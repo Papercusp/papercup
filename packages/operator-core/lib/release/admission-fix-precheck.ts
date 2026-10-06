@@ -26,9 +26,10 @@
  * `scripts/test-files.mjs` per file), guarded by the gate's initial run-lock probe.
  */
 import { execFileSync, spawn } from 'node:child_process';
-import { createWriteStream, existsSync, mkdirSync, type WriteStream } from 'node:fs';
+import { accessSync, constants as fsConstants, createWriteStream, existsSync, mkdirSync, statSync, type WriteStream } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { resolveDependencyGenerationRoot } from './dependency-generation-prebuild';
 import type { RepairSignatureEntry, RepairSignatureKind } from './frozen-candidate-repair-queue';
 import { isCheckpointRunLockHeldCheap } from '../release-checkpoint-launch';
 
@@ -305,6 +306,16 @@ export interface CheckpointTreeRunnerOptions {
    * `~/.papercusp/checkpoint-logs`, beside the gate's own run logs.
    */
   logDir?: string;
+  /**
+   * Explicit pre-check tree. Default: {@link deriveAdmissionPrecheckRoot}, which
+   * keeps the tree on the dependency-generation store's filesystem (WI-10006789).
+   */
+  precheckRoot?: string;
+  /**
+   * Injectable for tests: the dependency-generation store for `integrationRoot`.
+   * Default {@link resolveDependencyGenerationRoot} (env, recorded root, tree-local).
+   */
+  resolveGenerationRoot?: (integrationRoot: string) => string | null;
 }
 
 export interface ExecOptions {
@@ -603,6 +614,97 @@ export function admissionPrecheckSetupEnv(): NodeJS.ProcessEnv {
   return { DEPENDENCY_GENERATION_ALLOW_HARDLINK: '1' };
 }
 
+/** Filesystem facts {@link deriveAdmissionPrecheckRoot} needs; injectable for tests. */
+export interface AdmissionPrecheckRootProbe {
+  /** `st_dev` of exactly `p`, or null when `p` does not exist. */
+  deviceOf(p: string): number | null;
+  /** Whether `dir` is a directory the current user can create entries in. */
+  writableDir(dir: string): boolean;
+}
+
+export type AdmissionPrecheckRootPlacement =
+  | 'explicit'
+  | 'beside-checkpoint'
+  | 'beside-generation-store'
+  | 'inside-generation-store';
+
+export interface AdmissionPrecheckRoot {
+  root: string;
+  placement: AdmissionPrecheckRootPlacement;
+  /** One line naming why this placement was chosen, for the pre-check log. */
+  reason: string;
+  /** The default location, when the tree was moved away from it. */
+  displaced?: string;
+}
+
+const defaultAdmissionPrecheckRootProbe: AdmissionPrecheckRootProbe = {
+  deviceOf(p) {
+    try {
+      return statSync(p).dev;
+    } catch {
+      return null;
+    }
+  },
+  writableDir(dir) {
+    try {
+      if (!statSync(dir).isDirectory()) return false;
+      accessSync(dir, fsConstants.W_OK | fsConstants.X_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  },
+};
+
+/**
+ * Where the admission pre-check tree lives (WI-10006789).
+ *
+ * The tree's node_modules is materialized from the dependency-generation store
+ * with `DEPENDENCY_GENERATION_ALLOW_HARDLINK=1` ({@link admissionPrecheckSetupEnv}).
+ * A hardlink — and a reflink — only works when source and destination share a
+ * filesystem. The default location, `<checkpointRoot>-admission-precheck`, sits
+ * beside the gate's checkout; on a host whose store lives on another device
+ * (measured: store on /mnt/data xfs, checkout on / ext4) every cold pre-check
+ * became a full ~12 GiB copy that could not finish inside its setup budget.
+ *
+ * So when the default location is on a different device from the store, the
+ * tree moves onto the store's filesystem: beside the store when its parent is
+ * writable, otherwise in a reserved `.worktrees/` directory inside it. The
+ * store's own maintenance only ever enumerates `v1-*` generations and its own
+ * dot-prefixed bookkeeping, so a `.worktrees/` entry is never treated as a
+ * generation. When the store does not exist yet, or already shares the default
+ * location's filesystem, nothing moves.
+ */
+export function deriveAdmissionPrecheckRoot(input: {
+  checkpointRoot: string;
+  generationRoot: string | null;
+  probe?: AdmissionPrecheckRootProbe;
+}): AdmissionPrecheckRoot {
+  const probe = input.probe ?? defaultAdmissionPrecheckRootProbe;
+  const besideCheckpoint = `${path.resolve(input.checkpointRoot)}-admission-precheck`;
+  const keep = (reason: string): AdmissionPrecheckRoot => ({ root: besideCheckpoint, placement: 'beside-checkpoint', reason });
+  if (!input.generationRoot) return keep('dependency-generation store unresolved');
+  const store = path.resolve(input.generationRoot);
+  const storeDevice = probe.deviceOf(store);
+  if (storeDevice === null) return keep(`dependency-generation store ${store} does not exist`);
+  let probeAt = path.dirname(besideCheckpoint);
+  let defaultDevice = probe.deviceOf(probeAt);
+  while (defaultDevice === null && path.dirname(probeAt) !== probeAt) {
+    probeAt = path.dirname(probeAt);
+    defaultDevice = probe.deviceOf(probeAt);
+  }
+  if (defaultDevice === null || defaultDevice === storeDevice) {
+    return keep(`same filesystem as the dependency-generation store ${store}`);
+  }
+  const name = path.basename(besideCheckpoint);
+  const storeParent = path.dirname(store);
+  const moved = `the default ${besideCheckpoint} is on another filesystem than the dependency-generation store ${store}, so node_modules could not be hardlinked`;
+  if (storeParent !== store && probe.writableDir(storeParent) && probe.deviceOf(storeParent) === storeDevice) {
+    return { root: path.join(storeParent, name), placement: 'beside-generation-store', reason: moved, displaced: besideCheckpoint };
+  }
+  return { root: path.join(store, '.worktrees', name), placement: 'inside-generation-store', reason: moved, displaced: besideCheckpoint };
+}
+
 export function createCheckpointTreeFixPrecheckRunner(opts: CheckpointTreeRunnerOptions): FixPrecheckRunner {
   const exec = opts.exec ?? defaultExec;
   const runLockHeld = opts.runLockHeld ?? ((root: string) => isCheckpointRunLockHeldCheap(root));
@@ -631,7 +733,25 @@ export function createCheckpointTreeFixPrecheckRunner(opts: CheckpointTreeRunner
     // The gate may acquire its run lock and re-pin checkpointRoot AFTER the one-time
     // probe above. Keep admission measurement in a different, queue-serialized worktree.
     // setup-release-checkout already creates/refreshes this checkout at the exact ref.
-    const precheckRoot = `${path.resolve(opts.checkpointRoot)}-admission-precheck`;
+    // WI-10006789: it lives on the dependency-generation store's filesystem so the
+    // node_modules materialization can hardlink instead of copying.
+    const placement: AdmissionPrecheckRoot = opts.precheckRoot
+      ? { root: path.resolve(opts.precheckRoot), placement: 'explicit', reason: 'caller-provided pre-check root' }
+      : deriveAdmissionPrecheckRoot({
+          checkpointRoot: opts.checkpointRoot,
+          generationRoot: (opts.resolveGenerationRoot ?? resolveDependencyGenerationRoot)(opts.integrationRoot),
+        });
+    const precheckRoot = placement.root;
+    log(`[admission-precheck] tree ${precheckRoot} (${placement.placement}: ${placement.reason})`);
+    if (placement.displaced && existsSync(placement.displaced)) {
+      log(
+        `[admission-precheck] the earlier tree ${placement.displaced} is no longer used; ` +
+          `reclaim it with: git -C ${opts.integrationRoot} worktree remove --force ${placement.displaced}`,
+      );
+    }
+    if (placement.placement !== 'beside-checkpoint' && placement.placement !== 'explicit') {
+      mkdirSync(path.dirname(precheckRoot), { recursive: true });
+    }
     if (existsSync(precheckRoot)) {
       const integrationGitDir = defaultGitCommonDir(opts.integrationRoot);
       const precheckGitDir = defaultGitCommonDir(precheckRoot);

@@ -130,7 +130,9 @@ describe('admission pre-check defaultExec subtree handling', () => {
       const exitWitness = vi.spyOn(childProcess.ChildProcess.prototype, 'emit').mockImplementation(
         function (this: childProcess.ChildProcess, event, ...args) {
           const emitted = originalEmit.call(this, event, ...args);
-          if (event === 'exit' && this.pid === directPid) observedExit();
+          // `emit` is overloaded; mockImplementation infers its FIRST overload, so
+          // `event` types as 'spawn'. Widen it to compare against 'exit'.
+          if ((event as string) === 'exit' && this.pid === directPid) observedExit();
           return emitted;
         },
       );

@@ -11,6 +11,7 @@ import {
   createCheckpointTreeFixPrecheckRunner,
   defaultExec,
   dependencyGenerationInfraCode,
+  deriveAdmissionPrecheckRoot,
   evaluateFixPrecheck,
   isTestFilePath,
   precheckPopulation,
@@ -18,6 +19,7 @@ import {
   ROUTER_EXIT_NOT_MEASURED,
   ROUTER_EXIT_TEMPFAIL,
   type ExecOptions,
+  type AdmissionPrecheckRootProbe,
   type ExecResult,
   type FixPrecheckRunResult,
   type FixPrecheckProgress,
@@ -297,7 +299,9 @@ describe('createCheckpointTreeFixPrecheckRunner', () => {
     expect(logs.filter((line) => line.includes('queue unavailable'))).toHaveLength(3);
   });
 
-  const base = { integrationRoot: '/repo', checkpointRoot: '/ckpt' };
+  // resolveGenerationRoot: () => null pins the default-path tests to the
+  // beside-checkpoint placement whatever PAPERCUSP_DEPENDENCY_GENERATION_ROOT says.
+  const base = { integrationRoot: '/repo', checkpointRoot: '/ckpt', resolveGenerationRoot: () => null };
 
   it('reports checkpoint-tree-busy without touching the tree when a gate run holds the run-lock', async () => {
     const exec = vi.fn();
@@ -405,6 +409,7 @@ describe('createCheckpointTreeFixPrecheckRunner', () => {
       const runner = createCheckpointTreeFixPrecheckRunner({
         integrationRoot: '/repo', checkpointRoot, exec,
         runLockHeld: () => ({ held: false, elapsedSec: null }),
+        resolveGenerationRoot: () => null,
       });
       const out = await runner({ commit: C, files: ['lib/red.test.ts'] });
       expect(out).toMatchObject({ ran: false, reason: 'runner-failed' });
@@ -413,6 +418,23 @@ describe('createCheckpointTreeFixPrecheckRunner', () => {
       rmSync(unrelated, { recursive: true, force: true });
       rmSync(checkpointRoot, { recursive: true, force: true });
     }
+  });
+
+  it('materializes into an explicit precheckRoot and names the placement in its log (WI-10006789)', async () => {
+    const calls: Array<{ argv: readonly string[]; cwd: string }> = [];
+    const logs: string[] = [];
+    const exec = vi.fn(async (argv: readonly string[], opts: ExecOptions): Promise<ExecResult> => {
+      calls.push({ argv, cwd: opts.cwd });
+      return { exitCode: argv[0] === 'bash' ? 0 : 1, signal: null, output: argv[0] === 'bash' ? 'ok' : ' FAIL  lib/red.test.ts > x\nTests 1 failed (1)', timedOut: false, durationMs: 1 };
+    });
+    const runner = createCheckpointTreeFixPrecheckRunner({
+      ...base, exec, precheckRoot: '/fast/papercusp-precheck', log: (line) => logs.push(line),
+      runLockHeld: () => ({ held: false, elapsedSec: null }),
+    });
+    await runner({ commit: C, files: ['lib/red.test.ts'] });
+    expect(calls[0].argv).toEqual(expect.arrayContaining(['--release', '/fast/papercusp-precheck']));
+    expect(calls[1].cwd).toBe('/fast/papercusp-precheck');
+    expect(logs).toContain('[admission-precheck] tree /fast/papercusp-precheck (explicit: caller-provided pre-check root)');
   });
 
   it('isolates progress persistence failures from the measured file verdict', async () => {
@@ -533,5 +555,86 @@ describe('dependencyGenerationInfraCode (WI-10004849)', () => {
   it('is null for an ordinary setup failure', () => {
     expect(dependencyGenerationInfraCode(1, 'npm ERR! missing script')).toBeNull();
     expect(dependencyGenerationInfraCode(null, '')).toBeNull();
+  });
+});
+
+describe('deriveAdmissionPrecheckRoot (WI-10006789)', () => {
+  // The measured host: checkout on / (ext4, dev 1), generation store on /mnt/data (xfs, dev 2).
+  const devices: Record<string, number> = {
+    '/': 1,
+    '/home/u/ws': 1,
+    '/mnt/data': 2,
+    '/mnt/data/papercusp-dependency-generations': 2,
+  };
+  const probe = (writable: string[] = []): AdmissionPrecheckRootProbe => ({
+    deviceOf: (p) => devices[p] ?? null,
+    writableDir: (dir) => writable.includes(dir),
+  });
+  const checkpointRoot = '/home/u/ws/papercusp-checkpoint';
+  const store = '/mnt/data/papercusp-dependency-generations';
+
+  it('moves the tree into a reserved directory inside the store when the store is on another filesystem and its parent is not writable', () => {
+    expect(deriveAdmissionPrecheckRoot({ checkpointRoot, generationRoot: store, probe: probe() })).toEqual({
+      root: '/mnt/data/papercusp-dependency-generations/.worktrees/papercusp-checkpoint-admission-precheck',
+      placement: 'inside-generation-store',
+      reason: expect.stringContaining('could not be hardlinked'),
+      displaced: '/home/u/ws/papercusp-checkpoint-admission-precheck',
+    });
+  });
+
+  it('places the tree beside the store when the store parent is writable on the same filesystem', () => {
+    expect(deriveAdmissionPrecheckRoot({ checkpointRoot, generationRoot: store, probe: probe(['/mnt/data']) })).toMatchObject({
+      root: '/mnt/data/papercusp-checkpoint-admission-precheck',
+      placement: 'beside-generation-store',
+      displaced: '/home/u/ws/papercusp-checkpoint-admission-precheck',
+    });
+  });
+
+  it('keeps the default location when the store shares its filesystem', () => {
+    const local = '/home/u/ws/papercusp/.papercusp/dependency-generations';
+    const sameDevice: AdmissionPrecheckRootProbe = { deviceOf: (p) => (p === local ? 1 : devices[p] ?? null), writableDir: () => true };
+    expect(deriveAdmissionPrecheckRoot({ checkpointRoot, generationRoot: local, probe: sameDevice })).toEqual({
+      root: '/home/u/ws/papercusp-checkpoint-admission-precheck',
+      placement: 'beside-checkpoint',
+      reason: expect.stringContaining('same filesystem'),
+    });
+  });
+
+  it('keeps the default location when the store is unresolved or does not exist yet', () => {
+    expect(deriveAdmissionPrecheckRoot({ checkpointRoot, generationRoot: null, probe: probe() }).placement).toBe('beside-checkpoint');
+    expect(deriveAdmissionPrecheckRoot({ checkpointRoot, generationRoot: '/mnt/data/not-created-yet', probe: probe() })).toMatchObject({
+      root: '/home/u/ws/papercusp-checkpoint-admission-precheck',
+      placement: 'beside-checkpoint',
+      reason: expect.stringContaining('does not exist'),
+    });
+  });
+
+  it('compares the store against the nearest existing ancestor when the checkout parent does not exist yet', () => {
+    const fresh = '/home/u/ws/not-yet/papercusp-checkpoint';
+    expect(deriveAdmissionPrecheckRoot({ checkpointRoot: fresh, generationRoot: store, probe: probe() })).toMatchObject({
+      placement: 'inside-generation-store',
+      root: '/mnt/data/papercusp-dependency-generations/.worktrees/papercusp-checkpoint-admission-precheck',
+    });
+  });
+
+  it('never names a path a generation glob (`v1-*`) or the default copy would collide with', () => {
+    const { root } = deriveAdmissionPrecheckRoot({ checkpointRoot, generationRoot: store, probe: probe() });
+    const entry = root.slice(store.length + 1).split('/')[0];
+    expect(entry.startsWith('.')).toBe(true);
+    expect(entry.startsWith('v1-')).toBe(false);
+  });
+
+  it('uses the real filesystem by default: a store in the same tmp tree keeps the default placement', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'admission-root-'));
+    try {
+      const realStore = join(dir, 'generations');
+      mkdirSync(realStore);
+      expect(deriveAdmissionPrecheckRoot({ checkpointRoot: join(dir, 'checkpoint'), generationRoot: realStore })).toMatchObject({
+        root: `${join(dir, 'checkpoint')}-admission-precheck`,
+        placement: 'beside-checkpoint',
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
