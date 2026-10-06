@@ -49,8 +49,9 @@ const MAX_NOTE = 2000;
 
 export function classifyEndUserReport(text: string, ctx?: ReportContextInput | null): EndUserReportClassification {
   if (Array.isArray(ctx?.recentErrors) && ctx.recentErrors.length > 0) return { kind: 'bug', basis: 'recent-errors' };
-  if (NOTE_PREFIX.test(text)) return { kind: 'note', basis: 'explicit-note' };
+  // A defect cue beats a note prefix: "FYI the export is broken" reports a bug.
   if (DEFECT_CUE.test(text)) return { kind: 'bug', basis: 'defect-cue' };
+  if (NOTE_PREFIX.test(text)) return { kind: 'note', basis: 'explicit-note' };
   if (IDEA_CUE.test(text)) return { kind: 'idea', basis: 'idea-cue' };
   return { kind: 'bug', basis: 'ambiguous' };
 }
