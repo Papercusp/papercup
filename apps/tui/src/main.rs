@@ -90,7 +90,10 @@ use mux::{Multiplexer, MuxAction, Zellij};
 const CLI_HELP: &str = "pui — Papercusp terminal agent
 
 Usage:
-  pui [OPTIONS]              Chat with an agent in the current directory
+  pui [OPTIONS]              Chat with an agent in the current directory, with the
+                             HUD, wake, network and work panes beside it
+                             (Alt+z hides or shows them)
+  pui --solo [OPTIONS]       The chat alone, with no side panes
   pui [OPTIONS] [SUBCOMMAND]
 
 Subcommands:
@@ -113,7 +116,8 @@ Subcommands:
 Options:
   --fleet=<slug>             Join fresh PUI SU sessions to an existing fleet
   --seat=<ref>               Consume that fleet's delegated seat (requires --fleet)
-  -h, --help                 Print this help text
+  --solo                     Open only the chat (no zellij, no side panes)
+  -h, --help                Print this help text
   -V, --version              Print version information
 
 Remote hosts (the same saved connections psu uses):
@@ -134,6 +138,8 @@ struct CliInvocation {
     positionals: Vec<String>,
     fleet: Option<String>,
     seat: Option<String>,
+    /// `--solo`: the chat alone, with no workbench panes around it (P-030).
+    solo: bool,
 }
 
 impl CliInvocation {
@@ -179,6 +185,7 @@ impl CliInvocation {
         let mut positionals = Vec::new();
         let mut fleet = None;
         let mut seat = None;
+        let mut solo = false;
         let mut pending: Option<&'static str> = None;
 
         for arg in args {
@@ -196,6 +203,7 @@ impl CliInvocation {
             match arg.as_str() {
                 "--fleet" => pending = Some("--fleet"),
                 "--seat" => pending = Some("--seat"),
+                "--solo" => solo = true,
                 _ if arg.starts_with("--fleet=") => {
                     set_cli_value(&mut fleet, "--fleet", &arg["--fleet=".len()..])?
                 }
@@ -220,6 +228,7 @@ impl CliInvocation {
             positionals,
             fleet,
             seat,
+            solo,
         })
     }
 
@@ -264,20 +273,25 @@ fn print_cli_version(subcommand: Option<&str>, subcommand_arg: Option<&str>) -> 
 /// `pui workbench` materializes its primary full TUI as `pui hud`, so `hud` is a
 /// launch-capable mode even though it is spelled as a subcommand. The pinned data
 /// boards remain non-reactive; otherwise every board races to open the same pane.
-/// Bare `pui` is chat-first (P-001): one conversation with no multiplexer, so
-/// it has nowhere to open a pane and must never claim a pending launch.
+/// The chat surface (`pui --solo`, which is also what the chat workbench's main
+/// pane runs — P-030) is never reactive: its workbench `pui hud` pane owns
+/// pending launches, and a solo chat has no multiplexer to open a pane in.
 fn reactive_launch_mode(subcommand: Option<&str>) -> bool {
     matches!(subcommand, Some("hud") | Some("dock-driver"))
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Subcommand dispatch — bare `pui` is ONE full-screen chat in the current
-    // directory, the way `claude` and `codex` start (pui-chat-first-ux P-001):
-    //   pui           → chat-first: no zellij, tab strip, fleet rail or boards
-    //   pui workbench → the zellij workbench with every board (D-001)
-    //   pui hud       → just the full HUD (what the workbench's own HUD pane runs;
-    //                   the workbench never launches bare `pui`, so it cannot nest).
+    // Subcommand dispatch (pui-chat-first-ux P-001, reshaped by P-030 / D-020):
+    //   pui           → the chat workbench: the chat is the main, focused zellij
+    //                   pane and the HUD, wake, network and work panes sit beside
+    //                   it (Alt+z hides/shows them). Falls back to the solo chat
+    //                   where zellij cannot run (see `bare_launch`).
+    //   pui --solo    → the chat alone, full screen, no zellij — the way `claude`
+    //                   and `codex` start. The workbench's chat pane runs this.
+    //   pui workbench → the HUD-primary zellij workbench (D-001)
+    //   pui hud       → just the full HUD (what the workbenches' HUD pane runs;
+    //                   no layout launches bare `pui`, so nothing can nest).
     // `pui --connect…` runs pui on a remote host through psu's saved
     // connections (P-017 / D-025). Checked before any other parsing: psu owns
     // every `--connect*` cell, which PUI's own parser would misread as a
@@ -311,6 +325,24 @@ async fn main() -> Result<()> {
     }
     if print_cli_version(subcommand.as_deref(), subcommand_arg.as_deref()) {
         return Ok(());
+    }
+    if subcommand.is_none() {
+        let launch = bare_launch(BareLaunchInputs {
+            solo: cli.solo,
+            in_multiplexer_pane: std::env::var_os("ZELLIJ").is_some_and(|v| !v.is_empty()),
+            interactive: {
+                use std::io::IsTerminal;
+                std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
+            },
+            zellij_available: zellij_on_path(),
+        });
+        if launch == BareLaunch::ChatWorkbench {
+            if let Some(code) = run_chat_workbench().await? {
+                std::process::exit(code);
+            }
+            // No backend identity to hand the panes: the solo chat below owns
+            // first-run setup and the plain "what to do" errors (P-031).
+        }
     }
     match subcommand.as_deref() {
         Some("workbench") => return run_workbench().await,
