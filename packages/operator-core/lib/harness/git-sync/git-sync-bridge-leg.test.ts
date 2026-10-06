@@ -21,6 +21,7 @@ const hiveGitRepoPathMock = vi.hoisted(() => vi.fn());
 const pathExistsMock = vi.hoisted(() => vi.fn());
 const defaultRunGitMock = vi.hoisted(() => vi.fn());
 const runGithubBridgeTickMock = vi.hoisted(() => vi.fn());
+const loadHiveEffectAuthorityMock = vi.hoisted(() => vi.fn());
 const emitGitSyncEgressedEventMock = vi.hoisted(() => vi.fn());
 /** The routines row the leg reads its watermarks from. A non-null `wb_sha` is what
  *  arms the catch-up pin at all — without it the pin is skipped for an unrelated
@@ -53,6 +54,11 @@ vi.mock('../../sync/pot-git/storage', async (importOriginal) => ({
 vi.mock('../../sync/pot-git/github-bridge-tick', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   runGithubBridgeTick: runGithubBridgeTickMock,
+}));
+// WI-10006624: the owning-hive key decides whether this member bridges GitHub at all.
+vi.mock('../../sync/pot-git/hive-effect-authority', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  loadHiveEffectAuthority: loadHiveEffectAuthorityMock,
 }));
 vi.mock('./git-sync-events', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -87,6 +93,8 @@ beforeEach(() => {
   sqlMock.unsafe.mockReset();
   emitGitSyncEgressedEventMock.mockReset();
   defaultRunGitMock.mockResolvedValue({ code: 0, stdout: '', stderr: '' });
+  // Default: this device does NOT hold the owning hive key (a p2p joiner).
+  loadHiveEffectAuthorityMock.mockResolvedValue(null);
 });
 
 describe('runGithubBridgeLeg — WI-6282 cold-store catch-up pin', () => {
@@ -321,6 +329,74 @@ describe('GitHub credential-helper handoff', () => {
         repoKey: 'gh-aviynw--oddsmith',
       }),
     );
+  });
+});
+
+/**
+ * WI-10006624 / D-022 — only the OWNING hive bridges GitHub.
+ *
+ * LIVE-OBSERVED on c1006k (2026-10-06): a cold p2p joiner (no owning hive key) ran the
+ * bridge's GitHub ingress every tick. The service user had no git credential, so ingress
+ * failed for every branch, and three sweeps later git-sync-stall-watchdog raised a
+ * persistent FAULT ALARM on a joiner whose p2p sync was healthy. Its egress was already
+ * refused by the hive-effect authority, so ingress there fed nothing it may act on.
+ * The integrator leg already declines `not_hive_owner`; the bridge must match.
+ */
+describe('runGithubBridgeLeg — WI-10006624 non-owner members do not bridge GitHub', () => {
+  const bridgedRegistry = {
+    projects: [
+      {
+        slug: SLUG,
+        path: '/clones/hello',
+        hive_slug: SLUG,
+        self_repo: true,
+        github_remote: 'https://github.com/acme/hello.git',
+      },
+    ],
+  };
+  const clearOutcome = {
+    ran: false,
+    egressTarget: 'skipped',
+    ingressed: { updated: 0, upToDate: 0, nonFF: 0, absent: 0 },
+    admissions: [],
+    lastAdmitted: null,
+    egress: null,
+    egressHead: null,
+    verdict: { action: 'clear', needsOwner: false, signals: [], detail: '' },
+    errors: [],
+  };
+  const writerSeam = async (): Promise<boolean | undefined> => {
+    expect(runGithubBridgeTickMock).toHaveBeenCalledOnce();
+    const input = runGithubBridgeTickMock.mock.calls[0]![0] as {
+      deps?: { isBridgeWriter?: () => Promise<boolean> };
+    };
+    return input.deps?.isBridgeWriter?.();
+  };
+
+  it('a member WITHOUT the owning hive key answers the writer seam false (the tick then skips not_bridge_writer)', async () => {
+    loadHarnessRegistryMock.mockResolvedValue(bridgedRegistry);
+    pathExistsMock.mockResolvedValue(false);
+    loadHiveEffectAuthorityMock.mockResolvedValue(null);
+    runGithubBridgeTickMock.mockResolvedValue({ ...clearOutcome, skipped: 'not_bridge_writer' });
+
+    await runGithubBridgeLeg(SLUG, WS);
+
+    // A missing seam (undefined) would default to "writer" inside the tick — the bug.
+    expect(await writerSeam()).toBe(false);
+  });
+
+  it('the OWNING member answers the writer seam true — the guard narrows to non-owners, it does not disable the bridge', async () => {
+    loadHarnessRegistryMock.mockResolvedValue(bridgedRegistry);
+    pathExistsMock.mockResolvedValue(false);
+    loadHiveEffectAuthorityMock.mockResolvedValue({
+      hive_id: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+      sign: async () => Buffer.alloc(64),
+    });
+    runGithubBridgeTickMock.mockResolvedValue(clearOutcome);
+
+    await runGithubBridgeLeg(SLUG, WS);
+
+    expect(await writerSeam()).toBe(true);
   });
 });
 
