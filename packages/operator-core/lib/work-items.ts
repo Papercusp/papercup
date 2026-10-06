@@ -131,6 +131,8 @@ import {
   matchesAgentReviewClaimAdmission,
   readAgentReviewState,
   readStructuredOwnerAsk,
+  verificationTaskConflict,
+  verificationTaskConflictSql,
   type AgentReviewClaimAdmission,
 } from './harness/improvements/agent-review-policy';
 import { hasResourceGovernorReceiptPayload, ResourceGovernorReleaseRequiredError } from './resource-governor/queue';
@@ -5447,6 +5449,10 @@ export async function claimWorkItem(
   let prior: WorkItem | null = null;
   if (issue) {
     prior = issueToWorkItem(issue);
+    // P-007 / D-021: a verification task (payload.verification) is never claimable by
+    // its own reporter or implementer. This is the by-id writer every assign path
+    // funnels through, so the refusal holds for claim, assign and dispatch alike.
+    if (verificationTaskConflict(prior.payload, assignee)) return null;
     const agentReviewAdmission = matchesAgentReviewClaimAdmission(opts.agentReviewAdmission, prior, assignee)
       ? opts.agentReviewAdmission
       : null;
@@ -5495,6 +5501,7 @@ export async function claimWorkItem(
     const wi = await getFeatureWorkItemOnly(id, opts.harness);
     if (!wi) return null;
     prior = wi;
+    if (verificationTaskConflict(prior.payload, assignee)) return null;
     const operationClaims = await import('./blueprint/operation-worker-binding');
     const operationClaimRead = await operationClaims.readActiveOperationWorkerClaimBinding(activeWorkspaceId(), assignee);
     if (!operationClaims.matchOperationWorkerClaim(operationClaimRead, wi).allowed) return null;
@@ -6076,6 +6083,9 @@ export function claimFloorsWhereSql(sql: OrgSql, opts: ClaimFloorsOpts) {
       claimSpecReferencesFleet: opts.claimSpecReferencesFleet,
       claimSpecReferencesGoal: opts.claimSpecReferencesGoal,
     })}
+    -- P-007 / D-021: a verification task never self-selects to its own reporter or
+    -- implementer. Claimant-specific, so it is a claim-door filter, not a claim floor.
+    AND NOT ${verificationTaskConflictSql(sql, opts.cooldownAssignee ?? '', 'payload')}
     -- EI-14806: the cross-machine-rig floor, extended to the FEATURE family. The issue-family
     -- claim has honored payload.needs_2_machine_rig since WI-2796, but a FEATURE-family item can
     -- ALSO carry the tag (WI-3487, a p2p rig-readiness feature) and this path — getNextWorkItem
@@ -8074,6 +8084,7 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
          AND ${observationLaneExclusionSql(sql)}
          AND ${needsOwnerActionExclusionSql(sql)}
          AND ${agentReviewNormalExclusionSql(sql)}
+         AND NOT ${verificationTaskConflictSql(sql, filter.assignee, 'wi.payload')}
          AND ${externalBlockersExclusionSql(sql)}
          -- WI-2633: a replication-liveness detector EI is gated to the p2p fleet — same floor the
          -- claim applies (below), so the miss diagnosis never disagrees with what it serves.
@@ -8807,6 +8818,8 @@ export async function claimNextIssueWorkItem(
           -- submitter-owned revision interval. The dedicated reviewer tool is the only
           -- selector for pending; approved rows pass this floor again.
           AND ${agentReviewNormalExclusionSql(tx)}
+          -- P-007 / D-021: never self-select a verification task to its reporter or implementer.
+          AND NOT ${verificationTaskConflictSql(tx, filter.assignee, 'wi.payload')}
           AND ${externalBlockersExclusionSql(tx)}
           -- WI-2633: never self-select an auto-filed replication-liveness detector EI
           -- (payload._ei.created_by='system:replication-liveness'). A generic backlog-drain

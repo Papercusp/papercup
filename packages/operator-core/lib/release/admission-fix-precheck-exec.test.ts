@@ -10,10 +10,15 @@ import {
   EXEC_STDIO_CLOSE_GRACE_MS,
 } from './admission-fix-precheck';
 
-/** Is a pid still alive (signal 0 probe)? */
+/** Is a pid still executing? Signal 0 also succeeds for an unreaped Linux corpse. */
 function alive(pid: number): boolean {
   try {
     process.kill(pid, 0);
+    if (process.platform === 'linux') {
+      const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+      const state = stat.slice(stat.lastIndexOf(')') + 2).split(' ')[0];
+      if (state === 'Z' || state === 'X') return false;
+    }
     return true;
   } catch {
     return false;
@@ -23,6 +28,36 @@ function alive(pid: number): boolean {
 // WI-10004928 part 5: a grandchild that inherited stdout (a dependency-generation `cp`) kept
 // 'close' from firing, so the pre-check held its single slot far past the setup budget.
 describe('admission pre-check defaultExec subtree handling', () => {
+  it.skipIf(process.platform !== 'linux')('treats an unreaped zombie as terminated while preserving the live-pid control', async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'precheck-zombie-'));
+    const logFile = path.join(dir, 'child.log');
+    // Keep the parent alive without waitpid: the exited child is deterministically Z,
+    // rather than relying on how quickly PID 1 reaps a killed orphan on this machine.
+    const pending = defaultExec(['python3', '-c',
+      "import os,time\npid=os.fork()\nif pid==0: os._exit(0)\nprint('ZOMBIE_FIXTURE_PID='+str(pid),flush=True)\ntime.sleep(30)",
+    ], { cwd: process.cwd(), timeoutMs: 5_000, logFile });
+    try {
+      let pid = 0;
+      let state = '';
+      const deadline = Date.now() + 4_000;
+      while (Date.now() < deadline && state !== 'Z') {
+        try {
+          pid = Number(/^ZOMBIE_FIXTURE_PID=(\d+)$/m.exec(readFileSync(logFile, 'utf8'))?.[1]);
+          const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+          state = stat.slice(stat.lastIndexOf(')') + 2).split(' ')[0] ?? '';
+        } catch { /* the child's first output has not arrived yet */ }
+        if (state !== 'Z') await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      expect(state, 'the controlled child must have exited but remain unreaped').toBe('Z');
+      expect(() => process.kill(pid, 0), 'signal 0 still succeeds for the dead fixture').not.toThrow();
+      expect(alive(process.pid), 'a live process must still be reported alive').toBe(true);
+      expect(alive(pid), 'an unreaped corpse cannot still be executing').toBe(false);
+    } finally {
+      await pending; // the existing executor owns and bounds all fixture cleanup
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 15_000);
+
   it.each(['stdout', 'stderr'] as const)('notifies on %s activity while the child is still running', async (stream) => {
     let notified!: () => void;
     const output = new Promise<void>((resolve) => { notified = resolve; });

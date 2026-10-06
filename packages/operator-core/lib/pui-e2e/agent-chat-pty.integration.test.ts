@@ -106,6 +106,9 @@ const scriptedEngine = vi.hoisted(() => ({
   // decides "the answer was lost".
   questionVerdicts: [] as Array<{ behavior: string; updatedInput?: Record<string, unknown>; message?: string }>,
   requests: [] as string[],
+  // P-026: every mid-session model/effort switch the engine asked the SDK for,
+  // in order (setModel then, for a spec with an effort, applyFlagSettings).
+  modelSwitches: [] as Array<{ model?: string; effort?: string }>,
   sdkPermissions: [] as Array<{ mode: string | undefined; bypass: boolean | undefined }>,
   // Which agent the SDK was asked to run (P-007): the prompt kind, the MCP
   // servers it may load, and whether the psu hook set is silenced.
@@ -433,6 +436,11 @@ vi.mock('../su-session-claude-engine', async (original) => {
           },
           mcpServerStatus: async () => [{ name: 'papercusp-su', status: 'connected' as const }],
           interrupt: async () => { result(); },
+          // P-026: the streaming-input switch the engine makes before a turn.
+          setModel: async (model?: string) => { scriptedEngine.modelSwitches.push({ model }); },
+          applyFlagSettings: async (settings: { effortLevel?: string }) => {
+            scriptedEngine.modelSwitches.push({ effort: settings.effortLevel });
+          },
           close: () => { native?.stdin.end(); output.end(); },
         };
       };
@@ -1937,6 +1945,7 @@ beforeEach(async () => {
   scriptedEngine.questionPrompt = 'Keep or change the draft title?';
   scriptedEngine.questionOptions = ['Keep', 'Change'];
   scriptedEngine.requests = [];
+  scriptedEngine.modelSwitches = [];
   scriptedEngine.sdkPermissions = [];
   scriptedEngine.sdkSessions = [];
   scriptedEngine.sdkCwds = [];
@@ -6744,6 +6753,93 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-013 terminal compatibilit
       transportFault = 'none';
       releaseHungSnapshots();
       releaseInitialization();
+      await pane.stop().catch(() => {});
+      rmSync(launchDir, { recursive: true, force: true });
+    }
+  });
+
+  // pui-chat-first-ux-2026-09-28 P-026 (D-025), owner #1276: "how can I switch
+  // models?". /model on a running conversation lists this engine's tiers and
+  // names the running model on Keep. The pick changes nothing until the next
+  // message; the engine then switches before that turn (no new session) and
+  // the footer and /status name the new model.
+  test('P-026: /model on a running conversation switches the engine from the next turn', { timeout: 240_000 }, async ({ onTestFailed }) => {
+    const { readSuperuserToken } = await import('../superuser-token');
+    const served = await fetch(`http://127.0.0.1:${operatorPort}/api/agent-config`,
+      { headers: { authorization: `Bearer ${readSuperuserToken()}` } });
+    expect(served.status).toBe(200);
+    const { effectiveTiers: tiers } = await served.json() as {
+      effectiveTiers: Array<{ name: string; spec: string; backend?: string; loopCapability?: { executable?: boolean } }>;
+    };
+    const launchDir = realpathSync(mkdtempSync(path.join(tmpdir(), 'pui-p026-launch-')));
+    let stage = 'first-turn';
+    const frames: Record<string, string> = {};
+    const pane = new PuiPane(bin, operatorPort, home, { args: ['--solo'], cwd: launchDir });
+    onTestFailed(() => console.info('PUI_P026_FAILURE', JSON.stringify({
+      stage, launchDir, frames, tiers, switches: scriptedEngine.modelSwitches, requests: scriptedEngine.requests,
+      ...pane.failureEvidence(),
+    })));
+    try {
+      await pane.waitFor(`Claude · ${launchDir}`, { timeoutMs: 40_000 });
+      pane.write('hi');
+      await pane.waitFor('Enter sends');
+      pane.enter();
+      await pane.waitFor(scriptedEngine.successText, { timeoutMs: 30_000 });
+      await pane.waitForSendReady();
+      const engines = scriptedEngine.engines.length;
+      const engine = scriptedEngine.engines.at(-1) as ClaudeSuEngine;
+      const running = engine.adapter.host.descriptor().model ?? null;
+      // A settable Claude tier (no backend, or Claude's) other than the running model.
+      const base = (spec: string) => spec.split(':')[0];
+      const index = tiers.findIndex((tier) => tier.loopCapability?.executable !== false
+        && (!tier.backend || tier.backend === 'claude' || tier.backend === 'claude-code')
+        && base(tier.spec) !== base(running ?? ''));
+      expect(index, JSON.stringify({ running, tiers })).toBeGreaterThanOrEqual(0);
+      const picked = tiers[index];
+
+      stage = 'picker';
+      pane.write('/model');
+      await pane.waitFor('/model');
+      pane.enter();
+      await pane.waitFor('Model — Enter select');
+      await pane.waitFor(running ? `Keep the current model (${running})` : 'Keep the current model');
+      await pane.waitFor(`${picked.name} — ${picked.spec}`);
+      frames.picker = pane.screen();
+      pane.write('j'.repeat(index + 1));
+      pane.enter();
+      await pane.waitForGone('Model — Enter select');
+      await pane.waitFor(`next turn: ${picked.spec} · ${launchDir}`);
+      frames.pending = pane.screen();
+      // The pick alone switches nothing: a turn's model never changes under it.
+      expect(scriptedEngine.modelSwitches).toEqual([]);
+
+      stage = 'second-turn';
+      pane.write('again');
+      await pane.waitFor('Enter sends');
+      pane.enter();
+      await vi.waitFor(() => expect(scriptedEngine.requests).toEqual(['hi', 'again']), { timeout: 30_000, interval: 100 });
+      await pane.waitForSendReady();
+      const [model, effort] = picked.spec.split(':');
+      expect(scriptedEngine.modelSwitches, 'the engine switched before the turn, once').toEqual(
+        [{ model }, ...(effort ? [{ effort }] : [])]);
+      expect(engine.adapter.host.descriptor().model).toBe(picked.spec);
+      expect(scriptedEngine.engines, 'a live switch keeps the one running session').toHaveLength(engines);
+      await pane.waitFor(`${picked.spec} · ${launchDir}`);
+      await pane.waitForGone(`next turn: ${picked.spec}`);
+      frames.switched = pane.screen();
+      expect(chatJargonIn(frames.switched), frames.switched).toEqual([]);
+
+      stage = 'status';
+      pane.write('/status');
+      await pane.waitFor('/status');
+      pane.enter();
+      await pane.waitFor(`Model ${picked.spec} · account`);
+      frames.status = pane.screen();
+      expect(frames.status).toContain('engine Claude');
+      console.info('PUI_P026_MODEL_SWITCH_ACCEPTANCE', JSON.stringify({
+        binary: bin, binarySha256, launchDir, running, picked: picked.spec, switches: scriptedEngine.modelSwitches, frames,
+      }));
+    } finally {
       await pane.stop().catch(() => {});
       rmSync(launchDir, { recursive: true, force: true });
     }

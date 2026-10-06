@@ -391,11 +391,13 @@ bundle_rc=0
   # disabled for ~8 min). `wait` blocks (bounded) while a window is open in this
   # checkout or any submodule; `verify` re-checks after esbuild, and a window that
   # opened mid-build costs one rebuild. Still blocked → exit 1, so the fallback below
-  # boots the last-known-good bundle, marked stale, instead of a mutant.
+  # boots the last-known-good bundle, marked stale, instead of a mutant. No --timeout-sec:
+  # the gate resolves PAPERCUSP_BUNDLE_PROBE_WAIT_SEC, then the PAPERCUSP_UNATTENDED_LOCK_WAIT_SEC
+  # umbrella, then 90 s (WI-10006268).
   probe_attempt=1
   while :; do
     "${COMMITTED_NODE[@]}" "$REPO_ROOT/scripts/mutation-probe-window-gate.mjs" wait --root "$REPO_ROOT" \
-      --stamp-file "$PROBE_STAMP" --timeout-sec "${PAPERCUSP_BUNDLE_PROBE_WAIT_SEC:-90}" || exit 1
+      --stamp-file "$PROBE_STAMP" || exit 1
     if ! npx --yes esbuild@0.25.0 "$ENTRY" \
       --bundle --platform=node --format=esm --target=node22 \
       --outfile="$TMPFILE" \

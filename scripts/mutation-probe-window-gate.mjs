@@ -2,6 +2,7 @@
 // WI-10005321 — the build gate around a bundler that reads the shared working tree.
 //
 //   node scripts/mutation-probe-window-gate.mjs wait   --root <checkout> --stamp-file <f> [--timeout-sec N]
+//     (no --timeout-sec: PAPERCUSP_BUNDLE_PROBE_WAIT_SEC, else PAPERCUSP_UNATTENDED_LOCK_WAIT_SEC, else 90)
 //   node scripts/mutation-probe-window-gate.mjs verify --root <checkout> --stamp-file <f>
 //
 // `wait` blocks (bounded) while an in-tree mutation probe holds a file under <checkout> or any of
@@ -18,6 +19,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 import {
   formatBuildWindowBlock,
+  resolveBuildWindowWaitSec,
   verifyBuildWindowUnchanged,
   waitForBuildWindowClear,
 } from './lib/mutation-probe-window.mjs';
@@ -56,14 +58,26 @@ const options = {
 };
 
 if (mode === 'wait') {
-  const timeoutSec = Number(values['timeout-sec'] ?? 90);
-  if (!Number.isFinite(timeoutSec) || timeoutSec < 0) usage(`--timeout-sec must be a non-negative number`);
+  // WI-10006268: callers omit --timeout-sec so the env knobs (PAPERCUSP_BUNDLE_PROBE_WAIT_SEC, then
+  // the PAPERCUSP_UNATTENDED_LOCK_WAIT_SEC umbrella) reach this wait; an explicit flag still wins.
+  let timeoutSec;
+  let source = '--timeout-sec';
+  if (values['timeout-sec'] !== undefined) {
+    timeoutSec = Number(values['timeout-sec']);
+    if (!Number.isFinite(timeoutSec) || timeoutSec < 0) usage(`--timeout-sec must be a non-negative number`);
+  } else {
+    try {
+      ({ sec: timeoutSec, source } = resolveBuildWindowWaitSec(process.env));
+    } catch (error) {
+      usage(String(error instanceof Error ? error.message : error));
+    }
+  }
   const result = await waitForBuildWindowClear(root, { ...options, timeoutMs: timeoutSec * 1000 });
   for (const note of result.verdict.notes) process.stdout.write(`→ ${note}\n`);
   if (!result.ok) {
     for (const line of formatBuildWindowBlock(result.verdict, root)) process.stdout.write(`${line}\n`);
     const why = result.verdict.waitable
-      ? `it stayed open for the whole ${timeoutSec}s wait`
+      ? `it stayed open for the whole ${timeoutSec}s wait (from ${source}; an unattended build sets PAPERCUSP_UNATTENDED_LOCK_WAIT_SEC to queue longer)`
       : 'an orphaned or unreadable marker will not clear by itself (the next mutation probe recovers an orphan)';
     process.stdout.write(
       `ERROR: refusing to bundle while a mutation probe holds a file in this tree mutated (WI-10005321): ${why}.\n`,

@@ -86,6 +86,22 @@ export function buildWindowStamp(root: string, options?: {
     tmpDir?: string;
 }): Record<string, number | null>;
 /**
+ * How long a build waits for a mutation-probe window to close (WI-10006268). The specific
+ * PAPERCUSP_BUNDLE_PROBE_WAIT_SEC wins; otherwise PAPERCUSP_UNATTENDED_LOCK_WAIT_SEC
+ * (EI-24961470606265468), the one knob an unattended build (a systemd-run capacity build, a
+ * scheduled gate) sets so EVERY lock/window wait queues behind a peer instead of dying at an
+ * interactive-sized default; otherwise 90 s. Same precedence and umbrella semantics as
+ * scripts/lib/fs-mutex.mjs: an umbrella that is unset, non-numeric or <= 0 is ignored. A specific
+ * knob that is set but not a non-negative number throws, as a bad `--timeout-sec` does.
+ *
+ * @param {Record<string, string | undefined>} [env]
+ * @returns {{ sec: number, source: 'PAPERCUSP_BUNDLE_PROBE_WAIT_SEC' | 'PAPERCUSP_UNATTENDED_LOCK_WAIT_SEC' | 'default' }}
+ */
+export function resolveBuildWindowWaitSec(env?: Record<string, string | undefined>): {
+    sec: number;
+    source: "PAPERCUSP_BUNDLE_PROBE_WAIT_SEC" | "PAPERCUSP_UNATTENDED_LOCK_WAIT_SEC" | "default";
+};
+/**
  * Wait (bounded) until a build may read `root`. Only an all-ACTIVE block is waited on: an orphan
  * or an unreadable marker will not clear by itself. The stamp is taken BEFORE the verdict, so a
  * window opening after a clear verdict still moves it for `verifyBuildWindowUnchanged`.
@@ -168,3 +184,5 @@ export function formatBuildWindowBlock(verdict: ReturnType<typeof buildWindowVer
  * @returns {string}
  */
 export function formatMutationProbeWindow(window: ReturnType<typeof readMutationProbeWindow>, checkoutRoot: string): string;
+/** The interactive default: a peer's in-tree probe window is capped at 600 s, so 90 s is a guess. */
+export const BUILD_WINDOW_DEFAULT_WAIT_SEC: 90;

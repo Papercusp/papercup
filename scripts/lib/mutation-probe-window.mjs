@@ -199,6 +199,37 @@ export function buildWindowStamp(root, options = {}) {
   return stamp;
 }
 
+/** The interactive default: a peer's in-tree probe window is capped at 600 s, so 90 s is a guess. */
+export const BUILD_WINDOW_DEFAULT_WAIT_SEC = 90;
+
+/**
+ * How long a build waits for a mutation-probe window to close (WI-10006268). The specific
+ * PAPERCUSP_BUNDLE_PROBE_WAIT_SEC wins; otherwise PAPERCUSP_UNATTENDED_LOCK_WAIT_SEC
+ * (EI-24961470606265468), the one knob an unattended build (a systemd-run capacity build, a
+ * scheduled gate) sets so EVERY lock/window wait queues behind a peer instead of dying at an
+ * interactive-sized default; otherwise 90 s. Same precedence and umbrella semantics as
+ * scripts/lib/fs-mutex.mjs: an umbrella that is unset, non-numeric or <= 0 is ignored. A specific
+ * knob that is set but not a non-negative number throws, as a bad `--timeout-sec` does.
+ *
+ * @param {Record<string, string | undefined>} [env]
+ * @returns {{ sec: number, source: 'PAPERCUSP_BUNDLE_PROBE_WAIT_SEC' | 'PAPERCUSP_UNATTENDED_LOCK_WAIT_SEC' | 'default' }}
+ */
+export function resolveBuildWindowWaitSec(env = process.env) {
+  const specific = env.PAPERCUSP_BUNDLE_PROBE_WAIT_SEC;
+  if (specific !== undefined && specific !== '') {
+    const sec = Number(specific);
+    if (!Number.isFinite(sec) || sec < 0) {
+      throw new Error(`PAPERCUSP_BUNDLE_PROBE_WAIT_SEC must be a non-negative number of seconds, got "${specific}"`);
+    }
+    return { sec, source: 'PAPERCUSP_BUNDLE_PROBE_WAIT_SEC' };
+  }
+  const unattended = Number(env.PAPERCUSP_UNATTENDED_LOCK_WAIT_SEC);
+  if (env.PAPERCUSP_UNATTENDED_LOCK_WAIT_SEC && Number.isFinite(unattended) && unattended > 0) {
+    return { sec: unattended, source: 'PAPERCUSP_UNATTENDED_LOCK_WAIT_SEC' };
+  }
+  return { sec: BUILD_WINDOW_DEFAULT_WAIT_SEC, source: 'default' };
+}
+
 /**
  * Wait (bounded) until a build may read `root`. Only an all-ACTIVE block is waited on: an orphan
  * or an unreadable marker will not clear by itself. The stamp is taken BEFORE the verdict, so a
@@ -209,7 +240,7 @@ export function buildWindowStamp(root, options = {}) {
  *   sleep?: (ms: number) => Promise<void>, now?: () => number }} [options]
  */
 export async function waitForBuildWindowClear(root, options = {}) {
-  const { timeoutMs = 90_000, pollMs = 2_000, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) } = options;
+  const { timeoutMs = BUILD_WINDOW_DEFAULT_WAIT_SEC * 1000, pollMs = 2_000, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) } = options;
   const now = options.now ?? Date.now;
   const started = now();
   for (let polls = 0; ; polls += 1) {

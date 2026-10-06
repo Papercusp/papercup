@@ -20,6 +20,7 @@ import {
   formatMutationProbeWindow,
   mutationProbeAdmissionDir,
   readMutationProbeWindow,
+  resolveBuildWindowWaitSec,
   verifyBuildWindowUnchanged,
   waitForBuildWindowClear,
 } from '../../../scripts/lib/mutation-probe-window.mjs';
@@ -273,6 +274,94 @@ describe('build gate: never bundle a probe-mutated tree (WI-10005321)', () => {
     rmSync(join(mutationProbeAdmissionDir(checkout, opts()), 'original.manifest'));
     expect(run('wait').status).toBe(0);
     expect(run('verify').status).toBe(0);
+  });
+
+  it('the CLI wait takes its budget from the env when no --timeout-sec is passed (WI-10006268)', () => {
+    publishFor(checkout, [checkout, join(checkout, 'g.ts'), join(scratch, 'g.orig'), String(process.pid)]);
+    const run = (env: Record<string, string>) =>
+      spawnSync(
+        process.execPath,
+        [
+          join(REPO, 'scripts/mutation-probe-window-gate.mjs'),
+          'wait',
+          '--root',
+          checkout,
+          '--stamp-file',
+          join(scratch, 'stamp-env.json'),
+          '--tmp-dir',
+          scratch,
+          '--uid',
+          '4242',
+        ],
+        {
+          encoding: 'utf8',
+          env: { ...process.env, PAPERCUSP_BUNDLE_PROBE_WAIT_SEC: '', PAPERCUSP_UNATTENDED_LOCK_WAIT_SEC: '', ...env },
+        },
+      );
+    const umbrella = run({ PAPERCUSP_UNATTENDED_LOCK_WAIT_SEC: '1' });
+    expect(umbrella.status).toBe(1);
+    expect(umbrella.stdout).toContain('whole 1s wait (from PAPERCUSP_UNATTENDED_LOCK_WAIT_SEC');
+    const specific = run({ PAPERCUSP_BUNDLE_PROBE_WAIT_SEC: '0', PAPERCUSP_UNATTENDED_LOCK_WAIT_SEC: '3600' });
+    expect(specific.status).toBe(1);
+    expect(specific.stdout).toContain('whole 0s wait (from PAPERCUSP_BUNDLE_PROBE_WAIT_SEC');
+    const junk = run({ PAPERCUSP_BUNDLE_PROBE_WAIT_SEC: 'soon' });
+    expect(junk.status).toBe(2);
+    expect(junk.stderr).toContain('PAPERCUSP_BUNDLE_PROBE_WAIT_SEC must be a non-negative number');
+  });
+});
+
+describe('build-window wait budget (WI-10006268)', () => {
+  it('defaults to the interactive 90 s', () => {
+    expect(resolveBuildWindowWaitSec({})).toEqual({ sec: 90, source: 'default' });
+  });
+
+  it('honours the unattended umbrella that every other build lock wait honours', () => {
+    expect(resolveBuildWindowWaitSec({ PAPERCUSP_UNATTENDED_LOCK_WAIT_SEC: '3600' })).toEqual({
+      sec: 3600,
+      source: 'PAPERCUSP_UNATTENDED_LOCK_WAIT_SEC',
+    });
+  });
+
+  it('lets the specific knob win over the umbrella, including an explicit 0', () => {
+    const env = { PAPERCUSP_BUNDLE_PROBE_WAIT_SEC: '0', PAPERCUSP_UNATTENDED_LOCK_WAIT_SEC: '3600' };
+    expect(resolveBuildWindowWaitSec(env)).toEqual({ sec: 0, source: 'PAPERCUSP_BUNDLE_PROBE_WAIT_SEC' });
+  });
+
+  it('ignores an umbrella that is junk or <= 0, as scripts/lib/fs-mutex.mjs does', () => {
+    for (const bad of ['junk', '0', '-5', '']) {
+      expect(resolveBuildWindowWaitSec({ PAPERCUSP_UNATTENDED_LOCK_WAIT_SEC: bad })).toEqual({ sec: 90, source: 'default' });
+    }
+  });
+
+  it('refuses a specific knob that is set but not a non-negative number', () => {
+    expect(() => resolveBuildWindowWaitSec({ PAPERCUSP_BUNDLE_PROBE_WAIT_SEC: 'soon' })).toThrow(/non-negative/);
+    expect(() => resolveBuildWindowWaitSec({ PAPERCUSP_BUNDLE_PROBE_WAIT_SEC: '-1' })).toThrow(/non-negative/);
+  });
+});
+
+/** Every `wait` call (up to its `||`) leaves the budget to the gate's env resolution. */
+function waitCallsLeaveBudgetToGate(text: string): boolean {
+  const calls = text
+    .split('mutation-probe-window-gate.mjs" wait')
+    .slice(1)
+    .map((rest) => rest.slice(0, rest.indexOf('||')));
+  return calls.length > 0 && calls.every((call) => !call.includes('--timeout-sec'));
+}
+
+describe('bundle wait call sites do not pin --timeout-sec (WI-10006268)', () => {
+  const host = readFileSync(join(REPO, 'apps/operator/bin/bundle-host.sh'), 'utf8');
+  const common = readFileSync(join(REPO, 'apps/operator/bin/bundle-host-common.sh'), 'utf8');
+
+  it('bundle-host.sh and bundle-host-common.sh let PAPERCUSP_UNATTENDED_LOCK_WAIT_SEC reach the wait', () => {
+    expect(waitCallsLeaveBudgetToGate(host)).toBe(true);
+    expect(waitCallsLeaveBudgetToGate(common)).toBe(true);
+  });
+
+  it('CONTROL: the predicate catches a re-pinned budget and a vanished wait call', () => {
+    const pinned = host.replace('--stamp-file "$PROBE_STAMP"', '--stamp-file "$PROBE_STAMP" --timeout-sec 90');
+    expect(pinned).not.toBe(host);
+    expect(waitCallsLeaveBudgetToGate(pinned)).toBe(false);
+    expect(waitCallsLeaveBudgetToGate(common.replaceAll('mutation-probe-window-gate.mjs" wait', 'gone'))).toBe(false);
   });
 });
 

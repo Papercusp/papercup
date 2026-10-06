@@ -32,6 +32,7 @@ import {
   type UnresolvedDepBlocker,
 } from '../../work-items';
 import { notAgentWorkClaimHint } from '../../work-nature/not-agent-work-hint';
+import { verificationTaskConflict } from '../../harness/improvements/agent-review-policy';
 import { mintForceTakeoverAdmission } from '../../issues-engineer';
 import { lookupWorkItem } from './_lookup';
 import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
@@ -1047,6 +1048,23 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
             `This gate applies to every claim path INCLUDING a force takeover — liveness/authority authorization does not bypass it.${retryHint}`
           : "Likely the item's admission/trust gate (still pending duplicate screening, or an un-admitted remote/untrusted origin) — " +
             'check its admission/origin/auditVerdict directly (dev:pg_query) rather than retrying the takeover blind.'),
+    };
+  }
+  // P-007 / D-021: claimWorkItem refuses a verification task to its own reporter or
+  // implementer. That refusal is PERMANENT for this claimant (waiting or retrying cannot
+  // clear it), so name it rather than letting it read as a peer conflict or a gate.
+  const verificationRole = current ? verificationTaskConflict(current.payload, claimer) : null;
+  if (verificationRole) {
+    return {
+      ok: false,
+      id: it.id,
+      error: 'verification_conflict',
+      role: verificationRole,
+      workItem: current,
+      hint:
+        `${it.id} is a verification task and ${claimer} is its ${verificationRole}. ` +
+        'Verification must be done by an independent agent, never the reporter or the implementer, ' +
+        'so this refusal is permanent for you: leave it for a verifier and pick other work.',
     };
   }
   const failure = classifyClaimFailure(current, claimer);

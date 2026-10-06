@@ -122,7 +122,7 @@ bundle_host_spawner() { # <repo root> <out dir> [esbuild boundary args...]
   # bytes before its restricted-hold gate; other callers (release packaging) keep plain node.
   local -a run_node=("${COMMITTED_NODE[@]:-node}")
   if ! "${run_node[@]}" "$repo_root/scripts/mutation-probe-window-gate.mjs" wait --root "$repo_root" \
-      --stamp-file "$stamp" --timeout-sec "${PAPERCUSP_BUNDLE_PROBE_WAIT_SEC:-90}" ||
+      --stamp-file "$stamp" ||
      ! npx --yes esbuild@0.25.0 "$repo_root/apps/operator/bin/spawner-sidecar.ts" \
       --bundle --platform=node --format=esm --target=node22 \
       --outfile="$tmp" --metafile="$meta" --banner:js="$HOST_BANNER" \

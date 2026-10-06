@@ -15,6 +15,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough, Writable, type Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
+import { createZstdCompress } from 'node:zlib';
 import {
   extractDevSourceTree,
   hasPapercupMarkers,
@@ -318,7 +319,7 @@ describe('extractDevSourceTree', () => {
     }
   });
 
-  it('repairs an interrupted cache with the real tar extractor and preserves portable toolchain links', async () => {
+  it('repairs an interrupted cache with real bundled Zstandard/tar extraction and preserves portable toolchain links', async () => {
     const t = await tmp();
     try {
       const archive = join(t, 'source.tar.zst');
@@ -333,7 +334,7 @@ describe('extractDevSourceTree', () => {
       const tar = createRequire(import.meta.url)('tar-fs') as {
         pack: (directory: string) => Readable;
       };
-      await pipeline(tar.pack(input), createWriteStream(archive));
+      await pipeline(tar.pack(input), createZstdCompress(), createWriteStream(archive));
       await writeMarkers(target);
       await writeFile(join(target, 'partial.txt'), 'interrupted');
       await writeMarkers(backup);
@@ -342,7 +343,7 @@ describe('extractDevSourceTree', () => {
         JSON.stringify({ size: 1, mtimeMs: 1 }),
       );
       expect(
-        await extractDevSourceTree({ archivePath: archive, targetDir: target, makeDecompress }),
+        await extractDevSourceTree({ archivePath: archive, targetDir: target }),
       ).toBe(target);
       expect(await readFile(join(target, 'node_modules', '.bin', 'tool'), 'utf8')).toBe('bundled tool');
       expect(existsSync(join(target, 'partial.txt'))).toBe(false);

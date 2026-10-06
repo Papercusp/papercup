@@ -1153,6 +1153,40 @@ export function verificationTaskConflict(payload: unknown, claimant: string): Ve
   return task ? verificationConflict(task, claimant) : null;
 }
 
+type VerificationPayloadColumn = 'wi.payload' | 'payload' | 'target.payload';
+
+/**
+ * SQL twin of `verificationTaskConflict(payload, claimant)`: TRUE when the row carries a
+ * current-version verification block naming `claimant` as a reporter or implementer.
+ * Null-safe, so `NOT (...)` keeps every row without a verification block. The self-select
+ * claim UPDATEs AND this in, because they do not funnel through `claimWorkItem`.
+ */
+export function verificationTaskConflictSql(sql: OrgSql, claimant: string, payloadColumn: VerificationPayloadColumn) {
+  const payload = sql`COALESCE(${sql.unsafe(payloadColumn)}, '{}'::jsonb)`;
+  const who = claimant.trim();
+  // The outer COALESCE is load-bearing: a missing `check` makes `= ANY(...)` NULL, and a
+  // NULL here would turn `NOT (...)` into NULL and silently drop the row from self-select.
+  return sql`COALESCE((
+    ${payload} -> 'verification' ->> 'schemaVersion' IS NOT DISTINCT FROM ${VERIFICATION_TASK_SCHEMA_VERSION}
+    AND jsonb_typeof(${payload} -> 'verification' -> 'subject') IS NOT DISTINCT FROM 'string'
+    AND btrim(${payload} -> 'verification' ->> 'subject') <> ''
+    AND (${payload} -> 'verification' ->> 'check') = ANY(${[...VERIFICATION_CHECKS]}::text[])
+    AND ${who} <> ''
+    AND (
+      (jsonb_typeof(${payload} -> 'verification' -> 'reporters') IS NOT DISTINCT FROM 'array'
+        AND EXISTS (
+          SELECT 1 FROM jsonb_array_elements(${payload} -> 'verification' -> 'reporters') AS r(v)
+           WHERE jsonb_typeof(r.v) = 'string' AND btrim(r.v #>> '{}') = ${who}
+        ))
+      OR (jsonb_typeof(${payload} -> 'verification' -> 'implementers') IS NOT DISTINCT FROM 'array'
+        AND EXISTS (
+          SELECT 1 FROM jsonb_array_elements(${payload} -> 'verification' -> 'implementers') AS i(v)
+           WHERE jsonb_typeof(i.v) = 'string' AND btrim(i.v #>> '{}') = ${who}
+        ))
+    )
+  ), false)`;
+}
+
 /**
  * SQL twin of `verificationConflict(verificationParties(row), verifier)`: TRUE when
  * `verifier` is a reporter or implementer of the row. Every leg is null-safe, so the
@@ -1161,7 +1195,7 @@ export function verificationTaskConflict(payload: unknown, claimant: string): Ve
 export function verificationConflictSql(
   sql: OrgSql,
   verifier: string,
-  columns: { payload: 'wi.payload' | 'payload' | 'target.payload'; terminalOwner: 'wi.terminal_owner' | 'terminal_owner' | 'target.terminal_owner' },
+  columns: { payload: VerificationPayloadColumn; terminalOwner: 'wi.terminal_owner' | 'terminal_owner' | 'target.terminal_owner' },
 ) {
   const payload = sql`COALESCE(${sql.unsafe(columns.payload)}, '{}'::jsonb)`;
   const who = verifier.trim();
@@ -1172,13 +1206,7 @@ export function verificationConflictSql(
       ${payload} -> 'reproduction' ->> 'schemaVersion' IS NOT DISTINCT FROM ${BUG_REPRODUCTION_SCHEMA_VERSION}
       AND ${payload} -> 'reproduction' ->> 'filedBy' IS NOT DISTINCT FROM ${who}
     )
-    OR (
-      ${payload} -> 'verification' ->> 'schemaVersion' IS NOT DISTINCT FROM ${VERIFICATION_TASK_SCHEMA_VERSION}
-      AND (
-        COALESCE(${payload} -> 'verification' -> 'reporters', '[]'::jsonb) ? ${who}
-        OR COALESCE(${payload} -> 'verification' -> 'implementers', '[]'::jsonb) ? ${who}
-      )
-    )
+    OR ${verificationTaskConflictSql(sql, verifier, columns.payload)}
     OR ${sql.unsafe(columns.terminalOwner)} IS NOT DISTINCT FROM ${who}
   )`;
 }
