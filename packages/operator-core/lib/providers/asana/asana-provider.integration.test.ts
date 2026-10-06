@@ -761,8 +761,10 @@ describe('admission presets turn matching Asana tasks into work (P-006, R-6)', (
     return sql<Admitted[]>`
       SELECT a.source_key AS record, a.admitted_via AS via, a.rule_id::text AS rule_id, w.item_kind AS kind,
              harness_shared.work_item_is_agent_work(w.nature, w.audience, w.lane, w.needs_owner_action) AS agent_work,
+             -- A feature-family destination is stored harness-qualified (papercusp#<id>).
              (SELECT count(*)::int FROM harness_shared.coord_links l
-               WHERE l.src_ref = a.work_item_id AND l.rel = 'about' AND l.dst_ref = a.source_key) AS about
+               WHERE l.src_ref = a.work_item_id AND l.rel = 'about'
+                 AND (l.dst_ref = a.source_key OR l.dst_ref = ${HARNESS} || '#' || a.source_key)) AS about
         FROM harness_shared.work_admissions a
         JOIN harness_shared.work_items w ON w.workspace_id = a.workspace_id AND w.feature_id = a.work_item_id
        WHERE a.workspace_id = ${WS} AND a.data_source_id = ${sourceId}::uuid
