@@ -340,6 +340,12 @@ export interface AwsWorkspaceHostSdkClient {
     instanceId: string,
     signal?: AbortSignal,
   ): Promise<AwsCommandInvocationObservation>;
+  /**
+   * The AMI's own `RootDeviceName`, or undefined when this account cannot see the image. A launch
+   * must name the root volume by exactly this device: a mapping on any other name describes a
+   * second, blank volume and leaves the real root on the image's defaults (WI-10006800).
+   */
+  describeImageRootDeviceName(imageId: string): Promise<string | undefined>;
   runInstances(input: AwsRunInstancesInput): Promise<AwsCreatedInstance>;
   findInstanceByClientToken(clientToken: string): Promise<AwsInstanceObservation | undefined>;
   describeInstance(instanceId: string): Promise<AwsInstanceObservation | undefined>;
@@ -572,10 +578,9 @@ function readSettings(desired: WorkspaceHostDesiredSpec): AwsWorkspaceHostDesire
       provider.rootVolumeGiB === undefined
         ? 20
         : requirePositiveInteger(provider.rootVolumeGiB, 'aws.desired.provider.rootVolumeGiB'),
-    rootDeviceName:
-      provider.rootDeviceName === undefined
-        ? '/dev/sda1'
-        : requireString(provider.rootDeviceName, 'aws.desired.provider.rootDeviceName'),
+    ...(provider.rootDeviceName === undefined
+      ? {}
+      : { rootDeviceName: requireString(provider.rootDeviceName, 'aws.desired.provider.rootDeviceName') }),
     dataDeviceName:
       provider.dataDeviceName === undefined
         ? '/dev/sdf'
