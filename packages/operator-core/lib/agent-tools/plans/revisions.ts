@@ -181,6 +181,13 @@ export const FEDERATED_BOOTSTRAP_REVISION_AUTHOR = 'plan-federation:whole-blob-b
  * plan's bytes (WI-10006313: the flag-OFF `ON CONFLICT DO UPDATE` federation apply).
  */
 export const FEDERATED_WHOLE_BLOB_REVISION_AUTHOR = 'plan-federation:whole-blob-apply';
+/**
+ * System authors for the scheduled-run instance writers, which write `harness_plans.content`
+ * with raw SQL outside `withPlanLock` (WI-10006321). They are the clone of a template into its
+ * `<template>@run-<token>` instance, and that instance's retirement.
+ */
+export const PLAN_RUN_INSTANCE_CLONE_REVISION_AUTHOR = 'plan-run:instance-clone';
+export const PLAN_RUN_INSTANCE_RETIRE_REVISION_AUTHOR = 'plan-run:instance-retire';
 
 /**
  * Append one SYSTEM-attributed revision using an already-open transaction, for a
