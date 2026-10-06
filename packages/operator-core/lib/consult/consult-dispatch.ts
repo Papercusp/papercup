@@ -1550,6 +1550,15 @@ async function launchAnsweringSession(
   // Set when the transcript was readable but no reply had landed by the bound;
   // the dispatch stands, and its record says the first turn was not judged.
   let firstTurnUnjudgedAfterMs: number | null = null;
+  // Set when a Claude rank's first reply could not be judged at all: the kickoff
+  // proof named no native transcript, or the transcript was unreadable. Neither
+  // is evidence of a rejection, so the dispatch stands — but the record must say
+  // the check did not run. A silent record reads exactly like a fork whose first
+  // reply was judged clean, which hid a dead-on-arrival fork (WI-10006676).
+  let firstTurnUncheckedReason: string | null = null;
+  if (rank.agent === 'claude' && !(typeof answeringTranscript === 'string' && answeringTranscript.endsWith('.jsonl'))) {
+    firstTurnUncheckedReason = 'the kickoff proof named no native transcript';
+  }
   if (rank.agent === 'claude' && typeof answeringTranscript === 'string' && answeringTranscript.endsWith('.jsonl')) {
     let rejection: { turns: number; tool: string | null; contextEvidence?: string } | null = null;
     const deadline = kickoffSeenAtMs + FIRST_TURN_WAIT_MS;
@@ -1591,6 +1600,7 @@ async function launchAnsweringSession(
       await d.sleepMs(Math.min(FIRST_TURN_POLL_MS, remainingMs));
     }
     if (readable && !replied) firstTurnUnjudgedAfterMs = Math.max(0, d.nowMs() - kickoffSeenAtMs);
+    if (!readable) firstTurnUncheckedReason = `its transcript ${answeringTranscript} could not be read`;
     if (rejection) {
       const stopped = await d.stopFailedLaunch(spawn.taskId);
       return {
@@ -1612,10 +1622,12 @@ async function launchAnsweringSession(
     }
   }
 
-  const firstTurnNote = firstTurnUnjudgedAfterMs === null
-    ? ''
-    : ` First reply not written ${firstTurnUnjudgedAfterMs}ms after kickoff, so it was not checked for a ` +
-      'provider rejection.';
+  const firstTurnNote = firstTurnUnjudgedAfterMs !== null
+    ? ` First reply not written ${firstTurnUnjudgedAfterMs}ms after kickoff, so it was not checked for a ` +
+      'provider rejection.'
+    : firstTurnUncheckedReason
+      ? ` First reply not checked for a provider rejection: ${firstTurnUncheckedReason}.`
+      : '';
   return {
     record: {
       ...base,
