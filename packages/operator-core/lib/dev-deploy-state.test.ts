@@ -12,6 +12,7 @@ import * as path from 'node:path';
 import {
   classifyCommitRefFailure,
   DEV_DEPLOY_SIDECAR_BATCH_DEADLINE_MS,
+  DEV_DEPLOY_SIDECAR_RPC_TIMEOUT_MS,
   devDeployState,
   resetDevDeployStateCache,
   runDevDeployGitBatch,
@@ -179,6 +180,7 @@ describe('devDeployState', () => {
     const viaSidecar: NonNullable<DevDeployGitBatchDeps['viaSidecar']> = async (command, args, options) => {
       expect(command).toBe('sh');
       expect(options.timeoutMs).toBe(DEV_DEPLOY_SIDECAR_BATCH_DEADLINE_MS);
+      expect(options.rpcTimeoutMs).toBe(DEV_DEPLOY_SIDECAR_RPC_TIMEOUT_MS);
       expect(options.signal).toBeUndefined();
       const nonce = args[3]!;
       return { code: 0, stdout: `sidecar-head\n\u0000${nonce} o0 0\u0000\u0000${nonce} e0 0\u0000`, stderr: '' };
