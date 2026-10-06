@@ -2435,7 +2435,7 @@ describe('applyResultDoor', () => {
       return markerJson + longText(Math.max(0, totalChars - markerJson.length));
     }
 
-    it('a body_truncated:true marker swaps the footer to "re-call the tool", not "page the spill"', () => {
+    it('a body_truncated:true marker gives recovery guidance instead of suggesting paging the spill', () => {
       const text = withMarker('{"entries":[{"id":"m1","body_truncated":true}]}\n', BUDGET_CHARS * 3);
       const doored = applyResultDoor(
         { content: [{ type: 'text' as const, text }] },
@@ -2445,7 +2445,8 @@ describe('applyResultDoor', () => {
       expect(pointer).not.toContain('page it with a bounded read');
       expect(pointer).toContain('TOOL ITSELF already truncated');
       expect(pointer).toContain('body_truncated');
-      expect(pointer).toContain('Re-call coord:inbox');
+      expect(pointer).toContain('coord:inbox result already marked a field as truncated');
+      expect(pointer).toContain("Re-read using that field's documented recovery handle or narrower arguments");
 
       const spill = readSpill('ws-1', 'coord:inbox', RUN_ID);
       expect(spill).toContain('TOOL ITSELF already truncated');
@@ -2469,7 +2470,7 @@ describe('applyResultDoor', () => {
       expect(pointer.match(/body_truncated/g)).toHaveLength(1);
     });
 
-    it('camelCase *Truncated markers from build:typecheck TOON output are detected', () => {
+    it('camelCase *Truncated markers from build:typecheck TOON output are detected with recovery guidance', () => {
       const text = withMarker(
         'errorsTruncated: true\nbyFileTruncated: true\n',
         BUDGET_CHARS * 3,
@@ -2482,7 +2483,8 @@ describe('applyResultDoor', () => {
       expect(pointer).toContain('TOOL ITSELF already truncated');
       expect(pointer).toContain('errorsTruncated');
       expect(pointer).toContain('byFileTruncated');
-      expect(pointer).toContain('Re-call build:typecheck');
+      expect(pointer).toContain('build:typecheck result already marked a field as truncated');
+      expect(pointer).toContain("Re-read using that field's documented recovery handle or narrower arguments");
     });
 
     it('code:run summaryNotice.truncated marks its JSON spill partial and recommends smaller returns', () => {
