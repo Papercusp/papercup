@@ -55,6 +55,10 @@ function connectorSeams(appSink: ReturnType<typeof fakeAppSink> | null) {
     })),
     createDatatypeSinks: vi.fn(async () => []),
     createAppSink: vi.fn(async () => appSink),
+    // Mail and calendar are interactions, so the runtime also builds a relationship-graph
+    // participant sink (crm P-003). These assertions are about the app sink; the participant
+    // chain is covered by relationship-graph/participants.test.ts and its backfill test.
+    createParticipantSink: vi.fn(async () => null),
   };
 }
 
