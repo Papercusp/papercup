@@ -499,6 +499,7 @@ const defaultReadCmdline: ReadPidCmdline = (pid) => {
  *  A test writing `process.pid` as a live-host stand-in injects `() => true`. Local type
  *  (not exported): callers pass an inline `{ verifyIdentity: () => … }`. */
 type VerifyPidIdentity = (pid: number) => boolean;
+type VerifyPidIdentityAsync = (pid: number) => boolean | Promise<boolean>;
 
 /**
  * Process-IDENTITY check (WI-2339 defect #2): is `pid` actually a psu session host,
@@ -648,6 +649,45 @@ async function pathExistsAsync(p: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/** Async counterpart for periodic/event-loop-sensitive callers. Keep the same
+ *  identity contract as pidIsPsuHost while moving the /proc read off the main
+ *  thread. */
+async function pidIsPsuHostAsync(pid: number): Promise<boolean> {
+  if (!pid) return false;
+  try {
+    const cmdline = (await fsp.readFile(`/proc/${pid}/cmdline`, 'utf8')).replace(/\0/g, ' ');
+    return /psu-(launcher|pty-host)/.test(cmdline);
+  } catch {
+    // Match pidIsPsuHost: only fail open when /proc itself is absent (non-Linux).
+    return !(await pathExistsAsync('/proc'));
+  }
+}
+
+/**
+ * Async keyed counterpart to findLiveHost. The orphan-respawn watchdog checks
+ * this once for each delayed pending owner; every filesystem read (metadata,
+ * socket and /proc cmdline) must stay off the operator event loop.
+ */
+export async function findLiveHostAsync(
+  ownerId: string,
+  dir: string = PSU_PTY_DIR,
+  opts: { verifyIdentity?: VerifyPidIdentityAsync } = {},
+): Promise<PsuPtyHost | null> {
+  startJanitor();
+  const verify = opts.verifyIdentity ?? pidIsPsuHostAsync;
+  const metaPath = join(dir, `${sanitizeKey(ownerId)}.json`);
+  try {
+    const h = JSON.parse(await fsp.readFile(metaPath, 'utf8')) as PsuPtyHost;
+    if (h && h.ownerId && h.ownerId !== ownerId) return null;
+    if (h && h.sock && h.pid && (await pathExistsAsync(h.sock)) && pidAlive(h.pid) && (await verify(h.pid))) {
+      return h;
+    }
+  } catch {
+    /* missing, unreadable or partial discovery file — treat as no host */
+  }
+  return null;
 }
 
 /**
