@@ -1129,19 +1129,6 @@ async function waitForOutput(
   }
 }
 
-/** `process.env` with the PAPERCUSP_FLEET_* vars stripped, so this test is hermetic
- *  to whether the AGENT RUNNING IT happens to be a fleet member. `hostThroughPty`
- *  emits a fleet-recolor OSC banner (fleetOscFromEnv, psu-pty-host.mjs) to the
- *  child's stdout whenever `PAPERCUSP_FLEET_BG` is set — a plain `...process.env`
- *  spread inherits it from whatever shell runs the test, so this whole file passed
- *  cleanly from a non-fleet dev shell but genuinely failed (captured() polluted with
- *  literal OSC bytes ahead of the child's own output) when run from inside an su
- *  fleet-member session (PAPERCUSP_FLEET_BG/_FG/_CURSOR set by bootstrap-su for the
- *  fleet's bound color scheme) — exactly the environment backlog-drain agents run
- *  `npm run test:affected` in, which is almost certainly why the watchdog saw this
- *  file red repeatedly. */
-// Reuse the same caller-state isolation as the native round-trip fixtures.
-
 /** A fake stdout that accumulates the pty's output; a non-TTY fake stdin.
  *  Mirrors the sibling file's fakeIo() — bridgeTty defaults OFF here, so an
  *  injected turn is NOT idle-gated (gate only runs when the TTY is bridged). */
