@@ -140,6 +140,9 @@ struct CliInvocation {
     seat: Option<String>,
     /// `--solo`: the chat alone, with no workbench panes around it (P-030).
     solo: bool,
+    /// [`layout::CHAT_WORKBENCH_PANE_FLAG`]: this process is the chat pane of
+    /// the chat workbench its launcher started (P-030). Undocumented.
+    workbench_pane: bool,
 }
 
 impl CliInvocation {
@@ -186,6 +189,7 @@ impl CliInvocation {
         let mut fleet = None;
         let mut seat = None;
         let mut solo = false;
+        let mut workbench_pane = false;
         let mut pending: Option<&'static str> = None;
 
         for arg in args {
@@ -204,6 +208,7 @@ impl CliInvocation {
                 "--fleet" => pending = Some("--fleet"),
                 "--seat" => pending = Some("--seat"),
                 "--solo" => solo = true,
+                layout::CHAT_WORKBENCH_PANE_FLAG => workbench_pane = true,
                 _ if arg.starts_with("--fleet=") => {
                     set_cli_value(&mut fleet, "--fleet", &arg["--fleet=".len()..])?
                 }
@@ -229,6 +234,7 @@ impl CliInvocation {
             fleet,
             seat,
             solo,
+            workbench_pane,
         })
     }
 
@@ -508,6 +514,23 @@ async fn main() -> Result<()> {
         // rather than painting the workbench's opaque dashboard panels.
         crate::theme::Theme::set_transparent_surfaces(true);
     }
+    // P-030: the chat pane of a chat workbench owns that session's lifetime.
+    let chat_workbench = if chat_first {
+        own_chat_workbench(cli.workbench_pane)
+    } else {
+        None
+    };
+    if chat_workbench.is_some()
+        && std::env::var(layout::CHAT_WORKBENCH_ZOOM_ENV).as_deref() == Ok("1")
+    {
+        // Launched narrower than CHAT_WORKBENCH_MIN_SIDE_COLS: start with the
+        // side panes collapsed (the chat zoomed to the whole window), so 80x24
+        // still gets a usable chat. Alt+z brings them back. The chat pane is
+        // the session's focused pane, so the zoom lands on it.
+        let _ = std::process::Command::new("zellij")
+            .args(["action", "toggle-fullscreen"])
+            .output();
+    }
 
     enable_raw_mode()?;
     let mut out = stdout();
@@ -623,6 +646,19 @@ async fn main() -> Result<()> {
     // the error return a closed terminal causes, and before anything is
     // printed: a write to a hung-up terminal must not be able to skip it.
     let exit_note = finish_su_session_on_exit().await;
+    // P-030: in the chat workbench the pane's own screen dies with the session,
+    // so the conversation, the exit note and any error go to the launcher,
+    // which prints them into the real terminal after zellij is gone. Then the
+    // session stops: exiting the chat exits `pui`, as in the solo chat.
+    if let Some(session) = &chat_workbench {
+        finish_chat_workbench_pane(
+            session,
+            EXIT_TRANSCRIPT.get().map(String::as_str),
+            exit_note.as_deref(),
+            result.as_ref().err(),
+        );
+        return result;
+    }
     // pui-chat-first-ux P-004 "clean scrollback": now that the alternate screen
     // is gone, print the conversation to the normal screen so it stays in the
     // terminal's own scrollback (set by `run` for the chat-first surface only).
@@ -801,7 +837,10 @@ static EXIT_TRANSCRIPT: std::sync::OnceLock<String> = std::sync::OnceLock::new()
 
 #[cfg(test)]
 mod cli_help_tests {
-    use super::{print_cli_help, print_cli_version, CliInvocation, CLI_HELP};
+    use super::{
+        bare_launch, chat_workbench_exit_text, own_chat_workbench_from, print_cli_help,
+        print_cli_version, BareLaunch, BareLaunchInputs, CliInvocation, CLI_HELP,
+    };
 
     fn args(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).to_string()).collect()
@@ -908,6 +947,104 @@ mod cli_help_tests {
         assert!(CLI_HELP.contains("--connect[=<name>[/<workspace>]]"));
         assert!(CLI_HELP.contains("--connect-login"));
         assert!(CLI_HELP.contains("requires --fleet"));
+    }
+
+    /// P-030: `--solo` and the chat pane's owner flag are flags, not
+    /// subcommands, so bare `pui --solo` still reaches the chat surface.
+    #[test]
+    fn solo_and_workbench_pane_flags_leave_no_subcommand() {
+        let solo = CliInvocation::parse(args(&["--solo"]), None, None).unwrap();
+        assert!(solo.solo && !solo.workbench_pane);
+        assert!(solo.positionals.is_empty());
+
+        let pane = CliInvocation::parse(
+            args(&["--solo", crate::layout::CHAT_WORKBENCH_PANE_FLAG]),
+            Some("fed-drill"),
+            None,
+        )
+        .unwrap();
+        assert!(pane.solo && pane.workbench_pane);
+        assert!(pane.positionals.is_empty());
+        assert_eq!(pane.fleet.as_deref(), Some("fed-drill"));
+
+        let bare = CliInvocation::parse(args(&[]), None, None).unwrap();
+        assert!(!bare.solo && !bare.workbench_pane);
+    }
+
+    fn inputs() -> BareLaunchInputs {
+        BareLaunchInputs {
+            solo: false,
+            in_multiplexer_pane: false,
+            interactive: true,
+            zellij_available: true,
+        }
+    }
+
+    /// P-030: bare `pui` opens the chat workbench; `--solo`, an enclosing
+    /// zellij pane (no nesting), a non-terminal launch and a missing zellij all
+    /// open the chat alone instead of failing.
+    #[test]
+    fn bare_pui_opens_the_chat_workbench_unless_it_cannot() {
+        assert_eq!(bare_launch(inputs()), BareLaunch::ChatWorkbench);
+        for solo_case in [
+            BareLaunchInputs { solo: true, ..inputs() },
+            BareLaunchInputs { in_multiplexer_pane: true, ..inputs() },
+            BareLaunchInputs { interactive: false, ..inputs() },
+            BareLaunchInputs { zellij_available: false, ..inputs() },
+        ] {
+            assert_eq!(bare_launch(solo_case), BareLaunch::Solo, "{solo_case:?}");
+        }
+    }
+
+    /// Only the chat pane the launcher started — flag AND matching session —
+    /// owns the session. A `pui --solo` typed into the work shell inherits the
+    /// session env but not the flag, so exiting it must not stop the session.
+    #[test]
+    fn only_the_flagged_chat_pane_owns_its_chat_workbench() {
+        let env = |pairs: &'static [(&'static str, &'static str)]| {
+            move |k: &str| {
+                pairs
+                    .iter()
+                    .find(|(key, _)| *key == k)
+                    .map(|(_, v)| v.to_string())
+            }
+        };
+        let inside: &'static [(&str, &str)] = &[
+            (crate::layout::CHAT_WORKBENCH_SESSION_ENV, "pui-chat-7"),
+            ("ZELLIJ_SESSION_NAME", "pui-chat-7"),
+        ];
+        assert_eq!(
+            own_chat_workbench_from(true, env(inside)).as_deref(),
+            Some("pui-chat-7")
+        );
+        assert_eq!(own_chat_workbench_from(false, env(inside)), None);
+        let elsewhere: &'static [(&str, &str)] = &[
+            (crate::layout::CHAT_WORKBENCH_SESSION_ENV, "pui-chat-7"),
+            ("ZELLIJ_SESSION_NAME", "my-own-session"),
+        ];
+        assert_eq!(own_chat_workbench_from(true, env(elsewhere)), None);
+        assert_eq!(own_chat_workbench_from(true, env(&[])), None);
+    }
+
+    /// The launcher prints the conversation, the exit note and the error that
+    /// ended the chat — the solo chat's scrollback and plain-error behaviour.
+    #[test]
+    fn chat_workbench_exit_text_keeps_transcript_note_and_error() {
+        let err = anyhow::anyhow!("operator unreachable");
+        let text =
+            chat_workbench_exit_text(Some("you: hi\nclaude: hello\n"), Some("Session kept."), Some(&err));
+        assert_eq!(
+            text,
+            "you: hi\nclaude: hello\nSession kept.\npui: operator unreachable\n"
+        );
+        assert_eq!(chat_workbench_exit_text(None, Some("  "), None), "");
+    }
+
+    #[test]
+    fn help_documents_the_chat_workbench_and_solo() {
+        assert!(CLI_HELP.contains("pui --solo"));
+        assert!(CLI_HELP.contains(crate::layout::CHAT_WORKBENCH_TOGGLE_HINT));
+        assert!(!CLI_HELP.contains(crate::layout::CHAT_WORKBENCH_PANE_FLAG));
     }
 }
 
@@ -1346,6 +1483,173 @@ fn require_interactive_terminal(command: &str) -> Result<()> {
     anyhow::bail!(
         "`pui {command}` needs an interactive terminal (stdin/stdout are not a TTY): run it in a terminal window, from the desktop launcher, or via capability:terminal — a background launch would leave an incomplete zellij session behind"
     )
+}
+
+/// What bare `pui` opens (pui-chat-first-ux P-030 / D-020).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BareLaunch {
+    /// The chat workbench: the chat as the main pane, workbench panes beside it.
+    ChatWorkbench,
+    /// The chat alone, full screen, in this terminal.
+    Solo,
+}
+
+/// The facts [`bare_launch`] decides from — gathered by the caller so the
+/// decision is a pure function the tests can drive.
+#[derive(Debug, Clone, Copy)]
+struct BareLaunchInputs {
+    /// `--solo` was passed.
+    solo: bool,
+    /// Already inside a zellij pane: a workbench there would nest zellij (and
+    /// the chat workbench's own chat pane runs `--solo` for the same reason).
+    in_multiplexer_pane: bool,
+    /// stdin and stdout are a terminal. zellij needs one; without it the
+    /// launch would leave a half-built session behind (EI-22373168217321170).
+    interactive: bool,
+    /// A `zellij` executable is reachable (the bundled one first, see
+    /// `install::prefer_bundled_tools`).
+    zellij_available: bool,
+}
+
+/// Bare `pui` opens the chat workbench unless `--solo` asks for the chat alone
+/// or zellij cannot run here; in every such case the solo chat still works, so
+/// `pui` never fails to start for lack of a multiplexer.
+fn bare_launch(inputs: BareLaunchInputs) -> BareLaunch {
+    if inputs.solo
+        || inputs.in_multiplexer_pane
+        || !inputs.interactive
+        || !inputs.zellij_available
+    {
+        BareLaunch::Solo
+    } else {
+        BareLaunch::ChatWorkbench
+    }
+}
+
+/// Is a `zellij` executable on PATH?
+fn zellij_on_path() -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::env::var_os("PATH").is_some_and(|path| {
+        std::env::split_paths(&path).any(|dir| {
+            std::fs::metadata(dir.join("zellij"))
+                .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+        })
+    })
+}
+
+/// The chat workbench session THIS process is the chat pane of, if any: it
+/// was started with [`layout::CHAT_WORKBENCH_PANE_FLAG`] inside the session
+/// its launcher named.
+fn own_chat_workbench(workbench_pane: bool) -> Option<String> {
+    own_chat_workbench_from(workbench_pane, |k| std::env::var(k).ok())
+}
+
+fn own_chat_workbench_from(
+    workbench_pane: bool,
+    env: impl Fn(&str) -> Option<String>,
+) -> Option<String> {
+    if !workbench_pane {
+        return None;
+    }
+    let mine = env(layout::CHAT_WORKBENCH_SESSION_ENV).filter(|s| !s.is_empty())?;
+    let current = env("ZELLIJ_SESSION_NAME")?;
+    (mine == current).then_some(mine)
+}
+
+/// The text the chat workbench's launcher prints after zellij exits: the
+/// conversation, the engine exit note, and the error that ended the chat.
+fn chat_workbench_exit_text(
+    transcript: Option<&str>,
+    note: Option<&str>,
+    error: Option<&anyhow::Error>,
+) -> String {
+    let mut text = String::new();
+    for part in [
+        transcript.map(str::to_string),
+        note.map(str::to_string),
+        error.map(|e| format!("pui: {e:#}")),
+    ]
+    .into_iter()
+    .flatten()
+    .filter(|p| !p.trim().is_empty())
+    {
+        text.push_str(part.trim_end());
+        text.push('\n');
+    }
+    text
+}
+
+/// The chat pane of a chat workbench is exiting: leave the exit text for the
+/// launcher, then stop the session (this process included — call it last).
+fn finish_chat_workbench_pane(
+    session: &str,
+    transcript: Option<&str>,
+    note: Option<&str>,
+    error: Option<&anyhow::Error>,
+) {
+    let text = chat_workbench_exit_text(transcript, note, error);
+    if let Ok(path) = std::env::var(layout::CHAT_WORKBENCH_TRANSCRIPT_ENV) {
+        if !path.is_empty() && !text.is_empty() {
+            let _ = std::fs::write(path, text);
+        }
+    }
+    let _ = std::process::Command::new("zellij")
+        .args(["kill-session", session])
+        .output();
+}
+
+/// Bare `pui` (P-030): start this launch's own `pui-chat-<pid>` zellij session
+/// with the chat as the focused main pane, wait for it, then print the
+/// conversation into this terminal's scrollback.
+///
+/// `Ok(None)` = no backend identity resolves. The caller then falls through to
+/// the solo chat, which owns first-run setup and the plain-sentence errors.
+async fn run_chat_workbench() -> Result<Option<i32>> {
+    let Ok((_client, backend)) = selected_backend_identity().await else {
+        return Ok(None);
+    };
+    let session = layout::chat_workbench_session_name(std::process::id());
+    // Never attach to anything. A live session already carrying our name can
+    // only be a leftover from a recycled pid — it is not ours.
+    if reap::live_session_exists(&session) {
+        reap::kill_and_delete(&session);
+    }
+    reap::reap_stale(&session);
+    identity::inherit(&backend);
+    let narrow = crossterm::terminal::size()
+        .map(|(cols, _)| cols < layout::CHAT_WORKBENCH_MIN_SIDE_COLS)
+        .unwrap_or(false);
+    let transcript = chat_workbench_transcript_path(&session)?;
+    let _ = std::fs::remove_file(&transcript);
+    // Exported before zellij starts, so the new session's panes inherit them.
+    std::env::set_var(layout::CHAT_WORKBENCH_SESSION_ENV, &session);
+    std::env::set_var(layout::CHAT_WORKBENCH_TRANSCRIPT_ENV, &transcript);
+    if narrow {
+        std::env::set_var(layout::CHAT_WORKBENCH_ZOOM_ENV, "1");
+    } else {
+        std::env::remove_var(layout::CHAT_WORKBENCH_ZOOM_ENV);
+    }
+    let path = layout::materialize_chat_workbench()?;
+    let argv = layout::launch_argv(&path.to_string_lossy(), &session);
+    let (prog, rest) = argv.split_first().expect("launch argv is never empty");
+    let status = std::process::Command::new(prog).args(rest).status()?;
+    reap::kill_and_delete(&session);
+    if let Ok(text) = std::fs::read_to_string(&transcript) {
+        use std::io::Write as _;
+        let _ = write!(std::io::stdout(), "{text}");
+        let _ = std::fs::remove_file(&transcript);
+    }
+    Ok(Some(status.code().unwrap_or(0)))
+}
+
+/// Where the chat pane of `session` leaves its exit text for the launcher.
+fn chat_workbench_transcript_path(session: &str) -> Result<std::path::PathBuf> {
+    let dir = dirs::home_dir()
+        .ok_or_else(|| anyhow::anyhow!("no home directory"))?
+        .join(".papercusp")
+        .join("pui-chat");
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir.join(format!("{session}.exit.txt")))
 }
 
 async fn run_workbench() -> Result<()> {

@@ -266,6 +266,11 @@ pub const CHAT_WORKBENCH_ZOOM_ENV: &str = "PUI_CHAT_WORKBENCH_ZOOMED";
 /// can print it into the real terminal's scrollback after zellij is gone
 /// (the chat-first "clean scrollback" promise, P-004).
 pub const CHAT_WORKBENCH_TRANSCRIPT_ENV: &str = "PUI_CHAT_WORKBENCH_TRANSCRIPT";
+/// Undocumented flag only the layout's chat pane is started with. The
+/// session env above is inherited by EVERY pane, so a `pui --solo` typed into
+/// the work shell would otherwise also believe it owns the session and stop it
+/// on exit. The flag marks the one process that does.
+pub const CHAT_WORKBENCH_PANE_FLAG: &str = "--workbench-pane";
 
 /// The bare-`pui` layout (pui-chat-first-ux P-030 / D-020): the chat is the
 /// main, focused pane, and the workbench panes Avi asked to keep sit beside it
@@ -289,7 +294,7 @@ layout {{
     pane split_direction="vertical" {{
         pane name="chat" focus=true size="65%" {{
             command "pui"
-            args "--solo"
+            args "--solo" "{pane_flag}"
         }}
         pane name="side" stacked=true size="35%" {{
             pane name="hud" expanded=true {{
@@ -314,6 +319,7 @@ layout {{
 "#,
         toggle = CHAT_WORKBENCH_TOGGLE_HINT,
         keybinds = keybinds_kdl(CHAT_WORKBENCH_BINDS),
+        pane_flag = CHAT_WORKBENCH_PANE_FLAG,
     )
 }
 
@@ -1037,7 +1043,12 @@ mod tests {
             .find(|(opener, _)| opener.contains("name=\"chat\""))
             .expect("the layout has a chat pane");
         assert!(chat.0.contains("focus=true"), "the chat is focused: {chat:?}");
-        assert_eq!(chat.1.as_deref(), Some("\"--solo\""));
+        assert_eq!(
+            chat.1.as_deref(),
+            Some(format!("\"--solo\" \"{CHAT_WORKBENCH_PANE_FLAG}\"").as_str())
+        );
+        // Only the chat pane carries the session-owner flag.
+        assert_eq!(kdl.matches(CHAT_WORKBENCH_PANE_FLAG).count(), 1);
         // Exactly one focused pane, and it is the chat.
         assert_eq!(kdl.matches("focus=true").count(), 1, "{kdl}");
         // Every pui pane carries args: a bare `pui` pane would launch this
