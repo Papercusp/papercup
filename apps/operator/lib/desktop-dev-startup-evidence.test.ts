@@ -24,9 +24,12 @@ import { fileURLToPath } from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '../../..');
 const EVIDENCE = resolve(REPO_ROOT, 'docs/evidence/desktop-dev-startup-speed-2026-10-06');
-const BOOT_TIMES = resolve(EVIDENCE, 'boot-times.tsv');
-const HEADLESS_LOG = resolve(EVIDENCE, 'headless-p004-run.log');
-const DEV_HOST_SCRIPT = resolve(REPO_ROOT, 'papercusp-desktop/bin/dev-operator-ifneeded.sh');
+// Each subject is overridable so scripts/mutation-probe.sh can run this file against a mutated
+// COPY (copy-out mode) instead of mutating the shared tree. Unset = the committed evidence.
+const BOOT_TIMES = process.env.DEVSTART_BOOT_TIMES || resolve(EVIDENCE, 'boot-times.tsv');
+const HEADLESS_LOG = process.env.DEVSTART_HEADLESS_LOG || resolve(EVIDENCE, 'headless-p004-run.log');
+const DEV_HOST_SCRIPT =
+  process.env.DEVSTART_DEV_HOST_SCRIPT || resolve(REPO_ROOT, 'papercusp-desktop/bin/dev-operator-ifneeded.sh');
 
 const LOAD_AVG = /^\d+(\.\d+)?\/\d+(\.\d+)?\/\d+(\.\d+)?$/;
 

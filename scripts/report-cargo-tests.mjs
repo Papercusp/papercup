@@ -55,7 +55,9 @@ import {
   reclaimInactiveCargoArtifacts,
   resolveCargoBin,
   resolveCargoTargetDir,
+  resolveCargoExecutionDetails,
   resolveCargoTestRunScope,
+  resolveCargoTestRunSource,
 } from './lib/cargo-result.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -341,14 +343,15 @@ async function insertRows(sql, rows) {
   const { loopLagP95Ms, rssMb } = captureReporterSaturationSnapshot();
   // WI-10006828: attribute rows like the vitest reporter does, or they can never be bound as proof.
   const { harnessSlug, workspaceId } = resolveCargoTestRunScope();
+  const executionDetails = resolveCargoExecutionDetails();
   for (const row of rows) {
     try {
       await Promise.race([
         sql`
           INSERT INTO harness_shared.test_runs
-            (file_path, framework, status, duration_ms, started_at, finished_at, output_tail, source, loop_lag_p95_ms, rss_mb, harness_slug, workspace_id)
+            (file_path, framework, status, duration_ms, started_at, finished_at, output_tail, source, loop_lag_p95_ms, rss_mb, harness_slug, workspace_id, execution_details)
           VALUES
-            (${row.filePath}, 'cargo', ${row.status}, ${row.durationMs}, ${row.startedAt}, ${row.finishedAt}, ${row.outputTail}, ${row.source}, ${loopLagP95Ms}, ${rssMb}, ${harnessSlug}, ${workspaceId})
+            (${row.filePath}, 'cargo', ${row.status}, ${row.durationMs}, ${row.startedAt}, ${row.finishedAt}, ${row.outputTail}, ${row.source}, ${loopLagP95Ms}, ${rssMb}, ${harnessSlug}, ${workspaceId}, ${executionDetails ? sql.json(executionDetails) : null})
         `,
         new Promise((_, reject) => setTimeout(() => reject(new Error('pg_insert_timeout')), 2000)),
       ]);
@@ -385,7 +388,9 @@ async function main() {
 
   const results = parseCargoTestResultLines(combined);
   const failureDetails = parseFailureDetails(combined);
-  const source = process.env.CI ? 'ci' : 'local';
+  // WI-10006828: same source contract as the vitest reporter, so a mutation probe's rows are
+  // recorded as source='mutation-probe' (with their phase) instead of an ordinary local failure.
+  const source = resolveCargoTestRunSource();
   const cargoResult = diskAdmission?.status === 'blocked'
     ? {
         status: 'error',

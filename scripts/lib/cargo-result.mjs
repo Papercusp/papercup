@@ -73,6 +73,31 @@ export function resolveCargoTestRunScope(env = process.env) {
   };
 }
 
+const CARGO_TEST_RUN_SOURCES = new Set(['ci', 'local', 'admin-ui', 'mutation-probe']);
+
+/**
+ * The ledger `source` for a cargo row — the vitest reporter's `resolveTestRunSource`, mirrored
+ * (WI-10006828). Without it a mutation probe around a Rust test recorded its deliberately
+ * failing mutant as an ordinary `local` failure, so no cargo test could ever supply the
+ * mutation evidence spec-test adequacy demands, and the mutant polluted repository-health reads.
+ */
+export function resolveCargoTestRunSource(env = process.env) {
+  if (env.PAPERCUSP_MUTATION_PROBE === '1') return 'mutation-probe';
+  const override = env.PAPERCUSP_TEST_RUN_SOURCE;
+  if (override && CARGO_TEST_RUN_SOURCES.has(override)) return override;
+  return env.CI ? 'ci' : 'local';
+}
+
+/**
+ * `execution_details` for a cargo row: the probe's phase (`baseline`/`mutant`), mirroring
+ * `resolveMutationProbePhase`. Null outside a probe — never an invented phase.
+ */
+export function resolveCargoExecutionDetails(env = process.env) {
+  if (env.PAPERCUSP_MUTATION_PROBE !== '1') return null;
+  const phase = env.PAPERCUSP_MUTATION_PHASE?.trim();
+  return phase ? { mutationPhase: phase } : null;
+}
+
 /**
  * Resolve an actual `cargo` binary rather than trusting a bare spawn to find it on inherited
  * PATH. Service-managed and Vitest-worker environments can omit rustup's `~/.cargo/bin`; the

@@ -44,7 +44,9 @@ import {
   reclaimInactiveCargoArtifacts,
   resolveCargoBin,
   resolveCargoTargetDir,
+  resolveCargoExecutionDetails,
   resolveCargoTestRunScope,
+  resolveCargoTestRunSource,
   shouldRunAffectedCargoSuite,
   stripCargoTerminalControlSequences,
 // @ts-ignore -- runtime reporter module intentionally tested from TypeScript.
@@ -117,6 +119,33 @@ describe('cargo test_runs rows are attributed to a harness/workspace (WI-1000682
     expect(valueSlots[columns.indexOf('harness_slug')]).toBe('${harnessSlug}');
     expect(valueSlots[columns.indexOf('workspace_id')]).toBe('${workspaceId}');
     expect(REPORTER_SOURCE).toMatch(/const \{ harnessSlug, workspaceId \} = resolveCargoTestRunScope\(\)/);
+    // The probe phase rides in execution_details, and the row source comes from the shared rule.
+    expect(columns).toContain('execution_details');
+    expect(valueSlots[columns.indexOf('execution_details')]).toContain('executionDetails');
+    expect(REPORTER_SOURCE).toMatch(/const executionDetails = resolveCargoExecutionDetails\(\)/);
+    expect(REPORTER_SOURCE).toMatch(/const source = resolveCargoTestRunSource\(\)/);
+  });
+
+  it('a mutation probe records cargo rows as source=mutation-probe, like the vitest reporter', () => {
+    // Pinned to the vitest reporter's own rule so the two cannot drift apart silently.
+    expect(VITEST_REPORTER_SOURCE).toMatch(
+      /if \(process\.env\.PAPERCUSP_MUTATION_PROBE === '1'\) return 'mutation-probe';/,
+    );
+    expect(resolveCargoTestRunSource({})).toBe('local');
+    expect(resolveCargoTestRunSource({ CI: '1' })).toBe('ci');
+    expect(resolveCargoTestRunSource({ CI: '1', PAPERCUSP_MUTATION_PROBE: '1' })).toBe('mutation-probe');
+    expect(resolveCargoTestRunSource({ PAPERCUSP_TEST_RUN_SOURCE: 'admin-ui' })).toBe('admin-ui');
+    expect(resolveCargoTestRunSource({ PAPERCUSP_TEST_RUN_SOURCE: 'bogus' })).toBe('local');
+    expect(resolveCargoTestRunSource({ PAPERCUSP_MUTATION_PROBE: '1', PAPERCUSP_TEST_RUN_SOURCE: 'ci' }))
+      .toBe('mutation-probe');
+  });
+
+  it('records the probe phase in execution_details, and nothing outside a probe', () => {
+    expect(resolveCargoExecutionDetails({})).toBeNull();
+    expect(resolveCargoExecutionDetails({ PAPERCUSP_MUTATION_PHASE: 'mutant' })).toBeNull();
+    expect(resolveCargoExecutionDetails({ PAPERCUSP_MUTATION_PROBE: '1' })).toBeNull();
+    expect(resolveCargoExecutionDetails({ PAPERCUSP_MUTATION_PROBE: '1', PAPERCUSP_MUTATION_PHASE: ' mutant ' }))
+      .toEqual({ mutationPhase: 'mutant' });
   });
 });
 
