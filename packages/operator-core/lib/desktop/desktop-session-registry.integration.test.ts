@@ -592,6 +592,46 @@ describe('P-005 — the idle/freeze/thaw transitions', () => {
     expect((await stateOf(s.scopeRef))?.state).toBe('frozen');
   });
 
+  it('touchDesktopSession reports the post-touch state, so a driver can see a freeze that beat it (WI-10006636)', async () => {
+    const s = await registerDesktopSession(base(), sql);
+    await markDesktopReady(s.id, {}, sql);
+    expect(await touchDesktopSession(s.id, sql)).toBe('ready');
+    await markDesktopFrozen(s.id, sql);
+    expect(await touchDesktopSession(s.id, sql)).toBe('frozen');
+    await closeDesktopSession(s.id, 'released', sql);
+    expect(await touchDesktopSession(s.id, sql)).toBeUndefined();
+  });
+
+  it('a guarded freeze/idle REFUSES once the desktop was touched after the snapshot (WI-10006636)', async () => {
+    const s = await registerDesktopSession(base(), sql);
+    await markDesktopReady(s.id, {}, sql);
+    await sql`UPDATE harness_shared.desktop_sessions
+                 SET last_active_at = now() - interval '4 hours'
+               WHERE id = ${s.id}`;
+    const snapshot = (await stateOf(s.scopeRef))!.lastActiveAt;
+
+    // A computer verb drives it after the sweep's scan.
+    await touchDesktopSession(s.id, sql);
+    expect(await markDesktopIdle(s.id, sql, { notActiveAfter: snapshot })).toBe(false);
+    expect(await markDesktopFrozen(s.id, sql, { notActiveAfter: snapshot })).toBe(false);
+    expect((await stateOf(s.scopeRef))?.state).toBe('ready');
+  });
+
+  it('a guarded write PASSES against its own snapshot despite Postgres keeping microseconds', async () => {
+    // The snapshot crosses a JS Date (milliseconds). Pin a sub-millisecond clock
+    // so an untruncated comparison would read the untouched row as touched.
+    const s = await registerDesktopSession(base(), sql);
+    await markDesktopReady(s.id, {}, sql);
+    await sql`UPDATE harness_shared.desktop_sessions
+                 SET last_active_at = date_trunc('second', now()) - interval '4 hours' + interval '123456 microseconds'
+               WHERE id = ${s.id}`;
+    const snapshot = (await stateOf(s.scopeRef))!.lastActiveAt;
+
+    expect(await markDesktopIdle(s.id, sql, { notActiveAfter: snapshot })).toBe(true);
+    expect(await markDesktopFrozen(s.id, sql, { notActiveAfter: snapshot })).toBe(true);
+    expect((await stateOf(s.scopeRef))?.state).toBe('frozen');
+  });
+
   it('the database itself refuses a frozen row with no frozen_at', async () => {
     const s = await registerDesktopSession(base(), sql);
     await markDesktopReady(s.id, {}, sql);

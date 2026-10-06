@@ -391,12 +391,18 @@ export async function markDesktopReady(
  * answer, which is the blank-screen class P-002 fixed, reintroduced through the
  * back door.
  */
-export async function touchDesktopSession(id: string, sql?: Sql): Promise<void> {
-  await db(sql)`
+export async function touchDesktopSession(id: string, sql?: Sql): Promise<DesktopState | undefined> {
+  // RETURNING the post-touch state is what lets a driver notice a freeze that
+  // landed AFTER it resolved the desktop (the lifecycle sweep froze it in between):
+  // a touch that comes back `frozen` means the input about to be sent would hang,
+  // so the caller thaws first (see prepareDesktopForDrive). undefined = no live row.
+  const rows = await db(sql)`
     UPDATE harness_shared.desktop_sessions
        SET last_active_at = now(),
            state          = CASE WHEN state = 'idle' THEN 'ready' ELSE state END
-     WHERE id = ${id} AND state NOT IN ('released', 'dead')`;
+     WHERE id = ${id} AND state NOT IN ('released', 'dead')
+    RETURNING state`;
+  return (rows[0]?.state as DesktopState | undefined) ?? undefined;
 }
 
 /**
@@ -464,15 +470,41 @@ export async function setDesktopTaskId(
  *
  * Guarded to `ready` so it can never demote a `frozen` session (which would drop
  * the frozen_at stamp the reaper escalates on) or resurrect a terminal one.
+ * `guard.notActiveAfter` adds the activity-clock check (see DesktopActivityGuard).
  */
-export async function markDesktopIdle(id: string, sql?: Sql): Promise<boolean> {
+export async function markDesktopIdle(
+  id: string,
+  sql?: Sql,
+  guard: DesktopActivityGuard = {},
+): Promise<boolean> {
+  const notActiveAfter = guard.notActiveAfter ?? null;
   const rows = await db(sql)`
     UPDATE harness_shared.desktop_sessions
        SET state = 'idle'
      WHERE id = ${id} AND state = 'ready'
+       AND (${notActiveAfter}::timestamptz IS NULL
+            OR date_trunc('milliseconds', last_active_at) <= ${notActiveAfter}::timestamptz)
     RETURNING id`;
   if (rows.length > 0) announceRosterChange();
   return rows.length > 0;
+}
+
+/**
+ * Compare-and-set guard on the activity clock, for the governor's demotions.
+ *
+ * The lifecycle sweep classifies every row from ONE snapshot and acts on each row
+ * later — after other sessions' freezes and kills, each of which can take seconds.
+ * A touch that lands in between means a computer verb is driving the desktop, and
+ * a demotion written over it would idle or freeze a desktop mid-verb. Pass the
+ * snapshot's `lastActiveAt` as `notActiveAfter`; the UPDATE then refuses when the
+ * row's clock has moved past it.
+ *
+ * Compared at MILLISECOND precision on purpose: the snapshot came through a JS
+ * Date and Postgres keeps microseconds, so without the truncation an untouched row
+ * reads as touched up to 999µs later and every guarded demotion refuses.
+ */
+export interface DesktopActivityGuard {
+  notActiveAfter?: Date | null;
 }
 
 /**
@@ -482,13 +514,22 @@ export async function markDesktopIdle(id: string, sql?: Sql): Promise<boolean> {
  * forever.
  *
  * ⚠ THE ROW IS THE RECORD, NOT THE ACT. Call this only AFTER the freezer actually
- * reported success; see `desktop-lifecycle.ts`, which owns that ordering.
+ * reported success; see `desktop-lifecycle.ts`, which owns that ordering. With
+ * `guard.notActiveAfter`, a refusal after a successful freeze means the desktop
+ * was driven while the freezer ran — the caller must thaw it back.
  */
-export async function markDesktopFrozen(id: string, sql?: Sql): Promise<boolean> {
+export async function markDesktopFrozen(
+  id: string,
+  sql?: Sql,
+  guard: DesktopActivityGuard = {},
+): Promise<boolean> {
+  const notActiveAfter = guard.notActiveAfter ?? null;
   const rows = await db(sql)`
     UPDATE harness_shared.desktop_sessions
        SET state = 'frozen', frozen_at = now()
      WHERE id = ${id} AND state IN ('ready', 'idle')
+       AND (${notActiveAfter}::timestamptz IS NULL
+            OR date_trunc('milliseconds', last_active_at) <= ${notActiveAfter}::timestamptz)
     RETURNING id`;
   if (rows.length > 0) announceRosterChange();
   return rows.length > 0;

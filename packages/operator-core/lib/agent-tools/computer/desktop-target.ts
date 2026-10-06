@@ -139,19 +139,33 @@ export async function prepareDesktopForDrive(
   session: DesktopSessionRecord,
   deps: DesktopTargetDeps = {},
 ): Promise<void> {
-  if (session.state === 'frozen' && session.taskId) {
+  const thawForDrive = async (why: string) => {
+    if (!session.taskId) return;
     const thaw = deps.thaw ?? thawTask;
     const markThawed = deps.markThawed ?? markDesktopThawed;
     try {
       await thaw(session.taskId);
       await markThawed(session.id);
     } catch (err) {
-      console.warn(`[desktop-target] thawing frozen desktop ${session.id} before driving it failed: ${String(err)}`);
+      console.warn(`[desktop-target] thawing frozen desktop ${session.id} ${why} failed: ${String(err)}`);
     }
+  };
+
+  let thawed = false;
+  if (session.state === 'frozen') {
+    await thawForDrive('before driving it');
+    thawed = true;
   }
+  let after: Awaited<ReturnType<typeof touchDesktopSession>>;
   try {
-    await (deps.touch ?? touchDesktopSession)(session.id);
+    after = await (deps.touch ?? touchDesktopSession)(session.id);
   } catch {
     /* last_active_at is bookkeeping; a missed touch only makes the desktop look idle sooner */
   }
+  // The lifecycle sweep may have frozen this desktop between our resolving it
+  // (`ready`) and this touch: the touch then comes back `frozen`, and the input
+  // about to be sent would hang in a suspended X server. Thaw it now — the sweep's
+  // guarded row write orders the two: either the freeze was recorded first (we see
+  // `frozen` here) or our touch landed first (the sweep sees it and thaws back).
+  if (after === 'frozen' && !thawed) await thawForDrive('frozen under a live drive');
 }

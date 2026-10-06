@@ -177,7 +177,9 @@ export function createDefaultDesktopBackend(
     // this adapter to ONE organization + customer workspace, and that binding IS the
     // authorization boundary. A second, weaker filter here would imply it is not.
     listSessions: () => listDesktopSessions({ workspaceId: scope() }),
-    touchSession: (id) => touchDesktopSession(id),
+    touchSession: async (id) => {
+      await touchDesktopSession(id);
+    },
     // The desktop pack's socket service (D-363) is what `ensureHiveDesktop`
     // provisions through on a workspace host, so this needs no pack-specific code.
     ensureDesktop: async () => {
