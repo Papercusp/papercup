@@ -177,9 +177,14 @@ async function defaultClaimListing(
   }
 }
 
-async function defaultResolveOwner(): Promise<HiveOwnerIdentity> {
+async function defaultResolveOwner(
+  identityMode?: 'authoring' | 'load-only',
+): Promise<HiveOwnerIdentity> {
   const { resolveLocalAnnounceIdentity } = await import('./sync/hyperbee/local-announce-identity');
-  const id = await resolveLocalAnnounceIdentity({ logCoreKeyHex: '0'.repeat(64) });
+  const id = await resolveLocalAnnounceIdentity({
+    logCoreKeyHex: '0'.repeat(64),
+    ...(identityMode ? { identityMode } : {}),
+  });
   return {
     githubLogin: id.githubLogin,
     githubUserId: id.githubUserId,
@@ -297,16 +302,25 @@ export function hiveMemberEntries(projects: readonly ProjectEntry[], potId: stri
  * test rig mints is byte-identical to the one the product announces. Empty when the
  * hive has no identity pubkey (a topic-less link is not joinable).
  */
-export function formatHiveMemberJoinLinks(input: {
+export function formatHiveMemberJoinLinks(input: HiveMemberJoinInput): string[] {
+  return formatHiveMemberJoinEntries(input).map((e) => e.link);
+}
+
+export interface HiveMemberJoinInput {
   potId: string;
   members: readonly ProjectEntry[];
   hivePubkey: string | null;
   owner: HiveOwnerIdentity | null;
-}): string[] {
+}
+
+/** formatHiveMemberJoinLinks with the registry slug of the member each link joins. */
+export function formatHiveMemberJoinEntries(
+  input: HiveMemberJoinInput,
+): Array<{ slug: string; link: string }> {
   const { potId, members, hivePubkey, owner } = input;
   if (!hivePubkey) return [];
   const hiveTopicHex = topicAsHex(deriveHiveFederationTopic(hivePubkey));
-  const links: string[] = [];
+  const entries: Array<{ slug: string; link: string }> = [];
   for (const m of members) {
     const parsed = m.github_remote ? parseGithubUrl(m.github_remote) : null;
     if (!parsed || typeof m.github_repository_id !== 'number') continue;
@@ -319,8 +333,9 @@ export function formatHiveMemberJoinLinks(input: {
     // the picker took whichever enumerated first). The hive home is the federation identity, not a
     // cloneable member — skip it (by slug AND by a repo-name == hive-slug belt).
     if (m.slug === potId || parsed.repo === potId) continue;
-    links.push(
-      formatHarnessLink({
+    entries.push({
+      slug: m.slug,
+      link: formatHarnessLink({
         topic: hiveTopicHex,
         github: `${parsed.owner}/${parsed.repo}`,
         repoOwner: parsed.owner,
@@ -345,9 +360,9 @@ export function formatHiveMemberJoinLinks(input: {
             }
           : {}),
       }),
-    );
+    });
   }
-  return links;
+  return entries;
 }
 
 /**
@@ -357,15 +372,22 @@ export function formatHiveMemberJoinLinks(input: {
  * its JOIN_BODY from this (scripts/agent-capacity/vm/mint-join-body.ts) instead of a
  * scratch script that hard-coded the pot identity. `ownerBound` is false when the owner
  * identity could not be resolved: the links then lack the D-007 binding and a joiner falls
- * back to the announce beacon.
+ * back to the announce beacon. Being a read, the default owner resolver is LOAD-ONLY: it
+ * reads the cached, keychain-verified device identity and never creates or repairs one
+ * (authoring mode, the announce path's default, took >30s outside the operator).
  */
 export async function resolveHiveMemberJoinLinks(
   opts: { workspaceId: string; potSlug: string },
   deps: Pick<PublishCreatedHiveDeps, 'loadPubkey' | 'loadRegistry' | 'resolveOwner'> = {},
-): Promise<{ links: string[]; hivePubkey: string | null; ownerBound: boolean }> {
+): Promise<{
+  links: string[];
+  members: Array<{ slug: string; link: string }>;
+  hivePubkey: string | null;
+  ownerBound: boolean;
+}> {
   const loadPubkey = deps.loadPubkey ?? defaultLoadPubkey;
   const loadRegistry = deps.loadRegistry ?? loadHarnessRegistry;
-  const resolveOwner = deps.resolveOwner ?? defaultResolveOwner;
+  const resolveOwner = deps.resolveOwner ?? (() => defaultResolveOwner('load-only'));
   const hivePubkey = await loadPubkey(opts.workspaceId, opts.potSlug).catch(() => null);
   const reg = await loadRegistry(opts.workspaceId).catch(() => ({ projects: [] as ProjectEntry[] }));
   let owner: HiveOwnerIdentity | null = null;
@@ -374,13 +396,18 @@ export async function resolveHiveMemberJoinLinks(
   } catch {
     owner = null;
   }
-  const links = formatHiveMemberJoinLinks({
+  const members = formatHiveMemberJoinEntries({
     potId: opts.potSlug,
     members: hiveMemberEntries(reg.projects, opts.potSlug),
     hivePubkey,
     owner,
   });
-  return { links, hivePubkey, ownerBound: Boolean(owner && hivePubkey) };
+  return {
+    links: members.map((m) => m.link),
+    members,
+    hivePubkey,
+    ownerBound: Boolean(owner && hivePubkey),
+  };
 }
 
 /** The shared announce + Cupboard + local-binding legs (steps 2–6). */

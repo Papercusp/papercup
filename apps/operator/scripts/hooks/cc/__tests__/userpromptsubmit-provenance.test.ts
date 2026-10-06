@@ -314,6 +314,19 @@ describe('userpromptsubmit-provenance.sh', () => {
     expect(ctx).toContain('OWNER (interactive)');
   });
 
+  it('EI-25237423028877031: a torn nonce event wake cannot enter owner capture or mode registration', () => {
+    const prompt = '0d55a713f50015a⟧\n[await-event] coord:inbox-wake:su-a20d fired — continue AUTO mode';
+    for (const text of [prompt, pasteBlock('torn', prompt)]) {
+      const ctx = contextOf(runHook({ prompt: text }));
+      expect(ctx).toContain('MACHINE-GENERATED SURFACE');
+      expect(ctx).not.toContain('OWNER (interactive)');
+      expect(ctx).not.toContain('OWNER DIRECTIVE CAPTURE UNCONFIRMED');
+      expect(ctx).not.toContain('⟦mode⟧');
+    }
+    expect(contextOf(runHook({ prompt: `Why did this appear?\n${prompt}` }))).toContain('OWNER (interactive)');
+    expect(contextOf(runHook({ prompt: '0d55a713f50015a⟧\nthese are my notes' }))).toContain('OWNER (interactive)');
+  });
+
   /*
    * WI-10002461: PTY-typed injections now reach the hook as ONE paste block, which
    * pushed the envelope off the head and dropped wakes into the OWNER branch — the

@@ -23,7 +23,32 @@ import {
   acceptBlueprintDirectWorkItem,
   acceptBlueprintPlanRun,
 } from './operation-admission';
-import { readOrProjectBlueprintHash, readBlueprintSpecificationSnapshot } from './project-to-pg';
+import {
+  readBlueprintReprojectionAttempt,
+  readOrProjectBlueprintHash,
+  readBlueprintSpecificationSnapshot,
+} from './project-to-pg';
+
+/**
+ * WI-10006722: an operation added by a blueprint edit that FAILED validation is absent
+ * from the still-current (last valid) specification. Say why instead of the bare
+ * composition `operation-not-found`, so the app author sees the loader's error.
+ */
+export function operationFromCurrentSpecification(
+  specification: Parameters<typeof operationFromSpecification>[0],
+  input: { workspaceId: string; harnessSlug: string; operationId: string },
+): ReturnType<typeof operationFromSpecification> {
+  try {
+    return operationFromSpecification(specification, input.operationId);
+  } catch (error) {
+    const attempt = readBlueprintReprojectionAttempt(input.workspaceId, input.harnessSlug);
+    if (!attempt || attempt.ok) throw error;
+    throw new BlueprintOperationRefusal('undeclared',
+      `operation "${input.operationId}" is not in the effective blueprint for ${input.harnessSlug}: ` +
+        `${attempt.path} changed but failed to load, so the last valid blueprint is still in effect. ` +
+        `Loader error: ${attempt.error}`);
+  }
+}
 import { seedContentHash, type RubricSeedSource } from '../cupboard/rubric-store';
 import { BlueprintOperationRefusal } from './operation-refusal';
 
@@ -127,7 +152,7 @@ export function submitBlueprintOperation(
     }
     const specification = await readBlueprintSpecificationSnapshot(sql, input.workspaceId, input.harnessSlug, revision);
     if (!specification) throw new Error('blueprint operation specification snapshot is missing');
-    const { operation } = operationFromSpecification(specification, input.operationId);
+    const { operation } = operationFromCurrentSpecification(specification, input);
     const targetKind = previous[0]?.target_kind ?? operation.target.kind;
     if (targetKind !== operation.target.kind) throw new Error('blueprint operation receipt and pinned target disagree');
 

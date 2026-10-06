@@ -1,14 +1,16 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
-import {
-  GOOGLE_CALENDAR_MEETING_PREP_EVENT,
-  GOOGLE_CALENDAR_MEETING_PREP_HARNESS,
-  GOOGLE_CALENDAR_MEETING_PREP_PLAN,
-  provisionOwnedGoogleWorkspaceSources,
-} from './google-workspace';
+import { provisionOwnedGoogleWorkspaceSources } from './google-workspace';
 
 const WS = 'google-workspace-source-test';
+// The retired built-in Calendar meeting-prep binding: connect used to ensure a
+// launch-plan binding to this plan; app-agent-tasks-durable-execution-2026-10-06
+// D-011 moved meeting prep to an app-submitted blueprint operation and retired
+// it. Fixture-only now: nothing in the product names this plan any more.
+const LEGACY_MEETING_PREP_HARNESS = 'papercusp';
+const LEGACY_MEETING_PREP_PLAN = 'meeting-prep-brief-2026-08-22';
+const LEGACY_MEETING_PREP_EVENT = 'ext:gcal:event-upcoming';
 let org: OrgTestDb;
 let sql: Sql;
 let userId: string;

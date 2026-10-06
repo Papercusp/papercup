@@ -4,7 +4,7 @@
  * Cupboard rows per member repo; invite = secret-topic announce only, NO
  * Cupboard; private never reaches this module.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   publishCreatedHive,
   resolveHiveMemberJoinLinks,
@@ -17,6 +17,17 @@ import {
   topicAsHex,
 } from './sync/hyperbee/derive-swarm-topic';
 import type { ProjectEntry } from './harness-registry';
+
+// Records the identityMode the DEFAULT owner resolver asks for (WI-10006697). Every other
+// test injects resolveOwner, so this mock is only reached when a test omits it.
+const identityCalls = vi.hoisted(() => [] as Array<Record<string, unknown>>);
+vi.mock('./sync/hyperbee/local-announce-identity', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  resolveLocalAnnounceIdentity: async (opts: Record<string, unknown>) => {
+    identityCalls.push(opts);
+    return { githubLogin: 'alice', githubUserId: 1, devicePubkeyBase64: 'dpk', attestationGistId: 'gist' };
+  },
+}));
 
 const HIVE_PUBKEY = Buffer.alloc(32, 7).toString('base64');
 /** Hardening P-006: a real hex secret so the invite-link artifact round-trips. */
@@ -505,6 +516,7 @@ describe('resolveHiveMemberJoinLinks (WI-10006697: the soak JOIN_BODY is minted 
     const { deps } = fakes();
     const out = await resolveHiveMemberJoinLinks(OPTS, deps);
     expect(out.links).toEqual(announced);
+    expect(out.members).toEqual([{ slug: 'shop', link: announced[0] }]);
     expect(out.hivePubkey).toBe(HIVE_PUBKEY);
     expect(out.ownerBound).toBe(true);
     const link = parseHarnessLink(out.links[0])!;
@@ -554,6 +566,23 @@ describe('resolveHiveMemberJoinLinks (WI-10006697: the soak JOIN_BODY is minted 
   it('no hive pubkey: no links (nothing joinable) and not owner-bound', async () => {
     const { deps } = fakes({ loadPubkey: async () => null });
     const out = await resolveHiveMemberJoinLinks(OPTS, deps);
-    expect(out).toEqual({ links: [], hivePubkey: null, ownerBound: false });
+    expect(out).toEqual({ links: [], members: [], hivePubkey: null, ownerBound: false });
+  });
+
+  it('the default owner resolver is LOAD-ONLY: a read never creates or repairs device identity', async () => {
+    identityCalls.length = 0;
+    const { deps } = fakes();
+    const out = await resolveHiveMemberJoinLinks(OPTS, { ...deps, resolveOwner: undefined });
+    expect(identityCalls.map((c) => c.identityMode)).toEqual(['load-only']);
+    expect(out.ownerBound).toBe(true);
+    expect(parseHarnessLink(out.links[0])!.ownerDevicePubkey).toBe('dpk');
+  });
+
+  it('the announce path keeps its default (authoring) owner resolver', async () => {
+    identityCalls.length = 0;
+    const { deps } = fakes();
+    await publishCreatedHive({ ...BASE, visibility: 'public' }, { ...deps, resolveOwner: undefined });
+    expect(identityCalls.length).toBeGreaterThan(0);
+    expect(identityCalls.every((c) => c.identityMode === undefined)).toBe(true);
   });
 });

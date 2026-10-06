@@ -8,8 +8,9 @@ import { buildJoinBody, parseMintArgs, REPO_ROOT, refuseInRepo } from './mint-jo
 
 const parse = (url: string) => {
   const m = /^link:([^/]+)\/(.+)$/.exec(url);
-  return m ? { github: `${m[1]}/${m[2]}`, repoName: m[2] } : null;
+  return m ? { github: `${m[1]}/${m[2]}` } : null;
 };
+const mem = (github: string, slug = github.split('/')[1] + '-local') => ({ slug, link: `link:${github}` });
 
 describe('mint-join-body argument parsing', () => {
   it('requires --hive and --out, defaults workspace and allowUnbound', () => {
@@ -49,20 +50,20 @@ describe('mint-join-body refuses to write the join link inside the repository', 
 });
 
 describe('mint-join-body member selection', () => {
-  it('one member: uses it, slug defaults to the repo name', () => {
-    expect(buildJoinBody(['link:acme/shop'], {}, parse)).toEqual({
-      body: { harnessLinkUrl: 'link:acme/shop', slug: 'shop' },
+  it('one member: uses it, slug defaults to the member registry slug (not the repo name)', () => {
+    expect(buildJoinBody([mem('acme/shop')], {}, parse)).toEqual({
+      body: { harnessLinkUrl: 'link:acme/shop', slug: 'shop-local' },
       github: 'acme/shop',
     });
-    expect(buildJoinBody(['link:acme/shop'], { slug: 'mine' }, parse)).toMatchObject({
+    expect(buildJoinBody([mem('acme/shop')], { slug: 'mine' }, parse)).toMatchObject({
       body: { slug: 'mine' },
     });
   });
 
   it('several members: --repo picks one (case-insensitive); without it, refuses and names them', () => {
-    const links = ['link:acme/shop', 'link:acme/docs'];
+    const links = [mem('acme/shop'), mem('acme/docs')];
     expect(buildJoinBody(links, { repo: 'ACME/docs' }, parse)).toMatchObject({
-      body: { harnessLinkUrl: 'link:acme/docs', slug: 'docs' },
+      body: { harnessLinkUrl: 'link:acme/docs', slug: 'docs-local' },
     });
     expect(buildJoinBody(links, {}, parse)).toEqual({
       error: 'the hive has 2 members; pass --repo one of: acme/shop, acme/docs',
@@ -73,6 +74,6 @@ describe('mint-join-body member selection', () => {
 
   it('no parseable link: exit code 3', () => {
     expect(buildJoinBody([], {}, parse)).toMatchObject({ code: 3 });
-    expect(buildJoinBody(['garbage'], {}, parse)).toMatchObject({ code: 3 });
+    expect(buildJoinBody([{ slug: 'x', link: 'garbage' }], {}, parse)).toMatchObject({ code: 3 });
   });
 });

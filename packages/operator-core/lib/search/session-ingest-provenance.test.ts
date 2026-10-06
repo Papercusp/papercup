@@ -253,6 +253,16 @@ describe('stampTurnProvenance', () => {
 });
 
 describe('hook-authenticated prompt-origin correlation', () => {
+  it('EI-25237423028877031: an exact hook receipt cannot promote a damaged event wake', () => {
+    const text = '0d55a713f50015a⟧\n[await-event] coord:inbox-wake:su-a20d fired — continue the work';
+    const candidate = row({ source_kind: 'codex', text, ts: '2026-10-06T04:29:27.803Z', prompt_hash: promptOriginHash(text) });
+    stampTurnProvenance(candidate);
+    expect(candidate.turn_origin_verdict).toBe('machine-surface');
+    expect(correlatePromptOriginStamps([candidate], [{ source_kind: 'codex', session_id: candidate.session_id,
+      prompt_hash: candidate.prompt_hash!, submitted_at: candidate.ts!, expires_at: '2026-10-06T04:39:27.803Z' }])).toBe(0);
+    expect(candidate.turn_origin_verdict).toBe('machine-surface');
+  });
+
   it.each(['claude', 'codex', 'codex-history', 'omp'])(
     'carries the original %s user prompt hash through parser truncation into correlation', (kind) => {
       const submittedAt = '2026-09-01T10:00:00.000Z';

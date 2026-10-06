@@ -30,7 +30,10 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const SDK_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+// PLUGIN_SDK_ROOT lets a mutation probe run a copy of this script from outside the tree.
+const SDK_ROOT = process.env.PLUGIN_SDK_ROOT
+  ? resolve(process.env.PLUGIN_SDK_ROOT)
+  : resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const REPO = resolve(SDK_ROOT, '..', '..');
 const TOOLDEF_SRC = join(REPO, 'libs', 'generic', 'tooldef', 'src');
 const TOOLDEF_SPECIFIER = '@papercusp/tooldef';

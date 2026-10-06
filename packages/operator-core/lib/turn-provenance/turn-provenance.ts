@@ -40,6 +40,7 @@ import { appendFile, mkdir, readFile, readdir, stat, unlink, writeFile } from 'n
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { pinModuleState } from '@papercusp/module-singleton';
+import { DAMAGED_EVENT_WAKE_RE } from './machine-surface-catalogue';
 import {
   ENVELOPE_RE as ENVELOPE_GRAMMAR_RE,
   formatEnvelope as formatEnvelopeGrammar,
@@ -587,7 +588,8 @@ export function detectMachineSurface(promptText: string): boolean {
   return (
     MACHINE_SURFACE_RE.test(text) ||
     TASK_NOTIFICATION_TAG_RE.test(text) ||
-    CLAUDE_USAGE_RESET_RE.test(text)
+    CLAUDE_USAGE_RESET_RE.test(text) ||
+    DAMAGED_EVENT_WAKE_RE.test(text)
   );
 }
 

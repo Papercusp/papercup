@@ -130,6 +130,13 @@ export interface ManagedEntry {
   lastError: string | null;
   /** true while a tick is in flight (the re-entrancy guard is engaged). */
   running: boolean;
+  /** epoch ms when the in-flight tick started, or null when no tick is running. With `running`
+   *  this tells a slow tick from a wedged one: `now - runningSince` is how long it has held the
+   *  re-entrancy guard (EI-25221129396992808). */
+  runningSince: number | null;
+  /** cumulative count of fires the re-entrancy guard swallowed because the previous tick was
+   *  still running. A wedged async tick shows here as a climbing count with `fires` frozen. */
+  skippedWhileRunning: number;
   /** count of fires (including ones that threw). */
   fires: number;
   /** whether this timer participates in load-shedding. */
@@ -233,6 +240,23 @@ interface InternalRecord {
   timer: TimerHandle;
   running: boolean;
   stopped: boolean;
+  /** fires skipped during the CURRENT in-flight tick (reset when it settles). */
+  episodeSkips: number;
+}
+
+/**
+ * A tick that has held the re-entrancy guard for this many consecutive skipped fires is
+ * reported (EI-25221129396992808). One skipped fire is ordinary jitter (a tick that ran a little
+ * over its interval); two or more means the tick has run at least two whole intervals. Before
+ * this, a wedged async tick was silent: the guard swallowed every later fire, `lastFireAt` froze,
+ * and the only symptom was whatever downstream reader went stale, which then blamed the wrong
+ * component.
+ */
+export const LONG_TICK_REPORT_MIN_SKIPS = 2;
+
+/** Report on skip counts 2, 4, 8, 16, ... so a wedged tick logs O(log n) lines, not one per interval. */
+function shouldReportSkip(skips: number): boolean {
+  return skips >= LONG_TICK_REPORT_MIN_SKIPS && (skips & (skips - 1)) === 0;
 }
 
 /**

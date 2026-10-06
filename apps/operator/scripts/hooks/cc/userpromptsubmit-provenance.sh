@@ -128,12 +128,21 @@ CLAUDE_USAGE_RESET_RE = re.compile(
     re.IGNORECASE,
 )
 
+# EI-25237423028877031: mirror DAMAGED_EVENT_WAKE_RE in the shared catalogue.
+# A torn envelope defeats both nonce and payload-hash verification, but the
+# remaining hex tail + event-wake banner still proves machine authorship.
+DAMAGED_EVENT_WAKE_RE = re.compile(
+    r'^\s*[a-f0-9]{1,16}⟧\r?\n[ \t]*\[await-event\][ \t]+'
+    r'[^\r\n]+?[ \t]+fired[ \t]+—'
+)
+
 def is_machine_surface(s):
     return bool(
         MACHINE_SURFACE_RE.match(s)
         or TASK_NOTIFICATION_TAG_RE.match(s)
         or CLAUDE_USAGE_RESET_RE.match(s)
         or MACHINE_SUFFIX_RE.search(s)
+        or DAMAGED_EVENT_WAKE_RE.match(s)
     )
 
 PARTIAL_LOOP_FIRE_WINDOW_MS = 120_000

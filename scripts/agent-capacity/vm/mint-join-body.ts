@@ -12,7 +12,7 @@
  *       [--repo <owner/name>] [--slug <member slug>] [--workspace <id>] [--allow-unbound]
  *
  * --repo picks a member when the hive has more than one; --slug defaults to the member's
- * repo name. The link grants a join, so --out must be OUTSIDE the repository (a path inside
+ * registry slug. The product never emits a link to the hive HOME (D-047), only to members. The link grants a join, so --out must be OUTSIDE the repository (a path inside
  * it is refused) and the file is written mode 0600. Prints JOIN_BODY_MINTED on success.
  *
  * Exit: 0 written · 2 usage / refused --out / ambiguous member · 3 no joinable link
@@ -72,13 +72,13 @@ export function refuseInRepo(outPath: string, repoRoot: string = REPO_ROOT): str
 
 /** Pick one member link (by --repo when there are several) and build the body. */
 export function buildJoinBody(
-  links: string[],
+  members: Array<{ slug: string; link: string }>,
   args: Pick<MintArgs, 'repo' | 'slug'>,
-  parse: (url: string) => { github: string; repoName: string } | null,
+  parse: (url: string) => { github: string } | null,
 ): { body: { harnessLinkUrl: string; slug: string }; github: string } | { error: string; code: 2 | 3 } {
-  const parsed = links
-    .map((url) => ({ url, link: parse(url) }))
-    .filter((x): x is { url: string; link: { github: string; repoName: string } } => x.link !== null);
+  const parsed = members
+    .map((m) => ({ url: m.link, slug: m.slug, link: parse(m.link) }))
+    .filter((x): x is { url: string; slug: string; link: { github: string } } => x.link !== null);
   if (parsed.length === 0) return { error: 'the hive has no joinable member link', code: 3 };
   const pick = args.repo
     ? parsed.filter((x) => x.link.github.toLowerCase() === args.repo!.toLowerCase())
@@ -90,7 +90,7 @@ export function buildJoinBody(
     return { error: `the hive has ${pick.length} members; pass --repo one of: ${pick.map((x) => x.link.github).join(', ')}`, code: 2 };
   }
   return {
-    body: { harnessLinkUrl: pick[0].url, slug: args.slug ?? pick[0].link.repoName },
+    body: { harnessLinkUrl: pick[0].url, slug: args.slug ?? pick[0].slug },
     github: pick[0].link.github,
   };
 }
@@ -113,7 +113,7 @@ async function main(): Promise<number> {
     console.error(`JOIN_BODY_NONE hive=${args.hive} workspace=${args.workspace}: no hive pubkey on this box (not the owner, or not a hive slug)`);
     return 3;
   }
-  const built = buildJoinBody(res.links, args, parseHarnessLink);
+  const built = buildJoinBody(res.members, args, parseHarnessLink);
   if ('error' in built) {
     console.error(`JOIN_BODY_NONE hive=${args.hive}: ${built.error}`);
     return built.code;

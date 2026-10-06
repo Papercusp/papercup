@@ -85,7 +85,15 @@
  * Tested against the turn HEAD (bounds an incidental mid-body quote from
  * tripping a marker); each pattern carries its own anchor.
  */
+/** EI-25237423028877031: PTY transit can retain only the nonce's hex tail
+ * and closing bracket before an event-wake banner. Require that exact head
+ * shape AND the wake's fired delimiter; a nonce-like string or an owner's
+ * mid-body quotation alone must never remove owner authority. Shared with
+ * the live classifier; its Python hook mirror has behavioural parity tests. */
+export const DAMAGED_EVENT_WAKE_RE = /^\s*[a-f0-9]{1,16}⟧\r?\n[ \t]*\[await-event\][ \t]+[^\r\n]+?[ \t]+fired[ \t]+—/;
+
 export const MACHINE_SURFACE_PATTERNS: readonly RegExp[] = [
+  DAMAGED_EVENT_WAKE_RE,
   // Claude's background-task completion banner (self-labels "NOT USER INPUT").
   /\[\s*SYSTEM NOTIFICATION\b[^\]]*\bNOT USER INPUT\b[^\]]*\]/i,
   // Claude's app-level usage-limit reset continuation (no Papercusp injector
@@ -244,7 +252,9 @@ export const CLASSIFY_HEAD_CHARS = 240;
 // 5 → 6 (EI-24061185425252841): Claude's fixed usage-limit reset continuation
 // was otherwise captured as an owner directive when it arrived without the
 // original machine envelope. Make existing rows findable for reclassification.
-export const MACHINE_SURFACE_CATALOGUE_VERSION = 6;
+// 6 → 7 (EI-25237423028877031): damaged nonce-tail event wakes must override
+// even an earlier hook-authenticated owner stamp during the existing backfill.
+export const MACHINE_SURFACE_CATALOGUE_VERSION = 7;
 
 /** Does this turn's head carry a CLI/subsystem synthetic-command wrapper? */
 export function hasSyntheticMarker(text: string): boolean {
