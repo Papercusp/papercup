@@ -1548,3 +1548,66 @@ describe('deb archives survive a full reclaim of the Cargo target (WI-10006749)'
     }
   });
 });
+
+describe('cargo rows record the MEASURED worktree, never the column default (WI-10006860)', () => {
+  // test_runs.worktree_dirty is NOT NULL DEFAULT false, and spec freshness rates a run current
+  // only when it is false. A reporter that omits the column claims every cargo run — an in-tree
+  // mutant included — came from a clean tree.
+  const SHA = 'a'.repeat(40);
+  const clean = { commit: SHA, porcelain: '' };
+  const provenanceOf = (before: unknown, after: unknown) =>
+    cargoWorktreeProvenance({ before, after, describeDirt: describeWorktreeDirt });
+  const detailsFor = (worktree: unknown) =>
+    parseTestRunExecutionDetails(buildCargoExecutionDetails({
+      root: '/repo', filePath: 'papercusp-desktop/src-tauri::tests::x', passed: 1, harnessSlug: 'papercusp',
+      workspaceId: 'papercusp-workspace', env: {}, ...(worktree === undefined ? {} : { worktree }),
+    }));
+
+  it('a clean, unmoved tree is recorded clean with its commit, and still parses under the strict contract', () => {
+    const worktree = provenanceOf(clean, clean);
+    expect(worktree).toEqual({ commitSha: SHA, worktreeDirty: false, worktreeDirtyReason: null });
+    const details = detailsFor(worktree);
+    expect(details).not.toBeNull();
+    expect(details?.worktreeDirty).toBe(false);
+    expect(details?.commitSha).toBe(SHA);
+    expect(details?.worktreeDirtyReason).toBeUndefined();
+  });
+
+  it.each([
+    ['an uncommitted file', clean, { commit: SHA, porcelain: ' M papercusp-desktop/src-tauri/src/main.rs' }, /porcelain line/],
+    ['a moved HEAD', clean, { commit: 'b'.repeat(40), porcelain: '' }, /HEAD moved/],
+    ['an unreadable git status', clean, { commit: SHA, porcelain: null }, /unreadable/],
+    ['an unreadable HEAD', { commit: null, porcelain: '' }, clean, /HEAD unreadable/],
+  ])('%s is recorded dirty with the reason the vitest reporter would name', (_label, before, after, reason) => {
+    const worktree = provenanceOf(before, after);
+    expect(worktree.worktreeDirty).toBe(true);
+    expect(worktree.worktreeDirtyReason).toMatch(reason);
+    const details = detailsFor(worktree);
+    expect(details?.worktreeDirty).toBe(true);
+    expect(details?.worktreeDirtyReason).toMatch(reason);
+  });
+
+  it('a missing snapshot, describer, or throwing describer is dirty, never clean', () => {
+    expect(cargoWorktreeProvenance({ before: null, after: clean, describeDirt: describeWorktreeDirt })).toEqual(UNMEASURED_CARGO_WORKTREE);
+    expect(cargoWorktreeProvenance({ before: clean, after: clean, describeDirt: undefined })).toEqual(UNMEASURED_CARGO_WORKTREE);
+    const thrown = cargoWorktreeProvenance({ before: clean, after: clean, describeDirt: () => { throw new Error('boom'); } });
+    expect(thrown.worktreeDirty).toBe(true);
+    expect(thrown.worktreeDirtyReason).toMatch(/boom/);
+    expect(detailsFor(undefined)?.worktreeDirty).toBe(true);
+  });
+
+  it('the reporter snapshots around the cargo spawn and INSERTs commit_sha and worktree_dirty from it', () => {
+    const insert = REPORTER_SOURCE.slice(REPORTER_SOURCE.indexOf('INSERT INTO harness_shared.test_runs'));
+    const columns = insert.slice(0, insert.indexOf('VALUES'));
+    expect(columns).toMatch(/\bcommit_sha\b/);
+    expect(columns).toMatch(/\bworktree_dirty\b/);
+    expect(insert).toMatch(/\$\{worktree\.commitSha\}, \$\{worktree\.worktreeDirty\}/);
+    const before = REPORTER_SOURCE.indexOf('const worktreeBefore = await snapshotWorktree(');
+    const spawnCall = REPORTER_SOURCE.indexOf('await runCargoTest(manifestAbs');
+    const provenance = REPORTER_SOURCE.indexOf('cargoWorktreeProvenance({', spawnCall);
+    expect(before).toBeGreaterThan(-1);
+    expect(spawnCall).toBeGreaterThan(before);
+    expect(provenance).toBeGreaterThan(spawnCall);
+    expect(REPORTER_SOURCE).toMatch(/import\('\.\.\/libs\/test-config\/src\/admin-test-runs-reporter\.ts'\)/);
+  });
+});
