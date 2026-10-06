@@ -7,7 +7,7 @@
  * em dash, returned a truncated prefix — so no mutation proof could ever pass.
  */
 import { describe, expect, it } from 'vitest';
-import { mutationFailureLines } from './spec-evidence-store';
+import { mutationFailedCaseTitles, mutationFailureLines } from './spec-evidence-store';
 import { mutationMeasuredFailedCase, type SpecEvidenceForAdequacy } from './spec-test-adequacy';
 
 // Shape of live test_run 20842783 (source=mutation-probe, status=fail): two failed cases, the
@@ -83,5 +83,55 @@ describe('mutation failure lines (WI-10006745)', () => {
     expect(mutationMeasuredFailedCase(row, 'forged DOM case')).toBe(false);
     expect(mutationFailureLines(LIVE_TAIL, { ...details, failedCaseTitles: ['bad\nname'] })).toEqual([]);
     expect(mutationFailureLines(LIVE_TAIL, JSON.stringify(details))).toEqual(mutationFailureLines('', details));
+  });
+
+  it('matches recorded failed-case titles by exact membership, never by prefix (WI-10006753)', () => {
+    // A full name containing the reporter separator: the line form `suite > a: b: <msg>` starts
+    // with `suite > a: `, so prefix matching would let the declared `suite > a` claim it.
+    const recorded = 'suite > a: b';
+    const row = mutationRow(`${recorded}: boom`);
+    expect(mutationMeasuredFailedCase(row, 'suite > a')).toBe(true); // legacy line fallback is ambiguous
+    row.testRunProvenance!.mutationFailedCaseTitles = [recorded];
+    expect(mutationMeasuredFailedCase(row, 'suite > a')).toBe(false);
+    expect(mutationMeasuredFailedCase(row, recorded)).toBe(true);
+    // Recorded titles are authoritative even when the tail is silent (late cases dropped by the
+    // 4000-char bound) and even when the tail names a case the titles do not.
+    const silent = mutationRow('forged: not a recorded failure');
+    silent.testRunProvenance!.mutationFailedCaseTitles = [SECOND_CASE];
+    expect(mutationMeasuredFailedCase(silent, SECOND_CASE)).toBe(true);
+    expect(mutationMeasuredFailedCase(silent, 'forged')).toBe(false);
+    // An empty recorded list (malformed proof) measures nothing; it does not fall back to the tail.
+    const malformed = mutationRow(LIVE_TAIL);
+    malformed.testRunProvenance!.mutationFailedCaseTitles = [];
+    expect(mutationMeasuredFailedCase(malformed, SECOND_CASE)).toBe(false);
+  });
+
+  it('extracts recorded failed-case titles from execution details for the store provenance (WI-10006753)', () => {
+    const details = {
+      schemaVersion: 1, root: '/repo', filePath: 'test/a.test.ts', runGroupId: null,
+      workspaceId: 'ws', harnessSlug: 'papercusp', testNamePattern: null,
+      passed: 3, failed: 1, skipped: 0, collectionFailed: false, mutationPhase: 'mutant',
+      commitSha: 'abc', worktreeDirty: false, failedCaseTitles: ['suite > a: b'],
+    };
+    // No execution details (legacy row) → undefined, so the evaluator keeps line-prefix matching.
+    expect(mutationFailedCaseTitles(undefined)).toBeUndefined();
+    expect(mutationFailedCaseTitles(null)).toBeUndefined();
+    // Valid details without structured titles → undefined (legacy fallback, not "nothing failed").
+    const { failedCaseTitles: _omit, ...untitled } = details;
+    expect(mutationFailedCaseTitles(untitled)).toBeUndefined();
+    // Valid titles, as an object or as the JSON string a jsonb column can surface → exact copy.
+    expect(mutationFailedCaseTitles(details)).toEqual(['suite > a: b']);
+    expect(mutationFailedCaseTitles(JSON.stringify(details))).toEqual(['suite > a: b']);
+    const copy = mutationFailedCaseTitles(details)!;
+    copy.push('mutated');
+    expect(details.failedCaseTitles).toEqual(['suite > a: b']);
+    // Malformed proof measures nothing — it never falls back to the free-text tail.
+    expect(mutationFailedCaseTitles({ ...details, failedCaseTitles: ['bad\nname'] })).toEqual([]);
+    expect(mutationFailedCaseTitles('{not json')).toEqual([]);
+    // End to end through the evaluator: the store's titles make the prefix-only claim fail.
+    const row = mutationRow('suite > a: b: boom');
+    row.testRunProvenance!.mutationFailedCaseTitles = mutationFailedCaseTitles(details);
+    expect(mutationMeasuredFailedCase(row, 'suite > a')).toBe(false);
+    expect(mutationMeasuredFailedCase(row, 'suite > a: b')).toBe(true);
   });
 });
