@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 951,
+  "count": 952,
   "tools": [
     {
       "name": "ablation:report",
@@ -2371,6 +2371,39 @@
         "when": "From an unscoped (--all-workspaces) superuser session, sharing a blueprint you authored or customized — a local/private blueprint living at <repo>/.papercusp/blueprints/<id>/ — so others can install it from the Comb.",
         "notWhen": "Browsing/installing blueprints (blueprint:catalog lists what's installable); authoring one (blueprint:create / blueprint:extend); calling from a workspace-scoped session (the transport and handler refuse this global publication; the workspace argument cannot make it safe); or when the blueprint files are not on GitHub yet — publish points at the repo, so commit + push first.",
         "chaining": "Run from an unscoped (--all-workspaces) superuser session after the blueprint files are committed + pushed via the project's normal flow. The response carries review_status=pending — operators approve at /admin/cupboard-moderation; once approved it installs via the Cupboard like any blueprint listing."
+      }
+    },
+    {
+      "name": "blueprint:read-private-input",
+      "http": {
+        "path": "/api/agent-tools/blueprint/read-private-input",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read the private input attached to the blueprint operation whose work item you hold (e.g. a call transcript). Returns { content, sha256 }; sha256 is over JSON.stringify(content).",
+      "capabilities": [
+        "work_items:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator",
+        "papercup",
+        "papercup-deep"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Your operation work item says its content is private input: pass your held work item id, then verify sha256 against the reference in the item input.",
+        "notWhen": "An item you do not hold, a terminal item, or an operation without privateInputSchema; these are refused.",
+        "chaining": "work_items:claim → blueprint:read-private-input { workItemId } → work_items:complete."
       }
     },
     {

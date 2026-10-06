@@ -363,6 +363,10 @@ apps/operator/dist-host/
 # drop-database-force, envelope-grammar, undrained-stdout) then reddened the gate on bundle text
 # (EI-22059281687580461, WI-2139971, WI-2139976). Untracked 2026-09-02 (WI-2141120).
 apps/operator/dist-sidecar/
+# Sibling of dist-host: the attended `npm run dev` desktop operator's bundled host
+# (papercusp-desktop/bin/dev-operator-ifneeded.sh, plan desktop-dev-startup-speed-2026-10-06).
+# Generated output only; a bundle here is ~50MB of esbuild text.
+apps/operator/dist-devhost/
 
 # WI-4481: flake-soak "prove it discriminates" fixtures. A flake fix drops a
 # KNOWN-FLAKY *.flakeproof.test.tsx next to the code under test and runs

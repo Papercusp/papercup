@@ -608,6 +608,16 @@ async function triggerDeliveryRetentionTick(): Promise<void> {
     },
     { name: 'trigger-delivery-payload-retention' },
   );
+  // D-014 (WI-10006699): operation private input lives only while its operation
+  // work item is in flight. Reads already refuse a terminal item; this bounds the
+  // row's physical lifetime (terminal, missing, or past expires_at).
+  await DBOS.runStep(
+    async () => {
+      const { pruneOperationPrivateInputs } = await import('../blueprint/operation-private-input');
+      return pruneOperationPrivateInputs();
+    },
+    { name: 'operation-private-input-retention' },
+  );
 }
 const triggerDeliveryRetentionWorkflow = idempotentRegisterWorkflow('triggerDeliveryRetention', () =>
   DBOS.registerWorkflow(triggerDeliveryRetentionTick, {

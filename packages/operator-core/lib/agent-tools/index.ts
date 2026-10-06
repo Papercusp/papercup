@@ -1494,6 +1494,9 @@ import './blueprint/publish';
 // Public blueprint operation lifecycle (blueprint-backed-work-item-execution P-017, D-009):
 // one typed defineTool per verb over the shared operation service.
 import './blueprint/submit-operation';
+// D-014 (app-agent-tasks-durable-execution-2026-10-06): the worker read of an
+// operation's private input, holder-only and refused once the item is terminal.
+import './blueprint/read-private-input';
 import './blueprint/status-operation';
 import './blueprint/result-operation';
 import './blueprint/events-operation';
