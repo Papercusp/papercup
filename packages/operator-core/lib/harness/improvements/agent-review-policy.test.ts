@@ -19,6 +19,14 @@ import {
   readImplementationReadiness,
   readStructuredOwnerAsk,
   sealImplementationAcceptance,
+  createVerificationTask,
+  matchesAgentReviewClaimAdmission,
+  mintAgentReviewClaimAdmission,
+  readVerificationTask,
+  VERIFICATION_TASK_SCHEMA_VERSION,
+  verificationConflict,
+  verificationParties,
+  verificationTaskConflict,
   type ImplementationAcceptanceAuthority,
   type ImplementationAcceptanceContract,
   type ImplementationAcceptanceSource,
@@ -748,5 +756,89 @@ describe('agentReviewEligibility (abolish-human-review D-003)', () => {
       }),
     ).toEqual({ eligible: true });
     expect(hasStrictOwnerAction({ humanCapability: 'product-decision' })).toBe(false);
+  });
+});
+
+describe('verifier lane: the verifier-conflict rule (P-007 / D-021)', () => {
+  const REVIEW = { status: 'pending', submittedBy: 'su-submitter', ledgerIdeaId: 'WI-7', round: 1 } as const;
+  const subject = {
+    id: 'EI-1',
+    harness: 'papercusp',
+    createdBy: 'su-filer',
+    terminalOwner: 'su-closer',
+    payload: {
+      _ei: { created_by: 'improvement-triage' },
+      agentReview: REVIEW,
+      verification: {
+        schemaVersion: VERIFICATION_TASK_SCHEMA_VERSION,
+        subject: 'EI-0',
+        check: 'reproduction',
+        reporters: ['su-task-reporter', ' su-task-reporter '],
+        implementers: ['su-task-implementer'],
+      },
+    },
+  };
+
+  it('collects every reporter and implementer recorded on the row', () => {
+    const parties = verificationParties(subject);
+    expect([...parties.reporters].sort()).toEqual(
+      ['improvement-triage', 'su-filer', 'su-submitter', 'su-task-reporter'].sort(),
+    );
+    expect([...parties.implementers].sort()).toEqual(['su-closer', 'su-task-implementer'].sort());
+  });
+
+  // SPEC-P-007: verification work is refused to its reporter and to its implementer.
+  it('refuses the reporter and the implementer', () => {
+    const parties = verificationParties(subject);
+    expect(verificationConflict(parties, 'su-filer')).toBe('reporter');
+    expect(verificationConflict(parties, 'improvement-triage')).toBe('reporter');
+    expect(verificationConflict(parties, ' su-submitter ')).toBe('reporter');
+    expect(verificationConflict(parties, 'su-closer')).toBe('implementer');
+    expect(verificationConflict(parties, 'su-task-implementer')).toBe('implementer');
+  });
+
+  // SPEC-P-007-B: an independent verifier may take it.
+  it('lets an independent verifier through', () => {
+    expect(verificationConflict(verificationParties(subject), 'su-verifier')).toBeNull();
+    expect(verificationConflict(verificationParties(subject), '   ')).toBeNull();
+  });
+
+  it('gates a claim on the TASK parties only, so the reviewer who filed the task may run it', () => {
+    expect(verificationTaskConflict(subject.payload, 'su-task-reporter')).toBe('reporter');
+    expect(verificationTaskConflict(subject.payload, 'su-task-implementer')).toBe('implementer');
+    // The row's own filer/closer are not task parties: the task filer is the deciding reviewer.
+    expect(verificationTaskConflict(subject.payload, 'su-filer')).toBeNull();
+    expect(verificationTaskConflict(subject.payload, 'su-verifier')).toBeNull();
+    expect(verificationTaskConflict({}, 'su-task-reporter')).toBeNull();
+  });
+
+  it('ignores a verification block that is not a current, complete one', () => {
+    const base = subject.payload.verification;
+    expect(readVerificationTask({ verification: { ...base, schemaVersion: 'verification-task-v0' } })).toBeNull();
+    expect(readVerificationTask({ verification: { ...base, subject: '  ' } })).toBeNull();
+    expect(readVerificationTask({ verification: { ...base, check: 'vibes' } })).toBeNull();
+    expect(readVerificationTask({ verification: { ...base, reporters: 'su-task-reporter' } })).toEqual(
+      createVerificationTask({ subject: 'EI-0', check: 'reproduction', reporters: [], implementers: ['su-task-implementer'] }),
+    );
+  });
+
+  it('mints and matches a review admission only for an independent reviewer', () => {
+    const mint = (reviewer: string) =>
+      mintAgentReviewClaimAdmission({
+        itemId: subject.id,
+        reviewer,
+        harnessSlug: 'papercusp',
+        review: REVIEW,
+        parties: verificationParties(subject),
+      });
+    expect(mint('su-filer')).toBeNull();
+    expect(mint('su-closer')).toBeNull();
+    const admission = mint('su-verifier');
+    expect(admission).not.toBeNull();
+    expect(matchesAgentReviewClaimAdmission(admission, subject, 'su-verifier')).toBe(true);
+    // Re-derived from the row at the writer: a row whose closer is now the reviewer refuses.
+    expect(
+      matchesAgentReviewClaimAdmission(admission, { ...subject, terminalOwner: 'su-verifier' }, 'su-verifier'),
+    ).toBe(false);
   });
 });
