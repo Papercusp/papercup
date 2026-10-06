@@ -1,11 +1,15 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
-import { mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { replayHash, replayLoadedRuntime, replayRuntimeLaunch, type ReplayRuntimeWitness } from './lsp-fleet-replay-runtime';
+import { assertReplayOracleRuntimeQualified, freezeQualifiedReplayConfig, qualifyReplayOracleRuntime, replayHash, replayLoadedRuntime, replayOracleFingerprint,
+  replayRuntimeLaunch, replaySourceFingerprint, type DaemonReplayConfig, type ReplayRuntimeWitness } from './lsp-fleet-replay-runtime';
 import { readProcessIdentity } from '../process-identity';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { createRequire } from 'node:module';
+import { dirname } from 'node:path';
+import { buildSync } from 'esbuild';
 import { buildTaskScopeArgvWithTransport, SYSTEMD_ENV_RUNNER_PATH, SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS } from '../systemd-scope';
 
 const scopeProbeArgv = ['--user', '--scope', '--quiet', ...SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS, '--', 'true'];
@@ -60,7 +64,211 @@ function liveWitness(f: ReturnType<typeof fixture>, files: string[]) {
     text: (path: string) => path.endsWith('/maps') ? `1-2 r-xp 0 00:01 9 ${library}\n` : readFileSync(path, 'utf8') };
   return { witness, reader };
 }
+describe('independent parent oracle producer', () => {
+  it('runs the maintained CLI and actual TypeScript compiler with the kernel native-mapping evaluator', () => {
+    const f = fixture('cjs');
+    const sourceRoot = join(f.root, 'source'); mkdirSync(sourceRoot);
+    writeFileSync(join(sourceRoot, 'source.ts'), 'export function hot() {}\nhot();\n');
+    writeFileSync(join(sourceRoot, 'tsconfig.json'), JSON.stringify({ files: ['source.ts'], compilerOptions: { noLib: true } }));
+    const require = createRequire(import.meta.url);
+    const compiler = require.resolve('typescript');
+    const compilerRoot = dirname(dirname(compiler));
+    // The pinned package is an executable shim, not the compiler implementation.
+    // Resolve its declared delegate before the child runs, never from receipts.
+    const delegate = createRequire(compiler).resolve('@typescript/old');
+    const delegateRoot = dirname(dirname(delegate));
+    mkdirSync(join(f.root, 'node_modules'));
+    symlinkSync(compilerRoot, join(f.root, 'node_modules', 'typescript'));
+    const cli = join(f.root, 'cli.cjs');
+    buildSync({ entryPoints: [fileURLToPath(new URL('./lsp-saturation-bench-cli.ts', import.meta.url))],
+      outfile: cli, bundle: true, platform: 'node', format: 'cjs', packages: 'external',
+      banner: { js: 'process.umask(0);' },
+      define: { 'import.meta.url': JSON.stringify(pathToFileURL(cli).href) }, logLevel: 'silent' });
+    writeFileSync(join(f.root, 'lsp-replay-runtime-witness.cjs'),
+      readFileSync(fileURLToPath(new URL('./lsp-replay-runtime-witness.cjs', import.meta.url))));
+    const inputPath = join(f.root, 'input.json');
+    writeFileSync(inputPath, JSON.stringify({ runId: 'actual-compiler-producer', rootPath: sourceRoot,
+      socketPath: join(f.root, 'socket'), workspaceId: 'fixture', levels: [1], requestTimeoutMs: 1000,
+      tsconfigPath: 'tsconfig.json', definition: { file: 'source.ts', line1: 1, character: 17 },
+      references: { file: 'source.ts', line1: 1, character: 17 }, runtimeFiles: [], evidenceRef: 'authored-before-launch' }));
+    const optionsPath = join(f.root, 'options.json');
+    const witnessDirectory = join(f.root, 'native-receipts');
+    const compilerEntries = [compiler, delegate, join(dirname(delegate), '_typescript.js')].filter(existsSync);
+    writeFileSync(optionsPath, JSON.stringify({ freezerEntry: cli, compilerEntries,
+      runtimePaths: [compilerRoot, delegateRoot], witnessDirectory, timeoutMs: 15_000 }));
+    const outputPath = join(f.root, 'qualified.json');
+    // Check the whole bundled startup graph without launching a compiler. A
+    // missing dependency must retain its diagnostic, not surface as no receipts.
+    let preflight = '';
+    try { execFileSync(process.execPath, [cli, '--freeze-replay-child', inputPath, outputPath],
+      { env: { ...process.env, NODE_OPTIONS: '' }, encoding: 'utf8', timeout: 5000 }); }
+    catch (error) { preflight = String((error as { stderr?: Buffer | string }).stderr ?? error); }
+    expect(preflight).toContain('replay-oracle-parent-channel-required');
+    // Elevation is an explicit integration-run choice. Ordinary CI still checks
+    // fail-closed behavior when the kernel denies mapped-inode reads.
+    const privileged = process.env.PAPERCUSP_REPLAY_NATIVE_PROOF === 'required';
+    const launcher = privileged ? 'sudo' : process.execPath;
+    const args = [cli, '--freeze-qualified-replay', inputPath, outputPath, optionsPath];
+    if (privileged) args.unshift('-n', process.execPath);
+    let failure = '';
+    try { execFileSync(launcher, args, { env: { ...process.env, NODE_OPTIONS: '' }, encoding: 'utf8', timeout: 25_000 }); }
+    catch (error) { failure = String((error as { stderr?: Buffer | string }).stderr ?? error); }
+    expect(existsSync(witnessDirectory), failure).toBe(true);
+    if (privileged) execFileSync('sudo', ['-n', 'chmod', '-R', 'a+rX', witnessDirectory]);
+    const rows = receipts(witnessDirectory);
+    for (const entry of compilerEntries) expect(rows).toContainEqual(expect.objectContaining({
+      kind: 'commonjs-compile', path: entry, sha256: replayHash(readFileSync(entry)) }));
+    const boot = rows.find(row => row.kind === 'bootstrap');
+    expect(boot).toBeDefined();
+    expect(readProcessIdentity(boot.pid)).toBeNull();
+    if (failure) {
+      expect(privileged, failure).toBe(false);
+      expect(failure).toContain('unreadable-native-mappings');
+      expect(failure).not.toContain('unfrozen-loaded-bytes');
+      expect(existsSync(outputPath)).toBe(false);
+    } else {
+      const qualified = JSON.parse(readFileSync(outputPath, 'utf8')) as DaemonReplayConfig;
+      expect(() => assertReplayOracleRuntimeQualified(qualified)).not.toThrow();
+      expect(qualified.corpus['hot-references'].oracle.sites).toEqual([
+        { path: 'source.ts', line1: 1 }, { path: 'source.ts', line1: 2 }]);
+      expect(qualified.oracleProvenance.runtime!.process.loadedModules).toMatchObject({ unknown: [], native: expect.any(Array) });
+      expect(JSON.parse(readFileSync(join(witnessDirectory, 'terminal.json'), 'utf8'))).toMatchObject({ code: 0, signal: null });
+    }
+  }, 30_000);
+  function producer(suffix = '') {
+    const f = fixture('cjs', `const fs=require('node:fs');require('./compiler.cjs');
+      const input=JSON.parse(fs.readFileSync(process.argv[3],'utf8'));
+      const config=JSON.parse(fs.readFileSync(input.configPath,'utf8'));
+      const candidatePath=process.argv[4];
+      const bytes=JSON.stringify(config);fs.writeFileSync(candidatePath,bytes,{flag:'wx'});
+      const sha256=require('node:crypto').createHash('sha256').update(bytes).digest('hex');
+      process.on('message',row=>{
+        if(row.kind!=='replay-oracle-release'||row.sha256!==sha256||row.runId!==input.runId)process.exit(9);
+        else process.disconnect();
+      });
+      ${suffix}
+      process.send({kind:'replay-oracle-frozen',runId:input.runId,candidatePath,sha256});`);
+    const sourceRoot = join(f.root, 'source'); mkdirSync(sourceRoot);
+    const source = join(sourceRoot, 'source.ts'); writeFileSync(source, 'export function hot() {}\n');
+    const compiler = join(f.root, 'compiler.cjs'); writeFileSync(compiler, 'module.exports={version:"fixture-compiler"};');
+    const library = join(f.root, 'fixture-native'); writeFileSync(library, 'fixture native');
+    const files = { [source]: replayHash(readFileSync(source)) };
+    const sites = [{ path: 'source.ts', line1: 1 }];
+    const corpus = { cursor: { file: source, line1: 1, character: 17 },
+      oracle: { sites, sourceFingerprint: replaySourceFingerprint(files), oracleFingerprint: replayOracleFingerprint({ sites }) } };
+    const config: DaemonReplayConfig = { schemaVersion: 'lsp-daemon-replay-config-v1', runId: 'parent-producer',
+      rootPath: sourceRoot, socketPath: join(f.root, 'socket'), workspaceId: 'fixture', levels: [1], requestTimeoutMs: 1000,
+      oracleProvenance: { method: 'source-authored fixture', evidenceRef: 'authored-before-launch', compilerVersion: 'fixture-compiler' },
+      files, corpus: { definition: corpus, 'hot-references': corpus } };
+    const configPath = join(sourceRoot, 'config.json'); writeFileSync(configPath, JSON.stringify(config));
+    const inputPath = join(f.root, 'input.json'); writeFileSync(inputPath, JSON.stringify({ ...config, configPath,
+      definition: corpus.cursor, references: corpus.cursor, evidenceRef: config.oracleProvenance.evidenceRef }));
+    const outputPath = join(f.root, 'qualified.json');
+    const options = { freezerEntry: f.entry, compilerEntries: [compiler], runtimePaths: [library],
+      witnessDirectory: join(f.root, 'receipts'), timeoutMs: 10_000 };
+    // Only native mapping is simulated. The producer launches and qualifies a
+    // real child using actual argv, PID epoch, executable and compile/read bytes.
+    const processReader = { identity: readProcessIdentity, link: readlinkSync,
+      bytes: (path: string) => path.includes('/map_files/') ? readFileSync(library) : readFileSync(path),
+      text: (path: string) => path.endsWith('/maps') ? `1-2 r-xp 0 00:01 9 ${library}\n` : readFileSync(path, 'utf8') };
+    return { ...f, source, inputPath, outputPath, options, deps: { processReader, nativeDependencies: () => [] } };
+  }
+  it('predeclares source/compiler/freezer closure, qualifies the live child, then publishes after successful exit', async () => {
+    const f = producer();
+    const qualified = await freezeQualifiedReplayConfig(f.inputPath, f.outputPath, f.options, f.deps);
+    expect(() => assertReplayOracleRuntimeQualified(qualified)).not.toThrow();
+    expect(JSON.parse(readFileSync(f.outputPath, 'utf8'))).toEqual(qualified);
+    const declaration = JSON.parse(readFileSync(join(f.options.witnessDirectory, 'declaration.json'), 'utf8'));
+    expect(declaration.witness.files[f.source]).toBe(qualified.files[f.source]);
+    expect(JSON.parse(readFileSync(join(f.options.witnessDirectory, 'terminal.json'), 'utf8'))).toMatchObject({ code: 0, signal: null });
+    expect(readProcessIdentity(qualified.oracleProvenance.runtime!.process.pid)).toBeNull();
+    await expect(freezeQualifiedReplayConfig(f.inputPath, f.outputPath, f.options, f.deps)).rejects.toThrow('replay-oracle-output-exists');
+  });
+  it.each([
+    ['compiler drift after load', "fs.writeFileSync(require.resolve('./compiler.cjs'),'changed');", 'changed-file'],
+    ['source drift', 'fs.writeFileSync(Object.keys(config.files)[0],"changed");', 'changed-file'],
+    ['handoff hash mismatch', 'fs.appendFileSync(candidatePath," ");', 'replay-oracle-candidate-hash-mismatch'],
+    ['foreign run handoff', 'input.runId="foreign";', 'replay-oracle-invalid-child-handoff'],
+    ['authored config mismatch', `config.workspaceId="foreign";
+      const altered=JSON.stringify(config);fs.writeFileSync(candidatePath,altered);
+      const send=process.send.bind(process);process.send=row=>send({...row,
+        sha256:require('node:crypto').createHash('sha256').update(altered).digest('hex')});`, 'replay-oracle-candidate-input-mismatch'],
+    ['early child exit', 'process.exit(7);', 'replay-oracle-child-exited'],
+    ['failed terminal', "process.removeAllListeners('message');process.on('message',()=>process.exit(8));", 'replay-oracle-child-terminal'],
+  ])('does not publish on %s', async (_name, suffix, error) => {
+    const f = producer(suffix);
+    await expect(freezeQualifiedReplayConfig(f.inputPath, f.outputPath, f.options, f.deps)).rejects.toThrow(error);
+    expect(existsSync(f.outputPath)).toBe(false);
+    const boot = receipts(f.options.witnessDirectory).find(row => row.kind === 'bootstrap');
+    expect(boot).toBeDefined();
+    expect(readProcessIdentity(boot.pid)).toBeNull();
+  });
+  it('refuses a missing compiler load without expanding the predeclared witness', async () => {
+    const f = producer();
+    const unused = join(f.root, 'unused.cjs'); writeFileSync(unused, 'module.exports=1;');
+    await expect(freezeQualifiedReplayConfig(f.inputPath, f.outputPath, { ...f.options, compilerEntries: [unused] }, f.deps))
+      .rejects.toThrow(`unloaded-oracle-code:${unused}`);
+    expect(existsSync(f.outputPath)).toBe(false);
+  });
+  it('reaps a child that never offers a candidate and retains exclusive attempt/output identities', async () => {
+    const f = producer('process.send=()=>{};');
+    await expect(freezeQualifiedReplayConfig(f.inputPath, f.outputPath, { ...f.options, timeoutMs: 1000 }, f.deps))
+      .rejects.toThrow('replay-oracle-producer-timeout');
+    expect(existsSync(f.outputPath)).toBe(false);
+    const boot = receipts(f.options.witnessDirectory).find(row => row.kind === 'bootstrap');
+    expect(readProcessIdentity(boot.pid)).toBeNull();
+    await expect(freezeQualifiedReplayConfig(f.inputPath, f.outputPath, f.options, f.deps)).rejects.toThrow('EEXIST');
+    await expect(freezeQualifiedReplayConfig(f.inputPath, f.source, { ...f.options, witnessDirectory: join(f.root, 'new') }, f.deps))
+      .rejects.toThrow('replay-oracle-output-inside-source');
+  });
+});
 describe('actual replay load-byte witness', () => {
+  it('qualifies predeclared executable compiler/freezer bytes and rejects metadata-only, replaced and unbound oracle proof', async () => {
+    const f = fixture('cjs', 'require("./compiler.cjs");console.log(JSON.stringify({pids:[]}));setInterval(()=>{},1000);');
+    const compiler = join(f.root, 'compiler.cjs'); writeFileSync(compiler, 'module.exports = {version:"fixture-compiler"};');
+    const metadata = join(f.root, 'package.json'); writeFileSync(metadata, '{"version":"fixture-compiler"}');
+    const library = join(f.root, 'fixture-native'); writeFileSync(library, 'fixture native');
+    const source = join(f.root, 'source.ts'); writeFileSync(source, 'export function hot() {}\n');
+    // Every expected byte is authored before the real child starts. Only the
+    // native mapping is a fixture; kernel PID/epoch/argv and JS loads are real.
+    const witness: ReplayRuntimeWitness = { directory: f.root, runId: 'witness-test',
+      bootstraps: { [f.entry]: f.launch.evalSha256 }, files: Object.fromEntries(
+        [f.entry, compiler, metadata, library, process.execPath].map(file => [file, replayHash(readFileSync(file))])) };
+    const files = { [source]: replayHash(readFileSync(source)) };
+    const sites = [{ path: 'source.ts', line1: 1 }];
+    const corpus = { cursor: { file: source, line1: 1, character: 17 },
+      oracle: { sites, sourceFingerprint: replaySourceFingerprint(files), oracleFingerprint: replayOracleFingerprint({ sites }) } };
+    const config: DaemonReplayConfig = { schemaVersion: 'lsp-daemon-replay-config-v1', runId: witness.runId,
+      rootPath: f.root, socketPath: join(f.root, 'socket'), workspaceId: 'fixture', levels: [1], requestTimeoutMs: 1000,
+      oracleProvenance: { method: 'source-authored fixture', evidenceRef: 'authored-before-launch', compilerVersion: 'fixture-compiler' },
+      files, corpus: { definition: corpus, 'hot-references': corpus } };
+    await withLiveRuntime(f, ([pid]) => {
+      const reader = { identity: readProcessIdentity, link: readlinkSync,
+        bytes: (path: string) => path.includes('/map_files/') ? readFileSync(library) : readFileSync(path),
+        text: (path: string) => path.endsWith('/maps') ? `1-2 r-xp 0 00:01 9 ${library}\n` : readFileSync(path, 'utf8') };
+      const declaration = { witness, compilerEntries: [compiler], freezerEntry: f.entry };
+      const qualified = qualifyReplayOracleRuntime(config, declaration, pid, reader);
+      expect(qualified.oracleProvenance.runtime!.process.identity).toBe(readProcessIdentity(pid));
+      expect(qualified.oracleProvenance.runtime!.process.loadedModules).not.toBe('unmeasured');
+      expect(() => assertReplayOracleRuntimeQualified(qualified)).not.toThrow();
+      expect(() => qualifyReplayOracleRuntime(config, { ...declaration, compilerEntries: [metadata] }, pid, reader))
+        .toThrow(`unloaded-oracle-code:${metadata}`);
+      expect(() => qualifyReplayOracleRuntime(config, { ...declaration, compilerEntries: [] }, pid, reader))
+        .toThrow('invalid-replay-oracle-runtime-declaration');
+      expect(() => assertReplayOracleRuntimeQualified({ ...qualified, requestTimeoutMs: 1001 }))
+        .toThrow('replay-oracle-runtime-proof-mismatch');
+      expect(() => assertReplayOracleRuntimeQualified({ ...qualified, oracleProvenance: {
+        ...qualified.oracleProvenance, compilerVersion: 'other-compiler' } })).toThrow('replay-oracle-runtime-proof-mismatch');
+      const replaced = { ...reader, identity: () => 'replaced-kernel-process' };
+      expect(() => qualifyReplayOracleRuntime(config, declaration, pid, replaced)).toThrow('unwitnessed-runtime-bootstrap');
+      writeFileSync(compiler, 'module.exports = {version:"replaced"};');
+      expect(() => assertReplayOracleRuntimeQualified(qualified)).toThrow(`replay-oracle-runtime-drift:changed-file:${compiler}`);
+      // A later disk hash cannot repair the already-loaded compiler identity.
+      const retrospective = { ...declaration, witness: { ...witness,
+        files: { ...witness.files, [compiler]: replayHash(readFileSync(compiler)) } } };
+      expect(() => qualifyReplayOracleRuntime(config, retrospective, pid, reader)).toThrow(`unfrozen-loaded-bytes:${compiler}`);
+    });
+  });
   it('records the executed ESM bytes, config reads and argv-anchored bootstrap in a real Node process', () => {
     const f = fixture('mjs', 'import {readFileSync} from "node:fs"; console.log(readFileSync(new URL("./config.json",import.meta.url),"utf8"));');
     const config = join(f.root, 'config.json'); writeFileSync(config, '{"value":7}');
@@ -201,14 +409,91 @@ describe('actual replay load-byte witness', () => {
   it('retains an explicit unknown when a consumer bypasses complete file reads', () => {
     const f = fixture('cjs', 'const fs=require("node:fs"); const fd=fs.openSync(__filename,"r"); fs.readSync(fd,Buffer.alloc(4),0,4,0); fs.closeSync(fd);');
     execFileSync(process.execPath, f.launch.args, { env: { ...process.env, NODE_OPTIONS: '' }, stdio: 'pipe' });
-    expect(receipts(f.root)).toContainEqual(expect.objectContaining({ kind: 'unknown', reason: 'unsupported-file-reader:readSync' }));
+    expect(receipts(f.root)).toContainEqual(expect.objectContaining({ kind: 'unknown', reason: 'incomplete-file-reader:readSync' }));
   });
   it('restores the reader guard after a default ESM load and a failed complete read', () => {
     const f = fixture('mjs', 'import fs from "node:fs"; try { fs.readFileSync("/missing-witness-fixture"); } catch {} const fd=fs.openSync(new URL(import.meta.url),"r"); fs.readSync(fd,Buffer.alloc(4),0,4,0); fs.closeSync(fd);');
     execFileSync(process.execPath, f.launch.args, { env: { ...process.env, NODE_OPTIONS: '' }, stdio: 'pipe' });
     expect(receipts(f.root).filter(row => row.kind === 'unknown')).toEqual([
-      expect.objectContaining({ reason: 'unsupported-file-reader:readSync' }),
+      expect.objectContaining({ reason: 'incomplete-file-reader:readSync' }),
     ]);
+  });
+  it.each(['implicit', 'explicit', 'options', 'esm'] as const)('qualifies complete streamed bytes without changing consumer buffers (%s)', async route => {
+    const f = fixture(route === 'esm' ? 'mjs' : 'cjs');
+    const input = join(f.root, 'input.bin');
+    const bytes = Buffer.from(Array.from({ length: 130_019 }, (_, i) => i % 251));
+    writeFileSync(input, bytes);
+    const read = route === 'explicit' ? 'fs.readSync(fd,view,1,4093,total)' : route === 'options' ?
+      'fs.readSync(fd,view,{offset:1,length:4093,position:null})' : 'fs.readSync(fd,view,1,4093,null)';
+    writeFileSync(f.entry, `${route === 'esm' ? 'import * as fs from "node:fs";' : 'const fs=require("node:fs");'}
+      const fd=fs.openSync(${JSON.stringify(input)},'r');const view=new Uint8Array(4095);let total=0;let n;
+      while((n=${read})>0){for(let i=0;i<n;i++)if(view[i+1]!==((total+i)%251))throw Error('consumer bytes changed');total+=n;}
+      if(total!==130019)throw Error('consumer length changed');fs.closeSync(fd);
+      console.log(JSON.stringify({pids:[]}));setInterval(()=>{},1000);`);
+    await withLiveRuntime(f, pids => {
+      const rows = receipts(f.root);
+      expect(rows.filter(row => row.kind === 'unknown')).toEqual([]);
+      const completed = rows.find(row => row.kind === 'file-read' && row.reader === 'readSync');
+      expect(completed).toMatchObject({ path: input, sha256: replayHash(bytes), byteLength: bytes.length });
+      const { witness, reader } = liveWitness(f, [f.entry, input]);
+      const command = reader.text(`/proc/${pids[0]}/cmdline`).split('\0').filter(Boolean);
+      const qualify = () => replayLoadedRuntime(pids[0], reader.identity(pids[0]), command, witness, reader).unknown;
+      expect(qualify()).toEqual([]);
+      const receiptPath = join(f.root, `${pids[0]}.jsonl`);
+      // Removing the close proof, duplicating it or moving it before the open
+      // must not convert a partial live read into a qualified frozen input.
+      for (const altered of [rows.filter(row => row !== completed), [...rows, completed],
+        [rows[0], completed, ...rows.slice(1).filter(row => row !== completed)]]) {
+        writeFileSync(receiptPath, altered.map(row => JSON.stringify(row)).join('\n') + '\n');
+        expect(qualify()).toContain(`unclosed-or-unqualified-file-reader:readSync:${input}`);
+      }
+    });
+  });
+  it.each([
+    ['partial', 'fs.readSync(fd,b,0,4,null);fs.closeSync(fd);', 'incomplete-file-reader'],
+    ['no EOF', 'fs.readSync(fd,b,0,8,null);fs.closeSync(fd);', 'incomplete-file-reader'],
+    ['skipped prefix', 'fs.readSync(fd,b,0,4,4);fs.closeSync(fd);', 'nonsequential-file-reader'],
+    ['repeated prefix', 'fs.readSync(fd,b,0,4,0);fs.readSync(fd,b,0,4,0);fs.closeSync(fd);', 'nonsequential-file-reader'],
+    ['explicit then implicit', 'fs.readSync(fd,b,0,4,0);fs.readSync(fd,b,0,4,null);fs.closeSync(fd);', 'nonsequential-file-reader'],
+    ['zero length', 'fs.readSync(fd,b,0,0,null);fs.closeSync(fd);', 'unsupported-file-reader'],
+    ['changed inode', 'while(fs.readSync(fd,b,0,8,null)>0){}fs.unlinkSync(input);fs.writeFileSync(input,"abcdefgh");fs.closeSync(fd);', 'changed-file-reader'],
+    ['changed contents', 'while(fs.readSync(fd,b,0,8,null)>0){}fs.writeFileSync(input,"12345678");fs.closeSync(fd);', 'changed-file-reader'],
+    ['failed read', 'try{fs.readSync(fd,b,99,8,null);}catch{}fs.closeSync(fd);', 'unsupported-file-reader'],
+  ])('refuses incomplete or unstable descriptor bytes (%s)', (_name, action, reason) => {
+    const f = fixture('cjs');
+    const input = join(f.root, 'input.bin'); writeFileSync(input, 'abcdefgh');
+    writeFileSync(f.entry, `const fs=require('node:fs');const input=${JSON.stringify(input)};
+      const fd=fs.openSync(input,'r');const b=Buffer.alloc(8);${action}`);
+    execFileSync(process.execPath, f.launch.args, { env: { ...process.env, NODE_OPTIONS: '' }, stdio: 'pipe' });
+    const rows = receipts(f.root);
+    expect(rows).toContainEqual(expect.objectContaining({ kind: 'unknown', reason: `${reason}:readSync` }));
+    expect(rows.filter(row => row.kind === 'file-read' && row.reader === 'readSync')).toEqual([]);
+  });
+  it('keeps a fully consumed but unclosed live descriptor unqualified', async () => {
+    const f = fixture('cjs', `const fs=require('node:fs');const fd=fs.openSync(__filename,'r');const b=Buffer.alloc(1024);
+      while(fs.readSync(fd,b,0,b.length,null)>0){}console.log(JSON.stringify({pids:[]}));setInterval(()=>{},1000);`);
+    await withLiveRuntime(f, pids => {
+      const { witness, reader } = liveWitness(f, [f.entry]);
+      const command = reader.text(`/proc/${pids[0]}/cmdline`).split('\0').filter(Boolean);
+      expect(replayLoadedRuntime(pids[0], reader.identity(pids[0]), command, witness, reader).unknown)
+        .toContain(`unclosed-or-unqualified-file-reader:readSync:${f.entry}`);
+    });
+  });
+  it('handles empty files and reused descriptors without mixing their consumed-byte hashes', () => {
+    const f = fixture('cjs');
+    const empty = join(f.root, 'empty'); const populated = join(f.root, 'populated');
+    writeFileSync(empty, ''); writeFileSync(populated, 'abcdefgh');
+    writeFileSync(f.entry, `const fs=require('node:fs');for(const input of ${JSON.stringify([empty, populated])}){
+      const fd=fs.openSync(input,'r');const b=Buffer.alloc(3);while(fs.readSync(fd,b)>0){}fs.closeSync(fd);}`);
+    execFileSync(process.execPath, f.launch.args, { env: { ...process.env, NODE_OPTIONS: '' }, stdio: 'pipe' });
+    const rows = receipts(f.root);
+    expect(rows.filter(row => row.kind === 'unknown')).toEqual([]);
+    const reads = rows.filter(row => row.kind === 'file-read' && row.reader === 'readSync');
+    expect(reads).toEqual([
+      expect.objectContaining({ path: empty, sha256: replayHash(''), byteLength: 0 }),
+      expect.objectContaining({ path: populated, sha256: replayHash('abcdefgh'), byteLength: 8 }),
+    ]);
+    expect(new Set(reads.map(row => row.readId)).size).toBe(2);
   });
   it('propagates through real forks and shebang grandchildren, preserving IPC, argv and memory flags', async () => {
     const f = fixture();
