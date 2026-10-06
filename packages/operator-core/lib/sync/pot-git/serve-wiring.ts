@@ -87,6 +87,7 @@ import { runGovernedOperation } from '../../resource-governor/execution';
 import { authorizeScopeRepoServe, type ScopeRepoServeGrant } from './scope-serve-gate';
 import { getScopeRoster } from '../../p2p/scope-roster';
 import { resolveGithubUserIdForDevicePubkey } from '../hyperbee/hive-member-identity-set';
+import { loadRevokedHivePubkeysForLocalPot } from '../../federated-pot-scope';
 import {
   findSupersededRepoKey,
   supersededRepoKeyRefusal,
@@ -1154,6 +1155,16 @@ function handleReq(state: ChannelState, v: ReqFrame): void {
       read = { mode: 'legacy', source: 'error' };
     }
     if (read.mode === 'legacy') return refuse(POT_GIT_MODE_REFUSAL[read.source]);
+    // WI-10006827: a REVOKED device is refused for EVERY repo, the pot's main repo included.
+    // Only `scopes/` repos used to check the caller's device (below), so a revoked joiner kept
+    // pulling the main repo over the unchanged topic: measured on soak c1010r, the tower
+    // logged `serve OK ... peer=ywj8zjsF` four minutes after that device was revoked.
+    const revokedRefusal = await resolveRevokedPeerRefusal({
+      workspaceId: cfg.workspaceId,
+      potHomeSlug: cfg.potHomeSlug,
+      peerDevicePubkey: cfg.resolvePeerDevicePubkey?.(state.socket),
+    });
+    if (revokedRefusal) return refuse(revokedRefusal);
     // WI-3641: a `scope:`-prefixed wire repoKey (scopeRepoWireKey) addresses a
     // `scopes/` family repo — hiveGitRepoPath's single-path-component join can
     // never itself PRODUCE a `scopes/<owner>/<slug>.git` path (that's 2
@@ -1653,6 +1664,38 @@ export async function openHiveGitFetchDuplex(
     duplex.destroy(e instanceof Error ? e : new Error(String(e)));
   }
   return duplex;
+}
+
+/**
+ * WI-10006827: the serve-time revocation gate. A peer whose SIGNATURE-VERIFIED device pubkey is
+ * in the hive's revoked set (`pot_members.revoked_pubkeys`, the set substrate:revoke_contributor
+ * writes) is refused for every repo. Uncached, like the scope gate's member lookup: an
+ * authorization decision must see a revoke at once, and the read is one row set per inbound fetch.
+ *
+ * - No verified pubkey on the socket: no verdict (`null`). This is a deny-list, not an
+ *   attested-only allow-list, because a cold joiner's first fetch can precede its attestation
+ *   reaching this node; refusing unknown devices could break join. The gap this leaves: a
+ *   MODIFIED client that never sends the signed hello keeps an unverified socket and is still
+ *   served the main repo. A stock client always sends it, which is what this gate stops. Closing
+ *   the gap needs the attested-only gate, which waits on measuring the join ordering.
+ * - Lookup error: refuse (`revocation-lookup-error`), fail closed like the scope gate. The dialer
+ *   retries; serving a possibly revoked device is the worse error.
+ */
+export async function resolveRevokedPeerRefusal(input: {
+  workspaceId: string;
+  potHomeSlug: string;
+  peerDevicePubkey: string | undefined;
+  loadRevoked?: (workspaceId: string, localPotHomeSlug: string) => Promise<Set<string>>;
+}): Promise<'revoked-device' | 'revocation-lookup-error' | null> {
+  if (!input.peerDevicePubkey) return null;
+  const load = input.loadRevoked ?? ((ws: string, slug: string) => loadRevokedHivePubkeysForLocalPot(ws, slug));
+  let revoked: Set<string>;
+  try {
+    revoked = await load(input.workspaceId, input.potHomeSlug);
+  } catch {
+    return 'revocation-lookup-error';
+  }
+  return revoked.has(input.peerDevicePubkey) ? 'revoked-device' : null;
 }
 
 /**

@@ -31,6 +31,7 @@ vi.mock('../../harness-registry', async (importOriginal) => ({
 
 import {
   _testing,
+  resolveRevokedPeerRefusal,
   resolveServeAdmission,
   DEFAULT_SERVE_PROGRESS_WINDOW_MS,
   type InFlightServe,
@@ -658,5 +659,43 @@ describe('resolveServeAdmission (EI-18802033487678337)', () => {
       }
       expect(discarded).toBe(0);
     });
+  });
+});
+
+/**
+ * WI-10006827: a revoked device must not pull ANY repo. Soak c1010r measured the hole: the
+ * tower served the pot's main repo to device ywj8zjsF four minutes after it was revoked,
+ * because only scopes/ repos consulted the caller's device. The end-to-end wiring (a real
+ * pot_members.revoked_pubkeys row refusing a real fetch) is in serve-wiring.integration.test.ts.
+ */
+describe('resolveRevokedPeerRefusal (WI-10006827)', () => {
+  const base = { workspaceId: 'ws-1', potHomeSlug: 'pot-a' };
+
+  it('refuses a verified peer whose device is in the revoked set', async () => {
+    const loadRevoked = vi.fn(async () => new Set(['REVOKED=', 'OTHER=']));
+    await expect(resolveRevokedPeerRefusal({ ...base, peerDevicePubkey: 'REVOKED=', loadRevoked })).resolves.toBe(
+      'revoked-device',
+    );
+    expect(loadRevoked).toHaveBeenCalledWith('ws-1', 'pot-a');
+  });
+
+  it('gives no verdict for a verified peer that is not revoked (control: the gate is not refuse-all)', async () => {
+    const loadRevoked = vi.fn(async () => new Set(['REVOKED=']));
+    await expect(resolveRevokedPeerRefusal({ ...base, peerDevicePubkey: 'MEMBER=', loadRevoked })).resolves.toBeNull();
+  });
+
+  it('gives no verdict, and reads nothing, when the socket carries no verified device', async () => {
+    const loadRevoked = vi.fn(async () => new Set(['REVOKED=']));
+    await expect(resolveRevokedPeerRefusal({ ...base, peerDevicePubkey: undefined, loadRevoked })).resolves.toBeNull();
+    expect(loadRevoked).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the revoked set cannot be read', async () => {
+    const loadRevoked = vi.fn(async () => {
+      throw new Error('pg down');
+    });
+    await expect(resolveRevokedPeerRefusal({ ...base, peerDevicePubkey: 'MEMBER=', loadRevoked })).resolves.toBe(
+      'revocation-lookup-error',
+    );
   });
 });
