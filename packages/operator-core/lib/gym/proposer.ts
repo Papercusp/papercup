@@ -12,6 +12,10 @@ import { tryParseJson } from './parse-json';
 import { planVariantOverlay, type VariantOverlay } from './variant-overlay';
 import type { GymLlmCall } from './task-generator';
 import type { JudgeLlmCall } from './judge';
+import { createHash } from 'node:crypto';
+import type { RunAgentChatOptions } from '../agent-chat-stream';
+import type { GatewayCarryTrialAttempt, GatewayCarryTrialBinding } from '../inference-gateway/gateway';
+import type { GatewayServiceOptions, RunningGatewayService } from '../inference-gateway/launch';
 
 export interface WorstTrace {
   taskId: string;
@@ -98,7 +102,100 @@ type NativeGymLlmRequest = Parameters<JudgeLlmCall>[0] & {
   priority?: string;
   harnessSlug?: string;
   requireOutputTokenLimit?: boolean;
-};
+} & Pick<RunAgentChatOptions, 'statelessGateway' | 'authorizeStatelessRequest'>;
+
+type NativeGymTransport = Pick<RunAgentChatOptions, 'statelessGateway' | 'authorizeStatelessRequest'>;
+
+/** Host-issued authority for this cycle. The host owns authenticated provider
+ * identity, native bounds, reservation and settlement; a caller bearer digest
+ * alone does not establish any of those. Never derive authority from env. */
+export interface NativeGymGatewayConfig {
+  token: string;
+  carryTrial: GatewayCarryTrialBinding;
+}
+
+/** Capture before cycle setup. Both protocols are required because the frozen
+ * judge is Anthropic and the configured proposer may use Codex. */
+export function snapshotNativeGymGatewayConfig(value: NativeGymGatewayConfig): NativeGymGatewayConfig {
+  const invalid = () => Object.assign(new Error('Native Gym requires its configured gateway authority'), { costUsd: 0 });
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw invalid();
+  const token = value.token, binding = value.carryTrial;
+  if (typeof token !== 'string' || token.trim() !== token || token.length < 32 ||
+    !binding || typeof binding !== 'object' || Array.isArray(binding)) throw invalid();
+  const { manifestSha256, armId, requestTokenSha256, authorizeAttempt } = binding;
+  const protocols = binding.protocols;
+  if (!/^[a-f0-9]{64}$/.test(manifestSha256) || typeof armId !== 'string' || !armId.trim() ||
+    requestTokenSha256 !== createHash('sha256').update(token).digest('hex') ||
+    typeof authorizeAttempt !== 'function' || !Array.isArray(protocols) || protocols.length !== 2 ||
+    !protocols.includes('anthropic-messages') || !protocols.includes('openai-responses')) throw invalid();
+  const carryTrial: GatewayCarryTrialBinding = Object.freeze({ manifestSha256, armId, requestTokenSha256,
+    protocols: Object.freeze([...protocols]),
+    async authorizeAttempt(attempt: GatewayCarryTrialAttempt) {
+      if (attempt.manifestSha256 !== manifestSha256 || attempt.armId !== armId || attempt.signal.aborted) return null;
+      const receipt = await authorizeAttempt(attempt);
+      // Native authority must be rechecked at the actual selected-provider send,
+      // not merely at the earlier asynchronous issuer boundary.
+      return receipt && typeof receipt.validateAuthorization === 'function'
+        ? Object.freeze({ ...receipt }) : null;
+    },
+  });
+  return Object.freeze({ token, carryTrial });
+}
+
+/** Reuse the maintained service/account pool for the cycle's scoped caller
+ * token. The local guard binds the exact private route; the carryTrial hook
+ * authenticates and admits the FINAL selected-provider request separately. */
+export async function startNativeGymGateway(
+  config: NativeGymGatewayConfig,
+  workspaceId: string,
+  log: (message: string) => void,
+  start: (options: GatewayServiceOptions) => Promise<RunningGatewayService> = async options =>
+    (await import('../inference-gateway/launch')).startGatewayService(options),
+): Promise<{ transport: NativeGymTransport; stop: () => Promise<void> }> {
+  const frozen = snapshotNativeGymGatewayConfig(config);
+  let live = true;
+  const service = await start({ port: 0, workspace: workspaceId,
+    carryTrial: { ...frozen.carryTrial, async authorizeAttempt(attempt) {
+      if (!live) return null;
+      const receipt = await frozen.carryTrial.authorizeAttempt(attempt);
+      if (!live || !receipt) return null;
+      return { ...receipt, validateAuthorization() {
+        if (!live) throw new Error('Native Gym gateway authority revoked');
+        const validation: unknown = receipt.validateAuthorization!();
+        if (validation !== undefined) {
+          void Promise.resolve(validation).catch(() => {});
+          throw new Error('Native Gym gateway authority requires a synchronous check');
+        }
+        if (!live) throw new Error('Native Gym gateway authority revoked');
+      } };
+    } }, log: (level, message) => log(`native gateway ${level}: ${message}`) });
+  if (!Number.isSafeInteger(service.port) || service.port <= 0 || service.port > 65535) {
+    live = false;
+    await service.stop();
+    throw Object.assign(new Error('Native Gym gateway did not bind a private port'), { costUsd: 0 });
+  }
+  const baseURL = `http://127.0.0.1:${service.port}`;
+  const credentialSha256 = createHash('sha256').update(JSON.stringify({
+    authorization: `Bearer ${frozen.token}`, apiKey: null,
+  })).digest('hex');
+  let stopping: Promise<void> | undefined;
+  return {
+    transport: { statelessGateway: { baseURL, token: frozen.token },
+      async authorizeStatelessRequest(attempt) {
+        const request = { ...attempt };
+        const valid = () => live && !request.signal.aborted && request.method === 'POST' &&
+          (request.url === `${baseURL}/v1/messages` || request.url === `${baseURL}/v1/responses`) &&
+          request.credentialSha256 === credentialSha256 &&
+          request.bodySha256 === createHash('sha256').update(request.body).digest('hex');
+        if (!valid()) return null;
+        return () => { if (!valid()) throw new Error('Native Gym gateway request refused'); };
+      } },
+    stop() {
+      live = false;
+      return stopping ??= Promise.resolve().then(() => service.stop());
+    },
+  };
+}
 
 /** Shared native admission guard, used before cycle setup and before transport. */
 export function requireNativeGymOutputLimit(value: unknown, consumer: 'judge' | 'proposer'): number {
@@ -114,10 +211,13 @@ export function requireNativeGymOutputLimit(value: unknown, consumer: 'judge' | 
 export function bindNativeGymLlmCalls(
   call: (opts: NativeGymLlmRequest) => ReturnType<JudgeLlmCall>,
   harnessSlug: string,
-  deps: { log: (message: string) => void; sleep?: (ms: number) => Promise<void> },
+  deps: { log: (message: string) => void; sleep?: (ms: number) => Promise<void>; transport?: NativeGymTransport },
 ): { judge: JudgeLlmCall; proposer: GymLlmCall } {
+  const transport = deps.transport ? { ...deps.transport,
+    ...(deps.transport.statelessGateway ? { statelessGateway: Object.freeze({ ...deps.transport.statelessGateway }) } : {}),
+  } : {};
   const dispatch = withGymLlmNetworkRetry((opts: NativeGymLlmRequest) =>
-    call({ ...opts, priority: 'gym', harnessSlug }), deps);
+    call({ ...opts, ...transport, priority: 'gym', harnessSlug }), deps);
   const snapshot = (opts: NativeGymLlmRequest): NativeGymLlmRequest => ({
     ...opts, messages: opts.messages.map(message => ({ ...message })),
   });

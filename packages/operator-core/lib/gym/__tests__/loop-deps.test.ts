@@ -98,7 +98,7 @@ function makeDeps(over: Partial<Parameters<typeof buildLoopDeps>[0]> = {}, signa
       outputTokens: 0,
     };
   };
-  const deps = buildLoopDeps({
+  const config: Parameters<typeof buildLoopDeps>[0] = {
     gymSql: fakeSql(sqlSink, sqlValues),
     ports: {} as never,
     judgeCall: fakeJudge,
@@ -117,8 +117,9 @@ function makeDeps(over: Partial<Parameters<typeof buildLoopDeps>[0]> = {}, signa
       proposals.push(rec);
     },
     ...over,
-  });
-  return { deps, sqlSink, sqlValues, proposals, proposerCalls };
+  };
+  const deps = buildLoopDeps(config);
+  return { deps, sqlSink, sqlValues, proposals, proposerCalls, config };
 }
 
 describe('buildLoopDeps.evaluate — pool → VariantEval aggregation', () => {
@@ -390,8 +391,7 @@ describe('buildLoopDeps — propose / persistCycle / recordProposal seams', () =
       requests.push(request); return { text: '', json: { promptOverrides: { worker: 'x' }, rationale: 'r' },
         costUsd: 0, inputTokens: 0, outputTokens: 0 };
     }, 'native-harness', { log: () => {} });
-    const config = { proposerCall: native.proposer, proposerMaxTokens: 257 };
-    const { deps } = makeDeps(config);
+    const { deps, config } = makeDeps({ proposerCall: native.proposer, proposerMaxTokens: 257 });
     config.proposerMaxTokens = 1;
     await deps.propose({ promptOverrides: {} }, [], '');
     expect(requests[0]).toMatchObject({ model: 'claude-sonnet-4-6', maxTokens: 257,
