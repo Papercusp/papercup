@@ -235,6 +235,11 @@ export function startClaudeSuEngine(
   // Whether the active owner turn has produced any assistant frame. A turn that
   // ends having produced none is reported, never left to read as an answer.
   let activeTurnSawAssistant = false;
+  // Set when the owner interrupts the active turn. Claude then ends that turn
+  // with an `error_during_execution` result whose `errors` carry CLI
+  // diagnostics ("[ede_diagnostic] …"); that is the interrupt landing, not a
+  // failed turn, so it must not be reported as one (P-032).
+  let activeTurnInterrupted = false;
   let finishActiveTurn: (() => void) | undefined;
   const pending = new Map<string, ReturnType<typeof deferred<ClaudeNativeCommandVerdict>>>();
   // P-026: the spec the session runs on, so a turn naming it again is no switch.
@@ -329,6 +334,7 @@ export function startClaudeSuEngine(
           activeOwnerTurnId = turnId;
           activeInputUuid = uuid;
           activeTurnSawAssistant = false;
+          activeTurnInterrupted = false;
           armStallWatch();
           try {
             timer = setTimeout(() => receipt.resolve(unavailable('Claude did not acknowledge this saved turn; reconcile delivery before retrying')), deliveryTimeoutMs);
@@ -346,7 +352,12 @@ export function startClaudeSuEngine(
           return await receipt.promise;
         } finally { clearTimeout(timer); pending.delete(uuid); }
       },
-      async interrupt() { cards.cancel(); await sdk.interrupt(); return { ok: true }; },
+      async interrupt() {
+        cards.cancel();
+        if (activeInputUuid) activeTurnInterrupted = true;
+        await sdk.interrupt();
+        return { ok: true };
+      },
       async resume() { return ready && !closed ? { ok: true } : unavailable('Reconnect the structured Claude runtime before resuming'); },
       async focus() { return { ok: true }; },
       async end() { await close(); return { ok: true }; },
@@ -599,7 +610,9 @@ export function startClaudeSuEngine(
             // frame and nothing else to observe. Report it as an error; a turn
             // that produced nothing at all is reported rather than inferred.
             if (activeInputUuid) {
-              if (event.is_error || event.subtype !== 'success') {
+              if (activeTurnInterrupted && event.subtype === 'error_during_execution') {
+                // The owner's interrupt landed; the turn stopped as asked.
+              } else if (event.is_error || event.subtype !== 'success') {
                 const detail = event.subtype === 'success' ? event.result : event.errors.join('; ');
                 adapter.host.emit({
                   type: 'error', scope: 'transport', code: 'claude_turn_failed', recoverable: true,
