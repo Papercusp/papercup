@@ -3131,12 +3131,13 @@ describe('REPORT-REFERENCE-ADMISSION-P002: actual coord:send handler', () => {
     // WI-10006545: the reference-form stamp carries the truth its validated snapshot proves,
     // and the cited ref states the next inline report's corrections check reads as baseline.
     expect(snapshot.moved.length).toBeGreaterThan(0);
-    expect(opts.extra?.goalOwnerReport?.truth).toEqual({
+    const deliveredStamp = opts.extra?.goalOwnerReport as ReturnType<typeof stampGoalReportReference> | undefined;
+    expect(deliveredStamp?.truth).toEqual({
       cost: 'cited-measured',
       ownerWalls: snapshot.ownerWalls.length > 0 ? 'all-listed-with-action' : 'none-open',
       corrections: 'unread',
     });
-    expect(opts.extra?.goalOwnerReport?.citedRefStates).toEqual(snapshot.moved.map((m) => ({ ref: m.ref, state: m.state })));
+    expect(deliveredStamp?.citedRefStates).toEqual(snapshot.moved.map((m) => ({ ref: m.ref, state: m.state })));
     // The persisted envelope uses the same stamp function, so delivered and persisted stamps agree.
     expect(opts.extra?.goalOwnerReport).toEqual(
       stampGoalReportReference(snapshot.goalId, snapshot, deriveGoalReportNotification(snapshot)),
