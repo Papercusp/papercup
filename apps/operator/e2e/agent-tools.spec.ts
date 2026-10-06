@@ -152,9 +152,11 @@ test.describe('agent-tools catch-all routing', () => {
     // the handler; anything else (no body, a 401/5xx shape) still fails.
     // WI-10006791: the isolated rig registers no harness, so pinning
     // `features` failed every isolated run.
-    if ('error' in parsed) expect(parsed.error).toBe('unknown project');
-    else expect(parsed).toHaveProperty('features');
-    expect(Array.isArray(parsed.features)).toBe(true);
+    if ('error' in parsed) {
+      expect(parsed.error).toBe('unknown project');
+    } else {
+      expect(Array.isArray(parsed.features)).toBe(true);
+    }
   });
 
   test('docs:get accepts slug arg', async ({ request }) => {
