@@ -4,6 +4,8 @@ import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import SecretStream from '@hyperswarm/secret-stream';
+import { ByocSealedChannel } from './byoc-sealed-channel';
 import {
   HOSTED_HOST_MAX_FILE_BYTES,
   HOSTED_HOST_MAX_UPLOAD_CHUNK_BYTES,
@@ -1224,5 +1226,105 @@ describe('hosted lane teardown window vs the governor hold (P-014)', () => {
     // governor would start freezing desktops this adapter had not yet released.
     // Nothing else in the tree connects these two numbers.
     expect(HOSTED_HOST_SESSION_IDLE_MS / 1000).toBeLessThanOrEqual(VIEWER_STREAM_TEARDOWN_CEILING_SEC);
+  });
+});
+
+// android-public-release-2026-10-01 D-013 #6: a phone's device-http channel is Noise-sealed
+// end to end; the handshake key names the device, and only that device's JWT is forwarded.
+describe('sealed device-http channel (D-013 #6)', () => {
+  const jwtFor = (sub: string) =>
+    `eyJhbGciOiJIUzI1NiJ9.${Buffer.from(JSON.stringify({ sub })).toString('base64url')}.c2ln`;
+  const hostKey = SecretStream.keyPair(Buffer.alloc(32, 31));
+  const phoneKey = SecretStream.keyPair(Buffer.alloc(32, 41));
+
+  async function settle(predicate: () => boolean): Promise<void> {
+    for (let i = 0; i < 200 && !predicate(); i++) await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+
+  function sealedDeviceHarness(resolveDeviceNoiseKey?: (key: string) => Promise<string | null>) {
+    const sent: HostedHostOutboundEnvelope[] = [];
+    const forwarded: Array<Record<string, string>> = [];
+    const clientErrors: Error[] = [];
+    const audit = vi.fn();
+    let phone!: ByocSealedChannel;
+    const adapter = new HostedWorkspaceHostSessionAdapter({
+      binding,
+      workspaceRoot: '/nonexistent',
+      onAudit: audit,
+      send: (message) => {
+        sent.push(message);
+        if (message.type === 'relay' && message.channelId === 'dev-ch') {
+          // One relay message per event, as a websocket relay delivers them. A same-tick burst
+          // trips ByocSealedChannel's single-slot content-type check (filed separately).
+          setImmediate(() => phone.receive(message.payload as never));
+        }
+      },
+      createPty: () => new FakePty(),
+      operatorHttp: {
+        origin: 'http://127.0.0.1:1',
+        fetch: async (_url, init) => {
+          forwarded.push({ ...(init.headers as Record<string, string>) });
+          return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
+        },
+      },
+      byocSealedChannel: {
+        localKeyPair: hostKey,
+        ...(resolveDeviceNoiseKey ? { resolveDeviceNoiseKey } : {}),
+      },
+    });
+    phone = new ByocSealedChannel({
+      initiator: true,
+      localKeyPair: phoneKey,
+      expectedRemotePublicKey: hostKey.publicKey,
+      sendPacket: (packet) => { void adapter.accept({ type: 'relay', channelId: 'dev-ch', payload: packet }); },
+      onFrame: () => {},
+      onError: (error) => clientErrors.push(error),
+    });
+    const open = () => adapter.accept({ type: 'relay.open', channelId: 'dev-ch', kind: 'device-http', audience: 'device', sealed: true });
+    const request = async (requestId: string, token: string) => {
+      const before = forwarded.length;
+      await phone.send({ type: 'http.request', requestId, method: 'GET', path: '/api/device/runtime-config', headers: { authorization: `Bearer ${token}` } });
+      await settle(() => forwarded.length > before);
+      return forwarded[before];
+    };
+    return { adapter, sent, forwarded, audit, clientErrors, phone, open, request };
+  }
+
+  it("forwards the JWT of the device the handshake key resolves to, and drops another device's", async () => {
+    const resolve = vi.fn(async (key: string) => (key === phoneKey.publicKey.toString('base64') ? 'dev-a' : null));
+    const h = sealedDeviceHarness(resolve);
+    await h.open();
+    await h.phone.opened;
+    expect(resolve).toHaveBeenCalledWith(phoneKey.publicKey.toString('base64'));
+    expect((await h.request('r1', jwtFor('dev-a')))?.authorization).toBe(`Bearer ${jwtFor('dev-a')}`);
+    const other = await h.request('r2', jwtFor('dev-b'));
+    expect(other).toBeDefined();
+    expect(other.authorization).toBeUndefined();
+    // Content never crosses the relay in the clear.
+    expect(JSON.stringify(h.sent)).not.toContain(jwtFor('dev-a'));
+  });
+
+  it('admits an unregistered phone key unbound: the call still reaches the machine, with no JWT', async () => {
+    const h = sealedDeviceHarness(async () => null);
+    await h.open();
+    await h.phone.opened;
+    const headers = await h.request('r1', jwtFor('dev-a'));
+    expect(headers).toBeDefined();
+    expect(headers.authorization).toBeUndefined();
+  });
+
+  it('refuses a sealed device channel when the host has no device-key resolver', async () => {
+    const h = sealedDeviceHarness();
+    await h.open();
+    expect(h.sent).toContainEqual({ type: 'relay.close', channelId: 'dev-ch', reason: 'sealed_channel_unavailable' });
+  });
+
+  it('refuses the handshake when the resolver fails, and forwards nothing', async () => {
+    const h = sealedDeviceHarness(async () => { throw new Error('db down'); });
+    await h.open();
+    await settle(() => JSON.stringify(h.audit.mock.calls).includes('sealed_channel_failed') || h.clientErrors.length > 0);
+    await h.phone.send({ type: 'http.request', requestId: 'r1', method: 'GET', path: '/api/device/runtime-config', headers: {} }).catch(() => {});
+    await settle(() => false);
+    expect(h.forwarded).toEqual([]);
   });
 });

@@ -1,7 +1,8 @@
 /**
- * backup:restore — restore-to-clone only. Never overwrites live files.
- * Restores into <workspace>/.restored/<snapshotId>/. Agent (or user)
- * diffs the clone against live and promotes manually.
+ * backup:restore — restore-to-clone by default, or explicitly in place.
+ * Clone mode writes into <workspace>/.restored/<snapshotId>/ without
+ * overwriting live files. In-place mode replaces the target after taking
+ * a safety snapshot; an optional source path narrows clone mode only.
  */
 
 import { z } from 'zod';

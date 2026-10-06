@@ -25,6 +25,7 @@ import { mutationTargetingRefusal, type bindingSchema } from './bind-spec-eviden
 type Binding = z.infer<typeof bindingSchema>;
 
 const SCENARIO = 'reconnect-failure';
+const TARGETING_TEST_FILE = 'packages/operator-core/lib/agent-tools/plans/bind-spec-evidence-targeting.test.ts';
 
 function clause(over: Partial<SpecClauseRevision> = {}): SpecClauseRevision {
   return {
@@ -114,7 +115,30 @@ function counterexampleRow(targeted: unknown): SpecEvidenceForAdequacy {
   const base = evidence();
   const adequacy: Record<string, unknown> = { ...(base.details.adequacy as Record<string, unknown>), outcome: 'killed' };
   if (targeted !== undefined) adequacy.targeted = targeted;
-  return evidence({ evidenceKind: 'counterexample', evidenceRef: 'counterexample:reconnect', details: { adequacy } });
+  return evidence({
+    evidenceKind: 'counterexample',
+    evidenceRef: 'counterexample:reconnect',
+    coverageEvidenceRef: null,
+    testRunId: 45,
+    testRunProvenance: { filePath: TARGETING_TEST_FILE, commitSha: null, worktreeDirty: null },
+    details: { adequacy },
+  });
+}
+
+function currentClauseTestRow(): SpecEvidenceForAdequacy {
+  return evidence({
+    evidenceKind: 'test',
+    evidenceRef: 'test-run:targeting-fixture',
+    coverageEvidenceRef: null,
+    testRunId: 44,
+    testRunProvenance: { filePath: TARGETING_TEST_FILE, commitSha: null, worktreeDirty: null },
+  });
+}
+
+function evaluatorEvidence(targeted: unknown): SpecEvidenceForAdequacy[] {
+  // Revision 4 requires a successful, current same-clause binding for the
+  // counterexample's canonical test file before falsifiability can pass.
+  return [evidence(), currentClauseTestRow(), counterexampleRow(targeted)];
 }
 
 function binding(targeted: unknown, over: Partial<Binding> = {}): Binding {
@@ -156,7 +180,7 @@ describe('RSR-P-043-A: bind-time targeting agrees with the evaluator', () => {
     const evaluatorPasses =
       evaluateSpecTestAdequacy({
         clause: c,
-        evidence: [evidence(), counterexampleRow(targeted)],
+        evidence: evaluatorEvidence(targeted),
         classRef: 'plan-class-feature-ship',
       }).ratings.falsifiability.rating === 'pass';
     const refusal = await mutationTargetingRefusal(binding(targeted), SCOPE, loaderFor(c));
@@ -183,7 +207,7 @@ describe('RSR-P-043-A: bind-time targeting agrees with the evaluator', () => {
       const evaluatorPasses =
         evaluateSpecTestAdequacy({
           clause: c,
-          evidence: [evidence(), counterexampleRow(targeted)],
+          evidence: evaluatorEvidence(targeted),
           classRef: 'plan-class-feature-ship',
         }).ratings.falsifiability.rating === 'pass';
       if (((await refuse(binding(targeted), c)) === null) !== evaluatorPasses) out.push(name);

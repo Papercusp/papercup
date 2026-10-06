@@ -607,6 +607,11 @@ describe('frozen lineage carry policy', () => {
     'Test-file blobs at repairHead b72f26b6 differ from the working tree only for apps/operator-vite/dist-atomic-writes.test.ts.',
     'On the judged lineage, only these red test files have since been edited: apps/operator-vite/dist-atomic-writes.test.ts.',
     'Worktree remains on staging while the unrelated local check is investigated.',
+    // EI-25213563657815886: a pot-git design decision describing a p2p MEMBER worktree
+    // that diverged from hive staging was refused (build d740fc3802). "worktree" there is
+    // a member checkout, not the judged release worktree.
+    'Visible now: when the catch-up sweep finds the worktree diverged from the accepted staging, git-sync computes the conflicting paths with `git merge-tree` (no worktree change), persists them in routines.metadata.worktree_divergence {since, localHead, stagingSha, paths}, logs one warning when a divergence starts or its path set changes, and clears the key when the worktree contains staging again.',
+    'when the catch-up sweep finds the worktree diverged from refs/hive/staging',
   ])('allows descriptive checkpoint forensics without selecting a moving candidate: %s', (text) => {
     expect(detectUnsafeFrozenCarryInstruction(text)).toBeNull();
   });
