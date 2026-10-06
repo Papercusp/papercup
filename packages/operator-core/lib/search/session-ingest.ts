@@ -1976,17 +1976,79 @@ async function backfillCodexAdvSessions(
 }
 
 /**
- * Rows re-classified per sweep. Bounded like every other pass in this file —
- * the corpus is millions of turns, so the sweep converges across ticks rather
- * than trying to swallow history in one go.
+ * Most rows rewritten per statement. This is what bounds how long the pass
+ * holds row locks (WI-10006752).
+ *
+ * Since migration 1405 none of the columns this pass writes is indexed
+ * (WI-10006788), so a rewrite whose new tuple fits on the same heap page is a
+ * HOT update and touches no index. When the page is full Postgres falls back to
+ * a non-HOT update, which re-inserts into every session_turns index, the
+ * 5.5 GB HNSW included. Measured 2026-10-06 while every update was non-HOT:
+ * 100-row statements averaged 84.6 s (~700 shared blocks read per row), and
+ * 5,000-row statements averaged 124.7 s with a 711 s maximum. This cap keeps
+ * that fallback bounded.
  */
-export const PROVENANCE_BACKFILL_BATCH = 5_000;
+export const PROVENANCE_BACKFILL_BATCH = 100;
+
+/**
+ * Heap pages one window examines. The pass walks session_turns in physical
+ * order with a TID range scan, so a window reads at most this many pages,
+ * whatever the backlog looks like.
+ */
+export const PROVENANCE_LAP_WINDOW_PAGES = 64;
+
+/**
+ * Most heap pages one call walks while looking for stale rows. A call stops at
+ * the first window that yields rows, so this only bounds the clean stretches.
+ */
+export const PROVENANCE_PASS_PAGE_BUDGET = 1_024;
+
+/**
+ * How long a lap that found nothing stale stays authoritative. Rows are stamped
+ * at insert (migration 794), so new staleness only appears when
+ * MACHINE_SURFACE_CATALOGUE_VERSION changes, and that restarts the lap. The
+ * daily re-walk is a backstop for an insert path that skips the stamp.
+ */
+export const PROVENANCE_CLEAN_LAP_TTL_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Progress of one walk over the session_turns heap ("lap").
+ */
+export interface ProvenanceLap {
+  /** Catalogue version this lap re-derives to; a different one restarts it. */
+  version: number | null;
+  /** First heap page not yet walked. */
+  nextPage: number;
+  /** Relation size in pages when the lap started. */
+  endPage: number;
+  /** Rows found needing a new verdict so far this lap, written or not. */
+  needed: number;
+  /** When a whole lap found nothing to change; null while a lap is in progress. */
+  cleanAt: number | null;
+}
+
+export function newProvenanceLap(): ProvenanceLap {
+  return { version: null, nextPage: 0, endPage: 0, needed: 0, cleanAt: null };
+}
+
+/**
+ * This process's lap. It lives in memory on purpose: it is a progress hint
+ * that nothing depends on for correctness. The cost of losing it is one lap per
+ * restart: a sequential read of the heap (~190,000 pages, ~1.5 GB on
+ * 2026-10-06) plus re-classifying the rows below the current version, spread
+ * over ~15 ticks. Two hosts walking at once only duplicate that work, because
+ * every write is claimed SKIP LOCKED and guarded on the values it read.
+ */
+const processProvenanceLap = pinModuleState<ProvenanceLap>(
+  '@papercusp/operator-core.session-ingest.provenance-lap',
+  newProvenanceLap,
+);
 
 export interface ProvenanceBackfillResult {
   scanned: number;
   updated: number;
-  /** True while rows remain below the current catalogue version — the caller
-   *  can keep sweeping, or simply wait for the next tick. */
+  /** True until a whole lap over the heap claims nothing. The caller can keep
+   *  sweeping, or simply wait for the next tick. */
   more: boolean;
 }
 
@@ -2009,11 +2071,111 @@ export interface ProvenanceBackfillResult {
  * Only the HEAD is fetched — the classifier bounds itself to
  * CLASSIFY_HEAD_CHARS anyway, so pulling whole turn bodies (up to 8k each)
  * would be pure bandwidth.
+ *
+ * FIND THE BACKLOG BY WALKING THE HEAP, NOT BY AN INDEX (WI-10006788). The
+ * pass used to take `ORDER BY turn_origin_classifier_version ... LIMIT n` off
+ * an index on that column. That index is what made every rewrite non-HOT:
+ * Postgres can only update a row in place when no indexed column changes, so
+ * each rewritten row inserted a new entry into all session_turns indexes,
+ * the 5.5 GB HNSW included (measured 2026-10-06: ~700 shared blocks read per
+ * row, 84.6 s per 100-row statement, 0.3% of updates HOT). Migration 1405
+ * dropped the index. The pass now walks the heap in physical order, one window
+ * of PROVENANCE_LAP_WINDOW_PAGES pages at a time, with a TID range scan, and
+ * keeps its place in a ProvenanceLap. Every page is visited once per lap, so
+ * NULL rows and stale-version rows are both reached in a bounded time and
+ * neither population can starve the other. (The old ORDER BY existed because
+ * a plain LIMIT had served 20,000 NULL rows while 2,435 stale-version rows
+ * waited.) A lap that finds nothing to change marks the table clean, and the
+ * pass then idles until the catalogue version changes or
+ * PROVENANCE_CLEAN_LAP_TTL_MS passes.
+ *
+ * WRITE ONLY WHAT CHANGES (WI-10006788). Every stale row in a window is
+ * re-classified, but a row is rewritten only when its verdict or origin
+ * actually changes, or when it has never been classified (version NULL).
+ * Measured 2026-10-06 on a 5,069-row sample of the 1,347,175 rows below
+ * catalogue 7: 11 (0.22%) re-derive to a different verdict. Rewriting the
+ * other 99.8% only to bump the version cost one full-index row rewrite each.
+ * So turn_origin_classifier_version records the catalogue that last WROTE the
+ * verdict, and a row a newer catalogue left unchanged keeps its older number.
+ * Such rows are re-classified, without being written, on every lap.
+ *
+ * CLAIM, DON'T QUEUE (WI-10006752). Rows to rewrite are claimed with
+ * `FOR NO KEY UPDATE SKIP LOCKED`, guarded on the exact values that were
+ * classified, and rewritten in the same statement. A concurrent run of this
+ * pass (an overlapping tick, a second host) or any other writer holding one of
+ * these rows is stepped around, never waited on, and a row that changed since
+ * it was read is left for the next lap. Without the claim the second of two
+ * runs queued behind the first one's row locks until lock_timeout aborted it:
+ * measured 2026-10-06, every one of 25 sampled session_turns lock waits was
+ * this UPDATE waiting on itself. A skipped row still counts as needed, so that
+ * lap is not clean and the next one picks the row up.
+ *
+ * `lap` defaults to this process's lap. Tests pass their own
+ * (`newProvenanceLap()`) to start from page 0 regardless of earlier calls.
  */
 export async function backfillTurnProvenanceOnce(
   sql: Sql,
   limit = PROVENANCE_BACKFILL_BATCH,
+  lap: ProvenanceLap = processProvenanceLap,
+  now: () => number = Date.now,
 ): Promise<ProvenanceBackfillResult> {
+  const version = MACHINE_SURFACE_CATALOGUE_VERSION;
+  if (lap.version !== version) Object.assign(lap, newProvenanceLap(), { version });
+  if (lap.cleanAt !== null) {
+    if (now() - lap.cleanAt < PROVENANCE_CLEAN_LAP_TTL_MS) return { scanned: 0, updated: 0, more: false };
+    Object.assign(lap, newProvenanceLap(), { version });
+  }
+
+  let pagesWalked = 0;
+  while (pagesWalked < PROVENANCE_PASS_PAGE_BUDGET) {
+    if (lap.nextPage >= lap.endPage) {
+      // A lap just ended (or none has started). A lap that found nothing to
+      // change proves the table clean. One that found rows is walked again,
+      // because a row it had to skip (held by another writer, or changed after
+      // it was read) still carries its old verdict.
+      if (lap.endPage > 0 && lap.needed === 0) {
+        lap.cleanAt = now();
+        return { scanned: 0, updated: 0, more: false };
+      }
+      lap.nextPage = 0;
+      lap.needed = 0;
+      lap.endPage = await sessionTurnsHeapPages(sql);
+      if (lap.endPage === 0) {
+        lap.cleanAt = now();
+        return { scanned: 0, updated: 0, more: false };
+      }
+    }
+    const fromPage = lap.nextPage;
+    const toPage = Math.min(fromPage + PROVENANCE_LAP_WINDOW_PAGES, lap.endPage);
+    const window = await rederiveProvenanceWindow(sql, limit, fromPage, toPage);
+    lap.needed += window.needed;
+    lap.nextPage = toPage;
+    pagesWalked += toPage - fromPage;
+    if (window.examined > 0) return { scanned: window.examined, updated: window.updated, more: true };
+  }
+  return { scanned: 0, updated: 0, more: true };
+}
+
+/** Pages in session_turns' main fork: where a lap ends. */
+async function sessionTurnsHeapPages(sql: Sql): Promise<number> {
+  const [row] = await sql<Array<{ pages: number }>>`
+    SELECT (pg_relation_size('harness_shared.session_turns')
+            / current_setting('block_size')::int)::int AS pages
+  `;
+  return row?.pages ?? 0;
+}
+
+/**
+ * Re-classify every stale row on heap pages [fromPage, toPage) and rewrite the
+ * ones whose verdict changes, `limit` rows per statement. The read takes no
+ * locks; only the rewrite claims rows (see writeProvenanceChanges).
+ */
+async function rederiveProvenanceWindow(
+  sql: Sql,
+  limit: number,
+  fromPage: number,
+  toPage: number,
+): Promise<{ examined: number; needed: number; updated: number }> {
   const rows = await sql<
     Array<{
       workspace_id: string;
@@ -2024,42 +2186,23 @@ export async function backfillTurnProvenanceOnce(
       head: string | null;
       turn_origin: string | null;
       turn_origin_verdict: string | null;
+      version: number | null;
     }>
   >`
     SELECT workspace_id, source_kind, session_id, turn_idx, speaker,
            left(text, ${CLASSIFY_HEAD_CHARS}) AS head,
-           turn_origin, turn_origin_verdict
+           turn_origin, turn_origin_verdict,
+           turn_origin_classifier_version AS version
       FROM harness_shared.session_turns
-     WHERE turn_origin_classifier_version IS NULL
-        OR turn_origin_classifier_version < ${MACHINE_SURFACE_CATALOGUE_VERSION}
-     -- STALE-VERSION ROWS FIRST, never-classified rows after. The two
-     -- populations are NOT equally harmful, and a plain LIMIT serves them in
-     -- physical order, which starves the harmful one: measured on the first
-     -- real sweep, 20,000 rows drained entirely from the NULL backlog while all
-     -- 2,435 version-below-current rows sat untouched behind it.
-     --
-     -- A NULL row is HONEST - it asserts nothing, and every reader is told NULL
-     -- means "never classified". A stale-version row carries a CONCRETE verdict
-     -- with a stored column's authority, and that stale verdict is
-     -- disproportionately the owner-typed RESIDUAL, precisely because the
-     -- residual is what each newer catalogue is written to stop over-assigning.
-     -- So the rows that actively misattribute machine text to the owner drain
-     -- first; the ones that merely say nothing wait.
-     --
-     -- DESC NULLS LAST orders non-NULL versions ahead of NULLs and is served by
-     -- session_turns_provenance_version_idx rather than a sort of the backlog.
-     ORDER BY turn_origin_classifier_version DESC NULLS LAST
-     LIMIT ${limit}
+     -- A TID range scan: reads exactly the pages [fromPage, toPage).
+     WHERE ctid >= ${`(${fromPage},0)`}::tid
+       AND ctid < ${`(${toPage},0)`}::tid
+       AND (turn_origin_classifier_version IS NULL
+            OR turn_origin_classifier_version < ${MACHINE_SURFACE_CATALOGUE_VERSION})
   `;
-  if (!rows.length) return { scanned: 0, updated: 0, more: false };
+  if (!rows.length) return { examined: 0, needed: 0, updated: 0 };
 
-  const wsIds: string[] = [];
-  const kinds: string[] = [];
-  const sessionIds: string[] = [];
-  const turnIdxs: number[] = [];
-  const origins: (string | null)[] = [];
-  const verdicts: string[] = [];
-
+  const changes: ProvenanceChange[] = [];
   for (const r of rows) {
     // Reuse the ONE stamp path rather than re-deriving the rules here — a
     // second copy of this logic is how the four divergent classifiers arose.
@@ -2084,46 +2227,132 @@ export async function backfillTurnProvenanceOnce(
       staged.turn_origin_verdict = 'owner-typed';
     }
 
-    wsIds.push(r.workspace_id);
-    kinds.push(r.source_kind);
-    sessionIds.push(r.session_id);
-    turnIdxs.push(r.turn_idx);
-    origins.push(staged.turn_origin ?? null);
-    verdicts.push(staged.turn_origin_verdict!);
+    const origin = staged.turn_origin ?? null;
+    const verdict = staged.turn_origin_verdict!;
+    // An unchanged verdict is not written (see the docstring above
+    // backfillTurnProvenanceOnce). A NULL version always is: that row has never
+    // been classified, and writing it is what takes it out of the backlog.
+    if (r.version !== null && origin === (r.turn_origin ?? null) && verdict === r.turn_origin_verdict) {
+      continue;
+    }
+    changes.push({
+      workspace_id: r.workspace_id,
+      source_kind: r.source_kind,
+      session_id: r.session_id,
+      turn_idx: r.turn_idx,
+      old_origin: r.turn_origin ?? null,
+      old_verdict: r.turn_origin_verdict ?? null,
+      old_version: r.version,
+      turn_origin: origin,
+      turn_origin_verdict: verdict,
+    });
   }
 
-  const res = await sql`
-    UPDATE harness_shared.session_turns AS turns
-       SET turn_origin = resolved.turn_origin,
-           turn_origin_verdict = resolved.turn_origin_verdict,
-           turn_origin_classifier_version = ${MACHINE_SURFACE_CATALOGUE_VERSION}
-      FROM UNNEST(
-             ${sql.array(wsIds)}::text[], ${sql.array(kinds)}::text[],
-             ${sql.array(sessionIds)}::text[], ${sql.array(turnIdxs)}::int[],
-             ${sql.array(origins as string[])}::text[], ${sql.array(verdicts)}::text[]
-           ) AS resolved(workspace_id, source_kind, session_id, turn_idx,
-                         turn_origin, turn_origin_verdict)
-     WHERE turns.workspace_id = resolved.workspace_id
-       AND turns.source_kind = resolved.source_kind
-       AND turns.session_id = resolved.session_id
-       AND turns.turn_idx = resolved.turn_idx
-  `;
+  let updated = 0;
+  for (let i = 0; i < changes.length; i += limit) {
+    updated += await writeProvenanceChanges(sql, changes.slice(i, i + limit));
+  }
+  return { examined: rows.length, needed: changes.length, updated };
+}
 
-  return {
-    scanned: rows.length,
-    updated: res.count ?? rows.length,
-    more: rows.length === limit,
-  };
+interface ProvenanceChange {
+  workspace_id: string;
+  source_kind: string;
+  session_id: string;
+  turn_idx: number;
+  old_origin: string | null;
+  old_verdict: string | null;
+  old_version: number | null;
+  turn_origin: string | null;
+  turn_origin_verdict: string;
 }
 
 /**
- * Sweep passes per tick. One pass is PROVENANCE_BACKFILL_BATCH rows, so this
- * caps a tick's write volume while still converging: the measured backlog when
- * this lane was first wired was 370,478 never-classified rows (96% of the
- * table), which drains in a couple of hours at this rate rather than pinning
- * the pool for one enormous transaction.
+ * Rewrite `changes` in one statement. Each row is claimed
+ * `FOR NO KEY UPDATE SKIP LOCKED` and only if it still holds the values it was
+ * classified from, so a row another writer holds or has changed is skipped,
+ * never waited on and never overwritten. Returns the number of rows written.
  */
-export const PROVENANCE_BACKFILL_PASSES_PER_TICK = 4;
+async function writeProvenanceChanges(sql: Sql, changes: ProvenanceChange[]): Promise<number> {
+  const col = <K extends keyof ProvenanceChange>(k: K) => changes.map((c) => c[k]);
+  const res = await sql`
+    WITH wanted AS (
+      SELECT * FROM UNNEST(
+        ${sql.array(col('workspace_id'))}::text[], ${sql.array(col('source_kind'))}::text[],
+        ${sql.array(col('session_id'))}::text[], ${sql.array(col('turn_idx'))}::int[],
+        ${sql.array(col('old_origin') as string[])}::text[],
+        ${sql.array(col('old_verdict') as string[])}::text[],
+        ${sql.array(col('old_version') as number[])}::int[],
+        ${sql.array(col('turn_origin') as string[])}::text[],
+        ${sql.array(col('turn_origin_verdict'))}::text[]
+      ) AS w(workspace_id, source_kind, session_id, turn_idx, old_origin, old_verdict,
+             old_version, turn_origin, turn_origin_verdict)
+    ), claimed AS (
+      SELECT t.workspace_id, t.source_kind, t.session_id, t.turn_idx,
+             w.turn_origin, w.turn_origin_verdict
+        FROM harness_shared.session_turns AS t
+        JOIN wanted AS w
+          ON t.workspace_id = w.workspace_id AND t.source_kind = w.source_kind
+         AND t.session_id = w.session_id AND t.turn_idx = w.turn_idx
+       WHERE t.turn_origin IS NOT DISTINCT FROM w.old_origin
+         AND t.turn_origin_verdict IS NOT DISTINCT FROM w.old_verdict
+         AND t.turn_origin_classifier_version IS NOT DISTINCT FROM w.old_version
+         FOR NO KEY UPDATE OF t SKIP LOCKED
+    )
+    UPDATE harness_shared.session_turns AS turns
+       SET turn_origin = claimed.turn_origin,
+           turn_origin_verdict = claimed.turn_origin_verdict,
+           turn_origin_classifier_version = ${MACHINE_SURFACE_CATALOGUE_VERSION}
+      FROM claimed
+     WHERE turns.workspace_id = claimed.workspace_id
+       AND turns.source_kind = claimed.source_kind
+       AND turns.session_id = claimed.session_id
+       AND turns.turn_idx = claimed.turn_idx
+  `;
+  return res.count ?? 0;
+}
+
+/**
+ * Upper bound on sweep passes per tick. One pass is PROVENANCE_BACKFILL_BATCH
+ * rows, so this caps a tick's write volume at 20,000 rows, the same as the old
+ * 4 × 5,000, while each statement stays short.
+ */
+export const PROVENANCE_BACKFILL_PASSES_PER_TICK = 200;
+
+/**
+ * Wall-clock budget for one tick's passes (WI-10006752). The tick fires every
+ * 5 minutes; a tick that outlives its interval overlaps the next one, which
+ * doubles the write load on a table whose every update is non-HOT. Measured
+ * 2026-10-06 at 4 × 5,000 rows: one statement alone averaged 124.7 s, so a
+ * tick routinely ran past the next fire. The budget is checked between passes,
+ * so a tick ends at most one (short) pass after it.
+ */
+export const PROVENANCE_BACKFILL_TICK_BUDGET_MS = 120_000;
+
+/**
+ * Run `pass` until the backlog is drained, `maxPasses` is reached, or
+ * `budgetMs` has elapsed (checked between passes). Exported for tests.
+ */
+export async function runProvenancePasses(
+  pass: () => Promise<ProvenanceBackfillResult>,
+  opts: { maxPasses: number; budgetMs: number; now?: () => number },
+): Promise<ProvenanceBackfillResult & { passes: number }> {
+  const now = opts.now ?? Date.now;
+  const started = now();
+  let scanned = 0;
+  let updated = 0;
+  let more = false;
+  let passes = 0;
+  while (passes < opts.maxPasses) {
+    const r = await pass();
+    passes += 1;
+    scanned += r.scanned;
+    updated += r.updated;
+    more = r.more;
+    if (!r.more || now() - started >= opts.budgetMs) break;
+  }
+  return { scanned, updated, more, passes };
+}
 
 /**
  * Run the provenance re-derivation lane for one tick.
@@ -2140,16 +2369,10 @@ export const PROVENANCE_BACKFILL_PASSES_PER_TICK = 4;
  */
 export async function runTurnProvenanceBackfillOnce(): Promise<ProvenanceBackfillResult> {
   const { sql } = getOrgPg();
-  let scanned = 0;
-  let updated = 0;
-  let more = false;
-  for (let pass = 0; pass < PROVENANCE_BACKFILL_PASSES_PER_TICK; pass += 1) {
-    const r = await backfillTurnProvenanceOnce(sql);
-    scanned += r.scanned;
-    updated += r.updated;
-    more = r.more;
-    if (!r.more) break;
-  }
+  const { scanned, updated, more } = await runProvenancePasses(
+    () => backfillTurnProvenanceOnce(sql),
+    { maxPasses: PROVENANCE_BACKFILL_PASSES_PER_TICK, budgetMs: PROVENANCE_BACKFILL_TICK_BUDGET_MS },
+  );
   // After the re-derivation above, so rows it just moved to the current
   // catalogue version are eligible for their hook stamp in the same tick.
   const recorrelated = await recorrelatePromptOriginStampsOnce(sql);
@@ -2159,6 +2382,15 @@ export async function runTurnProvenanceBackfillOnce(): Promise<ProvenanceBackfil
     more: more || recorrelated.more,
   };
 }
+
+/**
+ * Stamp/turn pairs examined per recorrelation tick. Separate from
+ * PROVENANCE_BACKFILL_BATCH since WI-10006752 shrank that one to 100: this pass
+ * runs once per tick and only rewrites the rows it promotes, so it can take a
+ * larger window, but its UPDATE still holds row locks on every promoted
+ * non-HOT row until it commits, so it stays bounded.
+ */
+export const PROMPT_ORIGIN_RECORRELATE_BATCH = 500;
 
 export interface PromptOriginRecorrelationResult {
   /** Distinct unenrolled rows the prefilter paired with a stamp. */
@@ -2190,7 +2422,7 @@ export interface PromptOriginRecorrelationResult {
  */
 export async function recorrelatePromptOriginStampsOnce(
   sql: Sql,
-  limit = PROVENANCE_BACKFILL_BATCH,
+  limit = PROMPT_ORIGIN_RECORRELATE_BATCH,
 ): Promise<PromptOriginRecorrelationResult> {
   const workspace = activeWorkspaceId();
   const windowMs = PROMPT_ORIGIN_MATCH_WINDOW_MS;

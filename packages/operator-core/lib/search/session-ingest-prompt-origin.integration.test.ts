@@ -126,12 +126,23 @@ it('persists exact authenticated source stamps through the real ingest SQL witho
         WHERE workspace_id = \${workspace} AND session_id IN ('origin-new-machine-rule', 'origin-assistant', 'origin-torn-wake')\`;
       await sql\`UPDATE harness_shared.session_turns SET speaker = 'assistant'
         WHERE workspace_id = \${workspace} AND session_id = 'origin-assistant'\`;
+      const before = await sql\`SELECT session_id, turn_origin, turn_origin_verdict
+        FROM harness_shared.session_turns WHERE workspace_id = \${workspace} ORDER BY session_id\`;
       const repaired = await backfillTurnProvenanceOnce(sql, 100);
       assert.equal(repaired.scanned, cases.length);
-      assert.equal(repaired.updated, cases.length);
       const after = await sql\`SELECT session_id, turn_origin, turn_origin_verdict, turn_origin_classifier_version
         FROM harness_shared.session_turns WHERE workspace_id = \${workspace} ORDER BY session_id\`;
       console.log('PROMPT_ORIGIN_BACKFILL_RESULT ' + JSON.stringify(after));
+      // WI-10006788: only rows whose verdict or origin CHANGED are rewritten
+      // (and stamped with the current version); the rest keep V-1 untouched.
+      const changedIds = new Set(after.filter((row) => {
+        const prior = before.find((b) => b.session_id === row.session_id);
+        return prior.turn_origin !== row.turn_origin || prior.turn_origin_verdict !== row.turn_origin_verdict;
+      }).map((row) => row.session_id));
+      for (const label of ['legacy-residual', 'new-machine-rule', 'assistant', 'torn-wake']) {
+        assert.ok(changedIds.has('origin-' + label), 'the corrupted row must be rewritten: ' + label);
+      }
+      assert.equal(repaired.updated, changedIds.size);
       for (const c of cases) {
         const stored = after.find(row => row.session_id === c.row.session_id);
         const positive = ['claude', 'codex', 'omp', 'codex-history', 'late-ingest', 'late-stamp'].includes(c.label);
@@ -139,10 +150,15 @@ it('persists exact authenticated source stamps through the real ingest SQL witho
           : ['new-machine-rule', 'torn-wake'].includes(c.label) ? 'machine-surface'
           : c.label === 'assistant' ? 'not-user-turn' : 'unenrolled-origin';
         assert.equal(stored.turn_origin_verdict, expected, c.label);
-        assert.equal(stored.turn_origin_classifier_version, MACHINE_SURFACE_CATALOGUE_VERSION);
+        assert.equal(stored.turn_origin_classifier_version,
+          changedIds.has(c.row.session_id) ? MACHINE_SURFACE_CATALOGUE_VERSION : MACHINE_SURFACE_CATALOGUE_VERSION - 1,
+          c.label);
         if (positive) assert.equal(stored.turn_origin, 'hook-authenticated-prompt', c.label);
       }
-      assert.equal((await backfillTurnProvenanceOnce(sql, 100)).scanned, 0);
+      // The next lap re-classifies the unchanged rows and writes nothing; the
+      // one after that finds the table clean.
+      assert.equal((await backfillTurnProvenanceOnce(sql, 100)).updated, 0);
+      assert.equal((await backfillTurnProvenanceOnce(sql, 100)).more, false);
       assert.equal(sourceHash, createHash('sha256').update(readFileSync('packages/operator-core/lib/search/session-ingest.ts')).digest('hex'));
     } finally { await sql.end(); }
   `.replaceAll('\\`', '`').replaceAll('\\${', '${');
