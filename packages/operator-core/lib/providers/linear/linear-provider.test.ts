@@ -163,7 +163,8 @@ describe('syncPage walks issues then comments per team, folding watermarks only 
     const pages: Array<{ hasMore: boolean; ids: string[] }> = [];
     let cursor: string | null = null;
     for (let i = 0; i < 10; i++) {
-      const out = await adapter.syncPage({ source: SOURCE, config, cursor }, fake.host);
+      const out: { records: Array<{ nativeId: string }>; nextCursor: string | null; hasMore: boolean } =
+        await adapter.syncPage({ source: SOURCE, config, cursor }, fake.host);
       pages.push({ hasMore: out.hasMore, ids: out.records.map((r: { nativeId: string }) => r.nativeId) });
       cursor = out.nextCursor;
       if (!out.hasMore) break;

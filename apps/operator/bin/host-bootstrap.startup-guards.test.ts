@@ -17,9 +17,11 @@
  * name each guard. Crude, but it fails loudly the moment someone deletes a call site, which is
  * exactly the regression that went unnoticed for months.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { runInNewContext } from 'node:vm';
+import ts from 'typescript';
 
 const bootSrc = readFileSync(join(__dirname, 'host-bootstrap.ts'), 'utf8');
 const dbosWorkItemsContractSrc = readFileSync(
@@ -420,6 +422,31 @@ describe('hono-host exposes a no-native-teardown desktop-dev recycle contract', 
 });
 
 describe('hono-host rejects persistent main-port conflicts before bootstrap', () => {
+  it.each([
+    { mode: 'primary host', env: {}, probes: 1, exits: 1 },
+    { mode: 'R6 worker', env: { PAPERCUSP_REPAIR_PRECHECK_WORKER_MODE: '1' }, probes: 0, exits: 0 },
+    { mode: 'spawner sidecar', env: { PAPERCUSP_SPAWNER_SIDECAR_MODE: '1' }, probes: 0, exits: 0 },
+  ])('handles an occupied HTTP port for the $mode', ({ env, probes, exits }) => {
+    const available = vi.fn(() => false);
+    const exit = vi.fn();
+    const compiled = ts.transpileModule(honoHostPortPreflightSrc, {
+      compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true },
+    }).outputText;
+    runInNewContext(compiled, {
+      exports: {}, console: { error: vi.fn() },
+      process: { env: { PAPERCUSP_HONO_PORT: '3170', ...env }, exit },
+      require: (name: string) => {
+        if (name === 'node:cluster') return { isPrimary: true };
+        if (name.endsWith('/port-availability')) return { portAvailableSync: available };
+        if (name.endsWith('/resolve-bind-host')) return { resolveBindHost: () => '127.0.0.1' };
+        throw new Error(`unexpected preflight import ${name}`);
+      },
+    }, { timeout: 1_000 });
+    expect(available).toHaveBeenCalledTimes(probes);
+    expect(exit).toHaveBeenCalledTimes(exits);
+    if (exits) expect(exit).toHaveBeenCalledWith(1);
+  });
+
   it('runs the availability preflight before startCluster/runBootstrap and skips sidecars', () => {
     const preflightImport = honoHostSrc.indexOf("import './hono-host-port-preflight';");
     const bootstrapImport = honoHostSrc.indexOf("import { runBootstrap, waitForBootMigrationGate } from './host-bootstrap';");

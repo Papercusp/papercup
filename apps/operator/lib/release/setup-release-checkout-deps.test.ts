@@ -2147,6 +2147,66 @@ describe('setup-release-checkout.sh --prepare-existing (EI-20336479620858625)', 
     );
   }
 
+  it.each(['missing store', 'missing generation'])('EI-252238 refuses %s before changing the source checkout', (missing) => {
+    writeFileSync(join(integrationRoot, 'new-tip.txt'), 'new tip\n');
+    git(integrationRoot, 'add', '-A');
+    git(integrationRoot, 'commit', '-q', '-m', 'new tip');
+    const generationRoot = join(integrationRoot, 'missing-generations');
+    if (missing === 'missing generation') mkdirSync(generationRoot);
+    const result = spawnSync('bash', [SCRIPT_PATH,
+      '--integration', integrationRoot, '--release', releaseRoot, '--ref', 'HEAD',
+      '--node-modules', 'force', '--node-modules-copy', 'copy',
+      '--node-modules-generation', 'required', '--node-modules-generation-id', `v1-${'a'.repeat(64)}`,
+      '--dependency-generation-root', generationRoot,
+    ], { encoding: 'utf8', timeout: 10_000 });
+
+    expect(result.status, result.stderr).toBe(74);
+    expect(result.stderr).toContain('disappeared before it could be leased');
+    expect(git(releaseRoot, 'rev-parse', 'HEAD')).toBe(targetSha);
+    expect(readFileSync(join(releaseRoot, 'untracked-sentinel.txt'), 'utf8')).toBe('keep me\n');
+    expect(readFileSync(join(releaseRoot, 'ignored-cache', 'stale.txt'), 'utf8')).toBe('keep me too\n');
+  });
+
+  it('EI-252238 holds one explicit-generation lease during source checkout and releases it after pinning', () => {
+    const generationRoot = join(dirname(releaseRoot), 'fixture-generations');
+    mkdirSync(join(integrationRoot, 'node_modules/lease-fixture'), { recursive: true });
+    writeFileSync(join(integrationRoot, 'node_modules/lease-fixture/package.json'), '{}');
+    const published = spawnSync('bash', ['-c',
+      'set -euo pipefail; source "$1"; dependency_generation_ensure "$2" "$3"; printf "FIXTURE_ID=%s\\n" "$DEPENDENCY_GENERATION_ID"',
+      'fixture', DEPENDENCY_GENERATION_SCRIPT, integrationRoot, generationRoot,
+    ], { encoding: 'utf8', timeout: 30_000, env: { ...process.env,
+      DEPENDENCY_GENERATION_COPY_LOCK_FILE: join(generationRoot, 'fixture-copy.lock') } });
+    expect(published.status, published.stderr).toBe(0);
+    const identity = /^FIXTURE_ID=(v1-[0-9a-f]{64})$/m.exec(published.stdout)?.[1];
+    expect(identity).toBeDefined();
+
+    const realGit = spawnSync('which', ['git'], { encoding: 'utf8' }).stdout.trim();
+    const bin = join(integrationRoot, 'git-probe');
+    const observed = join(integrationRoot, 'checkout-leases');
+    mkdirSync(bin);
+    writeFileSync(join(bin, 'git'), `#!/usr/bin/env bash
+case " $* " in
+  *" checkout --detach "*)
+    grep -l -F "identity=$REGRESSION_GENERATION_ID" "$REGRESSION_GENERATION_ROOT"/.leases/selector-* > "$REGRESSION_LEASE_OBSERVED" 2>/dev/null || true
+    ;;
+esac
+exec "$REGRESSION_REAL_GIT" "$@"
+`, { mode: 0o755 });
+    const result = spawnSync('bash', [SCRIPT_PATH,
+      '--integration', integrationRoot, '--release', releaseRoot, '--ref', targetSha,
+      '--node-modules', 'force', '--node-modules-copy', 'copy',
+      '--node-modules-generation', 'required', '--node-modules-generation-id', identity!,
+      '--dependency-generation-root', generationRoot,
+    ], { encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}`,
+      REGRESSION_REAL_GIT: realGit, REGRESSION_GENERATION_ROOT: generationRoot,
+      REGRESSION_GENERATION_ID: identity, REGRESSION_LEASE_OBSERVED: observed } });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(readFileSync(observed, 'utf8').trim().split('\n')).toHaveLength(1);
+    expect(readdirSync(join(generationRoot, '.leases')).filter(name => name.startsWith('selector-'))).toEqual([]);
+    expect(existsSync(join(releaseRoot, 'node_modules/lease-fixture/package.json'))).toBe(true);
+  });
+
   it('preserves an existing pinned clone while running dependency-only preparation', () => {
     mkdirSync(join(integrationRoot, 'node_modules', 'dependency-only-fixture'), { recursive: true });
     writeFileSync(join(integrationRoot, 'node_modules', 'dependency-only-fixture', 'package.json'), '{}');

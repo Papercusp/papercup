@@ -1149,6 +1149,13 @@ dependency_generation_acquire_selector_lease() {
     dependency_generation_log "FATAL: dependency-generation lease owner pid is not live: $owner_pid"
     return 74
   fi
+  # A selector only consumes a published store. If its root is absent, mkdir
+  # "$generation_root/.publish-lock" can never succeed; retrying that ENOENT
+  # spent the whole publish-lock budget before reporting the missing input.
+  if [ ! -d "$generation_root" ]; then
+    dependency_generation_log "FATAL: dependency generation $identity disappeared before it could be leased (generation_root=$generation_root)"
+    return 74
+  fi
   dependency_generation_acquire_publish_lock "$generation_root" || return $?
   if ! dependency_generation_marker_matches "$generation_root/$identity" "$identity"; then
     dependency_generation_release_publish_lock

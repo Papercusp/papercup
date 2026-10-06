@@ -181,6 +181,78 @@ describe('createRoutedModelPort', () => {
     ]);
   });
 
+  const apiProviders = [
+    ['anthropic', 'ANTHROPIC_API_KEY'],
+    ['openai', 'OPENAI_API_KEY'],
+    ['google', 'GOOGLE_GENERATIVE_AI_API_KEY'],
+    ['mistral', 'MISTRAL_API_KEY'],
+    ['groq', 'GROQ_API_KEY'],
+    ['xai', 'XAI_API_KEY'],
+  ] as const;
+  const redirectedCatalog = (provider: string): ModelsDevCatalog => ({
+    [provider]: {
+      env: ['UNRELATED_PROVIDER_SECRET'],
+      models: { 'model-test': { id: 'model-test' } },
+    },
+  });
+
+  it.each(apiProviders)('does not send a catalog-selected foreign secret to %s', async (provider, keyName) => {
+    const createLanguageModel = vi.fn(async () => model());
+    const port = createRoutedModelPort({
+      catalog: redirectedCatalog(provider),
+      credentials: async () => ({}),
+      env: { UNRELATED_PROVIDER_SECRET: 'foreign-test-secret' },
+      createLanguageModel,
+    });
+
+    expect(await collect(port, request(`${provider}/model-test`))).toEqual([
+      expect.objectContaining({ type: 'error', message: expect.stringContaining(keyName) }),
+    ]);
+    expect(createLanguageModel).not.toHaveBeenCalled();
+  });
+
+  it.each(apiProviders)('uses the locally configured %s key despite catalog env metadata', async (provider, keyName) => {
+    const createLanguageModel = vi.fn(async () => model());
+    const port = createRoutedModelPort({
+      catalog: redirectedCatalog(provider),
+      credentials: async () => ({}),
+      env: { [keyName]: ' intended-test-key ', UNRELATED_PROVIDER_SECRET: 'foreign-test-secret' },
+      createLanguageModel,
+    });
+
+    expect((await collect(port, request(`${provider}/model-test`))).at(-1)).toMatchObject({
+      type: 'stop', reason: 'end_turn',
+    });
+    expect(createLanguageModel).toHaveBeenCalledWith(expect.objectContaining({ apiKey: 'intended-test-key' }));
+  });
+
+  it.each(apiProviders)('names only local credential configuration when %s has no key', async (provider, keyName) => {
+    const port = createRoutedModelPort({
+      catalog: redirectedCatalog(provider),
+      credentials: async () => ({}),
+      env: {},
+    });
+
+    const events = await collect(port, request(`${provider}/model-test`));
+    expect(events).toEqual([
+      expect.objectContaining({ type: 'error', message: expect.stringContaining(keyName) }),
+    ]);
+    expect(JSON.stringify(events)).not.toContain('UNRELATED_PROVIDER_SECRET');
+  });
+
+  it('retains the local Google key alias when catalog metadata omits it', async () => {
+    const createLanguageModel = vi.fn(async () => model());
+    const port = createRoutedModelPort({
+      catalog,
+      credentials: async () => ({}),
+      env: { GOOGLE_GENERATIVE_AI_API_KEY: '  ', GOOGLE_API_KEY: 'google-alias-test-key' },
+      createLanguageModel,
+    });
+
+    expect((await collect(port, request('google/gemini-test'))).at(-1)).toMatchObject({ type: 'stop' });
+    expect(createLanguageModel).toHaveBeenCalledWith(expect.objectContaining({ apiKey: 'google-alias-test-key' }));
+  });
+
   it('keeps known subscription families working when models.dev is unavailable', async () => {
     const native: ModelPort = {
       async *stream(req) {

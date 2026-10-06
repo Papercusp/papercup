@@ -181,11 +181,15 @@ describe('app row mapping (P-011)', () => {
 
   it('builds the strict batch body each app accepts', () => {
     const email = buildAppSyncBatch('email', [{ id: 'm-1' }], { cursor: 'cur-1' });
-    expect(email.body).toEqual({ messages: [{ id: 'm-1' }], contacts: [], sourceRef: 'papercusp-vault', cursor: 'cur-1' });
+    expect(email.body).toEqual({ messages: [{ id: 'm-1' }], sourceRef: 'papercusp-vault', cursor: 'cur-1' });
     expect(email.rowCount).toBe(1);
 
     const calendar = buildAppSyncBatch('calendar', [{ id: 'e-1' }]);
-    expect(calendar.body).toEqual({ events: [{ id: 'e-1' }], calendars: [], contacts: [], sourceRef: 'papercusp-vault' });
+    expect(calendar.body).toEqual({ events: [{ id: 'e-1' }], calendars: [], sourceRef: 'papercusp-vault' });
+    // crm P-003 (D-017 point 4): people come from the platform graph, so no app batch carries
+    // a `contacts` key. The apps can only drop it from their strict schemas once this holds.
+    expect('contacts' in email.body).toBe(false);
+    expect('contacts' in calendar.body).toBe(false);
     // No cursor key at all when none is supplied — the schemas are .strict(),
     // so an explicit undefined would be a different (rejected) body.
     expect('cursor' in calendar.body).toBe(false);

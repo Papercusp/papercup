@@ -19,6 +19,61 @@ import { pgDiagnosticIdentity, recordPgResult, setBuildStampResolver } from '@pa
 const root = resolve(__dirname, '../../..');
 const hash = (value: Buffer | string) => createHash('sha256').update(value).digest('hex');
 const executableHashes = new Map<string, string>();
+type WorkloadRequestDiagnostic = {
+  window: number;
+  pair: number;
+  index: number;
+  status: number;
+  rows?: number;
+  requestId: string | null;
+  responseBytes: number;
+  responseSha256: string;
+  elapsedMs: number;
+};
+async function captureWorkloadRequestPair({
+  report, window, pair, fetchRequest, publish, observe,
+}: {
+  report: { requests: WorkloadRequestDiagnostic[] };
+  window: number;
+  pair: number;
+  fetchRequest: (index: number) => Promise<Response>;
+  publish: () => void;
+  observe?: (requestIds: string[]) => Promise<void>;
+}): Promise<string[]> {
+  const captured = await Promise.all([0, 1].map(async index => {
+    const started = performance.now();
+    const response = await fetchRequest(index);
+    const bytes = Buffer.from(await response.arrayBuffer());
+    const request: WorkloadRequestDiagnostic = {
+      window, pair, index, status: response.status,
+      requestId: response.headers.get('x-papercusp-request-id'),
+      responseBytes: bytes.length, responseSha256: hash(bytes),
+      elapsedMs: performance.now() - started,
+    };
+    return { response, bytes, request };
+  }));
+
+  // Persist both responses and expose their IDs to the frozen reader before
+  // validating either status. A 500 must remain diagnosable in the partial
+  // report instead of escaping before its final-window query ID is recorded.
+  report.requests.push(...captured.map(row => row.request));
+  publish();
+  const requestIds = captured.map(row => row.request.requestId)
+    .filter((id): id is string => typeof id === 'string');
+  if (observe) await observe(requestIds);
+
+  for (const row of captured) {
+    expect(row.response.status,
+      'workItems.byHarness request ' + (row.request.requestId ?? 'missing request id') +
+      ' elapsedMs=' + Math.round(row.request.elapsedMs)).toBe(200);
+    const body = JSON.parse(row.bytes.toString());
+    expect(Array.isArray(body.rows)).toBe(true);
+    expect(body.rows.length).toBeLessThanOrEqual(32);
+    row.request.rows = body.rows.length;
+  }
+  publish();
+  return requestIds;
+}
 type PinnedLimits = Omit<Parameters<typeof readPinnedState>[1], 'expectedPid' | 'owners' | 'operatorCacheEntries'>;
 function parsePinnedLimits(raw?: string): PinnedLimits | undefined {
   if (!raw) return undefined;
@@ -604,6 +659,44 @@ async function releaseTargetInspectors(leases: InspectorLease[], effects = inspe
   }
   return results;
 }
+
+describe('workload request diagnostics', () => {
+  it('records both response IDs and observes them before rejecting an HTTP failure', async () => {
+    const report = { requests: [] as WorkloadRequestDiagnostic[] };
+    const published: WorkloadRequestDiagnostic[][] = [];
+    const observed: string[][] = [];
+    const responses = [
+      new Response(JSON.stringify({ rows: [] }), {
+        status: 200, headers: { 'x-papercusp-request-id': '11111111-1111-4111-8111-111111111111' },
+      }),
+      new Response(JSON.stringify({ error: 'row read deadline' }), {
+        status: 500, headers: { 'x-papercusp-request-id': '22222222-2222-4222-8222-222222222222' },
+      }),
+    ];
+
+    await expect(captureWorkloadRequestPair({
+      report,
+      window: 1,
+      pair: 2,
+      fetchRequest: async index => responses[index]!,
+      publish: () => published.push(report.requests.map(row => ({ ...row }))),
+      observe: async requestIds => { observed.push(requestIds); },
+    })).rejects.toThrow();
+
+    expect(report.requests).toMatchObject([
+      { status: 200, requestId: '11111111-1111-4111-8111-111111111111', window: 1, pair: 2 },
+      { status: 500, requestId: '22222222-2222-4222-8222-222222222222', window: 1, pair: 2 },
+    ]);
+    expect(published[0]).toMatchObject([
+      { status: 200, requestId: '11111111-1111-4111-8111-111111111111' },
+      { status: 500, requestId: '22222222-2222-4222-8222-222222222222' },
+    ]);
+    expect(observed).toEqual([[
+      '11111111-1111-4111-8111-111111111111',
+      '22222222-2222-4222-8222-222222222222',
+    ]]);
+  });
+});
 
 describe('actual current-build operator memory baseline', () => {
   describe('sampler target inspector lifecycle', () => {
@@ -1584,20 +1677,13 @@ describe('actual current-build operator memory baseline', () => {
         const startedAt = new Date().toISOString();
         const workload = async (observe?: (ids: string[]) => Promise<void>) => {
           for (let pair = 0; pair < 4; pair++) {
-            await Promise.all([0, 1].map(async index => {
-            const started = performance.now();
-            const response = await fetch(base + query, { headers: { 'x-papercusp-workspace': 'papercusp-workspace' },
-              signal: AbortSignal.timeout(15000) });
-            const bytes = Buffer.from(await response.arrayBuffer());
-            expect(response.status).toBe(200);
-            const body = JSON.parse(bytes.toString());
-            expect(Array.isArray(body.rows)).toBe(true); expect(body.rows.length).toBeLessThanOrEqual(32);
-            report.requests.push({ window, pair, index, status: response.status, rows: body.rows.length,
-              requestId: response.headers.get('x-papercusp-request-id'),
-              responseBytes: bytes.length, responseSha256: hash(bytes), elapsedMs: performance.now() - started });
-            }));
-            if (observe) await observe(report.requests.filter((row: any) => row.window === window)
-              .map((row: any) => row.requestId).filter((id: unknown): id is string => typeof id === 'string'));
+            await captureWorkloadRequestPair({
+              report, window, pair, observe, publish,
+              fetchRequest: () => fetch(base + query, {
+                headers: { 'x-papercusp-workspace': 'papercusp-workspace' },
+                signal: AbortSignal.timeout(15000),
+              }),
+            });
           }
           return report.requests.filter((row: any) => row.window === window).map((row: any) => row.requestId);
         };

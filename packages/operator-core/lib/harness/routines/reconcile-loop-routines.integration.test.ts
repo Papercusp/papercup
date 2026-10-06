@@ -294,7 +294,9 @@ describe('reconcileLoopRoutines — robustness layers', () => {
     const res = await reconcile({ sql, nowMs: T0 + 70_000 }); // 66s quiet since last_active
     expect(res.rearmed).toBe(1);
     expect(res.loops[0].via).toBe('presence-quiescence');
-    expect((await readFire(id)).nextFireMs).toBe(T0 + 4_000 + 60_000);
+    // The activity-relative candidate is already expired, so reconciliation leaves a full
+    // interval from this pass instead of persisting another immediately-due timestamp.
+    expect((await readFire(id)).nextFireMs).toBe(T0 + 70_000 + 60_000);
   });
 
   it('FALLBACK does NOT fire while the session is still recently active', async () => {
@@ -318,7 +320,8 @@ describe('reconcileLoopRoutines — robustness layers', () => {
 
     expect(res.rearmed).toBe(1);
     expect(res.loops[0]).toMatchObject({ id, via: 'claim-dispatch-gap' });
-    expect((await readFire(id)).nextFireMs).toBe(T0 + interval * 1_000);
+    // The claim-relative retry is stale at this pass; keep the new fire in the future.
+    expect((await readFire(id)).nextFireMs).toBe(T0 + 3 * interval * 1_000);
   });
 
   it('BACKSTOP: re-arms a loop parked long past the fire with no signal at all', async () => {
@@ -332,7 +335,8 @@ describe('reconcileLoopRoutines — robustness layers', () => {
     const res = await reconcile({ sql, nowMs: longAfter });
     expect(res.rearmed).toBe(1);
     expect(res.loops[0].via).toBe('stuck-backstop');
-    expect((await readFire(id)).nextFireMs).toBe(T0 + interval * 1_000); // last_fired + interval (a retry)
+    // The last-fired-relative retry is long past; re-arm one full interval from this pass.
+    expect((await readFire(id)).nextFireMs).toBe(longAfter + interval * 1_000);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('re-armed to retry'));
     warn.mockRestore();
   });
