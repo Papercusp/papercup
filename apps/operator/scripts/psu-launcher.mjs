@@ -13116,9 +13116,26 @@ export function codexResumeHome(session, home = homedir()) {
   if (session?.agent !== "codex") return null;
   if (session.codexHome && existsSync(session.codexHome))
     return session.codexHome;
-  if (session.id != null)
-    return join(home, ".papercusp", "su-codex-homes", `session-${session.id}`);
+  if (session.id != null) return suCodexHomeForAdvSession(session.id, process.env, home);
   return null;
+}
+
+/**
+ * The conventional per-session CODEX_HOME for an adv-session id. Mirrors
+ * `codexHomeForSessionKey` in @papercusp/orchestrator/session-launch-dirs,
+ * including its PAPERCUSP_SU_CODEX_HOMES_DIR override, so the launcher and the
+ * operator's ensure-codex-home route agree on which home is "ours"
+ * (WI-10006770). Pure — exported for tests.
+ *
+ * @param {string | number} advSessionId
+ * @param {NodeJS.ProcessEnv | Record<string, string | undefined> | null} [env]
+ * @param {string} [home]
+ */
+export function suCodexHomeForAdvSession(advSessionId, env = process.env, home = homedir()) {
+  const root =
+    (env ?? process.env).PAPERCUSP_SU_CODEX_HOMES_DIR ||
+    join(home, ".papercusp", "su-codex-homes");
+  return join(root, `session-${advSessionId}`);
 }
 
 /**
@@ -15280,11 +15297,12 @@ export async function ensureCodexHomeViaOperator(
   // conventional path. A resume pointed at a relocated/foreign home would
   // otherwise have a DIFFERENT home rebuilt behind its back while the one it
   // actually launches with stays broken (the same guard the claude twin uses).
-  if (
-    codexHome !==
-    join(homedir(), ".papercusp", "su-codex-homes", `session-${advSessionId}`)
-  )
-    return null;
+  // The conventional root honours PAPERCUSP_SU_CODEX_HOMES_DIR exactly like the
+  // server's `codexHomesRoot()` (@papercusp/orchestrator/session-launch-dirs).
+  // Hard-coding ~/.papercusp/su-codex-homes here skipped the repair for every
+  // home under an overridden root, so a damaged config.toml reached the
+  // readiness check unrepaired (WI-10006770).
+  if (codexHome !== suCodexHomeForAdvSession(advSessionId, env)) return null;
   try {
     const resolvedOperatorUrl =
       operatorUrl ??

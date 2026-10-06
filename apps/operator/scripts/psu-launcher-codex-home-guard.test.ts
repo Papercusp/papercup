@@ -461,6 +461,44 @@ describe('Codex resume reconciles project MCP servers', () => {
       rmSync(home, { recursive: true, force: true });
     }
   });
+
+  // WI-10006770: the operator keys Codex homes by codexHomesRoot(), which honours
+  // PAPERCUSP_SU_CODEX_HOMES_DIR. The launcher hard-coded ~/.papercusp/su-codex-homes,
+  // so a home under an overridden root (the installed-PUI acceptance fixture) was
+  // never repaired and a stub config.toml failed the readiness check on restore.
+  it('repairs a home under an overridden PAPERCUSP_SU_CODEX_HOMES_DIR, and still refuses a foreign home', async () => {
+    const owner = 'su-overridden-root-resume';
+    const advSessionId = 7;
+    const root = mkdtempSync(join(tmpdir(), 'codex-homes-root-'));
+    const env = { PAPERCUSP_SU_CODEX_HOMES_DIR: root };
+    const home = join(root, `session-${advSessionId}`);
+    mkdirSync(home, { recursive: true });
+    const calls: string[] = [];
+    const fetchImpl = async (url: string) => {
+      calls.push(url);
+      return { json: async () => ({ ok: true, repaired: false }) };
+    };
+    try {
+      expect(launcher.suCodexHomeForAdvSession(advSessionId, env)).toBe(home);
+      expect(launcher.suCodexHomeForAdvSession(advSessionId, {}, '/h')).toBe('/h/.papercusp/su-codex-homes/session-7');
+
+      const ours = await launcher.ensureCodexHomeViaOperator(owner, home, advSessionId, {
+        operatorUrl: 'http://operator', token: 't', env, fetchImpl,
+      });
+      expect(ours).toEqual({ ok: true, repaired: false });
+      expect(calls).toEqual(['http://operator/api/adv/sessions/ensure-codex-home']);
+
+      // Positive control for the guard: a home that is NOT the conventional path for
+      // this id (here, a different session number under the same root) is never sent.
+      const foreign = await launcher.ensureCodexHomeViaOperator(owner, join(root, 'session-8'), advSessionId, {
+        operatorUrl: 'http://operator', token: 't', env, fetchImpl,
+      });
+      expect(foreign).toBeNull();
+      expect(calls).toHaveLength(1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('Codex managed carry keeps the selected account route', () => {

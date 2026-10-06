@@ -78,6 +78,7 @@
     "scripts/npm-install-safe.mjs",
     "scripts/lib/not-checked.mjs",
     "scripts/lib/git-index-fault.mjs",
+    "scripts/lib/git-optional-locks.mjs",
     "scripts/lib/task-exit-class.mjs",
     // WI-42146 / P-047 — the test-certified watermark that decouples the affected-test
     // diff base from the green-main pointer. Registered for this list's first reason: it

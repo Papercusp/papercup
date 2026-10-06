@@ -3584,6 +3584,18 @@ export function argvProbeSessionId(session: any): any;
  */
 export function codexResumeHome(session: any, home?: string): any;
 /**
+ * The conventional per-session CODEX_HOME for an adv-session id. Mirrors
+ * `codexHomeForSessionKey` in @papercusp/orchestrator/session-launch-dirs,
+ * including its PAPERCUSP_SU_CODEX_HOMES_DIR override, so the launcher and the
+ * operator's ensure-codex-home route agree on which home is "ours"
+ * (WI-10006770). Pure — exported for tests.
+ *
+ * @param {string | number} advSessionId
+ * @param {NodeJS.ProcessEnv | Record<string, string | undefined> | null} [env]
+ * @param {string} [home]
+ */
+export function suCodexHomeForAdvSession(advSessionId: string | number, env?: NodeJS.ProcessEnv | Record<string, string | undefined> | null, home?: string): string;
+/**
  * The refusal text for a resume codex is going to reject anyway. Pure — exported
  * for tests.
  *
