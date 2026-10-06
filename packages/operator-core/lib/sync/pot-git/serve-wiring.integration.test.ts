@@ -51,7 +51,7 @@ import { fetchOverDuplex } from './fetch-transport';
 import { wireHiveGitServe, openHiveGitFetchDuplex, _testing as serveTesting } from './serve-wiring';
 import { scopeRepoWireKey } from './scope-repo';
 import { setPotGitMode, getPotGitMode } from '../../harness/git-sync/hive-git-mode';
-import { addRevokedHivePubkeys } from '../../hive-membership-store';
+import { addRevokedHivePubkeys, upsertHiveMember } from '../../hive-membership-store';
 import { loadRevokedHivePubkeysForLocalPot, unsafeFederatedPotScope } from '../../federated-pot-scope';
 
 const WORKSPACE_ID = `ws-serve-wiring-${randomUUID().slice(0, 8)}`;
@@ -61,6 +61,21 @@ const TOPIC = Buffer.alloc(32, 7); // a fixed 32-byte stand-in for the hive topi
 // enforce a real Hive row exists (getHiveBySlug), same fixture idiom as
 // hive-settings-store.integration.test.ts's own `pk()` helper.
 const FAKE_PUBKEY = Buffer.alloc(32, 9).toString('base64');
+// WI-10006832: the serve gate admits only a verified device that a member of this pot attests.
+// The shared server below identifies every client socket as CLIENT_DEVICE, attested in beforeAll.
+const CLIENT_DEVICE = Buffer.alloc(32, 13).toString('base64');
+const CLIENT_MEMBER_ID = 4141;
+const HIVE_SCOPE_REASON = 'test fixture: this hive home is its own federated scope';
+function attestation(devicePubkey: string) {
+  return {
+    device_pubkey: devicePubkey,
+    gist_id: `gist-${devicePubkey.slice(0, 6)}`,
+    gist_url: '',
+    device_label: 'test-device',
+    created_at: Date.now(),
+    signature_by_device: '',
+  };
+}
 
 async function mintCommit(repoPath: string, msg: string): Promise<string> {
   const tree = await defaultRunGit(['hash-object', '-w', '-t', 'tree', '/dev/null'], repoPath);
@@ -123,6 +138,13 @@ describe('pot-git serve-wiring (P-201: serveUploadPack over the papercusp/pot-gi
       pubkeyBase64: FAKE_PUBKEY,
       keychainId: 'k-serve-wiring',
     });
+    await upsertHiveMember({
+      workspaceId: WORKSPACE_ID,
+      potHomeSlug: unsafeFederatedPotScope(HIVE, HIVE_SCOPE_REASON),
+      githubUserId: CLIENT_MEMBER_ID,
+      githubUsername: 'client-under-test',
+      deviceAttestations: [attestation(CLIENT_DEVICE)],
+    });
 
     root = await mkdtemp(join(tmpdir(), 'hgserve-'));
     process.env.PAPERCUSP_HIVE_GIT_ROOT = root;
@@ -148,7 +170,11 @@ describe('pot-git serve-wiring (P-201: serveUploadPack over the papercusp/pot-gi
       // SecretStream, exactly mirroring what the real hive-swarm connection's
       // `noiseStream` already provides in production.
       const srvNoise = new SecretStream(false, srvConn);
-      wireHiveGitServe(srvNoise, TOPIC, { potHomeSlug: HIVE, workspaceId: WORKSPACE_ID });
+      wireHiveGitServe(srvNoise, TOPIC, {
+        potHomeSlug: HIVE,
+        workspaceId: WORKSPACE_ID,
+        resolvePeerDevicePubkey: () => CLIENT_DEVICE,
+      });
     });
     await new Promise<void>((r) => server.listen(sockPath, () => r()));
     clientSocket = await new Promise<Socket>((resolve, reject) => {
@@ -364,10 +390,9 @@ describe('pot-git serve-wiring (P-201: serveUploadPack over the papercusp/pot-gi
    * FULL fetch ceiling (120 s in prod) on a failure the serving side knew
    * about instantly. Now it answers `refuse('serve-error')`.
    *
-   * This test needs its own wiring because the shared server above passes no
-   * `resolvePeerDevicePubkey` at all (that path refuses cleanly with
-   * `scope-repo-no-verified-peer`, which is a DIFFERENT branch and would not
-   * catch this bug).
+   * This test needs its own wiring because the shared server above passes a
+   * resolver that never throws (an unverified socket refuses cleanly with
+   * `unverified-peer`, which is a DIFFERENT branch and would not catch this bug).
    */
   it('REGRESSION (WI-6184): a THROWING serve hook answers refuse(serve-error) instead of hanging the peer', async () => {
     const badSockPath = join(root, 'serve-error.sock');
@@ -424,9 +449,10 @@ describe('pot-git serve-wiring (P-201: serveUploadPack over the papercusp/pot-gi
    * written by the same writer substrate:revoke_contributor uses (addRevokedHivePubkeys) and read
    * back through the exact lookup the gate uses, so this pins the real row, not a stub.
    */
-  it('WI-10006827: refuses the main repo to a REVOKED verified device, fast and named; a non-revoked device is still served', async () => {
+  it('WI-10006827 + WI-10006832: the main repo is refused, fast and named, to a revoked, an unattested and an unverified peer; an attested device is served', async () => {
     const REVOKED = Buffer.alloc(32, 11).toString('base64');
     const MEMBER = Buffer.alloc(32, 12).toString('base64');
+    const STRANGER = Buffer.alloc(32, 14).toString('base64');
     await db.adminSql`INSERT INTO harness_shared.pot_members (workspace_id, pot_home_slug, github_user_id, github_username)
       VALUES (${WORKSPACE_ID}, ${HIVE}, 4242, 'owner-under-test') ON CONFLICT DO NOTHING`;
     await addRevokedHivePubkeys(
@@ -437,8 +463,17 @@ describe('pot-git serve-wiring (P-201: serveUploadPack over the papercusp/pot-gi
     );
     // Positive control on the fixture: the gate's own lookup sees the revocation.
     expect(await loadRevokedHivePubkeysForLocalPot(WORKSPACE_ID, HIVE)).toContain(REVOKED);
+    // MEMBER is attested through the real writer. REVOKED is offered too, and the writer drops it
+    // because it is revoked, which is why the revoked refusal below is not an attestation gap.
+    await upsertHiveMember({
+      workspaceId: WORKSPACE_ID,
+      potHomeSlug: unsafeFederatedPotScope(HIVE, HIVE_SCOPE_REASON),
+      githubUserId: 4242,
+      githubUsername: 'owner-under-test',
+      deviceAttestations: [attestation(MEMBER), attestation(REVOKED)],
+    });
 
-    const fetchAs = async (peer: string, tag: string) => {
+    const fetchAs = async (peer: string | undefined, tag: string) => {
       const sock = join(root, `revoke-${tag}.sock`);
       const srv = createServer({ allowHalfOpen: true }, (srvConn) => {
         srvConn.on('error', () => {});
@@ -476,7 +511,13 @@ describe('pot-git serve-wiring (P-201: serveUploadPack over the papercusp/pot-gi
 
     const refused = await fetchAs(REVOKED, 'revoked');
     expectFastNamedRefusal(refused.res, refused.elapsedMs, /serve refused: revoked-device/);
-    // Control: the same wiring, the same repo, a device that is not revoked, is served.
+    // WI-10006832: a socket that never proved a device (a client that skipped the signed hello).
+    const unverified = await fetchAs(undefined, 'unverified');
+    expectFastNamedRefusal(unverified.res, unverified.elapsedMs, /serve refused: unverified-peer/);
+    // WI-10006832: a verified device that no member of this pot attests.
+    const stranger = await fetchAs(STRANGER, 'stranger');
+    expectFastNamedRefusal(stranger.res, stranger.elapsedMs, /serve refused: unknown-device/);
+    // Control: the same wiring, the same repo, an attested device that is not revoked, is served.
     const served = await fetchAs(MEMBER, 'member');
     expect(served.res.code, served.res.stderr).toBe(0);
   });

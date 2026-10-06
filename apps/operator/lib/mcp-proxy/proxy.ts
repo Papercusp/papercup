@@ -51,7 +51,10 @@ import {
   MCP_REQUEST_TRACE_HEADER,
   MAX_MCP_REQUEST_TRACE_ID_CHARS,
 } from "@papercusp/operator-core/lib/mcp-request-trace";
-import { isCheapRepeatingBeat } from "@papercusp/operator-core/lib/system-health/mcp-proxy-beats";
+import {
+  isCheapRepeatingBeat,
+  isFastFailPrecheck,
+} from "@papercusp/operator-core/lib/system-health/mcp-proxy-beats";
 import {
   isBoundedDevTelemetryArgs,
   isBoundedCoordPresenceArgs,
@@ -1745,10 +1748,10 @@ function forwardOnce(
  *  NEXT beat carry the liveness signal. Deliberately far below `retryWindowMs`. */
 export const CHEAP_REPEATING_BEAT_RETRY_WINDOW_MS = 2000;
 
-/** The retry window this REQUEST gets — the restart-sized default, unless it is a cheap
- *  repeating beat, which must fail fast rather than amplify (EI-19294517824914302). */
+/** The retry window this REQUEST gets — restart-sized by default, short for cheap repeating
+ *  beats and fail-closed preflights that must surface promptly rather than amplify retries. */
 export function effectiveRetryWindowMs(url: string, windowMs: number): number {
-  return isCheapRepeatingBeat(url)
+  return isCheapRepeatingBeat(url) || isFastFailPrecheck(url)
     ? Math.min(CHEAP_REPEATING_BEAT_RETRY_WINDOW_MS, windowMs)
     : windowMs;
 }

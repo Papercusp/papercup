@@ -481,11 +481,12 @@ describe('mid-turn-context — the budget is enforced HERE, because injection.ts
     expect(OVERSIZED.length).toBeGreaterThan(4000);
   });
 
-  it('keeps the HANDLE when it clips — scope and id survive, so the teaser is actionable', async () => {
+  it('keeps the memory id when clipping without prescribing a possibly unavailable tool', async () => {
     buildMemoryContextBlockMock.mockResolvedValueOnce(OVERSIZED);
     const out = await post({ owner: owner(), tool: 'Grep', toolInput: { pattern: 'slow session history' } });
     expect(out.text).toContain('id=980ce692');
-    expect(out.text).toContain('memory:search');
+    expect(out.text).toContain('(clipped; id retained)');
+    expect(out.text).not.toContain('memory:search');
   });
 
   it('leaves a block already within budget byte-identical', () => {

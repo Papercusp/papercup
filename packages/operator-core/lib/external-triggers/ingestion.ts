@@ -115,12 +115,36 @@ async function claimDelivery(
   sql: postgres.Sql,
   event: CanonicalExternalEvent,
   sink: Pick<ExternalTriggerSink, 'kind' | 'ref'>,
+  legacyDedupeKey?: string,
 ): Promise<{ row: DeliveryRow; shouldDeliver: boolean }> {
   // The payload is stored ONCE per event, on the event-bus row (WI-10004921): that is
   // the row trigger_runs.delivery_id points at and the only one anything reads back.
   // Every other sink row is pure dedupe/outcome ledger — a retry re-delivers the
   // in-memory event, never a stored copy — so storing it there quadrupled the table.
   const payload = storesDeliveryPayload(sink) ? JSON.stringify(event.payload) : null;
+  // Keep already-delivered rows idempotent across the key-format change. Rows
+  // created before datatype-scoped defaults used source:externalId. Move only
+  // the row for this datatype; a sibling datatype may legitimately share that
+  // legacy key and must get its own new row. Explicit adapter keys bypass this.
+  if (legacyDedupeKey && legacyDedupeKey !== event.dedupeKey) {
+    await sql`
+      UPDATE harness_shared.trigger_deliveries AS legacy
+         SET dedupe_key = ${event.dedupeKey}, updated_at = now()
+       WHERE legacy.workspace_id = ${event.workspaceId}
+         AND legacy.source_id = ${event.sourceId}
+         AND legacy.dedupe_key = ${legacyDedupeKey}
+         AND legacy.datatype_id = ${event.datatypeId}
+         AND legacy.sink_kind = ${sink.kind}
+         AND legacy.sink_ref = ${sink.ref}
+         AND NOT EXISTS (
+           SELECT 1 FROM harness_shared.trigger_deliveries AS current
+            WHERE current.workspace_id = ${event.workspaceId}
+              AND current.source_id = ${event.sourceId}
+              AND current.dedupe_key = ${event.dedupeKey}
+              AND current.sink_kind = ${sink.kind}
+              AND current.sink_ref = ${sink.ref}
+         )`;
+  }
   const inserted = await sql<DeliveryRow[]>`
     INSERT INTO harness_shared.trigger_deliveries
       (workspace_id, source_id, dedupe_key, datatype_id, event_key, payload,
@@ -317,7 +341,8 @@ export async function ingestExternalTriggerEvent(
 
   const deliveries: ExternalTriggerDeliveryResult[] = [];
   for (const sink of sinks) {
-    const claim = await claimDelivery(sql, canonical, sink);
+    const legacyDedupeKey = input.dedupeKey === undefined ? `${source}:${externalId}` : undefined;
+    const claim = await claimDelivery(sql, canonical, sink, legacyDedupeKey);
     if (!claim.shouldDeliver) {
       deliveries.push({
         sinkKind: sink.kind,

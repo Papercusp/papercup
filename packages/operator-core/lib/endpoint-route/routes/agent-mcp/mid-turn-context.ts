@@ -849,7 +849,10 @@ function clampSection(section: string, budget: number): string {
   // Prefer a word boundary, but never sacrifice most of the budget to find one.
   const lastSpace = cut.lastIndexOf(' ');
   const head = lastSpace > budget * 0.6 ? cut.slice(0, lastSpace) : cut;
-  return `${head.trimEnd()} … (clipped — memory:search the id above for the rest)`;
+  // Principals calling this shared endpoint can have different tool grants.
+  // Keep the stable id, but do not prescribe memory:search to callers that
+  // may not be allowed to invoke it.
+  return `${head.trimEnd()} … (clipped; id retained)`;
 }
 
 /** One tool call as the PostToolBatch hook ships it (clamped, see the script). */

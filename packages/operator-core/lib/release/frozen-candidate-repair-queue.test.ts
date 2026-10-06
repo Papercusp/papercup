@@ -17,6 +17,7 @@ import {
   frozenRepairHeadAwaitsVerification,
   markFrozenCandidateVerificationRed,
   markFrozenRepairAdmitted,
+  settleFrozenRepairAdmission,
   markFrozenRepairAgeEscalated,
   markFrozenRepairExhausted,
   markFrozenRepairFixerDead,
@@ -2198,5 +2199,61 @@ describe('WI-10000741 / D-014 — a red measured behind a mid-suite admission is
     expect(() =>
       recordFrozenRepairSupersededRed(queue, { measuredHead: C, failingTests: [], nowMs: Number.NaN }),
     ).toThrow(/nowMs/);
+  });
+});
+
+describe('settleFrozenRepairAdmission — what a missed door write means (WI-10006866)', () => {
+  // The door's entry: hunk-exact, wall-clock atMs, built onto the fresh queue's head C.
+  const door = {
+    atMs: T0 + 10, actor: 'su-door', source: { ref: 'staging', sha: C1 },
+    fromRepairHead: C, toRepairHead: C2, paths: ['lib/a.test.ts'], unchanged: [],
+    blobs: { 'lib/a.test.ts': C1 }, mode: 'hunk-exact' as const,
+  };
+  // What a concurrent repair-queue read writes when it reconciles the row from the ref:
+  // no mode, the synthetic 2000-01-01 commit date, provenance stamped.
+  const reconciled = {
+    atMs: 946_684_800_000, actor: 'su-door', source: { ref: 'staging', sha: C1 },
+    fromRepairHead: C, toRepairHead: C2, paths: ['lib/a.test.ts'], unchanged: [],
+    blobs: { 'lib/a.test.ts': C1 }, provenance: 'reconciled-from-ref' as const,
+  };
+
+  it('adopts a reconciled rebuild of the SAME admission: persisted, door entry replaces it', () => {
+    // The measured 2026-10-06 shape: the row is already at the admission because a reader
+    // reconciled it; the door's CAS missed. Retracting here is what created ref-behind-row.
+    const row = { ...markFrozenRepairAdmitted(fresh(), reconciled), updatedAtMs: T0 + 1 };
+    const out = settleFrozenRepairAdmission(row, door);
+    expect(out.kind).toBe('adopt-reconciled');
+    expect(out.queue?.repairHead).toBe(C2);
+    expect(out.queue?.admissions).toHaveLength(1);
+    expect(out.queue?.admissions?.[0]).toEqual(door);
+    expect(out.queue?.admissions?.[0]).not.toHaveProperty('provenance');
+    expect(out.queue?.updatedAtMs).toBeGreaterThanOrEqual(door.atMs);
+    expect(out.queue?.lastAdmittedAtMs).toBe(door.atMs);
+    // The writer persists JSON, so the settled row must survive a parse round trip.
+    expect(parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(out.queue)))?.repairHead).toBe(C2);
+  });
+
+  it('a row that already carries the door entry is recorded, and returns the fresh row ITSELF (no write)', () => {
+    const row = markFrozenRepairAdmitted(fresh(), door);
+    const out = settleFrozenRepairAdmission(row, door);
+    expect(out.kind).toBe('recorded');
+    expect(out.queue).toBe(row);
+  });
+
+  it('a row still at the parent (an unrelated writer won the CAS) gets the admission applied', () => {
+    const row = { ...fresh(), updatedAtMs: T0 + 5 };
+    const out = settleFrozenRepairAdmission(row, door);
+    expect(out.kind).toBe('apply');
+    expect(out.queue?.repairHead).toBe(C2);
+    expect(out.queue?.admissions?.at(-1)).toEqual(door);
+  });
+
+  it('diverged rows are NOT reported as persisted: another head, an unledgered head, another parent', () => {
+    const elsewhere = { ...fresh(), repairHead: C1 };
+    expect(settleFrozenRepairAdmission(elsewhere, door)).toMatchObject({ kind: 'diverged', queue: null });
+    const unledgered = { ...markFrozenRepairAdmitted(fresh(), door), admissions: [] };
+    expect(settleFrozenRepairAdmission(unledgered, door)).toMatchObject({ kind: 'diverged', queue: null });
+    const otherParent = markFrozenRepairAdmitted({ ...fresh(), repairHead: C1 }, { ...reconciled, fromRepairHead: C1 });
+    expect(settleFrozenRepairAdmission(otherParent, door)).toMatchObject({ kind: 'diverged', queue: null });
   });
 });

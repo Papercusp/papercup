@@ -214,6 +214,16 @@ describe('child idle-window guard (WI-10004030 — the WI-10004029 gate-red clas
     ]);
   });
 
+  it('ignores report cadence data in a spawning file while retaining the actual child option', () => {
+    const src = [
+      'const report = { workload: { idleMs: 200 } };',
+      'execProcess({ command: process.execPath, idleTimeoutMs: 300 });',
+    ].join('\n');
+    expect(findChildIdleWindowBudgets(src)).toEqual([
+      expect.objectContaining({ key: 'idleTimeoutMs', budgetMs: 300, via: 'literal', exempt: false }),
+    ]);
+  });
+
   it('RESOLVES a same-file const, so hoisting the literal into a name does not evade the floor', () => {
     const src = `const IDLE_MS = 300;\nexecProcess({ command: process.execPath, idleTimeoutMs: IDLE_MS });`;
     expect(findChildIdleWindowBudgets(src)).toEqual([

@@ -17,7 +17,7 @@
  * the detector fired. Confirmed non-vacuous: stubbing `noteSessionHighWater` to a
  * no-op fails the "fires" and "new high-water" cases below.
  */
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // WI-6364: the superseded-store lookup reads the harness registry. PARTIAL mock
 // (importOriginal) is mandatory — serve-wiring's transitive imports touch other
@@ -31,7 +31,7 @@ vi.mock('../../harness-registry', async (importOriginal) => ({
 
 import {
   _testing,
-  resolveRevokedPeerRefusal,
+  resolvePeerAdmission,
   resolveServeAdmission,
   DEFAULT_SERVE_PROGRESS_WINDOW_MS,
   type InFlightServe,
@@ -663,39 +663,69 @@ describe('resolveServeAdmission (EI-18802033487678337)', () => {
 });
 
 /**
- * WI-10006827: a revoked device must not pull ANY repo. Soak c1010r measured the hole: the
- * tower served the pot's main repo to device ywj8zjsF four minutes after it was revoked,
- * because only scopes/ repos consulted the caller's device. The end-to-end wiring (a real
- * pot_members.revoked_pubkeys row refusing a real fetch) is in serve-wiring.integration.test.ts.
+ * WI-10006832: only a verified, attested, non-revoked device may pull ANY repo. WI-10006827
+ * (soak c1010r: the tower served the main repo to device ywj8zjsF four minutes after it was
+ * revoked) closed the revoked half with a deny-list, which still served an UNVERIFIED socket.
+ * The end-to-end wiring (real pot_members rows refusing real fetches) is in
+ * serve-wiring.integration.test.ts.
  */
-describe('resolveRevokedPeerRefusal (WI-10006827)', () => {
+describe('resolvePeerAdmission (WI-10006832, supersedes WI-10006827)', () => {
   const base = { workspaceId: 'ws-1', potHomeSlug: 'pot-a' };
+  // MEMBER= is attested to github user 77; nobody attests STRANGER=.
+  const members: Record<string, number> = { 'MEMBER=': 77, 'REVOKED=': 88 };
+  const resolveMember = vi.fn(async (_ws: string, _slug: string, pk: string) => members[pk] ?? null);
+  const loadRevoked = vi.fn(async () => new Set(['REVOKED=', 'OTHER=']));
+  beforeEach(() => {
+    resolveMember.mockClear();
+    loadRevoked.mockClear();
+  });
 
-  it('refuses a verified peer whose device is in the revoked set', async () => {
-    const loadRevoked = vi.fn(async () => new Set(['REVOKED=', 'OTHER=']));
-    await expect(resolveRevokedPeerRefusal({ ...base, peerDevicePubkey: 'REVOKED=', loadRevoked })).resolves.toBe(
-      'revoked-device',
-    );
+  it('admits a verified, attested, non-revoked device and returns its member (calibration: not refuse-all)', async () => {
+    await expect(
+      resolvePeerAdmission({ ...base, peerDevicePubkey: 'MEMBER=', loadRevoked, resolveMember }),
+    ).resolves.toEqual({ ok: true, githubUserId: 77 });
     expect(loadRevoked).toHaveBeenCalledWith('ws-1', 'pot-a');
+    expect(resolveMember).toHaveBeenCalledWith('ws-1', 'pot-a', 'MEMBER=');
   });
 
-  it('gives no verdict for a verified peer that is not revoked (control: the gate is not refuse-all)', async () => {
-    const loadRevoked = vi.fn(async () => new Set(['REVOKED=']));
-    await expect(resolveRevokedPeerRefusal({ ...base, peerDevicePubkey: 'MEMBER=', loadRevoked })).resolves.toBeNull();
-  });
-
-  it('gives no verdict, and reads nothing, when the socket carries no verified device', async () => {
-    const loadRevoked = vi.fn(async () => new Set(['REVOKED=']));
-    await expect(resolveRevokedPeerRefusal({ ...base, peerDevicePubkey: undefined, loadRevoked })).resolves.toBeNull();
+  it('refuses an UNVERIFIED socket (no signed hello) and reads nothing: the WI-10006832 hole', async () => {
+    await expect(
+      resolvePeerAdmission({ ...base, peerDevicePubkey: undefined, loadRevoked, resolveMember }),
+    ).resolves.toEqual({ ok: false, refusal: 'unverified-peer' });
+    await expect(
+      resolvePeerAdmission({ ...base, peerDevicePubkey: '', loadRevoked, resolveMember }),
+    ).resolves.toEqual({ ok: false, refusal: 'unverified-peer' });
     expect(loadRevoked).not.toHaveBeenCalled();
+    expect(resolveMember).not.toHaveBeenCalled();
+  });
+
+  it('refuses a revoked device by name, even when a stale attestation still maps it to a member', async () => {
+    await expect(
+      resolvePeerAdmission({ ...base, peerDevicePubkey: 'REVOKED=', loadRevoked, resolveMember }),
+    ).resolves.toEqual({ ok: false, refusal: 'revoked-device' });
+  });
+
+  it('refuses a verified device that no member of this pot attests', async () => {
+    await expect(
+      resolvePeerAdmission({ ...base, peerDevicePubkey: 'STRANGER=', loadRevoked, resolveMember }),
+    ).resolves.toEqual({ ok: false, refusal: 'unknown-device' });
   });
 
   it('fails closed when the revoked set cannot be read', async () => {
-    const loadRevoked = vi.fn(async () => {
+    const failingRevoked = vi.fn(async (): Promise<Set<string>> => {
       throw new Error('pg down');
     });
-    await expect(resolveRevokedPeerRefusal({ ...base, peerDevicePubkey: 'MEMBER=', loadRevoked })).resolves.toBe(
-      'revocation-lookup-error',
-    );
+    await expect(
+      resolvePeerAdmission({ ...base, peerDevicePubkey: 'MEMBER=', loadRevoked: failingRevoked, resolveMember }),
+    ).resolves.toEqual({ ok: false, refusal: 'revocation-lookup-error' });
+  });
+
+  it('fails closed when the member lookup errors', async () => {
+    const failingMember = vi.fn(async (): Promise<number | null> => {
+      throw new Error('pg down');
+    });
+    await expect(
+      resolvePeerAdmission({ ...base, peerDevicePubkey: 'MEMBER=', loadRevoked, resolveMember: failingMember }),
+    ).resolves.toEqual({ ok: false, refusal: 'member-lookup-error' });
   });
 });

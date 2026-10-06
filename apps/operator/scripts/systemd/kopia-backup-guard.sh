@@ -442,8 +442,16 @@ holder_stalled_sec() {
   [ "$stalled" -ge "${progress_stall_sec%.*}" ] || return 1
   printf '%d' "$stalled"
 }
+waiter_mode_of() {
+  case "$1" in
+    *--mode\ wait*) printf 'wait' ;;
+    *--mode\ scheduled*) printf 'scheduled' ;;
+    *) printf 'unknown' ;;
+  esac
+}
+yield_waiter_logged=
 has_live_priority_waiter() {
-  local request pid cmd due_path due hold_reason now window_base stalled
+  local request pid cmd due_path due hold_reason now window_base stalled yield_reason
   for request in "${lock_path}".*.wait; do
     [ -f "$request" ] || continue
     due_path="${request%.wait}.due"
@@ -476,6 +484,24 @@ has_live_priority_waiter() {
           fi
           continue
         fi
+      fi
+      # Name the waiter this holder honors, once per waiter and reason; the caller's
+      # next line says what it did about it (stopping-during-run, or holding for a
+      # child that is not restart-safe). Before this line the holder's journal said
+      # only "stopping-during-run reason=priority-waiter", so a preemption by a
+      # waiter that logs nowhere the host can read (2026-10-06 15:19:44 EDT: an
+      # overdue sweep stopped while the only logged waiter was 33 min from due)
+      # could not be attributed afterwards.
+      if [ "$pressure_escalated" != 1 ]; then
+        yield_reason=holder-not-overdue
+      elif ! due=$(read_stamp "$due_path"); then
+        yield_reason=waiter-due-now
+      else
+        yield_reason="waiter-due waiter_overdue_sec=$(( $(date +%s) - ${due%.*} ))"
+      fi
+      if [ "$yield_waiter_logged" != "$request:${yield_reason%% *}" ]; then
+        yield_waiter_logged="$request:${yield_reason%% *}"
+        guard_log "result=honoring-priority-waiter reason=$yield_reason waiter=${request##*/} waiter_pid=$pid waiter_mode=$(waiter_mode_of "$cmd")"
       fi
       return 0
     fi

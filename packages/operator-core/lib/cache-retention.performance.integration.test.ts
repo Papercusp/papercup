@@ -199,7 +199,6 @@ describe('cache retained roots and resource costs in isolated processes', () => 
         plane: 'isolated-current-source-cache', incomplete: true, cohorts: [],
         testSource: { sha256: fingerprint(readFileSync(fileURLToPath(import.meta.url), 'utf8')) },
         workload: { expiredEntries: 438, rowsPerExpiredEntry: 948, bodyCodeUnits: 256,
-          // idle-window-ok: this is an observation-cadence receipt, not a child idle watchdog.
           usefulEntries: 604, usefulBodyCodeUnits: 256, reads: 32, idleMs: 200 },
         limitations: ['Private cache runtime; no live operator or production savings claim.',
           'Unforced PSS and cumulative V8 allocation are separate from subsequent diagnostic GC/root reclamation.',

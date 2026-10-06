@@ -176,6 +176,7 @@ import {
   type GitSyncRoutineMetadataPatch,
   type RefAnnounceRoutineState,
 } from './routine-metadata-state';
+import { clearMissingCheckout, recordMissingCheckoutSkip } from './missing-checkout';
 import { canonicalRepoKey } from '../../sync/pot-git/repo-identity';
 import {
   signedProtocolContextMatches,
@@ -3282,6 +3283,24 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
       await patchRoutineMetadata(slug, workspaceId, { fire_started_at: Date.now() });
       const { gate: g, entry } = await gitSyncRuntimeGate(slug, workspaceId, repoPathOverride);
       if (!g.eligible) {
+        if (g.reason === 'no_path' && workspaceId) {
+          // WI-10006867: a vanished checkout gets its own lifecycle (missing-checkout.ts) —
+          // the same skip fields plus a first-seen `missing_checkout { since, path }`, and
+          // retirement once it has been gone past the grace — instead of skipping forever
+          // under a frozen last_synced_at that reads as scheduler starvation.
+          const recorded = await recordMissingCheckoutSkip(getOrgPg().sql, {
+            slug,
+            workspaceId,
+            path: entry?.path ?? null,
+            nowMs: Date.now(),
+          });
+          if (recorded?.retired) {
+            console.warn(
+              `[git-sync] ${slug}: checkout missing since ${new Date(recorded.since).toISOString()} — routine retired (paused with reason); resume with routines:set { active:true } once restored`,
+            );
+          }
+          return g;
+        }
         await patchRoutineMetadata(slug, workspaceId, {
           last_status: 'skipped',
           local_sync_status: 'skipped',
@@ -3290,6 +3309,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
         });
         return g;
       }
+      if (workspaceId) await clearMissingCheckout(getOrgPg().sql, { slug, workspaceId });
       // github-bridge P-003 (S-5, run-time half): re-consult the hive's git mode
       // EVERY tick — a hive flipped legacy→bridged must stop origin-pushing without
       // a routine re-seed (the seeded trigger_config.push predates the flip). Only

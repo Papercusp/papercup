@@ -1451,6 +1451,10 @@ describe('Kopia managed entrypoint contract', () => {
     expect(declined, evidence).toHaveLength(1);
     // ...then yields once the dump is due, not before and not at its own end.
     expect(hotOut, evidence).toContain('result=stopping-during-run reason=priority-waiter');
+    // ...naming the waiter it honored, so the preemption is attributable afterwards.
+    expect(hotOut, evidence).toMatch(
+      /result=honoring-priority-waiter reason=waiter-due waiter_overdue_sec=-?\d+ waiter=global\.lock\.db-dump\.\d+\.wait waiter_pid=\d+ waiter_mode=scheduled\b/,
+    );
     expect(hotOut, evidence).toContain('result=escalation-refunded');
     expect(Number(readFileSync(dbRan, 'utf8').trim()), evidence).toBeGreaterThanOrEqual(dueEpoch);
     expect(
@@ -1492,6 +1496,8 @@ describe('Kopia managed entrypoint contract', () => {
     expect(hotOut).toContain('result=staleness-override-armed');
     expect(hotOut).toContain('result=stopping-during-run reason=priority-waiter');
     expect(hotOut).not.toContain('reason=holder-overdue');
+    // A marker with no .due is honored as due now -- and the log says so, with its pid.
+    expect(hotOut).toMatch(/result=honoring-priority-waiter reason=waiter-due-now waiter=\S+\.wait waiter_pid=\d+ waiter_mode=wait\b/);
     expect(existsSync(join(dir, 'wait-ran'))).toBe(true);
   });
 
@@ -1977,6 +1983,10 @@ describe('Kopia managed entrypoint contract', () => {
     expect(contended, out).toBeGreaterThan(cleared);
     expect(started, out).toBeGreaterThan(contended);
     expect(hotOut.text).toContain('result=stopping-during-run reason=priority-waiter');
+    // A holder that is not overdue honors every waiter at once; the log names which.
+    expect(hotOut.text).toMatch(
+      /result=honoring-priority-waiter reason=holder-not-overdue waiter=\S+\.wait waiter_pid=\d+ waiter_mode=scheduled\b/,
+    );
     expect(existsSync(dbRan)).toBe(true);
   }, 30_000);
 

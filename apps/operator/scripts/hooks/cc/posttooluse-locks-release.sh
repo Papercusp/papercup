@@ -476,6 +476,63 @@ def recover_failed_code_mode_edit(current_cache_path):
 # lock must remain held. The helper classifies success + enrolled paths itself.
 run_declaration_regenerator(['--hook-payload'], raw)
 
+
+def attest_retained_edit():
+    """WI-10006831: attribute an edit made under the owner's own explicit hold.
+
+    PreToolUse writes <tool_use_id>.attest for paths it found already held by
+    this owner (no release token, EI-63). On a successful native edit, send
+    locks:release { retain:true, native_edit_proof } so the edit reaches
+    edit_attribution_ledger while the deliberate hold stays in place. The
+    paths travel ONLY inside native_edit_proof: an operator predating `retain`
+    strips that key, and without a `paths` selector it refuses rather than
+    releasing the hold. Best-effort, and the sidecar is consumed either way.
+    """
+    attest_path = os.path.join(cache_dir, tool_use_id + '.attest')
+    if not os.path.exists(attest_path):
+        return
+    try:
+        with open(attest_path) as f:
+            attest = json.load(f)
+    except Exception:
+        attest = None
+    try:
+        os.remove(attest_path)
+    except Exception:
+        pass
+    if not isinstance(attest, dict):
+        return
+    paths = attest.get('paths')
+    domain = attest.get('domain')
+    if not isinstance(paths, list) or not paths or not all(isinstance(p, str) and p for p in paths):
+        return
+    proof = native_edit_proof(tool_name, payload.get('tool_response', payload.get('toolResponse')), paths)
+    if proof is None:
+        # A failed or unrecognized edit is not evidence of a mutation.
+        return
+    attest_args = {'retain': True, 'native_edit_proof': proof}
+    if isinstance(domain, str) and domain:
+        attest_args['coordination_domain'] = domain
+    result, error = call_tool('locks:release', attest_args)
+    attributed = (
+        error is None and isinstance(result, dict) and result.get('ok') is True
+        and isinstance(result.get('attributed'), list)
+        and all(path in result['attributed'] for path in paths)
+    )
+    value = {
+        'ts': now_iso(), 'owner': owner, 'tool': tool_name, 'paths': paths[:50],
+        'attributed': attributed,
+        **({} if attributed else {'detail': str(error or result)[:200]}),
+    }
+    write_marker('last-attest.json', value)
+    write_marker(owner_marker_name('attest'), value)
+
+
+try:
+    attest_retained_edit()
+except Exception:
+    pass
+
 cache_path = os.path.join(cache_dir, tool_use_id + '.lock')
 if not os.path.exists(cache_path):
     recover_failed_code_mode_edit(cache_path)

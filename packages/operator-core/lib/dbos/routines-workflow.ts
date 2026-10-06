@@ -1184,6 +1184,35 @@ async function routinesTickImpl(): Promise<void> {
     console.warn(`[coord-program] accepted root launch scan failed: ${error instanceof Error ? error.message : error}`);
   }
 
+  // WI-10006859 / D-017: an accepted AGENT operation needs its applied worker
+  // launched. Claim + launch run inside ONE step so a replayed tick reuses the
+  // recorded result instead of spawning again; the claim's conditional UPDATE
+  // makes a re-executed step skip receipts it already placed. Fail-soft.
+  try {
+    const [{ FLAGS }, { getFlag }] = await Promise.all([
+      import('@papercusp/flags'),
+      import('@papercusp/flags/server'),
+    ]);
+    if (await getFlag(FLAGS.BLUEPRINT_AGENT_OPERATION_PLACEMENT, activeWorkspaceId())) {
+      const { placeAcceptedAgentOperations, launchAgentOperationWorker } =
+        await import('../blueprint/operation-agent-placement');
+      const placed = await DBOS.runStep(
+        () => placeAcceptedAgentOperations(sql, { launch: launchAgentOperationWorker }),
+        { name: 'accepted-agent-operation-placement' },
+      );
+      if (placed.claimed > 0) {
+        console.warn(
+          `[agent-operation-placement] claimed ${placed.claimed}, launched ${placed.launched}` +
+            (placed.failed.length
+              ? `; failed: ${placed.failed.map((f) => `${f.workItemId} (receipt ${f.receiptId}): ${f.detail}`).join('; ')}`
+              : ''),
+        );
+      }
+    }
+  } catch (error) {
+    console.warn(`[agent-operation-placement] placement pass failed: ${error instanceof Error ? error.message : error}`);
+  }
+
   // EI-19408412473830336: auto-resolve leg for the loop-death / loop-lifecycle-death
   // watchdog escalations opened above (via reconcileLoopRoutines's terminateDeadLoop /
   // classifyLoopLifecycleTurn paths) — see reconcile-loop-routines.ts's module-header

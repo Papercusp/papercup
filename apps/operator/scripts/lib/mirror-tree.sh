@@ -26,12 +26,18 @@
 # every install and build would also make the cheap path expensive.
 
 # Copy one generated runtime asset without writing through a destination that
-# another checkout may still hard-link. GNU cp --remove-destination is unavailable
-# on macOS, where these same postinstall scripts run during desktop packaging.
+# another checkout may still hard-link. Stage beside the destination and rename
+# so an in-flight Vite build sees either the old complete asset or the new one,
+# never a missing or partially copied file. A same-directory rename is atomic on
+# both Linux and macOS.
 mirror_copy_unlinked() {
   local source="$1" destination="$2"
-  rm -f "$destination"
-  cp "$source" "$destination"
+  local staged
+  staged="$(mktemp "${destination}.tmp.XXXXXX")"
+  if ! cp -p "$source" "$staged" || ! touch "$staged" || ! mv -f "$staged" "$destination"; then
+    rm -f "$staged"
+    return 1
+  fi
 }
 
 # mirror_file_set <dir> [excluded-relative-path...]

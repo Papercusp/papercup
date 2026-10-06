@@ -92,6 +92,21 @@ function run(f: Fixture, script: string): void {
   expect(r.status, `${r.stdout ?? ''}${r.stderr ?? ''}`).toBe(0);
 }
 
+function runWithFailedMirrorCopy(f: Fixture, script: string, destinationName: string): ReturnType<typeof spawnSync> {
+  const bin = join(f.root, 'bin');
+  mkdirSync(bin, { recursive: true });
+  const cp = join(bin, 'cp');
+  writeFileSync(
+    cp,
+    `#!/bin/sh\nlast=\nfor arg do last="$arg"; done\ncase "$last" in *${destinationName}*) exit 42;; esac\nexec /bin/cp "$@"\n`,
+    { mode: 0o755 },
+  );
+  return spawnSync('bash', [join(f.app, 'scripts', script)], {
+    encoding: 'utf8',
+    env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ''}` },
+  });
+}
+
 /** The sibling kept its bytes and inode; the app got the new bytes on its own inode. */
 function expectIsolated(f: Fixture, rel: string, seeded: { shared: string; ino: number }, fresh: string): void {
   expect(readFileSync(seeded.shared, 'utf8'), `${rel}: the run rewrote the sibling tree's file`).toBe(OLD);
@@ -167,6 +182,20 @@ describe('setup-*-runtime.sh never writes through a hard-linked destination (WI-
     run(f, 'setup-wake-runtime.sh');
     cases.forEach(([rel, fresh], i) => expectIsolated(f, rel, seeded[i], fresh));
     expectNoSharedInodes(join(f.app, 'public'));
+  });
+
+  it('setup-wake-runtime.sh leaves the current asset intact when a replacement copy fails', () => {
+    const f = fixture('setup-wake-runtime.sh');
+    const rel = 'public/wake-runtime/ort-wasm-simd-threaded.wasm';
+    const destination = join(f.app, rel);
+    put(destination, OLD);
+    const ort = join(f.root, 'node_modules/onnxruntime-web/dist');
+    put(join(ort, 'ort-wasm-simd-threaded.wasm'), 'new wasm\n');
+
+    const result = runWithFailedMirrorCopy(f, 'setup-wake-runtime.sh', 'ort-wasm-simd-threaded.wasm');
+    expect(result.status).not.toBe(0);
+    expect(readFileSync(destination, 'utf8')).toBe(OLD);
+    expect(readdirSync(dirname(destination)).filter((name) => name.includes('.tmp.'))).toEqual([]);
   });
 
   it('setup-monaco-runtime.sh: the version stamp outside the re-copied mirror', () => {

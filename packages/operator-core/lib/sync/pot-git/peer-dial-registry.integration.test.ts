@@ -28,8 +28,16 @@ import { insertHiveIfAbsent } from '../../hive-store';
 import { defaultRunGit, ensurePotGitRepo } from './storage';
 import { fetchOverDuplex } from './fetch-transport';
 import { openHiveGitFetchDuplex, wireHiveGitServe } from './serve-wiring';
+import { upsertHiveMember } from '../../hive-membership-store';
+import { unsafeFederatedPotScope } from '../../federated-pot-scope';
 import { setPotGitMode, getPotGitMode } from '../../harness/git-sync/hive-git-mode';
-import { wireHiveGitDial, resolvePotGitPeerSocket, openHiveGitDuplexToDevice, _testing } from './peer-dial-registry';
+import {
+  wireHiveGitDial,
+  resolvePotGitPeerSocket,
+  openHiveGitDuplexToDevice,
+  resolveVerifiedDevicePubkeyForSocket,
+  _testing,
+} from './peer-dial-registry';
 import { generateEd25519KeypairDer, signWithPrivateKeyDer } from '../../identity/ed25519';
 
 const WORKSPACE_ID = `ws-dial-registry-${randomUUID().slice(0, 8)}`;
@@ -198,6 +206,24 @@ describe('pot-git peer-dial-registry (WI-3583: device_pubkey -> live socket, ove
       pubkeyBase64: FAKE_PUBKEY,
       keychainId: 'k-dial-registry',
     });
+    // WI-10006832: serve admits only an attested device, so the dialing client's device is
+    // attested here, exactly as a joined member's would be.
+    await upsertHiveMember({
+      workspaceId: WORKSPACE_ID,
+      potHomeSlug: unsafeFederatedPotScope(HIVE, 'test fixture: this hive home is its own federated scope'),
+      githubUserId: 5151,
+      githubUsername: 'dial-client-under-test',
+      deviceAttestations: [
+        {
+          device_pubkey: CLIENT_DEVICE,
+          gist_id: 'gist-dial-client',
+          gist_url: '',
+          device_label: 'test-device',
+          created_at: Date.now(),
+          signature_by_device: '',
+        },
+      ],
+    });
 
     root = await mkdtemp(join(tmpdir(), 'hgdial-'));
     process.env.PAPERCUSP_HIVE_GIT_ROOT = root;
@@ -218,7 +244,12 @@ describe('pot-git peer-dial-registry (WI-3583: device_pubkey -> live socket, ove
       // cuts syscalls, it's no longer load-bearing for correctness.
       const srvDuplex = frameWrap(srvConn);
       wireAllCorked(srvDuplex, () => {
-        wireHiveGitServe(srvDuplex, TOPIC, { potHomeSlug: HIVE, workspaceId: WORKSPACE_ID });
+        wireHiveGitServe(srvDuplex, TOPIC, {
+          potHomeSlug: HIVE,
+          workspaceId: WORKSPACE_ID,
+          // swarm.ts's production default: the signed-hello registry's verified device.
+          resolvePeerDevicePubkey: resolveVerifiedDevicePubkeyForSocket,
+        });
         wireHiveGitDial(srvDuplex, TOPIC, SERVER_DEVICE, signAsServer);
       });
     });

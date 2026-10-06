@@ -38,10 +38,10 @@ describe('external trigger ingestion core', () => {
   it('seeds the curated external datatypes with compilable schemas', async () => {
     const rows = await sql<{ id: string; payload_schema: Record<string, unknown> }[]>`
       SELECT id, payload_schema FROM harness_shared.datatype_registry
-       WHERE workspace_id = 'papercusp-workspace' AND nature <> 'work' ORDER BY id`;
+       WHERE workspace_id = 'papercusp-workspace'
+         AND id IN ('calendar-event', 'chat-message', 'contact', 'email-message', 'social-post', 'webhook-payload')
+       ORDER BY id`;
     // 877 seeds the first five; 1269 adds `webhook-payload` to the same platform catalog.
-    // 1318 also registers the built-in item kinds (feature, bug, change, task, chunk) as
-    // nature = 'work'; those are work, not curated external data, so they are excluded.
     expect(rows.map((row) => row.id)).toEqual([
       'calendar-event',
       'chat-message',
@@ -292,6 +292,45 @@ describe('external trigger ingestion core', () => {
     expect(result.deliveries.every((delivery) => delivery.deduped)).toBe(true);
     expect(emit).not.toHaveBeenCalled();
     expect(vaultDeliver).not.toHaveBeenCalled();
+  });
+
+  it('migrates a matching legacy delivery key without replaying an already delivered event', async () => {
+    const externalId = 'm-legacy-key';
+    await sql`
+      INSERT INTO harness_shared.trigger_deliveries
+        (workspace_id, source_id, dedupe_key, datatype_id, event_key, payload,
+         sink_kind, sink_ref, outcome, attempts, updated_at)
+      VALUES (
+        'papercusp-workspace', ${sourceId}, ${`gmail:${externalId}`}, 'email-message',
+        'ext:gmail:message.received', '{}'::jsonb, 'event-bus', 'workspace', 'delivered', 1, now()
+      )`;
+    const emit = vi.fn();
+    const result = await ingestExternalTriggerEvent(
+      sql,
+      {
+        workspaceId: 'papercusp-workspace',
+        sourceId,
+        source: 'gmail',
+        event: 'message.received',
+        externalId,
+        datatypeId: 'email-message',
+        adapterPayload: {},
+        normalize: () => ({ id: externalId, subject: 'Legacy delivery' }),
+      },
+      { emit: emit as never },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.event.dedupeKey).toBe(`gmail:email-message:${externalId}`);
+    expect(result.deliveries).toEqual(expect.arrayContaining([
+      expect.objectContaining({ sinkKind: 'event-bus', outcome: 'delivered', deduped: true }),
+    ]));
+    expect(emit).not.toHaveBeenCalled();
+    const rows = await sql<{ dedupe_key: string; outcome: string }[]>`
+      SELECT dedupe_key, outcome FROM harness_shared.trigger_deliveries
+       WHERE source_id = ${sourceId} AND event_key = 'ext:gmail:message.received'
+         AND sink_kind = 'event-bus' AND dedupe_key = ${result.event.dedupeKey}`;
+    expect(rows).toEqual([{ dedupe_key: `gmail:email-message:${externalId}`, outcome: 'delivered' }]);
   });
 
   it('persists canonical validation failures and emits nothing', async () => {

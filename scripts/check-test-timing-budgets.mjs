@@ -90,7 +90,9 @@
  * names, or budgets held in
  * identifiers are also not resolved. For idle windows, a window passed through a helper, a
  * spread, a computed key, arithmetic, or a cross-file / non-`const` binding is not resolved.
- * This guard reports what it can see and its --list
+ * Idle-window keys are classified only when they are direct properties of an inline object
+ * passed at a known child-process options position; report data elsewhere in a child-spawning
+ * test file is not a child watchdog. This guard reports what it can see and its --list
  * output is the honest population — it is not a proof that no other tight budget exists.
  * Overstating a guard's reach is how the next reader mistakes silence for safety.
  *
@@ -364,9 +366,38 @@ export const IDLE_WINDOW_EXEMPTION_RE = /idle-window-ok:\s*\S/;
 export const IDLE_WINDOW_BASELINE = new Set([]);
 
 /**
- * Literal and same-file-`const` idle windows in object literals. Non-positive values are
- * invalid-policy fixtures, not windows, and are skipped. A binding declared more than once
- * with different values (or also as `let`/`var`) is ambiguous and is not resolved.
+ * Return the inline options object for a supported child-process call. Restricting the
+ * classifier to these argument positions prevents arbitrary report/config data elsewhere
+ * in a spawning test file from being mistaken for a child watchdog.
+ */
+function childProcessOptionsObject(call) {
+  const name = ts.isIdentifier(call.expression)
+    ? call.expression.text
+    : ts.isPropertyAccessExpression(call.expression)
+      ? call.expression.name.text
+      : null;
+  const args = call.arguments;
+  if (name === 'execProcess') return args[0];
+  if (name === 'managedSpawn') return args[3];
+  if (name === 'exec' || name === 'execSync') return args[1];
+  if (
+    name === 'spawn' ||
+    name === 'spawnSync' ||
+    name === 'execFile' ||
+    name === 'execFileSync' ||
+    name === 'fork' ||
+    name === 'execa'
+  ) {
+    return args[1] && ts.isObjectLiteralExpression(args[1]) ? args[1] : args[2];
+  }
+  return undefined;
+}
+
+/**
+ * Literal and same-file-`const` idle windows in inline child-process option objects.
+ * Non-positive values are invalid-policy fixtures, not windows, and are skipped. A binding
+ * declared more than once with different values (or also as `let`/`var`) is ambiguous and
+ * is not resolved.
  */
 export function findChildIdleWindowBudgets(text, fileName = 'fixture.test.ts') {
   const kind = fileName.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
@@ -388,41 +419,47 @@ export function findChildIdleWindowBudgets(text, fileName = 'fixture.test.ts') {
   };
   collect(source);
 
+  const optionObjects = new Set();
+  const collectOptionObjects = (node) => {
+    if (ts.isCallExpression(node)) {
+      const options = childProcessOptionsObject(node);
+      if (options && ts.isObjectLiteralExpression(options)) optionObjects.add(options);
+    }
+    ts.forEachChild(node, collectOptionObjects);
+  };
+  collectOptionObjects(source);
+
   const lines = text.split('\n');
   const found = [];
-  const visit = (node) => {
-    if (ts.isObjectLiteralExpression(node)) {
-      for (const property of node.properties) {
-        let key = null;
-        let valueNode = null;
-        if (ts.isPropertyAssignment(property)) {
-          key = propertyNameText(property.name);
-          valueNode = property.initializer;
-        } else if (ts.isShorthandPropertyAssignment(property)) {
-          key = property.name.text;
-          valueNode = property.name;
-        }
-        if (!key || !IDLE_WINDOW_KEY_RE.test(key)) continue;
-        let budgetMs = numericLiteralMs(valueNode);
-        let via = 'literal';
-        if (budgetMs === null && valueNode && ts.isIdentifier(valueNode)) {
-          const resolved = bindings.get(valueNode.text);
-          if (typeof resolved === 'number') {
-            budgetMs = resolved;
-            via = `const ${valueNode.text}`;
-          }
-        }
-        if (budgetMs === null || budgetMs <= 0) continue;
-        const line = source.getLineAndCharacterOfPosition(property.getStart(source)).line + 1;
-        const exempt =
-          IDLE_WINDOW_EXEMPTION_RE.test(lines[line - 1] ?? '') ||
-          IDLE_WINDOW_EXEMPTION_RE.test(lines[line - 2] ?? '');
-        found.push({ line, key, budgetMs, via, exempt });
+  for (const options of optionObjects) {
+    for (const property of options.properties) {
+      let key = null;
+      let valueNode = null;
+      if (ts.isPropertyAssignment(property)) {
+        key = propertyNameText(property.name);
+        valueNode = property.initializer;
+      } else if (ts.isShorthandPropertyAssignment(property)) {
+        key = property.name.text;
+        valueNode = property.name;
       }
+      if (!key || !IDLE_WINDOW_KEY_RE.test(key)) continue;
+      let budgetMs = numericLiteralMs(valueNode);
+      let via = 'literal';
+      if (budgetMs === null && valueNode && ts.isIdentifier(valueNode)) {
+        const resolved = bindings.get(valueNode.text);
+        if (typeof resolved === 'number') {
+          budgetMs = resolved;
+          via = `const ${valueNode.text}`;
+        }
+      }
+      if (budgetMs === null || budgetMs <= 0) continue;
+      const line = source.getLineAndCharacterOfPosition(property.getStart(source)).line + 1;
+      const exempt =
+        IDLE_WINDOW_EXEMPTION_RE.test(lines[line - 1] ?? '') ||
+        IDLE_WINDOW_EXEMPTION_RE.test(lines[line - 2] ?? '');
+      found.push({ line, key, budgetMs, via, exempt });
     }
-    ts.forEachChild(node, visit);
-  };
-  visit(source);
+  }
   return found;
 }
 
