@@ -456,7 +456,7 @@ export async function buildMemoryContextBlock(input: MemoryInjectionInput): Prom
     noteCorpusLegHealth(corpus);
     const block = composeWithCorpus(memoryBlock, corpus);
     if (!memoryTimedOut) return block;
-    const notice = '⚠ Memory retrieval was DEGRADED this turn (memory leg: timed-out) — recover missing recall with memory:search.';
+    const notice = '⚠ Memory retrieval was DEGRADED this turn (memory leg: timed-out) — ask an authorized memory reader to recover missing recall before relying on it.';
     return block ? `${block}\n\n${notice}` : notice;
   } finally {
     if (ownsDeadline) deadline.close();
@@ -887,13 +887,13 @@ function composeWithCorpus(memoryBlock: string | null, corpus: CorpusLegResult |
     // one of them silently.
     //
     // Emitting one line converts an unknown-unknown into a known-degraded the
-    // agent can act on, and `memory:search` is the recovery the rest of this
-    // module already points at for budget-dropped entries.
+    // agent can act on. Ask an authorized memory reader for recovery rather than
+    // assuming this recipient can call a memory tool.
     if (corpus && CORPUS_DEGRADED_OUTCOMES.has(corpus.outcome)) {
       const marker =
         `⚠ Memory retrieval was DEGRADED this turn (corpus leg: ${corpus.outcome}) — ` +
         'context you would normally have is MISSING, not absent. ' +
-        'Recover it on demand with memory:search before relying on recall.';
+        'Ask an authorized memory reader to recover it before relying on recall.';
       return memoryBlock ? `${memoryBlock}\n\n${marker}` : marker;
     }
     return memoryBlock;
@@ -1742,7 +1742,7 @@ async function buildBlockInner(
     if (lines.length === 0) return rendered(null);
     if (truncated) {
       lines.push(
-        '- (more learnings withheld this turn — the memory budget is full; memory:search pulls the rest on demand)',
+        '- (more learnings withheld this turn — the memory budget is full; ask an authorized memory reader to retrieve omitted entries on demand)',
       );
     }
 
