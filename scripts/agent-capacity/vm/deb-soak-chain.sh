@@ -6,19 +6,26 @@
 #   1. wait for BUILD_UNIT (a systemd --user unit running build-test-deb.sh) to stop, if one is named;
 #   2. require DEB_RC=0, an existing TEST_ARTIFACT_DEB, and MARKER <name> >= 1 for each REQUIRE_MARKERS name;
 #   3. sha256 the archived .deb and upload it to $GCS_PREFIX/$RUN/$RUN.deb (no local copy: the archive keeps
-#      the 10 most recent builds, so it cannot be pruned before the upload ends);
-#   4. take the hive-git-physical-rig resource lock, retrying RIG_TRIES times RIG_SLEEP_SEC apart;
+#      the 10 most recent builds, so it cannot be pruned before the upload ends). The upload is retried
+#      GCS_TRIES times: two gcloud processes starting together can crash one of them on its own credential
+#      store ('database is locked'), which aborted c1010k on a good build (WI-10006787);
+#   4. take this host's rig flock ($RIG_FLOCK), then the hive-git-physical-rig resource lock, retrying
+#      RIG_TRIES times RIG_SLEEP_SEC apart. The flock is what keeps two chains apart: every chain acquires
+#      the named lock as the same SU, and an exclusive lock is re-granted to its own holder, so c1010k got
+#      the rig while c1010r still ran (WI-10006817). The named lock still excludes other sessions;
 #   5. run p2p-join-soak.sh with RUN/DEB/SHA/RIG_LOCK/SU/AGENT_CAPACITY_OUT. Every other soak knob
 #      (CONFLICT_AT_OBS, REVOKE, OBS_LIMIT, JOIN_BODY, ...) passes through the environment unchanged.
-#      The soak releases the rig lock itself.
+#      The soak releases the rig lock itself; the flock is released when this chain exits, and the soak
+#      does not inherit it (fd 9 is closed for it), so nothing the soak leaves running can pin the rig.
 # Each step appends one line to $OUT/chain.log. A failure logs "CHAIN_ABORT <reason>" and exits non-zero.
 #
 # Required env: RUN · BUILD_LOG (the build-test-deb.sh log) · SU (the su session id that holds the rig lock).
 # Optional env: BUILD_UNIT (unset: no wait) · REQUIRE_MARKERS (space-separated marker names) ·
 #   OUT (~/.cache/agent-capacity/$RUN) · GCS_PREFIX (gs://pc-agent-capacity-0930-artifacts) ·
-#   RIG_TRIES (80) · RIG_SLEEP_SEC (30) · WAIT_POLL_SEC (30).
+#   RIG_TRIES (80) · RIG_SLEEP_SEC (30) · WAIT_POLL_SEC (30) · GCS_TRIES (4) · GCS_RETRY_SEC (15, times the
+#   attempt number) · RIG_FLOCK (~/.cache/agent-capacity/rig.flock, waited on for RIG_TRIES*RIG_SLEEP_SEC).
 # Exit: the soak's own exit code once it ran · 2 usage · 3 build not usable · 4 hash/upload failed ·
-#   5 rig lock not acquired.
+#   5 rig flock or rig lock not acquired.
 set -uo pipefail
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd) || exit 2
 RUN=${RUN:-}; BUILD_LOG=${BUILD_LOG:-}; SU=${SU:-}
@@ -29,6 +36,8 @@ fi
 OUT=${OUT:-$HOME/.cache/agent-capacity/$RUN}
 GCS_PREFIX=${GCS_PREFIX:-gs://pc-agent-capacity-0930-artifacts}
 RIG_TRIES=${RIG_TRIES:-80}; RIG_SLEEP_SEC=${RIG_SLEEP_SEC:-30}; WAIT_POLL_SEC=${WAIT_POLL_SEC:-30}
+GCS_TRIES=${GCS_TRIES:-4}; GCS_RETRY_SEC=${GCS_RETRY_SEC:-15}
+RIG_FLOCK=${RIG_FLOCK:-$HOME/.cache/agent-capacity/rig.flock}
 REQUIRE_MARKERS=${REQUIRE_MARKERS:-}
 mkdir -p "$OUT" || exit 2
 cd "$ROOT" || exit 2
@@ -64,8 +73,20 @@ SHA=$(sha256sum "$deb" | cut -d' ' -f1)
 [ "${#SHA}" = 64 ] || abort 4 "sha256 of $deb failed"
 say "DEB_SHA256 $SHA"
 DEB="$GCS_PREFIX/$RUN/$RUN.deb"
-gcloud storage cp "$deb" "$DEB" --no-user-output-enabled || abort 4 "upload to $DEB failed"
+uploaded=
+for i in $(seq 1 "$GCS_TRIES"); do
+  if gcloud storage cp "$deb" "$DEB" --no-user-output-enabled 2> "$OUT/upload.err"; then uploaded=1; break; fi
+  say "CHAIN_UPLOAD_RETRY try=$i/$GCS_TRIES $(tail -n 1 "$OUT/upload.err" | cut -c1-200)"
+  [ "$i" -lt "$GCS_TRIES" ] && sleep "$((GCS_RETRY_SEC * i))"
+done
+[ -n "$uploaded" ] || abort 4 "upload to $DEB failed after $GCS_TRIES tries (see $OUT/upload.err)"
 say "DEB_UPLOADED $DEB"
+
+mkdir -p "$(dirname "$RIG_FLOCK")" || abort 5 "cannot create the directory of $RIG_FLOCK"
+exec 9>> "$RIG_FLOCK" || abort 5 "cannot open $RIG_FLOCK"
+say "RIG_FLOCK_WAIT $RIG_FLOCK"
+flock -w "$((RIG_TRIES * RIG_SLEEP_SEC))" 9 || abort 5 "rig flock $RIG_FLOCK still held by another chain after $((RIG_TRIES * RIG_SLEEP_SEC))s"
+say "RIG_FLOCK_HELD $RIG_FLOCK"
 
 mcp() { env -u CLAUDE_CODE_SESSION_ID node scripts/mcp-call.mjs "$@" --client "$SU"; }
 LOCK=
@@ -81,7 +102,7 @@ say "RIG_LOCK ${LOCK:-none}"
 [ -n "$LOCK" ] || abort 5 "rig lock not acquired after $RIG_TRIES tries (see $OUT/rig-acquire.out)"
 
 RUN="$RUN" DEB="$DEB" SHA="$SHA" RIG_LOCK="$LOCK" SU="$SU" AGENT_CAPACITY_OUT="$OUT" \
-  bash scripts/agent-capacity/vm/p2p-join-soak.sh > "$OUT/run.log" 2>&1
+  bash scripts/agent-capacity/vm/p2p-join-soak.sh 9>&- > "$OUT/run.log" 2>&1
 soak_rc=$?
 say "CHAIN_SOAK_EXIT=$soak_rc"
 exit "$soak_rc"
