@@ -244,8 +244,9 @@ export interface HostedDesktopRosterEntry {
   lastActiveAt?: string;
   /** Plan agent-multi-desktops-grid P-006: who the desktop belongs to, so the grid
    *  can label each tile. `owner` is the agent's ownerId for an agent desktop and
-   *  the pot slug for a pot desktop; the workspace desktop has none. */
-  scope?: 'pot' | 'agent' | 'workspace';
+   *  the pot slug for a pot desktop; the workspace desktop has none. A `user` desktop
+   *  (personal-cloud-desktop-2026-10-06) is owned by the hosted userId in `owner`. */
+  scope?: 'pot' | 'agent' | 'workspace' | 'user';
   owner?: string;
   /** The agent-chosen name of an agent desktop. */
   name?: string;
