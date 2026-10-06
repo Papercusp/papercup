@@ -31,9 +31,21 @@ import {
 } from './provider-dispatch';
 import { CANONICAL_SOURCE_BY_DATATYPE, resolveCanonicalDocument, string } from './resolve';
 
-/** What any provider reports back for a written event. */
+/**
+ * What any provider reports back for a written event, plus where it was written.
+ *
+ * `id` is the provider's own event id (what `calendar:update` accepts as
+ * `eventId`). `sourceId` + `nativeId` name the connected source the write went
+ * through, so a caller that stores the event can key it exactly as the sync
+ * producer will (`<sourceId>:<nativeId>`, see `appRowId`) instead of storing a
+ * bare native id that the next sync batch then duplicates.
+ */
 export interface CalendarWriteResult {
   id: string;
+  /** The provider's own event id; always equal to `id`. */
+  nativeId: string;
+  /** The connected source (`data_sources.id`) the write went through. */
+  sourceId: string;
   htmlLink: string | null;
   status: string | null;
   attendees: string[];
@@ -75,8 +87,11 @@ async function writeViaProvider(
 ): Promise<CalendarWriteResult> {
   const capability = OUTBOUND_CAPABILITIES.calendarWrite;
   const result = await invokeOutboundProvider(sql, target, capability, { ...operation, ...presentFields(fields) }, deps);
+  const id = resultString(result, 'id', target, capability);
   return {
-    id: resultString(result, 'id', target, capability),
+    id,
+    nativeId: id,
+    sourceId: target.source.id,
     htmlLink: resultString(result, 'htmlLink', target, capability, false) || null,
     status: resultString(result, 'status', target, capability, false) || null,
     attendees: resultStrings(result, 'attendees'),

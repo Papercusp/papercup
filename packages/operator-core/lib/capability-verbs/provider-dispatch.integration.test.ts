@@ -320,6 +320,8 @@ describe('shared verbs dispatch to the provider owning the selected source (R-5)
       calendarDeps(),
     );
     expect(created).toMatchObject({ id: `event@${ACME_HOST}:${acmeOne}`, status: 'confirmed', attendees: [CORRESPONDENT] });
+    // The result names where it was written, so a caller can key the event as sync will (WI-10006510).
+    expect(created).toMatchObject({ sourceId: acmeOne, nativeId: created.id });
 
     const updated = await updateCalendarEvent(
       org.adminSql,
@@ -327,6 +329,7 @@ describe('shared verbs dispatch to the provider owning the selected source (R-5)
       calendarDeps(),
     );
     expect(updated.id).toBe('acme-event-1');
+    expect(updated).toMatchObject({ sourceId: acmeOne, nativeId: 'acme-event-1' });
     expect(requests.map((request) => `${request.host}${request.path}`)).toEqual([
       `${ACME_HOST}/calendar.write/create`,
       `${ACME_HOST}/calendar.write/update`,
