@@ -2768,6 +2768,10 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
       payload: input.payload,
       sourcePlanSlug: input.sourcePlanSlug,
       sourcePlanItemIds: input.sourcePlanItemIds,
+      // WI-10006622: owner-directive provenance. The feature-family INSERT below has
+      // always written it; this branch dropped it, so every bug/change/task filed with
+      // work_items:create { directiveRef } left its directive reading open-unworked.
+      directiveRef: input.directiveRef,
       // P-002: the born-admission rides in createIssue's own INSERT (which reaches the
       // base columns through the engineer_issues INSTEAD OF trigger as of migration
       // 946) — never a post-create UPDATE from here, which would leave the row
