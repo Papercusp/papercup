@@ -6,7 +6,10 @@
  * committed docs/evidence JSON artifact whose bytes describe the command,
  * timestamps, exit code, and individual assertions. The server derives the
  * verdict from those bytes, pins their SHA-256 and HEAD commit, and returns the
- * exact numeric row IDs that plans:bind-spec-evidence accepts.
+ * exact numeric row IDs that plans:bind-spec-evidence accepts. An archivedMutation
+ * artifact can recover failed case identities from a committed raw mutation log
+ * after validating it against the original scoped receipt. Recovery appends a
+ * labelled row and preserves the original execution; it does not run a new test.
  */
 
 import { createHash } from 'node:crypto';
@@ -485,9 +488,9 @@ export async function recordOperationalRun(
 export default defineTool({
   name: 'testing:record-run',
   description:
-    `Record an already-executed non-Vitest operational check in harness_shared.test_runs and return its numeric testRunIds for plans:bind-spec-evidence. The evidence must be a committed docs/evidence/*.json artifact with schemaVersion:1, kind:"operational-test-evidence", command, timestamps, exitCode, summary, and explicit assertions; expectedSha256 pins the exact bytes. Mutation-probe evidence must include exact per-probe records copied from MUTATION_PROBE_EVIDENCE_JSON and cannot cite shared .papercusp/scratch commands. Evidence JSON is capped at ${MAX_OPERATIONAL_EVIDENCE_BYTES} bytes; keep it compact and store bulky payloads as raw artifacts pinned by SHA-256. The verdict is derived from exitCode + assertions, never accepted as a caller boolean. Idempotent by artifact hash.`,
+    `Record an already-executed non-Vitest operational check in harness_shared.test_runs and return its numeric testRunIds for plans:bind-spec-evidence. The evidence must be a committed docs/evidence/*.json artifact with schemaVersion:1, kind:"operational-test-evidence", command, timestamps, exitCode, summary, and explicit assertions; expectedSha256 pins the exact bytes. Mutation-probe evidence must include exact per-probe records copied from MUTATION_PROBE_EVIDENCE_JSON and cannot cite shared .papercusp/scratch commands. Optional archivedMutation:{originalTestRunId,rawLogFile,rawLogSha256} recovers failed case identities from a committed raw log after validating the original scoped receipt; it appends an archived row without changing that receipt or executing a new test. Evidence JSON is capped at ${MAX_OPERATIONAL_EVIDENCE_BYTES} bytes; keep it compact and store bulky payloads as raw artifacts pinned by SHA-256. The verdict is derived from exitCode + assertions, never accepted as a caller boolean. Idempotent by artifact hash.`,
   guidance: {
-    when: 'A real Playwright, Cargo, node, shell, desktop, or other operational acceptance run already completed and needs an honest numeric execution-ledger anchor.',
+    when: 'A real Playwright, Cargo, node, shell, desktop, or other operational acceptance run already completed and needs an honest numeric execution-ledger anchor; or a historical mutation receipt needs additive case-identity recovery from its committed raw log.',
     notWhen:
       'Executing Vitest files (use testing:run), recording a temporary /tmp log, or manufacturing proof for a run that did not happen. Commit a self-describing docs/evidence JSON artifact first.',
     chaining:
