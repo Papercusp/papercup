@@ -847,12 +847,29 @@ async function mapRubricPlanRows(rows: RubricPlanRow[]): Promise<Rubric[]> {
 const RUBRIC_STATUS_ORDER: Record<RubricStatus, number> = { active: 0, proposed: 1, retired: 2 };
 function sortRubrics(rubrics: Rubric[]): Rubric[] {
   return rubrics.sort(
-    (a, b) => RUBRIC_STATUS_ORDER[a.status] - RUBRIC_STATUS_ORDER[b.status] || b.updatedAt.localeCompare(a.updatedAt),
+    (a, b) =>
+      RUBRIC_STATUS_ORDER[a.status] - RUBRIC_STATUS_ORDER[b.status] ||
+      b.updatedAt.localeCompare(a.updatedAt) ||
+      a.rubricId.localeCompare(b.rubricId),
   );
 }
 
 /** A kind scope for the library reads: one kind, or 'any' (explicit opt-in to both). */
 export type RubricKindFilter = RubricKind | 'any';
+
+export interface ListRubricsPageResult {
+  rubrics: Rubric[];
+  hasMore: boolean;
+  nextOffset: number | null;
+}
+
+interface RubricPlanPageOptions {
+  status?: RubricStatus;
+  characteristic?: string;
+  subjectPlan?: string;
+  limit: number;
+  offset: number;
+}
 
 /** Every rubric-template plan in the rubric workspace, mapped to Rubric. The single read
  *  path the three public reads filter/search over — which makes it the ONE choke point
@@ -878,18 +895,47 @@ async function loadAllRubrics(kind: RubricKindFilter = 'standard'): Promise<Rubr
 /** The raw plan-row read behind loadAllRubrics, seed-free (the seed itself reads/writes
  *  through paths that land back here — the seed gate above breaks the recursion). */
 async function queryRubricPlans(kind: RubricKindFilter = 'standard'): Promise<Rubric[]> {
+  return (await queryRubricPlansPage(kind, { limit: 500, offset: 0 })).rubrics;
+}
+
+/** Bounded, filter-aware SQL page for rubrics:list. The lookahead row determines
+ * continuation without loading the entire shared rubric library into memory. */
+async function queryRubricPlansPage(
+  kind: RubricKindFilter,
+  page: RubricPlanPageOptions,
+): Promise<ListRubricsPageResult> {
   try {
     const { sql } = getOrgPg();
+    const requestedLimit = page.limit;
+    const limit = Number.isFinite(requestedLimit)
+      ? Math.max(0, Math.min(Math.floor(requestedLimit), 500))
+      : 100;
+    if (limit === 0) return { rubrics: [], hasMore: false, nextOffset: null };
+    const requestedOffset = page.offset;
+    const offset = Number.isFinite(requestedOffset) ? Math.max(0, Math.floor(requestedOffset)) : 0;
     // Exclude per-run instance plans (template_slug IS NOT NULL) — a rubric is a
     // top-level plan, not a scheduled instance (D-003). The kind predicate is pushed to
-    // SQL so acceptance rows (one per completed plan, unbounded) never eat the row cap;
-    // the in-process re-filter below keeps the scope honest under mocked-sql tests too.
+    // SQL so acceptance rows (one per completed plan, unbounded) never eat the row cap.
     const kindCond =
       kind === 'any'
         ? sql`TRUE`
         : kind === 'acceptance'
           ? sql`template_data->>'kind' = 'acceptance'`
           : sql`(template_data->>'kind' IS DISTINCT FROM 'acceptance')`;
+    const statusCond =
+      page.status === 'active'
+        ? sql`archived IS NOT TRUE AND status IN ('active', 'ready')`
+        : page.status === 'proposed'
+          ? sql`archived IS NOT TRUE AND (status IS NULL OR status NOT IN ('active', 'ready', 'superseded', 'shipped'))`
+          : page.status === 'retired'
+            ? sql`archived IS TRUE OR status IN ('superseded', 'shipped')`
+            : sql`TRUE`;
+    const characteristicCond = page.characteristic
+      ? sql`template_data->>'characteristic' = ${page.characteristic}`
+      : sql`TRUE`;
+    const subjectPlanCond = page.subjectPlan
+      ? sql`template_data->>'subjectPlan' = ${page.subjectPlan}`
+      : sql`TRUE`;
     const rows = await sql<RubricPlanRow[]>`
       SELECT plan_slug, workspace_id, harness_slug, title, status, created, updated, updated_at,
              version, owner, archived, template_data
@@ -898,10 +944,36 @@ async function queryRubricPlans(kind: RubricKindFilter = 'standard'): Promise<Ru
          AND template = ${RUBRIC_TEMPLATE_NAME}
          AND template_slug IS NULL
          AND ${kindCond}
-       LIMIT 500`;
-    return (await mapRubricPlanRows(rows)).filter((r) => kind === 'any' || r.kind === kind);
+         AND ${statusCond}
+         AND ${characteristicCond}
+         AND ${subjectPlanCond}
+       ORDER BY
+         CASE
+           WHEN archived IS TRUE OR status IN ('superseded', 'shipped') THEN 2
+           WHEN status IN ('active', 'ready') THEN 0
+           ELSE 1
+         END,
+         updated_at DESC NULLS LAST,
+         plan_slug ASC
+       LIMIT ${limit + 1}
+       OFFSET ${offset}`;
+    const hasMore = rows.length > limit;
+    const consumedRows = hasMore ? rows.slice(0, limit) : rows;
+    const mapped = await mapRubricPlanRows(consumedRows);
+    const rubrics = mapped.filter(
+      (r) =>
+        (kind === 'any' || r.kind === kind) &&
+        (!page.status || r.status === page.status) &&
+        (!page.characteristic || r.characteristic === page.characteristic) &&
+        (!page.subjectPlan || r.subjectPlan === page.subjectPlan),
+    );
+    return {
+      rubrics: sortRubrics(rubrics),
+      hasMore,
+      nextOffset: hasMore ? offset + limit : null,
+    };
   } catch (error) {
-    return [];
+    return { rubrics: [], hasMore: false, nextOffset: null };
   }
 }
 
@@ -1200,6 +1272,8 @@ export interface ListRubricsFilter {
   status?: RubricStatus;
   characteristic?: string;
   limit?: number;
+  /** Zero-based offset for continuing a bounded list read. */
+  offset?: number;
   /**
    * Kind scope (acceptance-rubrics-on-every-plan-2026-08-11). DEFAULT 'standard': the
    * library reads (and everything downstream of them — the learning surfaces, the
@@ -1219,15 +1293,30 @@ export interface ListRubricsFilter {
   subjectPlan?: string;
 }
 
-/** List rubrics (active first, then proposed, then retired), optionally filtered by
- *  status / characteristic / subjectPlan. Reads rubric-template plans (P-006/P-007).
- *  Standard-kind only unless `kind` opts in (see ListRubricsFilter.kind). */
+/** List one page of rubrics (active first, then proposed, then retired), optionally
+ * filtered by status / characteristic / subjectPlan. Reads rubric-template plans
+ * (P-006/P-007). Standard-kind only unless kind opts in (see ListRubricsFilter.kind). */
+export async function listRubricsPage(filter: ListRubricsFilter = {}): Promise<ListRubricsPageResult> {
+  const requestedLimit = filter.limit ?? 100;
+  const limit = Number.isFinite(requestedLimit)
+    ? Math.max(0, Math.min(Math.floor(requestedLimit), 500))
+    : 100;
+  if (limit === 0) return { rubrics: [], hasMore: false, nextOffset: null };
+  const requestedOffset = filter.offset ?? 0;
+  const offset = Number.isFinite(requestedOffset) ? Math.max(0, Math.floor(requestedOffset)) : 0;
+  if (!process.env.VITEST) await ensureFirstPartyRubricsSeeded();
+  return queryRubricPlansPage(filter.kind ?? 'standard', {
+    status: filter.status,
+    characteristic: filter.characteristic,
+    subjectPlan: filter.subjectPlan,
+    limit,
+    offset,
+  });
+}
+
+/** Array-returning compatibility helper for consumers that need only the first page. */
 export async function listRubrics(filter: ListRubricsFilter = {}): Promise<Rubric[]> {
-  let rubrics = await loadAllRubrics(filter.kind ?? 'standard');
-  if (filter.status) rubrics = rubrics.filter((r) => r.status === filter.status);
-  if (filter.characteristic) rubrics = rubrics.filter((r) => r.characteristic === filter.characteristic);
-  if (filter.subjectPlan) rubrics = rubrics.filter((r) => r.subjectPlan === filter.subjectPlan);
-  return sortRubrics(rubrics).slice(0, Math.min(filter.limit ?? 100, 500));
+  return (await listRubricsPage(filter)).rubrics;
 }
 
 /**
