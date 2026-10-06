@@ -46,8 +46,10 @@ Each step's output feeds the next one. All commands run from the repo root.
      over settled tenants, the top process classes and host MemAvailable per step.
    - `vm/p2p-join-soak.sh` is the p2p join soak (S6, P-525): a cold GCP joiner against the tower.
      With a short OBSERVE_SEC it is also the one-shot cold join of field test S1 (P-522). It needs
-     JOIN_BODY, a local file `{"harnessLinkUrl": "<the pot's join link>", "slug": "<pot>"}`. The
-     link grants a join, so the file stays out of the repo.
+     JOIN_BODY, a local file `{"harnessLinkUrl": "<a member join link>", "slug": "<member slug>"}`.
+     `npx tsx vm/mint-join-body.ts --hive <hive slug> --out <file>` writes it on the box that owns
+     the hive, from the product's own link builder (`resolveHiveMemberJoinLinks`). The link grants
+     a join, so the script refuses an --out inside the repo and writes the file mode 0600.
      `python3 vm/backfill-split.py <fp.jsonl> <serve.log> [from_epoch]` splits its footprint
      samples by whether an embed-backfill drain overlapped them.
    - `vm/build-test-deb.sh` builds a test-artifact .deb from the working tree and checks that it
@@ -83,11 +85,15 @@ deadline, a worst-case-cost admission check, and a teardown that only counts as 
 re-read of the project shows no instance and no orphaned disk. Its header explains each rail. Check
 `gcloud compute instances list --project=pc-agent-capacity-0930` after every run.
 
-## Still made by hand
+## Join target: member, not home
 
-Every driver behind this plan's decisions is now in `vm/` (WI-10006497). One input is still made
-by hand: the JOIN_BODY link for `vm/p2p-join-soak.sh` was minted by
-`.papercusp/scratch/s1join/mklink.mts`, which hard-codes hello-world-3-pot's identity.
+Every driver behind this plan's decisions is now in `vm/` (WI-10006497), and the JOIN_BODY is
+minted by `vm/mint-join-body.ts` (WI-10006697). Soaks run before 2026-10-06 used a hand-minted
+link (`.papercusp/scratch/s1join/mklink.mts`) that pointed at the hive HOME repo
+(papercupai/hello-world-3-pot). The product never emits a home link (D-047): for
+hello-world-3-pot it emits the member `hello-world-3` (octocat/Hello-World), with the same topic,
+hive pubkey and owner binding plus `attestation_gist_id` and `repo_key`. Those earlier soaks joined
+by a path no product joiner takes; a soak on the minted member link is what checks the real one.
 
 `.papercusp/scratch/run-p011-ab.sh` and `run-p011-replicate.sh` are NOT capacity drivers. They are
 P-011 of a different plan (deterministic-tool-definition-delivery-2026-09-21, the agent-comprehension
