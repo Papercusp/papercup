@@ -27,6 +27,7 @@ pub enum SlashKind {
     Clear,
     Model,
     Effort,
+    Backend,
     Status,
     Compact,
     Approvals,
@@ -66,6 +67,14 @@ pub const COMMANDS: &[SlashCommand] = &[
         name: "effort",
         summary: "Set the reasoning effort, from the next turn",
         kind: SlashKind::Effort,
+    },
+    // pui-chat-first-ux P-025: in chat-first Esc stays in the message box
+    // (P-027), so the `b` key never reaches the backend picker. This is the
+    // only way a bare `pui` user starts a Codex or OMP conversation.
+    SlashCommand {
+        name: "backend",
+        summary: "Engine for a new conversation: Claude, Codex or OMP",
+        kind: SlashKind::Backend,
     },
     SlashCommand {
         name: "status",
