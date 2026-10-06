@@ -11,7 +11,7 @@
  *
  * Deps are injected so tests supply the registry, the setting read and the suite resolver.
  */
-import type { PotIntegrationMode, PotIntegrationModeRead } from './pot-integration-mode';
+import { repoHasSubmodules, type PotIntegrationMode, type PotIntegrationModeRead } from './pot-integration-mode';
 import { integrationModeQuestion, type IntegrationModeQuestion } from './integration-mode-question';
 
 /** The registry fields this read uses (a subset of the harness registry entry). */
@@ -21,6 +21,8 @@ export interface IntegrationModeRegistryEntry {
   self_repo?: boolean;
   github_remote?: string;
   fork_remote?: string;
+  /** The pot's checkout; read for `.gitmodules` (WI-10006107). */
+  path?: string;
 }
 
 export interface IntegrationModeSettingsDeps {
@@ -79,7 +81,11 @@ export async function readIntegrationModeSettings(
   const current = await deps.readMode(ws, r.potHomeSlug);
   return {
     kind: 'pot',
-    question: integrationModeQuestion({ repoLabel: repoLabelFromRemote(r.entry.github_remote), hasTestSuite }),
+    question: integrationModeQuestion({
+      repoLabel: repoLabelFromRemote(r.entry.github_remote),
+      hasTestSuite,
+      hasSubmodules: repoHasSubmodules(r.entry.path),
+    }),
     current: current.mode,
     workingCopyUrl: r.entry.fork_remote ?? null,
   };

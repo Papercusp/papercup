@@ -64,6 +64,8 @@ export interface IntegrationModeQuestionInput {
    * selectable; the create step re-checks and reports a refusal.
    */
   hasTestSuite?: boolean;
+  /** WI-10006107: the repo uses git submodules, which a working copy cannot carry yet. */
+  hasSubmodules?: boolean;
   /** P-018: recommendIntegrationMode's answer for this repo. A locked one disables the other option. */
   recommendation?: IntegrationModeRecommendation;
   /** P-018: PotControlPolicy.newPotIntegrationMode — the unanswered default when set. */
@@ -89,6 +91,11 @@ export function integrationModeQuestion(input: IntegrationModeQuestionInput): In
       opt.available = false;
       opt.unavailableReason =
         'This repository has no test suite, so a PR could not show the work passed tests. Add a test command first.';
+    }
+    if (value === 'review' && input.hasSubmodules === true) {
+      opt.available = false;
+      opt.unavailableReason =
+        'This repository uses submodules, which a working copy cannot carry yet. Keep the work going straight in.';
     }
     const rec = input.recommendation;
     if (rec) {

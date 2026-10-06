@@ -18,6 +18,7 @@ import type {
   ChoosePotIntegrationModeInput,
   ChoosePotIntegrationModeResult,
 } from '../../../harness/git-sync/pot-integration-mode';
+import { repoHasSubmodules } from '../../../harness/git-sync/pot-integration-mode';
 import { parseIntegrationModeAnswer } from '../../../harness/git-sync/integration-mode-question';
 import {
   defaultIntegrationModeSettingsDeps,
@@ -81,6 +82,7 @@ export function makeIntegrationModeRoutes(deps: IntegrationModeRouteDeps) {
         greenCmd,
         forkRemote: r.entry.fork_remote ?? null,
         upstreamRemote: r.entry.github_remote ?? null,
+        hasSubmodules: repoHasSubmodules(r.entry.path),
       });
       if (!result.ok) return Response.json(result, { status: 409 });
       // After the write committed: live settings sections re-read (a push failure never fails the save).

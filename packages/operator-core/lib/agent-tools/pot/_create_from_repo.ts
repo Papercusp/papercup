@@ -697,6 +697,7 @@ export async function createPotFromRepo(
         greenCmd,
         forkRemote: null,
         upstreamRemote: parsed.cloneUrl,
+        hasSubmodules: (await import('../../harness/git-sync/pot-integration-mode')).repoHasSubmodules(memberPath),
       });
     })().catch((e) => ({
       ok: false as const,
