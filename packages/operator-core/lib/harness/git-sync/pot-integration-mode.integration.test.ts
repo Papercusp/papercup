@@ -69,6 +69,9 @@ const tipOf = (bare: string): Promise<string> => git(['rev-parse', 'main'], bare
 const stagingOf = (repo: string): Promise<string> => git(['rev-parse', 'refs/heads/staging'], repo);
 const headOf = (dir: string): Promise<string> => git(['rev-parse', 'HEAD'], dir);
 const filesAt = (bare: string, ref = 'main'): Promise<string> => git(['ls-tree', '-r', '--name-only', ref], bare);
+/** Every ref in a repository, sorted — so a stray per-work-item branch or PR ref shows up. */
+const refsOf = async (repo: string): Promise<string[]> =>
+  (await git(['for-each-ref', '--format=%(refname)'], repo)).split('\n').filter(Boolean).sort();
 
 interface Topology {
   /** The main repository — the pot clone's `origin`. */
@@ -161,6 +164,21 @@ describe('pot integration mode — where a real git-sync tick pushes (P-014, SPE
     // the main repository is untouched — unreviewed work never reaches it
     expect(await tipOf(t.upstream)).toBe(t.seed);
     expect(await filesAt(t.upstream)).not.toContain('agent.txt');
+  });
+
+  it('D-006: two work-items share the one integration branch — no per-work-item branch or PR ref is created', async () => {
+    const t = await makeTopology('no-per-wi');
+    await agentEdit(t.work, 'wi-a.txt');
+    await tick('pim-no-per-wi', t, { mode: 'review', source: 'set' }, t.fork);
+    await agentEdit(t.work, 'wi-b.txt');
+    await tick('pim-no-per-wi', t, { mode: 'review', source: 'set' }, t.fork);
+
+    // positive control: both work-items' changes DID reach the fork's integration branch
+    const onStaging = (await filesAt(t.fork, 'staging')).split('\n');
+    expect(onStaging).toEqual(expect.arrayContaining(['wi-a.txt', 'wi-b.txt']));
+    // ...on that one branch only: no per-work-item branch, no PR ref, in the fork or the main repository
+    expect(await refsOf(t.fork)).toEqual(['refs/heads/main', 'refs/heads/staging']);
+    expect(await refsOf(t.upstream)).toEqual(['refs/heads/main']);
   });
 
   it('WI-10006301: after a working-copy tick the gate has something to promote (staging ahead of the release ref)', async () => {

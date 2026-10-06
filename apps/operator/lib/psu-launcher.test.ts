@@ -4395,11 +4395,14 @@ describe("psu-launcher arg parsing", () => {
     const source = {
       agent: "claude", sessionId: "native-source", coordOwnerId: "su-source",
       id: 17, cwd: "/repo", workspaceId: "fork-workspace", planSlug: "source-plan",
+      portId: "inherited-port", portSourceAdvSessionId: 11,
     };
     const postBootstrap = vi.fn().mockRejectedValue(new Error("stop after captured request"));
     const launchResume = vi.fn();
     await expect(launchTrackedFork(source, {
       ownerId: "su-fork", launchedBy, headless, contextSize: "trimmed",
+      sessionPortSourceAdvSessionId: source.id,
+      sessionPortToken: "inherited-port-token", sessionPortProtocol: 1,
     }, { forward: "auto", id: null, env: {}, notice: null }, "fable[1m]", {
       api: postBootstrap, launchResume,
     })).rejects.toThrow(/pre-pinned managed identity requires a launch record/);
@@ -4410,6 +4413,12 @@ describe("psu-launcher arg parsing", () => {
       "--account=auto", "--model=fable[1m]",
     ]));
     expect(body.owner_id).toBe("su-fork");
+    expect(body.launch_argv.filter((arg: string) => /^--resume(?:=|$)/.test(arg)))
+      .toEqual(["--resume=native-source"]);
+    expect(body.launch_argv.some((arg: string) => arg.startsWith("--session-port"))).toBe(false);
+    for (const key of ["session_port_token", "session_port_protocol", "session_port_source_adv_session_id"]) {
+      expect(body).not.toHaveProperty(key);
+    }
     if (launchedBy) {
       expect(body.launched_by).toBe(launchedBy);
       expect(body.launch_argv).toContain(`--launched-by=${launchedBy}`);

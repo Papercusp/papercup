@@ -41,6 +41,7 @@ import {
   type ReserveLearningSpendInput,
   type ReserveLearningSpendResult,
   type LearningReservationResources,
+  type LearningSpendReservation,
   type SettleLearningSpendInput,
   type SettleLearningSpendResult,
 } from './store';
@@ -193,6 +194,41 @@ function costEvidenceOf(value: unknown): { costUsd: number; missing: boolean } {
   return { costUsd: valid ? c : 0, missing: !valid || report?.costUsdMeasurementMissing === true };
 }
 
+/** Immutability is not admission: a stale, foreign or malformed successful
+ * adapter receipt must not become the authority for a paid dispatch. */
+function validDispatchReservation<T>(
+  reservation: LearningSpendReservation | null,
+  input: GovernedSpendAttemptInput<T>,
+  clamped: boolean,
+  headroomUsd: number | null,
+): reservation is LearningSpendReservation {
+  const amount = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n) && n >= 0;
+  if (!reservation || typeof reservation.id !== 'string' || !reservation.id.trim() ||
+    reservation.workspaceId !== input.workspaceId || reservation.loopId !== input.loopId ||
+    reservation.attemptKind !== input.attemptKind || reservation.status !== 'open' ||
+    reservation.usedUsd !== 0 || reservation.settledAt !== null ||
+    !amount(input.requestedUsd) || reservation.requestedUsd !== input.requestedUsd ||
+    !amount(reservation.reservedUsd) || reservation.reservedUsd > input.requestedUsd ||
+    !amount(headroomUsd) || reservation.reservedUsd > headroomUsd ||
+    typeof clamped !== 'boolean' || clamped !== (reservation.reservedUsd < input.requestedUsd) ||
+    reservation.signalOrigin !== (input.signalOrigin ?? 'organic') ||
+    (input.potSlug !== undefined && reservation.potSlug !== input.potSlug)) return false;
+  const resources = reservation.resources;
+  if (resources !== undefined && (!resources || typeof resources !== 'object' ||
+    typeof resources.armId !== 'string' || !resources.armId.trim() ||
+    !Number.isSafeInteger(resources.inputTokens) || resources.inputTokens < 0 ||
+    !Number.isSafeInteger(resources.outputTokens) || resources.outputTokens <= 0)) return false;
+  if (!input.exact) return reservation.runRef === (input.runRef ?? null);
+  const exact = input.exact;
+  const expectedResources = exact.resources;
+  return reservation.id.toLowerCase() === exact.reservationId.toLowerCase() &&
+    reservation.runRef === `manifest:${exact.binding}/attempt:${exact.reservationId.toLowerCase()}` &&
+    reservation.reservedUsd === input.requestedUsd && !clamped &&
+    (expectedResources === undefined ? resources === undefined :
+      resources !== undefined && resources.armId === expectedResources.armId &&
+      resources.inputTokens === expectedResources.inputTokens && resources.outputTokens === expectedResources.outputTokens);
+}
+
 /**
  * Run one spending call inside a governor reservation. Complete usage settles
  * exactly once — success, partial, cancellation, or throw. Incomplete usage
@@ -242,10 +278,23 @@ export async function runGovernedSpendAttempt<T>(
   if (!reserved.ok) {
     return { ok: false, reason: 'refused', refusal: reserved.reason, headroomUsd: reserved.headroomUsd };
   }
-  const reservationId = reserved.reservation.id;
+  // Copy once before validating, then dispatch only that snapshot. Never try
+  // to settle an invalid receipt: its id may belong to another live attempt.
+  const row = reserved.reservation;
+  const reservation = row && typeof row === 'object' ? { ...row,
+    ...(row.resources ? { resources: { ...row.resources } } : {}),
+  } : null;
+  const clamped = reserved.clamped;
+  if (!validDispatchReservation(reservation, input, clamped, reserved.headroomUsd)) {
+    const error = 'governor reservation receipt does not match request';
+    d.log(error);
+    return { ok: false, reason: 'failed', error, costUsd: 0, reservationId: null,
+      settlement: null, settlementError: 'invalid reservation receipt; dispatch and settlement not attempted' };
+  }
+  const reservationId = reservation.id;
   const grant: SpendAttemptGrant = Object.freeze({
-    reservationId, reservedUsd: reserved.reservation.reservedUsd, clamped: reserved.clamped,
-    ...(reserved.reservation.resources ? { resources: Object.freeze({ ...reserved.reservation.resources }) } : {}),
+    reservationId, reservedUsd: reservation.reservedUsd, clamped,
+    ...(reservation.resources ? { resources: Object.freeze({ ...reservation.resources }) } : {}),
   });
   let settlement: SettleLearningSpendResult | null = null;
   let settlementError: string | undefined;

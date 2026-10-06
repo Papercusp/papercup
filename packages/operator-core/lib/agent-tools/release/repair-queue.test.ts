@@ -1726,6 +1726,10 @@ describe('release:repair-queue', () => {
 
     const retired = body(await tool.handler({ ...args, confirm: true } as never, { role: 'su' } as never)) as {
       retired?: boolean;
+      completionReceipt?: {
+        status: 'recorded' | 'not-recorded' | 'recovery-incomplete';
+        effectRef?: string;
+      };
       nextStep?: string;
     };
     expect(retired.retired).toBe(true);

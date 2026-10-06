@@ -540,6 +540,50 @@ describe('ticket write-back requested by work-item id (linear-asana-task-sync P-
     expect(invoked).toHaveLength(calls);
   });
 
+  it('posts a comment on a GitHub-admitted issue through the real package, ledgered under the comment sync’s nativeId (WI-10006212)', async () => {
+    issues = [issue(5, 'Commentable ticket', [])];
+    const sourceId = await connect();
+    await sync(sourceId);
+    const admitted = await admitWorkItem(
+      {
+        workspaceId: WS, harness: HARNESS,
+        source: { kind: 'record', recordId: dataSourceRecordId(WS, sourceId, 'ticket', `${OWNER}/${REPO}#5`) },
+        admitter: { via: 'person', actorId: PERSON },
+      },
+      { sql },
+    );
+    if (!admitted.ok) throw new Error(`admission failed: ${JSON.stringify(admitted)}`);
+    const posted: Array<{ source: string; url: string; method?: string; body: unknown }> = [];
+    const recordedGithubWrite = (_db: unknown, input: { sourceId: string }): HostFetch => async ({ source, request }) => {
+      expect(source).toBe(input.sourceId);
+      posted.push({ source, url: request.url, method: request.method, body: JSON.parse(String(request.body)) });
+      return {
+        status: 201, headers: { 'content-type': 'application/json' }, bodyEncoding: 'utf8',
+        body: JSON.stringify({ id: 4242, html_url: `https://github.com/${OWNER}/${REPO}/issues/5#issuecomment-4242` }),
+      };
+    };
+    const githubDeps = {
+      resolverFor: (kind: string) => (kind === 'record' ? createRecordAdmissionSource({ registry, hostFetchFor: recordedGithubWrite }) : undefined),
+    } as Parameters<typeof writeBackAdmission>[4];
+
+    expect(await writeBackAdmission(WS, admitted.workItemId, 'Papercusp picked this up.', sql, githubDeps)).toEqual({
+      ok: true, sourceKind: 'record', posted: true,
+      externalRef: `https://github.com/${OWNER}/${REPO}/issues/5#issuecomment-4242`, updateId: 'comment:4242',
+    });
+    expect(posted).toEqual([{
+      source: sourceId, url: `https://api.github.com/repos/${OWNER}/${REPO}/issues/5/comments`, method: 'POST',
+      body: { body: 'Papercusp picked this up.' },
+    }]);
+    // The next comment sync reports this comment as nativeId `comment:4242`: the host knows it is its own.
+    expect(await findAdmissionWriteBack(sql, { workspaceId: WS, dataSourceId: sourceId, updateId: 'comment:4242' }))
+      .toMatchObject({ workItemId: admitted.workItemId, action: 'comment' });
+    // GitHub has no workflow columns: a transition is refused by name, before any request.
+    expect(await transitionAdmission(WS, admitted.workItemId, 'in-progress', sql, githubDeps)).toEqual({
+      ok: false, code: 'provider_capability_unsupported', message: `provider_capability_unsupported:${GITHUB}:ticket.transition`,
+    });
+    expect(posted).toHaveLength(1);
+  });
+
   it('refuses a work item that was never admitted from a data source', async () => {
     expect(await writeBackAdmission(WS, 'WI-never-admitted-p002', 'hello', sql, deps)).toMatchObject({ ok: false, code: 'not_admitted' });
     expect(await transitionAdmission(WS, 'WI-never-admitted-p002', 'done', sql, deps)).toMatchObject({ ok: false, code: 'not_admitted' });

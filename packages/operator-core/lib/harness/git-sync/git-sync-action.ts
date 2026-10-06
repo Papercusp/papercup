@@ -4421,6 +4421,41 @@ export async function refreshRemoteTrackingRefFromProvenTip(
   }
 }
 
+/** The persisted error cap (`github_bridge.errors` keeps the first 10). */
+const GITHUB_BRIDGE_PERSISTED_ERRORS = 10;
+
+/**
+ * WI-10006470: the journal line for a GitHub-bridge error TRANSITION, or null.
+ *
+ * `github_bridge.errors` holds only the latest tick, so a streak that clears leaves no
+ * cause behind (a 3-sweep "remote could not be contacted" fault on hello-world-3-pot,
+ * 2026-10-06, could not be diagnosed after it cleared). Returns a line when errors
+ * start or change, and when a previously failing bridge comes back clean; null for a
+ * clean tick after a clean tick and for an identical repeat (already journaled).
+ * `prevErrors` is the raw persisted value, so anything that is not a string array
+ * counts as "no previous errors".
+ */
+export function githubBridgeErrorTransitionLine(
+  slug: string,
+  prevErrors: unknown,
+  errors: readonly string[],
+  divergence: string,
+): string | null {
+  const prev = Array.isArray(prevErrors) ? prevErrors.filter((e): e is string => typeof e === 'string') : [];
+  const current = errors.slice(0, GITHUB_BRIDGE_PERSISTED_ERRORS);
+  const signature = (list: readonly string[]) => list.join('\n');
+  if (current.length > 0) {
+    if (signature(current) === signature(prev)) return null;
+    return `[github-bridge] ${slug}: tick errors (divergence=${divergence}): ${current.join(' | ').slice(0, 1500)}`;
+  }
+  if (prev.length > 0) {
+    return `[github-bridge] ${slug}: tick errors cleared (divergence=${divergence}; previous: ${prev
+      .join(' | ')
+      .slice(0, 500)})`;
+  }
+  return null;
+}
+
 export async function runGithubBridgeLeg(
   slug: string,
   workspaceId: string,
@@ -4458,16 +4493,20 @@ export async function runGithubBridgeLeg(
 
     // The admission watermark (P-005): the last ADMITTED github-origin head.
     const { sql } = getOrgPg();
-    const rows = await sql<{ la: string | null; wb_sha: string | null; prev_egress_head: string | null }[]>`
+    const rows = await sql<
+      { la: string | null; wb_sha: string | null; prev_egress_head: string | null; prev_errors?: unknown }[]
+    >`
       SELECT metadata->'github_bridge'->>'last_admitted' AS la,
              metadata->'worktree_bridge'->>'stagingSha' AS wb_sha,
-             metadata->'github_bridge'->>'egress_head' AS prev_egress_head
+             metadata->'github_bridge'->>'egress_head' AS prev_egress_head,
+             metadata->'github_bridge'->'errors' AS prev_errors
         FROM harness_shared.routines
        WHERE install_slug = ${slug} AND workspace_id = ${workspaceId} AND target_role = 'system:git-sync'
        LIMIT 1
     `;
     const lastAdmitted = rows[0]?.la ?? null;
     const prevEgressHead = rows[0]?.prev_egress_head ?? null;
+    const prevBridgeErrors = rows[0]?.prev_errors;
 
     // Catch-up pin (WI-3500): the bare-side canonical mirror (refs/hive/staging)
     // is maintained on staging-advance ACCEPTANCE (worktree-bridge step 3.5),
@@ -4574,6 +4613,17 @@ export async function runGithubBridgeLeg(
       // instead of silently reading `divergence: clear`.
       expectedCanonicalSha: wbSha,
     });
+
+    // WI-10006470: `github_bridge.errors` below is replaced wholesale every tick, so
+    // once an error streak clears its cause is gone from PG. Journal the streak's
+    // start/change and its clearing (never every repeat tick) so it stays recoverable.
+    const bridgeErrorLine = githubBridgeErrorTransitionLine(
+      slug,
+      prevBridgeErrors,
+      outcome.errors,
+      outcome.verdict.action,
+    );
+    if (bridgeErrorLine) console.warn(bridgeErrorLine);
 
     // EI-22754766601034346: P2P/local-path fetches intentionally do not update
     // the checkout's refs/remotes/*, so a fresh bridge egress can coexist with a

@@ -133,7 +133,7 @@ function readyAnswer(frozen: DaemonReplayConfig, queryClass: 'definition' | 'hot
 }
 describe('daemon replay readiness and runtime admission', () => {
   function boundary(frozen: DaemonReplayConfig): ReplayBoundary {
-    const taskId = 'replay-server';
+    const taskId = 'replayserver';
     const cgroup = `0::/papercusp.slice/${scopeUnitForTask(taskId)}`;
     const executable = { path: join(frozen.rootPath, 'source.ts'), sha256: frozen.files[join(frozen.rootPath, 'source.ts')] };
     const process = (pid: number) => ({ pid, identity: `fixture:${pid}`, cmdline: ['fixture'], cgroup, executable,

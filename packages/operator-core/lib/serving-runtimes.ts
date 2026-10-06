@@ -490,7 +490,10 @@ export function evaluateServingRuntime(probe: ServingRuntimeProbe): ServingRunti
 
   // canonical-tree host
   if (probe.pid === null && probe.startedAtMs === null && probe.buildSha === null) {
-    return unknown('insufficient-data', `${spec.label} is not running (no process for ${spec.unit ?? 'its unit'}).`);
+    return unknown(
+      'insufficient-data',
+      `${spec.label} could not be inspected: no unit pid, start time, or health build sha was available for ${spec.unit ?? 'its unit'}, so its running state is unknown.`,
+    );
   }
   if (probe.bundle?.stale) {
     // WI-10005936: the rebuild at start FAILED and the host booted an older bundle.

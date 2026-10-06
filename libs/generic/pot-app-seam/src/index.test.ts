@@ -1,27 +1,38 @@
 import { describe, expect, it } from 'vitest';
 import {
+  BLUEPRINT_OPERATION_TOOL_NAMES,
+  blueprintOperationHostFromInvoker,
   createPotAppSeam,
+  deriveRequestKey,
   operationDraftFromPlanRun,
+  OperationOutputRejectedError,
   type BlueprintOperationHandle,
+  type BlueprintOperationStatus,
   type IngestEvent,
   type PotAppSeamHost,
 } from './index';
 
+function statusOf(handle: BlueprintOperationHandle, over: Partial<BlueprintOperationStatus> = {}): BlueprintOperationStatus {
+  return {
+    handle, phase: 'terminal', outcome: 'succeeded', items: [],
+    planRun: { status: 'done', outcome: 'success' }, cancellationRequested: false, wait: null, ...over,
+  };
+}
+
 function host(): PotAppSeamHost & {
   markers: Map<string, string>;
   pots: string[];
-  runs: string[];
-  operations: Map<string, BlueprintOperationHandle>;
+  operations: Map<string, { handle: BlueprintOperationHandle; input: string }>;
+  cancels: Map<string, string>;
+  eventCalls: unknown[];
 } {
   const markers = new Map<string, string>();
   const pots: string[] = [];
-  const runs: string[] = [];
-  const operations = new Map<string, BlueprintOperationHandle>();
+  const operations = new Map<string, { handle: BlueprintOperationHandle; input: string }>();
+  const cancels = new Map<string, string>();
+  const eventCalls: unknown[] = [];
   return {
-    markers,
-    pots,
-    runs,
-    operations,
+    markers, pots, operations, cancels, eventCalls,
     readBootstrapMarker: (marker) => markers.get(marker) ?? null,
     writeBootstrapMarker: (marker, fingerprint) => {
       markers.set(marker, fingerprint);
@@ -30,58 +41,37 @@ function host(): PotAppSeamHost & {
       pots.push(spec.slug);
       return { slug: spec.slug, created: true, ref: `pot:${spec.slug}` };
     },
-    launchPlanRun: (draft) => {
-      const n = runs.length + 1;
-      runs.push(`${draft.templateSlug}:${draft.execution.agentName}`);
-      return {
-        runId: `RUN-${n}`,
-        planSlug: `${draft.templateSlug}-run-${n}`,
-        workItemIds: [`WI-${n}`],
-        assignedAgentName: draft.execution.agentName,
-        dedupeKey: draft.dedupeKey,
-        dispatch: {
-          status: 'delivered',
-          assignedWorkItemIds: [`WI-${n}`],
-          wakeAcknowledged: true,
-        },
-      };
-    },
     submitBlueprintOperation: (draft) => {
       const key = `${draft.harnessSlug}:${draft.operationId}:${draft.requestKey}`;
+      const input = JSON.stringify(draft.input);
       const prior = operations.get(key);
-      if (prior) return prior;
+      if (prior) {
+        if (prior.input !== input) throw new Error('input_conflict: request key reused with different input');
+        return prior.handle;
+      }
       const handle: BlueprintOperationHandle = {
-        workspaceId: 'workspace-fixture',
-        harnessSlug: draft.harnessSlug,
-        receiptId: operations.size + 1,
-        operationId: draft.operationId,
-        specificationRevision: 'a'.repeat(64),
-        target: { kind: 'plan', runId: operations.size + 1, instanceSlug: `review@run-${operations.size + 1}` },
+        workspaceId: 'workspace-fixture', harnessSlug: draft.harnessSlug, receiptId: operations.size + 1,
+        operationId: draft.operationId, specificationRevision: 'a'.repeat(64),
+        target: { kind: 'work-item', id: `WI-${operations.size + 1}` },
       };
-      operations.set(key, handle);
+      operations.set(key, { handle, input });
       return handle;
     },
-    readBlueprintOperationStatus: (handle) => ({
-      handle,
-      phase: 'terminal',
-      outcome: 'succeeded',
-      items: [],
-      planRun: { status: 'done', outcome: 'success' },
-      cancellationRequested: false,
-      wait: null,
-    }),
-    readBlueprintOperationResult: (handle) => ({
-      state: 'pending',
-      status: {
-        handle,
-        phase: 'dispatched',
-        outcome: null,
-        items: [],
-        planRun: { status: 'running', outcome: null },
-        cancellationRequested: false,
-        wait: null,
-      },
-    }),
+    readBlueprintOperationStatus: (handle) => statusOf(handle),
+    readBlueprintOperationResult: (handle) => ({ state: 'pending', status: statusOf(handle, { phase: 'dispatched', outcome: null }) }),
+    readBlueprintOperationEvents: (handle, options) => {
+      eventCalls.push(options);
+      return {
+        status: statusOf(handle, { phase: 'dispatched', outcome: null }),
+        events: [{ kind: 'work-item', cursor: '1', at: '2026-10-06T00:00:00Z', state: 'open' }],
+        cursor: '1', hasMore: false,
+      };
+    },
+    cancelBlueprintOperation: (_handle, input) => {
+      const replayed = cancels.has(input.requestKey);
+      cancels.set(input.requestKey, input.reason);
+      return { eventId: `evt-${input.requestKey}`, replayed, accepted: true, wakeQueued: !replayed, handled: false, effected: false };
+    },
   };
 }
 
@@ -89,188 +79,140 @@ async function* events(items: IngestEvent[]): AsyncIterable<IngestEvent> {
   for (const item of items) yield item;
 }
 
+const draft = (requestKey: string, input: Record<string, string> = { candidateId: 'a' }) => ({
+  harnessSlug: 'shop', operationId: 'review-candidate', requestKey, input,
+});
+
 describe('createPotAppSeam', () => {
   it('bootstraps pots once per stable fingerprint marker', async () => {
     const h = host();
     const seam = createPotAppSeam(h);
-
     const first = await seam.bootstrapPots({
-      pots: [
-        { slug: 'shop', title: 'Shop' },
-        { slug: 'shop-ops', blueprint: 'generic-pot' },
-      ],
+      pots: [{ slug: 'shop', title: 'Shop' }, { slug: 'shop-ops', blueprint: 'generic-pot' }],
     });
     expect(first.skipped).toBe(false);
-    expect(first.pots.map((x) => x.slug)).toEqual(['shop', 'shop-ops']);
     expect(h.pots).toEqual(['shop', 'shop-ops']);
-
     const second = await seam.bootstrapPots({
-      pots: [
-        { slug: 'shop-ops', blueprint: 'generic-pot' },
-        { slug: 'shop', title: 'Shop' },
-      ],
+      pots: [{ slug: 'shop-ops', blueprint: 'generic-pot' }, { slug: 'shop', title: 'Shop' }],
     });
-    expect(second.skipped).toBe(true);
-    expect(second.pots).toEqual([]);
+    expect(second).toMatchObject({ skipped: true, pots: [] });
     expect(h.pots).toEqual(['shop', 'shop-ops']);
   });
 
-  it('launches an app-owned plan run through the canonical host adapter', async () => {
-    const h = host();
-    const seam = createPotAppSeam(h);
-    const out = await seam.launchPlanRuns([
-      {
-        templateSlug: 'candidate-review',
-        input: { candidateId: 'a' },
-        provenance: { eventId: 'evt-a' },
-        execution: { appHarnessSlug: 'shop', agentName: 'shop-reviewer' },
-        dedupeKey: 'candidate:a',
-      },
+  it('exposes only the operation lifecycle — no direct plan-run or work-item enqueue path', () => {
+    const seam = createPotAppSeam(host());
+    expect(Object.keys(seam).sort()).toEqual([
+      'bootstrapPots', 'cancelOperation', 'operationEvents', 'operationResult', 'operationStatus',
+      'startIngestLoop', 'submitOperations',
     ]);
-    expect(out[0]).toMatchObject({
-      runId: 'RUN-1',
-      workItemIds: ['WI-1'],
-      assignedAgentName: 'shop-reviewer',
-      dedupeKey: 'candidate:a',
-      dispatch: { status: 'delivered', wakeAcknowledged: true },
-    });
-    expect(h.runs).toEqual(['candidate-review:shop-reviewer']);
   });
 
   it('maps a legacy plan draft to one operation request without changing replay identity or input', () => {
-    const request = operationDraftFromPlanRun({
-      templateSlug: 'candidate-review',
-      input: { candidateId: 'a' },
-      provenance: { eventId: 'evt-a' },
+    const legacy = {
+      templateSlug: 'candidate-review', input: { candidateId: 'a' }, provenance: { eventId: 'evt-a' },
       execution: { appHarnessSlug: 'shop', agentName: 'shop-reviewer' },
-      dedupeKey: 'candidate:a',
-    }, 'review-candidate');
-    expect(request).toEqual({
-      harnessSlug: "shop",
-      operationId: "review-candidate",
-      requestKey: "candidate:a",
-      input: { candidateId: "a", provenance: { eventId: "evt-a" } },
-    });
-    expect(() => operationDraftFromPlanRun({
-      templateSlug: 'candidate-review',
-      input: { candidateId: 'a' },
-      provenance: { eventId: 'evt-a' },
-      execution: { appHarnessSlug: 'shop', agentName: 'shop-reviewer' },
-    }, 'review-candidate')).toThrow(/requires dedupeKey/);
-    expect(() =>
-      operationDraftFromPlanRun(
-        {
-          templateSlug: "candidate-review",
-          input: { provenance: "caller-owned" },
-          provenance: { eventId: "evt-a" },
-          execution: { appHarnessSlug: "shop", agentName: "shop-reviewer" },
-          dedupeKey: "candidate:a",
-        },
-        "review-candidate",
-      ),
-    ).toThrow(/reserved provenance/);
-  });
-
-  it('submits one durable operation handle on replay and returns payload only when ready', async () => {
-    const h = host();
-    const seam = createPotAppSeam(h);
-    const request = {
-      harnessSlug: 'shop',
-      operationId: 'review-candidate',
-      requestKey: 'candidate:a',
-      input: { candidateId: 'a' },
-    } as const;
-    const first = await seam.submitOperations([request]);
-    const replay = await seam.submitOperations([request]);
-    expect(replay[0]).toEqual(first[0]);
-    expect(h.operations).toHaveLength(1);
-
-    h.readBlueprintOperationResult = (handle) => ({
-      state: 'ready',
-      status: {
-        handle,
-        phase: 'terminal',
-        outcome: 'succeeded',
-        items: [],
-        planRun: { status: 'done', outcome: 'success' },
-        cancellationRequested: false,
-        wait: null,
-      },
-      output: { candidateId: 'a', verdict: 'accepted' },
-      evidenceRef: 'plan-run:1',
-    });
-    await expect(seam.operationResult<{ candidateId: string; verdict: string }>(first[0]!)).resolves.toMatchObject({
-      state: 'ready',
-      output: { candidateId: 'a', verdict: 'accepted' },
-    });
-  });
-
-  it("refuses status and result reads that drift to a different durable target", async () => {
-    const h = host();
-    const seam = createPotAppSeam(h);
-    const [handle] = await seam.submitOperations([
-      {
-        harnessSlug: "shop",
-        operationId: "review-candidate",
-        requestKey: "candidate:a",
-        input: {},
-      },
-    ]);
-    const driftedHandle: BlueprintOperationHandle = {
-      ...handle!,
-      target: { kind: "plan", runId: 999, instanceSlug: "review@run-999" },
     };
-    h.readBlueprintOperationStatus = () => ({
-      handle: driftedHandle,
-      phase: "terminal",
-      outcome: "succeeded",
-      items: [],
-      planRun: { status: "done", outcome: "success" },
-      cancellationRequested: false,
-      wait: null,
+    expect(operationDraftFromPlanRun({ ...legacy, dedupeKey: 'candidate:a' }, 'review-candidate')).toEqual({
+      harnessSlug: 'shop', operationId: 'review-candidate', requestKey: 'candidate:a',
+      input: { candidateId: 'a', provenance: { eventId: 'evt-a' } },
     });
-    await expect(seam.operationStatus(handle!)).rejects.toThrow(
-      /different durable handle/,
-    );
-
-    h.readBlueprintOperationResult = () => ({
-      state: "pending",
-      status: {
-        handle: driftedHandle,
-        phase: "dispatched",
-        outcome: null,
-        items: [],
-        planRun: { status: "running", outcome: null },
-        cancellationRequested: false,
-        wait: null,
-      },
-    });
-    await expect(seam.operationResult(handle!)).rejects.toThrow(
-      /different durable handle/,
-    );
+    expect(() => operationDraftFromPlanRun(legacy, 'review-candidate')).toThrow(/requires dedupeKey/);
+    expect(() => operationDraftFromPlanRun({ ...legacy, input: { provenance: 'x' }, dedupeKey: 'k' }, 'r'))
+      .toThrow(/reserved provenance/);
   });
 
-  it('refuses a non-ready result that smuggles an output payload', async () => {
+  it('replays one durable handle for the same request key and refuses the key with different input', async () => {
     const h = host();
     const seam = createPotAppSeam(h);
-    const [handle] = await seam.submitOperations([{
-      harnessSlug: 'shop', operationId: 'review-candidate', requestKey: 'candidate:a', input: {},
-    }]);
-    h.readBlueprintOperationResult = (sameHandle) => ({
-      state: 'failed',
-      reason: 'plan failed',
-      output: { shouldNotExist: true },
-      status: {
-        handle: sameHandle,
-        phase: 'terminal',
-        outcome: 'failed',
-        items: [],
-        planRun: { status: 'failed', outcome: 'failed' },
-        cancellationRequested: false,
-        wait: null,
-      },
+    const [first] = await seam.submitOperations([draft('candidate:a')]);
+    const [replay] = await seam.submitOperations([draft('candidate:a')]);
+    expect(replay).toEqual(first);
+    expect(h.operations.size).toBe(1);
+    await expect(seam.submitOperations([draft('candidate:a', { candidateId: 'b' })])).rejects.toThrow(/input_conflict/);
+    expect(h.operations.size).toBe(1);
+    await expect(seam.submitOperations([draft('x'.repeat(201))])).rejects.toThrow(/exceeds 200/);
+  });
+
+  it('lets ready output into the app only through its parse gate', async () => {
+    const h = host();
+    const seam = createPotAppSeam(h);
+    const [handle] = await seam.submitOperations([draft('candidate:a')]);
+    h.readBlueprintOperationResult = (same) => ({
+      state: 'ready', status: statusOf(same), output: { candidateId: 'a', verdict: 'accepted' }, evidenceRef: 'plan-run:1',
+    });
+    const parse = (output: unknown) => {
+      const o = output as { candidateId?: unknown; verdict?: unknown };
+      if (typeof o.candidateId !== 'string' || (o.verdict !== 'accepted' && o.verdict !== 'rejected')) {
+        throw new Error('not a review verdict');
+      }
+      return { candidateId: o.candidateId, verdict: o.verdict, parsed: true as const };
+    };
+    await expect(seam.operationResult(handle!, parse)).resolves.toMatchObject({
+      state: 'ready', output: { candidateId: 'a', verdict: 'accepted', parsed: true },
+    });
+    // A ready output the app's parser rejects never reaches the caller.
+    h.readBlueprintOperationResult = (same) => ({
+      state: 'ready', status: statusOf(same), output: { candidateId: 'a', verdict: 'maybe' }, evidenceRef: 'plan-run:1',
+    });
+    const rejected = seam.operationResult(handle!, parse);
+    await expect(rejected).rejects.toBeInstanceOf(OperationOutputRejectedError);
+    await expect(rejected).rejects.toThrow(/parse gate: not a review verdict/);
+    await expect(seam.operationResult(handle!, undefined as never)).rejects.toThrow(/requires the app parse gate/);
+  });
+
+  it('returns non-ready terminal results without invoking the parser, and refuses smuggled output', async () => {
+    const h = host();
+    const seam = createPotAppSeam(h);
+    const [handle] = await seam.submitOperations([draft('candidate:a')]);
+    let parsed = 0;
+    const parse = (o: unknown) => { parsed += 1; return o; };
+    h.readBlueprintOperationResult = (same) => ({
+      state: 'failed', reason: 'agent failed', status: statusOf(same, { outcome: 'failed' }),
+    });
+    await expect(seam.operationResult(handle!, parse)).resolves.toMatchObject({ state: 'failed', reason: 'agent failed' });
+    h.readBlueprintOperationResult = (same) => ({
+      state: 'failed', reason: 'agent failed', output: { leak: true }, status: statusOf(same, { outcome: 'failed' }),
     } as never);
-    await expect(seam.operationResult(handle!)).rejects.toThrow(/must not carry output/);
+    await expect(seam.operationResult(handle!, parse)).rejects.toThrow(/must not carry output/);
+    expect(parsed).toBe(0);
+  });
+
+  it('pages events with the caller cursor and limit, and bounds the limit', async () => {
+    const h = host();
+    const seam = createPotAppSeam(h);
+    const [handle] = await seam.submitOperations([draft('candidate:a')]);
+    const page = await seam.operationEvents(handle!, { cursor: '7', limit: 10 });
+    expect(page).toMatchObject({ cursor: '1', hasMore: false, events: [{ kind: 'work-item', cursor: '1' }] });
+    expect(h.eventCalls).toEqual([{ cursor: '7', limit: 10 }]);
+    await seam.operationEvents(handle!);
+    expect(h.eventCalls[1]).toEqual({});
+    await expect(seam.operationEvents(handle!, { limit: 0 })).rejects.toThrow(/1\.\.100/);
+  });
+
+  it('cancels through the handle with an idempotent request key and a required reason', async () => {
+    const h = host();
+    const seam = createPotAppSeam(h);
+    const [handle] = await seam.submitOperations([draft('candidate:a')]);
+    const first = await seam.cancelOperation(handle!, { requestKey: 'cancel:a', reason: 'candidate withdrew' });
+    expect(first).toMatchObject({ accepted: true, handled: false, replayed: false });
+    expect(await seam.cancelOperation(handle!, { requestKey: 'cancel:a', reason: 'candidate withdrew' }))
+      .toMatchObject({ eventId: first.eventId, replayed: true });
+    await expect(seam.cancelOperation(handle!, { requestKey: 'cancel:b', reason: ' ' })).rejects.toThrow(/cancel.reason/);
+    h.cancelBlueprintOperation = () => ({ accepted: false } as never);
+    await expect(seam.cancelOperation(handle!, { requestKey: 'cancel:c', reason: 'r' })).rejects.toThrow(/not accepted/);
+  });
+
+  it('refuses status, result and events reads that drift to a different durable target', async () => {
+    const h = host();
+    const seam = createPotAppSeam(h);
+    const [handle] = await seam.submitOperations([draft('candidate:a')]);
+    const drifted: BlueprintOperationHandle = { ...handle!, target: { kind: 'work-item', id: 'WI-999' } };
+    h.readBlueprintOperationStatus = () => statusOf(drifted);
+    await expect(seam.operationStatus(handle!)).rejects.toThrow(/status returned a different durable handle/);
+    h.readBlueprintOperationResult = () => ({ state: 'pending', status: statusOf(drifted) });
+    await expect(seam.operationResult(handle!, (o) => o)).rejects.toThrow(/result returned a different durable handle/);
+    h.readBlueprintOperationEvents = () => ({ status: statusOf(drifted), events: [], cursor: '0', hasMore: false });
+    await expect(seam.operationEvents(handle!)).rejects.toThrow(/events returned a different durable handle/);
   });
 
   it('parses and stores ingest events with resumable cursors', async () => {
@@ -278,10 +220,7 @@ describe('createPotAppSeam', () => {
     const stored: Array<{ text: string; cursor: string }> = [];
     const sub = seam.startIngestLoop({
       source: events([{ id: 'evt-1', payload: { text: 'accepted' } }]),
-      parse: (event) => {
-        const payload = event.payload as { text: string };
-        return payload.text.toUpperCase();
-      },
+      parse: (event) => (event.payload as { text: string }).text.toUpperCase(),
       store: (text, cursor) => {
         stored.push({ text, cursor: cursor.eventId });
       },
@@ -290,38 +229,69 @@ describe('createPotAppSeam', () => {
     expect(stored).toEqual([{ text: 'ACCEPTED', cursor: 'evt-1' }]);
   });
 
-  it('fails fast on invalid pot and work-item boundaries', async () => {
+  it('fails fast on invalid pot and operation boundaries', async () => {
     const seam = createPotAppSeam(host());
     await expect(seam.bootstrapPots({ pots: [] })).rejects.toThrow(/at least one/);
     await expect(seam.bootstrapPots({ pots: [{ slug: '' }] })).rejects.toThrow(/pot.slug/);
-    await expect(seam.launchPlanRuns([{
-      templateSlug: '',
-      input: {},
-      provenance: {},
-      execution: { appHarnessSlug: 'shop', agentName: 'shop-reviewer' },
-    }])).rejects.toThrow(/plan template slug/);
+    await expect(seam.submitOperations([{ ...draft('k'), operationId: '' }])).rejects.toThrow(/operation.operationId/);
+    await expect(seam.submitOperations([draft(' ')])).rejects.toThrow(/operation.requestKey/);
+  });
+});
+
+describe('deriveRequestKey', () => {
+  it('is a pure function of the domain identity, encoded so separators cannot collide', () => {
+    expect(deriveRequestKey('draft-reply', 'mbx-1', 'thr-1')).toBe('draft-reply:mbx-1:thr-1');
+    expect(deriveRequestKey('draft-reply', 'mbx-1', 'thr-1')).toBe(deriveRequestKey('draft-reply', 'mbx-1', 'thr-1'));
+    expect(deriveRequestKey('op', 'a:b', 'c')).not.toBe(deriveRequestKey('op', 'a', 'b:c'));
+    expect(() => deriveRequestKey('op')).toThrow(/at least one domain part/);
+    expect(() => deriveRequestKey('op', 'a', '')).toThrow(/domain part 1/);
+    expect(() => deriveRequestKey('op', 'x'.repeat(200))).toThrow(/bound is 200/);
+  });
+});
+
+describe('blueprintOperationHostFromInvoker', () => {
+  const handle: BlueprintOperationHandle = {
+    workspaceId: 'w', harnessSlug: 'email', receiptId: 3, operationId: 'draft-reply',
+    specificationRevision: 'a'.repeat(64), target: { kind: 'work-item', id: 'WI-3' },
+  };
+
+  it('calls the public blueprint:* tools with the contract argument shapes', async () => {
+    const calls: Array<[string, Record<string, unknown>]> = [];
+    const replies: Record<string, unknown> = {
+      'blueprint:submit': { handle },
+      'blueprint:status': statusOf(handle),
+      'blueprint:result': { state: 'pending', status: statusOf(handle) },
+      'blueprint:events': { status: statusOf(handle), events: [], cursor: '0', hasMore: false },
+      'blueprint:cancel': { eventId: 'e', replayed: false, accepted: true, wakeQueued: true, handled: false, effected: false },
+    };
+    const h = blueprintOperationHostFromInvoker(async (name, args) => {
+      calls.push([name, args]);
+      return replies[name];
+    });
+    expect(await h.submitBlueprintOperation({ harnessSlug: 'email', operationId: 'draft-reply', requestKey: 'k',
+      input: { threadId: 't' }, title: 'Draft' })).toEqual(handle);
+    await h.readBlueprintOperationStatus(handle);
+    await h.readBlueprintOperationResult(handle);
+    await h.readBlueprintOperationEvents(handle, { cursor: '4' });
+    await h.cancelBlueprintOperation(handle, { requestKey: 'c', reason: 'r' });
+    expect(calls).toEqual([
+      ['blueprint:submit', { harness: 'email', operationId: 'draft-reply', requestKey: 'k', input: { threadId: 't' }, title: 'Draft' }],
+      ['blueprint:status', { handle }],
+      ['blueprint:result', { handle }],
+      ['blueprint:events', { handle, cursor: '4' }],
+      ['blueprint:cancel', { handle, requestKey: 'c', reason: 'r' }],
+    ]);
+    expect(Object.values(BLUEPRINT_OPERATION_TOOL_NAMES)).toEqual(expect.arrayContaining(calls.map(([n]) => n)));
   });
 
-  it('fails loudly when the stable execution target was not dispatched and woken', async () => {
-    const h = host();
-    h.launchPlanRun = (draft) => ({
-      runId: 'RUN-1',
-      planSlug: 'candidate-review-run-1',
-      workItemIds: ['WI-1'],
-      assignedAgentName: draft.execution.agentName,
-      dispatch: {
-        status: 'retryable-failure',
-        assignedWorkItemIds: ['WI-1'],
-        wakeAcknowledged: false,
-        reason: 'stable agent is absent',
-      },
+  it('refuses a malformed tool result instead of passing it to the app', async () => {
+    const h = blueprintOperationHostFromInvoker(async () => ({ ok: true }));
+    await expect(h.submitBlueprintOperation({ harnessSlug: 'email', operationId: 'o', requestKey: 'k', input: {} }))
+      .rejects.toThrow(/blueprint:submit result is missing handle/);
+    await expect(h.cancelBlueprintOperation(handle, { requestKey: 'c', reason: 'r' })).rejects.toThrow(/missing eventId/);
+    const refusing = blueprintOperationHostFromInvoker(async () => {
+      throw new Error('input_conflict');
     });
-    const seam = createPotAppSeam(h);
-    await expect(seam.launchPlanRuns([{
-      templateSlug: 'candidate-review',
-      input: {},
-      provenance: { eventId: 'evt-a' },
-      execution: { appHarnessSlug: 'shop', agentName: 'shop-reviewer' },
-    }])).rejects.toThrow(/failed retryably.*stable agent is absent/);
+    await expect(refusing.readBlueprintOperationStatus(handle)).rejects.toThrow(/input_conflict/);
   });
 });

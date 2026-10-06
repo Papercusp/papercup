@@ -122,9 +122,10 @@ export async function checkFleetZeroWorkers(
   deps: FleetZeroWorkersGuardDeps = defaultFleetZeroWorkersGuardDeps(),
 ): Promise<FleetZeroWorkersVerdict> {
   if (input.monitorDelta) return { action: 'allow' };
+  const owner = { workspaceId: input.workspaceId, ownerId: input.ownerId };
   let fleetSlug: string | null | 'unknown';
   try {
-    fleetSlug = await deps.monitorFleet(input);
+    fleetSlug = await deps.monitorFleet(owner);
   } catch {
     fleetSlug = 'unknown';
   }
@@ -133,7 +134,7 @@ export async function checkFleetZeroWorkers(
   }
   let row: FleetStaffingRow | null | 'unknown';
   try {
-    row = await deps.staffing({ ...input, fleetSlug });
+    row = await deps.staffing({ ...owner, fleetSlug });
   } catch {
     row = 'unknown';
   }

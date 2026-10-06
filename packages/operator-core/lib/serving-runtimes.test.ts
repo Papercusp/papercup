@@ -279,12 +279,14 @@ describe('evaluateServingRuntime — each runtime answers from ITS OWN build ide
     });
   });
 
-  it('canonical-tree host that is not running is unknown, not false', () => {
+  it('canonical-tree host with no runtime identity is unknown, not assumed stopped', () => {
     const e = evaluateServingRuntime(
       probe({ runtime: 'embed-sidecar', pid: null, startedAtMs: null, buildSha: null, buildShaSource: null }),
     );
     expect(e.containsChange).toBeNull();
-    expect(e.unknownReason?.detail).toMatch(/not running/);
+    expect(e.unknownReason?.code).toBe('insufficient-data');
+    expect(e.unknownReason?.detail).toMatch(/running state is unknown/);
+    expect(e.unknownReason?.detail).not.toMatch(/is not running/);
   });
 
   it('psu pty hosts answer with instance counts', () => {

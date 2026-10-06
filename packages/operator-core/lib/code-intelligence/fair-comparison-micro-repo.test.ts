@@ -54,11 +54,14 @@ describe('micro repo markers (P-017 calibration fixture)', () => {
     expect(k.sites).toEqual(['src/app/report.ts:4', 'src/app/report.ts:7', 'src/util/math.ts:7']);
     expect(k.aliases).toEqual({
       'src/util/math.ts:6': 'src/util/math.ts:7',
+      // D-013 module scope: line 1 stands for the module's top level, so it aliases the first top-level call.
+      'src/app/report.ts:1': 'src/app/report.ts:4',
       'src/app/report.ts:6': 'src/app/report.ts:7',
       'src/app/report.ts:8': 'src/app/report.ts:7',
     });
     expect(k.neutral).toEqual(['src/util/math.ts:2']);
-    expect(k.rejected).toEqual(['src/app/format.ts:8', 'src/app/report.ts:1', 'src/util/index.ts:1']);
+    // The barrel's line 1 is a re-export, and the barrel has no top-level call: rejected.
+    expect(k.rejected).toEqual(['src/app/format.ts:8', 'src/util/index.ts:1']);
   });
 
   it('scores a function-granularity answer and a line-granularity answer the same', () => {

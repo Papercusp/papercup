@@ -2240,7 +2240,122 @@
       "observedState": "done",
       "authority": "proposed",
       "completionFreshness": "stale",
-      "reason": "Both declared candidate-embedders source/test content identities differ from the stored completion; current working-tree blobs match HEAD. Source P-002 done does not establish independent canonical settlement."
+      "reason": "Both declared candidate-embedders source/test content identities differ from the stored completion; current working-tree blobs match HEAD. Source P-002 done does not establish independent canonical settlement.",
+      "evidenceQualification": {
+       "status": "historical-controlled-reference-qualified-current-R2-acceptance-unsettled",
+       "sourceRef": "thread-post:1159084",
+       "recordedAt": "2026-10-06T06:25:01.251Z",
+       "requirement": "R-2 — Incumbent reference fairness",
+       "sourcePlanVersion": 11,
+       "sourcePlanHash": "a5972967126ccfd937627d3a4b943b1df444e83215cf44dd4c9fb0d566566e3b",
+       "clauses": [
+        {
+         "ref": "mdenseon-adoption-measurements-2026-10-01#AUTO-BAR-R-2-P-002@2",
+         "contentHash": "bb6ba3566630b7d8d1b6f351881be55ef6b846e706d8d0a5e9779eb62e848f06",
+         "acceptanceRef": "acceptance-mdenseon-adoption-measurements-2026-10-01@1:R-2"
+        },
+        {
+         "ref": "mdenseon-adoption-measurements-2026-10-01#MDENSE-reference-arm-identity@1",
+         "contentHash": "45061605d92aef96a603d4a012f09960a1744dcccbcf75b447a1a261970e4bbd"
+        }
+       ],
+       "workItemObservation": {
+        "ref": "papercusp#WI-10004536",
+        "state": "done",
+        "assignee": null,
+        "authority": "proposed",
+        "completionFreshness": "stale",
+        "checkpointPresent": false,
+        "boundedThreadTotal": 0,
+        "settlementQualification": "Stored completion names an absent reference-profile-collision path and a root-relative tokenizer-normalization path; the retained negative receipt uses reference-collision. Existing settlement residuals remain unresolved."
+       },
+       "selectedEvidenceBindings": {
+        "workItemIds": [
+         "WI-10004536"
+        ],
+        "limit": 100,
+        "truncatedByLimit": false,
+        "ids": [
+         18311,
+         18284,
+         18275,
+         18274,
+         18271,
+         18260,
+         18258,
+         18257
+        ],
+        "specRef": "MDENSE-reference-arm-identity@1",
+        "overallCurrentness": "all eight server-measured stale",
+        "qualification": "Source fingerprints moved; some test fingerprints moved and dirty-run ambiguity remains. No AUTO-BAR-R-2-P-002@2 binding in this selected work-item query; no global evidence-absence claim."
+       },
+       "operationalReceipt": {
+        "path": "docs/evidence/mdenseon-incumbent-reference-2026-10-01.json",
+        "sha256": "f9005668ed6baf88ee5cf09819f87cd3486056bc23a5cf1ca8af960ba8cce303",
+        "bytes": 57196,
+        "rawPinsChecked": 7,
+        "rawShaAndBytesMatch": true,
+        "qualification": "Retained actual CPU/fp32 native and maintained Python reference across eight controlled texts in query/document forms; three separately identified recipes each record sixteen token/vector comparisons and eight full ranking matches. No model execution or summary-verifier replay."
+       },
+       "controlledRecipes": [
+        {
+         "profileId": "gemma-embeddinggemma-300m-768@v1",
+         "tokenizerBackend": "shipped-sdk",
+         "pooling": "mean",
+         "dimensions": 768
+        },
+        {
+         "profileId": "gemma-corrected-rust-768@benchmark-v1",
+         "tokenizerBackend": "corrected-rust",
+         "pooling": "mean",
+         "dimensions": 768
+        },
+        {
+         "profileId": "harrier-oss-v1-0.6b-1024@v1",
+         "tokenizerBackend": "shipped-sdk",
+         "pooling": "model-graph",
+         "dimensions": 1024
+        }
+       ],
+       "fixedGates": {
+        "minimumCosine": 0.99999,
+        "maximumAbsoluteError": 0.00003,
+        "ranking": "exact"
+       },
+       "correctedGemmaEffect": {
+        "population": 16,
+        "changedTokenCases": [],
+        "maximumAbsoluteError": 0,
+        "rankingQueriesChanged": [],
+        "qualification": "A scoped measured null; no corpus-wide tokenizer-defect absence or relevance claim."
+       },
+       "collisionReceipt": {
+        "path": "docs/evidence/mdenseon-reference-collision-2026-10-01.json",
+        "sha256": "6d11c68d179d5265067a8dfa5c734fa1b17bec1e1129022e0d70b257ef737536",
+        "bytes": 2724,
+        "rawPinsChecked": 3,
+        "rawShaAndBytesMatch": true,
+        "positiveTestRun": 20370500,
+        "counterexampleTestRun": 20370563,
+        "qualification": "Receipt and binding18311 record same-request/assets control with corrected profile collapsed into shipped profile, consistent native SHA join, CLI exit1 and no summary. Current destination absence alone is not proof of historical rejection."
+       },
+       "currentGuardInspection": {
+        "sourcePath": "packages/operator-core/lib/memory/bench/candidate-embedders.ts",
+        "sourceSha256": "528b712424fb3895da32e894df23017a5cff515afbbd19cb801a03b8f782b6cb",
+        "testPath": "packages/operator-core/lib/memory/bench/candidate-embedders.test.ts",
+        "testSha256": "a377a542731f19c127f910fa10633a76bf021511772d17d75c31dbe5d8631a41",
+        "integrationPath": "packages/operator-core/lib/memory/bench/candidate-embedders.integration.test.ts",
+        "integrationSha256": "d4821d64175edeb5a3118f53659f5e213c1e56ea4a26a19e0a2c4c8ee2af0bc1",
+        "pythonPath": "packages/operator-core/lib/memory/bench/mdenseon-vectors.py",
+        "pythonSha256": "964ec8aa90bc3941316c248996c1b987e084e94e5d894c8bc8e26cd4476ad52c",
+        "qualification": "Inspected masked-mean, fixed parity/rank writers, recipe/model/prompt/asset/mask/worker/version negatives and native/request/Python byte joins. Integration fixture is explicitly synthetic; inspection is not a new behavioral PASS. Current selected whole-file source changes remain distinct from the retained run."
+       },
+       "remainingAcceptance": [
+        "Qualify current-source execution and conventional guards against the current R2 clause before rebinding historical receipts.",
+        "Resolve canonical P002 completion authority and declared settlement path residue.",
+        "Preserve separate shipped and corrected Gemma recipe identities and production v1 vectors; keep larger-cohort relevance and whole-plan outcomes separate."
+       ]
+      }
      },
      {
       "ref": "papercusp#WI-10004537",

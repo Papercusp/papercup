@@ -33563,7 +33563,7 @@
           "POST"
         ]
       },
-      "description": "Admit ingested data into work (D-004). op 'admit' turns a source (e.g. { kind:'record', recordId }) into one linked, attributed work item, idempotent per source. 'write-back' posts a note to the admitted item's source. 'rules-*' manage per-data-source rules that admit matching records on ingest.",
+      "description": "Admit ingested data into work (D-004). op 'admit' turns a source (e.g. { kind:'record', recordId }) into one linked, attributed work item, idempotent per source. 'write-back' posts a note to the admitted item's source; 'transition' moves it to toCategory. 'rules-*' manage per-data-source rules that admit matching records on ingest.",
       "capabilities": [
         "work_items:write"
       ],

@@ -1048,6 +1048,41 @@ describe('governed attempt persisted settlement receipts', () => {
 describe('spend reservation + settlement — every attempt closes', () => {
   const LOOP = 'frontier:reserve-test';
 
+  it.each(['status', 'workspaceId', 'loopId', 'reservedUsd'] as const)(
+    'does not dispatch or settle a substituted %s receipt from an actual reservation', async field => {
+      const loopId = `gym:invalid-dispatch-grant-${randomUUID()}`;
+      await registerLearningLoop(sql, { workspaceId: WS, loopId, budgetKind: 'lifetime', budgetUsd: 10 });
+      let reservationId: string | undefined;
+      let ran = false;
+      const settle = vi.fn(settleLearningSpend);
+      const out = await runGovernedSpendAttempt({ workspaceId: WS, loopId, attemptKind: 'proposer',
+        requestedUsd: 1, accumulate: false, run: async () => {
+          ran = true;
+          return { costUsd: 0, value: null };
+        },
+      }, { enabled: async () => true, getSql: async () => sql, log: () => {}, settle,
+        reserve: async (client, request) => {
+          const admitted = await reserveLearningSpend(client, request);
+          if (!admitted.ok) return admitted;
+          reservationId = admitted.reservation.id;
+          return { ...admitted, reservation: { ...admitted.reservation,
+            [field]: field === 'reservedUsd' ? 2 : field === 'status' ? 'settled' : 'foreign',
+          } };
+        },
+      });
+      expect(out).toMatchObject({ ok: false, reason: 'failed', costUsd: 0,
+        reservationId: null, settlement: null, error: 'governor reservation receipt does not match request' });
+      expect(ran).toBe(false);
+      expect(settle).not.toHaveBeenCalled();
+      const rows = await listLearningSpendReservations(sql, { workspaceId: WS, loopId });
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ id: reservationId, workspaceId: WS, loopId,
+        requestedUsd: 1, reservedUsd: 1, usedUsd: 0, status: 'open', settledAt: null });
+      expect(await listLearningSpendEvents(sql, { workspaceId: WS, loopId })).toEqual([]);
+      expect(await sumOpenReservedUsd(sql, { workspaceId: WS, loopId })).toBe(1);
+    },
+  );
+
   it.each([10, LEARNING_GOVERNOR_BUDGET_FLOOR_USD + 0.25, 0])('binds dispatch to the persisted reservation before work runs (budget $%s)', async budgetUsd => {
     const loopId = `gym:dispatch-grant-${randomUUID()}`;
     await registerLearningLoop(sql, { workspaceId: WS, loopId, budgetKind: 'lifetime', budgetUsd });

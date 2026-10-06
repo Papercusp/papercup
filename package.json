@@ -487,7 +487,10 @@
     "@ai-sdk/provider-utils": {
       "undici": "^6.28.1"
     },
-    "@modelcontextprotocol/sdk": "^1.29.0"
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "mem0ai": {
+      "@anthropic-ai/sdk": "^0.93.0"
+    }
   },
   "devDependencies": {
     "@astrojs/check": "^0.9.8",

@@ -17,8 +17,10 @@
  *
  * Also: pull requests are skipped; a backfill then an incremental pass (GitHub `since`) update in
  * place; a replayed pass dedupes; a 429 keeps the uncommitted cursor; an interrupted pass resumes
- * from the committed page; the provider is read-only, so every write capability is reported
- * unsupported (registry lookup, adapter invoke, and record write-back dispatch).
+ * from the committed page; the provider's only write is `ticket.comment` (linear-asana-task-sync
+ * P-002, WI-10006212), posted through host.fetch with an update id equal to the comment sync's
+ * nativeId, and every other write capability is reported unsupported (registry lookup, adapter
+ * invoke, and record write-back dispatch).
  *
  * The drift detectors at the end pin D-015: the host routing/driver/write-back modules name no
  * provider, the package imports only node built-ins and its own manifest, and the bespoke GitHub
@@ -44,7 +46,11 @@ import {
   dataSourceEventId,
   dataSourceRecordId,
 } from '../../data-sources/datatype-destination-sink';
-import { createRecordAdmissionSource, recordWriteBackCapability } from '../../work-admission/record-source';
+import {
+  createRecordAdmissionSource,
+  recordTransitionCapability,
+  recordWriteBackCapability,
+} from '../../work-admission/record-source';
 import { runConnectorSync, type ConnectorSyncDeps, type ConnectorSourceOutcome } from '../connector-runtime';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as Sql, ws: 'papercusp-workspace' }));
@@ -324,20 +330,58 @@ beforeEach(async () => {
 // ── Registration ────────────────────────────────────────────────────────────
 
 describe('GitHub issues registers as a provider through the plugin host (R-14)', () => {
-  it('is a bundled package the production host discovers, with a non-mail datatype set and a read-only subset', () => {
+  it('is a bundled package the production host discovers, with a non-mail datatype set and a read-and-comment subset', () => {
     // Production discovers bundled plugins at <repo>/libs/papercusp/plugins (findBundledPluginsParent).
     expect(existsSync(join(PACKAGE_DIR, 'papercusp.json'))).toBe(true);
     expect(provider.pluginName).toBe(KIND);
     expect(provider.runtime).toBe('js');
     expect(provider.descriptor.datatypes).toEqual(TICKET_DATATYPES);
     expect(provider.descriptor.datatypes.some((d) => d.startsWith('email') || d.startsWith('calendar'))).toBe(false);
-    expect(provider.descriptor.capabilities).toEqual(['ticket.read']);
+    expect(provider.descriptor.capabilities).toEqual(['ticket.read', 'ticket.comment']);
     expect(provider.descriptor.egressHosts).toEqual(['api.github.com', 'github.com']);
   });
 
-  it('reports every write capability unsupported: registry lookup, adapter invoke and record write-back', async () => {
+  it('posts ticket.comment through host.fetch only, with the comment sync’s nativeId as its update id', async () => {
+    expect(registry.forDatatype('ticket', recordWriteBackCapability('ticket')).map((p) => p.descriptor.id)).toEqual([KIND]);
+    const sourceId = await createSource('personal');
+    const posted: Array<{ url: string; method: string | undefined; body: unknown }> = [];
+    const writingFetch: HostFetch = async (input) => {
+      const { request } = input;
+      if (request.method === 'POST') {
+        posted.push({ url: request.url, method: request.method, body: JSON.parse(String(request.body)) });
+        return json(201, { id: 9001, html_url: `https://github.com/${OWNER}/${REPO}/issues/1#issuecomment-9001` });
+      }
+      return recordedHostFetch(input);
+    };
+
+    const result = await provider.adapter!.invoke(
+      { source: sourceId, capability: 'ticket.comment', args: { externalId: `${OWNER}/${REPO}#1`, text: '  picked up  ' } },
+      { fetch: writingFetch },
+    );
+
+    expect(result).toEqual({
+      externalRef: `https://github.com/${OWNER}/${REPO}/issues/1#issuecomment-9001`,
+      // readComments reports this same comment as nativeId `comment:<id>`: the host's echo key.
+      updateId: 'comment:9001',
+    });
+    // Only the text is sent; nothing that would patch the issue's own fields.
+    expect(posted).toEqual([{ url: `${API}/issues/1/comments`, method: 'POST', body: { body: 'picked up' } }]);
+
+    // A GitHub write failure is named, not swallowed.
+    await expect(provider.adapter!.invoke(
+      { source: sourceId, capability: 'ticket.comment', args: { externalId: `${OWNER}/${REPO}#1`, text: 'x' } },
+      { fetch: async () => json(403, { message: 'Resource not accessible by integration' }) },
+    )).rejects.toThrow(`github_write_failed:403 ${API}/issues/1/comments`);
+    await expect(provider.adapter!.invoke(
+      { source: sourceId, capability: 'ticket.comment', args: { externalId: `${OWNER}/${REPO}#1`, text: '   ' } },
+      { fetch: writingFetch },
+    )).rejects.toThrow('ticket_comment_text_required');
+    expect(posted).toHaveLength(1);
+  });
+
+  it('reports every other write capability unsupported: registry lookup, adapter invoke and record write-back', async () => {
     expect(registry.forDatatype('ticket', 'ticket.read').map((p) => p.descriptor.id)).toEqual([KIND]);
-    expect(registry.forDatatype('ticket', recordWriteBackCapability('ticket'))).toEqual([]);
+    expect(registry.forDatatype('ticket', recordTransitionCapability('ticket'))).toEqual([]);
     expect(registry.forDatatype('ticket', 'ticket.update')).toEqual([]);
 
     const sourceId = await createSource('personal');
@@ -354,24 +398,24 @@ describe('GitHub issues registers as a provider through the plugin host (R-14)',
       { fetch: recordedHostFetch },
     )).rejects.toThrow('ticket_not_found:acme/orchid#2');
 
-    // Writes are refused by the adapter without a network call…
+    // Undeclared writes are refused by the adapter without a network call…
     gh.calls.length = 0;
     await expect(provider.adapter!.invoke(
-      { source: sourceId, capability: 'ticket.comment', args: { externalId: `${OWNER}/${REPO}#1`, text: 'hi' } },
+      { source: sourceId, capability: 'ticket.transition', args: { externalId: `${OWNER}/${REPO}#1`, toCategory: 'done' } },
       { fetch: recordedHostFetch },
-    )).rejects.toThrow('provider_capability_unsupported:ticket.comment');
+    )).rejects.toThrow('provider_capability_unsupported:ticket.transition');
     // …and by the host's record write-back dispatch before any host.fetch is built.
     const hostFetchFor = vi.fn(() => recordedHostFetch);
     const recordSource = createRecordAdmissionSource({ registry, hostFetchFor });
-    await expect(recordSource.writeBack!({
+    await expect(recordSource.transition!({
       db: sql as never,
       admission: {
         workspaceId: WS,
         dataSourceId: sourceId,
         sourceRef: { recordId: 'DSR-x', datatype: 'ticket', externalId: `${OWNER}/${REPO}#1` },
       } as never,
-      text: 'triaged',
-    } as never)).rejects.toThrow(`provider_capability_unsupported:${KIND}:ticket.comment`);
+      toCategory: 'done',
+    } as never)).rejects.toThrow(`provider_capability_unsupported:${KIND}:ticket.transition`);
     expect(hostFetchFor).not.toHaveBeenCalled();
     expect(gh.calls).toEqual([]);
   });

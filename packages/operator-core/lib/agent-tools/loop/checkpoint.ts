@@ -1151,9 +1151,13 @@ export default defineTool({
           label: 'loop:checkpoint fleet_zero_workers',
         },
       );
+      // `value` can be absent only under a test double of withBoundedTimeout; the real
+      // helper returns the work's verdict or the fallback. Absent is read as allow, the
+      // same way the other bounded reads in this handler treat a missing value.
+      const verdict: FleetZeroWorkersVerdict | undefined = guard.value;
       if (guard.degraded) {
         fleetZeroWorkersWarning = `fleet_zero_workers not checked (${guard.reason ?? 'error'}); the checkpoint was allowed.`;
-      } else if (guard.value.action === 'refuse') {
+      } else if (verdict?.action === 'refuse') {
         return {
           content: [
             {
@@ -1161,9 +1165,9 @@ export default defineTool({
               text: JSON.stringify({
                 ok: false,
                 error: 'fleet_zero_workers',
-                message: guard.value.message,
-                fleet: guard.value.fleetSlug,
-                repairs: guard.value.repairs,
+                message: verdict.message,
+                fleet: verdict.fleetSlug,
+                repairs: verdict.repairs,
                 harness,
                 ownerId,
               }),
@@ -1172,7 +1176,7 @@ export default defineTool({
           isError: true,
         };
       } else {
-        fleetZeroWorkersWarning = guard.value.warning;
+        fleetZeroWorkersWarning = verdict?.warning;
       }
     }
 

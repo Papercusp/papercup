@@ -147,10 +147,11 @@ describe('runGovernedSpendAttempt — complete usage settles, incomplete usage r
     const reserved = await deps.reserve!(SQL, {} as never);
     if (!reserved.ok) throw new Error('fixture must grant');
     Object.assign(reserved, { clamped: true });
+    reserved.reservation.reservedUsd = 0.25;
     const out = await runGovernedSpendAttempt(attempt(async grant => {
       Object.assign(reserved, { clamped: false });
       Object.assign(reserved.reservation, { reservedUsd: 99 });
-      expect(grant).toEqual({ reservationId: 'res-1', reservedUsd: 1, clamped: true });
+      expect(grant).toEqual({ reservationId: 'res-1', reservedUsd: 0.25, clamped: true });
       return { costUsd: 0, value: 'completed' };
     }), deps);
     expect(out).toMatchObject({ ok: true, reservationId: 'res-1', clamped: true });
@@ -301,6 +302,21 @@ describe('runGovernedSpendAttempt — complete usage settles, incomplete usage r
       expect(out).toMatchObject({ ok: false, reason: 'failed', reservationId: null });
     },
   );
+
+  it.each([null, false, 'resources'])('refuses a non-object resource receipt %s', async resources => {
+    const { deps, settlements } = fakeAttemptDeps();
+    const admitted = await deps.reserve!(SQL, {} as never);
+    if (!admitted.ok) throw new Error('fixture must grant');
+    Object.assign(admitted.reservation, { resources });
+    let ran = false;
+    const out = await runGovernedSpendAttempt(attempt(async () => {
+      ran = true;
+      return { costUsd: 0, value: null };
+    }), deps);
+    expect(ran).toBe(false);
+    expect(settlements).toEqual([]);
+    expect(out).toMatchObject({ ok: false, reason: 'failed', reservationId: null });
+  });
 
   it('settles a PARTIAL attempt at the partial cost, not the reservation', async () => {
     const { deps, settlements } = fakeAttemptDeps();

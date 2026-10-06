@@ -45,15 +45,32 @@ function deps(over: {
 const CTX = { workspaceId: 'papercusp-workspace' } as never;
 
 describe('bash task provenance — goal ref that IS a work-item id', () => {
-  it('uses the goal ref directly and does not consult held claims', async () => {
-    // Control: the pre-existing path must be unchanged.
-    const readHeld = vi.fn(async () => []);
+  it('uses a work-item goal only when it is still held', async () => {
+    const readHeld = vi.fn(async () => [heldItem('EI-21548894457555139')]);
     const p = await resolveBashTaskProvenance(CTX, 'papercusp', {
       ...deps({ goalRef: 'EI-21548894457555139' }),
       readHeldWorkItems: readHeld as never,
     });
     expect(p.workItemId).toBe('EI-21548894457555139');
-    expect(readHeld).not.toHaveBeenCalled();
+    expect(readHeld).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses the sole live claim instead of an unheld stale work-item goal', async () => {
+    const p = await resolveBashTaskProvenance(
+      CTX,
+      'papercusp',
+      deps({ goalRef: 'WI-old', held: [{ id: 'WI-current' }] }),
+    );
+    expect(p.workItemId).toBe('WI-current');
+  });
+
+  it('does not attribute an unheld terminal goal when no live claim remains', async () => {
+    const p = await resolveBashTaskProvenance(
+      CTX,
+      'papercusp',
+      deps({ goalRef: 'WI-done', held: [] }),
+    );
+    expect(p.workItemId).toBeNull();
   });
 });
 
@@ -112,7 +129,7 @@ describe('bash task provenance — a caller-named work_item_id (WI-10004202)', (
   });
 
   it('a blank value is the same as omitting it', async () => {
-    const p = await resolveBashTaskProvenance(CTX, 'papercusp', deps({ goalRef: 'WI-1' }), {
+    const p = await resolveBashTaskProvenance(CTX, 'papercusp', deps({ goalRef: 'WI-1', held: [{ id: 'WI-1' }] }), {
       explicitWorkItemId: '  ',
     });
     expect(p.workItemId).toBe('WI-1');

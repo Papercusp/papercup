@@ -123,7 +123,7 @@ export function acceptanceBarContractGaps(input: AcceptanceBarContractGapInput):
       gap: 'check_layer_mismatch',
       detail:
         `the check is explicitly manual (instrumentKey:'none') yet requiredTestLayers declares ${layers.join(', ')}; ` +
-        'a BAR cannot be both: drop the layers (a manual BAR) or give it a runnable check',
+        'a BAR cannot be both: omit the `requiredTestLayers` field (a manual BAR) or give it a runnable check',
     });
   } else if (input.check?.kind === 'tests' && layers.length > 0) {
     const classified = input.check.files.map((file) => ({ file, layers: checkFileTestLayers(file) }));

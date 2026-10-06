@@ -222,6 +222,17 @@ vi.mock('../../release/frozen-repair-edit-marker', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../release/frozen-repair-edit-marker')>()),
   readFrozenRepairMarker,
 }));
+// P-005 / D-030 (7). The suite-wide withBoundedTimeout double never runs the guard's
+// work, so this spy is reached only by tests that route its label through for real.
+const checkFleetZeroWorkers = vi.fn(
+  async (..._a: unknown[]): Promise<import('../../fleet/fleet-zero-workers-guard').FleetZeroWorkersVerdict> => ({
+    action: 'allow',
+  }),
+);
+vi.mock('../../fleet/fleet-zero-workers-guard', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../fleet/fleet-zero-workers-guard')>()),
+  checkFleetZeroWorkers: (...a: unknown[]) => checkFleetZeroWorkers(...a),
+}));
 
 const checkpointModule = await import('./checkpoint');
 const tool = checkpointModule.default;
@@ -802,7 +813,10 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
       remedy: 'Wake the owner of WI-42; if it does not resume promptly, claim/take over WI-42.',
     } as const;
     listVerifiedWaitTakeoversForSubscribers.mockResolvedValueOnce([alert]);
+    // Positional: the takeover read is the 4th bounded call. One of the three before it
+    // is the P-005 fleet_zero_workers guard, whose absent value reads as allow.
     withBoundedTimeout
+      .mockResolvedValueOnce({ value: undefined, degraded: false, elapsedMs: 0 })
       .mockResolvedValueOnce({ value: undefined, degraded: false, elapsedMs: 0 })
       .mockResolvedValueOnce({ value: undefined, degraded: false, elapsedMs: 0 })
       .mockResolvedValueOnce({ value: [alert], degraded: false, elapsedMs: 1 });
@@ -1759,7 +1773,13 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
   it('bounds a stalled decision-ref advisory after the carry note is stored', async () => {
     const { CONTINUATION_READ_BUDGET_MS } = await import('./checkpoint');
     unresolvedPlanDecisionRefs.mockImplementation(() => new Promise(() => {}));
-    withBoundedTimeout.mockResolvedValueOnce({ value: undefined, degraded: true, elapsedMs: 5_000 });
+    // Keyed by label, not position: the P-005 fleet_zero_workers guard is an earlier
+    // bounded call, and a positional once-value would be consumed by it instead.
+    withBoundedTimeout.mockImplementation(async (_work: unknown, opts: unknown) =>
+      (opts as { label?: string }).label === 'loop:checkpoint decision-ref advisory'
+        ? { value: undefined, degraded: true, elapsedMs: 5_000 }
+        : { value: undefined, degraded: false, elapsedMs: 0 },
+    );
 
     const out = await call({ next: 'continue after checkpoint' });
 
@@ -1996,7 +2016,11 @@ describe('WI-7124: verify-read — the write must read back via the SAME path a 
   it('a verify mismatch short-circuits BEFORE the advisory continuation-gate reads run', async () => {
     getLoopCarryNoteWithMeta.mockResolvedValueOnce({ note: 'something-else', updatedAtMs: 1 });
     await call({ next: 'x' });
-    expect(withBoundedTimeout).not.toHaveBeenCalled();
+    // The only bounded call is the PRE-write P-005 fleet_zero_workers guard; no
+    // continuation-gate read runs after the mismatch.
+    expect(withBoundedTimeout.mock.calls.map((c) => (c[1] as { label?: string } | undefined)?.label)).toEqual([
+      'loop:checkpoint fleet_zero_workers',
+    ]);
   });
 
   it('refuses a stale expectedHash without reading back or replacing the newer note', async () => {
@@ -2045,6 +2069,104 @@ describe('WI-7124: verify-read — the write must read back via the SAME path a 
       currentHash: shortCarryHash('newer note'),
     });
     expect(getLoopCarryNoteWithMeta).not.toHaveBeenCalled();
+  });
+});
+
+describe('P-005 / D-030 (7): a fleet-leader monitor cannot record a quiet wake on an empty fleet', () => {
+  const GUARD_LABEL = 'loop:checkpoint fleet_zero_workers';
+  // Run the guard's bounded work for real (so checkFleetZeroWorkers is reached); every
+  // other bounded call keeps the suite default.
+  const routeGuardForReal = (override?: (fallback: unknown) => unknown) =>
+    withBoundedTimeout.mockImplementation(async (work: unknown, opts: unknown) => {
+      const o = opts as { label?: string; fallback?: unknown };
+      if (o?.label !== GUARD_LABEL) return { value: undefined, degraded: false, elapsedMs: 0 };
+      if (override) return override(o.fallback);
+      return { value: await (work as () => Promise<unknown>)(), degraded: false, elapsedMs: 0 };
+    });
+  const refusal = {
+    action: 'refuse' as const,
+    fleetSlug: 'fleet-x',
+    message: 'Fleet fleet-x, which this monitor loop leads, has 0 productive workers against target 3.',
+    repairs: ['fleet:headcount-target { target, supervise:true }', 'fleet:launch-on-plan', 'fleet:wind-down'],
+  };
+
+  beforeEach(() => {
+    checkFleetZeroWorkers.mockReset();
+    checkFleetZeroWorkers.mockResolvedValue({ action: 'allow' });
+  });
+
+  it('refuses a quiet wake with fleet_zero_workers and writes nothing', async () => {
+    routeGuardForReal();
+    checkFleetZeroWorkers.mockResolvedValueOnce(refusal);
+
+    const out = await call({ did: 'watched the fleet', next: 'keep watching' });
+
+    expect(checkFleetZeroWorkers).toHaveBeenCalledWith({ workspaceId: 'ws-1', ownerId: 'su-caller', monitorDelta: false });
+    expect(out.isError).toBe(true);
+    expect(body(out)).toMatchObject({
+      ok: false,
+      error: 'fleet_zero_workers',
+      fleet: 'fleet-x',
+      message: refusal.message,
+      repairs: refusal.repairs,
+    });
+    expect(setLoopCarryNote).not.toHaveBeenCalled();
+    expect(setLoopCarryNoteWithPrior).not.toHaveBeenCalled();
+  });
+
+  it('allows the write and surfaces the warning when the headcount is unmeasured', async () => {
+    routeGuardForReal();
+    const warning = 'fleet_zero_workers not checked for fleet fleet-x: the staffing read failed.';
+    checkFleetZeroWorkers.mockResolvedValueOnce({ action: 'allow', warning });
+
+    const b = body(await call({ did: 'watched the fleet', next: 'keep watching' }));
+
+    expect(b).toMatchObject({ ok: true, fleetZeroWorkersWarning: warning });
+  });
+
+  it('fails open with a warning when the guard read times out', async () => {
+    routeGuardForReal((fallback) => ({ value: fallback, degraded: true, reason: 'timeout', elapsedMs: 3_000 }));
+
+    const b = body(await call({ did: 'watched the fleet', next: 'keep watching' }));
+
+    expect(b.ok).toBe(true);
+    expect(b.fleetZeroWorkersWarning).toBe('fleet_zero_workers not checked (timeout); the checkpoint was allowed.');
+    expect(withBoundedTimeout).toHaveBeenCalledWith(
+      expect.any(Function),
+      expect.objectContaining({ fallback: { action: 'allow' }, timeoutMs: 3_000, label: GUARD_LABEL }),
+    );
+  });
+
+  it('adds no warning field when the guard allows a staffed fleet', async () => {
+    routeGuardForReal();
+
+    const b = body(await call({ did: 'watched the fleet', next: 'keep watching' }));
+
+    expect(checkFleetZeroWorkers).toHaveBeenCalledTimes(1);
+    expect(b.ok).toBe(true);
+    expect(b).not.toHaveProperty('fleetZeroWorkersWarning');
+  });
+
+  it('does not consult the guard for a monitorDelta checkpoint', async () => {
+    routeGuardForReal();
+    checkFleetZeroWorkers.mockResolvedValue(refusal);
+    // recordMonitorDelta runs against the stubbed SQL; a failed stamp only warns.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    const b = body(await call({ did: 'a worker finished WI-1', next: 'keep watching', monitorDelta: true }));
+
+    warn.mockRestore();
+    expect(checkFleetZeroWorkers).not.toHaveBeenCalled();
+    expect(b.ok).toBe(true);
+  });
+
+  it('does not consult the guard without a workspace', async () => {
+    routeGuardForReal();
+    checkFleetZeroWorkers.mockResolvedValue(refusal);
+
+    await call({ next: 'x' }, { harnessSlug: 'papercusp' });
+
+    expect(checkFleetZeroWorkers).not.toHaveBeenCalled();
   });
 });
 

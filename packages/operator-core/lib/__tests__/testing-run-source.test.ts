@@ -6,6 +6,14 @@
 import { describe, it, expect } from 'vitest';
 import { resolveTestRunSource } from '../testing-run-source';
 
+const PLACEMENT_CONTROL_FILE = 'packages/operator-core/lib/goal-plan-placement-exclusion-proof.test.ts';
+const PLACEMENT_CONTROLS = [
+  'holder-not-independent',
+  'independent-member-positive',
+  'existing-one-fleet',
+  'drain-and-test-excluded',
+] as const;
+
 describe('resolveTestRunSource', () => {
   it("env override 'admin-ui' wins over CI", () => {
     expect(resolveTestRunSource({ PAPERCUSP_TEST_RUN_SOURCE: 'admin-ui', CI: '1' })).toBe('admin-ui');
@@ -39,5 +47,24 @@ describe('resolveTestRunSource', () => {
 
   it('default arg reads process.env — does not throw without explicit env', () => {
     expect(() => resolveTestRunSource()).not.toThrow();
+  });
+
+  it.each(PLACEMENT_CONTROLS)('marks controlled placement fixture %s as mutation-probe', (control) => {
+    expect(resolveTestRunSource({ PAPERCUSP_PLACEMENT_EXCLUSION_CONTROL: control }, PLACEMENT_CONTROL_FILE))
+      .toBe('mutation-probe');
+  });
+
+  it('limits the controlled-fixture marker to known controls on the exact test file', () => {
+    expect(resolveTestRunSource({}, PLACEMENT_CONTROL_FILE)).toBe('local');
+    expect(resolveTestRunSource(
+      { PAPERCUSP_PLACEMENT_EXCLUSION_CONTROL: 'holder-not-independent' },
+      'packages/operator-core/lib/another.test.ts',
+    )).toBe('local');
+    expect(resolveTestRunSource(
+      { PAPERCUSP_PLACEMENT_EXCLUSION_CONTROL: 'unknown-control' },
+      PLACEMENT_CONTROL_FILE,
+    )).toBe('local');
+    expect(resolveTestRunSource({ PAPERCUSP_PLACEMENT_EXCLUSION_CONTROL: 'holder-not-independent' }))
+      .toBe('local');
   });
 });

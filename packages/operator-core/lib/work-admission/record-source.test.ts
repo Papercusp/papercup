@@ -8,13 +8,20 @@
  * by-work-item-id verbs and the ledger are covered by
  * data-sources/ticket-admission.integration.test.ts.
  */
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi, type Mock } from 'vitest';
 import type postgres from 'postgres';
 import type { HostFetch, ProviderAdapter, ProviderDescriptor, ProviderInvokeRequest } from '@papercusp/plugin-sdk';
 import { createProviderRegistry, type ProviderRegistry } from '../integrations/provider-registry';
 import { ProviderCapabilityUnsupported } from '../capability-verbs/provider-dispatch';
 import type { AdmissionRow } from './admission-sources';
-import { createRecordAdmissionSource, recordTransitionCapability, recordWriteBackCapability } from './record-source';
+import {
+  createRecordAdmissionSource,
+  recordTransitionCapability,
+  recordWriteBackCapability,
+  type RecordSourceDeps,
+} from './record-source';
+
+type HostFetchFor = NonNullable<RecordSourceDeps['hostFetchFor']>;
 
 const WS = 'ws-record-source-unit';
 const TRACKER_SOURCE = '00000000-0000-4000-8000-000000000001';
@@ -56,7 +63,7 @@ interface Harness {
   trackerCalls: ProviderInvokeRequest[];
   decoyInvoke: ReturnType<typeof vi.fn>;
   readOnlyInvoke: ReturnType<typeof vi.fn>;
-  hostFetchFor: ReturnType<typeof vi.fn>;
+  hostFetchFor: Mock<HostFetchFor>;
   bound: unknown[];
   setTrackerChanged(v: boolean): void;
 }
@@ -78,7 +85,7 @@ function harness(): Harness {
   const readOnlyInvoke = vi.fn(async () => ({}));
   registry.register(provider('read-only', ['ticket.read'], readOnlyInvoke));
   const bound: unknown[] = [];
-  const hostFetchFor = vi.fn((_db: unknown, input: { sourceId: string }): HostFetch => {
+  const hostFetchFor = vi.fn<HostFetchFor>((_db, input): HostFetch => {
     bound.push(input);
     return async ({ source }) => {
       expect(source).toBe(input.sourceId);

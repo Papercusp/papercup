@@ -2431,7 +2431,10 @@ export default defineTool({
           let restartCommandExitCode: number | null = null;
           let restartCommandSignal: string | null = null;
           let restartCommandExited = false;
-          let restartCommandClosedResolve: (() => void) | null = null;
+          // Typed by assertion, not annotation: a `T | null = null` initializer narrows the
+          // variable to `null` in this scope (TS does not see the executor's assignment), so
+          // the synchronous catch below would read it as uncallable (WI-10006260).
+          let restartCommandClosedResolve = null as (() => void) | null;
           const restartCommandClosed = new Promise<void>((resolve) => {
             restartCommandClosedResolve = resolve;
           });
@@ -2782,11 +2785,7 @@ export default defineTool({
                       : bgHostEnvironmentDropInDrift
                         ? ' — the Environment= drop-in change was rechecked under the exclusive lease; a peer loaded it while this request drained, and this restart is for the still-stale runtime tree'
                         : ''
-                  } — this connection will drop as the operator restarts.${
-                    target === 'bg-host'
-                      ? ' bg-host restart freezes cross-machine peer-log rails ~13min while the substrate rejoins — see EI-13317.'
-                      : ''
-                  }${gitSync?.overridden || gitSync?.kind === 'probe-failed' || gitSync?.kind === 'operation-in-flight-unknown' ? ` ⚠ ${gitSync.note}` : ''}${gate.overridden || gate.kind === 'probe-failed' ? ` ⚠ ${gate.note}` : ''}${quiesce?.overridden ? ` ⚠ ${quiesce.note}` : ''}${peerInFlightEditsNote(peerInFlightEdits, cfg.unit)}`,
+                  } — this connection will drop as the operator restarts.${gitSync?.overridden || gitSync?.kind === 'probe-failed' || gitSync?.kind === 'operation-in-flight-unknown' ? ` ⚠ ${gitSync.note}` : ''}${gate.overridden || gate.kind === 'probe-failed' ? ` ⚠ ${gate.note}` : ''}${quiesce?.overridden ? ` ⚠ ${quiesce.note}` : ''}${peerInFlightEditsNote(peerInFlightEdits, cfg.unit)}`,
           });
         };
         if (target === 'staging') {

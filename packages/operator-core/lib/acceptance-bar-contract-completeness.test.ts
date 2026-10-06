@@ -100,7 +100,13 @@ describe('acceptanceBarContractGaps', () => {
   it('refuses an explicitly manual check that still declares test layers', () => {
     const manual = { kind: 'instrument', instrumentKey: 'none' } as const;
     expect(isExplicitlyManualCheck(manual)).toBe(true);
-    expect(gapsOf({ check: manual, requiredTestLayers: ['llm', 'e2e'] })).toEqual(['check_layer_mismatch']);
+    const findings = acceptanceBarContractGaps({
+      ...complete,
+      check: manual,
+      requiredTestLayers: ['llm', 'e2e'],
+    });
+    expect(findings.map((finding) => finding.gap)).toEqual(['check_layer_mismatch']);
+    expect(findings[0]!.detail).toContain('omit the `requiredTestLayers` field');
     // The truly manual BAR (no layers, no automated obligation) is complete.
     expect(gapsOf({ check: manual, requiredTestLayers: [], automatedProofRequired: false })).toEqual([]);
   });

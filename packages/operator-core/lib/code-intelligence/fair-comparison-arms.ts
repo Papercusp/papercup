@@ -29,6 +29,8 @@ export interface FairArm {
   readonly unavailable: string | null;
   index(): Promise<PhaseCost>;
   query(kase: FairCase): Promise<ArmAnswer>;
+  /** Release a long-lived engine process (an MCP server session), when the arm holds one. */
+  close?(): Promise<void>;
 }
 
 /**
@@ -69,30 +71,58 @@ const answer = (kase: FairCase, status: AnswerStatus, latencyMs: number, sites: 
   ...(detail === null ? {} : { detail }),
 });
 
+/** What one engine call produced: sites, or an error string (null = answered), plus an optional note on an answer. */
+export interface RawReply {
+  readonly sites: ArmAnswer['sites'];
+  readonly error: string | null;
+  readonly note?: string | null;
+}
+
 /**
- * Wrap a 2026-10-02 EngineArm. An intent the arm does not declare is declined
- * without querying (the scorer counts it `undeclared`, not wrong); an error
- * string or a thrown error becomes a typed status instead of an empty answer.
+ * The one query path every adapter goes through. An intent the arm does not
+ * declare is declined without querying (the scorer counts it `undeclared`, not
+ * wrong); an error string or a thrown error becomes a typed status instead of an
+ * empty answer; latency is the wall time of the engine call alone.
  */
-export function fromEngineArm(engine: EngineArm, capabilities: ArmCapabilities, now: () => number = () => performance.now()): FairArm {
+export function guardedArm(spec: {
+  capabilities: ArmCapabilities;
+  unavailable: string | null;
+  index(): Promise<PhaseCost>;
+  ask(kase: FairCase): Promise<RawReply>;
+  close?(): Promise<void>;
+  now?: () => number;
+}): FairArm {
+  const now = spec.now ?? (() => performance.now());
   return {
-    capabilities,
-    unavailable: engine.unavailable,
-    index: () => engine.index(),
+    capabilities: spec.capabilities,
+    unavailable: spec.unavailable,
+    index: () => spec.index(),
+    ...(spec.close ? { close: spec.close } : {}),
     async query(kase) {
-      if (!capabilities.intents.includes(kase.intent)) {
+      if (!spec.capabilities.intents.includes(kase.intent)) {
         return answer(kase, 'declined', 0, [], `undeclared intent '${kase.intent}'`);
       }
       const t0 = now();
       try {
-        const r = await engine.query(toCorpusCase(kase));
-        return answer(kase, classifyArmError(r.error), now() - t0, r.sites, r.error);
+        const r = await spec.ask(kase);
+        return answer(kase, classifyArmError(r.error), now() - t0, r.sites, r.error ?? r.note ?? null);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         return answer(kase, classifyArmError(msg), now() - t0, [], msg);
       }
     },
   };
+}
+
+/** Wrap a 2026-10-02 EngineArm (rg, GitNexus, codebase-memory) — reused, not re-written. */
+export function fromEngineArm(engine: EngineArm, capabilities: ArmCapabilities, now: () => number = () => performance.now()): FairArm {
+  return guardedArm({
+    capabilities,
+    unavailable: engine.unavailable,
+    index: () => engine.index(),
+    ask: (kase) => engine.query(toCorpusCase(kase)),
+    now,
+  });
 }
 
 export interface AdapterDefect {
@@ -110,9 +140,18 @@ export interface ConformanceReport {
 }
 
 /**
+ * A partial answer with perfect precision: every site is right, some units are
+ * missing. On a plain micro case that is an engine answering at a coarser
+ * granularity than D-012's unit (trace-mcp names the referencing file, not each
+ * line), not an adapter bug — a bad parser or line base returns WRONG sites.
+ */
+const coarser = (s: CaseScore): boolean => s.outcome === 'partial' && s.precision === 1;
+
+/**
  * Run an arm over the micro repo and name every adapter defect. A PLAIN case
- * (no hardness tag) that the arm declares must come back `correct`: the engine
- * supports the intent and the micro repo has no trap, so a miss is our parser,
+ * (no hardness tag) that the arm declares must come back `correct`, or partial
+ * with perfect precision (`coarser`): the engine supports the intent and the
+ * micro repo has no trap, so a wrong site or an empty answer is our parser,
  * line base or intent mapping until shown otherwise. A crash on ANY case is a
  * defect too. Hard cases are reported in `scores` but never counted as defects:
  * that is the engine being measured.
@@ -129,7 +168,7 @@ export async function runConformance(arm: FairArm, cases: readonly FairCase[], k
     scores.push(score);
     if (score.outcome === 'crashed') {
       defects.push({ caseId: kase.id, outcome: score.outcome, why: ans.detail ?? 'crashed without detail' });
-    } else if (kase.tags.length === 0 && score.outcome !== 'undeclared' && score.outcome !== 'correct') {
+    } else if (kase.tags.length === 0 && score.outcome !== 'undeclared' && score.outcome !== 'correct' && !coarser(score)) {
       const got = ans.sites.map((s) => `${s.path}:${s.line1 ?? '?'}`).join(', ') || '(none)';
       defects.push({ caseId: kase.id, outcome: score.outcome, why: `plain case: expected ${key.sites.join(', ')}; got ${got}${ans.detail ? ` (${ans.detail})` : ''}` });
     }

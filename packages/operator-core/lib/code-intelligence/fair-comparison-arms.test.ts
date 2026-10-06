@@ -125,6 +125,22 @@ describe('runConformance', () => {
     expect(r.scores.find((s) => s.caseId === 'micro-callers-by-label-dynamic')!.confidentFalseEmpty).toBe(true);
   });
 
+  it('treats a coarser-granularity answer (partial, precision 1) as measured, but a wrong extra site as a defect', async () => {
+    const coarse = await runConformance(
+      oracle((c) => (c.id === 'micro-references-sort-rows' ? { caseId: c.id, status: 'answered', sites: [site('src/main.ts:1')], latencyMs: 1 } : null)),
+      MICRO_CASES,
+      keys,
+    );
+    expect(coarse.ok).toBe(true);
+    expect(coarse.scores.find((s) => s.caseId === 'micro-references-sort-rows')).toMatchObject({ outcome: 'partial', precision: 1 });
+    const extra = await runConformance(
+      oracle((c) => (c.id === 'micro-references-sort-rows' ? { caseId: c.id, status: 'answered', sites: [site('src/main.ts:2'), site('src/main.ts:5'), site('src/main.ts:6')], latencyMs: 1 } : null)),
+      MICRO_CASES,
+      keys,
+    );
+    expect(extra.defects).toEqual([expect.objectContaining({ caseId: 'micro-references-sort-rows', outcome: 'partial' })]);
+  });
+
   it('does not count an undeclared intent as a defect', async () => {
     const r = await runConformance(oracle(() => null, ['text-search']), MICRO_CASES, keys);
     expect(r.ok).toBe(true);

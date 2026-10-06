@@ -8,36 +8,12 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
-import { syncGoogleCalendarSource } from '../external-triggers/google-calendar';
-import type { ExternalTriggerSourceRow } from '../external-triggers/source-store';
 import { connectorSinksFor, type ConnectorSourceRow } from '../providers/connector-runtime';
 import { createAppDeliverySinkIfConfigured } from './live-sink';
 
-const NOW = new Date('2026-08-30T12:00:00.000Z');
 const WORKSPACE = 'papercusp-workspace';
 const USER = '22222222-2222-4222-8222-222222222222';
 const SOURCE_ID = '11111111-1111-4111-8111-111111111111';
-
-function json(value: unknown, status = 200): Response {
-  return new Response(JSON.stringify(value), {
-    status,
-    headers: { 'content-type': 'application/json' },
-  });
-}
-
-function source(kind: 'gmail' | 'gcal', cursor: Record<string, unknown> = {}): ExternalTriggerSourceRow {
-  return {
-    id: SOURCE_ID,
-    workspaceId: WORKSPACE,
-    kind,
-    ownerUserId: USER,
-    credentialRef: 'google-workspace:owner',
-    providerAccountId: 'owner@example.com',
-    status: 'connected',
-    config: {},
-    cursor,
-  };
-}
 
 /** A stand-in app-delivery sink; identity is all these assertions need. */
 function fakeAppSink() {
@@ -49,42 +25,16 @@ function fakeAppSink() {
 }
 
 /**
- * Captures what each adapter hands to ingestion. `additionalSinks` is the only
- * thing under test: it is the list the ingestion loop actually iterates.
+ * A provider connector source. Gmail (P-008) and Google Calendar (P-009) are both
+ * registered providers: their sync runs through the shared connector runtime, so
+ * sink registration for either is `connectorSinksFor` — the list the runtime hands
+ * ingestion as `additionalSinks`.
  */
-function captureDeps(fetchImpl: typeof fetch, appSink: ReturnType<typeof fakeAppSink> | null) {
-  const sinkKindsPerEvent: string[][] = [];
-  return {
-    sinkKindsPerEvent,
-    createAppSink: vi.fn(async () => appSink),
-    value: {
-      fetch: fetchImpl,
-      now: () => NOW,
-      createPersonalSink: vi.fn(async () => ({
-        kind: 'personal-vault' as const,
-        ref: `user:${USER}`,
-        deliver: async () => undefined,
-      })),
-      createAppSink: vi.fn(async () => appSink),
-      ingest: vi.fn(async (_sql: unknown, input: { additionalSinks?: { kind: string }[] }) => {
-        sinkKindsPerEvent.push((input.additionalSinks ?? []).map((s) => s.kind));
-        return { ok: true, event: {} as never, deliveries: [] };
-      }),
-      updateSource: vi.fn(async () => source('gmail')),
-    },
-  };
-}
-
-/**
- * A provider connector source (Gmail is a registered provider, P-008). Mail sync
- * runs through the shared connector runtime, so its sink registration is
- * `connectorSinksFor` — the list the runtime hands ingestion as `additionalSinks`.
- */
-function connectorSource(ownerUserId: string | null = USER): ConnectorSourceRow {
+function connectorSource(ownerUserId: string | null = USER, kind: 'gmail' | 'gcal' = 'gmail'): ConnectorSourceRow {
   return {
     id: SOURCE_ID,
     workspaceId: WORKSPACE,
-    kind: 'gmail',
+    kind,
     ownerUserId,
     credentialRef: 'google-workspace:owner',
     status: 'connected',
@@ -108,24 +58,6 @@ function connectorSeams(appSink: ReturnType<typeof fakeAppSink> | null) {
   };
 }
 
-function calendarFetch(): typeof fetch {
-  return (async () =>
-    json({
-      items: [
-        {
-          id: 'e-1',
-          status: 'confirmed',
-          summary: 'Standup',
-          created: NOW.toISOString(),
-          updated: NOW.toISOString(),
-          start: { dateTime: '2026-09-01T12:00:00.000Z' },
-          end: { dateTime: '2026-09-01T12:30:00.000Z' },
-        },
-      ],
-      nextSyncToken: 'tok-2',
-    })) as typeof fetch;
-}
-
 describe('P-011 app-delivery sink registration', () => {
   it('registers the app sink alongside the personal vault on the provider (mail) path', async () => {
     const seams = connectorSeams(fakeAppSink());
@@ -144,21 +76,14 @@ describe('P-011 app-delivery sink registration', () => {
     expect(unowned.map((s) => s.kind)).not.toContain('app-delivery');
   });
 
-  it('registers the app sink alongside the personal vault on the Calendar path', async () => {
-    const deps = captureDeps(calendarFetch(), fakeAppSink());
-    await syncGoogleCalendarSource(
-      {} as unknown as Sql,
-      source('gcal', { syncToken: 'tok-1' }),
-      'access-token',
-      {},
-      deps.value,
-    );
+  it('registers the app sink alongside the personal vault on the provider (calendar) path', async () => {
+    // Each app consumes one datatype, so the calendar mapping is its own registration:
+    // asserting mail alone would let calendar lose its sink silently.
+    const seams = connectorSeams(fakeAppSink());
+    const sinks = await connectorSinksFor({} as unknown as Sql, connectorSource(USER, 'gcal'), 'calendar-event', seams);
 
-    expect(deps.sinkKindsPerEvent.length).toBeGreaterThan(0);
-    for (const kinds of deps.sinkKindsPerEvent) {
-      expect(kinds).toContain('personal-vault');
-      expect(kinds).toContain('app-delivery');
-    }
+    expect(sinks.map((s) => s.kind)).toEqual(['personal-vault', 'app-delivery']);
+    expect(seams.createAppSink).toHaveBeenCalledWith(expect.anything(), WORKSPACE, SOURCE_ID, 'calendar');
   });
 
   it('registers NO app sink when the deployment has no owner mapping', async () => {
@@ -222,31 +147,23 @@ describe('P-011 registration is isolated from the rest of the sync', () => {
     }
   });
 
-  it('reports the decline on the CALENDAR path too — the wiring is per-adapter and can drift', async () => {
-    // `onGateError` is passed at each adapter's own registration site, so
-    // asserting it on Gmail alone would let Calendar lose it silently. Both
-    // adapters route through the shared `reportAppSinkGateError`, and this is
-    // what holds that symmetry.
+  it('reports the decline on the CALENDAR path too — each app mapping is its own registration', async () => {
+    // Before P-009 Calendar had its own adapter and its own registration site, so the
+    // decline report could drift per adapter. Both providers now share
+    // `connectorSinksFor`; this keeps the calendar datatype's report from regressing.
     const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
-      const deps = captureDeps(calendarFetch(), null);
-      const { createAppSink: _omitted, ...withRealGate } = deps.value;
+      const { createAppSink: _omitted, ...withRealGate } = connectorSeams(null);
 
-      const result = await syncGoogleCalendarSource(
+      const sinks = await connectorSinksFor(
         {} as unknown as Sql,
-        source('gcal', { syncToken: 'tok-1' }),
-        'access-token',
-        {},
+        connectorSource(USER, 'gcal'),
+        'calendar-event',
         withRealGate,
       );
 
-      // The sync completed rather than aborting on the gate fault.
-      expect(result.created + result.updated).toBeGreaterThan(0);
-      expect(deps.sinkKindsPerEvent.length).toBeGreaterThan(0);
-      for (const kinds of deps.sinkKindsPerEvent) {
-        expect(kinds).toContain('personal-vault');
-        expect(kinds).not.toContain('app-delivery');
-      }
+      // Registration completed rather than aborting on the gate fault.
+      expect(sinks.map((s) => s.kind)).toEqual(['personal-vault']);
 
       expect(errors).toHaveBeenCalledTimes(1);
       const line = String(errors.mock.calls[0]![0]);

@@ -23,6 +23,9 @@ let db: FreshPgDb;
 
 const INTENTIONAL_RED_FIXTURE =
   'packages/operator-core/lib/agent-tools/testing/__tests__/run-failure-fixture.test.ts';
+const CONTROLLED_PLACEMENT_FIXTURE =
+  'packages/operator-core/lib/goal-plan-placement-exclusion-proof.test.ts';
+const CONTROLLED_FIXTURE_ONLY = 'packages/operator-core/lib/controlled-fixture-only.test.ts';
 const REAL_REGRESSION = 'packages/operator-core/lib/real-regression.test.ts';
 
 beforeAll(async () => {
@@ -51,10 +54,18 @@ beforeAll(async () => {
 
   const now = Date.now();
   const at = (minutesAgo: number) => new Date(now - minutesAgo * 60_000);
-  const rows = [
+  const rows: Array<{ filePath: string; status: string; startedAt: Date; source?: 'local' | 'mutation-probe' }> = [
     { filePath: INTENTIONAL_RED_FIXTURE, status: 'fail', startedAt: at(30) },
     { filePath: INTENTIONAL_RED_FIXTURE, status: 'fail', startedAt: at(20) },
     { filePath: INTENTIONAL_RED_FIXTURE, status: 'fail', startedAt: at(5) },
+    { filePath: CONTROLLED_PLACEMENT_FIXTURE, status: 'pass', startedAt: at(50), source: 'local' },
+    { filePath: CONTROLLED_PLACEMENT_FIXTURE, status: 'pass', startedAt: at(40), source: 'local' },
+    { filePath: CONTROLLED_PLACEMENT_FIXTURE, status: 'fail', startedAt: at(30), source: 'mutation-probe' },
+    { filePath: CONTROLLED_PLACEMENT_FIXTURE, status: 'fail', startedAt: at(20), source: 'mutation-probe' },
+    { filePath: CONTROLLED_PLACEMENT_FIXTURE, status: 'fail', startedAt: at(5), source: 'mutation-probe' },
+    { filePath: CONTROLLED_FIXTURE_ONLY, status: 'fail', startedAt: at(25), source: 'mutation-probe' },
+    { filePath: CONTROLLED_FIXTURE_ONLY, status: 'fail', startedAt: at(15), source: 'mutation-probe' },
+    { filePath: CONTROLLED_FIXTURE_ONLY, status: 'fail', startedAt: at(5), source: 'mutation-probe' },
     { filePath: REAL_REGRESSION, status: 'fail', startedAt: at(30) },
     { filePath: REAL_REGRESSION, status: 'fail', startedAt: at(20) },
     { filePath: REAL_REGRESSION, status: 'fail', startedAt: at(5) },
@@ -65,7 +76,7 @@ beforeAll(async () => {
       INSERT INTO harness_shared.test_runs
         (file_path, framework, status, duration_ms, started_at, finished_at, output_tail, source, is_scratch_config)
       VALUES
-        (${row.filePath}, 'vitest', ${row.status}, 100, ${row.startedAt}, ${row.startedAt}, 'assertion mismatch', 'local', false)
+        (${row.filePath}, 'vitest', ${row.status}, 100, ${row.startedAt}, ${row.startedAt}, 'assertion mismatch', ${row.source ?? 'local'}, false)
     `;
   }
 });
@@ -93,6 +104,17 @@ describe('fetchRedTestRows excludes intentionally red assertion fixtures', () =>
 
     expect(row).toBeDefined();
     expect(row?.fails).toBe(3);
+  });
+
+  it('excludes controlled fixture probes from fail counts and latest-run freshness', async () => {
+    const rows = await fetchRedTestRows(
+      db.sql as unknown as Parameters<typeof fetchRedTestRows>[0],
+      { redTestWindowHours: 6, redTestMinFails: 3 },
+    );
+
+    const paths = rows.map((row) => row.file_path);
+    expect(paths).not.toContain(CONTROLLED_PLACEMENT_FIXTURE);
+    expect(paths).not.toContain(CONTROLLED_FIXTURE_ONLY);
   });
 
   it('surfacesWithoutTheFix: the fixture qualifies under the prior query', async () => {

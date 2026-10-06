@@ -304,7 +304,14 @@ describe('R-1 pinned app operation contract (D-001)', () => {
     const status = { handle, phase: 'terminal', outcome: 'dropped', items: [], planRun: null,
       cancellationRequested: false, wait: null };
     expect(BlueprintOperationResultSchema.safeParse({ state: 'dropped', status, reason: 'x' }).success).toBe(true);
-    expect(BlueprintOperationResultSchema.safeParse({ state: 'ready', status }).success).toBe(false);
+    expect(BlueprintOperationResultSchema.safeParse({ state: 'dropped', status }).success).toBe(false);
+    // `ready` needs BOTH output and its evidence ref — each requirement asserted in isolation,
+    // beside a positive control, so relaxing either one fails here on its own.
+    const ready = { state: 'ready', status, output: { draftId: 'd', body: 'b' }, evidenceRef: 'verification:x' };
+    expect(BlueprintOperationResultSchema.safeParse(ready).success).toBe(true);
+    expect(BlueprintOperationResultSchema.safeParse({ ...ready, evidenceRef: undefined }).success).toBe(false);
+    expect(BlueprintOperationResultSchema.safeParse({ state: 'ready', status, evidenceRef: 'verification:x' }).success)
+      .toBe(false);
     expect(BlueprintOperationCancelReceiptSchema.safeParse({ eventId: 'e', replayed: false, accepted: true,
       wakeQueued: false, handled: false }).success).toBe(false);
   });
