@@ -4924,6 +4924,55 @@ impl App {
                 self.chat_toast("info", line);
                 Action::Render
             }
+            // pui-chat-first-ux P-027 (G-4): a new conversation, as in Claude
+            // Code and Codex. The running engine is ended the way /exit ends
+            // it, so the old conversation stays resumable from /resume; the
+            // next Enter starts a fresh one on the defaults.
+            SlashKind::Clear => {
+                let end = self.su_session_running().then(|| {
+                    self.su_session_control(crate::su_session::SuSessionControl::End {
+                        reason: Some("owner started a new conversation (/clear)".into()),
+                    })
+                });
+                let had_conversation = self.agent_chat_id.is_some();
+                self.reset_agent_chat_binding();
+                if had_conversation {
+                    self.chat_toast(
+                        "info",
+                        "New conversation. The last one is in /resume.".into(),
+                    );
+                }
+                end.unwrap_or(Action::Render)
+            }
+            // P-027 (G-4): Claude takes "/compact" as a message in the same
+            // session (Agent SDK slash commands). Codex and OMP compact on
+            // their own near the limit; pui says so instead of sending text the
+            // engine would read as a question.
+            SlashKind::Compact => {
+                if !self.su_session_running() {
+                    self.chat_toast("info", "There is no conversation to compact yet.".into());
+                    return Action::Render;
+                }
+                let backend = self.su_session.as_ref().map(|s| s.backend());
+                if backend != Some(crate::su_session::SuSessionBackend::Claude) {
+                    let engine = backend
+                        .map(|b| b.label())
+                        .unwrap_or("This engine");
+                    self.chat_toast(
+                        "info",
+                        format!(
+                            "{engine} compacts the conversation on its own near its limit; pui cannot start it by hand."
+                        ),
+                    );
+                    return Action::Render;
+                }
+                if self.chat_streaming {
+                    self.chat_toast("info", "Wait for the reply to finish, then /compact.".into());
+                    return Action::Render;
+                }
+                self.dispatch_chat_turn("/compact".into())
+                    .unwrap_or(Action::Render)
+            }
             SlashKind::Details => {
                 self.chat_details = Some(!self.chat_details_visible());
                 Action::Render
@@ -19550,6 +19599,61 @@ mod tests {
                 chat_id: "chat-1".into(),
             })
         );
+    }
+
+    /// P-027 (G-4): /clear ends the running engine (resumable, as after
+    /// /exit) and unbinds the chat, so the next message starts a new one.
+    #[test]
+    fn clear_ends_the_engine_and_starts_a_new_conversation() {
+        let mut a = app_with_running_su_session();
+        a.chat_messages.push(ChatMessage::user("old message"));
+        match a.run_slash_command("clear") {
+            Action::SendSuSessionCommand { chat_id, command, .. } => {
+                assert_eq!(chat_id, "chat-1");
+                assert_eq!(command["type"], "end");
+            }
+            other => panic!("/clear must end the running engine, got {other:?}"),
+        }
+        assert!(!a.should_quit, "/clear does not quit pui");
+        assert!(a.agent_chat_id.is_none(), "the chat is unbound");
+        assert!(a.su_session.is_none());
+        assert!(a.chat_messages.is_empty(), "the transcript starts empty");
+        assert!(a.toast.as_ref().unwrap().message.contains("/resume"));
+        // With nothing bound it is just a fresh box, and says nothing.
+        let mut fresh = App::new();
+        fresh.toast = None;
+        assert_eq!(fresh.run_slash_command("clear"), Action::Render);
+        assert!(fresh.toast.is_none());
+    }
+
+    /// P-027 (G-4): /compact goes to a Claude engine as "/compact" and is
+    /// refused in plain words for an engine that cannot take it.
+    #[test]
+    fn compact_sends_the_command_to_claude_and_explains_elsewhere() {
+        let mut a = app_with_running_su_session();
+        assert_eq!(
+            a.su_session.as_ref().unwrap().backend(),
+            crate::su_session::SuSessionBackend::Claude
+        );
+        a.run_slash_command("compact");
+        assert_eq!(a.su_pending_turn.as_ref().unwrap().content, "/compact");
+
+        let mut codex = app_with_running_su_session();
+        codex
+            .su_session
+            .as_mut()
+            .unwrap()
+            .identity
+            .as_mut()
+            .unwrap()
+            .backend = crate::su_session::SuSessionBackend::Codex;
+        assert_eq!(codex.run_slash_command("compact"), Action::Render);
+        assert!(codex.su_pending_turn.is_none(), "nothing is sent to Codex");
+        assert!(codex.toast.as_ref().unwrap().message.contains("on its own"));
+
+        let mut idle = App::new();
+        assert_eq!(idle.run_slash_command("compact"), Action::Render);
+        assert!(idle.toast.as_ref().unwrap().message.contains("no conversation"));
     }
 
     #[test]

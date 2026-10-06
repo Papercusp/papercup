@@ -24,9 +24,11 @@ pub struct SlashCommand {
 pub enum SlashKind {
     Help,
     Resume,
+    Clear,
     Model,
     Effort,
     Status,
+    Compact,
     Details,
     Expand,
     Copy,
@@ -46,6 +48,12 @@ pub const COMMANDS: &[SlashCommand] = &[
         summary: "Switch to another conversation (Ctrl+S)",
         kind: SlashKind::Resume,
     },
+    // pui-chat-first-ux P-027 (G-4): Claude Code's and Codex's /clear.
+    SlashCommand {
+        name: "clear",
+        summary: "Start a new conversation (this one stays in /resume)",
+        kind: SlashKind::Clear,
+    },
     // pui-chat-first-ux P-026: both apply from the next turn of a running
     // conversation, or set the model a new one starts on.
     SlashCommand {
@@ -62,6 +70,11 @@ pub const COMMANDS: &[SlashCommand] = &[
         name: "status",
         summary: "Model, account and engine this conversation runs on",
         kind: SlashKind::Status,
+    },
+    SlashCommand {
+        name: "compact",
+        summary: "Summarize the conversation to free up context (Claude)",
+        kind: SlashKind::Compact,
     },
     SlashCommand {
         name: "expand",
