@@ -44,14 +44,24 @@ import {
 } from '../../desktop/desktop-session-registry';
 import { killTask } from '../../task-manager/control';
 import { existsSync } from 'node:fs';
-import { provisionWorkspaceDesktop, WORKSPACE_DESKTOP_SOCKET } from '../../desktop/workspace-desktop-session';
-import { agentLeaseKey, potLeaseKey } from './desktop-names';
+import {
+  provisionPersonalDesktop,
+  provisionWorkspaceDesktop,
+  WORKSPACE_DESKTOP_SOCKET,
+  type WorkspaceDesktopDialDeps,
+} from '../../desktop/workspace-desktop-session';
+import { agentLeaseKey, potLeaseKey, userLeaseKey } from './desktop-names';
 
-type Provisioner = (opts?: ProvisionOptions) => Promise<SandboxDesktop>;
+type Provisioner = (opts: ProvisionOptions | undefined, target: DesktopLeaseTarget) => Promise<SandboxDesktop>;
 
 /** Which desktop a lease operation addresses. */
 export type DesktopLeaseTarget =
   | { scope: 'pot'; pot: string }
+  /**
+   * A person's own cloud desktop (personal-cloud-desktop-2026-10-06): one per hosted
+   * user, provisioned ONLY through the personal worker socket as the customer account.
+   */
+  | { scope: 'user'; userId: string }
   | {
       scope: 'agent';
       /** The owning agent's coordination ownerId (resolveAgentIdentity(ctx).ownerId). */
@@ -65,8 +75,8 @@ export type DesktopLeaseTarget =
 /** A lease as an observer sees it — the shape list/grid code reads. */
 export interface DesktopLeaseInfo {
   key: string;
-  scope: 'pot' | 'agent';
-  /** Pot slug for a pot lease; the owning ownerId for an agent lease. */
+  scope: 'pot' | 'agent' | 'user';
+  /** Pot slug for a pot lease; the owning ownerId for an agent lease; the userId for a user lease. */
   scopeRef: string;
   name: string | null;
   harnessSlug: string | null;
@@ -81,7 +91,9 @@ interface LeaseEntry {
 }
 
 export function desktopLeaseKey(target: DesktopLeaseTarget): string {
-  return target.scope === 'pot' ? potLeaseKey(target.pot) : agentLeaseKey(target.ownerId, target.name);
+  if (target.scope === 'pot') return potLeaseKey(target.pot);
+  if (target.scope === 'user') return userLeaseKey(target.userId);
+  return agentLeaseKey(target.ownerId, target.name);
 }
 
 /**
@@ -90,7 +102,9 @@ export function desktopLeaseKey(target: DesktopLeaseTarget): string {
  * names both its owner and its desktop name rather than an opaque compound key.
  */
 function leaseLogLabel(target: DesktopLeaseTarget): string {
-  return target.scope === 'pot' ? `pot=${target.pot}` : `agent=${target.ownerId} name=${target.name}`;
+  if (target.scope === 'pot') return `pot=${target.pot}`;
+  if (target.scope === 'user') return `user=${target.userId}`;
+  return `agent=${target.ownerId} name=${target.name}`;
 }
 
 /**
@@ -106,9 +120,44 @@ function leaseLogLabel(target: DesktopLeaseTarget): string {
  */
 const sessionIds = new Map<string, string>();
 
-const defaultProvision: Provisioner = (opts) => existsSync(WORKSPACE_DESKTOP_SOCKET)
-  ? provisionWorkspaceDesktop(opts)
-  : realProvision(opts);
+/** Which provisioning route a lease target takes (personal-cloud-desktop R-8 / R-9). */
+export type DesktopProvisionRoute = 'personal-socket' | 'sandbox-socket' | 'local';
+
+/**
+ * Pure routing rule. A `user` lease goes to the personal worker and nowhere else — not
+ * even when the personal worker is missing (that refuses; see `provisionPersonalDesktop`).
+ * Every other lease goes to the sandbox worker when the pack installed it, else local.
+ * So no agent/pot lease ever dials the personal socket, and no person's desktop ever
+ * dials the sandbox socket or runs in this process's identity.
+ */
+export function desktopProvisionRoute(target: DesktopLeaseTarget, sandboxSocketPresent: boolean): DesktopProvisionRoute {
+  if (target.scope === 'user') return 'personal-socket';
+  return sandboxSocketPresent ? 'sandbox-socket' : 'local';
+}
+
+/** The default provisioner with its I/O seams exposed, so routing tests can watch the dial. */
+export function provisionForTarget(
+  target: DesktopLeaseTarget,
+  opts: ProvisionOptions | undefined,
+  deps: {
+    exists?: (path: string) => boolean;
+    connect?: WorkspaceDesktopDialDeps['connect'];
+    local?: (opts?: ProvisionOptions) => Promise<SandboxDesktop>;
+  } = {},
+): Promise<SandboxDesktop> {
+  const exists = deps.exists ?? existsSync;
+  const dial = deps.connect ? { connect: deps.connect } : {};
+  switch (desktopProvisionRoute(target, exists(WORKSPACE_DESKTOP_SOCKET))) {
+    case 'personal-socket':
+      return provisionPersonalDesktop(opts, { ...dial, exists });
+    case 'sandbox-socket':
+      return provisionWorkspaceDesktop(opts, dial);
+    case 'local':
+      return (deps.local ?? realProvision)(opts);
+  }
+}
+
+const defaultProvision: Provisioner = (opts, target) => provisionForTarget(target, opts);
 let provisionImpl: Provisioner = defaultProvision;
 /** Test seam — swap the provisioner so the lifecycle tests need no live X. */
 export function __setProvisionerForTests(next: Provisioner): void {
@@ -142,7 +191,7 @@ export async function ensureDesktop(target: DesktopLeaseTarget, opts?: Provision
   if (pending) return pending;
 
   const p = (async () => {
-    const desktop = await provisionImpl(opts);
+    const desktop = await provisionImpl(opts, target);
     const entry: LeaseEntry = { target, desktop };
     leases.set(key, entry);
     await recordLeaseInRegistry(key, entry);
@@ -167,9 +216,9 @@ function infoFor(key: string, entry: LeaseEntry): DesktopLeaseInfo {
   return {
     key,
     scope: t.scope,
-    scopeRef: t.scope === 'pot' ? t.pot : t.ownerId,
+    scopeRef: t.scope === 'pot' ? t.pot : t.scope === 'user' ? t.userId : t.ownerId,
     name: t.scope === 'agent' ? t.name : null,
-    harnessSlug: t.scope === 'pot' ? t.pot : (t.harnessSlug ?? null),
+    harnessSlug: t.scope === 'pot' ? t.pot : t.scope === 'user' ? null : (t.harnessSlug ?? null),
     desktop: entry.desktop,
     sessionId: sessionIds.get(key),
   };
@@ -235,7 +284,9 @@ async function recordLeaseInRegistry(key: string, entry: LeaseEntry): Promise<vo
   const scopeFields =
     target.scope === 'pot'
       ? { harnessSlug: target.pot, scope: 'pot' as const, scopeRef: target.pot }
-      : {
+      : target.scope === 'user'
+        ? { harnessSlug: null, scope: 'user' as const, scopeRef: target.userId, leaseHolder: target.userId }
+        : {
           harnessSlug: target.harnessSlug ?? null,
           scope: 'agent' as const,
           scopeRef: target.ownerId,
@@ -335,7 +386,9 @@ export async function releaseDesktop(target: DesktopLeaseTarget): Promise<Releas
   const row = await resolveDesktopForScope(
     target.scope === 'pot'
       ? { workspaceId: activeWorkspaceId(), scope: 'pot', scopeRef: target.pot }
-      : { workspaceId: activeWorkspaceId(), scope: 'agent', scopeRef: target.ownerId, name: target.name },
+      : target.scope === 'user'
+        ? { workspaceId: activeWorkspaceId(), scope: 'user', scopeRef: target.userId }
+        : { workspaceId: activeWorkspaceId(), scope: 'agent', scopeRef: target.ownerId, name: target.name },
   ).catch(() => undefined);
   if (!row) return { released: false, via: 'none' };
   return releaseViaRegistryRow(row);
