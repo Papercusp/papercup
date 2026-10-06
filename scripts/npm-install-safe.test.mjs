@@ -30,6 +30,8 @@ import {
   parseCliArgs,
   readChildRssBytes,
   repoLockName,
+  RESOLUTION_STALE_ATTEMPTS_DEFAULT,
+  resolutionStaleAttempts,
   runCommandUnderInstallMutex,
   runNpmWithHeartbeat,
   USAGE,
@@ -153,10 +155,10 @@ function createManifestResolutionFixture({
     "    lockfile.packages[\"packages/operator-core\"].dependencies = { \"fixture-pkg\": \"1.2.3\" };",
     "    lockfile.packages[\"node_modules/fixture-pkg\"] = { version: \"1.2.3\", resolved: \"https://registry.npmjs.org/fixture-pkg/-/fixture-pkg-1.2.3.tgz\", integrity: \"sha512-fixture\" };",
     "    fs.writeFileSync(lockfilePath, JSON.stringify(lockfile, null, 2) + \"\\n\");",
-    "    if (process.env.NPM_INSTALL_SAFE_TEST_STALE === \"1\") {",
+    "    if (process.env.NPM_INSTALL_SAFE_TEST_STALE) {",
     "      const livePath = path.join(repoRoot, \"packages\", \"operator-core\", \"package.json\");",
     "      const liveManifest = JSON.parse(fs.readFileSync(livePath, \"utf8\"));",
-    "      liveManifest.externalFixtureChange = true;",
+    "      liveManifest.externalFixtureChange = process.env.NPM_INSTALL_SAFE_TEST_STALE === \"always\" ? (Number(liveManifest.externalFixtureChange) || 0) + 1 : true;",
     "      fs.writeFileSync(livePath, JSON.stringify(liveManifest, null, 2) + \"\\n\");",
     "    }",
     "    record(phase);",
@@ -206,7 +208,9 @@ function createManifestResolutionFixture({
             PAPERCUSP_SKIP_DEP_VERIFY: "1",
           }
         : {}),
-      ...(staleDuringResolve ? { NPM_INSTALL_SAFE_TEST_STALE: "1" } : {}),
+      ...(staleDuringResolve
+        ? { NPM_INSTALL_SAFE_TEST_STALE: staleDuringResolve === "always" ? "always" : "1" }
+        : {}),
     },
   };
 }
@@ -240,10 +244,67 @@ test("repo writers can proceed during resolution but stay blocked during reify a
   }
 });
 
-test("manifest-only install skips reify when source manifests changed after the snapshot", {
+test("manifest-only install re-resolves against the current manifests when they changed after the snapshot", {
   skip: process.platform === "win32",
 }, () => {
-  const fixture = createManifestResolutionFixture({ staleDuringResolve: true });
+  // The fake resolve edits the live operator-core manifest; on attempt 2 it rewrites the same
+  // bytes, so this models one peer edit landing mid-resolve (WI-10006714).
+  const fixture = createManifestResolutionFixture({ staleDuringResolve: "once" });
+  try {
+    const result = spawnSync(process.execPath, [fixture.cli, ...fixture.args], {
+      encoding: "utf8",
+      timeout: 15_000,
+      env: fixture.env,
+    });
+    assert.ifError(result.error);
+    assert.equal(result.status, 0, result.stderr + result.stdout);
+    assert.match(
+      result.stderr,
+      /NPM_INSTALL_SAFE_RESOLUTION_RETRY: source-changed at \S*package\.json during attempt 1\/3/,
+    );
+    assert.doesNotMatch(result.stderr, /NPM_INSTALL_SAFE_RESOLUTION_STALE/);
+    assert.deepEqual(
+      readFileSync(fixture.tracePath, "utf8").trim().split("\n"),
+      ["cache-verify", "resolve", "cache-verify", "resolve", "reify", "repair"],
+    );
+    const liveManifest = JSON.parse(
+      readFileSync(
+        join(fixture.repoRoot, "packages", "operator-core", "package.json"),
+        "utf8",
+      ),
+    );
+    // Both are present: attempt 2 resolved from the peer-edited manifest instead of
+    // overwriting the peer's edit with the stale resolution.
+    assert.equal(liveManifest.externalFixtureChange, true);
+    assert.equal(liveManifest.dependencies?.["fixture-pkg"], "1.2.3");
+    assert.ok(
+      existsSync(
+        join(fixture.repoRoot, "node_modules", "fixture-pkg", "package.json"),
+      ),
+    );
+  } finally {
+    rmSync(fixture.tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("resolutionStaleAttempts defaults to 3 and accepts only a positive integer override", () => {
+  assert.equal(RESOLUTION_STALE_ATTEMPTS_DEFAULT, 3);
+  assert.equal(resolutionStaleAttempts({}), 3);
+  assert.equal(resolutionStaleAttempts({ PAPERCUSP_INSTALL_SAFE_STALE_ATTEMPTS: "" }), 3);
+  assert.equal(resolutionStaleAttempts({ PAPERCUSP_INSTALL_SAFE_STALE_ATTEMPTS: "1" }), 1);
+  assert.equal(resolutionStaleAttempts({ PAPERCUSP_INSTALL_SAFE_STALE_ATTEMPTS: "5" }), 5);
+  for (const bad of ["0", "-2", "1.5", "abc"])
+    assert.equal(
+      resolutionStaleAttempts({ PAPERCUSP_INSTALL_SAFE_STALE_ATTEMPTS: bad }),
+      3,
+      bad,
+    );
+});
+
+test("manifest-only install gives up without reifying when the manifests change on every attempt", {
+  skip: process.platform === "win32",
+}, () => {
+  const fixture = createManifestResolutionFixture({ staleDuringResolve: "always" });
   const initialLockfile = readFileSync(
     join(fixture.repoRoot, "package-lock.json"),
     "utf8",
@@ -256,10 +317,14 @@ test("manifest-only install skips reify when source manifests changed after the 
     });
     assert.ifError(result.error);
     assert.equal(result.status, 1, result.stderr + result.stdout);
-    assert.match(result.stderr, /NPM_INSTALL_SAFE_RESOLUTION_STALE: source-changed/);
+    assert.match(
+      result.stderr,
+      /NPM_INSTALL_SAFE_RESOLUTION_STALE: source-changed at \S*package\.json on all 3 attempt\(s\)/,
+    );
+    assert.equal(result.stderr.match(/NPM_INSTALL_SAFE_RESOLUTION_RETRY/g)?.length, 2);
     assert.deepEqual(
       readFileSync(fixture.tracePath, "utf8").trim().split("\n"),
-      ["cache-verify", "resolve"],
+      ["cache-verify", "resolve", "cache-verify", "resolve", "cache-verify", "resolve"],
     );
     const liveManifest = JSON.parse(
       readFileSync(
@@ -267,7 +332,7 @@ test("manifest-only install skips reify when source manifests changed after the 
         "utf8",
       ),
     );
-    assert.equal(liveManifest.externalFixtureChange, true);
+    assert.equal(liveManifest.externalFixtureChange, 3);
     assert.equal(liveManifest.dependencies, undefined);
     assert.equal(
       readFileSync(join(fixture.repoRoot, "package-lock.json"), "utf8"),
