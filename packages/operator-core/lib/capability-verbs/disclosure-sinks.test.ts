@@ -167,7 +167,7 @@ const CASES: SinkCase[] = [
     verb: 'mail:reply',
     recipients: ['alice@inbound.example'],
     sink: 'mail:reply',
-    document: doc('gmail', 'message', ['alice@inbound.example'], {
+    document: doc('mail', 'message', ['alice@inbound.example'], {
       direction: 'inbound', from: 'alice@inbound.example', threadId: 't1', messageId: '<m1@inbound.example>', subject: 'Hi',
     }),
     run: (p) => replyToCanonicalMail(sql, { workspaceId: WORKSPACE, userId: USER, messageId: 'ext-1', text: 'reply', mode: 'send', agentOwnerId: AGENT }, p as never),
