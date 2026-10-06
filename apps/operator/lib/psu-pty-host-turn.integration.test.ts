@@ -23,6 +23,7 @@
 import { describe, it, expect } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { EventEmitter } from 'node:events';
+import { hermeticEnv } from '../vitest-shims/psu-pty-temp-dir';
 import { execPath } from 'node:process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -1139,20 +1140,7 @@ async function waitForOutput(
  *  fleet's bound color scheme) — exactly the environment backlog-drain agents run
  *  `npm run test:affected` in, which is almost certainly why the watchdog saw this
  *  file red repeatedly. */
-function hermeticEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
-  const {
-    PAPERCUSP_FLEET_BG: _bg,
-    PAPERCUSP_FLEET_FG: _fg,
-    PAPERCUSP_FLEET_CURSOR: _cursor,
-    // Backend-specific startup readiness (for example Codex's `% context left`
-    // marker) must be selected explicitly by a test.  In a fleet session the
-    // ambient Codex value would make generic echo-child tests wait for a marker
-    // they can never emit, masking the clean-boundary behavior under test.
-    PAPERCUSP_AGENT: _agent,
-    ...rest
-  } = process.env;
-  return { ...rest, ...extra };
-}
+// Reuse the same caller-state isolation as the native round-trip fixtures.
 
 /** A fake stdout that accumulates the pty's output; a non-TTY fake stdin.
  *  Mirrors the sibling file's fakeIo() — bridgeTty defaults OFF here, so an
