@@ -98,6 +98,7 @@ import { DESKTOP_DEV_RESOURCE, resolveDesktopDevListener, restartDesktopDev } fr
 import { activeWorkspaceId } from '../../workspace-registry';
 import { probeHttpReachable, type HttpProbeResult } from '../../escalating-http-probe';
 import { listListeningSockets } from '../../listening-sockets';
+import { readBundleStaleMarkerAt, type BundleStaleness } from '../../bundle-staleness';
 import { integrationTreeRoots } from '../../harness/routines/restricted-tree-skip';
 import { restrictedTreeHoldRefusal, type RestrictedHoldRefusal } from '../testing/restricted-hold-fence';
 import {
@@ -598,6 +599,45 @@ export function configurePeerInFlightEditsReaderForTests(
   reader: PeerInFlightEditsReader = defaultPeerInFlightEditsReader,
 ): void {
   peerInFlightEditsReader = reader;
+}
+
+/**
+ * EI-25257294558913225: a bg-host restart whose ExecStartPre rebuild was REFUSED (a
+ * free-ref / esbuild failure, typically a peer's mid-edit) still starts the service —
+ * PAPERCUSP_BUNDLE_ALLOW_STALE_START=1 — on the last-known-good bundle, and bundle-host.sh
+ * leaves `dist-host/.bundle-stale.json` beside it (deleted on every successful build). A
+ * changed MainPID alone therefore said "restarted" for a restart that loaded no new code
+ * (measured 2026-10-06 19:02Z). `loadedNewCode` reads that marker in the UNIT's tree.
+ * `null` is UNKNOWN (unresolvable root) — never a clean bill.
+ */
+export type BgHostBundleLoad = {
+  checked: boolean;
+  loadedNewCode: boolean | null;
+  stale: BundleStaleness | null;
+};
+
+export type BgHostBundleStaleReader = (integrationRoot: string) => BundleStaleness | null;
+const BG_HOST_BUNDLE_STALE_MARKER_RELATIVE_PATH = 'apps/operator/dist-host/.bundle-stale.json';
+const defaultBgHostBundleStaleReader: BgHostBundleStaleReader = (integrationRoot) =>
+  readBundleStaleMarkerAt(resolve(integrationRoot, BG_HOST_BUNDLE_STALE_MARKER_RELATIVE_PATH));
+let bgHostBundleStaleReader = defaultBgHostBundleStaleReader;
+
+/** Test seam — tests supply the marker without touching a real tree. */
+export function configureBgHostBundleStaleReaderForTests(
+  reader: BgHostBundleStaleReader = defaultBgHostBundleStaleReader,
+): void {
+  bgHostBundleStaleReader = reader;
+}
+
+async function readBgHostBundleLoad(): Promise<BgHostBundleLoad> {
+  try {
+    const integrationRoot = await bgHostIntegrationRootResolver();
+    if (!integrationRoot) return { checked: false, loadedNewCode: null, stale: null };
+    const stale = bgHostBundleStaleReader(integrationRoot);
+    return { checked: true, loadedNewCode: stale === null, stale };
+  } catch {
+    return { checked: false, loadedNewCode: null, stale: null };
+  }
 }
 
 const UNKNOWN_BG_HOST_FRESHNESS: BgHostRestartFreshness = {
@@ -2599,7 +2639,15 @@ export default defineTool({
               observationWaitedMs: bgHostReadiness.waitedMs,
             });
             const restartWasScheduled = restartProcess !== null && restartSpawnError === null;
-            const restartNote = bgHostRestarted
+            // EI-25257294558913225: a cycled PID is not loaded code — read the stale marker.
+            const bundleLoad = bgHostRestarted ? await readBgHostBundleLoad() : null;
+            const startedOnStaleBundle = bundleLoad?.loadedNewCode === false;
+            const restartNote = startedOnStaleBundle
+              ? 'bg-host restarted (active MainPID ' + bgHostReadiness.observedPid + ') but its ExecStartPre rebuild was ' +
+                'REFUSED, so it is serving the STALE bundle built ' + (bundleLoad?.stale?.servingBundleMtime ?? 'at an unknown time') +
+                ' — NONE of the tree edits since then are loaded. Fix the build failure (bundleStale.error; often a peer\'s ' +
+                'mid-edit that resolves within seconds), then restart again; do not report the change as live.'
+              : bgHostRestarted
               ? 'bg-host restart transition observed at active MainPID ' + bgHostReadiness.observedPid +
                 ' after ' + bgHostReadiness.waitedMs + 'ms.'
               : restartSpawnError
@@ -2612,10 +2660,21 @@ export default defineTool({
                       '); do not report it as restarted.'
                     : 'bg-host restart was scheduled, but a changed active MainPID was not observed; do not report it as restarted.';
             return json({
-              ok: bgHostRestarted,
+              ok: bgHostRestarted && !startedOnStaleBundle,
               target,
               drained: true,
               restarted: bgHostRestarted,
+              loadedNewCode: bundleLoad?.loadedNewCode ?? null,
+              ...(bundleLoad?.stale
+                ? {
+                    bundleStale: {
+                      failedAt: bundleLoad.stale.failedAt,
+                      servingBundleMtime: bundleLoad.stale.servingBundleMtime,
+                      failingFiles: bundleLoad.stale.failingFiles,
+                      error: bundleLoad.stale.error.slice(-1200),
+                    },
+                  }
+                : {}),
               restartScheduled: restartWasScheduled,
               systemdJobAccepted,
               restartObserved: bgHostReadiness.observed,
@@ -2646,7 +2705,9 @@ export default defineTool({
                 ? { reason: 'bg_host_restart_command_spawn_failed' }
                 : !bgHostRestarted
                   ? { reason: 'bg_host_restart_not_observed' }
-                  : {}),
+                  : startedOnStaleBundle
+                    ? { reason: 'bg_host_restarted_on_stale_bundle' }
+                    : {}),
               verifyWith: restartVerificationHint(target, cfg.unit, before.mainPid ?? null, before.nRestarts),
               note: restartNote +
                 (environmentDropInFreshnessAtGuard?.changedPaths.length

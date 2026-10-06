@@ -11,6 +11,7 @@
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/dev/restart.test.ts
  */
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { BundleStaleness } from '../../bundle-staleness';
 import { EventEmitter } from 'node:events';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -295,6 +296,7 @@ const {
   configureBgHostIntegrationRootResolverForTests,
   configureBgHostRestartReadinessReaderForTests,
   configureBgHostRestartFreshnessReaderForTests,
+  configureBgHostBundleStaleReaderForTests,
   configurePeerInFlightEditsReaderForTests,
   configureStagingRestartReadinessReaderForTests,
   configureSystemdDaemonReloaderForTests,
@@ -333,6 +335,8 @@ const environmentDropInFreshnessM = vi.fn(
 /** WI-10003606: the root bg-host's own unit names — deliberately NOT the serving operator's. */
 const BG_HOST_UNIT_ROOT = '/fixture/canonical-tree';
 const bgHostRootM = vi.fn(async (): Promise<string | null> => BG_HOST_UNIT_ROOT);
+/** EI-25257294558913225: the unit tree's dist-host/.bundle-stale.json. Default absent (fresh build). */
+const bgHostBundleStaleM = vi.fn((_root: string): BundleStaleness | null => null);
 // EI-24790218658923698: the peer in-flight-edit advisory. Default: checked, nothing held.
 const peerEditsM = vi.fn(async (_workingDirectory: string | null, _selfOwner: string | null) => ({
   checked: true,
@@ -419,6 +423,8 @@ beforeEach(() => {
   configurePeerInFlightEditsReaderForTests(peerEditsM);
   configureStagingRestartReadinessReaderForTests(stagingReadinessM);
   configureBgHostRestartReadinessReaderForTests(bgHostRestartReadinessM);
+  bgHostBundleStaleM.mockReturnValue(null);
+  configureBgHostBundleStaleReaderForTests(bgHostBundleStaleM);
   configureSystemdDaemonReloaderForTests(systemdDaemonReloadM);
   releaseM.mockResolvedValue({
     released: 1,
@@ -469,6 +475,7 @@ afterAll(() => {
   configurePeerInFlightEditsReaderForTests();
   configureStagingRestartReadinessReaderForTests();
   configureBgHostRestartReadinessReaderForTests();
+  configureBgHostBundleStaleReaderForTests();
   configureSystemdDaemonReloaderForTests();
   if (ORIGINAL_ENV === undefined) delete process.env.PAPERCUSP_ALLOW_DEV_RESTART;
   else process.env.PAPERCUSP_ALLOW_DEV_RESTART = ORIGINAL_ENV;
@@ -2643,6 +2650,44 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:bg-host
       observedMainPid: 4322,
       observedActiveState: 'active',
     });
+  });
+
+  it('reports loadedNewCode:true when the restart built a fresh bundle (no stale marker in the unit tree)', async () => {
+    mockResolvedTyped(probeM, { ok: true, mainPid: 4321, secondsSinceStart: 900 });
+    mockImplementationTyped(guardM, runGuard(fenceOk(23)));
+
+    const b = body(await call({ confirm: true, target: 'bg-host' }));
+
+    expect(b).toMatchObject({ ok: true, restarted: true, loadedNewCode: true });
+    expect(b.bundleStale).toBeUndefined();
+    expect(bgHostBundleStaleM).toHaveBeenCalledWith(BG_HOST_UNIT_ROOT);
+  });
+
+  it('EI-25257294558913225: a restart whose rebuild was refused is restarted but NOT ok — it loaded no new code', async () => {
+    mockResolvedTyped(probeM, { ok: true, mainPid: 4321, secondsSinceStart: 900 });
+    mockImplementationTyped(guardM, runGuard(fenceOk(24)));
+    bgHostBundleStaleM.mockReturnValueOnce({
+      schema: 'bundle-stale-v1',
+      failedAt: '2026-10-06T19:02:19.596Z',
+      entry: 'bin/hono-host.ts',
+      outfile: 'dist-host/hono-host.mjs',
+      servingBundleMtime: '2026-10-06T18:47:10.795Z',
+      servingBundleAgeSecAtFailure: 909,
+      failingFiles: [],
+      error: '🚨 free reference `structuredRootShape` at libs/generic/tooldef/src/serialize-result.ts:364:18',
+    });
+
+    const b = body(await call({ confirm: true, target: 'bg-host' }));
+
+    expect(b).toMatchObject({
+      ok: false,
+      restarted: true,
+      loadedNewCode: false,
+      reason: 'bg_host_restarted_on_stale_bundle',
+      bundleStale: { servingBundleMtime: '2026-10-06T18:47:10.795Z' },
+    });
+    expect(String(b.bundleStale.error)).toMatch(/structuredRootShape/);
+    expect(b.note).toMatch(/STALE bundle built 2026-10-06T18:47:10\.795Z/);
   });
 
   it('keeps restarted false and records the outcome when systemd accepts the job but no PID transition is observed', async () => {
