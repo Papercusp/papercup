@@ -14,6 +14,43 @@
     "unchanged": true,
     "sampleCredit": false
   },
+  "liveLaunchAuditSelectionControl": {
+    "kind": "single-own-session-positive-control; not matrix acceptance",
+    "endpoint": "http://127.0.0.1:3170",
+    "containingRuntimeObserved": {
+      "buildSha": "cf272b6803",
+      "sourcePath": "packages/operator-core/lib/projected-tool-deps.ts",
+      "sourceCommit": "cd747dda55",
+      "containsChange": true,
+      "method": "dev:pipeline_position blob containment before and after the call"
+    },
+    "invocation": {
+      "id": 31826553,
+      "tool": "coord:whoami",
+      "status": "ok",
+      "invokedAt": "2026-10-06T00:09:14.223Z",
+      "ownerId": "su-48ca22e5-deca-4778-9acb-d6ae2fb48dd4",
+      "launchAudit": {
+        "selection": "caller-row",
+        "advSessionId": "34279",
+        "xmin": "787036296"
+      }
+    },
+    "selectedNativeRow": {
+      "id": 34279,
+      "ownerId": "su-48ca22e5-deca-4778-9acb-d6ae2fb48dd4",
+      "nativeSessionId": "01a10e82-2fd0-7a43-b939-9345cb5be89d",
+      "backend": "codex",
+      "portId": null
+    },
+    "verification": "Exact persisted invocation joined to its selected launch row; owner and native session match this managed continuation.",
+    "limitations": [
+      "One positive audit-field/native-row control only.",
+      "No complete source-owner incarnation or physical actor census.",
+      "No spoof/ABA live control or required three-row matrix pass.",
+      "No fixed-cohort credit, normal parent acceptance or shipment claim."
+    ]
+  },
   "trial": {
     "conversationId": "conv-muvsow6d-0000-9db0d462af354281ae14190a8776e7bf",
     "requesterId": "su-48ca22e5-deca-4778-9acb-d6ae2fb48dd4",
