@@ -240,9 +240,13 @@ test.use({
       return { status: res.status, text: await res.text() };
     });
     expect(r.status).not.toBe(502);
-    // 404 'no-key' = none configured; 401 = configured but rejected / out of credits.
-    expect([401, 404, 200]).toContain(r.status);
+    // 404 'no-key' = none configured; 401 = configured but rejected / out of credits;
+    // 400 = the engine is refused by the release-availability seam
+    // (voice-release-availability.ts, plan voice-final-public-release-2026-10-01
+    // D-005) before any provider call — still a clean, classified 4xx.
+    expect([400, 401, 404, 200]).toContain(r.status);
     if (r.status === 404) expect(r.text).toBe('no-key');
+    if (r.status === 400) expect(r.text).toContain('not available in this release');
   });
 
   test('settings UI exposes all 5 TTS engines and the local defaults are selected', async ({ page }) => {
