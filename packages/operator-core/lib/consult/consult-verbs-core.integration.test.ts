@@ -1095,25 +1095,28 @@ describe.each(['selected', 'refill'] as const)('failed cascade dispatch — %s m
     expect(emits).toHaveLength(1);
   });
 
-  it.each(['return', 'early stamp'] as const)('retains a booting answering session identified by %s', async (identity) => {
-    const id = await seedConsult({ routing: routingFor(['booting', 'unused']) });
-    const { deps, dispatchCalls } = makeDeps();
-    deps.dispatch = async (o) => {
-      dispatchCalls.push(o);
-      if (identity === 'early stamp') await o.onAnsweringOwner?.('booting-fork');
-      return { woke: 0, ...(identity === 'return' ? { answeringOwnerId: 'booting-fork' } : {}) };
-    };
-    const r = await consultDeclineCore(
-      { workspaceId: WS, authorId: RESPONDER, conversationId: id, reason: 'conflict' }, deps,
-    );
-    expect(r).toMatchObject({ cascade: { advanced_to: 'booting', exhausted: false, woke: 0 } });
-    expect(dispatchCalls).toHaveLength(1);
-    const row = await stateRow(id);
-    expect(row).toMatchObject({ responder_id: 'booting', cascade_cursor: 1, closed_at: null });
-    expect((row.routing as { selection: { selected: Array<{ answeringOwnerId?: string }> } }).selection.selected[1])
-      .toMatchObject({ answeringOwnerId: 'booting-fork' });
-    expect(row.cascade_digest).toHaveLength(1);
-  });
+  it.each(['return', 'early stamp'] as const)(
+    'retains a booting answering session when the dispatcher returns its identity (%s path)',
+    async (identity) => {
+      const id = await seedConsult({ routing: routingFor(['booting', 'unused']) });
+      const { deps, dispatchCalls } = makeDeps();
+      deps.dispatch = async (o) => {
+        dispatchCalls.push(o);
+        if (identity === 'early stamp') await o.onAnsweringOwner?.('booting-fork');
+        return { woke: 0, answeringOwnerId: 'booting-fork' };
+      };
+      const r = await consultDeclineCore(
+        { workspaceId: WS, authorId: RESPONDER, conversationId: id, reason: 'conflict' }, deps,
+      );
+      expect(r).toMatchObject({ cascade: { advanced_to: 'booting', exhausted: false, woke: 0 } });
+      expect(dispatchCalls).toHaveLength(1);
+      const row = await stateRow(id);
+      expect(row).toMatchObject({ responder_id: 'booting', cascade_cursor: 1, closed_at: null });
+      expect((row.routing as { selection: { selected: Array<{ answeringOwnerId?: string }> } }).selection.selected[1])
+        .toMatchObject({ answeringOwnerId: 'booting-fork' });
+      expect(row.cascade_digest).toHaveLength(1);
+    },
+  );
 
   it.each(['cursor', 'expiry'] as const)('preserves concurrent %s progress instead of dispatching or terminal-closing over it', async (race) => {
     const id = await seedConsult({ routing: routingFor(['unlaunchable', 'concurrent-winner']) });
