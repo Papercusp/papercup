@@ -342,6 +342,36 @@ describe('gmail outbound mail verbs through invoke', () => {
     await expect(result).rejects.toThrow(/gmail_draft_thread_mismatch/);
   });
 
+  // Port of WI-10001658 (the deleted host updateGoogleGmailDraft): revising a live draft must be
+  // one in-place PUT that keeps the draft id, never a delete plus recreate on the owner's mailbox.
+  it('mail.draft update PUTs the existing draft in place and keeps its id', async () => {
+    const { result, calls } = invoke(
+      'mail.draft',
+      { operation: 'update', draftId: 'd-7', to: 'bob@example.com', subject: 'Hi again', text: 'Revised', threadId: 'thread-1' },
+      (request) => (request.url === `${BASE}/drafts/d-7` && request.method === 'PUT'
+        ? { json: { id: 'd-7', message: { id: 'm-10', threadId: 'thread-1' } } }
+        : undefined),
+    );
+    await expect(result).resolves.toEqual({ draftId: 'd-7', messageId: 'm-10', threadId: 'thread-1' });
+    expect(calls.map((call) => `${call.method ?? 'GET'} ${call.url}`)).toEqual([`PUT ${BASE}/drafts/d-7`]);
+    const body = JSON.parse(calls[0]!.body ?? '{}');
+    expect(body.id).toBe('d-7');
+    expect(body.message.threadId).toBe('thread-1');
+    expect(Buffer.from(body.message.raw, 'base64url').toString('utf8')).toContain('Subject: Hi again');
+  });
+
+  it('mail.draft update needs a draft id, and a response naming another draft is refused', async () => {
+    await expect(
+      invoke('mail.draft', { operation: 'update', to: 'bob@example.com', subject: 'Hi', text: 'Hello' }, () => undefined).result,
+    ).rejects.toThrow(/gmail_draft_id_required/);
+    const { result } = invoke(
+      'mail.draft',
+      { operation: 'update', draftId: 'd-7', to: 'bob@example.com', subject: 'Hi', text: 'Hello' },
+      () => ({ json: { id: 'd-OTHER', message: { id: 'm-10', threadId: 'thread-1' } } }),
+    );
+    await expect(result).rejects.toThrow(/gmail_draft_id_mismatch/);
+  });
+
   it('mail.send sends a message or a stored draft', async () => {
     const sent = invoke('mail.send', { operation: 'message', to: 'bob@example.com', subject: 'Hi', text: 'Hello' }, (request) =>
       request.url === `${BASE}/messages/send` ? { json: { id: 'm-1', threadId: 't-1' } } : undefined,
