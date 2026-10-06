@@ -1,5 +1,9 @@
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import type { managedSpawn } from '../task-manager/managed-spawn';
 import { describe, expect, it, vi } from 'vitest';
 import {
   ADMISSION_PRECHECK_WORKER_MODE_ENV,
@@ -8,6 +12,7 @@ import {
   buildAdmissionPrecheckSpawnPlan,
   parseAdmissionPrecheckWorkerInput,
   runAdmissionPrecheckWorker,
+  startAdmissionPrecheckWorker,
   type AdmissionPrecheckWorkerInput,
 } from './admission-fix-precheck-managed';
 import type { FrozenCandidateRepairQueue, FrozenRepairAdmissionPrecheck } from './frozen-candidate-repair-queue';
@@ -62,6 +67,47 @@ const input: AdmissionPrecheckWorkerInput = {
 };
 
 describe('managed R6 admission pre-check runner (WI-10006003)', () => {
+  it('retains actual worker stdout and startup stderr after the launching descriptor closes', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'precheck-worker-log-'));
+    let fd = -1;
+    const launch = vi.fn(async (...args: Parameters<typeof managedSpawn>) => {
+      const [, , spec, options] = args;
+      fd = (options?.spawnOptions?.stdio as ['ignore', number, number])[1];
+      expect(spec.logPath).toBe(join(root, `admission-precheck-worker-${input.taskId}.log`));
+      const child = spawn(process.execPath, ['-e', 'console.log("worker stdout"); console.error("startup failure marker"); process.exitCode = 1'], {
+        stdio: options?.spawnOptions?.stdio,
+      });
+      return { child } as Awaited<ReturnType<typeof managedSpawn>>;
+    });
+    try {
+      const result = await startAdmissionPrecheckWorker(input, {
+        spawn: launch, logDir: root, spawnPlan: { cmd: '/node', args: ['/worker'], env: {}, mode: 'bundled-reexec' },
+      });
+      expect(() => writeSync(fd, 'leaked descriptor')).toThrow();
+      const [code] = await once(result.child, 'close');
+      expect(code).toBe(1);
+      const output = readFileSync(join(root, `admission-precheck-worker-${input.taskId}.log`), 'utf8');
+      expect(output).toContain('worker stdout');
+      expect(output).toContain('startup failure marker');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('logs a scope launch rejection and closes the descriptor before rethrowing', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'precheck-scope-log-'));
+    let fd = -1;
+    const launch = vi.fn(async (...args: Parameters<typeof managedSpawn>): Promise<Awaited<ReturnType<typeof managedSpawn>>> => {
+      fd = (args[3]?.spawnOptions?.stdio as ['ignore', number, number])[2];
+      throw new Error('scope launch rejected');
+    });
+    try {
+      await expect(startAdmissionPrecheckWorker(input, {
+        spawn: launch, logDir: root, spawnPlan: { cmd: '/node', args: ['/worker'], env: {}, mode: 'bundled-reexec' },
+      })).rejects.toThrow('scope launch rejected');
+      expect(readFileSync(join(root, `admission-precheck-worker-${input.taskId}.log`), 'utf8')).toContain('scope launch rejected');
+      expect(() => writeSync(fd, 'leaked descriptor')).toThrow();
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   it('re-execs as a host-independent task in source and bundled deployments', () => {
     expect(buildAdmissionPrecheckSpawnPlan({
       selfPath: '/repo/packages/operator-core/lib/release/admission-fix-precheck-managed.ts',
