@@ -6,6 +6,10 @@
  *     --deb <installed .deb> --expected-deb-sha256 <hex from the release handoff> \
  *     --release 0.0.28-alpha --observer <ownerId> [--work-item WI-…] \
  *     [--journey <key> …] [--command '<drill command>'] [--out-dir docs/evidence]
+ *     [--p202-transcript <p202-workdist.sh stdout> --p202-exit <rc> [--p202-started-at <iso>]]
+ *
+ * `--drill` and/or `--p202-transcript` (at least one). The P-202 LIVE-2 transcript
+ * yields the `delegated-seat-lifecycle` journey (WI-10006413), which the drill cannot.
  *
  * Writes one `operational-test-evidence` document per journey into --out-dir, then
  * `run-p2p-candidate-manifest.ts --evidence-dir <out-dir>` binds them to the candidate.
@@ -17,6 +21,7 @@ import { basename, join, relative } from 'node:path';
 import { validatePhysicalDrillEvidence } from '@papercusp/operator-core/lib/sync/pot-git/physical-drill-evidence';
 import { evidenceVerdict } from './p2p-candidate-evidence';
 import { deriveDrillJourneyEvidence } from './p521-drill-journey-evidence';
+import { deriveSeatJourneyEvidence } from './p202-seat-journey-evidence';
 
 function sha256(bytes: Buffer): string {
   return createHash('sha256').update(bytes).digest('hex');
@@ -44,35 +49,65 @@ function main(): number {
     return 2;
   }
   const one = (key: string) => args.get(key)?.[0];
-  const required = ['drill', 'deb', 'expected-deb-sha256', 'release', 'observer'];
+  const required = ['deb', 'expected-deb-sha256', 'release', 'observer'];
   const missing = required.filter((k) => !one(k));
+  if (!one('drill') && !one('p202-transcript')) missing.push('drill (or --p202-transcript)');
+  if (one('p202-transcript') && !/^\d+$/.test(one('p202-exit') ?? '')) missing.push('p202-exit (the driver exit status)');
   if (missing.length) {
     console.error(`missing required: ${missing.map((k) => `--${k}`).join(' ')}`);
     return 2;
   }
 
-  const drillPath = one('drill')!;
-  const drillBytes = readFileSync(drillPath);
-  const drill = JSON.parse(drillBytes.toString('utf8')) as unknown;
-  const anchorPath = one('trust-anchor');
-  const anchor = anchorPath ? (JSON.parse(readFileSync(anchorPath, 'utf8')) as unknown) : undefined;
-  const validation = validatePhysicalDrillEvidence(drill, anchor);
   const debPath = one('deb')!;
+  const actualDebSha256 = sha256(readFileSync(debPath));
+  const docs: Array<{ journey: string; fileName: string; doc: Record<string, unknown> }> = [];
+  let validation: ReturnType<typeof validatePhysicalDrillEvidence> | null = null;
 
-  const docs = deriveDrillJourneyEvidence({
-    drill,
-    drillPath: relative(process.cwd(), drillPath),
-    drillSha256: sha256(drillBytes),
-    validation,
-    release: one('release')!,
-    artifact: basename(debPath),
-    actualDebSha256: sha256(readFileSync(debPath)),
-    expectedDebSha256: one('expected-deb-sha256')!,
-    observer: one('observer')!,
-    command: args.get('command') ?? [`hive-git-physical-scenario.sh run ${String((drill as { runId?: unknown }).runId ?? '?')}`],
-    workItem: one('work-item'),
-    journeys: args.get('journey'),
-  });
+  const drillPath = one('drill');
+  if (drillPath) {
+    const drillBytes = readFileSync(drillPath);
+    const drill = JSON.parse(drillBytes.toString('utf8')) as unknown;
+    const anchorPath = one('trust-anchor');
+    const anchor = anchorPath ? (JSON.parse(readFileSync(anchorPath, 'utf8')) as unknown) : undefined;
+    validation = validatePhysicalDrillEvidence(drill, anchor);
+    docs.push(
+      ...deriveDrillJourneyEvidence({
+        drill,
+        drillPath: relative(process.cwd(), drillPath),
+        drillSha256: sha256(drillBytes),
+        validation,
+        release: one('release')!,
+        artifact: basename(debPath),
+        actualDebSha256,
+        expectedDebSha256: one('expected-deb-sha256')!,
+        observer: one('observer')!,
+        command: args.get('command') ?? [`hive-git-physical-scenario.sh run ${String((drill as { runId?: unknown }).runId ?? '?')}`],
+        workItem: one('work-item'),
+        journeys: args.get('journey'),
+      }),
+    );
+  }
+
+  const transcriptPath = one('p202-transcript');
+  if (transcriptPath) {
+    const transcriptBytes = readFileSync(transcriptPath);
+    docs.push(
+      deriveSeatJourneyEvidence({
+        transcript: transcriptBytes.toString('utf8'),
+        transcriptPath: relative(process.cwd(), transcriptPath),
+        transcriptSha256: sha256(transcriptBytes),
+        driverExitCode: Number(one('p202-exit')),
+        release: one('release')!,
+        artifact: basename(debPath),
+        actualDebSha256,
+        expectedDebSha256: one('expected-deb-sha256')!,
+        observer: one('observer')!,
+        command: ['papercusp-desktop/bin/vm-rig/p202-workdist.sh --i-accept-live-spawn'],
+        workItem: one('work-item'),
+        startedAt: one('p202-started-at'),
+      }),
+    );
+  }
 
   const outDir = one('out-dir') ?? 'docs/evidence';
   mkdirSync(outDir, { recursive: true });
@@ -84,7 +119,7 @@ function main(): number {
     if (verdict !== 'pass') failed += 1;
     console.log(`P521_DRILL_JOURNEY\t${journey}\t${verdict}\t${path}\t${reason}`);
   }
-  if (!validation.ok) console.error(`drill evidence INVALID: ${validation.errors.join('; ')}`);
+  if (validation && !validation.ok) console.error(`drill evidence INVALID: ${validation.errors.join('; ')}`);
   return failed ? 1 : 0;
 }
 

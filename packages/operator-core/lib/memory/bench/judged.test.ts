@@ -825,6 +825,34 @@ describe('blind label collection through the injected stateless transport', () =
       expect(f.calls).toBe(2);
     } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
   });
+  it('resumes a foreign-owner donor only under an explicit, recorded owner succession', async () => {
+    const f = fixture(), priorSid = process.env.PAPERCUSP_SID;
+    try {
+      // A genuinely different owner produced the donor (internally consistent receipts).
+      process.env.PAPERCUSP_SID = 'predecessor-owner';
+      const original = await authorOnly(f);
+      process.env.PAPERCUSP_SID = 'successor-owner';
+      await expect(collectIndependentCohort({ snapshot: f.snapshot, out: path.join(f.root, 'implicit'), llm: f.llm,
+        targetsPerPartition: 1, reuseAuthorsFrom: original })).rejects.toThrow('recovery identity');
+      // Naming a different predecessor is still a mismatched recovery identity.
+      await expect(collectIndependentCohort({ snapshot: f.snapshot, out: path.join(f.root, 'wrong-heir'), llm: f.llm,
+        targetsPerPartition: 1, reuseAuthorsFrom: original, adoptDonorOwner: 'someone-else' })).rejects.toThrow('recovery identity');
+      await expect(collectIndependentCohort({ snapshot: f.snapshot, out: path.join(f.root, 'no-donor'), llm: f.llm,
+        targetsPerPartition: 1, adoptDonorOwner: 'predecessor-owner' })).rejects.toThrow('requires a named owner and a recovery donor');
+      expect(f.calls).toBe(2);
+      const out = path.join(f.root, 'heir');
+      await collectIndependentCohort({ snapshot: f.snapshot, out, llm: f.llm, targetsPerPartition: 1,
+        reuseAuthorsFrom: original, adoptDonorOwner: 'predecessor-owner' });
+      const heir = JSON.parse(fs.readFileSync(path.join(out, 'identity.json'), 'utf8'));
+      expect(heir.identity.ownerSuccession).toEqual({ donorOwnerId: 'predecessor-owner', successorOwnerId: 'successor-owner' });
+      expect(heir.identity.ownerId).toBe('successor-owner');
+      expect(fs.readdirSync(out).filter((s) => /^memory-author-[0-9a-f]+\.json$/.test(s))
+        .map((s) => JSON.parse(fs.readFileSync(path.join(out, s), 'utf8')).kind)).toEqual(['reused-author', 'reused-author']);
+    } finally {
+      if (priorSid === undefined) delete process.env.PAPERCUSP_SID; else process.env.PAPERCUSP_SID = priorSid;
+      fs.rmSync(f.root, { recursive: true, force: true });
+    }
+  });
   it.each(['ownerId', 'snapshot', 'model', 'author'])('refuses a mismatched recovery identity %s', async (field) => {
     const f = fixture();
     try {

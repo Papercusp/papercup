@@ -1496,7 +1496,7 @@ export function evaluateSpecTestAdequacy(input: {
           rating: 'pass',
           evidence: evidenceWithBindings(
             clauseSelfTarget !== null
-              ? `A bound mutation or counterexample targets ${clauseIdentity(clause)} itself, which declares no falsifier.requiredScenarios${clause.falsifier ? ' (its falsifier observation and probe method do not name scenarios)' : ''}; its canonical test file is separately bound as a successful current test for this clause.`
+              ? `A bound mutation or counterexample targets ${clauseIdentity(clause)} itself, which declares no structured falsifier.requiredScenarios list; its canonical test file is separately bound as a successful current test for this clause.`
               : `A bound mutation or counterexample targets a declared falsifier scenario for ${clauseIdentity(clause)}; its canonical test file is separately bound as a successful current test for this clause.`,
             clauseScopedProofBindings,
           ),

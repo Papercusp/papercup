@@ -5424,9 +5424,9 @@ async function runConvergenceProbe(input: {
           `A completed fetch is NOT convergence: our mirror has not advanced while the pot announced newer ` +
           `snapshots on the (repoKey-independent) ref-announce plane. Treat any 'COLD JOIN COMPLETE' / ` +
           `bootstrap ok:true for this pot as UNSOUND until this clears. ` +
-          `If a device named here is gone for good (a deleted VM, a wiped machine), revoke it ` +
-          `(substrate:revoke_self_device for your own device, substrate:revoke_contributor for another ` +
-          `member's) and it stops being judged. ` +
+          `If a device named here is gone for good (a deleted VM, a wiped machine), revoking it stops it ` +
+          `being judged (substrate:revoke_self_device reaches a device on a harness contributor row; one ` +
+          `listed only on the Hive member row has no single-device revoke yet, WI-10006415). ` +
           (await describeRefAnnounceReceiveFreshness(slug, workspaceId)),
       );
     }

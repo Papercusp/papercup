@@ -1139,9 +1139,11 @@ cannot read at all. A named regression test pins it.
 - **Tier 1 — `.ssh` directories** (`KEYPERM_SSH_ROOTS`, default
   `/home /root /mnt/data/back`, depth `KEYPERM_SSH_MAXDEPTH`=6). Checks the
   directory mode *and* each contained key's mode; neither subsumes the other.
-  ~15s on this box. This is the tier that catches the 2026-09-03 shape.
+  It prunes the same configured vendored/cache directory-name globs as tier 2.
+  This is the tier that catches the 2026-09-03 shape.
 - **Tier 2 — content sweep outside `.ssh`** (`KEYPERM_DEEP_ROOTS`, default
-  `$HOME /mnt/data/back`). Catches an exported deploy key or a loose `.pem`.
+  `$HOME/papercupai-workspace $HOME/.config /mnt/data/back`). Catches an
+  exported deploy key or a loose `.pem`.
   Bounded by `KEYPERM_DEEP_TIMEOUT_S` and run at `nice 19` / `ionice -c 3`,
   because this box routinely sits at load average 60+ and a probe that degrades
   its host is a probe somebody disables.

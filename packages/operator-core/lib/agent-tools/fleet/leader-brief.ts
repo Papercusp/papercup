@@ -47,6 +47,9 @@ import {
   type FleetLaneHealthUnavailable,
 } from '../../fleet/lane-health';
 import { canonicalExecutableWidth, exactPositiveSinglePlanSlugFromFilter } from '../../fleet/executable-frontier';
+import { computeFleetUnderStaffedAlert, type FleetUnderStaffedEvaluation } from '../../fleet/under-staffed-alert';
+import { FLAGS } from '@papercusp/flags';
+import { getFlag } from '@papercusp/flags/server';
 import { buildClaimableNowAggregate } from './leader-brief-aggregate';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { resolveAgentIdentity, deriveFleetMembership } from '../coordination/identity';
@@ -4114,6 +4117,18 @@ export async function buildLeaderBrief(
   const fleetRecord =
     fleetRecordResult.value !== undefined ? fleetRecordResult.value : controlFleetRecord;
   const fleetRecordReadAvailable = fleetRecordResult.value !== undefined || controlFleetRecord !== null;
+  // P-005 / D-030: the governor's own eligibility facts, so `headcount.held` says
+  // whether anything will actually restore this fleet. A failed flag read stays
+  // null (unknown), never a fabricated OFF; an unread fleet record supplies no
+  // governance at all, so `held` reads null rather than guessing.
+  const governorFlagRead = await withBoundedTimeout(
+    getFlag(FLAGS.FLEET_HEADCOUNT_GOVERNOR, 'system').then((on): boolean | null => on === true),
+    {
+      fallback: null,
+      timeoutMs: LEADER_BRIEF_HEADCOUNT_TIMEOUT_MS,
+      label: 'leader-brief:headcountGovernorFlag',
+    },
+  );
   const headcount = projectFleetHeadcountState(
     headcountTargetResult.value,
     fleetRecordReadAvailable ? (fleetRecord?.lastLaunchTransaction ?? null) : undefined,
@@ -4126,6 +4141,15 @@ export async function buildLeaderBrief(
         fleet,
         ...(args.harness ? { harness: args.harness } : {}),
       },
+      ...(fleetRecordReadAvailable
+        ? {
+            governance: {
+              governorFlagOn: governorFlagRead.value,
+              controlState: fleetRecord?.controlState ?? null,
+              leaderOwnerId: fleetRecord?.leaderOwnerId ?? null,
+            },
+          }
+        : {}),
     },
   );
   const rosterEntries: DecoratedAgent[] = rosterResult.entries.map((entry) => ({
@@ -4972,6 +4996,33 @@ export async function buildLeaderBrief(
   } catch {
     /* best-effort — never block the brief on a spec-effect preview failure */
   }
+  // P-005 / D-030 step 5: the UNDER-staff counterpart of the over-staff alert
+  // above. Plan-independent: a fleet with zero workers is short whatever it drains.
+  // The falsifier reads live claims straight from fleet:assignments, independent of
+  // the productive-seat projection that fired it.
+  const fleetUnderStaffed: (FleetUnderStaffedEvaluation & { falsifier?: AlertFalsifier }) | undefined = (() => {
+    const evaluation = computeFleetUnderStaffedAlert({
+      headcount,
+      controlState: fleetRecordReadAvailable ? (fleetRecord?.controlState ?? null) : null,
+      fleetPaused: fleetPause.paused,
+    });
+    if (!evaluation?.alert) return evaluation;
+    return {
+      ...evaluation,
+      falsifier: {
+        tool: 'fleet:assignments',
+        check: renderFalsifierCall('fleet:assignments', { fleet }),
+        measurement:
+          'each live member and the work-item it holds right now, read from presence and claims — ' +
+          'not from the productive-seat count `summary.headcount.current` this alert fired on',
+        kills:
+          evaluation.target != null
+            ? `${evaluation.target} or more members are live and each holds a claim → headcount.current ` +
+              'under-read them; do not launch more workers from this alert.'
+            : 'at least one live member holds a claim → the fleet is not empty; do not launch from this alert.',
+      },
+    };
+  })();
   const announcedGates = await boundedLeaderBriefRead(
     'announced-gates',
     () =>

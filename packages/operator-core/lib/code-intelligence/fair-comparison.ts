@@ -81,17 +81,21 @@ export const siteKey = (s: Pick<SymbolSite, 'path' | 'line1'>): SiteKey => `${s.
  * it denotes (e.g. a decorator line vs the declaration line) so an engine is not
  * punished for a different-but-correct line choice. `rejected` records sites a
  * human verified as WRONG, so they never re-enter the adjudication pool.
+ * `neutral` records sites that are neither credited nor penalised — the subject's
+ * own declaration in a callers/references answer is the standard case: LSP
+ * includes it by default and graph engines omit it, and neither choice is wrong.
  */
 export interface AnswerKey {
   readonly caseId: string;
   readonly sites: readonly SiteKey[];
   readonly aliases: Readonly<Record<SiteKey, SiteKey>>;
   readonly rejected: readonly SiteKey[];
+  readonly neutral: readonly SiteKey[];
 }
 
 export interface AdjudicationVerdict {
   readonly site: SiteKey;
-  readonly verdict: 'valid' | 'invalid' | 'alias';
+  readonly verdict: 'valid' | 'invalid' | 'alias' | 'neutral';
   /** Required when verdict is `alias`: the canonical site it denotes. */
   readonly aliasOf?: SiteKey;
   /** Why — the evidence a reviewer saw (file excerpt, call expression). */
@@ -99,7 +103,7 @@ export interface AdjudicationVerdict {
 }
 
 const known = (key: AnswerKey): Set<SiteKey> =>
-  new Set<SiteKey>([...key.sites, ...Object.keys(key.aliases), ...key.rejected]);
+  new Set<SiteKey>([...key.sites, ...Object.keys(key.aliases), ...key.rejected, ...key.neutral]);
 
 /**
  * Pooled adjudication, step 1: every site ANY arm returned that the key has not
@@ -132,8 +136,17 @@ export function applyAdjudication(key: AnswerKey, verdicts: readonly Adjudicatio
   const sites = new Set(key.sites);
   const aliases: Record<SiteKey, SiteKey> = { ...key.aliases };
   const rejected = new Set(key.rejected);
+  const neutral = new Set(key.neutral);
   const ruled = (k: SiteKey): string | null =>
-    sites.has(k) ? 'valid' : rejected.has(k) ? 'invalid' : k in aliases ? 'alias' : null;
+    sites.has(k)
+      ? 'valid'
+      : rejected.has(k)
+        ? 'invalid'
+        : neutral.has(k)
+          ? 'neutral'
+          : k in aliases
+            ? 'alias'
+            : null;
   for (const v of verdicts) {
     const prior = ruled(v.site);
     if (prior !== null && prior !== v.verdict) {
@@ -141,6 +154,7 @@ export function applyAdjudication(key: AnswerKey, verdicts: readonly Adjudicatio
     }
     if (v.verdict === 'valid') sites.add(v.site);
     else if (v.verdict === 'invalid') rejected.add(v.site);
+    else if (v.verdict === 'neutral') neutral.add(v.site);
     else {
       if (!v.aliasOf) throw new Error(`alias verdict for ${v.site} on ${key.caseId} names no aliasOf`);
       aliases[v.site] = v.aliasOf;
@@ -149,7 +163,13 @@ export function applyAdjudication(key: AnswerKey, verdicts: readonly Adjudicatio
   for (const [from, to] of Object.entries(aliases)) {
     if (!sites.has(to)) throw new Error(`alias ${from} -> ${to} on ${key.caseId}: target is not a valid site`);
   }
-  return { caseId: key.caseId, sites: [...sites].sort(), aliases, rejected: [...rejected].sort() };
+  return {
+    caseId: key.caseId,
+    sites: [...sites].sort(),
+    aliases,
+    rejected: [...rejected].sort(),
+    neutral: [...neutral].sort(),
+  };
 }
 
 /** Order-independent hash of the frozen keys — recorded in the preregistration. */
@@ -161,6 +181,7 @@ export function hashKeys(keys: readonly AnswerKey[]): string {
       sites: [...k.sites].sort(),
       aliases: Object.fromEntries(Object.entries(k.aliases).sort(([a], [b]) => a.localeCompare(b))),
       rejected: [...k.rejected].sort(),
+      neutral: [...k.neutral].sort(),
     }));
   return createHash('sha256').update(JSON.stringify(canon)).digest('hex');
 }
@@ -241,11 +262,13 @@ export function scoreCase(kase: FairCase, caps: ArmCapabilities, key: AnswerKey,
 
   const truth = new Set(key.sites);
   const ruled = known(key);
+  const neutral = new Set(key.neutral);
   const returned = new Set<SiteKey>();
   let unadjudicated = 0;
   for (const s of answer.sites) {
     const raw = siteKey(s);
     if (!ruled.has(raw)) unadjudicated += 1;
+    if (neutral.has(raw)) continue;
     returned.add(key.aliases[raw] ?? raw);
   }
   const tp = [...returned].filter((k) => truth.has(k)).length;

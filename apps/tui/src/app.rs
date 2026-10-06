@@ -3372,6 +3372,12 @@ impl App {
             }
         }
         self.finish_chat_turn();
+        if !pending_draft {
+            // P-025: an accepted turn failed; show why under its prompt. A
+            // pending draft never reached the transcript, so the note covers it.
+            self.chat_messages
+                .push(crate::models::ChatMessage::turn_error(message));
+        }
         self.su_active_command_id = None;
         self.last_error = Some(message.to_string());
         self.session_note = Some(if !pending_draft {
@@ -3401,6 +3407,9 @@ impl App {
             .filter(|m| {
                 !(m.streaming
                     || m.role == "undelivered"
+                    // P-025: a failed-turn row is pui's record of an engine
+                    // refusal, never a message either side sent.
+                    || m.role == "error"
                     || m.role == "assistant" && m.content.trim().is_empty())
             })
             .map(|m| (m.role.clone(), m.content.clone()))
@@ -4378,6 +4387,10 @@ impl App {
                         // The failed turn was already accepted: nothing to
                         // retry, and the next message goes to this session.
                         self.finish_chat_turn();
+                        // P-025: say what failed under the prompt, as stock
+                        // CLIs do; the status line alone is hidden chat-first.
+                        self.chat_messages
+                            .push(crate::models::ChatMessage::turn_error(&message));
                         self.su_active_command_id = None;
                         self.last_error = Some(format!("SU-session: {message}"));
                         self.session_note = Some(
@@ -20325,6 +20338,43 @@ mod tests {
     /// RECOVERABLE errors after the runtime is back at waiting-for-owner. They
     /// must not orphan the binding: the follow-up goes to the same attached
     /// session, never through a second launch.
+    #[test]
+    fn su_failed_accepted_turn_leaves_its_reason_in_the_transcript() {
+        // P-025: Codex reported each failed turn as task_complete.error; pui
+        // ended the turn with no reply and no row, so four turns read as
+        // silence. The reason must be in the transcript, and never in the
+        // history the next turn sends.
+        let mut app = App::new();
+        app.agent_chat_id = Some("chat-1".into());
+        app.set_su_session_binding(su_binding());
+        app.chat_messages
+            .push(crate::models::ChatMessage::user("hi"));
+        app.chat_streaming = true;
+        let mut event = su_event_base("error", 1);
+        event["scope"] = json!("turn");
+        event["code"] = json!("other");
+        event["message"] = json!(
+            r#"{"type":"error","status":400,"error":{"message":"The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account."}}"#
+        );
+        event["recoverable"] = json!(true);
+        app.apply_su_session_event(su_event(event));
+
+        assert!(!app.chat_streaming, "the failed turn ends");
+        let row = app
+            .chat_messages
+            .iter()
+            .find(|m| m.role == "error")
+            .expect("a failed turn leaves a row");
+        assert_eq!(
+            row.content,
+            "API Error 400: The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account."
+        );
+        assert!(app
+            .chat_history_for_send()
+            .iter()
+            .all(|(role, _)| role != "error"));
+    }
+
     #[test]
     fn su_recoverable_turn_error_keeps_the_runtime_attached() {
         let mut app = App::new();

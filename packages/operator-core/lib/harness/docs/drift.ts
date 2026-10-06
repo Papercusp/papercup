@@ -110,6 +110,40 @@ async function runDriftRangeLog(
   return res;
 }
 
+/**
+ * Multi-path drift (WI-10006256). A `git log <base>..HEAD -- p1 p2 …` walk cannot use
+ * the commit-graph's changed-path Bloom filters (git 2.43 applies them to a SINGLE
+ * pathspec only), so on a ~34k-commit range it cost 6-14 s of CPU per doc, measured
+ * as the bulk of the spawner sidecar's drift CPU. Two cheaper steps give the same
+ * stale verdict:
+ *  1. Endpoint `git diff --name-only <base> HEAD -- paths` (milliseconds). Any path
+ *     that differs at the endpoints was touched by some commit in the range: stale.
+ *  2. Only when nothing differs (no change, or every change reverted) fall back to
+ *     one single-pathspec `git log` per path — Bloom-accelerated (~0.7 s vs 8.5 s for
+ *     two paths, measured) — so a touched-then-reverted path still counts as drift,
+ *     exactly as the old walk did.
+ * The changed-path list in step 1 can omit paths that were touched and reverted
+ * while another path really differs; it only feeds the human-readable reason.
+ */
+async function multiPathDrift(
+  runGit: GitRunner,
+  base: string,
+  rels: string[],
+  cwd: string,
+): Promise<{ code: number; stdout: string; stderr: string }> {
+  const diff = await runGit(['diff', '--name-only', base, 'HEAD', '--', ...rels], cwd);
+  if (diff.code !== 0) return diff;
+  if (collectNameOnly(diff.stdout).length > 0) return diff;
+  const range = `${base}..HEAD`;
+  const out: string[] = [];
+  for (const rel of rels) {
+    const res = await runDriftRangeLog(runGit, ['log', range, '--name-only', '--format=%H', '--', rel], cwd, hasChangedName);
+    if (res.code !== 0) return res;
+    out.push(res.stdout);
+  }
+  return { code: 0, stdout: out.join('\n'), stderr: '' };
+}
+
 const hasCommitLine = (stdout: string): boolean => stdout.split('\n').some((l) => l.trim() !== '');
 const hasChangedName = (stdout: string): boolean => collectNameOnly(stdout).length > 0;
 
@@ -297,10 +331,9 @@ export async function checkSubjectRefDrift(
     const range = `${g.baseline}..HEAD`;
     // --follow is only valid for a single concrete file pathspec.
     const single = g.rels.length === 1 && isConcretePath(g.rels[0]);
-    const args = single
-      ? ['log', range, '--follow', '--name-only', '--format=%H', '--', g.rels[0]]
-      : ['log', range, '--name-only', '--format=%H', '--', ...g.rels];
-    const res = await runDriftRangeLog(runGit, args, g.cwd, hasChangedName);
+    const res = single
+      ? await runDriftRangeLog(runGit, ['log', range, '--follow', '--name-only', '--format=%H', '--', g.rels[0]], g.cwd, hasChangedName)
+      : await multiPathDrift(runGit, g.baseline, g.rels, g.cwd);
     if (res.code !== 0) {
       firstErr ??= gitErr(res);
       continue;

@@ -2843,6 +2843,41 @@ pub struct ChatMessage {
     pub worked_for: Option<std::time::Duration>,
 }
 
+/// One readable line for a failed turn. Engines pass the provider's error body
+/// through verbatim, often as JSON (Codex:
+/// `{"type":"error","status":400,"error":{"message":"The 'x' model is not
+/// supported …"}}`), sometimes behind a prefix (`unexpected status 400: {…}`).
+/// Show the provider's sentence with its status, as stock CLIs do; anything
+/// that is not such JSON is shown as sent, whitespace-collapsed.
+pub fn turn_error_text(raw: &str) -> String {
+    let raw = raw.trim();
+    let raw = raw.strip_prefix("SU-session:").map(str::trim).unwrap_or(raw);
+    let parsed = raw
+        .find('{')
+        .and_then(|start| serde_json::from_str::<serde_json::Value>(&raw[start..]).ok());
+    let from_json = parsed.as_ref().and_then(|v| {
+        let message = v
+            .pointer("/error/message")
+            .or_else(|| v.get("message"))
+            .and_then(serde_json::Value::as_str)?;
+        let status = v
+            .get("status")
+            .or_else(|| v.pointer("/error/status"))
+            .and_then(serde_json::Value::as_u64);
+        Some(match status {
+            Some(status) => format!("API Error {status}: {message}"),
+            None => format!("API Error: {message}"),
+        })
+    });
+    let text = from_json.unwrap_or_else(|| raw.to_string());
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if text.is_empty() {
+        "The turn failed without a reply.".to_string()
+    } else {
+        text
+    }
+}
+
 impl ChatMessage {
     pub fn user(text: &str) -> Self {
         Self {
@@ -2883,6 +2918,22 @@ impl ChatMessage {
         Self {
             role: "undelivered".into(),
             content: text.into(),
+            reasoning: String::new(),
+            provenance: None,
+            tools: Vec::new(),
+            streaming: false,
+            worked_for: None,
+        }
+    }
+    /// P-025: an accepted turn that the engine failed (an API refusal, a model
+    /// the account cannot use). Stock Claude Code and Codex print the failure
+    /// under the prompt (`⎿ API Error: 400 …`); before this row pui ended the
+    /// turn with nothing in the transcript, so the owner saw a silent no-reply.
+    /// The role keeps it out of the history sent to the model.
+    pub fn turn_error(raw: &str) -> Self {
+        Self {
+            role: "error".into(),
+            content: turn_error_text(raw),
             reasoning: String::new(),
             provenance: None,
             tools: Vec::new(),
@@ -3560,6 +3611,34 @@ mod fleet_rate_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn turn_error_text_reads_the_provider_sentence_out_of_a_json_body() {
+        // The exact body Codex 0.157.1 wrote into task_complete.error on
+        // 2026-10-06 (P-025 Codex leg, rollout 01a10f95).
+        let codex = r#"{"type":"error","status":400,"error":{"type":"invalid_request_error","message":"The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account."}}"#;
+        assert_eq!(
+            turn_error_text(codex),
+            "API Error 400: The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account."
+        );
+        assert_eq!(
+            turn_error_text(&format!("unexpected status 400 Bad Request: {codex}")),
+            turn_error_text(codex),
+        );
+        assert_eq!(
+            turn_error_text(r#"{"message":"overloaded"}"#),
+            "API Error: overloaded"
+        );
+        // Not JSON: shown as sent, on one line.
+        assert_eq!(
+            turn_error_text("SU-session: stream\n  closed"),
+            "stream closed"
+        );
+        assert_eq!(turn_error_text("  "), "The turn failed without a reply.");
+        let row = ChatMessage::turn_error(codex);
+        assert_eq!(row.role, "error");
+        assert!(row.content.starts_with("API Error 400: "));
+    }
 
     #[test]
     fn goal_spend_null_is_unmeasured_not_a_parse_failure() {

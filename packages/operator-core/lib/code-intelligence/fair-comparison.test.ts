@@ -22,11 +22,18 @@ import {
 
 const site = (path: string, line1: number): SymbolSite => ({ path, line1, kind: null });
 const kase = (id: string, intent: FairIntent = 'callers'): FairCase => ({ id, intent, subject: 'foo', tags: [], source: 'authored' });
-const key = (caseId: string, sites: string[], aliases: Record<string, string> = {}, rejected: string[] = []): AnswerKey => ({
+const key = (
+  caseId: string,
+  sites: string[],
+  aliases: Record<string, string> = {},
+  rejected: string[] = [],
+  neutral: string[] = [],
+): AnswerKey => ({
   caseId,
   sites,
   aliases,
   rejected,
+  neutral,
 });
 const caps = (armId: string, intents: FairIntent[] = ['callers', 'callees', 'impact'], licence: ArmCapabilities['licence'] = 'permissive'): ArmCapabilities => ({
   armId,
@@ -89,6 +96,31 @@ describe('scoreCase — outcome classes', () => {
     const aliased = key('c1', ['a.ts:10'], { 'a.ts:9': 'a.ts:10' });
     const s = scoreCase(kase('c1'), caps('x'), aliased, answer('c1', [site('a.ts', 9), site('a.ts', 10)]));
     expect(s).toMatchObject({ outcome: 'correct', precision: 1, recall: 1, unadjudicated: 0 });
+  });
+
+  it('neither credits nor penalises a NEUTRAL site (the subject declaration in a references answer)', () => {
+    const k2 = key('c1', ['a.ts:1'], {}, [], ['decl.ts:5']);
+    const withDecl = scoreCase(kase('c1'), caps('x'), k2, answer('c1', [site('a.ts', 1), site('decl.ts', 5)]));
+    const withoutDecl = scoreCase(kase('c1'), caps('x'), k2, answer('c1', [site('a.ts', 1)]));
+    expect(withDecl).toMatchObject({ outcome: 'correct', precision: 1, recall: 1, unadjudicated: 0 });
+    expect(withoutDecl).toMatchObject({ outcome: 'correct', precision: 1, recall: 1 });
+    // A neutral site alone is still an EMPTY answer to a non-empty key.
+    const onlyDecl = scoreCase(kase('c1'), caps('x'), k2, answer('c1', [site('decl.ts', 5)]));
+    expect(onlyDecl).toMatchObject({ outcome: 'wrong', confidentFalseEmpty: true });
+    // On an absence case, returning only the declaration is NOT an absence false positive.
+    const absent = key('c3', [], {}, [], ['decl.ts:5']);
+    expect(scoreCase(kase('c3'), caps('x'), absent, answer('c3', [site('decl.ts', 5)]))).toMatchObject({
+      outcome: 'correct',
+      absenceFalsePositive: false,
+    });
+  });
+
+  it('records a neutral verdict and refuses to flip it later', () => {
+    const k2 = applyAdjudication(key('c1', ['a.ts:1']), [{ site: 'decl.ts:5', verdict: 'neutral', note: 'subject declaration' }]);
+    expect(k2.neutral).toEqual(['decl.ts:5']);
+    expect(poolCandidates(k2, [{ sites: [site('decl.ts', 5)] }])).toEqual([]);
+    expect(() => applyAdjudication(k2, [{ site: 'decl.ts:5', verdict: 'valid', note: 'flip' }])).toThrow(/already neutral/);
+    expect(hashKeys([k2])).not.toBe(hashKeys([key('c1', ['a.ts:1'])]));
   });
 
   it('counts returned sites the key has not ruled on as unadjudicated (a provisional score)', () => {

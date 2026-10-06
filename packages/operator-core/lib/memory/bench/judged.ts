@@ -638,16 +638,26 @@ export function writeBlindReceipt(file: string, value: unknown): void {
 
 export async function collectIndependentCohort(opts: { snapshot: string; out: string; llm: LlmCallFn;
   targetsPerPartition?: BlindTargetBudget; reuseAuthorsFrom?: string; reuseCallsFrom?: string;
-  reuseSnapshotExpansion?: boolean; log?: (message: string) => void }) {
+  reuseSnapshotExpansion?: boolean;
+  /** Explicit, recorded measurement-owner succession: a successor session may
+   * resume a donor collection owned by exactly this (one) prior owner. Never
+   * implied — without it a foreign donor owner is refused as before. */
+  adoptDonorOwner?: string; log?: (message: string) => void }) {
   const targets = opts.targetsPerPartition ?? 16, log = opts.log ?? (() => {});
   if (opts.reuseAuthorsFrom && opts.reuseCallsFrom) throw new Error('choose authors-only or exact-call recovery, not both');
   if (opts.reuseSnapshotExpansion && !opts.reuseCallsFrom) throw new Error('snapshot expansion requires exact-call recovery');
+  if (opts.adoptDonorOwner !== undefined && (!opts.adoptDonorOwner.trim() || !(opts.reuseCallsFrom ?? opts.reuseAuthorsFrom))) {
+    throw new Error('donor owner succession requires a named owner and a recovery donor');
+  }
   const reuseFrom = opts.reuseCallsFrom ?? opts.reuseAuthorsFrom, reuseAllCalls = !!opts.reuseCallsFrom;
   const root = path.resolve(opts.out), reuseRoot = reuseFrom ? path.resolve(reuseFrom) : undefined;
   if (reuseRoot === root) throw new Error('authors-only recovery requires a new output directory');
   const snapshot = JSON.parse(fs.readFileSync(opts.snapshot, 'utf8')) as Snapshot;
   const sourceTargets = selectBlindSourceTargets(snapshot, targets);
   const snapshotFingerprint = await fingerprintFile(opts.snapshot), ownerId = measurementOwner();
+  if (opts.adoptDonorOwner === ownerId) throw new Error('donor owner succession names the current owner');
+  const ownerAccepted = (donorOwner: unknown) => donorOwner === ownerId
+    || (opts.adoptDonorOwner !== undefined && donorOwner === opts.adoptDonorOwner);
   const sourceFingerprint = await fingerprintFile(new URL('./judged.ts', import.meta.url).pathname);
   const recoveryInputs = (prior: Snapshot, targets: typeof sourceTargets) => ({
     snapshot: prior, targets,
@@ -666,7 +676,7 @@ export async function collectIndependentCohort(opts: { snapshot: string; out: st
     const actual = await fingerprintFile(file);
     if (expected && hashJson(actual) !== hashJson(expected)) throw new Error('invalid authors-only identity fingerprint');
     const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
-    if (hashJson(saved.identity) !== saved.identityHash || saved.identity?.ownerId !== ownerId
+    if (hashJson(saved.identity) !== saved.identityHash || !ownerAccepted(saved.identity?.ownerId)
       || saved.identity?.contract?.model !== BLIND_COHORT_CONTRACT.model
       || saved.identity?.contract?.author !== BLIND_COHORT_CONTRACT.author) throw new Error('invalid authors-only recovery identity: snapshot/owner/model/author contract mismatch');
     const sameSnapshot = saved.identity?.snapshotFingerprint?.sha256 === snapshotFingerprint.sha256
@@ -710,7 +720,8 @@ export async function collectIndependentCohort(opts: { snapshot: string; out: st
   }
   const identity = { snapshotFingerprint, sourceFingerprint, ownerId, targets, contract: BLIND_COHORT_CONTRACT,
     ...(authorReuse ? { authorReuse } : {}), ...(reuseAllCalls ? { callReuse: authorReuse } : {}),
-    ...(opts.reuseSnapshotExpansion ? { snapshotExpansion: true } : {}) };
+    ...(opts.reuseSnapshotExpansion ? { snapshotExpansion: true } : {}),
+    ...(opts.adoptDonorOwner !== undefined ? { ownerSuccession: { donorOwnerId: opts.adoptDonorOwner, successorOwnerId: ownerId } } : {}) };
   const identityHash = hashJson(identity);
   fs.mkdirSync(root, { recursive: true, mode: 0o700 });
   const write = writeBlindReceipt;

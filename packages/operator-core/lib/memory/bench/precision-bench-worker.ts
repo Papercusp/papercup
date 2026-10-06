@@ -5,7 +5,7 @@
  * its own process-global memory host/client, while the parent only receives the
  * final metrics over stdout.
  */
-import { benchMemoryPrecision, PRECISION_BENCH_JEV_GATE_ENV, PRECISION_BENCH_RESULT_MARKER } from './precision-monitor';
+import { benchMemoryPrecision, PRECISION_BENCH_JEV_GATE_ENV, PRECISION_BENCH_RESULT_MARKER } from './precision-bench-core';
 
 try {
   const metrics = await benchMemoryPrecision({ jevGate: process.env[PRECISION_BENCH_JEV_GATE_ENV] === '1' });

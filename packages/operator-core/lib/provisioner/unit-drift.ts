@@ -37,7 +37,12 @@ export interface LlamaServerUnitParams {
   kvCacheTypeV: string | null;
   flashAttn: boolean | null;
   alias: string | null;
-  gpuLayers: number | null;
+  /** `-ngl`: an exact count, or llama-server's `'auto'` / `'all'` keywords kept verbatim. */
+  gpuLayers: number | 'auto' | 'all' | null;
+  /** `--fit on|off` (WI-10006354). */
+  fit: 'on' | 'off' | null;
+  /** `--fit-target MiB` (single-device form only; a per-device list reads as null). */
+  fitTargetMiB: number | null;
 }
 
 /**
@@ -246,6 +251,8 @@ export function parseLlamaServerUnit(unitText: string): LlamaServerUnitParams {
     flashAttn: null,
     alias: null,
     gpuLayers: null,
+    fit: null,
+    fitTargetMiB: null,
   };
   if (start === -1) return params;
 
@@ -285,8 +292,20 @@ export function parseLlamaServerUnit(unitText: string): LlamaServerUnitParams {
         break;
       case '-ngl':
       case '--gpu-layers':
-      case '--n-gpu-layers':
-        params.gpuLayers = num(tokens[i + 1]);
+      case '--n-gpu-layers': {
+        const v = tokens[i + 1];
+        params.gpuLayers = v === 'auto' || v === 'all' ? v : num(v);
+        break;
+      }
+      case '-fit':
+      case '--fit': {
+        const v = tokens[i + 1];
+        params.fit = v === 'on' || v === 'off' ? v : null;
+        break;
+      }
+      case '-fitt':
+      case '--fit-target':
+        params.fitTargetMiB = num(tokens[i + 1]);
         break;
       case '--alias':
         params.alias = tokens[i + 1] ?? null;
@@ -336,6 +355,8 @@ export function diffCatalogAgainstDeployedUnit(entry: CatalogEntry, deployedUnit
     jinja: entry.serve.jinja,
     reasoningBudget: entry.serve.reasoningBudget,
     gpuLayers: entry.serve.gpuLayers,
+    fit: entry.serve.fit,
+    fitTargetMiB: entry.serve.fitTargetMiB,
     logPath: 'IRRELEVANT-NOT-COMPARED',
   });
   // Both sides go through the SAME parser on purpose: that is what puts a renderer regression in

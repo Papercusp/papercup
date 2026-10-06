@@ -2621,6 +2621,130 @@
      "summary": "plan lane mdenseon-adoption-measurements-2026-10-01#P-009 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
     }
    ],
+  "reportEvidenceQualification": {
+   "status": "retained-partial-evidence; final-benchmark-evidence-unqualified",
+   "observedAt": "2026-10-06T05:17:25Z",
+   "currentSource": {
+    "plan": "mdenseon-adoption-measurements-2026-10-01",
+    "version": 11,
+    "contentHash": "a5972967126ccfd937627d3a4b943b1df444e83215cf44dd4c9fb0d566566e3b",
+    "item": "P-009",
+    "effectiveStatus": "blocked",
+    "requirement": "R-8",
+    "shipmentMeaning": "The benchmark and evidence deliverable; production model adoption is explicitly outside this shipment meaning.",
+    "decisionReviewed": "D-005 retains the historical 429 attribution gap and missing P-003 judgments; expected deadline propagation and immutable-call recovery do not close them."
+   },
+   "currentClauses": [
+    {
+     "specId": "AUTO-BAR-R-8-P-009",
+     "revision": 2,
+     "contentHash": "a637cda5b60b57f71a0382a3c5e33ee8c557b9f6f238ed78b7bdbc2589195a16",
+     "lifecycleStatus": "active"
+    },
+    {
+     "specId": "MDENSE-complete-measurement-verdict",
+     "revision": 1,
+     "contentHash": "84c939d4254a820fd5f087f4271196f9e9a936ab26c1af6d0b8f250a38511c11",
+     "lifecycleStatus": "active"
+    }
+   ],
+   "retainedCheckpoint": {
+    "contentHash": "5614d5958232",
+    "fullBodyRead": true,
+    "freshness": "unknown; no measured dependency verdict",
+    "workItemState": "blocked",
+    "assignee": null,
+    "qualification": "The full checkpoint preserves CPU/CUDA observer and P-003 label/transport preparation, including failed V9. Its fire296 next action advances P-003 preparation; it does not accept P-009's final report or shipped measurement verdict."
+   },
+   "boundEvidenceWindow": {
+    "workItemIds": ["WI-10004543"],
+    "limit": 100,
+    "bindings": [],
+    "truncatedByLimit": false,
+    "scopeLimitation": "No bindings were returned for this selected consumer. This is not a claim that no evidence exists elsewhere."
+   },
+   "trackedProtocol": {
+    "path": "docs/evidence/mdenseon-measurement-protocol-2026-10-01.json",
+    "sha256": "579c3cfdf75b5e502a23d9906a650597236f2ada8aba4e527b549b1154d20c1a",
+    "qualification": "Executable candidate/performance command templates and manifest schema exist. The dossier explicitly says it is not a completed real-model seven-bar run manifest or a measurement verdict."
+   },
+   "detectorQualification": {
+    "manifestSource": "packages/operator-core/lib/memory/bench/measurement-manifest.ts",
+    "manifestSourceSha256": "fe09ea857d8e7e27ff4e81e4e119ac93493ed62e566402d45cdfa65a35dfc52b",
+    "unitSource": "packages/operator-core/lib/memory/bench/candidate-hybrid-bench.test.ts",
+    "unitSourceSha256": "dbbec0e73e0e25a3b9d63b409d0144ef8c69bcb5d00df2d4110fe16d988b3085",
+    "integrationSource": "packages/operator-core/lib/memory/bench/candidate-hybrid-bench.integration.test.ts",
+    "integrationSourceSha256": "5c6fc4f9c88e8b8d5c7744710dbc27e91f834420c06ffe23372daff0752905e4",
+    "observedBoundary": "The unit guard checks seven declared bars, fixed thresholds and duplicate outputs. The inspected HTTP/client/SQL integration writes protocolOnly:true from a synthetic fixture and rejects production scope. These source guards do not prove all seven promised real measurement outcomes, complete audits, independent acceptance grade or authoritative shipment.",
+    "verificationKind": "source inspection and retained evidence qualification; no new benchmark or test-suite execution"
+   },
+   "openAcceptance": [
+    "Reconcile every promised cell with current typed fingerprints, raw hashes, measured populations/outcomes and limitations in an executable frozen manifest and tracked dossier.",
+    "Own each residual, finish required conventional checks and source/completion audits, and obtain the independent acceptance grade.",
+    "Resolve P-004 through P-008 prerequisites and confirm authoritative readiness before transitioning the benchmark/evidence plan to shipped."
+   ],
+   "disposition": "Retain the blocked report/evidence item. Preserve historical preparation without promoting it to final acceptance; no production model adoption, deployment, rollback exercise or shipment is claimed."
+  },
+   "performancePrerequisiteQualification": {
+    "status": "retained-controlled-CPU-evidence; current-consumer-acceptance-unqualified",
+    "observedAt": "2026-10-06T05:28:24Z",
+    "workItem": "WI-10004539",
+    "sourcePlanVersion": 11,
+    "sourcePlanContentHash": "a5972967126ccfd937627d3a4b943b1df444e83215cf44dd4c9fb0d566566e3b",
+    "sourceItem": "P-005",
+    "requirement": "R-4",
+    "currentClauses": [
+     {
+      "specId": "AUTO-BAR-R-4-P-005",
+      "revision": 2,
+      "contentHash": "6a0765b28f799c01779459d7c79e23f3d8d183b0b84f0cc8a361796ab9493d58"
+     },
+     {
+      "specId": "MDENSE-latency-sample-provenance",
+      "revision": 1,
+      "contentHash": "a032da091691d4618711ac73bf151e2a8d5ea8e86c42a1cdd2d10ba43e282201"
+     }
+    ],
+    "checkpointQualification": {
+     "contentHash": "b746c7671cf7",
+     "fullBodyRead": true,
+     "stateAtRead": "open",
+     "claimAtRead": "assigned to an existing peer; preserved",
+     "freshness": "unknown; no measured dependency verdict",
+     "qualification": "The full checkpoint retains controlled V7 performance evidence and unfinished BAR/bindings. The later mechanical session checkpoint concerns P-003 and explicitly has no item verification; it does not qualify a new P-005 performance outcome."
+    },
+    "boundEvidenceWindow": {
+     "workItemIds": ["WI-10004539"],
+     "limit": 100,
+     "bindings": [],
+     "truncatedByLimit": false,
+     "scopeLimitation": "This selected consumer returned no bindings; evidence elsewhere is not ruled out. This prerequisite is recorded under its retained P-009 dependent rather than added to the frozen blocked-row population."
+    },
+    "retainedDossier": {
+     "path": "docs/evidence/mdenseon-performance-startup-isolation-2026-10-01.json",
+     "sha256": "120c1f447d9a2e9e6cb3db6c856615503075ff567f35dd15ab3571fe7bdc10d6",
+     "runId": "performance-cpu-v7",
+     "manifestSha256": "78f97d1b622d5507c80a44b9f2a0fe1b582897f94f14f671cfe08f302614bbc1",
+     "driverSha256": "06c167746b6c2581025ea3fc572fd0fbfdb33687aee57af549bf40607fc77a34",
+     "summarySha256": "a7ca1070c7b0b8a2c81f0a9a1dd12cbc8b2119eb56f6321a507612dc1a7b07a3",
+     "historicalPopulation": "The retained receipt reports fifteen controlled CPU cells across five fresh-process blocks. Its reported verification is historical; this audit does not rerun the matrix or rederive its raw samples.",
+     "estimator": "Median across fresh-process blocks of each within-block statistic; pooled percentiles, confidence intervals and significance tests are not claimed.",
+     "resourceBoundary": "Peak RSS covers the CPU JS/ONNX process. GPU memory is explicitly not applicable to these declared CPU cells; no new GPU measurement requirement is inferred from that field.",
+     "fullPerformanceAcceptance": false,
+     "governingDecision": "D-004 retains V6 as diagnostic because of measured relevance overlap, whose latency effect remains unmeasured. Controlled V7 replacement preserves inputs, runtime, seeded order and thresholds."
+    },
+    "completionGuardQualification": {
+     "path": "packages/operator-core/lib/memory/bench/sidecar-performance.ts",
+     "sha256": "f02df776c9d2f68019423bd4799318bab552ed7d2148384ed4da6e0cdf8806a1",
+     "matchesRecordedSource": true,
+     "function": "verifyCompletedPerformanceRun",
+     "observedBehavior": "Source requires the completed driver to match the exact seeded schedule and owner/manifest, checks every raw fingerprint, and compares a rederived summary. The conventional integration source tests incomplete driver, changed raw bytes, altered aggregate and missing summary.",
+     "integrationSource": "packages/operator-core/lib/memory/bench/sidecar-performance.integration.test.ts",
+     "integrationSourceSha256": "a02f8c07bac33faab07c82e29f6db83bef703d459f14b06661ca2b5748bb0964",
+     "verificationKind": "Current source/dossier inspection and retained evidence qualification; no old verifier, benchmark or test suite rerun."
+    },
+    "disposition": "Preserve the retained controlled CPU proof and existing peer claim. Current R-4 consumer bindings, source/completion audits and independent acceptance remain unqualified; neither model adoption nor final shipment is claimed."
+   },
    "claimHold": false
   },
   {

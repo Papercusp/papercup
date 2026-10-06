@@ -136,7 +136,6 @@ export const TS_PROJECT_ROOTS: readonly string[] = [
   'libs/papercusp/packages/file-claim', 'libs/papercusp/packages/harness',
   'libs/papercusp/packages/harness/docs-viewer', 'libs/papercusp/packages/locks',
   'libs/papercusp/packages/orchestrator', 'libs/papercusp/plugins/gitnexus-bridge',
-  'libs/papercusp/plugins/jira-sync', 'libs/papercusp/plugins/linear-sync',
   'packages/agent-mcp', 'packages/backup', 'packages/coordination', 'packages/docs-engine', 'packages/omp-plugin',
   'packages/operator-core', 'packages/operator-ui', 'packages/tooldef-mcp',
   ...LIBS_GENERIC_PROJECTS,

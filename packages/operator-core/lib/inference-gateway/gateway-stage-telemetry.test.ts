@@ -594,6 +594,142 @@ const fixtureReservation = (attempt: GatewayCarryTrialAttempt) => ({
   clockId: attempt.clockId, validUntilMonotonicMs: processMonotonicClock.now() + 5_000,
 });
 
+const anthropicTrialBinding = (authorizeAttempt: GatewayCarryTrialBinding['authorizeAttempt']): GatewayCarryTrialBinding => ({
+  ...trialBinding(authorizeAttempt), protocols: ['anthropic-messages'],
+});
+const anthropicTrialBody = () => JSON.stringify({ model: 'claude-opus-4', max_tokens: 17,
+  stream: false, messages: [{ role: 'user', content: 'PRIVATE_NATIVE_TASK' }] });
+const sendAnthropicTrial = (port: number, token: string = trialToken, signal?: AbortSignal) =>
+  fetch(`http://127.0.0.1:${port}/v1/messages`, { method: 'POST', signal,
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    body: anthropicTrialBody() });
+
+it.each(['missing-token', 'wrong-token', 'refused', 'threw', 'expired', 'wrong-clock', 'replayed-receipt', 'empty-ref'] as const)(
+  'Anthropic binding prevents the actual pooled HTTP write for %s', async mode => {
+    let writes = 0, authorizations = 0;
+    upstream = http.createServer((req, res) => { req.resume(); writes++; res.end('{}'); });
+    const upstreamPort = await listen(upstream);
+    gateway = createInferenceGateway({ upstreamBase: `http://127.0.0.1:${upstreamPort}`,
+      pool: createFailoverPool([{ accountId: 'native-account', token: async () => 'PRIVATE_PROVIDER_TOKEN' }]),
+      requestAbsorbMs: 0, selfHeal: { enabled: false },
+      carryTrial: anthropicTrialBinding(async attempt => {
+        authorizations++;
+        if (mode === 'threw') throw new Error('PRIVATE_CONTROLLER_ERROR');
+        if (mode === 'refused') return null;
+        return { ...fixtureReservation(attempt),
+          ...(mode === 'expired' ? { validUntilMonotonicMs: 0 } : {}),
+          ...(mode === 'wrong-clock' ? { clockId: 'another-process' } : {}),
+          ...(mode === 'replayed-receipt' ? { attemptId: 'previous-attempt' } : {}),
+          ...(mode === 'empty-ref' ? { reservationRef: ' ' } : {}),
+        };
+      }),
+    });
+    const response = await sendAnthropicTrial(await gateway.listen(0),
+      mode === 'missing-token' ? '' : mode === 'wrong-token' ? 'wrong' : trialToken);
+    expect(response.status).toBe(403);
+    expect(response.headers.get('x-should-retry')).toBe('false');
+    expect(await response.text()).not.toMatch(/PRIVATE_/);
+    expect(writes).toBe(0);
+    expect(authorizations).toBe(mode === 'missing-token' || mode === 'wrong-token' ? 0 : 1);
+  });
+
+it.each([true, false])('Anthropic binding reauthorizes each actual failover send (allow=%s)', async allow => {
+  const attempts: GatewayCarryTrialAttempt[] = [], wire: Array<{ body: string; auth: string }> = [];
+  upstream = http.createServer(async (req, res) => {
+    const chunks: Buffer[] = []; for await (const chunk of req) chunks.push(Buffer.from(chunk));
+    wire.push({ body: Buffer.concat(chunks).toString(), auth: String(req.headers.authorization) });
+    const failed = wire.length === 1;
+    res.writeHead(failed ? 429 : 200, { 'content-type': 'application/json', ...(failed ? { 'retry-after': '3600' } : {}) });
+    res.end(JSON.stringify(failed ? { error: { message: 'fixture throttle' } } :
+      { id: 'msg_native', type: 'message', content: [], usage: { input_tokens: 1, output_tokens: 0 } }));
+  });
+  const upstreamPort = await listen(upstream);
+  gateway = createInferenceGateway({ upstreamBase: `http://127.0.0.1:${upstreamPort}`,
+    pool: createFailoverPool([{ accountId: 'native-a', token: async () => 'token-a' },
+      { accountId: 'native-b', token: async () => 'token-b' }]),
+    requestAbsorbMs: 0, selfHeal: { enabled: false },
+    carryTrial: anthropicTrialBinding(async attempt => {
+      attempts.push(attempt); return attempts.length === 2 && !allow ? null : fixtureReservation(attempt);
+    }),
+  });
+  const response = await sendAnthropicTrial(await gateway.listen(0));
+  expect(response.status).toBe(allow ? 200 : 403); await response.text();
+  expect(attempts.map(a => a.accountId)).toEqual(['native-a', 'native-b']);
+  expect(new Set(attempts.map(a => a.attemptId)).size).toBe(2);
+  expect(wire).toHaveLength(allow ? 2 : 1);
+  wire.forEach((request, i) => {
+    expect(attempts[i]).toMatchObject({ transport: 'anthropic-http', body: request.body,
+      bodySha256: sha256(request.body), credentialSha256: sha256(request.auth) });
+    expect(Object.isFrozen(attempts[i])).toBe(true);
+    expect(request.auth).not.toContain(trialToken);
+  });
+  expect(attempts[1]!.credentialSha256).toBe(sha256('Bearer token-b'));
+});
+
+it('Anthropic protocol allowance is copied at gateway creation and rejects alternate inference routes', async () => {
+  let writes = 0, authorizations = 0;
+  const protocols: Array<'anthropic-messages' | 'openai-responses'> = ['anthropic-messages'];
+  upstream = http.createServer((req, res) => { req.resume(); writes++; res.end('{}'); });
+  const upstreamPort = await listen(upstream);
+  const binding = { ...trialBinding(async attempt => { authorizations++; return fixtureReservation(attempt); }), protocols };
+  gateway = createInferenceGateway({ upstreamBase: `http://127.0.0.1:${upstreamPort}`,
+    pool: createFailoverPool([{ accountId: 'native', token: async () => 'token' }]),
+    carryTrial: binding, requestAbsorbMs: 0, selfHeal: { enabled: false } });
+  protocols.splice(0, 1, 'openai-responses');
+  const port = await gateway.listen(0);
+  const response = await sendAnthropicTrial(port);
+  expect(response.status).toBe(200); await response.text();
+  for (const route of ['/v1/responses', '/v1/chat/completions', '/v1/messages/count_tokens', '/maintenance/summarize']) {
+    const denied = await fetch(`http://127.0.0.1:${port}${route}`, { method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${trialToken}` },
+      body: anthropicTrialBody() });
+    expect(denied.status).toBe(403); await denied.text();
+  }
+  expect(writes).toBe(1); expect(authorizations).toBe(1);
+});
+
+it('Anthropic binding refuses redirects before an unreserved destination receives data', async () => {
+  const paths: string[] = [];
+  let authorizations = 0;
+  upstream = http.createServer((req, res) => {
+    req.resume(); paths.push(req.url!);
+    res.writeHead(307, { location: '/unreserved-target' }); res.end();
+  });
+  const upstreamPort = await listen(upstream);
+  gateway = createInferenceGateway({ upstreamBase: `http://127.0.0.1:${upstreamPort}`,
+    pool: createFailoverPool([{ accountId: 'native', token: async () => 'token' }]),
+    carryTrial: anthropicTrialBinding(async attempt => { authorizations++; return fixtureReservation(attempt); }),
+    requestAbsorbMs: 0, selfHeal: { enabled: false } });
+  const response = await sendAnthropicTrial(await gateway.listen(0));
+  expect(response.status).toBe(502); await response.text();
+  expect(paths.length).toBeGreaterThan(0);
+  expect(paths.every(path => path === '/v1/messages')).toBe(true);
+  expect(authorizations).toBe(paths.length);
+});
+
+it('Anthropic binding cannot send after downstream cancellation while admission is pending', async () => {
+  let writes = 0;
+  let enter!: () => void, release!: () => void, aborted!: () => void, returned!: () => void;
+  const entered = new Promise<void>(r => { enter = r; });
+  const pendingReservation = new Promise<void>(r => { release = r; });
+  const cancelled = new Promise<void>(r => { aborted = r; });
+  const completed = new Promise<void>(r => { returned = r; });
+  upstream = http.createServer((req, res) => { req.resume(); writes++; res.end('{}'); });
+  const upstreamPort = await listen(upstream);
+  gateway = createInferenceGateway({ upstreamBase: `http://127.0.0.1:${upstreamPort}`,
+    pool: createFailoverPool([{ accountId: 'native', token: async () => 'token' }]),
+    carryTrial: anthropicTrialBinding(async attempt => {
+      attempt.signal.addEventListener('abort', aborted, { once: true });
+      enter(); await pendingReservation; returned(); return fixtureReservation(attempt);
+    }), requestAbsorbMs: 0, selfHeal: { enabled: false } });
+  const controller = new AbortController();
+  const pending = sendAnthropicTrial(await gateway.listen(0), trialToken, controller.signal).catch(() => null);
+  try { await entered; controller.abort(); await pending; await cancelled; }
+  finally { release(); }
+  await completed; await new Promise(resolve => setImmediate(resolve));
+  expect(writes).toBe(0);
+});
+
 it.each(['missing-token', 'wrong-token', 'refused', 'threw', 'expired', 'wrong-clock', 'replayed-receipt'] as const)(
   'carry trial prevents the first actual HTTP write for %s', async mode => {
     let writes = 0, authorizations = 0;

@@ -3124,6 +3124,24 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
     // would actually copy.
     let copy_focus = app.effective_chat_focus();
     for (block_idx, m) in app.chat_messages.iter().enumerate() {
+        if m.role == "error" {
+            // P-025: a failed turn reads like stock Claude Code — the reason
+            // hangs under the prompt it answers (`⎿ API Error 400: …`), so the
+            // turn's blank separator is taken back first.
+            if lines.last().is_some_and(|l| l.width() == 0) {
+                lines.pop();
+            }
+            let text_w = inner_w.saturating_sub(4).max(1);
+            for (i, row) in wrap_text(&m.content, text_w).into_iter().enumerate() {
+                let lead = if i == 0 { "  ⎿ " } else { "    " };
+                lines.push(Line::from(Span::styled(
+                    format!("{lead}{row}"),
+                    Theme::danger(),
+                )));
+            }
+            lines.push(Line::from(""));
+            continue;
+        }
         let (who, who_style) = match m.role.as_str() {
             "user" => ("you", Theme::selected()),
             "assistant" => ("agent", Theme::notify()),
@@ -10031,6 +10049,38 @@ mod tests {
                 "default chat shows `{forbidden}`:\n{frame}"
             );
         }
+    }
+
+    #[test]
+    fn chat_first_failed_turn_shows_the_reason_under_its_prompt() {
+        // P-025: the Codex leg ended four turns with nothing on screen while
+        // every one had failed with this 400 (rollout 01a10f95, 2026-10-06).
+        let mut app = chat_first_bound_app();
+        app.chat_messages
+            .push(crate::models::ChatMessage::user("hi"));
+        app.chat_messages.push(crate::models::ChatMessage::turn_error(
+            r#"{"type":"error","status":400,"error":{"message":"The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account."}}"#,
+        ));
+        let mut term = Terminal::new(TestBackend::new(120, 24)).unwrap();
+        term.draw(|f| draw(f, &app)).unwrap();
+        let rows: Vec<String> = term
+            .backend()
+            .buffer()
+            .content()
+            .chunks(120)
+            .map(|row| row.iter().map(|c| c.symbol()).collect())
+            .collect();
+        let frame = rows.join("\n");
+        let lines: Vec<&str> = rows.iter().map(String::as_str).collect();
+        let prompt = lines
+            .iter()
+            .position(|l| l.contains("hi") && (l.contains('❯') || l.contains('▸')))
+            .unwrap_or_else(|| panic!("no prompt row:\n{frame}"));
+        assert!(
+            lines[prompt + 1].contains("⎿ API Error 400: The 'gpt-6.1-sol' model"),
+            "the reason must hang directly under the prompt:\n{frame}"
+        );
+        assert!(!frame.contains("\"status\""), "raw JSON leaked:\n{frame}");
     }
 
     #[test]

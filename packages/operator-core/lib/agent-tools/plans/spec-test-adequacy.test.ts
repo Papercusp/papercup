@@ -1045,7 +1045,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
 
       expect(clause().falsifier).toBeNull();
       expect(result.ratings.falsifiability.rating).toBe('pass');
-      expect(result.ratings.falsifiability.evidence).toContain('which declares no falsifier.requiredScenarios');
+      expect(result.ratings.falsifiability.evidence).toContain('which declares no structured falsifier.requiredScenarios list');
     });
 
     it('does not describe a declared falsifier as absent when it has no named scenarios', () => {
@@ -1061,9 +1061,26 @@ describe('spec-test-adequacy per-clause evaluator', () => {
       });
 
       expect(result.ratings.falsifiability.rating).toBe('pass');
-      expect(result.ratings.falsifiability.evidence).toContain('declares no falsifier.requiredScenarios');
-      expect(result.ratings.falsifiability.evidence).toContain('its falsifier observation and probe method');
+      expect(result.ratings.falsifiability.evidence).toContain('declares no structured falsifier.requiredScenarios list');
+      expect(result.ratings.falsifiability.evidence).not.toContain('observation and probe method do not name scenarios');
       expect(result.ratings.falsifiability.evidence).not.toContain('declares no falsifier scenarios');
+    });
+
+    it('does not claim prose-named scenarios are absent when the structured list is empty', () => {
+      const result = evaluateSpecTestAdequacy({
+        clause: clause({
+          falsifier: {
+            observation: 'The returned refusal and stores are checked against each counterexample.',
+            probeMethod: 'Try missing, wrong-workspace, wrong-goal, inaccessible, unresolved, retired/superseded and body-substituted references; then stale/future snapshots and changed source generation.',
+          },
+        }),
+        evidence: [evidence(), successfulTestBinding(testPath), mutationTargeting('spec-003-01')],
+        classRef: 'plan-class-feature-ship',
+      });
+
+      expect(result.ratings.falsifiability.rating).toBe('pass');
+      expect(result.ratings.falsifiability.evidence).toContain('declares no structured falsifier.requiredScenarios list');
+      expect(result.ratings.falsifiability.evidence).not.toContain('observation and probe method do not name scenarios');
     });
 
     it('does not credit a mutation binding that targets a sibling spec', () => {

@@ -1074,7 +1074,12 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
     ensureLocalBackendRunning: async (backend) => {
       const { ensureLocalBackendRunning } = await import('../provisioner/provision');
       const { markLocalBackendBusy } = await import('./local-backend-store');
-      const result = await ensureLocalBackendRunning(
+      const { startOnDemandBackendWithWatermark } = await import('./on-demand-start');
+      // Watermark BEFORE and AFTER the start (WI-10006360) — see on-demand-start.ts for the race.
+      const result = await startOnDemandBackendWithWatermark(backend.id, {
+        markBusy: () => markLocalBackendBusy(backend.id, { workspaceId: opts.workspace }),
+        log,
+        start: () => ensureLocalBackendRunning(
         {
           id: backend.id,
           unitName: backend.unitName ?? null,
@@ -1102,16 +1107,8 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
             }
           },
         },
-      );
-      if (result.ok) {
-        // STAMP THE WATERMARK ON START, not just on observed work. `last_busy_at` still holds the
-        // pre-stop value, which is by definition older than idleTtlSec — so without this the
-        // idle-reaper's very next sweep (every 2 min) could stop a backend we started seconds ago,
-        // before it has served its first request.
-        await markLocalBackendBusy(backend.id, { workspaceId: opts.workspace }).catch((e) => {
-          log('warn', `inference-gateway: started '${backend.id}' but could not stamp last_busy_at: ${(e as Error).message}`);
-        });
-      }
+      ),
+      });
       return { ok: result.ok, error: result.error };
     },
   });

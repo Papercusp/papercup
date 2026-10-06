@@ -1003,6 +1003,51 @@ describe('fleet no-top-up rule (P-005 / D-030)', () => {
     expect(await readRow('topup-no-recipe')).toEqual({ target: null, config: null });
   });
 
+  // The readers tolerate a jsonb STRING recipe (`typeof === 'string' ? JSON.parse`),
+  // which hid that this fixture's typed-parameter client stored one: the stored
+  // SHAPE is asserted directly, because readRow's parse would mask a regression.
+  it('every writer stores an object recipe, and a non-object recipe is left untouched', async () => {
+    const storedType = async (slug: string): Promise<string | null> => {
+      const [row] = await rootSql.unsafe<{ t: string | null }[]>(
+        `SELECT jsonb_typeof(headcount_config) AS t FROM harness_shared.agent_fleets
+          WHERE workspace_id = $1 AND fleet_slug = $2`,
+        [WS, slug],
+      );
+      return row?.t ?? null;
+    };
+    await insertFleet('topup-shape');
+    await setFleetHeadcountTarget({ workspaceId: WS, fleetSlug: 'topup-shape', target: 2, config, sql: rootSql });
+    expect(await storedType('topup-shape')).toBe('object');
+    await setFleetHeadcountTarget({
+      workspaceId: WS, fleetSlug: 'topup-shape', target: 2, config, topUpRule: rule(), sql: rootSql,
+    });
+    expect(await storedType('topup-shape')).toBe('object');
+    await setFleetHeadcountTarget({
+      workspaceId: WS, fleetSlug: 'topup-shape', target: null, topUpRule: rule({ until: 9_000 }), sql: rootSql,
+    });
+    expect(await storedType('topup-shape')).toBe('object');
+    await setFleetHeadcountTarget({ workspaceId: WS, fleetSlug: 'topup-shape', target: null, sql: rootSql });
+    expect(await storedType('topup-shape')).toBe('object');
+
+    await insertFleet('topup-scalar');
+    await rootSql.unsafe(
+      `UPDATE harness_shared.agent_fleets SET headcount_config = to_jsonb('legacy'::text)
+        WHERE workspace_id = $1 AND fleet_slug = $2`,
+      [WS, 'topup-scalar'],
+    );
+    await setFleetHeadcountTarget({ workspaceId: WS, fleetSlug: 'topup-scalar', target: null, sql: rootSql });
+    await setFleetHeadcountTarget({
+      workspaceId: WS, fleetSlug: 'topup-scalar', target: null, topUpRule: rule(), sql: rootSql,
+    });
+    expect(await storedType('topup-scalar')).toBe('string');
+    const [scalar] = await rootSql.unsafe<{ v: string | null }[]>(
+      `SELECT headcount_config #>> '{}' AS v FROM harness_shared.agent_fleets
+        WHERE workspace_id = $1 AND fleet_slug = $2`,
+      [WS, 'topup-scalar'],
+    );
+    expect(scalar?.v).toBe('legacy');
+  });
+
   it('a non-null write strips a stale stored rule unless the write ratifies one', async () => {
     await insertFleet('topup-rearm');
     // A recipe read back from the row still carries its old rule; re-arming with

@@ -123,19 +123,28 @@ proc_etimes() {
     echo $(( uptime_secs - starttime_secs ))
 }
 
-proc_cmdline() {
-    local pid="$1"
-    local f="/proc/$pid/cmdline"
+# Set PROC_CMDLINE to <pid>'s space-joined argv in the CALLER's shell; return 1
+# when the process is gone or unreadable.  Both /proc censuses below call this
+# once per host process, so it must not fork: `cmd=$(proc_cmdline "$pid")`
+# forked a subshell per entry — ~10k forks per scan, ~57s CPU per run, mostly
+# kernel time (WI-10006397).  Spawning `tr` per entry was the same cost in an
+# earlier form.  reap-stale-testvms.test.ts counts subshells to hold this.
+PROC_CMDLINE=''
+proc_read_cmdline() {
+    local f="/proc/$1/cmdline" arg
+    PROC_CMDLINE=''
     [ -f "$f" ] || return 1
-    local arg out=''
-    # Bash can read NUL-delimited argv entries directly.  Spawning `tr` once
-    # per /proc entry made the host-level census fork-heavy enough to look
-    # stalled under fleet load.
+    # 2>/dev/null precedes the input redirection so a process that exits after
+    # the -f test fails quietly instead of printing "No such file".
     while IFS= read -r -d '' arg; do
-        [ -n "$out" ] && out+=" "
-        out+="$arg"
-    done < "$f"
-    printf '%s\n' "$out"
+        PROC_CMDLINE+="${PROC_CMDLINE:+ }$arg"
+    done 2>/dev/null < "$f" || return 1
+}
+
+# Print form for callers outside the scan loops (selftests, ad-hoc use).
+proc_cmdline() {
+    proc_read_cmdline "$1" || return 1
+    printf '%s\n' "$PROC_CMDLINE"
 }
 
 # Read a process's real parent from /proc/<pid>/stat.  The comm field is
@@ -205,7 +214,8 @@ any_orchestrator_alive() {
         # The invoking shell (and any bash -c wrapper above it) is inspection
         # context, not evidence of a live federation run.
         proc_is_self_or_ancestor "$opid" && continue
-        cmd=$(proc_cmdline "$opid" 2>/dev/null) || continue
+        proc_read_cmdline "$opid" || continue
+        cmd=$PROC_CMDLINE
         local marker
         for marker in "${ORCHESTRATOR_MARKERS[@]}"; do
             case "$cmd" in
@@ -245,7 +255,8 @@ candidate_vm_pids() {
         [ -r "$cmdline_file" ] || continue
         pid="${cmdline_file%/cmdline}"; pid="${pid#/proc/}"
         proc_is_self_or_ancestor "$pid" && continue
-        cmd=$(proc_cmdline "$pid" 2>/dev/null) || continue
+        proc_read_cmdline "$pid" || continue
+        cmd=$PROC_CMDLINE
         is_qemu_testvm_cmdline "$cmd" || continue
         echo "$pid"
     done
@@ -292,7 +303,8 @@ main() {
         checked=$(( checked + 1 ))
 
         local cmd name et
-        cmd=$(proc_cmdline "$pid" 2>/dev/null) || continue
+        proc_read_cmdline "$pid" || continue
+        cmd=$PROC_CMDLINE
         name=$(vm_name_from_cmdline "$cmd") || { log "SKIP pid=$pid — could not parse instance name from cmdline"; continue; }
 
         et=$(proc_etimes "$pid" 2>/dev/null) || continue

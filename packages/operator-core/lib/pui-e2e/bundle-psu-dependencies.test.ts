@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { runInNewContext } from 'node:vm';
 import { build } from 'esbuild';
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-expect-error — JavaScript helper has no declaration; this test asserts its runtime behavior.
 import { lockedPackageKeyResolver, releaseMinification } from '../../../../apps/tui/scripts/bundle-psu-dependencies.mjs';
 
 const temporary: string[] = [];

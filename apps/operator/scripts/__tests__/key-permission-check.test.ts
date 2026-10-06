@@ -112,6 +112,21 @@ describe('papercup-fedplane-key-permission-check.sh (WI-2143622)', () => {
     expect(`${result.status} ${result.stderr ?? ''}`).toBe('0 ');
   });
 
+  it('prunes configured vendored directories from the tier-1 .ssh sweep', () => {
+    const fx = withControl(fixture());
+    const vendoredSsh = join(fx.root, 'vendor', '.ssh');
+    mkdirSync(vendoredSsh, { recursive: true });
+    const fixtureKey = join(vendoredSsh, 'id_exposed');
+    writeFileSync(fixtureKey, KEY_BODIES.opensshPlain);
+    chmodSync(fixtureKey, 0o664);
+
+    const out = runProbe(fx);
+    expect(out).toContain('positive control: passed');
+    expect(out).toContain('no exposed private keys found');
+    expect(out).not.toContain('vendor/.ssh');
+    expect(out).not.toContain('id_exposed');
+  });
+
   it('refuses to run at all when red-marker.sh is missing, rather than silently deduping on age', () => {
     // The library supplies the state-aware dedup gate (EI-22240553542994017). A
     // probe that degraded to age-only suppression would assert "already tracked"

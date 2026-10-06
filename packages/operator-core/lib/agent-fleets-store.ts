@@ -1542,13 +1542,16 @@ export async function setFleetHeadcountTarget(opts: {
     // The rule rides the PRESERVED recipe: a disabled row keeps headcount_config
     // for takeover/respawn, so `||` merges into it and `-` strips from it. A row
     // with no recipe has nothing a rule could ever restore, so it stays NULL.
+    // Only an OBJECT recipe is edited: on a jsonb scalar `-` throws and `||`
+    // wraps both sides into an array, so any other shape is left as it was.
+    // `$4::text::jsonb` (not `$4::jsonb`): see the non-null branch below.
     await s.unsafe(
       `UPDATE harness_shared.agent_fleets
           SET headcount_target = NULL,
               headcount_config = CASE
-                WHEN headcount_config IS NULL THEN NULL
-                WHEN $4::jsonb IS NULL THEN headcount_config - 'topUpRule'
-                ELSE headcount_config || jsonb_build_object('topUpRule', $4::jsonb)
+                WHEN headcount_config IS NULL OR jsonb_typeof(headcount_config) <> 'object' THEN headcount_config
+                WHEN $4::text IS NULL THEN headcount_config - 'topUpRule'
+                ELSE headcount_config || jsonb_build_object('topUpRule', $4::text::jsonb)
               END,
               headcount_next_attempt_at = NULL, headcount_backoff_ms = 0,
               headcount_last_error = NULL, updated_at = $3
@@ -1560,9 +1563,14 @@ export async function setFleetHeadcountTarget(opts: {
   if (!opts.config) throw new Error('headcount target requires a launch configuration');
   const { topUpRule: _staleRule, ...rest } = normalizeFleetHeadcountConfig(opts.config);
   const config: FleetHeadcountConfig = opts.topUpRule ? { ...rest, topUpRule: opts.topUpRule } : rest;
+  // `$4::text::jsonb`, never `$4::jsonb`: a client that learns the parameter's
+  // type (the test fixture's does) JSON-encodes the already-stringified recipe a
+  // second time, storing a jsonb STRING scalar that every jsonb operator above
+  // then misreads. Typed as text, every client sends the raw string and the
+  // server parses it into an object.
   await s.unsafe(
     `UPDATE harness_shared.agent_fleets
-        SET headcount_target = $3, headcount_config = $4::jsonb,
+        SET headcount_target = $3, headcount_config = $4::text::jsonb,
             headcount_next_attempt_at = NULL, headcount_backoff_ms = 0,
             headcount_last_error = NULL, updated_at = $5
       WHERE workspace_id = $1 AND fleet_slug = $2`,

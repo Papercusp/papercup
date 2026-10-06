@@ -3200,7 +3200,7 @@ export const DARK_FLAGS: ReadonlyMap<
     {
       case: "incomplete",
       reason:
-        "owner-directed 2026-07-04 (deterministic-onboarding-tutorial P-001): gates onboarding-tutorial items whose backing feature is NOT ready — telemetry consent, mobile pairing (phone notifications / remote control), auto-update channel. OFF ⇒ a fresh install never sees them (the intended default); ON ⇒ testers exercise the preview surfaces. Graduates per-item as each backing feature ships.",
+        "owner-directed 2026-07-04 (deterministic-onboarding-tutorial P-001): gates onboarding-tutorial items whose backing feature is NOT ready — mobile pairing (phone notifications / remote control), auto-update channel. Telemetry consent shipped and is no longer preview-gated (optional-setup-items.ts). OFF ⇒ a fresh install never sees the remaining preview items (the intended default); ON ⇒ testers exercise the preview surfaces. Graduates per-item as each backing feature ships.",
     },
   ],
   // TASK_MANAGER GRADUATED 2026-08-02 (WI-6844) on an explicit owner directive:
@@ -3831,7 +3831,25 @@ export function darkFlagReviewLane(c: DarkCase): "parking" | "owner" {
 //     candidate for the next reviewer.
 // VERDICT: zero graduations; membership and watermark unchanged. `npm run audit:dark-flags`
 // was NOT re-run (host load1 ≈170 at review time). Next parking review 2026-10-06.
-export const DARK_FLAGS_PARKING_REVIEW_BY = "2026-10-06";
+// ─── REVIEW 2026-10-06 (WI-10006316, D-021 tutorial verification) — re-derived
+// the current parking lane: parked 8 + incomplete 4 = 12/12. SUBSTRATE_LOG_SNAPSHOT
+// already graduated on 09-24; it is not an outstanding thirteenth entry.
+// Parked: CLOUDFLARE_PUBLISH, HARNESS_PHASES, DESIGN and TESTING retain their V1
+// cuts; THE_HIVE retains the public Pot lexicon; CONVERSATIONS_RAIL_TAB retains
+// the explicit owner-requested park; TEMPLATES_MARKETPLACE and RUBRICS_MARKETPLACE
+// retain the local-first v1/v2 marketplace boundary. No new graduation authority.
+// Incomplete: EXTERNAL_BENCH remains retired; ONBOARDING_PREVIEW_FEATURES still
+// gates mobile-pairing and update-channel preview inputs (telemetry already ships);
+// CAPABILITY_EXEC_SANDBOX still needs its live background-lifetime validation and
+// owner activation (existing WI-10002560 is now claimed); SUBSTRATE_SIDECAR still
+// has no completed replacement implementation. Zero new graduations this review.
+// Ran the maintained live audit (task 0muw7vo2qyx9g3c1s1e): its three CRITICAL
+// incomplete overrides remain confined to generic-test, as on 09-03. Their origin
+// is an accountable follow-up on WI-10006316; they are not assumed harmless or
+// used to justify defaults. PG + this process's env checked; PostHog not probed.
+// Membership, watermark and owner review clock unchanged. Renew only after this
+// substantive review; the production-defaults hard-deadline guard remains active.
+export const DARK_FLAGS_PARKING_REVIEW_BY = "2026-10-20";
 export const DARK_FLAGS_OWNER_REVIEW_BY = "2026-10-01";
 // 2026-07-12 (WI-4238, su-00a91): 25 → 26 for papercusp-queen-full-autonomy.
 //

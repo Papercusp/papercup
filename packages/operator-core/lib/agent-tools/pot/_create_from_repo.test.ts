@@ -490,6 +490,8 @@ describe('createPotFromRepo (P-006)', () => {
           greenCmd: 'npm test',
           forkRemote: null,
           upstreamRemote: 'https://github.com/acme/shop.git',
+          // the fake clone path has no .gitmodules (WI-10006107)
+          hasSubmodules: false,
         },
       ]);
       expect(r.integrationMode).toMatchObject({ ok: true, mode: 'review' });

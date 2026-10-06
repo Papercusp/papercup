@@ -307,6 +307,8 @@ add_finding() { FINDINGS="${FINDINGS}$1"$'\n'; FINDING_COUNT=$((FINDING_COUNT + 
 
 # ── TIER 1: .ssh directories ────────────────────────────────────────────────
 # Cheap, depth-bounded, and the tier that would have caught the 2026-09-03 key.
+# Apply the same configured directory-name exclusions used by tier 2 so this
+# walk does not spend minutes descending vendored and cache trees.
 # It checks BOTH halves of that finding: the containing directory's mode (0775)
 # and each contained private key's mode (0664). A 0700 directory holding a 0644
 # key is still an exposure to anything running as the owner's group inside it,
@@ -345,7 +347,7 @@ for root in $KEYPERM_SSH_ROOTS; do
         *)           add_finding "KEY  mode=${fmode} ${f} — encryption state UNKNOWN (unrecognised key format); treat as unencrypted until checked" ;;
       esac
     done < <(find "$sshdir" -maxdepth 1 -type f ! -name '*.pub' ! -name 'known_hosts*' ! -name 'config' ! -name 'authorized_keys*' 2>/dev/null)
-  done < <(find "$root" -maxdepth "$KEYPERM_SSH_MAXDEPTH" -type d -name .ssh 2>/dev/null)
+  done < <(find "$root" -maxdepth "$KEYPERM_SSH_MAXDEPTH" "${PRUNE_ARGS[@]}" -type d -name .ssh -print 2>/dev/null)
 done
 
 # ── POSITIVE CONTROL — constraint (3) ───────────────────────────────────────
