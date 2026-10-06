@@ -4419,6 +4419,66 @@ describe('EI-438 content-guard path (git-sync-content-error)', () => {
     warn.mockRestore();
   });
 
+  it('a lock-only quarantined importer stays reported but never consumes fixer attempts or alerts a human', async () => {
+    const importerDeferral = {
+      scope: 'superproject',
+      file: 'plugins/gmail/index.cjs',
+      detectorKey: 'quarantined-importer',
+      error:
+        "imports './papercusp.json' → 'plugins/gmail/papercusp.json', which is EXCLUDED from this commit (live-lock exclusion).",
+      fixerRole: 'content-fixer',
+    };
+    runGitSyncMock.mockResolvedValue({ ...contentErrorOutcome, contentErrors: [importerDeferral] });
+    // Model the production failure: this synthetic deferral has appeared for far
+    // longer than the five-tick fixer budget, but no content was actually broken.
+    counterRows = [{ et: 0, lo: [], ct: 209, cs: contentSignature([importerDeferral]) }];
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await action(ctx);
+
+    expect(contentUpserts()).toEqual([]);
+    expect(loopbackFetchMock).not.toHaveBeenCalled();
+    expect(upsertConditionWorkItemMock).not.toHaveBeenCalled();
+    expect(sendMessageMock).not.toHaveBeenCalled();
+    expect(routinePatches()).toContainEqual(
+      expect.objectContaining({
+        last_status: 'quarantined',
+        consecutive_content_error_ticks: 0,
+        last_content_errors: ['superproject/plugins/gmail/index.cjs [quarantined-importer]'],
+        last_content_error_signature: null,
+        last_content_fixer: null,
+      }),
+    );
+    warn.mockRestore();
+  });
+
+  it('a real content failure still dispatches, while its quarantined importer is omitted from the fixer payload', async () => {
+    const importerDeferral = {
+      scope: 'superproject',
+      file: 'apps/operator-docs/src/content/docs/x.test.ts',
+      detectorKey: 'quarantined-importer',
+      error: 'imports the MDX file, which is excluded from this commit (content/deletion guard).',
+      fixerRole: 'content-fixer',
+    };
+    runGitSyncMock.mockResolvedValue({
+      ...contentErrorOutcome,
+      contentErrors: [...contentErrorOutcome.contentErrors, importerDeferral],
+    });
+    counterRows = [{ et: 0, lo: [], ct: 0 }];
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await action(ctx);
+
+    expect(loopbackFetchMock).toHaveBeenCalledTimes(1);
+    const [, init] = loopbackFetchMock.mock.calls[0];
+    const body = JSON.parse((init as { body: string }).body) as Record<string, unknown>;
+    const extra = body.extra as string[];
+    const payload = JSON.parse(extra[1]!) as { files: Array<{ file: string }> };
+    expect(payload.files.map((file) => file.file)).toEqual(['apps/operator-docs/src/content/docs/x.mdx']);
+    expect(body.kickoff).not.toContain('x.test.ts');
+    warn.mockRestore();
+  });
+
   it('human escalation records the revalidated dirty snapshot and detector verdict hash', async () => {
     const file = 'docs/evidence/snapshot.json';
     const filePath = join(repoDir, file);
