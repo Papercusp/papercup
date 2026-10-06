@@ -154,7 +154,7 @@ export const testRunBindingSchema = z
     sourceGlobs: repoFilesEvidenceMeasurementSchema.shape.sourceGlobs,
     canonicalTestPath: repoFilesEvidenceMeasurementSchema.shape.testPaths.unwrap().element
       .optional()
-      .describe('Canonical repo-relative test path for a mutation-probe copy-out run whose temporary mirror is no longer a checkout.'),
+      .describe('Canonical repo-relative test path for a mutation-probe copy-out run whose temporary mirror is no longer a checkout, or the .rs file defining a cargo test.'),
     details: z.record(z.string(), z.unknown()).optional(),
     observedAt: z.string().datetime({ offset: true }).optional(),
   })
@@ -183,9 +183,61 @@ export interface TestRunEvidenceRow {
    */
   started_at?: Date | string | null;
   finished_at: Date | string | null;
+  /**
+   * The recording framework (`vitest`, `cargo`, …). Optional for the same fixture reason as
+   * `started_at`; the loader always selects it. `cargo` rows name a test, not a file
+   * (WI-10006836), so they map only through an explicit `canonicalTestPath`.
+   */
+  framework?: string | null;
 }
 
 export type HarnessAttribution = 'run' | 'adopted-caller-harness';
+
+/**
+ * WI-10006836: report-cargo-tests.mjs records each cargo test as `<crate-dir>::<test path>` and
+ * the binary as `<crate-dir> (cargo aggregate)`. Neither is a file, so the generic mapping would
+ * hand `realpath` a path that cannot exist. Returns the crate directory and the test's module
+ * path for a per-test row, or null for the aggregate row and anything else.
+ */
+export function cargoTestRef(filePath: string | null): { crateDir: string; testName: string } | null {
+  if (!filePath) return null;
+  const at = filePath.indexOf('::');
+  if (at <= 0) return null;
+  const crateDir = filePath.slice(0, at);
+  const testName = filePath.slice(at + 2);
+  if (!testName || /[\s()]/.test(testName)) return null;
+  return { crateDir, testName };
+}
+
+/**
+ * The canonical source for a cargo test must be a readable `.rs` file inside the recorded crate
+ * that defines the test's function, so a caller cannot point a passing cargo row at an unrelated
+ * file. Returns null when it holds, else the reason it does not.
+ */
+export function cargoCanonicalTestPathRefusal(
+  root: string,
+  ref: { crateDir: string; testName: string },
+  canonicalTestPath: string,
+): string | null {
+  const fnName = ref.testName.split('::').pop() ?? '';
+  if (!canonicalTestPath.endsWith('.rs') || !canonicalTestPath.startsWith(`${ref.crateDir}/`)) {
+    return `canonicalTestPath ${JSON.stringify(canonicalTestPath)} is not a .rs file inside the recorded crate ${JSON.stringify(ref.crateDir)}.`;
+  }
+  if (repoRelativeTestPath(root, resolve(root, canonicalTestPath)) !== canonicalTestPath) {
+    return `canonicalTestPath ${JSON.stringify(canonicalTestPath)} is not a normalized path inside this harness checkout.`;
+  }
+  let text: string;
+  try {
+    text = readFileSync(resolve(root, canonicalTestPath), 'utf8');
+  } catch {
+    return `canonicalTestPath ${JSON.stringify(canonicalTestPath)} is not a readable file in this harness checkout.`;
+  }
+  const escaped = fnName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  if (!new RegExp(`\\bfn\\s+${escaped}\\s*[<(]`).test(text)) {
+    return `canonicalTestPath ${JSON.stringify(canonicalTestPath)} does not define fn ${fnName}, the cargo test ${JSON.stringify(ref.testName)}.`;
+  }
+  return null;
+}
 
 /** The binding the derivation hands to the ordinary `bindingSchema` path (re-validated there). */
 export interface DerivedTestRunBinding {
@@ -224,7 +276,9 @@ export type TestRunBindingError =
   | 'source_paths_underivable'
   | 'run_contradicts_declared_adequacy'
   | 'test_run_as_committed_content_mismatch'
-  | 'test_run_source_modified_after_run';
+  | 'test_run_source_modified_after_run'
+  | 'test_run_cargo_not_a_test'
+  | 'test_run_cargo_test_path_required';
 
 function executionDetails(raw: unknown): Record<string, unknown> {
   // The column is jsonb, but the reporter has written it both as an object and as a
@@ -809,7 +863,7 @@ export const defaultTestRunBindingDeps: TestRunBindingDeps = {
     return withWorkspace(scope.workspaceId, async (tx) => {
       const rows = await tx<TestRunEvidenceRow[]>`
         SELECT id, file_path, status, source, harness_slug, workspace_id, commit_sha,
-               worktree_dirty, execution_details, started_at, finished_at
+               worktree_dirty, execution_details, started_at, finished_at, framework
           FROM harness_shared.test_runs
          WHERE id = ${testRunId}`;
       const row = rows[0];
@@ -899,10 +953,38 @@ export async function expandTestRunBinding(
     ? await deps.resolveSiblingRoot(scope, harnessRoot, row.root ?? null)
     : null;
   const root = sibling?.root ?? harnessRoot;
-  let testPath = await recordedTestPath(root, row, deps.git);
+  // WI-10006836: a cargo row names a test, not a file, so it maps only through an explicit
+  // canonicalTestPath that defines that test inside the recorded crate (any source: a local run
+  // and an in-tree mutation probe record the same shape).
+  const cargo = row.framework === 'cargo' ? cargoTestRef(row.file_path) : null;
+  if (row.framework === 'cargo') {
+    if (!cargo) {
+      return {
+        ok: false,
+        error: 'test_run_cargo_not_a_test',
+        testRunId,
+        message:
+          `test-run ${testRunId} (${JSON.stringify(row.file_path)}) is a cargo binary aggregate, not one test; ` +
+          "bind one of the run's per-test rows ('<crate-dir>::<test>').",
+      };
+    }
+    if (!input.canonicalTestPath) {
+      return {
+        ok: false,
+        error: 'test_run_cargo_test_path_required',
+        testRunId,
+        message:
+          `cargo recorded test-run ${testRunId} as test ${JSON.stringify(cargo.testName)} of crate ${JSON.stringify(cargo.crateDir)}, ` +
+          `not as a file; pass canonicalTestPath: the .rs file under ${cargo.crateDir}/ that defines it.`,
+      };
+    }
+    const refusal = cargoCanonicalTestPathRefusal(root, cargo, input.canonicalTestPath);
+    if (refusal) return { ok: false, error: 'test_run_canonical_path_mismatch', testRunId, message: refusal };
+  }
+  let testPath = cargo && input.canonicalTestPath ? input.canonicalTestPath : await recordedTestPath(root, row, deps.git);
   // WI-10004898: a clean run in a disposable clone (lint:as-committed) maps by commit content.
   let asCommitted: AsCommittedMapping | null = null;
-  if (input.canonicalTestPath) {
+  if (input.canonicalTestPath && !cargo) {
     const recordedRelative = row.root && isAbsolute(row.root) && row.file_path
       ? repoRelativeTestPath(row.root, row.file_path)
       : null;

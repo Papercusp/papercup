@@ -6,6 +6,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
   asCommittedTestPath,
+  cargoCanonicalTestPathRefusal,
+  cargoTestRef,
   deriveBindingFromTestRun,
   deriveSubjectSourcePaths,
   expandTestRunBinding,
@@ -285,6 +287,94 @@ describe('expandTestRunBinding: harness attribution', () => {
         },
         details: { testRun: { recordedRoot: mirror, recordedFilePath: TEST, canonicalTestPathOverride: canonical } },
       },
+    });
+  });
+
+  // WI-10006836: report-cargo-tests.mjs records `<crate-dir>::<test>`, which is not a file, so the
+  // generic mapping handed realpath an impossible path and every cargo row refused with ENOENT.
+  describe('cargo rows map through a canonicalTestPath that defines the test', () => {
+    const CRATE = 'app/src-tauri';
+    const RS = `${CRATE}/src/main.rs`;
+    const CARGO_TEST = `${CRATE}::tests::tracker_measures_the_stretch`;
+    const cargoRun = (over: Partial<TestRunEvidenceRow> = {}) =>
+      run({ framework: 'cargo', file_path: CARGO_TEST, commit_sha: null, ...over });
+    const bindInput = (over: Record<string, unknown> = {}) =>
+      input({ canonicalTestPath: RS, sourcePaths: [RS], ...over });
+
+    beforeAll(async () => {
+      await mkdir(path.join(root, `${CRATE}/src`), { recursive: true });
+      await writeFile(
+        path.join(root, RS),
+        'fn main() {}\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn tracker_measures_the_stretch() {}\n}\n',
+      );
+      await writeFile(path.join(root, `${CRATE}/src/other.rs`), 'fn unrelated() {}\n');
+    });
+
+    it('parses per-test rows and rejects the binary aggregate row', () => {
+      expect(cargoTestRef(CARGO_TEST)).toEqual({ crateDir: CRATE, testName: 'tests::tracker_measures_the_stretch' });
+      expect(cargoTestRef(`${CRATE} (cargo aggregate)`)).toBeNull();
+      expect(cargoTestRef(TEST)).toBeNull();
+      expect(cargoTestRef(null)).toBeNull();
+    });
+
+    it('binds a local cargo test row as test evidence on the defining .rs file', async () => {
+      const { d } = deps(cargoRun());
+      expect(await expandTestRunBinding(bindInput(), SCOPE, d)).toMatchObject({
+        ok: true,
+        binding: {
+          evidenceKind: 'test',
+          evidenceRef: RS,
+          measurement: { testPaths: [RS], sourcePaths: [RS] },
+          details: { testRun: { recordedFilePath: CARGO_TEST, canonicalTestPathOverride: RS, source: 'local' } },
+        },
+      });
+    });
+
+    it('binds an in-tree cargo mutation-probe mutant row as mutation evidence', async () => {
+      const { d } = deps(
+        cargoRun({ status: 'fail', source: 'mutation-probe', execution_details: { mutationPhase: 'mutant' } }),
+      );
+      expect(await expandTestRunBinding(bindInput(), SCOPE, d)).toMatchObject({
+        ok: true,
+        binding: {
+          evidenceKind: 'mutation',
+          evidenceRef: expect.stringContaining(`mutation-probe mutant fail ${RS}`),
+          measurement: { testPaths: [RS] },
+        },
+      });
+    });
+
+    it('names the missing canonicalTestPath instead of failing on a realpath of the test name', async () => {
+      const out = await expandTestRunBinding(input({ sourcePaths: [RS] }), SCOPE, deps(cargoRun()).d);
+      expect(out).toMatchObject({ ok: false, error: 'test_run_cargo_test_path_required' });
+      if (!out.ok) {
+        expect(out.message).toContain(`${CRATE}/`);
+        expect(out.message).not.toContain('ENOENT');
+      }
+    });
+
+    it('refuses the aggregate row', async () => {
+      const { d } = deps(cargoRun({ file_path: `${CRATE} (cargo aggregate)` }));
+      expect(await expandTestRunBinding(bindInput(), SCOPE, d)).toMatchObject({
+        ok: false,
+        error: 'test_run_cargo_not_a_test',
+      });
+    });
+
+    it('refuses a canonical file that does not define the test, or lies outside the crate', async () => {
+      const { d } = deps(cargoRun());
+      for (const canonicalTestPath of [`${CRATE}/src/other.rs`, TEST, `${CRATE}/src/missing.rs`, `${CRATE}/../${RS}`]) {
+        expect(await expandTestRunBinding(bindInput({ canonicalTestPath }), SCOPE, d)).toMatchObject({
+          ok: false,
+          error: 'test_run_canonical_path_mismatch',
+        });
+      }
+    });
+
+    it('accepts the defining file directly and rejects a sibling by name', () => {
+      const ref = { crateDir: CRATE, testName: 'tests::tracker_measures_the_stretch' };
+      expect(cargoCanonicalTestPathRefusal(root, ref, RS)).toBeNull();
+      expect(cargoCanonicalTestPathRefusal(root, ref, `${CRATE}/src/other.rs`)).toContain('does not define fn');
     });
   });
 
