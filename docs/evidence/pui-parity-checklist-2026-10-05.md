@@ -240,6 +240,56 @@ Host notes (not pui defects):
   `chat_first_startup_progress_is_plain_words` (the offer on screen). The agent-chat-pty hung-operator case
   checks the new sentence.
 
+## P-032 head-to-head (2026-10-06, WI-10006633)
+
+The same parity battery, one CLI after another so startup times share the box's load, 11:56-12:24Z,
+120x40 headless PTY. Legs: stock Claude Code 2.1.289 (`--permission-mode default`, paid through the
+inference gateway because the box login was at its weekly limit), stock Codex 0.160.1
+(`-s read-only -a on-request`, isolated CODEX_HOME), and the installed pui 0.1.0 (bd4f522988, equal to
+the tree at install) on its Claude engine (`--account auto`) and its Codex engine, both switched to
+approvals `ask`, against the staging operator :3170. The first pui-claude run is not used for the edit
+row: its edit send hit a measured :3170 main-loop stall (12:04:33-39Z, filed as WI-10006644). That leg
+was rerun at 12:17Z. Two pui-codex oddities were repeated with `--probes` (10,12,21,26 and 20,21).
+Frames, summaries and the runner script: `~/.papercusp/evidence/pui-p032-2026-10-06/` (secret-scanned,
+with a positive control).
+
+| # | Behaviour | Claude Code | Codex | pui: Claude engine / Codex engine | Grade |
+|---|---|---|---|---|---|
+| 1 | Startup to usable prompt | 1.8 s | 0.5 s | 0.1 s / 0.1 s | Ahead (G-1 closed) |
+| 2 | "hi": feedback, answer | Answer in 6.0 s | First change 44.8 s, answer 57 s | Echo and spinner by 150 ms; answer 9.8 s / 12.3-13.0 s. One Claude run sat 37 s on "Starting Claude…" (launch bootstrap 15.0 s at 12:03Z) | Level |
+| 3 | Working indicator | Spinner, elapsed, Esc hint; no tokens | Same | Spinner, elapsed, tokens, Esc hint on both engines | Ahead (G-2 closed) |
+| 4 | Answer and turn footer | "● …" then "✻ Worked for Ns" | "• …" | "● …" then "✻ Worked for Ns" | Level |
+| 5 | Streaming text | 2 distinct counts | 7 | 2 / 6 | Level with each engine |
+| 6 | Tool call and result | 11.5 s | 12.0 s | 13.5 s / 16.0-18.5 s; one compact row and a one-line result | Level |
+| 7 | Edit with diff | 19.8 s, 1 approval, file changed | 22.8 s, 1 approval, file changed | Claude: 12.3 s, 1 approval, file changed. Codex: 8 approvals over 132 s, file unchanged, because the engine obeyed this box's AGENTS.md rule to claim a Papercusp file lock first and the lock was refused (not a git repo). The stock Codex leg had an isolated CODEX_HOME, so this is box config, not pui | Level on Claude; Codex not comparable on this box |
+| 8 | Approval prompt | 1 Yes / 2 Yes, and accept edits / 3 No | Codex's own approval card | 1 Yes / 2 Yes, don't ask again / 3 No on both engines (D-028) | Level |
+| 9 | Interrupt (Esc mid-reply) | Stops in 2.0 s, "Interrupted · What should Claude do instead?" | 2.0 s, "Conversation interrupted" | 2.0 s on both. The Claude engine also printed a raw `[ede_diagnostic] … Last child stderr` line | Level on speed; the stray line is fixed in the tree (WI-10006646), not yet live on :3170 |
+| 10 | Esc with nothing running | Stays in the box | Stays | Stays in the box | Level (G-3 closed) |
+| 11 | Slash menu | ~100 commands | Codex's list | 15 commands incl. /model /effort /backend /status /compact /approvals /clear; "/mo" filters to /model | Level (G-4 closed) |
+| 12 | Model switch | Picker of models with prices | Model and effort picker | /model and /effort exist, but the picker lists the server's routing tiers (all claude-opus-5:xhigh) with internal "[owner 2026-09-03] …" notes as descriptions; on Codex it offers only Claude tiers marked not settable | Behind → WI-10006652 |
+| 13 | ? shortcuts overlay | Two-column key list | Key list | Overlay with keys and commands | Level |
+| 14 | History (Up) | Recalls earlier messages | Recalls | Up 1 / Up 2 recall in order | Level |
+| 15 | Multiline input | Ctrl+J and `\`+Enter | Ctrl+J; `\`+Enter submits | Ctrl+J and `\`+Enter on both engines | Level |
+| 16 | Paste (40 lines) | Chip | Chip | "[Pasted text #1 +39 lines]" | Level (G-7 closed) |
+| 17 | @ file mention | "@cal" lists calc.js and calc.test.js under the prompt at once | Not captured (no list in the frame) | "Attach a file · 2 matches" popup on both engines. Right after a cleared paste the popup is open but not drawn until the next key (reproduced) | Mostly level → WI-10006651 |
+| 18 | /status, context and cost | Settings › Status panel | /status panel | Claude: model, account, engine, approvals, context 19077/1000000, cost. Codex: the same without context | Level on Claude; Codex → WI-10006653 |
+| 19 | Idle footer | "⏸ manual mode on · ? for shortcuts" | Model · cwd · task | Claude: model · approvals · cwd · context % · cost. Codex: no context % until after a resume (reproduced) | Ahead on Claude; Codex → WI-10006653 |
+| 20 | Unknown command | Transcript line | Transcript line | Transcript line "No command /notacommand…" and "no command matches" in the popup | Level (G-10 closed) |
+| 21 | Ctrl+C with a draft | 1st clears, 3rd exits | 1st clears, 2nd exits | 1st clears ("Press Ctrl+C again to exit"), 2nd exits | Level with Codex (G-11 closed) |
+| 22 | Resume | `--continue` ready 1.9 s, recall correct | `resume --last` 0.5 s, recall correct | Claude: ready 0.1 s, /resume picker, recall correct. Codex: once the picker said "No earlier conversations" for a conversation that existed, so recall was never sent; the repeat listed it at once and recall was correct | Level on Claude; Codex glitch unconfirmed → WI-10006654 |
+| 23 | Errors: usage limit | - | - | Not exercised (no account was walled); P-031 covered the wording; the line still offers no next step | Open → WI-10006626 |
+| 24 | Choosing the account/route | Login or env | Login | `pui --account auto`; /status names the account | Level (G-14 closed) |
+| 25 | Zellij panes | n/a | n/a | Not exercised by this battery | P-030 |
+
+Also seen: when the operator is stalled rather than down, a send that waits more than 5 s tells the user
+to start or restart Papercusp Server and drops the turn (WI-10006644).
+
+Verdict: 22 rows level or ahead on the Claude engine (9 and 17 with a filed fix); 1 behind (12, model picker); 1 open (23);
+1 not in scope here (25). On the Codex engine rows 7, 18, 19 and 22 are not yet level (7 is box config).
+Before re-asking Avi for R-05 (P-006): ship WI-10006646 live and fix WI-10006652, WI-10006651 and
+WI-10006653 [self-imposed under AUTO, owner:Avi #1356], since the model picker was one of the reasons
+for the 2026-10-02 rejection.
+
 ## Where pui is already level or ahead
 
 Instant echo and working line after Enter (P-024), history recall, multiline input (three ways), the @ file
