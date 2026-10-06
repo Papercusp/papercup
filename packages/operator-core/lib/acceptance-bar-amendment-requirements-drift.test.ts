@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { parseRequirementBars } from './acceptance-bar-seed';
-import { diffAmendedCriteriaAgainstRequirements } from './acceptance-bar-amendment-requirements-drift';
+import {
+  diffAmendedCriteriaAgainstRequirements,
+  rerenderAmendedRequirementBlocks,
+} from './acceptance-bar-amendment-requirements-drift';
 
 // EI-24816459669484550: a rubric amendment can leave the plan's ## Requirements block
 // disagreeing with the canonical rubric. These cases parse REAL plan text, so the
@@ -236,5 +239,70 @@ describe('diffAmendedCriteriaAgainstRequirements', () => {
       requirementBars: bars(), nextCriteria: criteria, changedBars: ['R-2'],
     });
     expect(drift.inSync).toBe(true);
+  });
+
+  it('WI-10006835: says which drift the apply re-renders and which still needs a manual plan edit', () => {
+    const criteria = inSyncCriteria();
+    criteria[0]!.check = { kind: 'tests', files: ['moved.integration.test.ts'] };
+    criteria[1]!.model = 'The writer persists one canonical bar, reworded.';
+    const drift = diffAmendedCriteriaAgainstRequirements({
+      requirementBars: bars(), nextCriteria: criteria, changedBars: ['R-1', 'R-2'],
+    });
+    expect(drift.rerenderedOnApply).toEqual(['R-1']);
+    expect(drift.action).toContain('re-renders the explicit requirement block of R-1');
+    expect(drift.action).toContain('Nothing re-renders R-2');
+  });
+});
+
+// WI-10006835: the apply re-renders the changed BARs' explicit blocks. Each case round-trips through
+// the REAL parser and the drift diff, so "in sync after apply" is measured, not restated.
+describe('rerenderAmendedRequirementBlocks', () => {
+  const amended = (): Array<Record<string, unknown>> => {
+    const criteria = inSyncCriteria();
+    // The pui-chat-first-ux rev 10 shape: the amendment moved check.files and reworded the method.
+    criteria[0]!.check = { kind: 'tests', files: ['packages/x/moved.integration.test.ts'] };
+    criteria[0]!.method = 'Run the moved PTY suite against the current build.';
+    criteria[0]!.driftMarkers = 'Any ID is missing, duplicated, or out of order.';
+    return criteria;
+  };
+
+  it('rewrites a changed explicit block so the plan reads in sync with the amended rubric', () => {
+    const before = diffAmendedCriteriaAgainstRequirements({
+      requirementBars: bars(), nextCriteria: amended(), changedBars: ['R-1'],
+    });
+    expect(before.inSync).toBe(false);
+
+    const result = rerenderAmendedRequirementBlocks(planContent, { nextCriteria: amended(), changedBars: ['R-1'] });
+    expect(result.rerendered).toEqual(['R-1']);
+    const parsed = parseRequirementBars(result.content);
+    if (!parsed.ok) throw new Error(`re-rendered plan failed to parse: ${JSON.stringify(parsed.problems)}`);
+    const after = diffAmendedCriteriaAgainstRequirements({
+      requirementBars: parsed.bars, nextCriteria: amended(), changedBars: ['R-1'],
+    });
+    expect(after).toEqual({ inSync: true, entries: [], action: null });
+    // Intent is the plan's own record of the request; the amendment never rewrites it.
+    expect(parsed.bars[0]!.criterion?.intent).toEqual(sections.intent);
+  });
+
+  it('leaves legacy prose, unchanged BARs and every other line byte-identical', () => {
+    const result = rerenderAmendedRequirementBlocks(planContent, { nextCriteria: amended(), changedBars: ['R-1'] });
+    const beforeLines = planContent.split('\n');
+    const afterLines = result.content.split('\n');
+    expect(afterLines).toHaveLength(beforeLines.length);
+    const differing = beforeLines.flatMap((line, index) => (line === afterLines[index] ? [] : [index]));
+    // Only the single JSON line of R-1's block changes.
+    expect(differing).toEqual([beforeLines.indexOf(JSON.stringify(sections))]);
+
+    const prose = rerenderAmendedRequirementBlocks(planContent, {
+      nextCriteria: [{ ...inSyncCriteria()[1]!, model: 'Reworded prose outcome.' }], changedBars: ['R-2'],
+    });
+    expect(prose).toEqual({ content: planContent, rerendered: [] });
+  });
+
+  it('is a no-op when the amended criterion already matches the block, or the BAR did not change', () => {
+    expect(rerenderAmendedRequirementBlocks(planContent, { nextCriteria: inSyncCriteria(), changedBars: ['R-1'] }))
+      .toEqual({ content: planContent, rerendered: [] });
+    expect(rerenderAmendedRequirementBlocks(planContent, { nextCriteria: amended(), changedBars: [] }))
+      .toEqual({ content: planContent, rerendered: [] });
   });
 });

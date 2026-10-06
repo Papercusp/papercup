@@ -71,7 +71,10 @@ import {
 } from './rubrics-citation-checks';
 import { acceptanceBarContractGaps } from './acceptance-bar-contract-completeness';
 import { classifyAmendmentAdditivity } from './acceptance-bar-amendment-additivity';
-import { diffAmendedCriteriaAgainstRequirements } from './acceptance-bar-amendment-requirements-drift';
+import {
+  diffAmendedCriteriaAgainstRequirements,
+  rerenderAmendedRequirementBlocks,
+} from './acceptance-bar-amendment-requirements-drift';
 import { assertRubricRatingVocabulary } from './rubric-rating-vocabulary';
 
 // Structured criterion grading-window (EI-12146): schema + the pure resolver live in
@@ -4957,6 +4960,12 @@ async function amendAcceptanceBarRubric(
         };
       }
       const decisionId = allocateNextDecisionId(subjectRow.content);
+      // WI-10006835: re-render each changed BAR's explicit plan block from the amended criterion
+      // in this same transaction, so the plan copy reviewers read cannot lag the canonical rubric.
+      const requirementsRerender = rerenderAmendedRequirementBlocks(subjectRow.content, {
+        nextCriteria: guard.data.criteria as Array<Record<string, unknown>>,
+        changedBars,
+      });
       const decisionBody = [
         `Amendment-Id: ${idempotencyKey}`,
         `Request-Hash: ${amendmentRequestHash(input)}`,
@@ -4979,10 +4988,13 @@ async function amendAcceptanceBarRubric(
         `Subject plan revision: ${oldSubjectRevision} → ${nextSubjectRevision}`,
         `Changed BARs: ${changedBars.join(', ')}`,
         'Prior evidence, grades, vetting, author verdicts, and ship verdicts remain audit history and are revision-ineligible.',
+        ...(requirementsRerender.rerendered.length
+          ? [`Requirements re-rendered from the amended criterion: ${requirementsRerender.rerendered.join(', ')}`]
+          : []),
       ].join('\n');
       const subjectBody = bumpUpdatedDate(
         appendDecisionToBody(
-          subjectRow.content,
+          requirementsRerender.content,
           decisionId,
           'Acceptance BAR amendment',
           decisionBody,

@@ -144,13 +144,107 @@ export function diffAmendedCriteriaAgainstRequirements(input: {
   const named = entries
     .map((entry) => (entry.kind === 'missing-from-plan' ? `${entry.barKey} (missing from plan)` : `${entry.barKey} (${entry.fields.join(', ')})`))
     .join('; ');
+  // WI-10006835: an amended BAR whose plan block is explicit is re-rendered by the apply itself.
+  const rerenderedOnApply = entries
+    .filter((entry) => entry.kind === 'text-differs' && entry.changedByAmendment && planByBar.get(entry.barKey)?.criterion)
+    .map((entry) => entry.barKey);
+  const manual = entries.filter((entry) => !rerenderedOnApply.includes(entry.barKey)).map((entry) => entry.barKey);
   return {
     inSync: false,
     entries,
+    rerenderedOnApply,
     action:
       `The plan's ## Requirements block disagrees with the amended rubric on ${named}. The rubric is ` +
-      'canonical after seeding and nothing re-renders the plan block, so this drift persists unless you ' +
-      'fix it: update the plan R-N block to match (plans:set-content), or make the amendment match the ' +
-      'plan on every field named, before vetting. Reviewers who read the plan block grade the stale copy.',
+      'canonical after seeding. ' +
+      (rerenderedOnApply.length
+        ? `Applying this amendment re-renders the explicit requirement block of ${rerenderedOnApply.join(', ')} ` +
+          'from the amended criterion. '
+        : '') +
+      (manual.length
+        ? `Nothing re-renders ${manual.join(', ')} (a legacy prose record, a BAR this amendment does not ` +
+          'change, or a BAR missing from the plan), so that drift persists unless you fix it: update the plan ' +
+          'R-N block to match (plans:set-content), or make the amendment match the plan on every field named, ' +
+          'before vetting. Reviewers who read the plan block grade the stale copy.'
+        : 'No manual plan edit is needed.'),
   };
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+/**
+ * WI-10006835: rewrite the explicit ```requirement block of every BAR this amendment changes so the
+ * plan copy a reviewer reads carries the amended criterion, not the pre-amendment text (observed:
+ * pui-chat-first-ux rev 10, where a vetter graded the stale `check.files` from the plan block).
+ *
+ * This is the inverse of `diffAmendedCriteriaAgainstRequirements`: it writes exactly the fields that
+ * function compares — condition (model), falsifier (driftMarkers), method/check/replication, and any
+ * STATED acceptance metadata — so a re-rendered block reads in sync. Acceptance metadata the block
+ * does not state is left unstated, because the seeder derives it from the Bar-to-work map. Intent is
+ * the plan's own record of the request and is never rewritten. Legacy prose R-N records, unchanged
+ * BARs, and blocks that do not parse are left byte-identical. Pure: callers write the result.
+ */
+export function rerenderAmendedRequirementBlocks(
+  planContent: string,
+  input: { nextCriteria: ReadonlyArray<Record<string, unknown>>; changedBars: Iterable<string> },
+): { content: string; rerendered: string[] } {
+  const changed = new Set(input.changedBars);
+  const byBar = new Map<string, Record<string, unknown>>();
+  for (const criterion of input.nextCriteria) {
+    const barKey = typeof criterion.barKey === 'string' ? criterion.barKey.trim() : '';
+    if (barKey && changed.has(barKey)) byBar.set(barKey, criterion);
+  }
+  const unchanged = { content: planContent, rerendered: [] as string[] };
+  if (!byBar.size) return unchanged;
+
+  const lines = planContent.split('\n');
+  const start = lines.findIndex((line) => /^##\s+Requirements\s*$/i.test(line.trim()));
+  if (start < 0) return unchanged;
+  let end = lines.findIndex((line, index) => index > start && /^##\s+\S/.test(line));
+  if (end < 0) end = lines.length;
+
+  const rerendered: string[] = [];
+  let barKey: string | null = null;
+  for (let index = start + 1; index < end; index++) {
+    // Same record header as parseRequirementBars (acceptance-bar-seed.ts).
+    const header = /^\*\*(R-\d+)\s+[—–-]\s+.+?\.\*\*/.exec(lines[index]!);
+    if (header) {
+      barKey = header[1]!;
+      continue;
+    }
+    if (barKey === null || lines[index]!.trim() !== '```requirement') continue;
+    const criterion = byBar.get(barKey);
+    const key = barKey;
+    barKey = null;
+    if (!criterion) continue;
+    const close = lines.findIndex((line, at) => at > index && line.trim() === '```');
+    if (close < 0 || close >= end) continue;
+    let block: unknown;
+    try {
+      block = JSON.parse(lines.slice(index + 1, close).join('\n'));
+    } catch {
+      continue;
+    }
+    if (!isRecord(block)) continue;
+
+    const acceptance: Record<string, unknown> = isRecord(block.acceptance) ? { ...block.acceptance } : {};
+    const verification: Record<string, unknown> = isRecord(block.verification) ? { ...block.verification } : {};
+    if (typeof criterion.model === 'string') acceptance.condition = criterion.model;
+    if (typeof criterion.driftMarkers === 'string') acceptance.falsifier = criterion.driftMarkers;
+    for (const field of STATED_ACCEPTANCE_FIELDS) {
+      if (acceptance[field] === undefined) continue;
+      if (criterion[field] === undefined || criterion[field] === null) delete acceptance[field];
+      else acceptance[field] = criterion[field];
+    }
+    for (const field of VERIFICATION_FIELDS) {
+      if (criterion[field] === undefined || criterion[field] === null) delete verification[field];
+      else verification[field] = criterion[field];
+    }
+    const next = JSON.stringify({ ...block, acceptance, verification });
+    if (next === lines.slice(index + 1, close).join('\n')) continue;
+    lines.splice(index + 1, close - index - 1, next);
+    end -= close - index - 2;
+    rerendered.push(key);
+  }
+  return rerendered.length ? { content: lines.join('\n'), rerendered } : unchanged;
 }
