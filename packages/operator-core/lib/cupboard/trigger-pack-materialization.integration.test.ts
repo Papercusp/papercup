@@ -25,6 +25,7 @@ import {
 } from '../../test/_trigger-pack-fixtures';
 import { createExternalTriggerSource } from '../external-triggers/admin';
 import { installPluginFromCupboardCore, type InstallPluginCoreDeps, InstallPluginError } from './install-plugin-core';
+import { armTriggerPack } from './trigger-pack-lifecycle';
 import { materializeTriggerPack, TRIGGER_PACK_EDGE_EVENT_KEY } from './trigger-pack-materialize';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as Sql }));
@@ -226,8 +227,11 @@ describe('trigger-pack materialization (R-8)', () => {
        WHERE id = ${configured.resources.bindings['inbound-mail']!.triggerBindingId}::uuid`;
     expect(external!.eventPattern).toBe('ext:gmail:message.received');
 
-    // Re-configuring with the same choices is idempotent and preserves armed state.
-    await sql`UPDATE harness_shared.trigger_bindings SET armed = TRUE WHERE workspace_id = ${WS}`;
+    // Re-configuring with the same choices is idempotent and preserves the armed
+    // state of a REVIEWED pack (P-013, D-016: arming goes through the pack review).
+    expect(
+      await armTriggerPack(sql, WS, { installationId: configured.id, fingerprint: configured.review.fingerprint }),
+    ).toMatchObject({ ok: true });
     const again = await materializeTriggerPack(
       sql,
       WS,
