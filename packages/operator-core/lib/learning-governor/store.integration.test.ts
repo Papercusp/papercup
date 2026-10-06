@@ -13,7 +13,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import postgres from 'postgres';
 import { getTestPg, teardownTestPg } from '@papercusp/test-config/pg';
 import { provisionGymDatabase } from '../gym/gym-db-init';
-import { summarizeLearningSpend } from './core';
+import { LEARNING_GOVERNOR_BUDGET_FLOOR_USD, summarizeLearningSpend } from './core';
 import {
   deleteLearningLoop,
   getLearningLoop,
@@ -770,7 +770,7 @@ describe('governed attempt persisted settlement receipts', () => {
 describe('spend reservation + settlement — every attempt closes', () => {
   const LOOP = 'frontier:reserve-test';
 
-  it.each([10, 0.25, 0])('binds dispatch to the persisted reservation before work runs (budget $%s)', async budgetUsd => {
+  it.each([10, LEARNING_GOVERNOR_BUDGET_FLOOR_USD + 0.25, 0])('binds dispatch to the persisted reservation before work runs (budget $%s)', async budgetUsd => {
     const loopId = `gym:dispatch-grant-${randomUUID()}`;
     await registerLearningLoop(sql, { workspaceId: WS, loopId, budgetKind: 'lifetime', budgetUsd });
     const fresh = postgres(testDatabaseUri, { max: 1, onnotice: () => {}, prepare: false });
@@ -778,6 +778,7 @@ describe('spend reservation + settlement — every attempt closes', () => {
     try {
       for (let attempt = 0; attempt < 2; attempt++) {
         const requestedUsd = budgetUsd === 0 ? 0 : 1;
+        const expectedReservedUsd = Math.min(requestedUsd, Math.max(0, budgetUsd - LEARNING_GOVERNOR_BUDGET_FLOOR_USD));
         const runRef = `native-dispatch:${randomUUID()}`;
         const out = await runGovernedSpendAttempt({ workspaceId: WS, loopId, attemptKind: 'proposer',
           requestedUsd, runRef, accumulate: false, run: async grant => {
@@ -785,8 +786,8 @@ describe('spend reservation + settlement — every attempt closes', () => {
             const row = rows.find(r => r.id === grant.reservationId);
             expect(row).toMatchObject({ id: grant.reservationId, workspaceId: WS, loopId,
               runRef, status: 'open', settledAt: null, reservedUsd: grant.reservedUsd });
-            expect(grant.reservedUsd).toBe(Math.min(requestedUsd, budgetUsd));
-            expect(grant.clamped).toBe(requestedUsd > budgetUsd);
+            expect(grant.reservedUsd).toBe(expectedReservedUsd);
+            expect(grant.clamped).toBe(expectedReservedUsd < requestedUsd);
             expect(Object.isFrozen(grant)).toBe(true);
             seenIds.push(grant.reservationId);
             return { costUsd: 0, value: grant.reservationId };

@@ -183,4 +183,31 @@ describe('switchExplanation', () => {
     expect(text).toContain('straight into acme/widgets');
     expect(text).toContain('nothing is deleted');
   });
+
+  it('P-019: guides each direction before Switch is pressed', () => {
+    expect(switchExplanation('review', 'acme/widgets', null)).toContain('takes effect from the next sync');
+    const back = switchExplanation('direct', 'acme/widgets', 'https://github.com/bot/widgets');
+    expect(back).toContain('PR from the working copy to acme/widgets is still open');
+    expect(back).toContain('merged or closed first');
+  });
+});
+
+describe('IntegrationModeSection — P-019 switching back', () => {
+  it('a switch back refused because the PR is open shows the PR and keeps the working copy', async () => {
+    sync.rows = [settingsRow({ current: 'review', workingCopyUrl: 'https://github.com/bot/widgets' })];
+    const message =
+      "pull request #7 (https://github.com/acme/widgets/pull/7) still holds this pot's work: " +
+      'merge or close it first, then switch to straight in, so no work is stranded in the working copy';
+    mockFetch.mockResolvedValueOnce(json({ ok: false, error: 'standing_pr_open', message }, 409));
+    render(<IntegrationModeSection slug="widgets" />);
+    await screen.findByTestId('integration-mode-settings');
+    await userEvent.click(screen.getByTestId('integration-mode-option-direct').querySelector('input')!);
+    expect(screen.getByTestId('integration-mode-confirm-panel').textContent).toContain('merged or closed first');
+    await userEvent.click(screen.getByTestId('integration-mode-confirm'));
+
+    const err = await screen.findByTestId('integration-mode-error');
+    expect(err.textContent).toBe(message);
+    expect(screen.getByTestId('integration-mode-option-review').textContent).toContain('(current)');
+    expect(invalidate).not.toHaveBeenCalled();
+  });
 });

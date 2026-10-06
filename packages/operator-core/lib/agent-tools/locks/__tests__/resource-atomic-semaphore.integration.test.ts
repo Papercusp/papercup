@@ -306,6 +306,26 @@ describe('host-global resource exclusion across legacy coordination domains', as
       WHERE lock_id = ${reader.lock_id}::uuid`).rejects.toMatchObject(crossDomainError);
   });
 
+  it.skipIf(!live).each(['repeatable read', 'serializable'])(
+    'fences a stale %s snapshot that predates a foreign writer', async isolation => {
+      const resource = await hostResource();
+      await expect(getTxPool().begin(`isolation level ${isolation}`, async tx => {
+        const [empty] = await tx<Array<{ n: number }>>`
+          SELECT count(*)::int AS n FROM agent_resource_locks WHERE resource = ${resource}`;
+        expect(empty.n).toBe(0); // Pin the old transaction snapshot.
+        expect((await legacyExclusive(unique('committed-writer'), resource, 'writer')).ok).toBe(true);
+        await tx`INSERT INTO agent_resource_locks
+          (coordination_domain, resource, owner, mode, expires_ts)
+          VALUES (${unique('stale-writer')}, ${resource}, 'stale-writer', 'exclusive',
+            clock_timestamp() + interval '60 seconds')`;
+      })).rejects.toMatchObject({ code: '40001' });
+      const [row] = await getTxPool()<Array<{ n: number }>>`
+        SELECT count(*)::int AS n FROM agent_resource_locks
+         WHERE resource = ${resource} AND expires_ts > clock_timestamp()`;
+      expect(row.n).toBe(1);
+    },
+  );
+
   it.skipIf(!live)('allows shared readers across domains and ignores expired foreign leases', async () => {
     const resource = await hostResource();
     expect((await acquire(unique('reader-a'), resource, 'reader-a')).ok).toBe(true);

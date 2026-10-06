@@ -1,9 +1,12 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { replayHash, replayLoadedRuntime, replayRuntimeLaunch, type ReplayRuntimeWitness } from './lsp-fleet-replay-runtime';
+import { readProcessIdentity } from '../process-identity';
+import { fileURLToPath } from 'node:url';
+import { buildTaskScopeArgvWithTransport, SYSTEMD_ENV_RUNNER_PATH } from '../systemd-scope';
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -17,6 +20,43 @@ function fixture(extension = 'mjs', source = 'console.log("executed");') {
 function receipts(root: string) {
   const names = readdirSync(root).filter(name => name.endsWith('.jsonl'));
   return names.flatMap(name => readFileSync(join(root, name), 'utf8').trim().split('\n').map(line => JSON.parse(line)));
+}
+async function withLiveRuntime(f: ReturnType<typeof fixture>, check: (pids: number[], root: ChildProcess) => Promise<void> | void) {
+  const child = spawn(process.execPath, f.launch.args, { env: { ...process.env, NODE_OPTIONS: '' }, stdio: ['pipe', 'pipe', 'pipe'] });
+  let output = ''; let errors = '';
+  const closed = new Promise<void>(resolve => child.once('close', () => resolve()));
+  child.stderr!.on('data', chunk => { errors += chunk; });
+  try {
+    const pids = await new Promise<number[]>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`runtime startup timeout: ${errors}`)), 10_000);
+      child.once('error', error => { clearTimeout(timer); reject(error); });
+      child.once('exit', code => { clearTimeout(timer); reject(new Error(`runtime exited ${code}: ${errors}`)); });
+      child.stdout!.on('data', chunk => {
+        output += chunk;
+        if (output.includes('\n')) { clearTimeout(timer); resolve(JSON.parse(output.split('\n')[0]).pids); }
+      });
+    });
+    await check([child.pid!, ...pids], child);
+  } finally {
+    // Each instrumented process has its own PID receipt; fixture teardown must
+    // reap descendants too, including when the assertion before shutdown fails.
+    for (const row of receipts(f.root).filter(row => row.kind === 'bootstrap')) {
+      try { process.kill(row.pid, 'SIGTERM'); } catch { /* already exited */ }
+    }
+    child.kill();
+    await closed;
+  }
+}
+function liveWitness(f: ReturnType<typeof fixture>, files: string[]) {
+  const library = '/test-native-mapping';
+  const witness: ReplayRuntimeWitness = { directory: f.root, runId: 'witness-test',
+    bootstraps: { [f.entry]: f.launch.evalSha256 },
+    files: { ...Object.fromEntries(files.map(path => [path, replayHash(readFileSync(path))])), [library]: replayHash('fixture native') } };
+  // Native mapping access is independently tested below. Here it is an explicit
+  // fixture; cmdline, stat, process identity and source receipts are real.
+  const reader = { identity: readProcessIdentity, link: () => '', bytes: () => Buffer.from('fixture native'),
+    text: (path: string) => path.endsWith('/maps') ? `1-2 r-xp 0 00:01 9 ${library}\n` : readFileSync(path, 'utf8') };
+  return { witness, reader };
 }
 describe('actual replay load-byte witness', () => {
   it('records the executed ESM bytes, config reads and argv-anchored bootstrap in a real Node process', () => {
@@ -57,6 +97,81 @@ describe('actual replay load-byte witness', () => {
       expect.objectContaining({ reason: 'unsupported-file-reader:readSync' }),
     ]);
   });
+  it('propagates through real forks and shebang grandchildren, preserving IPC, argv and memory flags', async () => {
+    const f = fixture();
+    const worker = join(f.root, 'worker.cjs');
+    const leaf = join(f.root, 'leaf.cjs');
+    writeFileSync(leaf, '#!/usr/bin/env node\nconsole.log(JSON.stringify({pid:process.pid,arg:process.argv[2]}));setInterval(()=>{},1000);', { mode: 0o700 });
+    writeFileSync(worker, `const {spawn}=require('node:child_process');const c=spawn(${JSON.stringify(leaf)},['leaf-argument'],{stdio:['ignore','pipe','pipe']});c.stdout.on('data',chunk=>process.send({leaf:JSON.parse(String(chunk)),worker:process.pid,argv:process.argv,execArgv:process.execArgv}));`);
+    writeFileSync(f.entry, `import {fork} from 'node:child_process';const c=fork(${JSON.stringify(worker)},['worker-argument'],{silent:true,execArgv:['--max-old-space-size=128'],stdio:['pipe','pipe','pipe','ipc']});c.on('message',m=>{if(m.leaf.arg!=='leaf-argument'||m.argv[2]!=='worker-argument'||m.execArgv[0]!=='--max-old-space-size=128')throw Error('lost fork semantics');console.log(JSON.stringify({pids:[m.worker,m.leaf.pid]}));});`);
+    await withLiveRuntime(f, pids => {
+      const { witness, reader } = liveWitness(f, [f.entry, worker, leaf]);
+      expect(pids).toHaveLength(3);
+      for (const pid of pids) {
+        const cmdline = reader.text(`/proc/${pid}/cmdline`).split('\0').filter(Boolean);
+        expect(replayLoadedRuntime(pid, reader.identity(pid), cmdline, witness, reader).unknown).toEqual([]);
+      }
+      const workerRows = receipts(f.root).filter(row => row.pid === pids[1]);
+      expect(workerRows[0]).toMatchObject({ parent: { pid: pids[0] }, ppid: pids[0] });
+      expect(workerRows).toContainEqual(expect.objectContaining({ kind: 'child-launch', entry: leaf }));
+      // Even adding a child hash to the trusted-root map cannot bypass a
+      // missing parent launch or a wrong parent process epoch.
+      const receiptPath = join(f.root, `${pids[0]}.jsonl`);
+      const original = readFileSync(receiptPath, 'utf8');
+      writeFileSync(receiptPath, original.split('\n').filter(line => !line || JSON.parse(line).kind !== 'child-launch').join('\n'));
+      const childCommand = reader.text(`/proc/${pids[1]}/cmdline`).split('\0').filter(Boolean);
+      const expanded = { ...witness, bootstraps: { ...witness.bootstraps, [worker]: workerRows[0].evalSha256 } };
+      expect(replayLoadedRuntime(pids[1], reader.identity(pids[1]), childCommand, expanded, reader).unknown)
+        .toContain('unwitnessed-runtime-bootstrap');
+      writeFileSync(receiptPath, original);
+      const wrongEpoch = { ...reader, identity: (pid: number) => pid === pids[0] ? 'another epoch' : reader.identity(pid) };
+      expect(replayLoadedRuntime(pids[1], reader.identity(pids[1]), childCommand, witness, wrongEpoch).unknown)
+        .toContain('unwitnessed-runtime-bootstrap');
+    });
+  }, 20_000);
+  it('instruments the actual exact-env runner and its payload when the environment is replaced', async () => {
+    const f = fixture();
+    const runner = fileURLToPath(new URL('../systemd-scope-env-runner.mjs', import.meta.url));
+    const environment = join(f.root, 'payload.env');
+    const payload = join(f.root, 'payload.mjs');
+    writeFileSync(environment, `PATH=${process.env.PATH}\0NODE_OPTIONS=\0WITNESS_EXACT=payload\0`);
+    writeFileSync(payload, 'if(process.env.WITNESS_EXACT!=="payload"||process.env.WITNESS_OUTER)throw Error("env mismatch");console.log(JSON.stringify({pids:[process.ppid,process.pid]}));setInterval(()=>{},1000);');
+    writeFileSync(f.entry, `import {spawn} from 'node:child_process';spawn(process.execPath,[${JSON.stringify(runner)},'--env-fd-path',${JSON.stringify(environment)},'--',process.execPath,${JSON.stringify(payload)}],{env:{...process.env,WITNESS_OUTER:'outer'},stdio:'inherit'});setInterval(()=>{},1000);`);
+    await withLiveRuntime(f, pids => {
+      const { witness, reader } = liveWitness(f, [f.entry, runner, environment, payload]);
+      for (const pid of pids) {
+        const cmdline = reader.text(`/proc/${pid}/cmdline`).split('\0').filter(Boolean);
+        expect(replayLoadedRuntime(pid, reader.identity(pid), cmdline, witness, reader).unknown).toEqual([]);
+      }
+      expect(receipts(f.root).filter(row => row.kind === 'bootstrap').map(row => row.entry).sort())
+        .toEqual([f.entry, runner, payload].sort());
+    });
+  }, 20_000);
+  it('retains unknown for an unsupported child loader rather than replacing its launch flags', () => {
+    const f = fixture('mjs', 'import {spawn} from "node:child_process"; const c=spawn(process.execPath,["--import","data:text/javascript,", "--eval","console.log(1)"],{stdio:"ignore"});await new Promise(resolve=>c.on("exit",resolve));');
+    execFileSync(process.execPath, f.launch.args, { env: { ...process.env, NODE_OPTIONS: '' }, stdio: 'pipe' });
+    expect(receipts(f.root)).toContainEqual(expect.objectContaining({ kind: 'unknown', reason: `unsupported-child-launch:${process.execPath}` }));
+  });
+  it('propagates on the real managed systemd scope argv, including its nested runner separator', async () => {
+    const f = fixture();
+    const payload = join(f.root, 'scoped-payload.mjs');
+    writeFileSync(payload, 'if(process.env.WITNESS_EXACT!=="scoped")throw Error("env mismatch");console.log(JSON.stringify({pids:[process.ppid,process.pid]}));setInterval(()=>{},1000);');
+    const launch = buildTaskScopeArgvWithTransport([process.execPath, payload], {
+      unit: `lsp-witness-${process.pid}-${Date.now()}`, slice: 'papercusp-sidecar.slice',
+      env: { PATH: process.env.PATH, NODE_OPTIONS: '', WITNESS_EXACT: 'scoped' },
+    });
+    try {
+      writeFileSync(f.entry, `import {spawn} from 'node:child_process';spawn(${JSON.stringify(launch.argv[0])},${JSON.stringify(launch.argv.slice(1))},{stdio:'inherit'});setInterval(()=>{},1000);`);
+      await withLiveRuntime(f, pids => {
+        const { witness, reader } = liveWitness(f, [f.entry, SYSTEMD_ENV_RUNNER_PATH, launch.transport!.sourcePath, payload]);
+        for (const pid of pids) {
+          const cmdline = reader.text(`/proc/${pid}/cmdline`).split('\0').filter(Boolean);
+          expect(replayLoadedRuntime(pid, reader.identity(pid), cmdline, witness, reader).unknown).toEqual([]);
+        }
+        expect(receipts(f.root)).toContainEqual(expect.objectContaining({ kind: 'child-launch', route: 'systemd-scope', entry: SYSTEMD_ENV_RUNNER_PATH }));
+      });
+    } finally { launch.transport?.release(); }
+  }, 20_000);
 });
 
 describe('fail-closed runtime qualification', () => {

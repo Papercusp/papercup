@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, test } from 'vitest';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
-import { lockedPackageKeyResolver } from '../../../../apps/tui/scripts/bundle-psu-dependencies.mjs';
+import { runInNewContext } from 'node:vm';
+import { build } from 'esbuild';
+import { lockedPackageKeyResolver, releaseMinification } from '../../../../apps/tui/scripts/bundle-psu-dependencies.mjs';
 
 const temporary: string[] = [];
 const fixture = () => {
@@ -25,6 +27,32 @@ afterEach(() => {
 });
 
 describe('PUI bundler locked dependency identity', () => {
+  test('release bundles omit external module labels while preserving runtime function and class names', async () => {
+    const { root, installed, link } = fixture();
+    const library = path.join(installed, 'library');
+    mkdirSync(library);
+    writeFileSync(path.join(library, 'index.js'),
+      "function registeredStep() { return 'ok'; } class Worker {} module.exports = { registeredStep, Worker };\n");
+    link('node_modules/library', library);
+    const options = {
+      stdin: { contents: "module.exports = require('library');", resolveDir: root },
+      absWorkingDir: root, platform: 'node' as const, format: 'cjs' as const,
+      bundle: true, write: false,
+    };
+    const result = await build({ ...options, ...releaseMinification });
+    const code = result.outputFiles![0]!.text;
+    expect(code).not.toContain(installed);
+    expect(code).not.toContain(path.relative(root, installed));
+    const module = { exports: {} as { registeredStep: () => string; Worker: { name: string } } };
+    runInNewContext(code, { module, exports: module.exports });
+    expect(module.exports.registeredStep.name).toBe('registeredStep');
+    expect(module.exports.Worker.name).toBe('Worker');
+    expect(module.exports.registeredStep()).toBe('ok');
+    // Control: the old minification retains the physical dependency label.
+    const prior = await build({ ...options, ...releaseMinification, minifyIdentifiers: false });
+    expect(prior.outputFiles![0]!.text).toContain(path.relative(root, installed));
+  });
+
   test('resolves an installed package inside the source tree', () => {
     const { root } = fixture();
     const key = 'node_modules/esbuild';

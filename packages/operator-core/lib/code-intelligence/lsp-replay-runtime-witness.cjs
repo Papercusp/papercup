@@ -6,6 +6,8 @@ function startReplayRuntime(options) {
   const Module = require('node:module');
   const { createHash } = require('node:crypto');
   const { resolve, join } = require('node:path');
+  const { basename, delimiter } = require('node:path');
+  const children = require('node:child_process');
   const { fileURLToPath, pathToFileURL } = require('node:url');
   const hash = bytes => createHash('sha256').update(bytes).digest('hex');
   const originalReadFile = fs.readFileSync.bind(fs);
@@ -16,20 +18,29 @@ function startReplayRuntime(options) {
     finally { completeReadDepth--; }
   };
   const append = fs.appendFileSync.bind(fs);
-  const identity = () => {
-    const stat = readFile('/proc/self/stat', 'utf8');
+  const identity = (pid = 'self') => {
+    const stat = readFile(`/proc/${pid}/stat`, 'utf8');
     return `linux:${readFile('/proc/sys/kernel/random/boot_id', 'utf8').trim()}:${stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19]}`;
   };
   const processIdentity = identity();
+  const evalIndex = process.execArgv.indexOf('--eval');
+  const evalSha256 = hash(process.execArgv[evalIndex + 1] || '');
+  // Capture the recorder before importing subject code. Descendants are linked
+  // to this exact argv-anchored function through a parent launch receipt.
+  const recorder = startReplayRuntime.toString();
+  const runtimeFlags = process.execArgv.slice(0, evalIndex);
+  const supportedFlag = flag => /^--max-old-space-size=\d+$/.test(flag) || flag === '--no-warnings';
   const target = join(options.directory, `${process.pid}.jsonl`);
   const emit = row => append(target, `${JSON.stringify({ schemaVersion: 'lsp-replay-runtime-receipt-v1',
     pid: process.pid, identity: processIdentity, runId: options.runId, ...row })}\n`);
-  const startup = { kind: 'bootstrap', evalSha256: hash(process.execArgv[1] || ''),
+  const startup = { kind: 'bootstrap', evalSha256,
     node: process.version, entry: resolve(options.entry), nodeOptions: process.env.NODE_OPTIONS || '',
-    execArgv: process.execArgv };
+    execArgv: process.execArgv, parent: options.parent || null,
+    ppid: process.ppid, parentIdentity: identity(process.ppid) };
   fs.writeFileSync(target, '', { flag: 'wx', mode: 0o600 });
   emit(startup);
-  if (startup.nodeOptions || process.execArgv.length !== 2 || process.execArgv[0] !== '--eval' ||
+  if (startup.nodeOptions || evalIndex < 0 || process.execArgv.length !== evalIndex + 2 ||
+      runtimeFlags.some(flag => !supportedFlag(flag)) ||
       typeof Module.registerHooks !== 'function') {
     emit({ kind: 'unknown', reason: 'unsupported-loader-or-preload' });
     throw new Error('replay-runtime requires plain Node with no preloads or other loaders');
@@ -41,6 +52,116 @@ function startReplayRuntime(options) {
     const path = file instanceof URL ? fileURLToPath(file) : resolve(file);
     emit({ kind, path, sha256: hash(bytes), byteLength: Buffer.byteLength(bytes), ...extra });
   };
+  const originalSpawn = children.spawn;
+  const originalExecFile = children.execFile;
+  let launchSequence = 0;
+  const executable = (command, env, cwd) => {
+    const candidates = command.includes('/') ? [resolve(cwd, command)] :
+      (env.PATH || '').split(delimiter).map(path => resolve(cwd, path, command));
+    return candidates.find(path => {
+      try { fs.accessSync(path, fs.constants.X_OK); return true; } catch { return false; }
+    });
+  };
+  const prepareLaunch = (command, args, spawnOptions = {}, route = 'spawn', forkFlags) => {
+    if (spawnOptions.shell) { emit({ kind: 'unknown', reason: 'unsupported-child-shell' }); return null; }
+    const env = spawnOptions.env || process.env;
+    const cwd = resolve(String(spawnOptions.cwd || process.cwd()));
+    let prefix = [];
+    let payload = command;
+    let payloadArgs = [...args];
+    // Scope payloads remain children of the systemd-run client. Services are
+    // manager-parented and cannot establish this process ancestry contract.
+    if (basename(command) === 'systemd-run') {
+      const separator = args.indexOf('--');
+      const firstOperand = args.findIndex(arg => !arg.startsWith('-'));
+      const delimited = separator >= 0 && (firstOperand < 0 || separator < firstOperand);
+      const payloadIndex = delimited ? separator + 1 : firstOperand;
+      // The maintained scope builder emits self-contained --option=value
+      // switches and appends its payload without an optional -- separator.
+      const switches = args.slice(0, delimited ? separator : payloadIndex);
+      if (!args.includes('--scope') || payloadIndex < 0 || !args[payloadIndex] ||
+          switches.some(arg => !/^(?:--user|--scope|--quiet|--collect|--unit=.+|--slice=.+|--property=.+)$/.test(arg))) {
+        emit({ kind: 'unknown', reason: 'unsupported-systemd-child-route' }); return null;
+      }
+      prefix = args.slice(0, payloadIndex);
+      payload = args[payloadIndex]; payloadArgs = args.slice(payloadIndex + 1);
+      route = 'systemd-scope';
+    }
+    const path = executable(payload, env, cwd);
+    let node = path;
+    let entry;
+    let flags = forkFlags ? [...forkFlags] : [];
+    let entryArgs;
+    if (forkFlags || ['node', 'nodejs'].includes(basename(payload))) {
+      while (!forkFlags && payloadArgs[0]?.startsWith('-') && payloadArgs[0] !== '--') flags.push(payloadArgs.shift());
+      if (payloadArgs[0] === '--') payloadArgs.shift();
+      entry = payloadArgs.shift(); entryArgs = payloadArgs;
+    } else if (path) {
+      // Witness the interpreter directive used for classification. The file's
+      // actual JS source is witnessed again at its load/compile boundary.
+      let source;
+      try { source = readFile(path); } catch { /* normal spawn error owns this */ }
+      const first = source?.subarray(0, 256).toString('utf8').split('\n')[0];
+      const shebang = first && /^#!\s*(\S+)(?:\s+(\S+))?\s*$/.exec(first);
+      if (shebang && (basename(shebang[1]) === 'node' ||
+          (shebang[1] === '/usr/bin/env' && shebang[2] === 'node'))) {
+        receipt('file-read', path, source);
+        node = shebang[1] === '/usr/bin/env' ? executable('node', env, cwd) : shebang[1];
+        entry = path; entryArgs = payloadArgs;
+      }
+    }
+    if (!node || !entry || flags.some(flag => !supportedFlag(flag))) {
+      emit({ kind: 'unknown', reason: `unsupported-child-launch:${payload}` }); return null;
+    }
+    const launchId = `${process.pid}:${++launchSequence}`;
+    const childOptions = { entry: resolve(cwd, entry), args: entryArgs, directory: options.directory,
+      runId: options.runId, parent: { pid: process.pid, identity: processIdentity, evalSha256, launchId } };
+    const code = `(${recorder})(${JSON.stringify(childOptions)});`;
+    const childArgv = [...flags, '--eval', code];
+    const launchedCommand = prefix.length ? command : node;
+    const launchedArgs = prefix.length ? [...prefix, node, ...childArgv] : childArgv;
+    emit({ kind: 'child-launch', launchId, route, entry: childOptions.entry, evalSha256: hash(code),
+      command: launchedCommand, argv: launchedArgs, node, nodeArgv: childArgv });
+    return { command: launchedCommand, args: launchedArgs, launchId };
+  };
+  const recordChild = (child, launch) => {
+    if (!launch) return child;
+    let childIdentity = null;
+    if (child.pid) { try { childIdentity = identity(child.pid); } catch { /* refusal below */ } }
+    emit({ kind: 'child-started', launchId: launch.launchId, childPid: child.pid || null, childIdentity });
+    if (!child.pid || !childIdentity) emit({ kind: 'unknown', reason: 'child-process-identity-unavailable' });
+    return child;
+  };
+  children.spawn = function (command, args, spawnOptions) {
+    if (!Array.isArray(args)) { spawnOptions = args || {}; args = []; }
+    const launch = prepareLaunch(command, args, spawnOptions);
+    return recordChild(originalSpawn.call(this, launch?.command || command, launch?.args || args, spawnOptions), launch);
+  };
+  children.fork = function (entry, args, forkOptions) {
+    if (!Array.isArray(args)) { forkOptions = args || {}; args = []; }
+    const opts = { ...forkOptions, shell: false };
+    const flags = opts.execArgv || runtimeFlags;
+    const command = opts.execPath || process.execPath;
+    const launch = prepareLaunch(command, [entry, ...args], opts, 'fork', flags);
+    if (!launch) throw new Error('replay-runtime refuses unsupported fork launch');
+    opts.stdio = opts.stdio || (opts.silent ? ['pipe', 'pipe', 'pipe', 'ipc'] : ['inherit', 'inherit', 'inherit', 'ipc']);
+    if (typeof opts.stdio === 'string') opts.stdio = [opts.stdio, opts.stdio, opts.stdio, 'ipc'];
+    if (opts.stdio.filter(value => value === 'ipc').length !== 1) throw new Error('fork requires exactly one IPC channel');
+    return recordChild(originalSpawn(launch.command, launch.args, opts), launch);
+  };
+  children.execFile = function (command, args, execOptions, callback) {
+    if (!Array.isArray(args)) { callback = execOptions; execOptions = args; args = []; }
+    if (typeof execOptions === 'function') { callback = execOptions; execOptions = {}; }
+    const launch = prepareLaunch(command, args, execOptions);
+    return recordChild(originalExecFile.call(this, launch?.command || command, launch?.args || args, execOptions, callback), launch);
+  };
+  for (const name of ['spawnSync', 'execFileSync', 'exec', 'execSync']) {
+    const original = children[name];
+    children[name] = function (...args) {
+      emit({ kind: 'unknown', reason: `unsupported-child-launch:${name}` });
+      return original.apply(this, args);
+    };
+  }
   Module.registerHooks({ load(url, context, nextLoad) {
     // The default ESM loader retained its original readFileSync before this
     // recorder patched fs. Its internal readSync is still a complete read:
@@ -126,7 +247,7 @@ function startReplayRuntime(options) {
   Module.register = refuseLoader;
   Module.registerHooks = refuseLoader;
   Module.syncBuiltinESMExports();
-  emit({ kind: 'ready', coverage: ['esm-load-return', 'commonjs-compile', 'json-load', 'file-read', 'native-load'] });
+  emit({ kind: 'ready', coverage: ['esm-load-return', 'commonjs-compile', 'json-load', 'file-read', 'native-load', 'child-launch'] });
   process.argv = [process.execPath, resolve(options.entry), ...(options.args || [])];
   return import(pathToFileURL(resolve(options.entry)).href).catch(error => {
     emit({ kind: 'unknown', reason: `entry-failed:${String(error)}` });

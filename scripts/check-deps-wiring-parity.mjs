@@ -919,6 +919,29 @@ const AUDIT_ROW_OWN_WORKSPACE_DEFAULT =
 const CUSTOMER_ROLE_NEVER_WEB_IDENTITY =
   'WI-10005393 adjudicated: this site builds credentials only for a hosted customer-role source, which plans to fromTemporaryCredentials and never reaches the fromWebToken branch that reads getWebIdentityToken (aws-sdk-client.ts:452); an absent minter there fails loud';
 
+/**
+ * WI-10006261 adjudicated. Outbound dispatch has no failure classifier to feed: the sync
+ * driver maps a reconnect to ProviderSyncFailure{kind:'auth'} (connector-runtime.ts:386)
+ * because that marks the SOURCE as needing reconnection, while an outbound verb simply
+ * returns the refusal. The unwired seam therefore falls to a real, named default —
+ * HostFetchError('token-unavailable', 'source "<id>" must be reconnected (<reason>)')
+ * (source-host-fetch.ts:56-60) — not a silent no-op.
+ */
+const OUTBOUND_RECONNECT_DEFAULT_REFUSAL =
+  'WI-10006261 adjudicated: outbound dispatch has no sync failure classifier; an unwired reconnectRequired throws ' +
+  "HostFetchError('token-unavailable', '…must be reconnected') (source-host-fetch.ts:56-60), a real refusal";
+
+/**
+ * WI-10006261 adjudicated. The connector sync driver's test seam is the WHOLE host fetch
+ * (ConnectorSyncDeps.hostFetchFor, connector-runtime.ts:117), not the raw fetch beneath it;
+ * production leaves fetchImpl unset so createHostFetch uses global fetch
+ * (host-fetch.ts:60 `deps.fetchImpl ?? fetch`). Outbound dispatch wires fetchImpl only
+ * because OutboundDispatchDeps.hostFetchImpl (provider-dispatch.ts:77) is its HTTP-mock seam.
+ */
+const SYNC_FETCH_SEAM_IS_HOSTFETCHFOR =
+  'WI-10006261 adjudicated: sync tests replace the whole host fetch via ConnectorSyncDeps.hostFetchFor ' +
+  '(connector-runtime.ts:117); production fetchImpl defaults to global fetch (host-fetch.ts:60)';
+
 const FAIL_BASELINE = new Map([
   // Historical seed from the measured `--list` run after the WI-1745363 attribution fix:
   // 28 findings / 22 distinct rows over 7,150 files (was 44 / 33 under shape-based
@@ -1014,7 +1037,6 @@ const FAIL_BASELINE = new Map([
   ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-output-schema.ts|revisionInTransaction', PLAN_REVISION_HOOK_MODES],
   ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-plan-status.ts|revisionInTransaction', PLAN_REVISION_HOOK_MODES],
   ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-status.ts|revisionInTransaction', PLAN_REVISION_HOOK_MODES],
-  ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-template-data.ts|revisionInTransaction', PLAN_REVISION_HOOK_MODES],
   ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/set-title.ts|revisionInTransaction', PLAN_REVISION_HOOK_MODES],
   ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/start.ts|afterWrite', PLAN_REVISION_HOOK_MODES],
   ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/start.ts|revisionInTransaction', PLAN_REVISION_HOOK_MODES],
@@ -1062,6 +1084,10 @@ const FAIL_BASELINE = new Map([
   // WI-10005393 — rows taken from the measured `--list` population, not hand-written.
   ['AwsSdkCredentialResolvers|packages/operator-core/lib/workspace-host/hosted-aws-auth.ts|getWebIdentityToken', CUSTOMER_ROLE_NEVER_WEB_IDENTITY],
   ['AwsSdkCredentialResolvers|packages/operator-core/lib/workspace-host/hosted-aws-host-discovery.ts|getWebIdentityToken', CUSTOMER_ROLE_NEVER_WEB_IDENTITY],
+
+  // WI-10006261 — the two SourceHostFetchOptions sites (plan generalized-integrations…, D-014.4).
+  ['SourceHostFetchOptions|packages/operator-core/lib/capability-verbs/provider-dispatch.ts|reconnectRequired', OUTBOUND_RECONNECT_DEFAULT_REFUSAL],
+  ['SourceHostFetchOptions|packages/operator-core/lib/providers/connector-runtime.ts|fetchImpl', SYNC_FETCH_SEAM_IS_HOSTFETCHFOR],
 ]);
 
 /**

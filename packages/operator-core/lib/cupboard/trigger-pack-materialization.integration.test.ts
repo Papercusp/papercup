@@ -106,9 +106,11 @@ describe('trigger-pack materialization (R-8)', () => {
       armed: false,
       inputs: { tone: 'warm' },
     });
+    // D-016: each materialized plan records the sha256 of the template it came from, so
+    // the pack review can tell a template change from an unchanged update.
     expect(installation.resources.plans).toEqual({
-      reply: { planSlug: REPLY_SLUG },
-      'follow-up': { planSlug: FOLLOW_SLUG },
+      reply: { planSlug: REPLY_SLUG, templateSha256: expect.stringMatching(/^[0-9a-f]{64}$/) },
+      'follow-up': { planSlug: FOLLOW_SLUG, templateSha256: expect.stringMatching(/^[0-9a-f]{64}$/) },
     });
     expect(installation.resources.entryPoints).toEqual([
       { bindingId: 'manual-follow-up', targetId: 'follow-up', planSlug: FOLLOW_SLUG },

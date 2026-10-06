@@ -106,8 +106,8 @@ describe('transactional historical shipment recovery', () => {
     await restoreHistoricalShipment({}, request);
     const sql = (rig.read.mock.calls[0]?.[0] ?? []).join('?').replace(/\s+/g, ' ');
     expect(sql).toContain('AS durable_shipment_attested');
-    expect(sql).toContain('head.author_id IS NOT NULL');
     expect(sql).toContain("e.origin = 'local' AND e.writer_key = head.author_id");
+    expect(sql).toContain('to_timestamp(head.created_at / 1000.0)');
     expect(sql).toContain("e.body->>'after' = 'shipped'");
     expect(sql).toContain("o.row->>'origin' = 'local'");
   });

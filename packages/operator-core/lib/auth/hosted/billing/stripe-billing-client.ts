@@ -91,8 +91,23 @@ export interface StripeAccountTransactionEvidence {
   readonly accountId: string;
   readonly observedAtMs: number;
   readonly requestIds: readonly string[];
-  readonly transactions: readonly StripeBalanceTransaction[];
+  readonly transactions: readonly StripeObservedBalanceTransaction[];
   readonly evidenceRef: string;
+}
+
+export interface StripeObservedBalanceTransaction extends StripeBalanceTransaction {
+  readonly object: 'balance_transaction';
+  readonly status: 'available' | 'pending';
+  readonly available_on: number;
+  readonly net: number;
+}
+
+function freezeEvidence<T>(value: T): T {
+  if (value && typeof value === 'object') {
+    for (const child of Object.values(value)) freezeEvidence(child);
+    Object.freeze(value);
+  }
+  return value;
 }
 
 type StripeObject = Record<string, unknown>;
@@ -204,7 +219,7 @@ export function createStripeBillingClient(input: {
       if (!account.ok) return account;
       if (account.body.object !== 'account' || account.body.id !== accountId) return malformed(account.status, 'stripe account pin mismatch');
       const requestIds = [account.requestId];
-      const transactions: StripeBalanceTransaction[] = [];
+      const transactions: StripeObservedBalanceTransaction[] = [];
       const seen = new Set<string>();
       let startingAfter: string | undefined;
       for (let page = 0; page < maxPages; page += 1) {
@@ -232,12 +247,13 @@ export function createStripeBillingClient(input: {
           // Preserve unknown provider types and complete expanded sources for
           // the journal/reversal verifier to refuse or reconcile explicitly.
           seen.add(row.id);
-          transactions.push(row as unknown as StripeBalanceTransaction);
+          // Detach provider JSON before handing it to other server readers.
+          transactions.push(JSON.parse(JSON.stringify(row)) as StripeObservedBalanceTransaction);
         }
         if (!more) {
           const observedAtMs = Date.now();
           const evidenceRef = `stripe-census:${createHash('sha256').update(JSON.stringify({ accountId, observedAtMs, requestIds, transactions })).digest('hex')}`;
-          return { ok: true, evidence: { accountId, observedAtMs, requestIds, transactions, evidenceRef } };
+          return { ok: true, evidence: freezeEvidence({ accountId, observedAtMs, requestIds, transactions, evidenceRef }) };
         }
         startingAfter = transactions.at(-1)!.id;
       }

@@ -49,7 +49,8 @@ pub struct PendingSuTurn {
 /// server's `splitModelSpec` (agent-config-constants.ts): only a known effort
 /// level counts as a suffix, so `provider/model:tag` names keep their tag.
 pub fn spec_without_effort(spec: &str) -> &str {
-    const EFFORTS: [&str; 6] = ["minimal", "low", "medium", "high", "xhigh", "max"];
+    // Same set as MODEL_EFFORT_LEVELS in agent-config-constants.ts.
+    const EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
     match spec.rsplit_once(':') {
         Some((model, effort)) if !model.is_empty() && EFFORTS.contains(&effort.to_ascii_lowercase().as_str()) => model,
         _ => spec,
@@ -4835,6 +4836,16 @@ impl App {
                 self.show_help = true;
                 Action::Render
             }
+            // P-026: the same pickers as `m`/`e`; a running conversation takes
+            // the pick from its next turn (commit_session_picker).
+            SlashKind::Model => {
+                self.open_model_picker();
+                Action::Render
+            }
+            SlashKind::Effort => {
+                self.open_effort_picker();
+                Action::Render
+            }
             SlashKind::Details => {
                 self.chat_details = Some(!self.chat_details_visible());
                 Action::Render
@@ -6482,17 +6493,21 @@ impl App {
             .or_else(|| live.map(|session| session.backend()));
         if let Some(pick_backend) = pick_backend {
             if let Some(session) = live {
-                let current = self
-                    .su_next_model
-                    .clone()
-                    .or_else(|| session.descriptor.as_ref().and_then(|d| d.model.clone()));
-                opts[0].label = match &current {
+                // "Keep" clears any pending switch, so it names the model the
+                // session RUNS — never the pending pick it would discard.
+                let running = session.descriptor.as_ref().and_then(|d| d.model.clone());
+                opts[0].label = match &running {
                     Some(spec) => format!("Keep the current model ({spec})"),
                     None => "Keep the current model".into(),
                 };
+                let running = running.as_deref().map(spec_without_effort);
+                let pending = self.su_next_model.as_deref().map(spec_without_effort);
                 for option in opts.iter_mut().skip(1) {
-                    if current.as_deref().map(spec_without_effort) == Some(spec_without_effort(&option.id)) {
+                    let tier = Some(spec_without_effort(&option.id));
+                    if tier == running {
                         option.label.push_str(" · current");
+                    } else if tier == pending {
+                        option.label.push_str(" · next turn");
                     }
                 }
             } else {
@@ -6656,9 +6671,10 @@ impl App {
                             },
                         };
                         self.su_next_model = next.filter(|spec| Some(spec) != current.as_ref());
-                        self.session_note = Some(match &self.su_next_model {
-                            Some(spec) => format!("Next turn uses {spec}."),
-                            None => format!("Keeping {label}."),
+                        self.session_note = Some(match (&self.su_next_model, &current) {
+                            (Some(spec), _) => format!("Next turn uses {spec}."),
+                            (None, Some(running)) => format!("Keeping {running}."),
+                            (None, None) => "Keeping the current model.".to_string(),
                         });
                         return Action::Render;
                     }
@@ -16058,6 +16074,7 @@ mod tests {
             command: None,
             uncertain: false,
             error: None,
+            model: None,
         });
         app.chat_streaming = true;
         let mut ready = su_event_base("lifecycle", 1);
@@ -18285,6 +18302,109 @@ mod tests {
         );
     }
 
+    /// A chat-first app bound to a live Claude session running `model`.
+    fn chat_first_app_on_live_session(model: &str) -> App {
+        let mut a = chat_first_app();
+        a.set_operator_config(OperatorConfig {
+            tiers: vec![tier("quick", "haiku"), tier("deep", "opus:high")],
+            ..Default::default()
+        });
+        a.agent_chat_id = Some("chat-1".into());
+        a.set_su_session_binding(su_binding());
+        let session = a.su_session.as_mut().unwrap();
+        session.lifecycle = crate::su_session::SuSessionLifecycleState::Running;
+        session.descriptor = Some(serde_json::from_value(json!({
+            "identity": {"agentChatId":"chat-1", "advSessionId":7, "backend":"claude", "nativeSessionId":"native-1", "ownerId":"su-1", "workspaceId":"ws-1", "harnessSlug":"papercup"},
+            "lifecycle":"ready", "runtimeGeneration":1, "role":"su", "model": model, "carry":"warm", "modes":[],
+            "capabilities": {"commands": {"resume":{"state":"supported","implementation":"native"}, "fork":{"state":"unsupported","reason":"provider does not expose fork"}}, "features": {}},
+            "backendExtension": {"backend":"claude", "configDir":null, "configDirSource":null}
+        })).unwrap());
+        a
+    }
+
+    fn pick(a: &mut App, axis: crate::session_config::PickerAxis, id: &str) -> Action {
+        let picker = a.session_picker.as_mut().expect("a picker is open");
+        assert_eq!(picker.axis, axis);
+        let index = picker
+            .options
+            .iter()
+            .position(|option| option.id == id)
+            .unwrap_or_else(|| panic!("no {id} option"));
+        picker.sel = index;
+        a.commit_session_picker()
+    }
+
+    /// pui-chat-first-ux P-026 / D-025: on a live bound session a model or
+    /// effort pick does not open a new session. It rides on the next owner
+    /// turn, the footer says so until then, and dispatch hands it to that turn.
+    #[test]
+    fn a_live_session_model_pick_rides_on_the_next_owner_turn() {
+        use crate::session_config::PickerAxis;
+        let mut a = chat_first_app_on_live_session("haiku");
+
+        // `/model` from the composer opens the picker (Claude Code parity).
+        a.chat_input = "/model".into();
+        a.chat_cursor = a.chat_input.len();
+        assert!(matches!(
+            a.on_key(KeyCode::Enter, KeyModifiers::NONE),
+            Action::Render
+        ));
+        assert!(a.chat_input.is_empty(), "the command text is consumed");
+        assert!(a.su_pending_turn.is_none(), "nothing was sent");
+        let labels: Vec<String> = a
+            .session_picker
+            .as_ref()
+            .unwrap()
+            .options
+            .iter()
+            .map(|option| option.label.clone())
+            .collect();
+        assert_eq!(labels[0], "Keep the current model (haiku)");
+        assert!(labels[1].ends_with(" · current"), "{labels:?}");
+
+        assert!(matches!(pick(&mut a, PickerAxis::Model, "opus:high"), Action::Render));
+        assert!(a.session_picker.is_none());
+        assert!(a.session_setup.is_none(), "a model pick never opens the new-session form");
+        assert_eq!(a.su_next_model.as_deref(), Some("opus:high"));
+        assert_eq!(a.session_note.as_deref(), Some("Next turn uses opus:high."));
+        assert_eq!(a.chat_model_label(), "haiku · next turn: opus:high");
+
+        // An effort pick composes onto the PENDING model, not the running one.
+        a.session_picker = Some(crate::session_config::SessionPicker::new(
+            PickerAxis::Effort,
+            crate::session_config::effort_options(&["low".to_string(), "max".to_string()]),
+        ));
+        pick(&mut a, PickerAxis::Effort, "max");
+        assert_eq!(a.su_next_model.as_deref(), Some("opus:max"));
+
+        // Reopened, "Keep" still names the running model and the pending tier
+        // is marked; choosing Keep discards the pending switch.
+        a.open_model_picker();
+        let picker = a.session_picker.as_ref().unwrap();
+        assert_eq!(picker.options[0].label, "Keep the current model (haiku)");
+        assert!(picker.options[2].label.ends_with(" · next turn"), "{:?}", picker.options[2]);
+        pick(&mut a, PickerAxis::Model, crate::session_config::MODEL_INHERIT);
+        assert_eq!(a.su_next_model, None);
+        assert_eq!(a.session_note.as_deref(), Some("Keeping haiku."));
+        assert_eq!(a.chat_model_label(), "haiku");
+
+        // Picking the model the session already runs is not a switch.
+        a.open_model_picker();
+        pick(&mut a, PickerAxis::Model, "haiku");
+        assert_eq!(a.su_next_model, None);
+
+        // Dispatch moves the pick onto the owner turn and clears it.
+        a.open_model_picker();
+        pick(&mut a, PickerAxis::Model, "opus:high");
+        a.chat_input = "hi".into();
+        a.chat_cursor = a.chat_input.len();
+        a.on_key(KeyCode::Enter, KeyModifiers::NONE);
+        let pending = a.su_pending_turn.as_ref().expect("the turn is pending");
+        assert_eq!(pending.content, "hi");
+        assert_eq!(pending.model.as_deref(), Some("opus:high"));
+        assert_eq!(a.su_next_model, None);
+    }
+
     /// pui-chat-first-ux P-012: Enter moves the message into the transcript
     /// at once (Claude Code / Codex parity) instead of leaving it in the
     /// composer until the engine accepts the turn — on a fresh launch that
@@ -18506,8 +18626,8 @@ mod tests {
     #[test]
     fn chat_first_slash_menu_runs_a_command_instead_of_sending() {
         let mut a = chat_first_app();
-        a.chat_input = "/e".into();
-        a.chat_cursor = 2;
+        a.chat_input = "/ex".into();
+        a.chat_cursor = 3;
         assert!(matches!(
             a.on_key(KeyCode::Down, KeyModifiers::NONE),
             Action::Render
@@ -19252,6 +19372,7 @@ mod tests {
             command: None,
             uncertain: false,
             error: None,
+            model: None,
         });
         let error_at = |sequence: u64, message: &str| {
             let mut event = su_event_base("error", sequence);
@@ -24210,6 +24331,7 @@ mod tests {
             command: None,
             uncertain: true,
             error: Some("connection lost".into()),
+            model: None,
         });
         app.chat_streaming = false;
 

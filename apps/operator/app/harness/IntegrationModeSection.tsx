@@ -44,11 +44,15 @@ export function switchExplanation(target: Mode, repoLabel: string, workingCopyUr
     const where = workingCopyUrl ? `the working copy (${workingCopyUrl})` : 'a working copy of the repository, created for this pot';
     return (
       `Agents keep working together as they do now, but their work goes to ${where} instead of ${repoLabel}. ` +
-      `${repoLabel} receives their combined work only through a PR, opened after the pot's tests pass, that you (or a reviewer) approve.`
+      `${repoLabel} receives their combined work only through a PR, opened after the pot's tests pass, that you (or a reviewer) approve. ` +
+      `The switch takes effect from the next sync; work already in ${repoLabel} stays there.`
     );
   }
+  // P-019: leaving a working copy is refused while its PR to the main repo is
+  // open (guardLeavingWorkingCopy) — say so BEFORE the user presses Switch.
   return (
     `From now on, agents' work goes straight into ${repoLabel}, as before. ` +
+    `If a PR from the working copy to ${repoLabel} is still open, it must be merged or closed first; until then the switch is refused and nothing changes. ` +
     'The working copy is kept; nothing is deleted.'
   );
 }

@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { expect, it } from 'vitest';
@@ -22,6 +22,11 @@ it('keeps relationship visibility consistent across concurrent readers of one pi
   const root = existingRoot ? resolve(existingRoot) : mkdtempSync(join(tmpdir(), 'gitnexus-rel-readers-'));
   const repo = existingRepo ?? `relationship-readers-${process.pid}`;
   const cli = analyzeCliPath();
+  const backendPath = join(dirname(cli), '..', 'mcp', 'local', 'local-backend.js');
+  const poolPath = join(dirname(cli), '..', 'core', 'lbug', 'pool-adapter.js');
+  const sourceHashes = Object.fromEntries([cli, backendPath, poolPath].map(path =>
+    [path, createHash('sha256').update(readFileSync(path)).digest('hex')]));
+  const startedAt = new Date().toISOString();
   const env = Object.fromEntries(Object.entries({
     ...process.env,
     ...(!existingRoot ? { GITNEXUS_REGISTRY_PATH: join(root, 'registry.json') } : {}),
@@ -68,7 +73,9 @@ it('keeps relationship visibility consistent across concurrent readers of one pi
       const listing = (listed.content as Array<{ type: string; text?: string }>)
         .filter(part => part.type === 'text').map(part => part.text ?? '').join('\n');
       if (listed.isError) throw new Error(`Reader registry error: ${listing}`);
-      const registered = JSON.parse(listing).repositories.find((entry: { name: string }) => entry.name === repo);
+      // Same JSON/guidance boundary used by gen-graph-dependency-snapshot.mjs.
+      const registered = JSON.parse(listing.split('\n\n---\n')[0]).repositories
+        .find((entry: { name: string }) => entry.name === repo);
       expect(registered).toMatchObject({ path: root, indexedAt: meta.indexedAt });
       expect(registered.lastCommit ?? null).toBe(meta.lastCommit ?? null);
     }
@@ -90,7 +97,8 @@ it('keeps relationship visibility consistent across concurrent readers of one pi
     expect(await Promise.all(readers.map(reader => count(reader, fileQuery)))).toEqual(fileCounts);
     expect(readFileSync(metaPath, 'utf8')).toBe(metaBefore);
     console.log('GITNEXUS_RELATIONSHIP_WITNESS', JSON.stringify({
-      root, repo, indexedAt: meta.indexedAt, lastCommit: meta.lastCommit ?? null,
+      root, repo, startedAt, finishedAt: new Date().toISOString(),
+      indexedAt: meta.indexedAt, lastCommit: meta.lastCommit ?? null, sourceHashes,
       metaSha256: createHash('sha256').update(metaBefore).digest('hex'),
       cli, readerPids: readers.map(reader => reader.transport.pid), observations,
     }));

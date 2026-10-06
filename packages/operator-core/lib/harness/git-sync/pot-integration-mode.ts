@@ -324,9 +324,16 @@ export type ChoosePotIntegrationModeResult =
         | 'upstream_remote_required'
         | 'fork_is_main_repository'
         | 'fork_create_failed'
-        | 'fork_record_failed';
+        | 'fork_record_failed'
+        | 'standing_pr_open'
+        | 'standing_pr_unknown';
       message: string;
     };
+
+/** P-019: is the pot's standing PR open on the main repository? `ok:false` = could not tell. */
+export type OpenStandingPrLookup =
+  | { ok: true; pr: { number: number; url: string } | null }
+  | { ok: false; error: string };
 
 export interface ChoosePotIntegrationModeInput extends SetPotIntegrationModeInput {
   /** The pot's registry slug (where `fork_remote` is recorded). */
@@ -339,6 +346,68 @@ export interface ChoosePotIntegrationModeDeps {
   ensureFork?: (opts: EnsureForkOpts) => Promise<EnsureForkResult>;
   setForkRemote?: (slug: string, forkUrl: string | null, workspaceId?: string) => Promise<SetForkRemoteResult>;
   setMode?: (input: SetPotIntegrationModeInput) => Promise<SetPotIntegrationModeResult>;
+  /** The pot's CURRENT mode (default: readPotIntegrationMode). */
+  readMode?: (workspaceId: string, potHomeSlug: string) => Promise<PotIntegrationModeRead>;
+  /** Default: the GitHub PR host's open PRs on `upstreamRemote`, through findStandingPr (any base). */
+  findOpenStandingPr?: (upstreamRemote: string) => Promise<OpenStandingPrLookup>;
+}
+
+async function defaultFindOpenStandingPr(upstreamRemote: string): Promise<OpenStandingPrLookup> {
+  try {
+    const { createGitHubPrHost } = await import('../../pr-host/github');
+    const host = await createGitHubPrHost();
+    if (!host) return { ok: false, error: 'GitHub is not connected' };
+    const listed = await host.listOpenPrs({ remote: upstreamRemote });
+    if (!listed.ok) return { ok: false, error: listed.error.message };
+    const { findStandingPr } = await import('./standing-pr');
+    const pr = findStandingPr(listed.data);
+    return { ok: true, pr: pr ? { number: pr.ref.number, url: pr.url } : null };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
+ * P-019 guided switching, the working copy → straight-in half: leaving a working
+ * copy while its standing PR is open would strand the work waiting in that PR, so
+ * the switch is refused until the PR is merged or closed. Fails CLOSED: when the PR
+ * cannot be checked, the switch is refused too. Returns null when the switch may go.
+ */
+async function guardLeavingWorkingCopy(
+  input: ChoosePotIntegrationModeInput,
+  deps: ChoosePotIntegrationModeDeps,
+): Promise<ChoosePotIntegrationModeResult | null> {
+  if (input.mode === 'review') return null;
+  const current = await (deps.readMode ?? ((w, p) => readPotIntegrationMode(w, p, input.sql)))(
+    input.workspaceId,
+    input.potHomeSlug,
+  );
+  // Only a pot that IS (or may be) a working copy can have work waiting in a standing PR.
+  if (current.mode === 'direct' && current.source !== 'error') return null;
+  const upstream = input.upstreamRemote ? parseGithubUrl(input.upstreamRemote) : null;
+  if (!upstream) return null; // no main repository on GitHub ⇒ no standing PR can exist
+  const lookup = await (deps.findOpenStandingPr ?? defaultFindOpenStandingPr)(
+    `github.com/${upstream.owner}/${upstream.repo}`,
+  );
+  if (!lookup.ok) {
+    return {
+      ok: false,
+      error: 'standing_pr_unknown',
+      message:
+        `couldn't check whether this pot's pull request on ${upstream.owner}/${upstream.repo} is still open ` +
+        `(${lookup.error}), so the pot stays in its working copy; try again`,
+    };
+  }
+  if (lookup.pr) {
+    return {
+      ok: false,
+      error: 'standing_pr_open',
+      message:
+        `pull request #${lookup.pr.number} (${lookup.pr.url}) still holds this pot's work: ` +
+        'merge or close it first, then switch to straight in, so no work is stranded in the working copy',
+    };
+  }
+  return null;
 }
 
 /**
@@ -355,6 +424,8 @@ export async function choosePotIntegrationMode(
   deps: ChoosePotIntegrationModeDeps = {},
 ): Promise<ChoosePotIntegrationModeResult> {
   const setMode = deps.setMode ?? setPotIntegrationMode;
+  const refused = await guardLeavingWorkingCopy(input, deps);
+  if (refused) return refused;
   if (input.mode !== 'review' || input.forkRemote) {
     const r = await setMode(input);
     return r.ok ? { ok: true, mode: r.mode, fork: null } : r;

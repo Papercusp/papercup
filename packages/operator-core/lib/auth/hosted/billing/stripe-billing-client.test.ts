@@ -202,7 +202,12 @@ describe('authenticated account cash evidence', () => {
     const result = await r.client.readAccountTransactions({ accountId: 'acct_A' });
     expect(result).toMatchObject({ ok: true, evidence: { accountId: 'acct_A', transactions: [first, second],
       requestIds: ['req_Proof', 'req_Proof', 'req_Proof'], evidenceRef: expect.stringMatching(/^stripe-census:[a-f0-9]{64}$/) } });
-    const queries = r.fetchImpl.mock.calls.slice(1).map(([url]: [string]) => new URL(url).searchParams);
+    if (result.ok) {
+      expect(Object.isFrozen(result.evidence.transactions)).toBe(true);
+      expect(Object.isFrozen(result.evidence.transactions[0].source)).toBe(true);
+      expect(result.evidence.transactions[0].status).toBe('available');
+    }
+    const queries = r.fetchImpl.mock.calls.slice(1).map(call => new URL(String(call[0])).searchParams);
     expect(queries[0].get('starting_after')).toBeNull();
     expect(queries[1].get('starting_after')).toBe('txn_A');
     for (const q of queries) {

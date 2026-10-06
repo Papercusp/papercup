@@ -1539,6 +1539,135 @@ describe('buildWorkspaceHostBootstrap', () => {
     }
   });
 
+  // WI-10006258: the first bootc host to reach the hosted-PTY loopback was refused
+  // `Permission denied (publickey)` and the die path carried no evidence of why.
+  const shellFunction = (script: string, name: string): string => {
+    const lines = script.split('\n');
+    const start = lines.findIndex((l) => l === `${name}() {`);
+    expect(start, `${name}() is rendered`).toBeGreaterThanOrEqual(0);
+    const end = lines.findIndex((l, i) => i > start && l === '}');
+    return lines.slice(start, end + 1).join('\n');
+  };
+  const withStubs = (stubs: Record<string, string>, body: string) => {
+    const dir = mkdtempSync(join(tmpdir(), 'wh-stubs-'));
+    try {
+      for (const [name, sh] of Object.entries(stubs)) {
+        writeFileSync(join(dir, name), `#!/bin/sh\n${sh}\n`);
+        chmodSync(join(dir, name), 0o755);
+      }
+      return spawnSync('bash', ['-c', `set -euo pipefail\nPATH=${JSON.stringify(dir)}:$PATH\n${body}`], {
+        encoding: 'utf8',
+        timeout: 10_000,
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  it('dumps the boot AVC denials on every die on an SELinux host, and stays silent without SELinux (WI-10006258)', () => {
+    const script = buildWorkspaceHostBootstrap(bootcInput());
+    const die = script.split('\n').find((l) => l.startsWith('die() {'));
+    expect(die).toContain('selinux_denials >&2');
+    const prelude = [
+      'log() { printf "[workspace-host-bootstrap] %s\\n" "$1"; }',
+      shellFunction(script, 'selinux_denials'),
+      die,
+      'die "hosted customer PTY loopback authentication or isolation failed"',
+    ].join('\n');
+    const avc = 'type=AVC msg=audit(1): avc:  denied  { read } for comm="sshd-session" name="authorized_keys" tcontext=system_u:object_r:user_home_dir_t:s0';
+    const enforcing = withStubs(
+      { selinuxenabled: 'exit 0', journalctl: `printf '%s\\n' 'noise' '${avc}'` },
+      prelude,
+    );
+    expect(enforcing.status).toBe(1);
+    expect(enforcing.stderr).toContain('ERROR: hosted customer PTY loopback authentication or isolation failed');
+    expect(enforcing.stderr).toContain('--- SELinux denials this boot ---');
+    expect(enforcing.stderr).toContain('name="authorized_keys"');
+    expect(enforcing.stderr).not.toContain('noise');
+
+    const ubuntu = withStubs({ selinuxenabled: 'exit 1', journalctl: `printf '%s\\n' '${avc}'` }, prelude);
+    expect(ubuntu.status).toBe(1);
+    expect(ubuntu.stderr).not.toContain('SELinux denials');
+  });
+
+  it('relabels the workspace .ssh to the policy default on SELinux hosts, logging both labels (WI-10006258)', () => {
+    const lines = buildWorkspaceHostBootstrap(bootcInput()).split('\n');
+    const write = lines.findIndex((l) => l.includes('base64 -d > "/home/$WORKSPACE_USER/.ssh/authorized_keys"'));
+    const ptyKey = lines.findIndex((l) => l.includes('>> "/home/$WORKSPACE_USER/.ssh/authorized_keys"'));
+    const guard = lines.findIndex((l) => l === 'if command -v selinuxenabled >/dev/null 2>&1 && selinuxenabled; then');
+    const restore = lines.findIndex((l) => l.includes('restorecon -RF "/home/$WORKSPACE_USER/.ssh"'));
+    const dropIn = lines.findIndex((l) => l.startsWith('cat > /etc/ssh/sshd_config.d/'));
+    // After every write into ~/.ssh, before sshd is reconfigured.
+    expect(write).toBeGreaterThan(0);
+    expect(ptyKey).toBeGreaterThan(write);
+    expect(guard).toBeGreaterThan(ptyKey);
+    expect(restore).toBe(guard + 2);
+    expect(dropIn).toBeGreaterThan(restore);
+
+    const block = lines.slice(guard, guard + 5).join('\n');
+    expect(block.split('\n')[4]).toBe('fi');
+    const log = 'log() { printf "[workspace-host-bootstrap] %s\\n" "$1"; }\ndie() { echo "DIE $1" >&2; exit 1; }';
+    const recorded = withStubs(
+      {
+        selinuxenabled: 'exit 0',
+        restorecon: 'echo "restorecon $*"',
+        stat: 'for p in "$@"; do case "$p" in -*|%*) ;; *) echo "$p=ctx" ;; esac; done',
+      },
+      `WORKSPACE_USER=papercusp-workspace\n${log}\n${block}`,
+    );
+    expect(recorded.status).toBe(0);
+    expect(recorded.stdout).toContain('selinux labels before restorecon: /home/papercusp-workspace=ctx');
+    expect(recorded.stdout).toContain('restorecon -RF /home/papercusp-workspace/.ssh');
+    expect(recorded.stdout).toContain('selinux labels after restorecon:');
+
+    const skipped = withStubs(
+      { selinuxenabled: 'exit 1', restorecon: 'echo "restorecon $*"' },
+      `WORKSPACE_USER=papercusp-workspace\n${log}\n${block}`,
+    );
+    expect(skipped.status).toBe(0);
+    expect(skipped.stdout).not.toContain('restorecon');
+  });
+
+  it('a refused hosted-PTY loopback prints its sshd evidence before dying (WI-10006258)', () => {
+    const script = buildWorkspaceHostBootstrap(bootcInput());
+    const loopback = script.split('\n').find((l) => l.includes('-l "$WORKSPACE_USER" 127.0.0.1'));
+    expect(loopback).toMatch(
+      /\|\| \{ pty_loopback_evidence >&2; die "hosted customer PTY loopback authentication or isolation failed"; \}$/,
+    );
+    const run = withStubs(
+      {
+        sshd: `printf '%s\\n' 'usepam yes' 'strictmodes yes' 'authorizedkeysfile .ssh/authorized_keys' 'port 22'`,
+        journalctl: `echo 'Authentication refused: bad ownership or modes for directory /var/home/papercusp-workspace'`,
+        getent: 'echo "papercusp-workspace:x:1001:1001::/home/papercusp-workspace:/bin/bash"',
+        passwd: 'echo "papercusp-workspace LK"',
+        stat: 'echo "stat $*"',
+      },
+      `WORKSPACE_USER=papercusp-workspace\n${shellFunction(script, 'pty_loopback_evidence')}\npty_loopback_evidence`,
+    );
+    expect(run.status).toBe(0);
+    expect(run.stdout).toContain('--- hosted PTY loopback evidence ---');
+    expect(run.stdout).toContain('strictmodes yes');
+    expect(run.stdout).not.toContain('port 22');
+    expect(run.stdout).toContain('Authentication refused: bad ownership');
+    expect(run.stdout).toContain('%C');
+  });
+
+  it('writes the sshd drop-in as 05- so vendor 50- drop-ins cannot override it, and attests X11 off (WI-10006176)', () => {
+    for (const script of [buildWorkspaceHostBootstrap(bootcInput()), buildWorkspaceHostBootstrap(input())]) {
+      const lines = script.split('\n');
+      // sshd keeps the FIRST value per keyword; CentOS 50-redhat.conf sets X11Forwarding yes.
+      const legacy = lines.indexOf('rm -f /etc/ssh/sshd_config.d/60-papercusp-workspace.conf');
+      const dropIn = lines.indexOf('cat > /etc/ssh/sshd_config.d/05-papercusp-workspace.conf <<PAPERCUSP_SSH');
+      expect(legacy).toBeGreaterThan(0);
+      expect(dropIn).toBe(legacy + 1);
+      expect(lines.slice(dropIn, lines.indexOf('PAPERCUSP_SSH', dropIn))).toContain('X11Forwarding no');
+      expect(script).not.toMatch(/cat > \/etc\/ssh\/sshd_config\.d\/60-/);
+      expect(lines).toContain(
+        'grep -Fx "x11forwarding no" <<<"$SSHD_POLICY" >/dev/null || die "SSH X11 forwarding must be off; a vendor sshd drop-in is overriding the workspace policy"',
+      );
+    }
+  });
+
   it('attests bootc runtime confidentiality without refusing the image a+rx executables', () => {
     const oldShape = '-type f -o -type d \\) -perm -0004';
     const ubuntuLines = buildWorkspaceHostBootstrap(input()).split('\n');
@@ -1633,6 +1762,9 @@ describe('buildWorkspaceHostBootstrap', () => {
       const harness = [
         'set -euo pipefail',
         `STATE_ROOT=${JSON.stringify(stateRoot)}`,
+        // The AVC dump is shared with die() (WI-10006258) and only speaks on an SELinux host.
+        'selinuxenabled() { return 0; }',
+        shellFunction(lines.join('\n'), 'selinux_denials'),
         ...lines.slice(from, to),
         'start_sampler',
         'sleep 1',

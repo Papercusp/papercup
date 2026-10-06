@@ -60,7 +60,8 @@ export function historicalShipmentRefusal(
   return null;
 }
 
-async function readWitness(
+/** Exported for the real-PostgreSQL guard (restore-historical-shipment.integration.test.ts). */
+export async function readHistoricalShipmentWitness(
   scope: { workspaceId: string; harnessSlug: string },
   slug: string,
 ): Promise<HistoricalShipmentWitness | null> {
@@ -83,9 +84,10 @@ async function readWitness(
              ) AS local_shipment_captured,
              -- substrate_outbox is pruned within hours (WI-10006248), so the capture
              -- above expires long before a rollback may be noticed. The durable pair:
-             -- the head revision is attributed (a remote replay writes no revision
-             -- row) and its own author emitted the local-origin shipped event.
-             (head.author_id IS NOT NULL AND head.author_kind IS NOT NULL AND EXISTS (
+             -- the head revision (a remote replay writes no revision row, and
+             -- author_id is NOT NULL by schema) and the local-origin shipped event its
+             -- own author emitted within minutes of writing it.
+             (EXISTS (
                SELECT 1 FROM harness_shared.coord_event_log e
                 WHERE e.workspace_id = p.workspace_id AND e.surface = 'plan-events'
                   AND (e.harness_slug IS NULL OR e.harness_slug = p.harness_slug)
@@ -111,7 +113,8 @@ async function readWitness(
              ) AS rubric_retired_with_shipment
         FROM harness_shared.harness_plans p
         JOIN LATERAL (
-          SELECT r.seq, r.content_snapshot, r.content_hash FROM harness_shared.plan_revisions r
+          SELECT r.seq, r.content_snapshot, r.content_hash, r.author_id, r.author_kind, r.created_at
+            FROM harness_shared.plan_revisions r
            WHERE r.workspace_id = p.workspace_id AND r.harness_slug = p.harness_slug
              AND r.plan_slug = p.plan_slug ORDER BY r.seq DESC LIMIT 1
         ) head ON true
@@ -136,7 +139,7 @@ export async function restoreHistoricalShipment(ctx: PlanRevisionCtx, request: H
     harnessSlug: request.harnessSlug,
     ...((ctx as { workspaceId?: string }).workspaceId ? { workspaceId: (ctx as { workspaceId: string }).workspaceId } : {}),
   });
-  const witness = await readWitness(scope, request.slug);
+  const witness = await readHistoricalShipmentWitness(scope, request.slug);
   const refusal = historicalShipmentRefusal(witness, request);
   if (refusal || !witness) return { ok: false as const, code: refusal ?? 'historical_shipment_not_found' };
   const revision = planRevisionCapture(ctx, request.slug,

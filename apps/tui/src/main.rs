@@ -6817,7 +6817,7 @@ async fn send_su_turn_with_client(
             );
             return;
         }
-        serde_json::json!({
+        let mut command = serde_json::json!({
             "schema": crate::su_session::SU_SESSION_SCHEMA,
             "protocolVersion": crate::su_session::SU_SESSION_PROTOCOL_VERSION,
             "type": "owner_turn",
@@ -6826,7 +6826,13 @@ async fn send_su_turn_with_client(
             "target": identity,
             "turnId": format!("pui-turn-{}", pending.command_id),
             "content": pending.content,
-        })
+        });
+        // pui-chat-first-ux P-026 / D-025: the /model pick rides on this turn;
+        // omitted keeps the model the session already runs on.
+        if let Some(model) = pending.model.as_deref() {
+            command["model"] = serde_json::Value::String(model.to_string());
+        }
+        command
     };
     let identity: crate::su_session::SuSessionIdentity =
         match serde_json::from_value(command["target"].clone()) {

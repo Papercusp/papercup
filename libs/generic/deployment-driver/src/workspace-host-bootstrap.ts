@@ -2592,7 +2592,17 @@ export function buildWorkspaceHostBootstrap(
     "",
     'log() { printf "[workspace-host-bootstrap] %s\\n" "$1"; }',
     // Both record what the status report (below) says about a failure.
-    'die() { log "ERROR: $1" >&2; BOOTSTRAP_ERROR="$1"; exit 1; }',
+    // Every die on an SELinux host carries the boot's AVC denials (WI-10006258): a bootc failure
+    // whose real cause is a label otherwise reads as an unexplained refusal, and each unexplained
+    // refusal cost a ~45 min clean-room cycle. Silent where SELinux is absent (Ubuntu).
+    'selinux_denials() {',
+    '  command -v selinuxenabled >/dev/null 2>&1 && selinuxenabled || return 0',
+    '  echo "[workspace-host-bootstrap] --- SELinux denials this boot ---"',
+    // Kernel ring + audit log only: AVC denials land in one of the two (auditd present or
+    // not), and a whole-boot `journalctl -b` scan measured 10.7s on a busy host.
+    '  { journalctl -b -k --no-pager -o cat 2>/dev/null; cat /var/log/audit/audit.log 2>/dev/null; } | grep -F "avc:" | grep -F denied | tail -n 10 | cut -c1-400 || echo "(none)"',
+    '}',
+    'die() { log "ERROR: $1" >&2; BOOTSTRAP_ERROR="$1"; selinux_denials >&2 || true; exit 1; }',
     'phase() { log "phase:$1"; BOOTSTRAP_PHASE="$1"; }',
     // Bounded retry for the few commands that reach the network before anything else has. A fresh
     // boot can lose its first egress attempts (WI-10002837: every archive fetch failed ~110s after
@@ -2773,7 +2783,22 @@ export function buildWorkspaceHostBootstrap(
     // correctly-hardened sshd are indistinguishable from a healthy host until someone tries
     // to reach it, which is exactly how this went undetected.
     'test -s "/home/$WORKSPACE_USER/.ssh/authorized_keys" || die "workspace authorized_keys is empty; the host would be unreachable after sshd hardening"',
-    "cat > /etc/ssh/sshd_config.d/60-papercusp-workspace.conf <<PAPERCUSP_SSH",
+    // SELinux hosts (bootc): ~/.ssh and authorized_keys were created above by THIS script's
+    // domain (the SSM agent's), so they carry whatever that domain's create rules give them,
+    // not the policy's ssh_home_t, and sshd_t may be refused reading them (WI-10006258).
+    // Relabel to the policy default, logging both labels so a run shows which one sshd saw.
+    'if command -v selinuxenabled >/dev/null 2>&1 && selinuxenabled; then',
+    '  log "selinux labels before restorecon: $(stat -L -c "%n=%C" "/home/$WORKSPACE_USER" "/home/$WORKSPACE_USER/.ssh" "/home/$WORKSPACE_USER/.ssh/authorized_keys" 2>&1 | paste -sd " " -)"',
+    '  restorecon -RF "/home/$WORKSPACE_USER/.ssh" || die "could not restore the SELinux labels of the workspace .ssh directory"',
+    '  log "selinux labels after restorecon: $(stat -L -c "%n=%C" "/home/$WORKSPACE_USER/.ssh" "/home/$WORKSPACE_USER/.ssh/authorized_keys" 2>&1 | paste -sd " " -)"',
+    'fi',
+    // 05-, not 60-: sshd keeps the FIRST value it reads for each keyword, and CentOS (bootc)
+    // ships 50-redhat.conf with `X11Forwarding yes`, so a 60- drop-in silently lost that key
+    // (WI-10006176, measured with in-image `sshd -T`). Sorting before every vendor drop-in
+    // makes these values win on both bases. The legacy name is removed so an upgraded host
+    // does not keep a stale copy.
+    "rm -f /etc/ssh/sshd_config.d/60-papercusp-workspace.conf",
+    "cat > /etc/ssh/sshd_config.d/05-papercusp-workspace.conf <<PAPERCUSP_SSH",
     "# Managed by Papercusp workspace-host bootstrap.",
     "PasswordAuthentication no",
     "KbdInteractiveAuthentication no",
@@ -3267,10 +3292,7 @@ export function buildWorkspaceHostBootstrap(
     '  fi',
     '  echo "[workspace-host-bootstrap] --- recent logs under $STATE_ROOT ---" >&2',
     '  find "$STATE_ROOT" -xdev -type f \\( -name "*.log" -o -name "logfile" -o -name "postmaster.log" \\) -mmin -20 2>/dev/null | head -n 6 | while read -r f; do echo "## $f" >&2; tail -n 15 "$f" 2>&1 | cut -c1-240 >&2; done || true',
-    '  echo "[workspace-host-bootstrap] --- SELinux denials this boot ---" >&2',
-    // Kernel ring + audit log only: AVC denials land in one of the two (auditd present or
-    // not), and a whole-boot `journalctl -b` scan measured 10.7s on a busy host.
-    '  { journalctl -b -k --no-pager -o cat 2>/dev/null; cat /var/log/audit/audit.log 2>/dev/null; } | grep -F "avc:" | grep -F denied | tail -n 10 >&2 || echo "(none)" >&2',
+    '  selinux_denials >&2 || true',
     '}',
     'if service_restart_needed; then',
     '  start_sampler',
@@ -3380,6 +3402,7 @@ export function buildWorkspaceHostBootstrap(
     'grep -Fq "$CONDUIT_NODE" "$CREDENTIAL_DELIVERY_CONDUIT" || die "credential delivery conduit does not pin the bundled interpreter"',
     'SSHD_POLICY="$(sshd -T -C user="$WORKSPACE_USER",host=localhost,addr=127.0.0.1)"',
     'grep -Fx "allowtcpforwarding local" <<<"$SSHD_POLICY" >/dev/null || die "SSH TCP forwarding must be local-only"',
+    'grep -Fx "x11forwarding no" <<<"$SSHD_POLICY" >/dev/null || die "SSH X11 forwarding must be off; a vendor sshd drop-in is overriding the workspace policy"',
     'grep -Fx "permitopen 127.0.0.1:$SERVICE_PORT" <<<"$SSHD_POLICY" >/dev/null || die "SSH forwarding must be restricted to the loopback operator"',
     // EI-22185970114422986 — the reachability property, observed WHERE `healthy` IS CLAIMED.
     //
@@ -3403,9 +3426,20 @@ export function buildWorkspaceHostBootstrap(
     '[[ "$(stat -c "%U:%G:%a" "$HOSTED_PTY_KNOWN_HOSTS")" == "$SERVICE_USER:$SERVICE_GROUP:600" ]] || die "hosted PTY host pin ownership or mode is unsafe at attest time"',
     'runuser -u "$WORKSPACE_USER" -- test ! -r "$HOSTED_PTY_SSH_KEY" || die "customer can read hosted PTY private key"',
     'runuser -u "$WORKSPACE_USER" -- test ! -r "$STATE_ROOT/embedded-pg" || die "customer PTY identity can read embedded database state"',
+    // A refused loopback must say WHY (WI-10006258): the account, the label/owner/mode of every
+    // path sshd's StrictModes and SELinux check, sshd's effective auth settings, and sshd's own
+    // log lines ("Authentication refused: ..."). die() then adds the AVC denials.
+    'pty_loopback_evidence() {',
+    '  echo "[workspace-host-bootstrap] --- hosted PTY loopback evidence ---"',
+    '  getent passwd "$WORKSPACE_USER" || true',
+    '  passwd -S "$WORKSPACE_USER" 2>&1 || true',
+    '  stat -L -c "%n %U:%G %a %C" / /home "/home/$WORKSPACE_USER" "/home/$WORKSPACE_USER/.ssh" "/home/$WORKSPACE_USER/.ssh/authorized_keys" 2>&1 || true',
+    '  sshd -T -C user="$WORKSPACE_USER",host=localhost,addr=127.0.0.1 2>&1 | grep -E "^(usepam|strictmodes|pubkeyauthentication|authorizedkeysfile|authenticationmethods|allowusers|pubkeyacceptedalgorithms) " || true',
+    '  journalctl -b --no-pager -o cat -u sshd -u ssh -n 20 2>/dev/null | cut -c1-300 || true',
+    '}',
     // Permissions checked via runuser alone would miss a bad key, host pin or sshd policy.
     // Exercise the actual customer PTY identity switch before attesting the host healthy.
-    `timeout -k 5 30 runuser -u "$SERVICE_USER" -- env HOME="$STATE_ROOT" PATH=/usr/bin:/bin /usr/bin/ssh -F /dev/null -tt -i "$HOSTED_PTY_SSH_KEY" -o "UserKnownHostsFile=$HOSTED_PTY_KNOWN_HOSTS" -o GlobalKnownHostsFile=/dev/null -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o IdentitiesOnly=yes -o BatchMode=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o ForwardAgent=no -o ClearAllForwardings=yes -o ConnectTimeout=10 -l "$WORKSPACE_USER" 127.0.0.1 ${shellQuote(hostedPtySmoke)} || die "hosted customer PTY loopback authentication or isolation failed"`,
+    `timeout -k 5 30 runuser -u "$SERVICE_USER" -- env HOME="$STATE_ROOT" PATH=/usr/bin:/bin /usr/bin/ssh -F /dev/null -tt -i "$HOSTED_PTY_SSH_KEY" -o "UserKnownHostsFile=$HOSTED_PTY_KNOWN_HOSTS" -o GlobalKnownHostsFile=/dev/null -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o IdentitiesOnly=yes -o BatchMode=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o ForwardAgent=no -o ClearAllForwardings=yes -o ConnectTimeout=10 -l "$WORKSPACE_USER" 127.0.0.1 ${shellQuote(hostedPtySmoke)} || { pty_loopback_evidence >&2; die "hosted customer PTY loopback authentication or isolation failed"; }`,
     'grep -Fx "pubkeyauthentication yes" <<<"$SSHD_POLICY" >/dev/null || die "sshd would refuse public-key authentication for the workspace user"',
     'grep -Eq "^authorizedkeysfile .*\\.ssh/authorized_keys" <<<"$SSHD_POLICY" || die "sshd does not read the authorized_keys this bootstrap wrote"',
     'OBSERVED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"',

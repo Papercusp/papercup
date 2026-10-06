@@ -31,7 +31,12 @@ const H = vi.hoisted(() => ({
   dispatcherPaused: false,
   /** Every external binding in the admin snapshot is disarmed. */
   externalDisarmed: false,
+  /** The external bindings belong to an unreviewed trigger pack (P-013): arming answers 409. */
+  packOwned: false,
 }));
+
+const PACK_INSTALLATION_ID = '33333333-3333-4333-8333-333333333333';
+const PACK_FINGERPRINT = 'f'.repeat(64);
 
 /** 230 triggered plans, 12 of them urgent — the shape measured in the desktop shell. */
 const BULK_PLANS = Array.from({ length: 230 }, (_, i) => ({
@@ -253,12 +258,45 @@ beforeEach(() => {
   H.gmailSource = false;
   H.dispatcherPaused = false;
   H.externalDisarmed = false;
+  H.packOwned = false;
   vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
     if (init?.method === 'POST' && String(_input).includes('/agent-chats')) {
       return new Response(JSON.stringify({ id: 'workflow-composer-chat-1' }), { status: 200 });
     }
     if (init?.method === 'PATCH') {
-      const request = JSON.parse(String(init.body ?? '{}')) as { op?: string; id?: string };
+      const request = JSON.parse(String(init.body ?? '{}')) as { op?: string; id?: string; armed?: boolean };
+      if (H.packOwned && request.op === 'set-armed' && request.armed === true) {
+        return new Response(JSON.stringify({
+          ok: false,
+          error: 'trigger_pack_review_required',
+          detail: 'binding belongs to an unreviewed trigger pack',
+          pack: { installationId: PACK_INSTALLATION_ID, pluginName: 'gmail-triage' },
+        }), { status: 409 });
+      }
+      if (request.op === 'pack-review') {
+        return new Response(JSON.stringify({
+          ok: true,
+          review: {
+            installationId: PACK_INSTALLATION_ID,
+            fingerprint: PACK_FINGERPRINT,
+            reviewedFingerprint: null,
+            reviewedBy: null,
+            reviewedAt: null,
+            current: false,
+            bindingCount: 2,
+            review: {
+              pluginName: 'gmail-triage', pluginVersion: '1.2.0', harnessSlug: 'papercusp', status: 'configured',
+              capabilities: ['mail.draft'], oauth: [{ provider: 'google', scopes: ['gmail.readonly'] }],
+              bindings: [], entryPoints: [], plans: [], recipients: [], unmet: [],
+            },
+          },
+        }), { status: 200 });
+      }
+      if (request.op === 'pack-arm') {
+        return new Response(JSON.stringify({
+          ok: true, installationId: PACK_INSTALLATION_ID, fingerprint: PACK_FINGERPRINT, armedBindingIds: ['a', 'b'],
+        }), { status: 200 });
+      }
       if (request.op === 'attach-external') {
         return new Response(JSON.stringify({ ok: true, binding: { id: '22222222-2222-4222-8222-222222222222' } }), { status: 200 });
       }
@@ -522,6 +560,23 @@ describe('<AdvWorkflowsTab> — the inspector is the detail surface (D-002)', ()
       expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'PATCH'
         && String(init.body).includes('11111111-1111-4111-8111-111111111111')
         && String(init.body).includes('"armed":false'))).toBe(true);
+    });
+  });
+
+  it('arms a pack-owned binding only through the pack review, against the reviewed fingerprint (P-013)', async () => {
+    H.externalDisarmed = true;
+    H.packOwned = true;
+    renderTabOnDigest();
+    const inspector = await screen.findByLabelText('Workflow inspector');
+    fireEvent.click(within(inspector).getByRole('button', { name: 'Arm ext:slack:message' }));
+    await waitFor(() => {
+      const bodies = vi.mocked(fetch).mock.calls
+        .filter(([, init]) => init?.method === 'PATCH')
+        .map(([, init]) => JSON.parse(String(init?.body)) as Record<string, unknown>);
+      expect(bodies.map((body) => body.op)).toEqual(['set-armed', 'pack-review', 'pack-arm']);
+      expect(bodies[2]).toEqual({
+        op: 'pack-arm', installationId: PACK_INSTALLATION_ID, fingerprint: PACK_FINGERPRINT, confirm: true,
+      });
     });
   });
 

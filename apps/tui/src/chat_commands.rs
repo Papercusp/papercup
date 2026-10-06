@@ -24,6 +24,8 @@ pub struct SlashCommand {
 pub enum SlashKind {
     Help,
     Resume,
+    Model,
+    Effort,
     Details,
     Expand,
     Copy,
@@ -42,6 +44,18 @@ pub const COMMANDS: &[SlashCommand] = &[
         name: "resume",
         summary: "Switch to another conversation (Ctrl+S)",
         kind: SlashKind::Resume,
+    },
+    // pui-chat-first-ux P-026: both apply from the next turn of a running
+    // conversation, or set the model a new one starts on.
+    SlashCommand {
+        name: "model",
+        summary: "Switch the model, from the next turn",
+        kind: SlashKind::Model,
+    },
+    SlashCommand {
+        name: "effort",
+        summary: "Set the reasoning effort, from the next turn",
+        kind: SlashKind::Effort,
     },
     SlashCommand {
         name: "expand",
@@ -138,7 +152,10 @@ mod tests {
         let all: Vec<_> = matching("").iter().map(|c| c.name).collect();
         assert_eq!(all, COMMANDS.iter().map(|c| c.name).collect::<Vec<_>>());
         let e: Vec<_> = matching("e").iter().map(|c| c.name).collect();
-        assert_eq!(e, vec!["expand", "exit"]);
+        assert_eq!(e, vec!["effort", "expand", "exit"]);
+        let ex: Vec<_> = matching("ex").iter().map(|c| c.name).collect();
+        assert_eq!(ex, vec!["expand", "exit"]);
+        assert_eq!(matching("mo")[0].kind, SlashKind::Model);
         assert!(matching("zzz").is_empty());
         assert_eq!(matching("HE")[0].name, "help", "case-insensitive");
     }
@@ -146,9 +163,9 @@ mod tests {
     #[test]
     fn resolve_prefers_the_exact_name_then_the_highlighted_row() {
         assert_eq!(resolve("exit", 0).map(|c| c.kind), Some(SlashKind::Exit));
-        assert_eq!(resolve("e", 1).map(|c| c.kind), Some(SlashKind::Exit));
+        assert_eq!(resolve("ex", 1).map(|c| c.kind), Some(SlashKind::Exit));
         assert_eq!(
-            resolve("e", 9).map(|c| c.kind),
+            resolve("ex", 9).map(|c| c.kind),
             Some(SlashKind::Exit),
             "clamped"
         );

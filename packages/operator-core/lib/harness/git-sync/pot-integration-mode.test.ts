@@ -265,6 +265,9 @@ describe('choosePotIntegrationMode (P-014: choosing working-copy mode creates th
       .fn()
       .mockImplementation(async (slug: string, url: string) => ({ ok: true, slug, forkRemote: url, cleared: false })),
     setMode: vi.fn().mockImplementation(async (i: { mode: string | null }) => ({ ok: true, mode: i.mode })),
+    // P-019 seams: a pot that is not yet a working copy, and no standing PR.
+    readMode: vi.fn().mockResolvedValue({ mode: 'direct', source: 'absent' }),
+    findOpenStandingPr: vi.fn().mockResolvedValue({ ok: true, pr: null }),
   });
 
   it('creates the fork, records it as fork_remote, then sets the mode with that fork', async () => {
@@ -344,5 +347,83 @@ describe('choosePotIntegrationMode (P-014: choosing working-copy mode creates th
       remoteName: POT_FORK_REMOTE_NAME,
       url: FORK,
     });
+  });
+});
+
+describe('choosePotIntegrationMode (P-019: leaving a working copy waits for its open PR)', () => {
+  const PR = { number: 7, url: 'https://github.com/acme/widget/pull/7' };
+  const input = (over: Partial<ChoosePotIntegrationModeInput> = {}): ChoosePotIntegrationModeInput => ({
+    workspaceId: 'ws',
+    potHomeSlug: 'pot',
+    harnessSlug: 'widget',
+    mode: 'direct',
+    greenCmd: 'npm test',
+    forkRemote: FORK,
+    upstreamRemote: 'git@github.com:acme/widget.git',
+    ...over,
+  });
+  const deps = (
+    current: { mode: 'direct' | 'review'; source: 'set' | 'absent' | 'error' } = { mode: 'review', source: 'set' },
+    lookup: unknown = { ok: true, pr: PR },
+  ) => ({
+    ensureFork: vi.fn(),
+    setForkRemote: vi.fn(),
+    setMode: vi.fn().mockImplementation(async (i: { mode: string | null }) => ({ ok: true, mode: i.mode })),
+    readMode: vi.fn().mockResolvedValue(current),
+    findOpenStandingPr: vi.fn().mockResolvedValue(lookup),
+  });
+
+  it.each([['direct' as const], [null]])(
+    'a working copy with an open standing PR: switching to %s is refused, naming the PR, and nothing is stored',
+    async (mode) => {
+      const d = deps();
+      const r = await choosePotIntegrationMode(input({ mode }), d);
+      expect(r).toMatchObject({ ok: false, error: 'standing_pr_open' });
+      expect(!r.ok && r.message).toContain('#7');
+      expect(!r.ok && r.message).toContain(PR.url);
+      expect(d.setMode).not.toHaveBeenCalled();
+      // the lookup is asked about the MAIN repository, normalised from the registry remote
+      expect(d.findOpenStandingPr).toHaveBeenCalledWith('github.com/acme/widget');
+      expect(d.readMode).toHaveBeenCalledWith('ws', 'pot');
+    },
+  );
+
+  it('once the PR is merged or closed (none open), the switch to straight in goes through', async () => {
+    const d = deps({ mode: 'review', source: 'set' }, { ok: true, pr: null });
+    expect(await choosePotIntegrationMode(input(), d)).toEqual({ ok: true, mode: 'direct', fork: null });
+    expect(d.setMode).toHaveBeenCalledWith(expect.objectContaining({ mode: 'direct' }));
+  });
+
+  it('fails CLOSED: when the PR cannot be checked, the pot stays in its working copy', async () => {
+    const d = deps({ mode: 'review', source: 'set' }, { ok: false, error: 'rate limited' });
+    const r = await choosePotIntegrationMode(input(), d);
+    expect(r).toMatchObject({ ok: false, error: 'standing_pr_unknown' });
+    expect(!r.ok && r.message).toContain('rate limited');
+    expect(d.setMode).not.toHaveBeenCalled();
+  });
+
+  it('an unreadable current mode is treated as a possible working copy (the PR is still checked)', async () => {
+    const d = deps({ mode: 'direct', source: 'error' });
+    expect(await choosePotIntegrationMode(input(), d)).toMatchObject({ ok: false, error: 'standing_pr_open' });
+    expect(d.findOpenStandingPr).toHaveBeenCalledTimes(1);
+  });
+
+  it('a pot that is already straight in is never held up by a PR lookup', async () => {
+    const d = deps({ mode: 'direct', source: 'set' });
+    expect(await choosePotIntegrationMode(input(), d)).toEqual({ ok: true, mode: 'direct', fork: null });
+    expect(d.findOpenStandingPr).not.toHaveBeenCalled();
+  });
+
+  it('switching INTO a working copy never consults the PR lookup', async () => {
+    const d = deps();
+    expect(await choosePotIntegrationMode(input({ mode: 'review' }), d)).toEqual({ ok: true, mode: 'review', fork: null });
+    expect(d.readMode).not.toHaveBeenCalled();
+    expect(d.findOpenStandingPr).not.toHaveBeenCalled();
+  });
+
+  it('no main repository on GitHub ⇒ no standing PR can exist, so the switch goes through', async () => {
+    const d = deps();
+    expect(await choosePotIntegrationMode(input({ upstreamRemote: null }), d)).toMatchObject({ ok: true, mode: 'direct' });
+    expect(d.findOpenStandingPr).not.toHaveBeenCalled();
   });
 });

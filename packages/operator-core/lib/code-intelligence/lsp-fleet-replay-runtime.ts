@@ -512,9 +512,65 @@ export function replayLoadedRuntime(pid: number, identity: string | null, cmdlin
   const bootstrap = receipts[0];
   const evalIndex = cmdline.indexOf('--eval');
   const evalSha256 = evalIndex < 0 ? null : replayHash(cmdline[evalIndex + 1] ?? '');
+  // A descendant is not a second trusted root. Its literal eval bytes must be
+  // authorized by a currently witnessed parent's launch and kernel ancestry,
+  // recursively ending at the predeclared root command line.
+  const anchored = (childPid: number, childIdentity: string | null, childCommand: string[],
+    rows: Record<string, unknown>[], seen = new Set<number>()): boolean => {
+    if (seen.has(childPid) || seen.size >= 64) return false;
+    seen.add(childPid);
+    const boot = rows[0];
+    const index = childCommand.indexOf('--eval');
+    const codeHash = index < 0 ? null : replayHash(childCommand[index + 1] ?? '');
+    if (!childIdentity || !boot || boot.kind !== 'bootstrap' || boot.nodeOptions !== '' ||
+        boot.pid !== childPid || boot.identity !== childIdentity || boot.runId !== witness.runId ||
+        boot.evalSha256 !== codeHash || !codeHash) return false;
+    if (!boot.parent) return witness.bootstraps[String(boot.entry)] === codeHash;
+    try {
+      const parent = boot.parent as { pid: number; identity: string; evalSha256: string; launchId: string };
+      if (!Number.isSafeInteger(parent.pid) || reader.identity(parent.pid) !== parent.identity) return false;
+      const parentText = reader.text(join(witness.directory, `${parent.pid}.jsonl`));
+      if (!parentText.endsWith('\n')) return false;
+      const parentRows: Record<string, unknown>[] = parentText.trim().split('\n').map(line => JSON.parse(line));
+      const parentCommand = reader.text(`/proc/${parent.pid}/cmdline`).split('\0').filter(Boolean);
+      if (parentRows[0]?.evalSha256 !== parent.evalSha256 ||
+          !anchored(parent.pid, parent.identity, parentCommand, parentRows, seen) ||
+          !parentRows.some(row => row.kind === 'ready') || parentRows.some(row => row.kind === 'unknown') ||
+          parentRows.some(row => row.pid !== parent.pid || row.identity !== parent.identity || row.runId !== witness.runId ||
+            row.schemaVersion !== 'lsp-replay-runtime-receipt-v1')) return false;
+      const launches = parentRows.filter(row => row.kind === 'child-launch' && row.launchId === parent.launchId);
+      const started = parentRows.filter(row => row.kind === 'child-started' && row.launchId === parent.launchId);
+      if (launches.length !== 1 || started.length !== 1) return false;
+      const launch = launches[0];
+      const child = started[0];
+      if (launch.entry !== boot.entry || launch.evalSha256 !== codeHash ||
+          !Array.isArray(launch.nodeArgv) || JSON.stringify(launch.nodeArgv) !== JSON.stringify(childCommand.slice(1)) ||
+          !Number.isSafeInteger(child.childPid) || typeof child.childIdentity !== 'string') return false;
+      const ppid = (processPid: number) => {
+        const stat = reader.text(`/proc/${processPid}/stat`);
+        return Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[1]);
+      };
+      if (ppid(childPid) !== boot.ppid || reader.identity(Number(boot.ppid)) !== boot.parentIdentity) return false;
+      if (launch.route !== 'systemd-scope')
+        return ['spawn', 'fork'].includes(String(launch.route)) && child.childPid === childPid &&
+          child.childIdentity === childIdentity && boot.ppid === parent.pid && boot.parentIdentity === parent.identity;
+      // Scope launchers may exec the payload or retain a short intermediary
+      // chain. A manager-parented service or reparented process fails closed.
+      let current = childPid;
+      const ancestors = new Set<number>();
+      while (!ancestors.has(current) && ancestors.size < 16) {
+        ancestors.add(current);
+        if (current === child.childPid)
+          return reader.identity(current) === child.childIdentity && ppid(current) === parent.pid;
+        current = ppid(current);
+        if (!Number.isSafeInteger(current) || current < 1 || current === parent.pid) break;
+      }
+      return false;
+    } catch { return false; }
+  };
   if (!bootstrap || bootstrap.kind !== 'bootstrap' || bootstrap.nodeOptions !== '' ||
       !evalSha256 || bootstrap.evalSha256 !== evalSha256 ||
-      witness.bootstraps[String(bootstrap.entry)] !== evalSha256) unknown.push('unwitnessed-runtime-bootstrap');
+      !anchored(pid, identity, cmdline, receipts)) unknown.push('unwitnessed-runtime-bootstrap');
   if (!receipts.some(row => row.kind === 'ready')) unknown.push('runtime-recorder-not-ready');
   const loads = receipts.filter(row => ['esm-load-return', 'commonjs-compile', 'json-load'].includes(String(row.kind)));
   if (!loads.length || !loads.some(row => row.path === bootstrap?.entry)) unknown.push('runtime-entry-not-loaded');
@@ -525,7 +581,7 @@ export function replayLoadedRuntime(pid: number, identity: string | null, cmdlin
     if (['esm-load-return', 'commonjs-compile', 'json-load', 'file-read'].includes(String(row.kind))) {
       if (typeof row.path !== 'string' || witness.files[row.path] !== row.sha256)
         unknown.push(`unfrozen-loaded-bytes:${String(row.path)}`);
-    } else if (!['bootstrap', 'ready', 'native-load', 'unknown'].includes(String(row.kind))) unknown.push('unsupported-runtime-receipt');
+    } else if (!['bootstrap', 'ready', 'native-load', 'unknown', 'child-launch', 'child-started'].includes(String(row.kind))) unknown.push('unsupported-runtime-receipt');
   }
   // Kernel map_files names the mapped inode even after disk replacement/unlink.
   // Access failures are unknown; a later disk hash is never a fallback.

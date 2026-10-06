@@ -10159,6 +10159,7 @@ mod tests {
             command: None,
             uncertain: false,
             error: None,
+            model: None,
         });
         let at = |secs| start + std::time::Duration::from_secs(secs);
         assert!(app.chat_working_line(at(2)).contains("Starting Claude… (2s"));
@@ -10647,6 +10648,7 @@ mod tests {
             command: None,
             uncertain: false,
             error: None,
+            model: None,
         });
         app.chat_streaming = true;
         let text = render(&app, 100, 16);
@@ -10671,6 +10673,7 @@ mod tests {
             command: None,
             uncertain: false,
             error: None,
+            model: None,
         });
         app.chat_streaming = true;
         let text = render(&app, 100, 16);

@@ -20,6 +20,9 @@ import {
   POT_INTEGRATION_SETTING_KEY,
   setPotIntegrationMode,
 } from './pot-integration-mode';
+import { findStandingPr } from './standing-pr';
+import { STANDING_PR_BRANCH } from './decide-standing-pr';
+import type { Pr } from '../../pr-host/types';
 
 const WS = 'ws-p015';
 const pk = (fill: number): string => Buffer.alloc(32, fill).toString('base64');
@@ -127,5 +130,82 @@ describe('SPEC-P-015-require-suite — working-copy mode needs a test suite (rea
     });
     expect(r).toEqual({ ok: true, mode: 'review' });
     expect(await stored('has-suite')).toBe('review');
+  });
+});
+
+describe('SPEC-P-019-guarded-switch — leaving a working copy waits for its open PR (real hive-settings store)', () => {
+  let db: OrgTestDb;
+  let sql: Sql;
+  const UPSTREAM = 'https://github.com/main-owner/repo.git';
+
+  beforeAll(async () => {
+    db = await createOrgTestDb();
+    sql = db.adminSql;
+    await insertHiveIfAbsent({ workspaceId: WS, homeSlug: 'guarded', pubkeyBase64: pk(9), keychainId: 'k' }, sql);
+  }, 120_000);
+
+  afterAll(async () => {
+    await db?.cleanup();
+  });
+
+  const stored = async (slug: string): Promise<unknown> =>
+    (await getHiveSetting(WS, slug, POT_INTEGRATION_SETTING_KEY, sql))?.value ?? null;
+
+  /** GitHub at its one boundary: the main repository's open PRs, matched by the REAL findStandingPr. */
+  const openPrs = (prs: Array<{ number: number; head_ref: string; base_ref: string }>) =>
+    vi.fn(async (remote: string) => {
+      expect(remote).toBe('github.com/main-owner/repo');
+      const listed = prs.map(
+        (p) =>
+          ({
+            ref: { remote, number: p.number },
+            state: 'open',
+            head_ref: p.head_ref,
+            base_ref: p.base_ref,
+            head_sha: 'a'.repeat(40),
+            url: `https://github.com/main-owner/repo/pull/${p.number}`,
+          }) as unknown as Pr,
+      );
+      const pr = findStandingPr(listed);
+      return { ok: true as const, pr: pr ? { number: pr.ref.number, url: pr.url } : null };
+    });
+
+  const switchToDirect = (findOpenStandingPr: ReturnType<typeof openPrs>) =>
+    choosePotIntegrationMode(
+      {
+        workspaceId: WS,
+        potHomeSlug: 'guarded',
+        harnessSlug: 'guarded',
+        upstreamRemote: UPSTREAM,
+        mode: 'direct',
+        greenCmd: 'npm test',
+        forkRemote: FORK,
+        sql,
+      },
+      { findOpenStandingPr },
+    );
+
+  it('refuses while the standing PR is open (any base branch), and the stored mode stays the working copy', async () => {
+    expect(
+      await setPotIntegrationMode({ workspaceId: WS, potHomeSlug: 'guarded', mode: 'review', greenCmd: 'npm test', forkRemote: FORK, sql }),
+    ).toEqual({ ok: true, mode: 'review' });
+
+    const lookup = openPrs([
+      { number: 3, head_ref: 'feature/unrelated', base_ref: 'main' },
+      { number: 7, head_ref: STANDING_PR_BRANCH, base_ref: 'develop' },
+    ]);
+    const r = await switchToDirect(lookup);
+
+    expect(r).toMatchObject({ ok: false, error: 'standing_pr_open' });
+    expect(!r.ok && r.message).toContain('#7');
+    expect(lookup).toHaveBeenCalledTimes(1);
+    expect(await stored('guarded')).toBe('review');
+  });
+
+  it('after the PR is merged or closed (only unrelated PRs open), the switch goes through and is stored', async () => {
+    const r = await switchToDirect(openPrs([{ number: 3, head_ref: 'feature/unrelated', base_ref: 'main' }]));
+
+    expect(r).toEqual({ ok: true, mode: 'direct', fork: null });
+    expect(await stored('guarded')).toBe('direct');
   });
 });

@@ -1,6 +1,12 @@
 import { realpathSync } from 'node:fs';
 import * as path from 'node:path';
 
+// Identifier minification removes esbuild's debugging module-path labels.
+// keepNames preserves function/class names used by runtime registration.
+export const releaseMinification = Object.freeze({
+  minifyWhitespace: true, minifySyntax: true, minifyIdentifiers: true, keepNames: true,
+});
+
 /**
  * Identify installed packages by the committed lock's install paths. Node and
  * esbuild resolve symlinks, so their physical directory can be outside ROOT.

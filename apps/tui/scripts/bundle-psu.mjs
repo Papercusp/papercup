@@ -34,7 +34,7 @@ import { homedir, tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
-import { lockedPackageKeyResolver } from './bundle-psu-dependencies.mjs';
+import { lockedPackageKeyResolver, releaseMinification } from './bundle-psu-dependencies.mjs';
 
 const fail = (message) => {
   console.error(`bundle-psu: ERROR: ${message}`);
@@ -211,7 +211,7 @@ await esbuild.build({
   absWorkingDir: path.join(ROOT, 'apps/operator'),
   entryPoints: [path.join(ROOT, 'apps/operator/scripts/psu-launcher.mjs')],
   bundle: true, platform: 'node', format: 'esm', target: 'node22',
-  minifyWhitespace: true, minifySyntax: true,
+  ...releaseMinification,
   outfile: path.join(OUT, 'psu.mjs'),
   banner: { js: HOST_BANNER },
   external: ['@lydell/*'],
@@ -228,7 +228,7 @@ const { nativeBuilds } = await import(pathToFileURL(path.resolve(args['native-bu
 if (typeof nativeBuilds !== 'function') fail(`${args['native-builds']} does not export nativeBuilds(root, outDir)`);
 const nativeOutputs = [];
 for (const options of nativeBuilds(`${ROOT}/`, `${OUT}/`)) {
-  await esbuild.build({ ...options, absWorkingDir: ROOT, plugins: [committedSource] });
+  await esbuild.build({ ...options, ...releaseMinification, absWorkingDir: ROOT, plugins: [committedSource] });
   nativeOutputs.push(path.basename(options.outfile));
 }
 for (const name of ['native-client.cjs', 'native-extension.mjs']) {
