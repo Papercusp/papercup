@@ -70,6 +70,7 @@ import {
   planItemTextHash,
   planItemTextHashCandidates,
   repoCitationContextForHarness,
+  measureCitationBlobsAtHead,
   resolveCitation,
   UNFINISHED_ITEM_STATUSES,
 } from './plan-audits';
@@ -1006,6 +1007,18 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
         }
       }
 
+      // P-019 (proof-freshness-pinned-candidate-2026-10-06 D-001): compare audited blobs
+      // with the COMMITTED bytes at one measurement commit M per repository, not the
+      // shared working tree, so a peer's uncommitted edit to a cited file cannot stale a
+      // shipped audit. A committed change still reads stale. Citations M cannot measure
+      // keep the working-tree fingerprint.
+      const measurement = citationContext
+        ? await measureCitationBlobsAtHead(
+            effectiveAudits.flatMap(({ entry }) => entry.citations),
+            citationContext.deps,
+          ).catch(() => null)
+        : null;
+
       for (const item of items) {
         // A deliberate drop is the recorded exit supplied by D-002. It does not need
         // code evidence and must not be resurrected as an audit obligation.
@@ -1048,13 +1061,22 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
             // already reported as `broken` and has no deployment position to ask about.
             if (citation.path?.trim()) citedEvidencePaths.add(citation.path.trim());
 
-            const currentBlobSha = citationBlobSha(citation, citationContext.deps);
+            const rel = citation.path?.trim() ?? '';
+            const measuredAt = measurement?.commits.get(rel);
+            const currentBlobSha = measuredAt
+              ? (measurement!.blobs.get(rel) ?? null)
+              : citationBlobSha(citation, citationContext.deps);
+            const at = measuredAt ? ` at commit ${measuredAt.slice(0, 12)}` : '';
             if (!citation.blobSha) {
               reasons.push(`${citation.path ?? '(no path)'} has no audit-time blob fingerprint (audit #${auditSeq})`);
             } else if (!currentBlobSha) {
-              reasons.push(`${citation.path ?? '(no path)'} cannot be fingerprinted now (audit #${auditSeq})`);
+              reasons.push(
+                measuredAt
+                  ? `${citation.path ?? '(no path)'} is not a committed file${at} (audit #${auditSeq})`
+                  : `${citation.path ?? '(no path)'} cannot be fingerprinted now (audit #${auditSeq})`,
+              );
             } else if (currentBlobSha !== citation.blobSha) {
-              reasons.push(`${citation.path ?? '(no path)'} changed since audit #${auditSeq}`);
+              reasons.push(`${citation.path ?? '(no path)'} changed since audit #${auditSeq}${at}`);
             }
           }
         }

@@ -220,6 +220,61 @@ function rememberDigest(blob: string, content: Buffer): { sha256: string; size: 
   return digest;
 }
 
+/** Where a root-relative path lives at a commit: its owning repository and tree entry. */
+export interface CommittedBlobLocation {
+  /** Owning repository, root-relative (`.` for the root itself). */
+  repo: string;
+  /** The tree entry's object id (a blob id for a regular file). */
+  object: string;
+  mode: string;
+  type: string;
+  /** True only for a regular file (a blob that is not a symlink). */
+  isFile: boolean;
+}
+
+/**
+ * Locate `paths` (root-relative) at superproject commit `commit` WITHOUT reading their
+ * bytes: one `ls-tree` per owning repository, plus one per parent for submodule gitlinks.
+ * Keys are the normalized paths; a path absent at that commit maps to null. This is the
+ * blob-id-only read for callers that compare git object ids (P-019: audit citations),
+ * and the first half of `readCommittedFiles`.
+ */
+export async function locateCommittedBlobs(
+  root: string,
+  commit: string,
+  paths: readonly string[],
+  deps: CommittedTreeDeps = {},
+): Promise<Map<string, CommittedBlobLocation | null>> {
+  const git = deps.git ?? defaultGitRunner;
+  const ownerOf = new Map<string, string>();
+  for (const normalized of new Set(paths.map(normalizedRepoPath))) {
+    ownerOf.set(normalized, await owningRepo(root, normalized, deps.exists));
+  }
+  const repoCommits = await resolveRepoCommits(root, commit, new Set(ownerOf.values()), git, deps.exists ?? ((repo) => hasRepo(root, repo)));
+
+  const byRepo = new Map<string, string[]>();
+  for (const [normalized, repo] of ownerOf) byRepo.set(repo, [...(byRepo.get(repo) ?? []), normalized]);
+  const located = new Map<string, CommittedBlobLocation | null>();
+  for (const [repo, repoPaths] of byRepo) {
+    const repoCommit = repoCommits.get(repo) ?? null;
+    if (!repoCommit) {
+      for (const path of repoPaths) located.set(path, null);
+      continue;
+    }
+    const entries = await lsTree(git, repoDir(root, repo), repoCommit, repoPaths.map((path) => relativeTo(repo, path)));
+    for (const path of repoPaths) {
+      const entry = entries.get(relativeTo(repo, path));
+      located.set(
+        path,
+        entry
+          ? { repo, object: entry.object, mode: entry.mode, type: entry.type, isFile: entry.type === 'blob' && entry.mode !== '120000' }
+          : null,
+      );
+    }
+  }
+  return located;
+}
+
 /**
  * Read `paths` (root-relative) as committed at superproject commit `commit`. A path that
  * does not exist at that commit maps to null; a path that is a tree, gitlink or symlink
@@ -231,35 +286,18 @@ export async function readCommittedFiles(
   paths: readonly string[],
   deps: CommittedTreeDeps = {},
 ): Promise<Map<string, CommittedFile | null>> {
-  const git = deps.git ?? defaultGitRunner;
   const readBlobs = deps.readBlobs ?? defaultBlobBatchReader;
   const declared = [...new Set(paths)];
   const normalizedOf = new Map(declared.map((path) => [path, normalizedRepoPath(path)] as const));
-  const ownerOf = new Map<string, string>();
-  for (const normalized of new Set(normalizedOf.values())) {
-    ownerOf.set(normalized, await owningRepo(root, normalized, deps.exists));
-  }
-  const repoCommits = await resolveRepoCommits(root, commit, new Set(ownerOf.values()), git, deps.exists ?? ((repo) => hasRepo(root, repo)));
-
-  const byRepo = new Map<string, string[]>();
-  for (const [normalized, repo] of ownerOf) byRepo.set(repo, [...(byRepo.get(repo) ?? []), normalized]);
+  const locations = await locateCommittedBlobs(root, commit, [...new Set(normalizedOf.values())], deps);
   const blobOf = new Map<string, { repo: string; blob: string } | null>();
-  for (const [repo, repoPaths] of byRepo) {
-    const repoCommit = repoCommits.get(repo) ?? null;
-    if (!repoCommit) {
-      for (const path of repoPaths) blobOf.set(path, null);
-      continue;
-    }
-    const entries = await lsTree(git, repoDir(root, repo), repoCommit, repoPaths.map((path) => relativeTo(repo, path)));
-    for (const path of repoPaths) {
-      const entry = entries.get(relativeTo(repo, path));
-      if (!entry) {
-        blobOf.set(path, null);
-      } else if (entry.type !== 'blob' || entry.mode === '120000') {
-        throw new Error(`repo_measurement_not_file:${path}`);
-      } else {
-        blobOf.set(path, { repo, blob: entry.object });
-      }
+  for (const [path, location] of locations) {
+    if (!location) {
+      blobOf.set(path, null);
+    } else if (!location.isFile) {
+      throw new Error(`repo_measurement_not_file:${path}`);
+    } else {
+      blobOf.set(path, { repo: location.repo, blob: location.object });
     }
   }
 

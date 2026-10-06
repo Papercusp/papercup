@@ -84,6 +84,11 @@ import {
 import type { PlanClassRubricRef } from './agent-tools/plans/spec-test-adequacy';
 import { hashPlanContent } from './agent-tools/plans/content-hash';
 import {
+  locateCommittedBlobs,
+  resolveMeasurementCommit,
+  type CommittedTreeDeps,
+} from './agent-tools/plans/committed-tree-reader';
+import {
   acceptanceBarSourceFingerprint,
   synchronizeAcceptanceBarSubjectRevision,
 } from './acceptance-bar-amendment';
@@ -570,6 +575,78 @@ export interface CitationDeps {
   /** Repo-relative → Git-compatible blob hash of the file at an audited commit/ref.
    *  Optional only so small injected resolver tests can remain filesystem-pure. */
   blobShaAt?: (rel: string, auditedSha: string) => string | null;
+  /** Repo-relative → the absolute path the citation resolves to (sibling and registered
+   *  roots included). Lets `measureCitationBlobsAtHead` group citations by repository.
+   *  Optional: injected deps without it are measured from their working-tree bytes. */
+  locate?: (rel: string) => string | null;
+}
+
+/**
+ * proof-freshness-pinned-candidate-2026-10-06 P-019 (D-001): the committed blob of each
+ * verifying citation at a measurement commit M, the HEAD its top-level repository points
+ * at. The ship gate compares audited blobs against these instead of the shared working
+ * tree, so a peer's uncommitted edit to a cited file no longer stales a shipped audit,
+ * while a COMMITTED change still does.
+ */
+export interface CitationMeasurement {
+  /** rel → blob id at M; null when the path is absent or not a regular file at M. A rel
+   *  missing from the map was not measured (no repository, no commit, read failed) and
+   *  falls back to the working-tree fingerprint. */
+  blobs: Map<string, string | null>;
+  /** rel → the measurement commit its blob was read at. */
+  commits: Map<string, string>;
+}
+
+/**
+ * Measure every verifying citation at its top-level repository's HEAD. Batched per
+ * repository (one `rev-parse` plus one `ls-tree` per owning repository, through
+ * committed-tree-reader), never one synchronous Git child per citation on the request
+ * thread: M moves every few minutes, so a per-commit memo would not save the gate.
+ */
+export async function measureCitationBlobsAtHead(
+  citations: readonly AuditCitation[],
+  deps: CitationDeps,
+  treeDeps: CommittedTreeDeps = {},
+): Promise<CitationMeasurement> {
+  const measurement: CitationMeasurement = { blobs: new Map(), commits: new Map() };
+  if (!deps.locate) return measurement;
+  const relsByTop = new Map<string, Map<string, string>>();
+  for (const citation of citations) {
+    const rel = isVerifyingCitation(citation) ? citation.path?.trim() : undefined;
+    if (!rel || measurement.blobs.has(rel)) continue;
+    const abs = deps.locate(rel);
+    let repo = abs ? gitRootForFile(abs) : null;
+    if (!abs || !repo) continue;
+    // Climb submodule gitlinks to the top-level repository: M is that repository's
+    // HEAD, and committed-tree-reader descends gitlinks at the commits M pins.
+    let top = repo.root;
+    for (let parent = gitlinkParentForRepo(top); parent; parent = gitlinkParentForRepo(top)) {
+      top = parent.superprojectRoot;
+    }
+    const fromTop = path.relative(top, abs).split(path.sep).join('/');
+    if (!fromTop || fromTop.startsWith('../')) continue;
+    const rels = relsByTop.get(top) ?? new Map<string, string>();
+    rels.set(rel, fromTop);
+    relsByTop.set(top, rels);
+  }
+  await Promise.all(
+    [...relsByTop].map(async ([top, rels]) => {
+      try {
+        const commit = await resolveMeasurementCommit(top, treeDeps.git);
+        if (!commit) return;
+        const located = await locateCommittedBlobs(top, commit, [...new Set(rels.values())], treeDeps);
+        for (const [rel, fromTop] of rels) {
+          const entry = located.get(path.posix.normalize(fromTop));
+          measurement.blobs.set(rel, entry?.isFile ? entry.object : null);
+          measurement.commits.set(rel, commit);
+        }
+      } catch {
+        // Unmeasured: these citations keep the working-tree fingerprint (the pre-P-019
+        // behaviour), which can only over-report staleness, never waive it.
+      }
+    }),
+  );
+  return measurement;
 }
 
 /** Git's SHA-1 object id for a blob, without writing it into the object database. */
@@ -1324,6 +1401,7 @@ export function repoCitationDeps(
       const repo = gitRootForFile(abs);
       return repo ? gitCitationBlobShaAt(repo, auditedSha) : null;
     },
+    locate: (rel) => within(rel),
     isTracked: (rel) => {
       const abs = within(rel);
       if (!abs) return null;
