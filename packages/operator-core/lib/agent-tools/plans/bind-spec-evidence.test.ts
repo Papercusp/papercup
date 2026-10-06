@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { bindingSchema } from './bind-spec-evidence';
+import { asCommittedRunOf, bindingSchema, measureBindingForStore } from './bind-spec-evidence';
 
 const measuredBinding = {
   workItemId: 'WI-1',
@@ -268,5 +268,53 @@ describe('plans:bind-spec-evidence authenticated actor provenance', () => {
       binding: { ...publicBinding('test/reconnect.test.ts'), actorId: 'caller-controlled-actor' },
     });
     expect(parsed.success).toBe(false);
+  });
+});
+
+// proof-freshness-pinned-candidate-2026-10-06 P-003 / D-001 (b): a binding derived from a clean
+// run in a disposable clone is measured at the commit that ran, never at the live checkout.
+describe('as-committed bindings are measured at the run commit', () => {
+  const repoFiles = { schemaVersion: 1 as const, kind: 'repo-files' as const, sourcePaths: ['src/a.ts'] };
+  const fakes = () => {
+    const calls: string[] = [];
+    const result = { sourceFingerprint: 's', testFingerprint: null, pin: null };
+    return {
+      calls,
+      deps: {
+        atCommit: (async (_w: string, _h: string, _m: unknown, at: { commitSha: string }) => {
+          calls.push(`atCommit:${at.commitSha}`);
+          return result;
+        }) as never,
+        live: (async () => {
+          calls.push('live');
+          return result;
+        }) as never,
+      },
+    };
+  };
+
+  it('reads the commit stamped by bind-from-test-run, and nothing from an ordinary binding', () => {
+    // The exact shape expandTestRunBinding writes (bind-from-test-run.test.ts pins that side).
+    expect(asCommittedRunOf({ testRun: { asCommitted: { commitSha: 'abc123', repoPrefix: 'libs/sub', measuredAtCommit: true } } }))
+      .toEqual({ commitSha: 'abc123', repoPrefix: 'libs/sub' });
+    expect(asCommittedRunOf({ testRun: { asCommitted: { commitSha: 'abc123', repoPrefix: '' } } }))
+      .toEqual({ commitSha: 'abc123', repoPrefix: '' });
+    expect(asCommittedRunOf({ testRun: { commitSha: 'abc123', worktreeDirty: false } })).toBeUndefined();
+    expect(asCommittedRunOf({ testRun: { asCommitted: { commitSha: 42 } } })).toBeUndefined();
+    expect(asCommittedRunOf(undefined)).toBeUndefined();
+  });
+
+  it('routes a repo-files binding with a run commit to the at-commit measurer, and every other binding to the live one', async () => {
+    const f = fakes();
+    await measureBindingForStore('w', 'h', repoFiles, { commitSha: 'abc123', repoPrefix: null }, f.deps);
+    await measureBindingForStore('w', 'h', repoFiles, undefined, f.deps);
+    await measureBindingForStore(
+      'w',
+      'h',
+      { schemaVersion: 1, kind: 'work-items', workItemIds: ['WI-1'] } as never,
+      { commitSha: 'abc123', repoPrefix: null },
+      f.deps,
+    );
+    expect(f.calls).toEqual(['atCommit:abc123', 'live', 'live']);
   });
 });
