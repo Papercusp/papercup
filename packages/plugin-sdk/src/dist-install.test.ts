@@ -62,7 +62,7 @@ beforeAll(async () => {
   const out = execFileSync(process.execPath, [PACK_SCRIPT, '--out', join(work, 'out')], {
     cwd: SDK_ROOT,
     encoding: 'utf8',
-    env: hermeticEnv(),
+    env: { ...hermeticEnv(), PLUGIN_SDK_ROOT: SDK_ROOT },
   });
   tarball = /^PLUGIN_SDK_TARBALL=(.+)$/m.exec(out)?.[1] ?? '';
   expect(tarball, `pack-dist printed no tarball:\n${out}`).not.toBe('');
@@ -78,7 +78,12 @@ beforeAll(async () => {
 
   withPeer = join(work, 'with-peer');
   await fs.cp(bare, withPeer, { recursive: true });
-  await copyFromRepo('@types/react', withPeer);
+  // The main entry's types use react's ComponentType and node's Buffer (PluginStorage), so
+  // both are declared optional peers. Copy exactly the declared peers, nothing else.
+  const pkg = JSON.parse(readFileSync(join(bare, 'node_modules', '@papercusp', 'plugin-sdk', 'package.json'), 'utf8')) as {
+    peerDependencies?: Record<string, string>;
+  };
+  for (const peer of Object.keys(pkg.peerDependencies ?? {})) await copyFromRepo(peer, withPeer);
 }, 180_000);
 
 afterAll(async () => {
@@ -90,8 +95,13 @@ const RESOLUTIONS = {
   NodeNext: { module: ts.ModuleKind.NodeNext, moduleResolution: ts.ModuleResolutionKind.NodeNext },
 } as const;
 
-/** Type-check one consumer file in `dir` with strict settings, no node types and skipLibCheck OFF. */
-async function typecheck(dir: string, source: string, resolution: keyof typeof RESOLUTIONS): Promise<string[]> {
+/** Type-check one consumer file in `dir` with strict settings and skipLibCheck OFF. */
+async function typecheck(
+  dir: string,
+  source: string,
+  resolution: keyof typeof RESOLUTIONS,
+  types: string[] = [],
+): Promise<string[]> {
   const consumer = join(dir, `consumer-${resolution}.ts`);
   await fs.writeFile(consumer, source);
   const program = ts.createProgram({
@@ -102,7 +112,10 @@ async function typecheck(dir: string, source: string, resolution: keyof typeof R
       strict: true,
       noEmit: true,
       skipLibCheck: false,
-      types: [],
+      // TypeScript 6 defaults `types` to [] (no automatic @types inclusion), so an author who
+      // wants node globals lists them; the type roots are the author's own node_modules only.
+      types,
+      typeRoots: [join(dir, 'node_modules', '@types')],
     },
   });
   return ts.getPreEmitDiagnostics(program).map((d) => {
@@ -122,12 +135,12 @@ async function filesUnder(dir: string): Promise<string[]> {
 }
 
 const MAIN_CONSUMER = [
-  "import type { PapercuspPlugin, AgentRole, ToolResult, RolesQuota, ProgressCallback, EmitCallback } from '@papercusp/plugin-sdk';",
+  "import type { PapercuspApi, PluginStorage, AgentRole, ToolResult, RolesQuota, ProgressCallback, EmitCallback } from '@papercusp/plugin-sdk';",
   "import { PAPERCUSP_RUNTIME_VERSION, validateTriggerPackDeclaration, lookupTier } from '@papercusp/plugin-sdk';",
   "import type { ProviderDescriptor } from '@papercusp/plugin-sdk/provider';",
   "import { PROVIDER_CONTRACT_VERSIONS } from '@papercusp/plugin-sdk/provider';",
   "import { initPapercupIframe } from '@papercusp/plugin-sdk/iframe';",
-  'export type T = [PapercuspPlugin, AgentRole, ToolResult, RolesQuota, ProgressCallback, EmitCallback, ProviderDescriptor];',
+  'export type T = [PapercuspApi, PluginStorage, AgentRole, ToolResult, RolesQuota, ProgressCallback, EmitCallback, ProviderDescriptor];',
   'export const role: AgentRole = "outside-author:reviewer";',
   'export const version: string = PAPERCUSP_RUNTIME_VERSION;',
   'export const fns = [validateTriggerPackDeclaration, lookupTier, initPapercupIframe] as const;',
@@ -159,8 +172,8 @@ describe('plugin-sdk packed tarball, installed outside the monorepo (WI-10006701
   });
 
   for (const resolution of Object.keys(RESOLUTIONS) as Array<keyof typeof RESOLUTIONS>) {
-    it(`the main entry and subpaths type-check with only the declared peer added (${resolution}, skipLibCheck off)`, async () => {
-      const diagnostics = await typecheck(withPeer, MAIN_CONSUMER, resolution);
+    it(`the main entry and subpaths type-check with only the declared peers added (${resolution}, skipLibCheck off)`, async () => {
+      const diagnostics = await typecheck(withPeer, MAIN_CONSUMER, resolution, ['node']);
       expect(diagnostics, diagnostics.join('\n')).toEqual([]);
     }, 60_000);
 
