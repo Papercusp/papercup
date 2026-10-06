@@ -30,6 +30,7 @@ import {
 import { ARTIFACT_TRUST_PIPELINE_VERSION, type ArtifactTrustReport } from './artifact-trust';
 import {
   WORKSPACE_HOST_BOOTC_BAKE_CONTRACT_VERSION,
+  workspaceHostReleaseSubjectSha256,
   type WorkspaceHostBootcBakeManifest,
 } from './bootc-bake-manifest';
 import {
@@ -308,6 +309,8 @@ class FakeAdapter implements AwsAmiReleaseAdapter {
   /** Lets a test corrupt the canary proof (wrong fixture / bad attestation) after it is built. */
   proofOverride?: (proof: AwsAmiCleanAccountLaunchProof) => AwsAmiCleanAccountLaunchProof;
   canaryFixture?: Parameters<AwsAmiReleaseAdapter['launchCleanAccountCanary']>[0]['fixture'];
+  /** The artifact the published image claims to be; inspection tags are derived from it. */
+  candidate: WorkspaceHostImageArtifact = artifact();
 
   async buildCandidate(input: Parameters<AwsAmiReleaseAdapter['buildCandidate']>[0]) {
     this.calls.push(`build:${input.sourceRegion}`);
@@ -366,10 +369,10 @@ class FakeAdapter implements AwsAmiReleaseAdapter {
       architecture: 'x86_64',
       tags: {
         Name: `papercusp-workspace-host-${VERSION}`,
-        'papercusp:build-manifest': artifact().buildManifest.manifestIdentity,
+        'papercusp:build-manifest': this.candidate.buildManifest.manifestIdentity,
         'papercusp:image-version': VERSION,
         'papercusp:managed': 'true',
-        'papercusp:release-sha256': RELEASE_SHA,
+        'papercusp:release-sha256': workspaceHostReleaseSubjectSha256(this.candidate),
       },
       guestTools: AWS_AMI_REQUIRED_GUEST_TOOLS.filter((tool) => tool !== this.missingTool).map((name) => ({
         name,
@@ -444,6 +447,45 @@ describe('AWS workspace-host AMI release', () => {
     await expect(executeAwsAmiRelease(request(bootcArtifact(), bootcBakeManifest()), adapter)).rejects.toThrow(
       'bootc-consumer-observed',
     );
+  });
+
+  it('publishes a bootc AMI whose clean-account canary attests the bootc host model (WI-10006586)', async () => {
+    // Before WI-10006586 the release re-built the expected bootstrap input field by field and
+    // dropped hostModel/bootc, so a healthy bootc canary was judged against the
+    // ubuntu-release-bundle default and every bootc release was refused at this step.
+    const candidate = bootcArtifact();
+    const adapter = new FakeAdapter();
+    adapter.candidate = candidate;
+    adapter.buildCandidate = async (input) => {
+      adapter.calls.push(`build:${input.sourceRegion}`);
+      expect(input.builderKind).toBe(WORKSPACE_HOST_BOOTC_BUILDER_KIND);
+      return { imageId: 'ami-source1' };
+    };
+    const result = await executeAwsAmiRelease(request(candidate, bootcBakeManifest()), adapter);
+
+    expect(adapter.canaryFixture?.bootstrapInput.hostModel).toBe('bootc-image');
+    expect(adapter.canaryFixture?.bootstrapInput.bootc?.imageDigest).toBe(candidate.bootc.imageDigest);
+    expect(result.releaseGate.accepted).toBe(true);
+    expect(adapter.calls).toContain('publish-manifest');
+    expect(adapter.calls).toContain('activate-pins');
+  });
+
+  it('refuses a bootc canary whose attestation claims the ubuntu host model', async () => {
+    const candidate = bootcArtifact();
+    const adapter = new FakeAdapter();
+    adapter.candidate = candidate;
+    adapter.buildCandidate = async (input) => {
+      adapter.calls.push(`build:${input.sourceRegion}`);
+      return { imageId: 'ami-source1' };
+    };
+    adapter.proofOverride = (proof) => ({
+      ...proof,
+      attestation: { ...proof.attestation, hostModel: 'ubuntu-release-bundle' as never },
+    });
+    await expect(executeAwsAmiRelease(request(candidate, bootcBakeManifest()), adapter)).rejects.toThrow(
+      'attestation failed validation',
+    );
+    expect(adapter.calls).not.toContain('publish-manifest');
   });
 
   it('builds, scans, copies, verifies encrypted sharing, proves a clean-account launch, pins, then deprecates', async () => {
