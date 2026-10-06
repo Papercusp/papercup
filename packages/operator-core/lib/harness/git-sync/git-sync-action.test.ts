@@ -47,6 +47,7 @@ import { describe, it, expect, vi, beforeAll, beforeEach, afterAll } from 'vites
 import type { GitSyncOutcome, RunGitSyncOpts } from './run-git-sync';
 import type { BridgeTickInput, BridgeTickOutcome } from '../../sync/pot-git/github-bridge-tick';
 import { configureScheduledRegistry, resetScheduledRegistry, type TimerHandle } from '@papercusp/scheduled-registry';
+import { GitSyncLeaseLostError } from './git-sync-lease-fence';
 // WI-5960: NOT mocked — the real implementation, so the invariant test below
 // pins the ACTUAL cross-module agreement (a mock would just assert against
 // itself and could drift silently alongside a real-code regression).
@@ -3118,6 +3119,71 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       resetScheduledRegistry();
       vi.useRealTimers();
       vi.unstubAllEnvs();
+    }
+  });
+
+  it('WI-10006724: a refused lease refresh stops the fire before its next Git command', async () => {
+    resetScheduledRegistry();
+    let heartbeat: (() => void) | null = null;
+    const handle: TimerHandle = { unref: () => undefined };
+    configureScheduledRegistry({
+      setIntervalImpl: (cb, ms) => {
+        if (ms === 60_000) heartbeat = cb;
+        return handle;
+      },
+      clearIntervalImpl: () => undefined,
+    });
+    tryAcquireResourceMock.mockImplementation(async () => ({ ok: true }));
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const gitCallsBefore = runGitBoundedMock.mock.calls.length;
+    let firstCommandRan!: () => void;
+    const firstCommand = new Promise<void>((resolve) => { firstCommandRan = resolve; });
+    let resumePipeline!: () => void;
+    const pipelineGate = new Promise<void>((resolve) => { resumePipeline = resolve; });
+    let secondCommandError: unknown = null;
+    runGitSyncMock.mockImplementationOnce(async (_slug, raw) => {
+      const opts = raw as unknown as RunGitSyncOpts;
+      await opts.runGit!(['add', '-A'], repoDir);
+      firstCommandRan();
+      await pipelineGate;
+      try {
+        await opts.runGit!(['commit', '-m', 'lease probe'], repoDir);
+      } catch (e) {
+        secondCommandError = e;
+        throw e;
+      }
+      return syncedOutcome;
+    });
+    const running = action(ctx).catch((e: unknown) => e);
+    try {
+      await firstCommand;
+      expect(heartbeat).not.toBeNull();
+      // Another owner now holds the per-slug resource: the next refresh is refused.
+      tryAcquireResourceMock.mockImplementation(async (_tx, opts) =>
+        (opts as { resource: string }).resource === 'git-sync:papercup'
+          ? { ok: false, reason: 'held by system:git-sync:other-fire' }
+          : { ok: true },
+      );
+      heartbeat!();
+      await vi.waitFor(() =>
+        expect(error).toHaveBeenCalledWith(expect.stringContaining('LOST exclusive lock git-sync:papercup')),
+      );
+      resumePipeline();
+      await running;
+      expect(secondCommandError).toBeInstanceOf(GitSyncLeaseLostError);
+      expect((secondCommandError as GitSyncLeaseLostError).leaseLossCause).toBe('refused');
+      const gitVerbs = runGitBoundedMock.mock.calls.slice(gitCallsBefore).map((call) => (call[0] as string[])[0]);
+      expect(gitVerbs).toContain('add');
+      expect(gitVerbs).not.toContain('commit');
+    } finally {
+      resumePipeline?.();
+      await running;
+      resetScheduledRegistry();
+      log.mockRestore();
+      warn.mockRestore();
+      error.mockRestore();
     }
   });
 

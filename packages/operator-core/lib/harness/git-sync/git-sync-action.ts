@@ -281,6 +281,7 @@ import {
 } from './git-sync-events';
 import { parsePapercuspTrailers, recordCommitAttribution, type CommitAttributionRow } from '../../edit-attribution';
 import { pinModuleState } from '@papercusp/module-singleton';
+import { createGitSyncLeaseFence, type GitSyncLeaseFence } from './git-sync-lease-fence';
 import {
   enqueueDependencyPrebuild,
   recoverQueuedDependencyPrebuild,
@@ -296,6 +297,11 @@ const FULL_COMMIT_SHA = /^[0-9a-f]{40}$/i;
 // resource row expires mid-run and the next scheduled fire enters the same
 // checkout concurrently (EI-20224276977835463).
 const LOCK_HEARTBEAT_INTERVAL_MS = 60_000;
+// WI-10006724: the longest gap between confirmed lease refreshes a fire tolerates
+// before its lease fence refuses further Git commands. Two heartbeat intervals
+// below the TTL, so the fence trips before the row can expire under a command
+// that starts just inside the limit.
+const GIT_SYNC_LEASE_UNCONFIRMED_LIMIT_MS = LOCK_TTL_SEC * 1000 - 2 * LOCK_HEARTBEAT_INTERVAL_MS;
 // Keep the writer-backed activity marker fresh without turning git child output
 // into one metadata UPDATE per line. A stale marker is still useful evidence of
 // a wedged phase; a moving marker proves only that the pipeline is producing
@@ -1015,10 +1021,15 @@ function startLockHeartbeat(
   slug: string,
   resources: GitSyncLockRequest[],
   owner: string,
+  /** WI-10006724: told about every confirmed refresh and every refusal; see git-sync-lease-fence.ts. */
+  fence?: GitSyncLeaseFence,
 ): () => Promise<void> {
   let inFlight: Promise<void> | null = null;
 
   const refresh = async (): Promise<void> => {
+    // The store extends the expiry at statement time, so a refresh confirms the
+    // lease as of when it was SENT, never when its result came back.
+    const sentAt = Date.now();
     try {
       // Refresh the whole owner-scoped set under ONE workspace transaction.
       // Apart from cutting three advisory-lock acquisitions to one, this makes
@@ -1043,13 +1054,18 @@ function startLockHeartbeat(
           return refreshed;
         }),
       );
+      let refused = false;
       for (const { resource, result } of results) {
         if (!result.ok) {
+          refused = true;
           console.error(
             `[git-sync] ${slug}: LOST exclusive lock ${resource} during lease refresh (${result.reason ?? 'refused'})`,
           );
+          // Before WI-10006724 this was log-only and the fire kept writing.
+          fence?.markLost('refused', `${resource}: ${result.reason ?? 'refused'}`);
         }
       }
+      if (!refused) fence?.confirm(sentAt);
     } catch (e) {
       console.warn(`[git-sync] ${slug}: lock-set heartbeat failed: ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -3456,6 +3472,9 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
   });
   const writeActivity = (activity: GitSyncActivityFields): Promise<void> =>
     writeGitSyncActivity(slug, workspaceId, withActivityOwner(activity));
+  // WI-10006724: a lower bound on every resource's acquisition time, so the lease
+  // fence measures age conservatively (each row expires no earlier than this + TTL).
+  const lockRequestedAt = Date.now();
   const lock = await acquireLocks(cd, slug, resources, acquired, lockOwner);
   if (lock.state === 'held' || lock.state === 'contended') {
     const reason = lock.blockedReason ?? (lock.state === 'contended' ? 'lock_contended' : 'lock_held');
@@ -3539,8 +3558,20 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
   // several awaits before the local pipeline starts, and a six-hundred-second
   // lease can otherwise expire while those reads are still in flight.
   const activityStartedAt = Date.now();
+  // WI-10006724: only a locked fire has a lease to lose; the unlocked best-effort
+  // path ('error') runs without a fence, exactly as it runs without a heartbeat.
+  const leaseFence =
+    lock.state === 'acquired'
+      ? createGitSyncLeaseFence({
+          slug,
+          acquiredAt: lockRequestedAt,
+          unconfirmedLimitMs: GIT_SYNC_LEASE_UNCONFIRMED_LIMIT_MS,
+        })
+      : null;
   const stopLockHeartbeat =
-    lock.state === 'acquired' ? startLockHeartbeat(cd, slug, [...acquired], lockOwner) : async () => {};
+    lock.state === 'acquired'
+      ? startLockHeartbeat(cd, slug, [...acquired], lockOwner, leaseFence ?? undefined)
+      : async () => {};
   // The cancellation race bounds setup/metadata awaits, not OS process lifetime.
   // Reuse runGitSync's runner seam to track actual Git work independently of
   // the pipeline promise, which can be rejected by that race before child exit.
@@ -3835,6 +3866,9 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
         repoPath,
         config: cfg,
         runGit: async (args, cwd, gitOptions) => {
+          // WI-10006724: a fire that can no longer prove it holds its lease must
+          // not start another Git command; another fire may own this index now.
+          leaseFence?.assertHeld();
           liveness.assertActive();
           const execution = runGitBounded(args, cwd, gitTimeoutMsFor(args), {
             // WI-10006705: forward the attributed commit's private GIT_INDEX_FILE.
