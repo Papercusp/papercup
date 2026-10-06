@@ -102,6 +102,50 @@ describe('default Playwright run never collects a profile-owned spec (WI-1000673
     expect(leaked).toEqual([]);
   });
 
+  it('every spec that fetches from inside the page first puts the page on the app origin', () => {
+    // The fixture page starts on about:blank (an opaque origin) and the API sends
+    // no CORS headers, so an in-page fetch without a prior navigation fails with
+    // "TypeError: Failed to fetch" and the spec measures nothing (WI-10006736).
+    const fetchesInPage = (source: string) => /page\.evaluate\(/.test(source) && /\bfetch\(/.test(source);
+    const navigatesFirst = (source: string) => /\bonAppOrigin\(|\.goto\(/.test(source);
+
+    // Control: the predicate flags the exact shape that was broken.
+    const brokenShape = "const r = await page.evaluate(async (u) => { await fetch(u); }, url);";
+    expect(fetchesInPage(brokenShape) && !navigatesFirst(brokenShape)).toBe(true);
+
+    const specs = listFiles(E2E_DIR).filter((file) => file.endsWith('.spec.ts'));
+    const inPageFetchers = specs.filter((file) => fetchesInPage(readFileSync(file, 'utf8')));
+    const names = (list: string[]) => list.map((file) => file.slice(E2E_DIR.length + 1)).sort();
+    // Positive control: the detector still sees the specs it was written for.
+    expect(names(inPageFetchers)).toEqual(
+      expect.arrayContaining(['sse-last-event-id.spec.ts', 'state-snapshot-sse.spec.ts']),
+    );
+
+    const unnavigated = inPageFetchers.filter((file) => !navigatesFirst(readFileSync(file, 'utf8')));
+    expect(names(unnavigated)).toEqual([]);
+  });
+
+  it('every spec that reads the superuser token resolves PAPERCUSP_HOME first', () => {
+    // An isolated operator (VERIFY_TAURI_ISOLATED_DB=1) has its own PAPERCUSP_HOME,
+    // so a spec that hard-codes ~/.papercusp sends a foreign bearer and the
+    // verified-only routes answer 403 (WI-10006736, admin-routes.spec.ts).
+    const readsSuToken = (source: string) => /['"]superuser-token['"]/.test(source);
+    const resolvesHome = (source: string) => /process\.env\.PAPERCUSP_HOME/.test(source);
+
+    // Control: the predicate flags the exact shape that was broken.
+    const brokenShape = "readFileSync(join(homedir(), '.papercusp', 'superuser-token'), 'utf8')";
+    expect(readsSuToken(brokenShape) && !resolvesHome(brokenShape)).toBe(true);
+
+    const specs = listFiles(E2E_DIR).filter((file) => file.endsWith('.ts'));
+    const names = (list: string[]) => list.map((file) => file.slice(E2E_DIR.length + 1)).sort();
+    const tokenReaders = specs.filter((file) => readsSuToken(readFileSync(file, 'utf8')));
+    // Positive control: the detector still sees the spec it was written for.
+    expect(names(tokenReaders)).toContain('admin-routes.spec.ts');
+
+    const hardCoded = tokenReaders.filter((file) => !resolvesHome(readFileSync(file, 'utf8')));
+    expect(names(hardCoded)).toEqual([]);
+  });
+
   it('still collects ordinary specs (the ignore list is not over-broad)', async () => {
     const { default: config } = await import('../../playwright.config');
     const testMatch = config.testMatch as RegExp;
