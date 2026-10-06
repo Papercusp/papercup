@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
 import {
+  chmodSync,
+  existsSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
@@ -10,7 +13,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
@@ -25,8 +28,10 @@ import {
   npmChildEnv,
   normalizeNpmArgs,
   parseCliArgs,
+  readChildRssBytes,
   repoLockName,
   runCommandUnderInstallMutex,
+  runNpmWithHeartbeat,
   USAGE,
   verifyDepsExtracted,
   withPackageCacheReadLease,
@@ -39,6 +44,302 @@ import {
   resolveFsMutexTimeoutMs,
   withFsMutex,
 } from "./lib/fs-mutex.mjs";
+
+function createManifestResolutionFixture({
+  staleDuringResolve = false,
+  expectFallback = false,
+} = {}) {
+  const tempRoot = mkdtempSync(join(tmpdir(), "npm-install-safe-resolution-"));
+  const repoRoot = join(tempRoot, "repo");
+  const workspaceRoot = join(repoRoot, "packages", "operator-core");
+  const binDir = join(tempRoot, "bin");
+  const lockDir = join(tempRoot, "mutex");
+  const tracePath = join(tempRoot, "npm-phases.txt");
+  const fakeNpm = join(binDir, "npm");
+  const cli = fileURLToPath(new URL("./npm-install-safe.mjs", import.meta.url));
+  const fsMutexUrl = pathToFileURL(
+    fileURLToPath(new URL("./lib/fs-mutex.mjs", import.meta.url)),
+  ).href;
+
+  mkdirSync(workspaceRoot, { recursive: true });
+  mkdirSync(binDir, { recursive: true });
+  const localPackageRoot = join(tempRoot, "fixture-pkg");
+  mkdirSync(localPackageRoot, { recursive: true });
+  writeFileSync(
+    join(localPackageRoot, "package.json"),
+    JSON.stringify({ name: "fixture-pkg", version: "1.2.3" }, null, 2) + "\n",
+  );
+  writeFileSync(
+    join(repoRoot, "package.json"),
+    JSON.stringify(
+      {
+        name: "fixture",
+        version: "1.0.0",
+        private: true,
+        workspaces: ["packages/*"],
+      },
+      null,
+      2,
+    ) + "\n",
+  );
+  writeFileSync(
+    join(repoRoot, "package-lock.json"),
+    JSON.stringify(
+      {
+        name: "fixture",
+        version: "1.0.0",
+        lockfileVersion: 3,
+        requires: true,
+        packages: {
+          "": {
+            name: "fixture",
+            version: "1.0.0",
+            workspaces: ["packages/*"],
+          },
+          "packages/operator-core": {
+            name: "@fixture/operator-core",
+            version: "1.0.0",
+          },
+        },
+      },
+      null,
+      2,
+    ) + "\n",
+  );
+  writeFileSync(
+    join(workspaceRoot, "package.json"),
+    JSON.stringify(
+      { name: "@fixture/operator-core", version: "1.0.0" },
+      null,
+      2,
+    ) + "\n",
+  );
+
+  const npmShim = [
+    "#!/usr/bin/env node",
+    "const fs = require(\"node:fs\");",
+    "const path = require(\"node:path\");",
+    "(async () => {",
+    "  const { withFsMutex } = await import(__FS_MUTEX_URL__);",
+    "  const args = process.argv.slice(2);",
+    "  const phase = args[0] === \"cache\" ? \"cache-verify\" : (args.includes(\"--package-lock-only=true\") ? \"resolve\" : (args.includes(\"--legacy-peer-deps\") ? \"repair\" : \"reify\"));",
+    "  const repoRoot = process.env.NPM_INSTALL_SAFE_TEST_ROOT;",
+    "  const lockName = process.env.NPM_INSTALL_SAFE_TEST_LOCK_NAME;",
+    "  const record = (value) => fs.appendFileSync(process.env.NPM_INSTALL_SAFE_TEST_TRACE, value + \"\\n\");",
+    "  if (phase === \"cache-verify\") { record(phase); return; }",
+    "  let writerAcquired = false;",
+    "  try {",
+    "    await withFsMutex(lockName, async () => { writerAcquired = true; }, { timeoutMs: phase === \"resolve\" ? 2000 : 250, retryMs: 10 });",
+    "  } catch (error) {",
+    "    if (!String(error?.message || error).startsWith(\"Timed out after \")) throw error;",
+    "  }",
+    "  if (process.env.NPM_INSTALL_SAFE_TEST_EXPECT_FALLBACK === \"1\") {",
+    "    if (phase === \"resolve\") throw new Error(\"local package target was incorrectly resolved from scratch\");",
+    "    if (phase !== \"reify\" || writerAcquired) throw new Error(\"fallback install did not hold the repo writer\");",
+    "    const packageSpec = args.find((arg) => arg.includes(\"@file:\"));",
+    "    const packagePath = packageSpec?.slice(packageSpec.indexOf(\"@file:\") + \"@file:\".length);",
+    "    if (process.cwd() !== repoRoot || !packagePath || !fs.existsSync(path.join(path.resolve(process.cwd(), packagePath), \"package.json\"))) throw new Error(\"fallback lost the original repo-relative package target\");",
+    "    record(\"fallback\");",
+    "    return;",
+    "  }",
+    "  if (phase === \"resolve\") {",
+    "    if (!writerAcquired) throw new Error(\"resolve ran while the repo mutex blocked a writer\");",
+    "    const scratchManifest = path.join(process.cwd(), \"packages\", \"operator-core\", \"package.json\");",
+    "    const manifest = JSON.parse(fs.readFileSync(scratchManifest, \"utf8\"));",
+    "    manifest.dependencies = { ...(manifest.dependencies || {}), \"fixture-pkg\": \"1.2.3\" };",
+    "    fs.writeFileSync(scratchManifest, JSON.stringify(manifest, null, 2) + \"\\n\");",
+    "    const lockfilePath = path.join(process.cwd(), \"package-lock.json\");",
+    "    const lockfile = JSON.parse(fs.readFileSync(lockfilePath, \"utf8\"));",
+    "    lockfile.packages[\"packages/operator-core\"].dependencies = { \"fixture-pkg\": \"1.2.3\" };",
+    "    lockfile.packages[\"node_modules/fixture-pkg\"] = { version: \"1.2.3\", resolved: \"https://registry.npmjs.org/fixture-pkg/-/fixture-pkg-1.2.3.tgz\", integrity: \"sha512-fixture\" };",
+    "    fs.writeFileSync(lockfilePath, JSON.stringify(lockfile, null, 2) + \"\\n\");",
+    "    if (process.env.NPM_INSTALL_SAFE_TEST_STALE === \"1\") {",
+    "      const livePath = path.join(repoRoot, \"packages\", \"operator-core\", \"package.json\");",
+    "      const liveManifest = JSON.parse(fs.readFileSync(livePath, \"utf8\"));",
+    "      liveManifest.externalFixtureChange = true;",
+    "      fs.writeFileSync(livePath, JSON.stringify(liveManifest, null, 2) + \"\\n\");",
+    "    }",
+    "    record(phase);",
+    "    return;",
+    "  }",
+    "  if (writerAcquired) throw new Error(phase + \" ran without the repo writer\");",
+    "  const liveManifestPath = path.join(repoRoot, \"packages\", \"operator-core\", \"package.json\");",
+    "  const liveManifest = JSON.parse(fs.readFileSync(liveManifestPath, \"utf8\"));",
+    "  if (liveManifest.dependencies?.[\"fixture-pkg\"] !== \"1.2.3\") throw new Error(\"resolved manifest was not applied before reify\");",
+    "  const liveLockfile = JSON.parse(fs.readFileSync(path.join(repoRoot, \"package-lock.json\"), \"utf8\"));",
+    "  if (!liveLockfile.packages?.[\"node_modules/fixture-pkg\"]) throw new Error(\"resolved lockfile was not applied before reify\");",
+    "  if (phase === \"repair\") {",
+    "    fs.mkdirSync(path.join(repoRoot, \"node_modules\", \"fixture-pkg\"), { recursive: true });",
+    "    fs.writeFileSync(path.join(repoRoot, \"node_modules\", \"fixture-pkg\", \"package.json\"), JSON.stringify({ name: \"fixture-pkg\", version: \"1.2.3\" }));",
+    "  }",
+    "  record(phase);",
+    "})().catch((error) => { console.error(error.stack || error); process.exitCode = 1; });",
+  ].join("\n").replace("__FS_MUTEX_URL__", JSON.stringify(fsMutexUrl)) + "\n";
+  writeFileSync(fakeNpm, npmShim);
+  chmodSync(fakeNpm, 0o755);
+
+  return {
+    tempRoot,
+    repoRoot,
+    tracePath,
+    cli,
+    args: [
+      "--repo-root",
+      repoRoot,
+      "install",
+      "fixture-pkg@1.2.3",
+      "-w",
+      "@fixture/operator-core",
+    ],
+    env: {
+      ...process.env,
+      PATH: binDir + delimiter + (process.env.PATH ?? ""),
+      PAPERCUSP_FS_MUTEX_LOCK_DIR: lockDir,
+      PAPERCUSP_FS_MUTEX_TIMEOUT_MS: "10000",
+      PAPERCUSP_SKIP_DEP_GENERATION: "1",
+      NPM_INSTALL_SAFE_TEST_ROOT: repoRoot,
+      NPM_INSTALL_SAFE_TEST_TRACE: tracePath,
+      NPM_INSTALL_SAFE_TEST_LOCK_NAME: repoLockName(repoRoot),
+      ...(expectFallback
+        ? {
+            NPM_INSTALL_SAFE_TEST_EXPECT_FALLBACK: "1",
+            PAPERCUSP_SKIP_DEP_VERIFY: "1",
+          }
+        : {}),
+      ...(staleDuringResolve ? { NPM_INSTALL_SAFE_TEST_STALE: "1" } : {}),
+    },
+  };
+}
+
+test("repo writers can proceed during resolution but stay blocked during reify and repair", {
+  skip: process.platform === "win32",
+}, () => {
+  const fixture = createManifestResolutionFixture();
+  try {
+    const result = spawnSync(process.execPath, [fixture.cli, ...fixture.args], {
+      encoding: "utf8",
+      timeout: 15_000,
+      env: fixture.env,
+    });
+    assert.ifError(result.error);
+    assert.equal(result.status, 0, result.stderr + result.stdout);
+    assert.deepEqual(
+      readFileSync(fixture.tracePath, "utf8").trim().split("\n"),
+      ["cache-verify", "resolve", "reify", "repair"],
+    );
+    assert.match(result.stderr, /NPM_INSTALL_SAFE phase=resolve started/);
+    assert.match(result.stderr, /NPM_INSTALL_SAFE phase=reify started/);
+    assert.match(result.stderr, /NPM_INSTALL_SAFE phase=repair started/);
+    assert.ok(
+      existsSync(
+        join(fixture.repoRoot, "node_modules", "fixture-pkg", "package.json"),
+      ),
+    );
+  } finally {
+    rmSync(fixture.tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("manifest-only install skips reify when source manifests changed after the snapshot", {
+  skip: process.platform === "win32",
+}, () => {
+  const fixture = createManifestResolutionFixture({ staleDuringResolve: true });
+  const initialLockfile = readFileSync(
+    join(fixture.repoRoot, "package-lock.json"),
+    "utf8",
+  );
+  try {
+    const result = spawnSync(process.execPath, [fixture.cli, ...fixture.args], {
+      encoding: "utf8",
+      timeout: 15_000,
+      env: fixture.env,
+    });
+    assert.ifError(result.error);
+    assert.equal(result.status, 1, result.stderr + result.stdout);
+    assert.match(result.stderr, /NPM_INSTALL_SAFE_RESOLUTION_STALE: source-changed/);
+    assert.deepEqual(
+      readFileSync(fixture.tracePath, "utf8").trim().split("\n"),
+      ["cache-verify", "resolve"],
+    );
+    const liveManifest = JSON.parse(
+      readFileSync(
+        join(fixture.repoRoot, "packages", "operator-core", "package.json"),
+        "utf8",
+      ),
+    );
+    assert.equal(liveManifest.externalFixtureChange, true);
+    assert.equal(liveManifest.dependencies, undefined);
+    assert.equal(
+      readFileSync(join(fixture.repoRoot, "package-lock.json"), "utf8"),
+      initialLockfile,
+    );
+    assert.equal(existsSync(join(fixture.repoRoot, "node_modules")), false);
+  } finally {
+    rmSync(fixture.tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("name@file package targets fall back to npm under the original repo writer", {
+  skip: process.platform === "win32",
+}, () => {
+  const fixture = createManifestResolutionFixture({ expectFallback: true });
+  fixture.args[3] = "fixture-pkg@file:../fixture-pkg";
+  try {
+    const result = spawnSync(process.execPath, [fixture.cli, ...fixture.args], {
+      encoding: "utf8",
+      timeout: 15_000,
+      env: fixture.env,
+    });
+    assert.ifError(result.error);
+    assert.equal(result.status, 0, result.stderr + result.stdout);
+    assert.match(
+      result.stderr,
+      /NPM_INSTALL_SAFE_RESOLUTION_FALLBACK: a command-line package target is local or remote/,
+    );
+    assert.deepEqual(
+      readFileSync(fixture.tracePath, "utf8").trim().split("\n"),
+      ["cache-verify", "fallback"],
+    );
+  } finally {
+    rmSync(fixture.tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("runNpmWithHeartbeat reports asynchronous phase, child PID, RSS, and exit status", async () => {
+  const child = new EventEmitter();
+  child.pid = 4321;
+  const lines = [];
+  const status = await runNpmWithHeartbeat({
+    phase: "resolve",
+    args: ["install", "--package-lock-only=true"],
+    spawnCommand: () => {
+      setTimeout(() => child.emit("close", 0, null), 20);
+      return child;
+    },
+    heartbeatIntervalMs: 1,
+    readRssBytes: (pid) => (pid === 4321 ? 512 * 1024 * 1024 : null),
+    log: (line) => lines.push(line),
+  });
+  assert.equal(status, 0);
+  assert.match(lines[0], /phase=resolve started childPid=4321/);
+  assert.ok(
+    lines.some((line) =>
+      /phase=resolve heartbeat .*childRssMb=512\.0/.test(line),
+    ),
+  );
+  assert.match(lines.at(-1), /phase=resolve finished .*exitCode=0 signal=none/);
+});
+
+test("readChildRssBytes refuses unsupported platforms and invalid PIDs", () => {
+  assert.equal(readChildRssBytes(-1, "linux"), null);
+  assert.equal(readChildRssBytes(Number.NaN, "linux"), null);
+  assert.equal(readChildRssBytes(1234, "darwin"), null);
+  if (process.platform === "linux") {
+    const rssBytes = readChildRssBytes(process.pid);
+    assert.equal(typeof rssBytes, "number");
+    assert.ok(rssBytes > 0);
+  }
+});
 
 // EI-24961470606265468: the P-532f capacity build died after the interactive
 // 180 s fs-mutex wait behind a peer's install. The unattended lock-wait knob
@@ -764,7 +1065,7 @@ function holdPackageCacheReader() {
   return { ready, release, done };
 }
 
-test("install:safe verifies the npm cache with the package cache held exclusively, then reifies under a shared lease", async () => {
+test("install:safe verifies the npm cache exclusively, then resolves and reifies under shared cache leases", async () => {
   const root = mkdtempSync(join(tmpdir(), "install-safe-cache-order-"));
   const binDir = join(root, "bin");
   const repoRoot = join(root, "repo");
@@ -802,6 +1103,7 @@ test("install:safe verifies the npm cache with the package cache held exclusivel
     assert.equal(await runMain(["--repo-root", repoRoot, "install"]), 0);
     assert.deepEqual(readFileSync(npmLog, "utf8").trim().split("\n"), [
       "cache writer=yes readers=0",
+      "install writer=no readers=1",
       "install writer=no readers=1",
     ]);
   } finally {
