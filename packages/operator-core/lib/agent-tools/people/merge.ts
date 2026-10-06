@@ -28,15 +28,15 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const workspaceId = ctx.workspaceId?.trim() ?? '';
-    if (isCodingAgentRole((ctx as { role?: string | null }).role)) return { ok: false as const, error: 'coding_agent_denied' };
-    if (!workspaceId || workspaceId === '*') return { ok: false as const, error: 'workspace_required' };
+    if (isCodingAgentRole((ctx as { role?: string | null }).role)) return { data: { ok: false, error: 'coding_agent_denied' } };
+    if (!workspaceId || workspaceId === '*') return { data: { ok: false, error: 'workspace_required' } };
     // The caller who asserted the merge is recorded as its provenance (assertedSameAsBy.acceptedBy).
     const acceptedBy = resolveAgentIdentity(ctx as Parameters<typeof resolveAgentIdentity>[0]).ownerId?.trim() || ctx.principal?.slug?.trim() || '';
     try {
       const result = await mergePeople(getOrgPg().sql, workspaceId, { ids: args.ids, acceptedBy });
-      return { ok: true as const, ...result };
+      return { data: { ok: true, ...result } };
     } catch (err) {
-      if (err instanceof MergeEntitiesError) return { ok: false as const, error: err.code, message: err.message };
+      if (err instanceof MergeEntitiesError) return { data: { ok: false, error: err.code, message: err.message } };
       throw err;
     }
   },
