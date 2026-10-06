@@ -386,6 +386,30 @@ describe('improvements:capture tool envelope', () => {
     );
   });
 
+  it('forwards a bug reporter context to the core so its error can fold (unified-bug-pipeline P-011 / D-046)', async () => {
+    const reportContext = {
+      app: 'papercusp-desktop',
+      recentErrors: [{ message: 'TypeError: cannot read properties of undefined (reading "id")', source: 'renderer' }],
+    };
+    const parsed = (captureTool.args as { parse: (value: unknown) => Record<string, unknown> }).parse({
+      kind: 'bug',
+      title: 'board crashes on open',
+      reportContext,
+    });
+
+    await callTool(parsed);
+
+    expect(mockCapture).toHaveBeenCalledWith(expect.objectContaining({ kind: 'bug', reportContext }));
+  });
+
+  it('omits reportContext when the caller sent none, and refuses an unknown context field', async () => {
+    await callTool({ title: 'no context', kind: 'bug' });
+    expect(mockCapture.mock.calls[0]?.[0]).not.toHaveProperty('reportContext');
+
+    const schema = captureTool.args as { safeParse: (value: unknown) => { success: boolean } };
+    expect(schema.safeParse({ kind: 'bug', title: 't', reportContext: { screenshotBytes: 'data:image/png;base64,AAAA' } }).success).toBe(false);
+  });
+
   it('maps a static-client caller to source="su"', async () => {
     mockIdentity.mockReturnValue(identity('static-client'));
     await callTool({ title: 'x', kind: 'bug' });

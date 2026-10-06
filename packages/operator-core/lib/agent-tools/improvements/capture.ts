@@ -746,6 +746,38 @@ export default defineTool({
           .describe(
             'A bug you ENCOUNTERED (D-024): ref = test_runs:<id> / tool_invocations:<id> (checked) or the log line, buildSha = the build it failed on. Verified, it skips bulk-review reproduction.',
           ),
+        // unified-bug-pipeline P-011 / D-046 pt 5: the context a bug reporter saw.
+        // Redacted + bounded server-side (report-context.ts); recentErrors also
+        // folds this report with others of the SAME error from any reporter.
+        reportContext: z
+          .object({
+            app: z.string().max(200).optional(),
+            appVersion: z.string().max(200).optional(),
+            screen: z
+              .object({
+                url: z.string().max(4000).optional(),
+                route: z.string().max(600).optional(),
+                state: z.record(z.string(), z.string().max(1000)).optional(),
+              })
+              .optional(),
+            recentErrors: z
+              .array(
+                z.object({
+                  message: z.string().min(1).max(2000),
+                  source: z.string().max(200).optional(),
+                  at: z.string().max(40).optional(),
+                }),
+              )
+              .max(20)
+              .optional(),
+            logExcerpt: z.string().max(8000).optional(),
+            screenshot: z.string().max(300).optional(),
+          })
+          .strict()
+          .optional()
+          .describe(
+            'Bug only: what you saw. recentErrors = the exact error text; reports of the same error fold into one bug.',
+          ),
         // EI-12176 compatibility aliases. Older generated guidance advertised these at
         // top level. Declaring + normalising them prevents tools:invoke's permissive
         // envelope from silently stripping a scorecard while keeping observation.* as
@@ -1335,6 +1367,7 @@ export default defineTool({
           origin: captureOrigin,
           lane: effectiveLane,
           watchdogKey: captureWatchdogKey,
+          ...(args.reportContext ? { reportContext: args.reportContext } : {}),
           payloadExtra:
             observation || hasIdeation || toolFailureProbation || runtimeProvenance || targetRuntimeSha || storedReproduction
               ? {
