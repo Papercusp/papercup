@@ -149,8 +149,13 @@ describe('Phone deployer read-only local status', () => {
   it('reports source-scoped readiness, fails on an inactive worker and never prints secrets', async () => {
     const conf = join(root, 'readiness-status'); mkdirSync(conf);
     const media = createHttpServer((_req, res) => res.end('ready'));
+    // The fake sidecar mirrors the real /internal/* guard: armed ⇒ an
+    // unauthenticated request is refused 401; booted without the secret ⇒ 503.
+    let ingestArmed = true;
     const sidecar = createHttpServer((req, res) => {
-      res.statusCode = req.url === '/api/health' ? 200 : 404; res.end('ready');
+      res.statusCode = req.url === '/api/health' ? 200
+        : req.url?.startsWith('/internal/') ? (ingestArmed ? 401 : 503) : 404;
+      res.end('ready');
     });
     await Promise.all([
       new Promise<void>(resolve => media.listen(0, '127.0.0.1', resolve)),
@@ -160,7 +165,8 @@ describe('Phone deployer read-only local status', () => {
     if (!mediaAddr || typeof mediaAddr === 'string' || !sidecarAddr || typeof sidecarAddr === 'string') {
       throw new Error('fixture listeners unavailable');
     }
-    writeFileSync(join(conf, 'livekit.env'), `PHONE_LIVEKIT_URL=ws://127.0.0.1:${mediaAddr.port}\nPHONE_LIVEKIT_API_SECRET=private-fixture-secret\n`, { mode: 0o600 });
+    writeFileSync(join(conf, 'livekit.env'), `PHONE_LIVEKIT_URL=ws://127.0.0.1:${mediaAddr.port}\nPHONE_LIVEKIT_API_SECRET=private-fixture-secret\n` +
+      'PHONE_WORKER_SECRET=private-worker-fixture\n', { mode: 0o600 });
     writeFileSync(join(conf, 'systemctl'), '#!/bin/sh\ncase "$3" in papercusp-phone-worker.service) [ "$PHONE_WORKER_DOWN" != 1 ] || exit 3;; esac\nprintf "active\\n"\n', { mode: 0o700 });
     const env = {
       ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('PHONE_'))),
@@ -179,6 +185,20 @@ describe('Phone deployer read-only local status', () => {
       const stopped = await runStatus({ ...env, PHONE_WORKER_DOWN: '1' });
       expect(stopped.status).toBe(1);
       expect(JSON.parse(stopped.stdout).checks).toContainEqual({ component: 'worker', ready: false });
+      // WI-10006645: every unit active and both health endpoints green, but the
+      // running sidecar booted without the worker secret.
+      ingestArmed = false;
+      const ingestDisabled = await runStatus(env);
+      ingestArmed = true;
+      expect(ingestDisabled.status).toBe(1);
+      expect(JSON.parse(ingestDisabled.stdout)).toMatchObject({ ok: false,
+        alerts: [expect.objectContaining({ component: 'worker-ingest' })] });
+      const armedEnv = readFileSync(join(conf, 'livekit.env'), 'utf8');
+      writeFileSync(join(conf, 'livekit.env'), armedEnv.replace(/^PHONE_WORKER_SECRET=.*\n/m, ''), { mode: 0o600 });
+      const secretMissing = await runStatus(env);
+      writeFileSync(join(conf, 'livekit.env'), armedEnv, { mode: 0o600 });
+      expect(secretMissing.status).toBe(1);
+      expect(JSON.parse(secretMissing.stdout).checks).toContainEqual({ component: 'worker-ingest', ready: false });
       const rotatingCert = join(conf, 'rotation certificate.pem');
       const rotatingKey = join(conf, 'rotation private.pem');
       copyFileSync(certPath, rotatingCert); copyFileSync(keyPath, rotatingKey);
@@ -209,14 +229,87 @@ describe('Phone deployer read-only local status', () => {
       const missingTurn = await runStatus(env);
       expect(missingTurn.status).toBe(1);
       expect(JSON.parse(missingTurn.stdout).checks).toContainEqual({ component: 'turn-certificate', ready: false });
-      const outputs = [ready, stopped, validCertificate, renewalDue, renewed, missingTurn]
+      const outputs = [ready, stopped, ingestDisabled, secretMissing, validCertificate, renewalDue, renewed, missingTurn]
         .map(result => result.stdout + result.stderr).join('\n');
       expect(outputs).not.toContain('private-fixture-secret');
+      expect(outputs).not.toContain('private-worker-fixture');
       expect(outputs).not.toContain(rotatingKey);
       expect(outputs).not.toContain(rotatingCert);
     } finally {
       await Promise.all([media, sidecar].map(server => new Promise<void>(resolve => server.close(() => resolve()))));
     }
+  });
+});
+
+// WI-10006645: deploy.sh minted the LiveKit pair and the portal secret but never
+// PHONE_WORKER_SECRET, so the hosted worker ran with sidecar reporting DISABLED.
+describe('Phone deployer worker-ingest secret', () => {
+  const workerLine = /^PHONE_WORKER_SECRET=([0-9a-f]{64})$/m;
+  function ensure(conf: string, extra: NodeJS.ProcessEnv = {}) {
+    const base = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('PHONE_')));
+    // Sourcing loads the definitions only (the script returns before any action).
+    // `set --` first: a sourced file inherits the caller's positional arguments.
+    return spawnSync('bash', ['-c', 'd="$1"; set --; source "$d"; ROTATE="${TEST_ROTATE:-0}"; ensure_worker_secret',
+      '_', deploy], {
+      env: { ...base, PHONE_CONFIG_DIR: conf, ...extra }, encoding: 'utf8', timeout: 15_000,
+    });
+  }
+  function conf(name: string, content: string) {
+    const dir = join(root, name); mkdirSync(dir);
+    writeFileSync(join(dir, 'livekit.env'), content, { mode: 0o600 });
+    return dir;
+  }
+  const shared = 'PHONE_LIVEKIT_API_KEY=k\nPHONE_LIVEKIT_API_SECRET=s\nDEEPGRAM_API_KEY=vendor-retained\n' +
+    'PHONE_TURN_CERT_FILE=/etc/certs/turn\\ cert.pem\n';
+
+  it('mints once into livekit.env, preserves every other line, stays 0600 and never prints it', () => {
+    const dir = conf('worker-secret-mint', shared);
+    const first = ensure(dir);
+    expect(first.status, first.stderr).toBe(0);
+    const minted = readFileSync(join(dir, 'livekit.env'), 'utf8');
+    const secret = minted.match(workerLine)?.[1];
+    expect(secret, minted).toBeDefined();
+    expect(minted.replace(workerLine, '').replace(/\n+$/, '\n')).toBe(shared);
+    expect(statSync(join(dir, 'livekit.env')).mode & 0o777).toBe(0o600);
+    expect(first.stdout + first.stderr).not.toContain(secret!);
+    const again = ensure(dir);
+    expect(again.status, again.stderr).toBe(0);
+    expect(readFileSync(join(dir, 'livekit.env'), 'utf8')).toBe(minted);
+  });
+
+  it('treats a blank line as missing and ignores a value exported only in the caller shell', () => {
+    const blank = conf('worker-secret-blank', `${shared}PHONE_WORKER_SECRET=\n`);
+    expect(ensure(blank).status).toBe(0);
+    expect(readFileSync(join(blank, 'livekit.env'), 'utf8')).toMatch(workerLine);
+    const shellOnly = conf('worker-secret-shell-only', shared);
+    expect(ensure(shellOnly, { PHONE_WORKER_SECRET: 'f'.repeat(64) }).status).toBe(0);
+    const persisted = readFileSync(join(shellOnly, 'livekit.env'), 'utf8').match(workerLine)?.[1];
+    expect(persisted).toBeDefined();
+    expect(persisted).not.toBe('f'.repeat(64));
+  });
+
+  it('rotates only under --rotate-secret, keeping the vendor credentials', () => {
+    const dir = conf('worker-secret-rotate', `${shared}PHONE_WORKER_SECRET=${'a'.repeat(64)}\n`);
+    expect(ensure(dir).status).toBe(0);
+    expect(readFileSync(join(dir, 'livekit.env'), 'utf8')).toContain(`PHONE_WORKER_SECRET=${'a'.repeat(64)}`);
+    expect(ensure(dir, { TEST_ROTATE: '1' }).status).toBe(0);
+    const rotated = readFileSync(join(dir, 'livekit.env'), 'utf8');
+    expect(rotated.match(workerLine)?.[1]).not.toBe('a'.repeat(64));
+    expect(rotated).toContain('DEEPGRAM_API_KEY=vendor-retained');
+  });
+
+  it('a full deploy arms it before units start; render-only never mints it', () => {
+    const source = readFileSync(deploy, 'utf8');
+    const call = source.search(/^\s*ensure_worker_secret$/m);
+    expect(call).toBeGreaterThan(source.indexOf('step "Credentials"'));
+    expect(call).toBeLessThan(source.indexOf('step "Start"'));
+    const f = fixture('worker-secret-render-only');
+    const withoutWorker = f.original.replace(/^PHONE_WORKER_SECRET=.*\n/m, '');
+    writeFileSync(join(f.conf, 'livekit.env'), withoutWorker, { mode: 0o600 });
+    const result = run(f.env);
+    expect(result.status, result.stderr).toBe(0);
+    expect(readFileSync(join(f.conf, 'livekit.env'), 'utf8')).not.toMatch(/^PHONE_WORKER_SECRET=/m);
+    expect(result.stdout).toContain('PHONE_WORKER_SECRET absent');
   });
 });
 

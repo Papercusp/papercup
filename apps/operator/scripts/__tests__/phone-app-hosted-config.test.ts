@@ -102,12 +102,13 @@ describe('Phone audio receive verdict', () => {
 
 describe('Phone local readiness is fail-closed and scoped', () => {
   const coordinates = { PHONE_LIVEKIT_URL: 'ws://127.0.0.1:7890',
-    PHONE_SIDECAR_URL: 'ws://127.0.0.1:8793' };
+    PHONE_SIDECAR_URL: 'ws://127.0.0.1:8793', PHONE_WORKER_SECRET: 'worker-fixture-secret' };
   it('observes four service units and two HTTP endpoints without asserting public calls', async () => {
     const units: string[] = [], urls: string[] = [];
     const result = await localPhoneReadiness(coordinates, {
       unitState: async (unit: string) => { units.push(unit); return true; },
       httpReady: async (url: string) => { urls.push(url); return true; },
+      httpStatus: async () => 401,
     });
     expect(result).toMatchObject({ ok: true, scope: 'local-process-and-http-only',
       publicPhoneVerified: false, bidirectionalAudioVerified: false,
@@ -119,7 +120,7 @@ describe('Phone local readiness is fail-closed and scoped', () => {
     expect(urls).toEqual(['http://127.0.0.1:7890/', 'http://127.0.0.1:8793/api/health']);
   });
   it('refuses inactive/crashed units, HTTP faults and unknown probes', async () => {
-    const base = { unitState: async () => true, httpReady: async () => true };
+    const base = { unitState: async () => true, httpReady: async () => true, httpStatus: async () => 401 };
     const sipFailure = await localPhoneReadiness(coordinates, {
       ...base, unitState: async (unit: string) => unit !== 'papercusp-phone-sip.service',
     });
@@ -146,6 +147,37 @@ describe('Phone local readiness is fail-closed and scoped', () => {
     })).ok).toBe(false);
     expect((await localPhoneReadiness({ ...coordinates, PHONE_SIDECAR_URL: 'wss://example.com' }, base)).ok).toBe(false);
     expect((await localPhoneReadiness({ PHONE_LIVEKIT_URL: '' }, base)).ok).toBe(false);
+  });
+  // WI-10006645: a blank PHONE_WORKER_SECRET left every unit and health endpoint
+  // green while the worker reported nothing and the sidecar refused all ingest.
+  it('fails worker-ingest unless the secret is configured AND the sidecar refuses an unauthenticated probe 401', async () => {
+    const base = { unitState: async () => true, httpReady: async () => true };
+    const probed: string[] = [];
+    const armed = await localPhoneReadiness(coordinates, {
+      ...base, httpStatus: async (url: string) => { probed.push(url); return 401; },
+    });
+    expect(armed.ok).toBe(true);
+    expect(armed.checks).toContainEqual({ component: 'worker-ingest', ready: true });
+    expect(probed).toEqual(['http://127.0.0.1:8793/internal/readiness']);
+    // The live 2026-10-06 state: the sidecar booted without the secret.
+    const disabled = await localPhoneReadiness(coordinates, { ...base, httpStatus: async () => 503 });
+    expect(disabled.ok).toBe(false);
+    expect(disabled.alerts).toEqual([{ component: 'worker-ingest', owner: 'phone-operations',
+      action: expect.stringContaining('PHONE_WORKER_SECRET') }]);
+    // An unauthenticated probe that is ADMITTED means the guard is gone, not ready.
+    expect((await localPhoneReadiness(coordinates, { ...base, httpStatus: async () => 200 })).ok).toBe(false);
+    for (const secret of [undefined, '', '   ']) {
+      const asked: string[] = [];
+      const unset = await localPhoneReadiness({ ...coordinates, PHONE_WORKER_SECRET: secret }, {
+        ...base, httpStatus: async (url: string) => { asked.push(url); return 401; },
+      });
+      expect(unset.ok, `secret=${JSON.stringify(secret)}`).toBe(false);
+      expect(unset.alerts.map(alert => alert.component)).toEqual(['worker-ingest']);
+      expect(asked).toEqual([]);
+    }
+    expect((await localPhoneReadiness(coordinates, {
+      ...base, httpStatus: async () => { throw new Error('connection refused'); },
+    })).ok).toBe(false);
   });
 });
 
