@@ -15,6 +15,7 @@ import {
   isSuApprovalsMode,
   type SuApprovalsMode,
   type SuPlanItem,
+  type SuSessionModelOption,
   type SuSessionUsage,
   type SuSessionBackend,
   type SuSessionCommand,
@@ -377,6 +378,29 @@ export class SuSessionHost<B extends SuSessionBackend = SuSessionBackend> {
     return this.emit({
       type: 'session',
       descriptor: { ...this.descriptorValue, plan: next },
+    } as SuSessionEventInput<B>);
+  }
+
+  /** WI-10006652: publish the models the engine reports it can switch to, so a
+   * client's /model lists those instead of the workspace's routing tiers.
+   * Rows without an id or label are dropped; emits only on change. */
+  updateModels(models: readonly SuSessionModelOption[]): SuSessionEvent<B> | null {
+    const next: readonly SuSessionModelOption[] = models
+      .filter((model) => model.id.trim() && model.label.trim())
+      .map((model) => ({
+        id: model.id,
+        label: model.label,
+        ...(model.description ? { description: model.description } : {}),
+        ...(model.resolvedModel ? { resolvedModel: model.resolvedModel } : {}),
+        ...(model.efforts?.length ? { efforts: [...model.efforts] } : {}),
+        ...(model.defaultEffort ? { defaultEffort: model.defaultEffort } : {}),
+        ...(model.isDefault ? { isDefault: true } : {}),
+      }));
+    if (!next.length) return null;
+    if (JSON.stringify(this.descriptorValue.models ?? null) === JSON.stringify(next)) return null;
+    return this.emit({
+      type: 'session',
+      descriptor: { ...this.descriptorValue, models: next },
     } as SuSessionEventInput<B>);
   }
 
