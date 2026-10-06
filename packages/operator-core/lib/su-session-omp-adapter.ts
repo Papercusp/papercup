@@ -40,6 +40,7 @@ import { bindSuSessionToAdvSession, persistSuSessionDescriptor } from './su-sess
 import { SuOwnerTurnReceiptMatcher, type SuOwnerTurnReceiptRef } from './su-session-commands';
 import { findOmpSessionPath, ompAgentHomeForSessionKey } from './session-transcript-resolvers';
 import { createOmpTimelineParser, type TimelineLineParser } from './session-timeline-parsers';
+import { ompMessageUsage } from './su-session-usage';
 import { gatewayServedAccountForOwner } from './compaction-usage';
 import {
   SuSessionHost,
@@ -250,7 +251,7 @@ export function ompCapabilities(): SuSessionCapabilities {
       'reasoning-stream': { state: 'supported', implementation: 'native' },
       usage: {
         state: 'conditional', implementation: 'native',
-        reason: 'OMP message records may carry usage/cost metadata but the v1 SU-session event contract has no usage event',
+        reason: 'assistant message records set descriptor.usage (latest-call tokens) and a running costUsd summed from each message cost',
       },
       compaction: {
         state: 'conditional', implementation: 'host',
@@ -261,8 +262,8 @@ export function ompCapabilities(): SuSessionCapabilities {
         reason: 'PUI attached launches and resumptions install OMP native question callbacks with always-ask approval. Other managed engine callers must opt into toolApproval prompt.',
       },
       context: {
-        state: 'unsupported',
-        reason: 'the v1 SU-session contract carries no context event or descriptor field, so OMP context consumption stays inside the native runtime and never reaches the PUI',
+        state: 'conditional', implementation: 'native',
+        reason: 'descriptor.usage.contextTokens comes from assistant message usage; OMP transcripts do not record the model context window, so contextWindow stays absent and no percentage can be shown',
       },
       modes: {
         state: 'conditional', implementation: 'host',
@@ -403,6 +404,8 @@ export class OmpSuSessionAdapter {
    * transcript that never emitted one.
    */
   private sawResolvedModel = false;
+  /** D-029: OMP prices each assistant message; the session cost is their sum. */
+  private sessionCostUsd = 0;
 
   constructor(
     readonly binding: PuiSuSessionBinding & { backend: 'omp' },
@@ -515,6 +518,18 @@ export class OmpSuSessionAdapter {
           type: 'session',
           descriptor: { ...descriptor, model: resolvedModel },
         } as SuSessionEventInput<'omp'>);
+      }
+    }
+
+    // D-029/D-031: usage rides the session descriptor. A replay only re-reads
+    // records this host has not claimed, so each message is counted once.
+    if (record.type === 'message' && messageRecord?.role === 'assistant') {
+      const measured = ompMessageUsage(messageRecord);
+      if (measured) {
+        if (measured.cost !== undefined) this.sessionCostUsd += measured.cost;
+        this.host.updateUsage(measured.cost !== undefined
+          ? { ...measured.usage, costUsd: this.sessionCostUsd }
+          : measured.usage);
       }
     }
 
