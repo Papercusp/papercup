@@ -94,7 +94,7 @@ import {
 } from '../work-items-admission';
 import { trackDetached } from '../detached-imports';
 import { agentWorkWhereSql, issueFamilyRouteSql } from '../work-nature/agent-work-predicate';
-import { agentReviewNormalExclusionSql, readAgentReviewState } from '../harness/improvements/agent-review-policy';
+import { intakeStageClaimFloorSql, readAgentReviewState } from '../harness/improvements/agent-review-policy';
 import {
   classifyAuditAge,
   classifyDurableParkReleaseLiveness,
@@ -1207,7 +1207,7 @@ export function issueClaimCandidateSubquery(
           -- claimability-snapshot-projection-covers-floors.test.ts.
           wi.condition_key,
           -- P-007 (WI-10004706): floor #16 (implementation readiness + acceptance contract,
-          -- inside agentReviewNormalExclusionSql) derives the intake stage from item_kind,
+          -- inside intakeStageClaimFloorSql) derives the intake stage from item_kind,
           -- title AND summary, and compares created_ts to the enforcement cutover. Same
           -- pushdown-path rule as wi.lane above.
           wi.summary,
@@ -1261,7 +1261,7 @@ export function issueClaimCandidateSubquery(
       (wi.taken_by IS NULL OR wi.taken_by = '')                         AS ok_untaken,
       (${claimHoldExclusionSql(sql)})                                   AS ok_claim_hold,
       (${needsOwnerActionExclusionSql(sql)})                             AS ok_needs_owner_action,
-      (${agentReviewNormalExclusionSql(sql)})                            AS ok_agent_review,
+      (${intakeStageClaimFloorSql(sql)})                            AS ok_agent_review,
       (${observationLaneExclusionSql(sql)})                             AS ok_observation,
       (${externalBlockersExclusionSql(sql)})                            AS ok_external_blocker,
       (${reservedPlanLaneExclusionSql(sql, assignee, 'wi.payload', {

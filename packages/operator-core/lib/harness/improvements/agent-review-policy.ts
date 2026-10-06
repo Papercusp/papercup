@@ -1550,30 +1550,92 @@ export function implementationReadinessAdmitsClaim(input: {
   return raw.status === 'ready' || (raw.status === 'unknown' && raw.source === 'creation-enrollment');
 }
 
-/** Normal implementation lane: review/readiness work is invisible until approved. */
-export function agentReviewNormalExclusionSql(
+/**
+ * agentReview statuses that put a row's stage check in progress (P-008, D-038):
+ * the proposal or reproduction review is pending, or it was sent back to the
+ * submitter for revision.
+ */
+export const INTAKE_STAGE_REVIEW_IN_PROGRESS_STATUSES = ['pending', 'revision-requested'] as const;
+
+/**
+ * P-008 (unified-bug-pipeline D-038): the ONE intake-stage claim predicate, over
+ * fragments a caller has already extracted. Every claim door and the admission
+ * promoter's projected census compose it, so the review legs and the readiness
+ * floor can no longer drift apart or hide inside one another. Its legs:
+ *
+ *  1. legacy-revision: a revision requested of {@link LEGACY_AGENT_REVIEW_SUBMITTER}
+ *     was seeded by the pre-agent-review migration, not a live review, so it passes.
+ *  2. review-in-progress: otherwise a pending or revision-requested review holds the
+ *     row; the review lane is its clearer.
+ *  3. readiness floor ({@link implementationReadinessFloorSql}): accepted (current
+ *     `ready` with a qualifying acceptance) or, for rows created before the
+ *     enforcement cutover, legacy-admitted.
+ *
+ * NULL-safe: the result is never NULL, so `NOT (stage)` keeps meaning "held".
+ */
+export function intakeStageClaimFloorFromFragmentsSql(
+  sql: OrgSql,
+  fragments: {
+    /** `agentReview ->> 'status'` of the row (NULL when it has no review). */
+    reviewStatus: postgres.Fragment;
+    /** `agentReview ->> 'submittedBy'` of the row. */
+    reviewSubmittedBy: postgres.Fragment;
+    /** A readiness floor over the same row (`implementationReadiness*FloorSql`). */
+    readinessFloor: postgres.Fragment;
+  },
+) {
+  const { reviewStatus, reviewSubmittedBy, readinessFloor } = fragments;
+  return sql`(
+    (
+      COALESCE(${reviewStatus} = 'revision-requested', FALSE)
+      AND COALESCE(${reviewSubmittedBy} = ${LEGACY_AGENT_REVIEW_SUBMITTER}, FALSE)
+    )
+    OR (
+      ${reviewStatus} IS DISTINCT FROM 'pending'
+      AND ${reviewStatus} IS DISTINCT FROM 'revision-requested'
+      AND COALESCE(${readinessFloor}, FALSE)
+    )
+  )`;
+}
+
+/**
+ * The intake-stage claim predicate over a payload column — what every ordinary
+ * (non-reviewer) claim door applies. Pass the relation shape the fragment is
+ * embedded in; the default is an aliased `work_items` row.
+ */
+export function intakeStageClaimFloorSql(
   sql: OrgSql,
   payloadCol: ClaimFloorPayloadColumn = 'wi.payload',
   shape?: ClaimFloorRelationShape,
 ) {
-  const payload = sql.unsafe(payloadCol);
-  return sql`(
-    (
-      COALESCE(
-        COALESCE(${payload}, '{}'::jsonb) -> 'agentReview' ->> 'status' = 'revision-requested',
-        FALSE
-      )
-      AND COALESCE(
-        COALESCE(${payload}, '{}'::jsonb) -> 'agentReview' ->> 'submittedBy' = ${LEGACY_AGENT_REVIEW_SUBMITTER},
-        FALSE
-      )
-    )
-    OR (
-      COALESCE(${payload}, '{}'::jsonb) -> 'agentReview' ->> 'status' IS DISTINCT FROM 'pending'
-      AND COALESCE(${payload}, '{}'::jsonb) -> 'agentReview' ->> 'status' IS DISTINCT FROM 'revision-requested'
-      AND ${shape ? implementationReadinessNormalExclusionSql(sql, payloadCol, shape) : implementationReadinessNormalExclusionSql(sql, payloadCol)}
-    )
-  )`;
+  const review = sql`(COALESCE(${sql.unsafe(payloadCol)}, '{}'::jsonb) -> 'agentReview')`;
+  return intakeStageClaimFloorFromFragmentsSql(sql, {
+    reviewStatus: sql`(${review} ->> 'status')`,
+    reviewSubmittedBy: sql`(${review} ->> 'submittedBy')`,
+    readinessFloor: shape
+      ? implementationReadinessNormalExclusionSql(sql, payloadCol, shape)
+      : implementationReadinessNormalExclusionSql(sql, payloadCol),
+  });
+}
+
+/**
+ * TS twin of {@link intakeStageClaimFloorSql} for one row: does the intake stage
+ * admit it for an ordinary (non-reviewer) claim?
+ */
+export function intakeStageAdmitsClaim(input: {
+  payload: unknown;
+  kind: string;
+  title: string;
+  summary: string | null | undefined;
+  /** Row creation time in epoch milliseconds; null/undefined is treated as legacy. */
+  createdAtMs: number | null | undefined;
+}): boolean {
+  const review = record(record(input.payload).agentReview);
+  // `->>` renders any JSON scalar as text; a non-string status can never equal a literal.
+  const status = typeof review.status === 'string' ? review.status : null;
+  if (status === 'revision-requested' && review.submittedBy === LEGACY_AGENT_REVIEW_SUBMITTER) return true;
+  if ((INTAKE_STAGE_REVIEW_IN_PROGRESS_STATUSES as readonly string[]).includes(status ?? '')) return false;
+  return implementationReadinessAdmitsClaim(input);
 }
 
 /** Reviewer lane: only submitted work, never revision work or approved work. */

@@ -28,6 +28,7 @@ import {
   hasStrictOwnerAction,
   readAgentReviewState,
   implementationReadinessProjectedFloorSql,
+  intakeStageClaimFloorFromFragmentsSql,
   implementationReadinessValidFromJsonSql,
   implementationAcceptanceStateFromReadinessSql,
   acceptanceSourceRevisionFromFragmentsSql,
@@ -2788,27 +2789,19 @@ export async function readWorkItemReadinessProjection(opts: {
                    = ANY(ARRAY['ready','unknown','not-ready']::text[])
                ) AS readiness_known,
                (p.admission IS DISTINCT FROM 'pending') AS admission_ready,
-               (
-                 (
-                   COALESCE(p.agent_review ->> 'status' = 'revision-requested', FALSE)
-                   AND COALESCE(
-                     p.agent_review ->> 'submittedBy' = ${LEGACY_AGENT_REVIEW_SUBMITTER},
-                     FALSE
-                   )
-                 )
-                 OR (
-                   p.agent_review ->> 'status' IS DISTINCT FROM 'pending'
-                   AND p.agent_review ->> 'status' IS DISTINCT FROM 'revision-requested'
-                   AND ${implementationReadinessProjectedFloorSql(sql, {
-                     readiness: sql`p.implementation_readiness`,
-                     enrolled: sql`p.readiness_enrolled`,
-                     itemKind: sql`p.item_kind`,
-                     title: sql`p.title`,
-                     summary: sql`p.summary`,
-                     createdTs: sql`p.created_ts`,
-                   })}
-                 )
-               ) AS review_ready,
+               -- P-008 (D-038): the same intake-stage claim predicate every claim door applies.
+               ${intakeStageClaimFloorFromFragmentsSql(sql, {
+                 reviewStatus: sql`(p.agent_review ->> 'status')`,
+                 reviewSubmittedBy: sql`(p.agent_review ->> 'submittedBy')`,
+                 readinessFloor: implementationReadinessProjectedFloorSql(sql, {
+                   readiness: sql`p.implementation_readiness`,
+                   enrolled: sql`p.readiness_enrolled`,
+                   itemKind: sql`p.item_kind`,
+                   title: sql`p.title`,
+                   summary: sql`p.summary`,
+                   createdTs: sql`p.created_ts`,
+                 }),
+               })} AS review_ready,
                EXISTS (
                  SELECT 1
                    FROM jsonb_path_query(

@@ -86,7 +86,7 @@ import { projectWorkItemColumns, type WorkItemReadOptions } from './work-item-re
 import { CLAIM_SUBJECT_BASELINE_KEY } from './claim-subject-baseline';
 import { AUTO_CLOSE_DEFAULT_MIN_TICKS, AUTO_CLOSE_ELIGIBLE_SOURCES } from './harness/improvements/auto-close-sources';
 import {
-  agentReviewNormalExclusionSql,
+  intakeStageClaimFloorSql,
   createImplementationReadiness,
   agentReviewPendingAdmissionSql,
   isAgentReviewClaimAdmission,
@@ -2026,7 +2026,7 @@ export function issueAdmissibleWhereSql(sql: OrgSql, aliased: boolean) {
     ${base}
     AND ${admittedWhereSql(sql, aliased ? 'ei' : undefined)}
     AND ${watchdogRecoveryWindowExclusionSqlForIssueView(sql, c)}
-    AND ${agentReviewNormalExclusionSql(sql, aliased ? 'ei.payload' : 'payload', 'engineer_issues')}
+    AND ${intakeStageClaimFloorSql(sql, aliased ? 'ei.payload' : 'payload', 'engineer_issues')}
   )`;
 }
 
@@ -3238,7 +3238,7 @@ export async function claimIssue(
            COALESCE(target.payload, '{}'::jsonb) -> 'agentReview' ->> 'status' = 'revision-requested'
            AND COALESCE(target.payload, '{}'::jsonb) -> 'agentReview' ->> 'submittedBy' = ${assignee}
          )
-         OR ${agentReviewNormalExclusionSql(sql, 'target.payload', 'engineer_issues')}
+         OR ${intakeStageClaimFloorSql(sql, 'target.payload', 'engineer_issues')}
        )
        -- WI-5826 NOTE — deliberately NO terminal-state floor here. Claiming an
        -- already-completed row BY ID is an INTENTIONAL, tested escape hatch (EI-8972:

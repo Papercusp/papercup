@@ -8,6 +8,9 @@ import {
   createImplementationReadiness,
   deriveWorkItemIntakeStage,
   implementationReadinessNormalExclusionSql,
+  intakeStageAdmitsClaim,
+  intakeStageClaimFloorSql,
+  LEGACY_AGENT_REVIEW_SUBMITTER,
   sealImplementationAcceptance,
   VERIFICATION_TASK_SCHEMA_VERSION,
   verificationConflict,
@@ -348,6 +351,62 @@ describe('implementationReadinessNormalExclusionSql (claim floor)', () => {
           ${BUG_SOURCE.kind}::text, ${TITLE}::text, ${SUMMARY}::text, 0::bigint
         )) AS fixture(payload, item_kind, title, summary, created_ts)`;
     expect(row).toEqual({ passes, held: !passes });
+  });
+});
+
+describe('intakeStageClaimFloorSql: one stage predicate, TS twin agrees (P-008 / D-038)', () => {
+  const enrolled = createImplementationReadiness({
+    status: 'unknown',
+    source: 'creation-enrollment',
+    reason: 'no-acceptance-evidence-at-creation',
+    updatedAt: '2026-09-05T00:00:00.000Z',
+  });
+  const mirror = { ...enrolled, source: 'agent-review', reason: 'awaiting-agent-review' };
+  const revision = { ...enrolled, status: 'not-ready', source: 'agent-review', reason: 'agent-review-revision-requested' };
+  const review = (status: unknown, submittedBy: unknown = 'su-author') => ({
+    status,
+    submittedBy,
+    ledgerIdeaId: 'idea-1',
+    round: 1,
+  });
+  // `passes` is the PRE-P-008 floor's verdict for each row (agentReviewNormalExclusionSql
+  // composed over implementationReadinessNormalExclusionSql), so this table also pins that
+  // the rename to one stage predicate changed no claimability.
+  const cases: Array<{ id: string; payload: unknown; passes: boolean }> = [
+    { id: 'no-review legacy row', payload: {}, passes: true },
+    { id: 'null payload', payload: null, passes: true },
+    { id: 'review pending holds', payload: { agentReview: review('pending'), implementationReadiness: mirror }, passes: false },
+    { id: 'pending holds even with a divergent accepted readiness', payload: { agentReview: review('pending'), implementationReadiness: acceptedReadiness() }, passes: false },
+    { id: 'revision requested holds', payload: { agentReview: review('revision-requested'), implementationReadiness: revision }, passes: false },
+    {
+      id: 'legacy-submitter revision bypasses the readiness floor',
+      payload: { agentReview: review('revision-requested', LEGACY_AGENT_REVIEW_SUBMITTER), implementationReadiness: revision },
+      passes: true,
+    },
+    { id: 'legacy-submitter pending still holds', payload: { agentReview: review('pending', LEGACY_AGENT_REVIEW_SUBMITTER) }, passes: false },
+    { id: 'approved + accepted readiness', payload: { agentReview: review('approved'), implementationReadiness: acceptedReadiness() }, passes: true },
+    {
+      id: 'approved review does not lift a capture-policy hold',
+      payload: { agentReview: review('approved'), implementationReadiness: { ...enrolled, source: 'capture-policy' } },
+      passes: false,
+    },
+    { id: 'non-string review status is no review', payload: { agentReview: review(1), implementationReadiness: enrolled }, passes: true },
+    { id: 'scalar agentReview is no review', payload: { agentReview: 'garbage' }, passes: true },
+    { id: 'malformed readiness holds', payload: { implementationReadiness: { status: 'ready' } }, passes: false },
+  ];
+
+  it.each(cases)('$id → passes=$passes in SQL and TS, never NULL', async ({ payload, passes }) => {
+    const floor = intakeStageClaimFloorSql(sql as unknown as OrgSql, 'payload');
+    const [row] = await sql<Array<{ passes: boolean | null; held: boolean | null }>>`
+      SELECT ${floor} AS passes, NOT ${floor} AS held
+        FROM (VALUES (
+          ${payload == null ? null : sql.json(payload as postgres.JSONValue)}::jsonb,
+          ${BUG_SOURCE.kind}::text, ${TITLE}::text, ${SUMMARY}::text, 0::bigint
+        )) AS fixture(payload, item_kind, title, summary, created_ts)`;
+    expect(row).toEqual({ passes, held: !passes });
+    expect(
+      intakeStageAdmitsClaim({ payload, kind: BUG_SOURCE.kind, title: TITLE, summary: SUMMARY, createdAtMs: 0 }),
+    ).toBe(passes);
   });
 });
 

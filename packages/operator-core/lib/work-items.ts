@@ -128,7 +128,7 @@ import { isTransportOnlyIdentity } from './agent-tools/coordination/identity';
 import { AUTO_CLOSE_DEFAULT_MIN_TICKS, AUTO_CLOSE_ELIGIBLE_SOURCES } from './harness/improvements/auto-close-sources';
 import {
   agentReviewPendingAdmissionSql,
-  agentReviewNormalExclusionSql,
+  intakeStageClaimFloorSql,
   matchesAgentReviewClaimAdmission,
   readAgentReviewState,
   verificationTaskConflict,
@@ -1409,7 +1409,7 @@ async function listWorkItemsWithLimit(filter: ListWorkItemsFilter, rowLimit: num
                  -- assignee) — mirrors issueAdmissibleWhereSql's own list-context shape.
                  AND ${claimHoldExclusionSql(sql, 'payload')}
                  AND ${reservedPlanLaneExclusionSql(sql, '', 'payload')}
-                 AND ${agentReviewNormalExclusionSql(sql, 'payload')}
+                 AND ${intakeStageClaimFloorSql(sql, 'payload')}
                )`
              : sql`TRUE`
          }
@@ -1545,7 +1545,7 @@ export async function countWorkItems(filter: ListWorkItemsFilter = {}): Promise<
                  -- denominator not).
                  AND ${claimHoldExclusionSql(sql, 'payload')}
                  AND ${reservedPlanLaneExclusionSql(sql, '', 'payload')}
-                 AND ${agentReviewNormalExclusionSql(sql, 'payload')}
+                 AND ${intakeStageClaimFloorSql(sql, 'payload')}
                )`
              : sql`TRUE`
          }
@@ -1671,7 +1671,7 @@ export async function countWorkItemsByState(filter: ListWorkItemsFilter = {}): P
                  AND ${admittedWhereSql(sql)}
                  AND ${claimHoldExclusionSql(sql, 'payload')}
                  AND ${reservedPlanLaneExclusionSql(sql, '', 'payload')}
-                 AND ${agentReviewNormalExclusionSql(sql, 'payload')}
+                 AND ${intakeStageClaimFloorSql(sql, 'payload')}
                )`
              : sql`TRUE`
          }
@@ -6118,7 +6118,7 @@ export function claimFloorsWhereSql(sql: OrgSql, opts: ClaimFloorsOpts) {
     AND COALESCE(payload, '{}'::jsonb) ->> '_claimHold' IS DISTINCT FROM 'true'
     -- D-003/P-004: work awaiting peer review, or returned to its submitter for revision,
     -- belongs exclusively to the agent-review lifecycle. Approval re-admits the row.
-    AND ${agentReviewNormalExclusionSql(sql, 'payload')}
+    AND ${intakeStageClaimFloorSql(sql, 'payload')}
     -- EI-19441925633833456: the HIVE-CANARY floor. A canary (payload.canary=true) is a
     -- MEASUREMENT INSTRUMENT for "does the autonomous loop carry queued work end-to-end?",
     -- so an agent self-selecting it and completing it does not answer that question — it
@@ -8096,7 +8096,7 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
          AND ${needsOwnerActionExclusionSql(sql)}
          -- D-003/P-004: pending/revision-requested rows are owned by the reviewer/revision
          -- lifecycle, not the normal implementation pool. Approval re-admits them.
-         AND ${agentReviewNormalExclusionSql(sql)}
+         AND ${intakeStageClaimFloorSql(sql)}
          AND ${externalBlockersExclusionSql(sql)}
          -- WI-2633: an auto-filed replication-liveness detector EI is gated to the p2p fleet and
          -- unactionable by a generic self-selector — pool-exclude it too (like observation/
@@ -8160,7 +8160,7 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
          -- D-005: an observation-lane row is not work-queue material — same floor the claim applies.
          AND ${observationLaneExclusionSql(sql)}
          AND ${needsOwnerActionExclusionSql(sql)}
-         AND ${agentReviewNormalExclusionSql(sql)}
+         AND ${intakeStageClaimFloorSql(sql)}
          AND NOT ${verificationTaskConflictSql(sql, filter.assignee, 'wi.payload')}
          AND ${externalBlockersExclusionSql(sql)}
          -- WI-2633: a replication-liveness detector EI is gated to the p2p fleet — same floor the
@@ -8355,7 +8355,7 @@ export function issueClaimBarFloorColumnsSql(
     (${liveGateOpsSelfSelectExclusionSql(sql)})                            AS ok_live_gate_ops,
     (${observationLaneExclusionSql(sql)})                                  AS ok_observation,
     (${needsOwnerActionExclusionSql(sql)})                                 AS ok_needs_owner_action,
-    (${agentReviewNormalExclusionSql(sql)})                                AS ok_agent_review,
+    (${intakeStageClaimFloorSql(sql)})                                AS ok_agent_review,
     (${externalBlockersExclusionSql(sql)})                                 AS ok_external_blocker,
     (${claimHoldExclusionSql(sql)})                                        AS ok_claim_hold,
     (${reservedPlanLaneExclusionSql(sql, assignee, 'wi.payload', {
@@ -8894,7 +8894,7 @@ export async function claimNextIssueWorkItem(
           -- D-003/P-004: normal self-selection cannot take pending review work or the
           -- submitter-owned revision interval. The dedicated reviewer tool is the only
           -- selector for pending; approved rows pass this floor again.
-          AND ${agentReviewNormalExclusionSql(tx)}
+          AND ${intakeStageClaimFloorSql(tx)}
           -- P-007 / D-021: never self-select a verification task to its reporter or implementer.
           AND NOT ${verificationTaskConflictSql(tx, filter.assignee, 'wi.payload')}
           AND ${externalBlockersExclusionSql(tx)}
