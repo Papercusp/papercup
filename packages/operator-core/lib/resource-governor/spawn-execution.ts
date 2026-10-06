@@ -116,7 +116,7 @@ export async function spawnGovernedAgentProcess(
   }
   if (result.status === 'error') {
     await execution.cancel(result.error);
-    return result;
+    return { ...result, ...(goalAdmissionDegraded.length ? { goalAdmissionDegraded } : {}) };
   }
 
   const exit = result.childExit ?? (result.child ? observeVisibleChild(result.child) : null);

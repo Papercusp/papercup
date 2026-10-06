@@ -140,4 +140,28 @@ describe('spawnGovernedAgentProcess', () => {
     }, async () => ({ status: 'ok', pid: 42, terminal: 'headless', child: null, display: null, desktopEnvResolvedVia: null }));
     expect(result).toMatchObject({ status: 'ok', goalAdmissionDegraded: ['fixture lock unavailable'] });
   });
+
+  it('retains the degraded admission reason when the process fails and the reservation is cancelled', async () => {
+    registerGoalLaunchMock.mockImplementation(async (_args, register) => ({
+      value: await register('goal-fixture'), resolution: null, degradedReason: 'fixture lock unavailable',
+    }));
+    const result = await spawnGovernedAgentProcess({
+      workspaceId: 'ws', idempotencyKey: 'spawn-1', owner: 'target', metadata: { launchedBy: 'launcher' },
+    }, async () => ({ status: 'error', error: 'fixture boot failure', code: 502 }));
+    expect(result).toEqual({ status: 'error', error: 'fixture boot failure', code: 502,
+      goalAdmissionDegraded: ['fixture lock unavailable'] });
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(cancel).toHaveBeenCalledWith('fixture boot failure');
+    expect(finish).not.toHaveBeenCalled();
+  });
+
+  it('cancels a throwing process start exactly once and preserves the original exception', async () => {
+    const error = new Error('fixture thrown boot failure');
+    await expect(spawnGovernedAgentProcess({
+      workspaceId: 'ws', idempotencyKey: 'spawn-1', owner: 'target', metadata: { launchedBy: 'launcher' },
+    }, async () => { throw error; })).rejects.toBe(error);
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(cancel).toHaveBeenCalledWith('spawn threw: fixture thrown boot failure');
+    expect(finish).not.toHaveBeenCalled();
+  });
 });
