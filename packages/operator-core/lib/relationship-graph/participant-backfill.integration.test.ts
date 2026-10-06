@@ -9,12 +9,27 @@
  */
 import { randomUUID } from 'node:crypto';
 import type postgres from 'postgres';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { setPersonalVaultEnabled, upsertPersonalDocuments } from '../personal-vault/store';
 import type { PersonalToolContext } from '../personal-vault/types';
 import { backfillInteractionParticipants, runPendingParticipantBackfills } from './participant-backfill';
+import { createInteractionParticipantSink } from './participants';
 import { searchPeople } from './people';
+import { graphDefaultHarness } from './resolver';
+
+// createWorkItem / mergeWorkItemPayload write through the shared org pool, not the `sql` handed to
+// the sinks. Without this redirect they write to whatever database the process is configured for,
+// which on the dev box is the LIVE one (they did, once: two DSR- rows, deleted).
+const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
+vi.mock('@papercusp/db-org', async (orig) => {
+  const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
+  return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
+});
+vi.mock('../workspace-registry', async (orig) => ({
+  ...(await orig<typeof import('../workspace-registry')>()),
+  activeWorkspaceId: () => 'papercusp-workspace',
+}));
 
 // The `person` datatype is registered for this workspace only (migration 1383), and the record
 // sink needs it: a workspace without it gets no person -> record sink, so nothing is granted.
@@ -31,14 +46,18 @@ let userId: string;
 let mailSource: string;
 let calendarSource: string;
 
-async function connect(kind: string, policy: Record<string, string[]>): Promise<{ id: string; account: string }> {
+async function connect(
+  kind: string,
+  policy: Record<string, string[]>,
+  config: Record<string, string> = { harnessSlug: HARNESS },
+): Promise<{ id: string; account: string }> {
   const account = `${kind}-account-${randomUUID()}`;
   const [row] = await sql<{ id: string }[]>`
     INSERT INTO harness_shared.data_sources
       (workspace_id, kind, owner_user_id, provider_account_id, status, config, scope,
        destination_policy, permission_mapping)
     VALUES (${WS}, ${kind}, ${userId}, ${account}, 'connected',
-            ${sql.json({ harnessSlug: HARNESS })}, 'personal',
+            ${sql.json(config)}, 'personal',
             ${sql.json(policy)}, ${sql.json({ mode: 'source-acl' })})
     RETURNING id::text`;
   return { id: row!.id, account };
@@ -56,6 +75,7 @@ async function personIds(): Promise<string[]> {
 beforeAll(async () => {
   org = await createOrgTestDb();
   sql = org.adminSql;
+  h.sql = sql;
   const [user] = await sql<{ id: string }[]>`
     INSERT INTO harness_shared.users (username, display_name)
     VALUES (${'participant-backfill-' + Date.now()}, 'Participant backfill')
@@ -167,5 +187,38 @@ describe('interaction participant backfill (P-003, D-017 point 2)', () => {
       { sourceId: calendarSource, outcome: 'backfilled', documents: 1, participants: 2 },
     ]);
     expect((await searchPeople(sql, WS, { emails: [ATTENDEE] })).map((p) => p.emails)).toEqual([[ATTENDEE]]);
+  });
+
+  it('a personal source with no harness of its own builds its participant sink and lands in the graph home harness (D-019, WI-10006570)', async () => {
+    // The built-in Google sources carry no config.harnessSlug. Before D-019 granting them
+    // person -> record made the sink BUILD throw data_source_harness_missing, aborting the sync.
+    const BARE = 'bare@harnessless.example';
+    const bare = await connect('gmail', { 'email-message': ['document', 'event'], person: ['record'] }, {});
+    await upsertPersonalDocuments(sql, WS, userId, [{
+      source: 'gmail',
+      sourceId: bare.id,
+      providerAccountId: bare.account,
+      kind: 'email',
+      externalId: `msg-${randomUUID()}`,
+      occurredAt: '2026-10-06T09:00:00Z',
+      participants: [BARE],
+      title: 'Harnessless source',
+      text: 'body never leaves the Vault',
+      metadata: { from: BARE },
+    }]);
+
+    const errors: unknown[] = [];
+    const sink = await createInteractionParticipantSink(sql, { workspaceId: WS, sourceId: bare.id, datatype: 'email-message' }, { onChainError: (cause) => errors.push(cause) });
+    expect(errors).toEqual([]);
+    expect(sink?.kind).toBe('relationship-graph-participants');
+
+    const run = await runPendingParticipantBackfills(sql, { workspaceId: WS });
+    expect(run).toEqual([{ sourceId: bare.id, outcome: 'backfilled', documents: 1, participants: 1 }]);
+    const [person] = await searchPeople(sql, WS, { emails: [BARE] });
+    expect(person?.emails).toEqual([BARE]);
+    const rows = await sql<{ harness_slug: string }[]>`
+      SELECT DISTINCT harness_slug FROM harness_shared.work_items
+       WHERE workspace_id = ${WS} AND item_kind = 'person' AND payload->>'dataSourceId' = ${bare.id}`;
+    expect(rows.map((r) => r.harness_slug)).toEqual([graphDefaultHarness()]);
   });
 });
