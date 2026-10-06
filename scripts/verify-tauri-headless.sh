@@ -2381,7 +2381,7 @@ if [ -f "$SHARED_SPA_DIST/index.html" ]; then
     newest=""
     assets_ready=0
     if [ -d "$SHARED_SPA_DIST/assets" ]; then
-      newest=$(find "$SHARED_SPA_DIST/assets" -type f -newermt "@0" -printf '%T@\n' 2>/dev/null | sort -rn | head -1)
+      newest=$(find "$SHARED_SPA_DIST/assets" -type f -newermt "@0" -printf '%T@\n' 2>/dev/null | sort -rn|sed -n 1p)
       [ -n "$newest" ] && assets_ready=1
     fi
     if [ "$assets_ready" -eq 1 ]; then

@@ -1656,6 +1656,102 @@ describe('Kopia managed entrypoint contract', () => {
     expect(r.dbRanAt - r.dumpDue, r.evidence).toBeLessThan(30);
   });
 
+  // EI-25211496463956189. A wait-mode marker publishes no deadline, so it stops even an
+  // overdue sweep at once (calibration above). Measured 2026-10-06 09:57 EDT: the
+  // per-workspace DB hook's dump stopped the overdue hot sweep 3s after it began
+  // waiting, then was killed at its own 900s budget. --deadline-at-arrival gives such a
+  // waiter its arrival as its deadline, so the earliest-deadline hold and the progress
+  // check apply to it.
+  function arrivalWaiterScenario(opts: { hotLoops: number; hotWritesProgress: boolean }) {
+    const fx = fixture();
+    const { dir } = fx;
+    const progressPath = join(dir, 'io.stat');
+    writeFileSync(progressPath, '8:0 rbytes=0 wbytes=0 rios=0 wios=0\n');
+    seedDeadlineBase(dir, 'hot', 25_200);
+    const hotLog = join(dir, 'hot.log');
+    const waitLog = join(dir, 'wait.log');
+    const waitRan = join(dir, 'wait-ran');
+    const hotDone = join(dir, 'hot-done');
+    const scenario = spawnSync(
+      'bash',
+      [
+        '-c',
+        `
+        set -uo pipefail
+        "$GUARD" --mode scheduled --label hot -- bash -c 'touch "$1"; for i in $(seq 1 "$3"); do [ -z "$4" ] || printf "8:0 rbytes=%s wbytes=0\\n" "$i" >"$4"; sleep 0.05; done; date +%s.%N >"$2"' _ "$HOT_READY" "$HOT_DONE" "$HOT_LOOPS" "$HOT_PROGRESS" >"$HOT_LOG" 2>&1 &
+        hot=$!
+        for _ in $(seq 1 100); do [ -e "$HOT_READY" ] && break; sleep 0.01; done
+        [ -e "$HOT_READY" ] || exit 91
+        "$GUARD" --mode wait --label workspace-db-dump --deadline-at-arrival -- bash -c 'date +%s.%N >"$1"' _ "$WAIT_RAN" >"$WAIT_LOG" 2>&1
+        wait_rc=$?
+        wait "$hot"
+        hot_rc=$?
+        echo "wait_rc=$wait_rc hot_rc=$hot_rc"
+        `,
+      ],
+      {
+        encoding: 'utf8',
+        env: {
+          ...fx.env,
+          KOPIA_BACKUP_MAX_DEFER_SEC: '10',
+          KOPIA_BACKUP_PRIORITY_HOLD_EXTENSION_SEC: '60',
+          KOPIA_BACKUP_PROGRESS_PATH: progressPath,
+          KOPIA_BACKUP_PROGRESS_STALL_SEC: '1',
+          HOT_PROGRESS: opts.hotWritesProgress ? progressPath : '',
+          HOT_READY: join(dir, 'hot-ready'),
+          HOT_DONE: hotDone,
+          HOT_LOOPS: String(opts.hotLoops),
+          HOT_LOG: hotLog,
+          WAIT_LOG: waitLog,
+          WAIT_RAN: waitRan,
+        },
+        timeout: 30_000,
+      },
+    );
+    const hotOut = existsSync(hotLog) ? readFileSync(hotLog, 'utf8') : 'missing';
+    const waitOut = existsSync(waitLog) ? readFileSync(waitLog, 'utf8') : 'missing';
+    return {
+      scenario,
+      hotOut,
+      waitRanAt: existsSync(waitRan) ? Number(readFileSync(waitRan, 'utf8').trim()) : Number.NaN,
+      hotDoneAt: existsSync(hotDone) ? Number(readFileSync(hotDone, 'utf8').trim()) : Number.NaN,
+      evidence: `${scenario.stdout}\n${scenario.stderr}\nhot guard:\n${hotOut}\nwait guard:\n${waitOut}`,
+    };
+  }
+
+  it('lets an overdue sweep that is making progress finish before a --deadline-at-arrival waiter', () => {
+    const r = arrivalWaiterScenario({ hotLoops: 60, hotWritesProgress: true });
+
+    expect(r.scenario.stdout, r.evidence).toContain('wait_rc=0 hot_rc=0');
+    expect(r.hotOut, r.evidence).toContain('result=staleness-override-armed');
+    expect(r.hotOut, r.evidence).toContain('result=holding-against-priority-waiter reason=holder-earlier-deadline');
+    expect(r.hotOut, r.evidence).not.toContain('result=stopping-during-run');
+    expect(r.waitRanAt, r.evidence).toBeGreaterThanOrEqual(r.hotDoneAt);
+  });
+
+  it('still yields to a --deadline-at-arrival waiter once the sweep has stalled', () => {
+    const r = arrivalWaiterScenario({ hotLoops: 400, hotWritesProgress: false });
+
+    expect(r.scenario.stdout, r.evidence).toContain(`wait_rc=0 hot_rc=${SCHEDULED_DEFER_EXIT}`);
+    expect(r.hotOut, r.evidence).toMatch(
+      /result=yielding-to-priority-waiter reason=holder-stalled waiter=\S+\.wait would_hold=holder-earlier-deadline /,
+    );
+    expect(r.hotOut, r.evidence).toContain('result=stopping-during-run reason=priority-waiter');
+    expect(Number.isNaN(r.hotDoneAt), r.evidence).toBe(true);
+    expect(Number.isNaN(r.waitRanAt), r.evidence).toBe(false);
+  });
+
+  it('rejects --deadline-at-arrival outside wait mode', () => {
+    const { env } = fixture();
+    const r = spawnSync('bash', ['-c', '"$GUARD" --mode scheduled --label hot --deadline-at-arrival -- true'], {
+      encoding: 'utf8',
+      env,
+      timeout: 10_000,
+    });
+    expect(r.status, `${r.stdout}\n${r.stderr}`).toBe(64);
+    expect(r.stderr).toContain('usage:');
+  });
+
   it('keeps the escalation spent when an override cycle ends on its own', () => {
     // Calibration for the refund above: only a handoff refunds. A cycle that ran to
     // its own exit -- here a failing child -- keeps the retry window, exactly as

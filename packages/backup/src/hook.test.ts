@@ -169,9 +169,36 @@ import {
   requiredFreeBytes,
   resolveKopiaBackupGuard,
   runPreSnapshotHook,
+  summarizeDumpFailure,
   terminateSpawnTree,
   WORKSPACE_BACKUP_GUARD_LABEL,
 } from './hook';
+
+describe('summarizeDumpFailure', () => {
+  // EI-25211496463956189: on 2026-10-06 every timed-out dump was recorded as the
+  // guard's first stderr line ("result=waiting reason=lock"), hiding the timeout.
+  it('records the timeout, not the guard lines that precede it', () => {
+    const stderr = [
+      'KOPIA_BACKUP_GUARD timestamp=2026-10-06T09:57:11-04:00 label=workspace-db-dump result=waiting reason=lock',
+      'KOPIA_BACKUP_GUARD timestamp=2026-10-06T09:57:34-04:00 label=workspace-db-dump result=started mode=wait',
+      'pg dump timed out after 900000ms',
+      '',
+    ].join('\n');
+    expect(summarizeDumpFailure(stderr)).toBe('pg dump timed out after 900000ms');
+  });
+
+  it('keeps the end of a long error, where the cause is', () => {
+    const summary = summarizeDumpFailure(`${'x'.repeat(500)}\npg_dump: error: connection lost`);
+    expect(summary).toHaveLength(200);
+    expect(summary.endsWith('pg_dump: error: connection lost')).toBe(true);
+  });
+
+  it('falls back to a generic message when only guard lines were written', () => {
+    expect(summarizeDumpFailure('KOPIA_BACKUP_GUARD timestamp=x label=y result=waiting reason=lock\n')).toBe(
+      'dump pipeline failed',
+    );
+  });
+});
 
 const ctx = { workspaceId: 'ws-1', workspaceRoot: '/work/ws-1' };
 const originalGuardBin = process.env.KOPIA_BACKUP_GUARD_BIN;
@@ -266,9 +293,12 @@ describe('runPreSnapshotHook admin-URL → spawn args', () => {
     const pgDumpIndex = c.args.indexOf('pg_dump');
 
     expect(c.cmd).toBe(h.guardBin);
+    // --deadline-at-arrival keeps this non-restart-safe dump from stopping an
+    // overdue sweep that is still making progress (EI-25211496463956189).
     expect(c.args.slice(0, pgDumpIndex)).toEqual([
       '--mode', 'wait',
       '--label', WORKSPACE_BACKUP_GUARD_LABEL,
+      '--deadline-at-arrival',
       '--',
     ]);
     expect(pgDumpIndex).toBeGreaterThan(-1);
