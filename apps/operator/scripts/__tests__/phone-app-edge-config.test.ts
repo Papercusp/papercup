@@ -386,7 +386,9 @@ describe("the deployer configures the Phone backup the ops-alert check verifies"
     const unit = readFileSync(join(here, "systemd/papercusp-phone-backup.service.tmpl"), "utf8");
     const timer = readFileSync(join(here, "systemd/papercusp-phone-backup.timer"), "utf8");
     expect(unit).toMatch(/^EnvironmentFile=\$\{PHONE_CONFIG_DIR\}\/ops-alert\.env$/m);
-    expect(unit).toMatch(/^ExecStart=\$\{PHONE_NODE_BIN\} \$\{PHONE_BACKUP_SCRIPT\} backup --out \$PHONE_BACKUP_ARCHIVE$/m);
+    // --replace: the daily timer refreshes ONE fixed archive path, so each run must overwrite
+    // the previous dump (WI-10006587; phone-app-backup.integration.test.ts proves the overwrite).
+    expect(unit).toMatch(/^ExecStart=\$\{PHONE_NODE_BIN\} \$\{PHONE_BACKUP_SCRIPT\} backup --out \$PHONE_BACKUP_ARCHIVE --replace$/m);
     expect(deploy).toContain("content=\"${content//'${PHONE_BACKUP_SCRIPT}'/$HERE/phone-db-backup.mjs}\"");
     expect(timer).toMatch(/^OnCalendar=daily$/m);
     expect(timer).toMatch(/^Unit=papercusp-phone-backup\.service$/m);
