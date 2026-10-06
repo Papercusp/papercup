@@ -109,8 +109,13 @@ export interface SpecEvidenceForAdequacy {
     filePath: string;
     commitSha: string | null;
     worktreeDirty: boolean | null;
-    /** Server-derived first failing case title from a failed mutation-probe test run. */
-    mutationFailedCaseTitle?: string;
+    /**
+     * Server-derived failure lines of a failed mutation-probe test run, in the ledger reporter's
+     * `<case full name>: <message>` format (admin-test-runs-reporter `buildOutputTail`, one line
+     * per failed case). A declared `adequacy.testCases` entry is a measured failed case only when
+     * a line starts with exactly `<entry>: ` — never parsed out of free text (WI-10006745).
+     */
+    mutationFailureLines?: string[];
   } | null;
   details: Record<string, unknown>;
   observedAt?: string;
@@ -1396,24 +1401,36 @@ function clauseBoundCurrentTest(
   ) ?? null;
 }
 
-function measuredMutationFailedCaseTitle(mutation: SpecEvidenceForAdequacy): string | null {
-  const title = mutation.testRunProvenance?.mutationFailedCaseTitle;
-  if (typeof title !== 'string' || title.length === 0 || title.trim() !== title) return null;
+function isWellFormedCaseTitle(title: unknown): title is string {
+  if (typeof title !== 'string' || title.length === 0 || title.trim() !== title) return false;
   for (const character of title) {
     const code = character.charCodeAt(0);
-    if (code < 0x20 || code === 0x7f) return null;
+    if (code < 0x20 || code === 0x7f) return false;
   }
-  return title;
+  return true;
+}
+
+/**
+ * True when the failed mutant run measured `caseTitle` as a failed case. The ledger reporter
+ * writes one `<case full name>: <message>` line per failed case, so the declared title must be a
+ * whole line prefix ending at the reporter's `: ` separator. WI-10006745: deriving one title by
+ * splitting the tail on ' — ' matched no reporter output (a describe title may itself contain an
+ * em dash), so every mutation binding failed this check.
+ */
+export function mutationMeasuredFailedCase(mutation: SpecEvidenceForAdequacy, caseTitle: unknown): boolean {
+  if (!isWellFormedCaseTitle(caseTitle)) return false;
+  const prefix = `${caseTitle}: `;
+  return (mutation.testRunProvenance?.mutationFailureLines ?? []).some((line) => line.startsWith(prefix));
 }
 
 function summarizeMutationFailedCaseTitles(mutations: readonly SpecEvidenceForAdequacy[]): string {
-  const titles = mutations
-    .map(measuredMutationFailedCaseTitle)
-    .filter((title): title is string => title !== null);
-  const distinctTitles = [...new Set(titles)].sort((a, b) => a.localeCompare(b));
-  return distinctTitles.length > 0
-    ? `Measured failed case title(s): ${distinctTitles.map((title) => JSON.stringify(title)).join(', ')}.`
-    : 'No well-formed measured failed case title is available.';
+  const lines = mutations
+    .flatMap((mutation) => mutation.testRunProvenance?.mutationFailureLines ?? [])
+    .map((line) => (line.length > 200 ? `${line.slice(0, 200)}…` : line));
+  const distinctLines = [...new Set(lines)].sort((a, b) => a.localeCompare(b)).slice(0, 5);
+  return distinctLines.length > 0
+    ? `Measured failing case line(s), reporter format "<case full name>: <message>" — declare the part before ": " exactly: ${distinctLines.map((line) => JSON.stringify(line)).join(', ')}.`
+    : 'No measured failing case line is available for the mutation run.';
 }
 
 function clauseBoundMutationTest(
@@ -1423,8 +1440,9 @@ function clauseBoundMutationTest(
 ): SpecEvidenceForAdequacy | null {
   const testBinding = clauseBoundCurrentTest(clause, mutation, evidence);
   if (!testBinding || mutation.evidenceKind !== 'mutation') return testBinding;
-  const failedCaseTitle = measuredMutationFailedCaseTitle(mutation);
-  return failedCaseTitle && detailsOf(testBinding).testCases?.includes(failedCaseTitle) ? testBinding : null;
+  return (detailsOf(testBinding).testCases ?? []).some((caseTitle) => mutationMeasuredFailedCase(mutation, caseTitle))
+    ? testBinding
+    : null;
 }
 
 function isClauseBoundMutationTest(
