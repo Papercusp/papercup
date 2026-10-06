@@ -281,6 +281,21 @@ describe('connector sync driver over registered providers (R-3)', () => {
     expect((await state(src)).cursor).toBe('c3');
   });
 
+  it('resolves sinks once per datatype per sync, not once per record (P-011)', async () => {
+    const src = await createSource();
+    handler = scripted({ start: page([mail('s1'), mail('s2'), mail('s3')], 'c1', false) });
+    const resolved: string[] = [];
+    const outcome = await syncOne(src, {
+      sinksFor: async (_sql, _source, datatype) => {
+        resolved.push(datatype);
+        return [];
+      },
+    });
+    expect(outcome).toMatchObject({ outcome: 'synced', admitted: 3 });
+    // Positive control: three records were admitted, so a per-record resolver would show 3.
+    expect(resolved).toEqual(['email-message']);
+  });
+
   it('an interrupted sync resumes from the last committed cursor and delivers each object exactly once', async () => {
     const src = await createSource();
     const first = [mail('m1')];

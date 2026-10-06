@@ -52,7 +52,7 @@ import {
 } from '@papercusp/plugin-sdk';
 import { createPersonalVaultExternalSinkForSource, VAULT_DATATYPES } from '../personal-vault/live-sink';
 import { createDatatypeDestinationSinks } from '../data-sources/datatype-destination-sink';
-import { createAppDeliverySinkIfConfigured } from '../app-data-producer/live-sink';
+import { createAppDeliverySinkIfConfigured, reportAppSinkGateError } from '../app-data-producer/live-sink';
 import { DATATYPE_FOR_APP } from '../app-data-producer/app-rows';
 
 /** Source statuses the driver advances. `error` waits for a reconnect. */
@@ -369,25 +369,65 @@ export async function wakeConnectorSource(
   return rows.length === 1;
 }
 
+/** Construction seams for {@link connectorSinksFor}; production passes none. */
+export interface ConnectorSinkSeams {
+  createPersonalSink?: (sql: postgres.Sql, workspaceId: string, sourceId: string) => Promise<ExternalTriggerSink>;
+  createDatatypeSinks?: typeof createDatatypeDestinationSinks;
+  createAppSink?: (
+    sql: postgres.Sql,
+    workspaceId: string,
+    sourceId: string,
+    app: keyof typeof DATATYPE_FOR_APP,
+  ) => Promise<ExternalTriggerSink | null>;
+}
+
+/**
+ * The production app-sink gate. It never throws (live-sink.ts), and it REPORTS a
+ * swallowed gate fault through the shared `reportAppSinkGateError` (P-007), so a
+ * database fault is distinguishable from "no app mapping configured".
+ */
+function defaultAppSink(
+  sql: postgres.Sql,
+  workspaceId: string,
+  sourceId: string,
+  app: keyof typeof DATATYPE_FOR_APP,
+): Promise<ExternalTriggerSink | null> {
+  return createAppDeliverySinkIfConfigured(sql, workspaceId, sourceId, app, { onGateError: reportAppSinkGateError });
+}
+
 /**
  * Where one record goes, by DATATYPE only (D-010, D-015): a datatype the personal Vault routes
  * goes to the owner's Vault; every other datatype goes where the datatype registry's nature and
- * the source's destination policy put it (record / event / document). Apps subscribe by datatype.
+ * the source's destination policy put it (record / event / document). Apps subscribe by datatype:
+ * an owned source also registers the app-delivery sink for each app consuming this datatype
+ * (P-011). Registration never throws, so an app fault cannot cost the Vault write.
  */
-async function defaultSinksFor(sql: postgres.Sql, source: ConnectorSourceRow, datatype: string): Promise<ExternalTriggerSink[]> {
+export async function connectorSinksFor(
+  sql: postgres.Sql,
+  source: ConnectorSourceRow,
+  datatype: string,
+  seams: ConnectorSinkSeams = {},
+): Promise<ExternalTriggerSink[]> {
+  const createPersonalSink = seams.createPersonalSink ?? createPersonalVaultExternalSinkForSource;
+  const createDatatypeSinks = seams.createDatatypeSinks ?? createDatatypeDestinationSinks;
+  const createAppSink = seams.createAppSink ?? defaultAppSink;
   const sinks: ExternalTriggerSink[] = [];
   if (VAULT_DATATYPES.includes(datatype)) {
-    if (source.ownerUserId) sinks.push(await createPersonalVaultExternalSinkForSource(sql, source.workspaceId, source.id));
+    if (source.ownerUserId) sinks.push(await createPersonalSink(sql, source.workspaceId, source.id));
   } else {
-    sinks.push(...(await createDatatypeDestinationSinks(sql, { workspaceId: source.workspaceId, sourceId: source.id, datatype })));
+    sinks.push(...(await createDatatypeSinks(sql, { workspaceId: source.workspaceId, sourceId: source.id, datatype })));
   }
   if (!source.ownerUserId) return sinks;
   for (const [app, appDatatype] of Object.entries(DATATYPE_FOR_APP) as [keyof typeof DATATYPE_FOR_APP, string][]) {
     if (appDatatype !== datatype) continue;
-    const appSink = await createAppDeliverySinkIfConfigured(sql, source.workspaceId, source.id, app);
+    const appSink = await createAppSink(sql, source.workspaceId, source.id, app);
     if (appSink) sinks.push(appSink);
   }
   return sinks;
+}
+
+function defaultSinksFor(sql: postgres.Sql, source: ConnectorSourceRow, datatype: string): Promise<ExternalTriggerSink[]> {
+  return connectorSinksFor(sql, source, datatype);
 }
 
 /**
