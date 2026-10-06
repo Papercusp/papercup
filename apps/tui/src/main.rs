@@ -623,24 +623,29 @@ async fn main() -> Result<()> {
     // send the message. Text keys still arrive as text under this flag. Where
     // the protocol is absent, a trailing `\` + Enter and Alt+Enter still work.
     //
-    // That probe waits up to 2 s in a terminal that never answers it, so show
-    // startup progress first (pui-first-party-public-release P-013: "display
-    // meaningful startup progress immediately"). Cleared before the first frame.
+    // pui-chat-first-ux P-031 (G-1): the flags are pushed WITHOUT first asking
+    // the terminal whether it speaks the protocol. crossterm's
+    // supports_keyboard_enhancement() blocks for up to 2 s when the terminal
+    // never answers, and that one wait made `pui` 2.6x slower to a usable
+    // prompt than Claude Code (2108 ms vs 805 ms, parity checklist row 1). A
+    // terminal without the protocol ignores the push and pop sequences (an
+    // unknown CSI), so nothing is lost by skipping the question.
+    //
+    // Startup progress still shows before the first frame
+    // (pui-first-party-public-release P-013); cleared before the first frame.
     let _ = execute!(
         out,
         crossterm::cursor::MoveTo(0, 0),
         crossterm::style::Print("Starting PUI…")
     );
-    let kbd_enhanced = crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false);
-    if kbd_enhanced {
-        let _ = execute!(
-            out,
-            crossterm::event::PushKeyboardEnhancementFlags(
-                crossterm::event::KeyboardEnhancementFlags::REPORT_EVENT_TYPES
-                    | crossterm::event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-            )
-        );
-    }
+    let kbd_enhanced = true;
+    let _ = execute!(
+        out,
+        crossterm::event::PushKeyboardEnhancementFlags(
+            crossterm::event::KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+                | crossterm::event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+        )
+    );
     // ratatui diffs against a blank screen; leave it one.
     let _ = execute!(
         out,
@@ -8538,10 +8543,10 @@ mod tests {
             default_operator_chat(&chats, inventory, launch).map(|chat| chat.id.clone())
         };
         // A fresh project: nothing there, so a new conversation.
-        assert_eq!(pick(&[here.clone()], Some("/work/b")), None);
+        assert_eq!(pick(std::slice::from_ref(&here), Some("/work/b")), None);
         assert_eq!(pick(&[], Some("/work/b")), None);
         // The launch's own directory still wins over the newer unknown chat.
-        assert_eq!(pick(&[here.clone()], Some("/work/a")).as_deref(), Some("here"));
+        assert_eq!(pick(std::slice::from_ref(&here), Some("/work/a")).as_deref(), Some("here"));
         // A PUI with no known directory has nothing to scope by.
         assert_eq!(pick(&[], None).as_deref(), Some("probe-failed"));
     }
@@ -8769,7 +8774,7 @@ mod tests {
     async fn a_hung_operator_is_reported_within_its_budget() {
         let started = std::time::Instant::now();
         let outcome = await_su_send_readiness(
-            || std::future::pending::<Result<crate::su_session::SuSessionSnapshot>>(),
+            std::future::pending::<Result<crate::su_session::SuSessionSnapshot>>,
             FAST,
         )
         .await;

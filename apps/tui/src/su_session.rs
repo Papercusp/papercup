@@ -1239,6 +1239,88 @@ mod tests {
         assert!(error.contains("unsupported SU-session schema"));
     }
 
+    /// pui-chat-first-ux D-031: an event type this PUI predates no longer ends
+    /// the stream. It keeps its envelope (so the sequence stays contiguous)
+    /// and the schema/protocol checks still apply to it.
+    #[test]
+    fn decodes_an_unknown_event_type_as_unrecognized_with_its_envelope() {
+        let frame = envelope("usage", json!({ "sequence": 9, "contextTokens": 12 }));
+        let event = decode_su_session_event(&frame).expect("unknown type is not fatal");
+        assert!(
+            matches!(&event, SuSessionEvent::Unrecognized { kind, .. } if kind == "usage"),
+            "{event:?}"
+        );
+        assert_eq!(event.envelope().sequence, 9);
+
+        let mut drifted = envelope("usage", json!({}));
+        drifted.data = drifted.data.replace(SU_SESSION_SCHEMA, "other/v9");
+        let error = decode_su_session_event(&drifted).unwrap_err().to_string();
+        assert!(error.contains("unsupported SU-session schema"), "{error}");
+
+        // A known type with a broken body is still an error, not skipped.
+        let broken = envelope("lifecycle", json!({ "state": 42 }));
+        assert!(decode_su_session_event(&broken).is_err());
+    }
+
+    #[test]
+    fn every_known_event_type_is_in_the_decoder_list() {
+        for kind in SU_SESSION_EVENT_TYPES {
+            let frame = envelope(kind, json!({}));
+            if let Ok(event) = decode_su_session_event(&frame) {
+                assert!(
+                    !matches!(event, SuSessionEvent::Unrecognized { .. }),
+                    "`{kind}` must decode as its own variant"
+                );
+            }
+        }
+    }
+
+    /// pui-chat-first-ux P-029 / D-031: usage and plan ride the descriptor.
+    #[test]
+    fn descriptor_carries_usage_and_plan_and_tolerates_their_absence() {
+        let mut value = json!({
+            "identity": {
+                "agentChatId":"chat-1", "advSessionId":7, "backend":"claude",
+                "nativeSessionId":"n-1", "ownerId":"su-1", "workspaceId":"ws-1", "harnessSlug":"papercup"
+            },
+            "lifecycle":"waiting-for-owner", "runtimeGeneration":1, "role":"su",
+            "carry":"warm",
+            "capabilities": {"commands": {}, "features": {}},
+            "backendExtension": {"backend":"claude"}
+        });
+        let bare: SuSessionDescriptor = serde_json::from_value(value.clone()).expect("older operator");
+        assert_eq!(bare.usage, None);
+        assert_eq!(bare.plan, None);
+
+        value["usage"] = json!({ "contextTokens": 150000, "contextWindow": 200000, "costUsd": 0.5 });
+        value["plan"] = json!([
+            { "text": "Read", "status": "completed" },
+            { "text": "Fix", "status": "in_progress" },
+            { "text": "Later", "status": "blocked" }
+        ]);
+        let full: SuSessionDescriptor = serde_json::from_value(value).expect("usage + plan");
+        let usage = full.usage.expect("usage");
+        assert_eq!(usage.context_left_percent(), Some(25));
+        assert_eq!(usage.cost_usd, Some(0.5));
+        let plan = full.plan.expect("plan");
+        assert_eq!(plan.len(), 3, "an unknown status does not fail the descriptor");
+        assert!(plan[0].is_completed() && plan[1].is_in_progress());
+    }
+
+    #[test]
+    fn context_left_needs_both_measurements() {
+        let usage = |tokens, window| SuSessionUsage {
+            context_tokens: tokens,
+            context_window: window,
+            ..SuSessionUsage::default()
+        };
+        assert_eq!(usage(Some(10), None).context_left_percent(), None);
+        assert_eq!(usage(None, Some(100)).context_left_percent(), None);
+        assert_eq!(usage(Some(10), Some(0)).context_left_percent(), None);
+        assert_eq!(usage(Some(250), Some(200)).context_left_percent(), Some(0));
+        assert_eq!(usage(Some(0), Some(200)).context_left_percent(), Some(100));
+    }
+
     #[test]
     fn backend_and_lifecycle_labels_are_stable() {
         assert_eq!(

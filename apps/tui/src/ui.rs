@@ -2999,25 +2999,32 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
         + app.attachments.len() as u16
         + turn_error.len() as u16
         + u16::from(quiet); // P-021 footer line under the box
-    let constraints = if card_h > 0 {
-        vec![
-            Constraint::Min(1),
-            Constraint::Length(card_h),
-            Constraint::Length(composer_h),
-        ]
-    } else {
-        vec![Constraint::Min(1), Constraint::Length(composer_h)]
-    };
+    // P-029 / D-029: the agent's todo/plan list sits directly above the
+    // message box (and above an open card). It never takes the transcript's
+    // last rows: it gets at most what is left after a few transcript lines.
+    let plan_lines = plan_checklist_lines(
+        app,
+        width,
+        area.height.saturating_sub(card_h + composer_h + 4) as usize,
+    );
+    let plan_h = plan_lines.len() as u16;
+    let mut constraints = vec![Constraint::Min(1)];
+    if plan_h > 0 {
+        constraints.push(Constraint::Length(plan_h));
+    }
+    if card_h > 0 {
+        constraints.push(Constraint::Length(card_h));
+    }
+    constraints.push(Constraint::Length(composer_h));
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints(constraints)
         .split(area);
     let transcript_area = rows[0];
-    let (card_area, composer_area) = if card_h > 0 {
-        (Some(rows[1]), rows[2])
-    } else {
-        (None, rows[1])
-    };
+    let plan_area = (plan_h > 0).then(|| rows[1]);
+    let card_index = 1 + usize::from(plan_h > 0);
+    let card_area = (card_h > 0).then(|| rows[card_index]);
+    let composer_area = rows[rows.len() - 1];
     let (composer_area, footer_area) = if quiet && composer_area.height > 1 {
         let split = Layout::default()
             .direction(Direction::Vertical)
@@ -3478,6 +3485,11 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
         f.render_widget(para, transcript_area);
     }
 
+    // P-029: the plan checklist, in the strip reserved above the card/box.
+    if let Some(pa) = plan_area {
+        f.render_widget(Paragraph::new(plan_lines), pa);
+    }
+
     // Inline card (Phase 2a): render the focused card into its reserved strip.
     if let Some(ca) = card_area {
         draw_card(f, app, ca);
@@ -3798,10 +3810,17 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
     );
     f.render_widget(cpara, composer_area);
     if let Some(footer) = footer_area {
+        // D-029: near the context limit the footer carries a warning, so it
+        // is drawn in the warning colour instead of dim.
+        let footer_style = if app.chat_context_warning().is_some() {
+            Theme::warn()
+        } else {
+            Theme::dim()
+        };
         f.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 quiet_footer_line(footer_hint, &footer_status, footer.width as usize),
-                Theme::dim(),
+                footer_style,
             ))),
             footer,
         );
@@ -3919,6 +3938,47 @@ fn chat_shortcut_rows(width: usize) -> Vec<String> {
 
 /// The quiet composer's footer: the hint on the left, model · directory ·
 /// cost on the right. When both do not fit, the status is shortened first.
+/// The tallest the plan checklist gets; a longer plan shows a window of it.
+pub const PLAN_CHECKLIST_MAX_ROWS: usize = 8;
+
+/// pui-chat-first-ux P-029 / D-029: the agent's todo/plan list as checklist
+/// rows (☐ pending, ◐ in progress, ☑ done). A plan taller than the room keeps
+/// the first unfinished item in view and ends with a `… N more` row.
+fn plan_checklist_lines(app: &App, width: usize, room: usize) -> Vec<Line<'static>> {
+    let Some(plan) = app.chat_plan_checklist() else {
+        return Vec::new();
+    };
+    let max_rows = room.min(PLAN_CHECKLIST_MAX_ROWS);
+    if max_rows < 2 {
+        return Vec::new();
+    }
+    let row = |item: &crate::su_session::SuPlanItem| {
+        let (glyph, style) = if item.is_completed() {
+            ("☑", Theme::dim().add_modifier(ratatui::style::Modifier::CROSSED_OUT))
+        } else if item.is_in_progress() {
+            ("◐", Theme::notify())
+        } else {
+            ("☐", Style::default())
+        };
+        Line::from(Span::styled(trunc(&format!("  {glyph} {}", item.text), width), style))
+    };
+    if plan.len() <= max_rows {
+        return plan.iter().map(row).collect();
+    }
+    let shown = max_rows - 1;
+    let focus = plan
+        .iter()
+        .position(|item| !item.is_completed())
+        .unwrap_or(plan.len() - 1);
+    let start = focus.saturating_sub(1).min(plan.len() - shown);
+    let mut lines: Vec<Line<'static>> = plan[start..start + shown].iter().map(row).collect();
+    lines.push(Line::from(Span::styled(
+        format!("    … {} more", plan.len() - shown),
+        Theme::dim(),
+    )));
+    lines
+}
+
 fn quiet_footer_line(hint: &str, status: &str, width: usize) -> String {
     let left = if hint.is_empty() {
         String::new()
@@ -10289,6 +10349,52 @@ mod tests {
     /// pui-chat-first-ux P-021: the full-screen chat's message box is quiet,
     /// the way Claude Code's is. No shortcut list in its border, a dim
     /// placeholder in the empty box, and ONE footer line under the bottom rule:
+    /// pui-chat-first-ux P-029 / D-029: the agent's plan renders as a
+    /// checklist directly above the message box, and the footer under the box
+    /// turns into a context warning near the limit.
+    #[test]
+    fn plan_checklist_renders_above_the_message_box_and_the_footer_warns() {
+        let mut app = chat_first_bound_app();
+        let descriptor: crate::su_session::SuSessionDescriptor =
+            serde_json::from_value(serde_json::json!({
+                "identity": {
+                    "agentChatId": "7d1b0a8d-69e4-4c1e-9a55-00000000c0de", "advSessionId": 31362,
+                    "backend": "claude", "nativeSessionId": "n-1", "ownerId": "su-1",
+                    "workspaceId": "ws-1", "harnessSlug": "papercusp"
+                },
+                "lifecycle": "waiting-for-owner", "runtimeGeneration": 1, "role": "su",
+                "carry": "warm",
+                "capabilities": {"commands": {}, "features": {}},
+                "backendExtension": {"backend": "claude"},
+                "usage": {"contextTokens": 180000, "contextWindow": 200000},
+                "plan": [
+                    {"text": "Read the file", "status": "completed"},
+                    {"text": "Fix the bug", "status": "in_progress"},
+                    {"text": "Run the tests", "status": "pending"}
+                ]
+            }))
+            .expect("descriptor");
+        app.su_session.as_mut().unwrap().descriptor = Some(descriptor);
+        let (rows, _) = render_rows(&app, 100, 24);
+        let frame = rows.join("\n");
+        let draft = rows
+            .iter()
+            .position(|r| r.starts_with("> Message Claude"))
+            .unwrap_or_else(|| panic!("no placeholder row:\n{frame}"));
+        let at = |needle: &str| {
+            rows.iter()
+                .position(|r| r.contains(needle))
+                .unwrap_or_else(|| panic!("`{needle}` not on screen:\n{frame}"))
+        };
+        let (read, fix, run) = (at("☑ Read the file"), at("◐ Fix the bug"), at("☐ Run the tests"));
+        assert!(read < fix && fix < run, "{frame}");
+        assert_eq!(run + 1, draft - 1, "the checklist sits right above the box:\n{frame}");
+        assert!(
+            rows[draft + 2].trim_end().ends_with("Context 90% full: /compact"),
+            "{frame}"
+        );
+    }
+
     /// `? for shortcuts` on the left, model · directory on the right.
     #[test]
     fn chat_first_composer_is_quiet_with_a_placeholder_and_one_footer_line() {
@@ -10433,6 +10539,7 @@ mod tests {
     /// reply is running or the session is unavailable.
     #[test]
     fn quiet_footer_hints_show_only_while_the_box_is_ready_to_send() {
+        #[allow(clippy::type_complexity)] // one row per state, read in place
         let states: [(&str, fn(&mut App)); 3] = [
             ("running", |app| app.chat_streaming = true),
             ("down", |app| {

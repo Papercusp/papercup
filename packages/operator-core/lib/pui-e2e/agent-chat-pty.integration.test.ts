@@ -52,7 +52,7 @@ const scriptedEngine = vi.hoisted(() => ({
   real: process.env.PUI_REAL_ENGINE === '1',
   backend: process.env.PUI_REAL_BACKEND ?? 'claude',
   mode: 'success' as 'success' | 'failure' | 'stall' | 'startup-exit' | 'question' | 'wrapped-question' | 'edit' | 'stream' | 'approval'
-    | 'engine-death' | 'stream-loss' | 'auth-expired' | 'rate-limit',
+    | 'engine-death' | 'stream-loss' | 'auth-expired' | 'rate-limit' | 'plan-usage',
   successText: 'PUI structured engine replied',
   // The success-mode Read tool's result. P-004 sets a multi-line value to prove
   // the collapsed preview and the Ctrl+R expansion.
@@ -409,6 +409,29 @@ vi.mock('../su-session-claude-engine', async (original) => {
                   ] } });
                   result();
                 }).catch((error: Error) => output.destroy(error));
+              continue;
+            }
+            if (scriptedEngine.mode === 'plan-usage') {
+              // pui-chat-first-ux P-029: a TodoWrite call, per-message usage
+              // and a priced result, in the Agent SDK's own record shapes, so
+              // the real Claude adapter derives the descriptor's usage + plan.
+              // Context = 10 + 169,980 + 0 + 10 = 170,000 of 200,000 (85%).
+              const usage = { input_tokens: 10, cache_read_input_tokens: 169_980, cache_creation_input_tokens: 0, output_tokens: 10 };
+              output.write({ type: 'assistant', session_id: nativeId, parent_tool_use_id: null, message: { usage, content: [
+                { type: 'tool_use', id: 'pui-e2e-todo', name: 'TodoWrite', input: { todos: [
+                  { content: 'Read the file', status: 'completed', activeForm: 'Reading the file' },
+                  { content: 'Fix the bug', status: 'in_progress', activeForm: 'Fixing the bug' },
+                  { content: 'Run the tests', status: 'pending', activeForm: 'Running the tests' },
+                ] } },
+              ] } });
+              output.write({ type: 'user', session_id: nativeId, message: { role: 'user', content: [
+                { type: 'tool_result', tool_use_id: 'pui-e2e-todo', content: 'Todos have been modified successfully.' },
+              ] } });
+              output.write({ type: 'assistant', session_id: nativeId, parent_tool_use_id: null, message: { usage, content: [
+                { type: 'text', text: scriptedEngine.successText },
+              ] } });
+              output.write({ type: 'result', subtype: 'success', session_id: nativeId, is_error: false,
+                total_cost_usd: 0.42, modelUsage: { 'claude-pui-e2e': { contextWindow: 200_000 } } });
               continue;
             }
             output.write({ type: 'assistant', session_id: nativeId, message: { content: [
@@ -6914,6 +6937,59 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-013 terminal compatibilit
         binary: bin, binarySha256, launchDir, running, picked: picked.spec, switches: scriptedEngine.modelSwitches, frames,
       }));
     } finally {
+      await pane.stop().catch(() => {});
+      rmSync(launchDir, { recursive: true, force: true });
+    }
+  });
+
+  // pui-chat-first-ux-2026-09-28 P-029 (D-029, D-031), owner #1276: the
+  // footer shows context left and cost and warns near the limit; the agent's
+  // todo list renders as a checklist above the message box. The engine's own
+  // records (SDK shapes) go through the real adapter, host, stream and pui.
+  test('P-029: the footer shows context and cost, warns near the limit, and the todo list is a checklist above the box', { timeout: 180_000 }, async ({ onTestFailed }) => {
+    scriptedEngine.mode = 'plan-usage';
+    const launchDir = realpathSync(mkdtempSync(path.join(tmpdir(), 'pui-p029-launch-')));
+    let stage = 'turn';
+    const frames: Record<string, string> = {};
+    const pane = new PuiPane(bin, operatorPort, home, { args: ['--solo'], cwd: launchDir });
+    onTestFailed(() => console.info('PUI_P029_FAILURE', JSON.stringify({
+      stage, launchDir, frames, requests: scriptedEngine.requests, ...pane.failureEvidence(),
+    })));
+    try {
+      await pane.waitFor(`Claude · ${launchDir}`, { timeoutMs: 40_000 });
+      pane.write('fix the bug');
+      await pane.waitFor('Enter sends');
+      pane.enter();
+      await pane.waitFor(scriptedEngine.successText, { timeoutMs: 30_000 });
+      await pane.waitForSendReady();
+      const engine = scriptedEngine.engines.at(-1) as ClaudeSuEngine;
+      const descriptor = engine.adapter.host.descriptor();
+      expect(descriptor.usage).toMatchObject({ contextTokens: 170_000, contextWindow: 200_000, costUsd: 0.42 });
+      expect(descriptor.plan?.map((item) => item.status)).toEqual(['completed', 'in_progress', 'pending']);
+
+      stage = 'checklist';
+      await pane.waitFor('◐ Fix the bug');
+      await pane.waitFor('Context 85% full: /compact');
+      await pane.waitFor('$0.42');
+      frames.checklist = pane.screen();
+      const rows = frames.checklist.split('\n');
+      const at = (needle: string) => rows.findIndex((row) => row.includes(needle));
+      const [read, fix, run] = [at('☑ Read the file'), at('◐ Fix the bug'), at('☐ Run the tests')];
+      expect(read >= 0 && read < fix && fix < run, frames.checklist).toBe(true);
+      // The checklist sits directly on the message box's top rule.
+      expect(rows[run + 1]?.trim().startsWith('─'), frames.checklist).toBe(true);
+      expect(chatJargonIn(frames.checklist), frames.checklist).toEqual([]);
+
+      stage = 'status';
+      pane.write('/status');
+      await pane.waitFor('/status');
+      pane.enter();
+      await pane.waitFor('context 170000/200000 (15% left)');
+      frames.status = pane.screen();
+      expect(frames.status).toContain('cost $0.42');
+      console.info('PUI_P029_STATUS_CONTEXT_ACCEPTANCE', JSON.stringify({ binary: bin, binarySha256, launchDir, frames }));
+    } finally {
+      scriptedEngine.mode = 'success';
       await pane.stop().catch(() => {});
       rmSync(launchDir, { recursive: true, force: true });
     }

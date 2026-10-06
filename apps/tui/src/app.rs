@@ -4394,6 +4394,9 @@ impl App {
                     descriptor.backend_extension = extension;
                 }
             }
+            // D-031: a newer operator's event type. Its sequence was applied
+            // above; the body means nothing to this PUI.
+            crate::su_session::SuSessionEvent::Unrecognized { .. } => {}
             crate::su_session::SuSessionEvent::Error {
                 message,
                 recoverable,
@@ -7523,12 +7526,28 @@ impl App {
             (Some(now), None) => format!(" · approvals {now}"),
             (None, None) => String::new(),
         };
+        // P-029 / D-029: context used/window and the session cost, once the
+        // engine measured them; nothing is printed for an unmeasured value.
+        let mut measured = String::new();
+        if let Some(usage) = self.su_usage() {
+            match (usage.context_tokens, usage.context_window, usage.context_left_percent()) {
+                (Some(used), Some(window), Some(left)) => {
+                    measured.push_str(&format!(" · context {used}/{window} ({left}% left)"))
+                }
+                (Some(used), _, _) => measured.push_str(&format!(" · context {used} tokens")),
+                _ => {}
+            }
+        }
+        if let Some(cost) = self.chat_session_cost_usd() {
+            measured.push_str(&format!(" · cost ${cost:.2}"));
+        }
         format!(
-            "Model {} · account {} · engine {}{} · conversation {}",
+            "Model {} · account {} · engine {}{}{} · conversation {}",
             self.chat_model_label(),
             account,
             backend.label(),
             approvals,
+            measured,
             state
         )
     }
@@ -16826,6 +16845,7 @@ mod tests {
         let question =
             |prompt: &str| json!({"questions":[{"question":prompt,"options":[{"label":"Tests"}]}]});
         // (call id, tool name, input, card resolution or None, isError, expected)
+        #[allow(clippy::type_complexity)] // one row per case, read in place
         let cases: Vec<(&str, &str, Value, Option<&str>, bool, ToolOutcome)> = vec![
             (
                 "skip",
@@ -19256,6 +19276,81 @@ mod tests {
         a.toast.as_ref().map(|t| t.message.clone()).unwrap_or_default()
     }
 
+    fn set_usage(a: &mut App, tokens: u64, window: u64, cost: Option<f64>) {
+        a.su_session.as_mut().unwrap().descriptor.as_mut().unwrap().usage =
+            Some(crate::su_session::SuSessionUsage {
+                context_tokens: Some(tokens),
+                context_window: Some(window),
+                cost_usd: cost,
+                ..Default::default()
+            });
+    }
+
+    fn set_plan(a: &mut App, items: &[(&str, &str)]) {
+        a.su_session.as_mut().unwrap().descriptor.as_mut().unwrap().plan = Some(
+            items
+                .iter()
+                .map(|(text, status)| crate::su_session::SuPlanItem {
+                    text: (*text).into(),
+                    status: (*status).into(),
+                })
+                .collect(),
+        );
+    }
+
+    /// pui-chat-first-ux P-029 / D-029: the footer reads model · approvals ·
+    /// directory · context left · cost, and nothing unmeasured.
+    #[test]
+    fn footer_shows_approvals_context_left_and_cost_once_measured() {
+        let mut a = chat_first_app_with_approvals("auto-edit");
+        let before = a.chat_status_line();
+        assert!(before.contains(" · auto-edit · "), "{before}");
+        assert!(!before.contains("context"), "unmeasured context is left out: {before}");
+
+        set_usage(&mut a, 50_000, 200_000, Some(1.234));
+        let line = a.chat_status_line();
+        assert!(line.ends_with(" · 75% context left · $1.23"), "{line}");
+        assert!(a.chat_context_warning().is_none());
+        let status = a.agent_chat_usage_label().unwrap();
+        assert!(status.contains("cost $1.2340"), "{status}");
+        assert!(status.contains("context 50000/200000 (75% left)"), "{status}");
+        let report = a.chat_status_report();
+        assert!(
+            report.contains(" · approvals auto-edit · context 50000/200000 (75% left) · cost $1.23 · conversation"),
+            "{report}"
+        );
+    }
+
+    #[test]
+    fn footer_warns_from_eighty_percent_of_the_context_used() {
+        let mut a = chat_first_app_with_approvals("ask");
+        set_usage(&mut a, 159_000, 200_000, None);
+        assert!(a.chat_context_warning().is_none(), "79.5% used is 21% left, 79% used");
+        set_usage(&mut a, 170_000, 200_000, None);
+        let warning = a.chat_context_warning().expect("85% used warns");
+        assert!(warning.starts_with("Context 85% full"), "{warning}");
+        let line = a.chat_status_line();
+        assert!(line.contains(&warning) && !line.contains("context left"), "{line}");
+        assert!(!line.contains('$'), "no cost was measured: {line}");
+    }
+
+    /// D-029: the checklist shows while there is work left or the turn runs,
+    /// and hides once every item is done and the turn has ended.
+    #[test]
+    fn plan_checklist_hides_once_everything_is_done_and_the_turn_ended() {
+        let mut a = chat_first_app_with_approvals("ask");
+        assert!(a.chat_plan_checklist().is_none(), "no plan yet");
+        set_plan(&mut a, &[("Read", "completed"), ("Fix", "in_progress")]);
+        assert_eq!(a.chat_plan_checklist().map(|p| p.len()), Some(2));
+        set_plan(&mut a, &[("Read", "completed"), ("Fix", "completed")]);
+        a.chat_streaming = true;
+        assert!(a.chat_plan_checklist().is_some(), "still shown while the turn runs");
+        a.chat_streaming = false;
+        assert!(a.chat_plan_checklist().is_none());
+        set_plan(&mut a, &[]);
+        assert!(a.chat_plan_checklist().is_none());
+    }
+
     /// pui-chat-first-ux P-027 (G-6) / D-026: `/approvals` opens a three-row
     /// picker with the running mode marked; the pick rides on the next owner
     /// turn, and dispatch hands it to that turn and clears it.
@@ -19322,7 +19417,11 @@ mod tests {
         assert_eq!(a.su_next_approvals, None);
         assert!(toast_text(&a).contains("already on"), "{}", toast_text(&a));
         assert!(a.su_pending_turn.is_none(), "cycling never sends a message");
-        assert_eq!(a.chat_status_report().contains(" · approvals auto-edit · conversation"), true);
+        assert!(
+            a.chat_status_report().contains(" · approvals auto-edit · conversation"),
+            "{}",
+            a.chat_status_report()
+        );
     }
 
     /// P-027 (parity checklist row 13): Alt+P in the message box opens the
