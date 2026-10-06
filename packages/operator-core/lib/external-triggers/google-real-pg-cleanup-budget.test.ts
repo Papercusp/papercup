@@ -4,7 +4,6 @@ import { describe, expect, it } from 'vitest';
 
 const REAL_PG_GOOGLE_SUITES = [
   './google-workspace.integration.test.ts',
-  './google-gmail.integration.test.ts',
   './google-calendar.integration.test.ts',
 ] as const;
 

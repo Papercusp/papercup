@@ -37,7 +37,7 @@ import {
   setWorkItemClaimHold,
   setWorkItemStateWithAliasInfo,
 } from '../work-items';
-import { isStrictOwnerActionCapability } from '../harness/improvements/agent-review-policy';
+import { hasActiveStrictHumanAsk } from '../hold-registry';
 import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
 
 export const BLOCKER_DEFAULT_REAPER_ACTOR = 'system:blocker-default-reaper';
@@ -103,7 +103,8 @@ export const defaultBlockerReapDeps: BlockerReapDeps = {
   // follows the blockers that REMAIN, never the shape of this request.
   async restoreLifecycle({ id, harness, family, state, remaining }) {
     if (remaining.length > 0) {
-      const strict = remaining.some((b) => b.kind === 'human' && isStrictOwnerActionCapability(b.capability));
+      // D-029: the hold registry's answerable ask, the predicate the needs-human writer refuses on.
+      const strict = hasActiveStrictHumanAsk({ externalBlockers: remaining });
       await setWorkItemStateWithAliasInfo(id, strict ? 'needs-human' : 'blocked', {
         harness,
         by: BLOCKER_DEFAULT_REAPER_ACTOR,

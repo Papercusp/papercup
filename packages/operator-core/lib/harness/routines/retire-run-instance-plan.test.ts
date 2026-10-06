@@ -13,9 +13,14 @@ import type { Sql } from 'postgres';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { stripCommentsOnly } from '../../../../../scripts/lib/strip-comments-and-strings.mjs';
 
-const H = vi.hoisted(() => ({ writeIndex: vi.fn() }));
+const H = vi.hoisted(() => ({ writeIndex: vi.fn(), recordRevision: vi.fn() }));
 vi.mock('../../agent-tools/plans/plan-index-rows', () => ({ writePlanIndexRows: H.writeIndex }));
+vi.mock('../../agent-tools/plans/revisions', () => ({
+  recordSystemPlanRevisionInTransaction: H.recordRevision,
+  PLAN_RUN_INSTANCE_RETIRE_REVISION_AUTHOR: 'plan-run:instance-retire',
+}));
 
+import { hashPlanContent } from '@papercusp/plan-parser/content-hash';
 import { retireRunInstancePlan, runInstanceRetiredNote } from './retire-run-instance-plan';
 
 interface Recorded {
@@ -23,13 +28,17 @@ interface Recorded {
   values: unknown[];
 }
 
-/** A tagged-template `sql` double: SELECT returns `row` (or nothing), everything else is recorded. */
-function fakeSql(row: Record<string, unknown> | null) {
+/**
+ * A tagged-template `sql` double: SELECT returns `row` (or nothing), an UPDATE reports
+ * `updateCount` affected rows (postgres.js `RowList.count`), everything is recorded.
+ */
+function fakeSql(row: Record<string, unknown> | null, updateCount = 1) {
   const calls: Recorded[] = [];
   const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
     const text = strings.join('?').replace(/\s+/g, ' ').trim();
     calls.push({ text, values });
-    return Promise.resolve(text.startsWith('SELECT') ? (row ? [row] : []) : []);
+    if (text.startsWith('SELECT')) return Promise.resolve(row ? [row] : []);
+    return Promise.resolve(Object.assign([], { count: text.startsWith('UPDATE') ? updateCount : 0 }));
   }) as unknown as Sql;
   return { sql, calls };
 }
@@ -76,6 +85,8 @@ function itemsWritten(update: Recorded): Array<{ id: string; status: string }> {
 beforeEach(() => {
   H.writeIndex.mockReset();
   H.writeIndex.mockResolvedValue(undefined);
+  H.recordRevision.mockReset();
+  H.recordRevision.mockResolvedValue({ seq: 1, contentHash: 'h' });
 });
 
 describe('retireRunInstancePlan', () => {
@@ -158,6 +169,49 @@ describe('retireRunInstancePlan', () => {
     const body = String(updateOf(calls).values.find((v) => typeof v === 'string' && v.startsWith('---')));
     expect(body).toContain(runInstanceRetiredNote('failed').replace(/[()]/g, ''));
     expect(runInstanceRetiredNote('failed')).toMatch(/never completed by a work-item/);
+  });
+
+  // WI-10006321: the raw UPDATE rewrites content outside withPlanLock, so it owes the
+  // plan_revisions row itself (the reconcile sweep's content clock).
+  it('records a system revision of exactly the bytes it wrote', async () => {
+    const { sql, calls } = fakeSql({ content: BODY, items: STORED_ITEMS, decisions: [] });
+    await retireRunInstancePlan(sql, INPUT);
+
+    const written = String(updateOf(calls).values.find((v) => typeof v === 'string' && v.startsWith('---')));
+    expect(H.recordRevision).toHaveBeenCalledTimes(1);
+    const [seam, args] = H.recordRevision.mock.calls[0]!;
+    expect(seam).toBe(sql);
+    expect(args).toMatchObject({
+      workspaceId: 'ws',
+      harnessSlug: 'papercusp',
+      planSlug: 'tmpl@run-9',
+      content: written,
+      contentHash: hashPlanContent(written),
+      authorId: 'plan-run:instance-retire',
+    });
+    // The hash the UPDATE stored is the hash the revision carries, so the sweep matches it.
+    expect(updateOf(calls).values).toContain(hashPlanContent(written));
+  });
+
+  it('records no revision when a concurrent retire won the status guard (0 rows updated)', async () => {
+    const { sql } = fakeSql({ content: BODY, items: STORED_ITEMS, decisions: [] }, 0);
+    await retireRunInstancePlan(sql, INPUT);
+    expect(H.recordRevision).not.toHaveBeenCalled();
+  });
+
+  it('runs the content write, revision and index in ONE transaction when handed a pool', async () => {
+    const inner = fakeSql({ content: BODY, items: STORED_ITEMS, decisions: [] });
+    const begin = vi.fn(async (fn: (tx: Sql) => Promise<unknown>) => fn(inner.sql));
+    const pool = Object.assign(
+      ((strings: TemplateStringsArray, ...values: unknown[]) =>
+        (inner.sql as unknown as (s: TemplateStringsArray, ...v: unknown[]) => Promise<unknown>)(strings, ...values)) as unknown as Sql,
+      { begin },
+    );
+    await retireRunInstancePlan(pool, INPUT);
+
+    expect(begin).toHaveBeenCalledTimes(1);
+    expect(H.recordRevision.mock.calls[0]![0]).toBe(inner.sql);
+    expect(H.writeIndex.mock.calls[0]![0]).toBe(inner.sql);
   });
 });
 

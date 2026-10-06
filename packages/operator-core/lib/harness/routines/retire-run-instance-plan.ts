@@ -104,24 +104,51 @@ export async function retireRunInstancePlan(
   const flipped = flipPlanFrontmatterStatus(body, 'superseded');
   if (flipped.newBody) body = flipped.newBody;
 
-  await sql`
-    UPDATE harness_shared.harness_plans
-       SET status = 'superseded',
-           content = ${body},
-           content_hash = ${hashPlanContent(body)},
-           items = ${JSON.stringify(closedItems)}::text::jsonb,
-           version = version + 1,
-           origin = 'local'
-     WHERE workspace_id = ${workspaceId}
-       AND harness_slug = ${planStorageSlug}
-       AND plan_slug = ${instanceSlug}
-       AND template_slug = ${templateSlug}
-       AND status = ${fromStatus}
-  `;
-  await writePlanIndexRows(
-    sql as unknown as Parameters<typeof writePlanIndexRows>[0],
-    { workspaceId, harnessSlug: planStorageSlug, planSlug: instanceSlug },
-    { items: closedItems, decisions },
-  );
+  const contentHash = hashPlanContent(body);
+  // The content rewrite, its plan_revisions row and the derived index commit together: a
+  // pool `sql` gets its own transaction, a caller's transaction is used as-is.
+  const writeRetirement = async (db: Sql): Promise<void> => {
+    const updated = await db`
+      UPDATE harness_shared.harness_plans
+         SET status = 'superseded',
+             content = ${body},
+             content_hash = ${contentHash},
+             items = ${JSON.stringify(closedItems)}::text::jsonb,
+             version = version + 1,
+             origin = 'local'
+       WHERE workspace_id = ${workspaceId}
+         AND harness_slug = ${planStorageSlug}
+         AND plan_slug = ${instanceSlug}
+         AND template_slug = ${templateSlug}
+         AND status = ${fromStatus}
+    `;
+    // WI-10006321: this raw UPDATE rewrites content outside withPlanLock, so it records the
+    // revision itself. Without one, the plan-parts reconcile sweep has no content clock for
+    // the retired body and falls back to updated_at. Only when a row was actually written:
+    // a concurrent retire that won the status guard wrote its own.
+    if (updated.count > 0) {
+      const { recordSystemPlanRevisionInTransaction, PLAN_RUN_INSTANCE_RETIRE_REVISION_AUTHOR } =
+        await import('../../agent-tools/plans/revisions');
+      await recordSystemPlanRevisionInTransaction(db, {
+        workspaceId,
+        harnessSlug: planStorageSlug,
+        planSlug: instanceSlug,
+        content: body,
+        contentHash,
+        rationale: `run instance retired (run settled ${outcome})`,
+        authorId: PLAN_RUN_INSTANCE_RETIRE_REVISION_AUTHOR,
+      });
+    }
+    await writePlanIndexRows(
+      db as unknown as Parameters<typeof writePlanIndexRows>[0],
+      { workspaceId, harnessSlug: planStorageSlug, planSlug: instanceSlug },
+      { items: closedItems, decisions },
+    );
+  };
+  if ('begin' in sql && typeof sql.begin === 'function') {
+    await sql.begin((tx) => writeRetirement(tx as unknown as Sql));
+  } else {
+    await writeRetirement(sql);
+  }
   return { retired: true, itemsClosed };
 }

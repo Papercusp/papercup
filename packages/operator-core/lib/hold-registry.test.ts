@@ -165,6 +165,8 @@ describe('hold registry: every readiness writer is enumerated', () => {
         'attention/intake-promotion.ts',
         'harness/improvements/agent-review.ts',
         'harness/improvements/capture-core.ts',
+        // P-007 Phase C (D-028): writes status 'ready', which is not a hold.
+        'harness/improvements/completion-verification.ts',
         'harness/improvements/legacy-acceptance-adoption.ts',
         'harness/improvements/stranded-tool-failure-sweep.ts',
         'harness/improvements/triage-core.ts',
@@ -175,7 +177,16 @@ describe('hold registry: every readiness writer is enumerated', () => {
 });
 
 describe('classifyHolds', () => {
-  const ask = { status: 'active', kind: 'human', capability: 'product-decision', defaultIfUnanswered: 'ship it' };
+  const ask = {
+    status: 'active',
+    kind: 'human',
+    capability: 'product-decision',
+    summary: 'Ship the epoch policy?',
+    createdBy: 'su-asker',
+    createdAt: '2026-10-06T00:00:00.000Z',
+    nextVerb: 'Answer the ask, then clear the blocker.',
+    defaultIfUnanswered: 'ship it',
+  };
 
   it('resolves each hold on a stored row against the registry', () => {
     const holds = classifyHolds({
@@ -200,6 +211,20 @@ describe('classifyHolds', () => {
     expect(hasActiveStrictHumanAsk({ externalBlockers: [ask] })).toBe(true);
     expect(hasActiveStrictHumanAsk({ externalBlockers: [{ ...ask, defaultIfUnanswered: '' }] })).toBe(false);
     expect(hasActiveStrictHumanAsk({ externalBlockers: [{ ...ask, capability: 'live-dependency' }] })).toBe(false);
+    // D-029: it is ALSO the structured owner ask the canonical needs-human writer requires; each
+    // missing field fails it on its own, and the fields must sit on ONE blocker.
+    for (const field of ['summary', 'createdBy', 'nextVerb', 'createdAt'] as const) {
+      expect(hasActiveStrictHumanAsk({ externalBlockers: [{ ...ask, [field]: '' }] }), field).toBe(false);
+    }
+    expect(hasActiveStrictHumanAsk({ externalBlockers: [{ ...ask, createdAt: 'not-a-date' }] })).toBe(false);
+    expect(
+      hasActiveStrictHumanAsk({
+        externalBlockers: [
+          { ...ask, defaultIfUnanswered: '' },
+          { ...ask, ref: 'other', nextVerb: '' },
+        ],
+      }),
+    ).toBe(false);
     expect(classifyHolds({ status: 'needs-human', payload: { externalBlockers: [ask] } }).find((h) => h.domain === 'needs-human')?.entry).not.toBeNull();
     const bare = classifyHolds({ status: 'needs-human', payload: {} });
     expect(bare).toEqual([{ domain: 'needs-human', key: 'needs-human-without-answerable-ask', entry: null }]);
@@ -218,7 +243,16 @@ describe('classifyHolds', () => {
 });
 
 describe('HOLD_PAYLOAD_KEYS: the census projection classifies exactly like the whole payload', () => {
-  const ask = { status: 'active', kind: 'human', capability: 'product-decision', defaultIfUnanswered: 'ship it' };
+  const ask = {
+    status: 'active',
+    kind: 'human',
+    capability: 'product-decision',
+    summary: 'Ship the epoch policy?',
+    createdBy: 'su-asker',
+    createdAt: '2026-10-06T00:00:00.000Z',
+    nextVerb: 'Answer the ask, then clear the blocker.',
+    defaultIfUnanswered: 'ship it',
+  };
   const noise = { title: 'x', toolFailureProbation: { class: 'caller' }, lane: 'bugs', summary: 'y' };
   const fixtures = [
     {

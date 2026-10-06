@@ -38,6 +38,10 @@ import { setFrontmatterScalar } from '../../agent-tools/plans/transfer-owner';
 import { planRunInstanceSlug } from '../../agent-tools/plans/run-instance-slug';
 import { deriveIndexFromContent, type PlanIndexDecision, type PlanIndexItem } from '../../agent-tools/plans/source';
 import { writePlanIndexRows } from '../../agent-tools/plans/plan-index-rows';
+import {
+  PLAN_RUN_INSTANCE_CLONE_REVISION_AUTHOR,
+  recordSystemPlanRevisionInTransaction,
+} from '../../agent-tools/plans/revisions';
 import { parsePlan } from '@papercusp/plan-parser';
 import { hashPlanContent } from '@papercusp/plan-parser/content-hash';
 import {
@@ -657,7 +661,7 @@ async function runScheduledPlanFireTx(
     Array.isArray(template.decisions) && template.decisions.length > 0 ? template.decisions : contentIndex.decisions;
   const itemsJson = JSON.stringify(instanceItems);
   const decisionsJson = JSON.stringify(instanceDecisions);
-  await sql`
+  const insertedInstance = await sql<Array<{ plan_slug: string }>>`
     INSERT INTO harness_shared.harness_plans
       (workspace_id, harness_slug, plan_slug, title, status, content, content_hash,
        items, decisions, template_slug, run_seq, origin, template, template_data, input_schema,
@@ -668,7 +672,23 @@ async function runScheduledPlanFireTx(
             ${template.template}, ${runInputsJson}::text::jsonb, ${inputSchemaJson}::text::jsonb,
             ${outputSchemaJson}::text::jsonb)
     ON CONFLICT (workspace_id, harness_slug, plan_slug) DO NOTHING
+    RETURNING plan_slug
   `;
+  // WI-10006321: the instance's first revision rides the same transaction as its body. Without
+  // one, the plan-parts reconcile sweep has no content clock for the instance and falls back to
+  // updated_at, which non-content writes also bump. A replayed fire (ON CONFLICT) inserted
+  // nothing and owes nothing.
+  if (insertedInstance.length > 0) {
+    await recordSystemPlanRevisionInTransaction(sql, {
+      workspaceId,
+      harnessSlug: appPlanStorageSlug,
+      planSlug: instanceSlug,
+      content: instanceContent,
+      contentHash: instanceContentHash,
+      rationale: `scheduled run instance cloned from ${templateSlug}`,
+      authorId: PLAN_RUN_INSTANCE_CLONE_REVISION_AUTHOR,
+    });
+  }
   // Raw instance creation is a plan WRITE and therefore owes the same derived
   // relational index as with-plan-lock and the built-in external-trigger plan
   // writers. Keep it in this transaction, after the parent row exists and while

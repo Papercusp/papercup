@@ -990,6 +990,9 @@ describe('work_items:set_blocker', () => {
       capability: 'physical-device',
       ref: 'peer-vm',
       summary: 'Inspect the peer VM.',
+      // D-029: the surviving ask stays needs-human only because it is answerable.
+      nextVerb: 'Inspect the peer VM, then clear peer-vm.',
+      defaultIfUnanswered: 'stays parked; the weekly owner digest re-surfaces it',
       status: 'active',
       createdAt: '2026-09-05T00:00:00.000Z',
       createdBy: 'su-a',

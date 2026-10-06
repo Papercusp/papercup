@@ -15,6 +15,7 @@ import {
   isDeadTerminalLaunch,
   isFailedTerminalLaunch,
   acquireAdvSessionResume,
+  classifyOwnerNativeSession,
   fallbackCodexLaunchSpecFromAdvSession,
   hasAdvSessionTerminalEvidence,
   isAdvSessionLocalLivenessEvidence,
@@ -38,6 +39,56 @@ beforeEach(() => {
   advSessionRowsMock.mockResolvedValue([]);
   advSessionBeginMock.mockReset();
   advSessionBeginMock.mockImplementation(async (fn: (tx: typeof advSessionRowsMock) => unknown) => fn(advSessionRowsMock));
+});
+
+describe('classifyOwnerNativeSession exact incarnation (get-feedback D-006)', () => {
+  const ownerId = 'su-incarnation-source';
+  const nativeId = 'native-source';
+  const rejected = { binding: 'foreign', boundSessionId: null, advSessionId: null };
+
+  it.each(['missing', 'owned by another session'])('does not replace an explicit %s row with another matching owner row', async () => {
+    // The id/owner predicate returns no row in either case. A second lookup
+    // could incorrectly find a different incarnation with the presented id.
+    advSessionRowsMock.mockResolvedValueOnce([]).mockResolvedValueOnce([
+      { id: 543, session_id: nativeId, active: true },
+    ]);
+    await expect(classifyOwnerNativeSession({ ownerId, sessionId: nativeId, advSessionId: 541 }))
+      .resolves.toEqual(rejected);
+    expect(advSessionRowsMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY])('rejects invalid explicit row %s before reading another incarnation', async (advSessionId) => {
+    advSessionRowsMock.mockResolvedValue([{ id: 543, session_id: nativeId, active: true }]);
+    await expect(classifyOwnerNativeSession({ ownerId, sessionId: nativeId, advSessionId }))
+      .resolves.toEqual(rejected);
+    expect(advSessionRowsMock).not.toHaveBeenCalled();
+  });
+
+  it.each([541, 543])('retains an exact legitimate row %s for the same owner', async (advSessionId) => {
+    advSessionRowsMock.mockResolvedValue([{ id: advSessionId, session_id: nativeId, active: true }]);
+    await expect(classifyOwnerNativeSession({ ownerId, sessionId: nativeId, advSessionId }))
+      .resolves.toEqual({ binding: 'bound', boundSessionId: nativeId, advSessionId });
+    expect(advSessionRowsMock).toHaveBeenCalledTimes(1);
+    const call = (advSessionRowsMock.mock.calls as unknown[][])[0];
+    expect(call.slice(1)).toEqual([advSessionId, ownerId]);
+  });
+
+  it('retains first binding for an existing pending exact row', async () => {
+    advSessionRowsMock.mockResolvedValue([{ id: 541, session_id: null, active: true }]);
+    await expect(classifyOwnerNativeSession({ ownerId, sessionId: nativeId, advSessionId: 541 }))
+      .resolves.toEqual({ binding: 'unbound', boundSessionId: null, advSessionId: 541 });
+    expect(advSessionRowsMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([undefined, null])('keeps owner-wide lookup when an exact row is omitted (%s)', async (advSessionId) => {
+    advSessionRowsMock.mockResolvedValue([
+      { id: 543, session_id: 'native-continuation', active: true },
+      { id: 541, session_id: nativeId, active: true },
+    ]);
+    await expect(classifyOwnerNativeSession({ ownerId, sessionId: nativeId, advSessionId }))
+      .resolves.toEqual({ binding: 'bound', boundSessionId: nativeId, advSessionId: 541 });
+    expect(advSessionRowsMock).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('getLatestActiveAdvSessionByOwner', () => {

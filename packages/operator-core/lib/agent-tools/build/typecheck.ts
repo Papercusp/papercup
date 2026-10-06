@@ -611,8 +611,8 @@ export function ambientTypePackages(typeRoot: string): string[] {
  * enumeration is a repair for a known-broken case, never something to force on a project
  * whose intent we could not read.
  */
-export function projectDeclaresTypes(tsconfigAbs: string, depth = 0): boolean {
-  if (depth > 8) return true; // cyclic or absurd extends chain — do not intervene
+function projectDeclaredTypes(tsconfigAbs: string, depth = 0): string[] | undefined | null {
+  if (depth > 8) return null; // unknown: cyclic or absurd extends chain — do not intervene
   let parsed: { compilerOptions?: { types?: unknown }; extends?: unknown };
   try {
     const raw = readFileSync(tsconfigAbs, 'utf8');
@@ -634,18 +634,25 @@ export function projectDeclaresTypes(tsconfigAbs: string, depth = 0): boolean {
       );
     }
   } catch {
-    return true;
+    return null;
   }
-  if (parsed?.compilerOptions && 'types' in parsed.compilerOptions) return true;
+  if (parsed?.compilerOptions && 'types' in parsed.compilerOptions) {
+    const types = parsed.compilerOptions.types;
+    return Array.isArray(types) && types.every(type => typeof type === 'string') ? types : null;
+  }
   const ext = parsed?.extends;
-  if (typeof ext !== 'string' || ext.length === 0) return false;
+  if (typeof ext !== 'string' || ext.length === 0) return undefined;
   // Only a relative/absolute path extends is resolvable here; a bare package specifier
   // (e.g. "@tsconfig/node20/tsconfig.json") is treated as declaring, i.e. hands-off.
-  if (!ext.startsWith('.') && !isAbsolute(ext)) return true;
+  if (!ext.startsWith('.') && !isAbsolute(ext)) return null;
   const next = isAbsolute(ext) ? ext : resolve(dirname(tsconfigAbs), ext);
   const withExt = existsSync(next) ? next : `${next}.json`;
-  if (!existsSync(withExt)) return true;
-  return projectDeclaresTypes(withExt, depth + 1);
+  if (!existsSync(withExt)) return null;
+  return projectDeclaredTypes(withExt, depth + 1);
+}
+
+export function projectDeclaresTypes(tsconfigAbs: string, depth = 0): boolean {
+  return projectDeclaredTypes(tsconfigAbs, depth) !== undefined;
 }
 
 /**
@@ -736,7 +743,8 @@ export function buildScopedTsconfig(
   const typeRoot = join(root, 'node_modules', '@types');
   // Only repair a project that declares NO `types` — see projectDeclaresTypes for the
   // measured reason overriding a declared one is destructive.
-  const ambientTypes = projectDeclaresTypes(projectTsconfigAbs) ? [] : ambientTypePackages(typeRoot);
+  const declaredTypes = projectDeclaredTypes(projectTsconfigAbs);
+  const ambientTypes = declaredTypes !== undefined ? [] : ambientTypePackages(typeRoot);
   const dir = mkdtempSync(join(tmpdir(), 'pc-typecheck-scoped-'));
   const configPath = join(dir, 'tsconfig.json');
   writeFileSync(
@@ -753,7 +761,11 @@ export function buildScopedTsconfig(
           // may include imports from anywhere in the workspace, so anchor the synthetic
           // program at the real workspace root rather than the temp config directory.
           rootDir: root,
-          typeRoots: [typeRoot],
+          // An explicit package subpath such as vitest/globals lives outside
+          // @types. /tmp cannot find the project's node_modules by ancestry.
+          // Add that search root only with a KNOWN explicit list, so implicit
+          // discovery cannot inject every package's globals into the program.
+          typeRoots: Array.isArray(declaredTypes) ? [typeRoot, join(root, 'node_modules')] : [typeRoot],
           // Trap 3 above — enumerated, not hardcoded, so this mirrors what tsc would have
           // auto-included. Omitted entirely when the scan finds nothing, so an unreadable
           // or absent @types dir degrades to today's behaviour rather than pinning `types`

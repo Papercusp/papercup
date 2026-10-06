@@ -32,6 +32,7 @@ import {
 } from '../../external-blockers';
 import { lookupWorkItem } from './_lookup';
 import { isStrictOwnerActionCapability } from '../../harness/improvements/agent-review-policy';
+import { hasActiveStrictHumanAsk } from '../../hold-registry';
 import { stagingFirstBlockerProblem } from '../plans/staging-first-activation-guard';
 import { pureWorkItemDependencyReferents, workItemRefBlockerProblem } from './work-item-ref-blocker-guard';
 import { linkWorkItemRefDependencies } from './work-item-ref-blocker-edges';
@@ -679,9 +680,12 @@ export default defineTool({
         // still active. Parking that row as generic `blocked` removes it from
         // the owner-action queue despite the surviving blocker still requiring
         // owner capability.
-        const remainingStrictHumanAsk = active.some(
-          (blocker) => blocker.kind === 'human' && isStrictOwnerActionCapability(blocker.capability),
-        );
+        //
+        // D-029: "strict" is the hold registry's answerable ask (structured AND carrying
+        // defaultIfUnanswered), the same predicate the canonical needs-human writer refuses
+        // on. A surviving LEGACY ask with no default parks as `blocked` (an owner-clearer
+        // blocker hold) instead of a needs-human write the writer would refuse.
+        const remainingStrictHumanAsk = hasActiveStrictHumanAsk({ externalBlockers: active });
         const updated = await mergeWorkItemPayload(
           input.id,
           { externalBlockers: history.blockers },

@@ -1327,6 +1327,65 @@ describe('release:repair-queue', () => {
       expect(JSON.stringify(result.precheck)).toContain('checkpoint-tree-busy');
     });
 
+    it('retryPrecheck:true refreshes a busy-tree deferral without publishing until the new measured pass', async () => {
+      mocks.admit.mockReturnValue(admissionOf(true));
+      const deferredOperationId = 'repair-precheck-deferred';
+      mocks.readState.mockResolvedValue({
+        status: 'value',
+        queue: {
+          ...queueWithoutPrecheck(),
+          admissionPrecheck: {
+            ...queue.admissionPrecheck,
+            operationId: deferredOperationId,
+            status: 'deferred' as const,
+            verdict: {
+              ok: true as const,
+              ran: false as const,
+              reason: 'checkpoint-tree-busy' as const,
+              detail: 'previous gate run held the checkpoint tree',
+              population: queue.admissionPrecheck.verdict.population,
+            },
+          },
+        },
+      });
+
+      const started = body(
+        await tool.handler(
+          { op: 'admit', paths: ['lib/red.test.ts'], confirm: true, retryPrecheck: true } as never,
+          { role: 'su' } as never,
+        ),
+      );
+
+      expect(started).toMatchObject({
+        ok: true,
+        admitted: false,
+        pending: true,
+        verdict: 'precheck-running',
+        precheckOperation: { status: 'running', builtCommit: NEW_HEAD },
+      });
+      expect(started.precheckOperation.operationId).not.toBe(deferredOperationId);
+      expect(dryRuns()).toEqual([true]);
+      expect(mocks.precheckFactory).toHaveBeenCalledTimes(1);
+      const settled = await settledPrecheckQueue();
+      expect(settled.admissionPrecheck).toMatchObject({
+        operationId: started.precheckOperation.operationId,
+        status: 'passed',
+        verdict: { ok: true, ran: true },
+      });
+      expect(dryRuns()).toEqual([true]);
+
+      mocks.readState.mockResolvedValue({ status: 'value', queue: settled });
+      const published = body(
+        await tool.handler(
+          { op: 'admit', paths: ['lib/red.test.ts'], confirm: true, retryPrecheck: true } as never,
+          { role: 'su' } as never,
+        ),
+      );
+      expect(published).toMatchObject({ ok: true, admitted: true, precheck: { ok: true, ran: true } });
+      expect(dryRuns()).toEqual([true, true, false]);
+      expect(mocks.precheckFactory).toHaveBeenCalledTimes(1);
+    });
+
     it('a dry run never creates the runner', async () => {
       mocks.admit.mockReturnValue(admissionOf(false));
       body(await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'] } as never, { role: 'su' } as never));

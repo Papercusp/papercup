@@ -15,6 +15,7 @@ import {
 
 const CUR = 'http://localhost:3070/harness/p';
 const PANEL = 'http://localhost:3070/quick-panel';
+const DESKTOP = 'papercusp://localhost/harness';
 
 describe('Quick Panel Escape across Docs navigation', () => {
   type Dom = { window: Window & typeof globalThis };
@@ -100,6 +101,14 @@ describe('Quick Panel Escape across Docs navigation', () => {
 });
 
 describe('shouldSoftNavigate', () => {
+  it('soft-navigates within the native Papercusp origin', () => {
+    expect(shouldSoftNavigate('/settings/shortcuts', DESKTOP)).toBe(true);
+    expect(shouldSoftNavigate('papercusp://localhost/notes', DESKTOP)).toBe(true);
+    // Custom schemes have opaque URL.origin values: two null origins must
+    // never make an untrusted host or scheme count as the desktop origin.
+    expect(shouldSoftNavigate('papercusp://evil.example/notes', DESKTOP)).toBe(false);
+    expect(shouldSoftNavigate('other://localhost/notes', DESKTOP)).toBe(false);
+  });
   it('true for a same-origin target', () => {
     expect(shouldSoftNavigate('/other', CUR)).toBe(true);
     expect(shouldSoftNavigate('http://localhost:3070/x', CUR)).toBe(true);
@@ -115,6 +124,15 @@ describe('shouldSoftNavigate', () => {
 });
 
 describe('resolveClientNavigation', () => {
+  it('preserves native app routes, query and fragment', () => {
+    expect(resolveClientNavigation('/settings/shortcuts?ws=alpha#navigation', DESKTOP)).toEqual({
+      mode: 'soft',
+      href: '/settings/shortcuts?ws=alpha#navigation',
+      replace: false,
+    });
+    expect(resolveClientNavigation('papercusp://evil.example/notes', DESKTOP).mode).toBe('none');
+    expect(resolveClientNavigation('papercusp://localhost/notes', CUR).mode).toBe('none');
+  });
   it('soft-navigates same-origin to a path+search+hash href', () => {
     expect(resolveClientNavigation('http://localhost:3070/a?b=1#c', CUR)).toEqual({
       mode: 'soft',
@@ -172,6 +190,12 @@ describe('resolveClientNavigation', () => {
 // WI-4827: the Quick Panel window must never navigate itself into the full app.
 describe('resolveQuickPanelHandoff', () => {
   const inPanel = { isQuickPanelWindow: true };
+  it('hands off native app routes while retaining the custom-origin boundary', () => {
+    const panel = 'papercusp://localhost/quick-panel';
+    expect(resolveQuickPanelHandoff('/settings/shortcuts', panel, inPanel)).toBe('/settings/shortcuts');
+    expect(resolveQuickPanelHandoff('/quick-panel?tab=docs', panel, inPanel)).toBeNull();
+    expect(resolveQuickPanelHandoff('papercusp://evil.example/notes', panel, inPanel)).toBeNull();
+  });
   it('returns null when NOT the quick-panel window (main app navigates normally)', () => {
     expect(resolveQuickPanelHandoff('/settings/voice', CUR, { isQuickPanelWindow: false })).toBeNull();
   });

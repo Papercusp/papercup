@@ -83,8 +83,7 @@ export function resolveQuickPanelHandoff(
   } catch {
     return null;
   }
-  if (!(next.protocol === 'http:' || next.protocol === 'https:')) return null;
-  if (next.origin !== current.origin) return null;
+  if (!sameAppOrigin(next, current)) return null;
   if (isChromelessPath(next.pathname)) return null;
   return `${next.pathname}${next.search}${next.hash}`;
 }
@@ -131,12 +130,23 @@ function targetChangesWorkspace(parsed: URL, currentWorkspaceId: string | undefi
   return !!nextWs && nextWs !== currentWorkspaceId;
 }
 
+function sameAppOrigin(next: URL, current: URL): boolean {
+  if (next.protocol === 'http:' || next.protocol === 'https:') {
+    return next.origin === current.origin;
+  }
+  // Linux/macOS custom-protocol URLs have opaque (`null`) URL.origin values.
+  // Compare the trusted desktop authority explicitly rather than equating two
+  // null origins, which would also admit other schemes or arbitrary hosts.
+  return [next, current].every((url) =>
+    url.protocol === 'papercusp:' && url.host === 'localhost' && !url.username && !url.password,
+  );
+}
+
 export function shouldSoftNavigate(target: string, currentHref = window.location.href): boolean {
   try {
     const current = new URL(currentHref, currentHref);
     const next = new URL(target, currentHref);
-    if (!(next.protocol === 'http:' || next.protocol === 'https:')) return false;
-    return next.origin === current.origin;
+    return sameAppOrigin(next, current);
   } catch {
     return false;
   }
@@ -151,7 +161,8 @@ export function resolveClientNavigation(
   let parsed: URL;
   try {
     parsed = new URL(target, currentHref);
-    if (!(parsed.protocol === 'http:' || parsed.protocol === 'https:')) {
+    const current = new URL(currentHref, currentHref);
+    if (!(parsed.protocol === 'http:' || parsed.protocol === 'https:') && !sameAppOrigin(parsed, current)) {
       return { mode: 'none', href: null, replace };
     }
   } catch {
