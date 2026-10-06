@@ -7,6 +7,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import type { LearningLoopHealthSweepReport } from '../harness/routines/learning-loop-health-sweep';
 
 const state = vi.hoisted(() => ({
   stepOutputs: [] as Array<{ name: string; output: unknown }>,
@@ -127,6 +128,7 @@ vi.mock('../harness/routines/register-system-actions', () => ({}));
 vi.mock('../harness/routines/configure-per-workspace', () => ({}));
 
 import { fireLoopWake } from '../harness/routines/loop-fire';
+import { DBOS } from '@dbos-inc/dbos-sdk';
 import { registerSystemAction } from '../harness/routines/system-actions';
 import {
   createRoutineDispatchController,
@@ -137,6 +139,7 @@ import {
   enqueueRoutineFire,
   routineFireTimeoutMs,
   routineFireWorkflow,
+  learningLoopHealthSweepDbosStep,
 } from './routines-workflow';
 import {
   LOOP_WAKE_TARGET_ROLE,
@@ -503,7 +506,41 @@ describe('routinesTickImpl — probe evidence', () => {
 });
 
 describe('learning-loop-health-sweep — durable operation output', () => {
-  it('returns the workspace-scoped classifier report from its DBOS step', () => {
+  it('returns the workspace-scoped classifier report as its DBOS step output', async () => {
+    const report: LearningLoopHealthSweepReport = {
+      schemaVersion: 'learning-loop-health-sweep/v1',
+      workspaceId: 'papercusp-workspace',
+      observedAtMs: 1_791_280_000_000,
+      processStartedAtMs: 1_791_279_000_000,
+      runStatus: 'completed',
+      candidateCount: 1,
+      candidates: [
+        {
+          blueprintId: 'regret',
+          alwaysOn: true,
+          singletonRow: null,
+          legacyRow: null,
+          collision: false,
+          active: true,
+          lastFiredAt: '2026-10-06T00:00:00.000Z',
+          daysSinceFire: 0,
+          activityLastAt: null,
+          daysSinceActivity: null,
+          activitySource: null,
+          activityDetail: null,
+          status: 'firing',
+          expectedMaterialized: true,
+          pauseAcknowledged: false,
+          selectedForEscalation: false,
+        },
+      ],
+      escalations: [],
+    };
+    await DBOS.runStep(() => learningLoopHealthSweepDbosStep(async () => report), {
+      name: 'learning-loop-health-sweep',
+    });
+    expect(state.stepOutputs).toContainEqual({ name: 'learning-loop-health-sweep', output: report });
+
     const source = readFileSync(resolve(__dirname, 'routines-workflow.ts'), 'utf8');
     const stepAt = source.lastIndexOf("await DBOS.runStep(", source.indexOf("{ name: 'learning-loop-health-sweep' }"));
     const stepEnd = source.indexOf("{ name: 'learning-loop-health-sweep' }", stepAt);
@@ -511,9 +548,7 @@ describe('learning-loop-health-sweep — durable operation output', () => {
 
     expect(stepAt).toBeGreaterThan(-1);
     expect(stepEnd).toBeGreaterThan(stepAt);
-    expect(step).toContain('learningLoopHealthSweepWithEvidence');
-    expect(step).toContain('report.escalations');
-    expect(step).toContain('return report;');
+    expect(step).toContain('learningLoopHealthSweepDbosStep');
   });
 });
 

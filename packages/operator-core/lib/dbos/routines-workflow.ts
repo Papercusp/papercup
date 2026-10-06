@@ -88,6 +88,23 @@ const operatorBase = operatorApiBase;
 const ROUTINE_FIRE_WORKFLOW_NAME = 'routineFire';
 let routineFireDbosClient: Promise<DBOSClient> | null = null;
 
+type LearningLoopHealthSweepReport = import('../harness/routines/learning-loop-health-sweep').LearningLoopHealthSweepReport;
+
+/** Return the sweep report from the DBOS step so operation_outputs retains it durably. */
+export async function learningLoopHealthSweepDbosStep(
+  sweep: () => Promise<LearningLoopHealthSweepReport> = async () => {
+    const { learningLoopHealthSweepWithEvidence } = await import('../harness/routines/learning-loop-health-sweep');
+    return learningLoopHealthSweepWithEvidence();
+  },
+): Promise<LearningLoopHealthSweepReport> {
+  const report = await sweep();
+  for (const r of report.escalations) {
+    if (r.outcome === 'debounced') continue;
+    console.warn(`[learning-loop-health] ${r.outcome}: ${r.blueprintId} (${r.status}) — ${r.reason.slice(0, 160)}`);
+  }
+  return report;
+}
+
 function routineFirePrimaryAppVersion(): string {
   return (
     process.env.PAPERCUSP_HOSTED_PROVISIONING_DBOS_APP_VERSION?.trim() ||
@@ -1922,22 +1939,11 @@ async function routinesTickImpl(): Promise<void> {
   // the Learning tab). The Scout/Blender leg sat paused this way for 5 days with a
   // correct, unread verdict the whole time. Same watchdog-sweep house pattern,
   // its own 24h debounce ledger (source 'learning-loop-health').
-  await DBOS.runStep(
-    async () => {
-      const { learningLoopHealthSweepWithEvidence } = await import('../harness/routines/learning-loop-health-sweep');
-      const report = await learningLoopHealthSweepWithEvidence();
-      for (const r of report.escalations) {
-        if (r.outcome === 'debounced') continue;
-        console.warn(`[learning-loop-health] ${r.outcome}: ${r.blueprintId} (${r.status}) — ${r.reason.slice(0, 160)}`);
-      }
-      // DBOS persists runStep return values in operation_outputs. Keep the concrete
-      // workspace and every classifier candidate/outcome with the same durable tick
-      // record so a later investigation can distinguish an empty healthy read from
-      // a wrong-workspace read or a candidate that was classified but not escalated.
-      return report;
-    },
-    { name: 'learning-loop-health-sweep' },
-  );
+  // DBOS persists runStep return values in operation_outputs. Keep the concrete
+  // workspace and every classifier candidate/outcome with the same durable tick
+  // record so a later investigation can distinguish an empty healthy read from
+  // a wrong-workspace read or a candidate that was classified but not escalated.
+  await DBOS.runStep(learningLoopHealthSweepDbosStep, { name: 'learning-loop-health-sweep' });
 
   // EI-19342686127995790: the INTERPRETER for the new-file tsc reds the baseline gate
   // observes on its hot path. The gate recomputes that finding ~9x/hour (every agent's
