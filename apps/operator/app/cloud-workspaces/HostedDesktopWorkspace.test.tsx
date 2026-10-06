@@ -57,6 +57,8 @@ function Workspace(props: Partial<HostedDesktopWorkspaceProps>) {
   const [selectedDesktop, onSelectDesktop] = useState<DesktopSelection | null>(
     null,
   );
+  const [pinned, onPinnedChange] = useState<string[]>([]);
+  const [filter, onFilterChange] = useState("");
   return (
     <HostedDesktopWorkspace
       hostName="Research workspace"
@@ -78,6 +80,10 @@ function Workspace(props: Partial<HostedDesktopWorkspaceProps>) {
       viewerState={null}
       onSelectDesktop={onSelectDesktop}
       onViewerStateChange={() => {}}
+      pinned={pinned}
+      onPinnedChange={onPinnedChange}
+      filter={filter}
+      onFilterChange={onFilterChange}
       {...props}
     />
   );
@@ -184,6 +190,48 @@ describe("<HostedDesktopWorkspace>", () => {
     expect(
       screen.getByText("No desktop activity has been reported yet."),
     ).toBeTruthy();
+  });
+
+  it("labels each tile with its owning agent and that agent's work-item (P-006)", () => {
+    render(
+      <Workspace
+        roster={[
+          {
+            desktopSessionId: "desk-a",
+            state: "running",
+            scope: "agent",
+            owner: "su-1a2b",
+            name: "browser",
+            workItemId: "WI-12",
+            workItemIntent: "build the grid",
+          },
+          { desktopSessionId: "desk-p", state: "running", scope: "pot", owner: "research" },
+          { desktopSessionId: "desk-w", state: "running", scope: "workspace" },
+        ]}
+      />,
+    );
+    const agent = screen.getByRole("button", { name: "Watch browser" });
+    expect(within(agent).getByText("Agent su-1a2b")).toBeTruthy();
+    expect(within(agent).getByText("WI-12 · build the grid")).toBeTruthy();
+    expect(screen.getByText("Pot research")).toBeTruthy();
+    expect(screen.getByText("Workspace desktop")).toBeTruthy();
+  });
+
+  it("streams pinned tiles live in watch-only mode beside the large viewer", () => {
+    render(<Workspace />);
+    fireEvent.click(screen.getByRole("button", { name: "Pin Display 2 live" }));
+    const pinnedLive = screen.getByRole("region", { name: "Live desk-2" });
+    expect(pinnedLive.getAttribute("data-mode")).toBe("watch");
+    // A pinned tile never offers take-over in place; that lives in the large viewer.
+    expect(
+      (within(pinnedLive).getByRole("button", { name: "Take control" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Watch Display 1" }));
+    expect(screen.getByRole("region", { name: "Live desk-1" })).toBeTruthy();
+    expect(screen.getByRole("region", { name: "Live desk-2" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Unpin Display 2" }));
+    expect(screen.queryByRole("region", { name: "Live desk-2" })).toBeNull();
   });
 
   it.each([

@@ -29,6 +29,12 @@ export interface HostedDesktopRosterEntry {
   displayNumber?: number;
   geometry?: string;
   lastActiveAt?: string;
+  /** P-006 / D-009: who the desktop belongs to and what its owner is on now. */
+  scope?: "pot" | "agent" | "workspace";
+  owner?: string;
+  name?: string;
+  workItemId?: string;
+  workItemIntent?: string;
 }
 
 export interface HostedDesktopThumbnailResult {
@@ -83,6 +89,14 @@ function roster(value: unknown): HostedDesktopRosterEntry[] {
     const displayNumber = safeInteger(item?.displayNumber);
     const geometry = nonEmptyString(item?.geometry);
     const lastActiveAt = nonEmptyString(item?.lastActiveAt);
+    const scope =
+      item?.scope === "pot" || item?.scope === "agent" || item?.scope === "workspace"
+        ? item.scope
+        : null;
+    const owner = nonEmptyString(item?.owner);
+    const name = nonEmptyString(item?.name);
+    const workItemId = nonEmptyString(item?.workItemId);
+    const workItemIntent = nonEmptyString(item?.workItemIntent);
     return [
       {
         desktopSessionId,
@@ -92,6 +106,11 @@ function roster(value: unknown): HostedDesktopRosterEntry[] {
           : {}),
         ...(geometry ? { geometry } : {}),
         ...(lastActiveAt ? { lastActiveAt } : {}),
+        ...(scope ? { scope } : {}),
+        ...(owner ? { owner } : {}),
+        ...(name ? { name } : {}),
+        ...(workItemId ? { workItemId } : {}),
+        ...(workItemId && workItemIntent ? { workItemIntent } : {}),
       },
     ];
   });
