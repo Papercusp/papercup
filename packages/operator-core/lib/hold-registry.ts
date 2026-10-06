@@ -243,7 +243,14 @@ function str(value: unknown): string | null {
   return typeof value === 'string' && value.trim().length > 0 ? value : null;
 }
 
-/** An active, strict, answerable human ask: the precondition the needs-human entry registers. */
+/**
+ * An active, strict, answerable human ask: the precondition the needs-human entry registers, and
+ * the ONE predicate every needs-human writer applies (D-029). It is the structured owner ask that
+ * agent-review-policy readStructuredOwnerAsk reads (question = summary, asker = createdBy,
+ * askedAt = a parseable createdAt, unblockedBy = nextVerb, a strict owner capability) PLUS a
+ * nonblank defaultIfUnanswered, which is what makes it answerable: the owner can see what happens
+ * if they never reply. All of it must hold on the SAME blocker.
+ */
 export function hasActiveStrictHumanAsk(payload: unknown): boolean {
   const blockers = obj(payload)?.externalBlockers;
   if (!Array.isArray(blockers)) return false;
@@ -254,6 +261,11 @@ export function hasActiveStrictHumanAsk(payload: unknown): boolean {
       b.status === 'active' &&
       b.kind === 'human' &&
       OWNER_CAPABILITIES.has(b.capability as ExternalBlockerCapability) &&
+      str(b.summary) !== null &&
+      str(b.createdBy) !== null &&
+      str(b.nextVerb) !== null &&
+      typeof b.createdAt === 'string' &&
+      Number.isFinite(Date.parse(b.createdAt)) &&
       str(b.defaultIfUnanswered) !== null
     );
   });
