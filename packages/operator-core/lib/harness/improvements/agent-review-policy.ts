@@ -97,7 +97,14 @@ export const IMPLEMENTATION_ACCEPTANCE_CONTRACT_VERSION = 'implementation-accept
  * authority. Duplicate admission, severity/security tagging, explicit assignment
  * and confidence are deliberately absent: none of them is acceptance authority.
  */
-export const IMPLEMENTATION_ACCEPTANCE_POLICIES = ['trusted-tool-failure-promotion'] as const;
+export const IMPLEMENTATION_ACCEPTANCE_POLICIES = ['trusted-tool-failure-promotion', 'completion-verification'] as const;
+/**
+ * P-007 Phase C (D-028): the policy that admits a completion verification task. Valid
+ * ONLY on a row whose own verification block is a `completion` check of the same subject
+ * the contract names: what is to be verified is fully determined by the subject's
+ * recorded completion, so no reviewer judgment is replaced.
+ */
+export const COMPLETION_VERIFICATION_POLICY = 'completion-verification' as const;
 export type ImplementationAcceptancePolicy = (typeof IMPLEMENTATION_ACCEPTANCE_POLICIES)[number];
 
 export type ImplementationAcceptanceAuthority =
@@ -128,7 +135,9 @@ export function candidateStageCheckForKind(kind: string): CandidateStageCheck {
 
 export type ImplementationAcceptanceVerification =
   | { check: 'reproduction'; receipt: BugReproductionReceipt }
-  | { check: 'proposal-review' };
+  | { check: 'proposal-review' }
+  /** P-007 Phase C (D-028): a completion verification task, admitted by policy. */
+  | { check: 'completion'; subject: string };
 
 export interface ImplementationAcceptanceContract extends ImplementationAcceptanceProposal {
   contractVersion: typeof IMPLEMENTATION_ACCEPTANCE_CONTRACT_VERSION;
@@ -406,7 +415,7 @@ export function evaluateImplementationAcceptance(
     return { state: 'stale-revision', missing: [], acceptedRevision, currentRevision };
   }
   // A matching revision means `source` was supplied, so its kind is the judged kind.
-  const verification = acceptanceVerificationFor(acceptance, (source as ImplementationAcceptanceSource).kind);
+  const verification = acceptanceVerificationFor(acceptance, (source as ImplementationAcceptanceSource).kind, payload);
   if (!verification) {
     return { state: 'incomplete', missing: ['verification'], acceptedRevision, currentRevision };
   }
@@ -428,18 +437,36 @@ export function evaluateImplementationAcceptance(
  * receipt that would still parse today. A change, feature or task qualifies
  * through proposal review, which is agent-review authority; contracts sealed
  * before P-006 carry no `verification` marker but already name that authority.
+ * P-007 Phase C (D-028): a non-bug row also qualifies under the completion policy,
+ * but only when the row itself is a completion verification task for the subject
+ * the contract names.
  */
 function acceptanceVerificationFor(
   acceptance: Record<string, unknown>,
   kind: string,
+  payload: unknown,
 ): ImplementationAcceptanceVerification | null {
+  const recorded = record(acceptance.verification);
   if (candidateStageCheckForKind(kind) === 'reproduction') {
-    const recorded = record(acceptance.verification);
     if (recorded.check !== 'reproduction') return null;
     const receipt = readBugReproductionReceipt(recorded.receipt);
     return receipt ? { check: 'reproduction', receipt } : null;
   }
-  return record(acceptance.authority).kind === 'agent-review' ? { check: 'proposal-review' } : null;
+  const authority = record(acceptance.authority);
+  if (authority.kind === 'agent-review') return { check: 'proposal-review' };
+  if (authority.kind === 'policy' && authority.policy === COMPLETION_VERIFICATION_POLICY) {
+    const subject = completionVerificationSubject(payload);
+    return subject && recorded.check === 'completion' && recorded.subject === subject
+      ? { check: 'completion', subject }
+      : null;
+  }
+  return null;
+}
+
+/** The subject a row verifies, when the row is a current-version completion verification task. */
+export function completionVerificationSubject(payload: unknown): string | null {
+  const task = readVerificationTask(payload);
+  return task?.check === 'completion' ? task.subject : null;
 }
 
 export type SealImplementationAcceptanceResult =
@@ -465,6 +492,11 @@ export function sealImplementationAcceptance(input: {
   acceptedAt?: string;
   /** Required when `source.kind` is a bug: the receipt the reviewer or the filer recorded. */
   reproduction?: unknown;
+  /**
+   * P-007 Phase C (D-028): the payload of the row being sealed. The completion policy is
+   * valid only when it carries a current `completion` verification block.
+   */
+  rowPayload?: unknown;
 }): SealImplementationAcceptanceResult {
   const proposal = record(input.proposal);
   const missing: ImplementationAcceptanceField[] = [];
@@ -480,9 +512,13 @@ export function sealImplementationAcceptance(input: {
     const receipt = readBugReproductionReceipt(input.reproduction);
     if (!receipt) return { ok: false, refusal: 'reproduction-missing' };
     verification = { check: 'reproduction', receipt };
-  } else {
-    if (input.authority.kind !== 'agent-review') return { ok: false, refusal: 'proposal-review-missing' };
+  } else if (input.authority.kind === 'agent-review') {
     verification = { check: 'proposal-review' };
+  } else {
+    const subject =
+      input.authority.policy === COMPLETION_VERIFICATION_POLICY ? completionVerificationSubject(input.rowPayload) : null;
+    if (!subject) return { ok: false, refusal: 'proposal-review-missing' };
+    verification = { check: 'completion', subject };
   }
   const authority: ImplementationAcceptanceAuthority =
     input.authority.kind === 'agent-review'
@@ -738,7 +774,20 @@ export function implementationAcceptanceStateSql(sql: OrgSql, columns: WorkItemI
     sql`(COALESCE(${payload}, '{}'::jsonb) -> 'implementationReadiness')`,
     acceptanceSourceRevisionSql(sql, columns),
     sql.unsafe(columns.itemKind ?? 'item_kind'),
+    completionVerificationSubjectSql(sql, payload),
   );
+}
+
+/** SQL twin of `completionVerificationSubject`: the subject, or NULL when the row is not a completion task. */
+export function completionVerificationSubjectSql(sql: OrgSql, payload: postgres.Fragment) {
+  const verification = sql`(COALESCE(${payload}, '{}'::jsonb) -> 'verification')`;
+  return sql`(CASE
+    WHEN ${verification} ->> 'schemaVersion' = ${VERIFICATION_TASK_SCHEMA_VERSION}
+      AND ${verification} ->> 'check' = 'completion'
+      AND jsonb_typeof(${verification} -> 'subject') = 'string'
+      AND btrim(${verification} ->> 'subject') <> ''
+    THEN btrim(${verification} ->> 'subject')
+  END)`;
 }
 
 /**
