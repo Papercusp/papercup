@@ -254,6 +254,35 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
     expect(classifyToolError('handler_error', 'error', '{"ok":false,"error":"flush-required-ish"}')).toBe('structural');
   });
 
+  it('classifies the nested tools:invoke missing scratch evidence-class refusal as caller', () => {
+    // capability:read returns this expected selection refusal as a JSON `reason`;
+    // tools:invoke preserves the payload but the outer invocation row is handler_error.
+    const nestedRefusal =
+      '{"ok":false,"reason":"evidence_class_not_found","message":"scratch reference has no work-item evidence."}';
+    expect(classifyToolError('handler_error', 'error', nestedRefusal)).toBe('caller');
+    expect(classifyToolError('handler_error', 'error', '{"ok":false,"reason":"unrelated_refusal"}'))
+      .toBe('structural');
+  });
+
+  it('classifies nested tenant-scope reader refusals as caller', () => {
+    // dev:pg_query returns these deliberate scope guards as structured refusals.
+    // tools:invoke wraps them in handler_error, so the serialized reason must
+    // keep them out of the structural auto-implement lane too.
+    for (const reason of ['tenant_scope_required', 'positive_control_tenant_scope_required']) {
+      expect(classifyToolError(reason, 'error', 'tenant-scoped read required')).toBe('caller');
+      expect(classifyToolError(
+        'handler_error',
+        'error',
+        JSON.stringify({ error: 'tenant-scoped read required', reason }),
+      )).toBe('caller');
+    }
+    expect(classifyToolError(
+      'handler_error',
+      'error',
+      JSON.stringify({ error: 'unrelated refusal', reason: 'workspace_scope_required' }),
+    )).toBe('structural');
+  });
+
   it('classifies an expected missing rubric reference as caller input, not a tool bug', () => {
     expect(classifyToolError('rubric-not-found', 'error', 'rubric not found')).toBe('caller');
     // The classification is code-specific; an unrelated tool failure with the

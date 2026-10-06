@@ -83,7 +83,8 @@ export const TIMEOUT_MESSAGE_PATTERN =
  *  including the `invalid_input: invalid_args:` wrapper from a nested
  *  `tools:invoke` refusal,
  *  the intentional scratch-reference line-window size refusal
- *  (scratch_line_window_too_large),
+ *  (scratch_line_window_too_large), or the explicitly caller-side JSON reasons
+ *  for absent scratch evidence and missing tenant-scope controls,
  *  the checkpoint replacement safety refusal that requires explicit retirement
  *  of carried safety rows,
  *  an explicit compaction flush-gate refusal that requires a checkpoint,
@@ -96,7 +97,7 @@ export const TIMEOUT_MESSAGE_PATTERN =
  *  workspace-scoping gap is treated as `structural` (a wiring gap worth catching
  *  at the low bar), and the fingerprint separates it from anything it used to mask. */
 export const CALLER_MESSAGE_PATTERN =
-  '^missing_capability:|^invalid_input: *invalid_args:|^invalid_args:|^reviewer_model_not_allowed:|scratch_line_window_too_large|checkpoint_replace_would_drop_rows|"error":"flush-required"|No harness specified|not registered in (any workspace|harness_shared)|resolvePlanScope:.*is not a Hive home|no sandbox desktop is leased|acceptance BAR contract is not ready for vetting|predicate_shape_mismatch:';
+  '^missing_capability:|^invalid_input: *invalid_args:|^invalid_args:|^reviewer_model_not_allowed:|scratch_line_window_too_large|"reason":"(evidence_class_not_found|tenant_scope_required|positive_control_tenant_scope_required)"|checkpoint_replace_would_drop_rows|"error":"flush-required"|No harness specified|not registered in (any workspace|harness_shared)|resolvePlanScope:.*is not a Hive home|no sandbox desktop is leased|acceptance BAR contract is not ready for vetting|predicate_shape_mismatch:';
 
 /** An EXTERNAL provider rate-limit / quota (OpenAI embedding TPM 429,
  *  "Rate limit reached", surfaced as `openai_embed_failed_429`). CAPACITY, not a
@@ -149,7 +150,8 @@ export const TOOL_ERROR_RULES: readonly ToolErrorRule[] = [
       'invalid_args', 'invalid_input', 'role_not_allowed', 'missing_capability',
       'quota_exceeded', 'harness_required', 'checkpoint_replace_would_drop_rows',
       'flush-required', 'rubric-not-found', 'reviewer_model_not_allowed',
-      'dynamic_import_unsupported', 'mcp_auth_failed',
+      'dynamic_import_unsupported', 'mcp_auth_failed', 'evidence_class_not_found',
+      'tenant_scope_required', 'positive_control_tenant_scope_required',
     ],
     statuses: ['role-not-allowed'],
     messagePattern: CALLER_MESSAGE_PATTERN,
