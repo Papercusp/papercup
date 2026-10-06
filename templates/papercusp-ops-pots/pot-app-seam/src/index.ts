@@ -157,6 +157,14 @@ export interface BlueprintOperationDraft<TInput extends JsonObject = JsonObject>
   /** Stable replay identity. Reusing it with different input must be refused by the host. */
   readonly requestKey: string;
   readonly input: TInput;
+  /**
+   * Content for the worker that must NOT enter the durable work-item payload (e.g. a
+   * call transcript the app deletes on its own schedule). Only for an operation that
+   * declares `privateInputSchema`; the host stores it outside the item, only the
+   * item's current holder can read it, and it is deleted once the item is terminal.
+   * Reusing the request key with different private input is refused.
+   */
+  readonly privateInput?: JsonValue;
   readonly title?: string;
   readonly summary?: string;
 }
@@ -280,8 +288,11 @@ function assertNonEmpty(value: string, label: string): void {
 function stableJson(value: JsonValue): string {
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map((v) => stableJson(v)).join(',')}]`;
-  const keys = Object.keys(value).sort();
-  return `{${keys.map((k) => `${JSON.stringify(k)}:${stableJson(value[k])}`).join(',')}}`;
+  // Entries, not keys + index: the value travels with its key, so consumers
+  // compiling under noUncheckedIndexedAccess (Phone's sidecar) accept it.
+  // The comparator is the default sort's UTF-16 code-unit order.
+  const entries = Object.entries(value).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${stableJson(v)}`).join(',')}}`;
 }
 
 function fingerprintPots(pots: readonly PotSpec[]): string {
@@ -384,6 +395,7 @@ export function blueprintOperationHostFromInvoker(invoke: BlueprintToolInvoke): 
         operationId: draft.operationId,
         requestKey: draft.requestKey,
         input: draft.input,
+        ...(draft.privateInput === undefined ? {} : { privateInput: draft.privateInput }),
         ...(draft.title === undefined ? {} : { title: draft.title }),
         ...(draft.summary === undefined ? {} : { summary: draft.summary }),
       }), T.submit, ['handle']);
