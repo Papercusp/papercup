@@ -17,7 +17,12 @@
  * hashes, option order, probabilities, subject ids — never the judged text.
  */
 import { getOrgPg } from '@papercusp/db-org';
-import { toDecisionLedgerEntry, type DecisionCallRecord, type DecisionPricing } from '@papercusp/decision-model';
+import {
+  toDecisionLedgerEntry,
+  type DecisionCallRecord,
+  type DecisionLedgerEntry,
+  type DecisionPricing,
+} from '@papercusp/decision-model';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { activeWorkspaceId } from './workspace-registry';
 
@@ -68,8 +73,15 @@ export async function recordDecisionModelCall(
   record: DecisionCallRecord,
   options: RecordDecisionModelCallOptions = {},
 ): Promise<boolean> {
+  return recordDecisionModelLedgerEntry(toDecisionLedgerEntry(record, { pricing: options.pricing }), options);
+}
+
+/** Persist an already sanitized ledger entry received across a worker boundary. */
+export async function recordDecisionModelLedgerEntry(
+  e: DecisionLedgerEntry,
+  options: Pick<RecordDecisionModelCallOptions, 'workspaceId'> = {},
+): Promise<boolean> {
   try {
-    const e = toDecisionLedgerEntry(record, { pricing: options.pricing });
     const workspaceId = options.workspaceId ?? activeWorkspaceId();
     const { sql } = getOrgPg();
     await sql`

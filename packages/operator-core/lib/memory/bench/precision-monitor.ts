@@ -25,10 +25,13 @@ import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import { memoryHost, type MemoryCredentials } from '@papercusp/memory';
+import type { DecisionLedgerEntry } from '@papercusp/decision-model';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
+import { recordDecisionModelLedgerEntry } from '../../decision-model-ledger';
 import { collectChildOutput } from '../../child-output';
-import { resolveJevMemoryInjection } from '../jev-settings';
+import { alertOwnerOnJevAccountRefusal } from '../jev-account-alert';
+import { readJevApiKey, resolveJevMemoryInjection } from '../jev-settings';
 import {
   recordMemoryPrecisionAttempt,
   recordMemoryPrecisionRun,
@@ -41,7 +44,13 @@ import {
 import { evaluateRecallDrop, BASELINE_HISTORY_WINDOW, type PriorRun, type RecallDropEvaluation } from './precision-alert';
 import { fileRecallDropEi, resolveRecallDropEi } from './precision-alert-ei';
 import { tsxBin } from '../../harness-paths';
-import { PRECISION_BENCH_JEV_GATE_ENV, PRECISION_BENCH_RESULT_MARKER } from './precision-bench-core';
+import {
+  PRECISION_BENCH_JEV_API_KEY_ENV,
+  PRECISION_BENCH_JEV_GATE_ENV,
+  PRECISION_BENCH_JEV_LEDGER_MARKER,
+  PRECISION_BENCH_RESULT_MARKER,
+  PRECISION_BENCH_WORKSPACE_ID_ENV,
+} from './precision-bench-core';
 import { PRECISION_BENCH_EMBEDDER_MODE_ENV } from './precision-bench-host';
 
 export { PRECISION_BENCH_EMBEDDER_MODE_ENV };
@@ -53,6 +62,9 @@ export {
   jevGatedShape,
   PRECISION_BENCH_JEV_CONSUMER,
   PRECISION_BENCH_JEV_GATE_ENV,
+  PRECISION_BENCH_JEV_API_KEY_ENV,
+  PRECISION_BENCH_WORKSPACE_ID_ENV,
+  PRECISION_BENCH_JEV_LEDGER_MARKER,
   PRECISION_BENCH_RESULT_MARKER,
 } from './precision-bench-core';
 export type { JevGateFn, JevGateReplayStats } from './precision-bench-core';
@@ -163,6 +175,44 @@ export function parsePrecisionBenchWorkerOutput(stdout: string): MemoryPrecision
   }
 }
 
+/** Parse only sanitized ledger projections written by the worker's marker protocol. */
+export function parsePrecisionBenchWorkerLedgerEntries(stdout: string): DecisionLedgerEntry[] {
+  return stdout
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith(PRECISION_BENCH_JEV_LEDGER_MARKER))
+    .map((line) => {
+      const json = line.slice(PRECISION_BENCH_JEV_LEDGER_MARKER.length);
+      try {
+        const parsed = JSON.parse(json) as Omit<DecisionLedgerEntry, 'startedAt'> & { startedAt: string };
+        const startedAt = new Date(parsed.startedAt);
+        if (!Number.isFinite(startedAt.getTime())) throw new Error('invalid startedAt');
+        return { ...parsed, startedAt };
+      } catch (error) {
+        throw new Error(`precision bench worker returned invalid ledger JSON: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    });
+}
+
+/** Apply worker ledger records on the host, where database writes and owner alerts live. */
+export async function persistPrecisionBenchWorkerLedgerEntries(
+  entries: readonly DecisionLedgerEntry[],
+  workspaceId: string,
+  deps: {
+    record?: typeof recordDecisionModelLedgerEntry;
+    alert?: typeof alertOwnerOnJevAccountRefusal;
+    log?: (message: string) => void;
+  } = {},
+): Promise<void> {
+  await Promise.all(entries.map(async (entry) => {
+    await (deps.record ?? recordDecisionModelLedgerEntry)(entry, { workspaceId });
+    try {
+      await (deps.alert ?? alertOwnerOnJevAccountRefusal)(entry, { workspaceId: () => workspaceId });
+    } catch (error) {
+      (deps.log ?? console.warn)(`[jev-account-alert] owner notification failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }));
+}
+
 /**
  * Run the precision bench in a fresh process. The memory package's configure/client
  * state is process-global, so scheduled inline execution can retarget the operator;
@@ -172,29 +222,43 @@ export async function runBenchInWorker(opts: {
   spawnProcess?: typeof spawn;
   timeoutMs?: number;
   jevGate?: boolean;
+  /** Parent-resolved workspace for the worker's Jev gate and host-side ledger writes. */
+  workspaceId?: string;
   /** Resolved in the parent, whose memory host carries the live embedder cascade. */
   embedderMode?: string;
   /** Test seam for the parent's stored extraction and embedding credentials. */
   resolveWorkerCredentials?: () => Promise<MemoryCredentials>;
+  /** Test seam for the separately stored TypeSafe key; read only for effective On. */
+  resolveWorkerJevApiKey?: () => Promise<string | null>;
 } = {}): Promise<MemoryPrecisionMetrics> {
   const spawnProcess = opts.spawnProcess ?? spawn;
   const timeoutMs = opts.timeoutMs ?? DEFAULT_WORKER_TIMEOUT_MS;
   let child: ChildProcess;
   try {
-    const host = memoryHost();
-    const [embedderMode, credentials] = await Promise.all([
-      opts.embedderMode === undefined ? host.resolveEmbedder().then(({ mode }) => mode) : Promise.resolve(opts.embedderMode),
-      opts.resolveWorkerCredentials ? opts.resolveWorkerCredentials() : host.getCredentials(),
+    const host = opts.embedderMode === undefined || !opts.resolveWorkerCredentials ? memoryHost() : undefined;
+    const [embedderMode, credentials, jevApiKey] = await Promise.all([
+      opts.embedderMode === undefined ? host!.resolveEmbedder().then(({ mode }) => mode) : Promise.resolve(opts.embedderMode),
+      opts.resolveWorkerCredentials ? opts.resolveWorkerCredentials() : host!.getCredentials(),
+      opts.jevGate ? (opts.resolveWorkerJevApiKey ?? readJevApiKey)() : Promise.resolve(null),
     ]);
+    const useJevGate = opts.jevGate === true && typeof jevApiKey === 'string' && jevApiKey.length > 0;
+    if (useJevGate && !opts.workspaceId) throw new Error('precision bench Jev gate requires the parent-resolved workspace id');
     const worker = precisionBenchWorkerInvocation(PRECISION_BENCH_WORKER);
     const env: NodeJS.ProcessEnv = {
       ...process.env,
       // Set explicitly either way, so an inherited value can never gate a floor-only run.
-      [PRECISION_BENCH_JEV_GATE_ENV]: opts.jevGate ? '1' : '0',
+      [PRECISION_BENCH_JEV_GATE_ENV]: useJevGate ? '1' : '0',
       [PRECISION_BENCH_EMBEDDER_MODE_ENV]: String(embedderMode),
     };
+    delete env[PRECISION_BENCH_JEV_API_KEY_ENV];
+    delete env[PRECISION_BENCH_WORKSPACE_ID_ENV];
+    delete env.TYPESAFE_API_KEY;
     if (credentials.openai_api_key !== undefined) env.OPENAI_API_KEY = credentials.openai_api_key;
     if (credentials.anthropic_api_key !== undefined) env.ANTHROPIC_API_KEY = credentials.anthropic_api_key;
+    if (useJevGate) {
+      env[PRECISION_BENCH_JEV_API_KEY_ENV] = jevApiKey!;
+      env[PRECISION_BENCH_WORKSPACE_ID_ENV] = opts.workspaceId;
+    }
     child = spawnProcess(worker.command, worker.args, {
       cwd: process.cwd(),
       env,
@@ -209,23 +273,37 @@ export async function runBenchInWorker(opts: {
     // 'data' events must not decode to replacement chars (WI-6728).
     const { stdout, stderr } = collectChildOutput(child);
     let settled = false;
+    let timeoutTriggered = false;
+    let childError: Error | null = null;
+    let forceKillTimer: ReturnType<typeof setTimeout> | undefined;
     const timer = setTimeout(() => {
       if (settled) return;
-      settled = true;
+      timeoutTriggered = true;
       try {
         child.kill('SIGTERM');
       } catch {
         /* the child may already have exited */
       }
-      reject(new Error(`precision bench worker timed out after ${timeoutMs}ms`));
+      forceKillTimer = setTimeout(() => {
+        if (settled) return;
+        try {
+          child.kill('SIGKILL');
+        } catch {
+          /* the child may already have exited */
+        }
+      }, 1_000);
+      forceKillTimer.unref?.();
     }, timeoutMs);
     timer.unref?.();
 
     const fail = (error: Error): void => {
       if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      reject(error);
+      childError = error;
+      try {
+        child.kill('SIGTERM');
+      } catch {
+        /* the child may already have exited */
+      }
     };
 
     child.once('error', (error) => fail(error instanceof Error ? error : new Error(String(error))));
@@ -233,20 +311,37 @@ export async function runBenchInWorker(opts: {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      if (code !== 0) {
-        reject(
-          new Error(
-            `precision bench worker exited with code ${code ?? 'null'}${signal ? ` (${signal})` : ''}` +
-              (stderr.text().trim() ? `: ${stderr.text().trim().slice(-1_000)}` : ''),
-          ),
-        );
-        return;
-      }
-      try {
-        resolve(parsePrecisionBenchWorkerOutput(stdout.text()));
-      } catch (error) {
-        reject(error);
-      }
+      if (forceKillTimer) clearTimeout(forceKillTimer);
+      void (async () => {
+        try {
+          const output = stdout.text();
+          const ledgerEntries = parsePrecisionBenchWorkerLedgerEntries(output);
+          if (ledgerEntries.length > 0) {
+            if (!opts.workspaceId) throw new Error('precision bench worker emitted ledger entries without a workspace id');
+            await persistPrecisionBenchWorkerLedgerEntries(ledgerEntries, opts.workspaceId);
+          }
+          if (timeoutTriggered) {
+            reject(new Error(`precision bench worker timed out after ${timeoutMs}ms`));
+            return;
+          }
+          if (childError) {
+            reject(childError);
+            return;
+          }
+          if (code !== 0) {
+            reject(
+              new Error(
+                `precision bench worker exited with code ${code ?? 'null'}${signal ? ` (${signal})` : ''}` +
+                  (stderr.text().trim() ? `: ${stderr.text().trim().slice(-1_000)}` : ''),
+              ),
+            );
+            return;
+          }
+          resolve(parsePrecisionBenchWorkerOutput(output));
+        } catch (error) {
+          reject(error);
+        }
+      })();
     });
   });
 }
@@ -310,7 +405,7 @@ export async function runMemoryPrecisionMonitor(
 
   let metrics: MemoryPrecisionMetrics;
   try {
-    const run = deps.runBench ?? deps.runBenchWorker ?? ((o: PrecisionBenchRunOptions) => runBenchInWorker({ jevGate: o.jevGate }));
+    const run = deps.runBench ?? deps.runBenchWorker ?? ((o: PrecisionBenchRunOptions) => runBenchInWorker({ jevGate: o.jevGate, workspaceId: input.workspaceId }));
     metrics = await run({ jevGate });
   } catch (e) {
     const error = e instanceof Error ? e.message : String(e);

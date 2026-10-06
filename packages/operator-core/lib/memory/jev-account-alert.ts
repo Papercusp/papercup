@@ -20,7 +20,7 @@
  * the network, not something the owner fixes in an account console, and they
  * have their own measurement (EI-24748208098755918).
  */
-import type { DecisionCallRecord } from '@papercusp/decision-model';
+import type { DecisionCallRecord, DecisionLedgerEntry } from '@papercusp/decision-model';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { notifyAttentionOnce, type ReplaySafeAttentionNotifyInput } from '../attention-notify';
 import { activeWorkspaceId } from '../workspace-registry';
@@ -52,10 +52,15 @@ export interface JevAccountAlert {
  * Only a real provider response counts (status present): a call the client
  * answered itself while suspended after a 402 carries no status.
  */
-export function jevAccountAlertFor(record: DecisionCallRecord, workspaceId: string, nowMs: number): JevAccountAlert | null {
-  const outcome = record.outcome;
-  if (outcome.kind !== 'inconclusive' || outcome.status === undefined) return null;
-  const reason = outcome.reason;
+export function jevAccountAlertFor(record: DecisionCallRecord | DecisionLedgerEntry, workspaceId: string, nowMs: number): JevAccountAlert | null {
+  const rawCall = 'request' in record;
+  const reason = rawCall
+    ? record.outcome.kind === 'inconclusive' ? record.outcome.reason : null
+    : record.outcome === 'inconclusive' ? record.inconclusiveReason : null;
+  const status = rawCall
+    ? record.outcome.kind === 'inconclusive' ? record.outcome.status : undefined
+    : record.httpStatus ?? undefined;
+  if (status === undefined || status === null || reason === null) return null;
   if (reason !== 'payment-required' && reason !== 'unauthorized') return null;
   const day = new Date(nowMs).toISOString().slice(0, 10);
   const spec = OWNER_ACTION[reason];
@@ -64,7 +69,7 @@ export function jevAccountAlertFor(record: DecisionCallRecord, workspaceId: stri
     reason,
     title: spec.title,
     body:
-      `Provider ${record.provider} returned HTTP ${outcome.status} (${reason}) at ${new Date(nowMs).toISOString()} ` +
+      `Provider ${record.provider} returned HTTP ${status} (${reason}) at ${new Date(nowMs).toISOString()} ` +
       `for a ${record.consumer ?? 'unlabelled'} call. ${spec.action} ` +
       `Check: decision_model_calls rows with inconclusive_reason IS NULL resume once it is fixed.`,
   };
@@ -85,7 +90,7 @@ const state = pinModuleState('@papercusp/operator-core.jev-account-alert', () =>
  * refusal retries.
  */
 export async function alertOwnerOnJevAccountRefusal(
-  record: DecisionCallRecord,
+  record: DecisionCallRecord | DecisionLedgerEntry,
   deps: Partial<JevAccountAlertDeps> = {},
 ): Promise<boolean> {
   const workspaceId = (deps.workspaceId ?? activeWorkspaceId)();

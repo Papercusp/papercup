@@ -8,7 +8,17 @@
 import { createHash } from 'node:crypto';
 
 import type { Cache } from '@papercusp/cache';
-import { JEV_PINNED_MODEL, type DecisionClient } from '@papercusp/decision-model';
+import {
+  createDecisionClient,
+  createJevProvider,
+  JEV_PINNED_MODEL,
+  toDecisionLedgerEntry,
+  type DecisionCallRecord,
+  type DecisionClient,
+  type DecisionLedgerEntry,
+  type DecisionPricing,
+  type FetchLike,
+} from '@papercusp/decision-model';
 
 import { judgeAdmission, type AdmissionDecide, type AdmissionEncoding, type AdmissionVariant } from './jev-admission-request';
 import type { JevFunnelEntry } from './recall-stats';
@@ -32,6 +42,16 @@ export const JEV_MEMORY_RESPONSE_MARGIN_MS = 250;
 
 /** Maximum duration of one Jev decision call on the memory path. */
 export const JEV_MEMORY_TIMEOUT_MS = 800;
+
+/**
+ * Token rates for the pinned Jev model, so every ledger row carries `cost_usd`.
+ * Source: the OpenRouter listing for typesafe/jev-1.13 (checked 2026-09-30):
+ * $0.042 per million input tokens, output tokens free. Re-check on model-pin changes.
+ */
+export const JEV_PRICING: DecisionPricing = {
+  inputUsdPerMillionTokens: 0.042,
+  outputUsdPerMillionTokens: 0,
+};
 
 /** How long an answered Jev result is cached for an exact repeat. */
 export const JEV_MEMORY_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
@@ -84,6 +104,25 @@ export interface JevMemoryGateDeps {
   readonly resolve: (workspaceId: string) => Promise<JevMemoryInjectionResolution>;
   readonly client: () => DecisionClient;
   readonly cache?: () => Cache;
+}
+
+/**
+ * Build the Jev client without operator settings, credentials, or ledger storage.
+ * The observer receives only the sanitized ledger projection, never the raw call
+ * record that contains the user's turn and memory text.
+ */
+export function createJevMemoryDecisionClient(options: {
+  readonly apiKey: string;
+  readonly fetch?: FetchLike;
+  readonly onLedgerEntry?: (entry: DecisionLedgerEntry) => void | Promise<void>;
+}): DecisionClient {
+  return createDecisionClient({
+    provider: createJevProvider(),
+    resolveKey: () => options.apiKey,
+    timeoutMs: JEV_MEMORY_TIMEOUT_MS,
+    ...(options.fetch ? { fetch: options.fetch } : {}),
+    onCall: (record: DecisionCallRecord) => options.onLedgerEntry?.(toDecisionLedgerEntry(record, { pricing: JEV_PRICING })),
+  });
 }
 
 /** Where the result is resolved to: production uses `on` only after its parent gate. */

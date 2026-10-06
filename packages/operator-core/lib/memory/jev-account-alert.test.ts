@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { DecisionCallRecord, DecisionOutcome } from '@papercusp/decision-model';
+import { toDecisionLedgerEntry, type DecisionCallRecord, type DecisionOutcome } from '@papercusp/decision-model';
 import {
   __resetJevAccountAlertForTest,
   alertOwnerOnJevAccountRefusal,
@@ -44,6 +44,14 @@ describe('jevAccountAlertFor (WI-10005694)', () => {
     const a = jevAccountAlertFor(refused401, 'ws-1', NOW);
     expect(a).toMatchObject({ reason: 'unauthorized', dedupeKey: 'jev-account-refusal:ws-1:unauthorized:2026-10-02' });
     expect(a!.body).toContain('API key');
+  });
+
+  it('builds the same refusal alert from the sanitized worker ledger entry', () => {
+    const entry = toDecisionLedgerEntry(refused402);
+    expect(jevAccountAlertFor(entry, 'ws-1', NOW)).toMatchObject({
+      reason: 'payment-required',
+      dedupeKey: 'jev-account-refusal:ws-1:payment-required:2026-10-02',
+    });
   });
 
   it('no alert for a suspended no-send call, a timeout, a 5xx, or an answer', () => {

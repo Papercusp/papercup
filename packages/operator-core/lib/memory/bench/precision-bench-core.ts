@@ -14,15 +14,18 @@ import {
   type QueryOutcome,
   type SeedManifest,
 } from '@papercusp/memory/bench';
+import { createCache } from '@papercusp/cache';
 import { pushSearchFloors } from '../push-search-floors';
 import {
   JEV_MEMORY_ADMIT_THRESHOLD,
   JEV_MEMORY_ENCODING,
-  runJevMemoryGate,
+  createJevMemoryDecisionClient,
+  runJevMemoryGateWithDeps,
   type JevMemoryGateInput,
   type JevMemoryGateResult,
-} from '../jev-memory-gate';
-import { ensureJevDecisionClient } from '../jev-settings';
+  type JevMemoryGateDeps,
+} from '../jev-memory-gate-core';
+import type { DecisionLedgerEntry, FetchLike } from '@papercusp/decision-model';
 import { withCandidates } from './jev-admission';
 import { loadCorpusFixture } from './corpus';
 import { loadGoldSetFixture } from './gold-set';
@@ -31,6 +34,9 @@ import type { MemoryPrecisionMetrics } from './precision-read';
 
 export const PRECISION_BENCH_RESULT_MARKER = 'PAPERCUSP_MEMORY_PRECISION_BENCH_RESULT:';
 export const PRECISION_BENCH_JEV_GATE_ENV = 'PAPERCUSP_PRECISION_BENCH_JEV_GATE';
+export const PRECISION_BENCH_JEV_API_KEY_ENV = 'PAPERCUSP_PRECISION_BENCH_JEV_API_KEY';
+export const PRECISION_BENCH_WORKSPACE_ID_ENV = 'PAPERCUSP_PRECISION_BENCH_WORKSPACE_ID';
+export const PRECISION_BENCH_JEV_LEDGER_MARKER = 'PAPERCUSP_MEMORY_PRECISION_BENCH_JEV_LEDGER:';
 export const PRECISION_BENCH_JEV_CONSUMER = 'memory-bench';
 /**
  * A run whose corpus did not FULLY seed measures NOTHING: every gold query then
@@ -90,9 +96,22 @@ export interface JevGateReplayStats {
 
 export type JevGateFn = (input: JevMemoryGateInput) => Promise<JevMemoryGateResult>;
 
-/** The production gate, forced On: the parent already resolved the switch for this run. */
-const productionGate: JevGateFn = (input) =>
-  runJevMemoryGate(input, { resolve: async () => ({ effective: 'on' }), client: ensureJevDecisionClient });
+/** Worker-side gate. The parent has already resolved effective On and supplies its key. */
+export function createPrecisionBenchJevGate(options: {
+  readonly workspaceId: string;
+  readonly apiKey: string;
+  readonly fetch?: FetchLike;
+  readonly onLedgerEntry?: (entry: DecisionLedgerEntry) => void | Promise<void>;
+}): JevGateFn {
+  const client = createJevMemoryDecisionClient(options);
+  const cache = createCache();
+  const deps: JevMemoryGateDeps = {
+    resolve: async () => ({ effective: 'on' }),
+    client: () => client,
+    cache: () => cache,
+  };
+  return (input) => runJevMemoryGateWithDeps({ ...input, workspaceId: options.workspaceId }, deps);
+}
 
 /**
  * The admission-shape tag for a gated row. The model is part of the shape: a
@@ -114,7 +133,7 @@ export function jevGatedShape(fusionMode: string, model: string): string {
 export async function gateReplayWithJev(
   outcomes: readonly QueryOutcome[],
   queryText: ReadonlyMap<string, string>,
-  gate: JevGateFn = productionGate,
+  gate: JevGateFn,
   concurrency = 4,
 ): Promise<{ outcomes: QueryOutcome[]; stats: JevGateReplayStats }> {
   const gated: QueryOutcome[] = [...outcomes];
@@ -225,6 +244,7 @@ export async function benchMemoryPrecision(
     let shape = `fusionMode:${f.fusionMode}`;
     let jevStats: JevGateReplayStats | null = null;
     if (opts.jevGate) {
+      if (!opts.gate) throw new Error('precision bench Jev gate requested without a worker supplied gate');
       const queryText = new Map(gold.queries.map((q) => [q.id, q.query] as const));
       const gated = await gateReplayWithJev(retrieval.perQuery, queryText, opts.gate);
       jevStats = gated.stats;
