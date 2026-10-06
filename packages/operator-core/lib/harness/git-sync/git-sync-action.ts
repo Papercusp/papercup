@@ -1847,6 +1847,11 @@ async function recordContentFixerDispatch(
  *  The separators are ASCII unit/record separators, never NUL: this value is persisted into
  *  routine metadata JSONB, which rejects \u0000, and a NUL here failed every outcome write
  *  (EI-24099226502437988 — origin froze because the bridge leg runs after that write). */
+/** A quarantined importer is a dependency fence, not broken content a fixer can edit. */
+function contentFixerEligibleErrors(contentErrors: readonly ScopedContentError[]): ScopedContentError[] {
+  return contentErrors.filter((contentError) => contentError.detectorKey !== 'quarantined-importer');
+}
+
 function contentFixerSignature(contentErrors: readonly ScopedContentError[]): string {
   return [...new Set(contentErrors.map((c) => `${c.scope}\u001f${c.file}\u001f${c.detectorKey}`))]
     .sort()
@@ -1954,11 +1959,14 @@ async function revalidateContentErrors(
   repoPath: string | null | undefined,
   contentErrors: readonly ScopedContentError[],
 ): Promise<ScopedContentError[]> {
-  if (!repoPath || contentErrors.length === 0) return [...contentErrors];
+  // Keep this temporary commit deferral in GitSyncOutcome, but never escalate or
+  // dispatch it: no edit to the importer can release a live lock on its dependency.
+  const fixerContentErrors = contentFixerEligibleErrors(contentErrors);
+  if (!repoPath || fixerContentErrors.length === 0) return [...fixerContentErrors];
   const detectors = new Map(DEFAULT_CONTENT_DETECTORS.map((detector) => [detector.key, detector]));
   const root = resolve(repoPath);
   const checked = await Promise.all(
-    contentErrors.map(async (contentError) => {
+    fixerContentErrors.map(async (contentError) => {
       const detector = detectors.get(contentError.detectorKey);
       if (!detector) return contentError;
       const repo = resolve(root, contentError.scope === 'superproject' ? '.' : contentError.scope);
@@ -2353,6 +2361,10 @@ async function recordOutcome(
     outcome.bulkExcluded ?? outcome.oversized.filter((f) => f.exclusionReason === 'cumulative-limit')
   ).filter((f) => f.exclusionReason === 'cumulative-limit');
   const oversized = outcome.oversized.filter((f) => f.exclusionReason !== 'cumulative-limit');
+  // Keep every excluded path visible in the public outcome, but only count real
+  // content failures against the fixer budget. A quarantined importer is a
+  // temporary atomicity deferral that clears when its dependency can publish.
+  const fixerContentErrors = contentFixerEligibleErrors(outcome.contentErrors);
   // A local commit can still be valid while the content guard leaves dirty files
   // out of it.  Do not publish that partial success as plain `synced`: the routine
   // headline is the first health signal most callers read.  Keep the precise local
@@ -2425,10 +2437,10 @@ async function recordOutcome(
       consecutive_content_error_ticks: consecutiveContentErrorTicks,
       last_content_errors: outcome.contentErrors.map((c) => `${c.scope}/${c.file} [${c.detectorKey}]`),
       last_content_error_signature:
-        outcome.contentErrors.length > 0 ? contentFixerSignature(outcome.contentErrors) : null,
+        fixerContentErrors.length > 0 ? contentFixerSignature(fixerContentErrors) : null,
       // A measured-clean pass invalidates the prior dispatch identity. This is
       // intentionally in the same outcome write as the clean detector result.
-      ...(outcome.contentErrors.length === 0 ? { last_content_fixer: null } : {}),
+      ...(fixerContentErrors.length === 0 ? { last_content_fixer: null } : {}),
       // WI-1416: a COMPLETED fire resets the consecutive-reap counter the executor
       // reaper increments on each cancel+requeue — so `reaped_count` reads as "reaps
       // since the last completed fire" (the git-sync-stall-watchdog's persistent-reap
@@ -3751,13 +3763,22 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
   // after that lease is released so a fixer that repaired/committed the file
   // during the post-lock window does not become a new work item.
   const revalidatedContentErrors = await revalidateContentErrors(repoPath, outcome.contentErrors);
-  if (revalidatedContentErrors.length !== outcome.contentErrors.length) {
-    outcome = { ...outcome, contentErrors: revalidatedContentErrors };
+  let nextActionableError = 0;
+  const reportedContentErrors = outcome.contentErrors.flatMap((contentError) => {
+    if (contentError.detectorKey === 'quarantined-importer') return [contentError];
+    const current = revalidatedContentErrors[nextActionableError++];
+    return current ? [current] : [];
+  });
+  if (reportedContentErrors.length !== outcome.contentErrors.length) {
+    // Preserve importer deferrals for the partial-sync status and diagnostics;
+    // the separate content-fixer signature below excludes them.
+    outcome = { ...outcome, contentErrors: reportedContentErrors };
   }
   const errTicks = tickErrors.length > 0 ? prev.errTicks + 1 : 0;
   // EI-23989162263803651: the fixer budget belongs to the current offender signature,
   // not the routine-wide streak. A new file/detector set starts its own five-tick budget.
-  const contentSignature = outcome.contentErrors.length > 0 ? contentFixerSignature(outcome.contentErrors) : null;
+  const contentSignature =
+    revalidatedContentErrors.length > 0 ? contentFixerSignature(revalidatedContentErrors) : null;
   const sameContentSignature = contentSignature !== null && contentSignature === prev.contentSignature;
   const prevSignatureContentTicks = sameContentSignature ? prev.contentTicks : 0;
   const contentTicks = contentSignature === null ? 0 : prevSignatureContentTicks + 1;
@@ -7282,7 +7303,10 @@ async function recordAndEscalateTick(a: {
     if (outcome.contentErrors.length > 0) {
       await patchRoutineMetadata(slug, workspaceId, {
         consecutive_content_error_ticks: 0,
-        last_content_errors: [],
+        last_content_errors: outcome.contentErrors.map((contentError) =>
+          `${contentError.scope}/${contentError.file} [${contentError.detectorKey}]`,
+        ),
+        last_content_error_signature: null,
         last_content_fixer: null,
       });
     }
