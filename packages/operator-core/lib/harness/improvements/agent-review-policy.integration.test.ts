@@ -407,6 +407,13 @@ describe('intakeStageClaimFloorSql: one stage predicate, TS twin agrees (P-008 /
     { id: 'review pending holds', payload: { agentReview: review('pending'), implementationReadiness: mirror }, passes: false },
     { id: 'pending holds even with a divergent accepted readiness', payload: { agentReview: review('pending'), implementationReadiness: acceptedReadiness() }, passes: false },
     { id: 'revision requested holds', payload: { agentReview: review('revision-requested'), implementationReadiness: revision }, passes: false },
+    // Pins the revision-requested leg on its own: with a not-ready readiness (the row above) the
+    // readiness floor would hold the row even if that leg were deleted.
+    {
+      id: 'revision requested holds even with a divergent accepted readiness',
+      payload: { agentReview: review('revision-requested'), implementationReadiness: acceptedReadiness() },
+      passes: false,
+    },
     {
       id: 'legacy-submitter revision bypasses the readiness floor',
       payload: { agentReview: review('revision-requested', LEGACY_AGENT_REVIEW_SUBMITTER), implementationReadiness: revision },
