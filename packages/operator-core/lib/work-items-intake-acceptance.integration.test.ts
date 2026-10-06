@@ -36,6 +36,7 @@ import {
   WORK_ITEM_PRESENTATION_STAGES,
   countWorkItemPresentationStages,
   createImplementationReadiness,
+  createVerificationTask,
   deriveWorkItemIntakeStage,
   deriveWorkItemPresentationStage,
   implementationReadinessAdmitsClaim,
@@ -340,6 +341,37 @@ describe('R-25 reviewer access stays scoped to the intake row', () => {
       }),
     ).toBeNull();
     expect(await drainIds('WI-R25-')).toEqual([]);
+  });
+});
+
+// P-007 (D-021 / D-023): a verification task never reaches its own reporter or implementer,
+// on the self-pull drain or the by-id writer. The rule depends on who is claiming, so it is a
+// claim-door filter and NOT a claimant-free floor: the advertised view still lists the row.
+describe('P-007 a verification task skips its parties and serves a verifier', () => {
+  const verification = createVerificationTask({
+    subject: 'WI-P7-SUBJECT',
+    check: 'reproduction',
+    reporters: ['su-reporter'],
+    implementers: ['su-builder'],
+  });
+
+  it('the drain and the by-id writer refuse the reporter and the implementer, and serve an independent verifier', async () => {
+    await seed('WI-P7-TASK', { createdTs: POST, payload: { ...qualifying(), verification } });
+    // Claimant-free surfaces are unchanged: no floor label, still advertised.
+    expect((await floorLabels('WI-P7-'))['WI-P7-TASK']).toEqual([]);
+    expect(await viewIds('WI-P7-')).toEqual(['WI-P7-TASK']);
+    for (const party of ['su-reporter', 'su-builder']) {
+      expect([party, await drainIds('WI-P7-', party)]).toEqual([party, []]);
+      expect([party, await byIdClaims('WI-P7-TASK', party)]).toEqual([party, false]);
+    }
+    expect(await holder('WI-P7-TASK')).toBeNull();
+    expect(await drainIds('WI-P7-', 'su-verifier')).toEqual(['WI-P7-TASK']);
+    expect(await holder('WI-P7-TASK')).toBe('su-verifier');
+  });
+
+  it('a row with no verification block is served to the same agents (the filter is not a blanket refusal)', async () => {
+    await seed('WI-P7-PLAIN', { createdTs: POST, payload: qualifying() });
+    expect(await byIdClaims('WI-P7-PLAIN', 'su-reporter')).toBe(true);
   });
 });
 

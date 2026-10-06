@@ -89,6 +89,7 @@ import {
   createImplementationReadiness,
   agentReviewPendingAdmissionSql,
   isAgentReviewClaimAdmission,
+  verificationTaskConflict,
   type AgentReviewClaimAdmission,
 } from './harness/improvements/agent-review-policy';
 import {
@@ -3028,6 +3029,11 @@ export async function claimIssue(
   if (!priorRows[0] || !operationClaims.matchOperationWorkerClaim(operationClaimRead, {
     id, harness: priorRows[0].harness_slug, payload: priorRows[0].payload,
   }).allowed) return null;
+  // P-007 / D-021: a verification task is never held by its own reporter or implementer.
+  // claimWorkItem checks this too, but this is the bottom issue writer and some callers
+  // (the improvement-runner dispatcher) reach it directly. payload.verification is
+  // written once when the task is created, so this pre-read is as good as the UPDATE's.
+  if (verificationTaskConflict(priorRows[0].payload, assignee)) return null;
   // A holder's subject must be captured in the SAME atomic UPDATE as the claim.
   // The watchdog coalescer intentionally refreshes an open issue's visible
   // title/body and watchdogKey; a follow-up completion must not silently treat

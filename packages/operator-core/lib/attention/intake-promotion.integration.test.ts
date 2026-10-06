@@ -19,7 +19,7 @@ vi.mock('@papercusp/db-org', async (orig) => {
   return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
 });
 
-const { createIssue, getIssue, issuesOutLinksMany } = await import('../issues-engineer');
+const { claimIssue, createIssue, getIssue, issuesOutLinksMany } = await import('../issues-engineer');
 const {
   assertIntakeLockPool,
   currentIntakeSourceRevision,
@@ -35,9 +35,8 @@ const {
 } = await import('./intake-promotion');
 const { parseIntakeDecision } = await import('./bulk-dispositions');
 const { stampFiledBugReproduction } = await import('./bug-reproduction');
-const { createImplementationReadiness, evaluateImplementationAcceptance, readImplementationReadiness } = await import(
-  '../harness/improvements/agent-review-policy'
-);
+const { createImplementationReadiness, evaluateImplementationAcceptance, readImplementationReadiness, readVerificationTask } =
+  await import('../harness/improvements/agent-review-policy');
 const { recordIssueOccurrence } = await import('../issue-occurrence-ledger');
 
 type Decision = import('./bulk-dispositions').BulkIntakeDecision;
@@ -516,6 +515,62 @@ describe('bug reproduction receipt', () => {
     const bug = await file({ kind: 'bug' });
     const investigate = await decide(bug.id, { disposition: 'investigate', reason: 'cannot reproduce yet', acceptance: FULL_ACCEPTANCE });
     expect(await exec(bug.id, investigate)).toMatchObject({ ok: true, created: true });
+  });
+});
+
+// P-007 (D-021 / D-023): `investigate` spawns a verification task. Its claim writer refuses
+// the subject's reporters and implementers, and the decision itself needs a reviewer who is
+// independent of the whole party set, not only of the filer the seal already checks.
+describe('verification task parties (P-007)', () => {
+  const REPRODUCER = 'su-reproducer';
+  const BUILDER = 'su-builder';
+  const VERIFIER = 'su-verifier';
+  const INVESTIGATE = { disposition: 'investigate', reason: 'cause unknown', acceptance: FULL_ACCEPTANCE } as const;
+
+  /** A bug whose reproduction receipt was filed by someone other than the bug's filer. */
+  async function bugWithReproducer() {
+    const stamp = await stampFiledBugReproduction(
+      { ref: 'npm run test:file -- trailing-token.test.ts', buildSha: 'abc1234def5678' },
+      { filedBy: REPRODUCER },
+      defaultReproductionLedgerDeps(),
+    );
+    if (!stamp.ok) throw new Error(stamp.error);
+    return file({ kind: 'bug', payload: { reproduction: stamp.stored } });
+  }
+
+  it('investigate stamps the task with the subject parties, and its claim writer refuses them', async () => {
+    const cand = await bugWithReproducer();
+    const result = await exec(cand.id, await decide(cand.id, INVESTIGATE));
+    expect(result).toMatchObject({ ok: true, created: true, mode: 'distinct' });
+    if (!result.ok) return;
+    const taskId = result.workItemId!;
+
+    const task = readVerificationTask(await payloadOf(taskId));
+    expect(task).toMatchObject({ subject: cand.id, check: 'reproduction', implementers: [] });
+    expect([...(task?.reporters ?? [])].sort()).toEqual([FILER, REPRODUCER].sort());
+    // The reviewer who ordered the check is independent of the subject, so it is no party.
+    expect(task?.reporters).not.toContain(REVIEWER);
+
+    for (const party of [FILER, REPRODUCER]) {
+      expect([party, await claimIssue(taskId, party)]).toEqual([party, null]);
+    }
+    expect((await getIssue(taskId))?.assignee ?? null).toBeNull();
+    // Control: the same writer serves an independent verifier, so the refusals above are
+    // the party rule and not some other floor.
+    expect(await claimIssue(taskId, VERIFIER)).toMatchObject({ id: taskId, assignee: VERIFIER });
+  });
+
+  it('refuses a decision recorded by a reporter or an implementer of the source, and writes nothing', async () => {
+    const cand = await bugWithReproducer();
+    await db.adminSql`UPDATE harness_shared.work_items SET terminal_owner = ${BUILDER} WHERE feature_id = ${cand.id}`;
+    for (const [decidedBy, role] of [[REPRODUCER, 'reporter'], [BUILDER, 'implementer']] as const) {
+      const refused = await exec(cand.id, await decide(cand.id, INVESTIGATE, decidedBy));
+      expect([decidedBy, refused]).toMatchObject([decidedBy, { ok: false, refusal: 'acceptance-invalid-authority' }]);
+      expect(refused.ok ? '' : refused.detail).toContain(`is a ${role} of ${cand.id}`);
+    }
+    expect(await promotedFrom(cand.id)).toEqual([]);
+    // Control: an independent reviewer's decision on the same source goes through.
+    expect(await exec(cand.id, await decide(cand.id, INVESTIGATE))).toMatchObject({ ok: true, created: true });
   });
 });
 
