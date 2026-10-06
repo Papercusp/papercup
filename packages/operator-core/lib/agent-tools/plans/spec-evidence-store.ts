@@ -1095,6 +1095,20 @@ export function classifySpecEvidenceCurrentness(
   };
 }
 
+/**
+ * Split a failed mutation-probe run's ledger tail into its non-empty lines (WI-10006745). The
+ * ledger reporter writes one `<case full name>: <message>` line per failed case; the adequacy
+ * evaluator matches a declared test case against those line prefixes rather than parsing a title
+ * out of free text. Bounded twice over: the ledger keeps 4000 chars, and we keep 64 lines.
+ */
+export function mutationFailureLines(tail: string): string[] {
+  return tail
+    .split('\n')
+    .map((line) => line.trimEnd())
+    .filter((line) => line.length > 0)
+    .slice(0, 64);
+}
+
 interface EvidenceRow extends CurrentnessRow {
   id: number;
   work_item_id: string;
@@ -1122,7 +1136,8 @@ interface EvidenceRow extends CurrentnessRow {
   test_run_file_path: string | null;
   test_run_commit_sha: string | null;
   test_run_worktree_dirty: boolean | null;
-  mutation_failure_case_title: string | null;
+  /** Ledger output tail of a FAILED mutation-probe run bound as mutation evidence; else NULL. */
+  mutation_failure_tail: string | null;
   provisionalProofBase?: boolean;
   provisionalScorecard?: ProvisionalScorecardProof;
 }
@@ -1177,8 +1192,6 @@ export interface ListSpecEvidenceOptions {
   specFingerprint?: string;
   /** Replay the supplied current tuple as a prior server measurement; never re-read live files. */
   replaySnapshot?: boolean;
-  /** Read the measured failing case title for mutation evidence; set only by the adequacy evaluator. */
-  includeMutationFailureCaseTitle?: boolean;
   /** Provenance for a replayed current tuple. */
   currentProvenance?: 'server-measured' | 'partially-server-measured' | 'replayed-snapshot';
   currentness?: Array<'current' | 'stale' | 'unknown'>;
@@ -1699,16 +1712,15 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
            tr.file_path AS test_run_file_path,
            tr.commit_sha AS test_run_commit_sha,
            tr.worktree_dirty AS test_run_worktree_dirty,
-           ${options.includeMutationFailureCaseTitle === true
-             ? tx`CASE
-                 WHEN b.evidence_kind = 'mutation'
-                   AND tr.source = 'mutation-probe'
-                   AND tr.status = 'fail'
-                   AND strpos(tr.output_tail, ' — ') > 0
-                 THEN NULLIF(btrim(split_part(tr.output_tail, ' — ', 1)), '')
-                 ELSE NULL
-               END`
-             : tx`NULL::text`} AS mutation_failure_case_title,
+           -- WI-10006745: unconditional, so no adequacy reader (the ship-gate snapshot included)
+           -- can forget to ask for it. Bounded by the ledger's own 4000-char tail.
+           CASE
+             WHEN b.evidence_kind = 'mutation'
+               AND tr.source = 'mutation-probe'
+               AND tr.status = 'fail'
+             THEN tr.output_tail
+             ELSE NULL
+           END AS mutation_failure_tail,
            ${specIsCurrent} AS spec_is_current,
            (b.coverage_evidence_ref IS NOT NULL AND EXISTS (
               SELECT 1 FROM harness_shared.coverage_evidence ce
@@ -1980,7 +1992,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
             filePath: row.test_run_file_path,
             commitSha: row.test_run_commit_sha,
             worktreeDirty: row.test_run_worktree_dirty,
-            ...(row.mutation_failure_case_title ? { mutationFailedCaseTitle: row.mutation_failure_case_title } : {}),
+            ...(row.mutation_failure_tail ? { mutationFailureLines: mutationFailureLines(row.mutation_failure_tail) } : {}),
           },
       details: row.provisionalProofBase
         ? {
