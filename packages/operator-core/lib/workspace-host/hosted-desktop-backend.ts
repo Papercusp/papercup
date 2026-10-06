@@ -113,6 +113,13 @@ export interface HostedDesktopBackendDeps {
    * no fallback (a missing or stale capture file answers null).
    */
   grabThumbnail?: (display: number) => Promise<Buffer | null>;
+  /**
+   * The work-item an agent is on right now — its most recent live claim
+   * (`work-item-claims.getActiveClaimForOwner`). Plan agent-multi-desktops-grid
+   * D-009: the grid labels each agent desktop with it, derived at roster time and
+   * never stored on the desktop row. Omitted, or a failed read: no label.
+   */
+  activeClaimFor?: (owner: string) => Promise<HostedDesktopOwnerClaim | null>;
   /** Override the capture directory (tests, or a pack that relocates it). */
   captureDir?: string;
   /** Override the KasmVNC websocket path. */
@@ -258,16 +265,61 @@ export function desktopRecordForLease(desktop: SandboxDesktop): HostedDesktopSes
 }
 
 /** One registry row as the viewer's picker renders it. */
-export function rosterEntryForSession(session: DesktopSessionRecord): HostedDesktopRosterEntry {
+/** An owner's current work-item, as the roster labels its desktops. */
+export interface HostedDesktopOwnerClaim {
+  workItemId: string;
+  intent: string | null;
+}
+
+/** Longest claim intent the roster carries: a tile label, not the claim's full text. */
+export const HOSTED_ROSTER_INTENT_MAX_CHARS = 160;
+
+export function rosterEntryForSession(
+  session: DesktopSessionRecord,
+  claim: HostedDesktopOwnerClaim | null = null,
+): HostedDesktopRosterEntry {
   const display = displayNumber(session.display);
   const { width, height } = session.displayGeometry;
+  // A workspace desktop's scopeRef is the workspace id, which names no owner.
+  const owner = session.scope === 'workspace' ? '' : session.scopeRef;
+  const intent = claim?.intent?.trim().slice(0, HOSTED_ROSTER_INTENT_MAX_CHARS) ?? '';
   return {
     desktopSessionId: session.id,
     state: session.state,
     ...(display === null ? {} : { displayNumber: display }),
     ...(width && height ? { geometry: `${width}x${height}` } : {}),
     ...(session.lastActiveAt ? { lastActiveAt: session.lastActiveAt.toISOString() } : {}),
+    scope: session.scope,
+    ...(owner ? { owner } : {}),
+    ...(session.name ? { name: session.name } : {}),
+    ...(claim ? { workItemId: claim.workItemId } : {}),
+    ...(claim && intent ? { workItemIntent: intent } : {}),
   };
+}
+
+/**
+ * Each agent owner's current claim, read once per owner. A failed read is a missing
+ * label, never a failed roster: the grid must still show every desktop.
+ */
+async function claimsForSessions(
+  sessions: readonly DesktopSessionRecord[],
+  activeClaimFor: HostedDesktopBackendDeps['activeClaimFor'],
+  warn: (message: string) => void,
+): Promise<Map<string, HostedDesktopOwnerClaim>> {
+  const claims = new Map<string, HostedDesktopOwnerClaim>();
+  if (!activeClaimFor) return claims;
+  const owners = [...new Set(sessions.filter((s) => s.scope === 'agent').map((s) => s.scopeRef))];
+  await Promise.all(
+    owners.map(async (owner) => {
+      try {
+        const claim = await activeClaimFor(owner);
+        if (claim) claims.set(owner, claim);
+      } catch (error) {
+        warn(`hosted-desktop-backend — claim lookup for ${owner} failed: ${String(error)}`);
+      }
+    }),
+  );
+  return claims;
 }
 
 /**
@@ -447,7 +499,11 @@ export function createHostedDesktopBackend(deps: HostedDesktopBackendDeps): Host
 
     async roster(): Promise<HostedDesktopRosterEntry[]> {
       await reconcile();
-      return (await deps.listSessions()).map(rosterEntryForSession);
+      const sessions = await deps.listSessions();
+      const claims = await claimsForSessions(sessions, deps.activeClaimFor, warn);
+      return sessions.map((session) =>
+        rosterEntryForSession(session, session.scope === 'agent' ? (claims.get(session.scopeRef) ?? null) : null),
+      );
     },
 
     async start(): Promise<HostedDesktopRosterEntry | null> {

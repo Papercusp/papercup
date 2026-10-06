@@ -39,6 +39,7 @@ import {
 } from '../agent-tools/computer/desktop-lease';
 import { hostedDesktopAuditRow, recordDesktopAudit } from '../desktop/desktop-audit';
 import { desktopThumbnailer } from '../desktop/desktop-thumbnail';
+import { getActiveClaimForOwner } from '../work-item-claims';
 import type { HostedConnectorBinding } from '../endpoint-route/hosted-workspace-connector';
 import { configureAgentSpawnTransform } from '@papercusp/papercusp-shared/agent';
 import { installHostedCustomerAgentIdentity } from './hosted-agent-identity';
@@ -199,6 +200,11 @@ export function createDefaultDesktopBackend(
     // P-005 / D-008: an agent-started desktop is absent from the bootstrap-time capture
     // loop's display list, so its thumbnail is grabbed on demand by the grid read.
     grabThumbnail: (display) => desktopThumbnailer().thumbnail(display),
+    // D-009: the tile's work-item label is the owner's live claim, read now.
+    activeClaimFor: async (owner) => {
+      const claim = await getActiveClaimForOwner(scope(), owner);
+      return claim ? { workItemId: claim.workItemId, intent: claim.intent || null } : null;
+    },
     ...overrides,
   });
 }
