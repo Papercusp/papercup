@@ -17,55 +17,34 @@ import { defineTool } from '@papercusp/agent-mcp';
 import type {
   ChoosePotIntegrationModeInput,
   ChoosePotIntegrationModeResult,
-  PotIntegrationModeRead,
 } from '../../../harness/git-sync/pot-integration-mode';
+import { parseIntegrationModeAnswer } from '../../../harness/git-sync/integration-mode-question';
 import {
-  integrationModeQuestion,
-  parseIntegrationModeAnswer,
-} from '../../../harness/git-sync/integration-mode-question';
+  defaultIntegrationModeSettingsDeps,
+  readIntegrationModeSettings,
+  resolveIntegrationModePot,
+  type IntegrationModePotResolution,
+  type IntegrationModeSettingsDeps,
+} from '../../../harness/git-sync/integration-mode-settings';
 
-/** The registry fields this route reads (a subset of the harness registry entry). */
-export interface IntegrationModeRegistryEntry {
-  slug: string;
-  hive_slug?: string;
-  self_repo?: boolean;
-  github_remote?: string;
-  fork_remote?: string;
-}
+export { repoLabelFromRemote, type IntegrationModeRegistryEntry } from '../../../harness/git-sync/integration-mode-settings';
 
-export interface IntegrationModeRouteDeps {
-  loadProjects: () => Promise<IntegrationModeRegistryEntry[]>;
-  workspaceId: () => Promise<string>;
-  readMode: (workspaceId: string, potHomeSlug: string) => Promise<PotIntegrationModeRead>;
-  resolveSuite: (slug: string, workspaceId: string) => Promise<string | null>;
+export interface IntegrationModeRouteDeps extends IntegrationModeSettingsDeps {
   choose: (input: ChoosePotIntegrationModeInput) => Promise<ChoosePotIntegrationModeResult>;
+  /** Push the new answer to every live settings section (`potIntegration.settings`). */
+  notifySaved?: (slug: string) => Promise<void>;
 }
 
-/** "owner/repo" for a GitHub remote; the raw remote otherwise; '' when absent. */
-export function repoLabelFromRemote(remote: string | undefined | null): string {
-  if (!remote) return '';
-  const m = /github\.com[/:]([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/i.exec(remote.trim());
-  return m ? `${m[1]}/${m[2]}` : remote.trim();
-}
-
-type Resolved =
-  | { ok: true; entry: IntegrationModeRegistryEntry; potHomeSlug: string }
-  | { ok: false; response: Response };
-
-async function resolvePot(deps: IntegrationModeRouteDeps, slug: string): Promise<Resolved> {
-  const entry = (await deps.loadProjects()).find((p) => p.slug === slug);
-  if (!entry) return { ok: false, response: Response.json({ error: 'unknown harness' }, { status: 404 }) };
-  const potHomeSlug = entry.hive_slug ?? (entry.self_repo ? entry.slug : undefined);
-  if (!potHomeSlug) {
-    return {
-      ok: false,
-      response: Response.json(
-        { error: 'not_a_pot', message: 'This project is not a pot, so there is no shared agent work to route.' },
-        { status: 409 },
-      ),
-    };
+/** The HTTP refusal for a slug that is not a pot, or null when it is one. */
+function notAPotResponse(r: { kind: IntegrationModePotResolution['kind'] }): Response | null {
+  if (r.kind === 'unknown-harness') return Response.json({ error: 'unknown harness' }, { status: 404 });
+  if (r.kind === 'not-a-pot') {
+    return Response.json(
+      { error: 'not_a_pot', message: 'This project is not a pot, so there is no shared agent work to route.' },
+      { status: 409 },
+    );
   }
-  return { ok: true, entry, potHomeSlug };
+  return null;
 }
 
 export function makeIntegrationModeRoutes(deps: IntegrationModeRouteDeps) {
@@ -74,18 +53,9 @@ export function makeIntegrationModeRoutes(deps: IntegrationModeRouteDeps) {
     path: '/harness/:slug/integration-mode',
     auth: 'loopback',
     async handler(_req, ctx) {
-      const r = await resolvePot(deps, ctx.params.slug as string);
-      if (!r.ok) return r.response;
-      const ws = await deps.workspaceId();
-      // Unknown (resolver failed) leaves the working copy selectable; the PUT re-checks.
-      const greenCmd = await deps.resolveSuite(r.entry.slug, ws).catch(() => undefined);
-      const hasTestSuite = greenCmd === undefined ? undefined : Boolean(greenCmd && greenCmd.trim());
-      const current = await deps.readMode(ws, r.potHomeSlug);
-      return Response.json({
-        question: integrationModeQuestion({ repoLabel: repoLabelFromRemote(r.entry.github_remote), hasTestSuite }),
-        current: current.mode,
-        workingCopyUrl: r.entry.fork_remote ?? null,
-      });
+      const r = await readIntegrationModeSettings(deps, ctx.params.slug as string);
+      if (r.kind !== 'pot') return notAPotResponse(r) as Response;
+      return Response.json({ question: r.question, current: r.current, workingCopyUrl: r.workingCopyUrl });
     },
   });
 
@@ -94,8 +64,8 @@ export function makeIntegrationModeRoutes(deps: IntegrationModeRouteDeps) {
     path: '/harness/:slug/integration-mode',
     auth: 'loopback',
     async handler(req, ctx) {
-      const r = await resolvePot(deps, ctx.params.slug as string);
-      if (!r.ok) return r.response;
+      const r = await resolveIntegrationModePot(deps, ctx.params.slug as string);
+      if (r.kind !== 'pot') return notAPotResponse(r) as Response;
       const body = (await req.json().catch(() => ({}))) as { mode?: unknown };
       const mode = parseIntegrationModeAnswer(body.mode);
       if (!mode) {
@@ -113,6 +83,8 @@ export function makeIntegrationModeRoutes(deps: IntegrationModeRouteDeps) {
         upstreamRemote: r.entry.github_remote ?? null,
       });
       if (!result.ok) return Response.json(result, { status: 409 });
+      // After the write committed: live settings sections re-read (a push failure never fails the save).
+      await deps.notifySaved?.(r.entry.slug).catch(() => undefined);
       return Response.json(result);
     },
   });
@@ -121,12 +93,9 @@ export function makeIntegrationModeRoutes(deps: IntegrationModeRouteDeps) {
 }
 
 export default makeIntegrationModeRoutes({
-  loadProjects: async () => (await import('../../../harness-registry')).loadHarnessRegistry().then((r) => r.projects),
-  workspaceId: async () => (await import('../../../workspace-registry')).activeWorkspaceId(),
-  readMode: async (ws, pot) =>
-    (await import('../../../harness/git-sync/pot-integration-mode')).readPotIntegrationMode(ws, pot),
-  resolveSuite: async (slug, ws) =>
-    (await import('../../../harness/routines/hive-release-env')).resolvePotSuiteCommand(slug, ws),
+  ...defaultIntegrationModeSettingsDeps,
+  notifySaved: async (slug) =>
+    (await import('../../../sync-sse')).notifySyncInvalidate('potIntegration.settings', { slug }),
   choose: async (input) =>
     (await import('../../../harness/git-sync/pot-integration-mode')).choosePotIntegrationMode(input),
 });

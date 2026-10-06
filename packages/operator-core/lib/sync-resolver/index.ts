@@ -1993,6 +1993,9 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // fact-free question.
   'potIntegration.createQuestion': {
     argsSchema: z.object({ githubUrl: z.string().min(1).max(500) }),
+    // The only Postgres input is the workspace default (PotControlPolicy); a policy write
+    // re-asks every open form. The GitHub facts are re-probed by the create step.
+    backingTables: ['harness_shared.operator_pot_control_policy'],
     resolve: async (args) => {
       const { githubUrl } = args as { githubUrl: string };
       try {
@@ -2013,6 +2016,32 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         return [{ githubUrl, ...integrationModeQuestion({ repoLabel, recommendation, defaultMode }) }];
       } catch (err) {
         console.warn('[potIntegration.createQuestion] read failed:', err instanceof Error ? err.message : err);
+        return [];
+      }
+    },
+  },
+
+  // ── potIntegration.settings — P-017 settings section, live (EI-25188362216785598) ──
+  // The pot-settings form of "Where should the agents' work go?" for one harness slug:
+  // the question (with option availability) and the pot's current answer. The same
+  // read GET /harness/:slug/integration-mode serves (readIntegrationModeSettings), so
+  // the two cannot disagree. One row; `isPot:false` for a project that is not a pot
+  // (the section hides). Pushed by the PUT after a switch, and by any pot_settings
+  // write (a federated switch from a peer). A failed read degrades to [].
+  'potIntegration.settings': {
+    argsSchema: z.object({ slug: z.string().min(1).max(200) }),
+    backingTables: ['harness_shared.pot_settings'],
+    resolve: async (args) => {
+      const { slug } = args as { slug: string };
+      try {
+        const { readIntegrationModeSettings, defaultIntegrationModeSettingsDeps } = await import(
+          '../harness/git-sync/integration-mode-settings'
+        );
+        const r = await readIntegrationModeSettings(defaultIntegrationModeSettingsDeps, slug);
+        if (r.kind !== 'pot') return [{ slug, isPot: false }];
+        return [{ slug, isPot: true, question: r.question, current: r.current, workingCopyUrl: r.workingCopyUrl }];
+      } catch (err) {
+        console.warn('[potIntegration.settings] read failed:', err instanceof Error ? err.message : err);
         return [];
       }
     },

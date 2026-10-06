@@ -416,7 +416,6 @@ const UNDECLARED_BASELINE: readonly string[] = [
   'planSessions.list',
   'plans.attention',
   'plans.attentionCounts',
-  'potIntegration.createQuestion',
   'plans.attentionItem',
   'plans.byHive',
   'plans.get',
