@@ -24,6 +24,14 @@
  * Re-adding an engine = remove it here AND give it its own release
  * acceptance with a working key (the plan's R-2/R-3 bars).
  *
+ * ElevenLabs TTS returned to scope under D-006 (2026-10-06, WI-10006757):
+ * a working sk_ key is stored for the local runtime (desktop + TUI), measured
+ * by a 200 audio/mpeg preview on :3070. The hosted portal reads its own
+ * credential store, which that write did not touch, so ElevenLabs stays
+ * refused there (RELEASE_UNAVAILABLE_HOSTED_TTS_ENGINES) until hosted P2 is
+ * verified with its own key. ElevenLabs Conversational AI stays unavailable:
+ * the keyed account has no ConvAI agent.
+ *
  * Deliberately import-free (types only) so the client bundle can use it.
  */
 
@@ -42,9 +50,15 @@ export const RELEASE_UNAVAILABLE_FULL_AGENT_ENGINES: ReadonlySet<FullAgentEngine
 ]);
 
 export const RELEASE_UNAVAILABLE_TTS_ENGINES: ReadonlySet<TtsEngineKind> = new Set<TtsEngineKind>([
-  'elevenlabs',
   'openai',
   'cartesia',
+]);
+
+/** Hosted portal speech: everything the shared set refuses, plus engines whose
+ *  hosted credentials are not yet verified (ElevenLabs — D-006, hosted P2). */
+export const RELEASE_UNAVAILABLE_HOSTED_TTS_ENGINES: ReadonlySet<TtsEngineKind> = new Set<TtsEngineKind>([
+  ...RELEASE_UNAVAILABLE_TTS_ENGINES,
+  'elevenlabs',
 ]);
 
 export const RELEASE_UNAVAILABLE_WAKE_ENGINES: ReadonlySet<WakeWordEngineKind> = new Set<WakeWordEngineKind>([
@@ -57,6 +71,10 @@ export function isFullAgentEngineUnavailable(engine: unknown): boolean {
 
 export function isTtsEngineUnavailable(engine: unknown): boolean {
   return typeof engine === 'string' && RELEASE_UNAVAILABLE_TTS_ENGINES.has(engine as TtsEngineKind);
+}
+
+export function isHostedTtsEngineUnavailable(engine: unknown): boolean {
+  return typeof engine === 'string' && RELEASE_UNAVAILABLE_HOSTED_TTS_ENGINES.has(engine as TtsEngineKind);
 }
 
 export function isWakeEngineUnavailable(engine: unknown): boolean {
