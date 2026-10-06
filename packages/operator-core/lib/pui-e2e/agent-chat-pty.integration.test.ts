@@ -681,8 +681,47 @@ function ensurePuiBinary(): string {
 /** Approval-card headlines (pui-chat-first-ux P-008): a native tool is asked
  * about by action and target, `Allow Update(calc.js)?`; the SU's own tool by
  * server and verb words, `Allow papercusp-su · work items claimable (MCP)?`. */
-const NATIVE_APPROVAL_HEADLINE = /^Allow ([A-Z][A-Za-z ]*?)(?:\(.*\))?\?$/;
 const SU_APPROVAL_HEADLINE = /^Allow (papercusp-su · .+) \(MCP\)\?$/;
+
+/** An approval card as pui draws it on screen (pui-chat-first-ux D-028, Claude
+ * Code's permission prompt): the call's title (`Update(calc.js)`,
+ * `papercusp-su · work items claimable (MCP)`), the change between `╌` rules,
+ * the question (`Do you want to proceed?`), then `❯ 1. Yes` / `2. Yes, and
+ * don't ask again …` / `3. No, and tell … what to do instead`. `lines` are
+ * screen lines with box characters blanked and trimmed. */
+interface ScreenApproval {
+  /** The title line, e.g. `Read(/tmp/x/notes.md)`. */
+  title: string;
+  /** The tool word of a native title (`Read`, `Update`, `Bash`), else undefined. */
+  native?: string;
+  /** The SU tool a papercusp-su title names, e.g. `papercusp-su · work items claimable`. */
+  suTool?: string;
+  /** The index of the title line in `lines`. */
+  at: number;
+}
+const APPROVAL_QUESTION = /^Do you want .+\?$/;
+const APPROVAL_RULE = /^╌+$/;
+function screenApproval(lines: string[]): ScreenApproval | undefined {
+  const question = lines.findIndex((line) => APPROVAL_QUESTION.test(line));
+  if (question < 1) return undefined;
+  let at = question - 1;
+  if (APPROVAL_RULE.test(lines[at])) {
+    at -= 1;
+    while (at > 0 && !APPROVAL_RULE.test(lines[at])) at -= 1;
+    at -= 1;
+  }
+  const title = lines[at];
+  if (at < 0 || !title) return undefined;
+  const suTool = /^(papercusp-su · .+) \(MCP\)$/.exec(title)?.[1];
+  const native = suTool ? undefined : /^([A-Z][A-Za-z ]*?)(?:\(.*\))?$/.exec(title)?.[1];
+  return { title, native, suTool, at };
+}
+/** The digit that picks one answer of a visible approval card: `yes` (once),
+ * `always` (`Yes, and don't ask again …` / `Yes, and allow all edits …`) or `no`. */
+function approvalOptionKey(lines: string[], answer: 'yes' | 'always' | 'no'): string | undefined {
+  const label = answer === 'yes' ? 'Yes(?: \\(|$)' : answer === 'always' ? 'Yes, and ' : 'No, and tell ';
+  return lines.map((line) => new RegExp(`^(?:[›❯] )?(\\d)\\. ${label}`).exec(line)?.[1]).find(Boolean);
+}
 
 /** The composer is ready to send. pui-chat-first-ux P-021 made the full-screen
  * chat's composer quiet: its footer reads `? for shortcuts` on an empty box and
@@ -759,19 +798,20 @@ class PuiPane {
   settleSuToolApproval(): boolean {
     if (!this.suToolApprovals || Date.now() - this.suToolApprovalAt < 750) return false;
     const lines = this.screen().split('\n').map((line) => line.replace(/[│┌┐└┘─]/g, ' ').trim());
-    const tool = lines.map((line) => SU_APPROVAL_HEADLINE.exec(line)?.[1]).find(Boolean);
-    const readAt = tool ? -1 : lines.findIndex((line) => /^(Read|Search)$/.test(NATIVE_APPROVAL_HEADLINE.exec(line)?.[1] ?? ''));
-    // The full path is in the headline (outside the launch directory) or on
-    // the line under it (inside, where the headline shows it relative).
+    const card = screenApproval(lines);
+    const tool = card?.suTool;
+    const readAt = !card || tool || !/^(Read|Search)$/.test(card.native ?? '') ? -1 : card.at;
+    // The full path is in the title (outside the launch directory) or on the
+    // line under it (inside, where the title shows it relative).
     const readPath = readAt < 0 ? undefined
       : [...this.nativeReadPaths].find((p) => lines.slice(readAt, readAt + 4).some((line) => line.includes(p)));
     if (!tool && !readPath) return false;
-    const option = (label: string) => lines.map((line) => new RegExp(`^(?:› )?(\\d)\\. ${label}\\b`).exec(line)?.[1]).find(Boolean);
-    const pick = readPath ? option('Approve') : option('Always allow') ?? option('Approve');
+    const pick = readPath ? approvalOptionKey(lines, 'yes')
+      : approvalOptionKey(lines, 'always') ?? approvalOptionKey(lines, 'yes');
     if (!pick) return false;
     this.pty.write(pick);
     if (tool) this.suToolApprovals.push(tool);
-    else this.nativeReadApprovals.push(`${NATIVE_APPROVAL_HEADLINE.exec(lines[readAt])?.[1]} ${readPath}`);
+    else this.nativeReadApprovals.push(`${card?.native} ${readPath}`);
     this.suToolApprovalAt = Date.now();
     return true;
   }
@@ -4461,15 +4501,17 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       expect(pane.screen()).toMatch(/\+\s+let introduced = 3;/);
       expect(pane.screen()).toMatch(/-\s+let dropped = 2;/);
 
-      // Permission prompts: inline, in plain words, answered with 1 (allow) / 2 (deny).
+      // Permission prompts: inline, in plain words, answered with 1 (Yes) / 2 (No).
+      // Claude offers no remembered rule here, so there is no "don't ask again"
+      // row and No is option 2 (D-028).
       stage = 'approval';
       scriptedEngine.mode = 'approval';
       scriptedEngine.successText = `P4 approval reply ${tag}`;
       pane.write(`approve ${tag}`);
       pane.enter();
       await vi.waitFor(() => expect(pendingNativeCards()).toHaveLength(2), { timeout: 60_000, interval: 100 });
-      await pane.waitFor('Approve');
-      await pane.waitFor('Decline');
+      await pane.waitFor('Do you want to run this command?');
+      await pane.waitFor('2. No, and tell Claude');
       const prompt = pane.screen();
       const shown = scriptedEngine.approvalRequests.filter((r) => prompt.includes(String(r.input.command)));
       expect(shown, prompt).toHaveLength(1);
@@ -7805,8 +7847,8 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         if (Date.now() - approvedAt < 750) return;
         const screen = pane.screen();
         const lines = screen.split('\n').map((line) => line.replace(/[│┌┐└┘─]/g, ' ').trim());
-        const tool = lines.map((line) => NATIVE_APPROVAL_HEADLINE.exec(line)?.[1]).find(Boolean);
-        const pick = tool && lines.map((line) => /^(?:› )?(\d)\. Approve\b/.exec(line)?.[1]).find(Boolean);
+        const tool = screenApproval(lines)?.native;
+        const pick = tool && approvalOptionKey(lines, 'yes');
         if (!tool || !pick) return;
         frame(`${label}-approval-${approvals.length + 1}`, screen);
         pane.pty.write(pick);
@@ -7824,9 +7866,8 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         if (Date.now() - skippedAt < 1_500 || Date.now() - approvedAt < 5_000) return;
         const open = pendingNativeCards().filter((card) => !isSuToolApprovalCard(card));
         const screen = pane.screen();
-        // Tool approvals are cards too; only a card with no `Allow <tool>?` is a question.
-        const approval = screen.split('\n').map((line) => line.replace(/[│┌┐└┘─]/g, ' ').trim())
-          .some((line) => NATIVE_APPROVAL_HEADLINE.test(line) || SU_APPROVAL_HEADLINE.test(line));
+        // Tool approvals are cards too; only a card with no `Do you want …?` is a question.
+        const approval = Boolean(screenApproval(screen.split('\n').map((line) => line.replace(/[│┌┐└┘─]/g, ' ').trim())));
         if (!open.length || approval || !screen.includes('Esc skip')) return;
         frame(`${label}-question-${questions.length + 1}`, screen);
         questions.push(`${label}: ${open[0].prompt}`);
