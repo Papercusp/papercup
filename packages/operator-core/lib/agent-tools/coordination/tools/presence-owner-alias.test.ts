@@ -111,6 +111,58 @@ describe('coord:presence ownerId compatibility alias', () => {
     expect(createPgDiagnosticHooks('org-app').onquerycontext()).toEqual({ state: 'unobserved' });
   });
 
+  it('retains exact phase query evidence after unrelated requests evict the ring', async () => {
+    const snapshot = await mocks.assemblePresenceSnapshot();
+    const hooks = createPgDiagnosticHooks('org-app');
+    const record = (queryId: number, context = hooks.onquerycontext()) => hooks.onresult({
+      connectionId: 1, queryId, backendPid: 42, query: 'select secret_value from private_table',
+      rowCount: 1, wireBytes: 12, status: 'ok', elapsedMs: 200, preBuildMs: 700, context,
+    });
+    record(1); // Same pool/time window, but outside this presence attempt.
+    mocks.assemblePresenceSnapshot.mockImplementation(async () => {
+      record(2);
+      return snapshot;
+    });
+    const metadata = vi.fn();
+    const result = await presenceTool.handler({ owner: 'su-target', include_coupling: false } as never,
+      { workspaceId: 'test-workspace', isSuperuser: true, metadata } as never);
+    const phase = metadata.mock.calls.at(-1)?.[0]?.presenceRead.stages
+      .find((stage: { name: string }) => stage.name === 'snapshot');
+    expect(phase.completedQueries).toMatchObject({
+      available: true, matchingRetained: 1, omittedMatching: 0,
+      coverage: 'retained-completed-results-for-exact-attempt',
+      results: [{ queryId: 2, elapsedMs: 200, preBuildMs: 700,
+        correlation: { attemptId: phase.queryDiagnostics.attemptId } }],
+    });
+    expect(JSON.stringify(phase.completedQueries)).not.toContain('secret_value');
+    expect(phase.completedQueries.results[0].queryFamily).toBe('select:private_table');
+    for (let queryId = 3; queryId < 40; queryId++) record(queryId);
+    expect(pgResultDiagnosticSnapshot('org-app', 32).results.some(row => row.queryId === 2)).toBe(false);
+    expect(phase.completedQueries.results).toHaveLength(1);
+    expect(phase.completedQueries.results[0].queryId).toBe(2);
+    expect(result).toMatchObject({ data: { active: [], etag: 'etag-1' } });
+  });
+
+  it('bounds retained phase evidence and reports omitted matching records', async () => {
+    const snapshot = await mocks.assemblePresenceSnapshot();
+    const hooks = createPgDiagnosticHooks('org-admin');
+    mocks.assemblePresenceSnapshot.mockImplementation(async () => {
+      for (let queryId = 1; queryId <= 12; queryId++) hooks.onresult({
+        connectionId: 1, queryId, backendPid: null, query: 'select 1',
+        rowCount: 1, wireBytes: 1, status: 'ok', context: hooks.onquerycontext(),
+      });
+      return snapshot;
+    });
+    const metadata = vi.fn();
+    await presenceTool.handler({ owner: 'su-target', include_coupling: false } as never,
+      { workspaceId: 'test-workspace', isSuperuser: true, metadata } as never);
+    const phase = metadata.mock.calls.at(-1)?.[0]?.presenceRead.stages
+      .find((stage: { name: string }) => stage.name === 'snapshot');
+    expect(phase.completedQueries).toMatchObject({ matchingRetained: 12, omittedMatching: 4 });
+    expect(phase.completedQueries.results).toHaveLength(8);
+    expect(phase.completedQueries.limitations).toContain('Neither identifies a root cause');
+  });
+
   it('keeps diagnostic sink failures from replacing results or dependency errors', async () => {
     const metadata = vi.fn(() => { throw new Error('diagnostic sink failed'); });
     await expect(presenceTool.handler({ owner: 'su-target' } as never,
@@ -150,6 +202,12 @@ describe('coord:presence ownerId compatibility alias', () => {
     const phase = (metadata: typeof firstMetadata) => metadata.mock.calls.at(-1)?.[0]?.presenceRead.stages
       .find((stage: { name: string }) => stage.name === 'snapshot').queryDiagnostics.attemptId;
     expect(phase(firstMetadata)).not.toBe(phase(secondMetadata));
+    for (const metadata of [firstMetadata, secondMetadata]) {
+      const snapshotPhase = metadata.mock.calls.at(-1)?.[0]?.presenceRead.stages
+        .find((stage: { name: string }) => stage.name === 'snapshot');
+      expect(snapshotPhase.completedQueries.results).toHaveLength(1);
+      expect(snapshotPhase.completedQueries.results[0].correlation.attemptId).toBe(phase(metadata));
+    }
     expect(pgResultDiagnosticSnapshot('org-app').results.map(row => row.correlation?.attemptId))
       .toEqual([phase(firstMetadata), phase(secondMetadata)]);
     expect(hooks.onquerycontext()).toEqual({ state: 'unobserved' });

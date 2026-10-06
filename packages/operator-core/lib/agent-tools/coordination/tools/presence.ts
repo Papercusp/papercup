@@ -14,6 +14,7 @@
 
 import { z } from 'zod';
 import { defineTool, readJsonResult, type SeeAlsoEntry } from '@papercusp/agent-mcp';
+import { pgResultDiagnosticSnapshot, type PgResultDiagnostic } from '@papercusp/db-org';
 import { resolvePresenceScope, assemblePresenceSnapshot } from '../presence-snapshot';
 import { readIdentity } from '../../locks/identity';
 import { resolveSelfRef, markSelfRows } from '../self-marker';
@@ -332,6 +333,15 @@ export default defineTool({
         coverage: 'queries-created-during-phase';
         timing: 'query-build-to-terminal-not-acquisition';
       };
+      completedQueries: {
+        available: boolean;
+        coverage: 'retained-completed-results-for-exact-attempt';
+        selection: 'newest-retained-first';
+        matchingRetained: number;
+        omittedMatching: number;
+        results: PgResultDiagnostic[];
+        limitations: string;
+      };
     }> = [];
     // Reuse the invocation ledger and PG diagnostic ring. These durations are
     // dependency wall time; the snapshot contains parallel work internally.
@@ -347,9 +357,33 @@ export default defineTool({
         return value;
       } finally {
         attempt.finish(status === 'ok' ? 'fulfilled' : 'rejected');
+        // Retain the evidence at the phase boundary: a later pg_health read can
+        // no longer recover it after unrelated requests evict the process ring.
+        // Reuse its sanitized records (no SQL/parameters), joining by BOTH
+        // attempt and process identity, never by timestamp proximity.
+        let matching: PgResultDiagnostic[] = [];
+        let available = true;
+        try {
+          matching = ['org-app', 'org-admin', 'org-admin-lossless-bigint']
+            .flatMap((pool) => pgResultDiagnosticSnapshot(pool, 32).results)
+            .filter((result) => result.correlationState === 'linked'
+              && result.correlation?.attemptId === attempt.context.attemptId
+              && result.correlation.processInstanceId === attempt.context.processInstanceId)
+            .sort((a, b) => b.recordedAt - a.recordedAt);
+        } catch {
+          available = false;
+        }
         stages.push({ name, elapsedMs: Math.max(0, performance.now() - start), status,
           queryDiagnostics: { ...attempt.context, stage: 'scope-query',
             coverage: 'queries-created-during-phase', timing: 'query-build-to-terminal-not-acquisition' },
+          completedQueries: {
+            available, coverage: 'retained-completed-results-for-exact-attempt',
+            selection: 'newest-retained-first', matchingRetained: matching.length,
+            omittedMatching: Math.max(0, matching.length - 8), results: matching.slice(0, 8),
+            limitations: 'Retained completed queries only; evicted/in-flight records are unavailable. '
+              + 'preBuildMs includes queue/connect/preparation, not pure acquisition or CPU; '
+              + 'elapsedMs is build-to-terminal time. Neither identifies a root cause.',
+          },
         });
         try {
           metadata({ presenceRead: { schemaVersion: 'presence-read-v1', unit: 'ms',
