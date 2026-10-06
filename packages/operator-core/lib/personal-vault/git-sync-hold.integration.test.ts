@@ -16,8 +16,11 @@
  * and `readGitSyncCensusStrict` with their default deps) reads and writes this
  * database through getOrgPg.
  */
+import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import type postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { applyMigrationForTest } from '../../test/_pg-helpers';
 
 const holder = vi.hoisted(() => ({ sql: null as postgres.Sql | null }));
 
@@ -27,6 +30,7 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
 }));
 
 const { createOrgTestDb } = await import('../../test/_org-test-db');
+const { recordEditAttributionStrict } = await import('../edit-attribution');
 const {
   readRestrictedEditHoldings,
   ownerHasActiveDisclosure,
@@ -75,6 +79,12 @@ async function edit(agent: string, repoRoot: string, file: string, ts: string, w
 beforeAll(async () => {
   org = await createOrgTestDb();
   sql = org.adminSql;
+  // Exercise the registered upgrade privately before it is armed; after arming,
+  // the full fixture already applies it and this also proves idempotent replay.
+  const migration = fileURLToPath(new URL(
+    '../../../../libs/papercusp/libs/db/sql/1367-edit-attribution-dispatch-call-id.sql', import.meta.url,
+  ));
+  await applyMigrationForTest(sql, existsSync(migration) ? migration : `${migration}.DRAFT`);
   holder.sql = sql;
   const [user] = await sql<{ id: string }[]>`
     INSERT INTO harness_shared.users (username, display_name)
@@ -181,6 +191,23 @@ describe('ownerHasActiveDisclosure (real Postgres)', () => {
 });
 
 describe('production wiring through getOrgPg (real Postgres)', () => {
+  it('captures each file once per dispatch while retaining separate calls and legacy captures', async () => {
+    const input = { repoRoot: REPO_A, files: ['dispatch-a.ts', 'dispatch-b.ts'], agentId: ACTIVE };
+    await recordEditAttributionStrict({ ...input, dispatchCallId: 'hold-dispatch-1' });
+    await recordEditAttributionStrict({ ...input, dispatchCallId: 'hold-dispatch-1' });
+    await recordEditAttributionStrict({ ...input, dispatchCallId: 'hold-dispatch-2' });
+    await recordEditAttributionStrict(input);
+    await recordEditAttributionStrict(input);
+    const rows = await sql<Array<{ file: string; dispatch_call_id: string | null }>>`
+      SELECT file, dispatch_call_id FROM harness_shared.edit_attribution_ledger
+       WHERE repo_root = ${REPO_A} AND file = ANY(${input.files}::text[])
+       ORDER BY file, dispatch_call_id NULLS LAST`;
+    for (const file of input.files) {
+      expect(rows.filter((row) => row.file === file).map((row) => row.dispatch_call_id))
+        .toEqual(['hold-dispatch-1', 'hold-dispatch-2', null, null]);
+    }
+  });
+
   it('recordRestrictedEditBeforeRelease writes the ledger row for a restricted owner, and the census then holds it', async () => {
     const recorded = await recordRestrictedEditBeforeRelease({
       repoRoot: REPO_A,
