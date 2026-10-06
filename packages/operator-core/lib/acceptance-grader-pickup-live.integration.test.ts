@@ -304,6 +304,9 @@ describe('R-3 grader recruitment idempotence + three-valued pickup (real PG)', (
       planSlug?: string;
       createdAgoMs: number;
       digest: Array<{ at: string; kind: string; ownerId: string; excerpt?: string }>;
+      selection?: Record<string, unknown>;
+      cascadeCursor?: number;
+      state?: string;
     }): Promise<void> {
       const routing = {
         cascade: {
@@ -313,16 +316,19 @@ describe('R-3 grader recruitment idempotence + three-valued pickup (real PG)', (
           harnessSlug: HARNESS,
           reservation: RESERVATION,
         },
+        ...(opts.selection ? { selection: opts.selection } : {}),
       };
       const createdAt = new Date(Date.now() - opts.createdAgoMs).toISOString();
       await db.adminSql`
         INSERT INTO harness_shared.consult_state
           (workspace_id, conversation_id, requester_id, responder_id, state, question, latency_contract,
-           routing, cascade_digest, created_at, updated_at, expires_at)
+           routing, cascade_digest, cascade_cursor, created_at, updated_at, expires_at)
         VALUES
-          (${RECONCILE_WS}, ${opts.conversationId}, ${'acceptance-grading-sweep'}, ${'su-head'}, ${'active'},
+          (${RECONCILE_WS}, ${opts.conversationId}, ${'acceptance-grading-sweep'}, ${'su-head'},
+           ${opts.state ?? 'active'},
            ${'grade it'}, ${'proceed'}, ${db.adminSql.json(routing as never)},
-           ${db.adminSql.json(opts.digest as never)}, ${createdAt}::timestamptz, ${createdAt}::timestamptz,
+           ${db.adminSql.json(opts.digest as never)}, ${opts.cascadeCursor ?? 0},
+           ${createdAt}::timestamptz, ${createdAt}::timestamptz,
            ${new Date(Date.now() + 3_600_000).toISOString()}::timestamptz)`;
     }
 
@@ -399,6 +405,50 @@ describe('R-3 grader recruitment idempotence + three-valued pickup (real PG)', (
       expect(res.liveConversationId).toBe('conv-wi10003451-just-answered');
       expect(await stateOf('conv-wi10003451-declined-only')).toMatchObject({ state: 'active', closed: false });
       expect(await stateOf('conv-wi10003451-just-answered')).toMatchObject({ state: 'active', closed: false });
+    });
+
+    // WI-10006700 — the shape MEASURED on conv-muwrapka (2026-10-06): every slot,
+    // incl. the min-answers refill pick, failed to dispatch; cascade-core wrote
+    // `underFilled: refill-spent` at cursor 2 and handed the terminal state to a
+    // trigger that dropped it. Counted live, the row returned dispatch:'existing'
+    // on every ship retry for the full 4h TTL.
+    it('WI-10006700: finishes a cascade cascade-core already walked to exhaustion instead of reusing it', async () => {
+      const plan = 'wi-10006700-subject-plan';
+      const failed = (ownerId: string) => ({ at: agoIso(10 * 60_000), kind: 'dispatch_failed', ownerId });
+      await seedCascade({
+        conversationId: 'conv-wi10006700-walked',
+        planSlug: plan,
+        createdAgoMs: 15 * 60_000,
+        state: 'awaiting_responder',
+        cascadeCursor: 2,
+        selection: {
+          min: 1,
+          underFilled: { at: agoIso(10 * 60_000), min: 1, answers: 0, reason: 'refill-spent' },
+        },
+        digest: [failed('su-g1'), failed('su-g2'), failed('su-refill')],
+      });
+      // CONTROL: the same failed digest WITHOUT underFilled is a cascade still
+      // mid-walk (cascade-core has not finished the menu) — it must stay live.
+      await seedCascade({
+        conversationId: 'conv-wi10006700-mid-walk',
+        planSlug: 'wi-10006700-control-plan',
+        createdAgoMs: 15 * 60_000,
+        state: 'awaiting_responder',
+        cascadeCursor: 1,
+        selection: { min: 1 },
+        digest: [failed('su-g1')],
+      });
+
+      const res = await reconcileOpenGradingCascades({ ...params, planSlug: plan });
+      expect(res).toEqual({ liveConversationId: null, closedSpent: [] });
+      expect(await stateOf('conv-wi10006700-walked')).toMatchObject({
+        state: 'no_qualified_responder',
+        closed: false,
+      });
+
+      const control = await reconcileOpenGradingCascades({ ...params, planSlug: 'wi-10006700-control-plan' });
+      expect(control.liveConversationId).toBe('conv-wi10006700-mid-walk');
+      expect(await stateOf('conv-wi10006700-mid-walk')).toMatchObject({ state: 'awaiting_responder', closed: false });
     });
   });
 
