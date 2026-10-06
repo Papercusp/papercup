@@ -109,6 +109,8 @@ export interface SpecEvidenceForAdequacy {
     filePath: string;
     commitSha: string | null;
     worktreeDirty: boolean | null;
+    /** Server-derived first failing case title from a failed mutation-probe test run. */
+    mutationFailedCaseTitle?: string;
   } | null;
   details: Record<string, unknown>;
   observedAt?: string;
@@ -380,6 +382,7 @@ interface AdequacyDetails {
   coverageRungs?: Partial<Record<'l1' | 'l2' | 'l3' | 'l4', boolean>>;
   scenarioIds?: string[];
   causalPairIds?: string[];
+  testCases?: string[];
   contractMetadataIssues?: string[];
   provisionalProofBase?: boolean;
   /**
@@ -636,6 +639,10 @@ function detailsOf(evidence: SpecEvidenceForAdequacy): AdequacyDetails {
   };
   const scenarioIds = idList('scenarioIds');
   const causalPairIds = idList('causalPairIds');
+  const testCases =
+    Array.isArray(raw.testCases) && raw.testCases.every((value) => typeof value === 'string' && value.length > 0)
+      ? raw.testCases as string[]
+      : undefined;
   const targeted =
     typeof raw.targeted === 'boolean'
       ? raw.targeted
@@ -665,6 +672,7 @@ function detailsOf(evidence: SpecEvidenceForAdequacy): AdequacyDetails {
       : {}),
     ...(scenarioIds ? { scenarioIds } : {}),
     ...(causalPairIds ? { causalPairIds } : {}),
+    ...(testCases ? { testCases } : {}),
     ...(contractMetadataIssues.length > 0 ? { contractMetadataIssues } : {}),
     ...(evidence.provisionalProofBase === true || raw.provisionalProofBase === true
       ? { provisionalProofBase: true }
@@ -1319,8 +1327,9 @@ function appendRatingRerunProbes(
  *   3 — correct-layer requires the declared live/deployed evidence plane on a current binding.
  *   4 — a mutation/counterexample target must be corroborated by successful current test evidence
  *       for its canonical test file on the same clause revision.
+ *   5 — a mutation's measured failed case must exactly appear in that test binding's adequacy.testCases.
  */
-export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 4;
+export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 5;
 
 type MutationTargetClause = Pick<SpecClauseRevision, 'specId' | 'falsifier'>;
 
@@ -1361,7 +1370,7 @@ export function isAcceptedMutationTarget(clause: MutationTargetClause, targeted:
  * clause revision. This prevents a killed mutant from a sibling clause's test suite from
  * satisfying falsifiability or the proof floor by naming this clause in its own binding.
  */
-function clauseBoundMutationTest(
+function clauseBoundCurrentTest(
   clause: SpecClauseRevision,
   mutation: SpecEvidenceForAdequacy,
   evidence: readonly SpecEvidenceForAdequacy[],
@@ -1379,6 +1388,37 @@ function clauseBoundMutationTest(
       row.currentness.overall === 'current' &&
       isSuccessfulRepairedEvidence(row),
   ) ?? null;
+}
+
+function measuredMutationFailedCaseTitle(mutation: SpecEvidenceForAdequacy): string | null {
+  const title = mutation.testRunProvenance?.mutationFailedCaseTitle;
+  if (typeof title !== 'string' || title.length === 0 || title.trim() !== title) return null;
+  for (const character of title) {
+    const code = character.charCodeAt(0);
+    if (code < 0x20 || code === 0x7f) return null;
+  }
+  return title;
+}
+
+function summarizeMutationFailedCaseTitles(mutations: readonly SpecEvidenceForAdequacy[]): string {
+  const titles = mutations
+    .map(measuredMutationFailedCaseTitle)
+    .filter((title): title is string => title !== null);
+  const distinctTitles = [...new Set(titles)].sort((a, b) => a.localeCompare(b));
+  return distinctTitles.length > 0
+    ? `Measured failed case title(s): ${distinctTitles.map((title) => JSON.stringify(title)).join(', ')}.`
+    : 'No well-formed measured failed case title is available.';
+}
+
+function clauseBoundMutationTest(
+  clause: SpecClauseRevision,
+  mutation: SpecEvidenceForAdequacy,
+  evidence: readonly SpecEvidenceForAdequacy[],
+): SpecEvidenceForAdequacy | null {
+  const testBinding = clauseBoundCurrentTest(clause, mutation, evidence);
+  if (!testBinding || mutation.evidenceKind !== 'mutation') return testBinding;
+  const failedCaseTitle = measuredMutationFailedCaseTitle(mutation);
+  return failedCaseTitle && detailsOf(testBinding).testCases?.includes(failedCaseTitle) ? testBinding : null;
 }
 
 function isClauseBoundMutationTest(
@@ -1594,6 +1634,13 @@ export function evaluateSpecTestAdequacy(input: {
   const targetedMutationWithoutTestBinding = boundMutationOrCounterexample.filter(
     (row) =>
       isAcceptedMutationTarget(clause, detailsOf(row).targeted) &&
+      !clauseBoundCurrentTest(clause, row, evidence),
+  );
+  const targetedMutationWithoutMatchingCase = boundMutationOrCounterexample.filter(
+    (row) =>
+      row.evidenceKind === 'mutation' &&
+      isAcceptedMutationTarget(clause, detailsOf(row).targeted) &&
+      clauseBoundCurrentTest(clause, row, evidence) !== null &&
       !isClauseBoundMutationTest(clause, row, evidence),
   );
   const clauseScopedProofBindings = [
@@ -1643,8 +1690,10 @@ export function evaluateSpecTestAdequacy(input: {
       ? `${mutationInCohortNotExecutable.length} mutation or counterexample binding(s) are in the current grading cohort for ${clauseIdentity(clause)} but do not qualify as successful executable evidence (${summarizeExecutableEvidenceGaps(mutationInCohortNotExecutable)}).`
       : mutationOutsideCohort.length > 0
         ? `${mutationOutsideCohort.length} mutation or counterexample binding(s) exist in the exact clause population but are outside the current grading cohort for ${clauseIdentity(clause)}.`
-        : targetedMutationWithoutTestBinding.length > 0
-          ? `${targetedMutationWithoutTestBinding.length} successful mutation or counterexample binding(s) name ${clauseIdentity(clause)} but their canonical test file is not also bound as a successful current test for this clause.`
+      : targetedMutationWithoutTestBinding.length > 0
+        ? `${targetedMutationWithoutTestBinding.length} successful mutation or counterexample binding(s) name ${clauseIdentity(clause)} but their canonical test file is not also bound as a successful current test for this clause.`
+        : targetedMutationWithoutMatchingCase.length > 0
+          ? `${targetedMutationWithoutMatchingCase.length} successful mutation binding(s) name ${clauseIdentity(clause)}, but the measured failed case is missing or is not an exact member of the successful current same-clause adequacy.testCases binding. ${summarizeMutationFailedCaseTitles(targetedMutationWithoutMatchingCase)}`
         : boundMutationOrCounterexample.length > 0
           ? clauseSelfTarget !== null
             ? `Successful mutation or counterexample binding(s) for ${clauseIdentity(clause)} do not target this clause's own specId.`
@@ -1671,6 +1720,8 @@ export function evaluateSpecTestAdequacy(input: {
             suggestion:
               targetedMutationWithoutTestBinding.length > 0
                 ? `Bind a successful test result for the mutation run's canonical test file to ${clauseIdentity(clause)}; adequacy.targeted alone cannot establish that link.`
+                : targetedMutationWithoutMatchingCase.length > 0
+                  ? 'Add the exact measured failed case title from the mutation run to adequacy.testCases on the successful current same-clause test binding; missing or mismatched case identity cannot establish falsifiability.'
                 : `Set adequacy.targeted to ${clauseTargetRequirement}; a boolean or sibling-case target is insufficient.`,
           }
       : attestedFalsifiableOnly.length > 0

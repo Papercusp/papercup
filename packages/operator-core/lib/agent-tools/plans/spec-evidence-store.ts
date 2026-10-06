@@ -1122,6 +1122,7 @@ interface EvidenceRow extends CurrentnessRow {
   test_run_file_path: string | null;
   test_run_commit_sha: string | null;
   test_run_worktree_dirty: boolean | null;
+  mutation_failure_case_title: string | null;
   provisionalProofBase?: boolean;
   provisionalScorecard?: ProvisionalScorecardProof;
 }
@@ -1176,6 +1177,8 @@ export interface ListSpecEvidenceOptions {
   specFingerprint?: string;
   /** Replay the supplied current tuple as a prior server measurement; never re-read live files. */
   replaySnapshot?: boolean;
+  /** Read the measured failing case title for mutation evidence; set only by the adequacy evaluator. */
+  includeMutationFailureCaseTitle?: boolean;
   /** Provenance for a replayed current tuple. */
   currentProvenance?: 'server-measured' | 'partially-server-measured' | 'replayed-snapshot';
   currentness?: Array<'current' | 'stale' | 'unknown'>;
@@ -1696,6 +1699,16 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
            tr.file_path AS test_run_file_path,
            tr.commit_sha AS test_run_commit_sha,
            tr.worktree_dirty AS test_run_worktree_dirty,
+           ${options.includeMutationFailureCaseTitle === true
+             ? tx`CASE
+                 WHEN b.evidence_kind = 'mutation'
+                   AND tr.source = 'mutation-probe'
+                   AND tr.status = 'fail'
+                   AND strpos(tr.output_tail, ' — ') > 0
+                 THEN NULLIF(btrim(split_part(tr.output_tail, ' — ', 1)), '')
+                 ELSE NULL
+               END`
+             : tx`NULL::text`} AS mutation_failure_case_title,
            ${specIsCurrent} AS spec_is_current,
            (b.coverage_evidence_ref IS NOT NULL AND EXISTS (
               SELECT 1 FROM harness_shared.coverage_evidence ce
@@ -1967,6 +1980,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
             filePath: row.test_run_file_path,
             commitSha: row.test_run_commit_sha,
             worktreeDirty: row.test_run_worktree_dirty,
+            ...(row.mutation_failure_case_title ? { mutationFailedCaseTitle: row.mutation_failure_case_title } : {}),
           },
       details: row.provisionalProofBase
         ? {
