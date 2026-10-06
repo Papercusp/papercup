@@ -585,11 +585,15 @@ export interface ChoosePotIntegrationModeDeps {
   setMode?: (input: SetPotIntegrationModeInput) => Promise<SetPotIntegrationModeResult>;
   /** The pot's CURRENT mode (default: readPotIntegrationMode). */
   readMode?: (workspaceId: string, potHomeSlug: string) => Promise<PotIntegrationModeRead>;
-  /** Default: the GitHub PR host's open PRs on `upstreamRemote`, through findStandingPr (any base). */
-  findOpenStandingPr?: (upstreamRemote: string) => Promise<OpenStandingPrLookup>;
+  /**
+   * Default: the GitHub PR host's open PRs on `upstreamRemote`, through findStandingPr (any base).
+   * `forkRepo` ("owner/repo", when the pot's fork is recorded) restricts the match to PRs whose
+   * head lives in this pot's fork, so another pot's PR from the same branch name never counts.
+   */
+  findOpenStandingPr?: (upstreamRemote: string, forkRepo?: string) => Promise<OpenStandingPrLookup>;
 }
 
-async function defaultFindOpenStandingPr(upstreamRemote: string): Promise<OpenStandingPrLookup> {
+async function defaultFindOpenStandingPr(upstreamRemote: string, forkRepo?: string): Promise<OpenStandingPrLookup> {
   try {
     const { createGitHubPrHost } = await import('../../pr-host/github');
     const host = await createGitHubPrHost();
@@ -597,7 +601,8 @@ async function defaultFindOpenStandingPr(upstreamRemote: string): Promise<OpenSt
     const listed = await host.listOpenPrs({ remote: upstreamRemote });
     if (!listed.ok) return { ok: false, error: listed.error.message };
     const { findStandingPr } = await import('./standing-pr');
-    const pr = findStandingPr(listed.data);
+    // A PR whose head repository is unreported still counts: refusing is safer than stranding work.
+    const pr = findStandingPr(listed.data, { forkRepo, unknownHeadRepo: 'include' });
     return { ok: true, pr: pr ? { number: pr.ref.number, url: pr.url } : null };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
@@ -623,8 +628,11 @@ async function guardLeavingWorkingCopy(
   if (current.mode === 'direct' && current.source !== 'error') return null;
   const upstream = input.upstreamRemote ? parseGithubUrl(input.upstreamRemote) : null;
   if (!upstream) return null; // no main repository on GitHub ⇒ no standing PR can exist
+  // No recorded fork ⇒ no fork filter: any standing-branch PR counts (the conservative reading).
+  const fork = input.forkRemote ? parseGithubUrl(input.forkRemote) : null;
   const lookup = await (deps.findOpenStandingPr ?? defaultFindOpenStandingPr)(
     `github.com/${upstream.owner}/${upstream.repo}`,
+    fork ? `${fork.owner}/${fork.repo}` : undefined,
   );
   if (!lookup.ok) {
     return {

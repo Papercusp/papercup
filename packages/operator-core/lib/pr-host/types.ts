@@ -146,6 +146,13 @@ export interface Pr {
   base_ref: string;
   /** Head commit SHA of the PR branch at last fetch. */
   head_sha: string;
+  /**
+   * "owner/repo" of the repository the head branch lives in (GitHub `head.repo.full_name`).
+   * null = the host reported none (the head fork was deleted); undefined = this host does not
+   * report it. A head ref alone is not an identity across forks: two forks of one repository
+   * can each hold a branch with the same name (WI-10006271).
+   */
+  head_repo?: string | null;
   /** Merge commit SHA (only populated when state='merged'). */
   merge_commit_sha: string | null;
   author: PrAuthor;

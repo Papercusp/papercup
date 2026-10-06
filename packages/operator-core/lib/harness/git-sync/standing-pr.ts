@@ -30,6 +30,7 @@ import {
   type StandingPrDecision,
   type StandingPrTrigger,
 } from './decide-standing-pr';
+import { parseGithubUrl } from '../clone-github';
 import { POT_FORK_REMOTE_NAME, type PotIntegrationModeRead } from './pot-integration-mode';
 
 export interface StandingPrDeps {
@@ -70,18 +71,48 @@ function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-/**
- * Pick the standing PR out of the main repository's open PRs. Lowest number wins if several match.
- * Omit `baseBranch` to match a standing PR against ANY target branch (P-019's switch guard: work
- * waiting in an open standing PR is stranded by leaving the working copy, whatever its base).
- */
-export function findStandingPr(prs: readonly Pr[], baseBranch?: string): Pr | null {
+export interface StandingPrMatch {
+  /**
+   * Only PRs targeting this branch. Omit to match ANY target branch (P-019's switch guard: work
+   * waiting in an open standing PR is stranded by leaving the working copy, whatever its base).
+   */
+  baseBranch?: string;
+  /**
+   * The pot's fork as "owner/repo". When set, only a PR whose head lives in that fork is this
+   * pot's standing PR. The head branch name alone also matches another pot's fork of the same
+   * main repository, since every working copy uses {@link STANDING_PR_BRANCH} (WI-10006271).
+   */
+  forkRepo?: string;
+  /**
+   * What to do with a PR whose head repository the host did not report, or whose fork was
+   * deleted, when `forkRepo` is set. Nothing proves such a PR is this pot's.
+   * - 'exclude' (default): skip it. Publishing must never adopt another pot's PR as its own.
+   * - 'include': count it. The switch guard refuses rather than risk stranding work.
+   */
+  unknownHeadRepo?: 'exclude' | 'include';
+}
+
+/** "owner/repo" of a GitHub remote in any form the registry stores, or undefined if it is not one. */
+export function githubRepoOf(remote: string | null | undefined): string | undefined {
+  const parsed = remote ? parseGithubUrl(remote) : null;
+  return parsed ? `${parsed.owner}/${parsed.repo}` : undefined;
+}
+
+/** Pick the standing PR out of the main repository's open PRs. Lowest number wins if several match. */
+export function findStandingPr(prs: readonly Pr[], match: StandingPrMatch = {}): Pr | null {
+  const fork = match.forkRepo?.toLowerCase();
+  const inFork = (p: Pr): boolean => {
+    if (fork === undefined) return true;
+    if (!p.head_repo) return match.unknownHeadRepo === 'include';
+    return p.head_repo.toLowerCase() === fork;
+  };
   const matches = prs
     .filter(
       (p) =>
         p.state === 'open' &&
         p.head_ref === STANDING_PR_BRANCH &&
-        (baseBranch === undefined || p.base_ref === baseBranch),
+        (match.baseBranch === undefined || p.base_ref === match.baseBranch) &&
+        inFork(p),
     )
     .sort((a, b) => a.ref.number - b.ref.number);
   return matches[0] ?? null;
@@ -132,7 +163,10 @@ export async function publishStandingPr(
   if (!listed.ok) {
     return { ok: false, stage: 'list', error: redactToken(`listing open pull requests failed: ${listed.error.message}`) };
   }
-  const existing = findStandingPr(listed.data, input.baseBranch);
+  const existing = findStandingPr(listed.data, {
+    baseBranch: input.baseBranch,
+    forkRepo: githubRepoOf(input.forkRemote),
+  });
 
   const decision = decideStandingPr({
     ...base,

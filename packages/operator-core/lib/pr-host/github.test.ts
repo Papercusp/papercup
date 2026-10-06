@@ -63,6 +63,13 @@ describe('GitHub PR viewer', () => {
     expect(r.ok && r.data.map(p => [p.ref.number, p.state])).toEqual([[42, 'open'], [43, 'merged'], [44, 'closed']]);
     expect(oc.paginate).toHaveBeenCalledWith(oc.pulls.list, expect.objectContaining({ state: 'all', per_page: 100 }));
   });
+  it("reports each PR's head repository, null when the head fork is gone (WI-10006271)", async () => {
+    const fromFork = { ...makePrData(50), head: { sha: 'f1', ref: 'fix/thing', repo: { full_name: 'potbot/repo' } } };
+    const forkDeleted = { ...makePrData(51), head: { sha: 'f2', ref: 'fix/thing', repo: null } };
+    const oc = mockOctokit({ pullsList: { data: [fromFork, forkDeleted] } });
+    const r = await new GitHubPrHost(oc).listPrs({ remote: REMOTE, state: 'all' });
+    expect(r.ok && r.data.map((p) => [p.ref.number, p.head_repo])).toEqual([[50, 'potbot/repo'], [51, null]]);
+  });
   it('loads commits, patches, target and diff without calling absent checks green', async () => {
     const oc = mockOctokit({});
     vi.mocked(oc.pulls.get).mockImplementation(async (args) => ({ data: args?.mediaType ? 'diff --git file.ts\n+safe' : makePrData() }) as unknown as Awaited<ReturnType<Octokit['pulls']['get']>>);

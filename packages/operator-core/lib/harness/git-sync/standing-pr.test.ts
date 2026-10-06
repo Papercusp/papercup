@@ -22,6 +22,8 @@ function pr(over: Partial<Pr> & { number: number }): Pr {
     head_ref: STANDING_PR_BRANCH,
     base_ref: 'main',
     head_sha: SHA_A,
+    // The pot's own fork (input().forkRemote) unless a case says otherwise.
+    head_repo: 'potbot/repo',
     merge_commit_sha: null,
     author: { github_user_id: 1, github_login: 'bot' },
     reviewers_requested: [],
@@ -165,8 +167,56 @@ describe('findStandingPr', () => {
       pr({ number: 2, head_ref: 'other' }),
       pr({ number: 1, state: 'closed' }),
     ];
-    expect(findStandingPr(prs, 'main')?.ref.number).toBe(5);
-    expect(findStandingPr([], 'main')).toBeNull();
+    expect(findStandingPr(prs, { baseBranch: 'main' })?.ref.number).toBe(5);
+    expect(findStandingPr([], { baseBranch: 'main' })).toBeNull();
+  });
+
+  // WI-10006271: every working copy pushes the same branch name, so two pots forking one main
+  // repository each have an open PR with head_ref === STANDING_PR_BRANCH. Only the PR whose head
+  // lives in THIS pot's fork is its standing PR.
+  it('with forkRepo, matches only the PR whose head lives in that fork (case-insensitive)', () => {
+    const prs = [
+      pr({ number: 3, head_repo: 'otherbot/repo' }),
+      pr({ number: 8, head_repo: 'PotBot/Repo' }),
+      pr({ number: 11, head_repo: 'potbot/repo' }),
+    ];
+    expect(findStandingPr(prs, { forkRepo: 'potbot/repo' })?.ref.number).toBe(8);
+    expect(findStandingPr(prs, { forkRepo: 'otherbot/repo' })?.ref.number).toBe(3);
+    expect(findStandingPr(prs, { forkRepo: 'thirdbot/repo' })).toBeNull();
+    // No forkRepo: the head ref alone, lowest number (the pre-fix reading, kept for unknown forks).
+    expect(findStandingPr(prs)?.ref.number).toBe(3);
+  });
+
+  it('a PR with no reported head repository is excluded by default and counted with include', () => {
+    const prs = [pr({ number: 4, head_repo: null }), pr({ number: 6, head_repo: undefined })];
+    expect(findStandingPr(prs, { forkRepo: 'potbot/repo' })).toBeNull();
+    expect(findStandingPr(prs, { forkRepo: 'potbot/repo', unknownHeadRepo: 'include' })?.ref.number).toBe(4);
+  });
+});
+
+describe('publishStandingPr across forks (WI-10006271)', () => {
+  it("another pot's open PR on the same branch name is not adopted: this pot opens its own", async () => {
+    const theirs = pr({ number: 5, head_repo: 'otherbot/repo', head_sha: SHA_A });
+    const { deps, calls } = fakeDeps({ open: [theirs] });
+    const res = await publishStandingPr(input(), deps);
+    expect(res).toMatchObject({ ok: true, decision: { action: 'open' }, prNumber: 42 });
+    expect(calls.open).toHaveLength(1);
+  });
+
+  it("this pot's PR is found even when another pot's lower-numbered PR shares the branch name", async () => {
+    const theirs = pr({ number: 5, head_repo: 'otherbot/repo', head_sha: SHA_A });
+    const ours = pr({ number: 9, head_repo: 'potbot/repo', head_sha: SHA_A });
+    const { deps, calls } = fakeDeps({ open: [theirs, ours] });
+    const res = await publishStandingPr(input(), deps);
+    expect(res).toMatchObject({ ok: true, decision: { action: 'update', fromSha: SHA_A, headSha: SHA_B }, prNumber: 9 });
+    expect(calls.open).toEqual([]);
+  });
+
+  it('a PR whose head repository is unreported is never adopted as the standing PR', async () => {
+    const { deps, calls } = fakeDeps({ open: [pr({ number: 5, head_repo: null })] });
+    const res = await publishStandingPr(input(), deps);
+    expect(res).toMatchObject({ ok: true, decision: { action: 'open' } });
+    expect(calls.open).toHaveLength(1);
   });
 });
 

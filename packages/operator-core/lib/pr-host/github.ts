@@ -113,6 +113,7 @@ export class GitHubPrHost implements PrHost {
         head_ref: data.head.ref,
         base_ref: data.base.ref,
         head_sha: data.head.sha,
+        head_repo: data.head.repo?.full_name ?? null,
         merge_commit_sha: null,
         author: { github_user_id: data.user?.id ?? 0, github_login: data.user?.login ?? '' },
         reviewers_requested: [],
@@ -158,6 +159,7 @@ export class GitHubPrHost implements PrHost {
         head_ref: data.head.ref,
         base_ref: data.base.ref,
         head_sha: data.head.sha,
+        head_repo: data.head.repo?.full_name ?? null,
         merge_commit_sha: (data as { merge_commit_sha?: string | null }).merge_commit_sha ?? null,
         author: { github_user_id: data.user?.id ?? 0, github_login: data.user?.login ?? '' },
         reviewers_requested: (data.requested_reviewers ?? []).map((r) => ({
@@ -301,6 +303,7 @@ export class GitHubPrHost implements PrHost {
         head_ref: d.head.ref,
         base_ref: d.base.ref,
         head_sha: d.head.sha,
+        head_repo: d.head.repo?.full_name ?? null,
         merge_commit_sha: d.merged_at ? d.merge_commit_sha ?? null : null,
         author: { github_user_id: d.user?.id ?? 0, github_login: d.user?.login ?? '' },
         reviewers_requested: (d.requested_reviewers ?? []).map((r) => ({

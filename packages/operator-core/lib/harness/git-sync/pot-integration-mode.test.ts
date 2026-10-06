@@ -617,11 +617,19 @@ describe('choosePotIntegrationMode (P-019: leaving a working copy waits for its 
       expect(!r.ok && r.message).toContain('#7');
       expect(!r.ok && r.message).toContain(PR.url);
       expect(d.setMode).not.toHaveBeenCalled();
-      // the lookup is asked about the MAIN repository, normalised from the registry remote
-      expect(d.findOpenStandingPr).toHaveBeenCalledWith('github.com/acme/widget');
+      // the lookup is asked about the MAIN repository, normalised from the registry remote, and
+      // restricted to PRs from THIS pot's fork (WI-10006271: the branch name alone is shared)
+      expect(d.findOpenStandingPr).toHaveBeenCalledWith('github.com/acme/widget', 'acme-bot/widget');
       expect(d.readMode).toHaveBeenCalledWith('ws', 'pot');
     },
   );
+
+  it('no recorded fork: the lookup is unfiltered, so any standing-branch PR still holds the switch', async () => {
+    const d = deps();
+    const r = await choosePotIntegrationMode(input({ forkRemote: null }), d);
+    expect(r).toMatchObject({ ok: false, error: 'standing_pr_open' });
+    expect(d.findOpenStandingPr).toHaveBeenCalledWith('github.com/acme/widget', undefined);
+  });
 
   it('once the PR is merged or closed (none open), the switch to straight in goes through', async () => {
     const d = deps({ mode: 'review', source: 'set' }, { ok: true, pr: null });

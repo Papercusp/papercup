@@ -27,6 +27,8 @@ import type { Pr } from '../../pr-host/types';
 const WS = 'ws-p015';
 const pk = (fill: number): string => Buffer.alloc(32, fill).toString('base64');
 const FORK = 'https://github.com/pot-owner/repo.git';
+/** FORK as the "owner/repo" GitHub reports in a PR's head.repo.full_name. */
+const FORK_REPO = 'pot-owner/repo';
 
 describe('SPEC-P-015-require-suite — working-copy mode needs a test suite (real hive-settings store)', () => {
   let db: OrgTestDb;
@@ -152,8 +154,9 @@ describe('SPEC-P-019-guarded-switch — leaving a working copy waits for its ope
     (await getHiveSetting(WS, slug, POT_INTEGRATION_SETTING_KEY, sql))?.value ?? null;
 
   /** GitHub at its one boundary: the main repository's open PRs, matched by the REAL findStandingPr. */
-  const openPrs = (prs: Array<{ number: number; head_ref: string; base_ref: string }>) =>
-    vi.fn(async (remote: string) => {
+  // Same matching as the default lookup: scoped to the pot's fork, unreported head repo counted.
+  const openPrs = (prs: Array<{ number: number; head_ref: string; base_ref: string; head_repo?: string }>) =>
+    vi.fn(async (remote: string, forkRepo?: string) => {
       expect(remote).toBe('github.com/main-owner/repo');
       const listed = prs.map(
         (p) =>
@@ -163,10 +166,11 @@ describe('SPEC-P-019-guarded-switch — leaving a working copy waits for its ope
             head_ref: p.head_ref,
             base_ref: p.base_ref,
             head_sha: 'a'.repeat(40),
+            head_repo: p.head_repo ?? FORK_REPO,
             url: `https://github.com/main-owner/repo/pull/${p.number}`,
           }) as unknown as Pr,
       );
-      const pr = findStandingPr(listed);
+      const pr = findStandingPr(listed, { forkRepo, unknownHeadRepo: 'include' });
       return { ok: true as const, pr: pr ? { number: pr.ref.number, url: pr.url } : null };
     });
 
@@ -200,6 +204,19 @@ describe('SPEC-P-019-guarded-switch — leaving a working copy waits for its ope
     expect(!r.ok && r.message).toContain('#7');
     expect(lookup).toHaveBeenCalledTimes(1);
     expect(await stored('guarded')).toBe('review');
+  });
+
+  it("another pot's standing PR (same branch name, different fork) does not hold this pot's switch", async () => {
+    expect(
+      await setPotIntegrationMode({ workspaceId: WS, potHomeSlug: 'guarded', mode: 'review', greenCmd: 'npm test', forkRemote: FORK, sql }),
+    ).toEqual({ ok: true, mode: 'review' });
+
+    const lookup = openPrs([{ number: 5, head_ref: STANDING_PR_BRANCH, base_ref: 'main', head_repo: 'other-pot-bot/repo' }]);
+    const r = await switchToDirect(lookup);
+
+    expect(lookup).toHaveBeenCalledWith('github.com/main-owner/repo', FORK_REPO);
+    expect(r).toEqual({ ok: true, mode: 'direct', fork: null });
+    expect(await stored('guarded')).toBe('direct');
   });
 
   it('after the PR is merged or closed (only unrelated PRs open), the switch goes through and is stored', async () => {
