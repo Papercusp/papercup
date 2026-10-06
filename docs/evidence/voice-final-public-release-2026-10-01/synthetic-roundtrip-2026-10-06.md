@@ -52,7 +52,7 @@ Re-run once `:3170` carried the D-007 availability change
 
 Log: `.papercusp/scratch/d006-tui-el-run1.log` (`EXIT=0`).
 
-## Desktop — in progress
+## Desktop — PASS (run 6)
 
 The Playwright spec `apps/operator/e2e/voice-synthetic-roundtrip.spec.ts` runs inside an
 isolated `scripts/verify-tauri-headless.sh` rig (isolated database and WebView profile).
@@ -94,6 +94,29 @@ until the client reports the expected engine before it speaks.
 
 Log: `.papercusp/scratch/d006-rig-run5.log` (2 passed, 1 failed, 4 not run). Run 6 waits for an
 SPA build that contains the fix.
+
+### Run 6 (2026-10-06T18:01:03Z, run `20261006T180103Z-1545361`) — PASS, 7/7
+
+The rig waited for an SPA build containing the WI-10006826 fix
+(`VERIFY_TAURI_REQUIRE_BUILT=apps/operator/app/_components/voice/voice-mode.ts`; build stamp
+18:03:20Z, newer than the edit). `voice-mode.ts` was committed by git-sync in `1256f9f789`
+(18:03:02Z). Seed: `RIG_SEED voice_credentials rc=0 0 rows=1`; rig health `kokoro:true`,
+`elevenlabs:true`.
+
+| Leg | What it proves | Result |
+|---|---|---|
+| Push-to-talk | fake-mic Kokoro pangram → real PTT capture path → local Whisper transcript | PASS (7.5 s) |
+| Reply playback (Kokoro) | `speak()` → `operator-tts-preview` engine=kokoro → captured audio → Whisper matches the reply | PASS (6.0 s) |
+| Reply playback (ElevenLabs) | user engine set to ElevenLabs → client requests engine=elevenlabs → captured audio → Whisper matches | PASS (6.5 s) |
+| Stop | cancelling mid-reply ends playback and it stays stopped | PASS (4.5 s) |
+| Denial | a blocked microphone names the permission problem | PASS (3.1 s) |
+| Retry | an STT failure is reported, and the next hold transcribes | PASS (13.2 s) |
+| Brain | spoken question → posted turn → agent answer → answer spoken → captured and transcribed | PASS (8.4 s) |
+
+Result line: `HARNESS_RESULT harness=verify-tauri-headless verdict=pass run=20261006T180103Z-1545361`;
+Playwright `7 passed (51.9s)`. Log: `.papercusp/scratch/d006-rig-run6.log`. This closes the
+live check for WI-10006826: the ElevenLabs leg failed in run 5 on the cached `kokoro` engine and
+passes in run 6 with the cache removed.
 
 ## Hosted portal — pending
 
