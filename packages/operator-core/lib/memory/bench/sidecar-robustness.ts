@@ -9,7 +9,13 @@
  * Synthetic integration runs qualify this collector; only a real-weight run
  * qualifies a model. Nothing here is retrieval-quality or adoption evidence.
  *
- * Timers: one setTimeout chain for /healthz sampling (no bare setInterval).
+ * Timers: one setTimeout chain for /healthz sampling and one for the
+ * main-thread stall detector (no bare setInterval).
+ *
+ * A run whose main thread was NOT SCHEDULED for a stall window (frozen by the
+ * pc-heavy PSI controller, stopped, ...) is graded 'invalid', never pass or
+ * fail: its timing evidence describes the freezer, not the sidecar (plan
+ * mdenseon-adoption-measurements-2026-10-01 D-010).
  */
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -17,6 +23,7 @@ import path from 'node:path';
 import { performance, monitorEventLoopDelay } from 'node:perf_hooks';
 import { z } from 'zod';
 import { sidecarEmbedBatch, SidecarEmbedHttpError, SIDECAR_MAX_TEXT_CHARS, type SidecarEmbedResponse } from '@papercusp/memory';
+import { startStallDetector } from './harness-stall-detector';
 import { fingerprintFile, hashJson } from './measurement-manifest';
 import { latencySummary } from './sidecar-performance';
 
@@ -135,7 +142,10 @@ export interface HealthSample {
 }
 export interface WorkerStateView { alive: boolean; disabled: boolean; pendingCount: number }
 export interface RobustnessDeps {
-  /** Forcefully terminate the embed worker while inference is in flight. */
+  /** Tear the embed worker down while inference is in flight. Its in-flight
+   * work must be released synchronously; the returned promise resolves once the
+   * OLD worker is gone (shutdownLocalEmbedder awaits a bounded retire drain,
+   * WI-10006567), while new work may already be served by a replacement. */
   crashWorker: () => Promise<void>;
   workerState: () => WorkerStateView;
   /** Server-side open work requests (EmbedSidecarHandle.activity). */
@@ -206,6 +216,7 @@ export async function collectSidecarRobustness(url: string, expected: Robustness
   const eventLoop: Partial<Record<RobustnessPhase, { p50Ms: number; p99Ms: number; maxMs: number }>> = {};
   const references = new Map<string, number[]>();
   let phase: RobustnessPhase = 'reference', sequence = 0;
+  const stallDetector = startStallDetector({ label: () => phase, now });
 
   // /healthz sampler: a setTimeout chain so a slow probe never overlaps itself.
   let sampling = true, tickTimer: NodeJS.Timeout | undefined, tickInFlight: Promise<void> | undefined;
@@ -341,12 +352,23 @@ export async function collectSidecarRobustness(url: string, expected: Robustness
           await sleep(5);
         }
         const crashAtMs = now();
-        await deps.crashWorker();
+        // NOT awaited before probing (D-010): crashWorker resolves only once the
+        // OLD worker has drained its native run, while a replacement serves new
+        // work at once. Awaiting it first timed the drain, not the recovery.
+        let retiredAtMs: number | null = null, retireError: { error: unknown } | null = null;
+        const retiring = deps.crashWorker().then(() => { retiredAtMs = now(); }, (error: unknown) => { retireError = { error }; });
         const workerAfterCrash = deps.workerState();
         await Promise.all(pending);
         const recoveryProbe = await probe(cycle);
+        const workerAfterRecovery = deps.workerState();
+        // The old worker must be gone within the same frozen recovery bound.
+        const retireBound = Math.max(0, crashAtMs + input.crash.recoveryWithinMs - now());
+        let boundTimer: NodeJS.Timeout | undefined;
+        await Promise.race([retiring, new Promise<void>((resolve) => { boundTimer = setTimeout(resolve, retireBound); })]);
+        clearTimeout(boundTimer);
+        if (retireError) throw (retireError as { error: unknown }).error;
         cycles.push({ cycle, crashAtMs, startedBeforeCrash, workerAfterCrash, recoveryProbeSequence: recoveryProbe.sequence,
-          workerAfterRecovery: deps.workerState() });
+          workerAfterRecovery, retiredAtMs: retiredAtMs as number | null });
       }
       return cycles;
     });
@@ -363,12 +385,14 @@ export async function collectSidecarRobustness(url: string, expected: Robustness
     });
 
     sampling = false; clearTimeout(tickTimer); await tickInFlight;
+    const harnessStalls = stallDetector.stop();
     // Concurrent requests settle out of order; the report is keyed by issue order.
     samples.sort((a, b) => a.sequence - b.sequence);
-    return { formatVersion: 1 as const, pid: process.pid, expected, inputSha256: hashJson(input), startedAt,
+    return { formatVersion: 2 as const, pid: process.pid, expected, inputSha256: hashJson(input), startedAt,
       finishedAt: new Date().toISOString(), samples, health, eventLoop,
+      stallDetector: { source: stallDetector.source, config: stallDetector.config }, harnessStalls,
       phases: { saturation, timeout, cancellation, crash, soak } };
-  } finally { sampling = false; clearTimeout(tickTimer); await tickInFlight?.catch(() => {}); }
+  } finally { sampling = false; clearTimeout(tickTimer); stallDetector.stop(); await tickInFlight?.catch(() => {}); }
 }
 export type RobustnessReport = Awaited<ReturnType<typeof collectSidecarRobustness>>;
 
@@ -380,7 +404,9 @@ const p99 = (values: number[]) => latencySummary(values).p99Ms;
  * report cannot be graded at all. Behavioural defects are returned as named
  * failures so a real run that fails a bar is recorded, not lost. */
 export function summarizeRobustnessReport(input: RobustnessInput, expected: RobustnessIdentity, report: RobustnessReport) {
-  if (report.formatVersion !== 1 || report.inputSha256 !== hashJson(input) || hashJson(report.expected) !== hashJson(expected)) {
+  // formatVersion 2 (D-010): v1 reports lack the stall record and timed the
+  // retire drain as recovery, so they can never be graded as acceptance.
+  if (report.formatVersion !== 2 || report.inputSha256 !== hashJson(input) || hashJson(report.expected) !== hashJson(expected)) {
     throw new Error('robustness report input/identity binding mismatch');
   }
   const bySequence = new Map(report.samples.map((s) => [s.sequence, s]));
@@ -472,6 +498,9 @@ export function summarizeRobustnessReport(input: RobustnessInput, expected: Robu
     if (!probeSample || probeSample.role !== 'probe' || probeSample.phase !== 'crash' || probeSample.cycle !== c.cycle) throw new Error('crash recovery probe is unbound');
     if (probeSample.settledAtMs - c.crashAtMs > input.crash.recoveryWithinMs) fail(`crash cycle ${c.cycle}: recovery took ${probeSample.settledAtMs - c.crashAtMs}ms`);
     if (!c.workerAfterRecovery.alive || c.workerAfterRecovery.disabled) fail(`crash cycle ${c.cycle}: worker not alive/enabled after recovery`);
+    if (c.retiredAtMs === null || c.retiredAtMs - c.crashAtMs > input.crash.recoveryWithinMs) {
+      fail(`crash cycle ${c.cycle}: old worker not retired within ${input.crash.recoveryWithinMs}ms`);
+    }
   }
 
   const soak = report.phases.soak, soakLoad = of('soak', 'load');
@@ -506,7 +535,14 @@ export function summarizeRobustnessReport(input: RobustnessInput, expected: Robu
     const ok = of(phase, 'load').filter((s) => s.outcome === 'ok').map((s) => s.latencyMs);
     return ok.length ? latencySummary(ok) : null;
   };
-  return { verdict: failures.length ? 'fail' as const : 'pass' as const, failures,
+  // D-010: a window in which the harness main thread (which also hosts the
+  // isolated sidecar) neither ran nor waited to run voids every timing bar.
+  // Invalid is never pass and never fail; the failures stay listed for diagnosis.
+  const notScheduled = report.harnessStalls.filter((s) => s.kind === 'not-scheduled');
+  const invalidReasons = notScheduled.map((s) =>
+    `main thread not scheduled for ${Math.round(s.gapMs)}ms in ${s.labelAtStart === s.label ? s.label : `${s.labelAtStart}->${s.label}`} at ${Math.round(s.atMs)}ms`);
+  const verdict = invalidReasons.length ? 'invalid' as const : failures.length ? 'fail' as const : 'pass' as const;
+  return { verdict, failures, invalidReasons, harnessStalls: report.harnessStalls, stallDetector: report.stallDetector,
     expected, samples: report.samples.length, healthSamples: report.health.length, healthzP99Ms: healthP99,
     latency: { concurrency: latency('concurrency'), saturation: latency('saturation'), soak: latency('soak') },
     soak: { lateEarlyP95Ratio: soakRatio, rssGrowthMiB, requests: soakLoad.length },
@@ -514,7 +550,8 @@ export function summarizeRobustnessReport(input: RobustnessInput, expected: Robu
       interrupted: of('crash', 'load').filter((s) => s.cycle === c.cycle && s.outcome !== 'ok').length,
       rescued: of('crash', 'load').filter((s) => s.cycle === c.cycle && s.outcome === 'ok').length,
       workerAfterCrash: c.workerAfterCrash,
-      recoveredMs: bySequence.get(c.recoveryProbeSequence)!.settledAtMs - c.crashAtMs })),
+      recoveredMs: bySequence.get(c.recoveryProbeSequence)!.settledAtMs - c.crashAtMs,
+      retiredMs: c.retiredAtMs === null ? null : c.retiredAtMs - c.crashAtMs })),
     cancellation: { releaseMs: cancel.releaseMs, drainMs: cancel.drain.afterMs, atAbort: cancel.atAbort },
     // Reported, not gated: whole-process RSS by phase (a crash rescue that loads
     // a second, main-thread model copy shows up here, outside the soak window).

@@ -22,7 +22,8 @@ const raw = {
 const expected: RobustnessIdentity = { model: 'mdenseon', modelRev: 'rev', runtime: 'node-onnx-worker', dims: 768 };
 
 /** The smallest structurally complete report for `raw`; each knob breaks one bar. */
-function report(input: RobustnessInput, knobs: { longMs?: number; soakLateMs?: number; rssLateMiB?: number; healthRttMs?: number; drop?: boolean } = {}): RobustnessReport {
+function report(input: RobustnessInput, knobs: { longMs?: number; soakLateMs?: number; rssLateMiB?: number; healthRttMs?: number; drop?: boolean;
+  retiredAfterMs?: number | null; stalls?: RobustnessReport['harnessStalls'] } = {}): RobustnessReport {
   const samples: RobustnessSample[] = [];
   let t = 0;
   const add = (phase: RobustnessSample['phase'], role: RobustnessSample['role'], over: Partial<RobustnessSample> = {}) => {
@@ -54,14 +55,18 @@ function report(input: RobustnessInput, knobs: { longMs?: number; soakLateMs?: n
     samples.forEach((s, i) => { s.sequence = i; });
   }
   const drained = { drained: true, afterMs: 1 };
-  return { formatVersion: 1, pid: 1, expected, inputSha256: hashJson(input), startedAt: 'x', finishedAt: 'y', samples, health,
+  const retiredAfterMs = knobs.retiredAfterMs === undefined ? 30 : knobs.retiredAfterMs;
+  return { formatVersion: 2, pid: 1, expected, inputSha256: hashJson(input), startedAt: 'x', finishedAt: 'y', samples, health,
     eventLoop: Object.fromEntries(ROBUSTNESS_PHASES.map((p) => [p, { p50Ms: 1, p99Ms: 2, maxMs: 3 }])),
+    stallDetector: { source: 'schedstat', config: { tickMs: 100, stallMs: 1000, scheduledFractionMin: 0.1 } },
+    harnessStalls: knobs.stalls ?? [],
     phases: { saturation: { burstWallMs: 20, drain: drained }, timeout: { referenceLongLatencyMs: knobs.longMs ?? 400, recovery: drained },
       cancellation: { atAbort: { depth: 0, active: 1 }, abortedAtMs: 1, releaseMs: 3, drain: drained,
         workerAfter: { alive: true, disabled: false, pendingCount: 0 } },
       crash: [{ cycle: 0, crashAtMs, startedBeforeCrash: { active: 1, pending: 1 }, workerAfterCrash: { alive: false, disabled: false, pendingCount: 0 },
         recoveryProbeSequence: samples.findIndex((s) => s.phase === 'crash' && s.role === 'probe'),
-        workerAfterRecovery: { alive: true, disabled: false, pendingCount: 0 } }],
+        workerAfterRecovery: { alive: true, disabled: false, pendingCount: 0 },
+        retiredAtMs: retiredAfterMs === null ? null : crashAtMs + retiredAfterMs }],
       soak: { startedAtMs: soakStart, endedAtMs: soakEnd } } };
 }
 
@@ -102,7 +107,33 @@ describe('robustness verdict re-derived from raw samples', () => {
     expect(summary.failures).toEqual([]);
     expect(summary.verdict).toBe('pass');
     expect(summary.crash).toEqual([{ cycle: 0, startedBeforeCrash: { active: 1, pending: 1 }, interrupted: 1, rescued: 0,
-      workerAfterCrash: { alive: false, disabled: false, pendingCount: 0 }, recoveredMs: expect.any(Number) }]);
+      workerAfterCrash: { alive: false, disabled: false, pendingCount: 0 }, recoveredMs: expect.any(Number), retiredMs: 30 }]);
+    expect(summary.invalidReasons).toEqual([]);
+  });
+  it('fails when the old worker is not retired within the recovery bound, or never', () => {
+    for (const retiredAfterMs of [1001, null]) {
+      const summary = summarizeRobustnessReport(input, expected, report(input, { retiredAfterMs }));
+      expect(summary.verdict).toBe('fail');
+      expect(summary.failures).toContain('crash cycle 0: old worker not retired within 1000ms');
+    }
+  });
+  it('grades a run whose main thread was not scheduled as invalid — never pass, never fail (D-010)', () => {
+    const frozen = { labelAtStart: 'soak' as const, label: 'soak' as const, atMs: 400, gapMs: 21423, runMs: 2, waitMs: 1, kind: 'not-scheduled' as const };
+    const clean = summarizeRobustnessReport(input, expected, report(input, { stalls: [frozen] }));
+    expect(clean.verdict).toBe('invalid');
+    expect(clean.invalidReasons).toEqual(['main thread not scheduled for 21423ms in soak at 400ms']);
+    // A run that ALSO failed a bar is still invalid, with its failures kept for diagnosis.
+    const failing = summarizeRobustnessReport(input, expected, report(input, { stalls: [frozen], soakLateMs: 40 }));
+    expect(failing.verdict).toBe('invalid');
+    expect(failing.failures.some((f) => /soak late\/early p95 ratio/.test(f))).toBe(true);
+    // A BUSY stall is the code under test blocking its own loop: it never excuses anything.
+    const busy = summarizeRobustnessReport(input, expected, report(input, { stalls: [{ ...frozen, runMs: 21000, kind: 'busy' }] }));
+    expect(busy.verdict).toBe('pass');
+    expect(busy.harnessStalls).toHaveLength(1);
+  });
+  it('refuses a formatVersion 1 report, which timed the retire drain as recovery and recorded no stalls', () => {
+    expect(() => summarizeRobustnessReport(input, expected, { ...report(input), formatVersion: 1 } as unknown as RobustnessReport))
+      .toThrow(/binding mismatch/);
   });
   it.each([
     ['a timeout phase whose long request beats the deadline', { longMs: 50 }, /timeout phase is vacuous/],

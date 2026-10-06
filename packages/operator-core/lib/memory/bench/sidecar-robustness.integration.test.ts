@@ -8,7 +8,9 @@ import { collectSidecarRobustness, parseRobustnessInput, summarizeRobustnessRepo
  * terminate path does), and a respawn on the next call. It ignores
  * AbortSignal like the real worker, so started work keeps its queue slot.
  * Collector qualification only — real-weight runs qualify a model. */
-function syntheticWorker(opts: { baseMs: number; msPerChar: number; driftAfterCrash?: boolean; hangOnCrash?: boolean }) {
+function syntheticWorker(opts: { baseMs: number; msPerChar: number; driftAfterCrash?: boolean; hangOnCrash?: boolean;
+  /** Resolve crash() only after this long, like shutdownLocalEmbedder awaiting the old worker's retire drain. */
+  retireDelayMs?: number }) {
   let alive = false, crashes = 0, nextId = 0;
   const pending = new Map<number, { reject: (error: Error) => void; timer: NodeJS.Timeout }>();
   const vectorFor = (text: string) => {
@@ -31,6 +33,7 @@ function syntheticWorker(opts: { baseMs: number; msPerChar: number; driftAfterCr
       const error = new Error(`embedder worker was shut down while ${pending.size} request(s) were in flight`);
       for (const [, p] of pending) { clearTimeout(p.timer); p.reject(error); }
       pending.clear();
+      if (opts.retireDelayMs) await new Promise<void>((resolve) => { setTimeout(resolve, opts.retireDelayMs); });
     },
     state: () => ({ alive, disabled: false, pendingCount: pending.size, keepAlive: false }),
   };
@@ -91,6 +94,20 @@ describe('sidecar robustness collector through a real HTTP sidecar', () => {
     expect(report.phases.cancellation.atAbort).toEqual({ depth: 1, active: 2 });
     expect(summary.soak.requests).toBeGreaterThan(10);
     expect(report.health.length).toBeGreaterThan(20);
+  }, 60000);
+
+  it('times recovery from the replacement worker, not the old worker\'s retire drain (D-010)', async () => {
+    // The drain (2.5s) is under the 3s bound, but a probe that waited for it would
+    // report >= 2.5s of "recovery" for a service that answered at once.
+    const { report } = await run(syntheticWorker({ baseMs: 15, msPerChar: 1, retireDelayMs: 2500 }));
+    const summary = summarizeRobustnessReport(input, expected, report);
+    expect(summary.failures).toEqual([]);
+    expect(['pass', 'invalid']).toContain(summary.verdict);
+    for (const c of summary.crash) {
+      expect(c.recoveredMs).toBeLessThan(1000);
+      expect(c.retiredMs).toBeGreaterThanOrEqual(2400);
+    }
+    expect(report.stallDetector.source).toMatch(/^(schedstat|thread-cpu)$/);
   }, 60000);
 
   it('fails the verdict when a restarted worker answers from a different vector space', async () => {
