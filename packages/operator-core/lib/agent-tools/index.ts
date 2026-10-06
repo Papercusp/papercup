@@ -1709,6 +1709,10 @@ import './triggers/rotate-webhook-secret';
 import './triggers/bind';
 import './triggers/arm';
 import './triggers/disarm';
+import './trigger-packs/review';
+import './trigger-packs/arm';
+import './trigger-packs/uninstall';
+import './trigger-packs/export';
 import './triggers/run-with-last-event';
 import './triggers/status';
 // WI-2143575 — the READ half of the trigger pair. The private ingest is no
