@@ -4,9 +4,9 @@
   "name": "R-24: the hosted cloud tier provisions no service-owned Anthropic credentials into a customer workspace",
   "framework": "operational",
   "command": [
-    "python3 .papercusp/scratch/osr/r1006/r24-live.py (HTTP probes of the running :3880 hosted runtime; mounted-route census of hosted-runtime.ts; live papercusp DB census via sudo -n -u postgres psql)"
+    "python3 .papercusp/scratch/osr/r1006/r24-live-v2.py (HTTP probes of the running :3880 hosted runtime; mounted-route census of hosted-runtime.ts; live papercusp DB census via sudo -n -u postgres psql)"
   ],
-  "startedAt": "2026-10-06T05:16:32.706338Z",
+  "startedAt": "2026-10-06T12:07:47.029428Z",
   "evidencePlane": "live",
   "plan": "open-source-release-2026-09-29",
   "specId": "R-24",
@@ -15,7 +15,7 @@
     "AUTO-BAR-R-24-P-019"
   ],
   "decision": "open-source-release-2026-09-29#D-024",
-  "subjectCommit": "90e6465ad21b79142bac4853bb1c9c958f868f41",
+  "subjectCommit": "72f1e3cdbd965945216a036d48e5a5e3fb78cd3f",
   "workItemId": "WI-10003960",
   "servingObservation": {
     "url": "http://127.0.0.1:3880/api/health",
@@ -25,7 +25,7 @@
       "service": "papercusp-operator",
       "sha": "2041f3e9c7",
       "version": "0.0.1",
-      "ts": "2026-10-06T05:16:32.720Z"
+      "ts": "2026-10-06T12:07:47.051Z"
     }
   },
   "mountedRouteControl": {
@@ -411,6 +411,19 @@
         "admission_family": "agent-forwarded-reference",
         "bind_step_delivery": "forwarded-agent"
       }
+    ],
+    "agentRevocationsOnCustomerBoundHosts": [
+      {
+        "display_name": "avi-test",
+        "host_id": "host-3daf37098c8096b5d9e0ac72",
+        "operation_id": "osr-r24-avi-test-revoke-agent-20261006-1",
+        "status": "succeeded",
+        "created_at": "2026-10-06T08:03:07.068582-04:00",
+        "finished_at": "2026-10-06T08:03:31.556163-04:00",
+        "message": "Workspace host credential lifecycle 'revoke' completed (2 steps)",
+        "revokes_agent": true,
+        "verifies_agent_revoked": true
+      }
     ]
   },
   "disclosure": {
@@ -420,15 +433,26 @@
       "workspace": "avi-test",
       "hostId": "host-3daf37098c8096b5d9e0ac72",
       "what": "the owner's own single-workspace test org received this box's operator-home-file Claude/Codex login (agent-forwarded-reference) via initialize on 2026-09-26, before the guard existed",
-      "disposition": "disclosed, not revoked (D-024 ruling 2)"
+      "disposition": "revoked by osr-r24-avi-test-revoke-agent-20261006-1 at 2026-10-06T08:03:31.556163-04:00 (D-031, supersedes D-024 ruling 2)"
     },
     "succeededAgentAdmissionsByWorkspace": [
       "avi-test"
     ],
     "failedOnlyAttempts": [
       "P-029 Acceptance Workspace"
-    ]
+    ],
+    "revocationByHost": {
+      "host-3daf37098c8096b5d9e0ac72": {
+        "lastSucceededAdmissionAt": "2026-09-26T14:36:08.280756-04:00",
+        "revokedBy": "osr-r24-avi-test-revoke-agent-20261006-1",
+        "revokedAt": "2026-10-06T08:03:31.556163-04:00"
+      }
+    }
   },
+  "decisions": [
+    "open-source-release-2026-09-29#D-024",
+    "open-source-release-2026-09-29#D-031"
+  ],
   "producerGuard": {
     "route": "POST /workspace-hosts/:hostId/agent-credentials",
     "refusal": "409 customer_workspace_service_credential_refused for any non-absent slot source on a customer-bound host (deleted rows included), before any source is read, dry run included; 503 customer_binding_unverified when the binding read fails",
@@ -441,7 +465,7 @@
       "sha256": "098bb8ed95023915e06c86a9f8c2c173505441b36e303bb8882c3c6f317fd45c"
     }
   },
-  "finishedAt": "2026-10-06T05:16:33.093001Z",
+  "finishedAt": "2026-10-06T12:07:47.775598Z",
   "failures": [],
   "status": "pass",
   "exitCode": 0,
@@ -462,14 +486,19 @@
       "evidence": "40 boot-asserted mounted keys; producer keys: none; customer credentials only via provider-delegations or the CLI device grant"
     },
     {
+      "id": "service-agent-credentials-revoked",
+      "passed": true,
+      "evidence": "host-3daf37098c8096b5d9e0ac72: last admission 2026-09-26T14:36:08.280756-04:00, revoked by osr-r24-avi-test-revoke-agent-20261006-1 at 2026-10-06T08:03:31.556163-04:00"
+    },
+    {
       "id": "db-census-disclosed",
       "passed": true,
       "evidence": "succeeded agent admissions on customer-bound hosts: ['avi-test']; failed-only: ['P-029 Acceptance Workspace']; zero third-party customers"
     }
   ],
-  "summary": "The running :3880 hosted runtime answers 404 on every service-credential producer route beside non-vacuous controls; its boot-asserted mounted route set contains no producer route; the live DB census finds zero third-party customers and discloses avi-test (the owner's own test org holding the owner's own login, pre-guard, not revoked) and P-029 (agent bind attempts that all failed; host destroyed).",
+  "summary": "The running :3880 hosted runtime answers 404 on every service-credential producer route beside non-vacuous controls; its boot-asserted mounted route set contains no producer route; the live DB census finds zero third-party customers; avi-test, the one customer-bound host that received this box's login before the guard, had that agent credential revoked and verify-revoked through the lifecycle route (D-031); P-029's agent bind attempts all failed (host destroyed).",
   "limitations": [
-    "avi-test is a disclosed pre-guard exception (D-024): it holds this box's operator-home-file login and was not revoked.",
+    "avi-test received this box's operator-home-file login on 2026-09-26, before the guard existed; it was revoked on 2026-10-06 (D-031). The receipt proves the revoke + verify-revoked steps ran on the host; it does not prove the upstream provider session was invalidated.",
     "The producer guard is proven by unit tests, not by a live refusal on a customer host, so as not to touch avi-test's credentials."
   ]
 }
