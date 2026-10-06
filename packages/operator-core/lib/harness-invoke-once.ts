@@ -15,6 +15,8 @@
  * result-file polling; this just assembles the command + env so the call
  * sites stay in lockstep.
  */
+import { existsSync } from 'node:fs';
+import { delimiter, join } from 'node:path';
 import { invokeOnceBin, tsxBin } from './harness-paths';
 import { augmentedSpawnPath, resolveBin } from './plugin-spawn-impl';
 import { getHarnessAdminUrl } from './embedded-pg-discovery';
@@ -137,11 +139,10 @@ export function inferBackendFromModelSpec(spec?: string): AgentBackend | undefin
  * default omp spawns to Anthropic AND collapsed every role into one `anthropic:default`
  * bucket. Exported for unit testing.
  */
-export function resolveSpawnBackendModel(
-  role: string,
-  overrideSpec?: string,
-  overrideBackend?: string,
-): { backend: TurnBackend; model: string } {
+/** The agent command a spawn of `role` will exec, with no per-spawn override: the same
+ *  derivation buildInvokeOnce bakes into AGENT_CMD (env AGENT_CMD/CLAUDE > the spec's
+ *  fallback binary, backend-swapped, then the role's model flags). */
+export function resolveRoleSpawnCommand(role: string, overrideSpec?: string, overrideBackend?: string): string {
   // Backend inference keys off the EFFECTIVE spec (override > env map > committed
   // default), not just the per-spawn channel — a Codex-only committed default
   // (kettle post-P-020) must bucket against OpenAI, not Anthropic (WI-4640).
@@ -152,7 +153,45 @@ export function resolveSpawnBackendModel(
     process.env.AGENT_CMD ?? process.env.CLAUDE ?? fallbackBaseCmd(effectiveSpec),
     effectiveBackend,
   );
-  const cmd = applyRoleModel(base, role, overrideSpec);
+  return applyRoleModel(base, role, overrideSpec);
+}
+
+/** Result of {@link probeRoleRuntime}. */
+export type RoleRuntimeProbe = { ok: true; bin: string; resolved: string } | { ok: false; bin: string };
+
+/**
+ * WI-10006833: can a spawn of `role` exec its agent CLI on this host? Resolves the
+ * command's binary on the PATH the invoke child gets (buildInvokeOnce pins
+ * `env.PATH = augmentedSpawnPath()`). A Server install ships no agent CLI, so without
+ * this a dispatch dies `spawn claude ENOENT` (rc 127, empty stderr) and nothing
+ * records why.
+ */
+export function probeRoleRuntime(
+  role: string,
+  opts: { path?: string; exists?: (p: string) => boolean; command?: string } = {},
+): RoleRuntimeProbe {
+  const cmd = opts.command ?? resolveRoleSpawnCommand(role);
+  const bin = cmd.trim().split(/\s+/)[0] ?? '';
+  const exists = opts.exists ?? existsSync;
+  if (bin === '') return { ok: false, bin };
+  if (bin.includes('/')) return exists(bin) ? { ok: true, bin, resolved: bin } : { ok: false, bin };
+  for (const dir of (opts.path ?? augmentedSpawnPath()).split(delimiter)) {
+    if (!dir) continue;
+    const cand = join(dir, bin);
+    if (exists(cand)) return { ok: true, bin, resolved: cand };
+  }
+  return { ok: false, bin };
+}
+
+export function resolveSpawnBackendModel(
+  role: string,
+  overrideSpec?: string,
+  overrideBackend?: string,
+): { backend: TurnBackend; model: string } {
+  // Backend inference keys off the EFFECTIVE spec (override > env map > committed
+  // default), not just the per-spawn channel — a Codex-only committed default
+  // (kettle post-P-020) must bucket against OpenAI, not Anthropic (WI-4640).
+  const cmd = resolveRoleSpawnCommand(role, overrideSpec, overrideBackend);
   const bin = cmd.trim().split(/\s+/)[0]?.toLowerCase() ?? '';
   const backend: TurnBackend = /codex/.test(bin) ? 'codex' : /claude/.test(bin) ? 'claude-code' : 'omp';
   const m = /(?:--model(?:=|\s+)|\s-m\s+)(\S+)/.exec(cmd);

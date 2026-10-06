@@ -39,7 +39,27 @@ export interface WorktreeDivergence {
    *  path set is unchanged and dropped when it changes, so each distinct conflict is
    *  handed to the resolver once, never once per tick. */
   resolverDispatchedAt?: number;
+  /** WI-10006833: the merge-resolver cannot run on THIS member because the agent CLI
+   *  its role would exec is not on the spawn PATH (a Server install ships none).
+   *  While set, the conflict is NOT dispatched: every dispatch would die
+   *  `spawn <bin> ENOENT` (rc 127, empty stderr) and leave no record of why. It is a
+   *  property of the member, not of the path set, so it is carried across path-set
+   *  changes. Re-probed each tick while a dispatch is pending, and dropped once the
+   *  runtime resolves. */
+  resolverUnavailable?: ResolverUnavailable;
 }
+
+/** Why the D-055 resolver cannot run on this member. */
+export interface ResolverUnavailable {
+  /** The binary the resolver role would exec (e.g. `claude`). */
+  runtime: string;
+  reason: 'runtime-missing';
+  /** First tick that found it missing (ms epoch). */
+  since: number;
+}
+
+/** One preflight of the resolver role's agent CLI. */
+export type ResolverRuntimeProbe = { ok: true } | { ok: false; runtime: string };
 
 /** What one catch-up tick learned about the member worktree. */
 export type DivergenceObservation =
@@ -89,7 +109,15 @@ export function parseWorktreeDivergence(raw: unknown): WorktreeDivergence | null
     hiveSha: r.hiveSha,
     paths,
     ...(typeof r.resolverDispatchedAt === 'number' ? { resolverDispatchedAt: r.resolverDispatchedAt } : {}),
+    ...(parseResolverUnavailable(r.resolverUnavailable) ?? {}),
   };
+}
+
+function parseResolverUnavailable(raw: unknown): { resolverUnavailable: ResolverUnavailable } | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const u = raw as Record<string, unknown>;
+  if (typeof u.runtime !== 'string' || u.runtime === '' || typeof u.since !== 'number') return null;
+  return { resolverUnavailable: { runtime: u.runtime, reason: 'runtime-missing', since: u.since } };
 }
 
 /** Pure transition: prior state + this tick's observation → next state. */
@@ -115,6 +143,8 @@ export function nextWorktreeDivergence(
     hiveSha: d.hiveSha,
     paths: conflictPaths,
   };
+  // WI-10006833: a missing resolver runtime belongs to the member, not the path set.
+  if (prior?.resolverUnavailable) next.resolverUnavailable = prior.resolverUnavailable;
   if (!prior) return { next, log: 'started', write: true };
   // A new conflicting path set is a new conflict: it gets its own resolver dispatch.
   if (!samePaths(prior.paths, conflictPaths)) return { next, log: 'paths-changed', write: true };
@@ -145,7 +175,59 @@ export interface DivergenceResolverDispatch {
  */
 export function divergenceResolverDispatch(d: WorktreeDivergence | null): DivergenceResolverDispatch | null {
   if (d === null || d.resolverDispatchedAt !== undefined || d.paths.length === 0) return null;
+  // WI-10006833: a resolver that cannot spawn here is never dispatched.
+  if (d.resolverUnavailable) return null;
   return { conflicts: [{ scope: 'superproject', conflictedFiles: [...d.paths] }], mergeRef: d.hiveSha };
+}
+
+/** Whether a conflict is waiting on a dispatch (so its resolver runtime is worth probing). */
+export function divergenceAwaitsResolver(d: WorktreeDivergence | null): d is WorktreeDivergence {
+  return d !== null && d.resolverDispatchedAt === undefined && d.paths.length > 0;
+}
+
+/** What changed when a runtime probe was applied (null = nothing to write or log). */
+export type ResolverRuntimeChange = 'unavailable' | 'available' | null;
+
+/**
+ * WI-10006833: fold one preflight of the resolver role's agent CLI into a divergence
+ * that awaits a dispatch. Missing → record `resolverUnavailable` (kept unchanged while
+ * the same runtime stays missing, so `since` reads its age). Present → drop it, which
+ * re-enables `divergenceResolverDispatch` on the same tick.
+ */
+export function applyResolverRuntimeProbe(
+  d: WorktreeDivergence,
+  probe: ResolverRuntimeProbe,
+  now: number,
+): { next: WorktreeDivergence; change: ResolverRuntimeChange } {
+  if (probe.ok) {
+    if (!d.resolverUnavailable) return { next: d, change: null };
+    const { resolverUnavailable: _dropped, ...rest } = d;
+    return { next: rest, change: 'available' };
+  }
+  if (d.resolverUnavailable?.runtime === probe.runtime) return { next: d, change: null };
+  return {
+    next: { ...d, resolverUnavailable: { runtime: probe.runtime, reason: 'runtime-missing', since: now } },
+    change: 'unavailable',
+  };
+}
+
+/** The operator-facing line for a resolver-runtime change (null = nothing to log). */
+export function describeResolverRuntimeChange(
+  slug: string,
+  d: WorktreeDivergence,
+  change: ResolverRuntimeChange,
+): string | null {
+  if (change === null) return null;
+  if (change === 'available') {
+    return `[git-sync] ${slug}: the merge-resolver runtime is now available; dispatching the pending D-055 conflict.`;
+  }
+  const rt = d.resolverUnavailable?.runtime ?? '(unknown)';
+  return (
+    `[git-sync] ${slug}: D-055 conflict on ${d.paths.length} path(s) NOT dispatched: the merge-resolver ` +
+    `would exec '${rt}', which is not on this member's spawn PATH (runtime-missing). The worktree stays ` +
+    `diverged until that CLI is installed here or the conflict is resolved by hand. ` +
+    `State: routines.metadata.worktree_divergence.resolverUnavailable (WI-10006833).`
+  );
 }
 
 /** The operator-facing line for a logged transition (null = nothing to log). */
