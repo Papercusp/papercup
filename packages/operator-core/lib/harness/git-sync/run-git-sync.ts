@@ -5229,7 +5229,7 @@ async function commitOneRepoWithScratch(
     // fails, return a LOUD 'error' (caught by the git-sync-stall watchdog + escalation) instead
     // of silently reporting 'nothing'.
     let omittedIgnoredExcludes: string[] = [];
-    let addRes = await runGit(buildAddArgs([]), repoPath);
+    let addRes = await stageGit(buildAddArgs([]), repoPath);
     if (addRes.code !== 0) {
       // WI-40170: a protected path may ALSO be ignored. Git treats even a
       // negative pathspec as an explicit ignored-path mention and aborts the
@@ -5242,14 +5242,14 @@ async function commitOneRepoWithScratch(
           `[git-sync] ${repoPath}: 'git add -A' rejected ignored protected path(s) [${ignored.join(', ')}] — ` +
             'omitting those redundant exclusion pathspecs and retrying without force-adding ignored files',
         );
-        addRes = await runGit(buildAddArgs([], omittedIgnoredExcludes), repoPath);
+        addRes = await stageGit(buildAddArgs([], omittedIgnoredExcludes), repoPath);
       }
       const stray = addFailureStrayPaths(`${addRes.stdout}\n${addRes.stderr}`);
       if (stray.length > 0) {
         o.log(
           `[git-sync] ${repoPath}: 'git add -A' FAILED on embedded/uncommitted repo(s) [${stray.join(', ')}] — excluding + retrying so the rest of the tree still commits (previously: silent strand)`,
         );
-        addRes = await runGit(buildAddArgs(stray, omittedIgnoredExcludes), repoPath);
+        addRes = await stageGit(buildAddArgs(stray, omittedIgnoredExcludes), repoPath);
       }
       // TRANSIENT-ENOENT SELF-HEAL (EI-18094449017685490): git's tree-walk
       // enumerated a path an instant before some other process's atomic
@@ -5269,14 +5269,14 @@ async function commitOneRepoWithScratch(
           `[git-sync] ${repoPath}: 'git add -A' hit a transient ENOENT (a concurrent atomic-write race enumerated a path that vanished before stat) — retrying (attempt ${attempt}/${TRANSIENT_STAT_FAILURE_MAX_RETRIES})`,
         );
         await new Promise((resolve) => setTimeout(resolve, TRANSIENT_STAT_FAILURE_RETRY_DELAY_MS));
-        addRes = await runGit(buildAddArgs(stray, omittedIgnoredExcludes), repoPath);
+        addRes = await stageGit(buildAddArgs(stray, omittedIgnoredExcludes), repoPath);
       }
       // STALE-LOCK SELF-HEAL (2026-07-04): a dead git process's orphaned index.lock
       // otherwise fails EVERY tick until a human clears it. Provably-stale only —
       // see clearStaleIndexLock.
       addRes = await recoverIndexLockContention(
         addRes,
-        () => runGit(buildAddArgs(stray, omittedIgnoredExcludes), repoPath),
+        () => stageGit(buildAddArgs(stray, omittedIgnoredExcludes), repoPath),
         runGit,
         repoPath,
         'git add -A',
@@ -5298,7 +5298,7 @@ async function commitOneRepoWithScratch(
     // known conflict defers only that migration; a failed/invalid read defers all
     // staged migration candidates fail-closed while unrelated staged work commits.
     if (o.migrationReservationChecker) {
-      const stagedMigrationPaths = await stagedFiles(runGit, repoPath);
+      const stagedMigrationPaths = await stagedFiles(stageGit, repoPath);
       const postStageMigrationCheck = await checkMigrationReservations(o, stagedMigrationPaths);
       const postStageMigrationRefusals = postStageMigrationCheck.ok
         ? postStageMigrationCheck.refusals
