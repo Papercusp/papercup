@@ -3847,6 +3847,8 @@ const CHAT_SHORTCUTS: &[(&str, &str)] = &[
     ("Esc", "stop a reply, twice to clear"),
     // D-026 (P-027 G-6): `App::cycle_approvals`.
     ("Shift+Tab", "approvals mode"),
+    // P-027 (parity checklist row 13): `App::open_model_picker`.
+    ("Alt+P", "switch model"),
     ("Ctrl+R", "show tool output"),
     ("Ctrl+O", "details"),
     ("Ctrl+Z", "undo"),

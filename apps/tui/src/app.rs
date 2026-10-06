@@ -14231,6 +14231,14 @@ impl App {
                 // while the composer is focused, so the contract's "when the
                 // composer is focused" needs no separate focus test.
                 KeyCode::Char('@') => self.open_file_picker(),
+                // P-027 (parity checklist row 13): Alt+P opens the model
+                // picker, as in Claude Code, instead of typing a "p".
+                KeyCode::Char('p') | KeyCode::Char('P')
+                    if self.chat_first && mods.contains(KeyModifiers::ALT) =>
+                {
+                    self.open_model_picker();
+                    Action::Render
+                }
                 KeyCode::Char(c) => self.chat_insert_text(&c.to_string()),
                 _ => Action::None,
             };
@@ -18971,6 +18979,21 @@ mod tests {
         assert!(toast_text(&a).contains("already on"), "{}", toast_text(&a));
         assert!(a.su_pending_turn.is_none(), "cycling never sends a message");
         assert_eq!(a.chat_status_report().contains(" · approvals auto-edit · conversation"), true);
+    }
+
+    /// P-027 (parity checklist row 13): Alt+P in the message box opens the
+    /// model picker, as in Claude Code, and types nothing; a plain p still types.
+    #[test]
+    fn alt_p_opens_the_model_picker_and_types_nothing() {
+        let mut a = chat_first_app_on_live_session("haiku");
+        a.chat_composing = true;
+        a.on_key(KeyCode::Char('p'), KeyModifiers::ALT);
+        let picker = a.session_picker.as_ref().expect("Alt+P opens the model picker");
+        assert_eq!(picker.axis, crate::session_config::PickerAxis::Model);
+        assert!(a.chat_input.is_empty(), "Alt+P types nothing: {:?}", a.chat_input);
+        a.session_picker = None;
+        a.on_key(KeyCode::Char('p'), KeyModifiers::NONE);
+        assert_eq!(a.chat_input, "p");
     }
 
     /// D-026: OMP has no approval-mode RPC, so /approvals and Shift+Tab say so
