@@ -1137,6 +1137,24 @@ const retainFeedArgsSchema = z
   .optional();
 
 const REGISTRY: Record<string, QueryEntry<unknown>> = {
+  'harnessPrs.byHarness': {
+    backingTables: ['harness_shared.pr_review_reports', 'harness_shared.pr_check_status_cache', 'harness_shared.harness_feature_prs', 'harness_shared.routines'],
+    argsSchema: z.object({ harnessSlug: z.string().trim().min(1), scope: z.enum(['harness', 'hive']).optional() }),
+    resolve: async (raw) => {
+      const { harnessSlug, scope } = raw as { harnessSlug: string; scope?: 'harness' | 'hive' };
+      const { readPrsPayload } = await import('../endpoint-route/routes/harness/prs');
+      return [await readPrsPayload(harnessSlug, scope)];
+    },
+  },
+  'harnessPrs.detail': {
+    backingTables: ['harness_shared.pr_review_reports', 'harness_shared.pr_check_status_cache', 'harness_shared.routines', 'harness_shared.pr_reviewer_settings', 'harness_shared.shared_repo_binding_cache'],
+    argsSchema: z.object({ harnessSlug: z.string().trim().min(1), number: z.number().int().positive() }),
+    resolve: async (raw) => {
+      const { harnessSlug, number } = raw as { harnessSlug: string; number: number };
+      const { livePrViewerDeps, readPrViewerDetails } = await import('../pr-host/pr-viewer');
+      return [await readPrViewerDetails(number, await livePrViewerDeps(harnessSlug))];
+    },
+  },
   // identities.surface — P-011's one bounded, flat-row settings read over the
   // existing identity source catalog, launch receipt, control activation, and
   // append-only transition ledger. Provider bindings remain an explicit M3 state.
