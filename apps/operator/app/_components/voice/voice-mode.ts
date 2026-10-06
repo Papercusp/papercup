@@ -590,10 +590,6 @@ export function initVoiceMode(): void {
   // VoiceButton renders immediately, and the user-perceived "Connecting…"
   // status appears within ~100ms of paint instead of blocking it.
   const runDeferred = () => {
-    // Prime the TTS engine cache so the first speak() routes through
-    // the user's chosen engine instead of defaulting to Browser TTS.
-    void fetchPreferredEngine();
-
     // Restore last mode from config so navigation preserves user choice.
     // Skip if state.mode is already non-off (init may run again on hot reload).
     // An isolated verifier must never re-open a persisted microphone mode,
@@ -2891,13 +2887,8 @@ function processSynthQueue(): void {
   // no audio at all (owner-reported PTT "no response"). Only an EXPLICIT
   // 'browser' pref uses Web Speech now; every adapter engine is honored on
   // utterance #1, not just from the second reply once the async cache warmed.
-  if (adapterEngineCache === null) {
-    try {
-      adapterEngineCache = loadVoicePrefsClient().ttsEngine ?? 'kokoro';
-      adapterEngineCacheAt = Date.now();
-    } catch { /* prefs unreadable → keep null, old fallback applies */ }
-  }
-  const cachedEngine = adapterEngineCache; // sync read; resolved above / by prior fetch
+  // WI-10006826: read the prefs on EVERY utterance (see readPreferredEngine).
+  const cachedEngine = readPreferredEngine();
   const useBrowser =
     cachedEngine === 'browser' ||
     (cachedEngine === null && window.speechSynthesis && state.hasWebSpeechTTS);
@@ -2925,18 +2916,26 @@ function processSynthQueue(): void {
 }
 
 let adapterAudio: HTMLAudioElement | null = null;
-let adapterEngineCache: string | null = null;
-let adapterEngineCacheAt = 0;
+/**
+ * The user's selected TTS engine, read fresh from the client prefs cache.
+ *
+ * WI-10006826: this used to be cached for 30s, and a boot-time prime ran before
+ * VoicePrefsSyncBridge hydrated the prefs, so it cached the default 'kokoro'.
+ * A user who chose ElevenLabs heard Kokoro for the first 30s after opening the
+ * app, and an engine change in Settings took up to 30s to apply. The cache
+ * saved nothing: loadVoicePrefsClient() is a synchronous in-memory read.
+ * Returns null only when the prefs are unreadable (old browser fallback).
+ */
+function readPreferredEngine(): string | null {
+  try {
+    return loadVoicePrefsClient().ttsEngine ?? 'kokoro';
+  } catch {
+    return null;
+  }
+}
 
 async function fetchPreferredEngine(): Promise<string> {
-  // Cache the prefs lookup for 30s so a chatty caller doesn't hammer the
-  // prefs route once per utterance.
-  const now = Date.now();
-  if (adapterEngineCache && now - adapterEngineCacheAt < 30_000) return adapterEngineCache;
-  const prefs = loadVoicePrefsClient();
-  adapterEngineCache = prefs.ttsEngine ?? 'kokoro';
-  adapterEngineCacheAt = now;
-  return adapterEngineCache;
+  return readPreferredEngine() ?? 'kokoro';
 }
 
 async function synthViaAdapter(text: string, role: string): Promise<void> {
