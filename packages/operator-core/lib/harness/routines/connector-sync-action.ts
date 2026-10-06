@@ -37,7 +37,8 @@ registerSystemAction('connector-sync', async (ctx) => {
   const failed = result.sources.filter((source) => source.outcome === 'failed' || source.outcome === 'reconnect-required');
   // D-018: project participants of interactions stored before a source's person -> record grant.
   // Independent of the sync outcome above (it reads the owner's Vault, not the provider), and a
-  // failure here is reported, never a failed pass.
+  // failure here is reported, never a failed pass. Time-boxed per tick (WI-10006999): a large
+  // mailbox continues over several ticks from its saved cursor instead of holding this tick.
   const backfills = await runPendingParticipantBackfills(sql, { workspaceId: ctx.workspaceId }).catch(
     (cause: unknown) => [{ sourceId: '*', outcome: 'failed' as const, documents: 0, participants: 0, error: cause instanceof Error ? cause.message : String(cause) }],
   );
@@ -63,6 +64,7 @@ registerSystemAction('connector-sync', async (ctx) => {
       woken: wakes.sources.filter((source) => source.outcome === 'woken').length,
       wakeFailed: wakes.sources.filter((source) => source.outcome === 'failed').length,
       participantBackfilled: backfills.filter((b) => b.outcome === 'backfilled').length,
+      participantBackfillPartial: backfills.filter((b) => b.outcome === 'partial').length,
       participantBackfillFailed: backfillFailed.length,
       pushSubscribed: push.sources.filter((source) => source.outcome === 'subscribed').length,
       pushFailed: pushFailed.length,
