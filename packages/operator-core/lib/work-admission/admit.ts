@@ -47,6 +47,11 @@ import {
 } from './admission-sources';
 import { recordAdmissionWriteBack } from './write-back-ledger';
 import {
+  captureImprovement as defaultCaptureImprovement,
+  type CaptureImprovementInput,
+  type CaptureImprovementResult,
+} from '../harness/improvements/capture-core';
+import {
   isTicketStatusCategory,
   TICKET_STATUS_CATEGORIES,
   type TicketStatusCategory,
@@ -75,6 +80,13 @@ export interface AdmitInput {
 export interface AdmitDeps {
   sql?: AdmissionDb & { begin?: unknown };
   createWorkItem?: (input: CreateWorkItemInput) => Promise<{ id: string } | unknown>;
+  /**
+   * The ONE bug intake (unified-bug-pipeline-and-honest-queue-2026-10-05 P-011, D-001). Every
+   * `kind:'bug'` admission goes through it instead of minting directly
+   * (slack-messages-to-bug-reports-2026-10-05 P-004, D-007): redact, classify, fold duplicates,
+   * create or attach the candidate.
+   */
+  captureBug?: (input: CaptureImprovementInput) => Promise<CaptureImprovementResult>;
   linkWorkItem?: typeof defaultLinkWorkItem;
   resolveWorkItemRef?: typeof defaultResolveWorkItemRef;
 }
@@ -82,7 +94,14 @@ export interface AdmitDeps {
 export type AdmitResult =
   | {
       ok: true;
-      reason: 'admitted' | 'existing' | 'covered';
+      /**
+       * admitted — a new work item was minted for this source;
+       * folded   — a bug the intake folded onto an EXISTING bug: this source got its own admission
+       *            row on that bug, and the intake recorded the corroboration (repeat count, reporter kinds);
+       * existing — this source was already admitted;
+       * covered  — a covering source (e.g. the thread a message sits in) was already admitted.
+       */
+      reason: 'admitted' | 'folded' | 'existing' | 'covered';
       workItemId: string;
       admission: AdmissionRow;
       linkedRecord?: string | null;
@@ -211,16 +230,39 @@ export async function admitWorkItem(input: AdmitInput, deps: AdmitDeps = {}): Pr
     const body = [resolved.body.slice(0, ADMISSION_BODY_MAX), resolved.permalink ? `Source: ${resolved.permalink}` : '']
       .filter(Boolean)
       .join('\n\n');
-    const created = await create({
-      kind: workKind,
-      title,
-      summary: body,
-      harness: input.harness,
-      workspaceId: input.workspaceId,
-      createdBy: by,
-    });
-    const workItemId = createdId(created);
-    if (!workItemId) return refusal('admission_create_failed', 'createWorkItem returned no id');
+    let workItemId: string | null;
+    let reason: 'admitted' | 'folded' = 'admitted';
+    if (workKind === 'bug') {
+      const capture = deps.captureBug ?? defaultCaptureImprovement;
+      const intake = await capture(
+        admissionBugCapture({
+          input,
+          sourceKind: kindRaw,
+          sourceKey: resolved.sourceKey,
+          dataSourceId: resolved.dataSourceId,
+          permalink: resolved.permalink ?? null,
+          title,
+          body,
+          by,
+        }),
+      );
+      const target = bugIntakeTarget(intake);
+      if (!target) return refusal('admission_intake_failed', 'the bug intake returned no work item');
+      workItemId = target.id;
+      if (!target.created) reason = 'folded';
+    } else {
+      workItemId = createdId(
+        await create({
+          kind: workKind,
+          title,
+          summary: body,
+          harness: input.harness,
+          workspaceId: input.workspaceId,
+          createdBy: by,
+        }),
+      );
+      if (!workItemId) return refusal('admission_create_failed', 'createWorkItem returned no id');
+    }
 
     let linkedRecord: string | null = null;
     if (resolved.recordWorkItemId) {
@@ -232,7 +274,10 @@ export async function admitWorkItem(input: AdmitInput, deps: AdmitDeps = {}): Pr
       linkedRecord = resolved.recordWorkItemId;
     }
 
-    const fieldAuthority = resolved.fieldAuthority ?? DEFAULT_FIELD_AUTHORITY;
+    // A folded source did not write the bug it landed on, so it must never re-sync that bug's
+    // title, description or assignee from its own text: it keeps attribution and the link only.
+    const fieldAuthority =
+      reason === 'folded' ? FOLDED_FIELD_AUTHORITY : (resolved.fieldAuthority ?? DEFAULT_FIELD_AUTHORITY);
     const [row] = await tx<AdmissionDbRow[]>`
       INSERT INTO harness_shared.work_admissions
         (workspace_id, work_item_id, harness_slug, data_source_id, source_kind, source_key, source_ref,
@@ -243,8 +288,60 @@ export async function admitWorkItem(input: AdmitInput, deps: AdmitDeps = {}): Pr
          ${tx.json({ external: [...fieldAuthority.external], papercusp: [...fieldAuthority.papercusp] } as never)},
          ${input.admitter.via}, ${by}, ${input.admitter.via === 'rule' ? input.admitter.ruleId : null})
       RETURNING *`;
-    return { ok: true as const, reason: 'admitted' as const, workItemId, admission: toAdmissionRow(row!), linkedRecord };
+    return { ok: true as const, reason, workItemId, admission: toAdmissionRow(row!), linkedRecord };
   })) as AdmitResult;
+}
+
+/** Field authority of a folded admission: Papercusp owns every field of the bug it landed on. */
+export const FOLDED_FIELD_AUTHORITY: FieldAuthority = Object.freeze({
+  external: Object.freeze([] as string[]),
+  papercusp: Object.freeze([...new Set([...DEFAULT_FIELD_AUTHORITY.external, ...DEFAULT_FIELD_AUTHORITY.papercusp])]),
+});
+
+/**
+ * The intake input for a `kind:'bug'` admission (slack-messages-to-bug-reports-2026-10-05 P-004).
+ * The source's own text is the report. The intake owns redaction, classification, folding and
+ * the candidate state, so nothing here marks the bug verified or ready (D-007 c).
+ */
+export function admissionBugCapture(args: {
+  input: Pick<AdmitInput, 'workspaceId' | 'harness' | 'admitter'>;
+  sourceKind: string;
+  sourceKey: string;
+  dataSourceId: string | null;
+  permalink: string | null;
+  title: string;
+  body: string;
+  by: string;
+}): CaptureImprovementInput {
+  return {
+    title: args.title,
+    body: args.body,
+    kind: 'bug',
+    scope: `harness:${args.input.harness}`,
+    workspaceId: args.input.workspaceId,
+    createdBy: args.by,
+    // A rule admits a PERSON's report from outside (a chat message, a ticket), so the reporter is
+    // a person, not the admitting rule (whose `admission-rule:<id>` label would otherwise derive
+    // 'agent'). Chat sources get their own 'chat' reporter kind in P-005.
+    ...(args.input.admitter.via === 'rule' ? { reporterKind: 'end-user' as const } : {}),
+    foundDuring: `work admission (${args.sourceKind})`,
+    payloadExtra: {
+      admission: {
+        sourceKind: args.sourceKind,
+        sourceKey: args.sourceKey,
+        dataSourceId: args.dataSourceId,
+        permalink: args.permalink,
+        admittedVia: args.input.admitter.via,
+      },
+    },
+  };
+}
+
+/** Which work item a bug intake call landed on, and whether it was newly created. */
+export function bugIntakeTarget(result: CaptureImprovementResult): { id: string; created: boolean } | null {
+  if (result.coalescedOnto?.id) return { id: result.coalescedOnto.id, created: false };
+  const id = result.issue?.id;
+  return typeof id === 'string' && id ? { id, created: result.created } : null;
 }
 
 /** Every admission whose work item is `workItemId` (normally one). */
