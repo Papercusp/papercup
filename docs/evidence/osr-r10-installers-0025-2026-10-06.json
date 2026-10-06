@@ -34,7 +34,7 @@
     {
       "id": "installer-selection-excludes-gitnexus",
       "passed": true,
-      "evidence": "papercusp-desktop/bin/lib/source-tree-selection.sh excludes ./libs/papercusp/plugins/gitnexus-bridge and ./node_modules/@papercupai/gitnexus-bridge (D-006); falsified by the R-10 clean mutation probe on that selection."
+      "evidence": "papercusp-desktop/bin/lib/source-tree-selection.sh excludes ./libs/papercusp/plugins/gitnexus-bridge and ./node_modules/@papercupai/gitnexus-bridge (D-006). That selection's falsifiability is not proven by this artifact: it is a separate clean as-committed binding on AUTO-BAR-R-10-P-005 (test row 20846634 pass, mutant row 20846667 caught, clone 6d1ebd0c22)."
     }
   ],
   "limitations": [
