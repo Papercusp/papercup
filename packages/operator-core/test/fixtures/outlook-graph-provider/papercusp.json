@@ -15,7 +15,7 @@
     "displayName": "Outlook (Microsoft Graph)",
     "datatypes": ["email-message", "calendar-event"],
     "capabilities": ["mail.read", "calendar.read"],
-    "egressHosts": ["graph.microsoft.com"],
+    "egressHosts": ["graph.microsoft.com", "login.microsoftonline.com"],
     "oauth": {
       "authorizeUrl": "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
       "tokenUrl": "https://login.microsoftonline.com/common/oauth2/v2.0/token",
@@ -58,6 +58,7 @@
         "eventPattern": "ext:*:message.received",
         "filter": { "direction": "inbound" }
       }
-    ]
+    ],
+    "edges": []
   }
 }
