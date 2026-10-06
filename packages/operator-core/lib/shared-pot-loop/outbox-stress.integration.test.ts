@@ -55,6 +55,14 @@ describe('P-006 — outbox stress: write storm drains bounded, no amplification,
       const HARNESS = 'shl-storm';
       const now = rig.now();
 
+      // Canonical template and membership seeds retain their own CDC scopes.
+      // They must survive boot without entering this harness's storm oracle.
+      const [seedRows] = await a.sql<Array<{ n: number }>>`
+        SELECT COUNT(*)::int AS n FROM harness_shared.substrate_outbox
+         WHERE NOT (workspace_id = ${rig.workspaceId} AND harness_slug = ${HARNESS})`;
+      expect(seedRows.n).toBeGreaterThan(0);
+      expect(await rig.outboxDepth(a)).toBe(0);
+
       // ── The storm (set-based, so the test stresses the SYSTEM, not the test). ──
       await a.sql`
         INSERT INTO harness_shared.harness_features_consolidated
@@ -91,11 +99,26 @@ describe('P-006 — outbox stress: write storm drains bounded, no amplification,
       }
       expect(await rig.outboxDepth(a)).toBe(0);
 
-      // NO AMPLIFICATION: rows ever enqueued == the storm's writes (no echo
-      // re-capture inflated the outbox — the 102GB failure shape).
+      // NO AMPLIFICATION in the same workspace/harness stream whose pending
+      // depth was measured above. Unrelated seed CDC is not a storm write.
       const everRows = await a.sql<Array<{ n: number }>>`
-        SELECT COUNT(*)::int AS n FROM harness_shared.substrate_outbox`;
+        SELECT COUNT(*)::int AS n FROM harness_shared.substrate_outbox
+         WHERE workspace_id = ${rig.workspaceId} AND harness_slug = ${HARNESS}`;
       expect(Number(everRows[0].n)).toBe(TOTAL_WRITES);
+
+      // CONTROL: one unexpected captured event in the driven stream still
+      // fails the exact cumulative oracle. The failed transaction rolls back
+      // its write and CDC before the real convergence checks continue.
+      await expect(a.sql.begin(async (tx) => {
+        await tx`UPDATE harness_shared.harness_features_consolidated
+                    SET title = title || ' unexpected echo', updated_ts = ${rig.now()}
+                  WHERE workspace_id = ${rig.workspaceId} AND harness_slug = ${HARNESS}
+                    AND feature_id = 'F-S00001'`;
+        const [withEcho] = await tx<Array<{ n: number }>>`
+          SELECT COUNT(*)::int AS n FROM harness_shared.substrate_outbox
+           WHERE workspace_id = ${rig.workspaceId} AND harness_slug = ${HARNESS}`;
+        expect(withEcho.n).toBe(TOTAL_WRITES);
+      })).rejects.toThrow(`expected ${TOTAL_WRITES + 1} to be ${TOTAL_WRITES}`);
 
       // ── Convergence under load: B ends with EVERY stormed row + fixpoint holds. ──
       const settle = await rig.converge({ maxPasses: 60 });
