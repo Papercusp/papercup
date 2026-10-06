@@ -44,7 +44,7 @@ vi.mock('./su-session-client-lease', () => ({
   suClientLeaseConfig: () => ({ ttlMs: 30_000, renewMs: 10_000, sweepMs: 5_000, initialMs: 60_000 }),
   superviseSuClientLease: vi.fn(() => () => undefined),
 }));
-import { LAUNCH_STALL_REPORT_MS, SLOW_LAUNCH_STAGE_MS, claudeEngineIdentityForCwd, launchAttachedSuSession,
+import { LATE_STALL_REPORT_MS, LAUNCH_STALL_REPORT_MS, SLOW_LAUNCH_STAGE_MS, claudeEngineIdentityForCwd, launchAttachedSuSession,
   launchStageTracer, logLaunchTrace, type LaunchTraceLevel } from './su-session-attached-launch';
 import { CODEX_SAFE_DEFAULT_MODEL } from './model-context-budget.mjs';
 
@@ -487,6 +487,31 @@ describe('launch stage tracer (a stalled launch names its step)', () => {
     expect(lines).toHaveLength(1);
     expect(lines[0]).toMatch(/^\[su-launch\] ws:h:chat not finished after \d+ms; stalled in stage=bootstrap for \d+ms$/);
     trace.end();
+  });
+
+  it('says when the stall report itself ran late, and only then', () => {
+    vi.useFakeTimers();
+    // The injected clock runs ahead of the timer queue: the report is due at
+    // the deadline but the process could not run it for 9s, as observed in
+    // WI-10006559. A report just under the lateness threshold keeps the plain line.
+    let clock = 1_000_000;
+    const lines: string[] = [];
+    const late = launchStageTracer('ws:h:late', (line) => lines.push(line), () => clock);
+    late.stage('bootstrap');
+    clock += LAUNCH_STALL_REPORT_MS + 9_186;
+    vi.advanceTimersByTime(LAUNCH_STALL_REPORT_MS);
+    expect(lines).toEqual([`[su-launch] ws:h:late not finished after ${LAUNCH_STALL_REPORT_MS + 9_186}ms; `
+      + `stalled in stage=bootstrap for ${LAUNCH_STALL_REPORT_MS + 9_186}ms; this report ran 9186ms late (event loop delayed)`]);
+    late.end();
+
+    clock = 2_000_000;
+    lines.length = 0;
+    const prompt = launchStageTracer('ws:h:prompt', (line) => lines.push(line), () => clock);
+    clock += LAUNCH_STALL_REPORT_MS + LATE_STALL_REPORT_MS - 1;
+    vi.advanceTimersByTime(LAUNCH_STALL_REPORT_MS);
+    expect(lines).toEqual([`[su-launch] ws:h:prompt not finished after ${LAUNCH_STALL_REPORT_MS + LATE_STALL_REPORT_MS - 1}ms; `
+      + `stalled in stage=read-chat for ${LAUNCH_STALL_REPORT_MS + LATE_STALL_REPORT_MS - 1}ms`]);
+    prompt.end();
   });
 
   it('reports slow finished steps with their duration and stays quiet for fast ones', () => {

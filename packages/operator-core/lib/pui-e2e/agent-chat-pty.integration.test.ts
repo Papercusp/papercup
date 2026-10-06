@@ -2076,7 +2076,7 @@ beforeEach(async () => {
         timeoutDegradations.push(args[0]);
         console.info('PUI_TIMEOUT_DEGRADATION_DIAGNOSTIC', args[0]);
       } else if (args.length === 1 && typeof args[0] === 'string'
-        && /^\[su-launch\] \S+ (stage=\S+ took \d+ms|not finished after \d+ms; stalled in stage=\S+ for \d+ms)$/.test(args[0])) {
+        && /^\[su-launch\] \S+ (stage=\S+ took \d+ms|not finished after \d+ms; stalled in stage=\S+ for \d+ms(; this report ran \d+ms late \(event loop delayed\))?)$/.test(args[0])) {
         // The launch stage tracer (su-session-attached-launch.ts) reports a slow
         // or still-running launch step so a stall names its step. On a slow
         // host that report is advisory, like D-024's degradations: the
@@ -4276,8 +4276,9 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
     // The file-wide beforeEach already spies console.warn, and vi.spyOn returns
     // that same spy. Chain to its filter, never to the spy itself: once this
     // implementation replaces the filter, the spy would call itself forever.
-    const filtered = vi.isMockFunction(console.warn) ? console.warn.getMockImplementation() : undefined;
-    const warn = filtered ?? console.warn.bind(console);
+    const current = console.warn;
+    const filtered = vi.isMockFunction(current) ? current.getMockImplementation() : undefined;
+    const warn = filtered ?? current.bind(console);
     const archiveWarn = vi.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
       if (args.length === 1 && typeof args[0] === 'string'
         && /^\[session-archive\] adv \d+ not resolvable \(agent=omp, owner=[^,]+, native=null, omp=null\) — left for the disk-side reconciler$/.test(args[0])) {
