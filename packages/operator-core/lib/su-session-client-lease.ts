@@ -134,6 +134,8 @@ const state = pinModuleState('@papercusp/operator-core.su-client-lease', () => (
   supervised: new Map<number, Supervision>(),
   sweepTimer: null as ManagedHandle | null,
   sweeping: false,
+  /** Ids whose sweep-issued renew (WI-10006906) is still in flight. */
+  sweepRenewing: new Set<number>(),
   warned: new Set<string>(),
   /** Arm real timers inside a Vitest worker (see _armSuClientLeaseTimersForTest). */
   timersInTest: false,
@@ -267,7 +269,7 @@ async function sweep(): Promise<void> {
       // A client that really goes away closes its stream, and the next sweep
       // ends the engine as before.
       if ((state.streams.get(advSessionId) ?? 0) > 0) {
-        watched.push(advSessionId);
+        if (!state.sweepRenewing.has(advSessionId)) watched.push(advSessionId);
         continue;
       }
       state.supervised.delete(advSessionId);
@@ -279,11 +281,15 @@ async function sweep(): Promise<void> {
         .catch((error) => console.warn(`[su-client-lease] ending unattended session ${advSessionId} failed`, error));
     }
     if (watched.length > 0) {
-      try {
-        await store().renew(watched, suClientLeaseConfig().ttlMs);
-      } catch (error) {
-        warnOnce('renew', error);
-      }
+      // Not awaited, like ending an engine above: this is a timeout reaper,
+      // and before WI-10006906 its tick did one read. An awaited write here
+      // (one that waits on a row lock, say) held `sweeping` for >1s in the PTY
+      // suite. sweepRenewing keeps a slow renew from being re-issued by every
+      // later tick while it is still in flight.
+      for (const id of watched) state.sweepRenewing.add(id);
+      void store().renew(watched, suClientLeaseConfig().ttlMs)
+        .catch((error) => warnOnce('renew', error))
+        .finally(() => { for (const id of watched) state.sweepRenewing.delete(id); });
     }
   } finally {
     state.sweeping = false;
@@ -335,6 +341,7 @@ export function _resetSuClientLeaseForTest(store: SuClientLeaseStore | null = nu
   state.renewTimer = null;
   state.sweepTimer = null;
   state.sweeping = false;
+  state.sweepRenewing.clear();
   state.warned.clear();
   state.timersInTest = false;
 }
