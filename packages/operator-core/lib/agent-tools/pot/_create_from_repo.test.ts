@@ -455,6 +455,91 @@ describe('createPotFromRepo (P-006)', () => {
     expect(r.gitSync).toMatchObject({ seeded: true, push: true, branch: 'develop' });
   });
 
+  describe("P-017 (D-007): the 'where should the agents' work go' answer", () => {
+    function withChooser(result?: Record<string, unknown>, suite: string | null = 'npm test') {
+      const chooses: Record<string, unknown>[] = [];
+      const suiteLookups: Array<{ slug: string; ws: string }> = [];
+      const { deps, calls } = fakes({
+        resolveSuiteCommand: async (slug, ws) => {
+          suiteLookups.push({ slug, ws });
+          return suite;
+        },
+        chooseIntegrationMode: (async (i: Record<string, unknown>) => {
+          chooses.push(i);
+          return result ?? { ok: true, mode: 'review', fork: { url: 'https://github.com/bot/shop.git', created: true } };
+        }) as never,
+      });
+      return { deps, calls, chooses, suiteLookups };
+    }
+
+    it("'review' on a new pot: forks via the chooser with pot home, member slug, main repo and the pot's test suite", async () => {
+      const { deps, chooses, suiteLookups } = withChooser();
+      const r = await createPotFromRepo({ githubUrl: URL, workspaceId: 'ws', integrationMode: 'review' }, deps);
+      expect(r.ok).toBe(true);
+      if (!r.ok || !('created' in r)) throw new Error('expected created');
+      expect(suiteLookups).toEqual([{ slug: 'shop', ws: 'ws' }]);
+      expect(chooses).toEqual([
+        {
+          workspaceId: 'ws',
+          potHomeSlug: 'shop-pot',
+          harnessSlug: 'shop',
+          mode: 'review',
+          greenCmd: 'npm test',
+          forkRemote: null,
+          upstreamRemote: 'https://github.com/acme/shop.git',
+        },
+      ]);
+      expect(r.integrationMode).toMatchObject({ ok: true, mode: 'review' });
+    });
+
+    it("'direct' (and no answer) never forks", async () => {
+      for (const integrationMode of ['direct', undefined] as const) {
+        const { deps, chooses } = withChooser();
+        const r = await createPotFromRepo({ githubUrl: URL, workspaceId: 'ws', integrationMode }, deps);
+        expect(r.ok).toBe(true);
+        if (!r.ok || !('created' in r)) throw new Error('expected created');
+        expect(chooses).toEqual([]);
+        expect(r.integrationMode).toBeUndefined();
+      }
+    });
+
+    it("'review' when adding a repo INTO an existing pot does not re-decide that pot's mode", async () => {
+      const { deps, chooses } = withChooser();
+      deps.loadRegistry = async () => ({ projects: [{ slug: 'mypot', path: '/h', harness_kind: 'hive' }] }) as never;
+      deps.republish = (async () => ({ announced: true, cupboard: { attempted: false } })) as never;
+      const r = await createPotFromRepo(
+        { githubUrl: URL, intoPot: 'mypot', workspaceId: 'ws', integrationMode: 'review' },
+        deps,
+      );
+      expect(r.ok).toBe(true);
+      expect(chooses).toEqual([]);
+    });
+
+    it('a refusal (no test suite) is REPORTED and never fails the create', async () => {
+      const { deps } = withChooser(
+        { ok: false, error: 'green_cmd_required', message: 'a working copy needs a test suite' },
+        null,
+      );
+      const r = await createPotFromRepo({ githubUrl: URL, workspaceId: 'ws', integrationMode: 'review' }, deps);
+      expect(r.ok).toBe(true);
+      if (!r.ok || !('created' in r)) throw new Error('expected created');
+      expect(r.integrationMode).toMatchObject({ ok: false, error: 'green_cmd_required' });
+    });
+
+    it('a chooser that THROWS is reported as fork_create_failed, create still ok', async () => {
+      const { deps } = fakes({
+        resolveSuiteCommand: async () => 'npm test',
+        chooseIntegrationMode: async () => {
+          throw new Error('github 502');
+        },
+      });
+      const r = await createPotFromRepo({ githubUrl: URL, workspaceId: 'ws', integrationMode: 'review' }, deps);
+      expect(r.ok).toBe(true);
+      if (!r.ok || !('created' in r)) throw new Error('expected created');
+      expect(r.integrationMode).toEqual({ ok: false, error: 'fork_create_failed', message: 'github 502' });
+    });
+  });
+
   it('seeds on the P-009 into-pot path too (member of the EXISTING home)', async () => {
     const { deps, calls } = fakes({
       loadRegistry: async () =>
