@@ -70,7 +70,7 @@ describe('scope-aware goal planning obligations', () => {
     const unbacked = input('existing-plans-sufficient');
     delete (known(unbacked).review as { coverage?: unknown }).coverage;
     expect(goalPlanningObligation(unbacked)).toMatchObject({
-      status: 'due', title: 'Back the no-new-plan review with a coverage map', applicableDemand: 1, ruleRevision: 'goal-planning-needed-v3',
+      status: 'due', title: 'Back the no-new-plan review with a coverage map', applicableDemand: 1, ruleRevision: 'goal-planning-needed-v4',
     });
   });
   it('keeps the nudge due when a 3+ item cluster maps to no plan, and names it', () => {
@@ -83,6 +83,46 @@ describe('scope-aware goal planning obligations', () => {
     expect(obligation).toMatchObject({ status: 'due', title: 'Write a plan for the uncovered need', applicableDemand: 1 });
     expect(obligation.reason).toContain('stale loop wakes');
     expect(obligation.reason).toContain('plans:new');
+  });
+  // WI-10006710 (measured 2026-10-06, goal 60d3a8 epoch 21): the 12:19:30Z
+  // existing-plans-sufficient review cited three worklist plans and omitted a ready,
+  // unplaced one with open goal work. Nothing flagged it, and that plan then got no
+  // start, staffing or recorded hold for the rest of the tenure.
+  describe('unplaced worklist plans must be accounted for by a no-new-plan review', () => {
+    function withWorklist(entries: GoalPortfolioBrief['worklist'], coverage?: Array<{ need: string; itemRefs: string[]; planRef?: string; justification?: string }>) {
+      const value = input('existing-plans-sufficient'); const state = known(value);
+      state.portfolio!.worklist = entries;
+      if (coverage) state.review!.coverage = coverage;
+      state.review!.portfolioFingerprint = goalPlanningPortfolioFingerprint(state.portfolio!);
+      return value;
+    }
+    it('keeps the nudge due and names each uncited unplaced or blocked plan', () => {
+      const obligation = goalPlanningObligation(withWorklist([
+        worklistPlan(placement('working', 'none'), 'checkout'),
+        worklistPlan(placement('unplaced', 'launch-plan-fleet'), 'orphan-plan'),
+        worklistPlan(placement('blocked', 'resolve-plan-blockers'), 'stuck-plan'),
+      ]));
+      expect(obligation).toMatchObject({ status: 'due', title: 'Account for every unplaced worklist plan', applicableDemand: 2 });
+      expect(obligation.reason).toContain('plan:papercusp/orphan-plan (unplaced)');
+      expect(obligation.reason).toContain('plan:papercusp/stuck-plan (blocked)');
+      expect(obligation.reason).not.toContain('plan:papercusp/checkout');
+    });
+    it('discharges once the coverage map cites the plan', () => {
+      expect(goalPlanningObligation(withWorklist(
+        [worklistPlan(placement('unplaced', 'launch-plan-fleet'), 'orphan-plan')],
+        [
+          { need: 'checkout recovery', itemRefs: ['WI-1', 'WI-2', 'WI-3'], planRef: 'plan:papercusp/checkout' },
+          { need: 'orphan work, held until checkout lands', itemRefs: ['WI-7'], planRef: 'plan:papercusp/orphan-plan' },
+        ],
+      ))).toMatchObject({ status: 'satisfied' });
+    });
+    it('demands nothing for placed, owner-walled or terminal worklist plans', () => {
+      expect(goalPlanningObligation(withWorklist([
+        worklistPlan(placement('working', 'none'), 'busy'),
+        worklistPlan(placement('owner-walled', 'none'), 'walled'),
+        worklistPlan(placement('terminal', 'none'), 'finished'),
+      ]))).toMatchObject({ status: 'satisfied' });
+    });
   });
   it('accepts an explicitly empty map for no-eligible-work', () => {
     const none = input('no-eligible-work');
