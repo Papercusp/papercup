@@ -4893,6 +4893,76 @@ describe('su identity precedence (EI-7066: explicit SID before Mcp-Session-Id)',
   });
 });
 
+describe('successful native-session audit (get-feedback D-006)', () => {
+  it.each([
+    { carrier: 'header:x-papercusp-native-session', query: '&client=su-owner', headers: { 'x-papercusp-native-session': 'native-owner-session' } },
+    { carrier: 'query:native_session', query: '&client=su-owner&native_session=native-owner-session', headers: {} },
+  ])('persists the $carrier fingerprint and bound row on the invocation context', async ({ carrier, query, headers }) => {
+    h.nativeSessionRows = new Map([['su-owner', [{ id: 541, session_id: 'native-owner-session', active: true }]]]);
+    const res = await callTool('gatingtest:scoped', {}, superuserExtra(query, headers));
+    expect(res.isError, textOf(res)).toBeUndefined();
+    const invocation = h.invocations.find(row => row.toolName === 'gatingtest:scoped');
+    expect(invocation?.ctx.requestOrigin).toMatchObject({
+      nativeSession: {
+        carrier,
+        valueFingerprint: createHash('sha256').update('native-owner-session', 'utf8').digest('hex'),
+        binding: 'bound',
+        candidateAdvSessionId: 541,
+      },
+    });
+    expect(JSON.stringify(invocation?.ctx.requestOrigin)).not.toContain('native-owner-session');
+  });
+
+  it('distinguishes an unbound presentation from an omitted native carrier without changing dispatch', async () => {
+    h.nativeSessionRows = new Map([['su-owner', [{ id: 541, session_id: null, active: true }]]]);
+    const presented = await callTool('gatingtest:scoped', {}, superuserExtra('&client=su-owner&native_session=unbound-value'));
+    expect(presented.isError, textOf(presented)).toBeUndefined();
+    expect(seen[0].ctx.advSessionId).toBeUndefined();
+    expect(h.invocations[0]?.ctx.requestOrigin).toMatchObject({
+      nativeSession: {
+        carrier: 'query:native_session',
+        valueFingerprint: createHash('sha256').update('unbound-value', 'utf8').digest('hex'),
+        binding: 'unbound',
+        candidateAdvSessionId: 541,
+      },
+    });
+    expect(JSON.stringify(h.invocations[0]?.ctx.requestOrigin)).not.toContain('unbound-value');
+    const omitted = await callTool('gatingtest:scoped', {}, superuserExtra('&client=su-owner'));
+    expect(omitted.isError, textOf(omitted)).toBeUndefined();
+    expect(h.invocations[1]?.ctx.requestOrigin).not.toHaveProperty('nativeSession');
+  });
+
+  it('audits the winning header when both native carriers are supplied', async () => {
+    h.nativeSessionRows = new Map([['su-owner', [{ id: 541, session_id: 'native-header', active: true }]]]);
+    const res = await callTool('gatingtest:scoped', {}, superuserExtra('&client=su-owner&native_session=native-query', {
+      'x-papercusp-native-session': 'native-header',
+    }));
+    expect(res.isError, textOf(res)).toBeUndefined();
+    expect(h.nativeSessionCalls).toEqual([{ ownerId: 'su-owner', sessionId: 'native-header' }]);
+    expect(h.invocations[0]?.ctx.requestOrigin).toMatchObject({ nativeSession: {
+      carrier: 'header:x-papercusp-native-session',
+      valueFingerprint: createHash('sha256').update('native-header', 'utf8').digest('hex'),
+      binding: 'bound',
+      candidateAdvSessionId: 541,
+    } });
+    expect(JSON.stringify(h.invocations[0]?.ctx.requestOrigin)).not.toMatch(/native-header|native-query/);
+  });
+
+  it('records caller consistency without claiming physical actor proof for a different connection', async () => {
+    h.nativeSessionRows = new Map([['su-owner', [{ id: 543, session_id: 'native-owner-continuation', active: true }]]]);
+    const res = await callTool('gatingtest:scoped', {}, superuserExtra('&client=su-owner&native_session=native-owner-continuation', {
+      'mcp-session-id': 'different-answerer-connection',
+    }));
+    expect(res.isError, textOf(res)).toBeUndefined();
+    expect(seen[0].ctx).toMatchObject({ uiClientId: 'su-owner', advSessionId: 543 });
+    expect(h.invocations[0]?.ctx.requestOrigin).toMatchObject({ nativeSession: {
+      binding: 'bound',
+      candidateAdvSessionId: 543,
+    } });
+    expect(h.invocations[0]?.ctx.requestOrigin).not.toHaveProperty('nativeSession.physicalActorVerified');
+  });
+});
+
 describe('isolated consult native identity guard (get-feedback D-006)', () => {
   it.each([
     { sourceBackend: 'claude', targetBackend: 'claude', operation: 'fork' },
