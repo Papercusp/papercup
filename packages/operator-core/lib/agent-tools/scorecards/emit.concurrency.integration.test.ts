@@ -394,15 +394,20 @@ describe('scorecards:emit final dedup read-to-write mutex, real PG', () => {
     );
     releaseFirstPreflight();
     const results = await Promise.all([first, second]);
-
-    expect(secondPassedBeforeFirstSettled).toBe(false);
-    expect(results.filter((result) => result.ok && result.created)).toHaveLength(1);
     const persistedAudits = await listScorecards({
       rubricRef: 'grading-integrity',
       subjectRef: subject.id,
       limit: 10,
     });
     console.info(`[grading-audit concurrency fixture] persisted audit count=${persistedAudits.length}`);
-    expect(persistedAudits).toHaveLength(1);
+    expect({
+      secondPassedBeforeFirstSettled,
+      createdAuditCount: results.filter((result) => result.ok && result.created).length,
+      persistedAuditCount: persistedAudits.length,
+    }).toEqual({
+      secondPassedBeforeFirstSettled: false,
+      createdAuditCount: 1,
+      persistedAuditCount: 1,
+    });
   }, 30_000);
 });
