@@ -70,6 +70,7 @@ import {
   safeGcpImageFamilyCommandEnvironment,
 } from './gcp-image-family-production';
 import { gcpBaseImageIdentity, gcpBaseImageIdentityDigest } from './gcp-base-image-identity';
+import { workspaceHostReleaseSubjectSha256 } from './bootc-bake-manifest';
 
 const PROJECT = 'papercusp-images-123';
 const FAMILY = 'papercusp-workspace-host';
@@ -1211,6 +1212,52 @@ describe('GCP image-family production adapter', () => {
         releaseSha256: RELEASE_SHA,
       }),
     ).rejects.toThrow('not bound');
+  });
+
+  it('accepts a bootc clean-room attestation against the bootc fixture it rendered (WI-10006586)', async () => {
+    // The adapter used to re-build the expected bootstrap input field by field and drop
+    // hostModel/bootc, so a healthy bootc boot was judged against the ubuntu default and refused.
+    const bootc = bootcArtifact(TEMPLATE_SHA);
+    const bootcContext: GcpImageFamilyReleaseContext = { ...CONTEXT, artifact: bootc };
+    let seenFixture: GcpImageFamilyCleanRoomRunInput['fixture'] | undefined;
+    const runner = {
+      run: async (input: GcpImageFamilyCleanRoomRunInput) => {
+        seenFixture = input.fixture;
+        return {
+          evidenceRef: 'gcp://clean-room/evidence-bootc',
+          projectId: input.projectId,
+          zone: input.zone,
+          imageId: input.imageId,
+          buildManifestIdentity: input.buildManifestIdentity,
+          computeRunning: true,
+          osLoginReady: true,
+          publicIpv4Assigned: false,
+          attestation: workspaceHostCleanRoomFixtureAttestation(input.fixture, CLEAN_ROOM_OBSERVED_AT),
+          terminated: true,
+          residualResourceIds: [],
+          observedAt: CLEAN_ROOM_OBSERVED_AT,
+          fixtureId: input.fixture.fixtureId,
+          bootstrapScriptSha256: input.fixture.bootstrapScriptSha256,
+        };
+      },
+    };
+    const adapter = new GoogleComputeGcpImageFamilyReleaseAdapter(
+      baseOptions(new ComputeFake(), { cleanRoomRunner: runner }),
+    );
+    await adapter.bindReleaseContext(bootcContext);
+    const proof = await adapter.launchCleanRoomCanary({
+      projectId: PROJECT,
+      zone: 'us-central1-a',
+      serviceAccountEmail: CONTEXT.request.cleanRoom.serviceAccountEmail,
+      subnetwork: CONTEXT.request.cleanRoom.subnetwork,
+      imageId: CANDIDATE_ID,
+      buildManifestIdentity: bootc.buildManifest.manifestIdentity,
+      releaseVersion: VERSION,
+      releaseSha256: workspaceHostReleaseSubjectSha256(bootc),
+    });
+    expect(seenFixture?.bootstrapInput.hostModel).toBe('bootc-image');
+    expect(proof.attestation.hostModel).toBe('bootc-image');
+    expect(proof.terminated).toBe(true);
   });
 
   it('publishes an exact family member, resolves it, and deprecates by immutable replacement', async () => {
