@@ -1261,12 +1261,18 @@ export function normalizeSessionSettingsModel(configDir: string | null | undefin
     from: string | null;
     to: string;
 } | null;
-/** The launch-site half of normalizeSessionSettingsModel: only a Claude argv with NO --model reads
- *  its model from settings (an explicit flag wins and is already normalized at the flag). */
-export function normalizeSessionSettingsModelForLaunch(args: any, { agent, configDir, home }?: {
-    agent?: null | undefined;
-    configDir?: null | undefined;
-    home?: string | undefined;
+/**
+ * The launch-site half of normalizeSessionSettingsModel: only a Claude argv with NO --model reads
+ * its model from settings (an explicit flag wins and is already normalized at the flag).
+ *
+ * @param {string[]} args
+ * @param {{ agent?: string | null, configDir?: string | null, home?: string }} [opts]
+ * @returns {{ from: string | null, to: string } | null}
+ */
+export function normalizeSessionSettingsModelForLaunch(args: string[], { agent, configDir, home }?: {
+    agent?: string | null;
+    configDir?: string | null;
+    home?: string;
 }): {
     from: string | null;
     to: string;

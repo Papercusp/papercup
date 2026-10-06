@@ -328,6 +328,8 @@ describe('goal observation replay binding', () => {
     expect(retry).toEqual(first);
     expect(stored.record.requestFingerprint).toBe(legacyFingerprint);
     expect(stored.record.metadata.goalAdmission).toBe('first-snapshot');
+    const { goalAdmission: _observation, ...pins } = input.metadata;
+    expect(await governor(store).governor.admit({ ...input, metadata: pins })).toEqual(first);
     for (const [field, value] of Object.entries({ goalId: 'other-goal', fleetSlug: 'other-fleet', targetOwnerId: 'other-target' })) {
       await expect(governor(store).governor.admit({ ...input, metadata: { ...input.metadata, [field]: value } }))
         .rejects.toBeInstanceOf(AdmissionIdempotencyConflictError);

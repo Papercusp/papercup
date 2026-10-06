@@ -4666,8 +4666,14 @@ export function normalizeSessionSettingsModel(configDir, { home = homedir() } = 
   return { from: current, to: next };
 }
 
-/** The launch-site half of normalizeSessionSettingsModel: only a Claude argv with NO --model reads
- *  its model from settings (an explicit flag wins and is already normalized at the flag). */
+/**
+ * The launch-site half of normalizeSessionSettingsModel: only a Claude argv with NO --model reads
+ * its model from settings (an explicit flag wins and is already normalized at the flag).
+ *
+ * @param {string[]} args
+ * @param {{ agent?: string | null, configDir?: string | null, home?: string }} [opts]
+ * @returns {{ from: string | null, to: string } | null}
+ */
 export function normalizeSessionSettingsModelForLaunch(
   args,
   { agent = null, configDir = null, home = homedir() } = {},

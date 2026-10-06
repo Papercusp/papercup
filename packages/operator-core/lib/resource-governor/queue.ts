@@ -795,7 +795,9 @@ export class WorkItemAdmissionQueueDriver implements AdmissionDriver {
       // come from this request, so changing a target/goal/fleet remains a conflict.
       const storedSnapshot = stored.record.metadata.goalAdmission;
       const legacyFingerprint = request.admissionClass === 'agent' && typeof storedSnapshot === 'string'
-        ? requestDigest({ ...request, metadata: { ...request.metadata, goalAdmission: storedSnapshot } },
+        ? requestDigest({ ...request, metadata: Object.fromEntries(Object.entries({
+          ...request.metadata, goalAdmission: storedSnapshot,
+        }).sort(([a], [b]) => a.localeCompare(b))) },
           { includeGoalAdmissionSnapshot: true })
         : null;
       if (stored.record.requestFingerprint !== legacyFingerprint) {
