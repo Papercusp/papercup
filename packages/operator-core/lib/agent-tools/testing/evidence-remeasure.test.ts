@@ -293,9 +293,11 @@ describe('buildTestEvidenceRemeasure', () => {
       const oldRun = 'f04cdb70-ad2d-4757-9ff0-3a3d9f4440ad';
       const pending = row(12, {
         phase: 'pending', currentness: sourceStale, runId: oldRun, originRunId: oldRun,
-        observedAt: new Date(now - PENDING_TEST_EVIDENCE_ABANDONMENT_GRACE_MS - 1).toISOString(),
+        // row() returns `never`, so the age is chosen here rather than assigned afterwards.
+        observedAt: new Date(reason === 'inside grace'
+          ? now - 1_000
+          : now - PENDING_TEST_EVIDENCE_ABANDONMENT_GRACE_MS - 1).toISOString(),
       });
-      if (reason === 'inside grace') pending.observedAt = new Date(now - 1_000).toISOString();
       const list = vi.fn().mockResolvedValue([pending]);
       const runStatus = vi.fn().mockResolvedValue(reason === 'a live run snapshot'
         ? { runId: oldRun, status: 'running', startedAt: now - 10_000, finishedAt: null } as never
