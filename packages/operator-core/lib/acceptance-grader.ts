@@ -1727,6 +1727,37 @@ export function spentGradingCascadeAnswer(
 }
 
 /**
+ * WI-10006700: did cascade-core already finish this grading cascade's menu,
+ * leaving only the terminal STATE unwritten?
+ *
+ * cascade-core records the terminal digest + `selection.underFilled` itself and
+ * hands the state transition to whichever trigger called it. A trigger that drops
+ * that hand-off (the open-dispatch walk did, until WI-10006700) leaves the row
+ * `awaiting_responder` with NOBODY answering: the last digest event is the final
+ * slot's failed dispatch (cascade-core only skips a slot whose dispatch launched
+ * nothing — no queue, no answering owner). Counted as live, such a row makes every
+ * ship retry return `dispatch:'existing'` until the 4h expiry, and the fresh-judge
+ * fallback never fires. This predicate lets the recruiter finish the hand-off.
+ */
+export function gradingCascadeWalkedToExhaustion(routingRaw: unknown, digestRaw: unknown): boolean {
+  const parse = (raw: unknown): unknown => {
+    if (typeof raw !== 'string') return raw;
+    try {
+      return JSON.parse(raw) as unknown;
+    } catch {
+      return null;
+    }
+  };
+  const routing = parse(routingRaw) as { selection?: { underFilled?: unknown } } | null;
+  const underFilled = routing?.selection?.underFilled;
+  if (!underFilled || typeof underFilled !== 'object') return false;
+  const digest = parse(digestRaw);
+  if (!Array.isArray(digest) || digest.length === 0) return false;
+  const last = digest[digest.length - 1] as { kind?: unknown } | null;
+  return last?.kind === 'dispatch_failed';
+}
+
+/**
  * The dedupe half of {@link prodOpenGradingCascade}, split out so its database
  * behaviour is testable on real PG without the dispatch half (which launches a
  * session). Every open cascade matching this plan + rubric (+ reservation) is read;
@@ -1750,7 +1781,7 @@ export async function reconcileOpenGradingCascades(
   const sql = getOrgPg().sql;
   const nowMs = deps.nowMs ?? Date.now();
   const rows = (await sql`
-    SELECT conversation_id, cascade_digest
+    SELECT conversation_id, cascade_digest, routing, cascade_cursor
       FROM harness_shared.consult_state
      WHERE workspace_id = ${params.workspaceId}
        AND closed_at IS NULL
@@ -1765,12 +1796,38 @@ export async function reconcileOpenGradingCascades(
        )
      ORDER BY created_at DESC
      LIMIT 16
-  `) as unknown as Array<{ conversation_id: string; cascade_digest: unknown }>;
+  `) as unknown as Array<{
+    conversation_id: string;
+    cascade_digest: unknown;
+    routing: unknown;
+    cascade_cursor: number;
+  }>;
 
   let liveConversationId: string | null = null;
   const closedSpent: Array<{ conversationId: string; answeredBy: string; answeredAt: string }> = [];
   const nowIso = new Date(nowMs).toISOString();
   for (const row of rows) {
+    if (gradingCascadeWalkedToExhaustion(row.routing, row.cascade_digest)) {
+      // WI-10006700: finish the terminal hand-off a trigger dropped. The CAS
+      // re-asserts the same predicate in SQL, so a row a concurrent trigger
+      // moved (new slot, new digest event) is left alone and stays live.
+      const finished = (await sql`
+        UPDATE harness_shared.consult_state
+           SET state = 'no_qualified_responder',
+               responder_id = NULL,
+               expires_at = NULL,
+               updated_at = ${nowIso}::timestamptz
+         WHERE workspace_id = ${params.workspaceId}
+           AND conversation_id = ${row.conversation_id}
+           AND closed_at IS NULL
+           AND state IN ('awaiting_responder', 'active')
+           AND cascade_cursor = ${row.cascade_cursor}
+           AND routing -> 'selection' ? 'underFilled'
+           AND cascade_digest -> -1 ->> 'kind' = 'dispatch_failed'
+        RETURNING conversation_id
+      `) as unknown as Array<{ conversation_id: string }>;
+      if (finished[0]) continue;
+    }
     const spent = spentGradingCascadeAnswer(row.cascade_digest, nowMs);
     if (!spent) {
       liveConversationId ??= row.conversation_id;

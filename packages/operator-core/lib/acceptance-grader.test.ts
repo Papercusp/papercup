@@ -20,6 +20,7 @@ import {
   resolveShipperId,
   selectableGraderLiveness,
   spentGradingCascadeAnswer,
+  gradingCascadeWalkedToExhaustion,
   ACCEPTANCE_GRADING_SWEEP_ACTOR,
   CONSULT_EXPIRY_REVIEW_AUTHOR,
   GRADING_CASCADE_ANSWER_GRACE_MS,
@@ -103,6 +104,36 @@ describe('spentGradingCascadeAnswer (WI-10003451)', () => {
     expect(spentGradingCascadeAnswer({ kind: 'answer' }, NOW)).toBeNull();
     expect(spentGradingCascadeAnswer([{ kind: 'answer', ownerId: 'su-x', at: 'yesterday' }], NOW)).toBeNull();
     expect(spentGradingCascadeAnswer([{ kind: 'answer', at: '2026-09-27T08:00:00.000Z' }], NOW)).toBeNull();
+  });
+});
+
+describe('gradingCascadeWalkedToExhaustion (WI-10006700)', () => {
+  const failed = (ownerId: string) => ({ at: '2026-10-06T14:10:47.959Z', kind: 'dispatch_failed', ownerId });
+  const underFilled = { at: '2026-10-06T14:10:47.959Z', min: 1, answers: 0, reason: 'refill-spent' };
+
+  it('recognises the measured conv-muwrapka shape: underFilled + a failed final dispatch', () => {
+    const routing = { selection: { min: 1, underFilled } };
+    const digest = [failed('su-g1'), failed('su-g2'), failed('su-refill')];
+    expect(gradingCascadeWalkedToExhaustion(routing, digest)).toBe(true);
+    expect(gradingCascadeWalkedToExhaustion(JSON.stringify(routing), JSON.stringify(digest))).toBe(true);
+  });
+
+  it('keeps a mid-walk cascade (no underFilled yet) live', () => {
+    expect(gradingCascadeWalkedToExhaustion({ selection: { min: 1 } }, [failed('su-g1')])).toBe(false);
+  });
+
+  it('keeps a cascade whose final event is not a failed dispatch live', () => {
+    const routing = { selection: { underFilled } };
+    expect(
+      gradingCascadeWalkedToExhaustion(routing, [failed('su-g1'), { at: underFilled.at, kind: 'answer', ownerId: 'su-g2' }]),
+    ).toBe(false);
+    expect(gradingCascadeWalkedToExhaustion(routing, [])).toBe(false);
+  });
+
+  it('is false on malformed input rather than finishing a row it cannot read', () => {
+    expect(gradingCascadeWalkedToExhaustion('{not json', [failed('su-g1')])).toBe(false);
+    expect(gradingCascadeWalkedToExhaustion({ selection: { underFilled } }, '{not json')).toBe(false);
+    expect(gradingCascadeWalkedToExhaustion(null, null)).toBe(false);
   });
 });
 
