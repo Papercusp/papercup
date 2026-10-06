@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   ADMISSION_PRECHECK_SETUP_BUDGET_MS,
   ADMISSION_PRECHECK_SETUP_IDLE_MS,
+  ADMISSION_PRECHECK_HEARTBEAT_INTERVAL_MS,
   admissionPrecheckSetupEnv,
   classifyTestFileRun,
   createCheckpointTreeFixPrecheckRunner,
@@ -189,6 +190,7 @@ describe('createCheckpointTreeFixPrecheckRunner', () => {
     const releaseFile = join(dir, 'release');
     const snapshots: FixPrecheckProgress[] = [];
     let setupFinished = false;
+    let setupOutput = '';
     let filesMeasured = 0;
     const exec = async (argv: readonly string[], opts: ExecOptions): Promise<ExecResult> => {
       if (argv[0] !== 'bash') {
@@ -203,6 +205,7 @@ describe('createCheckpointTreeFixPrecheckRunner', () => {
         releaseFile,
       ], { ...opts, cwd: process.cwd(), timeoutMs: 5_000 });
       setupFinished = true;
+      setupOutput = result.output;
       return result;
     };
     const runner = createCheckpointTreeFixPrecheckRunner({
@@ -223,7 +226,75 @@ describe('createCheckpointTreeFixPrecheckRunner', () => {
       const result = await pending;
       rmSync(dir, { recursive: true, force: true });
       expect(result).toMatchObject({ ran: true, results: [{ status: 'pass' }] });
+      expect(setupOutput).toContain('materializing dependencies');
+      expect(setupOutput).toContain('setup stderr progress');
     }
+  });
+
+  it('bounds output heartbeats, coalesces slow writes and drains setup progress before file progress', async () => {
+    let now = 100_000;
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    const snapshots: FixPrecheckProgress[] = [];
+    let releaseWrite!: () => void;
+    const writeBlocked = new Promise<void>((resolve) => { releaseWrite = resolve; });
+    let setupOutputFinished!: () => void;
+    const outputFinished = new Promise<void>((resolve) => { setupOutputFinished = resolve; });
+    let activeWrites = 0;
+    let maxActiveWrites = 0;
+    const exec = async (argv: readonly string[], opts: ExecOptions): Promise<ExecResult> => {
+      if (argv[0] === 'bash') {
+        opts.onOutput?.();
+        for (let i = 0; i < 100; i += 1) {
+          now += 1;
+          opts.onOutput?.();
+        }
+        now += ADMISSION_PRECHECK_HEARTBEAT_INTERVAL_MS;
+        opts.onOutput?.();
+        now += ADMISSION_PRECHECK_HEARTBEAT_INTERVAL_MS;
+        opts.onOutput?.();
+        setupOutputFinished();
+      } else {
+        // The latest setup snapshot must already be persisted before this phase starts.
+        expect(snapshots.map((p) => p.heartbeatAtMs)).toEqual([100_000, now, now]);
+        now += 1;
+        opts.onOutput?.();
+      }
+      return { exitCode: 0, signal: null, timedOut: false, output: '', durationMs: 1 };
+    };
+    const runner = createCheckpointTreeFixPrecheckRunner({ ...base, exec, runLockHeld: () => ({ held: false, elapsedSec: null }) });
+    const pending = runner({ commit: C, files: ['lib/red.test.ts'], onProgress: async (p) => {
+      activeWrites += 1;
+      maxActiveWrites = Math.max(maxActiveWrites, activeWrites);
+      snapshots.push(p);
+      if (snapshots.length === 1) await writeBlocked;
+      activeWrites -= 1;
+    } });
+    try {
+      await outputFinished;
+      expect(snapshots).toHaveLength(1);
+    } finally {
+      releaseWrite();
+      try {
+        expect(await pending).toMatchObject({ ran: true, results: [{ status: 'pass' }] });
+        expect(snapshots).toHaveLength(4);
+        expect(maxActiveWrites).toBe(1);
+        expect(snapshots.every((p) => p.completedCount === 0 && p.totalCount === 1)).toBe(true);
+      } finally {
+        clock.mockRestore();
+      }
+    }
+  });
+
+  it('keeps the measured verdict when setup output progress cannot be persisted', async () => {
+    const logs: string[] = [];
+    const exec = async (_argv: readonly string[], opts: ExecOptions): Promise<ExecResult> => {
+      opts.onOutput?.();
+      return { exitCode: 0, signal: null, timedOut: false, output: 'progress', durationMs: 1 };
+    };
+    const runner = createCheckpointTreeFixPrecheckRunner({ ...base, exec, log: (line) => logs.push(line), runLockHeld: () => ({ held: false, elapsedSec: null }) });
+    const result = await runner({ commit: C, files: ['lib/red.test.ts'], onProgress: async () => { throw new Error('queue unavailable'); } });
+    expect(result).toMatchObject({ ran: true, results: [{ status: 'pass' }] });
+    expect(logs.filter((line) => line.includes('queue unavailable'))).toHaveLength(3);
   });
 
   const base = { integrationRoot: '/repo', checkpointRoot: '/ckpt' };

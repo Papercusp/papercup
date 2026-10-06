@@ -23,6 +23,33 @@ function alive(pid: number): boolean {
 // WI-10004928 part 5: a grandchild that inherited stdout (a dependency-generation `cp`) kept
 // 'close' from firing, so the pre-check held its single slot far past the setup budget.
 describe('admission pre-check defaultExec subtree handling', () => {
+  it.each(['stdout', 'stderr'] as const)('notifies on %s activity while the child is still running', async (stream) => {
+    let notified!: () => void;
+    const output = new Promise<void>((resolve) => { notified = resolve; });
+    let finished = false;
+    const pending = defaultExec(
+      [process.execPath, '-e', `process.${stream}.write('setup progress'); setTimeout(() => {}, 200);`],
+      { cwd: process.cwd(), timeoutMs: 5_000, onOutput: notified },
+    ).then((result) => { finished = true; return result; });
+    await output;
+    expect(finished).toBe(false);
+    expect(await pending).toMatchObject({ exitCode: 0, output: 'setup progress', timedOut: false });
+  });
+
+  it('does not emit output progress for a silent child or change the verdict when an observer throws', async () => {
+    let notifications = 0;
+    const silent = await defaultExec([process.execPath, '-e', ''], {
+      cwd: process.cwd(), timeoutMs: 5_000, onOutput: () => { notifications += 1; },
+    });
+    expect(silent.exitCode).toBe(0);
+    expect(notifications).toBe(0);
+    const observed = await defaultExec([process.execPath, '-e', "console.log('progress'); process.exitCode = 3;"], {
+      cwd: process.cwd(), timeoutMs: 5_000, onOutput: () => { throw new Error('observer unavailable'); },
+    });
+    expect(observed).toMatchObject({ exitCode: 3, timedOut: false });
+    expect(observed.output).toContain('progress');
+  });
+
   it('resolves on the direct child exit when a backgrounded grandchild still holds stdout, and kills it', async () => {
     const r = await defaultExec(
       ['bash', '-c', '( sleep 30 & echo $! ) ; echo done'],

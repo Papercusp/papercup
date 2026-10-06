@@ -113,9 +113,9 @@ export type FixPrecheckRunResult =
   | { ran: false; reason: FixPrecheckBusyReason; detail: string; holder?: { pid?: number; elapsedSec: number | null } }
   | { ran: false; reason: 'runner-failed'; detail: string };
 
-/** A durable liveness snapshot for the file currently being measured. */
+/** A durable liveness snapshot during setup or measurement of the current file. */
 export interface FixPrecheckProgress {
-  /** Repo-relative file whose test process is about to run. */
+  /** Repo-relative file being prepared or measured. Setup retains the first queued file. */
   currentFile: string;
   /** Number of files that completed before `currentFile` started. */
   completedCount: number;
@@ -320,6 +320,8 @@ export interface ExecOptions {
   env?: NodeJS.ProcessEnv;
   /** Append the child's full stdout+stderr here, so a failure is attributable after the fact. */
   logFile?: string;
+  /** Observe real stdout/stderr activity while the child is running; not a measurement verdict. */
+  onOutput?: () => void;
 }
 
 export interface ExecResult {
@@ -344,6 +346,8 @@ export const ADMISSION_PRECHECK_SETUP_BUDGET_MS = 40 * 60_000;
 /** No setup output for this long = stalled (the gate's own setup watchdog is 30 min idle). */
 export const ADMISSION_PRECHECK_SETUP_IDLE_MS = 15 * 60_000;
 export const ADMISSION_PRECHECK_PER_FILE_BUDGET_MS = 10 * 60_000;
+/** Bound queue writes from chatty children; silent children never manufacture a heartbeat. */
+export const ADMISSION_PRECHECK_HEARTBEAT_INTERVAL_MS = 5_000;
 /** Output kept in memory: the first HEAD bytes plus the LAST TAIL bytes. */
 export const EXEC_OUTPUT_HEAD_CHARS = 32_000;
 export const EXEC_OUTPUT_TAIL_CHARS = 224_000;
@@ -413,6 +417,11 @@ export const defaultExec: NonNullable<CheckpointTreeRunnerOptions['exec']> = (ar
       capture.push(s);
       logStream?.write(s);
       armIdle();
+      try {
+        opts.onOutput?.();
+      } catch (err) {
+        logStream?.write(`\n[admission-precheck-exec] output callback failed: ${err instanceof Error ? err.message : String(err)}\n`);
+      }
     };
     child.stdout?.on('data', collect);
     child.stderr?.on('data', collect);
@@ -628,8 +637,52 @@ export function createCheckpointTreeFixPrecheckRunner(opts: CheckpointTreeRunner
       }
     }
     const setupScript = path.join(opts.integrationRoot, 'apps/operator/bin/release/setup-release-checkout.sh');
+    const reportProgress = async (progress: FixPrecheckProgress): Promise<void> => {
+      if (!onProgress) return;
+      try {
+        await onProgress(progress);
+      } catch (err) {
+        // Progress is a liveness aid, never a substitute for the measured verdict. A transient
+        // queue/DB write failure must not convert a real test result into runner-failed.
+        log(
+          `[admission-precheck] progress callback failed for ${progress.currentFile}: ` +
+            `${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    };
+    const execWithProgress = async (
+      argv: readonly string[],
+      execOpts: ExecOptions,
+      fileProgress: Omit<FixPrecheckProgress, 'heartbeatAtMs'>,
+    ): Promise<ExecResult> => {
+      let lastHeartbeatAtMs = -Infinity;
+      let pendingProgress: FixPrecheckProgress | null = null;
+      let reporting: Promise<void> | null = null;
+      const onOutput = () => {
+        if (!onProgress) return;
+        const heartbeatAtMs = Date.now();
+        if (heartbeatAtMs - lastHeartbeatAtMs < ADMISSION_PRECHECK_HEARTBEAT_INTERVAL_MS) return;
+        lastHeartbeatAtMs = heartbeatAtMs;
+        pendingProgress = { ...fileProgress, heartbeatAtMs };
+        if (reporting) return;
+        // Keep at most one pending snapshot while a CAS write is in flight. Await the last
+        // write before advancing phases so delayed setup progress cannot overwrite a file.
+        reporting = (async () => {
+          while (pendingProgress) {
+            const progress = pendingProgress;
+            pendingProgress = null;
+            await reportProgress(progress);
+          }
+        })().finally(() => { reporting = null; });
+      };
+      try {
+        return await exec(argv, { ...execOpts, onOutput });
+      } finally {
+        await reporting;
+      }
+    };
     log(`[admission-precheck] materializing ${commit.slice(0, 12)} into ${precheckRoot}`);
-    const setup = await exec(
+    const setup = await execWithProgress(
       [
         'bash',
         setupScript,
@@ -651,6 +704,7 @@ export function createCheckpointTreeFixPrecheckRunner(opts: CheckpointTreeRunner
         env: admissionPrecheckSetupEnv(),
         logFile,
       },
+      { currentFile: files[0] as string, completedCount: 0, totalCount: files.length },
     );
     if (setup.exitCode !== 0) {
       const infra = dependencyGenerationInfraCode(setup.exitCode, setup.output);
@@ -666,19 +720,6 @@ export function createCheckpointTreeFixPrecheckRunner(opts: CheckpointTreeRunner
       };
     }
     const results: FixPrecheckFileResult[] = [];
-    const reportProgress = async (progress: FixPrecheckProgress): Promise<void> => {
-      if (!onProgress) return;
-      try {
-        await onProgress(progress);
-      } catch (err) {
-        // Progress is a liveness aid, never a substitute for the measured verdict. A transient
-        // queue/DB write failure must not convert a real test result into runner-failed.
-        log(
-          `[admission-precheck] progress callback failed for ${progress.currentFile}: ` +
-            `${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
-    };
     for (let index = 0; index < files.length; index += 1) {
       const file = files[index] as string;
       await reportProgress({
@@ -688,12 +729,12 @@ export function createCheckpointTreeFixPrecheckRunner(opts: CheckpointTreeRunner
         heartbeatAtMs: Date.now(),
       });
       log(`[admission-precheck] test-file ${file} @ ${commit.slice(0, 12)}`);
-      const r = await exec(['node', 'scripts/test-files.mjs', file], {
+      const r = await execWithProgress(['node', 'scripts/test-files.mjs', file], {
         cwd: precheckRoot,
         timeoutMs: perFileTimeoutMs,
         env: { PAPERCUSP_ADMISSION_PRECHECK: '1', PAPERCUSP_TEST_RUN_GROUP: `admission-precheck:${commit.slice(0, 12)}` },
         logFile,
-      });
+      }, { currentFile: file, completedCount: index, totalCount: files.length });
       const c = classifyTestFileRun(r);
       results.push({ path: file, status: c.status, ...(c.detail ? { detail: c.detail } : {}), exitCode: r.exitCode, durationMs: r.durationMs });
     }
