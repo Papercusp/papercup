@@ -1058,6 +1058,8 @@ export interface ReconcileTickResult {
   checked: number;
   actions: ReconcileAction[];
   degraded: boolean;
+  /** D-004 census: failed, non-transient user units no registry entry covers (absent on early return). */
+  unregisteredFailed?: string[];
 }
 
 /** systemd unit-type suffixes, so a registry entry that already names one is passed through
@@ -1610,7 +1612,122 @@ export async function reconcileTick(deps: ReconcilerDeps): Promise<ReconcileTick
 
   await reconcilePauses(deps, pausedThisTick, observedThisTick, now);
 
-  return { checked: registry.length, actions, degraded: false };
+  const unregisteredFailed = await censusUnregisteredFailedUnits(deps, registry, log);
+
+  return { checked: registry.length, actions, degraded: false, unregisteredFailed };
+}
+
+// ── Host-scoped failed-unit census (reboot-residue-service-repairs-2026-10-03 D-004 / R-004) ──
+//
+// WHY. After the 2026-10-02 forced reboot, `agenticmail.service` and `llama-ornith.service` sat in
+// `failed` for days and NOTHING reported either: the loop above only looks at SUPERVISED_PROCESSES,
+// a static registry that ships to every host. Both artifacts had been deleted weeks earlier (a node
+// reinstall dropped the global npm package; a disk reclamation removed the model store) while the
+// long-running processes kept serving from memory, so the reboot was the first moment they failed.
+//
+// WHY NOT ADD THEM TO THE REGISTRY. They are host-specific units. A registry entry is checked on
+// every host, and on a host without the unit it becomes a permanent phantom-DOWN — the exact class
+// NON_PROBED_UNITS records as `unit-not-installed` ("Never add these"). Asking systemd which units
+// are failed on THIS host is host-scoped by construction: a unit that is not installed never fails.
+//
+// WHAT IS EXCLUDED. (1) Registry units — the loop above already owns them, with damping and EI
+// filing; announcing them twice would double every alarm. (2) `Transient=yes` units — run-scoped
+// (`capability:bash` tasks, `systemd-run` chains, manual checkpoint runs): their names are minted per
+// run and a failed one records that RUN's exit, not a host service that is down. Measured on the dev
+// box 2026-10-06: 13 of 17 failed user units were transient; the other 4 were all real residues.
+//
+// REPORT-ONLY, ONCE PER EPISODE. It never restarts anything (a restart cannot restore a deleted
+// artifact) and announces each unit once until it leaves `failed`; a later failure re-announces.
+// The episode memory is process-local, so a process restart re-announces a unit that is still
+// failed — bounded, and a still-failed service deserves the reminder. It never fails the tick.
+
+/** Units the census announced for their CURRENT failure episode. */
+const announcedUnregisteredFailures = new Set<string>();
+
+/** Test-only reset for the census episode memory. */
+export function _resetFailedUnitCensusForTests(): void {
+  announcedUnregisteredFailures.clear();
+}
+
+const normalizeServiceUnit = (unit: string): string => unit.replace(/\.service$/, '');
+
+/**
+ * PURE: the failed units no registry entry covers and that are not run-scoped. `transientById` is
+ * keyed by systemd `Id` (the full unit name) with the `Transient` property value; a unit missing
+ * from it, or with a value other than `no`, is NOT selected — an unknown transience is not evidence
+ * of a host service, and the next tick asks again.
+ */
+export function selectUnregisteredFailedUnits(
+  failed: readonly SystemctlUnitStatus[],
+  registry: readonly { unit?: string }[],
+  transientById: ReadonlyMap<string, string>,
+): SystemctlUnitStatus[] {
+  const registered = new Set(registry.filter((e) => e.unit).map((e) => normalizeServiceUnit(e.unit as string)));
+  return failed.filter(
+    (u) =>
+      u.active === 'failed' &&
+      !registered.has(normalizeServiceUnit(u.unit)) &&
+      transientById.get(u.unit) === 'no',
+  );
+}
+
+/**
+ * List failed user units, keep the host services no registry entry covers, and announce the ones
+ * not yet announced this episode. Returns the full selected set (announced or not) for the tick
+ * result. Never throws: a census that cannot run is logged and reports nothing.
+ */
+export async function censusUnregisteredFailedUnits(
+  deps: Pick<ReconcilerDeps, 'execUser' | 'notify'>,
+  registry: readonly { unit?: string }[],
+  log: (msg: string) => void,
+): Promise<string[]> {
+  let failed: SystemctlUnitStatus[];
+  try {
+    failed = parseSystemctlListUnits(
+      await deps.execUser(['list-units', '--state=failed', '--no-legend', '--plain']),
+    ).filter((u) => u.active === 'failed');
+  } catch (err) {
+    log(`failed-unit census skipped: ${err instanceof Error ? err.message : String(err)}`);
+    return [];
+  }
+
+  const registered = new Set(registry.filter((e) => e.unit).map((e) => normalizeServiceUnit(e.unit as string)));
+  const candidates = failed.filter((u) => !registered.has(normalizeServiceUnit(u.unit)));
+  let selected: SystemctlUnitStatus[] = [];
+  if (candidates.length > 0) {
+    let transientById: Map<string, string>;
+    try {
+      const records = parseSystemctlShowRecords(
+        await deps.execUser(['show', '-p', 'Id', '-p', 'Transient', ...candidates.map((u) => u.unit)]),
+      );
+      transientById = new Map([...records].map(([id, props]) => [id, (props.Transient ?? '').trim()]));
+    } catch (err) {
+      log(`failed-unit census could not read Transient (${err instanceof Error ? err.message : String(err)}) — reporting nothing this tick`);
+      return [];
+    }
+    selected = selectUnregisteredFailedUnits(candidates, registry, transientById);
+  }
+
+  const failedNow = new Set(selected.map((u) => u.unit));
+  // A unit that left `failed` closes its episode, so a later failure is announced again.
+  for (const unit of [...announcedUnregisteredFailures]) {
+    if (!failedNow.has(unit)) announcedUnregisteredFailures.delete(unit);
+  }
+  const fresh = selected.filter((u) => !announcedUnregisteredFailures.has(u.unit));
+  if (fresh.length > 0) {
+    const list = fresh.map((u) => `\`${u.unit}\`${u.description ? ` (${u.description})` : ''}`).join(', ');
+    await deps
+      .notify({
+        summary:
+          `⚠ supervision: ${fresh.length} unsupervised user unit(s) FAILED on this host — ${list}. ` +
+          'Not in SUPERVISED_PROCESSES, so nothing restarts them; inspect with ' +
+          '`systemctl --user status <unit>`, then fix the cause or `systemctl --user reset-failed <unit>` if retired.',
+        category: 'supervision',
+      })
+      .catch(() => {});
+    for (const u of fresh) announcedUnregisteredFailures.add(u.unit);
+  }
+  return selected.map((u) => u.unit);
 }
 
 /**

@@ -1,5 +1,6 @@
 import {
   WORKSPACE_HOST_BOOTC_BUILDER_KIND,
+  workspaceHostBootcPinnedImageRef,
   type WorkspaceHostBootstrapAttestation,
   type WorkspaceHostBuilderKind,
   type WorkspaceHostImageArtifact,
@@ -511,7 +512,7 @@ function validateCleanBootProof(
     if (
       artifact.hostModel !== 'bootc-image' ||
       proof.attestation.bootcBaseImage !== artifact.bootc.baseImage ||
-      proof.attestation.release.source !== artifact.bootc.image ||
+      proof.attestation.release.source !== workspaceHostBootcPinnedImageRef(artifact.bootc) ||
       proof.attestation.release.imageDigest !== artifact.bootc.imageDigest ||
       proof.attestation.release.signaturePolicyPath !== artifact.bootc.signaturePolicyPath
     ) {

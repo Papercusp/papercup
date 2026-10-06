@@ -255,7 +255,7 @@ describe("workspace-host image compatibility", () => {
       hostModel: "bootc-image",
       bootcBaseImage: WORKSPACE_HOST_BOOTC_BASE_IMAGE,
       release: {
-        source: candidate.bootc.image,
+        source: `${candidate.bootc.image.slice(0, candidate.bootc.image.lastIndexOf(":"))}@${candidate.bootc.imageDigest}`,
         imageDigest: candidate.bootc.imageDigest,
         signaturePolicyPath: WORKSPACE_HOST_CONTAINERS_POLICY_PATH,
       },

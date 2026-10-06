@@ -802,6 +802,12 @@ export function implementationAcceptanceStateFromReadinessSql(
   currentRevision: postgres.Fragment,
   /** The row's current kind: it picks the stage's kind-specific check (P-006). */
   itemKind: postgres.Fragment,
+  /**
+   * P-007 Phase C (D-028): `completionVerificationSubjectSql` over the same row. A census
+   * that projected only the readiness document passes nothing, so the completion policy
+   * reads 'incomplete' there (completion tasks are created admitted; no census promotes them).
+   */
+  completionSubject: postgres.Fragment = sql`NULL::text`,
 ) {
   const acc = sql`(${readinessJson} -> 'evidence' -> 'acceptance')`;
   const authority = sql`(${acc} -> 'authority')`;
@@ -867,7 +873,15 @@ export function implementationAcceptanceStateFromReadinessSql(
       AND ${nonEmptyText(sql`(${receipt} -> 'ref')`)}
       AND jsonb_typeof(${receipt} -> 'buildSha') = 'string'
       AND (${receipt} ->> 'buildSha') ~ '^[[:space:]]*[0-9a-fA-F]{7,40}[[:space:]]*$'
-    ) ELSE ${authority} ->> 'kind' = 'agent-review' END
+    ) ELSE (
+      ${authority} ->> 'kind' = 'agent-review'
+      OR (
+        ${authority} ->> 'kind' = 'policy'
+        AND ${authority} ->> 'policy' = ${COMPLETION_VERIFICATION_POLICY}
+        AND ${acc} -> 'verification' ->> 'check' = 'completion'
+        AND ${acc} -> 'verification' ->> 'subject' = ${completionSubject}
+      )
+    ) END
   ), FALSE)`;
   return sql`(CASE
     WHEN NOT (${readinessValid})

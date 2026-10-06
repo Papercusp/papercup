@@ -8,6 +8,7 @@ import {
   validateWorkspaceHostImageArtifact,
   verifyWorkspaceHostBuildManifest,
   workspaceHostImageModel,
+  workspaceHostBootcPinnedImageRef,
   type WorkspaceHostBuildManifestVerification,
   type WorkspaceHostBuilderKind,
   type WorkspaceHostBuilderTemplateShape,
@@ -270,7 +271,7 @@ export function evaluateWorkspaceHostReleaseGate(
         cleanRoomErrors.push('artifact bootc image identity is missing');
       } else if (
         cleanRoom.attestation.release.version !== input.artifact.release.version ||
-        cleanRoom.attestation.release.source !== bootc.image ||
+        cleanRoom.attestation.release.source !== workspaceHostBootcPinnedImageRef(bootc) ||
         cleanRoom.attestation.release.imageDigest !== bootc.imageDigest ||
         cleanRoom.attestation.release.signaturePolicyPath !== bootc.signaturePolicyPath ||
         cleanRoom.attestation.bootcBaseImage !== bootc.baseImage
