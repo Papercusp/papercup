@@ -165,8 +165,8 @@ export const TOOL_ERROR_RULES: readonly ToolErrorRule[] = [
   },
   {
     class: 'caller',
-    messagePattern: 'Identity capability \\(unresolved\\): outside-ceiling',
-    why: 'the kernel refused a call outside the caller identity’s authored capability ceiling; this expected authorization refusal is not a tool implementation defect',
+    messagePattern: 'Identity capability \\(unresolved\\): outside-ceiling|Identity capability \\(unresolved\\): stale-artifact',
+    why: 'the kernel refused an identity capability check: outside-ceiling is absent from the authored grant, while stale-artifact means the caller launch record cannot prove the desired identity revision. Both are expected authorization-state refusals, not defects in the named tool',
   },
   {
     class: 'caller',

@@ -223,12 +223,18 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
     expect(classifyToolError('verification-failed', 'error', 'tool failed while verifying its result')).toBe('structural');
   });
 
-  it('classifies kernel identity outside-ceiling refusals as caller without broadening authorization_denied', () => {
+  it('classifies kernel identity outside-ceiling and stale-artifact refusals as caller without broadly matching authorization_denied', () => {
     const sessionsRefusal = 'Kernel preflight denied tool "sessions:ingest-gate-event": Identity capability (unresolved): outside-ceiling (sessions:ingest-gate-event)';
     const journalRefusal = 'Kernel preflight denied tool "journal:record-turn": Identity capability (unresolved): outside-ceiling (journal:record-turn)';
+    const staleArtifactRefusal = 'Kernel preflight denied tool "tools:invoke": Identity capability (unresolved): stale-artifact (tools:invoke)';
     expect(classifyToolError('authorization_denied', 'error', sessionsRefusal)).toBe('caller');
     expect(classifyToolError('authorization_denied', 'error', journalRefusal)).toBe('caller');
+    expect(classifyToolError('authorization_denied', 'error', staleArtifactRefusal)).toBe('caller');
     expect(classifyToolError('authorization_denied', 'error', 'database constraint failed')).toBe('structural');
+    expect(classifyToolError(
+      'authorization_denied', 'error',
+      'Kernel preflight denied tool "tools:invoke": Identity capability (unresolved): policy-unavailable (tools:invoke)',
+    )).toBe('structural');
   });
 
   it('classifies a nested tools:invoke invalid_input wrapper as caller, not structural', () => {
