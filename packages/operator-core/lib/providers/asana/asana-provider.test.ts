@@ -64,9 +64,17 @@ function json(status: number, body: unknown, headers: Record<string, string> = {
   return { status, headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body), bodyEncoding: 'utf8' };
 }
 
-/** A fake Asana: `route` answers each request; an unanswered request fails the test loudly. */
-function fakeHost(route: Route) {
+/** The connected account: the Asana user the source is authorized as ("the Papercusp user", D-012). */
+const ME = { gid: 'user-me', resource_type: 'user', name: 'Papercusp' } satisfies Schemas['UserCompact'];
+
+/**
+ * A fake Asana: `route` answers each request; an unanswered request fails the test loudly.
+ * GET /users/me (the connected account) is answered here and counted in `selfCalls`, apart
+ * from `calls`, so the call-order assertions below describe task and event traffic only.
+ */
+function fakeHost(route: Route, me: Schemas['UserCompact'] = ME) {
   const calls: Call[] = [];
+  const selfCalls: Call[] = [];
   const fetch: HostFetch = async ({ source, request }) => {
     expect(request.url.startsWith(`${API}/`)).toBe(true);
     const url = new URL(request.url);
@@ -78,13 +86,17 @@ function fakeHost(route: Route) {
       source,
       request,
     };
+    if (call.method === 'GET' && call.path === '/users/me') {
+      selfCalls.push(call);
+      return json(200, { data: me });
+    }
     calls.push(call);
     const response = route(call);
     if (!response) throw new Error(`unrouted Asana request: ${call.method} ${call.path}?${call.query}`);
     return response;
   };
   const named = (method: string, path: string) => calls.filter((c) => c.method === method && c.path === path);
-  return { calls, named, host: { fetch } };
+  return { calls, selfCalls, named, host: { fetch } };
 }
 
 const ENG = { gid: 'proj-eng', resource_type: 'project', name: 'Engineering' };
@@ -295,7 +307,14 @@ describe('the cursor', () => {
     JSON.stringify({ v: 1, projects, project: 0, phase: 'events', offset: null, tokens: { 'proj-eng': 'tok' }, fresh: {}, ...over });
 
   it('no cursor starts a crawl of the first project', () => {
-    expect(internal.decodeCursor(null, projects)).toEqual({ v: 1, projects, project: 0, phase: 'crawl', offset: null, tokens: {}, fresh: {} });
+    expect(internal.decodeCursor(null, projects)).toEqual({ v: 1, projects, project: 0, phase: 'crawl', offset: null, tokens: {}, fresh: {}, self: null });
+  });
+
+  it('keeps the connected account it resolved; a cursor without one resolves it again', () => {
+    expect(internal.decodeCursor(raw({ self: 'user-me' }), projects).self).toBe('user-me');
+    expect(internal.decodeCursor(raw({}), projects).self).toBeNull();
+    // A changed project list restarts the crawl, and with it the account lookup.
+    expect(internal.decodeCursor(raw({ projects: ['proj-eng'], self: 'user-me' }), projects).self).toBeNull();
   });
 
   it('a changed project list restarts the crawl; an unreadable or foreign cursor is expired', () => {
@@ -354,6 +373,7 @@ describe('backfill crawls each project after taking its Events token', () => {
     expect(first.hasMore).toBe(true);
     expect(JSON.parse(first.nextCursor)).toEqual({
       v: 1, projects: ['proj-eng', 'proj-ops'], project: 0, phase: 'crawl', offset: 'off-2', tokens: {}, fresh: { 'proj-eng': 'tok-proj-eng-0' },
+      self: ME.gid,
     });
     // The token is taken before the first task page, so a change made during the crawl is replayed.
     const order = fake.calls.map((c) => `${c.method} ${c.path}`);
@@ -375,9 +395,33 @@ describe('backfill crawls each project after taking its Events token', () => {
     expect(third.hasMore).toBe(false);
     expect(JSON.parse(third.nextCursor)).toEqual({
       v: 1, projects: ['proj-eng', 'proj-ops'], project: 0, phase: 'events', offset: null,
-      tokens: { 'proj-eng': 'tok-proj-eng-0', 'proj-ops': 'tok-proj-ops-0' }, fresh: {},
+      tokens: { 'proj-eng': 'tok-proj-eng-0', 'proj-ops': 'tok-proj-ops-0' }, fresh: {}, self: ME.gid,
     });
     expect(fake.calls.every((c) => c.source === SOURCE)).toBe(true);
+    // The connected account is resolved once, on the first page, and then rides the cursor.
+    expect(fake.selfCalls).toHaveLength(1);
+    expect(fake.selfCalls[0]!.source).toBe(SOURCE);
+  });
+
+  it('marks the tasks assigned to the connected account with selfRoles, and no others (D-012)', async () => {
+    const ws = workspace();
+    ws.tasks.set('t-2', task({ ...ws.t2, assignee: { ...ME } }));
+    const fake = fakeHost((c) => {
+      if (c.method === 'GET' && c.path === '/projects/proj-eng/tasks' && c.query.get('offset') === 'off-2') {
+        return json(200, { data: [ws.tasks.get('t-2')!], next_page: null } satisfies Schemas['GetTasksForProjectOk']);
+      }
+      return ws.route(c);
+    });
+    const first = await adapter.syncPage(syncReq(null), fake.host);
+    const second = await adapter.syncPage(syncReq(first.nextCursor), fake.host);
+    expect(first.records[0]!.payload).not.toHaveProperty('selfRoles'); // t-1 is Bob's
+    expect(second.records[0]!.payload).toMatchObject({ externalId: 't-2', assignees: ['Papercusp'], selfRoles: ['assignee'] });
+    // A different connected account sees the same task as someone else's.
+    const other = fakeHost((c) => (c.path === '/projects/proj-eng/tasks' ? json(200, { data: [ws.tasks.get('t-2')!], next_page: null }) : ws.route(c)), {
+      gid: 'user-avi', resource_type: 'user', name: 'Avi',
+    });
+    const seenByAvi = await adapter.syncPage(syncReq(null), other.host);
+    expect(seenByAvi.records[0]!.payload).not.toHaveProperty('selfRoles');
   });
 
   it('an expired crawl offset restarts that project without a new token', async () => {
@@ -440,7 +484,7 @@ describe('incremental reads each project\'s events and re-reads the touched task
     expect(third.hasMore).toBe(false);
     expect(JSON.parse(third.nextCursor)).toEqual({
       v: 1, projects: CONFIG.projectGids, project: 0, phase: 'events', offset: null,
-      tokens: { 'proj-eng': 'tok-eng-2', 'proj-ops': 'tok-ops-1' }, fresh: {},
+      tokens: { 'proj-eng': 'tok-eng-2', 'proj-ops': 'tok-ops-1' }, fresh: {}, self: ME.gid,
     });
   });
 

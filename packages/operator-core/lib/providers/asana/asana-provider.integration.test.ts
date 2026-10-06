@@ -43,6 +43,7 @@ import {
   recordWriteBackCapability,
 } from '../../work-admission/record-source';
 import { runConnectorSync, type ConnectorSyncDeps, type ConnectorSourceOutcome } from '../connector-runtime';
+import { setAdmissionRuleAndBackfill, ticketRulePreset, type TicketRulePreset } from '../../work-admission/admission-rules';
 import type { components } from './asana-openapi';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as Sql, ws: 'papercusp-workspace' }));
@@ -102,6 +103,8 @@ const projectOfSection = (gid: string) => Object.keys(SECTIONS).find((p) => SECT
 const PAPERCUSP_APP = { gid: 'u-app', resource_type: 'user', name: 'Papercusp' } satisfies Schemas['UserCompact'];
 const BOB = { gid: 'u-bob', resource_type: 'user', name: 'Bob' } satisfies Schemas['UserCompact'];
 const ALICE = { gid: 'u-alice', resource_type: 'user', name: 'Alice' } satisfies Schemas['UserCompact'];
+/** The account the source is connected as: GET /users/me ("the Papercusp user", D-012). */
+const PAPERCUSP = { gid: 'u-papercusp', resource_type: 'user', name: 'Papercusp' } satisfies Schemas['UserCompact'];
 type User = Schemas['UserCompact'];
 
 /** The source's config: both projects, and the columns its board sections stand for. */
@@ -125,6 +128,8 @@ interface Recorded {
   nextStory: number;
   nextToken: number;
   minute: number;
+  /** GET /users/me requests, kept out of `calls` so the op sequences below describe task traffic. */
+  selfCalls: number;
 }
 
 let asana: Recorded;
@@ -148,6 +153,7 @@ function recorded(): Recorded {
     nextStory: 1,
     nextToken: 1,
     minute: 0,
+    selfCalls: 0,
     log: {},
     tokens: new Map(),
     expired: new Set(),
@@ -286,6 +292,10 @@ const recordedHostFetch: HostFetch = async ({ request }) => {
   const query = Object.fromEntries(url.searchParams);
   const body = request.body === undefined ? undefined : JSON.parse(request.body);
   const op = `${method} ${path}`;
+  if (op === 'GET /users/me') {
+    asana.selfCalls += 1;
+    return json(200, { data: PAPERCUSP } satisfies Schemas['GetUserOk']);
+  }
   asana.calls.push({ op, query, ...(body === undefined ? {} : { body }) });
   if (asana.rateLimitOnce.delete(op)) {
     return json(429, { errors: [{ message: 'You have made too many requests recently.' }] }, { 'Retry-After': '120' });
@@ -433,6 +443,15 @@ async function clean(): Promise<void> {
     SELECT id::text FROM harness_shared.data_sources WHERE workspace_id = ${WS} AND kind = ${KIND}`;
   const ids = sources.map((s) => s.id);
   if (ids.length > 0) {
+    // Admitted work items carry no dataSourceId of their own; they are found through their admission.
+    await sql`DELETE FROM harness_shared.admission_write_backs WHERE workspace_id = ${WS} AND data_source_id = ANY(${sql.array(ids)}::uuid[])`;
+    await sql`
+      DELETE FROM harness_shared.work_items w
+       USING harness_shared.work_admissions a
+       WHERE a.workspace_id = ${WS} AND w.workspace_id = a.workspace_id AND w.feature_id = a.work_item_id
+         AND a.data_source_id = ANY(${sql.array(ids)}::uuid[])`;
+    await sql`DELETE FROM harness_shared.work_admissions WHERE workspace_id = ${WS} AND data_source_id = ANY(${sql.array(ids)}::uuid[])`;
+    await sql`DELETE FROM harness_shared.admission_rules WHERE workspace_id = ${WS} AND data_source_id = ANY(${sql.array(ids)}::uuid[])`;
     await sql`DELETE FROM harness_shared.work_items WHERE workspace_id = ${WS} AND payload->>'dataSourceId' = ANY(${sql.array(ids)}::text[])`;
     await sql`DELETE FROM harness_shared.documents WHERE workspace_id = ${WS} AND metadata->>'dataSourceId' = ANY(${sql.array(ids)}::text[])`;
     await sql`DELETE FROM harness_shared.document_permission_lists WHERE workspace_id = ${WS} AND source_ref = ANY(${sql.array(ids)}::text[])`;
@@ -732,6 +751,79 @@ describe('Asana syncs through the shared connector driver (R-5)', () => {
 });
 
 // ── Writes dispatched by the host ───────────────────────────────────────────
+
+describe('admission presets turn matching Asana tasks into work (P-006, R-6)', () => {
+  /** Another Asana user whose name is ALSO "Papercusp": only the gid says who is who. */
+  const LOOKALIKE = { gid: 'u-lookalike', resource_type: 'user', name: 'Papercusp' } satisfies Schemas['UserCompact'];
+
+  type Admitted = { record: string; via: string; rule_id: string | null; kind: string; agent_work: boolean; about: number };
+  async function admitted(sourceId: string): Promise<Admitted[]> {
+    return sql<Admitted[]>`
+      SELECT a.source_key AS record, a.admitted_via AS via, a.rule_id::text AS rule_id, w.item_kind AS kind,
+             harness_shared.work_item_is_agent_work(w.nature, w.audience, w.lane, w.needs_owner_action) AS agent_work,
+             (SELECT count(*)::int FROM harness_shared.coord_links l
+               WHERE l.src_ref = a.work_item_id AND l.rel = 'about' AND l.dst_ref = a.source_key) AS about
+        FROM harness_shared.work_admissions a
+        JOIN harness_shared.work_items w ON w.workspace_id = a.workspace_id AND w.feature_id = a.work_item_id
+       WHERE a.workspace_id = ${WS} AND a.data_source_id = ${sourceId}::uuid
+       ORDER BY a.source_key`;
+  }
+  const recordOf = (sourceId: string, gid: string) => dataSourceRecordId(WS, sourceId, 'ticket', gid);
+  const preset = (sourceId: string, p: TicketRulePreset, value?: string) =>
+    setAdmissionRuleAndBackfill(
+      { workspaceId: WS, dataSourceId: sourceId, title: `${p} ${value ?? ''}`.trim(), match: ticketRulePreset(p, value), harness: HARNESS, createdBy: 'asana-it' },
+      { sql },
+    );
+  const setTask = (gid: string, over: Partial<Task>) => {
+    const i = asana.tasks.findIndex((t) => t.gid === gid);
+    asana.tasks[i] = { ...asana.tasks[i]!, ...over };
+  };
+
+  it('assigned-to-papercusp: the task assigned to the connected user becomes exactly one linked work item', async () => {
+    setTask('t-2', { assignee: PAPERCUSP });
+    setTask('t-4', { assignee: LOOKALIKE }); // same name, different user: not Papercusp's
+    const sourceId = await createSource();
+    const { rule } = await preset(sourceId, 'assigned-to-papercusp');
+
+    await syncOne(sourceId);
+    const rows1 = await admitted(sourceId);
+    expect(rows1).toEqual([
+      { record: recordOf(sourceId, 't-2'), via: 'rule', rule_id: rule.id, kind: 'change', agent_work: true, about: 1 },
+    ]);
+    expect((await tickets(sourceId)).map((t) => [t.payload.externalId, t.agent_work, t.payload.selfRoles ?? null])).toEqual([
+      ['t-1', false, null], ['t-2', false, ['assignee']], ['t-3', false, null], ['t-4', false, null],
+    ]);
+    // The connected user is looked up once for the whole backfill, then carried in the cursor.
+    expect(asana.selfCalls).toBe(1);
+
+    await due(sourceId);
+    await syncOne(sourceId);
+    expect(await admitted(sourceId)).toEqual(rows1);
+  });
+
+  it('a project rule added after the sync admits each held task in it once, a multi-homed task included', async () => {
+    const sourceId = await createSource();
+    await syncOne(sourceId);
+    expect(await admitted(sourceId)).toEqual([]); // no rule, no work
+
+    const { rule, backfill } = await preset(sourceId, 'project', 'operations');
+    expect(backfill).toMatchObject({ scanned: 4, admitted: 2, existing: 0, refused: [], truncated: false });
+    const expected: Admitted[] = [
+      // t-1 lives in Engineering AND Operations: one ticket, so one work item; its "bug" tag makes it a bug.
+      { record: recordOf(sourceId, 't-1'), via: 'rule', rule_id: rule.id, kind: 'bug', agent_work: true, about: 1 },
+      { record: recordOf(sourceId, 't-4'), via: 'rule', rule_id: rule.id, kind: 'change', agent_work: true, about: 1 },
+    ];
+    expect(await admitted(sourceId)).toEqual(expected.sort((a, b) => (a.record < b.record ? -1 : 1)));
+  });
+
+  it('a tag arrives as a label: the label preset admits the tagged task only', async () => {
+    const sourceId = await createSource();
+    await syncOne(sourceId);
+    expect((await preset(sourceId, 'label', 'needs-design')).backfill).toMatchObject({ scanned: 4, admitted: 0 });
+    expect((await preset(sourceId, 'label', 'bug')).backfill).toMatchObject({ admitted: 1 });
+    expect((await admitted(sourceId)).map((a) => [a.record, a.kind])).toEqual([[recordOf(sourceId, 't-1'), 'bug']]);
+  });
+});
 
 describe('the host writes back to Asana by capability (D-008)', () => {
   function admission(sourceId: string, externalId: string) {
