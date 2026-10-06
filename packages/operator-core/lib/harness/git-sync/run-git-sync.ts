@@ -5316,7 +5316,7 @@ async function commitOneRepoWithScratch(
         const refused = migrationReservationSkips(o.scope, postStageMigrationRefusals, skippedPaths, o.log);
         migrationQuarantinedPaths = [...new Set([...migrationQuarantinedPaths, ...refused])];
         stagingExcludePaths = [...new Set([...stagingExcludePaths, ...refused])];
-        const unstage = await unstagePreStagedProtectedPaths(runGit, repoPath, refused, o.log);
+        const unstage = await unstagePreStagedProtectedPaths(stageGit, repoPath, refused, o.log);
         const unstageError = unstage.ok ? '' : `; could not unstage refused migration paths: ${unstage.error}`;
         if (!unstage.ok) {
           o.log(`[git-sync] ${o.scope}: post-stage migration quarantine could not remove refused paths${unstageError}`);
@@ -5334,7 +5334,7 @@ async function commitOneRepoWithScratch(
     }
     // EI-24712906810240170: a lock taken, or a transient edit made and undone, after the
     // pre-stage refresh must not publish through the index this add just built.
-    const catchAllGuard = await postStageGuard();
+    const catchAllGuard = await postStageGuard(stageGit);
     if (!catchAllGuard.ok) {
       return {
         committedLocal: committedAny,
@@ -5351,10 +5351,13 @@ async function commitOneRepoWithScratch(
     // sweep's intent/default stem, incl. its own [skip ci]) is demoted to the body for
     // traceability. Numstat failure or an empty staged set falls back to `message` alone
     // — byte-identical to the pre-WI-38594 commit.
-    const commitArgs = [...GIT_SYNC_IDENTITY_ARGS, 'commit', '--no-verify'];
+    const messageArgs: string[] = [];
     let catchAllSubjected = false;
     if (o.diffSubjects !== false) {
-      const ns = await runGit(['diff', '--cached', '--numstat'], repoPath);
+      // On the private path the base is explicit: the index was seeded from it, and a HEAD
+      // that moved since would make an implicit `--cached` diff describe the wrong base.
+      const numstatBase = catchAllPrivate?.base ? [catchAllPrivate.base] : [];
+      const ns = await stageGit(['diff', '--cached', '--numstat', ...numstatBase], repoPath);
       if (ns.code === 0) {
         const stats = parseNumstat(ns.stdout);
         if (stats.length > 0) {
@@ -5362,12 +5365,82 @@ async function commitOneRepoWithScratch(
             stats.map((s) => s.file),
             stats,
           );
-          commitArgs.push('-m', `${subject}${skipCiSuffix(message)}`, '-m', message);
+          messageArgs.push('-m', `${subject}${skipCiSuffix(message)}`, '-m', message);
           catchAllSubjected = true;
         }
       }
     }
-    if (!catchAllSubjected) commitArgs.push('-m', message);
+    if (!catchAllSubjected) messageArgs.push('-m', message);
+    if (catchAllPrivate) {
+      const published = await publishPrivateIndexCommit(runGit, stageGit, repoPath, {
+        base: catchAllPrivate.base,
+        baseTree: catchAllPrivate.baseTree,
+        label: 'catch-all commit',
+        reflogMessage: 'git-sync: catch-all commit',
+        messageArgs: async () => messageArgs,
+      });
+      if (published.status === 'committed') {
+        committedAny = true;
+        committedCount += 1;
+        // Bring the SHARED index's entries for exactly the committed paths up to the commit,
+        // so it does not hold pre-commit blobs (a later commit would revert them). A path the
+        // guard held back is not in this diff, so a peer's staged entry for it is untouched.
+        // The catch-all can commit thousands of paths: they go through a NUL pathspec file
+        // (no argv limit) read literally (GIT_LITERAL_PATHSPECS: no glob magic), and the
+        // reset is never run with an EMPTY pathspec, which would reset the whole index.
+        const changed = await runGit(
+          ['diff', '--name-only', '--no-renames', '-z', catchAllPrivate.baseTree, published.tree],
+          repoPath,
+        );
+        const committedPaths = changed.code === 0 ? changed.stdout.split('\0').filter(Boolean) : [];
+        let refresh: GitCommandResult | null = changed.code === 0 ? null : changed;
+        if (committedPaths.length > 0) {
+          const pathspecFile = join(
+            catchAllPrivate.gitDir,
+            `papercusp-git-sync-catch-all-${process.pid}-${randomUUID()}.pathspec`,
+          );
+          scratch.push(pathspecFile);
+          await writeFile(pathspecFile, `${committedPaths.join('\0')}\0`);
+          const resetArgs = ['reset', '-q', published.commit, `--pathspec-from-file=${pathspecFile}`, '--pathspec-file-nul'];
+          const literal = { env: { GIT_LITERAL_PATHSPECS: '1' } };
+          refresh = await recoverIndexLockContention(
+            await runGit(resetArgs, repoPath, literal),
+            () => runGit(resetArgs, repoPath, literal),
+            runGit,
+            repoPath,
+            'catch-all shared-index refresh',
+            o.log,
+          );
+        }
+        if (refresh && refresh.code !== 0) {
+          // The commit landed. A stale shared entry reads as staged-vs-HEAD; the next tick's
+          // catch-all is seeded from HEAD, so it cannot be committed as a revert.
+          o.log(
+            `[git-sync] ${repoPath}: catch-all commit ${published.commit.slice(0, 10)} landed but the shared index ` +
+              `could not be refreshed for ${committedPaths.length} path(s): ${gitFailureDetail(refresh)}`,
+          );
+        }
+      } else if (published.status !== 'nothing') {
+        // P-002 (below): a commit that did not land must surface as an error, never fall
+        // into the merge phase with a dirty tree. A refused CAS means HEAD moved while the
+        // catch-all was being built; nothing was published and the next tick retries.
+        return {
+          committedLocal: false,
+          dirtyPathCount,
+          committedCount,
+          error:
+            published.status === 'cas-refused'
+              ? `catch-all commit not published: HEAD moved while it was being built (update-ref CAS refused: ${published.detail})`
+              : published.error,
+          oversized,
+          contentErrors,
+          skippedPaths,
+        };
+      }
+      committedLocal = committedAny;
+      return { committedLocal, dirtyPathCount, committedCount, oversized, contentErrors, skippedPaths };
+    }
+    const commitArgs = [...GIT_SYNC_IDENTITY_ARGS, 'commit', '--no-verify', ...messageArgs];
     let c = await runGit(commitArgs, repoPath);
     c = await recoverIndexLockContention(c, () => runGit(commitArgs, repoPath), runGit, repoPath, 'git commit', o.log);
     if (c.code === 0) {

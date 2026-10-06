@@ -1258,6 +1258,63 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(git(repo, 'status', '--porcelain', '--', 'file.txt')).toMatch(/file\.txt/);
   });
 
+  it('WI-10006725: a guard-held path a peer re-stages before the catch-all commit is not committed', async () => {
+    writeFileSync(join(repo, 'file.txt'), 'held by a late lock\n');
+    writeFileSync(join(repo, 'normal.txt'), 'ordinary work\n');
+    let census = 0;
+    // The pre-stage census is clear, so `add -A` stages file.txt; the post-stage census
+    // reports a late lock, so the guard holds file.txt back from this commit.
+    const refreshLiveLockHoldings = vi.fn(async () => {
+      census += 1;
+      return census === 1 ? [] : [{ path: 'file.txt', owner: 'su-peer', intent: 'late lock' }];
+    });
+    // A peer `git add`s the held path into the SHARED index after the guard, right before
+    // the catch-all records its commit (`write-tree` privately, or `git commit` on the
+    // shared index — the pre-WI-10006725 path, which recorded the peer's entry).
+    let peerStaged = false;
+    const runGit: RunGit = async (args, cwd, options) => {
+      if (!peerStaged && census >= 2 && (args.includes('write-tree') || args.includes('commit'))) {
+        peerStaged = true;
+        git(repo, 'add', 'file.txt');
+      }
+      return directRunGit(args, cwd, options);
+    };
+
+    const out = await runGitSync('test', { repoPath: repo, config: cfg, refreshLiveLockHoldings, runGit });
+
+    expect(peerStaged).toBe(true);
+    expect(out.status).toBe('synced');
+    expect(out.skippedPaths).toContainEqual({ scope: 'superproject', path: 'file.txt', owner: 'su-peer', intent: 'late lock' });
+    expect(git(originDir, 'show', 'main:file.txt')).toBe('line1');
+    expect(git(originDir, 'show', 'main:normal.txt')).toBe('ordinary work');
+    // The peer's staged entry is left as the peer wrote it; the committed path's shared
+    // entry was refreshed to the commit, so it reads clean.
+    expect(git(repo, 'diff', '--cached', '--name-only')).toBe('file.txt');
+    expect(git(repo, 'status', '--porcelain', '--', 'normal.txt')).toBe('');
+  });
+
+  it('WI-10006725: a catch-all whose base moved before publish is not published and errors', async () => {
+    writeFileSync(join(repo, 'normal.txt'), 'ordinary work\n');
+    let moved = false;
+    const runGit: RunGit = async (args, cwd, options) => {
+      if (!moved && args[0] === 'update-ref' && args.includes('git-sync: catch-all commit')) {
+        moved = true;
+        // A second writer advances HEAD between the catch-all's commit-tree and its CAS.
+        const peer = git(repo, 'commit-tree', 'HEAD^{tree}', '-p', 'HEAD', '-m', 'peer moved HEAD');
+        git(repo, 'update-ref', 'HEAD', peer);
+      }
+      return directRunGit(args, cwd, options);
+    };
+
+    const out = await runGitSync('test', { repoPath: repo, config: cfg, runGit });
+
+    expect(moved).toBe(true);
+    expect(out.status).toBe('error');
+    expect(JSON.stringify(out)).toContain('update-ref CAS refused');
+    expect(git(repo, 'log', '-1', '--format=%s')).toBe('peer moved HEAD');
+    expect(git(repo, 'status', '--porcelain', '--', 'normal.txt')).toMatch(/normal\.txt/);
+  });
+
   it('EI-24356165312897992: commits released locks while retaining current locks and explicit exclusions', async () => {
     writeFileSync(join(repo, 'file.txt'), 'completed edit\n');
     writeFileSync(join(repo, 'explicit.txt'), 'explicitly excluded\n');
@@ -2889,7 +2946,8 @@ describe('runGitSync (real git, no submodule)', () => {
       return { code: r.status ?? 1, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
     };
     // WI-10006705: the attributed add runs on a PRIVATE index (GIT_INDEX_FILE in
-    // options.env); the catch-all `add -A` never carries one, so it runs for real.
+    // options.env). WI-10006725: so does the catch-all, but its argv is `add -A`, not
+    // `add --`, so only the attributed add matches below and the catch-all runs for real.
     let attributedAddFailed = false;
     const runGit: RunGit = async (args, cwd, options) => {
       const onPrivateIndex = Boolean(options?.env?.GIT_INDEX_FILE);
