@@ -146,7 +146,18 @@ the shell's periodic refresh clears the shared error banner whenever it succeeds
 separate voice-start error, and the voice control shows the refusal as a sentence
 ("Voice needs a workspace — create or select one, then retry.") on its retry button and status line;
 Retry asks for the chat again. Unit tests are in `portal/tests/voice-session.test.ts` (11/11 pass) and
-the portal typecheck is clean (2946 files).
+the portal typecheck is clean (2958 files at 19:01Z).
+
+**Live check of the fix — run 7, PASS** (2026-10-06T19:12:24Z–19:12:30Z, against release
+`72kJ33-m_qtCIfpcyrT1n`, portal commit `c269bd1c`). The 19:10 reconcile promoted that release but did
+not restart the portal (EI-24484616826768773), so it was restarted by hand at 19:11:50Z. The new
+serving process's cwd is that release, and the live chunk carries the new message. Results: GET and
+POST `/api/papercup-chat/conversations` returned 403 `portal_chat_workspace_not_selected` at
+19:12:29.639Z / .841Z. The control named the refusal at 19:12:29.896Z: status text "Voice needs a
+workspace — create or select one, then retry.", button "Voice mode — push-to-talk". Nothing opened
+(0 peer connections, 0 microphone calls, 0 microphone tracks). Playwright: `1 passed, 2 skipped
+(16.4s)`, exit 0. The two skips are the workspace-dependent tests (D-009). Log
+`.papercusp/scratch/d006-portal-run7.log`, receipt `.papercusp/scratch/d006-portal-run7-receipt.json`.
 
 Rescope (plan D-009): the spec's first test now checks that the refusal is named and that no room and
 no microphone open. The spoken round trip and the denial test skip with a stated reason when the account
