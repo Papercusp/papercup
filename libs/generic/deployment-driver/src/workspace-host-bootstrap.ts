@@ -2846,6 +2846,16 @@ export function buildWorkspaceHostBootstrap(
     ...harden.tail,
     "",
     `phase '${WORKSPACE_HOST_BOOTSTRAP_PHASES[2]}'`,
+    // WI-10006965: state that code AFTER the model branch reads is assigned HERE, for both
+    // models. Both used to be assigned only inside the bundle arm, so a bootc host died under
+    // `set -u`: WORK_DIR in the local-inference (ollama) install, PREVIOUS_TARGET in
+    // service_restart_needed on any re-run after a reboot. A bootc run never switches
+    // `current` (the release is the booted image), so the same readback is its true value.
+    // The trap replaces statusReportLines' trap and keeps its reporting; the bundle arm's
+    // cleanup() replaces this one and removes WORK_DIR itself.
+    'WORK_DIR="$(mktemp -d /var/tmp/papercusp-bootstrap.XXXXXX)"',
+    `trap 'status=$?; rm -rf -- "$WORK_DIR"; report_outcome "$status"; exit "$status"' EXIT`,
+    'PREVIOUS_TARGET="$(readlink -f "$RUNTIME_ROOT/current" 2>/dev/null || true)"',
     // The two update paths. ⛔ The bundle arm below is NOT legacy awaiting deletion — it is what
     // every provisioned host runs today, and both models are live through the transition
     // (D-280). It is kept verbatim, in place, with its comments attached to their lines.
@@ -2924,12 +2934,11 @@ export function buildWorkspaceHostBootstrap(
     'bundle_storage_diagnostics',
     'RELEASE_DIR="$RUNTIME_ROOT/releases/$RELEASE_VERSION"',
     'prune_bundle_releases',
-    'WORK_DIR="$(mktemp -d /var/tmp/papercusp-bootstrap.XXXXXX)"',
+    // WORK_DIR and PREVIOUS_TARGET are assigned before the model branch (WI-10006965).
     'BUNDLE_PATH="$WORK_DIR/server-bundle.tgz"',
     'SIGNATURE_PATH="$WORK_DIR/server-bundle.tgz.minisig"',
     'PUBLIC_KEY_PATH="$WORK_DIR/bootstrap-public.key"',
     'STAGE_DIR=""',
-    'PREVIOUS_TARGET="$(readlink -f "$RUNTIME_ROOT/current" 2>/dev/null || true)"',
     "SWITCHED=0",
     "restore_previous() {",
     '  [[ "$SWITCHED" -eq 1 && -n "$PREVIOUS_TARGET" && -d "$PREVIOUS_TARGET" ]] || return 0',
