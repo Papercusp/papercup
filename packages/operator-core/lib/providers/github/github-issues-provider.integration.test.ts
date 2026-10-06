@@ -595,11 +595,12 @@ describe('D-015 drift detectors', () => {
   });
 
   it('the bespoke GitHub poller, its routine action and the octokit write-back are gone', () => {
-    // Positive control: the files these scans read exist, so an empty match is a real absence.
-    const register = join(REPO_ROOT, 'packages/operator-core/lib/harness/routines/register-system-actions.ts');
-    expect(existsSync(register)).toBe(true);
-    expect(readFileSync(register, 'utf8')).toContain("'system:");
-    expect(readFileSync(register, 'utf8')).not.toContain('github-issues-sync');
+    // Positive control: the registry of routine actions is the side-effect import list, and it is
+    // populated, so the missing import is a real absence rather than a moved file.
+    const register = readFileSync(join(REPO_ROOT, 'packages/operator-core/lib/harness/routines/register-system-actions.ts'), 'utf8');
+    expect(register.match(/^import '\.\.?\/[^']+';$/gm)?.length ?? 0).toBeGreaterThan(50);
+    expect(register).toContain("import '../git-sync/git-sync-action';");
+    expect(register).not.toContain('github-issues-sync');
     expect(existsSync(join(REPO_ROOT, 'packages/operator-core/lib/harness/routines/github-issues-sync-action.ts'))).toBe(false);
     expect(existsSync(join(REPO_ROOT, 'packages/operator-core/lib/data-sources/github-issues-connector.ts'))).toBe(false);
     const recordSource = readFileSync(join(REPO_ROOT, 'packages/operator-core/lib/work-admission/record-source.ts'), 'utf8');

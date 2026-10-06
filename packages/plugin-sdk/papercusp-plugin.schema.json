@@ -128,7 +128,17 @@
             "scopes": { "type": "array", "items": { "type": "string" } },
             "pkce": { "type": "boolean" },
             "clientRegistrationRef": { "type": "string" },
-            "credentialGroup": { "type": "string" }
+            "credentialGroup": { "type": "string" },
+            "identity": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["url", "idField"],
+              "properties": {
+                "url": { "type": "string" },
+                "idField": { "type": "string" },
+                "displayNameField": { "type": "string" }
+              }
+            }
           }
         },
         "egressHosts": { "type": "array", "minItems": 1, "items": { "type": "string" } },

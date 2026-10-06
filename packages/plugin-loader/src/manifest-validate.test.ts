@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import type { ProviderDescriptor, ProviderOAuthDescriptor, ProviderOAuthIdentity } from '@papercusp/plugin-sdk';
 import { validateManifest } from './manifest-validate';
 
 describe('validateManifest', () => {
@@ -258,5 +259,53 @@ describe('provides.events + dependencies.events (events-as-a-dependency axis, D-
   it('rejects a dependencies.events entry missing family', () => {
     const r = validateManifest({ ...base, dependencies: { events: [{ optional: true }] } });
     expect(r.ok).toBe(false);
+  });
+});
+
+/**
+ * The manifest JSON schema must accept every field of the SDK's provider descriptor type. The
+ * fixture is typed `Required<…>` at every level, so adding a field to ProviderDescriptor,
+ * ProviderOAuthDescriptor or ProviderOAuthIdentity fails the typecheck here until the fixture
+ * carries it, and then this test fails until the schema accepts it. (Regression: P-003 added
+ * `oauth.identity` to the type but not the schema, so a real package declaring it was refused
+ * at load — found by the P-010 GitHub issues provider.)
+ */
+describe('validateManifest: provider descriptor schema matches the SDK type', () => {
+  const identity: Required<ProviderOAuthIdentity> = {
+    url: 'https://api.example.com/user',
+    idField: 'id',
+    displayNameField: 'login',
+  };
+  const oauth: Required<ProviderOAuthDescriptor> = {
+    authorizeUrl: 'https://example.com/oauth/authorize',
+    tokenUrl: 'https://example.com/oauth/token',
+    scopes: ['read'],
+    pkce: true,
+    clientRegistrationRef: 'example',
+    credentialGroup: 'example-suite',
+    identity,
+  };
+  const provider: Required<ProviderDescriptor> = {
+    id: 'example-provider',
+    contractVersion: 1,
+    displayName: 'Example',
+    datatypes: ['ticket'],
+    capabilities: ['ticket.read'],
+    oauth,
+    egressHosts: ['api.example.com', 'example.com'],
+    configSchema: { type: 'object' },
+  };
+  const manifest = (p: unknown) => ({ name: 'example-provider', version: '0.1.0', papercusp: '^0.1.0', provider: p });
+
+  it('accepts a descriptor carrying every declared field', () => {
+    const r = validateManifest(manifest(provider));
+    expect(r.issues).toEqual([]);
+    expect(r.ok).toBe(true);
+  });
+
+  it('still refuses an unknown oauth or identity property', () => {
+    expect(validateManifest(manifest({ ...provider, oauth: { ...oauth, clientSecret: 'x' } })).ok).toBe(false);
+    expect(validateManifest(manifest({ ...provider, oauth: { ...oauth, identity: { ...identity, token: 'x' } } })).ok).toBe(false);
+    expect(validateManifest(manifest({ ...provider, oauth: { ...oauth, identity: { url: identity.url } } })).ok).toBe(false);
   });
 });
