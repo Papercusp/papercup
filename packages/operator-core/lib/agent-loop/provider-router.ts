@@ -19,6 +19,8 @@ import {
   type ModelsDevCatalog,
 } from './model-selection';
 
+// Catalog metadata is advisory. Credential slots are local authority: a remote
+// catalog must never select an unrelated secret for a provider's request.
 const API_KEY_ENV: Record<AiSdkProviderId, string[]> = {
   anthropic: ['ANTHROPIC_API_KEY'],
   openai: ['OPENAI_API_KEY'],
@@ -66,9 +68,7 @@ function apiKeyFor(
   }
   const fromStore = storedKey(selection.provider, credentials);
   if (fromStore) return fromStore;
-  const names = selection.providerMetadata?.env?.length
-    ? selection.providerMetadata.env
-    : API_KEY_ENV[selection.provider];
+  const names = API_KEY_ENV[selection.provider];
   for (const name of names) {
     const value = env[name]?.trim();
     if (value) return value;
@@ -175,9 +175,7 @@ export function createRoutedModelPort(opts: RoutedModelPortOptions = {}): ModelP
       }
       const apiKey = apiKeyFor(selection, credentials, env);
       if (aiProvider !== 'gateway-codex' && !apiKey) {
-        const names = selection.providerMetadata?.env?.length
-          ? selection.providerMetadata.env
-          : API_KEY_ENV[aiProvider];
+        const names = API_KEY_ENV[aiProvider];
         yield {
           type: 'error',
           message:
