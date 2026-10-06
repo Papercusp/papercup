@@ -774,12 +774,57 @@ describe('release:repair-queue', () => {
     );
   });
 
-  it('a queue-row write failure RETRACTS the published lineage ref so ref and row cannot disagree', async () => {
+  it('WI-10006866: a CAS miss because a concurrent read RECONCILED the row to this admission is persisted, never retracted', async () => {
+    // Measured 2026-10-06 19:12Z: a repair-queue read in the admit window rebuilt the row from
+    // the ref (provenance reconciled-from-ref, synthetic 2000-01-01 atMs), so the door's CAS
+    // missed. The old bare catch reported persist_failed and retracted the ref: ref-behind-row.
     mocks.admit.mockReturnValue(admissionOf(true));
-    mocks.write.mockRejectedValue(new Error('pg down'));
+    mocks.write.mockRejectedValueOnce(new Error('frozen repair queue write conflict: updatedAtMs moved'));
+    const door = admissionOf(true).entry;
+    const reconciledRow = {
+      ...queue,
+      repairHead: NEW_HEAD,
+      admissions: [{ ...door, atMs: 946_684_800_000, provenance: 'reconciled-from-ref' }],
+      updatedAtMs: queue.updatedAtMs + 1,
+    };
+    mocks.transition.mockImplementationOnce(async (_target, transition) => ({
+      status: 'written',
+      queue: transition(reconciledRow as typeof queue),
+      fresh: reconciledRow as typeof queue,
+      retries: 0,
+    }));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const result = body(
       await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'], confirm: true } as never, { role: 'su' } as never),
     );
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/adopt-reconciled → persisted=true/));
+    warn.mockRestore();
+    expect(mocks.retract).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      ok: true,
+      admitted: true,
+      persisted: true,
+      judgedSha: NEW_HEAD,
+      persistError: expect.stringMatching(/write conflict/),
+      persistSettlement: 'adopt-reconciled',
+    });
+    // The door's richer entry replaced the reconciled rebuild (the synthetic date is gone).
+    const settled = await (mocks.transition.mock.results.at(-1)?.value as Promise<{ queue: typeof queue & { admissions: Array<{ atMs: number; provenance?: string }> } }>);
+    expect(settled.queue.admissions).toHaveLength(1);
+    expect(settled.queue.admissions[0]!.provenance).toBeUndefined();
+    expect(settled.queue.admissions[0]!.atMs).not.toBe(946_684_800_000);
+  });
+
+  it('a queue-row write failure whose fresh re-read ALSO fails RETRACTS the published lineage ref so ref and row cannot disagree', async () => {
+    mocks.admit.mockReturnValue(admissionOf(true));
+    mocks.write.mockRejectedValue(new Error('pg down'));
+    mocks.transition.mockRejectedValue(new Error('pg down'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const result = body(
+      await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'], confirm: true } as never, { role: 'su' } as never),
+    );
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/settle-failed: pg down → persisted=false/));
+    warn.mockRestore();
     expect(mocks.retract).toHaveBeenCalledWith({
       root: '/repo',
       candidate: queue.candidate,
@@ -2283,11 +2328,21 @@ describe('release:repair-queue', () => {
       expect(mocks.write).not.toHaveBeenCalled();
       mocks.admit.mockReturnValue(admissionOf(true));
       mocks.write.mockRejectedValueOnce(new Error('queue CAS moved'));
+      // WI-10006866: a CAS miss retracts only when the FRESH row genuinely lacks the admission —
+      // here it moved to an unrelated head, so the settlement is `diverged`.
+      mocks.transition.mockImplementationOnce(async (_target, transition) => {
+        const diverged = { ...queue, repairHead: '9'.repeat(40) };
+        return { status: 'unchanged', queue: transition(diverged as typeof queue), fresh: diverged, retries: 0 };
+      });
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       expect(body(await tool.handler({ ...patchArgs, confirm: true } as never, ctx))).toMatchObject({
         ok: false,
         admitted: false,
         reason: 'persist_failed',
+        persistSettlement: expect.stringMatching(/^diverged: /),
       });
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/settled against the fresh row as diverged/));
+      warn.mockRestore();
       expect(mocks.retract).toHaveBeenCalledWith(
         expect.objectContaining({ published: NEW_HEAD, previousRepairHead: queue.repairHead }),
       );

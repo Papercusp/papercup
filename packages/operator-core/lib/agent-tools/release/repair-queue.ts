@@ -32,6 +32,7 @@ import {
   frozenRepairHeadAwaitsVerification,
   markFrozenRepairAdmitted,
   normalizeRepoPath,
+  settleFrozenRepairAdmission,
   type FrozenCandidateRepairQueue,
   type FrozenRepairAdmission,
   type FrozenRepairAdmissionPrecheck,
@@ -1817,6 +1818,12 @@ export default defineTool({
         });
       }
       let persisted = true;
+      // WI-10006866: a missed write is NOT "nothing moved". Any repair-queue read in the window
+      // since the ref moved reconciles the row from that ref, so the CAS can miss because the
+      // admission IS already recorded. Retracting then leaves the row ahead of the ref. Settle
+      // against the FRESH row first; retract only when the row genuinely lacks this admission.
+      let persistError: string | null = null;
+      let persistSettlement: string | null = null;
       try {
         if (expectedQueueIdentity) {
           await writeFrozenCandidateRepairQueue(inspected.target, next, {
@@ -1827,8 +1834,29 @@ export default defineTool({
             expectedUpdatedAtMs: queue.updatedAtMs,
           });
         }
-      } catch {
-        persisted = false;
+      } catch (writeErr) {
+        persistError = writeErr instanceof Error ? writeErr.message : String(writeErr);
+        const settle: { kind: string; detail: string | null } = { kind: 'diverged', detail: null };
+        try {
+          const settled = await applyFrozenCandidateRepairQueueTransition(inspected.target, (fresh) => {
+            const s = settleFrozenRepairAdmission(fresh, entry);
+            settle.kind = s.kind;
+            settle.detail = s.kind === 'diverged' ? s.detail : null;
+            return s.queue ?? fresh;
+          });
+          persisted = settled.status !== 'absent' && settle.kind !== 'diverged';
+          if (persisted && settled.queue) next = settled.queue;
+          persistSettlement = settled.status === 'absent'
+            ? 'queue-absent'
+            : `${settle.kind}${settle.detail ? `: ${settle.detail}` : ''}`;
+        } catch (settleErr) {
+          persisted = false;
+          persistSettlement = `settle-failed: ${settleErr instanceof Error ? settleErr.message : String(settleErr)}`;
+        }
+        console.warn(
+          `[repair-queue] admit ${outcome.commit.slice(0, 12)}: queue-row write failed (${persistError}); ` +
+            `settled against the fresh row as ${persistSettlement} → persisted=${persisted}`,
+        );
       }
       let retracted: boolean | null = null;
       if (!persisted) {
@@ -1856,6 +1884,7 @@ export default defineTool({
         precheck: precheckEntry,
         ...(dependencyGeneration ? { dependencyGeneration } : {}),
         persisted,
+        ...(persistError ? { persistError, persistSettlement } : {}),
         ...(retracted === null ? {} : { retracted }),
       });
       const judgedSha = persisted ? outcome.commit : queue.repairHead;
@@ -1925,6 +1954,7 @@ export default defineTool({
                 ? 'The queue row could not be written, so the lineage ref was retracted to the previous repairHead; nothing moved. Re-run.'
                 : 'The queue row could not be written AND the lineage ref could not be retracted: the ref is at the admission but the row is not. Re-read the queue before relying on the judged sha.',
             }),
+        ...(persistError ? { persistError, persistSettlement } : {}),
       });
     }
     if (args.op === 'claim-leg') {
