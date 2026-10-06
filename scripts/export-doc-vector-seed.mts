@@ -24,8 +24,11 @@
  *   npx tsx scripts/export-doc-vector-seed.mts --out <dir> [--previous <dir>]
  *        [--mode gemma] [--dsn <postgres url>] [--allow-uncovered]
  */
+import { rm } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
 import postgres from 'postgres';
 import { getHarnessAdminUrl } from '../packages/operator-core/lib/embedded-pg-discovery';
+import { scrubDocVectorSeedIdentity } from '../packages/operator-core/lib/release/doc-vector-seed-identity-scrub';
 import {
   applyDocVectorSeed,
   countUnembeddedDocSections,
@@ -76,6 +79,16 @@ async function main(): Promise<number> {
       return 1;
     }
     await writeDocVectorSeed(out, seed);
+    // WI-10006868: an anchor is a heading slug and can quote a person; redact with the
+    // release audit's own identity map before any cut packs this directory. Fail closed.
+    try {
+      const { rows } = await scrubDocVectorSeedIdentity(out, fileURLToPath(new URL('..', import.meta.url)));
+      console.log(`identity scrub: ${rows} rows verified`);
+    } catch (err) {
+      await rm(out, { recursive: true, force: true });
+      console.error(`refusing to ship the doc-vector seed: identity scrub failed (${err instanceof Error ? err.message : String(err)})`);
+      return 1;
+    }
     console.log(`wrote ${out}`);
     return 0;
   } finally {
