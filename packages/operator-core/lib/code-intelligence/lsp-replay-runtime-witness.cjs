@@ -42,7 +42,14 @@ function startReplayRuntime(options) {
     emit({ kind, path, sha256: hash(bytes), byteLength: Buffer.byteLength(bytes), ...extra });
   };
   Module.registerHooks({ load(url, context, nextLoad) {
-    const result = nextLoad(url, context);
+    // The default ESM loader retained its original readFileSync before this
+    // recorder patched fs. Its internal readSync is still a complete read:
+    // nextLoad's returned source is witnessed below. No additional loader may
+    // register, so this scope contains only Node's default loading boundary.
+    let result;
+    completeReadDepth++;
+    try { result = nextLoad(url, context); }
+    finally { completeReadDepth--; }
     if (url.startsWith('node:')) return result;
     if (!url.startsWith('file:') || result.source == null) {
       // CommonJS is witnessed at the actual compile boundary below.
@@ -99,8 +106,8 @@ function startReplayRuntime(options) {
   for (const name of ['read', 'readSync', 'readv', 'readvSync', 'createReadStream']) {
     const original = fs[name];
     fs[name] = function (...args) {
-      // Node's readFileSync calls exported readSync internally. Those bytes
-      // already have a complete filename-bound receipt at its return boundary.
+      // Complete reads and the default ESM loader call exported readSync
+      // internally; their returned bytes have a filename-bound receipt.
       if (!completeReadDepth) emit({ kind: 'unknown', reason: `unsupported-file-reader:${name}` });
       return original.apply(this, args);
     };

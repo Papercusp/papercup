@@ -139,7 +139,7 @@ dependency_generation_input_manifest() {
       printf '%s\t%s\n' "$rel" "$digest"
     done < <(
       find . \
-        \( -type d \( -name .papercusp -o -name .git -o -name node_modules \
+        \( -type d \( -name .papercusp -o -name .papercusp-smoke-snapshots -o -name .git -o -name node_modules \
           -o -name 'node_modules.deploy-tmp.*' -o -name 'node_modules.deploy-old.*' \
           -o -name '*.tmp.[0-9]*' -o -name '*.old.[0-9]*' \) -prune \) -o \
         \( -type f \( -name package-lock.json -o -name npm-shrinkwrap.json \
@@ -186,7 +186,7 @@ dependency_generation_input_manifest_ref() {
       *) continue ;;
     esac
     case "$rel" in
-      .papercusp/*|*/.papercusp/*|node_modules/*|*/node_modules/*) continue ;;
+      .papercusp/*|*/.papercusp/*|.papercusp-smoke-snapshots/*|*/.papercusp-smoke-snapshots/*|node_modules/*|*/node_modules/*) continue ;;
     esac
     if [ -n "$extract_root" ]; then
       mkdir -p "$extract_root/$(dirname "${prefix}${rel}")" || return 1
@@ -332,6 +332,8 @@ dependency_generation_configure_workspace_dirs() {
 
 # Product dependency trees only. Coordination worktrees and Git metadata are
 # runtime infrastructure, never dependency-generation inputs. Neither are
+# short-lived repositories under .papercusp-smoke-snapshots: their install trees
+# and lockfiles can disappear while a product generation is being copied.
 # swap-by-rename scratch siblings: node_modules.deploy-{tmp,old}.* (WI-2144371)
 # and any whole DIRECTORY staged as <dir>.tmp.<pid> / <dir>.old.<pid>, e.g.
 # build-desktop-sidecar.sh's sidecar.tmp.$$ (WI-10005953). Such a sibling carries
@@ -349,7 +351,7 @@ dependency_generation_enumerate_node_modules() {
   # -mindepth 1: the name patterns below must never prune the starting root
   # itself, whatever its basename (a caller may pass a generated scratch root).
   find "$root" -mindepth 1 \
-    \( -type d \( -name .papercusp -o -name .git \
+    \( -type d \( -name .papercusp -o -name .papercusp-smoke-snapshots -o -name .git \
       -o -name 'node_modules.deploy-tmp.*' -o -name 'node_modules.deploy-old.*' \
       -o -name '*.tmp.[0-9]*' -o -name '*.old.[0-9]*' \) -prune \) -o \
     \( -type d -name node_modules -prune -print \)

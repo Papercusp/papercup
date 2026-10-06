@@ -6932,6 +6932,24 @@ impl App {
         let written = reply.map_or(0, |m| m.content.chars().count() + m.reasoning.chars().count());
         let tools = reply.map_or(0, |m| m.tools.len());
         let awaiting_approval = reply.is_some_and(|m| m.tools.iter().any(|t| t.needs_approval));
+        let key = if self.chat_composing { "Esc" } else { "Ctrl+X" };
+        // An open card means the engine is blocked on the user, not working.
+        // SU sessions deliver approvals and questions as cards, not as
+        // `needs_approval` tools on the reply, so the line used to keep saying
+        // "Thinking" under an approval card. Like Claude Code under a
+        // permission prompt, nothing moves while it waits: no spinner and no
+        // ticking timer, so the screen holds still until the user answers.
+        if let Some(card) = self.card_state.focused() {
+            let phase = if card.prompt.trim_start().starts_with("Allow ") {
+                "Waiting for your approval"
+            } else {
+                "Waiting for your answer"
+            };
+            return format!("· {phase} ({key} to interrupt)");
+        }
+        if awaiting_approval {
+            return format!("· Waiting for your approval ({key} to interrupt)");
+        }
         let starting = match self.su_session.as_ref() {
             Some(session) => matches!(
                 session.lifecycle,
@@ -6941,9 +6959,7 @@ impl App {
             // The engine is still being launched for this message.
             None => self.su_pending_turn.is_some(),
         };
-        let phase = if awaiting_approval {
-            "Waiting for your approval".to_string()
-        } else if starting && elapsed.as_secs() >= 5 {
+        let phase = if starting && elapsed.as_secs() >= 5 {
             format!("Still starting {engine}; your message will send when it is ready")
         } else if starting {
             format!("Starting {engine}")
@@ -6971,7 +6987,6 @@ impl App {
             };
             detail.push_str(&format!(" · ↓ ~{shown} tokens"));
         }
-        let key = if self.chat_composing { "Esc" } else { "Ctrl+X" };
         format!("{frame} {phase}… ({detail} · {key} to interrupt)")
     }
 
@@ -15768,6 +15783,44 @@ mod tests {
             Action::CardRespond { correlation_id, .. } => Some(correlation_id.clone()),
             _ => None,
         }
+    }
+
+    /// P-024 / P-011: under an open SU approval card the working line says it
+    /// is waiting for the user and holds still. It used to read "Thinking"
+    /// with a moving spinner and timer, so it misreported the state and the
+    /// screen kept changing under the card.
+    #[test]
+    fn su_open_card_working_line_waits_for_the_user_and_holds_still() {
+        let mut app = App::new();
+        app.tab = Tab::Operator;
+        app.agent_chat_id = Some("chat-1".into());
+        app.set_su_session_binding(su_binding());
+        app.chat_streaming = true;
+        let start = std::time::Instant::now();
+        app.chat_turn_started = Some(start);
+        let running = app.chat_working_line(start + std::time::Duration::from_millis(300));
+        assert!(running.contains("… (0s"), "{running}");
+        assert!(!running.contains("Waiting for your"), "{running}");
+
+        open_approval_card(&mut app, 1, "alpha", "echo ALPHA");
+        let first = app.chat_working_line(start + std::time::Duration::from_millis(300));
+        let later = app.chat_working_line(start + std::time::Duration::from_secs(7));
+        assert!(first.contains("Waiting for your approval"), "{first}");
+        assert!(!first.contains("Thinking"), "{first}");
+        assert_eq!(first, later, "the line must not move while the card waits");
+
+        close_card(&mut app, 2, "alpha");
+        let resumed = app.chat_working_line(start + std::time::Duration::from_secs(7));
+        assert!(resumed.contains("(7s"), "{resumed}");
+
+        let mut question = su_event_base("card", 3);
+        question["turnId"] = json!("turn-1");
+        question["phase"] = json!("opened");
+        question["card"] = json!({"correlationId":"q1","prompt":"Which branch?","createdAt":3,
+            "presentation":{"kind":"radio","options":[{"id":"0","label":"main"}]}});
+        app.apply_su_session_event(su_event(question));
+        let asking = app.chat_working_line(start + std::time::Duration::from_secs(8));
+        assert!(asking.contains("Waiting for your answer"), "{asking}");
     }
 
     /// P-015: Approve collapses the card to one "Approved" row at once, and

@@ -207,6 +207,15 @@ async function extractDevSourceTreeLocked(
   };
   const stampPath = join(targetDir, SOURCE_ARCHIVE_STAMP_BASENAME);
 
+  // A source checkout is never a disposable extraction cache, with or without
+  // orphan backups or a completion stamp. .git may be a directory or a gitfile.
+  if (existsSync(join(targetDir, '.git'))) {
+    log(
+      `[dev-source] source checkout at ${targetDir} needs manual upgrade; preserving its work`,
+    );
+    return hasPapercupMarkers(targetDir) ? targetDir : null;
+  }
+
   // A killed upgrade can leave the old tree renamed and the new tree only
   // partly unpacked. Markers alone are insufficient: they can be early tar
   // entries. Only a final archive stamp identifies a completed rollback tree.
@@ -242,13 +251,6 @@ async function extractDevSourceTreeLocked(
     const completed =
       hasPapercupMarkers(targetDir) && (await readArchiveStamp(stampPath));
     if (!completed) {
-      // Never classify an actual source checkout as disposable bundle cache.
-      if (existsSync(join(targetDir, '.git'))) {
-        log(
-          `[dev-source] source checkout at ${targetDir} needs manual upgrade; preserving its work`,
-        );
-        return hasPapercupMarkers(targetDir) ? targetDir : null;
-      }
       let rollback: string | undefined;
       for (const path of abandoned) {
         if (

@@ -3041,15 +3041,25 @@ export async function runTscBaselineGate({
   // JavaScript modules. Running tsc before refreshing those companions makes the first
   // typecheck after an export change fail on the stale `.d.mts`, even though that same
   // validation workflow then writes the declaration that makes its second run green.
-  // Keep this an explicit per-project hook: most gates have no generated-input preflight,
-  // and hiding a repo-wide mutation inside the shared policy would be surprising.
+  // Keep this an explicit per-project hook: most gates have no generated-input preflight.
+  // Immutable qualification must inspect the COMMITTED companions instead of repairing them:
+  // publication here hides stale artifacts from the later freshness test and dirties the
+  // candidate whose clean source identity is required by proof capture/reuse.
   if (preTscCommand) {
     let command = String(preTscCommand);
     try {
       // EI-24783793601501800 — a scoped verdict must not publish every peer's
       // declaration. Reuse the generator's selected-output mode across every
       // declaration-consuming leg, without changing unrelated custom preflights.
-      if (command.trim() === 'npm run gen:declarations' && explicitFiles !== null) {
+      const immutableInputs = process.env.PAPERCUSP_LINT_AS_COMMITTED_CLONE === '1' ||
+        process.env.PAPERCUSP_ADMISSION_PRECHECK === '1' ||
+        Boolean(process.env.PAPERCUSP_TEST_RUN_COMMIT?.trim());
+      if (command.trim() === 'npm run gen:declarations' && immutableInputs) {
+        // Reuse the non-publishing generator check and the existing runtime markers.
+        // Check the whole enrolled cohort even when the tsc verdict is scoped: an unchanged
+        // importer can still resolve a stale companion outside the selected source paths.
+        command = 'npm run gen:declarations:check';
+      } else if (command.trim() === 'npm run gen:declarations' && explicitFiles !== null) {
         const selectedInputs = declarationFilesFromConfig(root, { strict: true })
           .filter((declaration) => {
             const normalized = declaration.replace(/\\/g, '/').replace(/^\.\//, '');

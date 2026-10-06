@@ -599,7 +599,17 @@ export async function applyTriageDecision(
 
   // Generic gates enter harness-bound agent review. Owner escalations follow the
   // coordinator's owner-action path and operator-scoped rows have no harness to review.
-  if (decision === 'gate' && routeTarget !== 'owner-escalation') {
+  //
+  // A PLACE whose deployment screen could not answer is stamped
+  // unknown/'deployment-freshness-unknown', which keeps it out of ordinary self-select,
+  // and nothing ever re-screens it: 217 open bugs sat in that dead zone on 2026-10-05
+  // (P-002 / EI-25176539351759672). Until verification is a lane of its own (P-008),
+  // it enters agent review too, so the existing reviewer lane owns the open question.
+  const freshnessUnknownPlace =
+    decision === 'place' &&
+    implementationReadiness.status === 'unknown' &&
+    implementationReadiness.reason === 'deployment-freshness-unknown';
+  if ((decision === 'gate' && routeTarget !== 'owner-escalation') || freshnessUnknownPlace) {
     await deps.enterAgentReview({ id: input.id, submittedBy: by });
   }
 

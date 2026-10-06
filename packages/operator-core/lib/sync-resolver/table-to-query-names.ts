@@ -884,7 +884,15 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // and per-Pot beacon consent. Steering remains a workspace-wide fold; beacon
   // consent is keyed by the changed row's natural harness_slug so only that pot's
   // PotBeaconToggle refreshes after a federated write.
-  'harness_shared.pot_settings': ['hive.steering', 'learning.dream', { name: 'hive.beaconConsent', scope: potHomeSlugScope }],
+  // potIntegration.settings (pot-review-integration-mode P-017, EI-25188362216785598) reads the
+  // pot's integration mode; its args are the HARNESS slug, not the pot home slug, so it full-busts
+  // (only mounted settings sections re-read).
+  'harness_shared.pot_settings': [
+    'hive.steering',
+    'learning.dream',
+    { name: 'hive.beaconConsent', scope: potHomeSlugScope },
+    'potIntegration.settings',
+  ],
   'harness_shared.feature_claims': [
     'fleetAssignments.byHarness',
     'sidebar.fleetCups',

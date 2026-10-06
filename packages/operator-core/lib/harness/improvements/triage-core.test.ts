@@ -677,6 +677,34 @@ describe('applyTriageDecision — deployment-staleness screen (P-003)', () => {
       reason: 'deployment-freshness-unknown',
       evidence: { deployment: { state: 'unknown', unknownReason: 'git-unreadable' } },
     });
+    // P-002 / EI-25176539351759672: that stamp keeps the row out of ordinary self-select
+    // and nothing re-screens it, so the place must ALSO enter agent review — otherwise it
+    // sits in a dead zone no lane selects (217 open bugs did on 2026-10-05).
+    expect(deps.enterAgentReview).toHaveBeenCalledTimes(1);
+    expect(deps.enterAgentReview).toHaveBeenCalledWith({ id: 'unknown-1', submittedBy: 'improvement-triage' });
+  });
+
+  it('a PLACE whose deployment screen answered CURRENT is not sent to review', async () => {
+    const issue = issueOf({ id: 'current-1', kind: 'bug' });
+    const deps = depsOf(
+      issue,
+      {},
+      {
+        deploymentStalenessScreen: vi.fn(async () => ({
+          screened: true,
+          divert: false,
+          state: 'current',
+          toolName: 'improvements:capture',
+          relPath: 'packages/operator-core/lib/agent-tools/improvements/capture.ts',
+          deployedSha: 'deadbee',
+          treeRef: 'staging',
+        }) as const),
+      },
+    );
+    const res = await applyTriageDecision({ id: 'current-1', decision: 'place', reason: 'code-bug' }, deps);
+    expect(res.decision).toBe('place');
+    expect(res.implementationReadiness?.reason).not.toBe('deployment-freshness-unknown');
+    expect(deps.enterAgentReview).not.toHaveBeenCalled();
   });
 
   it('does not pay for the screen on reject or gym — neither routes anyone at a code fix', async () => {

@@ -541,6 +541,7 @@ export function replayLoadedRuntime(pid: number, identity: string | null, cmdlin
     }
     for (const row of receipts.filter(row => row.kind === 'native-load'))
       if (!native.some(mapping => mapping.path === row.path)) unknown.push(`unwitnessed-native-load:${String(row.path)}`);
+    if (!native.length) unknown.push('empty-native-mapping-census');
   } catch (error) { unknown.push(`unreadable-native-mappings:${String(error)}`); }
   if (reader.identity(pid) !== identity) unknown.push('process-replaced-during-runtime-witness');
   return { receipts, native, unknown: [...new Set(unknown)] };

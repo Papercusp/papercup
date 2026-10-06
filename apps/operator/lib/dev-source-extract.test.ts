@@ -9,10 +9,12 @@ import {
   readdir,
   symlink,
 } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { createWriteStream, existsSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { PassThrough, Writable } from 'node:stream';
+import { PassThrough, Writable, type Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import {
   extractDevSourceTree,
   hasPapercupMarkers,
@@ -253,6 +255,100 @@ describe('extractDevSourceTree', () => {
       expect(existsSync(`${target}.stale-notes`)).toBe(true);
       expect(existsSync(`${target}.stale-456`)).toBe(true);
       expect(existsSync(outside)).toBe(true);
+    } finally {
+      await rm(t, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ['directory', false],
+    ['file', false],
+    ['directory', true],
+    ['file', true],
+  ] as const)(
+    'preserves a source checkout with a .git %s and abandoned cache=%s',
+    async (gitKind, withAbandoned) => {
+      const t = await tmp();
+      try {
+        const archive = join(t, 'source.tar.zst');
+        const target = join(t, 'out');
+        await writeFile(archive, 'new bundle');
+        await writeMarkers(target);
+        if (gitKind === 'directory') await mkdir(join(target, '.git'));
+        else await writeFile(join(target, '.git'), 'gitdir: /preserved/repository');
+        await writeFile(join(target, 'uncommitted.txt'), 'peer work');
+        if (withAbandoned) await writeMarkers(`${target}.stale-100`);
+        const makeExtract = vi.fn(makeFakeExtractSuccess(target));
+        expect(
+          await extractDevSourceTree({
+            archivePath: archive,
+            targetDir: target,
+            makeDecompress,
+            makeExtract,
+          }),
+        ).toBe(target);
+        expect(makeExtract).not.toHaveBeenCalled();
+        expect(await readFile(join(target, 'uncommitted.txt'), 'utf8')).toBe('peer work');
+        expect(existsSync(join(target, '.git'))).toBe(true);
+      } finally {
+        await rm(t, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it('preserves a numeric stale sibling that is itself a source checkout', async () => {
+    const t = await tmp();
+    try {
+      const archive = join(t, 'source.tar.zst');
+      const target = join(t, 'out');
+      const checkout = `${target}.stale-100`;
+      await writeFile(archive, 'bundle');
+      await writeMarkers(target);
+      await writeMatchingStamp(archive, target);
+      await writeMarkers(checkout);
+      await mkdir(join(checkout, '.git'));
+      await writeFile(join(checkout, 'uncommitted.txt'), 'peer work');
+      expect(
+        await extractDevSourceTree({ archivePath: archive, targetDir: target }),
+      ).toBe(target);
+      expect(await readFile(join(checkout, 'uncommitted.txt'), 'utf8')).toBe('peer work');
+      expect(existsSync(join(checkout, '.git'))).toBe(true);
+    } finally {
+      await rm(t, { recursive: true, force: true });
+    }
+  });
+
+  it('repairs an interrupted cache with the real tar extractor and preserves portable toolchain links', async () => {
+    const t = await tmp();
+    try {
+      const archive = join(t, 'source.tar.zst');
+      const input = join(t, 'input');
+      const target = join(t, 'out');
+      const backup = `${target}.stale-100`;
+      await writeMarkers(input);
+      await mkdir(join(input, 'node_modules', '.bin'), { recursive: true });
+      await mkdir(join(input, 'node_modules', 'tool'), { recursive: true });
+      await writeFile(join(input, 'node_modules', 'tool', 'cli.js'), 'bundled tool');
+      await symlink('../tool/cli.js', join(input, 'node_modules', '.bin', 'tool'));
+      const tar = createRequire(import.meta.url)('tar-fs') as {
+        pack: (directory: string) => Readable;
+      };
+      await pipeline(tar.pack(input), createWriteStream(archive));
+      await writeMarkers(target);
+      await writeFile(join(target, 'partial.txt'), 'interrupted');
+      await writeMarkers(backup);
+      await writeFile(
+        join(backup, SOURCE_ARCHIVE_STAMP_BASENAME),
+        JSON.stringify({ size: 1, mtimeMs: 1 }),
+      );
+      expect(
+        await extractDevSourceTree({ archivePath: archive, targetDir: target, makeDecompress }),
+      ).toBe(target);
+      expect(await readFile(join(target, 'node_modules', '.bin', 'tool'), 'utf8')).toBe('bundled tool');
+      expect(existsSync(join(target, 'partial.txt'))).toBe(false);
+      expect(existsSync(backup)).toBe(false);
+      const stamp = JSON.parse(await readFile(join(target, SOURCE_ARCHIVE_STAMP_BASENAME), 'utf8'));
+      expect(stamp.size).toBe((await stat(archive)).size);
     } finally {
       await rm(t, { recursive: true, force: true });
     }

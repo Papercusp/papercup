@@ -385,6 +385,42 @@ describe('WI-10002299: patch-package patches are dependency inputs', () => {
 });
 
 describe('immutable dependency generation', () => {
+  it('excludes smoke repository churn from live trees and committed dependency inputs', () => {
+    const integration = makeIntegration();
+    const baselineRef = commitAllFixture(integration, 'product dependencies');
+    const baseline = publish(integration);
+    expect(baseline.status, baseline.stderr).toBe(0);
+    const smoke = join(integration, '.papercusp-smoke-snapshots/hive-fromrepo-smoke.fixture');
+    mkdirSync(join(smoke, 'node_modules/temporary'), { recursive: true });
+    writeFileSync(join(smoke, 'node_modules/temporary/index.js'), 'ephemeral\n');
+    writeFileSync(join(smoke, 'package-lock.json'), '{"name":"temporary"}\n');
+    const smokeRef = commitAllFixture(integration, 'temporary smoke repository');
+
+    const inputBefore = fingerprintRef(integration, baselineRef);
+    const inputWithSmoke = fingerprintRef(integration, smokeRef);
+    expect(inputBefore.status, inputBefore.stderr).toBe(0);
+    expect(inputWithSmoke.status, inputWithSmoke.stderr).toBe(0);
+    expect(publishedInputFingerprint(inputWithSmoke.stdout)).toBe(
+      publishedInputFingerprint(inputBefore.stdout),
+    );
+    const withSmoke = publish(integration);
+    expect(withSmoke.status, withSmoke.stderr).toBe(0);
+    expect(publishedIdentity(withSmoke.stdout)).toBe(publishedIdentity(baseline.stdout));
+    expect(existsSync(join(publishedPath(withSmoke.stdout), 'tree/.papercusp-smoke-snapshots'))).toBe(false);
+
+    rmSync(smoke, { recursive: true });
+    const removed = publish(integration);
+    expect(removed.status, removed.stderr).toBe(0);
+    expect(publishedIdentity(removed.stdout)).toBe(publishedIdentity(baseline.stdout));
+    // A real product install still changes the generation and is copied.
+    writeFileSync(join(integration, 'node_modules/pkg/index.js'), 'changed product dependency\n');
+    const changed = publish(integration);
+    expect(changed.status, changed.stderr).toBe(0);
+    expect(publishedIdentity(changed.stdout)).not.toBe(publishedIdentity(baseline.stdout));
+    expect(readFileSync(join(publishedPath(changed.stdout), 'tree/node_modules/pkg/index.js'), 'utf8'))
+      .toBe('changed product dependency\n');
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
   it('WI-322485: parses the whole long-running script before executing it', () => {
     const source = readFileSync(SCRIPT, 'utf8');
     const guardOpen = source.indexOf(

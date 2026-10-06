@@ -50,6 +50,13 @@ describe('actual replay load-byte witness', () => {
     execFileSync(process.execPath, f.launch.args, { env: { ...process.env, NODE_OPTIONS: '' }, stdio: 'pipe' });
     expect(receipts(f.root)).toContainEqual(expect.objectContaining({ kind: 'unknown', reason: 'unsupported-file-reader:readSync' }));
   });
+  it('restores the reader guard after a default ESM load and a failed complete read', () => {
+    const f = fixture('mjs', 'import fs from "node:fs"; try { fs.readFileSync("/missing-witness-fixture"); } catch {} const fd=fs.openSync(new URL(import.meta.url),"r"); fs.readSync(fd,Buffer.alloc(4),0,4,0); fs.closeSync(fd);');
+    execFileSync(process.execPath, f.launch.args, { env: { ...process.env, NODE_OPTIONS: '' }, stdio: 'pipe' });
+    expect(receipts(f.root).filter(row => row.kind === 'unknown')).toEqual([
+      expect.objectContaining({ reason: 'unsupported-file-reader:readSync' }),
+    ]);
+  });
 });
 
 describe('fail-closed runtime qualification', () => {
@@ -84,5 +91,11 @@ describe('fail-closed runtime qualification', () => {
     const result = replayLoadedRuntime(42, 'epoch', [process.execPath, ...p.f.launch.args], p.witness, reader);
     expect(result.unknown).toContain('incomplete-runtime-receipt');
     expect(result.unknown.some(reason => reason.startsWith('unreadable-native-mappings'))).toBe(true);
+  });
+  it('refuses an empty native mapping census', () => {
+    const p = proof();
+    const reader = { ...p.reader, text: (path: string) => path.endsWith('/maps') ? '' : p.reader.text(path) };
+    expect(replayLoadedRuntime(42, 'epoch', [process.execPath, ...p.f.launch.args], p.witness, reader).unknown)
+      .toContain('empty-native-mapping-census');
   });
 });

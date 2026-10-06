@@ -589,6 +589,53 @@ describe('measured window outranks the spec-derived guess (WI-38347)', () => {
       expect(setLimitMock).not.toHaveBeenCalled();
     });
 
+    /**
+     * WI-10006236 (owner Avi 2026-10-05, #1309 prevention): the WI-10006049 incident left
+     * one trace, the quiet `re-limited 450000 → 158000` log line. Lowering a session whose
+     * model family is served at 1M by default to the 200k window is now an owner-facing
+     * escalation, once per owner.
+     */
+    it('ESCALATES once when a 1M-default family is measured at 200k and lowered (WI-10006236)', async () => {
+      const healed = defaultCompactionLimitForWindow(MODEL_WINDOW_1M);
+      const lowered = defaultCompactionLimitForWindow(MODEL_WINDOW_DEFAULT);
+      for (const spec of ['opus[1m]', 'sonnet', 'fable:high']) {
+        resetCarryRespawnForTests();
+        openEscalationMock.mockClear();
+        specMock.mockResolvedValue(spec);
+        contextWindowMock.mockResolvedValue(MODEL_WINDOW_DEFAULT);
+        const out = await checkCompactionCompliance(sweep(healed));
+        expect(out.relimited).toContainEqual({ owner: 'cx', from: healed, to: lowered });
+        expect(out.default1mServedSmall).toEqual([
+          { owner: 'cx', spec, from: healed, to: lowered, window: MODEL_WINDOW_DEFAULT },
+        ]);
+        expect(openEscalationMock).toHaveBeenCalledTimes(1);
+        const [, input] = openEscalationMock.mock.calls[0] as unknown as [
+          unknown,
+          { summary: string; meta: { subjectSignature: string } },
+        ];
+        expect(input.meta.subjectSignature).toBe('compaction-watchdog:default-1m-served-small:cx');
+        expect(input.summary).toContain(`${MODEL_WINDOW_DEFAULT}-token window`);
+        // Same owner, next sweep: still recorded, not re-escalated.
+        await checkCompactionCompliance(sweep(healed));
+        expect(openEscalationMock).toHaveBeenCalledTimes(1);
+      }
+    });
+
+    it('does NOT escalate a 200k-window family, nor a 1M family lowered at a window above 200k (WI-10006236 falsifiers)', async () => {
+      const healed = defaultCompactionLimitForWindow(MODEL_WINDOW_1M);
+      specMock.mockResolvedValue('claude-sonnet-4-6'); // a genuine 200k model
+      contextWindowMock.mockResolvedValue(MODEL_WINDOW_DEFAULT);
+      const small = await checkCompactionCompliance(sweep(healed));
+      expect(small.relimited).not.toEqual([]);
+      expect(small.default1mServedSmall).toEqual([]);
+      specMock.mockResolvedValue('opus[1m]');
+      contextWindowMock.mockResolvedValue(CODEX_WINDOW); // lowered, but not to the 200k window
+      const codexSized = await checkCompactionCompliance(sweep(healed));
+      expect(codexSized.relimited).not.toEqual([]);
+      expect(codexSized.default1mServedSmall).toEqual([]);
+      expect(openEscalationMock).not.toHaveBeenCalled();
+    });
+
     it('leaves a DELIBERATE lower override alone — its value differs from the derived seed (D-006 leanness)', async () => {
       const out = await checkCompactionCompliance(sweep(100_000));
       expect(out.relimited).toEqual([]);

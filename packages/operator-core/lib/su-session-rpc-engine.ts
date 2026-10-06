@@ -89,6 +89,7 @@ function object(value: unknown): RpcFrame {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as RpcFrame : {};
 }
 function string(value: unknown): string { return typeof value === 'string' ? value : ''; }
+/** P-026: an owner's model switch the engine refused before any turn began. */
 
 export function startSuRpcEngine(
   boot: BootstrapSuResult,
@@ -178,12 +179,34 @@ export function startSuRpcEngine(
   let initializingFrameBytes = 0;
   const unavailable = (message: string) => ({ ok: false as const, code: 'engine_delivery_unknown', message, retryable: false });
   const controls = {
-    async ownerTurn({ content, turnId }: { content: string; turnId: string }) {
+    async ownerTurn({ content, turnId, model: nextModel }: { content: string; turnId: string; model?: string }) {
       if (!ready || closed) return unavailable(`${backend} connection is not ready`);
+      // P-026: Codex takes the switch on this turn's turn/start; OMP takes it as
+      // set_model (+ set_thinking_level) before the prompt. A refused OMP switch
+      // refuses the turn rather than running it on the old model.
+      const switchTo = nextModel && nextModel !== selectedModel ? splitModelSpec(nextModel) : null;
+      if (switchTo && !switchTo.model) return { ok: false as const, code: 'model_switch_refused', retryable: false, message: `"${nextModel}" names no model` };
       let acknowledged!: (verdict: { ok: true } | ReturnType<typeof unavailable>) => void;
       const receipt = new Promise<{ ok: true } | ReturnType<typeof unavailable>>((resolve) => { acknowledged = resolve; });
       inputTail = inputTail.then(async () => {
         if (!ready || closed) { acknowledged(unavailable('The engine closed before this saved turn was sent')); return; }
+        if (switchTo && backend === 'omp') {
+          // Switch before the turn is opened: a refusal then leaves no owner
+          // turn waiting on a completion that will never come. The stdio peer
+          // rejects a correlated `success:false` response, so any failure of
+          // either request lands here as an Error, never as a resolved frame.
+          const slash = switchTo.model!.indexOf('/');
+          try {
+            if (slash <= 0) throw new Error(`"${nextModel}" is not a provider/model OMP spec`);
+            await peer!.request({ type: 'set_model', provider: switchTo.model!.slice(0, slash),
+              modelId: switchTo.model!.slice(slash + 1) }, options.deliveryTimeoutMs ?? 30_000);
+            if (switchTo.effort) await peer!.request({ type: 'set_thinking_level', level: switchTo.effort }, options.deliveryTimeoutMs ?? 30_000);
+          } catch (error) {
+            const reason = error instanceof Error ? error.message : String(error);
+            acknowledged({ ok: false as const, code: 'model_switch_refused', retryable: false, message: `Could not switch to ${nextModel}: ${reason}` });
+            return;
+          }
+        }
         ownerTurnId = turnId;
         turnCompletionSettled = false;
         const finished = new Promise<void>((resolve) => { turnFinished = resolve; });
@@ -192,11 +215,13 @@ export function startSuRpcEngine(
           if (backend === 'codex') {
             nativeStart = peer!.request({ method: 'turn/start', params: {
               threadId: nativeId(), input: [{ type: 'text', text: content }],
+              ...(switchTo ? { model: switchTo.model, ...(switchTo.effort ? { effort: switchTo.effort } : {}) } : {}),
             } }, options.deliveryTimeoutMs ?? 30_000);
             const result = await nativeStart;
             nativeTurnId = string(object(result.turn).id);
             if (!nativeTurnId) throw new Error('Codex accepted no identifiable native turn');
           } else await peer!.request({ type: 'prompt', message: content }, options.deliveryTimeoutMs ?? 30_000);
+          if (switchTo) { selectedModel = nextModel; host.updateModel(nextModel!); }
           await refreshResumeEvidence();
           acknowledged({ ok: true });
           await finished;
