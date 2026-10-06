@@ -53,6 +53,8 @@ describe('D166 private row-drop plan transport', () => {
   const execution = { sourceCommit: 'a'.repeat(40), gitDirty: false as const, nodeVersion: process.version,
     dependencyInputSha256: 'b'.repeat(64), installedPackagesSha256: createHash('sha256').update(JSON.stringify(installedPackages)).digest('hex'),
     dependencyGeneration: `v1-${'d'.repeat(64)}`, installedPackages,
+    excludedEntries: [], excludedEntryCount: 0,
+    loadedModulePaths: ['packages/operator-core/lib/sync/hyperbee/seed-provider-corestore.ts'],
     dependencyGenerationSnapshotSha256: 'f'.repeat(64), materializedTreesSha256: '1'.repeat(64),
     securityPackages: ['hypercore', 'hyperbee', 'hypercore-crypto', 'sodium-native', 'sodium-universal'].map(name => ({
       path: `node_modules/${name}`, name, version: '1.0.0', resolved: `https://registry.npmjs.org/${name}/-/package.tgz`,
@@ -62,7 +64,8 @@ describe('D166 private row-drop plan transport', () => {
       'packages/operator-core/lib/sync/hyperbee/seed-provider-corestore.ts', 'apps/operator/lib/release/cut-seed-cli.ts',
       'packages/operator-core/lib/sync/hyperbee/seed-frozen-execution.ts',
       'packages/operator-core/lib/sync/hyperbee/hive-epoch-aead.ts',
-      'apps/operator/bin/release/dependency-generation.sh', 'scripts/check-lockfile-census.mjs']
+      'apps/operator/bin/release/dependency-generation.sh', 'scripts/check-lockfile-census.mjs',
+      'packages/operator-core/lib/sync/hyperbee/seed-module-census.mjs']
       .map(path => ({ path, sha256: 'e'.repeat(64) })) };
   const deps = { readFrozenExecution: async () => execution };
   it('exports the actual frozen manifest population read-only and refuses changed source identities', async () => {

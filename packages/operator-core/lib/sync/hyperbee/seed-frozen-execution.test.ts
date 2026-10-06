@@ -1,11 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { assertSeedLoadedSecurityFiles, bindSeedFrozenDependencies, readSeedInstalledPackages, verifySeedSecurityPackage } from './seed-frozen-execution';
+import { assertSeedExcludedModules, assertSeedLoadedSecurityFiles, bindSeedFrozenDependencies, readSeedInstalledPackages, readSeedLoadedModulePaths, verifySeedSecurityPackage } from './seed-frozen-execution';
 
 const dirs: string[] = [];
 const temp = () => { const dir = mkdtempSync(join(tmpdir(), 'seed-d177-')); dirs.push(dir); return dir; };
@@ -16,23 +16,60 @@ const pkg = (root: string, path: string, name: string, version = '1.0.0') => {
 };
 const sha512 = (bytes: Buffer) => 'sha512-' + createHash('sha512').update(bytes).digest('base64');
 const library = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../../apps/operator/bin/release/dependency-generation.sh');
+const moduleCensus = fileURLToPath(new URL('./seed-module-census.mjs', import.meta.url));
 const bash = (root: string, code: string, ...args: string[]) => execFileSync('bash', ['-euo', 'pipefail', '-c',
   'source "$1"; shift; ' + code, 'test', join(root, 'apps/operator/bin/release/dependency-generation.sh'), ...args],
 { encoding: 'utf8' }).trim();
 afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 
+describe('D178 process module census', () => {
+  it('observes actual ESM, CommonJS and sodium native addon loads and refuses a late preload', () => {
+    const root = temp();
+    write(join(root, 'esm.mjs'), 'export default 1;');
+    write(join(root, 'cjs.cjs'), 'module.exports = 1;');
+    const script = `import { createRequire } from 'node:module';
+      await import(${JSON.stringify(pathToFileURL(join(root, 'esm.mjs')).href)});
+      const require = createRequire(process.cwd() + '/package.json');
+      require(${JSON.stringify(join(root, 'cjs.cjs'))}); require('sodium-native');
+      const t = globalThis[Symbol.for('papercusp.seed-module-census')];
+      console.log(JSON.stringify([...new Set([...t.paths, ...Object.keys(require.cache)])]));`;
+    const paths: string[] = JSON.parse(execFileSync(process.execPath,
+      ['--import', moduleCensus, '--input-type=module', '-e', script], { encoding: 'utf8' }));
+    expect(paths).toContain(join(root, 'esm.mjs'));
+    expect(paths).toContain(join(root, 'cjs.cjs'));
+    expect(paths.some(path => path.includes('/sodium-native/') && path.endsWith('.node'))).toBe(true);
+    expect(() => execFileSync(process.execPath,
+      ['--import', 'tsx', '--import', moduleCensus, '--input-type=module', '-e', ''],
+      { stdio: 'pipe' })).toThrow();
+  });
+});
+
 describe('D177 installed dependency census', () => {
   it('excludes hidden tooling names inside scopes and still refuses unlocked installed packages', async () => {
     const root = temp();
-    pkg(root, 'node_modules/.npm-stage-a', 'a');
-    pkg(root, 'node_modules/@scope/.npm-stage-b', '@scope/b');
+    pkg(root, 'node_modules/.a-1234abcd', 'a');
+    pkg(root, 'node_modules/@scope/.b-1234abcd', '@scope/b');
     pkg(root, 'node_modules/@scope/b', '@scope/b');
     const locks = [{ path: 'package-lock.json', packages: {
       'node_modules/@scope/b': { version: '1.0.0' } } }];
-    expect((await readSeedInstalledPackages(root, ['node_modules'], locks)).map(row => row.path))
+    const excluded: Parameters<typeof readSeedInstalledPackages>[3] = [];
+    expect((await readSeedInstalledPackages(root, ['node_modules'], locks, excluded)).map(row => row.path))
       .toEqual(['node_modules/@scope/b']);
+    expect(excluded).toEqual([{ path: 'node_modules/.a-1234abcd', name: 'a', version: '1.0.0' },
+      { path: 'node_modules/@scope/.b-1234abcd', name: '@scope/b', version: '1.0.0' }]);
     pkg(root, 'node_modules/@scope/unlocked', '@scope/unlocked');
     await expect(readSeedInstalledPackages(root, ['node_modules'], locks)).rejects.toThrow('no committed lock entry');
+  });
+  it('refuses unknown scoped dot entries, malformed leftover metadata and loaded excluded paths', async () => {
+    const root = temp(); pkg(root, 'node_modules/@scope/.other', '@scope/other');
+    await expect(readSeedInstalledPackages(root, ['node_modules'], [])).rejects.toThrow('unknown hidden');
+    rmSync(join(root, 'node_modules/@scope/.other'), { recursive: true });
+    pkg(root, 'node_modules/@scope/.b-1234abcd', '@scope/wrong');
+    await expect(readSeedInstalledPackages(root, ['node_modules'], [])).rejects.toThrow('metadata mismatch');
+    const excluded = [{ path: 'node_modules/@scope/.b-1234abcd', name: '@scope/b', version: '1.0.0' }];
+    expect(() => assertSeedExcludedModules(excluded, ['node_modules/@scope/b/index.js'])).not.toThrow();
+    expect(() => assertSeedExcludedModules(excluded, ['node_modules/@scope/.b-1234abcd/index.js'])).toThrow('excluded');
+    expect(() => readSeedLoadedModulePaths(root)).toThrow('preload required');
   });
   it('uses the root workspace lock instead of a subsumed stale local lock and still refuses drift', async () => {
     const root = temp(); const path = 'packages/workspace/node_modules/@types/node';
@@ -106,7 +143,7 @@ describe('D177 security package content integrity', () => {
   });
 });
 
-async function frozen() {
+async function frozen(excludedAlias = false) {
   const base = temp(); const root = join(base, 'source'); const generationRoot = join(base, 'published');
   const generationId = 'v1-' + 'a'.repeat(64); const generation = join(generationRoot, generationId);
   const names = ['hypercore', 'hyperbee', 'hypercore-crypto', 'sodium-native', 'sodium-universal'];
@@ -117,7 +154,11 @@ async function frozen() {
     archives.set(url, bytes); packages[`node_modules/${name}`] = { version: '1.0.0', resolved: url, integrity: sha512(bytes) };
   }
   // Tooling directories stay in the generation fingerprint, outside the npm package namespace.
-  pkg(join(generation, 'tree'), 'node_modules/@fixture/.npm-stage-x', '@fixture/x');
+  pkg(join(generation, 'tree'), 'node_modules/@fixture/.x-1234abcd', '@fixture/x');
+  if (excludedAlias) {
+    mkdirSync(join(generation, 'tree/node_modules/.bin'), { recursive: true });
+    symlinkSync('../@fixture/.x-1234abcd/index.js', join(generation, 'tree/node_modules/.bin/leftover'));
+  }
   write(join(root, 'package-lock.json'), JSON.stringify({ lockfileVersion: 3, packages }));
   write(join(root, '.gitignore'), 'node_modules/\n');
   mkdirSync(dirname(join(root, 'apps/operator/bin/release/dependency-generation.sh')), { recursive: true });
@@ -143,6 +184,13 @@ async function frozen() {
 }
 
 describe('D177 maintained publication binding', () => {
+  it('refuses loaded excluded modules and symlink targets even with matching generation bytes', async () => {
+    const f = await frozen();
+    await expect(bindSeedFrozenDependencies(f.root, f.commit,
+      { readLoadedModulePaths: () => ['node_modules/@fixture/.x-1234abcd/index.js'] })).rejects.toThrow('excluded dependency');
+    const g = await frozen(true);
+    await expect(bindSeedFrozenDependencies(g.root, g.commit)).rejects.toThrow('excluded dependency');
+  });
   it('refuses stale loaded security bytes or modules from another installation', async () => {
     const f = await frozen(); const { securityPackages } = await bindSeedFrozenDependencies(f.root, f.commit);
     const row = securityPackages[0]; const file = row.files.find(file => file.path === 'index.js')!;
@@ -158,6 +206,8 @@ describe('D177 maintained publication binding', () => {
     expect(result).toMatchObject({ dependencyGeneration: f.generationId, dependencyInputSha256: f.input,
       dependencyGenerationSnapshotSha256: f.snapshot });
     expect(result.securityPackages).toHaveLength(5);
+    expect(result.excludedEntryCount).toBe(result.excludedEntries.length);
+    expect(result.excludedEntries).toContainEqual({ path: 'node_modules/@fixture/.x-1234abcd', name: '@fixture/x', version: '1.0.0' });
     expect(result).not.toHaveProperty('installedLockSha256');
     expect(await bindSeedFrozenDependencies(f.root, f.commit)).toEqual(result);
   });
@@ -169,7 +219,7 @@ describe('D177 maintained publication binding', () => {
     const f = await frozen();
     await expect(bindSeedFrozenDependencies(f.root, f.commit)).resolves.toMatchObject({
       dependencyGeneration: f.generationId });
-    const file = join(f.root, 'node_modules/@fixture/.npm-stage-x/index.js');
+    const file = join(f.root, 'node_modules/@fixture/.x-1234abcd/index.js');
     chmodSync(file, 0o644); write(file, 'tooling copy changed');
     await expect(bindSeedFrozenDependencies(f.root, f.commit)).rejects.toThrow('materialized dependency tree drift');
   });

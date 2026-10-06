@@ -104,7 +104,7 @@ import { SEED_EXCLUDED_TABLES, SEED_REDACT_IN_PLACE_TABLES } from './seed-exclud
  */
 export { SEED_PROJECTED_FROM_META_KEY, readCoreProjectedFrom } from './seed-projection-meta';
 import { SEED_PROJECTED_FROM_META_KEY } from './seed-projection-meta';
-import { bindSeedFrozenDependencies, SEED_EXECUTION_PATHS, type SeedFrozenExecution } from './seed-frozen-execution';
+import { bindSeedFrozenDependencies, readSeedLoadedModulePaths, SEED_EXECUTION_PATHS, type SeedFrozenExecution } from './seed-frozen-execution';
 export type { SeedFrozenExecution } from './seed-frozen-execution';
 
 /** What {@link mintFilteredSeedContentCore} produced, for the manifest. */
@@ -178,7 +178,9 @@ export async function readSeedFrozenExecution(): Promise<SeedFrozenExecution> {
     throw new Error('[seed:corestore] frozen census requires a clean source commit');
   }
   const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
-  const dependencies = await bindSeedFrozenDependencies(root, sourceCommit);
+  readSeedLoadedModulePaths(root); // Refuse a late/missing preload before any long tree walk.
+  const dependencies = await bindSeedFrozenDependencies(root, sourceCommit,
+    { readLoadedModulePaths: () => readSeedLoadedModulePaths(root) });
   const directBlobs = await Promise.all(SEED_EXECUTION_PATHS.map(async path => ({ path, sha256: hash(await readFile(join(root, path))) })));
   if (JSON.stringify(directBlobs) !== JSON.stringify(LOADED_SEED_EXECUTION_BLOBS)) {
     throw new Error('[seed:corestore] loaded source modules do not match frozen blobs');

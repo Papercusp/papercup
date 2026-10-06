@@ -26,7 +26,14 @@ export const SEED_EXECUTION_PATHS = ['packages/operator-core/lib/sync/hyperbee/r
   'packages/operator-core/lib/sync/hyperbee/seed-frozen-execution.ts',
   'packages/operator-core/lib/sync/hyperbee/hive-epoch-aead.ts',
   'apps/operator/bin/release/dependency-generation.sh',
-  'scripts/check-lockfile-census.mjs'];
+  'scripts/check-lockfile-census.mjs',
+  'packages/operator-core/lib/sync/hyperbee/seed-module-census.mjs'];
+
+export interface SeedExcludedEntry { path: string; name: string | null; version: string | null }
+const REIFY_LEFTOVER = /^\.(.+)-[A-Za-z0-9]{8}$/;
+const ROOT_TOOLING = new Set(['.bin', '.cache', '.vite', '.vite-temp', '.astro', '.pnpm', '.store',
+  '.package-lock.json', '.papercusp-isolated-snapshot', '.papercusp-dependency-generation',
+  '.papercusp-source-package-lock.json']);
 
 export interface SeedFrozenExecution {
   sourceCommit: string;
@@ -35,6 +42,9 @@ export interface SeedFrozenExecution {
   dependencyInputSha256: string;
   installedPackagesSha256: string;
   installedPackages: { path: string; name: string; version: string }[];
+  excludedEntries: SeedExcludedEntry[];
+  excludedEntryCount: number;
+  loadedModulePaths: string[];
   dependencyGeneration: string;
   dependencyGenerationSnapshotSha256: string;
   materializedTreesSha256: string;
@@ -68,7 +78,8 @@ const safe = (path: string) => path.length > 0 && !path.startsWith('/')
 /** Package paths come from the complete generation tree census, including nested
  * installations. Workspace links bind to the committed link target's metadata. */
 export async function readSeedInstalledPackages(root: string, trees: readonly string[],
-  locks: readonly { path: string; packages: Record<string, LockEntry> }[]): Promise<PackageRow[]> {
+  locks: readonly { path: string; packages: Record<string, LockEntry> }[],
+  excludedEntries: SeedExcludedEntry[] = []): Promise<PackageRow[]> {
   const rootLock = locks.find(lock => lock.path === 'npm-shrinkwrap.json')
     ?? locks.find(lock => lock.path === 'package-lock.json');
   let workspaceDirs = new Set<string>();
@@ -91,14 +102,37 @@ export async function readSeedInstalledPackages(root: string, trees: readonly st
     }
   }
   const actual = new Map<string, PackageRow>();
+  const exclude = async (path: string, expectedName?: string) => {
+    let metadata: { name?: unknown; version?: unknown } | undefined;
+    try {
+      const file = join(root, path, 'package.json');
+      if (!(await lstat(file)).isFile()) throw new Error('excluded metadata must be a regular file');
+      metadata = JSON.parse(await readFile(file, 'utf8'));
+    } catch (error) {
+      if (!['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+    }
+    if (expectedName && (metadata?.name !== expectedName || typeof metadata.version !== 'string' || !metadata.version)) {
+      throw new Error(`excluded reify entry metadata mismatch: ${path}`);
+    }
+    excludedEntries.push({ path, name: typeof metadata?.name === 'string' ? metadata.name : null,
+      version: typeof metadata?.version === 'string' ? metadata.version : null });
+  };
   const scan = async (nm: string) => {
     for (const name of (await readdir(join(root, nm))).sort()) {
-      if (name.startsWith('.')) continue;
-      // Match the maintained installed-package walk: dot-prefixed npm tooling
-      // entries are outside the package namespace, also inside a scope. Their
-      // bytes remain covered by the complete generation/tree fingerprints.
-      const names = name.startsWith('@') ? (await readdir(join(root, nm, name)))
-        .filter(n => !n.startsWith('.')).sort().map(n => `${name}/${n}`) : [name];
+      if (name.startsWith('.')) {
+        const leftover = REIFY_LEFTOVER.exec(name);
+        if (!ROOT_TOOLING.has(name) && !leftover) throw new Error(`unknown hidden dependency entry: ${nm}/${name}`);
+        await exclude(`${nm}/${name}`, leftover?.[1]); continue;
+      }
+      const names: string[] = [];
+      if (name.startsWith('@')) {
+        for (const child of (await readdir(join(root, nm, name))).sort()) {
+          if (!child.startsWith('.')) { names.push(`${name}/${child}`); continue; }
+          const leftover = REIFY_LEFTOVER.exec(child);
+          if (!leftover) throw new Error(`unknown hidden dependency entry: ${nm}/${name}/${child}`);
+          await exclude(`${nm}/${name}/${child}`, `${name}/${leftover[1]}`);
+        }
+      } else names.push(name);
       for (const name of names) {
         const path = `${nm}/${name}`;
         const found = expected.get(path);
@@ -127,7 +161,29 @@ export async function readSeedInstalledPackages(root: string, trees: readonly st
   for (const [path, { entry }] of expected) {
     if (!actual.has(path) && !entry.optional) throw new Error(`non-optional committed package missing: ${path}`);
   }
+  excludedEntries.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
   return [...actual.values()].sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+}
+
+/** The preload sees ESM and CommonJS loads; require.cache also names native addons. */
+export function readSeedLoadedModulePaths(root: string): string[] {
+  const tracker = (globalThis as unknown as Record<symbol, { preloadPath: string; paths: Set<string> } | undefined>)
+    [Symbol.for('papercusp.seed-module-census')];
+  if (!tracker || tracker.preloadPath !== join(root, SEED_EXECUTION_PATHS.at(-1)!)) {
+    throw new Error('complete seed module census preload required');
+  }
+  const cache = createRequire(import.meta.url).cache;
+  return [...new Set([...tracker.paths, ...Object.keys(cache)].map(path => {
+    const rel = relative(root, path).split('\\').join('/');
+    if (!safe(rel)) throw new Error('loaded seed module outside frozen source');
+    return rel;
+  }))].sort();
+}
+
+export function assertSeedExcludedModules(excluded: readonly SeedExcludedEntry[], paths: readonly string[]) {
+  if (paths.some(path => excluded.some(entry => path === entry.path || path.startsWith(entry.path + '/')))) {
+    throw new Error('loaded module reaches an excluded dependency entry');
+  }
 }
 
 /** D-151(a)'s sha512 archive -> same-member sha256 chain. Verify a superset of
@@ -183,7 +239,8 @@ export async function verifySeedSecurityPackage(root: string, row: PackageRow,
 /** Called identically immediately before/after census and before the producer.
  * Copies have different inodes: verify the publication's exact fingerprint AND
  * compare copies using the publisher's existing copy-normalized record projection. */
-export async function bindSeedFrozenDependencies(root: string, sourceCommit: string) {
+export async function bindSeedFrozenDependencies(root: string, sourceCommit: string,
+  options: { readLoadedModulePaths?: () => string[] } = {}) {
   const marker = fields(await readFile(join(root, 'node_modules/.papercusp-dependency-generation'), 'utf8'));
   const dependencyGeneration = marker.get('identity') ?? '';
   if (!/^v1-[0-9a-f]{64}$/.test(dependencyGeneration)) throw new Error('invalid frozen dependency generation');
@@ -216,12 +273,17 @@ export async function bindSeedFrozenDependencies(root: string, sourceCommit: str
     'dependency_generation_records_projection "$record" | ' +
     'awk -F "\\t" \'$1 != ".papercusp-dependency-generation" && $1 != ".papercusp-source-package-lock.json"\'', tree);
   const projections: [string, string][] = [];
+  const links: string[] = [];
   for (const tree of trees) {
     const isolated = fields(await readFile(join(root, tree, '.papercusp-isolated-snapshot'), 'utf8'));
     if (isolated.get('generation') !== dependencyGeneration) throw new Error('materialized dependency pin mismatch');
     const original = await projection(join(generation, 'tree', tree));
     if (await projection(join(root, tree)) !== original) throw new Error(`materialized dependency tree drift: ${tree}`);
     projections.push([tree, hash(original)]);
+    for (const line of original.split('\n')) {
+      const [path, kind] = line.split('\t');
+      if (kind === 'l') links.push(posix.join(tree, path));
+    }
   }
   const manifest = await shell(root, 'dependency_generation_input_manifest_ref "$1" "$2" | LC_ALL=C sort', root, sourceCommit);
   const locks: { path: string; packages: Record<string, LockEntry> }[] = [];
@@ -236,7 +298,11 @@ export async function bindSeedFrozenDependencies(root: string, sourceCommit: str
       locks.push({ path, packages: lock.packages });
     }
   }
-  const packages = await readSeedInstalledPackages(root, trees, locks);
+  const excludedEntries: SeedExcludedEntry[] = [];
+  const packages = await readSeedInstalledPackages(root, trees, locks, excludedEntries);
+  const linkTargets = await Promise.all(links.map(async path =>
+    relative(root, await realpath(join(root, path))).split('\\').join('/')));
+  assertSeedExcludedModules(excludedEntries, linkTargets);
   const security = packages.filter(row => SECURITY_NAMES.has(row.name));
   for (const name of ['hypercore', 'hyperbee', 'hypercore-crypto', 'sodium-native', 'sodium-universal']) {
     if (!security.some(row => row.name === name)) throw new Error(`required security package missing: ${name}`);
@@ -249,7 +315,10 @@ export async function bindSeedFrozenDependencies(root: string, sourceCommit: str
     if (hash(await projection(join(root, tree))) !== digest) throw new Error('materialized dependency tree changed while binding');
   }
   const installedPackages = packages.map(({ path, name, version }) => ({ path, name, version }));
+  const loadedModulePaths = options.readLoadedModulePaths?.() ?? [];
+  assertSeedExcludedModules(excludedEntries, loadedModulePaths);
   return { dependencyInputSha256, dependencyGeneration, dependencyGenerationSnapshotSha256, installedPackages,
+    excludedEntries, excludedEntryCount: excludedEntries.length, loadedModulePaths,
     installedPackagesSha256: hash(JSON.stringify(installedPackages)),
     materializedTreesSha256: hash(JSON.stringify(projections)), securityPackages };
 }
