@@ -27,7 +27,7 @@ export function localRow(index: number, name: string, owner: string, workItem: [
   return {
     id: `local-desktop-${index}`,
     slug: 'papercusp',
-    kind: 'xvfb',
+    kind: 'xvfb-local',
     scope: 'agent',
     scopeRef: `${owner}:main`,
     display: 110 + index,
@@ -43,7 +43,7 @@ export function localRow(index: number, name: string, owner: string, workItem: [
     name,
     workItemId: workItem?.[0] ?? null,
     workItemIntent: workItem?.[1] ?? null,
-  } as LocalDesktopSyncRow;
+  };
 }
 
 const empty = new URL(location.href).searchParams.get('empty') === '1';
