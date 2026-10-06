@@ -7,8 +7,14 @@ import { describe, expect, it } from 'vitest';
 import type { FairCase } from './fair-comparison';
 import { MICRO_CASES } from './fair-comparison-micro-repo';
 import {
+  askCbm,
   askCgc,
+  askGitnexus,
   askTrace,
+  CBM_LIMITS,
+  gitnexusJson,
+  gitnexusLine1,
+  narrowToAnchor,
   CGC_ACCEPTED_FAULTS,
   CGC_RESULT_LIMITS,
   cgcPath,
