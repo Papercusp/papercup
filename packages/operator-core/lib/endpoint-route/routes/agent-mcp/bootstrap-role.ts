@@ -177,6 +177,13 @@ const options = defineTool({
 const post = defineTool({
   method: 'POST',
   path: '/agent-mcp/console/bootstrap-role',
+  // Same contract as bootstrap-su (WI-10006975): role bootstrap is an
+  // idempotency-keyed launch transaction (bootstrap_idempotency_key). A slow
+  // request can finish after the route stack's default 30s watchdog, which
+  // would turn its committed launch into a 408 that psu does not replay, so
+  // the placed worker exits. psu and the MCP proxy own bounded transport
+  // waits and same-key recovery.
+  timeoutSec: null,
   auth: 'loopback',
   async handler(req) {
     const denied = await gatePrincipal(req.headers);
