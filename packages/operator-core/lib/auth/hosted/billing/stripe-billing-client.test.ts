@@ -259,7 +259,7 @@ describe('authenticated complete payment source enumeration', () => {
     status: 'needs_response', created: 3, livemode: true, balance_transactions: [],
     evidence: { private: 'customer private dispute content' } };
   const page = (data: unknown[], has_more = false) => ({ object: 'list', data, has_more });
-  function reader(overrides: Record<string, unknown[]> = {}, options: { status?: number; requestId?: string | null; mode?: 'live' | 'test' } = {}) {
+  function reader(overrides: Record<string, unknown[] | undefined> = {}, options: { status?: number; requestId?: string | null; mode?: 'live' | 'test' } = {}) {
     const bodies = { '/v1/account': [account], '/v1/charges': [page([charge])],
       '/v1/refunds': [page([refund])], '/v1/disputes': [page([dispute])], ...overrides };
     const fetchImpl = vi.fn(async (url: string | URL, _init?: RequestInit) => {
