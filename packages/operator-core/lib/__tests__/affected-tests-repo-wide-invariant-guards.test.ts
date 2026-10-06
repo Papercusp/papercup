@@ -238,9 +238,20 @@ describe('affected-tests: Phone media source recurrence', () => {
 
   it('names real unit, integration and isolated e2e commands in its host workspace', () => {
     const pkg = JSON.parse(readFileSync(resolve(REPO_ROOT, 'apps/operator/package.json'), 'utf8'));
-    const command = pkg.scripts['test:phone-media'];
-    expect(command).toContain('phone-app-hosted-config.test.ts --config vitest.config.ts');
-    expect(command).toContain('phone-app-hosted-config.integration.test.ts --config vitest.integration.config.ts');
+    const command: string = pkg.scripts['test:phone-media'];
+    // Assert per `&&` segment, not as one contiguous substring: a segment may
+    // legitimately list more test files before its `--config` (2026-10-06 the
+    // unit segment gained phone-app-edge-config.test.ts and the old literal
+    // 'hosted-config.test.ts --config vitest.config.ts' went red).
+    const segments = command.split('&&').map(s => s.trim());
+    const unit = segments.find(s => /\bphone-app-hosted-config\.test\.ts\b/.test(s));
+    expect(unit, `no unit segment in: ${command}`).toBeDefined();
+    expect(unit).toMatch(/^vitest run /);
+    expect(unit).toContain('--config vitest.config.ts');
+    const integration = segments.find(s => s.includes('phone-app-hosted-config.integration.test.ts'));
+    expect(integration, `no integration segment in: ${command}`).toBeDefined();
+    expect(integration).toMatch(/^vitest run /);
+    expect(integration).toContain('--config vitest.integration.config.ts');
     expect(command).toContain('OPERATOR_E2E_REUSE_SERVER=1 playwright test e2e/phone-media-probe.spec.ts --workers=1');
   });
 });
