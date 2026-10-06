@@ -37,8 +37,9 @@ import { spawn } from 'node:child_process';
 import { collectChildOutput } from '../../child-output.js';
 import { processGroupLifetime } from '../../fleet/process-group-lifetime';
 import { withGitFetchHeadroom } from './git-fetch-headroom';
-import { lstat, mkdir, open, readFile, readlink, readdir, realpath, unlink, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { copyFile, lstat, mkdir, open, readFile, readlink, readdir, realpath, rm, unlink, writeFile } from 'node:fs/promises';
+import { dirname, isAbsolute, join, resolve as resolvePath } from 'node:path';
 import { mapLiveLockHoldingsForRepo } from './live-lock-coordinates';
 import { projectDirForSlug } from '../../operator-notes';
 import { gitSidecarEnabled, isSidecarInfrastructureFault, noteSidecarFallback, runGitViaSpawnerSidecar } from '../../fleet/git-via-sidecar';
@@ -65,7 +66,23 @@ import {
   type AttributionRosterEntry,
 } from './git-sync-attribution';
 
-export type RunGit = (args: string[], cwd: string) => Promise<{ code: number; stdout: string; stderr: string }>;
+/**
+ * Per-call options a git runner must forward to the git child.
+ *
+ * WI-10006705: `env` carries `GIT_INDEX_FILE` for the attributed commit's PRIVATE
+ * index. A wrapping runner that drops it would silently run those commands against
+ * the SHARED index, so commitAttributedGroups probes the runner (`rev-parse
+ * --git-path index`) and refuses to build attributed commits when it is ignored.
+ */
+export interface GitRunOptions {
+  env?: Readonly<Record<string, string>>;
+}
+
+export type RunGit = (
+  args: string[],
+  cwd: string,
+  options?: GitRunOptions,
+) => Promise<{ code: number; stdout: string; stderr: string }>;
 
 const gitFailureDetail = (result: Awaited<ReturnType<RunGit>>): string =>
   (result.stderr.trim() || result.stdout.trim() || `git exited with code ${result.code} without output`).slice(0, 300);
@@ -187,6 +204,8 @@ export interface GitRunExecutionOptions {
   onProgress?: () => void;
   /** Abort a git child when its owning git-sync fire is declared stalled. */
   signal?: AbortSignal;
+  /** Extra environment for the git child (WI-10006705: a private GIT_INDEX_FILE). */
+  env?: Readonly<Record<string, string>>;
 }
 
 const runGitLocalBounded = (
@@ -217,6 +236,7 @@ const runGitLocalBounded = (
       detached: process.platform !== 'win32',
       env: {
         ...process.env,
+        ...options.env,
         LC_ALL: 'C',
         LANG: 'C',
         PAPERCUSP_GIT_SYNC_PUSH: '1',
@@ -364,6 +384,7 @@ const runGitBoundedUnchecked = async (
   // hang guard fires.
   const env = {
     ...process.env,
+    ...options.env,
     LC_ALL: 'C',
     LANG: 'C',
     PAPERCUSP_GIT_SYNC_PUSH: '1',
@@ -400,7 +421,8 @@ const runGitBoundedUnchecked = async (
 };
 
 /** Spawn `git <args>` in `cwd` with the default per-subcommand ceiling (never throws). */
-const defaultRunGit: RunGit = (args, cwd) => runGitBounded(args, cwd, gitTimeoutMsFor(args));
+const defaultRunGit: RunGit = (args, cwd, options) =>
+  runGitBounded(args, cwd, gitTimeoutMsFor(args), { env: options?.env });
 
 /** No Git child ran on a sidecar admission refusal; do not diagnose a Git merge conflict. */
 export function gitSyncPreDispatchError(result: Awaited<ReturnType<RunGit>>): string | null {
@@ -4027,12 +4049,62 @@ function skipCiSuffix(message: string): string {
   return m ? ` ${m[1]}` : '';
 }
 
+/** Where a runner's git says the index lives. `rev-parse --git-path index` honours
+ *  GIT_INDEX_FILE, so with a private env it also proves the runner forwarded it. */
+async function resolveIndexPath(runGit: RunGit, repoPath: string, options?: GitRunOptions): Promise<string | null> {
+  const r = await runGit(['rev-parse', '--git-path', 'index'], repoPath, options);
+  const out = r.stdout.trim();
+  if (r.code !== 0 || !out) return null;
+  return isAbsolute(out) ? out : resolvePath(repoPath, out);
+}
+
+/** The commit message argv shared by every attributed commit (subject, intent body, trailers). */
+function attributedMessageArgs(
+  g: ReturnType<typeof groupFilesForAttribution>[number],
+  subject: string,
+  suffix: string,
+  intentBody: string | null,
+): string[] {
+  const args = ['-m', `${subject}${suffix}`];
+  if (intentBody) args.push('-m', intentBody);
+  if (g.coAuthor) args.push('-m', `Co-Authored-By: ${g.coAuthor}`);
+  // P-004 (deterministic-commit-workitem-attribution-2026-06-22): bounded provenance
+  // trailers so the commit↔work-item link travels IN git history (and is read back
+  // post-sync into git_sync_commit_attribution). Deterministic — from the ledger-derived
+  // attribution, no LLM (D-004/D-006).
+  if (g.agent) args.push('-m', `Papercusp-Agent: ${g.agent}`);
+  if (g.workItems && g.workItems.length > 0) {
+    args.push('-m', `Papercusp-Work-Item: ${g.workItems.slice(0, 20).join(', ')}`);
+  }
+  if (g.sessionId) args.push('-m', `Papercusp-Session: ${g.sessionId}`);
+  if (g.planSlug) args.push('-m', `Papercusp-Plan: ${g.planSlug}`);
+  return args;
+}
+
 /**
  * P-004 (git-sync-dx-hardening): peel each declaring agent's dirty files into its OWN commit
  * (intent subject + a Co-Authored-By trailer), preserving the CI-skip marker. Excluded files
  * (oversized / content offenders) stay quarantined. The catch-all (agent=null) group is left
  * for the caller's existing whole-tree commit. Never throws; a real commit failure returns an
  * error. Exported for the P-004 commit-grouping test (injected runGit, no real repo).
+ *
+ * WI-10006705: each group is built in a PRIVATE index, never the shared one. The
+ * shared index is writable by anything on the tree (an agent's `git add`, the merge
+ * resolver, a second git-sync flow), and the old path ran `git add` → guard →
+ * `git commit` on it. `git commit` records the whole index, so a path a peer staged
+ * after the guard read (or one the guard had just unstaged) was committed anyway:
+ * 84959c3039 swept a foreign pre-staged test and a guard-flagged importer, and the
+ * staging bundle broke. Per group, now:
+ *   1. read HEAD (the CAS base) and seed a private GIT_INDEX_FILE from it (`read-tree -m`
+ *      over a copy of the shared index keeps its stat cache, so later diffs stay cheap);
+ *   2. `add` only the group's files and run the guard (`beforeCommit`) against THAT index;
+ *   3. `write-tree` + `commit-tree -p <base>`, so the commit is exactly what the guard saw;
+ *   4. `update-ref HEAD <new> <base>`: if anything moved HEAD meanwhile the CAS refuses,
+ *      nothing lands, and the files stay dirty for the catch-all / next tick;
+ *   5. reset the shared index's entries for the committed paths to the new commit, so it
+ *      does not hold the pre-commit blobs (a later commit would otherwise revert them).
+ * The runner must forward `GitRunOptions.env`; it is probed once and the phase refuses
+ * (the caller falls through to the catch-all) rather than ever touching the shared index.
  */
 export async function commitAttributedGroups(
   runGit: RunGit,
@@ -4043,87 +4115,155 @@ export async function commitAttributedGroups(
   opts: {
     diffSubjects?: boolean;
     /** EI-24712906810240170: runs after each group's add and before its commit (see
-     *  guardStagedIndexBeforeCommit). A failure aborts the phase with that error. */
-    beforeCommit?: () => Promise<{ ok: true } | { ok: false; error: string }>;
+     *  guardStagedIndexBeforeCommit). WI-10006705: it receives the runner bound to the
+     *  group's PRIVATE index and must guard through it. A failure aborts the phase. */
+    beforeCommit?: (privateRunGit: RunGit) => Promise<{ ok: true } | { ok: false; error: string }>;
     /** WI-10006519: receives the stale-lock recovery diagnostics. */
     log?: (m: string) => void;
   } = {},
 ): Promise<{ committedAny: boolean; committedCount: number; error?: string }> {
   const excludeSet = new Set(excludePaths);
   const dirty = (await dirtyFiles(runGit, repoPath)).filter((f) => !excludeSet.has(f));
-  const groups = groupFilesForAttribution(dirty, attribution);
+  // The catch-all (agent=null) group is handled by the caller's add -A.
+  const groups = groupFilesForAttribution(dirty, attribution).filter((g) => g.agent !== null && g.files.length > 0);
+  if (groups.length === 0) return { committedAny: false, committedCount: 0 };
   const suffix = skipCiSuffix(message);
   const log = opts.log ?? (() => {});
   let committedAny = false;
   let committedCount = 0;
+
+  const gitDirRes = await runGit(['rev-parse', '--absolute-git-dir'], repoPath);
+  const gitDir = gitDirRes.stdout.trim();
+  if (gitDirRes.code !== 0 || !gitDir) {
+    return { committedAny, committedCount, error: `attributed commits could not locate the git dir: ${gitFailureDetail(gitDirRes)}` };
+  }
+  const privateIndexPath = (): string => join(gitDir, `papercusp-git-sync-attributed-${process.pid}-${randomUUID()}.index`);
+  const bindIndex = (indexFile: string): RunGit => (args, cwd, options) =>
+    runGit(args, cwd, { ...options, env: { ...options?.env, GIT_INDEX_FILE: indexFile } });
+  // Fail closed: a runner that drops `env` would run read-tree/add/reset on the SHARED index.
+  const probe = privateIndexPath();
+  const seen = await resolveIndexPath(bindIndex(probe), repoPath);
+  if (seen !== resolvePath(probe)) {
+    return {
+      committedAny,
+      committedCount,
+      error:
+        `attributed commits refused: the git runner did not forward GIT_INDEX_FILE ` +
+        `(git reported ${seen ?? 'no index path'}), so a private index cannot be isolated from the shared one`,
+    };
+  }
+  const sharedIndex = await resolveIndexPath(runGit, repoPath);
+
   for (const g of groups) {
-    if (g.agent === null || g.files.length === 0) continue; // catch-all handled by the caller's add -A
-    // WI-10006519: an index.lock orphaned by a killed git process failed this add on
-    // every tick (2026-10-06 07:09Z and 08:00Z). Route it through the same age- and
-    // holder-checked recovery the catch-all add and the commit already use; a FRESH or
-    // live-held lock is still left alone and surfaces as an error after bounded retries.
-    const addArgs = ['add', '--', ...g.files];
-    const add = await recoverIndexLockContention(
-      await runGit(addArgs, repoPath),
-      () => runGit(addArgs, repoPath),
-      runGit,
-      repoPath,
-      'attributed git add',
-      log,
-    );
-    if (add.code !== 0) {
-      return {
-        committedAny,
-        committedCount,
-        error: `attributed add failed: ${gitFailureDetail(add)}`,
-      };
-    }
-    if (opts.beforeCommit) {
-      const guard = await opts.beforeCommit();
-      if (!guard.ok) return { committedAny, committedCount, error: guard.error };
-    }
-    // WI-38594 (flag GIT_SYNC_DIFF_SUBJECTS): the subject describes the DIFF (what this
-    // commit actually contains — from the just-staged numstat); the agent's intent line
-    // (the pre-WI-38594 subject) rides as the first BODY paragraph, ahead of the
-    // provenance trailers, so it stays greppable without masquerading as a diff summary.
-    // A failed numstat only drops the ±counts — never blocks the commit.
-    let subject = g.subject;
-    let intentBody: string | null = null;
-    if (opts.diffSubjects !== false) {
-      const ns = await runGit(['diff', '--cached', '--numstat', '--', ...g.files], repoPath);
-      subject = diffDerivedSubject(g.files, ns.code === 0 ? parseNumstat(ns.stdout) : undefined);
-      if (g.subject && g.subject !== DEFAULT_GIT_SYNC_SUBJECT) intentBody = g.subject;
-    }
-    const args = [...GIT_SYNC_IDENTITY_ARGS, 'commit', '--no-verify', '-m', `${subject}${suffix}`];
-    if (intentBody) args.push('-m', intentBody);
-    if (g.coAuthor) args.push('-m', `Co-Authored-By: ${g.coAuthor}`);
-    // P-004 (deterministic-commit-workitem-attribution-2026-06-22): bounded provenance
-    // trailers so the commit↔work-item link travels IN git history (and is read back
-    // post-sync into git_sync_commit_attribution). Deterministic — from the ledger-derived
-    // attribution, no LLM (D-004/D-006).
-    if (g.agent) args.push('-m', `Papercusp-Agent: ${g.agent}`);
-    if (g.workItems && g.workItems.length > 0) {
-      args.push('-m', `Papercusp-Work-Item: ${g.workItems.slice(0, 20).join(', ')}`);
-    }
-    if (g.sessionId) args.push('-m', `Papercusp-Session: ${g.sessionId}`);
-    if (g.planSlug) args.push('-m', `Papercusp-Plan: ${g.planSlug}`);
-    const c = await recoverIndexLockContention(
-      await runGit(args, repoPath),
-      () => runGit(args, repoPath),
-      runGit,
-      repoPath,
-      'attributed git commit',
-      log,
-    );
-    if (c.code === 0) {
+    const indexFile = privateIndexPath();
+    const privateGit = bindIndex(indexFile);
+    try {
+      // 1. The CAS base. A non-zero answer is an unborn branch (or unreadable HEAD — the
+      //    empty-old CAS below then refuses, so nothing lands either way).
+      const headRes = await runGit(['rev-parse', '--verify', '-q', 'HEAD^{commit}'], repoPath);
+      const base = headRes.code === 0 && headRes.stdout.trim() ? headRes.stdout.trim() : null;
+      if (base && sharedIndex) await copyFile(sharedIndex, indexFile).catch(() => {});
+      let seed = await privateGit(base ? ['read-tree', '-m', base] : ['read-tree', '--empty'], repoPath);
+      if (seed.code !== 0 && base) {
+        // An unmerged shared index refuses the stat-preserving merge; build from scratch.
+        await rm(indexFile, { force: true }).catch(() => {});
+        seed = await privateGit(['read-tree', base], repoPath);
+      }
+      if (seed.code !== 0) {
+        return { committedAny, committedCount, error: `attributed commit could not seed its private index: ${gitFailureDetail(seed)}` };
+      }
+      const baseTreeRes = base
+        ? await runGit(['rev-parse', '--verify', '-q', `${base}^{tree}`], repoPath)
+        : await privateGit(['write-tree'], repoPath); // the empty tree, in this repo's hash
+      const baseTree = baseTreeRes.stdout.trim();
+      if (baseTreeRes.code !== 0 || !baseTree) {
+        return { committedAny, committedCount, error: `attributed commit could not read the base tree: ${gitFailureDetail(baseTreeRes)}` };
+      }
+
+      // 2. Stage ONLY this group's files, then guard exactly that index.
+      const add = await privateGit(['add', '--', ...g.files], repoPath);
+      if (add.code !== 0) {
+        return { committedAny, committedCount, error: `attributed add failed: ${gitFailureDetail(add)}` };
+      }
+      if (opts.beforeCommit) {
+        const guard = await opts.beforeCommit(privateGit);
+        if (!guard.ok) return { committedAny, committedCount, error: guard.error };
+      }
+
+      // 3. The tree the guard checked. Equal to the base tree = nothing left to commit.
+      const treeRes = await privateGit(['write-tree'], repoPath);
+      const tree = treeRes.stdout.trim();
+      if (treeRes.code !== 0 || !tree) {
+        return { committedAny, committedCount, error: `attributed commit failed: ${gitFailureDetail(treeRes)}` };
+      }
+      if (tree === baseTree) continue;
+
+      // WI-38594 (flag GIT_SYNC_DIFF_SUBJECTS): the subject describes the DIFF (what this
+      // commit actually contains — from the private index's numstat against the base);
+      // the agent's intent line (the pre-WI-38594 subject) rides as the first BODY
+      // paragraph, ahead of the provenance trailers, so it stays greppable without
+      // masquerading as a diff summary. A failed numstat only drops the ±counts.
+      let subject = g.subject;
+      let intentBody: string | null = null;
+      if (opts.diffSubjects !== false) {
+        const ns = await privateGit(['diff', '--cached', '--numstat', ...(base ? [base] : []), '--', ...g.files], repoPath);
+        subject = diffDerivedSubject(g.files, ns.code === 0 ? parseNumstat(ns.stdout) : undefined);
+        if (g.subject && g.subject !== DEFAULT_GIT_SYNC_SUBJECT) intentBody = g.subject;
+      }
+      const commitArgs = [
+        ...GIT_SYNC_IDENTITY_ARGS,
+        'commit-tree',
+        tree,
+        ...(base ? ['-p', base] : []),
+        ...attributedMessageArgs(g, subject, suffix, intentBody),
+      ];
+      const c = await runGit(commitArgs, repoPath);
+      const commit = c.stdout.trim();
+      if (c.code !== 0 || !commit) {
+        return { committedAny, committedCount, error: `attributed commit failed: ${gitFailureDetail(c)}` };
+      }
+
+      // 4. Publish only if HEAD is still the base the commit was built on.
+      const cas = await runGit(
+        ['update-ref', '-m', `git-sync: attributed commit for ${g.agent}`, 'HEAD', commit, base ?? ''],
+        repoPath,
+      );
+      if (cas.code !== 0) {
+        log(
+          `[git-sync] ${repoPath}: HEAD moved while ${g.agent}'s attributed commit was being built ` +
+            `(update-ref CAS refused: ${gitFailureDetail(cas)}) — not published; its ${g.files.length} file(s) ` +
+            'stay dirty for the catch-all or the next tick',
+        );
+        continue;
+      }
       committedAny = true;
       committedCount += 1;
-    } else if (!nothingToCommit(c)) {
-      return {
-        committedAny,
-        committedCount,
-        error: `attributed commit failed: ${gitFailureDetail(c)}`,
-      };
+
+      // 5. Bring the shared index's entries for the committed paths up to the commit.
+      const changed = await runGit(['diff', '--name-only', '--no-renames', '-z', baseTree, tree], repoPath);
+      const committedPaths = changed.code === 0 ? changed.stdout.split('\0').filter(Boolean) : g.files;
+      // ⚠ never reset with an EMPTY pathspec: that resets the whole shared index.
+      if (committedPaths.length === 0) continue;
+      const resetArgs = ['reset', '-q', commit, '--', ...committedPaths];
+      const refresh = await recoverIndexLockContention(
+        await runGit(resetArgs, repoPath),
+        () => runGit(resetArgs, repoPath),
+        runGit,
+        repoPath,
+        'attributed shared-index refresh',
+        log,
+      );
+      if (refresh.code !== 0) {
+        // The commit landed. A stale shared entry reads as staged-vs-HEAD and as drift
+        // to the catch-all's post-stage guard, which unstages it before that commit.
+        log(
+          `[git-sync] ${repoPath}: attributed commit ${commit.slice(0, 10)} landed but the shared index could not be ` +
+            `refreshed for ${committedPaths.length} path(s): ${gitFailureDetail(refresh)}`,
+        );
+      }
+    } finally {
+      await rm(indexFile, { force: true }).catch(() => {});
+      await rm(`${indexFile}.lock`, { force: true }).catch(() => {});
     }
   }
   return { committedAny, committedCount };
@@ -4852,9 +4992,11 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
     let committedAny = false;
     // EI-24712906810240170: the post-stage guard for every commit below. A late lock is
     // reported like a pre-stage one (skippedPaths), deduped by path.
-    const postStageGuard = async (): Promise<PostStageGuardResult> => {
+    // WI-10006705: an attributed group passes the runner bound to its PRIVATE index, so the
+    // guard inspects and edits exactly the index that group's commit records.
+    const postStageGuard = async (indexRunGit: RunGit = runGit): Promise<PostStageGuardResult> => {
       const guard = await guardStagedIndexBeforeCommit({
-        runGit,
+        runGit: indexRunGit,
         repoPath,
         scope: o.scope,
         refreshLiveLockHoldings: o.refreshLiveLockHoldings,
@@ -4885,7 +5027,7 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
         o.attribution,
         [...stagingExcludePaths, ...migrationCandidates, ...(o.forceCatchAllPaths ?? [])],
         message,
-        { diffSubjects: o.diffSubjects, beforeCommit: postStageGuard, log: o.log },
+        { diffSubjects: o.diffSubjects, beforeCommit: (privateRunGit) => postStageGuard(privateRunGit), log: o.log },
       );
       if (res.error) {
         // STRANDING GUARD (2026-06-30): a failed per-agent attributed commit — e.g. an
@@ -5642,12 +5784,13 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
   };
   const baseRunGit: RunGit =
     opts.runGit ??
-    ((args, cwd) =>
+    ((args, cwd, gitOptions) =>
       runGitBounded(args, cwd, gitTimeoutMsFor(args), {
         onProgress: reportProgress,
         signal: opts.signal,
+        env: gitOptions?.env,
       }));
-  const runGit: RunGit = async (args, cwd) => {
+  const runGit: RunGit = async (args, cwd, gitOptions) => {
     throwIfAborted();
     reportProgress();
     if (gitSubcommand(args) === 'push' && opts.beforePush) {
@@ -5665,7 +5808,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
     }
     const startedAt = performance.now();
     try {
-      const result = await baseRunGit(args, cwd);
+      const result = await baseRunGit(args, cwd, gitOptions);
       reportProgress();
       throwIfAborted();
       return result;
