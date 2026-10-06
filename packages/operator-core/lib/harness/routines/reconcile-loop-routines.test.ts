@@ -463,6 +463,7 @@ describe('reconcileLoopRoutines — cold settle ladder (su-cold-auto 2026-07-03)
   });
 
   it('restores the existing stuck-backstop retry once the cold in-flight dwell expires', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const recordFire = vi.fn(async () => {});
     const res = await reconcile({
       sql: fakeSql(
@@ -482,6 +483,9 @@ describe('reconcileLoopRoutines — cold settle ladder (su-cold-auto 2026-07-03)
     expect(res.rearmed).toBe(1);
     expect(res.loops[0]).toMatchObject({ via: 'stuck-backstop' });
     expect(recordFire).toHaveBeenCalledWith('papercusp', 'loop-su-test', 'loop-stuck-backstop', 'error');
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("no completion signal — re-armed to retry (circuit fed 'error')"),
+    );
   });
 });
 
