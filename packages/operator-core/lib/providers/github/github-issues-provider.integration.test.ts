@@ -411,6 +411,10 @@ describe('GitHub issues registers as a provider through the plugin host (R-14)',
       { source: sourceId, capability: 'ticket.containers', args: {} },
       { fetch: recordedHostFetch },
     )).rejects.toThrow('provider_capability_unsupported:ticket.containers');
+    await expect(provider.adapter!.invoke(
+      { source: sourceId, capability: 'ticket.update', args: { externalId: `${OWNER}/${REPO}#1`, title: 'x' } },
+      { fetch: recordedHostFetch },
+    )).rejects.toThrow('provider_capability_unsupported:ticket.update');
     expect(gh.calls).toEqual([]);
     // …and by the host's record write-back dispatch before any host.fetch is built.
     const hostFetchFor = vi.fn(() => recordedHostFetch);
@@ -426,6 +430,10 @@ describe('GitHub issues registers as a provider through the plugin host (R-14)',
     } as never)).rejects.toThrow(`provider_capability_unsupported:${KIND}:ticket.transition`);
     expect(hostFetchFor).not.toHaveBeenCalled();
     expect(gh.calls).toEqual([]);
+    // The record write-back dispatch has exactly two write paths: writeBack (the declared
+    // ticket.comment) and transition (refused above). ticket.update and ticket.containers have
+    // no write-back route at all. A new route must fail here until it gets its own refusal case.
+    expect(Object.keys(recordSource).sort()).toEqual(['kind', 'parseRef', 'resolve', 'transition', 'writeBack']);
   });
 });
 
