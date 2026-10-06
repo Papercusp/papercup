@@ -2,6 +2,7 @@ import type { LanguageModelV3, LanguageModelV3StreamPart } from '@ai-sdk/provide
 import { describe, expect, it, vi } from 'vitest';
 import type { ModelPort, ModelRequest, ModelStreamEvent } from './model-port';
 import type { ModelsDevCatalog } from './model-selection';
+import type { AccountPool, ActiveAccount } from '../inference-gateway/provider-contracts';
 import { createRoutedModelPort, type ProviderFactoryArgs } from './provider-router';
 
 const catalog: ModelsDevCatalog = {
@@ -75,7 +76,151 @@ async function collect(port: ModelPort, req: ModelRequest): Promise<ModelStreamE
   return events;
 }
 
+function openRouterPool(account: ActiveAccount): AccountPool {
+  return {
+    active: vi.fn(() => account),
+    select: vi.fn((id) => id === account.accountId ? account : null),
+    onExhausted: vi.fn(() => null),
+  };
+}
+
+const openRouterAccount = (): ActiveAccount => ({
+  accountId: 'customer-openrouter-test', authMode: 'api-key',
+  token: vi.fn(async () => ' customer-openrouter-test-key '),
+});
+
 describe('createRoutedModelPort', () => {
+  it('requires an injected OpenRouter account pool even when env and remote metadata name keys', async () => {
+    const createLanguageModel = vi.fn(async () => model());
+    const credentials = vi.fn(async () => ({ openai_api_key: 'unrelated-store-test-key' }));
+    const port = createRoutedModelPort({
+      catalog: { openrouter: { env: ['UNRELATED_PROVIDER_SECRET'], models: {} } },
+      env: { OPENROUTER_API_KEY: 'ambient-test-key', UNRELATED_PROVIDER_SECRET: 'foreign-test-key' },
+      credentials, createLanguageModel,
+    });
+    expect(await collect(port, request('openrouter/vendor/model-test'))).toEqual([
+      { type: 'error', message: expect.stringContaining('OpenRouter account pool') },
+    ]);
+    expect(credentials).not.toHaveBeenCalled();
+    expect(createLanguageModel).not.toHaveBeenCalled();
+  });
+
+  it.each([undefined, 'auto', 'default'])('selects OpenRouter from its supplied pool for account %s', async (account) => {
+    const pool = openRouterPool(openRouterAccount());
+    const createLanguageModel = vi.fn(async () => model());
+    const port = createRoutedModelPort({ catalog: null, openRouterAccounts: pool, createLanguageModel });
+    expect((await collect(port, { ...request('openrouter/vendor/model-test:high'), account })).at(-1))
+      .toMatchObject({ type: 'stop', reason: 'end_turn', servedAccount: 'customer-openrouter-test' });
+    expect(pool.active).toHaveBeenCalledOnce();
+    expect(pool.select).not.toHaveBeenCalled();
+    expect(createLanguageModel).toHaveBeenCalledWith(expect.objectContaining({
+      apiKey: 'customer-openrouter-test-key',
+      selection: { spec: 'openrouter/vendor/model-test:high', provider: 'openrouter',
+        modelId: 'vendor/model-test', effort: 'high', metadata: null, providerMetadata: null },
+    }));
+  });
+
+  it('honors the explicit OpenRouter account pin without selecting another account', async () => {
+    const pool = openRouterPool(openRouterAccount());
+    const port = createRoutedModelPort({ catalog: null, openRouterAccounts: pool,
+      createLanguageModel: async () => model() });
+    expect((await collect(port, { ...request('openrouter/vendor/model-test'), account: 'customer-openrouter-test' })).at(-1))
+      .toMatchObject({ type: 'stop', servedAccount: 'customer-openrouter-test' });
+    expect(pool.select).toHaveBeenCalledWith('customer-openrouter-test');
+    expect(pool.active).not.toHaveBeenCalled();
+  });
+
+  it('refuses an unavailable OpenRouter account pin without pool fallback', async () => {
+    const pool = openRouterPool(openRouterAccount());
+    const createLanguageModel = vi.fn(async () => model());
+    const port = createRoutedModelPort({ catalog: null, openRouterAccounts: pool, createLanguageModel });
+    expect(await collect(port, { ...request('openrouter/vendor/model-test'), account: 'foreign-account' }))
+      .toEqual([{ type: 'error', message: expect.stringContaining('account pin is unavailable') }]);
+    expect(pool.active).not.toHaveBeenCalled();
+    expect(createLanguageModel).not.toHaveBeenCalled();
+  });
+
+  it('rejects a pool returning a different account for an explicit OpenRouter pin', async () => {
+    const pool = openRouterPool(openRouterAccount());
+    pool.select = vi.fn(() => openRouterAccount());
+    const createLanguageModel = vi.fn(async () => model());
+    const port = createRoutedModelPort({ catalog: null, openRouterAccounts: pool, createLanguageModel });
+    expect(await collect(port, { ...request('openrouter/vendor/model-test'), account: 'foreign-account' }))
+      .toEqual([{ type: 'error', message: expect.stringContaining('account pin is unavailable') }]);
+    expect(createLanguageModel).not.toHaveBeenCalled();
+  });
+
+  it('does not disclose a failed OpenRouter token read or fall back to ambient credentials', async () => {
+    const secret = 'dummy-sensitive-token-error';
+    const account = { ...openRouterAccount(), token: async () => { throw new Error(secret); } };
+    const createLanguageModel = vi.fn(async () => model());
+    const port = createRoutedModelPort({ catalog: null, openRouterAccounts: openRouterPool(account),
+      env: { OPENROUTER_API_KEY: 'ambient-test-key' }, createLanguageModel });
+    const events = await collect(port, request('openrouter/vendor/model-test'));
+    expect(events).toEqual([{ type: 'error', message: 'failed to read OpenRouter account credentials' }]);
+    expect(JSON.stringify(events)).not.toContain(secret);
+    expect(createLanguageModel).not.toHaveBeenCalled();
+  });
+
+  it.each([undefined, 'customer-openrouter-test'])('does not disclose failed account selection for %s', async (account) => {
+    const secret = 'dummy-sensitive-account-store-error';
+    const pool = openRouterPool(openRouterAccount());
+    pool.active = vi.fn(() => { throw new Error(secret); });
+    pool.select = vi.fn(() => { throw new Error(secret); });
+    const createLanguageModel = vi.fn(async () => model());
+    const port = createRoutedModelPort({ catalog: null, openRouterAccounts: pool,
+      env: { OPENROUTER_API_KEY: 'ambient-test-key' }, createLanguageModel });
+    const events = await collect(port, { ...request('openrouter/vendor/model-test'), account });
+    expect(events).toEqual([{ type: 'error', message: 'failed to select OpenRouter account' }]);
+    expect(JSON.stringify(events)).not.toContain(secret);
+    expect(createLanguageModel).not.toHaveBeenCalled();
+  });
+
+  it('streams the maintained OpenRouter SDK through ModelPort with a pooled key and native wire options', async () => {
+    const chunks = [
+      { id: 'gen-openrouter-test', object: 'chat.completion.chunk', created: 1, model: 'vendor/model-test',
+        choices: [{ index: 0, delta: { role: 'assistant', content: 'sdk hello' }, finish_reason: null }] },
+      { id: 'gen-openrouter-test', object: 'chat.completion.chunk', created: 1, model: 'vendor/model-test',
+        choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 } },
+    ];
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(
+      chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join('') + 'data: [DONE]\n\n',
+      { headers: { 'content-type': 'text/event-stream' } },
+    ));
+    try {
+      const port = createRoutedModelPort({ catalog: null, openRouterAccounts: openRouterPool(openRouterAccount()) });
+      const events = await collect(port, { ...request('openrouter/vendor/model-test:high'), maxTokens: 32,
+        tools: [{ name: 'files:read', inputSchema: { type: 'object' } }] });
+      expect(events).toContainEqual({ type: 'text_delta', text: 'sdk hello' });
+      expect(events.at(-1)).toMatchObject({ type: 'stop', reason: 'end_turn',
+        usage: { inputTokens: 3, outputTokens: 2 }, servedAccount: 'customer-openrouter-test' });
+      expect(fetchSpy).toHaveBeenCalledOnce();
+      const [url, init] = fetchSpy.mock.calls[0];
+      expect(String(url)).toBe('https://openrouter.ai/api/v1/chat/completions');
+      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer customer-openrouter-test-key');
+      expect(JSON.parse(String(init?.body))).toMatchObject({ model: 'vendor/model-test',
+        reasoning: { effort: 'high' }, max_tokens: 32, stream: true,
+        tools: [{ type: 'function', function: { name: expect.stringMatching(/^pc_files_read_[a-f0-9]{12}$/) } }] });
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it.each([
+    { authMode: 'oauth' as const, token: async (): Promise<string> => 'oauth-test-token' },
+    { authMode: undefined, token: async (): Promise<string> => 'unclassified-test-token' },
+    { authMode: 'api-key' as const, token: async (): Promise<string> => '   ' },
+  ])('refuses invalid OpenRouter account credentials before constructing a provider: %j', async (invalid) => {
+    const createLanguageModel = vi.fn(async () => model());
+    const pool = openRouterPool({ ...openRouterAccount(), ...invalid });
+    const port = createRoutedModelPort({ catalog: null, openRouterAccounts: pool, createLanguageModel });
+    expect(await collect(port, request('openrouter/vendor/model-test'))).toEqual([
+      { type: 'error', message: expect.stringContaining('OpenRouter account') },
+    ]);
+    expect(createLanguageModel).not.toHaveBeenCalled();
+  });
+
   it('keeps bare Claude aliases on the native subscription gateway', async () => {
     const seen: ModelRequest[] = [];
     const native: ModelPort = {

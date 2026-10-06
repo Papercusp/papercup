@@ -8,6 +8,7 @@
 import type { LanguageModelV3 } from '@ai-sdk/provider';
 import { priorityTierHeaders, routeAccountHeaders } from '../agent-chat-stream';
 import { readCredentials, type Credentials } from '../credentials';
+import type { AccountPool, ActiveAccount } from '../inference-gateway/provider-contracts';
 import { createAiSdkPort } from './ai-sdk-port';
 import { createAnthropicPort } from './anthropic-port';
 import type { ModelPort, ModelRequest, ModelStreamEvent } from './model-port';
@@ -21,7 +22,7 @@ import {
 
 // Catalog metadata is advisory. Credential slots are local authority: a remote
 // catalog must never select an unrelated secret for a provider's request.
-const API_KEY_ENV: Record<AiSdkProviderId, string[]> = {
+const API_KEY_ENV: Record<Exclude<AiSdkProviderId, 'openrouter'>, string[]> = {
   anthropic: ['ANTHROPIC_API_KEY'],
   openai: ['OPENAI_API_KEY'],
   google: ['GOOGLE_GENERATIVE_AI_API_KEY', 'GOOGLE_API_KEY'],
@@ -45,6 +46,8 @@ export interface RoutedModelPortOptions {
   gatewayBaseUrl?: string;
   anthropicPort?: ModelPort;
   createLanguageModel?: (args: ProviderFactoryArgs) => Promise<LanguageModelV3>;
+  /** Runtime-owned OpenRouter pool; no ambient operator key or account is inferred. */
+  openRouterAccounts?: AccountPool;
 }
 
 function gatewayBaseUrl(env: NodeJS.ProcessEnv): string {
@@ -63,7 +66,8 @@ function apiKeyFor(
   credentials: Credentials,
   env: NodeJS.ProcessEnv,
 ): string | undefined {
-  if (selection.provider === 'gateway-anthropic' || selection.provider === 'gateway-codex') {
+  if (selection.provider === 'gateway-anthropic' || selection.provider === 'gateway-codex'
+    || selection.provider === 'openrouter') {
     return undefined;
   }
   const fromStore = storedKey(selection.provider, credentials);
@@ -74,6 +78,34 @@ function apiKeyFor(
     if (value) return value;
   }
   return undefined;
+}
+
+async function openRouterCredentials(
+  pool: AccountPool | undefined,
+  pin: string | undefined,
+): Promise<{ apiKey: string; accountId: string }> {
+  if (!pool) throw new Error('an explicitly supplied OpenRouter account pool is required');
+  const pinned = pin !== undefined && pin !== 'auto' && pin !== 'default';
+  let account: ActiveAccount | null | undefined;
+  try {
+    account = pinned ? pool.select?.(pin) : pool.active();
+  } catch {
+    // Pool implementations can touch credential stores. Their exception text
+    // cannot cross the ModelPort boundary or trigger an ambient-key fallback.
+    throw new Error('failed to select OpenRouter account');
+  }
+  if (!account || (pinned && account.accountId !== pin)) {
+    throw new Error('OpenRouter account pin is unavailable');
+  }
+  if (account.authMode !== 'api-key') throw new Error('OpenRouter account must use API-key authentication');
+  let key: string;
+  try {
+    key = (await account.token()).trim();
+  } catch {
+    throw new Error('failed to read OpenRouter account credentials');
+  }
+  if (!key) throw new Error('OpenRouter account has no API key');
+  return { apiKey: key, accountId: account.accountId };
 }
 
 async function defaultLanguageModel(args: ProviderFactoryArgs): Promise<LanguageModelV3> {
@@ -109,6 +141,10 @@ async function defaultLanguageModel(args: ProviderFactoryArgs): Promise<Language
     case 'xai': {
       const { createXai } = await import('@ai-sdk/xai');
       return createXai({ apiKey })(selection.modelId);
+    }
+    case 'openrouter': {
+      const { createOpenRouter } = await import('@openrouter/ai-sdk-provider');
+      return createOpenRouter({ apiKey }).chat(selection.modelId);
     }
     case 'gateway-anthropic':
       throw new Error('gateway-anthropic is handled by the native Anthropic ModelPort');
@@ -166,15 +202,23 @@ export function createRoutedModelPort(opts: RoutedModelPortOptions = {}): ModelP
       const aiProvider: Exclude<LoopModelSelection['provider'], 'gateway-anthropic'> =
         selection.provider;
 
-      let credentials: Credentials;
+      let apiKey: string | undefined;
+      let servedAccount: string | undefined;
       try {
-        credentials = aiProvider === 'gateway-codex' ? {} : await readCreds();
+        if (aiProvider === 'openrouter') {
+          const selected = await openRouterCredentials(opts.openRouterAccounts, req.account);
+          apiKey = selected.apiKey;
+          servedAccount = selected.accountId;
+        } else {
+          const credentials = aiProvider === 'gateway-codex' ? {} : await readCreds();
+          apiKey = apiKeyFor(selection, credentials, env);
+        }
       } catch (error) {
-        yield { type: 'error', message: `failed to read provider credentials: ${errorMessage(error)}` };
+        yield { type: 'error', message: aiProvider === 'openrouter'
+          ? errorMessage(error) : `failed to read provider credentials: ${errorMessage(error)}` };
         return;
       }
-      const apiKey = apiKeyFor(selection, credentials, env);
-      if (aiProvider !== 'gateway-codex' && !apiKey) {
+      if (aiProvider !== 'gateway-codex' && aiProvider !== 'openrouter' && !apiKey) {
         const names = API_KEY_ENV[aiProvider];
         yield {
           type: 'error',
@@ -207,7 +251,11 @@ export function createRoutedModelPort(opts: RoutedModelPortOptions = {}): ModelP
         yield* aiPort.stream({ ...gatewayReq, model: selection.modelId });
         return;
       }
-      yield* aiPort.stream({ ...req, model: selection.modelId });
+      for await (const event of aiPort.stream({ ...req, model: selection.modelId })) {
+        yield event.type === 'stop' && servedAccount !== undefined
+          ? { ...event, servedAccount }
+          : event;
+      }
     },
   };
 }

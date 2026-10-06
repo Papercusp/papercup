@@ -21,6 +21,7 @@ export const AI_SDK_PROVIDER_IDS = [
   'mistral',
   'groq',
   'xai',
+  'openrouter',
 ] as const;
 
 export type AiSdkProviderId = (typeof AI_SDK_PROVIDER_IDS)[number];
@@ -75,8 +76,7 @@ export interface LoopModelSelection {
  * The capability of one model spec on the in-process Agent Chat loop.
  *
  * Tier configuration is intentionally backend-neutral and may contain models
- * that only an OMP subprocess understands (for example an `openrouter/...`
- * selector).  The loop has a narrower executable boundary than that generic
+ * outside the loop's supported providers. The loop has a narrower executable boundary than that generic
  * menu.  Keep the classification next to the resolver so route validation and
  * menu annotations cannot grow independent provider allow-lists.
  */

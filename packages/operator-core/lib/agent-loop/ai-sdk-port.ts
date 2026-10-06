@@ -161,6 +161,8 @@ export function effortProviderOptions(
       return { groq: { reasoningEffort: effort } };
     case 'xai':
       return { xai: { reasoningEffort: effort } };
+    case 'openrouter':
+      return { openrouter: { reasoning: { effort } } };
   }
 }
 

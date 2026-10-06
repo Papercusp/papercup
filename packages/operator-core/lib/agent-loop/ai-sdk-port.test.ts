@@ -81,6 +81,9 @@ describe('AI SDK v6 prompt mapping', () => {
   it('maps effort onto each provider native option without changing the public spec', () => {
     expect(effortProviderOptions('openai', 'xhigh')).toEqual({ openai: { reasoningEffort: 'xhigh' } });
     expect(effortProviderOptions('anthropic', 'high')).toEqual({ anthropic: { effort: 'high' } });
+    expect(effortProviderOptions('openrouter', 'high')).toEqual({
+      openrouter: { reasoning: { effort: 'high' } },
+    });
     expect(effortProviderOptions('google', 'medium')).toEqual({
       google: { thinkingConfig: { thinkingLevel: 'medium' } },
     });

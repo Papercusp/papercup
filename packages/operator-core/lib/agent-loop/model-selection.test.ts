@@ -85,6 +85,12 @@ describe('resolveLoopModelSpec', () => {
     });
   });
 
+  it('preserves the nested OpenRouter model id and effort without requiring a catalog', () => {
+    expect(resolveLoopModelSpec('openrouter/vendor/model-v2:high', null)).toMatchObject({
+      provider: 'openrouter', modelId: 'vendor/model-v2', effort: 'high', metadata: null,
+    });
+  });
+
   it('only peels a recognized effort suffix, preserving colon-bearing model ids', () => {
     expect(resolveLoopModelSpec('openai/vendor:model-v2:0', catalog)).toMatchObject({
       modelId: 'vendor:model-v2:0',
@@ -116,10 +122,10 @@ describe('classifyLoopModelSpec', () => {
     });
   });
 
-  it('marks OMP-only provider selectors unavailable and preserves the resolver reason', () => {
+  it('marks OpenRouter syntax executable without choosing an account or model default', () => {
     expect(classifyLoopModelSpec('openrouter/stealth/ox-alpha:max')).toEqual({
-      executable: false,
-      reason: expect.stringContaining('unsupported loop provider "openrouter"'),
+      executable: true,
+      provider: 'openrouter',
     });
   });
 
