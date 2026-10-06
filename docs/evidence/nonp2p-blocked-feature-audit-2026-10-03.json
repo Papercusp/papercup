@@ -3311,7 +3311,141 @@
      "summary": "plan lane agent-economy-flywheel-2026-08-30#P-006 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
     }
    ],
-   "claimHold": false
+   "claimHold": false,
+   "listingDiscoveryEvidenceQualification": {
+    "status": "scoped-qualification-only-no-item-acceptance",
+    "measuredAt": "2026-10-06",
+    "author": "su-25bc0450-2829-42b9-a2dd-1431c99e4ba8",
+    "parentWorkItem": "WI-10005820",
+    "source": {
+     "plan": "agent-economy-flywheel-2026-08-30",
+     "revision": 100,
+     "sha256": "fc68bbe66e2de5fdea2a667e37de106465287eea99c13d406789b207b4af7ca6",
+     "governingDecisions": [
+      "D-003",
+      "D-004",
+      "D-006"
+     ],
+     "item": "P-006",
+     "dependency": "P-004 / WI-10004288"
+    },
+    "mappingCorrection": "The incoming cold carry incorrectly mapped P-006 to outcome verification/refunds under R-21. Current source100 maps P-006 to listing discovery under R-15; R-21 governs P-010. No refund implementation or acceptance was replayed.",
+    "currentClauses": [
+     {
+      "id": "AUTO-BAR-R-15-P-006",
+      "revision": 2,
+      "status": "active",
+      "sha256": "6e706c029025e575d419c596ba2ff9fe84f3b43e5f5a2f7ddf589221e598782b"
+     },
+     {
+      "id": "AUTO-REQ-M-004-P-006",
+      "revision": 1,
+      "status": "draft",
+      "sha256": "9dee35cd02b40faca0bec03089f02df7bde26a9f1b84daabea18fea57b4de2be"
+     },
+     {
+      "id": "AUTO-REQ-M-008-P-006",
+      "revision": 1,
+      "status": "draft",
+      "sha256": "cdbe099e135ae6f068966c847c74394a775475c4c17df30dc335b67565b0c7f6"
+     }
+    ],
+    "contract": "R-15 requires cupboard:search to return matching identity listings ahead of every other kind. Full P-006 also requires identity prominence in UX and activation-time verification of the missing listing types among the source's eleven kinds. D-004 keeps Phase2 gated on the P-004 external paid pilot.",
+    "implementationQualification": "Current cupboard:search delegates to browseCupboardListings and projects its returned order. The typed adapter supports blueprintKind:'identity' and locally narrows responses when an older Worker ignores the facet. Those operations are filtering, not proof of identity-first ranking across kinds. Identity listings use listing_kind:'blueprint' plus blueprint_kind:'identity'. The inspected LISTING_KINDS literal has no skill, memory-pack or human-role values; this is a finding about that enum, not a whole-platform absence or a decided representation for those kinds. Worker ordering and the UX journey were not measured.",
+    "namedCheck": {
+     "path": "packages/operator-core/lib/agent-tools/cupboard/search.test.ts",
+     "exists": false,
+     "qualification": "Exact requirement-named test is absent in this checkout; the maintained adjacent tests are narrower detectors."
+    },
+    "currentLocalTests": {
+     "command": "npm run test:file -- packages/operator-core/lib/cupboard/browse-listings.test.ts packages/operator-core/lib/cupboard/identity-listing-surface.test.ts",
+     "ledgerRows": [
+      20836840,
+      20836841
+     ],
+     "result": "Both local canonical file receipts PASS",
+     "commitSha": "ab112b7f4062ff6d106c241d89603cc7fc9ee01e",
+     "worktreeDirty": true,
+     "harness": "papercusp",
+     "qualification": "The runner warned that PAPERCUSP_TEST_RUN_HARNESS was unset. Independent testing:runs recovered both exact path rows and their papercusp scope after the local reporting script lost the terminal result. No assertion count or terminal exit receipt is reconstructed. Browse envelope/facet filtering and identity manifest-surface tests do not assert R-15 ranking or the whole P-006 UX/types contract."
+    },
+    "clauseEvidenceSelection": {
+     "specIds": [
+      "AUTO-BAR-R-15-P-006",
+      "AUTO-REQ-M-004-P-006",
+      "AUTO-REQ-M-008-P-006"
+     ],
+     "count": 0,
+     "truncatedByLimit": false,
+     "qualification": "Exact scoped binding selection is empty; not a global absence claim."
+    },
+    "rubric": {
+     "id": "acceptance-agent-economy-flywheel-2026-08-30",
+     "revision": 5,
+     "sha256": "25dd447cc55337d60b91c38186c4c1867cb9d9e8c0ec2df4fe124bb7686d08c8",
+     "vetting": "unvetted",
+     "reason": "Rejected attestation: grading-audit-unsettled / criteria-hash-mismatch."
+    },
+    "prerequisiteQualification": "P-004 source status needs-human; its canonical WI-10004288 remains blocked/unassigned. Exact resume8794fcc6b741 retains author-qualified missing public adapter/listing/seller/funded pilot/outside-buyer payment. No external paid pilot was measured or accepted here.",
+    "sourcePins": [
+     {
+      "path": "packages/operator-core/lib/agent-tools/cupboard/search.ts",
+      "exists": true,
+      "sha256": "ffc4f26d95be93a72c3e042dfc9730b321d39ca1c4e496212f83f6af0335a4cf",
+      "ownHEADblob": "1203f870c04c5d8d717d5fedb60f2cef69a04800"
+     },
+     {
+      "path": "packages/operator-core/lib/agent-tools/cupboard/search.test.ts",
+      "exists": false,
+      "sha256": null,
+      "ownHEADblob": null
+     },
+     {
+      "path": "packages/operator-core/lib/cupboard/browse-listings.ts",
+      "exists": true,
+      "sha256": "5381c9814d69962cc5bc39817f3f8eea6f544f5c8fce71c94f800c2b6104a98e",
+      "ownHEADblob": "fa9a3ee0303dc9cb2c884c8fa9143069fd1836ef"
+     },
+     {
+      "path": "packages/operator-core/lib/cupboard/browse-listings.test.ts",
+      "exists": true,
+      "sha256": "df0b1a5df6e0eeac6ef394ccd6ef85ab17d9014efc527aa52af88dd115011ca3",
+      "ownHEADblob": "3eb2f12f945403a5c4f33bbee735e88b42c0c53c"
+     },
+     {
+      "path": "packages/operator-core/lib/cupboard/identity-listing-surface.ts",
+      "exists": true,
+      "sha256": "979470ef547fb39bb42701f758e9ef2ac999ed4042a999e3115ccd8867b0f428",
+      "ownHEADblob": "920037e901b277d51b38bad5bc9f587fbb3845c7"
+     },
+     {
+      "path": "packages/operator-core/lib/cupboard/identity-listing-surface.test.ts",
+      "exists": true,
+      "sha256": "8c4c7e2af01334ea8dcfdd29da1d312b23129132f9f0827064b5ade456ba6d7e",
+      "ownHEADblob": "28d02ad76e89d2766f183a5d7874d1e18a3bb59f"
+     },
+     {
+      "path": "packages/operator-core/lib/cupboard/types.ts",
+      "exists": true,
+      "sha256": "07462d36fe4245560e04c45f69324cdb062fedd8867e03e7a21f0075229c8079",
+      "ownHEADblob": "34762cb2ceb8571b0eaf696ab7116836108343f9"
+     },
+     {
+      "path": "packages/operator-core/lib/cupboard/publish-listing.ts",
+      "exists": true,
+      "sha256": "a743b50e415dd7d7613fb05755a8d1846ad878363c87b9d9394c213dc68ee705",
+      "ownHEADblob": "f898175972e45939958379a9422776ade1d36943"
+     }
+    ],
+    "remaining": [
+     "Executable exact R-15 check and current clause-bound proof",
+     "Measured identity-first ranking across matching kinds, including pagination",
+     "Identity prominence in the actual UX and a complete listing-type representation census",
+     "P-004 external paid pilot acceptance",
+     "Rubric vetting, adequacy, independent grade and whole-item acceptance"
+    ],
+    "acceptanceWaived": false
+   }
   },
   {
    "id": "WI-10004292",
