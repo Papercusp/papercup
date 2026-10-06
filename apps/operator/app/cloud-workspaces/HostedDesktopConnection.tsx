@@ -82,6 +82,8 @@ function DesktopConnection({
     useState<HostedDesktopViewerState | null>(null);
   const [startState, setStartState] = useState<HostedDesktopQueryState>("idle");
   const [startError, setStartError] = useState<string | null>(null);
+  /** Whether the start in flight (or the last failed one) was asked for by My desktop (P-005). */
+  const [personalStart, setPersonalStart] = useState(false);
   /** One automatic start per connection, so a failed start is shown, not retried in a loop. */
   const startRequested = useRef(false);
   const liveIds = useMemo(
@@ -98,6 +100,7 @@ function DesktopConnection({
         startRequested.current = false;
         setStartState("idle");
         setStartError(null);
+        setPersonalStart(false);
       }
     },
     [],
@@ -107,6 +110,7 @@ function DesktopConnection({
   useEffect(() => {
     if (!showDesktop || !bridge || rosterState !== "ready" || roster.length > 0) return;
     if (startRequested.current) return;
+    setPersonalStart(false);
     startRequested.current = bridge.requestStart();
   }, [showDesktop, bridge, roster, rosterState]);
   const { setSelection } = grid;
@@ -133,6 +137,7 @@ function DesktopConnection({
     }
     if (!bridge) return;
     setStartError(null);
+    setPersonalStart(true);
     if (!bridge.requestStart({ personal: true })) {
       setStartState("error");
       setStartError("controller_required");
@@ -215,6 +220,7 @@ function DesktopConnection({
           routeLabel={routeLabel}
           bridge={bridge}
           onOpenMyDesktop={onOpenMyDesktop}
+          personalStart={personalStart}
           roster={roster}
           rosterState={rosterState}
           rosterError={rosterError}

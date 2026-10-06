@@ -90,6 +90,12 @@ export interface HostedDesktopWorkspaceProps {
    * starting it when none runs. Absent: the entry is not offered.
    */
   onOpenMyDesktop?: () => void;
+  /**
+   * The start in flight (or the one that last failed) was asked for by My desktop,
+   * not the automatic workspace start (D-405). Only then do `startState` and
+   * `startError` speak for My desktop.
+   */
+  personalStart?: boolean;
 }
 
 function desktopLabel(entry: HostedDesktopRosterEntry): string {
@@ -148,13 +154,15 @@ export function HostedDesktopWorkspace({
   filter,
   onFilterChange,
   onOpenMyDesktop,
+  personalStart = false,
 }: HostedDesktopWorkspaceProps) {
   const myDesktop = myDesktopEntry(roster);
-  // A start in flight with no personal desktop listed yet is the My desktop start;
-  // its failure is shown here rather than left behind a spinner (R-15).
-  const myDesktopStarting = Boolean(onOpenMyDesktop) && !myDesktop && startState === "loading";
-  const myDesktopError =
-    onOpenMyDesktop && !myDesktop && startState === "error" && startError ? startError : null;
+  // Only a start My desktop asked for speaks for it: the automatic workspace start
+  // (D-405) shares startState, and its progress or failure is not the person's own
+  // desktop. A My desktop failure is shown here rather than left behind a spinner (R-15).
+  const ownStart = Boolean(onOpenMyDesktop) && personalStart && !myDesktop;
+  const myDesktopStarting = ownStart && startState === "loading";
+  const myDesktopError = ownStart && startState === "error" && startError ? startError : null;
   const selectedEntry = roster.find(
     (entry) => entry.desktopSessionId === selectedDesktop?.desktopSessionId,
   );
