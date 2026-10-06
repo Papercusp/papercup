@@ -83,7 +83,22 @@ import {
   DESKTOP_START_TIMEOUT_MS,
   HostedWorkspaceSession,
 } from "./HostedWorkspaceSession";
+import type { ReactElement } from "react";
+import { NuqsTestingAdapter } from "nuqs/adapters/testing";
 import { HostedDesktopConnection } from "./HostedDesktopConnection";
+
+/**
+ * The connection keeps the open desktop, pins and filter in the URL (P-006 grid
+ * state), so it needs a nuqs adapter. `hasMemory` lets a selection it sets take
+ * effect; a fresh adapter per render keeps one test's URL out of the next.
+ */
+function renderConnection(ui: ReactElement) {
+  return render(
+    <NuqsTestingAdapter searchParams="" hasMemory>
+      {ui}
+    </NuqsTestingAdapter>,
+  );
+}
 import { HOSTED_WORKSPACE_MAX_WHOLE_FILE_BYTES } from "./hosted-workspace-session-protocol";
 import type { WorkspaceHostControlRow } from "./workspace-view-model";
 
@@ -721,7 +736,7 @@ describe("HostedWorkspaceSession", () => {
         connector: { routeLabel: "workspace-relay", transport: "websocket" },
       },
     };
-    render(<HostedDesktopConnection workspace={workspace} showDesktop={showDesktop} />);
+    renderConnection(<HostedDesktopConnection workspace={workspace} showDesktop={showDesktop} />);
     const socket = await connected();
     const sentMessages = () =>
       socket.send.mock.calls.map(
@@ -786,7 +801,7 @@ describe("HostedWorkspaceSession", () => {
       desktops: Array<Record<string, unknown>>,
       { controller }: { controller: boolean },
     ) {
-      render(<HostedDesktopConnection workspace={desktopWorkspace} />);
+      renderConnection(<HostedDesktopConnection workspace={desktopWorkspace} />);
       const socket = await connected();
       const sent = () =>
         socket.send.mock.calls.map((call) => JSON.parse(String(call[0])) as Sent);
@@ -836,6 +851,7 @@ describe("HostedWorkspaceSession", () => {
       const start = sent().find((message) => message.type === "desktop.start");
       expect(start?.personal).toBe(true);
       await waitFor(() => expect(button.textContent).toBe("Starting my desktop…"));
+      expect(desktopSocketFor("mine", "takeover")).toBeUndefined();
 
       await act(async () =>
         socket.emit("message", {
@@ -860,6 +876,8 @@ describe("HostedWorkspaceSession", () => {
         { controller: true },
       );
       expect(button.getAttribute("data-my-desktop")).toBe("running");
+      // Nothing is open before the click, so the socket below is the click's doing.
+      expect(desktopSocketFor("mine", "takeover")).toBeUndefined();
       fireEvent.click(button);
       await waitFor(() => expect(desktopSocketFor("mine", "takeover")).toBeTruthy());
       expect(sent().some((message) => message.type === "desktop.start")).toBe(false);
