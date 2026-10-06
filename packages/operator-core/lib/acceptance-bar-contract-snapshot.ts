@@ -1837,12 +1837,27 @@ async function defaultReadWorkContracts(
       spec_fingerprint: string;
     }>
   >`
-    SELECT work_item_id, plan_slug, spec_id, spec_revision, spec_fingerprint
-      FROM harness_shared.work_item_spec_revision_edges
-     WHERE workspace_id = ${plan.workspaceId}
-       AND harness_slug = ${plan.harnessSlug}
-       AND plan_slug = ${plan.planSlug}
-     ORDER BY work_item_id, spec_id, spec_revision
+    -- ONE edge per (work item, spec): the edge at the clause's CURRENT revision when it
+    -- exists, else the newest. Edges are append-only (an immutability trigger rejects
+    -- DELETE/UPDATE), so every spec revision a work item ever bound stays a row, and
+    -- reading that whole history let a long-lived plan exceed MAX_BAR_PROJECTION_EDGES on
+    -- SUPERSEDED rows alone — refusing the entire contract as bar_snapshot_source_truncated
+    -- with zero BARs blocking (EI-25254803369850716: 1,129 edges, 422 live pairs). Every
+    -- consumer asks only whether SOME edge for a clause is current; a superseded edge never
+    -- is, and the newest-edge fallback keeps a stale-only work item visible as stale. The
+    -- cap now bounds the live bar-to-work map, which is what it bounds at seed time.
+    SELECT DISTINCT ON (e.work_item_id, e.spec_id)
+           e.work_item_id, e.plan_slug, e.spec_id, e.spec_revision, e.spec_fingerprint
+      FROM harness_shared.work_item_spec_revision_edges e
+      LEFT JOIN harness_shared.plan_spec_clauses c
+        ON c.workspace_id = e.workspace_id AND c.harness_slug = e.harness_slug
+       AND c.plan_slug = e.plan_slug AND c.spec_id = e.spec_id
+     WHERE e.workspace_id = ${plan.workspaceId}
+       AND e.harness_slug = ${plan.harnessSlug}
+       AND e.plan_slug = ${plan.planSlug}
+     ORDER BY e.work_item_id, e.spec_id,
+              (e.spec_revision = c.current_revision) DESC NULLS LAST,
+              e.spec_revision DESC
      LIMIT ${MAX_BAR_PROJECTION_EDGES + 1}`;
   return bounded(
     rows.map((row) => ({
