@@ -67,7 +67,8 @@ cmd_provision() {
   PHONE_EDGE_PUBLIC_IP="$("${GC[@]}" compute addresses describe "$addr" --region "$PHONE_EDGE_GCP_REGION" --format='value(address)')"
   [[ -n "$PHONE_EDGE_PUBLIC_IP" ]] || die "static address has no IPv4"
   # SIP/RTP are deliberately absent: P-004 adds them restricted to the carrier's source ranges.
-  local allow="tcp:80,tcp:443,tcp:7891,udp:7892,udp:7893,udp:51820"
+  # No udp:7893: TURN is TLS-only, through tcp:443 (WI-10006616).
+  local allow="tcp:80,tcp:443,tcp:7891,udp:7892,udp:51820"
   if "${GC[@]}" compute firewall-rules describe "$fw" >/dev/null 2>&1; then
     "${GC[@]}" compute firewall-rules update "$fw" --allow "$allow" --target-tags "$name" --source-ranges 0.0.0.0/0
   else
@@ -227,7 +228,9 @@ cmd_apply_box() {
     sudo -n systemctl enable --now "wg-quick@$PHONE_EDGE_IFACE" >/dev/null 2>&1
   fi
   sudo -n ufw allow in on "$PHONE_EDGE_IFACE" to any port 7890,7891,7894 proto tcp comment 'phone media edge' >/dev/null
-  sudo -n ufw allow in on "$PHONE_EDGE_IFACE" to any port 7892,7893 proto udp comment 'phone media edge' >/dev/null
+  sudo -n ufw allow in on "$PHONE_EDGE_IFACE" to any port 7892 proto udp comment 'phone media edge' >/dev/null
+  # Older deploys also opened TURN/UDP 7893; TURN is TLS-only now (WI-10006616).
+  sudo -n ufw delete allow in on "$PHONE_EDGE_IFACE" to any port 7892,7893 proto udp >/dev/null 2>&1 || true
   # TURN/TLS certificate lives on the box (LiveKit terminates it); DNS-01 needs no inbound port.
   dpkg -s certbot python3-certbot-dns-cloudflare >/dev/null 2>&1 \
     || sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq certbot python3-certbot-dns-cloudflare >/dev/null
