@@ -247,6 +247,16 @@ const ensurePotGitRepoMock = vi.hoisted(() => vi.fn());
 const defaultRunGitMock = vi.hoisted(() => vi.fn());
 const defaultRunGitCallHistory = vi.hoisted(() => [] as Array<{ testName: string; args: unknown[]; stack: string }>);
 const sidecarStartupAttempts = vi.hoisted(() => [] as string[]);
+const conflictAuthorshipGitCalls = vi.hoisted(() => [] as Array<{ args: string[]; cwd: string }>);
+vi.mock('../docs/git-runner', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../docs/git-runner')>()),
+  // Conflict authorship uses this runner, independently of storage.defaultRunGit.
+  // This fixture has no real commit history; record its reads at the same seam.
+  runGit: async (args: string[], cwd: string) => {
+    conflictAuthorshipGitCalls.push({ args, cwd });
+    return { code: 0, stdout: '', stderr: '' };
+  },
+}));
 vi.mock('../../fleet/spawner-sidecar-spawn', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../fleet/spawner-sidecar-spawn')>()),
   // Fail at the first caller instead of launching a real child whose delayed
@@ -4923,6 +4933,14 @@ describe("WI-37668: the lock hook's sentinel intent never becomes a commit subje
 });
 
 describe('WI-10005972: sidecar Git entrypoint attribution', () => {
+  it('isolates conflict-authorship reads through the docs Git runner', () => {
+    expect(conflictAuthorshipGitCalls.length).toBeGreaterThan(0);
+    for (const { args, cwd } of conflictAuthorshipGitCalls) {
+      expect(args.slice(0, 5)).toEqual(['log', '-n', '5', '--format=%H%x1f%B%x1e', '--']);
+      expect(cwd === repoDir || cwd.startsWith(repoDir + '/')).toBe(true);
+    }
+  });
+
   it('never reaches the real sidecar startup boundary', () => {
     expect(sidecarStartupAttempts).toEqual([]);
   });
