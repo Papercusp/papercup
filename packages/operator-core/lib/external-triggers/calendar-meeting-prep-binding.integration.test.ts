@@ -1,11 +1,19 @@
 /**
- * Plan app-agent-tasks-durable-execution-2026-10-06 P-006 (D-007), AUTO-BAR-R-6:
- * Calendar meeting prep runs as a durable blueprint operation. The live armed
- * binding (5bbaba69: ext:gcal:event-upcoming, attendees filter, storm 60/60s,
- * launch-plan calendar/calendar-meeting-prep) is migrated with the maintained
- * mechanism onto `meeting-prep-for-trigger`, cut over (replacement armed, legacy
- * disarmed), and then driven end to end on PostgreSQL through the REAL binding
- * sink and REAL dispatcher into the REAL `submitBlueprintOperation`:
+ * Generic platform coverage for migrating a launch-plan trigger binding onto a
+ * blueprint operation, and for run-with-last-event on an operation-targeting
+ * binding (kept by app-agent-tasks-durable-execution-2026-10-06 D-011 point 4).
+ *
+ * The fixture is the HISTORICAL Calendar meeting-prep shape (binding 5bbaba69:
+ * ext:gcal:event-upcoming, attendees filter, storm 60/60s, launch-plan
+ * calendar/calendar-meeting-prep; operation `meeting-prep-for-trigger`). It is
+ * NOT the live design: D-011 retired that binding and removed the operation;
+ * the Calendar app now submits `meeting-prep` itself as its own caller (proved
+ * in the calendar repo's tests/meeting-prep-operation.test.ts). The input
+ * contract below is an inline fixture, independent of the calendar blueprint.
+ *
+ * The migrated binding is cut over (replacement armed, legacy disarmed), and
+ * then driven end to end on PostgreSQL through the REAL binding sink and REAL
+ * dispatcher into the REAL `submitBlueprintOperation`:
  *   • two signals for one event revision (same dedupe key) give ONE operation;
  *   • a new revision of the same event (new start, new dedupe key) gives a second;
  *   • an event with no attendees matches nothing (the filter survived migration);

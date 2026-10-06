@@ -38,16 +38,32 @@ beforeEach(async () => {
   await sql`
     DELETE FROM harness_shared.harness_plans
      WHERE workspace_id = ${WS}
-       AND harness_slug = ${GOOGLE_CALENDAR_MEETING_PREP_HARNESS}
-       AND plan_slug = ${GOOGLE_CALENDAR_MEETING_PREP_PLAN}`;
+       AND harness_slug = ${LEGACY_MEETING_PREP_HARNESS}
+       AND plan_slug = ${LEGACY_MEETING_PREP_PLAN}`;
   await sql`
     INSERT INTO harness_shared.harness_plans
       (workspace_id, harness_slug, plan_slug, title, status, content, content_hash, items)
     VALUES (
-      ${WS}, ${GOOGLE_CALENDAR_MEETING_PREP_HARNESS}, ${GOOGLE_CALENDAR_MEETING_PREP_PLAN},
+      ${WS}, ${LEGACY_MEETING_PREP_HARNESS}, ${LEGACY_MEETING_PREP_PLAN},
       'Meeting prep', 'ready', '# Meeting prep', 'meeting-prep-v1', '[]'::jsonb
     )`;
 });
+
+/** Every binding on this workspace's sources, retired (detached) ones included. */
+async function allBindings(): Promise<
+  Array<{ sourceKind: string; planSlug: string | null; armed: boolean; detached: boolean }>
+> {
+  return sql<Array<{ sourceKind: string; planSlug: string | null; armed: boolean; detached: boolean }>>`
+    SELECT s.kind AS "sourceKind",
+           b.plan_slug AS "planSlug",
+           b.armed,
+           (b.detached_at IS NOT NULL) AS detached
+      FROM harness_shared.trigger_bindings b
+      JOIN harness_shared.data_sources s
+        ON s.workspace_id = b.workspace_id AND s.id = b.source_id
+     WHERE b.workspace_id = ${WS}
+     ORDER BY b.created_at, b.id`;
+}
 
 describe('Google Workspace owned trigger-source provisioning', () => {
   it('creates Gmail + Calendar + Contacts once and preserves cursors/preferences across re-consent', async () => {
@@ -101,44 +117,10 @@ describe('Google Workspace owned trigger-source provisioning', () => {
       { kind: 'gmail', count: 1 },
     ]);
 
-    const bindings = await sql<
-      Array<{
-        sourceKind: string;
-        eventPattern: string;
-        eventFilter: Record<string, unknown>;
-        planHarnessSlug: string;
-        planSlug: string;
-        action: Record<string, unknown>;
-        armed: boolean;
-        count: number;
-      }>
-    >`
-      SELECT s.kind AS "sourceKind",
-             b.event_pattern AS "eventPattern",
-             b.event_filter AS "eventFilter",
-             b.plan_harness_slug AS "planHarnessSlug",
-             b.plan_slug AS "planSlug",
-             b.action,
-             b.armed,
-             count(*)::int AS count
-        FROM harness_shared.trigger_bindings b
-        JOIN harness_shared.data_sources s
-          ON s.workspace_id = b.workspace_id AND s.id = b.source_id
-       WHERE b.workspace_id = ${WS}
-       GROUP BY s.kind, b.event_pattern, b.event_filter, b.plan_harness_slug,
-                b.plan_slug, b.action, b.armed`;
-    expect(bindings).toEqual([
-      {
-        sourceKind: 'gcal',
-        eventPattern: GOOGLE_CALENDAR_MEETING_PREP_EVENT,
-        eventFilter: { 'attendees.0': { exists: true } },
-        planHarnessSlug: GOOGLE_CALENDAR_MEETING_PREP_HARNESS,
-        planSlug: GOOGLE_CALENDAR_MEETING_PREP_PLAN,
-        action: { type: 'launch-plan' },
-        armed: false,
-        count: 1,
-      },
-    ]);
+    // Connect and re-consent create no binding on any Google source: Gmail
+    // drafts are opt-in through a trigger pack (D-019.3) and Calendar meeting
+    // prep is submitted by the Calendar app (app-agent-tasks D-011).
+    expect(await allBindings()).toEqual([]);
   });
 
   it('keeps a second account and its reconnect isolated across sources, cursors, credentials, and bindings', async () => {
@@ -205,22 +187,8 @@ describe('Google Workspace owned trigger-source provisioning', () => {
       cursor: { historyId: 'keep-first-history' },
     });
 
-    const bindingsBeforeReconnect = await sql<
-      Array<{ id: string; sourceId: string; providerAccountId: string; armed: boolean }>
-    >`
-      SELECT b.id::text,
-             b.source_id::text AS "sourceId",
-             s.provider_account_id AS "providerAccountId",
-             b.armed
-        FROM harness_shared.trigger_bindings b
-        JOIN harness_shared.data_sources s
-          ON s.workspace_id = b.workspace_id AND s.id = b.source_id
-       WHERE b.workspace_id = ${WS}
-       ORDER BY s.provider_account_id`;
-    expect(bindingsBeforeReconnect).toEqual([
-      expect.objectContaining({ providerAccountId: 'first@example.com', armed: false }),
-      expect.objectContaining({ providerAccountId: 'second@example.com', armed: false }),
-    ]);
+    // Neither account's connect created a binding (D-019.3 / app-agent-tasks D-011).
+    expect(await allBindings()).toEqual([]);
 
     const reconnectedSecond = await provisionOwnedGoogleWorkspaceSources(sql, {
       workspaceId: WS,
@@ -257,22 +225,11 @@ describe('Google Workspace owned trigger-source provisioning', () => {
       cursor: { historyId: 'keep-first-history' },
     });
 
-    const bindingsAfterReconnect = await sql<
-      Array<{ id: string; sourceId: string; providerAccountId: string; armed: boolean }>
-    >`
-      SELECT b.id::text,
-             b.source_id::text AS "sourceId",
-             s.provider_account_id AS "providerAccountId",
-             b.armed
-        FROM harness_shared.trigger_bindings b
-        JOIN harness_shared.data_sources s
-          ON s.workspace_id = b.workspace_id AND s.id = b.source_id
-       WHERE b.workspace_id = ${WS}
-       ORDER BY s.provider_account_id`;
-    expect(bindingsAfterReconnect).toEqual(bindingsBeforeReconnect);
+    // ...and neither did the reconnect.
+    expect(await allBindings()).toEqual([]);
   });
 
-  it('serializes concurrent reconnects onto the same disarmed Calendar binding', async () => {
+  it('converges concurrent reconnects onto one source per kind and creates no binding', async () => {
     await Promise.all([
       provisionOwnedGoogleWorkspaceSources(sql, {
         workspaceId: WS,
@@ -287,10 +244,51 @@ describe('Google Workspace owned trigger-source provisioning', () => {
         field: 'owner-b',
       }),
     ]);
-    const rows = await sql<Array<{ count: number; armed: boolean }>>`
-      SELECT count(*)::int AS count, bool_or(armed) AS armed
-        FROM harness_shared.trigger_bindings
-       WHERE workspace_id = ${WS}`;
-    expect(rows).toEqual([{ count: 1, armed: false }]);
+    const rows = await sql<Array<{ kind: string; count: number }>>`
+      SELECT kind, count(*)::int AS count
+        FROM harness_shared.data_sources
+       WHERE workspace_id = ${WS}
+       GROUP BY kind
+       ORDER BY kind`;
+    expect(rows).toEqual([
+      { kind: 'contacts', count: 1 },
+      { kind: 'gcal', count: 1 },
+      { kind: 'gmail', count: 1 },
+    ]);
+    expect(await allBindings()).toEqual([]);
+  });
+
+  // EI-25243055141955619: connect used to ensure a launch-plan meeting-prep
+  // binding on the Calendar source, matching only NON-detached rows. Retiring
+  // the binding (disarm + detach, app-agent-tasks D-011) therefore did not
+  // stick: the next reconnect minted a fresh one. The retired row must stay
+  // the only binding, still detached and disarmed, after a reconnect.
+  it('does not resurrect a retired Calendar meeting-prep binding on reconnect', async () => {
+    const first = await provisionOwnedGoogleWorkspaceSources(sql, {
+      workspaceId: WS,
+      ownerUserId: userId,
+      providerAccountId: 'owner@example.com',
+      field: 'owner',
+    });
+    const calendar = first.find((row) => row.kind === 'gcal')!;
+    await sql`
+      INSERT INTO harness_shared.trigger_bindings
+        (workspace_id, source_id, plan_harness_slug, plan_slug, event_pattern,
+         event_filter, action, armed, detached_at, created_by)
+      VALUES (
+        ${WS}, ${calendar.id}::uuid, ${LEGACY_MEETING_PREP_HARNESS}, ${LEGACY_MEETING_PREP_PLAN},
+        ${LEGACY_MEETING_PREP_EVENT}, '{"attendees.0":{"exists":true}}'::jsonb,
+        '{"type":"launch-plan"}'::jsonb, false, now(), 'test:retired-meeting-prep'
+      )`;
+    const retired = [{ sourceKind: 'gcal', planSlug: LEGACY_MEETING_PREP_PLAN, armed: false, detached: true }];
+    expect(await allBindings()).toEqual(retired);
+
+    await provisionOwnedGoogleWorkspaceSources(sql, {
+      workspaceId: WS,
+      ownerUserId: userId,
+      providerAccountId: 'owner@example.com',
+      field: 'owner-reconnected',
+    });
+    expect(await allBindings()).toEqual(retired);
   });
 });

@@ -1305,8 +1305,10 @@ export async function migrateExternalTriggerPlanBindingToOperation(
  *
  * `trigger_bindings` intentionally permits multiple bindings between the same
  * source and plan because users may author distinct filters. Connection-time
- * provisioning needs a narrower guarantee: reconnecting (or two concurrent
- * OAuth callbacks) must not multiply the one built-in Calendar binding. A
+ * provisioning needs a narrower guarantee: re-running provisioning (or two
+ * concurrent installs) must not multiply one built-in binding, such as the
+ * Slack flagship's (slack-flagship.ts). Google connect no longer ensures any
+ * binding (app-agent-tasks-durable-execution-2026-10-06 D-011). A
  * transaction-scoped advisory lock serializes that exact semantic key, then an
  * equality read reuses the installed row. The binding remains disarmed; arming
  * is still an explicit, separately-governed operation.

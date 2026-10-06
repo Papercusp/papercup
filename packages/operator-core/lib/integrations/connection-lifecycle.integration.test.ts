@@ -48,12 +48,7 @@ vi.mock('../oauth/state', async (orig) => ({
 import callbackRoute from '../endpoint-route/routes/oauth/callback';
 import { fsTokenStorage } from '../oauth/storage-fs';
 import { GOOGLE_WORKSPACE_SCOPES, __resetRegistryForTest, registerProvider } from '../oauth/providers';
-import {
-  GOOGLE_CALENDAR_MEETING_PREP_HARNESS,
-  GOOGLE_CALENDAR_MEETING_PREP_PLAN,
-  GOOGLE_GMAIL_PROFILE_ENDPOINT,
-  GOOGLE_WORKSPACE_OAUTH_PLUGIN,
-} from '../external-triggers/google-workspace';
+import { GOOGLE_GMAIL_PROFILE_ENDPOINT, GOOGLE_WORKSPACE_OAUTH_PLUGIN } from '../external-triggers/google-workspace';
 /** An ordinary hive harness for the fixture; nothing here depends on its name. */
 const GMAIL_RESPOND_DRAFT_HARNESS = 'email';
 import { providerRegistry } from './provider-registry';
@@ -239,14 +234,6 @@ beforeAll(async () => {
       })}::text::jsonb
     )
     ON CONFLICT (workspace_id) DO UPDATE SET payload = EXCLUDED.payload`;
-  await sql`
-    INSERT INTO harness_shared.harness_plans
-      (workspace_id, harness_slug, plan_slug, title, status, content, content_hash, items)
-    VALUES (
-      ${WS}, ${GOOGLE_CALENDAR_MEETING_PREP_HARNESS}, ${GOOGLE_CALENDAR_MEETING_PREP_PLAN},
-      'Meeting prep', 'ready', '# Meeting prep', 'meeting-prep-v1', '[]'::jsonb
-    )
-    ON CONFLICT (workspace_id, harness_slug, plan_slug) DO NOTHING`;
 
   const registry = providerRegistry();
   registry.unregisterPlugin(PROVIDER_PLUGIN_NAME);
@@ -446,19 +433,22 @@ describe('descriptor credential group through the real OAuth callback', () => {
 describe('Google Workspace through the same lifecycle', () => {
   const GOOGLE_KINDS = ['contacts', 'gcal', 'gmail'];
 
-  async function gmailBindings(): Promise<Array<{ armed: boolean }>> {
-    return sql<Array<{ armed: boolean }>>`
-      SELECT binding.armed
+  async function googleBindings(): Promise<Array<{ kind: string; armed: boolean }>> {
+    return sql<Array<{ kind: string; armed: boolean }>>`
+      SELECT source.kind, binding.armed
         FROM harness_shared.trigger_bindings AS binding
         JOIN harness_shared.data_sources AS source ON source.id = binding.source_id
-       WHERE binding.workspace_id = ${WS} AND source.kind = 'gmail'`;
+       WHERE binding.workspace_id = ${WS} AND source.kind = ANY(${GOOGLE_KINDS})`;
   }
 
-  // Plan generalized-integrations-google-migration-cupboard-workflows-2026-10-05
-  // D-019.3: connect creates NO Gmail draft binding at all (a draft responder is
-  // opt-in through the email-draft-responder trigger pack), so a binding count
-  // above zero after connect or reconnect is the regression this guards.
-  it('shares one credential across Gmail, Calendar and Contacts and creates no Gmail draft binding on connect or reconnect', async () => {
+  // Connect creates NO binding on any Google source. Gmail: plan
+  // generalized-integrations-google-migration-cupboard-workflows-2026-10-05
+  // D-019.3 (a draft responder is opt-in through the email-draft-responder
+  // trigger pack). Calendar: plan app-agent-tasks-durable-execution-2026-10-06
+  // D-011 (meeting prep is submitted by the Calendar app itself; the built-in
+  // launch-plan binding is retired, EI-25243055141955619). A binding count above
+  // zero after connect or reconnect is the regression this guards.
+  it('shares one credential across Gmail, Calendar and Contacts and creates no binding on connect or reconnect', async () => {
     await expect(googleConnect('owner-slot')).resolves.toEqual({ connected: GOOGLE_WORKSPACE_OAUTH_PLUGIN, error: null });
     const first = await sources(GOOGLE_KINDS);
     expect(first.map((row) => [row.kind, row.providerAccountId, row.credentialRef, row.status])).toEqual([
@@ -466,7 +456,7 @@ describe('Google Workspace through the same lifecycle', () => {
       ['gcal', 'owner@example.com', 'google-workspace:owner-slot', 'connected'],
       ['gmail', 'owner@example.com', 'google-workspace:owner-slot', 'connected'],
     ]);
-    expect(await gmailBindings()).toEqual([]);
+    expect(await googleBindings()).toEqual([]);
 
     await expect(googleConnect('owner-slot', 'owner@example.com')).resolves.toEqual({
       connected: GOOGLE_WORKSPACE_OAUTH_PLUGIN,
@@ -474,7 +464,7 @@ describe('Google Workspace through the same lifecycle', () => {
     });
     const second = await sources(GOOGLE_KINDS);
     expect(second.map((row) => row.id)).toEqual(first.map((row) => row.id));
-    expect(await gmailBindings()).toEqual([]);
+    expect(await googleBindings()).toEqual([]);
   });
 
   it('refuses a Google reconnect that signs in to a different mailbox', async () => {
