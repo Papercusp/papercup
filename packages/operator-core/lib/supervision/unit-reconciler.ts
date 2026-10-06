@@ -1704,9 +1704,18 @@ export async function censusUnregisteredFailedUnits(
     let transientById: Map<string, string>;
     try {
       const records = parseSystemctlShowRecords(
-        await deps.execUser(['show', '-p', 'Id', '-p', 'Transient', ...candidates.map((u) => u.unit)]),
+        await deps.execUser(['show', '-p', 'Id', '-p', 'LoadState', '-p', 'Transient', ...candidates.map((u) => u.unit)]),
       );
-      transientById = new Map([...records].map(([id, props]) => [id, (props.Transient ?? '').trim()]));
+      // A unit that is no longer LOADED vanished between `list-units` and `show` — typically a
+      // failed transient unit garbage-collected by `reset-failed`. systemd answers `Transient=no`
+      // for a not-found unit, so trusting that value would announce a run-scoped unit as a host
+      // service (WI-10006477). A vanished unit is not a residue: map it to an unknown transience.
+      transientById = new Map(
+        [...records].map(([id, props]) => [
+          id,
+          (props.LoadState ?? '').trim() === 'loaded' ? (props.Transient ?? '').trim() : '',
+        ]),
+      );
     } catch (err) {
       log(`failed-unit census could not read Transient (${err instanceof Error ? err.message : String(err)}) — reporting nothing this tick`);
       return [];

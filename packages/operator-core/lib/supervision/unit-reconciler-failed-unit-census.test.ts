@@ -49,12 +49,19 @@ const REGISTRY: SupervisionEntry[] = [
 ];
 
 /** A `systemctl --user` fake that answers the census's two calls from mutable state. */
-function fakeSystemctl(state: { list: string; transient: Record<string, string> }) {
+function fakeSystemctl(state: {
+  list: string;
+  transient: Record<string, string>;
+  /** Per-unit LoadState; defaults to `loaded` (the unit still exists when `show` runs). */
+  loadState?: Record<string, string>;
+}) {
   return vi.fn(async (args: string[]) => {
     if (args[0] === 'list-units' && args.includes('--state=failed')) return state.list;
     if (args[0] === 'show') {
       const units = args.slice(1).filter((a, i, all) => a !== '-p' && all[i] !== '-p' && all[i - 1] !== '-p');
-      return units.map((u) => `Id=${u}\nTransient=${state.transient[u] ?? ''}`).join('\n\n');
+      return units
+        .map((u) => `Id=${u}\nLoadState=${state.loadState?.[u] ?? 'loaded'}\nTransient=${state.transient[u] ?? ''}`)
+        .join('\n\n');
     }
     throw new Error(`unexpected systemctl call: ${args.join(' ')}`);
   });
@@ -138,6 +145,24 @@ describe('censusUnregisteredFailedUnits', () => {
     await expect(censusUnregisteredFailedUnits({ execUser, notify }, REGISTRY, log)).resolves.toEqual([]);
     expect(notify).not.toHaveBeenCalled();
     expect(log).toHaveBeenCalledWith(expect.stringContaining('failed-unit census skipped'));
+  });
+
+  it('a failed transient unit that VANISHED before `show` (LoadState=not-found, Transient=no) is not announced', async () => {
+    // Measured 2026-10-06 (WI-10006477): a capability:bash unit was garbage-collected between
+    // `list-units --state=failed` and `show`; systemd then answers Transient=no for the missing
+    // unit, and the census announced a run-scoped unit as an unsupervised host service.
+    const execUser = fakeSystemctl({
+      list: [FAILED_LIST, 'pc-0muwaxirzabakc11s9b.service loaded failed failed /usr/bin/node runner'].join('\n'),
+      transient: { ...TRANSIENT, 'pc-0muwaxirzabakc11s9b.service': 'no' },
+      loadState: { 'pc-0muwaxirzabakc11s9b.service': 'not-found' },
+    });
+    const notify = vi.fn(async () => {});
+    const result = await censusUnregisteredFailedUnits({ execUser, notify }, REGISTRY, () => {});
+    expect(result).toEqual(['agenticmail.service', 'llama-ornith.service']);
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(notify).toHaveBeenCalledWith(
+      expect.objectContaining({ summary: expect.not.stringContaining('pc-0muwaxirzabakc11s9b') }),
+    );
   });
 
   it('an unreadable Transient property reports nothing rather than guessing', async () => {
