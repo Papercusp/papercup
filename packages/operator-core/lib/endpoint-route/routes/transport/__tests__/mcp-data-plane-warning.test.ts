@@ -121,6 +121,7 @@ describe('withMcpDiagnosticWarnings', () => {
   it.each([
     ['loop:status', { ok: true, ownerId: 'su-1', loop: { active: true, goal: 'keep working' } }],
     ['scheduler:get_next', { ok: true, workItem: { id: 'EI-25212384048274593', state: 'open' } }],
+    ['scheduler:get_claim_spec', { ok: true, source: 'fleet', spec: { kinds: ['bug'] } }],
     ['events:status', { ok: true, event_inspection: { current_generation: 1, current_state: 'fired', waiters: [{ await_id: 229122, state: 'fired' }] } }],
   ])('does not warn for a populated %s result envelope', (_tool, body) => {
     const result: McpCallResult = {
