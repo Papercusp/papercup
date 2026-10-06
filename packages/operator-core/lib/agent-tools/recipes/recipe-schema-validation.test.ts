@@ -6,6 +6,11 @@ import orientTool from '../coordination/tools/orient';
 import workItemsGetTool from '../work_items/get';
 import '../pre-prompt-registry-config';
 
+// tooldef publishes a tool's `result` as the generic StandardSchemaV1; these tools
+// define it with zod, so narrow the type for z.toJSONSchema (WI-10006260). Runtime
+// conversion is unchanged.
+const zodResult = (schema: unknown): z.ZodType => schema as z.ZodType;
+
 const tool = (
   name: string,
   inputSchema: Record<string, unknown>,
@@ -22,7 +27,7 @@ const tool = (
 
 describe('validateRecipeScriptAgainstCatalog', () => {
   it('accepts the saved obligation recovery read against the actual orient output contract', async () => {
-    const catalog = [tool('coord:orient', z.toJSONSchema(orientTool.args), z.toJSONSchema(orientTool.result!))];
+    const catalog = [tool('coord:orient', z.toJSONSchema(orientTool.args), z.toJSONSchema(zodResult(orientTool.result)))];
     const guarded = await validateRecipeScriptAgainstCatalog(
       'const orient = await tools.coord.orient({ afterCompaction: false });\n' +
         'const ob = orient.obligations || {};\n' +
@@ -140,7 +145,7 @@ describe('validateRecipeScriptAgainstCatalog', () => {
     const workItemsGet = tool(
       'work_items:get',
       z.toJSONSchema(workItemsGetTool.args),
-      z.toJSONSchema(workItemsGetTool.result!),
+      z.toJSONSchema(zodResult(workItemsGetTool.result)),
     );
     const script =
       'const item = await tools.workItems.get({ id: "WI-1" });\n' +

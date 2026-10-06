@@ -2076,7 +2076,8 @@ describe('P-005 / D-030 (7): a fleet-leader monitor cannot record a quiet wake o
   const GUARD_LABEL = 'loop:checkpoint fleet_zero_workers';
   // Run the guard's bounded work for real (so checkFleetZeroWorkers is reached); every
   // other bounded call keeps the suite default.
-  const routeGuardForReal = (override?: (fallback: unknown) => unknown) =>
+  type BoundedResult = { value: unknown; degraded: boolean; elapsedMs: number; reason?: string };
+  const routeGuardForReal = (override?: (fallback: unknown) => BoundedResult) =>
     withBoundedTimeout.mockImplementation(async (work: unknown, opts: unknown) => {
       const o = opts as { label?: string; fallback?: unknown };
       if (o?.label !== GUARD_LABEL) return { value: undefined, degraded: false, elapsedMs: 0 };
