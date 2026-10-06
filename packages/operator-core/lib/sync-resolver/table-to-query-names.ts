@@ -192,6 +192,13 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // userId used by the consumer key.
   'harness_shared.personal_vault_import_jobs': ['personalVault.importJobs'],
   'harness_shared.personal_vault_import_uploads': ['personalVault.importJobs'],
+  // Settings → Integrations ticket page (linear-asana-task-sync P-007, migration 1399): a sync pass
+  // stamps data_sources, a rule change writes admission_rules, an admission writes work_admissions,
+  // often from a background worker. Full-bust: the consumer key is the owner's userId, which the
+  // trigger payload does not carry.
+  'harness_shared.data_sources': ['integrations.tickets'],
+  'harness_shared.admission_rules': ['integrations.tickets'],
+  'harness_shared.work_admissions': ['integrations.tickets'],
   'harness_shared.harness_skills': ['harnessSkills.byHarness'],
   'harness_shared.harness_decisions': ['harnessDecisions.byHarness'],
   'harness_shared.harness_lanes': ['harnessLanes.byHarness', 'harnessLanes.snapshot'],

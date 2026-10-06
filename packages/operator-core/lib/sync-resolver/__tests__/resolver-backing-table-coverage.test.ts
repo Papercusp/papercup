@@ -100,6 +100,15 @@ const PUSH_EXEMPT: Record<string, string> = {
   'planLock.byPath :: papercusp_su.agent_file_locks':
     'lock rows live in a different database (papercusp_su), unreachable by an operator-DB trigger; the lock writers push explicitly via notifyPlanLockChange.',
 
+  // integrations.tickets (linear-asana-task-sync P-007): work_items supplies only each source's
+  // mirrored-record COUNT. Records are written by a connector sync pass, which also stamps the
+  // source's data_sources row (sync_last_success_at), and data_sources IS bridged (mig 1399). Adding
+  // integrations.tickets to work_items' bridge would refetch the page on every work-item write in
+  // the workspace. RE-ARM: bridge it if records ever arrive without a data_sources write (a
+  // webhook path that writes records directly, P-008).
+  'integrations.tickets :: harness_shared.work_items':
+    'record counts move only during a connector sync pass, which also writes the bridged data_sources row; a work_items bridge would refetch on every work-item write.',
+
   // plans.attentionBulkRun (inbox-bulk-resolve-2026-08-23, mig 912): every writer to
   // both tables pushes explicitly — createRun/reportOutcomes (agent-tools/inbox/
   // bulk-run.ts) and the admin bulk-resolve route each fire
