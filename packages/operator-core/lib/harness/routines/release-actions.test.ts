@@ -3315,7 +3315,8 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
       gateFireId: 'repair-fire', runId: 'repair-run', testPassReuse, repairQueue: {
         schemaVersion: 1, phase: 'ready-to-verify', candidate: 'b'.repeat(40), base: 'd'.repeat(40),
         repairHead: sha, attempts: 1, openedAtMs: 1, updatedAtMs: 2, fixerSpawnId: null,
-        failingTests: ['lib/red.test.ts'], signature: [], convergenceRounds: [{ head: sha }],
+        failingTests: ['lib/red.test.ts'], signature: [],
+        convergenceRounds: [{ round: 1, head: sha, failingCount: 1, atMs: 120 }],
       } as unknown as FrozenCandidateRepairQueue });
     expect(detail.candidate).toBe('b'.repeat(12));
     expect(detail.testPassReuse).toMatchObject({ audit: { judgedSha: sha } });

@@ -88,17 +88,20 @@ describe('first required suite after named pure capture', () => {
     const input = fixture(); frozenRepair(input.read.rows[index]!.detail);
     expect(evaluateFirstPostCaptureGateReuse(input)).toMatchObject({ verdict: 'pass', runId: 'first', pureReused: 1 });
   });
-  it.each(['missing-provenance', 'unjudged-head', 'foreign-head', 'foreign-pin', 'conflicting-archive'])(
-    'keeps %s repair-head evidence unknown', (condition) => {
-      const input = fixture(); const detail = input.read.rows[3]!.detail;
+  it.each([1, 3].flatMap((index) =>
+    ['missing-provenance', 'unjudged-head', 'foreign-head', 'foreign-pin', 'conflicting-archive', 'invalid-phase']
+      .map((condition) => ({ index, condition }))))(
+    'keeps $condition repair-head evidence unknown at outcome $index', ({ index, condition }) => {
+      const input = fixture(); const detail = input.read.rows[index]!.detail;
       frozenRepair(detail);
       const provenance = detail.verdictProvenance as Record<string, unknown>;
       if (condition === 'missing-provenance') delete detail.verdictProvenance;
       if (condition === 'unjudged-head') provenance.repairHeadVerdict = 'not-judged';
       if (condition === 'foreign-head') detail.repairHead = 'c'.repeat(12);
       if (condition === 'foreign-pin') detail.frozenCandidate = 'c'.repeat(12);
+      if (condition === 'invalid-phase') provenance.phase = 'ready-to-test';
       if (condition === 'conflicting-archive') {
-        const other = structuredClone(input.read.rows[3]!);
+        const other = structuredClone(input.read.rows[index]!);
         other.id = 'conflicting-outcome'; other.detail.repairHead = 'c'.repeat(12);
         input.read.rows.push(other); input.read.total++;
       }

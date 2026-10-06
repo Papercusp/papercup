@@ -353,7 +353,9 @@ export function evaluateFirstPostCaptureGateReuse(input: {
     attempts.push({ anchor: anchors[0]!, rows });
   }
   const source = groups.get(capture.gateFireId);
-  if (!source?.some((r) => r.kind === 'green_checkpoint' && isTerminalGateOutcomeStatus(r.status) &&
+  const sourceOutcomes = source?.filter((r) => r.kind === 'green_checkpoint' && isTerminalGateOutcomeStatus(r.status)) ?? [];
+  if (new Set(sourceOutcomes.map(gateReuseOutcomeIdentity)).size !== 1 ||
+      !sourceOutcomes.some((r) => ['verdict-green', 'verdict-red', 'promotion-failed'].includes(classifyGateOutcomeStatus(r.status)) &&
       r.detail.runId === capture.runId && matchesRecordedGateJudgedSha(r.detail, capture.judgedSha) &&
       isCheckpointCandidateSource(r.detail.candidateSource) && r.detail.candidateSource !== 'pinned' &&
       r.detail.diagnostic === undefined &&
