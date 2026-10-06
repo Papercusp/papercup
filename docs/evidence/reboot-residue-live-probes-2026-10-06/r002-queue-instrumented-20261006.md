@@ -12,9 +12,9 @@ Run: 2026-10-06 20:49:47Z–21:02:58Z. Source tree HEAD: `781edde2d8`; sidecar r
 
 ## Queue / latency comparison
 
-The `/embed` sample timestamps and health samples were joined in UTC. A start-depth match required a successful health sample within 1 second of the request timestamp. All 354 requests matched: 348 began at depth zero (median 58 ms, p95 224 ms, max 4.437 s); six began with positive depth (median 70 ms, max 328 ms). No successful health sample reported positive depth during any sampled request's measured interval.
+The `/embed` sampler records whole-second timestamps. Their time base was checked against the explicit UTC run start/end and the health sampler's sub-second UTC timestamps. A nearest-health-sample match within 1 second exists for all 354 request timestamps: 348 nearest readings had depth zero (latency median 58 ms, p95 224 ms, max 4.437 s); six had positive depth (latency median 70 ms, max 328 ms). Because the request timestamps omit sub-second precision, the exact overlap between requests and queue readings cannot be determined. Conservative windows expanded by 1 second around each recorded request interval contain positive-depth readings for 15 requests; all 15 completed within 328 ms. No request exceeded 10 seconds.
 
-This run observed transient FIFO backlog during the cold start, but the probe's requests remained fast and none overlapped a positive-depth health sample. It does not reproduce or explain the five >10-second responses from the earlier 10:01Z run. Queue wait remains unestablished as their cause; no product fix is justified from these measurements.
+This run observed transient FIFO backlog during the cold start, but the probe's requests remained fast. The coarse timestamps prevent a precise latency-to-queue overlap claim, and the run does not reproduce or explain the five >10-second responses from the earlier 10:01Z run. Queue wait remains unestablished as their cause; no product fix is justified from these measurements.
 
 ## Raw evidence
 
