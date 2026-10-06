@@ -11,7 +11,10 @@ import { shadowMonthBounds } from '../../../cupboard/shadow-metering-reader';
 import { splitMicrosDecimal } from '../../../cupboard/money-journal';
 import { openRouterUsageRecord, type OpenRouterUsageBinding } from './openrouter-usage';
 import type { HostedBudgetExecutionGrant, HostedBudgetRequest, PostgresHostedBudgetStore } from './budget-store';
-import type { OpenRouterRequestCapture, OpenRouterRequestContext } from '../../../agent-loop/provider-router';
+// From the no-import leaf, never agent-loop/provider-router: that module's
+// credential/gateway graph would ride into every hosted consumer's typecheck
+// (WI-10006711 — it broke the portal build).
+import type { OpenRouterRequestCapture, OpenRouterRequestContext } from '../../../agent-loop/model-port';
 import {
   buildHostedUsageStatement,
   validateHostedUsageRecord,

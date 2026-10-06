@@ -5,13 +5,15 @@
  * explicitly provider-qualified API-key models use AI SDK v6 provider
  * packages. The loop above this module sees only ModelPort.
  */
+import { createHash } from 'node:crypto';
 import type { LanguageModelV3 } from '@ai-sdk/provider';
 import { priorityTierHeaders, routeAccountHeaders } from '../agent-chat-stream';
 import { readCredentials, type Credentials } from '../credentials';
 import type { AccountPool, ActiveAccount } from '../inference-gateway/provider-contracts';
 import { createAiSdkPort } from './ai-sdk-port';
 import { createAnthropicPort } from './anthropic-port';
-import type { ModelPort, ModelRequest, ModelStreamEvent } from './model-port';
+import { MODEL_PROVIDER_REQUEST_CAPTURE, type ModelPort,
+  type ModelRequest, type ModelStreamEvent } from './model-port';
 import {
   loadModelsDevCatalog,
   openRouterTokenPrice,
@@ -38,6 +40,11 @@ export interface ProviderFactoryArgs {
   gatewayBaseUrl: string;
 }
 
+// Declared in the no-import leaf so hosted billing can name them without this
+// module's graph (WI-10006711); re-exported for existing router callers.
+import type { OpenRouterRequestCapture, OpenRouterRequestContext } from './model-port';
+export type { OpenRouterRequestCapture, OpenRouterRequestContext } from './model-port';
+
 export interface RoutedModelPortOptions {
   /** Fixed catalog/test seam. `undefined` loads the cached live models.dev catalog. */
   catalog?: ModelsDevCatalog | null;
@@ -49,6 +56,10 @@ export interface RoutedModelPortOptions {
   createLanguageModel?: (args: ProviderFactoryArgs) => Promise<LanguageModelV3>;
   /** Runtime-owned OpenRouter pool; no ambient operator key or account is inferred. */
   openRouterAccounts?: AccountPool;
+  /** Authenticated host composition only. Creates a fresh, synchronous capture
+   * closure per request; writes belong in the returned awaited observation
+   * handler. No default authority or production paid integration is installed. */
+  openRouterRequestCapture?: (context: Readonly<OpenRouterRequestContext>) => OpenRouterRequestCapture;
 }
 
 function gatewayBaseUrl(env: NodeJS.ProcessEnv): string {
@@ -98,6 +109,7 @@ async function openRouterCredentials(
   if (!account || (pinned && account.accountId !== pin)) {
     throw new Error('OpenRouter account pin is unavailable');
   }
+  const accountId = account.accountId;
   if (account.authMode !== 'api-key') throw new Error('OpenRouter account must use API-key authentication');
   let key: string;
   try {
@@ -106,7 +118,7 @@ async function openRouterCredentials(
     throw new Error('failed to read OpenRouter account credentials');
   }
   if (!key) throw new Error('OpenRouter account has no API key');
-  return { apiKey: key, accountId: account.accountId };
+  return { apiKey: key, accountId };
 }
 
 async function defaultLanguageModel(args: ProviderFactoryArgs): Promise<LanguageModelV3> {
@@ -175,6 +187,7 @@ export function createRoutedModelPort(opts: RoutedModelPortOptions = {}): ModelP
   const createLanguageModel = opts.createLanguageModel ?? defaultLanguageModel;
   const readCreds = opts.credentials ?? readCredentials;
   const baseUrl = opts.gatewayBaseUrl ?? gatewayBaseUrl(env);
+  const captureFactory = opts.openRouterRequestCapture;
 
   return {
     async *stream(req: ModelRequest): AsyncIterable<ModelStreamEvent> {
@@ -234,6 +247,18 @@ export function createRoutedModelPort(opts: RoutedModelPortOptions = {}): ModelP
         return;
       }
 
+      let capture: OpenRouterRequestCapture | undefined;
+      if (aiProvider === 'openrouter' && captureFactory) {
+        try {
+          capture = captureFactory(Object.freeze({ modelId: selection.modelId, servedAccount: servedAccount!,
+            credentialSha256: createHash('sha256').update(apiKey!).digest('hex') }));
+          if (typeof capture !== 'function') throw new Error('invalid capture');
+        } catch {
+          yield { type: 'error', message: 'OpenRouter request capture could not be configured' };
+          return;
+        }
+      }
+
       const aiPort = createAiSdkPort({
         resolveModel: async () => ({
           model: await createLanguageModel({ selection, apiKey, gatewayBaseUrl: baseUrl }),
@@ -258,9 +283,24 @@ export function createRoutedModelPort(opts: RoutedModelPortOptions = {}): ModelP
         return;
       }
       for await (const event of aiPort.stream({ ...req, model: selection.modelId })) {
-        yield (event.type === 'stop' || event.type === 'provider_request') && servedAccount !== undefined
+        const routed = (event.type === 'stop' || event.type === 'provider_request') && servedAccount !== undefined
           ? { ...event, servedAccount }
           : event;
+        if (routed.type !== 'provider_request' || !capture) { yield routed; continue; }
+        const observed = routed.request;
+        const snapshot = Object.freeze({ provider: observed.provider, modelId: observed.modelId,
+          ...(observed.response ? { response: Object.freeze({
+            ...(observed.response.id !== undefined ? { id: observed.response.id } : {}),
+            ...(observed.response.modelId !== undefined ? { modelId: observed.response.modelId } : {}),
+          }) } : {}), ...(observed.identityUncertain !== undefined ? { identityUncertain: observed.identityUncertain } : {}) });
+        let pending: Promise<void> | undefined;
+        let captured = false;
+        const commit = () => pending ??= Promise.resolve().then(() => capture!(snapshot)).then(() => { captured = true; },
+          () => { throw new Error('OpenRouter request capture failed; reservation remains unresolved'); });
+        yield { ...routed, [MODEL_PROVIDER_REQUEST_CAPTURE]: commit };
+        // A direct ModelPort consumer cannot bypass admission by ignoring the
+        // private continuation. In particular, no next pull may dispatch wire I/O.
+        if (!captured) throw new Error('OpenRouter request capture was not awaited');
       }
     },
   };

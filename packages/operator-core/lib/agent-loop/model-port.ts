@@ -92,6 +92,19 @@ export interface ModelProviderRequest {
   identityUncertain?: boolean;
 }
 
+/** Local identity of the credential actually selected for ONE OpenRouter
+ * request. It is private server context, not a provider billing-account
+ * ownership claim. Declared here (a no-import leaf) rather than in
+ * provider-router.ts so hosted billing code can name it without pulling the
+ * router's credential/gateway graph into every consumer's typecheck
+ * (WI-10006711: the portal build failed on exactly that). */
+export interface OpenRouterRequestContext {
+  readonly modelId: string;
+  readonly servedAccount: string;
+  readonly credentialSha256: string;
+}
+export type OpenRouterRequestCapture = (request: Readonly<ModelProviderRequest>) => Promise<void>;
+
 /** Server-only continuation on the existing observation seam. The owned
  * consumer awaits it before pulling again; public snapshots omit symbols.
  * It contains no serializable grant, credential or billing authority. */
