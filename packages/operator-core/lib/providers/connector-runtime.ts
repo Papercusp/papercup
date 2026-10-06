@@ -42,7 +42,12 @@ import {
   type IngestExternalTriggerInput,
   type IngestExternalTriggerResult,
 } from '../external-triggers/ingestion';
-import { providerRegistry, type ProviderRegistry, type RegisteredProvider } from '../integrations/provider-registry';
+import {
+  providerRegistry,
+  readyProviderRegistry,
+  type ProviderRegistry,
+  type RegisteredProvider,
+} from '../integrations/provider-registry';
 import { createSourceHostFetch } from '../integrations/source-host-fetch';
 import { resolveProviderServices } from '../integrations/service-credentials';
 import {
@@ -720,7 +725,9 @@ export async function runConnectorSync(
   opts: ConnectorSyncOptions,
   deps: ConnectorSyncDeps = {},
 ): Promise<ConnectorSyncResult> {
-  const registry = deps.registry ?? providerRegistry();
+  // A pass that starts before this process's plugin discovery finishes would otherwise see no
+  // plugin providers and skip (or fail) every Linear/Asana source (WI-10006703).
+  const registry = deps.registry ?? (await readyProviderRegistry());
   const providers = registry.list();
   const byKind = new Map(providers.map((provider) => [provider.descriptor.id, provider]));
   const resolved = {
