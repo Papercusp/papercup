@@ -36,6 +36,7 @@ import type {
   ModelToolDef,
   ModelUsage,
 } from './model-port';
+import { captureModelProviderRequest } from './model-port';
 
 // ---------------------------------------------------------------------------
 // Tools
@@ -415,6 +416,7 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<L
               ...(ev.servedAccount !== undefined ? { servedAccount: ev.servedAccount } : {}) });
             providerRequests.push(info);
             try {
+              await captureModelProviderRequest(ev);
               await opts.onProviderRequest?.(copyProviderRequest(info));
             } catch (error) {
               // An overlapping parent abort must not disguise a failed

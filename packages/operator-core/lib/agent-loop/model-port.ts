@@ -92,6 +92,17 @@ export interface ModelProviderRequest {
   identityUncertain?: boolean;
 }
 
+/** Server-only continuation on the existing observation seam. The owned
+ * consumer awaits it before pulling again; public snapshots omit symbols.
+ * It contains no serializable grant, credential or billing authority. */
+export const MODEL_PROVIDER_REQUEST_CAPTURE = Symbol('model-provider-request-capture');
+
+export async function captureModelProviderRequest(
+  event: Extract<ModelStreamEvent, { type: 'provider_request' }>,
+): Promise<void> {
+  await event[MODEL_PROVIDER_REQUEST_CAPTURE]?.();
+}
+
 export type ModelStopReason =
   | 'end_turn'
   | 'tool_use'
@@ -105,7 +116,8 @@ export type ModelStopReason =
  *  never sees half-parsed arguments. Exactly one terminal event ends a healthy
  *  stream (`stop`); `error` is terminal too. */
 export type ModelStreamEvent =
-  | { type: 'provider_request'; request: ModelProviderRequest; servedAccount?: string }
+  | { type: 'provider_request'; request: ModelProviderRequest; servedAccount?: string;
+      [MODEL_PROVIDER_REQUEST_CAPTURE]?: () => Promise<void> }
   | { type: 'text_delta'; text: string }
   | { type: 'reasoning_delta'; text: string }
   | { type: 'tool_call'; id: string; name: string; input: unknown }

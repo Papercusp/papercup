@@ -8,7 +8,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { ModelPort, ModelStreamEvent } from './model-port';
-import { textMessage } from './model-port';
+import { MODEL_PROVIDER_REQUEST_CAPTURE, textMessage } from './model-port';
 import {
   hasToolCall,
   runAgentLoop,
@@ -65,6 +65,20 @@ const callTool = (id: string, name: string, input: unknown): ModelStreamEvent[] 
 ];
 
 describe('runAgentLoop', () => {
+  it('awaits private server capture and keeps a failed admission visible across abort', async () => {
+    const abort = new AbortController(); let pulled = false;
+    const port: ModelPort = { async *stream() {
+      yield { type: 'provider_request', request: { provider: 'openrouter', modelId: 'vendor/model' },
+        [MODEL_PROVIDER_REQUEST_CAPTURE]: async () => { abort.abort(); throw new Error('private capture failed'); } };
+      pulled = true; yield { type: 'stop', reason: 'end_turn' };
+    } };
+    const events = await collect({ port, model: 'm', messages: [], signal: abort.signal });
+    expect(pulled).toBe(false);
+    expect(events.find(e => e.type === 'error')).toMatchObject({ message: 'private capture failed' });
+    expect(doneEvent(events).stopReason).toBe('error');
+    expect(Object.getOwnPropertySymbols(doneEvent(events).providerRequests![0])).toEqual([]);
+  });
+
   it('does not hide a durable-capture rejection behind an overlapping abort', async () => {
     const abort = new AbortController();
     const { port } = scriptedPort([[{ type: 'provider_request', request: { provider: 'openrouter', modelId: 'vendor/model' } }]]);
