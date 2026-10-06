@@ -40,6 +40,7 @@ import {
   type RegisterLearningLoopInput,
   type ReserveLearningSpendInput,
   type ReserveLearningSpendResult,
+  type LearningReservationResources,
   type SettleLearningSpendInput,
   type SettleLearningSpendResult,
 } from './store';
@@ -141,6 +142,8 @@ export interface SpendAttemptGrant {
   readonly reservationId: string;
   readonly reservedUsd: number;
   readonly clamped: boolean;
+  /** Actual store-admitted bounds, frozen independently of the adapter's row. */
+  readonly resources?: Readonly<LearningReservationResources>;
 }
 
 export interface GovernedSpendAttemptInput<T> {
@@ -150,6 +153,10 @@ export interface GovernedSpendAttemptInput<T> {
   attemptKind: SpendAttemptKind;
   /** What this attempt asks the governor to set aside up front. */
   requestedUsd: number;
+  /** Forward the existing store contract for single-use manifest/resource admission. */
+  exact?: ReserveLearningSpendInput['exact'];
+  /** Same floor as reserveLearningSpend; omission preserves its default. */
+  floorUsd?: number;
   signalOrigin?: 'organic' | 'drill' | 'replay' | 'shadow';
   runRef?: string | null;
   note?: string | null;
@@ -208,6 +215,15 @@ export async function runGovernedSpendAttempt<T>(
   input: GovernedSpendAttemptInput<T>,
   deps?: GovernorGlueDeps,
 ): Promise<GovernedSpendAttemptOutcome<T>> {
+  // An async flag/pool preflight must not let the caller replace the manifest,
+  // resource policy, dispatch callback or settlement identity after admission
+  // begins. The store validates this snapshot against the registered policy.
+  input = { ...input, ...(input.exact ? { exact: { ...input.exact,
+    ...(input.exact.resources ? { resources: { ...input.exact.resources } } : {}),
+    ...(input.exact.expectedResourceBudget ? { expectedResourceBudget: { ...input.exact.expectedResourceBudget,
+      armIds: Array.isArray(input.exact.expectedResourceBudget.armIds) ? [...input.exact.expectedResourceBudget.armIds] : [],
+    } } : {}),
+  } } : {}) };
   const d = resolve(deps);
   if (!(await d.enabled())) return { ok: false, reason: 'governor-dark' };
   const sql = await d.getSql();
@@ -217,6 +233,8 @@ export async function runGovernedSpendAttempt<T>(
     ...(input.potSlug === undefined ? {} : { potSlug: input.potSlug }),
     attemptKind: input.attemptKind,
     requestedUsd: input.requestedUsd,
+    ...(input.exact === undefined ? {} : { exact: input.exact }),
+    ...(input.floorUsd === undefined ? {} : { floorUsd: input.floorUsd }),
     ...(input.signalOrigin ? { signalOrigin: input.signalOrigin } : {}),
     runRef: input.runRef ?? null,
     note: input.note ?? null,
@@ -227,6 +245,7 @@ export async function runGovernedSpendAttempt<T>(
   const reservationId = reserved.reservation.id;
   const grant: SpendAttemptGrant = Object.freeze({
     reservationId, reservedUsd: reserved.reservation.reservedUsd, clamped: reserved.clamped,
+    ...(reserved.reservation.resources ? { resources: Object.freeze({ ...reserved.reservation.resources }) } : {}),
   });
   let settlement: SettleLearningSpendResult | null = null;
   let settlementError: string | undefined;
