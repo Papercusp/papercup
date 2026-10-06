@@ -2279,6 +2279,9 @@ pub struct App {
     /// for a live bound session. It rides on the next owner turn (taken into
     /// `PendingSuTurn.model` at dispatch) and the footer names it until then.
     pub su_next_model: Option<String>,
+    /// WI-10006644: the pending turn whose send is retrying a busy operator.
+    /// Only shown while it names the current pending turn.
+    pub su_operator_busy: Option<String>,
     /// D-026: an approvals mode picked with /approvals or Shift+Tab. It rides
     /// on the next owner turn (taken into `PendingSuTurn.approvals`).
     pub su_next_approvals: Option<String>,
@@ -2987,6 +2990,7 @@ impl App {
             chat_account: None,
             chat_mode: None,
             su_next_model: None,
+            su_operator_busy: None,
             su_next_approvals: None,
             su_tell_instead: false,
             su_launch_fleet: None,
@@ -6762,9 +6766,46 @@ impl App {
     /// hardcoded tier list, which would be a second copy of a server-owned truth
     /// and would diverge silently the moment the workspace tiers change.
     pub fn open_model_picker(&mut self) {
+        // WI-10006652: a live conversation whose engine has reported its own
+        // models lists THOSE; the tier menu below is for a launch.
+        if let Some(opts) = self.engine_model_picker_options() {
+            self.session_picker = Some(crate::session_config::SessionPicker::new(
+                crate::session_config::PickerAxis::Model,
+                opts,
+            ));
+            return;
+        }
         // The EFFECTIVE menu as the SERVER computed it — the pui does not merge
         // override-vs-baseline itself (D-022 §1).
-        let tiers = self.operator_config.tiers.clone();
+        let chat = self.session_setup.is_none();
+        // P-026: a live bound session switches from its next turn, so its
+        // picker is limited to its own engine's tiers just like the setup form.
+        let live = self
+            .su_session
+            .as_ref()
+            .filter(|session| chat && session.is_live());
+        // WI-10006652: before the first message the chat still knows the engine
+        // that message starts on, so it is limited the same way.
+        let pick_backend = self
+            .session_setup
+            .as_ref()
+            .map(|setup| setup.backend)
+            .or_else(|| live.map(|session| session.backend()))
+            .or_else(|| chat.then(|| self.chat_engine()));
+        let mut tiers = self.operator_config.tiers.clone();
+        if chat {
+            // A chat user is offered only tiers that run on this engine, and
+            // never sees their `when` notes: those are fleet routing config
+            // ("[owner 2026-09-03] all tiers → …"), not model descriptions.
+            // The setup form keeps every tier, disabled with a reason.
+            if let Some(backend) = pick_backend {
+                tiers.retain(|tier| Self::tier_runs_on(tier, backend));
+            }
+            for tier in &mut tiers {
+                tier.when = None;
+                tier.backend = None;
+            }
+        }
         // The chat pane IS the `operator` surface, so that is the default it
         // inherits when we send no model.
         let surface_default = self
@@ -6773,17 +6814,24 @@ impl App {
             .as_ref()
             .and_then(|a| a.config.surface_models.get("operator").cloned());
         let mut opts = crate::session_config::model_options(&tiers, surface_default.as_deref());
-        // P-026: a live bound session switches from its next turn, so its
-        // picker is limited to its own engine's tiers just like the setup form.
-        let live = self
-            .su_session
-            .as_ref()
-            .filter(|session| self.session_setup.is_none() && session.is_live());
-        let pick_backend = self
-            .session_setup
-            .as_ref()
-            .map(|setup| setup.backend)
-            .or_else(|| live.map(|session| session.backend()));
+        if let (true, None, Some(backend)) = (chat, live, pick_backend) {
+            // The surface default names a model for another engine (the
+            // operator surface defaults to a Claude model): say whose default
+            // this conversation gets instead of naming one it will not run.
+            let foreign_default = surface_default.as_deref().is_some_and(|spec| {
+                self.operator_config
+                    .tiers
+                    .iter()
+                    .any(|tier| tier.spec == spec && !Self::tier_runs_on(tier, backend))
+            });
+            if foreign_default {
+                opts[0].label = format!("{} default model", backend.label());
+            }
+            opts[0].hint = Some(format!(
+                "Your first message starts the conversation; /model then lists the models {} offers.",
+                backend.label()
+            ));
+        }
         if let Some(pick_backend) = pick_backend {
             if let Some(session) = live {
                 // "Keep" clears any pending switch, so it names the model the
@@ -6803,15 +6851,11 @@ impl App {
                         option.label.push_str(" · next turn");
                     }
                 }
-            } else {
+            } else if !chat {
                 opts[0].label = "Server default model".into();
             }
             for (option, tier) in opts.iter_mut().skip(1).zip(&tiers) {
-                if tier.backend.as_deref().is_some_and(|backend| {
-                    backend != pick_backend.as_str()
-                        && !(backend == "claude-code"
-                            && pick_backend == crate::su_session::SuSessionBackend::Claude)
-                }) {
+                if !Self::tier_runs_on(tier, pick_backend) {
                     option.disabled = true;
                     option.hint = Some(format!(
                         "This tier uses {}; choose a {} tier.",
@@ -6825,6 +6869,50 @@ impl App {
             crate::session_config::PickerAxis::Model,
             opts,
         ));
+    }
+
+    /// Whether a routing tier can run on `backend`. A tier with no backend
+    /// runs anywhere; `claude-code` is the Claude engine's wire name.
+    fn tier_runs_on(
+        tier: &crate::session_config::ModelTier,
+        backend: crate::su_session::SuSessionBackend,
+    ) -> bool {
+        tier.backend.as_deref().map_or(true, |name| {
+            name == backend.as_str()
+                || (name == "claude-code"
+                    && backend == crate::su_session::SuSessionBackend::Claude)
+        })
+    }
+
+    /// WI-10006652: /model rows for a live bound conversation from the models
+    /// its engine reported on the descriptor. `None` (no live session, a setup
+    /// form open, or an engine that has not answered yet) keeps the tier menu.
+    fn engine_model_picker_options(&self) -> Option<Vec<crate::session_config::PickerOption>> {
+        if self.session_setup.is_some() {
+            return None;
+        }
+        let session = self.su_session.as_ref().filter(|session| session.is_live())?;
+        let descriptor = session.descriptor.as_ref()?;
+        if descriptor.models.is_empty() {
+            return None;
+        }
+        let mut opts = crate::session_config::engine_model_options(&descriptor.models);
+        // "Keep" clears any pending switch, so it names the model the session
+        // RUNS — never the pending pick it would discard.
+        if let Some(spec) = descriptor.model.as_deref() {
+            opts[0].label = format!("Keep the current model ({spec})");
+        }
+        let running = descriptor.model.as_deref().map(spec_without_effort);
+        let pending = self.su_next_model.as_deref().map(spec_without_effort);
+        for (option, model) in opts.iter_mut().skip(1).zip(&descriptor.models) {
+            let names = [Some(model.id.as_str()), model.resolved_model.as_deref()];
+            if running.is_some() && names.contains(&running) {
+                option.label.push_str(" · current");
+            } else if pending.is_some() && pending == Some(model.id.as_str()) {
+                option.label.push_str(" · next turn");
+            }
+        }
+        Some(opts)
     }
 
     /// P-025 / D-027: an engine pick in chat-first starts the next
@@ -7666,7 +7754,12 @@ impl App {
             // The engine is still being launched for this message.
             None => self.su_pending_turn.is_some(),
         };
-        let phase = if starting && elapsed.as_secs() >= 5 {
+        let operator_busy = self.su_pending_turn.as_ref().is_some_and(|turn| {
+            self.su_operator_busy.as_deref() == Some(turn.command_id.as_str())
+        });
+        let phase = if operator_busy {
+            "Papercusp is busy; still trying to send your message".to_string()
+        } else if starting && elapsed.as_secs() >= 5 {
             format!("Still starting {engine}; your message will send when it is ready")
         } else if starting {
             format!("Starting {engine}")
@@ -7725,9 +7818,13 @@ impl App {
         }
         // pui-chat-first-ux P-031 (G-13): each failure names the step that
         // fixes it, not just the subsystem to look at.
-        if raw.contains("operator did not answer within") {
+        // WI-10006644: the operator accepted the connection and stayed silent
+        // past the retry budget. It is running, so restarting it (and every
+        // other session on it) is the wrong advice; a refused connection is
+        // handled below with the start-the-server step.
+        if raw.contains("operator was busy and did not answer") {
             return Some(format!(
-                "Papercusp is not answering; start or restart Papercusp Server, then {retry}."
+                "Papercusp is busy and did not answer; your message is kept, {retry}."
             ));
         }
         let sentence = if raw.contains("/login")
@@ -7781,6 +7878,19 @@ impl App {
             format!("{engine} stopped; {retry}.")
         };
         Some(sentence)
+    }
+
+    /// WI-10006626 (parity row 23): under a usage-limit failure line, the step
+    /// that continues now, as stock Claude Code adds `/usage-credits`. In
+    /// chat-first, `/backend` starts the next message on the picked engine in
+    /// a new conversation and the limited one stays in /resume (D-027,
+    /// `chat_first_pick_backend`). Account is a launch-time choice with no
+    /// in-chat route, so it is not offered. The workbench keeps a bound
+    /// conversation's engine, so it gets no hint.
+    pub fn turn_error_next_step(&self, error: &str) -> Option<&'static str> {
+        (self.chat_first && crate::models::is_usage_limit(error)).then_some(
+            "Wait for the reset, or type /backend to continue on another engine in a new conversation.",
+        )
     }
 
     /// Settings tab (P10): store the operator feature flags as a sorted Vec (the
@@ -12770,10 +12880,16 @@ impl App {
                 self.session_note = Some(format!("SU-session command {status}"));
                 Action::Render
             }
+            Event::SuSendOperatorBusy { command_id } => {
+                self.su_operator_busy = Some(command_id);
+                Action::Render
+            }
             Event::SuTurnPrepared {
                 command_id,
                 command,
             } => {
+                // The operator answered: the send is no longer waiting on it.
+                self.su_operator_busy = None;
                 if let Some(pending) = self
                     .su_pending_turn
                     .as_mut()
@@ -12828,6 +12944,7 @@ impl App {
                 message,
                 uncertain,
             } => {
+                self.su_operator_busy = None;
                 if self
                     .su_pending_turn
                     .as_ref()
@@ -17977,6 +18094,87 @@ mod tests {
         assert_eq!(a.session_picker.as_ref().unwrap().options.len(), 1);
     }
 
+    /// WI-10006652 (P-032 probe 16): a fresh chat's /model, before the first
+    /// message, listed every routing tier with its internal `when` note
+    /// ("[owner 2026-09-03] all tiers → …"), and on Codex every row was a
+    /// Claude or OMP tier the conversation could not run.
+    fn routing_tiers() -> Vec<crate::session_config::ModelTier> {
+        let note = |mut t: crate::session_config::ModelTier, backend: &str| {
+            t.when = Some("[owner 2026-09-03] all tiers → Claude Opus 5 xhigh".into());
+            t.backend = Some(backend.into());
+            t
+        };
+        vec![
+            note(tier("deep", "claude-opus-5:xhigh"), "claude-code"),
+            note(tier("ox-alpha", "openrouter/stealth/ox-alpha:max"), "omp"),
+            tier("any", "house-default"),
+        ]
+    }
+
+    fn picker_rows(a: &App) -> Vec<(String, String, Option<String>, bool)> {
+        a.session_picker
+            .as_ref()
+            .expect("picker opens")
+            .options
+            .iter()
+            .map(|o| (o.id.clone(), o.label.clone(), o.hint.clone(), o.disabled))
+            .collect()
+    }
+
+    #[test]
+    fn a_fresh_codex_chat_model_picker_offers_no_other_engines_tiers_or_routing_notes() {
+        let mut a = app_with_tiers(routing_tiers());
+        a.su_backend = Some(crate::su_session::SuSessionBackend::Codex);
+        a.open_model_picker();
+        let rows = picker_rows(&a);
+        let ids: Vec<&str> = rows.iter().map(|r| r.0.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec![crate::session_config::MODEL_INHERIT, "house-default"],
+            "only tiers that run on Codex (or anywhere) are offered"
+        );
+        for (_, label, hint, disabled) in &rows {
+            assert!(!disabled, "{label} is selectable");
+            let text = format!("{label} {}", hint.as_deref().unwrap_or(""));
+            assert!(!text.contains("[owner"), "routing note leaked: {text}");
+        }
+        assert!(
+            rows[0].2.as_deref().is_some_and(|hint| hint.contains("Codex")),
+            "the default row says the engine's own models come with the conversation: {:?}",
+            rows[0].2
+        );
+    }
+
+    #[test]
+    fn a_fresh_claude_chat_model_picker_keeps_claude_tiers_without_routing_notes() {
+        let mut a = app_with_tiers(routing_tiers());
+        a.su_backend = Some(crate::su_session::SuSessionBackend::Claude);
+        a.open_model_picker();
+        let rows = picker_rows(&a);
+        let ids: Vec<&str> = rows.iter().map(|r| r.0.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec![
+                crate::session_config::MODEL_INHERIT,
+                "claude-opus-5:xhigh",
+                "house-default"
+            ]
+        );
+        assert!(rows.iter().all(|r| !r.3 && r.2.as_deref().map_or(true, |h| !h.contains("[owner"))));
+    }
+
+    #[test]
+    fn the_setup_form_model_picker_still_shows_every_tier_with_its_reason() {
+        let mut a = app_with_tiers(routing_tiers());
+        a.open_session_setup();
+        a.session_setup.as_mut().unwrap().backend = crate::su_session::SuSessionBackend::Codex;
+        a.open_model_picker();
+        let rows = picker_rows(&a);
+        assert_eq!(rows.len(), 4, "inherit + all three tiers");
+        assert!(rows[1].3 && rows[2].3, "Claude and OMP tiers are disabled on Codex");
+        assert!(!rows[3].3);
+    }
+
     #[test]
     fn open_model_picker_refreshes_when_server_config_arrives() {
         let mut a = App::new();
@@ -19253,6 +19451,67 @@ mod tests {
         a.commit_session_picker()
     }
 
+    /// WI-10006652: once the engine has reported its own models, /model on a
+    /// live conversation lists THOSE (the Claude SDK catalog here) instead of
+    /// the workspace's routing tiers: no tier names, no tier `when` notes, and
+    /// every row settable. A pick still rides on the next owner turn.
+    #[test]
+    fn a_live_session_model_picker_lists_the_engines_own_models() {
+        use crate::session_config::PickerAxis;
+        let mut a = chat_first_app_on_live_session("claude-sonnet-5");
+        a.operator_config.tiers[0].when =
+            Some("[owner 2026-09-03] all tiers → Claude Opus 5 xhigh; trivial work".into());
+        let rows = |a: &App| -> Vec<(String, Option<String>, bool)> {
+            a.session_picker
+                .as_ref()
+                .expect("a picker is open")
+                .options
+                .iter()
+                .map(|option| (option.label.clone(), option.hint.clone(), option.disabled))
+                .collect()
+        };
+
+        // Before the engine answers, the tier menu is the fallback.
+        a.open_model_picker();
+        assert!(rows(&a)[1].0.starts_with("quick — "), "{:?}", rows(&a));
+
+        a.su_session.as_mut().unwrap().descriptor.as_mut().unwrap().models =
+            serde_json::from_value(json!([
+                {"id":"default","label":"Default (recommended)","description":"Opus 5 with 1M context · Best for everyday, complex tasks","resolvedModel":"claude-opus-5[1m]","isDefault":true},
+                {"id":"sonnet","label":"Sonnet","description":"Sonnet 5 · Efficient for routine tasks","resolvedModel":"claude-sonnet-5"},
+                {"id":"haiku","label":"Haiku","description":"Haiku 4.5 · Fastest for quick answers"}
+            ]))
+            .unwrap();
+        a.open_model_picker();
+        let listed = rows(&a);
+        assert_eq!(
+            listed.iter().map(|row| row.0.as_str()).collect::<Vec<_>>(),
+            vec![
+                "Keep the current model (claude-sonnet-5)",
+                "Default (recommended)",
+                "Sonnet · current",
+                "Haiku",
+            ]
+        );
+        assert_eq!(listed[2].1.as_deref(), Some("Sonnet 5 · Efficient for routine tasks"));
+        assert!(listed.iter().all(|row| !row.2), "every engine row is settable: {listed:?}");
+        assert!(
+            listed.iter().all(|row| !row.0.contains("[owner")
+                && !row.1.as_deref().unwrap_or("").contains("[owner")
+                && !row.0.contains("quick")),
+            "no routing tier name or note: {listed:?}"
+        );
+
+        assert!(matches!(pick(&mut a, PickerAxis::Model, "haiku"), Action::Render));
+        assert_eq!(a.su_next_model.as_deref(), Some("haiku"));
+        assert_eq!(a.session_note.as_deref(), Some("Next turn uses haiku."));
+        a.open_model_picker();
+        assert_eq!(rows(&a)[3].0, "Haiku · next turn");
+        // Keep discards the pending pick.
+        assert!(matches!(pick(&mut a, PickerAxis::Model, crate::session_config::MODEL_INHERIT), Action::Render));
+        assert_eq!(a.su_next_model, None);
+    }
+
     /// pui-chat-first-ux P-026 / D-025: on a live bound session a model or
     /// effort pick does not open a new session. It rides on the next owner
     /// turn, the footer says so until then, and dispatch hands it to that turn.
@@ -20022,8 +20281,9 @@ mod tests {
                 "Claude is taking too long to start; your message is kept, press Enter to send your message again.",
             ),
             (
-                "The operator did not answer within 5s. Draft retained.",
-                "Papercusp is not answering; start or restart Papercusp Server, then press Enter to send your message again.",
+                // WI-10006644: a stalled operator is running; never advise a restart.
+                "The operator was busy and did not answer for 20s. Draft retained.",
+                "Papercusp is busy and did not answer; your message is kept, press Enter to send your message again.",
             ),
         ] {
             let mut a = chat_first_app();

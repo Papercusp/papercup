@@ -3149,6 +3149,12 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
                     Theme::danger(),
                 )));
             }
+            // WI-10006626: a usage limit names the step that continues now.
+            if let Some(step) = app.turn_error_next_step(&m.content) {
+                for row in wrap_text(step, text_w) {
+                    lines.push(Line::from(Span::styled(format!("    {row}"), Theme::dim())));
+                }
+            }
             lines.push(Line::from(""));
             continue;
         }
@@ -10327,6 +10333,43 @@ mod tests {
             "the reason must hang directly under the prompt:\n{frame}"
         );
         assert!(!frame.contains("\"status\""), "raw JSON leaked:\n{frame}");
+        assert!(!frame.contains("/backend"), "only a usage limit names /backend:\n{frame}");
+    }
+
+    #[test]
+    fn chat_first_usage_limit_names_the_step_that_continues_now() {
+        // WI-10006626 (parity row 23): stock Claude Code adds a next step under
+        // a usage limit. pui names /backend, which starts the next message on
+        // another engine in a new conversation (D-027).
+        let mut app = chat_first_bound_app();
+        app.chat_messages
+            .push(crate::models::ChatMessage::user("hi"));
+        app.chat_messages.push(crate::models::ChatMessage::turn_error(
+            "Claude ended this turn without a usable reply (success, stop reason stop_sequence): \
+             You've hit your weekly limit · resets 1pm (America/New_York)",
+        ));
+        let mut term = Terminal::new(TestBackend::new(120, 24)).unwrap();
+        term.draw(|f| draw(f, &app)).unwrap();
+        let rows: Vec<String> = term
+            .backend()
+            .buffer()
+            .content()
+            .chunks(120)
+            .map(|row| row.iter().map(|c| c.symbol()).collect())
+            .collect();
+        let frame = rows.join("\n");
+        let failure = rows
+            .iter()
+            .position(|l| l.contains("⎿ You've hit your weekly limit · resets 1pm"))
+            .unwrap_or_else(|| panic!("no failure line:\n{frame}"));
+        assert!(
+            rows[failure + 1].contains("Wait for the reset, or type /backend to continue on another engine"),
+            "the next step must sit directly under the failure line:\n{frame}"
+        );
+        // The workbench keeps a bound conversation's engine, so /backend
+        // would not continue there: no step.
+        app.chat_first = false;
+        assert_eq!(app.turn_error_next_step("You've hit your weekly limit · resets 1pm"), None);
     }
 
     #[test]
@@ -10818,6 +10861,38 @@ mod tests {
             slow.contains("Still starting Claude; your message will send when it is ready… (6s"),
             "{slow}"
         );
+    }
+
+    /// WI-10006644: while a send retries an operator that is connected but
+    /// stalled, the working line says Papercusp is busy (no restart advice),
+    /// and only for the turn the busy report names.
+    #[test]
+    fn chat_first_working_line_names_a_busy_operator() {
+        let mut app = chat_first_bound_app();
+        app.chat_streaming = true;
+        let start = std::time::Instant::now();
+        app.chat_turn_started = Some(start);
+        app.su_pending_turn = Some(crate::app::PendingSuTurn {
+            command_id: "c1".into(),
+            content: "hi".into(),
+            draft: "hi".into(),
+            attachment_references: Vec::new(),
+            command: None,
+            uncertain: false,
+            error: None,
+            model: None,
+            approvals: None,
+        });
+        let at = start + std::time::Duration::from_secs(4);
+        assert!(!app.chat_working_line(at).contains("busy"));
+        app.update(crate::event::Event::SuSendOperatorBusy { command_id: "other".into() });
+        assert!(!app.chat_working_line(at).contains("busy"), "a stale report for another turn");
+        app.update(crate::event::Event::SuSendOperatorBusy { command_id: "c1".into() });
+        let busy = app.chat_working_line(at);
+        assert!(busy.contains("Papercusp is busy; still trying to send your message"), "{busy}");
+        assert!(!busy.to_ascii_lowercase().contains("restart"), "{busy}");
+        app.update(crate::event::Event::SuTurnPrepared { command_id: "c1".into(), command: serde_json::json!({}) });
+        assert!(!app.chat_working_line(at).contains("busy"), "the operator answered");
     }
 
     #[test]

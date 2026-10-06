@@ -2106,8 +2106,29 @@ async fn run<B: Backend>(
     let mut last_notif_seq = app.notif_seq;
     // Persist the tutorial dismissal exactly once, the first time it closes.
     let mut tutorial_persisted = !app.show_tutorial;
+    // Draw coalescing (WI-10006651). A burst of input — a held Backspace, an
+    // unbracketed paste, a driver's 2000-key clear — queues one event per key,
+    // and a full redraw per queued key made the LAST key's frame (an `@` that
+    // opens the picker) appear seconds late. A plain `Render` therefore waits
+    // while more events are already queued; the deferred frame is drawn the
+    // moment the queue runs dry, before the loop blocks for the next event.
+    let mut render_deferred = false;
 
-    'event_loop: while let Some(ev) = rx.recv().await {
+    'event_loop: loop {
+        let ev = match rx.try_recv() {
+            Ok(ev) => ev,
+            Err(mpsc::error::TryRecvError::Empty) => {
+                if render_deferred {
+                    render_deferred = false;
+                    terminal.draw(|f| ui::draw(f, &app))?;
+                }
+                match rx.recv().await {
+                    Some(ev) => ev,
+                    None => break,
+                }
+            }
+            Err(mpsc::error::TryRecvError::Disconnected) => break,
+        };
         record_su_session_exit(&app);
         let prior_tab = app.tab;
         let prior_harness = app.harness.clone();
@@ -2276,8 +2297,14 @@ async fn run<B: Backend>(
         let mut action_queue = vec![action];
         while let Some(action) = action_queue.pop() {
             match action {
+                // Coalesced: see `render_deferred` above the loop.
                 Action::Render => {
-                    terminal.draw(|f| ui::draw(f, &app))?;
+                    if rx.is_empty() {
+                        render_deferred = false;
+                        terminal.draw(|f| ui::draw(f, &app))?;
+                    } else {
+                        render_deferred = true;
+                    }
                 }
                 // P-007 transcript copy: emit the OSC 52 sequence the reducer
                 // already built. Written straight to the tty and flushed rather
@@ -6906,6 +6933,11 @@ struct SuSendBudgets {
     ready: Duration,
     /// Gap between readiness reads while the engine starts.
     poll: Duration,
+    /// WI-10006644: how long an operator that accepts the connection but does
+    /// not answer is retried before the send fails. A stalled event loop is
+    /// transient (10s measured under load); the read is idempotent, so the turn
+    /// is retried rather than handed back with advice to restart a live server.
+    busy: Duration,
 }
 
 impl SuSendBudgets {
@@ -6915,6 +6947,7 @@ impl SuSendBudgets {
         operator: Duration::from_secs(4),
         ready: Duration::from_secs(60),
         poll: Duration::from_millis(250),
+        busy: Duration::from_secs(20),
     };
 }
 
@@ -6923,23 +6956,52 @@ impl SuSendBudgets {
 /// what made "hi" fail with "Claude stopped before it was ready" (P-023). Every
 /// way this can fail ends in a plain error within a bounded time, never silence.
 async fn await_su_send_readiness<F, Fut>(
-    mut read: F,
+    read: F,
     budgets: SuSendBudgets,
 ) -> std::result::Result<crate::su_session::SuSessionSnapshot, String>
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<crate::su_session::SuSessionSnapshot>>,
 {
+    await_su_send_readiness_reporting(read, budgets, || {}).await
+}
+
+/// As [`await_su_send_readiness`], calling `on_busy` once when the operator
+/// first fails to answer a read in time (WI-10006644), so the working line can
+/// say so within the P-024 5s bound while the send keeps retrying.
+async fn await_su_send_readiness_reporting<F, Fut, B>(
+    mut read: F,
+    budgets: SuSendBudgets,
+    mut on_busy: B,
+) -> std::result::Result<crate::su_session::SuSessionSnapshot, String>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<crate::su_session::SuSessionSnapshot>>,
+    B: FnMut(),
+{
     let started = tokio::time::Instant::now();
+    let mut busy_since: Option<tokio::time::Instant> = None;
     loop {
         let snapshot = match tokio::time::timeout(budgets.operator, read()).await {
-            Ok(Ok(snapshot)) => snapshot,
+            Ok(Ok(snapshot)) => {
+                busy_since = None;
+                snapshot
+            }
+            // A refused or broken connection: the operator is not running.
             Ok(Err(error)) => return Err(format!("Cannot read session readiness: {error}")),
+            // Connected but silent: a stalled operator, not a stopped one.
             Err(_) => {
-                return Err(format!(
-                    "The operator did not answer within {}s. Draft retained.",
-                    budgets.operator.as_secs().max(1)
-                ))
+                let since = *busy_since.get_or_insert_with(|| {
+                    on_busy();
+                    tokio::time::Instant::now()
+                });
+                if since.elapsed() >= budgets.busy {
+                    return Err(format!(
+                        "The operator was busy and did not answer for {}s. Draft retained.",
+                        since.elapsed().as_secs().max(1)
+                    ));
+                }
+                continue;
             }
         };
         if snapshot.terminal {
@@ -6978,9 +7040,14 @@ async fn send_su_turn_with_client(
     } else {
         // A connected engine remains usable while waiting for its next owner
         // turn or after interruption; readiness is separate from that lifecycle.
-        let snapshot = match await_su_send_readiness(
+        let snapshot = match await_su_send_readiness_reporting(
             || client.su_session_snapshot(harness, chat_id),
             SuSendBudgets::LIVE,
+            || {
+                let _ = tx.send(Event::SuSendOperatorBusy {
+                    command_id: pending.command_id.clone(),
+                });
+            },
         )
         .await
         {
@@ -8785,6 +8852,7 @@ mod tests {
         operator: Duration::from_millis(60),
         ready: Duration::from_millis(200),
         poll: Duration::from_millis(10),
+        busy: Duration::from_millis(150),
     };
 
     /// P-023 / P-024: "hi" typed while Claude is still starting must wait for
@@ -8815,8 +8883,33 @@ mod tests {
         )
         .await;
         let message = outcome.expect_err("a hung operator must not be waited on");
-        assert!(message.contains("operator did not answer within"), "{message}");
+        assert!(message.contains("operator was busy and did not answer"), "{message}");
         assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    /// WI-10006644: an operator whose event loop stalls for longer than one
+    /// read budget but recovers must not drop the turn. Measured on :3170
+    /// under load: a 10s stall against a 4s read budget.
+    #[tokio::test]
+    async fn a_briefly_stalled_operator_is_retried_not_reported() {
+        let reads = std::cell::Cell::new(0);
+        let outcome = await_su_send_readiness(
+            || {
+                let n = reads.get() + 1;
+                reads.set(n);
+                async move {
+                    if n <= 2 {
+                        // Longer than FAST.operator: this read times out.
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                    Ok(readiness_snapshot(true, true, false))
+                }
+            },
+            FAST,
+        )
+        .await;
+        assert!(outcome.is_ok_and(|s| s.executor_attached), "the third read answers");
+        assert_eq!(reads.get(), 3);
     }
 
     #[tokio::test]

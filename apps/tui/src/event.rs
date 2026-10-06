@@ -519,6 +519,10 @@ pub enum Event {
         command_id: String,
         command: serde_json::Value,
     },
+    /// WI-10006644: the operator accepted the connection but has not answered
+    /// one readiness read in time. The send keeps retrying; the working line
+    /// says Papercusp is busy instead of leaving a silent spinner.
+    SuSendOperatorBusy { command_id: String },
     SuTurnAcknowledged {
         command_id: String,
         session: crate::su_session::SuSessionIdentity,
