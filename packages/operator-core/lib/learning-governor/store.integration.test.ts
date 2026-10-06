@@ -8,7 +8,7 @@
  * (the spend-until-exhausted lifecycle), and the ledger reads.
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import postgres from 'postgres';
 import { getTestPg, teardownTestPg } from '@papercusp/test-config/pg';
@@ -32,7 +32,9 @@ import { setPotLearningScope } from '../learning/pot-gate/store';
 import { runGovernedSpendAttempt } from './registrants';
 import { llmCall } from '../llm-testing/llm-client';
 import { buildLoopDeps } from '../gym/loop-deps';
-import { withGymLlmNetworkRetry } from '../gym/proposer';
+import { createNativeGymGatewayController, withGymLlmNetworkRetry, type NativeGymProviderAuthorization } from '../gym/proposer';
+import type { GatewayCarryTrialAttempt, GatewayCarryTrialAttemptResult } from '../inference-gateway/gateway';
+import { processMonotonicClock } from '../process-monotonic-clock';
 import { runWithRatePause } from '../gym/rate-pause';
 import { LlmCallError } from '@papercusp/testing-shell/llm';
 import type { AbDeps } from '../gym/ab-runner';
@@ -94,6 +96,186 @@ afterAll(async () => {
   // Best-effort: the reused test container is shared across vitest processes
   // on the dev box — a concurrent suite's teardown can stop it first (404).
   if (!process.env.KEEP_TEST_PG) await teardownTestPg().catch(() => {});
+});
+
+describe('native gateway controller with the persisted cycle ledger', () => {
+  const digest = (value: string) => createHash('sha256').update(value).digest('hex');
+  const resourceBudget = { inputTokens: 64, outputTokens: 16, requestsPerArm: 2, armIds: ['native'] };
+  const fixture = async (attemptKind: 'evaluation' | 'proposer' = 'evaluation', requestedUsd = 0.25) => {
+    const loopId = `gym:native-controller:${randomUUID()}`;
+    const potSlug = `native-controller-pot:${randomUUID()}`;
+    await setPotLearningScope(sql, { workspaceId: WS, potSlugs: [potSlug], enabled: true, setBy: 'su-test' });
+    await registerLearningLoop(sql, { workspaceId: WS, loopId, potSlug, budgetKind: 'per-cycle', budgetUsd: 1,
+      meta: { reservationResourceBudget: resourceBudget } });
+    const authority: NativeGymProviderAuthorization = { attemptKind, requestedUsd, inputTokens: 32, outputTokens: 8,
+      validUntilMonotonicMs: processMonotonicClock.now() + 60_000, validateAuthorization: vi.fn(() => {}) };
+    const input = { workspaceId: WS, loopId, potSlug,
+      token: 'PRIVATE_PG_NATIVE_TOKEN_0123456789abcdef0123456789abcdef',
+      manifestSha256: digest('private PG native manifest'), armId: 'native',
+      cycle: { runId: randomUUID(), budgetUsd: 1, resourceBudget },
+      authorizeProviderAttempt: vi.fn(async (_attempt: GatewayCarryTrialAttempt) => authority) };
+    // Only the flag and private pool are supplied. Reserve and settle use the
+    // real store, including its transaction/registration/resource checks.
+    const controller = createNativeGymGatewayController(input, {
+      enabled: async () => true, getSql: async () => sql, log: () => {} });
+    const body = JSON.stringify({ model: 'private-approved-model', max_tokens: 8, messages: [] });
+    const request: GatewayCarryTrialAttempt = { attemptId: randomUUID(), manifestSha256: input.manifestSha256,
+      armId: input.armId, transport: 'anthropic-http', accountId: 'private-selected-account',
+      credentialHeader: 'authorization', credentialSha256: digest('Bearer PRIVATE_PG_PROVIDER_CREDENTIAL'),
+      target: 'https://provider.invalid/v1/messages', body, bodySha256: digest(body),
+      clockId: processMonotonicClock.id, signal: new AbortController().signal };
+    const rows = () => listLearningSpendReservations(sql, { workspaceId: WS, loopId });
+    return { ...controller, input, authority, request, rows };
+  };
+  const result = (request: GatewayCarryTrialAttempt, reservationRef: string,
+    outcome: 'send-refused' | 'fetch-failed' | 'response-headers'): GatewayCarryTrialAttemptResult => {
+    const { body: _body, signal: _signal, ...identity } = request;
+    return { ...identity, reservationRef, outcome, responseStatus: outcome === 'response-headers' ? 200 : null,
+      ...(outcome === 'send-refused' ? { costUsd: 0, costUsdMeasurementMissing: false } : { costUsdMeasurementMissing: true }) };
+  };
+
+  it.each(['evaluation', 'proposer'] as const)('persists exact %s admission before exposing send authority', async kind => {
+    const f = await fixture(kind);
+    const fresh = postgres(testDatabaseUri, { max: 1, onnotice: () => {}, prepare: false });
+    try {
+      const receipt = await f.gateway.carryTrial.authorizeAttempt(f.request);
+      if (!receipt) throw new Error('registered exact attempt must grant');
+      const rows = await listLearningSpendReservations(fresh, { workspaceId: WS, loopId: f.input.loopId });
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ id: receipt.reservationRef, workspaceId: WS, loopId: f.input.loopId,
+        potSlug: f.input.potSlug, attemptKind: kind, requestedUsd: 0.25, reservedUsd: 0.25,
+        usedUsd: 0, status: 'open', settledAt: null, resources: { armId: 'native', inputTokens: 32, outputTokens: 8 } });
+      expect(rows[0]!.runRef).toContain(`cycle:${f.input.cycle.runId}/cap:1000000/resources:`);
+      expect(rows[0]!.runRef).toEndWith(`/attempt:${receipt.reservationRef}`);
+      const identity = JSON.parse(rows[0]!.note!).nativeGatewayAttempt;
+      const { body: _body, signal: _signal, ...expected } = f.request;
+      expect(identity).toEqual(expected);
+      expect(rows[0]!.note).not.toContain('PRIVATE_PG_PROVIDER_CREDENTIAL');
+      expect(identity).not.toHaveProperty('body'); expect(identity).not.toHaveProperty('signal');
+      expect(f.input.authorizeProviderAttempt).toHaveBeenCalledWith(f.request);
+      receipt.validateAuthorization!();
+      expect(f.authority.validateAuthorization).toHaveBeenCalledTimes(1);
+      await receipt.observeAttemptResult!(result(f.request, receipt.reservationRef, 'response-headers'));
+      expect(await sumOpenReservedUsd(fresh, { workspaceId: WS, loopId: f.input.loopId })).toBe(0.25);
+    } finally { f.revoke(); await fresh.end({ timeout: 5 }); }
+  });
+
+  it.each(['send-refused', 'fetch-failed', 'response-headers'] as const)(
+    'settles only exact no-fetch refusal and retains unknown %s', async outcome => {
+      const f = await fixture();
+      try {
+        const receipt = await f.gateway.carryTrial.authorizeAttempt(f.request);
+        if (!receipt) throw new Error('registered exact attempt must grant');
+        if (outcome !== 'send-refused') receipt.validateAuthorization!();
+        await receipt.observeAttemptResult!(result(f.request, receipt.reservationRef, outcome));
+        const row = (await f.rows())[0]!;
+        expect(row).toMatchObject({ id: receipt.reservationRef, usedUsd: 0,
+          status: outcome === 'send-refused' ? 'cancelled' : 'open' });
+        expect(row.settledAt === null).toBe(outcome !== 'send-refused');
+        expect(await sumOpenReservedUsd(sql, { workspaceId: WS, loopId: f.input.loopId }))
+          .toBe(outcome === 'send-refused' ? 0 : 0.25);
+        expect(await listLearningSpendEvents(sql, { workspaceId: WS, loopId: f.input.loopId })).toEqual([]);
+        await expect(receipt.observeAttemptResult!(result(f.request, receipt.reservationRef, outcome))).rejects.toThrow();
+        expect((await f.rows())[0]!.status).toBe(row.status);
+      } finally { f.revoke(); }
+    });
+
+  it.each(['attemptId', 'accountId', 'credentialSha256', 'bodySha256', 'clockId', 'reservationRef'] as const)(
+    'keeps real reservation open for substituted result %s', async key => {
+      const f = await fixture();
+      try {
+        const receipt = await f.gateway.carryTrial.authorizeAttempt(f.request);
+        if (!receipt) throw new Error('registered exact attempt must grant');
+        await expect(receipt.observeAttemptResult!({ ...result(f.request, receipt.reservationRef, 'send-refused'),
+          [key]: 'foreign' })).rejects.toThrow();
+        expect((await f.rows())[0]).toMatchObject({ id: receipt.reservationRef, status: 'open', settledAt: null });
+        expect(await sumOpenReservedUsd(sql, { workspaceId: WS, loopId: f.input.loopId })).toBe(0.25);
+      } finally { f.revoke(); }
+    });
+
+  it.each(['disabled', 'pot-disabled', 'lifetime', 'budget', 'missing-resources', 'resources'] as const)(
+    'refuses actual registered %s policy before issuing a receipt', async mismatch => {
+      const f = await fixture();
+      try {
+        if (mismatch === 'disabled') await registerLearningLoop(sql, { workspaceId: WS, loopId: f.input.loopId, enabled: false });
+        if (mismatch === 'pot-disabled') await setPotLearningScope(sql, { workspaceId: WS,
+          potSlugs: [f.input.potSlug], enabled: false, setBy: 'su-test' });
+        if (mismatch === 'lifetime') await registerLearningLoop(sql, { workspaceId: WS, loopId: f.input.loopId, budgetKind: 'lifetime' });
+        if (mismatch === 'budget') await registerLearningLoop(sql, { workspaceId: WS, loopId: f.input.loopId, budgetUsd: 2 });
+        if (mismatch === 'missing-resources') await registerLearningLoop(sql, { workspaceId: WS, loopId: f.input.loopId, meta: {} });
+        if (mismatch === 'resources') await registerLearningLoop(sql, { workspaceId: WS, loopId: f.input.loopId,
+          meta: { reservationResourceBudget: { ...resourceBudget, outputTokens: 17 } } });
+        expect(await f.gateway.carryTrial.authorizeAttempt(f.request)).toBeNull();
+        expect(await f.rows()).toEqual([]);
+      } finally { f.revoke(); }
+    });
+
+  it('binds retries to different persisted IDs and never refunds request resources for no-fetch zero', async () => {
+    const f = await fixture();
+    const ids: string[] = [];
+    try {
+      for (let n = 0; n < 2; n++) {
+        const request = { ...f.request, attemptId: randomUUID() };
+        const receipt = await f.gateway.carryTrial.authorizeAttempt(request);
+        if (!receipt) throw new Error('registered retry must grant');
+        ids.push(receipt.reservationRef);
+        await receipt.observeAttemptResult!(result(request, receipt.reservationRef, 'send-refused'));
+        expect(await f.gateway.carryTrial.authorizeAttempt(request)).toBeNull();
+      }
+      expect(new Set(ids).size).toBe(2);
+      expect(await f.gateway.carryTrial.authorizeAttempt({ ...f.request, attemptId: randomUUID() })).toBeNull();
+      const rows = await f.rows();
+      expect(rows).toHaveLength(2);
+      expect(rows.every(row => row.status === 'cancelled' && row.usedUsd === 0)).toBe(true);
+      expect(new Set(rows.map(row => JSON.parse(row.note!).nativeGatewayAttempt.attemptId)).size).toBe(2);
+      expect(await sumOpenReservedUsd(sql, { workspaceId: WS, loopId: f.input.loopId })).toBe(0);
+    } finally { f.revoke(); }
+  });
+
+  it('admits only registered aggregate resources across simultaneous final attempts', async () => {
+    const f = await fixture();
+    try {
+      const requests = Array.from({ length: 3 }, () => ({ ...f.request, attemptId: randomUUID() }));
+      const receipts = await Promise.all(requests.map(request => f.gateway.carryTrial.authorizeAttempt(request)));
+      expect(receipts.filter(Boolean)).toHaveLength(2);
+      expect(await f.rows()).toHaveLength(2);
+      expect(await sumOpenReservedUsd(sql, { workspaceId: WS, loopId: f.input.loopId })).toBe(0.5);
+      for (let i = 0; i < receipts.length; i++) {
+        const receipt = receipts[i];
+        if (receipt) await receipt.observeAttemptResult!(result(requests[i]!, receipt.reservationRef, 'response-headers'));
+      }
+      expect((await f.rows()).every(row => row.status === 'open')).toBe(true);
+    } finally { f.revoke(); }
+  });
+
+  it('never exposes a partial monetary grant during simultaneous final attempts', async () => {
+    const f = await fixture('proposer', 0.6);
+    try {
+      const requests = Array.from({ length: 2 }, () => ({ ...f.request, attemptId: randomUUID() }));
+      const receipts = await Promise.all(requests.map(request => f.gateway.carryTrial.authorizeAttempt(request)));
+      expect(receipts.filter(Boolean)).toHaveLength(1);
+      const rows = await f.rows();
+      expect(rows).toHaveLength(2);
+      expect(rows.find(row => row.status === 'open')).toMatchObject({ reservedUsd: 0.6, usedUsd: 0, settledAt: null });
+      expect(rows.find(row => row.status === 'failed')).toMatchObject({ reservedUsd: 0.4, usedUsd: 0 });
+      expect(await sumOpenReservedUsd(sql, { workspaceId: WS, loopId: f.input.loopId })).toBe(0.6);
+      for (let i = 0; i < receipts.length; i++) {
+        const receipt = receipts[i];
+        if (receipt) await receipt.observeAttemptResult!(result(requests[i]!, receipt.reservationRef, 'response-headers'));
+      }
+    } finally { f.revoke(); }
+  });
+
+  it('revokes send authority while preserving the actual unknown reservation', async () => {
+    const f = await fixture();
+    const receipt = await f.gateway.carryTrial.authorizeAttempt(f.request);
+    if (!receipt) throw new Error('registered exact attempt must grant');
+    f.revoke();
+    expect(() => receipt.validateAuthorization!()).toThrow();
+    await expect(receipt.observeAttemptResult!(result(f.request, receipt.reservationRef, 'send-refused'))).rejects.toThrow();
+    expect((await f.rows())[0]).toMatchObject({ id: receipt.reservationRef, status: 'open', settledAt: null });
+    expect(await sumOpenReservedUsd(sql, { workspaceId: WS, loopId: f.input.loopId })).toBe(0.25);
+  });
 });
 
 describe('per-cycle run reservations', () => {
