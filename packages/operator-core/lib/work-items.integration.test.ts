@@ -135,6 +135,10 @@ beforeAll(async () => {
   // (EI-24551293655721837, EI-21222032743884155, WI-10004700).
   await applyEventSubstrateMigrationsForTest(db.sql, { label: 'work-items.integration.test.ts' });
   await db.sql.unsafe(HFC_DDL);
+  // WI-10006622: owner-directive provenance (directive_ref) is written by both
+  // create families and read by listWorkItemsByDirective — install the production
+  // column + index from its creating migration rather than a hand-rolled copy.
+  await db.sql.unsafe(readMigration('1194-work-items-directive-ref.sql')).simple();
   // EI-22040912157347872: the reserved-plan-lane predicate now reads the durable
   // assignment + adopted-name tables as well as live claim leases. Install their
   // production schema in this narrowed fixture before any claim query is prepared.
@@ -2090,6 +2094,49 @@ describe('unified work_items surface (real PG)', () => {
        WHERE feature_id = ${task.id}
          AND item_kind = 'task'`;
     expect(taskProvenance).toEqual({ source_plan_slug: 'x', source_plan_item_ids: ['P-001', 'P-002'] });
+  });
+
+  it('persists owner-directive provenance (directiveRef) for BOTH families, read back by listWorkItemsByDirective (WI-10006622)', async () => {
+    // The issue-family branch of createWorkItem used to drop directiveRef before
+    // createIssue — the same forwarding defect the test above pins for plan
+    // provenance — so every bug/change/task filed with work_items:create
+    // { directiveRef } left its directive reading open-unworked in orders:get.
+    // Assert through the exact reader orders:get and the turn-start banner use.
+    const directive = 900_000_000 + Math.floor(Math.random() * 1_000_000);
+    const task = await wi.createWorkItem({
+      kind: 'task',
+      title: 'carries a directive (issue family)',
+      harness: 'papercup',
+      createdBy: 'agA',
+      directiveRef: directive,
+    });
+    const feature = await wi.createWorkItem({
+      kind: 'feature',
+      title: 'carries a directive (feature family)',
+      harness: 'papercup',
+      createdBy: 'agA',
+      directiveRef: directive,
+    });
+    const unbound = await wi.createWorkItem({
+      kind: 'bug',
+      title: 'no directive',
+      harness: 'papercup',
+      createdBy: 'agA',
+    });
+    expect(task.family).toBe('issue');
+    expect(feature.family).toBe('feature');
+
+    const ws = (
+      await db.sql<{ workspace_id: string }[]>`
+        SELECT workspace_id FROM harness_shared.work_items WHERE feature_id = ${task.id}`
+    )[0]!.workspace_id;
+    const linked = await wi.listWorkItemsByDirective(ws, [directive]);
+    expect(linked.map((row) => row.id).sort()).toEqual([feature.id, task.id].sort());
+    expect(linked.every((row) => row.directiveRef === directive)).toBe(true);
+
+    const [unboundRow] = await db.sql<{ directive_ref: string | null }[]>`
+      SELECT directive_ref FROM harness_shared.work_items WHERE feature_id = ${unbound.id}`;
+    expect(unboundRow.directive_ref).toBeNull();
   });
 
   it('feature-family plan_item unset clears normalized provenance and exact coverage edges atomically', async () => {
