@@ -590,6 +590,20 @@ export async function ensureAttestationGist(
 ): Promise<string> {
   const expectedFilename = attestationGistFilename(input.pubkeyBase64);
 
+  // A verified hint IS a usable binding for this device, so returning it can
+  // never create a duplicate. A hint that does not verify (revoked, deleted,
+  // rate-limited, belongs to another key) establishes nothing either way, so
+  // it falls through to the listing below with every one of its refusals.
+  if (input.knownGistId) {
+    const hinted = await verifyAttestation(
+      input.knownGistId,
+      input.pubkeyBase64,
+      input.githubUserId,
+      { token: input.token },
+    );
+    if (hinted.valid) return input.knownGistId;
+  }
+
   // Creating is safe only after we have positively established that no usable
   // binding exists. A refused or failed listing establishes nothing, so it
   // must never reach createAttestationGist() below.
