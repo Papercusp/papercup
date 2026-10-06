@@ -612,7 +612,7 @@ describe('host-code-adopted carry with a late Codex native id (EI-24961854655864
         "const fs=require('node:fs');process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');",
         "process.stdout.write('FRESH-BOOT\\n');",
         "let line='';process.stdin.on('data',data=>{let echo='';for(const c of data.toString()){",
-        "if(c==='\\u0004')process.exit(0);",
+        "if(c==='\\u0004'){process.stdout.write('EOT_RECEIVED\\n',()=>process.exit(0));return;}",
         "if(c==='\\r'){if(line){",
         "fs.appendFileSync(process.env.CARRY_NATIVE_PATH,JSON.stringify({type:'response_item',payload:{type:'message',role:'user',content:[{type:'input_text',text:line}]}})+'\\n');",
         "fs.appendFileSync(process.env.CARRY_NATIVE_PATH,JSON.stringify({type:'event_msg',timestamp:new Date().toISOString(),payload:{type:'task_started',turn_id:'adopted-carry'}})+'\\n');",
@@ -664,6 +664,8 @@ describe('host-code-adopted carry with a late Codex native id (EI-24961854655864
       });
 
       let carryDispatch: Promise<unknown> | null = null;
+      let eotReceived = false;
+      let carryDispatchSettled = true;
       try {
         expect(await waitForOutput(captured, 'FRESH-BOOT', CHILD_START_OUTPUT_TIMEOUT_MS)).toBe(true);
         if (route === 'in-place') {
@@ -728,17 +730,29 @@ describe('host-code-adopted carry with a late Codex native id (EI-24961854655864
       } finally {
         await injectIntoHost(socketPathFor(ownerId), {
           mode: 'raw',
-          data: '\\x04',
+          data: '\x04',
           ownerId,
         }).catch(() => false);
+        eotReceived = await waitForOutput(captured, 'EOT_RECEIVED', 1000);
         await done;
-        await carryDispatch;
+        const pendingDispatch = carryDispatch;
+        if (pendingDispatch) {
+          carryDispatchSettled = await new Promise<boolean>((resolve) => {
+            const timer = setTimeout(() => resolve(false), 2000);
+            void pendingDispatch.then(
+              () => { clearTimeout(timer); resolve(true); },
+              () => { clearTimeout(timer); resolve(true); },
+            );
+          });
+        }
         rmSync(eventLog, { force: true });
         rmSync(metaPathFor(ownerId), { force: true });
         rmSync(root, { recursive: true, force: true });
       }
+      expect(eotReceived, 'raw cleanup must deliver Ctrl-D to the spawned child').toBe(true);
+      expect(carryDispatchSettled, 'in-place carry dispatch must settle after child shutdown').toBe(true);
     },
-    15_000,
+    20_000,
   );
 });
 
