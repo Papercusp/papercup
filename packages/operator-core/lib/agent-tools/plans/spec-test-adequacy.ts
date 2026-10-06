@@ -607,8 +607,14 @@ function detailsOf(evidence: SpecEvidenceForAdequacy): AdequacyDetails {
   // who writes `details.disclosedGap` gets no error — reading only the nested
   // spelling would silently drop exactly the disclosure this criterion exists to
   // catch (EI-22953893504383574 is the same trap for the other adequacy keys).
-  const topLevelGap = disclosedGapList((evidence.details as Record<string, unknown>).disclosedGap);
-  const observationGaps = explicitCoverageLimitations((evidence.details as Record<string, unknown>).observations);
+  const topLevelDetails = evidence.details as Record<string, unknown>;
+  // details is free-form, so explicit limitation fields are author disclosures too.
+  const topLevelGap = [
+    ...disclosedGapList(topLevelDetails.disclosedGap),
+    ...disclosedGapList(topLevelDetails.limitation),
+    ...disclosedGapList(topLevelDetails.limitations),
+  ];
+  const observationGaps = explicitCoverageLimitations(topLevelDetails.observations);
   if (!nested || typeof nested !== 'object' || Array.isArray(nested)) {
     const disclosedGap = [...new Set([...topLevelGap, ...observationGaps])];
     return disclosedGap.length > 0 ? { disclosedGap } : {};

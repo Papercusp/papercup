@@ -2521,6 +2521,28 @@ describe('disclosed-gap criterion (P-002: a disclosure cannot coexist with a mac
     expect(result.wouldBlock).toContain('disclosed-gap');
   });
 
+  it.each([
+    ['limitation', 'The hosted-VM run is deferred; R-4 remains degraded until it lands.'],
+    ['limitations', ['The hosted-VM run is deferred; R-4 remains degraded until it lands.']],
+  ] as const)(
+    'blocks an explicit disclosure stored in top-level details.%s',
+    (field, disclosure) => {
+      const base = evidence();
+      const result = evaluateSpecTestAdequacy({
+        clause: clause(),
+        evidence: [evidence({ details: { ...base.details, [field]: disclosure } })],
+        classRef: 'plan-class-feature-ship',
+      });
+
+      expect(result.ratings['disclosed-gap'].rating).toBe('fail');
+      expect(result.ratings['disclosed-gap'].evidence).toContain(
+        'The hosted-VM run is deferred; R-4 remains degraded until it lands.',
+      );
+      expect(result.wouldBlock).toContain('disclosed-gap');
+      expect(result.verdict).toBe('fail');
+    },
+  );
+
   it('keeps a disclosure when the same proof is rebound without its disclosedGap', () => {
     const base = evidence();
     const gap = 'commercial metering remains outside approved scope';
