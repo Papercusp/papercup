@@ -2760,6 +2760,8 @@ if (
     // barge-in stop without needing a brain reply first.
     speak: (t: string) => speak(t, 'system:operator', 'polite', { force: true }),
     cancel: () => cancelAllSpeech(),
+    // The TTS engine the next reply will use, as the client sees the synced prefs.
+    ttsEngine: () => readPreferredEngine(),
   };
 }
 
