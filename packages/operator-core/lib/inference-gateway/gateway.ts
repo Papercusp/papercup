@@ -82,6 +82,7 @@ import {
   makeGatewayLaneRegistry,
   makeGatewayProviderAdapters,
   providerForGatewayRequest,
+  REQUIRE_OUTPUT_TOKEN_LIMIT_HEADER,
   type GatewayLaneDescriptor,
   type GatewayLegacyExecutorId,
 } from './provider-adapters';
@@ -1163,6 +1164,7 @@ const STRIP_REQUEST = new Set([
   'x-papercusp-account',
   'x-papercusp-account-pin',
   'x-papercusp-owner',
+  REQUIRE_OUTPUT_TOKEN_LIMIT_HEADER,
   'content-length',
   'accept-encoding',
   'connection',
@@ -9108,6 +9110,19 @@ export function createInferenceGateway(deps: GatewayDeps) {
     let preBody: Buffer | undefined;
     let requestModel: string | null = null;
     let requestEffort: string | null = null;
+    const outputLimitHeader = req.headers[REQUIRE_OUTPUT_TOKEN_LIMIT_HEADER];
+    const requiresOutputTokenLimit = outputLimitHeader !== undefined;
+    const invalidOutputLimit = () => {
+      req.resume();
+      sendJson(res, 400, { type: 'error', gateway: true,
+        error: { type: 'invalid_request_error', code: 'output_token_limit_invalid',
+          message: 'Required output limit needs the header true and a positive integer max_output_tokens' } },
+        { 'x-should-retry': 'false' });
+    };
+    if (requiresOutputTokenLimit && outputLimitHeader !== 'true') {
+      invalidOutputLimit();
+      return;
+    }
     if (req.method === 'POST' && url.startsWith('/v1/responses')) {
       stageSpan?.beginStage('bodyRead');
       try {
@@ -9135,6 +9150,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
         stageSpan?.setNativeCorrelation(parsed);
         if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object')
           throw new Error('request body must be a JSON object');
+        if (requiresOutputTokenLimit && (!Number.isSafeInteger(parsed.max_output_tokens) ||
+            (parsed.max_output_tokens as number) <= 0)) {
+          invalidOutputLimit();
+          return;
+        }
         const modelSpec = typeof parsed.model === 'string' ? parsed.model : undefined;
         // Reuse the bridge parser as the one request-boundary policy seam. It
         // resolves omitted models, normalizes aliases/effort, and throws on the
@@ -9385,6 +9405,16 @@ export function createInferenceGateway(deps: GatewayDeps) {
         yieldedFrom: cliInitialPinYieldedFrom,
       });
       const transport = codexOAuthProxyEnabled ? 'oauth-http' : 'cli-exec';
+      // Subscription normalization removes max_output_tokens; cli-exec cannot
+      // enforce it either. Refuse before auth, normalization, or execution.
+      if (requiresOutputTokenLimit &&
+          adapter.lane.transports.find(t => t.id === transport)?.enforcesOutputTokenLimit !== true) {
+        sendJson(res, 422, { type: 'error', gateway: true,
+          error: { type: 'invalid_request_error', code: 'output_token_limit_unsupported',
+            message: `Selected Codex transport '${transport}' cannot enforce the required output token limit` } },
+          { 'x-should-retry': 'false' });
+        return;
+      }
       await executeCodexLegacyTransport(
         legacyExecutorForGatewayTransport(adapter.lane, transport),
         { req, res, cli, url, preBody, routing: { hardPin, pinned: cliPin, ownerId: wantOwner }, acceptedOperation },

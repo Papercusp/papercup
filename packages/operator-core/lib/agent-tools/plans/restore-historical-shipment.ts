@@ -68,7 +68,8 @@ async function readWitness(
     const rows = await tx<{
       version: string | number; content: string; content_hash: string; origin: string;
       seq: number; shipped_body: string; shipped_hash: string; predecessor_body: string;
-      local_shipment_captured: boolean; rubric_retired_with_shipment: boolean;
+      local_shipment_captured: boolean; durable_shipment_attested: boolean;
+      rubric_retired_with_shipment: boolean;
     }[]>`
       SELECT p.version, p.content, p.content_hash, p.origin, head.seq,
              head.content_snapshot AS shipped_body, head.content_hash AS shipped_hash,
@@ -80,6 +81,20 @@ async function readWitness(
                   AND o.row->>'content_hash' = head.content_hash
                   AND o.row->>'status' = 'shipped' AND o.row->>'origin' = 'local'
              ) AS local_shipment_captured,
+             -- substrate_outbox is pruned within hours (WI-10006248), so the capture
+             -- above expires long before a rollback may be noticed. The durable pair:
+             -- the head revision is attributed (a remote replay writes no revision
+             -- row) and its own author emitted the local-origin shipped event.
+             (head.author_id IS NOT NULL AND head.author_kind IS NOT NULL AND EXISTS (
+               SELECT 1 FROM harness_shared.coord_event_log e
+                WHERE e.workspace_id = p.workspace_id AND e.surface = 'plan-events'
+                  AND (e.harness_slug IS NULL OR e.harness_slug = p.harness_slug)
+                  AND e.origin = 'local' AND e.writer_key = head.author_id
+                  AND e.body->>'plan_slug' = p.plan_slug
+                  AND e.body->>'event' = 'status_changed' AND e.body->>'after' = 'shipped'
+                  AND e.ts BETWEEN to_timestamp(head.created_at / 1000.0) - interval '5 minutes'
+                               AND to_timestamp(head.created_at / 1000.0) + interval '5 minutes'
+             )) AS durable_shipment_attested,
              EXISTS (
                SELECT 1 FROM harness_shared.harness_plans rubric
                JOIN LATERAL (
@@ -109,7 +124,8 @@ async function readWitness(
     return row ? {
       version: Number(row.version), content: row.content, contentHash: row.content_hash, origin: row.origin,
       seq: Number(row.seq), shippedBody: row.shipped_body, shippedHash: row.shipped_hash,
-      predecessorBody: row.predecessor_body, localShipmentCaptured: row.local_shipment_captured,
+      predecessorBody: row.predecessor_body,
+      localShipmentCaptured: row.local_shipment_captured || row.durable_shipment_attested,
       rubricRetiredWithShipment: row.rubric_retired_with_shipment,
     } : null;
   });

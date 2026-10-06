@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { journalEntryForMovement, type MoneyMovement } from '../../../cupboard/money-journal';
+import { journalEntryForMovement, type JournalEntry, type MoneyMovement } from '../../../cupboard/money-journal';
 import { receiptCommitment } from '../../../cupboard/payment-receipt';
 import { evaluateHostedBudget } from './budget-policy';
-import { evaluateHostedPrepaidFunding, type HostedPrepaidFundingInput } from './budget-funding';
+import { evaluateHostedPrepaidFunding, type HostedCashBacking, type HostedPrepaidFundingInput } from './budget-funding';
 
 const T = Date.UTC(2026, 9, 2);
 const START = Date.UTC(2026, 9, 1);
@@ -27,12 +27,28 @@ const charge = (changes: Partial<HostedPrepaidFundingInput['priorCharges'][numbe
   chargeId: 'charge-a', organizationId: 'org-a', customerWorkspaceId: 'ws-a', budgetKey: KEY,
   periodEndMs: START, costSource: 'provider-billed' as const, providerFinal: true, micros: 100_000, ...changes,
 });
-const input = (changes: Partial<HostedPrepaidFundingInput> = {}): HostedPrepaidFundingInput => ({
-  scope, budgetKey: KEY, windowStartMs: START, asOfMs: T,
-  snapshot: { controlWorkspaceId: 'control', organizationId: 'org-a', stripeAccountId: 'acct_A',
-    stripeCustomerId: 'cus_A', livemode: true, complete: true, asOfMs: T, evidenceRef: 'stripe:census-a' },
-  payments: [payment()], reversals: [], allocations: [allocation()], priorCharges: [], ...changes,
-});
+function journal(id: string, movement: MoneyMovement): JournalEntry {
+  const built = journalEntryForMovement({ entryId: id, occurredAtMs: T, currency: 'USD',
+    externalRef: { kind: 'bank-transaction', id }, movement });
+  if (!built.ok) throw new Error(built.detail);
+  return built.entry;
+}
+function cash(journalEntries: readonly JournalEntry[], changes: Partial<HostedCashBacking> = {}): HostedCashBacking {
+  return { controlWorkspaceId: 'control', stripeAccountId: 'acct_A', asOfMs: T,
+    livemode: true, complete: true, evidenceRef: 'cash:reconciled-pool', journalEntries,
+    availableMicros: 100_000_000, unpaidProviderMicros: 0, retainedReserveMicros: 0, ...changes };
+}
+const capital = payment('txn_capital', 10_000, 0, 0,
+  { kind: 'customer-payment', grossCents: 10_000, feeCents: 0, taxCents: 0, daoCents: 0, refundReserveCents: 0 }).entry;
+function input(changes: Partial<HostedPrepaidFundingInput> = {}): HostedPrepaidFundingInput {
+  const payments = changes.payments ?? [payment()];
+  const reversals = changes.reversals ?? [];
+  return { scope, budgetKey: KEY, windowStartMs: START, asOfMs: T,
+    snapshot: { controlWorkspaceId: 'control', organizationId: 'org-a', stripeAccountId: 'acct_A',
+      stripeCustomerId: 'cus_A', livemode: true, complete: true, asOfMs: T, evidenceRef: 'stripe:census-a' },
+    payments, reversals, allocations: [allocation()], priorCharges: [],
+    cashBacking: cash([capital, ...payments.map(p => p.entry), ...reversals.map(r => r.entry)]), ...changes };
+}
 const run = (changes: Partial<HostedPrepaidFundingInput> = {}) => evaluateHostedPrepaidFunding(input(changes));
 function refund(id = 'txn_refund', gross = 30, fee = 0, tax = 0, chargeback = false) {
   return { ...payment(id, gross, fee, tax, chargeback
@@ -206,5 +222,92 @@ describe('prepaid allocation rules (verified server census and durable transacti
       position: { ...funding.organization, spentMicros: 0, openReservedMicros: 0, retainedReserveMicros: 0, unreconciled: false },
       maximumCostMicros: 1, asOfMs: T });
     expect(decision).toMatchObject({ admitted: false, reason: 'budget-exhausted', capMicros: 0, capMicrosExact: '0.9' });
+  });
+
+  it('requires independently verified pool backing in addition to a valid customer receipt', () => {
+    expect(run({ cashBacking: null })).toEqual({ ok: false, reason: 'unverified-cash-backing' });
+    expect(run({ cashBacking: cash([payment().entry]) })).toEqual({ ok: false, reason: 'insufficient-cash-backing' });
+    // The processor fee leaves cash below the face value of the credits owed.
+    expect(run({ cashBacking: cash([capital, payment().entry]) })).toMatchObject({ ok: true });
+  });
+
+  it.each(['livemode', 'complete'] as const)('refuses cash evidence without verified %s', field => {
+    expect(run({ cashBacking: { ...input().cashBacking!, [field]: false } }))
+      .toEqual({ ok: false, reason: 'unverified-cash-backing' });
+  });
+
+  it.each(['controlWorkspaceId', 'stripeAccountId', 'evidenceRef'] as const)('refuses unbound cash %s', field => {
+    expect(run({ cashBacking: { ...input().cashBacking!, [field]: '' } }))
+      .toEqual({ ok: false, reason: 'unverified-cash-backing' });
+  });
+
+  it.each([-1, 1])('refuses cash evidence at a different cutoff (%s)', delta => {
+    expect(run({ cashBacking: { ...input().cashBacking!, asOfMs: T + delta } }))
+      .toEqual({ ok: false, reason: 'unverified-cash-backing' });
+  });
+
+  it('refuses unknown retained exposure and insufficient independent liquid cash', () => {
+    expect(run({ cashBacking: { ...input().cashBacking!, retainedReserveMicros: null } }))
+      .toEqual({ ok: false, reason: 'unverified-cash-backing' });
+    expect(run({ cashBacking: { ...input().cashBacking!, availableMicros: 999_999 } }))
+      .toEqual({ ok: false, reason: 'insufficient-cash-backing' });
+  });
+
+  it('includes every customer credit obligation rather than only this customer allocation', () => {
+    const other = payment('txn_other', 10_000, 0, 0).entry;
+    expect(run({ cashBacking: cash([capital, payment().entry, other]) }))
+      .toEqual({ ok: false, reason: 'insufficient-cash-backing' });
+    expect(run({ cashBacking: cash([capital, payment().entry, other], { availableMicros: 101_000_000 }) }))
+      .toMatchObject({ ok: true });
+  });
+
+  it.each([10_001, 10_098])('subtracts %s cents of provider outflows before admitting valid allocations', amountCents => {
+    const paid = journal('bank-provider', { kind: 'provider-payment', amountCents });
+    expect(run({ cashBacking: cash([capital, payment().entry, paid]) }))
+      .toEqual({ ok: false, reason: 'insufficient-cash-backing' });
+  });
+
+  it('does not offset another obligation using a debit refund-provision balance', () => {
+    const refundDebit = refund().entry;
+    expect(run({ cashBacking: cash([capital, payment().entry, refundDebit], { availableMicros: 900_000 }) }))
+      .toEqual({ ok: false, reason: 'insufficient-cash-backing' });
+  });
+
+  it('reserves tax, DAO and refund obligations without treating subscription revenue as prepaid funding', () => {
+    const other = payment('txn_subscription', 10_000, 0, 0,
+      { kind: 'customer-payment', grossCents: 10_000, feeCents: 0, taxCents: 3000, daoCents: 3000, refundReserveCents: 4000 }).entry;
+    expect(run({ cashBacking: cash([capital, payment().entry, other]) }))
+      .toEqual({ ok: false, reason: 'insufficient-cash-backing' });
+    expect(run({ cashBacking: cash([capital, payment().entry, other], { availableMicros: 101_000_000 }) }))
+      .toMatchObject({ ok: true, organization: { fundedMicros: 500_000 } });
+  });
+
+  it('aggregates exact unpaid costs and continuing exposure before comparing backing', () => {
+    const backing = cash([capital, payment().entry], { availableMicros: 1_000_001,
+      unpaidProviderMicros: 0, unpaidProviderMicrosExact: '0.6', retainedReserveMicros: 1 });
+    expect(run({ cashBacking: backing })).toEqual({ ok: false, reason: 'insufficient-cash-backing' });
+    expect(run({ cashBacking: { ...backing, availableMicros: 1_000_002 } })).toMatchObject({ ok: true });
+    expect(run({ cashBacking: { ...backing, retainedReserveMicros: 0, availableMicrosExact: '1000001.6' } }))
+      .toMatchObject({ ok: true });
+  });
+
+  it.each(['9007199254740991.1', '100000000.0', '-1', '1e6'])('rejects unsafe/noncanonical exact cash %s', availableMicrosExact => {
+    expect(() => run({ cashBacking: { ...input().cashBacking!, availableMicrosExact } })).toThrow(/micro amount/);
+  });
+
+  it('does not accept scoped source postings absent from or changed in the global journal', () => {
+    expect(() => run({ cashBacking: cash([capital]) })).toThrow(/prepaid posting mismatch/);
+    const p = payment().entry;
+    expect(() => run({ cashBacking: cash([capital, { ...p, lines: capital.lines }]) })).toThrow(/prepaid posting mismatch/);
+  });
+
+  it.each(['duplicate', 'reference-replay', 'future', 'currency', 'unbalanced'] as const)('refuses %s cash journal evidence', kind => {
+    const p = payment().entry;
+    const entries = kind === 'duplicate' ? [capital, p, p]
+      : kind === 'reference-replay' ? [capital, p, { ...p, entryId: 'alias' }]
+      : [capital, { ...p, ...(kind === 'future' ? { occurredAtMs: T + 1 }
+        : kind === 'currency' ? { currency: 'EUR' }
+        : { lines: p.lines.slice(1) }) }];
+    expect(() => run({ cashBacking: cash(entries) })).toThrow(/cash backing/);
   });
 });

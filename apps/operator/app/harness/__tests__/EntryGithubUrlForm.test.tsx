@@ -19,6 +19,7 @@ import {
   repoLabelFromUrl,
   stepForErrorCode,
 } from '../EntryGithubUrlForm';
+import { integrationModeQuestion } from '@papercusp/operator-core/lib/harness/git-sync/integration-mode-question';
 
 // Test-watchdog selection does not always inherit apps/operator's setupFiles.
 // Radix exercises ResizeObserver only after particular form transitions, so a
@@ -30,6 +31,24 @@ if (typeof globalThis.ResizeObserver === 'undefined') {
     disconnect(): void {}
   } as unknown as typeof ResizeObserver;
 }
+
+// P-018: the integration-question row (repo-facts recommendation) is served by
+// useSyncQuery('potIntegration.createQuestion'); every other query keeps the
+// real hook. `integrationRows.current` undefined = no row (the fact-free question).
+const integrationRows = vi.hoisted(() => ({ current: undefined as unknown[] | undefined }));
+vi.mock('@papercusp/sync', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@papercusp/sync')>();
+  return {
+    ...actual,
+    useSyncQuery: ((opts: { queryName: string }) =>
+      opts.queryName === 'potIntegration.createQuestion'
+        ? { data: integrationRows.current, isLoading: false, error: null }
+        : (actual.useSyncQuery as (o: unknown) => unknown)(opts)) as typeof actual.useSyncQuery,
+  };
+});
+afterEach(() => {
+  integrationRows.current = undefined;
+});
 
 // useLexicon → flag bootstrap (fetch + EventSource) is mocked out; the form
 // only resolves the 'pot' term ("Hive"/"hive").
@@ -561,6 +580,56 @@ describe('integration-mode question (new hive)', () => {
     await user.click(screen.getByRole('button', { name: 'Create hive' }));
     await waitFor(() => expect(postedBodies('/api/harness/pots/from-repo')).toHaveLength(1));
     expect(postedBodies('/api/harness/pots/from-repo')[0]).toMatchObject({ githubUrl: VALID_URL, integrationMode: 'review' });
+  });
+
+  // ── P-018: recommend and lock from the repo's checkable facts ──
+  const factsRow = (recommendation: Parameters<typeof integrationModeQuestion>[0]['recommendation']) => [
+    { githubUrl: VALID_URL, ...integrationModeQuestion({ repoLabel: 'acme/web', recommendation }) },
+  ];
+
+  it('an unlocked recommendation shows a Recommended badge and its reason, and leaves the answer to the owner', async () => {
+    const user = userEvent.setup();
+    integrationRows.current = factsRow({ recommended: 'review', locked: false, rule: 'other-committers', reason: 'Other people commit to acme/web.' });
+    respondByUrl(created);
+    renderForm();
+    await user.type(screen.getByPlaceholderText('https://github.com/owner/repo'), VALID_URL);
+    await waitFor(() => expect(screen.getByTestId('integration-mode-review-recommended').textContent).toBe('Recommended'));
+    expect(screen.getByTestId('integration-mode-reason').textContent).toBe('Other people commit to acme/web.');
+    expect(screen.queryByTestId('integration-mode-direct-recommended')).toBeNull();
+    expect(radio('direct').disabled).toBe(false);
+    expect(radio('direct').checked).toBe(true);
+    // Explicitly choosing straight in sends it, so a workspace default cannot override the owner.
+    await user.click(radio('direct'));
+    await user.click(screen.getByRole('button', { name: 'Create hive' }));
+    await waitFor(() => expect(postedBodies('/api/harness/pots/from-repo')).toHaveLength(1));
+    expect(postedBodies('/api/harness/pots/from-repo')[0]).toMatchObject({ integrationMode: 'direct' });
+  });
+
+  it('no write access LOCKS the working copy: straight-in is disabled with the reason, the working copy is selected', async () => {
+    const user = userEvent.setup();
+    const reason = "You can't push to acme/web, so the agents' work has to go through a working copy and PRs.";
+    integrationRows.current = factsRow({ recommended: 'review', locked: true, rule: 'no-write-access', reason });
+    respondByUrl(created);
+    renderForm();
+    await user.type(screen.getByPlaceholderText('https://github.com/owner/repo'), VALID_URL);
+    await waitFor(() => expect(radio('direct').disabled).toBe(true));
+    expect(screen.getByTestId('integration-mode-direct').textContent).toContain(reason);
+    expect(screen.getByTestId('integration-mode-review-recommended').textContent).toBe('Required');
+    expect(radio('review').checked).toBe(true);
+    // Unanswered → nothing sent; the server applies the lock it re-probes.
+    await user.click(screen.getByRole('button', { name: 'Create hive' }));
+    await waitFor(() => expect(postedBodies('/api/harness/pots/from-repo')).toHaveLength(1));
+    expect(postedBodies('/api/harness/pots/from-repo')[0]).not.toHaveProperty('integrationMode');
+  });
+
+  it('a recommendation row for a DIFFERENT repo is ignored', async () => {
+    const user = userEvent.setup();
+    integrationRows.current = [{ ...factsRow({ recommended: 'review', locked: true, rule: 'no-write-access', reason: 'x' })[0], githubUrl: 'https://github.com/other/repo' }];
+    renderForm();
+    await user.type(screen.getByPlaceholderText('https://github.com/owner/repo'), VALID_URL);
+    await new Promise((r) => setTimeout(r, 450));
+    expect(radio('direct').disabled).toBe(false);
+    expect(screen.queryByTestId('integration-mode-reason')).toBeNull();
   });
 
   it('is not asked when adding a repo into an existing hive', () => {

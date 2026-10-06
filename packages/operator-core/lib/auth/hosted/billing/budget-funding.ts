@@ -31,6 +31,30 @@ interface Reversal extends Omit<Payment, 'available'> {
   /** Established by the authenticated provider source, not by matching amounts. */
   readonly paymentTransactionId: string;
 }
+/** Current, complete cash-pool evidence supplied by the authenticated reader.
+ * The journal covers EVERY customer/organization sharing this pool. Available
+ * cash is independently reconciled liquid cash, not a receipt sum or forecast.
+ * The reader must lock this population with allocations and reservation writes.
+ * These fields are verifier inputs; this pure module does not authenticate them.
+ */
+export interface HostedCashBacking {
+  readonly controlWorkspaceId: string;
+  readonly stripeAccountId: string;
+  readonly asOfMs: number;
+  readonly livemode: boolean;
+  readonly complete: boolean;
+  readonly evidenceRef: string;
+  readonly journalEntries: readonly JournalEntry[];
+  readonly availableMicros: number;
+  readonly availableMicrosExact?: string;
+  /** Unpaid costs not already represented by journal outflows or reserves.
+   * The reader must reconcile provider bills/roll-ups to avoid double counting.
+   * Never subtract customer credit obligations merely because work was admitted.
+   */
+  readonly unpaidProviderMicros: number;
+  readonly unpaidProviderMicrosExact?: string;
+  readonly retainedReserveMicros: number | null;
+}
 export interface HostedPrepaidFundingInput {
   readonly scope: { readonly controlWorkspaceId: string; readonly organizationId: string; readonly customerWorkspaceId: string };
   readonly budgetKey: string;
@@ -63,10 +87,13 @@ export interface HostedPrepaidFundingInput {
     readonly micros: number;
     readonly microsExact?: string;
   }[];
+  /** Missing current cash authority refuses even otherwise valid allocations. */
+  readonly cashBacking: HostedCashBacking | null;
 }
 type FundingAmount = { readonly fundedMicros: number; readonly fundedMicrosExact?: string };
 type Refusal = 'unverified-funding' | 'funding-scope-mismatch' | 'unavailable-payment'
-  | 'unmatched-reversal' | 'funding-overallocated' | 'funding-overspent';
+  | 'unmatched-reversal' | 'funding-overallocated' | 'funding-overspent'
+  | 'unverified-cash-backing' | 'insufficient-cash-backing';
 export type HostedPrepaidFundingResult = { readonly ok: false; readonly reason: Refusal }
   | { readonly ok: true; readonly organization: FundingAmount;
     /** Null means no separate workspace allocation; the organization cap still applies. */
@@ -113,6 +140,54 @@ function posting(payment: Omit<Payment, 'available'>, customerId: string): Journ
 }
 const cents = (entry: JournalEntry, account: JournalLine['account'], side: JournalLine['side']) =>
   entry.lines.filter(l => l.account === account && l.side === side).reduce((n, l) => n + BigInt(l.cents), 0n);
+
+function cashBackingProblem(input: HostedPrepaidFundingInput): Refusal | null {
+  const c = input.cashBacking;
+  if (!c || c.controlWorkspaceId !== input.scope.controlWorkspaceId
+      || c.stripeAccountId !== input.snapshot.stripeAccountId || c.asOfMs !== input.asOfMs
+      || c.livemode !== true || c.complete !== true || !id(c.evidenceRef)
+      || c.retainedReserveMicros === null) return 'unverified-cash-backing';
+  if (!Array.isArray(c.journalEntries) || !safe(c.retainedReserveMicros)) throw new Error('invalid cash backing input');
+  const available = exact(c.availableMicros, c.availableMicrosExact);
+  const unpaid = exact(c.unpaidProviderMicros, c.unpaidProviderMicrosExact);
+  const postings = new Map<string, JournalEntry>();
+  const references = new Set<string>();
+  let operating = 0n;
+  const liabilities = new Map<JournalLine['account'], bigint>();
+  for (const raw of c.journalEntries) {
+    const valid = validateJournalEntry(raw);
+    if (!valid.ok) throw new Error('invalid cash backing journal');
+    const entry = valid.entry;
+    const ref = JSON.stringify(entry.externalRef);
+    if (entry.currency !== 'USD' || entry.occurredAtMs > input.asOfMs
+        || postings.has(entry.entryId) || references.has(ref)) throw new Error('invalid or duplicate cash backing posting');
+    postings.set(entry.entryId, entry); references.add(ref);
+    for (const line of entry.lines) {
+      const debit = line.side === 'debit' ? BigInt(line.cents) : -BigInt(line.cents);
+      if (line.account === 'operating') operating += debit;
+      if (['customer-credit-reserve', 'refund-chargeback-reserve', 'tax-reserve', 'dao-payable'].includes(line.account)) {
+        liabilities.set(line.account, (liabilities.get(line.account) ?? 0n) - debit);
+      }
+    }
+  }
+  // A scoped receipt cannot supply backing absent from the global journal.
+  for (const p of [...input.payments, ...input.reversals]) {
+    const stored = postings.get(p.entry.entryId);
+    if (!stored || stored.occurredAtMs !== p.entry.occurredAtMs || stored.movement !== p.entry.movement
+        || JSON.stringify(stored.externalRef) !== JSON.stringify(p.entry.externalRef)
+        || sortedLines(stored.lines) !== sortedLines(p.entry.lines)) throw new Error('cash backing prepaid posting mismatch');
+  }
+  if (operating < 0n) return 'insufficient-cash-backing';
+  // Each credit-normal account contributes its positive obligation separately.
+  // A debit provision balance never cancels another customer's credit/tax/DAO.
+  const reservedCents = [...liabilities.values()].reduce((n, value) => n + (value > 0n ? value : 0n), 0n);
+  const reserved = addMicrosDecimals((reservedCents * BigInt(MICROS_PER_CENT)).toString(),
+    unpaid, String(c.retainedReserveMicros));
+  // Both book cash AND independent available cash must back the entire pool.
+  // Compare aggregate decimals before any whole-micro admission projection.
+  return subtract((operating * BigInt(MICROS_PER_CENT)).toString(), reserved) === null
+    || subtract(available, reserved) === null ? 'insufficient-cash-backing' : null;
+}
 
 /** Allocations partition the cash of each individual prepaid payment; they are
  * never additional money alongside the organization total. Fees, tax and
@@ -223,5 +298,7 @@ export function evaluateHostedPrepaidFunding(input: HostedPrepaidFundingInput): 
   const workspaceGrant = workspaceGrants.has(workspaceKey(s.customerWorkspaceId, input.budgetKey));
   const scoped = workspaceGrant ? subtract(addMicrosDecimals(...workspace), addMicrosDecimals(...priorWorkspace)) : '0';
   if (organization === null || scoped === null) return refuse('funding-overspent');
+  const cashProblem = cashBackingProblem(input);
+  if (cashProblem) return refuse(cashProblem);
   return { ok: true, organization: amount(organization), workspace: workspaceGrant ? amount(scoped) : null, evidenceRef: v.evidenceRef };
 }

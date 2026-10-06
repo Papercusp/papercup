@@ -1069,6 +1069,10 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
                 checked={effectiveIntegrationMode === opt.value}
                 disabled={!opt.available}
                 onChange={() => setIntegrationMode(opt.value)}
+                // A click on the already-selected default fires no change event, but it
+                // is still an explicit answer: record it so the server's workspace
+                // default cannot override what the owner picked (P-018).
+                onClick={() => setIntegrationMode(opt.value)}
                 style={{ marginTop: 3 }}
               />
               <span>

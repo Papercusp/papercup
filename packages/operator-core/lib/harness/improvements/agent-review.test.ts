@@ -9,6 +9,7 @@ import {
   LEGACY_AGENT_REVIEW_SUBMITTER,
 } from './agent-review-policy';
 import {
+  approvalAcceptance,
   claimAgentReview,
   enterAgentReview,
   preflightAgentReviewGrade,
@@ -137,6 +138,39 @@ function harness(initial: WorkItem = issue()) {
     resolveSubmitterLiveness,
   };
 }
+
+describe('approvalAcceptance — one verification stage, kind-specific checks (P-006 / D-019)', () => {
+  const proposal = {
+    problem: 'The floor admits unverified bugs.',
+    evidence: ['observed on the current build'],
+    outcome: 'Only verified bugs are accepted.',
+    scope: 'The acceptance seal.',
+    completionCheck: 'The seal refuses a bug without a receipt.',
+  };
+  const payloadWith = (extra: Record<string, unknown> = {}) => ({
+    implementationReadiness: createImplementationReadiness({
+      status: 'unknown',
+      source: 'capture-policy',
+      reason: 'awaiting-agent-review',
+      evidence: { acceptance: proposal },
+    }),
+    ...extra,
+  });
+  const approve = (overrides: Partial<WorkItem>) =>
+    approvalAcceptance(issue(overrides), { reviewer: 'su-reviewer', submittedBy: 'su-author', round: 1, grade: 5 });
+  const receipt = { kind: 'scripted-repro', ref: 'scripts/repro.sh', buildSha: 'abcdef1' };
+
+  it('seals a bug only with the reproduction receipt recorded on it', () => {
+    expect(approve({ kind: 'bug', payload: payloadWith() })).toBeUndefined();
+    expect(approve({ kind: 'bug', payload: payloadWith({ intakeReproduction: { receipt: { ...receipt, buildSha: 'zz' } } }) })).toBeUndefined();
+    const contract = approve({ kind: 'bug', payload: payloadWith({ intakeReproduction: { receipt } }) });
+    expect(contract?.verification).toEqual({ check: 'reproduction', receipt });
+  });
+
+  it('seals a change through proposal review, with no receipt needed', () => {
+    expect(approve({ kind: 'change', payload: payloadWith() })?.verification).toEqual({ check: 'proposal-review' });
+  });
+});
 
 describe('enterAgentReview (abolish-human-review D-003)', () => {
   it('enrolls on the existing ledger without overwriting richer SU provenance', async () => {

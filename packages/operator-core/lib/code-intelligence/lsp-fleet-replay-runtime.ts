@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { appendFileSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, readSync, readdirSync, realpathSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { callLspDaemonRpc, readLspDaemonAdmission } from './lsp-daemon-client';
 import { LSP_DAEMON_SOCKET_ENV } from './lsp-daemon-socket';
 import { classifyReplayAnswer, evaluateReplayLadder, runReplay, scoreReplay, REPLAY_CLASSES,
@@ -33,6 +34,22 @@ export interface DaemonReplayConfig {
   readonly files: Readonly<Record<string, string>>;
   readonly corpus: Readonly<Record<ReplayClass, ReplayCorpus>>;
   readonly sourceSnapshot?: ReplayOracleInput['sourceSnapshot'];
+  /** Predeclared runtime population and command-line-anchored recorder launches.
+   * Kept separate from the independently authored source oracle. */
+  readonly runtimeWitness?: ReplayRuntimeWitness;
+}
+export interface ReplayRuntimeWitness {
+  readonly directory: string;
+  readonly runId: string;
+  readonly bootstraps: Readonly<Record<string, string>>;
+  readonly files: Readonly<Record<string, string>>;
+}
+/** Reuse Node's load/compile boundaries with the maintained plain-Node bundle
+ * route. The recorder runs from literal argv bytes, never a later self-disk read. */
+export function replayRuntimeLaunch(entry: string, directory: string, runId: string, args: readonly string[] = []) {
+  const recorder = readFileSync(fileURLToPath(new URL('./lsp-replay-runtime-witness.cjs', import.meta.url)), 'utf8');
+  const code = `${recorder}\n;startReplayRuntime(${JSON.stringify({ entry: resolve(entry), directory: resolve(directory), runId, args })});`;
+  return { args: ['--eval', code], evalSha256: replayHash(code), entry: resolve(entry) };
 }
 export const replayHash = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
 /** Runtime binaries can be large; hash their original bytes without a whole-file allocation. */
@@ -463,7 +480,7 @@ const replayProcessReader: ReplayProcessReader = {
   link: readlinkSync,
 };
 /** Kernel executable bytes and boot/start identity, not a later disk-path hash. */
-export function replayProcessIdentity(pid: number, reader: ReplayProcessReader = replayProcessReader) {
+export function replayProcessIdentity(pid: number, reader: ReplayProcessReader = replayProcessReader, witness?: ReplayRuntimeWitness) {
   const unknown: string[] = [];
   const before = reader.identity(pid);
   const read = <T>(label: string, fn: () => T): T | null => {
@@ -475,16 +492,66 @@ export function replayProcessIdentity(pid: number, reader: ReplayProcessReader =
   const after = reader.identity(pid);
   if (!before || !after) unknown.push('process-identity-unavailable');
   else if (before !== after) unknown.push('process-replaced-during-snapshot');
-  // Executable identity does not witness scripts, loaders or native modules.
-  return { pid, identity: before, cmdline, cgroup, executable, loadedModules: 'unmeasured' as const, unknown };
+  const runtime = witness ? replayLoadedRuntime(pid, before, cmdline, witness, reader) : null;
+  return { pid, identity: before, cmdline, cgroup, executable,
+    loadedModules: runtime ?? 'unmeasured' as const, unknown };
+}
+
+/** Never substitute disk filenames for executed bytes. Missing receipts,
+ * unsupported readers/loaders, native mappings and process epochs fail closed. */
+export function replayLoadedRuntime(pid: number, identity: string | null, cmdline: string[],
+  witness: ReplayRuntimeWitness, reader: ReplayProcessReader = replayProcessReader) {
+  const unknown: string[] = [];
+  const receipts: Record<string, unknown>[] = [];
+  const native: { path: string; sha256: string }[] = [];
+  try {
+    const text = reader.text(join(witness.directory, `${pid}.jsonl`));
+    if (!text.endsWith('\n')) unknown.push('incomplete-runtime-receipt');
+    for (const line of text.trim().split('\n')) receipts.push(JSON.parse(line));
+  } catch (error) { unknown.push(`unreadable-runtime-receipts:${String(error)}`); }
+  const bootstrap = receipts[0];
+  const evalIndex = cmdline.indexOf('--eval');
+  const evalSha256 = evalIndex < 0 ? null : replayHash(cmdline[evalIndex + 1] ?? '');
+  if (!bootstrap || bootstrap.kind !== 'bootstrap' || bootstrap.nodeOptions !== '' ||
+      !evalSha256 || bootstrap.evalSha256 !== evalSha256 ||
+      witness.bootstraps[String(bootstrap.entry)] !== evalSha256) unknown.push('unwitnessed-runtime-bootstrap');
+  if (!receipts.some(row => row.kind === 'ready')) unknown.push('runtime-recorder-not-ready');
+  const loads = receipts.filter(row => ['esm-load-return', 'commonjs-compile', 'json-load'].includes(String(row.kind)));
+  if (!loads.length || !loads.some(row => row.path === bootstrap?.entry)) unknown.push('runtime-entry-not-loaded');
+  for (const row of receipts) {
+    if (row.schemaVersion !== 'lsp-replay-runtime-receipt-v1' || row.pid !== pid || !identity ||
+        row.identity !== identity || row.runId !== witness.runId) unknown.push('runtime-receipt-identity-mismatch');
+    if (row.kind === 'unknown') unknown.push(String(row.reason));
+    if (['esm-load-return', 'commonjs-compile', 'json-load', 'file-read'].includes(String(row.kind))) {
+      if (typeof row.path !== 'string' || witness.files[row.path] !== row.sha256)
+        unknown.push(`unfrozen-loaded-bytes:${String(row.path)}`);
+    } else if (!['bootstrap', 'ready', 'native-load', 'unknown'].includes(String(row.kind))) unknown.push('unsupported-runtime-receipt');
+  }
+  // Kernel map_files names the mapped inode even after disk replacement/unlink.
+  // Access failures are unknown; a later disk hash is never a fallback.
+  try {
+    const seen = new Set<string>();
+    for (const line of reader.text(`/proc/${pid}/maps`).trim().split('\n')) {
+      const match = /^(\S+)\s+\S+\s+\S+\s+\S+\s+\S+\s+(.+)$/.exec(line);
+      if (!match || !match[2].startsWith('/') || seen.has(match[2])) continue;
+      const path = match[2]; seen.add(path);
+      const sha256 = replayHash(reader.bytes(`/proc/${pid}/map_files/${match[1]}`));
+      native.push({ path, sha256 });
+      if (witness.files[path] !== sha256) unknown.push(`unfrozen-native-mapping:${path}`);
+    }
+    for (const row of receipts.filter(row => row.kind === 'native-load'))
+      if (!native.some(mapping => mapping.path === row.path)) unknown.push(`unwitnessed-native-load:${String(row.path)}`);
+  } catch (error) { unknown.push(`unreadable-native-mappings:${String(error)}`); }
+  if (reader.identity(pid) !== identity) unknown.push('process-replaced-during-runtime-witness');
+  return { receipts, native, unknown: [...new Set(unknown)] };
 }
 
 /** Reuse the managed cgroup walk, retaining unreadable branches as unknown. */
 export function replayServerPopulation(pid: number, taskId: string, deps: {
-  process?: ReplayProcessReader; fs?: CgroupFs;
+  process?: ReplayProcessReader; fs?: CgroupFs; witness?: ReplayRuntimeWitness;
 } = {}) {
   const processReader = deps.process ?? replayProcessReader;
-  const root = replayProcessIdentity(pid, processReader);
+  const root = replayProcessIdentity(pid, processReader, deps.witness);
   const unknown = [...root.unknown];
   const cgroup = root.cgroup ? parseProcCgroup(root.cgroup) : null;
   if (!cgroup || taskIdFromScopeUnit(basename(cgroup)) !== taskId)
@@ -518,7 +585,7 @@ export function replayServerPopulation(pid: number, taskId: string, deps: {
   const groups = absolute && !unknown.length ? walkCgroupTree(absolute, fs) : [];
   const pids = [...new Set(groups.flatMap(group => group.pids))].sort((a, b) => a - b);
   if (!pids.includes(pid)) unknown.push('server-missing-from-cgroup-census');
-  const processes = pids.map(child => child === pid ? root : replayProcessIdentity(child, processReader));
+  const processes = pids.map(child => child === pid ? root : replayProcessIdentity(child, processReader, deps.witness));
   for (const child of processes) {
     unknown.push(...child.unknown.map(reason => `pid:${child.pid}:${reason}`));
     const childGroup = child.cgroup ? parseProcCgroup(child.cgroup) : null;
@@ -570,10 +637,11 @@ export async function runDaemonReplay(config: DaemonReplayConfig, archiveParent:
     const admission = await readLspDaemonAdmission(config.workspaceId);
     const runtime = health.daemonRuntime;
     const processes = runtime ? [runtime.pid, ...runtime.servers.flatMap(server => server.pid ? [server.pid] : [])]
-      .map(pid => replayProcessIdentity(pid)) : [];
+      .map(pid => replayProcessIdentity(pid, replayProcessReader, config.runtimeWitness)) : [];
     const populations = runtime?.servers.filter(server => resolve(server.rootPath) === resolve(config.rootPath))
-      .flatMap(server => server.pid && server.taskId ? [replayServerPopulation(server.pid, server.taskId)] : []) ?? [];
-    const snapshot = { label, atMs: Date.now(), health, admission, processes, populations, fileDrift: replayFileMismatches(config.files) };
+      .flatMap(server => server.pid && server.taskId ? [replayServerPopulation(server.pid, server.taskId, { witness: config.runtimeWitness })] : []) ?? [];
+    const snapshot = { label, atMs: Date.now(), health, admission, processes, populations,
+      fileDrift: replayFileMismatches({ ...config.files, ...config.runtimeWitness?.files }) };
     record('boundaries.jsonl', snapshot);
     return snapshot;
   };
@@ -612,6 +680,7 @@ export async function runDaemonReplay(config: DaemonReplayConfig, archiveParent:
           if (!process.executable || config.files[process.executable.path] !== process.executable.sha256)
             problems.push(`unfrozen-running-executable:${process.pid}`);
           if (process.loadedModules === 'unmeasured') problems.push(`unqualified-loaded-module-population:${process.pid}`);
+          else problems.push(...process.loadedModules.unknown.map(reason => `runtime:${process.pid}:${reason}`));
         }
         const servers = snapshot.health.daemonRuntime?.servers.filter(server => resolve(server.rootPath) === resolve(config.rootPath));
         if (!servers || servers.length !== 1 || servers[0].health !== 'healthy' || !servers[0].taskId || !servers[0].pid)
@@ -626,7 +695,10 @@ export async function runDaemonReplay(config: DaemonReplayConfig, archiveParent:
       }
       if (JSON.stringify(start.health.daemonRuntime?.servers.map(server => [server.taskId, server.pid])) !==
           JSON.stringify(end.health.daemonRuntime?.servers.map(server => [server.taskId, server.pid]))) problems.push('changed-server-population');
-      if (JSON.stringify(start.processes) !== JSON.stringify(end.processes) ||
+      // Read receipts grow as new inputs are consumed; compare immutable process
+      // identity separately and validate both complete receipt boundaries above.
+      const identities = (rows: typeof start.processes) => rows.map(({ loadedModules: _loaded, ...row }) => row);
+      if (JSON.stringify(identities(start.processes)) !== JSON.stringify(identities(end.processes)) ||
           JSON.stringify(start.populations.map(replayPopulationFingerprint)) !== JSON.stringify(end.populations.map(replayPopulationFingerprint)))
         problems.push('changed-runtime-process-identity');
       const mixed = reports.get('mixed')!;

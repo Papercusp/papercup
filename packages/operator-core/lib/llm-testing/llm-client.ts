@@ -37,6 +37,7 @@ import { readCredentials } from '../credentials';
 import { loopbackFetch } from '../loopback-fetch';
 import { CODEX_LLM_DEFAULT_MODEL, codexWireModel, isCodexModel } from './codex-model-pricing';
 import { captureSourceHash } from '@papercusp/eval-battery';
+import { REQUIRE_OUTPUT_TOKEN_LIMIT_HEADER } from '../inference-gateway/provider-adapters';
 
 const LLM_CLIENT_SOURCE_HASH = captureSourceHash(import.meta.url);
 
@@ -198,6 +199,7 @@ async function llmCallViaCodexGateway(
         // `benchmark`, high enough to stop being first-shed but never ahead of real interactive
         // work.
         'x-papercusp-priority': opts.priority ?? 'llm-testing',
+        ...(opts.requireOutputTokenLimit ? { [REQUIRE_OUTPUT_TOKEN_LIMIT_HEADER]: 'true' } : {}),
       },
       body: JSON.stringify(body),
       signal: opts.signal,
@@ -223,7 +225,16 @@ async function llmCallViaCodexGateway(
   if (!res.ok) {
     const message =
       raw && typeof raw === 'object' ? ((raw as { error?: { message?: string } }).error?.message ?? text) : text;
-    throw new LlmCallError(classifyHttpError({ status: res.status, message }, providerForBackend('codex')));
+    const failure = new LlmCallError(classifyHttpError({ status: res.status, message }, providerForBackend('codex')));
+    const refusal = raw && typeof raw === 'object' ? raw as { gateway?: unknown; error?: { code?: unknown } } : null;
+    if (refusal?.gateway === true &&
+        ((res.status === 422 && refusal.error?.code === 'output_token_limit_unsupported') ||
+         (res.status === 400 && refusal.error?.code === 'output_token_limit_invalid'))) {
+      // The gateway refused before inference. This is a known zero, unlike
+      // missing usage on a request that may already have reached the provider.
+      Object.assign(failure, { costUsd: 0 });
+    }
+    throw failure;
   }
 
   const finalText = extractResponsesText(raw);
@@ -271,6 +282,12 @@ async function llmCallViaCodexGateway(
  */
 export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
   const backend = backendForLlmCall(opts.model);
+  if (opts.requireOutputTokenLimit && (!Number.isSafeInteger(opts.maxTokens) || opts.maxTokens! <= 0)) {
+    throw Object.assign(new RangeError('Required output token limit needs a positive integer maxTokens'), { costUsd: 0 });
+  }
+  if (opts.requireOutputTokenLimit && backend !== 'codex') {
+    throw Object.assign(new Error(`Required output token limit is not implemented for backend '${backend}'`), { costUsd: 0 });
+  }
   let model = modelForLlmCall(opts.model, backend);
   // EI-13118: canonicalize / loudly reject fleet-spec syntax BEFORE it reaches the raw
   // anthropic-direct API call — see canonicalizeAnthropicModel's doc comment.

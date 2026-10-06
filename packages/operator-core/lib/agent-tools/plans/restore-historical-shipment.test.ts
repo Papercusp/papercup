@@ -22,12 +22,16 @@ const witness: HistoricalShipmentWitness = {
 
 afterEach(() => vi.restoreAllMocks());
 
-function transactionalRig(concurrentVersion = request.expectedVersion) {
+function transactionalRig(
+  concurrentVersion = request.expectedVersion,
+  proof: { outbox: boolean; durable: boolean } = { outbox: true, durable: false },
+) {
   const scope = { workspaceId: 'ws', harnessSlug: 'papercusp' };
-  const read = vi.fn(async () => [{
+  const read = vi.fn(async (_sql: TemplateStringsArray, ..._values: unknown[]) => [{
     version: witness.version, content: witness.content, content_hash: witness.contentHash, origin: witness.origin,
     seq: witness.seq, shipped_body: witness.shippedBody, shipped_hash: witness.shippedHash,
-    predecessor_body: witness.predecessorBody, local_shipment_captured: true, rubric_retired_with_shipment: true,
+    predecessor_body: witness.predecessorBody, local_shipment_captured: proof.outbox,
+    durable_shipment_attested: proof.durable, rubric_retired_with_shipment: true,
   }]);
   vi.spyOn(db, 'withWorkspace').mockImplementation(async (_ws, callback) => callback(read as never));
   vi.spyOn(source, 'resolvePlanScope').mockResolvedValue(scope);
@@ -53,7 +57,7 @@ function transactionalRig(concurrentVersion = request.expectedVersion) {
       scope, filePath: 'plan:delivered' };
   };
   vi.spyOn(locks, 'withPlanLock').mockImplementation(lock);
-  return { writes, receipt, revision, emitted };
+  return { writes, receipt, revision, emitted, read };
 }
 
 describe('transactional historical shipment recovery', () => {
@@ -76,6 +80,36 @@ describe('transactional historical shipment recovery', () => {
     expect(rig.receipt).not.toHaveBeenCalled();
     expect(rig.revision).not.toHaveBeenCalled();
     expect(rig.emitted).not.toHaveBeenCalled();
+  });
+
+  // WI-10006248: substrate_outbox is pruned within hours, so a rollback noticed days
+  // later has no outbox capture. The durable attributed-revision + local-event pair
+  // must carry the proof on its own, and neither proof may be optional.
+  it('restores on the durable shipment attestation once the outbox capture has been pruned', async () => {
+    const rig = transactionalRig(request.expectedVersion, { outbox: false, durable: true });
+    expect(await restoreHistoricalShipment({}, request)).toMatchObject({ ok: true, restoredShippedRevision: 17 });
+    expect(rig.writes).toEqual([shipped]);
+    expect(rig.emitted).toHaveBeenCalledOnce();
+  });
+
+  it('refuses with no outbox capture and no durable attestation, writing nothing', async () => {
+    const rig = transactionalRig(request.expectedVersion, { outbox: false, durable: false });
+    expect(await restoreHistoricalShipment({}, request))
+      .toMatchObject({ ok: false, code: 'historical_shipment_proof_missing' });
+    expect(rig.writes).toEqual([]);
+    expect(rig.receipt).not.toHaveBeenCalled();
+    expect(rig.emitted).not.toHaveBeenCalled();
+  });
+
+  it('binds the durable attestation to the head revision author and a local shipped event', async () => {
+    const rig = transactionalRig();
+    await restoreHistoricalShipment({}, request);
+    const sql = (rig.read.mock.calls[0]?.[0] ?? []).join('?').replace(/\s+/g, ' ');
+    expect(sql).toContain('AS durable_shipment_attested');
+    expect(sql).toContain('head.author_id IS NOT NULL');
+    expect(sql).toContain("e.origin = 'local' AND e.writer_key = head.author_id");
+    expect(sql).toContain("e.body->>'after' = 'shipped'");
+    expect(sql).toContain("o.row->>'origin' = 'local'");
   });
 
   it('propagates a failed strict revision without publishing a success event', async () => {

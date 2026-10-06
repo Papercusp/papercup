@@ -129,6 +129,7 @@ import { schemaVersionEvents } from './schema-version';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import {
+  formatMemoryFederationDegradedWarn,
   readMemoryFederationFlagOnce,
   type MemoryFederationFlagRead,
 } from './memory-federation-flag-read';
@@ -1486,9 +1487,14 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   ): void => {
     memoryFederationDegradedReads += 1;
     console.warn(
-      `[read-merge] [${opts.workspaceId}/${opts.harnessSlug}] WI-10005919: mem0-federation flag ` +
-        `${when} read degraded (${read.degraded}, ${read.elapsedMs}ms; degraded reads this boot: ` +
-        `${memoryFederationDegradedReads}) — ${outcome}`,
+      formatMemoryFederationDegradedWarn({
+        workspaceId: opts.workspaceId,
+        harnessSlug: opts.harnessSlug,
+        when,
+        read,
+        degradedReadsThisBoot: memoryFederationDegradedReads,
+        outcome,
+      }),
     );
   };
   const bootMemoryFederationRead = await readMemoryFederationFlag();

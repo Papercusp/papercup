@@ -165,7 +165,7 @@ export async function fetchRepoIntegrationFacts(
   const hasPrRule = Array.isArray(rules) ? rules.some((r) => r?.type === 'pull_request') : null;
   let mainRequiresPr: boolean | null = null;
   if (protectedBranch === true || hasPrRule === true) mainRequiresPr = true;
-  else if (protectedBranch === false && hasPrRule !== true) mainRequiresPr = false;
+  else if (protectedBranch === false) mainRequiresPr = false; // and no pull_request rule (checked above)
 
   let otherCommitters: boolean | null = null;
   if (Array.isArray(contributors) && typeof me === 'string' && me) {

@@ -12,8 +12,12 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import { randomUUID } from 'node:crypto';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
+import { PAPERCUSP_WORKSPACE_ID } from '../harness/papercusp-workspace';
+import { runWithWorkspace } from '../workspace-als';
 
-const WS = 'default';
+// Operator-home plan reads/writes resolve to this tenant, not the legacy
+// default workspace. Bind the request ALS to the same scope as the fixture.
+const WS = PAPERCUSP_WORKSPACE_ID;
 const HARNESS = 'papercusp';
 const h = vi.hoisted(() => ({
   sql: undefined as unknown as postgres.Sql,
@@ -88,7 +92,8 @@ function ctx(): Record<string, unknown> {
 async function dispatch(tool: string, args: Record<string, unknown>): Promise<Record<string, unknown>> {
   const projected = lookupByMcpName(tool);
   expect(projected, `tool ${tool} must be registered`).toBeTruthy();
-  const res = await dispatchProjectedTool(projected!, tool, args, ctx() as never, PROJECTED_DEPS);
+  const res = await runWithWorkspace(WS, () =>
+    dispatchProjectedTool(projected!, tool, args, ctx() as never, PROJECTED_DEPS));
   expect(res.ok, `${tool} dispatch failed: ${JSON.stringify(res.error ?? null)}`).toBe(true);
   const text = (res.result?.content as Array<{ text: string }>)[0]?.text;
   const parsed = text ? JSON.parse(text) : {};
@@ -103,6 +108,10 @@ beforeAll(async () => {
   db = await createOrgTestDb();
   h.sql = db.adminSql;
   h.appSql = db.appSql;
+  const { resolvePlanScope } = await import('../agent-tools/plans/source');
+  await expect(resolvePlanScope({ harnessSlug: HARNESS })).resolves.toEqual({
+    workspaceId: WS, harnessSlug: HARNESS,
+  });
   await db.adminSql`
     INSERT INTO harness_shared.projects
       (id, name, status, slug, workspace_id, created_ts, updated_ts)

@@ -56,6 +56,9 @@ const REVIEW_AUTHORITY: ImplementationAcceptanceAuthority = {
   round: 1,
 };
 
+/** P-006: the D-023 receipt a bug's acceptance must carry. */
+const REPRODUCTION = { kind: 'failing-test', ref: 'packages/operator-core/lib/example.test.ts', buildSha: 'abcdef1' } as const;
+
 function sealedContract(
   source: ImplementationAcceptanceSource = BUG_SOURCE,
   authority: ImplementationAcceptanceAuthority = REVIEW_AUTHORITY,
@@ -66,6 +69,7 @@ function sealedContract(
     reason: 'agent-review-approved (grade 5/5)',
     source,
     acceptedAt: '2026-09-05T00:00:00.000Z',
+    reproduction: source.kind === 'bug' ? REPRODUCTION : undefined,
   });
   if (!sealed.ok) throw new Error(`fixture contract must seal: ${JSON.stringify(sealed)}`);
   return sealed.contract;
@@ -439,6 +443,76 @@ describe('versioned work-item intake stage', () => {
   });
 });
 
+describe('one verification stage, kind-specific checks (P-006 / D-019)', () => {
+  const CHANGE_SOURCE: ImplementationAcceptanceSource = { ...BUG_SOURCE, kind: 'change' };
+  const POLICY_AUTHORITY: ImplementationAcceptanceAuthority = {
+    kind: 'policy',
+    policy: 'trusted-tool-failure-promotion',
+    actor: 'system:test',
+  };
+  const seal = (
+    source: ImplementationAcceptanceSource,
+    authority: ImplementationAcceptanceAuthority,
+    reproduction?: unknown,
+  ) =>
+    sealImplementationAcceptance({ proposal: PROPOSAL, authority, reason: 'approved', source, reproduction });
+  const evaluate = (contract: object, source: ImplementationAcceptanceSource) =>
+    evaluateImplementationAcceptance({ implementationReadiness: readinessWith(contract) }, source);
+
+  it('refuses a bug with no reproduction receipt, or one that does not parse, at the seal', () => {
+    expect(seal(BUG_SOURCE, REVIEW_AUTHORITY)).toEqual({ ok: false, refusal: 'reproduction-missing' });
+    expect(seal(BUG_SOURCE, REVIEW_AUTHORITY, { ...REPRODUCTION, buildSha: 'not-a-sha' })).toEqual({
+      ok: false,
+      refusal: 'reproduction-missing',
+    });
+    expect(seal(BUG_SOURCE, REVIEW_AUTHORITY, { ...REPRODUCTION, kind: 'hunch' })).toEqual({
+      ok: false,
+      refusal: 'reproduction-missing',
+    });
+  });
+
+  it('accepts a bug with a receipt under either authority, recording the receipt as its verification', () => {
+    for (const authority of [REVIEW_AUTHORITY, POLICY_AUTHORITY]) {
+      const sealed = seal(BUG_SOURCE, authority, REPRODUCTION);
+      expect(sealed.ok).toBe(true);
+      if (!sealed.ok) continue;
+      expect(sealed.contract.verification).toEqual({ check: 'reproduction', receipt: REPRODUCTION });
+      expect(evaluate(sealed.contract, BUG_SOURCE)).toMatchObject({ state: 'qualifying' });
+    }
+  });
+
+  it('accepts a change only through proposal review (agent-review authority)', () => {
+    expect(seal(CHANGE_SOURCE, POLICY_AUTHORITY, REPRODUCTION)).toEqual({ ok: false, refusal: 'proposal-review-missing' });
+    const sealed = seal(CHANGE_SOURCE, REVIEW_AUTHORITY);
+    expect(sealed.ok).toBe(true);
+    if (!sealed.ok) return;
+    expect(sealed.contract.verification).toEqual({ check: 'proposal-review' });
+    expect(evaluate(sealed.contract, CHANGE_SOURCE)).toMatchObject({ state: 'qualifying' });
+  });
+
+  it('reads a bug contract without its reproduction verification as incomplete', () => {
+    const { verification: _dropped, ...withoutVerification } = sealedContract();
+    expect(evaluate(withoutVerification, BUG_SOURCE)).toMatchObject({ state: 'incomplete', missing: ['verification'] });
+    expect(evaluate({ ...sealedContract(), verification: { check: 'proposal-review' } }, BUG_SOURCE)).toMatchObject({
+      state: 'incomplete',
+      missing: ['verification'],
+    });
+    expect(
+      evaluate({ ...sealedContract(), verification: { check: 'reproduction', receipt: { kind: 'failing-test' } } }, BUG_SOURCE),
+    ).toMatchObject({ state: 'incomplete', missing: ['verification'] });
+  });
+
+  it('keeps a pre-P-006 change contract (agent-review authority, no verification marker) qualifying', () => {
+    const { verification: _dropped, ...legacy } = sealedContract(CHANGE_SOURCE);
+    expect(evaluate(legacy, CHANGE_SOURCE)).toMatchObject({ state: 'qualifying' });
+    // …but a change sealed under policy authority is not proposal review.
+    expect(evaluate({ ...legacy, authority: POLICY_AUTHORITY }, CHANGE_SOURCE)).toMatchObject({
+      state: 'incomplete',
+      missing: ['verification'],
+    });
+  });
+});
+
 describe('implementation acceptance contract (R-4 / R-20 / R-21)', () => {
   it('seals a complete proposal bound to the judged source revision', () => {
     const contract = sealedContract();
@@ -449,6 +523,7 @@ describe('implementation acceptance contract (R-4 / R-20 / R-21)', () => {
       reason: 'agent-review-approved (grade 5/5)',
       sourceRevision: acceptanceSourceRevision(BUG_SOURCE),
       acceptedAt: '2026-09-05T00:00:00.000Z',
+      verification: { check: 'reproduction', receipt: REPRODUCTION },
     });
     expect(evaluateImplementationAcceptance({ implementationReadiness: readinessWith(contract) }, BUG_SOURCE)).toMatchObject({
       state: 'qualifying',

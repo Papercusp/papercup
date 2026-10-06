@@ -9,6 +9,267 @@
   "count": 172,
   "scope": "Frozen non-P2P selector cohort; not the whole live backlog or original200 cohort"
  },
+ "predecessorHistoryQualification": {
+ "status": "partial-local-evidence-live-outcomes-unqualified",
+ "rootWorkItem": "WI-10000248",
+ "rootAuthorityAtRead": "done/proposed",
+ "sourcePlan": {
+  "slug": "desktop-release-shared-project-history-2026-09-06",
+  "revision": 38,
+  "contentHash": "e83a27d45f0dd58a109647cfe7bba089e3cf93e784295066c7268994ad28fc4b"
+ },
+ "rubric": {
+  "ref": "acceptance-desktop-release-shared-project-history-2026-09-06",
+  "revision": 9,
+  "criteriaHash": "c50ac3ad656d0ae7b985206d24993df060344bed08eb0895e2740c0aeef413f1",
+  "barSetHash": "3335f240b11164513e1d72e807d6f241f65cfe6c792f28ec97ab80d2af8b9e0c",
+  "vettingAtRead": {
+   "state": "unvetted",
+   "reason": "missing-attestation",
+   "satisfied": false
+  }
+ },
+ "priorEvidenceRef": "thread-post:1158422",
+ "priorArtifactSha256": "6a8d548ae4aa86fe519ade2c95b62e1997ae80d13e96a462ee33dcd9e1e8eb5b",
+ "localVerification": [
+  {
+   "runner": "canonical-vitest-test-file-router",
+   "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- apps/operator/lib/release/release-history-integration.test.ts apps/operator/lib/release/release-history-page.test.ts",
+   "cwd": "<repo-root>",
+   "head": "ae71fe3f730815666268c5afdbe66227a7e7f638",
+   "startedAt": "2026-10-06T00:45:31.202Z",
+   "postRunAt": "2026-10-06T00:46:01.282Z",
+   "requestedFiles": 2,
+   "executedFiles": 2,
+   "matchedFiles": 2,
+   "passedTests": 109,
+   "skippedTests": 0,
+   "exitCode": 0,
+   "receipt": "TEST_FILE_RESULT requested=2 executed=2 matched=2 status=passed head=ae71fe3f73 uncommittedPaths=0/2 provenance=stamped startedAt=2026-10-06T00:45:31.202Z skippedTests=0",
+   "runtimeCaveat": "Committed-source loader substituted dirty resource-governor admission.ts and queue.ts with HEAD bytes; the fixture-based release tests do not establish a whole import graph or live runtime identity."
+  },
+  {
+   "runner": "documented-desktop-node-test",
+   "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp node --test --test-global-setup=test/monorepo-host-preflight.mjs test/publish-project-history.test.js test/release-identity-scan-archives.test.js test/release-upload-content-skip.test.js",
+   "cwd": "<repo-root>/papercusp-desktop",
+   "head": "5eff3d66238ce8ea564c8dc120885b0a5e9812b1",
+   "requestedFiles": 3,
+   "executedFiles": 3,
+   "passedTests": 57,
+   "failedTests": 0,
+   "cancelledTests": 0,
+   "skippedTests": 0,
+   "exitCode": 0,
+   "durationMs": 11838.213052,
+   "scope": "Publisher/readback and archive/upload fixtures; no real public publication or candidate install."
+  }
+ ],
+ "criterionEvidence": [
+  {
+   "key": "r-2",
+   "barKey": "R-2",
+   "barHash": "9d13f4ac34ebabe9c8aebfafbc5094aabe8b8ef31079598f076e9c65b0fb4295",
+   "mandatory": true,
+   "requiredScope": [
+    "live"
+   ],
+   "evidencePlane": "live",
+   "structuredCheckFiles": [
+    "apps/operator/lib/release/release-project-history.test.ts",
+    "apps/operator/lib/release/release-history-integration.test.ts",
+    "papercusp-desktop/test/publish-project-history.test.js"
+   ],
+   "currentPassingFiles": [
+    "apps/operator/lib/release/release-history-integration.test.ts",
+    "papercusp-desktop/test/publish-project-history.test.js"
+   ],
+   "notFreshlyExecutedHere": [
+    "apps/operator/lib/release/release-project-history.test.ts"
+   ],
+   "verdict": "unknown",
+   "missingLiveEvidence": [
+    "Public selected 0.0.19 generalized ProjectHistoryView controls, plans, completion and verification references, with exact membership/cutoff and user-control evidence.",
+    "Public 0.0.18 known-later-completion negative control.",
+    "Exact artifact/runtime identity, request URLs, timestamps, screenshots/DOM assertions, and request/console evidence."
+   ],
+   "detectorLimit": "Passing fixture tests and source usage cannot establish the required live user journey."
+  },
+  {
+   "key": "r-3",
+   "barKey": "R-3",
+   "barHash": "95375fc6749055f839db9391fd97b7227e0d79cdf8dfd92da01074332178437d",
+   "mandatory": true,
+   "requiredScope": [
+    "live"
+   ],
+   "evidencePlane": "live",
+   "structuredCheckFiles": [
+    "apps/operator/lib/release/release-history-page.test.ts",
+    "papercusp-desktop/test/release-identity-scan-archives.test.js",
+    "papercusp-desktop/test/release-upload-content-skip.test.js"
+   ],
+   "currentPassingFiles": [
+    "apps/operator/lib/release/release-history-page.test.ts",
+    "papercusp-desktop/test/release-identity-scan-archives.test.js",
+    "papercusp-desktop/test/release-upload-content-skip.test.js"
+   ],
+   "notFreshlyExecutedHere": [],
+   "verdict": "unknown",
+   "missingLiveEvidence": [
+    "Finished-artifact scan using both configured owner-email literals and maintained scrub rules on the exact candidate.",
+    "Public served-byte hashes versus exact uploaded hashes; no uploaded-but-unread substitution.",
+    "Complete platform download and static detail-link inventory in a JavaScript-disabled browser.",
+    "Actual shared dialogs and self-hosted asset network/console evidence with JavaScript enabled.",
+    "Permanent updater, release registry and public page identity agreement."
+   ],
+   "detectorLimit": "Markup, fake HTTPS/storage and synthetic archive controls cannot establish public browser usability or actual uploaded-byte identity."
+  }
+ ],
+ "testedSourceIdentities": [
+  {
+   "path": "apps/operator/lib/release/release-history-integration.test.ts",
+   "repository": "<repo-root>",
+   "head": "ae71fe3f730815666268c5afdbe66227a7e7f638",
+   "headBlob": "4e0385266957642445ecb7153f8a15129e768650",
+   "workingBlob": "4e0385266957642445ecb7153f8a15129e768650",
+   "committed": true,
+   "sha256": "23c6b84abcfbb29bbefc87076dc27f9d37777bc4cb9392136995dcfeefb7988b"
+  },
+  {
+   "path": "apps/operator/lib/release/release-history-page.test.ts",
+   "repository": "<repo-root>",
+   "head": "ae71fe3f730815666268c5afdbe66227a7e7f638",
+   "headBlob": "a1ecc7acc7a2677e96742a71952d79c4271bef4e",
+   "workingBlob": "a1ecc7acc7a2677e96742a71952d79c4271bef4e",
+   "committed": true,
+   "sha256": "41beca344339f1db8c80d60ac2bd6a7ca4b36e4b707df540a5ec2edaa3560fa3"
+  },
+  {
+   "path": "apps/operator/lib/release/release-history-page.ts",
+   "repository": "<repo-root>",
+   "head": "ae71fe3f730815666268c5afdbe66227a7e7f638",
+   "headBlob": "8fc70989af3fd1d9807042e3392d11c2d23e1814",
+   "workingBlob": "8fc70989af3fd1d9807042e3392d11c2d23e1814",
+   "committed": true,
+   "sha256": "0a8da936679693179fa5efa1c6053945cff260fa8e2b4bc1868a7f6704fc74ff"
+  },
+  {
+   "path": "apps/operator/lib/release/release-project-history.ts",
+   "repository": "<repo-root>",
+   "head": "ae71fe3f730815666268c5afdbe66227a7e7f638",
+   "headBlob": "42a2911547ff1b014653bad32ab5c16aa39c1383",
+   "workingBlob": "42a2911547ff1b014653bad32ab5c16aa39c1383",
+   "committed": true,
+   "sha256": "38d33f6a83aa1d104b4ec87a081a228515fdcc07f93ca54a40e745c54abe62f8"
+  },
+  {
+   "path": "apps/operator/lib/release/release-project-history-client.tsx",
+   "repository": "<repo-root>",
+   "head": "ae71fe3f730815666268c5afdbe66227a7e7f638",
+   "headBlob": "14141a78c6c6c529919b74583d52f7a5bfc49adb",
+   "workingBlob": "14141a78c6c6c529919b74583d52f7a5bfc49adb",
+   "committed": true,
+   "sha256": "b2fb69f3e0c7949fd337d296b737373c1410d8eb40b8af435f2da84020d21410"
+  },
+  {
+   "path": "papercusp-desktop/test/publish-project-history.test.js",
+   "repository": "<repo-root>/papercusp-desktop",
+   "head": "5eff3d66238ce8ea564c8dc120885b0a5e9812b1",
+   "headBlob": "5700e8b79fec58ff13302a73b98e493cef241303",
+   "workingBlob": "5700e8b79fec58ff13302a73b98e493cef241303",
+   "committed": true,
+   "sha256": "22ed6736696aef0e8b4e6aa1e3b4174ef26290b4a6573015fe8584ecdc0ff305"
+  },
+  {
+   "path": "papercusp-desktop/test/release-identity-scan-archives.test.js",
+   "repository": "<repo-root>/papercusp-desktop",
+   "head": "5eff3d66238ce8ea564c8dc120885b0a5e9812b1",
+   "headBlob": "9236779bf23f2e01cb3a24d976e43b1e53939618",
+   "workingBlob": "9236779bf23f2e01cb3a24d976e43b1e53939618",
+   "committed": true,
+   "sha256": "7784801394631b6d518a0619cad8c27ad75e1993cf9e6fb595ca0c9206c07c1c"
+  },
+  {
+   "path": "papercusp-desktop/test/release-upload-content-skip.test.js",
+   "repository": "<repo-root>/papercusp-desktop",
+   "head": "5eff3d66238ce8ea564c8dc120885b0a5e9812b1",
+   "headBlob": "23cbb6d0d500ecb736fe59559589a03876d58608",
+   "workingBlob": "23cbb6d0d500ecb736fe59559589a03876d58608",
+   "committed": true,
+   "sha256": "456ce333b092c56ddd7a2b28ae297094de66d43a3dc700d09cdf097553a8f02a"
+  },
+  {
+   "path": "papercusp-desktop/bin/publish-release-history.sh",
+   "repository": "<repo-root>/papercusp-desktop",
+   "head": "5eff3d66238ce8ea564c8dc120885b0a5e9812b1",
+   "headBlob": "57311e22574cd4710925f680170e05fb47dc9b50",
+   "workingBlob": "57311e22574cd4710925f680170e05fb47dc9b50",
+   "committed": true,
+   "sha256": "d235636fe1cc795e52b555375845fb229eb20a286d3bc0153500d3570e868720"
+  },
+  {
+   "path": "papercusp-desktop/bin/audit-release-bundle.py",
+   "repository": "<repo-root>/papercusp-desktop",
+   "head": "5eff3d66238ce8ea564c8dc120885b0a5e9812b1",
+   "headBlob": "c60ed10ceafdd3c600407671880ae3f29688eb7e",
+   "workingBlob": "c60ed10ceafdd3c600407671880ae3f29688eb7e",
+   "committed": true,
+   "sha256": "11bfd9236e456bf214e5c7dbe7aee03a4443e044e8988988d42bdba90b2807ed"
+  },
+  {
+   "path": "papercusp-desktop/bin/upload-release.sh",
+   "repository": "<repo-root>/papercusp-desktop",
+   "head": "5eff3d66238ce8ea564c8dc120885b0a5e9812b1",
+   "headBlob": "0465ba876ecf00861fd719d03edb3a9805bcc853",
+   "workingBlob": "0465ba876ecf00861fd719d03edb3a9805bcc853",
+   "committed": true,
+   "sha256": "349c92117610a5c9d71cc131fd5f4b34a5d8f9aaf63791c3b19675169c73bcd1"
+  },
+  {
+   "path": "papercusp-desktop/bin/upload-mobile-release.sh",
+   "repository": "<repo-root>/papercusp-desktop",
+   "head": "5eff3d66238ce8ea564c8dc120885b0a5e9812b1",
+   "headBlob": "bcf75888b744929b3c24997570f9b8fc50fcea91",
+   "workingBlob": "bcf75888b744929b3c24997570f9b8fc50fcea91",
+   "committed": true,
+   "sha256": "3c9d3265914896e20a48ade0caf3b70e7db0a8132cea1c74409fa3526d437f99"
+  },
+  {
+   "path": "papercusp-desktop/bin/lib/gen-latest-manifest.sh",
+   "repository": "<repo-root>/papercusp-desktop",
+   "head": "5eff3d66238ce8ea564c8dc120885b0a5e9812b1",
+   "headBlob": "751128c5ca600f321a84adc5e6a5c0def1550d01",
+   "workingBlob": "751128c5ca600f321a84adc5e6a5c0def1550d01",
+   "committed": true,
+   "sha256": "e1dcbcab17577044a3115fb20e63a38eb7ee0b802794de96c34a180d161b8a5e"
+  },
+  {
+   "path": "scripts/test-files.mjs",
+   "repository": "<repo-root>",
+   "head": "ae71fe3f730815666268c5afdbe66227a7e7f638",
+   "headBlob": "648c7d4bad720fbdff131a3258517205292d0610",
+   "workingBlob": "648c7d4bad720fbdff131a3258517205292d0610",
+   "committed": true,
+   "sha256": "17917d75aedad74e5355386a7719aaec816048c2d118a0ebd1807e044f08da10"
+  },
+  {
+   "path": "papercusp-desktop/test/monorepo-host-preflight.mjs",
+   "repository": "<repo-root>/papercusp-desktop",
+   "head": "5eff3d66238ce8ea564c8dc120885b0a5e9812b1",
+   "headBlob": "c4b60ba37b421b229333afb04b5e4dc8ed162638",
+   "workingBlob": "c4b60ba37b421b229333afb04b5e4dc8ed162638",
+   "committed": true,
+   "sha256": "fbc35e5679ed948f9844780498405b52772d848931620e3f7a59b7d703e40f0f"
+  }
+ ],
+ "sourceIdentityScope": "Only the fifteen explicitly enumerated paths were checked against their actual repository HEAD and were byte-identical before/after the two new runs. This is not the full import graph.",
+ "retainedDependencies": [
+  "WI-10000249",
+  "WI-10000250"
+ ],
+ "disposition": "Retain root predecessor and dependent build/publication work. No authority upgrade, acceptance, unblock, new fleet wave, gate, shared-runtime restart, deployment, or git operation.",
+ "historicalResidue": "The three superseded-before-commit residual blobs remain unqualified. Earlier local object/history absence is not a universal archive-absence claim."
+},
  "cleanupMethodPreparation": {
   "status": "verification-methods-applied-vetting-and-outcome-acceptance-open",
   "preparedAt": "2026-10-05T20:54:20Z",

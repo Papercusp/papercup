@@ -28,6 +28,7 @@ function attestation(
   kind: FlagOverrideReadKind,
   source: FlagResolutionSource,
   resolvedValue: boolean,
+  loadError: string | null = 'Error: flag backend timed out after 2000ms',
 ): FlagAttestation {
   return {
     key: FLAGS.MEM0_FEDERATION_EGRESS,
@@ -43,6 +44,7 @@ function attestation(
       cacheAgeMs: null,
       ttlMs: 5_000,
       ttlRemainingMs: 0,
+      loadError: kind === 'store-error' ? loadError : null,
     },
     backendConfigured: false,
     observedAtMs: 0,
@@ -50,11 +52,18 @@ function attestation(
 }
 
 describe('memoryFederationFlagReadDegradation (WI-10005919)', () => {
-  it('flags ONLY a store-error read as degraded, naming where the value came from', () => {
+  it('flags ONLY a store-error read as degraded, naming where the value came from and why', () => {
     expect(memoryFederationFlagReadDegradation(attestation('store-error', 'compiled-default', false))).toBe(
-      'override store unreadable with no cached map (value came from compiled-default)',
+      'override store unreadable with no cached map (value came from compiled-default; ' +
+        'load error: Error: flag backend timed out after 2000ms)',
     );
     expect(memoryFederationFlagReadDegradation(attestation('store-error', 'posthog', true))).toContain('posthog');
+  });
+
+  it('says the load error was not reported rather than inventing one (WI-10006242)', () => {
+    expect(
+      memoryFederationFlagReadDegradation(attestation('store-error', 'compiled-default', false, null)),
+    ).toContain('load error: not reported');
   });
 
   it.each<[FlagOverrideReadKind, FlagResolutionSource]>([

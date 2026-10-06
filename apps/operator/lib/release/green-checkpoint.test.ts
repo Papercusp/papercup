@@ -21,6 +21,7 @@ import { join } from "node:path";
 import { linuxProcStateFromStat } from "@papercusp/operator-core/lib/process-identity";
 import {
   runGreenCheckpoint,
+  archivePureProofCapture,
   recordDerivedFreezeDispositionWithDeadline,
   emitInconclusiveCheckpointVerdict,
   checkpointVerdictSiblingKeys,
@@ -10194,6 +10195,49 @@ describe("realCheckpointDeps.runGreen — checkpoint-log retention (WI-224710)",
     expect(
       readdirSync(logDir).filter((name) => name.endsWith(".log")),
     ).toHaveLength(1);
+  });
+
+  it("retains actual pure-capture receipts for the gate ledger's 90-day evidence window", async () => {
+    const nestedLogDir = join(logDir, "managed-hive");
+    mkdirSync(nestedLogDir);
+    const receipt = (runId: string) => ({
+      version: 1 as const, runId, gateFireId: `fire-${runId}`, pid: 123,
+      processStartedAtMs: 1, judgedSha: "a".repeat(40), resolvedAtMs: 70,
+      terminalEmissionCompletedAtMs: 90, verdictRecordedAtMs: 80,
+      promotion: { candidate: "a".repeat(12), recordedAtMs: 60,
+        promoted: false, reason: "not-green" },
+      capture: null, archivedAtMs: 210,
+    });
+    const captures = [15, 89, 91].map((ageDays) => {
+      const file = archivePureProofCapture(nestedLogDir, receipt(`age-${ageDays}`), () => {});
+      expect(file).not.toBeNull();
+      const bytes = readFileSync(file!, "utf8");
+      const old = new Date(Date.now() - ageDays * 24 * 60 * 60 * 1000);
+      utimesSync(file!, old, old);
+      return { file: file!, bytes, ageDays };
+    });
+    const diagnostic = join(nestedLogDir, "pure-proof-capture-age-15.log");
+    const unrelated = join(nestedLogDir, "unrelated.json");
+    for (const file of [diagnostic, unrelated]) {
+      writeFileSync(file, "old diagnostic");
+      const old = new Date(Date.now() - 15 * 24 * 60 * 60 * 1000);
+      utimesSync(file, old, old);
+    }
+    const exec: CheckpointExec = async (cmd, args) => {
+      if (cmd === "git" && args[0] === "grep") return { code: 1, stdout: "", stderr: "" };
+      return { code: 0, stdout: "Test Files  1 passed (1)\n", stderr: "" };
+    };
+    const config = releaseConfig({ checkpointRoot: tree, checkpointLogDir: logDir,
+      greenCmd: "npm run test:affected", spaBuildWorkspace: "" });
+
+    expect((await realCheckpointDeps(config, exec).runGreen(tree, "base")).green).toBe(true);
+
+    for (const { file, bytes, ageDays } of captures) {
+      if (ageDays < 90) expect(readFileSync(file, "utf8")).toBe(bytes);
+      else expect(existsSync(file)).toBe(false);
+    }
+    expect(existsSync(diagnostic)).toBe(false);
+    expect(existsSync(unrelated)).toBe(false);
   });
 });
 
