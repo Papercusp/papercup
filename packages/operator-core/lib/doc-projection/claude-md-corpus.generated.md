@@ -1799,7 +1799,7 @@ The duplicate-number race is EI-6843 — it cost a rename plus every in-code ref
 | prose / full-text | exact phrase → `search:fulltext`; paraphrased concept → `search:semantic` | `ILIKE '%…%'` |
 | definition, references, type truth | `lsp:query` (compiler semantics) | `grep` for a declaration — cannot resolve shadowing or re-exports |
 | call chains, impact radius, topology | `gitnexus.context` / `gitnexus.impact` (dot, not colon) | `gitnexus.query` — UNRANKED NOISE, not empty: a wrong answer looks like a confident one (D-021) |
-| who CALLS this symbol | `graph:query { op:'callers', name }` — returns call sites with `line1`, excludes the definition site, reports index staleness | `gitnexus.impact { direction:'callers' }` — `callers` is NOT a valid direction (only `upstream`/`downstream`/`both`) and the plugin SILENTLY answers with callees, self-reporting `epistemic:"exact"` |
+| who CALLS this symbol | `graph:query { op:'callers', name }` — `line1` call sites, no definition; index may be stale. **Empty is not proof of no callers**: measured needs-widening, held at observe, deferred to WI-10006543. | `gitnexus.impact { direction:'callers' }` — unsupported (only `upstream`/`downstream`/`both`); returns callees as `epistemic:"exact"`. |
 
 ⚠ **If `gate.greenCheckpoint.candidateFailures` is unavailable, the ONLY query that answers it is scoped to one population — and the blob check is half the answer:**
 

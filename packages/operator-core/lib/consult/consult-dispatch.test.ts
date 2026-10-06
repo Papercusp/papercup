@@ -699,6 +699,41 @@ describe('dispatchConsultResponder — the walk', () => {
     });
   });
 
+  describe('a Claude source with a persisted provider context rejection', () => {
+    it.each([false, true])('checks the actual provider rejection; recovered=%s', async (recovered) => {
+      const dir = mkdtempSync(join(tmpdir(), 'consult-context-preflight-'));
+      const path = join(dir, 'source.jsonl');
+      try {
+        const error = JSON.stringify({
+          type: 'assistant', error: 'invalid_request', isApiErrorMessage: true,
+          message: { role: 'assistant', model: '<synthetic>', content: [{ type: 'text', text: 'Prompt is too long' }] },
+        });
+        writeFileSync(path, [error, ...(recovered
+          ? [JSON.stringify({ type: 'system', subtype: 'compact_boundary' })]
+          : [JSON.stringify({ type: 'user', message: { role: 'user', content: 'Answer the exact consult.' } })])].join('\n'));
+        const { deps, calls } = makeFakes({
+          fetchContextPressure: async () => new Map([['su-expert', 'ok']]),
+          checkResumeTranscript: async () => ({ available: true, detail: 'fixture', transcriptPath: path }),
+          estimateTranscriptTokens: async () => 100,
+          bucketTranscriptPressure: async () => 'ok',
+          analyzeClaudeTranscript: analyzeClaudeResumeTranscriptFile,
+        });
+        const result = await dispatchConsultResponder(OPTS, CTX, deps);
+        expect(calls.spawn).toHaveLength(1);
+        if (recovered) {
+          expect(result).toMatchObject({ dispatched: true, operation: 'fork' });
+          expect(result.attempts.some(a => a.reason === 'source-context-critical')).toBe(false);
+        } else {
+          expect(result.attempts[0]).toMatchObject({ operation: 'fork', outcome: 'skipped', reason: 'source-context-critical' });
+          expect(result.attempts[0].detail).toContain('Prompt is too long');
+          expect(result).toMatchObject({ dispatched: true, operation: 'convert', agent: 'codex' });
+        }
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  });
+
   // WI-10004260: two acceptance-grading forks of sources whose transcripts
   // already ended in a provider "Tool reference … not found" 400 each replayed
   // the poison on their first turn and held the grading slot until expiry.
@@ -793,6 +828,23 @@ describe('dispatchConsultResponder — the walk', () => {
       expect(calls.stopped).toEqual(['task-1']);
       // The conversion leg is not a Claude session, so it is not re-checked.
       expect(r).toMatchObject({ dispatched: true, operation: 'convert', agent: 'codex' });
+    });
+
+    it('rejects a context wall in the answering fork and continues through conversion', async () => {
+      const { deps, calls } = makeFakes({
+        analyzeClaudeTranscript: (path: string) => path === '/native/answer.jsonl' ? {
+          trailingMissingToolReferenceTurns: 0,
+          lastMissingToolReferenceName: null,
+          assistantTurnsSinceLastPrompt: 1,
+          trailingContextLimitTurns: 1,
+          lastContextLimitEvidence: 'Prompt is too long',
+        } : null,
+      });
+      const result = await dispatchConsultResponder(OPTS, CTX, deps);
+      expect(result.attempts[0]).toMatchObject({ operation: 'fork', outcome: 'failed', reason: 'first-turn-rejected' });
+      expect(result.attempts[0].detail).toContain('provider context-limit rejection (Prompt is too long)');
+      expect(calls.stopped).toEqual(['task-1']);
+      expect(result).toMatchObject({ dispatched: true, operation: 'convert', agent: 'codex' });
     });
 
     it('CONTROL: a fork whose first reply has not been rejected stays dispatched', async () => {
@@ -1061,6 +1113,12 @@ describe('launchLogFailureReason (the launcher’s own words, from a real log)',
     const log = 'psu: tracked resume failed: first\npsu: refusing fork: second\n';
     expect(launchLogFailureReason(log)).toBe('psu: refusing fork: second');
   });
+
+  it.each(['Context limit reached · /clear to continue', 'Prompt is too long'])
+    ('reports the actual terminal context rejection: %s', (failure) => {
+      expect(launchLogFailureReason(`consult brief\x1b[1B  ⎿  ${failure}\n`)).toBe(failure);
+      expect(launchLogFailureReason(`The request quotes ${failure} for investigation.\n`)).toBeNull();
+    });
 
   it.each([
     'psu: V1 targetBackend must be codex|omp',

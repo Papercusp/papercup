@@ -172,6 +172,37 @@ describe('blind label collection through the injected stateless transport', () =
     fs.writeFileSync(file, JSON.stringify(snapshot));
     return file;
   }
+  it('produces byte-identical labels at any call concurrency, bounded by the requested limit (WI-10004537 V20)', async () => {
+    const f = fixture(9); // 18 sources -> 72 questions -> two question chunks per judge pass
+    try {
+      const run = async (callConcurrency: number) => {
+        let inFlight = 0, peak = 0;
+        const llm: LlmCallFn = async (opts) => {
+          inFlight++; peak = Math.max(peak, inFlight);
+          try { await new Promise((resolve) => setTimeout(resolve, 2)); return await f.llm(opts); } finally { inFlight--; }
+        };
+        const out = path.join(f.root, `c${callConcurrency}`);
+        const receipt = await collectIndependentCohort({ snapshot: f.snapshot, out, llm, targetsPerPartition: 'all', callConcurrency });
+        return { peak, labels: fs.readFileSync(receipt.labels.path), files: fs.readdirSync(out).sort() };
+      };
+      const sequential = await run(1), concurrent = await run(4);
+      expect(sequential.peak).toBe(1);
+      expect(concurrent.peak).toBeGreaterThan(1);
+      expect(concurrent.peak).toBeLessThanOrEqual(4);
+      expect(concurrent.labels).toEqual(sequential.labels);
+      expect(concurrent.files).toEqual(sequential.files);
+      expect(sequential.files.some((name) => /-judge-1-0-q64\.json$/.test(name))).toBe(true);
+    } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
+  });
+  it('refuses a call concurrency outside [1, 32]', async () => {
+    const f = fixture(1);
+    try {
+      for (const callConcurrency of [0, 33, 1.5]) {
+        await expect(collectIndependentCohort({ snapshot: f.snapshot, out: path.join(f.root, `bad-${callConcurrency}`), llm: f.llm,
+          targetsPerPartition: 'all', callConcurrency })).rejects.toThrow(/callConcurrency/);
+      }
+    } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
+  });
   it('parses a frozen snapshot once per invocation while rechecking its fingerprint across reused ancestry', async () => {
     const f = fixture(2);
     try {

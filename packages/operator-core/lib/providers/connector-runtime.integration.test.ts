@@ -28,6 +28,7 @@ import { ingestExternalTriggerEvent, type IngestExternalTriggerInput } from '../
 import { createProviderRegistry, type ProviderRegistry } from '../integrations/provider-registry';
 import {
   connectorRecordDedupeKey,
+  formatConnectorSyncLog,
   ProviderSyncFailure,
   runConnectorSync,
   wakeConnectorSource,
@@ -392,6 +393,11 @@ describe('connector sync driver over registered providers (R-3)', () => {
     });
     const reset = await syncOne(src);
     expect(reset).toMatchObject({ outcome: 'synced', cursorReset: true, mode: 'backfill', admitted: 0, deduped: 2 });
+    // WI-10001662 port: a full resync names the provider's reason, on the outcome and the log line.
+    expect(reset.cursorResetReason).toBe('history id too old');
+    expect(formatConnectorSyncLog({ providers: 1, sources: [reset] })).toContain(
+      `cursor_resets=1 reset_reasons=${src}: history id too old`,
+    );
     expect(calls.slice(-2)).toEqual([
       { cursor: 'c1', mode: 'incremental' },
       { cursor: null, mode: 'backfill' },

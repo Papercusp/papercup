@@ -36,6 +36,12 @@ const GUIDANCE_FILES = [
   'apps/operator/prompts/papercusp-su-power.tools.md',
 ] as const;
 
+const CALLER_ROUTING_DOCS = [
+  'CLAUDE.md',
+  'AGENTS.md',
+  'packages/operator-core/lib/doc-projection/claude-md-corpus.generated.md',
+] as const;
+
 const PROMPTS_DIR = 'apps/operator/prompts';
 
 /**
@@ -214,6 +220,25 @@ describe('D-001 code-intelligence routing authority', () => {
           verdict.ok,
           verdict.ok ? '' : `\n${formatRoutingViolations(rel, verdict.violations)}\n`,
         ).toBe(true);
+      });
+    }
+
+    for (const rel of CALLER_ROUTING_DOCS) {
+      it(`${rel} keeps the measured callers caveat in the authority cell`, () => {
+        const source = readFileSync(join(ROOT, rel), 'utf8');
+        const rows = source
+          .split('\n')
+          .filter((line) => line.startsWith('| who CALLS this symbol |'));
+        expect(rows, `${rel} should have exactly one callers row`).toHaveLength(1);
+
+        const cells = rows[0]!.split('|').slice(1, -1).map((cell) => cell.trim());
+        expect(cells).toHaveLength(3);
+        expect(cells[0]).toBe('who CALLS this symbol');
+        expect(cells[1]).toMatch(/graph:query.*op:'callers'/);
+        expect(cells[1]).toMatch(/empty is not proof of no callers/i);
+        expect(cells[1]).toMatch(/measured needs-widening/i);
+        expect(cells[1]).toMatch(/held at observe/i);
+        expect(cells[1]).toContain('WI-10006543');
       });
     }
 

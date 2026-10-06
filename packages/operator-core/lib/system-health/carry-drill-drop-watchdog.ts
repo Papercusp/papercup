@@ -58,7 +58,7 @@ import { openEscalation } from '../agent-tools/coordination/escalations';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
 import {
   PSU_PTY_DIR,
-  findLiveHost,
+  findLiveHostAsync,
   readHostEventTailAsync,
   type PtyHostEvent,
 } from '../events/await/psu-pty-discovery';
@@ -142,8 +142,8 @@ export interface OrphanedRespawnSweepDeps {
   /** mtime-banded candidate owners; see {@link listOrphanCandidateOwners}. */
   listCandidates: (now: number) => Promise<string[]>;
   readPrior: (ownerId: string, now: number) => Promise<PriorRespawn>;
-  /** Liveness of the owner's pty host. Throwing is treated as ALIVE (stay quiet). */
-  hostLive: (ownerId: string) => boolean;
+  /** Liveness of the owner's pty host. Throwing/rejecting is treated as ALIVE (stay quiet). */
+  hostLive: (ownerId: string) => boolean | Promise<boolean>;
   escalate: (alert: OrphanedRespawnAlert) => Promise<void>;
   flagEnabled: () => Promise<boolean>;
   now: () => number;
@@ -313,9 +313,17 @@ export function orphanedRespawnAlert(
   hostLive: boolean,
   opts: { maxAgeMs?: number } = {},
 ): OrphanedRespawnAlert | null {
+  if (hostLive) return null;
+  return orphanedRespawnAlertCandidate(ownerId, prior, opts);
+}
+
+function orphanedRespawnAlertCandidate(
+  ownerId: string,
+  prior: PriorRespawn | null | undefined,
+  opts: { maxAgeMs?: number } = {},
+): OrphanedRespawnAlert | null {
   if (!prior || prior.outcome !== 'pending') return null;
   if (!isDelayedPendingRespawn(prior)) return null;
-  if (hostLive) return null;
   const maxAge = opts.maxAgeMs ?? ORPHANED_RESPAWN_MAX_AGE_MS;
   // An unknown age is NOT treated as recent — same reasoning as the ambient
   // line: guessing "recent" on the rows we know least about nags forever.
@@ -519,7 +527,7 @@ function orphanSweepDeps(overrides: Partial<OrphanedRespawnSweepDeps>): Orphaned
   return {
     listCandidates: (now) => listOrphanCandidateOwners(PSU_PTY_DIR, now),
     readPrior: (ownerId, now) => readPriorRespawnOutcome(ownerId, { dir: PSU_PTY_DIR, now }),
-    hostLive: (ownerId) => findLiveHost(ownerId) != null,
+    hostLive: async (ownerId) => (await findLiveHostAsync(ownerId)) != null,
     escalate: defaultEscalateOrphan,
     flagEnabled: defaultFlagEnabled,
     now: Date.now,
@@ -555,17 +563,20 @@ export async function runOrphanedRespawnSweepOnce(
     } catch {
       continue;
     }
+    const alert = orphanedRespawnAlertCandidate(ownerId, prior, { maxAgeMs: deps.maxAgeMs });
+    // Most recent event ledgers are not orphan candidates. Filter them before
+    // touching per-owner discovery files or /proc for a liveness proof.
+    if (!alert) continue;
     let live: boolean;
     try {
-      live = deps.hostLive(ownerId);
+      live = await deps.hostLive(ownerId);
     } catch {
       // FAIL SAFE TOWARD SILENCE: liveness is the evidence that turns a delay
       // into a loss. If we could not measure it, we have not established loss —
       // assume alive and stay quiet rather than alarm on a session that is fine.
       live = true;
     }
-    const alert = orphanedRespawnAlert(ownerId, prior, live, { maxAgeMs: deps.maxAgeMs });
-    if (!alert) continue;
+    if (live) continue;
     alerts += 1;
     try {
       await deps.escalate(alert);

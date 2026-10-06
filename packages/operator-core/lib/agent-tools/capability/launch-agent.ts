@@ -956,11 +956,11 @@ export default defineTool({
       // A wake-pump can reactivate a Codex session without a managed pty-host
       // row being visible to resolveResumeTarget yet. Codex's per-thread flock
       // is the same single-writer authority checked by psu immediately before
-      // resume, so consult it here as an additional positive liveness witness.
-      // This turns that race into the documented live-source fork instead of a
-      // second terminal that later exits with Codex's active-writer refusal.
-      if (!isSuccessor && !fork && target.agent === 'codex') {
-        const nativeHandle = nativeSessionHandleForAdvSession(
+      // resume, so consult it for every retained-owner source launch, including
+      // a fresh successor. Ordinary resume forks a live source; a successor
+      // must refuse because it would retain that writer's active owner identity.
+      const codexNativeHandle = !fork && target.agent === 'codex'
+        ? nativeSessionHandleForAdvSession(
           {
             id: target.advSessionId,
             agent: 'codex',
@@ -968,9 +968,14 @@ export default defineTool({
             sessionId: target.sessionId,
           } as Parameters<typeof nativeSessionHandleForAdvSession>[0],
           { findCodexRolloutId: () => null },
-        );
-        if (nativeHandle?.backend === 'codex') {
-          const writer = codexThreadWriterHolder(nativeHandle.codexHome, target.sessionId);
+        )
+        : null;
+      const readSourceCodexWriter = () => codexNativeHandle?.backend === 'codex'
+        ? codexThreadWriterHolder(codexNativeHandle.codexHome, target.sessionId)
+        : null;
+      {
+        const writer = readSourceCodexWriter();
+        if (writer) {
           codexWriterHeld = writer.held;
           if (writer.held) {
             sourceStillLive = true;
@@ -1062,6 +1067,9 @@ export default defineTool({
           if (current.live || findLiveHost(binding.coordOwnerId)) {
             return 'Cannot start successor: a LIVE source host appeared during preparation. No process was opened.';
           }
+          if (readSourceCodexWriter()?.held) {
+            return 'Cannot start successor: an active native Codex writer appeared during preparation. No process was opened.';
+          }
           if (current.endedAt != null) return null;
           if (!hasAdvSessionTerminalEvidence(current)) {
             const verdicts = await resolveSessionStates(
@@ -1075,6 +1083,9 @@ export default defineTool({
           }
           if (findLiveHost(binding.coordOwnerId)) {
             return 'Cannot start successor: a LIVE source host appeared during reconciliation. No process was opened.';
+          }
+          if (readSourceCodexWriter()?.held) {
+            return 'Cannot start successor: an active native Codex writer appeared during reconciliation. No process was opened.';
           }
           const ended = await markAdvSessionEnded(target.advSessionId, null, 'reconciler', {
             expectedBinding: binding,

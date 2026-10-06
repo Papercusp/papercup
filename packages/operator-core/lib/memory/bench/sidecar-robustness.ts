@@ -156,6 +156,24 @@ function compare(reference: number[], vector: number[]): { cosine: number; maxAb
   return { cosine: dot / Math.sqrt(a * b), maxAbs };
 }
 
+/**
+ * An error's message plus its `cause` chain. undici's fetch rejects with a bare "fetch failed"
+ * and puts the actual reason (socket closed, connection refused/reset, ...) in `cause`; recording
+ * only the message left a failed probe unattributable (P-007 gemma v2 soak, 2026-10-06).
+ */
+export function describeFetchError(error: unknown): string {
+  const parts: string[] = [];
+  let current: unknown = error;
+  for (let depth = 0; depth < 4 && current !== undefined && current !== null; depth++) {
+    if (current instanceof Error) {
+      const code = (current as { code?: unknown }).code;
+      parts.push(`${current.name}${typeof code === 'string' ? ` ${code}` : ''}: ${current.message}`);
+      current = (current as { cause?: unknown }).cause;
+    } else { parts.push(String(current)); break; }
+  }
+  return parts.join(' <- ').slice(0, 300);
+}
+
 async function readHealth(url: string, timeoutMs: number) {
   const start = performance.now();
   try {
@@ -166,7 +184,7 @@ async function readHealth(url: string, timeoutMs: number) {
       queue: body.queue ? { depth: body.queue.depth, active: body.queue.active } : undefined,
       embedderWorker: body.workers?.embedder ? { alive: body.workers.embedder.alive, disabled: body.workers.embedder.disabled } : undefined };
   } catch (error) {
-    return { rttMs: performance.now() - start, ok: false, error: error instanceof Error ? error.message : String(error) };
+    return { rttMs: performance.now() - start, ok: false, error: describeFetchError(error) };
   }
 }
 
@@ -221,7 +239,7 @@ export async function collectSidecarRobustness(url: string, expected: Robustness
           : error instanceof Error && (error.name === 'AbortError' || error.name === 'TimeoutError') ? 'timeout' : 'network-error';
       sample = { ...base, settledAtMs: settled, latencyMs: settled - start, outcome,
         ...(error instanceof SidecarEmbedHttpError ? { status: error.status } : {}),
-        error: (error instanceof Error ? error.message : String(error)).slice(0, 300) };
+        error: describeFetchError(error) };
     }
     samples.push(sample); await deps.onSample?.(sample);
     return sample;

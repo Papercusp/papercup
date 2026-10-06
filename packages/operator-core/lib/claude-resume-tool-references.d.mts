@@ -8,6 +8,9 @@ export interface ClaudeResumeTranscriptAnalysis {
   lastMissingToolReferenceEvidence: string | null;
   /** The tool name the latest counted rejection named, or null. */
   lastMissingToolReferenceName: string | null;
+  /** Provider context rejections still present after the latest compaction; absent in older cached diagnostics. */
+  trailingContextLimitTurns?: number;
+  lastContextLimitEvidence?: string | null;
   /**
    * Assistant records (model output or the provider's synthetic error) written
    * after the most recent submitted prompt. A fork's file carries the source's

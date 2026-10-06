@@ -52,6 +52,7 @@
  * liveness-parity.test.ts (P-001).
  */
 
+import { hostname } from 'node:os';
 import { probeProcessLiveness, getPresence, listPresence } from './presence';
 import {
   fetchWakeability,
@@ -75,7 +76,13 @@ import {
   type SelfWakeSource,
 } from './presence-selfwake';
 import { RECORDED_ENDED_SESSION_SOURCE, RECORDED_SESSION_SOURCE } from './recorded-sessions';
-import { endedRecordedOwnerIds, recordedLiveOwnerIds } from '../../adv-sessions';
+import {
+  advSessionsByCoordOwner,
+  DISPLAY_TERMINAL_LAUNCH,
+  endedRecordedOwnerIds,
+  recordedLiveOwnerIds,
+  type AdvSessionRow,
+} from '../../adv-sessions';
 import { findLiveHost } from '../../events/await/psu-pty-discovery';
 
 /** The per-owner inputs a caller supplies. Everything beyond `ownerId` is
@@ -242,6 +249,9 @@ export interface ResolveSessionStatesOpts {
   } | null>;
   /** Batched counterpart to `getPresenceFn`, injectable for PG-free tests. */
   listPresenceFn?: typeof listPresence;
+  /** Latest exact incarnation per owner, only after a successful presence miss.
+   * Reuses the recorded-session reader; no presence mutation or lifecycle write. */
+  fetchRecordedSessionsFn?: (ids: string[]) => Promise<Map<string, AdvSessionRow>>;
 }
 
 /** WI-10005725: true only when `host` (a `findLiveHost` result) names a live psu
@@ -475,9 +485,8 @@ function hasPresenceSignal(subject: LivenessSubject): boolean {
   return (
     subject.heartbeatAt != null ||
     subject.stale != null ||
-    subject.host != null ||
-    subject.pid != null ||
-    subject.source != null
+    !!subject.host?.trim() ||
+    !!subject.source?.trim()
   );
 }
 
@@ -518,6 +527,7 @@ export async function resolveSessionStates(
   const findHostFn = opts.findHostFn ?? findLiveHost;
 
   let hydrated: readonly LivenessSubject[] = subjects;
+  const absentPresence = new Set<string>();
   if (opts.hydrateBatch) {
     const needsHydration = subjects.filter((s) => s.heartbeatAt == null && s.stale == null);
     if (needsHydration.length > 0) {
@@ -529,7 +539,10 @@ export async function resolveSessionStates(
         hydrated = subjects.map((s) => {
           if (s.heartbeatAt != null || s.stale != null) return s;
           const p = byOwner.get(s.ownerId);
-          if (!p) return s;
+          if (!p) {
+            absentPresence.add(s.ownerId);
+            return s;
+          }
           return {
             ...s,
             heartbeatAt: p.heartbeatAt,
@@ -552,7 +565,10 @@ export async function resolveSessionStates(
         if (s.heartbeatAt != null || s.stale != null) return s;
         try {
           const p = await getPresenceFn(s.ownerId);
-          if (!p) return s;
+          if (!p) {
+            absentPresence.add(s.ownerId);
+            return s;
+          }
           return {
             ...s,
             heartbeatAt: p.heartbeatAt,
@@ -573,6 +589,41 @@ export async function resolveSessionStates(
         }
       }),
     );
+  }
+
+  if (absentPresence.size > 0) {
+    try {
+      const missingIds = [...absentPresence];
+      const recorded = await (opts.fetchRecordedSessionsFn ??
+        ((ids: string[]) => advSessionsByCoordOwner(ids.length, ids)))(missingIds);
+      hydrated = hydrated.map((s) => {
+        if (!absentPresence.has(s.ownerId)) return s;
+        const r = recorded.get(s.ownerId);
+        if (!r || r.coordOwnerId !== s.ownerId) return s;
+        // adv_sessions has NO host column. Only a terminal-spawned row is
+        // local by construction (the existing isDeadTerminalLaunch contract).
+        // A caller-known host is retained, including remote hosts. Never turn
+        // an arbitrary recorded PID into local ESRCH evidence.
+        const host = s.host || (r.display === DISPLAY_TERMINAL_LAUNCH ? hostname() : null);
+        const localPid = host === hostname() && r.pid != null && r.pid > 0;
+        return {
+          ...s,
+          host,
+          pid: s.pid ?? r.pid,
+          agentRole: s.agentRole ?? r.role,
+          // started_at is an incarnation binding, NOT a heartbeat. Copying
+          // it here would manufacture hard-stale death for an unknown host.
+          // A locally-bound PID can use the existing recorded rescue; the
+          // oracle's affirmative ESRCH still outranks it, and a newer verified
+          // live host still supersedes a predecessor PID.
+          ...(localPid && r.endedAt == null && s.source == null
+            ? { source: RECORDED_SESSION_SOURCE }
+            : {}),
+        };
+      });
+    } catch {
+      // An unavailable recorded leg is unknown, not terminal evidence.
+    }
   }
 
   const ids = hydrated.map((s) => s.ownerId);

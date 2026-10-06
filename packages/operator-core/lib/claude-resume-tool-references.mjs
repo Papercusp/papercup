@@ -14,6 +14,8 @@ import { join } from 'node:path';
 const PAPERCUSP_MCP_TOOL_PREFIX = /^mcp__papercusp(?:-su|_su)__/i;
 const MISSING_TOOL_REFERENCE_RE =
   /^\s*API Error(?::\s*400|\s+400\b)[^\r\n]{0,300}\bTool reference\s+['"][^'"]+['"]\s+not found in available tools\b/im;
+const CONTEXT_LIMIT_RE =
+  /^\s*(?:Prompt is too long|Context limit reached(?:\s*·\s*\/clear to continue)?)\s*$/i;
 
 export const CLAUDE_TOOL_REFERENCE_POISON_TURNS = 3;
 /**
@@ -133,6 +135,8 @@ export function analyzeClaudeResumeTranscript(jsonl, options = {}) {
   let trailingMissingToolReferenceTurns = 0;
   let lastMissingToolReferenceEvidence = null;
   let lastMissingToolReferenceName = null;
+  let trailingContextLimitTurns = 0;
+  let lastContextLimitEvidence = null;
   let assistantTurnsSinceLastPrompt = 0;
 
   for (const line of String(jsonl ?? '').split(/\r?\n/)) {
@@ -146,6 +150,12 @@ export function analyzeClaudeResumeTranscript(jsonl, options = {}) {
     }
 
     collectPapercuspToolReferences(record, references);
+    // A native compaction replaces the rejected context. A new submitted
+    // prompt alone does not: a fork replays the same over-limit history.
+    if (record.type === 'system' && record.subtype === 'compact_boundary') {
+      trailingContextLimitTurns = 0;
+      lastContextLimitEvidence = null;
+    }
     if (isSubmittedPrompt(record)) {
       assistantTurnsSinceLastPrompt = 0;
       continue;
@@ -161,6 +171,9 @@ export function analyzeClaudeResumeTranscript(jsonl, options = {}) {
     trailingMissingToolReferenceTurns = evidence ? trailingMissingToolReferenceTurns + 1 : 0;
     lastMissingToolReferenceEvidence = evidence;
     lastMissingToolReferenceName = evidence ? missingToolReferenceName(evidence) : null;
+    const contextEvidence = synthetic && CONTEXT_LIMIT_RE.test(text) ? text.trim().slice(0, 200) : null;
+    trailingContextLimitTurns = contextEvidence ? trailingContextLimitTurns + 1 : 0;
+    lastContextLimitEvidence = contextEvidence;
   }
 
   const toolReferences = maxReferences === 0
@@ -171,6 +184,8 @@ export function analyzeClaudeResumeTranscript(jsonl, options = {}) {
     trailingMissingToolReferenceTurns,
     lastMissingToolReferenceEvidence,
     lastMissingToolReferenceName,
+    trailingContextLimitTurns,
+    lastContextLimitEvidence,
     assistantTurnsSinceLastPrompt,
     needsFreshContext: trailingMissingToolReferenceTurns >= CLAUDE_TOOL_REFERENCE_RECOVERY_TURNS,
     poisoned: trailingMissingToolReferenceTurns >= CLAUDE_TOOL_REFERENCE_POISON_TURNS,

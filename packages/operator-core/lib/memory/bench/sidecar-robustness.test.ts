@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { hashJson } from './measurement-manifest';
-import { loadRobustnessRun, parseRobustnessInput, summarizeRobustnessReport, ROBUSTNESS_PHASES, type RobustnessIdentity,
+import { describeFetchError, loadRobustnessRun, parseRobustnessInput, summarizeRobustnessReport, ROBUSTNESS_PHASES, type RobustnessIdentity,
   type RobustnessInput, type RobustnessReport, type RobustnessSample } from './sidecar-robustness';
 
 const raw = {
@@ -64,6 +64,26 @@ function report(input: RobustnessInput, knobs: { longMs?: number; soakLateMs?: n
         workerAfterRecovery: { alive: true, disabled: false, pendingCount: 0 } }],
       soak: { startedAtMs: soakStart, endedAtMs: soakEnd } } };
 }
+
+describe('describeFetchError keeps the cause a bare "fetch failed" hides', () => {
+  it('records the cause chain with its codes', async () => {
+    // A real undici rejection: connection refused on a port nothing listens on.
+    const net = await import('node:net');
+    const server = net.createServer(); await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address() as { port: number }; await new Promise((resolve) => server.close(resolve));
+    const refused = await fetch(`http://127.0.0.1:${port}/healthz`).catch((error: unknown) => error);
+    const described = describeFetchError(refused);
+    expect(described).toMatch(/^TypeError: fetch failed <- /);
+    expect(described).toMatch(/ECONNREFUSED/);
+  });
+  it('handles non-Error values and bounds its output', () => {
+    expect(describeFetchError('plain')).toBe('plain');
+    const deep = new Error('a'.repeat(400), { cause: Object.assign(new Error('b'), { code: 'X_CODE' }) });
+    expect(describeFetchError(deep).length).toBeLessThanOrEqual(300);
+    expect(describeFetchError(new Error('top', { cause: Object.assign(new Error('inner'), { code: 'UND_ERR_SOCKET' }) })))
+      .toBe('Error: top <- Error UND_ERR_SOCKET: inner');
+  });
+});
 
 describe('robustness input contract', () => {
   it('accepts the declared shape and refuses ambiguous or vacuous designs before any request', () => {

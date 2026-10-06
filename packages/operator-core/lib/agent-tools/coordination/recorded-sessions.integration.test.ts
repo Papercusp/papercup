@@ -11,17 +11,23 @@
  * present to live-test when the fix landed.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { hostname } from 'node:os';
 import type postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../../_baseline-coord-fixture';
 import {
   acquireAdvSessionResume,
+  advSessionsByCoordOwner,
   claimAdvSessionResume,
   finalizeAdvSessionResume,
   listRecordedLiveSessions,
   reactivateAdvSessionByOwner,
   releaseAdvSessionResume,
 } from '../../adv-sessions';
+import { resolveSessionStates } from './liveness-oracle';
+import { getPresence, probeProcessLiveness } from './presence';
 
 let fx: BaselineCoordFixture | null = null;
 let admin: postgres.Sql;
@@ -47,15 +53,17 @@ async function seedAdv(opts: {
   label?: string | null;
   startedAgoSec?: number;
   ended?: boolean;
+  pid?: number | null;
+  display?: string | null;
 }): Promise<void> {
   await admin`
     INSERT INTO harness_shared.adv_sessions
-      (workspace_id, agent, mode, role, label, coord_owner_id, started_at, ended_at)
+      (workspace_id, agent, mode, role, label, coord_owner_id, started_at, ended_at, pid, display)
     VALUES (
       ${opts.workspaceId ?? WS}, ${opts.agent ?? 'claude'}, ${opts.mode ?? 'console'},
       ${opts.role ?? null}, ${opts.label ?? null}, ${opts.coordOwnerId},
       now() - ${`${opts.startedAgoSec ?? 60} seconds`}::interval,
-      ${opts.ended ? new Date() : null}
+      ${opts.ended ? new Date() : null}, ${opts.pid ?? null}, ${opts.display ?? null}
     )
   `;
 }
@@ -63,6 +71,62 @@ async function seedAdv(opts: {
 beforeAll(async () => {
   fx = await setupBaselineCoordFixture();
   admin = fx.admin;
+});
+
+describe('WI-10006572 — real recorded reader / absent presence / local OS PID', () => {
+  it('targeted latest-per-owner reads retain PID/locality outside the global recent window', async () => {
+    const a = `s-hydration-a-${WS}`;
+    const b = `s-hydration-b-${WS}`;
+    await seedAdv({ coordOwnerId: a, startedAgoSec: 7200, pid: 72, display: 'terminal' });
+    await seedAdv({ coordOwnerId: a, startedAgoSec: 3600, pid: 73, display: 'terminal' });
+    await seedAdv({ coordOwnerId: b, startedAgoSec: 8000, pid: 74, ended: true });
+    const rows = await advSessionsByCoordOwner(2, [a, b]);
+    expect([...rows.keys()]).toEqual([a, b]);
+    expect(rows.get(a)).toMatchObject({ pid: 73, display: 'terminal' });
+    expect(rows.get(b)?.endedAt).not.toBeNull();
+    expect((await advSessionsByCoordOwner(500, [])).size).toBe(0);
+  });
+
+  it('both hydration paths detect an exited recorded local PID without changing the binding', async () => {
+    const child = spawn(process.execPath, ['-e', 'process.exit(0)'], { stdio: 'ignore' });
+    const pid = child.pid;
+    await once(child, 'exit');
+    expect(pid).toBeGreaterThan(0);
+    expect(probeProcessLiveness({ host: hostname(), pid })).toBe(false);
+    const ownerId = `s-hydration-dead-${WS}`;
+    await seedAdv({ coordOwnerId: ownerId, startedAgoSec: 3600, pid, display: 'terminal' });
+    expect(await getPresence(ownerId)).toBeNull();
+    const before = (await advSessionsByCoordOwner(1, [ownerId])).get(ownerId)!;
+    const options = {
+      fetchWakeabilityFn: async () => new Map([[ownerId, { wakeable: true, liveTurn: false }]]),
+      findHostFn: () => null,
+    };
+    for (const hydration of [{ hydratePerId: true }, { hydrateBatch: true }]) {
+      const out = await resolveSessionStates([{ ownerId }], { ...options, ...hydration });
+      expect(out.get(ownerId)?.sessionState).toBe('ended');
+    }
+    const after = (await advSessionsByCoordOwner(1, [ownerId])).get(ownerId)!;
+    expect(after).toEqual(before);
+    expect(after.endedAt).toBeNull(); // verdict assembly must never write a fake exit
+  });
+
+  it('the same dead PID with no host provenance is unknown, never a guessed local death', async () => {
+    const child = spawn(process.execPath, ['-e', 'process.exit(0)'], { stdio: 'ignore' });
+    const pid = child.pid;
+    await once(child, 'exit');
+    expect(pid).toBeGreaterThan(0);
+    expect(probeProcessLiveness({ host: hostname(), pid })).toBe(false);
+    const ownerId = `s-hydration-unknown-${WS}`;
+    await seedAdv({ coordOwnerId: ownerId, startedAgoSec: 3600, pid });
+    const out = await resolveSessionStates([{ ownerId }], {
+      hydratePerId: true,
+      fetchWakeabilityFn: async () => new Map([[ownerId, { wakeable: false, liveTurn: false }]]),
+      findHostFn: () => null,
+    });
+    expect(out.get(ownerId)).toMatchObject({
+      sessionState: null, signalMissing: true, confirmLiveness: true,
+    });
+  });
 });
 afterAll(async () => {
   await cleanOwnedRows().catch(() => {});

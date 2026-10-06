@@ -604,6 +604,76 @@ const sendAnthropicTrial = (port: number, token: string = trialToken, signal?: A
     headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
     body: anthropicTrialBody() });
 
+it.each(['anthropic', 'codex'] as const)(
+  'carry trial validates controller authority at the final %s send', async protocol => {
+    let writes = 0, checks = 0;
+    upstream = http.createServer((req, res) => { req.resume(); writes++; res.end('{}'); });
+    const upstreamPort = await listen(upstream);
+    const authorize: GatewayCarryTrialBinding['authorizeAttempt'] = async attempt => ({
+      ...fixtureReservation(attempt),
+      validateAuthorization: () => {
+        checks++;
+        expect(attempt.credentialSha256).toBe(sha256('Bearer PRIVATE_PROVIDER_TOKEN'));
+        expect(attempt.bodySha256).toBe(sha256(attempt.body));
+        expect(writes).toBe(0);
+      },
+    });
+    gateway = createInferenceGateway({ accountId: 'unused', token: async () => 'unused',
+      ...(protocol === 'anthropic'
+        ? { upstreamBase: `http://127.0.0.1:${upstreamPort}`,
+          pool: createFailoverPool([{ accountId: 'final-account', token: async () => 'PRIVATE_PROVIDER_TOKEN' }]) }
+        : { openaiUpstreamBase: `http://127.0.0.1:${upstreamPort}`,
+          codexPool: createFailoverPool([{ accountId: 'final-account', token: async () => 'PRIVATE_PROVIDER_TOKEN' }]) }),
+      carryTrial: protocol === 'anthropic' ? anthropicTrialBinding(authorize) : trialBinding(authorize),
+      requestAbsorbMs: 0, selfHeal: { enabled: false },
+    });
+    const port = await gateway.listen(0);
+    const response = protocol === 'anthropic' ? await sendAnthropicTrial(port) :
+      await fetch(`http://127.0.0.1:${port}/v1/responses`, { method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${trialToken}` },
+        body: JSON.stringify({ model: 'gpt-6-sol', input: 'PRIVATE_TASK' }) });
+    expect(response.status).toBe(200); await response.text();
+    expect(checks).toBe(1); expect(writes).toBe(1);
+  });
+
+it.each(['anthropic', 'codex'].flatMap(protocol =>
+  ['revoked', 'throws', 'async', 'async-reject', 'nonfunction'].map(mode => ({ protocol, mode }))))(
+  'carry trial refuses final controller authority for $protocol/$mode', async ({ protocol, mode }) => {
+    let writes = 0, checks = 0, revoked = false;
+    upstream = http.createServer((req, res) => { req.resume(); writes++; res.end('{}'); });
+    const upstreamPort = await listen(upstream);
+    const authorize: GatewayCarryTrialBinding['authorizeAttempt'] = async attempt => {
+      // Revocation occurs after the issuer returned, before the actual send.
+      // A valid receipt alone cannot authorize this later write.
+      if (mode === 'revoked') queueMicrotask(() => { revoked = true; });
+      return { ...fixtureReservation(attempt), validateAuthorization: (mode === 'nonfunction' ? true : () => {
+        checks++;
+        if (mode === 'async') return Promise.resolve();
+        if (mode === 'async-reject') return Promise.reject(new Error('PRIVATE_ASYNC_AUTHORITY_ERROR'));
+        if (mode === 'throws' || revoked) throw new Error('PRIVATE_REVOKED_AUTHORITY');
+      }) as never };
+    };
+    gateway = createInferenceGateway({ accountId: 'unused', token: async () => 'unused',
+      ...(protocol === 'anthropic'
+        ? { upstreamBase: `http://127.0.0.1:${upstreamPort}`,
+          pool: createFailoverPool([{ accountId: 'final-account', token: async () => 'PRIVATE_PROVIDER_TOKEN' }]) }
+        : { openaiUpstreamBase: `http://127.0.0.1:${upstreamPort}`,
+          codexPool: createFailoverPool([{ accountId: 'final-account', token: async () => 'PRIVATE_PROVIDER_TOKEN' }]) }),
+      carryTrial: protocol === 'anthropic' ? anthropicTrialBinding(authorize) : trialBinding(authorize),
+      requestAbsorbMs: 0, selfHeal: { enabled: false },
+    });
+    const port = await gateway.listen(0);
+    const response = protocol === 'anthropic' ? await sendAnthropicTrial(port) :
+      await fetch(`http://127.0.0.1:${port}/v1/responses`, { method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${trialToken}` },
+        body: JSON.stringify({ model: 'gpt-6-sol', input: 'PRIVATE_TASK' }) });
+    expect(response.status).toBe(403);
+    expect(response.headers.get('x-should-retry')).toBe('false');
+    expect(await response.text()).not.toMatch(/PRIVATE_/);
+    expect(writes).toBe(0); expect(checks).toBe(mode === 'nonfunction' ? 0 : 1);
+    expect(gateway.stats().upstreamErrors).toBe(0);
+  });
+
 it.each([null, [], ['anthropic-messages', 'anthropic-messages'], ['unobserved-protocol'], 'anthropic-messages'])(
   'rejects malformed protocol allowance %j before serving requests', protocols => {
     expect(() => createInferenceGateway({ accountId: 'unused', token: async () => 'unused',

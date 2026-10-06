@@ -175,7 +175,8 @@ export interface components {
                  */
                 date_time?: string;
             } | null;
-            enum_value?: components["schemas"]["EnumOption"] & (Record<string, never> | null);
+            /** @description *Conditional*. Only relevant for custom fields of type `enum`. This object is the chosen value of an `enum` custom field. */
+            enum_value?: components["schemas"]["EnumOption"] | null;
             /** @description *Conditional*. Only relevant for custom fields of type `multi_enum`. This object is the chosen values of a `multi_enum` custom field. */
             multi_enum_values?: components["schemas"]["EnumOption"][];
             /**
@@ -222,7 +223,7 @@ export interface components {
              * @example false
              */
             is_value_read_only?: boolean;
-            created_by?: components["schemas"]["UserCompact"] & unknown;
+            created_by?: components["schemas"]["UserCompact"] | null;
             /** @description *Conditional*. Only relevant for custom fields of type `people`. This array of [compact user](/reference/users) objects reflects the values of a `people` custom field. */
             people_value?: components["schemas"]["UserCompact"][];
             /** @description *Conditional*. Only relevant for custom fields of type `reference`. This array of objects reflects the values of a `reference` custom field. */
@@ -425,8 +426,10 @@ export interface components {
          *     an object with the user's `id` and `type`.
          */
         EventResponse: {
-            user?: components["schemas"]["UserCompact"] & unknown;
-            resource?: components["schemas"]["AsanaNamedResource"] & unknown;
+            /** @description The user who triggered the event. */
+            user?: components["schemas"]["UserCompact"];
+            /** @description The resource which has triggered the event by being modified in some way. */
+            resource?: components["schemas"]["AsanaNamedResource"];
             /**
              * @description *Deprecated: Refer to the resource_type of the resource.* The type of the resource that generated the event.
              * @example task
@@ -437,7 +440,8 @@ export interface components {
              * @example changed
              */
             readonly action?: string;
-            parent?: components["schemas"]["AsanaNamedResource"] & unknown;
+            /** @description For added/removed events, the parent object that resource was added to or removed from. The parent will be `null` for other event types. */
+            parent?: components["schemas"]["AsanaNamedResource"];
             /**
              * Format: date-time
              * @description The timestamp when the event occurred.
@@ -886,8 +890,10 @@ export interface components {
             readonly old_enum_value?: components["schemas"]["EnumOption"];
             /** @description *Conditional* */
             readonly new_enum_value?: components["schemas"]["EnumOption"];
-            readonly old_date_value?: components["schemas"]["StoryResponseDates"] & unknown;
-            readonly new_date_value?: components["schemas"]["StoryResponseDates"] & unknown;
+            /** @description *Conditional*. The old value of a date custom field story. */
+            readonly old_date_value?: components["schemas"]["StoryResponseDates"];
+            /** @description *Conditional* The new value of a date custom field story. */
+            readonly new_date_value?: components["schemas"]["StoryResponseDates"];
             /** @description *Conditional*. The old value of a people custom field story. */
             readonly old_people_value?: components["schemas"]["UserCompact"][];
             /** @description *Conditional*. The new value of a people custom field story. */
@@ -918,7 +924,8 @@ export interface components {
              * @enum {string}
              */
             readonly source?: "web" | "email" | "mobile" | "api" | "unknown";
-            target?: components["schemas"]["TaskCompact"] & Record<string, never>;
+            /** @description The object this story is associated with. Currently may only be a task. */
+            target?: components["schemas"]["TaskCompact"];
         };
         /** @description *Conditional* */
         StoryResponseDates: {
@@ -972,7 +979,8 @@ export interface components {
              * @enum {string}
              */
             assignee_status?: "today" | "upcoming" | "later" | "new" | "inbox";
-            assigned_by?: components["schemas"]["UserCompact"] & unknown;
+            /** @description The user who assigned the task. This field is only returned when requesting it via opt_fields, and will be null if the task has no specific assigner (e.g., tasks created without an explicit assigner). */
+            assigned_by?: components["schemas"]["UserCompact"] | null;
             /**
              * @description True if the task is currently marked complete, false if not.
              * @example false
@@ -984,7 +992,7 @@ export interface components {
              * @example 2012-02-22T02:06:58.147Z
              */
             readonly completed_at?: string | null;
-            completed_by?: components["schemas"]["UserCompact"] & unknown;
+            completed_by?: components["schemas"]["UserCompact"] | null;
             /**
              * Format: date-time
              * @description The time at which this resource was created.
@@ -1172,7 +1180,7 @@ export interface components {
         };
         TaskMembership: {
             project?: components["schemas"]["ProjectCompact"];
-            section?: components["schemas"]["SectionCompact"] & unknown;
+            section?: components["schemas"]["SectionCompact"] | null;
         };
         TaskRequestBase: components["schemas"]["TaskBase"] & {
             /**
@@ -1223,15 +1231,20 @@ export interface components {
             parent?: string | null;
         };
         TaskResponse: components["schemas"]["TaskBase"] & {
-            assignee?: components["schemas"]["UserCompact"] & unknown;
-            assignee_section?: components["schemas"]["SectionCompact"] & (Record<string, never> | null);
+            assignee?: components["schemas"]["UserCompact"] | null;
+            /**
+             * @description The *assignee section* is a subdivision of a project that groups tasks together in the assignee's "My tasks" list. It can either be a header above a list of tasks in a list view or a column in a board view of "My tasks."
+             *     The `assignee_section` property will be returned in the response only if the request was sent by the user who is the assignee of the task. Note that you can only write to `assignee_section` with the gid of an existing section visible in the user's "My tasks" list.
+             */
+            assignee_section?: components["schemas"]["SectionCompact"] | null;
             /** @description Array of custom field values applied to the task. These represent the custom field values recorded on this project for a particular custom field. For example, these custom field values will contain an `enum_value` property for custom fields of type `enum`, a `text_value` property for custom fields of type `text`, and so on. Please note that the `gid` returned on each custom field value *is identical* to the `gid` of the custom field, which allows referencing the custom field metadata through the `/custom_fields/custom_field_gid` endpoint. The array includes custom fields from projects the task belongs to directly and from projects inherited from its full ancestor chain. */
             readonly custom_fields?: components["schemas"]["CustomFieldResponse"][];
-            custom_type?: components["schemas"]["CustomTypeCompact"] & unknown;
-            custom_type_status_option?: components["schemas"]["CustomTypeStatusOptionCompact"] & unknown;
+            custom_type?: components["schemas"]["CustomTypeCompact"] | null;
+            custom_type_status_option?: components["schemas"]["CustomTypeStatusOptionCompact"] | null;
             /** @description Array of users following this task. */
             readonly followers?: components["schemas"]["UserCompact"][];
-            parent?: components["schemas"]["TaskCompact"] & (Record<string, never> | null);
+            /** @description The parent of this task, or `null` if this is not a subtask. This property cannot be modified using a PUT request but you can change it with the `setParent` endpoint. You can create subtasks by using the subtasks endpoint. */
+            parent?: components["schemas"]["TaskCompact"] | null;
             /** @description *Create-only.* Array of projects this task is directly associated with. At task creation time, this array can be used to add the task to many projects at once. After task creation, these associations can be modified using the addProject and removeProject endpoints. */
             readonly projects?: components["schemas"]["ProjectCompact"][];
             /**
@@ -1250,7 +1263,8 @@ export interface components {
              *     ]
              */
             readonly tags?: components["schemas"]["TagCompact"][];
-            workspace?: components["schemas"]["WorkspaceCompact"] & Record<string, never>;
+            /** @description *Create-only*. The workspace this task is associated with. Once created, task cannot be moved to a different workspace. This attribute can only be specified at creation time. */
+            workspace?: components["schemas"]["WorkspaceCompact"];
             /**
              * @description A url that points directly to the object within Asana.
              * @example https://app.asana.com/1/12345/task/123456789

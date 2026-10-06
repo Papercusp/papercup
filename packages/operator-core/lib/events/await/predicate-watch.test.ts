@@ -120,6 +120,34 @@ describe('comparePredicate', () => {
     expect(comparePredicate({ a: 1 }, 'ne', { a: 2 })).toBe(true);
   });
 
+  it('compares JSONB baselines independently of nested object key order', () => {
+    const observed = [{ runtime: 'staging-operator', build: { sha: 'd1b140799c', containsChange: false } }];
+    const persisted = [{ build: { containsChange: false, sha: 'd1b140799c' }, runtime: 'staging-operator' }];
+
+    expect(comparePredicate(observed, 'eq', persisted)).toBe(true);
+    expect(comparePredicate(observed, 'ne', persisted)).toBe(false);
+    expect(comparePredicate(observed, 'changed', undefined, { established: true, value: persisted })).toBe(false);
+    expect(comparePredicate(observed, 'contains', persisted[0])).toBe(true);
+  });
+
+  it('still detects nested value changes and reordered arrays', () => {
+    const before = [{ build: { containsChange: false }, runtime: 'staging-operator' }, { runtime: 'release-operator' }];
+    const changed = [{ runtime: 'staging-operator', build: { containsChange: true } }, { runtime: 'release-operator' }];
+
+    expect(comparePredicate(changed, 'changed', undefined, { established: true, value: before })).toBe(true);
+    expect(comparePredicate([...before].reverse(), 'eq', before)).toBe(false);
+    expect(comparePredicate([...before].reverse(), 'changed', undefined, { established: true, value: before })).toBe(true);
+  });
+
+  it('preserves literal JSON object keys when comparing a persisted baseline', () => {
+    const before = JSON.parse('{"__proto__":{"containsChange":false},"runtime":"staging-operator"}');
+    const reordered = JSON.parse('{"runtime":"staging-operator","__proto__":{"containsChange":false}}');
+    const changed = JSON.parse('{"runtime":"staging-operator","__proto__":{"containsChange":true}}');
+
+    expect(comparePredicate(reordered, 'eq', before)).toBe(true);
+    expect(comparePredicate(changed, 'changed', undefined, { established: true, value: before })).toBe(true);
+  });
+
   it('numeric ops coerce both sides (a jsonb number often arrives as a string)', () => {
     expect(comparePredicate('128', 'gt', 127)).toBe(true);
     expect(comparePredicate(127, 'gt', 127)).toBe(false);

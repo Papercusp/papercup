@@ -784,13 +784,26 @@ describe('sync-staging-checkout.sh superseded generation pruning (WI-10005310)',
     expect(startPrune).toBeLessThan(Math.min(firstNoOp, prepare));
   });
 
-  it('prunes after a restart advance reports healthy, not only on the SPA-only path', () => {
+  it('finishes a verified cutover without letting cleanup turn success into failure', () => {
     const script = readFileSync(SCRIPT_PATH, 'utf8');
     const healthy = script.indexOf('log "✅ :3170 healthy on exact staging source');
     expect(healthy).toBeGreaterThan(-1);
     const exitAfterHealthy = script.indexOf('exit 0', healthy);
     expect(exitAfterHealthy).toBeGreaterThan(healthy);
-    expect(script.slice(healthy, exitAfterHealthy)).toContain('prune_staging_generations');
+    // Execute the shipped success branch with a failing cleanup sentinel. The
+    // next timer tick's existing GC handles superseded generations; it must
+    // not consume the update's remaining systemd startup budget after health.
+    const result = spawnSync('bash', ['-c', [
+      'set -euo pipefail',
+      'last_health_sha=0123456789abcdef',
+      'log() { printf "%s\\n" "$*"; }',
+      'prune_staging_generations() { echo UNEXPECTED_POST_HEALTH_GC >&2; exit 91; }',
+      script.slice(healthy, exitAfterHealthy + 'exit 0'.length),
+    ].join('\n')], { encoding: 'utf8', timeout: 2_000 });
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('healthy on exact staging source 0123456789abcdef');
+    expect(result.stderr).not.toContain('UNEXPECTED_POST_HEALTH_GC');
   });
 });
 

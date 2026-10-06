@@ -646,8 +646,16 @@ export async function collectIndependentCohort(opts: { snapshot: string; out: st
   /** Explicit, recorded measurement-owner succession: a successor session may
    * resume a donor collection owned by exactly this (one) prior owner. Never
    * implied — without it a foreign donor owner is refused as before. */
-  adoptDonorOwner?: string; log?: (message: string) => void }) {
+  adoptDonorOwner?: string;
+  /** How many blind calls may be in flight at once (default 1). Run identity never includes it:
+   * a prefetch only fills per-name call files ahead of the sequential replay, which alone
+   * orders, validates and aggregates, so the labels are the same at any concurrency. */
+  callConcurrency?: number; log?: (message: string) => void }) {
   const targets = opts.targetsPerPartition ?? 16, log = opts.log ?? (() => {});
+  const callConcurrency = opts.callConcurrency ?? 1;
+  if (!Number.isInteger(callConcurrency) || callConcurrency < 1 || callConcurrency > 32) {
+    throw new Error('callConcurrency must be an integer in [1, 32]');
+  }
   if (opts.reuseAuthorsFrom && opts.reuseCallsFrom) throw new Error('choose authors-only or exact-call recovery, not both');
   if (opts.reuseSnapshotExpansion && !opts.reuseCallsFrom) throw new Error('snapshot expansion requires exact-call recovery');
   if (opts.adoptDonorOwner !== undefined && (!opts.adoptDonorOwner.trim() || !(opts.reuseCallsFrom ?? opts.reuseAuthorsFrom))) {
@@ -932,16 +940,39 @@ export async function collectIndependentCohort(opts: { snapshot: string; out: st
     }
     throw new Error(`invalid blind response after 3 attempts and a format repair for ${name}: ${String(lastError)}`);
   };
+  // Bounded-concurrency prefetch. `call` is per-name and file-isolated: each name owns its own
+  // receipt/attempt files and replays them on recovery. So the independent calls of one stage can be
+  // issued concurrently ahead of the sequential loop, which then replays each one from disk in its
+  // deterministic order and stays the sole authority for validation, ordering and every error. A
+  // prefetch failure is only logged: the replay re-enters `call` for that name, exactly as a resume
+  // would, and surfaces it. Sequential the ~10K-call V20 prose cohort was a ~15h run (WI-10004537).
+  const prefetch = async (jobs: ReadonlyArray<{ name: string; system: string; input: unknown }>) => {
+    if (callConcurrency <= 1 || jobs.length <= 1) return;
+    let next = 0;
+    const lane = async () => {
+      while (next < jobs.length) {
+        const job = jobs[next++];
+        try { await call(job.name, job.system, job.input); }
+        catch (error) { log(`blind ${job.name} prefetch failed; the sequential replay decides: ${String(error)}`); }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(callConcurrency, jobs.length) }, lane));
+  };
   const allLabels: Record<string, HeldoutQuery[]> = {}, allProofs: Record<string, unknown> = {};
   for (const corpus of ['memory', 'prose'] as const) {
     const entries = snapshot.suites[corpus].entries;
     const { groups, chosen } = sourceTargets[corpus];
     const questions: HeldoutQuery[] = [], authors = [];
+    const authorJob = (group: (typeof chosen)['test'][number]) => {
+      const targetId = hashJson([corpus, group]).slice(0, 20);
+      return { targetId, name: `${corpus}-author-${targetId}`, system: BLIND_COHORT_CONTRACT.author,
+        input: { sources: groups.get(group)!.map((e) => ({ key: e.key, text: e.text })) } };
+    };
+    await prefetch([...chosen.calibration, ...chosen.test].map(authorJob));
     for (const partition of ['calibration', 'test'] as const) {
       for (const group of chosen[partition]) {
-        const targetId = hashJson([corpus, group]).slice(0, 20);
-        const raw = await call(`${corpus}-author-${targetId}`, BLIND_COHORT_CONTRACT.author,
-          { sources: groups.get(group)!.map((e) => ({ key: e.key, text: e.text })) });
+        const { targetId, name, system, input } = authorJob(group);
+        const raw = await call(name, system, input);
         authors.push({ invocationId: raw.invocationId, promptSha256: raw.promptSha256,
           receipt: await fingerprintFile(path.join(root, `${corpus}-author-${targetId}.json`)) });
         const generated = blindQuestionSchema.parse(parseLlmJson(raw.result)).queries;
@@ -960,13 +991,20 @@ export async function collectIndependentCohort(opts: { snapshot: string; out: st
       const order = [...entries].sort((a, b) => hashJson([snapshot.seed, pass, a.key]).localeCompare(hashJson([snapshot.seed, pass, b.key])));
       const combined = new Map<string, BlindVote>(questions.map((q) => [q.id, { queryId: q.id, relevantKeys: [], ambiguous: false, note: '' }]));
       const calls = [];
+      const passJobs: Array<{ name: string; system: string; input: unknown; chunk: typeof entries; batch: HeldoutQuery[] }> = [];
       for (let offset = 0; offset < order.length; offset += BLIND_COHORT_CONTRACT.documentChunk) {
         const chunk = order.slice(offset, offset + BLIND_COHORT_CONTRACT.documentChunk);
         for (let queryOffset = 0; queryOffset < questions.length; queryOffset += BLIND_COHORT_CONTRACT.questionChunk) {
           const batch = questions.slice(queryOffset, queryOffset + BLIND_COHORT_CONTRACT.questionChunk);
-          const name = `${corpus}-judge-${pass + 1}-${offset}${questions.length > BLIND_COHORT_CONTRACT.questionChunk ? `-q${queryOffset}` : ''}`;
-          const raw = await call(name, BLIND_COHORT_CONTRACT.judge,
-            { questions: batch.map((q, index) => ({ index, query: q.query })), sources: chunk.map((e, index) => ({ index, text: e.text })) });
+          passJobs.push({ name: `${corpus}-judge-${pass + 1}-${offset}${questions.length > BLIND_COHORT_CONTRACT.questionChunk ? `-q${queryOffset}` : ''}`,
+            system: BLIND_COHORT_CONTRACT.judge, chunk, batch,
+            input: { questions: batch.map((q, index) => ({ index, query: q.query })), sources: chunk.map((e, index) => ({ index, text: e.text })) } });
+        }
+      }
+      await prefetch(passJobs);
+      for (const { name, system, input, chunk, batch } of passJobs) {
+        {
+          const raw = await call(name, system, input);
           if (invocationIds.has(raw.invocationId)) throw new Error('reused blind judge invocation');
           invocationIds.add(raw.invocationId);
           const votes = parseBlindChunkVotes(parseLlmJson(raw.result), batch, chunk);

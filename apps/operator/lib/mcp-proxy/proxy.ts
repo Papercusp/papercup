@@ -4747,6 +4747,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                 upstreamErr: outcome.err
                   ? String(outcome.err.message ?? outcome.err)
                   : undefined,
+                ...rpcTrace,
               });
               break;
             }

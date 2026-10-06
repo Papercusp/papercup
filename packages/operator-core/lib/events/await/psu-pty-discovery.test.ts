@@ -18,6 +18,7 @@ import { join, resolve } from 'node:path';
 import net from 'node:net';
 import {
   findLiveHost,
+  findLiveHostAsync,
   hostSupports,
   hostIsAgentLaunched,
   hostCodeVersionMatches,
@@ -147,6 +148,37 @@ describe('findLiveHost', () => {
       JSON.stringify({ ownerId: 'su-B', pid: process.pid, ptyPid: process.pid, sock, command: 'claude-su', startedAt: 1 }),
     );
     expect(findLiveHost('su-A', dir)).toBeNull();
+  });
+});
+
+describe('findLiveHostAsync', () => {
+  it('returns the keyed host after async socket and identity validation', async () => {
+    const dir = tmpDir();
+    const { sock } = startSocket(dir, 'su-async-live');
+    writeMeta(dir, 'su-async-live', {
+      pid: process.pid,
+      ptyPid: process.pid,
+      sock,
+      command: 'claude-su',
+      startedAt: 1,
+    });
+    const verifyIdentity = vi.fn(async () => true);
+
+    const host = await findLiveHostAsync('su-async-live', dir, { verifyIdentity });
+
+    expect(host).toMatchObject({ ownerId: 'su-async-live', sock });
+    expect(verifyIdentity).toHaveBeenCalledWith(process.pid);
+  });
+
+  it('rejects a sanitize-key collision even when the async liveness probe passes', async () => {
+    const dir = tmpDir();
+    const { sock } = startSocket(dir, 'su-async-owner-a');
+    writeFileSync(
+      join(dir, `${sanitizeKey('su-async-owner-a')}.json`),
+      JSON.stringify({ ownerId: 'su-async-owner-b', pid: process.pid, sock }),
+    );
+
+    await expect(findLiveHostAsync('su-async-owner-a', dir, { verifyIdentity: async () => true })).resolves.toBeNull();
   });
 });
 

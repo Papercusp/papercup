@@ -3585,8 +3585,10 @@ describe("EI-21908521835344903: client_gone records the write's actual outcome",
     const previous = process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG;
     process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG = logFile;
     try {
+      const upstreamTraceIds: string[] = [];
       const upstream = track(
         http.createServer((_req, res) => {
+          upstreamTraceIds.push(String(_req.headers[MCP_PROXY_TRACE_HEADER] ?? ""));
           // The write lands only AFTER the client has already disconnected — the exact
           // reported race (step 2: the write committed while the calling agent's own
           // MCP client had already given up on a bare "operation timed out").
@@ -3641,11 +3643,15 @@ describe("EI-21908521835344903: client_gone records the write's actual outcome",
               connected?: boolean;
               timedOut?: boolean;
               upstreamErr?: string;
+              traceId?: string;
+              rpcMethods?: string[];
             },
         );
       const gone = records.filter((rec) => rec.kind === "client_gone");
       expect(gone.length).toBeGreaterThanOrEqual(1);
       expect(gone[0].klass).toBe("keyed");
+      expect(gone[0].traceId).toBe(upstreamTraceIds[0]);
+      expect(gone[0].rpcMethods).toEqual(["tools/call"]);
       // The write LANDED (upstream answered 200) even though the client was already
       // gone — this is the exact fact the old record discarded.
       expect(gone[0].upstreamStatus).toBe(200);

@@ -634,13 +634,21 @@ export async function withFsMutexRead(name, fn, opts = {}) {
     let markerCreated = false;
     let ready = false;
     try {
-      await mkdir(readerDir);
-      markerCreated = true;
-      await writeFile(
-        join(readerDir, "owner.json"),
-        `${JSON.stringify(owner, null, 2)}\n`,
-      );
-      ready = !(await writerLockIsHeld(writerDir, staleMs));
+      // A reserved writer already prevents admission. Publishing markers on
+      // every retry in that state makes its drain observe readers that will
+      // never enter, and a stream of newcomers can keep that drain occupied.
+      if (!(await writerLockIsHeld(writerDir, staleMs))) {
+        await mkdir(readerDir);
+        markerCreated = true;
+        await writeFile(
+          join(readerDir, "owner.json"),
+          `${JSON.stringify(owner, null, 2)}\n`,
+        );
+        // Keep this second check: a writer can reserve after the preflight
+        // but before publication. Its drain must see our marker until we
+        // notice that reservation and remove it.
+        ready = !(await writerLockIsHeld(writerDir, staleMs));
+      }
     } catch (error) {
       if (error.code !== "EEXIST") {
         if (markerCreated)

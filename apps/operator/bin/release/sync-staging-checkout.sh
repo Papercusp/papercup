@@ -799,14 +799,14 @@ fi
 [ -d "$INTEGRATION_ROOT/.git" ] || { log "FATAL: integration root not a git repo: $INTEGRATION_ROOT"; exit 1; }
 staging_alias_bootstrap || { log "FATAL: could not bootstrap the stable staging alias"; exit 1; }
 
-# WI-10005311: prune superseded generations at the START of every tick. The two
-# post-publish prunes only run when a tick reaches its success exit. Every other
-# exit after a publish (the recent-restart grace skip, the git-sync deferral, a
-# refused restart, a readiness timeout) used to leave the superseded generation
-# on / forever. By 05:30Z on 2026-10-02, 13 generations of ~3G each had piled
-# up and git-sync stopped fleet-wide on a full disk. This tick holds the exclusive
-# lock, so no peer sync or release cut can be mid-create. The published
-# generation and any generation a process still references are retained.
+# WI-10005311: prune superseded generations at the START of every tick,
+# including no-op ticks. This tick holds the exclusive lock, so no peer sync
+# or release cut can be mid-create. The published generation and any generation
+# a process still references are retained.
+# WI-10006606: do not repeat GC after publication/readiness. A verified cutover
+# exhausted systemd's startup budget in that second prune and was reported as
+# failed despite serving the exact target. Newly superseded generations are
+# collected on the next timer tick through this same maintained GC path.
 prune_staging_generations
 
 forward_compat_review_warnings
@@ -913,9 +913,6 @@ if [ "$checkout_needs_advance" = 1 ]; then
     require_host_bundle=1
   fi
   publish_staging_generation "$STAGING_CANDIDATE_ROOT" "$STAGING_CANDIDATE_HOME" "$target" "$require_host_bundle"
-  if [ "$restart_required" = 0 ]; then
-    prune_staging_generations
-  fi
 fi
 
 # WI-5710 — SPA-only advance: the stable alias now points at the complete
@@ -1155,12 +1152,6 @@ while [ "$readiness_elapsed_sec" -lt "$READINESS_TIMEOUT_SEC" ]; do
   if health_sha_matches_target "$last_health_sha" "$target" &&
      { [ "$restart_pending" -eq 0 ] || staging_restart_is_observed "$main_pid" "$observed_main_pid" "$last_health_sha" "$target"; }; then
     log "✅ :3170 healthy on exact staging source ${last_health_sha}"
-    # WI-10005310: the SPA-only path prunes right after publishing, but a restart
-    # advance is the common case and used to prune nothing, so every superseded
-    # generation stayed on / (13 candidates, ~45G measured 2026-10-02). The old
-    # process has now been replaced, and the shared lock is still held, so no
-    # concurrent sync can be mid-create. In-use generations are still retained.
-    prune_staging_generations
     exit 0
   fi
   readiness_elapsed_sec=$(( $(date +%s) - readiness_started_at ))

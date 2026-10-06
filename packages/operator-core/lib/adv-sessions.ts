@@ -2435,8 +2435,18 @@ export async function updateAdvSessionPortStatus(
  * unit tests and typecheck both green — the fixtures set the field by hand, so
  * only a live drive could see it.
  */
-export async function advSessionsByCoordOwner(limit = 500): Promise<Map<string, AdvSessionRow>> {
+export async function advSessionsByCoordOwner(
+  limit = 500,
+  coordOwnerIds?: readonly string[],
+): Promise<Map<string, AdvSessionRow>> {
   const out = new Map<string, AdvSessionRow>();
+  // Exact targeted hydration must not scan the global recent-session window:
+  // older requested owners can be outside it, and multiple incarnations of
+  // one owner must not consume another owner's slot.
+  const ids = coordOwnerIds == null
+    ? null
+    : [...new Set(coordOwnerIds.filter((id) => id && !id.startsWith('fed:')))];
+  if (ids?.length === 0) return out;
   try {
     const { sql } = getOrgPg();
     const rows = await sql<
@@ -2444,6 +2454,8 @@ export async function advSessionsByCoordOwner(limit = 500): Promise<Map<string, 
         id: number;
         /** See the docblock: omitting this maps to null, not a type error. */
         launch_argv?: string[] | null;
+        display?: string | null;
+        launched_at?: string | Date | null;
         workspace_id: string;
         plan_slug: string | null;
         agent: string | null;
@@ -2463,12 +2475,14 @@ export async function advSessionsByCoordOwner(limit = 500): Promise<Map<string, 
         exit_code: number | null;
       }>
     >`
-      SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
+      SELECT ${ids ? sql`DISTINCT ON (coord_owner_id)` : sql``}
+             id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
              window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, launch_argv,
-             started_at, ended_at, exit_code, ended_by, ended_signal
+             display, launched_at, started_at, ended_at, exit_code, ended_by, ended_signal
         FROM harness_shared.adv_sessions
        WHERE coord_owner_id IS NOT NULL
-       ORDER BY started_at DESC
+         ${ids ? sql`AND coord_owner_id = ANY(${ids}::text[])` : sql``}
+       ORDER BY ${ids ? sql`coord_owner_id,` : sql``} started_at DESC
        LIMIT ${limit}
     `;
     for (const r of rows) {

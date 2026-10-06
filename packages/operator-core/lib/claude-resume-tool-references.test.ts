@@ -35,6 +35,37 @@ afterEach(() => {
 });
 
 describe('Claude resume tool-reference recovery', () => {
+  it('detects the persisted provider context wall across a new fork kickoff', () => {
+    const transcript = [
+      assistant('Working.'),
+      apiError('Prompt is too long'),
+      JSON.stringify({ type: 'user', message: { role: 'user', content: 'Answer the exact current consult.' } }),
+    ].join('\n');
+    expect(analyzeClaudeResumeTranscript(transcript)).toMatchObject({
+      trailingContextLimitTurns: 1,
+      lastContextLimitEvidence: 'Prompt is too long',
+      trailingMissingToolReferenceTurns: 0,
+    });
+  });
+
+  it.each([
+    assistant('The source reported Prompt is too long; investigate it.'),
+    assistant('Prompt is too long'),
+    JSON.stringify({ type: 'system', subtype: 'compact_boundary' }),
+  ])('CONTROL: model output or a native compaction clears a prior context wall', (recovery) => {
+    expect(analyzeClaudeResumeTranscript([apiError('Prompt is too long'), recovery].join('\n')))
+      .toMatchObject({ trailingContextLimitTurns: 0, lastContextLimitEvidence: null });
+  });
+
+  it('tool results do not clear a synthetic context rejection', () => {
+    const result = JSON.stringify({
+      type: 'user',
+      message: { role: 'user', content: [{ type: 'tool_result', content: 'done' }] },
+    });
+    expect(analyzeClaudeResumeTranscript([apiError('Prompt is too long'), result].join('\n')))
+      .toMatchObject({ trailingContextLimitTurns: 1 });
+  });
+
   it('restores recent Papercusp tool references and excludes other MCP servers', () => {
     const transcript = [
       JSON.stringify({

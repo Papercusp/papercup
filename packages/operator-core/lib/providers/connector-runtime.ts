@@ -102,6 +102,11 @@ export interface ConnectorSourceOutcome {
   deduped: number;
   rejected: number;
   cursorReset: boolean;
+  /**
+   * The provider's cursor-expired message that triggered the reset, so a full resync is
+   * attributable to an operation and status instead of inferred from a counter (WI-10001662).
+   */
+  cursorResetReason?: string;
   /** True when this pass adopted the source's pre-provider cursor state (D-020). */
   adopted?: boolean;
   hasMore: boolean;
@@ -611,6 +616,7 @@ async function syncSource(
         const failure = classifyProviderSyncError(cause);
         if (failure.kind === 'cursor-expired' && !outcome.cursorReset) {
           outcome.cursorReset = true;
+          outcome.cursorResetReason = failure.message;
           cursor = null;
           mode = 'backfill';
           outcome.mode = mode;
@@ -875,9 +881,12 @@ export function formatConnectorWakeLog(result: ConnectorWakeResult): string {
 export function formatConnectorSyncLog(result: ConnectorSyncResult): string {
   const count = (kind: ConnectorSourceOutcomeKind) => result.sources.filter((s) => s.outcome === kind).length;
   const admitted = result.sources.reduce((n, s) => n + s.admitted, 0);
+  const resets = result.sources.filter((s) => s.cursorReset);
+  const resetReasons = resets.map((s) => `${s.sourceId}: ${s.cursorResetReason ?? 'unknown'}`).join('; ');
   return (
     `[connector-sync] providers=${result.providers} sources=${result.sources.length} synced=${count('synced')} `
     + `rate_limited=${count('rate-limited')} failed=${count('failed')} reconnect=${count('reconnect-required')} `
-    + `leased_elsewhere=${count('leased-elsewhere')} admitted=${admitted}`
+    + `leased_elsewhere=${count('leased-elsewhere')} admitted=${admitted} cursor_resets=${resets.length}`
+    + (resetReasons ? ` reset_reasons=${resetReasons}` : '')
   );
 }

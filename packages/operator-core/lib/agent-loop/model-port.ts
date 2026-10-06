@@ -101,7 +101,8 @@ export interface ModelRequest {
    *  fleet load, so interactive callers should always set one. */
   priority?: string;
   /** Optional per-request inference-gateway account route. Undefined means
-   * gateway auto-routing; direct API-key providers ignore this axis. */
+   * gateway auto-routing. OpenRouter also honors pins in its explicitly supplied
+   * runtime account pool; other direct API-key providers ignore this axis. */
   account?: string;
   /** Stable caller identity forwarded to the inference gateway for routing
    * attribution (owned loop/chat id, not a user-provided label). */

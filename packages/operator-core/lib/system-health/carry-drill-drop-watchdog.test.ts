@@ -367,13 +367,53 @@ describe('runOrphanedRespawnSweepOnce (WI-10001537)', () => {
       ...baseDeps,
       listCandidates: async () => ['su-unknown'],
       readPrior: async () => pending(),
-      hostLive: () => {
+      hostLive: async () => {
         throw new Error('procfs unreadable');
       },
       escalate,
     });
     expect(result.alerts).toBe(0);
     expect(escalate).not.toHaveBeenCalled();
+  });
+
+  it('prefilters non-delayed outcomes before awaiting host liveness', async () => {
+    const order: string[] = [];
+    const priorByOwner: Record<string, PriorRespawn> = {
+      delivered: pending({ outcome: 'delivered' }),
+      early: pending({ ageMs: 400_000 }),
+      unknownAge: pending({ ageMs: null }),
+      orphan: pending(),
+    };
+    const hostLive = vi.fn(async (ownerId: string) => {
+      order.push(`live:${ownerId}`);
+      return false;
+    });
+    const escalate = vi.fn(async (alert: OrphanedRespawnAlert) => {
+      order.push(`escalate:${alert.ownerId}`);
+    });
+
+    const result = await runOrphanedRespawnSweepOnce({
+      ...baseDeps,
+      listCandidates: async () => Object.keys(priorByOwner),
+      readPrior: async (ownerId) => {
+        order.push(`prior:${ownerId}`);
+        return priorByOwner[ownerId];
+      },
+      hostLive,
+      escalate,
+    });
+
+    expect(result).toMatchObject({ scanned: 4, alerts: 1, escalated: 1 });
+    expect(hostLive).toHaveBeenCalledTimes(1);
+    expect(hostLive).toHaveBeenCalledWith('orphan');
+    expect(order).toEqual([
+      'prior:delivered',
+      'prior:early',
+      'prior:unknownAge',
+      'prior:orphan',
+      'live:orphan',
+      'escalate:orphan',
+    ]);
   });
 
   it('keeps sweeping when one ledger is unreadable, so a bad file cannot hide other orphans', async () => {

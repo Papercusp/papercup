@@ -52,6 +52,7 @@ if (process.argv.includes('--label-cohort')) {
     ...(argValue('--reuse-calls-from') ? { reuseCallsFrom: argValue('--reuse-calls-from') } : {}),
     ...(process.argv.includes('--reuse-snapshot-expansion') ? { reuseSnapshotExpansion: true } : {}),
     ...(argValue('--adopt-donor-owner') ? { adoptDonorOwner: argValue('--adopt-donor-owner') } : {}),
+    ...(argValue('--call-concurrency') ? { callConcurrency: Number(argValue('--call-concurrency')) } : {}),
     ...(argValue('--targets-per-partition') ? { targetsPerPartition: parseBlindTargetBudget(argValue('--targets-per-partition')!) } : {}),
     log: (message) => console.log(new Date().toISOString(), message) });
   // The receipt is a data-derived JSON dump that gets piped; process.exit() does not drain an

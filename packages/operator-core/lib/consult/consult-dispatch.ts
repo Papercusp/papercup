@@ -299,7 +299,8 @@ export interface ConsultDispatchDeps extends ExpertModelAllowlistDeps {
     transcriptPath: string,
   ) => Pick<
     ClaudeResumeTranscriptAnalysis,
-    'trailingMissingToolReferenceTurns' | 'lastMissingToolReferenceName' | 'assistantTurnsSinceLastPrompt'
+    'trailingMissingToolReferenceTurns' | 'lastMissingToolReferenceName' | 'assistantTurnsSinceLastPrompt' |
+    'trailingContextLimitTurns' | 'lastContextLimitEvidence'
   > | null;
   /** Wait seam for the first-turn poll (WI-10004645); tests resolve it at once. */
   sleepMs: (ms: number) => Promise<void>;
@@ -677,6 +678,10 @@ const MIDLINE_FAILURES: RegExp[] = [
   /Tool reference \S+ not found/g,
 ];
 const LAUNCH_EXIT_LINE = /^\[papercusp\] initial terminal command exited with status \d+/;
+// Match an actual CLI error line or its terminal result glyph, never a consult
+// brief quoting the failure it asks the reviewer to investigate.
+const CONTEXT_LIMIT_LOG_RE =
+  /(?:^|⎿)[ \t]*(Context limit reached\s*·\s*\/clear to continue|(?:API Error:\s*400\s+)?Prompt is too long)[ \t]*$/gi;
 
 /**
  * The failure a launch log ends on: the LAST launcher failure (psu's own
@@ -697,6 +702,11 @@ export function launchLogFailureReason(logText: string): string | null {
     }
     if (LAUNCH_EXIT_LINE.test(line)) {
       exit = line.replace(/; headless launch exiting\.?$/, '');
+      continue;
+    }
+    const contextFailures = [...line.matchAll(CONTEXT_LIMIT_LOG_RE)];
+    if (contextFailures.length) {
+      failure = contextFailures[contextFailures.length - 1][1].trim();
       continue;
     }
     for (const re of MIDLINE_FAILURES) {
@@ -1079,6 +1089,16 @@ async function walkConsultDispatch(
     if ((sourceAgent === 'claude' || sourceAgent === 'claude-code') && transcript.transcriptPath) {
       try {
         const analysis = d.analyzeClaudeTranscript(transcript.transcriptPath);
+        // WI-10006539: byte/owner pressure can miss an evidence-selected
+        // transcript whose last provider response already rejected its size.
+        // Forking preserves that wall; the configured conversion ranks can
+        // still render the exact evidence into a fresh target context.
+        if (analysis && (analysis.trailingContextLimitTurns ?? 0) > 0) {
+          forkBlockedByPressure =
+            `${target.ownerId ?? 'the source'}'s transcript ends in a provider context rejection ` +
+            `(${analysis.lastContextLimitEvidence ?? 'Prompt is too long'}), so a fork would inherit ` +
+            'a transcript with no room to answer';
+        }
         if (analysis && analysis.trailingMissingToolReferenceTurns > 0) {
           forkBlockedByPoison =
             `${target.ownerId ?? 'the source'}'s transcript ends in ${analysis.trailingMissingToolReferenceTurns} ` +
@@ -1194,7 +1214,7 @@ async function walkConsultDispatch(
       if (operation === 'fork' && attempt.record.reason === 'first-turn-rejected' && !forkBlockedByPoison) {
         forkBlockedByPoison =
           `rank #${rank.rank} (${rank.agent}/${rank.model}) forked ${target.ownerId ?? 'the source'} and its ` +
-          'first reply was a provider "Tool reference not found" rejection; every fork replays the same ' +
+          'first reply was a provider rejection; every fork replays the same ' +
           'source history, so the remaining fork ranks would fail the same way';
       }
       if (attempt.record.outcome === 'dispatched') {
@@ -1490,7 +1510,7 @@ async function launchAnsweringSession(
   // the dispatch stands, and its record says the first turn was not judged.
   let firstTurnUnjudgedAfterMs: number | null = null;
   if (rank.agent === 'claude' && typeof answeringTranscript === 'string' && answeringTranscript.endsWith('.jsonl')) {
-    let rejection: { turns: number; tool: string | null } | null = null;
+    let rejection: { turns: number; tool: string | null; contextEvidence?: string } | null = null;
     const deadline = kickoffSeenAtMs + FIRST_TURN_WAIT_MS;
     // The read-count bound is independent of the clock, so a stalled clock
     // cannot turn this into an unbounded loop.
@@ -1511,7 +1531,13 @@ async function launchAnsweringSession(
       }
       if (analysis.assistantTurnsSinceLastPrompt > 0) {
         replied = true;
-        if (analysis.trailingMissingToolReferenceTurns > 0) {
+        if ((analysis.trailingContextLimitTurns ?? 0) > 0) {
+          rejection = {
+            turns: analysis.trailingContextLimitTurns!,
+            tool: null,
+            contextEvidence: analysis.lastContextLimitEvidence ?? 'Prompt is too long',
+          };
+        } else if (analysis.trailingMissingToolReferenceTurns > 0) {
           rejection = {
             turns: analysis.trailingMissingToolReferenceTurns,
             tool: analysis.lastMissingToolReferenceName,
@@ -1533,7 +1559,9 @@ async function launchAnsweringSession(
           reason: 'first-turn-rejected',
           detail:
             `${operation} of ${opts.sourceOwnerId} → ${rank.agent}/${rank.model} as ${answeringOwnerId}: ` +
-            `its first reply was a provider "Tool reference not found" rejection` +
+            (rejection.contextEvidence
+              ? `its first reply was a provider context-limit rejection (${rejection.contextEvidence})`
+              : `its first reply was a provider "Tool reference not found" rejection`) +
             (rejection.tool ? ` ('${rejection.tool}')` : '') +
             ` in ${answeringTranscript}; ${stopped}`,
         },

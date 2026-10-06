@@ -947,7 +947,8 @@ function canonicalizeForKey(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonicalizeForKey);
   if (value && typeof value === 'object') {
     const src = value as Record<string, unknown>;
-    const out: Record<string, unknown> = {};
+    // JSON object keys are data, including the literal key "__proto__".
+    const out: Record<string, unknown> = Object.create(null);
     for (const k of Object.keys(src).sort()) out[k] = canonicalizeForKey(src[k]);
     return out;
   }
