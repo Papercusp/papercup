@@ -8,8 +8,12 @@ import {
   AppRelayRateLimiter,
   DEVICE_RELAY_INGRESS_MARKER,
   InMemoryHostedAppRelayUsageStore,
+  boundDeviceHttpRequestHeaders,
+  createDeviceHttpChannel,
   decideDeviceHttpRoute,
   deviceHttpRequestHeaders,
+  unverifiedDeviceJwtSubject,
+  type DeviceChannelBinding,
   handleHostedDeviceRelay,
   parseDeviceRelayPath,
   readDeviceJwtBearer,
@@ -108,6 +112,76 @@ describe('device-http header policy', () => {
     const headers = deviceHttpRequestHeaders({ Authorization: `Bearer ${JWT}`, Cookie: 'sid=1', 'Content-Type': 'application/json', 'X-Forwarded-For': '1.2.3.4' });
     expect(headers).toEqual({ authorization: `Bearer ${JWT}`, 'content-type': 'application/json', [EXTERNAL_INGRESS_MARKER_HEADER]: DEVICE_RELAY_INGRESS_MARKER });
     expect(deviceHttpRequestHeaders({ authorization: 'Bearer pcapp_x' }).authorization).toBeUndefined();
+  });
+});
+
+/** A JWT-shaped token whose claims are `claims`; the signature is never checked here. */
+function jwtWithClaims(claims: unknown): string {
+  return `eyJhbGciOiJIUzI1NiJ9.${Buffer.from(JSON.stringify(claims)).toString('base64url')}.c2ln`;
+}
+
+describe('sealed device-http channel binding (D-013 #6)', () => {
+  const DEV_A = jwtWithClaims({ sub: 'dev-a' });
+  const DEV_B = jwtWithClaims({ sub: 'dev-b' });
+
+  it('reads the unverified sub claim, and nothing from a malformed token', () => {
+    expect(unverifiedDeviceJwtSubject(DEV_A)).toBe('dev-a');
+    expect(unverifiedDeviceJwtSubject(JWT)).toBe('dev');
+    expect(unverifiedDeviceJwtSubject(jwtWithClaims({ sub: 7 }))).toBeNull();
+    expect(unverifiedDeviceJwtSubject(jwtWithClaims({ sub: '' }))).toBeNull();
+    expect(unverifiedDeviceJwtSubject(jwtWithClaims('dev-a'))).toBeNull();
+    expect(unverifiedDeviceJwtSubject('a.!!!not-json!!!.c')).toBeNull();
+    expect(unverifiedDeviceJwtSubject('no-dots')).toBeNull();
+  });
+
+  it('keeps a JWT naming the bound device, with the rest of the header policy intact', () => {
+    const headers = boundDeviceHttpRequestHeaders({ Authorization: `Bearer ${DEV_A}`, 'Content-Type': 'application/json', Cookie: 'x=1' }, { deviceId: 'dev-a' });
+    expect(headers).toEqual({ authorization: `Bearer ${DEV_A}`, 'content-type': 'application/json', [EXTERNAL_INGRESS_MARKER_HEADER]: DEVICE_RELAY_INGRESS_MARKER });
+  });
+
+  it("drops another phone's JWT, so one paired key cannot present a second device's token", () => {
+    const headers = boundDeviceHttpRequestHeaders({ authorization: `Bearer ${DEV_B}`, 'content-type': 'application/json' }, { deviceId: 'dev-a' });
+    expect(headers.authorization).toBeUndefined();
+    expect(headers[EXTERNAL_INGRESS_MARKER_HEADER]).toBe(DEVICE_RELAY_INGRESS_MARKER);
+    expect(headers['content-type']).toBe('application/json');
+  });
+
+  it('forwards no JWT at all on a channel whose key is not a registered device (pair redeem)', () => {
+    expect(boundDeviceHttpRequestHeaders({ authorization: `Bearer ${DEV_A}` }, { deviceId: null }).authorization).toBeUndefined();
+    expect(boundDeviceHttpRequestHeaders({ authorization: `Bearer ${jwtWithClaims({})}` }, { deviceId: 'dev-a' }).authorization).toBeUndefined();
+  });
+
+  function channelHarness(boundDevice?: DeviceChannelBinding) {
+    const seen: Array<Record<string, string>> = [];
+    const channel = createDeviceHttpChannel({
+      send: () => {},
+      audit: () => {},
+      origin: 'http://127.0.0.1:1',
+      fetch: async (_url, init) => {
+        seen.push({ ...(init.headers as Record<string, string>) });
+        return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
+      },
+      ...(boundDevice ? { boundDevice } : {}),
+    });
+    const request = (requestId: string, token: string) =>
+      channel.accept('http.request', { requestId, method: 'GET', path: '/api/device/runtime-config', headers: { authorization: `Bearer ${token}` } });
+    return { seen, request };
+  }
+
+  it('applies the binding at request time, so a device resolved after the handshake is honoured', async () => {
+    const binding: DeviceChannelBinding = { deviceId: null };
+    const h = channelHarness(binding);
+    await h.request('r1', DEV_A);
+    binding.deviceId = 'dev-a';
+    await h.request('r2', DEV_A);
+    await h.request('r3', DEV_B);
+    expect(h.seen.map((headers) => headers.authorization ?? null)).toEqual([null, `Bearer ${DEV_A}`, null]);
+  });
+
+  it('leaves an unsealed channel on the plain header policy', async () => {
+    const h = channelHarness();
+    await h.request('r1', DEV_B);
+    expect(h.seen[0].authorization).toBe(`Bearer ${DEV_B}`);
   });
 });
 
