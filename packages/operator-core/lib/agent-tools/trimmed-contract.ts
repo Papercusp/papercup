@@ -758,6 +758,18 @@ export const SHAPER_CONTRACT_EXEMPT: Readonly<Record<string, ShaperExemption>> =
       'tiers, its negative control (rows past the cap absent) confirms the shaper really ran, and ' +
       'its calibration arm confirms an equivalent literal-rebuild envelope shaper passes clean.',
   },
+  'rubrics:amend': {
+    case: 'reasoned',
+    reason:
+      'Audited by reading (WI-10006943), not probed: there is no hand-written key list to pin. ' +
+      'shapeAmendReviewPayload (rubrics/amend.ts) returns the payload UNCHANGED below its tier ' +
+      'target (12k chars trimmed, 24k standard) and above it delegates to the generic ' +
+      'projectBoundedPayload (@papercusp/tooldef), which records every drop IN-BAND ' +
+      '(`_projection.omitted*` plus a recovery cursor) and pins AMEND_REVIEW_PRESERVE_PATHS ' +
+      '(review.state/conversationId/previewPostRef/next, ok, dryRun, preview.approval). The ' +
+      'silent-drop hazard this gate exists for cannot arise, and the payload is a review ' +
+      'envelope with no `rows` array for `contract: { rows }` to bind to.',
+  },
 };
 
 /**

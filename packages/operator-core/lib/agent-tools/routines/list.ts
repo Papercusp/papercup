@@ -21,6 +21,7 @@ import { parseInFlightCandidate } from '../../release/in-flight-candidate';
 import { isAdmissionSyntheticCommitDate } from '../../release/admission-commit-date';
 import { gateAbortVintage } from '../../release/gate-abort-status';
 import { computeNextFireAt } from '../../harness/routines/cron';
+import { readRoutineLastFires, type LastFireSql } from './routine-last-fire';
 import { effectivePauseExpiryMs, readRoutinePause } from '../../harness/routines/release-pause-ttl';
 import { isPidDefinitivelyDead } from '../locks/resource-acquire-wait';
 import { getTxPool, readResourceQueue } from '../locks/su-lock-store';
@@ -944,7 +945,8 @@ export default defineTool({
     // those are prompt-weight budgeted and this tool is already near the cap
     // (the budget guard refused the first attempt to put it in `when`).
     returns: [
-      'Each row: { installSlug, name, triggerKind, cron, targetRole, active, nextFireAt, lastFiredAt, group, paused, acceptanceBacklog, health }.',
+      'Each row: { installSlug, name, triggerKind, cron, targetRole, active, nextFireAt, lastFiredAt, group, paused, acceptanceBacklog, health, lastFire }.',
+      '`lastFire` — WHAT the newest completed fire DID, for a `system:` routine when `name` pins the read (null otherwise, or when no fire completed in 8 days): { completedAt, workflowId, diagnostics, softError, error }, read from the DBOS step output bound to this routine id (EI-25264102161745452). `diagnostics` is the action\'s own per-fire evidence (e.g. operator-e2e-red-filer\'s owned/filed outcome per red spec); `health` stays null on a clean fire, so this is the read for "what did it do". `{ unavailable }` means the lookup failed — not "no fire".',
       '`paused` — non-null means a DELIBERATE hold, carrying { reason, by, at }. Read it before calling a routine stalled; a bare active:false with paused:null is the one worth investigating.',
       '`acceptanceBacklog` — on `acceptance-grading-sweep`, { depth, oldestPlanUpdatedAt }; depth counts active non-rubric plans in `awaiting-acceptance`. A paused routine with depth > 0 is not an empty pause; do not re-arm it automatically because grading spends LLM budget.',
       '`health` — the operational half of the routine row, null when the row carries none of it. Carries EVERY `<subsystem>_health` record the row holds, derived from the key name rather than an allowlist, so a new writer is readable the day it ships (`gate_health` on green-checkpoint: the live in-flight-retriage marker, observed candidate and consecutive-red count; `gitnexus_health` on gitnexus-reindex: embeddings coverage, DB utilization, failure streak), plus last_status / last_error / consecutive_error_ticks / fire_count / armed_at where present. For git-sync, `health.git_sync_freshness` is the read-time verdict derived from last_synced_at, the in-flight fire and the cron cadence: degraded means either no completed outcome for more than three scheduled intervals, or one fire in flight longer than that same window. `health.git_sync_activity` is the writer-backed whole-fire marker: while `active:true`, `last_status` describes only the local stage; wait for `phase:"complete"` before treating the fire as terminal.',
@@ -1028,6 +1030,7 @@ export default defineTool({
       paused: z.unknown().nullable().optional(),
       acceptanceBacklog: z.unknown().nullable().optional(),
       health: z.unknown().nullable().optional(),
+      lastFire: z.unknown().nullable().optional(),
       plane: z.unknown().optional(),
     })
     .passthrough(),
@@ -1106,6 +1109,9 @@ export default defineTool({
           // untouched and remains the real size control.
           lastFiredAt: r.lastFiredAt ?? null,
           health: r.health ?? null,
+          // EI-25264102161745452: null on every unpinned row, so it costs one null
+          // there; only a `name`-pinned read of a system routine carries a body.
+          lastFire: r.lastFire ?? null,
           ...(r.plane ? { plane: r.plane } : {}),
         };
       });
@@ -1126,6 +1132,7 @@ export default defineTool({
           // rather than "this is not a routine".
           lastFiredAt: null,
           health: null,
+          lastFire: null,
         });
       }
       return { count: d.count ?? d.routines.length, routines: rows };
@@ -1212,6 +1219,7 @@ export default defineTool({
     const qLike = q ? `%${q}%` : null;
     const rows = await sql<
       Array<{
+        id: string;
         install_slug: string;
         name: string;
         trigger_kind: string;
@@ -1224,7 +1232,7 @@ export default defineTool({
         metadata: Record<string, unknown> | null;
       }>
     >`
-      SELECT install_slug, name, trigger_kind, trigger_config, target_role, active, next_fire_at, last_fired_at, group_slug, metadata
+      SELECT id, install_slug, name, trigger_kind, trigger_config, target_role, active, next_fire_at, last_fired_at, group_slug, metadata
         FROM harness_shared.routines
        WHERE workspace_id = ${ws}
          AND (${slug}::text IS NULL OR install_slug = ${slug})
@@ -1247,6 +1255,11 @@ export default defineTool({
         oldestPlanUpdatedAt: iso(backlog[0]?.oldest_plan_updated_at ?? null),
       };
     }
+    // EI-25264102161745452: what the newest fire DID, only when `name` pins the read —
+    // the lookup joins DBOS tables, and an unpinned listing should not pay for it.
+    const lastFires = name
+      ? await readRoutineLastFires(sql as unknown as LastFireSql, rows.map((r) => ({ id: r.id, targetRole: r.target_role })))
+      : null;
     const routines = await Promise.all(rows.map(async (r) => {
       const cron = (r.trigger_config as { cron?: string } | null)?.cron ?? null;
       let health: Record<string, unknown> | null;
@@ -1292,6 +1305,7 @@ export default defineTool({
           ? { acceptanceBacklog }
           : {}),
         health,
+        lastFire: lastFires?.get(r.id) ?? null,
       };
       // Only the operator-home row backs the operator pipeline cells. Other installs
       // may use the same routine name but have independent gates; stamping them with
