@@ -4711,6 +4711,15 @@ export async function runGithubBridgeLeg(
       upstreamWrite,
       githubCredentialHelper,
       lastAdmitted,
+      // WI-10006624 / D-022: only the OWNING hive bridges GitHub — the same rule the
+      // integrator leg applies (`not_hive_owner`). A non-owner member's egress is
+      // refused by the hive-effect authority anyway, and its ingress feeds an
+      // admission/integration it may not perform; running it there only demanded a
+      // GitHub credential the member never needs (members receive staging over p2p)
+      // and, without one, raised a persistent git-sync FAULT + stall ALARM on a
+      // healthy joiner. Keyed on the owning KEY (not `effectAuthority`), so an owner
+      // whose serving actor is missing still runs and reports, rather than skipping.
+      deps: { isBridgeWriter: async () => ownerKey !== null },
       // EI-18751829787526583: the same watermark the catch-up pin above just
       // re-derived from — passed through as a BACKSTOP so a case the pin
       // declined to touch (diverged rather than a strict ancestor) or a
