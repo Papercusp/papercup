@@ -230,10 +230,36 @@ const ACCESS_DENIED_NAMES = new Set([
   'AuthFailure',
 ]);
 
+/** AWS error codes that mean "slow down": a bounded backoff clears them, whatever their HTTP status. */
+const AWS_THROTTLE_ERROR_NAMES = new Set([
+  'ThrottlingException',
+  'Throttling',
+  'RequestLimitExceeded',
+  'TooManyRequestsException',
+  'RequestThrottled',
+  'RequestThrottledException',
+  'SlowDown',
+]);
+
+/**
+ * 4xx codes EC2 answers for a request that is valid but arrived before the resources it names had
+ * settled: eventual consistency right after a create (`*.NotFound`), an in-flight state transition
+ * (`Incorrect*State`), or a dependency still detaching (`DependencyViolation`, `*InUse`). The same
+ * request can succeed moments later, so these must not reach the shared classifier as a
+ * deterministic refusal (it would halt a teardown that only needed a later pass).
+ */
+const AWS_STATE_DEPENDENT_ERROR = /\.NotFound$|InUse$|^Incorrect[A-Za-z]*State$|^DependencyViolation$|^ResourceInUse/;
+
 /**
  * The ONLY error type this module throws for an AWS failure. Built from an allow-list of fields
  * with a scrubbed message and deliberately no `cause`: the SDK's own error objects can carry the
  * raw HTTP response, and credential-provider errors can quote profile material.
+ *
+ * It also carries the provider-neutral `status` / `throttled` signals that
+ * `workspaceHostProviderRetryClass` reads, the same contract the GCP adapter's errors honour.
+ * Before WI-10006801 an AWS error carried only `httpStatusCode`, so every AWS refusal classified
+ * as `ambiguous` and the runner reconciled it with no ceiling: a RunInstances refused with
+ * InvalidParameterCombination (HTTP 400) was replayed 1,461 times in 2.5 hours and never failed.
  */
 export class AwsWorkspaceHostSdkError extends Error {
   readonly operation: string;
@@ -242,6 +268,13 @@ export class AwsWorkspaceHostSdkError extends Error {
   readonly requestId?: string;
   readonly retryable: boolean;
   readonly accessDenied: boolean;
+  /**
+   * The HTTP status as a refusal signal. Withheld for a 4xx that is retryable or state-dependent
+   * (see `AWS_STATE_DEPENDENT_ERROR`), so only a deterministic 4xx refusal classifies `terminal`.
+   */
+  readonly status?: number;
+  /** True for a throttling code, which outranks the status (STS/IAM throttle with HTTP 400). */
+  readonly throttled?: boolean;
 
   constructor(input: {
     operation: string;
@@ -260,6 +293,13 @@ export class AwsWorkspaceHostSdkError extends Error {
     this.requestId = input.requestId;
     this.retryable = input.retryable;
     this.accessDenied = input.accessDenied;
+    if (input.code !== undefined && AWS_THROTTLE_ERROR_NAMES.has(input.code)) this.throttled = true;
+    const status = input.httpStatusCode;
+    if (status !== undefined) {
+      const clientError = status >= 400 && status < 500;
+      const stateDependent = input.code !== undefined && AWS_STATE_DEPENDENT_ERROR.test(input.code);
+      if (!clientError || !(input.retryable || stateDependent)) this.status = status;
+    }
   }
 }
 
@@ -1046,6 +1086,17 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
   }
 
   // --- instances ---
+
+  async describeImageRootDeviceName(imageId: string): Promise<string | undefined> {
+    try {
+      const result = await this.ec2.send(new DescribeImagesCommand({ ImageIds: [imageId] }));
+      const image = result.Images?.find((candidate) => candidate.ImageId === imageId);
+      return image?.RootDeviceName || undefined;
+    } catch (error) {
+      if (isNotFound(error, ['InvalidAMIID.NotFound', 'InvalidAMIID.Unavailable'])) return undefined;
+      throw sanitizeError(error, 'describe-images', this.redactor);
+    }
+  }
 
   async runInstances(input: AwsRunInstancesInput): Promise<AwsCreatedInstance> {
     await this.assertMutationAccount();

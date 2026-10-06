@@ -6,6 +6,7 @@ import type {
   WorkspaceHostProviderContext,
   WorkspaceHostResourceRef,
 } from '@papercusp/deployment-driver';
+import { workspaceHostProviderRetryClass } from '@papercusp/deployment-driver';
 import {
   fromIni,
   fromNodeProviderChain,
@@ -289,7 +290,12 @@ class FakeAws {
             };
       case 'ec2:DescribeImagesCommand':
         return input.ImageIds
-          ? { Images: [{ ImageId: input.ImageIds[0], OwnerId: ACCOUNT, State: 'available', Architecture: 'x86_64' }] }
+          ? {
+              Images: [
+                // Papercusp releases register /dev/xvda (aws-ami-production.ts); WI-10006800.
+                { ImageId: input.ImageIds[0], OwnerId: ACCOUNT, State: 'available', Architecture: 'x86_64', RootDeviceName: '/dev/xvda' },
+              ],
+            }
           : {
               Images: [
                 {
@@ -1142,5 +1148,53 @@ describe('SDK-backed preflight client', () => {
     );
     expect(report.quotas[0]).toMatchObject({ value: 32 });
     expect(JSON.stringify(report)).not.toContain(SECRET);
+  });
+});
+
+describe('AWS SDK errors feed the shared retry classifier (WI-10006801)', () => {
+  async function classify(name: string, httpStatusCode: number | undefined) {
+    const { aws, client } = setup();
+    aws.overrides.set('ec2:DescribeImagesCommand', () => {
+      throw awsError(name, `${name} from EC2`, {
+        // awsError defaults to HTTP 400; a lost response carries no status at all.
+        $metadata: httpStatusCode === undefined ? {} : { httpStatusCode, requestId: `req-${name}` },
+      });
+    });
+    const error = await client.describeImageRootDeviceName('ami-0abc').then(
+      () => {
+        throw new Error('expected the AWS call to fail');
+      },
+      (caught: unknown) => caught,
+    );
+    expect(error).toBeInstanceOf(AwsWorkspaceHostSdkError);
+    return workspaceHostProviderRetryClass(error);
+  }
+
+  it.each([
+    // The canary's 1,461-attempt loop: a deterministic 400 must stop, not reconcile forever.
+    ['InvalidParameterCombination', 400, 'terminal'],
+    ['UnauthorizedOperation', 403, 'terminal'],
+    // Throttles outrank the status, including STS/IAM's HTTP-400 throttles.
+    ['RequestLimitExceeded', 503, 'throttled'],
+    ['Throttling', 400, 'throttled'],
+    // State-dependent 4xx: the same request can succeed on a later pass.
+    ['InvalidInstanceID.NotFound', 400, 'ambiguous'],
+    ['IncorrectInstanceState', 400, 'ambiguous'],
+    ['DependencyViolation', 400, 'ambiguous'],
+    ['VolumeInUse', 400, 'ambiguous'],
+    // A server-side fault or a lost response stays ambiguous.
+    ['InsufficientInstanceCapacity', 500, 'ambiguous'],
+    ['InternalError', undefined, 'ambiguous'],
+  ] as const)('%s (HTTP %s) classifies %s', async (name, status, expected) => {
+    expect(await classify(name, status)).toBe(expected);
+  });
+
+  it("reads the AMI's RootDeviceName, and reports an image this account cannot see as undefined", async () => {
+    const { aws, client } = setup();
+    expect(await client.describeImageRootDeviceName('ami-0abc')).toBe('/dev/xvda');
+    aws.overrides.set('ec2:DescribeImagesCommand', () => {
+      throw awsError('InvalidAMIID.NotFound', 'gone', { $metadata: { httpStatusCode: 400 } });
+    });
+    expect(await client.describeImageRootDeviceName('ami-0gone')).toBeUndefined();
   });
 });

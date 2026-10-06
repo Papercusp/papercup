@@ -256,6 +256,13 @@ class FakeAwsWorkspaceHostSdkClient implements AwsWorkspaceHostSdkClient {
     return { requestId: `request:delete:${volumeId}` };
   }
 
+  /** AMI id -> RootDeviceName. An unlisted image is one this account cannot see. */
+  readonly imageRootDevices = new Map<string, string>();
+
+  async describeImageRootDeviceName(imageId: string): Promise<string | undefined> {
+    return this.imageRootDevices.get(imageId);
+  }
+
   async runInstances(input: AwsRunInstancesInput): Promise<AwsCreatedInstance> {
     this.runInstancesCalls.push(input);
     const existing = this.instanceTokens.get(input.ClientToken);
@@ -720,6 +727,49 @@ describe('AWS volume initialization rate (WI-10006140: lazy EBS hydration of sna
     await expect(planWith(value, `rate-bad-${String(value)}`)).rejects.toThrow(
       /volumeInitializationRateMiBps must be an integer from 100 to 300 MiB\/s, or null/,
     );
+  });
+});
+
+describe('AWS root device mapping follows the AMI (WI-10006800)', () => {
+  async function rootMapping(options: { configured?: string; imageRoot?: string }) {
+    const base = desired();
+    const { rootDeviceName: _fixtureRoot, ...providerWithoutRoot } = base.provider as Record<string, unknown>;
+    const spec: WorkspaceHostDesiredSpec = {
+      ...base,
+      provider: options.configured === undefined ? providerWithoutRoot : { ...providerWithoutRoot, rootDeviceName: options.configured },
+    };
+    const { client, provider } = providerAndClient();
+    if (options.imageRoot !== undefined) client.imageRootDevices.set(base.image.id, options.imageRoot);
+    const plan = await provider.plan({ action: 'provision', operationId: 'root', idempotencyKey: 'root', desired: spec }, context());
+    const instance = plan.steps.find((step) => step.id === 'run-instance')!.input as unknown as {
+      request: AwsRunInstancesInput;
+    };
+    return instance.request.BlockDeviceMappings;
+  }
+
+  it("maps the root volume at the AMI's own RootDeviceName when no override is set", async () => {
+    // Papercusp releases register /dev/xvda. The former fixed /dev/sda1 default described a second,
+    // blank volume, so the root kept the image defaults and RunInstances refused the init rate.
+    const mappings = await rootMapping({ imageRoot: '/dev/xvda' });
+    expect(mappings).toHaveLength(1);
+    expect(mappings[0].DeviceName).toBe('/dev/xvda');
+    expect(mappings[0].Ebs).toMatchObject({ Encrypted: true, KmsKeyId: 'arn:aws:kms:us-east-1:123456789012:key/key-123', VolumeSize: 40 });
+  });
+
+  it('accepts an override that names the same device as the AMI', async () => {
+    const mappings = await rootMapping({ configured: '/dev/xvda', imageRoot: '/dev/xvda' });
+    expect(mappings[0].DeviceName).toBe('/dev/xvda');
+  });
+
+  it('refuses at plan time an override that does not match the AMI root device', async () => {
+    await expect(rootMapping({ configured: '/dev/sda1', imageRoot: '/dev/xvda' })).rejects.toThrow(
+      /rootDeviceName '\/dev\/sda1' does not match image 'ami-ubuntu-2404' root device '\/dev\/xvda'/,
+    );
+  });
+
+  it('uses an explicit override when the AMI is not visible, and refuses when it has neither', async () => {
+    expect((await rootMapping({ configured: '/dev/sda1' }))[0].DeviceName).toBe('/dev/sda1');
+    await expect(rootMapping({})).rejects.toThrow(/root device name cannot be read/);
   });
 });
 

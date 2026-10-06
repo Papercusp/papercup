@@ -1009,6 +1009,36 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
   }
 
   /**
+   * The device name that configures the AMI's root volume: the image's own RootDeviceName.
+   *
+   * A BlockDeviceMapping on any other name does not touch the root at all. EC2 reads it as a
+   * second, blank volume, so the root keeps the image defaults (no customer KMS key, the image's
+   * size and type) and a stray volume is attached. With a VolumeInitializationRate on the mapping,
+   * RunInstances refuses outright ("not created from a snapshot"). Papercusp releases register
+   * `/dev/xvda`, while a fixed `/dev/sda1` default matched only Ubuntu-style AMIs (WI-10006800).
+   * An explicit override is accepted only when it names the same device.
+   */
+  private async resolveRootDeviceName(
+    settings: AwsWorkspaceHostDesiredProviderSettings,
+    imageId: string,
+  ): Promise<string> {
+    const imageRoot = await this.client.describeImageRootDeviceName(imageId);
+    const configured = settings.rootDeviceName;
+    if (imageRoot === undefined) {
+      if (configured !== undefined) return configured;
+      throw new Error(
+        `AWS image '${imageId}' is not visible to this account, so its root device name cannot be read; set aws.desired.provider.rootDeviceName or share the image`,
+      );
+    }
+    if (configured !== undefined && configured !== imageRoot) {
+      throw new Error(
+        `aws.desired.provider.rootDeviceName '${configured}' does not match image '${imageId}' root device '${imageRoot}'; that mapping would attach a blank volume instead of configuring the root`,
+      );
+    }
+    return imageRoot;
+  }
+
+  /**
    * Provision, and restore (which is a provision of a distinct host whose data volume is created
    * from the source host's snapshot). One description of the host for both, so a restored host is
    * launched exactly as a provisioned one would be.
