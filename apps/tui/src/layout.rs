@@ -250,18 +250,15 @@ pub fn chat_workbench_session_name(launcher_pid: u32) -> String {
     format!("{}-{launcher_pid}", session_name(CHAT_WORKBENCH_KIND))
 }
 
-/// Terminals narrower than this open the chat workbench with the chat zoomed
-/// to the full window (side panes collapsed), so 80x24 still gets a usable
-/// chat. `Alt+z` brings the panes back.
-pub const CHAT_WORKBENCH_MIN_SIDE_COLS: u16 = 120;
-
 /// Environment set by the chat-workbench launcher for the session it starts.
 /// The chat pane reads it to recognise its own session (and to stop it on
 /// exit); every other pane ignores it.
+///
+/// There is deliberately no width cutoff: the side panes open visible at
+/// every terminal width (pui-chat-first-ux D-033, owner 2026-10-06). The P-030
+/// zoom-on-start under 120 columns hid every pane on a 92-column terminal
+/// with nothing on screen saying so.
 pub const CHAT_WORKBENCH_SESSION_ENV: &str = "PUI_CHAT_WORKBENCH";
-/// Set to `1` when the launch terminal was narrower than
-/// [`CHAT_WORKBENCH_MIN_SIDE_COLS`]: the chat zooms itself on start.
-pub const CHAT_WORKBENCH_ZOOM_ENV: &str = "PUI_CHAT_WORKBENCH_ZOOMED";
 /// Where the chat pane leaves its conversation text on exit, so the launcher
 /// can print it into the real terminal's scrollback after zellij is gone
 /// (the chat-first "clean scrollback" promise, P-004).
@@ -956,21 +953,6 @@ fn materialize_chat_workbench_at(base: &Path) -> std::io::Result<PathBuf> {
     Ok(path)
 }
 
-/// Is terminal pane `pane_id` fullscreen, per `zellij action list-panes
-/// --json --state` output? `None` when the output does not parse or does not
-/// list that pane (yet). Plugin panes share the id space, so only
-/// `is_plugin: false` entries match.
-pub fn pane_fullscreen(list_panes_json: &[u8], pane_id: u64) -> Option<bool> {
-    let panes: Vec<serde_json::Value> = serde_json::from_slice(list_panes_json).ok()?;
-    panes
-        .iter()
-        .find(|p| {
-            p.get("is_plugin").and_then(serde_json::Value::as_bool) == Some(false)
-                && p.get("id").and_then(serde_json::Value::as_u64) == Some(pane_id)
-        })
-        .and_then(|p| p.get("is_fullscreen").and_then(serde_json::Value::as_bool))
-}
-
 /// zellij settings for pui's own sessions, used ONLY when the user has no
 /// zellij config of their own ([`user_zellij_config_exists`]).
 pub const SESSION_ZELLIJ_CONFIG_KDL: &str = "// Papercusp: zellij settings for pui's own sessions.\n\
@@ -1400,21 +1382,6 @@ mod tests {
         // variable (as the PTY harness sets) counts as unset.
         assert!(!user_zellij_config_exists(
             env_of(&[("ZELLIJ_CONFIG_FILE", ""), ("ZELLIJ_CONFIG_DIR", "")]), Some(home), |_| false));
-    }
-
-    #[test]
-    fn pane_fullscreen_reads_the_terminal_pane_not_a_plugin_with_the_same_id() {
-        // Shape measured from zellij 0.44.3 `action list-panes --json --all`.
-        let listed = br#"[
-            {"id":0,"title":"(.) - zellij:link","is_plugin":true,"is_fullscreen":true},
-            {"id":1,"title":"configuration","is_plugin":true,"is_focused":true,"is_fullscreen":false},
-            {"id":0,"title":"chat","is_plugin":false,"is_focused":true,"is_fullscreen":false},
-            {"id":1,"title":"hud","is_plugin":false,"is_fullscreen":true}
-        ]"#;
-        assert_eq!(pane_fullscreen(listed, 0), Some(false));
-        assert_eq!(pane_fullscreen(listed, 1), Some(true));
-        assert_eq!(pane_fullscreen(listed, 7), None);
-        assert_eq!(pane_fullscreen(b"not json", 0), None);
     }
 
     #[test]

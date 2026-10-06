@@ -592,15 +592,11 @@ async fn main() -> Result<()> {
     } else {
         None
     };
-    if chat_workbench.is_some()
-        && std::env::var(layout::CHAT_WORKBENCH_ZOOM_ENV).as_deref() == Ok("1")
-    {
-        // Launched narrower than CHAT_WORKBENCH_MIN_SIDE_COLS: start with the
-        // side panes collapsed (the chat zoomed to the whole window), so 80x24
-        // still gets a usable chat. Alt+z brings them back. The chat pane is
-        // the session's focused pane, so the zoom lands on it.
-        zoom_own_pane_when_ready();
-    }
+    // pui-chat-first-ux D-033 (owner, 2026-10-06): the side panes open visible
+    // at EVERY terminal width. The P-030 zoom-on-start below 120 columns hid
+    // them all on a 92-column terminal with nothing on screen saying so; the
+    // chat's footer now names Alt+z instead (`ui::workbench_footer_hint`).
+    let chat_workbench_pane = chat_workbench.is_some();
 
     enable_raw_mode()?;
     let mut out = stdout();
@@ -685,6 +681,7 @@ async fn main() -> Result<()> {
         hive_agent_tabs,
         reactive_launch_panes,
         chat_first,
+        chat_workbench_pane,
         kbd_enhanced,
     )
     .await;
@@ -1739,19 +1736,11 @@ async fn run_chat_workbench() -> Result<Option<i32>> {
     }
     reap::reap_stale(&session);
     identity::inherit(&backend);
-    let narrow = crossterm::terminal::size()
-        .map(|(cols, _)| cols < layout::CHAT_WORKBENCH_MIN_SIDE_COLS)
-        .unwrap_or(false);
     let transcript = chat_workbench_transcript_path(&session)?;
     let _ = std::fs::remove_file(&transcript);
     // Exported before zellij starts, so the new session's panes inherit them.
     std::env::set_var(layout::CHAT_WORKBENCH_SESSION_ENV, &session);
     std::env::set_var(layout::CHAT_WORKBENCH_TRANSCRIPT_ENV, &transcript);
-    if narrow {
-        std::env::set_var(layout::CHAT_WORKBENCH_ZOOM_ENV, "1");
-    } else {
-        std::env::remove_var(layout::CHAT_WORKBENCH_ZOOM_ENV);
-    }
     let path = layout::materialize_chat_workbench()?;
     let argv = layout::launch_argv(&path.to_string_lossy(), &session);
     let status = zellij_session_command(&argv).status()?;
@@ -1785,42 +1774,6 @@ fn zellij_session_command(argv: &[String]) -> std::process::Command {
         command.env("ZELLIJ_CONFIG_DIR", dir);
     }
     command
-}
-
-/// Zoom THIS pane to the whole window (the chat workbench opened narrower
-/// than [`layout::CHAT_WORKBENCH_MIN_SIDE_COLS`]). zellij silently drops a
-/// `toggle-fullscreen` sent in the first ~0.5s of a new session (measured
-/// 2026-10-06, zellij 0.44.3: dropped at 0-0.5s, applied at 1.5s), and this
-/// runs as the chat starts, so: toggle, read the pane's own state back from
-/// `list-panes --json`, and re-send only while it is still not fullscreen.
-/// Runs on its own thread so the chat never waits on it. Bounded; a zellij
-/// that never reports the pane gives up silently (the chat still works, and
-/// Alt+z still zooms).
-fn zoom_own_pane_when_ready() {
-    let Some(pane_id) = std::env::var("ZELLIJ_PANE_ID")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-    else {
-        return;
-    };
-    std::thread::spawn(move || {
-        let zellij = |args: &[&str]| std::process::Command::new("zellij").args(args).output();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
-        while std::time::Instant::now() < deadline {
-            let listed = zellij(&["action", "list-panes", "--json", "--state"]);
-            let state = listed
-                .ok()
-                .filter(|out| out.status.success())
-                .and_then(|out| layout::pane_fullscreen(&out.stdout, pane_id));
-            if state == Some(true) {
-                return;
-            }
-            if state == Some(false) {
-                let _ = zellij(&["action", "toggle-fullscreen"]);
-            }
-            std::thread::sleep(std::time::Duration::from_millis(500));
-        }
-    });
 }
 
 /// Where the chat pane of `session` leaves its exit text for the launcher.
@@ -1925,6 +1878,7 @@ async fn run<B: Backend>(
     hive_agent_tabs: bool,
     reactive_launch_panes: bool,
     chat_first: bool,
+    chat_workbench_pane: bool,
     kbd_enhanced: bool,
 ) -> Result<()> {
     let (tx, mut rx) = mpsc::unbounded_channel::<Event>();
@@ -1963,6 +1917,7 @@ async fn run<B: Backend>(
     // Chat-first (P-001): open on the conversation with the composer already
     // focused, so the first keystroke is the first word of the message.
     app.chat_first = chat_first;
+    app.chat_workbench_pane = chat_workbench_pane;
     if chat_first {
         app.tab = app::Tab::Operator;
         app.chat_composing = true;

@@ -4042,7 +4042,13 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
   const listSessions = () => paneZellij(['list-sessions', '--no-formatting']).stdout ?? '';
   const startChatWorkbench = (cols: number, rows: number) => {
     const launchDir = realpathSync(mkdtempSync(path.join(tmpdir(), 'pui-p030-launch-')));
-    const pane = new PuiPane(bin, operatorPort, home, { args: [], cwd: launchDir, cols, rows });
+    // The workbench layout starts every pane (the chat included) as `pui …`
+    // from PATH. Put the binary under test first, or the panes run whatever
+    // `pui` is installed (~/.cargo/bin) and the test judges a stale build.
+    const pane = new PuiPane(bin, operatorPort, home, {
+      args: [], cwd: launchDir, cols, rows,
+      env: { PATH: `${path.dirname(bin)}:${process.env.PATH ?? '/usr/bin:/bin'}` },
+    });
     const session = `pui-chat-${pane.pty.pid}`;
     const exited = new Promise<number>((resolve) => pane.pty.onExit(({ exitCode }) => resolve(exitCode)));
     const cleanup = async () => {
@@ -4099,8 +4105,12 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
     } finally { await wb.cleanup(); }
   }, 180_000);
 
-  test.skipIf(!zellijAvailable)('P-030: under 120 columns the chat opens zoomed and Alt+z brings the side panes back', async ({ onTestFailed }) => {
-    const wb = startChatWorkbench(80, 24);
+  // pui-chat-first-ux D-033 (owner 2026-10-06, WI-10006739): Avi launched bare
+  // `pui` in a 92x26 terminal and saw no panes. The P-030 build zoomed the chat
+  // over them below 120 columns, and nothing on screen said so. Now the panes
+  // open visible at every width and the chat's footer names Alt+z.
+  test.skipIf(!zellijAvailable)('P-030 / D-033: at 92 columns the side panes open visible, the footer names Alt+z, and Alt+z hides and shows them', async ({ onTestFailed }) => {
+    const wb = startChatWorkbench(92, 26);
     onTestFailed(() => console.info('PUI_P030_NARROW_FAILURE', JSON.stringify({
       session: wb.session, sessions: listSessions(), ...wb.pane.failureEvidence(),
     })));
@@ -4108,21 +4118,27 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
     const paneTitle = (name: string) => new RegExp(`[┌─] ${name} [─┐]`);
     try {
       await wb.pane.waitFor('Claude ·', { timeoutMs: 90_000 });
-      // Zoomed: the side panes are collapsed out of view at 80x24.
+      // Visible from the start: no key press, at the owner's own width.
       await vi.waitFor(() => {
         const frame = wb.pane.screen();
-        expect(paneTitle('hud').test(frame), frame).toBe(false);
-        expect(paneTitle('wake').test(frame), frame).toBe(false);
+        expect(paneTitle('hud').test(frame), frame).toBe(true);
+        expect(frame, frame).toContain('Alt+z panes');
       }, { timeout: 15_000, interval: 250 });
-      const zoomed = wb.pane.screen();
-      // One key brings them back …
-      wb.pane.write('\u001bz');
-      await vi.waitFor(() => expect(paneTitle('hud').test(wb.pane.screen()), wb.pane.screen()).toBe(true), { timeout: 15_000, interval: 250 });
-      const expanded = wb.pane.screen();
-      // … and the same key collapses them again.
+      const opened = wb.pane.screen();
+      // Stays visible: nothing zooms the chat a moment after it starts (the
+      // removed P-030 zoom retried for up to 8s).
+      await new Promise((resolve) => setTimeout(resolve, 3_000));
+      expect(paneTitle('hud').test(wb.pane.screen()), wb.pane.screen()).toBe(true);
+      // One key hides them …
       wb.pane.write('\u001bz');
       await vi.waitFor(() => expect(paneTitle('hud').test(wb.pane.screen()), wb.pane.screen()).toBe(false), { timeout: 15_000, interval: 250 });
-      console.info('PUI_P030_NARROW_ACCEPTANCE', JSON.stringify({ binary: bin, binarySha256, session: wb.session, zoomed, expanded }));
+      const hidden = wb.pane.screen();
+      // … the hint is still on screen to bring them back …
+      expect(hidden).toContain('Alt+z panes');
+      // … and the same key brings them back.
+      wb.pane.write('\u001bz');
+      await vi.waitFor(() => expect(paneTitle('hud').test(wb.pane.screen()), wb.pane.screen()).toBe(true), { timeout: 15_000, interval: 250 });
+      console.info('PUI_P030_NARROW_ACCEPTANCE', JSON.stringify({ binary: bin, binarySha256, session: wb.session, opened, hidden }));
     } finally { await wb.cleanup(); }
   }, 180_000);
 

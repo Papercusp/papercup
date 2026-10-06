@@ -3826,9 +3826,10 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
         } else {
             Theme::dim()
         };
+        let footer_hint = workbench_footer_hint(footer_hint, app.chat_workbench_pane);
         f.render_widget(
             Paragraph::new(Line::from(Span::styled(
-                quiet_footer_line(footer_hint, &footer_status, footer.width as usize),
+                quiet_footer_line(&footer_hint, &footer_status, footer.width as usize),
                 footer_style,
             ))),
             footer,
@@ -3887,6 +3888,24 @@ pub const QUIET_SEND_HINT: &str = "Enter sends";
 pub const QUIET_CTRL_C_EXIT_HINT: &str = "Press Ctrl+C again to exit";
 /// The footer hint while a first Esc has armed clearing the draft (P-027, G-3).
 pub const QUIET_ESC_CLEAR_HINT: &str = "Esc again to clear";
+
+/// pui-chat-first-ux D-033: in the chat pane of the bare-`pui` workbench the
+/// footer always names the key that hides and shows the side panes
+/// (`Alt+z panes`), so a person who has hidden them, or never noticed them,
+/// can see how to get them back. It gives way only to the armed Ctrl+C / Esc
+/// hints, whose second key press must not be crowded out. Outside the
+/// workbench (`pui --solo`, `pui chat`) there are no panes, so nothing is added.
+pub fn workbench_footer_hint(hint: &str, workbench_pane: bool) -> String {
+    if !workbench_pane || hint == QUIET_CTRL_C_EXIT_HINT || hint == QUIET_ESC_CLEAR_HINT {
+        return hint.to_string();
+    }
+    let panes = format!("{} panes", crate::layout::CHAT_WORKBENCH_TOGGLE_HINT);
+    if hint.is_empty() {
+        panes
+    } else {
+        format!("{hint} · {panes}")
+    }
+}
 
 /// The keys the chat-first message box answers to, listed by `?` (P-021).
 /// Each one is a real binding of the composing arm in `App::on_key`, or of
@@ -10607,6 +10626,41 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// D-033 (owner 2026-10-06): the workbench chat pane always names the key
+    /// that hides and shows the side panes; a solo chat has no panes to name.
+    #[test]
+    fn workbench_chat_footer_names_the_side_pane_key_and_solo_does_not() {
+        assert_eq!(
+            workbench_footer_hint(QUIET_SHORTCUTS_HINT, true),
+            "? for shortcuts · Alt+z panes"
+        );
+        assert_eq!(workbench_footer_hint(QUIET_SEND_HINT, true), "Enter sends · Alt+z panes");
+        assert_eq!(workbench_footer_hint("", true), "Alt+z panes");
+        // The armed second key press keeps the whole footer to itself.
+        for armed in [QUIET_CTRL_C_EXIT_HINT, QUIET_ESC_CLEAR_HINT] {
+            assert_eq!(workbench_footer_hint(armed, true), armed);
+        }
+        for hint in ["", QUIET_SHORTCUTS_HINT, QUIET_SEND_HINT] {
+            assert_eq!(workbench_footer_hint(hint, false), hint);
+        }
+
+        // Rendered at the chat pane's width on Avi's 92-column terminal (65%,
+        // ~60 columns): the hint is on screen, beside the shortcuts hint.
+        let mut pane = chat_first_bound_app();
+        pane.chat_workbench_pane = true;
+        let frame = render(&pane, 60, 24);
+        assert!(frame.contains("Alt+z panes"), "{frame}");
+        assert!(frame.contains(QUIET_SHORTCUTS_HINT), "{frame}");
+        // While a reply runs, the ready-to-send hints stay hidden (the PTY
+        // suite reads them as "ready"), but the pane key is still named.
+        pane.chat_streaming = true;
+        let running = render(&pane, 60, 24);
+        assert!(!running.contains(QUIET_SHORTCUTS_HINT), "{running}");
+
+        let solo = render(&chat_first_bound_app(), 60, 24);
+        assert!(!solo.contains("Alt+z"), "{solo}");
     }
 
     #[test]

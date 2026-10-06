@@ -2104,6 +2104,10 @@ pub struct App {
     /// `pui workbench`. Unlike `pinned` this is not a dock pane: Context
     /// still follows the bound chat rather than the Sentinel roster.
     pub chat_first: bool,
+    /// This chat is the main pane of the bare-`pui` chat workbench (P-030),
+    /// with the side panes beside it. Its footer then names the key that hides
+    /// and shows them (D-033), since nothing else on screen does.
+    pub chat_workbench_pane: bool,
     /// The directory `pui` was started in (pui-chat-first-ux P-010). The
     /// default chat's `/resume` lists only conversations started here, the
     /// way Claude Code and Codex scope resume to the project directory.
@@ -2930,6 +2934,7 @@ impl App {
             view_state_restore_pending: true,
             pinned: None,
             chat_first: false,
+            chat_workbench_pane: false,
             chat_details: None,
             chat_tools_expanded: false,
             chat_slash_selected: 0,
