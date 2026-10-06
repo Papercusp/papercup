@@ -2009,8 +2009,13 @@ function customerAgentToolchainInstallLines(
   }
   if (has('claude')) {
     lines.push(
+      // WI-10006974: compare CANONICAL to CANONICAL. On a bootc image /home is a symlink to
+      // var/home, so `readlink -f` of the installer's symlink yields /var/home/<agent>/... while
+      // $AGENT_HOME stays /home/<agent>; a prefix test against the raw $AGENT_HOME then refuses a
+      // correctly installed CLI.
       'CLAUDE_REAL="$(readlink -f -- "$AGENT_RUNTIME_CLAUDE")"',
-      '[[ "$CLAUDE_REAL" == "$AGENT_HOME/"* && -f "$CLAUDE_REAL" ]] || die "vendor claude did not resolve to a file inside the agent home"',
+      'AGENT_HOME_REAL="$(readlink -f -- "$AGENT_HOME")"',
+      '[[ -n "$AGENT_HOME_REAL" && "$CLAUDE_REAL" == "$AGENT_HOME_REAL/"* && -f "$CLAUDE_REAL" ]] || die "vendor claude did not resolve to a file inside the agent home"',
       'install -m 0755 -o root -g root -- "$CLAUDE_REAL" "$TOOLCHAIN_NEXT/bin/claude"',
     );
   }
@@ -2412,8 +2417,15 @@ function statusReportLines(
     'BOOTSTRAP_PHASE=""',
     'BOOTSTRAP_ERROR=""',
     deliver,
+    // EI-25267772765088134: a non-die abort (a `set -u` unbound variable, an unguarded failing
+    // command) leaves BOOTSTRAP_ERROR empty, so the controller saw `error=` with nothing after it.
+    // Inside the EXIT trap BASH_COMMAND still holds the UNEXPANDED command that aborted; report
+    // that, with single-quoted literals redacted (an inline payload never reaches the console)
+    // and newlines folded.
     'report_outcome() { if [[ "$1" -eq 0 ]]; then report_status succeeded; else ' +
-      `report_status "failed exit=$1 phase=$BOOTSTRAP_PHASE error=\${BOOTSTRAP_ERROR:0:${WORKSPACE_HOST_BOOTSTRAP_STATUS_ERROR_MAX_CHARS}}"; fi; }`,
+      `local err="$BOOTSTRAP_ERROR"; if [[ -z "$err" ]]; then local cmd="\${BASH_COMMAND//$'\\n'/ }"; ` +
+      `err="aborted outside die: \${cmd//\\'*\\'/\\'<redacted>\\'}"; fi; ` +
+      `report_status "failed exit=$1 phase=$BOOTSTRAP_PHASE error=\${err:0:${WORKSPACE_HOST_BOOTSTRAP_STATUS_ERROR_MAX_CHARS}}"; fi; }`,
     `trap 'status=$?; report_outcome "$status"; exit "$status"' EXIT`,
     'report_status running',
   ];

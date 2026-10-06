@@ -3290,7 +3290,7 @@ describe('agent sandbox user namespaces (WI-10004636)', () => {
  */
 describe('rendered bootstrap assigns every variable it expands (WI-10006965)', () => {
   // Assigned outside the script text: by bash itself, or by `. /etc/os-release`.
-  const ASSIGNED_OUTSIDE_SCRIPT = new Set(['EUID', 'SECONDS', 'VERSION_ID']);
+  const ASSIGNED_OUTSIDE_SCRIPT = new Set(['BASH_COMMAND', 'EUID', 'SECONDS', 'VERSION_ID']);
 
   function unassignedExpansions(script: string): { unassigned: string[]; expansions: number } {
     const assigned = new Set<string>(ASSIGNED_OUTSIDE_SCRIPT);
@@ -3340,5 +3340,77 @@ describe('rendered bootstrap assigns every variable it expands (WI-10006965)', (
     expect(usedAt).toBeGreaterThan(-1);
     expect(assignedAt).toBeGreaterThan(-1);
     expect(assignedAt).toBeLessThan(usedAt);
+  });
+});
+
+/**
+ * WI-10006974: on a bootc image /home is a symlink to var/home, so `readlink -f` of the
+ * installer's ~/.local/bin/claude symlink yields /var/home/<agent>/... A prefix test of that
+ * CANONICAL path against the raw $AGENT_HOME (/home/<agent>) refused a correctly installed CLI
+ * and killed install-runtime. The rendered check is executed against three fixture layouts: a
+ * symlinked home (bootc), a plain home (Ubuntu), and a CLI that resolves outside the home, which
+ * must still be refused.
+ */
+describe('vendor claude resolve check survives a symlinked /home (WI-10006974)', () => {
+  function renderedClaudeCheck(): string {
+    const script = buildWorkspaceHostBootstrap(
+      bootcInput({ agentRuntimeInstalls: [...AGENT_RUNTIME_INSTALLS] }),
+    );
+    const start = script.indexOf('CLAUDE_REAL="$(readlink -f');
+    const dieAt = script.indexOf('die "vendor claude did not resolve to a file inside the agent home"', start);
+    expect(start).toBeGreaterThan(-1);
+    expect(dieAt).toBeGreaterThan(start);
+    return script.slice(start, script.indexOf('\n', dieAt));
+  }
+
+  function runCheck(layout: 'symlinked-home' | 'plain-home' | 'outside-home') {
+    const root = mkdtempSync(join(tmpdir(), 'wi10006974-'));
+    try {
+      const realHomes = layout === 'plain-home' ? join(root, 'home') : join(root, 'var', 'home');
+      mkdirSync(realHomes, { recursive: true });
+      if (layout !== 'plain-home') symlinkSync(join('var', 'home'), join(root, 'home'));
+      const agentHome = join(root, 'home', 'agent');
+      const versions = join(realHomes, 'agent', '.local', 'share', 'claude', 'versions');
+      mkdirSync(versions, { recursive: true });
+      mkdirSync(join(realHomes, 'agent', '.local', 'bin'), { recursive: true });
+      writeFileSync(join(versions, '9.9.9'), '#!/bin/sh\n');
+      const outside = join(root, 'opt-claude');
+      writeFileSync(outside, '#!/bin/sh\n');
+      const target = layout === 'outside-home' ? outside : join('..', 'share', 'claude', 'versions', '9.9.9');
+      symlinkSync(target, join(realHomes, 'agent', '.local', 'bin', 'claude'));
+      return spawnSync('bash', ['-c', [
+        'set -euo pipefail',
+        'die() { echo "DIE: $*" >&2; exit 3; }',
+        renderedClaudeCheck(),
+        'echo "OK $CLAUDE_REAL"',
+      ].join('\n')], {
+        encoding: 'utf8',
+        timeout: 5000,
+        env: {
+          ...process.env,
+          AGENT_HOME: agentHome,
+          AGENT_RUNTIME_CLAUDE: join(agentHome, '.local', 'bin', 'claude'),
+        },
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  it('accepts a CLI installed under a symlinked home (bootc /home -> var/home)', () => {
+    const run = runCheck('symlinked-home');
+    expect(run.status, run.stderr).toBe(0);
+    expect(run.stdout).toMatch(/OK .*\/var\/home\/agent\/\.local\/share\/claude\/versions\/9\.9\.9/);
+  });
+
+  it('accepts a CLI installed under a plain home (Ubuntu)', () => {
+    const run = runCheck('plain-home');
+    expect(run.status, run.stderr).toBe(0);
+  });
+
+  it('still refuses a CLI that resolves outside the agent home (control)', () => {
+    const run = runCheck('outside-home');
+    expect(run.status).toBe(3);
+    expect(run.stderr).toContain('vendor claude did not resolve to a file inside the agent home');
   });
 });

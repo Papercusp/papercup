@@ -143,6 +143,37 @@ describe('ec2-console-output bootstrap status channel (D-013)', () => {
     });
   });
 
+  // EI-25267772765088134: a `set -u` abort never reaches die, so the report used to carry an
+  // empty error and the controller saw only 'error='. The abort runs in a subshell with the
+  // production EXIT trap, so the outer harness still exits 0.
+  it('reports the aborting command for a non-die abort, with single-quoted literals redacted', () => {
+    const abort = (command: string) =>
+      runConsoleReports(
+        [
+          'report_status running',
+          '( trap \'status=$?; report_outcome "$status"; exit "$status"\' EXIT',
+          '  BOOTSTRAP_PHASE=install-runtime',
+          `  ${command}`,
+          ') || true',
+        ].join('\n'),
+      );
+    expect(parseEc2ConsoleBootstrapStatus(abort('OLLAMA_TMP="$WORK_DIR/ollama"'))).toEqual({
+      state: 'failed',
+      exitCode: 1,
+      phase: 'install-runtime',
+      error: 'aborted outside die: OLLAMA_TMP="$WORK_DIR/ollama"',
+    });
+    const leaked = abort("printf '%s' 'SECRET-TICKET-abc' > /nonexistent-dir-ei25267772765088134/t");
+    expect(leaked).not.toContain('SECRET-TICKET-abc');
+    expect(parseEc2ConsoleBootstrapStatus(leaked)).toMatchObject({
+      state: 'failed',
+      error: "aborted outside die: printf '<redacted>' > /nonexistent-dir-ei25267772765088134/t",
+    });
+    // A die message still wins over the aborting command.
+    const died = abort('BOOTSTRAP_ERROR="named failure"; false');
+    expect(parseEc2ConsoleBootstrapStatus(died)).toMatchObject({ state: 'failed', error: 'named failure' });
+  });
+
   it('truncates the die message to the report ceiling', () => {
     const consoleText = runConsoleReports(
       [
