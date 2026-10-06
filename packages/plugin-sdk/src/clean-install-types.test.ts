@@ -8,10 +8,11 @@
  * package here is COPIED into a fresh directory under the OS temp dir, which has no ancestor
  * node_modules, and the calibration case proves that directory cannot see the repo.
  *
- * Distribution status: `@papercusp/plugin-sdk` and its dependency `@papercusp/tooldef` are both
- * `private` workspace packages. Neither is published, so the main entry is only installable from
- * a workspace that also carries tooldef and its closure. The `./provider` subpath has no imports
- * at all and is what a provider author can consume on its own.
+ * Scope: this file installs the SOURCE package, whose main entry imports `@papercusp/tooldef`
+ * (a private workspace package), so only the `./provider` subpath is checked here with nothing
+ * else installed. The distributable an outside author installs is the self-contained tarball
+ * built by `npm run pack:dist` (scripts/pack-dist.mjs, WI-10006701); dist-install.test.ts
+ * proves that one, main entry included.
  */
 import { afterAll, describe, expect, it } from 'vitest';
 import { createRequire } from 'node:module';
@@ -102,7 +103,7 @@ async function typecheck(dir: string, source: string): Promise<string[]> {
   });
 }
 
-const MAIN_ENTRY_CONSUMER = "import type { PapercuspPlugin } from '@papercusp/plugin-sdk';\nexport type P = PapercuspPlugin;\n";
+const MAIN_ENTRY_CONSUMER = "import type { PapercuspApi } from '@papercusp/plugin-sdk';\nexport type P = PapercuspApi;\n";
 
 describe('plugin-sdk type-checks in a clean install (WI-10006655)', () => {
   it('the provider subpath type-checks with only the SDK installed', async () => {
