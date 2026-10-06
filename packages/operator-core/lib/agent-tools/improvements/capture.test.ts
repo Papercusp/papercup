@@ -388,7 +388,7 @@ describe('improvements:capture tool envelope', () => {
 
   it('forwards a bug reporter context to the core so its error can fold (unified-bug-pipeline P-011 / D-046)', async () => {
     const reportContext = {
-      app: 'papercusp-desktop',
+      appVersion: '0.9.3',
       recentErrors: [{ message: 'TypeError: cannot read properties of undefined (reading "id")', source: 'renderer' }],
     };
     const parsed = (captureTool.args as { parse: (value: unknown) => Record<string, unknown> }).parse({
