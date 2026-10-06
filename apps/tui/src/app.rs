@@ -6574,6 +6574,33 @@ impl App {
         self.account_rows = rows;
     }
 
+    /// Whether `/resume` lists `chat`. pui-chat-first-ux P-010: the default
+    /// chat lists only the conversations started in this directory (plus the
+    /// open one); the workbench keeps the whole pot inventory.
+    fn chat_in_resume_scope(&self, chat: &crate::agent_chats::AgentChatSummary) -> bool {
+        !self.chat_first
+            || self.agent_chat_id.as_deref() == Some(chat.id.as_str())
+            || crate::su_session::session_in_directory(
+                self.su_session_inventory
+                    .iter()
+                    .find(|entry| entry.agent_chat_id == chat.id)
+                    .and_then(|entry| entry.cwd.as_deref()),
+                self.launch_cwd.as_deref(),
+            )
+    }
+
+    /// pui-chat-first-ux P-031 (G-12): an empty chat-first conversation
+    /// offers `/resume` when this directory has an earlier conversation, read
+    /// from the same list `/resume` shows (and only once that list loaded).
+    pub fn chat_first_offers_resume(&self) -> bool {
+        self.chat_first
+            && self.agent_chats_loaded_for.as_deref() == Some(self.harness.as_str())
+            && self.agent_chat_summaries.iter().any(|chat| {
+                self.agent_chat_id.as_deref() != Some(chat.id.as_str())
+                    && self.chat_in_resume_scope(chat)
+            })
+    }
+
     /// Open the conversation picker: the EXISTING PG-backed Agent Chat
     /// conversations, nothing else. It deliberately synthesises no "new
     /// <role> · <backend> session" rows — the old picker built a role ×
@@ -6585,24 +6612,7 @@ impl App {
     pub fn open_conversation_picker(&mut self) {
         use crate::session_config::{PickerAxis, PickerOption, SessionPicker};
         let mut options: Vec<PickerOption> = Vec::new();
-        let chat_first = self.chat_first;
-        let launch_cwd = self.launch_cwd.as_deref();
-        let inventory = &self.su_session_inventory;
-        let active_chat_id = self.agent_chat_id.as_deref();
-        let in_scope = |chat: &&crate::agent_chats::AgentChatSummary| {
-            // pui-chat-first-ux P-010: the default chat lists only the
-            // conversations started in this directory (plus the open one).
-            // The workbench keeps the whole pot inventory.
-            !chat_first
-                || active_chat_id == Some(chat.id.as_str())
-                || crate::su_session::session_in_directory(
-                    inventory
-                        .iter()
-                        .find(|entry| entry.agent_chat_id == chat.id)
-                        .and_then(|entry| entry.cwd.as_deref()),
-                    launch_cwd,
-                )
-        };
+        let in_scope = |chat: &&crate::agent_chats::AgentChatSummary| self.chat_in_resume_scope(chat);
         options.extend(
             self.agent_chat_summaries
                 .iter()
@@ -7474,13 +7484,16 @@ impl App {
     }
 
     fn chat_engine_label(&self) -> &'static str {
+        self.chat_engine().label()
+    }
+
+    fn chat_engine(&self) -> crate::su_session::SuSessionBackend {
         self.su_session
             .as_ref()
             .map(|session| session.backend())
             .or(self.su_backend)
             .or(self.configured_su_backend())
             .unwrap_or(crate::su_session::PUI_DEFAULT_SU_BACKEND)
-            .label()
     }
 
     /// `pui --model` / `--account` (P-026, D-023): what a new conversation
@@ -7710,9 +7723,11 @@ impl App {
                 "{engine} is taking too long to start; your message is kept, {retry}."
             ));
         }
+        // pui-chat-first-ux P-031 (G-13): each failure names the step that
+        // fixes it, not just the subsystem to look at.
         if raw.contains("operator did not answer within") {
             return Some(format!(
-                "Papercusp is not answering; check that it is running, then {retry}."
+                "Papercusp is not answering; start or restart Papercusp Server, then {retry}."
             ));
         }
         let sentence = if raw.contains("/login")
@@ -7720,18 +7735,31 @@ impl App {
             || raw.contains("authentication")
             || raw.contains("401")
         {
-            format!("{engine} is not signed in; sign in to {engine}, then {retry}.")
+            // Engines sign in where they run: on the operator's computer,
+            // which is this one for a local install (setup help: "Provider
+            // login belongs on the operator host").
+            let login = match self.chat_engine() {
+                crate::su_session::SuSessionBackend::Claude => "run claude and type /login",
+                crate::su_session::SuSessionBackend::Codex => "run codex login",
+                crate::su_session::SuSessionBackend::Omp => "run omp and type /login",
+            };
+            format!(
+                "{engine} is not signed in; in a terminal on the computer running Papercusp, {login}, then {retry}."
+            )
         } else if let Some(reason) = self.su_launch_refusal.as_deref() {
             // The operator answered and refused to start the engine
             // (WI-10004158): not a lost connection, and its reason names the
             // owner's next step (an account or model to choose).
             let reason = reason.trim().trim_end_matches('.');
             format!("{engine} could not start: {reason}. Then {retry}.")
-        } else if self.su_connection_error.is_some()
-            || raw.contains("connection refused")
+        } else if raw.contains("connection refused")
             || raw.contains("error sending request")
             || raw.contains("unreachable")
         {
+            // The request to the operator itself failed: the engine was never
+            // reached, so naming the engine sent the owner to the wrong place.
+            format!("PUI cannot reach Papercusp; start Papercusp Server, then {retry}.")
+        } else if self.su_connection_error.is_some() {
             // Opening or reaching the session failed. An engine that died
             // mid-start also closes its event stream, but that is the
             // "before it was ready" case below, not a lost connection.
@@ -18368,6 +18396,37 @@ mod tests {
         assert_eq!(a.session_picker.as_ref().unwrap().options.len(), 3);
     }
 
+    /// pui-chat-first-ux P-031 (G-12): a new conversation offers `/resume`
+    /// exactly when `/resume` would list an earlier one in this directory,
+    /// and says nothing before the list has loaded.
+    #[test]
+    fn chat_first_offers_resume_only_when_this_directory_has_an_earlier_conversation() {
+        let mut row = inventory_row_for(
+            "here",
+            crate::su_session::SuSessionReconciliation::EndedArchived,
+        );
+        row.cwd = Some("/work/app".into());
+        let mut a = App::new();
+        a.chat_first = true;
+        a.launch_cwd = Some("/work/app".into());
+        a.agent_chat_summaries = vec![chat_summary_for("here")];
+        a.su_session_inventory = vec![row];
+        assert!(!a.chat_first_offers_resume(), "not before the list loaded");
+        a.agent_chats_loaded_for = Some(a.harness.clone());
+        assert!(a.chat_first_offers_resume());
+        a.agent_chat_id = Some("here".into());
+        assert!(
+            !a.chat_first_offers_resume(),
+            "the open conversation is not an earlier one"
+        );
+        a.agent_chat_id = None;
+        a.launch_cwd = Some("/work/other".into());
+        assert!(!a.chat_first_offers_resume(), "another directory's chat");
+        a.launch_cwd = Some("/work/app".into());
+        a.chat_first = false;
+        assert!(!a.chat_first_offers_resume(), "the workbench has its own list");
+    }
+
     /// P-007 (P-005 review, step 5): /resume opened right after relaunch,
     /// before the Agent Chat list arrived, said "No earlier conversations in
     /// this directory" — a disabled row, so Enter did nothing — for a
@@ -19964,7 +20023,7 @@ mod tests {
             ),
             (
                 "The operator did not answer within 5s. Draft retained.",
-                "Papercusp is not answering; check that it is running, then press Enter to send your message again.",
+                "Papercusp is not answering; start or restart Papercusp Server, then press Enter to send your message again.",
             ),
         ] {
             let mut a = chat_first_app();
@@ -19977,6 +20036,36 @@ mod tests {
                 message: raw.into(),
             });
             assert_eq!(a.chat_failure_sentence().as_deref(), Some(expected), "{raw}");
+        }
+    }
+
+    /// pui-chat-first-ux P-031 (G-13): a missing engine login names the
+    /// command that signs that engine in, not just "sign in to Claude".
+    #[test]
+    fn chat_first_missing_login_says_how_to_sign_in() {
+        use crate::su_session::SuSessionBackend;
+        for (backend, step) in [
+            (SuSessionBackend::Claude, "run claude and type /login"),
+            (SuSessionBackend::Codex, "run codex login"),
+            (SuSessionBackend::Omp, "run omp and type /login"),
+        ] {
+            let mut a = chat_first_app();
+            a.su_backend = Some(backend);
+            a.chat_input = "hello".into();
+            a.on_key(KeyCode::Enter, KeyModifiers::NONE);
+            a.update(Event::SuSessionError(
+                "open SU session: 401 Unauthorized: Not logged in · Please run /login".into(),
+            ));
+            let label = backend.label();
+            // The retry clause depends on whether the draft became a pending
+            // turn (the existing retry tests cover it); this test is the step.
+            let sentence = a.chat_failure_sentence().unwrap_or_default();
+            assert!(
+                sentence.starts_with(&format!(
+                    "{label} is not signed in; in a terminal on the computer running Papercusp, {step}, then "
+                )),
+                "{label}: {sentence}"
+            );
         }
     }
 
@@ -20029,7 +20118,7 @@ mod tests {
         ));
         assert_eq!(
             b.chat_failure_sentence().as_deref(),
-            Some("PUI lost its connection to Claude; press Enter to send your message again.")
+            Some("PUI cannot reach Papercusp; start Papercusp Server, then press Enter to send your message again.")
         );
         // A later successful open clears the refusal with the connection error.
         a.update(Event::SuSessionOpened(su_binding()));

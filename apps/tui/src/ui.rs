@@ -10926,6 +10926,17 @@ mod tests {
             serde_json::from_value(serde_json::json!({ "id": "chat-earlier", "role": "operator" }))
                 .expect("summary");
         app.agent_chat_summaries = vec![earlier];
+        app.su_session_inventory = vec![crate::su_session::SuSessionInventoryEntry {
+            agent_chat_id: "chat-earlier".into(),
+            adv_session_id: 7,
+            backend: crate::su_session::SuSessionBackend::Claude,
+            lifecycle: crate::su_session::SuSessionLifecycleState::Ended,
+            runtime_generation: 1,
+            native_session_id: "native-earlier".into(),
+            terminal: true,
+            reconciliation: crate::su_session::SuSessionReconciliation::EndedArchived,
+            cwd: app.launch_cwd.clone(),
+        }];
         app.agent_chats_loaded_for = Some(app.harness.clone());
         let frame = render(&app, 120, 24);
         assert!(
