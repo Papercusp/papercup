@@ -190,6 +190,23 @@ describe('proposeStagingFixes — R-6', () => {
   });
 });
 
+describe('legsFromSignature (CLI)', () => {
+  it('groups test files by owning workspace and keeps every other signature entry as its own leg', async () => {
+    const { legsFromSignature } = await import('./staging-fix-proposal-cli');
+    const legs = legsFromSignature([
+      { kind: 'test-file', id: RED, workspace: 'operator-core' },
+      { kind: 'test-file', id: 'lib/x/b.test.ts', workspace: 'operator-core' },
+      { kind: 'test-file', id: 'src/c.test.ts', workspace: 'web' },
+      { kind: 'lint-leg', id: 'lint:tsc' },
+    ]);
+    expect(legs.map((l) => [l.leg, l.signature.length])).toEqual([
+      ['operator-core::test', 2],
+      ['web::test', 1],
+      ['lint-leg:lint:tsc', 1],
+    ]);
+  });
+});
+
 describe('chooseProposalPaths', () => {
   it('a narrow commit contributes every co-changed path; a sweep only the failing file and same-directory siblings', () => {
     const sweep = { sha: '2'.repeat(40), paths: [RED, 'lib/x/near.ts', ...Array.from({ length: 20 }, (_, i) => `apps/far/f${i}.ts`)] };
