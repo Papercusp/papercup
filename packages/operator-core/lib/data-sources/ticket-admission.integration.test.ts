@@ -48,6 +48,7 @@ import {
   writeBackAdmission,
 } from '../work-admission/admit';
 import { createRecordAdmissionSource } from '../work-admission/record-source';
+import { quoteEndUserTitle } from '../harness/improvements/untrusted-evidence';
 import { findAdmissionWriteBack, writeBacksForWorkItem } from '../work-admission/write-back-ledger';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as Sql, ws: 'papercusp-workspace' }));
@@ -347,7 +348,8 @@ describe('ticket admission into work (P-020, R-14) through the shared connector 
     expect(minted).toEqual([{ feature_id: rows[0]!.work_item_id, created_by: `admission-rule:${rule.id}`, admission_count: 1 }]);
     const [item] = await sql<Array<{ title: string; nature: string }>>`
       SELECT title, nature FROM harness_shared.work_items WHERE workspace_id = ${WS} AND feature_id = ${rows[0]!.work_item_id}`;
-    expect(item).toEqual({ title: `${OWNER}/${REPO}#1: Agents should fix the tulip build`, nature: 'work' });
+    // A rule admission carries outside text, so the work item stores its title quoted (P-013, D-047).
+    expect(item).toEqual({ title: quoteEndUserTitle(`${OWNER}/${REPO}#1: Agents should fix the tulip build`), nature: 'work' });
 
     // A Papercusp-owned field set on the admitted item survives the re-sync below.
     await sql`UPDATE harness_shared.work_items SET taken_by = ${PERSON} WHERE workspace_id = ${WS} AND feature_id = ${rows[0]!.work_item_id}`;
@@ -358,7 +360,8 @@ describe('ticket admission into work (P-020, R-14) through the shared connector 
     expect(await mintedWork()).toHaveLength(1);
     const [resynced] = await sql<Array<{ title: string; assignee: string | null }>>`
       SELECT title, taken_by AS assignee FROM harness_shared.work_items WHERE workspace_id = ${WS} AND feature_id = ${rows[0]!.work_item_id}`;
-    expect(resynced).toEqual({ title: `${OWNER}/${REPO}#1: Agents should fix the tulip build (retitled)`, assignee: PERSON });
+    // The re-sync quotes exactly as the admission did.
+    expect(resynced).toEqual({ title: quoteEndUserTitle(`${OWNER}/${REPO}#1: Agents should fix the tulip build (retitled)`), assignee: PERSON });
   });
 
   it('a person promotes an unmatched ticket by hand; a second promote returns the same admission', async () => {

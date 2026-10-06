@@ -12,6 +12,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import type { CaptureImprovementInput, CaptureImprovementResult } from '../harness/improvements/capture-core';
+import { quoteEndUserTitle } from '../harness/improvements/untrusted-evidence';
 import { registerAdmissionSource, unregisterAdmissionSourceForTest } from './admission-sources';
 import { admissionBugCapture, admitWorkItem, bugIntakeTarget, FOLDED_FIELD_AUTHORITY, type AdmitDeps } from './admit';
 
@@ -206,9 +207,11 @@ describe('two reports of the same failure through the real intake (R-4)', () => 
     const second = await admit('thread-2');
     expect(second).toMatchObject({ ok: true, reason: 'folded', workItemId: bugId });
 
+    // A rule admission is a person's report from outside, so the intake stores its title
+    // quoted (D-047); look the bug up by the stored form.
     const bugs = await sql<{ feature_id: string; kind: string; repeat_count: string | null }[]>`
       SELECT feature_id, item_kind AS kind, payload->>'repeatCount' AS repeat_count
-        FROM harness_shared.work_items WHERE title = ${TITLE}`;
+        FROM harness_shared.work_items WHERE title = ${quoteEndUserTitle(TITLE)}`;
     expect(bugs.map((b) => b.feature_id)).toEqual([bugId]);
     expect(bugs[0]!.kind).toBe('bug');
     // The fold is the corroboration: the existing bug's repeat count moves from 1 to 2.
@@ -216,6 +219,17 @@ describe('two reports of the same failure through the real intake (R-4)', () => 
 
     const rows = await admissionRows(bugId);
     expect(rows.map((r) => r.source_key).sort()).toEqual([key('thread-1'), key('thread-2')].sort());
+
+    // P-008 (D-011): each admission row records what it did, which the Slack-bugs view counts.
+    const outcomes = await sql<{ source_key: string; outcome: string }[]>`
+      SELECT source_key, outcome FROM harness_shared.work_admissions
+       WHERE workspace_id = ${WS} AND work_item_id = ${bugId} ORDER BY source_key`;
+    expect(outcomes).toEqual(
+      [
+        { source_key: key('thread-1'), outcome: 'created' },
+        { source_key: key('thread-2'), outcome: 'folded' },
+      ].sort((a, b) => a.source_key.localeCompare(b.source_key)),
+    );
   });
 });
 
