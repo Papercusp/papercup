@@ -8,9 +8,9 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
-import { syncGoogleGmailSource } from '../external-triggers/google-gmail';
 import { syncGoogleCalendarSource } from '../external-triggers/google-calendar';
 import type { ExternalTriggerSourceRow } from '../external-triggers/source-store';
+import { connectorSinksFor, type ConnectorSourceRow } from '../providers/connector-runtime';
 import { createAppDeliverySinkIfConfigured } from './live-sink';
 
 const NOW = new Date('2026-08-30T12:00:00.000Z');
@@ -75,24 +75,37 @@ function captureDeps(fetchImpl: typeof fetch, appSink: ReturnType<typeof fakeApp
   };
 }
 
-function gmailFetch(): typeof fetch {
-  return (async (input: RequestInfo | URL) => {
-    const url = String(input);
-    if (url.includes('/history')) {
-      // Every real Gmail history record carries an `id`; the incremental sync keys its
-      // idempotent resume on it and refuses a record without one.
-      return json({ history: [{ id: 'h-1', messagesAdded: [{ message: { id: 'm-1' } }] }], historyId: '99' });
-    }
-    if (url.includes('/messages/m-1')) {
-      return json({
-        id: 'm-1',
-        threadId: 't-1',
-        internalDate: String(NOW.getTime()),
-        payload: { headers: [{ name: 'Subject', value: 'Hello' }], body: { data: '' } },
-      });
-    }
-    return json({ emailAddress: 'owner@example.com', historyId: '99' });
-  }) as typeof fetch;
+/**
+ * A provider connector source (Gmail is a registered provider, P-008). Mail sync
+ * runs through the shared connector runtime, so its sink registration is
+ * `connectorSinksFor` — the list the runtime hands ingestion as `additionalSinks`.
+ */
+function connectorSource(ownerUserId: string | null = USER): ConnectorSourceRow {
+  return {
+    id: SOURCE_ID,
+    workspaceId: WORKSPACE,
+    kind: 'gmail',
+    ownerUserId,
+    credentialRef: 'google-workspace:owner',
+    status: 'connected',
+    config: {},
+    cursor: {},
+    backfillStatus: 'complete',
+    failureCount: 0,
+    wakeRequestedAt: null,
+  };
+}
+
+function connectorSeams(appSink: ReturnType<typeof fakeAppSink> | null) {
+  return {
+    createPersonalSink: vi.fn(async () => ({
+      kind: 'personal-vault' as const,
+      ref: `user:${USER}`,
+      deliver: async () => undefined,
+    })),
+    createDatatypeSinks: vi.fn(async () => []),
+    createAppSink: vi.fn(async () => appSink),
+  };
 }
 
 function calendarFetch(): typeof fetch {
@@ -114,16 +127,21 @@ function calendarFetch(): typeof fetch {
 }
 
 describe('P-011 app-delivery sink registration', () => {
-  it('registers the app sink alongside the personal vault on the Gmail path', async () => {
-    const deps = captureDeps(gmailFetch(), fakeAppSink());
-    await syncGoogleGmailSource({} as unknown as Sql, source('gmail', { historyId: '10' }), 'token', deps.value);
+  it('registers the app sink alongside the personal vault on the provider (mail) path', async () => {
+    const seams = connectorSeams(fakeAppSink());
+    const sinks = await connectorSinksFor({} as unknown as Sql, connectorSource(), 'email-message', seams);
 
-    expect(deps.sinkKindsPerEvent.length).toBeGreaterThan(0);
-    // Every ingested event carries BOTH sinks — not just the first.
-    for (const kinds of deps.sinkKindsPerEvent) {
-      expect(kinds).toContain('personal-vault');
-      expect(kinds).toContain('app-delivery');
-    }
+    expect(sinks.map((s) => s.kind)).toEqual(['personal-vault', 'app-delivery']);
+    expect(seams.createAppSink).toHaveBeenCalledWith(expect.anything(), WORKSPACE, SOURCE_ID, 'email');
+  });
+
+  it('registers no app sink for a datatype no app consumes, and none for an unowned source', async () => {
+    const seams = connectorSeams(fakeAppSink());
+    await connectorSinksFor({} as unknown as Sql, connectorSource(), 'ticket-issue', seams);
+    const unowned = await connectorSinksFor({} as unknown as Sql, connectorSource(null), 'email-message', seams);
+
+    expect(seams.createAppSink).not.toHaveBeenCalled();
+    expect(unowned.map((s) => s.kind)).not.toContain('app-delivery');
   });
 
   it('registers the app sink alongside the personal vault on the Calendar path', async () => {
@@ -144,23 +162,15 @@ describe('P-011 app-delivery sink registration', () => {
   });
 
   it('registers NO app sink when the deployment has no owner mapping', async () => {
-    const deps = captureDeps(gmailFetch(), null);
-    await syncGoogleGmailSource({} as unknown as Sql, source('gmail', { historyId: '10' }), 'token', deps.value);
+    const sinks = await connectorSinksFor({} as unknown as Sql, connectorSource(), 'email-message', connectorSeams(null));
 
-    expect(deps.sinkKindsPerEvent.length).toBeGreaterThan(0);
-    for (const kinds of deps.sinkKindsPerEvent) {
-      expect(kinds).toContain('personal-vault');
-      // The whole point of self-gating: an unconfigured install produces no
-      // app-delivery row at all, rather than a row that fails on every event.
-      expect(kinds).not.toContain('app-delivery');
-    }
+    // The whole point of self-gating: an unconfigured install produces no
+    // app-delivery row at all, rather than a row that fails on every event.
+    expect(sinks.map((s) => s.kind)).toEqual(['personal-vault']);
   });
 
-  it('resolves the app sink ONCE per sync, not once per event', async () => {
-    const deps = captureDeps(gmailFetch(), fakeAppSink());
-    await syncGoogleGmailSource({} as unknown as Sql, source('gmail', { historyId: '10' }), 'token', deps.value);
-    expect(deps.value.createAppSink).toHaveBeenCalledTimes(1);
-  });
+  // "Once per sync, not once per event" is a property of the connector loop's
+  // per-datatype sink cache: connector-runtime.integration.test.ts asserts it.
 });
 
 describe('P-011 registration is isolated from the rest of the sync', () => {
@@ -182,34 +192,25 @@ describe('P-011 registration is isolated from the rest of the sync', () => {
     expect(onGateError).toHaveBeenCalledTimes(1);
   });
 
-  it('does not abort a Gmail sync when the real gate cannot reach the database, and REPORTS the decline (P-007)', async () => {
-    // No createAppSink override: this exercises the DEFAULT production path
-    // against an unusable sql handle, which is what a database fault looks like.
+  it('does not abort mail sink registration when the real gate cannot reach the database, and REPORTS the decline (P-007)', async () => {
+    // No createAppSink seam: this exercises the DEFAULT production gate against
+    // an unusable sql handle, which is what a database fault looks like.
     //
     // P-007 added the second half of this assertion. Surviving the fault was
     // never enough: the gate swallows its own error to protect the sync, so
     // before the adapters passed `onGateError` this sync was indistinguishable
     // from one where no mapping was configured — the user's app silently stopped
-    // receiving mail and nothing anywhere said why.
+    // receiving mail and nothing anywhere said why. The provider connector path
+    // lost this once (P-008 found it); this assertion is what holds it.
     const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
-      const deps = captureDeps(gmailFetch(), null);
-      const { createAppSink: _omitted, ...withRealGate } = deps.value;
+      const { createAppSink: _omitted, ...withRealGate } = connectorSeams(null);
 
-      const result = await syncGoogleGmailSource(
-        {} as unknown as Sql,
-        source('gmail', { historyId: '10' }),
-        'token',
-        withRealGate,
-      );
+      const sinks = await connectorSinksFor({} as unknown as Sql, connectorSource(), 'email-message', withRealGate);
 
-      expect(result.messages).toBeGreaterThan(0);
-      for (const kinds of deps.sinkKindsPerEvent) {
-        expect(kinds).toContain('personal-vault');
-        expect(kinds).not.toContain('app-delivery');
-      }
+      expect(sinks.map((s) => s.kind)).toEqual(['personal-vault']);
 
-      // Registration is resolved once per sync, so exactly one report.
+      // Exactly one report for the one app consuming this datatype.
       expect(errors).toHaveBeenCalledTimes(1);
       const line = String(errors.mock.calls[0]![0]);
       // The prefix is the interface `logs:read { grep }` matches on.

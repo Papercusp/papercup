@@ -66,7 +66,6 @@
 
 import type { CoverageResult, BashSubstitutionPair } from '../types';
 // P-006: dependency-free so the PreToolUse hook that loads this registry stays light.
-import { GRAPH_FAILURE_FALLBACK_GUIDANCE } from '../../code-intelligence/graph-fallback-guidance';
 
 /**
  * The backing-index liveness finding, recorded as DATA rather than prose. The
@@ -309,42 +308,45 @@ export function parseGrepAtom(atom: string): ParsedGrepCommand {
   return out;
 }
 
-/** gitnexus's own symbol-kind vocabulary, from `gitnexus.context`'s schema. */
-const KIND_FOR_KEYWORD: Record<string, string> = {
-  function: 'Function',
-  class: 'Class',
-  interface: 'Interface',
-};
+/**
+ * Source extensions the pinned `lsp:query` servers answer for: tsserver
+ * (TypeScript + JavaScript) and rust-analyzer. A narrower set than
+ * CODE_EXTENSIONS on purpose — there is no Python/Go/Java/Ruby server, so a
+ * definition lookup filtered to those files is NOT something lsp:query serves.
+ */
+const LSP_EXTENSIONS = new Set(['ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs', 'rs']);
 
 /** Render the tool call a covered command maps onto. */
 function expressionFor(parsed: ParsedGrepCommand): string {
-  const kind = KIND_FOR_KEYWORD[parsed.declKeyword ?? ''];
-  const content = parsed.afterContext !== null ? ', include_content: true' : '';
-  return `gitnexus.context { name: "${parsed.symbol}", kind: "${kind}"${content} }`;
+  const rust = parsed.includes.length > 0 && parsed.includes.every((g) => /\.rs$/.test(g));
+  return `lsp:query { op: "workspace_symbols", name: "${parsed.symbol}"${rust ? ', language: "rust"' : ''} }`;
 }
 
 /**
- * Flags whose request `gitnexus.context` genuinely serves.
+ * Flags whose request `lsp:query { op: 'workspace_symbols' }` genuinely serves.
+ *
+ * Code-intelligence D-001 [owner 2026-08-21] routes definition and
+ * references to the `lsp` facade and keeps GitNexus for call chains, impact and
+ * topology; this pair used to send definitions to `gitnexus.context`, which
+ * contradicted that ruling and a second CLAUDE.md row
+ * (gitnexus-deterministic-integration-2026-10-05 P-002).
  *
  * `-l`/`-n` ask WHERE the definition is, which is exactly what the tool returns
- * (file location); `-r`/`-R` is the recursion this pattern requires; `-w` asks
- * for a whole-word match, and the tool matches an exact symbol NAME, which is
+ * (file + one-indexed line); `-r`/`-R` is the recursion this pattern requires;
+ * `-w` asks for a whole-word match, and the tool matches a symbol NAME, which is
  * strictly that; `-I`/`-h`/`-s` are output/binary plumbing that does not change
  * the question; `--include` is a source-type filter checked separately.
  *
- * `-A` is covered on a JUDGEMENT that is worth stating plainly rather than
- * burying: on a DEFINITION-anchored grep, `-A 30` means "show me the start of
- * this symbol's body", and `include_content: true` returns the symbol's FULL
- * source — the same question, answered without the arbitrary truncation. `-B`
- * and `-C` are NOT covered: they ask for what PRECEDES a definition (decorators,
- * a JSDoc block), which the symbol's own source does not contain.
+ * `-A`/`-B`/`-C` are NOT covered: workspace_symbols returns locations, not
+ * bodies, so a grep asking for the lines around a definition asks for something
+ * the tool does not return.
  */
-const EXPRESSIBLE_FLAGS = new Set(['-r', '-R', '-l', '-n', '-w', '-I', '-h', '-s', '-A', '--include']);
+const EXPRESSIBLE_FLAGS = new Set(['-r', '-R', '-l', '-n', '-w', '-I', '-h', '-s', '--include']);
 
-/** Everything `gitnexus.context` can and cannot express about a parsed grep. */
+/** Everything `lsp:query { op: 'workspace_symbols' }` can and cannot express about a parsed grep. */
 export function coverDefinitionLookup(parsed: ParsedGrepCommand): CoverageResult {
   if (parsed.writes) {
-    return { covered: false, reason: 'redirects the match output to a file; gitnexus.context returns a structured result and writes no artifact' };
+    return { covered: false, reason: 'redirects the match output to a file; lsp:query returns a structured result and writes no artifact' };
   }
   if (parsed.dynamic) {
     return { covered: false, reason: 'a search operand is a shell expansion, so the searched tree is not decidable from the atom' };
@@ -366,10 +368,10 @@ export function coverDefinitionLookup(parsed: ParsedGrepCommand): CoverageResult
 
   for (const glob of parsed.includes) {
     const ext = /\.([A-Za-z0-9]+)$/.exec(glob)?.[1];
-    if (ext === undefined || !CODE_EXTENSIONS.has(ext)) {
+    if (ext === undefined || !LSP_EXTENSIONS.has(ext)) {
       return {
         covered: false,
-        reason: `--include=${glob} filters to files gitnexus's CODE graph does not model (it indexes source, not data/config files)`,
+        reason: `--include=${glob} filters to files no pinned lsp:query server answers for (tsserver covers TS/JS, rust-analyzer covers Rust; data/config and other languages are not served)`,
       };
     }
   }
@@ -388,7 +390,7 @@ export function coverDefinitionLookup(parsed: ParsedGrepCommand): CoverageResult
       covered: false,
       reason:
         `search path "${foreign}" is not anchored in this repo (a cwd-relative path, an absolute path, or another ` +
-        'checkout on this box such as oddsmith); gitnexus indexes per-repo, so its answer would be about a different tree',
+        'checkout on this box such as oddsmith); the lsp:query servers are rooted at this repo, so its answer would be about a different tree',
     };
   }
 
@@ -412,13 +414,12 @@ export const gitnexusDefinitionLookup: BashSubstitutionPair = {
       `grep(?:\\s+-[A-Za-z]*[rR][A-Za-z]*)` +
       `[^\\n]*${TRAILING_NOISE}$`,
   ),
-  toolName: 'gitnexus.context',
+  toolName: 'lsp:query',
   advisoryText:
-    'gitnexus.context { name, kind } answers "where is this defined" from the code graph: the symbol\'s file location PLUS its categorized callers and callees, and ranked candidates when the name is ambiguous — not just the one line grep would print. Add include_content: true for the full body. NOTE it is a DOT-namespaced plugin tool (gitnexus.context), not the usual server:verb form. ' +
-    GRAPH_FAILURE_FALLBACK_GUIDANCE,
+    'lsp:query { op: "workspace_symbols", name } answers "where is this defined" from the compiler: each matching declaration\'s file and one-indexed line, resolved through re-exports and shadowing that a text grep cannot see. Pass language: "rust" for Rust symbols. For who CALLS it, use graph:query { op: "callers", name } (call sites with lines; it reports index age, and an empty answer is not proof of absence).',
   routing: {
-    want: 'to find where a symbol is DEFINED (and who calls it)',
-    use: '`gitnexus.context { name: "managedSetInterval", kind: "Function" }`',
+    want: 'to find where a symbol is DEFINED',
+    use: '`lsp:query { op: "workspace_symbols", name: "managedSetInterval" }`',
     insteadOf:
       '`grep -rn "export function managedSetInterval" --include=*.ts --exclude-dir={node_modules,.vitest-tmp,dist,coverage} --exclude-dir=sidecar libs packages` (generated bundles/caches are not source evidence; exhaustive exact-text search remains grep\'s job)',
   },

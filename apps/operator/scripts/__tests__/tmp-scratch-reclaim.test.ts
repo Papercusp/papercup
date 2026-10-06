@@ -100,7 +100,7 @@ describe('shared /tmp scratch reclaimer systemd contract', () => {
     const service = readFileSync(SERVICE, 'utf8');
 
     expect(service).toContain(
-      'ExecStart=%h/papercupai-workspace/papercusp/scripts/reclaim-tmp-scratch-residue.sh --execute --root /tmp --max-age-min 240',
+      'ExecStart=%h/papercupai-workspace/papercusp/apps/operator/scripts/systemd/papercusp-script-snapshot.sh %h/papercupai-workspace/papercusp/scripts/reclaim-tmp-scratch-residue.sh --execute --root /tmp --max-age-min 240',
     );
     expect(service).toContain('PrivateTmp=no');
     expect(service).toContain('ProtectSystem=strict');

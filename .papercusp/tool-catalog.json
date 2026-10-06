@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 950,
+  "count": 949,
   "tools": [
     {
       "name": "ablation:report",
@@ -14071,39 +14071,6 @@
       "guidance": {
         "when": "A review-mode pot has green work on its working copy and you want the standing PR refreshed now.",
         "notWhen": "Direct-mode pots (no standing PR), or to ship untested commits: it only sends what the gate promoted."
-      }
-    },
-    {
-      "name": "gmail:create-draft",
-      "http": {
-        "path": "/api/agent-tools/gmail/create-draft",
-        "methods": [
-          "POST"
-        ]
-      },
-      "description": "Create a Gmail draft reply for one completed external-trigger plan run. The server resolves recipient, thread, reply headers, and OAuth credential from planRunId; this tool never sends mail.",
-      "capabilities": [
-        "operator:write"
-      ],
-      "agentRoles": [
-        "scoper",
-        "architect",
-        "worker",
-        "validator",
-        "reviewer",
-        "debugger",
-        "operator",
-        "mug",
-        "documenter",
-        "curator",
-        "papercup",
-        "papercup-deep"
-      ],
-      "profile": "engineer",
-      "guidance": {
-        "when": "A Gmail-triggered plan item asks you to draft a response to the originating inbound message. Read payload.plan_run.runId and pass it with the draft body.",
-        "notWhen": "Sending email, composing unrelated mail, or a run that did not originate from ext:gmail:message.received. This tool cannot redirect the recipient or thread.",
-        "chaining": "After created:true or alreadyCreated:true, complete the plan-run work item with draftId and messageId as evidence. A human reviews/sends the draft in Gmail."
       }
     },
     {

@@ -27,4 +27,6 @@ IOSchedulingClass=idle
 # timeout is what converts a truncated sweep into an INDETERMINATE verdict
 # instead of a silent clean one.
 TimeoutStartSec=2400
-ExecStart=%h/papercupai-workspace/papercusp/apps/operator/scripts/papercup-fedplane-key-permission-check.sh
+# Run from an immutable per-invocation snapshot: a shared-tree edit mid-run cannot
+# corrupt it (papercusp-script-snapshot.sh; census in systemd-script-snapshot.test.ts).
+ExecStart=%h/papercupai-workspace/papercusp/apps/operator/scripts/systemd/papercusp-script-snapshot.sh %h/papercupai-workspace/papercusp/apps/operator/scripts/papercup-fedplane-key-permission-check.sh

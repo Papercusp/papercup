@@ -1,7 +1,7 @@
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { spawn, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join, posix, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { collectChildOutput } from '@papercusp/operator-core/lib/child-output';
 
@@ -293,5 +293,154 @@ printf '%s\\n' "$MARKER_VALUE"
       /^ExecStart=.*papercusp-script-snapshot\.sh .*papercup-backup-health-check\.sh$/m,
     );
     expect(healthUnit).not.toContain('kopia-backup-guard.sh');
+  });
+});
+
+// ── Census (WI-10006315) ─────────────────────────────────────────────────────
+// The per-unit assertions above cover only the units their authors hit. This census
+// covers the CLASS: every tracked unit Exec* line that runs a shell script out of the
+// shared tree (an absolute %h/papercupai-workspace/papercusp/… path, or a relative one
+// under a shared-tree WorkingDirectory) must go through papercusp-script-snapshot.sh,
+// because bash reads scripts lazily and an agent's edit landing mid-run changes the
+// program being executed. Installed copies (/usr/local, /etc, ~/.config/kopia) and the
+// separate papercusp-staging.current checkout are not exposed, so they are not counted.
+//
+// UNWRAPPED_ALLOWLIST is SHRINK-ONLY: a new unwrapped unit fails the census, and
+// wrapping an allowlisted one fails the stale-entry check until its entry is deleted.
+
+const REPO_ROOT = resolve(__dirname, '..', '..', '..', '..');
+const SHARED_TREE_PREFIX = '%h/papercupai-workspace/papercusp/';
+const LAUNCHER_REL = 'apps/operator/scripts/systemd/papercusp-script-snapshot.sh';
+
+const UNWRAPPED_ALLOWLIST: Record<string, string> = {
+  'apps/operator/scripts/systemd/papercup-bg-host.service.d/95-bundled-entry.conf ExecStartPre apps/operator/bin/bundle-host.sh':
+    'bundle-host.sh derives REPO_ROOT from its own directory, cds there, re-execs itself under a lock and reads .mjs helpers beside itself; it needs a repo-root override before it can run from a snapshot.',
+  'apps/operator/scripts/systemd/papercup-embed-sidecar.service ExecStartPre apps/operator/bin/bundle-host.sh':
+    'Same bundle-host.sh constraint as the bg-host drop-in: self-located repo root, lock re-exec, sibling .mjs helpers.',
+  'apps/operator/scripts/systemd/papercup-fedplane-disk-health.service ExecStart apps/operator/scripts/papercup-fedplane-disk-health-check.sh':
+    'Derives REPO_ROOT from BASH_SOURCE/../../..; it needs a repo-root override before it can run from a snapshot.',
+  'apps/operator/scripts/systemd/papercup-isolated-dht-liveness.service ExecStart apps/operator/scripts/papercup-dht-liveness-check.sh':
+    'Derives REPO_ROOT from BASH_SOURCE/../../..; it needs a repo-root override before it can run from a snapshot.',
+  'apps/operator/scripts/systemd/papercup-live-federation-gate.service ExecStart scripts/pc-heavy.sh':
+    'The target live-federation-gate.sh snapshots itself and re-execs from /tmp (wrapping it again breaks its BASH_SOURCE repo root); the pc-heavy.sh admission prefix has not been assessed for snapshot safety.',
+  'apps/operator/scripts/systemd/papercup-testvm-reaper.service ExecStart bin/reap-stale-testvms.sh':
+    'Resolves vmctl relative to its own directory (SELF_DIR/../papercusp-desktop/...); it needs an override before it can run from a snapshot.',
+};
+
+type ExecFinding = { key: string; wrapped: boolean };
+
+const EXEC_LINE = /^(Exec(?:Start|StartPre|StartPost|Stop|StopPost|Reload|Condition))=(.*)$/;
+const SHELL_TOKEN = /[^\s'"=;]+\.sh\b/g;
+
+function workingDirectoryOf(text: string): string | undefined {
+  let dir: string | undefined;
+  for (const line of text.split('\n')) {
+    const match = /^WorkingDirectory=-?(.*)$/.exec(line.trim());
+    if (match) dir = match[1].trim();
+  }
+  return dir;
+}
+
+function sharedTreeRel(token: string, workDir: string | undefined): string | null {
+  const path = token.replace(/^[-@:+!|]+/, '');
+  if (path.startsWith(SHARED_TREE_PREFIX)) return posix.normalize(path.slice(SHARED_TREE_PREFIX.length));
+  if (/^[/%$]/.test(path)) return null; // installed copy, another checkout, or an unexpanded variable
+  const base = workDir ? workDir.replace(/\/+$/, '') + '/' : '';
+  if (!base.startsWith(SHARED_TREE_PREFIX)) return null;
+  return posix.normalize(posix.join(base.slice(SHARED_TREE_PREFIX.length), path));
+}
+
+function classifyUnitExecLines(unitPath: string, text: string, inheritedWorkDir?: string): ExecFinding[] {
+  const workDir = workingDirectoryOf(text) ?? inheritedWorkDir;
+  const findings: ExecFinding[] = [];
+  for (const line of text.replace(/\\\n/g, ' ').split('\n')) {
+    const match = EXEC_LINE.exec(line.trim());
+    if (!match || !match[2].trim()) continue;
+    const rels = [...match[2].matchAll(SHELL_TOKEN)]
+      .map((token) => sharedTreeRel(token[0], workDir))
+      .filter((rel): rel is string => rel !== null);
+    const script = rels.find((rel) => rel !== LAUNCHER_REL);
+    if (!script) continue;
+    const launcherAt = rels.indexOf(LAUNCHER_REL);
+    findings.push({
+      key: `${unitPath} ${match[1]} ${script}`,
+      wrapped: launcherAt !== -1 && launcherAt < rels.indexOf(script),
+    });
+  }
+  return findings;
+}
+
+async function censusTrackedUnits(): Promise<ExecFinding[]> {
+  const listed = spawnSync('git', ['ls-files', '-z', '--', '*.service', '*.service.tmpl', '*.service.d/*.conf'], {
+    cwd: REPO_ROOT,
+    encoding: 'utf8',
+  });
+  expect(listed.status, listed.stderr).toBe(0);
+  const units = listed.stdout.split('\0').filter(Boolean);
+  // Enumeration control: an empty or truncated listing must not read as "no unwrapped units".
+  expect(units.length).toBeGreaterThan(50);
+  const findings: ExecFinding[] = [];
+  for (const unit of units) {
+    const text = await readFile(join(REPO_ROOT, unit), 'utf8').catch(() => null);
+    if (text === null) continue; // tracked but deleted in this working tree
+    const dropIn = /^(.*\.service)\.d\/[^/]+\.conf$/.exec(unit);
+    const inherited = dropIn
+      ? workingDirectoryOf(await readFile(join(REPO_ROOT, dropIn[1]), 'utf8').catch(() => ''))
+      : undefined;
+    findings.push(...classifyUnitExecLines(unit, text, inherited));
+  }
+  return findings;
+}
+
+describe('systemd unit census: shared-tree scripts run from a snapshot (WI-10006315)', () => {
+  it('classifies unit exec lines (calibration for the census below)', () => {
+    const launcher = SHARED_TREE_PREFIX + LAUNCHER_REL;
+    const unit = [
+      '[Service]',
+      '# ExecStart=%h/papercupai-workspace/papercusp/bin/commented-out.sh',
+      `ExecStart=${SHARED_TREE_PREFIX}bin/direct.sh --flag`,
+      `ExecStartPre=-${launcher} ${SHARED_TREE_PREFIX}bin/wrapped.sh`,
+      'ExecStart=/usr/local/lib/papercusp/installed.sh',
+      'ExecStart=%h/.config/kopia/healthcheck.sh',
+      'ExecStartPost=/usr/bin/bash %h/papercupai-workspace/papercusp-staging.current/x.sh',
+      'ExecStop=',
+    ].join('\n');
+    expect(classifyUnitExecLines('u.service', unit)).toEqual([
+      { key: 'u.service ExecStart bin/direct.sh', wrapped: false },
+      { key: 'u.service ExecStartPre bin/wrapped.sh', wrapped: true },
+    ]);
+    // A relative script counts only under a shared-tree WorkingDirectory (its own or the base unit's).
+    const relative = "ExecStartPre=/usr/bin/bash -c 'exec bin/bundle.sh'";
+    expect(classifyUnitExecLines('r.service', relative, SHARED_TREE_PREFIX + 'apps/operator')).toEqual([
+      { key: 'r.service ExecStartPre apps/operator/bin/bundle.sh', wrapped: false },
+    ]);
+    expect(classifyUnitExecLines('r.service', relative, '%h/windows-vm')).toEqual([]);
+    // The launcher must PRECEDE the script; naming it after the target wraps nothing.
+    expect(classifyUnitExecLines('a.service', `ExecStart=${SHARED_TREE_PREFIX}bin/t.sh ${launcher}`)).toEqual([
+      { key: 'a.service ExecStart bin/t.sh', wrapped: false },
+    ]);
+  });
+
+  it('routes every tracked shared-tree script through the launcher, or allowlists it with a reason', async () => {
+    const findings = await censusTrackedUnits();
+    // Positive control: units known to be wrapped must be seen as wrapped, or a broken
+    // classifier that finds nothing would pass the checks below vacuously.
+    expect(findings.filter((f) => f.wrapped).map((f) => f.key)).toEqual(
+      expect.arrayContaining([
+        'apps/operator/scripts/systemd/papercusp-db-backup.service ExecStart apps/operator/scripts/systemd/kopia-backup-guard.sh',
+        'infra/estate-backup/pc-estate-mirror.service ExecStart infra/estate-backup/pc-estate-mirror.sh',
+        'infra/estate-backup/pc-mirror-restore-drill.service ExecStart infra/estate-backup/pc-mirror-restore-drill.sh',
+      ]),
+    );
+    const unwrapped = findings.filter((f) => !f.wrapped).map((f) => f.key);
+    expect(
+      unwrapped.filter((key) => !(key in UNWRAPPED_ALLOWLIST)),
+      'these units run a shared-tree .sh directly: wrap them with papercusp-script-snapshot.sh, after checking the script for non-.sh/.mjs files it reads beside itself',
+    ).toEqual([]);
+    expect(
+      Object.keys(UNWRAPPED_ALLOWLIST).filter((key) => !unwrapped.includes(key)),
+      'allowlist entries no longer measured: delete them (the allowlist is shrink-only)',
+    ).toEqual([]);
+    for (const [key, reason] of Object.entries(UNWRAPPED_ALLOWLIST)) expect(reason.length, key).toBeGreaterThan(40);
   });
 });

@@ -4,13 +4,14 @@
   "name": "Both deployed Papercusp LLC Stripe TEST cloud subscription lifecycles",
   "framework": "playwright",
   "command": [
-    "PORTAL_BILLING_LIVE_E2E=1 PLAYWRIGHT_JSON_OUTPUT_FILE=$HOME/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal/test-results/billing-live-pinned-20261003-0745-report.json PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:e2e:browser -- e2e/portal-billing-live.spec.ts --reporter=list,json --output=test-results/billing-live-pinned-20261003-0745"
+    "PORTAL_BILLING_LIVE_E2E=1 PLAYWRIGHT_JSON_OUTPUT_FILE=$HOME/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal/test-results/billing-live-pinned-20261006-0338-report.json PAPERCUSP_TEST_RUN_HARNESS=papercusp PAPERCUSP_WORKSPACE_ID=papercusp-workspace PAPERCUSP_WORK_ITEM_ID=WI-10005985 npm run test:e2e:browser -- e2e/portal-billing-live.spec.ts --reporter=list,json --output=test-results/billing-live-pinned-20261006-0338",
+    "PAPERCUSP_STRIPE_TEST_E2E=1 PAPERCUSP_WORK_ITEM_ID=WI-10005985 npm run test:file -- packages/operator-core/lib/auth/hosted/billing/stripe-billing.live.integration.test.ts"
   ],
   "cwd": "$HOME/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
   "exitCode": 0,
-  "startedAt": "2026-10-03T07:45:06.415Z",
-  "finishedAt": "2026-10-03T07:45:58.261Z",
-  "summary": "Both actual HTTPS billing journeys passed with genuine WorkOS TEST authentication, real TEST Checkout, signed webhook activation, customer-portal cancellation and deployed ended status. TEST customers/sessions cleaned up. This does not certify upstream AuthKit signup UI or commercial metering/provisioning.",
+  "startedAt": "2026-10-06T03:38:34.431Z",
+  "finishedAt": "2026-10-06T03:39:44.303Z",
+  "summary": "Re-verified 2026-10-06 against the redeployed portal: both actual HTTPS billing journeys passed (2 expected, 0 skipped, 0 unexpected, 0 flaky). Each used genuine WorkOS TEST authentication, real TEST Checkout on the Papercusp LLC account, signed webhook activation, customer-portal cancellation and the deployed ended status. The opted-in real-Stripe integration suite also passed: 7 executed, 0 skipped. This does not certify the upstream AuthKit signup UI or commercial metering/provisioning.",
   "assertions": [
     {
       "id": "papercusp-cloud-test-account-auth",
@@ -45,7 +46,7 @@
     {
       "id": "in-journey-immutable-serving-identity",
       "passed": true,
-      "evidence": "Both registered tests captured and validated servedArtifact.buildId during their authenticated billing page response, resolving unique immutable release metadata before payment."
+      "evidence": "Both registered tests captured servedArtifact.buildId AH6b6cKrXhojbGBLt4PEm from their authenticated billing page response and resolved it to unique immutable release metadata AH6b6cKrXhojbGBLt4PEm-20261006033412382-3565123-c94508e5 before payment."
     }
   ],
   "receipts": [
@@ -53,20 +54,20 @@
       "accountId": "acct_1UChLcF3Zj0ZNLH5",
       "mode": "test",
       "planKey": "papercusp-cloud",
-      "organizationId": "b085068a-c174-446c-b016-ffa176eadf58",
+      "organizationId": "f2ec0178-4e89-4484-8d8a-3be308325455",
       "authFixture": "genuine WorkOS TEST authentication + server-side tenant admission; upstream AuthKit UI not exercised",
       "servedArtifact": {
         "schemaVersion": 2,
-        "buildId": "oiltmrEZ_nKIlt6H_E7ch",
-        "release": "oiltmrEZ_nKIlt6H_E7ch-20261003072023676-1018709-3238973b",
+        "buildId": "AH6b6cKrXhojbGBLt4PEm",
+        "release": "AH6b6cKrXhojbGBLt4PEm-20261006033412382-3565123-c94508e5",
         "sourceRoot": "$HOME/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
-        "publishedAt": "2026-10-03T07:20:23.676Z",
-        "sourceRootDigest": "2a34696e771370c60bcb078dd16efa3acf8929edba242205d11122c005d6d143"
+        "publishedAt": "2026-10-06T03:34:12.382Z",
+        "sourceRootDigest": "1edcaeb3e0c29a5e40d6bfd61ae681f49b472a5d85994317bf04af145359ffda"
       },
       "sessionPreflight": {
         "status": 200,
         "ok": true,
-        "organizationId": "b085068a-c174-446c-b016-ffa176eadf58"
+        "organizationId": "f2ec0178-4e89-4484-8d8a-3be308325455"
       },
       "cookieScope": [
         {
@@ -79,11 +80,11 @@
       "localCookieValid": true,
       "cookieSent": true,
       "checkoutResponseStatus": 200,
-      "customerId": "cus_VN7srFsBJHGiDd",
+      "customerId": "cus_VOBaW2W7UvIEyK",
       "checkoutOpened": true,
       "checkoutReturned": "success",
       "webhookActive": true,
-      "subscriptionId": "sub_1UMNdHF3Zj0ZNLH5utQI9GWV",
+      "subscriptionId": "sub_1UNPDTF3Zj0ZNLH5GeWcSNrj",
       "customerPortalOpened": true,
       "webhookCanceled": true
     },
@@ -91,20 +92,20 @@
       "accountId": "acct_1UChLcF3Zj0ZNLH5",
       "mode": "test",
       "planKey": "byoc-cloud",
-      "organizationId": "c68a730a-3e6f-498c-ab12-47fdbdd008bd",
+      "organizationId": "1ae2ca4e-db26-4973-8345-2a38607d9976",
       "authFixture": "genuine WorkOS TEST authentication + server-side tenant admission; upstream AuthKit UI not exercised",
       "servedArtifact": {
         "schemaVersion": 2,
-        "buildId": "oiltmrEZ_nKIlt6H_E7ch",
-        "release": "oiltmrEZ_nKIlt6H_E7ch-20261003072023676-1018709-3238973b",
+        "buildId": "AH6b6cKrXhojbGBLt4PEm",
+        "release": "AH6b6cKrXhojbGBLt4PEm-20261006033412382-3565123-c94508e5",
         "sourceRoot": "$HOME/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
-        "publishedAt": "2026-10-03T07:20:23.676Z",
-        "sourceRootDigest": "2a34696e771370c60bcb078dd16efa3acf8929edba242205d11122c005d6d143"
+        "publishedAt": "2026-10-06T03:34:12.382Z",
+        "sourceRootDigest": "1edcaeb3e0c29a5e40d6bfd61ae681f49b472a5d85994317bf04af145359ffda"
       },
       "sessionPreflight": {
         "status": 200,
         "ok": true,
-        "organizationId": "c68a730a-3e6f-498c-ab12-47fdbdd008bd"
+        "organizationId": "1ae2ca4e-db26-4973-8345-2a38607d9976"
       },
       "cookieScope": [
         {
@@ -117,30 +118,38 @@
       "localCookieValid": true,
       "cookieSent": true,
       "checkoutResponseStatus": 200,
-      "customerId": "cus_VN7tGPq60jlXau",
+      "customerId": "cus_VOBaew4aW42PpU",
       "checkoutOpened": true,
       "checkoutReturned": "success",
       "webhookActive": true,
-      "subscriptionId": "sub_1UMNdcF3Zj0ZNLH5sQuTIHsG",
+      "subscriptionId": "sub_1UNPDvF3Zj0ZNLH5swkHnaqB",
       "customerPortalOpened": true,
       "webhookCanceled": true
     }
   ],
   "publicOrigin": "https://app.papercusp.com",
   "rawReport": {
-    "sourcePath": "$HOME/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal/test-results/billing-live-pinned-20261003-0745-report.json",
-    "sha256": "2bbb66d1131785415e26afcee8de06699c2417078adf5aafa5781326cbad029b"
+    "sourcePath": "$HOME/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal/test-results/billing-live-pinned-20261006-0338-report.json",
+    "sha256": "aace69f33aa604ec5b49fe45c0882a8e2176b9dcb200da404219ec7703728ab1",
+    "stats": {
+      "startTime": "2026-10-06T03:38:34.431Z",
+      "duration": 69871.955,
+      "expected": 2,
+      "skipped": 0,
+      "unexpected": 0,
+      "flaky": 0
+    }
   },
   "measuredBlobs": [
     {
       "root": "$HOME/papercupai-workspace/papercusp",
       "path": "packages/operator-core/lib/endpoint-route/hosted-billing-runtime.ts",
-      "sha256": "eeb8ce14f355b123c2d1e179d141ae22b7cddb8bf3c400af170d8e257b2778ea"
+      "sha256": "2d27326eff189ff073775077f8f7fd3ce63abd10cede1cc0dd83036ac8d8ed89"
     },
     {
       "root": "$HOME/papercupai-workspace/papercusp",
       "path": "packages/operator-core/lib/endpoint-route/hosted-billing-runtime.test.ts",
-      "sha256": "48aa238c85b66b1831a69a3ab0b51d0ce8bac9c7d46f90d9fa2bc160d0e58bea"
+      "sha256": "7c400f675f6c5fc5633f8b9a24f06d29116db1f5324422a3f5e09b26d12ba566"
     },
     {
       "root": "$HOME/papercupai-workspace/papercusp",
@@ -184,52 +193,59 @@
     "accountGuardMutationBaselines": [
       20649882,
       20649883
-    ]
+    ],
+    "runtimePassCurrent": 20817745,
+    "liveStripeIntegrationPass": 20818379,
+    "liveStripeIntegrationCounts": {
+      "executed": 7,
+      "skipped": 0
+    }
   },
   "screenshots": [
     {
-      "path": "docs/evidence/cloud-dashboard-stripe-test-rollout-2026-10-03/papercusp-cloud-checkout.png",
-      "sha256": "f5b548e32f2cb4c9162b3be243d58fd6ee325705314e26ff460f606495ec412b"
+      "path": "docs/evidence/cloud-dashboard-stripe-test-rollout-2026-10-03/run-20261006-0338/papercusp-cloud-checkout.png",
+      "sha256": "830b28b0abef7ff05d313700119afc635d9537eec827b1e06f15a16bcb8ebec9"
     },
     {
-      "path": "docs/evidence/cloud-dashboard-stripe-test-rollout-2026-10-03/papercusp-cloud-active.png",
-      "sha256": "8aa624ceb0268c0e675c09fa226b01cc246ba851590c955966db11c2184e80e6"
+      "path": "docs/evidence/cloud-dashboard-stripe-test-rollout-2026-10-03/run-20261006-0338/papercusp-cloud-active.png",
+      "sha256": "5fedb9b7c634255fb3fb19f258860bbe7c564ed961c3fabd5aa4f00e8a310d35"
     },
     {
-      "path": "docs/evidence/cloud-dashboard-stripe-test-rollout-2026-10-03/papercusp-cloud-cancellation.png",
+      "path": "docs/evidence/cloud-dashboard-stripe-test-rollout-2026-10-03/run-20261006-0338/papercusp-cloud-cancellation.png",
       "sha256": "c3b15904e6a5a23dc008c933117296d33d5cc83ba70516ad7158940f4231658e"
     },
     {
-      "path": "docs/evidence/cloud-dashboard-stripe-test-rollout-2026-10-03/offers.png",
+      "path": "docs/evidence/cloud-dashboard-stripe-test-rollout-2026-10-03/run-20261006-0338/offers.png",
       "sha256": "a2923b32b790dd440c438a3bb51cd7dba74b625c2510a67273315ed582c40ad1"
     },
     {
-      "path": "docs/evidence/cloud-dashboard-stripe-test-rollout-2026-10-03/byoc-cloud-checkout.png",
-      "sha256": "1d56db05c1d15ff0d433c3e402f9f2d9595a12f3f8a19816f82d38d363e67ecc"
+      "path": "docs/evidence/cloud-dashboard-stripe-test-rollout-2026-10-03/run-20261006-0338/byoc-cloud-checkout.png",
+      "sha256": "37fdc003062c48578a62c08b9b92deb1bfcec503964e7085a676b69ce502c5e7"
     },
     {
-      "path": "docs/evidence/cloud-dashboard-stripe-test-rollout-2026-10-03/byoc-cloud-active.png",
-      "sha256": "1957064b5fb8977110b573ae7790b4eae4b94ee85cb2a6075f3df937b4cc8d9d"
+      "path": "docs/evidence/cloud-dashboard-stripe-test-rollout-2026-10-03/run-20261006-0338/byoc-cloud-active.png",
+      "sha256": "f30f0af789c599ceb8de55e22f8358a126580d8338a483c3e25f71f7f6ae1707"
     },
     {
-      "path": "docs/evidence/cloud-dashboard-stripe-test-rollout-2026-10-03/byoc-cloud-cancellation.png",
+      "path": "docs/evidence/cloud-dashboard-stripe-test-rollout-2026-10-03/run-20261006-0338/byoc-cloud-cancellation.png",
       "sha256": "20be01e4db546c430be8c44a615d2f21eab40b247e6023d1823c41b96365afb8"
     }
   ],
-  "sourceCommit": "035b7869624dc1a978ba7b4ab9011b08c403b7b7",
+  "sourceCommit": "5da0cf836545592e800cc6ab548001fda6a1f327",
   "deployedArtifacts": [
     {
       "schemaVersion": 2,
-      "buildId": "oiltmrEZ_nKIlt6H_E7ch",
-      "release": "oiltmrEZ_nKIlt6H_E7ch-20261003072023676-1018709-3238973b",
+      "buildId": "AH6b6cKrXhojbGBLt4PEm",
+      "release": "AH6b6cKrXhojbGBLt4PEm-20261006033412382-3565123-c94508e5",
       "sourceRoot": "$HOME/.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal",
-      "publishedAt": "2026-10-03T07:20:23.676Z",
-      "sourceRootDigest": "2a34696e771370c60bcb078dd16efa3acf8929edba242205d11122c005d6d143"
+      "publishedAt": "2026-10-06T03:34:12.382Z",
+      "sourceRootDigest": "1edcaeb3e0c29a5e40d6bfd61ae681f49b472a5d85994317bf04af145359ffda"
     }
   ],
   "servingIdentityVerification": {
     "method": "Each authenticated initial billing HTML response identifies its served Next build; the test resolves that build to one immutable release metadata file before Checkout.",
     "lateCurrentPointerUsed": false
   },
-  "correction": "Supersedes the late-current-pointer artifact binding in initial evidence SHA e7b2fafd95779cccbbae839c960ec04b37515bb1073d728d78d75143e5813b7d; prior two-offer journey passes remain real, but this artifact uses direct in-journey identity capture."
+  "correction": "Supersedes the 2026-10-03T07:45Z run (prior evidence file SHA 079a266cc8444d9a237b95254db03d02d271d372c9bae1b2f852d9fe4a3b0c14). The portal was redeployed after it (crash-loop fix on 2026-10-05, reconcile handoffs on 2026-10-06), so both journeys were re-run against the current deployment. The only artifact identity claimed is the one captured during the journey, never a late current pointer.",
+  "portalCommit": "0bd1a924eeefd1d07a822b6d92e71274509a1078"
 }

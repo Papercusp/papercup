@@ -2490,14 +2490,6 @@ describe('runtime-owner map (EI-10895)', () => {
     expect(own.activation).toMatch(/dev:restart.*bg-host/s);
   });
 
-  it('EI-21458114771988888: google-pubsub.ts is a bg-host dependency of the Gmail polling routine', () => {
-    const own = classifyRuntimeOwner('packages/operator-core/lib/external-triggers/google-pubsub.ts')!;
-    expect(own.host).toBe('bg-host');
-    expect(own.releasePipelineApplies).toBe(false);
-    expect(own.restartTarget).toBe('bg-host');
-    expect(own.activation).toMatch(/dev:restart.*bg-host/s);
-  });
-
   it('EI-22090053297465523: fleet-control-reconcile.ts is a bg-host dependency of the fleet transition system action', () => {
     const own = classifyRuntimeOwner(
       'packages/operator-core/lib/harness/routines/fleet-control-reconcile.ts',

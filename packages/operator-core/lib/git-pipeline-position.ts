@@ -613,21 +613,6 @@ const RUNTIME_OWNERS: RuntimeOwnerEntry[] = [
       },
     ],
   },
-  // EI-21458114771988888: Google Pub/Sub provisioning/pull/ack helpers are
-  // imported only by the `google-gmail-poll` system action below the routine
-  // boundary. The action is dispatched by routinesTick in bg-host, so this
-  // dependency must receive the same activation verdict even though it lives
-  // under external-triggers rather than harness/routines.
-  {
-    match: /^packages\/operator-core\/lib\/external-triggers\/google-pubsub\.ts$/,
-    own: {
-      host: 'bg-host',
-      releasePipelineApplies: false,
-      restartTarget: 'bg-host',
-      activation:
-        'Google Pub/Sub Gmail polling imports this module from the `google-gmail-poll` system action, dispatched by routinesTick only when PAPERCUSP_BACKGROUND_WORKERS=1 (bg-host). It loads on RESTART: dev:restart { target: "bg-host", confirm: true }. A deploy does not carry it.',
-    },
-  },
   // EI-22090053297465523: fleet-transition-sweep-action.ts dynamically imports
   // this helper from a registered system action. It is therefore executed by
   // routinesTick in bg-host even though it is not itself an `*-action.ts` file

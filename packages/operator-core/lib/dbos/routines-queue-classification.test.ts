@@ -190,7 +190,7 @@ describe('queueForRoutine — the deploy-launcher lane (EI-23909857328600541)', 
       expect(queueForRoutine(starver)).toBe(ROUTINES_QUEUE);
       expect(queueForRoutine(starver)).not.toBe(ROUTINES_DEPLOY_QUEUE);
     }
-    expect(queueForRoutine('system:google-gmail-poll')).toBe(ROUTINES_TRIGGERS_QUEUE);
+    expect(queueForRoutine('system:connector-sync')).toBe(ROUTINES_TRIGGERS_QUEUE);
   });
 });
 
@@ -209,7 +209,8 @@ describe('queueForRoutine — the external-source poll lane (WI-41662)', () => {
   });
 
   it('routes the measured-starved polls specifically (the regression this lane exists for)', () => {
-    expect(queueForRoutine('system:google-gmail-poll')).toBe(ROUTINES_TRIGGERS_QUEUE);
+    // Gmail sync moved onto the provider connector (P-008), so its lane is connector-sync's.
+    expect(queueForRoutine('system:connector-sync')).toBe(ROUTINES_TRIGGERS_QUEUE);
     expect(queueForRoutine('system:google-calendar-poll')).toBe(ROUTINES_TRIGGERS_QUEUE);
   });
 
@@ -219,9 +220,9 @@ describe('queueForRoutine — the external-source poll lane (WI-41662)', () => {
   });
 
   it('keeps near-miss names on the shared queue (exact match)', () => {
-    expect(queueForRoutine('system:google-gmail-poll-status')).toBe(ROUTINES_QUEUE);
+    expect(queueForRoutine('system:connector-sync-status')).toBe(ROUTINES_QUEUE);
     expect(queueForRoutine('system:pre-pr-poll')).toBe(ROUTINES_QUEUE);
-    expect(queueForRoutine('google-gmail-poll')).toBe(ROUTINES_QUEUE);
+    expect(queueForRoutine('connector-sync')).toBe(ROUTINES_QUEUE);
   });
 
   it('does NOT widen the critical floor — a poll still sheds under PG-pool pressure', () => {
