@@ -27,6 +27,7 @@
  * both; pixel-identical WebKitGTK capture is out of scope here.
  */
 import { test, expect, assertMounted, type Page } from './_egress';
+import { stubSyncQueries, type SyncQueryStub } from './_sync-stub';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -74,7 +75,18 @@ const CONTRIBUTORS = [
   },
 ];
 
-async function stubApis(page: Page) {
+async function stubApis(page: Page): Promise<SyncQueryStub> {
+  // The panel reads its rows through the `contributors.byHarness` SYNC query
+  // (AdvContributorsPanel useSyncQuery), not the REST route below — a REST-only
+  // stub was silently bypassed and the panel rendered 0 rows on a fresh DB
+  // (WI-10006792). The REST routes stay for any non-sync caller.
+  const sync = await stubSyncQueries(page, (name) => {
+    if (name === 'contributors.byHarness') return CONTRIBUTORS;
+    if (name === 'harnessProjects.lite') {
+      return [{ slug: SLUG, path: `/tmp/${SLUG}`, name: SLUG, hasState: true, hasSpec: true, parent_slug: null, harness_kind: 'project' }];
+    }
+    return undefined;
+  });
   await page.route('**/api/harness/**/contributors', async (route) => {
     await route.fulfill({
       status: 200,
@@ -102,6 +114,7 @@ async function stubApis(page: Page) {
       }),
     });
   });
+  return sync;
 }
 
 /**
@@ -135,7 +148,7 @@ async function openContributorsPanel(page: Page) {
 
 test.describe('/adv Contributors panel (P-048)', () => {
   test('renders verified + zeroed-unverified rows with the viewer marker', async ({ page }) => {
-    await stubApis(page);
+    const sync = await stubApis(page);
     const mounted = await dockMounts(page);
     assertMounted(
       mounted,
@@ -145,6 +158,9 @@ test.describe('/adv Contributors panel (P-048)', () => {
         "app's real request shapes.",
     );
     await openContributorsPanel(page);
+    // Falsifier: the stub must actually be hit, or the row assertions below
+    // would be measuring unstubbed (empty) live data.
+    await sync.waitForServed(['contributors.byHarness']);
 
     const rows = page.locator('.pc-adv-contributors__row');
     await expect(rows).toHaveCount(2, { timeout: 15_000 });
