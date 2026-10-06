@@ -3479,7 +3479,121 @@
      "summary": "plan lane agent-economy-flywheel-2026-08-30#P-008 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
     }
    ],
-   "claimHold": false
+   "claimHold": false,
+   "discoveryCitizenshipEvidenceQualification": {
+    "status": "scoped-qualification-only-no-item-acceptance",
+    "measuredAt": "2026-10-06",
+    "author": "su-25bc0450-2829-42b9-a2dd-1431c99e4ba8",
+    "parentWorkItem": "WI-10005820",
+    "source": {
+     "plan": "agent-economy-flywheel-2026-08-30",
+     "revision": 100,
+     "sha256": "fc68bbe66e2de5fdea2a667e37de106465287eea99c13d406789b207b4af7ca6",
+     "item": "P-008",
+     "governingDecisions": [
+      "D-001",
+      "D-002",
+      "D-004",
+      "D-007"
+     ],
+     "dependency": "P-004 / WI-10004288"
+    },
+    "currentClauses": [
+     {
+      "id": "AUTO-BAR-R-18-P-008",
+      "revision": 2,
+      "status": "active",
+      "sha256": "2e39b81b97307c3a2328b80279ff008a34b8ed008311cfb7b18c4071c269b93c"
+     },
+     {
+      "id": "AUTO-BAR-R-19-P-008",
+      "revision": 2,
+      "status": "active",
+      "sha256": "cbc4d684e2be00abcc9381781e3b7022bbf2cddebaeb7705968f54b8bdedff53"
+     },
+     {
+      "id": "AUTO-REQ-M-006-P-008",
+      "revision": 1,
+      "status": "draft",
+      "sha256": "439608c067ef99443b4b170bb7dec4466d53b5cb11141b5573b2d7c857ab96cb"
+     }
+    ],
+    "contract": "R-18 requires tools:find to return an ingested external x402 endpoint for a matching listing query. R-19 requires the Papercusp ERC-8004 registration to resolve to the actually served .well-known catalog. Full P-008 also names catalog publication and external discovery/payment; D-002 names Bazaar / Agentic.Market and prohibits a proprietary naming system. D-004 retains the Phase1/P-004 prerequisite.",
+    "implementationQualification": "The inspected tools:find buildCorpus() enumerates listAllProjectedTools(), admitting MCP-exposed registrations and deriving their metadata and schemas. The adjacent Tools discovery/pack-catalog builders resolve built-in, installed plugin/pack and Cupboard plugin/pack providers. These are local registry/catalog mechanisms; they do not establish external Bazaar ingestion, x402 execution/payment, catalog publication or ERC-8004 registration. No registered external-endpoint fixture or public registry/catalog identity was measured. The bounded source search found no matching ERC-8004/Bazaar implementation tokens in the searched TS/TSX/MJS paths; this is scoped search coverage, never global absence.",
+    "namedCheck": {
+     "path": "packages/operator-core/lib/cupboard/external-endpoint-ingest.test.ts",
+     "exists": false,
+     "qualification": "The exact R-18 requirement-named detector is missing in this checkout. Adjacent maintained discovery tests do not substitute for it."
+    },
+    "currentLocalTests": {
+     "command": "npm run test:file -- packages/operator-core/lib/cupboard/tool-find.test.ts packages/operator-core/lib/agent-tools/tools/find.test.ts",
+     "ledgerRows": [
+      20837765,
+      20837766
+     ],
+     "result": "Canonical runner reports 2 files PASS, 148 tests PASS, 0 skipped; exact local ledger rows independently read as PASS.",
+     "commitSha": "72f1e3cdbd965945216a036d48e5a5e3fb78cd3f",
+     "worktreeDirty": true,
+     "harness": "papercusp",
+     "qualification": "Runner pre/post provenance stamps the two named test paths clean; the full worktree is marked dirty by the ledger. PAPERCUSP_TEST_RUN_HARNESS was unset; both authoritative rows independently confirm papercusp scope. The terminal result contained complete suite output, but a later poll found the process handle gone; no outer process exit receipt is invented. Tests exercise local discovery/schema/ranking behavior, not R-18 external ingestion or R-19 public registration."
+    },
+    "clauseEvidenceSelection": {
+     "specIds": [
+      "AUTO-BAR-R-18-P-008",
+      "AUTO-BAR-R-19-P-008",
+      "AUTO-REQ-M-006-P-008"
+     ],
+     "count": 0,
+     "truncatedByLimit": false,
+     "independentReads": 2,
+     "qualification": "Exact three-clause evidence selection is empty/untruncated twice. This does not prove global absence, failed production behavior or that no external registry exists."
+    },
+    "rubric": {
+     "id": "acceptance-agent-economy-flywheel-2026-08-30",
+     "revision": 5,
+     "sha256": "25dd447cc55337d60b91c38186c4c1867cb9d9e8c0ec2df4fe124bb7686d08c8",
+     "vetting": "unvetted",
+     "reason": "Rejected attestation: grading-audit-unsettled / criteria-hash-mismatch."
+    },
+    "prerequisiteQualification": "WI-10004288/P-004 is still blocked/unassigned. Exact resume8794fcc6b741 retains the earlier author-qualified public adapter/listing/seller/funded pilot/outside-buyer payment gap. Its historical 24-test evidence is not re-run or promoted to current external-paid-pilot acceptance here.",
+    "sourcePins": [
+     {
+      "path": "packages/operator-core/lib/cupboard/tool-find.ts",
+      "sha256": "478dc2c309a98b273c4087ad13945dbfbef954e5bf0eb048c9c80526aaa33ecd",
+      "ownHEADblob": "2c69d47bb77fac2241f777928ea24e1a08623d49"
+     },
+     {
+      "path": "packages/operator-core/lib/cupboard/tool-find.test.ts",
+      "sha256": "97229c09f20807b1180b0fe82a7878b650b03ed52218134ae378fad2806dbfed",
+      "ownHEADblob": "149879235e050f3d20b710af5f18bef4231b9347"
+     },
+     {
+      "path": "packages/operator-core/lib/agent-tools/tools/find.ts",
+      "sha256": "6279ef3421df527092f821e04dbbcb12f0804b4dd9d44531bacd8ff48366f2d0",
+      "ownHEADblob": "3b97a92de9d9ca5abbf7c47fd2a05b35c4c531b5"
+     },
+     {
+      "path": "packages/operator-core/lib/agent-tools/tools/find.test.ts",
+      "sha256": "884ae8efecea3a950e96aafcd29273f9db56e4eac81b4ad259bdf7edef91ade7",
+      "ownHEADblob": "3d0da3a63e86c746f9e7d84c993c9833ecace2ef"
+     },
+     {
+      "path": "packages/operator-core/lib/cupboard/pack-catalog.ts",
+      "sha256": "3dd774002a1088c9f1d7d5a62ee8f8d423646dc97bfb6f547b7ae71eb33f4609",
+      "ownHEADblob": "b0b8720e2467d19279d385aa93723f9cf2f281da"
+     }
+    ],
+    "disposition": "Retain current dependency; no duplicate/supersession or obsolete scope established. Extend existing discovery/catalog/payment seams when implementation is admitted; do not create a parallel namespace or payment rail.",
+    "acceptanceStillOpen": [
+     "Named external-ingestion detector and executable R-18 proof",
+     "Concrete public registry/catalog identity and measured R-19 resolution",
+     "External endpoint execution/payment and full P-008 delivery",
+     "P-004 external paid pilot",
+     "Current governed binding, fixture calibration, adequacy, rubric vetting and independent grade",
+     "Whole-item acceptance and final shipment"
+    ],
+    "acceptanceWaived": false
+   }
   },
   {
    "id": "WI-10004293",
