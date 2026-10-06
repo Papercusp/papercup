@@ -63,6 +63,9 @@ export interface RunGitOptions {
   timeoutMs?: number;
   /** Retain the process lifetime until cancellation has actually drained Git and its helpers. */
   signal?: AbortSignal;
+  /** Extra environment for the git child. Shared with run-git-sync's RunGit (WI-10006705:
+   *  its attributed commits pass a private GIT_INDEX_FILE and probe that it is honoured). */
+  env?: Readonly<Record<string, string>>;
 }
 
 /** The run-git seam (matches harness/git-sync/run-git-sync.ts): spawn `git
@@ -167,7 +170,7 @@ export const runGitLocal: RunGit = (args, cwd, opts) =>
     }
     const child = spawn('git', args, {
       cwd, detached: process.platform !== 'win32',
-      env: { ...process.env, LC_ALL: 'C', LANG: 'C', GIT_TERMINAL_PROMPT: '0' },
+      env: { ...process.env, ...opts?.env, LC_ALL: 'C', LANG: 'C', GIT_TERMINAL_PROMPT: '0' },
     });
     const out = collectChildOutput(child);
     const lifetime = processGroupLifetime(child, (message) => out.stderr.append(`\n${message}`));
@@ -247,6 +250,7 @@ const runGitUnchecked: RunGit = async (args, cwd, opts) => {
     try {
       return await runGitViaSpawnerSidecar(args, cwd, timeoutMs, {
         ...process.env,
+        ...opts?.env,
         LC_ALL: 'C',
         LANG: 'C',
       }, { signal: opts?.signal });

@@ -82,6 +82,21 @@ export function unitExcludedVitestTest(file: string): boolean;
  */
 export function classifySpecifier(spec: any): "relative" | "alias" | "bare";
 /**
+ * Path aliases for a workspace, read from its tsconfig `compilerOptions.paths`.
+ *
+ * Only intra-package aliases matter here (`@/…`); a bare package specifier is out of
+ * graph by design. Returning {} on any problem is SAFE, not lossy: an alias we cannot
+ * resolve makes the importing file "unresolved", and every caller of this module treats
+ * an unresolved file as reaching everything (or the closure as not-ok) — so a missing
+ * mapping widens the run rather than silently dropping edges from the graph.
+ * Moved here from affected-tests.mjs (WI-10006650) so the e2e fixture-spec selector
+ * resolves `@/` exactly as related-test selection does — one parser, not two.
+ *
+ * @param {string} wsRoot absolute workspace root holding tsconfig.json
+ * @returns {Record<string, string>} prefix → absolute dir (trailing slash)
+ */
+export function tsconfigAliasesFor(wsRoot: string): Record<string, string>;
+/**
  * Walk the transitive static module graph from a small set of entry files.
  *
  * This is the entry-oriented sibling of `buildIndex`: it reuses the same specifier parser and
@@ -101,12 +116,16 @@ export function classifySpecifier(spec: any): "relative" | "alias" | "bare";
  * @param {object} [o]
  * @param {string} o.rootDir absolute repository root
  * @param {string[]} o.entryFiles absolute entry files to walk
+ * @param {Record<string, string>} [o.aliases] tsconfig-style prefix → absolute dir map (same
+ *   shape and first-match rule as `buildIndex`). An alias specifier with no matching prefix
+ *   stays unresolved, so the default `{}` keeps every existing caller's fail-closed behaviour.
  * @param {RelatedFs} [o.fs] filesystem seam (injected in tests)
  * @returns {{ ok: boolean, files: string[], unresolved: string[] }}
  */
-export function staticImportClosure({ rootDir, entryFiles, fs, }?: {
+export function staticImportClosure({ rootDir, entryFiles, aliases, fs, }?: {
     rootDir: string;
     entryFiles: string[];
+    aliases?: Record<string, string> | undefined;
     fs?: RelatedFs | undefined;
 }): {
     ok: boolean;

@@ -292,6 +292,58 @@ function candidatesFor(base) {
 }
 
 /**
+ * Path aliases for a workspace, read from its tsconfig `compilerOptions.paths`.
+ *
+ * Only intra-package aliases matter here (`@/…`); a bare package specifier is out of
+ * graph by design. Returning {} on any problem is SAFE, not lossy: an alias we cannot
+ * resolve makes the importing file "unresolved", and every caller of this module treats
+ * an unresolved file as reaching everything (or the closure as not-ok) — so a missing
+ * mapping widens the run rather than silently dropping edges from the graph.
+ * Moved here from affected-tests.mjs (WI-10006650) so the e2e fixture-spec selector
+ * resolves `@/` exactly as related-test selection does — one parser, not two.
+ *
+ * @param {string} wsRoot absolute workspace root holding tsconfig.json
+ * @returns {Record<string, string>} prefix → absolute dir (trailing slash)
+ */
+export function tsconfigAliasesFor(wsRoot) {
+  try {
+    const tsconfigPath = path.join(wsRoot, "tsconfig.json");
+    let text;
+    try {
+      text = readFileSync(tsconfigPath, "utf8");
+    } catch {
+      return {};
+    }
+    // Tolerate comments/trailing commas — tsconfig is JSON5-ish in practice.
+    // Comments are masked by the SHARED stripper, never a local regex. A naive
+    // `//`-to-end-of-line rule is string-literal-blind, so a tsconfig value that
+    // merely CONTAINS " // " (measured: `"note": "ratio 1 // 2 is fine"`) is
+    // truncated mid-string and JSON.parse throws. The catch below would swallow
+    // that and return {}, silently dropping every alias — which makes each aliased
+    // import unresolvable and fail-safes the whole workspace to "reaches
+    // everything". Safe direction, but it disables narrowing INVISIBLY, which is
+    // the failure mode this file can least afford to hide. Trailing commas are
+    // stripped AFTER masking, so a comma inside a string is never touched either.
+    const raw = stripCommentsOnly(text, tsconfigPath).replace(/,(\s*[}\]])/g, "$1");
+    const cfg = JSON.parse(raw);
+    const opts = cfg.compilerOptions ?? {};
+    const baseUrl = path.join(wsRoot, opts.baseUrl ?? ".");
+    const out = {};
+    for (const [pattern, targets] of Object.entries(opts.paths ?? {})) {
+      const target = Array.isArray(targets) ? targets[0] : null;
+      if (typeof target !== "string") continue;
+      // "@/*": ["./*"]  ->  prefix "@/" maps to <baseUrl>/
+      const prefix = pattern.replace(/\*$/, "");
+      const dir = path.join(baseUrl, target.replace(/\*$/, ""));
+      out[prefix] = dir.endsWith("/") ? dir : dir + "/";
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+/**
  * Walk the transitive static module graph from a small set of entry files.
  *
  * This is the entry-oriented sibling of `buildIndex`: it reuses the same specifier parser and
@@ -311,12 +363,16 @@ function candidatesFor(base) {
  * @param {object} [o]
  * @param {string} o.rootDir absolute repository root
  * @param {string[]} o.entryFiles absolute entry files to walk
+ * @param {Record<string, string>} [o.aliases] tsconfig-style prefix → absolute dir map (same
+ *   shape and first-match rule as `buildIndex`). An alias specifier with no matching prefix
+ *   stays unresolved, so the default `{}` keeps every existing caller's fail-closed behaviour.
  * @param {RelatedFs} [o.fs] filesystem seam (injected in tests)
  * @returns {{ ok: boolean, files: string[], unresolved: string[] }}
  */
 export function staticImportClosure({
   rootDir,
   entryFiles,
+  aliases = {},
   fs = defaultFs(),
 } = {}) {
   const root = path.resolve(rootDir ?? ".");
@@ -355,11 +411,17 @@ export function staticImportClosure({
       if (!spec) continue;
       const kind = classifySpecifier(spec);
       if (kind === "bare") continue;
+      let base;
       if (kind === "alias") {
-        unresolved.add(`${file}:${spec}`);
-        continue;
+        const prefix = Object.keys(aliases).find((p) => spec === p || spec.startsWith(p));
+        if (prefix === undefined) {
+          unresolved.add(`${file}:${spec}`);
+          continue;
+        }
+        base = path.resolve(aliases[prefix], spec.slice(prefix.length));
+      } else {
+        base = path.resolve(path.dirname(file), spec);
       }
-      const base = path.resolve(path.dirname(file), spec);
       const target = candidatesFor(base).find((candidate) => fs.exists(candidate));
       if (!target || !insideRoot(target)) {
         unresolved.add(`${file}:${spec}`);
