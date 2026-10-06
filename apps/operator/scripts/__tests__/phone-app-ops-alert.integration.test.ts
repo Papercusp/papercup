@@ -105,7 +105,9 @@ esac
     }
     const livekit = join(bins, 'livekit-server');
     const sip = join(bins, 'livekit-sip');
-    writeFileSync(livekit, '#!/bin/sh\nexit 0\n', { mode: 0o700 });
+    // deploy.sh refuses a livekit-server older than its TURN floor (WI-10006603),
+    // so the stub must report a version at or above LK_MIN_VERSION.
+    writeFileSync(livekit, '#!/bin/sh\n[ "$1" = --version ] && echo "livekit-server version 1.13.6"\nexit 0\n', { mode: 0o700 });
     writeFileSync(sip, '#!/bin/sh\nexit 0\n', { mode: 0o700 });
     const baseEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('PHONE_')));
     const env = { ...baseEnv, HOME: home, PHONE_CONFIG_DIR: f.dir,
@@ -113,6 +115,9 @@ esac
       PHONE_LIVEKIT_BIN: livekit, PHONE_SIP_BIN: sip, PHONE_NODE_BIN: process.execPath,
       PHONE_LAN_IFACE: 'test0', PHONE_TEST_ROOT: phone,
       PHONE_TEST_REVISION: 'a'.repeat(40), PHONE_TEST_SYSTEMCTL_CALLS: calls,
+      // Readiness is not fixture-forced green (below), so never spend the
+      // 30×1s retry budget waiting for this host's real services.
+      PHONE_READINESS_RETRY_SEC: '0',
       PATH: `${bins}:${process.env.PATH ?? ''}` };
     const pin = spawnSync('bash', [join(repoRoot, 'infra/phone-app/deploy.sh'), '--pin-artifacts'],
       { env, encoding: 'utf8', timeout: 15_000 });

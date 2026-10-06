@@ -19,7 +19,8 @@ function execFile(...args) {
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = join(here, '../..');
 const permitted = {
-  readiness: new Set(['media', 'sip', 'worker', 'sidecar', 'media-http', 'sidecar-http', 'turn-certificate']),
+  readiness: new Set(['media', 'sip', 'worker', 'sidecar', 'media-http', 'sidecar-http', 'worker-ingest',
+    'turn-certificate']),
   usage: new Set(['usage-telemetry-unavailable', 'missingPolicy', 'suspended',
     'expired', 'exhausted', 'malformed']),
   backup: new Set(['backup-stale', 'backup-integrity-unavailable']),

@@ -286,6 +286,9 @@ export interface TranscriptTailTurn {
   /** Logical native turn/request identity.  For linked-list clients this is
    *  resolved to the originating text-user node while scanning the tail. */
   requestId?: string | null;
+  /** USER turns only: the request the native parent node belonged to before
+   *  this node re-keyed the chain (e.g. the turn that raised a dialog answer). */
+  parentRequestId?: string | null;
   /** Native response lifecycle evidence; absence remains unknown/open. */
   responseDisposition?: ParsedResponseDisposition | null;
   /** Present on the oldest returned turn when older transcript/request records
@@ -421,8 +424,15 @@ export async function readVerbatimTail(
       // A real text-user node starts a logical request for the linked-list
       // clients.  Synthetic tool-result nodes have no ParsedTurn, so they take
       // the inherited parent request and keep the chain connected instead.
+      // EI-25227743201307257: keep the request the parent chain carried before
+      // this user node re-keys it. For an AskUserQuestion answer that is the
+      // request whose running turn raised the dialog — the structural link the
+      // carry doc needs to settle a dialog chain on its final delivered answer.
+      let parentRequestId: string | null = null;
       if (turn?.speaker === 'user') {
+        const inherited = requestId;
         requestId = turn.requestId ?? turn.messageId ?? requestId;
+        if (inherited && inherited !== requestId) parentRequestId = inherited;
       }
       if (link.messageId && requestId) requestByMessage.set(link.messageId, requestId);
 
@@ -432,6 +442,7 @@ export async function readVerbatimTail(
           text: turn.text,
           ts: turn.ts,
           requestId,
+          ...(parentRequestId ? { parentRequestId } : {}),
           responseDisposition: turn.responseDisposition ?? null,
         });
         if (turn.speaker === 'assistant' && requestId) {

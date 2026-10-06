@@ -32,6 +32,8 @@ export function localProbeHealthUrl(value: string): string;
 export function localPhoneReadiness(env: MediaEnvironment, probes?: {
   unitState?: (unit: string) => Promise<boolean>;
   httpReady?: (url: string) => Promise<boolean>;
+  /** Status of an unauthenticated worker-ingest probe; 401 is the only ready answer. */
+  httpStatus?: (url: string) => Promise<number>;
 }): Promise<{
   ok: boolean; checks: Array<{ component: string; ready: boolean }>;
   alerts: Array<{ component: string; owner: 'phone-operations'; action: string }>;

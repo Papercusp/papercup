@@ -139,6 +139,12 @@ export interface CarryDocTailTurn {
   /** Native logical request/turn identity, resolved through message-parent
    *  links by turn-journal for clients that do not stamp it directly. */
   requestId?: string | null;
+  /** USER turns only: the request the native PARENT node belongs to — for an
+   *  AskUserQuestion dialog answer, the request whose running turn raised the
+   *  dialog. Structural (message-parent linkage), never inferred from position.
+   *  A delivered response that settles a dialog answer also settles this chain
+   *  ancestor (EI-25227743201307257). Absent ⇒ no chaining (prior behaviour). */
+  parentRequestId?: string | null;
   /** Authoritative response lifecycle from the client wire.  Only
    *  `delivered` settles a request; progress and interruption leave it open. */
   responseDisposition?: 'progress' | 'delivered' | 'interrupted' | null;
@@ -604,6 +610,7 @@ async function defaultGetTail(opts: BuildCarryDocOpts): Promise<CarryDocTailTurn
       text: t.text,
       ts: t.ts ? t.ts.toISOString() : null,
       requestId: t.requestId ?? null,
+      ...(t.parentRequestId ? { parentRequestId: t.parentRequestId } : {}),
       responseDisposition: t.responseDisposition ?? null,
       requestHistoryStatus: t.requestHistoryStatus,
       provenance: t.speaker === 'user' ? classifyRecordedTurn(t.text) : null,
@@ -967,6 +974,28 @@ export function deriveContinuation(
     for (const request of requestByKey.get(requestId) ?? []) request.settled = true;
   };
 
+  // EI-25227743201307257 — an AskUserQuestion dialog answer is a tool result
+  // INSIDE the agent's running turn. The agent acts on it and then (often)
+  // raises the NEXT dialog, so that answer's id never receives a `delivered`
+  // response: the turn's eventual end_turn carries the LATER answer's id. Left
+  // alone it reads as an open owner message and is re-delivered to a carry
+  // successor as a fresh directive — measured twice (directives #1379, #1460).
+  // A dialog answer therefore records the request whose turn raised it, and a
+  // RESPONSE that settles the answer settles that chain too. Only owner-dialog
+  // answers chain (a queued owner-typed message is an independent request), the
+  // link is structural (native parent node), and cancellation/supersession do
+  // not cascade — only a response does.
+  const chainParent = new Map<string, string>();
+  const settleResponse = (requestId: string | null | undefined) => {
+    const seen = new Set<string>();
+    let id = requestId ?? null;
+    while (id && !seen.has(id)) {
+      seen.add(id);
+      settle(id);
+      id = chainParent.get(id) ?? null;
+    }
+  };
+
   for (let i = 0; i < tail.length; i += 1) {
     const turn = tail[i];
     for (const superseded of turn.supersedesRequestIds ?? []) settle(superseded);
@@ -985,13 +1014,22 @@ export function deriveContinuation(
       const same = requestByKey.get(key) ?? [];
       same.push(entry);
       requestByKey.set(key, same);
+      if (
+        turn.provenance?.verdict === 'owner-dialog' &&
+        turn.requestId &&
+        turn.parentRequestId &&
+        turn.parentRequestId !== turn.requestId
+      ) {
+        chainParent.set(turn.requestId, turn.parentRequestId);
+      }
     }
 
-    // A response settles ONLY the request whose native/thread id it shares and
-    // only at the client's final delivered boundary. Commentary, acknowledg-
-    // ments, unrelated final answers and interrupted turns remain open.
+    // A response settles ONLY the request whose native/thread id it shares (and
+    // that request's dialog chain, above) and only at the client's final
+    // delivered boundary. Commentary, acknowledgements, unrelated final answers
+    // and interrupted turns remain open.
     if (turn.speaker === 'assistant' && turn.responseDisposition === 'delivered') {
-      settle(turn.requestId);
+      settleResponse(turn.requestId);
     }
   }
 
@@ -1018,7 +1056,7 @@ export function deriveContinuation(
   if (opts.finalTurnInFlight && tail.length > 0) {
     const live = tail[tail.length - 1];
     if (live.speaker === 'assistant' && live.responseDisposition !== 'interrupted') {
-      settle(live.requestId);
+      settleResponse(live.requestId);
     }
   }
 
