@@ -13,7 +13,11 @@
  *   - owner keystrokes typed while parked are held and replayed into the resumed child;
  *   - an in-TUI `/clear` (a newer transcript in the session's own config dir)
  *     switches the resume id;
- *   - a child with a live descendant is never parked, and `0` disables parking.
+ *   - a child with a live descendant is never parked, and `0` disables parking;
+ *   - P-019: a resume that FAILS holds the delivery (and owner keystrokes) until a
+ *     retry or a later trigger resumes, then delivers it exactly once;
+ *   - D-003: a shutdown or host signal while parked ends the session without
+ *     resuming the CLI, and a recycle reaching a parked host resumes first.
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import { EventEmitter } from 'node:events';
@@ -91,11 +95,16 @@ function withDeadline<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
   return Promise.race([p, timeout]).finally(() => clearTimeout(timer));
 }
 
-function controlInject(sock: string, mode: 'turn' | 'raw', data: string): Promise<void> {
+function controlInject(
+  sock: string,
+  mode: 'turn' | 'raw' | 'shutdown' | 'recycle',
+  data: string,
+  extra: Record<string, unknown> = {},
+): Promise<void> {
   let c: net.Socket | undefined;
   const closed = new Promise<void>((resolve) => {
     c = net.connect(sock, () => {
-      c!.write(encodeControl({ mode, data, ownerId: basename(sock, '.sock') }));
+      c!.write(encodeControl({ mode, data, ownerId: basename(sock, '.sock'), ...extra }));
       c!.end();
     });
     c.on('data', () => {});
@@ -143,11 +152,15 @@ function startParkHost({
   parkIdleMs = '400',
   extraArgs = [],
   configDir,
+  extraEnv = {},
+  hostOptions = {},
 }: {
   label: string;
   parkIdleMs?: string;
   extraArgs?: string[];
   configDir?: (ownerId: string, root: string) => string;
+  extraEnv?: Record<string, string>;
+  hostOptions?: Record<string, unknown>;
 }) {
   const ownerId = `su-park-${label}-itest-${process.pid}-${Math.floor(performance.now())}`;
   const root = mkdtempSync(join(tmpdir(), 'psu-park-itest-'));
@@ -178,6 +191,7 @@ function startParkHost({
     PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '50',
     PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '100',
     PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '50',
+    ...extraEnv,
   };
   // Never let the vitest worker's own session config dir leak in: the transcript
   // cross-check would read the REAL session's transcripts.
@@ -199,6 +213,9 @@ function startParkHost({
     onExit: (code: number) => {
       exitCode = code;
     },
+    // Never probe a real operator pin from a test respawn.
+    healOperatorPin: async () => null,
+    ...hostOptions,
   });
   cleanups.push(() => {
     if (existsSync(eventLog)) unlinkSync(eventLog);
@@ -391,5 +408,198 @@ describe('psu process-free parking (P-017) — real pty round trip', () => {
       }
     },
     30_000,
+  );
+});
+
+/**
+ * A pty spawn that fails on exactly its Nth call (1 = the launch, 2 = the first
+ * resume) the way fork does under memory pressure, and delegates to the real
+ * spawn otherwise. The pressure that makes parking worthwhile is the same
+ * pressure that can make a resume fail.
+ */
+function failNthSpawn(n: number) {
+  let calls = 0;
+  return (
+    file: string,
+    argv: string[],
+    options: object,
+    realSpawn: (file: string, argv: string[], options: object) => unknown,
+  ) => {
+    calls += 1;
+    if (calls === n) throw Object.assign(new Error('forkpty(3) failed.'), { code: 'EAGAIN' });
+    return realSpawn(file, argv, options);
+  };
+}
+
+describe('psu process-free parking (P-019) — a failed resume never loses a delivery', () => {
+  it(
+    'holds the control-socket turn when the resume fails, and the retry delivers it exactly once',
+    async () => {
+      const h = startParkHost({
+        label: 'unpark-retry',
+        extraEnv: { PAPERCUSP_PSU_PARK_UNPARK_RETRY_MS: '400' },
+        hostOptions: { spawnPty: failNthSpawn(2) },
+      });
+      try {
+        await waitFor(() => h.eventsOf('child-parked')[0], 'the park');
+        const [boot1] = h.argvLog();
+
+        await controlInject(h.sock, 'turn', 'HELD_TURN_TOKEN');
+        const failed = await waitFor(() => h.eventsOf('child-unpark-failed')[0], 'the failed resume');
+        expect(failed).toMatchObject({ trigger: 'control:turn', reason: 'spawn-failed' });
+        expect(JSON.stringify(failed)).toContain('forkpty');
+        expect(await waitFor(() => h.eventsOf('parked-delivery-held')[0], 'the held delivery')).toMatchObject({
+          mode: 'turn',
+          reason: 'spawn-failed',
+          held: 1,
+        });
+
+        // The retry resumes the same conversation and the held turn lands in it.
+        const got = await waitFor(
+          () => h.inputLog().find((e) => e.line.includes('HELD_TURN_TOKEN')),
+          'the held turn to reach the retried resume',
+        );
+        const boots = h.argvLog();
+        // The failed spawn never booted anything; the retry is the second boot.
+        expect(boots).toHaveLength(2);
+        expect(boots[1].argv).toEqual(['--resume', SESSION_ID]);
+        expect(got.pid).toBe(boots[1].pid);
+        expect(got.pid).not.toBe(boot1.pid);
+        expect(h.eventsOf('child-unparked')[0]).toMatchObject({
+          trigger: 'retry',
+          nativeId: SESSION_ID,
+          promptReady: true,
+        });
+        const kinds = h.events().map((e) => e.kind);
+        expect(kinds.indexOf('parked-delivery-held')).toBeLessThan(kinds.indexOf('child-unparked'));
+        // Exactly once, and the failure did not end the session.
+        await sleep(300);
+        expect(h.inputLog().filter((e) => e.line.includes('HELD_TURN_TOKEN'))).toHaveLength(1);
+        expect(h.exitCode()).toBeNull();
+      } finally {
+        expect(await h.quit()).toBe(0);
+      }
+    },
+    30_000,
+  );
+
+  it(
+    'a later owner keystroke resumes after a failed resume and delivers the held turn with it',
+    async () => {
+      const h = startParkHost({
+        label: 'unpark-owner',
+        // Far enough out that only the keystroke can be the resume trigger.
+        extraEnv: { PAPERCUSP_PSU_PARK_UNPARK_RETRY_MS: '60000' },
+        hostOptions: { spawnPty: failNthSpawn(2) },
+      });
+      try {
+        await waitFor(() => h.eventsOf('child-parked')[0], 'the park');
+        await controlInject(h.sock, 'turn', 'HELD_BEHIND_FAILURE');
+        await waitFor(() => h.eventsOf('parked-delivery-held')[0], 'the held delivery');
+        // Held, not dropped and not written anywhere: still parked, nothing received.
+        expect(h.readMeta().parked).toBe(true);
+        expect(h.readMeta().ptyPid).toBeNull();
+        expect(h.inputLog()).toEqual([]);
+
+        h.stdin.emit('data', Buffer.from('OWNER_AFTER_FAILURE\r'));
+        await waitFor(() => {
+          const lines = h.inputLog().map((e) => e.line);
+          return (
+            lines.some((l) => l.includes('OWNER_AFTER_FAILURE')) && lines.some((l) => l.includes('HELD_BEHIND_FAILURE'))
+          );
+        }, 'the keystrokes and the held turn to reach the resumed child');
+        const boots = h.argvLog();
+        expect(boots).toHaveLength(2);
+        await sleep(300);
+        for (const token of ['OWNER_AFTER_FAILURE', 'HELD_BEHIND_FAILURE']) {
+          const rows = h.inputLog().filter((e) => e.line.includes(token));
+          expect(rows).toHaveLength(1);
+          expect(rows[0].pid).toBe(boots[1].pid);
+        }
+        expect(h.eventsOf('child-unparked')[0]).toMatchObject({ trigger: 'owner-input', nativeId: SESSION_ID });
+      } finally {
+        expect(await h.quit()).toBe(0);
+      }
+    },
+    30_000,
+  );
+});
+
+describe('psu process-free parking (D-003) — session lifecycle while parked', () => {
+  it(
+    'a shutdown while parked ends the session cleanly without resuming the CLI',
+    async () => {
+      const h = startParkHost({ label: 'shutdown', extraEnv: { PAPERCUSP_LAUNCHED_BY: 'psu-park-itest' } });
+      let ended = false;
+      try {
+        await waitFor(() => h.eventsOf('child-parked')[0], 'the park');
+        await controlInject(h.sock, 'shutdown', 'itest wind-down', { force: true });
+        const code = await withDeadline(h.done, 10_000, 'the host to exit after a shutdown while parked');
+        ended = true;
+        expect(code).toBe(0);
+        expect(h.exitCode()).toBe(0);
+        expect(h.eventsOf('shutdown-accepted')).toHaveLength(1);
+        // No CLI was started just to be stopped again.
+        expect(h.argvLog()).toHaveLength(1);
+        expect(h.eventsOf('child-unparked')).toEqual([]);
+        expect(h.eventsOf('child-unpark-failed')).toEqual([]);
+        expect(existsSync(h.sock)).toBe(false);
+        expect(existsSync(h.meta)).toBe(false);
+      } finally {
+        if (!ended) await h.quit().catch(() => undefined);
+      }
+    },
+    30_000,
+  );
+
+  it(
+    'a host signal while parked tears the session down without resuming the CLI',
+    async () => {
+      const signals = new EventEmitter();
+      const h = startParkHost({ label: 'signal', hostOptions: { signalSource: signals } });
+      let ended = false;
+      try {
+        await waitFor(() => h.eventsOf('child-parked')[0], 'the park');
+        signals.emit('SIGTERM', 'SIGTERM');
+        await withDeadline(h.done, 10_000, 'the host to exit after SIGTERM while parked');
+        ended = true;
+        expect(h.eventsOf('host-teardown')[0]).toMatchObject({ via: 'signal', signal: 'SIGTERM' });
+        expect(h.argvLog()).toHaveLength(1);
+        expect(h.eventsOf('child-unparked')).toEqual([]);
+        expect(existsSync(h.sock)).toBe(false);
+        expect(existsSync(h.meta)).toBe(false);
+      } finally {
+        if (!ended) await h.quit().catch(() => undefined);
+      }
+    },
+    30_000,
+  );
+
+  it(
+    'a recycle that reaches a parked host resumes first, then respawns and carries its turn',
+    async () => {
+      // A longer threshold so the recycled child is not re-parked mid-carry.
+      const h = startParkHost({ label: 'recycle', parkIdleMs: '1500' });
+      try {
+        await waitFor(() => h.eventsOf('child-parked')[0], 'the park', 10_000);
+        await controlInject(h.sock, 'recycle', 'RECYCLE_CARRY_TOKEN');
+        const got = await waitFor(
+          () => h.inputLog().find((e) => e.line.includes('RECYCLE_CARRY_TOKEN')),
+          'the recycle carry to land',
+          15_000,
+        );
+        const boots = h.argvLog();
+        // launch → resume (same conversation) → the recycle's own respawn.
+        expect(boots).toHaveLength(3);
+        expect(boots[1].argv).toEqual(['--resume', SESSION_ID]);
+        expect(got.pid).toBe(boots[2].pid);
+        expect(h.eventsOf('child-unparked')[0]).toMatchObject({ trigger: 'control:recycle', nativeId: SESSION_ID });
+        expect(h.inputLog().filter((e) => e.line.includes('RECYCLE_CARRY_TOKEN'))).toHaveLength(1);
+        expect(h.exitCode()).toBeNull();
+      } finally {
+        expect(await h.quit()).toBe(0);
+      }
+    },
+    45_000,
   );
 });
