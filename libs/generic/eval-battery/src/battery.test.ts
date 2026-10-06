@@ -148,19 +148,32 @@ describe('runBattery — never abort', () => {
     expect(results[0]).toMatchObject({ status: 'errored', judgeCostUsd: costUsd ?? 0, judgeCostMeasured: costUsd !== undefined });
   });
 
-  it('counts measured calls before a rate-pause restart in the successful score', async () => {
+  it.each([0, 0.02])('preserves a prior measured charge of %s when deciding whether to restart a rate-limited judgment', async (priorCost) => {
     let calls = 0;
+    const slept: number[] = [];
+    const scored: string[] = [];
     const results = await runBattery(
       { cells: cells(['a', 'c1']), rubric: RUBRIC, maxDistillChars: 100 },
-      { subject: fakeSubject(), now: () => 1, sleep: async () => {}, llmCall: async (opts) => {
-        if (++calls === 1) return { text: 'invalid reply', costUsd: 0.02, inputTokens: 1, outputTokens: 1 };
+      { subject: fakeSubject(), now: () => 1, sleep: async (ms) => { slept.push(ms); }, llmCall: async (opts) => {
+        if (++calls === 1) return { text: 'invalid reply', costUsd: priorCost, inputTokens: 1, outputTokens: 1 };
         if (calls === 2) throw Object.assign(new LlmCallError({ class: 'rate_limited', message: 'limited', retryAfterMs: 1 }), { costUsd: 0 });
         return { ...await okJudge(opts), costUsd: 0.03 };
-      } },
+      }, hooks: { onScore: ({ runId }) => { scored.push(runId); } } },
     );
-    expect(calls).toBe(3);
-    expect(results[0]).toMatchObject({ status: 'scored', judgeCostUsd: 0.05, judgeCostMeasured: true,
-      score: { costUsd: 0.05 } });
+    expect(results).toHaveLength(1);
+    if (priorCost === 0) {
+      expect(calls).toBe(3);
+      expect(slept).toEqual([1]);
+      expect(scored).toEqual(['run-0']);
+      expect(results[0]).toMatchObject({ status: 'scored', judgeCostUsd: 0.03, judgeCostMeasured: true,
+        score: { costUsd: 0.03 } });
+    } else {
+      expect(calls).toBe(2);
+      expect(slept).toEqual([]);
+      expect(scored).toEqual([]);
+      expect(results[0]).toMatchObject({ status: 'rate_limited', judgeCostUsd: priorCost, judgeCostMeasured: true });
+      expect(results[0].score).toBeUndefined();
+    }
   });
 
   it('records a run error as `errored` and continues to the next cell', async () => {

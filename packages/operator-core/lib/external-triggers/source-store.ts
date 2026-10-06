@@ -25,6 +25,21 @@ export interface OwnedExternalTriggerSourceRow extends ExternalTriggerSourceRow 
   updatedAt: string;
 }
 
+/** The install whose token store a source's credential lives in when nothing names another. */
+export const DEFAULT_SOURCE_TOKEN_HARNESS = 'papercusp';
+
+/**
+ * The install (token-store `harness`) holding a source's OAuth credential: the one the connect
+ * flow wrote it under, `config.installSlug`, else the caller's default install, else
+ * {@link DEFAULT_SOURCE_TOKEN_HARNESS}. Every host.fetch built for a source resolves its token
+ * here. It is never `config.harnessSlug`: that names where ADMITTED WORK lands, a different
+ * harness whenever the user targets one, and its token store is empty (WI-10006662).
+ */
+export function sourceTokenHarness(config: Record<string, unknown> | null | undefined, defaultInstallSlug?: string | null): string {
+  const own = typeof config?.installSlug === 'string' ? config.installSlug.trim() : '';
+  return own || defaultInstallSlug?.trim() || DEFAULT_SOURCE_TOKEN_HARNESS;
+}
+
 export interface DisconnectOwnedExternalTriggerSourcesResult {
   sources: number;
   credentialRefs: string[];

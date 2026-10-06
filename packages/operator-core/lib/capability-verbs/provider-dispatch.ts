@@ -23,6 +23,7 @@ import type postgres from 'postgres';
 import type { HostFetch } from '@papercusp/plugin-sdk';
 import {
   listOwnedExternalTriggerSources,
+  sourceTokenHarness,
   type OwnedExternalTriggerSourceRow,
 } from '../external-triggers/source-store';
 import { providerRegistry, type ProviderRegistry, type RegisteredProvider } from '../integrations/provider-registry';
@@ -181,7 +182,7 @@ export async function resolveCapabilitySource(
     source,
     provider,
     datatype: params.datatype,
-    installSlug: string(source.config.installSlug) || params.defaultInstallSlug || 'papercusp',
+    installSlug: sourceTokenHarness(source.config, params.defaultInstallSlug),
     userId: params.userId,
   };
 }

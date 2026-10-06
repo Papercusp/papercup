@@ -3627,7 +3627,149 @@
      "summary": "plan lane agent-economy-flywheel-2026-08-30#P-009 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
     }
    ],
-   "claimHold": false
+   "claimHold": false,
+   "securityVettingEvidenceQualification": {
+    "status": "scoped-qualification-only-no-item-acceptance",
+    "measuredAt": "2026-10-06",
+    "author": "su-25bc0450-2829-42b9-a2dd-1431c99e4ba8",
+    "parentWorkItem": "WI-10005820",
+    "auditRef": "thread-post:1159895",
+    "source": {
+     "plan": "agent-economy-flywheel-2026-08-30",
+     "revision": 100,
+     "sha256": "fc68bbe66e2de5fdea2a667e37de106465287eea99c13d406789b207b4af7ca6",
+     "item": "P-009",
+     "governingDecisions": [
+      "D-006"
+     ],
+     "dependency": "P-006 / WI-10004290; downstream P-004 / WI-10004288"
+    },
+    "currentClauses": [
+     {
+      "id": "AUTO-BAR-R-20-P-009",
+      "revision": 2,
+      "status": "active",
+      "sha256": "5e404de2efc6185bc6451a3aafd042c7f19a0413db78b54a2ef654512199ecae"
+     },
+     {
+      "id": "AUTO-REQ-M-008-P-009",
+      "revision": 1,
+      "status": "draft",
+      "sha256": "bf4316c1a89f998b61664ed9de4d8b2d2ad2423ff11b708059bdef11f9659ff0"
+     },
+     {
+      "id": "AUTO-REQ-M-010-P-009",
+      "revision": 1,
+      "status": "draft",
+      "sha256": "f845d85155a43fec9a0deb47d55fb92506187e365a46ad504490e3be6af92003"
+     }
+    ],
+    "contract": "R20 requires listing-time refusal of an identity persona contradicting a kernel duty. Full P009 also requires prompt-injection review of descriptions/results, permission scoping and sandboxed probe runs. D006 preserves monotonic kernel duties.",
+    "implementationQualification": "identity-lint explicitly assigns contradiction phrasing to WARN while structural kernel-slot/forged-control/applicable capability-ceiling violations block. The maintained render-stack D009 fixture asserts hostile skip-work-items/bypass-locks prose composes without blocking and below-kernel authority. Attestation measures content identity; public blueprint release signs the served closure and declares permissions with reviewStatus pending. These scoped mechanisms do not establish listing-time refusal, results review or sandboxed probes. No actual public listing request was made.",
+    "namedCheck": {
+     "path": "packages/operator-core/lib/cupboard/listing-vetting.test.ts",
+     "exists": false,
+     "qualification": "Exact R20-named detector absent in this checkout; adjacent passing tests do not substitute for it."
+    },
+    "currentLocalTests": {
+     "command": "npm run test:file -- libs/papercusp/packages/orchestrator/src/blueprint/identity-lint.test.ts libs/papercusp/packages/orchestrator/src/blueprint/render-stack.test.ts packages/operator-core/lib/cupboard/publish-listing.test.ts packages/operator-core/lib/cupboard/identity-attestation.test.ts",
+     "ledgerRows": [
+      20839096,
+      20839095,
+      20839099,
+      20839100
+     ],
+     "result": "Four files PASS, 49 tests PASS, zero skipped; outer process exit0 and four independent exact ledger PASS receipts.",
+     "commitSha": "ae13664ea3ec92e6e48c2b104feaab22c08c9bb2",
+     "worktreeDirty": true,
+     "harness": "papercusp",
+     "qualification": "Unset PAPERCUSP_TEST_RUN_HARNESS warning; ledger confirms papercusp. Two submodule tests stamped DIRTY: own HEAD052a9b4096 differs from superproject pin6f4f745d298bf5debd39ddb7d313c6bea8072b8c. All nine inspected bytes equal their own HEAD blobs; superproject candidate reproducibility remains unproved. Local maintained-mechanism evidence only."
+    },
+    "clauseEvidenceSelection": {
+     "specIds": [
+      "AUTO-BAR-R-20-P-009",
+      "AUTO-REQ-M-008-P-009",
+      "AUTO-REQ-M-010-P-009"
+     ],
+     "count": 0,
+     "truncatedByLimit": false,
+     "independentReads": 2,
+     "qualification": "Exact three-clause binding absence only; no global absence or public listing behavior inferred."
+    },
+    "rubric": {
+     "id": "acceptance-agent-economy-flywheel-2026-08-30",
+     "revision": 5,
+     "sha256": "25dd447cc55337d60b91c38186c4c1867cb9d9e8c0ec2df4fe124bb7686d08c8",
+     "vetting": "unvetted",
+     "reason": "Rejected attestation: grading-audit-unsettled / criteria-hash-mismatch."
+    },
+    "prerequisiteQualification": "P006/WI10004290 and P009/WI10004293 blocked/unassigned with absent checkpoints. Canonical P006 downstream prerequisite is P004; prior qualified external-paid-pilot gap retained without replay.",
+    "sourcePins": [
+     {
+      "path": "libs/papercusp/packages/orchestrator/src/blueprint/identity-lint.ts",
+      "sha256": "f50deb8f30a6f9c333fb02008c56c021d4557f22c6424fd9c734cb8f0c0c15fe",
+      "ownHEADblob": "1e22c183564c15a2f94dd6a45e473b707d795c82",
+      "equalsOwnHEAD": true
+     },
+     {
+      "path": "libs/papercusp/packages/orchestrator/src/blueprint/identity-lint.test.ts",
+      "sha256": "ce5257f2059b5bcbcc3ca7315f1948d4f29f9c3939534f8fd1d309b5ef8fa1e6",
+      "ownHEADblob": "147c6f3186aefc0504f96f554dd4bc4303391490",
+      "equalsOwnHEAD": true
+     },
+     {
+      "path": "libs/papercusp/packages/orchestrator/src/blueprint/render-stack.test.ts",
+      "sha256": "afb41500075c36d211985a5d772440e64ffada0d14a1506c772b89fe95d31e57",
+      "ownHEADblob": "c0707dd4b21e718fc2e03e379fea9c1e26f0681f",
+      "equalsOwnHEAD": true
+     },
+     {
+      "path": "packages/operator-core/lib/cupboard/publish-listing.ts",
+      "sha256": "a743b50e415dd7d7613fb05755a8d1846ad878363c87b9d9394c213dc68ee705",
+      "ownHEADblob": "f898175972e45939958379a9422776ade1d36943",
+      "equalsOwnHEAD": true
+     },
+     {
+      "path": "packages/operator-core/lib/cupboard/publish-listing.test.ts",
+      "sha256": "69c8e08d873784c7669991d4c095f2ca3a5664978b8f004ff2898a3aa6fea9ff",
+      "ownHEADblob": "2a3bcfd5bdfe65f80898f2ad479efe89b8b13f98",
+      "equalsOwnHEAD": true
+     },
+     {
+      "path": "packages/operator-core/lib/cupboard/identity-attestation.ts",
+      "sha256": "108824b419bd817b67f622b08c5bf94175fa2dc99c53cf79fa7f7c648b4b43ac",
+      "ownHEADblob": "e1341b4d1e8ec116dd32ed0e1f7e111cf6120942",
+      "equalsOwnHEAD": true
+     },
+     {
+      "path": "packages/operator-core/lib/cupboard/identity-attestation.test.ts",
+      "sha256": "2254cf76692b1a5dac583f970a4239763db5bb5ef24ec31be23adce1cd764a9d",
+      "ownHEADblob": "850d21a20a12d7a050e2b0c54ffa71a4b9ab99a2",
+      "equalsOwnHEAD": true
+     },
+     {
+      "path": "packages/operator-core/lib/cupboard/blueprint-release.ts",
+      "sha256": "c5f9d138bd743a3c2c7f7c6a722d8dd4d1fa1d7ea8433772f08fb44a1612858e",
+      "ownHEADblob": "8870e12c2bc4f79d4c593e909b68380eff718651",
+      "equalsOwnHEAD": true
+     },
+     {
+      "path": "packages/operator-core/lib/endpoint-route/routes/cupboard-publish-blueprint.ts",
+      "sha256": "db9d5650c9bea07290e8c85b1a3a2faa0e757e55cbfa77a20806bbfbb5280584",
+      "ownHEADblob": "b2b7b9c82959e4224dfe557a810cebe3e641bfc3",
+      "equalsOwnHEAD": true
+     }
+    ],
+    "disposition": "Retain current dependency; no duplication/supersession proved. Extend identity lint and existing publish/release/permission seams when implementation is admitted; no parallel system added.",
+    "acceptanceStillOpen": [
+     "Named listing detector and executable R20 refusal",
+     "Prompt-injection description/results review, permission scoping and sandboxed probes",
+     "P006/P004 prerequisite acceptance",
+     "Current governed proof, fixture calibration, adequacy, rubric vetting and independent grade",
+     "Whole-item acceptance and final shipment"
+    ],
+    "acceptanceWaived": false
+   }
   },
   {
    "id": "WI-10004294",

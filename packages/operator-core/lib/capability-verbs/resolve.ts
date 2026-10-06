@@ -14,7 +14,7 @@
  * property the D-020 rails depend on — see `addressing.ts`.
  */
 import type postgres from 'postgres';
-import { listOwnedExternalTriggerSources, type ExternalTriggerSourceRow } from '../external-triggers/source-store';
+import { listOwnedExternalTriggerSources, sourceTokenHarness, type ExternalTriggerSourceRow } from '../external-triggers/source-store';
 import { listSocialPlatforms } from '../external-triggers/social/platform-registry';
 
 type Db = postgres.Sql | postgres.TransactionSql;
@@ -217,7 +217,7 @@ export async function resolveOutboundContext(
   }
   return {
     source,
-    installSlug: string(source.config.installSlug) || params.defaultInstallSlug || 'papercusp',
+    installSlug: sourceTokenHarness(source.config, params.defaultInstallSlug),
     userId: params.userId,
   };
 }

@@ -872,6 +872,20 @@
           }
         }
       },
+      "GetProjectsOk": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProjectCompact"
+            }
+          },
+          "next_page": {
+            "$ref": "#/components/schemas/NextPage"
+          }
+        }
+      },
       "GetSectionsForProjectOk": {
         "type": "object",
         "properties": {
@@ -927,6 +941,20 @@
         "properties": {
           "data": {
             "$ref": "#/components/schemas/UserResponse"
+          }
+        }
+      },
+      "GetWorkspacesOk": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkspaceCompact"
+            }
+          },
+          "next_page": {
+            "$ref": "#/components/schemas/NextPage"
           }
         }
       },

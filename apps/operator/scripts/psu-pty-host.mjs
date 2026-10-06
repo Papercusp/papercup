@@ -10802,6 +10802,17 @@ export function hostThroughPty(o) {
   /** @type {NodeJS.Timeout | null} */
   let unparkRetryTimer = null;
   let unparkRetryAttempt = 0;
+  // WI-10006574: a resumed CLI that EXITS before its prompt (e.g. `--resume`
+  // finding no transcript) is a failed resume, not the session ending. While
+  // a resume waits for its prompt, the child-exit handler hands such an exit
+  // here: the stand-in comes back, held work stays held and the retry runs.
+  // Only PAPERCUSP_PSU_PARK_RESUME_EXIT_MAX consecutive such exits end the
+  // session (with `child-unpark-abandoned`), since an agent that cannot be
+  // resumed would otherwise retry forever behind a live-looking host.
+  /** @type {{ child: unknown, resume: { args: string[], nativeId: string }, trigger: string } | null} */
+  let resumeAwaitingPrompt = null;
+  let resumedChildExitStreak = 0;
+  const parkResumeExitMax = positiveNumber(env.PAPERCUSP_PSU_PARK_RESUME_EXIT_MAX, 3);
   const parkInProgress = () => parked || parkPromise !== null || unparkPromise !== null;
   const releaseHeldDeliveries = (outcome) => {
     for (const release of heldDeliveryWaiters.splice(0)) release(outcome);
@@ -10874,6 +10885,34 @@ export function hostThroughPty(o) {
     baseMeta.parkedAt = null;
     return { trigger, parkedForMs, ...extra };
   };
+  /** Swap the (dead) child for the pid-less stand-in and publish the parked
+   *  state. Shared by a park and by WI-10006574's re-park of a resumed CLI
+   *  that exited before its prompt. Synchronous, so a child-exit handler can
+   *  run it before anything else observes the dead child as current. */
+  const installParkedStandIn = (resume) => {
+    if (normalizedLog) normalizedLog.flush();
+    childStartupOutput = '';
+    childStartupReady = false;
+    childPromptReady = false;
+    childStartupFirstOutputAt = 0;
+    childBracketedPaste = false;
+    childBracketedPasteTail = '';
+    childBackendTuiStartedAt = 0;
+    childBackendFirstFrameAt = 0;
+    lastMachineTurnWriteStartedAtMs = 0;
+    quotaBlockDetector.reset();
+    ownerComposerGate.markSubmitted();
+    child = makeParkedChild();
+    wireChildExit();
+    parked = true;
+    parkedAtMs = Date.now();
+    parkResume = resume;
+    baseMeta.parked = true;
+    baseMeta.parkedAt = parkedAtMs;
+    // A dead pid is recycled within hours here; never advertise one.
+    baseMeta.ptyPid = null;
+    writeMeta();
+  };
   const parkChild = async (verdict) => {
     const resume = mintResumeForPark();
     if (!resume) return false;
@@ -10896,28 +10935,7 @@ export function hostThroughPty(o) {
         dead,
         new Promise((res) => setTimeout(() => res(false), RECYCLE_FORCE_KILL_WAIT_MS * 5)),
       ]);
-      if (normalizedLog) normalizedLog.flush();
-      childStartupOutput = '';
-      childStartupReady = false;
-      childPromptReady = false;
-      childStartupFirstOutputAt = 0;
-      childBracketedPaste = false;
-      childBracketedPasteTail = '';
-      childBackendTuiStartedAt = 0;
-      childBackendFirstFrameAt = 0;
-      lastMachineTurnWriteStartedAtMs = 0;
-      quotaBlockDetector.reset();
-      ownerComposerGate.markSubmitted();
-      child = makeParkedChild();
-      wireChildExit();
-      parked = true;
-      parkedAtMs = Date.now();
-      parkResume = resume;
-      baseMeta.parked = true;
-      baseMeta.parkedAt = parkedAtMs;
-      // A dead pid is recycled within hours here; never advertise one.
-      baseMeta.ptyPid = null;
-      writeMeta();
+      installParkedStandIn(resume);
       try {
         // The killed TUI left its terminal modes (mouse reporting, bracketed
         // paste) armed; reset them so a mouse move is not read as a keystroke.
@@ -11021,6 +11039,58 @@ export function hostThroughPty(o) {
     unparkRetryTimer.unref?.();
   };
   /**
+   * WI-10006574: called by the child-exit handler for every genuine exit of
+   * the current child. Returns true when the exit was a resumed CLI dying
+   * before its prompt and the stand-in has been restored (the host lives on);
+   * false when the exit must end the session as usual — any other exit, a
+   * host already ending, or the PAPERCUSP_PSU_PARK_RESUME_EXIT_MAX-th
+   * consecutive early exit (recorded as `child-unpark-abandoned` first).
+   */
+  const reparkResumedChildExit = (exited, exitCode, signal) => {
+    const pending = resumeAwaitingPrompt;
+    if (!pending || pending.child !== exited || childPromptReady) return false;
+    resumeAwaitingPrompt = null;
+    if (hostCleanedUp || shuttingDown) return false;
+    resumedChildExitStreak++;
+    const evidence = {
+      trigger: pending.trigger,
+      reason: 'resumed-child-exited',
+      exitCode: Number.isInteger(exitCode) ? exitCode : null,
+      signal: signalNameFromCode(signal),
+      streak: resumedChildExitStreak,
+      nativeId: pending.resume.nativeId,
+      childPid: Number.isInteger(exited?.pid) ? exited.pid : null,
+    };
+    if (resumedChildExitStreak >= parkResumeExitMax) {
+      appendHostEvent(ownerId, 'child-unpark-abandoned', { ...evidence, max: parkResumeExitMax });
+      try {
+        stdout.write(
+          `\r\n[psu] The agent exited ${resumedChildExitStreak} times in a row while resuming; ending the session.\r\n`,
+        );
+      } catch {
+        /* advisory */
+      }
+      return false;
+    }
+    try {
+      stopStartupTrace('resume-exited');
+    } catch {
+      /* diagnostic only */
+    }
+    installParkedStandIn(pending.resume);
+    appendHostEvent(ownerId, 'child-unpark-failed', { ...evidence, attempt: unparkRetryAttempt });
+    try {
+      stdout.write(
+        `\r\n[psu] The agent exited while resuming (exit ${evidence.exitCode ?? evidence.signal ?? '?'}); ` +
+          `still parked, will retry.\r\n`,
+      );
+    } catch {
+      /* advisory */
+    }
+    scheduleUnparkRetry();
+    return true;
+  };
+  /**
    * Bring a parked child back on the same conversation. Single-flight: every
    * trigger that arrives while a resume is in progress shares it. Resolves once
    * the resumed TUI shows its prompt (or the wait cap passes — the delivery
@@ -11068,7 +11138,6 @@ export function hostThroughPty(o) {
           return { unparked: false, reason: 'spawn-failed' };
         }
         cancelUnparkRetry();
-        unparkRetryAttempt = 0;
         child = resumed;
         stopStartupTrace = startCodexStartupProcessTrace({
           agent: env.PAPERCUSP_AGENT, ownerId, pid: child.pid,
@@ -11076,13 +11145,31 @@ export function hostThroughPty(o) {
         const details = clearParkedState(trigger, { nativeId: resume.nativeId });
         baseMeta.ptyPid = child.pid;
         writeMeta();
-        wireChildData();
-        wireChildExit();
-        activity.touchOutput();
-        const deadline = Date.now() + parkResumeWaitMs;
-        while (!childPromptReady && child === resumed && !hostCleanedUp && Date.now() < deadline) {
-          await new Promise((res) => setTimeout(res, 100));
+        // Armed before the exit wiring, so an exit before the prompt re-parks
+        // instead of ending the session (WI-10006574).
+        resumeAwaitingPrompt = { child: resumed, resume, trigger };
+        try {
+          wireChildData();
+          wireChildExit();
+          activity.touchOutput();
+          const deadline = Date.now() + parkResumeWaitMs;
+          while (!childPromptReady && child === resumed && !hostCleanedUp && Date.now() < deadline) {
+            await new Promise((res) => setTimeout(res, 100));
+          }
+        } finally {
+          if (resumeAwaitingPrompt?.child === resumed) resumeAwaitingPrompt = null;
         }
+        if (child !== resumed && parked) {
+          // The resumed CLI exited before its prompt and the exit handler put
+          // the stand-in back; held work waits for the retry it scheduled.
+          scheduleUnparkRetry();
+          return { unparked: false, reason: 'resumed-child-exited' };
+        }
+        if (hostCleanedUp) return { unparked: false, reason: 'host-ending' };
+        // The backoff and the early-exit run both restart only once a resume
+        // actually comes back, so repeated early exits keep backing off.
+        unparkRetryAttempt = 0;
+        if (childPromptReady) resumedChildExitStreak = 0;
         appendHostEvent(ownerId, 'child-unparked', {
           ...details,
           childPid: Number.isInteger(resumed.pid) ? resumed.pid : null,
@@ -12862,6 +12949,9 @@ export function hostThroughPty(o) {
       thisChild.onExit(({ exitCode, signal }) => {
         if (recycling) return; // an intended recycle kill — respawn re-wires; host lives on
         if (child !== thisChild) return; // a superseded child that died late — ignore
+        // WI-10006574: a resumed CLI dying before its prompt is a failed resume —
+        // the stand-in is back and the host lives on, unless the run hit its cap.
+        if (reparkResumedChildExit(thisChild, exitCode, signal)) return;
         // WI-38054: `signal` MUST be read here. node-pty reports a signal death as
         // { exitCode: 0, signal: N } — MEASURED in this tree: SIGHUP -> {"exitCode":0,"signal":1}.
         // Destructuring only exitCode (as this did) throws away the sole evidence that

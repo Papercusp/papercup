@@ -26,6 +26,7 @@ import type { HostFetch } from '@papercusp/plugin-sdk';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { providerRegistry, type ProviderRegistry, type RegisteredProvider } from '../integrations/provider-registry';
 import { createSourceHostFetch } from '../integrations/source-host-fetch';
+import { sourceTokenHarness } from '../external-triggers/source-store';
 import { ProviderCapabilityUnsupported } from '../capability-verbs/provider-dispatch';
 import { isTicketStatusCategory, TICKET_STATUS_CATEGORIES } from '../data-sources/ticket-vocabulary';
 import {
@@ -175,6 +176,7 @@ interface RecordTarget {
   sql: postgres.Sql;
   workspaceId: string;
   sourceId: string;
+  /** Token-store install for the source's credential (sourceTokenHarness), not the admission target. */
   harness: string;
   externalId: string;
   provider: RegisteredProvider;
@@ -210,8 +212,9 @@ async function resolveRecordTarget(
   if (!provider.descriptor.capabilities.includes(capability)) {
     throw new ProviderCapabilityUnsupported(provider.descriptor.id, capability);
   }
-  const harness = str(source.config?.harnessSlug);
-  if (!harness) throw new Error(`write_back_source_harness_missing:${sourceId}`);
+  // The token lives in the install that connected the source, not in config.harnessSlug (where
+  // admitted work lands): reading the target harness's token store found nothing (WI-10006662).
+  const harness = sourceTokenHarness(source.config);
   return { sql, workspaceId: admission.workspaceId, sourceId, harness, externalId, provider, capability, config: source.config ?? {} };
 }
 

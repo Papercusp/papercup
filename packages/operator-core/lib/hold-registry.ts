@@ -52,6 +52,13 @@ export interface HoldRegistryEntry {
   readonly recheckSec: number;
   /** The hold applies to some claimants only (D-023: verification conflict). */
   readonly claimantSpecific?: true;
+  /**
+   * The reason is RETIRED: no writer may produce it again (`assertHoldRegistered` refuses it
+   * with `RetiredHoldError`), yet a row stamped before the retirement — or by a deployed build
+   * that predates it, which keeps writing it until it ships — still resolves here, so the hold
+   * census names its real clearer instead of reporting it as a hold nobody ends.
+   */
+  readonly retired?: { readonly by: string };
 }
 
 const MIN = 60;
@@ -65,7 +72,7 @@ function entry(
   cls: HoldClass,
   clearer: HoldClearer,
   recheckSec: number,
-  extra: { match?: 'exact' | 'prefix'; claimantSpecific?: true } = {},
+  extra: { match?: 'exact' | 'prefix'; claimantSpecific?: true; retired?: { by: string } } = {},
 ): HoldRegistryEntry {
   return {
     domain,
@@ -75,6 +82,7 @@ function entry(
     clearer,
     recheckSec,
     ...(extra.claimantSpecific ? { claimantSpecific: true as const } : {}),
+    ...(extra.retired ? { retired: { by: extra.retired.by } } : {}),
   };
 }
 
@@ -85,6 +93,7 @@ const owner = (ref: string): HoldClearer => ({ kind: 'owner', ref });
 const AGENT_REVIEW_LANE = lane('improvements:agent-review (claim_next)');
 const INTAKE_REVIEW_LANE = lane('attention:bulk-review (promote or investigate the intake candidate)');
 const TRIAGE_LANE = lane('improvement-triage');
+const STRANDED_SWEEP = routine('stranded-tool-failure-sweep (papercusp-invocation-friction watchdog pass)');
 
 /** Prefix stem of the free-text legacy-adoption reason ('legacy-acceptance-adoption cohort <k> run <id>'). */
 export const LEGACY_ACCEPTANCE_ADOPTION_REASON_PREFIX = 'legacy-acceptance-adoption';
@@ -118,10 +127,17 @@ export const HOLD_REGISTRY: readonly HoldRegistryEntry[] = [
   entry('readiness', 'awaiting-agent-review', 'transient', AGENT_REVIEW_LANE, HOUR),
   entry('readiness', 'agent-review-resubmitted', 'transient', AGENT_REVIEW_LANE, HOUR),
   entry('readiness', 'triage-alone-does-not-establish-readiness', 'transient', AGENT_REVIEW_LANE, DAY),
-  // P-008 / D-038 (plan unified-bug-pipeline-and-honest-queue-2026-10-05): the probation
-  // reason corroborated-tool-failure-awaiting-review and the freshness reason
-  // deployment-freshness-unknown are retired. Their writers stamp awaiting-agent-review,
-  // and migration 1398 rewrote the open rows, so no writer may produce them again.
+  // P-008 / D-038 (plan unified-bug-pipeline-and-honest-queue-2026-10-05): the probation and
+  // freshness reasons are RETIRED. Their writers now stamp awaiting-agent-review and migration
+  // 1398 rewrites the open rows, so a write is refused. They stay resolvable because a deployed
+  // build that predates P-008 keeps stamping them until it ships (measured 2026-10-06 12:36Z);
+  // the stranded sweep enrols those rows, and agent-review entry restamps awaiting-agent-review.
+  entry('readiness', 'corroborated-tool-failure-awaiting-review', 'transient', STRANDED_SWEEP, HOUR, {
+    retired: { by: 'unified-bug-pipeline-and-honest-queue-2026-10-05 D-038' },
+  }),
+  entry('readiness', 'deployment-freshness-unknown', 'transient', STRANDED_SWEEP, HOUR, {
+    retired: { by: 'unified-bug-pipeline-and-honest-queue-2026-10-05 D-038' },
+  }),
   entry('readiness', 'no-acceptance-evidence-at-creation', 'transient', INTAKE_REVIEW_LANE, DAY),
   entry('readiness', LEGACY_ACCEPTANCE_ADOPTION_REASON_PREFIX, 'transient', INTAKE_REVIEW_LANE, DAY, { match: 'prefix' }),
   entry('readiness', 'citation-evidence-unresolved', 'transient', TRIAGE_LANE, DAY),
@@ -189,10 +205,27 @@ export class UnmappedHoldError extends Error {
   }
 }
 
-/** Refuse a hold write whose key has no registry entry. Returns the entry. */
+export class RetiredHoldError extends Error {
+  readonly code = 'retired_hold' as const;
+  constructor(
+    readonly domain: HoldDomain,
+    readonly key: string,
+    readonly retiredBy: string,
+  ) {
+    super(
+      `hold registry: refusing to write retired ${domain} hold '${key}' (retired by ${retiredBy}). ` +
+        'Rows already carrying it still resolve so their clearer stays visible; new writes must use the ' +
+        'reason that replaced it.',
+    );
+    this.name = 'RetiredHoldError';
+  }
+}
+
+/** Refuse a hold write whose key has no registry entry or is retired. Returns the entry. */
 export function assertHoldRegistered(domain: HoldDomain, key: string): HoldRegistryEntry {
   const found = resolveHold(domain, key);
   if (!found) throw new UnmappedHoldError(domain, key);
+  if (found.retired) throw new RetiredHoldError(domain, key, found.retired.by);
   return found;
 }
 

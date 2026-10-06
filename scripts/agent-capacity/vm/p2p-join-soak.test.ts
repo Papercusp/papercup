@@ -255,8 +255,11 @@ describe('vm/p2p-join-soak.sh (faked gcloud, gcp-rails, mcp-call)', () => {
       expect(r.out).toMatch(/S8_EXCHANGE tag=before-revoke waited=0s joinerPushed=1 joinerPulled=1/);
       const revoke = nodeCalls().filter((l) => l.includes('revoke_contributor'));
       expect(revoke).toHaveLength(1);
+      // --harness <pot> is load-bearing: without it the operator refuses the call with
+      // harness_forbidden (the pot is outside the calling session's own hive), measured live
+      // 2026-10-06 against :3170.
       expect(revoke[0]).toContain(
-        'scripts/mcp-call.mjs substrate:revoke_contributor {"workspaceId":"papercusp-workspace","potSlug":"hello-world-3-pot","githubUserId":279242982,"devicePubkey":"ABCDEFGHIJKL"} --client su-test --port 3170',
+        'scripts/mcp-call.mjs substrate:revoke_contributor {"workspaceId":"papercusp-workspace","potSlug":"hello-world-3-pot","githubUserId":279242982,"devicePubkey":"ABCDEFGHIJKL"} --client su-test --harness hello-world-3-pot --port 3170',
       );
       expect(r.out).toMatch(/S8_REVOKE rc=0 device=ABCDEFGH "ok":true "live":false/);
       expect(r.out).toMatch(/S8_EXCHANGE tag=after-revoke waited=0s joinerPushed=0 joinerPulled=0/);

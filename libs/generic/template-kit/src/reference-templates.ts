@@ -117,12 +117,18 @@ export const PAPERCUSP_OPS_HIVES_TEMPLATE: TemplateManifest = {
       run: "checks/gym-signals.test.ts",
       summary: "the stable app agent's guardrail gym signals are present and wired",
     },
+    {
+      id: "operation-first-triggers",
+      run: "checks/operation-first-triggers.test.ts",
+      summary:
+        "no app trigger creates agent work directly (direct-create binding kind or work-item create tool target); every agent-execution operation's worker role is declared in the app's root .papercusp/blueprint.yaml",
+    },
   ],
   musts: [
     {
       id: "canonical-plan-work-plane",
-      rule: "Every reusable external or scheduled agentic run invokes a declared blueprint operation that targets an app-owned plan template and canonical plan-item promotion; never raw work-item inserts, direct work_items:create, a copied DAG, or a parallel scheduler",
-      enforcedBy: "prose-only",
+      rule: "Every reusable external or scheduled agentic run invokes a declared blueprint operation (declared in the app's ROOT .papercusp/blueprint.yaml) that targets an app-owned plan template and canonical plan-item promotion; never raw work-item inserts, direct work_items:create, a copied DAG, or a parallel scheduler",
+      enforcedBy: "operation-first-triggers",
     },
     {
       id: "operation-first-task-binding",

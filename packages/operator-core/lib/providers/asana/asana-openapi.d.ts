@@ -514,6 +514,10 @@ export interface components {
              */
             readonly sync?: string;
         };
+        GetProjectsOk: {
+            data?: components["schemas"]["ProjectCompact"][];
+            next_page?: components["schemas"]["NextPage"];
+        };
         GetSectionsForProjectOk: {
             data?: components["schemas"]["SectionCompact"][];
             next_page?: components["schemas"]["NextPage"];
@@ -531,6 +535,10 @@ export interface components {
         };
         GetUserOk: {
             data?: components["schemas"]["UserResponse"];
+        };
+        GetWorkspacesOk: {
+            data?: components["schemas"]["WorkspaceCompact"][];
+            next_page?: components["schemas"]["NextPage"];
         };
         /** @description An object to represent a user's like. */
         Like: {

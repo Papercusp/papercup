@@ -106,7 +106,7 @@ s8() {
   case "$ghid" in '' | *[!0-9]*) log "S8_RESULT verdict=revoke-failed control=$control reason=no-numeric-gh-id"; return ;; esac
   mcp substrate:revoke_contributor \
     "{\"workspaceId\":\"$WS\",\"potSlug\":\"$POT\",\"githubUserId\":$ghid,\"devicePubkey\":\"$dev\"}" \
-    --port "$REVOKE_PORT" > "$OUT/revoke.out" 2>&1; rc=$?
+    --harness "$POT" --port "$REVOKE_PORT" > "$OUT/revoke.out" 2>&1; rc=$?
   log "S8_REVOKE rc=$rc device=${dev:0:8} $(grep -oE '"(ok|code|live|reason)": *("[^"]*"|true|false)' "$OUT/revoke.out" | tr -d ' ' | tr '\n' ' ')"
   grep -qE '"ok": *true' "$OUT/revoke.out" || { log "S8_RESULT verdict=revoke-failed control=$control"; return; }
   exchange after-revoke
