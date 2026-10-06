@@ -116,6 +116,10 @@ export const LOAD_SKIP_FACTOR = 1.2;
  *  runs with REDUCED_BUDGET at idle priority — the old behaviour skipped there. */
 export const HARD_LOAD_CEILING_FACTOR = 3;
 
+/** How far before the oldest batch commit the edit ledger is searched. git-sync
+ *  commits on a ~10-minute cadence, so an edit can precede its sweep by that much. */
+export const EDITOR_LOOKBACK_MARGIN_MS = 30 * 60_000;
+
 /** Confirm/attribution budget under load or while a gate suite runs. */
 export const REDUCED_BUDGET = { maxConfirmRuns: 1, maxAttributionProbes: 3 } as const;
 
@@ -977,10 +981,32 @@ export interface SyncBatchDeltaDeps {
   /** One file, in its OWN invocation (root CLAUDE.md's gate-triage rule).
    *  `true` = passed, `false` = failed, `null` = not measured. */
   confirmOne(file: string): Promise<ConfirmVerdict>;
-  /** File/refresh the deduped work item. */
+  /** File/refresh the deduped work item (assigned to `finding.assignee` when set). */
   fileRed(finding: RedFinding): Promise<{ ok: boolean; id?: string; adopted?: boolean; error?: string }>;
+  /** Newest recorded editor per file from the edit-attribution ledger, since `sinceMs`
+   *  (P-002). null = unreadable; the red then routes by trailer or files unassigned. */
+  lookupEditors?(files: readonly string[], sinceMs: number): Promise<EditorHit[] | null>;
   now(): number;
   log(message: string): void;
+}
+
+/**
+ * File a red, routed to its author when one is known. An assignment the store
+ * refuses (an unresolvable owner id, a retired session) must never cost the red
+ * itself: the finding is re-filed unassigned, and the refusal is logged so the
+ * routing miss stays visible. Routing is an improvement on the signal, not a
+ * condition of it (D-002).
+ */
+export async function fileRoutedRed(
+  deps: Pick<SyncBatchDeltaDeps, 'fileRed' | 'log'>,
+  finding: RedFinding,
+): Promise<{ ok: boolean; id?: string; adopted?: boolean; error?: string }> {
+  const res = await deps.fileRed(finding);
+  if (res.ok || !finding.assignee) return res;
+  deps.log(
+    `[sync-batch-delta] routing to ${finding.assignee} refused (${res.error ?? 'unknown'}); re-filing unassigned`,
+  );
+  return deps.fileRed({ ...finding, assignee: null });
 }
 
 export type SyncBatchDeltaStatus =
@@ -1045,22 +1071,70 @@ export async function runSyncBatchDeltaCheck(
   deps: SyncBatchDeltaDeps,
   opts?: { caps?: RadiusCaps; maxConfirmRuns?: number; maxAttributionProbes?: number },
 ): Promise<SyncBatchDeltaResult> {
-  const caps = opts?.caps ?? DEFAULT_RADIUS_CAPS;
-  const maxConfirm = opts?.maxConfirmRuns ?? MAX_CONFIRM_RUNS;
-  const maxProbes = opts?.maxAttributionProbes ?? MAX_ATTRIBUTION_PROBES;
+  // Coverage is carried from the PRE-run cursor: some inner branches rebuild the
+  // cursor from scratch, which would otherwise drop the history.
+  let priorCoverage: SyncDeltaCoverage | undefined;
+  try {
+    priorCoverage = (await deps.readCursor())?.coverage;
+  } catch {
+    priorCoverage = undefined;
+  }
+  const result = await runSyncBatchDeltaTick(deps, opts);
+  try {
+    await recordCoverage(deps, priorCoverage, result);
+  } catch {
+    // Coverage is an instrument, never a reason to fail the tick.
+  }
+  return result;
+}
 
-  // ── 1. never fight the gate ────────────────────────────────────────────────
-  const loadVerdict = evaluateLoad(deps.hostLoad(), LOAD_SKIP_FACTOR);
-  if (loadVerdict.skip) {
-    await recordSkip(deps, loadVerdict.reason);
-    deps.log(`[sync-batch-delta] skip: ${loadVerdict.reason}`);
-    return emptyResult('skipped', loadVerdict.reason);
+/** Append this tick to the coverage history and raise/clear the low-coverage alarm.
+ *  The alarm files only on the TRANSITION into low coverage, so a sustained low
+ *  period is one item, not one per tick. */
+async function recordCoverage(
+  deps: SyncBatchDeltaDeps,
+  prior: SyncDeltaCoverage | undefined,
+  result: SyncBatchDeltaResult,
+): Promise<void> {
+  const cursor = await deps.readCursor();
+  if (!cursor?.sha) return; // nothing to annotate before the first bootstrap
+  const now = deps.now();
+  let coverage = recordCoverageTick(prior, { atMs: now, evaluated: isEvaluatedStatus(result.status), status: result.status });
+  const verdict = evaluateCoverage(coverage, now);
+  if (verdict.low && coverage.alarmOpenSinceMs === undefined) {
+    const res = await deps.fileRed(buildCoverageAlarm(verdict, coverage));
+    if (res.ok) coverage = { ...coverage, alarmOpenSinceMs: now };
+    deps.log(`[sync-batch-delta] coverage low (${verdict.evaluated}/${verdict.total}) — alarm ${res.ok ? 'filed' : `failed: ${res.error}`}`);
+  } else if (!verdict.low && verdict.ratio !== null && coverage.alarmOpenSinceMs !== undefined) {
+    const { alarmOpenSinceMs: _cleared, ...rest } = coverage;
+    coverage = rest;
   }
-  if ((await deps.greenCheckpointRunning()) === true) {
-    await recordSkip(deps, 'green-checkpoint-running');
-    deps.log('[sync-batch-delta] skip: a green-checkpoint suite is running');
-    return emptyResult('skipped', 'green-checkpoint-running');
+  await deps.writeCursor({ ...cursor, coverage });
+}
+
+async function runSyncBatchDeltaTick(
+  deps: SyncBatchDeltaDeps,
+  opts?: { caps?: RadiusCaps; maxConfirmRuns?: number; maxAttributionProbes?: number },
+): Promise<SyncBatchDeltaResult> {
+  const caps = opts?.caps ?? DEFAULT_RADIUS_CAPS;
+
+  // ── 1. capacity: idle-priority legs always; load and the gate shrink the budget ──
+  const capacity = evaluateCapacity({
+    reading: deps.hostLoad(),
+    gateRunning: await deps.greenCheckpointRunning(),
+    fullBudget: {
+      maxConfirmRuns: opts?.maxConfirmRuns ?? MAX_CONFIRM_RUNS,
+      maxAttributionProbes: opts?.maxAttributionProbes ?? MAX_ATTRIBUTION_PROBES,
+    },
+  });
+  if (capacity.skip) {
+    await recordSkip(deps, capacity.reason);
+    deps.log(`[sync-batch-delta] skip: ${capacity.reason}`);
+    return emptyResult('skipped', capacity.reason);
   }
+  if (capacity.mode === 'reduced') deps.log(`[sync-batch-delta] reduced budget: ${capacity.reason}`);
+  const maxConfirm = capacity.budget.maxConfirmRuns;
+  const maxProbes = capacity.budget.maxAttributionProbes;
 
   // ── 2. cursor ──────────────────────────────────────────────────────────────
   const head = await deps.headSha();
@@ -1231,8 +1305,24 @@ export async function runSyncBatchDeltaCheck(
       },
       maxProbes: probeBudget,
     });
-    const finding = buildRedFinding({ failing: cand.failing, attribution, batches, leg: cand.leg });
-    const res = await deps.fileRed(finding);
+    // P-002: route to the editing agent. Ledger rows are looked up from the oldest
+    // batch in the window (minus a margin: the edit precedes its sweep commit).
+    const oldestMs = batches.reduce<number | null>(
+      (m, b) => (b.committedAtMs === null ? m : m === null ? b.committedAtMs : Math.min(m, b.committedAtMs)),
+      null,
+    );
+    const lookupFiles = [cand.failing.file, ...(attribution.batch?.paths ?? [])];
+    let editors: EditorHit[] | null = null;
+    if (deps.lookupEditors) {
+      try {
+        editors = await deps.lookupEditors(lookupFiles, (oldestMs ?? deps.now()) - EDITOR_LOOKBACK_MARGIN_MS);
+      } catch {
+        editors = null;
+      }
+    }
+    const author = pickRedAuthor({ failingFile: cand.failing.file, batch: attribution.batch, editors });
+    const finding = buildRedFinding({ failing: cand.failing, attribution, batches, leg: cand.leg, author });
+    const res = await fileRoutedRed(deps, finding);
     filed.push({
       file: cand.failing.file,
       conditionKey: finding.conditionKey,
