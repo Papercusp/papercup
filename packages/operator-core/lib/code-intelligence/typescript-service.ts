@@ -135,20 +135,32 @@ export interface ScopedTsTree extends TsTree {
   stubbedFiles(): number;
 }
 
+/** How a reached, non-root, in-repo file is served. */
+export type StubFn = (ts: Ts, fileName: string, text: string) => string;
+
 /**
  * A LanguageService whose program is rooted at `rootFiles`. Files the program
  * reaches through imports are served as {@link reExportStub}s unless they are
  * root files or sit under node_modules (package declarations stay whole, so
  * library types still resolve).
+ *
+ * `stub` exists for measurement: passing the identity serves the full transitive
+ * closure (the baseline the stub is checked against), and a deliberately lossy
+ * stub is the falsifiability control for that check.
  */
-export function openScopedTsTree(ts: Ts, root: string, rootFiles: readonly string[]): ScopedTsTree {
+export function openScopedTsTree(
+  ts: Ts,
+  root: string,
+  rootFiles: readonly string[],
+  stub: StubFn = reExportStub,
+): ScopedTsTree {
   const full = new Set(rootFiles);
   let stubbed = 0;
   const textOf = (f: string): string | undefined => {
     const text = ts.sys.readFile(f);
     if (text === undefined || full.has(f) || f.split('/').includes('node_modules')) return text;
     stubbed += 1;
-    return reExportStub(ts, f, text);
+    return stub(ts, f, text);
   };
   return {
     ts,

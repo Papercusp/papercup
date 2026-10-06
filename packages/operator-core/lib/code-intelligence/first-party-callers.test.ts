@@ -8,7 +8,14 @@ import { dirname, join } from 'node:path';
 import ts from 'typescript';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { firstPartyCallers, findCandidateFiles } from './first-party-callers';
-import { incomingCallSites, openScopedTsTree, openTsTree, reExportStub, tsDeclarations } from './typescript-service';
+import {
+  incomingCallSites,
+  openScopedTsTree,
+  openTsTree,
+  reExportStub,
+  tsDeclarations,
+  type TsTree,
+} from './typescript-service';
 
 const FILES: Record<string, string> = {
   'tsconfig.json': JSON.stringify({ compilerOptions: { target: 'es2022', module: 'esnext', moduleResolution: 'bundler', strict: true } }),
@@ -111,19 +118,42 @@ describe('scoped program', () => {
     expect(reExportStub(ts, 'x.ts', FILES['src/barrel.ts']!)).toBe('export * from "./a";');
   });
 
-  it('resolves the same callers as the whole-tree program the bench measured', () => {
-    const scoped = openScopedTsTree(ts, root, findCandidateFiles(root, 'target').files);
-    const whole = openTsTree(ts, root);
+  const resolvedOf = (tree: TsTree): string[] => {
+    const program = tree.service.getProgram()!;
+    return lines(incomingCallSites(tree, program, tsDeclarations(tree, program, 'target')));
+  };
+  const withTree = <T>(tree: TsTree, fn: (t: TsTree) => T): T => {
     try {
-      const sitesOf = (tree: typeof whole): string[] => {
-        const program = tree.service.getProgram()!;
-        return lines(incomingCallSites(tree, program, tsDeclarations(tree, program, 'target')));
-      };
-      expect(sitesOf(scoped)).toEqual(sitesOf(whole));
-      expect(sitesOf(scoped)).toEqual(['src/b.test.ts:4', 'src/use.ts:4']);
+      return fn(tree);
     } finally {
-      scoped.service.dispose();
-      whole.service.dispose();
+      tree.service.dispose();
     }
+  };
+
+  it('resolves the same callers as the whole-tree program the bench measured', () => {
+    const scoped = withTree(openScopedTsTree(ts, root, findCandidateFiles(root, 'target').files), resolvedOf);
+    const whole = withTree(openTsTree(ts, root), resolvedOf);
+    expect(scoped).toEqual(whole);
+    expect(scoped).toEqual(['src/b.test.ts:4', 'src/use.ts:4']);
+  });
+
+  it('serves the full transitive closure when the stub is the identity', () => {
+    const candidates = findCandidateFiles(root, 'target').files;
+    const closure = withTree(openScopedTsTree(ts, root, candidates, (_ts, _f, text) => text), resolvedOf);
+    expect(closure).toEqual(['src/b.test.ts:4', 'src/use.ts:4']);
+  });
+
+  // Falsifiability control for the parity above: a stub that drops the barrel's
+  // `export *` must break the chain, so the parity test is sensitive to the one
+  // thing reExportStub is responsible for keeping.
+  it('loses the export-star caller when the stub drops re-exports (control)', () => {
+    const candidates = findCandidateFiles(root, 'target').files;
+    const lossy = withTree(openScopedTsTree(ts, root, candidates, () => ''), resolvedOf);
+    expect(lossy).not.toContain('src/use.ts:4');
+    expect(lossy).toContain('src/b.test.ts:4');
+    // ...and firstPartyCallers still lists the call, now as unattributed: the
+    // syntactic sweep is what keeps grep-equivalence when resolution fails.
+    const a = firstPartyCallers({ ts, root, name: 'target' });
+    expect(lines(a.sites)).toContain('src/use.ts:4');
   });
 });
