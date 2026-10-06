@@ -511,6 +511,129 @@ describe('withFsMutex', () => {
   });
 });
 
+// EI-25235644267089650: old leases still protect live owners. Age is only a
+// recovery fallback for records that cannot identify an owner.
+describe('fs-mutex lease reclamation', () => {
+  it.each([
+    ['local', 'reader'], ['local', 'writer'],
+    ['remote', 'reader'], ['remote', 'writer'],
+  ] as const)('preserves an old %s writer against a %s waiter until release', async (location, mode) => {
+    const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-old-writer-'));
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = dir;
+    const lockDir = join(dir, 'old-writer.lock');
+    await mkdir(lockDir);
+    await writeFile(join(lockDir, 'owner.json'), JSON.stringify({
+      pid: process.pid, host: location === 'local' ? hostname() : `${hostname()}-remote`,
+    }));
+    const old = new Date(Date.now() - 60_000);
+    await utimes(lockDir, old, old);
+    const acquire = mode === 'reader' ? withFsMutexRead : withFsMutex;
+    let entered = false;
+    try {
+      await expect(acquire('old-writer', async () => { entered = true; }, {
+        timeoutMs: 120, staleMs: 1, retryMs: 5,
+      })).rejects.toThrow('Timed out after 120ms');
+      expect(entered).toBe(false);
+      expect(peekFsMutexSync('old-writer').owner).toMatchObject({ pid: process.pid });
+      await rm(lockDir, { recursive: true, force: true });
+      await acquire('old-writer', async () => { entered = true; });
+      expect(entered).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps an old live reader protected until its callback releases', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-old-reader-'));
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = dir;
+    const readersDir = join(dir, 'old-reader.readers');
+    let started!: () => void;
+    const ready = new Promise<void>(resolve => { started = resolve; });
+    let release!: () => void;
+    const released = new Promise<void>(resolve => { release = resolve; });
+    const reader = withFsMutexRead('old-reader', async () => { started(); await released; });
+    let writerEntered = false;
+    try {
+      await ready;
+      const markers = await readdir(readersDir);
+      expect(markers).toHaveLength(1);
+      const old = new Date(Date.now() - 60_000);
+      await utimes(join(readersDir, markers[0]), old, old);
+      await expect(withFsMutex('old-reader', async () => { writerEntered = true; }, {
+        timeoutMs: 120, staleMs: 1, retryMs: 5,
+      })).rejects.toThrow('Timed out after 120ms');
+      expect(writerEntered).toBe(false);
+      expect(await readdir(readersDir)).toEqual(markers);
+      release();
+      await reader;
+      expect(await readdir(readersDir)).toEqual([]);
+      await withFsMutex('old-reader', async () => { writerEntered = true; });
+      expect(writerEntered).toBe(true);
+    } finally {
+      release();
+      await reader;
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves an old remote reader until explicit release', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-remote-reader-'));
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = dir;
+    const readersDir = join(dir, 'remote-reader.readers');
+    const markerDir = join(readersDir, 'remote.lock');
+    await mkdir(markerDir, { recursive: true });
+    await writeFile(join(markerDir, 'owner.json'), JSON.stringify({ pid: process.pid, host: `${hostname()}-remote` }));
+    const old = new Date(Date.now() - 60_000);
+    await utimes(markerDir, old, old);
+    try {
+      await expect(withFsMutex('remote-reader', async () => undefined, {
+        timeoutMs: 120, staleMs: 1, retryMs: 5,
+      })).rejects.toThrow('Timed out after 120ms');
+      expect(await readdir(readersDir)).toEqual(['remote.lock']);
+      await rm(markerDir, { recursive: true, force: true });
+      await expect(withFsMutex('remote-reader', async () => 'released')).resolves.toBe('released');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it.each(['writer', 'reader'] as const)('reclaims a fresh %s lease only after confirming its owner dead', async mode => {
+    const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-dead-owner-'));
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = dir;
+    const markerDir = mode === 'writer' ? join(dir, 'dead-owner.lock') : join(dir, 'dead-owner.readers', 'dead.lock');
+    await mkdir(markerDir, { recursive: true });
+    await writeFile(join(markerDir, 'owner.json'), JSON.stringify({ pid: 2_147_483_647, host: hostname() }));
+    try {
+      await expect(withFsMutex('dead-owner', async () => 'recovered', {
+        timeoutMs: 1_000, staleMs: 60_000, retryMs: 5,
+      })).resolves.toBe('recovered');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ['writer', undefined], ['reader', undefined],
+    ['writer', '{invalid-json'], ['reader', '{invalid-json'],
+    ['writer', '{"pid":"invalid","host":"local"}'], ['reader', '{"pid":"invalid","host":"local"}'],
+  ] as const)('recovers an old ownerless or malformed %s lease (%s)', async (mode, record) => {
+    const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-ownerless-'));
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = dir;
+    const markerDir = mode === 'writer' ? join(dir, 'ownerless.lock') : join(dir, 'ownerless.readers', 'orphan.lock');
+    await mkdir(markerDir, { recursive: true });
+    if (record !== undefined) await writeFile(join(markerDir, 'owner.json'), record);
+    const old = new Date(Date.now() - 60_000);
+    await utimes(markerDir, old, old);
+    try {
+      await expect(withFsMutex('ownerless', async () => 'recovered', {
+        timeoutMs: 1_000, staleMs: 1, retryMs: 5,
+      })).resolves.toBe('recovered');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 // EI-21915677034576963: withFsMutex had no fairness at all — every waiter just raced
 // mkdir() on a fixed poll, so a caller that re-acquires the SAME lock across many
 // short-lived sub-invocations (e.g. one shard of a broad affected-tests run after
