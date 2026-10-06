@@ -16,6 +16,8 @@ export interface AmendReceiptEntry {
 }
 
 export const AMEND_RECEIPT_RETENTION_MS = 60 * 60 * 1000;
+/** A run still 'running' after this long is treated as orphaned and may be reclaimed by a same-key retry. */
+export const AMEND_RECEIPT_RUNNING_LEASE_MS = 15 * 60 * 1000;
 interface ReceiptRow {
   idempotency_key: string;
   rubric_ref: string;
@@ -74,11 +76,18 @@ export async function trackAmendRun(
     ON CONFLICT (workspace_id, rubric_ref, idempotency_key) DO NOTHING
     RETURNING idempotency_key
   `;
+  // A 'running' row past the lease belongs to a worker that died mid-run (an operator
+  // restart kills the in-process run before it can write 'failed'). Keys are
+  // deterministic per request, so without this reclaim every same-key retry would
+  // answer `pending` forever (WI-10006937).
+  const leaseSeconds = Math.round(AMEND_RECEIPT_RUNNING_LEASE_MS / 1000);
   const reclaimed = inserted.length > 0 ? [] : await sql<Array<{ idempotency_key: string }>>`
     UPDATE harness_shared.rubric_amend_receipts
        SET state = 'running', result_json = NULL, error = NULL, started_at = now(), finished_at = NULL
      WHERE workspace_id = ${workspaceId} AND rubric_ref = ${rubricRef}
-       AND idempotency_key = ${idempotencyKey} AND state = 'failed'
+       AND idempotency_key = ${idempotencyKey}
+       AND (state = 'failed'
+         OR (state = 'running' AND started_at < now() - make_interval(secs => ${leaseSeconds})))
     RETURNING idempotency_key
   `;
   if (inserted.length === 0 && reclaimed.length === 0) {

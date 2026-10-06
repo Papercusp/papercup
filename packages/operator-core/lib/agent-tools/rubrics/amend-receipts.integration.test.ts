@@ -119,4 +119,36 @@ describe('rubric amend receipts in shared Postgres', () => {
     expect(executions).toBe(2);
     expect(await getAmendReceipt(rubric, key)).toMatchObject({ state: 'committed' });
   });
+
+  // WI-10006937: an operator restart killed the worker mid-run, so its receipt stayed
+  // 'running' with no finished_at. The key is deterministic, so every retry answered
+  // `pending` forever and the review request could never be re-sent.
+  it('reclaims a running receipt past its lease, but not one inside it', async () => {
+    const { AMEND_RECEIPT_RUNNING_LEASE_MS } = await import('./amend-receipts');
+    const rubric = 'acceptance-receipt-orphaned';
+    const leaseSeconds = Math.round(AMEND_RECEIPT_RUNNING_LEASE_MS / 1000);
+    const seedRunning = async (key: string, ageSeconds: number) => {
+      await db.adminSql`
+        INSERT INTO harness_shared.rubric_amend_receipts
+          (workspace_id, rubric_ref, idempotency_key, state, started_at)
+        VALUES (${activeWorkspaceId()}, ${rubric}, ${key}, 'running',
+                now() - make_interval(secs => ${ageSeconds}))
+      `;
+    };
+    let executions = 0;
+    const run = async () => {
+      executions++;
+      return { ok: true, rerun: true };
+    };
+
+    // Control: a run still inside its lease is a live peer, so the retry must wait.
+    await seedRunning('orphan-inside-lease', leaseSeconds - 60);
+    expect(await trackAmendRun('orphan-inside-lease', rubric, run)).toMatchObject({ pending: true });
+    expect(executions).toBe(0);
+
+    await seedRunning('orphan-past-lease', leaseSeconds + 60);
+    expect(await trackAmendRun('orphan-past-lease', rubric, run)).toEqual({ ok: true, rerun: true });
+    expect(executions).toBe(1);
+    expect(await getAmendReceipt(rubric, 'orphan-past-lease')).toMatchObject({ state: 'committed' });
+  });
 });
