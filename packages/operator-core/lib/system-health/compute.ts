@@ -3287,6 +3287,69 @@ async function collectContextInjection(ctx: HealthCtx): Promise<HealthPanel<Cont
 // ── the aggregator ───────────────────────────────────────────────────────────
 
 /**
+ * The hive scope a health snapshot reads: the representative pot (prefer a started one),
+ * whether it is started, and the open-placement counts. Never throws; an unreadable registry
+ * yields `potSlug: null`, so queen/work-feed degrade to 'unknown'.
+ *
+ * WI-10007007: the pot registry is read ONCE. `listPots` is serial per pot (a hive-pubkey and
+ * wake-view read each) and measured up to 100s per call under load; the open-placement block
+ * used to call it a second time, on every tick, for the same slugs.
+ */
+export async function resolveHealthPotScope(
+  ws: string,
+  L: TickLegTracker = NOOP_TICK_LEGS,
+): Promise<Pick<HealthCtx, 'potSlug' | 'started' | 'openPlacements'>> {
+  let potSlug: string | null = null;
+  let started = false;
+  let allSlugs: string[] = [];
+  try {
+    const { listPots } = await import('../agent-tools/pot/_resolve');
+    const { getPotStarted } = await import('../pot/started');
+    const hives = await L.leg('list-pots', () => listPots(ws));
+    allSlugs = hives.map((h) => h.slug);
+    const startedSlug = await L.leg('pot-started', async () => {
+      for (const h of hives) {
+        if (await getPotStarted(ws, h.slug).catch(() => false)) return h.slug;
+      }
+      return null;
+    });
+    if (startedSlug) { potSlug = startedSlug; started = true; }
+    if (!potSlug && hives.length > 0) potSlug = hives[0].slug;
+  } catch { /* registry unreadable — queen/work-feed degrade to 'unknown' */ }
+
+  let openPlacements: HealthCtx['openPlacements'] = null;
+  if (potSlug) {
+    try {
+      const { summarizeOpenPlacements } = await import('../pot/placement-watchdog');
+      // K1 (workspace-scoped-coordination P-003 / D-006): the one workspace Queen
+      // drives placements across ALL the workspace's hives, so when
+      // WORKSPACE_COORDINATION is ON the open-placement panel SPANS every hive
+      // (summed) rather than just the representative one. OFF (the dark default) ⇒
+      // the single representative hive, byte-identical to today.
+      const { isWorkspaceCoordinationOn } = await import('../workspace-brain-scope');
+      // EI-25221129396992808: every await on the tick path is a named leg, so an in-flight
+      // line can name what a long tick is blocked on.
+      const on = await L.leg('coordination-flag', () => isWorkspaceCoordinationOn());
+      // potSlug is only ever set from the list-pots read, so allSlugs is non-empty here.
+      const scopeSlugs = on && allSlugs.length > 0 ? allSlugs : [potSlug];
+      const sums = await L.leg('open-placements', () =>
+        Promise.all(scopeSlugs.map((slug) => summarizeOpenPlacements(ws, slug))),
+      );
+      openPlacements = sums.reduce(
+        (acc, op) => ({
+          recovering: acc.recovering + op.recovering,
+          cursed: acc.cursed + op.cursed,
+          stranded: acc.stranded + op.stranded,
+          workingTracked: acc.workingTracked + op.workingTracked,
+        }),
+        { recovering: 0, cursed: 0, stranded: 0, workingTracked: 0 },
+      );
+    } catch { /* leave null — queen.workingTracked + bees.placements degrade to 0 */ }
+  }
+  return { potSlug, started, openPlacements };
+}
+
+/**
  * Build the whole-system health snapshot for a workspace. Flag-agnostic (the
  * tab/resolver/tick gate on SYSTEM_HEALTH_TAB; the overwatch brief wraps this
  * regardless). Resolves the hive + the shared open-placement + gateway reads
