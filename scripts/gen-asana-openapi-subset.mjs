@@ -39,6 +39,7 @@ const OUT_DTS = join(OUT_DIR, 'asana-openapi.d.ts');
 const ROOT_SCHEMAS = [
   'TaskResponse', 'TaskCompact', 'StoryResponse', 'StoryCompact', 'EventResponse',
   'SectionCompact', 'ProjectCompact', 'UserCompact', 'UserResponse', 'TagCompact', 'ErrorResponse',
+  'WorkspaceCompact',
 ];
 
 /** Inline bodies of the endpoints the provider calls, lifted to named schemas. */
@@ -55,6 +56,9 @@ const ENDPOINT_BODIES = [
   { name: 'AddTaskForSectionBody', path: '/sections/{section_gid}/addTask', method: 'post', request: true },
   { name: 'GetSectionsForProjectOk', path: '/projects/{project_gid}/sections', method: 'get', response: '200' },
   { name: 'GetUserOk', path: '/users/{user_gid}', method: 'get', response: '200' },
+  // ticket.containers (the Integrations page's pickers, plan decision D-014).
+  { name: 'GetWorkspacesOk', path: '/workspaces', method: 'get', response: '200' },
+  { name: 'GetProjectsOk', path: '/projects', method: 'get', response: '200' },
 ];
 
 const SCHEMA_REF = /^#\/components\/schemas\/(.+)$/;
