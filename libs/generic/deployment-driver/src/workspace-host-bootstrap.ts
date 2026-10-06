@@ -144,6 +144,13 @@ export const DEFAULT_WORKSPACE_HOST_AGENT_USER = 'papercusp-agent';
 export const WORKSPACE_HOST_BOOTC_RUNTIME_READ_GROUP = 'papercusp-runtime-read';
 export const WORKSPACE_HOST_RUNTIME_ROOT = '/opt/papercusp';
 export const WORKSPACE_HOST_STATE_ROOT = '/var/lib/papercusp';
+/**
+ * Root-only bootstrap bookkeeping (WI-10006299). The completion marker lived under
+ * $RUNTIME_ROOT, which is read-only on a bootc image (/opt is part of the image), so a
+ * bootc bootstrap died on its last step. It is not under $STATE_ROOT either: the service
+ * user owns that, and could forge the marker to make a later boot skip its restart.
+ */
+export const WORKSPACE_HOST_BOOTSTRAP_STATE_DIR = '/var/lib/papercusp-bootstrap';
 export const WORKSPACE_HOST_DATA_ROOT = '/srv/papercusp/workspaces';
 /** Private key and host pin for the operator's loopback PTY hop into the customer identity. */
 export const WORKSPACE_HOST_HOSTED_PTY_SSH_KEY = `${WORKSPACE_HOST_STATE_ROOT}/hosted-pty-ssh/id_ed25519`;
@@ -2547,6 +2554,7 @@ export function buildWorkspaceHostBootstrap(
     assignment("AGENT_HOME", `/home/${agentUser}`),
     assignment("RUNTIME_ROOT", WORKSPACE_HOST_RUNTIME_ROOT),
     assignment("STATE_ROOT", WORKSPACE_HOST_STATE_ROOT),
+    assignment("BOOTSTRAP_STATE_DIR", WORKSPACE_HOST_BOOTSTRAP_STATE_DIR),
     assignment("WORKSPACE_ROOT", WORKSPACE_HOST_DATA_ROOT),
     assignment("HOSTED_PTY_SSH_KEY", WORKSPACE_HOST_HOSTED_PTY_SSH_KEY),
     assignment("HOSTED_PTY_KNOWN_HOSTS", WORKSPACE_HOST_HOSTED_PTY_KNOWN_HOSTS),
@@ -3243,7 +3251,7 @@ export function buildWorkspaceHostBootstrap(
     // rendered script, `current` unchanged by this run, and the unit active. A release switch,
     // a changed rendering, or a second run within one boot still restarts (P-018 r7 above).
     `BOOTSTRAP_FINGERPRINT=${WORKSPACE_HOST_BOOTSTRAP_FINGERPRINT_PLACEHOLDER}`,
-    'BOOTSTRAP_COMPLETE_MARKER="$RUNTIME_ROOT/.bootstrap-complete"',
+    'BOOTSTRAP_COMPLETE_MARKER="$BOOTSTRAP_STATE_DIR/complete"',
     'BOOT_ID="$(cat /proc/sys/kernel/random/boot_id)"',
     'service_restart_needed() {',
     '  local marker_fingerprint="" marker_boot_id=""',
@@ -3452,6 +3460,7 @@ export function buildWorkspaceHostBootstrap(
     `printf '${WORKSPACE_HOST_BOOTSTRAP_ATTESTATION_PREFIX}%s\\n' "$(base64 --wrap=0 < \"$ATTESTATION_PATH\")"`,
     "SWITCHED=0",
     // WI-10004242: only a run that got this far may let a LATER boot skip the service restart.
+    'install -d -o root -g root -m 0700 "$BOOTSTRAP_STATE_DIR"',
     'printf "%s %s\\n" "$BOOTSTRAP_FINGERPRINT" "$BOOT_ID" > "$BOOTSTRAP_COMPLETE_MARKER.next"',
     'mv -Tf "$BOOTSTRAP_COMPLETE_MARKER.next" "$BOOTSTRAP_COMPLETE_MARKER"',
     'log "bootstrap complete"',

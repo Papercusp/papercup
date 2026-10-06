@@ -1668,6 +1668,24 @@ describe('buildWorkspaceHostBootstrap', () => {
     }
   });
 
+  it('writes the completion marker to a root-only /var/lib dir, never the read-only bootc runtime root (WI-10006299)', () => {
+    for (const script of [buildWorkspaceHostBootstrap(bootcInput()), buildWorkspaceHostBootstrap(input())]) {
+      const lines = script.split('\n');
+      const dirAssignment = lines.find((l) => l.startsWith('BOOTSTRAP_STATE_DIR='));
+      expect(dirAssignment).toContain('/var/lib/papercusp-bootstrap');
+      // Not $STATE_ROOT (/var/lib/papercusp): the service user owns it and could forge the marker.
+      expect(dirAssignment).not.toMatch(/\/var\/lib\/papercusp\//);
+      expect(lines).toContain('BOOTSTRAP_COMPLETE_MARKER="$BOOTSTRAP_STATE_DIR/complete"');
+      const mkdir = lines.indexOf('install -d -o root -g root -m 0700 "$BOOTSTRAP_STATE_DIR"');
+      const write = lines.indexOf('printf "%s %s\\n" "$BOOTSTRAP_FINGERPRINT" "$BOOT_ID" > "$BOOTSTRAP_COMPLETE_MARKER.next"');
+      expect(mkdir).toBeGreaterThan(0);
+      expect(write).toBe(mkdir + 1);
+      expect(script).not.toContain('$RUNTIME_ROOT/.bootstrap-complete');
+    }
+    // bootc: /opt is part of the immutable image, so nothing may redirect output into $RUNTIME_ROOT.
+    expect(buildWorkspaceHostBootstrap(bootcInput())).not.toMatch(/>\s*"?\$RUNTIME_ROOT/);
+  });
+
   it('attests bootc runtime confidentiality without refusing the image a+rx executables', () => {
     const oldShape = '-type f -o -type d \\) -perm -0004';
     const ubuntuLines = buildWorkspaceHostBootstrap(input()).split('\n');
