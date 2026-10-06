@@ -38,6 +38,15 @@ describe('integrationModeQuestion (P-017, D-007 wording)', () => {
     expect(q.options.find((o) => o.value === 'direct')!.available).toBe(true);
   });
 
+  it('WI-10006107: makes the working copy unavailable, with a reason, when the repo uses submodules', () => {
+    const q = integrationModeQuestion({ repoLabel: 'acme/widgets', hasTestSuite: true, hasSubmodules: true });
+    const review = q.options.find((o) => o.value === 'review')!;
+    expect(review.available).toBe(false);
+    expect(review.unavailableReason).toMatch(/submodules/);
+    expect(q.defaultValue).toBe('direct');
+    expect(q.blocked).toBeUndefined();
+  });
+
   it('falls back to a generic repo name when the label is blank', () => {
     const q = integrationModeQuestion({ repoLabel: '  ' });
     expect(q.options[0].label).toBe('Straight into the main repository');
