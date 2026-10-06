@@ -89,13 +89,56 @@ export function resolveCargoTestRunSource(env = process.env) {
 }
 
 /**
- * `execution_details` for a cargo row: the probe's phase (`baseline`/`mutant`), mirroring
- * `resolveMutationProbePhase`. Null outside a probe — never an invented phase.
+ * The probe's phase (`baseline`/`mutant`) for a cargo row, mirroring `resolveMutationProbePhase`.
+ * Null outside a probe — never an invented phase.
  */
-export function resolveCargoExecutionDetails(env = process.env) {
+export function resolveCargoMutationPhase(env = process.env) {
   if (env.PAPERCUSP_MUTATION_PROBE !== '1') return null;
-  const phase = env.PAPERCUSP_MUTATION_PHASE?.trim();
-  return phase ? { mutationPhase: phase } : null;
+  return env.PAPERCUSP_MUTATION_PHASE?.trim() || null;
+}
+
+/** Mirrors `MAX_RECORDED_FAILED_CASES` / `isRecordedCaseTitle` in libs/test-config/src/execution-details.ts. */
+const MAX_CARGO_FAILED_CASES = 64;
+const MAX_CARGO_CASE_TITLE_CHARS = 2_048;
+function isCargoCaseTitle(value) {
+  return typeof value === 'string' && value.length > 0 && value.length <= MAX_CARGO_CASE_TITLE_CHARS
+    && value.trim() === value && !/[\u0000-\u001f\u007f]/.test(value);
+}
+
+/**
+ * A COMPLETE `execution_details` record (schemaVersion 1) for one cargo row (WI-10006849).
+ * The contract parser (`parseTestRunExecutionDetails`) is strict: a partial record — the bare
+ * `{ mutationPhase }` WI-10006828 wrote — parses as malformed, and the spec evaluator then treats
+ * the run as having NO measured failing case, so no cargo mutation run could ever establish
+ * falsifiability. `failedCaseTitles` carries cargo's own test path (`tests::name`), the identity
+ * a spec binding declares in `adequacy.testCases`. Cargo does not snapshot the worktree around a
+ * run and observes no commit, so `worktreeDirty` is true (with its reason) and `commitSha` null.
+ */
+export function buildCargoExecutionDetails({
+  root, filePath, passed = 0, failed = 0, skipped = 0, collectionFailed = false,
+  failedCaseTitles = [], harnessSlug = null, workspaceId = null, env = process.env,
+}) {
+  const titles = collectionFailed
+    ? []
+    : [...new Set(failedCaseTitles.filter(isCargoCaseTitle))].slice(0, Math.min(MAX_CARGO_FAILED_CASES, failed));
+  return {
+    schemaVersion: 1,
+    root,
+    filePath,
+    runGroupId: null,
+    workspaceId,
+    harnessSlug,
+    testNamePattern: null,
+    passed,
+    failed,
+    skipped,
+    collectionFailed,
+    ...(titles.length > 0 ? { failedCaseTitles: titles } : {}),
+    mutationPhase: resolveCargoMutationPhase(env),
+    commitSha: null,
+    worktreeDirty: true,
+    worktreeDirtyReason: 'cargo reporter does not snapshot the worktree around the run',
+  };
 }
 
 /**

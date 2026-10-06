@@ -55,7 +55,7 @@ import {
   reclaimInactiveCargoArtifacts,
   resolveCargoBin,
   resolveCargoTargetDir,
-  resolveCargoExecutionDetails,
+  buildCargoExecutionDetails,
   resolveCargoTestRunScope,
   resolveCargoTestRunSource,
 } from './lib/cargo-result.mjs';
@@ -343,8 +343,9 @@ async function insertRows(sql, rows) {
   const { loopLagP95Ms, rssMb } = captureReporterSaturationSnapshot();
   // WI-10006828: attribute rows like the vitest reporter does, or they can never be bound as proof.
   const { harnessSlug, workspaceId } = resolveCargoTestRunScope();
-  const executionDetails = resolveCargoExecutionDetails();
   for (const row of rows) {
+    // WI-10006849: a complete per-row record, or the strict contract parser discards it.
+    const executionDetails = buildCargoExecutionDetails({ ...row.execution, root: REPO_ROOT, filePath: row.filePath, harnessSlug, workspaceId });
     try {
       await Promise.race([
         sql`
@@ -408,6 +409,12 @@ async function main() {
     finishedAt,
     outputTail: r.outcome === 'FAILED' ? (failureDetails.get(r.name) ?? null) : null,
     source,
+    execution: {
+      passed: r.outcome === 'ok' ? 1 : 0,
+      failed: r.outcome === 'FAILED' ? 1 : 0,
+      skipped: r.outcome === 'ignored' ? 1 : 0,
+      failedCaseTitles: r.outcome === 'FAILED' ? [r.name] : [],
+    },
   }));
 
   // One aggregate row for the whole binary so the Tests tab has a duration signal
@@ -421,6 +428,13 @@ async function main() {
     finishedAt,
     outputTail: results.length === 0 ? combined.slice(-4000) : null,
     source,
+    execution: {
+      passed: results.filter((r) => r.outcome === 'ok').length,
+      failed: results.filter((r) => r.outcome === 'FAILED').length,
+      skipped: results.filter((r) => r.outcome === 'ignored').length,
+      collectionFailed: results.length === 0,
+      failedCaseTitles: results.filter((r) => r.outcome === 'FAILED').map((r) => r.name),
+    },
   });
 
   if (results.length === 0 && diskAdmission?.status !== 'blocked') {
