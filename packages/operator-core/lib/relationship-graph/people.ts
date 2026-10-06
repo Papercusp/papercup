@@ -4,12 +4,13 @@
  * Phone and the CRM read canonical PER- rows through these functions (via the `people:*` tools)
  * instead of keeping their own contact tables.
  *
- * Read-only. A merged-away id is followed to its survivor (getCanonicalEntity), so an app that
- * stored an id before a merge still resolves the same human.
+ * Reads follow a merged-away id to its survivor (getCanonicalEntity), so an app that stored an
+ * id before a merge still resolves the same human. The one write is mergePeople (plan D-027):
+ * a person's assertion that two PER- rows are the same human.
  */
 import type { Sql } from 'postgres';
 import { normalizeEmail, normalizePhone, type IdentityKey } from './identity-keys';
-import { PERSON_DATATYPE, getCanonicalEntity, type CanonicalEntity } from './resolver';
+import { PERSON_DATATYPE, getCanonicalEntity, mergeEntities, type CanonicalEntity, type ResolverDeps } from './resolver';
 
 /** One canonical person as apps see it: identity fields only, never interaction content. */
 export interface PersonView {
@@ -118,4 +119,31 @@ export async function getPeople(sql: Sql, workspaceId: string, ids: readonly str
     out.set(id, entity ? personView(entity) : null);
   }
   return out;
+}
+
+export interface MergePeopleResult {
+  /** The surviving person. Every merged id now resolves to it through people:get. */
+  person: PersonView;
+  /** The PER- ids the request named, after following earlier merges. */
+  merged: string[];
+  /** True when the ids already named one person; nothing was written. */
+  alreadyMerged: boolean;
+}
+
+/**
+ * Merge duplicate persons the identity keys missed (plan D-027). Throws MergeEntitiesError
+ * (too_few_entities | empty_actor | entity_missing | no_members). Idempotent.
+ */
+export async function mergePeople(
+  sql: Sql,
+  workspaceId: string,
+  input: { ids: readonly string[]; acceptedBy: string },
+  deps: ResolverDeps = {},
+): Promise<MergePeopleResult> {
+  const result = await mergeEntities(
+    sql,
+    { workspaceId, datatype: PERSON_DATATYPE, canonicalIds: input.ids, acceptedBy: input.acceptedBy },
+    deps,
+  );
+  return { person: personView(result.survivor), merged: result.requested, alreadyMerged: result.alreadyMerged };
 }
