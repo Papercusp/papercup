@@ -1194,6 +1194,20 @@ function promotionReproductionPatch(input: CaptureImprovementInput): { reproduct
   return stored ? { reproduction: stored } : {};
 }
 
+/** The readiness reason triage stamps when its deployment screen could not answer. */
+export const DEPLOYMENT_FRESHNESS_UNKNOWN_REASON = 'deployment-freshness-unknown';
+
+/**
+ * The two `unknown` readiness reasons that wait on a verifier no lane was ever handed
+ * (EI-25176539351759672): a corroborated tool-failure promotion, and a triage place
+ * whose deployment screen could not answer. Both are held out of self-select by the
+ * claim floor; neither carried an agentReview record before P-002.
+ */
+export const STRANDED_REVIEW_REASONS: readonly string[] = [
+  TOOL_FAILURE_AWAITING_REVIEW_REASON,
+  DEPLOYMENT_FRESHNESS_UNKNOWN_REASON,
+];
+
 /**
  * EI-25176539351759672: a row whose readiness says it awaits review but which has no
  * agentReview record is invisible to every lane — the claim floor holds it as
@@ -1205,7 +1219,8 @@ export function isStrandedToolFailureReview(payload: unknown): boolean {
   const readiness = value.implementationReadiness as Record<string, unknown> | null | undefined;
   return (
     readiness?.status === 'unknown' &&
-    readiness.reason === TOOL_FAILURE_AWAITING_REVIEW_REASON &&
+    typeof readiness.reason === 'string' &&
+    STRANDED_REVIEW_REASONS.includes(readiness.reason) &&
     (value.agentReview === undefined || value.agentReview === null)
   );
 }
