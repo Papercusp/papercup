@@ -1814,7 +1814,8 @@ export interface OwnerNativeSessionRow {
  *   - `bound`   — some candidate is already bound to `sessionId`.
  *   - `unbound` — no candidate carries a native id yet (first binding; the
  *                 SessionStart reanchor is how it gets one).
- *   - `foreign` — the owner's incarnation is bound to a DIFFERENT native session.
+ *   - `foreign` — the owner's incarnation is bound to a DIFFERENT native session,
+ *                 or an explicitly requested incarnation cannot be verified.
  *
  * WI-10003957: `foreign` is what a nested CLI looks like. `PAPERCUSP_SID` is
  * inherited by every descendant of an su (native Bash, capability:bash jobs,
@@ -1839,8 +1840,11 @@ export function classifyOwnerNativeSessionRows(
 /**
  * Is `sessionId` the native session the owner's adv_sessions row is bound to?
  * With `advSessionId` (the launcher-exported PAPERCUSP_ADV_SESSION_ID) only that
- * row is consulted, when it belongs to the owner. Throws on a PG error, so the
- * caller decides the fail direction.
+ * owner/id pair is consulted. A missing, foreign-owned or invalid explicit row
+ * is `foreign`, with no candidate id; it must not become a first binding or
+ * borrow another incarnation's binding. Throws on a PG error, so the caller
+ * decides the fail direction. This checks row consistency, not physical actor
+ * identity: the input is still caller-presented.
  */
 export async function classifyOwnerNativeSession(opts: {
   ownerId: string;
@@ -1850,13 +1854,18 @@ export async function classifyOwnerNativeSession(opts: {
   const { sql } = getOrgPg();
   let rows: OwnerNativeSessionRow[] = [];
   if (opts.advSessionId != null) {
+    if (!Number.isSafeInteger(opts.advSessionId) || opts.advSessionId <= 0) {
+      return { binding: 'foreign', boundSessionId: null, advSessionId: null };
+    }
     rows = await sql<OwnerNativeSessionRow[]>`
       SELECT id, session_id, (ended_at IS NULL AND ended_by IS NULL) AS active
         FROM harness_shared.adv_sessions
        WHERE id = ${opts.advSessionId} AND coord_owner_id = ${opts.ownerId}
     `;
-  }
-  if (rows.length === 0) {
+    if (rows.length === 0) {
+      return { binding: 'foreign', boundSessionId: null, advSessionId: null };
+    }
+  } else {
     rows = await sql<OwnerNativeSessionRow[]>`
       SELECT id, session_id, (ended_at IS NULL AND ended_by IS NULL) AS active
         FROM harness_shared.adv_sessions
