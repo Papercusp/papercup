@@ -230,11 +230,11 @@ async function candidateSources(
 ): Promise<SourceRow[]> {
   if (binding.source.kind !== 'external') return [];
   const rows = await sql<SourceRow[]>`
-    SELECT id::text AS id, kind FROM harness_shared.data_sources
+    SELECT id::text AS id, kind FROM harness_shared.data_sources AS source
      WHERE workspace_id = ${workspaceId}
        AND kind <> ${TRIGGER_PACK_EDGE_SOURCE_KIND}
        AND status <> 'disabled'
-     ORDER BY created_at, id`;
+     ORDER BY source.created_at, source.id`;
   const source = binding.source;
   if (source.sourceKind) return rows.filter((row) => row.kind === source.sourceKind);
   const datatype = source.datatype!;
@@ -445,9 +445,9 @@ async function ensureEdgeSource(
   createdBy: string | null,
 ): Promise<string> {
   const existing = await sql<Array<{ id: string }>>`
-    SELECT id::text AS id FROM harness_shared.data_sources
+    SELECT id::text AS id FROM harness_shared.data_sources AS source
      WHERE workspace_id = ${workspaceId} AND kind = ${TRIGGER_PACK_EDGE_SOURCE_KIND}
-     ORDER BY created_at, id LIMIT 1`;
+     ORDER BY source.created_at, source.id LIMIT 1`;
   if (existing[0]) return existing[0].id;
   const created = await createExternalTriggerSource(sql, workspaceId, {
     kind: TRIGGER_PACK_EDGE_SOURCE_KIND,
