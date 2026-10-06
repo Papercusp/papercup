@@ -595,6 +595,47 @@ export const WORKSPACE_HOST_BOOTSTRAP_STATUS_GUEST_ATTRIBUTE_KEY = 'bootstrap';
 export const WORKSPACE_HOST_BOOTSTRAP_STATUS_CONSOLE_MARKER =
   'PAPERCUSP_BOOTSTRAP_STATUS';
 
+/**
+ * The delimiters of the SSH host-key block on the EC2 console, in cloud-init's format, which the
+ * controller pins from before its first SSH (`parseEc2ConsoleHostKeys` in operator-core reads
+ * these same constants). WI-10007009: the bootc AMI has no cloud-init, so on the
+ * `ec2-console-output` channel the bootstrap prints the block itself.
+ */
+export const WORKSPACE_HOST_EC2_CONSOLE_HOST_KEYS_BEGIN = '-----BEGIN SSH HOST KEY KEYS-----';
+export const WORKSPACE_HOST_EC2_CONSOLE_HOST_KEYS_END = '-----END SSH HOST KEY KEYS-----';
+
+/** The host-key algorithms the controller can pin; the bootstrap prints only these. */
+export const WORKSPACE_HOST_EC2_CONSOLE_HOST_KEY_ALGORITHMS = [
+  'ssh-ed25519',
+  'ecdsa-sha2-nistp256',
+  'ssh-rsa',
+] as const;
+
+/**
+ * GCP guest-environment units the bootc image ships and that only fail or spin on EC2
+ * (WI-10007009, measured on ami-0f0944cd39ad0234e: google-guest-agent-manager stuck activating,
+ * google-oslogin-cache and google-startup-scripts failed, google-guest-compat-manager logging a
+ * metadata error every 10s). Disabled and masked on the `ec2-console-output` channel only.
+ */
+export const WORKSPACE_HOST_EC2_GCP_GUEST_UNITS = [
+  'google-guest-agent.service',
+  'google-guest-agent-manager.service',
+  'google-guest-compat-manager.service',
+  'google-oslogin-cache.service',
+  'google-oslogin-cache.timer',
+  'google-startup-scripts.service',
+  'google-shutdown-scripts.service',
+] as const;
+
+/**
+ * An rsyslog rule that copies messages to the serial console, in the legacy `selector action`
+ * form (the GCP guest environment's `/etc/rsyslog.d/90-google.conf` ships `daemon,kern.*
+ * /dev/console`). systemd services log under facility `daemon`, so that rule copies every
+ * service's journal to the console. ERE, matched per line; comments never match.
+ */
+export const WORKSPACE_HOST_RSYSLOG_CONSOLE_RULE =
+  '^[[:space:]]*[^#[:space:]][^#]*[[:space:]]-?/dev/console[[:space:]]*$';
+
 /** The longest die() message a report carries; the serial console has the full log. */
 export const WORKSPACE_HOST_BOOTSTRAP_STATUS_ERROR_MAX_CHARS = 300;
 
@@ -2417,17 +2458,76 @@ function statusReportLines(
     'BOOTSTRAP_PHASE=""',
     'BOOTSTRAP_ERROR=""',
     deliver,
+    ...(channel === 'ec2-console-output' ? ec2ConsoleChannelLines() : NO_CONSOLE_CHANNEL_LINES),
     // EI-25267772765088134: a non-die abort (a `set -u` unbound variable, an unguarded failing
     // command) leaves BOOTSTRAP_ERROR empty, so the controller saw `error=` with nothing after it.
     // Inside the EXIT trap BASH_COMMAND still holds the UNEXPANDED command that aborted; report
     // that, with single-quoted literals redacted (an inline payload never reaches the console)
     // and newlines folded.
-    'report_outcome() { if [[ "$1" -eq 0 ]]; then report_status succeeded; else ' +
+    // The keys again right before `succeeded`, so a finished host's console ENDS with its key
+    // block and its marker no matter what scrolled through during the run.
+    'report_outcome() { if [[ "$1" -eq 0 ]]; then publish_host_keys; report_status succeeded; else ' +
       `local err="$BOOTSTRAP_ERROR"; if [[ -z "$err" ]]; then local cmd="\${BASH_COMMAND//$'\\n'/ }"; ` +
       `err="aborted outside die: \${cmd//\\'*\\'/\\'<redacted>\\'}"; fi; ` +
       `report_status "failed exit=$1 phase=$BOOTSTRAP_PHASE error=\${err:0:${WORKSPACE_HOST_BOOTSTRAP_STATUS_ERROR_MAX_CHARS}}"; fi; }`,
     `trap 'status=$?; report_outcome "$status"; exit "$status"' EXIT`,
+    // Order matters on EC2: quiet the console first, so nothing this run logs can bury the key
+    // block or the marker; then the keys, because the controller pins from them BEFORE it waits
+    // on this script (establishAwsSsmHostKeyTrust runs at initialization-resolve time, bounded
+    // at 300s, so keys printed only at the end would arrive minutes too late).
+    'console_quiet',
+    'publish_host_keys',
     'report_status running',
+  ];
+}
+
+/** Other channels never touch the console: both helpers are no-ops. */
+const NO_CONSOLE_CHANNEL_LINES = [
+  'console_quiet() { :; }',
+  'publish_host_keys() { :; }',
+] as const;
+
+/**
+ * The `ec2-console-output` channel's two console helpers (WI-10007009). Measured on the bootc AMI
+ * ami-0f0944cd39ad0234e: the bootstrap SUCCEEDED, but its `succeeded` marker never reached the
+ * 64 KiB console window the controller reads, because the GCP guest environment's rsyslog rule
+ * copied ~660 lines of the service's own migration log to the console after it; and with no
+ * cloud-init on the image, no host-key block was ever printed, so first SSH could never pin.
+ *
+ * Both are best-effort, like `report_status`: neither may change the bootstrap's own outcome.
+ * - `console_quiet` comments out every rsyslog rule that writes to `/dev/console` (restoring the
+ *   file's SELinux label, since `sed -i` replaces the file) and restarts rsyslog only if it changed
+ *   something; then disables and masks the GCP guest units, which only fail or spin on EC2.
+ * - `publish_host_keys` prints the host public keys in cloud-init's block format, one line per
+ *   supported algorithm, comments dropped. No supported key means no block at all: an EMPTY block
+ *   is a hard refusal in the parser, whereas an absent one only keeps the controller waiting.
+ */
+function ec2ConsoleChannelLines(): string[] {
+  const rule = WORKSPACE_HOST_RSYSLOG_CONSOLE_RULE;
+  const supported = WORKSPACE_HOST_EC2_CONSOLE_HOST_KEY_ALGORITHMS.map(
+    (algorithm) => `$1 == "${algorithm}"`,
+  ).join(' || ');
+  return [
+    'console_quiet() {',
+    '  local conf unit changed=0',
+    '  for conf in /etc/rsyslog.conf /etc/rsyslog.d/*.conf; do',
+    `    [[ -f "$conf" ]] && grep -Eq '${rule}' "$conf" || continue`,
+    `    sed -i -E '\\%${rule}%s%^%# disabled by papercusp, console is the status channel (WI-10007009): %' "$conf" || continue`,
+    '    command -v restorecon >/dev/null 2>&1 && restorecon "$conf" >/dev/null 2>&1 || true',
+    '    changed=1',
+    '  done',
+    '  [[ "$changed" -eq 0 ]] || systemctl try-restart rsyslog.service >/dev/null 2>&1 || true',
+    `  for unit in ${WORKSPACE_HOST_EC2_GCP_GUEST_UNITS.join(' ')}; do`,
+    '    systemctl disable --now --no-block "$unit" >/dev/null 2>&1 || true',
+    '    systemctl mask "$unit" >/dev/null 2>&1 || true',
+    '  done',
+    '}',
+    'publish_host_keys() {',
+    '  local keys',
+    `  keys="$(awk '(${supported}) && NF >= 2 && !seen[$1]++ { print $1 " " $2 }' /etc/ssh/ssh_host_*_key.pub 2>/dev/null || true)"`,
+    '  [[ -n "$keys" ]] || return 0',
+    `  printf '%s\\n%s\\n%s\\n' '${WORKSPACE_HOST_EC2_CONSOLE_HOST_KEYS_BEGIN}' "$keys" '${WORKSPACE_HOST_EC2_CONSOLE_HOST_KEYS_END}' > /dev/console 2>/dev/null || true`,
+    '}',
   ];
 }
 
