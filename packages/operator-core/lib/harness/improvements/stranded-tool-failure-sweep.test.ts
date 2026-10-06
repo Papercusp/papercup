@@ -12,8 +12,12 @@ import type { GitRead } from '../../candidate-contains';
 import type { ReproductionLedgerDeps, ReproductionVerification } from '../../attention/bug-reproduction';
 import {
   STRANDED_SWEEP_OWNER,
+  classifyExpiryCandidate,
   classifyStrandedRow,
+  isAutomaticReport,
+  renderCandidateExpiryNote,
   renderStrandedSweepNote,
+  sweepExpiredCandidates,
   reportBuildOf,
   reportLastSeenAt,
   retirementFact,
@@ -394,6 +398,130 @@ describe('sweepStrandedToolFailures (executor)', () => {
     const result = await sweepStrandedToolFailures('ws-1', h.deps);
     expect(result.failed).toBe(1);
     expect(result.retired + result.review).toBe(2);
+  });
+});
+
+describe('candidate expiry (P-011 / D-046 pt 6)', () => {
+  const candidate = (overrides: Record<string, unknown> = {}) =>
+    strandedPayload({ implementationReadiness: undefined, reporter: { kind: 'agent' }, reporterKinds: ['agent'], ...overrides });
+
+  it('never expires a report any person made, whatever the evidence says', () => {
+    for (const payload of [
+      candidate({ reporter: { kind: 'end-user' }, reporterKinds: ['end-user'] }),
+      candidate({ reporter: { kind: 'agent' }, reporterKinds: ['agent', 'end-user'] }),
+    ]) {
+      expect(isAutomaticReport(payload)).toBe(false);
+      expect(classifyExpiryCandidate(payload, { reproduction: null, retirement: retirable })).toEqual({
+        outcome: 'kept',
+        reason: 'person-reported',
+      });
+    }
+    expect(isAutomaticReport(candidate({ reporter: { kind: 'watchdog' }, reporterKinds: ['watchdog'] }))).toBe(true);
+  });
+
+  it('keeps a candidate somebody reproduced, and one whose evidence is incomplete', () => {
+    expect(classifyExpiryCandidate(candidate(), { reproduction: verified, retirement: retirable })).toEqual({
+      outcome: 'kept',
+      reason: 'receipt-verified',
+    });
+    expect(classifyExpiryCandidate(candidate(), { reproduction: null, retirement: notRetirable })).toEqual({
+      outcome: 'kept',
+      reason: 'freshness-unknown:git-unreadable',
+    });
+    expect(classifyExpiryCandidate(candidate(), { reproduction: null, retirement: retirable })).toEqual({
+      outcome: 'expired',
+      reason: 'tool-changed-and-quiet',
+    });
+  });
+
+  function harness(rows: Array<{ id: string; harness_slug: string; payload: Record<string, unknown> }>) {
+    const sql = { unsafe: vi.fn(async () => rows) };
+    const merge = vi.fn(async () => ({}));
+    const resolve = vi.fn(async () => ({}));
+    const deps = {
+      sql: sql as never,
+      currentBuild: () => CURRENT,
+      sourceFileFor: (tool: string) => `${ROOT}/packages/${tool.replace(':', '-')}.ts`,
+      repoRoot: ROOT,
+      git: (async (args: string[]) => {
+        const path = String(args.at(-1));
+        return fakeGit(path.includes('tool-stable') ? [] : [{ sha: 'c-fix', at: at(30) }])(args);
+      }) as GitRead,
+      lastFailureAfter: async () => null,
+      ledger: { readTestRun: async () => null, readToolInvocation: async () => null, now: () => new Date(T0) },
+      mergeIssuePayload: merge,
+      resolveRetired: resolve,
+      now: () => Date.parse(T0),
+    };
+    return { deps, sql, merge, resolve };
+  }
+
+  it('expires a quiet automatic candidate with D-012 evidence and stamps the rest against this build', async () => {
+    const h = harness([
+      { id: 'EI-expire', harness_slug: 'papercusp', payload: candidate() },
+      {
+        id: 'EI-stable',
+        harness_slug: 'papercusp',
+        payload: candidate({ toolFailureProbation: { class: 'structural', report: { toolName: 'tool:stable', errorCode: 'x' } } }),
+      },
+    ]);
+    const result = await sweepExpiredCandidates('ws-1', h.deps);
+
+    expect(result).toMatchObject({ scanned: 2, expired: 1, kept: 1, failed: 0 });
+    expect(result.keptReasons).toEqual({ 'tool-unchanged-since-report': 1 });
+    expect(h.merge).toHaveBeenCalledWith('EI-expire', expect.objectContaining({
+      decidedReason: expect.stringContaining('D-012/D-046'),
+      candidateExpiry: expect.objectContaining({
+        owner: STRANDED_SWEEP_OWNER,
+        outcome: 'expired',
+        checkedBuild: CURRENT,
+        reportBuild: REPORT,
+        changeCommits: ['c-fix'],
+      }),
+    }));
+    expect(h.resolve).toHaveBeenCalledTimes(1);
+    expect(h.resolve).toHaveBeenCalledWith('EI-expire');
+    expect(h.merge).toHaveBeenCalledWith('EI-stable', {
+      candidateExpiry: expect.objectContaining({ outcome: 'kept', reason: 'tool-unchanged-since-report', checkedBuild: CURRENT }),
+    });
+    // Only admission-pending automatic candidates not yet checked against this build are read.
+    const [query, params] = h.sql.unsafe.mock.calls[0] as unknown as [string, unknown[]];
+    expect(params).toEqual(['ws-1', CURRENT, 200]);
+    expect(query).toContain("admission = 'pending'");
+    expect(query).toContain('["end-user"]');
+    expect(query).toContain("payload->'candidateExpiry'->>'checkedBuild' IS DISTINCT FROM $2");
+  });
+
+  it('re-checks a transient unknown next tick instead of stamping it', async () => {
+    const h = harness([{ id: 'EI-flaky', harness_slug: 'papercusp', payload: candidate() }]);
+    const result = await sweepExpiredCandidates('ws-1', { ...h.deps, lastFailureAfter: async () => { throw new Error('pg down'); } });
+    expect(result).toMatchObject({ kept: 1, keptReasons: { 'ledger-unreadable': 1 } });
+    expect(h.merge).not.toHaveBeenCalled();
+    expect(h.resolve).not.toHaveBeenCalled();
+  });
+
+  it('does nothing when the serving build is unknown, and dry run writes nothing', async () => {
+    const h = harness([{ id: 'EI-expire', harness_slug: 'papercusp', payload: candidate() }]);
+    expect(await sweepExpiredCandidates('ws-1', { ...h.deps, currentBuild: () => null })).toMatchObject({
+      scanned: 0,
+      skipped: 'current-build-unknown',
+    });
+    expect(h.sql.unsafe).not.toHaveBeenCalled();
+
+    const dry = await sweepExpiredCandidates('ws-1', h.deps, { dryRun: true });
+    expect(dry.plan).toEqual([{ id: 'EI-expire', outcome: 'expired', reason: 'tool-changed-and-quiet' }]);
+    expect(h.merge).not.toHaveBeenCalled();
+    expect(h.resolve).not.toHaveBeenCalled();
+  });
+
+  it('renders a one-line note', () => {
+    expect(
+      renderCandidateExpiryNote({ scanned: 3, expired: 1, kept: 2, deferred: 0, failed: 0, keptReasons: { 'person-reported': 2 } }),
+    ).toBe('candidate-expiry scanned=3 expired=1 kept=2 deferred=0 failed=0 keptReasons=person-reported:2');
+    expect(renderCandidateExpiryNote({ scanned: 0, expired: 0, kept: 0, deferred: 0, failed: 0, keptReasons: {}, skipped: 'current-build-unknown' })).toBe(
+      'candidate-expiry skipped=current-build-unknown',
+    );
+    expect(renderCandidateExpiryNote({ error: 'boom' })).toBe('candidate-expiry error=boom');
   });
 });
 

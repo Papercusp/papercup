@@ -4387,16 +4387,17 @@ export async function defaultPapercuspCollectors(
         // unified-bug-pipeline P-003 / D-022: promoted tool-failure rows stamped
         // awaiting-review or freshness-unknown with no reviewer get verified, retired
         // with evidence, or enrolled in agent review. Bounded by rows and wall time.
-        const { sweepStrandedToolFailures, renderStrandedSweepNote } = await import('./stranded-tool-failure-sweep');
-        const sweepNote = renderStrandedSweepNote(
-          await sweepStrandedToolFailures(workspaceId).catch((error: unknown) => ({
-            error: error instanceof Error ? error.message : String(error),
-          })),
-        );
+        const { sweepStrandedToolFailures, renderStrandedSweepNote, sweepExpiredCandidates, renderCandidateExpiryNote } =
+          await import('./stranded-tool-failure-sweep');
+        const asError = (error: unknown) => ({ error: error instanceof Error ? error.message : String(error) });
+        const sweepNote = renderStrandedSweepNote(await sweepStrandedToolFailures(workspaceId).catch(asError));
+        // P-011 / D-046 pt 6: automatic reports still at candidate admission expire on
+        // the same D-012 evidence when a newer build changed the tool and nobody reproduced it.
+        const expiryNote = renderCandidateExpiryNote(await sweepExpiredCandidates(workspaceId).catch(asError));
         const result = await recoverInvocationFriction(workspaceId);
         return {
           signals: [],
-          note: `friction delivered=${result.delivered}, locked-pending=${result.pending}, expired=${result.expired}; ${foldNote}; ${sweepNote}`,
+          note: `friction delivered=${result.delivered}, locked-pending=${result.pending}, expired=${result.expired}; ${foldNote}; ${sweepNote}; ${expiryNote}`,
         };
       },
     },

@@ -353,20 +353,10 @@ function defaultCaptureDeps(): CaptureDeps {
   } as CaptureDeps;
 }
 
-/**
- * One bounded sweep pass for a workspace. A row that throws is counted in `failed` and
- * left for the next tick; it never aborts the others. `dryRun` classifies without writing.
- */
-export async function sweepStrandedToolFailures(
-  workspaceId: string,
-  deps: StrandedSweepDeps = {},
-  opts: { limit?: number; budgetMs?: number; dryRun?: boolean } = {},
-): Promise<StrandedSweepResult> {
-  const sql = deps.sql ?? getOrgPg().sql;
-  const now = deps.now ?? (() => Date.now());
-  const started = now();
+/** The D-012 evidence readers both passes share: serving build, tool source, git range, failure ledger. */
+function resolveRetirementDeps(sql: Sql, workspaceId: string, deps: StrandedSweepDeps): ResolvedRetirementDeps {
   const repoRoot = deps.repoRoot ?? integrationRoot();
-  const retirementDeps: ResolvedRetirementDeps = {
+  return {
     currentBuild: deps.currentBuild ?? (() => getBuildInfo().sha ?? null),
     sourceFileFor: deps.sourceFileFor ?? resolveToolSourceFile,
     repoRoot,
@@ -384,6 +374,21 @@ export async function sweepStrandedToolFailures(
         return last ? new Date(last).toISOString() : null;
       }),
   };
+}
+
+/**
+ * One bounded sweep pass for a workspace. A row that throws is counted in `failed` and
+ * left for the next tick; it never aborts the others. `dryRun` classifies without writing.
+ */
+export async function sweepStrandedToolFailures(
+  workspaceId: string,
+  deps: StrandedSweepDeps = {},
+  opts: { limit?: number; budgetMs?: number; dryRun?: boolean } = {},
+): Promise<StrandedSweepResult> {
+  const sql = deps.sql ?? getOrgPg().sql;
+  const now = deps.now ?? (() => Date.now());
+  const started = now();
+  const retirementDeps = resolveRetirementDeps(sql, workspaceId, deps);
   const ledger = deps.ledger ?? defaultLedger(sql);
   const merge = deps.mergeIssuePayload ?? ((id, patch) => mergeIssuePayload(id, patch));
   const resolve =
@@ -502,6 +507,188 @@ export async function sweepStrandedToolFailures(
     }
   }
   return result;
+}
+
+// ── Candidate expiry (P-011 / D-046 pt 6) ─────────────────────────────────────
+//
+// The stranded pass above skips admission-pending rows, so an automatic report
+// that is still a candidate never expired when a newer build changed its tool.
+// This pass applies the same D-012 evidence to those candidates. A report any
+// person made never expires this way: their report is not a tool-failure claim
+// a code change can be shown to answer.
+
+/** Reasons that can change without a new build, so the row is re-checked next tick. */
+function isTransientReason(reason: string): boolean {
+  return reason === 'ledger-unreadable' || reason === 'current-build-unknown' || reason.startsWith('freshness-unknown:');
+}
+
+/** An automatic report: nobody but agents or the watchdog ever reported it. */
+export function isAutomaticReport(payload: Record<string, unknown>): boolean {
+  const reporter = record(payload.reporter);
+  const kinds = Array.isArray(payload.reporterKinds) ? payload.reporterKinds : [];
+  return reporter.kind !== 'end-user' && !kinds.includes('end-user');
+}
+
+export type CandidateExpiryOutcome = 'expired' | 'kept';
+
+export function classifyExpiryCandidate(
+  payload: Record<string, unknown>,
+  facts: StrandedFacts,
+): { outcome: CandidateExpiryOutcome; reason: string } {
+  if (!isAutomaticReport(payload)) return { outcome: 'kept', reason: 'person-reported' };
+  if (facts.reproduction && !isCallerClassified(payload) && isAcceptedReproductionStatus(facts.reproduction.status)) {
+    return { outcome: 'kept', reason: `receipt-${facts.reproduction.status}` };
+  }
+  if (facts.retirement.retirable) return { outcome: 'expired', reason: 'tool-changed-and-quiet' };
+  return { outcome: 'kept', reason: facts.retirement.reason };
+}
+
+// Rows already checked against THIS build are skipped: nothing that decides
+// retirement changes until the serving build does (a later failure only keeps a
+// row), so re-reading them each tick would starve newer candidates behind them.
+const EXPIRY_CANDIDATES_SQL = `
+    SELECT feature_id AS id, harness_slug, payload
+      FROM harness_shared.work_items
+     WHERE workspace_id = $1
+       AND item_kind = 'bug'
+       AND status = 'open'
+       AND admission = 'pending'
+       AND taken_by IS NULL
+       AND claim_hold IS NOT TRUE
+       AND lane IS DISTINCT FROM 'observation'
+       AND payload->>'lane' IS DISTINCT FROM 'observation'
+       AND jsonb_typeof(payload->'toolFailureProbation') = 'object'
+       AND payload->'reporter'->>'kind' IS DISTINCT FROM 'end-user'
+       AND NOT (COALESCE(payload->'reporterKinds', '[]'::jsonb) @> '["end-user"]'::jsonb)
+       AND payload->'candidateExpiry'->>'checkedBuild' IS DISTINCT FROM $2
+     ORDER BY updated_ts ASC NULLS FIRST, feature_id
+     LIMIT $3`;
+
+export interface CandidateExpiryResult {
+  scanned: number;
+  expired: number;
+  kept: number;
+  deferred: number;
+  failed: number;
+  /** Why rows were kept, counted, so the note says what stood in the way. */
+  keptReasons: Record<string, number>;
+  /** Set when the pass could not run at all. */
+  skipped?: 'current-build-unknown';
+  plan?: Array<{ id: string; outcome: CandidateExpiryOutcome; reason: string }>;
+}
+
+/**
+ * One bounded candidate-expiry pass. Same shape and bounds as the stranded pass;
+ * an expired row records the D-012 evidence and resolves under the sweep's owner.
+ */
+export async function sweepExpiredCandidates(
+  workspaceId: string,
+  deps: StrandedSweepDeps = {},
+  opts: { limit?: number; budgetMs?: number; dryRun?: boolean } = {},
+): Promise<CandidateExpiryResult> {
+  const result: CandidateExpiryResult = {
+    scanned: 0,
+    expired: 0,
+    kept: 0,
+    deferred: 0,
+    failed: 0,
+    keptReasons: {},
+    ...(opts.dryRun ? { plan: [] } : {}),
+  };
+  const sql = deps.sql ?? getOrgPg().sql;
+  const now = deps.now ?? (() => Date.now());
+  const started = now();
+  const retirementDeps = resolveRetirementDeps(sql, workspaceId, deps);
+  const currentBuild = retirementDeps.currentBuild();
+  if (!currentBuild) return { ...result, skipped: 'current-build-unknown' };
+  const ledger = deps.ledger ?? defaultLedger(sql);
+  const merge = deps.mergeIssuePayload ?? ((id, patch) => mergeIssuePayload(id, patch));
+  const resolve =
+    deps.resolveRetired ??
+    ((id) => setIssueState(id, 'resolved', STRANDED_SWEEP_OWNER, undefined, { skipCompletionGate: true }));
+
+  const rows = await sql.unsafe<CandidateRow[]>(EXPIRY_CANDIDATES_SQL, [
+    workspaceId,
+    currentBuild,
+    opts.limit ?? STRANDED_SWEEP_BATCH,
+  ]);
+  result.scanned = rows.length;
+  const budget = opts.budgetMs ?? STRANDED_SWEEP_BUDGET_MS;
+
+  for (const [index, row] of rows.entries()) {
+    if (now() - started > budget) {
+      result.deferred = rows.length - index;
+      break;
+    }
+    try {
+      const payload = record(row.payload);
+      const [reproduction, retirement] = await Promise.all([
+        reproductionFact(payload, ledger),
+        retirementFact(payload, retirementDeps),
+      ]);
+      const classification = classifyExpiryCandidate(payload, { reproduction, retirement });
+      if (classification.outcome === 'kept') {
+        result.keptReasons[classification.reason] = (result.keptReasons[classification.reason] ?? 0) + 1;
+      }
+      result.plan?.push({ id: row.id, ...classification });
+      if (opts.dryRun) {
+        result[classification.outcome]++;
+        continue;
+      }
+      const marker = {
+        owner: STRANDED_SWEEP_OWNER,
+        at: new Date(now()).toISOString(),
+        outcome: classification.outcome,
+        reason: classification.reason,
+        checkedBuild: currentBuild,
+      };
+
+      if (classification.outcome === 'expired' && retirement.retirable) {
+        const errorText = retirement.errorCode ? ` ${retirement.errorCode}` : '';
+        await merge(row.id, {
+          decidedReason:
+            `expired — automatic report: \`${retirement.relPath}\` (defines ${retirement.toolName}) changed between ` +
+            `the report's build ${retirement.reportBuild} and the serving build ${retirement.currentBuild}, nobody ` +
+            `reproduced it, and no failing ${retirement.toolName}${errorText} call was recorded after the last change ` +
+            `(last matching failure ${retirement.lastMatchingFailureAt}). ` +
+            'Candidate expiry (unified-bug-pipeline-and-honest-queue-2026-10-05 D-012/D-046).',
+          candidateExpiry: {
+            ...marker,
+            toolName: retirement.toolName,
+            errorCode: retirement.errorCode,
+            relPath: retirement.relPath,
+            reportBuild: retirement.reportBuild,
+            changeCommits: retirement.changeCommits,
+            lastMatchingFailureAt: retirement.lastMatchingFailureAt,
+          },
+        });
+        await resolve(row.id);
+        result.expired++;
+        continue;
+      }
+      // A transient unknown is retried next tick; anything else waits for a new build.
+      if (!isTransientReason(classification.reason)) await merge(row.id, { candidateExpiry: marker });
+      result.kept++;
+    } catch {
+      result.failed++;
+    }
+  }
+  return result;
+}
+
+export function renderCandidateExpiryNote(result: CandidateExpiryResult | { error: string }): string {
+  if ('error' in result) return `candidate-expiry error=${result.error}`;
+  if (result.skipped) return `candidate-expiry skipped=${result.skipped}`;
+  const reasons = Object.entries(result.keptReasons)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 4)
+    .map(([reason, n]) => `${reason}:${n}`)
+    .join(',');
+  return (
+    `candidate-expiry scanned=${result.scanned} expired=${result.expired} kept=${result.kept} ` +
+    `deferred=${result.deferred} failed=${result.failed}` +
+    (reasons ? ` keptReasons=${reasons}` : '')
+  );
 }
 
 /** The one-line watchdog note for a pass. */
