@@ -28,9 +28,10 @@ import { ingestExternalTriggerEvent, type IngestExternalTriggerInput } from '../
 import { runConnectorSync } from '../providers/connector-runtime';
 import { dataSourceRecordId } from '../data-sources/datatype-destination-sink';
 import { listProvenanceKey } from './merge';
-import { getPeople, searchPeople } from './people';
+import { getPeople, mergePeople, searchPeople } from './people';
 import {
   acceptEntityField,
+  mergeEntities,
   findEntityByIdentity,
   getCanonicalEntity,
   resolveIdentities,
@@ -319,6 +320,63 @@ describe('platform relationship graph (P-002, R-1)', () => {
     await expect(acceptEntityField(sql, {
       workspaceId: WS, datatype: 'person', canonicalId: ada!.feature_id, field: 'favouriteColour', value: 'blue', acceptedBy: 'user:avi',
     })).rejects.toMatchObject({ code: 'unknown_field' });
+  });
+
+  it('a person merge joins two people the keys missed, survives a re-sync, and replays idempotently (D-027, R-2)', async () => {
+    feeds[CRM] = [
+      { datatype: 'person', nativeId: 'crm-ada', payload: { displayName: 'Ada Lovelace', emails: ['ada@acme.com'] } },
+      { datatype: 'person', nativeId: 'crm-ada-home', payload: { displayName: 'Ada L.', emails: ['ada.l@home.example'] } },
+    ];
+    const crm = await connect(CRM);
+    await sync(crm);
+    const [older, younger] = live(await graphRows('PER-', 'person'));
+    expect(younger).toBeDefined();
+
+    const merged = await mergePeople(
+      sql, WS, { ids: [younger!.feature_id, older!.feature_id], acceptedBy: 'user:avi' },
+      { now: () => new Date('2026-10-06T17:00:00Z') },
+    );
+    expect(merged).toMatchObject({ alreadyMerged: false, person: { id: older!.feature_id, sourceRecordCount: 2 } });
+    expect([...merged.person.emails].sort()).toEqual(['ada.l@home.example', 'ada@acme.com']);
+    expect([...merged.merged].sort()).toEqual([older!.feature_id, younger!.feature_id].sort());
+
+    const rows = await graphRows('PER-', 'person');
+    expect(live(rows).map((r) => r.feature_id)).toEqual([older!.feature_id]);
+    expect(rows.find((r) => r.feature_id === younger!.feature_id)!.payload).toMatchObject({ mergedInto: older!.feature_id });
+    expect((await getPeople(sql, WS, [younger!.feature_id])).get(younger!.feature_id)?.id).toBe(older!.feature_id);
+
+    // Every member record carries the one asserted key and who asserted it.
+    const records = await graphRows('DSR-', 'person');
+    expect(records).toHaveLength(2);
+    const [linkKey] = records[0]!.payload.assertedSameAs as string[];
+    expect(linkKey).toMatch(/^same:[0-9a-f]{24}$/);
+    for (const record of records) {
+      expect(record.payload.assertedSameAs).toEqual([linkKey]);
+      expect((record.payload.assertedSameAsBy as Record<string, unknown>)[linkKey!]).toEqual({
+        acceptedBy: 'user:avi', acceptedAt: '2026-10-06T17:00:00.000Z', entities: [older!.feature_id, younger!.feature_id].sort(),
+      });
+    }
+
+    // The connector re-delivers both records with fresh payloads: the merge holds.
+    feeds[CRM] = [
+      { datatype: 'person', nativeId: 'crm-ada', payload: { displayName: 'Ada Lovelace', emails: ['ada@acme.com'], updatedAt: '2026-10-07T00:00:00Z' } },
+      { datatype: 'person', nativeId: 'crm-ada-home', payload: { displayName: 'Ada L.', emails: ['ada.l@home.example'], updatedAt: '2026-10-07T00:00:00Z' } },
+    ];
+    await sync(crm);
+    expect(live(await graphRows('PER-', 'person')).map((r) => r.feature_id)).toEqual([older!.feature_id]);
+
+    // Replaying the merge writes nothing and returns the same survivor.
+    const again = await mergeEntities(sql, {
+      workspaceId: WS, datatype: 'person', canonicalIds: [older!.feature_id, younger!.feature_id], acceptedBy: 'user:avi',
+    });
+    expect(again).toMatchObject({ alreadyMerged: true, linkKey: null, stamped: 0, survivor: { id: older!.feature_id } });
+
+    await expect(mergePeople(sql, WS, { ids: [older!.feature_id, older!.feature_id], acceptedBy: 'user:avi' }))
+      .rejects.toMatchObject({ code: 'too_few_entities' });
+    await expect(mergePeople(sql, WS, { ids: [older!.feature_id, 'PER-000000000000000000000000'], acceptedBy: 'user:avi' }))
+      .rejects.toMatchObject({ code: 'entity_missing' });
+    await expect(mergePeople(sql, WS, { ids: [older!.feature_id, younger!.feature_id], acceptedBy: '  ' }))
+      .rejects.toMatchObject({ code: 'empty_actor' });
   });
 
   it('a source that does not route person to record writes nothing to the graph', async () => {

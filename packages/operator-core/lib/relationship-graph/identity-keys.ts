@@ -10,9 +10,27 @@
  *   - a phone number is matched on its exact digits, with its `+` country prefix when written;
  *     a national-format number is NOT expanded with an assumed country code;
  *   - a free-mail domain (gmail.com, outlook.com, ...) never names an organization.
+ *
+ * A fourth key is ASSERTED rather than observed: when a person merges two entities the keys
+ * missed (people:merge, plan D-027), every member record of both is stamped with one
+ * `same:<digest>` key in `payload.assertedSameAs`. Clustering treats it like any shared key, so
+ * the two clusters become one and stay one across connector re-syncs (the sink merges payloads,
+ * it does not replace them).
  */
 
-export type IdentityKey = `email:${string}` | `phone:${string}` | `domain:${string}`;
+export type IdentityKey = `email:${string}` | `phone:${string}` | `domain:${string}` | `same:${string}`;
+
+/** Payload field holding a record's asserted `same:` keys. */
+export const ASSERTED_SAME_AS_FIELD = 'assertedSameAs';
+
+/** The asserted `same:` keys stamped on a record (people:merge). */
+export function assertedSameAsKeys(payload: Record<string, unknown>): Array<`same:${string}`> {
+  const raw = payload[ASSERTED_SAME_AS_FIELD];
+  if (!Array.isArray(raw)) return [];
+  return uniqueSorted(
+    raw.filter((v): v is `same:${string}` => typeof v === 'string' && v.startsWith('same:') && v.length > 'same:'.length),
+  );
+}
 
 const EMAIL_RE = /^[^\s@<>()",;:]+@[^\s@<>()",;:]+\.[^\s@<>()",;:]+$/;
 const DOMAIN_RE = /^(?=.{3,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,62}$/;
@@ -133,11 +151,15 @@ export function personIdentityKeys(payload: Record<string, unknown>): IdentityKe
   return uniqueSorted<IdentityKey>([
     ...personEmails(payload).map((e) => `email:${e}` as const),
     ...payloadPhones(payload).map((p) => `phone:${p}` as const),
+    ...assertedSameAsKeys(payload),
   ]);
 }
 
 export function organizationIdentityKeys(payload: Record<string, unknown>): IdentityKey[] {
-  return uniqueSorted<IdentityKey>(organizationDomains(payload).map((d) => `domain:${d}` as const));
+  return uniqueSorted<IdentityKey>([
+    ...organizationDomains(payload).map((d) => `domain:${d}` as const),
+    ...assertedSameAsKeys(payload),
+  ]);
 }
 
 /**

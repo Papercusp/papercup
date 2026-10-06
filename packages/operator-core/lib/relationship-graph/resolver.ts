@@ -34,6 +34,8 @@ import {
   type CreateWorkItemInput,
 } from '../work-items';
 import {
+  ASSERTED_SAME_AS_FIELD,
+  assertedSameAsKeys,
   type IdentityKey,
   interactionParticipantKeys,
   organizationIdentityKeys,
@@ -787,4 +789,103 @@ export async function acceptEntityField(
   const refreshed = await getCanonicalEntity(sql, input.workspaceId, input.datatype, entity.id);
   if (!refreshed) throw new AcceptFieldError('entity_missing', `${input.datatype} ${entity.id} vanished while accepting`);
   return refreshed;
+}
+
+export type MergeEntitiesErrorCode = 'too_few_entities' | 'empty_actor' | 'entity_missing' | 'no_members';
+
+export class MergeEntitiesError extends Error {
+  constructor(readonly code: MergeEntitiesErrorCode, message: string) {
+    super(message);
+    this.name = 'MergeEntitiesError';
+  }
+}
+
+/** Provenance of one asserted `same:` key, kept on each stamped record. */
+export interface AssertedSameAs {
+  acceptedBy: string;
+  acceptedAt: string;
+  /** The canonical ids the person merged (survivors at the time of the merge). */
+  entities: string[];
+}
+
+export interface MergeEntitiesResult {
+  /** The surviving canonical entity after the re-resolve. */
+  survivor: CanonicalEntity;
+  /** The canonical ids the request named, after following earlier merges. */
+  requested: string[];
+  /** True when every requested id already resolved to one entity: nothing was written. */
+  alreadyMerged: boolean;
+  /** The asserted key stamped on every member record; null when alreadyMerged. */
+  linkKey: `same:${string}` | null;
+  /** Member records stamped with the key. */
+  stamped: number;
+}
+
+/**
+ * Record a person's assertion that several canonical entities are ONE (plan D-027): the
+ * duplicate a connector's keys missed. Every member record of every entity is stamped with one
+ * `same:<digest>` identity key (payload `assertedSameAs`, provenance in `assertedSameAsBy`),
+ * then the component is re-resolved under the resolve lock, so the clusters union and the
+ * resolver's normal merge keeps the oldest canonical id and retires the rest with `mergedInto`.
+ * Idempotent: replaying the same request stamps nothing new and returns the same survivor.
+ */
+export async function mergeEntities(
+  sql: Sql,
+  input: { workspaceId: string; datatype: GraphEntityDatatype; canonicalIds: readonly string[]; acceptedBy: string },
+  deps: ResolverDeps = {},
+): Promise<MergeEntitiesResult> {
+  const acceptedBy = str(input.acceptedBy);
+  if (!acceptedBy) throw new MergeEntitiesError('empty_actor', 'acceptedBy is required');
+  const named = [...new Set(input.canonicalIds.map(str).filter(Boolean))];
+  if (named.length < 2) throw new MergeEntitiesError('too_few_entities', 'name at least two distinct canonical ids to merge');
+
+  const entities: CanonicalEntity[] = [];
+  for (const id of named) {
+    const entity = await getCanonicalEntity(sql, input.workspaceId, input.datatype, id);
+    if (!entity) throw new MergeEntitiesError('entity_missing', `${input.datatype} ${id} not found`);
+    if (!entities.some((e) => e.id === entity.id)) entities.push(entity);
+  }
+  const requested = entities.map((e) => e.id).sort();
+  if (entities.length < 2) {
+    return { survivor: entities[0]!, requested, alreadyMerged: true, linkKey: null, stamped: 0 };
+  }
+  for (const entity of entities) {
+    if (stringArray(entity.payload.memberRecordIds).length === 0) {
+      throw new MergeEntitiesError('no_members', `${input.datatype} ${entity.id} has no member records to link`);
+    }
+  }
+
+  const linkKey = `same:${digest([input.workspaceId, input.datatype, ...requested])}` as const;
+  const members = [...new Set(entities.flatMap((e) => stringArray(e.payload.memberRecordIds)))].sort();
+  const merge = deps.mergeWorkItemPayload ?? defaultMergeWorkItemPayload;
+  const acceptedAt = (deps.now ?? (() => new Date()))().toISOString();
+
+  const stamped = await withResolveLock(sql, input.workspaceId, input.datatype, async () => {
+    const rows = await sql<Array<{ feature_id: string; harness_slug: string; payload: Record<string, unknown> | null }>>`
+      SELECT feature_id, harness_slug, payload FROM harness_shared.work_items
+       WHERE workspace_id = ${input.workspaceId} AND item_kind = ${input.datatype} AND nature = 'record'
+         AND feature_id = ANY(${sql.array(members)}::text[])`;
+    let count = 0;
+    for (const row of rows) {
+      const payload = row.payload ?? {};
+      const keys = assertedSameAsKeys(payload);
+      if (keys.includes(linkKey)) continue;
+      const provenance = (payload.assertedSameAsBy && typeof payload.assertedSameAsBy === 'object' && !Array.isArray(payload.assertedSameAsBy))
+        ? (payload.assertedSameAsBy as Record<string, AssertedSameAs>)
+        : {};
+      const patch = {
+        [ASSERTED_SAME_AS_FIELD]: [...keys, linkKey].sort(),
+        assertedSameAsBy: { ...provenance, [linkKey]: { acceptedBy, acceptedAt, entities: requested } satisfies AssertedSameAs },
+      };
+      const written = await merge(row.feature_id, patch, { harness: row.harness_slug });
+      if (!written) throw new Error(`relationship_graph_merge_stamp_failed:${row.feature_id}`);
+      count += 1;
+    }
+    await resolveUnlocked(sql, { workspaceId: input.workspaceId, datatype: input.datatype, recordIds: members }, deps);
+    return count;
+  });
+
+  const survivor = await getCanonicalEntity(sql, input.workspaceId, input.datatype, requested[0]!);
+  if (!survivor) throw new MergeEntitiesError('entity_missing', `${input.datatype} ${requested[0]} vanished while merging`);
+  return { survivor, requested, alreadyMerged: false, linkKey, stamped };
 }

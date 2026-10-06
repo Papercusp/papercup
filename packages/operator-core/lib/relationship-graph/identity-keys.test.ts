@@ -4,6 +4,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  assertedSameAsKeys,
   interactionParticipantKeys,
   interactionParticipants,
   isAutomatedEmail,
@@ -138,5 +139,19 @@ describe('interactionParticipants (D-013 projection)', () => {
   it('isAutomatedEmail matches machine mailboxes only', () => {
     expect(['no-reply@a.io', 'noreply@a.io', 'donotreply@a.io', 'mailer-daemon@a.io', 'bounce+1@a.io'].map(isAutomatedEmail)).toEqual([true, true, true, true, true]);
     expect(['ada@a.io', 'noreen@a.io', 'replies@a.io', 'alert.team.lead@a.io'].map(isAutomatedEmail)).toEqual([false, false, false, true]);
+  });
+});
+
+describe('asserted same-as keys (people:merge, D-027)', () => {
+  it('reads only well-formed same: keys from assertedSameAs, deduplicated and sorted', () => {
+    expect(assertedSameAsKeys({ assertedSameAs: ['same:b2', 'same:a1', 'same:b2', 'same:', 'email:x@y.io', 7, null] })).toEqual(['same:a1', 'same:b2']);
+    expect(assertedSameAsKeys({ assertedSameAs: 'same:a1' })).toEqual([]);
+    expect(assertedSameAsKeys({})).toEqual([]);
+  });
+
+  it('a person or organization record with an asserted key shares it as an identity key', () => {
+    expect(personIdentityKeys({ emails: ['ada@acme.com'], assertedSameAs: ['same:a1'] })).toEqual(['email:ada@acme.com', 'same:a1']);
+    expect(personIdentityKeys({ assertedSameAs: ['same:a1'] })).toEqual(['same:a1']);
+    expect(organizationIdentityKeys({ domain: 'acme.com', assertedSameAs: ['same:o1'] })).toEqual(['domain:acme.com', 'same:o1']);
   });
 });
