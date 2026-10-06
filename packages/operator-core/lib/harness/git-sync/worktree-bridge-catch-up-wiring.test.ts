@@ -63,4 +63,34 @@ describe('WI-10003772: runWorktreeBridgeLeg runs the deferred-advance retry swee
     expect(source).toMatch(/metadata->'worktree_divergence' AS worktree_divergence/);
     expect(source.match(/await runWorktreeCatchUp\(catchUpCtx,/g)?.length).toBe(2);
   });
+
+  // WI-10006507 / D-055 step 2: the recorded conflict is RESOLVED, not just recorded. The
+  // sweep hands it to the merge-resolver (deduped by the in-flight marker), persists the
+  // dispatch mark, and the resolver is told to merge the hive head, not the push remote.
+  it('the sweep dispatches the merge-resolver for a recorded conflict and persists the dispatch mark', () => {
+    const sweep = functionBody(source, 'async function runWorktreeCatchUp(');
+    expect(sweep).toMatch(/divergenceResolverDispatch\(next\)/);
+    expect(sweep).toMatch(/if \(next && dispatch && !\(await resolverInFlight\(slug, ctx\.workspaceId\)\)\) \{/);
+    expect(sweep).toMatch(/await spawnMergeResolver\([^;]*\{ mergeRef: dispatch\.mergeRef \}\)/);
+    expect(sweep).toMatch(/next = \{ \.\.\.next, resolverDispatchedAt: now \};\s*write = true;/);
+    expect(sweep).toMatch(/if \(write\) await patchRoutineMetadata\(slug, ctx\.workspaceId, \{ worktree_divergence: next \}\)/);
+  });
+
+  it('spawnMergeResolver forwards mergeRef to the resolver in its --git-sync-conflict extra', () => {
+    const spawn = functionBody(source, 'async function spawnMergeResolver(');
+    expect(spawn).toMatch(/opts: \{ mergeRef\?: string \} = \{\}/);
+    expect(spawn).toMatch(/JSON\.stringify\(\{ scopes, files: filesSummary, authorship, \.\.\.\(opts\.mergeRef \? \{ mergeRef: opts\.mergeRef \} : \{\}\) \}\)/);
+  });
+
+  it('the merge-resolver prompt merges mergeRef (no fetch, no rebase) when the extra carries it', () => {
+    const prompt = readFileSync(
+      process.env.MERGE_RESOLVER_PROMPT_SOURCE ??
+        join(here, '../../../../../libs/papercusp/packages/harness/blueprints/base/prompts/merge-resolver.md'),
+      'utf8',
+    );
+    expect(prompt).toMatch(/carries a `mergeRef`/);
+    expect(prompt).toMatch(/`git merge --no-edit <mergeRef>`/);
+    expect(prompt).toMatch(/do NOT fetch/);
+    expect(prompt).toMatch(/never a rebase/);
+  });
 });

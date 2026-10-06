@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   DIVERGENCE_REFRESH_MS,
   describeDivergenceTransition,
+  divergenceResolverDispatch,
   nextWorktreeDivergence,
   parseWorktreeDivergence,
   type WorktreeDivergence,
@@ -87,9 +88,51 @@ describe('nextWorktreeDivergence (D-055)', () => {
   });
 });
 
+// WI-10006507 / D-055 step 2: a recorded conflict is handed to the merge-resolver once per
+// conflicting path set, with the hive head (not the push remote) as the side to merge.
+describe('divergenceResolverDispatch (D-055 step 2)', () => {
+  it('a recorded, undispatched conflict dispatches a superproject merge of the hive head sha', () => {
+    expect(divergenceResolverDispatch(prior({ paths: ['a.txt', 'b.txt'], hiveSha: H2 }))).toEqual({
+      conflicts: [{ scope: 'superproject', conflictedFiles: ['a.txt', 'b.txt'] }],
+      mergeRef: H2,
+    });
+  });
+
+  it('nothing to dispatch with no divergence, or once the resolver was dispatched for it', () => {
+    expect(divergenceResolverDispatch(null)).toBeNull();
+    expect(divergenceResolverDispatch(prior({ resolverDispatchedAt: T0 + 5 }))).toBeNull();
+  });
+
+  it('the dispatch mark survives a persisting conflict (heads moving, refresh writes): one dispatch per conflict', () => {
+    const marked = prior({ resolverDispatchedAt: T0 + 5 });
+    const moved = nextWorktreeDivergence(marked, conflict(['soak-heartbeat.txt'], L2, H2), T0 + 10);
+    expect(moved.write).toBe(true);
+    expect(moved.next?.resolverDispatchedAt).toBe(T0 + 5);
+    expect(divergenceResolverDispatch(moved.next)).toBeNull();
+    const refreshed = nextWorktreeDivergence(marked, conflict(['soak-heartbeat.txt']), T0 + DIVERGENCE_REFRESH_MS);
+    expect(refreshed.next?.resolverDispatchedAt).toBe(T0 + 5);
+  });
+
+  it('a changed conflicting path set drops the mark, so the new conflict is dispatched again', () => {
+    const t = nextWorktreeDivergence(prior({ resolverDispatchedAt: T0 + 5 }), conflict(['x.txt']), T0 + 10);
+    expect(t.log).toBe('paths-changed');
+    expect(t.next?.resolverDispatchedAt).toBeUndefined();
+    expect(divergenceResolverDispatch(t.next)?.conflicts[0].conflictedFiles).toEqual(['x.txt']);
+  });
+
+  it('a cleared divergence has nothing to dispatch', () => {
+    const t = nextWorktreeDivergence(prior({ resolverDispatchedAt: T0 + 5 }), { kind: 'contained' }, T0 + 10);
+    expect(t.next).toBeNull();
+    expect(divergenceResolverDispatch(t.next)).toBeNull();
+  });
+});
+
 describe('parseWorktreeDivergence', () => {
   it('round-trips a persisted value and rejects malformed or empty-path rows', () => {
     expect(parseWorktreeDivergence(JSON.parse(JSON.stringify(prior())))).toEqual(prior());
+    const marked = prior({ resolverDispatchedAt: T0 + 5 });
+    expect(parseWorktreeDivergence(JSON.parse(JSON.stringify(marked)))).toEqual(marked);
+    expect(parseWorktreeDivergence({ ...marked, resolverDispatchedAt: 'soon' })).toEqual(prior());
     expect(parseWorktreeDivergence(null)).toBeNull();
     expect(parseWorktreeDivergence({ ...prior(), paths: [] })).toBeNull();
     expect(parseWorktreeDivergence({ ...prior(), since: 'yesterday' })).toBeNull();

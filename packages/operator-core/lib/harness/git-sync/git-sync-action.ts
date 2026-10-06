@@ -93,6 +93,7 @@ import {
   type DivergenceObservation,
   type WorktreeDivergence,
   describeDivergenceTransition,
+  divergenceResolverDispatch,
   nextWorktreeDivergence,
   parseWorktreeDivergence,
 } from './worktree-divergence';
@@ -1697,6 +1698,9 @@ async function spawnMergeResolver(
   workspaceId: string,
   conflicts: RepoConflict[],
   superprojectBranch: string,
+  /** D-055 step 2 (WI-10006507): a pot-git member diverged from the hive head. The
+   *  resolver merges this sha into the checked-out branch instead of `origin/<branch>`. */
+  opts: { mergeRef?: string } = {},
 ): Promise<void> {
   // workspace-work-scope-policy-2026-09-04 P-008: git-sync keeps COMMITTING every
   // install, but an out-of-scope install gets no agent dispatched for its conflicts.
@@ -1764,8 +1768,13 @@ async function spawnMergeResolver(
     body: JSON.stringify({
       // P-007: the superproject branch comes from the routine's resolved config
       // (cfg.branch ?? 'main') — it is NOT papercup's 'staging' for other harnesses.
-      kickoff: `Resolve the git-sync merge conflict(s) in ${scopes.join(', ')} (on the branch each conflicted repo has checked out — superproject = \`${superprojectBranch}\`, submodules = their own default). Conflicted: ${filesSummary}`,
-      extra: ['--git-sync-conflict', JSON.stringify({ scopes, files: filesSummary, authorship })],
+      kickoff: opts.mergeRef
+        ? `Resolve a pot-git member/hive conflict: merge the hive head \`${opts.mergeRef}\` (already local; do not fetch, never rebase) into this worktree's checked-out branch. Conflicted: ${filesSummary}`
+        : `Resolve the git-sync merge conflict(s) in ${scopes.join(', ')} (on the branch each conflicted repo has checked out — superproject = \`${superprojectBranch}\`, submodules = their own default). Conflicted: ${filesSummary}`,
+      extra: [
+        '--git-sync-conflict',
+        JSON.stringify({ scopes, files: filesSummary, authorship, ...(opts.mergeRef ? { mergeRef: opts.mergeRef } : {}) }),
+      ],
       // P-010: a real multi-file merge by a higher-effort model needs well beyond the
       // route's 90s default. The invoke-route ceiling is 1200s (the old "~300s ceiling"
       // comment was stale). It drains+takes the git-sync lock (≤120s) first, then merges;
@@ -7328,9 +7337,24 @@ async function runWorktreeCatchUp(
           : { kind: 'unknown' };
     const now = Date.now();
     const t = nextWorktreeDivergence(ctx.priorDivergence, obs, now);
-    if (t.write) await patchRoutineMetadata(slug, ctx.workspaceId, { worktree_divergence: t.next });
     const line = describeDivergenceTransition(slug, ctx.priorDivergence, t, now);
     if (line) (t.log === 'cleared' ? console.log : console.warn)(line);
+    // D-055 step 2 (WI-10006507): hand a recorded conflict to the merge-resolver, once per
+    // conflicting path set, merging the hive head instead of the push remote. A resolver
+    // still in flight (for this or an ordinary git-sync conflict) defers it to a later tick.
+    let next = t.next;
+    let write = t.write;
+    const dispatch = divergenceResolverDispatch(next);
+    if (next && dispatch && !(await resolverInFlight(slug, ctx.workspaceId))) {
+      console.warn(
+        `[git-sync] ${slug}: dispatching merge-resolver to merge the hive head ${dispatch.mergeRef.slice(0, 12)} ` +
+          `into this member's worktree (conflict on ${next.paths.length} path(s), D-055 step 2)`,
+      );
+      await spawnMergeResolver(slug, ctx.workspaceId, dispatch.conflicts, 'HEAD', { mergeRef: dispatch.mergeRef });
+      next = { ...next, resolverDispatchedAt: now };
+      write = true;
+    }
+    if (write) await patchRoutineMetadata(slug, ctx.workspaceId, { worktree_divergence: next });
   } catch (e) {
     console.warn(`[git-sync] ${slug}: recording worktree divergence failed: ${e instanceof Error ? e.message : e}`);
   }

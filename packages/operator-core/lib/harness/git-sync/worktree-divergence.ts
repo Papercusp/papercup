@@ -34,6 +34,11 @@ export interface WorktreeDivergence {
   hiveSha: string;
   /** Conflicting paths, sorted. Never empty in a persisted value. */
   paths: string[];
+  /** D-055 step 2 (WI-10006507): when the merge-resolver was dispatched for THIS
+   *  conflicting path set (ms epoch). Absent = not yet dispatched. Carried while the
+   *  path set is unchanged and dropped when it changes, so each distinct conflict is
+   *  handed to the resolver once, never once per tick. */
+  resolverDispatchedAt?: number;
 }
 
 /** What one catch-up tick learned about the member worktree. */
@@ -77,7 +82,14 @@ export function parseWorktreeDivergence(raw: unknown): WorktreeDivergence | null
   ) {
     return null;
   }
-  return { since: r.since, lastSeenAt: r.lastSeenAt, localHead: r.localHead, hiveSha: r.hiveSha, paths };
+  return {
+    since: r.since,
+    lastSeenAt: r.lastSeenAt,
+    localHead: r.localHead,
+    hiveSha: r.hiveSha,
+    paths,
+    ...(typeof r.resolverDispatchedAt === 'number' ? { resolverDispatchedAt: r.resolverDispatchedAt } : {}),
+  };
 }
 
 /** Pure transition: prior state + this tick's observation → next state. */
@@ -104,11 +116,36 @@ export function nextWorktreeDivergence(
     paths: conflictPaths,
   };
   if (!prior) return { next, log: 'started', write: true };
+  // A new conflicting path set is a new conflict: it gets its own resolver dispatch.
   if (!samePaths(prior.paths, conflictPaths)) return { next, log: 'paths-changed', write: true };
+  if (prior.resolverDispatchedAt !== undefined) next.resolverDispatchedAt = prior.resolverDispatchedAt;
   const headsMoved = prior.localHead !== d.localHead || prior.hiveSha !== d.hiveSha;
   const stale = now - prior.lastSeenAt >= DIVERGENCE_REFRESH_MS;
   if (headsMoved || stale) return { next, log: null, write: true };
   return { next: prior, log: null, write: false };
+}
+
+/** What git-sync hands the merge-resolver for a conflict divergence (D-055 step 2). */
+export interface DivergenceResolverDispatch {
+  /** Same shape as a git-sync `RepoConflict`: the member worktree is the superproject. */
+  conflicts: { scope: string; conflictedFiles: string[] }[];
+  /** The hive head to merge INTO the member's branch, as a sha rather than
+   *  `refs/hive/staging`. The catch-up only fetches that ref when the object is
+   *  missing, so the ref can trail the watermark; the sha is the commit the
+   *  conflict probe actually merged against, and it is already local. */
+  mergeRef: string;
+}
+
+/**
+ * D-055 step 2 (WI-10006507): the dispatch for a recorded conflict divergence that
+ * has not been handed to the resolver yet, or null. Step 1 only RECORDED the fork;
+ * nothing resolved it, and the integrator parks the member until the member merges the
+ * hive head itself. This is that merge, routed through the same resolver as an ordinary
+ * git-sync conflict, with `mergeRef` replacing the push remote as the other side.
+ */
+export function divergenceResolverDispatch(d: WorktreeDivergence | null): DivergenceResolverDispatch | null {
+  if (d === null || d.resolverDispatchedAt !== undefined || d.paths.length === 0) return null;
+  return { conflicts: [{ scope: 'superproject', conflictedFiles: [...d.paths] }], mergeRef: d.hiveSha };
 }
 
 /** The operator-facing line for a logged transition (null = nothing to log). */
