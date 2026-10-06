@@ -3126,7 +3126,131 @@
      "summary": "plan lane agent-economy-flywheel-2026-08-30#P-039 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
     }
    ],
-   "claimHold": false
+   "claimHold": false,
+   "mainnetProposalEvidenceQualification": {
+    "status": "retained-source-evidence-qualified-not-operationally-accepted",
+    "qualifiedAt": "2026-10-06T11:02:15Z",
+    "workItem": "WI-10005820",
+    "sourceAuthority": {
+     "plan": "agent-economy-flywheel-2026-08-30",
+     "item": "P-039",
+     "version": 100,
+     "contentHash": "fc68bbe66e2de5fdea2a667e37de106465287eea99c13d406789b207b4af7ca6",
+     "requirements": "Full source Requirements parsed and current Now read. R-9 compares the first mainnet settlement timestamp, if any, with recorded Avi approval. R-27 requires chain/stablecoin, treasury/channel capital, Safe signers, DAO 10% split-manifest release and rollback, then needs-human until an owner-typed approval exists.",
+     "decisions": ["D-007", "D-013", "D-015"],
+     "fullItemBoundary": "The P-020 testnet journey must pass first; P-044 transparency and P-045 setup remain prerequisites. D-015 approved Phase B construction, retained P-045 as owner work and limited execution to test mode/testnet. It is not recorded P-039 cutover approval. R-33 requires observed setup and an OWNER-stamped confirmation; agent authorization does not establish those facts.",
+     "sourceNowQualification": "Now still lists multiple BAR readiness blockers and suggests accepting draft R-27. That suggestion is not evidence of a complete proposal or proof carried forward. No clause, rubric or source change made."
+    },
+    "specs": [
+     {
+      "specId": "AUTO-BAR-R-9-P-039",
+      "revision": 2,
+      "contentHash": "b79aa71a9b942ac948cd37f6d8090258e44ba4902c4420715a9bba61ac36f27b",
+      "status": "active",
+      "requiredEvidence": ["live"],
+      "sourceRubricRevision": 1
+     },
+     {
+      "specId": "AUTO-BAR-R-27-P-039",
+      "revision": 1,
+      "contentHash": "eac7003abf897e49bb795dbf858ae6d709fc0a10c0a7ae0928a736c51dfef532",
+      "status": "draft",
+      "requiredEvidence": ["live"],
+      "sourceRubricRevision": 4
+     },
+     {
+      "specId": "AUTO-REQ-M-021-P-039",
+      "revision": 1,
+      "contentHash": "a385a4c605aba61eaa8b3e60c30d20ff2b409a510497ce8aebdb21987b37e052",
+      "status": "draft"
+     }
+    ],
+    "bindingQualification": {
+     "workItemIds": ["WI-10004285"],
+     "specIds": ["AUTO-BAR-R-9-P-039", "AUTO-BAR-R-27-P-039", "AUTO-REQ-M-021-P-039"],
+     "limit": 100,
+     "truncatedByLimit": false,
+     "evidenceRows": 0,
+     "independentRead": "Two separate exact consumer/clause reads returned empty, untruncated evidence without a data-plane warning. This establishes only this selection's empty binding set, not global evidence or proposal absence."
+    },
+    "rubricQualification": {
+     "rubric": "acceptance-agent-economy-flywheel-2026-08-30",
+     "revision": 5,
+     "criteriaHash": "25dd447cc55337d60b91c38186c4c1867cb9d9e8c0ec2df4fe124bb7686d08c8",
+     "vetting": "unvetted/rejected-attestation; candidate EI-24753855151782231 rejected grading-audit-unsettled/criteria-hash-mismatch",
+     "acceptanceUpgraded": false
+    },
+    "currentItemQualification": {
+     "workItem": "WI-10004285",
+     "state": "blocked",
+     "assignee": null,
+     "checkpoint": null,
+     "threadPosts": 0,
+     "needsHumanFlag": false,
+     "sourceStoredStatus": "todo",
+     "sourceEffectiveStatus": "blocked",
+     "unresolvedSourceItems": ["P-020", "P-045"],
+     "scope": "Current item and its returned complete thread window. Historical lifecycle coverage explicitly excludes some transitions; an empty timeline does not establish never-started work. The intended eventual needs-human state is not asserted as today's state."
+    },
+    "predecessorQualification": [
+     {
+      "item": "P-020",
+      "workItem": "WI-10004284",
+      "state": "blocked",
+      "assignee": null,
+      "checkpoint": null,
+      "retainedAudit": "thread-post:1159671",
+      "proofBoundary": "The prior independent qualification preserves deterministic local-peer convergence as distinct from actual public-testnet identity publication, activation, inference, settlement and revocation. No receipt replayed or acceptance upgraded."
+     },
+     {
+      "item": "P-044",
+      "workItem": "WI-10004751",
+      "state": "done",
+      "completionAuthority": "committed",
+      "completionFreshness": "stale",
+      "retainedEvidence": "Completion stores test runs 20380738/20380647/20380495 at d494690199, with report/journal equality, signed monthly statement and Worker/SQLite publishing readback. Current freshness identifies changed committed transparency-routes.test.ts content versus verification HEAD 28db2e820b38659560d23d4b12e67dc599d067ef. Dated completion is preserved; it is not current deployed transparency or P-039 approval."
+     },
+     {
+      "item": "P-045",
+      "sourceState": "needs-human",
+      "proofBoundary": "Source explicitly retains company, five bank account categories, Stripe live mode, M-of-N hardware-wallet signers held by different people, DAO legal wrapper and counsel/CPA review as Avi's work. No actual setup or OWNER-stamped confirmation was observed. Two filtered work-item list slices (default audience then audience:any) returned empty; these slices do not establish global item absence."
+     }
+    ],
+    "proposalArtifactQualification": {
+     "path": "~/.papercusp/artifacts/dao-launch-and-auditable-banking-2026-09-30.md",
+     "sha256": "a816235f4b80b7f2aaa6a4c1fe2002cdc6cd8567effb80860f71bc39fe0eee89",
+     "sourceRef": "D-013 / WI-10004323 / owner directive1057 part2",
+     "observed": "Complete dated banking/DAO brief read. Base/USDC and 2-of-3 or 3-of-5 are examples. It gives account and reporting designs and historical setup assertions. It does not name actual treasury/channel capital amounts, appointed signer identities, a DAO split release hash or a cutover rollback. It is not a verified complete P-039 proposal or Avi's approval of one.",
+     "scope": "This exact dated local source file plus current target thread/bindings and bounded repository filename/text searches; no global absence, delivery, legal/setup currentness or mainnet-settlement claim."
+    },
+    "implementationQualification": {
+     "rail": "apps/operator-public/src/settlement-facilitator.ts#createViemSettlementFacilitator",
+     "observed": "The inspected constructor validates explicit RPC/private-key/contract/stablecoin configuration and positive chainId, then constructs a viem chain and writes settleBatch/refundChannel transactions. Its configuration checks do not themselves measure recorded owner approval or testnet-only adoption. This bounded read does not establish whether wider governance enforces P-039.",
+     "detectorBoundary": "R-9 and R-27 source checks still use instrumentKey:none; no executable timestamp/approval comparison or full proposal acceptance was established. No first-mainnet settlement timestamp was measured.",
+     "reuse": "Reuse the existing proposal/spec evidence, P-020 journey, P-044 transparency and viem settlement surfaces; this audit introduces no payment rail or approval system."
+    },
+    "currentFilePins": [
+     {"path": "apps/operator-public/src/settlement-facilitator.ts", "sha256": "bd871d9098a985ae513253f666a1d1910b8edc5e7e80c5f3754c5c46a8f4c4ca", "headBlob": "0135cf0cc16f0fb1c6d6b80ebe8adb27ff916a18", "workingBlob": "0135cf0cc16f0fb1c6d6b80ebe8adb27ff916a18"},
+     {"path": "packages/operator-core/lib/p2p/evm-settlement.ts", "sha256": "d448e06f1fad5b88f89519875d0d8890eb1ca1b9b7602924d21341eb08856cb0", "headBlob": "b908169b0c465f4cbd946f3df23c703cee68a74f", "workingBlob": "b908169b0c465f4cbd946f3df23c703cee68a74f"},
+     {"path": "packages/operator-core/lib/cupboard/transparency-report.ts", "sha256": "c82c4c8705f9e3321087f2b123bc20d3dba535d8a940d351bced35cb6f198e73", "headBlob": "573e028e78c3cd90328f2d5fa9656bc0ee911ffb", "workingBlob": "573e028e78c3cd90328f2d5fa9656bc0ee911ffb"},
+     {"path": "packages/operator-core/lib/cupboard/transparency-runtime.ts", "sha256": "6eb97b30c66f7a95d2fa1dd3eac28182c8879f684b3a68dfdeb83eeb443c6409", "headBlob": "b1f945176578b9e1a1144d16742f737c90e0d886", "workingBlob": "b1f945176578b9e1a1144d16742f737c90e0d886"},
+     {"path": "apps/operator-public/src/__tests__/transparency-routes.test.ts", "sha256": "b19aa00dfb72ec14589b7a332cd4af233d53860584de3965b335fef36d9bae07", "headBlob": "3ad2c212f4b4859f914c2757a899a42b31e37ec1", "workingBlob": "3ad2c212f4b4859f914c2757a899a42b31e37ec1"}
+    ],
+    "verificationBoundary": {
+     "newBehavioralSuitesRun": false,
+     "oldReceiptReplayed": false,
+     "currentRuntimeMeasured": false,
+     "mainnetAction": false,
+     "ownerApprovalFabricated": false,
+     "retainedEvidenceOnly": true
+    },
+    "notEstablished": [
+     "Complete current P-039 proposal, verified delivery and OWNER-stamped approval of its exact contents",
+     "P-020 pilot testnet journey acceptance and observed P-045 setup/confirmation",
+     "First-mainnet settlement versus approval comparison, executable R9/R27 checks, current bindings, rubric vetting, adequacy and independent grade",
+     "Current P-044 deployed transparency acceptance, whole-plan acceptance or shipment"
+    ]
+   }
   },
   {
    "id": "WI-10004288",
