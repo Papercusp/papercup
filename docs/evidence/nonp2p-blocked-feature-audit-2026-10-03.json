@@ -1542,7 +1542,33 @@
      "summary": "plan lane mdenseon-adoption-measurements-2026-10-01#P-004 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
     }
    ],
-   "claimHold": false
+   "claimHold": false,
+   "qualification": {
+    "status": "retained-prerequisite-authority-and-freshness-unsettled",
+    "sourceRef": "thread-post:1158614",
+    "recordedAt": "2026-10-06T02:37:07.405Z",
+    "sourcePlanVersion": 10,
+    "sourcePlanHash": "b130f9a608024c6471b634f997edcfe16fb0636ffa09751e299fe19cfd05044f",
+    "requirement": "R-2 — Incumbent reference fairness",
+    "prerequisites": [
+     {
+      "ref": "papercusp#WI-10004536",
+      "observedState": "done",
+      "authority": "proposed",
+      "completionFreshness": "stale",
+      "reason": "Both declared candidate-embedders source/test content identities differ from the stored completion; current working-tree blobs match HEAD. Source P-002 done does not establish independent canonical settlement."
+     },
+     {
+      "ref": "papercusp#WI-10004537",
+      "observedState": "open",
+      "authority": null,
+      "reason": "No completion evidence in the bounded current read; the P-003 prerequisite remains unresolved."
+     }
+    ],
+    "verification": "Canonical incoming links require both prerequisites to be settled. Read exact source R-2 and corroborated the two completion-content mismatches against native git object identities; no current reference replay or acceptance grade was performed.",
+    "acceptanceWaived": false,
+    "scope": "Dated qualification of this retained consumer only; frozen historical fields and original40/200/complete109-root unknowns remain unchanged."
+   }
   },
   {
    "id": "WI-10004541",
