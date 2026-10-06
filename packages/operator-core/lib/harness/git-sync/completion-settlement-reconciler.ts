@@ -550,6 +550,20 @@ export type SettlementStrandedNotice = {
 const SETTLEMENT_SYSTEM_OWNER = 'system:git-sync-completion-settlement';
 
 /**
+ * Production `onSettled` (P-007 Phase C, D-028 §6): settlement just upgraded the row to
+ * 'committed', so an open completion verification task for it is accepted by settlement.
+ * Lazy import: the store reaches work-items/issues-engineer, which this module must not load
+ * eagerly.
+ */
+export async function acceptCompletionVerificationOnSettlement(settled: {
+  id: string;
+  authority: 'committed';
+}): Promise<void> {
+  const { acceptCompletionOnSettlementForSubject } = await import('../improvements/completion-verification-store');
+  await acceptCompletionOnSettlementForSubject(settled.id, settled.authority);
+}
+
+/**
  * Production notice: one coord message to the closer. Best-effort by contract — the
  * caller swallows a failure, because a notice must never fail the settlement pass.
  */
@@ -719,6 +733,13 @@ export interface CompletionSettlementReconcilerDeps {
    * nothing, so hermetic fixtures never reach the real coord log.
    */
   notifyStranded?: (notice: SettlementStrandedNotice) => Promise<void>;
+  /**
+   * P-007 Phase C (D-028 §6): called once per row whose authority this fire really upgraded
+   * to 'committed'. Production (no `sql` injected) closes the subject's open completion
+   * verification task as accepted by settlement; injected `sql` without this seam does
+   * nothing, so hermetic fixtures never write work items. Failures are logged, never thrown.
+   */
+  onSettled?: (settled: { id: string; harness: string; authority: 'committed' }) => Promise<void>;
   /**
    * WI-10005560: where the history reader's per-pair verdicts persist across restarts.
    * Production (no `sql` injected) uses Postgres, shared by every pass in the process. An
@@ -908,6 +929,7 @@ async function reconcileProposedCompletionsCore(
   const historyLookup = deps.historyLookup ?? historyReader?.contains;
   const workingTreeLookup = deps.workingTreeLookup ?? (deps.lookup ? undefined : completionWorkingTreeBlobSha);
   const notifyStranded = deps.notifyStranded ?? (deps.sql ? undefined : notifySettlementStranded);
+  const onSettled = deps.onSettled ?? (deps.sql ? undefined : acceptCompletionVerificationOnSettlement);
   const emit = deps.emit ?? emitAwaitedEvent;
   // EI-24710716781971154: two-tier selection. A row whose manifest has no `residualPaths`
   // key has NEVER been attempted — it is the only kind a fresh close can be, and the
@@ -1243,6 +1265,14 @@ async function reconcileProposedCompletionsCore(
           source: 'git-sync-completion-settlement',
           workspaceId: scope.workspaceId,
         });
+        try {
+          await onSettled?.({ id, harness: row.harness_slug, authority: 'committed' });
+        } catch (error) {
+          console.warn(
+            `[git-sync-completion-settlement] ${scope.installSlug}: could not accept the completion verification ` +
+              `task of settled ${id}: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
       }
     } finally {
       completed += 1;

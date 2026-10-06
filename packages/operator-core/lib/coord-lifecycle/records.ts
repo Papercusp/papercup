@@ -1138,6 +1138,22 @@ export const CompletionRecordSchema = z.object({
       `hypothesis!=alternativeHypothesis; ${ROOT_CAUSE_PREDICTED_OBSERVATIONS_CONSTRAINT}; ` +
       `distinguishingTest: ${ROOT_CAUSE_DISTINGUISHING_TEST_CONSTRAINT}`,
   }),
+  /**
+   * Required (and only meaningful) when closing a completion verification task — a row whose
+   * payload.verification has check 'completion' (P-007 Phase C, D-028). 'accept' releases the
+   * subject's dependents; 'reject' reopens the subject to its closer and needs a reason.
+   */
+  verificationVerdict: z
+    .object({
+      verdict: z.enum(['accept', 'reject']),
+      reason: z.string().min(1).optional(),
+    })
+    .strict()
+    .optional()
+    .meta({
+      'x-papercusp-call-constraint':
+        "closing a completion verification task (payload.verification.check='completion') => required; reject => reason required",
+    }),
   /** Top-level alias for the structured verification coverage record (WI-37960). */
   coverage: CompletionCoverageSchema.optional().meta({
     'x-papercusp-call-constraint': COMPLETION_COVERAGE_CALL_CONSTRAINT,
