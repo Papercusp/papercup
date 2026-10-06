@@ -19,11 +19,10 @@
  * test database, so the workspace credential store is only a fallback). The key
  * is sent only in the request header and is never logged or asserted on.
  *
- * Run it through the test router directly so the opt-in reaches the worker
- * (`npm run test:file` currently drops it, EI-25261630093241703):
+ * Run it through the package's test:file wrapper; the inline opt-in reaches
+ * the worker through this wrapper chain:
  *   PAPERCUSP_ELEVENLABS_LIVE=1 ELEVENLABS_API_KEY=… PAPERCUSP_TEST_RUN_HARNESS=papercusp \
- *     node --import ./scripts/lib/committed-source-loader.mjs scripts/test-files.mjs \
- *     packages/operator-core/lib/voice-engines/elevenlabs-agent-sync.live.integration.test.ts
+ *     npm run test:file -- packages/operator-core/lib/voice-engines/elevenlabs-agent-sync.live.integration.test.ts
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
