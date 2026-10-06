@@ -152,13 +152,13 @@ describe('turn-provenance ledger I/O stays off the event loop (WI-10005327)', ()
   it('accepts awaited promise chains while rejecting floating and unrelated method calls', () => {
     const names = ['tagTurnForInjection'];
     expect(unawaitedCalls('x.ts',
-      'await (tagTurnForInjection(x)).then(format).catch(onError).finally(cleanup);', names,
+      'async function f() { await (tagTurnForInjection(x)).then(format).catch(onError).finally(cleanup); }', names,
     )).toEqual([]);
     expect(unawaitedCalls('x.ts',
       'tagTurnForInjection(x).then(format).catch(onError);', names,
     )).toEqual(['x.ts:1:tagTurnForInjection']);
     expect(unawaitedCalls('x.ts',
-      'await tagTurnForInjection(x).toString();', names,
+      'async function f() { await tagTurnForInjection(x).toString(); }', names,
     )).toEqual(['x.ts:1:tagTurnForInjection']);
   });
 
