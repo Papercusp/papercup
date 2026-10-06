@@ -2288,7 +2288,9 @@ async fn run<B: Backend>(
             match action {
                 // Coalesced: see `render_deferred` above the loop.
                 Action::Render => {
-                    if rx.is_empty() {
+                    // A mouse selection in progress is drawn even with input
+                    // queued: its release copies from that frame (WI-10006861).
+                    if app.draw_now(rx.is_empty()) {
                         render_deferred = false;
                         terminal.draw(|f| ui::draw(f, &app))?;
                     } else {

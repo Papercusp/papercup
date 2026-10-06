@@ -13370,6 +13370,17 @@ impl App {
         }
     }
 
+    /// Whether the event loop must draw a `Render` now instead of coalescing
+    /// it. Draw coalescing (WI-10006651) defers a plain `Render` while more
+    /// input is queued, but a mouse selection cannot wait: the release copies
+    /// the text a DRAWN frame showed (`a_selection_never_drawn_copies_nothing`),
+    /// so a press, drag and release that arrive in one burst would copy nothing
+    /// (WI-10006861). Drags arrive at pointer pace, so drawing each one costs
+    /// what it did before coalescing; key bursts still coalesce.
+    pub fn draw_now(&self, queue_empty: bool) -> bool {
+        queue_empty || self.mouse_selection.is_some()
+    }
+
     /// The key to NAME in a hint for a subview/facet cycle.
     ///
     /// `Tab` on a bare terminal; `Shift+Tab` inside the dock session, whose
@@ -31379,6 +31390,50 @@ mod mouse_tests {
             Action::Render
         );
         assert!(a.toast.is_none());
+    }
+
+    /// WI-10006861: press, drag and release in ONE input burst. The event loop
+    /// coalesces a `Render` while input is queued unless `draw_now` says
+    /// otherwise; replaying that decision, the selection is still drawn, so the
+    /// release copies. Before the fix every render here was deferred and the
+    /// release found no frame (the P-018 PTY case read 'no OSC 52 write').
+    #[test]
+    fn a_drag_in_one_input_burst_still_copies() {
+        let mut a = chat_first_app(2);
+        let screen = rows(&draw(&a));
+        let (row, line) = screen
+            .iter()
+            .enumerate()
+            .find(|(_, r)| r.contains("answer 1"))
+            .expect("the reply is on screen");
+        let col = line[..line.find("answer 1").unwrap()].chars().count() as u16;
+        let row = row as u16;
+        let end = col + "answer 1".len() as u16 - 1;
+        // Plain renders still coalesce while input is queued.
+        assert!(!a.draw_now(false));
+        assert!(a.draw_now(true));
+
+        for kind in [
+            MouseEventKind::Down(MouseButton::Left),
+            MouseEventKind::Drag(MouseButton::Left),
+        ] {
+            let at = if matches!(kind, MouseEventKind::Down(_)) { col } else { end };
+            assert_eq!(a.update(mouse(kind, at, row)), Action::Render);
+            // More of the burst is queued (queue_empty = false).
+            if a.draw_now(false) {
+                draw(&a);
+            }
+        }
+        let Action::CopyToClipboard { sequence } =
+            a.update(mouse(MouseEventKind::Up(MouseButton::Left), end, row))
+        else {
+            panic!("a drag delivered in one burst must still copy");
+        };
+        use base64::Engine as _;
+        let payload = base64::engine::general_purpose::STANDARD.encode("answer 1");
+        assert!(sequence.contains(&payload), "{sequence:?}");
+        // The selection is over: renders coalesce again.
+        assert!(!a.draw_now(false));
     }
 
     /// Without a frame that showed the selection there is nothing to read.
