@@ -20,7 +20,7 @@ const PROJECTS = [
   { slug: 'loose' },
 ];
 
-let deps: { [K in keyof IntegrationModeRouteDeps]: ReturnType<typeof vi.fn> };
+let deps: { [K in keyof IntegrationModeRouteDeps]-?: ReturnType<typeof vi.fn> };
 let get: RouteLike;
 let put: RouteLike;
 

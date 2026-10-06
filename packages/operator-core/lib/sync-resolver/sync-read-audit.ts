@@ -112,6 +112,9 @@ export const SYNC_QUERY_FIXTURES: Record<string, QueryFixture> = {
   'plans.byHive': { potHomeSlug: 'papercusp', workspaceId: 'papercusp-workspace' },
   'hive.overrides': { potSlug: 'papercusp', workspaceId: 'papercusp-workspace' },
   'hiveRoster.byHive': { potSlug: 'papercusp', workspaceId: 'papercusp-workspace' },
+  // The settings panel reads this by harness slug (not the Pot home slug).
+  // Papercusp is a stable in-scope Pot harness for a representative live shape.
+  'potIntegration.settings': { slug: 'papercusp' },
   'insights.tokens': { harness: 'papercusp' }, // `harness`, not `harnessSlug`
   'planSessions.list': { planSlug: 'precompute-sync-reads-phase2-compute-latency-2026-07-19' },
   // planActivity.list (plan-visibility-revamp-2026-08-23 P-004) — the PlanDashboard
