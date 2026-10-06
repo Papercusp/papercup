@@ -1457,6 +1457,30 @@ async function probeMergeResolverRuntime(slug: string, workspaceId: string): Pro
   }
 }
 
+/**
+ * WI-10006848: the binary a launch target's role needs when it is NOT on this host's spawn
+ * PATH, else null. Both agent dispatchers (merge-resolver, content-fixer) check this AFTER
+ * resolving their blueprint, so every dispatch path is covered, not only the D-055 sweep.
+ * Positive findings only: a probe error reads null, so a dispatch is withheld only when the
+ * CLI is demonstrably absent.
+ */
+async function launchRoleRuntimeMissing(slug: string, role: string): Promise<string | null> {
+  try {
+    const { probeRoleRuntime } = await import('../../harness-invoke-once');
+    const p = probeRoleRuntime(role);
+    return p.ok ? null : p.bin || '(empty spawn command)';
+  } catch (e) {
+    console.warn(`[git-sync] ${slug}: ${role} runtime probe failed: ${e instanceof Error ? e.message : e}`);
+    return null;
+  }
+}
+
+/** What spawnMergeResolver did. `runtime-missing` is the one a caller must surface. */
+type MergeResolverDispatch =
+  | { dispatched: true }
+  | { dispatched: false; reason: 'out-of-scope' | 'no-blueprint' }
+  | { dispatched: false; reason: 'runtime-missing'; runtime: string };
+
 async function resolverInFlight(slug: string, workspaceId: string): Promise<boolean> {
   const { sql } = getOrgPg();
   const rows = await sql<{ lr: ResolverMarker | null }[]>`
@@ -1468,9 +1492,16 @@ async function resolverInFlight(slug: string, workspaceId: string): Promise<bool
   return isResolverInFlight(rows[0]?.lr, Date.now(), PROCESS_INSTANCE_ID);
 }
 
-async function writeGitSyncEscalation(slug: string, workspaceId: string, conflicts: RepoConflict[]): Promise<void> {
+async function writeGitSyncEscalation(
+  slug: string,
+  workspaceId: string,
+  conflicts: RepoConflict[],
+  /** WI-10006848: set when no resolver can run here, so the row says why nothing is coming. */
+  opts: { resolverRuntimeMissing?: string } = {},
+): Promise<void> {
   const { sql } = getOrgPg();
   const scopes = conflicts.map((c) => c.scope);
+  const missing = opts.resolverRuntimeMissing;
   const body = JSON.stringify({
     kind: ESCALATION_KIND,
     harness_slug: slug,
@@ -1479,7 +1510,11 @@ async function writeGitSyncEscalation(slug: string, workspaceId: string, conflic
     conflicts: conflicts.map((c) => ({ scope: c.scope, conflicted_files: c.conflictedFiles })),
     scope: scopes.join(', '),
     emitted_at: Date.now(),
-    detail: `git-sync auto-merge conflicted in ${scopes.join(', ')}; trees aborted clean, merge-resolver dispatched.`,
+    ...(missing ? { resolver_unavailable: { runtime: missing, reason: 'runtime-missing' } } : {}),
+    detail: missing
+      ? `git-sync auto-merge conflicted in ${scopes.join(', ')}; trees aborted clean, merge-resolver NOT dispatched ` +
+        `— merge-resolver runtime missing: ${missing}. Install the agent CLI on this host or resolve the conflict by hand.`
+      : `git-sync auto-merge conflicted in ${scopes.join(', ')}; trees aborted clean, merge-resolver dispatched.`,
   });
   await sql.unsafe(
     `INSERT INTO harness_shared.harness_escalations (harness_slug, phase, escalation, mtime_ms, workspace_id)
@@ -1726,7 +1761,7 @@ async function spawnMergeResolver(
   /** D-055 step 2 (WI-10006507): a pot-git member diverged from the hive head. The
    *  resolver merges this sha into the checked-out branch instead of `origin/<branch>`. */
   opts: { mergeRef?: string } = {},
-): Promise<void> {
+): Promise<MergeResolverDispatch> {
   // workspace-work-scope-policy-2026-09-04 P-008: git-sync keeps COMMITTING every
   // install, but an out-of-scope install gets no agent dispatched for its conflicts.
   {
@@ -1734,7 +1769,7 @@ async function spawnMergeResolver(
     const scope = await gateWorkScope('git-sync:merge-resolver', { harness: slug });
     if (!scope.allowed) {
       console.warn(`[git-sync] ${slug}: merge-resolver dispatch skipped — ${scope.message}`);
-      return;
+      return { dispatched: false, reason: 'out-of-scope' };
     }
   }
   // unify-agent-launches-as-blueprints D-002/D-004: the launch is now DECLARATIVE.
@@ -1746,7 +1781,17 @@ async function spawnMergeResolver(
   const target = await resolveLaunchTargetForEvent(CONFLICT_EVENT, { installSlug: slug, workspaceId });
   if (!target) {
     console.warn(`[git-sync] no launch blueprint declares "${CONFLICT_EVENT}" — skipping merge-resolver dispatch`);
-    return;
+    return { dispatched: false, reason: 'no-blueprint' };
+  }
+  // WI-10006848: a host without the role's agent CLI (a Server install ships none) used to
+  // die `spawn claude ENOENT` on every dispatch with nothing saying why. Withhold it instead.
+  const missingRuntime = await launchRoleRuntimeMissing(slug, target.role);
+  if (missingRuntime) {
+    console.warn(
+      `[git-sync] ${slug}: merge-resolver NOT dispatched — runtime missing: ${missingRuntime} ` +
+        `(role ${target.role} has no agent CLI on this host's spawn PATH)`,
+    );
+    return { dispatched: false, reason: 'runtime-missing', runtime: missingRuntime };
   }
   const { url } = target;
   const scopes = conflicts.map((c) => c.scope);
@@ -1854,6 +1899,7 @@ async function spawnMergeResolver(
       await recordResolverDispatch(slug, workspaceId, { at: dispatchedAt, status: 'error', error: msg.slice(0, 300) });
       await logResolverSettle('error', { error: msg.slice(0, 300) });
     });
+  return { dispatched: true };
 }
 
 /** Record the merge-resolver dispatch lifecycle onto the routine metadata (GAP-2). */
@@ -2091,6 +2137,16 @@ async function spawnContentFixer(
   const target = await resolveLaunchTargetForEvent(CONTENT_ERROR_EVENT, { installSlug: slug, workspaceId });
   if (!target) {
     console.warn(`[git-sync] no launch blueprint declares "${CONTENT_ERROR_EVENT}" — skipping content-fixer dispatch`);
+    return currentErrors;
+  }
+  // WI-10006848: same preflight as the merge-resolver. The quarantine still holds; only the
+  // agent that would die `spawn <cli> ENOENT` is withheld.
+  const missingRuntime = await launchRoleRuntimeMissing(slug, target.role);
+  if (missingRuntime) {
+    console.warn(
+      `[git-sync] ${slug}: content-fixer NOT dispatched — runtime missing: ${missingRuntime} ` +
+        `(role ${target.role} has no agent CLI on this host's spawn PATH)`,
+    );
     return currentErrors;
   }
   const { url } = target;
@@ -7512,7 +7568,12 @@ async function recordAndEscalateTick(a: {
     if (!(await resolverInFlight(slug, workspaceId))) {
       const scopes = outcome.conflicts.map((c) => c.scope).join(', ');
       console.warn(`[git-sync] ${slug}: merge conflict(s) in ${scopes} — dispatching merge-resolver`);
-      await spawnMergeResolver(slug, workspaceId, outcome.conflicts, a.cfgBranch ?? 'main');
+      const dispatch = await spawnMergeResolver(slug, workspaceId, outcome.conflicts, a.cfgBranch ?? 'main');
+      // WI-10006848: no resolver can run on this host. Rewrite the row (written first so a
+      // dispatched resolver can read it) to say so, instead of "merge-resolver dispatched".
+      if (!dispatch.dispatched && dispatch.reason === 'runtime-missing') {
+        await writeGitSyncEscalation(slug, workspaceId, outcome.conflicts, { resolverRuntimeMissing: dispatch.runtime });
+      }
     }
   } else if (
     outcome.status === 'synced' ||
