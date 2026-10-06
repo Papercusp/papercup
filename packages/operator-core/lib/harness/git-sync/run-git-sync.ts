@@ -38,7 +38,7 @@ import { collectChildOutput } from '../../child-output.js';
 import { processGroupLifetime } from '../../fleet/process-group-lifetime';
 import { withGitFetchHeadroom } from './git-fetch-headroom';
 import { randomUUID } from 'node:crypto';
-import { copyFile, lstat, mkdir, open, readFile, readdir, realpath, rm, unlink, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, open, readFile, readdir, realpath, rm, unlink, utimes, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, resolve as resolvePath } from 'node:path';
 import { mapLiveLockHoldingsForRepo } from './live-lock-coordinates';
 import { scanProcForOpenFile } from './proc-open-file-scan';
@@ -4172,6 +4172,35 @@ async function openPrivateIndexSite(
 }
 
 /**
+ * Copy the shared index for its stat cache WITHOUT defeating git's racy-entry check.
+ *
+ * Git trusts a cached stat only when the entry's mtime is older than the INDEX FILE's own
+ * mtime; an entry written in the same second as the index is "racy" and is re-hashed. A
+ * plain copy gets a fresh mtime, so every racy entry in it becomes trusted: a file rewritten
+ * at the same size within the second its stat was cached reads as unchanged, and `add`
+ * never picks the edit up (WI-10006725, found by the WI-39922 test). So the bytes and the
+ * stamp come from ONE open file (a concurrent rename cannot pair new bytes with an old
+ * stamp, or the reverse), and the copy is stamped at the shared index's mtime floored to
+ * the second: never later than the original, so it can only make more entries racy.
+ * Any failure removes the copy, and the caller seeds without a stat cache.
+ */
+async function copyIndexKeepingRacyStamp(sharedIndex: string, indexFile: string): Promise<void> {
+  try {
+    const handle = await open(sharedIndex, 'r');
+    try {
+      const st = await handle.stat();
+      await writeFile(indexFile, await handle.readFile());
+      const stamp = Math.floor(st.mtimeMs / 1000);
+      await utimes(indexFile, stamp, stamp);
+    } finally {
+      await handle.close();
+    }
+  } catch {
+    await rm(indexFile, { force: true }).catch(() => {});
+  }
+}
+
+/**
  * Seed `indexFile` (bound into `privateGit`) at HEAD, the CAS base. `read-tree -m` over a
  * copy of the shared index keeps its stat cache, so later diffs stay cheap; an unmerged
  * shared index refuses that merge, so it falls back to a plain read. A non-zero HEAD read
@@ -4187,7 +4216,7 @@ async function seedPrivateIndex(
 ): Promise<{ ok: true; base: string | null; baseTree: string } | { ok: false; error: string }> {
   const headRes = await runGit(['rev-parse', '--verify', '-q', 'HEAD^{commit}'], repoPath);
   const base = headRes.code === 0 && headRes.stdout.trim() ? headRes.stdout.trim() : null;
-  if (base && sharedIndex) await copyFile(sharedIndex, indexFile).catch(() => {});
+  if (base && sharedIndex) await copyIndexKeepingRacyStamp(sharedIndex, indexFile);
   let seed = await privateGit(base ? ['read-tree', '-m', base] : ['read-tree', '--empty'], repoPath);
   if (seed.code !== 0 && base) {
     await rm(indexFile, { force: true }).catch(() => {});
@@ -4206,10 +4235,63 @@ async function seedPrivateIndex(
   return { ok: true, base, baseTree };
 }
 
+/** Argv batch size for `update-index` entries (keeps one call well under ARG_MAX). */
+const CARRY_UPDATE_INDEX_BATCH = 200;
+
+/**
+ * WI-10006725: carry the shared index's TRACKED-SET changes into a catch-all private index
+ * seeded at HEAD. `add -A` rebuilds every other staged state from the working tree, but it
+ * never changes an IGNORED path's membership. Without this, a `git rm --cached` of an ignored
+ * file (git-sync's own dependency-generation untracks, or an agent's) would be re-committed
+ * from HEAD, and a `git add -f` of an ignored file would never be committed. So entries the
+ * shared index ADDED or DELETED relative to the base tree are copied over as they are; the
+ * caller's `add -A` then brings each carried entry up to the working tree, and the
+ * post-stage guard inspects the result like any other staged path. Excluded paths are never
+ * carried. Read before the guard, so a later peer write to the shared index cannot reach it.
+ */
+async function carrySharedIndexMembership(
+  runGit: RunGit,
+  privateGit: RunGit,
+  repoPath: string,
+  baseTree: string,
+  isExcluded: (path: string) => boolean,
+): Promise<{ ok: true; added: number; removed: number } | { ok: false; error: string }> {
+  const diff = await runGit(['diff-index', '--cached', '-z', '--no-renames', '--diff-filter=AD', baseTree, '--'], repoPath);
+  if (diff.code !== 0) {
+    return { ok: false, error: `could not read the shared index's added/deleted entries: ${gitFailureDetail(diff)}` };
+  }
+  // Raw -z records: ":<srcmode> <dstmode> <srcsha> <dstsha> <status>\0<path>\0".
+  const fields = diff.stdout.split('\0');
+  const additions: string[] = [];
+  const removals: string[] = [];
+  for (let i = 0; i + 1 < fields.length; i += 2) {
+    const meta = fields[i].trim();
+    const path = fields[i + 1];
+    if (!meta.startsWith(':') || !path || isExcluded(path)) continue;
+    const [, dstMode, , dstSha, status] = meta.slice(1).split(' ');
+    if (status === 'A' && dstMode && dstSha) additions.push('--cacheinfo', dstMode, dstSha, path);
+    else if (status === 'D') removals.push(path);
+  }
+  for (let i = 0; i < removals.length; i += CARRY_UPDATE_INDEX_BATCH) {
+    const batch = removals.slice(i, i + CARRY_UPDATE_INDEX_BATCH);
+    const res = await privateGit(['update-index', '--force-remove', '--', ...batch], repoPath);
+    if (res.code !== 0) return { ok: false, error: `could not carry staged deletions: ${gitFailureDetail(res)}` };
+  }
+  // Four argv words per entry.
+  for (let i = 0; i < additions.length; i += CARRY_UPDATE_INDEX_BATCH * 4) {
+    const batch = additions.slice(i, i + CARRY_UPDATE_INDEX_BATCH * 4);
+    const res = await privateGit(['update-index', '--add', '--replace', ...batch], repoPath);
+    if (res.code !== 0) return { ok: false, error: `could not carry staged additions: ${gitFailureDetail(res)}` };
+  }
+  return { ok: true, added: additions.length / 4, removed: removals.length };
+}
+
 /**
  * Commit exactly what the private index holds and publish it only if HEAD is still `base`:
  * `write-tree` (equal to the base tree = nothing to commit), `commit-tree -p <base>`, then
  * `update-ref HEAD <new> <base>`. The message is built lazily, after the nothing check.
+ * `beforePublish` runs after the commit object exists and before the CAS; a failure there
+ * returns an error and publishes nothing.
  */
 async function publishPrivateIndexCommit(
   runGit: RunGit,
@@ -4221,6 +4303,7 @@ async function publishPrivateIndexCommit(
     label: string;
     reflogMessage: string;
     messageArgs: () => Promise<string[]>;
+    beforePublish?: (commit: string, tree: string) => Promise<{ ok: true } | { ok: false; error: string }>;
   },
 ): Promise<
   | { status: 'nothing' }
@@ -4242,6 +4325,10 @@ async function publishPrivateIndexCommit(
   const c = await runGit(commitArgs, repoPath);
   const commit = c.stdout.trim();
   if (c.code !== 0 || !commit) return { status: 'error', error: `${p.label} failed: ${gitFailureDetail(c)}` };
+  if (p.beforePublish) {
+    const ready = await p.beforePublish(commit, tree);
+    if (!ready.ok) return { status: 'error', error: ready.error };
+  }
   const cas = await runGit(['update-ref', '-m', p.reflogMessage, 'HEAD', commit, p.base ?? ''], repoPath);
   if (cas.code !== 0) return { status: 'cas-refused', detail: gitFailureDetail(cas) };
   return { status: 'committed', commit, tree };
@@ -5208,6 +5295,20 @@ async function commitOneRepoWithScratch(
       if (seeded.ok) {
         stageGit = privateGit;
         catchAllPrivate = { base: seeded.base, baseTree: seeded.baseTree, gitDir: catchAllSite.site.gitDir };
+        const carryExcludes = [...stagingExcludePaths, ...migrationQuarantinedPaths];
+        const carried = await carrySharedIndexMembership(runGit, privateGit, repoPath, seeded.baseTree, (path) =>
+          carryExcludes.some((ex) => path === ex || path.startsWith(`${ex}/`)),
+        );
+        if (!carried.ok) {
+          // Only IGNORED paths' membership depends on the carry; the rest of the tree still
+          // commits from the working tree, so this degrades, it does not strand.
+          o.log(`[git-sync] ${repoPath}: catch-all ${carried.error} — committing without the shared index's untracks/force-adds`);
+        } else if (carried.added + carried.removed > 0) {
+          o.log(
+            `[git-sync] ${repoPath}: catch-all carried ${carried.removed} staged deletion(s) and ` +
+              `${carried.added} staged addition(s) from the shared index`,
+          );
+        }
       } else {
         o.log(`[git-sync] ${repoPath}: ${seeded.error} — committing the catch-all through the shared index instead`);
       }
@@ -5372,54 +5473,59 @@ async function commitOneRepoWithScratch(
     }
     if (!catchAllSubjected) messageArgs.push('-m', message);
     if (catchAllPrivate) {
+      const privateBase = catchAllPrivate;
+      // Bring the SHARED index's entries for exactly the committed paths up to the commit
+      // BEFORE it is published, so the shared index never holds pre-commit blobs under the new
+      // HEAD (they read as staged reverts). A path the guard held back is not in this diff,
+      // so a peer's staged entry for it is untouched. A live writer's index.lock fails the
+      // refresh and so the tick, without robbing the writer and without publishing a commit
+      // the shared index cannot follow (the pre-WI-10006725 contract). If the CAS then
+      // refuses, the refreshed entries match the working tree, which is benign.
+      // The catch-all can commit thousands of paths: they go through a NUL pathspec file
+      // (no argv limit) read literally (GIT_LITERAL_PATHSPECS: no glob magic), and the
+      // reset is never run with an EMPTY pathspec, which would reset the whole index.
+      const refreshSharedIndex = async (
+        commit: string,
+        tree: string,
+      ): Promise<{ ok: true } | { ok: false; error: string }> => {
+        const changed = await runGit(['diff', '--name-only', '--no-renames', '-z', privateBase.baseTree, tree], repoPath);
+        if (changed.code !== 0) {
+          return { ok: false, error: `catch-all commit not published: could not list its paths: ${gitFailureDetail(changed)}` };
+        }
+        const committedPaths = changed.stdout.split('\0').filter(Boolean);
+        if (committedPaths.length === 0) return { ok: true };
+        const pathspecFile = join(privateBase.gitDir, `papercusp-git-sync-catch-all-${process.pid}-${randomUUID()}.pathspec`);
+        scratch.push(pathspecFile);
+        await writeFile(pathspecFile, `${committedPaths.join('\0')}\0`);
+        const resetArgs = ['reset', '-q', commit, `--pathspec-from-file=${pathspecFile}`, '--pathspec-file-nul'];
+        const literal = { env: { GIT_LITERAL_PATHSPECS: '1' } };
+        const refresh = await recoverIndexLockContention(
+          await runGit(resetArgs, repoPath, literal),
+          () => runGit(resetArgs, repoPath, literal),
+          runGit,
+          repoPath,
+          'catch-all shared-index refresh',
+          o.log,
+        );
+        if (refresh.code === 0) return { ok: true };
+        return {
+          ok: false,
+          error:
+            `catch-all commit not published: the shared index could not be refreshed for ` +
+            `${committedPaths.length} path(s): ${gitFailureDetail(refresh)}`,
+        };
+      };
       const published = await publishPrivateIndexCommit(runGit, stageGit, repoPath, {
-        base: catchAllPrivate.base,
-        baseTree: catchAllPrivate.baseTree,
+        base: privateBase.base,
+        baseTree: privateBase.baseTree,
         label: 'catch-all commit',
         reflogMessage: 'git-sync: catch-all commit',
         messageArgs: async () => messageArgs,
+        beforePublish: refreshSharedIndex,
       });
       if (published.status === 'committed') {
         committedAny = true;
         committedCount += 1;
-        // Bring the SHARED index's entries for exactly the committed paths up to the commit,
-        // so it does not hold pre-commit blobs (a later commit would revert them). A path the
-        // guard held back is not in this diff, so a peer's staged entry for it is untouched.
-        // The catch-all can commit thousands of paths: they go through a NUL pathspec file
-        // (no argv limit) read literally (GIT_LITERAL_PATHSPECS: no glob magic), and the
-        // reset is never run with an EMPTY pathspec, which would reset the whole index.
-        const changed = await runGit(
-          ['diff', '--name-only', '--no-renames', '-z', catchAllPrivate.baseTree, published.tree],
-          repoPath,
-        );
-        const committedPaths = changed.code === 0 ? changed.stdout.split('\0').filter(Boolean) : [];
-        let refresh: GitCommandResult | null = changed.code === 0 ? null : changed;
-        if (committedPaths.length > 0) {
-          const pathspecFile = join(
-            catchAllPrivate.gitDir,
-            `papercusp-git-sync-catch-all-${process.pid}-${randomUUID()}.pathspec`,
-          );
-          scratch.push(pathspecFile);
-          await writeFile(pathspecFile, `${committedPaths.join('\0')}\0`);
-          const resetArgs = ['reset', '-q', published.commit, `--pathspec-from-file=${pathspecFile}`, '--pathspec-file-nul'];
-          const literal = { env: { GIT_LITERAL_PATHSPECS: '1' } };
-          refresh = await recoverIndexLockContention(
-            await runGit(resetArgs, repoPath, literal),
-            () => runGit(resetArgs, repoPath, literal),
-            runGit,
-            repoPath,
-            'catch-all shared-index refresh',
-            o.log,
-          );
-        }
-        if (refresh && refresh.code !== 0) {
-          // The commit landed. A stale shared entry reads as staged-vs-HEAD; the next tick's
-          // catch-all is seeded from HEAD, so it cannot be committed as a revert.
-          o.log(
-            `[git-sync] ${repoPath}: catch-all commit ${published.commit.slice(0, 10)} landed but the shared index ` +
-              `could not be refreshed for ${committedPaths.length} path(s): ${gitFailureDetail(refresh)}`,
-          );
-        }
       } else if (published.status !== 'nothing') {
         // P-002 (below): a commit that did not land must surface as an error, never fall
         // into the merge phase with a dirty tree. A refused CAS means HEAD moved while the
