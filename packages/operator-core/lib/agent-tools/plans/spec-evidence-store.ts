@@ -524,7 +524,7 @@ export type BindSpecEvidenceResult =
       bindingFingerprint: string;
     }
   | { status: 'work_item_not_found'; workItemId: string }
-  | { status: 'spec_not_found'; specId?: string; sourceValId?: string }
+  | { status: 'spec_not_found'; specId?: string; sourceValId?: string; message?: string }
   | { status: 'spec_revision_not_found'; specId: string; specRevision: number }
   | { status: 'coverage_evidence_not_found'; coverageEvidenceRef: number }
   // The test-run lookup is tenant-scoped, so a row that EXISTS but carries a
@@ -637,6 +637,13 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
         status: 'spec_not_found',
         ...(input.specId ? { specId: input.specId } : {}),
         ...(input.sourceValId ? { sourceValId: input.sourceValId } : {}),
+        ...(!input.planSlug?.trim()
+          ? {
+              message:
+                `spec_not_found in ${planSlug} (no slug supplied; defaulted to the ad-hoc scope). ` +
+                'For a clause on a named plan, pass slug to plans:bind-spec-evidence.',
+            }
+          : {}),
       };
     }
 
