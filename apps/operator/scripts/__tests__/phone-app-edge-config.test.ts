@@ -530,3 +530,61 @@ describe("public clients are only offered TURN they can reach (WI-10006616)", ()
     expect(edgeScript).not.toMatch(/ufw allow in on [^\n]*port [0-9,]*7893/);
   });
 });
+
+// WI-10006623: `edge.sh apply-box` runs the TURN certificate deploy hook on every run, and the
+// hook restarted LiveKit even when the certificate was unchanged. Each idempotent re-run
+// therefore dropped live calls, and the public WSS answered 502 for ~15s. The hook must
+// hand over and restart only when the lineage actually differs from LiveKit's copy.
+// PROBE_EDGE_SCRIPT lets scripts/mutation-probe.sh point this at a mutated copy.
+describe("TURN certificate deploy hook restarts LiveKit only for a changed certificate (WI-10006623)", () => {
+  it("installs and restarts on first hand-over and on a change, and is a no-op when unchanged", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "phone-turn-hook-"));
+    try {
+      const confDir = join(tmp, "conf");
+      const lineage = join(tmp, "lineage");
+      const bin = join(tmp, "bin");
+      const log = join(tmp, "systemctl.log");
+      for (const dir of [lineage, bin]) spawnSync("mkdir", ["-p", dir]);
+      const rendered = spawnSync("bash", [process.env.PROBE_EDGE_SCRIPT ?? edgeScript, "turn-hook"], {
+        env: { PATH: process.env.PATH, HOME: tmp, PHONE_CONFIG_DIR: confDir },
+        encoding: "utf8",
+      });
+      expect(rendered.status, rendered.stderr).toBe(0);
+      const hook = join(tmp, "hook.sh");
+      writeFileSync(hook, rendered.stdout, { mode: 0o755 });
+      writeFileSync(join(bin, "systemctl"), '#!/bin/sh\necho "$*" >> "$SYSTEMCTL_LOG"\n', { mode: 0o755 });
+
+      const turnDir = join(confDir, "tls", "turn");
+      const restarts = () =>
+        existsSync(log) ? readFileSync(log, "utf8").split("\n").filter((l) => l.includes("try-restart")).length : 0;
+      const runHook = (domains = "phone-turn.papercusp.com") => {
+        const r = spawnSync("sh", [hook], {
+          env: { PATH: `${bin}:${process.env.PATH}`, RENEWED_DOMAINS: domains, RENEWED_LINEAGE: lineage, SYSTEMCTL_LOG: log },
+          encoding: "utf8",
+        });
+        expect(r.status, r.stderr).toBe(0);
+      };
+      writeFileSync(join(lineage, "fullchain.pem"), "CERT-1\n");
+      writeFileSync(join(lineage, "privkey.pem"), "KEY-1\n");
+
+      runHook();
+      expect(restarts()).toBe(1);
+      expect(readFileSync(join(turnDir, "fullchain.pem"), "utf8")).toBe("CERT-1\n");
+      expect(statSync(join(turnDir, "privkey.pem")).mode & 0o777).toBe(0o600);
+
+      runHook();
+      expect(restarts(), "an unchanged certificate must not restart LiveKit").toBe(1);
+
+      writeFileSync(join(lineage, "privkey.pem"), "KEY-2\n");
+      runHook();
+      expect(restarts()).toBe(2);
+      expect(readFileSync(join(turnDir, "privkey.pem"), "utf8")).toBe("KEY-2\n");
+
+      writeFileSync(join(lineage, "fullchain.pem"), "CERT-OTHER\n");
+      runHook("phone-voice.papercusp.com");
+      expect(restarts(), "a renewal of another domain is not handed to LiveKit").toBe(2);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
