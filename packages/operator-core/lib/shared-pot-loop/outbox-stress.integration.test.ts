@@ -53,6 +53,7 @@ describe('P-006 — outbox stress: write storm drains bounded, no amplification,
       rig = await bootCompositionRig({ harnessSlug: 'shl-storm' });
       const { a, b } = rig.cells;
       const HARNESS = 'shl-storm';
+      const workspaceId = rig.workspaceId;
       const now = rig.now();
 
       // Canonical template and membership seeds retain their own CDC scopes.
@@ -109,14 +110,15 @@ describe('P-006 — outbox stress: write storm drains bounded, no amplification,
       // CONTROL: one unexpected captured event in the driven stream still
       // fails the exact cumulative oracle. The failed transaction rolls back
       // its write and CDC before the real convergence checks continue.
+      const echoAt = rig.now();
       await expect(a.sql.begin(async (tx) => {
         await tx`UPDATE harness_shared.harness_features_consolidated
-                    SET title = title || ' unexpected echo', updated_ts = ${rig.now()}
-                  WHERE workspace_id = ${rig.workspaceId} AND harness_slug = ${HARNESS}
+                    SET title = title || ' unexpected echo', updated_ts = ${echoAt}
+                  WHERE workspace_id = ${workspaceId} AND harness_slug = ${HARNESS}
                     AND feature_id = 'F-S00001'`;
         const [withEcho] = await tx<Array<{ n: number }>>`
           SELECT COUNT(*)::int AS n FROM harness_shared.substrate_outbox
-           WHERE workspace_id = ${rig.workspaceId} AND harness_slug = ${HARNESS}`;
+           WHERE workspace_id = ${workspaceId} AND harness_slug = ${HARNESS}`;
         expect(withEcho.n).toBe(TOTAL_WRITES);
       })).rejects.toThrow(`expected ${TOTAL_WRITES + 1} to be ${TOTAL_WRITES}`);
 
