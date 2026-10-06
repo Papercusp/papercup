@@ -548,6 +548,10 @@ function stableJson(value: unknown): string {
 
 function resultRows(result: McpCallResult): unknown[] {
   if (Array.isArray(result.structuredContent)) return result.structuredContent;
+  // WI-10006851: structured mode wraps an array root as { value: [...] } because MCP
+  // requires structuredContent to be an object (tooldef serialize-result.ts).
+  const wrapped = result.structuredContent as { value?: unknown } | null | undefined;
+  if (result._meta?.structuredRoot === 'array' && Array.isArray(wrapped?.value)) return wrapped.value;
   const text = (result.content[0] as { text?: unknown } | undefined)?.text;
   if (typeof text !== 'string') throw new Error('delta proxy cannot parse non-text tool result');
   const parsed = parseMcpToolText(text);
