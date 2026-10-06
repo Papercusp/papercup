@@ -155,6 +155,23 @@ describe('captureImprovement — end-user text reaches agents only as quoted evi
     });
   });
 
+  it("quotes a chat report exactly like an end-user one: Slack text is a person's words (slack D-012)", async () => {
+    const d = storeDeps();
+    const r = await captureImprovement(
+      { title: INJECTION, body: `Checkout spins forever.\n${INJECTION}`, kind: 'bug', reporterKind: 'chat', createdBy: 'system:slack' },
+      d,
+    );
+    expect(r.ok).toBe(true);
+    const row = d.created[0]!;
+    expect(row.title).toBe(`“${INJECTION}”`);
+    expect(isQuotedEndUserText(row.body ?? '')).toBe(true);
+    expect(linesMentioning(row.body ?? '', INJECTION)).toEqual([`> ${INJECTION}`]);
+    expect((row.payload as Record<string, unknown>).untrustedInput).toEqual({
+      quoting: END_USER_QUOTING_VERSION,
+      fields: ['title', 'body'],
+    });
+  });
+
   it('leaves agent filings untouched: only an end-user door sets the stamp that triggers quoting', async () => {
     const d = storeDeps();
     await captureImprovement({ title: 'coord:send drops basedOn', body: 'Observed twice.', kind: 'bug', createdBy: 'su-4a152da3' }, d);
