@@ -194,6 +194,14 @@ async function census(callerId: string, requestKey: string): Promise<{ receipts:
   return row;
 }
 
+/** The settled result as STORED, read on the observer connection (not via the service). */
+async function storedOutput(itemId: string): Promise<unknown> {
+  const [row] = await db.sql<{ output: unknown }[]>`
+    SELECT payload->'blueprintResult'->'output' AS output FROM harness_shared.work_items
+     WHERE workspace_id = ${WORKSPACE} AND feature_id = ${itemId}`;
+  return row?.output ?? null;
+}
+
 async function itemIdsFor(callerId: string, requestKey: string): Promise<string[]> {
   const rows = await db.sql<{ feature_id: string }[]>`
     SELECT feature_id FROM harness_shared.work_items
@@ -373,6 +381,7 @@ describe('R-10 — an operator restart mid-operation resumes to one terminal res
       outputPayload: { draft: 'a different draft' },
     }).catch(() => undefined);
     expect(await appClient.result(replayed)).toMatchObject({ state: 'ready', output: { draft: 'Thanks, Thursday works.' } });
+    expect(await storedOutput(itemId)).toEqual({ draft: 'Thanks, Thursday works.' });
     expect(await terminalWorkItemEvents(rt, first, callerId)).toBe(1);
 
     // ── A second restart after completion: the replay returns the same settled result. ──
