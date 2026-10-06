@@ -6,7 +6,10 @@
  * config.toml = [mcp_servers.papercusp] url = "<signed>", auth.json
  * symlinked to the real ~/.codex/auth.json (never copied).
  */
+import { spawn } from 'node:child_process';
 import {
+  chmodSync,
+  copyFileSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -17,8 +20,10 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
+import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { parse as parseToml } from '@iarna/toml';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -1630,6 +1635,175 @@ describe('writeCodexLockHooks — context-injection hooks (P-004)', () => {
     expect(hooks.hooks.Stop).toBeUndefined();
     expect(injectEntries(hooks, 'PreToolUse')).toHaveLength(0);
     expect(injectEntries(hooks, 'SessionStart')).toHaveLength(0);
+  });
+});
+
+/**
+ * WI-10006795 — the codex turn-end JOURNAL hook.
+ *
+ * Measured before the fix: journal:record-turn had 1 codex call in 7 days against
+ * ~13k Claude calls, because only Claude's settings.json enrolled
+ * stop-turn-journal.sh. A codex GOAL holder therefore produced no
+ * goalPlacementTurnEnd rows. These pin the enrollment, the resume self-repair of a
+ * pre-fix home, and (end to end) that the composed command really reaches the
+ * operator as a codex turn under the minimal env codex hands its hooks.
+ */
+describe('writeCodexLockHooks — turn-end journal (WI-10006795)', () => {
+  const REAL_CC_HOOKS = fileURLToPath(new URL('../../../apps/operator/scripts/hooks/cc/', import.meta.url));
+
+  function journalEntries(hooks: any) {
+    return (hooks.hooks.Stop ?? []).filter((e: { hooks: { command: string }[] }) =>
+      e.hooks[0].command.includes('stop-turn-journal.sh'),
+    );
+  }
+
+  /** The real script plus the two python helpers it imports, so the e2e case runs
+   *  the shipped hook rather than a stub. Returns the fake cc hooks dir. */
+  async function installRealJournalHook() {
+    const dir = await installFakeHooks();
+    for (const name of ['stop-turn-journal.sh', 'pc_nested_cli.py', 'mcp_response.py']) {
+      copyFileSync(join(REAL_CC_HOOKS, name), join(dir, name));
+      chmodSync(join(dir, name), 0o755);
+    }
+    return dir;
+  }
+
+  it('enrolls the journal on the Stop event of SU and role homes, sid and agent baked', async () => {
+    await installRealJournalHook();
+    const { writeSuCodexHome, writeRoleCodexHome } = await loadMod();
+    const su = writeSuCodexHome({ sessionKey: 61, mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'P', sid: 'su-journal-61' });
+    const role = writeRoleCodexHome({ sessionKey: 62, mcpUrl: 'http://x/?role=worker&sig=1', promptText: 'P', sid: 'role-journal-62' });
+    for (const [out, sid] of [[su, 'su-journal-61'], [role, 'role-journal-62']] as const) {
+      const hooks = JSON.parse(readFileSync(join(out.codexHome, 'hooks.json'), 'utf8'));
+      const entries = journalEntries(hooks);
+      expect(entries, `${sid} journal entry`).toHaveLength(1);
+      expect(entries[0].matcher).toBe('.*');
+      expect(entries[0].hooks[0].command).toContain(`PAPERCUSP_SID='${sid}'`);
+      expect(entries[0].hooks[0].command).toContain('PAPERCUSP_AGENT=codex');
+    }
+  });
+
+  it('calibration: no journal entry when the script is not installed', async () => {
+    await installFakeHooks();
+    const { writeSuCodexHome } = await loadMod();
+    const out = writeSuCodexHome({ sessionKey: 63, mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'P', sid: 'su-journal-63' });
+    const hooks = JSON.parse(readFileSync(join(out.codexHome, 'hooks.json'), 'utf8'));
+    expect(journalEntries(hooks)).toHaveLength(0);
+  });
+
+  it('a resumed pre-fix home is repaired once, then left byte-identical', async () => {
+    await installFakeHooks();
+    const { ensureSuCodexHomeConfig, writeSuCodexHome } = await loadMod();
+    // Written while the script was absent: the shape every codex home had before the fix.
+    const home = writeSuCodexHome({
+      sessionKey: 'journal-upgrade',
+      mcpUrl: 'http://x/api/mcp?superuser=1',
+      promptText: 'PRESERVE',
+      sid: 'su-journal-upgrade',
+    });
+    const hooksPath = join(home.codexHome, 'hooks.json');
+    expect(journalEntries(JSON.parse(readFileSync(hooksPath, 'utf8')))).toHaveLength(0);
+
+    await installRealJournalHook();
+    const resume = () =>
+      ensureSuCodexHomeConfig({
+        sessionKey: 'journal-upgrade',
+        mcpUrl: 'http://x/api/mcp?superuser=1',
+        sid: 'su-journal-upgrade',
+      });
+    expect(resume()).toMatchObject({ identityRepaired: true });
+    const repairedText = readFileSync(hooksPath, 'utf8');
+    expect(journalEntries(JSON.parse(repairedText))).toHaveLength(1);
+    expect(readFileSync(join(home.codexHome, 'AGENTS.md'), 'utf8')).toContain('PRESERVE');
+
+    // No repair loop: a current home is not rewritten on the next resume.
+    expect(resume()).toMatchObject({ identityRepaired: false });
+    expect(readFileSync(hooksPath, 'utf8')).toBe(repairedText);
+  });
+
+  it('end to end: the composed Stop command posts journal:record-turn as a codex turn', async () => {
+    await installRealJournalHook();
+    writeFileSync(join(fakeHome, '.papercusp', 'superuser-token'), 'test-token\n');
+    const { writeSuCodexHome } = await loadMod();
+    const out = writeSuCodexHome({ sessionKey: 64, mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'P', sid: 'su-journal-e2e' });
+    const hooks = JSON.parse(readFileSync(join(out.codexHome, 'hooks.json'), 'utf8'));
+    const [entry] = journalEntries(hooks);
+    expect(entry, 'journal entry composed').toBeTruthy();
+
+    const bodies: string[] = [];
+    const server = createServer((req, res) => {
+      let body = '';
+      req.on('data', (chunk) => (body += chunk));
+      req.on('end', () => {
+        bodies.push(body);
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { content: [] } }));
+      });
+    });
+    await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('fixture server did not bind');
+
+    // A deterministic process shape: hook → fake `codex` → fake psu-launcher.mjs,
+    // which pc_nested_cli.py classifies as the managed incarnation whatever runs
+    // this test (CI, a psu claude, an operator-spawned runner).
+    const fixtures = join(fakeHome, 'journal-e2e');
+    mkdirSync(fixtures, { recursive: true });
+    const codexBody = join(fixtures, 'fake-codex-body.sh');
+    writeFileSync(codexBody, 'eval "$HOOK_CMD"\nexit $?\n');
+    const launcher = join(fixtures, 'psu-launcher.mjs');
+    writeFileSync(launcher, '( exec -a codex bash "$FAKE_CODEX_BODY" )\nexit $?\n');
+
+    // Codex hands hooks a minimal env: the identity must come from the COMMAND.
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      HOME: fakeHome,
+      PAPERCUSP_OPERATOR_URL: `http://127.0.0.1:${address.port}`,
+      PAPERCUSP_JOURNAL_SYNC: '1',
+      HOOK_CMD: entry.hooks[0].command,
+      FAKE_CODEX_BODY: codexBody,
+    };
+    delete env.PAPERCUSP_SID;
+    delete env.PAPERCUSP_AGENT;
+    const transcript = join(fixtures, 'rollout.jsonl');
+    writeFileSync(transcript, '{}\n');
+    // The codex-cli 0.160 `stop.command.input` shape (required fields).
+    const payload = {
+      hook_event_name: 'Stop',
+      session_id: 'codex-native-64',
+      transcript_path: transcript,
+      turn_id: 'turn-1',
+      stop_hook_active: false,
+      cwd: fixtures,
+      model: 'gpt-5.6-sol',
+      permission_mode: 'default',
+      last_assistant_message: null,
+    };
+    try {
+      const result = await new Promise<{ code: number | null; stdout: string }>((done, fail) => {
+        const child = spawn('bash', ['-c', 'exec -a node bash "$0"', launcher], { env, stdio: ['pipe', 'pipe', 'pipe'] });
+        let stdout = '';
+        child.stdout.on('data', (c) => (stdout += c));
+        child.on('error', fail);
+        child.on('close', (code) => done({ code, stdout }));
+        child.stdin.end(JSON.stringify(payload));
+      });
+      expect(result.code).toBe(0);
+      // Codex parses Stop stdout as a decision; the journal must never emit one.
+      expect(result.stdout).toBe('');
+      expect(bodies).toHaveLength(1);
+      const rpc = JSON.parse(bodies[0]);
+      expect(rpc.params.name).toBe('journal:record-turn');
+      expect(rpc.params.arguments).toEqual({
+        owner: 'su-journal-e2e',
+        agent: 'codex',
+        session_id: 'codex-native-64',
+        source_kind: 'codex',
+        transcript_path: transcript,
+      });
+    } finally {
+      await new Promise<void>((done) => server.close(() => done()));
+    }
   });
 });
 
