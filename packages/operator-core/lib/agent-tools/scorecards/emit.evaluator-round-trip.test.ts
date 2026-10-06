@@ -31,6 +31,7 @@ import { join } from 'node:path';
 
 const h = vi.hoisted(() => ({
   rows: [] as Array<Record<string, unknown>>,
+  querySql: [] as string[],
   measurementRoot: '',
 }));
 
@@ -42,6 +43,7 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
     withWorkspace: async <T>(_workspaceId: string, fn: (tx: unknown) => Promise<T>) => {
       const tx = ((strings: TemplateStringsArray | string[]) => {
         const sql = Array.from(strings).join(' ');
+        h.querySql.push(sql);
         // The provisional-scorecard lookup finds none; every other read returns the bindings.
         return Promise.resolve(sql.includes('provisional') ? [] : h.rows);
       }) as unknown;
@@ -148,9 +150,26 @@ const ADEQUACY = {
 
 /** A stored binding row exactly as listSpecEvidence's SQL returns it (snake_case). */
 function bindingRow(
-  over: { id: number; evidenceKind: string; evidenceRef: string; outcome: string },
+  over: {
+    id: number;
+    evidenceKind: string;
+    evidenceRef: string;
+    outcome: string;
+    testRunId?: number;
+    testRunSource?: string;
+    testRunStatus?: string;
+    testRunOutputTail?: string | null;
+    testCases?: string[];
+  },
   fingerprints: { sourceFingerprint: string; testFingerprint: string | null },
 ): Record<string, unknown> {
+  const mutationFailureCaseTitle =
+    over.evidenceKind === 'mutation' &&
+    over.testRunSource === 'mutation-probe' &&
+    over.testRunStatus === 'fail' &&
+    over.testRunOutputTail?.includes(' — ')
+      ? over.testRunOutputTail.split(' — ')[0]?.trim() ?? null
+      : null;
   return {
     id: over.id,
     work_item_id: 'WI-101',
@@ -171,14 +190,22 @@ function bindingRow(
     environment_fingerprint: null,
     coverage_evidence_ref: 42,
     coverage_evidence_present: true,
-    test_run_id: 43,
+    test_run_id: over.testRunId ?? 43,
     test_run_present: true,
     // The fake durable ledger represents a measured clean run. Missing/dirty
     // provenance must stay unknown, independently of matching file hashes.
     test_run_file_path: 'test/reconnect.test.ts',
     test_run_commit_sha: 'fixture-clean-commit',
     test_run_worktree_dirty: false,
-    details: { adequacy: { ...ADEQUACY, outcome: over.outcome }, currentMeasurement: MEASUREMENT },
+    mutation_failure_case_title: mutationFailureCaseTitle,
+    details: {
+      adequacy: {
+        ...ADEQUACY,
+        outcome: over.outcome,
+        ...(over.testCases ? { testCases: over.testCases } : {}),
+      },
+      currentMeasurement: MEASUREMENT,
+    },
     observed_at: '2026-09-20 17:10:00-04',
     binding_fingerprint: `sha256:binding-${over.id}`,
     created_by: 'su-binder',
@@ -256,6 +283,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   vi.clearAllMocks();
+  h.querySql = [];
   await writeSubject('export const ackedEventsReplayed = false;\n');
   // Stored fingerprints are what binding MEASURED: derive them from the fixture checkout
   // at run time, so 'current' can only mean the server re-derived them.
@@ -263,9 +291,15 @@ beforeEach(async () => {
   h.rows = [
     bindingRow({ id: 1, evidenceKind: 'coverage-census', evidenceRef: 'surface:reconnect', outcome: 'passed' }, bound),
     bindingRow({ id: 2, evidenceKind: 'counterexample', evidenceRef: 'counterexample:reconnect', outcome: 'pass' }, bound),
-    // Evaluator revision 4 requires a successful current test binding for the mutation or
+    // Evaluator revision 5 requires a successful current test binding for the mutation or
     // counterexample's canonical test file on this exact clause revision.
-    bindingRow({ id: 3, evidenceKind: 'test', evidenceRef: 'test:reconnect', outcome: 'passed' }, bound),
+    bindingRow({
+      id: 3,
+      evidenceKind: 'test',
+      evidenceRef: 'test:reconnect',
+      outcome: 'passed',
+      testCases: ['reconnect after acknowledgement'],
+    }, bound),
     // The clause requires an 'integration fixture'. Only fixture-scoped proof (an
     // evidenceKind='fixture' binding or a non-null fixture fingerprint) may attest
     // fixtureCalibrated; the flag on the test row above no longer counts
@@ -313,6 +347,43 @@ const emitDraft = (draft: EvaluatorPayload['rows'][number]['scorecardDraft']) =>
   );
 
 describe('spec-test-adequacy evaluator → scorecards:emit round trip', () => {
+  it('requires the measured mutation failed case in the successful same-clause testCases before scoring falsifiability', async () => {
+    h.rows = h.rows
+      .filter((row) => row.id !== 2)
+      .map((row) => {
+        if (row.id !== 3) return row;
+        const details = row.details as Record<string, unknown>;
+        const adequacy = details.adequacy as Record<string, unknown>;
+        return {
+          ...row,
+          details: { ...details, adequacy: { ...adequacy, testCases: ['code-search.definition-lookup'] } },
+        };
+      });
+    h.rows.push(bindingRow({
+      id: 5,
+      evidenceKind: 'mutation',
+      evidenceRef: 'mutation-probe:callers-lookup:caught',
+      outcome: 'caught',
+      testRunId: 44,
+      testRunSource: 'mutation-probe',
+      testRunStatus: 'fail',
+      testRunOutputTail: "code-search.callers-lookup — measurement and promotion state > expected 'needs-widening' to be 'equivalent'",
+    }, await measureRepoFilesEvidenceAtRoot(root, MEASUREMENT)));
+
+    const result = await runEvaluator({
+      harness: 'papercusp',
+      slug: PLAN,
+      classRef: 'plan-class-feature-ship',
+      specIds: [SPEC],
+      detail: 'full',
+    });
+
+    expect(result.rows[0]!.ratings.falsifiability.rating).toBe('unknown');
+    expect(result.rows[0]!.ratings.falsifiability.evidence).toContain('code-search.callers-lookup');
+    expect(result.rows[0]!.ratings.falsifiability.suggestion).toContain('adequacy.testCases');
+    expect(h.querySql.some((sql) => sql.includes('tr.output_tail'))).toBe(true);
+  });
+
   it.each([true, null])('refuses freshness pass when the durable run cleanliness is %s', async (dirty) => {
     h.rows = h.rows.map((row) => ({ ...row, test_run_worktree_dirty: dirty }));
     const live = await runEvaluator({ harness: 'papercusp', slug: PLAN, classRef: 'plan-class-feature-ship', specIds: [SPEC], detail: 'full' });
@@ -383,7 +454,7 @@ describe('spec-test-adequacy evaluator → scorecards:emit round trip', () => {
     expect(dispatchTool).toHaveBeenCalledWith('plans:evaluate-spec-test-adequacy', {
       ...row!.scorecardDraft.rerunRecipe.args,
       detail: 'summary',
-      includeDraft: false,
+      includeDraft: true,
       payloadTier: 'full',
     });
     expect(captureImprovement).toHaveBeenCalledTimes(1);
@@ -400,7 +471,7 @@ describe('spec-test-adequacy evaluator → scorecards:emit round trip', () => {
     expect(live.rows[0]!.ratings.freshness.rating, live.rows[0]!.ratings.freshness.evidence).toBe('pass');
 
     // The code under proof changes after grading and before filing. The replay re-measures;
-    // evaluator revision 4 withdraws falsifiability first because its canonical test witness is stale.
+    // evaluator revision 5 withdraws falsifiability first because its canonical test witness is stale.
     await writeSubject('export const ackedEventsReplayed = true;\n');
 
     const result = await emitDraft(live.rows[0]!.scorecardDraft);
