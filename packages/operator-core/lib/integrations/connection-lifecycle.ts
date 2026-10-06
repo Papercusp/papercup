@@ -484,6 +484,8 @@ export function descriptorConnectionAdapter(plugin: string): ConnectionAdapter |
           credentialRef: connectionCredentialRef(adapter, input.field),
           status: 'connected',
           ...(input.account.displayName ? { config: { accountLabel: input.account.displayName } } : {}),
+          // The provider's starting routing, so a fresh source syncs without a hand-set policy.
+          ...(entry.descriptor.defaultDestinations ? { destinationPolicy: entry.descriptor.defaultDestinations } : {}),
           createdBy: input.createdBy,
         });
       }
