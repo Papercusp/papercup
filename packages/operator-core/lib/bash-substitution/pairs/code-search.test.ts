@@ -282,11 +282,17 @@ describe('code-search.callers-lookup — cover() names every reason the graph ca
     expect(coverCallers('grep -rln "splitMarkdown(" libs/generic').covered).toBe(true);
   });
 
+  it('covers a verified empty answer, and the names the GitNexus backend could not answer (D-027)', () => {
+    // no-callers: the only grep line is a comment, so the empty answer is grep's answer too.
+    expect(coverCallers('grep -rn "DBOSUnexpectedStepError(" packages/operator-core/lib').covered).toBe(true);
+    // Previously ambiguous, file-only, not-found and missed respectively.
+    for (const ident of ['readCell', 'gcVerifyInstances', 'supportsContext1m', 'joinSharedHarness']) {
+      expect(coverCallers(`grep -rn "${ident}(" packages/operator-core/lib`).covered, ident).toBe(true);
+    }
+  });
+
   it.each([
-    ['ambiguous', 'grep -rn "readCell(" packages/operator-core/lib', /ambiguous/],
-    ['file-only', 'grep -rn "gcVerifyInstances(" packages/operator-core/lib', /file-level/],
-    ['not-found', 'grep -rn "supportsContext1m(" packages/operator-core/lib', /no symbol/],
-    ['missed', 'grep -rn "joinSharedHarness(" packages/operator-core/lib', /empty answer/],
+    ['error', 'grep -rn "fetch(" packages/operator-core/lib', /answered with an error/],
     ['unmeasured', 'grep -rn "neverMeasuredIdentifier(" packages/operator-core/lib', /no graph answerability measurement/],
   ])('a measured %s identifier is not covered', (_label, atom, reason) => {
     const result = coverCallers(atom);
@@ -339,10 +345,23 @@ describe('code-search.callers-lookup — measurement and promotion state', () =>
   it('is recorded needs-widening and pinned at observe until the graph can answer', () => {
     expect(graphCallersLookup.toolName).toBe('graph:query');
     expect(graphCallersLookup.expectedVerdict).toBe('needs-widening');
-    expect(graphCallersLookup.holdAtObserve).toMatch(/P-017/);
+    // D-027: the hold names what still blocks promotion — the deploy and the population re-scope.
+    expect(graphCallersLookup.holdAtObserve).toMatch(/D-027/);
+    expect(graphCallersLookup.holdAtObserve).toMatch(/:3070/);
+    expect(graphCallersLookup.holdAtObserve).toMatch(/not anchored inside this repo/);
     // D-018: the hold names the work-item that owns lifting it, so the deferral cannot go unowned.
     expect(graphCallersLookup.holdAtObserve).toMatch(/WI-10006543/);
     expect(assertPolicyTier(graphCallersLookup)).toBe('observe');
-    expect(graphCallersLookup.advisoryText).toMatch(/not proof of absence/);
+    expect(graphCallersLookup.advisoryText).toMatch(/answer with an error/);
+  });
+
+  it('the re-measure is against the first-party backend, with its evidence file in the tree', () => {
+    expect(CALLERS_GRAPH_MEASUREMENT.backend).toMatch(/typescript-service/);
+    const evidence = JSON.parse(readFileSync(join(HERE, '../../../../..', CALLERS_GRAPH_MEASUREMENT.evidence), 'utf8')) as {
+      tally: Record<string, number>;
+      rows: { name: string }[];
+    };
+    expect(evidence.tally).toEqual(CALLERS_GRAPH_MEASUREMENT.tally);
+    expect(evidence.rows.map((r) => r.name).sort()).toEqual(Object.keys(CALLERS_GRAPH_OUTCOMES).sort());
   });
 });

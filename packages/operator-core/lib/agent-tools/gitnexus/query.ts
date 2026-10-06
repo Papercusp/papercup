@@ -69,7 +69,7 @@ async function firstPartyCallersAnswer(
     coverage: {
       ...answer.coverage,
       limitations: [
-        ...answer.coverage.limitations,
+        ...(answer.coverage?.limitations ?? []),
         `callers ignores ${ignored.join(', ')}: it answers for every symbol with this name in the workspace.`,
       ],
     },
