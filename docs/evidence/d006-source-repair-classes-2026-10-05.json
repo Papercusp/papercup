@@ -5,9 +5,9 @@
   "accountableOwner": "su-a20d4635-81b0-4323-b33e-6e838a21d8fe",
   "population": {
     "failedFiles": 124,
-    "repairedFocused": 9,
+    "repairedFocused": 10,
     "repairedPeerFocused": 10,
-    "openUnknown": 105
+    "openUnknown": 104
   },
   "classes": {
     "assertion": 62,
@@ -936,8 +936,8 @@
     {
       "path": "packages/operator-core/lib/system-health/stale-paused-routines.integration.test.ts",
       "class": "missing-schema",
-      "state": "open-unknown",
-      "item": "WI-10006170",
+      "state": "repaired-focused",
+      "item": "WI-10006323",
       "lines": [
         14477,
         14478,
@@ -950,7 +950,63 @@
         14485,
         14486,
         14487
-      ]
+      ],
+      "registeredRepairItem": "WI-10006323",
+      "repairStage": "exact-dispatch-claimed-migrated-fixture-repair-verified-focused",
+      "diagnosis": "Private fixture created only routines, omitting harness_plans resolved by the unchanged reader's acceptance-backlog CASE subquery. Reused maintained createOrgTestDb/current migration-keyed template/adminSql/cleanup. Preserved all eleven real-PG controls and added canonical backlog/workspace/exclusion and unrelated-routine controls. The historical duplicate-routine control temporarily removes both current unique keys inside its own transaction, removes the orphan and restores both keys before commit; failure rolls back the fixture DDL.",
+      "beforeTestRun": 20815699,
+      "afterTestRun": 20818364,
+      "passed": 13,
+      "skipped": 0,
+      "testSha256": "b549b7b7f40c70c6f1a19ffae37309e8e7cd1b4e81e35942bcaaf2f7bcd0da2d",
+      "sourceFingerprints": {
+        "beforeTestSha256": "0a487aad41242b5171f95f0defaa0a24d6a05c9781194d1b10c119e345ff5554",
+        "computeSha256": "813d65ded2640c1da153bf761c086739b4cd1539a2b0d2fa34f332475e48c97f",
+        "migratedFixtureSha256": "b3ba720026222bed7399209d78bddb9025ddddee060c70894b72878448769746",
+        "preconditionRevision": "316f93594019aca3c3327d39b7a5ed0a2fb81a99",
+        "testReceiptRevision": "9faf127360dcee12f542728aa3f1b806f0ca36c9",
+        "committedFixtureRevision": "5da0cf836545592e800cc6ab548001fda6a1f327"
+      },
+      "currentPrecondition": {
+        "status": "fail",
+        "casesPassed": 0,
+        "casesFailed": 11,
+        "casesSkipped": 0,
+        "testRunId": 20815699,
+        "worktreeDirty": true,
+        "runGroupId": null
+      },
+      "intermediateFocusedAttempt": {
+        "testRunId": 20817743,
+        "casesPassed": 12,
+        "casesFailed": 1,
+        "casesSkipped": 0,
+        "worktreeDirty": true,
+        "runGroupId": null,
+        "meaning": "Only the preserved legacy duplicate seed failed against canonical uniqueness. Audited baseline and migration305, then confined that legacy state to a transaction restoring both keys. No assertion was removed and this attempt is not a passing verdict.",
+        "logPath": "/tmp/wi-10006323-fixture-after.log",
+        "logSha256": "f9b750b5e1846f5ee11373f073341658d91d6751e517221fb52fc678dcd2352b"
+      },
+      "latestLocalReceipt": {
+        "id": 20818364,
+        "filePath": "packages/operator-core/lib/system-health/stale-paused-routines.integration.test.ts",
+        "status": "pass",
+        "commitSha": "9faf127360dcee12f542728aa3f1b806f0ca36c9",
+        "worktreeDirty": true,
+        "isScratchConfig": false,
+        "root": "<repo-root>",
+        "harness": "papercusp",
+        "startedAt": "2026-10-06T03:38:16.312Z",
+        "runGroupId": null
+      },
+      "nativePassLog": {
+        "path": "/tmp/wi-10006323-fixture-after2.log",
+        "sha256": "604c7c64972d62346d9d5fa5b85666d0d82ed3619c9fc7c350dc50bae46d5a49",
+        "casesPassed": 13,
+        "casesFailed": 0,
+        "casesSkipped": 0
+      },
+      "latestReceiptMeaning": "Exact fixture repair verified against unchanged production reader and shared helper; committed fixture content matches tested SHA. Archived original D006 raw log still contains the same missing harness_plans failure. Dirty test provenance remains immutable; no final D006, complete source/import/environment, acceptance or shipment assurance."
     },
     {
       "path": "packages/operator-core/lib/shared-pot-loop/composition-chaos.integration.test.ts",
