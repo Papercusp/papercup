@@ -1139,11 +1139,13 @@ cannot read at all. A named regression test pins it.
 - **Tier 1 — `.ssh` directories** (`KEYPERM_SSH_ROOTS`, default
   `/home /root /mnt/data/back`, depth `KEYPERM_SSH_MAXDEPTH`=6). Checks the
   directory mode *and* each contained key's mode; neither subsumes the other.
-  It prunes the same configured vendored/cache directory-name globs as tier 2.
+  It prunes the same configured vendored/cache/Gradle-intermediate directory-name globs as tier 2.
   This is the tier that catches the 2026-09-03 shape.
 - **Tier 2 — content sweep outside `.ssh`** (`KEYPERM_DEEP_ROOTS`, default
   `$HOME/papercupai-workspace $HOME/.config /mnt/data/back`). Catches an
-  exported deploy key or a loose `.pem`.
+  exported deploy key or a loose `.pem`. The defaults also prune Android
+  Gradle's generated `intermediates` directories by name; workspace source and
+  configuration trees remain scanned.
   Bounded by `KEYPERM_DEEP_TIMEOUT_S` and run at `nice 19` / `ionice -c 3`,
   because this box routinely sits at load average 60+ and a probe that degrades
   its host is a probe somebody disables.
