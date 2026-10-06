@@ -13,7 +13,14 @@ import { readFileLockIdentity } from './identity';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { inWorkspaceTxn } from './in-workspace-txn';
 import { acquireWithContentionRetry } from './contention-retry';
-import { readResourceLockStatus, releaseGranular, tryRelease } from './su-lock-store';
+import {
+  ensureBootstrap,
+  getTxPool,
+  readQueue,
+  readResourceLockStatus,
+  releaseGranular,
+  tryRelease,
+} from './su-lock-store';
 import { notifyPlanLockChange } from './notify-lock-change';
 import { routeFileLockOp } from '../../authority/file-lock-routing';
 import {
@@ -25,7 +32,7 @@ import {
 } from '../../authority/file-lock-authority-ops';
 import { recordLockEvent } from '../../authority/lock-event-stream';
 import { noteShaTokenRelease } from '../../authority/sha-token-registry';
-import { recordEditAttribution } from '../../edit-attribution';
+import { recordEditAttribution, recordEditAttributionStrict } from '../../edit-attribution';
 import { recordRestrictedEditBeforeRelease } from '../../personal-vault/git-sync-hold';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
 import { resolveExplicitFileLockDomain } from './coordination-domain';
@@ -45,6 +52,98 @@ const lockIdSchema = z.string().uuid({
     return 'Invalid UUID for lock id. Use the complete id returned by locks:acquire or locks:queue.';
   },
 });
+
+const textResult = (value: unknown) => ({
+  content: [{ type: 'text' as const, text: JSON.stringify(value) }],
+});
+
+/**
+ * WI-10006831 — attribute a native edit made under a lock the caller STILL holds.
+ *
+ * The edit-attribution ledger is written only when a release carries
+ * native_edit_proof for exactly the rows it released (EI-21641025582934324).
+ * An edit covered by the owner's own explicit lock gets no release token from
+ * the PreToolUse hook (EI-63: releasing would dissolve the deliberate hold), so
+ * before this path that edit never reached the ledger at all: measured, 46 of
+ * 343 codex owners had ANY ledger row in 24h, because codex sessions are told
+ * to lock explicitly before editing.
+ *
+ * `retain` keeps the lock and writes the attribution, and only for paths the
+ * caller holds live in this coordination domain. The subject paths come from
+ * the proof itself, never a `paths` selector. That is deliberate: an operator
+ * that predates `retain` strips the unknown key, and a request carrying
+ * `paths` would then be a plain path release that drops the explicit hold.
+ * Without `paths` an older operator refuses the request and releases nothing.
+ */
+async function attestRetainedNativeEdit(input: {
+  ownerId: string;
+  ownerLabel: string | undefined;
+  coordinationDomain: string;
+  proof: unknown;
+  conflictingSelector: boolean;
+  identity: { workspaceId?: string | null; userId?: string | null };
+}): Promise<Record<string, unknown>> {
+  const base = { retained: [] as string[], released: [] as string[], attributed: [] as string[] };
+  if (input.conflictingSelector) {
+    return { ok: false, error: 'retain_conflicting_selector', ...base };
+  }
+  const proof = input.proof as NativeEditProof | undefined;
+  const subject = Array.isArray(proof?.paths) ? [...new Set(proof.paths)] : [];
+  if (subject.length === 0 || !isNativeEditProofForPaths(proof, subject)) {
+    return { ok: false, error: 'retain_requires_native_edit_proof', ...base };
+  }
+
+  let heldPaths: Set<string>;
+  try {
+    await ensureBootstrap();
+    const snapshot = await acquireWithContentionRetry(() =>
+      readQueue(getTxPool(), { coordinationDomain: input.coordinationDomain, owner: input.ownerId, paths: subject }),
+    );
+    heldPaths = new Set(
+      snapshot.active_locks
+        .filter(
+          (row) =>
+            row.owner === input.ownerId &&
+            row.coordination_domain === input.coordinationDomain &&
+            subject.includes(row.path),
+        )
+        .map((row) => row.path),
+    );
+  } catch (err) {
+    return { ok: false, error: `retain_hold_check_failed: ${err instanceof Error ? err.message : String(err)}`, ...base };
+  }
+  const notHeld = subject.filter((path) => !heldPaths.has(path));
+  if (notHeld.length > 0) {
+    // Attribution rides on a live hold. A path the caller no longer holds may
+    // already be a peer's, so nothing is written for any of them.
+    return { ok: false, error: 'retain_paths_not_held', not_held: notHeld, ...base };
+  }
+
+  const tools = proof.tool ?? proof.tools?.join(',') ?? 'native-edit';
+  const attribution = {
+    repoRoot: input.coordinationDomain,
+    files: subject,
+    intent: `PostToolUse:${proof.source}:${tools}:retained`,
+    workspaceId: input.identity.workspaceId ?? undefined,
+    contributor: input.identity.userId ?? undefined,
+  };
+  try {
+    // P-014: a restricted owner's row is the git-sync hold, written strictly.
+    const restricted = await recordRestrictedEditBeforeRelease({ ...attribution, ownerId: input.ownerId });
+    if (!restricted) await recordEditAttributionStrict({ ...attribution, agentId: input.ownerId });
+  } catch (err) {
+    return { ok: false, error: `retain_attribution_failed: ${err instanceof Error ? err.message : String(err)}`, ...base };
+  }
+  return {
+    ok: true,
+    retained: subject,
+    released: [],
+    attributed: subject,
+    held_before: subject.length,
+    owner: input.ownerId,
+    owner_label: input.ownerLabel,
+  };
+}
 
 export default defineTool({
   name: 'locks:release',

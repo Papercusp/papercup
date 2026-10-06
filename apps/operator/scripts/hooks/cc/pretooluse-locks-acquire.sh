@@ -1432,7 +1432,7 @@ ORPHAN_RELEASE_MAX = int(os.environ.get('PAPERCUSP_LOCKS_ORPHAN_RELEASE_MAX') or
 ORPHAN_PRUNE_MAX = int(os.environ.get('PAPERCUSP_LOCKS_ORPHAN_PRUNE_MAX') or 200)
 ORPHAN_SCAN_MAX = int(os.environ.get('PAPERCUSP_LOCKS_ORPHAN_SCAN_MAX') or 2000)
 _ORPHAN_SUFFIXES = ('.lock', '.paths', '.domain', '.owner', '.batch',
-                    '.edited', '.files', '.done', '.checked')
+                    '.edited', '.files', '.done', '.checked', '.attest')
 
 
 def _orphan_sidecar(base, suffix):
@@ -1464,6 +1464,16 @@ def _sweep_orphaned_claims():
         candidates = []
         with os.scandir(cache_dir) as entries:
             for entry in entries:
+                if entry.name.endswith('.attest'):
+                    # WI-10006831: an attest sidecar holds no lock, so it never
+                    # needs a release; only drop one its PostToolUse never consumed.
+                    try:
+                        if pruned < ORPHAN_PRUNE_MAX and now - entry.stat().st_mtime >= ORPHAN_EXPIRED_SEC:
+                            os.remove(entry.path)
+                            pruned += 1
+                    except Exception:
+                        pass
+                    continue
                 if not entry.name.endswith('.lock'):
                     continue
                 scanned += 1
@@ -1758,6 +1768,23 @@ def _grant(granted):
             if len(repo_domains) == 1:
                 with open(os.path.join(cache_dir, tool_use_id + '.domain'), 'w') as f:
                     f.write(next(iter(repo_domains)))
+        except Exception:
+            pass
+    # WI-10006831: paths covered by the owner's OWN explicit hold get no release
+    # token (EI-63 above), so their edit never reached edit_attribution_ledger.
+    # Leave an attest sidecar; PostToolUse turns a successful edit into
+    # locks:release { retain:true }, which records attribution and keeps the hold.
+    # Only when the server reported newly_held (an older operator gives no way to
+    # tell held from new) and the edit lives in exactly one coordination domain.
+    attest_paths = [p for p in repo_relative[:50] if p not in release_paths] if isinstance(newly_held, list) else []
+    if tool_use_id and attest_paths and len(repo_domains) == 1:
+        try:
+            with open(os.path.join(cache_dir, tool_use_id + '.attest'), 'w') as f:
+                json.dump({
+                    'paths': attest_paths,
+                    'domain': next(iter(repo_domains)),
+                    'owner': owner,
+                }, f)
         except Exception:
             pass
     _clear_transient_streak()
