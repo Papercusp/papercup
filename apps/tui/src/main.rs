@@ -527,9 +527,7 @@ async fn main() -> Result<()> {
         // side panes collapsed (the chat zoomed to the whole window), so 80x24
         // still gets a usable chat. Alt+z brings them back. The chat pane is
         // the session's focused pane, so the zoom lands on it.
-        let _ = std::process::Command::new("zellij")
-            .args(["action", "toggle-fullscreen"])
-            .output();
+        zoom_own_pane_when_ready();
     }
 
     enable_raw_mode()?;
@@ -1656,7 +1654,48 @@ fn zellij_session_command(argv: &[String]) -> std::process::Command {
     {
         command.env("PATH", path);
     }
+    // No zellij config of the user's own: give the session pui's, so zellij's
+    // first-run wizard never opens over (and takes focus from) the panes.
+    if let Some(dir) = layout::session_config_dir() {
+        command.env("ZELLIJ_CONFIG_DIR", dir);
+    }
     command
+}
+
+/// Zoom THIS pane to the whole window (the chat workbench opened narrower
+/// than [`layout::CHAT_WORKBENCH_MIN_SIDE_COLS`]). zellij silently drops a
+/// `toggle-fullscreen` sent in the first ~0.5s of a new session (measured
+/// 2026-10-06, zellij 0.44.3: dropped at 0-0.5s, applied at 1.5s), and this
+/// runs as the chat starts, so: toggle, read the pane's own state back from
+/// `list-panes --json`, and re-send only while it is still not fullscreen.
+/// Runs on its own thread so the chat never waits on it. Bounded; a zellij
+/// that never reports the pane gives up silently (the chat still works, and
+/// Alt+z still zooms).
+fn zoom_own_pane_when_ready() {
+    let Some(pane_id) = std::env::var("ZELLIJ_PANE_ID")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+    else {
+        return;
+    };
+    std::thread::spawn(move || {
+        let zellij = |args: &[&str]| std::process::Command::new("zellij").args(args).output();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+        while std::time::Instant::now() < deadline {
+            let listed = zellij(&["action", "list-panes", "--json", "--state"]);
+            let state = listed
+                .ok()
+                .filter(|out| out.status.success())
+                .and_then(|out| layout::pane_fullscreen(&out.stdout, pane_id));
+            if state == Some(true) {
+                return;
+            }
+            if state == Some(false) {
+                let _ = zellij(&["action", "toggle-fullscreen"]);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+    });
 }
 
 /// Where the chat pane of `session` leaves its exit text for the launcher.

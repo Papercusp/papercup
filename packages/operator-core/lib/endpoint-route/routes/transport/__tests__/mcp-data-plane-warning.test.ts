@@ -166,6 +166,49 @@ describe('withMcpDiagnosticWarnings', () => {
     expect(JSON.parse((annotated.content[0] as { text: string }).text)).toEqual(body);
   });
 
+  it('does not warn for populated activity:tool-log counts', () => {
+    const body = {
+      ok: true,
+      calls: 11,
+      rawRows: 14,
+      span: { from: '2026-10-05T17:44:30Z', to: '2026-10-05T17:52:30Z' },
+      log: 'tools_invoke ×11 ·',
+    };
+    const result: McpCallResult = {
+      content: [{ type: 'text', text: JSON.stringify(body) }],
+    };
+    const annotated = withMcpDiagnosticWarnings(
+      result,
+      context({ dataPlaneDegradedAtMs: Date.parse('2026-10-05T17:52:29.000Z') }),
+    );
+
+    expect(annotated).toBe(result);
+    expect(annotated._meta).toBeUndefined();
+    expect(JSON.parse((annotated.content[0] as { text: string }).text)).toEqual(body);
+  });
+
+  it('keeps the warning for empty activity:tool-log counts', () => {
+    const result: McpCallResult = {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          ok: true,
+          calls: 0,
+          rawRows: 0,
+          span: { from: '2026-10-05T17:44:30Z', to: '2026-10-05T17:52:30Z' },
+          log: '',
+        }),
+      }],
+    };
+    const annotated = withMcpDiagnosticWarnings(
+      result,
+      context({ dataPlaneDegradedAtMs: Date.parse('2026-10-05T17:52:29.000Z') }),
+    );
+
+    const body = JSON.parse((annotated.content[0] as { text: string }).text);
+    expect(body._dataPlaneMayBeDegraded).toContain('unexpected empty/not-found');
+  });
+
   it('keeps the warning for an empty tools:find envelope without an ok field', () => {
     const result: McpCallResult = {
       content: [{

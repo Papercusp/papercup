@@ -237,6 +237,42 @@ describe('llmCall backend selection', () => {
   });
 });
 
+describe('llmCall successful usage completeness', () => {
+  it.each([
+    { label: 'absent', usage: {}, subtotal: 0, missing: true },
+    { label: 'NaN', usage: { costUsd: NaN }, subtotal: 0, missing: true },
+    { label: 'infinite', usage: { costUsd: Infinity }, subtotal: 0, missing: true },
+    { label: 'negative', usage: { costUsd: -1 }, subtotal: 0, missing: true },
+    { label: 'partial', usage: { costUsd: 0.42, unreportedFrames: 1 }, subtotal: 0.42, missing: true },
+    { label: 'zero', usage: { costUsd: 0 }, subtotal: 0, missing: false },
+    { label: 'positive', usage: { costUsd: 0.42, unreportedFrames: 0 }, subtotal: 0.42, missing: false },
+  ])('retains $label usage without changing the successful response', async ({ usage, subtotal, missing }) => {
+    events.length = 0;
+    events.push({ type: 'result', finalText: '{"ok":true}', tokensIn: 12, tokensOut: 4, ...usage });
+    try {
+      const { llmCall } = await import('../llm-client');
+      const result = await llmCall({ model: 'claude-sonnet-4-6', responseFormat: 'json',
+        messages: [{ role: 'user', content: 'unchanged' }] });
+      expect(result).toMatchObject({ text: '{"ok":true}', json: { ok: true },
+        inputTokens: 12, outputTokens: 4, costUsd: subtotal });
+      if (missing) expect(result).toMatchObject({ costUsdMeasurementMissing: true });
+      else expect(result).not.toHaveProperty('costUsdMeasurementMissing');
+      if ('unreportedFrames' in usage) expect(result).toMatchObject({ unreportedFrames: usage.unreportedFrames });
+    } finally { events.length = 0; }
+  });
+
+  it('keeps the last known subtotal when a later result has invalid usage', async () => {
+    events.length = 0;
+    events.push({ type: 'result', finalText: 'partial', tokensIn: 12, tokensOut: 4, costUsd: 0.42 },
+      { type: 'result', finalText: 'finished', tokensIn: 13, tokensOut: 5, costUsd: NaN });
+    try {
+      const { llmCall } = await import('../llm-client');
+      expect(await llmCall({ model: 'claude-sonnet-4-6', messages: [{ role: 'user', content: 'unchanged' }] }))
+        .toMatchObject({ text: 'finished', costUsd: 0.42, costUsdMeasurementMissing: true });
+    } finally { events.length = 0; }
+  });
+});
+
 describe('llmCall subprocess error surfacing', () => {
   it.each([0, 0.42])('preserves reported failure spend $%s on the classified exception', async costUsd => {
     events.length = 0;

@@ -67,6 +67,30 @@ function fakeLlm(json: unknown): GymLlmCall {
 
 describe('proposeCandidate', () => {
   it.each([
+    { label: 'absent', usage: {}, subtotal: 0 },
+    { label: 'NaN', usage: { costUsd: NaN }, subtotal: 0 },
+    { label: 'infinite', usage: { costUsd: Infinity }, subtotal: 0 },
+    { label: 'negative', usage: { costUsd: -1 }, subtotal: 0 },
+    { label: 'partial', usage: { costUsd: 0.42, unreportedFrames: 1 }, subtotal: 0.42 },
+    { label: 'marked missing', usage: { costUsd: 0.42, costUsdMeasurementMissing: true }, subtotal: 0.42 },
+  ])('preserves incomplete $label usage on a valid proposal', async ({ usage, subtotal }) => {
+    const response = { text: '', json: { promptOverrides: { validator: '# validator v2' }, rationale: 'r' },
+      inputTokens: 12, outputTokens: 4, ...usage };
+    const value = await proposeCandidate(input, { llmCall: async () => response as Awaited<ReturnType<GymLlmCall>> });
+    expect(value).toMatchObject({ overlay: { promptOverrides: { worker: '# worker v1', validator: '# validator v2' } },
+      rationale: 'r', costUsd: subtotal, costUsdMeasurementMissing: true });
+    if ('unreportedFrames' in usage) expect(value).toMatchObject({ unreportedFrames: usage.unreportedFrames });
+  });
+
+  it.each([0, 0.42])('keeps complete successful spend $%s complete', async costUsd => {
+    const value = await proposeCandidate(input, { llmCall: async () => ({ text: '',
+      json: { promptOverrides: { worker: '# worker v2' }, rationale: 'r' },
+      costUsd, inputTokens: 12, outputTokens: 4 }) });
+    expect(value.costUsd).toBe(costUsd);
+    expect(value).not.toHaveProperty('costUsdMeasurementMissing');
+  });
+
+  it.each([
     { label: 'absent', usage: {} },
     { label: 'NaN', usage: { costUsd: NaN } },
     { label: 'infinite', usage: { costUsd: Infinity } },

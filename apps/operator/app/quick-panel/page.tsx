@@ -21,7 +21,7 @@
  * URL-backed (nuqs) per the repo rule — deep-linkable and agent-drivable
  * via ui:dispatch.
  */
-import { Suspense, useEffect, useMemo, useRef, type ReactNode } from 'react';
+import { Suspense, useEffect, useMemo, useState, type ReactNode } from 'react';
 import * as Tabs from '@radix-ui/react-tabs';
 import { parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import { BookOpenText, Lightbulb, ListTree } from 'lucide-react';
@@ -152,18 +152,20 @@ export default function QuickPanelPage({
     `${queryPrefix}tab`,
     parseAsStringEnum<QpTab>([...QP_TABS]).withDefault('prompts'),
   );
-  const docsFrame = useRef<HTMLIFrameElement>(null);
+  // Radix mounts an inactive pane after the tab transition. A ref alone can be
+  // null when the tab effect runs, so bind when the actual frame is committed.
+  const [docsFrame, setDocsFrame] = useState<HTMLIFrameElement | null>(null);
 
   useEffect(() => {
     if (!enabled || !isQuickPanelWindow()) return;
-    return bindQuickPanelEscape(document, docsFrame.current, () => {
+    return bindQuickPanelEscape(document, docsFrame, () => {
       // Rust intercepts CloseRequested and hides this reusable palette window.
       // Invoke from the parent: navigated iframe docs do not carry Tauri's API.
       void import('@tauri-apps/api/window')
         .then(({ getCurrentWindow }) => getCurrentWindow().close())
         .catch((error) => console.warn('[quick-panel] could not dismiss window', error));
     });
-  }, [enabled, tab]);
+  }, [enabled, docsFrame]);
 
   // WI-4827: the Quick Panel window is chromeless by ROUTE only — a control that
   // links into the full app (the chat sidebar's mic-settings gear → /settings/voice,
@@ -245,7 +247,7 @@ export default function QuickPanelPage({
         <Tabs.Content className="pc-qp__pane" value="docs">
           {/* Package-local docs search and result navigation remain same-origin. */}
           <iframe
-            ref={docsFrame}
+            ref={setDocsFrame}
             className="pc-qp__docsframe"
             src="/internal/docs/search-palette.html"
             title="Docs search"

@@ -35,9 +35,15 @@ import { buildLoopDeps } from '../gym/loop-deps';
 import type { AbDeps } from '../gym/ab-runner';
 
 const failureUsage = vi.hoisted(() => ({ costUsd: 0 as number | undefined }));
+const successfulUsage = vi.hoisted(() => ({ value: undefined as { costUsd?: number; unreportedFrames?: number } | undefined }));
 vi.mock('../agent-chat-stream', async importOriginal => ({
   ...await importOriginal<typeof import('../agent-chat-stream')>(),
   runAgentChat: async function* () {
+    if (successfulUsage.value) {
+      yield { type: 'result', finalText: '{"promptOverrides":{"worker":"# worker v2"},"rationale":"r"}',
+        tokensIn: 12, tokensOut: 4, ...successfulUsage.value };
+      return;
+    }
     yield { type: 'error', message: 'tool failed after paid inference', costUsd: failureUsage.costUsd };
   },
 }));
@@ -546,6 +552,52 @@ describe('the one visible number (P-003 verification)', () => {
 /* ── reservation + settlement (P-005), migration 1116 ────────────────────── */
 
 describe('governed attempt persisted settlement receipts', () => {
+  it.each([
+    { label: 'absent', usage: {}, costUsd: 0, incomplete: true },
+    { label: 'NaN', usage: { costUsd: NaN }, costUsd: 0, incomplete: true },
+    { label: 'infinite', usage: { costUsd: Infinity }, costUsd: 0, incomplete: true },
+    { label: 'negative', usage: { costUsd: -1 }, costUsd: 0, incomplete: true },
+    { label: 'partial', usage: { costUsd: 0.42, unreportedFrames: 1 }, costUsd: 0.42, incomplete: true },
+    { label: 'zero', usage: { costUsd: 0 }, costUsd: 0, incomplete: false },
+    { label: 'positive', usage: { costUsd: 0.42, unreportedFrames: 0 }, costUsd: 0.42, incomplete: false },
+  ])('successful transport -> native proposer -> SQL keeps $label usage honest', async ({ usage, costUsd, incomplete }) => {
+    const loopId = `gym:proposer-success-${randomUUID()}`;
+    const runRef = `native-proposer:${randomUUID()}`;
+    await registerLearningLoop(sql, { workspaceId: WS, loopId, budgetKind: 'lifetime', budgetUsd: 10 });
+    const unexpected = async () => { throw new Error('proposer fixture must not evaluate'); };
+    const native = buildLoopDeps({ gymSql: sql, ports: {} as never, abDeps: {} as AbDeps, judgeCall: unexpected,
+      proposerCall: llmCall, proposerModel: 'claude-sonnet-4-6', tasks: [],
+      baseline: { variantId: 'baseline', overlay: { promptOverrides: {} } },
+      harnessCommit: 'controlled', workspaceId: WS, scratchRoot: '/unused-proposer-fixture',
+      timeoutMs: 100, pollIntervalMs: 1, maxDistillChars: 100 });
+    successfulUsage.value = usage;
+    try {
+      const out = await runGovernedSpendAttempt({ workspaceId: WS, loopId, attemptKind: 'proposer',
+        requestedUsd: 1, runRef, accumulate: false, run: async () => {
+          const value = await native.propose({ promptOverrides: {} }, [], '');
+          return { costUsd: value.costUsd, costUsdMeasurementMissing: value.costUsdMeasurementMissing, value };
+        } }, { enabled: async () => true, getSql: async () => sql, log: () => {} });
+      if (!out.ok || !out.reservationId) throw new Error('expected reserved successful proposal');
+      expect(out.value).toMatchObject({ overlay: { promptOverrides: { worker: '# worker v2' } }, rationale: 'r' });
+      expect(out.costUsd).toBe(costUsd);
+      if (incomplete) expect(out).toMatchObject({ costUsdMeasurementMissing: true, settlement: null });
+      else expect(out.settlement).toMatchObject({ ok: true, reservation: { status: 'settled', usedUsd: costUsd } });
+      const fresh = postgres(testDatabaseUri, { max: 1, onnotice: () => {}, prepare: false });
+      try {
+        const rows = await listLearningSpendReservations(fresh, { workspaceId: WS, loopId });
+        expect(rows).toHaveLength(1);
+        expect(rows[0]).toMatchObject({ id: out.reservationId, requestedUsd: 1, reservedUsd: 1, runRef,
+          status: incomplete ? 'open' : 'settled', usedUsd: incomplete ? 0 : costUsd });
+        expect(rows[0]!.settledAt === null).toBe(incomplete);
+        expect(await listLearningSpendEvents(fresh, { workspaceId: WS, loopId }))
+          .toHaveLength(incomplete || costUsd === 0 ? 0 : 1);
+        expect((await getLearningSpendPositions(fresh, { workspaceId: WS, loopId })).spend)
+          .toMatchObject({ unsettledUsd: incomplete ? 1 : 0, usedUsd: incomplete ? 0 : costUsd });
+        expect((await getLearningLoop(fresh, { workspaceId: WS, loopId }))?.spentUsd).toBe(0);
+      } finally { await fresh.end({ timeout: 5 }); }
+    } finally { successfulUsage.value = undefined; }
+  });
+
   it.each([
     { label: 'absent', usage: {}, costUsd: 0, incomplete: true },
     { label: 'partial', usage: { costUsd: 0.42, unreportedFrames: 1 }, costUsd: 0.42, incomplete: true },

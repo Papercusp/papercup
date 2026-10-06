@@ -1,32 +1,42 @@
 /**
  * Ticket admission into work against real Postgres (plan enterprise-data-sources-2026-10-01
- * P-020, D-004, D-030; acceptance spec AUTO-BAR-R-14-P-020). The REAL GitHub Issues connector,
- * admission rules, admitWorkItem, createWorkItem and linkWorkItem run; only GitHub is faked.
+ * P-020, D-004, D-030; ported to the shared connector driver by
+ * generalized-integrations-google-migration-cupboard-workflows-2026-10-05 P-010 / D-015).
+ *
+ * The REAL GitHub issues provider package, the shared connector driver with its default datatype
+ * sinks, admission rules, admitWorkItem, createWorkItem and linkWorkItem run; only GitHub's REST
+ * responses are recorded (served through host.fetch).
  *
  * Properties under test:
  *   - an ingested ticket becomes work ONLY through an admission: a rule of its data source that
  *     matches it, or a person promoting it. An unmatched ticket stays a record;
  *   - every work item minted from a ticket carries exactly one work_admissions row naming the
  *     rule (admitted_via 'rule', rule_id) or the person (admitted_via 'person', admitted_by);
- *   - admission is idempotent: a re-poll and a second promote return the existing admission;
+ *   - admission is idempotent: a re-sync and a second promote return the existing admission;
  *   - field authority: a Papercusp patch of an external-owned field (title, description) is
  *     refused, and a re-sync updates those fields without touching Papercusp-owned state;
- *   - a rule cannot admit outside its data source, and an event row is never admitted.
+ *   - a rule cannot admit outside its data source, and an event row is never admitted;
+ *   - write-back dispatches by capability (D-015.5): the read-only GitHub provider is refused
+ *     `provider_capability_unsupported`; a provider declaring `ticket.comment` is invoked through
+ *     a host.fetch bound to exactly the record's source.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { promises as fs, readdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { Sql } from 'postgres';
+import type { HostFetch, HostFetchResponse, ProviderAdapter, ProviderDescriptor, ProviderInvokeRequest } from '@papercusp/plugin-sdk';
+import { loadPlugins } from '@papercusp/plugin-loader';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
-import { getExternalTriggerSource, type ExternalTriggerSourceRow } from '../external-triggers/source-store';
-import {
-  connectGitHubIssuesSource,
-  pollGitHubIssuesOnce,
-  ticketWorkItemId,
-  type GitHubIssue,
-  type GitHubIssuesClient,
-} from './github-issues-connector';
+import { registerPluginProviders } from '../plugin-host-runtime';
+import { createProviderRegistry, type ProviderRegistry } from '../integrations/provider-registry';
+import { ingestExternalTriggerEvent, type IngestExternalTriggerInput } from '../external-triggers/ingestion';
+import { runConnectorSync } from '../providers/connector-runtime';
+import { dataSourceRecordId } from './datatype-destination-sink';
 import { setAdmissionRule } from '../work-admission/admission-rules';
-import { admitWorkItem, refuseExternalOwnedPatch } from '../work-admission/admit';
-import '../work-admission/record-source';
+import { admissionsForWorkItem, admitWorkItem, refuseExternalOwnedPatch } from '../work-admission/admit';
+import { createRecordAdmissionSource } from '../work-admission/record-source';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as Sql, ws: 'papercusp-workspace' }));
 vi.mock('@papercusp/db-org', async (orig) => {
@@ -38,52 +48,107 @@ vi.mock('../workspace-registry', async (orig) => ({
   activeWorkspaceId: () => h.ws,
 }));
 
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
+const PACKAGE_DIR = join(REPO_ROOT, 'libs/papercusp/plugins/github-issues');
+const ROOT = join(tmpdir(), `papercusp-ticket-admission-it-${process.pid}-${Date.now()}`);
+
 const WS = 'papercusp-workspace';
 const HARNESS = 'papercusp';
+const GITHUB = 'github-issues';
+const WRITABLE = 'ticket-fixture';
 const OWNER = 'acme';
 const REPO = 'tulip';
-const T0 = new Date('2026-10-01T12:00:00.000Z');
-const CONNECTOR_ID_RE = '^TK[TS]-';
+const CONNECTOR_ROW_RE = '^DS[RE]-';
 const PERSON = 'su-ticket-admission-test';
 
 let org: OrgTestDb;
 let sql: Sql;
 let alice: string;
 let startedAt: Date;
+let registry: ProviderRegistry;
+let issues: Array<Record<string, unknown>>;
 
-function issue(n: number, title: string, assignees: string[], updatedAt = '2026-10-01T10:00:00Z'): GitHubIssue {
+function issue(n: number, title: string, assignees: string[], updatedAt = '2026-10-01T10:00:00Z'): Record<string, unknown> {
   return {
-    id: 7000 + n, number: n, title, body: `body of #${n}`, state: 'open', user: { login: 'alice-gh', id: 1001 },
-    assignees: assignees.map((login, i) => ({ login, id: 2000 + i })), labels: [],
+    id: 7000 + n, number: n, title, body: `body of #${n}`, state: 'open', user: { login: 'alice-gh' },
+    assignees: assignees.map((login) => ({ login })), labels: [],
     html_url: `https://github.com/${OWNER}/${REPO}/issues/${n}`,
     created_at: '2026-10-01T08:00:00Z', updated_at: updatedAt,
   };
 }
 
-/** One page of issues, no comments or events; enough for admission. */
-function fakeGitHub(issues: GitHubIssue[]): { client: GitHubIssuesClient; issues: GitHubIssue[] } {
-  const state = { issues, client: undefined as unknown as GitHubIssuesClient };
-  state.client = {
-    issues: {
-      listForRepo: async (p) => ({ data: p.page === 1 ? state.issues : [] }),
-      listCommentsForRepo: async () => ({ data: [] }),
-      listEventsForRepo: async () => ({ data: [] }),
-    },
-    repos: { listCollaborators: async () => ({ data: [] }) },
-  };
-  return state;
+function json(body: unknown): HostFetchResponse {
+  return { status: 200, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), bodyEncoding: 'utf8' };
 }
 
-async function connect(): Promise<ExternalTriggerSourceRow> {
-  return connectGitHubIssuesSource(sql, {
-    workspaceId: WS, ownerUserId: alice, owner: OWNER, repo: REPO, harnessSlug: HARNESS, createdBy: 'ticket-admission-test',
+/** Recorded GitHub: one page of issues, no events or comments; enough for admission. */
+const githubFetch: HostFetch = async ({ request }) => {
+  const url = new URL(request.url);
+  const page = Number(url.searchParams.get('page') ?? '1');
+  if (page > 1 || !url.pathname.endsWith('/issues')) return json([]);
+  return json(issues);
+};
+
+// ── A writable ticket provider (the GitHub provider is read-only, D-009) ─────
+
+const writableDescriptor: ProviderDescriptor = {
+  id: WRITABLE,
+  contractVersion: 1,
+  datatypes: ['ticket'],
+  capabilities: ['ticket.read', 'ticket.comment'],
+  egressHosts: ['tickets.example.com'],
+};
+const invoked: Array<{ request: ProviderInvokeRequest; fetched: string | null }> = [];
+const writableAdapter: ProviderAdapter = {
+  describe: () => writableDescriptor,
+  syncPage: async () => ({
+    records: [{
+      datatype: 'ticket',
+      nativeId: 'TIX-9',
+      event: 'ticket-updated',
+      payload: { provider: 'fixture', externalId: 'TIX-9', title: 'Writable ticket', body: 'b', state: 'open', assignees: [], labels: [] },
+    }],
+    nextCursor: null,
+    hasMore: false,
+  }),
+  invoke: async (request, host) => {
+    const response = await host.fetch({
+      source: request.source,
+      request: { url: 'https://tickets.example.com/TIX-9/comments', method: 'POST', body: JSON.stringify(request.args) },
+    });
+    invoked.push({ request, fetched: response.body });
+    return { externalRef: 'comment-77' };
+  },
+};
+
+async function ingest(db: Sql, input: IngestExternalTriggerInput) {
+  return ingestExternalTriggerEvent(db, input, {
+    emit: async (event) => ({ ok: true, key: event.key, woken: 0, notified: [], msgId: null, waiters: 0 }),
   });
 }
 
-async function reread(source: ExternalTriggerSourceRow): Promise<ExternalTriggerSourceRow> {
-  const row = await getExternalTriggerSource(sql, source.workspaceId, source.id);
-  if (!row) throw new Error('source vanished');
-  return row;
+/** One pass of the shared driver over one source, with the default datatype sinks. */
+async function sync(sourceId: string, hostFetch: HostFetch = githubFetch): Promise<void> {
+  await sql`UPDATE harness_shared.data_sources SET sync_next_attempt_at = NULL WHERE id = ${sourceId}::uuid`;
+  const result = await runConnectorSync(
+    sql,
+    { workspaceId: WS, harness: HARNESS, sourceIds: [sourceId] },
+    { registry, ingest, hostFetchFor: () => hostFetch, leaseOwner: 'ticket-admission-it' },
+  );
+  expect(result.sources).toEqual([expect.objectContaining({ sourceId, outcome: 'synced', rejected: 0 })]);
+}
+
+async function connect(kind = GITHUB): Promise<string> {
+  const [row] = await sql<{ id: string }[]>`
+    INSERT INTO harness_shared.data_sources
+      (workspace_id, kind, owner_user_id, provider_account_id, status, config, scope,
+       destination_policy, permission_mapping)
+    VALUES (${WS}, ${kind}, ${alice}, ${`${kind}-account-${Date.now()}`}, 'connected',
+            ${sql.json({ owner: OWNER, repo: REPO, harnessSlug: HARNESS })}, 'organization',
+            ${sql.json({ ticket: ['record'], 'ticket-status-change': ['event'], 'ticket-comment': ['document'] })},
+            ${sql.json({ mode: 'source-acl' })})
+    RETURNING id::text`;
+  return row!.id;
 }
 
 interface AdmissionDb {
@@ -95,7 +160,10 @@ async function admissions(): Promise<AdmissionDb[]> {
   return sql<AdmissionDb[]>`
     SELECT work_item_id, source_kind, source_key, data_source_id::text AS data_source_id,
            admitted_via, admitted_by, rule_id::text AS rule_id
-      FROM harness_shared.work_admissions WHERE workspace_id = ${WS} ORDER BY created_at`;
+      FROM harness_shared.work_admissions
+     WHERE workspace_id = ${WS}
+       AND data_source_id IN (SELECT id FROM harness_shared.data_sources WHERE workspace_id = ${WS} AND kind IN (${GITHUB}, ${WRITABLE}))
+     ORDER BY created_at`;
 }
 
 /** Every non-connector work item this test minted, with its admission count. */
@@ -105,66 +173,94 @@ async function mintedWork(): Promise<Array<{ feature_id: string; created_by: str
            (SELECT count(*)::int FROM harness_shared.work_admissions a
              WHERE a.workspace_id = w.workspace_id AND a.work_item_id = w.feature_id) AS admission_count
       FROM harness_shared.work_items w
-     WHERE w.workspace_id = ${WS} AND w.feature_id !~ ${CONNECTOR_ID_RE} AND w.created_ts >= ${startedAt.getTime()}
+     WHERE w.workspace_id = ${WS} AND w.feature_id !~ ${CONNECTOR_ROW_RE} AND w.created_ts >= ${startedAt.getTime()}
+       AND EXISTS (SELECT 1 FROM harness_shared.work_admissions a
+                    WHERE a.workspace_id = w.workspace_id AND a.work_item_id = w.feature_id
+                      AND a.data_source_id IN (SELECT id FROM harness_shared.data_sources
+                                                WHERE workspace_id = ${WS} AND kind IN (${GITHUB}, ${WRITABLE})))
      ORDER BY w.feature_id`;
 }
 
 async function clean(): Promise<void> {
-  await sql`
-    DELETE FROM harness_shared.work_items w
-     USING harness_shared.work_admissions a
-     WHERE a.workspace_id = ${WS} AND w.workspace_id = a.workspace_id AND w.feature_id = a.work_item_id`;
-  await sql`DELETE FROM harness_shared.work_admissions WHERE workspace_id = ${WS}`;
-  await sql`DELETE FROM harness_shared.work_items WHERE workspace_id = ${WS} AND feature_id ~ ${CONNECTOR_ID_RE}`;
-  await sql`DELETE FROM harness_shared.documents WHERE workspace_id = ${WS}`;
-  await sql`DELETE FROM harness_shared.data_sources WHERE workspace_id = ${WS}`;
-  await sql`DELETE FROM harness_shared.document_permission_lists WHERE workspace_id = ${WS}`;
+  const sources = await sql<{ id: string }[]>`
+    SELECT id::text FROM harness_shared.data_sources WHERE workspace_id = ${WS} AND kind IN (${GITHUB}, ${WRITABLE})`;
+  const ids = sources.map((s) => s.id);
+  if (ids.length > 0) {
+    await sql`
+      DELETE FROM harness_shared.work_items w
+       USING harness_shared.work_admissions a
+       WHERE a.workspace_id = ${WS} AND w.workspace_id = a.workspace_id AND w.feature_id = a.work_item_id
+         AND a.data_source_id = ANY(${sql.array(ids)}::uuid[])`;
+    await sql`DELETE FROM harness_shared.work_admissions WHERE workspace_id = ${WS} AND data_source_id = ANY(${sql.array(ids)}::uuid[])`;
+    await sql`DELETE FROM harness_shared.admission_rules WHERE workspace_id = ${WS} AND data_source_id = ANY(${sql.array(ids)}::uuid[])`;
+    await sql`DELETE FROM harness_shared.work_items WHERE workspace_id = ${WS} AND payload->>'dataSourceId' = ANY(${sql.array(ids)}::text[])`;
+    await sql`DELETE FROM harness_shared.documents WHERE workspace_id = ${WS} AND metadata->>'dataSourceId' = ANY(${sql.array(ids)}::text[])`;
+    await sql`DELETE FROM harness_shared.document_permission_lists WHERE workspace_id = ${WS} AND source_ref = ANY(${sql.array(ids)}::text[])`;
+    await sql`DELETE FROM harness_shared.trigger_deliveries WHERE workspace_id = ${WS} AND source_id = ANY(${sql.array(ids)}::uuid[])`;
+  }
+  await sql`DELETE FROM harness_shared.data_sources WHERE workspace_id = ${WS} AND kind IN (${GITHUB}, ${WRITABLE})`;
 }
 
 beforeAll(async () => {
+  await fs.mkdir(ROOT, { recursive: true });
   org = await createOrgTestDb();
   sql = org.adminSql;
   h.sql = sql;
   const [a] = await sql<{ id: string }[]>`
     INSERT INTO harness_shared.users (username, display_name) VALUES (${`ticket-admission-alice-${Date.now()}`}, 'alice') RETURNING id`;
   alice = a!.id;
+
+  // The real GitHub issues package, discovered and registered the way the host does it.
+  const target = join(ROOT, 'project', 'plugins', 'github-issues');
+  await fs.mkdir(target, { recursive: true });
+  for (const file of readdirSync(PACKAGE_DIR)) await fs.copyFile(join(PACKAGE_DIR, file), join(target, file));
+  const emptyGlobal = join(ROOT, 'no-global-plugins');
+  await fs.mkdir(emptyGlobal, { recursive: true });
+  const { loaded, errors } = await loadPlugins({ projectDir: join(ROOT, 'project'), harnessSlugs: [], globalPluginsDir: emptyGlobal });
+  expect(errors).toEqual([]);
+  registry = createProviderRegistry();
+  expect(await registerPluginProviders(loaded, () => {}, registry)).toEqual([GITHUB]);
+  registry.register({ descriptor: writableDescriptor, adapter: writableAdapter, pluginName: WRITABLE, runtime: 'js' } as never);
 });
 
 afterAll(async () => {
   if (org) await clean().catch(() => {});
   if (alice) await sql`DELETE FROM harness_shared.users WHERE id = ${alice}`.catch(() => {});
   await org?.cleanup();
+  await fs.rm(ROOT, { recursive: true, force: true });
 });
 
 beforeEach(async () => {
   await clean();
+  invoked.length = 0;
   startedAt = new Date(Date.now() - 1000);
 });
 
-describe('ticket admission into work (P-020, R-14)', () => {
-  it('admits only tickets a rule matches, attributes every admission, and stays idempotent on re-poll', async () => {
-    const gh = fakeGitHub([issue(1, 'Agents should fix the tulip build', ['papercusp-agents']), issue(2, 'Human-only ticket', ['carol-gh'])]);
-    let source = await connect();
+describe('ticket admission into work (P-020, R-14) through the shared connector driver', () => {
+  it('admits only tickets a rule matches, attributes every admission, and stays idempotent on re-sync', async () => {
+    issues = [issue(1, 'Agents should fix the tulip build', ['papercusp-agents']), issue(2, 'Human-only ticket', ['carol-gh'])];
+    const sourceId = await connect();
     const rule = await setAdmissionRule(
-      { workspaceId: WS, dataSourceId: source.id, title: 'Assigned to the agents user', match: { assignees: { contains: 'papercusp-agents' } }, harness: HARNESS, createdBy: PERSON },
+      { workspaceId: WS, dataSourceId: sourceId, title: 'Assigned to the agents user', match: { assignees: { contains: 'papercusp-agents' } }, harness: HARNESS, createdBy: PERSON },
       sql,
     );
 
-    const first = await pollGitHubIssuesOnce(sql, source, { client: gh.client, now: () => T0 });
-    expect(first.tickets).toEqual({ created: 2, updated: 0 });
-    expect(first.admissions).toEqual({ matched: 1, admitted: 1, existing: 0, refused: 0, refreshed: 0, failed: 0, lastError: null });
+    await sync(sourceId);
 
-    const matchedRecord = ticketWorkItemId(WS, source.id, `${OWNER}/${REPO}#1`);
-    const unmatchedRecord = ticketWorkItemId(WS, source.id, `${OWNER}/${REPO}#2`);
+    const matchedRecord = dataSourceRecordId(WS, sourceId, 'ticket', `${OWNER}/${REPO}#1`);
+    const unmatchedRecord = dataSourceRecordId(WS, sourceId, 'ticket', `${OWNER}/${REPO}#2`);
     const rows = await admissions();
     expect(rows).toEqual([
       {
-        work_item_id: expect.any(String), source_kind: 'record', source_key: matchedRecord, data_source_id: source.id,
+        work_item_id: expect.any(String), source_kind: 'record', source_key: matchedRecord, data_source_id: sourceId,
         admitted_via: 'rule', admitted_by: `admission-rule:${rule.id}`, rule_id: rule.id,
       },
     ]);
     // The unmatched ticket is still only a record.
     expect(rows.some((r) => r.source_key === unmatchedRecord)).toBe(false);
+    const [unmatched] = await sql<Array<{ nature: string }>>`
+      SELECT nature FROM harness_shared.work_items WHERE workspace_id = ${WS} AND feature_id = ${unmatchedRecord}`;
+    expect(unmatched).toEqual({ nature: 'record' });
 
     const minted = await mintedWork();
     expect(minted).toEqual([{ feature_id: rows[0]!.work_item_id, created_by: `admission-rule:${rule.id}`, admission_count: 1 }]);
@@ -175,10 +271,8 @@ describe('ticket admission into work (P-020, R-14)', () => {
     // A Papercusp-owned field set on the admitted item survives the re-sync below.
     await sql`UPDATE harness_shared.work_items SET taken_by = ${PERSON} WHERE workspace_id = ${WS} AND feature_id = ${rows[0]!.work_item_id}`;
 
-    source = await reread(source);
-    gh.issues[0] = { ...gh.issues[0]!, title: 'Agents should fix the tulip build (retitled)', updated_at: '2026-10-01T11:00:00Z' };
-    const again = await pollGitHubIssuesOnce(sql, source, { client: gh.client, now: () => T0 });
-    expect(again.admissions).toEqual({ matched: 1, admitted: 0, existing: 1, refused: 0, refreshed: 1, failed: 0, lastError: null });
+    issues[0] = { ...issues[0]!, title: 'Agents should fix the tulip build (retitled)', updated_at: '2026-10-01T11:00:00Z' };
+    await sync(sourceId);
     expect(await admissions()).toHaveLength(1);
     expect(await mintedWork()).toHaveLength(1);
     const [resynced] = await sql<Array<{ title: string; assignee: string | null }>>`
@@ -187,10 +281,10 @@ describe('ticket admission into work (P-020, R-14)', () => {
   });
 
   it('a person promotes an unmatched ticket by hand; a second promote returns the same admission', async () => {
-    const gh = fakeGitHub([issue(3, 'Promote me by hand', [])]);
-    const source = await connect();
-    await pollGitHubIssuesOnce(sql, source, { client: gh.client, now: () => T0 });
-    const recordId = ticketWorkItemId(WS, source.id, `${OWNER}/${REPO}#3`);
+    issues = [issue(3, 'Promote me by hand', [])];
+    const sourceId = await connect();
+    await sync(sourceId);
+    const recordId = dataSourceRecordId(WS, sourceId, 'ticket', `${OWNER}/${REPO}#3`);
     expect(await admissions()).toEqual([]);
 
     const promote = () =>
@@ -204,7 +298,7 @@ describe('ticket admission into work (P-020, R-14)', () => {
 
     expect(await admissions()).toEqual([
       {
-        work_item_id: first.workItemId, source_kind: 'record', source_key: recordId, data_source_id: source.id,
+        work_item_id: first.workItemId, source_kind: 'record', source_key: recordId, data_source_id: sourceId,
         admitted_via: 'person', admitted_by: PERSON, rule_id: null,
       },
     ]);
@@ -221,10 +315,10 @@ describe('ticket admission into work (P-020, R-14)', () => {
   });
 
   it('refuses a rule admission outside the rule’s data source and never admits an event row', async () => {
-    const gh = fakeGitHub([issue(4, 'Scoped ticket', ['papercusp-agents'])]);
-    const source = await connect();
-    await pollGitHubIssuesOnce(sql, source, { client: gh.client, now: () => T0 });
-    const recordId = ticketWorkItemId(WS, source.id, `${OWNER}/${REPO}#4`);
+    issues = [issue(4, 'Scoped ticket', ['papercusp-agents'])];
+    const sourceId = await connect();
+    await sync(sourceId);
+    const recordId = dataSourceRecordId(WS, sourceId, 'ticket', `${OWNER}/${REPO}#4`);
 
     const foreignRule = await admitWorkItem(
       {
@@ -236,7 +330,8 @@ describe('ticket admission into work (P-020, R-14)', () => {
     expect(foreignRule).toMatchObject({ ok: false, code: 'outside_rule_scope' });
 
     const [event] = await sql<Array<{ feature_id: string }>>`
-      SELECT feature_id FROM harness_shared.work_items WHERE workspace_id = ${WS} AND feature_id ~ '^TKS-' LIMIT 1`;
+      SELECT feature_id FROM harness_shared.work_items
+       WHERE workspace_id = ${WS} AND feature_id ~ '^DSE-' AND payload->>'dataSourceId' = ${sourceId} LIMIT 1`;
     expect(event).toBeDefined();
     const notRecord = await admitWorkItem(
       { workspaceId: WS, harness: HARNESS, source: { kind: 'record', recordId: event!.feature_id }, admitter: { via: 'person', actorId: PERSON } },
@@ -246,5 +341,55 @@ describe('ticket admission into work (P-020, R-14)', () => {
 
     expect(await admissions()).toEqual([]);
     expect(await mintedWork()).toEqual([]);
+  });
+});
+
+describe('record write-back dispatches by provider capability (D-015.5)', () => {
+  it('refuses write-back to the read-only GitHub provider without building a host.fetch', async () => {
+    issues = [issue(5, 'Read-only ticket', [])];
+    const sourceId = await connect();
+    await sync(sourceId);
+    const recordId = dataSourceRecordId(WS, sourceId, 'ticket', `${OWNER}/${REPO}#5`);
+    const admitted = await admitWorkItem(
+      { workspaceId: WS, harness: HARNESS, source: { kind: 'record', recordId }, admitter: { via: 'person', actorId: PERSON } },
+      { sql },
+    );
+    if (!admitted.ok) throw new Error(`admission failed: ${JSON.stringify(admitted)}`);
+    const [admission] = await admissionsForWorkItem(WS, admitted.workItemId, sql);
+    expect(admission).toBeDefined();
+
+    const hostFetchFor = vi.fn(() => githubFetch);
+    await expect(createRecordAdmissionSource({ registry, hostFetchFor }).writeBack!({ db: sql, admission: admission!, text: 'triaged' }))
+      .rejects.toThrow(`provider_capability_unsupported:${GITHUB}:ticket.comment`);
+    expect(hostFetchFor).not.toHaveBeenCalled();
+  });
+
+  it('invokes ticket.comment on a provider that declares it, through a host.fetch bound to the record’s source', async () => {
+    const sourceId = await connect(WRITABLE);
+    await sync(sourceId);
+    const recordId = dataSourceRecordId(WS, sourceId, 'ticket', 'TIX-9');
+    const admitted = await admitWorkItem(
+      { workspaceId: WS, harness: HARNESS, source: { kind: 'record', recordId }, admitter: { via: 'person', actorId: PERSON } },
+      { sql },
+    );
+    if (!admitted.ok) throw new Error(`admission failed: ${JSON.stringify(admitted)}`);
+    const [admission] = await admissionsForWorkItem(WS, admitted.workItemId, sql);
+
+    const bound: unknown[] = [];
+    const hostFetchFor = (_db: unknown, input: { workspaceId: string; providerId: string; sourceId: string; harness: string }): HostFetch => {
+      bound.push(input);
+      return async ({ source, request }) => {
+        // The host.fetch only ever serves the source it was bound to.
+        expect(source).toBe(input.sourceId);
+        return { status: 201, headers: {}, body: `posted:${request.body}`, bodyEncoding: 'utf8' };
+      };
+    };
+    const result = await createRecordAdmissionSource({ registry, hostFetchFor }).writeBack!({ db: sql, admission: admission!, text: 'triaged' });
+    expect(result).toEqual({ posted: true, externalRef: 'comment-77' });
+    expect(bound).toEqual([{ workspaceId: WS, providerId: WRITABLE, sourceId, harness: HARNESS }]);
+    expect(invoked).toEqual([{
+      request: { source: sourceId, capability: 'ticket.comment', args: { externalId: 'TIX-9', text: 'triaged' } },
+      fetched: `posted:${JSON.stringify({ externalId: 'TIX-9', text: 'triaged' })}`,
+    }]);
   });
 });

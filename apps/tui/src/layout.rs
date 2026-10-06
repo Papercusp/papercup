@@ -956,6 +956,77 @@ fn materialize_chat_workbench_at(base: &Path) -> std::io::Result<PathBuf> {
     Ok(path)
 }
 
+/// Is terminal pane `pane_id` fullscreen, per `zellij action list-panes
+/// --json --state` output? `None` when the output does not parse or does not
+/// list that pane (yet). Plugin panes share the id space, so only
+/// `is_plugin: false` entries match.
+pub fn pane_fullscreen(list_panes_json: &[u8], pane_id: u64) -> Option<bool> {
+    let panes: Vec<serde_json::Value> = serde_json::from_slice(list_panes_json).ok()?;
+    panes
+        .iter()
+        .find(|p| {
+            p.get("is_plugin").and_then(serde_json::Value::as_bool) == Some(false)
+                && p.get("id").and_then(serde_json::Value::as_u64) == Some(pane_id)
+        })
+        .and_then(|p| p.get("is_fullscreen").and_then(serde_json::Value::as_bool))
+}
+
+/// zellij settings for pui's own sessions, used ONLY when the user has no
+/// zellij config of their own ([`user_zellij_config_exists`]).
+pub const SESSION_ZELLIJ_CONFIG_KDL: &str = "// Papercusp: zellij settings for pui's own sessions.\n\
+// Used only while you have no zellij config of your own; create\n\
+// ~/.config/zellij/config.kdl and pui uses yours instead.\n\
+show_startup_tips false\n\
+show_release_notes false\n";
+
+/// Does the user have a zellij config of their own? Mirrors where zellij
+/// looks for `config.kdl`: `$ZELLIJ_CONFIG_FILE`, `$ZELLIJ_CONFIG_DIR`,
+/// `$XDG_CONFIG_HOME/zellij` (default `~/.config/zellij`), `/etc/zellij`.
+///
+/// With none, zellij 0.44 opens its first-run `configuration` wizard as a
+/// FOCUSED floating pane over the layout, so on a new machine the first keys
+/// typed into bare `pui` went to zellij's wizard instead of the chat, and
+/// the chat's own zoom-on-start landed on the wizard (P-030 PTY acceptance,
+/// measured 2026-10-06 with `zellij action list-panes --json --all`).
+pub fn user_zellij_config_exists(
+    env: impl Fn(&str) -> Option<String>,
+    home: Option<&Path>,
+    is_file: impl Fn(&Path) -> bool,
+) -> bool {
+    let set = |key: &str| env(key).filter(|v| !v.is_empty());
+    if set("ZELLIJ_CONFIG_FILE").is_some() {
+        return true;
+    }
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if let Some(dir) = set("ZELLIJ_CONFIG_DIR") {
+        dirs.push(PathBuf::from(dir));
+    }
+    match set("XDG_CONFIG_HOME") {
+        Some(xdg) => dirs.push(Path::new(&xdg).join("zellij")),
+        None => dirs.extend(home.map(|h| h.join(".config").join("zellij"))),
+    }
+    dirs.push(PathBuf::from("/etc/zellij"));
+    dirs.iter().any(|dir| is_file(&dir.join("config.kdl")))
+}
+
+/// The `ZELLIJ_CONFIG_DIR` for an app-managed session: `None` when the user
+/// has a zellij config of their own (theirs is never overridden), otherwise
+/// `~/.papercusp/zellij` with [`SESSION_ZELLIJ_CONFIG_KDL`] written into it.
+pub fn session_config_dir() -> Option<PathBuf> {
+    let home = dirs::home_dir();
+    if user_zellij_config_exists(|k| std::env::var(k).ok(), home.as_deref(), Path::is_file) {
+        return None;
+    }
+    materialize_session_config_at(&base_dir()?).ok()
+}
+
+fn materialize_session_config_at(base: &Path) -> std::io::Result<PathBuf> {
+    let dir = base.join("zellij");
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(dir.join("config.kdl"), SESSION_ZELLIJ_CONFIG_KDL)?;
+    Ok(dir)
+}
+
 /// Write the chat-dock KDL (for `brain_argv`, with pane names resolved through
 /// `lex`) to `~/.papercusp/pui-chat-dock.kdl` and return it. Launched the same
 /// way as the workbench (`launch_argv`). (P-013 / pui-hive-lexicon-2026-06-06)
@@ -1304,6 +1375,58 @@ mod tests {
             std::ffi::OsString::from("/work/target/debug"),
         );
         assert_eq!(session_path_env(Path::new("pui"), Some(&inherited)), None);
+    }
+
+    #[test]
+    fn a_user_zellij_config_is_found_where_zellij_looks_for_it() {
+        let home = Path::new("/home/u");
+        let env_of = |pairs: &'static [(&'static str, &'static str)]| {
+            move |k: &str| pairs.iter().find(|(key, _)| *key == k).map(|(_, v)| v.to_string())
+        };
+        let only = |file: &'static str| move |p: &Path| p == Path::new(file);
+        // Default location.
+        assert!(user_zellij_config_exists(env_of(&[]), Some(home), only("/home/u/.config/zellij/config.kdl")));
+        // XDG_CONFIG_HOME moves it; the ~/.config copy is then not where zellij looks.
+        assert!(user_zellij_config_exists(
+            env_of(&[("XDG_CONFIG_HOME", "/x")]), Some(home), only("/x/zellij/config.kdl")));
+        assert!(!user_zellij_config_exists(
+            env_of(&[("XDG_CONFIG_HOME", "/x")]), Some(home), only("/home/u/.config/zellij/config.kdl")));
+        // An explicit dir or file, and the system-wide one.
+        assert!(user_zellij_config_exists(
+            env_of(&[("ZELLIJ_CONFIG_DIR", "/c")]), Some(home), only("/c/config.kdl")));
+        assert!(user_zellij_config_exists(env_of(&[("ZELLIJ_CONFIG_FILE", "/f.kdl")]), Some(home), |_| false));
+        assert!(user_zellij_config_exists(env_of(&[]), Some(home), only("/etc/zellij/config.kdl")));
+        // None anywhere (a new machine): pui supplies its own, and an EMPTY
+        // variable (as the PTY harness sets) counts as unset.
+        assert!(!user_zellij_config_exists(
+            env_of(&[("ZELLIJ_CONFIG_FILE", ""), ("ZELLIJ_CONFIG_DIR", "")]), Some(home), |_| false));
+    }
+
+    #[test]
+    fn pane_fullscreen_reads_the_terminal_pane_not_a_plugin_with_the_same_id() {
+        // Shape measured from zellij 0.44.3 `action list-panes --json --all`.
+        let listed = br#"[
+            {"id":0,"title":"(.) - zellij:link","is_plugin":true,"is_fullscreen":true},
+            {"id":1,"title":"configuration","is_plugin":true,"is_focused":true,"is_fullscreen":false},
+            {"id":0,"title":"chat","is_plugin":false,"is_focused":true,"is_fullscreen":false},
+            {"id":1,"title":"hud","is_plugin":false,"is_fullscreen":true}
+        ]"#;
+        assert_eq!(pane_fullscreen(listed, 0), Some(false));
+        assert_eq!(pane_fullscreen(listed, 1), Some(true));
+        assert_eq!(pane_fullscreen(listed, 7), None);
+        assert_eq!(pane_fullscreen(b"not json", 0), None);
+    }
+
+    #[test]
+    fn the_session_config_suppresses_both_zellij_popups() {
+        let base = std::env::temp_dir().join(format!("pui-session-config-{}", std::process::id()));
+        let dir = materialize_session_config_at(&base).unwrap();
+        assert_eq!(dir, base.join("zellij"));
+        let written = std::fs::read_to_string(dir.join("config.kdl")).unwrap();
+        assert_eq!(written, SESSION_ZELLIJ_CONFIG_KDL);
+        assert!(written.contains("show_startup_tips false"));
+        assert!(written.contains("show_release_notes false"));
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

@@ -87,6 +87,16 @@ function hasPopulatedMcpResult(result: McpCallResult): boolean {
   // tools:find and testing:runs use populated top-level arrays without the legacy `{ ok: true, ... }` shape.
   if (Array.isArray(body.hits) && body.hits.length > 0) return true;
   if (Array.isArray(body.runs) && body.runs.length > 0) return true;
+  // activity:tool-log returns a nonempty row/call count instead of a result array.
+  // Keep zero counts empty so a genuinely empty log still receives the warning.
+  if (
+    ['calls', 'rawRows'].some((key) => {
+      const value = body[key];
+      return typeof value === 'number' && Number.isFinite(value) && value > 0;
+    })
+  ) {
+    return true;
+  }
   if (body.ok !== true) return false;
   if (body.ended === true || body.verified === true) return true;
   if (
