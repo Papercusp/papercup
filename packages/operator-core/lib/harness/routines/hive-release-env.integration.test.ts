@@ -317,10 +317,11 @@ describe('resolveHiveReleaseEnv', () => {
     // 'main' == releaseRef 'main', so every fire read 'up-to-date' and nothing was ever tested.
     const mainDir = makeHiveDir('coding-factory', { git: true });
     const masterDir = makeHiveDir('coding-factory', { git: true });
-    registryProjects = [
+    const projects: Array<{ slug: string; path: string; self_repo?: boolean; github_default_branch?: string }> = [
       { slug: 'main-default', path: mainDir, self_repo: false, github_default_branch: 'main' },
       { slug: 'master-default', path: masterDir, self_repo: false, github_default_branch: 'master' },
-    ] as typeof registryProjects;
+    ];
+    registryProjects = projects;
     const { resolveHiveReleaseEnv, resolveCheckpointRouting } = await import('./hive-release-env');
 
     const res = await resolveHiveReleaseEnv('main-default', 'default');
