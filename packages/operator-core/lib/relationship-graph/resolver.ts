@@ -23,7 +23,7 @@
  *
  * Writes go through createWorkItem / mergeWorkItemPayload like the sink, and every write is
  * idempotent, so a replayed delivery converges on the same rows. Concurrent resolves of one
- * (workspace, datatype) serialize on a session advisory lock.
+ * (workspace, datatype) serialize on a transaction-scoped advisory lock (see withResolveLock).
  */
 import { createHash } from 'node:crypto';
 import type { Sql } from 'postgres';
@@ -292,21 +292,37 @@ async function rowExists(sql: Sql, workspaceId: string, id: string): Promise<boo
   return rows.length > 0;
 }
 
-/** Hold a session advisory lock on one (workspace, datatype) while `fn` runs. */
+/** The advisory-lock key serializing resolves of one (workspace, datatype). */
+function resolveLockKey(workspaceId: string, datatype: string): string {
+  return `relationship-graph:${workspaceId}:${datatype}`;
+}
+
+/**
+ * Bound on how long the lock-holding transaction may sit idle while `fn` runs on the pool.
+ * The roles default to 60s, which a full backfill can outlast; a hung `fn` still frees the
+ * lock after this.
+ */
+const RESOLVE_LOCK_IDLE_TIMEOUT = '10min';
+
+/**
+ * Serialize `fn` against every other resolve of one (workspace, datatype).
+ *
+ * The lock is TRANSACTION-scoped (pg_advisory_xact_lock) and held by a transaction that stays
+ * open while `fn` runs on the pool. A transaction is the one unit pgbouncer's transaction pooling
+ * pins to a single server backend, and the lock ends with it on commit, rollback or a killed
+ * connection. The earlier session lock taken on `sql.reserve()` leaked behind pgbouncer: reserve
+ * pins only the client connection, so the unlock could land on a different backend, return false,
+ * and leave the lock held by a pooled backend until it closed. Every later resolve then failed
+ * with `lock timeout` (WI-10006902).
+ */
 async function withResolveLock<T>(sql: Sql, workspaceId: string, datatype: string, fn: () => Promise<T>): Promise<T> {
-  const reserve = (sql as unknown as { reserve?: () => Promise<Sql & { release: () => void }> }).reserve;
-  if (typeof reserve !== 'function') return fn();
-  const key = `relationship-graph:${workspaceId}:${datatype}`;
-  const reserved = await reserve.call(sql);
-  let acquired = false;
-  try {
-    await reserved`SELECT pg_advisory_lock(hashtextextended(${key}, 0))`;
-    acquired = true;
-    return await fn();
-  } finally {
-    if (acquired) await reserved`SELECT pg_advisory_unlock(hashtextextended(${key}, 0))`.catch(() => {});
-    reserved.release();
-  }
+  if (typeof (sql as unknown as { begin?: unknown }).begin !== 'function') return fn();
+  const key = resolveLockKey(workspaceId, datatype);
+  return (await sql.begin(async (tx) => {
+    await tx.unsafe(`SET LOCAL idle_in_transaction_session_timeout = '${RESOLVE_LOCK_IDLE_TIMEOUT}'`);
+    await tx`SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0))`;
+    return fn();
+  })) as T;
 }
 
 export interface ResolvedCanonical {
