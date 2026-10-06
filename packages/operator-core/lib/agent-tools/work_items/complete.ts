@@ -1607,6 +1607,73 @@ export function unresolvedPathsInCompletion(
       }
     });
 
+  // EI-25268569078254536: a close may contain ordinary paths from the primary checkout
+  // alongside explicitly repo-qualified paths from a registered sibling checkout. The
+  // whole-root score below correctly refuses to combine *unqualified* partial matches,
+  // but it falsely warns on this explicit mixed form: each root sees the other checkout's
+  // entries as missing. When a secondary root is named by its `<repoName>/` prefix, first
+  // resolve bare paths against the primary root and qualified paths against their named
+  // roots. Keep the old whole-root rule as the fallback, so an unqualified path cannot
+  // borrow existence from an unrelated checkout.
+  const primaryRoot = repoRoots[0]!;
+  const hasQualifiedSecondaryPath = declared.slice(0, MAX_PATHS_PROBED).some((raw) => {
+    const declaredPath = raw.trim();
+    return (
+      !nodePath.isAbsolute(declaredPath) &&
+      repoRoots.slice(1).some((root) => declaredPath.startsWith(`${nodePath.basename(root)}/`))
+    );
+  });
+  if (hasQualifiedSecondaryPath) {
+    let everyPathResolves = true;
+    for (const raw of declared.slice(0, MAX_PATHS_PROBED)) {
+      const declaredPath = raw.trim();
+      if (!declaredPath || declaredPath.includes('*') || declaredPath.includes('?')) continue;
+
+      try {
+        if (nodePath.isAbsolute(declaredPath)) {
+          // Absolute paths outside the candidate checkouts are out-of-repo artifacts and
+          // remain outside this repo-relative existence warning's scope.
+          const owner = repoRoots.find((root) => {
+            const relative = nodePath.relative(root, declaredPath);
+            return relative === '' || (!relative.startsWith('..' + nodePath.sep) && !nodePath.isAbsolute(relative));
+          });
+          if (!owner || exists(declaredPath)) continue;
+          everyPathResolves = false;
+          break;
+        }
+
+        const primaryPath = nodePath.resolve(primaryRoot, declaredPath);
+        if (
+          primaryPath !== primaryRoot &&
+          primaryPath.startsWith(primaryRoot + nodePath.sep) &&
+          exists(primaryPath)
+        ) {
+          continue;
+        }
+
+        const qualifiedRootHit = repoRoots.some((root) => {
+          const prefix = `${nodePath.basename(root)}/`;
+          if (!declaredPath.startsWith(prefix)) return false;
+          const stripped = declaredPath.slice(prefix.length);
+          if (!stripped) return false;
+          const candidate = nodePath.resolve(root, stripped);
+          return (
+            candidate !== root &&
+            candidate.startsWith(root + nodePath.sep) &&
+            exists(candidate)
+          );
+        });
+        if (qualifiedRootHit) continue;
+        everyPathResolves = false;
+        break;
+      } catch {
+        everyPathResolves = false;
+        break;
+      }
+    }
+    if (everyPathResolves) return undefined;
+  }
+
   // A completion describes ONE checkout. Score each candidate as a unit and choose the root
   // that resolves the most paths (stable ties keep the primary root first). This fixes a fleet
   // member completing SideStage work through the Papercusp coordination harness without
