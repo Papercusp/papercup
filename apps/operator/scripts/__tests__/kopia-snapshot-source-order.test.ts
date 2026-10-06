@@ -45,6 +45,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   utimesSync,
   writeFileSync,
@@ -85,7 +86,7 @@ LISTING
 fi
 if [ "$1" = "snapshot" ] && [ "$2" = "create" ]; then
   shift 2
-  printf '%s\\n' "$@" > ${JSON.stringify(join(dir, 'create-argv'))}
+  { printf '%s\\n' "$@"; echo '${INVOCATION_END}'; } >> ${JSON.stringify(join(dir, 'create-argv'))}
   exit 0
 fi
 exit 0
@@ -94,8 +95,12 @@ exit 0
   for (const f of ['sudo', 'kopia']) chmodSync(join(dir, f), 0o755);
 }
 
-/** Run the sweep and return the source arguments, in the order kopia saw them. */
-function runSweep(requiredDir: string): string[] {
+/** Separates one `kopia snapshot create` invocation's argv from the next. */
+const INVOCATION_END = '--end-of-invocation--';
+
+/** Run the sweep and return the source arguments of each kopia invocation, in order. */
+function runSweepInvocations(requiredDir: string): string[][] {
+  rmSync(join(dir, 'create-argv'), { force: true });
   execFileSync('/usr/bin/env', ['bash', SCRIPT], {
     env: {
       ...process.env,
@@ -108,9 +113,17 @@ function runSweep(requiredDir: string): string[] {
     },
     timeout: 60_000,
   });
-  return readFileSync(join(dir, 'create-argv'), 'utf8')
-    .split('\n')
-    .filter((l) => l.length > 0 && l !== '--parallel=1');
+  const invocations: string[][] = [[]];
+  for (const line of readFileSync(join(dir, 'create-argv'), 'utf8').split('\n')) {
+    if (line === INVOCATION_END) invocations.push([]);
+    else if (line.length > 0 && line !== '--parallel=1') invocations[invocations.length - 1].push(line);
+  }
+  return invocations.filter((inv) => inv.length > 0);
+}
+
+/** Run the sweep and return the source arguments, in the order kopia saw them. */
+function runSweep(requiredDir: string): string[] {
+  return runSweepInvocations(requiredDir).flat();
 }
 
 beforeEach(() => {
@@ -171,6 +184,113 @@ describe('kopia-snapshot-all.sh source ordering', () => {
     const argv = runSweep(join(dir, 'no-such-directory'));
 
     expect(argv).toEqual(['/srv/a-source']);
+  });
+
+  // EI-25211496463956189: Kopia commits a finished source only when its process
+  // flushes. In one invocation the required source waited for the whole sweep: on
+  // 2026-10-06 db-dumps finished at 21:52Z and was still not listed at 22:47Z.
+  it('snapshots required sources in their OWN kopia invocation, ahead of the batched tail', () => {
+    writeFakes(['/srv/a-source', '/srv/z-source']);
+
+    expect(runSweepInvocations(join(dir, 'dumps'))).toEqual([
+      [join(dir, 'dumps')],
+      ['/srv/a-source', '/srv/z-source'],
+    ]);
+  });
+
+  it('runs the tail as ONE invocation when no required source exists on disk', () => {
+    writeFakes(['/srv/a-source', '/srv/z-source']);
+
+    expect(runSweepInvocations(join(dir, 'no-such-directory'))).toEqual([
+      ['/srv/a-source', '/srv/z-source'],
+    ]);
+  });
+});
+
+// EI-25211496463956189: a stopped sweep must let Kopia FLUSH. Kopia commits a
+// finished source's snapshot only at a flush; SIGTERM makes it flush and exit 0,
+// SIGKILL discards every snapshot since the last flush. The cleanup used to
+// SIGKILL at once, so each stopped sweep threw away the sources it had finished.
+describe('kopia-snapshot-all.sh --cleanup stops Kopia without discarding its work', () => {
+  const PID = 4242;
+
+  /** A fake /proc entry for a Kopia `snapshot create`, plus a kill that logs its argv. */
+  function fakeRunningKopia(): { env: NodeJS.ProcessEnv; killLog: string; output: string } {
+    writeFakes([]);
+    const kopiaBin = realpathSync(join(dir, 'kopia'));
+    const procRoot = join(dir, 'proc');
+    mkdirSync(join(procRoot, String(PID)), { recursive: true });
+    execFileSync('ln', ['-s', kopiaBin, join(procRoot, String(PID), 'exe')]);
+    writeFileSync(
+      join(procRoot, String(PID), 'cmdline'),
+      [kopiaBin, 'snapshot', 'create', '--parallel=1', '/srv/a', '/srv/b', ''].join('\0'),
+    );
+    const killLog = join(dir, 'kill.log');
+    // Exit on SIGTERM (Kopia flushing, then exiting) only when the test asks for it.
+    writeFileSync(
+      join(dir, 'kill'),
+      `#!/usr/bin/env bash
+printf '%s\\n' "$*" >> ${JSON.stringify(killLog)}
+if [ "$1" = "-TERM" ] && [ "\${KOPIA_TEST_EXIT_ON_TERM:-0}" = 1 ]; then rm -rf ${JSON.stringify(procRoot)}/"$2"; fi
+exit 0
+`,
+    );
+    chmodSync(join(dir, 'kill'), 0o755);
+    const logDir = join(dir, 'log');
+    mkdirSync(logDir, { recursive: true });
+    writeFileSync(join(logDir, 'snapshot-all.kopia.pid'), `${PID}\n`);
+    const output = join(logDir, 'snapshot-all-output.777');
+    writeFileSync(
+      output,
+      'Snapshotting backup@host:/srv/a ...\nCreated snapshot with root k1 and ID 2 in 1s\nSnapshotting backup@host:/srv/b ...\n',
+    );
+    writeFileSync(join(logDir, 'snapshot-all.kopia.pid.output'), `${output}\n`);
+    return {
+      killLog,
+      output,
+      env: {
+        ...process.env,
+        HOME: join(dir, 'home'),
+        KOPIA_SNAPSHOT_LOG_DIR: logDir,
+        KOPIA_SNAPSHOT_PROC_ROOT: procRoot,
+        KOPIA_SNAPSHOT_SUDO: join(dir, 'sudo'),
+        KOPIA_SNAPSHOT_KILL: join(dir, 'kill'),
+        KOPIA_SNAPSHOT_BIN: kopiaBin,
+      },
+    };
+  }
+
+  function cleanup(env: NodeJS.ProcessEnv): string {
+    execFileSync('/usr/bin/env', ['bash', SCRIPT, '--cleanup'], { env, timeout: 30_000 });
+    return readFileSync(join(dir, 'log', 'snapshot-all.log'), 'utf8');
+  }
+
+  it('sends SIGTERM and never SIGKILL when Kopia exits to flush', () => {
+    const { env, killLog, output } = fakeRunningKopia();
+    const log = cleanup({ ...env, KOPIA_TEST_EXIT_ON_TERM: '1' });
+
+    expect(readFileSync(killLog, 'utf8').trim().split('\n')).toEqual([`-TERM ${PID}`]);
+    expect(log).toContain(`Kopia PID ${PID} exited after SIGTERM`);
+    expect(readFileSync(output, 'utf8')).not.toContain('KOPIA_UNFLUSHED');
+    expect(existsSync(join(dir, 'log', 'snapshot-all.kopia.pid'))).toBe(false);
+    expect(existsSync(join(dir, 'log', 'snapshot-all.kopia.pid.output'))).toBe(false);
+  });
+
+  it('SIGKILLs a Kopia that outlives the grace, and marks its output unflushed', () => {
+    const { env, killLog, output } = fakeRunningKopia();
+    const log = cleanup({ ...env, KOPIA_SNAPSHOT_FLUSH_GRACE_SEC: '1' });
+
+    expect(readFileSync(killLog, 'utf8').trim().split('\n')).toEqual([`-TERM ${PID}`, `-KILL ${PID}`]);
+    expect(log).toContain(`killed exact Kopia PID ${PID} after 1s SIGTERM grace`);
+    expect(readFileSync(output, 'utf8').trim().split('\n').pop()).toMatch(/^KOPIA_UNFLUSHED: /);
+  });
+
+  it('does not mark an output that reached post-flush maintenance before the SIGKILL', () => {
+    const { env, output } = fakeRunningKopia();
+    writeFileSync(output, `${readFileSync(output, 'utf8')}Running quick maintenance...\n`);
+    cleanup({ ...env, KOPIA_SNAPSHOT_FLUSH_GRACE_SEC: '0' });
+
+    expect(readFileSync(output, 'utf8')).not.toContain('KOPIA_UNFLUSHED');
   });
 });
 
@@ -300,5 +420,61 @@ exit 0
       '/srv/a',
       '/srv/c',
     ]);
+  });
+
+  // EI-25211496463956189: "Created snapshot" proves Kopia BUILT the snapshot, not
+  // that it was committed; a SIGKILL before the next flush discards it. Crediting
+  // such a source as swept would push it to the back while it has no new snapshot.
+  it('does not credit a created source as swept when its Kopia was killed before flushing', () => {
+    writeFakes(SOURCES);
+    const now = Math.floor(Date.now() / 1000);
+    leaveStoppedOutput(
+      DEAD_PID,
+      [
+        started('/srv/a'),
+        created,
+        started('/srv/b'),
+        identical,
+        started('/srv/c'),
+        'KOPIA_UNFLUSHED: Kopia was killed before it flushed; snapshots reported as created above were discarded',
+      ],
+      now - 600,
+    );
+
+    // Unmarked, the order would be d, c, a, b (see the first rotation test). Marked,
+    // a ties with c as unfinished; b changed nothing, so it lost nothing and stays last.
+    expect(runSweep(join(dir, 'dumps'))).toEqual([join(dir, 'dumps'), '/srv/d', '/srv/a', '/srv/c', '/srv/b']);
+  });
+
+  it('marks the output itself when Kopia dies of SIGKILL mid-sweep (rc 137), so the next sweep redoes it', () => {
+    writeFakes(SOURCES);
+    // The tail invocation finishes a, starts b, then dies of SIGKILL (the OOM-killer path).
+    writeFileSync(
+      join(dir, 'kopia'),
+      `#!/usr/bin/env bash
+if [ "$1" = "snapshot" ] && [ "$2" = "list" ]; then
+${SOURCES.map((s) => `  echo 'backup@host:${s} 2026-09-05 13:00:00 EDT k0 1 GB drwxr-xr-x'`).join('\n')}
+  exit 0
+fi
+if [ "$1" = "snapshot" ] && [ "$2" = "create" ]; then
+  printf '%s\\n' "$@" >> ${JSON.stringify(join(dir, 'create-argv'))}
+  case " $* " in
+    *" /srv/a "*)
+      echo 'Snapshotting backup@host:/srv/a ...'
+      echo '${created}'
+      echo 'Snapshotting backup@host:/srv/b ...'
+      kill -KILL $$ ;;
+  esac
+  exit 0
+fi
+exit 0
+`,
+    );
+    chmodSync(join(dir, 'kopia'), 0o755);
+    runSweep(join(dir, 'dumps'));
+
+    // Never reached (c, d) first, then the killed run's a and b, tied, in discovery order.
+    writeFakes(SOURCES);
+    expect(runSweep(join(dir, 'dumps'))).toEqual([join(dir, 'dumps'), '/srv/c', '/srv/d', '/srv/a', '/srv/b']);
   });
 });
