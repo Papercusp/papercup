@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // WI-10006716: an UNSIGNALLED sidecar call keeps the legacy contract of rethrowing a
 // transport error, so the catch site cannot tell "nothing ran" from "the child may
@@ -29,12 +29,24 @@ async function rejection(run: Promise<unknown>): Promise<unknown> {
   throw new Error('expected the sidecar call to reject');
 }
 
+let warn: ReturnType<typeof vi.spyOn>;
+
 beforeEach(() => {
   vi.clearAllMocks();
   resetSidecarFallbackStatsForTest();
   mock.preflight.mockReturnValue(true);
   mock.reap.mockResolvedValue(false);
+  // A post-dispatch transport fault is logged as [spawner-process-exec-fault];
+  // the post-dispatch cases assert that line, the others assert its absence.
+  warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 });
+
+afterEach(() => {
+  warn.mockRestore();
+});
+
+const execFaultLogged = (): boolean =>
+  warn.mock.calls.some((call: unknown[]) => call[0] === '[spawner-process-exec-fault]');
 
 describe('unsignalled process:exec transport failures', () => {
   it('marks a transport loss AFTER dispatch as an unknown-outcome fault, preserving the original error', async () => {
@@ -53,6 +65,7 @@ describe('unsignalled process:exec transport failures', () => {
     expect((error as NodeJS.ErrnoException).code).toBe('ECONNRESET');
     expect(isSidecarPostDispatchFault(error)).toBe(true);
     expect(sidecarPostDispatchDetail(error)).toEqual({ requestId: 41 });
+    expect(execFaultLogged()).toBe(true);
   });
 
   it('marks an RPC timeout after dispatch, because the child may still be running', async () => {
@@ -81,6 +94,7 @@ describe('unsignalled process:exec transport failures', () => {
 
     expect((error as Error).message).toContain('ECONNREFUSED');
     expect(isSidecarPostDispatchFault(error)).toBe(false);
+    expect(execFaultLogged()).toBe(false);
   });
 
   it('does not mark a non-transport error the sidecar answered after dispatch', async () => {
