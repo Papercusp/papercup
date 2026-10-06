@@ -87,7 +87,7 @@ async function file(opts: {
     payload.implementationReadiness = createImplementationReadiness({
       status: 'unknown',
       source: 'creation-enrollment',
-      reason: 'test-proposal',
+      reason: 'no-acceptance-evidence-at-creation',
       updatedAt: new Date().toISOString(),
       evidence: { acceptance: { outcome: opts.outcome } },
     });

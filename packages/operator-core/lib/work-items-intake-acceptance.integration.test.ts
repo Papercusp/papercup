@@ -126,7 +126,13 @@ const readiness = (
   acceptance?: object,
 ) => ({
   implementationReadiness: createImplementationReadiness({
-    status, source, reason: `${source} fixture`, updatedAt: AT,
+    status, source, updatedAt: AT,
+    // A non-ready verdict is a hold: it carries the registered reason its real writer uses
+    // (hold-registry.ts, D-026), since createImplementationReadiness refuses any other.
+    reason:
+      status === 'ready'
+        ? `${source} fixture`
+        : source === 'creation-enrollment' ? 'no-acceptance-evidence-at-creation' : 'awaiting-agent-review',
     ...(acceptance ? { evidence: { acceptance: acceptance as Record<string, unknown> } } : {}),
   }),
 });

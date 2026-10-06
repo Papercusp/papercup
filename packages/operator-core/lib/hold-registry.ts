@@ -111,8 +111,9 @@ export const HOLD_REGISTRY: readonly HoldRegistryEntry[] = [
   entry('claim-floor', 'blocked-dep', 'transient', lane('the holder of the blocking work-item'), HOUR),
   entry('claim-floor', 'cooldown', 'transient', routine('elapsed time (release cooldown / filing grace)'), QUARTER_HOUR),
   entry('claim-floor', 'stop-line', 'transient', routine('green-checkpoint (lifts when the gate greens)'), HOUR),
-  // D-023 point 3: claimant-specific — refused for the reporter or implementer only.
-  entry('claim-floor', 'verification-conflict', 'transient', lane('an independent verifier (neither reporter nor implementer)'), HOUR, { claimantSpecific: true }),
+  // D-023 point 3: claimant-specific — refused for the reporter or implementer only. The key is
+  // the claim door's own refusal code (agent-tools/work_items/claim.ts), not an oracle label.
+  entry('claim-floor', 'verification_conflict', 'transient', lane('an independent verifier (neither reporter nor implementer)'), HOUR, { claimantSpecific: true }),
 
   // ── readiness: every non-ready implementationReadiness reason a writer produces ──
   entry('readiness', 'awaiting-agent-review', 'transient', AGENT_REVIEW_LANE, HOUR),
@@ -223,12 +224,16 @@ export interface HoldClassifiableRow {
 }
 
 const NON_TERMINAL_STATUSES = new Set(['open', 'wip', 'blocked', 'needs-human']);
-const OWNER_CAPABILITIES: ReadonlySet<ExternalBlockerCapability> = new Set<ExternalBlockerCapability>([
-  'credential',
-  'physical-device',
-  'external-service-action',
-  'product-decision',
-]);
+/**
+ * Blocker capabilities only an owner can clear — DERIVED from the blocker entries whose clearer
+ * is an owner. hold-registry.test.ts pins this set equal to the capabilities whose policy has
+ * `requiresOwnerCapability` (external-blockers.ts), so the two cannot drift apart.
+ */
+export const OWNER_CAPABILITIES: ReadonlySet<ExternalBlockerCapability> = new Set(
+  HOLD_REGISTRY.filter((e) => e.domain === 'blocker' && e.clearer.kind === 'owner').map(
+    (e) => e.key as ExternalBlockerCapability,
+  ),
+);
 
 function obj(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null;

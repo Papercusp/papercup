@@ -519,7 +519,7 @@ export function acceptanceCanaryProbes(): Array<{
     {
       probe: 'creation-enrollment-unknown',
       step: 'fail-closed',
-      payload: { implementationReadiness: createImplementationReadiness({ status: 'unknown', source: 'creation-enrollment', reason: 'created', updatedAt }) },
+      payload: { implementationReadiness: createImplementationReadiness({ status: 'unknown', source: 'creation-enrollment', reason: 'no-acceptance-evidence-at-creation', updatedAt }) },
       expectAdmit: false,
     },
     { probe: 'admission-unreviewed-fail-open', step: 'fail-closed', payload: { admission: 'unreviewed', implementationReadiness: bareReady }, expectAdmit: false },

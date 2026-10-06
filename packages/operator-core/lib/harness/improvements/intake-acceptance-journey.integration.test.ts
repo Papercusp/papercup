@@ -219,7 +219,7 @@ describe('R-12 observation → candidate → accepted work → verified completi
         implementationReadiness: createImplementationReadiness({
           status: 'unknown',
           source: 'creation-enrollment',
-          reason: 'journey-control',
+          reason: 'no-acceptance-evidence-at-creation',
           updatedAt: new Date().toISOString(),
         }),
       },

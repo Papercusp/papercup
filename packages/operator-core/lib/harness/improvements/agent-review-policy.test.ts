@@ -92,7 +92,7 @@ const readinessWith = (
   createImplementationReadiness({
     status,
     source: 'agent-review',
-    reason: status === 'ready' ? 'agent-review-approved' : 'awaiting-review',
+    reason: status === 'ready' ? 'agent-review-approved' : 'awaiting-agent-review',
     updatedAt: '2026-09-05T00:00:00.000Z',
     ...(acceptance ? { evidence: { acceptance: acceptance as Record<string, unknown> } } : {}),
   });
@@ -199,7 +199,7 @@ describe('versioned work-item intake stage', () => {
           implementationReadiness: createImplementationReadiness({
             status: 'unknown',
             source: 'agent-review',
-            reason: 'awaiting-review',
+            reason: 'awaiting-agent-review',
             updatedAt: '2026-09-05T00:00:00.000Z',
           }),
         },
@@ -215,7 +215,7 @@ describe('versioned work-item intake stage', () => {
           implementationReadiness: createImplementationReadiness({
             status: 'not-ready',
             source: 'agent-review',
-            reason: 'revision-requested',
+            reason: 'agent-review-revision-requested',
             updatedAt: '2026-09-05T00:00:00.000Z',
           }),
         },

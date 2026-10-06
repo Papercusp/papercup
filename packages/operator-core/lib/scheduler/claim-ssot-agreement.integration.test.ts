@@ -1192,7 +1192,12 @@ describe('floor #16 implementation-readiness: view, 12-arg floor labels and the 
     implementationReadiness: createImplementationReadiness({
       status,
       source,
-      reason: source === 'creation-enrollment' ? 'created' : 'agent-review-approved',
+      // A non-ready verdict is a hold, so it carries the registered reason its real writer
+      // uses (hold-registry.ts, D-026); createImplementationReadiness refuses any other.
+      reason:
+        status === 'ready'
+          ? source === 'creation-enrollment' ? 'created' : 'agent-review-approved'
+          : source === 'creation-enrollment' ? 'no-acceptance-evidence-at-creation' : 'awaiting-agent-review',
       updatedAt: UPDATED_AT,
       ...(acceptance ? { evidence: { acceptance: acceptance as Record<string, unknown> } } : {}),
     }),

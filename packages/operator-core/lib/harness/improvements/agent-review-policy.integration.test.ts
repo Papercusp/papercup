@@ -65,7 +65,7 @@ const readinessWith = (acceptance: object | undefined, status: 'ready' | 'unknow
   createImplementationReadiness({
     status,
     source: 'agent-review',
-    reason: 'agent-review-approved',
+    reason: status === 'ready' ? 'agent-review-approved' : 'awaiting-agent-review',
     updatedAt: '2026-09-05T00:00:00.000Z',
     ...(acceptance ? { evidence: { acceptance: acceptance as Record<string, unknown> } } : {}),
   });
@@ -95,7 +95,7 @@ const fixtures: Array<{ id: string; input: WorkItemIntakeStageInput }> = [
       implementationReadiness: createImplementationReadiness({
         status: 'unknown',
         source: 'agent-review',
-        reason: 'awaiting-review',
+        reason: 'awaiting-agent-review',
         updatedAt: '2026-09-05T00:00:00.000Z',
       }),
     }),

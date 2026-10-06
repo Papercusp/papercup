@@ -12,6 +12,7 @@ import { createHash } from 'node:crypto';
 import type postgres from 'postgres';
 
 import type { OrgSql } from '../../work-items';
+import { assertHoldRegistered } from '../../hold-registry';
 import { ALL_SUCCESSFUL_STATUSES, ALL_TERMINAL_STATUSES } from '../../work-item-blocking';
 import { WORK_ITEM_PRESENTATION_STAGES, type WorkItemPresentationStage } from '../../work-item-presentation-contract';
 export { WORK_ITEM_PRESENTATION_STAGES, type WorkItemPresentationStage } from '../../work-item-presentation-contract';
@@ -231,6 +232,10 @@ const IMPLEMENTATION_READINESS_UPDATED_AT_PATTERN = new RegExp(IMPLEMENTATION_RE
 export function createImplementationReadiness(
   input: Omit<ImplementationReadinessState, 'schemaVersion' | 'updatedAt'> & { updatedAt?: string },
 ): ImplementationReadinessState {
+  // D-026: a non-ready verdict HOLDS the row, so its reason must name a clearer and a
+  // re-check time in the hold registry. An unregistered reason is refused at the write
+  // (UnmappedHoldError) instead of minting a hold nobody is responsible for ending.
+  if (input.status !== 'ready') assertHoldRegistered('readiness', input.reason);
   return {
     schemaVersion: IMPLEMENTATION_READINESS_SCHEMA_VERSION,
     status: input.status,
