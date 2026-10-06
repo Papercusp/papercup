@@ -2895,7 +2895,202 @@
      "summary": "plan lane agent-economy-flywheel-2026-08-30#P-020 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
     }
    ],
-   "claimHold": false
+   "claimHold": false,
+   "testnetJourneyEvidenceQualification": {
+    "status": "retained-source-evidence-qualified-not-operationally-accepted",
+    "qualifiedAt": "2026-10-06T10:43:24.212Z",
+    "workItem": "WI-10005820",
+    "sourceAuthority": {
+     "plan": "agent-economy-flywheel-2026-08-30",
+     "item": "P-020",
+     "version": 100,
+     "contentHash": "fc68bbe66e2de5fdea2a667e37de106465287eea99c13d406789b207b4af7ca6",
+     "requirements": "Complete Requirements and Now read; R-7 requires production seller publication, buyer funding/activation/turns, testnet settlement transaction IDs and equal buyer/seller dashboards; R-8 requires seller revocation then refused fresh buyer activation.",
+     "decisions": [
+      "D-005",
+      "D-007",
+      "D-009",
+      "D-010"
+     ],
+     "productionDoorAuthority": "shared-pot-dao-cupboard-v1-2026-09-04#D-051; full decision read at source version263/27543eb34607ae95f32122de2338dc8b5fefc3cc3755e3773eff540c764dcb45",
+     "fullItemBoundary": "Preserve receipts/vouchers through P-033, refund-or-revocation stop, BYOC/per-layer markup, testnet first and separately approved mainnet cutover. Two scalar BAR outcomes do not replace the whole item."
+    },
+    "specs": [
+     {
+      "specId": "AUTO-BAR-R-7-P-020",
+      "revision": 2,
+      "contentHash": "5306a7e8a7b834eb191c883d9395978319dc06c97a463965c60f0fd3207c8ebd",
+      "status": "active",
+      "requiredEvidence": [
+       "live"
+      ],
+      "sourceRubricRevision": 1
+     },
+     {
+      "specId": "AUTO-BAR-R-8-P-020",
+      "revision": 2,
+      "contentHash": "499205f70364745d2b5d77cce4a96db06479148cddcb1325637046cf4423b487",
+      "status": "active",
+      "requiredEvidence": [
+       "live"
+      ],
+      "sourceRubricRevision": 1
+     },
+     {
+      "specId": "AUTO-REQ-M-013-P-020",
+      "revision": 1,
+      "contentHash": "40437a3b95e9bd65dcb8df92e8da58b7e299b9c005aa28a05cbd5a55fde0ca52",
+      "status": "draft"
+     },
+     {
+      "specId": "AUTO-REQ-M-021-P-020",
+      "revision": 1,
+      "contentHash": "390bf6dbf80e8a594e82abe8f807a75632319aa6361542b665d46f2c7a978833",
+      "status": "draft"
+     }
+    ],
+    "bindingQualification": {
+     "workItemIds": [
+      "WI-10004284"
+     ],
+     "specIds": [
+      "AUTO-BAR-R-7-P-020",
+      "AUTO-BAR-R-8-P-020",
+      "AUTO-REQ-M-013-P-020",
+      "AUTO-REQ-M-021-P-020"
+     ],
+     "limit": 100,
+     "truncatedByLimit": false,
+     "evidenceRows": 0,
+     "scope": "Only this exact consumer/clause selection; not global evidence absence."
+    },
+    "rubricQualification": {
+     "rubric": "acceptance-agent-economy-flywheel-2026-08-30",
+     "revision": 5,
+     "criteriaHash": "25dd447cc55337d60b91c38186c4c1867cb9d9e8c0ec2df4fe124bb7686d08c8",
+     "vetting": "unvetted/rejected-attestation; candidate EI-24753855151782231 rejected grading-audit-unsettled/criteria-hash-mismatch",
+     "acceptanceUpgraded": false
+    },
+    "predecessorQualification": [
+     {
+      "item": "P-017",
+      "workItem": "WI-10004281",
+      "state": "blocked",
+      "assignee": null,
+      "checkpoint": null
+     },
+     {
+      "item": "P-018",
+      "workItem": "WI-10004282",
+      "state": "blocked",
+      "assignee": null,
+      "checkpoint": null,
+      "retainedAudit": "thread-post:1159616"
+     },
+     {
+      "item": "P-019",
+      "workItem": "WI-10004283",
+      "state": "open",
+      "assignee": null,
+      "checkpoint": null
+     }
+    ],
+    "railReceiptQualification": [
+     {
+      "item": "DAO P-032",
+      "workItem": "WI-2146852",
+      "state": "done",
+      "completionAuthority": "committed",
+      "proofBoundary": "Authenticated channel open/get/close with migrated D1 and deterministic fake rail; completion explicitly notChecked real Base-compatible transaction and records unavailable historical RPC/funded key/contract/stablecoin. This does not measure today's credential availability."
+     },
+     {
+      "item": "DAO P-033",
+      "workItem": "WI-2146853",
+      "state": "done",
+      "completionAuthority": "committed",
+      "proofBoundary": "Production Worker settlement state machine and fake-chain tests; completion explicitly notChecked recorded testnet claim. Historical injected-chain verification is retained; no current pilot-L2 transaction inferred."
+     },
+     {
+      "item": "DAO P-036",
+      "workItem": "WI-2146856",
+      "state": "done",
+      "completionAuthority": "committed",
+      "proofBoundary": "Historical separate-peer-process DHT convergence/escrow/finality proof. Current source injects deterministic facilitator; a local DHT testnet is not the pilot EVM testnet."
+     }
+    ],
+    "implementationQualification": {
+     "runner": "packages/operator-core/lib/p2p/two-peer-commerce/run-two-peer-commerce.ts",
+     "observed": "The runner uses release:widget@1.0.0 fixture vouchers; calls createDeterministicFacilitator, directly plans/submits a synthetic claim, advances its in-memory head and folds proof events to equal perUseRollup totals. Current integration test asserts the eleven P-036 scenarios, identical fold and escrow. These source reads do not measure actual paid-identity publication/activation/inference or public-chain settlement.",
+     "transactionWriter": "deterministic-facilitator.ts creates transactionHash from sha256(tx:seed) and records it in an in-memory map. Its transaction-shaped hashes cannot serve as public RPC receipts.",
+     "reusableProductionRail": "apps/operator-public/src/settlement-facilitator.ts has a viem implementation with explicit RPC/private-key/contract/stablecoin/chain configuration and typed unavailable results. Source availability does not establish loaded/deployed configuration or a real transaction.",
+     "revocationBoundary": "The inspected identity funding gate reads offers and funds; inactive offers are filtered and no live offer returns free. No seller-revocation/fresh-buyer-activation result was observed. This source observation alone does not establish how the wider admission/entitlement path behaves.",
+     "reuse": "Existing P-032/P-033 production doors, P-036 real-peer harness and shared rollup should be extended for the missing identity journey; no parallel system introduced."
+    },
+    "currentFilePins": [
+     {
+      "path": "packages/operator-core/lib/p2p/two-peer-commerce/run-two-peer-commerce.ts",
+      "sha256": "799725ac4d8f6352f8e9ede86081329133562d296bac0fae06ec661d7103b033",
+      "headBlob": "ff9b3e1783622797355957f6410c8e38d33a6ee8",
+      "workingBlob": "ff9b3e1783622797355957f6410c8e38d33a6ee8"
+     },
+     {
+      "path": "packages/operator-core/lib/p2p/two-peer-commerce/deterministic-facilitator.ts",
+      "sha256": "3430153e66a9711d6d030144191e3545ee253bebb0e2194d7be07766f75dd1f4",
+      "headBlob": "ca02ca11f79b85b7d567558c2187332307ff2e50",
+      "workingBlob": "ca02ca11f79b85b7d567558c2187332307ff2e50"
+     },
+     {
+      "path": "packages/operator-core/lib/p2p/two-peer-commerce/two-peer-commerce.integration.test.ts",
+      "sha256": "56861c86c8f94fdee7fb1c2322cd294b2e85433c11b7e1d92c457788657d875c",
+      "headBlob": "361eb3788a605d5812c483d46d0ed1d593090f66",
+      "workingBlob": "361eb3788a605d5812c483d46d0ed1d593090f66"
+     },
+     {
+      "path": "packages/operator-core/lib/cupboard/identity-activation-gate.ts",
+      "sha256": "3b43fe4c3f472fd8473eeea66d5bd432cf3605cd9fb619adac780c3c28358703",
+      "headBlob": "3dd0a3ab84af9b7e322246f3d750d4e4a9a7ee11",
+      "workingBlob": "3dd0a3ab84af9b7e322246f3d750d4e4a9a7ee11"
+     },
+     {
+      "path": "packages/operator-core/lib/cupboard/identity-activation-gate-io.ts",
+      "sha256": "af1d57fb0295f9ddaf9ae7affc9f90e23ecdba67895b5ecff8afe0265c5f88a8",
+      "headBlob": "4825f949fc88eb6b1dd167efb276ed4cd27445c7",
+      "workingBlob": "4825f949fc88eb6b1dd167efb276ed4cd27445c7"
+     },
+     {
+      "path": "packages/operator-core/lib/cupboard/commerce-dashboards.ts",
+      "sha256": "e88df4d58dc23551533e9625568435abdc98b2430cbd62e87eb7a73271738e85",
+      "headBlob": "889552c8e65f2ae36a8adad1f8e31dc08d2f611b",
+      "workingBlob": "889552c8e65f2ae36a8adad1f8e31dc08d2f611b"
+     },
+     {
+      "path": "apps/operator-public/src/settlement-facilitator.ts",
+      "sha256": "bd871d9098a985ae513253f666a1d1910b8edc5e7e80c5f3754c5c46a8f4c4ca",
+      "headBlob": "0135cf0cc16f0fb1c6d6b80ebe8adb27ff916a18",
+      "workingBlob": "0135cf0cc16f0fb1c6d6b80ebe8adb27ff916a18"
+     },
+     {
+      "path": "packages/operator-core/lib/p2p/evm-settlement.ts",
+      "sha256": "d448e06f1fad5b88f89519875d0d8890eb1ca1b9b7602924d21341eb08856cb0",
+      "headBlob": "b908169b0c465f4cbd946f3df23c703cee68a74f",
+      "workingBlob": "b908169b0c465f4cbd946f3df23c703cee68a74f"
+     }
+    ],
+    "verificationBoundary": {
+     "newBehavioralSuitesRun": false,
+     "oldReceiptReplayed": false,
+     "currentRuntimeMeasured": false,
+     "liveTestnetJourneyRun": false,
+     "mainnetAction": false,
+     "retainedEvidenceOnly": true
+    },
+    "notEstablished": [
+     "Full production-door paid-identity journey and public testnet transaction receipts",
+     "Current equal buyer/seller dashboards for actual identity usage and next-activation revocation refusal",
+     "Current executable R7/R8 instrument (source instrumentKey remains none), current proof binding, rubric vetting, adequacy, independent grade and acceptance",
+     "P-017/P-018/P-019 terminal acceptance, whole-plan acceptance, mainnet approval or shipment"
+    ]
+   }
   },
   {
    "id": "WI-10004285",
