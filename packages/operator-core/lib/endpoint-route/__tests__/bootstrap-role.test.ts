@@ -281,6 +281,13 @@ describe('bootstrap-role', () => {
   const pinnedOwner = 'su-auditor-canonical';
   const pinnedRequest = { role: 'worker', agent: 'claude', harness_slug: 'papercup', feature: 'F-001', owner_id: pinnedOwner };
 
+  it('lets a committed slow role bootstrap return past the generic route watchdog (WI-10006975)', async () => {
+    const mod = await import('../routes/agent-mcp/bootstrap-role');
+    const route = (mod.default as Array<{ method: string; timeoutSec?: number | null }>)
+      .find((r) => r.method === 'POST')!;
+    expect(route.timeoutSec).toBeNull();
+  });
+
   it('preserves a pre-pinned owner through account routing, role composition, record and environment', async () => {
     const response = await callPost({ ...pinnedRequest, bootstrap_idempotency_key: 'role-stable-key' });
     expect(response.status).toBe(200);
