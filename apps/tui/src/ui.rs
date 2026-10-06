@@ -3845,6 +3845,8 @@ const CHAT_SHORTCUTS: &[(&str, &str)] = &[
     ("Drag", "select and copy"),
     ("Shift+drag", "the terminal's own selection"),
     ("Esc", "stop a reply, twice to clear"),
+    // D-026 (P-027 G-6): `App::cycle_approvals`.
+    ("Shift+Tab", "approvals mode"),
     ("Ctrl+R", "show tool output"),
     ("Ctrl+O", "details"),
     ("Ctrl+Z", "undo"),
@@ -10277,6 +10279,7 @@ mod tests {
             uncertain: false,
             error: None,
             model: None,
+            approvals: None,
         });
         let at = |secs| start + std::time::Duration::from_secs(secs);
         assert!(app.chat_working_line(at(2)).contains("Starting Claude… (2s"));
@@ -10766,6 +10769,7 @@ mod tests {
             uncertain: false,
             error: None,
             model: None,
+            approvals: None,
         });
         app.chat_streaming = true;
         let text = render(&app, 100, 16);
@@ -10791,6 +10795,7 @@ mod tests {
             uncertain: false,
             error: None,
             model: None,
+            approvals: None,
         });
         app.chat_streaming = true;
         let text = render(&app, 100, 16);

@@ -6966,6 +6966,10 @@ async fn send_su_turn_with_client(
         });
         // pui-chat-first-ux P-026 / D-025: the /model pick rides on this turn;
         // omitted keeps the model the session already runs on.
+        // D-026: the /approvals or Shift+Tab pick rides on this turn too.
+        if let Some(approvals) = pending.approvals.as_deref() {
+            command["approvals"] = serde_json::Value::String(approvals.to_string());
+        }
         if let Some(model) = pending.model.as_deref() {
             command["model"] = serde_json::Value::String(model.to_string());
         }
