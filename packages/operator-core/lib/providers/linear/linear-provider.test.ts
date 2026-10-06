@@ -151,6 +151,9 @@ describe('syncPage walks issues then comments per team, folding watermarks only 
         if (team === 'team-a') return page('issues', [issue({ id: 'iss-2', number: 2, updatedAt: '2026-10-02T11:00:00.000Z' })]);
         return page('issues', []);
       }
+      // Comments live on team-a's issue only.
+      const commentTeam = ((filter.issue as { team: { id: { eq: string } } }).team).id.eq;
+      if (commentTeam !== 'team-a') return page('comments', []);
       return page('comments', [{
         id: 'c-1', body: 'repro attached', url: 'https://linear.app/acme/issue/ENG-1#comment-c1',
         createdAt: '2026-10-02T10:00:00.000Z', updatedAt: '2026-10-02T10:00:00.000Z', user: { name: 'alice' }, issue: { id: 'iss-1' },
