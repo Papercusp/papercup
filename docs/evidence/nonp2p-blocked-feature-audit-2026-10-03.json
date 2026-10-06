@@ -1935,7 +1935,89 @@
      "summary": "plan lane finish-session-2893b033-residue-2026-09-26#P-004 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
     }
    ],
-   "claimHold": false
+   "claimHold": false,
+   "qualification": {
+    "status": "retained-evidence-qualified-current-acceptance-open",
+    "measuredAt": "2026-10-06T08:47:19Z",
+    "proofWorkItem": "WI-10005820",
+    "ownerId": "su-25bc0450-2829-42b9-a2dd-1431c99e4ba8",
+    "sourcePlan": {
+     "slug": "finish-session-2893b033-residue-2026-09-26",
+     "revision": 21,
+     "contentHash": "1f12d44e42362d9b71ec0b1475c5f5300957f2ec2bddcde9f2745f8367844004",
+     "decisionsRead": ["D-003"],
+     "watchdogSpec": {"id": "AUTO-BAR-R-4-P-003", "revision": 4, "contentHash": "a99d2f35762809436b49509bb7540f027dd322aa1b092ed7109d7ca146845390", "lifecycleStatus": "accepted", "evidencePlane": "tree"},
+     "preShipSpec": {"id": "AUTO-BAR-R-5-P-004", "revision": 6, "contentHash": "40232ebbc471e4ebdb211bb56689caecc302ca08db174e61f515fbebc9ca732f", "lifecycleStatus": "exempt", "evidencePlane": "live"},
+     "rubricRevision": 8,
+     "rubricQualification": "The preceding P001/P002 audits retain rubric8 as unvetted; this audit does not claim a fresh rubric-vetting read or grade.",
+     "preShipExemptionScope": "The clause exempts P004 as a coordination/verification/terminal-transition step; P001..P003 own behavioral contracts and the canonical ship gate enforces the lifecycle outcome. It does not waive the source R5 method, live evidence, focused tests, explicit affected-path verification, current L4 witness, independent grading or author acceptance."
+    },
+    "prerequisitesAtRead": [
+     {"id": "WI-10003332", "item": "P-001", "state": "blocked", "assignee": null, "authority": null},
+     {"id": "WI-10003333", "item": "P-002", "state": "blocked", "assignee": null, "authority": null},
+     {"id": "WI-10003334", "item": "P-003", "state": "done", "authority": "committed"},
+     {"id": "WI-10003335", "item": "P-004", "state": "blocked", "assignee": null, "authority": null}
+    ],
+    "watchdogPopulation": [
+     {"id": "EI-24097085300016579", "state": "dropped", "authority": "committed", "canonicalOwner": "EI-24058359583141394", "receiptScope": "Typed duplicate; current-source inspection rather than an independent implementation test."},
+     {"id": "EI-24058359583141394", "state": "done", "authority": "committed", "storedRootCause": "Auto-heal PTY wake lacked a machine-origin ledger row, so UserPromptSubmit classified it as interactive owner input and captured an owner directive.", "storedAlternative": "The provenance hook or capture rail misclassifies correctly stamped machine turns independently of watchdog enrolment.", "storedDistinguishingTest": "Remove watchdog provenance enrolment and run its test; compare correctly stamped machine-origin controls and post-deploy capture records.", "storedMutationRun": 19663701, "storedRestoredRuns": [20165609, 20165611, 20165612, 20165615, 20165616], "storedAdequacyCard": "EI-24376411862304667"}
+    ],
+    "retainedP003Receipt": {
+     "headSha": "fe3546aea640c29c0fe712c055794add363df7cf",
+     "testResult": "Stored receipt reports 196 passing tests across five files and no failures, run individually on 2026-09-30.",
+     "specRevisionAtReceipt": 3,
+     "scope": "Complete terminal receipt and canonical structured rootCauseVerification were read. Old test totals, mutation result and post-deploy zero-capture report are historical receipt claims, not fresh reproductions, current operational measurements or independent acceptance."
+    },
+    "detectorsInspected": {
+     "productionWriter": "taggedHealedWakeText records origin watchdog before returning the PTY payload; healedWakeText tells a session to inspect durable loop state and not re-arm a deliberately ended loop.",
+     "watchdogTest": "The existing test parses the tagged auto-heal payload and asserts one matching watchdog ledger row.",
+     "captureRailControl": "The per-origin control includes watchdog and asserts that verified machine-origin input captures no directive. This inspected control is separate from the watchdog payload test.",
+     "compositionQualification": "The inspected source and separate controls do not establish current bound proof that the exact synthetic auto-heal payload traverses provenance with both zero owner-order writes and zero re-arm of an ended loop. This audit neither ran a composition fixture nor proves its global absence.",
+     "committedSourcePins": {
+      "packages/operator-core/lib/system-health/mcp-dark-watchdog.ts": "6fc91b739d0c69785ed1d28cf5a26a630c37fbee010cc2a81ccae57f1b2587cd",
+      "packages/operator-core/lib/system-health/mcp-dark-watchdog.test.ts": "a58d02460a49778cddace8f4fdec82cb213c20582e9b95fd4da1348a3dbcfc9b",
+      "packages/operator-core/lib/turn-provenance/turn-provenance.ts": "2061779e4b4cd0918d0f5731b462d84a08213b529565f1f3940a1306ee957fe9",
+      "packages/operator-core/lib/turn-provenance/turn-provenance.test.ts": "c5782dfb7482742c0e18a72e3f94388a39f384da45d4e652830b8b416a0d2049",
+      "packages/operator-core/lib/turn-provenance/machine-surface-catalogue.ts": "d7410cfb959b2b59569be631e6aa595fb0ebe665246b061fad081ee0840fce42",
+      "packages/operator-core/lib/turn-provenance/machine-surface-catalogue.test.ts": "c9bb04d9c29c734336f94ec20cb41eac92f9a2a7656e1e45c442ae13919cba39",
+      "apps/operator/scripts/hooks/cc/__tests__/userpromptsubmit-capture-rail.test.ts": "149f561c66fa7c4d9da512a37a9240868cf5b124df2c8efc4d6cf5eb5be2a06f",
+      "packages/operator-core/lib/agent-tools/loop/end.test.ts": "8b6613e974e033d0b0608d3292e0bbe2ddfa1445cebd7a3c3749166e75e737c0"
+     },
+     "pinScope": "All eight selected files matched their own repository HEAD blobs at inspection. This does not clean or requalify any historical dirty test run."
+    },
+    "boundEvidence": {
+     "queryScope": "AUTO-BAR-R-4-P-003 and AUTO-BAR-R-5-P-004 on this plan only; limit1000, truncatedByLimit:false. Scoped selection is not global evidence absence.",
+     "returnedBindingIds": [14147, 14146, 14124, 14122, 14120, 14116, 13575, 13548, 13545, 13441],
+     "serverCurrentness": {"current": 0, "stale": 10, "unknown": 0},
+     "clauseRevisions": {"revision3": [14147, 14146, 14124, 14122, 14120, 14116], "revision2": [13575, 13548, 13545, 13441]},
+     "sourceAndTestCurrentButSpecStale": [14120, 13548],
+     "runProvenance": "Every selected row's testRun dimension is unknown:test-run-worktree-not-clean; overall remains stale because the canonical R4 clause is now revision4.",
+     "retainedMutationBindings": [14116, 13575],
+     "retainedMutationQualification": "Both refer to caught mutation run19663701 on older clause revisions, with source/test stale and dirty-run provenance unknown. Neither establishes the current R4/R5 L4 witness.",
+     "selectionQualification": "This selection contains R4 revision2/3 records and no R4@4 or R5@6 binding. The conclusion is bounded to these exact queried specs.",
+     "currentnessWriter": "spec-evidence-store.ts classifySpecEvidenceCurrentness derives spec/source/test dimensions and treats dirty test runs as unknown. get-spec-evidence.ts counts the returned overall verdicts after a limit-plus-one query."
+    },
+    "preShipMethod": {
+     "requiredBeforeGrading": "After P001..P004 pre-ship verification and completion audit and D003 population settlement, derive explicit changed paths from terminal evidence; run focused suites plus npm run test:affected -- --changed-paths=<explicit path set> and require AFFECTED_DERIVATION source=explicit.",
+     "allowedPendingCodes": ["bar_snapshot_grading_missing", "acceptance_ungraded", "bar_snapshot_author_verdict_missing"],
+     "otherRefusalsFail": "Any other ship-readiness refusal, including bar_snapshot_vetting_missing, fails R5.",
+     "populationRollup": "R5 is the conjunction of R3 and R4 scorecard ratings over D003's fixed population; do not re-evidence EI rows or count duplicate evidence twice.",
+     "shipOrdering": "P004 pre-ship tests and completion audit precede independent grading and author acceptance; the canonical ship invocation follows those verdicts, then lifecycle truth is re-read.",
+     "readinessAtAudit": "Unavailable: code:run's plans:get shipReadiness read timed out after30000ms. No readiness verdict or refusal census was returned; this is not a passing result."
+    },
+    "remaining": [
+     "Resolve P001 and P002 current acceptance, clean proof, independent rubric vetting and their recorded killed-goal/replacement-budget constraint.",
+     "Qualify current R4 synthetic auto-heal composition proof and current caught L4 witness without upgrading the old dirty mutation run.",
+     "Derive the explicit affected-path set from terminal receipts, then obtain focused and affected-run evidence after prerequisite settlement.",
+     "Recover a complete current ship-readiness result and current R3/R4 roll-up before grading, author acceptance or shipping."
+    ],
+    "goalRevived": false,
+    "acceptanceGranted": false,
+    "shipped": false,
+    "sourceBehaviorEdited": false,
+    "priorProbesOrSuitesReplayed": false,
+    "otherFrozenRowsChanged": false
+   }
   },
   {
    "id": "WI-10003659",
