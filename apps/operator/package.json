@@ -266,6 +266,7 @@
     "@types/qrcode": "^1.5.5",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@types/tar-fs": "^2.0.4",
     "@typescript/native": "npm:typescript@7.0.2",
     "driver.js": "1.8.0",
     "lost-pixel": "^3.22.0",

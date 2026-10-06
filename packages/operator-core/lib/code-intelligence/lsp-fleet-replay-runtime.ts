@@ -591,7 +591,10 @@ export function replayLoadedRuntime(pid: number, identity: string | null, cmdlin
       const match = /^(\S+)\s+\S+\s+\S+\s+\S+\s+\S+\s+(.+)$/.exec(line);
       if (!match || !match[2].startsWith('/') || seen.has(match[2])) continue;
       const path = match[2]; seen.add(path);
-      const sha256 = replayHash(reader.bytes(`/proc/${pid}/map_files/${match[1]}`));
+      // maps pads low addresses, but map_files names use canonical hex. Keep
+      // 64-bit addresses exact instead of rounding them through Number.
+      const range = match[1].split('-').map(address => BigInt(`0x${address}`).toString(16)).join('-');
+      const sha256 = replayHash(reader.bytes(`/proc/${pid}/map_files/${range}`));
       native.push({ path, sha256 });
       if (witness.files[path] !== sha256) unknown.push(`unfrozen-native-mapping:${path}`);
     }

@@ -191,6 +191,25 @@ describe('fail-closed runtime qualification', () => {
     const p = proof();
     expect(replayLoadedRuntime(42, 'epoch', [process.execPath, ...p.f.launch.args], p.witness, p.reader).unknown).toEqual([]);
   });
+  it('opens canonical map_files ranges without padding or 64-bit address rounding', () => {
+    for (const [printed, canonical] of [
+      ['00400000-00420000', '400000-420000'],
+      ['00fffffffffffff1-00fffffffffffff3', 'fffffffffffff1-fffffffffffff3'],
+    ]) {
+      const p = proof();
+      const reads: string[] = [];
+      const reader = { ...p.reader,
+        text: (path: string) => path.endsWith('/maps') ? `${printed} r-xp 0 00:01 9 /lib/native.so\n` : p.reader.text(path),
+        bytes: (path: string) => {
+          reads.push(path);
+          if (path !== `/proc/42/map_files/${canonical}`) throw new Error('mapping does not exist');
+          return Buffer.from('mapped inode');
+        },
+      };
+      expect(replayLoadedRuntime(42, 'epoch', [process.execPath, ...p.f.launch.args], p.witness, reader).unknown).toEqual([]);
+      expect(reads).toEqual([`/proc/42/map_files/${canonical}`]);
+    }
+  });
   it('refuses stale process receipts, unfrozen vendor bytes and a substituted recorder', () => {
     const p = proof(); p.rows[2].sha256 = replayHash('changed vendor');
     const result = replayLoadedRuntime(42, 'another epoch', [process.execPath, '--eval', 'different recorder'], p.witness, p.reader);

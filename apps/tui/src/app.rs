@@ -4847,7 +4847,7 @@ impl App {
                 Action::Render
             }
             SlashKind::Status => {
-                let line = self.chat_status_line();
+                let line = self.chat_status_report();
                 self.chat_toast("info", line);
                 Action::Render
             }
@@ -6980,8 +6980,6 @@ impl App {
             .label()
     }
 
-    /// The model that last answered, else the one picked for the next turn,
-    /// else the engine's own name (its configured default model).
     /// `pui --model` / `--account` (P-026, D-023): what a new conversation
     /// starts on, read exactly as the model and account pickers read it.
     pub fn apply_chat_launch_choice(&mut self, model: Option<&str>, account: Option<&str>) {
@@ -6996,7 +6994,7 @@ impl App {
     /// `/status` (P-026, D-023 G-14): the model, account and engine this
     /// conversation RUNS on. A bound session reports its own descriptor, not
     /// the launch picks it no longer reads.
-    pub fn chat_status_line(&self) -> String {
+    pub fn chat_status_report(&self) -> String {
         let session = self.su_session.as_ref();
         let backend = session
             .map(|s| s.backend())
@@ -7027,6 +7025,8 @@ impl App {
         )
     }
 
+    /// The model that last answered, else the one picked for the next turn,
+    /// else the engine's own name (its configured default model).
     fn chat_model_label(&self) -> String {
         let known = |model: &str| {
             let model = model.trim();
@@ -18465,7 +18465,7 @@ mod tests {
         assert_eq!(fresh.chat_account.as_deref(), Some("auto"));
         fresh.apply_chat_launch_choice(None, Some("  "));
         assert_eq!(fresh.chat_account.as_deref(), Some("auto"), "blank keeps the choice");
-        let status = fresh.chat_status_line();
+        let status = fresh.chat_status_report();
         assert!(status.starts_with("Model opus:high · account auto · engine "), "{status}");
         assert!(status.ends_with("conversation new"), "{status}");
 

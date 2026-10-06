@@ -225,6 +225,9 @@ export async function registerAwait(input: {
   expectedGeneration?: number | null;
   /** Lifecycle owner for auto/suggested-armed rows. Manual awaits omit it. */
   boundTo?: LifecycleBinding | null;
+  /** Lifecycle auto-arm reuses a pending explicit one-shot wake for this key,
+   *  preserving its identity and complete control state under the key lock. */
+  preserveExplicitWait?: boolean;
   /** Retire this owner's pending rows atomically with the replacement insert. */
   supersedePending?: {
     /** Retire matching rows across every event key for this subscriber. Callers
@@ -333,11 +336,40 @@ export async function registerAwait(input: {
     !isPattern(input.eventKey) &&
     input.payloadFilter == null &&
     !input.note?.startsWith(FLEET_BENCH_NOTE_PREFIX);
-  const retireExactPending = async (tx: any): Promise<number> => {
-    if (!exactOneShot) return 0;
+  if (input.preserveExplicitWait &&
+      (!input.boundTo || !exactOneShot || supersedePending || (input.policy ?? 'wake') !== 'wake')) {
+    throw new Error('preserveExplicitWait requires an exact one-shot lifecycle wake without explicit supersession');
+  }
+  const reconcileExactPending = async (tx: any): Promise<AwaitRow | null> => {
+    if (!exactOneShot) return null;
     const lockKey = `event-await:${ws}:${input.subscriberId}:${input.eventKey}`;
     await tx`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`;
-    const retired = await tx`
+    if (input.preserveExplicitWait) {
+      // The snapshot in interest-auto-arm is advisory. Ordinary explicit
+      // registrations share this lock, so a late bounded wait cannot be retired
+      // and replaced by an unlimited automatic registration. Return the stored
+      // row verbatim: recomputing timeoutSec would extend the original deadline.
+      // Filtered explicit siblings must not gain an unconditional automatic wake.
+      const explicit = await tx`
+        SELECT * FROM harness_shared.event_awaits
+         WHERE workspace_id = ${ws}
+           AND subscriber_id = ${input.subscriberId}
+           AND event_key = ${input.eventKey}
+           AND policy = 'wake'
+           AND once = true
+           AND root_id IS NULL
+           AND bound_to IS NULL
+           AND (note IS NULL OR note NOT LIKE ${FLEET_BENCH_NOTE_PREFIX + '%'})
+           AND fired_at IS NULL
+           AND cancelled_at IS NULL
+           AND superseded_at IS NULL
+         ORDER BY expires_ts ASC NULLS LAST, id DESC
+         LIMIT 1
+         FOR UPDATE
+      `;
+      if (explicit[0]) return mapAwait(explicit[0]);
+    }
+    await tx`
       UPDATE harness_shared.event_awaits
          SET cancelled_at = now(), cancel_reason = ${AWAIT_SUPERSEDED_BY_REGISTRATION}
        WHERE workspace_id = ${ws}
@@ -353,7 +385,7 @@ export async function registerAwait(input: {
          AND superseded_at IS NULL
       RETURNING id
     `;
-    return retired.length;
+    return null;
   };
   if (supersedePending) {
     return boundedOrgTxn(async (tx) => {
@@ -400,14 +432,14 @@ export async function registerAwait(input: {
   if (input.expectedGeneration != null) {
     return boundedOrgTxn(async (tx) => {
       await assertGenerationPin(tx);
-      await retireExactPending(tx);
-      return insertAwait(tx);
+      const explicit = await reconcileExactPending(tx);
+      return explicit ?? insertAwait(tx);
     }, AWAIT_PRE_REGISTRATION_TXN_OPTIONS);
   }
   if (exactOneShot) {
     return boundedOrgTxn(async (tx) => {
-      await retireExactPending(tx);
-      return insertAwait(tx);
+      const explicit = await reconcileExactPending(tx);
+      return explicit ?? insertAwait(tx);
     }, AWAIT_PRE_REGISTRATION_TXN_OPTIONS);
   }
   // Keep the legacy insert byte-for-byte free of `bound_to` when no binding was
