@@ -1927,6 +1927,37 @@ describe('template_data persistence boundary — the set-template-data door', ()
     return { ...seeded, workspaceId, subject };
   }
 
+  it('resolves a legacy current revision after an in-place subject pin advance, still failing closed on grading drift (WI-10006667)', async () => {
+    const seeded = await seedBarContract('legacy-subject-pin-advance');
+    const current = await rubrics.getRubric(seeded.rubricSlug);
+    if (!current?.revision) throw new Error(`seeded rubric '${seeded.rubricSlug}' did not resolve`);
+    expect((await rubrics.getRubric(seeded.rubricSlug, current.revision))?.criteriaHash).toBe(current.criteriaHash);
+    // Make the rubric's revision history legacy (no explicit rubricRevision stamp), so
+    // only the current-version proof branch of getRubricAtRevision can resolve it.
+    await db.adminSql`
+      UPDATE harness_shared.plan_revisions
+         SET content_snapshot = regexp_replace(content_snapshot, '\n  "rubricRevision": [0-9]+,', '', 'g')
+       WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${seeded.rubricSlug}`;
+    expect((await rubrics.getRubric(seeded.rubricSlug, current.revision))?.criteriaHash).toBe(current.criteriaHash);
+    // The production writer (acceptance-bar-amendment.ts, advanceAcceptanceBarSubjectRevision)
+    // advances ONLY this pin, in place, at the same rubric version and without a snapshot.
+    const advancedPin = Number(current.barContract?.subjectPlanRevision ?? 1) + 7;
+    await db.adminSql`
+      UPDATE harness_shared.harness_plans
+         SET template_data = jsonb_set(template_data, '{barContract,subjectPlanRevision}', to_jsonb(${advancedPin}::integer))
+       WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${seeded.rubricSlug}`;
+    const pinned = await rubrics.getRubric(seeded.rubricSlug, current.revision);
+    expect(pinned?.revision).toBe(current.revision);
+    expect(pinned?.criteriaHash).toBe(current.criteriaHash);
+    expect(pinned?.barContract?.subjectPlanRevision).toBe(advancedPin);
+    // An unrecorded grading change alongside the pin advance must still fail closed.
+    await db.adminSql`
+      UPDATE harness_shared.harness_plans
+         SET template_data = jsonb_set(template_data, '{criteria,0,method}', '"Unrecorded new instructions"')
+       WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${seeded.rubricSlug}`;
+    expect(await rubrics.getRubric(seeded.rubricSlug, current.revision)).toBeNull();
+  });
+
   it('rolls back both BAR plan rows and the first revision when the subject revision insert fails', async () => {
     const seeded = await seedBarContract('strict-bar-revision-failure-subject', { authorMethods: true });
     const rubric = await rubrics.getRubric(seeded.rubricSlug);

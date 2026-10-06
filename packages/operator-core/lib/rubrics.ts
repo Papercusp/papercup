@@ -754,6 +754,27 @@ function parseRubricRevisionSnapshot(snapshot: string): ParsedRubricRevisionSnap
   return null;
 }
 
+/**
+ * WI-10006667: `acceptance-bar-amendment` advances `barContract.subjectPlanRevision`
+ * IN PLACE at the same rubric version — by design, it changes no BAR meaning and
+ * appends no revision snapshot. A legacy current-version proof (snapshot structured
+ * data == row structured data) must therefore ignore exactly that integer pin. Every
+ * other byte of the structured grading data, including the pin's presence, must
+ * still match, so any unrecorded grading change keeps failing closed.
+ */
+export function legacyRubricTemplateDataMatches(snapshotData: unknown, rowData: unknown): boolean {
+  if (isDeepStrictEqual(snapshotData, rowData)) return true;
+  const withoutSubjectPin = (data: unknown): unknown => {
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return data;
+    const contract = (data as { barContract?: unknown }).barContract;
+    if (!contract || typeof contract !== 'object' || Array.isArray(contract)) return data;
+    const pin = (contract as { subjectPlanRevision?: unknown }).subjectPlanRevision;
+    if (!Number.isInteger(pin)) return data;
+    return { ...(data as Record<string, unknown>), barContract: { ...contract, subjectPlanRevision: 'pin' } };
+  };
+  return isDeepStrictEqual(withoutSubjectPin(snapshotData), withoutSubjectPin(rowData));
+}
+
 /** True when a revision contains no structured rubric snapshot at all. */
 export function isMarkdownOnlyRubricRevisionSnapshot(snapshot: string): boolean {
   return inspectRubricRevisionSnapshot(snapshot).kind === 'markdown-only';
@@ -1326,10 +1347,11 @@ async function getRubricAtRevision(rubricId: string, revision: number): Promise<
       if (revision === Number(row.version) && latest?.parsed &&
           latest.parsed.rubricRevision === undefined &&
           latest.content_hash === row.content_hash &&
-          isDeepStrictEqual(latest.parsed.templateData, row.template_data)) {
+          legacyRubricTemplateDataMatches(latest.parsed.templateData, row.template_data)) {
         // For the exact CURRENT legacy version, independently equal immutable
         // body + raw structured data prove the contract without rewriting it.
-        parsedSnapshot = latest.parsed;
+        // The row is authoritative for the in-place-advanced subject pin.
+        parsedSnapshot = { ...latest.parsed, templateData: row.template_data };
       }
     }
     if (!parsedSnapshot) return null;
