@@ -1983,6 +1983,41 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // ── potIntegration.createQuestion — P-018 (pot-review-integration-mode-2026-10-05) ──
+  // The new-pot form's "Where should the agents' work go?" question for a pasted
+  // GitHub URL, with the recommendation (and lock) derived from the repo's
+  // checkable facts and the workspace default (PotControlPolicy.newPotIntegrationMode).
+  // One row. NOT table-backed (a GitHub read): the create step re-probes and is
+  // authoritative, so a stale row can only mislabel a badge, never bypass a lock.
+  // An unparseable URL or any failure degrades to [] — the form keeps its
+  // fact-free question.
+  'potIntegration.createQuestion': {
+    argsSchema: z.object({ githubUrl: z.string().min(1).max(500) }),
+    resolve: async (args) => {
+      const { githubUrl } = args as { githubUrl: string };
+      try {
+        const { parseGithubUrl } = await import('../harness/clone-github');
+        const parsed = parseGithubUrl(githubUrl);
+        if (!parsed) return [];
+        const [{ fetchRepoIntegrationFacts }, { recommendIntegrationMode }, { integrationModeQuestion }, policy] =
+          await Promise.all([
+            import('../harness/github-repo-permissions'),
+            import('../harness/git-sync/integration-mode-recommendation'),
+            import('../harness/git-sync/integration-mode-question'),
+            import('../pot-control-policy'),
+          ]);
+        const repoLabel = `${parsed.owner}/${parsed.repo}`;
+        const defaultMode = policy.resolveNewPotIntegrationModeDefault(policy.placementOverride());
+        const facts = await fetchRepoIntegrationFacts(parsed.owner, parsed.repo);
+        const recommendation = recommendIntegrationMode(facts, { repoLabel, policyDefault: defaultMode });
+        return [{ githubUrl, ...integrationModeQuestion({ repoLabel, recommendation, defaultMode }) }];
+      } catch (err) {
+        console.warn('[potIntegration.createQuestion] read failed:', err instanceof Error ? err.message : err);
+        return [];
+      }
+    },
+  },
+
   'harnessTextArtifact.byHarness': {
     // EI-1763: workspaceId scopes the read to the caller's tenant. harness_slug is
     // per-workspace-unique (NOT global), and getOrgPg bypasses RLS, so a slug-only
