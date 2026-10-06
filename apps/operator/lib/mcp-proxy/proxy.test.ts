@@ -14,6 +14,10 @@ import {
   prepareForward,
   forwardingResultForUpstreamFailure,
   MCP_PROXY_FORWARDING_RESULTS,
+  upstreamDeathSseErrorEvents,
+  endsOnSseEventBoundary,
+  MAX_UPSTREAM_DEATH_ERROR_EVENTS,
+  UPSTREAM_DIED_MID_STREAM_RPC_CODE,
   postConnectRetryable,
   READ_ONLY_TOOLS,
   MAX_POST_CONNECT_RETRIES,
@@ -3575,6 +3579,238 @@ describe("WI-35737: a departed client stops the retry loop", () => {
     // that the loop STOPS, not that it stops with sub-millisecond precision.
     expect(hits).toBeLessThanOrEqual(hitsAtHangup + 1);
   }, 20_000);
+});
+
+/**
+ * WI-10006908 — UPSTREAM-DISCONNECT, the mirror of WI-35737. :3070 flushes SSE headers the
+ * instant a tools/call opens, so a worker that dies mid-call (memory-watchdog recycle,
+ * event-loop-sentinel SIGKILL, deploy restart) used to leave the client response open: `pipe`
+ * never ends the destination when the source aborts. Measured before the fix with the real
+ * createMcpProxy: complete → END in 46ms; die-after-sse-headers → STILL OPEN after 6001ms; live,
+ * a tools/call hung to Claude's 300s idle timeout.
+ *
+ * The CONTROL keeps the subject honest: a normal completion must still deliver the upstream's
+ * own result and record no upstream death, so "the client got an error event" cannot pass by
+ * the proxy erroring every SSE response.
+ */
+describe("WI-10006908: an upstream that dies after SSE headers ends the client response", () => {
+  type UpstreamMode = "complete" | "die-at-boundary" | "die-mid-event";
+  const TOOL_CALL = JSON.stringify({
+    jsonrpc: "2.0",
+    id: 7,
+    method: "tools/call",
+    params: { name: "testing:run", arguments: {} },
+  });
+
+  function sseUpstream(mode: UpstreamMode): http.Server {
+    return track(
+      http.createServer((req, res) => {
+        req.resume();
+        req.on("end", () => {
+          res.writeHead(200, { "content-type": "text/event-stream" });
+          res.write(":stream-open\n\n"); // what primeSseResponse() flushes at call open
+          if (mode === "complete") {
+            res.end(
+              'event: message\ndata: {"jsonrpc":"2.0","id":7,"result":{"content":[]}}\n\n',
+            );
+            return;
+          }
+          if (mode === "die-mid-event")
+            res.write('event: message\ndata: {"jsonrpc":"2.0","id":7,"res');
+          // The worker is SIGKILLed mid-tool: the socket just goes away.
+          setTimeout(() => req.socket.destroy(), 150);
+        });
+      }),
+    );
+  }
+
+  /** Resolves with how the client response ENDED; never with "still open" unless the budget lapses. */
+  function callTool(
+    p: number,
+    budgetMs: number,
+  ): Promise<{ outcome: "end" | "aborted" | "error" | "still-open"; body: string; ms: number }> {
+    return new Promise((resolve) => {
+      const t0 = Date.now();
+      let body = "";
+      let settled = false;
+      const settle = (outcome: "end" | "aborted" | "error" | "still-open") => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve({ outcome, body, ms: Date.now() - t0 });
+      };
+      const timer = setTimeout(() => {
+        settle("still-open");
+        r.destroy();
+      }, budgetMs);
+      const r = http.request(
+        {
+          host: "127.0.0.1",
+          port: p,
+          method: "POST",
+          path: "/api/mcp",
+          headers: {
+            "content-type": "application/json",
+            accept: "application/json, text/event-stream",
+          },
+        },
+        (res) => {
+          res.on("data", (c) => (body += c));
+          res.on("end", () => settle("end"));
+          res.on("aborted", () => settle("aborted"));
+          res.on("error", () => settle("error"));
+        },
+      );
+      r.on("error", () => settle("error"));
+      r.end(TOOL_CALL);
+    });
+  }
+
+  async function withLedger<T>(
+    fn: (readRecords: () => Array<Record<string, unknown>>) => Promise<T>,
+  ): Promise<T> {
+    const os = await import("node:os");
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const logFile = path.join(
+      os.tmpdir(),
+      `mcp-proxy-upstream-death-${Date.now()}-${Math.random().toString(36).slice(2)}.jsonl`,
+    );
+    const prev = process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG;
+    process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG = logFile;
+    try {
+      return await fn(() =>
+        fs.existsSync(logFile)
+          ? fs
+              .readFileSync(logFile, "utf8")
+              .trim()
+              .split("\n")
+              .filter(Boolean)
+              .map((l) => JSON.parse(l) as Record<string, unknown>)
+          : [],
+      );
+    } finally {
+      fs.rmSync(logFile, { force: true });
+      if (prev === undefined) delete process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG;
+      else process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG = prev;
+    }
+  }
+
+  async function proxyFor(upstream: http.Server): Promise<http.Server> {
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: "127.0.0.1",
+        targetPort: port(upstream),
+        retryWindowMs: 2_000,
+        log: () => {},
+      }),
+    );
+    await listen(proxy);
+    return proxy;
+  }
+
+  it("CONTROL: a completed SSE response is delivered unchanged and records no upstream death", async () => {
+    await withLedger(async (readRecords) => {
+      const proxy = await proxyFor(sseUpstream("complete"));
+      const r = await callTool(port(proxy), 3_000);
+      expect(r.outcome).toBe("end");
+      expect(r.body).toContain('"result":{"content":[]}');
+      expect(r.body).not.toContain(String(UPSTREAM_DIED_MID_STREAM_RPC_CODE));
+      expect(readRecords().some((x) => x.kind === "upstream_died_mid_stream")).toBe(false);
+    });
+  }, 10_000);
+
+  it("SUBJECT: death at an SSE event boundary answers the pending id with a JSON-RPC error and ends promptly", async () => {
+    await withLedger(async (readRecords) => {
+      const proxy = await proxyFor(sseUpstream("die-at-boundary"));
+      // Before the fix this stayed open for the whole budget.
+      const r = await callTool(port(proxy), 1_500);
+      expect(r.outcome).toBe("end");
+      const events = r.body
+        .split("\n")
+        .filter((l) => l.startsWith("data: "))
+        .map((l) => JSON.parse(l.slice("data: ".length)));
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({
+        jsonrpc: "2.0",
+        id: 7,
+        error: {
+          code: UPSTREAM_DIED_MID_STREAM_RPC_CODE,
+          data: {
+            kind: "upstream_died_mid_stream",
+            forwardingResult: MCP_PROXY_FORWARDING_RESULTS.outcomeUnknown,
+          },
+        },
+      });
+      const rec = readRecords().find((x) => x.kind === "upstream_died_mid_stream");
+      expect(rec).toMatchObject({
+        status: 200,
+        clientResolution: "jsonrpc_error_events",
+        forwardingResult: MCP_PROXY_FORWARDING_RESULTS.outcomeUnknown,
+      });
+      expect(rec?.traceId).toBe(events[0].error.data.traceId);
+    });
+  }, 10_000);
+
+  it("SUBJECT: death mid-event cannot append a parseable event, so the client response is destroyed promptly", async () => {
+    await withLedger(async (readRecords) => {
+      const proxy = await proxyFor(sseUpstream("die-mid-event"));
+      const r = await callTool(port(proxy), 1_500);
+      expect(r.outcome).not.toBe("still-open");
+      expect(r.outcome).not.toBe("end"); // a clean end would read as a complete stream
+      expect(r.body).not.toContain(String(UPSTREAM_DIED_MID_STREAM_RPC_CODE));
+      expect(readRecords().find((x) => x.kind === "upstream_died_mid_stream")).toMatchObject({
+        clientResolution: "destroyed",
+      });
+    });
+  }, 10_000);
+
+  it("error events answer request ids only — notifications, responses and non-JSON yield nothing", () => {
+    const batch = Buffer.from(
+      JSON.stringify([
+        { jsonrpc: "2.0", id: "a", method: "tools/call" },
+        { jsonrpc: "2.0", method: "notifications/initialized" }, // notification: no id
+        { jsonrpc: "2.0", id: 3, result: {} }, // a response: no method
+        { jsonrpc: "2.0", id: 4, method: "ping" },
+      ]),
+    );
+    const sse = upstreamDeathSseErrorEvents(batch, "trace-1");
+    const ids = (sse ?? "")
+      .split("\n")
+      .filter((l) => l.startsWith("data: "))
+      .map((l) => JSON.parse(l.slice(6)).id);
+    expect(ids).toEqual(["a", 4]);
+    expect(
+      upstreamDeathSseErrorEvents(
+        Buffer.from('{"jsonrpc":"2.0","method":"notifications/initialized"}'),
+        "t",
+      ),
+    ).toBeNull();
+    expect(upstreamDeathSseErrorEvents(Buffer.from("not json"), "t")).toBeNull();
+    const huge = Buffer.from(
+      JSON.stringify(
+        Array.from({ length: MAX_UPSTREAM_DEATH_ERROR_EVENTS + 10 }, (_, i) => ({
+          jsonrpc: "2.0",
+          id: i,
+          method: "ping",
+        })),
+      ),
+    );
+    expect(
+      (upstreamDeathSseErrorEvents(huge, "t") ?? "").split("event: message").length - 1,
+    ).toBe(MAX_UPSTREAM_DEATH_ERROR_EVENTS);
+  });
+
+  it("event-boundary detection: only a completed event (or nothing) is a safe append point", () => {
+    expect(endsOnSseEventBoundary("")).toBe(true);
+    expect(endsOnSseEventBoundary("n\n\n")).toBe(true);
+    expect(endsOnSseEventBoundary("\r\n\r\n")).toBe(true);
+    expect(endsOnSseEventBoundary("x\r\r")).toBe(true);
+    expect(endsOnSseEventBoundary('"res')).toBe(false);
+    expect(endsOnSseEventBoundary("}\n")).toBe(false);
+  });
 });
 
 /**

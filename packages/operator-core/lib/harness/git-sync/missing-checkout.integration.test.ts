@@ -131,6 +131,13 @@ describe('recordMissingCheckoutSkip', () => {
     expect((await row()).metadata.pause).toBeUndefined();
   });
 
+  it('never retires when metadata is not a JSON object (a NULL since is not 1970)', async () => {
+    await sql.unsafe(`UPDATE harness_shared.routines SET metadata = '[]'::jsonb WHERE install_slug = $1`, [SLUG]);
+    const res = await recordMissingCheckoutSkip(sql, { slug: SLUG, workspaceId: WS, path: '/gone/a', nowMs: T0 });
+    expect(res).toBeNull();
+    expect((await row()).active).toBe(true);
+  });
+
   it('returns null for an install with no routine row', async () => {
     expect(await recordMissingCheckoutSkip(sql, { slug: 'no-such', workspaceId: WS, path: null, nowMs: T0 })).toBeNull();
   });
@@ -140,13 +147,16 @@ describe('clearing via the outcome write (missing_checkout: null)', () => {
   it('a checkout that came back and vanished again starts a fresh clock, not the stale one', async () => {
     await recordMissingCheckoutSkip(sql, { slug: SLUG, workspaceId: WS, path: '/gone/a', nowMs: T0 });
     // git-sync-action's recordOutcome: the same top-level jsonb merge, nulling the marker.
+    // ::text::jsonb — plain postgres.js would JSON-encode a string bound straight to ::jsonb.
     await sql.unsafe(
       `UPDATE harness_shared.routines
-          SET metadata = COALESCE(metadata, '{}'::jsonb) || $3::jsonb
+          SET metadata = COALESCE(metadata, '{}'::jsonb) || $3::text::jsonb
         WHERE install_slug = $1 AND workspace_id = $2`,
       [SLUG, WS, JSON.stringify({ last_status: 'synced', missing_checkout: null })],
     );
-    expect(readMissingCheckout((await row()).metadata)).toBeNull();
+    const cleared = (await row()).metadata;
+    expect(cleared).toMatchObject({ last_status: 'synced', missing_checkout: null });
+    expect(readMissingCheckout(cleared)).toBeNull();
 
     // Vanishes again long after the old first-seen time: retirement must not be immediate.
     const again = T0 + 3 * GIT_SYNC_MISSING_CHECKOUT_RETIRE_AFTER_MS;

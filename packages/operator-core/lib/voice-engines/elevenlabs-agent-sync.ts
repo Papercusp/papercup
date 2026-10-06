@@ -5,9 +5,10 @@
  * is the FAST FRONT of a two-tier voice design: it answers small talk itself
  * and hands anything substantive to Papercup through the `ask_papercup` client
  * tool. Papercup is the brain (operator-converse, ~16 s to first word measured
- * in D-004), so the tool returns a short acknowledgement immediately and the
- * full answer is spoken separately on the same audio channel (D-005, the
- * pattern operator-voice-session.ts already uses).
+ * in D-004), so ElevenLabs always speaks a holding line before the tool runs
+ * (`pre_tool_speech: "force"`, P-003) and the tool returns Papercup's answer to
+ * say — or, past the client deadline, a short spoken failure line
+ * (@papercusp/chat-protocol voice-brain-tool).
  *
  * `syncElevenLabsAgent` converges ElevenLabs on the definition below:
  *   1. upsert every client tool by NAME (PATCH when it exists, POST when not);
@@ -23,6 +24,8 @@
  * two-tier agent; request shapes are taken from that script.
  */
 
+import { ASK_PAPERCUP_TOOL_NAME, VOICE_BRAIN_TIMEOUT_MS } from '@papercusp/chat-protocol';
+
 const EL_API = 'https://api.elevenlabs.io/v1/convai';
 
 export interface ElevenLabsClientTool {
@@ -36,6 +39,8 @@ export interface ElevenLabsClientTool {
   };
   expects_response: boolean;
   response_timeout_secs: number;
+  /** Whether the agent speaks a filler line before calling the tool (ElevenLabs default 'auto'). */
+  pre_tool_speech?: 'auto' | 'force' | 'off';
 }
 
 export interface ElevenLabsAgentDefinition {
@@ -58,10 +63,10 @@ export interface ElevenLabsAgentDefinition {
 
 export const ASK_PAPERCUP_TOOL: ElevenLabsClientTool = {
   type: 'client',
-  name: 'ask_papercup',
+  name: ASK_PAPERCUP_TOOL_NAME,
   description:
     'Ask Papercup, the user’s assistant, anything that needs knowledge of their work, their workspace, '
-    + 'or an action. Returns a short line to say right away; Papercup’s full answer is spoken to the user separately.',
+    + 'or an action. Returns Papercup’s answer (or a short line explaining it could not answer): say it as written.',
   parameters: {
     type: 'object',
     properties: {
@@ -73,9 +78,13 @@ export const ASK_PAPERCUP_TOOL: ElevenLabsClientTool = {
     required: ['question'],
   },
   expects_response: true,
-  // The client answers within ~2.5 s with an acknowledgement (D-005); this is
-  // only the ceiling for a stalled client.
-  response_timeout_secs: 10,
+  // The client gives up on Papercup at VOICE_BRAIN_TIMEOUT_MS and returns a
+  // spoken failure line, so ElevenLabs must wait longer than that — the user
+  // then hears our line rather than ElevenLabs' generic tool error.
+  response_timeout_secs: Math.ceil(VOICE_BRAIN_TIMEOUT_MS / 1000) + 10,
+  // Always say a short holding line ("let me check") before the tool runs:
+  // the brain takes ~16 s to its first word (D-004).
+  pre_tool_speech: 'force',
 };
 
 export const PAPERCUP_FRONT_PROMPT = [
@@ -84,8 +93,8 @@ export const PAPERCUP_FRONT_PROMPT = [
   'Handle greetings, small talk and simple clarifying questions yourself.',
   'For anything that needs facts about the user’s work, files, messages, plans, workspace or Papercup itself, '
     + 'or any action, call ask_papercup with the user’s request. Never make up those answers.',
-  'ask_papercup returns a short line: say it as written. If it returns nothing, say nothing.',
-  'Papercup’s full answer is played to the user separately. Do not repeat it, summarize it or talk over it.',
+  'Before calling ask_papercup, say one short holding line such as “Let me check.”',
+  'ask_papercup returns Papercup’s answer: say it as written, without adding to it or summarizing it.',
   'If the user speaks while an answer is pending, listen; call ask_papercup again if they changed the request.',
 ].join('\n');
 

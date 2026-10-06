@@ -38,6 +38,58 @@ export class WorkspaceHostControllerFenceError extends Error {
 }
 
 /**
+ * WI-10006863: a first operation (provision/restore) named a host id that already has an
+ * operation history: it ran, or it is being destroyed or has been retired. One host id is one
+ * replaceable Host, so a new host needs a new id. Raised BEFORE the host row is touched. Before
+ * this, the provision upsert rewrote a destroyed row back to running at revision 1 and only then
+ * did the operation fence refuse it, which left a retired host claiming to be provisioning.
+ */
+export class WorkspaceHostIdSpentError extends Error {
+  constructor(
+    readonly hostId: string,
+    readonly desiredRevision: number,
+    readonly priorOperationId: string | null,
+  ) {
+    super(
+      `workspace host id '${hostId}' is already used (revision ${desiredRevision}${
+        priorOperationId ? `, operation ${priorOperationId}` : ''
+      }); a new host needs a new id`,
+    );
+    this.name = 'WorkspaceHostIdSpentError';
+  }
+}
+
+/**
+ * The ONE definition of "a prior operation that brought this host id into use", shared by the
+ * operation fence (beginFencedWorkspaceHostOperation) and the first-operation guard on the host
+ * upsert, so the two can never disagree about whether an id is spent. `excludeOperationId` is the
+ * operation asking: its own row is a replay of itself, never a prior.
+ */
+function priorCountingOperation(
+  tx: Sql,
+  workspaceId: string,
+  hostId: string,
+  excludeOperationId: string | null,
+) {
+  return tx`
+    SELECT prior.id FROM harness_shared.workspace_host_operations prior
+    WHERE prior.workspace_id = ${workspaceId} AND prior.host_id = ${hostId}
+      AND prior.id IS DISTINCT FROM ${excludeOperationId}::text
+      -- A first operation that FAILED, with no recovery in flight, never brought the
+      -- host into existence, so a retry is still the host's first operation. Counting
+      -- it fenced every retry of a failed first provision forever (WI-10005307).
+      AND NOT (
+        prior.action IN ('provision', 'restore')
+        AND prior.status = 'failed'
+        AND prior.recovery_state = 'none'
+      )
+      -- A refused operation never ran, so it is never a prior operation (WI-10005312);
+      -- counting one refused start would fence every later provision retry.
+      AND prior.error->>'code' IS DISTINCT FROM ${WORKSPACE_HOST_FENCE_REFUSED_CODE}
+  `;
+}
+
+/**
  * WI-10005312: `error.code` of the terminal row recorded when the fence refuses an operation
  * before it began. Without it, a request already answered 202 had no row at all, so the
  * timeline it was pointed at could never show the failure. A refused row never ran on the
@@ -377,6 +429,14 @@ export interface WorkspaceHostInput {
    * an observation refresh must never erase provisioning intent.
    */
   desiredSpec?: WorkspaceHostDesiredSpec;
+  /**
+   * WI-10006863: set by a FIRST operation (provision) writing the row it is about to govern. The
+   * upsert then refuses with {@link WorkspaceHostIdSpentError}, without touching the row, exactly
+   * when the operation fence would refuse this operation: the stored revision is newer, or it is
+   * equal and a counting prior operation exists. `operationId` is the asking operation, so a
+   * replay of it is never its own prior.
+   */
+  firstOperation?: { operationId: string };
 }
 
 export async function upsertWorkspaceHost(input: WorkspaceHostInput): Promise<void> {
@@ -400,6 +460,24 @@ export async function upsertWorkspaceHost(input: WorkspaceHostInput): Promise<vo
   });
   const desiredSpec = input.desiredSpec ? JSON.stringify(input.desiredSpec) : null;
   await withWorkspace(input.workspaceId, async (tx) => {
+    if (input.firstOperation) {
+      // FOR UPDATE: a concurrent writer cannot spend the id between this check and the upsert.
+      const existing = await tx<Array<{ desired_revision: number; prior_id: string | null }>>`
+        SELECT host.desired_revision,
+               (${priorCountingOperation(tx, input.workspaceId, input.id, input.firstOperation.operationId)} LIMIT 1) AS prior_id
+        FROM harness_shared.workspace_hosts AS host
+        WHERE host.workspace_id = ${input.workspaceId} AND host.id = ${input.id}
+        FOR UPDATE
+      `;
+      const row = existing[0];
+      if (
+        row &&
+        (desiredRevision < Number(row.desired_revision) ||
+          (desiredRevision === Number(row.desired_revision) && row.prior_id !== null))
+      ) {
+        throw new WorkspaceHostIdSpentError(input.id, Number(row.desired_revision), row.prior_id);
+      }
+    }
     const rows = await tx<Array<{ id: string }>>`
       INSERT INTO harness_shared.workspace_hosts (
         workspace_id, id, name, connection_id, target, scope_label, region, size,
@@ -896,21 +974,7 @@ async function beginFencedWorkspaceHostOperation(input: WorkspaceHostOperationIn
               -- opens its operation there — requiring "strictly newer" fenced that out forever.
               ${input.action} IN ('provision', 'restore')
               AND ${desiredRevision}::bigint = desired_revision
-              AND NOT EXISTS (
-                SELECT 1 FROM harness_shared.workspace_host_operations prior
-                WHERE prior.workspace_id = ${input.workspaceId} AND prior.host_id = ${input.hostId}
-                  -- A first operation that FAILED, with no recovery in flight, never brought the
-                  -- host into existence, so a retry is still the host's first operation. Counting
-                  -- it fenced every retry of a failed first provision forever (WI-10005307).
-                  AND NOT (
-                    prior.action IN ('provision', 'restore')
-                    AND prior.status = 'failed'
-                    AND prior.recovery_state = 'none'
-                  )
-                  -- A refused operation never ran, so it is never a prior operation (WI-10005312);
-                  -- counting one refused start would fence every later provision retry.
-                  AND prior.error->>'code' IS DISTINCT FROM ${WORKSPACE_HOST_FENCE_REFUSED_CODE}
-              )
+              AND NOT EXISTS (${priorCountingOperation(tx, input.workspaceId, input.hostId, input.operationId)})
             )
           )
           AND (

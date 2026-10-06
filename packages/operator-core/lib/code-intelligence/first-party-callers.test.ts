@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import ts from 'typescript';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { firstPartyCallers, findCandidateFiles, resolveRipgrep } from './first-party-callers';
+import { firstPartyCallers, findCandidateFiles, resolveRipgrep, resolveSearchPaths } from './first-party-callers';
 import {
   incomingCallSites,
   openScopedTsTree,
@@ -105,6 +105,48 @@ describe('firstPartyCallers', () => {
     const noRg = firstPartyCallers({ ts, root, name: 'target', rgPath: join(root, 'no-such-rg') });
     expect(noRg.error).toMatch(/^ripgrep could not run/);
     expect(noRg.sites).toEqual([]);
+  });
+});
+
+describe('firstPartyCallers paths scope (WI-10006543)', () => {
+  it('answers only from the named roots and says so', () => {
+    const scripts = firstPartyCallers({ ts, root, name: 'target', paths: ['scripts'] });
+    expect(scripts.error).toBeNull();
+    expect(lines(scripts.sites)).toEqual(['scripts/hook.mjs:2']);
+    expect(scripts.attribution?.candidateFiles).toBe(1);
+    expect(scripts.coverage?.limitations).toContain('Searched only under: scripts.');
+  });
+
+  it('still lists a call whose declaration lies outside the scope', () => {
+    const a = firstPartyCallers({ ts, root, name: 'target', paths: ['./src/use.ts'] });
+    expect(a.error).toBeNull();
+    expect(lines(a.sites)).toEqual(['src/use.ts:4']);
+  });
+
+  it('refuses a root it cannot search instead of answering empty', () => {
+    for (const [paths, why] of [
+      [['../elsewhere'], /outside the repository/],
+      [['/etc'], /relative to the repository root/],
+      [['no-such-dir'], /does not exist/],
+    ] as const) {
+      const a = firstPartyCallers({ ts, root, name: 'target', paths: [...paths] });
+      expect(a.error).toMatch(why);
+      expect(a.freshness.health).toBe('unhealthy');
+    }
+  });
+});
+
+describe('resolveSearchPaths', () => {
+  it('defaults to the whole repository and normalises, dedupes and scopes the rest', () => {
+    expect(resolveSearchPaths(root, undefined)).toEqual({ ok: true, paths: ['.'], scoped: false });
+    expect(resolveSearchPaths(root, [])).toEqual({ ok: true, paths: ['.'], scoped: false });
+    expect(resolveSearchPaths(root, ['./src/', 'src', 'scripts/hook.mjs'])).toEqual({
+      ok: true,
+      paths: ['src', 'scripts/hook.mjs'],
+      scoped: true,
+    });
+    expect(resolveSearchPaths(root, ['.', 'src'])).toEqual({ ok: true, paths: ['.', 'src'], scoped: false });
+    expect(resolveSearchPaths(root, Array.from({ length: 51 }, () => 'src')).ok).toBe(false);
   });
 });
 

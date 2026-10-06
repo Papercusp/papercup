@@ -291,7 +291,9 @@ export function createChatAdmissionSink(
       const refused = outcome.admitted.filter(({ result }) => !result.ok);
       if (refused.length > 0) {
         const codes = refused.map(({ ruleId, result }) => `${ruleId}=${'code' in result ? result.code : 'refused'}`);
-        throw new Error(`chat_admission_refused:${codes.join(',')}`);
+        // The channel leads the codes, as in the sink's other errors: the delivery's payload is
+        // pruned later, and this error is what the Slack-bugs view groups refusals by (D-011).
+        throw new Error(`chat_admission_refused:${outcome.subject?.channelId ?? 'unknown'}:${codes.join(',')}`);
       }
       return outcome;
     },

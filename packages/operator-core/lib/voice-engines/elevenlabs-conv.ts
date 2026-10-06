@@ -23,6 +23,7 @@
  */
 
 import { Conversation, type VoiceConversation } from '@elevenlabs/client';
+import { ASK_PAPERCUP_TOOL_NAME, answerVoiceQuestion, voiceQuestionOf } from '@papercusp/chat-protocol';
 import { wsLocalKey } from '../browser-workspace';
 import { runCommand, runQuery, list } from '../commands/registry';
 import type { CommandContext, Definition } from '../commands/types';
@@ -467,7 +468,27 @@ export function buildClientTools(opts: {
   // to call this for every user turn and speak the returned text verbatim.
   tools.ask_operator = async (params: any) => askOperatorViaSse(params);
 
+  // Two-tier voice (plan voice-two-tier-elevenlabs-agent-2026-10-06, P-003):
+  // the ElevenLabs front agent answers small talk itself and calls this for
+  // anything substantive. ElevenLabs speaks the holding line while it runs
+  // (the tool's pre_tool_speech), so this returns only Papercup's answer —
+  // or, past the deadline or on failure, a short line to say instead.
+  tools[ASK_PAPERCUP_TOOL_NAME] = async (params: any) => askPapercupForVoice(params);
+
   return tools;
+}
+
+/**
+ * The `ask_papercup` client tool: Papercup's answer for the same conversation
+ * the text chat uses, under the shared voice deadline. Never throws and never
+ * returns an empty string, so the voice agent always has something to say.
+ */
+export async function askPapercupForVoice(params: unknown): Promise<string> {
+  const result = await answerVoiceQuestion(voiceQuestionOf(params), async (question, signal) =>
+    converseVoiceTurn({ text: question }, signal),
+  );
+  if (result.outcome !== 'answered') console.warn(`[el-conv:${ASK_PAPERCUP_TOOL_NAME}] ${result.outcome}`);
+  return result.say;
 }
 
 /**
@@ -486,6 +507,28 @@ export async function askOperatorViaSse(params: { text?: string; trigger?: strin
   const userText = (params?.text ?? '').toString().trim();
   const trigger = typeof params?.trigger === 'string' ? params.trigger : null;
   // No user text + no explicit trigger = nothing to do.
+  if (!userText && !trigger) return '';
+  try {
+    return (await converseVoiceTurn(params)) || '...';
+  } catch (err) {
+    console.warn('[el-conv:ask_operator]', err);
+    return 'I had trouble just then — say that again?';
+  }
+}
+
+/**
+ * One voice turn through /api/agent-mcp/operator-converse for the current
+ * conversation: returns the spoken `<say>` text (plus any voice-card lines),
+ * or '' when the brain said nothing. THROWS when the brain cannot be reached
+ * or refuses — the callers decide what the user hears. `signal` cancels both
+ * requests, so a voice turn abandoned at its deadline stops the brain call.
+ */
+export async function converseVoiceTurn(
+  params: { text?: string; trigger?: string },
+  signal?: AbortSignal,
+): Promise<string> {
+  const userText = (params?.text ?? '').toString().trim();
+  const trigger = typeof params?.trigger === 'string' ? params.trigger : null;
   if (!userText && !trigger) return '';
   // EL agent forwards { trigger: 'open_canvas' | 'user_says_ready' |
   // 'quiet_wait_resume' } per the shell prompt. After the 2026-05-14
@@ -519,7 +562,8 @@ export async function askOperatorViaSse(params: { text?: string; trigger?: strin
   const HISTORY_LIMIT = 30;
   const messages: Array<{ role: 'user' | 'assistant' | 'system'; content: string }> = [];
   try {
-    const hRes = await fetch(`/api/operator/conversations?limit=${HISTORY_LIMIT}`);
+    const historyUrl = `/api/operator/conversations?limit=${HISTORY_LIMIT}`;
+    const hRes = signal ? await fetch(historyUrl, { signal }) : await fetch(historyUrl);
     if (hRes.ok) {
       const h = await hRes.json() as {
         turns: Array<{ role: 'user' | 'assistant' | 'system'; text: string }>;
@@ -543,10 +587,11 @@ export async function askOperatorViaSse(params: { text?: string; trigger?: strin
       messages.push({ role: 'user', content: userText });
     }
   }
-  try {
+  {
     const res = await fetch('/api/agent-mcp/operator-converse', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
+      ...(signal ? { signal } : {}),
       body: JSON.stringify({
         messages,
         trigger: effectiveTrigger,
@@ -560,7 +605,7 @@ export async function askOperatorViaSse(params: { text?: string; trigger?: strin
     });
     if (!res.ok || !res.body) {
       console.warn('[el-conv:ask_operator] SSE init failed', res.status);
-      return 'I had trouble just then — say that again?';
+      throw new Error(`operator-converse answered HTTP ${res.status}`);
     }
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
@@ -647,10 +692,7 @@ export async function askOperatorViaSse(params: { text?: string; trigger?: strin
         out += (out.length > 0 ? ' ' : '') + cardLines.join(' ');
       }
     }
-    return out || '...';
-  } catch (err) {
-    console.warn('[el-conv:ask_operator]', err);
-    return 'I had trouble just then — say that again?';
+    return out;
   }
 }
 

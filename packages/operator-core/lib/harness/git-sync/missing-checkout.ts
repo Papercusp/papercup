@@ -126,7 +126,10 @@ export async function recordMissingCheckoutSkip(
     [args.slug, args.workspaceId, JSON.stringify(skipPatch), args.path],
   );
   const row = rows[0];
-  if (!row) return null;
+  // A NULL since (metadata that is not a JSON object, so missing_checkout never landed)
+  // must read as "not recorded", never as Number(null) === 0 — a since of 1970 retires
+  // the routine on the spot.
+  if (!row || row.since === null || row.since === undefined) return null;
   const since = Number(row.since);
   if (!Number.isFinite(since)) return null;
   if (row.active !== true || !missingCheckoutRetireDue(since, args.nowMs, graceMs)) {

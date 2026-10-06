@@ -37,6 +37,11 @@ const live = prepareLiveVoiceFixtures();
 assertLiveVoiceWhenRequired(live);
 
 test.use({ permissions: ['microphone'], launchOptions: { args: FAKE_MIC_LAUNCH_ARGS } });
+// Every test pins the WORKSPACE-WIDE voice prefs through withLocalEnginePrefs and
+// restores them in `finally`, so two of these tests on parallel workers overwrite
+// each other's engine pin mid-test (the operator config sets fullyParallel: true).
+// Opt this file out: its tests run in order on one worker (WI-10006911 seeded run).
+test.describe.configure({ mode: 'default' });
 
 const REPLY = 'Papercup heard you. The synthetic voice check is complete.';
 
@@ -406,6 +411,38 @@ async function transcribeInPage(page: Page, audio: Buffer): Promise<{ status: nu
       await page.waitForTimeout(3_000);
       expect(await status(page)).toBe('off');
       expect(await liveMicTracks(page)).toBe(0);
+    });
+  });
+
+  // R-4 navigation/unmount cleanup. Voice is global to the desktop shell, so an
+  // in-app route change must NOT stop capture — but a remount on the new route must
+  // not open a second microphone either, and voice-off must still release every
+  // track afterwards. The route change goes through the SPA router (TanStack Router
+  // follows popstate), never a full reload, which would destroy the document's
+  // tracks itself and prove nothing about the app.
+  test('navigate: moving between screens keeps one microphone, and off still releases it', async ({ page }) => {
+    test.setTimeout(180_000);
+    await withLocalEnginePrefs(page, async () => {
+      await openShell(page);
+      await voice(page, (h) => h.setMode('always-on'));
+      await expect.poll(() => liveMicTracks(page), { timeout: 30_000, message: 'always-on opened the microphone' })
+        .toBeGreaterThan(0);
+      const opened = await liveMicTracks(page);
+      for (const path of ['/settings/voice', '/harness', '/settings/voice', '/harness']) {
+        await page.evaluate((p) => {
+          window.history.pushState({}, '', p);
+          window.dispatchEvent(new PopStateEvent('popstate'));
+        }, path);
+        await expect.poll(() => page.evaluate(() => window.location.pathname)).toBe(path);
+      }
+      // A leaked or duplicated capture opens within milliseconds of the remount; give
+      // every route's effects time to settle before counting.
+      await page.waitForTimeout(3_000);
+      expect(await liveMicTracks(page), 'route changes neither leaked nor duplicated the microphone').toBe(opened);
+      expect((await voice(page, (h) => h.getState())).mode, 'voice stays on across in-app navigation').toBe('always-on');
+      await voice(page, (h) => h.setMode('off'));
+      await expect.poll(() => liveMicTracks(page), { timeout: 3_000, message: 'voice off after navigating released every mic track' })
+        .toBe(0);
     });
   });
 

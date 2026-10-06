@@ -181,3 +181,51 @@ no microphone open. The spoken round trip and the denial test skip with a stated
 has no workspace, and run unchanged on an account that has one. The hosted spoken round trip and
 microphone denial on the portal are covered by Avi's guided session (D-005), on his account, which has a
 workspace. No synthetic portal round-trip evidence is claimed for this release.
+
+## R-4 lifecycle and recovery on the desktop rig (P-004, WI-10004760)
+
+Spec: `apps/operator/e2e/voice-synthetic-roundtrip.spec.ts`, run inside an isolated
+`verify-tauri-headless` rig (`VERIFY_TAURI_ISOLATED_DB=1`, SPA freshness required on
+`voice-mode.ts`, one worker) by `.papercusp/scratch/d006-rig-assert.sh`.
+
+### Runs
+
+| Run | When (UTC) | Rig run id | Result | Log |
+|---|---|---|---|---|
+| 1 | 19:54Z | — | 7 passed, 3 failed (red-first) | `.papercusp/scratch/r4-rig-run1.log` |
+| 2 | 20:07–20:15Z | `20261006T200744Z-1065105` | 9 passed, 1 failed (spec bug) | `.papercusp/scratch/r4-rig-run2.log` |
+| 3 | 20:17–20:28Z | `20261006T201756Z-1692605` | **10/10 passed**, HARNESS_RESULT verdict=pass | `.papercusp/scratch/r4-rig-run3.log` |
+| 4 | from 20:28Z | pending | navigate leg added | `.papercusp/scratch/r4-rig-run4.log` |
+
+What the reds were:
+
+- **Mute (run 1, product defect).** Muting voice output mid-reply did not stop the reply already
+  playing. Fixed in `voice-mode.ts` (mute stops current playback). Run 2 and run 3: PASS.
+- **Muted reply never completed its turn (WI-10006893, product defect, found by code reading).**
+  `speak()` returned at the output gates before recording the canonical sentence and completion, so
+  the next utterance recorded the muted turn as interrupted. Fixed by recording completion before
+  every output gate. Unit test in `voice-mode-capture.test.ts`; a mutation probe that restores the old
+  behaviour fails exactly that test (`.papercusp/scratch/wi10006893-mutation-probe.log`, verdict caught).
+- **TTS outage (run 1, spec race).** The spec waited on the voice status, which turns `speaking`
+  before the synthesis request is sent. The spec now waits on the request. Run 2 and run 3: PASS.
+- **Brain turn identity (runs 1 and 2, spec bugs).** Run 1 counted every POST to
+  `/conversations/:id/turns`; the client also persists the agent's reply there. Run 2 confirmed this
+  by measurement: exactly one `role:'user'` POST per hold. Run 2's remaining red compared the raw JSON
+  body, where a newline is escaped as `\n`. The spec now parses each body and requires the posted user
+  text to equal the transcript the user was shown. Run 3: PASS.
+
+### Scenario map (bar R-4: each scenario needs a named live test)
+
+| R-4 scenario | Synthetic rig leg (this file) | Real microphone (guided session) |
+|---|---|---|
+| Interruption | `stop: cancelling mid-reply ends playback and stays stopped` | A3, C4 (speaking over a reply) |
+| Output mute | `mute: muting mid-reply stops it, a muted reply stays silent, unmuting speaks again` | A5 |
+| Off cleanup | `off: turning voice off releases the microphone and stops a reply mid-playback` | A6, C3 |
+| Navigation / unmount cleanup | `navigate: moving between screens keeps one microphone, and off still releases it` (run 4) | — |
+| Permission denial | `denial: a blocked microphone names the permission problem` | A9, C5 |
+| Provider outage | `tts outage: …` and `retry: an STT failure says so, and the next hold transcribes` | — |
+| Reconnect / retry | `retry: …` | C5 |
+| Self-audio | none. The fake microphone has no acoustic path from the speaker, so a synthetic run cannot produce echo; the capture-overlap guard is unit-tested | **A4 is the only live evidence** |
+| Turn / transcript identity | `brain: a spoken question is posted, answered by the agent, and the answer is spoken` | A1, C2 |
+
+Hosted credential, tenant and spend isolation belong to R-7 and the hosted portal section above (D-009).

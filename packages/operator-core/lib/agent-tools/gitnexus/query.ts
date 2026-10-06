@@ -52,7 +52,7 @@ import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
  * GitNexus selectors (kind, file_path, uid, repo) do not apply to it.
  */
 async function firstPartyCallersAnswer(
-  args: { name?: string; kind?: string; file_path?: string; uid?: string; repo?: string; limit?: number },
+  args: { name?: string; kind?: string; file_path?: string; uid?: string; repo?: string; limit?: number; paths?: string[] },
   ctx: { projectDir?: string },
 ) {
   const limit = Math.min(Math.max(1, args.limit ?? MAX_SITES_PER_ANSWER), FIRST_PARTY_CALLERS_DEFAULT_LIMIT);
@@ -61,6 +61,7 @@ async function firstPartyCallersAnswer(
     root: resolveAgentWorkspaceRoot(ctx),
     name: args.name ?? '',
     limit,
+    ...(args.paths && args.paths.length > 0 ? { paths: args.paths } : {}),
   });
   const ignored = (['kind', 'file_path', 'uid', 'repo'] as const).filter((k) => args[k] !== undefined);
   if (ignored.length === 0) return answer;
@@ -143,6 +144,11 @@ export default defineTool({
       .min(1)
       .optional()
       .describe('Cap on returned sites. Default 100; callers allows up to 500.'),
+    paths: z
+      .array(z.string().min(1))
+      .max(50)
+      .optional()
+      .describe('callers only: repo-relative files/dirs to search. Default: whole repo.'),
   }),
   async handler(args, ctx) {
     const op = args.op as string;

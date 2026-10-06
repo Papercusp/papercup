@@ -1076,6 +1076,72 @@ export function forwardingResultForUpstreamFailure(
     : MCP_PROXY_FORWARDING_RESULTS.notForwarded;
 }
 
+/**
+ * WI-10006908 — the upstream (:3070) died AFTER sending response headers. For an SSE response
+ * the MCP client's request is resolved only by a JSON-RPC response carrying its id: a stream that
+ * merely ends or errors raises a transport error but leaves the request pending until the
+ * client's own request timeout (measured: a live tools/call hung to Claude's 300s limit). So the
+ * proxy answers each forwarded REQUEST id itself with a JSON-RPC error, then ends the stream.
+ *
+ * Returns the SSE text to write, or null when the body carries no request ids (nothing pending
+ * to resolve). Notifications (no id) and responses (no method) are skipped. Bounded so a
+ * pathological batch cannot turn one failure into an unbounded write.
+ */
+export const MAX_UPSTREAM_DEATH_ERROR_EVENTS = 64;
+export const UPSTREAM_DIED_MID_STREAM_RPC_CODE = -32000;
+export function upstreamDeathSseErrorEvents(
+  requestBody: Buffer,
+  traceId: string,
+): string | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(requestBody.toString("utf8"));
+  } catch {
+    return null;
+  }
+  const msgs = Array.isArray(parsed) ? parsed : [parsed];
+  const events: string[] = [];
+  for (const m of msgs) {
+    if (!m || typeof m !== "object") continue;
+    const { id, method } = m as { id?: unknown; method?: unknown };
+    if (typeof method !== "string") continue;
+    if (typeof id !== "string" && typeof id !== "number") continue;
+    const response = {
+      jsonrpc: "2.0",
+      id,
+      error: {
+        code: UPSTREAM_DIED_MID_STREAM_RPC_CODE,
+        message:
+          `Papercusp MCP proxy: the operator process serving this ${method} died before ` +
+          "it finished (upstream connection lost mid-response). The call was dispatched, so " +
+          "its effects are UNKNOWN: check state before retrying a write.",
+        data: {
+          kind: "upstream_died_mid_stream",
+          forwardingResult: MCP_PROXY_FORWARDING_RESULTS.outcomeUnknown,
+          traceId,
+        },
+      },
+    };
+    events.push(`event: message\ndata: ${JSON.stringify(response)}\n\n`);
+    if (events.length >= MAX_UPSTREAM_DEATH_ERROR_EVENTS) break;
+  }
+  return events.length ? events.join("") : null;
+}
+
+/**
+ * True when the bytes already forwarded end on an SSE event boundary (or none were forwarded),
+ * so an appended event parses as its own event. Mid-event, an appended event would be glued
+ * onto a truncated one and fail to parse — the caller must destroy the stream instead.
+ */
+export function endsOnSseEventBoundary(forwardedTail: string): boolean {
+  return (
+    forwardedTail === "" ||
+    forwardedTail.endsWith("\n\n") ||
+    forwardedTail.endsWith("\r\n\r\n") ||
+    forwardedTail.endsWith("\r\r")
+  );
+}
+
 export interface PreparedForward {
   body: Buffer;
   headers: http.IncomingHttpHeaders;
@@ -4910,6 +4976,45 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               // the RESPONSE cannot half-apply anything.
               res.on("close", () => {
                 if (!ures.destroyed) ures.destroy();
+              });
+              // WI-10006908 — the REVERSE direction. `pipe` does not end the destination when
+              // the SOURCE aborts, and :3070 flushes SSE headers the instant a tools/call opens
+              // (primeSseResponse), so a worker death mid-call (memory-watchdog recycle,
+              // event-loop-sentinel SIGKILL, deploy restart) used to leave the client response
+              // open forever: the agent hung to its own idle timeout (300s for Claude).
+              let forwardedTail = "";
+              ures.on("data", (chunk: Buffer) => {
+                forwardedTail = (forwardedTail + chunk.toString("latin1")).slice(-4);
+              });
+              ures.once("close", () => {
+                if (ures.complete || res.writableEnded || res.destroyed) return;
+                const isSse = String(ures.headers["content-type"] ?? "")
+                  .toLowerCase()
+                  .includes("text/event-stream");
+                const errorEvents =
+                  isSse && endsOnSseEventBoundary(forwardedTail)
+                    ? upstreamDeathSseErrorEvents(rawBody, traceId)
+                    : null;
+                record({
+                  kind: "upstream_died_mid_stream",
+                  method: req.method,
+                  path: req.url,
+                  status,
+                  attempts,
+                  klass: fwd.klass,
+                  elapsedMs: Date.now() - started,
+                  clientResolution: errorEvents ? "jsonrpc_error_events" : "destroyed",
+                  forwardingResult: forwardingResultForUpstreamFailure(true),
+                  ...rpcTrace,
+                });
+                log(
+                  `upstream died mid-stream after ${Date.now() - started}ms (trace ${traceId}); ` +
+                    (errorEvents
+                      ? "answered the pending request id(s) with a JSON-RPC error"
+                      : "destroyed the client response"),
+                );
+                if (errorEvents) res.end(errorEvents);
+                else res.destroy();
               });
               ures.pipe(res);
               if (attempts > 1) {

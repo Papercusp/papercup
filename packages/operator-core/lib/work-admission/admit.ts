@@ -46,6 +46,7 @@ import {
   type FieldAuthority,
 } from './admission-sources';
 import { recordAdmissionWriteBack } from './write-back-ledger';
+import { admittedSourceBody, admittedSourceTitle } from '../harness/improvements/untrusted-evidence';
 import {
   captureImprovement as defaultCaptureImprovement,
   type CaptureImprovementInput,
@@ -251,11 +252,14 @@ export async function admitWorkItem(input: AdmitInput, deps: AdmitDeps = {}): Pr
       workItemId = target.id;
       if (!target.created) reason = 'folded';
     } else {
+      // P-013 (D-047): this path skips captureImprovement, so it applies the intake's
+      // redaction, and for a rule admission (a person's report) its quoting, itself.
+      const endUser = input.admitter.via === 'rule';
       workItemId = createdId(
         await create({
           kind: workKind,
-          title,
-          summary: body,
+          title: admittedSourceTitle(title, endUser),
+          summary: admittedSourceBody(body, endUser),
           harness: input.harness,
           workspaceId: input.workspaceId,
           createdBy: by,
@@ -281,12 +285,13 @@ export async function admitWorkItem(input: AdmitInput, deps: AdmitDeps = {}): Pr
     const [row] = await tx<AdmissionDbRow[]>`
       INSERT INTO harness_shared.work_admissions
         (workspace_id, work_item_id, harness_slug, data_source_id, source_kind, source_key, source_ref,
-         field_authority, admitted_via, admitted_by, rule_id)
+         field_authority, admitted_via, admitted_by, rule_id, outcome)
       VALUES
         (${input.workspaceId}, ${workItemId}, ${input.harness}, ${resolved.dataSourceId}, ${kindRaw},
          ${resolved.sourceKey}, ${tx.json(resolved.sourceRef as never)},
          ${tx.json({ external: [...fieldAuthority.external], papercusp: [...fieldAuthority.papercusp] } as never)},
-         ${input.admitter.via}, ${by}, ${input.admitter.via === 'rule' ? input.admitter.ruleId : null})
+         ${input.admitter.via}, ${by}, ${input.admitter.via === 'rule' ? input.admitter.ruleId : null},
+         ${reason === 'folded' ? 'folded' : 'created'})
       RETURNING *`;
     return { ok: true as const, reason, workItemId, admission: toAdmissionRow(row!), linkedRecord };
   })) as AdmitResult;
@@ -424,11 +429,18 @@ export async function refreshAdmittedFromSource(
   for (const a of admissions) {
     const owned = new Set(a.fieldAuthority.external);
     const patch: { title?: string; body?: string; confirmShrink?: boolean } = {};
-    if (owned.has('title') && snapshot.title?.trim()) patch.title = snapshot.title.trim().slice(0, 300);
+    // P-013 (D-047): a re-sync writes past the intake, so it redacts, and for a rule
+    // admission quotes, exactly as the admission did. An unchanged source then still
+    // compares equal to the stored form below and writes nothing.
+    const endUser = a.admittedVia === 'rule';
+    if (owned.has('title') && snapshot.title?.trim()) patch.title = admittedSourceTitle(snapshot.title.trim().slice(0, 300), endUser);
     if (owned.has('description') && typeof snapshot.body === 'string') {
-      patch.body = [snapshot.body.slice(0, ADMISSION_BODY_MAX), snapshot.permalink ? `Source: ${snapshot.permalink}` : '']
-        .filter(Boolean)
-        .join('\n\n');
+      patch.body = admittedSourceBody(
+        [snapshot.body.slice(0, ADMISSION_BODY_MAX), snapshot.permalink ? `Source: ${snapshot.permalink}` : '']
+          .filter(Boolean)
+          .join('\n\n'),
+        endUser,
+      );
       patch.confirmShrink = true;
     }
     if (!patch.title && patch.body === undefined) {

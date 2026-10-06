@@ -371,6 +371,28 @@ describe('Settings → Integrations', () => {
     await waitFor(() => expect(call('DELETE', `${API}/sources/src-1/rules/rule-1`)).toBeTruthy());
   });
 
+  it('counts a backfilled ticket the intake attached to an already-filed bug as admitted', async () => {
+    serve({ providers: [LINEAR], sources: [source({ config: { harnessSlug: 'website' }, missingConfig: [] })] });
+    route('POST', `${API}/sources/src-1/containers`, { ok: true, truncated: false, containers: [] });
+    route('POST', `${API}/sources/src-1/rules`, {
+      ok: true,
+      rule: { id: 'rule-3', title: 'Label needs-agent', harness: 'website', workKind: 'bug', enabled: true },
+      backfill: { scanned: 3, admitted: 1, folded: 1, existing: 1, refused: [], truncated: false },
+    });
+    render(<Page />);
+
+    fireEvent.click((await row('src-1')).getByRole('button', { name: 'Rules (0)' }));
+    fireEvent.change(await screen.findByLabelText('Rule'), { target: { value: 'label' } });
+    fireEvent.change(screen.getByLabelText('Label'), { target: { value: 'needs-agent' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add rule' }));
+
+    await waitFor(() =>
+      expect(H.toast.success).toHaveBeenCalledWith(
+        'Rule added. 2 synced tickets admitted as work (1 attached to a bug that was already filed).',
+      ),
+    );
+  });
+
   it('refuses a value-taking preset with no value without calling the route', async () => {
     serve({ providers: [LINEAR], sources: [source({ config: { harnessSlug: 'website' }, missingConfig: ['teamIds'] })] });
     route('POST', `${API}/sources/src-1/containers`, { ok: true, truncated: false, containers: [] });

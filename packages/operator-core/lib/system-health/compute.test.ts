@@ -1083,7 +1083,7 @@ describe('collectDeploy — EI-218 git-sync freshness wiring', () => {
         retireAtMs: since + GIT_SYNC_MISSING_CHECKOUT_RETIRE_AFTER_MS,
       },
     ]);
-    expect(data.gitSyncMissedIntervalsByInstall.map((entry) => entry.installSlug)).toEqual(['starved-install']);
+    expect((data.gitSyncMissedIntervalsByInstall ?? []).map((entry) => entry.installSlug)).toEqual(['starved-install']);
     expect(data.gitSyncMissedIntervalsInstallSlug).toBe('starved-install');
     expect(data.gitSyncMaxMissedIntervals).toBe(40);
   });

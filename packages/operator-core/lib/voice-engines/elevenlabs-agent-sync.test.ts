@@ -4,6 +4,7 @@
  * missing or gone, never duplicates tools, and never leaks the key.
  */
 import { describe, expect, it } from 'vitest';
+import { ASK_PAPERCUP_TOOL_NAME, VOICE_BRAIN_TIMEOUT_MS } from '@papercusp/chat-protocol';
 import {
   ASK_PAPERCUP_TOOL,
   ElevenLabsAgentSyncError,
@@ -184,10 +185,15 @@ describe('buildAgentConfig', () => {
     expect(ovr.tts.voice_id).toBe(false);
   });
 
-  it('defines ask_papercup as a client tool that answers quickly and takes the question', () => {
+  it('defines ask_papercup as a client tool that takes the question, forces a holding line, and outwaits the client deadline', () => {
     expect(ASK_PAPERCUP_TOOL.type).toBe('client');
+    expect(ASK_PAPERCUP_TOOL.name).toBe(ASK_PAPERCUP_TOOL_NAME);
     expect(ASK_PAPERCUP_TOOL.expects_response).toBe(true);
     expect(ASK_PAPERCUP_TOOL.parameters.required).toEqual(['question']);
-    expect(ASK_PAPERCUP_TOOL.response_timeout_secs).toBeLessThanOrEqual(10);
+    expect(ASK_PAPERCUP_TOOL.pre_tool_speech).toBe('force');
+    // ElevenLabs must not time out before the client returns its own spoken failure line.
+    expect(ASK_PAPERCUP_TOOL.response_timeout_secs * 1000).toBeGreaterThan(VOICE_BRAIN_TIMEOUT_MS);
+    // ElevenLabs accepts client-tool timeouts up to at least 60 s (measured live 2026-10-06).
+    expect(ASK_PAPERCUP_TOOL.response_timeout_secs).toBeLessThanOrEqual(60);
   });
 });

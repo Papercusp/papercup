@@ -19,6 +19,8 @@ export interface FirstPartyCallersJob {
   readonly root: string;
   readonly name: string;
   readonly limit?: number;
+  /** Repository-relative search roots; absent = the whole repository. */
+  readonly paths?: readonly string[];
   readonly rgPath?: string;
 }
 
@@ -29,7 +31,7 @@ const started = Date.now();
 let result: FirstPartyCallersAnswer;
 try {
   const ts = loadVendoredTypescript(job.vendorDir);
-  result = firstPartyCallers({ ts, root: job.root, name: job.name, limit: job.limit, rgPath: job.rgPath });
+  result = firstPartyCallers({ ts, root: job.root, name: job.name, limit: job.limit, paths: job.paths, rgPath: job.rgPath });
 } catch (error) {
   // Loading TypeScript is the one step firstPartyCallers does not guard itself.
   const why = error instanceof Error ? error.message : String(error);

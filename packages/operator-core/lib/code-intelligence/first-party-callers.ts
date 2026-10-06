@@ -83,9 +83,51 @@ export interface FirstPartyCallersQuery {
   readonly root: string;
   readonly name: string;
   readonly limit?: number;
+  /**
+   * Repository-relative files or directories to search (WI-10006543). Default: the
+   * whole repository. A grep over `packages/x/lib apps/y/bin` asks about those roots
+   * only; answering it repo-wide costs a program over every file that names a common
+   * identifier (`fetch`: 2,578 files exhausted the worker's heap).
+   */
+  readonly paths?: readonly string[];
   /** ripgrep binary. Default: {@link resolveRipgrep}. */
   readonly rgPath?: string;
   readonly now?: () => number;
+}
+
+/** At most this many search roots per question. */
+export const FIRST_PARTY_CALLERS_MAX_PATHS = 50;
+
+/**
+ * Normalise caller-supplied search roots: repository-relative, existing, and never
+ * outside the repository. Returns the roots to hand ripgrep, or why they cannot be
+ * searched. An empty or absent list means the whole repository.
+ */
+export function resolveSearchPaths(
+  root: string,
+  paths: readonly string[] | undefined,
+): { ok: true; paths: string[]; scoped: boolean } | { ok: false; error: string } {
+  if (!paths || paths.length === 0) return { ok: true, paths: ['.'], scoped: false };
+  if (paths.length > FIRST_PARTY_CALLERS_MAX_PATHS) {
+    return { ok: false, error: `callers takes at most ${FIRST_PARTY_CALLERS_MAX_PATHS} paths; got ${paths.length}` };
+  }
+  const out: string[] = [];
+  for (const raw of paths) {
+    const trimmed = raw.trim().replace(/\/+$/, '');
+    if (!trimmed || isAbsolute(trimmed)) {
+      return { ok: false, error: `path "${raw}" must be relative to the repository root` };
+    }
+    const rel = posix(relative(root, join(root, trimmed)));
+    if (rel === '..' || rel.startsWith('../')) return { ok: false, error: `path "${raw}" is outside the repository` };
+    const normalised = rel === '' ? '.' : rel;
+    try {
+      accessSync(join(root, normalised), fsConstants.R_OK);
+    } catch {
+      return { ok: false, error: `path "${raw}" does not exist in the repository` };
+    }
+    if (!out.includes(normalised)) out.push(normalised);
+  }
+  return { ok: true, paths: out, scoped: !out.includes('.') };
 }
 
 export interface CandidateSearch {
@@ -134,11 +176,16 @@ export function resolveRipgrep(
   return null;
 }
 
-/** Source files under `root` that contain `name` as a whole word. */
-export function findCandidateFiles(root: string, name: string, rgPath = 'rg'): CandidateSearch {
+/** Source files under `root` (or under its relative `paths`) that contain `name` as a whole word. */
+export function findCandidateFiles(
+  root: string,
+  name: string,
+  rgPath = 'rg',
+  paths: readonly string[] = ['.'],
+): CandidateSearch {
   const r = spawnSync(
     rgPath,
-    ['-l', '-w', '-F', '-g', FIRST_PARTY_SOURCE_GLOB, '-g', '!**/node_modules/**', '--', name, '.'],
+    ['-l', '-w', '-F', '-g', FIRST_PARTY_SOURCE_GLOB, '-g', '!**/node_modules/**', '--', name, ...paths],
     { cwd: root, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 },
   );
   if (r.error) return { files: [], error: `ripgrep could not run (${rgPath}): ${r.error.message}`, partial: null };
@@ -276,9 +323,14 @@ export function firstPartyCallers(q: FirstPartyCallersQuery): FirstPartyCallersA
       error: 'ripgrep (rg) was not found on PATH, in ~/.local/bin, ~/.cargo/bin or the system bin dirs; set PAPERCUSP_RG',
     });
   }
-  const search = findCandidateFiles(q.root, q.name, rgPath);
+  const scope = resolveSearchPaths(q.root, q.paths);
+  if (!scope.ok) return answer(q.name, started, now, { error: scope.error });
+  const search = findCandidateFiles(q.root, q.name, rgPath, scope.paths);
   if (search.error) return answer(q.name, started, now, { error: search.error });
-  const partial = search.partial ? [`ripgrep could not read every path: ${search.partial}`] : [];
+  const partial = [
+    ...(scope.scoped ? [`Searched only under: ${scope.paths.join(', ')}.`] : []),
+    ...(search.partial ? [`ripgrep could not read every path: ${search.partial}`] : []),
+  ];
   if (search.files.length === 0) {
     // No searched source file contains the word: as strong an absence as grep's.
     return answer(q.name, started, now, {

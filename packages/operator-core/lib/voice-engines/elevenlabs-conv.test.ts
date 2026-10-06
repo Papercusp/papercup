@@ -34,6 +34,7 @@ vi.mock('../commands/registry', () => ({
 }));
 
 import { askOperatorViaSse, buildClientTools, buildClientToolCatalog } from './elevenlabs-conv';
+import { VOICE_BRAIN_EMPTY_QUESTION_LINE, VOICE_BRAIN_FAILURE_LINE } from '@papercusp/chat-protocol';
 import { list } from '../commands/registry';
 
 /** Build a Response whose body is an SSE stream of the given lines. */
@@ -292,9 +293,10 @@ describe('buildClientTools — reflexive client-tool dispatch', () => {
 
   const tools = () => buildClientTools({ workspace: 'ws-1', tabId: 'tab-9', endSession });
 
-  it('exposes end_conversation, ask_operator, reflexive commands + queries (dotted ids normalized)', () => {
+  it('exposes end_conversation, ask_operator, ask_papercup, reflexive commands + queries (dotted ids normalized)', () => {
     expect(Object.keys(tools()).sort()).toEqual([
       'ask_operator',
+      'ask_papercup',
       'end_conversation',
       'panel_toggle',
       'status_summary',
@@ -333,6 +335,57 @@ describe('buildClientTools — reflexive client-tool dispatch', () => {
       (c) => (c[0] as { kind: string }).kind === 'command',
     );
     expect((cmdCall![0] as { browser?: string[] }).browser).toEqual(['required']);
+  });
+});
+
+describe('ask_papercup — two-tier voice brain tool (voice-two-tier P-003)', () => {
+  const tools = () => buildClientTools({ workspace: 'ws-1', tabId: 'tab-9', endSession: async () => {} });
+  let warn: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => { warn = vi.spyOn(console, 'warn').mockImplementation(() => {}); });
+  afterEach(() => warn.mockRestore());
+
+  it('returns Papercup’s spoken answer for the question, sent to operator-converse with an abort signal', async () => {
+    fetchSpy.mockImplementationOnce(() =>
+      Promise.resolve(new Response(JSON.stringify({ turns: [] }), { status: 200, headers: { 'content-type': 'application/json' } })),
+    );
+    fetchSpy.mockImplementationOnce(() =>
+      Promise.resolve(sseResponse([
+        'event: delta\ndata: {"text":"<say>You have two meetings today.</say>"}\n\n',
+        'event: done\ndata: {}\n\n',
+      ])),
+    );
+    const out = await tools().ask_papercup({ question: 'what is on my calendar' });
+    expect(out).toBe('You have two meetings today.');
+    const [historyCall, converseCall] = fetchSpy.mock.calls;
+    expect(historyCall[1]?.signal).toBeInstanceOf(AbortSignal);
+    expect(converseCall[0]).toBe('/api/agent-mcp/operator-converse');
+    expect(converseCall[1].signal).toBeInstanceOf(AbortSignal);
+    const body = JSON.parse(converseCall[1].body as string);
+    expect(body.messages.at(-1)).toEqual({ role: 'user', content: 'what is on my calendar' });
+    expect(body.modality).toBe('voice');
+  });
+
+  it('speaks the shared failure line when operator-converse refuses', async () => {
+    fetchSpy.mockImplementationOnce(() =>
+      Promise.resolve(new Response(JSON.stringify({ turns: [] }), { status: 200, headers: { 'content-type': 'application/json' } })),
+    );
+    fetchSpy.mockImplementationOnce(() => Promise.resolve(new Response('nope', { status: 502 })));
+    await expect(tools().ask_papercup({ question: 'hi' })).resolves.toBe(VOICE_BRAIN_FAILURE_LINE);
+    expect(warn).toHaveBeenCalledWith('[el-conv:ask_papercup] failed');
+  });
+
+  it('asks for the question again instead of calling the brain when it is empty', async () => {
+    await expect(tools().ask_papercup({ question: '  ' })).resolves.toBe(VOICE_BRAIN_EMPTY_QUESTION_LINE);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith('[el-conv:ask_papercup] empty-question');
+  });
+
+  it('leaves ask_operator’s own fallback line unchanged when operator-converse refuses', async () => {
+    fetchSpy.mockImplementationOnce(() =>
+      Promise.resolve(new Response(JSON.stringify({ turns: [] }), { status: 200, headers: { 'content-type': 'application/json' } })),
+    );
+    fetchSpy.mockImplementationOnce(() => Promise.resolve(new Response('nope', { status: 502 })));
+    await expect(askOperatorViaSse({ text: 'hi' })).resolves.toBe('I had trouble just then — say that again?');
   });
 });
 

@@ -30,18 +30,24 @@ describe('papercup-backup-health-check.sh', () => {
       maxBuffer: 1024 * 1024,
     });
     const output = run.stdout ?? '';
+    // lastCheck names the last check that FINISHED. EI-25211496463956189: a timeout
+    // (ETIMEDOUT/SIGTERM) left empty failLines and stderrTail, so the red never said
+    // which probe was slow. The next check after lastCheck is the slow one.
+    const checkLines = output.split('\n').filter((line) => /^\s+(ok|FAIL)\s/.test(line));
     expect({
       status: run.status,
       signal: run.signal,
       error: run.error?.message ?? null,
       failLines: output.split('\n').filter((line) => line.includes('FAIL')),
       stderrTail: (run.stderr ?? '').slice(-2000),
+      lastCheck: checkLines.at(-1) ?? '(no check finished)',
     }).toEqual({
       status: 0,
       signal: null,
       error: null,
       failLines: [],
       stderrTail: expect.any(String),
+      lastCheck: expect.any(String),
     });
     expect(output).toContain('post disk-headroom block');
     expect(output).toContain('stale stats do not create a false TOAST-bloat alarm');

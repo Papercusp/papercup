@@ -71,6 +71,7 @@ import {
   updateWorkspaceHostOperation,
   upsertWorkspaceHost,
   upsertWorkspaceHostResourceCheckpoint,
+  WorkspaceHostIdSpentError,
 } from './observability-store';
 import {
   renderWorkspaceHostProvisionBootstrap,
@@ -1104,7 +1105,8 @@ export async function runWorkspaceHostProvisioning(
   // No checkpoints means no provider mutation has been admitted for this operation. Persist the
   // exact desired spec before creating the operation/resource graph it governs.
   if (checkpoints.length === 0) {
-    await store.upsertHost({
+    try {
+      await store.upsertHost({
       // The spec-derived columns come from the ONE shared projection, so this row and the
       // one hosted admission writes before it can never describe different hosts.
       ...workspaceHostSpecColumns(input.desired),
@@ -1123,7 +1125,19 @@ export async function runWorkspaceHostProvisioning(
       observedRevision: 0,
       ...(runtimeRelease ? { runtimeRelease } : {}),
       controllerAuthority,
-    });
+      // WI-10006863: refuse a spent id BEFORE the row is rewritten. Without this the upsert set a
+      // destroyed host back to running/provisioning at revision 1, and only then did the fence
+      // in beginOperation refuse, leaving a retired host that claimed to be provisioning.
+      firstOperation: { operationId },
+      });
+    } catch (error) {
+      // A spent id is the caller's error (pick a new host id), never a transient one: retrying
+      // the same request can only be refused again.
+      if (error instanceof WorkspaceHostIdSpentError) {
+        throw new WorkspaceHostProvisioningRequestError([error.message]);
+      }
+      throw error;
+    }
   }
 
   await store.beginOperation({

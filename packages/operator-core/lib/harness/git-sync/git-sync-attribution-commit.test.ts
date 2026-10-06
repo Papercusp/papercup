@@ -377,7 +377,11 @@ describe('commitAttributedGroups private index (WI-10006705)', () => {
     expect(res).toEqual({ committedAny: false, committedCount: 0 });
     expect(await git(repo, 'log', '-1', '--format=%s')).toBe('concurrent');
     expect(await git(repo, 'ls-tree', '--name-only', 'HEAD')).toBe('base.ts');
-    expect(await git(repo, 'status', '--porcelain', '--', 'a.ts')).toBe('?? a.ts');
+    // WI-10006850: the shared index was refreshed BEFORE the CAS, so a.ts is staged as the
+    // unpublished commit had it. That entry equals the working tree (the catch-all's
+    // documented benign case) and the file stays uncommitted for the catch-all / next tick.
+    expect(await git(repo, 'status', '--porcelain', '--', 'a.ts')).toBe('A  a.ts');
+    expect(await git(repo, 'diff', '--name-only', '--', 'a.ts')).toBe('');
     expect(logs.some((m) => m.includes('update-ref CAS refused'))).toBe(true);
   });
 

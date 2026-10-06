@@ -110,7 +110,8 @@ describe('captureImprovement — one candidate per error signature (SPEC-P-011)'
     expect(payload.reporterKinds).toEqual(['agent', 'end-user']);
     expect(payload.repeatCount).toBe(2);
     // The person's report keeps its words; the agent's account is an occurrence, not an overwrite.
-    expect(row.title).toBe('The plans page shows an error and never loads');
+    // The first report was the person's, so the candidate keeps its title, quoted as evidence (P-013, D-047).
+    expect(row.title).toBe('“The plans page shows an error and never loads”');
     // The first report named no tool; the second does, so the stored signature learns it.
     expect((payload.errorSignature as { tool: string | null }).tool).toBe('plans:list');
   });
