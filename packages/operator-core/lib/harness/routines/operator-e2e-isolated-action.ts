@@ -48,6 +48,8 @@ import { registerSystemAction, type SystemActionCtx, type SystemActionResult } f
 import { operatorHomeHarnessSlug } from '../operator-home-harness';
 
 export const OPERATOR_E2E_ISOLATED_ACTION = 'operator-e2e-isolated';
+/** The PAPERCUSP_SID a routine fire hands the rig when no caller session id is inherited. */
+export const OPERATOR_E2E_ISOLATED_SID = `system:${OPERATOR_E2E_ISOLATED_ACTION}`;
 
 /** Ledger run-group prefix for routine fires (plan D-001 #1). */
 export const OPERATOR_E2E_RUN_GROUP_PREFIX = 'operator-e2e-nightly';
@@ -116,6 +118,11 @@ export function buildOperatorE2eInvocation(
   env.PAPERCUSP_TEST_RUN_GROUP = runGroup;
   env.PAPERCUSP_TEST_RUN_WORKSPACE = ids.workspaceId;
   env.PAPERCUSP_TEST_RUN_HARNESS = ids.harnessSlug;
+  // verify-tauri-headless.sh refuses to launch without PAPERCUSP_SID (its provenance anchor).
+  // bg-host has no session id, so the first real routine fire died at launch with
+  // "PAPERCUSP_SID is unset" while every probe run inherited the agent's own id. A routine
+  // fire is attributed to the action; a manual run keeps the caller's identity.
+  if (!env.PAPERCUSP_SID?.trim()) env.PAPERCUSP_SID = OPERATOR_E2E_ISOLATED_SID;
   // The runner also unsets this; removing it here keeps the env we record on the task honest.
   delete env.PAPERCUSP_DISABLE_TEST_RUNS_REPORTER;
   const args = exists(pcHeavy) ? [pcHeavy, '--', 'bash', runner] : [runner];

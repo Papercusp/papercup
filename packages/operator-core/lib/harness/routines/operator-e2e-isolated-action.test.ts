@@ -9,6 +9,7 @@ vi.mock('../../task-manager/managed-spawn', () => ({ managedSpawn: taskManager.m
 vi.mock('../operator-home-harness', () => ({ operatorHomeHarnessSlug: () => 'papercusp' }));
 
 import {
+  OPERATOR_E2E_ISOLATED_SID,
   OPERATOR_E2E_LOGS_KEPT,
   OPERATOR_E2E_RUNTIME_MAX_SEC,
   buildOperatorE2eInvocation,
@@ -63,6 +64,28 @@ describe('buildOperatorE2eInvocation', () => {
 
   it('formats the run group with the D-001 prefix', () => {
     expect(operatorE2eRunGroup('abc')).toBe('operator-e2e-nightly:abc');
+  });
+
+  it('attributes a routine fire with no inherited session id to the action, so the rig will launch', () => {
+    // bg-host has no PAPERCUSP_SID; the first real routine fire died at launch with
+    // "PAPERCUSP_SID is unset" while every probe run inherited the calling agent's id.
+    const ids = { fireId: 'wf-1', workspaceId: 'ws', harnessSlug: 'papercusp' };
+    for (const baseEnv of [{}, { PAPERCUSP_SID: '' }, { PAPERCUSP_SID: '   ' }]) {
+      expect(buildOperatorE2eInvocation(ROOT, ids, baseEnv, () => true).env.PAPERCUSP_SID).toBe(
+        OPERATOR_E2E_ISOLATED_SID,
+      );
+    }
+    expect(OPERATOR_E2E_ISOLATED_SID).toBe('system:operator-e2e-isolated');
+  });
+
+  it('keeps the caller session id on a manual run', () => {
+    const inv = buildOperatorE2eInvocation(
+      ROOT,
+      { fireId: 'x', workspaceId: 'ws', harnessSlug: 'papercusp' },
+      { PAPERCUSP_SID: 'su-caller' },
+      () => true,
+    );
+    expect(inv.env.PAPERCUSP_SID).toBe('su-caller');
   });
 });
 
@@ -203,8 +226,18 @@ describe('production wiring', () => {
     const bespoke = readFileSync(path.join(lib, 'harness/routines/bespoke-active-seeds-check.ts'), 'utf8');
     expect(registry).toContain("import './operator-e2e-isolated-action'");
     expect(classification).toContain("'system:operator-e2e-isolated'");
-    expect(seed).toContain("'system:operator-e2e-isolated', 'skip', 'skip-old', ${active}, 'durable'");
+    // The seed writes one row per SeedRow (P-003 added the red filer beside this one).
+    expect(seed).toContain("targetRole: 'system:operator-e2e-isolated'");
+    expect(seed).toContain("'skip', 'skip-old', ${active}, 'durable'");
     expect(seed).toMatch(/OPERATOR_E2E_ISOLATED_CRON = '0 30 4 \* \* \*'/);
     expect(bespoke).toContain("{ name: 'operator-e2e-isolated', seedScript: 'seed-operator-e2e-isolated-routine.ts' }");
+  });
+
+  it('still targets a rig that refuses an unattributed launch (why the action must supply PAPERCUSP_SID)', () => {
+    // If the rig ever drops this refusal, the fallback identity above can be revisited;
+    // until then a routine fire without it launches nothing.
+    const rig = readFileSync(path.join(repoRoot, 'scripts/verify-tauri-headless.sh'), 'utf8');
+    expect(rig).toContain('TAURI_OWNER_SID="${PAPERCUSP_SID:-}"');
+    expect(rig).toContain('FATAL: PAPERCUSP_SID is unset');
   });
 });
