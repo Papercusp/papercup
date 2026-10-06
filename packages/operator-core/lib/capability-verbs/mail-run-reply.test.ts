@@ -42,7 +42,7 @@ function source() {
 function inboundMessage() {
   return {
     id: 'doc-1',
-    source: 'gmail',
+    source: 'mail',
     sourceId: SOURCE,
     providerAccountId: ACCOUNT,
     kind: 'message',
