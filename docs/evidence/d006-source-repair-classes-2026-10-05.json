@@ -5,9 +5,9 @@
   "accountableOwner": "su-a20d4635-81b0-4323-b33e-6e838a21d8fe",
   "population": {
     "failedFiles": 124,
-    "repairedFocused": 7,
+    "repairedFocused": 8,
     "repairedPeerFocused": 10,
-    "openUnknown": 107
+    "openUnknown": 106
   },
   "classes": {
     "assertion": 62,
@@ -1044,8 +1044,8 @@
     {
       "path": "packages/operator-core/lib/harness/docs/doc-record.integration.test.ts",
       "class": "missing-schema",
-      "state": "open-unknown",
-      "item": "WI-10006170",
+      "state": "repaired-focused",
+      "item": "EI-25192006009017108",
       "lines": [
         15120,
         15121,
@@ -1054,7 +1054,41 @@
         15124,
         15125,
         15126
-      ]
+      ],
+      "registeredRepairItem": "EI-25192006009017108",
+      "repairStage": "exact-dispatch-claimed-migrated-fixture-repair-verified-focused",
+      "diagnosis": "Fixture applied only historical migrations172+386, omitting canonical content columns used by the unchanged writer. Replaced the private migration list with maintained createOrgTestDb/current migration-keyed template, retained seven doc controls and added canonical-content preservation through a metadata-only upsert.",
+      "beforeTestRun": 20802974,
+      "afterTestRun": 20805989,
+      "passed": 8,
+      "skipped": 0,
+      "testSha256": "854a70fd8cab7da3a37a0f9bd96f610a73f1b70229b58429a7827c3845c78cdf",
+      "sourceFingerprints": {
+        "docWriterSha256": "b0c6fe22b7a6aa5a0b91de270cd744a6d66965eb04939f961fe33c096e9affd0",
+        "migratedFixtureSha256": "b3ba720026222bed7399209d78bddb9025ddddee060c70894b72878448769746",
+        "preconditionRevision": "e5b7c000a018fa0330d8620fa879e3313ff8434a",
+        "focusedRevision": "3cb2dc57deafb2b7b079164e715d72e0a83a2483"
+      },
+      "currentPrecondition": {
+        "status": "fail",
+        "casesPassed": 0,
+        "casesFailed": 7,
+        "casesSkipped": 0,
+        "testRunId": 20802974,
+        "runGroupId": "11914f0b-c895-4eb6-b48e-b601123a0a59"
+      },
+      "latestLocalReceipt": {
+        "id": 20805989,
+        "filePath": "packages/operator-core/lib/harness/docs/doc-record.integration.test.ts",
+        "status": "pass",
+        "commitSha": "3cb2dc57deafb2b7b079164e715d72e0a83a2483",
+        "worktreeDirty": true,
+        "isScratchConfig": false,
+        "root": "<repo-root>",
+        "startedAt": "2026-10-06T01:47:02.906Z",
+        "runGroupId": "11e22856-ba98-4c65-9607-5acff418ccf7"
+      },
+      "latestReceiptMeaning": "Focused causal fixture repair verified; committed test content and unchanged doc-writer hash checked. No production writer/schema edit, final D006 sweep, or complete import/environment assurance."
     },
     {
       "path": "packages/operator-core/lib/testing-flakiness.integration.test.ts",
