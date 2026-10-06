@@ -67,6 +67,12 @@ export const COORD_ROLES = [
   // file/shell tools (so it deliberately stays out of SU_ROLES); the matching
   // synthesized principal grants live in role-principal-caps.ts.
   'release-fixer',
+  // The MERGE-RESOLVER — a launch-blueprint role whose conflict protocol uses
+  // native coordination and work-item tools alongside its git-sync resource
+  // lock. Its synthesized principal carries only coord/work-item/feature/lock
+  // capabilities (role-principal-caps.ts); this shared role set is the other
+  // dispatch gate for its declared tools and its lifecycle/capture reporting.
+  'merge-resolver',
   // The CONTENT-FIXER — another launch-blueprint role whose repair protocol is
   // coordinated work: orient, hold/checkpoint/complete its repair item, and
   // escalate when the quarantined content cannot be fixed safely. Its
