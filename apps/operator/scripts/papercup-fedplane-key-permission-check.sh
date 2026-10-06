@@ -142,13 +142,14 @@ mkdir -p "$STATE_DIR" 2>/dev/null || true
 #   VENDORED third-party source, whose "keys" are published test vectors
 #     (node_modules and its deployment/generation temp trees, gomodcache*,
 #      openssl-src, postgresql-src, testdata, vendor, hetzner-rescue OS
-#      snapshots, dependency-generations, papercusp-rust-dependencies);
+#      snapshots, dependency-generations, papercusp-rust-dependencies, and the
+#      papercusp-jna-configure-* / papercusp-jna-native-* temporary source trees);
 #   TOOLCHAIN/BUILD/CACHE trees, which are regenerable and dominate the file
 #     count rather than the risk (.git, target, .cargo-target, .cache, .cargo,
 #      .rustup, .npm, .pnpm-store, __pycache__).
 # The cache half is what makes a widened KEYPERM_DEEP_ROOTS survivable; see the
 # measurement on KEYPERM_DEEP_ROOTS below.
-EXCLUDE_DIRS_DEFAULT='node_modules node_modules.deploy-tmp.* node_modules.deploy-old.* node_modules.generation-tmp.* node_modules.generation-old.* gomodcache* .git target intermediates dependency-generations papercusp-rust-dependencies openssl-src postgresql-src hetzner-rescue testdata vendor site-packages dist-packages .venv venv .cargo-target .cache .cargo .rustup .npm .pnpm-store __pycache__'
+EXCLUDE_DIRS_DEFAULT='node_modules node_modules.deploy-tmp.* node_modules.deploy-old.* node_modules.generation-tmp.* node_modules.generation-old.* gomodcache* .git target intermediates dependency-generations papercusp-rust-dependencies papercusp-jna-configure-* papercusp-jna-native-* openssl-src postgresql-src hetzner-rescue testdata vendor site-packages dist-packages .venv venv .cargo-target .cache .cargo .rustup .npm .pnpm-store __pycache__'
 KEYPERM_EXCLUDE_DIRS="${KEYPERM_EXCLUDE_DIRS-$EXCLUDE_DIRS_DEFAULT}"
 
 log() { echo "[fedplane-key-perm $(date +%H:%M:%S 2>/dev/null || true)] $*" >&2; }

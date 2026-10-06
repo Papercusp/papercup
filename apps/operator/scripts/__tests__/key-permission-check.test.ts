@@ -388,6 +388,33 @@ describe('papercup-fedplane-key-permission-check.sh (WI-2143622)', () => {
       expect(out).not.toContain('generated-test-key.pem');
     });
 
+    it('prunes temporary JNA configure and native source trees while reporting a loose workspace key', () => {
+      const fx = withControl(fixture());
+      const deep = join(fx.root, 'deep');
+      const configure = join(deep, 'app', 'build', 'outputs', 'papercusp-jna-configure-run-1', 'source');
+      const native = join(deep, 'app', 'build', 'outputs', 'papercusp-jna-native-run-1', 'libffi', 'src');
+      const loose = join(deep, 'app', 'config');
+      mkdirSync(configure, { recursive: true });
+      mkdirSync(native, { recursive: true });
+      mkdirSync(loose, { recursive: true });
+      const generatedFixtures = [
+        join(configure, 'generated-configure-test-key.pem'),
+        join(native, 'generated-native-test-key.pem'),
+      ];
+      const looseFixture = join(loose, 'deploy.pem');
+      for (const path of [...generatedFixtures, looseFixture]) {
+        writeFileSync(path, KEY_BODIES.opensshPlain);
+        chmodSync(path, 0o664);
+      }
+
+      const out = runProbe(fx, { KEYPERM_DEEP: '1', KEYPERM_DEEP_ROOTS: deep });
+      expect(out).toContain('FILE mode=664 ' + looseFixture + ' (content-matched private key outside .ssh)');
+      expect(out).not.toContain('papercusp-jna-configure-');
+      expect(out).not.toContain('papercusp-jna-native-');
+      expect(out).not.toContain('generated-configure-test-key.pem');
+      expect(out).not.toContain('generated-native-test-key.pem');
+    });
+
     it('keeps grep process count bounded for large candidate batches', () => {
       const fx = withControl(fixture());
       const deep = join(fx.root, 'deep');
