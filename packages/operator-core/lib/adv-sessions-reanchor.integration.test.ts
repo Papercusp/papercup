@@ -259,6 +259,95 @@ describe('grant-bearing role receipt and activation (canonical PostgreSQL client
     `;
     expect(persisted?.activation).toMatchObject({ desired: revision, status: 'desired' });
   });
+
+  it.each(['current', 'history'] as const)(
+    'copies only the exact applied receipt from a predecessor %s record',
+    async (receiptSource) => {
+      const owner = `su-cross-row-receipt-${receiptSource}-${randomUUID()}`;
+      const predecessorId = await seedAdv({ coordOwnerId: owner, sessionId: DEAD_ID });
+      const successorId = await seedAdv({ coordOwnerId: owner, sessionId: FRESH_ID, startedAgoSec: 0 });
+      const makeArtifact = (text: string) => compileAgentSpecification({
+        source: {
+          id: 'cross-row-receipt', workItem: { kind: 'feature' },
+          spine: { edges: { DONE: { to: 'done' } } },
+          grants: { requires: [], optional: [] },
+        },
+        prompt: { role: 'worker', text }, inputClosure: [],
+      });
+      const makeReceipt = (
+        artifact: ReturnType<typeof makeArtifact>,
+        stateRevision: string,
+      ) => ({
+        stack: ['domain:blueprint-operation-worker'],
+        specificationRevision: artifact.specificationRevision,
+        stateRevision,
+        specificationArtifact: artifact,
+        recordedAt: '2026-10-01T00:00:00.000Z',
+      });
+      const appliedArtifact = makeArtifact('currently applied instructions');
+      const olderArtifact = makeArtifact('older unrelated instructions');
+      const predecessorCurrentArtifact = receiptSource === 'current'
+        ? appliedArtifact
+        : makeArtifact('predecessor current instructions');
+      const successorArtifact = makeArtifact('successor instructions');
+      const applied = {
+        specificationRevision: appliedArtifact.specificationRevision,
+        stateRevision: 'state-applied',
+      };
+      const predecessorRecord = {
+        v: 1, workspaceId: WS, harnessSlug: 'papercusp', role: 'worker',
+        stack: ['domain:blueprint-operation-worker'],
+        specificationRevision: predecessorCurrentArtifact.specificationRevision,
+        stateRevision: receiptSource === 'current' ? applied.stateRevision : 'state-predecessor-current',
+        specificationArtifact: predecessorCurrentArtifact,
+        identityHistory: [
+          makeReceipt(appliedArtifact, 'state-other'),
+          ...(receiptSource === 'history' ? [makeReceipt(appliedArtifact, applied.stateRevision)] : []),
+          makeReceipt(olderArtifact, 'state-older'),
+        ],
+      };
+      try {
+        expect(await recordSuLaunchSpec(predecessorId, owner, predecessorRecord)).toBe(true);
+        const requested = await requestSessionIdentityActivation({
+          ownerId: owner, workspaceId: WS, revision: applied, source: 'launch',
+          attribution: { actorId: owner, principalId: owner, sessionId: owner },
+        });
+        const delivered = acknowledgeActivation(
+          prepareActivation(requested.state.activation!, applied), applied,
+        );
+        await admin`
+          UPDATE harness_shared.session_briefs
+             SET control_state = jsonb_set(control_state, '{activation}', ${admin.json(delivered)}, true)
+           WHERE workspace_id = ${WS} AND owner_id = ${owner}
+        `;
+
+        const successorRecord = {
+          v: 1, workspaceId: WS, harnessSlug: 'papercusp', role: 'worker',
+          stack: ['domain:blueprint-operation-worker'],
+          specificationRevision: successorArtifact.specificationRevision,
+          stateRevision: 'state-successor',
+          specificationArtifact: successorArtifact,
+        };
+        expect(await recordSuLaunchSpec(successorId, owner, successorRecord)).toBe(true);
+        const [stored] = await admin<{ launch_spec: Record<string, unknown> }[]>`
+          SELECT launch_spec FROM harness_shared.adv_sessions WHERE id = ${successorId}
+        `;
+        expect(stored.launch_spec).toMatchObject(successorRecord);
+        const history = stored.launch_spec.identityHistory as Array<Record<string, unknown>>;
+        expect(history).toHaveLength(1);
+        expect(history[0]).toMatchObject({
+          specificationRevision: applied.specificationRevision,
+          stateRevision: applied.stateRevision,
+          specificationArtifact: appliedArtifact,
+        });
+        expect(resolveIdentityArtifact(stored.launch_spec, applied)).toMatchObject({
+          kind: 'governed', artifact: appliedArtifact, current: successorArtifact,
+        });
+      } finally {
+        await admin`DELETE FROM harness_shared.session_briefs WHERE workspace_id = ${WS} AND owner_id = ${owner}`;
+      }
+    },
+  );
 });
 
 describe('active operation worker claim receipt', () => {

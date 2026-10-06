@@ -1901,8 +1901,15 @@ export async function recordSuLaunchSpec(
     // concurrent refreshes cannot discard each other's immutable receipts.
     return await boundedOrgTxn(async (tx) => {
       const exactId = advSessionId != null && advSessionId > 0 ? advSessionId : null;
-      const rows = await tx<{ id: number; launch_spec: unknown; applied: unknown }[]>`
-        SELECT a.id, a.launch_spec, b.control_state->'activation'->'applied' AS applied
+      const rows = await tx<{
+        id: number;
+        workspace_id: string;
+        coord_owner_id: string | null;
+        launch_spec: unknown;
+        applied: unknown;
+      }[]>`
+        SELECT a.id, a.workspace_id, a.coord_owner_id, a.launch_spec,
+               b.control_state->'activation'->'applied' AS applied
           FROM harness_shared.adv_sessions a
           LEFT JOIN harness_shared.session_briefs b
             ON b.workspace_id = a.workspace_id AND b.owner_id = a.coord_owner_id
@@ -1914,7 +1921,68 @@ export async function recordSuLaunchSpec(
       `;
       const row = rows[0];
       if (!row) return false;
-      const payload = JSON.stringify(retainSuLaunchIdentityHistory(row.launch_spec, launchSpec, row.applied));
+      const appliedPair = row.applied !== null && typeof row.applied === 'object' && !Array.isArray(row.applied)
+        ? row.applied as Record<string, unknown>
+        : null;
+      const appliedSpecificationRevision = typeof appliedPair?.specificationRevision === 'string'
+        ? appliedPair.specificationRevision
+        : null;
+      const appliedStateRevision = typeof appliedPair?.stateRevision === 'string'
+        ? appliedPair.stateRevision
+        : null;
+      // Activation state belongs to the stable coord owner, but launch records are per adv-session row.
+      // If this row is new, retain only the exact real applied receipt from a sibling row; never copy
+      // its whole history or synthesize a receipt from the next render.
+      const matchingReceipts = appliedSpecificationRevision && appliedStateRevision
+        ? await tx<{ receipt: unknown }[]>`
+            SELECT candidate.receipt
+              FROM harness_shared.adv_sessions prior
+              CROSS JOIN LATERAL (
+                SELECT jsonb_build_object(
+                  'stack', prior.launch_spec->'stack',
+                  'selectedIdentity', prior.launch_spec->'selectedIdentity',
+                  'specificationRevision', prior.launch_spec->'specificationRevision',
+                  'stateRevision', prior.launch_spec->'stateRevision',
+                  'specificationArtifact', prior.launch_spec->'specificationArtifact',
+                  'recordedAt', prior.started_at
+                ) AS receipt, 0 AS source_order
+                 WHERE prior.launch_spec->>'specificationRevision' = ${appliedSpecificationRevision}
+                   AND prior.launch_spec->>'stateRevision' = ${appliedStateRevision}
+                   AND prior.launch_spec->'specificationArtifact'->>'specificationRevision' = ${appliedSpecificationRevision}
+                UNION ALL
+                SELECT history.receipt, 1 AS source_order
+                  FROM jsonb_array_elements(
+                    CASE WHEN jsonb_typeof(prior.launch_spec->'identityHistory') = 'array'
+                         THEN prior.launch_spec->'identityHistory' ELSE '[]'::jsonb END
+                  ) AS history(receipt)
+                 WHERE history.receipt->>'specificationRevision' = ${appliedSpecificationRevision}
+                   AND history.receipt->>'stateRevision' = ${appliedStateRevision}
+                   AND history.receipt->'specificationArtifact'->>'specificationRevision' = ${appliedSpecificationRevision}
+              ) AS candidate
+             WHERE prior.workspace_id = ${row.workspace_id}
+               AND prior.coord_owner_id = ${row.coord_owner_id}
+               AND prior.id <> ${row.id}
+             ORDER BY prior.started_at DESC, prior.id DESC, candidate.source_order
+             LIMIT 1
+          `
+        : [];
+      const currentRecord =
+        row.launch_spec !== null &&
+        typeof row.launch_spec === 'object' &&
+        !Array.isArray(row.launch_spec)
+          ? row.launch_spec as Record<string, unknown>
+          : null;
+      const inheritedReceipt = matchingReceipts[0]?.receipt;
+      const previous = inheritedReceipt
+        ? {
+            ...(currentRecord ?? {}),
+            identityHistory: [
+              ...(Array.isArray(currentRecord?.identityHistory) ? currentRecord.identityHistory : []),
+              inheritedReceipt,
+            ],
+          }
+        : row.launch_spec;
+      const payload = JSON.stringify(retainSuLaunchIdentityHistory(previous, launchSpec, row.applied));
       const updated = await tx<{ id: number }[]>`
         UPDATE harness_shared.adv_sessions SET launch_spec = ${payload}::jsonb
          WHERE id = ${row.id}
