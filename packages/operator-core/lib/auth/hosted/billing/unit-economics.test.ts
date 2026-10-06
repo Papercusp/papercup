@@ -131,6 +131,36 @@ describe('pilot unit economics (synthetic arithmetic fixtures, not customer meas
     expect(result.quoteAllowed).toBe(false);
     expect(result.reasons).toContain('estimated-cost:compute');
   });
+  it.each(PILOT_COST_CATEGORIES.filter((category) => !['support', 'platform-overhead'].includes(category)))(
+    'rejects a measured labor rate as observed %s provider cost', (category) => {
+      const base = sheet();
+      const resource = base.lines.find((row) => row.category === category)!;
+      expect(() => calculatePilotEconomics(replace(base, category, {
+        quantity: 1, rate: { ...resource.rate!, kind: 'measured-labor' },
+      }))).toThrow('measured labor rate requires a labor cost category');
+    },
+  );
+  it.each(['inference-input', 'inference-output', 'cache-read', 'cache-write', 'inference-fees'] as const)(
+    'rejects labor evidence for customer-direct %s costs', (category) => {
+      const base = sheet({ inferenceMode: 'customer-key', consumptionPriceCents: 0 });
+      const lines = base.lines.map((row): PilotCostLine => row.category.startsWith('inference-') || row.category.startsWith('cache-')
+        ? { ...row, payer: 'customer-direct' } : row);
+      const resource = lines.find((row) => row.category === category)!;
+      expect(() => calculatePilotEconomics(replace({ ...base, lines }, category, {
+        quantity: 1, rate: { ...resource.rate!, kind: 'measured-labor' },
+      }))).toThrow('measured labor rate requires a labor cost category');
+    },
+  );
+  it.each(['support', 'platform-overhead'] as const)('retains measured staff rates for %s', (category) => {
+    const base = sheet();
+    const labor = base.lines.find((row) => row.category === category)!;
+    const result = calculatePilotEconomics(replace(base, category, {
+      quantity: 1, rate: { ...labor.rate!, kind: 'measured-labor' },
+    }));
+    expect(result.state).toBe('measured');
+    expect(result.quoteAllowed).toBe(true);
+    expect(result.platform.costMicros).toBe(1_000_000);
+  });
   it('modeled support and catalog merchant fees cannot certify a real quote', () => {
     const result = calculatePilotEconomics(replace(sheet({ paymentFee: { ...provenance, kind: 'catalog', percentageBps: 290, fixedCents: 30 } }), 'support', { usage: { ...provenance, kind: 'modeled' } }));
     expect(result.state).toBe('provisional');
