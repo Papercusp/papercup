@@ -2955,7 +2955,9 @@ function ImproveGrid({
     {
       key: "score",
       header: "Score",
-      width: 0.6,
+      // px floor (WI-10006513): a bare 0.6fr track shrank below the
+      // 18px score + 20px cell padding at 1024px and cut the number.
+      width: "minmax(56px, 0.6fr)",
       align: "right",
       toCopyText: (r) => (r.item ? String(r.item.score) : ""),
       render: ({ row: r }) =>
@@ -6535,7 +6537,10 @@ function buildRetainColumns(opts: {
     {
       key: "kind",
       header: "Kind",
-      width: 1,
+      // px floors on the retain table's chip/label tracks (WI-10006513):
+      // bare fr tracks shrink below the chip + 20px cell padding on narrow
+      // windows and the overflow:hidden cells cut the chip mid-word.
+      width: "minmax(84px, 1fr)",
       toCopyText: (r) => (r.rowType === "item" ? r.row.kind : "wi"),
       // NO `filter` here, deliberately (WI-39675, D-003). Kind is ALREADY an
       // axis — the `rtab` segmented control, applied SERVER-side. A second
@@ -6634,7 +6639,7 @@ function buildRetainColumns(opts: {
     {
       key: "status",
       header: "Status",
-      width: 1.1,
+      width: "minmax(104px, 1.1fr)",
       toCopyText: (r) =>
         r.rowType === "item" ? (r.row.status ?? "") : r.child.status,
       filter: {
@@ -6658,7 +6663,7 @@ function buildRetainColumns(opts: {
     {
       key: "lens",
       header: "Lens",
-      width: 1.2,
+      width: "minmax(104px, 1.2fr)",
       toCopyText: (r) => (r.rowType === "item" ? (r.row.meta.lens ?? "") : ""),
       filter: {
         type: "enum",
@@ -6738,7 +6743,7 @@ function buildRetainColumns(opts: {
     {
       key: "when",
       header: "When",
-      width: 0.8,
+      width: "minmax(64px, 0.8fr)",
       toCopyText: (r) => (r.rowType === "item" ? r.row.ts : r.child.ts),
       render: ({ row: r }) => {
         const ms = Date.parse(r.rowType === "item" ? r.row.ts : r.child.ts);

@@ -463,6 +463,11 @@ export default function LearningLoopControl() {
       {verdict ? (
         <span
           className={`pc-lloop__verdict${verdict.nothingLearning ? " is-idle" : ""}`}
+          // The strip below drops figures WHOLE on narrow windows (never cut
+          // mid-value), so the full verdict must stay reachable (WI-10006513).
+          title={[verdict.lead, verdict.pots, verdict.lanes, verdict.spend]
+            .filter(Boolean)
+            .join(" · ")}
         >
           <span className="pc-lloop__lead">
             <span className="pc-lloop__dot" aria-hidden />

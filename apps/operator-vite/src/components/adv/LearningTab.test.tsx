@@ -2737,8 +2737,12 @@ describe("LearningTab — grading, the only row control the merge kept (P-005: c
       expect(t.split("minmax(104px, 1.1fr)").length - 1).toBe(2);
       // severity
       expect(t).toContain("minmax(72px, 0.9fr)");
+      // score (cut at 1024px by a bare 0.6fr track, re-sweep 2026-10-06)
+      expect(t).toContain("minmax(56px, 0.6fr)");
       // the pre-fix bare tracks are gone
-      expect(t.split(" ").filter((track) => track === "1.1fr" || track === "0.9fr")).toHaveLength(0);
+      expect(
+        t.split(" ").filter((track) => track === "1.1fr" || track === "0.9fr" || track === "0.6fr"),
+      ).toHaveLength(0);
     }
   });
 
