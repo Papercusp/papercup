@@ -29,11 +29,16 @@ test.describe('workspace registry + user surfaces', () => {
     }
   });
 
-  test('GET /api/workspaces includes the default workspace', async ({ request }) => {
+  test('GET /api/workspaces includes the current workspace', async ({ request }) => {
+    // The registry must list the workspace it reports as `current`. The id is
+    // environment-specific — the dev box calls it 'default', the isolated rig
+    // 'verify-tauri-isolated-<display>' — so hardcoding 'default' failed every
+    // isolated run (WI-10006791, seeded group operator-e2e-seed-ready-…19-29-08Z).
     const res = await request.get(`${baseURL}/api/workspaces`);
     const body = await res.json();
     const ids = body.workspaces.map((w: { id: string }) => w.id);
-    expect(ids).toContain('default');
+    expect(typeof body.current).toBe('string');
+    expect(ids).toContain(body.current);
   });
 
   test('GET /api/operator/state-snapshot requires auth', async ({ request }) => {
