@@ -250,7 +250,7 @@ export default defineTool({
       .max(10)
       .optional()
       .describe(
-        'also return `excludedSample`: up to this many ids PER FLOOR (taken/claimHold/needsHuman/…, same overlapping-bucket semantics as excludedBreakdown) — the ROW-LEVEL diagnostic companion to the counts, answering "which items" instead of just "how many" without raw SQL. Omit to skip (cheaper — one extra bounded query per call when set).',
+        'Valid values are 1 through 10 (maximum 10 ids per floor). Also return `excludedSample`: up to this many ids PER FLOOR (taken/claimHold/needsHuman/…, same overlapping-bucket semantics as excludedBreakdown) — the ROW-LEVEL diagnostic companion to the counts, answering "which items" instead of just "how many" without raw SQL. Omit to skip (cheaper — one extra bounded query per call when set).',
       ),
   }),
   async handler(args, ctx) {

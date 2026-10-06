@@ -908,6 +908,18 @@ describe('work_items:claimable handler', () => {
     expect(out.excludedSample).toBeUndefined();
   });
 
+  it('documents the sampleExcluded limit that its schema enforces', () => {
+    const argsSchema = tool.args as unknown as {
+      shape: { sampleExcluded: { description?: string } };
+      safeParse: (value: unknown) => { success: boolean };
+    };
+    expect(argsSchema.shape.sampleExcluded.description).toContain(
+      'Valid values are 1 through 10 (maximum 10 ids per floor).',
+    );
+    expect(argsSchema.safeParse({ harness: 'papercup', sampleExcluded: 10 }).success).toBe(true);
+    expect(argsSchema.safeParse({ harness: 'papercup', sampleExcluded: 11 }).success).toBe(false);
+  });
+
   it('sampleExcluded rides through as sampleLimit on the SAME snapshot read + surfaces excludedSample', async () => {
     sampleValue = {
       ...EMPTY_SAMPLE,
