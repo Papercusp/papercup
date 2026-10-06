@@ -30,6 +30,7 @@ import {
   ownerHeaders,
   probeStatelessTransport,
   createStatelessDiagnosticFetch,
+  resolveStatelessTransport,
   type AgentBackend,
   type TurnError,
   type TurnProvider,
@@ -161,11 +162,16 @@ function extractResponsesText(value: unknown): string {
 }
 
 async function llmCallViaCodexGateway(
-  opts: LlmCallOpts & Pick<RunAgentChatOptions, 'authorizeStatelessRequest'>,
+  opts: LlmCallOpts & Pick<RunAgentChatOptions, 'authorizeStatelessRequest' | 'statelessGateway'>,
   model: string | undefined,
   promptText: string,
 ): Promise<LlmCallResult> {
   const pricedModel = model ?? CODEX_LLM_DEFAULT_MODEL;
+  const gateway = opts.statelessGateway === undefined ? undefined : resolveStatelessTransport(undefined, opts.statelessGateway);
+  const gatewayUrl = gateway
+    ? new URL('v1/responses', gateway.baseURL.endsWith('/') ? gateway.baseURL : gateway.baseURL + '/').href
+    : codexGatewayUrl();
+  const gatewayToken = gateway?.token ?? CODEX_GATEWAY_AUTH;
   if (!priceFor(pricedModel)) throw new Error('Codex model has no registered usage price: ' + pricedModel);
   const input =
     opts.responseFormat === 'json' && !/\bjson\b/i.test(promptText)
@@ -185,11 +191,11 @@ async function llmCallViaCodexGateway(
   if (opts.responseFormat === 'json') body.text = { format: { type: 'json_object' } };
 
   const res = await loopbackFetch(
-    codexGatewayUrl(),
+    gatewayUrl,
     {
       method: 'POST',
       headers: {
-        authorization: `Bearer ${CODEX_GATEWAY_AUTH}`,
+        authorization: `Bearer ${gatewayToken}`,
         'content-type': 'application/json',
         ...ownerHeaders(opts.ownerId),
         // EI-315: an unlabeled llm-testing call used to default to 'scout' (tier 1 — WRONG
@@ -219,7 +225,7 @@ async function llmCallViaCodexGateway(
         // gateway request; its credential digest is the gateway bearer, not
         // the provider account the gateway selects later.
         wrapFetch: (send: typeof fetch) => createStatelessDiagnosticFetch({
-          baseURL: codexGatewayUrl(), token: CODEX_GATEWAY_AUTH, headers: {}, label: 'gateway-pool',
+          baseURL: gatewayUrl, token: gatewayToken, headers: {}, label: 'gateway-pool',
         }, () => {}, send, undefined, 'unobserved', undefined, opts.authorizeStatelessRequest),
       } : {}),
     },
@@ -293,12 +299,17 @@ async function llmCallViaCodexGateway(
  * `buildSystemParam`, you MUST prepend `CLAUDE_CODE_IDENTIFIER` yourself or it will opus-429.
  */
 export async function llmCall(
-  opts: LlmCallOpts & Pick<RunAgentChatOptions, 'authorizeStatelessRequest'>,
+  opts: LlmCallOpts & Pick<RunAgentChatOptions, 'authorizeStatelessRequest' | 'statelessGateway'>,
 ): Promise<LlmCallResult> {
-  if (opts.requireOutputTokenLimit || opts.authorizeStatelessRequest !== undefined) {
-    opts = { ...opts, messages: opts.messages.map(message => ({ ...message })) };
+  if (opts.requireOutputTokenLimit || opts.authorizeStatelessRequest !== undefined || opts.statelessGateway !== undefined) {
+    opts = { ...opts, messages: opts.messages.map(message => ({ ...message })),
+      ...(opts.statelessGateway === undefined ? {} : { statelessGateway: Object.freeze({ ...opts.statelessGateway }) }) };
+    if (opts.statelessGateway !== undefined) resolveStatelessTransport(undefined, opts.statelessGateway);
   }
   const backend = backendForLlmCall(opts.model);
+  if (opts.statelessGateway !== undefined && backend !== 'anthropic-direct' && backend !== 'codex') {
+    throw Object.assign(new Error('Stateless gateway binding requires an HTTP inference backend'), { costUsd: 0 });
+  }
   if (opts.authorizeStatelessRequest !== undefined &&
       (typeof opts.authorizeStatelessRequest !== 'function' ||
         (backend !== 'anthropic-direct' && backend !== 'codex'))) {
@@ -359,6 +370,7 @@ export async function llmCall(
       maxTokens: opts.maxTokens,
       requireOutputTokenLimit: opts.requireOutputTokenLimit,
       authorizeStatelessRequest: opts.authorizeStatelessRequest,
+      statelessGateway: opts.statelessGateway,
       temperature: opts.temperature,
       thinkingBudgetTokens: opts.thinkingBudgetTokens,
       signal: opts.signal,

@@ -60,6 +60,86 @@ afterAll(() => {
 });
 
 describe('llmCall backend selection', () => {
+  it('forwards a copied per-call gateway through the Anthropic transport', async () => {
+    const { llmCall } = await import('../llm-client');
+    const statelessGateway = { baseURL: 'http://127.0.0.1:32123', token: 'cycle-fixture' };
+    events.splice(0, events.length, { type: 'result', finalText: 'scoped', tokensIn: 1, tokensOut: 1, costUsd: 0.1 });
+    try {
+      await llmCall({ model: 'claude-opus-4-8', messages: [{ role: 'user', content: 'fixture' }], statelessGateway });
+      expect(lastRunAgentChatOpts?.statelessGateway).toEqual(statelessGateway);
+      expect(lastRunAgentChatOpts?.statelessGateway).not.toBe(statelessGateway);
+      expect(Object.isFrozen(lastRunAgentChatOpts?.statelessGateway)).toBe(true);
+    } finally { events.length = 0; }
+  });
+
+  it.each([
+    { baseURL: 'https://example.invalid', token: 'fixture' },
+    { baseURL: 'file:///tmp/fixture', token: 'fixture' },
+    { baseURL: 'http://user:private@127.0.0.1:32123', token: 'fixture' },
+    { baseURL: 'http://127.0.0.1:32123?private=token', token: 'fixture' },
+    { baseURL: 'http://127.0.0.1:32123#private', token: 'fixture' },
+    { baseURL: 'http://127.0.0.1:32123', token: '' },
+    { baseURL: 'http://127.0.0.1:32123', token: 'private\nheader' },
+  ])('refuses an invalid per-call gateway before Codex sends', async statelessGateway => {
+    const { llmCall } = await import('../llm-client');
+    const send = vi.fn(); vi.stubGlobal('fetch', send);
+    try {
+      await expect(llmCall({ model: 'gpt-6.1-sol', messages: [{ role: 'user', content: 'fixture' }],
+        statelessGateway })).rejects.toMatchObject({ message: 'Invalid stateless gateway binding', costUsd: 0 });
+      expect(send).not.toHaveBeenCalled();
+    } finally { vi.unstubAllGlobals(); }
+  });
+
+  it('isolates concurrent Codex gateways and snapshots route/token before authorization', async () => {
+    const { llmCall } = await import('../llm-client');
+    const received: Array<{ arm: number; url: string; authorization: string | undefined; body: string }> = [];
+    const servers = [0, 1].map(arm => createServer(async (req, res) => {
+      const chunks: Buffer[] = []; for await (const chunk of req) chunks.push(Buffer.from(chunk));
+      received.push({ arm, url: req.url!, authorization: req.headers.authorization, body: Buffer.concat(chunks).toString() });
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ output_text: 'arm-' + arm, usage: { input_tokens: 1, output_tokens: 1 } }));
+    }));
+    await Promise.all(servers.map(server => new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))));
+    const gateways = servers.map((server, arm) => ({ baseURL: `http://127.0.0.1:${(server.address() as AddressInfo).port}/cycle-${arm}`,
+      token: 'private-arm-' + arm }));
+    const allowed = gateways.map(gateway => gateway.baseURL + '/');
+    const savedEnv = { port: process.env.PAPERCUSP_GATEWAY_PORT, url: process.env.PAPERCUSP_ANTHROPIC_URL };
+    const originalFetch = globalThis.fetch;
+    // An ignored binding must never reach the shared gateway, including in the failing baseline.
+    vi.stubGlobal('fetch', (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (!allowed.some(prefix => url.startsWith(prefix))) return Promise.resolve(new Response(JSON.stringify({
+        output_text: 'wrong-route', usage: { input_tokens: 1, output_tokens: 1 },
+      })));
+      return originalFetch(input, init);
+    });
+    const attempts: StatelessRequestAttempt[] = [];
+    try {
+      const results = await Promise.all(gateways.map((gateway, arm) => llmCall({ model: 'gpt-6.1-sol',
+        messages: [{ role: 'user', content: 'arm-' + arm }], maxTokens: 8, requireOutputTokenLimit: true,
+        statelessGateway: gateway, authorizeStatelessRequest: async attempt => {
+          attempts.push(attempt); gateway.token = 'mutated'; gateway.baseURL = 'http://127.0.0.1:1'; return () => {};
+        } })));
+      expect(results.map(result => result.text)).toEqual(['arm-0', 'arm-1']);
+      expect(received.sort((a, b) => a.arm - b.arm).map(value => [value.arm, value.url, value.authorization]))
+        .toEqual([[0, '/cycle-0/v1/responses', 'Bearer private-arm-0'], [1, '/cycle-1/v1/responses', 'Bearer private-arm-1']]);
+      for (const value of received) {
+        const attempt = attempts.find(candidate => JSON.parse(candidate.body).input === 'arm-' + value.arm)!;
+        expect(value.body).toBe(attempt.body);
+        expect(attempt.credentialSha256).toBe(createHash('sha256').update(JSON.stringify({
+          authorization: 'Bearer private-arm-' + value.arm, apiKey: null,
+        })).digest('hex'));
+      }
+      expect({ port: process.env.PAPERCUSP_GATEWAY_PORT, url: process.env.PAPERCUSP_ANTHROPIC_URL }).toEqual(savedEnv);
+    } finally {
+      vi.unstubAllGlobals();
+      await Promise.all(servers.map(server => {
+        server.closeAllConnections();
+        return new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+      }));
+    }
+  });
+
   it('forwards trusted-host stateless authorization without changing the frozen judge policy', async () => {
     const { llmCall } = await import('../llm-client');
     const authorizeStatelessRequest = vi.fn(async () => () => {});
