@@ -1476,6 +1476,11 @@ export default defineTool({
     // belong to that goal and are bound by the goal's ceilings. `count` is passed
     // whole so an over-large batch is refused once here rather than part-way
     // through, leaving half a fleet running against a breached ceiling.
+    const retainedOwnerId = isSuccessor || (isResume && !fork) ? resumeOwnerId : null;
+    const goalExcludedOwnerIds = [...new Set([
+      ...(respawnReplacesOwnerId ? [respawnReplacesOwnerId] : []),
+      ...(retainedOwnerId ? [retainedOwnerId] : []),
+    ])];
     const goalLaunch = await resolveGoalLaunch({
       workspaceId,
       launcherOwnerId: callerOwnerId ?? '',
@@ -1484,7 +1489,7 @@ export default defineTool({
       goalRole: args.goalVerifier === 'grade' ? 'grading' : args.goalVerifier === 'test' ? 'test' : null,
       fleetSlug,
       count,
-      ...(respawnReplacesOwnerId ? { excludeOwnerIds: [respawnReplacesOwnerId] } : {}),
+      ...(goalExcludedOwnerIds.length ? { excludeOwnerIds: goalExcludedOwnerIds } : {}),
       requested: {
         ...(args.agent ? { agent: args.agent as 'claude' | 'codex' | 'omp' } : {}),
         ...(args.account ? { account: args.account } : {}),
@@ -1577,11 +1582,10 @@ export default defineTool({
     // bootstrap can then register the session under the same owner that the
     // launcher, admission metadata, and launch verifier already know. A
     // respawn supplies its durable replacement identity; successors and
-    // in-place resumes retain the source identity; forks deliberately mint a
-    // new identity from their resumed transcript and therefore stay unpinned.
+    // in-place resumes retain the source identity; each fork gets a fresh pin
+    // through the shared command builder so its reservation and bootstrap agree.
     const memberOwnerIds: Array<string | null> = Array.from({ length: count }, (_v, i) => {
       if (isSuccessor || (isResume && !fork)) return resumeOwnerId;
-      if (isResume) return null;
       if (i === 0 && respawnOwnerId) return respawnOwnerId;
       return `su-${randomUUID()}`;
     });
@@ -1662,6 +1666,7 @@ export default defineTool({
         cmd = isResume
           ? buildAgentLaunchCommand({
               mode: fork ? 'fork' : 'resume',
+              ...(fork ? { ownerId: memberOwnerIds[i] } : {}),
               sessionId: resumeSessionId,
               resumeId,
               // A same-session resume/fork keeps the source's account route
@@ -1904,9 +1909,8 @@ export default defineTool({
                 fleetSlug,
                 kickoffProof: requireKickoffProof,
                 // Fresh members and successors are explicitly pre-pinned. An
-                // in-place resume re-attaches its source owner. A fork
-                // deliberately gets no stamp because it mints a distinct
-                // identity at boot.
+                // in-place resume re-attaches its source owner. Each fork's
+                // distinct identity is pinned in both argv and this receipt.
                 coordOwnerId: targetOwnerId,
               });
               // A one-turn headless agent may finish at its CLI prompt without

@@ -1532,8 +1532,9 @@ describe('resume + fork (D-004/D-007)', () => {
       expect(owner).toMatch(/^su-[0-9a-f-]{36}$/);
       expect(owner).not.toBe(dead.ownerId);
       expect(spawnGovernedAgentProcessMock.mock.calls[i][0]).toMatchObject({ owner });
-      expect(spawns.mock.calls[i][0].envelope.greetingCmd).toContain(`--owner-id=${owner}`);
-      if (headless) expect(spawns.mock.calls[i][0]).toMatchObject({ coordOwnerId: owner });
+      const options = spawns.mock.calls[i][0] as { envelope: { greetingCmd: string }; coordOwnerId?: string };
+      expect(options.envelope.greetingCmd).toContain(`--owner-id=${owner}`);
+      if (headless) expect(options).toMatchObject({ coordOwnerId: owner });
     }
     expect(dataOf(result)?.launch).toMatchObject({ ownerIds: owners });
     expect(goalLaunchResolveMock.mock.calls[0][0]).not.toHaveProperty('excludeOwnerIds');
