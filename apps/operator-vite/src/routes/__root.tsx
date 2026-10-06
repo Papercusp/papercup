@@ -24,6 +24,7 @@ import GlobalShortcutsHelp from '@/app/_components/GlobalShortcutsHelp';
 import GlobalAppShortcuts from '@/app/_components/GlobalAppShortcuts';
 import GlobalVoiceShortcuts from '@/app/_components/GlobalVoiceShortcuts';
 import GlobalSearchDialog from '@/app/_components/GlobalSearchDialog';
+import ReportProblemDialog from '@/app/_components/ReportProblemDialog';
 import PresenceRail from '@/app/_components/PresenceRail';
 // Side effect: register the browser voice controls into operator-core's
 // voice-control bridge so voice.* commands reach the UI voice engine without a
@@ -267,6 +268,7 @@ function RootComponent() {
               <GlobalAppShortcuts />
               <GlobalVoiceShortcuts />
               <GlobalSearchDialog />
+              <ReportProblemDialog />
               {!chromeless && !portalEmbed && !wslGateBlocking && <PresenceRail />}
               {/* Far-left steering/settings sidebar (D-009). Inside NuqsAdapter
                   (its open/tab/selection state is URL-backed) + RootSyncProvider

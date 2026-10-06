@@ -263,6 +263,14 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
     options: { enableOnFormTags: ['INPUT', 'TEXTAREA'] },
   },
   {
+    // unified-bug-pipeline P-014 / D-048 pt 1: opens ReportProblemDialog (?report=true).
+    id: 'report.problem',
+    description: 'Report a problem',
+    defaultCombo: 'mod+shift+b',
+    category: 'global',
+    options: { enableOnFormTags: ['INPUT', 'TEXTAREA'] },
+  },
+  {
     id: 'panel.togglePresence',
     description: 'Toggle the live-agents rail (member list)',
     defaultCombo: 'mod+u', // Discord: Ctrl+U member list
