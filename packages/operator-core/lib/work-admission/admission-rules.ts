@@ -344,7 +344,15 @@ export async function applyAdmissionRule(
   workspaceId: string,
   ruleId: string,
   deps: AdmitDeps & { sql?: AdmissionDb; limit?: number } = {},
-): Promise<{ scanned: number; admitted: number; existing: number; refused: Array<{ recordId: string; code: string }>; truncated: boolean }> {
+): Promise<{
+  scanned: number;
+  admitted: number;
+  /** Bugs the intake attached to an existing bug: an admission row, no new work item. */
+  folded: number;
+  existing: number;
+  refused: Array<{ recordId: string; code: string }>;
+  truncated: boolean;
+}> {
   const sql = deps.sql ?? getOrgPg().sql;
   const [ruleRow] = await sql<RuleDbRow[]>`
     SELECT * FROM harness_shared.admission_rules WHERE workspace_id = ${workspaceId} AND id = ${ruleId}`;
@@ -360,7 +368,7 @@ export async function applyAdmissionRule(
      ORDER BY feature_id
      LIMIT ${limit + 1}`;
   const truncated = records.length > limit;
-  const summary = { scanned: 0, admitted: 0, existing: 0, refused: [] as Array<{ recordId: string; code: string }>, truncated };
+  const summary = { scanned: 0, admitted: 0, folded: 0, existing: 0, refused: [] as Array<{ recordId: string; code: string }>, truncated };
   for (const rec of records.slice(0, limit)) {
     summary.scanned += 1;
     if (!matchAdmissionRule(rule.match, rec.payload ?? {})) continue;
@@ -376,6 +384,8 @@ export async function applyAdmissionRule(
     );
     if (!res.ok) summary.refused.push({ recordId: rec.feature_id, code: res.code });
     else if (res.reason === 'admitted') summary.admitted += 1;
+    // A bug the intake folded onto an existing bug: a new admission, but no new work item.
+    else if (res.reason === 'folded') summary.folded += 1;
     else summary.existing += 1;
   }
   return summary;

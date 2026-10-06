@@ -76,6 +76,15 @@ function admitDeps(): AdmitDeps {
       nextId += 1;
       return { id: `WI-CHAT-RULE-${nextId}` };
     },
+    // Slack bugs reach the ONE bug intake, not createWorkItem (slack-messages-to-bug-reports P-004,
+    // D-007). `created` records whichever door minted the item, so these assertions keep meaning
+    // "one bug was filed"; admit-bug-intake.integration.test.ts pins the door itself.
+    captureBug: async (input) => {
+      const harness = typeof input.scope === 'string' && input.scope.startsWith('harness:') ? input.scope.slice('harness:'.length) : '';
+      created.push({ kind: String(input.kind), title: String(input.title), harness });
+      nextId += 1;
+      return { ok: true, created: true, issue: { id: `WI-CHAT-RULE-${nextId}` } as never, possibleDuplicates: [] };
+    },
   };
 }
 
