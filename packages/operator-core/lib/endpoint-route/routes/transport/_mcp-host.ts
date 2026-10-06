@@ -4315,6 +4315,7 @@ export function registerMcpHost(server: McpServer): void {
               // request did not. Recover only an unambiguous JSON object body;
               // result-door envelopes describe retrieval state, not tool data.
               if (requestedStructured && storedResult.structuredContent === undefined) {
+                let structuredUnavailableReason = 'stored-result-not-rehydratable';
                 const [onlyContent] = storedResult.content;
                 if (
                   storedResult.content.length === 1 &&
@@ -4331,10 +4332,27 @@ export function registerMcpHost(server: McpServer): void {
                     ) {
                       storedResult.structuredContent = decoded;
                       storedResult._meta = { ...(storedResult._meta ?? {}), structured: true };
+                    } else if (
+                      decoded !== null &&
+                      typeof decoded === 'object' &&
+                      (decoded as { schemaVersion?: unknown }).schemaVersion === 'papercusp.output-envelope/v1'
+                    ) {
+                      structuredUnavailableReason = 'result-door-envelope-is-not-tool-data';
                     }
                   } catch {
                     // Compact or other non-JSON content cannot be rehydrated safely.
                   }
+                }
+                // MCP clients that loaded outputSchema reject a non-error result
+                // without structuredContent before callers can inspect its text.
+                // Preserve the honest result-door envelope as an explicit tool
+                // error when its spilled/partial body cannot satisfy that contract.
+                if (storedResult.structuredContent === undefined) {
+                  storedResult.isError = true;
+                  storedResult._meta = {
+                    ...(storedResult._meta ?? {}),
+                    structuredUnavailable: { reason: structuredUnavailableReason },
+                  };
                 }
               }
               // P-006 / D-014: a replay is still model-facing output. Stored
