@@ -47,6 +47,8 @@ import {
 } from './admission-sources';
 import { recordAdmissionWriteBack } from './write-back-ledger';
 import { admittedSourceBody, admittedSourceTitle } from '../harness/improvements/untrusted-evidence';
+import { isPersonReporterKind, type ReporterKind } from '../harness/improvements/provenance';
+import type { ReportContextInput } from '../harness/improvements/report-context';
 import {
   captureImprovement as defaultCaptureImprovement,
   type CaptureImprovementInput,
@@ -64,6 +66,8 @@ export type AdmittedKind = (typeof ADMITTED_KINDS)[number];
 
 /** Upper bound on the body excerpt copied onto the minted item. */
 export const ADMISSION_BODY_MAX = 8000;
+/** Upper bound on a chat reporter's note leading the body (the Slack form allows 2000). */
+export const ADMISSION_NOTE_MAX = 2000;
 /** Upper bound on a write-back text. */
 export const ADMISSION_WRITE_BACK_MAX = 4000;
 
@@ -76,6 +80,69 @@ export interface AdmitInput {
   /** Optional title override. Without one the source's own title is used. */
   title?: string;
   kind?: AdmittedKind;
+  /**
+   * What the admitter knows about the report that the source does not (for a chat report: the
+   * gesture, who reported it, their note and attachment consent). Merged over the source's own
+   * context (ResolvedAdmissionSource.reportContext) and handed to the bug intake.
+   */
+  reportContext?: ReportContextInput;
+}
+
+/**
+ * Who filed a report admitted from `sourceKind` by `via` (slack-messages-to-bug-reports D-012).
+ * A source that declares a reporter kind (chat: always a person in a chat workspace) wins; a rule
+ * admits a person's report from outside ('end-user', P-004); otherwise the intake derives it from
+ * the admitter's identity. The ONE place the admission path decides this, so the intake, the
+ * direct create and a re-sync quote the same text the same way.
+ */
+export function admissionReporterKind(sourceKind: string, via: string): ReporterKind | undefined {
+  const declared = getAdmissionSource(sourceKind)?.reporterKind;
+  if (declared) return declared;
+  return via === 'rule' ? 'end-user' : undefined;
+}
+
+/**
+ * The admitter's context over the source's. The chat block merges field by field, since each
+ * side knows different parts of it (the source: channel, author, post time, excerpt; the
+ * admitter: gesture, reporter, note, consent, links).
+ */
+export function mergeReportContext(
+  fromSource: ReportContextInput | undefined,
+  fromAdmitter: ReportContextInput | undefined,
+): ReportContextInput | undefined {
+  if (!fromSource && !fromAdmitter) return undefined;
+  const asRecord = (v: unknown) => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : undefined);
+  // The admitter's value wins only when it has one: a null never erases what the source knew,
+  // and a nested place or person ({ id, name }) merges field by field.
+  const overlay = (base: Record<string, unknown> | undefined, top: Record<string, unknown> | undefined) => {
+    const out: Record<string, unknown> = { ...base };
+    for (const [key, value] of Object.entries(top ?? {})) {
+      if (value === null || value === undefined) continue;
+      const below = asRecord(out[key]);
+      const above = asRecord(value);
+      out[key] = below && above ? overlay(below, above) : value;
+    }
+    return out;
+  };
+  const chatSource = asRecord(fromSource?.chat);
+  const chatAdmitter = asRecord(fromAdmitter?.chat);
+  const merged: ReportContextInput = { ...fromSource, ...fromAdmitter };
+  if (chatSource || chatAdmitter) merged.chat = overlay(chatSource, chatAdmitter);
+  return merged;
+}
+
+/** A chat report's link to its message, when the admitter found one (https only). */
+function contextPermalink(context: ReportContextInput | undefined): string | null {
+  const chat = context?.chat;
+  const link = chat && typeof chat === 'object' ? (chat as Record<string, unknown>).permalink : null;
+  return typeof link === 'string' && /^https:\/\/\S+$/i.test(link.trim()) ? link.trim() : null;
+}
+
+/** The note a chat reporter typed, when there is one. */
+function reporterNote(context: ReportContextInput | undefined): string | null {
+  const chat = context?.chat;
+  const note = chat && typeof chat === 'object' ? (chat as Record<string, unknown>).note : null;
+  return typeof note === 'string' && note.trim() ? note.trim() : null;
 }
 
 export interface AdmitDeps {
@@ -228,7 +295,16 @@ export async function admitWorkItem(input: AdmitInput, deps: AdmitDeps = {}): Pr
     }
 
     const title = (input.title?.trim() || resolved.title.trim() || resolved.sourceKey).slice(0, 300);
-    const body = [resolved.body.slice(0, ADMISSION_BODY_MAX), resolved.permalink ? `Source: ${resolved.permalink}` : '']
+    const reportContext = mergeReportContext(resolved.reportContext, input.reportContext);
+    const permalink = resolved.permalink ?? contextPermalink(reportContext);
+    // A chat reporter's own note is their description of the problem, so it leads the body
+    // (Slack D-012 pt 4); the intake quotes the whole body as one person's report.
+    const note = reporterNote(input.reportContext);
+    const body = [
+      note ? `Note from the reporter:\n${note.slice(0, ADMISSION_NOTE_MAX)}` : '',
+      resolved.body.slice(0, ADMISSION_BODY_MAX),
+      permalink ? `Source: ${permalink}` : '',
+    ]
       .filter(Boolean)
       .join('\n\n');
     let workItemId: string | null;
@@ -241,10 +317,11 @@ export async function admitWorkItem(input: AdmitInput, deps: AdmitDeps = {}): Pr
           sourceKind: kindRaw,
           sourceKey: resolved.sourceKey,
           dataSourceId: resolved.dataSourceId,
-          permalink: resolved.permalink ?? null,
+          permalink,
           title,
           body,
           by,
+          reportContext,
         }),
       );
       const target = bugIntakeTarget(intake);
@@ -253,8 +330,8 @@ export async function admitWorkItem(input: AdmitInput, deps: AdmitDeps = {}): Pr
       if (!target.created) reason = 'folded';
     } else {
       // P-013 (D-047): this path skips captureImprovement, so it applies the intake's
-      // redaction, and for a rule admission (a person's report) its quoting, itself.
-      const endUser = input.admitter.via === 'rule';
+      // redaction, and for a person's report (a rule admission, any chat source) its quoting, itself.
+      const endUser = isPersonReporterKind(admissionReporterKind(kindRaw, input.admitter.via));
       workItemId = createdId(
         await create({
           kind: workKind,
@@ -317,7 +394,13 @@ export function admissionBugCapture(args: {
   title: string;
   body: string;
   by: string;
+  /** The merged report context (source + admitter), when either side had any. */
+  reportContext?: ReportContextInput;
 }): CaptureImprovementInput {
+  // A rule admits a PERSON's report from outside (a ticket), so the reporter is a person, not the
+  // admitting rule (whose `admission-rule:<id>` label would otherwise derive 'agent'). A chat
+  // source is always a person in a chat workspace: 'chat' whoever admits it (D-012).
+  const reporterKind = admissionReporterKind(args.sourceKind, args.input.admitter.via);
   return {
     title: args.title,
     body: args.body,
@@ -325,10 +408,8 @@ export function admissionBugCapture(args: {
     scope: `harness:${args.input.harness}`,
     workspaceId: args.input.workspaceId,
     createdBy: args.by,
-    // A rule admits a PERSON's report from outside (a chat message, a ticket), so the reporter is
-    // a person, not the admitting rule (whose `admission-rule:<id>` label would otherwise derive
-    // 'agent'). Chat sources get their own 'chat' reporter kind in P-005.
-    ...(args.input.admitter.via === 'rule' ? { reporterKind: 'end-user' as const } : {}),
+    ...(reporterKind ? { reporterKind } : {}),
+    ...(args.reportContext ? { reportContext: args.reportContext } : {}),
     foundDuring: `work admission (${args.sourceKind})`,
     payloadExtra: {
       admission: {
@@ -429,10 +510,10 @@ export async function refreshAdmittedFromSource(
   for (const a of admissions) {
     const owned = new Set(a.fieldAuthority.external);
     const patch: { title?: string; body?: string; confirmShrink?: boolean } = {};
-    // P-013 (D-047): a re-sync writes past the intake, so it redacts, and for a rule
-    // admission quotes, exactly as the admission did. An unchanged source then still
+    // P-013 (D-047): a re-sync writes past the intake, so it redacts, and for a person's
+    // report quotes, exactly as the admission did. An unchanged source then still
     // compares equal to the stored form below and writes nothing.
-    const endUser = a.admittedVia === 'rule';
+    const endUser = isPersonReporterKind(admissionReporterKind(String(a.sourceKind), String(a.admittedVia)));
     if (owned.has('title') && snapshot.title?.trim()) patch.title = admittedSourceTitle(snapshot.title.trim().slice(0, 300), endUser);
     if (owned.has('description') && typeof snapshot.body === 'string') {
       patch.body = admittedSourceBody(

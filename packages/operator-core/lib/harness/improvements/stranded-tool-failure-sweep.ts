@@ -54,6 +54,7 @@ import {
   type CaptureDeps,
 } from './capture-core';
 import { structuredToolFailureSubject } from './deployment-staleness-screen';
+import { isPersonReporterKind, PERSON_REPORTER_KINDS } from './provenance';
 
 type Sql = ReturnType<typeof getOrgPg>['sql'];
 
@@ -522,12 +523,19 @@ function isTransientReason(reason: string): boolean {
   return reason === 'ledger-unreadable' || reason === 'current-build-unknown' || reason.startsWith('freshness-unknown:');
 }
 
-/** An automatic report: nobody but agents or the watchdog ever reported it. */
+/**
+ * An automatic report: nobody but agents or the watchdog ever reported it. A person's
+ * report through any door ('end-user', or 'chat' from Slack — Slack D-012) keeps it.
+ */
 export function isAutomaticReport(payload: Record<string, unknown>): boolean {
   const reporter = record(payload.reporter);
   const kinds = Array.isArray(payload.reporterKinds) ? payload.reporterKinds : [];
-  return reporter.kind !== 'end-user' && !kinds.includes('end-user');
+  return !isPersonReporterKind(reporter.kind) && !kinds.some(isPersonReporterKind);
 }
+
+// The SQL twin of isAutomaticReport, built from the same list so the two cannot drift.
+// The kinds are fixed literals from provenance.ts, never caller input.
+const PERSON_KINDS_SQL = PERSON_REPORTER_KINDS.map((k) => `'${k}'`).join(', ');
 
 export type CandidateExpiryOutcome = 'expired' | 'kept';
 
@@ -558,8 +566,8 @@ const EXPIRY_CANDIDATES_SQL = `
        AND lane IS DISTINCT FROM 'observation'
        AND payload->>'lane' IS DISTINCT FROM 'observation'
        AND jsonb_typeof(payload->'toolFailureProbation') = 'object'
-       AND payload->'reporter'->>'kind' IS DISTINCT FROM 'end-user'
-       AND NOT (COALESCE(payload->'reporterKinds', '[]'::jsonb) @> '["end-user"]'::jsonb)
+       AND COALESCE(payload->'reporter'->>'kind', '') NOT IN (${PERSON_KINDS_SQL})
+       AND NOT (COALESCE(payload->'reporterKinds', '[]'::jsonb) ?| ARRAY[${PERSON_KINDS_SQL}])
        AND payload->'candidateExpiry'->>'checkedBuild' IS DISTINCT FROM $2
      ORDER BY updated_ts ASC NULLS FIRST, feature_id
      LIMIT $3`;
