@@ -45,10 +45,15 @@ function bars() {
 
 // The rubric criteria exactly as the plan seeds them (R-2's driftMarkers is the generated
 // sentence a legacy prose BAR receives, which the plan itself never states).
-const inSyncCriteria = () => [
+const inSyncCriteria = (): Array<Record<string, unknown>> => [
   {
     key: 'r-1', barKey: 'R-1', model: sections.acceptance.condition,
     driftMarkers: sections.acceptance.falsifier,
+    method: sections.verification.method,
+    check: { ...sections.verification.check },
+    requiredScope: [...sections.acceptance.requiredScope],
+    requiredTestLayers: [...sections.acceptance.requiredTestLayers],
+    evidencePlane: sections.acceptance.evidencePlane,
   },
   {
     key: 'r-2', barKey: 'R-2', model: 'The writer persists one canonical bar.',
@@ -155,5 +160,81 @@ describe('diffAmendedCriteriaAgainstRequirements', () => {
       requirementBars: parsed.bars, nextCriteria: criteria, changedBars: [],
     });
     expect(drift.entries.map((entry) => entry.barKey)).toEqual(['R-2', 'R-10']);
+  });
+
+  // WI-10006829: rev 10 of acceptance-pui-chat-first-ux moved R-01's check.files to a different
+  // test file; the plan block kept the old (nonexistent) files and this advisory said inSync:true.
+  it('flags an amendment that moves check to different files while the plan block keeps the old check', () => {
+    const criteria = inSyncCriteria();
+    criteria[0]!.check = { kind: 'tests', files: ['apps/tui/lib/agent-chat-pty.integration.test.ts'] };
+    const drift = diffAmendedCriteriaAgainstRequirements({
+      requirementBars: bars(), nextCriteria: criteria, changedBars: ['R-1'],
+    });
+    expect(drift.inSync).toBe(false);
+    expect(drift.entries).toEqual([
+      { barKey: 'R-1', changedByAmendment: true, kind: 'text-differs', fields: ['check'] },
+    ]);
+    expect(drift.action).toContain('R-1 (check)');
+  });
+
+  it('flags a reworded method and a replication the plan block never states', () => {
+    const criteria = inSyncCriteria();
+    criteria[0]!.method = 'Run the PTY suite once.';
+    criteria[0]!.replication = 'Re-run on a second machine.';
+    const drift = diffAmendedCriteriaAgainstRequirements({
+      requirementBars: bars(), nextCriteria: criteria, changedBars: ['R-1'],
+    });
+    expect(drift.entries).toEqual([
+      { barKey: 'R-1', changedByAmendment: true, kind: 'text-differs', fields: ['method', 'replication'] },
+    ]);
+  });
+
+  it('flags stated acceptance metadata that the amendment changed', () => {
+    const criteria = inSyncCriteria();
+    criteria[0]!.requiredTestLayers = ['e2e', 'unit'];
+    const drift = diffAmendedCriteriaAgainstRequirements({
+      requirementBars: bars(), nextCriteria: criteria, changedBars: ['R-1'],
+    });
+    expect(drift.entries).toEqual([
+      { barKey: 'R-1', changedByAmendment: true, kind: 'text-differs', fields: ['requiredTestLayers'] },
+    ]);
+  });
+
+  it('does not compare acceptance metadata the plan block leaves to the seeder', () => {
+    const criteria = inSyncCriteria();
+    // The fixture block never states evidenceRuntime, so the seeder (not the plan) owns it.
+    criteria[0]!.evidenceRuntime = 'staging';
+    const drift = diffAmendedCriteriaAgainstRequirements({
+      requirementBars: bars(), nextCriteria: criteria, changedBars: ['R-1'],
+    });
+    expect(drift.inSync).toBe(true);
+  });
+
+  it('compares check structurally: key order and file order are not drift', () => {
+    const content = planContent.replace(
+      JSON.stringify(sections),
+      JSON.stringify({
+        ...sections,
+        verification: { ...sections.verification, check: { kind: 'tests', files: ['a.test.ts', 'b.test.ts'] } },
+      }),
+    );
+    const parsed = parseRequirementBars(content);
+    if (!parsed.ok) throw new Error(`fixture plan failed to parse: ${JSON.stringify(parsed.problems)}`);
+    const criteria = inSyncCriteria();
+    criteria[0]!.check = { files: ['b.test.ts', 'a.test.ts'], kind: 'tests' };
+    const drift = diffAmendedCriteriaAgainstRequirements({
+      requirementBars: parsed.bars, nextCriteria: criteria, changedBars: ['R-1'],
+    });
+    expect(drift.inSync).toBe(true);
+  });
+
+  it('never compares verification fields for a legacy prose BAR (the plan states none)', () => {
+    const criteria = inSyncCriteria();
+    criteria[1]!.method = 'Any method.';
+    criteria[1]!.check = { kind: 'tests', files: ['x.test.ts'] };
+    const drift = diffAmendedCriteriaAgainstRequirements({
+      requirementBars: bars(), nextCriteria: criteria, changedBars: ['R-2'],
+    });
+    expect(drift.inSync).toBe(true);
   });
 });
