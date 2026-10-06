@@ -14,9 +14,16 @@
  * token — and deletes both afterwards. It never touches the production agent
  * or the stored voice preference.
  *
- * Opt in with PAPERCUSP_ELEVENLABS_LIVE=1. The key comes from
- * ELEVENLABS_API_KEY, or else the workspace voice-credentials store. The key is
- * sent only in the request header and is never logged or asserted on.
+ * Opt in with PAPERCUSP_ELEVENLABS_LIVE=1 and pass the key as
+ * ELEVENLABS_API_KEY (the integration lane's pools may point at a throwaway
+ * test database, so the workspace credential store is only a fallback). The key
+ * is sent only in the request header and is never logged or asserted on.
+ *
+ * Run it through the test router directly so the opt-in reaches the worker
+ * (`npm run test:file` currently drops it, EI-25261630093241703):
+ *   PAPERCUSP_ELEVENLABS_LIVE=1 ELEVENLABS_API_KEY=… PAPERCUSP_TEST_RUN_HARNESS=papercusp \
+ *     node --import ./scripts/lib/committed-source-loader.mjs scripts/test-files.mjs \
+ *     packages/operator-core/lib/voice-engines/elevenlabs-agent-sync.live.integration.test.ts
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
@@ -81,7 +88,7 @@ describe.skipIf(!LIVE)('LIVE: ElevenLabs agent sync against the real API', () =>
       const { readElevenLabsKey } = await import('../voice-credentials');
       apiKey = (await readElevenLabsKey()) ?? '';
     }
-    if (!apiKey) throw new Error('PAPERCUSP_ELEVENLABS_LIVE=1 but no ElevenLabs key is configured');
+    if (!apiKey) throw new Error('PAPERCUSP_ELEVENLABS_LIVE=1 but no ElevenLabs key is configured (set ELEVENLABS_API_KEY)');
   }, 30_000);
 
   afterAll(async () => {
