@@ -71,9 +71,14 @@ import {
   readImplementationAcceptanceProposal,
   readImplementationReadiness,
   sealImplementationAcceptance,
+  createVerificationTask,
+  verificationConflict,
+  verificationParties,
   type ImplementationAcceptanceContract,
   type ImplementationAcceptanceProposal,
   type SealImplementationAcceptanceResult,
+  type VerificationParties,
+  type VerificationTask,
 } from '../harness/improvements/agent-review-policy';
 import { neutralizeToolCallTags, sanitizePersistedText } from '../text-safety';
 
@@ -96,6 +101,8 @@ export interface IntakeWorkItem {
   scope: string;
   severity?: string | null;
   createdBy: string | null;
+  /** Who closed the row, when it was closed: an implementer of it (P-007). */
+  terminalOwner?: string | null;
   payload: unknown;
 }
 
@@ -405,6 +412,22 @@ function investigationRecord(
   };
 }
 
+/**
+ * P-007 / D-021: the task `investigate` spawns is a verification task, so its claim writer
+ * refuses the subject's reporters and implementers. A bug is checked by reproducing it;
+ * anything else by reviewing the proposal. Implementers are the subject's closer only:
+ * a candidate under review has usually never been worked, and its claim history records
+ * REVIEW claims, so reading it would exclude the very reviewer who ordered the check.
+ */
+function investigationVerificationTask(source: IntakeWorkItem, parties: VerificationParties): VerificationTask {
+  return createVerificationTask({
+    subject: source.id,
+    check: source.kind === 'bug' ? 'reproduction' : 'proposal-review',
+    reporters: parties.reporters,
+    implementers: parties.implementers,
+  });
+}
+
 /** The investigation record on a promoted task, when it is a current-version one. */
 export function readIntakeInvestigation(payload: unknown): IntakeInvestigation | null {
   const stored = record(record(payload).investigation);
@@ -487,6 +510,23 @@ async function executePromotion(input: IntakeExecutionInput, deps: IntakePromoti
         detail: `${source.id} has no recorded filer, so reviewer independence cannot be established`,
       };
     }
+    // P-007 / D-021: the deciding reviewer must be independent of the WHOLE party set, not
+    // only the filer the seal checks: any reporter (auto-filer, submitter, reproduction
+    // filer) or implementer (whoever closed it). Same refusal code as the seal's own
+    // filer check, since both are the same failure: the reviewer lacks authority.
+    const parties = verificationParties({
+      createdBy: source.createdBy,
+      terminalOwner: source.terminalOwner ?? null,
+      payload: source.payload,
+    });
+    const reviewerConflict = verificationConflict(parties, decision.decidedBy);
+    if (reviewerConflict && decision.decidedBy.trim() !== submittedBy) {
+      return {
+        ok: false,
+        refusal: 'acceptance-invalid-authority',
+        detail: `${decision.decidedBy} is a ${reviewerConflict} of ${source.id}; an independent reviewer must record the ${disposition} decision`,
+      };
+    }
     // P-013 (D-023): a BUG promote needs a reproduction receipt — on the decision, or
     // the source's born-verified encounter receipt (D-024). Refuses before any write.
     const reproductionSource = intakeReproductionSourceOf(source);
@@ -541,7 +581,12 @@ async function executePromotion(input: IntakeExecutionInput, deps: IntakePromoti
           implementationReadiness: readyReadiness(source.payload, sealed.contract, authority, now),
           intakeSource: { id: source.id, mode: 'in-place', revision: sourceRevision },
           intakePromotion: receipt,
-          ...(disposition === 'investigate' ? { investigation: investigationRecord(sealed.contract, decision) } : {}),
+          ...(disposition === 'investigate'
+            ? {
+                investigation: investigationRecord(sealed.contract, decision),
+                verification: investigationVerificationTask(source, parties),
+              }
+            : {}),
           ...(reproduction ? { intakeReproduction: reproduction } : {}),
         });
       } catch (error) {
@@ -585,7 +630,12 @@ async function executePromotion(input: IntakeExecutionInput, deps: IntakePromoti
             kind: source.kind,
           },
           intakePromotion: receipt,
-          ...(disposition === 'investigate' ? { investigation: investigationRecord(sealed.contract, decision) } : {}),
+          ...(disposition === 'investigate'
+            ? {
+                investigation: investigationRecord(sealed.contract, decision),
+                verification: investigationVerificationTask(source, parties),
+              }
+            : {}),
           ...(reproduction ? { intakeReproduction: reproduction } : {}),
         },
       });
@@ -865,6 +915,7 @@ function toIntakeWorkItem(issue: {
   scope: string;
   severity?: string | null;
   createdBy: string | null;
+  terminalOwner?: string | null;
   payload: unknown;
 }): IntakeWorkItem {
   return {
@@ -876,6 +927,7 @@ function toIntakeWorkItem(issue: {
     scope: issue.scope,
     severity: issue.severity ?? null,
     createdBy: issue.createdBy,
+    terminalOwner: issue.terminalOwner ?? null,
     payload: issue.payload,
   };
 }
