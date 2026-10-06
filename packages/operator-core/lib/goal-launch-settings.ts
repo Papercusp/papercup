@@ -3334,7 +3334,7 @@ export async function registerGoalLaunch<T>(args: {
   sql?: Sql;
   /** Test seam: production uses the existing complete policy resolver. */
   resolve?: typeof resolveGoalLaunchForGoal;
-}, register: (goalId: string | null) => Promise<T>): Promise<{
+}, register: (goalId: string | null, resolution: GoalLaunchResolution | null, degradedReason: string | null) => Promise<T>): Promise<{
   value: T | null; resolution: GoalLaunchResolution | null; degradedReason: string | null;
 }> {
   let goalId: string | null;
@@ -3342,10 +3342,10 @@ export async function registerGoalLaunch<T>(args: {
     goalId = await resolveGoalContext(args.workspaceId, args.launcherOwnerId, args.sql);
   } catch (error) {
     if (isGoalHolderAuthorityError(error)) throw error;
-    return { value: await register(null), resolution: null,
-      degradedReason: `goal admission registration not enforced — ${error instanceof Error ? error.message : String(error)}` };
+    const degradedReason = `goal admission registration not enforced — ${error instanceof Error ? error.message : String(error)}`;
+    return { value: await register(null, null, degradedReason), resolution: null, degradedReason };
   }
-  if (!goalId) return { value: await register(null), resolution: null, degradedReason: null };
+  if (!goalId) return { value: await register(null, null, null), resolution: null, degradedReason: null };
   let registrationStarted = false;
   try {
     return await pg(args.sql).begin(async (tx) => {
@@ -3358,12 +3358,12 @@ export async function registerGoalLaunch<T>(args: {
       });
       if (resolution.refusal) return { value: null, resolution, degradedReason: null };
       registrationStarted = true;
-      return { value: await register(goalId), resolution, degradedReason: null };
+      return { value: await register(goalId, resolution, null), resolution, degradedReason: null };
     }) as unknown as { value: T | null; resolution: GoalLaunchResolution | null; degradedReason: string | null };
   } catch (error) {
     if (registrationStarted || isGoalHolderAuthorityError(error)) throw error;
-    return { value: await register(goalId), resolution: null,
-      degradedReason: `goal admission registration not enforced — ${error instanceof Error ? error.message : String(error)}` };
+    const degradedReason = `goal admission registration not enforced — ${error instanceof Error ? error.message : String(error)}`;
+    return { value: await register(goalId, null, degradedReason), resolution: null, degradedReason };
   }
 }
 
