@@ -14,6 +14,7 @@ import type {
   WorkspaceHostRuntimeRelease,
   WorkspaceHostResourceCheckpoint,
   WorkspaceHostResourceRef,
+  WorkspaceHostScopeRef,
 } from '@papercusp/deployment-driver';
 import { notifySyncInvalidate } from '../sync-sse';
 
@@ -264,15 +265,17 @@ export async function readWorkspaceHostConnection(
         status: ConnectionStatus;
         authenticated_identity: string | null;
         status_detail: string | null;
+        scopes: unknown;
       }>
     >`
-      SELECT id, label, target, credential_ref, provider_config, status, authenticated_identity, status_detail
+      SELECT id, label, target, credential_ref, provider_config, status, authenticated_identity, status_detail, scopes
       FROM harness_shared.workspace_host_connections
       WHERE workspace_id = ${workspaceId} AND id = ${connectionId}
       LIMIT 1
     `;
     const row = rows[0];
     if (!row) return null;
+    const scope = storedWorkspaceHostConnectionScope(row.target, row.scopes, row.provider_config);
     return {
       id: row.id,
       label: row.label,
@@ -283,10 +286,38 @@ export async function readWorkspaceHostConnection(
       connection: {
         target: row.target,
         cloudCredentialRef: { kind: 'cloud', ref: row.credential_ref },
+        ...(scope ? { scope } : {}),
         ...(Object.keys(row.provider_config ?? {}).length > 0 ? { provider: row.provider_config } : {}),
       },
     };
   });
+}
+
+/**
+ * The admitted scope of a stored connection, rebuilt from what its row persists. The write path keeps
+ * no `scope` column: the AWS account survives only as the single inspected scope in `scopes` (kind
+ * stripped), and the GCP project as `provider_config.projectId`. Without this a stored connection read
+ * back with no scope, so `update` lost the AWS accountId ("invalid AWS accountId") and the AWS client
+ * ran without its account binding (WI-10006709). Ambiguous or absent input yields no scope rather than a
+ * guessed one.
+ */
+export function storedWorkspaceHostConnectionScope(
+  target: string,
+  scopes: unknown,
+  providerConfig: JsonRecord | null | undefined,
+): WorkspaceHostScopeRef | undefined {
+  if (target === 'aws') {
+    const ids = (Array.isArray(scopes) ? scopes : [])
+      .map((entry) => (entry && typeof entry === 'object' ? (entry as { id?: unknown }).id : undefined))
+      .filter((id): id is string => typeof id === 'string' && id.trim() !== '')
+      .map((id) => id.trim());
+    return ids.length === 1 ? { kind: 'account', id: ids[0]! } : undefined;
+  }
+  if (target === 'gcp') {
+    const projectId = providerConfig?.projectId;
+    return typeof projectId === 'string' && projectId.trim() !== '' ? { kind: 'project', id: projectId.trim() } : undefined;
+  }
+  return undefined;
 }
 
 /**

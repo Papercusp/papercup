@@ -22,6 +22,7 @@ import {
   readWorkspaceHostResourceCheckpoints,
   recordWorkspaceHostOperationTerminalFailure,
   redactWorkspaceHostValue,
+  storedWorkspaceHostConnectionScope,
   upsertWorkspaceHostConnection,
 } from './observability-store';
 
@@ -119,9 +120,40 @@ describe('workspace-host observability store', () => {
       connection: {
         target: 'gcp',
         cloudCredentialRef: { kind: 'cloud', ref: 'adc://controller' },
+        scope: { kind: 'project', id: 'project-1' },
         provider: { projectId: 'project-1', credentialSource: 'hosted-delegation' },
       },
     });
+  });
+
+  // WI-10006709: the row has no scope column, so a stored AWS connection read back with no scope and
+  // `update` refused it as "invalid AWS accountId". The account survives only in `scopes`.
+  it('reads a stored AWS connection back with its account scope from the persisted scopes', async () => {
+    H.rows.set('FROM harness_shared.workspace_host_connections WHERE', [
+      {
+        id: 'aws:canary',
+        label: 'canary',
+        target: 'aws',
+        credential_ref: 'aws-profile://papercusp-automation',
+        provider_config: { region: 'us-east-1', subnetId: 'subnet-1' },
+        status: 'connected',
+        status_detail: null,
+        scopes: [{ id: '413781344298', label: 'AWS account 413781344298' }],
+      },
+    ]);
+
+    const stored = await readWorkspaceHostConnection('ws-1', 'aws:canary');
+    expect(stored?.connection.scope).toEqual({ kind: 'account', id: '413781344298' });
+  });
+
+  it('derives no scope from ambiguous or absent persisted input rather than guessing one', () => {
+    expect(storedWorkspaceHostConnectionScope('aws', [], {})).toBeUndefined();
+    expect(storedWorkspaceHostConnectionScope('aws', null, {})).toBeUndefined();
+    expect(storedWorkspaceHostConnectionScope('aws', [{ id: '111111111111' }, { id: '222222222222' }], {})).toBeUndefined();
+    expect(storedWorkspaceHostConnectionScope('aws', [{ id: ' 413781344298 ' }], {})).toEqual({ kind: 'account', id: '413781344298' });
+    expect(storedWorkspaceHostConnectionScope('gcp', [{ id: 'other' }], {})).toBeUndefined();
+    expect(storedWorkspaceHostConnectionScope('gcp', [], { projectId: 'p-1' })).toEqual({ kind: 'project', id: 'p-1' });
+    expect(storedWorkspaceHostConnectionScope('azure', [{ id: 'x' }], { projectId: 'p-1' })).toBeUndefined();
   });
 
   it('rejects secret-shaped hosted provider metadata before persistence', async () => {
