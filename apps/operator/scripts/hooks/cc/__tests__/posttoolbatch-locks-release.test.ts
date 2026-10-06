@@ -25,6 +25,9 @@ let operatorUrl: string;
 let releaseRequests: Array<Record<string, any>> = [];
 let releaseObservedAfterRegen: boolean[] = [];
 let primaryNoText = false;
+// WI-10006900: a retain (attestation) request answers with this body; null
+// echoes the proof paths as attributed, like an operator that knows `retain`.
+let attestResponse: Record<string, unknown> | null = null;
 
 beforeAll(async () => {
   home = fs.mkdtempSync(join(os.tmpdir(), 'posttoolbatch-home-'));
@@ -62,13 +65,22 @@ beforeAll(async () => {
       if (parsed.params?.name === 'locks:release') {
         releaseObservedAfterRegen.push(fs.existsSync(regenMarker));
       }
+      const args = parsed.params?.arguments ?? {};
+      const result = args.retain
+        ? (attestResponse ?? {
+            ok: true,
+            retained: args.native_edit_proof?.paths ?? [],
+            released: [],
+            attributed: args.native_edit_proof?.paths ?? [],
+          })
+        : { ok: true };
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(
         JSON.stringify({
           jsonrpc: '2.0',
           id: 1,
           result: {
-            content: primaryNoText ? [] : [{ type: 'text', text: JSON.stringify({ ok: true }) }],
+            content: primaryNoText ? [] : [{ type: 'text', text: JSON.stringify(result) }],
           },
         }),
       );
@@ -83,6 +95,7 @@ afterEach(() => {
   releaseRequests = [];
   releaseObservedAfterRegen = [];
   primaryNoText = false;
+  attestResponse = null;
   fs.rmSync(regenMarker, { force: true });
   for (const name of fs.readdirSync(cache)) fs.rmSync(join(cache, name), { force: true });
 });
@@ -123,6 +136,7 @@ function writeBatch(
     owner?: string;
     paths?: string[];
     releasePaths?: string[];
+    attestPaths?: string[];
     coordinationDomain?: string;
   } = {},
 ) {
@@ -139,6 +153,7 @@ function writeBatch(
       owner,
       lock_id: 'batch-lock',
       release_paths: options.releasePaths ?? options.paths ?? ['src/first.ts', 'src/second.ts'],
+      ...(options.attestPaths ? { attest_paths: options.attestPaths } : {}),
       coordination_domain: options.coordinationDomain ?? '/repo',
     }),
   );
@@ -385,6 +400,105 @@ describe('posttoolbatch-locks-release.sh', () => {
     expect(out.status).toBe(0);
     expect(releaseRequests).toHaveLength(1);
     expect(releaseRequests[0]?.params?.arguments).not.toHaveProperty('native_edit_proof');
+  });
+});
+
+describe('posttoolbatch already-held attestation (WI-10006900)', () => {
+  const readAttest = () =>
+    JSON.parse(fs.readFileSync(join(cache, 'last-attest.json'), 'utf8')) as Record<string, any>;
+
+  it('attests a fully already-held batch with retain and proof-only paths, releasing nothing', async () => {
+    writeBatch('held', 'granted', ['tu-first', 'tu-second'], {
+      releasePaths: [],
+      attestPaths: ['src/first.ts', 'src/second.ts'],
+    });
+
+    const out = await runHook(BATCH_HOOK, batchInput(['tu-first', 'tu-second']));
+
+    expect(out.status).toBe(0);
+    expect(out.stdout.trim()).toBe('');
+    expect(releaseRequests).toHaveLength(1);
+    const args = releaseRequests[0]?.params?.arguments;
+    expect(releaseRequests[0]?.params?.name).toBe('locks:release');
+    expect(args).toEqual({
+      retain: true,
+      coordination_domain: '/repo',
+      native_edit_proof: {
+        success: true,
+        source: 'claude',
+        tools: ['Edit', 'Edit'],
+        paths: ['src/first.ts', 'src/second.ts'],
+      },
+    });
+    expect(readAttest()).toMatchObject({
+      handler: 'posttoolbatch',
+      attributed: true,
+      paths: ['src/first.ts', 'src/second.ts'],
+    });
+    expectClean('held', ['tu-first', 'tu-second']);
+  });
+
+  it('releases the newly held subset and attests the already-held subset separately', async () => {
+    writeBatch('mixed', 'granted', ['tu-first', 'tu-second'], {
+      releasePaths: ['src/first.ts'],
+      attestPaths: ['src/second.ts'],
+    });
+
+    const out = await runHook(BATCH_HOOK, batchInput(['tu-first', 'tu-second']));
+
+    expect(out.status).toBe(0);
+    expect(releaseRequests).toHaveLength(2);
+    const [release, attest] = releaseRequests.map((r) => r.params?.arguments);
+    expect(release).toMatchObject({
+      lock_id: 'batch-lock',
+      paths: ['src/first.ts'],
+      native_edit_proof: { paths: ['src/first.ts'] },
+    });
+    expect(release).not.toHaveProperty('retain');
+    expect(attest).toMatchObject({ retain: true, native_edit_proof: { paths: ['src/second.ts'] } });
+    expect(attest).not.toHaveProperty('lock_id');
+    expect(attest).not.toHaveProperty('paths');
+    expect(readAttest().attributed).toBe(true);
+    expectClean('mixed', ['tu-first', 'tu-second']);
+  });
+
+  it('attests nothing when one batch member failed', async () => {
+    writeBatch('held-failed', 'granted', ['tu-one', 'tu-two'], {
+      releasePaths: [],
+      attestPaths: ['src/first.ts', 'src/second.ts'],
+    });
+
+    const out = await runHook(BATCH_HOOK, {
+      ...batchInput(['tu-one', 'tu-two']),
+      tool_calls: [
+        { tool_use_id: 'tu-one', tool_name: 'Edit', tool_response: { ok: true } },
+        { tool_use_id: 'tu-two', tool_name: 'Edit', tool_response: { is_error: true, error: 'not applied' } },
+      ],
+    });
+
+    expect(out.status).toBe(0);
+    expect(releaseRequests).toHaveLength(0);
+    expect(fs.existsSync(join(cache, 'last-attest.json'))).toBe(false);
+    expectClean('held-failed', ['tu-one', 'tu-two']);
+  });
+
+  it('records an unconfirmed attestation when the operator refuses retain', async () => {
+    attestResponse = { ok: false, error: 'invalid_args: no selector' };
+    writeBatch('held-refused', 'granted', ['tu-first'], {
+      paths: ['src/first.ts'],
+      releasePaths: [],
+      attestPaths: ['src/first.ts'],
+    });
+
+    const out = await runHook(BATCH_HOOK, batchInput(['tu-first']));
+
+    expect(out.status).toBe(0);
+    expect(out.stdout.trim()).toBe('');
+    expect(releaseRequests).toHaveLength(1);
+    const marker = readAttest();
+    expect(marker.attributed).toBe(false);
+    expect(String(marker.detail)).toContain('no selector');
+    expectClean('held-refused', ['tu-first']);
   });
 });
 

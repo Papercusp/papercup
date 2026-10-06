@@ -298,13 +298,11 @@ def result_records():
     return records
 
 
-def native_edit_batch_proof(state):
-    """Require one successful recognized result for every expected edit."""
+def batch_edit_tools(state):
+    """The native edit tool of every expected batch member, or None unless each
+    member has a recognized, successful result."""
     expected = state.get('tool_use_ids')
-    paths = state.get('release_paths')
     if not isinstance(expected, list) or not expected or not all(isinstance(x, str) and x for x in expected):
-        return None
-    if not isinstance(paths, list) or not paths or not all(isinstance(x, str) and x for x in paths):
         return None
     records = result_records()
     tools = []
@@ -321,6 +319,17 @@ def native_edit_batch_proof(state):
         if tool not in NATIVE_EDIT_TOOLS or not native_edit_result_succeeded(response):
             return None
         tools.append(tool)
+    return tools
+
+
+def native_edit_batch_proof(state, key='release_paths'):
+    """Require one successful recognized result for every expected edit."""
+    paths = state.get(key)
+    if not isinstance(paths, list) or not paths or not all(isinstance(x, str) and x for x in paths):
+        return None
+    tools = batch_edit_tools(state)
+    if tools is None:
+        return None
     return {
         'success': True,
         'source': 'claude',
@@ -453,6 +462,72 @@ def release_batch(state, proof=None):
     return False
 
 
+def attest_batch(state):
+    """WI-10006900: attribute batch edits to paths the owner already held.
+
+    PreToolUse records the already-held subset as attest_paths (no release
+    token, EI-63). Once every batch member succeeded, send
+    locks:release { retain:true, native_edit_proof } so the edits reach
+    edit_attribution_ledger and the deliberate hold stays. As in the per-edit
+    PostToolUse path, the paths travel ONLY inside native_edit_proof: an
+    operator predating `retain` strips that key and, with no selector, refuses
+    rather than releasing. Best-effort; the outcome lands in last-attest.json.
+    """
+    proof = native_edit_batch_proof(state, 'attest_paths')
+    if proof is None:
+        return False
+    paths = proof['paths']
+    attest_args = {'retain': True, 'native_edit_proof': proof}
+    domain = state.get('coordination_domain')
+    if isinstance(domain, str) and domain:
+        attest_args['coordination_domain'] = domain
+    body = json.dumps({
+        'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+        'params': {'name': 'locks:release', 'arguments': attest_args},
+    }).encode()
+    origins = [operator_url]
+    if fallback_operator_url and fallback_operator_url != operator_url:
+        origins.append(fallback_operator_url)
+    attributed = False
+    detail = None
+    for base_url in origins:
+        req = urllib.request.Request(
+            base_url.rstrip('/') + '/api/mcp?superuser=1&origin=hook&client='
+            + urllib.parse.quote(owner, safe=''),
+            data=body,
+            headers={
+                'Authorization': 'Bearer ' + token,
+                'Content-Type': 'application/json',
+                'Accept': 'application/json, text/event-stream',
+            },
+            method='POST',
+        )
+        try:
+            raw_response = urllib.request.urlopen(req, timeout=10).read().decode('utf-8', errors='replace')
+        except Exception as exc:
+            detail = str(exc)
+            continue
+        inner, rpc_error, phase = parse_mcp_response(raw_response)
+        if rpc_error is not None or phase != 'ok' or not isinstance(inner, dict):
+            detail = 'rpc: ' + str(rpc_error) if rpc_error is not None else 'response: ' + str(phase)
+            continue
+        attributed = (
+            inner.get('ok') is True and isinstance(inner.get('attributed'), list)
+            and all(path in inner['attributed'] for path in paths)
+        )
+        if not attributed:
+            detail = inner
+        break
+    value = {
+        'ts': now_iso(), 'owner': owner, 'handler': 'posttoolbatch',
+        'tools': proof['tools'], 'paths': paths[:50], 'attributed': attributed,
+        **({} if attributed else {'detail': str(detail)[:200]}),
+    }
+    write_marker('last-attest.json', value)
+    write_marker(owner_marker_name('attest'), value)
+    return attributed
+
+
 # A PostToolBatch can contain ordinary read/tool calls alongside the edit
 # batch.  Marker-derived grouping therefore ignores unrelated IDs while still
 # requiring every expected edit ID from each state.
@@ -485,6 +560,10 @@ for batch_id in groups:
                 if release_batch(state, proof):
                     write_marker('last-success.json', {'ts': now_iso(), 'owner': owner})
                     write_marker(owner_marker_name('success'), {'ts': now_iso(), 'owner': owner})
+            try:
+                attest_batch(state)
+            except Exception:
+                pass
         # Cleanup occurs for every state we successfully claimed.  A failed
         # release is still safe: the server-side acquire TTL remains the guard.
     finally:

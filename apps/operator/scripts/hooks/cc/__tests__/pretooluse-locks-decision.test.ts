@@ -480,7 +480,57 @@ describe("cc PreToolUse hook — operator decision rendering (stub operator)", (
       status: "granted",
       tool_use_ids: ["tu-batch-first", "tu-batch-second"],
       paths: ["sub/batch-first.ts", "sub/batch-second.ts"],
+      // An operator that does not report newly_held gives no way to tell
+      // already-held from new, so nothing is set aside for attestation.
+      attest_paths: [],
     });
+  });
+
+  it("Claude batch partly under the owner's explicit hold → state carries the held subset as attest_paths (WI-10006900)", async () => {
+    nextInner = { ok: true, lock_id: "manual-lock", newly_held: ["sub/held-new.ts"] };
+    const transcriptPath = join(home, "claude-transcript-held.jsonl");
+    const ids = ["tu-held-new", "tu-held-old"];
+    const rel = ["sub/held-new.ts", "sub/held-old.ts"];
+    fs.writeFileSync(
+      transcriptPath,
+      `${JSON.stringify({
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: ids.map((id, i) => ({
+            type: "tool_use",
+            id,
+            name: "Edit",
+            input: { file_path: join(repo, rel[i]) },
+          })),
+        },
+      })}\n`,
+    );
+    const env = { PAPERCUSP_SID: "batch-held-session", PAPERCUSP_LOCK_SID: "batch-held-session" };
+    const outs = await Promise.all(
+      ids.map((id, i) => run(nativeBatchInput(transcriptPath, rel[i], id), env)),
+    );
+    for (const out of outs) {
+      expect(out.status).toBe(0);
+      expect(out.stdout).toBe("");
+    }
+
+    // The cache is shared across this describe, so select THIS batch's state.
+    const state = fs
+      .readdirSync(cache)
+      .filter((name) => name.startsWith("batch-") && name.endsWith(".state.json"))
+      .map((name) => JSON.parse(fs.readFileSync(join(cache, name), "utf8")))
+      .find((s) => Array.isArray(s.tool_use_ids) && s.tool_use_ids.includes(ids[0]));
+    expect(state).toBeDefined();
+    expect(state).toMatchObject({
+      status: "granted",
+      lock_id: "manual-lock",
+      release_paths: ["sub/held-new.ts"],
+      attest_paths: ["sub/held-old.ts"],
+      coordination_domain: fs.realpathSync(repo),
+    });
+    // The batch path never leaves a per-call attest sidecar; PostToolBatch owns it.
+    for (const id of ids) expect(fs.existsSync(join(cache, `${id}.attest`))).toBe(false);
   });
 
   it("ambiguous acquire response → releases only the fresh automatic lock it can identify", async () => {

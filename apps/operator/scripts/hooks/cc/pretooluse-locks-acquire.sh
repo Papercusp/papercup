@@ -1724,10 +1724,19 @@ def _grant(granted):
         # existing behavior rather than silently allowing an untracked edit.
         release_paths = repo_relative[:50]
     if batch_info:
+        # WI-10006900: the batch analogue of the .attest sidecar below. Paths the
+        # owner already held get no release, so PostToolBatch attests them with
+        # locks:release { retain:true } once every edit in the batch succeeded.
+        # Only when the server reported newly_held and the batch has one domain.
+        batch_attest = (
+            [p for p in repo_relative[:100] if p not in release_paths]
+            if isinstance(newly_held, list) and len(repo_domains) == 1 else []
+        )
         _batch_terminal_state(
             'granted',
             lock_id=lock_id,
             release_paths=release_paths,
+            attest_paths=batch_attest,
             coordination_domain=(next(iter(repo_domains)) if len(repo_domains) == 1 else None),
         )
         _batch_mark_tool('granted')
