@@ -5,6 +5,7 @@ import { REBIND_BLOCKING_SESSION_STATES } from '../../agent-tools/coordination/r
 import {
   acceptanceSourceRevision,
   createImplementationReadiness,
+  createVerificationTask,
   deriveWorkItemIntakeStage,
   LEGACY_AGENT_REVIEW_SUBMITTER,
 } from './agent-review-policy';
@@ -360,6 +361,108 @@ describe('claimAgentReview directed pickup', () => {
     expect(h.releaseWorkItem).toHaveBeenCalledWith('WI-7', {
       harness: 'papercusp',
       expectedAssignee: 'su-reviewer',
+    });
+  });
+
+  describe('verifier conflicts (P-007 / D-021, D-023)', () => {
+    const withPayload = (item: WorkItem, extra: Record<string, unknown>): WorkItem => ({
+      ...item,
+      payload: { ...(item.payload as Record<string, unknown>), ...extra },
+    });
+    const verification = (reporters: string[], implementers: string[]) => createVerificationTask({
+      subject: 'WI-6',
+      check: 'reproduction',
+      reporters,
+      implementers,
+    });
+    const claimAs = (h: ReturnType<typeof harness>, reviewer: string) =>
+      claimAgentReview({ id: 'WI-7', reviewer, harnessSlug: 'papercusp' }, h.deps);
+
+    it('refuses a reporter who did not submit the review, before claiming', async () => {
+      // Every row here was submitted by su-filer, so own-submission cannot fire: only the
+      // reporter rule can refuse su-reporter.
+      const cases: Array<[string, WorkItem]> = [
+        ['row filer column', { ...pending('WI-7'), createdBy: 'su-reporter' }],
+        ['_ei filer (improvement-triage style)', withPayload(pending('WI-7'), { _ei: { created_by: 'su-reporter' } })],
+        ['verification-block reporter', withPayload(pending('WI-7'), { verification: verification(['su-reporter'], []) })],
+      ];
+      for (const [label, candidate] of cases) {
+        const h = harness(candidate);
+        await expect(claimAs(h, 'su-reporter'), label).resolves.toEqual({
+          claimed: false,
+          workItem: null,
+          reason: 'reporter-conflict',
+        });
+        expect(h.claimWorkItem, label).not.toHaveBeenCalled();
+      }
+    });
+
+    it('refuses an implementer of the subject, before claiming', async () => {
+      const cases: Array<[string, WorkItem]> = [
+        ['terminal owner', { ...pending('WI-7'), terminalOwner: 'su-builder' }],
+        ['verification-block implementer', withPayload(pending('WI-7'), { verification: verification([], ['su-builder']) })],
+      ];
+      for (const [label, candidate] of cases) {
+        const h = harness(candidate);
+        await expect(claimAs(h, 'su-builder'), label).resolves.toEqual({
+          claimed: false,
+          workItem: null,
+          reason: 'implementer-conflict',
+        });
+        expect(h.claimWorkItem, label).not.toHaveBeenCalled();
+      }
+    });
+
+    it('names the reporter role first when the reviewer both filed and implemented the subject', async () => {
+      const h = harness({ ...pending('WI-7'), createdBy: 'su-both', terminalOwner: 'su-both' });
+      await expect(claimAs(h, 'su-both')).resolves.toMatchObject({ claimed: false, reason: 'reporter-conflict' });
+      expect(h.claimWorkItem).not.toHaveBeenCalled();
+    });
+
+    it('still serves an independent reviewer on a row with a distinct reporter and implementer', async () => {
+      const h = harness(withPayload(
+        { ...pending('WI-7'), createdBy: 'su-reporter', terminalOwner: 'su-builder' },
+        { _ei: { created_by: 'improvement-triage' }, verification: verification(['su-reporter'], ['su-builder']) },
+      ));
+      await expect(claimAs(h, 'su-reviewer')).resolves.toMatchObject({
+        claimed: true,
+        workItem: { id: 'WI-7', assignee: 'su-reviewer' },
+      });
+      expect(h.claimWorkItem).toHaveBeenCalledTimes(1);
+      expect(h.claimWorkItem).toHaveBeenCalledWith(
+        'WI-7',
+        'su-reviewer',
+        expect.objectContaining({ agentReviewAdmission: expect.objectContaining({ reviewer: 'su-reviewer' }) }),
+      );
+    });
+
+    it('reports a conflict found on the fresh read after a failed claim instead of naming a holder', async () => {
+      const h = harness(pending('WI-7'));
+      h.claimWorkItem.mockImplementation(async () => {
+        h.state.issue = { ...h.state.issue, assignee: 'su-other', terminalOwner: 'su-reviewer' };
+        return null;
+      });
+      const result = await claimAs(h, 'su-reviewer');
+      expect(result).toEqual({ claimed: false, workItem: null, reason: 'implementer-conflict' });
+      expect(result).not.toHaveProperty('claimConflict');
+    });
+
+    it('releases a claim whose returned row shows the reviewer became a party to the subject', async () => {
+      const h = harness(pending('WI-7'));
+      h.claimWorkItem.mockImplementation(async (_id: string, assignee: string) => {
+        h.state.issue = withPayload({ ...h.state.issue, assignee }, { verification: verification(['su-reviewer'], []) });
+        return cloneIssue(h.state.issue);
+      });
+      await expect(claimAs(h, 'su-reviewer')).resolves.toEqual({
+        claimed: false,
+        workItem: null,
+        reason: 'reporter-conflict',
+      });
+      expect(h.releaseWorkItem).toHaveBeenCalledWith('WI-7', {
+        harness: 'papercusp',
+        expectedAssignee: 'su-reviewer',
+      });
+      expect(h.state.issue.assignee).toBeNull();
     });
   });
 });
