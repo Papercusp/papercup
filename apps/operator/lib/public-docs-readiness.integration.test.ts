@@ -4,6 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import { servePublicDocs } from '@papercusp/operator-core/lib/public-docs';
+import { assertPublicManualFaq, PUBLIC_FAQ_ANCHORS } from '../../papercusp-docs/scripts/source-contract.mjs';
 
 const suppliedRoot = process.env.PAPERCUSP_PUBLIC_DOCS_ROOT
   ? resolve(process.env.PAPERCUSP_PUBLIC_DOCS_ROOT)
@@ -43,6 +44,21 @@ async function readPublic(path: string, method = 'GET'): Promise<Response> {
 }
 
 describe('built public manual contract', () => {
+  it('serves the FAQ with its published question anchors and working fuller guides', async () => {
+    const response = await servePublicDocs(new Request('https://app.papercusp.com/docs/faq'), root);
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).toContain('data-pagefind-body');
+    const renderedAnchors = [...html.matchAll(/<h2\b[^>]*\bid="([^"]+)"/g)].map((match) => match[1]);
+    expect(renderedAnchors).toEqual(expect.arrayContaining(PUBLIC_FAQ_ANCHORS));
+    expect(new Set(renderedAnchors).size).toBe(renderedAnchors.length);
+    const source = resolve(import.meta.dirname, '../../papercusp-docs/src/content/docs');
+    const faq = assertPublicManualFaq(source);
+    for (const link of new Set(faq.entries.flatMap((entry) => entry.guideLinks))) {
+      expect(html).toContain(`href="${link}"`);
+      expect((await servePublicDocs(new Request(`https://app.papercusp.com${link}`), root)).status, link).toBe(200);
+    }
+  });
   it('anonymous production reader checks assets, HEAD and private boundaries in bounded batches', async () => {
     const targets = new Set<string>(['/docs', '/docs/pagefind/pagefind.js', '/docs/sitemap-index.xml']);
     for (const file of readdirSync(root).filter((name) => name.endsWith('.html') && name !== '404.html')) {
