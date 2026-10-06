@@ -1257,6 +1257,99 @@ describe('superseded holder GOAL rows are retired after the handoff window (WI-1
     expect(after?.cancelled_at).not.toBeNull();
   }, 60_000);
 
+  it('releases only the tenure claims a former holder left untouched (WI-10006948)', async () => {
+    // Measured 2026-10-06: the epoch-25 holder of 60d3a8 self-claimed WI-10006823 at
+    // 17:48Z, lost the lease at 19:13Z, and its carry-respawn successor never took a
+    // turn (WI-10006814). Its session was parked, not ended, so no death sweep fired
+    // and the item stayed wip on it for 2h+. The retirement sweep must free that claim
+    // and nothing that is anyone's live work.
+    const goalId = 'goal-former-holder-claims';
+    await rootSql`DELETE FROM harness_shared.work_items WHERE workspace_id = ${WS} AND feature_id LIKE 'WI-fh-%'`;
+    await seedGoal({ id: goalId, launchSettings: RESPAWN_SETTINGS });
+    await attachHolder('su-old', goalId);
+    await attachHolder('su-new', goalId, 'su-old');
+
+    async function seedItem(id: string, opts: {
+      takenBy: string; goal?: string | null; status?: string;
+      takenAt: string; progressAt?: string;
+    }): Promise<void> {
+      await rootSql`
+        INSERT INTO harness_shared.work_items
+          (workspace_id, harness_slug, feature_id, item_kind, status, goal_id, taken_by, taken_at, last_progress_at)
+        VALUES (${WS}, 'papercusp', ${id}, 'task', ${opts.status ?? 'wip'},
+                ${opts.goal === undefined ? goalId : opts.goal}, ${opts.takenBy},
+                now() + ${opts.takenAt}::interval,
+                ${opts.progressAt === undefined ? null : rootSql`now() + ${opts.progressAt}::interval`})`;
+    }
+    // Abandoned tenure custody: claimed while holding the goal, never touched again.
+    await seedItem('WI-fh-pinned', { takenBy: 'su-old', takenAt: '-1 hour', progressAt: '-50 minutes' });
+    // Same shape, but the claim moved by the time the release ran: not reported.
+    await seedItem('WI-fh-moved', { takenBy: 'su-old', takenAt: '-1 hour' });
+    // Kept: claimed AFTER the agent left GOAL (a later, deliberate act).
+    await seedItem('WI-fh-after-exit', { takenBy: 'su-old', takenAt: '+1 hour' });
+    // Kept: progressed after the exit (a holder that stood down but kept working).
+    await seedItem('WI-fh-progressed', { takenBy: 'su-old', takenAt: '-1 hour', progressAt: '+1 hour' });
+    // Kept: terminal.
+    await seedItem('WI-fh-done', { takenBy: 'su-old', takenAt: '-1 hour', status: 'done' });
+    // Kept: another goal's item, and an un-stamped item, held by the same former holder.
+    await seedItem('WI-fh-other-goal', { takenBy: 'su-old', takenAt: '-1 hour', goal: 'some-other-goal' });
+    await seedItem('WI-fh-unstamped', { takenBy: 'su-old', takenAt: '-1 hour', goal: null });
+    // Kept: the elected holder's claim, and a worker who never held the goal.
+    await seedItem('WI-fh-elected', { takenBy: 'su-new', takenAt: '-1 hour' });
+    await seedItem('WI-fh-worker', { takenBy: 'su-worker', takenAt: '-1 hour' });
+
+    const calls: Array<{ id: string; ownerId: string; harness: string; exitedAt: Date }> = [];
+    // Models the compare-and-release on the test DB. The production default writes
+    // through getOrgPg(), which here would reach the LIVE database (WI-10006585).
+    const release = async (claim: { id: string; ownerId: string; harness: string; exitedAt: Date }) => {
+      calls.push({ id: claim.id, ownerId: claim.ownerId, harness: claim.harness, exitedAt: claim.exitedAt });
+      if (claim.id === 'WI-fh-moved') return false;
+      const rows = await rootSql`
+        UPDATE harness_shared.work_items SET taken_by = NULL, taken_at = NULL, status = 'open'
+         WHERE workspace_id = ${WS} AND feature_id = ${claim.id} AND taken_by = ${claim.ownerId}
+        RETURNING feature_id`;
+      return rows.length === 1;
+    };
+
+    // Inside the handoff window su-old still holds its GOAL row, so it is not a
+    // FORMER holder yet and nothing is touched.
+    await expect(retireSupersededGoalHolderModes(rootSql, WS, goalId, undefined, release)).resolves.toEqual({
+      retired: [],
+      leftArmed: [],
+      awaitsCancelled: 0,
+      claimsReleased: [],
+    });
+    expect(calls).toEqual([]);
+
+    await expireHandoff(goalId);
+    await expect(retireSupersededGoalHolderModes(rootSql, WS, goalId, undefined, release)).resolves.toEqual({
+      retired: ['su-old'],
+      leftArmed: [],
+      awaitsCancelled: 0,
+      claimsReleased: [{ id: 'WI-fh-pinned', ownerId: 'su-old' }],
+    });
+    expect(calls.map((c) => c.id).sort()).toEqual(['WI-fh-moved', 'WI-fh-pinned']);
+    for (const call of calls) {
+      expect(call).toMatchObject({ ownerId: 'su-old', harness: 'papercusp' });
+      expect(call.exitedAt).toBeInstanceOf(Date);
+    }
+
+    const held = await rootSql<{ feature_id: string; taken_by: string | null }[]>`
+      SELECT feature_id, taken_by FROM harness_shared.work_items
+       WHERE workspace_id = ${WS} AND feature_id LIKE 'WI-fh-%' ORDER BY feature_id`;
+    expect(Object.fromEntries(held.map((r) => [r.feature_id, r.taken_by]))).toEqual({
+      'WI-fh-after-exit': 'su-old',
+      'WI-fh-done': 'su-old',
+      'WI-fh-elected': 'su-new',
+      'WI-fh-moved': 'su-old',
+      'WI-fh-other-goal': 'su-old',
+      'WI-fh-pinned': null,
+      'WI-fh-progressed': 'su-old',
+      'WI-fh-unstamped': 'su-old',
+      'WI-fh-worker': 'su-worker',
+    });
+  }, 60_000);
+
   it('the respawner sweep retires superseded rows on a healthy goal without launching', async () => {
     const goalId = 'goal-superseded-sweep';
     await seedGoal({ id: goalId, launchSettings: RESPAWN_SETTINGS });
