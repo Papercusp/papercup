@@ -246,6 +246,7 @@ describe('scorecards:emit final dedup read-to-write mutex, real PG', () => {
     if (!auditRubric) throw new Error('grading-integrity rubric was not available in the test database');
 
     const reservedAt = new Date().toISOString();
+    console.info('[grading-audit concurrency fixture] creating pending source subject');
     const subject = await createIssue({
       title: 'pending grading-audit concurrency subject',
       kind: 'change',
@@ -272,10 +273,12 @@ describe('scorecards:emit final dedup read-to-write mutex, real PG', () => {
         },
       },
     });
+    console.info(`[grading-audit concurrency fixture] source subject created id=${subject.id}`);
     const reservation = {
       key: `grading-audit:${subject.id}`,
       reservedAt,
     };
+    console.info('[grading-audit concurrency fixture] persisting dispatch reservation');
     await db.adminSql`
       UPDATE harness_shared.work_items
          SET payload = jsonb_set(
@@ -286,6 +289,15 @@ describe('scorecards:emit final dedup read-to-write mutex, real PG', () => {
          )
        WHERE feature_id = ${subject.id}
     `;
+    console.info('[grading-audit concurrency fixture] verifying persisted dispatch reservation');
+    const persistedReservations = await db.adminSql`
+      SELECT payload->'observation'->'gradingAudit'->'dispatchReservation' AS reservation
+        FROM harness_shared.work_items
+       WHERE workspace_id = ${activeWorkspaceId()}
+         AND feature_id = ${subject.id}
+    `;
+    expect(persistedReservations[0]?.reservation).toEqual(reservation);
+    console.info('[grading-audit concurrency fixture] dispatch reservation verified');
 
     const passRatings = Object.fromEntries(
       auditRubric.criteria.map((criterion) => [criterion.key, {
@@ -342,8 +354,29 @@ describe('scorecards:emit final dedup read-to-write mutex, real PG', () => {
       lineageRelated: async () => false,
     };
 
+    console.info('[grading-audit concurrency fixture] starting first audit emitter');
     const first = emitScorecard(argsFor(passRatings) as never, inputFor('su-audit-concurrency-a'), deps);
-    await firstPreflightReached;
+    const firstOutcome = first.then(
+      (result) => ({ state: 'settled' as const, result }),
+      (error) => ({ state: 'rejected' as const, error: String(error) }),
+    );
+    let firstBarrierTimer: ReturnType<typeof setTimeout> | undefined;
+    const firstBarrierState = await Promise.race([
+      firstPreflightReached.then(() => ({ state: 'preflight' as const })),
+      firstOutcome,
+      new Promise<{ state: 'timeout' }>((resolve) => {
+        firstBarrierTimer = setTimeout(() => resolve({ state: 'timeout' }), 5_000);
+      }),
+    ]);
+    if (firstBarrierTimer) clearTimeout(firstBarrierTimer);
+    console.info(`[grading-audit concurrency fixture] first emitter phase=${firstBarrierState.state}`);
+    if (firstBarrierState.state !== 'preflight') {
+      releaseFirstPreflight();
+      throw new Error(
+        `first audit emitter did not reach responder preflight: ${JSON.stringify(firstBarrierState)}`,
+      );
+    }
+    console.info('[grading-audit concurrency fixture] starting second audit emitter');
     const second = emitScorecard(argsFor(failRatings) as never, inputFor('su-audit-concurrency-b'), deps);
 
     let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
@@ -354,6 +387,9 @@ describe('scorecards:emit final dedup read-to-write mutex, real PG', () => {
       }),
     ]);
     if (timeoutHandle) clearTimeout(timeoutHandle);
+    console.info(
+      `[grading-audit concurrency fixture] second preflight before first settled=${secondPassedBeforeFirstSettled}`,
+    );
     releaseFirstPreflight();
     const results = await Promise.all([first, second]);
 
@@ -364,6 +400,7 @@ describe('scorecards:emit final dedup read-to-write mutex, real PG', () => {
       subjectRef: subject.id,
       limit: 10,
     });
+    console.info(`[grading-audit concurrency fixture] persisted audit count=${persistedAudits.length}`);
     expect(persistedAudits).toHaveLength(1);
   }, 30_000);
 });
