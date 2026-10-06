@@ -58,6 +58,29 @@
    },
    "notEstablished": ["Complete original40 IDs and excluded-row contents", "Loaded original selector and claimability-floor execution", "Original approximately200 ID baseline and per-ID terminal reconciliation", "Global archive absence or the cause of temporary-file disappearance"]
   },
+  "requestChainRecovery": {
+   "status": "ledger-request-chain-qualified-no-stored-envelope-reference",
+   "scope": "Bounded own ledger window 2026-10-03T04:59:44Z..04:59:52Z; exact original SQL and maxRows=500 match the archived producer.",
+   "innerInvocation": "31499642",
+   "outerInvocation": "31499643",
+   "outerTool": "tools:invoke",
+   "innerTool": "dev:pg_query",
+   "sharedRunId": "b51813e9-2fb6-4e08-a73d-35b745a3474a",
+   "sharedSpawnId": "ephemeral-e2d38763496a94aa",
+   "recordedLaunchSession": "32446",
+   "recordedServingHost": "port-3070",
+   "recordedServingBuild": "d740fc3802",
+   "innerOutputRef": null,
+   "outerOutputRef": null,
+   "innerSpillPath": null,
+   "outerSpillPath": null,
+   "innerSpillUri": null,
+   "outerSpillUri": null,
+   "positiveControl": "Same scoped query transaction returned invocation31499642; one row, not truncated, status=passed.",
+   "qualification": "Matching run_id and spawn_id link these two ledger rows. Matching SQL, launch session and time nominate this chain for the archived command; no native call_id-to-request key was recovered. Neither ledger row stores the full response inline or names a retained envelope. Null references do not prove global archive absence or a deletion cause. The serving build belongs to this ledger chain, not the local tsx selector replay.",
+   "sourceWriter": "packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts and packages/operator-core/lib/projected-tool-deps.ts: result-door references are backfilled after dispatch telemetry; telemetry alone is not a full response archive.",
+   "notEstablished": ["Complete original40 IDs", "Excluded twelve row contents", "Loaded local selector bytes or executed claimability floors", "Original approximately200 ID reconciliation", "Cause of missing references or temporary-file disappearance"]
+  },
   "acceptance": "Dated source qualification only; no current population, completion, rubric acceptance, runtime or shipment verdict."
  },
  "historicalPopulationQualification": {
