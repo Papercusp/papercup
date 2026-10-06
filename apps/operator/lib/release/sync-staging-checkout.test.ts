@@ -967,6 +967,35 @@ describe('sync-staging-checkout.sh paths_require_restart() — restart relevance
   });
 
   describe('restart-REQUIRED advances', () => {
+    it('drains a streamed diff after finding a server path so pipefail cannot skip the restart', () => {
+      const root = mkdtempSync(join(tmpdir(), 'sync-streamed-diff-'));
+      const pathList = join(root, 'paths');
+      try {
+        const inertPaths = Array.from({ length: 20000 }, (_, i) => `docs/generated/page-${i}.md`);
+        writeFileSync(pathList, ['packages/operator-core/lib/release/admission-fix-precheck-managed.ts', ...inertPaths].join('\n') + '\n');
+        const result = runFn(['path_needs_no_restart', 'paths_require_restart'], 'cat "$DIFF_PATHS" | paths_require_restart', {
+          env: { DIFF_PATHS: pathList },
+        });
+        expect(result.status, result.stderr).toBe(0);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it('keeps a large streamed diff of only inert paths restart-exempt', () => {
+      const root = mkdtempSync(join(tmpdir(), 'sync-streamed-diff-'));
+      const pathList = join(root, 'paths');
+      try {
+        writeFileSync(pathList, Array.from({ length: 20000 }, (_, i) => `docs/generated/page-${i}.md`).join('\n') + '\n');
+        const result = runFn(['path_needs_no_restart', 'paths_require_restart'], 'cat "$DIFF_PATHS" | paths_require_restart', {
+          env: { DIFF_PATHS: pathList },
+        });
+        expect(result.status, result.stderr).toBe(1);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
     it('server code under packages/operator-core', () => {
       expect(requiresRestart(['packages/operator-core/lib/agent-tools/index.ts'])).toBe(true);
     });
@@ -1060,6 +1089,52 @@ describe('sync-staging-checkout.sh current_commit_age_sec() — deferral stalene
     expect(r.status).toBe(0);
     return Number(r.stdout.trim());
   }
+
+  function restartDecision(current: string, health: string, target: string): number {
+    const script = readFileSync(SCRIPT_PATH, 'utf8');
+    const start = script.indexOf('if [ "$target" = "$current" ]; then');
+    const end = script.indexOf('# WI-5710 gate 2', start);
+    expect(start).toBeGreaterThan(0);
+    expect(end).toBeGreaterThan(start);
+    const result = runFn(['health_sha_matches_target', 'path_needs_no_restart', 'paths_require_restart'],
+      `log() { :; }\n${script.slice(start, end)}\nprintf '%s\\n' "$restart_required"`, {
+        env: { INTEGRATION_ROOT: repo, current, health_sha: health, served_sha: health || current, target },
+      });
+    expect(result.status, result.stderr).toBe(0);
+    return Number(result.stdout.trim());
+  }
+
+  function serverThenDocs(): { served: string; checkout: string; target: string } {
+    const served = sha;
+    writeFileSync(join(repo, 'f.txt'), 'server-v2');
+    git('add', '-A');
+    git('commit', '-q', '-m', 'server');
+    const checkout = git('rev-parse', 'HEAD');
+    writeFileSync(join(repo, 'guide.md'), 'docs');
+    git('add', '-A');
+    git('commit', '-q', '-m', 'docs');
+    return { served, checkout, target: git('rev-parse', 'HEAD') };
+  }
+
+  it('diffs from the served source so a later docs-only advance cannot hide a pending server restart', () => {
+    const { served, checkout, target } = serverThenDocs();
+    expect(restartDecision(checkout, served.slice(0, 10), target)).toBe(1);
+  });
+
+  it('requires a restart when the served source diff cannot be resolved', () => {
+    const { checkout, target } = serverThenDocs();
+    expect(restartDecision(checkout, 'f'.repeat(40), target)).toBe(1);
+  });
+
+  it('requires a restart when health provides no serving source identity', () => {
+    const { checkout, target } = serverThenDocs();
+    expect(restartDecision(checkout, '', target)).toBe(1);
+  });
+
+  it('keeps a docs-only advance exempt when the process already holds the server source', () => {
+    const { checkout, target } = serverThenDocs();
+    expect(restartDecision(checkout, checkout.slice(0, 10), target)).toBe(0);
+  });
 
   it('a just-made commit reports a near-zero age (so a live session IS deferred for)', () => {
     const a = age(sha);

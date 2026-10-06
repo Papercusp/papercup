@@ -720,16 +720,20 @@ path_needs_no_restart() {
 # need_node_modules()'s "0 means the work is needed" convention in the sibling
 # setup-release-checkout.sh). Exit 1 = every path is provably restart-exempt.
 paths_require_restart() {
-  local p seen=0
+  local p seen=0 relevant=0
   while IFS= read -r p; do
     [ -z "$p" ] && continue
     seen=1
-    path_needs_no_restart "$p" || return 0
+    # Drain the complete diff even after a server path is found. An early
+    # return closes the pipe, making git exit with SIGPIPE; with pipefail the
+    # caller would then mistake a required restart for an exempt advance.
+    path_needs_no_restart "$p" || relevant=1
   done
   # An EMPTY path list means we could not establish what changed (a failed or
   # unavailable diff), not "nothing changed" — the caller no-ops on an
   # unmoved HEAD long before this. Fail safe: restart.
   [ "$seen" = 1 ] || return 0
+  [ "$relevant" = 0 ] || return 0
   return 1
 }
 
@@ -897,15 +901,25 @@ else
   checkout_needs_advance=1
   # WI-5710 gate 1 — decide BEFORE doing any work whether the running process
   # actually needs to be replaced, or only the on-disk SPA refreshed.
-  changed_count="$(git -C "$INTEGRATION_ROOT" diff --name-only "$current" "$target" 2>/dev/null | grep -c . || true)"
-  [ -n "$changed_count" ] || changed_count=0
+  changed_count=0
   if [ "$current" = none ]; then
     log "fresh staging checkout — full sync + restart"
     restart_required=1
-  elif git -C "$INTEGRATION_ROOT" diff --name-only "$current" "$target" 2>/dev/null | paths_require_restart; then
+  elif [ -z "$health_sha" ] ||
+       ! changed_paths="$(git -C "$INTEGRATION_ROOT" diff --name-only "$health_sha" "$target" 2>/dev/null)"; then
+    # The published checkout may already be ahead of the process after a
+    # refused restart. Judge the code the process holds, and fail safe when
+    # that identity or its diff cannot be measured.
     restart_required=1
   else
-    restart_required=0
+    changed_count="$(printf '%s\n' "$changed_paths" | grep -c . || true)"
+    # Capture git's status independently; no producer failure or SIGPIPE may
+    # be mistaken for an exempt diff under pipefail.
+    if paths_require_restart <<< "$changed_paths"; then
+      restart_required=1
+    else
+      restart_required=0
+    fi
   fi
 fi
 
