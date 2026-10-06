@@ -36,6 +36,7 @@ const {
   selfWakeMock,
   fleetMock,
   findLiveHostMock,
+  desktopSessionsMock,
   endedSessionsMock,
   endedOwnerIdsMock,
 } = vi.hoisted(() => ({
@@ -49,6 +50,7 @@ const {
   selfWakeMock: vi.fn(async (..._a: unknown[]) => new Map()),
   fleetMock: vi.fn(async (..._a: unknown[]) => new Map()),
   findLiveHostMock: vi.fn<(id: string) => { ownerId: string } | null>(() => null),
+  desktopSessionsMock: vi.fn(async (..._a: unknown[]) => ({ owners: new Set<string>() })),
   // EI-21488009366204518: the targeted-miss session-log death leg.
   endedSessionsMock: vi.fn(async (..._a: unknown[]) => [] as unknown[]),
   // WI-10006738: the oracle's positive ended-session leg (latest adv_session ended).
@@ -108,7 +110,7 @@ vi.mock('../../events/await/psu-pty-discovery', async (importOriginal) => ({
   findLiveHost: findLiveHostMock,
 }));
 vi.mock('../../desktop-window-liveness', () => ({
-  gatherOnDesktopSessions: vi.fn(async () => ({ owners: new Set<string>() })),
+  gatherOnDesktopSessions: desktopSessionsMock,
 }));
 vi.mock('../../pty-viewer-heartbeat', () => ({ gatherViewerAttachedOwners: vi.fn(async () => new Set<string>()) }));
 vi.mock('../locks/su-lock-store', () => ({
@@ -173,6 +175,7 @@ describe('assemblePresenceSnapshot targeted { owner } lookup (EI-9454)', () => {
       workspaceId: 'test-ws',
       ownerIds: ['su-bbb'],
     });
+    expect(desktopSessionsMock).toHaveBeenCalledWith({ ownerIds: ['su-bbb'] });
   });
 
   it('enriches ONLY the matched id — the batch joins never see the rest of the roster', async () => {

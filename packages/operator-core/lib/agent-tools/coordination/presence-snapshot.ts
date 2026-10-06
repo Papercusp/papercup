@@ -688,7 +688,8 @@ export async function assemblePresenceSnapshot(
     // On-desktop (live OS window) owners — best-effort, box-local (empty on a
     // headless box). Independent of the other joins so a wmctrl hiccup never
     // affects wakeability/tier-1, and vice-versa.
-    timeAsync('enrichment', 'gatherOnDesktopSessions', () => gatherOnDesktopSessions())
+    timeAsync('enrichment', 'gatherOnDesktopSessions', () =>
+      targeted ? gatherOnDesktopSessions({ ownerIds: localAllIds }) : gatherOnDesktopSessions())
       .then((s) => {
         onDesktopOwners = s.owners;
       })

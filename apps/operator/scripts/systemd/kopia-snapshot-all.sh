@@ -10,6 +10,11 @@ PROC_ROOT="${KOPIA_SNAPSHOT_PROC_ROOT:-/proc}"
 SUDO_BIN="${KOPIA_SNAPSHOT_SUDO:-/usr/bin/sudo}"
 KILL_BIN="${KOPIA_SNAPSHOT_KILL:-/usr/bin/kill}"
 KOPIA_BIN="${KOPIA_SNAPSHOT_BIN:-/usr/bin/kopia}"
+# Seconds a stopped sweep gives Kopia to flush after SIGTERM (kopia_stop_flushing).
+FLUSH_GRACE_SEC="${KOPIA_SNAPSHOT_FLUSH_GRACE_SEC:-15}"
+# Path of the output file the running Kopia writes, so a cleanup in ANOTHER process
+# (ExecStopPost) can mark exactly that output when it had to SIGKILL.
+OUTPUT_POINTER="$PID_FILE.output"
 if ! ensure_kopia_cache_dir "$LOG_DIR"; then
   echo "FATAL: unable to bootstrap Kopia snapshot log directory: $LOG_DIR" >&2
   exit 1

@@ -14,6 +14,8 @@ import { readRegistry } from '../workspace-registry';
 import { hostedDesktopAuditRow, isHostedDesktopAuditAction } from '../desktop/desktop-audit';
 import { HostedWorkspaceConnectorClient, type HostedConnectorClientSocket } from './hosted-connector-client';
 import { HOSTED_HOST_SESSION_IDLE_MS, type HostedHostAuditEvent, type HostedHostPty } from './hosted-session-host';
+import SecretStream from '@hyperswarm/secret-stream';
+import { ByocSealedChannel } from './byoc-sealed-channel';
 
 class FakePty extends EventEmitter implements HostedHostPty {
   killed = false;
@@ -485,6 +487,68 @@ describe('createHostedWorkspaceHostRuntime', () => {
     expect(terminal).toEqual([{ reason: 'stopped', detail: 'host_stopped' }]);
     vi.advanceTimersByTime(60_000);
     expect(sockets).toHaveLength(1);
+  });
+});
+
+// D-013 #6: the runtime hands every adapter it builds the machine Noise key (the one the pair
+// QR advertises) and a device lookup scoped to the BOUND customer workspace, which is where
+// pairing stored the phone. Without this wiring the session-host's sealed channel is dead code.
+describe('sealed device-http channel wiring (D-013 #6)', () => {
+  const hostKey = SecretStream.keyPair(Buffer.alloc(32, 31));
+  const phoneKey = SecretStream.keyPair(Buffer.alloc(32, 41));
+  const OPEN = { type: 'relay.open', channelId: 'dev-ch', kind: 'device-http', audience: 'device', sealed: true } as const;
+  const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+  beforeEach(() => vi.useRealTimers());
+
+  async function boundRuntime(overrides: Record<string, unknown>) {
+    const r = runtime(overrides);
+    r.value.start();
+    await tick(); // the machine key load settles before the binding arrives
+    r.sockets[0]!.emitOpen();
+    r.sockets[0]!.emitMessage({ type: 'bound', role: 'connector', binding: BINDING });
+    const frames = () =>
+      r.sockets[0]!.sent.map((raw) => JSON.parse(raw) as Record<string, unknown>).filter((f) => f.channelId === 'dev-ch');
+    return { ...r, frames };
+  }
+
+  it('serves no sealed channel when the machine key is disabled', async () => {
+    const find = vi.fn(async () => 'dev-a');
+    const { value, frames } = await boundRuntime({ loadMachineNoiseKeyPair: null, findDeviceIdByNoiseKey: find });
+    await value.adapter!.accept(OPEN);
+    expect(frames()).toContainEqual({ type: 'relay.close', channelId: 'dev-ch', reason: 'sealed_channel_unavailable' });
+    expect(find).not.toHaveBeenCalled();
+    value.stop();
+  });
+
+  it("completes the phone's handshake with the machine key and resolves the device in the BOUND workspace", async () => {
+    const find = vi.fn(async (_workspaceId: string, key: string) =>
+      (key === phoneKey.publicKey.toString('base64') ? 'dev-a' : null));
+    const { value, frames } = await boundRuntime({ loadMachineNoiseKeyPair: async () => hostKey, findDeviceIdByNoiseKey: find });
+    const errors: Error[] = [];
+    const phone = new ByocSealedChannel({
+      initiator: true,
+      localKeyPair: phoneKey,
+      expectedRemotePublicKey: hostKey.publicKey,
+      sendPacket: (packet) => { void value.adapter!.accept({ type: 'relay', channelId: 'dev-ch', payload: packet as never }); },
+      onFrame: () => {},
+      onError: (error) => errors.push(error),
+    });
+    let opened = false;
+    void phone.opened.then(() => { opened = true; }, () => {});
+    await value.adapter!.accept(OPEN);
+    // Deliver the host's packets to the phone one per event, as the websocket relay does.
+    let delivered = 0;
+    for (let i = 0; i < 200 && (!opened || find.mock.calls.length === 0); i++) {
+      const relayed = frames().filter((f) => f.type === 'relay');
+      if (delivered < relayed.length) phone.receive(relayed[delivered++]!.payload as never);
+      await tick();
+    }
+    expect(errors).toEqual([]);
+    expect(opened).toBe(true);
+    expect(find).toHaveBeenCalledWith('cust_1', phoneKey.publicKey.toString('base64'));
+    expect(frames()).not.toContainEqual(expect.objectContaining({ type: 'relay.close' }));
+    value.stop();
   });
 });
 

@@ -61,7 +61,7 @@
 import { readFile } from 'node:fs/promises';
 import { getOrgPg } from '@papercusp/db-org';
 import { execFileViaSidecar } from './fleet/git-via-sidecar';
-import { listLiveHostsAsync } from './events/await/psu-pty-discovery';
+import { findLiveHostAsync, listLiveHostsAsync } from './events/await/psu-pty-discovery';
 import {
   listWindowsByTitle,
   parseSessionIdFromWindowTitle,
@@ -395,6 +395,10 @@ export interface GatherOnDesktopDeps {
   listWindows?: () => Promise<OpenWindow[]>;
   /** Live interactive psu hosts (ownerId + host pid). Default: listLiveHostsAsync() (WI-10004587). */
   listHosts?: () => Array<{ ownerId: string; pid: number }> | Promise<Array<{ ownerId: string; pid: number }>>;
+  /** Targeted counterpart to listHosts. Default: findLiveHostAsync(ownerId). */
+  findHost?: (ownerId: string) => Promise<{ ownerId: string; pid: number } | null>;
+  /** Recent launch candidates. A supplied owner list filters the PG read to those owners. */
+  listCandidates?: (maxAgeSec: number, ownerIds?: readonly string[]) => Promise<DesktopCandidateRow[]>;
   /** /proc stat reader for the ancestry walk. Default: real /proc. */
   readStat?: (pid: number) => Promise<string | null>;
   /** Is this the Windows desktop host? Default: isWindowsDesktopHost(). Injected
@@ -403,6 +407,33 @@ export interface GatherOnDesktopDeps {
   /** The renderer-pushed Windows window cache (null ⇒ unknown). Default:
    *  getOnDesktopWindowsCache(). Injected alongside isWindowsHost for tests. */
   readWindowsCache?: () => WindowsDesktopWindow[] | null;
+}
+
+type DesktopCandidateRow = {
+  id: number;
+  coord_owner_id: string | null;
+  session_id: string | null;
+  window_id: string | null;
+  pid: number | null;
+};
+
+async function listRecentDesktopCandidateRows(
+  maxAgeSec: number,
+  ownerIds?: readonly string[],
+): Promise<DesktopCandidateRow[]> {
+  const { sql } = getOrgPg();
+  return ownerIds === undefined
+    ? sql<DesktopCandidateRow[]>`
+        SELECT id, coord_owner_id, session_id, window_id, pid
+          FROM harness_shared.adv_sessions
+         WHERE started_at > now() - make_interval(secs => ${maxAgeSec})
+           AND (window_id IS NOT NULL OR pid IS NOT NULL OR coord_owner_id IS NOT NULL)`
+    : sql<DesktopCandidateRow[]>`
+        SELECT id, coord_owner_id, session_id, window_id, pid
+          FROM harness_shared.adv_sessions
+         WHERE started_at > now() - make_interval(secs => ${maxAgeSec})
+           AND coord_owner_id = ANY(${ownerIds})
+           AND (window_id IS NOT NULL OR pid IS NOT NULL OR coord_owner_id IS NOT NULL)`;
 }
 
 /**
@@ -420,11 +451,20 @@ export interface GatherOnDesktopDeps {
  * over-killing).
  */
 export async function gatherOnDesktopSessions(
-  opts: { maxAgeMs?: number; nowMs?: number; ttlMs?: number; deps?: GatherOnDesktopDeps } = {},
+  opts: {
+    maxAgeMs?: number;
+    nowMs?: number;
+    ttlMs?: number;
+    ownerIds?: readonly string[];
+    deps?: GatherOnDesktopDeps;
+  } = {},
 ): Promise<OnDesktopSets> {
   const ttl = opts.ttlMs ?? ON_DESKTOP_TTL_MS;
   const now = opts.nowMs ?? Date.now();
-  if (onDesktopCache && now - onDesktopCache.at < ttl) return onDesktopCache.sets;
+  const targetedOwnerIds =
+    opts.ownerIds === undefined ? undefined : [...new Set(opts.ownerIds.filter((id) => id.trim().length > 0))];
+  const targeted = targetedOwnerIds !== undefined;
+  if (!targeted && onDesktopCache && now - onDesktopCache.at < ttl) return onDesktopCache.sets;
 
   let sets = emptyOnDesktopSets();
   // WI-1967 — Windows "unknown window signal" detection, computed up front (a pure
@@ -441,18 +481,11 @@ export async function gatherOnDesktopSessions(
   try {
     const windows = await (opts.deps?.listWindows ?? listOpenWindows)();
     // No open windows (headless box / no DISPLAY) → nobody is on the desktop.
-    if (windows.length > 0) {
+    if (windows.length > 0 && targetedOwnerIds?.length !== 0) {
       const maxAgeSec = Math.max(1, Math.round((opts.maxAgeMs ?? DESKTOP_CANDIDATE_MAX_AGE_MS) / 1000));
-      const { sql } = getOrgPg();
       // Recent rows with ANY join key — a launch handle (leg 1) OR a coord owner
       // (leg 2's join back from the live-host ownerId to sessionIds/advIds).
-      const rows = await sql<
-        Array<{ id: number; coord_owner_id: string | null; session_id: string | null; window_id: string | null; pid: number | null }>
-      >`
-        SELECT id, coord_owner_id, session_id, window_id, pid
-          FROM harness_shared.adv_sessions
-         WHERE started_at > now() - make_interval(secs => ${maxAgeSec})
-           AND (window_id IS NOT NULL OR pid IS NOT NULL OR coord_owner_id IS NOT NULL)`;
+      const rows = await (opts.deps?.listCandidates ?? listRecentDesktopCandidateRows)(maxAgeSec, targetedOwnerIds);
       sets = selectOnDesktopSessions(
         rows.map((r) => ({
           advSessionId: r.id,
@@ -472,10 +505,22 @@ export async function gatherOnDesktopSessions(
       const winPids = windowOwningPids(windows);
       if (winPids.size > 0) {
         let hosts: Array<{ ownerId: string; pid: number }> = [];
-        try {
-          hosts = await (opts.deps?.listHosts ?? listLiveHostsAsync)();
-        } catch {
-          hosts = [];
+        if (targetedOwnerIds !== undefined) {
+          const ownersToResolve = targetedOwnerIds.filter((ownerId) => !sets.owners.has(ownerId));
+          const findHost = opts.deps?.findHost ?? findLiveHostAsync;
+          hosts = (await Promise.all(ownersToResolve.map(async (ownerId) => {
+            try {
+              return await findHost(ownerId);
+            } catch {
+              return null;
+            }
+          }))).filter((host): host is { ownerId: string; pid: number } => host !== null);
+        } else {
+          try {
+            hosts = await (opts.deps?.listHosts ?? listLiveHostsAsync)();
+          } catch {
+            hosts = [];
+          }
         }
         for (const h of hosts) {
           if (!h.ownerId || !h.pid) continue;
@@ -500,7 +545,7 @@ export async function gatherOnDesktopSessions(
   // catch-reset empty sets (a Windows host with a null cache should read
   // "unknown" even if the PG join threw).
   sets.windowSignalUnknown = windowSignalUnknown;
-  onDesktopCache = { at: now, sets };
+  if (!targeted) onDesktopCache = { at: now, sets };
   return sets;
 }
 

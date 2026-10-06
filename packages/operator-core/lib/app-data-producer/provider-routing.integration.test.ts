@@ -22,7 +22,9 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { getDatatype, upsertDatatype } from '../datatype-registry-store';
 import { ingestExternalTriggerEvent } from '../external-triggers/ingestion';
+import { authorizePersonalAccess } from '../personal-vault/authorization';
 import { createPersonalVaultExternalSinkForSource, vaultDedupeKey } from '../personal-vault/live-sink';
+import { createPersonalGrant, searchPersonalDocuments } from '../personal-vault/store';
 import { appRowFromSourceRecord, appRowId, DATATYPE_FOR_APP } from './app-rows';
 import { selectCanonicalRowsAfter } from './reconcile';
 
@@ -184,7 +186,10 @@ describe('P-005 provider-neutral routing (D-010)', () => {
       const datatypeId = row.datatype_id as keyof typeof nativeFor;
       const native = nativeFor[datatypeId];
       expect(row).toMatchObject({ source_id: fx, provider_account_id: account, external_id: native });
-      const category = datatypeId === 'email-message' ? 'gmail' : 'calendar';
+      // The Vault partition is named for the DATATYPE, never the provider
+      // (WI-10006490): a non-Google provider's mail lands in `mail`.
+      const category = datatypeId === 'email-message' ? 'mail' : 'calendar';
+      expect(row.source).toBe(category);
       expect(row.dedupe_key).toBe(accountPrefix(account) + vaultDedupeKey(category, native, fx));
       expect(row.dedupe_key).toContain(`:${fx}:${native}`);
     }
@@ -198,6 +203,29 @@ describe('P-005 provider-neutral routing (D-010)', () => {
       expect(mapped?.app).toBe(app);
       expect(mapped?.row).toMatchObject({ id: appRowId(native, fx), nativeId: native });
     }
+  });
+
+  it('makes a non-Google provider\'s mail readable under the provider-neutral personal:mail scope (WI-10006490)', async () => {
+    const account = 'alice@outlook.example';
+    const fx = await source(FIXTURE, alice, account);
+    await ingest(fx, FIXTURE, 'email-message', mail(account));
+
+    const ctx = { workspaceId: WS, role: 'meeting-prep' };
+    expect((await authorizePersonalAccess(org.adminSql, ctx, WS, alice, ['personal:mail'])).allowed).toBe(false);
+    await createPersonalGrant(org.adminSql, {
+      workspaceId: WS, userId: alice, principalType: 'agent-role', principalId: 'meeting-prep',
+      scopes: ['personal:mail'], grantedBy: 'owner',
+    });
+    expect(await authorizePersonalAccess(org.adminSql, ctx, WS, alice, ['personal:mail']))
+      .toMatchObject({ allowed: true, scopes: ['personal:mail'] });
+    // There is no Google-named partition left to grant against or read from.
+    expect((await authorizePersonalAccess(org.adminSql, ctx, WS, alice, ['personal:gmail'])).allowed).toBe(false);
+
+    const found = await searchPersonalDocuments(org.adminSql, WS, alice, { query: 'Quarterly', scopes: ['personal:mail'] });
+    expect(found).toHaveLength(1);
+    expect(found[0]).toMatchObject({ source: 'mail', scopeKey: 'personal:mail', externalId: NATIVE });
+    expect(await searchPersonalDocuments(org.adminSql, WS, alice, { query: 'Quarterly', scopes: ['personal:gmail'] }))
+      .toEqual([]);
   });
 
   it('keeps two providers that reuse one native id distinct in the Vault and in the app batch', async () => {

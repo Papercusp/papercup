@@ -409,3 +409,49 @@ describe('gatherOnDesktopSessions — WI-1967 windowSignalUnknown (Windows conse
     expect(sets.windowSignalUnknown).toBe(false);
   });
 });
+
+describe('gatherOnDesktopSessions targeted owner lookup', () => {
+  it('uses per-owner host lookup and does not seed the full-roster cache', async () => {
+    const windows: OpenWindow[] = [{ wid: '0x1', pid: 100, title: 'Terminal' }];
+    const targetCandidate = {
+      id: 7,
+      coord_owner_id: 'su-target',
+      session_id: 'session-target',
+      window_id: null,
+      pid: null,
+    };
+    const listCandidates = vi.fn(async (_maxAgeSec: number, _ownerIds?: readonly string[]) => [targetCandidate]);
+    const findHost = vi.fn(async (ownerId: string) => ({ ownerId, pid: 200 }));
+    const listHosts = vi.fn(async () => [{ ownerId: 'su-full', pid: 300 }]);
+    const readStat = async () => '200 (psu-pty-host) S 100 1 0 0 0 0 0';
+    const listWindows = async () => windows;
+
+    const targeted = await gatherOnDesktopSessions({
+      ownerIds: ['su-target'],
+      nowMs: 1_000,
+      ttlMs: 5_000,
+      deps: { listWindows, listCandidates, findHost, listHosts, readStat },
+    });
+
+    expect(listCandidates).toHaveBeenCalledWith(43_200, ['su-target']);
+    expect(findHost).toHaveBeenCalledWith('su-target');
+    expect(listHosts).not.toHaveBeenCalled();
+    expect(targeted.owners).toEqual(new Set(['su-target']));
+    expect(targeted.sessionIds).toEqual(new Set(['session-target']));
+    expect(targeted.advSessionIds).toEqual(new Set([7]));
+
+    const full = await gatherOnDesktopSessions({
+      nowMs: 1_001,
+      ttlMs: 5_000,
+      deps: {
+        listWindows,
+        listCandidates: vi.fn(async () => []),
+        listHosts,
+        readStat: async () => '300 (psu-pty-host) S 100 1 0 0 0 0 0',
+      },
+    });
+
+    expect(listHosts).toHaveBeenCalledTimes(1);
+    expect(full.owners).toEqual(new Set(['su-full']));
+  });
+});
