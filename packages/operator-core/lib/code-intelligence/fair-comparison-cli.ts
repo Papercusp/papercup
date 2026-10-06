@@ -34,6 +34,7 @@ import { createRgFairArm, type FairArm } from './fair-comparison-arms';
 import { FAIR_CORPUS, FAIR_CORPUS_COMMIT, initialKeys } from './fair-comparison-corpus';
 import { createCbmFairArm, createCgcArm, createCodegraphArm, createGitnexusFairArm, createTraceMcpArm } from './fair-comparison-engines';
 import { createLspQueryArm, createNoThirdPartyArm, loadVendoredTypescript } from './fair-comparison-first-party';
+import { acquireArmRunLock } from './fair-comparison-lock';
 import { runArm, scoreRuns, type ArmRun, type PendingSites } from './fair-comparison-run';
 
 const run = promisify(execFile);
@@ -169,9 +170,16 @@ async function main(): Promise<void> {
     const id = arg('arm') as FairArmId;
     if (!FAIR_ARM_IDS.includes(id)) throw new Error(`unknown arm ${id}; one of ${FAIR_ARM_IDS.join(', ')}`);
     const prereg = await readJson<Preregistration>(join(out, 'prereg.json'));
-    await prepareTree(id);
-    const result = await runArm(await buildArm(id), cases, prereg);
-    await writeFile(join(out, `${id}.run.json`), JSON.stringify(result, null, 2));
+    // Before prepareTree: a concurrent run of this arm shares its tree and HOME.
+    const lock = await acquireArmRunLock(out, id);
+    let result: ArmRun;
+    try {
+      await prepareTree(id);
+      result = await runArm(await buildArm(id), cases, prereg);
+      await writeFile(join(out, `${id}.run.json`), JSON.stringify(result, null, 2));
+    } finally {
+      await lock.release();
+    }
     const answered = result.reps.flatMap((r) => r.answers).filter((a) => a.status === 'answered').length;
     console.log(`${id} index ok=${result.index?.ok} wallMs=${Math.round(result.index?.wallMs ?? 0)} reps=${result.reps.length} answered=${answered}`);
   } else if (cmd === 'score') {
