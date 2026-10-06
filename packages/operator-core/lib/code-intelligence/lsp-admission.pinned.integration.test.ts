@@ -67,6 +67,63 @@ afterAll(async () => {
 }, 30_000);
 
 describe('daemon admission against the pinned TypeScript server', () => {
+  it('preserves the readiness refusal for a source-complete stable warm reference answer', async () => {
+    expect(resolveServerBin('typescript')).not.toBeNull();
+    socketRoot = mkdtempSync(join(tmpdir(), 'lsp-stable-readiness-socket-'));
+    corpusRoot = mkdtempSync(join(tmpdir(), 'lsp-stable-readiness-corpus-'));
+    const file = join(corpusRoot, 'target.ts');
+    writeFileSync(join(corpusRoot, 'tsconfig.json'), JSON.stringify({
+      compilerOptions: { strict: true }, files: ['target.ts', 'consumer.ts'],
+    }));
+    writeFileSync(file, 'export function stableTarget() { return 1; }\nstableTarget();\n');
+    writeFileSync(join(corpusRoot, 'consumer.ts'),
+      'import { stableTarget } from "./target";\nstableTarget();\n');
+    const args = { file, rootPath: corpusRoot, line1: 2, character: 1 };
+    const socket = join(socketRoot, 'daemon.sock');
+    process.env[LSP_DAEMON_SOCKET_ENV] = socket;
+    server = runLspDaemonServer();
+    await once(server, 'listening');
+    try {
+      const warm = await callLspDaemonRpc(socket, { workspaceId, op: 'symbol', args, archive: true },
+        90_000, 'pinned/stable-readiness/warm');
+      expect(warm.error, JSON.stringify(warm)).toBeNull();
+      expect(warm.freshness.health).toBe('healthy');
+      expect(warm.sites.map(site => [site.path, site.line1])).toEqual([['target.ts', 1]]);
+      const expected = [['consumer.ts', 1], ['consumer.ts', 2], ['target.ts', 1], ['target.ts', 2]];
+      const samples = [];
+      for (let index = 0; index < 3; index++) {
+        const answer = await callLspDaemonRpc(socket, { workspaceId, op: 'references', args, archive: true },
+          90_000, `pinned/stable-readiness/${index}`);
+        expect(answer.error, JSON.stringify(answer)).toBeNull();
+        const sites = answer.sites.map(site => [site.path, site.line1])
+          .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+        // Ground truth comes from the fixture's authored sites, never a warm answer.
+        expect(sites).toEqual(expected);
+        const client = lspClientInventory().find(client => client.rootPath === corpusRoot)!;
+        expect(client).toBeDefined();
+        samples.push({ sites, health: answer.freshness.health,
+          progressGeneration: client.progressGeneration, certifiedReadiness: client.certifiedReadiness,
+          unprovenReadiness: client.unprovenReadiness });
+        expect(answer.freshness.health).toBe('degraded');
+        expect(client.certifiedReadiness).not.toContain('references');
+        expect(client.unprovenReadiness).toContain('references');
+      }
+      console.info('WI41095_STABLE_REFERENCE_READINESS', JSON.stringify(samples));
+      // This reproduces an availability failure, not a completeness waiver.
+      // An unchanged answer and a completed project-load cycle cannot satisfy
+      // the current canary's required answer transition after its first sample.
+      expect(samples.every(sample => sample.progressGeneration === samples[0].progressGeneration)).toBe(true);
+    } finally {
+      await shutdownAllLspClients();
+      await new Promise<void>(done => server!.close(() => done()));
+      server = undefined;
+      rmSync(socketRoot, { recursive: true, force: true });
+      rmSync(corpusRoot, { recursive: true, force: true });
+      socketRoot = undefined;
+      corpusRoot = undefined;
+    }
+  }, 120_000);
+
   it('answers tracked cross-package ground truth through learned cost lanes and live RPC readback', async () => {
     // Absence fails this acceptance check; a skip is not proof of a working backend.
     expect(resolveServerBin('typescript'), 'provision the maintained pinned TypeScript server').not.toBeNull();

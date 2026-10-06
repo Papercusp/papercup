@@ -2,17 +2,21 @@
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import type { PrViewerDetails } from '@papercusp/operator-core/lib/pr-host/pr-viewer';
 import { prToRow } from '@papercusp/operator-core/lib/pr-host/pr-viewer';
 import { toast } from 'sonner';
 
 const sync = vi.hoisted(() => ({ data: [] as unknown[], loading: false, error: null as Error | null,
-  invalidate: vi.fn(), query: vi.fn() }));
+  invalidate: vi.fn(), query: vi.fn(), selectedFile: null as string | null, setFile: vi.fn() }));
 vi.mock('@papercusp/sync', () => ({ useSyncQuery: (opts: unknown) => { sync.query(opts); return sync; } }));
 vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn() }) }));
 vi.mock('nuqs', async () => {
   const React = await import('react');
-  return { parseAsString: {}, useQueryState: () => React.useState<string | null>(null) };
+  return { parseAsString: {}, useQueryState: () => {
+    const [value, setValue] = React.useState<string | null>(sync.selectedFile);
+    return [value, (next: string | null) => { sync.setFile(next); setValue(next); }];
+  } };
 });
 import { PrDetails } from './PrDetails';
 
@@ -32,10 +36,11 @@ function fixture(): PrViewerDetails {
     checks: [{ name: 'Full suite', conclusion: 'success', status: 'completed', url: null }] };
 }
 describe('PR details', () => {
-  beforeEach(() => { sync.data = [fixture()]; sync.loading = false; sync.error = null; });
+  beforeEach(() => { sync.data = [fixture()]; sync.loading = false; sync.error = null; sync.selectedFile = null; });
   afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.clearAllMocks(); });
   const mount = () => render(<PrDetails harnessSlug="acme" number={7} onChanged={vi.fn()} />);
-  it('loads the named sync query and shows commits, checks, actual state and exact tested SHA separately from the head', () => {
+  it('loads the named sync query and shows commits, checks, actual state and exact tested SHA separately from the head', async () => {
+    const user = userEvent.setup();
     const view = mount();
     expect(sync.query).toHaveBeenCalledWith({ queryName: 'harnessPrs.detail', args: { harnessSlug: 'acme', number: 7 } });
     expect(view.getByLabelText('Exact merge test').textContent).toContain('c'.repeat(40));
@@ -43,10 +48,28 @@ describe('PR details', () => {
     expect(view.getByLabelText('PR commits').textContent).toContain('Combined work');
     expect(view.getByText('open · mergeable')).toBeTruthy();
     expect(view.getByRole('link', { name: 'Open on GitHub' }).getAttribute('href')).toContain('/pull/7');
-    fireEvent.change(view.getByLabelText('File diff'), { target: { value: 'src/main.ts' } });
+    await user.click(view.getByRole('combobox', { name: 'File diff' }));
+    await user.click(view.getByRole('option', { name: 'src/main.ts · modified +1 −1' }));
     expect(view.getByLabelText('PR diff').textContent).toBe('-old\n+new');
-    fireEvent.change(view.getByLabelText('File diff'), { target: { value: 'logo.png' } });
+    expect(sync.setFile).toHaveBeenLastCalledWith('src/main.ts');
+    await user.click(view.getByRole('combobox', { name: 'File diff' }));
+    await user.click(view.getByRole('option', { name: 'logo.png · modified +0 −0' }));
     expect(view.getByLabelText('PR diff').textContent).toContain('did not provide a patch');
+    await user.click(view.getByRole('combobox', { name: 'File diff' }));
+    await user.click(view.getByRole('option', { name: 'All changes' }));
+    expect(sync.setFile).toHaveBeenLastCalledWith(null);
+    expect(view.getByLabelText('PR diff').textContent).toBe(fixture().diff);
+  });
+  it('keeps a URL-selected file and falls back to all changes for a removed file', () => {
+    sync.selectedFile = 'src/main.ts';
+    const view = mount();
+    expect(view.getByLabelText('PR diff').textContent).toBe('-old\n+new');
+    expect(view.getByRole('combobox', { name: 'File diff' }).textContent).toContain('src/main.ts');
+    sync.data = [{ ...fixture(), files: [] }];
+    view.rerender(<PrDetails harnessSlug="acme" number={7} onChanged={vi.fn()} />);
+    expect(view.getByLabelText('PR diff').textContent).toBe(fixture().diff);
+    expect(view.getByRole('combobox', { name: 'File diff' }).textContent).toContain('All changes');
+    expect(sync.setFile).not.toHaveBeenCalled();
   });
   it('shows stale tests, report absence and truncated-diff disclosure', () => {
     const d = fixture(); d.mergeTestStatus = 'stale'; d.diffTruncated = true; sync.data = [d];

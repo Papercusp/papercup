@@ -440,13 +440,16 @@ describe('platform relationship graph (P-002, R-1)', () => {
     expect(await graphRows('PER-', 'person')).toEqual([]);
   });
 
-  it('interaction source kinds grant person -> record by default; contacts do not (D-017, migration 1393)', async () => {
+  it('the person -> record kind default for interaction sources is HELD until the D-020 fix is live (migration 1395 over 1393, WI-10006570)', async () => {
+    // 1393 made person -> record the gmail/gcal default; 1395 holds it back because the release
+    // running connector-sync aborts a harnessless personal source's sync on it. When the re-grant
+    // migration lands, flip these two expectations back to include person: ['record'].
     const defaults = await sql<Array<{ kind: string; policy: Record<string, string[]> }>>`
       SELECT k AS kind, (harness_shared.data_source_kind_defaults(k)).destination_policy AS policy
         FROM unnest(ARRAY['gmail', 'gcal', 'contacts']::text[]) AS k`;
     const byKind = Object.fromEntries(defaults.map((d) => [d.kind, d.policy]));
-    expect(byKind.gmail).toEqual({ 'email-message': ['document', 'event'], person: ['record'] });
-    expect(byKind.gcal).toEqual({ 'calendar-event': ['document', 'event'], person: ['record'] });
+    expect(byKind.gmail).toEqual({ 'email-message': ['document', 'event'] });
+    expect(byKind.gcal).toEqual({ 'calendar-event': ['document', 'event'] });
     // Contacts are not an interaction source: D-015 brings contacts in as connector person records.
     expect(byKind.contacts).toEqual({ contact: ['document', 'event'] });
 
@@ -459,7 +462,9 @@ describe('platform relationship graph (P-002, R-1)', () => {
               ${sql.json({ harnessSlug: HARNESS })}, 'organization', '{}'::jsonb, ${sql.json({ mode: 'source-acl' })})
       RETURNING id::text, destination_policy AS policy`;
     try {
-      expect(row!.policy.person).toEqual(['record']);
+      // Positive control: the trigger did apply the kind default (the interaction route is there).
+      expect(row!.policy['email-message']).toEqual(['document', 'event']);
+      expect(row!.policy.person).toBeUndefined();
     } finally {
       await sql`DELETE FROM harness_shared.data_sources WHERE id = ${row!.id}::uuid`;
     }

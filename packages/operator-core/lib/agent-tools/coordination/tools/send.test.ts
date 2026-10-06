@@ -15,7 +15,7 @@ import { z } from 'zod';
 import { parseGoalOwnerReportSnapshot } from '@papercusp/chat-protocol';
 import { goalOwnerReportFixture } from '../../../../test/fixtures/goal-owner-report';
 import {
-  deriveGoalReportNotification, validateGoalReportReferenceSnapshot,
+  deriveGoalReportNotification, stampGoalReportReference, validateGoalReportReferenceSnapshot,
   type GoalReportReferenceReads,
 } from '../../../goal-owner-report-reference';
 import {
@@ -3128,6 +3128,19 @@ describe('REPORT-REFERENCE-ADMISSION-P002: actual coord:send handler', () => {
     expect(opts.body).toBe(deriveGoalReportNotification(snapshot));
     expect(opts.body).not.toContain('Caller-supplied');
     expect(opts.extra?.report).toEqual(args().report);
+    // WI-10006545: the reference-form stamp carries the truth its validated snapshot proves,
+    // and the cited ref states the next inline report's corrections check reads as baseline.
+    expect(snapshot.moved.length).toBeGreaterThan(0);
+    expect(opts.extra?.goalOwnerReport?.truth).toEqual({
+      cost: 'cited-measured',
+      ownerWalls: snapshot.ownerWalls.length > 0 ? 'all-listed-with-action' : 'none-open',
+      corrections: 'unread',
+    });
+    expect(opts.extra?.goalOwnerReport?.citedRefStates).toEqual(snapshot.moved.map((m) => ({ ref: m.ref, state: m.state })));
+    // The persisted envelope uses the same stamp function, so delivered and persisted stamps agree.
+    expect(opts.extra?.goalOwnerReport).toEqual(
+      stampGoalReportReference(snapshot.goalId, snapshot, deriveGoalReportNotification(snapshot)),
+    );
     expect(opts.persistEnvelope).toEqual(expect.any(Function));
     const env = { msg_id: 'test', from: 'me', to: ['human'], ts: new Date().toISOString(), kind: 'message' as const };
     await opts.persistEnvelope!(env);

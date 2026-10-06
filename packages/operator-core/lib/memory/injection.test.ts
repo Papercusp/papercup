@@ -1099,7 +1099,8 @@ describe('push-path recall telemetry is recorded PER POOL (P-026)', () => {
     /**
      * The property that made the clamp the RIGHT lever rather than merely a
      * cheaper one (D-090): a clamped entry stays RECOVERABLE. It keeps its scope,
-     * id and lede and tells the agent how to get the rest, whereas an entry
+     * id and lede and tells the agent how to request the rest without assuming
+     * that this recipient is allowed to search memory, whereas an entry
      * dropped for budget is invisible and unrecoverable. If the clamp ever starts
      * truncating silently, halving it stops being a safe trade and this fails.
      */
@@ -1115,7 +1116,9 @@ describe('push-path recall telemetry is recorded PER POOL (P-026)', () => {
       });
       await flush();
 
-      expect(block).toContain('truncated — memory:search for the rest');
+      expect(block).toContain('truncated — ask an authorized memory reader for the full entry');
+      expect(block).not.toContain('memory:search');
+      expect(block).toContain('id=long1');
       // The lede survives the cut — a truncated entry is still identifiable.
       expect(block).toContain('mnemonic');
     });

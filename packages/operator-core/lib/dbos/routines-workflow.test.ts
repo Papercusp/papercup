@@ -502,6 +502,21 @@ describe('routinesTickImpl — probe evidence', () => {
   });
 });
 
+describe('learning-loop-health-sweep — durable operation output', () => {
+  it('returns the workspace-scoped classifier report from its DBOS step', () => {
+    const source = readFileSync(resolve(__dirname, 'routines-workflow.ts'), 'utf8');
+    const stepAt = source.lastIndexOf("await DBOS.runStep(", source.indexOf("{ name: 'learning-loop-health-sweep' }"));
+    const stepEnd = source.indexOf("{ name: 'learning-loop-health-sweep' }", stepAt);
+    const step = source.slice(stepAt, stepEnd);
+
+    expect(stepAt).toBeGreaterThan(-1);
+    expect(stepEnd).toBeGreaterThan(stepAt);
+    expect(step).toContain('learningLoopHealthSweepWithEvidence');
+    expect(step).toContain('report.escalations');
+    expect(step).toContain('return report;');
+  });
+});
+
 describe('routineFireWorkflow — durable loop:wake output', () => {
   it('registers every isolated routine lane at boot', () => {
     // Every lane queueForRoutine can return MUST be registered here, or a fire enqueued

@@ -50,6 +50,9 @@ beforeEach(() => {
   fakeWebCodecs();
   h.captured.opts = null;
   vi.clearAllMocks();
+  // jsdom's unimplemented play() returns undefined; a real browser returns a
+  // Promise. Keep the mocked camera preview from falsely entering error recovery.
+  vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue();
 });
 afterEach(() => {
   cleanup();
@@ -58,6 +61,7 @@ afterEach(() => {
   delete g.VideoEncoder;
   delete g.VideoDecoder;
   delete g.EncodedVideoChunk;
+  vi.restoreAllMocks();
 });
 
 async function renderGrid() {

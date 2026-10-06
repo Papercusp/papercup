@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type postgres from 'postgres';
 import {
+  readTriggerOperationPayload,
   readTriggerPlanRunPayload,
   redactTriggerArgsForPlanInputs,
   type TriggerRunArgs,
@@ -370,5 +371,31 @@ describe('readTriggerPlanRunPayload', () => {
     const result = await readTriggerPlanRunPayload(sql, 'papercusp-workspace', 7);
     expect(result.payload).toEqual({});
     expect(result.key).toBe('');
+  });
+});
+
+describe('readTriggerOperationPayload (D-006: trigger-fired operation work item)', () => {
+  it('returns the same private payload shape, keyed by the operation work item', async () => {
+    const sql = stubSql([{ triggerRunId: 'run-op-1', args: gmailArgs() }]);
+    const result = await readTriggerOperationPayload(sql, 'papercusp-workspace', 'WI-123');
+    expect(result.triggerRunId).toBe('run-op-1');
+    expect(result.source).toBe('gmail');
+    expect(result.payload.text).toContain('PRIVATE BODY');
+  });
+
+  it('refuses a blank work item id before touching the database', async () => {
+    let touched = false;
+    const sql = ((..._ignored: unknown[]) => {
+      touched = true;
+      return Promise.resolve([]);
+    }) as unknown as postgres.Sql;
+    await expect(readTriggerOperationPayload(sql, 'w', '   ')).rejects.toThrow('trigger_payload_work_item_id_invalid');
+    expect(touched).toBe(false);
+  });
+
+  it('throws a typed not-found rather than returning an empty payload', async () => {
+    await expect(readTriggerOperationPayload(stubSql([]), 'papercusp-workspace', 'WI-404')).rejects.toThrow(
+      'trigger_payload_operation_not_found:WI-404',
+    );
   });
 });

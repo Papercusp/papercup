@@ -9,7 +9,12 @@ import { getSystemActionEntry } from './system-actions';
 import type { SystemActionCtx } from './system-actions';
 import { TARGET_ROLE_SPEND } from '../../automation/routine-classification';
 import { BESPOKE_ACTIVE_SEEDS } from './bespoke-active-seeds-check';
-import { queueForRoutine, ROUTINES_HEAVY_QUEUE, ROUTINES_QUEUE } from '../../dbos/routines-queue-classification';
+import {
+  queueForRoutine,
+  ROUTINES_CRITICAL_QUEUE,
+  ROUTINES_HEAVY_QUEUE,
+  ROUTINES_QUEUE,
+} from '../../dbos/routines-queue-classification';
 import {
   BULK_DEDUP_SCHEDULED_ROUTINE_NAME,
   DEFAULT_DRIVER_MAX_STAGES,
@@ -46,11 +51,14 @@ function deps(overrides: Partial<BulkDedupDriverDeps> = {}): BulkDedupDriverDeps
 }
 
 describe('work-item admission bulk-dedup driver', () => {
-  it('isolates the scheduled bulk stage on the heavy lane while admission housekeeping stays shared', () => {
+  it('isolates the scheduled bulk stage on the heavy lane while admission housekeeping stays off it', () => {
     expect(queueForRoutine(enqueued.targetRole, 'papercusp')).toBe(ROUTINES_HEAVY_QUEUE);
-    for (const action of ['work-item-admission-fail-open', 'work-item-admission-promoter', 'work-item-admission-bulk-dedup-census']) {
+    for (const action of ['work-item-admission-promoter', 'work-item-admission-bulk-dedup-census']) {
       expect(queueForRoutine(`system:${action}`, 'papercusp')).toBe(ROUTINES_QUEUE);
     }
+    // EI-25209690807142935: the fail-open runner backs the admission-pending claim-floor guarantee, so it
+    // rides the epoch-limiter-exempt critical lane — never the heavy lane the bulk stage saturates.
+    expect(queueForRoutine('system:work-item-admission-fail-open', 'papercusp')).toBe(ROUTINES_CRITICAL_QUEUE);
   });
 
   it('is a registered STANDING action with an llm spend class and a bespoke seed row', () => {

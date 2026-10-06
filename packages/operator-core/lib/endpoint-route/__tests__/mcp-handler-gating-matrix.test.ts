@@ -658,6 +658,18 @@ defineTool({
   },
 });
 defineTool({
+  name: 'gatingtest:replay_structured_write',
+  requirePrincipal: false,
+  capability: 'agent_tools:write',
+  args: z.object({}),
+  result: z.object({ rows: z.array(z.object({ id: z.string(), state: z.string() })) }),
+  agentRoles: ['scoper'],
+  handler: async (_args, ctx) => {
+    parityCalls.push({ args: {}, ctx });
+    return { data: { rows: PARITY_ROWS } };
+  },
+});
+defineTool({
   name: 'gatingtest:parity_structured_large',
   requirePrincipal: false,
   capability: 'agent_tools:read',
@@ -1709,6 +1721,34 @@ describe('P006 full dispatcher semantics over real HTTP and authenticated UDS', 
   });
 
   it.each(['http', 'listener'] as const)(
+    '%s returns SDK-valid structuredContent when an opted-in write replays an older JSON receipt',
+    async connection => {
+      const payload = { rows: PARITY_ROWS };
+      h.storedReplay = { content: [{ type: 'text', text: JSON.stringify(payload) }], _meta: { format: 'json' } };
+      await withSdkHost(
+        extraFor(signedUrl({ tools: 'gatingtest:replay_structured_write' })),
+        async client => {
+          const catalog = await client.listTools();
+          expect(catalog.tools.find(tool => tool.name === 'gatingtest:replay_structured_write')?.outputSchema)
+            .toMatchObject({ type: 'object', required: ['rows'] });
+          parityCalls.length = 0;
+
+          const replayed = await client.callTool({
+            name: 'gatingtest:replay_structured_write',
+            arguments: {},
+            _meta: { structured: true, idempotencyKey: 'idem-replay-structured-rehydrate' },
+          }) as CallResult;
+          expect(replayed.structuredContent).toEqual(payload);
+          expect(replayed._meta).toMatchObject({ replayed: true, structured: true });
+          expect(JSON.parse(textOf(replayed))).toEqual(payload);
+          expect(parityCalls).toEqual([]); // a replay returns without re-running the write
+        },
+        connection,
+      );
+    },
+  );
+
+  it.each(['http', 'listener'] as const)(
     '%s keeps structuredContent output-schema-valid after trimmed payload shaping',
     async connection => {
       await withSdkHost(
@@ -2584,6 +2624,31 @@ describe('a replayed call records a tool_invocation row', () => {
     expect(seen.length).toBe(before);
     expect(h.withWorkspaceCalls).toEqual([]);
     expect(h.replayStores).toEqual([]);
+  });
+
+  it('does not synthesize unrequested structure or parse result-door envelopes', async () => {
+    const payload = { ok: true, item: null, reason: 'no_match' };
+    h.storedReplay = { content: [{ type: 'text', text: JSON.stringify(payload) }], _meta: { format: 'json' } };
+    const unrequested = await callTool('gatingtest:scoped', {}, scoped('ws-test'), {
+      idempotencyKey: 'idem-replay-structured-not-requested',
+    });
+    expect(unrequested.structuredContent).toBeUndefined();
+
+    const envelope = {
+      schemaVersion: 'papercusp.output-envelope/v1',
+      state: 'incomplete',
+      content: [{ kind: 'evidence-reference', uri: 'papercusp://scratch/example' }],
+    };
+    h.storedReplay = { content: [{ type: 'text', text: JSON.stringify(envelope) }], _meta: { format: 'json' } };
+    const doorResult = await callTool('gatingtest:scoped', {}, scoped('ws-test'), {
+      idempotencyKey: 'idem-replay-result-door-envelope',
+      structured: true,
+    });
+    expect(doorResult.structuredContent).toBeUndefined();
+    expect(JSON.parse(textOf(doorResult))).toMatchObject({
+      schemaVersion: 'papercusp.output-envelope/v1',
+      state: 'incomplete',
+    });
   });
 
   it('counts replayed output in the same explicit aggregate cohort', async () => {

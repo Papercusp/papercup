@@ -10894,7 +10894,18 @@ export function hostThroughPty(o) {
   const unparkChild = (trigger) => {
     if (unparkPromise) return unparkPromise;
     if (!parked && !parkPromise) return Promise.resolve({ unparked: false, reason: 'not-parked' });
-    unparkPromise = (async () => {
+    /** @type {Promise<{ unparked: boolean, reason: string }>} */
+    let attempt;
+    // The single-flight slot is cleared by IDENTITY, after the assignment below.
+    // A `finally` inside the async body is not enough: a resume that fails
+    // synchronously (a spawn that throws before any await) runs that finally
+    // BEFORE `unparkPromise = …` executes, leaving the failed promise in the
+    // slot for good, so every later retry/keystroke/delivery silently re-reads
+    // the stale failure (found by P-019's failing-first test).
+    const releaseSlot = () => {
+      if (unparkPromise === attempt) unparkPromise = null;
+    };
+    attempt = (async () => {
       const startedAt = Date.now();
       try {
         if (parkPromise) await parkPromise;
@@ -10951,11 +10962,17 @@ export function hostThroughPty(o) {
         // the host is ending and cleanup releases them as undeliverable.
         if (child === resumed) releaseHeldDeliveries({ ok: true, reason: 'resumed' });
         return { unparked: true, reason: 'resumed' };
-      } finally {
-        unparkPromise = null;
+      } catch (error) {
+        // Anything unexpected past the spawn (writeMeta, wiring) must not leave
+        // a rejected promise in callers that only branch on `unparked`.
+        appendHostEvent(ownerId, 'child-unpark-failed', { trigger, reason: 'error', ...hostErrorEvidence(error) });
+        scheduleUnparkRetry();
+        return { unparked: false, reason: 'error' };
       }
     })();
-    return unparkPromise;
+    unparkPromise = attempt;
+    attempt.then(releaseSlot, releaseSlot);
+    return attempt;
   };
   /** Owner bytes typed while parked: keep the real keystrokes for replay, drop
    *  the terminal's own replies (they answered the dead TUI), and resume. */

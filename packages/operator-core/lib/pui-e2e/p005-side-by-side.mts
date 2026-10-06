@@ -793,7 +793,17 @@ async function runParity() {
     frame('24-idle-footer');
     return { lastLines: screen().split('\n').slice(-4) };
   });
-  await probe('25-ctrl-c', async () => {
+  // `--unclean-exit-25` kills the CLI's PTY instead of exiting it, so the
+  // relaunch at step 26 starts while the previous session is still shutting
+  // down server-side. That is what happened in the 2026-10-06 05:25Z run, when
+  // Ctrl+C and the exit command both failed and the driver fell through to
+  // pty.kill() (WI-10006423; D-030 names the race).
+  if (flag('unclean-exit-25') && probeSelected('25-ctrl-c')) {
+    log.push({ label: '25-unclean-exit', killedPty: true });
+    try { pty.kill(); } catch { /* gone */ }
+    exited = true;
+  }
+  if (!exited) await probe('25-ctrl-c', async () => {
     await keys('draft text', 800);
     pty.write('\x03');
     await sleep(1200);

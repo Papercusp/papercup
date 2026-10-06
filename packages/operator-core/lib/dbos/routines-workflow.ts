@@ -1924,12 +1924,17 @@ async function routinesTickImpl(): Promise<void> {
   // its own 24h debounce ledger (source 'learning-loop-health').
   await DBOS.runStep(
     async () => {
-      const { learningLoopHealthSweep } = await import('../harness/routines/learning-loop-health-sweep');
-      const results = await learningLoopHealthSweep();
-      for (const r of results) {
+      const { learningLoopHealthSweepWithEvidence } = await import('../harness/routines/learning-loop-health-sweep');
+      const report = await learningLoopHealthSweepWithEvidence();
+      for (const r of report.escalations) {
         if (r.outcome === 'debounced') continue;
         console.warn(`[learning-loop-health] ${r.outcome}: ${r.blueprintId} (${r.status}) — ${r.reason.slice(0, 160)}`);
       }
+      // DBOS persists runStep return values in operation_outputs. Keep the concrete
+      // workspace and every classifier candidate/outcome with the same durable tick
+      // record so a later investigation can distinguish an empty healthy read from
+      // a wrong-workspace read or a candidate that was classified but not escalated.
+      return report;
     },
     { name: 'learning-loop-health-sweep' },
   );

@@ -19,7 +19,7 @@ it('persists exact authenticated source stamps through the real ingest SQL witho
     import { createHash } from 'node:crypto';
     import { getOrgPg } from '@papercusp/db-org';
     import { activeWorkspaceId } from './packages/operator-core/lib/workspace-registry.ts';
-    import { insertTurns, promptOriginHash, parseClaudeLine, parseCodexLine, parseOmpLine, backfillTurnProvenanceOnce } from './packages/operator-core/lib/search/session-ingest.ts';
+    import { insertTurns, promptOriginHash, parseClaudeLine, parseCodexLine, parseOmpLine, backfillTurnProvenanceOnce, recorrelatePromptOriginStampsOnce } from './packages/operator-core/lib/search/session-ingest.ts';
     import { MACHINE_SURFACE_CATALOGUE_VERSION } from './packages/operator-core/lib/turn-provenance/machine-surface-catalogue.ts';
     const workspace = activeWorkspaceId();
     assert.ok(workspace.startsWith('test-runtime-'));
@@ -32,12 +32,13 @@ it('persists exact authenticated source stamps through the real ingest SQL witho
     const now = new Date(), cases = [];
     function candidate(label, sourceKind = 'codex', overrides = {}) {
       const text = overrides.text ?? 'measure the unchanged frozen cohort\r\n' + 'original prompt bytes '.repeat(500);
+      const at = overrides.at ?? now;
       const line = overrides.history
-        ? { session_id: 'origin-' + label, ts: now.getTime() / 1000, text }
+        ? { session_id: 'origin-' + label, ts: at.getTime() / 1000, text }
         : sourceKind === 'codex'
-          ? { timestamp: now.toISOString(), type: 'response_item', payload: {
+          ? { timestamp: at.toISOString(), type: 'response_item', payload: {
               type: 'message', role: 'user', content: [{ type: 'input_text', text }] } }
-          : { timestamp: now.toISOString(), type: sourceKind === 'omp' ? 'message' : 'user',
+          : { timestamp: at.toISOString(), type: sourceKind === 'omp' ? 'message' : 'user',
               message: { role: 'user', content: [{ type: 'text', text }] } };
       const parser = sourceKind === 'claude' ? parseClaudeLine : sourceKind === 'omp' ? parseOmpLine : parseCodexLine;
       const parsed = parser(JSON.stringify(line));
@@ -67,6 +68,15 @@ it('persists exact authenticated source stamps through the real ingest SQL witho
       await stamp(candidate('outside-window'), { submitted_at: new Date(now.getTime() - 120001) });
       await stamp(candidate('expired'), { expires_at: new Date(now.getTime() - 1) });
       await stamp(candidate('injected', 'codex', { text: '⟦turn-origin:loop-fire nonce:095d0a31d74f617e⟧\nkeep going' }));
+      // WI-10006568: ingest that runs after the stamp's TTL. The turn was typed
+      // 15 min ago while its stamp was valid; it expired 5 min ago, before this
+      // insert. Expiry is judged against the TURN, so this must still promote.
+      const typedAt = new Date(now.getTime() - 15 * 60000);
+      await stamp(candidate('late-ingest', 'claude', { at: typedAt }),
+        { submitted_at: typedAt, expires_at: new Date(typedAt.getTime() + 600000) });
+      // Stamp lands only AFTER the row is stored. CRLF and edge whitespace check
+      // that the re-correlation prefilter normalises exactly like promptOriginHash.
+      const lateStampRow = candidate('late-stamp', 'claude', { text: '  fix the stamp race\r\nplease  ' });
       candidate('legacy-residual');
       candidate('new-machine-rule', 'codex', { text: process.env.TEST_PROMPT_ORIGIN_MACHINE_TEXT });
       candidate('assistant');
@@ -77,11 +87,29 @@ it('persists exact authenticated source stamps through the real ingest SQL witho
       assert.equal(rows.length, cases.length);
       for (const c of cases) {
         const stored = rows.find(row => row.session_id === c.row.session_id);
-        const expected = ['claude', 'codex', 'omp', 'codex-history'].includes(c.label) ? 'owner-typed'
+        const expected = ['claude', 'codex', 'omp', 'codex-history', 'late-ingest'].includes(c.label) ? 'owner-typed'
           : c.label === 'injected' ? 'agent-injected'
           : c.label === 'new-machine-rule' ? 'machine-surface' : 'unenrolled-origin';
         assert.equal(stored.turn_origin_verdict, expected, c.label);
       }
+      // Re-correlation of already-stored rows: no stamp existed at insert, so
+      // late-stamp is unenrolled above; its stamp now lands and the sweep must
+      // upgrade exactly that row. It must not touch the negative controls: the
+      // expired stamp fails per-row expiry, and wrong-hash, outside-window,
+      // wrong-session and wrong-source never pair.
+      await stamp(lateStampRow);
+      const recorrelated = await recorrelatePromptOriginStampsOnce(sql, 100);
+      console.log('PROMPT_ORIGIN_RECORRELATE ' + JSON.stringify(recorrelated));
+      assert.equal(recorrelated.promoted, 1);
+      const swept = await sql\`SELECT session_id, turn_origin, turn_origin_verdict
+        FROM harness_shared.session_turns WHERE workspace_id = \${workspace}\`;
+      const sweptBy = (label) => swept.find(row => row.session_id === 'origin-' + label);
+      assert.equal(sweptBy('late-stamp').turn_origin_verdict, 'owner-typed');
+      assert.equal(sweptBy('late-stamp').turn_origin, 'hook-authenticated-prompt');
+      for (const label of ['expired', 'wrong-hash', 'outside-window', 'wrong-session', 'wrong-source', 'legacy-residual']) {
+        assert.equal(sweptBy(label).turn_origin_verdict, 'unenrolled-origin', 'recorrelate must not promote ' + label);
+      }
+      assert.equal((await recorrelatePromptOriginStampsOnce(sql, 100)).promoted, 0);
       // A classifier upgrade outlives the ephemeral receipt. Re-derive the
       // actual stored rows after removing it, rather than trusting a mock.
       await sql\`DELETE FROM harness_shared.session_prompt_origin_stamps WHERE workspace_id = \${workspace}\`;
@@ -105,7 +133,7 @@ it('persists exact authenticated source stamps through the real ingest SQL witho
       console.log('PROMPT_ORIGIN_BACKFILL_RESULT ' + JSON.stringify(after));
       for (const c of cases) {
         const stored = after.find(row => row.session_id === c.row.session_id);
-        const positive = ['claude', 'codex', 'omp', 'codex-history'].includes(c.label);
+        const positive = ['claude', 'codex', 'omp', 'codex-history', 'late-ingest', 'late-stamp'].includes(c.label);
         const expected = positive ? 'owner-typed' : c.label === 'injected' ? 'agent-injected'
           : c.label === 'new-machine-rule' ? 'machine-surface'
           : c.label === 'assistant' ? 'not-user-turn' : 'unenrolled-origin';

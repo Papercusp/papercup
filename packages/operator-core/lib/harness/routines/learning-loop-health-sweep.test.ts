@@ -13,6 +13,7 @@ vi.mock('../../blueprint/learning-loop-read', () => ({ readLearningLoopHealth: v
 import {
   selectLearningLoopsNeedingEscalation,
   learningLoopHealthSweep,
+  learningLoopHealthSweepWithEvidence,
 } from './learning-loop-health-sweep';
 import { summarizeLearningLoopHealth, type LearningLoopHealth } from '../../blueprint/learning-loop-health';
 import { recentWatchdogFires, claimWatchdogFire } from '../../pot/watchdog';
@@ -123,6 +124,36 @@ describe('learningLoopHealthSweep (EI-19281872822982156, defect 2)', () => {
     if (originalDesktopEnv === undefined) delete process.env.PAPERCUSP_DESKTOP;
     else process.env.PAPERCUSP_DESKTOP = originalDesktopEnv;
     vi.clearAllMocks();
+  });
+
+  it('retains the resolved workspace and every classifier candidate/outcome in a JSON-safe report', async () => {
+    const singletonRow = {
+      installSlug: '@singleton',
+      name: 'bp-singleton-scout-0',
+      active: false,
+      lastFiredAt: '2026-10-04T00:00:00.000Z',
+      nextFireAt: null,
+      pauseReviewBy: null,
+    };
+    vi.mocked(readLearningLoopHealth).mockResolvedValue([
+      loop({ blueprintId: 'scout', status: 'should-be-on-but-dark', singletonRow }),
+      loop({ blueprintId: 'regret', status: 'firing', active: true }),
+    ]);
+
+    const report = await learningLoopHealthSweepWithEvidence();
+
+    expect(report).toMatchObject({
+      schemaVersion: 'learning-loop-health-sweep/v1',
+      workspaceId: 'ws-test',
+      runStatus: 'completed',
+      candidateCount: 2,
+      candidates: [
+        { blueprintId: 'scout', status: 'should-be-on-but-dark', selectedForEscalation: true, singletonRow },
+        { blueprintId: 'regret', status: 'firing', selectedForEscalation: false },
+      ],
+      escalations: [{ blueprintId: 'scout', outcome: 'escalated' }],
+    });
+    expect(JSON.parse(JSON.stringify(report))).toEqual(report);
   });
 
   it('does not escalate an empty registry during a pristine packaged desktop first boot', async () => {
