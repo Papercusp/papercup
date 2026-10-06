@@ -863,9 +863,11 @@ function spillRecoveryNote(
       `${input.aggregateMode === 'compatibility' ? '2-second compatibility cohort' : 'explicit output cohort'} ` +
       'consumed the shared budget. This does not prove they were parallel siblings. ' +
       'Read the spill in bounded byte pages, or retry in a NEW output cohort; reissuing ' +
-      'within the same cohort can spill again. To fan out WIDE without spending this budget at all, ' +
-      'fold the calls into ONE code:run — only the script\'s return value re-enters context ' +
-      '(a re-issue after this spill is not counted against you by the batch-hint).'
+      'within the same cohort can spill again. To fan out WIDE without spending this budget, ' +
+      'use ONE code:run only for compact output; oversized summaries are clipped and marked ' +
+      '`summaryNotice.truncated`, which that spill cannot restore. For complete long text, ' +
+      'page this spill or fetch bounded slices (a re-issue after this spill is not counted ' +
+      'against you by the batch-hint).'
     );
   }
   if (reason === 'explicit-full-request-overflow') {
@@ -1072,6 +1074,123 @@ export async function applyResultDoorAsync<T extends DoorableResult>(
   const settled = await Promise.allSettled(deferred);
   if (settled.every((s) => s.status === 'fulfilled')) return doored;
   return applyResultDoor(result, { ...opts, deferredScratchWrites: undefined });
+}
+
+function isScorecardsGetResult(opts: ResultDoorOpts): boolean {
+  return opts.toolName === 'scorecards:get' ||
+    (opts.toolName === 'tools:invoke' && opts.nestedTargetToolName === 'scorecards:get');
+}
+
+function recordAt(value: unknown): Record<string, unknown> | null {
+  return value != null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function retainedPrefixLength(source: string, projected: string): number {
+  let length = 0;
+  while (length < source.length && length < projected.length && source[length] === projected[length]) {
+    length += 1;
+  }
+  return length;
+}
+
+function scorecardEvidenceReadCall(issueId: string, criterionKey: string, evidenceOffset: number) {
+  return {
+    tool: 'scorecards:get',
+    args: { issueId, criterionKey, evidenceOffset },
+  };
+}
+
+/** Keep scorecards:get's paging contract truthful across this later projection. */
+function repairScorecardsGetProjection(sourceValue: unknown, projected: Record<string, unknown>): void {
+  const source = recordAt(sourceValue);
+  const sourceScorecard = recordAt(source?.scorecard);
+  const sourceRead = recordAt(source?.evidenceRead);
+  const sourceCriteria = Array.isArray(sourceScorecard?.criteria)
+    ? sourceScorecard.criteria.map(recordAt).filter((row): row is Record<string, unknown> => row != null)
+    : [];
+  if (!sourceScorecard || !sourceRead || sourceCriteria.length === 0) return;
+
+  const targetScorecard = recordAt(projected.scorecard) ?? {
+    issueId: sourceScorecard.issueId,
+    criteria: [],
+  };
+  projected.scorecard = targetScorecard;
+  const targetRead = {
+    ...sourceRead,
+    ...(recordAt(projected.evidenceRead) ?? {}),
+  };
+  projected.evidenceRead = targetRead;
+
+  if (sourceRead.scope === 'selected-criterion') {
+    const sourceCriterion = sourceCriteria[0];
+    const key = typeof sourceCriterion.key === 'string' ? sourceCriterion.key : null;
+    const sourcePage = typeof sourceCriterion.evidence === 'string' ? sourceCriterion.evidence : null;
+    const issueId = typeof sourceScorecard.issueId === 'string' ? sourceScorecard.issueId : null;
+    const sourceOffset = typeof sourceRead.offset === 'number' ? sourceRead.offset : 0;
+    if (!key || sourcePage == null || !issueId) return;
+
+    const targetCriteria = Array.isArray(targetScorecard.criteria)
+      ? targetScorecard.criteria.map(recordAt).filter((row): row is Record<string, unknown> => row != null)
+      : [];
+    const targetCriterion = targetCriteria.find((row) => row.key === key);
+    const projectedPage = typeof targetCriterion?.evidence === 'string' ? targetCriterion.evidence : '';
+    const retainedChars = retainedPrefixLength(sourcePage, projectedPage);
+    const pageWasClipped = retainedChars < sourcePage.length;
+
+    targetScorecard.criteria = [{
+      ...(targetCriterion ?? {}),
+      key,
+      ...(typeof sourceCriterion.rating === 'string' ? { rating: sourceCriterion.rating } : {}),
+      evidence: pageWasClipped ? sourcePage.slice(0, retainedChars) : sourcePage,
+    }];
+
+    if (pageWasClipped) {
+      const nextOffset = sourceOffset + retainedChars;
+      targetRead.complete = false;
+      targetRead.reason = 'outer-result-door-clipped-page';
+      targetRead.instruction =
+        'The outer result door clipped this page. Continue from evidenceRead.next; if its offset does not advance, read the _projection.cursor to recover the original page.';
+      targetRead.next = scorecardEvidenceReadCall(issueId, key, nextOffset);
+    } else if (sourceRead.complete === false && sourceRead.next === undefined) {
+      const nextOffset = sourceOffset + sourcePage.length;
+      targetRead.complete = false;
+      targetRead.next = scorecardEvidenceReadCall(issueId, key, nextOffset);
+    }
+    return;
+  }
+
+  if (sourceRead.complete === true) {
+    const targetCriteria = Array.isArray(targetScorecard.criteria)
+      ? targetScorecard.criteria.map(recordAt).filter((row): row is Record<string, unknown> => row != null)
+      : [];
+    const evidenceIntact = sourceCriteria.every((sourceCriterion) => {
+      const key = sourceCriterion.key;
+      const sourceEvidence = sourceCriterion.evidence;
+      if (typeof key !== 'string' || typeof sourceEvidence !== 'string') return false;
+      const targetCriterion = targetCriteria.find((row) => row.key === key);
+      return targetCriterion?.evidence === sourceEvidence;
+    });
+    if (evidenceIntact && targetCriteria.length === sourceCriteria.length) return;
+
+    const issueId = typeof sourceScorecard.issueId === 'string' ? sourceScorecard.issueId : null;
+    if (!issueId) return;
+    targetScorecard.criteria = [];
+    targetRead.complete = false;
+    targetRead.reason = 'outer-result-door-clipped-card';
+    targetRead.instruction =
+      'The outer result door clipped card evidence. Read every indexed criterion and concatenate its pages before grading; this index is not evidence of a missing probe.';
+    targetRead.criteria = sourceCriteria.flatMap((criterion) => {
+      if (typeof criterion.key !== 'string' || typeof criterion.evidence !== 'string') return [];
+      return [{
+        key: criterion.key,
+        ...(typeof criterion.rating === 'string' ? { rating: criterion.rating } : {}),
+        evidenceChars: criterion.evidence.length,
+        read: scorecardEvidenceReadCall(issueId, criterion.key, 0),
+      }];
+    });
+  }
 }
 
 /**
@@ -1601,6 +1720,20 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       ...(opts.toolName === 'rubrics:amend'
         ? ['review.state', 'review.conversationId', 'review.previewPostRef', 'review.next', 'ok', 'dryRun']
         : []),
+      ...(isScorecardsGetResult(opts)
+        ? [
+            'scorecard.issueId',
+            'scorecard.criteria[].key',
+            'scorecard.criteria[].rating',
+            'scorecard.criteria[].evidence',
+            'evidenceRead.complete',
+            'evidenceRead.scope',
+            'evidenceRead.offset',
+            'evidenceRead.totalChars',
+            'evidenceRead.next',
+            'evidenceRead.criteria',
+          ]
+        : []),
       ...(opts.toolName === 'plans:get' ? ['results[].shipReadiness', 'results[].items[].text'] : []),
       ...(opts.toolName === PIPELINE_POSITION_TOOL ? PIPELINE_POSITION_PRESERVE_PATHS : []),
       ...(opts.toolName === 'coord:send' ? COORD_SEND_DELIVERY_PRESERVE_PATHS : []),
@@ -1717,6 +1850,9 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       ...(evaluatorCompactBody == null && preservePaths.length > 0 ? { preservePaths } : {}),
       bulkEnvelope: opts.bulkEnvelope,
     });
+    if (isScorecardsGetResult(opts) && parsedJsonBody && evaluatorCompactBody == null) {
+      repairScorecardsGetProjection(bodyShape.json!.parsed, projected);
+    }
     const structuralText = JSON.stringify(projected);
     let inserted = false;
     const structuralContent: Array<{ type: 'text'; text: string } | Record<string, unknown>> = [];
