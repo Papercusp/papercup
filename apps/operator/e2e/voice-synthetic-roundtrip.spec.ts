@@ -428,7 +428,12 @@ async function transcribeInPage(page: Page, audio: Buffer): Promise<{ status: nu
       await expect.poll(() => liveMicTracks(page), { timeout: 30_000, message: 'always-on opened the microphone' })
         .toBeGreaterThan(0);
       const opened = await liveMicTracks(page);
-      for (const path of ['/settings/voice', '/harness', '/settings/voice', '/harness']) {
+      // Return to the path the shell actually settled on, not the one openShell
+      // requested: '/harness' is a router alias that redirects (rig run 4 measured
+      // it landing on '/adv'), so asserting the literal alias fails on routing, not voice.
+      const home = await page.evaluate(() => window.location.pathname);
+      expect(home, 'the shell settled on a route other than the voice settings page').not.toBe('/settings/voice');
+      for (const path of ['/settings/voice', home, '/settings/voice', home]) {
         await page.evaluate((p) => {
           window.history.pushState({}, '', p);
           window.dispatchEvent(new PopStateEvent('popstate'));

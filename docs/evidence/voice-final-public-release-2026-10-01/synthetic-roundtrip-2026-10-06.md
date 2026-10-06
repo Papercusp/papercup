@@ -195,7 +195,8 @@ Spec: `apps/operator/e2e/voice-synthetic-roundtrip.spec.ts`, run inside an isola
 | 1 | 19:54Z | — | 7 passed, 3 failed (red-first) | `.papercusp/scratch/r4-rig-run1.log` |
 | 2 | 20:07–20:15Z | `20261006T200744Z-1065105` | 9 passed, 1 failed (spec bug) | `.papercusp/scratch/r4-rig-run2.log` |
 | 3 | 20:17–20:28Z | `20261006T201756Z-1692605` | **10/10 passed**, HARNESS_RESULT verdict=pass | `.papercusp/scratch/r4-rig-run3.log` |
-| 4 | from 20:28Z | pending | navigate leg added | `.papercusp/scratch/r4-rig-run4.log` |
+| 4 | 20:28–20:43Z | `20261006T202848Z-2437388` | 10 passed, 1 failed (navigate leg, spec bug) | `.papercusp/scratch/r4-rig-run4.log` |
+| 5 | from 20:45Z | pending | navigate leg returns to the settled route | `.papercusp/scratch/r4-rig-run5.log` |
 
 What the reds were:
 
@@ -213,6 +214,10 @@ What the reds were:
   by measurement: exactly one `role:'user'` POST per hold. Run 2's remaining red compared the raw JSON
   body, where a newline is escaped as `\n`. The spec now parses each body and requires the posted user
   text to equal the transcript the user was shown. Run 3: PASS.
+- **Navigate (run 4, spec bug).** The leg pushed the literal `/harness` path and asserted the URL
+  matched it. `/harness` is a router alias: the app moved to `/adv` and the assertion timed out
+  before any microphone count was taken. The `/settings/voice` hop in the same run had already
+  succeeded. The leg now returns to the path the shell actually settled on.
 
 ### Scenario map (bar R-4: each scenario needs a named live test)
 
@@ -221,7 +226,7 @@ What the reds were:
 | Interruption | `stop: cancelling mid-reply ends playback and stays stopped` | A3, C4 (speaking over a reply) |
 | Output mute | `mute: muting mid-reply stops it, a muted reply stays silent, unmuting speaks again` | A5 |
 | Off cleanup | `off: turning voice off releases the microphone and stops a reply mid-playback` | A6, C3 |
-| Navigation / unmount cleanup | `navigate: moving between screens keeps one microphone, and off still releases it` (run 4) | — |
+| Navigation / unmount cleanup | `navigate: moving between screens keeps one microphone, and off still releases it` (run 5) | — |
 | Permission denial | `denial: a blocked microphone names the permission problem` | A9, C5 |
 | Provider outage | `tts outage: …` and `retry: an STT failure says so, and the next hold transcribes` | — |
 | Reconnect / retry | `retry: …` | C5 |
