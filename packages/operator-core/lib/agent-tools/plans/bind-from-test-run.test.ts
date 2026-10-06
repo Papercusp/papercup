@@ -686,7 +686,7 @@ describe('WI-10004898: a clean run in a deleted disposable clone binds by commit
     expect(await asCommittedTestPath(harness, cleanRow({ root: `${goneClone(superCommit)}/pkg`, file_path: 'lib/x.test.ts' }))).toBeNull();
   });
 
-  it('binds through expandTestRunBinding, records the mapping, and verifies content across a pinned gitlink', async () => {
+  it('binds through expandTestRunBinding, records the mapping, and checks presence across a pinned gitlink', async () => {
     const row = cleanRow();
     const bound = await expandTestRunBinding(input({ sourcePaths: ['pkg/lib/x.ts', `${SUB}/src/s.ts`] }), SCOPE, binder(row));
     expect(bound).toMatchObject({ ok: true });
@@ -694,8 +694,9 @@ describe('WI-10004898: a clean run in a deleted disposable clone binds by commit
     expect(bound.binding.evidenceRef).toBe('pkg/lib/x.test.ts');
     expect(bound.binding.details.testRun).toMatchObject({
       recordedRoot: row.root,
-      asCommitted: { commitSha: superCommit, repoPrefix: '', contentVerified: true },
+      asCommitted: { commitSha: superCommit, repoPrefix: '', measuredAtCommit: true },
     });
+    expect(bound.binding.details.testRun).not.toHaveProperty('asCommitted.contentVerified');
     const subRow = cleanRow({ root: `${goneClone(subCommit)}/${SUB}`, file_path: 'src/s.test.ts', commit_sha: subCommit });
     expect(await expandTestRunBinding(input(), SCOPE, binder(subRow))).toMatchObject({
       ok: true,
@@ -703,24 +704,41 @@ describe('WI-10004898: a clean run in a deleted disposable clone binds by commit
     });
   });
 
-  it('refuses when a measured file here no longer matches the commit the clone ran', async () => {
+  it('EI-25200724315817931: binds when a measured file here moved past the commit the clone ran (measured at the commit, D-001 b)', async () => {
+    // The pre-fix contract refused here (`… differs from its content at …`), so a peer's
+    // uncommitted edit to any measured file blocked every bind until git-sync committed it.
     const file = path.join(harness, 'pkg/lib/x.ts');
     await writeFile(file, 'export const x = 2;\n');
     try {
-      const refused = await expandTestRunBinding(input(), SCOPE, binder(cleanRow()));
-      expect(refused).toMatchObject({ ok: false, error: 'test_run_as_committed_content_mismatch' });
-      expect(refused.ok ? '' : refused.message).toContain('pkg/lib/x.ts differs from its content at');
-      const outside = await expandTestRunBinding(
-        input({ sourcePaths: ['pkg/lib/x.ts'] }),
-        SCOPE,
-        binder(cleanRow({ root: `${goneClone(subCommit)}/${SUB}`, file_path: 'src/s.test.ts', commit_sha: subCommit })),
-      );
-      expect(outside).toMatchObject({ ok: false, error: 'test_run_as_committed_content_mismatch' });
-      expect(outside.ok ? '' : outside.message).toContain(`lies outside the run's repository ${SUB}`);
+      const bound = await expandTestRunBinding(input(), SCOPE, binder(cleanRow()));
+      expect(bound).toMatchObject({
+        ok: true,
+        binding: { details: { testRun: { asCommitted: { commitSha: superCommit, measuredAtCommit: true } } } },
+      });
     } finally {
       await writeFile(file, 'export const x = 1;\n');
     }
-    expect(await expandTestRunBinding(input(), SCOPE, binder(cleanRow()))).toMatchObject({ ok: true });
+  });
+
+  it('still refuses a measured path outside the run repository, or absent at the run commit', async () => {
+    const outside = await expandTestRunBinding(
+      input({ sourcePaths: ['pkg/lib/x.ts'] }),
+      SCOPE,
+      binder(cleanRow({ root: `${goneClone(subCommit)}/${SUB}`, file_path: 'src/s.test.ts', commit_sha: subCommit })),
+    );
+    expect(outside).toMatchObject({ ok: false, error: 'test_run_as_committed_content_mismatch' });
+    expect(outside.ok ? '' : outside.message).toContain(`lies outside the run's repository ${SUB}`);
+    // A file that exists only in this checkout (added after the run's commit) names code the
+    // run never had, so it can never be measured at that commit.
+    const added = path.join(harness, 'pkg/lib/added-later.ts');
+    await writeFile(added, 'export const later = 1;\n');
+    try {
+      const absent = await expandTestRunBinding(input({ sourcePaths: ['pkg/lib/added-later.ts'] }), SCOPE, binder(cleanRow()));
+      expect(absent).toMatchObject({ ok: false, error: 'test_run_as_committed_content_mismatch' });
+      expect(absent.ok ? '' : absent.message).toContain(`pkg/lib/added-later.ts is absent at ${superCommit.slice(0, 12)}`);
+    } finally {
+      await rm(added, { force: true });
+    }
   });
 
   it('still refuses an unmappable clean run, naming the commit it checked', async () => {
@@ -740,23 +758,28 @@ describe('WI-10004898: a clean run in a deleted disposable clone binds by commit
       });
     const canonical = input({ canonicalTestPath: 'pkg/lib/x.test.ts', sourcePaths: ['pkg/lib/x.ts'] });
 
-    it('binds with contentVerified when this checkout still holds the commit content', async () => {
+    it('binds measured at its commit when this checkout still holds the commit content', async () => {
       const bound = await expandTestRunBinding(canonical, SCOPE, binder(mirrorRow()));
       expect(bound).toMatchObject({ ok: true, binding: { evidenceKind: 'mutation', evidenceRef: expect.stringContaining('pkg/lib/x.test.ts') } });
       if (!bound.ok) return;
       expect(bound.binding.details.testRun).toMatchObject({
         canonicalTestPathOverride: 'pkg/lib/x.test.ts',
-        asCommitted: { commitSha: superCommit, repoPrefix: '', contentVerified: true },
+        asCommitted: { commitSha: superCommit, repoPrefix: '', measuredAtCommit: true },
       });
     });
 
-    it('THE BUG: refuses when the subject here differs from what the mutant ran (a peer edited it since)', async () => {
+    it('EI-25203325947467696: binds measured at its commit when a peer edited the subject here since the mutant ran', async () => {
+      // WI-10004898 refused this case so the stored fingerprint could not describe the peer's
+      // bytes. D-001 (b) removes that risk at the source — the fingerprint is read from git
+      // objects at the run commit — so the refusal only blocked binds behind git-sync.
       const file = path.join(harness, 'pkg/lib/x.ts');
       await writeFile(file, 'export const x = 2;\n');
       try {
-        const refused = await expandTestRunBinding(canonical, SCOPE, binder(mirrorRow()));
-        expect(refused).toMatchObject({ ok: false, error: 'test_run_as_committed_content_mismatch' });
-        expect(refused.ok ? '' : refused.message).toContain('pkg/lib/x.ts differs from its content at');
+        const bound = await expandTestRunBinding(canonical, SCOPE, binder(mirrorRow()));
+        expect(bound).toMatchObject({
+          ok: true,
+          binding: { evidenceKind: 'mutation', details: { testRun: { asCommitted: { commitSha: superCommit, measuredAtCommit: true } } } },
+        });
         // A dirty or commit-less row proves no commit, so it keeps the checkout pin (and stays dirty evidence).
         expect(await expandTestRunBinding(canonical, SCOPE, binder(mirrorRow({ worktree_dirty: true })))).toMatchObject({ ok: true });
         expect(await expandTestRunBinding(canonical, SCOPE, binder(mirrorRow({ commit_sha: null })))).toMatchObject({ ok: true });
@@ -782,17 +805,19 @@ describe('WI-10004898: a clean run in a deleted disposable clone binds by commit
         if (!bound.ok) return;
         expect(bound.binding.details.testRun).toMatchObject({
           canonicalTestPathOverride: `${SUB}/src/s.test.ts`,
-          asCommitted: { commitSha: subCommit, repoPrefix: SUB, contentVerified: true },
+          asCommitted: { commitSha: subCommit, repoPrefix: SUB, measuredAtCommit: true },
         });
       });
 
-      it('still refuses when the submodule subject drifted from the commit the mutant ran', async () => {
+      it('binds measured at the submodule commit when the submodule subject drifted since the mutant ran', async () => {
         const file = path.join(harness, SUB, 'src/s.ts');
         await writeFile(file, 'export const s = 2;\n');
         try {
-          const refused = await expandTestRunBinding(subCanonical(), SCOPE, binder(subMirrorRow()));
-          expect(refused).toMatchObject({ ok: false, error: 'test_run_as_committed_content_mismatch' });
-          expect(refused.ok ? '' : refused.message).toContain(`${SUB}/src/s.ts differs from its content at`);
+          const bound = await expandTestRunBinding(subCanonical(), SCOPE, binder(subMirrorRow()));
+          expect(bound).toMatchObject({
+            ok: true,
+            binding: { details: { testRun: { asCommitted: { commitSha: subCommit, repoPrefix: SUB, measuredAtCommit: true } } } },
+          });
         } finally {
           await writeFile(file, 'export const s = 1;\n');
         }
@@ -803,7 +828,7 @@ describe('WI-10004898: a clean run in a deleted disposable clone binds by commit
         expect(bound).toMatchObject({ ok: true });
         if (!bound.ok) return;
         expect(bound.binding.details.testRun).toMatchObject({
-          asCommitted: { commitSha: superCommit, repoPrefix: '', contentVerified: true },
+          asCommitted: { commitSha: superCommit, repoPrefix: '', measuredAtCommit: true },
         });
       });
     });

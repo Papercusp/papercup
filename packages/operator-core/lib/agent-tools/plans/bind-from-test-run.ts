@@ -517,9 +517,11 @@ async function blobAtCommit(
 }
 
 /**
- * The binding fingerprints THIS checkout's files, so a disposable-clone run may lend its
- * outcome only when every measured path here is byte-identical to the commit it ran at —
- * otherwise the stored fingerprint would describe code the run never executed.
+ * A disposable-clone run may lend its outcome only for paths that EXIST at the commit it
+ * ran at, inside the repository it ran in. The binding is then fingerprinted from git
+ * objects at that commit (proof-freshness-pinned-candidate-2026-10-06 D-001 (b)), so the
+ * shared checkout's current bytes are deliberately not compared: a peer edit made after
+ * the run neither blocks the bind nor leaks into the stored fingerprint.
  */
 async function verifyAsCommittedContent(
   root: string,
