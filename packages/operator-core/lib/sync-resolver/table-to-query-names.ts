@@ -196,9 +196,15 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // stamps data_sources, a rule change writes admission_rules, an admission writes work_admissions,
   // often from a background worker. Full-bust: the consumer key is the owner's userId, which the
   // trigger payload does not carry.
-  'harness_shared.data_sources': ['integrations.tickets'],
-  'harness_shared.admission_rules': ['integrations.tickets'],
-  'harness_shared.work_admissions': ['integrations.tickets'],
+  // The Slack-bugs view on /admin/admission (slack-messages-to-bug-reports P-008, migration 1409)
+  // reads the same three plus the chat suggestions and the chat admission sink's deliveries, all
+  // written by the Slack ingest in the background. Its trigger on trigger_deliveries fires only for
+  // that sink's rows.
+  'harness_shared.data_sources': ['integrations.tickets', 'admission.chatBugs'],
+  'harness_shared.admission_rules': ['integrations.tickets', 'admission.chatBugs'],
+  'harness_shared.work_admissions': ['integrations.tickets', 'admission.chatBugs'],
+  'harness_shared.chat_bug_suggestions': ['admission.chatBugs'],
+  'harness_shared.trigger_deliveries': ['admission.chatBugs'],
   'harness_shared.harness_skills': ['harnessSkills.byHarness'],
   'harness_shared.harness_decisions': ['harnessDecisions.byHarness'],
   'harness_shared.harness_lanes': ['harnessLanes.byHarness', 'harnessLanes.snapshot'],

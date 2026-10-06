@@ -3981,6 +3981,29 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // admission.chatBugs — the Slack-bugs view on /admin/admission (slack-messages-to-bug-reports
+  // P-008, D-011): per chat source and channel, filed / merged / suggested / refused and the last
+  // error. One row: the whole view. Workspace server-derived; the Slack ingest writes every backing
+  // table in the background, so all of them reach this name through the table bridge (mig 1409).
+  'admission.chatBugs': {
+    backingTables: [
+      'harness_shared.work_admissions',
+      'harness_shared.admission_rules',
+      'harness_shared.chat_bug_suggestions',
+      'harness_shared.trigger_deliveries',
+      'harness_shared.data_sources',
+    ],
+    argsSchema: z.object({}),
+    resolve: async () => {
+      const [{ getOrgPg }, { activeWorkspaceId }, { chatBugsOverview }] = await Promise.all([
+        import('@papercusp/db-org'),
+        import('../workspace-registry'),
+        import('../data-sources/chat-bugs-overview'),
+      ]);
+      return [await chatBugsOverview(getOrgPg().sql, { workspaceId: activeWorkspaceId() })];
+    },
+  },
+
   // userMemory.total — how many memories the Memory page COULD show, so its
   // bounded window can render a denominator ("Showing 500 of 2,465") instead
   // of a bare count (WI-39540). Without this the page's own row count was the
