@@ -20,10 +20,14 @@ rtc:
   # Advertise loopback + LAN as well as the public IP so that co-located services
   # (livekit-sip, the agent worker) pick 127.0.0.1 for ICE rather than hairpinning
   # out through the public address — hairpin NAT drops WebRTC consent keepalives.
+  # The public media edge tunnel (infra/phone-app/edge, D-025) is included when configured:
+  # traffic sourced from it leaves through the cloud edge, so use_external_ip's per-interface
+  # STUN maps it to the edge's public IP — the address remote clients can actually reach.
   interfaces:
     includes:
       - lo
       - ${PHONE_LAN_IFACE}
+${PHONE_EDGE_IFACE_INCLUDE}
 
 # Coordination bus shared with livekit-sip. db 3 — db0/db1 are already in use on
 # this host by other services.
