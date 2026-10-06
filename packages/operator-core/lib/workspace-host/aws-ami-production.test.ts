@@ -222,6 +222,18 @@ describe('SdkAwsAmiReleaseAdapter.buildCandidate', () => {
       expect(deletedSnapshots(calls)).toEqual(['snap-0dead3']);
     });
 
+    it('stops coldsnap at the first block that has used its last retry, not at an intermediate retry', async () => {
+      const calls: Call[] = [];
+      const runs: unknown[] = [];
+      await sequencedAdapter([], calls, runs).buildCandidate(buildInput());
+      const pattern = (runs[0] as { abortOnStderr?: RegExp }).abortOnStderr;
+      expect(pattern).toBeInstanceOf(RegExp);
+      expect(pattern!.test(TRANSPORT)).toBe(true);
+      // The chain14 try2 lines: 5/5 lost the upload; 2/5 was coldsnap recovering on its own.
+      expect(pattern!.test("[WARN ] block 11633: attempt 5/5 failed after 12.0s: Failed to put block 11633 for snapshot 'snap-017b90e05278d7710': dispatch failure")).toBe(true);
+      expect(pattern!.test("[WARN ] block 11776: attempt 2/5 failed after 12.0s: Failed to put block 11776 for snapshot 'snap-017b90e05278d7710': dispatch failure")).toBe(false);
+    });
+
     it('names a partial snapshot that would not delete, and does not retry over it', async () => {
       const calls: Call[] = [];
       const runs: unknown[] = [];
