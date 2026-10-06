@@ -50,6 +50,12 @@ turn:
   # reaches the co-located SFU through its public edge candidate (WI-10006603).
   # One participant may hold at most this many relays (upstream default, >= 1.13.6).
   per_user_relay_allocation_limit: 12
+  # Relay source ports, pinned (upstream default) because the box-local DNAT exempts them:
+  # relay -> SFU traffic must leave through the edge, or the browser is handed the box's
+  # LAN address as its mapped address (WI-10006708). Must equal TURN_RELAY_RANGE in
+  # infra/phone-app/edge/edge-config.mjs; a test keeps them equal.
+  relay_range_start: 30000
+  relay_range_end: 40000
   # Hosted mode validates the hostname, certificate and key before rendering.
   # The public TCP/443 frontend must reach this TLS backend (default 7894).
 ${PHONE_TURN_TLS_CONFIG}

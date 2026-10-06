@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
-  BOX_LOCAL_TABLE, TUNNEL, boxLocalDnat, boxWireguard, edgeCoordinates, forwardedPorts, livekitInterfaces,
+  BOX_LOCAL_TABLE, TUNNEL, TURN_RELAY_RANGE, boxLocalDnat, boxWireguard, edgeCoordinates, forwardedPorts, livekitInterfaces,
   nginxSite, nginxStream, vmNftables, vmWireguard,
 } from "../../../../infra/phone-app/edge/edge-config.mjs";
 import { NON_PUBLIC_V4_SUBNETS, isPublicAddress } from "../../../../infra/phone-app/media-config.mjs";
@@ -100,6 +100,20 @@ describe("phone public media edge tunnel", () => {
     // nftables 1.0.9). Every nested block must be terminated with `;` first.
     expect(script).not.toMatch(/\}\s*\}/);
     expect(script.endsWith("; }; }")).toBe(true);
+  });
+
+  // WI-10006708, measured live: with the relay's own flows DNATed locally, the SFU saw the
+  // relay's LAN source and echoed it to the browser (selected local candidate became
+  // prflx 192.168.4.34 instead of relay). The relay port range must return BEFORE any DNAT.
+  it("exempts the TURN relay's source ports from the box-local DNAT, before any DNAT rule", () => {
+    const rules = boxLocalDnat(edgeCoordinates(env)).split("; ");
+    const exempt = rules.indexOf(`udp sport ${TURN_RELAY_RANGE.start}-${TURN_RELAY_RANGE.end} return`);
+    const firstDnat = rules.findIndex((r) => r.includes("dnat to"));
+    expect(exempt).toBeGreaterThan(-1);
+    expect(exempt).toBeLessThan(firstDnat);
+    const tmpl = readFileSync(template, "utf8");
+    expect(tmpl).toMatch(new RegExp(`^  relay_range_start: ${TURN_RELAY_RANGE.start}$`, "m"));
+    expect(tmpl).toMatch(new RegExp(`^  relay_range_end: ${TURN_RELAY_RANGE.end}$`, "m"));
   });
 });
 

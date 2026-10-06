@@ -104,6 +104,8 @@ describe('Phone existing deployer public media preparation', () => {
     const config = parse(readFileSync(join(f.conf, 'livekit-server.yaml'), 'utf8'));
     expect(config.rtc.interfaces.includes).toEqual(['phedge0']);
     expect(config.rtc.use_external_ip).toBe(true);
+    // The box-local DNAT exempts exactly this relay range (edge-config TURN_RELAY_RANGE).
+    expect(config.turn).toMatchObject({ relay_range_start: 30000, relay_range_end: 40000 });
     expect(readFileSync(join(f.conf, 'livekit.env'), 'utf8')).toContain('PHONE_EDGE_IFACE=phedge0');
   });
 
