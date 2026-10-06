@@ -167,6 +167,12 @@ kill -TERM "$fake_vm_pid" 2>/dev/null; wait "$fake_vm_pid" 2>/dev/null
 echo "4. keep_lease_state"
 KEEP_DIR="$(mktemp -d)"; MAX_KEEP_SECS=3600
 NOW=1800000000
+# Keep main() hermetic: answer every named-resource lease lookup (WI-10006611) with
+# "nobody holds it", so only the file keep lease decides below. The lease plane
+# itself is covered by apps/operator/scripts/__tests__/reap-stale-testvms.test.ts.
+LEASE_CMD="$KEEP_DIR.lease-free.sh"
+printf '#!/bin/bash\necho %s\n' "'{\"ok\":true,\"holders\":[],\"resources\":[]}'" > "$LEASE_CMD"
+chmod +x "$LEASE_CMD"
 keep_lease_state lease-none "$NOW" >/dev/null; rc=$?
 [ "$rc" -eq 1 ] && ok "no lease file -> rc 1 (normal age rule)" || bad "missing lease: expected rc 1, got $rc"
 echo $(( NOW + 600 )) > "$KEEP_DIR/lease-ok"
@@ -205,7 +211,7 @@ if echo "$unreaped_log" | grep -q "$fake_name"; then
   echo "$unreaped_log" | grep -q "would reap $fake_name" && ok "same VM WITHOUT a lease is a reap candidate (control)" \
     || bad "control: unleased over-age VM not marked for reaping"
 fi
-rm -rf "$KEEP_DIR"
+rm -rf "$KEEP_DIR" "$LEASE_CMD"
 
 # ── result ───────────────────────────────────────────────────────────────
 echo

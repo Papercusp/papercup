@@ -846,6 +846,21 @@ well past the live-federation-gate's own 4h `TimeoutStartSec` bound) is
 reaped, via `vmctl down <name>` (graceful in-guest poweroff, then SIGTERM,
 then SIGKILL — the same escalation `vmctl down` already uses), with a hard
 per-attempt timeout and a direct-kill fallback if `vmctl` itself can't run.
+After `vmctl down` succeeds the reaper waits up to 15s
+(`TESTVM_REAPER_VMCTL_EXIT_GRACE`) for QEMU to exit before escalating.
+
+**Opting an over-age VM out (WI-10006429, WI-10006611).** Two leases stop the
+reaper from touching an instance:
+
+- **Named-resource lease (the normal one).** A rig that holds
+  `linux-test-vm:<instance>` through `locks:acquire_resource` is skipped for as
+  long as that lease is live. The reaper reads it with
+  `scripts/mcp-call.mjs locks:list` once per over-age candidate. If the lease
+  plane cannot be read, the VM is deferred to the next sweep, not reaped, unless
+  it has run longer than 48h (`TESTVM_REAPER_LEASE_UNREADABLE_MAX_AGE_SECS`).
+- **File keep lease.** For a run with no Papercusp session to hold a lease, write
+  the epoch-seconds keep-until time into
+  `~/.local/state/papercusp/testvm-keep/<instance>` (capped at 48h).
 
 **Detection + reaping only** — this does not (and cannot) make a SIGKILLed
 launcher's `trap cleanup EXIT` fire; a sweeper is the durable second line of
