@@ -2664,6 +2664,15 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:bg-host
   });
 
   it('EI-25257294558913225: a restart whose rebuild was refused is restarted but NOT ok — it loaded no new code', async () => {
+    acquireM.mockResolvedValue({
+      ok: true,
+      mode: 'exclusive',
+      status: 'held',
+      lock_id: 'COOL-BG-STALE-BUNDLE',
+      expires_ts: new Date(),
+      shared_holders: [],
+      fence_seq: 1,
+    } as never);
     mockResolvedTyped(probeM, { ok: true, mainPid: 4321, secondsSinceStart: 900 });
     mockImplementationTyped(guardM, runGuard(fenceOk(24)));
     bgHostBundleStaleM.mockReturnValueOnce({
