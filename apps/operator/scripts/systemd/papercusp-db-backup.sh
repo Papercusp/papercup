@@ -189,7 +189,12 @@ fs_avail_gb() {
 # Databases that are NOT real state: per-test, scratch, repro, e2e, gym fixtures.
 # Deny-list (not an allow-list) so a genuinely new production DB is picked up
 # automatically instead of being silently skipped.
-EXCLUDE_RE='(_test$|_e2e|^e2e|^repro_|scratch|restore_check|gym_smoke|^template)'
+# ^tmpl_ and ^papercusp_it_baseline_ are the test harness's migration templates
+# (tmpl_<key>, tmpl_bld_*, tmpl_gym_*: libs/test-config/src/pg-migrate.ts) and its
+# throwaway integration baselines (baseline-schema-global-setup.ts). Measured
+# 2026-10-06: 17 + 7 of them were dumped every hour, and one dropped mid-run
+# failed the whole backup (EI-25211496463956189, WI-10006723).
+EXCLUDE_RE='(_test$|_e2e|^e2e|^repro_|scratch|restore_check|gym_smoke|^template|^tmpl_|^papercusp_it_baseline_)'
 
 log() { printf '[%s] %s\n' "$(date -Iseconds)" "$*" | tee -a "$LOG" >&2; }
 

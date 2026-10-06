@@ -1500,14 +1500,30 @@ describe('Kopia managed entrypoint contract', () => {
   // moment the dump is due (above) still stopped every sweep: 12 of 14 preemptions
   // since 2026-09-30 23:50Z were the dump, and the dumps went 18h without an off-host
   // copy. Between two OVERDUE producers the one whose deadline passed first goes first.
-  function edfScenario(opts: { extensionSec: number; dumpAgeSec: number; hotLoops: number }) {
+  function edfScenario(opts: {
+    extensionSec: number;
+    dumpAgeSec: number;
+    hotLoops: number;
+    // Point the guard's progress counter at a fixture file (an io.stat stand-in).
+    // `hotWritesProgress` makes the sweep's child advance it on every loop.
+    progressStallSec?: number;
+    hotWritesProgress?: boolean;
+  }) {
     const fx = fixture();
     const { dir } = fx;
-    const env = {
+    const progressPath = join(dir, 'io.stat');
+    const env: NodeJS.ProcessEnv = {
       ...fx.env,
       KOPIA_BACKUP_MAX_DEFER_SEC: '10',
       KOPIA_BACKUP_PRIORITY_HOLD_EXTENSION_SEC: String(opts.extensionSec),
+      HOT_PROGRESS: '',
     };
+    if (opts.progressStallSec !== undefined) {
+      writeFileSync(progressPath, '8:0 rbytes=0 wbytes=0 rios=0 wios=0\n');
+      env.KOPIA_BACKUP_PROGRESS_PATH = progressPath;
+      env.KOPIA_BACKUP_PROGRESS_STALL_SEC = String(opts.progressStallSec);
+      if (opts.hotWritesProgress) env.HOT_PROGRESS = progressPath;
+    }
     seedDeadlineBase(dir, 'hot', 25_200);
     const dumpBase = Number(readFileSync(seedDeadlineBase(dir, 'db-dump', opts.dumpAgeSec), 'utf8').trim());
     const hotLog = join(dir, 'hot.log');
@@ -1520,7 +1536,7 @@ describe('Kopia managed entrypoint contract', () => {
         '-c',
         `
         set -uo pipefail
-        "$GUARD" --mode scheduled --label hot -- bash -c 'touch "$1"; for _ in $(seq 1 "$3"); do sleep 0.05; done; date +%s.%N >"$2"' _ "$HOT_READY" "$HOT_DONE" "$HOT_LOOPS" >"$HOT_LOG" 2>&1 &
+        "$GUARD" --mode scheduled --label hot -- bash -c 'touch "$1"; for i in $(seq 1 "$3"); do [ -z "$4" ] || printf "8:0 rbytes=%s wbytes=0\\n" "$i" >"$4"; sleep 0.05; done; date +%s.%N >"$2"' _ "$HOT_READY" "$HOT_DONE" "$HOT_LOOPS" "$HOT_PROGRESS" >"$HOT_LOG" 2>&1 &
         hot=$!
         for _ in $(seq 1 100); do [ -e "$HOT_READY" ] && break; sleep 0.01; done
         [ -e "$HOT_READY" ] || exit 91
@@ -1591,6 +1607,53 @@ describe('Kopia managed entrypoint contract', () => {
     expect(r.hotOut, r.evidence).toContain('result=escalation-refunded');
     expect(Number.isNaN(r.hotDoneAt), r.evidence).toBe(true);
     expect(r.dbRanAt, r.evidence).toBeGreaterThanOrEqual(r.dumpDue + 3);
+  });
+
+  // EI-25211496463956189. A dump whose previous runs FAILED arrives already overdue by
+  // more than the extension. Measured 2026-10-06 (EDT): it arrived 4.4h and 6.4h late
+  // at the 10:10 and 12:11 ticks and stopped a sweep 11-13h overdue after 5s and after
+  // 52 min, because the hold window was anchored at the dump's deadline, which had
+  // already passed by more than the extension. The window now starts at its arrival.
+  it('still protects an earlier-deadline sweep from a dump that arrives overdue by more than the extension', () => {
+    const r = edfScenario({ extensionSec: 60, dumpAgeSec: 3_600, hotLoops: 40 });
+
+    expect(r.scenario.stdout, r.evidence).toContain('db_rc=0 hot_rc=0');
+    const held = r.hotOut.match(
+      /result=holding-against-priority-waiter reason=holder-earlier-deadline waiter=global\.lock\.db-dump\.\d+\.wait waiter_overdue_sec=(\d+) holder_overdue_sec=\d+ hold_ends_in_sec=(\d+) /,
+    );
+    expect(held, r.evidence).not.toBeNull();
+    // Overdue by ~3590s, yet the hold still has (almost) the whole extension left.
+    expect(Number(held![1]), r.evidence).toBeGreaterThan(3_000);
+    expect(Number(held![2]), r.evidence).toBeGreaterThan(50);
+    expect(r.hotOut, r.evidence).not.toContain('result=stopping-during-run');
+    expect(r.dbRanAt, r.evidence).toBeGreaterThanOrEqual(r.hotDoneAt);
+  });
+
+  it('keeps holding while the sweep is making I/O progress', () => {
+    // The hot child advances the progress counter on every loop, so a stall limit
+    // shorter than its runtime never trips.
+    const r = edfScenario({ extensionSec: 60, dumpAgeSec: 12, hotLoops: 60, progressStallSec: 1, hotWritesProgress: true });
+
+    expect(r.scenario.stdout, r.evidence).toContain('db_rc=0 hot_rc=0');
+    expect(r.hotOut, r.evidence).toContain('reason=holder-earlier-deadline');
+    expect(r.hotOut, r.evidence).not.toContain('reason=holder-stalled');
+    expect(r.hotOut, r.evidence).not.toContain('result=stopping-during-run');
+    expect(r.dbRanAt, r.evidence).toBeGreaterThanOrEqual(r.hotDoneAt);
+  });
+
+  it('yields a sweep whose I/O has stalled instead of holding a due dump for the whole extension', () => {
+    // Same overdue sweep and waiter, but the progress counter never moves: past the
+    // stall limit the sweep is stuck, and keeping the dump waiting buys nothing.
+    const r = edfScenario({ extensionSec: 60, dumpAgeSec: 12, hotLoops: 400, progressStallSec: 1 });
+
+    expect(r.scenario.stdout, r.evidence).toContain(`db_rc=0 hot_rc=${SCHEDULED_DEFER_EXIT}`);
+    expect(r.hotOut, r.evidence).toMatch(
+      /result=yielding-to-priority-waiter reason=holder-stalled waiter=global\.lock\.db-dump\.\d+\.wait would_hold=holder-earlier-deadline stalled_sec=\d+ stall_limit_sec=1 /,
+    );
+    expect(r.hotOut, r.evidence).toContain('result=stopping-during-run reason=priority-waiter');
+    expect(Number.isNaN(r.hotDoneAt), r.evidence).toBe(true);
+    // Well inside the 60s extension: the stall, not the extension, ended the hold.
+    expect(r.dbRanAt - r.dumpDue, r.evidence).toBeLessThan(30);
   });
 
   it('keeps the escalation spent when an override cycle ends on its own', () => {

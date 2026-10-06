@@ -147,6 +147,19 @@ is_number "$priority_pressure_wait_max" || { echo "invalid KOPIA_BACKUP_PRIORITY
 # the WI-10004741 rule (an overdue holder yields the moment the waiter is due).
 priority_hold_extension="${KOPIA_BACKUP_PRIORITY_HOLD_EXTENSION_SEC:-$max_defer}"
 is_number "$priority_hold_extension" || { echo "invalid KOPIA_BACKUP_PRIORITY_HOLD_EXTENSION_SEC=$priority_hold_extension" >&2; exit 64; }
+# An overdue holder keeps the lock against a waiter only while its child is still
+# doing work (EI-25211496463956189). The signal is the holder's own cgroup I/O
+# counters: a Kopia sweep re-hashes ~124G per run, so a sweep that is progressing
+# moves them every few seconds, and one that has not moved them for this long is
+# stuck and should not keep a recovery-point-critical dump waiting. An unreadable
+# counter is "unknown" and keeps the time-bounded hold above, never a yield.
+progress_stall_sec="${KOPIA_BACKUP_PROGRESS_STALL_SEC:-600}"
+is_number "$progress_stall_sec" || { echo "invalid KOPIA_BACKUP_PROGRESS_STALL_SEC=$progress_stall_sec" >&2; exit 64; }
+progress_path="${KOPIA_BACKUP_PROGRESS_PATH:-}"
+if [ -z "$progress_path" ]; then
+  progress_cgroup=$(awk -F: '$1 == "0" { print $3; exit }' /proc/self/cgroup 2>/dev/null) || progress_cgroup=
+  [ -z "$progress_cgroup" ] || progress_path="/sys/fs/cgroup${progress_cgroup}/io.stat"
+fi
 
 state_dir="${KOPIA_BACKUP_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/papercusp/kopia-backup-guard}"
 # The label reaches this from the command line and becomes a path segment.
@@ -339,24 +352,78 @@ register_priority_request() {
 # instead of one starving. The extension bounds the dump's wait if a sweep never
 # finishes.
 not_due_waiter_logged=
-# Print why this escalated holder keeps the lock against a waiter due at $1, and
-# succeed; fail when the holder must yield.
+# The earliest-deadline hold is bounded from the LATER of the waiter's deadline and
+# the moment it started waiting (its .wait marker's mtime), EI-25211496463956189.
+# Anchoring at the deadline alone gave an earlier-deadline holder no protection at
+# all against a waiter that had been overdue for longer than the extension before
+# it ever arrived -- which is exactly the waiter a FAILED previous dump produces.
+# Measured 2026-10-06: the dump's runs at 09:16 and 11:19 EDT failed, so at the
+# 10:10 and 12:11 ticks it arrived 4.4h and 6.4h overdue, past
+# due+extension, and stopped a sweep 11-13h overdue after 5s and after 52 min. The
+# waiter still waits at most one extension past its arrival.
+# Print the epoch the hold window is measured from, for a waiter due at $1 whose
+# marker is $2.
+hold_window_base() {
+  local waiter_due="${1%.*}" arrived
+  arrived=$(stat -c %Y -- "$2" 2>/dev/null) || arrived=
+  if [[ "$arrived" =~ ^[0-9]+$ ]] && [ "$arrived" -gt "$waiter_due" ]; then
+    printf '%d' "$arrived"
+  else
+    printf '%d' "$waiter_due"
+  fi
+}
+# Print why this escalated holder keeps the lock against a waiter due at $1 whose
+# hold window starts at $2, and succeed; fail when the holder must yield.
 overdue_holder_hold_reason() {
-  local waiter_due="${1%.*}" now
+  local waiter_due="${1%.*}" window_base="${2%.*}" now
   now=$(date +%s)
   if [ "$now" -lt "$waiter_due" ]; then
     printf 'holder-overdue'
     return 0
   fi
   if [ -n "$holder_due" ] && [ "$holder_due" -lt "$waiter_due" ] &&
-    [ "$now" -lt $(( waiter_due + priority_hold_extension )) ]; then
+    [ "$now" -lt $(( window_base + priority_hold_extension )) ]; then
     printf 'holder-earlier-deadline'
     return 0
   fi
   return 1
 }
+# Sum of the holder cgroup's read+write bytes; fails when the counter is unreadable.
+read_progress_counter() {
+  [ -r "$1" ] || return 1
+  awk '
+    {
+      for (i = 2; i <= NF; i++) {
+        split($i, kv, "=")
+        if (kv[1] == "rbytes" || kv[1] == "wbytes") sum += kv[2]
+      }
+    }
+    END { printf "%.0f", sum + 0 }
+  ' "$1" 2>/dev/null
+}
+last_progress_value=
+last_progress_at=
+# Called once per monitor tick while the child runs.
+sample_holder_progress() {
+  local value
+  [ -n "$progress_path" ] || return 0
+  value=$(read_progress_counter "$progress_path") || return 0
+  if [ "$value" != "$last_progress_value" ]; then
+    last_progress_value=$value
+    last_progress_at=$(date +%s)
+  fi
+}
+# Print how long the child's I/O has not moved and succeed when that is at least
+# progress_stall_sec; fail while it is moving or the counter is unknown.
+holder_stalled_sec() {
+  local stalled
+  [ -n "$last_progress_at" ] || return 1
+  stalled=$(( $(date +%s) - last_progress_at ))
+  [ "$stalled" -ge "${progress_stall_sec%.*}" ] || return 1
+  printf '%d' "$stalled"
+}
 has_live_priority_waiter() {
-  local request pid cmd due_path due hold_reason now
+  local request pid cmd due_path due hold_reason now window_base stalled
   for request in "${lock_path}".*.wait; do
     [ -f "$request" ] || continue
     due_path="${request%.wait}.due"
@@ -371,18 +438,24 @@ has_live_priority_waiter() {
     # the lock while the recovery-point-critical DB dump is already waiting.
     if [[ "$cmd" == *kopia-backup-guard.sh*--mode\ wait* ||
           "$cmd" == *kopia-backup-guard.sh*--mode\ scheduled* ]]; then
-      if [ "$pressure_escalated" = 1 ] && due=$(read_stamp "$due_path") &&
-        hold_reason=$(overdue_holder_hold_reason "$due"); then
-        if [ "$not_due_waiter_logged" != "$request:$hold_reason" ]; then
-          not_due_waiter_logged="$request:$hold_reason"
-          now=$(date +%s)
-          if [ "$hold_reason" = holder-overdue ]; then
-            guard_log "result=holding-against-priority-waiter reason=holder-overdue waiter=${request##*/} waiter_due_in_sec=$(( ${due%.*} - now )) $staleness_override_reason"
-          else
-            guard_log "result=holding-against-priority-waiter reason=holder-earlier-deadline waiter=${request##*/} waiter_overdue_sec=$(( now - ${due%.*} )) holder_overdue_sec=$(( now - holder_due )) hold_ends_in_sec=$(( ${due%.*} + priority_hold_extension - now )) $staleness_override_reason"
+      if [ "$pressure_escalated" = 1 ] && due=$(read_stamp "$due_path"); then
+        window_base=$(hold_window_base "$due" "$request")
+        if hold_reason=$(overdue_holder_hold_reason "$due" "$window_base"); then
+          if stalled=$(holder_stalled_sec); then
+            guard_log "result=yielding-to-priority-waiter reason=holder-stalled waiter=${request##*/} would_hold=$hold_reason stalled_sec=$stalled stall_limit_sec=$progress_stall_sec progress_path=$progress_path"
+            return 0
           fi
+          if [ "$not_due_waiter_logged" != "$request:$hold_reason" ]; then
+            not_due_waiter_logged="$request:$hold_reason"
+            now=$(date +%s)
+            if [ "$hold_reason" = holder-overdue ]; then
+              guard_log "result=holding-against-priority-waiter reason=holder-overdue waiter=${request##*/} waiter_due_in_sec=$(( ${due%.*} - now )) $staleness_override_reason"
+            else
+              guard_log "result=holding-against-priority-waiter reason=holder-earlier-deadline waiter=${request##*/} waiter_overdue_sec=$(( now - ${due%.*} )) holder_overdue_sec=$(( now - holder_due )) hold_ends_in_sec=$(( window_base + priority_hold_extension - now )) $staleness_override_reason"
+            fi
+          fi
+          continue
         fi
-        continue
       fi
       return 0
     fi
@@ -483,6 +556,7 @@ run_scheduled_command() {
     # waiter simply acquires it, so there is nothing left to yield.
     [ "$lock_released_early" -eq 0 ] || continue
 
+    sample_holder_progress
     # A wait-mode producer (the daily home snapshot or a protected/manual
     # snapshot) has priority over a hot sweep. Terminate only
     # this scheduled child and release the flock; content-addressed Kopia
