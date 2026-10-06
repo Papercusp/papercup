@@ -3974,11 +3974,23 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       await wb.pane.waitFor(`Claude · ${wb.launchDir}`, { timeoutMs: 90_000 });
       expect(wb.pane.screen()).toMatch(/Zellij \(pui-chat-\d+\)/);
       expect(listSessions()).toMatch(new RegExp(`^${wb.session}\\b`, 'm'));
-      // The running session carries the chat pane and every workbench pane.
-      const layout = paneZellij(['--session', wb.session, 'action', 'dump-layout']);
-      expect(layout.status, layout.stderr).toBe(0);
-      expect(layout.stdout).toContain('"--solo" "--workbench-pane"');
-      for (const board of ['"hud"', '"wake-pane"', '"network-pane"']) expect(layout.stdout).toContain(board);
+      // The running session carries the chat pane and every workbench pane,
+      // and the chat pane has focus. Read with `list-panes --json`, retried:
+      // zellij 0.44.3's `dump-layout` exits 0 with EMPTY stdout on most calls
+      // (0 of 20 on a healthy session, measured 2026-10-06), so it cannot be
+      // the instrument; `list-panes --json` answered 20 of 20.
+      type ZellijPane = { is_plugin: boolean; is_focused: boolean; title: string; terminal_command: string | null };
+      const command = (pane: ZellijPane) => pane.terminal_command ?? '';
+      await vi.waitFor(() => {
+        const listed = paneZellij(['--session', wb.session, 'action', 'list-panes', '--json', '--all']);
+        expect(listed.status, listed.stderr).toBe(0);
+        const panes = (JSON.parse(listed.stdout) as ZellijPane[]).filter((pane) => !pane.is_plugin);
+        const chat = panes.find((pane) => /(^|\/)pui --solo --workbench-pane$/.test(command(pane)));
+        expect(chat, JSON.stringify(panes)).toMatchObject({ is_focused: true });
+        for (const board of ['hud', 'wake-pane', 'network-pane']) {
+          expect(panes.some((pane) => new RegExp(`(^|/)pui ${board}$`).test(command(pane))), `${board} pane in ${JSON.stringify(panes)}`).toBe(true);
+        }
+      }, { timeout: 15_000, interval: 250 });
       // Keyboard focus is the chat: typed text lands in its message box.
       wb.pane.write('p030 focus probe');
       await wb.pane.waitFor('p030 focus probe', { timeoutMs: 10_000 });
