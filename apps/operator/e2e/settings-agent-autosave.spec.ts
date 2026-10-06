@@ -34,8 +34,25 @@ const SKIP_MSG_BLANK =
   '/settings/agent did not mount. Run against an HMR-enabled operator-vite ' +
   '(the playwright.config webServer) — a stale HMR-disabled :3055 serves a blank #root.';
 
-// The workspace the PAGE will use (fresh profile, no injected __PAPERCUSP_WS__).
-const WS_HEADERS = { 'x-papercusp-workspace': 'default' };
+// The workspace the PAGE uses. Learned in beforeAll from the page's OWN
+// /api/agent-config request (installWorkspaceHeaderFetch stamps it) instead of
+// assumed: on a fresh isolated rig the page's workspace is not necessarily
+// `default`, and a hardcoded guess made the read-back assertions read a
+// different workspace than the page wrote (0 tiers after a committed save —
+// WI-10006792). No stamp ⇒ the backend resolves the page against its global
+// workspace, so the fixture then sends no header either.
+let WS_HEADERS: Record<string, string> = { 'x-papercusp-workspace': 'default' };
+
+async function learnPageWorkspaceHeaders(page: Page): Promise<Record<string, string>> {
+  const req = page
+    .waitForRequest((r) => r.url().includes('/api/agent-config') && r.method() === 'GET', { timeout: 30_000 })
+    .catch(() => null);
+  await page.goto(`${baseURL}/settings/agent`, { waitUntil: 'load', timeout: 30_000 });
+  const seen = await req;
+  if (!seen) return WS_HEADERS; // page never fetched — keep the documented default
+  const ws = seen.headers()['x-papercusp-workspace'];
+  return ws ? { 'x-papercusp-workspace': ws } : {};
+}
 
 // Debounce in page.tsx is 600ms — anything still unsaved after this window
 // was (correctly) never scheduled.
@@ -72,7 +89,10 @@ async function editSpecAndBlur(page: Page, value: string) {
 test.describe.configure({ mode: 'serial' });
 
 test.describe('/settings/agent auto-save validation', () => {
-  test.beforeAll(async ({ request }) => {
+  test.beforeAll(async ({ request, browser }) => {
+    const probe = await browser.newPage();
+    WS_HEADERS = await learnPageWorkspaceHeaders(probe).catch(() => WS_HEADERS);
+    await probe.close();
     originalConfig = await getStoredConfig(request).catch(() => null);
     test.skip(originalConfig == null, 'agent-config API unreachable');
     // Known baseline for the tier flow: default menu, no ceilings. Everything

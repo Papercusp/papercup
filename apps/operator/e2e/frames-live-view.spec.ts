@@ -166,7 +166,7 @@ test.describe('/adv Frames tab (Swarm live view)', () => {
 
     // open the enlarged live-view panel on the first tile
     await page.locator('.pc-frames__tile').first().click();
-    const panel = page.getByRole('dialog', { name: 'Frame live view' });
+    const panel = page.getByRole('region', { name: 'Frame live view' });
     await expect(panel).toBeVisible();
     await page.waitForTimeout(400);
     await page.screenshot({ path: join(ARTIFACT_DIR, 'frames-tab-panel.png'), fullPage: false });
@@ -198,7 +198,7 @@ test.describe('/adv Frames tab (Swarm live view)', () => {
     // click-through: selection goes to the URL (nuqs) + the enlarged panel opens
     await tile.click();
     await expect(page).toHaveURL(new RegExp(`frame=${SLUG}%3A99|frame=${SLUG}:99`));
-    const panel = page.getByRole('dialog', { name: 'Frame live view' });
+    const panel = page.getByRole('region', { name: 'Frame live view' });
     await expect(panel).toBeVisible();
     await expect(panel).toContainText(SLUG);
 
@@ -242,7 +242,7 @@ test.describe('/adv Frames tab (Swarm live view)', () => {
     );
 
     await page.locator('.pc-frames__tile').first().click();
-    const panel = page.getByRole('dialog', { name: 'Frame live view' });
+    const panel = page.getByRole('region', { name: 'Frame live view' });
     await expect(panel).toBeVisible();
 
     await panel.getByRole('button', { name: 'Watch live' }).click();

@@ -245,7 +245,8 @@ test.describe('/adv Harnesses tab — Hive from GitHub repo (P-018)', () => {
     // the Comb" is a link to /cupboard (closing the modal in the same
     // navigation, WI-10003268); the other two are buttons.
     await expect(dialog.getByRole('link', { name: /Browse the Comb/ })).toHaveAttribute('href', '/cupboard?create=false');
-    await expect(dialog.getByRole('button', { name: /Hive invite/ })).toBeVisible();
+    // Lexicon-independent: the card reads "<Pot|Hive> invite" per t('pot').
+    await expect(dialog.getByRole('button', { name: /(Hive|Pot) invite/i })).toBeVisible();
     // The legacy per-hive "Hive link" / "Harness link" join card is retired.
     await expect(dialog.getByRole('button', { name: /Harness link/ })).toHaveCount(0);
     await expect(dialog.getByRole('button', { name: /Hive link/ })).toHaveCount(0);
@@ -261,15 +262,19 @@ test.describe('/adv Harnesses tab — Hive from GitHub repo (P-018)', () => {
     // The selected entry rides the nuqs `?picker=` axis (the live URL state).
     await expect.poll(() => new URL(page.url()).searchParams.get('picker'), { timeout: 10_000 }).toBe('github-url');
 
-    // The entry's 3-mode fork: new-hive is the headline default; no hive scope
-    // on the shell picker ⇒ no "Add to <hive>" mode.
+    // The creation fork (P-012): new-hive is the headline default; no hive
+    // scope on the shell picker ⇒ no "Add to <hive>" mode. Every created Pot is
+    // a hive, so the plain-harness "Standalone" mode is RETIRED.
     const fork = dialog.getByRole('group', { name: 'Creation mode' });
-    await expect(fork.getByRole('button', { name: 'New hive' })).toHaveAttribute('aria-pressed', 'true');
-    await expect(fork.getByRole('button', { name: 'Standalone' })).toHaveAttribute('aria-pressed', 'false');
+    await expect(fork.getByRole('button', { name: /^New (hive|pot)$/i })).toHaveAttribute('aria-pressed', 'true');
+    await expect(fork.getByRole('button', { name: 'Standalone' })).toHaveCount(0);
     await expect(fork.getByRole('button', { name: /^Add to/ })).toHaveCount(0);
 
-    // Visibility defaults Public (D-002).
-    await expect(dialog.getByRole('radio', { name: /Public \(default\)/ })).toBeChecked();
+    // Visibility is DERIVED from the repo's privacy (the chooser radio is
+    // retired): a pasted URL has unknown privacy ⇒ the neutral read-only hint.
+    const visibility = dialog.getByTestId('derived-visibility');
+    await expect(visibility).toBeVisible();
+    await expect(visibility.getByText(/Visibility is set automatically from the repository/)).toBeVisible();
 
     // Slug auto-derive: octocat/Hello-World → hello-world (+ home hello-world-hive).
     await dialog.getByPlaceholder('https://github.com/owner/repo').fill(REPO_URL);
@@ -297,7 +302,7 @@ test.describe('/adv Harnesses tab — Hive from GitHub repo (P-018)', () => {
     expect(cap.bodies).toHaveLength(0);
   });
 
-  test('P-018d created response renders the success summary; Done lands the new hive focused', async ({ page }) => {
+  test('P-018d clean created response closes the dialog and focuses the new hive', async ({ page }) => {
     await stubBase(page);
     const cap = await stubFromRepo(page, [CREATED_RESPONSE]);
     const mounted = await gotoHarnessesTab(page, `slug=${HIVE}`);
@@ -307,22 +312,19 @@ test.describe('/adv Harnesses tab — Hive from GitHub repo (P-018)', () => {
     await dialog.getByPlaceholder('https://github.com/owner/repo').fill(REPO_URL);
     await dialog.getByRole('button', { name: 'Create hive' }).click();
 
-    // Success summary settled from the REAL response (potSlug / memberSlug / publish).
-    await expect(dialog.getByRole('heading', { name: /Hive created/ })).toBeVisible({ timeout: 10_000 });
-    await expect(dialog.locator('code', { hasText: HOME_SLUG }).first()).toBeVisible();
-    await expect(dialog.locator('code', { hasText: DERIVED_SLUG }).first()).toBeVisible();
-    await expect(dialog.getByText(/Announced to the hive directory/)).toBeVisible();
-    await expect(dialog.getByText(/Central listing: 2 rows created/)).toBeVisible();
+    // modal-lifecycle-2026-06-17: a CLEAN create (no one-time invite secret,
+    // no warning to read) does not linger on a success view — the dialog closes
+    // and onCreated focuses the new hive (?slug=). The stay-open summary path is
+    // covered by P-018f (duplicate-flagged).
+    await expect(dialog).toBeHidden({ timeout: 10_000 });
+    await expect.poll(() => new URL(page.url()).searchParams.get('slug'), { timeout: 10_000 }).toBe(HOME_SLUG);
 
-    // The POST carried the form's defaults (the D-002 Public default).
+    // The POST carried the URL and NO chosen visibility (it is derived
+    // server-side from the repo's privacy) and no force flag.
     expect(cap.bodies).toHaveLength(1);
     expect(cap.bodies[0].githubUrl).toBe(REPO_URL);
-    expect(cap.bodies[0].visibility).toBe('public');
+    expect(cap.bodies[0]).not.toHaveProperty('visibility');
     expect(cap.bodies[0].force).toBeUndefined();
-
-    // Done → onCreated → the new hive becomes the focused scope (?slug=).
-    await dialog.getByRole('button', { name: 'Done' }).click();
-    await expect.poll(() => new URL(page.url()).searchParams.get('slug'), { timeout: 10_000 }).toBe(HOME_SLUG);
   });
 
   test('P-018e existing (joinable) response renders the join-offer card with Join', async ({ page }) => {
