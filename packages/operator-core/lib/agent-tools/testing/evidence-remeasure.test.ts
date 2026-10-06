@@ -21,14 +21,16 @@ type Currentness = {
   unknownReasons: string[];
 };
 
-const recipe = (specId: string, testPath: string) => ({
-  specId, specRevision: 3, testPath, sourcePaths: ['src/subject.ts'], testLayer: 'unit' as const,
+const recipe = (specId: string, testPath: string, sourceGlobs?: string[]) => ({
+  specId, specRevision: 3, testPath, sourcePaths: ['src/subject.ts'],
+  ...(sourceGlobs ? { sourceGlobs } : {}), testLayer: 'unit' as const,
 });
 
 function row(id: number, opts: {
   specId?: string; testPath?: string; kind?: string; phase?: string; revision?: number;
   currentness?: Partial<Currentness>; moved?: unknown; outcome?: string; evidenceRef?: string;
   adequacy?: Record<string, unknown>;
+  sourceGlobs?: string[];
   /** Bound by hand (plans:bind-spec-evidence): no stored recipe, only the measured paths. */
   handBound?: boolean;
   runId?: string;
@@ -51,11 +53,12 @@ function row(id: number, opts: {
     ),
     details: {
       ...(handBound
-        ? { currentMeasurement: { schemaVersion: 1, kind: 'repo-files', testPaths: [testPath], sourcePaths: ['src/subject.ts'] } }
+        ? { currentMeasurement: { schemaVersion: 1, kind: 'repo-files', testPaths: [testPath], sourcePaths: ['src/subject.ts'],
+            ...(opts.sourceGlobs ? { sourceGlobs: opts.sourceGlobs } : {}) } }
         : { testExecution: { phase: opts.phase ?? 'settled',
             ...(opts.runId ? { runId: opts.runId } : {}),
             ...(opts.originRunId ? { originRunId: opts.originRunId } : {}),
-            binding: recipe(specId, testPath) } }),
+            binding: recipe(specId, testPath, opts.sourceGlobs) } }),
       adequacy: { outcome: opts.outcome ?? 'pass', ...(handBound ? { testLayer: 'unit' } : {}), ...opts.adequacy },
     },
     testRunId: null,
@@ -107,6 +110,19 @@ describe('planTestEvidenceRemeasure', () => {
     expect(plan.skipped).toEqual([]);
   });
 
+  it('preserves source globs from a hand-bound measurement when recovering its retrospective recipe', () => {
+    const sourceGlobs = ['dynamic/plugins/*/papercusp.json'];
+    const plan = planTestEvidenceRemeasure([
+      row(13, { handBound: true, currentness: sourceStale, sourceGlobs }),
+    ]);
+
+    expect(plan.selected).toMatchObject([{
+      binding: recipe('S-1', 'src/subject.test.ts', sourceGlobs),
+      supersedes: [13],
+    }]);
+    expect(plan.skipped).toEqual([]);
+  });
+
   it('selects only the latest stale-by-drift binding per (clause, test file) and lists every live predecessor', () => {
     const moved = [{ path: 'src/subject.ts', dimension: 'source', change: 'changed' }];
     const plan = planTestEvidenceRemeasure([
@@ -120,6 +136,27 @@ describe('planTestEvidenceRemeasure', () => {
       movedPaths: moved, supersedes: [9, 10], binding: recipe('S-1', 'src/subject.test.ts'),
     });
     expect(plan.skipped).toEqual([{ specId: 'S-2', testPath: 'src/other.test.ts', bindingId: 11, reason: 'current' }]);
+  });
+
+  it('re-runs a saved recipe when an edited path matches only its source glob', async () => {
+    const sourceGlobs = ['dynamic/plugins/*/papercusp.json'];
+    const moved = [{ path: 'dynamic/plugins/linear-sync/papercusp.json', dimension: 'source', change: 'changed' }];
+    const built = await buildTestEvidenceRemeasure(
+      { workItemId: 'WI-1', planSlug: 'p' },
+      { harnessSlug: 'h' },
+      { list: vi.fn().mockResolvedValue([row(14, { currentness: sourceStale, moved, sourceGlobs })]) },
+    );
+
+    expect(built.plan.selected).toMatchObject([{
+      movedPaths: moved,
+      binding: recipe('S-1', 'src/subject.test.ts', sourceGlobs),
+    }]);
+    expect(built.request).toEqual({
+      workItemId: 'WI-1',
+      planSlug: 'p',
+      bindings: [recipe('S-1', 'src/subject.test.ts', sourceGlobs)],
+    });
+    expect(built.files).toEqual(['src/subject.test.ts']);
   });
 
   it('never re-measures a clause whose MEANING moved, an in-flight run, or an unmeasurable row', () => {
