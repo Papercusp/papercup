@@ -84,4 +84,11 @@ describe('process roots apply the default at module top level', () => {
     expect(src).toMatch(/^import \{ applyGitOptionalLocksDefault \} from ["']\.\/lib\/git-optional-locks\.mjs["'];$/m);
     expect(src).toMatch(/^applyGitOptionalLocksDefault\(\);$/m);
   });
+
+  it('apps/operator/bin/host-bootstrap.ts defaults it inside runBootstrap()', () => {
+    const src = readFileSync(join(REPO_ROOT, 'apps/operator/bin/host-bootstrap.ts'), 'utf8');
+    const body = src.slice(src.indexOf('export function runBootstrap(): void {'));
+    expect(body.length).toBeGreaterThan(0);
+    expect(body).toMatch(/^ {2}if \(!process\.env\.GIT_OPTIONAL_LOCKS\) process\.env\.GIT_OPTIONAL_LOCKS = '0';$/m);
+  });
 });

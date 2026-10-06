@@ -383,6 +383,13 @@ export function runBootstrap(): void {
   if (BOOTSTRAP_STATE.ran) return;
   BOOTSTRAP_STATE.ran = true;
 
+  // WI-10006785: hosts kill timed-out child processes, and a `git status` SIGKILLed while
+  // holding its OPTIONAL `.git/index.lock` leaves a holderless lock that freezes every commit
+  // in the shared tree. Default every git this host spawns to GIT_OPTIONAL_LOCKS=0 (read-only
+  // git then skips that lock; add/commit still take the real one). An explicit value wins.
+  // Same rule as scripts/lib/git-optional-locks.mjs, inlined so app code does not import scripts/.
+  if (!process.env.GIT_OPTIONAL_LOCKS) process.env.GIT_OPTIONAL_LOCKS = '0';
+
   // WI-10005481 / WI-10005586: decide this tenant's gateway, MCP-proxy and voice-WS ports
   // by listener ownership BEFORE anything can spawn an agent or bind a voice listener, so
   // no agent env carries a port another Linux user owns and tenants past the 8th still get
