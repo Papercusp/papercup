@@ -415,6 +415,8 @@ beforeAll(async () => {
   await db.sql.unsafe(readMigration('1301-acceptance-claim-floor.sql')).simple();
   // P-006 / WI-10006220: the same function re-rendered with the kind-specific verification check.
   await db.sql.unsafe(readMigration('1368-acceptance-claim-floor-kind-verification.sql')).simple();
+  // P-007 Phase C / WI-10006221: re-rendered again with the completion-verification policy.
+  await db.sql.unsafe(readMigration('1373-completion-verification-claim-floor.sql')).simple();
   await db.sql.unsafe(readMigration('1364-solo-decision-execution-reservation.sql')).simple();
 }, 180_000);
 afterAll(async () => {

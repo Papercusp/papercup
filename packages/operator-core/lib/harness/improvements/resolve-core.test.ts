@@ -220,10 +220,28 @@ describe('resolveImprovement — needs-human (P-004/WI-5679: leader-triage by de
     expect(d.rec.comments[0].body).toMatch(/LEADER TRIAGE/);
   });
 
-  it('a genuine OWNER-gated blockerCapability (credential) → the OWNER ACTION path (payload.needsOwnerAction) AND state moves to needs-human (EI-18210987268765837)', async () => {
+  it('D-029: an OWNER-gated needs-human without defaultIfUnanswered is refused before ANY write', async () => {
     const d = deps(issue({ id: 'EI-3' }));
     const r = await resolveImprovement(
       { id: 'EI-3', outcome: 'needs-human', summary: 'needs a prod DB credential only the owner holds', blockerCapability: 'credential' },
+      d,
+    );
+    expect(r).toMatchObject({ ok: false, id: 'EI-3' });
+    expect(r.error).toMatch(/requires defaultIfUnanswered/);
+    expect(d.rec.payloads).toEqual([]);
+    expect(d.rec.comments).toEqual([]);
+  });
+
+  it('a genuine OWNER-gated blockerCapability (credential) → the OWNER ACTION path (payload.needsOwnerAction) AND state moves to needs-human (EI-18210987268765837)', async () => {
+    const d = deps(issue({ id: 'EI-3' }));
+    const r = await resolveImprovement(
+      {
+        id: 'EI-3',
+        outcome: 'needs-human',
+        summary: 'needs a prod DB credential only the owner holds',
+        blockerCapability: 'credential',
+        defaultIfUnanswered: 'stays parked; the weekly owner digest re-surfaces it',
+      },
       d,
     );
     expect(r).toMatchObject({ ok: true, outcome: 'needs-human', state: 'needs-human', routedToOwnerAction: true });

@@ -94,6 +94,14 @@ fn str_arg<'a>(input: Option<&'a Value>, key: &str) -> Option<&'a str> {
 /// Label one tool call. `cwd` is the chat's launch directory, used to shorten
 /// file paths; `None` shows them in full.
 pub(crate) fn tool_display(name: &str, input: Option<&Value>, cwd: Option<&str>) -> ToolDisplay {
+    // P-025: a Codex MCP call arrives named by its bare tool (`plans_get`) with
+    // the server and arguments inside the item; label it like Claude's MCP row.
+    if let Some((server, tool, arguments)) = codex_mcp(input) {
+        return ToolDisplay {
+            title: format!("{server} · {} (MCP)", words(tool)),
+            summary: arguments.and_then(|a| human_args(a, usize::MAX)),
+        };
+    }
     let (name, input) = effective(name, input);
     let path = || {
         str_arg(input, "file_path")
@@ -109,13 +117,43 @@ pub(crate) fn tool_display(name: &str, input: Option<&Value>, cwd: Option<&str>)
         summary: None,
     };
     match name {
-        "Read" | "NotebookRead" => target("Read", path()),
-        "Edit" | "MultiEdit" | "NotebookEdit" => target("Update", path()),
-        "Write" => target("Write", path()),
-        "Bash" | "shell" | "exec_command" | "local_shell" => {
+        // OMP names its built-in tools in lower case (`read`, `edit`, `bash`).
+        "Read" | "NotebookRead" | "read" => target("Read", path()),
+        "Edit" | "MultiEdit" | "NotebookEdit" | "edit" => target("Update", path()),
+        "Write" | "write" => target("Write", path()),
+        "ls" => target("List", path()),
+        // P-025: Codex reports its edits as one `fileChange` item.
+        "fileChange" => {
+            let changes = input
+                .and_then(|i| i.get("changes"))
+                .and_then(Value::as_array)
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+            match changes {
+                [one] => {
+                    let verb = match one.pointer("/kind/type").and_then(Value::as_str) {
+                        Some("add") => "Write",
+                        Some("delete") => "Delete",
+                        _ => "Update",
+                    };
+                    target(
+                        verb,
+                        str_arg(Some(one), "path")
+                            .map(|p| clip(&display_path(p, cwd), TARGET_CHARS)),
+                    )
+                }
+                [] => target("Update files", None),
+                many => target("Update", Some(format!("{} files", many.len()))),
+            }
+        }
+        "webSearch" => target(
+            "Web Search",
+            str_arg(input, "query").map(|q| clip(q, TARGET_CHARS)),
+        ),
+        "Bash" | "bash" | "shell" | "exec_command" | "local_shell" | "commandExecution" => {
             let command = str_arg(input, "command")
                 .or_else(|| str_arg(input, "cmd"))
-                .map(|c| clip(c, TARGET_CHARS))
+                .map(|c| clip(strip_shell_wrapper(c), TARGET_CHARS))
                 .or_else(|| {
                     input
                         .and_then(|i| i.get("command"))
@@ -133,7 +171,7 @@ pub(crate) fn tool_display(name: &str, input: Option<&Value>, cwd: Option<&str>)
                 summary: str_arg(input, "description").map(|d| clip(d, 120)),
             }
         }
-        "Glob" | "Grep" => {
+        "Glob" | "Grep" | "glob" | "grep" | "find" => {
             let pattern = str_arg(input, "pattern").map(|p| clip(p, TARGET_CHARS));
             ToolDisplay {
                 title: match pattern {

@@ -22,6 +22,7 @@ import type postgres from 'postgres';
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from './_baseline-coord-fixture';
 import {
   adoptStartingTerminalLaunch,
+  classifyOwnerNativeSession,
   markAdvSessionEnded,
   readSuLaunchSpecByOwner,
   reanchorAdvSessionNativeId,
@@ -68,7 +69,8 @@ async function seedAdv(opts: {
     )
     RETURNING id
   `;
-  return rows[0].id;
+  // postgres returns bigint columns as strings; callers require numeric ids.
+  return Number(rows[0].id);
 }
 
 beforeAll(async () => {
@@ -91,6 +93,41 @@ describe('baseline fixture teardown', () => {
 });
 beforeEach(async () => {
   await admin`TRUNCATE harness_shared.adv_sessions`;
+});
+
+describe('exact native incarnation ownership (get-feedback D-006, real PG)', () => {
+  it('rejects a deleted explicit row instead of borrowing another incarnation with the same native id', async () => {
+    const deleted = await seedAdv({ coordOwnerId: OWNER, sessionId: DEAD_ID });
+    await admin`DELETE FROM harness_shared.adv_sessions WHERE id = ${deleted}`;
+    const replacement = await seedAdv({ coordOwnerId: OWNER, sessionId: DEAD_ID });
+    await expect(classifyOwnerNativeSession({ ownerId: OWNER, sessionId: DEAD_ID, advSessionId: deleted }))
+      .resolves.toEqual({ binding: 'foreign', boundSessionId: null, advSessionId: null });
+    await expect(classifyOwnerNativeSession({ ownerId: OWNER, sessionId: DEAD_ID, advSessionId: replacement }))
+      .resolves.toEqual({ binding: 'bound', boundSessionId: DEAD_ID, advSessionId: replacement });
+  });
+
+  it('rejects another owner\'s explicit row even when the caller has a matching native row', async () => {
+    const own = await seedAdv({ coordOwnerId: OWNER, sessionId: DEAD_ID });
+    const other = await seedAdv({ coordOwnerId: 'su-other-owner', sessionId: FRESH_ID });
+    await expect(classifyOwnerNativeSession({ ownerId: OWNER, sessionId: DEAD_ID, advSessionId: other }))
+      .resolves.toEqual({ binding: 'foreign', boundSessionId: null, advSessionId: null });
+    await expect(classifyOwnerNativeSession({ ownerId: OWNER, sessionId: DEAD_ID, advSessionId: own }))
+      .resolves.toEqual({ binding: 'bound', boundSessionId: DEAD_ID, advSessionId: own });
+  });
+
+  it('keeps both legitimate source incarnations and an existing pending first binding usable', async () => {
+    const original = await seedAdv({ coordOwnerId: OWNER, sessionId: DEAD_ID });
+    const continuation = await seedAdv({ coordOwnerId: OWNER, sessionId: FRESH_ID });
+    const pending = await seedAdv({ coordOwnerId: OWNER });
+    await expect(classifyOwnerNativeSession({ ownerId: OWNER, sessionId: DEAD_ID, advSessionId: original }))
+      .resolves.toEqual({ binding: 'bound', boundSessionId: DEAD_ID, advSessionId: original });
+    await expect(classifyOwnerNativeSession({ ownerId: OWNER, sessionId: FRESH_ID, advSessionId: continuation }))
+      .resolves.toEqual({ binding: 'bound', boundSessionId: FRESH_ID, advSessionId: continuation });
+    await expect(classifyOwnerNativeSession({ ownerId: OWNER, sessionId: FRESH_ID, advSessionId: pending }))
+      .resolves.toEqual({ binding: 'unbound', boundSessionId: null, advSessionId: pending });
+    await expect(classifyOwnerNativeSession({ ownerId: OWNER, sessionId: DEAD_ID }))
+      .resolves.toEqual({ binding: 'bound', boundSessionId: DEAD_ID, advSessionId: original });
+  });
 });
 
 describe('grant-bearing role receipt and activation (canonical PostgreSQL client)', () => {

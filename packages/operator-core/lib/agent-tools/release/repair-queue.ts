@@ -238,7 +238,7 @@ const argsSchema = z.preprocess(
         /** P-006 (R6, D-002): opt OUT of the admission pre-check for a deliberate wide admission. Requires `precheckReason`; recorded on the ledger entry. */
         skipPrecheck: z.boolean().optional(),
         precheckReason: z.string().min(8).max(2000).optional(),
-        /** Retry a terminal failed pre-check for the same immutable built commit. A running one is never duplicated. */
+        /** Retry a terminal failed or deferred pre-check for the same immutable built commit. A running one is never duplicated. */
         retryPrecheck: z.boolean().optional(),
       }),
       z.object({
@@ -1427,7 +1427,8 @@ export default defineTool({
         if (
           (matchingPrecheck?.status === 'passed' && matchingPrecheck.verdict?.ok === true && matchingPrecheck.verdict.ran) ||
           (matchingPrecheck?.status === 'deferred' && matchingPrecheck.verdict?.ok === true &&
-            !matchingPrecheck.verdict.ran && matchingPrecheck.verdict.reason === 'checkpoint-tree-busy')
+            !matchingPrecheck.verdict.ran && matchingPrecheck.verdict.reason === 'checkpoint-tree-busy' &&
+            args.retryPrecheck !== true)
         ) {
           precheck = matchingPrecheck.verdict;
         } else if (

@@ -34,12 +34,13 @@ const readContext: HostedBudgetContextReader = async (sql, input) => {
     entitlements: { budgets: { [input.budgetKey]: Number(cents) } }, fundedMicros: Number(row.funding),
     externalSpentMicros: 0, retainedReserveMicros: row.retained === null ? null : Number(row.retained), unreconciled: false });
   const { startMs, endMs } = shadowMonthBounds(input.month);
-  return { scope: input.scope, month: input.month, evidenceRef: 'fixture:verified-funding',
+  return { scope: input.scope, month: input.month, asOfMs: input.asOfMs, evidenceRef: 'fixture:verified-funding',
     policy: { policyId: 'fixture-policy', revision: 1, budgetKey: input.budgetKey,
       effectiveFromMs: startMs, effectiveUntilMs: endMs, warningBps: 8000 },
     limits: [limit(null, row.cap), ...(row.workspace_cap === null ? [] : [limit(input.scope.customerWorkspaceId, row.workspace_cap)])] };
 };
-const store = (reader: HostedBudgetContextReader = readContext, run = service) => new PostgresHostedBudgetStore({ readContext: reader, run });
+const store = (reader: HostedBudgetContextReader = readContext, run = service, now = () => T) =>
+  new PostgresHostedBudgetStore({ readContext: reader, run, now });
 
 async function tenant(controlWorkspaceId: string = randomUUID(), organizationId: string = randomUUID()): Promise<HostedBudgetScope> {
   const customerWorkspaceId = randomUUID();
@@ -93,8 +94,8 @@ function prepaidEvidence(r: HostedPrepaidAllocationRequest, grossCents = 100): O
       asOfMs: r.asOfMs, livemode: true, complete: true, evidenceRef: 'fixture:cash-census', journalEntries: [built.entry],
       availableMicros: grossCents * 10_000, unpaidProviderMicros: 0, retainedReserveMicros: 0 } };
 }
-const prepaidStore = (reader: HostedPrepaidFundingReader = async (_sql, r) => prepaidEvidence(r), run = service) =>
-  new PostgresHostedBudgetStore({ readPrepaidFunding: reader, run });
+const prepaidStore = (reader: HostedPrepaidFundingReader = async (_sql, r) => prepaidEvidence(r), run = service, now = () => T) =>
+  new PostgresHostedBudgetStore({ readPrepaidFunding: reader, run, now });
 const allocationRows = (account: string) => db.adminSql`SELECT * FROM papercusp_auth.hosted_prepaid_allocations
   WHERE stripe_account_id = ${account}`;
 
@@ -282,7 +283,7 @@ describe('PostgresHostedBudgetStore (real hosted service transactions)', () => {
 
   it('retains pending fractional reports and suspends even submicro old-month overruns', async () => {
     const s = await tenant(); const r = request(s, { maximumCostMicros: 1, month: '2026-09', asOfMs: Date.UTC(2026, 8, 2) });
-    await store().reserve(r);
+    await store(readContext, service, () => r.asOfMs).reserve(r);
     const report = observation(r, { costSource: 'provider-reported', costMicros: 0, costMicrosExact: '0.1', providerFinal: false });
     expect((await store().observe(report)).settlement).toMatchObject({ state: 'pending', heldMicros: 1, releasedMicros: 0 });
     expect((await store().reserve(request(s, { maximumCostMicros: 100_000 }))).outcome).toBe('refused');
@@ -361,7 +362,8 @@ describe('PostgresHostedBudgetStore (real hosted service transactions)', () => {
   });
 
   it('keeps old-month unfinished work reserved in the next window', async () => {
-    const s = await tenant(); await store().reserve(request(s, { month: '2026-09', asOfMs: Date.UTC(2026, 8, 2) }));
+    const s = await tenant(); const old = request(s, { month: '2026-09', asOfMs: Date.UTC(2026, 8, 2) });
+    await store(readContext, service, () => old.asOfMs).reserve(old);
     expect((await store().reserve(request(s, { maximumCostMicros: 1 }))).outcome).toBe('refused');
   });
 
@@ -472,6 +474,81 @@ describe('PostgresHostedBudgetStore (real hosted service transactions)', () => {
     await expect(prepaidStore(async (_sql, q) => ({ ...prepaidEvidence(q), scope: { ...q.scope, organizationId: randomUUID() } }))
       .allocatePrepaid(r)).rejects.toThrow('authority mismatch');
     expect(await allocationRows(r.stripeAccountId)).toHaveLength(0);
+  });
+
+  it('accepts a fresh funding completion after the request and persists the server decision time', async () => {
+    const r = prepaidRequest(await tenant()); let now = T + 10;
+    const reader: HostedPrepaidFundingReader = async (_sql, q) => {
+      expect(q.asOfMs).toBe(T + 10); expect(Object.isFrozen(q)).toBe(true);
+      now = T + 20;
+      return prepaidEvidence({ ...q, asOfMs: now });
+    };
+    expect((await prepaidStore(reader, service, () => now).allocatePrepaid(r)).outcome).toBe('allocated');
+    const [saved] = await allocationRows(r.stripeAccountId);
+    expect(Number(saved!.observed_at_ms)).toBe(T + 20);
+  });
+
+  it('refuses stale, future and backward-clock funding without persisting any allocation', async () => {
+    for (const [observed, completed] of [[T - 1, T + 1], [T + 2, T + 1], [T, T - 1], [T, T + 60_001],
+      [NaN, T + 1], [T, Infinity]]) {
+      const r = prepaidRequest(await tenant()); let now = T;
+      const reader: HostedPrepaidFundingReader = async (_sql, q) => {
+        now = completed!; return prepaidEvidence({ ...q, asOfMs: observed! });
+      };
+      expect(await prepaidStore(reader, service, () => now).allocatePrepaid(r))
+        .toMatchObject({ outcome: 'refused', reason: 'unverified-time', allocation: null });
+      expect(await allocationRows(r.stripeAccountId)).toHaveLength(0);
+    }
+  });
+
+  it('checks both allocation window and reservation policy at completion across a month boundary', async () => {
+    const end = shadowMonthBounds('2026-10').endMs;
+    const r = prepaidRequest(await tenant()); let now = end - 1;
+    const funding: HostedPrepaidFundingReader = async (_sql, q) => {
+      now = end; return prepaidEvidence({ ...q, asOfMs: end });
+    };
+    expect(await prepaidStore(funding, service, () => now).allocatePrepaid(r))
+      .toMatchObject({ outcome: 'refused', reason: 'inactive-window' });
+    expect(await allocationRows(r.stripeAccountId)).toHaveLength(0);
+    now = end - 1;
+    const context: HostedBudgetContextReader = async (sql, q) => {
+      const c = (await readContext(sql, q))!; now = end; return { ...c, asOfMs: end };
+    };
+    const result = await store(context, service, () => now).reserve(request(r.scope));
+    expect(result.outcome).toBe('refused'); expect(result.decisions[0]?.reason).toBe('inactive-policy');
+    expect(await rows(r.scope)).toHaveLength(0);
+  });
+
+  it('uses the server clock for reservation context and blocks stale/future/regressed authority', async () => {
+    const s = await tenant(); let now = T + 10;
+    const fresh: HostedBudgetContextReader = async (sql, q) => {
+      expect(q.asOfMs).toBe(T + 10); now = T + 20;
+      return { ...(await readContext(sql, q))!, asOfMs: now };
+    };
+    const admitted = await store(fresh, service, () => now).reserve(request(s));
+    expect(admitted.outcome).toBe('reserved'); expect(admitted.receipt?.observedAtMs).toBe(T + 20);
+    for (const [observed, completed] of [[T - 1, T + 1], [T + 2, T + 1], [T, T - 1], [T, T + 60_001],
+      [NaN, T + 1], [T, Infinity]]) {
+      const other = await tenant(); now = T;
+      const reader: HostedBudgetContextReader = async (sql, q) => {
+        const c = (await readContext(sql, q))!; now = completed!; return { ...c, asOfMs: observed! };
+      };
+      expect(await store(reader, service, () => now).executeOnce(request(other), async () => { throw new Error('must not dispatch'); }))
+        .toMatchObject({ execution: 'not-started', reservation: { outcome: 'refused', reason: 'unverified-time' } });
+      expect(await rows(other)).toHaveLength(0);
+    }
+  });
+
+  it('refuses future requests and invalid start clocks before invoking an authority reader', async () => {
+    const r = prepaidRequest(await tenant()); let calls = 0;
+    const funding: HostedPrepaidFundingReader = async (_sql, q) => { calls++; return prepaidEvidence(q); };
+    const context: HostedBudgetContextReader = async (sql, q) => { calls++; return readContext(sql, q); };
+    for (const clock of [T - 1, NaN, Infinity]) {
+      expect((await prepaidStore(funding, service, () => clock).allocatePrepaid(r)).outcome).toBe('refused');
+      expect((await store(context, service, () => clock).reserve(request(r.scope))).outcome).toBe('refused');
+    }
+    expect(calls).toBe(0); expect(await allocationRows(r.stripeAccountId)).toHaveLength(0);
+    expect(await rows(r.scope)).toHaveLength(0);
   });
 
   it('serializes concurrent exact partitions across instances and every budget key', async () => {

@@ -19,6 +19,7 @@ import {
   ADMISSION_COMPONENT_FLOOR,
   lexicalHardEdges,
   readAdjudicatedPairKeys,
+  readPinnedUnadjudicatedCensus,
   runWorkItemAdmissionCensus,
   type AdmissionCensusRunOptions,
   type AdmissionCensusRunResult,
@@ -2477,7 +2478,23 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
           withinTransaction: true,
           runId: `${stageRunId}-census-after`,
         });
-        assertAdmissionCensusRatchet(census.censusAfter, nextCensus.censusAfter);
+        // WI-10006336: ratchet over census-0's own members, not the live corpus.
+        // nextCensus re-reads "every open item", so it also counts items filed
+        // while this stage judged (one emitter cluster added ~9.5K edges in 50
+        // minutes). That influx is not the stage's doing; it is disclosed below
+        // and becomes the next stage's census-0.
+        const pinnedCensusAfter = await readPinnedUnadjudicatedCensus(tx, opts, {
+          pinnedRunId: census.runId,
+          currentRunId: nextCensus.runId,
+        });
+        assertAdmissionCensusRatchet(census.censusAfter, pinnedCensusAfter);
+        const ratchet = {
+          before: census.censusAfter,
+          after: pinnedCensusAfter,
+          population: 'census-0-members' as const,
+          corpusAfter: nextCensus.censusAfter,
+          influxEdges: Math.max(0, nextCensus.censusAfter - pinnedCensusAfter),
+        };
         const nextInput = await readBulkInput(tx, {
           workspaceId: opts.workspaceId,
           harnessSlug: opts.harnessSlug,
@@ -2554,7 +2571,9 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
                    // EFFICACY verdict when the assert it echoes is only a SAFETY
                    // one (the census did not grow). Any reader wanting the verdict
                    // derives it from the two fields that are actually measured.
-                   ratchet: { before: census.censusAfter, after: nextCensus.censusAfter },
+                   // `after` is census-0's members only (WI-10006336);
+                   // corpusAfter/influxEdges disclose what arrived meanwhile.
+                   ratchet,
                    outcome: {
                      unit: 'pairs',
                      attempted: input.pairs.length,

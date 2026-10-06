@@ -634,6 +634,54 @@ async function readUnadjudicatedCensus(
 }
 
 /**
+ * WI-10006336: the unadjudicated census over ONE population — the members
+ * pinned by `pinnedRunId` that are still members of `currentRunId` — so a
+ * bulk stage's post-stage ratchet compares the same population it started
+ * from. The corpus is "every open item" and is re-read live, so a census taken
+ * after a ~50-minute stage also counts items FILED during that stage; one
+ * machine emitter adding 39 near-duplicates to a dense cluster added ~9.5K
+ * unadjudicated edges and failed a stage that had created none (10-05 stage,
+ * 56,606 -> 65,264). A pinned member that leaves the corpus (merged away,
+ * closed) only removes edges, which is the decrease the ratchet expects; an
+ * edge that genuinely appears between two pinned members still counts, so
+ * the guard stays strict for everything the stage could have caused.
+ */
+export async function readPinnedUnadjudicatedCensus(
+  sql: OrgSql,
+  opts: Pick<AdmissionCensusRunOptions, 'workspaceId' | 'harnessSlug'>,
+  runs: { pinnedRunId: string; currentRunId: string },
+): Promise<number> {
+  const rows = await sql<Array<{ n: number }>>`
+    WITH pinned AS MATERIALIZED (
+      SELECT p.item_id
+        FROM harness_shared.dedup_shard_map p
+        JOIN harness_shared.dedup_shard_map c
+          ON c.workspace_id = p.workspace_id
+         AND c.harness_slug = p.harness_slug
+         AND c.run_id = ${runs.currentRunId}
+         AND c.role = 'member'
+         AND c.item_id = p.item_id
+       WHERE p.workspace_id = ${opts.workspaceId}
+         AND p.harness_slug = ${opts.harnessSlug}
+         AND p.run_id = ${runs.pinnedRunId}
+         AND p.role = 'member'
+    )
+    SELECT count(*)::int AS n
+      FROM harness_shared.dedup_edges e
+      LEFT JOIN harness_shared.dedup_adjudications d
+        ON d.workspace_id = e.workspace_id
+       AND d.harness_slug = e.harness_slug
+       AND d.a = e.a AND d.b = e.b
+     WHERE e.workspace_id = ${opts.workspaceId}
+       AND e.harness_slug = ${opts.harnessSlug}
+       AND e.cos >= ${ADMISSION_COMPONENT_FLOOR}
+       AND d.a IS NULL
+       AND e.a IN (SELECT item_id FROM pinned)
+       AND e.b IN (SELECT item_id FROM pinned)`;
+  return Number(rows[0]?.n ?? 0);
+}
+
+/**
  * Canonical `a\0b` keys of every adjudicated pair inside the corpus, so
  * in-memory lexical edges honour the same "no adjudication" census rule the
  * cosine leg gets from its `dedup_adjudications` anti-join. Exported for the

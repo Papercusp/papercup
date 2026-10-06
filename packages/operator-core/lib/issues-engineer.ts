@@ -24,6 +24,7 @@ import { admittedWhereSql, type BornAdmission } from './work-items-admission';
 import { assertScopeWellFormed, harnessScope, harnessOfScope } from './work-item-scope';
 import { harnessPreference, resolveIssuePhysicalSlug } from './work-items-physical-row';
 import { resolveWorkItemPot } from './pot-membership';
+import { hasActiveStrictHumanAsk } from './hold-registry';
 import { ANY_FAMILY_TERMINAL_STATES, ISSUE_TERMINAL_STATES } from './work-item-dispatch-states';
 import { neutralizeToolCallTags, sanitizePersistedText } from './text-safety';
 import {
@@ -3590,6 +3591,17 @@ export async function setIssueState(
         FOR UPDATE`;
     const priorRow = prior[0];
     if (!priorRow) return [] as IssueRowDb[];
+    // D-029 (plan unified-bug-pipeline-and-honest-queue-2026-10-05): the bottom issue writer
+    // refuses a needs-human park without an answerable owner ask, read off the LOCKED row, so a
+    // caller that skips setWorkItemState (resolve-core did) cannot write the hold-with-no-clearer
+    // shape. Same predicate as the census and the canonical writer.
+    if (state === 'needs-human' && priorRow.status !== 'needs-human' && !hasActiveStrictHumanAsk(priorRow.payload)) {
+      throw new Error(
+        `work_item '${id}' → 'needs-human' rejected — the item carries no answerable owner ask. Record it first with ` +
+          `work_items:set_blocker { id: '${id}', kind: 'human', capability, ref, summary, nextVerb, defaultIfUnanswered }: ` +
+          'defaultIfUnanswered says what happens if the owner never answers.',
+      );
+    }
     if (opts.acceptedProgramAttempt) {
       const payload = priorRow.payload && typeof priorRow.payload === 'object' &&
         !Array.isArray(priorRow.payload) ? priorRow.payload as Record<string, unknown> : {};

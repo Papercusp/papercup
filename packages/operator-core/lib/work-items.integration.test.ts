@@ -2371,6 +2371,7 @@ describe('unified work_items surface (real PG)', () => {
         ref: 'credential:test',
         summary: 'Provide test credential',
         nextVerb: 'provide credential',
+        defaultIfUnanswered: 'stay parked until the credential is supplied',
       },
       'agA',
     );

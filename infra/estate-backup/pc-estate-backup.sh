@@ -194,12 +194,15 @@ for c in ${CH_CONTAINERS[@]+"${CH_CONTAINERS[@]}"}; do
       "SELECT name FROM system.tables WHERE database='${db}' AND engine LIKE '%MergeTree' ORDER BY name")
     for t in "${DTBLS[@]}"; do
       df="${STAGE}/ch/${db}/data/${t}.native.gz"
+      # Keep clickhouse-client/docker stderr (outside $STAGE, which is uploaded wholesale)
+      # so a failure names its cause, not a bare "export failed" (WI-10006330).
       if docker exec "$c" clickhouse-client --max_block_size=100000 -q \
-           "SELECT * FROM \`${db}\`.\`${t}\` FORMAT Native" 2>/dev/null | gzip -6 > "$df"; then
+           "SELECT * FROM \`${db}\`.\`${t}\` FORMAT Native" 2>"/tmp/pcch.$$" | gzip -6 > "$df"; then
         [ -s "$df" ] && emit "$df" "${db}.${t}" "clickhouse_native" || rm -f "$df"
       else
-        fail "clickhouse ${db}.${t}: Native export failed"; rm -f "$df"
+        fail "clickhouse ${db}.${t}: Native export failed: $(tr '\n' ' ' < "/tmp/pcch.$$" 2>/dev/null | cut -c1-400)"; rm -f "$df"
       fi
+      rm -f "/tmp/pcch.$$"
     done
   done
 done

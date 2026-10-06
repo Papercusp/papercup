@@ -3229,6 +3229,23 @@ async function completeOne(
   // ctx carries the server-derived caller identity: only the owner's UI is exempt (D-038).
   const notAgentWork = await refuseNonAgentWorkAtDoor('work_items:complete', it.id, it.harness, ctx);
   if (notAgentWork) return notAgentWork;
+  // P-007 Phase C (D-028 §5): a completion verification task closes only with a verdict, and
+  // never by its subject's closer (the D-021 conflict rule holds at this door too, not only
+  // at the claim doors). Rows without a completion verification block are never affected.
+  if (it.state && TERMINAL_WORK_ITEM_STATES.has(it.state.toLowerCase())) {
+    const { completionVerdictRefusal } = await import('../../harness/improvements/completion-verification');
+    const { verificationTaskConflict } = await import('../../harness/improvements/agent-review-policy');
+    const verdictRefusal = completionVerdictRefusal({ payload: existing.payload, completion: it.completion, terminal: true });
+    if (verdictRefusal) return { ok: false, id: it.id, error: verdictRefusal };
+    const conflict = verificationTaskConflict(existing.payload, ident.ownerId);
+    if (conflict && (existing.payload as Record<string, unknown> | null)?.completionVerification) {
+      return {
+        ok: false,
+        id: it.id,
+        error: `verifier_conflict: you are the ${conflict} of the completion this task verifies; a different agent must record the verdict`,
+      };
+    }
+  }
   // EI-19313515375179600 (WI-6822 follow-up): `origin` can flip local→remote well after
   // creation (still-under-investigation federation/replay-provenance defect). Trusting it
   // ALONE strands the true author — check IDENTITY first: createdBy === the caller means
@@ -5188,6 +5205,55 @@ async function completeOne(
               `say so in \`deferred\` and leave it proposed.`)
       : undefined;
 
+  // P-007 Phase C (D-028 §1, §5): after a terminal close lands, (a) a completion task's verdict
+  // is applied (reject reopens the subject to its closer), and (b) a 'proposed' close of an
+  // item that still blocks live work spawns the completion verification task that gates those
+  // dependents. The close already landed, so a failure here is reported, never thrown.
+  let completionVerification: Record<string, unknown> | undefined;
+  let completionVerificationWarning: string | undefined;
+  if (!stateError && Boolean(finalState) && TERMINAL_WORK_ITEM_STATES.has(finalState as string)) {
+    try {
+      const store = await import('../../harness/improvements/completion-verification-store');
+      const verdict = await store.applyCompletionVerdictForClose({
+        taskPayload: existing.payload,
+        completion: it.completion,
+        verifier: ident.ownerId,
+      });
+      if (verdict) completionVerification = { verdict };
+      // Read the authority that LANDED: the downgrade trigger can turn a stamped 'committed'
+      // into 'proposed' on the write itself.
+      const landedAuthority = workItem?.completionAuthority ?? stampedAuthority;
+      const successfulClose = ROOT_CAUSE_SUCCESSFUL_CLOSE_STATES.some(
+        (state) => state === String(finalState).trim().toLowerCase(),
+      );
+      if (
+        landedAuthority &&
+        landedAuthority !== 'proposed' &&
+        existing.completionAuthority === 'proposed' &&
+        existing.state &&
+        TERMINAL_WORK_ITEM_STATES.has(existing.state.toLowerCase())
+      ) {
+        // D-028 §6 on this door: a re-sent close upgraded a stored 'proposed' completion, the
+        // same upgrade settlement makes — accept any open verification task for it.
+        const accepted = await store.acceptCompletionOnSettlementForSubject(it.id, landedAuthority);
+        if (accepted) completionVerification = { ...completionVerification, acceptedBySettlement: accepted };
+      } else if (landedAuthority === 'proposed' && successfulClose) {
+        const spawned = await store.spawnCompletionVerificationForClose({
+          id: it.id,
+          title: existing.title ?? it.id,
+          kind: String(existing.kind ?? 'task'),
+          closer: workItem?.terminalOwner ?? ident.ownerId,
+          harness: it.harness && it.harness !== '*' ? it.harness : undefined,
+        });
+        if (spawned.outcome !== 'no-dependents') completionVerification = { ...completionVerification, spawned };
+      }
+    } catch (error) {
+      completionVerificationWarning =
+        `${it.id} closed, but completion verification could not be recorded: ` +
+        `${error instanceof Error ? error.message : String(error)}. Dependents are not gated by a verification task.`;
+    }
+  }
+
   // Fill provenance defaults so the rendered notification is complete (D-006).
   const completion = {
     ...it.completion,
@@ -5434,6 +5500,8 @@ async function completeOne(
         }
       : {}),
     ...(authorityWarning ? { authorityWarning } : {}),
+    ...(completionVerification ? { completionVerification } : {}),
+    ...(completionVerificationWarning ? { completionVerificationWarning } : {}),
     ...(verificationWarning ? { verificationWarning } : {}),
     ...(skippedTestsWarning ? { skippedTestsWarning } : {}),
     ...(typeEvidenceWarning ? { typeEvidenceWarning } : {}),

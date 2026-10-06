@@ -106,6 +106,9 @@ export interface ColdBootDrillLedgerEvent {
   detail?: string;
   lookups?: RecoveryLookup[];
   transcriptPath?: string;
+  /** Caller that graded the sample; may differ from the host owner when the
+   * injected drill marker delegates grading to a role-scoped successor. */
+  gradedByOwnerId?: string;
   /** Host-mirrored terminal rows (EI-12655): why a carry was dropped / a respawn failed. */
   reason?: string;
   /** Host-mirrored respawn rows (EI-12655): the successor's fresh native session id. */
@@ -647,17 +650,35 @@ export type GradeColdBootDrillResult =
   | { ok: false; error: string; note: string };
 
 export async function gradeColdBootDrill(
-  ownerId: string,
+  graderOwnerId: string,
   drillId: string,
   overrides: Partial<GradeColdBootDrillDeps> = {},
 ): Promise<GradeColdBootDrillResult> {
   const deps = gradeDeps(overrides);
   const ledger = await deps.readLedger();
-  const requested = ledger.find((event) => event.drillId === drillId && event.ownerId === ownerId);
-  if (!requested) return { ok: false, error: 'unknown_drill', note: 'No durable drill request matches this owner and id.' };
+  // startColdBootDrill creates drillId with randomUUID() and embeds it in the
+  // injected successor prompt. That opaque marker is the one-drill delegation
+  // capability: the successor may run under a role-scoped principal whose
+  // ownerId differs from the host that owns the transcript. Keep all storage
+  // reads and attribution anchored to the recorded source owner.
+  const drillRows = ledger.filter((event) => event.drillId === drillId);
+  const ownerIds = [...new Set(drillRows.map((event) => event.ownerId))];
+  if (ownerIds.length === 0) {
+    return { ok: false, error: 'unknown_drill', note: 'No durable drill request matches this id.' };
+  }
+  if (ownerIds.length !== 1) {
+    return { ok: false, error: 'ambiguous_drill', note: 'The drill id is recorded under multiple owners; refusing to select a transcript.' };
+  }
+  const drillOwnerId = ownerIds[0];
+  const requested = drillRows.find(
+    (event) => event.ownerId === drillOwnerId && (event.kind === 'carry-drill-requested' || event.kind === 'carry-drill-queued'),
+  ) ?? drillRows.find((event) => event.ownerId === drillOwnerId);
+  if (!requested) {
+    return { ok: false, error: 'unknown_drill', note: 'No durable drill request matches this id.' };
+  }
 
   const existing = ledger.find(
-    (event) => event.drillId === drillId && event.ownerId === ownerId && event.kind === 'carry-drill-graded',
+    (event) => event.drillId === drillId && event.ownerId === drillOwnerId && event.kind === 'carry-drill-graded',
   );
   if (existing?.lookups) {
     const sample = { sessionClass: existing.sessionClass, lookups: existing.lookups };
@@ -671,7 +692,7 @@ export async function gradeColdBootDrill(
     };
   }
 
-  const hostEvents = await deps.readHostEvents(ownerId);
+  const hostEvents = await deps.readHostEvents(drillOwnerId);
   const respawn = [...hostEvents].reverse().find(
     (event) => event.kind === 'carry-drill-respawned' && event.drillId === drillId,
   );
@@ -695,7 +716,7 @@ export async function gradeColdBootDrill(
   if (carryText == null) {
     return { ok: false, error: 'carry_unreadable', note: 'The recorded carry file is absent, unsafe, or unreadable.' };
   }
-  const transcript = await deps.loadTranscript(ownerId, respawn.nativeId ?? null);
+  const transcript = await deps.loadTranscript(drillOwnerId, respawn.nativeId ?? null);
   if (!transcript) {
     return { ok: false, error: 'successor_transcript_unavailable', note: 'The fresh native transcript is not readable yet; grade at the next clean boundary.' };
   }
@@ -718,7 +739,8 @@ export async function gradeColdBootDrill(
     ts: new Date(deps.now()).toISOString(),
     kind: 'carry-drill-graded',
     drillId,
-    ownerId,
+    ownerId: drillOwnerId,
+    gradedByOwnerId: graderOwnerId,
     sessionClass: requested.sessionClass,
     lookups: sample.lookups,
     transcriptPath: transcript.ref,

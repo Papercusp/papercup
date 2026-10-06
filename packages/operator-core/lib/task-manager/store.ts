@@ -1776,12 +1776,12 @@ export async function gcTerminalTasks(
       .filter((path: string | null): path is string => Boolean(path?.trim())),
   )];
   if (logPaths.length > 0) {
-    const remaining = await sql`
+    const remaining = await sql<{ log_path: string }[]>`
       SELECT DISTINCT log_path
         FROM harness_shared.task_ledger
        WHERE log_path = ANY(${sql.array(logPaths)})
     `;
-    const stillReferenced = new Set(remaining.map((row: { log_path: string }) => row.log_path));
+    const stillReferenced = new Set(remaining.map((row) => row.log_path));
     await Promise.all(
       logPaths
         .filter((logPath) => !stillReferenced.has(logPath))

@@ -1274,6 +1274,72 @@ describe('EI-19342308665972321 — runTsc kills the WHOLE process group on timeo
  * is the same false-green shape as the hand-rolled `tsc | head` fallback this mode
  * exists to replace, so these are correctness guards, not shape trivia.
  */
+describe('scoped package type references with the real compiler (WI-10006343)', () => {
+  let root: string;
+  let project: string;
+  let ts: typeof import('typescript');
+  beforeAll(async () => { ts = await import('typescript'); });
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'scoped-package-types-'));
+    const dir = join(root, 'packages', 'fixture');
+    mkdirSync(join(dir, 'src'), { recursive: true });
+    mkdirSync(join(root, 'node_modules', 'test-kit'), { recursive: true });
+    mkdirSync(join(root, 'node_modules', 'unwanted-kit'), { recursive: true });
+    writeFileSync(join(root, 'node_modules', 'test-kit', 'globals.d.ts'), 'declare const testFixtureValue: 42;');
+    writeFileSync(join(root, 'node_modules', 'unwanted-kit', 'index.d.ts'), 'declare const unwantedFixtureValue: number;');
+    project = join(dir, 'tsconfig.json');
+    writeFileSync(project, JSON.stringify({ compilerOptions: { module: 'esnext', moduleResolution: 'bundler',
+      target: 'ES2022', strict: true, skipLibCheck: true, types: ['test-kit/globals'] }, include: ['src/**/*.ts'] }));
+    writeFileSync(join(dir, 'src', 'target.ts'), 'export const answer = testFixtureValue;');
+  });
+  afterEach(() => { rmSync(root, { recursive: true, force: true }); });
+
+  function diagnostics(configPath: string) {
+    const read = ts.readConfigFile(configPath, ts.sys.readFile);
+    const parsed = ts.parseJsonConfigFileContent(read.config, ts.sys, dirname(configPath), undefined, configPath);
+    // Match tsc -p: automatic type resolution needs the actual config location.
+    expect(parsed.options.configFilePath).toBe(configPath);
+    return [...parsed.errors, ...ts.getPreEmitDiagnostics(ts.createProgram(parsed.fileNames, parsed.options))]
+      .map(error => ({ code: error.code, message: ts.flattenDiagnosticMessageText(error.messageText, '\n') }));
+  }
+
+  it('preserves an explicit package subpath type that resolves in the original project', () => {
+    expect(diagnostics(project)).toEqual([]);
+    const scope = buildScopedTsconfig(root, project, ['packages/fixture/src/target.ts']);
+    try { expect(diagnostics(scope.configPath)).toEqual([]); }
+    finally { scope.cleanup(); }
+  });
+
+  it('does not import other node_modules globals while restoring the explicit package', () => {
+    writeFileSync(join(dirname(project), 'src', 'target.ts'), 'export const answer = testFixtureValue + unwantedFixtureValue;');
+    const scope = buildScopedTsconfig(root, project, ['packages/fixture/src/target.ts']);
+    try {
+      const errors = diagnostics(scope.configPath);
+      expect(errors).toHaveLength(1);
+      expect([2304, 2552]).toContain(errors[0].code);
+      expect(errors[0].message).toContain('unwantedFixtureValue');
+    } finally { scope.cleanup(); }
+  });
+
+  it('keeps an explicitly empty types list empty', () => {
+    const config = JSON.parse(readFileSync(project, 'utf8'));
+    config.compilerOptions.types = [];
+    writeFileSync(project, JSON.stringify(config));
+    const scope = buildScopedTsconfig(root, project, ['packages/fixture/src/target.ts']);
+    try { expect(diagnostics(scope.configPath).map(error => error.code)).toEqual([2304]); }
+    finally { scope.cleanup(); }
+  });
+
+  it('still rejects an actually missing package type', () => {
+    const config = JSON.parse(readFileSync(project, 'utf8'));
+    config.compilerOptions.types = ['missing-kit/globals'];
+    writeFileSync(project, JSON.stringify(config));
+    const scope = buildScopedTsconfig(root, project, ['packages/fixture/src/target.ts']);
+    try { expect(diagnostics(scope.configPath).map(error => error.code)).toContain(2688); }
+    finally { scope.cleanup(); }
+  });
+});
+
 describe('buildScopedTsconfig (scopeToFiles)', () => {
   const pkgRoot = join(__dirname, '..', '..', '..');
   const realFile = join(pkgRoot, 'lib', 'tsc-diagnostics.ts');

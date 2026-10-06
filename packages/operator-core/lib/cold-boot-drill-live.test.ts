@@ -361,6 +361,51 @@ describe('gradeColdBootDrill — host event + successor transcript', () => {
     expect(ledger.at(-1)?.kind).toBe('carry-drill-graded');
   });
 
+  it('grades a delivered drill when the recipient identity differs from its originating owner', async () => {
+    const ledger = [requested];
+    const hostOwners: string[] = [];
+    const transcriptOwners: string[] = [];
+    const result = await gradeColdBootDrill('system:judge/su-1', 'drill-1', {
+      readLedger: async () => ledger,
+      appendLedger: async (event) => { ledger.push(event); return true; },
+      readHostEvents: async (ownerId) => {
+        hostOwners.push(ownerId);
+        return [{ kind: 'carry-drill-respawned', drillId: 'drill-1', nativeId: 'native-2', launchContextPath: '/safe/carry.md' }];
+      },
+      readCarry: async () => SPEC.systemPromptAddendum,
+      loadTranscript: async (ownerId) => {
+        transcriptOwners.push(ownerId);
+        return transcript;
+      },
+      now: () => NOW + 1000,
+    });
+
+    expect(result).toMatchObject({ ok: true, drillId: 'drill-1', alreadyGraded: false });
+    expect(hostOwners).toEqual(['su-1']);
+    expect(transcriptOwners).toEqual(['su-1']);
+    expect(ledger.at(-1)).toMatchObject({
+      kind: 'carry-drill-graded',
+      ownerId: 'su-1',
+      gradedByOwnerId: 'system:judge/su-1',
+    });
+  });
+
+  it('refuses a drill id recorded under multiple owners', async () => {
+    const secondOwner = { ...requested, ownerId: 'su-2' };
+    let storageReads = 0;
+    const result = await gradeColdBootDrill('system:judge/su-1', 'drill-1', {
+      readLedger: async () => [requested, secondOwner],
+      appendLedger: async () => true,
+      readHostEvents: async () => { storageReads += 1; return []; },
+      readCarry: async () => null,
+      loadTranscript: async () => null,
+      now: () => NOW,
+    });
+
+    expect(result).toMatchObject({ ok: false, error: 'ambiguous_drill' });
+    expect(storageReads).toBe(0);
+  });
+
   it('grades a current Codex response_item successor through the shared replay parser', async () => {
     const ledger: ColdBootDrillLedgerEvent[] = [
       { ...requested, sessionClass: 'codex-interactive' },

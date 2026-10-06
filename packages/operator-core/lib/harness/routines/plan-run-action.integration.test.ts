@@ -26,6 +26,7 @@ import { seedContentHash } from '../../cupboard/rubric-store';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
 import { materializePlanSchedule, planScheduleRoutineName } from './materialize-plan-schedule';
 import { handlePlanRun, resetManualTokenCounterForTests, runScheduledPlanFire } from './plan-run-action';
+import { retireRunInstancePlan } from './retire-run-instance-plan';
 import { inboxWakeKey } from '../../agent-tools/coordination/inbox-wake';
 import { assignAndWakeActionableWorkItems } from '../../agent-tools/coordination/actionable-work-item-dispatch';
 import { getWorkItem, observeWorkItem, readUnresolvedDepBlockers } from '../../work-items';
@@ -1424,5 +1425,61 @@ describe('runScheduledPlanFire (system:plan-run)', () => {
     // compare-and-swap the moment anyone tried to edit the run snapshot.
     expect(inst[0].content_hash).toBe(hashPlanContent(inst[0].content));
     expect(inst[0].content_hash).not.toBe(hashPlanContent(fmContent));
+  });
+
+  // WI-10006321: both raw instance writers bypass withPlanLock, so each records its own
+  // plan_revisions row. Without it, the plan-parts reconcile sweep has no content clock for
+  // the instance and falls back to updated_at (108 live instances had no revision at all).
+  it('WI-10006321: the clone and its retirement each record a revision of the stored bytes; a replay records none', async () => {
+    const revisionsOf = (slug: string) => sql<Array<{
+      seq: number; author_kind: string; author_id: string; content_hash: string; content_snapshot: string;
+    }>>`
+      SELECT seq, author_kind, author_id, content_hash, content_snapshot
+        FROM harness_shared.plan_revisions
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${slug}
+       ORDER BY seq`;
+    const live = async (slug: string) => (await sql<Array<{ content: string; content_hash: string }>>`
+      SELECT content, content_hash FROM harness_shared.harness_plans
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${slug}`)[0]!;
+
+    await stampClaim(new Date('2026-06-16T09:00:00.000Z'));
+    const res = await runScheduledPlanFire(sql, { installSlug: HARNESS, workspaceId: WS, templateSlug: TEMPLATE });
+    const slug = res!.instanceSlug;
+    const cloned = await live(slug);
+    let revs = await revisionsOf(slug);
+    expect(revs).toHaveLength(1);
+    expect(revs[0]).toMatchObject({
+      seq: 1,
+      author_kind: 'system',
+      author_id: 'plan-run:instance-clone',
+      content_hash: cloned.content_hash,
+      content_snapshot: cloned.content,
+    });
+
+    const replay = await runScheduledPlanFire(sql, { installSlug: HARNESS, workspaceId: WS, templateSlug: TEMPLATE });
+    expect(replay!.replayed).toBe(true);
+    expect(await revisionsOf(slug)).toHaveLength(1);
+
+    const retired = await retireRunInstancePlan(sql, {
+      workspaceId: WS, planStorageSlug: HARNESS, instanceSlug: slug, templateSlug: TEMPLATE, outcome: 'failed',
+    });
+    expect(retired.retired).toBe(true);
+    const after = await live(slug);
+    expect(after.content_hash).not.toBe(cloned.content_hash);
+    revs = await revisionsOf(slug);
+    expect(revs).toHaveLength(2);
+    expect(revs[1]).toMatchObject({
+      seq: 2,
+      author_kind: 'system',
+      author_id: 'plan-run:instance-retire',
+      content_hash: after.content_hash,
+      content_snapshot: after.content,
+    });
+
+    // A second retire loses the status guard: no write, so no revision.
+    await retireRunInstancePlan(sql, {
+      workspaceId: WS, planStorageSlug: HARNESS, instanceSlug: slug, templateSlug: TEMPLATE, outcome: 'failed',
+    });
+    expect(await revisionsOf(slug)).toHaveLength(2);
   });
 });

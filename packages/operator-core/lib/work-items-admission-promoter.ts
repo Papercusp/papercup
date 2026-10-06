@@ -15,6 +15,7 @@
  */
 import { createHash, randomUUID } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
+import { isLlmCallError } from '@papercusp/testing-shell/llm';
 import { z } from 'zod';
 import { isTransientNetworkError } from './loopback-fetch';
 import { activeExternalBlockers } from './external-blockers';
@@ -1118,11 +1119,20 @@ export type PromoterLlmCall = (input: {
 
 const PROMOTER_LLM_TRANSIENT_RETRY_BACKOFFS_MS = [1_000, 9_000] as const;
 
+function isRetryablePromoterModelError(error: unknown): boolean {
+  if (isLlmCallError(error)) {
+    const retryable = error.turn.retryable;
+    if (typeof retryable === 'boolean') return retryable;
+  }
+  return isTransientNetworkError(error);
+}
+
 /**
  * The Codex LLM transport disables its own retry ladder so scheduled batch
  * callers can own a bounded policy. The promoter is one such caller: retry
- * only connection-level transient failures, with a 10s total wait that covers
- * the observed gateway stop/start window without multiplying API/model errors.
+ * classified transient model failures and raw connection-level failures, with
+ * a 10s total wait that covers the observed gateway stop/start window without
+ * multiplying permanent API/model errors.
  */
 export async function callPromoterLlmWithTransientRetry<T>(
   call: () => Promise<T>,
@@ -1134,7 +1144,7 @@ export async function callPromoterLlmWithTransientRetry<T>(
       return await call();
     } catch (error) {
       const backoffMs = PROMOTER_LLM_TRANSIENT_RETRY_BACKOFFS_MS[retry];
-      if (backoffMs === undefined || !isTransientNetworkError(error)) throw error;
+      if (backoffMs === undefined || !isRetryablePromoterModelError(error)) throw error;
       await sleep(backoffMs);
       retry += 1;
     }

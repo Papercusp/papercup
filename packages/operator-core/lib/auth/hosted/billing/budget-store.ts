@@ -47,6 +47,8 @@ export interface HostedBudgetLimit {
 export interface HostedBudgetContext {
   readonly scope: HostedBudgetScope;
   readonly month: string;
+  /** Completion time of the fresh authority read, from a server clock. */
+  readonly asOfMs: number;
   readonly policy: HostedBudgetPolicy;
   readonly limits: readonly HostedBudgetLimit[];
   readonly evidenceRef: string;
@@ -221,11 +223,21 @@ export class PostgresHostedBudgetStore {
   private readonly run: HostedServiceContextRunner;
   private readonly readContext: HostedBudgetContextReader;
   private readonly readPrepaidFunding: HostedPrepaidFundingReader;
+  private readonly now: () => number;
+  private readonly maximumEvidenceAgeMs: number;
   constructor(options: { run?: HostedServiceContextRunner; readContext?: HostedBudgetContextReader;
-    readPrepaidFunding?: HostedPrepaidFundingReader } = {}) {
+    readPrepaidFunding?: HostedPrepaidFundingReader; now?: () => number; maximumEvidenceAgeMs?: number } = {}) {
     this.run = options.run ?? withHostedServiceContext;
     this.readContext = options.readContext ?? (async () => null);
     this.readPrepaidFunding = options.readPrepaidFunding ?? (async () => null);
+    this.now = options.now ?? Date.now;
+    this.maximumEvidenceAgeMs = options.maximumEvidenceAgeMs ?? 60_000;
+    if (typeof this.now !== 'function' || !safe(this.maximumEvidenceAgeMs)) throw new Error('invalid budget clock configuration');
+  }
+
+  private freshTime(observed: number, started: number, completed: number): boolean {
+    return safe(started) && safe(completed) && safe(observed) && completed >= started
+      && observed >= started && observed <= completed && completed - observed <= this.maximumEvidenceAgeMs;
   }
 
   /** Persist one immutable prepaid partition after fresh server verification.
@@ -244,7 +256,7 @@ export class PostgresHostedBudgetStore {
     }
     exactCounter(a.micros, a.microsExact);
     input = Object.freeze({ ...input, scope: s, allocation: Object.freeze({ ...a }) });
-    const { startMs } = shadowMonthBounds(input.month);
+    const { startMs, endMs } = shadowMonthBounds(input.month);
     const pool = { controlWorkspaceId: s.controlWorkspaceId, stripeAccountId: input.stripeAccountId };
     const hash = allocationHash(pool, input.allocation);
     return this.run(async sql => {
@@ -257,11 +269,24 @@ export class PostgresHostedBudgetStore {
         const matches = allocationHash(pool, previous) === hash;
         return { outcome: matches ? 'duplicate' as const : 'conflict' as const, allocation: matches ? previous : null };
       }
-      const received = await this.readPrepaidFunding(sql, input);
+      const startedAtMs = this.now();
+      if (!safe(startedAtMs) || input.asOfMs > startedAtMs) {
+        return { outcome: 'refused' as const, reason: 'unverified-time', allocation: null };
+      }
+      // The request timestamp never certifies evidence. The reader receives
+      // the server's start time and may finish after its external reads.
+      const received = await this.readPrepaidFunding(sql, Object.freeze({ ...input, asOfMs: startedAtMs }));
       if (!received) return { outcome: 'refused' as const, reason: 'unconfigured-funding', allocation: null };
       if (!sameScope(scope(received.scope), s) || received.budgetKey !== input.allocation.budgetKey
-          || received.windowStartMs !== startMs || received.asOfMs !== input.asOfMs
+          || received.windowStartMs !== startMs
           || received.snapshot.stripeAccountId !== pool.stripeAccountId) throw new Error('prepaid funding authority mismatch');
+      const completedAtMs = this.now();
+      if (!this.freshTime(received.asOfMs, startedAtMs, completedAtMs)) {
+        return { outcome: 'refused' as const, reason: 'unverified-time', allocation: null };
+      }
+      if (completedAtMs < startMs || completedAtMs >= endMs) {
+        return { outcome: 'refused' as const, reason: 'inactive-window', allocation: null };
+      }
       const funding = evaluateHostedPrepaidFunding({ ...received,
         allocations: [...fundingAllocations(received, population), input.allocation] });
       if (!funding.ok) return { outcome: 'refused' as const, reason: funding.reason, allocation: null };
@@ -271,7 +296,7 @@ export class PostgresHostedBudgetStore {
         VALUES (${s.controlWorkspaceId}, ${pool.stripeAccountId}, ${input.allocation.allocationId},
           ${input.allocation.paymentTransactionId}, ${s.organizationId}, ${s.customerWorkspaceId}, ${input.allocation.customerWorkspaceId},
           ${input.allocation.budgetKey}, ${exactCounter(input.allocation.micros, input.allocation.microsExact)},
-          ${hash}, ${input.asOfMs}, ${funding.evidenceRef})`;
+          ${hash}, ${completedAtMs}, ${funding.evidenceRef})`;
       return { outcome: 'allocated' as const, allocation: input.allocation, funding };
     });
   }
@@ -322,7 +347,11 @@ export class PostgresHostedBudgetStore {
       const prior = await history(sql, input.scope, input.reservationId);
       if (prior.length) return { outcome: prior[0]!.requestHash === hash ? 'duplicate' as const : 'conflict' as const,
         receipt: sameScope(prior[0]!.scope, input.scope) ? prior.at(-1)! : null, decisions: [] as HostedBudgetDecision[] };
-      const received = await this.readContext(sql, input);
+      const startedAtMs = this.now();
+      if (!safe(startedAtMs) || input.asOfMs > startedAtMs) {
+        return { outcome: 'refused' as const, reason: 'unverified-time', receipt: null, decisions: [] as HostedBudgetDecision[] };
+      }
+      const received = await this.readContext(sql, Object.freeze({ ...input, asOfMs: startedAtMs }));
       if (!received) return { outcome: 'refused' as const, reason: 'unconfigured-context', receipt: null, decisions: [] as HostedBudgetDecision[] };
       if (!sameScope(scope(received.scope), input.scope) || received.month !== input.month
           || received.policy.budgetKey !== input.budgetKey || received.policy.effectiveFromMs !== startMs
@@ -334,6 +363,7 @@ export class PostgresHostedBudgetStore {
       }
       const policy = Object.freeze({ ...received.policy });
       const evidenceRef = received.evidenceRef;
+      const evidenceAtMs = received.asOfMs;
       const limits = received.limits.map(l => Object.freeze({ ...l, entitlements: { budgets: { ...l.entitlements.budgets } } }));
       // All keys share the organization lock and committed exposure. A new
       // policy/key cannot erase an old reservation. Open OLD-month holds also
@@ -345,13 +375,19 @@ export class PostgresHostedBudgetStore {
       ) latest WHERE month = ${input.month} OR NOT provider_final OR cost_source <> 'provider-billed'
         OR cost_micros > maximum_cost_micros`;
       const latest = rows.map(receipt);
+      // Check after the last database await, so queue/collection latency cannot
+      // admit against an expired policy or stale authority snapshot.
+      const completedAtMs = this.now();
+      if (!this.freshTime(evidenceAtMs, startedAtMs, completedAtMs)) {
+        return { outcome: 'refused' as const, reason: 'unverified-time', receipt: null, decisions: [] as HostedBudgetDecision[] };
+      }
       const decisions = limits.map(limit => {
         const relevant = latest.filter(r => limit.customerWorkspaceId === null || r.scope.customerWorkspaceId === limit.customerWorkspaceId);
         const amounts = relevant.map(r => ({ month: r.month, ...settlement(r) }));
         const spent = splitMicrosDecimal(addMicrosDecimals(exactCounter(limit.externalSpentMicros, limit.externalSpentMicrosExact),
           ...amounts.filter(a => a.month === input.month).map(a => a.chargedMicrosExact ?? String(a.chargedMicros))));
         return evaluateHostedBudget({ entitlements: limit.entitlements, policy, maximumCostMicros: input.maximumCostMicros,
-          asOfMs: input.asOfMs, position: { fundedMicros: limit.fundedMicros,
+          asOfMs: completedAtMs, position: { fundedMicros: limit.fundedMicros,
             fundedMicrosExact: limit.fundedMicrosExact, spentMicros: spent.micros,
             ...(spent.exact.includes('.') ? { spentMicrosExact: spent.exact } : {}),
             openReservedMicros: sum(amounts.map(a => a.heldMicros)), retainedReserveMicros: limit.retainedReserveMicros,
@@ -359,7 +395,7 @@ export class PostgresHostedBudgetStore {
       });
       if (decisions.some(d => !d.admitted)) return { outcome: 'refused' as const, receipt: null, decisions };
       const r: Receipt = { ...input, requestHash: hash, eventId: digest(['admission', hash]), revision: 0,
-        policyId: policy.policyId, policyRevision: policy.revision, observedAtMs: input.asOfMs,
+        policyId: policy.policyId, policyRevision: policy.revision, observedAtMs: completedAtMs,
         costSource: 'unpriced', costMicros: null, providerFinal: false, evidenceRef };
       await insert(sql, r);
       return { outcome: 'reserved' as const, receipt: r, decisions };

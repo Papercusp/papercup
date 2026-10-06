@@ -188,6 +188,10 @@ export const FEDERATED_WHOLE_BLOB_REVISION_AUTHOR = 'plan-federation:whole-blob-
  */
 export const PLAN_RUN_INSTANCE_CLONE_REVISION_AUTHOR = 'plan-run:instance-clone';
 export const PLAN_RUN_INSTANCE_RETIRE_REVISION_AUTHOR = 'plan-run:instance-retire';
+/** System author for the built-in external-trigger flagship plan seed/refresh (WI-10006321). */
+export const FLAGSHIP_PLAN_SEED_REVISION_AUTHOR = 'external-triggers:flagship-plan-seed';
+/** System author for the lazily materialised ad-hoc spec-scope plan row (WI-10006321). */
+export const ADHOC_SPEC_SCOPE_REVISION_AUTHOR = 'plan-spec:adhoc-scope';
 
 /**
  * Append one SYSTEM-attributed revision using an already-open transaction, for a

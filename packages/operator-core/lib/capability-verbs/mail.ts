@@ -323,6 +323,19 @@ function recordOf(value: unknown): Record<string, unknown> {
 }
 
 /**
+ * Whether a TRIGGERED plan run may send mail rather than draft it. A run that
+ * an inbound email launched acts with no human in the loop, so its send is
+ * automatic sending: owner-authority flag papercusp-gmail-auto-send (default
+ * OFF). The retired gmail:create-draft had no send branch at all; this keeps
+ * that property for every mail provider now that the reply verb can send.
+ */
+async function triggeredRunSendEnabled(workspaceId: string): Promise<boolean> {
+  const { getFlag } = await import('@papercusp/flags/server');
+  const { FLAGS } = await import('@papercusp/flags');
+  return getFlag(FLAGS.GMAIL_AUTO_SEND, `mail-run-reply:${workspaceId}`);
+}
+
+/**
  * `mail:reply { planRunId }` — reply to the message that LAUNCHED a triggered
  * plan run (plan generalized-integrations-…-2026-10-05 D-019.1).
  *
@@ -332,6 +345,8 @@ function recordOf(value: unknown): Record<string, unknown> {
  * started it. Everything after that is `replyToCanonicalMail`, rails included.
  * The result is recorded on the trigger run under `outcome.mailReply`, so a
  * retried step returns the first reply instead of drafting or sending twice.
+ * `mode:'send'` is refused while automatic sending is off (see
+ * `triggeredRunSendEnabled`); the refusal happens before any read or write.
  */
 export async function replyToTriggerPlanRun(
   sql: postgres.Sql | postgres.TransactionSql,
@@ -343,10 +358,15 @@ export async function replyToTriggerPlanRun(
     mode?: 'draft' | 'send';
     agentOwnerId: string | null;
   },
-  deps: MailDeps & { now?: () => Date } = {},
+  deps: MailDeps & { now?: () => Date; runSendEnabled?: (workspaceId: string) => Promise<boolean> } = {},
 ): Promise<MailRunReplyResult> {
   const planRunId = params.planRunId;
   if (!Number.isSafeInteger(planRunId) || planRunId <= 0) throw new Error('mail_reply_plan_run_id_invalid');
+  if (params.mode === 'send' && !(await (deps.runSendEnabled ?? triggeredRunSendEnabled)(params.workspaceId))) {
+    throw new Error(
+      'mail_reply_run_send_withheld: a triggered plan run may only draft its reply. Automatic sending is an owner-authority action (flag papercusp-gmail-auto-send, default OFF); omit mode to create a draft for a person to review and send.',
+    );
+  }
   const replyInTransaction = async (tx: postgres.TransactionSql | postgres.Sql): Promise<MailRunReplyResult> => {
     const rows = await tx<TriggerRunReplyRow[]>`
       SELECT tr.id::text, tr.args, tr.outcome

@@ -1843,15 +1843,15 @@ async function recordContentFixerDispatch(
   }
 }
 
-/** Stable identity for one content-fixer job. Human detector messages are deliberately excluded.
- *  The separators are ASCII unit/record separators, never NUL: this value is persisted into
- *  routine metadata JSONB, which rejects \u0000, and a NUL here failed every outcome write
- *  (EI-24099226502437988 — origin froze because the bridge leg runs after that write). */
 /** A quarantined importer is a dependency fence, not broken content a fixer can edit. */
 function contentFixerEligibleErrors(contentErrors: readonly ScopedContentError[]): ScopedContentError[] {
   return contentErrors.filter((contentError) => contentError.detectorKey !== 'quarantined-importer');
 }
 
+/** Stable identity for one content-fixer job. Human detector messages are deliberately excluded.
+ *  The separators are ASCII unit/record separators, never NUL: this value is persisted into
+ *  routine metadata JSONB, which rejects \u0000, and a NUL here failed every outcome write
+ *  (EI-24099226502437988 — origin froze because the bridge leg runs after that write). */
 function contentFixerSignature(contentErrors: readonly ScopedContentError[]): string {
   return [...new Set(contentErrors.map((c) => `${c.scope}\u001f${c.file}\u001f${c.detectorKey}`))]
     .sort()

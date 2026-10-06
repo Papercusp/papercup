@@ -1381,7 +1381,7 @@ describe('release:repair-queue', () => {
           { role: 'su' } as never,
         ),
       );
-      expect(published).toMatchObject({ ok: true, admitted: true, precheck: { ok: true, ran: true } });
+      expect(published).toMatchObject({ ok: true, admitted: true, precheck: { ran: true } });
       expect(dryRuns()).toEqual([true, true, false]);
       expect(mocks.precheckFactory).toHaveBeenCalledTimes(1);
     });

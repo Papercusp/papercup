@@ -51,6 +51,34 @@ import {
   seedAcceptanceBarsInTransaction,
   type AcceptanceBarCohort,
 } from '../acceptance-bar-seed';
+import {
+  FLAGSHIP_PLAN_SEED_REVISION_AUTHOR,
+  recordSystemPlanRevisionInTransaction,
+  type PlanRevisionSql,
+} from '../agent-tools/plans/revisions';
+
+/**
+ * WI-10006321: the seed and refresh write `harness_plans.content` with raw SQL outside
+ * withPlanLock, so they record the plan_revisions row themselves, in the same transaction.
+ * Without it, the plan-parts reconcile sweep has no content clock for the body.
+ */
+async function recordFlagshipRevision(
+  tx: postgres.TransactionSql,
+  workspaceId: string,
+  spec: FlagshipPlanSpec,
+  contentHash: string,
+  rationale: string,
+): Promise<void> {
+  await recordSystemPlanRevisionInTransaction(tx as unknown as PlanRevisionSql, {
+    workspaceId,
+    harnessSlug: spec.harnessSlug,
+    planSlug: spec.planSlug,
+    content: spec.content,
+    contentHash,
+    rationale,
+    authorId: FLAGSHIP_PLAN_SEED_REVISION_AUTHOR,
+  });
+}
 
 /** Attribution for the BAR contract a built-in template's installer seeds. */
 export const FLAGSHIP_INSTALLER_ACTOR = 'system:flagship-plan-installer';
@@ -174,6 +202,7 @@ export async function ensureFlagshipPlan(
            WHERE workspace_id = ${workspaceId}
              AND harness_slug = ${spec.harnessSlug}
              AND plan_slug = ${spec.planSlug}`;
+        await recordFlagshipRevision(tx, workspaceId, spec, contentHash, 'flagship plan content refreshed from its built-in spec');
         await writePlanIndexRows(
           tx as unknown as Parameters<typeof writePlanIndexRows>[0],
           { workspaceId, harnessSlug: spec.harnessSlug, planSlug: spec.planSlug },
@@ -208,6 +237,7 @@ export async function ensureFlagshipPlan(
         ${decisionsJson}::text::jsonb, ${idx.nowState}, ${idx.nowNext},
         ${inputSchemaJson}::text::jsonb, 'local'
       )`;
+    await recordFlagshipRevision(tx, workspaceId, spec, contentHash, 'flagship plan seeded from its built-in spec');
     await writePlanIndexRows(
       tx as unknown as Parameters<typeof writePlanIndexRows>[0],
       { workspaceId, harnessSlug: spec.harnessSlug, planSlug: spec.planSlug },

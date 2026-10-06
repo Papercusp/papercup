@@ -250,6 +250,8 @@ beforeAll(async () => {
     '1301-acceptance-claim-floor.sql',
     // P-006 / WI-10006220: floor #16 re-rendered with the kind-specific verification check.
     '1368-acceptance-claim-floor-kind-verification.sql',
+    // P-007 Phase C / WI-10006221: re-rendered with the completion-verification policy.
+    '1373-completion-verification-claim-floor.sql',
     // The shared stage aggregation reads these projections (R-10/R-32/R-33).
     '831-issue-occurrence-ledger.sql',
     '1037-work-item-first-claim-stamp.sql',
