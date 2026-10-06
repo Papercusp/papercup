@@ -3322,9 +3322,9 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
     expect(detail.testPassReuse).toMatchObject({ audit: { judgedSha: sha } });
     const read = { status: 'complete' as const, windowStartMs: 100, windowEndMs: 200,
       total: 2, reason: null, rows: [
-        { id: 'repair-anchor', kind: 'green_checkpoint_fire', status: 'fired', createdAtMs: 110,
+        { id: 'repair-anchor', kind: 'green_checkpoint_fire' as const, status: 'fired', createdAtMs: 110,
           detail: { gateFireId: 'repair-fire' } },
-        { id: 'repair-outcome', kind: 'green_checkpoint', status: 'not-green', createdAtMs: 130, detail },
+        { id: 'repair-outcome', kind: 'green_checkpoint' as const, status: 'not-green', createdAtMs: 130, detail },
       ] };
     expect(evaluateGateReuseAuditWindow(read)).toMatchObject({ verdict: 'pass', audited: 1,
       runIds: ['repair-run'] });
