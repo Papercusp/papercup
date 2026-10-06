@@ -7,8 +7,8 @@
  *     injection, history budgeting, trigger/modality sections)
  *   - checkBudget gate
  *   - principal load + workspace check
- *   - mcpConfig assembly (agentmcp via mcp-remote bridge; reads
- *     ~/.papercusp/superuser-token directly)
+ *   - mcpConfig assembly (agentmcp via mcp-remote bridge; bearer from the
+ *     shared `readSuperuserToken()`, which honours PAPERCUSP_HOME)
  *   - LLM streaming via runAgentChat
  *   - post-stream side-effects: recordSpend, mem0 fact extraction
  *     (post-turn .add), and server-side <spawn>-tag dispatch
@@ -36,9 +36,6 @@
  */
 
 import { z } from 'zod';
-import { readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
 import { defineTool, lookupByMcpName, resolveBearer } from '@papercusp/agent-mcp';
 import { endPiSession, startPiSession } from '@papercusp/agent-mcp/provisioning';
 import { agentSpawnTransformConfigured } from '@papercusp/papercusp-shared/agent';
@@ -55,6 +52,7 @@ import {
   type ChatBrainSession,
 } from './converse-session';
 import { selfUrl } from '../../self-url';
+import { readSuperuserToken } from '../../superuser-token';
 import { checkBudget, recordSpend, shouldBypassOperatorBudget } from '../../operator-budget';
 import { parseOperatorTurn } from '../../operator-converse-tags';
 import { readSystemPrincipal } from '../../system-principal';
@@ -239,15 +237,6 @@ export async function resolveConverseBrain(
  */
 function emitChatEvent(ctx: { emit: (event: string, data: unknown) => void }, ev: ChatEvent): void {
   ctx.emit(ev.type, ev);
-}
-
-function readSuperuserToken(): string {
-  try {
-    const token = readFileSync(join(homedir(), '.papercusp', 'superuser-token'), 'utf8').trim();
-    return token.length >= 16 ? token : '';
-  } catch {
-    return '';
-  }
 }
 
 export default defineTool({
@@ -539,7 +528,7 @@ export default defineTool({
       workspaceId,
       tools: operatorTools,
       uiClientId,
-      superuserToken: hostTrust === 'owner' && !hostedCustomerIdentity ? readSuperuserToken() : '',
+      superuserToken: hostTrust === 'owner' && !hostedCustomerIdentity ? (readSuperuserToken() ?? '') : '',
       agentRunsAsCustomer: hostedCustomerIdentity,
       principalToken: hostTrust === 'public'
         ? (input.principalToken ?? null)
