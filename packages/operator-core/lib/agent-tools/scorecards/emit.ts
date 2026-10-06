@@ -392,7 +392,10 @@ function scorecardEmitMutexSql(): postgres.Sql {
   if (!_scorecardEmitMutexSql) {
     _scorecardEmitMutexSql = postgres(scorecardEmitMutexUrl(), {
       onnotice: () => {},
-      max: 1,
+      // The database advisory lock serializes emitters for the same dedup key.
+      // Keep a bounded set of sessions available so distinct keys can proceed
+      // independently instead of queueing behind one process-wide reservation.
+      max: 8,
       idle_timeout: 0,
       connection: {
         application_name: `pcusp:scorecard-emit-mutex:p${process.pid}`.slice(0, 63),
@@ -1394,6 +1397,8 @@ export async function emitScorecard(
     ctxHarness?: string;
     role?: string;
     workspaceId?: string;
+    /** Internal read-only classification for an evaluator-produced draft. */
+    previewOnly?: boolean;
     /** Full request context used by the bounded post-write audit-dispatch repair. */
     launchContext?: GradingAuditLaunchContext;
     /** P-011 (D-006): the tree tests-check files resolve + run against — the handler
@@ -1495,7 +1500,12 @@ export async function emitScorecard(
       }
       return runningGeneration;
     };
-    const specTestAdequacyReplayError = await validateSpecTestAdequacyReplay(args, deps.dispatchTool);
+    // plans:certify-spec-clauses has just produced this evaluator-owned draft in
+    // the same invocation. Its dry run only classifies persisted scorecard state,
+    // so it can reuse the emitter's guards without replaying the evaluator again.
+    const specTestAdequacyReplayError = input.previewOnly
+      ? undefined
+      : await validateSpecTestAdequacyReplay(args, deps.dispatchTool);
     if (specTestAdequacyReplayError) return { ok: false as const, ...specTestAdequacyReplayError };
     // EI-21765534049482705: a meta-rubric card whose subject is an active
     // acceptance rubric is the vetting attestation consumed by the completion
@@ -2872,7 +2882,7 @@ export async function emitScorecard(
       (!args.supersedes || sameCorrectionAlreadyExists)
     ) {
       const acceptanceGraderCleanup =
-        rubric.kind === 'acceptance' && input.role === 'judge'
+        !input.previewOnly && rubric.kind === 'acceptance' && input.role === 'judge'
           ? await cleanupAcceptanceGraderTasks(args.rubricRef, { workspaceId: input.workspaceId })
           : undefined;
       return {
@@ -2884,6 +2894,17 @@ export async function emitScorecard(
         canonicalRatings: ratings,
         ...(vettingWarning ? { warning: vettingWarning } : {}),
         ...(acceptanceGraderCleanup ? { acceptanceGraderCleanup } : {}),
+      };
+    }
+
+    if (input.previewOnly) {
+      return {
+        ok: true as const,
+        created: false,
+        reason: 'would-file' as const,
+        evidenceFingerprint,
+        previousIssueId: latest?.issueId ?? null,
+        canonicalRatings: ratings,
       };
     }
 
@@ -3159,10 +3180,15 @@ export async function emitScorecard(
           ...(checkRuns ? { checkRuns } : {}),
         },
       },
+      onIssuePersisted: async () => {
+        if (releaseScorecardEmitMutex) {
+          await releaseScorecardEmitMutex();
+          releaseScorecardEmitMutex = undefined;
+        }
+      },
     });
-    // The advisory lock covers the final dedup read through the complete ledger
-    // capture. Post-write notifications/audit settlement are deliberately outside
-    // the critical section so a slow subscriber cannot serialize future emits.
+    // Successful creates release at the persistence boundary above. Keep this
+    // fallback for duplicate and early-return capture paths.
     if (releaseScorecardEmitMutex) {
       await releaseScorecardEmitMutex();
       releaseScorecardEmitMutex = undefined;
@@ -3516,6 +3542,7 @@ export async function emitScorecardForToolContext(
   // The full tool-handler context: GradingAuditLaunchContext IS that type (it is derived
   // from a defineTool handler's ctx parameter), and the handler above passes its own ctx.
   ctx: GradingAuditLaunchContext,
+  options: { previewOnly?: boolean } = {},
 ) {
   const identity = resolveAgentIdentity(ctx);
   const ctxHarness =
@@ -3527,6 +3554,7 @@ export async function emitScorecardForToolContext(
       ctxHarness,
       role: ctx.role,
       workspaceId: identity.workspaceId ?? undefined,
+      previewOnly: options.previewOnly === true,
       launchContext: ctx,
       // P-011: tests-checks resolve + run against the tree the AGENT edits.
       checkRoot: resolveAgentWorkspaceRoot(ctx),
