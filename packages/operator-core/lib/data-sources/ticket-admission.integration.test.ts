@@ -16,9 +16,13 @@
  *   - field authority: a Papercusp patch of an external-owned field (title, description) is
  *     refused, and a re-sync updates those fields without touching Papercusp-owned state;
  *   - a rule cannot admit outside its data source, and an event row is never admitted;
- *   - write-back dispatches by capability (D-015.5): the read-only GitHub provider is refused
+ *   - write-back dispatches by capability (D-015.5): a provider without the capability (GitHub
+ *     for `ticket.transition`, a read-only fixture for both) is refused
  *     `provider_capability_unsupported`; a provider declaring `ticket.comment` is invoked through
- *     a host.fetch bound to exactly the record's source.
+ *     a host.fetch bound to exactly the record's source;
+ *   - linear-asana-task-sync P-002: a comment or a workflow transition is requested by work-item
+ *     id, a transition sends only the category (field authority), and every write is ledgered
+ *     with the provider's update id so the host recognises its own change (echo suppression).
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { promises as fs, readdirSync } from 'node:fs';
@@ -35,8 +39,15 @@ import { ingestExternalTriggerEvent, type IngestExternalTriggerInput } from '../
 import { runConnectorSync } from '../providers/connector-runtime';
 import { dataSourceRecordId } from './datatype-destination-sink';
 import { setAdmissionRule } from '../work-admission/admission-rules';
-import { admissionsForWorkItem, admitWorkItem, refuseExternalOwnedPatch } from '../work-admission/admit';
+import {
+  admissionsForWorkItem,
+  admitWorkItem,
+  refuseExternalOwnedPatch,
+  transitionAdmission,
+  writeBackAdmission,
+} from '../work-admission/admit';
 import { createRecordAdmissionSource } from '../work-admission/record-source';
+import { findAdmissionWriteBack, writeBacksForWorkItem } from '../work-admission/write-back-ledger';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as Sql, ws: 'papercusp-workspace' }));
 vi.mock('@papercusp/db-org', async (orig) => {
@@ -95,10 +106,12 @@ const writableDescriptor: ProviderDescriptor = {
   id: WRITABLE,
   contractVersion: 1,
   datatypes: ['ticket'],
-  capabilities: ['ticket.read', 'ticket.comment'],
+  capabilities: ['ticket.read', 'ticket.comment', 'ticket.transition'],
   egressHosts: ['tickets.example.com'],
 };
 const invoked: Array<{ request: ProviderInvokeRequest; fetched: string | null }> = [];
+/** The fixture tracker's current column, so a repeated move reports `changed: false`. */
+let fixtureCategory = 'todo';
 const writableAdapter: ProviderAdapter = {
   describe: () => writableDescriptor,
   syncPage: async () => ({
@@ -112,13 +125,45 @@ const writableAdapter: ProviderAdapter = {
     hasMore: false,
   }),
   invoke: async (request, host) => {
+    const path = request.capability === 'ticket.transition' ? 'state' : 'comments';
     const response = await host.fetch({
       source: request.source,
-      request: { url: 'https://tickets.example.com/TIX-9/comments', method: 'POST', body: JSON.stringify(request.args) },
+      request: { url: `https://tickets.example.com/TIX-9/${path}`, method: 'POST', body: JSON.stringify(request.args) },
     });
     invoked.push({ request, fetched: response.body });
-    return { externalRef: 'comment-77' };
+    if (request.capability === 'ticket.transition') {
+      const to = String(request.args.toCategory);
+      if (to === fixtureCategory) return { changed: false };
+      fixtureCategory = to;
+      return { changed: true, updateId: `history:${to}-1` };
+    }
+    return { externalRef: 'comment-77', updateId: 'comment:77' };
   },
+};
+
+/** A tracker that only reads: no ticket.comment, no ticket.transition. */
+const READ_ONLY = 'ticket-readonly-fixture';
+const readOnlyDescriptor: ProviderDescriptor = {
+  id: READ_ONLY,
+  contractVersion: 1,
+  datatypes: ['ticket'],
+  capabilities: ['ticket.read'],
+  egressHosts: ['readonly.example.com'],
+};
+const readOnlyInvoke = vi.fn(async () => ({ ticket: {} }));
+const readOnlyAdapter: ProviderAdapter = {
+  describe: () => readOnlyDescriptor,
+  syncPage: async () => ({
+    records: [{
+      datatype: 'ticket',
+      nativeId: 'RO-1',
+      event: 'ticket-updated',
+      payload: { provider: 'fixture', externalId: 'RO-1', title: 'Read-only ticket', body: 'b', state: 'open', assignees: [], labels: [] },
+    }],
+    nextCursor: null,
+    hasMore: false,
+  }),
+  invoke: readOnlyInvoke,
 };
 
 async function ingest(db: Sql, input: IngestExternalTriggerInput) {
@@ -183,9 +228,10 @@ async function mintedWork(): Promise<Array<{ feature_id: string; created_by: str
 
 async function clean(): Promise<void> {
   const sources = await sql<{ id: string }[]>`
-    SELECT id::text FROM harness_shared.data_sources WHERE workspace_id = ${WS} AND kind IN (${GITHUB}, ${WRITABLE})`;
+    SELECT id::text FROM harness_shared.data_sources WHERE workspace_id = ${WS} AND kind IN (${GITHUB}, ${WRITABLE}, ${READ_ONLY})`;
   const ids = sources.map((s) => s.id);
   if (ids.length > 0) {
+    await sql`DELETE FROM harness_shared.admission_write_backs WHERE workspace_id = ${WS} AND data_source_id = ANY(${sql.array(ids)}::uuid[])`;
     await sql`
       DELETE FROM harness_shared.work_items w
        USING harness_shared.work_admissions a
@@ -198,7 +244,7 @@ async function clean(): Promise<void> {
     await sql`DELETE FROM harness_shared.document_permission_lists WHERE workspace_id = ${WS} AND source_ref = ANY(${sql.array(ids)}::text[])`;
     await sql`DELETE FROM harness_shared.trigger_deliveries WHERE workspace_id = ${WS} AND source_id = ANY(${sql.array(ids)}::uuid[])`;
   }
-  await sql`DELETE FROM harness_shared.data_sources WHERE workspace_id = ${WS} AND kind IN (${GITHUB}, ${WRITABLE})`;
+  await sql`DELETE FROM harness_shared.data_sources WHERE workspace_id = ${WS} AND kind IN (${GITHUB}, ${WRITABLE}, ${READ_ONLY})`;
 }
 
 beforeAll(async () => {
@@ -221,6 +267,7 @@ beforeAll(async () => {
   registry = createProviderRegistry();
   expect(await registerPluginProviders(loaded, () => {}, registry)).toEqual([GITHUB]);
   registry.register({ descriptor: writableDescriptor, adapter: writableAdapter, pluginName: WRITABLE, runtime: 'js' } as never);
+  registry.register({ descriptor: readOnlyDescriptor, adapter: readOnlyAdapter, pluginName: READ_ONLY, runtime: 'js' } as never);
 });
 
 afterAll(async () => {
@@ -233,6 +280,8 @@ afterAll(async () => {
 beforeEach(async () => {
   await clean();
   invoked.length = 0;
+  fixtureCategory = 'todo';
+  readOnlyInvoke.mockClear();
   startedAt = new Date(Date.now() - 1000);
 });
 
@@ -345,8 +394,8 @@ describe('ticket admission into work (P-020, R-14) through the shared connector 
 });
 
 describe('record write-back dispatches by provider capability (D-015.5)', () => {
-  it('refuses write-back to the read-only GitHub provider without building a host.fetch', async () => {
-    issues = [issue(5, 'Read-only ticket', [])];
+  it('refuses a transition on GitHub, which has no workflow columns, without building a host.fetch', async () => {
+    issues = [issue(5, 'Columnless ticket', [])];
     const sourceId = await connect();
     await sync(sourceId);
     const recordId = dataSourceRecordId(WS, sourceId, 'ticket', `${OWNER}/${REPO}#5`);
@@ -359,8 +408,8 @@ describe('record write-back dispatches by provider capability (D-015.5)', () => 
     expect(admission).toBeDefined();
 
     const hostFetchFor = vi.fn(() => githubFetch);
-    await expect(createRecordAdmissionSource({ registry, hostFetchFor }).writeBack!({ db: sql, admission: admission!, text: 'triaged' }))
-      .rejects.toThrow(`provider_capability_unsupported:${GITHUB}:ticket.comment`);
+    await expect(createRecordAdmissionSource({ registry, hostFetchFor }).transition!({ db: sql, admission: admission!, toCategory: 'in-progress' }))
+      .rejects.toThrow(`provider_capability_unsupported:${GITHUB}:ticket.transition`);
     expect(hostFetchFor).not.toHaveBeenCalled();
   });
 
@@ -385,11 +434,115 @@ describe('record write-back dispatches by provider capability (D-015.5)', () => 
       };
     };
     const result = await createRecordAdmissionSource({ registry, hostFetchFor }).writeBack!({ db: sql, admission: admission!, text: 'triaged' });
-    expect(result).toEqual({ posted: true, externalRef: 'comment-77' });
+    expect(result).toEqual({ posted: true, externalRef: 'comment-77', updateId: 'comment:77' });
     expect(bound).toEqual([{ workspaceId: WS, providerId: WRITABLE, sourceId, harness: HARNESS }]);
     expect(invoked).toEqual([{
       request: { source: sourceId, capability: 'ticket.comment', args: { externalId: 'TIX-9', text: 'triaged' } },
       fetched: `posted:${JSON.stringify({ externalId: 'TIX-9', text: 'triaged' })}`,
     }]);
+  });
+});
+
+describe('ticket write-back requested by work-item id (linear-asana-task-sync P-002)', () => {
+  const bound: Array<{ workspaceId: string; providerId: string; sourceId: string; harness: string }> = [];
+  const hostFetchFor = vi.fn((_db: unknown, input: { workspaceId: string; providerId: string; sourceId: string; harness: string }): HostFetch => {
+    bound.push(input);
+    return async ({ source, request }) => {
+      // The host.fetch only ever serves the source it was bound to.
+      expect(source).toBe(input.sourceId);
+      return { status: 201, headers: {}, body: `posted:${request.body}`, bodyEncoding: 'utf8' };
+    };
+  });
+  /** The resolver the verbs use, over this test's registry and host.fetch. */
+  const deps = {
+    resolverFor: (kind: string) => (kind === 'record' ? createRecordAdmissionSource({ registry, hostFetchFor }) : undefined),
+  } as Parameters<typeof writeBackAdmission>[4];
+
+  beforeEach(() => {
+    bound.length = 0;
+    hostFetchFor.mockClear();
+  });
+
+  async function admitFrom(kind: string, nativeId: string): Promise<{ sourceId: string; workItemId: string }> {
+    const sourceId = await connect(kind);
+    await sync(sourceId);
+    const recordId = dataSourceRecordId(WS, sourceId, 'ticket', nativeId);
+    const admitted = await admitWorkItem(
+      { workspaceId: WS, harness: HARNESS, source: { kind: 'record', recordId }, admitter: { via: 'person', actorId: PERSON } },
+      { sql },
+    );
+    if (!admitted.ok) throw new Error(`admission failed: ${JSON.stringify(admitted)}`);
+    return { sourceId, workItemId: admitted.workItemId };
+  }
+
+  it('delivers a comment through the source provider’s ticket.comment and ledgers the provider’s update id', async () => {
+    const { sourceId, workItemId } = await admitFrom(WRITABLE, 'TIX-9');
+
+    const res = await writeBackAdmission(WS, workItemId, '  picked up by Papercusp  ', sql, deps);
+
+    expect(res).toEqual({ ok: true, sourceKind: 'record', posted: true, externalRef: 'comment-77', updateId: 'comment:77' });
+    // Resolved from the record's data source, invoked through a host.fetch bound to it alone.
+    expect(bound).toEqual([{ workspaceId: WS, providerId: WRITABLE, sourceId, harness: HARNESS }]);
+    expect(invoked.map((i) => i.request)).toEqual([
+      { source: sourceId, capability: 'ticket.comment', args: { externalId: 'TIX-9', text: 'picked up by Papercusp' } },
+    ]);
+    expect(await writeBacksForWorkItem(sql, WS, workItemId)).toEqual([
+      expect.objectContaining({ workItemId, dataSourceId: sourceId, action: 'comment', updateId: 'comment:77', externalRef: 'comment-77', detail: {} }),
+    ]);
+    // Echo suppression: the provider's id for this change finds the host's own write, and only it.
+    expect(await findAdmissionWriteBack(sql, { workspaceId: WS, dataSourceId: sourceId, updateId: 'comment:77' }))
+      .toMatchObject({ workItemId, action: 'comment' });
+    expect(await findAdmissionWriteBack(sql, { workspaceId: WS, dataSourceId: sourceId, updateId: 'comment:78' })).toBeNull();
+    const other = await connect(WRITABLE);
+    expect(await findAdmissionWriteBack(sql, { workspaceId: WS, dataSourceId: other, updateId: 'comment:77' })).toBeNull();
+  });
+
+  it('refuses a provider without the capability by name, before any host.fetch or provider call, and ledgers nothing', async () => {
+    const { workItemId } = await admitFrom(READ_ONLY, 'RO-1');
+
+    expect(await writeBackAdmission(WS, workItemId, 'picked up', sql, deps)).toEqual({
+      ok: false,
+      code: 'provider_capability_unsupported',
+      message: `provider_capability_unsupported:${READ_ONLY}:ticket.comment`,
+    });
+    expect(await transitionAdmission(WS, workItemId, 'done', sql, deps)).toEqual({
+      ok: false,
+      code: 'provider_capability_unsupported',
+      message: `provider_capability_unsupported:${READ_ONLY}:ticket.transition`,
+    });
+    expect(hostFetchFor).not.toHaveBeenCalled();
+    expect(readOnlyInvoke).not.toHaveBeenCalled();
+    expect(await writeBacksForWorkItem(sql, WS, workItemId)).toEqual([]);
+  });
+
+  it('moves the source to a workflow category sending only the category, and recognises its own move', async () => {
+    const { sourceId, workItemId } = await admitFrom(WRITABLE, 'TIX-9');
+
+    expect(await transitionAdmission(WS, workItemId, 'in-progress', sql, deps)).toEqual({
+      ok: true, sourceKind: 'record', toCategory: 'in-progress', transitioned: true, updateId: 'history:in-progress-1', externalRef: null,
+    });
+    // Field authority (D-004): title, description and assignee never travel; only the category does.
+    expect(invoked.map((i) => i.request)).toEqual([
+      { source: sourceId, capability: 'ticket.transition', args: { externalId: 'TIX-9', toCategory: 'in-progress' } },
+    ]);
+
+    // Already there: the provider changes nothing, and nothing is ledgered for it.
+    expect(await transitionAdmission(WS, workItemId, 'in-progress', sql, deps)).toMatchObject({ ok: true, transitioned: false });
+    expect(await writeBacksForWorkItem(sql, WS, workItemId)).toEqual([
+      expect.objectContaining({ action: 'transition', updateId: 'history:in-progress-1', detail: { toCategory: 'in-progress' } }),
+    ]);
+    expect(await findAdmissionWriteBack(sql, { workspaceId: WS, dataSourceId: sourceId, updateId: 'history:in-progress-1' }))
+      .toMatchObject({ workItemId, action: 'transition', detail: { toCategory: 'in-progress' } });
+
+    // An unknown category is refused before any provider call.
+    const calls = invoked.length;
+    expect(await transitionAdmission(WS, workItemId, 'shipped', sql, deps)).toMatchObject({ ok: false, code: 'transition_category_invalid' });
+    expect(invoked).toHaveLength(calls);
+  });
+
+  it('refuses a work item that was never admitted from a data source', async () => {
+    expect(await writeBackAdmission(WS, 'WI-never-admitted-p002', 'hello', sql, deps)).toMatchObject({ ok: false, code: 'not_admitted' });
+    expect(await transitionAdmission(WS, 'WI-never-admitted-p002', 'done', sql, deps)).toMatchObject({ ok: false, code: 'not_admitted' });
+    expect(hostFetchFor).not.toHaveBeenCalled();
   });
 });

@@ -54,7 +54,7 @@
     "llm-test": "tsx bin/llm-test.ts"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.81.0",
+    "@anthropic-ai/sdk": "^0.93.0",
     "@assistant-ui/react": "^0.12.25",
     "@azure/identity": "^4.13.1",
     "@azure/search-documents": "^12.2.0",

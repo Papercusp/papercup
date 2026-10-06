@@ -226,6 +226,7 @@ describe('consult child runtime routing (EI-25158565040432475)', () => {
         loadRanks: async () => [{ rank: 1, agent: target, model: target === 'codex' ? 'sol' : 'opus' }],
       });
       const buildEnvelope = deps.buildConsoleEnvelope;
+      if (!buildEnvelope) throw new Error('makeFakes must provide buildConsoleEnvelope');
       deps.buildConsoleEnvelope = async (input) => {
         inputs.push(input);
         return buildEnvelope(input);

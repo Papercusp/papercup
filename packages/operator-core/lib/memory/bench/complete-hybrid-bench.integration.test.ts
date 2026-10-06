@@ -42,6 +42,9 @@ const DIMS = 768;
 /** Paraphrase pairs share a dimension, so a query matches its targets by
  *  vector alone while sharing no token with them (the lexical leg is silent). */
 const TOPIC: Record<string, number> = { zephyr: 0, breeze: 0, quasar: 1, pulsar: 1, harbor: 2, dockside: 2, violet: 3 };
+/** A weak pull toward the violet distractor: a near-miss negative (cosine
+ *  0.2/√1.04 ≈ 0.196) that only a floor can reject. */
+const WEAK: Record<string, number> = { faintly: 3 };
 
 async function topicEmbed(text: string): Promise<number[]> {
   const v = new Array<number>(DIMS).fill(0);
@@ -49,6 +52,7 @@ async function topicEmbed(text: string): Promise<number[]> {
   for (const token of text.toLowerCase().match(/[a-z]+/g) ?? []) {
     const dim = TOPIC[token];
     if (dim !== undefined) { v[dim] += 1; topical = true; }
+    if (WEAK[token] !== undefined) v[WEAK[token]] += 0.2;
   }
   // Off-topic text (negatives, entity names, the preflight probe): a stable
   // direction orthogonal to every topic dimension.
@@ -76,10 +80,10 @@ const q = (id: string, cls: string, query: string, expected: string[], partition
   ({ id, class: cls, query, expected, partition, group });
 const QUERIES: HeldoutQuery[] = [
   q('cal-pos', 'paraphrase', 'dockside lifting gear', ['memory:harbor'], 'calibration', 'harbor'),
-  q('cal-neg', 'hard-negative', 'sourdough fermentation timing', [], 'calibration', 'neg-cal'),
+  q('cal-neg', 'hard-negative', 'faintly sourdough fermentation timing', [], 'calibration', 'neg-cal'),
   q('t-zephyr', 'paraphrase', 'gentle breeze', ['memory:zephyr-a', 'memory:zephyr-b'], 'test', 'zephyr'),
   q('t-quasar', 'paraphrase', 'distant pulsar', ['memory:quasar-a', 'memory:quasar-b'], 'test', 'quasar'),
-  q('t-neg', 'hard-negative', 'medieval tapestry restoration', [], 'test', 'neg-test'),
+  q('t-neg', 'hard-negative', 'faintly medieval tapestry restoration', [], 'test', 'neg-test'),
 ];
 const SNAPSHOT_AT = '2026-10-01T00:00:00.000Z';
 
@@ -176,8 +180,12 @@ describe('complete-hybrid-bench drives the production memory path in an isolated
     const { summary, calibration } = reports.aYoung;
     expect(calibration.queries).toBe(2);
     for (const route of ROUTES) expect(summary[route]).toMatchObject({ positives: 2, negatives: 1, recallAt10: 1, mrr: 1 });
-    // The shipped push floor and this arm's calibrated floor both reject an orthogonal query;
-    // the unfloored route is the recall ceiling and admits it.
+    // A near-miss negative (cosine ≈ 0.196 to the violet distractor): the calibration negative
+    // sits at the same cosine, so this arm's floor lands just above it. The shipped push floor
+    // and the calibrated floor reject it; the unfloored route admits it (the positive control
+    // that the rejections above are the floors' doing, not an empty store).
+    expect(calibration.calibratedCosineFloor).toBeGreaterThan(0.19);
+    expect(calibration.calibratedCosineFloor).toBeLessThan(1);
     expect(summary.push.negativeAdmission).toBe(0);
     expect(summary['push-calibrated'].negativeAdmission).toBe(0);
     expect(summary.raw.negativeAdmission).toBe(1);

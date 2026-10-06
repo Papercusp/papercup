@@ -54,6 +54,8 @@ import {
 } from '@papercusp/plugin-sdk';
 import { createPersonalVaultExternalSinkForSource, VAULT_DATATYPES } from '../personal-vault/live-sink';
 import { createDatatypeDestinationSinks } from '../data-sources/datatype-destination-sink';
+import { createRelationshipGraphSink } from '../relationship-graph/graph-sink';
+import { isGraphEntityDatatype } from '../relationship-graph/resolver';
 import { createAppDeliverySinkIfConfigured, reportAppSinkGateError } from '../app-data-producer/live-sink';
 import { DATATYPE_FOR_APP } from '../app-data-producer/app-rows';
 
@@ -412,6 +414,8 @@ export async function wakeConnectorSource(
 export interface ConnectorSinkSeams {
   createPersonalSink?: (sql: postgres.Sql, workspaceId: string, sourceId: string) => Promise<ExternalTriggerSink>;
   createDatatypeSinks?: typeof createDatatypeDestinationSinks;
+  /** The relationship-graph resolve sink appended after a stored person/organization record. */
+  createGraphSink?: typeof createRelationshipGraphSink;
   createAppSink?: (
     sql: postgres.Sql,
     workspaceId: string,
@@ -450,11 +454,19 @@ export async function connectorSinksFor(
   const createPersonalSink = seams.createPersonalSink ?? createPersonalVaultExternalSinkForSource;
   const createDatatypeSinks = seams.createDatatypeSinks ?? createDatatypeDestinationSinks;
   const createAppSink = seams.createAppSink ?? defaultAppSink;
+  const createGraphSink = seams.createGraphSink ?? createRelationshipGraphSink;
   const sinks: ExternalTriggerSink[] = [];
   if (VAULT_DATATYPES.includes(datatype)) {
     if (source.ownerUserId) sinks.push(await createPersonalSink(sql, source.workspaceId, source.id));
   } else {
-    sinks.push(...(await createDatatypeSinks(sql, { workspaceId: source.workspaceId, sourceId: source.id, datatype })));
+    const datatypeSinks = await createDatatypeSinks(sql, { workspaceId: source.workspaceId, sourceId: source.id, datatype });
+    sinks.push(...datatypeSinks);
+    // A stored person/organization record re-resolves its identity cluster in the platform
+    // relationship graph (crm-agent-sales-onboarding-apps-2026-10-06 P-002). Only when the
+    // record sink actually stores it: a source not routing the datatype to `record` adds nothing.
+    if (isGraphEntityDatatype(datatype) && datatypeSinks.some((s) => s.kind === 'data-source-record')) {
+      sinks.push(createGraphSink(sql, { workspaceId: source.workspaceId, sourceId: source.id, datatype }));
+    }
   }
   if (!source.ownerUserId) return sinks;
   for (const [app, appDatatype] of Object.entries(DATATYPE_FOR_APP) as [keyof typeof DATATYPE_FOR_APP, string][]) {

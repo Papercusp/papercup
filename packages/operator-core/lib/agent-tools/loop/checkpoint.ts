@@ -97,6 +97,7 @@ import { uncoveredAbsencePremises } from '../../premises-claim-port';
 import { detectScopeOverreach } from '../../carry-note-probe-scope';
 import { unresolvedPlanDecisionRefs } from '../coordination/decision-ref-advisory';
 import { withBoundedTimeout } from '../../bounded-timeout';
+import type { FleetZeroWorkersVerdict } from '../../fleet/fleet-zero-workers-guard';
 import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
 import { listVerifiedWaitTakeoversForSubscribers } from '../../events/await/store';
 import { resolveCurrentTurnStamp } from '../../turn-provenance/turn-ref';
@@ -1130,6 +1131,49 @@ export default defineTool({
           },
         ],
       };
+    }
+
+    // P-005 / D-030 (7): a fleet-leader monitor cannot record a quiet wake (no
+    // monitorDelta) while the fleet it leads has zero productive workers. Bounded and
+    // fail-OPEN: an unmeasured fleet is allowed with a warning, never refused on a guess.
+    let fleetZeroWorkersWarning: string | undefined;
+    if (workspaceId && args.monitorDelta !== true) {
+      const guard = await withBoundedTimeout(
+        async () =>
+          (await import('../../fleet/fleet-zero-workers-guard')).checkFleetZeroWorkers({
+            workspaceId,
+            ownerId,
+            monitorDelta: false,
+          }),
+        {
+          fallback: { action: 'allow' } as FleetZeroWorkersVerdict,
+          timeoutMs: 3_000,
+          label: 'loop:checkpoint fleet_zero_workers',
+        },
+      );
+      if (guard.degraded) {
+        fleetZeroWorkersWarning = `fleet_zero_workers not checked (${guard.reason ?? 'error'}); the checkpoint was allowed.`;
+      } else if (guard.value.action === 'refuse') {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                ok: false,
+                error: 'fleet_zero_workers',
+                message: guard.value.message,
+                fleet: guard.value.fleetSlug,
+                repairs: guard.value.repairs,
+                harness,
+                ownerId,
+              }),
+            },
+          ],
+          isError: true,
+        };
+      } else {
+        fleetZeroWorkersWarning = guard.value.warning;
+      }
     }
 
     // EI-18833865002636933 — rescue-by-parse of a MALFORMED structured write. Seen live:
@@ -2170,6 +2214,8 @@ export default defineTool({
             ...(args.monitorDelta === true
               ? { monitorDelta: { recorded: monitorDeltaRoutinesStamped, requested: true } }
               : {}),
+            /** P-005 / D-030 (7): the zero-workers guard could not measure, so it allowed. */
+            ...(fleetZeroWorkersWarning ? { fleetZeroWorkersWarning } : {}),
             ...(verifiedWaitTakeoverRows.length > 0 ? { verifiedWaitTakeovers: verifiedWaitTakeoverRows } : {}),
             /** P-013: which row semantics this write actually ran under, so a caller
              *  never has to infer it from the counts. Present only when it was NOT the

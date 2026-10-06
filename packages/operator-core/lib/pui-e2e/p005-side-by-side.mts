@@ -161,7 +161,9 @@ const CLIS: Record<string, Cli> = {
   },
   codex: {
     launch: ['codex', ...stockArgs()], resume: ['codex', ...stockArgs(), 'resume', '--last'], exit: '/quit',
-    busy: /esc to interrupt|Working \(/i,
+    // "Waiting for startup · esc cancel" is a sent message Codex has not begun
+    // (P-028 run 2026-10-06: read as idle, so probe 12 ended after 6 s unanswered).
+    busy: /esc to interrupt|Working \(|Waiting for startup/i,
     approve: { when: /Would you like to (run|make)|Allow command|Yes, proceed/i, key: 'y' },
     startup: [],
     ready: /^\s*›\s/m,

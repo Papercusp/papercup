@@ -1,3 +1,4 @@
+import type { ToolResult } from '@papercusp/tooldef';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { drainDetached } from '../../detached-imports';
 import { checkpointRootMirror } from '../../release-checkpoint-launch';
@@ -244,12 +245,71 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
 
 const repairQueueModule = await import('./repair-queue');
 const tool = repairQueueModule.default;
-const { assessFrozenRepairFixerAuthorization } = repairQueueModule;
+const { assessFrozenRepairFixerAuthorization, repairQueueAbortCompletionReceipt } = repairQueueModule;
 type Out = { data?: unknown; content?: { text: string }[] };
 const body = (value: unknown) => {
   const out = value as Out;
   return 'data' in out ? out.data : JSON.parse(out.content![0]!.text);
 };
+const toolResult = (payload: unknown): ToolResult => ({
+  content: [{ type: 'text', text: JSON.stringify({ data: payload }) }],
+});
+
+describe('release:repair-queue abort-completion receipts', () => {
+  const attempt = { callId: 'repair-queue-call-1', toolName: 'release:repair-queue' };
+
+  it('identifies completed admit, claim-leg, record-edit, and retire writes by their durable effect ids', () => {
+    const completedWrites = [
+      ['admit', 'release:repair-queue:admit:receipt-admit'],
+      ['claim-leg', 'release:repair-queue:claim-leg:receipt-claim'],
+      ['record-edit', 'release:repair-queue:record-edit:42'],
+      ['retire', 'release:repair-queue:retire:receipt-retire'],
+      ['admit-precheck', 'release:repair-queue:admit-precheck:operation-1'],
+    ] as const;
+
+    for (const [op, effectRef] of completedWrites) {
+      expect(repairQueueAbortCompletionReceipt({}, toolResult({
+        op,
+        completionReceipt: { status: 'recorded', effectRef },
+      }), attempt)).toEqual({ status: 'recorded', effectRef });
+    }
+  });
+
+  it('returns not-recorded only for explicit read, preview, no-op, or failed-CAS outcomes', () => {
+    const noEffects = [
+      { op: 'get', ok: true },
+      { op: 'admit', dryRun: true, admitted: false },
+      { op: 'admit', pending: true, verdict: 'precheck-running', dryRun: false },
+      { op: 'retire', alreadyClear: true, retired: false },
+      { op: 'claim-leg', verdict: 'no-frozen-queue', claimed: false },
+      { op: 'record-edit', recorded: true, inserted: false },
+      { op: 'retire', retired: false, casMiss: true },
+      { op: 'claim-leg', refused: true, effectMayHaveRun: false },
+    ];
+
+    for (const payload of noEffects) {
+      expect(repairQueueAbortCompletionReceipt({}, toolResult(payload), attempt).status).toBe('not-recorded');
+    }
+  });
+
+  it('fails closed when a write result lacks a durable receipt or its effect may have run', () => {
+    expect(repairQueueAbortCompletionReceipt(
+      {},
+      toolResult({ op: 'claim-leg', ok: true, claimed: true, persisted: true }),
+      attempt,
+    )).toMatchObject({ status: 'recovery-incomplete', failures: ['missing-completion-receipt'] });
+    expect(repairQueueAbortCompletionReceipt(
+      {},
+      toolResult({ op: 'admit', refused: false, effectMayHaveRun: true }),
+      attempt,
+    ).status).toBe('recovery-incomplete');
+    expect(repairQueueAbortCompletionReceipt(
+      {},
+      toolResult({ op: 'retire', completionReceipt: { status: 'recorded', effectRef: 'other:receipt' } }),
+      attempt,
+    ).status).toBe('recovery-incomplete');
+  });
+});
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -631,6 +691,10 @@ describe('release:repair-queue', () => {
       verdict: 'admitted',
       persisted: true,
       auditRecorded: true,
+      completionReceipt: {
+        status: 'recorded',
+        effectRef: 'release:repair-queue:admit:test-repair-queue-receipt',
+      },
       judgedSha: NEW_HEAD,
       movedRepairHead: { from: queue.repairHead, to: NEW_HEAD },
       repairQueue: { repairHead: NEW_HEAD, phase: 'ready-to-verify' },
@@ -1027,6 +1091,10 @@ describe('release:repair-queue', () => {
         verdict: 'precheck-running',
         builtCommit: NEW_HEAD,
         precheckOperation: { status: 'running', builtCommit: NEW_HEAD, files: ['lib/red.test.ts'] },
+      });
+      expect(started.completionReceipt).toEqual({
+        status: 'recorded',
+        effectRef: `release:repair-queue:admit-precheck:${started.precheckOperation.operationId}`,
       });
       expect(dryRuns()).toEqual([true]);
       expect(mocks.write).toHaveBeenCalledWith(
@@ -1661,6 +1729,10 @@ describe('release:repair-queue', () => {
       nextStep?: string;
     };
     expect(retired.retired).toBe(true);
+    expect(retired.completionReceipt).toEqual({
+      status: 'recorded',
+      effectRef: 'release:repair-queue:retire:test-repair-queue-receipt',
+    });
     expect(
       retired.nextStep,
       'a successful retire must carry the next-step procedure, not leave it to guidance',
@@ -1814,6 +1886,10 @@ describe('release:repair-queue', () => {
         verdict: 'claimed',
         persisted: true,
         auditRecorded: true,
+        completionReceipt: {
+          status: 'recorded',
+          effectRef: 'release:repair-queue:claim-leg:test-repair-queue-receipt',
+        },
         paths: ['lib/red.test.ts'],
         presenceFiles: ['lib/red.test.ts'],
         admitCommand: manifestRow.admitCommand,
@@ -1927,6 +2003,7 @@ describe('release:repair-queue', () => {
         op: 'record-edit',
         recorded: true,
         inserted: true,
+        completionReceipt: { status: 'recorded', effectRef: 'release:repair-queue:record-edit:42' },
         oversize: false,
         ledgerId: 42,
         path: 'lib/red.test.ts',

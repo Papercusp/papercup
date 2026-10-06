@@ -190,15 +190,25 @@ export async function runCompleteHybrid(opts: CompleteRunOptions) {
     const seedEmbedCalls = embedCalls;
 
     // Decay input: stamp each aged row at runStart − frozen age (payload + columns).
+    // mem0 stores caller metadata FLAT in the payload (canonicalRowToEntry reads
+    // it back as `payload` minus data/user_id), so corpus_key is top-level.
+    // Only BENCH_SCOPE rows are stamped: leak decoys stay decay-neutral.
     let agedRows = 0;
     if (agesFile) {
-      for (const [key, ageDays] of Object.entries(agesFile.ages)) {
-        const ts = new Date(runStart - ageDays * 86_400_000).toISOString();
+      const agedKeys = Object.keys(agesFile.ages).filter((k) => byKey.has(k));
+      for (const key of agedKeys) {
+        const ts = new Date(runStart - agesFile.ages[key] * 86_400_000).toISOString();
         const r = await db.query(
           `UPDATE ${schema}.memory_canonical SET created_at = $2::timestamptz, updated_at = $2::timestamptz,
              payload = payload || jsonb_build_object('createdAt', $2::text, 'updatedAt', $2::text)
-           WHERE payload->'metadata'->>'corpus_key' = $1 AND NOT (payload ? 'entityType')`, [key, ts]);
+           WHERE payload->>'corpus_key' = $1 AND payload->>'user_id' = $3 AND NOT (payload ? 'entityType')`,
+          [key, ts, BENCH_SCOPE]);
         agedRows += r.rowCount ?? 0;
+      }
+      // Fail closed: an age that did not land leaves decay silently inert, and
+      // the run would still report numbers labelled "with decay".
+      if (agedRows !== agedKeys.length) {
+        throw new Error(`decay stamping matched ${agedRows} of ${agedKeys.length} frozen-age documents in ${schema}`);
       }
     }
     const census = (await db.query<{ memories: string; entities: string }>(

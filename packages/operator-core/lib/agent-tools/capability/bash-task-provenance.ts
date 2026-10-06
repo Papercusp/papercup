@@ -149,9 +149,10 @@ export async function resolveBashTaskProvenance(
 
   let workItemId = explicit;
   if (!workItemId) {
-    workItemId = implicitHeldWorkItemId !== undefined
-      ? implicitHeldWorkItemId
-      : goalRef && WORK_ITEM_ID_RE.test(goalRef) ? goalRef : null;
+    // A declared work-item goal can outlive its claim (including after it is done).
+    // Treat it as a candidate, not proof of current ownership; the live held-claim
+    // reader below validates it before task costs or loop attempts are attributed.
+    workItemId = implicitHeldWorkItemId !== undefined ? implicitHeldWorkItemId : null;
   }
   // EI-21548894457555139: the goal ref is only SOMETIMES a work-item id. A fleet leader
   // or a plan-bound agent declares `fleet:<slug>` / `<plan>#P-NNN`, so the regex above
@@ -165,11 +166,18 @@ export async function resolveBashTaskProvenance(
   // work-item association is worse than an absent one: absent reads as "unknown", while
   // wrong reads as fact and misattributes the cost and the provenance of the run. That
   // is the same principle this function's own doc comment already states.
-  if (!workItemId && ownerId) {
+  if (!workItemId && ownerId && implicitHeldWorkItemId === undefined) {
     try {
       const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId ?? '';
-      const held = await deps.readHeldWorkItems(ownerId, workspaceId, { limit: 2 });
-      if (held.length === 1) workItemId = held[0].id;
+      const goalWorkItemId = goalRef && WORK_ITEM_ID_RE.test(goalRef) ? goalRef : null;
+      const held = await deps.readHeldWorkItems(ownerId, workspaceId, {
+        limit: goalWorkItemId ? EXPLICIT_HELD_SCAN_LIMIT : 2,
+      });
+      if (goalWorkItemId && held.some((item) => item.id === goalWorkItemId)) {
+        workItemId = goalWorkItemId;
+      } else if (held.length === 1) {
+        workItemId = held[0]!.id;
+      }
     } catch {
       // Provenance is fail-soft by contract — an unreadable claim never blocks the shell.
     }

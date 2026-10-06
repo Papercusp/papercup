@@ -11,6 +11,7 @@
 import { z } from 'zod';
 import { defineTool, SU_ROLES, isOperatorConfigWriteRole } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
+import type { AbortCompletionContext, AbortCompletionReceipt, ToolResult } from '@papercusp/tooldef';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 import { trackDetached } from '../../detached-imports';
@@ -75,9 +76,69 @@ import { claimRepairManifestLeg, renderAdmitCommand } from '../../release/repair
 import { readIdentity } from '../locks/identity';
 import { readGateOwnership, shouldStandDownForLivePeer } from '../../coord/gate-ownership';
 import { executeWithGateActionReceipt } from '../../release/gate-action-receipt';
+import { asRecord, completedResultPayload } from '../abort-completion-payload';
 
 const json = (payload: unknown) => ({ data: payload });
 const target = () => ({ workspaceId: activeWorkspaceId(), installSlug: operatorHomeHarnessSlug() });
+
+/**
+ * A completed `release:repair-queue` call can outlive dispatch's deadline after it has
+ * committed a queue or edit-ledger write. Surface only the durable identity returned by
+ * that exact operation; a success-shaped response without one is not proof of persistence.
+ */
+export function repairQueueAbortCompletionReceipt(
+  _args: unknown,
+  result: ToolResult,
+  context: AbortCompletionContext,
+): AbortCompletionReceipt {
+  if (context.toolName !== 'release:repair-queue' || !context.callId.trim()) {
+    return {
+      status: 'recovery-incomplete',
+      reason: 'release:repair-queue receipt did not receive the dispatch attempt identity',
+      failures: ['missing-attempt-identity'],
+    };
+  }
+  const payload = completedResultPayload(result);
+  if (!payload) {
+    return {
+      status: 'recovery-incomplete',
+      reason: 'release:repair-queue result did not contain a parseable completion payload',
+      failures: ['missing-result-payload'],
+    };
+  }
+
+  const completionReceipt = asRecord(payload.completionReceipt);
+  const effectRef = typeof completionReceipt?.effectRef === 'string' ? completionReceipt.effectRef.trim() : '';
+  if (completionReceipt?.status === 'recorded' && effectRef.startsWith('release:repair-queue:')) {
+    return { status: 'recorded', effectRef };
+  }
+  if (completionReceipt?.status === 'not-recorded') {
+    return {
+      status: 'not-recorded',
+      ...(typeof completionReceipt.reason === 'string' ? { reason: completionReceipt.reason } : {}),
+    };
+  }
+
+  const op = payload.op;
+  if (
+    op === 'get' ||
+    payload.dryRun === true ||
+    payload.alreadyClear === true ||
+    payload.verdict === 'no-frozen-queue' ||
+    (payload.pending === true && payload.verdict === 'precheck-running') ||
+    (op === 'record-edit' && payload.recorded === true && payload.inserted === false) ||
+    (op === 'retire' && payload.retired === false && payload.casMiss === true) ||
+    (payload.refused === true && payload.effectMayHaveRun === false)
+  ) {
+    return { status: 'not-recorded', reason: 'completed response proves this attempt made no repair-queue write' };
+  }
+
+  return {
+    status: 'recovery-incomplete',
+    reason: 'release:repair-queue result did not prove whether its write committed',
+    failures: [effectRef ? 'invalid-completion-receipt' : 'missing-completion-receipt'],
+  };
+}
 const FULL_COMMIT_SHA = /^[0-9a-f]{40,64}$/;
 // Stay ahead of the observed 300s MCP client deadline. This applies to read-only previews only.
 const ADMISSION_PREVIEW_JOB_TIMEOUT_MS = 4 * 60 * 1000;
@@ -676,6 +737,7 @@ export default defineTool({
   description:
     'Inspect, admit paths onto, claim a manifest leg, or retire the frozen repair queue. Workspace-global; omit harness/workspace. `admit{paths,...}` is the only door for a gate-red fix on judged lineage: it replays exactly the named integration-branch paths onto repairHead as one proved commit; `wholeBlob:true, sourceCommit:<ancestor SHA>` pins a reviewed source against later staging drift. Dry-run unless `confirm:true`. A confirmed admission with R6 test files first returns an observable `precheck-running` operation; no background leg publishes. `converge` aliases `admit`; `retire` is an exact-identity CAS and dry-run unless confirmed.',
   capability: 'operator:write',
+  abortCompletionReceipt: repairQueueAbortCompletionReceipt,
   effectForCall: (args) => {
     const op = (args as { op?: unknown }).op;
     return op === undefined ||
@@ -736,6 +798,12 @@ export default defineTool({
       refused: z.boolean().optional(),
       casMiss: z.boolean().optional(),
       current: z.unknown().nullable().optional(),
+      completionReceipt: z.object({
+        status: z.enum(['recorded', 'not-recorded', 'recovery-incomplete']),
+        effectRef: z.string().optional(),
+        reason: z.string().optional(),
+        failures: z.array(z.string()).optional(),
+      }).optional(),
       inconclusiveTerminal: z.object({
         status: z.enum(['emitted', 'partial', 'failed']),
         sha: z.string(),
@@ -937,6 +1005,12 @@ export default defineTool({
         ok: true,
         recorded: true,
         inserted: outcome.inserted,
+        ...(outcome.inserted && outcome.id !== null
+          ? { completionReceipt: {
+              status: 'recorded',
+              effectRef: `release:repair-queue:record-edit:${outcome.id}`,
+            } }
+          : {}),
         oversize: outcome.oversize,
         ledgerId: outcome.id,
         path: outcome.path,
@@ -1547,6 +1621,10 @@ export default defineTool({
             judgedSha: queue.repairHead,
             builtCommit,
             precheckOperation: operation,
+            completionReceipt: {
+              status: 'recorded',
+              effectRef: `release:repair-queue:admit-precheck:${operationId}`,
+            },
             currentQueueIdentity: {
               candidate: pendingQueue.candidate,
               repairHead: pendingQueue.repairHead,
@@ -1809,6 +1887,12 @@ export default defineTool({
         persisted,
         auditRecorded,
         ...base,
+        ...(persisted && effectReceipt
+          ? { completionReceipt: {
+              status: 'recorded',
+              effectRef: `release:repair-queue:admit:${effectReceipt.receiptId}`,
+            } }
+          : {}),
         ...(patch ? { source: { ref: sourceRef, root } } : {}),
         repairQueue: persisted
           ? diagnoseFrozenCandidateRepairQueue(next, { nowMs: Date.now(), fixerAlive: inspected.fixerAlive })
@@ -1997,6 +2081,12 @@ export default defineTool({
         persisted,
         auditRecorded,
         ...base,
+        ...(persisted && effectReceipt
+          ? { completionReceipt: {
+              status: 'recorded',
+              effectRef: `release:repair-queue:claim-leg:${effectReceipt.receiptId}`,
+            } }
+          : {}),
         repairQueue: persisted
           ? diagnoseFrozenCandidateRepairQueue(next, { nowMs: Date.now(), fixerAlive: inspected.fixerAlive })
           : inspected.diagnostic,
@@ -2140,6 +2230,12 @@ export default defineTool({
       reason: casMiss ? 'cas-miss' : undefined,
       target: inspected.target,
       auditRecorded,
+      ...(result.retired && effectReceipt
+        ? { completionReceipt: {
+            status: 'recorded',
+            effectRef: `release:repair-queue:retire:${effectReceipt.receiptId}`,
+          } }
+        : {}),
       current: currentDiagnostic,
       ...(inconclusiveTerminal ? { inconclusiveTerminal } : {}),
       // WI-1105109 [owner 2026-08-30, OWNER-interactive]: "make sure another agent

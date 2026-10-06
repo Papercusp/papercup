@@ -3,10 +3,10 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { freezeCompilerReplayConfig, freezeReplayRuntimeFiles, materializeReplaySource, replayDurableReport, replayEvidenceProblems, replayFileMismatches, replayHash, replayOracleFingerprint,
+import { freezeCompilerReplayConfig, freezeReplayRuntimeFiles, materializeReplaySource, replayBoundaryProblems, replayDurableReport, replayEvidenceProblems, replayFileMismatches, replayHash, replayOracleFingerprint,
   replayPopulationFingerprint, replayProcessIdentity, replayServerPopulation, replaySourceFingerprint, replayWireOverlap,
-  runDaemonReplay, validateDaemonReplayConfig, type DaemonReplayConfig, type ReplayOracleInput } from './lsp-fleet-replay-runtime';
-import { callLspDaemonRpc } from './lsp-daemon-client';
+  runDaemonReplay, validateDaemonReplayConfig, type DaemonReplayConfig, type ReplayBoundary, type ReplayOracleInput } from './lsp-fleet-replay-runtime';
+import { callLspDaemonRpc, readLspDaemonAdmission } from './lsp-daemon-client';
 import { scopeUnitForTask } from '../task-manager/types';
 import { buildReplayTrace, type ReplayReport } from './lsp-fleet-replay';
 import type { LspDaemonAnswer } from './lsp-daemon-protocol';
@@ -113,12 +113,9 @@ describe('daemon replay RPC cursor origin', () => {
     const frozen = config();
     if (kind === 'relative') for (const corpus of Object.values(frozen.corpus)) corpus.cursor.file = 'source.ts';
     const original = JSON.stringify(frozen);
-    const answer: LspDaemonAnswer = { backend: 'lsp-adapter', intent: 'definition', query: 'fixture', sites: [],
-      truncation: { truncated: false, totalAvailable: 0, continuation: null },
-      freshness: { health: 'degraded', indexedAt: null, indexedCommit: null, staleVsDisk: false }, latencyMs: 0, error: null };
     vi.mocked(callLspDaemonRpc).mockImplementation(async (_socket, request) => {
       if (request.op === 'health') throw new Error('fixture-stop-before-load');
-      return answer;
+      return readyAnswer(frozen, request.op === 'symbol' ? 'definition' : 'hot-references');
     });
     await expect(runDaemonReplay(frozen, frozen.rootPath)).rejects.toThrow('fixture-stop-before-load');
     const queries = vi.mocked(callLspDaemonRpc).mock.calls.filter(([, request]) => request.op !== 'health');
@@ -126,6 +123,103 @@ describe('daemon replay RPC cursor origin', () => {
       .toEqual(['symbol', 'references'].map(op => [op, join(frozen.rootPath, 'source.ts'), frozen.rootPath]));
     expect(JSON.stringify(frozen)).toBe(original);
     expect(JSON.parse(readFileSync(join(frozen.rootPath, frozen.runId, 'config.json'), 'utf8')).config).toEqual(frozen);
+  });
+});
+function readyAnswer(frozen: DaemonReplayConfig, queryClass: 'definition' | 'hot-references'): LspDaemonAnswer {
+  const sites = frozen.corpus[queryClass].oracle.sites.map(site => ({ ...site, kind: 'function' }));
+  return { backend: 'lsp-adapter', intent: queryClass === 'definition' ? 'definition' : 'references', query: 'fixture', sites,
+    truncation: { truncated: false, totalAvailable: sites.length, continuation: null },
+    freshness: { health: 'healthy', indexedAt: null, indexedCommit: null, staleVsDisk: false }, latencyMs: 1, error: null };
+}
+describe('daemon replay readiness and runtime admission', () => {
+  function boundary(frozen: DaemonReplayConfig): ReplayBoundary {
+    const taskId = 'replay-server';
+    const cgroup = `0::/papercusp.slice/${scopeUnitForTask(taskId)}`;
+    const executable = { path: join(frozen.rootPath, 'source.ts'), sha256: frozen.files[join(frozen.rootPath, 'source.ts')] };
+    const process = (pid: number) => ({ pid, identity: `fixture:${pid}`, cmdline: ['fixture'], cgroup, executable,
+      loadedModules: { receipts: [], native: [], unknown: [] }, unknown: [] });
+    return { label: 'fixture', atMs: 1, fileDrift: [],
+      health: { ...readyAnswer(frozen, 'definition'), daemonRuntime: {
+        enabled: true, overall: 'healthy', provisioned: {} as NonNullable<LspDaemonAnswer['daemonRuntime']>['provisioned'],
+        pid: 10, node: executable.path, entry: executable.path, sampledAtMs: 1,
+        servers: [{ language: 'typescript', rootPath: frozen.rootPath, taskId, pid: 11, health: 'healthy', coldStartMs: 1,
+          openDocs: 1, everSettled: true, quiescent: true, pendingProgress: 0, progressGeneration: 1,
+          certifiedReadiness: ['definition', 'references'], unprovenReadiness: [] }],
+      } },
+      processes: [process(10), process(11)],
+      populations: [{ taskId, rootPid: 11, cgroup, groups: [], processes: [process(11), process(12)], unknown: [] }],
+      admission: { queued: 0, inFlight: 0, settlementFailures: [] } };
+  }
+  function rows(frozen: DaemonReplayConfig, file: string) {
+    return readFileSync(join(frozen.rootPath, frozen.runId, file), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  }
+  it.each(['refusal', 'empty', 'degraded', 'stale', 'truncated', 'missing-site', 'unexpected-site'])
+    ('archives a %s hot-reference warmup and issues no measured request', async failure => {
+      const frozen = config();
+      const answer = readyAnswer(frozen, 'hot-references');
+      const failed: LspDaemonAnswer = { ...answer,
+        error: failure === 'refusal' ? 'not ready' : null,
+        sites: failure === 'empty' ? [] : failure === 'missing-site' ? answer.sites.slice(0, 1) :
+          failure === 'unexpected-site' ? [...answer.sites, { path: 'source.ts', line1: 3, kind: 'function' }] : answer.sites,
+        freshness: { ...answer.freshness, health: failure === 'degraded' ? 'degraded' : 'healthy', staleVsDisk: failure === 'stale' },
+        truncation: { ...answer.truncation, truncated: failure === 'truncated' } };
+      vi.mocked(callLspDaemonRpc).mockImplementation(async (_socket, request) =>
+        request.op === 'symbol' ? readyAnswer(frozen, 'definition') : failed);
+      await expect(runDaemonReplay(frozen, frozen.rootPath)).rejects.toThrow('replay-readiness-refused:hot-references:');
+      expect(vi.mocked(callLspDaemonRpc).mock.calls.map(([, request]) => request.actorId)).toEqual(['warmup', 'warmup']);
+      expect(rows(frozen, 'warmups.jsonl')).toHaveLength(2);
+      expect(rows(frozen, 'preflights.jsonl')[0]).toMatchObject({ phase: 'readiness', ready: false });
+      expect(rows(frozen, 'errors.jsonl')[0].error).toContain('replay-readiness-refused');
+      expect(existsSync(join(frozen.rootPath, frozen.runId, 'runs.jsonl'))).toBe(false);
+      expect(existsSync(join(frozen.rootPath, frozen.runId, 'result.json'))).toBe(false);
+      const saved = readFileSync(join(frozen.rootPath, frozen.runId, 'warmups.jsonl'), 'utf8');
+      await expect(runDaemonReplay(frozen, frozen.rootPath)).rejects.toThrow('archive already exists');
+      expect(readFileSync(join(frozen.rootPath, frozen.runId, 'warmups.jsonl'), 'utf8')).toBe(saved);
+    });
+  it.each(['root-load', 'child-load', 'population', 'executable', 'health', 'unsettled', 'drift', 'missing-root', 'wrong-server'])
+    ('refuses %s at the first runtime boundary before measured load', async failure => {
+      const frozen = config();
+      const start = boundary(frozen);
+      if (failure === 'root-load') start.processes[0].loadedModules = 'unmeasured';
+      if (failure === 'child-load') start.populations[0].processes[1].loadedModules = 'unmeasured';
+      if (failure === 'population') start.populations[0].unknown.push('unreadable-census');
+      if (failure === 'executable') start.processes[0].executable!.sha256 = replayHash('changed inode');
+      if (failure === 'health') start.health.daemonRuntime!.servers[0].health = 'degraded';
+      if (failure === 'unsettled') start.admission.inFlight = 1;
+      if (failure === 'missing-root') start.processes.shift();
+      if (failure === 'wrong-server') start.populations[0].rootPid = 999;
+      vi.mocked(readLspDaemonAdmission).mockResolvedValue({ ...start.admission } as Awaited<ReturnType<typeof readLspDaemonAdmission>>);
+      vi.mocked(callLspDaemonRpc).mockImplementation(async (_socket, request) => {
+        if (request.op === 'health') {
+          if (failure === 'drift') writeFileSync(join(frozen.rootPath, 'source.ts'), 'changed after warmup');
+          return start.health;
+        }
+        return readyAnswer(frozen, request.op === 'symbol' ? 'definition' : 'hot-references');
+      });
+      await expect(runDaemonReplay(frozen, frozen.rootPath, { captureRuntime: () => start }))
+        .rejects.toThrow('replay-start-boundary-refused');
+      expect(vi.mocked(callLspDaemonRpc).mock.calls.filter(([, request]) => request.op !== 'health'))
+        .toHaveLength(2);
+      expect(rows(frozen, 'boundaries.jsonl')).toHaveLength(1);
+      expect(rows(frozen, 'preflights.jsonl')[1]).toMatchObject({ phase: 'runtime', ready: false });
+      expect(rows(frozen, 'errors.jsonl')[0].error).toContain('replay-start-boundary-refused');
+      expect(existsSync(join(frozen.rootPath, frozen.runId, 'runs.jsonl'))).toBe(false);
+    });
+  it('advances exact healthy warmups and qualified runtime boundaries through all three triplets', async () => {
+    const frozen = { ...config(), levels: [1] };
+    const start = boundary(frozen);
+    expect(replayBoundaryProblems(start, frozen)).toEqual([]);
+    vi.mocked(readLspDaemonAdmission).mockResolvedValue({ ...start.admission } as Awaited<ReturnType<typeof readLspDaemonAdmission>>);
+    vi.mocked(callLspDaemonRpc).mockImplementation(async (_socket, request) => request.op === 'health' ? start.health :
+      readyAnswer(frozen, request.op === 'symbol' ? 'definition' : 'hot-references'));
+    await runDaemonReplay(frozen, frozen.rootPath, { captureRuntime: () => start });
+    expect(rows(frozen, 'runs.jsonl')).toHaveLength(9);
+    expect(rows(frozen, 'triplets.jsonl')).toHaveLength(3);
+    expect(rows(frozen, 'preflights.jsonl').every(row => row.ready === true)).toBe(true);
+    expect(existsSync(join(frozen.rootPath, frozen.runId, 'result.json'))).toBe(true);
+    // Synthetic transport has no durable query evidence; admission is proven,
+    // while the archive must still refuse to claim acceptance for these runs.
+    expect(rows(frozen, 'triplets.jsonl').every(row => row.qualification.qualified === false)).toBe(true);
   });
 });
 describe('independent replay source materialization', () => {

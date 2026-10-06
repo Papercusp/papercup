@@ -106,7 +106,12 @@ function message(err: unknown): string {
  * degraded instead of a measured "leads nothing".
  */
 export async function readLedFleetStaffing(
-  input: { workspaceId: string; ownerId: string },
+  input: {
+    workspaceId: string;
+    ownerId: string;
+    /** Measure only this fleet (filtered BEFORE the fan-out bound, so it is never cut by it). */
+    onlyFleetSlug?: string;
+  },
   deps?: Partial<FleetStaffingReadDeps>,
 ): Promise<FleetStaffingRow[]> {
   const d: FleetStaffingReadDeps = {
@@ -116,6 +121,7 @@ export async function readLedFleetStaffing(
   };
   const led = (await d.listFleetsLedBy(input.workspaceId, input.ownerId))
     .filter((fleet) => fleet.controlState !== 'winding-down')
+    .filter((fleet) => input.onlyFleetSlug == null || fleet.fleetSlug === input.onlyFleetSlug)
     .slice(0, FLEET_STAFFING_MAX_FLEETS);
   if (led.length === 0) return [];
   const governorFlagOn = await d.governorFlagOn().catch(() => null);

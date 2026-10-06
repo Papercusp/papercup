@@ -164,6 +164,10 @@ describe('runGovernedSpendAttempt — complete usage settles, incomplete usage r
     const input = { ...attempt(async () => ({ costUsd: 0.1, value: 'original work' })),
       exact, floorUsd: 0, accumulate: false };
     const expectedExact = structuredClone(exact);
+    const admitted = await deps.reserve!(SQL, {} as never);
+    if (!admitted.ok) throw new Error('fixture must grant');
+    admitted.reservation.runRef = `manifest:${exact.binding}/attempt:${exact.reservationId}`;
+    admitted.reservation.resources = { ...exact.resources };
     let reservedInput: ReserveLearningSpendInput | undefined;
     let settlementWorkspace: string | undefined;
     const reserve = deps.reserve!;
@@ -209,6 +213,94 @@ describe('runGovernedSpendAttempt — complete usage settles, incomplete usage r
     }), deps);
     expect(out).toMatchObject({ ok: true, value: 'bounded dispatch', reservationId: 'res-1' });
   });
+
+  it.each([
+    ['id', ''], ['id', 1], ['workspaceId', 'foreign'], ['loopId', 'foreign'],
+    ['attemptKind', 'evaluation'], ['requestedUsd', 0.5], ['requestedUsd', NaN],
+    ['reservedUsd', 2], ['reservedUsd', -1], ['reservedUsd', NaN], ['reservedUsd', Infinity],
+    ['reservedUsd', '1'], ['usedUsd', 0.1], ['usedUsd', NaN],
+    ['status', 'settled'], ['status', 'failed'], ['status', 'cancelled'],
+    ['settledAt', 1], ['settledAt', undefined], ['runRef', 'foreign-run'],
+    ['signalOrigin', 'shadow'],
+  ])('refuses an inconsistent successful reservation receipt (%s=%s) before dispatch', async (field, value) => {
+    const { deps, settlements } = fakeAttemptDeps();
+    const admitted = await deps.reserve!(SQL, {} as never);
+    if (!admitted.ok) throw new Error('fixture must grant');
+    Object.assign(admitted.reservation, { [field as string]: value });
+    let ran = false;
+    const out = await runGovernedSpendAttempt(attempt(async () => {
+      ran = true;
+      return { costUsd: 0, value: 'must not dispatch' };
+    }), deps);
+    expect(ran).toBe(false);
+    expect(settlements).toEqual([]);
+    expect(out).toMatchObject({ ok: false, reason: 'failed', costUsd: 0,
+      reservationId: null, settlement: null, error: 'governor reservation receipt does not match request' });
+  });
+
+  it.each([
+    { clamped: true }, { clamped: 'false' }, { headroomUsd: 0.5 }, { headroomUsd: NaN },
+    { headroomUsd: null }, { reservation: null },
+  ])('refuses malformed grant metadata %j without dispatch or settlement', async mutation => {
+    const { deps, settlements } = fakeAttemptDeps();
+    const admitted = await deps.reserve!(SQL, {} as never);
+    Object.assign(admitted, mutation);
+    let ran = false;
+    const out = await runGovernedSpendAttempt(attempt(async () => {
+      ran = true;
+      return { costUsd: 0, value: null };
+    }), deps);
+    expect(ran).toBe(false);
+    expect(settlements).toEqual([]);
+    expect(out).toMatchObject({ ok: false, reason: 'failed', reservationId: null, settlement: null });
+  });
+
+  it.each([
+    { armId: '', inputTokens: 12, outputTokens: 4 },
+    { armId: 'judge', inputTokens: -1, outputTokens: 4 },
+    { armId: 'judge', inputTokens: 1.5, outputTokens: 4 },
+    { armId: 'judge', inputTokens: 12, outputTokens: 0 },
+    { armId: 'judge', inputTokens: 12, outputTokens: Infinity },
+  ])('refuses invalid actual resource bounds %j', async resources => {
+    const { deps, settlements } = fakeAttemptDeps();
+    const admitted = await deps.reserve!(SQL, {} as never);
+    if (!admitted.ok) throw new Error('fixture must grant');
+    admitted.reservation.resources = resources;
+    let ran = false;
+    const out = await runGovernedSpendAttempt(attempt(async () => {
+      ran = true;
+      return { costUsd: 0, value: null };
+    }), deps);
+    expect(ran).toBe(false);
+    expect(settlements).toEqual([]);
+    expect(out).toMatchObject({ ok: false, reason: 'failed', reservationId: null });
+  });
+
+  it.each(['id', 'runRef', 'resources', 'reservedUsd', 'potSlug'] as const)(
+    'refuses an exact reservation receipt with mismatched %s', async field => {
+      const { deps, settlements } = fakeAttemptDeps();
+      const admitted = await deps.reserve!(SQL, {} as never);
+      if (!admitted.ok) throw new Error('fixture must grant');
+      const exact = { reservationId: 'res-1', binding: 'a'.repeat(64), expectedBudgetUsd: 10,
+        resources: { armId: 'judge', inputTokens: 12, outputTokens: 4 },
+        expectedResourceBudget: { inputTokens: 24, outputTokens: 8, requestsPerArm: 2, armIds: ['judge'] } };
+      Object.assign(admitted.reservation, { runRef: `manifest:${exact.binding}/attempt:res-1`,
+        resources: { ...exact.resources }, potSlug: 'owned-pot' });
+      if (field === 'resources') admitted.reservation.resources!.outputTokens = 999;
+      else if (field === 'reservedUsd') {
+        admitted.reservation.reservedUsd = 0.25;
+        admitted.clamped = true;
+      } else Object.assign(admitted.reservation, { [field]: 'foreign' });
+      let ran = false;
+      const out = await runGovernedSpendAttempt({ ...attempt(async () => {
+        ran = true;
+        return { costUsd: 0, value: null };
+      }), exact, potSlug: 'owned-pot' }, deps);
+      expect(ran).toBe(false);
+      expect(settlements).toEqual([]);
+      expect(out).toMatchObject({ ok: false, reason: 'failed', reservationId: null });
+    },
+  );
 
   it('settles a PARTIAL attempt at the partial cost, not the reservation', async () => {
     const { deps, settlements } = fakeAttemptDeps();

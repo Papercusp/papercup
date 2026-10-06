@@ -26,7 +26,7 @@ import { ensureJevDecisionClient } from '../jev-settings';
 import { withCandidates } from './jev-admission';
 import { loadCorpusFixture } from './corpus';
 import { loadGoldSetFixture } from './gold-set';
-import { BENCH_SCOPE, makeBackendCtx } from './run-bench';
+import { BENCH_SCOPE, makeHybridBackendCtx } from './precision-hybrid-backend';
 import type { MemoryPrecisionMetrics } from './precision-read';
 
 export const PRECISION_BENCH_RESULT_MARKER = 'PAPERCUSP_MEMORY_PRECISION_BENCH_RESULT:';
@@ -187,7 +187,7 @@ export async function benchMemoryPrecision(
 ): Promise<MemoryPrecisionMetrics> {
   const corpus = loadCorpusFixture('v1');
   const gold = loadGoldSetFixture('v1');
-  const ctx = await makeBackendCtx('hybrid', false);
+  const ctx = await makeHybridBackendCtx(false);
   try {
     const manifest = await seedCorpus(ctx.backend, corpus, { scope: BENCH_SCOPE, verbatim: true, concurrency: 8 });
     // The manifest was previously DISCARDED — which is exactly how a total seed

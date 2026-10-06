@@ -1,8 +1,8 @@
 diff --git a/node_modules/@anthropic-ai/sdk/client.js b/node_modules/@anthropic-ai/sdk/client.js
-index ded34f9..a25b846 100644
+index 9d48b0b..421541b 100644
 --- a/node_modules/@anthropic-ai/sdk/client.js
 +++ b/node_modules/@anthropic-ai/sdk/client.js
-@@ -355,7 +355,27 @@ class BaseAnthropic {
+@@ -591,7 +591,27 @@
              clearTimeout(timeout);
          }
      }
@@ -18,7 +18,7 @@ index ded34f9..a25b846 100644
 +        const seconds = parseFloat(raw);
 +        return Number.isNaN(seconds) ? Date.parse(raw) - Date.now() : seconds * 1000;
 +    }
-     async shouldRetry(response) {
+     async shouldRetry(response, options) {
 +        // PAPERCUSP PATCH (WI-10004615): never wait out a server-requested delay longer than 60 s
 +        // inside the SDK. This version honours `retry-after` uncapped with a wait that ignored the
 +        // AbortSignal, so a usage-window 429 (measured: retry-after 8286) froze in-process LLM
@@ -27,10 +27,10 @@ index ded34f9..a25b846 100644
 +        const requestedDelayMs = this.papercuspRequestedRetryDelayMs(response.headers);
 +        if (requestedDelayMs !== undefined && requestedDelayMs > 60 * 1000)
 +            return false;
-         // Note this is not a standard header.
-         const shouldRetryHeader = response.headers.get('x-should-retry');
-         // If the server explicitly says whether or not to retry, obey.
-@@ -404,7 +424,7 @@ class BaseAnthropic {
+         // Reactive refresh: on a 401 from a request that used the token cache,
+         // invalidate and retry once. Only fires when this specific request was
+         // bearer-authenticated (not when an apiKey was used) and only once per
+@@ -654,7 +674,7 @@
              const maxRetries = options.maxRetries ?? this.maxRetries;
              timeoutMillis = this.calculateDefaultRetryTimeoutMillis(retriesRemaining, maxRetries);
          }
@@ -40,10 +40,10 @@ index ded34f9..a25b846 100644
      }
      calculateDefaultRetryTimeoutMillis(retriesRemaining, maxRetries) {
 diff --git a/node_modules/@anthropic-ai/sdk/client.mjs b/node_modules/@anthropic-ai/sdk/client.mjs
-index 1142075..41701a2 100644
+index c4dd285..e623ec5 100644
 --- a/node_modules/@anthropic-ai/sdk/client.mjs
 +++ b/node_modules/@anthropic-ai/sdk/client.mjs
-@@ -352,7 +352,27 @@ export class BaseAnthropic {
+@@ -588,7 +588,27 @@
              clearTimeout(timeout);
          }
      }
@@ -59,7 +59,7 @@ index 1142075..41701a2 100644
 +        const seconds = parseFloat(raw);
 +        return Number.isNaN(seconds) ? Date.parse(raw) - Date.now() : seconds * 1000;
 +    }
-     async shouldRetry(response) {
+     async shouldRetry(response, options) {
 +        // PAPERCUSP PATCH (WI-10004615): never wait out a server-requested delay longer than 60 s
 +        // inside the SDK. This version honours `retry-after` uncapped with a wait that ignored the
 +        // AbortSignal, so a usage-window 429 (measured: retry-after 8286) froze in-process LLM
@@ -68,10 +68,10 @@ index 1142075..41701a2 100644
 +        const requestedDelayMs = this.papercuspRequestedRetryDelayMs(response.headers);
 +        if (requestedDelayMs !== undefined && requestedDelayMs > 60 * 1000)
 +            return false;
-         // Note this is not a standard header.
-         const shouldRetryHeader = response.headers.get('x-should-retry');
-         // If the server explicitly says whether or not to retry, obey.
-@@ -401,7 +421,7 @@ export class BaseAnthropic {
+         // Reactive refresh: on a 401 from a request that used the token cache,
+         // invalidate and retry once. Only fires when this specific request was
+         // bearer-authenticated (not when an apiKey was used) and only once per
+@@ -651,7 +671,7 @@
              const maxRetries = options.maxRetries ?? this.maxRetries;
              timeoutMillis = this.calculateDefaultRetryTimeoutMillis(retriesRemaining, maxRetries);
          }

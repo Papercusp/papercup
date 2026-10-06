@@ -6,6 +6,7 @@ import consultGetFeedback from './consult/get-feedback';
 import consultReply from './consult/reply';
 import fleetLaunchOnPlan from './fleet_registry/launch-on-plan';
 import gradeIdea from './scout/grade-idea';
+import repairQueue from './release/repair-queue';
 import scorecardsEmit from './scorecards/emit';
 import workItemsCreate from './work_items/create';
 
@@ -32,6 +33,8 @@ const LATE_RETURN_MUTATORS = {
   'consult:decline': consultDecline,
   'fleet:launch-on-plan': fleetLaunchOnPlan,
   'capability:launch-agent': launchAgent,
+  // EI-25175620446966840: the write tool's p95 reached 82% of its dispatch budget.
+  'release:repair-queue': repairQueue,
   'scorecards:emit': scorecardsEmit,
   // WI-10005718: the INSERT precedes the response; a late return lost the id + downgrade notice.
   'work_items:create': workItemsCreate,

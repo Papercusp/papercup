@@ -829,8 +829,54 @@ export function replayDurableReport(report: ReplayReport, oracles: Readonly<Reco
   return scoreReplay(report.concurrency, report.mode, report.population, samples, oracles);
 }
 
+interface ReplayRuntimePopulation {
+  processes: ReturnType<typeof replayProcessIdentity>[];
+  populations: ReturnType<typeof replayServerPopulation>[];
+}
+export interface ReplayBoundary extends ReplayRuntimePopulation {
+  label: string;
+  atMs: number;
+  health: LspDaemonAnswer;
+  admission: Pick<Awaited<ReturnType<typeof readLspDaemonAdmission>>, 'queued' | 'inFlight' | 'settlementFailures'>;
+  fileDrift: string[];
+}
+/** The same loaded-byte and settlement checks govern admission to load and
+ * qualification afterward. A healthy RPC alone cannot qualify a runtime. */
+export function replayBoundaryProblems(snapshot: ReplayBoundary, config: DaemonReplayConfig): string[] {
+  const problems = [...snapshot.fileDrift];
+  const runtime = snapshot.health.daemonRuntime;
+  if (snapshot.health.error !== null || !runtime?.enabled ||
+      !snapshot.processes.some(process => process.pid === runtime.pid) ||
+      snapshot.processes.some(process => process.unknown.length || !process.cgroup))
+    problems.push('unqualified-runtime-or-process');
+  if (snapshot.populations.length !== 1 || snapshot.populations.some(population => population.unknown.length))
+    problems.push('unqualified-server-descendant-population');
+  for (const process of [...snapshot.processes, ...snapshot.populations.flatMap(population => population.processes)]) {
+    if (!process.executable || config.files[process.executable.path] !== process.executable.sha256)
+      problems.push(`unfrozen-running-executable:${process.pid}`);
+    if (process.loadedModules === 'unmeasured') problems.push(`unqualified-loaded-module-population:${process.pid}`);
+    else problems.push(...process.loadedModules.unknown.map(reason => `runtime:${process.pid}:${reason}`));
+  }
+  const servers = runtime?.servers.filter(server => resolve(server.rootPath) === resolve(config.rootPath));
+  if (!servers || servers.length !== 1 || servers[0].health !== 'healthy' || !servers[0].taskId || !servers[0].pid)
+    problems.push('unqualified-warm-server-population');
+  for (const server of servers ?? []) {
+    const process = snapshot.processes.find(process => process.pid === server.pid);
+    const unit = process?.cgroup?.split('\n').find(line => line.startsWith('0::'))?.slice(3);
+    if (!unit || taskIdFromScopeUnit(basename(unit)) !== server.taskId) problems.push('unqualified-server-task-cgroup');
+    if (!snapshot.populations.some(population => population.taskId === server.taskId && population.rootPid === server.pid &&
+        population.processes.some(process => process.pid === server.pid)))
+      problems.push('unmatched-server-descendant-population');
+  }
+  if (snapshot.admission.queued || snapshot.admission.inFlight || snapshot.admission.settlementFailures.length)
+    problems.push('unsettled-boundary');
+  return [...new Set(problems)];
+}
+
 /** Archive is append-only and exclusively created; no prior evidence is overwritten. */
-export async function runDaemonReplay(config: DaemonReplayConfig, archiveParent: string) {
+export async function runDaemonReplay(config: DaemonReplayConfig, archiveParent: string, deps: {
+  captureRuntime?: (health: LspDaemonAnswer) => ReplayRuntimePopulation;
+} = {}) {
   validateDaemonReplayConfig(config);
   const directory = join(archiveParent, config.runId);
   if (existsSync(directory)) throw new Error(`archive already exists:${directory}`);
@@ -851,10 +897,12 @@ export async function runDaemonReplay(config: DaemonReplayConfig, archiveParent:
       workspaceId: config.workspaceId }, 10_000, `${config.runId}/${label}`);
     const admission = await readLspDaemonAdmission(config.workspaceId);
     const runtime = health.daemonRuntime;
-    const processes = runtime ? [runtime.pid, ...runtime.servers.flatMap(server => server.pid ? [server.pid] : [])]
-      .map(pid => replayProcessIdentity(pid, replayProcessReader, config.runtimeWitness)) : [];
-    const populations = runtime?.servers.filter(server => resolve(server.rootPath) === resolve(config.rootPath))
-      .flatMap(server => server.pid && server.taskId ? [replayServerPopulation(server.pid, server.taskId, { witness: config.runtimeWitness })] : []) ?? [];
+    const { processes, populations } = deps.captureRuntime ? deps.captureRuntime(health) : {
+      processes: runtime ? [runtime.pid, ...runtime.servers.flatMap(server => server.pid ? [server.pid] : [])]
+        .map(pid => replayProcessIdentity(pid, replayProcessReader, config.runtimeWitness)) : [],
+      populations: runtime?.servers.filter(server => resolve(server.rootPath) === resolve(config.rootPath))
+        .flatMap(server => server.pid && server.taskId ? [replayServerPopulation(server.pid, server.taskId, { witness: config.runtimeWitness })] : []) ?? [],
+    };
     const snapshot = { label, atMs: Date.now(), health, admission, processes, populations,
       fileDrift: replayFileMismatches({ ...config.files, ...config.runtimeWitness?.files }) };
     record('boundaries.jsonl', snapshot);
@@ -864,16 +912,24 @@ export async function runDaemonReplay(config: DaemonReplayConfig, archiveParent:
   const triplets: ReplayTriplet[] = [];
   try {
     // Warm both intents independently; warmups remain visible but outside measured populations.
+    const readinessProblems: string[] = [];
     for (const queryClass of REPLAY_CLASSES) {
       const answer = await query(queryClass, `${config.runId}/warm/${queryClass}`, 'warmup');
-      record('warmups.jsonl', { queryClass, answer, classification: classifyReplayAnswer(answer, oracles[queryClass]) });
+      const classification = classifyReplayAnswer(answer, oracles[queryClass]);
+      record('warmups.jsonl', { queryClass, answer, classification });
+      if (!classification.usefulCorrect) readinessProblems.push(...classification.reasons.map(reason => `${queryClass}:${reason}`));
     }
+    record('preflights.jsonl', { phase: 'readiness', ready: readinessProblems.length === 0, reasons: readinessProblems });
+    if (readinessProblems.length) throw new Error(`replay-readiness-refused:${readinessProblems.join(';')}`);
     for (const concurrency of config.levels) for (let trial = 0; trial < 3; trial += 1) {
       const trialId = `${config.runId}/c${concurrency}/t${trial}`;
       const start = await boundary(`c${concurrency}/t${trial}/start`);
+      const startProblems = replayBoundaryProblems(start, config);
+      record('preflights.jsonl', { phase: 'runtime', trialId, ready: startProblems.length === 0, reasons: startProblems });
+      if (startProblems.length) throw new Error(`replay-start-boundary-refused:${startProblems.join(';')}`);
       const modes: ReplayMode[] = trial === 1 ? ['mixed', 'hot-references', 'definition'] : ['definition', 'hot-references', 'mixed'];
       const reports = new Map<ReplayMode, ReplayReport>();
-      const problems = [...start.fileDrift];
+      const problems: string[] = [];
       for (const mode of modes) {
         const report = replayDurableReport(await runReplay({ concurrency, mode, runId: `${trialId}/${mode}`, oracles,
           now: lspEvidenceNow, execute: request => query(request.queryClass, request.id, request.actorId) }), oracles);
@@ -885,29 +941,7 @@ export async function runDaemonReplay(config: DaemonReplayConfig, archiveParent:
           failures: report.failures.length, certifiedFalseEmpty: report.certifiedFalseEmpty, certifiedStale: report.certifiedStale });
       }
       const end = await boundary(`c${concurrency}/t${trial}/end`);
-      problems.push(...end.fileDrift);
-      for (const snapshot of [start, end]) {
-        if (!snapshot.health.daemonRuntime?.enabled || snapshot.processes.some(process => process.unknown.length || !process.cgroup))
-          problems.push('unqualified-runtime-or-process');
-        if (snapshot.populations.length !== 1 || snapshot.populations.some(population => population.unknown.length))
-          problems.push('unqualified-server-descendant-population');
-        for (const process of [...snapshot.processes, ...snapshot.populations.flatMap(population => population.processes)]) {
-          if (!process.executable || config.files[process.executable.path] !== process.executable.sha256)
-            problems.push(`unfrozen-running-executable:${process.pid}`);
-          if (process.loadedModules === 'unmeasured') problems.push(`unqualified-loaded-module-population:${process.pid}`);
-          else problems.push(...process.loadedModules.unknown.map(reason => `runtime:${process.pid}:${reason}`));
-        }
-        const servers = snapshot.health.daemonRuntime?.servers.filter(server => resolve(server.rootPath) === resolve(config.rootPath));
-        if (!servers || servers.length !== 1 || servers[0].health !== 'healthy' || !servers[0].taskId || !servers[0].pid)
-          problems.push('unqualified-warm-server-population');
-        for (const server of servers ?? []) {
-          const process = snapshot.processes.find(process => process.pid === server.pid);
-          const unit = process?.cgroup?.split('\n').find(line => line.startsWith('0::'))?.slice(3);
-          if (!unit || taskIdFromScopeUnit(basename(unit)) !== server.taskId) problems.push('unqualified-server-task-cgroup');
-        }
-        if (snapshot.admission.queued || snapshot.admission.inFlight || snapshot.admission.settlementFailures.length)
-          problems.push('unsettled-boundary');
-      }
+      problems.push(...replayBoundaryProblems(end, config));
       if (JSON.stringify(start.health.daemonRuntime?.servers.map(server => [server.taskId, server.pid])) !==
           JSON.stringify(end.health.daemonRuntime?.servers.map(server => [server.taskId, server.pid]))) problems.push('changed-server-population');
       // Read receipts grow as new inputs are consumed; compare immutable process

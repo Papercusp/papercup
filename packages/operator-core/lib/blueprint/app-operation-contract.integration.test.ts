@@ -298,7 +298,7 @@ describe('R-1 pinned app operation contract (D-001)', () => {
       ['cancellationRequested', 'handle', 'items', 'outcome', 'phase', 'planRun', 'wait']);
     expect(BlueprintOperationStatusSchema.shape.phase.options).toEqual(['accepted', 'dispatched', 'waiting', 'terminal']);
     const handle = { workspaceId: WORKSPACE, harnessSlug: APP_HARNESS, receiptId: 1, operationId: 'draft-reply',
-      specificationRevision: 'rev', target: { kind: 'work-item', id: 'WI-1' } };
+      specificationRevision: 'a'.repeat(64), target: { kind: 'work-item', id: 'WI-1' } };
     expect(BlueprintOperationHandleSchema.parse(handle)).toEqual(handle);
     // Only `ready` may carry output; every other terminal state carries a reason instead.
     const status = { handle, phase: 'terminal', outcome: 'dropped', items: [], planRun: null,
