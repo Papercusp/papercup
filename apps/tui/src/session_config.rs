@@ -256,6 +256,31 @@ pub fn model_options(tiers: &[ModelTier], surface_default: Option<&str>) -> Vec<
     out
 }
 
+/// WI-10006652: /model for a LIVE conversation lists the models its engine
+/// reports it can run (Claude's SDK catalog, Codex `model/list`) with the
+/// engine's own one-line descriptions, the way stock Claude Code and Codex do.
+/// The workspace's routing tiers are fleet config: their names and `when`
+/// notes are not a chat user's model list, and on Codex none of them was even
+/// settable. Row 0 keeps the running model (the caller names it).
+pub fn engine_model_options(models: &[crate::su_session::SuSessionModelOption]) -> Vec<PickerOption> {
+    let mut out = Vec::with_capacity(models.len() + 1);
+    out.push(PickerOption {
+        id: MODEL_INHERIT.to_string(),
+        label: "Keep the current model".to_string(),
+        hint: Some("No change; the conversation stays on the model it runs on.".to_string()),
+        disabled: false,
+    });
+    for model in models {
+        out.push(PickerOption {
+            id: model.id.clone(),
+            label: model.label.clone(),
+            hint: model.description.clone().filter(|text| !text.trim().is_empty()),
+            disabled: false,
+        });
+    }
+    out
+}
+
 /// What a model pick puts on the SU-session launch: `None` ⇒ omit `model`
 /// entirely (the server's default).
 pub fn model_pick(id: &str) -> Option<String> {

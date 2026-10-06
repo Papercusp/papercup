@@ -476,6 +476,11 @@ pub struct SuSessionDescriptor {
     /// Absent for an engine without a plan tool or before its first update.
     #[serde(default)]
     pub plan: Option<Vec<SuPlanItem>>,
+    /// WI-10006652: the models the ENGINE reports it can switch to (Claude's
+    /// SDK catalog, Codex `model/list`). Empty until the engine has answered;
+    /// /model then falls back to the server's tier menu.
+    #[serde(default)]
+    pub models: Vec<SuSessionModelOption>,
     #[serde(default)]
     pub account_route: Option<String>,
     pub carry: String,
@@ -515,6 +520,26 @@ impl SuSessionUsage {
         let left = window.saturating_sub(used) as f64 * 100.0 / window as f64;
         Some(left.round().clamp(0.0, 100.0) as u8)
     }
+}
+
+/// One model an engine reports it can run (WI-10006652). `id` is what an
+/// owner turn's `model` spec names (`id[:effort]`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SuSessionModelOption {
+    pub id: String,
+    pub label: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    /// The canonical model an alias `id` resolves to (`sonnet` → `claude-sonnet-5`).
+    #[serde(default)]
+    pub resolved_model: Option<String>,
+    #[serde(default)]
+    pub efforts: Vec<String>,
+    #[serde(default)]
+    pub default_effort: Option<String>,
+    #[serde(default)]
+    pub is_default: bool,
 }
 
 /// One row of the agent's todo/plan list. `status` stays a string so a status
