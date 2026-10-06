@@ -21,13 +21,14 @@
  *     unreachable. The client-native Bash half (the PreToolUse rewrite) is proven
  *     with real bwrap in apps/operator/scripts/hooks/cc/__tests__/restricted-egress-guard.test.ts.
  */
-import { existsSync, mkdtempSync, readlinkSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdtempSync, readlinkSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
-const holder = vi.hoisted(() => ({ sql: null as postgres.Sql | null, ownerId: '' }));
+const holder = vi.hoisted(() => ({ sql: null as postgres.Sql | null, ownerId: '', integrationRoot: '' }));
 
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/db-org')>()),
@@ -41,6 +42,13 @@ vi.mock('../agent-tools/coordination/identity', async (importOriginal) => ({
   resolveAgentIdentity: () => ({ ownerId: holder.ownerId }),
 }));
 
+// The source-hold gate must inspect this fixture's real Git tree. Pairing the
+// fixture's disclosure ledger with a peer-edited staging tree invents holds.
+vi.mock('../agent-tools/capability/base-dir', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../agent-tools/capability/base-dir')>()),
+  resolveCapabilityIntegrationRoot: () => holder.integrationRoot,
+}));
+
 const { createOrgTestDb } = await import('../../test/_org-test-db');
 const { checkRestrictedEgress, readSessionRestriction, isAgentRuntimePath, EGRESS_REFUSAL_CODE } = await import(
   './binding-enforcement'
@@ -48,6 +56,7 @@ const { checkRestrictedEgress, readSessionRestriction, isAgentRuntimePath, EGRES
 const { default: writeTool } = await import('../agent-tools/capability/write');
 const { default: editTool } = await import('../agent-tools/capability/edit');
 const { capabilityBwrapWorks } = await import('../agent-tools/capability/exec-sandbox');
+const { readRestrictedSourceHoldState } = await import('./git-sync-hold');
 const { scrubProviderCredentials, findProviderEgressTargets, providerEgressRules } = await import('./provider-egress.mjs');
 const { sanitizeInheritedWakeEnv } = await import('../inference-gateway/spawn-env');
 const { default: bashTool } = await import('../agent-tools/capability/bash');
@@ -138,6 +147,8 @@ async function routeVerdict(owner: string, texts: string[]): Promise<Record<stri
 }
 
 beforeAll(async () => {
+  holder.integrationRoot = mkdtempSync(join(tmpdir(), 'binding-source-'));
+  execFileSync('git', ['init', '--quiet', holder.integrationRoot]);
   org = await createOrgTestDb();
   sql = org.adminSql;
   holder.sql = sql;
@@ -157,6 +168,7 @@ afterAll(async () => {
   }
   holder.sql = null;
   await org?.cleanup();
+  if (holder.integrationRoot) rmSync(holder.integrationRoot, { recursive: true, force: true });
 });
 
 describe('R-11 environment: provider credentials never reach an agent launch', () => {
@@ -317,6 +329,21 @@ describe('R-11 network layer: a restricted session’s shell has no network; an 
       expect(restricted.netns, restricted.text).not.toBe(ownNetns);
       expect(restricted.ifaces, restricted.text).toBe('lo');
       expect(restricted.egress, restricted.text).toBe('errno101'); // ENETUNREACH
+
+      // A trusted session is also offline when this SAME fixture has an
+      // unattributed source edit during the active disclosure window.
+      const dirtySource = join(holder.integrationRoot, 'unattributed.ts');
+      writeFileSync(dirtySource, 'export const held = true;\n');
+      try {
+        expect(await readRestrictedSourceHoldState(holder.integrationRoot)).toBe('held');
+        const sourceHeld = await run(UNRESTRICTED);
+        expect(sourceHeld.netns, sourceHeld.text).not.toBe(ownNetns);
+        expect(sourceHeld.ifaces, sourceHeld.text).toBe('lo');
+        expect(sourceHeld.egress, sourceHeld.text).toBe('errno101');
+      } finally {
+        rmSync(dirtySource, { force: true });
+      }
+      expect(await readRestrictedSourceHoldState(holder.integrationRoot)).toBe('clear');
     },
     60_000,
   );
