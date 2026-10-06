@@ -146,7 +146,7 @@ describe('native gateway controller with the persisted cycle ledger', () => {
         potSlug: f.input.potSlug, attemptKind: kind, requestedUsd: 0.25, reservedUsd: 0.25,
         usedUsd: 0, status: 'open', settledAt: null, resources: { armId: 'native', inputTokens: 32, outputTokens: 8 } });
       expect(rows[0]!.runRef).toContain(`cycle:${f.input.cycle.runId}/cap:1000000/resources:`);
-      expect(rows[0]!.runRef).toEndWith(`/attempt:${receipt.reservationRef}`);
+      expect(rows[0]!.runRef.endsWith(`/attempt:${receipt.reservationRef}`)).toBe(true);
       const identity = JSON.parse(rows[0]!.note!).nativeGatewayAttempt;
       const { body: _body, signal: _signal, ...expected } = f.request;
       expect(identity).toEqual(expected);
