@@ -302,6 +302,12 @@ export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
     expectedClass: 'caller',
     note: 'the patch tool refused stale/mismatched hunk context before writing; re-read the exact source lines (EI-25197457482157766)',
   },
+  {
+    n: 1, errorCode: 'handler_error', status: 'error',
+    message: 'Code-run script treated nested activity:recent typed output as an MCP content envelope and failed with structured_result_shape; the returned activity data is in the typed root.',
+    expectedClass: 'caller',
+    note: 'code:run typed-root output was read as an MCP content envelope; structured_result_shape is a caller read-shape diagnostic (EI-25223020018710222)',
+  },
 
   // ── structural: genuine bugs/misconfig (the low-bar auto-implement lane) ────
   {

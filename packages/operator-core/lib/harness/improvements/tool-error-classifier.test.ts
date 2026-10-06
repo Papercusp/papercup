@@ -166,6 +166,19 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
     expect(classifyToolError('handler_error', 'error', 'code:run exceeded timeout after 45 seconds')).toBe('transient');
   });
 
+  it('classifies the code:run typed-root shape diagnostic as caller misuse, not a tool defect', () => {
+    expect(classifyToolError(
+      'handler_error',
+      'error',
+      'Code-run script treated nested activity:recent typed output as an MCP content envelope and failed with structured_result_shape; the returned activity data is in the typed root.',
+    )).toBe('caller');
+    expect(classifyToolError(
+      'handler_error',
+      'error',
+      'structured_result_shape: tool returned an invalid structured result',
+    )).toBe('structural');
+  });
+
   it('classifies an MCP auth-gate refusal as caller/auth without broadly matching its message', () => {
     expect(classifyToolError('mcp_auth_failed', 'error', 'superuser_invalid_bearer')).toBe('caller');
     expect(classifyToolError('handler_error', 'error', 'superuser_invalid_bearer')).toBe('structural');
