@@ -16,6 +16,7 @@
  */
 import { useCallback, useEffect, useState } from 'react';
 import { toast } from 'sonner';
+import { useSyncQuery } from '@papercusp/sync';
 import type {
   IntegrationModeQuestion,
 } from '@papercusp/operator-core/lib/harness/git-sync/integration-mode-question';
@@ -26,6 +27,15 @@ interface IntegrationModeState {
   question: IntegrationModeQuestion;
   current: Mode | null;
   workingCopyUrl: string | null;
+}
+
+/** One `potIntegration.settings` row; `isPot:false` hides the section. */
+interface SettingsRow {
+  slug: string;
+  isPot: boolean;
+  question?: IntegrationModeQuestion;
+  current?: Mode | null;
+  workingCopyUrl?: string | null;
 }
 
 /** Plain-language explanation of what switching to `target` changes. */
@@ -50,41 +60,35 @@ function repoLabelFrom(question: IntegrationModeQuestion): string {
 }
 
 export default function IntegrationModeSection({ slug }: { slug: string }) {
-  const [state, setState] = useState<IntegrationModeState | null>(null);
-  const [hidden, setHidden] = useState(false);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  // EI-25188362216785598: a LIVE read (potIntegration.settings) — the PUT below and any
+  // pot_settings write push a fresh row, so a switch made elsewhere shows here too.
+  const { data: rows, loading, error: readError, invalidate } = useSyncQuery<SettingsRow>({
+    queryName: 'potIntegration.settings',
+    args: { slug },
+  });
+  const row = rows[0];
+  const hidden = row?.isPot === false;
+  /** The answer just saved, shown until the re-read row arrives (transient → useState). */
+  const [optimistic, setOptimistic] = useState<Pick<IntegrationModeState, 'current' | 'workingCopyUrl'> | null>(null);
+  useEffect(() => {
+    setOptimistic(null);
+  }, [row?.current, row?.workingCopyUrl]);
+  const state: IntegrationModeState | null = row?.isPot && row.question
+    ? {
+        question: row.question,
+        current: optimistic?.current ?? row.current ?? null,
+        workingCopyUrl: optimistic ? optimistic.workingCopyUrl : (row.workingCopyUrl ?? null),
+      }
+    : null;
+  const loadError = !loading && !row ? (readError?.message ?? 'Could not read this setting.') : null;
   /** The answer the user picked but has not confirmed yet (mid-edit draft). */
   const [pending, setPending] = useState<Mode | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    let cancelled = false;
-    setState(null);
-    setHidden(false);
-    setLoadError(null);
     setPending(null);
     setError(null);
-    fetch(`/api/harness/${encodeURIComponent(slug)}/integration-mode`)
-      .then(async (res) => {
-        if (cancelled) return;
-        if (res.status === 404 || res.status === 409) {
-          setHidden(true);
-          return;
-        }
-        const body = await res.json().catch(() => null);
-        if (!res.ok || !body?.question) {
-          setLoadError(body?.message ?? body?.error ?? `HTTP ${res.status}`);
-          return;
-        }
-        setState(body as IntegrationModeState);
-      })
-      .catch((e: unknown) => {
-        if (!cancelled) setLoadError(e instanceof Error ? e.message : String(e));
-      });
-    return () => {
-      cancelled = true;
-    };
   }, [slug]);
 
   const confirmSwitch = useCallback(async () => {
@@ -102,11 +106,12 @@ export default function IntegrationModeSection({ slug }: { slug: string }) {
         setError(body?.message ?? body?.error ?? `HTTP ${res.status}`);
         return;
       }
-      setState({
-        ...state,
+      // Show the saved answer now; the pushed row (and this re-read) replaces it.
+      setOptimistic({
         current: (body.mode as Mode | null) ?? pending,
         workingCopyUrl: body.fork?.url ?? state.workingCopyUrl,
       });
+      invalidate();
       setPending(null);
       toast.success('Saved where the agents’ work goes');
     } catch (e: unknown) {
@@ -114,7 +119,7 @@ export default function IntegrationModeSection({ slug }: { slug: string }) {
     } finally {
       setSaving(false);
     }
-  }, [pending, slug, state]);
+  }, [pending, slug, state, invalidate]);
 
   if (hidden) return null;
 
