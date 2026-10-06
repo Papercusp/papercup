@@ -102,9 +102,13 @@ async function tryGetPg(): Promise<{
 } | null> {
   try {
     const pg = (await import('postgres')).default;
+    // The dedicated ledger variable wins (WI-10006736): the isolated rig exports
+    // HARNESS_ADMIN_DATABASE_URL at its throwaway database, so the isolated e2e runner
+    // points PAPERCUSP_TEST_RUNS_DB_URL at the shared ledger. Same order as the Vitest
+    // reporter and resolveExecutedMapPgUrl.
     const url =
-      process.env.HARNESS_ADMIN_DATABASE_URL ??
       process.env.PAPERCUSP_TEST_RUNS_DB_URL ??
+      process.env.HARNESS_ADMIN_DATABASE_URL ??
       'postgresql://harness_admin:harness_admin_pwd@localhost:5432/papercusp';
     const sql = pg(url, {
       max: 1,

@@ -103,6 +103,21 @@ describe('buildProviderBwrapArgs (D-006 provider profile, P-002)', () => {
     expect(tmpfs).toBeLessThan(argv.indexOf('/tmp/rt'));
   });
 
+  // WI-10006742: `--dev /dev` came AFTER the plugin bind, so a plugin dir under
+  // /dev/shm (the test TMPDIR guard's fallback) was covered by the fresh /dev
+  // and `--chdir` failed. Every fresh mount must precede every bind.
+  it('mounts /proc and /dev BEFORE the plugin and runtime binds so a plugin dir under /dev/shm is not shadowed', () => {
+    const { argv } = buildProviderBwrapArgs({ ...prov, pluginDir: '/dev/shm/pcv/plug', runtimeDirs: ['/dev/shm/pcv/rt'] });
+    const firstBind = Math.min(argv.indexOf('/dev/shm/pcv/plug'), argv.indexOf('/dev/shm/pcv/rt'));
+    for (const [flag, target] of [['--proc', '/proc'], ['--dev', '/dev'], ['--tmpfs', '/tmp']] as const) {
+      const i = argv.indexOf(flag);
+      expect(argv[i + 1]).toBe(target);
+      expect(i).toBeLessThan(firstBind);
+    }
+    expect(argv.lastIndexOf('--proc')).toBe(argv.indexOf('--proc'));
+    expect(argv.lastIndexOf('--dev')).toBe(argv.indexOf('--dev'));
+  });
+
   it('clears the environment and sets only PATH and HOME', () => {
     const { argv } = buildProviderBwrapArgs(prov);
     expect(argv).toContain('--clearenv');

@@ -420,7 +420,11 @@ export interface AwsWorkspaceHostDesiredProviderSettings {
   launchTemplateVersion?: string;
   kmsKeyArn: string;
   rootVolumeGiB: number;
-  rootDeviceName: string;
+  /**
+   * Operator override, checked against the AMI. Absent means "use the AMI's RootDeviceName", which
+   * is the only name that configures the root volume; see `resolveRootDeviceName` (WI-10006800).
+   */
+  rootDeviceName?: string;
   dataDeviceName: string;
   volumeType: string;
   userData?: string;
@@ -775,6 +779,7 @@ function runInstancesRequest(
   tags: readonly AwsTag[],
   idempotencyKey: string,
   imageId: string,
+  rootDeviceName: string,
 ): AwsRunInstancesInput {
   return {
     ClientToken: awsWorkspaceHostClientToken(idempotencyKey),
@@ -798,7 +803,7 @@ function runInstancesRequest(
     IamInstanceProfile: { Arn: settings.instanceProfileArn },
     BlockDeviceMappings: [
       {
-        DeviceName: settings.rootDeviceName,
+        DeviceName: rootDeviceName,
         Ebs: {
           DeleteOnTermination: true,
           Encrypted: true,
@@ -1008,14 +1013,16 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
    * from the source host's snapshot). One description of the host for both, so a restored host is
    * launched exactly as a provisioned one would be.
    */
-  private planProvision(
+  private async planProvision(
     desired: WorkspaceHostDesiredSpec,
     idempotencyKey: string,
     ctx: WorkspaceHostProviderContext,
     options: { action: 'provision' | 'restore'; snapshotId?: string },
-  ): readonly WorkspaceHostPlanStep[] {
+  ): Promise<readonly WorkspaceHostPlanStep[]> {
     const { action } = options;
     const settings = readSettings(desired);
+    const imageId = requireAwsAmiId(desired.image.id, 'desired.image.id');
+    const rootDeviceName = await this.resolveRootDeviceName(settings, imageId);
     const tags = stableTags(desired, ctx.workspaceId);
     const volumeKey = `${idempotencyKey}:data-volume`;
     const instanceKey = `${idempotencyKey}:instance`;
@@ -1034,7 +1041,7 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
         : {}),
       TagSpecifications: [{ ResourceType: 'volume', Tags: tags }],
     };
-    const runRequest = runInstancesRequest(desired, settings, tags, instanceKey, requireAwsAmiId(desired.image.id, 'desired.image.id'));
+    const runRequest = runInstancesRequest(desired, settings, tags, instanceKey, imageId, rootDeviceName);
 
     return [
       {
@@ -1173,7 +1180,8 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
     const tags = stableTags(desired, ctx.workspaceId);
     const hostId = request.host.hostId;
     const key = `${request.idempotencyKey}:upgrade:${instance.providerId}`;
-    const runRequest = runInstancesRequest(desired, settings, tags, `${key}:instance`, imageId);
+    const rootDeviceName = await this.resolveRootDeviceName(settings, imageId);
+    const runRequest = runInstancesRequest(desired, settings, tags, `${key}:instance`, imageId, rootDeviceName);
     // Step ids name the instance being replaced. The controller keys each step's resource row by
     // step id, and recording a plan resets that row to `planned`; ids shared with provision or an
     // earlier upgrade would therefore un-register the running instance until this upgrade's own

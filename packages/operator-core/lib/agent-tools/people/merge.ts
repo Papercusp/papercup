@@ -7,6 +7,7 @@ import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { isCodingAgentRole } from '../../personal-vault/coding-roles';
+import { resolveAgentIdentity } from '../coordination/identity';
 import { mergePeople } from '../../relationship-graph/people';
 import { MergeEntitiesError } from '../../relationship-graph/resolver';
 
@@ -29,7 +30,8 @@ export default defineTool({
     const workspaceId = ctx.workspaceId?.trim() ?? '';
     if (isCodingAgentRole((ctx as { role?: string | null }).role)) return { ok: false as const, error: 'coding_agent_denied' };
     if (!workspaceId || workspaceId === '*') return { ok: false as const, error: 'workspace_required' };
-    const acceptedBy = ctx.userId?.trim() || ctx.ownerId?.trim() || '';
+    // The caller who asserted the merge is recorded as its provenance (assertedSameAsBy.acceptedBy).
+    const acceptedBy = resolveAgentIdentity(ctx as Parameters<typeof resolveAgentIdentity>[0]).ownerId?.trim() || ctx.principal?.slug?.trim() || '';
     try {
       const result = await mergePeople(getOrgPg().sql, workspaceId, { ids: args.ids, acceptedBy });
       return { ok: true as const, ...result };
