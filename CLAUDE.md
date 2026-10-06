@@ -272,13 +272,13 @@ decision, `coord:ask-owner`.)
 
 Interactive (human-present) PSU sessions can still take a fast redirect from the owner, but the default is resolve-don't-relay.
 
-⛔ **Before you report an OWNER-GATED wall for a credential or permission, exhaust the privilege you already hold — on this box `sudo -n` is `NOPASSWD: ALL`.** The recurring failure is escalating "needs a superuser / needs credentials I don't have" after probing only the *unprivileged* path, which hands the owner a chore the agent could have done itself.
+⛔ **Before reporting an OWNER-GATED credential/permission wall, exhaust the privilege you hold — here `sudo -n` is `NOPASSWD: ALL`.** Escalating after probing only the *unprivileged* path hands the owner a chore you could have done.
 
 ```bash
 sudo -n -u postgres psql -d papercusp -c '<SQL>'
 ```
 
-A permission blocker is owner-gated only once **`sudo -n` has also failed**. When you do report one, name the privileged paths you actually tried — "no superuser is reachable" is a claim about YOUR probe set, not about the machine, and stating it the second way is how a five-second fix becomes an owner's task.
+⚠ Run it via `capability:bash` (host context), never a psu Claude session's native `Bash`: that sandbox sets `NoNewPrivs` and unshares the network, so `sudo` and `psql :5432` both fail falsely. A wall is owner-gated only once host-context `sudo -n` failed; name what you tried and where — "no superuser is reachable" describes YOUR probes, not the machine.
 
 
 ## A cross-lane ruling is a plan Decision, recorded the moment it forms
