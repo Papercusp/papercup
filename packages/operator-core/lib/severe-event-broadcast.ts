@@ -85,6 +85,11 @@ export interface SevereEventBroadcast {
   oneShot?: boolean;
   /** EI-10060: the resolved responsible party, if any. See {@link SevereEventRoute}. */
   route?: SevereEventRoute;
+  /**
+   * Further responsible parties paged the same way as `route`, each with its own directed
+   * message + wake (e.g. a gate holder AND its fleet leader). Delivered after `route`.
+   */
+  extraRoutes?: readonly SevereEventRoute[];
 }
 
 /**
@@ -263,6 +268,7 @@ export async function broadcastSevereEvent(ev: SevereEventBroadcast): Promise<bo
       },
     });
     if (ev.route) await deliverRoute(ev.route, ev.summary, body);
+    for (const extra of ev.extraRoutes ?? []) await deliverRoute(extra, ev.summary, body);
     return true;
   } catch (e) {
 

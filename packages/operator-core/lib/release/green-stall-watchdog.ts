@@ -81,6 +81,7 @@ import {
   recordLostGateRun,
   type StoredInFlightCandidate,
 } from './in-flight-candidate';
+import { LOST_RUN_SWEEP_INTERVAL_MS, sweepLostGateRuns } from './lost-gate-run-alarm';
 import { buildKey } from '../events/await/catalog';
 import type { EmitAwaitedEventOpts } from '../events/await/engine';
 import type { GateOwnershipAssessment } from '../coord/gate-ownership';
@@ -3816,6 +3817,7 @@ export async function checkStrandedRepairQueue(
 }
 
 let watchdogTimer: ManagedHandle | null = null;
+let lostRunTimer: ManagedHandle | null = null;
 
 /**
  * Start the watchdog: an immediate boot check + a recurring process-level sweep.
@@ -3825,7 +3827,7 @@ let watchdogTimer: ManagedHandle | null = null;
  */
 export function startGreenStallWatchdog(
   sql: Sql,
-  opts: GreenStallThresholds & { intervalMs?: number } = {},
+  opts: GreenStallThresholds & { intervalMs?: number; lostRunIntervalMs?: number } = {},
 ): void {
   if (process.env.PAPERCUSP_GREEN_STALL_WATCHDOG === '0') return;
   const intervalMs = opts.intervalMs ?? DEFAULT_WATCHDOG_INTERVAL_MS;
@@ -3869,4 +3871,23 @@ export function startGreenStallWatchdog(
   run(); // boot check
   if (watchdogTimer) watchdogTimer.stop();
   watchdogTimer = managedSetInterval('green-stall-watchdog', intervalMs, run, { category: 'watchdog' });
+
+  // P-005 (gate-throughput-shift-left-2026-10-06, R-5): the pass above only wakes checkpoint
+  // waiters for a run that died with its marker set, and only every 15 minutes, so nobody was
+  // paged (WI-10004928: 70+ minutes silent). This sweep pages the gate holder + fleet leader once
+  // per dead run, on its own short cadence. It never clears the marker, so it cannot race the
+  // record/emit/clear transaction the pass above owns.
+  const sweepLostRuns = (): void => {
+    void sweepLostGateRuns(sql).then((r) => {
+      if (r.alarmed.length > 0) console.warn(`[green-stall-watchdog] lost gate run paged on: ${r.alarmed.join(', ')}`);
+    });
+  };
+  sweepLostRuns();
+  if (lostRunTimer) lostRunTimer.stop();
+  lostRunTimer = managedSetInterval(
+    'green-checkpoint-lost-run-alarm',
+    opts.lostRunIntervalMs ?? LOST_RUN_SWEEP_INTERVAL_MS,
+    sweepLostRuns,
+    { category: 'watchdog' },
+  );
 }
