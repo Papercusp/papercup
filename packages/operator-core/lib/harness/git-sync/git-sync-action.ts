@@ -91,8 +91,12 @@ import { runWorktreeBridgeTick, WORKTREE_BRIDGE_RETRY_TTL_MS } from '../../sync/
 import { catchUpWorktreeToWatermark } from '../../sync/pot-git/worktree-bridge';
 import {
   type DivergenceObservation,
+  type ResolverRuntimeProbe,
   type WorktreeDivergence,
+  applyResolverRuntimeProbe,
   describeDivergenceTransition,
+  describeResolverRuntimeChange,
+  divergenceAwaitsResolver,
   divergenceResolverDispatch,
   nextWorktreeDivergence,
   parseWorktreeDivergence,
@@ -1432,6 +1436,26 @@ export function isResolverInFlight(lr: ResolverMarker | null | undefined, now: n
   return typeof lr.at === 'number' && now - lr.at < RESOLVER_INFLIGHT_MS;
 }
 
+/**
+ * WI-10006833: can the merge-resolver's agent CLI run on this host? Resolves the role the
+ * `git-sync:conflict` launch blueprint names (the same lookup spawnMergeResolver makes)
+ * and checks its binary on the invoke child's PATH. No blueprint → `ok`: spawnMergeResolver
+ * already skips and logs that case, so this must not mask it. A probe error is also `ok`:
+ * the preflight may only ever withhold a dispatch on a positive finding.
+ */
+async function probeMergeResolverRuntime(slug: string, workspaceId: string): Promise<ResolverRuntimeProbe> {
+  try {
+    const target = await resolveLaunchTargetForEvent(CONFLICT_EVENT, { installSlug: slug, workspaceId });
+    if (!target) return { ok: true };
+    const { probeRoleRuntime } = await import('../../harness-invoke-once');
+    const p = probeRoleRuntime(target.role);
+    return p.ok ? { ok: true } : { ok: false, runtime: p.bin };
+  } catch (e) {
+    console.warn(`[git-sync] ${slug}: merge-resolver runtime probe failed: ${e instanceof Error ? e.message : e}`);
+    return { ok: true };
+  }
+}
+
 async function resolverInFlight(slug: string, workspaceId: string): Promise<boolean> {
   const { sql } = getOrgPg();
   const rows = await sql<{ lr: ResolverMarker | null }[]>`
@@ -1794,10 +1818,12 @@ async function spawnMergeResolver(
           timedOut?: boolean;
           stderr?: string;
           decisionLine?: string;
+          rawStdoutTail?: string;
         };
         exitCode = j?.exitCode;
         timedOut = j?.timedOut;
-        if (j?.ok === false) detail = (j.decisionLine || j.stderr || '').slice(0, 400);
+        const failure = j?.ok === false ? resolverFailureDetail(j) : null;
+        if (failure) detail = failure.detail;
         const settled = res.ok && j?.ok !== false ? 'ok' : 'failed';
         await recordResolverDispatch(slug, workspaceId, {
           at: dispatchedAt,
@@ -1806,8 +1832,15 @@ async function spawnMergeResolver(
           exitCode,
           timedOut,
           detail,
+          ...(failure?.unavailable ? { unavailable: failure.unavailable } : {}),
         });
-        await logResolverSettle(settled, { httpStatus: res.status, exitCode, timedOut, detail });
+        await logResolverSettle(settled, {
+          httpStatus: res.status,
+          exitCode,
+          timedOut,
+          detail,
+          ...(failure?.unavailable ? { unavailable: failure.unavailable } : {}),
+        });
       } catch {
         const settled = res.ok ? 'ok' : 'failed';
         await recordResolverDispatch(slug, workspaceId, { at: dispatchedAt, status: settled, httpStatus: res.status });
@@ -1820,6 +1853,23 @@ async function spawnMergeResolver(
       await recordResolverDispatch(slug, workspaceId, { at: dispatchedAt, status: 'error', error: msg.slice(0, 300) });
       await logResolverSettle('error', { error: msg.slice(0, 300) });
     });
+}
+
+/**
+ * WI-10006833: the `last_resolver.detail` for a failed resolver run. `decisionLine` and
+ * `stderr` are empty when the agent CLI never started (c1010k: rc 127, empty stderr, the
+ * cause only in stdout as `spawn error: spawn claude ENOENT`), so fall back to the stdout
+ * tail the /invoke route returns, and name a missing runtime explicitly.
+ */
+export function resolverFailureDetail(j: {
+  decisionLine?: string;
+  stderr?: string;
+  rawStdoutTail?: string;
+}): { detail: string; unavailable?: { runtime: string; reason: 'runtime-missing' } } {
+  const tail = (j.rawStdoutTail ?? '').trim();
+  const detail = (j.decisionLine?.trim() || j.stderr?.trim() || tail.slice(-400)).slice(0, 400);
+  const enoent = /spawn (\S+) ENOENT/.exec(`${j.stderr ?? ''}\n${tail}`);
+  return enoent ? { detail, unavailable: { runtime: enoent[1], reason: 'runtime-missing' } } : { detail };
 }
 
 /** Record the merge-resolver dispatch lifecycle onto the routine metadata (GAP-2). */
@@ -7362,6 +7412,15 @@ async function runWorktreeCatchUp(
     // still in flight (for this or an ordinary git-sync conflict) defers it to a later tick.
     let next = t.next;
     let write = t.write;
+    // WI-10006833: preflight the resolver role's agent CLI while a dispatch is pending.
+    // A member without it (a Server install ships none) records why and is not dispatched.
+    if (divergenceAwaitsResolver(next)) {
+      const applied = applyResolverRuntimeProbe(next, await probeMergeResolverRuntime(slug, ctx.workspaceId), now);
+      const rtLine = describeResolverRuntimeChange(slug, applied.next, applied.change);
+      if (rtLine) (applied.change === 'available' ? console.log : console.warn)(rtLine);
+      if (applied.change !== null) write = true;
+      next = applied.next;
+    }
     const dispatch = divergenceResolverDispatch(next);
     if (next && dispatch && !(await resolverInFlight(slug, ctx.workspaceId))) {
       console.warn(
