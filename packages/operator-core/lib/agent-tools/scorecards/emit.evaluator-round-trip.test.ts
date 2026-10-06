@@ -35,6 +35,16 @@ const h = vi.hoisted(() => ({
   measurementRoot: '',
 }));
 
+// Repo-file measurement checks live mutation-probe locks. This round-trip uses a private
+// temporary checkout and does not exercise the shared lock store; keep that I/O seam empty
+// here (the lock behavior is covered by spec-evidence-store-mutation-probe.test.ts).
+vi.mock('../locks/su-lock-store', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../locks/su-lock-store')>()),
+  ensureBootstrap: vi.fn(async () => undefined),
+  getTxPool: vi.fn(() => ({} as never)),
+  readQueue: vi.fn(async () => ({ active_locks: [], waiting: [] })),
+}));
+
 // ── evidence-store I/O seams ────────────────────────────────────────────────────────
 vi.mock('@papercusp/db-org', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@papercusp/db-org')>();
