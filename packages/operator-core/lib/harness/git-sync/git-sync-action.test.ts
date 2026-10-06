@@ -246,6 +246,17 @@ vi.mock('./hive-git-mode', () => ({
 const ensurePotGitRepoMock = vi.hoisted(() => vi.fn());
 const defaultRunGitMock = vi.hoisted(() => vi.fn());
 const defaultRunGitCallHistory = vi.hoisted(() => [] as Array<{ testName: string; args: unknown[]; stack: string }>);
+const sidecarStartupAttempts = vi.hoisted(() => [] as string[]);
+vi.mock('../../fleet/spawner-sidecar-spawn', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../fleet/spawner-sidecar-spawn')>()),
+  // Fail at the first caller instead of launching a real child whose delayed
+  // diagnostics can be attributed to an unrelated test later in this suite.
+  spawnSpawnerSidecar: async () => {
+    const error = new Error('git-sync unit fixture reached real sidecar startup');
+    sidecarStartupAttempts.push(error.stack ?? error.message);
+    throw error;
+  },
+}));
 vi.mock('../../sync/pot-git/storage', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../sync/pot-git/storage')>()),
   // The action suite does not exercise bare-store initialization. Keep cold
@@ -4912,6 +4923,10 @@ describe("WI-37668: the lock hook's sentinel intent never becomes a commit subje
 });
 
 describe('WI-10005972: sidecar Git entrypoint attribution', () => {
+  it('never reaches the real sidecar startup boundary', () => {
+    expect(sidecarStartupAttempts).toEqual([]);
+  });
+
   it('pins the first sidecar-eligible Git call to the bridged credential-helper lookup', () => {
     const first = defaultRunGitCallHistory[0];
     expect(first).toBeDefined();
