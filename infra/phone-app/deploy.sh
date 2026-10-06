@@ -125,6 +125,24 @@ write_livekit_credentials() {
   chmod 600 "$ENV_FILE"
 }
 
+# The worker→sidecar ingest secret (header x-phone-worker-secret). The voice
+# worker and the sidecar both load livekit.env, so this ONE line arms both
+# ends. Without it the worker logs "sidecar reporting DISABLED" and the
+# sidecar boots with workerIngest disabled: no call context, transcripts,
+# consent notices, voicemail or summaries are recorded (WI-10006645).
+# Checked against the FILE, not the environment, so a value exported in the
+# caller's shell can never stand in for a persisted one. Minted once; rotated
+# only by --rotate-secret, whose Start step restarts both units together.
+ensure_worker_secret() {
+  [[ -f "$ENV_FILE" ]] || ( umask 077; : > "$ENV_FILE" )
+  if [[ $ROTATE == 1 ]] || ! grep -qE '^PHONE_WORKER_SECRET=.+' "$ENV_FILE"; then
+    upsert_env_var PHONE_WORKER_SECRET "$(openssl rand -hex 32)"
+    say "minted PHONE_WORKER_SECRET into $ENV_FILE (worker↔sidecar ingest; not printed)"
+  else
+    say "reusing PHONE_WORKER_SECRET in $ENV_FILE"
+  fi
+}
+
 report_status() {
   # A green LiveKit HTTP endpoint alone is NOT Phone readiness: SIP, the
   # worker and the portal sidecar may independently be down. This path is
@@ -296,6 +314,9 @@ rollback_drill() {
   say "isolated Phone source and ${#ARTIFACT_FILES[@]} artifacts restored from $revision; no service switched or public recovery asserted"
 }
 
+# Sourced (by tests) ⇒ the definitions above only; no action below runs.
+[[ "${BASH_SOURCE[0]}" == "$0" ]] || return 0
+
 if [[ $STATUS_ONLY == 1 ]]; then report_status; exit 0; fi
 if [[ $STAGE_ROLLBACK == 1 || $DRILL_ROLLBACK == 1 ]]; then
   [[ $((STAGE_ROLLBACK + DRILL_ROLLBACK + ROTATE + RENDER_ONLY + PREFLIGHT_ONLY + STATUS_ONLY + HOSTED + PIN_ONLY + VERIFY_PIN_ONLY)) == 1 ]] \
@@ -405,22 +426,10 @@ set -a; source "$ENV_FILE"; set +a
   || die "$ENV_FILE is missing PHONE_LIVEKIT_API_KEY / PHONE_LIVEKIT_API_SECRET"
 say "API credentials present (withheld)"
 
-# The worker→sidecar ingest secret (header x-phone-worker-secret). The voice
-# worker and the sidecar both load livekit.env, so this ONE line arms both
-# ends. Without it the worker logs "sidecar reporting DISABLED" and the
-# sidecar boots with workerIngest disabled: no call context, transcripts,
-# consent notices, voicemail or summaries are recorded (WI-10006645).
-# Checked against the FILE, not the environment, so a value exported in the
-# caller's shell can never stand in for a persisted one. Minted once; rotated
-# only by --rotate-secret, whose Start step restarts both units together.
 if [[ $RENDER_ONLY == 0 ]]; then
-  if [[ $ROTATE == 1 ]] || ! grep -qE '^PHONE_WORKER_SECRET=.+' "$ENV_FILE"; then
-    upsert_env_var PHONE_WORKER_SECRET "$(openssl rand -hex 32)"
-    say "minted PHONE_WORKER_SECRET into $ENV_FILE (worker↔sidecar ingest; not printed)"
-    set -a; source "$ENV_FILE"; set +a
-  else
-    say "reusing PHONE_WORKER_SECRET in $ENV_FILE"
-  fi
+  ensure_worker_secret
+  # shellcheck disable=SC1090
+  set -a; source "$ENV_FILE"; set +a
 elif ! grep -qE '^PHONE_WORKER_SECRET=.+' "$ENV_FILE"; then
   say "note: PHONE_WORKER_SECRET absent; a full deploy mints it (render-only never mints)"
 fi

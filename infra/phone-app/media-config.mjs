@@ -210,6 +210,7 @@ const PHONE_RECOVERY = {
   sidecar: 'Inspect papercusp-phone-sidecar.service and its database dependency.',
   'media-http': 'Inspect the loopback LiveKit HTTP control endpoint and media unit.',
   'sidecar-http': 'Inspect the sidecar /api/health endpoint and its unit.',
+  'worker-ingest': 'Re-run infra/phone-app/deploy.sh so PHONE_WORKER_SECRET is in livekit.env, then restart the worker and sidecar.',
   'turn-certificate': 'Renew and recheck the hosted TURN certificate/key before expiry; do not admit hosted traffic.',
 };
 let execFileAsyncMemo;
@@ -229,6 +230,10 @@ export async function localPhoneReadiness(env, probes = {}) {
     const response = await fetch(url, { signal: AbortSignal.timeout(3000) });
     return response.ok;
   });
+  const httpStatus = probes.httpStatus ?? (async url => {
+    const response = await fetch(url, { signal: AbortSignal.timeout(3000) });
+    return response.status;
+  });
   const checks = await Promise.all(PHONE_UNITS.map(async ([component, unit]) => {
     try { return { component, ready: (await unitState(unit)) === true }; }
     catch { return { component, ready: false }; }
@@ -244,6 +249,20 @@ export async function localPhoneReadiness(env, probes = {}) {
       checks.push({ component, ready: (await httpReady(url)) === true });
     } catch { checks.push({ component, ready: false }); }
   }
+  // Worker→sidecar ingest (WI-10006645). Both units read PHONE_WORKER_SECRET
+  // from livekit.env. Blank, the worker reports nothing and the sidecar answers
+  // every /internal/* call 503 phone_worker_ingest_disabled: calls then lose
+  // context, transcripts, notices and voicemail while every unit and health
+  // endpoint above stays green. Armed, a request WITHOUT the secret is refused
+  // 401, which is the only ready answer. The secret is never sent or echoed.
+  let ingestReady = false;
+  if (typeof env.PHONE_WORKER_SECRET === 'string' && env.PHONE_WORKER_SECRET.trim() !== '') {
+    try {
+      const url = new URL('internal/readiness', localProbeHealthUrl(env.PHONE_SIDECAR_URL)).href;
+      ingestReady = (await httpStatus(url)) === 401;
+    } catch { /* An unknown probe is not ready. */ }
+  }
+  checks.push({ component: 'worker-ingest', ready: ingestReady });
   // The local LAN install has no TLS material. Once any hosted coordinate is
   // present, however, a partial/expired/mismatched TURN certificate is an
   // operational failure even if all processes and HTTP endpoints are healthy.

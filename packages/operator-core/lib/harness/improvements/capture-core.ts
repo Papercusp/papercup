@@ -1151,8 +1151,18 @@ function initialImplementationReadiness(reviewRequired: boolean): Implementation
   );
 }
 
-/** The readiness reason a promoted tool failure carries while it awaits a reviewer. */
+/**
+ * LEGACY readiness reason: what a promoted tool failure carried while it awaited a
+ * reviewer, before plan unified-bug-pipeline-and-honest-queue-2026-10-05 P-008 / D-038.
+ * No writer produces it any more: a promotion now stamps the one stage reason
+ * `awaiting-agent-review` (AGENT_REVIEW_AWAITING_REASON) and enrols the row in agent
+ * review. It stays readable only so rows stamped before the P-008 migration are still
+ * found by the stranded sweep.
+ */
 export const TOOL_FAILURE_AWAITING_REVIEW_REASON = 'corroborated-tool-failure-awaiting-review';
+
+/** The one stage reason a row carries while it waits for (or sits in) agent review. */
+export const AGENT_REVIEW_AWAITING_REASON = 'awaiting-agent-review';
 
 function promotedProbationReadiness(
   input: CaptureImprovementInput,
@@ -1181,10 +1191,13 @@ function promotedProbationReadiness(
       reason: 'born-verified-tool-failure-promotion',
     });
   }
+  // P-008 / D-038: no separate probation hold. An unverified promotion waits in the one
+  // review stage, under the same reason every capture-review row carries, and the
+  // promotion path enrols it there (enrolPromotedToolFailureReview).
   return createImplementationReadiness({
     status: 'unknown',
     source: 'capture-policy',
-    reason: TOOL_FAILURE_AWAITING_REVIEW_REASON,
+    reason: AGENT_REVIEW_AWAITING_REASON,
   });
 }
 
@@ -1198,12 +1211,16 @@ function promotionReproductionPatch(input: CaptureImprovementInput): { reproduct
 export const DEPLOYMENT_FRESHNESS_UNKNOWN_REASON = 'deployment-freshness-unknown';
 
 /**
- * The two `unknown` readiness reasons that wait on a verifier no lane was ever handed
- * (EI-25176539351759672): a corroborated tool-failure promotion, and a triage place
- * whose deployment screen could not answer. Both are held out of self-select by the
- * claim floor; neither carried an agentReview record before P-002.
+ * The `unknown` readiness reasons that wait on a reviewer. A row carrying one of them
+ * with NO agentReview record is stranded (EI-25176539351759672): the claim floor holds
+ * it as in-review, and the reviewer lane selects only agentReview.status = pending.
+ *
+ * P-008 / D-038: `awaiting-agent-review` is the one stage reason every writer now
+ * stamps, so any such row without a review record is stranded, whatever produced it.
+ * The two legacy reasons stay here only for rows stamped before the P-008 migration.
  */
 export const STRANDED_REVIEW_REASONS: readonly string[] = [
+  AGENT_REVIEW_AWAITING_REASON,
   TOOL_FAILURE_AWAITING_REVIEW_REASON,
   DEPLOYMENT_FRESHNESS_UNKNOWN_REASON,
 ];

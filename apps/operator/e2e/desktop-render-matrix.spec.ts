@@ -69,7 +69,9 @@ test.beforeAll(async () => {
         });
       },
     }],
-    server: { host: '127.0.0.1', port: 0, strictPort: false },
+    // No HMR / watcher: root is the shared tree the fleet edits, so a watched change can
+    // full-reload the page mid-test (see e2e/_desktop-grid-fixture-server.ts).
+    server: { host: '127.0.0.1', port: 0, strictPort: false, hmr: false, watch: null },
   });
   await server.listen();
   origin = server.resolvedUrls!.local[0]!.replace(/\/$/, '');

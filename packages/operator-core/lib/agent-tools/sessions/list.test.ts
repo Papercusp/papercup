@@ -329,7 +329,7 @@ describe('sessions:list historical bounded census', () => {
     expect(sql).not.toContain('spawn_id');
   });
 
-  it('deduplicates owner/session keys before the lateral session lookup', async () => {
+  it('aggregates raw event keys before mapping and splits null/non-null session joins', async () => {
     const { queries } = await run(
       {
         mode: 'historical',
@@ -340,20 +340,33 @@ describe('sessions:list historical bounded census', () => {
     );
 
     const sql = queries[0];
+    const rawEventGroups = sql.indexOf('raw_event_groups AS MATERIALIZED');
+    const rawEventGroupBy = sql.indexOf('GROUP BY owner_id, session_id', rawEventGroups);
     const mapStart = sql.indexOf('session_map AS MATERIALIZED');
-    const distinctKeys = sql.indexOf('SELECT DISTINCT owner_id, session_id', mapStart);
-    const lateralLookup = sql.indexOf('LEFT JOIN LATERAL', distinctKeys);
-    const eventRejoin = sql.indexOf('FROM raw_events e', lateralLookup);
+    const mapKeys = sql.indexOf('FROM raw_event_groups k', mapStart);
+    const lateralLookup = sql.indexOf('LEFT JOIN LATERAL', mapKeys);
+    const splitJoin = sql.indexOf('mapped_key_events AS', lateralLookup);
+    const metricRollup = sql.indexOf('event_group_metrics AS', splitJoin);
+    const sourceRollup = sql.indexOf('event_group_sources AS', metricRollup);
     const sessionLookupEnd = sql.indexOf(') a ON true', lateralLookup);
     const sessionLookup = sql.slice(lateralLookup, sessionLookupEnd);
     const sessionLookupSelect = sessionLookup.slice(0, sessionLookup.indexOf('FROM harness_shared.adv_sessions'));
 
+    expect(rawEventGroups).toBeGreaterThanOrEqual(0);
+    expect(rawEventGroupBy).toBeGreaterThan(rawEventGroups);
     expect(mapStart).toBeGreaterThanOrEqual(0);
-    expect(distinctKeys).toBeGreaterThan(mapStart);
-    expect(lateralLookup).toBeGreaterThan(distinctKeys);
-    expect(eventRejoin).toBeGreaterThan(lateralLookup);
-    expect(sql).toContain('a.raw_session_id IS NOT DISTINCT FROM e.session_id');
-    expect(sql).toContain('count(*)::int AS event_count');
+    expect(mapStart).toBeGreaterThan(rawEventGroupBy);
+    expect(mapKeys).toBeGreaterThan(mapStart);
+    expect(lateralLookup).toBeGreaterThan(mapKeys);
+    expect(splitJoin).toBeGreaterThan(lateralLookup);
+    expect(metricRollup).toBeGreaterThan(splitJoin);
+    expect(sourceRollup).toBeGreaterThan(metricRollup);
+    expect(sql).toContain('WHERE k.session_id IS NOT NULL');
+    expect(sql).toContain('WHERE k.session_id IS NULL');
+    expect(sql).not.toContain('FROM raw_events e');
+    expect(sql).not.toContain('a.raw_session_id IS NOT DISTINCT FROM e.session_id');
+    expect(sql).toContain('sum(event_count)::int AS event_count');
+    expect(sql).toContain('array_agg(DISTINCT source.event_source ORDER BY source.event_source) AS event_sources');
     expect(sessionLookup).toContain("FROM harness_shared.adv_sessions");
     expect(sessionLookupSelect).toContain("launch_spec->>'harnessSlug' AS harness_slug");
     expect(sessionLookupSelect).not.toMatch(/,\s*harness_slug\s*,/);
