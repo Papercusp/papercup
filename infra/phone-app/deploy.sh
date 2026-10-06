@@ -455,8 +455,8 @@ MEDIA_ARGS=()
 [[ $HOSTED == 0 ]] || MEDIA_ARGS+=(--hosted)
 PHONE_TURN_TLS_CONFIG="$("$NODE_BIN" "$HERE/media-config.mjs" turn-config "${MEDIA_ARGS[@]}")" \
   || die "public media prerequisites failed; configuration was not changed"
-PHONE_EDGE_IFACE_INCLUDE="$("$NODE_BIN" "$HERE/edge/edge-config.mjs" livekit-interface-include)" \
-  || die "public media edge interface is invalid; configuration was not changed"
+PHONE_LIVEKIT_INTERFACES="$(PHONE_LAN_IFACE="$LAN_IFACE" "$NODE_BIN" "$HERE/edge/edge-config.mjs" livekit-interfaces)" \
+  || die "LiveKit media interface is invalid; configuration was not changed"
 if [[ $HOSTED == 1 && $RENDER_ONLY == 0 ]]; then
   "$NODE_BIN" "$HERE/media-config.mjs" public-dns \
     || die "hosted media DNS is not public; refusing runtime convergence"
@@ -480,9 +480,8 @@ render() {
   content="$(cat "$tmpl")"
   content="${content//'${PHONE_LIVEKIT_API_KEY}'/$PHONE_LIVEKIT_API_KEY}"
   content="${content//'${PHONE_LIVEKIT_API_SECRET}'/$PHONE_LIVEKIT_API_SECRET}"
-  content="${content//'${PHONE_LAN_IFACE}'/$LAN_IFACE}"
   content="${content//'${PHONE_TURN_TLS_CONFIG}'/$PHONE_TURN_TLS_CONFIG}"
-  content="${content//'${PHONE_EDGE_IFACE_INCLUDE}'/$PHONE_EDGE_IFACE_INCLUDE}"
+  content="${content//'${PHONE_LIVEKIT_INTERFACES}'/$PHONE_LIVEKIT_INTERFACES}"
   content="${content//'${PHONE_WORKER_DIR}'/$WORKER_DIR}"
   content="${content//'${PHONE_SIDECAR_DIR}'/$SIDECAR_DIR}"
   content="${content//'${PHONE_NODE_BIN}'/$NODE_BIN}"

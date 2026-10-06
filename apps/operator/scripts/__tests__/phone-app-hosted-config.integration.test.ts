@@ -79,6 +79,8 @@ describe('Phone existing deployer public media preparation', () => {
       domain: 'turn.example.com', cert_file: certPath, key_file: keyPath });
     // TURN is TLS-only: a UDP port would issue turn:<home IP> to public clients (WI-10006616).
     expect(config.turn).not.toHaveProperty('udp_port');
+    // No public edge configured: loopback + LAN keep co-located ICE off the hairpin.
+    expect(config.rtc.interfaces.includes).toEqual(['lo', 'test0']);
     expect(config.keys).toEqual({ 'test-key': 'test-secret-withheld' });
     expect(parse(readFileSync(join(f.conf, 'livekit-sip.yaml'), 'utf8')).ws_url).toBe('ws://127.0.0.1:7890');
     expect(statSync(file).mode & 0o777).toBe(0o600);
@@ -90,6 +92,19 @@ describe('Phone existing deployer public media preparation', () => {
       PHONE_LAN_IFACE: 'test0', PATH: process.env.PATH });
     expect(second.status, second.stderr).toBe(0);
     expect(readFileSync(file, 'utf8')).toBe(before);
+  });
+
+  // WI-10006708 / P-002 R-13: LiveKit hands its candidates to every participant, so with the
+  // public edge the rendered config may list ONLY the tunnel (measured live: the box LAN
+  // address 192.168.4.34 reached public browsers while lo + LAN were still listed).
+  it('advertises only the edge tunnel, never LAN or loopback, once the public edge is configured', () => {
+    const f = fixture('edge-only-candidates');
+    const result = run({ ...f.env, PHONE_EDGE_IFACE: 'phedge0' });
+    expect(result.status, result.stderr).toBe(0);
+    const config = parse(readFileSync(join(f.conf, 'livekit-server.yaml'), 'utf8'));
+    expect(config.rtc.interfaces.includes).toEqual(['phedge0']);
+    expect(config.rtc.use_external_ip).toBe(true);
+    expect(readFileSync(join(f.conf, 'livekit.env'), 'utf8')).toContain('PHONE_EDGE_IFACE=phedge0');
   });
 
   it('refuses a private WSS origin before any configuration write', () => {
