@@ -2,6 +2,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import type { Sql } from 'postgres';
+import type { LanguageModelV3 } from '@ai-sdk/provider';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { OrgTestDb } from '../../../../test/_org-test-db';
 import type { HostedServiceContextRunner } from '../workos-lifecycle-postgres';
@@ -12,6 +13,8 @@ import { OpenRouterHostedUsageCollector, createOpenRouterHostedUsageCollector, o
 import { createHostedUsageSource } from './usage-service';
 import { shadowMonthBounds } from '../../../cupboard/shadow-metering-reader';
 import { PostgresHostedBudgetStore, type HostedBudgetContextReader, type HostedBudgetExecutionGrant } from './budget-store';
+import { createRoutedModelPort } from '../../../agent-loop/provider-router';
+import { runAgentLoop } from '../../../agent-loop/loop';
 
 const { createOrgTestDb } = await import('../../../../test/_org-test-db');
 let db: OrgTestDb;
@@ -458,6 +461,155 @@ describe('PostgresHostedUsageStore (real Postgres and hosted_service)', () => {
         fundedMicros: 1_000_000, externalSpentMicros: 0, retainedReserveMicros: 0, unreconciled: false }] };
   };
   const budgetStore = () => new PostgresHostedBudgetStore({ run: runService, readContext: grantContext, now: () => T });
+
+  const intent = { provider: 'openrouter', modelId: 'vendor/model' };
+  const captureRequest = (scope: OpenRouterGenerationBinding['scope']) => ({ scope, reservationId: randomUUID(),
+    month: MONTH, budgetKey: 'consumption.usd_cents', maximumCostMicros: 100_000,
+    providerLimitRef: 'fixture:enforced-limit-unverified', asOfMs: T });
+  const captureContext = () => ({ modelId: intent.modelId, servedAccount: 'local-fixture-account',
+    credentialSha256: createHash('sha256').update('execution-key').digest('hex') });
+  const captureOptions = (scope: OpenRouterGenerationBinding['scope']) => ({ budget: budgetStore(),
+    request: captureRequest(scope), context: captureContext(), credentialRef: 'env:FIXTURE_OPENROUTER_KEY',
+    isByok: false, evidenceRef: 'execution:paused-native-capture', now: () => T });
+
+  it.each(['error', 'abort-before-wire'] as const)('composes actual native routing with committed admission and early binding on %s', async ending => {
+    const scope = await tenant(); const options = captureOptions(scope);
+    const abort = new AbortController(); const generationId = 'gen-' + randomUUID(); let wireCalls = 0;
+    const sdkModel: LanguageModelV3 = { specificationVersion: 'v3', provider: 'fixture', modelId: 'vendor/model', supportedUrls: {},
+      async doGenerate() { throw new Error('unused'); }, async doStream() {
+        wireCalls++;
+        // This measurement is inside the actual dispatch callback, after the
+        // native paused intent: admission must already be durable.
+        expect((await budgetStore().reserve(options.request)).outcome).toBe('duplicate');
+        return { stream: new ReadableStream({ start(controller) {
+          controller.enqueue({ type: 'response-metadata', id: generationId, modelId: intent.modelId });
+          controller.enqueue({ type: 'error', error: 'provider failed after generation identity' }); controller.close();
+        } }) };
+      } };
+    const port = createRoutedModelPort({ catalog: null,
+      openRouterAccounts: { active: () => ({ accountId: 'local-fixture-account', authMode: 'api-key',
+        token: async () => 'execution-key' }), onExhausted: () => null },
+      createLanguageModel: async () => sdkModel,
+      openRouterRequestCapture: context => store().createOpenRouterRequestCapture({ ...options, context }) });
+    const events = [];
+    for await (const event of runAgentLoop({ port, model: 'openrouter/vendor/model', messages: [], signal: abort.signal,
+      onProviderRequest: async observation => { if (ending === 'abort-before-wire' && !observation.request.response) abort.abort(); } })) {
+      events.push(event);
+    }
+    expect(events.at(-1)).toMatchObject({ type: 'done', stopReason: ending === 'error' ? 'error' : 'aborted', steps: [] });
+    expect(wireCalls).toBe(ending === 'error' ? 1 : 0);
+    const saved = await bindings(scope);
+    if (ending === 'error') {
+      expect(saved).toHaveLength(1);
+      expect(saved[0]).toMatchObject({ generationId, credentialSha256: createHash('sha256').update('execution-key').digest('hex'),
+        budgetGrant: { reservationId: options.request.reservationId } });
+    } else expect(saved).toEqual([]);
+    expect((await budgetStore().reserve(options.request)).receipt).toMatchObject({ revision: 0, providerFinal: false, costMicros: null });
+    expect(JSON.stringify(events)).not.toMatch(/budgetGrant|credentialSha256|execution-key|reservationId|policyId/);
+    expect(events.flatMap(event => event.type === 'done' ? event.providerRequests ?? [] : [])
+      .every(observation => Object.getOwnPropertySymbols(observation).length === 0)).toBe(true);
+  });
+
+  it('refuses concurrent use of a request capture closure without reopening its committed hold', async () => {
+    const scope = await tenant(); const options = captureOptions(scope);
+    let entered!: () => void; let release!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const budget = new PostgresHostedBudgetStore({ run: runService, now: () => T,
+      readContext: async (sql, request) => { entered(); await gate; return grantContext(sql, request); } });
+    const capture = store().createOpenRouterRequestCapture({ ...options, budget });
+    const first = capture(intent).catch(error => error);
+    await started;
+    await expect(capture(intent)).rejects.toThrow('not resumable');
+    release();
+    expect(await first).toBeInstanceOf(Error);
+    expect((await budgetStore().reserve(options.request)).receipt).toMatchObject({ revision: 0, providerFinal: false });
+    expect(await read(scope)).toEqual([]);
+  });
+
+  it('commits native dispatch intent before a private early binding and preserves an unpriced immutable hold', async () => {
+    const scope = await tenant(); const options = captureOptions(scope);
+    const capture = store().createOpenRouterRequestCapture(options);
+    await capture(intent);
+    expect((await budgetStore().reserve(options.request)).outcome).toBe('duplicate');
+    expect(await read(scope)).toEqual([]);
+    const generationId = 'gen-' + randomUUID();
+    await capture({ ...intent, response: { id: generationId, modelId: intent.modelId } });
+    await capture({ ...intent, response: { id: generationId } });
+    const saved = await bindings(scope);
+    expect(saved).toHaveLength(1);
+    expect(saved[0]).toMatchObject({ generationId, credentialSha256: options.context.credentialSha256,
+      budgetGrant: { reservationId: options.request.reservationId, maximumCostMicros: 100_000 } });
+    expect((await read(scope))[0]).toMatchObject({ costSource: 'unpriced', costMicros: null });
+    const replay = await budgetStore().reserve(options.request);
+    expect(replay.receipt).toMatchObject({ revision: 0, costMicros: null, providerFinal: false });
+    expect(JSON.stringify(await read(scope))).not.toMatch(/budgetGrant|credential|reservationId|local-fixture-account/);
+  });
+
+  it('refuses a reused reservation in a new stream and retains a missing-generation hold', async () => {
+    const scope = await tenant(); const options = captureOptions(scope);
+    await store().createOpenRouterRequestCapture(options)(intent);
+    await expect(store().createOpenRouterRequestCapture(options)(intent)).rejects.toThrow('not freshly admitted');
+    const replay = await budgetStore().reserve(options.request);
+    expect(replay).toMatchObject({ outcome: 'duplicate', receipt: { revision: 0, providerFinal: false, costMicros: null } });
+    expect(await read(scope)).toEqual([]);
+  });
+
+  it.each(['conflict', 'uncertain', 'served-model', 'invalid-id'] as const)('refuses %s identity without rebinding or releasing the admission', async mode => {
+    const scope = await tenant(); const options = captureOptions(scope);
+    const capture = store().createOpenRouterRequestCapture(options);
+    const first = 'gen-' + randomUUID(); await capture(intent);
+    await capture({ ...intent, response: { id: first } });
+    const next = { ...intent, response: { id: mode === 'conflict' ? 'gen-' + randomUUID() : mode === 'invalid-id' ? 'invalid' : first,
+      ...(mode === 'served-model' ? { modelId: 'vendor/other' } : {}) },
+      ...(mode === 'uncertain' ? { identityUncertain: true } : {}) };
+    await expect(capture(next)).rejects.toThrow();
+    await expect(capture({ ...intent, response: { id: first } })).rejects.toThrow('not resumable');
+    expect((await bindings(scope)).map(b => b.generationId)).toEqual([first]);
+    expect((await budgetStore().reserve(options.request)).receipt).toMatchObject({ revision: 0, providerFinal: false });
+  });
+
+  it('snapshots server authorization and credential identity before any asynchronous admission', async () => {
+    const scope = await tenant(); const base = captureOptions(scope);
+    const options = { ...base, request: { ...base.request, scope: { ...scope } } };
+    const original = { ...options.request, scope: { ...scope } };
+    const hash = options.context.credentialSha256;
+    const capture = store().createOpenRouterRequestCapture(options);
+    options.request.scope.customerWorkspaceId = randomUUID(); options.request.maximumCostMicros = 1;
+    options.context.credentialSha256 = 'b'.repeat(64); options.credentialRef = 'env:OTHER_KEY';
+    await capture(intent);
+    await capture({ ...intent, response: { id: 'gen-' + randomUUID() } });
+    expect((await bindings(scope))[0]).toMatchObject({ credentialRef: 'env:FIXTURE_OPENROUTER_KEY', credentialSha256: hash,
+      budgetGrant: { scope, maximumCostMicros: 100_000 } });
+    expect((await budgetStore().reserve(original)).outcome).toBe('duplicate');
+  });
+
+  it('keeps the admission after a bounded SQL binding failure and never retries the uncertain write', async () => {
+    const scope = await tenant(); const options = captureOptions(scope);
+    const capture = boundedWriter().createOpenRouterRequestCapture(options);
+    await capture(intent);
+    const observation = { ...intent, response: { id: 'gen-' + randomUUID() } };
+    await withPopulationHeld(async () => {
+      await expect(capture(observation)).rejects.toMatchObject({ code: '55P03' });
+    });
+    await expect(capture(observation)).rejects.toThrow('not resumable');
+    expect(await read(scope)).toEqual([]);
+    expect((await budgetStore().reserve(options.request)).receipt).toMatchObject({ revision: 0, costMicros: null, providerFinal: false });
+  });
+
+  it('refuses identity before dispatch intent, unconfigured authority and invalid server clocks', async () => {
+    const scope = await tenant(); const options = captureOptions(scope);
+    await expect(store().createOpenRouterRequestCapture(options)({ ...intent, response: { id: 'gen-before-admission' } }))
+      .rejects.toThrow('dispatch intent');
+    const noAuthority = new PostgresHostedBudgetStore({ run: runService, now: () => T });
+    await expect(store().createOpenRouterRequestCapture({ ...options, budget: noAuthority })(intent))
+      .rejects.toThrow('not freshly admitted');
+    const badTime = { ...captureOptions(scope), now: () => T - 1 };
+    await expect(store().createOpenRouterRequestCapture(badTime)(intent)).rejects.toThrow('execution time');
+    expect((await budgetStore().reserve(badTime.request)).receipt).toMatchObject({ revision: 0, providerFinal: false });
+    expect(await read(scope)).toEqual([]);
+  });
+
   async function admittedGrant(scope: OpenRouterGenerationBinding['scope']): Promise<HostedBudgetExecutionGrant> {
     const result = await budgetStore().executeOnce({ scope, reservationId: randomUUID(), month: MONTH,
       budgetKey: 'consumption.usd_cents', maximumCostMicros: 100_000,

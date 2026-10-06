@@ -1,6 +1,8 @@
+import { createHash } from 'node:crypto';
 import type { LanguageModelV3, LanguageModelV3StreamPart } from '@ai-sdk/provider';
 import { describe, expect, it, vi } from 'vitest';
 import type { ModelPort, ModelRequest, ModelStreamEvent } from './model-port';
+import { captureModelProviderRequest } from './model-port';
 import { curateOpenRouterCatalog, type ModelsDevCatalog } from './model-selection';
 import type { AccountPool, ActiveAccount } from '../inference-gateway/provider-contracts';
 import { createRoutedModelPort, type ProviderFactoryArgs } from './provider-router';
@@ -72,7 +74,10 @@ function model(parts: LanguageModelV3StreamPart[] = [{
 
 async function collect(port: ModelPort, req: ModelRequest): Promise<ModelStreamEvent[]> {
   const events: ModelStreamEvent[] = [];
-  for await (const event of port.stream(req)) events.push(event);
+  for await (const event of port.stream(req)) {
+    if (event.type === 'provider_request') await captureModelProviderRequest(event);
+    events.push(event);
+  }
   return events;
 }
 
@@ -90,6 +95,102 @@ const openRouterAccount = (): ActiveAccount => ({
 });
 
 describe('createRoutedModelPort', () => {
+  it('awaits private admission before dispatch and binding before the next stream pull', async () => {
+    const order: string[] = [];
+    let resume!: () => void;
+    const gate = new Promise<void>(resolve => { resume = resolve; });
+    let wireCalls = 0;
+    const port = createRoutedModelPort({ catalog: null, openRouterAccounts: openRouterPool(openRouterAccount()),
+      createLanguageModel: async () => model([
+        { type: 'response-metadata', id: 'gen-private-capture', modelId: 'vendor/model' },
+        { type: 'error', error: 'provider failed' },
+      ], () => { wireCalls++; order.push('wire'); }),
+      openRouterRequestCapture: context => {
+        expect(context).toEqual({ modelId: 'vendor/model', servedAccount: 'customer-openrouter-test',
+          credentialSha256: createHash('sha256').update('customer-openrouter-test-key').digest('hex') });
+        expect(Object.isFrozen(context)).toBe(true);
+        return async observation => {
+          expect(Object.isFrozen(observation)).toBe(true);
+          order.push(observation.response?.id ? 'bind' : 'admit');
+          if (!observation.response) await gate;
+        };
+      } });
+    const pending = collect(port, request('openrouter/vendor/model'));
+    await vi.waitFor(() => expect(order).toEqual(['admit']));
+    expect(wireCalls).toBe(0);
+    resume();
+    const events = await pending;
+    expect(order).toEqual(['admit', 'wire', 'bind']);
+    expect(events.at(-1)).toMatchObject({ type: 'error' });
+    expect(JSON.stringify(events)).not.toMatch(/credentialSha256|customer-openrouter-test-key|budgetGrant/);
+  });
+
+  it('creates an independent private handler for each request and snapshots the host factory', async () => {
+    const captures: string[][] = [];
+    const factory = vi.fn(() => { const seen: string[] = []; captures.push(seen);
+      return async (observation: { response?: { id?: string } }) => { seen.push(observation.response?.id ?? 'intent'); }; });
+    const options = { catalog: null, openRouterAccounts: openRouterPool(openRouterAccount()),
+      createLanguageModel: async () => model(), openRouterRequestCapture: factory };
+    const port = createRoutedModelPort(options);
+    options.openRouterRequestCapture = vi.fn(() => { throw new Error('mutated factory'); });
+    await collect(port, request('openrouter/vendor/model'));
+    await collect(port, request('openrouter/vendor/model'));
+    expect(factory).toHaveBeenCalledTimes(2);
+    expect(captures).toEqual([['intent'], ['intent']]);
+  });
+
+  it('retains the selected local account across an asynchronous credential read', async () => {
+    const account = openRouterAccount();
+    account.token = async () => { account.accountId = 'later-local-label'; return 'actual-execution-key'; };
+    const contexts: unknown[] = [];
+    const port = createRoutedModelPort({ catalog: null, openRouterAccounts: openRouterPool(account),
+      createLanguageModel: async () => model(), openRouterRequestCapture: context => {
+        contexts.push(context); return async () => {};
+      } });
+    const events = await collect(port, { ...request('openrouter/vendor/model'), account: 'customer-openrouter-test' });
+    expect(contexts).toEqual([{ modelId: 'vendor/model', servedAccount: 'customer-openrouter-test',
+      credentialSha256: createHash('sha256').update('actual-execution-key').digest('hex') }]);
+    expect(events.at(-1)).toMatchObject({ type: 'stop', servedAccount: 'customer-openrouter-test' });
+  });
+
+  it('refuses an unawaited private dispatch continuation without making a wire call', async () => {
+    const wire = vi.fn();
+    const capture = vi.fn(async () => {});
+    const port = createRoutedModelPort({ catalog: null, openRouterAccounts: openRouterPool(openRouterAccount()),
+      createLanguageModel: async () => model(undefined, wire), openRouterRequestCapture: () => capture });
+    const iterator = port.stream(request('openrouter/vendor/model'))[Symbol.asyncIterator]();
+    expect((await iterator.next()).value).toMatchObject({ type: 'provider_request' });
+    await expect(iterator.next()).rejects.toThrow('capture was not awaited');
+    expect(capture).not.toHaveBeenCalled(); expect(wire).not.toHaveBeenCalled();
+  });
+
+  it('does not let a consumer rewrite the identity captured before the next pull', async () => {
+    const seen: unknown[] = [];
+    const port = createRoutedModelPort({ catalog: null, openRouterAccounts: openRouterPool(openRouterAccount()),
+      createLanguageModel: async () => model([{ type: 'response-metadata', id: 'gen-original', modelId: 'vendor/model' },
+        { type: 'error', error: 'failed' }]), openRouterRequestCapture: () => async value => { seen.push(value); } });
+    for await (const event of port.stream(request('openrouter/vendor/model'))) {
+      if (event.type === 'provider_request') {
+        if (event.request.response) event.request.response.id = 'gen-mutated';
+        await captureModelProviderRequest(event);
+        await captureModelProviderRequest(event); // Same continuation is idempotent.
+      }
+    }
+    expect(seen).toEqual([{ provider: 'openrouter', modelId: 'vendor/model' },
+      { provider: 'openrouter', modelId: 'vendor/model', response: { id: 'gen-original', modelId: 'vendor/model' } }]);
+  });
+
+  it('sanitizes capture failure and stops before provider dispatch, including overlapping abort', async () => {
+    const wire = vi.fn(); const abort = new AbortController();
+    const port = createRoutedModelPort({ catalog: null, openRouterAccounts: openRouterPool(openRouterAccount()),
+      createLanguageModel: async () => model(undefined, wire), openRouterRequestCapture: () => async () => {
+        abort.abort(); throw new Error('private credential or SQL grant detail');
+      } });
+    await expect(collect(port, { ...request('openrouter/vendor/model'), signal: abort.signal }))
+      .rejects.toThrow('request capture failed; reservation remains unresolved');
+    expect(wire).not.toHaveBeenCalled();
+  });
+
   async function selectedEstimate(pricing: Record<string, unknown>, modelId = 'openai/gpt-5.5:free', write = 0) {
     const selected = curateOpenRouterCatalog({ data: [{ id: modelId, pricing }] }, [modelId], 123);
     const port = createRoutedModelPort({ catalog: selected,
