@@ -1733,6 +1733,9 @@ export {
   PROVIDER_DAEMON_METHODS,
   PROVIDER_SYNC_WAKE_CAPABILITY,
   PROVIDER_SYNC_ADOPT_CAPABILITY,
+  PROVIDER_PUSH_SUBSCRIBE_CAPABILITY,
+  PROVIDER_PUSH_UNSUBSCRIBE_CAPABILITY,
+  PROVIDER_PUSH_HEADER_PATTERN,
 } from './provider';
 export type {
   ProviderDaemonCallParams,
@@ -1750,6 +1753,9 @@ export type {
   ProviderServices,
   ProviderWakeResult,
   ProviderAdoptResult,
+  ProviderPushDescriptor,
+  ProviderPushSubscription,
+  ProviderPushSubscribeResult,
   HostFetchRequest,
   HostFetchResponse,
   HostFetch,

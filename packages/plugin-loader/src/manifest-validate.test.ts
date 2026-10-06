@@ -296,11 +296,15 @@ describe('validateManifest: provider descriptor schema matches the SDK type', ()
     contractVersion: 1,
     displayName: 'Example',
     datatypes: ['ticket'],
-    capabilities: ['ticket.read'],
+    capabilities: ['ticket.read', 'push.subscribe', 'push.unsubscribe'],
     oauth,
     egressHosts: ['api.example.com', 'example.com', 'pubsub.example.com'],
     configSchema: { type: 'object' },
     serviceCredentials: [{ ref: 'example-service', hosts: ['pubsub.example.com'] }],
+    push: {
+      handshake: { header: 'x-hook-secret' },
+      signature: { header: 'x-hook-signature', algorithm: 'hmac-sha256', encoding: 'hex' },
+    },
   };
   const manifest = (p: unknown) => ({ name: 'example-provider', version: '0.1.0', papercusp: '^0.1.0', provider: p });
 
@@ -320,6 +324,16 @@ describe('validateManifest: provider descriptor schema matches the SDK type', ()
   it('still refuses a malformed service credential', () => {
     expect(validateManifest(manifest({ ...provider, serviceCredentials: [{ ref: 'example-service' }] })).ok).toBe(false);
     expect(validateManifest(manifest({ ...provider, serviceCredentials: [{ ref: 'x', hosts: ['pubsub.example.com'], secret: 'y' }] })).ok).toBe(false);
+  });
+
+  it('refuses a push scheme with an unknown key, an unsupported algorithm, or a handshake without the push capabilities', () => {
+    const signature = provider.push.signature;
+    expect(validateManifest(manifest({ ...provider, push: { signature, secret: 'x' } })).ok).toBe(false);
+    expect(validateManifest(manifest({ ...provider, push: { signature: { ...signature, algorithm: 'sha1' } } })).ok).toBe(false);
+    expect(validateManifest(manifest({ ...provider, push: { signature: { ...signature, header: 'X-Hook-Signature' } } })).ok).toBe(false);
+    expect(validateManifest(manifest({ ...provider, capabilities: ['ticket.read'] })).ok).toBe(false);
+    // A signature-only scheme (no handshake) needs no subscribe capability.
+    expect(validateManifest(manifest({ ...provider, capabilities: ['ticket.read'], push: { signature } })).issues).toEqual([]);
   });
 });
 
