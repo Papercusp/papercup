@@ -90,14 +90,16 @@ export function buildProviderBwrapArgs(opts: ProviderBwrapOptions): { binary: st
   const binary = opts.bwrapBinary ?? 'bwrap';
   const argv: string[] = [];
   for (const dir of PROVIDER_SYSTEM_RO_DIRS) argv.push('--ro-bind-try', dir, dir);
-  // /tmp before the plugin/runtime binds: a plugin dir under /tmp must be
-  // bound ON TOP of the private tmpfs, not shadowed by it.
-  argv.push('--tmpfs', '/tmp');
+  // Every fresh mount (/proc, /dev, the private /tmp) goes BEFORE the plugin
+  // and runtime binds. bwrap applies operations in order, so a later fresh
+  // mount covers any bind already made under it. A plugin dir under /tmp, or
+  // under /dev/shm (where the test TMPDIR guard falls back when /tmp is short
+  // of headroom), was otherwise shadowed: `--chdir` then failed and the
+  // provider was refused as if the host could not sandbox at all (WI-10006742).
+  argv.push('--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp');
   for (const dir of opts.runtimeDirs ?? []) argv.push('--ro-bind', dir, dir);
   argv.push(
     '--ro-bind', opts.pluginDir, opts.pluginDir,
-    '--proc', '/proc',
-    '--dev', '/dev',
     '--chdir', opts.pluginDir,
     '--unshare-net',
     '--unshare-pid',

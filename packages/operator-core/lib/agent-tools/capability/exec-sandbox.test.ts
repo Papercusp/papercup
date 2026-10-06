@@ -265,6 +265,18 @@ describe('buildCapabilitySandboxCommand — wrapped argv (flag ON + bwrap works)
     expect(tmpfsIdx).toBeLessThan(bindIdx);
   });
 
+  it('orders `--proc` and `--dev` BEFORE the cwd bind (else a cwd under /dev/shm is shadowed, WI-10006742)', () => {
+    const shmCwd = '/dev/shm/pcv/work';
+    const shm = buildCapabilitySandboxCommand({ cmd: CMD, cwd: shmCwd }, { ...base, enabled: true });
+    const bindIdx = seqIndex(shm.argv, ['--bind', shmCwd, shmCwd]);
+    expect(bindIdx).toBeGreaterThanOrEqual(0);
+    for (const mount of [['--proc', '/proc'], ['--dev', '/dev'], ['--tmpfs', '/tmp']]) {
+      const i = seqIndex(shm.argv, mount);
+      expect(i).toBeGreaterThanOrEqual(0);
+      expect(i).toBeLessThan(bindIdx);
+    }
+  });
+
   it('isolates process namespaces + dies with the parent (foreground: background unset)', () => {
     for (const f of ['--unshare-pid', '--unshare-ipc', '--unshare-uts', '--unshare-cgroup-try', '--die-with-parent']) {
       expect(d.argv).toContain(f);

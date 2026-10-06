@@ -467,11 +467,14 @@ export function buildCapabilitySandboxCommand(
     // the cwd bind mounts an empty tmpfs OVER it, so the bind vanishes and `--chdir`
     // fails ("Can't chdir … No such file or directory"). Binding the cwd on TOP of
     // the tmpfs makes bwrap create the mount point inside the writable tmpfs, so the
-    // real cwd survives at its path and `--chdir` succeeds.
-    '--tmpfs', '/tmp',
-    '--bind', input.cwd, input.cwd,
+    // real cwd survives at its path and `--chdir` succeeds. The same holds for the
+    // fresh /proc and /dev: a cwd under /dev/shm (the test TMPDIR guard's fallback
+    // when /tmp is short of headroom) was covered by a later `--dev /dev`
+    // (WI-10006742). Every fresh mount goes before the cwd bind.
     '--proc', '/proc',
     '--dev', '/dev',
+    '--tmpfs', '/tmp',
+    '--bind', input.cwd, input.cwd,
     '--unshare-pid',
     '--unshare-ipc',
     '--unshare-uts',

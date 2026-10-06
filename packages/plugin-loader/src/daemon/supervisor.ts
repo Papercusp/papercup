@@ -28,34 +28,58 @@ export class DaemonSandboxUnavailableError extends Error {
   }
 }
 
-const _providerProbeCache = new Map<string, boolean>();
+/** Outcome of one provider-sandbox probe; `detail` says WHY it failed. */
+export interface ProviderSandboxProbe {
+  works: boolean;
+  /** Why the profile could not be established (bwrap's own stderr when it ran). */
+  detail?: string;
+}
+
+const _providerProbeCache = new Map<string, ProviderSandboxProbe>();
 /**
  * Probe the EXACT provider profile (including `--unshare-net`) rather than a
  * generic bwrap call: a host can run plain bwrap yet refuse a network
  * namespace, and a probe that skips the flag would then report a sandbox the
- * real spawn cannot get. Cached per (binary, pluginDir, runtimeDirs).
+ * real spawn cannot get. Cached per (binary, pluginDir, runtimeDirs), but only
+ * when bwrap actually ran to an exit status: a timeout or spawn error says
+ * nothing about the profile, and caching it refused the provider for the rest
+ * of the process. A failure keeps bwrap's stderr, because the profile can fail
+ * for a reason specific to this plugin dir (WI-10006742: a dir under /dev/shm
+ * was shadowed by `--dev /dev`) and that is not a host without namespaces.
  */
-export function providerSandboxWorks(input: { bwrapBinary?: string; pluginDir: string; runtimeDirs?: string[] }): boolean {
+export function probeProviderSandbox(input: { bwrapBinary?: string; pluginDir: string; runtimeDirs?: string[] }): ProviderSandboxProbe {
   const binary = input.bwrapBinary ?? DEFAULT_BWRAP;
   const key = JSON.stringify([binary, input.pluginDir, input.runtimeDirs ?? []]);
   const cached = _providerProbeCache.get(key);
   if (cached !== undefined) return cached;
-  let works = false;
-  if (process.platform === 'linux' && existsSync(binary)) {
-    try {
-      const { argv } = buildProviderBwrapArgs({
-        pluginDir: input.pluginDir,
-        runtimeDirs: input.runtimeDirs,
-        bwrapBinary: binary,
-        cmd: ['/usr/bin/true'],
-      });
-      works = spawnSync(binary, argv, { stdio: 'ignore', timeout: 5_000, env: {} }).status === 0;
-    } catch {
-      works = false;
-    }
+  if (process.platform !== 'linux') return { works: false, detail: `platform ${process.platform} has no bwrap sandbox` };
+  if (!existsSync(binary)) return { works: false, detail: `${binary} is not installed` };
+  let result: ReturnType<typeof spawnSync>;
+  try {
+    const { argv } = buildProviderBwrapArgs({
+      pluginDir: input.pluginDir,
+      runtimeDirs: input.runtimeDirs,
+      bwrapBinary: binary,
+      cmd: ['/usr/bin/true'],
+    });
+    result = spawnSync(binary, argv, { stdio: ['ignore', 'ignore', 'pipe'], timeout: 5_000, env: {}, encoding: 'utf8' });
+  } catch (err) {
+    return { works: false, detail: `probe could not run: ${err instanceof Error ? err.message : String(err)}` };
   }
-  _providerProbeCache.set(key, works);
-  return works;
+  if (result.error || result.status === null) {
+    const why = result.error ? result.error.message : `killed by ${result.signal ?? 'signal'}`;
+    return { works: false, detail: `probe did not finish (${why}); not cached` };
+  }
+  const stderr = String(result.stderr ?? '').trim();
+  const probe: ProviderSandboxProbe =
+    result.status === 0 ? { works: true } : { works: false, detail: stderr || `${binary} exited ${result.status}` };
+  _providerProbeCache.set(key, probe);
+  return probe;
+}
+
+/** Boolean form of {@link probeProviderSandbox}. */
+export function providerSandboxWorks(input: { bwrapBinary?: string; pluginDir: string; runtimeDirs?: string[] }): boolean {
+  return probeProviderSandbox(input).works;
 }
 
 /**
@@ -179,9 +203,10 @@ export async function startDaemonPlugin(opts: StartDaemonOptions): Promise<Daemo
     let binary: string;
     let argv: string[];
     if (providerMode) {
-      if (!providerSandboxWorks({ bwrapBinary: opts.bwrapBinary, pluginDir: opts.cwd, runtimeDirs: opts.runtimeDirs })) {
+      const probe = probeProviderSandbox({ bwrapBinary: opts.bwrapBinary, pluginDir: opts.cwd, runtimeDirs: opts.runtimeDirs });
+      if (!probe.works) {
         throw new DaemonSandboxUnavailableError(
-          `provider daemon ${opts.pluginName} refused: the provider sandbox (bwrap with --unshare-net) is unavailable on this host`,
+          `provider daemon ${opts.pluginName} refused: the provider sandbox (bwrap with --unshare-net) could not be established for ${opts.cwd}: ${probe.detail ?? 'unknown reason'}`,
         );
       }
       const built = buildProviderBwrapArgs({
