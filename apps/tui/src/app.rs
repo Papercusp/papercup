@@ -2645,6 +2645,9 @@ pub struct App {
     /// one half of this behaviour's falsifier, and this representation is what
     /// makes it unfalsifiable-by-construction rather than merely untested.
     pub chat_undo: Vec<String>,
+    /// Large pastes shown as `[Pasted text #k +N lines]` in the draft and
+    /// joined back in when the turn is sent (P-027 G-7).
+    pub paste_chips: crate::paste_chips::PasteChips,
     pub chat_scroll: u16,
     pub chat_streaming: bool,
     /// When the running turn started running (pui-chat-first-ux P-019). Set on
@@ -3099,6 +3102,7 @@ impl App {
             chat_history_idx: None,
             chat_draft: String::new(),
             chat_undo: Vec::new(),
+            paste_chips: Default::default(),
             chat_scroll: 0,
             chat_streaming: false,
             chat_turn_started: None,
@@ -5054,11 +5058,19 @@ impl App {
             return Action::Render;
         }
         self.chat_leave_history_for_edit();
-        let previous = self.chat_input[..self.chat_cursor]
-            .char_indices()
-            .next_back()
-            .map(|(offset, _)| offset)
-            .unwrap_or(0);
+        // A paste chip goes whole (P-027 G-7): eating only its `]` would leave
+        // a label that no longer expands and reads like real text.
+        let previous = match self
+            .paste_chips
+            .chip_len_ending(&self.chat_input[..self.chat_cursor])
+        {
+            Some(len) => self.chat_cursor - len,
+            None => self.chat_input[..self.chat_cursor]
+                .char_indices()
+                .next_back()
+                .map(|(offset, _)| offset)
+                .unwrap_or(0),
+        };
         self.chat_input
             .replace_range(previous..self.chat_cursor, "");
         self.chat_cursor = previous;
@@ -5072,7 +5084,11 @@ impl App {
             return Action::Render;
         };
         self.chat_leave_history_for_edit();
-        let end = self.chat_cursor + ch.len_utf8();
+        let len = self
+            .paste_chips
+            .chip_len_starting(&self.chat_input[self.chat_cursor..])
+            .unwrap_or(ch.len_utf8());
+        let end = self.chat_cursor + len;
         self.chat_input.replace_range(self.chat_cursor..end, "");
         self.chat_cursor_input_len = self.chat_input.len();
         Action::Render
@@ -5169,7 +5185,14 @@ impl App {
         // typed line with an arbitrary amount of text in one keystroke, and it
         // is the one composer edit a human cannot walk back with Backspace.
         self.chat_snapshot_for_undo();
-        self.chat_insert_text(text);
+        // P-027 G-7: a large paste becomes a one-line chip, as in Claude Code,
+        // instead of filling the screen; `dispatch_chat_turn` sends the text.
+        if crate::paste_chips::PasteChips::should_collapse(text) {
+            let label = self.paste_chips.collapse(text);
+            self.chat_insert_text(&label);
+        } else {
+            self.chat_insert_text(text);
+        }
     }
 
     /// Stash the current composer contents so the next `Ctrl-Z` can restore it.
@@ -5263,8 +5286,9 @@ impl App {
                 return Some(self.chat_first_quick_start(draft));
             }
             self.open_session_setup();
+            let message = self.paste_chips.expand(&draft);
             if let Some(setup) = self.session_setup.as_mut() {
-                setup.message = draft;
+                setup.message = message;
             }
             return Some(Action::CheckSessionSetup);
         }
@@ -5286,7 +5310,11 @@ impl App {
                 self.chat_input = pending.draft.clone();
             }
         }
-        let submitted = self.attachments.attach_to_prompt(&draft);
+        // P-027 G-7: paste chips stay in the draft (composer, history, undo);
+        // the engine gets the pasted text.
+        let submitted = self
+            .attachments
+            .attach_to_prompt(&self.paste_chips.expand(&draft));
         if submitted.trim().is_empty() && !reconciling {
             return None;
         }
@@ -8731,12 +8759,13 @@ impl App {
     fn chat_first_quick_start(&mut self, draft: String) -> Action {
         self.open_session_setup();
         let clear_composer = self.chat_input == draft;
+        let message = self.paste_chips.expand(&draft);
         let Some(setup) = self.session_setup.as_mut() else {
             // `open_session_setup` refused (a turn is still in flight) and
             // left its reason in `session_note`; the draft stays composed.
             return Action::Render;
         };
-        setup.message = draft;
+        setup.message = message;
         self.chat_first_autostart = true;
         self.chat_first_autostart_since = Some(std::time::Instant::now());
         // P-012: the message shows in the transcript while the session starts
@@ -27430,6 +27459,43 @@ mod tests {
         assert_eq!(c.update(key('q', KeyModifiers::NONE)), Action::Render);
         assert!(!c.should_quit);
         assert_eq!(c.chat_input, "q");
+    }
+
+    /// P-027 G-7 (parity checklist row 16): a 40-line paste filled the whole
+    /// composer. It now shows as Claude Code's chip, Backspace removes the
+    /// chip whole, and the engine still receives every pasted line.
+    #[test]
+    fn a_large_paste_collapses_to_a_chip_and_the_turn_sends_its_text() {
+        let mut a = App::new();
+        a.tab = Tab::Operator;
+        a.update(key('i', KeyModifiers::NONE));
+        assert!(a.chat_composing);
+        let body = (1..=40)
+            .map(|i| format!("pasted line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        for c in "see ".chars() {
+            a.update(key(c, KeyModifiers::NONE));
+        }
+        a.update(Event::Paste(body.clone()));
+        assert_eq!(a.chat_input, "see [Pasted text #1 +39 lines]");
+
+        a.update(Event::Key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE)));
+        assert_eq!(a.chat_input, "see ", "Backspace removes the chip whole");
+
+        a.update(Event::Paste("two\nlines".into()));
+        assert_eq!(a.chat_input, "see two\nlines", "a small paste stays inline");
+        a.chat_input = "see ".into();
+        a.chat_cursor = a.chat_input.len();
+        a.chat_cursor_input_len = a.chat_input.len();
+
+        a.update(Event::Paste(body.clone()));
+        let chip = "see [Pasted text #2 +39 lines]";
+        assert_eq!(a.chat_input, chip);
+        a.update(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
+        let pending = a.su_pending_turn.as_ref().expect("Enter sends the turn");
+        assert_eq!(pending.content, format!("see {body}"), "the engine gets the text");
+        assert_eq!(pending.draft, chip, "the draft keeps the chip");
     }
 
     #[test]

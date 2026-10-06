@@ -100,6 +100,24 @@ function evidence(over: Partial<SpecEvidenceForAdequacy> = {}): SpecEvidenceForA
   };
 }
 
+function successfulTestBinding(filePath: string): SpecEvidenceForAdequacy {
+  return evidence({
+    evidenceKind: 'test',
+    evidenceRef: `test-run:${filePath}`,
+    coverageEvidenceRef: null,
+    testRunProvenance: { filePath, commitSha: 'abc123', worktreeDirty: false },
+    details: {
+      adequacy: {
+        testLayer: 'integration',
+        collected: true,
+        skipped: false,
+        executed: true,
+        outcome: 'passed',
+      },
+    },
+  });
+}
+
 function negativeEvidence(over: Partial<SpecEvidenceForAdequacy> = {}): SpecEvidenceForAdequacy {
   const base = evidence();
   return {
@@ -117,6 +135,7 @@ function negativeEvidence(over: Partial<SpecEvidenceForAdequacy> = {}): SpecEvid
 }
 
 const RECONNECT_FALSIFIER_SCENARIO = 'reconnect-failure';
+const CASE_SCOPED_TEST_PATH = 'test/reconnect.integration.ts';
 
 function caseScopedClause(over: Partial<SpecClauseRevision> = {}): SpecClauseRevision {
   return clause({
@@ -132,6 +151,7 @@ function caseScopedNegativeEvidence(over: Partial<SpecEvidenceForAdequacy> = {})
   const base = negativeEvidence(over);
   return {
     ...base,
+    testRunProvenance: { filePath: CASE_SCOPED_TEST_PATH, commitSha: 'abc123', worktreeDirty: false },
     details: {
       ...base.details,
       adequacy: {
@@ -141,6 +161,10 @@ function caseScopedNegativeEvidence(over: Partial<SpecEvidenceForAdequacy> = {})
       },
     },
   };
+}
+
+function caseScopedTestBinding(): SpecEvidenceForAdequacy {
+  return successfulTestBinding(CASE_SCOPED_TEST_PATH);
 }
 
 function attempt(
@@ -220,7 +244,7 @@ describe('active registered test attempts (EI-22773954051523742)', () => {
     expect(
       evaluateSpecTestAdequacy({
         clause: caseScopedClause(),
-        evidence: [...rows, caseScopedNegativeEvidence()],
+        evidence: [...rows, caseScopedTestBinding(), caseScopedNegativeEvidence()],
         classRef: 'plan-class-feature-ship',
       }).verdict,
     ).toBe('pass');
@@ -343,7 +367,7 @@ describe('active registered test attempts (EI-22773954051523742)', () => {
     };
     const result = evaluateSpecTestAdequacy({
       clause: caseScopedClause(),
-      evidence: [...rows, historical, caseScopedNegativeEvidence()],
+      evidence: [...rows, historical, caseScopedTestBinding(), caseScopedNegativeEvidence()],
       classRef: 'plan-class-feature-ship',
     });
     expect(result.verdict).toBe('pass');
@@ -380,11 +404,11 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(latestLogicalEvidence([older, newer])).toEqual([newer]);
     const result = evaluateSpecTestAdequacy({
       clause: caseScopedClause(),
-      evidence: [older, newer, caseScopedNegativeEvidence()],
+      evidence: [older, newer, caseScopedTestBinding(), caseScopedNegativeEvidence()],
       classRef: 'plan-class-feature-ship',
     });
     expect(result.verdict).toBe('pass');
-    expect(result.evidenceRefs).toEqual([evidenceRef, 'counterexample:reconnect'].sort());
+    expect(result.evidenceRefs).toEqual([evidenceRef, 'counterexample:reconnect', `test-run:${CASE_SCOPED_TEST_PATH}`].sort());
     expect(result.ratings['execution-integrity'].rating).toBe('pass');
   });
 
@@ -420,7 +444,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(latestLogicalEvidence([stale, rebound])).toEqual([rebound]);
     const result = evaluateSpecTestAdequacy({
       clause: caseScopedClause(),
-      evidence: [stale, rebound, caseScopedNegativeEvidence()],
+      evidence: [stale, rebound, caseScopedTestBinding(), caseScopedNegativeEvidence()],
       classRef: 'plan-class-feature-ship',
     });
     expect(result.ratings['execution-integrity'].rating).toBe('pass');
@@ -430,7 +454,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
   it('produces a complete scorecards:emit draft for a current L3 feature proof', () => {
     const result = evaluateSpecTestAdequacy({
       clause: caseScopedClause(),
-      evidence: [evidence(), caseScopedNegativeEvidence()],
+      evidence: [evidence(), caseScopedTestBinding(), caseScopedNegativeEvidence()],
       classRef: 'plan-class-feature-ship',
     });
     expect(result.verdict).toBe('pass');
@@ -737,6 +761,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
             violatableKeys: ['criterion-a'],
           },
         }),
+        caseScopedTestBinding(),
         caseScopedNegativeEvidence({
           provisionalProofBase: true,
           provisionalScorecard: {
@@ -821,9 +846,11 @@ describe('spec-test-adequacy per-clause evaluator', () => {
 
   it('accepts exact targeted mutation proof and only a justified current approved L4 waiver', () => {
     const highRisk = clause({ behaviorClass: 'concurrency' });
+    const testPath = 'packages/operator-core/lib/agent-tools/plans/high-risk.integration.test.ts';
     const mutation = evidence({
       evidenceKind: 'mutation',
       evidenceRef: 'mutant:drop-dedupe',
+      testRunProvenance: { filePath: testPath, commitSha: 'abc123', worktreeDirty: false },
       details: {
         adequacy: {
           falsifiable: true,
@@ -832,16 +859,17 @@ describe('spec-test-adequacy per-clause evaluator', () => {
           skipped: false,
           executed: true,
           outcome: 'killed',
-          targeted: true,
+          targeted: 'spec-003-01',
         },
       },
     });
     const proved = evaluateSpecTestAdequacy({
       clause: highRisk,
-      evidence: [evidence(), mutation],
+      evidence: [evidence(), successfulTestBinding(testPath), mutation],
       classRef: 'plan-class-feature-ship',
     });
     expect(proved.ratings['plan-class-risk-floor'].rating).toBe('pass');
+    expect(proved.ratings.falsifiability.rating).toBe('pass');
 
     const waived = evaluateSpecTestAdequacy({
       clause: clause({
@@ -885,9 +913,11 @@ describe('spec-test-adequacy per-clause evaluator', () => {
   });
 
   it('counts a mutation probe only when it targets a declared clause scenario', () => {
+    const testPath = 'packages/operator-core/lib/agent-tools/plans/promotion-readable.integration.test.ts';
     const mutation = evidence({
       evidenceKind: 'mutation',
       evidenceRef: 'mutation-probe:drop-dedupe:caught',
+      testRunProvenance: { filePath: testPath, commitSha: 'abc123', worktreeDirty: false },
       details: {
         adequacy: {
           falsifiable: true,
@@ -909,7 +939,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
           requiredScenarios: ['promotion-readable', 'refused-transition-preserved'],
         },
       }),
-      evidence: [evidence(), mutation],
+      evidence: [evidence(), successfulTestBinding(testPath), mutation],
       classRef: 'plan-class-feature-ship',
     });
 
@@ -987,10 +1017,12 @@ describe('spec-test-adequacy per-clause evaluator', () => {
   // WI-10002724: a clause declaring NO falsifier.requiredScenarios has no scenario id to name, so
   // a target naming its own specId (lower-cased) is its clause-scoped claim.
   describe('clause without declared falsifier scenarios', () => {
+    const testPath = 'packages/operator-core/lib/agent-tools/plans/spec-test-adequacy.integration.test.ts';
     const mutationTargeting = (targeted: boolean | string) =>
       evidence({
         evidenceKind: 'mutation',
         evidenceRef: `mutation-probe:self-target:${String(targeted)}`,
+        testRunProvenance: { filePath: testPath, commitSha: 'abc123', worktreeDirty: false },
         details: {
           adequacy: {
             falsifiable: true,
@@ -1007,7 +1039,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     it('passes a mutation binding that targets the clause\'s own specId', () => {
       const result = evaluateSpecTestAdequacy({
         clause: clause(),
-        evidence: [evidence(), mutationTargeting('spec-003-01')],
+        evidence: [evidence(), successfulTestBinding(testPath), mutationTargeting('spec-003-01')],
         classRef: 'plan-class-feature-ship',
       });
 
@@ -1024,7 +1056,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
             probeMethod: 'Compare diagnosed failures with the verification report.',
           },
         }),
-        evidence: [evidence(), mutationTargeting('spec-003-01')],
+        evidence: [evidence(), successfulTestBinding(testPath), mutationTargeting('spec-003-01')],
         classRef: 'plan-class-feature-ship',
       });
 
@@ -1073,6 +1105,61 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     });
   });
 
+  it('does not accept a self-attested mutation target when its test file is not bound to the clause', () => {
+    const targetClause = clause();
+    const mutation = evidence({
+      evidenceKind: 'mutation',
+      evidenceRef: 'mutation-probe:r9-refusal:caught',
+      testRunId: 700,
+      testRunProvenance: {
+        filePath: 'packages/operator-core/lib/agent-tools/plans/r9-refusal.integration.test.ts',
+        commitSha: 'abc123',
+        worktreeDirty: false,
+      },
+      details: {
+        adequacy: {
+          falsifiable: true,
+          collected: true,
+          skipped: false,
+          executed: true,
+          outcome: 'caught',
+          targeted: 'spec-003-01',
+          coverageRungs: { l3: true, l4: false },
+        },
+      },
+    });
+    const unrelatedTestBinding = evidence({
+      evidenceKind: 'test',
+      evidenceRef: 'test-run:r8-materialization:passed',
+      testRunId: 701,
+      coverageEvidenceRef: null,
+      testRunProvenance: {
+        filePath: 'packages/operator-core/lib/agent-tools/plans/r8-materialization.integration.test.ts',
+        commitSha: 'abc123',
+        worktreeDirty: false,
+      },
+      details: {
+        adequacy: {
+          testLayer: 'integration',
+          collected: true,
+          skipped: false,
+          executed: true,
+          outcome: 'passed',
+        },
+      },
+    });
+
+    const result = evaluateSpecTestAdequacy({
+      clause: targetClause,
+      evidence: [unrelatedTestBinding, mutation],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings.falsifiability.rating).toBe('unknown');
+    expect(result.ratings['plan-class-risk-floor'].rating).toBe('unknown');
+    expect(result.verdict).not.toBe('pass');
+  });
+
   it('requires live evidence for a standalone clause that declares requiredEvidence live', () => {
     const liveClause = clause({ requiredEvidence: ['live'], requiredTestLayers: [] });
     const treeProof = evidence();
@@ -1107,9 +1194,17 @@ describe('spec-test-adequacy per-clause evaluator', () => {
 
   it('accepts stronger targeted L4 counterexample proof for an L3 floor', () => {
     const scenarioId = 'reject-future-window';
+    const testPath = 'packages/operator-core/lib/agent-tools/plans/reject-future-window.integration.test.ts';
+    const targetClause = clause({
+      falsifier: {
+        observation: 'A future event window is rejected.',
+        requiredScenarios: [scenarioId],
+      },
+    });
     const counterexample = evidence({
       evidenceKind: 'counterexample',
       evidenceRef: 'counterexample:reject-future-window',
+      testRunProvenance: { filePath: testPath, commitSha: 'abc123', worktreeDirty: false },
       details: {
         adequacy: {
           fixtureCalibrated: true,
@@ -1128,13 +1223,8 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     });
 
     const result = evaluateSpecTestAdequacy({
-      clause: clause({
-        falsifier: {
-          observation: 'A future event window is rejected.',
-          requiredScenarios: [scenarioId],
-        },
-      }),
-      evidence: [counterexample],
+      clause: targetClause,
+      evidence: [successfulTestBinding(testPath), counterexample],
       classRef: 'plan-class-feature-ship',
     });
 
@@ -1336,12 +1426,12 @@ describe('spec-test-adequacy per-clause evaluator', () => {
 
     const passing = evaluateSpecTestAdequacy({
       clause: caseScopedClause(),
-      evidence: [staleHistorical, unknownHistorical, current],
+      evidence: [staleHistorical, unknownHistorical, caseScopedTestBinding(), current],
       classRef: 'plan-class-feature-ship',
     });
     expect(passing.verdict).toBe('pass');
     expect(passing.ratings.freshness.rating).toBe('pass');
-    expect(passing.evidenceRefs).toEqual(['surface:current']);
+    expect(passing.evidenceRefs).toEqual(['surface:current', `test-run:${CASE_SCOPED_TEST_PATH}`].sort());
 
     const incompleteCurrent = evidence({
       evidenceRef: 'surface:current-incomplete',

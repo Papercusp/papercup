@@ -129,6 +129,7 @@ import { stripCommentsOnly } from "./lib/strip-comments-and-strings.mjs";
 import {
   computeGraphSuggestions,
   formatSuggestionLine,
+  resolveSnapshotPath,
   unionSuperset,
 } from "./lib/graph-dependency-suggestions.mjs";
 import { emptySuiteGuardArgs, scriptRunsZeroFilesAsPass } from "./lib/empty-suite-guard.mjs";
@@ -4874,25 +4875,28 @@ function affectedWorkspaces() {
 // copies of this that could drift would make the test prove nothing.
 /**
  * P-008 graph suggestions for `changed`, read from a PRE-COMPUTED snapshot FILE — never a live
- * graph. Default path is under the gitignored `.papercusp/`, so an ordinary gate checkout has
- * no snapshot and the selector degrades to the baseline (`status=unavailable`, silent).
- *   PAPERCUSP_AFFECTED_GRAPH_SNAPSHOT     snapshot file (default .papercusp/graph-snapshot/dependency-snapshot.json)
+ * graph. The default path is the SHARED file the hourly `system:gitnexus-reindex` routine writes
+ * (`~/.papercusp/graph-snapshot/papercusp/`, outside every checkout — so the gate's isolated tree
+ * reads it too), falling back to the legacy per-checkout `.papercusp/graph-snapshot/` file; see
+ * `resolveSnapshotPath`. Under Vitest with no explicit path the lookup is off (hermetic-test).
+ * Importer SOURCE is still read from THIS checkout, so an edge only applies where the judged
+ * tree's importer content matches the hash the snapshot pinned — the snapshot can add, never
+ * vouch for, a file that differs.
+ *   PAPERCUSP_AFFECTED_GRAPH_SNAPSHOT     snapshot file (overrides the default chain)
  *   PAPERCUSP_AFFECTED_GRAPH_SUGGESTIONS  `0` disables suggestions entirely
  *   PAPERCUSP_AFFECTED_GRAPH_MAX_AGE_MS   snapshot age ceiling (default 24h)
  *   PAPERCUSP_AFFECTED_GRAPH_SOURCE_ROOT  where importer SOURCE is read for corroboration (hermetic-test seam; default repo root)
  */
 function graphSuggestionsFor(changed) {
   if (process.env.PAPERCUSP_AFFECTED_GRAPH_SUGGESTIONS === "0") {
-    return { status: "unavailable", reason: "disabled", workspaces: [], accepted: 0, rejected: 0, index: null };
+    return { status: "unavailable", reason: "disabled", workspaces: [], accepted: 0, rejected: 0, index: null, ageMs: null, source: null };
   }
-  const snapshotPath =
-    process.env.PAPERCUSP_AFFECTED_GRAPH_SNAPSHOT ||
-    join(ROOT, ".papercusp", "graph-snapshot", "dependency-snapshot.json");
+  const resolved = resolveSnapshotPath({ env: process.env, root: ROOT });
   const sourceRoot = process.env.PAPERCUSP_AFFECTED_GRAPH_SOURCE_ROOT || ROOT;
   const maxAge = Number(process.env.PAPERCUSP_AFFECTED_GRAPH_MAX_AGE_MS);
-  return computeGraphSuggestions({
+  const report = computeGraphSuggestions({
     changed,
-    snapshotPath,
+    snapshotPath: resolved.path,
     readFile: (p) => readFileSync(p, "utf8"),
     readSource: (rel) => {
       try {
@@ -4908,6 +4912,7 @@ function graphSuggestionsFor(changed) {
     now: Date.now(),
     maxAgeMs: Number.isFinite(maxAge) && maxAge > 0 ? maxAge : undefined,
   });
+  return { ...report, source: resolved.source };
 }
 
 function resolveAffected(changed) {
@@ -4945,9 +4950,9 @@ function resolveAffected(changed) {
   const graphReport = graphSuggestionsFor(changed);
   const merged = unionSuperset(baselineSeeds, graphReport.workspaces);
   for (const name of merged.names) directlyChanged.add(name);
-  if (graphReport.status !== "unavailable" || process.env.PAPERCUSP_AFFECTED_GRAPH_TRACE === "1") {
-    errSync(formatSuggestionLine(graphReport, merged.added));
-  }
+  // EVERY run, including absent/stale/disabled (gitnexus-deterministic-integration P-001): the
+  // P-008 snapshot went dormant for days while this line stayed silent on `unavailable`.
+  errSync(formatSuggestionLine(graphReport, merged.added, graphReport.source ?? null));
 
   // Walk reverse-deps transitively
   const affected = new Set(directlyChanged);

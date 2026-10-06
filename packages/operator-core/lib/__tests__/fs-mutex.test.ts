@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, utimes, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rm, utimes, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir, hostname } from 'node:os';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -46,6 +46,68 @@ describe('resolveFsMutexLockRoot', () => {
 // credentials available — the SAME proven mkdir-lock algorithm as
 // `withTestcontainerStartLock` (libs/test-config/src/testcontainer-start-lock.ts), duplicated
 // rather than imported because this caller must stay a plain, buildless Node script.
+describe('withFsMutexRead wait observations', () => {
+  it('reports the current writer on the requested cadence without admitting the reader', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-reader-notices-'));
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = dir;
+    const writerDir = join(dir, 'npm-install.lock');
+    const writer = { pid: process.pid, host: hostname(), acquiredAt: new Date().toISOString() };
+    await mkdir(writerDir);
+    await writeFile(join(writerDir, 'owner.json'), JSON.stringify({ ...writer, intent: { stage: 'first' } }));
+    const notices: Array<{ owner: string; elapsedMs: number }> = [];
+    let firstNotice!: () => void;
+    const observedFirst = new Promise<void>(resolve => { firstNotice = resolve; });
+    let readerEntered = false;
+    try {
+      const reader = withFsMutexRead('npm-install', async () => { readerEntered = true; }, {
+        timeoutMs: 120,
+        retryMs: 2,
+        staleMs: 10_000,
+        waitingNoticeIntervalMs: 10,
+        onWaiting: notice => { notices.push(notice); firstNotice(); },
+      });
+      const timedOut = expect(reader).rejects.toThrow('Timed out after 120ms');
+      await observedFirst;
+      await writeFile(join(writerDir, 'owner.json'), JSON.stringify({ ...writer, intent: { stage: 'second' } }));
+      await timedOut;
+      expect(notices[0].owner).toContain('first');
+      expect(notices.some(notice => notice.owner.includes('second'))).toBe(true);
+      for (let index = 1; index < notices.length; index++) {
+        expect(notices[index].elapsedMs - notices[index - 1].elapsedMs).toBeGreaterThanOrEqual(10);
+      }
+      expect(readerEntered).toBe(false);
+      expect(await readdir(join(dir, 'npm-install.readers'))).toEqual([]);
+      expect(peekFsMutexSync('npm-install').held).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps the one-shot default and cleans up after a bounded timeout', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-reader-default-'));
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = dir;
+    const writerDir = join(dir, 'npm-install.lock');
+    await mkdir(writerDir);
+    await writeFile(join(writerDir, 'owner.json'), JSON.stringify({ pid: process.pid, host: hostname() }));
+    const notices: string[] = [];
+    let readerEntered = false;
+    try {
+      await expect(withFsMutexRead('npm-install', async () => { readerEntered = true; }, {
+        timeoutMs: 40,
+        retryMs: 2,
+        staleMs: 10_000,
+        onWaiting: notice => { notices.push(notice.owner); },
+      })).rejects.toThrow('Timed out after 40ms');
+      expect(notices).toHaveLength(1);
+      expect(readerEntered).toBe(false);
+      expect(await readdir(join(dir, 'npm-install.readers'))).toEqual([]);
+      expect(peekFsMutexSync('npm-install').held).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('withFsMutex', () => {
   it('serializes concurrent callers under the same lock name', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-'));

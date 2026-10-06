@@ -101,14 +101,64 @@ export function parseArgs(argv: any): {
         repo: string;
         client: string | null;
         pageSize: number;
+        pageSizeExplicit: boolean;
         retries: number;
         sourceRoot: string;
         edgesFile: null;
         indexCommit: null;
+        gitnexusBin: null;
+        registry: null;
     };
     error?: undefined;
 };
+/**
+ * DIRECT mode (gitnexus-deterministic-integration P-001): run `gitnexus cypher` as a child of
+ * THIS process instead of one `mcp-call.mjs` spawn + MCP round-trip per page. The MCP path was
+ * measured at ~29 min / 2,274 pages for 57k edges (pages capped by the 20,000-char bridge budget
+ * and the ~6,000-char result door); the CLI prints the same `{markdown,row_count}` body with
+ * neither budget, so `parseCypherText` reads it unchanged. `--repo` is always named: the CLI
+ * resolves its target from the GLOBAL registry and refuses when two repos are registered.
+ * @param {{ bin: string, repo: string, cwd: string, execFile?: Function, timeoutMs?: number }} o
+ */
+export function directCypherRunner({ bin, repo, cwd, runToFile, timeoutMs }: {
+    bin: string;
+    repo: string;
+    cwd: string;
+    execFile?: Function;
+    timeoutMs?: number;
+}): (statement: any) => Promise<any>;
+/**
+ * Run a CLI with stdout bound to a FILE, then read it. ⚠ Never a pipe: `gitnexus cypher` exits
+ * before a pipe drains, so a piped answer is cut at exactly 65,536 bytes (measured 2026-10-06: a
+ * 5,000-row page is 533,892 bytes to a file, 65,536 through `| wc -c`) — a truncated JSON body
+ * that reads as "unparseable". File writes are synchronous, so the file holds the whole answer.
+ */
+export function runCliToFile(bin: any, argv: any, { cwd, timeoutMs }: {
+    cwd: any;
+    timeoutMs: any;
+}): Promise<string>;
+/**
+ * Index identity for DIRECT mode, read from the gitnexus registry file the CLI itself resolves
+ * against (`~/.gitnexus/registry.json`, an array of `{name,lastCommit,indexedAt}`). Read before
+ * AND after paging by produceSnapshotFromGraph, so an index swapped mid-read is refused.
+ */
+export function registryIndexReader({ registry, repo, readFile, backendVersion }: {
+    registry: any;
+    repo: any;
+    readFile?: ((p: any) => string) | undefined;
+    backendVersion?: null | undefined;
+}): () => Promise<{
+    lastCommit: any;
+    indexedAt: any;
+    backend: string;
+    backendVersion: null;
+}>;
+/** The installed gitnexus version next to a CLI binary (`…/node_modules/.bin/gitnexus`). */
+export function backendVersionNearBin(bin: any, readFile?: (p: any) => string): any;
 export function main(argv?: string[]): Promise<0 | 2 | 3 | 4>;
+/** DIRECT-mode page: no response budget applies, ~12 pages for 59k edges (each query ~5s to open). */
+export const DIRECT_PAGE_SIZE: 5000;
+export const DIRECT_QUERY_TIMEOUT_MS: 120000;
 export const DEFAULT_SNAPSHOT_REL: ".papercusp/graph-snapshot/dependency-snapshot.json";
 export const DEFAULT_PAGE_SIZE: 50;
 /** Typed failure so the CLI (and tests) can tell WHY a read was refused. */

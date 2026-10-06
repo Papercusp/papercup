@@ -2618,6 +2618,10 @@ describe('unified work_items surface (real PG)', () => {
 
     const { launchFreshAmendmentReviewer } = await import('./consult/acceptance-bar-amendment-review');
     const launch = vi.fn().mockResolvedValue({ data: { launch: { tasks: [{ taskId: 'task-review' }] } } });
+    // This case exercises the real scoped preview/answer-target SQL. Account
+    // steering has its own reviewer suite; use its existing typed seam here so
+    // this narrow work-item fixture does not depend on the live account pool.
+    const resolveSteeredModel = vi.fn(async () => ({ agent: 'codex', model: 'sol' } as const));
     const result = await launchFreshAmendmentReviewer(
       {
         rubricRef: 'plan:review-test',
@@ -2629,6 +2633,7 @@ describe('unified work_items surface (real PG)', () => {
       } as never,
       {
         resolveScreen: async () => ({ check: async () => ({ eligible: true, reason: 'eligible' }) }),
+        resolveSteeredModel,
         launch,
       },
     );
@@ -2637,6 +2642,14 @@ describe('unified work_items surface (real PG)', () => {
       answerOn: { workItemId: feature.id, harness: 'papercup' },
     });
     expect(launch).toHaveBeenCalledOnce();
+    expect(resolveSteeredModel).toHaveBeenCalledExactlyOnceWith('papercusp-workspace');
+    expect(launch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        harness: 'papercup', account: 'auto', independent: true, headless: true,
+        members: [expect.objectContaining({ role: 'judge', agent: 'codex', model: 'sol' })],
+      }),
+      expect.objectContaining({ workspaceId: 'papercusp-workspace', harnessSlug: 'papercup' }),
+    );
   });
 
   it('search (cross-kind FTS): matches title/body across both kind-tables', async () => {

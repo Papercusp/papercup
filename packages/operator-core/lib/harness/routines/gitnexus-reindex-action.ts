@@ -1797,6 +1797,8 @@ export interface GitnexusHealth {
   indexDiskAlerted?: boolean;
   /** Vector-leg status from the last canary that ran (plan gitnexus-embeddings-enablement). */
   vectorSearch?: GitnexusVectorSearchHealth;
+  /** The test-selection dependency snapshot this routine keeps fresh (gitnexus-deterministic-integration P-001). */
+  dependencySnapshot?: DependencySnapshotHealth;
 }
 
 /**

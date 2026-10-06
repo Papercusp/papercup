@@ -47,7 +47,6 @@ import { createSourceHostFetch } from '../integrations/source-host-fetch';
 import { resolveProviderServices } from '../integrations/service-credentials';
 import {
   PROVIDER_SYNC_WAKE_CAPABILITY,
-  type HostFetch as ProviderHostFetch,
   type ProviderServices,
   type ProviderWakeResult,
 } from '@papercusp/plugin-sdk';
@@ -658,7 +657,7 @@ export async function runConnectorWakes(
        ${opts.sourceIds ? sql`AND id::text = ANY(${sql.array([...opts.sourceIds])}::text[])` : sql``}
      ORDER BY id`;
   const outcomes: ConnectorWakeOutcome[] = [];
-  const perProvider = new Map<string, { fetch: ProviderHostFetch; services: ProviderServices | undefined }>();
+  const perProvider = new Map<string, { fetch: HostFetch; services: ProviderServices | undefined }>();
   for (const source of sources) {
     const provider = byKind.get(source.kind);
     if (!provider?.adapter.invoke) continue;

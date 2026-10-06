@@ -581,7 +581,7 @@ export async function withFsMutex(name, fn, opts = {}) {
  * @template T
  * @param {string} name
  * @param {() => Promise<T>} fn
- * @param {{ mode?: 'read' | 'reader', timeoutMs?: number, staleMs?: number, retryMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void }} [opts]
+ * @param {{ mode?: 'read' | 'reader', timeoutMs?: number, staleMs?: number, retryMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number }} [opts]
  * @returns {Promise<T>}
  */
 export async function withFsMutexRead(name, fn, opts = {}) {
@@ -612,6 +612,14 @@ export async function withFsMutexRead(name, fn, opts = {}) {
   await mkdir(readersDir, { recursive: true });
 
   let announcedWaiting = false;
+  let lastWaitingNoticeMs = 0;
+  // Shared readers need the same opt-in observations as writer waiters. Read
+  // the owner again at each notice: consecutive installs can change the holder
+  // during one admission wait (EI-25192113925430292).
+  const waitingNoticeIntervalMs =
+    Number(opts.waitingNoticeIntervalMs) > 0
+      ? Number(opts.waitingNoticeIntervalMs)
+      : 0;
   for (;;) {
     let markerCreated = false;
     let ready = false;
@@ -635,8 +643,14 @@ export async function withFsMutexRead(name, fn, opts = {}) {
     if (markerCreated) await rm(readerDir, { recursive: true, force: true });
 
     const elapsed = Date.now() - startedAt;
-    if (!announcedWaiting && opts.onWaiting) {
+    if (
+      opts.onWaiting &&
+      (!announcedWaiting ||
+        (waitingNoticeIntervalMs > 0 &&
+          elapsed - lastWaitingNoticeMs >= waitingNoticeIntervalMs))
+    ) {
       announcedWaiting = true;
+      lastWaitingNoticeMs = elapsed;
       opts.onWaiting({ owner: await readOwner(writerDir), elapsedMs: elapsed });
     }
     if (elapsed > timeoutMs) {

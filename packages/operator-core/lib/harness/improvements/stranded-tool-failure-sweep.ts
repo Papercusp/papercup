@@ -306,6 +306,12 @@ export interface StrandedSweepResult {
   review: number;
   /** Review rows the reviewer lane could not take; stamped and retried on a later tick. */
   enrolFailed: number;
+  /**
+   * Why enrolment failed, per row (first {@link ENROL_FAILURE_SAMPLE} rows). A bare count
+   * hid the cause on the first live run (3 rows refused 'remote-owned'); the message is
+   * the same one stamped on the row as agentReviewFailure.
+   */
+  enrolFailures: Array<{ id: string; message: string }>;
   /** Rows left for the next tick because the wall-time budget ran out. */
   deferred: number;
   failed: number;
@@ -395,6 +401,7 @@ export async function sweepStrandedToolFailures(
     retired: 0,
     review: 0,
     enrolFailed: 0,
+    enrolFailures: [],
     deferred: 0,
     failed: 0,
     reviewReasons: {},
@@ -484,6 +491,9 @@ export async function sweepStrandedToolFailures(
         result.review++;
       } else {
         result.enrolFailed++;
+        if (result.enrolFailures.length < ENROL_FAILURE_SAMPLE) {
+          result.enrolFailures.push({ id: row.id, message: enrolment.failure?.message ?? 'not eligible for agent review' });
+        }
       }
     } catch {
       result.failed++;
@@ -500,9 +510,14 @@ export function renderStrandedSweepNote(result: StrandedSweepResult | { error: s
     .slice(0, 4)
     .map(([reason, n]) => `${reason}:${n}`)
     .join(',');
+  const failures = result.enrolFailures
+    .slice(0, 3)
+    .map((f) => `${f.id}:${f.message.replace(/^agent-review enrollment was not entered: /, '')}`)
+    .join(',');
   return (
     `stranded-sweep scanned=${result.scanned} verified=${result.verified} retired=${result.retired} ` +
     `review=${result.review} enrolFailed=${result.enrolFailed} deferred=${result.deferred} failed=${result.failed}` +
-    (reasons ? ` reviewReasons=${reasons}` : '')
+    (reasons ? ` reviewReasons=${reasons}` : '') +
+    (failures ? ` enrolFailures=${failures}` : '')
   );
 }

@@ -880,16 +880,23 @@ function riskFloorRating(
     };
   }
   const detailRows = evidence.map((row) => ({ row, details: detailsOf(row) }));
+  const isMutation = (row: SpecEvidenceForAdequacy) =>
+    row.evidenceKind === 'mutation' || row.evidenceKind === 'counterexample';
+  const hasClauseBoundMutationProof = (row: SpecEvidenceForAdequacy) =>
+    isClauseBoundMutationProof(clause, row, evidence);
   const isL4Proof = ({ row, details }: (typeof detailRows)[number]): boolean =>
-    details.coverageRungs?.l4 === true ||
-    ((row.evidenceKind === 'mutation' || row.evidenceKind === 'counterexample') &&
-      (details.targeted === true || typeof details.targeted === 'string') &&
-      SUCCESS_OUTCOMES.has(details.outcome?.toLowerCase() ?? ''));
+    isMutation(row) ? hasClauseBoundMutationProof(row) : details.coverageRungs?.l4 === true;
   const meetsL4 = detailRows.some(isL4Proof);
-  const meetsL3 = meetsL4 || detailRows.some(({ details }) => details.coverageRungs?.l3 === true);
-  const meetsL3Rows = detailRows.filter(
-    ({ row, details }) => details.coverageRungs?.l3 === true || isL4Proof({ row, details }),
-  );
+  const isL3Proof = ({ row, details }: (typeof detailRows)[number]): boolean =>
+    isL4Proof({ row, details }) ||
+    (details.coverageRungs?.l3 === true && (!isMutation(row) || hasClauseBoundMutationProof(row)));
+  const meetsL3 = detailRows.some(isL3Proof);
+  const meetsL3Rows = detailRows.filter(isL3Proof);
+  const proofBindings = (rows: typeof detailRows) =>
+    [...new Set(rows.flatMap(({ row }) => {
+      const pairedTest = isMutation(row) ? clauseBoundMutationTest(clause, row, evidence) : null;
+      return pairedTest ? [row, pairedTest] : [row];
+    }))];
   if (floor === 'l4') {
     if (meetsL4) {
       return {
@@ -898,7 +905,7 @@ function riskFloorRating(
           rating: 'pass',
           evidence: evidenceWithBindings(
             `Targeted L4 proof meets the ${clauseIdentity(clause)} floor.`,
-            detailRows.filter(isL4Proof).map(({ row }) => row),
+            proofBindings(detailRows.filter(isL4Proof)),
           ),
         },
       };
@@ -941,7 +948,7 @@ function riskFloorRating(
           rating: 'pass',
           evidence: evidenceWithBindings(
             `Targeted L3 or stronger proof meets the ${clauseIdentity(clause)} floor.`,
-            meetsL3Rows.map(({ row }) => row),
+            proofBindings(meetsL3Rows),
           ),
         }
       : {
@@ -1156,8 +1163,10 @@ function appendRatingRerunProbes(
  *   2 — the a49fca9b96 scenario-scoped falsifiability target + the WI-10002724 own-specId
  *       fallback (D-009), which the stamp was introduced alongside.
  *   3 — correct-layer requires the declared live/deployed evidence plane on a current binding.
+ *   4 — a mutation/counterexample target must be corroborated by successful current test evidence
+ *       for its canonical test file on the same clause revision.
  */
-export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 3;
+export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 4;
 
 type MutationTargetClause = Pick<SpecClauseRevision, 'specId' | 'falsifier'>;
 
@@ -1190,6 +1199,50 @@ export function mutationTargetRequirement(clause: MutationTargetClause): {
 
 export function isAcceptedMutationTarget(clause: MutationTargetClause, targeted: unknown): boolean {
   return typeof targeted === 'string' && mutationTargetRequirement(clause).acceptedTargets.includes(targeted);
+}
+
+/**
+ * `adequacy.targeted` is caller-authored metadata. A mutation probe is clause-scoped only when
+ * its canonical test file also has successful, current test evidence bound to the same immutable
+ * clause revision. This prevents a killed mutant from a sibling clause's test suite from
+ * satisfying falsifiability or the proof floor by naming this clause in its own binding.
+ */
+function clauseBoundMutationTest(
+  clause: SpecClauseRevision,
+  mutation: SpecEvidenceForAdequacy,
+  evidence: readonly SpecEvidenceForAdequacy[],
+): SpecEvidenceForAdequacy | null {
+  const filePath = mutation.testRunProvenance?.filePath;
+  if (!filePath || filePath.trim().length === 0) return null;
+  return evidence.find(
+    (row) =>
+      row.evidenceKind === 'test' &&
+      row.planSlug === clause.planSlug &&
+      row.specId === clause.specId &&
+      row.specRevision === clause.revision &&
+      row.specFingerprint === clause.contentHash &&
+      row.testRunProvenance?.filePath === filePath &&
+      row.currentness.overall === 'current' &&
+      isSuccessfulRepairedEvidence(row),
+  ) ?? null;
+}
+
+function isClauseBoundMutationTest(
+  clause: SpecClauseRevision,
+  mutation: SpecEvidenceForAdequacy,
+  evidence: readonly SpecEvidenceForAdequacy[],
+): boolean {
+  return clauseBoundMutationTest(clause, mutation, evidence) !== null;
+}
+
+function isClauseBoundMutationProof(
+  clause: SpecClauseRevision,
+  mutation: SpecEvidenceForAdequacy,
+  evidence: readonly SpecEvidenceForAdequacy[],
+): boolean {
+  return isSuccessfulExecutableEvidence(mutation) &&
+    isAcceptedMutationTarget(clause, detailsOf(mutation).targeted) &&
+    isClauseBoundMutationTest(clause, mutation, evidence);
 }
 
 export type AdequacyCardRevisionDisposition = {
@@ -1372,11 +1425,25 @@ export function evaluateSpecTestAdequacy(input: {
     );
   });
   // The targeting rule (scenario ids, or the WI-10002724 own-specId fallback) lives in
-  // mutationTargetRequirement so plans:bind-spec-evidence refuses at bind exactly what fails here.
+  // mutationTargetRequirement. A syntactically valid target remains a claim until the
+  // mutation run's canonical test file has its own successful test binding to this clause.
   const { selfTarget: clauseSelfTarget, requirement: clauseTargetRequirement } = mutationTargetRequirement(clause);
   const clauseScopedMutationOrCounterexample = boundMutationOrCounterexample.filter((row) =>
-    isAcceptedMutationTarget(clause, detailsOf(row).targeted),
+    isClauseBoundMutationProof(clause, row, evidence),
   );
+  const targetedMutationWithoutTestBinding = boundMutationOrCounterexample.filter(
+    (row) =>
+      isAcceptedMutationTarget(clause, detailsOf(row).targeted) &&
+      !isClauseBoundMutationTest(clause, row, evidence),
+  );
+  const clauseScopedProofBindings = [
+    ...new Set(
+      clauseScopedMutationOrCounterexample.flatMap((row) => [
+        row,
+        clauseBoundMutationTest(clause, row, evidence)!,
+      ]),
+    ),
+  ];
   const exactMutationOrCounterexample = exactEvidence.filter(
     (row) => row.evidenceKind === 'mutation' || row.evidenceKind === 'counterexample',
   );
@@ -1416,6 +1483,8 @@ export function evaluateSpecTestAdequacy(input: {
       ? `${mutationInCohortNotExecutable.length} mutation or counterexample binding(s) are in the current grading cohort for ${clauseIdentity(clause)} but do not qualify as successful executable evidence (${summarizeExecutableEvidenceGaps(mutationInCohortNotExecutable)}).`
       : mutationOutsideCohort.length > 0
         ? `${mutationOutsideCohort.length} mutation or counterexample binding(s) exist in the exact clause population but are outside the current grading cohort for ${clauseIdentity(clause)}.`
+        : targetedMutationWithoutTestBinding.length > 0
+          ? `${targetedMutationWithoutTestBinding.length} successful mutation or counterexample binding(s) name ${clauseIdentity(clause)} but their canonical test file is not also bound as a successful current test for this clause.`
         : boundMutationOrCounterexample.length > 0
           ? clauseSelfTarget !== null
             ? `Successful mutation or counterexample binding(s) for ${clauseIdentity(clause)} do not target this clause's own specId.`
@@ -1427,19 +1496,22 @@ export function evaluateSpecTestAdequacy(input: {
           rating: 'pass',
           evidence: evidenceWithBindings(
             clauseSelfTarget !== null
-              ? `A bound mutation or counterexample binding targets ${clauseIdentity(clause)} itself, which declares no falsifier.requiredScenarios${clause.falsifier ? ' (its falsifier observation and probe method do not name scenarios)' : ''}.`
-              : `A bound mutation or counterexample binding targets a declared falsifier scenario for ${clauseIdentity(clause)}.`,
-            clauseScopedMutationOrCounterexample,
+              ? `A bound mutation or counterexample targets ${clauseIdentity(clause)} itself, which declares no falsifier.requiredScenarios${clause.falsifier ? ' (its falsifier observation and probe method do not name scenarios)' : ''}; its canonical test file is separately bound as a successful current test for this clause.`
+              : `A bound mutation or counterexample targets a declared falsifier scenario for ${clauseIdentity(clause)}; its canonical test file is separately bound as a successful current test for this clause.`,
+            clauseScopedProofBindings,
           ),
         }
       : boundMutationOrCounterexample.length > 0
         ? {
             rating: 'unknown',
             evidence: evidenceWithBindings(
-              `Successful mutation or counterexample binding(s) lack a target matching ${clauseTargetRequirement} for ${clauseIdentity(clause)}; ${unboundMutationReason}`,
+              `Successful mutation or counterexample binding(s) do not establish clause-scoped falsifiability for ${clauseIdentity(clause)}; ${unboundMutationReason}`,
               boundMutationOrCounterexample,
             ),
-            suggestion: `Set adequacy.targeted to ${clauseTargetRequirement}; a boolean or sibling-case target is insufficient.`,
+            suggestion:
+              targetedMutationWithoutTestBinding.length > 0
+                ? `Bind a successful test result for the mutation run's canonical test file to ${clauseIdentity(clause)}; adequacy.targeted alone cannot establish that link.`
+                : `Set adequacy.targeted to ${clauseTargetRequirement}; a boolean or sibling-case target is insufficient.`,
           }
       : attestedFalsifiableOnly.length > 0
         ? {

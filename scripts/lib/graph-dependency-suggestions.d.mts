@@ -93,15 +93,33 @@ export function unionSuperset(baseline: any, suggested: any): {
     names: any[];
     added: any[];
 };
-/** Read + parse a snapshot file; never throws. */
+/**
+ * Where the reindex routine writes the snapshot (gitnexus-deterministic-integration P-001):
+ * OUTSIDE every checkout, so the green-checkpoint's isolated tree — whose gitignored
+ * `.papercusp/` never holds one — reads the same file the canonical tree does.
+ */
+export function sharedSnapshotPath(repoName?: string, home?: string): string;
+/**
+ * Resolve the snapshot the selector reads, and say WHERE it came from (printed on the status
+ * line, so a dormant or misplaced snapshot is never silent). Order: an explicit env path; the
+ * shared routine-written path; the legacy per-checkout path. Under Vitest (`VITEST` set) with no
+ * explicit path the default lookup is OFF: dozens of tests spawn the selector and assert exact
+ * workspace sets, and a host snapshot leaking into them would make those sets host-dependent.
+ * @returns {{ path: string | null, source: "env" | "shared" | "checkout" | "hermetic-test" }}
+ */
+export function resolveSnapshotPath({ env, root, home, exists }: {
+    env: any;
+    root: any;
+    home?: string | undefined;
+    exists?: typeof existsSync | undefined;
+}): {
+    path: string | null;
+    source: "env" | "shared" | "checkout" | "hermetic-test";
+};
+/** Read + parse a snapshot file; never throws. A missing file is `unavailable/absent`. */
 export function loadSnapshotFile(path: any, { readFile }: {
     readFile: any;
 }): {
-    status: string;
-    reason?: undefined;
-    snapshot?: undefined;
-    droppedMalformed?: undefined;
-} | {
     status: string;
     reason: string | undefined;
     snapshot?: undefined;
@@ -146,6 +164,7 @@ export function computeGraphSuggestions({ changed, snapshotPath, readFile, readS
     accepted: number;
     rejected: number;
     index: null;
+    ageMs: null;
     rejectedReasons?: undefined;
     truncated?: undefined;
 } | {
@@ -157,9 +176,17 @@ export function computeGraphSuggestions({ changed, snapshotPath, readFile, readS
     rejectedReasons: (string | undefined)[];
     truncated: boolean;
     index: any;
+    ageMs: number | null;
 };
-/** The single greppable stderr line the selector prints (stdout stays a clean AFFECTED_WS list). */
-export function formatSuggestionLine(report: any, added: any): string;
+/** Snapshot age as hours with one decimal, or `none` when nothing was loaded. */
+export function formatSnapshotAge(ageMs: any): string;
+/**
+ * The single greppable stderr line the selector prints on EVERY run (stdout stays a clean
+ * AFFECTED_WS list, so no stdout parser sees it). Printing it when the snapshot is absent or
+ * stale is the point: P-008's suggestions sat inert for days because this line was silent then.
+ * `source` names where the snapshot was looked for (env | shared | checkout | hermetic-test).
+ */
+export function formatSuggestionLine(report: any, added: any, source?: null): string;
 /**
  * Producer (out-of-band, used by gen-graph-dependency-snapshot.mjs): turn raw
  * `{importer, imported}` graph edges into a snapshot, keeping only edges the CURRENT source
@@ -193,3 +220,6 @@ export const GRAPH_SNAPSHOT_SCHEMA: "graph-dependency-snapshot-v1";
 export const DEFAULT_MAX_AGE_MS: number;
 /** Hard cap on files visited by one suggestion walk — a bound, never a verdict. */
 export const MAX_VISITED_FILES: 20000;
+/** The gitnexus repo name this tree is indexed under (the reindex routine's `--name`). */
+export const GRAPH_SNAPSHOT_REPO: "papercusp";
+import { existsSync } from "node:fs";

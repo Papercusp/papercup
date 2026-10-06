@@ -1,7 +1,8 @@
 [Unit]
 Description=Off-GCP mirror of the estate backups (WI-645563)
 Documentation=file:%h/papercupai-workspace/papercusp/infra/estate-backup/RESTORE-RUNBOOK.md
-After=network-online.target
+# No After=network-online.target: that target is not-found in the USER manager, so the
+# dependency was a silent no-op (WI-10006303). The script waits for connectivity itself.
 # OnFailure is a [Unit] key. Putting it in [Service] is SILENTLY IGNORED by
 # systemd — that mistake left the Postgres backup with no alarm at all for a
 # while (EI-10733 follow-up). Keep it here.
@@ -9,6 +10,9 @@ OnFailure=pc-estate-mirror-alert.service
 
 [Service]
 Type=oneshot
+# 75 = EX_TEMPFAIL: "no uplink yet, deferred" (the script arms pc-estate-mirror-retry.timer).
+# Mapping it to success keeps OnFailure= (the fleet alarm) for REAL faults only.
+SuccessExitStatus=75
 # Pin the SERVICE ACCOUNT explicitly. Without this the script inherits whichever
 # gcloud account happens to be active, which was the human `super@papercusp.com`
 # user credential. On 2026-09-01 its refresh token needed reauthentication, the
@@ -28,7 +32,7 @@ MemoryHigh=2G
 MemoryMax=4G
 # One estate day is ~1.5GB over a home link; 45min is generous, and a run that
 # exceeds it is a fault worth alarming on rather than one to wait out.
-TimeoutStartSec=45min
+TimeoutStartSec=90min
 ExecStart=%h/papercupai-workspace/papercusp/infra/estate-backup/pc-estate-mirror.sh mirror
 
 [Install]

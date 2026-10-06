@@ -21,7 +21,9 @@
 //
 // Pure + hermetic: every filesystem/clock dependency is injected.
 import { createHash } from "node:crypto";
-import { posix } from "node:path";
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { join, posix } from "node:path";
 
 export const GRAPH_SNAPSHOT_SCHEMA = "graph-dependency-snapshot-v1";
 export const DEFAULT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -254,13 +256,44 @@ export function unionSuperset(baseline, suggested) {
   return { names: [...out], added };
 }
 
-/** Read + parse a snapshot file; never throws. */
+/** The gitnexus repo name this tree is indexed under (the reindex routine's `--name`). */
+export const GRAPH_SNAPSHOT_REPO = "papercusp";
+
+/**
+ * Where the reindex routine writes the snapshot (gitnexus-deterministic-integration P-001):
+ * OUTSIDE every checkout, so the green-checkpoint's isolated tree — whose gitignored
+ * `.papercusp/` never holds one — reads the same file the canonical tree does.
+ */
+export function sharedSnapshotPath(repoName = GRAPH_SNAPSHOT_REPO, home = homedir()) {
+  return join(home, ".papercusp", "graph-snapshot", repoName, "dependency-snapshot.json");
+}
+
+/**
+ * Resolve the snapshot the selector reads, and say WHERE it came from (printed on the status
+ * line, so a dormant or misplaced snapshot is never silent). Order: an explicit env path; the
+ * shared routine-written path; the legacy per-checkout path. Under Vitest (`VITEST` set) with no
+ * explicit path the default lookup is OFF: dozens of tests spawn the selector and assert exact
+ * workspace sets, and a host snapshot leaking into them would make those sets host-dependent.
+ * @returns {{ path: string | null, source: "env" | "shared" | "checkout" | "hermetic-test" }}
+ */
+export function resolveSnapshotPath({ env, root, home = homedir(), exists = existsSync }) {
+  const explicit = env.PAPERCUSP_AFFECTED_GRAPH_SNAPSHOT;
+  if (explicit) return { path: explicit, source: "env" };
+  if (env.VITEST) return { path: null, source: "hermetic-test" };
+  const shared = sharedSnapshotPath(GRAPH_SNAPSHOT_REPO, home);
+  if (exists(shared)) return { path: shared, source: "shared" };
+  const checkout = join(root, ".papercusp", "graph-snapshot", "dependency-snapshot.json");
+  if (exists(checkout)) return { path: checkout, source: "checkout" };
+  return { path: shared, source: "shared" };
+}
+
+/** Read + parse a snapshot file; never throws. A missing file is `unavailable/absent`. */
 export function loadSnapshotFile(path, { readFile }) {
   let text;
   try {
     text = readFile(path);
-  } catch {
-    return { status: "unavailable" };
+  } catch (e) {
+    return { status: "unavailable", reason: e && e.code === "ENOENT" ? "absent" : "unreadable" };
   }
   const parsed = parseSnapshot(text);
   if (!parsed.ok) return { status: "invalid", reason: parsed.reason };
@@ -273,6 +306,9 @@ export function loadSnapshotFile(path, { readFile }) {
  * @param {{ changed: string[], snapshotPath: string, readFile: (p: string) => string, readSource: (rel: string) => string | null, ownerOfPath: (file: string) => string[], now: number, maxAgeMs?: number }} args
  */
 export function computeGraphSuggestions({ changed, snapshotPath, readFile, readSource, ownerOfPath, now, maxAgeMs }) {
+  if (!snapshotPath) {
+    return { status: "unavailable", reason: "no-snapshot-path", workspaces: [], accepted: 0, rejected: 0, index: null, ageMs: null };
+  }
   const loaded = loadSnapshotFile(snapshotPath, { readFile });
   if (loaded.status !== "ok") {
     return {
@@ -282,8 +318,10 @@ export function computeGraphSuggestions({ changed, snapshotPath, readFile, readS
       accepted: 0,
       rejected: 0,
       index: null,
+      ageMs: null,
     };
   }
+  const ageMs = now - Date.parse(loaded.snapshot.generatedAt);
   const result = suggestFromSnapshot({ changed, snapshot: loaded.snapshot, now, maxAgeMs, readSource });
   const workspaces = new Set();
   for (const file of result.suggestedFiles) {
@@ -298,17 +336,30 @@ export function computeGraphSuggestions({ changed, snapshotPath, readFile, readS
     rejectedReasons: [...new Set(result.rejected.map((r) => r.reason))].sort(),
     truncated: Boolean(result.truncated),
     index: result.index ?? null,
+    ageMs: Number.isFinite(ageMs) ? ageMs : null,
   };
 }
 
-/** The single greppable stderr line the selector prints (stdout stays a clean AFFECTED_WS list). */
-export function formatSuggestionLine(report, added) {
+/** Snapshot age as hours with one decimal, or `none` when nothing was loaded. */
+export function formatSnapshotAge(ageMs) {
+  return typeof ageMs === "number" && Number.isFinite(ageMs) ? `${(Math.max(0, ageMs) / 3_600_000).toFixed(1)}h` : "none";
+}
+
+/**
+ * The single greppable stderr line the selector prints on EVERY run (stdout stays a clean
+ * AFFECTED_WS list, so no stdout parser sees it). Printing it when the snapshot is absent or
+ * stale is the point: P-008's suggestions sat inert for days because this line was silent then.
+ * `source` names where the snapshot was looked for (env | shared | checkout | hermetic-test).
+ */
+export function formatSuggestionLine(report, added, source = null) {
   const idx = report.index?.lastCommit ? report.index.lastCommit.slice(0, 10) : "none";
   return (
     `GRAPH_SUGGESTIONS status=${report.status}` +
     (report.reason ? ` reason=${report.reason}` : "") +
     ` accepted=${report.accepted} rejected=${report.rejected}` +
-    ` added=${added.length ? added.join(",") : "none"} index=${idx}`
+    ` added=${added.length ? added.join(",") : "none"} index=${idx}` +
+    ` age=${formatSnapshotAge(report.ageMs)}` +
+    (source ? ` source=${source}` : "")
   );
 }
 

@@ -334,12 +334,20 @@ export async function connectionAccessToken(
   input: { workspaceId: string; harness: string; credentialRef: string | null; now?: number },
 ): Promise<{ accessToken: string | null } | { reconnectRequired: true; reason: string }> {
   const ref = input.credentialRef;
-  if (!ref || !ref.startsWith(DESCRIPTOR_OAUTH_PLUGIN_PREFIX)) return { accessToken: null };
-  const fieldSeparator = ref.indexOf(':', DESCRIPTOR_OAUTH_PLUGIN_PREFIX.length);
-  if (fieldSeparator < 0) return { reconnectRequired: true, reason: `connection_credential_ref_invalid:${ref}` };
+  if (!ref) return { accessToken: null };
+  // A credential ref is `<token-store plugin>:<field>`. Descriptor plugins are
+  // themselves `provider:<group>`; first-party adapters (google-workspace,
+  // whose refs existing Gmail and Calendar sources carry) use a bare plugin id.
+  const descriptorRef = ref.startsWith(DESCRIPTOR_OAUTH_PLUGIN_PREFIX);
+  const fieldSeparator = ref.indexOf(':', descriptorRef ? DESCRIPTOR_OAUTH_PLUGIN_PREFIX.length : 0);
+  if (fieldSeparator < 0) {
+    return descriptorRef ? { reconnectRequired: true, reason: `connection_credential_ref_invalid:${ref}` } : { accessToken: null };
+  }
   const plugin = ref.slice(0, fieldSeparator);
-  const adapter = descriptorConnectionAdapter(plugin);
-  if (!adapter) return { reconnectRequired: true, reason: `connection_provider_not_registered:${plugin}` };
+  const adapter = connectionAdapterForPlugin(plugin);
+  if (!adapter) {
+    return descriptorRef ? { reconnectRequired: true, reason: `connection_provider_not_registered:${plugin}` } : { accessToken: null };
+  }
   const field = adapter.oauthField(ref);
   const stored = await fsTokenStorage.read(plugin, input.harness);
   const token = stored[field];

@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[3]
 HERE = Path(__file__).resolve().parent
 SOURCE = json.loads((HERE / 'snapshot.json').read_text())
 BASE = json.loads((ROOT / '.papercusp/reports/unshipped-plans-audit/latest.json').read_text())
+CANONICAL = {r['slug']: r for r in json.loads((HERE / 'canonical.json').read_text())}
 NOW = dt.datetime.fromisoformat(SOURCE['snapshotAt'])
 TERMINAL = {'passed', 'deprecated', 'resolved', 'closed', 'done', 'dropped'}
 PLAN_TERMINAL = {'done', 'dropped'}
@@ -146,15 +147,25 @@ def summary(plan):
         characteristic = data.get('characteristic') or data.get('description') or ''
         return clip((f'{kind.capitalize()} criteria for {target}. ' if target else f'{kind.capitalize()} rubric. ') + str(characteristic or plan.get('title') or ''), 300)
     chunks = sections(plan.get('content', ''))
-    for needle in ('purpose', 'objective', 'goal', 'problem', 'summary', 'intent', 'overview', 'motivation', 'why', 'requirements', 'scope'):
+    for needle in ('purpose', 'objective', 'goal', 'problem', 'summary', 'intent', 'overview', 'motivation', 'why', 'scope'):
         for heading, body in chunks:
             if heading == needle or heading.startswith(needle + ' '):
                 prose = re.sub(r'(?m)^\s*[-*]\s*\[[^\]]*\].*$', '', body)
                 prose = clean(prose)
                 if len(prose) >= 35:
                     return clip(prose, 330)
-    title = clean(plan.get('title') or plan['slug'])
-    item = next((i for i in plan.get('items') or [] if i.get('text')), None)
+    requests=[]
+    for block in re.findall(r'```requirement\s*\n(.*?)\n```',plan.get('content',''),re.S):
+        try:
+            request=json.loads(block).get('intent',{}).get('request')
+            if request:
+                requests.append(clean(request))
+        except (ValueError,AttributeError):
+            pass
+    if requests:
+        return clip(' '.join(requests[:3]),330)
+    title = clean(plan.get('title') or CANONICAL[plan['slug']].get('parsedTitle') or plan['slug'])
+    item = next((i for i in CANONICAL[plan['slug']]['items'] if i.get('text')), None)
     return clip(title + ('. Scope includes ' + clean(item['text']).split('— note:')[0] if item else '. No executable scope is recorded.'), 330)
 
 
@@ -179,17 +190,38 @@ def check_citation(citation):
 
 
 def resolve_items(plan):
-    items = [dict(i) for i in plan.get('items') or []]
+    items = [dict(i) for i in CANONICAL[plan['slug']]['items']]
+    canonical_ids={i['id'] for i in items}
+    indexed=plan.get('items') or []
+    indexed_by_id={i['id']:i for i in indexed}
+    for saved in indexed:
+        if saved['id'] not in canonical_ids:
+            item=dict(saved)
+            item['storedStatus']=saved.get('status','todo')
+            item['unresolvedBlockers']=[ref for ref in saved.get('blockedBy') or [] if ref not in indexed_by_id or indexed_by_id[ref].get('status') not in PLAN_TERMINAL]
+            item['effectiveStatus']=item['storedStatus'] if item['storedStatus'] in PLAN_TERMINAL or item['storedStatus']=='blocked' else ('blocked' if item['unresolvedBlockers'] else item['storedStatus'])
+            item['staleBlockedHint']='index-only status ambiguity' if item['storedStatus']=='blocked' and saved.get('blockedBy') and not item['unresolvedBlockers'] else None
+            item['indexOnly']=True
+            items.append(item)
     by_id = {i['id']: i for i in items}
     # Same stored-status/dependency precedence as @papercusp/plan-parser.
     for item in items:
-        stored = item.get('status', 'todo')
-        unresolved = [ref for ref in item.get('blockedBy') or [] if ref not in by_id or by_id[ref].get('status') not in PLAN_TERMINAL]
+        stored = item.get('storedStatus', 'todo')
+        unresolved = item.get('unresolvedBlockers', [])
         item['unresolved'] = unresolved
-        item['effective'] = stored if stored in PLAN_TERMINAL or stored == 'blocked' else ('blocked' if unresolved else stored)
-        item['staleBlocked'] = stored == 'blocked' and bool(item.get('blockedBy')) and not unresolved
+        item['effective'] = item['effectiveStatus']
+        item['staleBlocked'] = stored == 'blocked' and bool(item.get('staleBlockedHint'))
         item['linkedWork'] = item_work[(plan['slug'], item['id'])]
     return items
+
+
+def closeout_step(gate):
+    message=gate.get('message','')
+    steps=[]
+    for token,text in [('proof_stale','refresh proof for the current scope'),('proof_missing','add missing acceptance proof'),('proof_inadequate','strengthen the acceptance tests and independent falsifiers'),('vetting_missing','vet the acceptance criteria'),('audit_coverage_stale','refresh the stale code-truth citations'),('grading_missing','obtain independent acceptance grading'),('author_verdict','record the author’s current acceptance decision')]:
+        if token in message or token in gate.get('code',''):
+            steps.append(text)
+    return '; then '.join(steps[:3]) or 'resolve the acceptance refusal recorded in the evidence'
 
 
 rows = []
@@ -250,7 +282,14 @@ for plan in SOURCE['plans']:
         contradictions.append('Stored blocked labels outlast all their declared dependencies: ' + ', '.join(stale) + '. An external blocker may still be legitimate.')
     if missing_deps:
         contradictions.append('Unfinished items reference unknown local dependencies; repair the references before restarting.')
+    parsed_count=CANONICAL[slug]['parsedCount']
+    index_count=CANONICAL[slug]['indexCount']
+    index_disagrees=index_count is not None and index_count!=parsed_count
+    if index_disagrees:
+        contradictions.append(f'Item index/content parse disagreement: index {index_count}, parse {parsed_count}. Both sets of obligations are retained; implementation confidence needs reconciliation.')
     types = 'rubric' if plan.get('template') == 'rubric' else ('run-instance' if plan.get('templateSlug') else 'delivery')
+    title=plan.get('title') or CANONICAL[slug].get('parsedTitle') or slug
+    fixture = types=='delivery' and bool(re.search(r'\b(?:throwaway|dummy.demo|dummy.plan|fixture|pipeline test|flow exercise|e2e.verify)\b',title+' '+slug,re.I))
     if types == 'rubric':
         target = (plan.get('templateData') or {}).get('subjectPlan')
         target_record = portfolio.get(target)
@@ -267,6 +306,10 @@ for plan in SOURCE['plans']:
             bucket = 'Acceptance and evaluation records'
             recommendation = 'Keep the evaluation contract if it is actively used; establish its subject and reviewer before scheduling any work. No product implementation is implied by a rubric record.'
         implementation = 'Evaluation criteria, not a product implementation plan. ' + (f'Subject: {target_record["status"]}.' if target_record else 'Subject not resolved in this Papercusp census.')
+    elif slug=='adhoc-work-item-specs':
+        bucket='System specification carrier'
+        implementation='System carrier for ad hoc work-item specifications; not a standalone product build.'
+        recommendation='Preserve this shared specification carrier. Audit the individual work-item contracts that use it rather than retiring it because it has no ordinary plan-item graph.'
     elif plan['status'] == 'superseded':
         bucket = 'Superseded delivery history'
         target = plan.get('supersededBy')
@@ -282,6 +325,10 @@ for plan in SOURCE['plans']:
             recommendation = 'Keep this retired. Identify which unfinished obligations still matter and map them to a current plan before archiving the residual labels; do not restart the entire old scope.'
         else:
             recommendation = 'Keep as historical context. No implementation restart is warranted; archive only after confirming all surviving obligations are represented elsewhere.'
+    elif fixture:
+        bucket='Retained fixture or workflow exercise'
+        implementation=f'Fixture/exercise record; {done} done, {dropped} dropped, {remaining} unfinished item labels.'
+        recommendation='Confirm whether the fixture still validates a maintained workflow. Retain its evidence and terminalize obsolete exercise labels; do not staff it as a new product feature.'
     elif types == 'run-instance':
         bucket = 'Scheduled run records'
         implementation = f'Run of {plan["templateSlug"]}; {done}/{len(items)} done, {remaining} unfinished.'
@@ -292,8 +339,9 @@ for plan in SOURCE['plans']:
         recommendation = 'Establish whether this archived scope is still wanted and has a current replacement. Resume only the surviving gap with fresh evidence; supersede obsolete scope through the normal lifecycle gate.'
     elif recent and (remaining or open_work):
         bucket = 'Implementation in progress'
-        implementation = f'In progress; {done}/{len(items)} done, {remaining} unfinished; {len(recent)} recently active holder(s).'
-        recommendation = 'Continue with the existing active holder(s), ' + ', '.join(o['owner'][:11] for o in recent) + '; protect their lane, finish the next unblocked item, and refresh acceptance evidence after the source stops changing.'
+        implementation = f'{done} done, {dropped} dropped, {remaining} left; {len(recent)} recently active holder(s).'
+        head=next((i for i in items if i['effective'] not in PLAN_TERMINAL and not i['unresolved']),None)
+        recommendation = ('Finish '+head['id']+': '+clip(head.get('text'),140)+'. ' if head else 'Finish the currently held critical-path work. ')+'Keep the existing active holder(s), ' + ', '.join(o['owner'][:11] for o in recent) + '; refresh acceptance evidence after the source stops changing.'
     elif owners and (remaining or open_work):
         bucket = 'Assigned work requiring pickup'
         implementation = f'{done}/{len(items)} done, {remaining} unfinished; assigned custody, recent progress not established.'
@@ -303,17 +351,21 @@ for plan in SOURCE['plans']:
             recommendation = 'Recover the saved checkpoint and transfer only the remaining work from the ended holder(s). Recheck current claims before reassignment; retain completed implementation.'
         else:
             recommendation = 'Confirm the current custodian and its saved next action; an assignment alone does not establish progress. Resume it or explicitly allocate the remaining work.'
-    elif reconcile or contrary:
+    elif reconcile or contrary or index_disagrees:
         bucket = 'Reconcile implementation records'
-        implementation = f'Plan/work ledger disagreement; {done}/{len(items)} done and {len(open_work)} open linked work.'
-        recommendation = 'Reconcile ' + ', '.join((reconcile + contrary)[:8]) + ' against its linked work and completion evidence before any implementation or shipping. Preserve real completed work and allocate only proven residue.'
+        implementation = f'Records disagree; {done}/{len(items)} done and {len(open_work)} open work. Implementation confidence requires reconciliation.'
+        if index_disagrees:
+            recommendation = f'Reconcile the {index_count}-item saved index with the {parsed_count}-item content parse; retain every obligation and recover its evidence before implementing or shipping. '
+        else:
+            recommendation = 'Reconcile ' + ', '.join((reconcile + contrary)[:8]) + ' against linked work and completion evidence before implementing or shipping. '
+        recommendation+='Preserve real completed work and allocate only proven residue.'
     elif items and not remaining and not open_work:
         bucket = 'Implementation recorded complete; acceptance pending'
         implementation = f'Ledger complete: {done} done, {dropped} dropped. ' + (f'{audit_coverage}/{done} completed items audited; acceptance still pending.' if done else 'No implemented items are recorded.')
         if gate.get('satisfied'):
             recommendation = 'Current read-only acceptance gate passed. Have the accountable owner perform final promotion/shipment verification and the normal shipped transition; no further implementation is indicated.'
         elif gate.get('code'):
-            recommendation = f'Finish closeout rather than rebuilding: repair the current {gate["code"]} refusal, beginning with ' + clip(gate.get('message'), 280) + '. Then obtain the required independent verdict and shipment evidence.'
+            recommendation = 'Next closeout step: '+closeout_step(gate)+'. Preserve the completed implementation; then obtain final shipment evidence. Exact refusal: '+gate['code']+'.'
         elif audit_coverage < done or not citations:
             recommendation = 'Check current code truth for the completed items, recover missing audit/test evidence, and run acceptance closeout. A terminal item ledger alone is not sufficient to mark the plan shipped.'
         else:
@@ -351,7 +403,7 @@ for plan in SOURCE['plans']:
     if citations and missing_files:
         recommendation += f' {missing_files} cited path(s) no longer resolve; locate renamed sources before relying on the saved audit.'
     next_items = [dict(id=i['id'], text=clip(i.get('text'), 280), status=i['effective'], blockedBy=i['unresolved'], linkedWork=i['linkedWork']) for i in items if i['effective'] not in PLAN_TERMINAL]
-    rows.append({'slug':slug, 'title':plan.get('title') or slug,'summary':summary(plan),'status':plan['status'],'type':types,'archived':plan['archived'],'legacy':plan['legacy'],
+    rows.append({'slug':slug, 'title':title,'summary':summary(plan),'status':plan['status'],'type':types,'archived':plan['archived'],'legacy':plan['legacy'],
                  'category':bucket,'implementation':implementation,'recommendation':recommendation,'counts':dict(counts),'itemTotal':len(items),'done':done,'dropped':dropped,'remaining':remaining,
                  'workTotal':len(linked),'workStates':dict(collections.Counter(w['status'] for w in linked)),'completedWorkWithSavedEvidence':len(proof_work),
                  'owners':owners,'declaredOwner':plan.get('owner'),'ageDays':round((NOW-time(plan['updatedAt'])).total_seconds()/86400,1),'updatedAt':plan['updatedAt'],
@@ -362,9 +414,10 @@ for plan in SOURCE['plans']:
                  'testCitationsWithRecordedRun':len(matched_test_runs),'citations':citations,'contentHash':plan['contentHash'],
                  'workerTurnover':max([len(w.get('workerHistory') or []) for w in linked] or [0]),
                  'workIds':[w['id'] for w in linked],'savedWorkEvidence':[{'id':w['id'],'summary':clip((w.get('completionEvidence') or {}).get('summary'),500),'testsRun':clip((w.get('completionEvidence') or {}).get('testsRun'),800)} for w in proof_work],
-                 'baselineCategory':b.get('category'),'baselineScopeCovered':bool(b)})
+                 'baselineCategory':b.get('category'),'baselineScopeCovered':bool(b),'cycleMembers':CANONICAL[slug]['cycleMembers'],'missingDependencyRefs':CANONICAL[slug]['missingRefs'],
+                 'parsedItemCount':parsed_count,'storedIndexCount':index_count,'indexDisagrees':index_disagrees})
 
-priority = {name:index for index,name in enumerate(['Implementation in progress','Assigned work requiring pickup','Reconcile implementation records','Implementation recorded complete; acceptance pending','Dependencies or blockers require resolution','Owner action recorded','Unowned implementation or unstarted work','Proposal or empty scope requiring a decision','Archived plans requiring disposition','Scheduled run records','Acceptance and evaluation records','Acceptance records for shipped work','Acceptance records for superseded work','Superseded delivery history'])}
+priority = {name:index for index,name in enumerate(['Implementation in progress','Assigned work requiring pickup','Reconcile implementation records','Implementation recorded complete; acceptance pending','Dependencies or blockers require resolution','Owner action recorded','Unowned implementation or unstarted work','Proposal or empty scope requiring a decision','Archived plans requiring disposition','Retained fixture or workflow exercise','Scheduled run records','System specification carrier','Acceptance and evaluation records','Acceptance records for shipped work','Acceptance records for superseded work','Superseded delivery history'])}
 rows.sort(key=lambda r:(priority.get(r['category'],99),r['ageDays'],r['title'].lower()))
 for index,row in enumerate(rows,1):
     row['number']=index
@@ -373,11 +426,12 @@ stats={'totalPortfolio':len(SOURCE['portfolio']),'nonShipped':len(rows),'shipped
        'byRecommendation':dict(collections.Counter(r['category'] for r in rows)),'plansWithContradictions':sum(bool(r['contradictions']) for r in rows),
        'plansWithMissingCitationPaths':sum(bool(r['missingCitationPaths']) for r in rows),'sourceCitationsChecked':sum(r['citationCount'] for r in rows),
        'sameBlobCitations':sum(r['sameBlobCitations'] for r in rows),'storedTestFilesRead':len(SOURCE['testFiles']),
-       'baselineCovered':sum(r['baselineScopeCovered'] for r in rows),'extendedBeyondBaseline':sum(not r['baselineScopeCovered'] for r in rows)}
+       'baselineCovered':sum(r['baselineScopeCovered'] for r in rows),'extendedBeyondBaseline':sum(not r['baselineScopeCovered'] for r in rows),
+       'itemIndexCountDisagreements':sum(r['indexDisagrees'] for r in rows),'missingItemIndexes':sum(r['storedIndexCount'] is None for r in rows)}
 assert len(rows)==len({r['slug'] for r in rows})==stats['nonShipped']
 assert {r['slug'] for r in rows}=={p['slug'] for p in SOURCE['portfolio'] if p['status']!='shipped'}
-audit={'snapshotAt':SOURCE['snapshotAt'],'generatedAt':dt.datetime.now(dt.timezone.utc).isoformat(),'scope':'Papercusp harness, papercusp-workspace; all records whose stored status is not shipped, including archives, superseded plans, rubrics and instances.',
-       'stats':stats,'limitations':['Point-in-time audit; source and ownership can move after the snapshot.','Every plan was reviewed against its available ledger and content. Citation paths, symbols and saved blob identities were checked where present.','Test results are stored history, not a fresh execution of every plan’s tests; missing or stale proof remains an explicit gap.','The baseline evaluates the plan acceptance gate, not current LIVE_GATE_OPS or deployment health. No release-gate operation was performed.','A stale dependency hint alone does not prove that a genuine external blocker has cleared.','No lifecycle, assignment, blocker, plan, implementation or release state was changed.'],
+audit={'snapshotAt':SOURCE['snapshotAt'],'baselineMeasuredAt':BASE['generatedAt'],'generatedAt':dt.datetime.now(dt.timezone.utc).isoformat(),'scope':'Papercusp harness, papercusp-workspace; all records whose stored status is not shipped, including archives, superseded plans, rubrics and instances.',
+       'stats':stats,'limitations':['Point-in-time audit; source and ownership can move after the snapshot.','Every plan was reviewed against its available ledger and content. Citation paths, symbols and saved blob identities were checked where present.','Canonical plan parsing was used for every record. When the derived item index disagrees, both obligation sets are retained and the disagreement is explicit.','Test results are stored history, not a fresh execution of every plan’s tests; missing or stale proof remains an explicit gap.','Acceptance-gate refusals were measured in the built-in baseline at '+BASE['generatedAt']+'; the full census and owner snapshot are separately timestamped.','The baseline evaluates the plan acceptance gate, not current LIVE_GATE_OPS or deployment health. No release-gate operation was performed.','A stale dependency hint alone does not prove that a genuine external blocker has cleared.','No lifecycle, assignment, blocker, plan, implementation or release state was changed.'],
        'writerRefs':['packages/operator-core/lib/agent-tools/plans/list.ts','packages/operator-core/lib/agent-tools/plans/source.ts','libs/generic/plan-parser/src/effective-status.ts','packages/operator-core/lib/plan-item-coverage.ts','packages/operator-core/lib/unshipped-plans-audit.ts','packages/operator-core/lib/work-items.ts:3119'],
        'coverage':{'population':[r['slug'] for r in rows],'checked':[r['slug'] for r in rows],'notChecked':[],'notApplicable':[],'residue':[]},'rows':rows}
 (HERE/'audit.json').write_text(json.dumps(audit,ensure_ascii=False,indent=2)+'\n')
@@ -441,5 +495,6 @@ page='''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="v
 </style></head><body><main><header><p class="muted">Papercusp · owner-directed portfolio audit</p><h1>What is built, what is left,<br>and what should happen next.</h1><p id="snapshot"></p><p>Continue active implementation. Reconcile contradictory records. Close out completed work through acceptance. Decide which old proposals remain useful. Evaluation rubrics and superseded history are kept visible without treating them as new builds.</p><p class="muted">Every non-shipped Papercusp record is included. Source citations and stored test histories were inspected where available; this report does not claim fresh tests or shipment verification for every historical plan.</p></header><div class="stats" id="stats"></div><h2>Recommended order</h2><ol><li>Protect and finish active implementation lanes.</li><li>Reconcile recorded completion and recover custody where pickup is missing.</li><li>Repair the exact acceptance refusal and verify final shipment.</li><li>Resolve dependency roots and confirmed owner-only actions.</li><li>Re-approve or retire old proposals; preserve evaluation and supersession history.</li></ol><div class="filters"><input id="search" aria-label="Search plans" placeholder="Search title, slug, summary, work item, or recommendation"><select id="category" aria-label="Recommendation"><option value="">All recommendations</option></select><select id="status" aria-label="Stored status"><option value="">All stored statuses</option></select><button id="export">Download complete audit JSON</button></div><p id="shown" class="muted" aria-live="polite"></p><div id="list"></div><h2>Evidence and limits</h2><ul id="limits"></ul></main><script type="application/json" id="audit">'''+embedded+'''</script><script>
 const audit=JSON.parse(document.getElementById('audit').textContent),rows=audit.rows;const el=id=>document.getElementById(id);const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));el('snapshot').textContent='Snapshot '+audit.snapshotAt+' · '+audit.stats.nonShipped.toLocaleString()+' non-shipped records inspected.';el('stats').innerHTML=[['Non-shipped records',audit.stats.nonShipped],['Shipped, excluded',audit.stats.shippedExcluded],['Rubric records',audit.stats.byType.rubric||0],['Status inconsistencies',audit.stats.plansWithContradictions]].map(([label,value])=>'<div class="stat"><strong>'+value.toLocaleString()+'</strong>'+label+'</div>').join('');for(const[id,values]of [['category',rows.map(r=>r.category)],['status',rows.map(r=>r.status)]])for(const v of [...new Set(values)].sort()){let o=document.createElement('option');o.value=v;o.textContent=v;el(id).append(o)}el('limits').innerHTML=audit.limitations.map(v=>'<li>'+esc(v)+'</li>').join('');function render(){const q=el('search').value.toLowerCase(),category=el('category').value,status=el('status').value;const found=rows.filter(r=>(!category||r.category===category)&&(!status||r.status===status)&&(!q||[r.title,r.slug,r.summary,r.recommendation,...r.workIds].join(' ').toLowerCase().includes(q)));el('shown').textContent=found.length.toLocaleString()+' of '+rows.length.toLocaleString()+' records';el('list').innerHTML=found.map(r=>'<article id="plan-'+r.number+'"><h3>'+r.number+'. '+esc(r.title)+'</h3><div class="slug">'+esc(r.slug)+'</div><span class="badge">'+esc(r.status)+'</span><span class="badge">'+esc(r.category)+'</span>'+(r.archived?'<span class="badge">Archived</span>':'')+'<p>'+esc(r.summary)+'</p><div class="row"><div><div class="label">Current implementation</div><p>'+esc(r.implementation)+'</p></div><div><div class="label">Recommendation</div><p class="recommendation">'+esc(r.recommendation)+'</p></div></div>'+(r.contradictions.length?'<p class="warning">'+r.contradictions.map(esc).join('<br>')+'</p>':'')+'<details><summary>Implementation evidence and remaining work</summary><p>Plan revision '+r.version+'; '+r.decisionCount+' decisions; '+r.workTotal+' linked work items; '+r.auditCoverage+' completed items covered by saved code-truth audits.</p><p>'+r.citationCount+' citations inspected; '+r.sameBlobCitations+' retain their saved source blob; '+r.missingCitationPaths+' paths unresolved. '+r.testCitationsWithRecordedRun+' of '+r.testCitationCount+' test citations have a stored file-run record in the 90-day history.</p><div class="label">Current owners</div><pre>'+esc(JSON.stringify(r.owners,null,2))+'</pre><div class="label">Unfinished items</div><pre>'+esc(JSON.stringify(r.nextItems,null,2))+'</pre><div class="label">Acceptance</div><pre>'+esc(JSON.stringify(r.acceptanceGate,null,2))+'</pre><div class="label">Saved completion evidence</div><pre>'+esc(JSON.stringify(r.savedWorkEvidence,null,2))+'</pre><div class="label">Source and test citations</div><pre>'+esc(JSON.stringify(r.citations,null,2))+'</pre><div class="label">Plan narrative (cross-checked, not assumed current)</div><p>'+esc(r.nowState)+'</p><p>'+esc(r.nowNext)+'</p><p class="slug">Content hash: '+esc(r.contentHash)+'</p></details></article>').join('')}for(const id of ['search','category','status'])el(id).addEventListener(id==='search'?'input':'change',render);el('export').addEventListener('click',()=>{const u=URL.createObjectURL(new Blob([JSON.stringify(audit,null,2)],{type:'application/json'})),a=document.createElement('a');a.href=u;a.download='papercusp-plan-audit-2026-10-06.json';a.click();setTimeout(()=>URL.revokeObjectURL(u),2000)});render();
 </script></body></html>'''
+page=page.replace('</head>','<style>select,.filters>*{max-width:100%}article h3,p{overflow-wrap:anywhere}#list{grid-template-columns:minmax(0,1fr)}article,.row>div{min-width:0}</style></head>')
 (HERE/'report.html').write_text(page)
 print(json.dumps({'stats':stats,'reportBytes':len(md.encode()),'htmlBytes':len(page.encode()),'auditBytes':(HERE/'audit.json').stat().st_size,'mainLimits':limits},ensure_ascii=False))

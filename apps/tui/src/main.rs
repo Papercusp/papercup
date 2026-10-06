@@ -46,6 +46,7 @@ mod mux;
 mod network;
 mod notify;
 mod operator_voice_bus;
+mod paste_chips;
 mod plans_board;
 mod reap;
 mod remote_connect;

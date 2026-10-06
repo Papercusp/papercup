@@ -8,16 +8,17 @@ WITH portfolio AS (
   SELECT * FROM portfolio WHERE COALESCE(status, 'draft') <> 'shipped'
 ), relevant_edges AS (
   SELECT l.* FROM harness_shared.coord_links l
-  WHERE l.workspace_id = 'papercusp-workspace'
-  AND ((l.dst_kind = 'plan_item' AND split_part(l.dst_ref, '#', 1) IN (SELECT plan_slug FROM subjects))
+  -- Canonical coverage reader intentionally finds exact plan-item references
+  -- across the legacy/default and current-workspace link plane.
+  WHERE ((l.dst_kind = 'plan_item' AND split_part(l.dst_ref, '#', 1) IN (SELECT plan_slug FROM subjects))
     OR (l.src_kind = 'plan_item' AND split_part(l.src_ref, '#', 1) IN (SELECT plan_slug FROM subjects)))
 ), linked_work AS (
   SELECT w.* FROM harness_shared.work_items w
   WHERE w.workspace_id = 'papercusp-workspace'
   AND (w.source_plan_slug IN (SELECT plan_slug FROM subjects)
     OR w.payload->'plan_item'->>'plan_slug' IN (SELECT plan_slug FROM subjects)
-    OR w.feature_id IN (SELECT src_ref FROM relevant_edges WHERE src_kind IN ('work_item','feature','issue'))
-    OR w.feature_id IN (SELECT dst_ref FROM relevant_edges WHERE dst_kind IN ('work_item','feature','issue')))
+    OR w.feature_id IN (SELECT regexp_replace(src_ref, '^.*#', '') FROM relevant_edges WHERE src_kind IN ('work_item','feature','issue'))
+    OR w.feature_id IN (SELECT regexp_replace(dst_ref, '^.*#', '') FROM relevant_edges WHERE dst_kind IN ('work_item','feature','issue')))
 )
 SELECT jsonb_build_object(
   'snapshotAt', transaction_timestamp(),

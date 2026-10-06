@@ -11,6 +11,12 @@ import { MICROS_PER_CENT, addMicrosDecimals, formatMicrosDecimal, journalLinesFo
   type JournalLine, type MoneyMovement } from '../../../cupboard/money-journal';
 import { receiptCommitment, receiptTransactionProblem } from '../../../cupboard/payment-receipt';
 import type { StoredPaymentReceipt } from '../../../cupboard/payment-receipt-store';
+import { createHash } from 'node:crypto';
+import { journalVerdictForStripeBalanceTransaction, validatePolicy,
+  type CustomerPaymentPolicy } from '../../../cupboard/money-journal-producers';
+import type { StripeAccountCashEvidence, StripeAccountPaymentSourceEvidence,
+  StripeAccountTransactionEvidence, StripePaymentLineageEvidence,
+  StripeObservedBalanceTransaction } from './stripe-billing-client';
 
 export interface HostedPrepaidAllocation {
   readonly allocationId: string;
@@ -137,6 +143,196 @@ function posting(payment: Omit<Payment, 'available'>, customerId: string): Journ
     throw new Error('prepaid receipt binding mismatch');
   }
   return entry;
+}
+
+/** Reconcile the Stripe portion of a locked funding read. All evidence must be
+ * collected by the server's authenticated client; this pure function does not
+ * authenticate a caller or lock SQL. Two unchanged censuses bracket the fresh
+ * lineage reads. Equality detects observed drift, not an atomic provider
+ * snapshot or protection against a later external withdrawal.
+ *
+ * Uses the SAME receipt and journal mapping as the existing importer. Every
+ * account transaction must have an exact posting and committed receipt, even
+ * for another customer. Unposted reversals refuse the whole pool. Payouts and
+ * unsupported reinstatements remain unresolved here: the bank/provider/cash
+ * reconciliation and allocation locks are still required independently.
+ */
+export interface HostedStripeFundingRead {
+  readonly scope: HostedPrepaidFundingInput['scope'];
+  readonly accountId: string;
+  readonly customerId: string;
+  readonly asOfMs: number;
+  readonly maximumAgeMs: number;
+  readonly policy: CustomerPaymentPolicy;
+  readonly cashBefore: StripeAccountCashEvidence;
+  readonly sourcesBefore: StripeAccountPaymentSourceEvidence;
+  readonly transactionsBefore: StripeAccountTransactionEvidence;
+  readonly lineages: readonly StripePaymentLineageEvidence[];
+  readonly transactionsAfter: StripeAccountTransactionEvidence;
+  readonly sourcesAfter: StripeAccountPaymentSourceEvidence;
+  readonly cashAfter: StripeAccountCashEvidence;
+  /** Entire pool population read through the reservation's SQL transaction. */
+  readonly entries: readonly JournalEntry[];
+  readonly receipts: readonly StoredPaymentReceipt[];
+}
+type StripeFundingRefusal = 'unverified-stripe-read' | 'stripe-read-changed'
+  | 'unreconciled-stripe-source' | 'unreconciled-stripe-movement' | 'unreconciled-stripe-receipt';
+export type HostedStripeFundingResult = { readonly ok: false; readonly reason: StripeFundingRefusal }
+  | { readonly ok: true; readonly snapshot: HostedPrepaidFundingInput['snapshot'];
+    readonly payments: readonly Payment[]; readonly reversals: readonly Reversal[];
+    readonly evidenceRef: string };
+
+export function reconcileHostedStripeFunding(input: HostedStripeFundingRead): HostedStripeFundingResult {
+  const reject = (reason: StripeFundingRefusal): HostedStripeFundingResult => ({ ok: false, reason });
+  const { sourcesBefore: before, sourcesAfter: after, transactionsBefore: txBefore,
+    transactionsAfter: txAfter, cashBefore, cashAfter } = input;
+  if (!id(input.scope.controlWorkspaceId) || !id(input.scope.organizationId) || !id(input.scope.customerWorkspaceId)
+      || !/^acct_[A-Za-z0-9]+$/.test(input.accountId) || !/^cus_[A-Za-z0-9]+$/.test(input.customerId)
+      || !safe(input.asOfMs) || !safe(input.maximumAgeMs) || validatePolicy(input.policy)
+      || !Array.isArray(input.lineages) || !Array.isArray(input.entries) || !Array.isArray(input.receipts)) {
+    throw new Error('invalid Stripe funding read');
+  }
+  const readings = [cashBefore, before, txBefore, ...input.lineages, txAfter, after, cashAfter];
+  if (readings.some(r => !r || r.accountId !== input.accountId || !id(r.evidenceRef)
+      || !safe(r.observedAtMs) || r.observedAtMs > input.asOfMs
+      || input.asOfMs - r.observedAtMs > input.maximumAgeMs)
+      || [cashBefore, cashAfter].some(c => c.customerId !== input.customerId
+        || c.organizationId !== input.scope.organizationId || c.livemode !== true
+        || !Number.isSafeInteger(c.availableUsdCents) || !Number.isSafeInteger(c.pendingUsdCents))
+      || before.livemode !== true || after.livemode !== true
+      || !safe(before.collectionStartedAtMs) || !safe(after.collectionStartedAtMs)
+      || cashBefore.observedAtMs > before.collectionStartedAtMs || before.collectionStartedAtMs > before.observedAtMs
+      || before.observedAtMs > txBefore.observedAtMs || txBefore.observedAtMs > txAfter.observedAtMs
+      || txAfter.observedAtMs > after.collectionStartedAtMs || after.collectionStartedAtMs > after.observedAtMs
+      || after.observedAtMs > cashAfter.observedAtMs
+      || input.lineages.some(l => l.livemode !== true || l.observedAtMs < txBefore.observedAtMs
+        || l.observedAtMs > txAfter.observedAtMs)) return reject('unverified-stripe-read');
+  const sorted = <T extends { readonly id: string }>(rows: readonly T[]) => JSON.stringify([...rows].sort((a, b) => a.id.localeCompare(b.id)));
+  if (sorted(before.charges) !== sorted(after.charges) || sorted(before.refunds) !== sorted(after.refunds)
+      || sorted(before.disputes) !== sorted(after.disputes) || sorted(txBefore.transactions) !== sorted(txAfter.transactions)
+      || cashBefore.availableUsdCents !== cashAfter.availableUsdCents || cashBefore.pendingUsdCents !== cashAfter.pendingUsdCents) {
+    return reject('stripe-read-changed');
+  }
+  const transactions = new Map<string, StripeObservedBalanceTransaction>();
+  const entries = new Map<string, JournalEntry>();
+  const receipts = new Map<string, StoredPaymentReceipt>();
+  for (const bt of txAfter.transactions) {
+    if (transactions.has(bt.id) || bt.currency !== 'usd' || !Number.isSafeInteger(bt.amount) || !safe(bt.fee)
+        || bt.net !== bt.amount - bt.fee || !safe(bt.created) || bt.created * 1000 > txBefore.observedAtMs
+        || !['available', 'pending'].includes(bt.status) || !safe(bt.available_on)) return reject('unreconciled-stripe-movement');
+    transactions.set(bt.id, bt);
+  }
+  for (const raw of input.entries) {
+    const valid = validateJournalEntry(raw);
+    if (!valid.ok || raw.occurredAtMs > input.asOfMs) return reject('unreconciled-stripe-movement');
+    if (raw.externalRef.kind !== 'stripe-balance-transaction') continue;
+    if (entries.has(raw.externalRef.id)) return reject('unreconciled-stripe-movement');
+    entries.set(raw.externalRef.id, valid.entry);
+  }
+  for (const r of input.receipts) {
+    if (receipts.has(r.transaction.id) || receiptTransactionProblem(r.transaction)
+        || r.commitment !== receiptCommitment(r.transaction, r.salt)) return reject('unreconciled-stripe-receipt');
+    receipts.set(r.transaction.id, r);
+  }
+  const sourceId = (bt: StripeObservedBalanceTransaction) => typeof bt.source === 'string' ? bt.source : bt.source?.id;
+  for (const [transactionId, bt] of transactions) {
+    const mapped = journalVerdictForStripeBalanceTransaction(bt, input.policy);
+    const entry = entries.get(transactionId); const receipt = receipts.get(transactionId);
+    if (mapped.disposition !== 'entry' || !entry || mapped.entry.movement !== entry.movement
+        || mapped.entry.occurredAtMs !== entry.occurredAtMs || mapped.entry.currency !== entry.currency
+        || sortedLines(mapped.entry.lines) !== sortedLines(entry.lines)) return reject('unreconciled-stripe-movement');
+    if (!receipt || receipt.transaction.amount !== bt.amount || receipt.transaction.fee !== bt.fee
+        || receipt.transaction.currency !== bt.currency || receipt.transaction.created !== bt.created
+        || receipt.sourceId !== sourceId(bt)) return reject('unreconciled-stripe-receipt');
+  }
+  // Comparing both directions is essential: an omitted outflow or an extra
+  // book inflow can otherwise make a partial census look solvent.
+  if (entries.size !== transactions.size || receipts.size !== transactions.size) return reject('unreconciled-stripe-movement');
+  const lineages = new Map<string, StripePaymentLineageEvidence>();
+  for (const l of input.lineages) {
+    const key = JSON.stringify([l.source.kind, l.source.id]);
+    if (lineages.has(key)) return reject('unreconciled-stripe-source');
+    lineages.set(key, l);
+  }
+  const used = new Set<string>(); const pinnedMovements = new Set<string>();
+  const payments: Payment[] = []; const reversals: Reversal[] = [];
+  const charges = new Map(after.charges.map(c => [c.id, c]));
+  if (charges.size !== after.charges.length) return reject('unreconciled-stripe-source');
+  function lineage(kind: 'charge' | 'refund' | 'dispute', source: string, chargeId: string): StripePaymentLineageEvidence | null {
+    const key = JSON.stringify([kind, source]); const l = lineages.get(key); const c = charges.get(chargeId);
+    if (!l || !c || l.charge.id !== chargeId || l.customerId !== c.customerId || !id(l.organizationId)
+        || (l.customerId === input.customerId && l.organizationId !== input.scope.organizationId)
+        || l.charge.balanceTransaction.id !== c.balanceTransactionId || l.charge.capturedUsdCents !== c.capturedCents
+        || l.charge.refundedUsdCents !== c.refundedCents
+        || !sameMovement(l.charge.balanceTransaction) || sourceId(l.charge.balanceTransaction) !== chargeId
+        || !['charge', 'payment'].includes(l.charge.balanceTransaction.type)
+        || l.charge.balanceTransaction.amount !== c.capturedCents) return null;
+    used.add(key); return l;
+  }
+  function sameMovement(bt: StripeObservedBalanceTransaction): boolean {
+    const current = transactions.get(bt.id);
+    return !!current && current.amount === bt.amount && current.fee === bt.fee && current.net === bt.net
+      && current.currency === bt.currency && current.created === bt.created && current.type === bt.type
+      && current.status === bt.status && current.available_on === bt.available_on && sourceId(current) === sourceId(bt);
+  }
+  for (const c of after.charges) {
+    if (c.currency !== 'usd' || !safe(c.created) || c.created * 1000 > before.observedAtMs) return reject('unreconciled-stripe-source');
+    // Uncaptured failed/pending attempts cannot supply cash. A movement or
+    // refunded principal still requires a fully reconciled original payment.
+    if (c.balanceTransactionId === null && c.capturedCents === 0 && c.refundedCents === 0
+        && c.failureBalanceTransactionId === null && !c.paid && !c.captured) continue;
+    const l = lineage('charge', c.id, c.id);
+    if (!l || !c.paid || !c.captured || c.status !== 'succeeded' || c.failureBalanceTransactionId !== null
+        || l.source.status !== c.status || l.source.amountUsdCents !== c.capturedCents
+        || l.source.balanceTransactions.length !== 1 || !sameMovement(l.source.balanceTransactions[0]!)
+        || l.source.balanceTransactions[0]!.id !== c.balanceTransactionId) return reject('unreconciled-stripe-source');
+    const bt = l.charge.balanceTransaction; const r = receipts.get(bt.id)!;
+    if (r.sourceCustomer !== c.customerId || pinnedMovements.has(bt.id)) return reject('unreconciled-stripe-receipt');
+    pinnedMovements.add(bt.id);
+    const entry = entries.get(bt.id)!;
+    if (c.customerId === input.customerId && entry.movement === 'credit-purchase') {
+      payments.push({ entry, receipt: r, available: bt.status === 'available' && bt.available_on * 1000 <= input.asOfMs });
+    }
+  }
+  const refunded = new Map<string, bigint>(); const refundIds = new Set<string>();
+  for (const r of after.refunds) {
+    const original = charges.get(r.chargeId);
+    if (!original || refundIds.has(r.id) || r.currency !== 'usd' || !safe(r.amountCents)
+        || !safe(r.created) || r.created < original.created || r.created * 1000 > before.observedAtMs) return reject('unreconciled-stripe-source');
+    refundIds.add(r.id);
+    if (['failed', 'canceled'].includes(r.status) && r.balanceTransactionId === null && r.failureBalanceTransactionId === null) continue;
+    const l = lineage('refund', r.id, r.chargeId);
+    if (!l || r.status !== 'succeeded' || r.failureBalanceTransactionId !== null
+        || l.source.status !== r.status || l.source.amountUsdCents !== r.amountCents
+        || l.source.balanceTransactions.length !== 1 || l.source.balanceTransactions[0]!.id !== r.balanceTransactionId) {
+      return reject('unreconciled-stripe-source');
+    }
+    const bt = l.source.balanceTransactions[0]!;
+    if (!sameMovement(bt) || bt.amount !== -r.amountCents || !['refund', 'payment_refund'].includes(bt.type)
+        || sourceId(bt) !== r.id || pinnedMovements.has(bt.id)) return reject('unreconciled-stripe-source');
+    pinnedMovements.add(bt.id);
+    refunded.set(r.chargeId, (refunded.get(r.chargeId) ?? 0n) + BigInt(r.amountCents));
+    const receipt = receipts.get(bt.id)!;
+    if (receipt.sourceCustomer !== l.customerId) return reject('unreconciled-stripe-receipt');
+    if (l.customerId === input.customerId && payments.some(p => p.receipt.transaction.id === l.charge.balanceTransaction.id)) {
+      reversals.push({ entry: entries.get(bt.id)!, receipt, paymentTransactionId: l.charge.balanceTransaction.id });
+    }
+  }
+  if (after.charges.some(c => !safe(c.refundedCents) || (refunded.get(c.id) ?? 0n) !== BigInt(c.refundedCents))
+      || after.disputes.length > 0 || lineages.size !== used.size
+      || [...transactions.values()].some(bt => ['charge', 'payment', 'refund', 'payment_refund', 'adjustment', 'refund_failure'].includes(bt.type)
+        && !pinnedMovements.has(bt.id))) return reject('unreconciled-stripe-source');
+  const evidenceRef = 'stripe-funding-read:' + createHash('sha256').update(JSON.stringify({ scope: input.scope,
+    asOfMs: input.asOfMs, policy: input.policy, readings: readings.map(r => r.evidenceRef),
+    entries: input.entries, receipts: input.receipts })).digest('hex');
+  const frozenPayment = <T extends Omit<Payment, 'available'>>(p: T): T => Object.freeze({ ...p,
+    entry: Object.freeze({ ...p.entry, externalRef: Object.freeze({ ...p.entry.externalRef }),
+      lines: Object.freeze(p.entry.lines.map(line => Object.freeze({ ...line }))) }),
+    receipt: Object.freeze({ ...p.receipt, transaction: Object.freeze({ ...p.receipt.transaction }) }) });
+  return Object.freeze({ ok: true, snapshot: Object.freeze({ controlWorkspaceId: input.scope.controlWorkspaceId, organizationId: input.scope.organizationId,
+    stripeAccountId: input.accountId, stripeCustomerId: input.customerId, livemode: true,
+    complete: true, asOfMs: input.asOfMs, evidenceRef }), payments: Object.freeze(payments.map(frozenPayment)),
+    reversals: Object.freeze(reversals.map(frozenPayment)), evidenceRef });
 }
 const cents = (entry: JournalEntry, account: JournalLine['account'], side: JournalLine['side']) =>
   entry.lines.filter(l => l.account === account && l.side === side).reduce((n, l) => n + BigInt(l.cents), 0n);

@@ -24,10 +24,11 @@
 //        [--edges-file <json> --index-commit <sha>]     (offline: edges as [{importer,imported}])
 //
 // Exit: 0 written · 2 usage · 3 graph unavailable/inconsistent (nothing written) · 4 write failure.
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { isCliEntry } from "@papercusp/operator-core/lib/util/cli-entry";
 import {
@@ -45,7 +46,11 @@ import {
   resolveMcpWorkspace,
   toolResultNotOkReason,
 } from "./mcp-call.mjs";
-import { buildSnapshot } from "./lib/graph-dependency-suggestions.mjs";
+import { buildSnapshot, sharedSnapshotPath } from "./lib/graph-dependency-suggestions.mjs";
+
+/** DIRECT-mode page: no response budget applies, ~12 pages for 59k edges (each query ~5s to open). */
+export const DIRECT_PAGE_SIZE = 5000;
+export const DIRECT_QUERY_TIMEOUT_MS = 120_000;
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, "..");
@@ -253,8 +258,31 @@ export function writeSnapshotAtomic(outPath, snapshot) {
 }
 
 export function parseArgs(argv) {
-  const opts = { out: null, repo: "papercusp", client: process.env.PAPERCUSP_SID || null, pageSize: DEFAULT_PAGE_SIZE, retries: DEFAULT_RETRIES, sourceRoot: ROOT, edgesFile: null, indexCommit: null };
-  const takes = new Set(["--out", "--repo", "--client", "--page-size", "--retries", "--source-root", "--edges-file", "--index-commit"]);
+  const opts = {
+    out: null,
+    repo: "papercusp",
+    client: process.env.PAPERCUSP_SID || null,
+    pageSize: DEFAULT_PAGE_SIZE,
+    pageSizeExplicit: false,
+    retries: DEFAULT_RETRIES,
+    sourceRoot: ROOT,
+    edgesFile: null,
+    indexCommit: null,
+    gitnexusBin: null,
+    registry: null,
+  };
+  const takes = new Set([
+    "--out",
+    "--repo",
+    "--client",
+    "--page-size",
+    "--retries",
+    "--source-root",
+    "--edges-file",
+    "--index-commit",
+    "--gitnexus-bin",
+    "--registry",
+  ]);
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
     const eq = a.indexOf("=");
@@ -268,15 +296,100 @@ export function parseArgs(argv) {
     else if (flag === "--source-root") opts.sourceRoot = value;
     else if (flag === "--edges-file") opts.edgesFile = value;
     else if (flag === "--index-commit") opts.indexCommit = value;
+    else if (flag === "--gitnexus-bin") opts.gitnexusBin = value;
+    else if (flag === "--registry") opts.registry = value;
     else {
       const n = Number(value);
       if (!Number.isInteger(n) || n < (flag === "--retries" ? 0 : 1)) return { error: `${flag} must be an integer` };
-      if (flag === "--page-size") opts.pageSize = n;
-      else opts.retries = n;
+      if (flag === "--page-size") {
+        opts.pageSize = n;
+        opts.pageSizeExplicit = true;
+      } else opts.retries = n;
     }
   }
   if (opts.edgesFile && !opts.indexCommit) return { error: "--edges-file requires --index-commit" };
+  if (opts.edgesFile && opts.gitnexusBin) return { error: "--edges-file and --gitnexus-bin are exclusive" };
+  // Direct mode has no response budget to fit under, so it pages in large steps.
+  if (opts.gitnexusBin && !opts.pageSizeExplicit) opts.pageSize = DIRECT_PAGE_SIZE;
   return { opts };
+}
+
+/**
+ * DIRECT mode (gitnexus-deterministic-integration P-001): run `gitnexus cypher` as a child of
+ * THIS process instead of one `mcp-call.mjs` spawn + MCP round-trip per page. The MCP path was
+ * measured at ~29 min / 2,274 pages for 57k edges (pages capped by the 20,000-char bridge budget
+ * and the ~6,000-char result door); the CLI prints the same `{markdown,row_count}` body with
+ * neither budget, so `parseCypherText` reads it unchanged. `--repo` is always named: the CLI
+ * resolves its target from the GLOBAL registry and refuses when two repos are registered.
+ * @param {{ bin: string, repo: string, cwd: string, execFile?: Function, timeoutMs?: number }} o
+ */
+export function directCypherRunner({ bin, repo, cwd, runToFile = runCliToFile, timeoutMs = DIRECT_QUERY_TIMEOUT_MS }) {
+  return async (statement) => runToFile(bin, ["cypher", "--repo", repo, statement], { cwd, timeoutMs });
+}
+
+/**
+ * Run a CLI with stdout bound to a FILE, then read it. ⚠ Never a pipe: `gitnexus cypher` exits
+ * before a pipe drains, so a piped answer is cut at exactly 65,536 bytes (measured 2026-10-06: a
+ * 5,000-row page is 533,892 bytes to a file, 65,536 through `| wc -c`) — a truncated JSON body
+ * that reads as "unparseable". File writes are synchronous, so the file holds the whole answer.
+ */
+export async function runCliToFile(bin, argv, { cwd, timeoutMs }) {
+  const dir = mkdtempSync(join(tmpdir(), "gnx-cypher-"));
+  const file = join(dir, "stdout.json");
+  const fd = openSync(file, "w");
+  try {
+    const outcome = await new Promise((resolveRun, rejectRun) => {
+      const child = spawn(bin, argv, { cwd, stdio: ["ignore", fd, "ignore"] });
+      const timer = setTimeout(() => child.kill("SIGKILL"), timeoutMs);
+      child.on("error", (e) => {
+        clearTimeout(timer);
+        rejectRun(e);
+      });
+      child.on("close", (code, signal) => {
+        clearTimeout(timer);
+        resolveRun({ code, signal });
+      });
+    });
+    if (outcome.code !== 0) {
+      throw new Error(`${bin} ${argv[0]} exited ${outcome.code ?? `signal ${outcome.signal}`}`);
+    }
+    return readFileSync(file, "utf8");
+  } finally {
+    closeSync(fd);
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Index identity for DIRECT mode, read from the gitnexus registry file the CLI itself resolves
+ * against (`~/.gitnexus/registry.json`, an array of `{name,lastCommit,indexedAt}`). Read before
+ * AND after paging by produceSnapshotFromGraph, so an index swapped mid-read is refused.
+ */
+export function registryIndexReader({ registry, repo, readFile = (p) => readFileSync(p, "utf8"), backendVersion = null }) {
+  return async () => {
+    let entries;
+    try {
+      entries = JSON.parse(readFile(registry));
+    } catch (e) {
+      throw new GraphReadError("backend-unavailable", `registry unreadable at ${registry}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    const list = Array.isArray(entries) ? entries : Array.isArray(entries?.repositories) ? entries.repositories : [];
+    const hit = list.find((r) => r && r.name === repo);
+    if (!hit || typeof hit.lastCommit !== "string" || hit.lastCommit.length === 0) {
+      throw new GraphReadError("backend-unavailable", `repo ${repo} not in registry ${registry}`);
+    }
+    return { lastCommit: hit.lastCommit, indexedAt: hit.indexedAt ?? null, backend: "gitnexus", backendVersion };
+  };
+}
+
+/** The installed gitnexus version next to a CLI binary (`…/node_modules/.bin/gitnexus`). */
+export function backendVersionNearBin(bin, readFile = (p) => readFileSync(p, "utf8")) {
+  try {
+    const pkg = JSON.parse(readFile(join(dirname(dirname(bin)), "gitnexus", "package.json")));
+    return typeof pkg.version === "string" ? pkg.version : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Call a Papercusp MCP tool with the shared in-process transport helpers. */
@@ -350,7 +463,9 @@ export async function main(argv = process.argv.slice(2)) {
     return 2;
   }
   const { opts } = parsed;
-  const out = resolve(ROOT, opts.out ?? DEFAULT_SNAPSHOT_REL);
+  // Default target is the SHARED path the selector reads first (outside every checkout, so the
+  // gate's isolated tree sees it); `--out` keeps any explicit (e.g. legacy per-checkout) target.
+  const out = opts.out ? resolve(ROOT, opts.out) : sharedSnapshotPath(opts.repo);
   const sourceRoot = resolve(opts.sourceRoot);
   const readSource = (rel) => {
     try {
@@ -366,6 +481,22 @@ export async function main(argv = process.argv.slice(2)) {
       const edges = JSON.parse(readFileSync(resolve(opts.edgesFile), "utf8"));
       if (!Array.isArray(edges)) throw new GraphReadError("usage", "--edges-file must hold a JSON array");
       result = produceSnapshotFromEdges({ edges, index: { lastCommit: opts.indexCommit, indexedAt: null, backend: "edges-file", backendVersion: null }, readSource, now });
+    } else if (opts.gitnexusBin) {
+      result = await produceSnapshotFromGraph({
+        runCypher: directCypherRunner({ bin: opts.gitnexusBin, repo: opts.repo, cwd: sourceRoot }),
+        fetchIndex: registryIndexReader({
+          registry: opts.registry ?? join(homedir(), ".gitnexus", "registry.json"),
+          repo: opts.repo,
+          backendVersion: backendVersionNearBin(opts.gitnexusBin),
+        }),
+        readSource,
+        now,
+        pageSize: opts.pageSize,
+        retries: opts.retries,
+        onProgress: ({ pages, rows, expected, pageSize }) => {
+          process.stderr.write(`GRAPH_SNAPSHOT_PROGRESS pages=${pages} rows=${rows}/${expected} pageSize=${pageSize}\n`);
+        },
+      });
     } else {
       const fetchIndex = async () => {
         const text = await mcpCallText("gitnexus.list_repos", { limit: 200 }, opts.client);

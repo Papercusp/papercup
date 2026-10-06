@@ -791,6 +791,7 @@ export async function publishDependencyGeneration({
           `NPM_INSTALL_SAFE dependency generation waiting on an install (${Math.round(elapsedMs / 1000)}s so far) — holder: ${owner.trim()}`,
         );
       },
+      waitingNoticeIntervalMs: 30_000,
     },
   );
   if (result.error) throw result.error;
@@ -908,6 +909,7 @@ export function runCommandUnderInstallMutex({
         `NPM_INSTALL_SAFE reader waiting on an install (${Math.round(elapsedMs / 1000)}s so far) — holder: ${owner.trim()}`,
       );
     },
+    waitingNoticeIntervalMs: 30_000,
   });
 }
 

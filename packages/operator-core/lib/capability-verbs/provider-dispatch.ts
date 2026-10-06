@@ -27,6 +27,7 @@ import {
 } from '../external-triggers/source-store';
 import { providerRegistry, type ProviderRegistry, type RegisteredProvider } from '../integrations/provider-registry';
 import { createSourceHostFetch } from '../integrations/source-host-fetch';
+import { resolveProviderServices } from '../integrations/service-credentials';
 import { string, type OutboundContext } from './resolve';
 
 /** Canonical datatypes the shared outbound verbs write. */
@@ -49,12 +50,11 @@ export const OUTBOUND_CAPABILITIES = {
  * TRANSITIONAL (D-014.5). The first-party Google kinds the host still serves
  * with its own Gmail and Calendar functions. Selected by the SOURCE KIND, never
  * as a fallback, so a non-Google source can never reach Google code. A kind
- * with a registered provider of the same id uses the provider instead. P-008
- * deletes the `gmail` entry and P-009 the `gcal` entry when they register the
- * Google providers.
+ * with a registered provider of the same id uses the provider instead. Gmail
+ * is a registered provider since P-008; P-009 deletes the `gcal` entry when it
+ * registers Google Calendar.
  */
 const GOOGLE_BUILTIN_KINDS: Readonly<Record<string, { datatype: OutboundDatatype; capabilities: readonly string[] }>> = {
-  gmail: { datatype: 'email-message', capabilities: ['mail.read', 'mail.draft', 'mail.send'] },
   gcal: { datatype: 'calendar-event', capabilities: ['calendar.read', 'calendar.write'] },
 };
 
@@ -229,7 +229,11 @@ export async function invokeOutboundProvider(
       fetchImpl: deps.hostFetchImpl,
       sourceIds: [target.source.id],
     });
-  const result = await provider.entry.adapter.invoke({ source: target.source.id, capability, args }, { fetch });
+  const services = await resolveProviderServices(provider.entry.descriptor.serviceCredentials);
+  const result = await provider.entry.adapter.invoke(
+    { source: target.source.id, capability, args, ...(services ? { services } : {}) },
+    { fetch },
+  );
   if (!result || typeof result !== 'object' || Array.isArray(result)) {
     throw new Error(`provider_result_invalid:${provider.id}:${capability}`);
   }

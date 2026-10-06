@@ -233,7 +233,7 @@ describe('manifest-bound resource reservations', () => {
     const loopId = await register();
     const input = request(loopId, budget(), 'control', 3, 4);
     let called = false;
-    const out = await runGovernedSpendAttempt({ ...input, attemptKind: 'evaluation', accumulate: false,
+    const out = await runGovernedSpendAttempt({ ...input, attemptKind: 'evaluation',
       run: async grant => {
         called = true;
         const fresh = postgres(testDatabaseUri, { max: 1, onnotice: () => {}, prepare: false });
@@ -251,7 +251,7 @@ describe('manifest-bound resource reservations', () => {
     expect(called).toBe(true);
     expect(out).toMatchObject({ ok: true, value: 'scored', reservationId: input.exact.reservationId,
       settlement: { ok: true, reservation: { id: input.exact.reservationId, status: 'settled', usedUsd: 0.02 } } });
-    expect((await getLearningLoop(sql, { workspaceId: WS, loopId }))!.spentUsd).toBe(0);
+    expect((await getLearningLoop(sql, { workspaceId: WS, loopId }))!.spentUsd).toBe(0.02);
     expect(await listLearningSpendEvents(sql, { workspaceId: WS, loopId })).toHaveLength(1);
     expect(await sumOpenReservedUsd(sql, { workspaceId: WS, loopId })).toBe(0);
   });
@@ -261,7 +261,7 @@ describe('manifest-bound resource reservations', () => {
     const loopId = await register(caps);
     let calls = 0;
     const run = async () => { calls += 1; return { costUsd: 0, value: 'zero-dollar completion' }; };
-    const input = { ...request(loopId, caps), attemptKind: 'proposer' as const, accumulate: false, run };
+    const input = { ...request(loopId, caps), attemptKind: 'proposer' as const, run };
     const deps = { enabled: async () => true, getSql: async () => sql, log: () => {} };
     const results = await Promise.all([runGovernedSpendAttempt(input, deps),
       runGovernedSpendAttempt({ ...input, exact: { ...input.exact, reservationId: randomUUID() } }, deps)]);
@@ -278,6 +278,20 @@ describe('manifest-bound resource reservations', () => {
         .toMatchObject({ reason: 'refused', refusal: 'resource-cap-exceeded' });
     } finally { await fresh.end({ timeout: 5 }); }
     expect(calls).toBe(1);
+    expect(await listLearningSpendEvents(sql, { workspaceId: WS, loopId })).toHaveLength(0);
+  });
+
+  it('preserves the exact-settlement refusal when a caller asks for mirror accounting', async () => {
+    const loopId = await register();
+    const input = request(loopId);
+    const out = await runGovernedSpendAttempt({ ...input, attemptKind: 'evaluation', accumulate: false,
+      run: async () => ({ costUsd: 0.02, value: 'reported work' }) },
+    { enabled: async () => true, getSql: async () => sql, log: () => {} });
+    expect(out).toMatchObject({ ok: true, value: 'reported work', reservationId: input.exact.reservationId,
+      settlement: { ok: false, reason: 'exact-settlement-required',
+        reservation: { id: input.exact.reservationId, status: 'open', usedUsd: 0, resources: input.exact.resources } } });
+    expect(await sumOpenReservedUsd(sql, { workspaceId: WS, loopId })).toBe(1);
+    expect((await getLearningLoop(sql, { workspaceId: WS, loopId }))!.spentUsd).toBe(0);
     expect(await listLearningSpendEvents(sql, { workspaceId: WS, loopId })).toHaveLength(0);
   });
 

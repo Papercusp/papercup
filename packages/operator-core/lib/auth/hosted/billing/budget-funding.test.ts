@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { journalEntryForMovement, type JournalEntry, type MoneyMovement } from '../../../cupboard/money-journal';
 import { receiptCommitment } from '../../../cupboard/payment-receipt';
 import { evaluateHostedBudget } from './budget-policy';
-import { evaluateHostedPrepaidFunding, type HostedCashBacking, type HostedPrepaidFundingInput } from './budget-funding';
+import { evaluateHostedPrepaidFunding, reconcileHostedStripeFunding, type HostedCashBacking,
+  type HostedPrepaidFundingInput, type HostedStripeFundingRead } from './budget-funding';
+import type { StripeObservedBalanceTransaction } from './stripe-billing-client';
 
 const T = Date.UTC(2026, 9, 2);
 const START = Date.UTC(2026, 9, 1);
@@ -309,5 +311,232 @@ describe('prepaid allocation rules (verified server census and durable transacti
         : kind === 'currency' ? { currency: 'EUR' }
         : { lines: p.lines.slice(1) }) }];
     expect(() => run({ cashBacking: cash(entries) })).toThrow(/cash backing/);
+  });
+});
+
+function stripeRead(changes: Partial<HostedStripeFundingRead> = {}): HostedStripeFundingRead {
+  const created = (T - 1000) / 1000;
+  const bt: StripeObservedBalanceTransaction = { object: 'balance_transaction', id: 'txn_Charge', type: 'charge',
+    amount: 100, fee: 3, net: 97, currency: 'usd', created, status: 'available', available_on: created,
+    source: { object: 'charge', id: 'ch_A', customer: 'cus_A', metadata: { purpose: 'prepaid-credits' }, invoice: null } };
+  const built = journalEntryForMovement({ entryId: 'stripe-bt:txn_Charge', occurredAtMs: created * 1000,
+    currency: 'USD', externalRef: { kind: 'stripe-balance-transaction', id: 'txn_Charge' },
+    movement: { kind: 'credit-purchase', grossCents: 100, feeCents: 3, taxCents: 0 } });
+  if (!built.ok) throw new Error('fixture');
+  const transaction = { id: bt.id, amount: bt.amount, fee: bt.fee, currency: bt.currency, created };
+  const salt = 'a'.repeat(64);
+  const sources = { accountId: 'acct_A', livemode: true, requestIds: ['req_Source'], evidenceRef: 'stripe:sources',
+    charges: [{ id: 'ch_A', customerId: 'cus_A', currency: 'usd', amountCents: 100, capturedCents: 100,
+      refundedCents: 0, paid: true, captured: true, status: 'succeeded', created,
+      balanceTransactionId: bt.id, failureBalanceTransactionId: null }], refunds: [], disputes: [] };
+  const tx = { accountId: 'acct_A', requestIds: ['req_Transactions'], evidenceRef: 'stripe:transactions', transactions: [bt] };
+  const cashEvidence = { accountId: 'acct_A', customerId: 'cus_A', organizationId: 'org-a', livemode: true,
+    availableUsdCents: 97, pendingUsdCents: 0, requestIds: ['req_Cash'], evidenceRef: 'stripe:cash' };
+  return { scope, accountId: 'acct_A', customerId: 'cus_A', asOfMs: T, maximumAgeMs: 1000,
+    policy: { daoBasisPoints: 0, refundReserveBasisPoints: 0 },
+    cashBefore: { ...cashEvidence, observedAtMs: T - 9 }, cashAfter: { ...cashEvidence, observedAtMs: T - 1 },
+    sourcesBefore: { ...sources, collectionStartedAtMs: T - 8, observedAtMs: T - 7 },
+    sourcesAfter: { ...sources, collectionStartedAtMs: T - 3, observedAtMs: T - 2 },
+    transactionsBefore: { ...tx, observedAtMs: T - 6 }, transactionsAfter: { ...tx, observedAtMs: T - 4 },
+    lineages: [{ accountId: 'acct_A', customerId: 'cus_A', organizationId: 'org-a', livemode: true,
+      charge: { id: 'ch_A', capturedUsdCents: 100, refundedUsdCents: 0, balanceTransaction: bt },
+      source: { kind: 'charge', id: 'ch_A', status: 'succeeded', amountUsdCents: 100, balanceTransactions: [bt] },
+      observedAtMs: T - 5, requestIds: ['req_Lineage'], evidenceRef: 'stripe:lineage' }],
+    entries: [built.entry], receipts: [{ transaction, salt, commitment: receiptCommitment(transaction, salt),
+      receiptSeq: 1, sourceId: 'ch_A', sourceCustomer: 'cus_A' }], ...changes };
+}
+
+describe('Stripe funding reconciliation against the complete journal and receipt population', () => {
+  const rejected = (changes: Partial<HostedStripeFundingRead>, reason: string) =>
+    expect(reconcileHostedStripeFunding(stripeRead(changes))).toEqual({ ok: false, reason });
+
+  it('derives scoped prepaid inputs from matched current evidence, while cash authority remains separate', () => {
+    const s = stripeRead(); const result = reconcileHostedStripeFunding(s);
+    expect(result).toMatchObject({ ok: true, payments: [{ available: true }], reversals: [],
+      snapshot: { stripeAccountId: 'acct_A', stripeCustomerId: 'cus_A', complete: true, asOfMs: T },
+      evidenceRef: expect.stringMatching(/^stripe-funding-read:[a-f0-9]{64}$/) });
+    if (!result.ok) throw new Error('fixture');
+    const prepaid = input({ ...result, allocations: [allocation({ paymentTransactionId: 'txn_Charge', micros: 970_000 })],
+      cashBacking: null });
+    expect(evaluateHostedPrepaidFunding(prepaid)).toEqual({ ok: false, reason: 'unverified-cash-backing' });
+    // Matching Stripe evidence still cannot cover credit obligations larger
+    // than actual pool cash (the payment fee consumed three cents).
+    expect(evaluateHostedPrepaidFunding({ ...prepaid, cashBacking: cash(s.entries, { availableMicros: 970_000 }) }))
+      .toEqual({ ok: false, reason: 'insufficient-cash-backing' });
+  });
+
+  it.each(['cashBefore', 'cashAfter', 'sourcesBefore', 'sourcesAfter', 'transactionsBefore', 'transactionsAfter'] as const)
+    ('requires fresh pinned %s evidence', field => {
+      const s = stripeRead();
+      rejected({ [field]: { ...s[field], accountId: 'acct_Other' } }, 'unverified-stripe-read');
+      rejected({ [field]: { ...s[field], observedAtMs: T - 1001 } }, 'unverified-stripe-read');
+      rejected({ [field]: { ...s[field], observedAtMs: T + 1 } }, 'unverified-stripe-read');
+      rejected({ [field]: { ...s[field], evidenceRef: '' } }, 'unverified-stripe-read');
+    });
+
+  it('requires live customer/org cash pins and ordered bracketing around every lineage read', () => {
+    const s = stripeRead();
+    for (const change of [{ customerId: 'cus_Other' }, { organizationId: 'org-b' }, { livemode: false }]) {
+      rejected({ cashBefore: { ...s.cashBefore, ...change } }, 'unverified-stripe-read');
+      rejected({ cashAfter: { ...s.cashAfter, ...change } }, 'unverified-stripe-read');
+    }
+    rejected({ sourcesAfter: { ...s.sourcesAfter, livemode: false } }, 'unverified-stripe-read');
+    rejected({ sourcesBefore: { ...s.sourcesBefore, collectionStartedAtMs: T - 10 } }, 'unverified-stripe-read');
+    rejected({ sourcesAfter: { ...s.sourcesAfter, collectionStartedAtMs: T - 5 } }, 'unverified-stripe-read');
+    rejected({ lineages: [{ ...s.lineages[0]!, observedAtMs: T - 7 }] }, 'unverified-stripe-read');
+    rejected({ lineages: [{ ...s.lineages[0]!, observedAtMs: T - 3 }] }, 'unverified-stripe-read');
+  });
+
+  it('detects changed source states, transaction state and liquid cash during collection', () => {
+    const s = stripeRead();
+    rejected({ sourcesAfter: { ...s.sourcesAfter, charges: [{ ...s.sourcesAfter.charges[0]!, refundedCents: 1 }] } }, 'stripe-read-changed');
+    rejected({ transactionsAfter: { ...s.transactionsAfter, transactions: [{ ...s.transactionsAfter.transactions[0]!, status: 'pending' }] } }, 'stripe-read-changed');
+    rejected({ cashAfter: { ...s.cashAfter, availableUsdCents: 96 } }, 'stripe-read-changed');
+    rejected({ cashAfter: { ...s.cashAfter, pendingUsdCents: 1 } }, 'stripe-read-changed');
+  });
+
+  it('refuses missing, aliased, future or balanced-but-wrong postings and omitted receipt history', () => {
+    const s = stripeRead();
+    rejected({ entries: [] }, 'unreconciled-stripe-movement');
+    rejected({ entries: [...s.entries, { ...s.entries[0]!, entryId: 'alias' }] }, 'unreconciled-stripe-movement');
+    rejected({ entries: [{ ...s.entries[0]!, occurredAtMs: T + 1 }] }, 'unreconciled-stripe-movement');
+    rejected({ entries: [{ ...s.entries[0]!, lines: [{ account: 'operating', side: 'debit', cents: 100 },
+      { account: 'customer-credit-reserve', side: 'credit', cents: 100 }] }] }, 'unreconciled-stripe-movement');
+    rejected({ receipts: [] }, 'unreconciled-stripe-receipt');
+    rejected({ receipts: [...s.receipts, s.receipts[0]!] }, 'unreconciled-stripe-receipt');
+    rejected({ receipts: [{ ...s.receipts[0]!, sourceId: 'ch_Other' }] }, 'unreconciled-stripe-receipt');
+    rejected({ receipts: [{ ...s.receipts[0]!, commitment: '0'.repeat(64) }] }, 'unreconciled-stripe-receipt');
+  });
+
+  it('requires exact current lineage, customer ownership and accounting pins', () => {
+    const s = stripeRead(); const l = s.lineages[0]!;
+    rejected({ lineages: [] }, 'unreconciled-stripe-source');
+    rejected({ lineages: [l, l] }, 'unreconciled-stripe-source');
+    rejected({ lineages: [{ ...l, organizationId: 'org-b' }] }, 'unreconciled-stripe-source');
+    rejected({ lineages: [{ ...l, customerId: 'cus_Other' }] }, 'unreconciled-stripe-source');
+    rejected({ lineages: [{ ...l, charge: { ...l.charge, capturedUsdCents: 101 } }] }, 'unreconciled-stripe-source');
+    rejected({ lineages: [{ ...l, charge: { ...l.charge, balanceTransaction: { ...l.charge.balanceTransaction, net: 98 } } }] }, 'unreconciled-stripe-source');
+    rejected({ receipts: [{ ...s.receipts[0]!, sourceCustomer: 'cus_Other' }] }, 'unreconciled-stripe-receipt');
+  });
+
+  it('detects an omitted source transaction even when journal and receipt history were omitted with it', () => {
+    const s = stripeRead();
+    rejected({ transactionsBefore: { ...s.transactionsBefore, transactions: [] },
+      transactionsAfter: { ...s.transactionsAfter, transactions: [] }, entries: [], receipts: [] }, 'unreconciled-stripe-source');
+  });
+
+  it.each(['pending', 'requires_action', 'succeeded'])('refuses an unposted %s refund anywhere in the shared pool', status => {
+    const s = stripeRead(); const refunds = [{ id: 're_A', chargeId: 'ch_A', currency: 'usd', amountCents: 10,
+      status, created: (T - 1000) / 1000, balanceTransactionId: null, failureBalanceTransactionId: null }];
+    rejected({ sourcesBefore: { ...s.sourcesBefore, refunds }, sourcesAfter: { ...s.sourcesAfter, refunds } }, 'unreconciled-stripe-source');
+  });
+
+  it('requires the successful refund population to sum to the current original charge total', () => {
+    const s = stripeRead(); const charges = [{ ...s.sourcesAfter.charges[0]!, refundedCents: 1 }];
+    const lineages = [{ ...s.lineages[0]!, charge: { ...s.lineages[0]!.charge, refundedUsdCents: 1 } }];
+    rejected({ sourcesBefore: { ...s.sourcesBefore, charges }, sourcesAfter: { ...s.sourcesAfter, charges }, lineages }, 'unreconciled-stripe-source');
+  });
+
+  it('does not manufacture postings for payouts or unsupported dispute reinstatements', () => {
+    const s = stripeRead(); const extra = { ...s.transactionsAfter.transactions[0]!, id: 'txn_Payout', type: 'payout', amount: -20, fee: 0, net: -20 };
+    rejected({ transactionsBefore: { ...s.transactionsBefore, transactions: [...s.transactionsBefore.transactions, extra] },
+      transactionsAfter: { ...s.transactionsAfter, transactions: [...s.transactionsAfter.transactions, extra] } }, 'unreconciled-stripe-movement');
+    const disputes = [{ id: 'du_A', chargeId: 'ch_A', currency: 'usd', amountCents: 20,
+      status: 'won', created: (T - 1000) / 1000, balanceTransactionIds: [] }];
+    rejected({ sourcesBefore: { ...s.sourcesBefore, disputes }, sourcesAfter: { ...s.sourcesAfter, disputes } }, 'unreconciled-stripe-source');
+  });
+
+  it('derives pending payment availability and lets the existing allocation guard refuse it', () => {
+    const s = stripeRead(); const bt = { ...s.transactionsAfter.transactions[0]!, status: 'pending' as const };
+    const result = reconcileHostedStripeFunding(stripeRead({
+      transactionsBefore: { ...s.transactionsBefore, transactions: [bt] }, transactionsAfter: { ...s.transactionsAfter, transactions: [bt] },
+      lineages: [{ ...s.lineages[0]!, charge: { ...s.lineages[0]!.charge, balanceTransaction: bt },
+        source: { ...s.lineages[0]!.source, balanceTransactions: [bt] } }],
+    }));
+    expect(result).toMatchObject({ ok: true, payments: [{ available: false }] });
+    if (!result.ok) throw new Error('fixture');
+    expect(evaluateHostedPrepaidFunding(input({ ...result,
+      allocations: [allocation({ paymentTransactionId: 'txn_Charge' })], cashBacking: cash(s.entries) })))
+      .toEqual({ ok: false, reason: 'unavailable-payment' });
+  });
+
+  it('requires other customers sharing the pool to have reconciled receipts, postings and lineage', () => {
+    const s = stripeRead(); const original = s.transactionsAfter.transactions[0]!;
+    const bt = { ...original, id: 'txn_Other', source: { object: 'charge', id: 'ch_Other', customer: 'cus_Other',
+      metadata: { purpose: 'prepaid-credits' }, invoice: null } };
+    const charge = { ...s.sourcesAfter.charges[0]!, id: 'ch_Other', customerId: 'cus_Other', balanceTransactionId: bt.id };
+    const p = s.entries[0]!; const entry = { ...p, entryId: 'stripe-bt:txn_Other',
+      externalRef: { kind: 'stripe-balance-transaction' as const, id: bt.id } };
+    const transaction = { ...s.receipts[0]!.transaction, id: bt.id };
+    const receipt = { ...s.receipts[0]!, transaction, sourceId: 'ch_Other', sourceCustomer: 'cus_Other',
+      commitment: receiptCommitment(transaction, s.receipts[0]!.salt) };
+    const l = { ...s.lineages[0]!, organizationId: 'org-other', customerId: 'cus_Other',
+      charge: { ...s.lineages[0]!.charge, id: 'ch_Other', balanceTransaction: bt },
+      source: { ...s.lineages[0]!.source, id: 'ch_Other', balanceTransactions: [bt] } };
+    const full = stripeRead({ transactionsBefore: { ...s.transactionsBefore, transactions: [original, bt] },
+      transactionsAfter: { ...s.transactionsAfter, transactions: [bt, original] },
+      sourcesBefore: { ...s.sourcesBefore, charges: [...s.sourcesBefore.charges, charge] },
+      sourcesAfter: { ...s.sourcesAfter, charges: [charge, ...s.sourcesAfter.charges] },
+      lineages: [s.lineages[0]!, l], entries: [...s.entries, entry], receipts: [...s.receipts, receipt] });
+    const result = reconcileHostedStripeFunding(full);
+    expect(result).toMatchObject({ ok: true, payments: [{ receipt: { sourceCustomer: 'cus_A' } }] });
+    if (!result.ok) throw new Error('fixture');
+    expect(result.payments).toHaveLength(1);
+    expect(reconcileHostedStripeFunding({ ...full, entries: s.entries })).toEqual({ ok: false, reason: 'unreconciled-stripe-movement' });
+    expect(reconcileHostedStripeFunding({ ...full, receipts: s.receipts })).toEqual({ ok: false, reason: 'unreconciled-stripe-receipt' });
+    expect(reconcileHostedStripeFunding({ ...full, lineages: s.lineages })).toEqual({ ok: false, reason: 'unreconciled-stripe-source' });
+    const refunds = [{ id: 're_Other', chargeId: 'ch_Other', currency: 'usd', amountCents: 10, status: 'pending',
+      created: original.created, balanceTransactionId: null, failureBalanceTransactionId: null }];
+    expect(reconcileHostedStripeFunding({ ...full, sourcesBefore: { ...full.sourcesBefore, refunds },
+      sourcesAfter: { ...full.sourcesAfter, refunds } })).toEqual({ ok: false, reason: 'unreconciled-stripe-source' });
+  });
+
+  it('links a fully posted successful refund to its original prepaid receipt and rejects conflicting totals', () => {
+    const s = stripeRead(); const original = s.transactionsAfter.transactions[0]!;
+    const bt: StripeObservedBalanceTransaction = { ...original, id: 'txn_Refund', type: 'refund', amount: -30, fee: 0, net: -30,
+      source: { object: 'refund', id: 're_A', customer: 'cus_A' } };
+    const built = journalEntryForMovement({ entryId: 'stripe-bt:txn_Refund', occurredAtMs: bt.created * 1000,
+      currency: 'USD', externalRef: { kind: 'stripe-balance-transaction', id: bt.id },
+      movement: { kind: 'refund', amountCents: 30, taxCents: 0 } });
+    if (!built.ok) throw new Error('fixture');
+    const transaction = { id: bt.id, amount: bt.amount, fee: bt.fee, currency: bt.currency, created: bt.created };
+    const r = { ...s.receipts[0]!, transaction, sourceId: 're_A', commitment: receiptCommitment(transaction, s.receipts[0]!.salt) };
+    const c = { ...s.sourcesAfter.charges[0]!, refundedCents: 30 };
+    const refund = { id: 're_A', chargeId: 'ch_A', currency: 'usd', amountCents: 30, status: 'succeeded',
+      created: bt.created, balanceTransactionId: bt.id, failureBalanceTransactionId: null };
+    const chargeLineage = { ...s.lineages[0]!, charge: { ...s.lineages[0]!.charge, refundedUsdCents: 30 } };
+    const refundLineage = { ...chargeLineage, source: { kind: 'refund' as const, id: 're_A', status: 'succeeded',
+      amountUsdCents: 30, balanceTransactions: [bt] } };
+    const full = stripeRead({ transactionsBefore: { ...s.transactionsBefore, transactions: [original, bt] },
+      transactionsAfter: { ...s.transactionsAfter, transactions: [original, bt] },
+      sourcesBefore: { ...s.sourcesBefore, charges: [c], refunds: [refund] },
+      sourcesAfter: { ...s.sourcesAfter, charges: [c], refunds: [refund] },
+      entries: [...s.entries, built.entry], receipts: [...s.receipts, r], lineages: [chargeLineage, refundLineage] });
+    const result = reconcileHostedStripeFunding(full);
+    expect(result).toMatchObject({ ok: true, reversals: [{ paymentTransactionId: 'txn_Charge', receipt: { transaction: { id: 'txn_Refund' } } }] });
+    if (!result.ok) throw new Error('fixture');
+    expect(evaluateHostedPrepaidFunding(input({ ...result, cashBacking: null,
+      allocations: [allocation({ paymentTransactionId: 'txn_Charge', micros: 670_001 })] })))
+      .toEqual({ ok: false, reason: 'funding-overallocated' });
+    expect(evaluateHostedPrepaidFunding(input({ ...result, cashBacking: null,
+      allocations: [allocation({ paymentTransactionId: 'txn_Charge', micros: 670_000 })] })))
+      .toEqual({ ok: false, reason: 'unverified-cash-backing' });
+    expect(reconcileHostedStripeFunding({ ...full, lineages: [chargeLineage,
+      { ...refundLineage, source: { ...refundLineage.source, amountUsdCents: 29 } }] })).toEqual({ ok: false, reason: 'unreconciled-stripe-source' });
+    expect(reconcileHostedStripeFunding({ ...full, sourcesBefore: { ...full.sourcesBefore, refunds: [refund, refund] },
+      sourcesAfter: { ...full.sourcesAfter, refunds: [refund, refund] } })).toEqual({ ok: false, reason: 'unreconciled-stripe-source' });
+  });
+
+  it('keeps selected results detached and frozen when caller-owned stored receipt values change', () => {
+    const s = stripeRead(); const result = reconcileHostedStripeFunding(s);
+    if (!result.ok) throw new Error('fixture');
+    const receipt = s.receipts[0]! as { sourceCustomer: string | null; transaction: { amount: number } };
+    receipt.sourceCustomer = 'cus_Other'; receipt.transaction.amount = 999;
+    expect(result.payments[0]!.receipt).toMatchObject({ sourceCustomer: 'cus_A', transaction: { amount: 100 } });
+    expect(Object.isFrozen(result)).toBe(true);
+    expect(Object.isFrozen(result.snapshot)).toBe(true);
+    expect(Object.isFrozen(result.payments)).toBe(true);
+    expect(Object.isFrozen(result.payments[0]!.entry.lines)).toBe(true);
+    expect(Object.isFrozen(result.payments[0]!.receipt.transaction)).toBe(true);
   });
 });

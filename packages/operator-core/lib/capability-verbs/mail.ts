@@ -6,9 +6,8 @@
  * cupboard-workflows-2026-10-05, D-014) every verb selects its source through
  * `provider-dispatch.ts` and calls the registered provider that owns it, with
  * the `mail.draft` / `mail.send` capabilities. The rails below run first, in the
- * host, identically for every provider. Sources of the first-party `gmail`
- * kind still reach the host's own Gmail functions until P-008 registers Gmail
- * as a provider and deletes that branch.
+ * host, identically for every provider. Gmail is one such registered provider
+ * (P-008, `libs/papercusp/plugins/gmail`); the host holds no Gmail code of its own.
  *
  * Threading, MIME encoding and header propagation live BELOW this seam, in the
  * adapter. That is deliberate: correct reply threading needs the thread id on
@@ -19,17 +18,6 @@
 import { readFile } from 'node:fs/promises';
 import { basename, extname } from 'node:path';
 import type postgres from 'postgres';
-import {
-  createGoogleGmailDraft,
-  updateGoogleGmailDraft,
-  sendGoogleGmailMessage,
-  sendGoogleGmailDraft,
-  readGoogleGmailDraftRecipients,
-  replySubjectFor,
-  type GoogleGmailAttachment,
-  type GoogleGmailOutboundInput,
-} from '../external-triggers/google-gmail';
-import { resolveGoogleWorkspaceAccessToken } from '../external-triggers/google-workspace';
 import { assertDisclosurePermits } from '../personal-vault/disclosure-ledger';
 import { assertTrustedAddressees, type AddresseeDecision, type AddresseeProvenance } from './addressing';
 import {
@@ -109,20 +97,27 @@ export interface MailSendDraftResult {
   deliverability: DeliverabilityReport[];
 }
 
+/** A declared attachment as read from disk, before it is handed to a provider. */
+export interface MailAttachment {
+  filename: string;
+  contentType: string;
+  content: Buffer;
+}
+
 /**
- * Injectable seams. `registry` / `hostFetchFor` / `hostFetchImpl` reach a
- * registered provider; the Google-named ones serve the transitional first-party
- * `gmail` kind only (D-014.5) and go when P-008 deletes that branch.
+ * `Re:`-prefix a subject exactly once. The reply subject is derived here, from
+ * the stored document, so it is part of rail 1 rather than a provider choice.
+ */
+export function replySubjectFor(subject: string): string {
+  const normalized = String(subject ?? '').trim();
+  return /^re\s*:/i.test(normalized) ? normalized : `Re: ${normalized}`;
+}
+
+/**
+ * Injectable seams. `registry` / `hostFetchFor` / `hostFetchImpl` reach the
+ * registered provider that owns the selected source.
  */
 export type MailDeps = OutboundDispatchDeps & {
-  resolveAccessToken?: typeof resolveGoogleWorkspaceAccessToken;
-  createDraft?: typeof createGoogleGmailDraft;
-  updateDraft?: typeof updateGoogleGmailDraft;
-  sendMessage?: typeof sendGoogleGmailMessage;
-  sendDraft?: typeof sendGoogleGmailDraft;
-  readDraftRecipients?: typeof readGoogleGmailDraftRecipients;
-  fetch?: typeof fetch;
-  apiOrigin?: string;
   /** Injected so attachment handling is testable without touching the disk. */
   readAttachment?: (path: string) => Promise<Buffer>;
   /**
@@ -157,10 +152,10 @@ const MAIL_ATTACHMENT_CONTENT_TYPES: Readonly<Record<string, string>> = {
 async function readMailAttachments(
   declared: readonly { path: string }[] | undefined,
   deps: MailDeps,
-): Promise<GoogleGmailAttachment[]> {
+): Promise<MailAttachment[]> {
   if (!declared?.length) return [];
   const read = deps.readAttachment ?? (async (path: string) => readFile(path));
-  const out: GoogleGmailAttachment[] = [];
+  const out: MailAttachment[] = [];
   for (const entry of declared) {
     const path = String(entry?.path ?? '').trim();
     if (!path) throw new Error('mail_attachment_path_required');
@@ -182,7 +177,7 @@ async function readMailAttachments(
 }
 
 /** Attachments as a provider receives them: base64 content, no host buffers. */
-function providerAttachments(attachments: readonly GoogleGmailAttachment[]) {
+function providerAttachments(attachments: readonly MailAttachment[]) {
   return attachments.map((entry) => ({
     filename: entry.filename,
     contentType: entry.contentType,
@@ -190,9 +185,10 @@ function providerAttachments(attachments: readonly GoogleGmailAttachment[]) {
   }));
 }
 
-/** TRANSITIONAL (D-014.5): the first-party Gmail token, for `gmail`-kind sources only. */
-function gmailToken(target: OutboundTarget, deps: MailDeps): Promise<string> {
-  return (deps.resolveAccessToken ?? resolveGoogleWorkspaceAccessToken)(target.source, target.installSlug);
+/** Recipient lists as cleared by the addressee rail (its canonical address, else the trimmed input). */
+function clearedAddresses(values: readonly string[], recipients: readonly AddresseeDecision[]): string[] {
+  const cleared = new Map(recipients.map((decision) => [decision.address, decision]));
+  return values.map((value) => cleared.get(value.trim().toLowerCase())?.address ?? value.trim());
 }
 
 /**
@@ -283,76 +279,28 @@ export async function replyToCanonicalMail(
     deps,
   );
 
-  if (target.provider.kind === 'registered') {
-    const result = await invokeOutboundProvider(
-      sql,
-      target,
-      capability,
-      {
-        operation: mode === 'send' ? 'message' : 'create',
-        to: [coordinates.to],
-        subject: coordinates.subject,
-        text,
-        threadId: coordinates.threadId,
-        inReplyTo: coordinates.inReplyTo,
-        references: coordinates.references,
-      },
-      deps,
-    );
-    return {
-      mode,
-      to: coordinates.to,
-      subject: coordinates.subject,
-      threadId: resultString(result, 'threadId', target, capability, false) || coordinates.threadId,
-      messageId: resultString(result, 'messageId', target, capability, mode === 'send'),
-      ...(mode === 'draft' ? { draftId: resultString(result, 'draftId', target, capability) } : {}),
-    };
-  }
-
-  const token = await gmailToken(target, deps);
-  const transport = { fetch: deps.fetch, apiOrigin: deps.apiOrigin };
-
-  if (mode === 'send') {
-    const sent = await (deps.sendMessage ?? sendGoogleGmailMessage)(
-      token,
-      {
-        to: coordinates.to,
-        subject: coordinates.subject,
-        text,
-        threadId: coordinates.threadId,
-        inReplyTo: coordinates.inReplyTo,
-        references: coordinates.references,
-      },
-      transport,
-    );
-    return {
-      mode: 'send',
-      to: coordinates.to,
-      subject: coordinates.subject,
-      threadId: sent.threadId,
-      messageId: sent.messageId,
-    };
-  }
-
-  const draft = await (deps.createDraft ?? createGoogleGmailDraft)(
-    token,
+  const result = await invokeOutboundProvider(
+    sql,
+    target,
+    capability,
     {
-      to: coordinates.to,
+      operation: mode === 'send' ? 'message' : 'create',
+      to: [coordinates.to],
       subject: coordinates.subject,
       text,
       threadId: coordinates.threadId,
       inReplyTo: coordinates.inReplyTo,
       references: coordinates.references,
     },
-    transport,
+    deps,
   );
   return {
-    mode: 'draft',
+    mode,
     to: coordinates.to,
     subject: coordinates.subject,
-    threadId: draft.threadId,
-    messageId: draft.messageId,
-    draftId: draft.draftId,
+    threadId: resultString(result, 'threadId', target, capability, false) || coordinates.threadId,
+    messageId: resultString(result, 'messageId', target, capability, mode === 'send'),
+    ...(mode === 'draft' ? { draftId: resultString(result, 'draftId', target, capability) } : {}),
   };
 }
 
@@ -395,7 +343,7 @@ export async function sendNewMail(
      * loudly. Identical contract to `draftNewMail`'s, deliberately: until
      * WI-10001671 this parameter existed ONLY on the draft, so the two verbs
      * disagreed about whether attaching was possible at all even though both
-     * funnel into the same `buildGoogleGmailRawMessage` encoder, which has
+     * funnelled into the same Gmail MIME encoder, which had
      * emitted `multipart/mixed` for either one since it was written.
      *
      * That asymmetry is invisible from the tool description and cost a real
@@ -469,50 +417,27 @@ export async function sendNewMail(
     },
     deps,
   );
-  const cleared = new Map(recipients.map((decision) => [decision.address, decision]));
-  const outbound: GoogleGmailOutboundInput = {
-    to: params.to.map((value) => cleared.get(value.trim().toLowerCase())?.address ?? value.trim()),
-    cc: params.cc?.map((value) => cleared.get(value.trim().toLowerCase())?.address ?? value.trim()),
-    subject,
-    text,
-    ...(attachments.length ? { attachments } : {}),
-  };
-  if (target.provider.kind === 'registered') {
-    const capability = OUTBOUND_CAPABILITIES.mailSend;
-    const result = await invokeOutboundProvider(
-      sql,
-      target,
-      capability,
-      {
-        operation: 'message',
-        to: outbound.to,
-        cc: outbound.cc ?? [],
-        subject,
-        text,
-        attachments: providerAttachments(attachments),
-      },
-      deps,
-    );
-    return {
-      mode: 'send',
-      recipients,
+  const capability = OUTBOUND_CAPABILITIES.mailSend;
+  const result = await invokeOutboundProvider(
+    sql,
+    target,
+    capability,
+    {
+      operation: 'message',
+      to: clearedAddresses(params.to, recipients),
+      cc: clearedAddresses(params.cc ?? [], recipients),
       subject,
-      threadId: resultString(result, 'threadId', target, capability, false),
-      messageId: resultString(result, 'messageId', target, capability),
-      deliverability,
-    };
-  }
-  const token = await gmailToken(target, deps);
-  const sent = await (deps.sendMessage ?? sendGoogleGmailMessage)(token, outbound, {
-    fetch: deps.fetch,
-    apiOrigin: deps.apiOrigin,
-  });
+      text,
+      attachments: providerAttachments(attachments),
+    },
+    deps,
+  );
   return {
     mode: 'send',
     recipients,
     subject,
-    threadId: sent.threadId,
-    messageId: sent.messageId,
+    threadId: resultString(result, 'threadId', target, capability, false),
+    messageId: resultString(result, 'messageId', target, capability),
     deliverability,
   };
 }
@@ -610,30 +535,20 @@ export async function sendMailDraft(
     },
     deps,
   );
-  const token = target.provider.kind === 'registered' ? null : await gmailToken(target, deps);
-
-  let live: { to: string[]; cc: string[]; subject: string | null };
-  if (token === null) {
-    const read = await invokeOutboundProvider(
-      sql,
-      target,
-      OUTBOUND_CAPABILITIES.mailDraft,
-      { operation: 'read', draftId },
-      deps,
-    );
-    live = {
-      to: resultStrings(read, 'to'),
-      cc: resultStrings(read, 'cc'),
-      subject: resultString(read, 'subject', target, OUTBOUND_CAPABILITIES.mailDraft, false) || null,
-    };
-  } else {
-    live = await (deps.readDraftRecipients ?? readGoogleGmailDraftRecipients)(token, draftId, {
-      fetch: deps.fetch,
-      apiOrigin: deps.apiOrigin,
-    });
-  }
+  const read = await invokeOutboundProvider(
+    sql,
+    target,
+    OUTBOUND_CAPABILITIES.mailDraft,
+    { operation: 'read', draftId },
+    deps,
+  );
+  const live = {
+    to: resultStrings(read, 'to'),
+    cc: resultStrings(read, 'cc'),
+    subject: resultString(read, 'subject', target, OUTBOUND_CAPABILITIES.mailDraft, false) || null,
+  };
   // A draft addressed to nobody cannot be sent to the right person by accident,
-  // but it can be sent — Gmail decides. Refuse here so the failure names the
+  // but it can be sent — the provider decides. Refuse here so the failure names the
   // cause instead of arriving as a provider error after the attempt.
   if (!live.to.length) throw new Error('mail_send_draft_no_recipients');
 
@@ -678,26 +593,14 @@ export async function sendMailDraft(
     { probe: deps.probeMailbox, allowUndeliverable: params.allowUndeliverable },
   );
 
-  let sent: { threadId: string; messageId: string };
-  if (token === null) {
-    const capability = OUTBOUND_CAPABILITIES.mailSend;
-    const result = await invokeOutboundProvider(sql, target, capability, { operation: 'draft', draftId }, deps);
-    sent = {
-      threadId: resultString(result, 'threadId', target, capability, false),
-      messageId: resultString(result, 'messageId', target, capability),
-    };
-  } else {
-    sent = await (deps.sendDraft ?? sendGoogleGmailDraft)(token, draftId, {
-      fetch: deps.fetch,
-      apiOrigin: deps.apiOrigin,
-    });
-  }
+  const capability = OUTBOUND_CAPABILITIES.mailSend;
+  const result = await invokeOutboundProvider(sql, target, capability, { operation: 'draft', draftId }, deps);
   return {
     mode: 'send',
     recipients,
     draftId,
-    threadId: sent.threadId,
-    messageId: sent.messageId,
+    threadId: resultString(result, 'threadId', target, capability, false),
+    messageId: resultString(result, 'messageId', target, capability),
     sentTo: live.to,
     sentCc: live.cc,
     subject: live.subject,
@@ -797,59 +700,30 @@ export async function draftNewMail(
     },
     deps,
   );
-  const cleared = new Map(recipients.map((decision) => [decision.address, decision]));
-  const outbound: GoogleGmailOutboundInput = {
-    to: params.to.map((value) => cleared.get(value.trim().toLowerCase())?.address ?? value.trim()),
-    cc: params.cc?.map((value) => cleared.get(value.trim().toLowerCase())?.address ?? value.trim()),
-    subject,
-    text,
-    ...(attachments.length ? { attachments } : {}),
-  };
   const reviseId = params.draftId?.trim();
-  if (target.provider.kind === 'registered') {
-    const capability = OUTBOUND_CAPABILITIES.mailDraft;
-    const result = await invokeOutboundProvider(
-      sql,
-      target,
-      capability,
-      {
-        operation: reviseId ? 'update' : 'create',
-        ...(reviseId ? { draftId: reviseId } : {}),
-        to: outbound.to,
-        cc: outbound.cc ?? [],
-        subject,
-        text,
-        attachments: providerAttachments(attachments),
-      },
-      deps,
-    );
-    return {
-      mode: 'draft',
-      recipients,
+  const capability = OUTBOUND_CAPABILITIES.mailDraft;
+  const result = await invokeOutboundProvider(
+    sql,
+    target,
+    capability,
+    {
+      operation: reviseId ? 'update' : 'create',
+      ...(reviseId ? { draftId: reviseId } : {}),
+      to: clearedAddresses(params.to, recipients),
+      cc: clearedAddresses(params.cc ?? [], recipients),
       subject,
-      threadId: resultString(result, 'threadId', target, capability, false),
-      messageId: resultString(result, 'messageId', target, capability, false),
-      draftId: resultString(result, 'draftId', target, capability),
-      deliverability,
-    };
-  }
-  const token = await gmailToken(target, deps);
-  const draft = reviseId
-    ? await (deps.updateDraft ?? updateGoogleGmailDraft)(token, reviseId, outbound, {
-        fetch: deps.fetch,
-        apiOrigin: deps.apiOrigin,
-      })
-    : await (deps.createDraft ?? createGoogleGmailDraft)(token, outbound, {
-        fetch: deps.fetch,
-        apiOrigin: deps.apiOrigin,
-      });
+      text,
+      attachments: providerAttachments(attachments),
+    },
+    deps,
+  );
   return {
     mode: 'draft',
     recipients,
     subject,
-    threadId: draft.threadId,
-    messageId: draft.messageId,
-    draftId: draft.draftId,
+    threadId: resultString(result, 'threadId', target, capability, false),
+    messageId: resultString(result, 'messageId', target, capability, false),
+    draftId: resultString(result, 'draftId', target, capability),
     deliverability,
   };
 }
