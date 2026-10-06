@@ -1,5 +1,11 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { classifyReplayIncident, evaluateReplayThreshold, REPLAY_SIGNALS, type ReplayIncident } from './graph-replay';
+
+// Overridable so scripts/mutation-probe.sh can point the pin at a mutated COPY (never the tree).
+const EVIDENCE_PATH = process.env.GRAPH_REPLAY_EVIDENCE_PATH ||
+  fileURLToPath(new URL('../../../../docs/evidence/gitnexus-replay-baseline-2026-10-06.json', import.meta.url));
 
 const SHA = '0123456789abcdef0123456789abcdef01234567';
 function incident(id = 'incident-1'): ReplayIncident {
@@ -112,5 +118,33 @@ describe('historical graph replay evidence accounting', () => {
     rows[0].signals['graph-added-workspaces'].verdict = 'incremental';
     rows[5].rootCauseVerified = false;
     expect(evaluateReplayThreshold(rows)).toMatchObject({ decision: 'unresolved', sampledReds: 5, unqualifiedIds: ['red-5'] });
+  });
+});
+
+describe('P-003 evidence document (gitnexus-replay-baseline-2026-10-06.json)', () => {
+  const evidence = JSON.parse(readFileSync(EVIDENCE_PATH, 'utf8')) as {
+    status: string;
+    replayIncidents: ReplayIncident[];
+    thresholdEvaluation: ReturnType<typeof evaluateReplayThreshold> & Record<string, unknown>;
+  };
+
+  it('records exactly the decision the classifier computes from its own incidents', () => {
+    const computed = evaluateReplayThreshold(evidence.replayIncidents);
+    const { decision, graphOnlyIncidents, sampledReds, graphOnlyReds, unknownIds, unqualifiedIds } = evidence.thresholdEvaluation;
+    expect({ decision, graphOnlyIncidents, sampledReds, graphOnlyReds, unknownIds, unqualifiedIds }).toEqual(computed);
+  });
+
+  it('never states a go or a scale-back that the evidence did not demonstrate', () => {
+    const { decision } = evaluateReplayThreshold(evidence.replayIncidents);
+    expect(evidence.status).toBe(decision === 'go' ? 'complete-go' : decision === 'scale-back' ? 'complete-scale-back' : 'complete-threshold-not-demonstrated');
+  });
+
+  it('gives no graph credit for a signal with no observation behind it', () => {
+    for (const row of evidence.replayIncidents) {
+      for (const signal of REPLAY_SIGNALS) {
+        const observation = row.signals[signal];
+        if (observation.comparison !== 'observed') expect(classifyReplayIncident(row).signals[signal]).toBe('unknown');
+      }
+    }
   });
 });
