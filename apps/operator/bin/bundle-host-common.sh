@@ -71,6 +71,7 @@ HOST_WORKER_OUTPUTS=(
   mutation-probe-closure.worker.mjs
   admission-jobs.worker.mjs
   precision-bench-worker.mjs
+  first-party-callers.worker.mjs
 )
 
 # Dependency-free on-disk scripts that the bundled host resolves as SIBLINGS of
@@ -198,7 +199,8 @@ bundle_host_workers() {
     "$repo_root/packages/operator-core/lib/sync/hyperbee/snapshot-fold.worker.ts" \
     "$repo_root/packages/operator-core/lib/agent-tools/testing/mutation-probe-closure.worker.ts" \
     "$repo_root/packages/operator-core/lib/release/admission-jobs.worker.ts" \
-    "$repo_root/packages/operator-core/lib/memory/bench/precision-bench-worker.ts"; do
+    "$repo_root/packages/operator-core/lib/memory/bench/precision-bench-worker.ts" \
+    "$repo_root/packages/operator-core/lib/code-intelligence/first-party-callers.worker.ts"; do
     output="${HOST_WORKER_OUTPUTS[$index]}"
     BUNDLE_HOST_WORKER_FAILED_SOURCE="$source"
     BUNDLE_HOST_WORKER_FAILED_OUTPUT="$output"
