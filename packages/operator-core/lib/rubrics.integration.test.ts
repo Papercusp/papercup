@@ -25,6 +25,7 @@ import { activeWorkspaceId } from './workspace-registry';
 import { OrgTxnTimeoutError } from './pg-bounded-txn';
 import { PLAN_ADVISORY_LOCK_NAMESPACE, planAdvisoryLockKey } from './agent-tools/plans/plan-lock-key';
 import { hashPlanContent } from './agent-tools/plans/content-hash';
+import { listLocalRubrics } from './cupboard/rubric-store';
 import setTemplateDataTool from './agent-tools/plans/set-template-data';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
@@ -704,8 +705,13 @@ Preserve this plan body.
   it('appends an exact current first-party snapshot without rewriting divergent history', async () => {
     rubrics.__resetRubricSeedStateForTests();
     try {
-      await runWithWorkspace(activeWorkspaceId(), () => rubrics.ensureFirstPartyRubricsSeeded());
       const rubricId = 'fleet-execution-health';
+      const source = listLocalRubrics().find(
+        (candidate) => candidate.rubricId === rubricId && candidate.source === 'first-party',
+      );
+      if (!source) throw new Error(`bundled first-party rubric ${rubricId} is unavailable`);
+      // Seed only the row under test; the global seed pass spans unrelated rubric content.
+      await rubrics.provisionPinnedRubric(source, activeWorkspaceId());
       const [seeded] = await db.adminSql<{
         version: number;
         content: string;
@@ -814,6 +820,74 @@ Preserve this plan body.
       expect(await db.adminSql`SELECT id FROM harness_shared.plan_revisions WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug = 'papercusp' AND plan_slug = ${rubricId}`)
         .toHaveLength(priorRows.length + 1);
     } finally {
+      rubrics.__resetRubricSeedStateForTests();
+    }
+  });
+
+  it('WI-10006335: a latest revision with no structured snapshot falls through to the backfill instead of throwing', async () => {
+    rubrics.__resetRubricSeedStateForTests();
+    const rubricId = 'fleet-execution-health';
+    // The previous case backfills this same rubric, leaving a `"rubricRevision": N,`
+    // marker that would claim this case's target revision and reject it early. Start
+    // (and finish) from a never-provisioned rubric so the case is order-independent.
+    const clearRubric = async () => {
+      await db.adminSql`
+        DELETE FROM harness_shared.plan_revisions
+         WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug = 'papercusp' AND plan_slug = ${rubricId}`;
+      await db.adminSql`
+        DELETE FROM harness_shared.harness_plans
+         WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug = 'papercusp' AND plan_slug = ${rubricId}`;
+    };
+    await clearRubric();
+    try {
+      const source = listLocalRubrics().find(
+        (candidate) => candidate.rubricId === rubricId && candidate.source === 'first-party',
+      );
+      if (!source) throw new Error(`bundled first-party rubric ${rubricId} is unavailable`);
+      await rubrics.provisionPinnedRubric(source, activeWorkspaceId());
+      const [seeded] = await db.adminSql<{ version: number; content: string }[]>`
+        SELECT version, content
+          FROM harness_shared.harness_plans
+         WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug = 'papercusp'
+           AND plan_slug = ${rubricId}`;
+      expect(seeded).toBeDefined();
+      const targetRevision = Number(seeded!.version) + 1;
+      const updatedBody = `${seeded!.content}\n\n# Markdown-only latest revision fixture\n`;
+      const updatedHash = hashPlanContent(updatedBody);
+      await db.adminSql`
+        UPDATE harness_shared.harness_plans
+           SET version = ${targetRevision}, content = ${updatedBody}, content_hash = ${updatedHash}
+         WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug = 'papercusp'
+           AND plan_slug = ${rubricId}`;
+      // The LATEST revision carries the live content hash but no structured snapshot
+      // (a legacy markdown-only row), so parseRubricRevisionSnapshot returns null for it.
+      // The hash equality is what reaches the already-repaired comparison; before the
+      // fix that comparison dereferenced the null parse and threw a TypeError.
+      await db.adminSql`
+        INSERT INTO harness_shared.plan_revisions
+          (workspace_id, harness_slug, plan_slug, seq, content_hash, content_snapshot,
+           rationale, author_kind, author_id, created_at)
+        SELECT ${activeWorkspaceId()}, 'papercusp', ${rubricId}, COALESCE(MAX(seq), 0) + 1, ${updatedHash},
+               '# markdown-only legacy rubric revision', 'test', 'agent', 'test', 1
+          FROM harness_shared.plan_revisions
+         WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug = 'papercusp'
+           AND plan_slug = ${rubricId}`;
+
+      const scope = { workspaceId: activeWorkspaceId(), harnessSlug: 'papercusp' };
+      const preview = await rubrics.repairLegacyRubricRevisionSnapshots(rubricId, scope, {
+        dryRun: true,
+        rubricRevision: targetRevision,
+      });
+      // An unparseable latest snapshot is not evidence of a prior repair.
+      expect(preview.reason).toBeUndefined();
+      expect(preview).toMatchObject({
+        status: 'dry_run',
+        currentRevision: targetRevision,
+        revisionsToRepair: 1,
+        revisionsRepaired: 0,
+      });
+    } finally {
+      await clearRubric();
       rubrics.__resetRubricSeedStateForTests();
     }
   });

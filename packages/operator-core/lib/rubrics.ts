@@ -2992,8 +2992,10 @@ export async function inspectCurrentRubricRevisionBackfill(
 
   const latest = revisions[revisions.length - 1];
   const latestParsed = latest ? parseRubricRevisionSnapshot(latest.contentSnapshot) : null;
+  // WI-10006335: a latest snapshot that does not parse is not evidence the rubric was
+  // already repaired, so it falls through to the repair instead of dereferencing null.
   if (
-    latest && latestParsed?.rubricRevision === undefined &&
+    latest && latestParsed && latestParsed.rubricRevision === undefined &&
     latest.contentHash === plan.contentHash &&
     isDeepStrictEqual(latestParsed.templateData, parsed.data)
   ) {
