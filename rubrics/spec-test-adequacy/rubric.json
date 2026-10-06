@@ -18,8 +18,8 @@
     {
       "key": "fixture-calibration",
       "title": "Fixtures represent the intended boundary",
-      "model": "Where a fixture is required or used, its calibration to the clause's real boundary is demonstrated and fingerprinted; fixture-free proof is explicitly not applicable.",
-      "method": "Inspect fixture bindings/fingerprints and their adequacy.fixtureCalibrated attestation; reject synthetic or stale fixtures that cannot reproduce the relevant state.",
+      "model": "Where a fixture is required or used, its calibration to the clause's real boundary is demonstrated and fingerprinted. Fixture-free proof is not applicable only when the bound proof explicitly attests adequacy.fixtureFree=true; an absent fixture fingerprint does not establish fixture absence.",
+      "method": "Inspect fixture bindings/fingerprints and their adequacy.fixtureCalibrated attestation; accept fixture-free only from adequacy.fixtureFree=true on the exact bound proof. Treat an executable binding with neither a fixture fingerprint nor an explicit fixture-free attestation as unknown; reject synthetic or stale fixtures that cannot reproduce the relevant state.",
       "driftMarkers": "A fixture that cannot trigger the behavior; production-only state replaced by an uncalibrated mock; changed fixture bytes under an old fingerprint."
     },
     {

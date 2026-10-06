@@ -3,7 +3,7 @@
  *
  * A `{ fromTestRun }` binding derives only the RUN facts (collected / skipped / executed /
  * outcome, testLayer). The DESIGN attestations a binder supplies by judgment — targeted,
- * falsifiable, pathReachable, oracleIndependent, fixtureCalibrated, coverageRungs — cannot be
+ * falsifiable, pathReachable, oracleIndependent, fixtureCalibrated, fixtureFree, coverageRungs — cannot be
  * derived from a run, so a fresh re-bind of the very same test file carries none of them.
  * Nothing visibly breaks at bind time, because the older row still carries them. The loss
  * lands LATER, when the older row is retracted (by hand, or by `supersedeAtRevision`): the
@@ -27,6 +27,7 @@ export const DESIGN_ATTESTATION_KEYS = [
   'pathReachable',
   'oracleIndependent',
   'fixtureCalibrated',
+  'fixtureFree',
   'coverageRungs',
 ] as const;
 export type DesignAttestationKey = (typeof DESIGN_ATTESTATION_KEYS)[number];

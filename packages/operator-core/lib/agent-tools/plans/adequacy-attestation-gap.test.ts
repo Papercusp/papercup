@@ -15,6 +15,7 @@ const ATTESTED = {
   falsifiable: true,
   pathReachable: true,
   fixtureCalibrated: true,
+  fixtureFree: true,
   oracleIndependent: true,
 };
 
@@ -47,7 +48,7 @@ describe('attestationGap — a fresh re-bind of the same test', () => {
   it('reports every attestation the older live row of the same test file carries and the new row lacks (GBE-P-008: 12398 → 22753)', () => {
     const gap = attestationGap(row(22753, RUN_FACTS), [row(12398, ATTESTED), row(22753, RUN_FACTS)]);
     expect(gap.map((g) => g.key).sort()).toEqual(
-      ['falsifiable', 'fixtureCalibrated', 'oracleIndependent', 'pathReachable', 'targeted'].sort(),
+      ['falsifiable', 'fixtureCalibrated', 'fixtureFree', 'oracleIndependent', 'pathReachable', 'targeted'].sort(),
     );
     expect(gap.every((g) => g.carriedBy.length === 1 && g.carriedBy[0] === 12398)).toBe(true);
   });
