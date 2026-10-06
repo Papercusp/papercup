@@ -70,7 +70,7 @@ export default defineTool({
     const workspaceId = ctx.workspaceId?.trim() || ctx.principal?.workspaceId?.trim();
     if (!workspaceId || workspaceId === '*') throw new Error('mail_draft_workspace_required');
     const user = await getSessionUserOrDefault();
-    const auth = await authorizePersonalAccess(ctx.tx!, ctx, workspaceId, user.id, ['personal:gmail']);
+    const auth = await authorizePersonalAccess(ctx.tx!, ctx, workspaceId, user.id, ['personal:mail']);
     if (!auth.allowed) return { data: { allowed: false, refusal: auth.reason } };
     try {
       const result = await draftNewMail(ctx.tx as unknown as postgres.Sql, {
