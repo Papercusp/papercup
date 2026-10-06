@@ -1595,7 +1595,11 @@ describe('buildWorkspaceHostBootstrap', () => {
     const lines = buildWorkspaceHostBootstrap(bootcInput()).split('\n');
     const write = lines.findIndex((l) => l.includes('base64 -d > "/home/$WORKSPACE_USER/.ssh/authorized_keys"'));
     const ptyKey = lines.findIndex((l) => l.includes('>> "/home/$WORKSPACE_USER/.ssh/authorized_keys"'));
-    const guard = lines.findIndex((l) => l === 'if command -v selinuxenabled >/dev/null 2>&1 && selinuxenabled; then');
+    // The hosted PTY key directory has its own SELinux block earlier in harden-os (WI-10006903),
+    // so find the guard that follows the ~/.ssh writes rather than the first one in the script.
+    const guard = lines.findIndex(
+      (l, i) => i > ptyKey && l === 'if command -v selinuxenabled >/dev/null 2>&1 && selinuxenabled; then',
+    );
     const restore = lines.findIndex((l) => l.includes('restorecon -RF "/home/$WORKSPACE_USER/.ssh"'));
     const dropIn = lines.findIndex((l) => l.startsWith('cat > /etc/ssh/sshd_config.d/'));
     // After every write into ~/.ssh, before sshd is reconfigured.
@@ -1627,6 +1631,69 @@ describe('buildWorkspaceHostBootstrap', () => {
     );
     expect(skipped.status).toBe(0);
     expect(skipped.stdout).not.toContain('restorecon');
+  });
+
+  // WI-10006903: on a bootc host ssh-keygen, started from the bootstrap's initrc_t domain, enters
+  // the confined ssh_keygen_t. Measured on a P-012 AWS host in that exact domain: it was refused
+  // writing the key into a var_lib_t directory (the policy default for this path) and accepted an
+  // ssh_home_t one, so the directory must be registered as an SSH identity directory.
+  it('labels the hosted PTY key directory ssh_home_t before ssh-keygen on SELinux hosts (WI-10006903)', () => {
+    const lines = buildWorkspaceHostBootstrap(bootcInput()).split('\n');
+    const dir = lines.findIndex((l) => l.includes('-m 0700 "$(dirname "$HOSTED_PTY_SSH_KEY")"'));
+    const guard = lines.findIndex(
+      (l, i) => i > dir && l === 'if command -v selinuxenabled >/dev/null 2>&1 && selinuxenabled; then',
+    );
+    const end = lines.findIndex((l, i) => i > guard && l === 'fi');
+    const keygen = lines.findIndex((l) => l.includes('ssh-keygen -q -t ed25519') && l.includes('"$HOSTED_PTY_SSH_KEY"'));
+    // Directly after the directory exists, directly before the key is generated into it.
+    expect(dir).toBeGreaterThan(0);
+    expect(guard).toBe(dir + 1);
+    expect(keygen).toBe(end + 1);
+
+    const block = lines.slice(guard, end + 1).join('\n');
+    const prelude = [
+      `STATE_ROOT='${WORKSPACE_HOST_STATE_ROOT}'`,
+      `HOSTED_PTY_SSH_KEY='${WORKSPACE_HOST_HOSTED_PTY_SSH_KEY}'`,
+      'die() { echo "DIE $1" >&2; exit 1; }',
+    ].join('\n');
+    const keyDir = WORKSPACE_HOST_HOSTED_PTY_SSH_KEY.replace(/\/[^/]+$/, '');
+    const run = (stubs: Record<string, string>) =>
+      withStubs({ selinuxenabled: 'exit 0', restorecon: 'echo "restorecon $*"', semanage: 'echo "semanage $*"', ...stubs }, `${prelude}\n${block}`);
+
+    // A fresh host: the policy still maps the directory to var_lib_t, so the rule is registered.
+    const fresh = run({
+      matchpathcon: 'echo "system_u:object_r:var_lib_t:s0"',
+      stat: 'echo "system_u:object_r:ssh_home_t:s0"',
+    });
+    expect(fresh.status, fresh.stderr).toBe(0);
+    const calls = fresh.stdout.trim().split('\n');
+    expect(calls).toEqual([
+      `restorecon -F ${WORKSPACE_HOST_STATE_ROOT}`,
+      `semanage fcontext -a -t ssh_home_t ${keyDir}(/.*)?`,
+      `restorecon -RF ${keyDir}`,
+    ]);
+
+    // A re-run: the rule already exists, so it is not re-added (semanage -a would refuse it).
+    const rerun = run({
+      matchpathcon: 'echo "system_u:object_r:ssh_home_t:s0"',
+      stat: 'echo "system_u:object_r:ssh_home_t:s0"',
+    });
+    expect(rerun.status, rerun.stderr).toBe(0);
+    expect(rerun.stdout).not.toContain('semanage');
+    expect(rerun.stdout).toContain(`restorecon -RF ${keyDir}`);
+
+    // The relabel did not take: fail here, naming the label, not later at ssh-keygen's bare EACCES.
+    const stuck = run({
+      matchpathcon: 'echo "system_u:object_r:var_lib_t:s0"',
+      stat: 'echo "system_u:object_r:var_lib_t:s0"',
+    });
+    expect(stuck.status).not.toBe(0);
+    expect(stuck.stderr).toContain('DIE hosted PTY key directory is not labeled ssh_home_t: system_u:object_r:var_lib_t:s0');
+
+    // No SELinux (Ubuntu): nothing is relabeled.
+    const ubuntu = run({ selinuxenabled: 'exit 1' });
+    expect(ubuntu.status, ubuntu.stderr).toBe(0);
+    expect(ubuntu.stdout).toBe('');
   });
 
   it('a refused hosted-PTY loopback prints its sshd evidence before dying (WI-10006258)', () => {

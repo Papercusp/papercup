@@ -81,6 +81,44 @@ describe('renderDurableFilesystemScript', () => {
     }
   });
 
+  it('relabels the fresh mount root on SELinux hosts before creating its children, never recursively (WI-10006903)', () => {
+    // A new ext4 has no security.selinux xattrs, so its root reads unlabeled_t and every child
+    // inherits it (measured on a P-012 bootc host). The relabel must come after the mount and
+    // before the first child directory, and must not recurse: a recursive relabel by the backing
+    // path would rewrite the home bind's copied labels to var_lib_t.
+    const script = renderDurableFilesystemScript({ devicePath: AWS_DEVICE, deviceWaitSec: 30 });
+    const lines = script.split('\n');
+    const mount = lines.findIndex((l) => l.includes('mount "$data_mount"'));
+    const relabel = lines.findIndex((l) => l.includes('restorecon'));
+    const firstChild = lines.findIndex((l) => l.startsWith('install -d') && l.includes('"$data_mount"/'));
+    expect(mount).toBeGreaterThan(0);
+    expect(relabel).toBeGreaterThan(mount);
+    expect(firstChild).toBeGreaterThan(relabel);
+    expect(lines.filter((l) => l.includes('restorecon'))).toHaveLength(1);
+    expect(lines[relabel]).not.toMatch(/restorecon\s+-\w*R/);
+
+    const stubs = mkdtempSync(join(tmpdir(), 'durable-selinux-'));
+    const run = (selinux: boolean) => {
+      writeFileSync(join(stubs, 'selinuxenabled'), `#!/bin/sh\nexit ${selinux ? 0 : 1}\n`, { mode: 0o755 });
+      writeFileSync(join(stubs, 'restorecon'), '#!/bin/sh\necho "restorecon $*"\n', { mode: 0o755 });
+      return spawnSync('bash', ['-c', `set -euo pipefail\ndata_mount=/var/lib/papercusp\n${lines[relabel]}`], {
+        encoding: 'utf8',
+        env: { ...process.env, PATH: `${stubs}:${process.env.PATH}` },
+        timeout: 5000,
+      });
+    };
+    try {
+      const enforcing = run(true);
+      expect(enforcing.status, enforcing.stderr).toBe(0);
+      expect(enforcing.stdout.trim()).toBe(`restorecon -F ${WORKSPACE_HOST_DURABLE_DATA_MOUNT_POINT}`);
+      const ubuntu = run(false);
+      expect(ubuntu.status, ubuntu.stderr).toBe(0);
+      expect(ubuntu.stdout).toBe('');
+    } finally {
+      rmSync(stubs, { recursive: true, force: true });
+    }
+  });
+
   it('runs the host bootstrap only after every durable mount, without its shebang', () => {
     const script = renderDurableFilesystemScript({
       devicePath: AWS_DEVICE,

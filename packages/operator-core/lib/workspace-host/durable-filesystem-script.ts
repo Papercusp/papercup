@@ -50,6 +50,14 @@ export function renderDurableFilesystemScript(input: DurableFilesystemScriptInpu
     'grep -q "^UUID=${data_uuid} " /etc/fstab || printf "UUID=%s %s ext4 defaults,nofail,discard 0 2\\n" "$data_uuid" "$data_mount" >> /etc/fstab',
     'mountpoint -q "$data_mount" || mount "$data_mount"',
     'resize2fs "$data_device"',
+    // ⛔ RELABEL THE FRESH MOUNT ROOT ON SELINUX HOSTS (WI-10006903). A new ext4 carries no
+    // security.selinux xattrs, so its root reads unlabeled_t and every directory created under it
+    // inherits that; confined domains cannot traverse it (measured on a P-012 bootc host: the state
+    // root, its hosted PTY key directory and the workspaces bind were all unlabeled_t). Relabel the
+    // root BEFORE creating its children so they inherit the policy type. Deliberately NOT
+    // recursive: the home bind below carries labels copied from the image, and a recursive relabel
+    // by this backing path would rewrite them to var_lib_t, refusing sshd the authorized_keys.
+    'if command -v selinuxenabled >/dev/null 2>&1 && selinuxenabled; then restorecon -F "$data_mount"; fi',
     'install -d -m 0750 "$data_mount"/{postgres,repositories,transcripts,workspaces}',
     // ⛔ WORKSPACE + AGENT HOMES MUST LAND ON THE DURABLE DISK (WI-10003296).
     //

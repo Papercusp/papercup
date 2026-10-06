@@ -2768,6 +2768,21 @@ export function buildWorkspaceHostBootstrap(
     // A separate local key lets the unprivileged operator service start a PTY under the existing
     // customer SSH identity. Re-add it on every bootstrap because controller keys are reset above.
     'install -d -o "$SERVICE_USER" -g "$SERVICE_GROUP" -m 0700 "$(dirname "$HOSTED_PTY_SSH_KEY")"',
+    // ⛔ SELinux hosts (bootc): ssh-keygen started from this script's domain (initrc_t under
+    // systemd-run) enters the confined ssh_keygen_t, which may write only SSH-identity types. The
+    // policy maps this directory to var_lib_t, so the keygen is refused with a bare EACCES and a
+    // dontaudit'ed AVC (WI-10006903, measured on a P-012 host in that exact domain: var_lib_t
+    // refused, ssh_home_t accepted). Relabeling to the policy default is therefore NOT enough:
+    // register the directory as an SSH identity directory. The state root is relabeled first
+    // because on a fresh durable data disk it is unlabeled_t, which ssh_keygen_t cannot traverse.
+    // The path itself must not move: the published release runtime reads it from its own build.
+    'if command -v selinuxenabled >/dev/null 2>&1 && selinuxenabled; then',
+    '  HOSTED_PTY_SSH_DIR="$(dirname "$HOSTED_PTY_SSH_KEY")"',
+    '  restorecon -F "$STATE_ROOT" || die "could not restore the SELinux label of the runtime state root"',
+    '  [[ "$(matchpathcon -n "$HOSTED_PTY_SSH_DIR")" == *:ssh_home_t:* ]] || semanage fcontext -a -t ssh_home_t "$HOSTED_PTY_SSH_DIR(/.*)?" || die "could not register the hosted PTY key directory as an SSH identity directory"',
+    '  restorecon -RF "$HOSTED_PTY_SSH_DIR" || die "could not restore the SELinux labels of the hosted PTY key directory"',
+    '  [[ "$(stat -c %C "$HOSTED_PTY_SSH_DIR")" == *:ssh_home_t:* ]] || die "hosted PTY key directory is not labeled ssh_home_t: $(stat -c %C "$HOSTED_PTY_SSH_DIR")"',
+    'fi',
     'if [[ ! -f "$HOSTED_PTY_SSH_KEY" ]]; then runuser -u "$SERVICE_USER" -- ssh-keygen -q -t ed25519 -N "" -f "$HOSTED_PTY_SSH_KEY" || die "hosted PTY key generation failed"; fi',
     '[[ ! -L "$HOSTED_PTY_SSH_KEY" && "$(stat -c %U:%G:%a "$HOSTED_PTY_SSH_KEY")" == "$SERVICE_USER:$SERVICE_GROUP:600" ]] || die "hosted PTY private key ownership or mode is unsafe"',
     'HOSTED_PTY_PUB="$(runuser -u "$SERVICE_USER" -- ssh-keygen -y -f "$HOSTED_PTY_SSH_KEY")" || die "hosted PTY public key is invalid"',
