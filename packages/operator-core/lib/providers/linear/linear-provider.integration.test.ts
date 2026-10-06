@@ -40,6 +40,7 @@ import {
   recordWriteBackCapability,
 } from '../../work-admission/record-source';
 import { runConnectorSync, type ConnectorSyncDeps, type ConnectorSourceOutcome } from '../connector-runtime';
+import { setAdmissionRuleAndBackfill, ticketRulePreset, type TicketRulePreset } from '../../work-admission/admission-rules';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as Sql, ws: 'papercusp-workspace' }));
 vi.mock('@papercusp/db-org', async (orig) => {
@@ -217,13 +218,13 @@ function bound(value: Date | string | null | undefined): number | null {
 }
 
 /** One page of a connection, newest first (Linear's updatedAt order), with an offset cursor. */
-function connection<T extends { updatedAt: string }>(field: string, rows: T[], after: string | null | undefined) {
+function connection<T extends { updatedAt: string }>(field: string, rows: T[], after: string | null | undefined, extra: Record<string, unknown> = {}) {
   const sorted = [...rows].sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
   const offset = after ? Number(after.split(':')[1]) : 0;
   const nodes = sorted.slice(offset, offset + lin.pageSize);
   const end = offset + nodes.length;
   const hasNextPage = end < sorted.length;
-  return data({ [field]: { nodes, pageInfo: { hasNextPage, endCursor: hasNextPage ? `${field}:${end}` : null } } });
+  return data({ ...extra, [field]: { nodes, pageInfo: { hasNextPage, endCursor: hasNextPage ? `${field}:${end}` : null } } });
 }
 
 function issueById(id: string): IssueNode | undefined {
@@ -251,7 +252,8 @@ const recordedHostFetch: HostFetch = async ({ request }) => {
       const since = bound(filter?.updatedAt?.gte);
       expect(team).toBeTruthy();
       const rows = lin.issues.filter((row) => row.team.id === team && (since === null || Date.parse(row.updatedAt) >= since));
-      return connection('issues', rows, after);
+      // The source is connected as Papercusp's app user (actor=app), so `viewer` is that user (D-012).
+      return connection('issues', rows, after, { viewer: { id: PAPERCUSP_APP.id } });
     }
     case 'PapercuspComments': {
       const { filter, after } = variables as CommentsVars;
@@ -265,7 +267,7 @@ const recordedHostFetch: HostFetch = async ({ request }) => {
       return connection('comments', rows, after);
     }
     case 'PapercuspIssue':
-      return data({ issue: issueById(String(variables.id)) ?? null });
+      return data({ viewer: { id: PAPERCUSP_APP.id }, issue: issueById(String(variables.id)) ?? null });
     case 'PapercuspIssueStates': {
       const row = issueById(String(variables.id));
       return data({ issue: row ? { id: row.id, state: row.state, team: { id: row.team.id, states: { nodes: TEAM_STATES[row.team.id] } } } : null });
@@ -408,6 +410,15 @@ async function clean(): Promise<void> {
     SELECT id::text FROM harness_shared.data_sources WHERE workspace_id = ${WS} AND kind = ${KIND}`;
   const ids = sources.map((s) => s.id);
   if (ids.length > 0) {
+    // Admitted work items carry no dataSourceId of their own; they are found through their admission.
+    await sql`DELETE FROM harness_shared.admission_write_backs WHERE workspace_id = ${WS} AND data_source_id = ANY(${sql.array(ids)}::uuid[])`;
+    await sql`
+      DELETE FROM harness_shared.work_items w
+       USING harness_shared.work_admissions a
+       WHERE a.workspace_id = ${WS} AND w.workspace_id = a.workspace_id AND w.feature_id = a.work_item_id
+         AND a.data_source_id = ANY(${sql.array(ids)}::uuid[])`;
+    await sql`DELETE FROM harness_shared.work_admissions WHERE workspace_id = ${WS} AND data_source_id = ANY(${sql.array(ids)}::uuid[])`;
+    await sql`DELETE FROM harness_shared.admission_rules WHERE workspace_id = ${WS} AND data_source_id = ANY(${sql.array(ids)}::uuid[])`;
     await sql`DELETE FROM harness_shared.work_items WHERE workspace_id = ${WS} AND payload->>'dataSourceId' = ANY(${sql.array(ids)}::text[])`;
     await sql`DELETE FROM harness_shared.documents WHERE workspace_id = ${WS} AND metadata->>'dataSourceId' = ANY(${sql.array(ids)}::text[])`;
     await sql`DELETE FROM harness_shared.document_permission_lists WHERE workspace_id = ${WS} AND source_ref = ANY(${sql.array(ids)}::text[])`;
@@ -489,6 +500,7 @@ describe('Linear registers as a provider through the plugin host (P-004)', () =>
     )) as { ticket: Record<string, unknown> };
     expect(read.ticket).toMatchObject({
       externalId: 'iss-1', identifier: 'ENG-1', container: 'ENG', statusCategory: 'in-progress', delegates: ['Papercusp'],
+      selfRoles: ['delegate'], // delegated to the connected app user (D-012)
     });
     expect(lin.calls.map((c) => c.op)).toEqual(['PapercuspIssue']);
     await expect(provider.adapter!.invoke(
@@ -662,6 +674,89 @@ describe('Linear syncs through the shared connector driver (R-4)', () => {
 });
 
 // ── Writes dispatched by the host ───────────────────────────────────────────
+
+describe('admission presets turn matching Linear issues into work (P-006, R-6)', () => {
+  /** A different agent whose display name is ALSO "Papercusp": only the user id says who is who. */
+  const LOOKALIKE: UserNode = { id: 'u-lookalike', name: 'papercusp-2', displayName: 'Papercusp' };
+
+  type Admitted = { record: string; work_item_id: string; via: string; rule_id: string | null; kind: string; agent_work: boolean; about: number };
+  /** Every admission of this source, with the work item it minted and its about-links to the record. */
+  async function admitted(sourceId: string): Promise<Admitted[]> {
+    return sql<Admitted[]>`
+      SELECT a.source_key AS record, a.work_item_id, a.admitted_via AS via, a.rule_id::text AS rule_id,
+             w.item_kind AS kind,
+             harness_shared.work_item_is_agent_work(w.nature, w.audience, w.lane, w.needs_owner_action) AS agent_work,
+             (SELECT count(*)::int FROM harness_shared.coord_links l
+               WHERE l.src_ref = a.work_item_id AND l.rel = 'about' AND l.dst_ref = a.source_key) AS about
+        FROM harness_shared.work_admissions a
+        JOIN harness_shared.work_items w ON w.workspace_id = a.workspace_id AND w.feature_id = a.work_item_id
+       WHERE a.workspace_id = ${WS} AND a.data_source_id = ${sourceId}::uuid
+       ORDER BY a.source_key`;
+  }
+  const recordOf = (sourceId: string, issueId: string) => dataSourceRecordId(WS, sourceId, 'ticket', issueId);
+  const preset = (sourceId: string, p: TicketRulePreset, value?: string) =>
+    setAdmissionRuleAndBackfill(
+      { workspaceId: WS, dataSourceId: sourceId, title: `${p} ${value ?? ''}`.trim(), match: ticketRulePreset(p, value), harness: HARNESS, createdBy: 'linear-it' },
+      { sql },
+    );
+
+  it('delegated-to-papercusp: the delegated issue becomes exactly one linked work item, a bug; no other issue does', async () => {
+    // ENG-2 is delegated to a lookalike agent named "Papercusp" too; ENG-3 and OPS-1 to nobody.
+    lin.issues[1] = { ...lin.issues[1]!, delegate: LOOKALIKE };
+    const sourceId = await createSource();
+    const { rule, backfill } = await preset(sourceId, 'delegated-to-papercusp');
+    expect(backfill).toEqual({ scanned: 0, admitted: 0, existing: 0, refused: [], truncated: false }); // nothing held yet
+
+    await syncOne(sourceId);
+    const rows1 = await admitted(sourceId);
+    expect(rows1).toEqual([{
+      record: recordOf(sourceId, 'iss-1'), work_item_id: expect.any(String), via: 'rule', rule_id: rule.id,
+      kind: 'bug', // ENG-1 carries Linear's "bug" label
+      agent_work: true, about: 1,
+    }]);
+    // The record itself stays data: only the admitted work item is agent work.
+    expect((await tickets(sourceId)).map((t) => [t.payload.externalId, t.agent_work, t.payload.selfRoles ?? null])).toEqual([
+      ['iss-1', false, ['delegate']], ['iss-2', false, null], ['iss-3', false, null], ['iss-4', false, null],
+    ]);
+
+    // An edit to the delegated issue and a full re-sync never mint a second work item.
+    lin.issues[0] = { ...lin.issues[0]!, title: 'Cold start fails after deploy', updatedAt: '2026-10-02T09:00:00.000Z' };
+    await due(sourceId);
+    await syncOne(sourceId);
+    expect(await admitted(sourceId)).toEqual(rows1);
+  });
+
+  it('a team rule added after the sync admits the issues already held, once; re-setting it admits nothing new', async () => {
+    const sourceId = await createSource();
+    await syncOne(sourceId);
+    expect(await admitted(sourceId)).toEqual([]); // no rule, no work: every ticket stays a record
+
+    const { rule, backfill } = await preset(sourceId, 'team', 'ops');
+    expect(backfill).toMatchObject({ scanned: 4, admitted: 1, existing: 0, refused: [], truncated: false });
+    const rows = await admitted(sourceId);
+    expect(rows).toEqual([{
+      record: recordOf(sourceId, 'iss-4'), work_item_id: expect.any(String), via: 'rule', rule_id: rule.id,
+      kind: 'change', // OPS-1 has no bug label, so the rule's default kind
+      agent_work: true, about: 1,
+    }]);
+
+    const again = await setAdmissionRuleAndBackfill(
+      { workspaceId: WS, dataSourceId: sourceId, id: rule.id, title: rule.title, match: rule.match, harness: HARNESS, createdBy: 'linear-it' },
+      { sql },
+    );
+    expect(again.backfill).toMatchObject({ scanned: 4, admitted: 0, existing: 1 });
+    expect(await admitted(sourceId)).toEqual(rows);
+  });
+
+  it('a label rule admits only the labelled issue; a label no issue carries admits nothing', async () => {
+    const sourceId = await createSource();
+    await syncOne(sourceId);
+    expect((await preset(sourceId, 'label', 'customer-reported')).backfill).toMatchObject({ scanned: 4, admitted: 0 });
+    expect(await admitted(sourceId)).toEqual([]);
+    expect((await preset(sourceId, 'label', 'BUG')).backfill).toMatchObject({ admitted: 1 });
+    expect((await admitted(sourceId)).map((a) => [a.record, a.kind, a.about])).toEqual([[recordOf(sourceId, 'iss-1'), 'bug', 1]]);
+  });
+});
 
 describe('the host writes back to Linear by capability (D-008)', () => {
   function admission(sourceId: string, externalId: string) {
