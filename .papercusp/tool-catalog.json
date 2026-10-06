@@ -30252,7 +30252,7 @@
       "guidance": {
         "when": "You are auditing one existing scorecard and must re-run the probe stated in every criterion evidence string. Pass the scorecard issueId returned by scorecards:list or a grading-audit dispatch reservation; generic id-based callers may use id as a compatibility alias.",
         "notWhen": "You want scorecard history, trend inputs, or multiple rows — scorecards:list. You want a rubric definition — rubrics:get. You are filing a scorecard — scorecards:emit.",
-        "chaining": "scorecards:get { issueId } → when evidenceRead.scope is criterion-index, follow evidenceRead.next until there is no next, then fetch each indexed criterion’s pages sequentially; batch independent criteria in small Promise.all groups. Sibling reads share the result door: before reading scorecard.criteria, detect and recover any `papercusp.output-envelope/v1` result via capability:read. A wrapper is not missing evidence. Concatenate complete pages, rerun probes, then emit the grading-integrity audit."
+        "chaining": "Page evidenceRead.next until the criterion index is complete, then fetch each criterion’s evidence pages in small parallel batches. Resolve result-door envelopes with capability:read before reading them. Concatenate complete pages, rerun probes, then emit the grading-integrity audit."
       }
     },
     {

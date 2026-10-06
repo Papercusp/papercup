@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtempSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, statSync } from 'node:fs';
 import { SELF_IDENTIFYING_SECRET_PATTERN } from './sensitive-text';
 import { createTextCollector } from './child-output';
 import { tmpdir } from 'node:os';
@@ -127,6 +127,76 @@ describe('transient service payload escaping', () => {
 
     expect(argv.at(-1)).toBe(command);
   });
+
+  it('uses an inherited stdio fd only when the scope caller opts in', () => {
+    const legacy = buildTaskScopeArgvWithTransport(['/bin/false'], {
+      unit: 'papercusp-env-fd-legacy.scope',
+      slice: 'papercusp-bash-job.slice',
+      env: { PRIVATE_VALUE: 'kept-out-of-argv' },
+    });
+    const inherited = buildTaskScopeArgvWithTransport(['/bin/false'], {
+      unit: 'papercusp-env-fd-inherited.scope',
+      slice: 'papercusp-bash-job.slice',
+      env: { PRIVATE_VALUE: 'kept-out-of-argv' },
+      environmentFdIndex: 4,
+    });
+    try {
+      const legacyRunner = legacy.argv.indexOf(SYSTEMD_ENV_RUNNER_PATH);
+      const inheritedRunner = inherited.argv.indexOf(SYSTEMD_ENV_RUNNER_PATH);
+      expect(legacy.argv[legacyRunner + 2]).toMatch(new RegExp('^/proc/' + process.pid + '/fd/\\d+$'));
+      expect(inherited.argv[inheritedRunner + 1]).toBe('--env-fd-path');
+      expect(inherited.argv[inheritedRunner + 2]).toBe('/proc/self/fd/4');
+      expect(inherited.inheritFd).toEqual({ index: 4, fd: inherited.transport!.fd });
+      expect(inherited.argv).not.toContain('PRIVATE_VALUE=kept-out-of-argv');
+      expect(legacy.inheritFd).toBeUndefined();
+    } finally {
+      legacy.transport?.release();
+      inherited.transport?.release();
+    }
+  });
+
+  it.skipIf(!userManagerBusReachable())(
+    'keeps a scope environment available after its short-lived caller exits',
+    async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'systemd-scope-short-caller-'));
+      const resultPath = join(dir, 'result.json');
+      const moduleUrl = new URL('./systemd-scope.ts', import.meta.url).href;
+      const secret = 'caller-exits-before-scope-reads-this';
+      const payloadScript = [
+        "const { readdirSync, readlinkSync, writeFileSync } = require('node:fs');",
+        'const parent = "/proc/" + process.ppid + "/fd";',
+        'const fds = readdirSync(parent);',
+        'const leaked = fds.some((fd) => { try { return /papercusp-env-.*\\(deleted\\)/.test(readlinkSync(parent + "/" + fd)); } catch { return false; } });',
+        'writeFileSync(process.env.PC_TEST_RESULT, JSON.stringify({ value: process.env.PC_TEST_SECRET, leaked }));',
+      ].join('');
+      const helper = [
+        'const { buildTaskScopeArgvWithTransport } = await import(' + JSON.stringify(moduleUrl) + ');',
+        "const { spawn } = await import('node:child_process');",
+        'const built = buildTaskScopeArgvWithTransport([' + JSON.stringify(process.execPath) + ', "-e", ' + JSON.stringify(payloadScript) + '], {',
+        'unit: ' + JSON.stringify('pc-short-caller-' + process.pid + '-' + Date.now() + '.scope') + ', slice: "papercusp-bash-job.slice",',
+        'env: { PC_TEST_SECRET: ' + JSON.stringify(secret) + ', PC_TEST_RESULT: ' + JSON.stringify(resultPath) + ' }, environmentFdIndex: 3 });',
+        "const child = spawn(built.argv[0], built.argv.slice(1), { env: process.env, stdio: ['ignore', 'ignore', 'ignore', built.inheritFd.fd], detached: true });",
+        'built.transport.release(); child.unref(); process.exit(0);',
+      ].join('');
+      const caller = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', helper], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let stderr = '';
+      caller.stderr?.setEncoding('utf8').on('data', (chunk: string) => {
+        stderr += chunk;
+      });
+      const [code, signal] = (await once(caller, 'close')) as [number | null, NodeJS.Signals | null];
+      expect({ code, signal, stderr }).toEqual({ code: 0, signal: null, stderr: '' });
+
+      const deadline = Date.now() + 10_000;
+      while (!existsSync(resultPath) && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      expect(existsSync(resultPath)).toBe(true);
+      expect(JSON.parse(readFileSync(resultPath, 'utf8'))).toEqual({ value: secret, leaked: false });
+    },
+    20_000,
+  );
 
   it('retains failed task units for the ledger writer while preserving collection by default', () => {
     const retained = buildTaskServiceArgv(['/bin/false'], {

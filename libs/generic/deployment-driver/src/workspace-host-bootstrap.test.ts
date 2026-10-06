@@ -3279,3 +3279,66 @@ describe('agent sandbox user namespaces (WI-10004636)', () => {
     }
   });
 });
+
+/**
+ * WI-10006965: the bootstrap runs under `set -u`, so a variable it EXPANDS but never ASSIGNS
+ * aborts it at that line. A bootc host died in install-runtime on `$WORK_DIR` (and would have
+ * died on `$PREVIOUS_TARGET` after its first reboot) because only the bundle arm assigned them,
+ * while code after the model branch read them on both models. Every host model x action is
+ * rendered with every agent, and each bare UPPERCASE expansion must have an assignment in the
+ * script. Defaulted expansions (`${X:-}`, `${X-}`, `${X:+}`, `${X:=}`) are `set -u` safe.
+ */
+describe('rendered bootstrap assigns every variable it expands (WI-10006965)', () => {
+  // Assigned outside the script text: by bash itself, or by `. /etc/os-release`.
+  const ASSIGNED_OUTSIDE_SCRIPT = new Set(['EUID', 'SECONDS', 'VERSION_ID']);
+
+  function unassignedExpansions(script: string): { unassigned: string[]; expansions: number } {
+    const assigned = new Set<string>(ASSIGNED_OUTSIDE_SCRIPT);
+    for (const m of script.matchAll(/\b([A-Z_][A-Z0-9_]*)(?:\[[^\]]*\])?\+?=/g)) assigned.add(m[1]);
+    for (const m of script.matchAll(
+      /\b(?:for|local|export|declare|readonly|read(?:\s+-\w+)*)\s+((?:[A-Z_][A-Z0-9_]*\s*)+)/g,
+    )) {
+      for (const name of m[1].trim().split(/\s+/)) assigned.add(name);
+    }
+    const unassigned = new Set<string>();
+    let expansions = 0;
+    for (const m of script.matchAll(/\$\{?([A-Z_][A-Z0-9_]*)(:?[-=+?])?/g)) {
+      if (m[2] && m[2] !== ':?' && m[2] !== '?') continue;
+      expansions += 1;
+      if (!assigned.has(m[1])) unassigned.add(m[1]);
+    }
+    return { unassigned: [...unassigned].sort(), expansions };
+  }
+
+  it('flags an expansion nothing assigns, and accepts assigned and defaulted ones (control)', () => {
+    expect(unassignedExpansions('set -u\nA=1\necho "$A ${B} ${C:-x} $EUID"').unassigned).toEqual(['B']);
+  });
+
+  for (const [model, render] of [
+    ['ubuntu-release-bundle', input],
+    ['bootc-image', bootcInput],
+  ] as const) {
+    for (const action of ['install', 'upgrade', 'rollback'] as const) {
+      it(`${model} ${action} with every agent`, () => {
+        const script = buildWorkspaceHostBootstrap(
+          render({ action, agentRuntimeInstalls: [...AGENT_RUNTIME_INSTALLS] }),
+        );
+        const { unassigned, expansions } = unassignedExpansions(script);
+        // The scan must actually have walked the script, or an empty list proves nothing.
+        expect(expansions).toBeGreaterThan(200);
+        expect(unassigned).toEqual([]);
+      });
+    }
+  }
+
+  it('the bootc local-inference install reads a WORK_DIR assigned before it', () => {
+    const script = buildWorkspaceHostBootstrap(
+      bootcInput({ agentRuntimeInstalls: [...AGENT_RUNTIME_INSTALLS] }),
+    );
+    const assignedAt = script.indexOf('WORK_DIR="$(mktemp -d');
+    const usedAt = script.indexOf('OLLAMA_TMP="$WORK_DIR/');
+    expect(usedAt).toBeGreaterThan(-1);
+    expect(assignedAt).toBeGreaterThan(-1);
+    expect(assignedAt).toBeLessThan(usedAt);
+  });
+});

@@ -130,6 +130,7 @@ export default defineConfig({
             'harness-snapshots',
             'plugins',
             'remote-access',
+            'faq',
             'troubleshooting',
           ],
         },

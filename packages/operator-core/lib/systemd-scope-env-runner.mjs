@@ -1,4 +1,4 @@
-import { createWriteStream, readFileSync, writeFileSync } from 'node:fs';
+import { closeSync, createWriteStream, readFileSync, writeFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { constants } from 'node:os';
 import { join } from 'node:path';
@@ -349,6 +349,8 @@ export function main(argv = process.argv) {
       throw new Error('credential directory is unavailable');
     }
     const environment = readEnvironment(sourcePath);
+    const inheritedFd = /^\/proc\/self\/fd\/(\d+)$/.exec(sourcePath);
+    if (inheritedFd) closeSync(Number(inheritedFd[1]));
     const logPath = environment[SYSTEMD_RUNNER_OUTPUT_PATH_ENV] ?? '';
     const redactions = decodeRedactions(environment[SYSTEMD_RUNNER_REDACTIONS_ENV] ?? '');
     delete environment[SYSTEMD_RUNNER_OUTPUT_PATH_ENV];

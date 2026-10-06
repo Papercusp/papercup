@@ -1,5 +1,32 @@
 {
   "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "personal-cloud-desktop P-006 live run p006-pcd006b-1: personal desktop on a real KasmVNC host (GCP host-560adc2a196edd88206fb582, workspace-host runtime 0.0.21-pcd006b)",
+  "command": [
+    "env",
+    "ORG=d405-e2e-probe-org-20260923154559",
+    "CWS=ws-560adc2a196edd88206fb582",
+    "HOST=host-560adc2a196edd88206fb582",
+    "INST=pc-host-560adc2a196edd88206fb582-190a4acd-vm",
+    "PROJECT=papercusp-hosted-workspaces",
+    "ZONE=us-central1-c",
+    "RUN_ID=p006-pcd006b-1",
+    "RUNTIME=0.0.21-pcd006b",
+    "OUT=docs/evidence/personal-cloud-desktop-2026-10-06/live-run.json",
+    "npx",
+    "tsx",
+    ".papercusp/scratch/pcd/p006-live.mts"
+  ],
+  "exitCode": 0,
+  "summary": "All five live assertions passed on one run against a real GCP KasmVNC workspace host with the desktop pack installed. Tickets were minted by the production HostedWorkspaceConnectorGateway and sockets went through the real broker relay to hosted-session-host on the VM; VM-side readings were taken over the controller IAP SSH as the customer account. R-6 personal-desktop-uid, R-17 personal-desktop-home, R-18 personal-desktop-takeover-input, R-19 personal-desktop-reconnect, R-20 personal-desktop-non-owner-refused. The driver and its SSH helper are local scratch files pinned below by SHA-256; every VM command and relay message they issued is in transcript[].",
+  "driver": {
+    "script": ".papercusp/scratch/pcd/p006-live.mts",
+    "scriptSha256": "5d6bf2ffba31cdf2e6e3b77b02378abbcf0d67058837f59acb26a5e2bc076ade",
+    "sshHelper": ".papercusp/scratch/pcd/vmssh.sh",
+    "sshHelperSha256": "567a0a521bb0a45dbdc93556e0d90807a7e93a6f36c18060752a8547306139bf",
+    "stdoutLog": ".papercusp/scratch/pcd/p006-live-pcd006b-1.log",
+    "stdoutLogSha256": "7a7c32b626dc47ea46c33566e3fa48c7a2c452d13a1c019d8b982a7c80d272ab"
+  },
   "plan": "personal-cloud-desktop-2026-10-06",
   "item": "P-006",
   "workItem": "WI-10006781",
@@ -37,7 +64,34 @@
     "owner": "pcd-owner-p006-pcd006b-1"
   },
   "passed": true,
-  "assertions": {
+  "assertions": [
+    {
+      "id": "personal-desktop-uid",
+      "passed": true,
+      "evidence": "R-6: the personal desktop's Xvnc process (pid 9880, display :210) runs as uid 1001, and id -u papercusp-workspace = 1001 (ps uid of the pgrep-matched Xvnc vs id -u, over the controller IAP SSH). Full readings: observations.personal-desktop-uid."
+    },
+    {
+      "id": "personal-desktop-home",
+      "passed": true,
+      "evidence": "R-17: HOME read from /proc/9946/environ (the desktop's xfce4-session) = /home/papercusp-workspace; the workspace checkout listed under it (ls /home/papercusp-workspace/workspaces) is papercusp-workspace. Full readings: observations.personal-desktop-home."
+    },
+    {
+      "id": "personal-desktop-takeover-input",
+      "passed": true,
+      "evidence": "R-18: the owner dialed the desktop in takeover mode through the relay and hosted-session-host (ready action=takeover, inputAllowed=true; RFB 003.008, 1024x768), sent Ctrl+Alt+T over RFB, and the visible X window list went from 7 windows to 8, adding 'Terminal - papercusp-workspace@pc-host-560adc2a196edd88206fb582-190a4acd-vm: ~'. Full readings: observations.personal-desktop-takeover-input."
+    },
+    {
+      "id": "personal-desktop-reconnect",
+      "passed": true,
+      "evidence": "R-19: after closing the viewer and reopening it, desktopSessionId stayed 0eae995a-5ddb-4b08-a3a0-4742bd9da756 and the Xvnc pid stayed 9880; the roster still listed the desktop and it reopened in takeover with inputAllowed=true and RFB 003.008. Full readings: observations.personal-desktop-reconnect."
+    },
+    {
+      "id": "personal-desktop-non-owner-refused",
+      "passed": true,
+      "evidence": "R-20: a second member identity (pcd-member-p006-pcd006b-1) dialed the owner's desktop over the relay in takeover mode and in watch mode; both sockets closed with code 4000 reason desktop_not_owner after 0 RFB bytes, and that member's desktop roster came back empty. Full readings: observations.personal-desktop-non-owner-refused."
+    }
+  ],
+  "observations": {
     "personal-desktop-uid": {
       "passed": true,
       "bar": "R-6",

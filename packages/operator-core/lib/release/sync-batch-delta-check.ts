@@ -112,6 +112,13 @@
  *  oversubscribed", which on this host means the gate or a fleet burst owns it. */
 export const LOAD_SKIP_FACTOR = 1.2;
 
+/** Above `cores * this` the tick SKIPS (P-001). Between LOAD_SKIP_FACTOR and this it
+ *  runs with REDUCED_BUDGET at idle priority — the old behaviour skipped there. */
+export const HARD_LOAD_CEILING_FACTOR = 3;
+
+/** Confirm/attribution budget under load or while a gate suite runs. */
+export const REDUCED_BUDGET = { maxConfirmRuns: 1, maxAttributionProbes: 3 } as const;
+
 /** Fix-or-revert SLA quoted in the filed work item, in minutes. Deliberately shorter
  *  than the hourly gate cycle: the whole point is to repair before the next
  *  checkpoint freezes a candidate on top of the break. */
@@ -185,6 +192,8 @@ export interface SyncDeltaCursor {
   lastBatchCommits?: number;
   /** Reds this check is holding open and re-verifying. */
   openReds?: OpenRed[];
+  /** Per-tick coverage history + the low-coverage alarm state (P-001 / R-2). */
+  coverage?: SyncDeltaCoverage;
 }
 
 // ── git-log parsing ──────────────────────────────────────────────────────────
@@ -534,23 +543,225 @@ export function parseLoadavg1(raw: string): number | null {
   return Number.isFinite(n) && n >= 0 ? n : null;
 }
 
-export type LoadVerdict = { skip: false } | { skip: true; reason: string };
+/** The budget one tick may spend confirming and attributing reds. */
+export interface CheckBudget {
+  maxConfirmRuns: number;
+  maxAttributionProbes: number;
+}
 
-/** Skip when the box is already oversubscribed. An UNREADABLE load (`null`) also
- *  skips: this check is optional work, so "I could not tell" resolves to not
- *  competing with the gate rather than to running anyway. */
-export function evaluateLoad(reading: LoadReading | null, factor = LOAD_SKIP_FACTOR): LoadVerdict {
+/**
+ * What a tick may do given host load and the gate.
+ *
+ * P-001 (gate-throughput-shift-left-2026-10-06): the old rule SKIPPED above
+ * `cores * LOAD_SKIP_FACTOR` and whenever a green-checkpoint suite ran. On this box
+ * load sits above that line for most of the day and the gate runs for hours, so the
+ * check judged almost nothing — exactly the per-commit signal it exists to provide.
+ * Every heavy leg now runs at idle CPU/IO priority (`idlePriorityArgv`), which is
+ * what actually keeps it from competing with the gate; load and the gate only shrink
+ * the confirm/attribution budget. The radius caps are NOT reduced, so no batch window
+ * is dropped as too wide because of load.
+ *
+ * Skips remain for two cases only: load above the hard ceiling (the box is genuinely
+ * saturated — even idle-priority children add memory and IO pressure) and an
+ * UNREADABLE load, which never runs blind.
+ */
+export type CapacityVerdict =
+  | { skip: true; reason: string }
+  | { skip: false; mode: 'full' | 'reduced'; reason?: string; budget: CheckBudget };
+
+export function evaluateCapacity(input: {
+  reading: LoadReading | null;
+  /** true / false / null (undetectable). Only `true` reduces the budget. */
+  gateRunning: boolean | null;
+  fullBudget: CheckBudget;
+  softFactor?: number;
+  hardFactor?: number;
+}): CapacityVerdict {
+  const soft = input.softFactor ?? LOAD_SKIP_FACTOR;
+  const hard = input.hardFactor ?? HARD_LOAD_CEILING_FACTOR;
+  const { reading } = input;
   if (!reading || !Number.isFinite(reading.load1) || !(reading.cores > 0)) {
     return { skip: true, reason: 'host-load-unreadable' };
   }
-  const ceiling = reading.cores * factor;
-  if (reading.load1 > ceiling) {
+  const hardCeiling = reading.cores * hard;
+  if (reading.load1 > hardCeiling) {
     return {
       skip: true,
-      reason: `host-load ${reading.load1.toFixed(2)} > ${ceiling.toFixed(2)} (cores ${reading.cores} x ${factor})`,
+      reason: `host-load ${reading.load1.toFixed(2)} > hard ceiling ${hardCeiling.toFixed(2)} (cores ${reading.cores} x ${hard})`,
     };
   }
-  return { skip: false };
+  const reasons: string[] = [];
+  const softCeiling = reading.cores * soft;
+  if (reading.load1 > softCeiling) {
+    reasons.push(`host-load ${reading.load1.toFixed(2)} > ${softCeiling.toFixed(2)}`);
+  }
+  if (input.gateRunning === true) reasons.push('green-checkpoint-running');
+  if (reasons.length === 0) return { skip: false, mode: 'full', budget: input.fullBudget };
+  return {
+    skip: false,
+    mode: 'reduced',
+    reason: reasons.join('; '),
+    budget: {
+      maxConfirmRuns: Math.min(input.fullBudget.maxConfirmRuns, REDUCED_BUDGET.maxConfirmRuns),
+      maxAttributionProbes: Math.min(input.fullBudget.maxAttributionProbes, REDUCED_BUDGET.maxAttributionProbes),
+    },
+  };
+}
+
+/** Wrap a heavy leg so it runs at the lowest CPU and IO priority. `nice -n 19`
+ *  yields CPU to every normal-priority process (the gate included); `ionice -c 3`
+ *  (idle class) only gets disk time when no one else wants it. Both are unprivileged.
+ *  This wrapper, not a load threshold, is what bounds the check's cost. */
+export function idlePriorityArgv(cmd: string, args: readonly string[]): { cmd: string; args: string[] } {
+  return { cmd: 'nice', args: ['-n', '19', 'ionice', '-c', '3', cmd, ...args] };
+}
+
+// ── coverage (P-001 / R-2) ───────────────────────────────────────────────────
+
+/** One tick's coverage record. */
+export interface CoverageTick {
+  atMs: number;
+  /** true = the tick judged its window (or confirmed there was nothing to judge). */
+  evaluated: boolean;
+  status: SyncBatchDeltaStatus;
+}
+
+export interface SyncDeltaCoverage {
+  ticks: CoverageTick[];
+  /** Epoch ms the low-coverage alarm was raised; absent while coverage is healthy. */
+  alarmOpenSinceMs?: number;
+}
+
+/** Coverage history kept on the cursor: 24h, bounded so the row cannot grow. */
+export const COVERAGE_RETENTION_MS = 24 * 60 * 60_000;
+export const COVERAGE_MAX_TICKS = 400;
+/** The alarm window, threshold and the minimum ticks needed to judge it. At the
+ *  5-minute cadence 2h is 24 ticks; 12 tolerates a slow or partly-starved engine
+ *  without judging from a handful of samples. */
+export const COVERAGE_ALARM_WINDOW_MS = 2 * 60 * 60_000;
+export const COVERAGE_ALARM_THRESHOLD = 0.8;
+export const COVERAGE_ALARM_MIN_TICKS = 12;
+
+/** Statuses that mean the window WAS judged. `radius-too-wide` advances the cursor
+ *  without running anything, so it counts as NOT evaluated, the same as a skip. */
+const EVALUATED_STATUSES: ReadonlySet<SyncBatchDeltaStatus> = new Set([
+  'bootstrapped',
+  'up-to-date',
+  'nothing-selected',
+  'green',
+  'red',
+]);
+
+export function isEvaluatedStatus(status: SyncBatchDeltaStatus): boolean {
+  return EVALUATED_STATUSES.has(status);
+}
+
+export function recordCoverageTick(
+  prior: SyncDeltaCoverage | undefined,
+  tick: CoverageTick,
+): SyncDeltaCoverage {
+  const cutoff = tick.atMs - COVERAGE_RETENTION_MS;
+  const ticks = [...(prior?.ticks ?? []).filter((t) => t.atMs >= cutoff), tick].slice(-COVERAGE_MAX_TICKS);
+  return { ...(prior?.alarmOpenSinceMs !== undefined ? { alarmOpenSinceMs: prior.alarmOpenSinceMs } : {}), ticks };
+}
+
+export interface CoverageVerdict {
+  /** Ticks inside the window. */
+  total: number;
+  evaluated: number;
+  /** evaluated / total, or null when there are too few ticks to judge. */
+  ratio: number | null;
+  /** true = coverage is below the threshold on enough samples. */
+  low: boolean;
+}
+
+export function evaluateCoverage(
+  coverage: SyncDeltaCoverage | undefined,
+  nowMs: number,
+  opts?: { windowMs?: number; threshold?: number; minTicks?: number },
+): CoverageVerdict {
+  const windowMs = opts?.windowMs ?? COVERAGE_ALARM_WINDOW_MS;
+  const threshold = opts?.threshold ?? COVERAGE_ALARM_THRESHOLD;
+  const minTicks = opts?.minTicks ?? COVERAGE_ALARM_MIN_TICKS;
+  const inWindow = (coverage?.ticks ?? []).filter((t) => t.atMs > nowMs - windowMs && t.atMs <= nowMs);
+  const evaluated = inWindow.filter((t) => t.evaluated).length;
+  if (inWindow.length < minTicks) return { total: inWindow.length, evaluated, ratio: null, low: false };
+  const ratio = evaluated / inWindow.length;
+  return { total: inWindow.length, evaluated, ratio, low: ratio < threshold };
+}
+
+/** The coverage alarm's upsert identity — one open item, refreshed in place. */
+export const COVERAGE_ALARM_CONDITION_KEY = 'sync-delta-coverage-low';
+
+export function buildCoverageAlarm(verdict: CoverageVerdict, coverage: SyncDeltaCoverage): RedFinding {
+  const pct = verdict.ratio === null ? 'n/a' : `${Math.round(verdict.ratio * 100)}%`;
+  const reasons = new Map<string, number>();
+  for (const t of coverage.ticks.slice(-verdict.total)) {
+    if (!t.evaluated) reasons.set(t.status, (reasons.get(t.status) ?? 0) + 1);
+  }
+  const breakdown = [...reasons.entries()].map(([s, n]) => `${s} x${n}`).join(', ') || '(none)';
+  return {
+    conditionKey: COVERAGE_ALARM_CONDITION_KEY,
+    title: `sync-batch delta check coverage low: ${pct} of ticks evaluated over 2h`,
+    body: [
+      `The per-sync check judged only ${verdict.evaluated} of ${verdict.total} ticks (${pct}) in the last 2h,`,
+      `below the ${Math.round(COVERAGE_ALARM_THRESHOLD * 100)}% floor. Breakage committed to staging in that window`,
+      'is NOT being caught at commit time; it will surface at the hourly gate instead.',
+      '',
+      `Non-evaluated ticks by status: ${breakdown}.`,
+      'Read the routine row: routines:list { name: "sync-batch-delta-check" } -> metadata.sync_delta',
+      '(lastSkipReason, coverage.ticks). A run of `skipped` with a hard-ceiling reason means the box is',
+      'saturated; `radius-too-wide` means batches exceed the radius caps.',
+      '',
+      `Filed by \`system:sync-batch-delta-check\` (conditionKey \`${COVERAGE_ALARM_CONDITION_KEY}\`).`,
+    ].join('\n'),
+    paths: ['packages/operator-core/lib/release/sync-batch-delta-check.ts'],
+    assignee: null,
+    authorSource: 'none',
+  };
+}
+
+// ── author routing (P-002 / R-3) ─────────────────────────────────────────────
+
+/** One edit-ledger row: the newest recorded editor of a file. */
+export interface EditorHit {
+  file: string;
+  agent: string;
+  tsMs: number;
+}
+
+export type AuthorSource = 'edit-ledger:failing-file' | 'edit-ledger:batch' | 'trailer' | 'none';
+
+/**
+ * Who should be told about a confirmed red. Never `git blame`, never the commit
+ * subject — git-sync sweeps the whole tree under one identity (root CLAUDE.md).
+ *
+ * Order, strongest evidence first:
+ *   1. the newest ledgered editor of the FAILING FILE itself;
+ *   2. the newest ledgered editor of any path in the attributed batch;
+ *   3. the batch's `Papercusp-Agent` trailer;
+ *   4. nobody — the item files unassigned and says so.
+ *
+ * Only `system:` identities are excluded (a routine is not a person to route to).
+ */
+export function pickRedAuthor(input: {
+  failingFile: string;
+  batch: SyncBatch | null;
+  editors: readonly EditorHit[] | null;
+}): { agent: string | null; source: AuthorSource } {
+  const editors = (input.editors ?? []).filter((e) => e.agent && !e.agent.startsWith('system:'));
+  const newest = (hits: EditorHit[]): EditorHit | undefined => [...hits].sort((a, b) => b.tsMs - a.tsMs)[0];
+  const onFile = newest(editors.filter((e) => e.file === input.failingFile));
+  if (onFile) return { agent: onFile.agent, source: 'edit-ledger:failing-file' };
+  if (input.batch) {
+    const batchPaths = new Set(input.batch.paths);
+    const onBatch = newest(editors.filter((e) => batchPaths.has(e.file)));
+    if (onBatch) return { agent: onBatch.agent, source: 'edit-ledger:batch' };
+    if (input.batch.agent && !input.batch.agent.startsWith('system:')) {
+      return { agent: input.batch.agent, source: 'trailer' };
+    }
+  }
+  return { agent: null, source: 'none' };
 }
 
 // ── batch attribution ────────────────────────────────────────────────────────
@@ -625,6 +836,10 @@ export interface RedFinding {
   body: string;
   /** Paths the item is about — the failing file plus the introducing batch's paths. */
   paths: string[];
+  /** The agent the item is assigned to (P-002), or null to file it unassigned. */
+  assignee: string | null;
+  /** Where `assignee` came from — evidence, carried into the body. */
+  authorSource: AuthorSource;
 }
 
 /** Render the work-item a confirmed red becomes. Every field a triager needs is in
@@ -639,7 +854,10 @@ export function buildRedFinding(input: {
   slaMinutes?: number;
   /** Prior open-red record, when this is a REFRESH rather than a first filing. */
   prior?: OpenRed | null;
+  /** Who the item is routed to (P-002); absent ⇒ unassigned. */
+  author?: { agent: string | null; source: AuthorSource };
 }): RedFinding {
+  const author = input.author ?? { agent: null, source: 'none' as const };
   const sla = input.slaMinutes ?? SYNC_DELTA_SLA_MINUTES;
   const { failing, attribution, batches, leg } = input;
   const batch = attribution.batch;
@@ -684,6 +902,10 @@ export function buildRedFinding(input: {
     '',
     attributionBlock,
     '',
+    author.agent
+      ? `Routed to: ${author.agent} (source: ${author.source}). The commit was NOT reverted or held — this is an alert.`
+      : 'Routed to: nobody — no ledgered editor or Papercusp-Agent trailer was found for this break. Claim it if it is yours.',
+    '',
     `SLA: fix or revert within ${sla} minutes.`,
     'Past that the hourly green-checkpoint freezes a candidate on top of this break, and every later',
     'red inherits its attribution — which is the failure this check exists to prevent.',
@@ -709,7 +931,14 @@ export function buildRedFinding(input: {
   }
 
   const paths = [failing.file, ...(batch?.paths ?? [])].filter((p, i, a) => a.indexOf(p) === i).slice(0, 40);
-  return { conditionKey: conditionKeyForRed(failing.file), title, body: lines.join('\n'), paths };
+  return {
+    conditionKey: conditionKeyForRed(failing.file),
+    title,
+    body: lines.join('\n'),
+    paths,
+    assignee: author.agent,
+    authorSource: author.source,
+  };
 }
 
 // ── the orchestration (deps-injected, so it is unit-testable end to end) ─────
