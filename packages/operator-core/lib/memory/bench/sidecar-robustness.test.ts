@@ -1,6 +1,10 @@
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { hashJson } from './measurement-manifest';
-import { parseRobustnessInput, summarizeRobustnessReport, ROBUSTNESS_PHASES, type RobustnessIdentity,
+import { loadRobustnessRun, parseRobustnessInput, summarizeRobustnessReport, ROBUSTNESS_PHASES, type RobustnessIdentity,
   type RobustnessInput, type RobustnessReport, type RobustnessSample } from './sidecar-robustness';
 
 const raw = {
@@ -91,5 +95,53 @@ describe('robustness verdict re-derived from raw samples', () => {
   });
   it('throws on a structurally incomplete population instead of grading it', () => {
     expect(() => summarizeRobustnessReport(input, expected, report(input, { drop: true }))).toThrow(/bypass\/load has 1 samples, expected 2/);
+  });
+});
+
+describe('loadRobustnessRun binds a real-weight run to a frozen arm', () => {
+  const sha = (b: Buffer | string) => crypto.createHash('sha256').update(b).digest('hex');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'robustness-arm-'));
+  const repoRoot = path.join(root, 'repo'), candidateDir = path.join(root, 'mdenseon');
+  const rel = 'node_modules/@huggingface/transformers/.cache/onnx-community/gemma/onnx';
+  const files = { graph: 'model.onnx', tokenizer: 'tokenizer.json', config: 'config.json', weights: 'model.onnx_data' } as const;
+  const write = (dir: string, name: string, body: string) => { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(path.join(dir, name), body); };
+  for (const [role, name] of Object.entries(files)) { write(path.join(repoRoot, rel), name, `gemma-${role}`); write(candidateDir, name, `mdenseon-${role}`); }
+  const pinOf = (p: string, body: string) => ({ path: p, sha256: sha(body), bytes: Buffer.byteLength(body) });
+  const armFor = (id: 'gemma' | 'mdenseon', at: (name: string) => string, wire = 'node-onnx-worker') => ({
+    id, model: id, modelRev: `${id}-frozen-rev`, runtime: { name: 'transformers-js-worker', wire }, profile: { targetDims: 768 },
+    artifacts: { graph: pinOf(at(files.graph), `${id}-graph`), tokenizer: pinOf(at(files.tokenizer), `${id}-tokenizer`),
+      config: pinOf(at(files.config), `${id}-config`), weightLayout: 'external', weights: [pinOf(at(files.weights), `${id}-weights`)] } });
+  const frozenTree = path.join(root, 'frozen/runtime-source-v1/tree', rel);
+  const manifestBody = (wire?: string) => JSON.stringify({ arms: [armFor('gemma', (n) => path.join(frozenTree, n), wire),
+    armFor('mdenseon', (n) => path.join(fs.realpathSync(candidateDir), n))] });
+  const manifestPath = path.join(root, 'frozen.json'), inputPath = path.join(root, 'input.json');
+  fs.writeFileSync(manifestPath, manifestBody()); fs.writeFileSync(inputPath, JSON.stringify(raw));
+  const base = () => ({ inputPath, inputSha256: sha(fs.readFileSync(inputPath)), armManifestPath: manifestPath,
+    armManifestSha256: sha(fs.readFileSync(manifestPath)), repoRoot, runtime: 'node-onnx-worker' });
+
+  it('takes the expected identity from the frozen arm and relocates incumbent weights onto the running tree', async () => {
+    const run = await loadRobustnessRun({ ...base(), model: 'gemma' });
+    expect(run.expected).toEqual({ model: 'gemma', modelRev: 'gemma-frozen-rev', runtime: 'node-onnx-worker', dims: 768 });
+    expect(run.armPin.artifacts.map((a) => a.loadedPath)).toEqual(
+      ['model.onnx', 'tokenizer.json', 'config.json', 'model.onnx_data'].map((n) => path.join(repoRoot, rel, n)));
+    expect(run.input.seed).toBe('unit');
+    const candidate = await loadRobustnessRun({ ...base(), model: 'mdenseon', mdenseonModelDir: candidateDir });
+    expect(candidate.expected.modelRev).toBe('mdenseon-frozen-rev');
+  });
+  it('refuses a loaded weight that differs by one byte from its frozen pin', async () => {
+    fs.writeFileSync(path.join(repoRoot, rel, files.weights), 'gemma-weightz');
+    try {
+      await expect(loadRobustnessRun({ ...base(), model: 'gemma' })).rejects.toThrow(/weights\[0\].*differs from its frozen pin/);
+    } finally { fs.writeFileSync(path.join(repoRoot, rel, files.weights), 'gemma-weights'); }
+  });
+  it('refuses an unpinned input, an unpinned manifest, a foreign candidate directory and a different wire runtime', async () => {
+    await expect(loadRobustnessRun({ ...base(), inputSha256: '0'.repeat(64), model: 'gemma' })).rejects.toThrow(/input fingerprint/);
+    await expect(loadRobustnessRun({ ...base(), armManifestSha256: '0'.repeat(64), model: 'gemma' })).rejects.toThrow(/manifest fingerprint/);
+    await expect(loadRobustnessRun({ ...base(), model: 'mdenseon', mdenseonModelDir: path.join(repoRoot, rel) })).rejects.toThrow(/outside/);
+    await expect(loadRobustnessRun({ ...base(), model: 'mdenseon' })).rejects.toThrow(/candidate model directory/);
+    fs.writeFileSync(manifestPath, manifestBody('worker-in-process'));
+    try {
+      await expect(loadRobustnessRun({ ...base(), model: 'gemma' })).rejects.toThrow(/is not the server runtime/);
+    } finally { fs.writeFileSync(manifestPath, manifestBody()); }
   });
 });

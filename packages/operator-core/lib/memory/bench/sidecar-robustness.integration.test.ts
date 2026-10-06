@@ -104,7 +104,7 @@ describe('sidecar robustness collector through a real HTTP sidecar', () => {
     const { report, input: runInput } = await run(syntheticWorker({ baseMs: 15, msPerChar: 1, hangOnCrash: true }));
     const summary = summarizeRobustnessReport(runInput, expected, report);
     expect(summary.verdict).toBe('fail');
-    expect(summary.failures).toContain('crash cycle 0 interrupted no request (vacuous)');
+    expect(summary.failures).toContain('crash cycle 0 did not tear down the worker and release its in-flight work (vacuous)');
   }, 60000);
 
   it('refuses structurally incomplete or rebound reports instead of grading them', async () => {

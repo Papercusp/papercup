@@ -11,10 +11,13 @@
  *
  * Timers: one setTimeout chain for /healthz sampling (no bare setInterval).
  */
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import { performance, monitorEventLoopDelay } from 'node:perf_hooks';
 import { z } from 'zod';
 import { sidecarEmbedBatch, SidecarEmbedHttpError, SIDECAR_MAX_TEXT_CHARS, type SidecarEmbedResponse } from '@papercusp/memory';
-import { hashJson } from './measurement-manifest';
+import { fingerprintFile, hashJson } from './measurement-manifest';
 import { latencySummary } from './sidecar-performance';
 
 const row = z.strictObject({ id: z.string().min(1), text: z.string().min(1).max(SIDECAR_MAX_TEXT_CHARS) });
@@ -53,6 +56,60 @@ export function parseRobustnessInput(value: unknown): RobustnessInput {
 
 /** The identity every successful response must carry — the requested recipe. */
 export interface RobustnessIdentity { model: string; modelRev: string; runtime: string; dims: number }
+
+const pin = z.object({ path: z.string().min(1), sha256: z.string().regex(/^[0-9a-f]{64}$/), bytes: z.number().int().nonnegative() });
+const frozenArmsSchema = z.object({ arms: z.array(z.object({
+  id: z.string().min(1), model: z.string().min(1), modelRev: z.string().min(1),
+  runtime: z.object({ wire: z.string().min(1) }), profile: z.object({ targetDims: z.number().int().positive() }),
+  artifacts: z.object({ graph: pin, tokenizer: pin, config: pin, weights: z.array(pin) }),
+})).min(1) });
+export type RobustnessModel = 'mdenseon' | 'gemma' | 'harrier';
+const sha256Of = (bytes: Buffer) => crypto.createHash('sha256').update(bytes).digest('hex');
+
+/** Bind a real-weight robustness run to a FROZEN measurement arm. The expected
+ * wire identity comes from the frozen arm, never from the server under test,
+ * and every pinned artifact must be byte-identical at the path the running
+ * tree's builder loads. Incumbent artifacts were pinned inside a frozen
+ * runtime-source tree, so they are relocated onto `repoRoot` by their
+ * tree-relative path; the candidate must live under `--mdenseon-model`. */
+export async function loadRobustnessRun(opts: { inputPath: string; inputSha256: string; armManifestPath: string;
+  armManifestSha256: string; model: RobustnessModel; repoRoot: string; mdenseonModelDir?: string; runtime: string }) {
+  const inputBytes = fs.readFileSync(opts.inputPath);
+  if (sha256Of(inputBytes) !== opts.inputSha256) throw new Error('robustness input fingerprint mismatch');
+  const input = parseRobustnessInput(JSON.parse(inputBytes.toString('utf8')));
+  const manifestBytes = fs.readFileSync(opts.armManifestPath);
+  if (sha256Of(manifestBytes) !== opts.armManifestSha256) throw new Error('frozen arm manifest fingerprint mismatch');
+  const arm = frozenArmsSchema.parse(JSON.parse(manifestBytes.toString('utf8'))).arms
+    .find((a) => a.id === opts.model && a.model === opts.model);
+  if (!arm) throw new Error(`frozen manifest has no ${opts.model} arm`);
+  if (arm.runtime.wire !== opts.runtime) throw new Error(`frozen ${opts.model} arm wire ${arm.runtime.wire} is not the server runtime ${opts.runtime}`);
+  const candidateDir = opts.model === 'mdenseon'
+    ? (opts.mdenseonModelDir ? fs.realpathSync(opts.mdenseonModelDir) : undefined) : undefined;
+  if (opts.model === 'mdenseon' && !candidateDir) throw new Error('mdenseon robustness requires the candidate model directory');
+  const relocate = (pinned: string) => {
+    if (candidateDir) {
+      if (!path.resolve(pinned).startsWith(`${candidateDir}${path.sep}`)) throw new Error(`frozen mdenseon artifact ${pinned} is outside ${candidateDir}`);
+      return pinned;
+    }
+    const inTree = /\/runtime-source-v\d+\/tree\/(node_modules\/.+)$/.exec(pinned);
+    return inTree ? path.join(opts.repoRoot, inTree[1]) : pinned;
+  };
+  const named: Array<[string, z.infer<typeof pin>]> = [['graph', arm.artifacts.graph], ['tokenizer', arm.artifacts.tokenizer],
+    ['config', arm.artifacts.config], ...arm.artifacts.weights.map((w, i) => [`weights[${i}]`, w] as [string, z.infer<typeof pin>])];
+  const artifacts = [];
+  for (const [role, frozen] of named) {
+    const loadedPath = relocate(frozen.path);
+    const actual = await fingerprintFile(loadedPath);
+    if (actual.sha256 !== frozen.sha256 || actual.bytes !== frozen.bytes) {
+      throw new Error(`${opts.model} ${role} at ${loadedPath} differs from its frozen pin`);
+    }
+    artifacts.push({ role, pinnedPath: frozen.path, loadedPath, sha256: frozen.sha256, bytes: frozen.bytes });
+  }
+  const expected: RobustnessIdentity = { model: arm.model, modelRev: arm.modelRev, runtime: arm.runtime.wire, dims: arm.profile.targetDims };
+  return { input, expected,
+    inputPin: { path: opts.inputPath, sha256: opts.inputSha256, bytes: inputBytes.length },
+    armPin: { manifestPath: opts.armManifestPath, manifestSha256: opts.armManifestSha256, armId: arm.id, artifacts } };
+}
 
 export const ROBUSTNESS_PHASES = ['reference', 'concurrency', 'saturation', 'coalescing', 'bypass',
   'timeout', 'cancellation', 'crash', 'soak'] as const;
@@ -380,11 +437,18 @@ export function summarizeRobustnessReport(input: RobustnessInput, expected: Robu
 
   for (const c of report.phases.crash) {
     if (!c.startedBeforeCrash) fail(`crash cycle ${c.cycle} fired before inference reached the worker (vacuous)`);
+    // The crash took effect only if the worker was torn down AND its in-flight
+    // work released. In-flight requests may then fail (classified 500) or be
+    // rescued by a builder's declared inline fallback (gemma/harrier); a rescued
+    // vector is still held to the identity/parity gates above, and its
+    // event-loop cost to the per-phase responsiveness bar below.
+    if (c.workerAfterCrash.alive || c.workerAfterCrash.pendingCount !== 0) {
+      fail(`crash cycle ${c.cycle} did not tear down the worker and release its in-flight work (vacuous)`);
+    }
     const load = of('crash', 'load').filter((s) => s.cycle === c.cycle);
     const late = load.filter((s) => s.settledAtMs - c.crashAtMs > input.crash.settleWithinMs);
     if (late.length) fail(`crash cycle ${c.cycle}: ${late.length} in-flight request(s) did not settle within ${input.crash.settleWithinMs}ms`);
     const failed = load.filter((s) => s.outcome !== 'ok');
-    if (!failed.length) fail(`crash cycle ${c.cycle} interrupted no request (vacuous)`);
     if (failed.some((s) => s.outcome !== 'http-error' || s.status !== 500)) fail(`crash cycle ${c.cycle}: an interrupted request failed other than with a classified 500`);
     const probeSample = bySequence.get(c.recoveryProbeSequence);
     if (!probeSample || probeSample.role !== 'probe' || probeSample.phase !== 'crash' || probeSample.cycle !== c.cycle) throw new Error('crash recovery probe is unbound');
@@ -430,7 +494,15 @@ export function summarizeRobustnessReport(input: RobustnessInput, expected: Robu
     soak: { lateEarlyP95Ratio: soakRatio, rssGrowthMiB, requests: soakLoad.length },
     crash: report.phases.crash.map((c) => ({ cycle: c.cycle, startedBeforeCrash: c.startedBeforeCrash,
       interrupted: of('crash', 'load').filter((s) => s.cycle === c.cycle && s.outcome !== 'ok').length,
+      rescued: of('crash', 'load').filter((s) => s.cycle === c.cycle && s.outcome === 'ok').length,
+      workerAfterCrash: c.workerAfterCrash,
       recoveredMs: bySequence.get(c.recoveryProbeSequence)!.settledAtMs - c.crashAtMs })),
     cancellation: { releaseMs: cancel.releaseMs, drainMs: cancel.drain.afterMs, atAbort: cancel.atAbort },
+    // Reported, not gated: whole-process RSS by phase (a crash rescue that loads
+    // a second, main-thread model copy shows up here, outside the soak window).
+    rssMedianMiBByPhase: Object.fromEntries(ROBUSTNESS_PHASES.map((p) => {
+      const v = report.health.filter((h) => h.phase === p).map((h) => h.rssBytes).sort((a, b) => a - b);
+      return [p, v.length ? Math.round(v[Math.floor(v.length / 2)] / (1024 * 1024)) : null];
+    })),
     eventLoop: report.eventLoop, modelAdoptionAuthorized: false as const };
 }
