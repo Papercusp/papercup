@@ -405,6 +405,26 @@ set -a; source "$ENV_FILE"; set +a
   || die "$ENV_FILE is missing PHONE_LIVEKIT_API_KEY / PHONE_LIVEKIT_API_SECRET"
 say "API credentials present (withheld)"
 
+# The worker→sidecar ingest secret (header x-phone-worker-secret). The voice
+# worker and the sidecar both load livekit.env, so this ONE line arms both
+# ends. Without it the worker logs "sidecar reporting DISABLED" and the
+# sidecar boots with workerIngest disabled: no call context, transcripts,
+# consent notices, voicemail or summaries are recorded (WI-10006645).
+# Checked against the FILE, not the environment, so a value exported in the
+# caller's shell can never stand in for a persisted one. Minted once; rotated
+# only by --rotate-secret, whose Start step restarts both units together.
+if [[ $RENDER_ONLY == 0 ]]; then
+  if [[ $ROTATE == 1 ]] || ! grep -qE '^PHONE_WORKER_SECRET=.+' "$ENV_FILE"; then
+    upsert_env_var PHONE_WORKER_SECRET "$(openssl rand -hex 32)"
+    say "minted PHONE_WORKER_SECRET into $ENV_FILE (worker↔sidecar ingest; not printed)"
+    set -a; source "$ENV_FILE"; set +a
+  else
+    say "reusing PHONE_WORKER_SECRET in $ENV_FILE"
+  fi
+elif ! grep -qE '^PHONE_WORKER_SECRET=.+' "$ENV_FILE"; then
+  say "note: PHONE_WORKER_SECRET absent; a full deploy mints it (render-only never mints)"
+fi
+
 # Internal control and browser signalling are two views of the same media
 # plane. Local installs use loopback for both. Hosted installs keep the worker
 # and RoomService client on the internal URL while returning public WSS to the
