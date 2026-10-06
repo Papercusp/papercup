@@ -1155,6 +1155,7 @@ export default defineTool({
     const problems: Problem[] = [];
     const entries: AuditItemEntry[] = [];
     const seenItems = new Set<string>();
+    const workingTreeDrift = new Set<string>();
     let citationsChecked = 0;
 
     for (const it of args.items ?? []) {
@@ -1268,18 +1269,13 @@ export default defineTool({
               storedCitations.push(c);
               continue;
             }
-            if (auditedBlobSha !== blobSha) {
-              problems.push({
-                itemId: it.itemId,
-                code: 'citation_audited_sha_mismatch',
-                detail:
-                  `${c.kind} citation '${c.path ?? ''}' has current blobSha '${blobSha}' but auditedSha ` +
-                  `'${auditedSha}' carries '${auditedBlobSha}'; re-audit against a commit containing the ` +
-                  `cited bytes`,
-              });
-              storedCitations.push(c);
-              continue;
-            }
+            // P-019 (proof-freshness-pinned-candidate-2026-10-06 D-001): the audit records
+            // the COMMITTED bytes at auditedSha, which is what the ship gate re-measures
+            // (at its own measurement commit). A peer's uncommitted edit in the shared
+            // tree is reported, not refused: it is not evidence until it is committed.
+            if (auditedBlobSha !== blobSha) workingTreeDrift.add(c.path?.trim() ?? '');
+            storedCitations.push({ ...c, blobSha: auditedBlobSha });
+            continue;
           }
           storedCitations.push({ ...c, blobSha });
         } else {
@@ -1398,7 +1394,14 @@ export default defineTool({
         `items (or drop them with a reason); every other unlisted item already carried forward with ` +
         `its original provenance.`
       : null;
-    const resultNote = [partialNote, uncoveredNote].filter((note): note is string => Boolean(note)).join(' ');
+    const driftNote = workingTreeDrift.size > 0
+      ? `${workingTreeDrift.size} cited file(s) differ in the working tree from auditedSha ` +
+        `${(auditedSha ?? '').slice(0, 12)}: ${[...workingTreeDrift].slice(0, 5).join(', ')}` +
+        `${workingTreeDrift.size > 5 ? ` (+${workingTreeDrift.size - 5} more)` : ''}. The audit recorded the ` +
+        `committed bytes at auditedSha; the citations' line/symbol checks read the working tree. If the ` +
+        `uncommitted edits matter to these items, re-audit them after the edits are committed.`
+      : null;
+    const resultNote = [partialNote, uncoveredNote, driftNote].filter((note): note is string => Boolean(note)).join(' ');
 
     if (dryRun) {
       return { data: {
