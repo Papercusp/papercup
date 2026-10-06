@@ -5,9 +5,9 @@
   "accountableOwner": "su-a20d4635-81b0-4323-b33e-6e838a21d8fe",
   "population": {
     "failedFiles": 124,
-    "repairedFocused": 8,
+    "repairedFocused": 9,
     "repairedPeerFocused": 10,
-    "openUnknown": 106
+    "openUnknown": 105
   },
   "classes": {
     "assertion": 62,
@@ -244,11 +244,64 @@
     {
       "path": "packages/operator-core/lib/work-items.integration.test.ts",
       "class": "missing-schema",
-      "state": "open-unknown",
-      "item": "WI-10006170",
+      "state": "repaired-focused",
+      "item": "WI-10006278",
       "lines": [
         13046
-      ]
+      ],
+      "registeredRepairItem": "WI-10006278",
+      "repairStage": "exact-dispatch-claimed-typed-resolver-fixture-verified-focused",
+      "diagnosis": "The BAR preview integration fixture injected screen and launch but omitted the existing typed resolveSteeredModel seam, invoking live account steering against unrelated missing operator_account_override schema. Injected that seam and added positive workspace, resolved-model, gateway-account and independent-launch assertions while preserving real scoped preview-post and answer-target SQL. Production reviewer source is unchanged; its dedicated steering controls passed separately.",
+      "beforeTestRun": 20808785,
+      "afterTestRun": 20811424,
+      "passed": 159,
+      "skipped": 0,
+      "testSha256": "61a042ca2efa435afcbc6e1b3aed685084242d5907cc4f5644ba753f0ceee539",
+      "sourceFingerprints": {
+        "beforeTestSha256": "8267f80ae06543391c530ffd1e2d2b25b9e8788c2930dd7b593325d986f6e2b7",
+        "reviewerSha256": "23bf8dfe20e69ad76a38094cac9fc538cf8d7d501ff20650897bcef340bb6e73",
+        "preconditionRevision": "ff5c4b31012d2572a36699b071a2f5c379c873b8",
+        "testReceiptRevision": "81c7be521adb885de5ec230c8511424ec63804d3",
+        "committedFixtureRevision": "39ce2b415243b0cd05994e068335681cd8db9e02"
+      },
+      "currentPrecondition": {
+        "status": "fail",
+        "testRunId": 20808785,
+        "worktreeDirty": true,
+        "runGroupId": "788e7779-fb2e-408c-b482-87e3cfc8de53",
+        "caseCounts": "not asserted from the saved diagnostic receipt"
+      },
+      "focusedTargetReceipt": {
+        "testRunId": 20810259,
+        "casesPassed": 1,
+        "casesFailed": 0,
+        "selectorUnselected": 158,
+        "worktreeDirty": true,
+        "runGroupId": null
+      },
+      "latestLocalReceipt": {
+        "id": 20811424,
+        "filePath": "packages/operator-core/lib/work-items.integration.test.ts",
+        "status": "pass",
+        "commitSha": "81c7be521adb885de5ec230c8511424ec63804d3",
+        "worktreeDirty": true,
+        "runGroupId": null
+      },
+      "productionReviewerControls": {
+        "testRunId": 20809244,
+        "casesPassed": 31,
+        "casesFailed": 0,
+        "casesSkipped": 0,
+        "runGroupId": "b95f5763-c055-4f4c-bd89-321bfd4a846e"
+      },
+      "nativePassLog": {
+        "path": "/tmp/wi-10006278-file-after.log",
+        "sha256": "0fe81692925ca57a74426cd112b3f99904bec8e270de338de15db0d3e054c1ff",
+        "casesPassed": 159,
+        "casesFailed": 0,
+        "casesSkipped": 0
+      },
+      "latestReceiptMeaning": "Bounded fixture repair verified and tested fixture bytes confirmed in the git-sync commit. Dirty test provenance remains immutable. No final D006 sweep, complete dependency/import/environment assurance, production routing change, acceptance or shipment claim."
     },
     {
       "path": "packages/operator-core/lib/agent-tools/locks/__tests__/su-lock-store.integration.test.ts",
