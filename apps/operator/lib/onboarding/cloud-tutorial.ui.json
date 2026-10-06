@@ -136,8 +136,17 @@
                   }
                 },
                 "interactions": [
+                  "focus-current-target",
                   "focus-current-target-only-after-explicit-show-me",
                   "respect-reduced-motion-when-scrolling-to-target"
+                ]
+              },
+              {
+                "kind": "component",
+                "ref": "retry",
+                "interactions": [
+                  "retry",
+                  "read-current-domain-state-and-retry-progress-save-without-provisioning-launching-or-resending-tasks"
                 ]
               },
               {
@@ -283,6 +292,7 @@
             }
           },
           "interactions": [
+            "retry",
             "read-current-domain-state-and-retry-progress-save-without-provisioning-launching-or-resending-tasks"
           ]
         }
