@@ -21,7 +21,7 @@ type Db = postgres.Sql | postgres.TransactionSql;
 
 /** Canonical datatype (D-004) → the vault source that stores it. */
 export const CANONICAL_SOURCE_BY_DATATYPE = {
-  'email-message': 'gmail',
+  'email-message': 'mail',
   'calendar-event': 'calendar',
   'chat-message': 'slack',
   contact: 'contacts',
@@ -33,9 +33,12 @@ export type CanonicalDatatype = keyof typeof CANONICAL_SOURCE_BY_DATATYPE;
  * Vault source name → data_sources.kind. They differ for calendar
  * ('calendar' in the vault, 'gcal' as a trigger source), which is exactly the
  * kind of drift a hand-maintained second copy would introduce silently.
+ *
+ * The `mail` partition has no entry on purpose: it is provider-neutral, so mail
+ * verbs pick the provider from the connected source (provider-dispatch.ts),
+ * never from a single partition → kind mapping.
  */
 const TRIGGER_KIND_BY_VAULT_SOURCE: Record<string, string> = {
-  gmail: 'gmail',
   calendar: 'gcal',
   contacts: 'contacts',
   slack: 'slack',
