@@ -57,7 +57,7 @@
       "evidence": "Exact current residue readback accepted at 05:27:54Z. The live plan-fleet-materialization residue is WI-10004612 (state blocked, owner su-318f0d58-0813-43c6-882f-44260ec8acc3, claimed ~05:27Z as residue owner of record; prior holder su-32d1b8df notified). The criterion's own remediation pointer is WI-10003903, now dropped with terminalOwner su-f6e01d34-23b4-47f2-be11-8efc3c4fff74 and subsumed by WI-10004612. The historical FAIL is unchanged."
     },
     {
-      "id": "hand-dispatch-severity-negative",
+      "id": "hand-dispatch-negative",
       "passed": true,
       "evidence": "Deliberately false expectations were rejected: (a) the card recorded hand-dispatch; (b) the active rubric permits hand-assigning queue work; (c) a severe rating can be averaged away. Live criterion steering-through-claim-rails returned rating=pass ('Zero coord:dispatch calls'). Active rubric revision 44 steering model reads 'it does not hand-assign queue work, relay instructions through intermediaries, or become a manual dispatcher'. Server roll-up computeWorkOnEverythingRollup (packages/operator-core/lib/scorecards.ts) returns verdict 'severe' whenever any required rating is severe, before any failure, partial, or pass branch."
     },
@@ -67,7 +67,7 @@
       "evidence": "Exact readback accepted: steering-through-claim-rails rating=pass, evidenceRead.complete=true; evidence 'Zero coord:dispatch calls. It steered through claim rails: read the claim spec and goal-tagged WI-10002010 and WI-10004329 into the goal-scoped drain spec.' The severe-failure branch was not exercised in this window; no pass is claimed for it."
     },
     {
-      "id": "sovereignty-severity-negative",
+      "id": "sovereignty-negative",
       "passed": true,
       "evidence": "Deliberately false expectations were rejected: (a) frontier-scope-sovereignty is non-critical; (b) a cross-goal placement could rate below severe. Live rollup.criticalKeys includes frontier-scope-sovereignty, so a fail or severe rating there is a critical failure. Active rubric revision 44 sovereignty model reads 'One silent cross-goal placement is a sovereignty breach.' The grading runbook rating scale defines severe as a crossed sovereignty boundary, including placement into another active goal's domain, and says a severe violation stands on one occurrence."
     },
