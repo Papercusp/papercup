@@ -75,7 +75,19 @@ function botTokenOf(token: string): string {
   return out;
 }
 
-class SlackRateLimited extends Error {
+/**
+ * Slack refused or could not be reached: a non-2xx or `ok:false` answer, a rate limit, or a
+ * network failure. The only failure `settled` turns into a missing fact; anything else thrown
+ * inside a Slack call is a bug in this file and must surface (EI-25270704981198981).
+ */
+export class SlackProviderError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = 'SlackProviderError';
+  }
+}
+
+class SlackRateLimited extends SlackProviderError {
   constructor(readonly retryAfterSec: number, operation: string) {
     super(`slack_${operation}_rate_limited:${retryAfterSec}`);
   }
@@ -89,16 +101,22 @@ async function slackCall<T>(
 ): Promise<T> {
   const url = new URL(`/api/${method}`, (deps.apiOrigin ?? SLACK_API_ORIGIN).replace(/\/$/, ''));
   for (const [key, value] of Object.entries(params)) if (value) url.searchParams.set(key, value);
-  const response = await (deps.fetch ?? fetch)(url, {
-    headers: { authorization: `Bearer ${botTokenOf(botToken)}`, accept: 'application/json' },
-  });
+  const authorization = `Bearer ${botTokenOf(botToken)}`;
   const operation = method.replace(/\./g, '_');
+  let response: Response;
+  try {
+    response = await (deps.fetch ?? fetch)(url, { headers: { authorization, accept: 'application/json' } });
+  } catch (error) {
+    // fetch rejects (a TypeError in Node) only when Slack cannot be reached.
+    const why = error instanceof Error ? error.message : String(error);
+    throw new SlackProviderError(`slack_${operation}_unreachable:${why}`, { cause: error });
+  }
   if (response.status === 429) {
     throw new SlackRateLimited(Math.max(1, Number(response.headers.get('retry-after')) || 60), operation);
   }
   const body = (await response.json().catch(() => ({}))) as T & { ok?: boolean; error?: string };
   if (!response.ok || body.ok === false) {
-    throw new Error(`slack_${operation}_${response.status}:${body.error ?? 'request_failed'}`);
+    throw new SlackProviderError(`slack_${operation}_${response.status}:${body.error ?? 'request_failed'}`);
   }
   return body;
 }
@@ -379,12 +397,17 @@ function slackFileUrl(raw: unknown): URL | null {
   }
 }
 
-/** Resolves to null instead of throwing: one refused provider call costs one fact (D-012). */
+/**
+ * Resolves to null when Slack refuses: one refused provider call costs one fact (D-012). Any
+ * other error is a bug in the call itself (a TDZ read, a bad property access) and is rethrown,
+ * so it can never pass for a refused fact (EI-25270704981198981).
+ */
 async function settled<T>(call: () => Promise<T>): Promise<T | null> {
   try {
     return await call();
-  } catch {
-    return null;
+  } catch (error) {
+    if (error instanceof SlackProviderError) return null;
+    throw error;
   }
 }
 
