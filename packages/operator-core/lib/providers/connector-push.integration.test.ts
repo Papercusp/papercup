@@ -36,6 +36,7 @@ const ASANA_DESCRIPTOR = (JSON.parse(readFileSync(path.join(REPO, 'libs/papercus
   provider: ProviderDescriptor;
 }).provider;
 const TARGET = (sourceId: string) => `https://me.example.net/api/hooks/${sourceId}`;
+const DESTINATIONS = { ticket: ['record'], 'ticket-status-change': ['event'], 'ticket-comment': ['document'] };
 
 let org: OrgTestDb;
 let sql: Sql;
@@ -95,7 +96,7 @@ async function newSource(config: Record<string, unknown>, status = 'connected'):
     INSERT INTO harness_shared.data_sources
       (workspace_id, kind, owner_user_id, provider_account_id, status, config, scope, destination_policy, permission_mapping)
     VALUES (${WS}, 'asana', ${owner}, ${`push-test-${Date.now()}-${Math.random()}`}, ${status},
-            ${sql.json(config)}, 'personal', ${sql.json({})}, ${sql.json({ mode: 'owner' })})
+            ${sql.json(config)}, 'personal', ${sql.json(DESTINATIONS)}, ${sql.json({ mode: 'owner' })})
     RETURNING id::text`;
   return row!.id;
 }
@@ -240,7 +241,7 @@ describe('reconcile runs only when something moved, and tears down what can no l
 
   it('a failed subscribe is recorded, closes the window, and waits out the retry period', async () => {
     const id = await newSource({ projectGids: ['p1'] });
-    const failing = registry.get('asana')!.adapter;
+    const failing = adapter;
     const original = failing.invoke;
     failing.invoke = async () => {
       throw new Error('asana_rate_limited:60s');
