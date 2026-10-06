@@ -74,6 +74,27 @@ expected answer only after the echoed prompt, for every CLI; guarded in `p005-co
 - **P-031 startup and errors**: G-1 (startup 2.1 s vs 0.8 s), G-12 (offer resume), G-13 (plain error with a next step), G-14.
 - **P-032 head-to-head**: rerun this battery on all three CLIs, with pui on a working route, after the above, and grade every row.
 
+## P-027 resolution (2026-10-06, WI-10006273)
+
+Each P-027 gap, with the code that closes it (apps/tui/src unless noted). Verified by `cargo test --bin pui`
+(1319 passed, 0 failed) and the operator-core su-session engine and host tests. The frames themselves are
+re-captured in P-032.
+
+| Gap / key | Now | Where |
+|---|---|---|
+| G-3 Esc with nothing running | Stays in the box; Esc twice clears the draft ("Esc again to clear") | app.rs `chat_first_esc` |
+| G-4 missing commands | `/` menu with one-line descriptions: /help /resume /clear /model /effort /status /compact /approvals /expand /details /copy /detach /exit; "/mo" filters to /model | chat_commands.rs |
+| G-6 permission-mode key | `/approvals` opens a three-row picker (ask, auto-edit, read-only; current marked). Shift+Tab cycles. The pick rides on the next message (plan D-026); /status names it. Claude uses setPermissionMode, Codex uses turn/start approvalPolicy + sandboxPolicy; OMP says it is not available. No full-access mode | app.rs `open_approvals_picker` / `cycle_approvals`; packages/operator-core/lib/su-session-*-engine.ts |
+| G-7 large paste | Collapses to a one-line `[pasted N lines]` chip; the full text is sent | app.rs, paste_chips.rs |
+| G-10 toast over the input border | In the quiet chat a toast sits inside the message box | ui.rs |
+| G-11 Ctrl+C with a draft | 1st clears the draft, 2nd within the window exits ("Press Ctrl+C again to exit") | app.rs |
+| G-12 /resume stuck loading | The list re-fetches; a failed fetch says why and how to retry | app.rs |
+| Alt+P (Claude) | Opens the model picker | app.rs composing arm |
+| `?` overlay | Lists Shift+Tab and Alt+P with the other keys | ui.rs `CHAT_SHORTCUTS` |
+| `!` shell (Claude) | Ruled out: bare `pui` opens a work shell pane beside the chat (P-030, D-024); a leading `!` is sent to the engine as text | — |
+| Ctrl+G external editor (Claude) | Ruled out: Codex has no such key, and the box already edits multi-line text with undo | — |
+| Context left and cost in /status | Not P-027: G-8 belongs to P-029 | — |
+
 ## Where pui is already level or ahead
 
 Instant echo and working line after Enter (P-024), history recall, multiline input (three ways), the @ file
