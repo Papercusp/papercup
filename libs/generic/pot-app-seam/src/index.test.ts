@@ -284,6 +284,22 @@ describe('blueprintOperationHostFromInvoker', () => {
     expect(Object.values(BLUEPRINT_OPERATION_TOOL_NAMES)).toEqual(expect.arrayContaining(calls.map(([n]) => n)));
   });
 
+  it('forwards privateInput to blueprint:submit only when the draft carries it (D-014)', async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    const h = blueprintOperationHostFromInvoker(async (_name, args) => {
+      calls.push(args);
+      return { handle };
+    });
+    const segments = [[1, 'agent', 'hi'], [2, 'guest', 'bye']];
+    await h.submitBlueprintOperation({ harnessSlug: 'phone', operationId: 'call-wrap-up', requestKey: 'k1',
+      input: { callKey: 'c' }, privateInput: segments });
+    await h.submitBlueprintOperation({ harnessSlug: 'phone', operationId: 'call-brief', requestKey: 'k2',
+      input: { callKey: 'c' } });
+    expect(calls[0]).toEqual({ harness: 'phone', operationId: 'call-wrap-up', requestKey: 'k1',
+      input: { callKey: 'c' }, privateInput: segments });
+    expect(calls[1]).not.toHaveProperty('privateInput');
+  });
+
   it('refuses a malformed tool result instead of passing it to the app', async () => {
     const h = blueprintOperationHostFromInvoker(async () => ({ ok: true }));
     await expect(h.submitBlueprintOperation({ harnessSlug: 'email', operationId: 'o', requestKey: 'k', input: {} }))

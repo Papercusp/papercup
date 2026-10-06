@@ -157,6 +157,14 @@ export interface BlueprintOperationDraft<TInput extends JsonObject = JsonObject>
   /** Stable replay identity. Reusing it with different input must be refused by the host. */
   readonly requestKey: string;
   readonly input: TInput;
+  /**
+   * Content for the worker that must NOT enter the durable work-item payload (e.g. a
+   * call transcript the app deletes on its own schedule). Only for an operation that
+   * declares `privateInputSchema`; the host stores it outside the item, only the
+   * item's current holder can read it, and it is deleted once the item is terminal.
+   * Reusing the request key with different private input is refused.
+   */
+  readonly privateInput?: JsonValue;
   readonly title?: string;
   readonly summary?: string;
 }
@@ -387,6 +395,7 @@ export function blueprintOperationHostFromInvoker(invoke: BlueprintToolInvoke): 
         operationId: draft.operationId,
         requestKey: draft.requestKey,
         input: draft.input,
+        ...(draft.privateInput === undefined ? {} : { privateInput: draft.privateInput }),
         ...(draft.title === undefined ? {} : { title: draft.title }),
         ...(draft.summary === undefined ? {} : { summary: draft.summary }),
       }), T.submit, ['handle']);
