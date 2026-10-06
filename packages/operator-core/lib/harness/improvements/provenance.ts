@@ -69,10 +69,27 @@ export function originAllowed(stored: unknown, allowed: readonly SignalOrigin[] 
 // corroboration record's per-kind tally: the distinct reporter kinds that have
 // filed the same condition (folds append to it; it never shrinks).
 
-/** Who filed a work item. */
-export type ReporterKind = 'agent' | 'watchdog' | 'end-user';
+/**
+ * Who filed a work item. 'end-user' is a person reporting through a Papercusp
+ * door (the in-app reporter, a rule-admitted ticket); 'chat' is a person
+ * reporting from a chat workspace such as Slack
+ * (slack-messages-to-bug-reports-2026-10-05 P-005, D-012).
+ */
+export type ReporterKind = 'agent' | 'watchdog' | 'end-user' | 'chat';
 
-export const REPORTER_KINDS: readonly ReporterKind[] = ['agent', 'watchdog', 'end-user'];
+export const REPORTER_KINDS: readonly ReporterKind[] = ['agent', 'watchdog', 'end-user', 'chat'];
+
+/** The reporter kinds a PERSON files under. */
+export const PERSON_REPORTER_KINDS: readonly ReporterKind[] = ['end-user', 'chat'];
+
+/**
+ * True when a person filed the report, so its text is untrusted evidence
+ * (quoted at intake, unified D-003) and it is never a stranded tool failure.
+ * Every rule about "a person's report" keys on this, never on one kind.
+ */
+export function isPersonReporterKind(kind: unknown): kind is 'end-user' | 'chat' {
+  return typeof kind === 'string' && (PERSON_REPORTER_KINDS as readonly string[]).includes(kind);
+}
 
 /**
  * Why the stored kind is what it is, so a wrong inference is diagnosable from

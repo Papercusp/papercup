@@ -699,8 +699,12 @@ function classifyMechanismClaim(
  * state:read / measured …), a source tag, a hedge, a question — or ANY checks row in the
  * same write that probes the release plane (the write "attaches a checks probe").
  */
+// Do not use the bare phrase "the release" as a deployment target: named
+// resource release events (for example resource:released:git-sync) use that
+// wording too. Keep concrete release-plane markers so deployment waits remain
+// detectable.
 const DEPLOY_DEPENDENCY_RE =
-  /\b(?:wait(?:ing|s)?\s+(?:on|for)|blocked\s+(?:on|by)|needs?|requires?|depends?\s+on|until|pending|gated\s+on|can'?t\s+\w+\s+(?:until|before|without))\b[^.\n]{0,50}?(?:\bgreen[- ]main\b|\bmain\b|:3070\b|\brelease:deployed\b|\bdeploy(?:ment|ments|s)?\b|\bthe\s+release\b|\b(?:to\s+be|be|been|being|is|are|was|were|get|got)\s+deployed\b|\bdeployed\b(?=\s*(?:[.,;:!?]|$|\b(?:before|until|to|on|at|now|first)\b)))/i;
+  /\b(?:wait(?:ing|s)?\s+(?:on|for)|blocked\s+(?:on|by)|needs?|requires?|depends?\s+on|until|pending|gated\s+on|can'?t\s+\w+\s+(?:until|before|without))\b[^.\n]{0,50}?(?:\bgreen[- ]main\b|\bmain\b|:3070\b|\brelease:deployed\b|\bdeploy(?:ment|ments|s)?\b|\b(?:to\s+be|be|been|being|is|are|was|were|get|got)\s+deployed\b|\bdeployed\b(?=\s*(?:[.,;:!?]|$|\b(?:before|until|to|on|at|now|first)\b)))/i;
 
 /** A probe of the release plane, on the line itself or on a checks row. */
 const RELEASE_PLANE_PROBE_RE =

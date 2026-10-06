@@ -948,11 +948,77 @@ describe('completionTreeStampForClose — one stamp route for every close (EI-24
     expect(await completionTreeStampForClose({ filesChanged: ['/nowhere/x.yml'] }, undefined, null)).toBeUndefined();
   });
 
+  it('retries an unreadable serving submodule against the registered source checkout', async () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), 'completion-close-submodule-fallback-'));
+    TEMP_ROOTS.push(workspaceRoot);
+    const submoduleOrigin = join(workspaceRoot, 'test-config-origin');
+    const servingRoot = join(workspaceRoot, 'papercusp-release');
+    const canonicalRoot = join(workspaceRoot, 'papercusp');
+    const changedPath = 'libs/test-config/src/fix.ts';
+    const content = 'export const fixed = true;\n';
+    const git = (cwd: string, ...args: string[]) =>
+      execFileSync('git', ['-C', cwd, ...args], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: 60_000,
+      }).trim();
+    const initRepo = (root: string) => {
+      mkdirSync(root, { recursive: true });
+      git(root, 'init', '-q');
+      git(root, 'config', 'user.email', 'completion-test@example.invalid');
+      git(root, 'config', 'user.name', 'Completion Test');
+    };
+
+    initRepo(submoduleOrigin);
+    mkdirSync(join(submoduleOrigin, 'src'), { recursive: true });
+    writeFileSync(join(submoduleOrigin, 'src', 'fix.ts'), content);
+    git(submoduleOrigin, 'add', 'src/fix.ts');
+    git(submoduleOrigin, 'commit', '-qm', 'submodule fix');
+    const submoduleSha = git(submoduleOrigin, 'rev-parse', 'HEAD');
+
+    initRepo(canonicalRoot);
+    writeFileSync(join(canonicalRoot, 'README.md'), 'canonical workspace\n');
+    git(canonicalRoot, 'add', 'README.md');
+    git(canonicalRoot, 'commit', '-qm', 'canonical root');
+    git(canonicalRoot, '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', submoduleOrigin, 'libs/test-config');
+    git(canonicalRoot, 'add', '.');
+    git(canonicalRoot, 'commit', '-qm', 'pin test-config');
+
+    // The release checkout has the pinned gitlink and extracted source files, but no
+    // initialized submodule object store — the state measured on :3070 in EI-24804091288346310.
+    initRepo(servingRoot);
+    writeFileSync(join(servingRoot, 'README.md'), 'release checkout\n');
+    mkdirSync(join(servingRoot, 'libs/test-config/src'), { recursive: true });
+    writeFileSync(join(servingRoot, changedPath), content);
+    git(servingRoot, 'add', 'README.md');
+    git(servingRoot, 'update-index', '--add', '--cacheinfo', `160000,${submoduleSha},libs/test-config`);
+    git(servingRoot, 'commit', '-qm', 'release gitlink');
+
+    const stamp = await completionTreeStampForClose(
+      { filesChanged: [changedPath] },
+      undefined,
+      servingRoot,
+      async () => [servingRoot, canonicalRoot],
+    );
+
+    expect(stamp?.repositoryRoot).toBe(join(canonicalRoot, 'libs/test-config'));
+    expect(stamp?.headSha).toBe(submoduleSha);
+    expect(stamp?.contentIdentity).toEqual([
+      expect.objectContaining({
+        path: 'src/fix.ts',
+        workingTreeBlobSha: expect.any(String),
+        headBlobSha: expect.any(String),
+      }),
+    ]);
+    expect(stamp?.contentIdentity?.[0]?.workingTreeBlobSha).toBe(stamp?.contentIdentity?.[0]?.headBlobSha);
+    expect(stamp?.contentIdentity?.[0]?.headBlobUnresolvable).toBeUndefined();
+  });
+
   it('complete.ts stamps every close through completionTreeStampForClose, never the single-repo route', () => {
     // Overridable so scripts/mutation-probe.sh can point the guard at a historical snapshot.
     const subject = process.env.COMPLETE_TS_GUARD_SUBJECT ?? fileURLToPath(new URL('./complete.ts', import.meta.url));
     const source = readFileSync(subject, 'utf8');
-    expect(source).toMatch(/completionTreeStampForClose\(completionEvidenceBeforeStamp,/);
+    expect(source).toMatch(/completionTreeStampForClose\(\s*completionEvidenceBeforeStamp,/);
     expect(source).not.toMatch(/await completionTreeStamp\(\{/);
   });
 });

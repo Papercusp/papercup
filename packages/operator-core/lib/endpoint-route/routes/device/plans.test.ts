@@ -13,11 +13,22 @@ vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
   dispatchProjectedTool: vi.fn(),
   lookupByMcpName: vi.fn(),
 }));
+const blocks = vi.hoisted(() => ({
+  getAllBlockedPlanItems: vi.fn(),
+  overlayIssueBlocksForPlan: vi.fn(),
+}));
+
 vi.mock('../../../agent-tools/index', () => ({}));
+// Keep the pure overlay + ref helpers real; stub only the two PG reads.
+vi.mock('../../../issue-blocks-merge', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../issue-blocks-merge')>()),
+  ...blocks,
+}));
 vi.mock('../../../agent-tools/plans/source', () => source);
 vi.mock('../../../device-harnesses', () => source);
 
 import routes from './plans';
+import { applyPlanItemBlocks, planItemRef } from '../../../issue-blocks-merge';
 
 const list = routes[0] as unknown as {
   handler: (req: Request, ctx: { principal: { kind: string; slug: string; workspaceId: string } }) => Promise<Response>;
@@ -26,7 +37,11 @@ const context = { principal: { kind: 'device', slug: 'phone-test', workspaceId: 
 const row = (slug: string, updatedAt: string, harnessSlug = 'hive-home') => ({
   planSlug: slug, harnessSlug, updatedAt, title: null, status: null,
   updated: null, owner: null, archived: false,
-  items: [{ status: 'done' }, { status: 'todo' }, { status: 'todo' }],
+  items: [
+    { id: 'P-001', status: 'done', blockedBy: [] },
+    { id: 'P-002', status: 'todo', blockedBy: [] },
+    { id: 'P-003', status: 'todo', blockedBy: [] },
+  ],
   nowState: 'Compatibility work', nowNext: 'Verify the candidate',
 });
 
@@ -35,6 +50,9 @@ beforeEach(() => {
   source.listPlanIndexRowsForWorkspace.mockResolvedValue([]);
   source.listPlanIndexRows.mockResolvedValue([]);
   source.harnessExistsInWorkspace.mockResolvedValue(true);
+  blocks.getAllBlockedPlanItems.mockResolvedValue(new Map());
+  blocks.overlayIssueBlocksForPlan.mockImplementation(async (_slug: string, items: { id: string; effectiveStatus: string }[]) =>
+    ({ items, blockingIssues: {} }));
 });
 
 describe('device plans list', () => {
@@ -94,5 +112,73 @@ describe('device plans list', () => {
     source.listPlanIndexRowsForWorkspace.mockRejectedValue(new Error('plan index unavailable'));
     await expect(list.handler(new Request('http://localhost/api/device/plans'), context))
       .rejects.toThrow('plan index unavailable');
+  });
+
+  it('counts EFFECTIVE status: dependency blocks and open issue blocks, not the authored status', async () => {
+    source.listPlanIndexRowsForWorkspace.mockResolvedValue([{
+      ...row('release', '2026-10-01'),
+      items: [
+        { id: 'P-001', status: 'todo', blockedBy: [] },
+        { id: 'P-002', status: 'todo', blockedBy: ['P-001'] },
+        { id: 'P-003', status: 'todo', blockedBy: [] },
+        { id: 'P-004', status: 'done', blockedBy: [] },
+      ],
+    }]);
+    blocks.getAllBlockedPlanItems.mockResolvedValue(new Map([[planItemRef('release', 'P-003'), ['EI-9']]]));
+    const response = await list.handler(new Request('http://localhost/api/device/plans'), context);
+    expect((await response.json()).plans[0].itemCounts).toEqual({ todo: 1, blocked: 2, done: 1 });
+    expect(blocks.getAllBlockedPlanItems).toHaveBeenCalledOnce();
+  });
+
+  it('degrades to resolver-only counts when the issue-block read fails', async () => {
+    source.listPlanIndexRowsForWorkspace.mockResolvedValue([row('release', '2026-10-01')]);
+    blocks.getAllBlockedPlanItems.mockRejectedValue(new Error('coord_links unavailable'));
+    const response = await list.handler(new Request('http://localhost/api/device/plans'), context);
+    expect(response.status).toBe(200);
+    expect((await response.json()).plans[0].itemCounts).toEqual({ done: 1, todo: 2 });
+  });
+});
+
+describe('device plan detail', () => {
+  const get = routes[1] as unknown as {
+    handler: (req: Request, ctx: { params: { slug: string } }) => Promise<Response>;
+  };
+  const item = (id: string, storedStatus: string, blockedBy: string[] = []) => ({
+    id, text: `item ${id}`, storedStatus, importance: 'normal', blockedBy,
+    decisionRefs: [], phase: null, lineNumber: 0, rawLine: '',
+  });
+
+  it('returns effectiveStatus on every item so the iOS client stops defaulting to todo', async () => {
+    source.readPlanBySlug.mockResolvedValue({
+      archived: false,
+      row: { planSlug: 'release', harnessSlug: 'hive-home', title: 'Release', status: 'active', owner: null },
+      parsed: {
+        frontmatter: {}, now: null, decisions: [],
+        items: [item('P-001', 'wip'), item('P-002', 'todo', ['P-001']), item('P-003', 'todo'), item('P-004', 'done')],
+      },
+    });
+    blocks.overlayIssueBlocksForPlan.mockImplementation(async (slug: string, items: { id: string; effectiveStatus: string }[]) =>
+      applyPlanItemBlocks(items, (id) => (planItemRef(slug, id) === planItemRef('release', 'P-003') ? ['EI-9'] : undefined)));
+
+    const response = await get.handler(new Request('http://localhost/api/device/plans/release'), { params: { slug: 'release' } });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(blocks.overlayIssueBlocksForPlan).toHaveBeenCalledWith('release', expect.any(Array));
+    expect(body.items.map((i: { id: string; storedStatus: string; effectiveStatus: string }) =>
+      [i.id, i.storedStatus, i.effectiveStatus])).toEqual([
+      ['P-001', 'wip', 'wip'],
+      ['P-002', 'todo', 'blocked'],
+      ['P-003', 'todo', 'blocked'],
+      ['P-004', 'done', 'done'],
+    ]);
+    expect(body.items[2].blockedByIssues).toEqual(['EI-9']);
+    expect(body.items[1]).not.toHaveProperty('blockedByIssues');
+  });
+
+  it('404s an unknown plan without reading issue blocks', async () => {
+    source.readPlanBySlug.mockResolvedValue(null);
+    const response = await get.handler(new Request('http://localhost/api/device/plans/missing'), { params: { slug: 'missing' } });
+    expect(response.status).toBe(404);
+    expect(blocks.overlayIssueBlocksForPlan).not.toHaveBeenCalled();
   });
 });

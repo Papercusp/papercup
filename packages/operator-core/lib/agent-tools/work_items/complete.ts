@@ -154,8 +154,41 @@ export async function completionTreeStampForClose(
   evidence: CompletionVerificationEvidence,
   registeredRepoRoots: string[] | undefined,
   primaryRoot: string | null,
+  resolveFallbackRepoRoots?: () => Promise<string[]>,
 ): ReturnType<typeof completionTreeStampForEvidence> {
-  return completionTreeStampForEvidence(evidence, registeredRepoRoots ?? (primaryRoot ? [primaryRoot] : []));
+  const initialRoots = registeredRepoRoots ?? (primaryRoot ? [primaryRoot] : []);
+  const initialStamp = await completionTreeStampForEvidence(evidence, initialRoots);
+  const unreadableSubmoduleCount = (stamp: typeof initialStamp): number =>
+    unresolvableContentIdentityPaths(stamp).filter(({ headBlobUnresolvable }) =>
+      /^submodule '[^']+' could not be read at /.test(headBlobUnresolvable),
+    ).length;
+  const initialFailures = unreadableSubmoduleCount(initialStamp);
+  if (initialFailures === 0) return initialStamp;
+
+  // A release checkout can contain archive-extracted submodule files while lacking the
+  // submodule object named by its gitlink. In that case its own tree cannot prove content
+  // identity, even when the canonical workspace checkout has the pinned commit locally.
+  // Retry only this measured failure class, and only use the alternate stamp if it resolves
+  // more of the unreadable submodule identities. Other closes keep the single-pass hot path.
+  let fallbackRoots = registeredRepoRoots;
+  const primary = primaryRoot ? nodePath.resolve(primaryRoot) : null;
+  const hasAlternateRoot = (fallbackRoots ?? []).some((root) => nodePath.resolve(root) !== primary);
+  if (!hasAlternateRoot && resolveFallbackRepoRoots) {
+    try {
+      fallbackRoots = await resolveFallbackRepoRoots();
+    } catch {
+      return initialStamp;
+    }
+  }
+  const alternateRoots = (fallbackRoots ?? []).filter((root) => nodePath.resolve(root) !== primary);
+  if (alternateRoots.length === 0) return initialStamp;
+
+  // Prefer registered source checkouts for this retry. A serving checkout remains last as a
+  // fail-open candidate when the registered tree does not contain a declared path.
+  const retryRoots = [...alternateRoots, ...(primaryRoot ? [primaryRoot] : [])];
+  const retryStamp = await completionTreeStampForEvidence(evidence, retryRoots);
+  if (!retryStamp) return initialStamp;
+  return unreadableSubmoduleCount(retryStamp) < initialFailures ? retryStamp : initialStamp;
 }
 
 /**
@@ -4521,7 +4554,14 @@ async function completeOne(
   // all stays `undefined` rather than gaining an `_completionEvidence` object whose one
   // key came from the server, which a later reader could mistake for caller-supplied proof.
   const treeStamp = completionEvidenceBeforeStamp
-    ? await completionTreeStampForClose(completionEvidenceBeforeStamp, registeredRepoRoots, completionRoot())
+    ? await completionTreeStampForClose(
+        completionEvidenceBeforeStamp,
+        registeredRepoRoots,
+        completionRoot(),
+        registeredRepoRoots === undefined && declaredCompletionPaths.length > 0
+          ? () => completionRepoRootsForWorkspace(ctx.workspaceId, declaredCompletionPaths)
+          : undefined,
+      )
     : undefined;
   const completionEvidenceToPersist: PersistedCompletionEvidence | undefined = (() => {
     const base = withClaimBaseline(completionEvidenceBeforeStamp, claimVerdicts, new Date().toISOString());

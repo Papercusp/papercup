@@ -33,15 +33,44 @@ import {
   type PlanIndexRow,
 } from '../../../agent-tools/plans/source';
 import { harnessExistsInWorkspace } from '../../../device-harnesses';
+import {
+  resolveEffectiveStatusForItems,
+  type PlanItem,
+} from '../../../agent-tools/plans/effective-status';
+import {
+  applyPlanItemBlocks,
+  getAllBlockedPlanItems,
+  overlayIssueBlocksForPlan,
+  planItemRef,
+} from '../../../issue-blocks-merge';
 
-/** Compact per-status item tally for a plan card. */
-function itemCounts(row: PlanIndexRow): Record<string, number> {
+/**
+ * Compact per-status item tally for a plan card, over EFFECTIVE status: the
+ * dependency resolver plus the open issue-block overlay, as plans:list counts
+ * it. The structured index carries only the authored status, so counting it
+ * showed a dependency-blocked item as `todo` on the phone.
+ */
+function itemCounts(row: PlanIndexRow, blocked: Map<string, string[]>): Record<string, number> {
+  const planItems: PlanItem[] = row.items.map((i) => ({
+    id: i.id,
+    text: i.text,
+    storedStatus: i.status as PlanItem['storedStatus'],
+    importance: i.importance as PlanItem['importance'],
+    blockedBy: i.blockedBy ?? [],
+    decisionRefs: i.decisionRefs ?? [],
+    phase: i.phase ?? null,
+    lineNumber: 0,
+    rawLine: '',
+  }));
+  const { items } = applyPlanItemBlocks(resolveEffectiveStatusForItems(planItems).items, (id) =>
+    blocked.get(planItemRef(row.planSlug, id)),
+  );
   const counts: Record<string, number> = {};
-  for (const it of row.items) counts[it.status] = (counts[it.status] ?? 0) + 1;
+  for (const it of items) counts[it.effectiveStatus] = (counts[it.effectiveStatus] ?? 0) + 1;
   return counts;
 }
 
-function planSummary(row: PlanIndexRow) {
+function planSummary(row: PlanIndexRow, blocked: Map<string, string[]>) {
   return {
     slug: row.planSlug,
     harness: row.harnessSlug,
@@ -50,7 +79,7 @@ function planSummary(row: PlanIndexRow) {
     updated: row.updated ?? row.updatedAt,
     owner: row.owner,
     archived: row.archived,
-    itemCounts: itemCounts(row),
+    itemCounts: itemCounts(row, blocked),
     nowState: row.nowState,
     nowNext: row.nowNext,
   };
@@ -94,7 +123,15 @@ const plansList = defineTool({
     }
     // Most-recently-updated first.
     all.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0));
-    return Response.json({ plans: all.map(planSummary) });
+    // The open issue-block overlay is workspace-wide: read it once for every card.
+    // Non-fatal, as in plans:list: on error the counts fall back to resolver-only.
+    let blocked = new Map<string, string[]>();
+    try {
+      blocked = await getAllBlockedPlanItems();
+    } catch {
+      /* resolver-only counts */
+    }
+    return Response.json({ plans: all.map((row) => planSummary(row, blocked)) });
   },
 });
 
@@ -115,6 +152,14 @@ const planGet = defineTool({
     const found = await readPlanBySlug(ctx.params.slug, { harnessSlug: harness });
     if (!found) return Response.json({ error: 'plan_not_found' }, { status: 404 });
     const { parsed, archived, row } = found;
+    // Items carry the EFFECTIVE status plans:get returns (dependency resolver, then
+    // open issue blocks). parsePlan alone yields only the authored `storedStatus`,
+    // and the iOS client reads `effectiveStatus ?? status`, so without this it
+    // rendered every item as `todo`. overlayIssueBlocksForPlan is non-fatal.
+    const { items, blockingIssues } = await overlayIssueBlocksForPlan(
+      row.planSlug,
+      resolveEffectiveStatusForItems(parsed.items).items,
+    );
     return Response.json({
       slug: row.planSlug,
       harness: row.harnessSlug,
@@ -124,7 +169,9 @@ const planGet = defineTool({
       owner: row.owner,
       frontmatter: parsed.frontmatter,
       now: parsed.now,
-      items: parsed.items,
+      items: items.map((it) =>
+        blockingIssues[it.id] ? { ...it, blockedByIssues: blockingIssues[it.id] } : it,
+      ),
       decisions: parsed.decisions,
     });
   },

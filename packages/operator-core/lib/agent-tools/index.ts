@@ -327,6 +327,7 @@ import './mail/send';
 import './mail/send-draft';
 import './calendar/propose';
 import './calendar/update';
+import './calendar/delete';
 import './chat/reply';
 import './social/delete';
 import './social/post';

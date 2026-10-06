@@ -81,8 +81,13 @@ async function stubApis(page: Page) {
 
 async function framesTabMounts(page: Page): Promise<boolean> {
   await page.goto(`${baseURL}/adv?tab=frames`, { waitUntil: 'domcontentloaded' });
+  // Probe the panel's own title element, not its wording: the title renders
+  // `{t('fleet')} live view`, and the lexicon term changed (Swarm -> Fleet),
+  // which made a literal 'Swarm live view' probe report every run as a mount
+  // failure while the panel was rendering correctly (WI-10006792).
   return page
-    .getByText('Swarm live view', { exact: false })
+    .locator('.pc-frames__title')
+    .filter({ hasText: /live view$/i })
     .first()
     .waitFor({ state: 'visible', timeout: 30_000 })
     .then(() => true)
