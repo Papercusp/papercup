@@ -1198,6 +1198,66 @@ async function seedAgentChat(input: SeedAgentChat): Promise<void> {
        ${input.createdAt ?? now}, ${now}, ${input.runtimeClass ?? null})`;
 }
 
+/**
+ * pui-chat-first-ux D-030: Agent Chat's front door only opens a chat whose
+ * session inventory row places it in PUI's launch directory. A seeded chat
+ * with no adv session has no snapshot, so it belongs to no directory, and a
+ * default launch never lands on it (EI-25245893959522241). Seed what a real
+ * quit leaves behind: an ENDED adv session launched in `cwd`, bound to the
+ * chat through the production bind call, with a resumable native id. The
+ * snapshot route then rehydrates it as ended-archived with `launchCwd = cwd`.
+ * The pane's default cwd is REPO_ROOT; PUI reads its own current_dir, which
+ * the kernel reports resolved, hence realpath.
+ */
+async function seedEndedSuSession(input: { agentChatId: string; cwd?: string }): Promise<number> {
+  const { bindSuSessionToAdvSession } = await import('../su-session-persistence');
+  const cwd = input.cwd ?? realpathSync(REPO_ROOT);
+  const nativeSessionId = `native-${input.agentChatId}`;
+  const [row] = await db.adminSql<Array<{ id: number }>>`
+    INSERT INTO harness_shared.adv_sessions
+      (workspace_id, mode, agent, session_id, coord_owner_id, pid, ended_at, cwd)
+    VALUES (${WORKSPACE}, 'omp', 'claude', ${nativeSessionId}, ${OWNER}, NULL, now(), ${cwd})
+    RETURNING id`;
+  const advSessionId = Number(row.id);
+  const supported = { state: 'supported', implementation: 'native' } as const;
+  const descriptor = {
+    identity: {
+      agentChatId: input.agentChatId,
+      advSessionId,
+      backend: 'claude',
+      nativeSessionId,
+      ownerId: OWNER,
+      workspaceId: WORKSPACE,
+      harnessSlug: HARNESS,
+    },
+    lifecycle: 'ended',
+    runtimeGeneration: 1,
+    role: 'su',
+    model: null,
+    accountServed: null,
+    accountRoute: 'default',
+    carry: 'warm',
+    modes: [],
+    capabilities: {
+      commands: {
+        owner_turn: supported, interrupt: supported, resume: supported,
+        fork: { state: 'unsupported', reason: 'seeded ended session' },
+        focus: { state: 'supported', implementation: 'host' }, end: supported,
+      },
+      features: {
+        'tool-events': supported, 'interactive-cards': supported, 'reasoning-stream': supported,
+        usage: supported, compaction: supported, approvals: supported, context: supported, modes: supported,
+      },
+    },
+    backendExtension: { backend: 'claude', configDir: path.join(home, '.claude'), configDirSource: 'live-process' },
+  } as unknown as SuSessionDescriptor;
+  const result = await bindSuSessionToAdvSession({
+    advSessionId, agentChatId: input.agentChatId, workspaceId: WORKSPACE, descriptor,
+  });
+  expect(result.status, `bind seeded ended session for ${input.agentChatId}`).toBe('bound');
+  return advSessionId;
+}
+
 /** Publish seeded Agent Chat transcript rows through the real sessions index. */
 async function ingestSeededAgentChats(): Promise<void> {
   const { FILE_ADAPTERS, runSessionIngestOnce } = await import('../search/session-ingest');
@@ -2130,6 +2190,7 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-008 sessions and context 
       outputTokens: 0,
       costCents: 0,
     });
+    await seedEndedSuSession({ agentChatId: chatId });
     await putViewState('Operator');
 
     const pane = new PuiPane(bin, operatorPort, home);
@@ -2297,6 +2358,9 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-008 sessions and context 
       id: alpha.id, title: alpha.title, runtimeClass: 'su-session',
       transcript: turns('alpha'), createdAt: now + 120_000, updatedAt: now + 120_000,
     });
+    // D-030: both conversations were started in the pane's directory.
+    await seedEndedSuSession({ agentChatId: alpha.id });
+    await seedEndedSuSession({ agentChatId: beta.id });
     // Durable work context: one canonical task per session, keyed only by its
     // own session id — the same rows the Context projection reads.
     for (const [sessionId, content] of [[alpha.id, alpha.task], [beta.id, beta.task]]) {
@@ -2405,6 +2469,9 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-008 sessions and context 
       id: active.id, title: active.title, runtimeClass: 'su-session', transcript: turns(active.answer),
       createdAt: now + 300_000, updatedAt: now + 300_000,
     });
+    // D-030: the active conversation was started (and last quit) in the
+    // pane's directory, the state a real owner relaunches into.
+    await seedEndedSuSession({ agentChatId: active.id });
     await seedAgentChat({
       id: unrelated.id, title: unrelated.title, runtimeClass: 'su-session', featureId: unrelated.workItem,
       transcript: turns(unrelated.answer), createdAt: now + 400_000, updatedAt: now + 400_000,
