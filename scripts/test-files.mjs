@@ -2912,7 +2912,8 @@ export async function main(
       if (!dry && !vitestArgs.some((arg) => String(arg).startsWith('--test-reporter'))) {
         try {
           const { beginNodeTestLedger } = await import('../libs/test-config/src/node-test-ledger.ts');
-          nodeLedger = beginNodeTestLedger({ repoRoot: REPO_ROOT });
+          // AWAITED: the before-snapshot must settle before the spawnSync below blocks the loop.
+          nodeLedger = await beginNodeTestLedger({ repoRoot: REPO_ROOT });
         } catch (error) {
           console.error(`TEST_FILE_LEDGER runner=node:test rows=0 reason=${JSON.stringify(`ledger unavailable: ${error?.message ?? error}`)}`);
         }
