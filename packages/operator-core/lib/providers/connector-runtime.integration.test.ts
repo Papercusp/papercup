@@ -13,7 +13,10 @@
  * uncommitted cursor, or a provider that dies mid-page leaves a cursor committed
  * past undelivered objects.
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { promises as fs } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
   HostFetch,
   ProviderAdapter,
@@ -25,7 +28,7 @@ import type {
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { getDatatype, upsertDatatype } from '../datatype-registry-store';
 import { ingestExternalTriggerEvent, type IngestExternalTriggerInput } from '../external-triggers/ingestion';
-import { createProviderRegistry, type ProviderRegistry } from '../integrations/provider-registry';
+import { createProviderRegistry, providerRegistry, type ProviderRegistry } from '../integrations/provider-registry';
 import {
   connectorRecordDedupeKey,
   formatConnectorSyncLog,
@@ -57,8 +60,8 @@ const descriptor: ProviderDescriptor = {
 
 let org: OrgTestDb;
 let registry: ProviderRegistry;
-/** The provider's behaviour for the current test. */
-let handler: (req: ProviderSyncRequest) => Promise<ProviderSyncPage>;
+/** The provider's behaviour for the current test; `host` is the host.fetch the driver handed it. */
+let handler: (req: ProviderSyncRequest, host: { fetch: HostFetch }) => Promise<ProviderSyncPage>;
 /** Every syncPage call the driver made, in order. */
 let calls: Array<{ cursor: string | null; mode: string }>;
 /** Dedupe key of every REAL event-bus delivery (a deduped replay never emits). */
@@ -69,9 +72,9 @@ let ingestCalls: number;
 
 const adapter: ProviderAdapter = {
   describe: () => descriptor,
-  syncPage: async (req) => {
+  syncPage: async (req, host) => {
     calls.push({ cursor: req.cursor, mode: req.mode });
-    return handler(req);
+    return handler(req, host);
   },
   invoke: async () => ({ ok: true }),
 };
@@ -669,5 +672,130 @@ describe('sync.adopt: adopting a pre-provider cursor (D-020)', () => {
     adoptAnswer = () => ({ cursor: 42, backfillComplete: true });
     expect((await adoptSync(src)).outcome).toBe('failed');
     expect(await hasProviderKey(src)).toBe(false);
+  });
+});
+
+/**
+ * P-013 R-7, re-asserted on the provider path (WI-10006345): the data-source record is the one
+ * copy a sync runs from. These passes use the PRODUCTION host.fetch (no `hostFetchFor` override),
+ * so the token comes from the record's credential_ref through the real token store; only the
+ * network edge (global fetch) and the token file's location are faked.
+ */
+describe('the data-source record is the one copy a sync runs from (P-013 R-7)', () => {
+  const GLOBAL_PLUGIN = 'connector-runtime-record-plugin';
+  const TOKEN_PLUGIN = `provider:${KIND}`;
+  const GRAPH = 'https://graph.microsoft.com/v1.0/me/messages';
+  const priorHome = process.env.PAPERCUSP_HOME;
+  let home: string;
+  let seen: Array<{ url: string; authorization: string | null }>;
+
+  async function recordSource(credentialRef: string | null, config: Record<string, unknown>): Promise<string> {
+    const src = await createSource();
+    await org.adminSql`
+      UPDATE harness_shared.data_sources
+         SET credential_ref = ${credentialRef}, config = ${JSON.stringify(config)}::text::jsonb
+       WHERE workspace_id = ${WS} AND id = ${src}::uuid`;
+    return src;
+  }
+
+  async function setCredential(src: string, credentialRef: string | null): Promise<void> {
+    await org.adminSql`
+      UPDATE harness_shared.data_sources SET credential_ref = ${credentialRef}
+       WHERE workspace_id = ${WS} AND id = ${src}::uuid`;
+  }
+
+  /** One pass through the production host.fetch. */
+  async function productionSync(src: string) {
+    const production = deps();
+    delete (production as { hostFetchFor?: unknown }).hostFetchFor;
+    const result = await runConnectorSync(
+      org.adminSql,
+      { workspaceId: WS, harness: 'papercusp', sourceIds: [src], pollIntervalSeconds: 300 },
+      production,
+    );
+    expect(result.sources).toHaveLength(1);
+    return result.sources[0];
+  }
+
+  beforeAll(async () => {
+    // The production host.fetch resolves the provider and its token store from the global registry.
+    providerRegistry().unregisterPlugin(GLOBAL_PLUGIN);
+    await providerRegistry().register({ descriptor, adapter, pluginName: GLOBAL_PLUGIN });
+  });
+
+  afterAll(() => {
+    providerRegistry().unregisterPlugin(GLOBAL_PLUGIN);
+  });
+
+  beforeEach(async () => {
+    home = await fs.mkdtemp(join(tmpdir(), 'paperhome-connector-record-'));
+    process.env.PAPERCUSP_HOME = home;
+    const dir = join(home, 'harnesses', 'papercusp', 'plugin-configs');
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(join(dir, `${TOKEN_PLUGIN}.json`), JSON.stringify({ 'slot-a': 'token-a', 'slot-b': 'token-b' }));
+    seen = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+        const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+        seen.push({ url, authorization: new Headers(init?.headers).get('authorization') });
+        return Response.json({ value: [] });
+      }),
+    );
+    // Each pass fetches once through the host, then returns one record and the next cursor.
+    handler = async (req, host) => {
+      await host.fetch({ source: req.source, request: { url: GRAPH } });
+      const at = req.cursor ?? 'c0';
+      return page([mail(`m-${at}`)], `${at}+`, false);
+    };
+  });
+
+  afterEach(async () => {
+    vi.unstubAllGlobals();
+    if (priorHome === undefined) delete process.env.PAPERCUSP_HOME;
+    else process.env.PAPERCUSP_HOME = priorHome;
+    await fs.rm(home, { recursive: true, force: true });
+  });
+
+  it('syncs from the record: its config reaches the provider, its credential signs the call, status and cursor land back on it', async () => {
+    const src = await recordSource(`${TOKEN_PLUGIN}:slot-a`, { folder: 'Inbox' });
+    let config: unknown;
+    const base = handler;
+    handler = async (req, host) => {
+      config = req.config;
+      return base(req, host);
+    };
+
+    expect(await productionSync(src)).toMatchObject({ outcome: 'synced', admitted: 1 });
+    expect(config).toEqual({ folder: 'Inbox' });
+    expect(seen).toEqual([{ url: GRAPH, authorization: 'Bearer token-a' }]);
+    expect(await state(src)).toMatchObject({ cursor: 'c0+', status: 'connected', failure_count: 0, last_error: null });
+  });
+
+  it('a credential_ref rotated on the record is the one used at the next pass', async () => {
+    const src = await recordSource(`${TOKEN_PLUGIN}:slot-a`, {});
+    expect(await productionSync(src)).toMatchObject({ outcome: 'synced' });
+
+    await setCredential(src, `${TOKEN_PLUGIN}:slot-b`);
+    await makeDue(src);
+    expect(await productionSync(src)).toMatchObject({ outcome: 'synced', admitted: 1 });
+    expect(seen.map((s) => s.authorization)).toEqual(['Bearer token-a', 'Bearer token-b']);
+    expect((await state(src)).cursor).toBe('c0++');
+  });
+
+  it('clearing the record credential stops the sync: no request leaves, the cursor stays', async () => {
+    const src = await recordSource(`${TOKEN_PLUGIN}:slot-a`, {});
+    // Positive control: with the credential set, a pass does reach the network.
+    expect(await productionSync(src)).toMatchObject({ outcome: 'synced' });
+    expect(seen).toHaveLength(1);
+
+    await setCredential(src, null);
+    await makeDue(src);
+    const stopped = await productionSync(src);
+    expect(stopped.outcome).toBe('failed');
+    expect(seen).toHaveLength(1);
+    const after = await state(src);
+    expect(after.cursor).toBe('c0+');
+    expect(after.last_error).toMatch(/no access token/);
   });
 });
