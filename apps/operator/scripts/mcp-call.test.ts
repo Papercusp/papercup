@@ -26,6 +26,7 @@ import {
   resolveMcpWorkspace,
   resolveCandidatePorts,
   resolveMcpProxyPort,
+  superuserTokenPath,
   isRecoverableAuthorityDenial,
   buildFallbackWarning,
   buildUnreachableDiagnostic,
@@ -206,6 +207,16 @@ describe('mcp-call argument parsing', () => {
       pinned: false,
     });
     expect(resolveMcpProxyPort({ PAPERCUSP_MCP_PROXY_PORT: '9171' })).toBe('9171');
+  });
+
+  // WI-10006600: an isolated verify-tauri-headless sidecar mints its own bearer
+  // under PAPERCUSP_HOME; reading ~/.papercusp instead presented the REAL user's
+  // token and every call was refused superuser_invalid_bearer.
+  it('reads the superuser token from PAPERCUSP_HOME before the home fallback, like the operator', () => {
+    expect(superuserTokenPath({ PAPERCUSP_HOME: '/tmp/iso/papercusp-home' }, '/home/u'))
+      .toBe('/tmp/iso/papercusp-home/superuser-token');
+    expect(superuserTokenPath({}, '/home/u')).toBe('/home/u/.papercusp/superuser-token');
+    expect(superuserTokenPath({ PAPERCUSP_HOME: '' }, '/home/u')).toBe('/home/u/.papercusp/superuser-token');
   });
 
   it('keeps an explicitly pinned operator port fail-closed', () => {

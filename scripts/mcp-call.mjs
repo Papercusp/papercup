@@ -421,6 +421,18 @@ export function parseSse(raw, requestId = 1) {
   };
 }
 
+/**
+ * Where the superuser bearer lives — the SAME precedence as the operator's own
+ * reader (packages/operator-core/lib/superuser-token.ts): `$PAPERCUSP_HOME/
+ * superuser-token`, else `~/.papercusp/superuser-token`. Hard-coding the home
+ * fallback made this helper present the REAL user's bearer to an isolated
+ * verify-tauri-headless sidecar (which mints its own token under PAPERCUSP_HOME),
+ * so every call was refused `superuser_invalid_bearer` (WI-10006600).
+ */
+export function superuserTokenPath(env = process.env, home = homedir()) {
+  return join(env.PAPERCUSP_HOME || join(home, '.papercusp'), 'superuser-token');
+}
+
 /** Resolve the local resilient MCP proxy port using the same default as ptool. */
 export function resolveMcpProxyPort(env = process.env) {
   const DEFAULT_MCP_PROXY_PORT = '9071';
@@ -652,9 +664,9 @@ async function main() {
   }
   let tok;
   try {
-    tok = readFileSync(join(homedir(), '.papercusp', 'superuser-token'), 'utf8').trim();
+    tok = readFileSync(superuserTokenPath(), 'utf8').trim();
   } catch {
-    console.error('mcp-call: no ~/.papercusp/superuser-token — run on a host that has it.');
+    console.error(`mcp-call: no superuser token at ${superuserTokenPath()} — run on a host that has it.`);
     process.exit(3);
   }
   let args;
