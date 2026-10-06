@@ -10,6 +10,12 @@ import {
 import { knownQueryNamesV2 } from './index';
 
 describe('queryNamesForTriggerEvent', () => {
+  it('refreshes the PR viewer when report, checks or exact merge-test metadata changes', () => {
+    for (const table of ['pr_review_reports', 'pr_check_status_cache', 'harness_feature_prs', 'routines']) {
+      expect(queryNamesForTriggerEvent(`harness_shared.${table}.changed`)).toContain('harnessPrs.byHarness');
+      expect(queryNamesForTriggerEvent(`harness_shared.${table}.changed`)).toContain('harnessPrs.detail');
+    }
+  });
   it('strips the .changed suffix and looks up the table', () => {
     expect(queryNamesForTriggerEvent('harness_shared.harness_text_artifacts.changed')).toEqual([
       'harnessTextArtifact.byHarness',

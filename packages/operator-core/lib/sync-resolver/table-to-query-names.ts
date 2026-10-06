@@ -106,7 +106,10 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // to scope by harness_slug on these viewer-keyed tables — the id-less
   // scope fallback only covers harness_plans/pot_settings today), matching
   // most of this map; low write rate keeps that cheap.
-  'harness_shared.pr_reviewer_settings': ['prReviewerSettings.byHarness'],
+  'harness_shared.pr_reviewer_settings': ['prReviewerSettings.byHarness', 'harnessPrs.detail'],
+  'harness_shared.pr_review_reports': ['harnessPrs.byHarness', 'harnessPrs.detail'],
+  'harness_shared.pr_check_status_cache': ['harnessPrs.byHarness', 'harnessPrs.detail'],
+  'harness_shared.shared_repo_binding_cache': ['harnessPrs.detail'],
   'harness_shared.trusted_authors': ['prReviewerSettings.byHarness'],
   // planSessions.list (owner-plans-single-pane P-004): the plan popup's
   // Sessions tab is keyed by plan_slug, not a row PK — full-bust here so a new
@@ -194,7 +197,7 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   'harness_shared.harness_lanes': ['harnessLanes.byHarness', 'harnessLanes.snapshot'],
   'harness_shared.harness_escalations': ['harnessEscalations.byHarness'],
   'harness_shared.harness_checkpoints': ['harnessCheckpoints.byHarness'],
-  'harness_shared.harness_feature_prs': ['featurePrs.byHarness', 'featureTimeline.byFeature'],
+  'harness_shared.harness_feature_prs': ['featurePrs.byHarness', 'featureTimeline.byFeature', 'harnessPrs.byHarness', 'harnessPrs.detail'],
   'harness_shared.harness_status': ['harnessStatus.byHarness'],
   'harness_shared.harness_tests': ['harnessTests.byHarness'],
   'harness_shared.harness_archives': ['harnessArchives.byHarness'],
@@ -813,7 +816,7 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   'harness_shared.regret_findings': ['learning.frontier'],
   'harness_shared.transfer_lessons': ['learning.frontier'],
   'harness_shared.prompt_ablation_runs': ['learning.frontier'],
-  'harness_shared.routines': ['learning.frontier'],
+  'harness_shared.routines': ['learning.frontier', 'harnessPrs.byHarness', 'harnessPrs.detail'],
   'harness_shared.bench_runs': ['evals.benchRuns', 'evals.benchRun', 'evals.benchRunLive'],
   'harness_shared.bench_run_tasks': ['evals.benchRun', 'evals.benchRunLive'],
   // fleetAssignments.byHarness (progress-tab-agents-convergence P-001) reads the

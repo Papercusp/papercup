@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -8,6 +8,9 @@ import { freezeCompilerReplayConfig, materializeReplaySource, replayDurableRepor
 import { scopeUnitForTask } from '../task-manager/types';
 import { buildReplayTrace, type ReplayReport } from './lsp-fleet-replay';
 import type { LspDaemonAnswer } from './lsp-daemon-protocol';
+import { runSaturationCli } from './lsp-saturation-bench-cli';
+
+vi.mock('./code-intel-bench.ts', () => { throw new Error('legacy benchmark must not load in independent replay mode'); });
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -73,6 +76,24 @@ describe('independent replay source materialization', () => {
     expect(() => validateDaemonReplayConfig(oracle)).not.toThrow();
     writeFileSync(copied.sourceSnapshot!.manifestPath, '{}');
     expect(() => validateDaemonReplayConfig(oracle)).toThrow('changed-file');
+  });
+  it('freezes through the maintained CLI without loading Git-dependent legacy probes', async () => {
+    const f = fixture();
+    expect(existsSync(join(f.input.rootPath, '.git'))).toBe(false);
+    const inputPath = join(f.parent, 'input.json');
+    const outputPath = join(f.parent, 'frozen.json');
+    writeFileSync(inputPath, JSON.stringify(f.input));
+    const output = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const progress = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await runSaturationCli(['node', 'lsp-saturation-bench-cli.ts', '--freeze-replay', inputPath, outputPath]);
+      const frozen = JSON.parse(readFileSync(outputPath, 'utf8')) as DaemonReplayConfig;
+      expect(frozen.rootPath).toBe(f.input.rootPath);
+      expect(frozen.corpus['hot-references'].oracle.sites).toEqual([
+        { path: 'source.ts', line1: 1 }, { path: 'source.ts', line1: 2 },
+      ]);
+      expect(() => validateDaemonReplayConfig(frozen)).not.toThrow();
+    } finally { output.mockRestore(); progress.mockRestore(); }
   });
   it('refuses a source-directory escape through the destination parent', () => {
     const f = fixture();

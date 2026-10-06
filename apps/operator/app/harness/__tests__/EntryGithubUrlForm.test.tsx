@@ -16,6 +16,7 @@ import {
   deriveSlugFromRepo,
   errorCodeToCopy,
   parseGithubUrlClient,
+  repoLabelFromUrl,
   stepForErrorCode,
 } from '../EntryGithubUrlForm';
 
@@ -91,6 +92,17 @@ function postedBodies(needle: string): Record<string, unknown>[] {
     .map((c) => JSON.parse((c[1] as RequestInit).body as string) as Record<string, unknown>);
 }
 
+/**
+ * Every radio EXCEPT the integration-mode question's (P-017). The visibility
+ * 3-way radio is retired, so this must stay empty; the one question that is
+ * allowed radios is the "where should the agents' work go?" answer.
+ */
+function radiosOutsideIntegrationQuestion(): HTMLElement[] {
+  return screen
+    .queryAllByRole('radio')
+    .filter((r) => !r.closest('[data-testid="integration-mode-question"]'));
+}
+
 const VALID_URL = 'https://github.com/acme/web';
 const TOPIC = 'a'.repeat(64);
 const memberLink = (repo: string, id: number) =>
@@ -161,7 +173,7 @@ describe('form validation', () => {
       /This repo is public — your hive is discoverable on the network; contributors’ GitHub identities, including your own, are visible\./,
     );
     // The 3-way radio is RETIRED — visibility is derived, never chosen.
-    expect(screen.queryAllByRole('radio')).toHaveLength(0);
+    expect(radiosOutsideIntegrationQuestion()).toHaveLength(0);
   });
 
   it('derives + displays Private (invite-only) visibility for a known-private repo (no radios)', () => {
@@ -170,7 +182,7 @@ describe('form validation', () => {
     screen.getByText(
       /This is a private repo — your hive will be Private: hidden from the directory and joinable only with the invite secret generated at publish\./,
     );
-    expect(screen.queryAllByRole('radio')).toHaveLength(0);
+    expect(radiosOutsideIntegrationQuestion()).toHaveLength(0);
   });
 
   it('shows the neutral "set automatically" hint when repo privacy is unknown (pasted URL)', () => {
@@ -178,7 +190,7 @@ describe('form validation', () => {
     screen.getByText(
       /Visibility is set automatically from the repository — public repos become Public; private repos become Private \(invite-only\)\./,
     );
-    expect(screen.queryAllByRole('radio')).toHaveLength(0);
+    expect(radiosOutsideIntegrationQuestion()).toHaveLength(0);
   });
 
   it('auto-derives the slug under the Advanced expander', async () => {
@@ -492,6 +504,70 @@ describe('new-hive mode', () => {
 });
 
 // ── Error mapping (rendered) ────────────────────────────────────────────────
+
+// ── P-017: where should the agents' work go? (pot-review-integration-mode, D-007) ──
+
+describe('repoLabelFromUrl', () => {
+  it('names the repo as owner/repo for https and ssh shapes, else a neutral fallback', () => {
+    expect(repoLabelFromUrl('https://github.com/acme/web')).toBe('acme/web');
+    expect(repoLabelFromUrl('https://github.com/acme/web.git')).toBe('acme/web');
+    expect(repoLabelFromUrl('git@github.com:acme/web.git')).toBe('acme/web');
+    expect(repoLabelFromUrl('  https://github.com/acme/web/tree/main  ')).toBe('acme/web');
+    expect(repoLabelFromUrl('')).toBe('the repository');
+    expect(repoLabelFromUrl('https://gitlab.com/acme/web')).toBe('the repository');
+  });
+});
+
+describe('integration-mode question (new hive)', () => {
+  const created = {
+    '/api/harness/pots/from-repo': {
+      status: 200,
+      body: { ok: true, created: { potSlug: 'web-hive', memberSlug: 'web', memberPath: '/tmp/web' }, bindingUnverified: false, publish: { skipped: 'private' } },
+    },
+  };
+  const radio = (value: 'direct' | 'review') =>
+    screen.getByTestId(`integration-mode-${value}`).querySelector('input') as HTMLInputElement;
+
+  it('asks the owner-approved question, names the repo, and defaults to Straight into', async () => {
+    const user = userEvent.setup();
+    renderForm();
+    const q = screen.getByTestId('integration-mode-question');
+    expect(q.querySelector('legend')?.textContent).toBe("Where should the agents' work go?");
+    await user.type(screen.getByPlaceholderText('https://github.com/owner/repo'), VALID_URL);
+    expect(screen.getByTestId('integration-mode-direct').textContent).toContain('Straight into acme/web');
+    expect(screen.getByTestId('integration-mode-review').textContent).toContain('Into a working copy of acme/web');
+    expect(screen.getByTestId('integration-mode-review').textContent).toContain('reaches acme/web only through PRs');
+    expect(radio('direct').checked).toBe(true);
+    expect(radio('review').checked).toBe(false);
+  });
+
+  it('the default answer sends NO integrationMode (today\'s behaviour)', async () => {
+    const user = userEvent.setup();
+    respondByUrl(created);
+    renderForm();
+    await user.type(screen.getByPlaceholderText('https://github.com/owner/repo'), VALID_URL);
+    await user.click(screen.getByRole('button', { name: 'Create hive' }));
+    await waitFor(() => expect(postedBodies('/api/harness/pots/from-repo')).toHaveLength(1));
+    expect(postedBodies('/api/harness/pots/from-repo')[0]).not.toHaveProperty('integrationMode');
+  });
+
+  it('choosing the working copy sends integrationMode: review', async () => {
+    const user = userEvent.setup();
+    respondByUrl(created);
+    renderForm();
+    await user.type(screen.getByPlaceholderText('https://github.com/owner/repo'), VALID_URL);
+    await user.click(radio('review'));
+    expect(radio('review').checked).toBe(true);
+    await user.click(screen.getByRole('button', { name: 'Create hive' }));
+    await waitFor(() => expect(postedBodies('/api/harness/pots/from-repo')).toHaveLength(1));
+    expect(postedBodies('/api/harness/pots/from-repo')[0]).toMatchObject({ githubUrl: VALID_URL, integrationMode: 'review' });
+  });
+
+  it('is not asked when adding a repo into an existing hive', () => {
+    renderForm({ hiveScope: 'acme', initialMode: 'into-hive' });
+    expect(screen.queryByTestId('integration-mode-question')).toBeNull();
+  });
+});
 
 describe('error rendering', () => {
   it('maps clone_auth_required to the gh-auth copy and offers retry', async () => {

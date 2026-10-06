@@ -43,7 +43,10 @@ const finalResolution: GoalLaunchResolution = {
   headcountMeasurement: {
     measuredAt: '2026-10-05T18:40:16Z', populationComplete: true,
     candidate: { total: 6, fleet: 3 },
-    counted: [{ ownerId: 'existing', inFleet: true, basis: 'launch-reservation', heartbeatAt: null, briefUpdatedAt: null }],
+    counted: Array.from({ length: 5 }, (_, index) => ({
+      ownerId: `existing-${index}`, inFleet: index < 2, basis: 'launch-reservation' as const,
+      heartbeatAt: null, briefUpdatedAt: null,
+    })),
     oracleEndedOwnerIds: ['ended'], excludedOwnerIds: ['replacement', 'target'],
   },
   budget: null, refusal: null, degraded: false, degradedReasons: [],
@@ -178,7 +181,8 @@ describe('spawnGovernedAgentProcess', () => {
     const result = await spawnGovernedAgentProcess({
       workspaceId: 'ws', idempotencyKey: 'spawn-1', owner: 'target', metadata: { launchedBy: 'launcher' },
     }, spawn);
-    expect(result).toEqual({ status: 'error', error: 'goal seat already reserved', code: 409 });
+    expect(result).toMatchObject({ status: 'error', error: 'goal seat already reserved', code: 409,
+      goalAdmission: { decision: 'refused', stage: 'final' } });
     expect(beginGovernedExecutionMock).not.toHaveBeenCalled();
     expect(spawn).not.toHaveBeenCalled();
   });
@@ -200,7 +204,7 @@ describe('spawnGovernedAgentProcess', () => {
     const result = await spawnGovernedAgentProcess({
       workspaceId: 'ws', idempotencyKey: 'spawn-1', owner: 'target', metadata: { launchedBy: 'launcher' },
     }, async () => ({ status: 'error', error: 'fixture boot failure', code: 502 }));
-    expect(result).toEqual({ status: 'error', error: 'fixture boot failure', code: 502,
+    expect(result).toMatchObject({ status: 'error', error: 'fixture boot failure', code: 502,
       goalAdmissionDegraded: ['fixture lock unavailable'] });
     expect(cancel).toHaveBeenCalledOnce();
     expect(cancel).toHaveBeenCalledWith('fixture boot failure');

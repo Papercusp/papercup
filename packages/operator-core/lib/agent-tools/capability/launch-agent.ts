@@ -2374,6 +2374,7 @@ export default defineTool({
       // Preserve the resolver's pre-spawn count. A later read could include this
       // launch or an existing actor whose goal attribution/freshness changed.
       goalAdmission: goalLaunch.goalId ? {
+        stage: 'batch-preflight',
         goalId: goalLaunch.goalId,
         fleet: fleetSlug,
         requested: count,
@@ -2385,6 +2386,15 @@ export default defineTool({
         degraded: goalLaunch.degraded,
         degradedReasons: goalLaunch.degradedReasons,
       } : null,
+      // Preserve each final decision separately from the earlier batch check.
+      // A throwing spawn can leave a durable receipt but no returned context;
+      // null is unknown here, never proof of a zero or unenforced population.
+      finalGoalAdmissions: results.map((result, memberIndex) => ({
+        memberIndex, ownerId: memberOwnerIds[memberIndex] ?? null,
+        receiptId: result.admissionContext?.receiptId ?? null,
+        admission: result.goalAdmission ?? null,
+        outcome: result.status === 'ok' ? 'opened' : 'failed',
+      })),
       opened: opened.length,
       failed: failed.length,
       failures,

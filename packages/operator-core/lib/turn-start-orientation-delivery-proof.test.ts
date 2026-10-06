@@ -402,14 +402,19 @@ describe('goal placement receipts through the real orientation ACK path', () => 
     expect(goalObligations()).toEqual({ contributionId: 'goal-obligations', omission: { reason: 'ineligible' } });
   });
 
-  it('a wrong token does not prove the first exposure; only a subsequently emitted retry can be recorded', async () => {
+  it('a wrong token attributes the discarded exposure and redelivers from the proven floor', async () => {
     const f = fixture();
     const first = await f.turn(null); f.finish();
     const retry = await f.turn('not-the-token');
     await drainDetached();
     expect(retry.block).toContain(formatAgentObligationLine(f.row, 'action'));
     expect(retry.deliveryToken).not.toBe(first.deliveryToken);
-    expect(f.receiptDeps.append).not.toHaveBeenCalled();
+    expect(f.receiptDeps.append).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ detail: {
+      goalPlacementDeliveryOutcome: expect.objectContaining({
+        stage: 'confirm', recorded: false, reason: 'confirmation-token-mismatch',
+        token: first.deliveryToken, planSlugs: ['plan'],
+      }),
+    } }));
   });
 
   it.each(['progress', 'interrupted'] as const)('does not record a %s native response despite valid delivery proof', async (disposition) => {

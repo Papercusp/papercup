@@ -4719,6 +4719,17 @@ export async function buildTurnStartOrientationBlock(input: {
       ORIENTATION_CURSOR_SURFACE,
       proof ? { confirmedToken: input.confirmedDeliveryToken ?? null } : undefined,
     ).catch(() => null);
+    const unconfirmedPlacement = progressReceipts && ack?.unconfirmedPending
+      ? ack.unconfirmedPending[progressReceipts.GOAL_PLACEMENT_DELIVERY_KEY]
+      : undefined;
+    if (progressReceipts && unconfirmedPlacement !== undefined) {
+      const reason = input.confirmedDeliveryToken === null
+        ? 'confirmation-token-missing'
+        : 'confirmation-token-mismatch';
+      void trackDetached(progressReceipts.recordGoalPlacementDeliveryOutcome({
+        ownerId, workspaceId, stage: 'confirm', reason, candidate: unconfirmedPlacement,
+      }, input.progressReceiptDeps)).catch(() => {});
+    }
     // A completed plan can leave no new orientation rows. Still settle its
     // previously emitted receipt; an empty next block must not erase evidence.
     if (progressReceipts && ack?.committed?.[progressReceipts.GOAL_PLACEMENT_DELIVERY_KEY]) {
