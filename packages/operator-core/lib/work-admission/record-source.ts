@@ -1,21 +1,26 @@
 /**
  * The `record` admission source (enterprise-data-sources-2026-10-01 P-020, D-011, D-030).
  *
- * A record is an ingested ticket stored as a work_items row tagged nature='record' (for GitHub
- * Issues, the deterministic TKT-… row github-issues-connector.ts writes). A record is DATA: it
- * is never claimable. Admitting it mints a separate issue-family work item that links back to
- * the record with rel 'about'.
+ * A record is an ingested ticket (or any record-nature datatype) stored as a work_items row
+ * tagged nature='record' — the deterministic row the connector driver's datatype destination
+ * sink writes (generalized-integrations-google-migration-cupboard-workflows-2026-10-05 D-015).
+ * A record is DATA: it is never claimable. Admitting it mints a separate issue-family work item
+ * that links back to the record with rel 'about'.
  *
- * Identity: the record's own id. It is deterministic over (workspace, data source, provider
- * object), so it is stable across re-polls and re-ingest.
+ * Identity: the record's own id. It is deterministic over (workspace, data source, datatype,
+ * provider object), so it is stable across re-syncs and re-ingest.
  *
- * Write-back: a plain-text comment on the source ticket. For GitHub the coordinates
- * (owner/repo, issue number) come from the durable admission's source_ref, never from the
- * caller, and the client is the operator's own gh identity (getOctokit), the same credential
- * the connector reads with.
+ * Write-back: a plain-text comment on the source object, dispatched by CAPABILITY (D-015.5).
+ * The record's data source names its provider; that provider must offer `<datatype>.comment`
+ * and is invoked through a host.fetch bound to exactly that one source. The coordinates come
+ * from the durable admission's source_ref, never from the caller. A provider that does not
+ * offer the capability (a read-only one) is refused with `provider_capability_unsupported`.
  */
-import { getOctokit } from '../identity/octokit-client';
+import type postgres from 'postgres';
+import type { HostFetch } from '@papercusp/plugin-sdk';
 import { pinModuleState } from '@papercusp/module-singleton';
+import { providerRegistry, type ProviderRegistry } from '../integrations/provider-registry';
+import { createSourceHostFetch } from '../integrations/source-host-fetch';
 import {
   DEFAULT_FIELD_AUTHORITY,
   registerAdmissionSource,
@@ -30,21 +35,23 @@ export interface RecordRef {
   recordId: string;
 }
 
-/** The slice of the GitHub client write-back uses. */
-export interface RecordWriteBackClient {
-  issues: {
-    createComment(args: { owner: string; repo: string; issue_number: number; body: string }): Promise<{
-      data: { id?: number | null; html_url?: string | null };
-    }>;
-  };
+export interface RecordSourceDeps {
+  registry?: ProviderRegistry;
+  /** host.fetch bound to exactly the record's source. Production: createSourceHostFetch. */
+  hostFetchFor?: (
+    db: postgres.Sql,
+    input: { workspaceId: string; providerId: string; sourceId: string; harness: string },
+  ) => HostFetch;
 }
 
-export interface RecordSourceDeps {
-  githubClient?: () => Promise<RecordWriteBackClient | null>;
+/** The capability a record of `datatype` is written back through: `<datatype>.comment`. */
+export function recordWriteBackCapability(datatype: string): string {
+  return `${datatype.replace(/-/g, '')}.comment`;
 }
 
 interface RecordRow {
   feature_id: string;
+  kind: string | null;
   title: string | null;
   summary: string | null;
   nature: string | null;
@@ -74,9 +81,21 @@ export function recordSnapshot(payload: Record<string, unknown>, rowTitle?: stri
   };
 }
 
+function defaultHostFetchFor(
+  db: postgres.Sql,
+  input: { workspaceId: string; providerId: string; sourceId: string; harness: string },
+): HostFetch {
+  return createSourceHostFetch(db, {
+    providerId: input.providerId,
+    workspaceId: input.workspaceId,
+    harness: input.harness,
+    sourceIds: [input.sourceId],
+  });
+}
+
 export function createRecordAdmissionSource(deps: RecordSourceDeps = {}): AdmissionSourceResolver<RecordRef> {
-  const githubClient =
-    deps.githubClient ?? (async () => (await getOctokit()) as unknown as RecordWriteBackClient | null);
+  const registryOf = () => deps.registry ?? providerRegistry();
+  const hostFetchFor = deps.hostFetchFor ?? defaultHostFetchFor;
   return {
     kind: RECORD_SOURCE_KIND,
     parseRef(raw) {
@@ -87,7 +106,7 @@ export function createRecordAdmissionSource(deps: RecordSourceDeps = {}): Admiss
     },
     async resolve(ctx, ref): Promise<ResolvedAdmissionSource | AdmissionRefusal> {
       const [row] = await ctx.db<RecordRow[]>`
-        SELECT feature_id, title, summary, nature, payload
+        SELECT feature_id, kind, title, summary, nature, payload
           FROM harness_shared.work_items
          WHERE workspace_id = ${ctx.workspaceId} AND feature_id = ${ref.recordId}
          LIMIT 1`;
@@ -107,6 +126,7 @@ export function createRecordAdmissionSource(deps: RecordSourceDeps = {}): Admiss
         recordWorkItemId: row.feature_id,
         sourceRef: {
           recordId: row.feature_id,
+          ...(str(row.kind) ? { datatype: str(row.kind) } : {}),
           ...(str(payload.provider) ? { provider: str(payload.provider) } : {}),
           ...(str(payload.externalId) ? { externalId: str(payload.externalId) } : {}),
           ...(str(payload.container) ? { container: str(payload.container) } : {}),
@@ -116,16 +136,31 @@ export function createRecordAdmissionSource(deps: RecordSourceDeps = {}): Admiss
         fieldAuthority: DEFAULT_FIELD_AUTHORITY,
       };
     },
-    async writeBack({ admission, text }) {
+    async writeBack({ db, admission, text }) {
       const ref = admission.sourceRef;
-      if (str(ref.provider) !== 'github') throw new Error(`write_back_unsupported_provider:${str(ref.provider) || 'unknown'}`);
-      const [owner, repo] = str(ref.container).split('/');
-      const issueNumber = Number(ref.number);
-      if (!owner || !repo || !Number.isInteger(issueNumber)) throw new Error('write_back_coordinates_missing');
-      const client = await githubClient();
-      if (!client) throw new Error('github_not_authenticated');
-      const { data } = await client.issues.createComment({ owner, repo, issue_number: issueNumber, body: text });
-      return { posted: true, externalRef: str(data.html_url) || (data.id != null ? String(data.id) : null) };
+      const sourceId = str(admission.dataSourceId);
+      const datatype = str(ref.datatype);
+      const externalId = str(ref.externalId);
+      if (!sourceId || !datatype || !externalId) throw new Error('write_back_coordinates_missing');
+      const sql = db as unknown as postgres.Sql;
+      const [source] = await sql<Array<{ kind: string; config: Record<string, unknown> | null }>>`
+        SELECT kind, config FROM harness_shared.data_sources
+         WHERE workspace_id = ${admission.workspaceId} AND id = ${sourceId}::uuid`;
+      if (!source) throw new Error(`write_back_source_missing:${sourceId}`);
+      const provider = registryOf().get(source.kind);
+      if (!provider) throw new Error(`write_back_provider_not_registered:${source.kind}`);
+      const capability = recordWriteBackCapability(datatype);
+      if (!provider.descriptor.capabilities.includes(capability)) {
+        throw new Error(`provider_capability_unsupported:${provider.descriptor.id}:${capability}`);
+      }
+      const harness = str(source.config?.harnessSlug);
+      if (!harness) throw new Error(`write_back_source_harness_missing:${sourceId}`);
+      const fetch = hostFetchFor(sql, { workspaceId: admission.workspaceId, providerId: provider.descriptor.id, sourceId, harness });
+      const result = (await provider.adapter.invoke(
+        { source: sourceId, capability, args: { externalId, text } },
+        { fetch },
+      )) as { externalRef?: unknown } | null;
+      return { posted: true, externalRef: str(result?.externalRef) || null };
     },
   };
 }

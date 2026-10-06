@@ -237,6 +237,7 @@ export async function runDrillCycle(cls: DrillClass, deps: DrillCycleDeps): Prom
       id: issue.id,
       decision: decision.decision,
       reason: `red-queen drill triage: ${decision.reason}`,
+      target: decision.target,
       by: 'red-queen-sandbox',
       comment: false,
     });

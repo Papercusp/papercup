@@ -185,6 +185,26 @@ describe('applyTriageDecision — the decision PERSISTS (the G1 fix)', () => {
     expect(deps.reviews).toEqual(['i-gate']);
   });
 
+  it('routes operator-scoped infrastructure gates to owner escalation instead of harness review', async () => {
+    const idea = issueOf({
+      id: 'i-owner-escalation',
+      scope: 'operator',
+      payload: { watchdogKey: 'service-down:operator-api' },
+    });
+    const deps = depsOf(idea);
+    const res = await applyTriageDecision(
+      { id: idea.id, decision: 'gate', reason: 'the operator API is unavailable' },
+      deps,
+    );
+
+    expect(res).toMatchObject({ ok: true, decision: 'gate', target: 'owner-escalation' });
+    expect(deps.reviews).toEqual([]);
+    expect(deps.merged[0].implementationReadiness).toMatchObject({
+      status: 'unknown',
+      reason: 'awaiting-owner-escalation',
+    });
+  });
+
   it('a NON-gate decision does not set needsHuman (the mirror is gate-only)', async () => {
     const deps = depsOf(issueOf({ id: 'i-place', scope: 'operator' }));
     await applyTriageDecision({ id: 'i-place', decision: 'place', reason: 'auto-eligible bug' }, deps);

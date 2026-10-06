@@ -54,6 +54,8 @@ export interface ApplyTriageInput {
   id: string;
   decision: TriageDecision;
   reason: string;
+  /** D-005 routing target; owner-escalations must not enter harness agent review. */
+  target?: string;
   /** Who decided ('Queen', 'improvement-triage' for the scheduled pass, a human id). */
   by?: string;
   /** Write an audit comment on the issue (default true; the scheduled batch
@@ -65,6 +67,8 @@ export interface ApplyTriageResult {
   ok: boolean;
   id: string;
   decision?: TriageDecision;
+  /** Effective D-005 target, including the inferred infra-environment route. */
+  target?: string;
   lifecycle?: IdeaLifecyclePayload;
   /** True when decision='reject' closed the issue (it left the open queue). */
   closed?: boolean;
@@ -345,6 +349,7 @@ function lifecycleOf(issue: EngineerIssue): IdeaLifecyclePayload | null {
 function triageImplementationReadiness(input: {
   issue: EngineerIssue;
   decision: TriageDecision;
+  target?: string;
   citations?: EvidenceCitationInspection;
   deployment?: DeploymentStalenessScreen;
 }): ImplementationReadinessState {
@@ -425,7 +430,12 @@ function triageImplementationReadiness(input: {
     return createImplementationReadiness({
       status: 'unknown',
       source: 'triage-freshness',
-      reason: input.decision === 'gate' ? 'awaiting-agent-review' : 'awaiting-validation',
+      reason:
+        input.decision === 'gate'
+          ? input.target === 'owner-escalation'
+            ? 'awaiting-owner-escalation'
+            : 'awaiting-agent-review'
+          : 'awaiting-validation',
       ...withEvidence,
     });
   }
@@ -553,6 +563,9 @@ export async function applyTriageDecision(
   // Full-fidelity classification (D-005): the candidate view carries paths +
   // watchdogKey + kind, which the taxonomy keys off — never a scope-only call.
   const ideaType = classifyIdeaType(issueToCandidate(issue)).type;
+  // Manual triage callers may omit a target; retain the taxonomy's owner route for
+  // infra/environment items instead of silently treating every gate as agent review.
+  const routeTarget = input.target ?? (ideaType === 'infra-environment' ? 'owner-escalation' : undefined);
   const lifecycle = updateIdeaLifecycle(current, 'triaged', {
     triageDecision: decision,
     triageReason: reason,
@@ -563,6 +576,7 @@ export async function applyTriageDecision(
   const implementationReadiness = triageImplementationReadiness({
     issue,
     decision,
+    target: routeTarget,
     citations: citationInspection,
     deployment: deploymentStaleness,
   });
@@ -583,10 +597,9 @@ export async function applyTriageDecision(
   if (decision === 'reject') patch.decidedReason = reason;
   await deps.mergeIssuePayload(input.id, patch);
 
-  // A triage gate is review work, not an owner-capability escalation. Enrollment is
-  // idempotent: an already-pending item stays in the same review round, while strict
-  // typed owner actions and remote-owned rows remain on their existing lanes.
-  if (decision === 'gate') {
+  // Generic gates enter harness-bound agent review. Owner escalations follow the
+  // coordinator's owner-action path and operator-scoped rows have no harness to review.
+  if (decision === 'gate' && routeTarget !== 'owner-escalation') {
     await deps.enterAgentReview({ id: input.id, submittedBy: by });
   }
 
@@ -624,6 +637,7 @@ export async function applyTriageDecision(
     ok: true,
     id: input.id,
     decision,
+    ...(routeTarget ? { target: routeTarget } : {}),
     lifecycle,
     closed,
     ...(evidenceDowngrade ? { evidenceDowngrade } : {}),

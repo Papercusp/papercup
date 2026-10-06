@@ -55,6 +55,7 @@ vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { success: vi.fn(), err
 vi.mock('@papercusp/sync', async () => {
   const React = await import('react');
   return {
+    onSyncBusEvent: () => () => {},
     useSyncQuery: ({ queryName, args, enabled = true }: { queryName: string; args?: { harnessSlug?: string; scope?: string }; enabled?: boolean }) => {
       const [data, setData] = React.useState<unknown[]>([]);
       const [loading, setLoading] = React.useState(true);
