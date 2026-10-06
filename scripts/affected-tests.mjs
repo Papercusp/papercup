@@ -69,6 +69,7 @@ import {
   RELATED_FILTER_LIST_ENV,
   selectRelatedTests,
   playwrightOwnedTest,
+  tsconfigAliasesFor,
   unitExcludedVitestTest,
   writeRelatedFilterList,
 } from "./lib/related-tests.mjs";
@@ -5170,50 +5171,8 @@ for (const guard of REPO_WIDE_INVARIANT_GUARDS) {
   });
 }
 
-/**
- * Path aliases for a workspace, read from its tsconfig `compilerOptions.paths`.
- *
- * Only intra-package aliases matter here (`@/…`); a bare package specifier is out of
- * graph by design. Returning {} on any problem is SAFE, not lossy: an alias we cannot
- * resolve makes the importing file "unresolved", and related-tests.mjs treats an
- * unresolved file as reaching everything — so a missing mapping widens the run rather
- * than silently dropping edges from the graph.
- */
-function tsconfigAliasesFor(wsRoot) {
-  try {
-    const tsconfigPath = join(wsRoot, "tsconfig.json");
-    if (!existsSync(tsconfigPath)) return {};
-    // Tolerate comments/trailing commas — tsconfig is JSON5-ish in practice.
-    // Comments are masked by the SHARED stripper, never a local regex. A naive
-    // `//`-to-end-of-line rule is string-literal-blind, so a tsconfig value that
-    // merely CONTAINS " // " (measured: `"note": "ratio 1 // 2 is fine"`) is
-    // truncated mid-string and JSON.parse throws. The catch below would swallow
-    // that and return {}, silently dropping every alias — which makes each aliased
-    // import unresolvable and fail-safes the whole workspace to "reaches
-    // everything". Safe direction, but it disables narrowing INVISIBLY, which is
-    // the failure mode this file can least afford to hide. Trailing commas are
-    // stripped AFTER masking, so a comma inside a string is never touched either.
-    const raw = stripCommentsOnly(
-      readFileSync(tsconfigPath, "utf8"),
-      tsconfigPath,
-    ).replace(/,(\s*[}\]])/g, "$1");
-    const cfg = JSON.parse(raw);
-    const opts = cfg.compilerOptions ?? {};
-    const baseUrl = join(wsRoot, opts.baseUrl ?? ".");
-    const out = {};
-    for (const [pattern, targets] of Object.entries(opts.paths ?? {})) {
-      const target = Array.isArray(targets) ? targets[0] : null;
-      if (typeof target !== "string") continue;
-      // "@/*": ["./*"]  ->  prefix "@/" maps to <baseUrl>/
-      const prefix = pattern.replace(/\*$/, "");
-      const dir = join(baseUrl, target.replace(/\*$/, ""));
-      out[prefix] = dir.endsWith("/") ? dir : dir + "/";
-    }
-    return out;
-  } catch {
-    return {};
-  }
-}
+// tsconfigAliasesFor(wsRoot) lives in ./lib/related-tests.mjs (moved there by WI-10006650
+// so the e2e fixture-spec guard resolves `@/` with the same parser as related selection).
 
 // --related: narrow each workspace's `test` task to the test files the change can
 // actually reach. Everything else about the task list is untouched — in particular
