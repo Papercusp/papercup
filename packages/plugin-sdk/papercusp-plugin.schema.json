@@ -158,7 +158,31 @@
             }
           }
         },
-        "configSchema": { "type": "object" }
+        "configSchema": { "type": "object" },
+        "push": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Push-wake scheme the host verifies (linear-asana-task-sync D-016): an optional subscription handshake header whose secret the host stores and echoes, and the header carrying hex HMAC-SHA256 of each delivery's raw body. A verified delivery only wakes the source's next sync.",
+          "required": ["signature"],
+          "properties": {
+            "handshake": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["header"],
+              "properties": { "header": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" } }
+            },
+            "signature": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["header", "algorithm", "encoding"],
+              "properties": {
+                "header": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" },
+                "algorithm": { "type": "string", "enum": ["hmac-sha256"] },
+                "encoding": { "type": "string", "enum": ["hex"] }
+              }
+            }
+          }
+        }
       }
     },
     "triggerPack": {
