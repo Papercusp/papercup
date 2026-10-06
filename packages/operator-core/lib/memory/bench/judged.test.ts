@@ -35,6 +35,7 @@ import {
   collectIndependentCohort,
   writeBlindReceipt,
   parseBlindChunkVotes,
+  BLIND_FORMAT_REPAIR,
   parseBlindTargetBudget,
   selectBlindSourceTargets,
   type JudgedQueryOutcome,
@@ -484,8 +485,10 @@ describe('blind label collection through the injected stateless transport', () =
         return result;
       };
       await expect(collectIndependentCohort({ snapshot: f.snapshot, out, llm: bad, targetsPerPartition: 1 }))
-        .rejects.toThrow(/invalid blind.*3 attempts/);
-      expect(f.calls).toBe(5);
+        .rejects.toThrow(/invalid blind.*3 attempts and a format repair/);
+      expect(f.calls).toBe(6); // Two authors, three malformed attempts and exactly one bounded format repair.
+      expect(JSON.parse(fs.readFileSync(path.join(out, 'memory-judge-1-0-format-repair.json'), 'utf8')).repair.of)
+        .toBe(JSON.parse(fs.readFileSync(path.join(out, 'memory-judge-1-0-attempt-3.json'), 'utf8')).invocationId);
       const noCalls: LlmCallFn = vi.fn(bad);
       await expect(collectIndependentCohort({ snapshot: f.snapshot, out, llm: noCalls, targetsPerPartition: 1 }))
         .rejects.toThrow(/invalid blind.*3 attempts/);
@@ -495,6 +498,38 @@ describe('blind label collection through the injected stateless transport', () =
       expect(noCalls).not.toHaveBeenCalled();
       expect(fs.existsSync(path.join(out, 'memory-judge-1-0.json'))).toBe(false);
       expect(fs.existsSync(path.join(out, 'labels.json'))).toBe(false);
+    } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
+  });
+  it('accepts only a strictly valid format repair of the same judge and recovers it without paying again', async () => {
+    const f = fixture();
+    try {
+      const out = path.join(f.root, 'repaired');
+      const repairTurns: string[] = [];
+      const scalar: LlmCallFn = async (opts) => {
+        const result = await f.llm(opts);
+        if (!JSON.parse(opts.messages[0].content).questions) return result;
+        if (opts.messages.length > 1) { repairTurns.push(String(opts.messages.at(-1)?.content)); return result; }
+        const payload = structuredClone(result.json) as { votes: Array<{ q: number; d: unknown; a: boolean }> };
+        payload.votes[0].d = 0; // The observed live failure: a scalar where an index array is required.
+        return { ...result, json: payload, text: JSON.stringify(payload) };
+      };
+      const receipt = await collectIndependentCohort({ snapshot: f.snapshot, out, llm: scalar, targetsPerPartition: 1 });
+      expect(repairTurns).toHaveLength(4); // One repair per judge call, never a fourth plain attempt.
+      for (const turn of repairTurns) {
+        expect(turn).toContain(BLIND_FORMAT_REPAIR);
+        expect(turn).toMatch(/expected array/);
+      }
+      expect(f.calls).toBe(20); // Four authors; four judge calls x (three rejected attempts + one repair).
+      const selected = JSON.parse(fs.readFileSync(path.join(out, 'memory-judge-1-0.json'), 'utf8'));
+      expect(path.basename(selected.origin.path)).toBe('memory-judge-1-0-format-repair.json');
+      const repaired = JSON.parse(fs.readFileSync(path.join(out, 'memory-judge-1-0-format-repair.json'), 'utf8'));
+      expect(repaired.repair.of).toBe(JSON.parse(fs.readFileSync(path.join(out, 'memory-judge-1-0-attempt-3.json'), 'utf8')).invocationId);
+      expect(repaired.repair.turns.map((t: { role: string }) => t.role)).toEqual(['assistant', 'user']);
+      expect(JSON.parse(fs.readFileSync(receipt.labels.path, 'utf8')).memory).toHaveLength(8);
+      const noCalls: LlmCallFn = vi.fn(scalar);
+      await collectIndependentCohort({ snapshot: f.snapshot, out: path.join(f.root, 'successor'),
+        llm: noCalls, targetsPerPartition: 1, reuseCallsFrom: out });
+      expect(noCalls).not.toHaveBeenCalled();
     } finally { fs.rmSync(f.root, { recursive: true, force: true }); }
   });
   it.each(['invalid-json', 'missing-votes', 'out-of-range', 'missing-ambiguity', 'truncated'])
