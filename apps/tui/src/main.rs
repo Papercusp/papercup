@@ -1631,8 +1631,7 @@ async fn run_chat_workbench() -> Result<Option<i32>> {
     }
     let path = layout::materialize_chat_workbench()?;
     let argv = layout::launch_argv(&path.to_string_lossy(), &session);
-    let (prog, rest) = argv.split_first().expect("launch argv is never empty");
-    let status = std::process::Command::new(prog).args(rest).status()?;
+    let status = zellij_session_command(&argv).status()?;
     reap::kill_and_delete(&session);
     if let Ok(text) = std::fs::read_to_string(&transcript) {
         use std::io::Write as _;
@@ -1640,6 +1639,24 @@ async fn run_chat_workbench() -> Result<Option<i32>> {
         let _ = std::fs::remove_file(&transcript);
     }
     Ok(Some(status.code().unwrap_or(0)))
+}
+
+/// The zellij process for an app-managed session `argv` (from
+/// [`layout::launch_argv`] or [`layout::attach_argv`]), with this build's
+/// directory first on its `PATH` so the layout's `command "pui"` panes run
+/// the same build as this launcher ([`layout::session_path_env`]).
+fn zellij_session_command(argv: &[String]) -> std::process::Command {
+    let (prog, rest) = argv.split_first().expect("launch argv is never empty");
+    let mut command = std::process::Command::new(prog);
+    command.args(rest);
+    let inherited = std::env::var_os("PATH");
+    if let Some(path) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| layout::session_path_env(&exe, inherited.as_deref()))
+    {
+        command.env("PATH", path);
+    }
+    command
 }
 
 /// Where the chat pane of `session` leaves its exit text for the launcher.
@@ -1677,8 +1694,7 @@ async fn run_workbench() -> Result<()> {
         let path = layout::materialize()?;
         layout::launch_argv(&path.to_string_lossy(), &session)
     };
-    let (prog, rest) = argv.split_first().expect("launch argv is never empty");
-    let status = std::process::Command::new(prog).args(rest).status()?;
+    let status = zellij_session_command(&argv).status()?;
     reap::kill_and_delete(&session);
     identity::clear(&session);
     std::process::exit(status.code().unwrap_or(0));
@@ -1722,8 +1738,7 @@ async fn run_chat_dock() -> Result<()> {
         reap::reap_stale(&session);
         layout::launch_argv(&path.to_string_lossy(), &session)
     };
-    let (prog, rest) = argv.split_first().expect("launch argv is never empty");
-    let status = std::process::Command::new(prog).args(rest).status()?;
+    let status = zellij_session_command(&argv).status()?;
     reap::kill_and_delete(&session);
     identity::clear(&session);
     std::process::exit(status.code().unwrap_or(0));
