@@ -29,6 +29,7 @@ import {
   classifyHttpError,
   ownerHeaders,
   probeStatelessTransport,
+  createStatelessDiagnosticFetch,
   type AgentBackend,
   type TurnError,
   type TurnProvider,
@@ -160,7 +161,7 @@ function extractResponsesText(value: unknown): string {
 }
 
 async function llmCallViaCodexGateway(
-  opts: LlmCallOpts,
+  opts: LlmCallOpts & Pick<RunAgentChatOptions, 'authorizeStatelessRequest'>,
   model: string | undefined,
   promptText: string,
 ): Promise<LlmCallResult> {
@@ -211,7 +212,17 @@ async function llmCallViaCodexGateway(
     // own request ceiling. Reuse loopbackFetch's existing long-running dispatcher
     // (`launch` is its historical option name). Keep its retry ladder empty here:
     // the bulk-dedup caller already owns the bounded transient retry policy.
-    { launch: true, backoffsMs: [] },
+    { launch: true, backoffsMs: [],
+      ...(opts.authorizeStatelessRequest ? {
+        // Reuse the exact-request guard at the actual fetch boundary, AFTER
+        // the long-running dispatcher is ready. This authorizes the caller's
+        // gateway request; its credential digest is the gateway bearer, not
+        // the provider account the gateway selects later.
+        wrapFetch: (send: typeof fetch) => createStatelessDiagnosticFetch({
+          baseURL: codexGatewayUrl(), token: CODEX_GATEWAY_AUTH, headers: {}, label: 'gateway-pool',
+        }, () => {}, send, undefined, 'unobserved', undefined, opts.authorizeStatelessRequest),
+      } : {}),
+    },
   );
   // The Codex bridge is non-streaming, so response headers arrive with the completed
   // response. Still surface the transport boundary for callers that use one shared seam.
@@ -289,8 +300,9 @@ export async function llmCall(
   }
   const backend = backendForLlmCall(opts.model);
   if (opts.authorizeStatelessRequest !== undefined &&
-      (typeof opts.authorizeStatelessRequest !== 'function' || backend !== 'anthropic-direct')) {
-    throw Object.assign(new Error('Stateless request authorization requires the Anthropic HTTP backend'), { costUsd: 0 });
+      (typeof opts.authorizeStatelessRequest !== 'function' ||
+        (backend !== 'anthropic-direct' && backend !== 'codex'))) {
+    throw Object.assign(new Error('Stateless request authorization requires an HTTP inference backend'), { costUsd: 0 });
   }
   if (opts.requireOutputTokenLimit && (!Number.isSafeInteger(opts.maxTokens) || opts.maxTokens! <= 0)) {
     throw Object.assign(new RangeError('Required output token limit needs a positive integer maxTokens'), { costUsd: 0 });
