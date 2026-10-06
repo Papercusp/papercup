@@ -108,7 +108,8 @@ describe("requestLocalVncSession", () => {
         fetchImpl as unknown as typeof fetch,
       ),
     ).resolves.toEqual({ wsUrl: "ws://x", rfb: "standard" });
-    expect(fetchImpl.mock.calls[0]![0]).toBe("/api/deploy/workspace/vnc-session");
+    const [url] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("/api/deploy/workspace/vnc-session");
   });
 
   it("surfaces the bridge's refusal", async () => {
