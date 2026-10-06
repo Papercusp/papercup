@@ -112,15 +112,17 @@ test.describe('Cupboard storefront — three listing kinds (E4)', () => {
     await expect(page.getByTestId('cupboard-hive-card')).toHaveCount(1);
     await expect(page.getByTestId('cupboard-hive-card-open')).toHaveCount(1);
     await expect(page.getByTestId('cupboard-kind-badge')).toHaveCount(3);
-    // Action buttons reflect each plain listing's action.
-    await expect(page.locator('[data-testid="cupboard-action"][data-action="fork"]')).toHaveCount(1);      // blueprint
-    await expect(page.locator('[data-testid="cupboard-action"][data-action="install"]')).toHaveCount(2);   // plugin + pack
+    // Action buttons reflect each plain listing's action. The `fork` action is
+    // retired: listingActionFor() (packages/operator-core/lib/cupboard/types.ts)
+    // maps blueprint, plugin and pack all to 'install' (clone the listing).
+    await expect(page.locator('[data-testid="cupboard-action"][data-action="fork"]')).toHaveCount(0);
+    await expect(page.locator('[data-testid="cupboard-action"][data-action="install"]')).toHaveCount(3);   // blueprint + plugin + pack
 
-    // Filter to Blueprints → one blueprint card, action = fork.
+    // Filter to Blueprints → one blueprint card, action = install.
     await page.getByTestId('cupboard-kind-tab-blueprint').click();
     await expect(page.getByTestId('cupboard-kind-badge')).toHaveCount(1);
     await expect(page.getByTestId('cupboard-kind-badge')).toHaveAttribute('data-kind', 'blueprint');
-    await expect(page.locator('[data-testid="cupboard-action"]')).toHaveAttribute('data-action', 'fork');
+    await expect(page.locator('[data-testid="cupboard-action"]')).toHaveAttribute('data-action', 'install');
 
     // Filter to Plugins → one plugin card, action = install.
     await page.getByTestId('cupboard-kind-tab-plugin').click();
