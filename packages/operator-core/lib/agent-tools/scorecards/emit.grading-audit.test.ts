@@ -493,6 +493,41 @@ describe('scorecards:emit grading audit path (P-013)', () => {
     expect(recordGradingAudit).not.toHaveBeenCalled();
   });
 
+  // EI-25246208524832409: the 15-min lease lapsed mid-audit (39-criterion card, ~18 min of
+  // honest work), the dispatcher dropped it, and nobody re-dispatched. GRADED_CARD is that
+  // state: pending with NO dispatchReservation.
+  it('admits the dispatched auditor whose lease lapsed and settles against the lease-less stamp', async () => {
+    const res = await emitScorecard(
+      { ...auditArgs, gradingAuditReservation: activeReservation },
+      { createdBy: 'su-lapsed-auditor', ctxHarness: 'papercusp' },
+    );
+
+    expect(res.ok).toBe(true);
+    expect(isCurrentSourceAuditResponder).toHaveBeenCalledWith('EI-CARD', activeReservation, 'su-lapsed-auditor');
+    expect(recordGradingAudit).toHaveBeenCalledTimes(1);
+    // recordGradingAudit compares the supplied lease with the stamp's ACTUAL one; carrying
+    // the lapsed lease would file the audit card and leave the target pending.
+    const [subject, settled] = recordGradingAudit.mock.calls[0] as [string, Record<string, unknown>];
+    expect(subject).toBe('EI-CARD');
+    expect(settled).not.toHaveProperty('dispatchReservation');
+    expect(settled).toMatchObject({ auditor: 'su-lapsed-auditor' });
+  });
+
+  it('refuses a lapsed lease presented by a session that is not its consult answerer', async () => {
+    isCurrentSourceAuditResponder.mockResolvedValue(false);
+
+    const res = await emitScorecard(
+      { ...auditArgs, gradingAuditReservation: activeReservation },
+      { createdBy: 'su-other-answerer', ctxHarness: 'papercusp' },
+    );
+
+    expect(res.ok).toBe(false);
+    expect((res as { code?: string }).code).toBe('grading_audit_reservation_unavailable');
+    expect(isCurrentSourceAuditResponder).toHaveBeenCalledWith('EI-CARD', activeReservation, 'su-other-answerer');
+    expect(captureImprovement).not.toHaveBeenCalled();
+    expect(recordGradingAudit).not.toHaveBeenCalled();
+  });
+
   it('a NON-AUTHOR audit files, settles the subject, and is itself never stamped pending (one level)', async () => {
     const res = await emitScorecard(auditArgs, { createdBy: 'su-auditor', ctxHarness: 'papercusp' });
     expect(res.ok).toBe(true);
