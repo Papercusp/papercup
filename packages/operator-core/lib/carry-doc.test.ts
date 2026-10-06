@@ -1172,6 +1172,73 @@ describe('P-005-request-settlement-regressions: deriveContinuation (pure, P-010)
     expect(gateOpenOwnerQuestion(cont).crossesOpenOwnerMessage).toBe(true);
   });
 
+  // EI-25227743201307257 — a dialog answer acted on before the agent raised the
+  // next dialog never meets a delivered response of its own id.
+  describe('dialog-answer chains (parentRequestId)', () => {
+    const chained = (text: string, requestId: string, parentRequestId: string): CarryDocTailTurn => ({
+      ...ownerDialog(text, requestId),
+      parentRequestId,
+    });
+    const chainTail = (final: CarryDocTailTurn): CarryDocTailTurn[] => [
+      ownerTurn('start the session', 'request-1'),
+      model('asking', 'request-1'),
+      chained('re-plugged', 'dialog-1', 'request-1'),
+      model('acting on it, asking again', 'dialog-1'),
+      chained('not at the machine', 'dialog-2', 'dialog-1'),
+      final,
+    ];
+
+    it('a delivered answer to the last dialog settles every link of the chain', () => {
+      const cont = deriveContinuation(chainTail(model('understood', 'dialog-2', 'delivered')), true);
+      expect(cont.answered).toBe(true);
+      expect(cont.pendingOwnerMessages).toBeUndefined();
+      expect(gateOpenOwnerQuestion(cont).crossesOpenOwnerMessage).toBe(false);
+    });
+
+    it('the in-flight final turn settles the chain the same way', () => {
+      const tail = chainTail(model('flushing, then compacting', 'dialog-2', 'progress'));
+      const cont = deriveContinuation(tail, true, true, { finalTurnInFlight: true });
+      expect(cont.answered).toBe(true);
+      expect(cont.pendingOwnerMessages).toBeUndefined();
+    });
+
+    it('an undelivered final answer leaves every link open', () => {
+      const cont = deriveContinuation(chainTail(model('noted', 'dialog-2', 'progress')), true);
+      expect(cont.answered).toBe(false);
+      expect(cont.pendingOwnerMessages?.map((r) => r.text)).toEqual(['start the session', 're-plugged', 'not at the machine']);
+    });
+
+    it('without the structural link nothing chains (unknown is never guessed from position)', () => {
+      const tail = [
+        ownerTurn('start the session', 'request-1'),
+        model('asking', 'request-1'),
+        ownerDialog('re-plugged', 'dialog-1'),
+        model('asking again', 'dialog-1'),
+        ownerDialog('not at the machine', 'dialog-2'),
+        model('understood', 'dialog-2', 'delivered'),
+      ];
+      expect(deriveContinuation(tail, true).pendingOwnerMessages?.map((r) => r.text)).toEqual(['start the session', 're-plugged']);
+    });
+
+    it('an owner-TYPED message never chains, even when it carries a parent link', () => {
+      const cont = deriveContinuation([
+        ownerTurn('first request', 'request-1'),
+        model('working', 'request-1'),
+        { ...ownerTurn('separate request', 'request-2'), parentRequestId: 'request-1' },
+        model('answered the separate one', 'request-2', 'delivered'),
+      ], true);
+      expect(cont.pendingOwnerMessages?.map((r) => r.text)).toEqual(['first request']);
+    });
+
+    it('supersession of the last dialog does not cascade to its ancestors', () => {
+      const cont = deriveContinuation([
+        ...chainTail(model('noted', 'dialog-2', 'progress')),
+        lifecycle('dialog-2', 'superseded'),
+      ], true);
+      expect(cont.pendingOwnerMessages?.map((r) => r.text)).toEqual(['start the session', 're-plugged']);
+    });
+  });
+
   it('accepts typed cancellation and supersession but never scans prose for those words', () => {
     expect(deriveContinuation([
       ownerTurn('first', 'request-1'),
