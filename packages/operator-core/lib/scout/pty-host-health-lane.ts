@@ -60,6 +60,12 @@ export function classifyPtyHostEvent(kind: string): PtyHostEventClass {
     kind === 'wake-turn-deferred-for-pending-respawn' ||
     kind === 'turn-deferred-for-owner-input' ||
     kind === 'duplicate-delivery-id' ||
+    // Idle parking, successful resume, and retained delivery waits are lifecycle
+    // state. Their failed/refused outcomes are separate events below.
+    kind === 'child-parked' ||
+    kind === 'child-park-deferred' ||
+    kind === 'child-unparked' ||
+    kind === 'parked-delivery-held' ||
     // The first model turn began while its retry was queued; suppressing that
     // second kickoff is successful duplicate prevention, not a host failure.
     kind === 'launch-kickoff-model-turn-retry-skipped' ||
@@ -90,6 +96,9 @@ export function classifyPtyHostEvent(kind: string): PtyHostEventClass {
     kind === 'orphan-teardown' ||
     kind === 'control-payload-unaddressed' ||
     kind === 'control-payload-rejected' ||
+    // The kickoff was refused and publishing its refusal receipt failed; the
+    // headless host terminates with an error rather than hiding the refusal.
+    kind === 'kickoff-refusal-unreported-terminating' ||
     kind === 'persona-refresh-skipped' ||
     kind === 'turn-verifier-unsupported' ||
     kind === 'wake-rearm-unsupported' ||

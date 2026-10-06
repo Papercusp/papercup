@@ -87,6 +87,7 @@ describe('PTY host event classification for Blender', () => {
       'quota-block-detected', 'control-payload-unaddressed',
       'pty-load-failed', 'pty-spawn-failed', 'resume-finalization-report-failed',
       'resume-finalization-callback-failed', 'startup-turn-dropped',
+      'kickoff-refusal-unreported-terminating',
       'session-port-delivery-ack-failed', 'managed-kickoff-failed',
       'gated-delivery-pipeline-error', 'control-socket-error',
       'control-socket-rebind-failed', 'session-scope-cleanup-partial',
@@ -112,6 +113,18 @@ describe('PTY host event classification for Blender', () => {
   it('keeps an extended startup-frame wait routine until its terminal timeout', () => {
     expect(classifyPtyHostEvent('launch-kickoff-backend-frame-wait-extended')).toBe('routine');
     expect(classifyPtyHostEvent('launch-kickoff-backend-frame-timeout')).toBe('failure');
+  });
+
+  it('omits normal parking lifecycle signals while retaining failed parking and delivery outcomes', () => {
+    const lifecycle = ['child-parked', 'child-park-deferred', 'child-unparked', 'parked-delivery-held'];
+    const failures = ['child-park-failed', 'child-unpark-failed', 'parked-delivery-refused'];
+    for (const kind of lifecycle) expect(classifyPtyHostEvent(kind), kind).toBe('routine');
+    for (const kind of failures) expect(classifyPtyHostEvent(kind), kind).toBe('failure');
+    expect(classifyPtyHostEvent('child-park-new-outcome')).toBe('unclassified');
+    expect(buildPtyHostHealthPatterns([
+      ...lifecycle.map(kind => row(kind, 20)),
+      ...failures.map(kind => row(kind, 1)),
+    ]).map(pattern => pattern.ref).sort()).toEqual(failures.map(kind => `pty-host:kind:${kind}`).sort());
   });
 
   it('keeps startup hold diagnostics distinct from the terminal stuck drop', () => {
