@@ -237,13 +237,16 @@ const {
   headlessRoleKickoffRequiresMcp,
   verifyHeadlessRoleMcp,
   shutdownRefusalReason,
+  mcpDialogShowsServerDetail,
+  headlessRoleMcpVerifyWorstCaseMs,
+  unreportedKickoffRefusalStrandsHost,
 } = host;
 import * as nodeFs from 'node:fs';
 import * as nodeOs from 'node:os';
 import { join as pathJoin } from 'node:path';
 import net from 'node:net';
 import { oscRecolorSequence, COLOR_SCHEMES } from '@papercusp/operator-core/lib/console-color-schemes';
-import { buildConsoleOneliner } from '@papercusp/operator-core/lib/console-spawn';
+import { buildConsoleOneliner, KICKOFF_PROOF_WINDOW_MS } from '@papercusp/operator-core/lib/console-spawn';
 
 describe('visible terminal discovery metadata', () => {
   it.each([
@@ -5221,6 +5224,58 @@ describe('mcp-reconnect macro (mcp-transport-resilience P-003, 2026-07-13)', () 
     });
   });
 
+  // WI-10006598 — measured 2026-10-06 on a fresh headless judge (Claude 2.1.289):
+  // /mcp opened straight into the server DETAIL view, a healthy list row read
+  // `✔ papercusp 27 tools` with no word "connected", and lines that merely NAME
+  // the server (the cwd header, the .mcp.json diagnostics path) surround both.
+  describe('/mcp shapes from Claude 2.1.289 (WI-10006598)', () => {
+    it('reads a check-glyph + tool-count list row as connected, glyph negatives as not', () => {
+      expect(mcpServerRowStatus('❯ ✔ papercusp 27 tools', 'papercusp')).toBe('connected');
+      expect(mcpServerRowStatus('❯✔papercusp27tools', 'papercusp')).toBe('connected');
+      expect(mcpServerRowStatus('❯ ◯ papercusp · connecting…', 'papercusp')).toBe('not-connected');
+      expect(mcpServerRowStatus('  ✘ papercusp', 'papercusp')).toBe('not-connected');
+      expect(mcpServerRowStatus('~/papercupai-workspace/papercusp', 'papercusp')).toBe('unknown');
+    });
+
+    it('a line that only names the server is not a verdict; scanning continues to the real row', () => {
+      const frame =
+        'Manage MCP servers\n1 server\nBuilt-in MCPs (always available)\n❯ ✔ papercusp 27 tools\n' +
+        'Location: /home/x/papercupai-workspace/papercusp/.mcp.json\n~/papercupai-workspace/papercusp\n';
+      expect(mcpConnectedVerdict(frame, 'papercusp')).toBe(true);
+      expect(mcpConnectedVerdict('Papercusp MCP Server\nStatus: ✔ connected\n~/x/papercusp', 'papercusp')).toBe(true);
+      expect(mcpConnectedVerdict('Papercusp MCP Server\nStatus: ◯ connecting…\n~/x/papercusp', 'papercusp')).toBe(false);
+    });
+
+    it('recognises the detail-view header, with or without inter-word gaps', () => {
+      expect(mcpDialogShowsServerDetail('\nPapercusp MCP Server\nStatus: ◯ connecting…', 'papercusp')).toBe(true);
+      expect(mcpDialogShowsServerDetail('PapercuspMCPServer', 'papercusp')).toBe(true);
+      expect(mcpDialogShowsServerDetail('Skipped — MCP server "papercusp" has a "url"', 'papercusp')).toBe(false);
+      expect(mcpDialogShowsServerDetail('❯ ✔ papercusp 27 tools', 'papercusp')).toBe(false);
+    });
+
+    it('the parent kickoff-proof window outlasts the worst-case headless role MCP verify', () => {
+      const worst = headlessRoleMcpVerifyWorstCaseMs();
+      expect(worst).toBeGreaterThan(30_000); // the old window — the measured strand
+      expect(KICKOFF_PROOF_WINDOW_MS).toBeGreaterThan(worst);
+    });
+
+    it('a refused headless kickoff whose receipt could not be published strands the host', () => {
+      const failed = { published: false, reason: 'kickoff-proof-write-failed', errorCode: 'ENOENT' };
+      expect(unreportedKickoffRefusalStrandsHost({ delivered: false, headless: true, receipt: failed })).toBe(true);
+      // The caller heard the refusal: it reaps the task itself.
+      expect(unreportedKickoffRefusalStrandsHost({
+        delivered: false, headless: true, receipt: { published: true },
+      })).toBe(false);
+      // No receipt handshake was requested: not this guard's call.
+      expect(unreportedKickoffRefusalStrandsHost({
+        delivered: false, headless: true, receipt: { published: false, reason: 'kickoff-proof-request-missing' },
+      })).toBe(false);
+      // A visible session may have a human attached; a delivered kickoff is fine.
+      expect(unreportedKickoffRefusalStrandsHost({ delivered: false, headless: false, receipt: failed })).toBe(false);
+      expect(unreportedKickoffRefusalStrandsHost({ delivered: true, headless: true, receipt: failed })).toBe(false);
+    });
+  });
+
   describe('runMcpReconnectMacro against a scripted fake TUI', () => {
     /** A minimal /mcp dialog state machine painting realistic frames (list rows =
      *  name+status on ONE line; detail = name header + separate Status line). */
@@ -5488,6 +5543,149 @@ describe('mcp-reconnect macro (mcp-transport-resilience P-003, 2026-07-13)', () 
       });
       expect(result.ok).toBe(false);
       expect(result.step).toBe('await-connected');
+    });
+
+    // WI-10006598 — the measured strand: /mcp opened straight into the detail
+    // view, so the old walker arrowed 40× looking for a list row that was never
+    // there and the judge never got its kickoff.
+    it('detail-first /mcp: goes straight to the Reconnect action without hunting a list row', async () => {
+      let output = '';
+      let view: 'idle' | 'detail' | 'closed' = 'idle';
+      let detailCursor = 0;
+      const writes: string[] = [];
+      const detailFrame = (cursor: number) =>
+        '\nPapercusp MCP Server\nStatus: ◯ connecting…\nAuth: ✘ not authenticated\nURL: http://127.0.0.1:9071\n' +
+        ['1. Authenticate', '2. Reconnect', '3. Disable'].map((r, i) => `${i === cursor ? '❯ ' : '  '}${r}`).join('\n') +
+        '\nMCP config diagnostics\nLocation: /home/x/papercupai-workspace/papercusp/.mcp.json\n' +
+        '[papercusp] mcpServers.papercusp: Skipped — MCP server "papercusp" has a "url" but no "type"\n';
+      const result = await runMcpReconnectMacro({
+        serverName: 'papercusp',
+        write: (bytes: string) => {
+          writes.push(bytes);
+          if (bytes === '\r' && view === 'idle') {
+            view = 'detail';
+            output = detailFrame(0);
+          } else if (bytes === '\x1b[B' && view === 'detail') {
+            detailCursor = Math.min(detailCursor + 1, 2);
+            output = `\n  1. Authenticate\n${detailCursor === 1 ? '❯ ' : '  '}2. Reconnect\n`;
+          } else if (bytes === '\r' && view === 'detail' && detailCursor === 1) {
+            view = 'closed';
+            output = '⎿  Reconnected to papercusp.\n';
+          }
+        },
+        readTap: () => output,
+        resetTap: () => { output = ''; },
+        sleep: fastSleep,
+        crDelayMs: 1,
+        settleMs: 1,
+        paintBudgetMs: 200,
+        reconnectBudgetMs: 200,
+        closeWaitMs: 20,
+      });
+      expect(result).toEqual({ ok: true, step: 'done', detail: 'dialog reconnect printed the success line' });
+      expect(writes.filter((w) => w === '\x1b[B')).toHaveLength(1); // one arrow: Authenticate → Reconnect
+      expect(writes).not.toContain('\x1b');
+    });
+
+    it('detail-first /mcp on an already-connected server: no-op, one Esc per dialog level', async () => {
+      let output = '';
+      let level = 0; // 0 prompt, 1 list, 2 detail
+      const writes: string[] = [];
+      const result = await runMcpReconnectMacro({
+        serverName: 'papercusp',
+        write: (bytes: string) => {
+          writes.push(bytes);
+          if (bytes === '\r' && level === 0) {
+            level = 2;
+            output = '\nPapercusp MCP Server\nStatus: ✔ connected\n❯ 1. View tools\n  2. Reconnect\n';
+          } else if (bytes === '\x1b' && level === 2) {
+            level = 1; // Esc in the detail view goes BACK to the list
+            output = '\nManage MCP servers\n❯ ✔ papercusp 27 tools\n';
+          } else if (bytes === '\x1b' && level === 1) {
+            level = 0;
+            output = '⎿  MCP dialog dismissed\n';
+          } else if (bytes === '\x1b' && level === 0) {
+            output = '\nRewind\nNothing to rewind to yet.\n';
+          }
+        },
+        readTap: () => output,
+        resetTap: () => { output = ''; },
+        sleep: fastSleep,
+        crDelayMs: 1,
+        settleMs: 1,
+        paintBudgetMs: 200,
+        reconnectBudgetMs: 200,
+        closeWaitMs: 20,
+      });
+      expect(result.ok).toBe(true);
+      expect(result.step).toBe('already-connected');
+      expect(writes.filter((w) => w === '\x1b')).toHaveLength(2); // detail → list → closed; never a Rewind
+      expect(level).toBe(0);
+    });
+
+    it('reads `✔ papercusp 27 tools` as already connected and stops after the dismissing Esc', async () => {
+      let output = '';
+      let open = false;
+      const writes: string[] = [];
+      const result = await runMcpReconnectMacro({
+        serverName: 'papercusp',
+        write: (bytes: string) => {
+          writes.push(bytes);
+          if (bytes === '\r' && !open) {
+            open = true;
+            output =
+              '\nManage MCP servers\n1 server\nBuilt-in MCPs (always available)\n❯ ✔ papercusp 27 tools\n' +
+              'https://code.claude.com/docs/en/mcp for help\n~/papercupai-workspace/papercusp\n';
+          } else if (bytes === '\x1b' && open) {
+            open = false;
+            output = ' /mcp\n ⎿  MCP dialog dismissed\n';
+          } else if (bytes === '\x1b') {
+            output = '\nRewind\nNothing to rewind to yet.\n';
+          }
+        },
+        readTap: () => output,
+        resetTap: () => { output = ''; },
+        sleep: fastSleep,
+        crDelayMs: 1,
+        settleMs: 1,
+        paintBudgetMs: 200,
+        reconnectBudgetMs: 200,
+        closeWaitMs: 20,
+      });
+      expect(result.step).toBe('already-connected');
+      expect(writes.filter((w) => w === '\x1b')).toHaveLength(1);
+    });
+
+    it('closes a Rewind dialog that a second Esc opened anyway', async () => {
+      let output = '';
+      let rewind = false;
+      const writes: string[] = [];
+      const result = await runMcpReconnectMacro({
+        serverName: 'papercusp',
+        write: (bytes: string) => {
+          writes.push(bytes);
+          if (bytes === '\r') output = '\n❯ ✔ papercusp 27 tools\n';
+          // This version prints no "dismissed" line; the second Esc lands on the prompt.
+          else if (bytes === '\x1b' && writes.filter((w) => w === '\x1b').length === 2) {
+            rewind = true;
+            output = '\nRewind\nNothing to rewind to yet.\n';
+          } else if (bytes === '\x1b' && rewind) {
+            rewind = false;
+            output = '';
+          } else if (bytes === '\x1b') output = '';
+        },
+        readTap: () => output,
+        resetTap: () => { output = ''; },
+        sleep: fastSleep,
+        crDelayMs: 1,
+        settleMs: 1,
+        paintBudgetMs: 200,
+        reconnectBudgetMs: 200,
+        closeWaitMs: 20,
+      });
+      expect(result.step).toBe('already-connected');
+      expect(writes.filter((w) => w === '\x1b')).toHaveLength(3);
+      expect(rewind).toBe(false);
     });
 
     it('decodeControl accepts the new mode, gated like a turn', () => {

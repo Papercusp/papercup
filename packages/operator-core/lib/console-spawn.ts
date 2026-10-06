@@ -1418,8 +1418,15 @@ export interface KickoffProofResult {
 export const KICKOFF_PROOF_PATH_ENV = 'PAPERCUSP_KICKOFF_PROOF_PATH';
 export const KICKOFF_PROOF_TOKEN_ENV = 'PAPERCUSP_KICKOFF_PROOF_TOKEN';
 
-/** How long an opted-in parent waits for the detached host's proof receipt. */
-export const KICKOFF_PROOF_WINDOW_MS = 30_000;
+/** How long an opted-in parent waits for the detached host's proof receipt.
+ *
+ * A fresh headless role verifies its MCP server through the /mcp macro before
+ * the kickoff (psu-pty-host headlessRoleMcpVerifyWorstCaseMs, ~70 s worst
+ * case). At 30 s the parent gave up first, removed the receipt request, and the
+ * host's later refusal had nowhere to land — an unreaped idle judge
+ * (WI-10006598). psu-pty-host.test.ts pins this above that worst case. The
+ * wait only runs this long on a slow or failing launch; a proof returns early. */
+export const KICKOFF_PROOF_WINDOW_MS = 120_000;
 
 /** Injectable seams for the detached kickoff-proof receipt poll. */
 export interface KickoffProofProbes {
