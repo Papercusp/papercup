@@ -12,6 +12,9 @@ import { evaluatePlanStartReadiness } from '../agent-tools/plans/plan-input-vali
 
 type JsonSchema = {
   const?: unknown;
+  enum?: unknown[];
+  format?: string;
+  pattern?: string;
   default?: unknown;
   type?: string;
   required?: string[];
@@ -27,10 +30,39 @@ interface PackPlanTarget {
   bindingInput: Record<string, unknown>;
 }
 
+/**
+ * A string matching a simple anchored alternation pattern such as
+ * `^ext:bluesky:(post|reply)$|^ext:threads:reply$`: take the first top-level
+ * branch, then the first alternative of every group. Verified against the
+ * pattern, so an unsupported shape fails loudly instead of sampling wrongly.
+ */
+function sampleForPattern(pattern: string): string {
+  let depth = 0;
+  let cut = pattern.length;
+  for (let i = 0; i < pattern.length; i += 1) {
+    if (pattern[i] === '(') depth += 1;
+    else if (pattern[i] === ')') depth -= 1;
+    else if (pattern[i] === '|' && depth === 0) {
+      cut = i;
+      break;
+    }
+  }
+  let sample = pattern.slice(0, cut).replace(/^\^/, '').replace(/\$$/, '');
+  while (/\(([^()]*)\)/.test(sample)) sample = sample.replace(/\(([^()]*)\)/, (_m, inner: string) => inner.split('|')[0]!);
+  const matcher = new RegExp(pattern);
+  const found = [sample, '1', '1.5', 'sample-value', 'a'].find((candidate) => matcher.test(candidate));
+  if (found === undefined) throw new Error(`sampleForPattern cannot satisfy ${pattern}`);
+  return found;
+}
+
 /** A minimal value that satisfies `schema` — consts and defaults win, then the type. */
 function sampleFor(schema: JsonSchema): unknown {
   if ('const' in schema) return schema.const;
+  if (typeof schema.pattern === 'string') return sampleForPattern(schema.pattern);
+  if (Array.isArray(schema.enum) && schema.enum.length > 0) return schema.enum[0];
   if (schema.default !== undefined) return schema.default;
+  if (schema.format === 'uuid') return '2b7f9e2a-0000-4000-8000-000000000009';
+  if (schema.format === 'date-time') return '2026-10-06T00:00:00.000Z';
   switch (schema.type) {
     case 'integer':
     case 'number':
@@ -204,15 +236,12 @@ describe('projected plan inputs satisfy every shipped trigger input schema', () 
   it('no shipped trigger schema still requires the private payload', () => {
     expect(SLACK_RESPOND_IN_THREAD_INPUT_SCHEMA.properties.trigger.required).not.toContain('payload');
     expect(SLACK_RESPOND_IN_THREAD_INPUT_SCHEMA.properties.trigger.properties).not.toHaveProperty('payload');
-    for (const target of packTargets) {
-      const trigger = target.inputSchema.properties.trigger;
-      expect({ target: target.label, required: trigger.required ?? [] }).not.toEqual(
-        expect.objectContaining({ required: expect.arrayContaining(['payload']) }),
-      );
-      expect({ target: target.label, properties: trigger.properties ?? {} }).not.toEqual(
-        expect.objectContaining({ properties: expect.objectContaining({ payload: expect.anything() }) }),
-      );
-    }
+    // A pack may still DESCRIBE payload (it documents the stored envelope that
+    // triggers:read-payload returns); it may never REQUIRE it.
+    const requiring = packTargets
+      .filter((target) => (target.inputSchema.properties.trigger.required ?? []).includes('payload'))
+      .map((target) => target.label);
+    expect(requiring).toEqual([]);
   });
 
   /**
