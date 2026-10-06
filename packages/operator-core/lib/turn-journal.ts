@@ -428,9 +428,13 @@ export async function readVerbatimTail(
       // this user node re-keys it. For an AskUserQuestion answer that is the
       // request whose running turn raised the dialog — the structural link the
       // carry doc needs to settle a dialog chain on its final delivered answer.
+      // Read it from the PARENT node's chain, not from `requestId` above: the
+      // claude adapter already stamps a user node's own id there, so comparing
+      // against it would never see the parent (measured on a real transcript).
+      // An out-of-window parent yields no link — unknown, never a guessed one.
       let parentRequestId: string | null = null;
       if (turn?.speaker === 'user') {
-        const inherited = requestId;
+        const inherited = link.parentMessageId ? requestByMessage.get(link.parentMessageId) ?? null : null;
         requestId = turn.requestId ?? turn.messageId ?? requestId;
         if (inherited && inherited !== requestId) parentRequestId = inherited;
       }
