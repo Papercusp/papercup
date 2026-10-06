@@ -299,6 +299,26 @@ describe('canonical dependency batch admission', () => {
     expect(await storedEdges()).toHaveLength(1);
   });
 
+  it('EI-252075: idempotent adds preserve SUCCESS unless a new requirement is explicit', async () => {
+    await seedItem('EI-dependent');
+    await seedItem('EI-blocker');
+    const edge = { op: 'add', blocked: issue('EI-dependent'), blocker: issue('EI-blocker') } as const;
+    await mutate([{ ...edge, satisfaction: 'success', createdBy: 'manual-source' }]);
+    const read = () => db.sql`
+      SELECT id, satisfaction, created_by, created_at FROM harness_shared.work_item_deps`;
+    const before = await read();
+    expect(before).toHaveLength(1);
+    expect(before[0].satisfaction).toBe('success');
+
+    const repeated = await mutate([edge]);
+
+    expect(repeated.inserted).toBe(0);
+    expect(repeated.removed).toBe(0);
+    expect(await read()).toEqual(before);
+    await mutate([{ ...edge, satisfaction: 'settled' }]);
+    expect(await read()).toEqual([{ ...before[0], satisfaction: 'settled' }]);
+  });
+
   it('routes mirror + unlink facades through canonical admission', async () => {
     await seedItem('EI-A');
     await seedItem('EI-B');

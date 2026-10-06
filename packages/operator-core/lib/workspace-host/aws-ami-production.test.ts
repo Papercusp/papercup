@@ -18,7 +18,6 @@ import {
   SdkAwsAmiReleaseAdapter,
   executeConfiguredAwsAmiRelease,
   probeAwsAmiCredential,
-  resolveAwsAmiGuestToolVersions,
   type AwsAmiCommandRunner,
 } from './aws-ami-production';
 import { CANARY_BUDGETS, SSM_CHUNK_CHARS } from '../../bin/aws-ami-canary-measure.mjs';
@@ -436,19 +435,6 @@ describe('connection binding', () => {
         { guestToolVersions: { curl: '8.0-1' } },
       ),
     ).rejects.toThrow(/disagrees with the bake SBOM: curl \(override 8\.0-1; SBOM 8\.12\.1-6\.el10\)/);
-  });
-
-  it('resolves guest-tool versions: SBOM-derived wins, an override may restate but not contradict or add (WI-10006386)', () => {
-    const derived = { curl: '8.12.1-6.el10', nftables: '1:1.1.5-6.el10' };
-    expect(resolveAwsAmiGuestToolVersions(derived, undefined)).toEqual(derived);
-    // A request composed without derived versions still uses the operator file.
-    expect(resolveAwsAmiGuestToolVersions(undefined, { curl: '1' })).toEqual({ curl: '1' });
-    expect(resolveAwsAmiGuestToolVersions(undefined, undefined)).toBeUndefined();
-    expect(resolveAwsAmiGuestToolVersions(derived, { curl: ' 8.12.1-6.el10 ' })).toEqual(derived);
-    expect(() => resolveAwsAmiGuestToolVersions(derived, { nftables: '1.1.5-6.el10' })).toThrow(
-      /nftables \(override 1\.1\.5-6\.el10; SBOM 1:1\.1\.5-6\.el10\)/,
-    );
-    expect(() => resolveAwsAmiGuestToolVersions(derived, { jq: '1.7' })).toThrow(/jq \(override 1\.7; the SBOM records no version\)/);
   });
 
   it('credential probe fails when the credential resolves to a different account', async () => {

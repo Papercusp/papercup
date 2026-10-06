@@ -3291,6 +3291,9 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
     opts.loopbackPeerGate ?? ((socket: import("node:net").Socket) => foreignLoopbackPeerForSocket(socket));
   const server = http.createServer((req, res) => {
     const receivedAt = Date.now();
+    // The degraded marker describes MCP data-plane health only. REST endpoints
+    // share this listener, but their failures must not affect /api/mcp callers.
+    const isMcpApiRequest = req.url?.split("?")[0] === "/api/mcp";
     // WI-10005688: refuse a loopback caller of another uid before anything runs or is
     // forwarded (the proxy injects the superuser bearer, so forwarding would act as us).
     const foreignPeer = loopbackPeerGate(req.socket);
@@ -4587,7 +4590,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           const traceId = requestTraceId;
           fwd.headers = withDataPlaneDegradedHeader(
             { ...fwd.headers, [MCP_PROXY_TRACE_HEADER]: traceId },
-            lastDataPlaneInstabilityAtMs,
+            isMcpApiRequest ? lastDataPlaneInstabilityAtMs : 0,
           );
           // WI-41042 detector gap: `klass:'idempotent'` folds initialize,
           // tools/list, ping, resources and prompts together. Preserve only the
@@ -4659,7 +4662,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             // must not carry a timestamp that expired while it was queued/backing off.
             fwd.headers = withDataPlaneDegradedHeader(
               fwd.headers,
-              lastDataPlaneInstabilityAtMs,
+              isMcpApiRequest ? lastDataPlaneInstabilityAtMs : 0,
             );
             attempts++;
             const attemptStartedAt = Date.now();
@@ -4776,10 +4779,12 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                 )
               ) {
                 backpressureRetries++;
-                lastDataPlaneInstabilityAtMs = Date.now();
+                if (isMcpApiRequest) {
+                  lastDataPlaneInstabilityAtMs = Date.now();
+                }
                 fwd.headers = withDataPlaneDegradedHeader(
                   fwd.headers,
-                  lastDataPlaneInstabilityAtMs,
+                  isMcpApiRequest ? lastDataPlaneInstabilityAtMs : 0,
                 );
                 const waitMs = retryAfterMs(
                   ures.headers["retry-after"],
@@ -4938,10 +4943,12 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               return;
             }
             last = outcome;
-            lastDataPlaneInstabilityAtMs = Date.now();
+            if (isMcpApiRequest) {
+              lastDataPlaneInstabilityAtMs = Date.now();
+            }
             fwd.headers = withDataPlaneDegradedHeader(
               fwd.headers,
-              lastDataPlaneInstabilityAtMs,
+              isMcpApiRequest ? lastDataPlaneInstabilityAtMs : 0,
             );
             if (!outcome.connected) {
               // Refused / pre-connect: the request provably never reached the selected

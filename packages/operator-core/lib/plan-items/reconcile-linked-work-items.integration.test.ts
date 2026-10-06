@@ -173,6 +173,7 @@ const {
 // (2026-09-04 → 2026-10-01). The 'mock wiring' test below pins the order.
 const { IMPLEMENTS_REL } = await import('./convert');
 const { getFeatureBlockers, syncFeatureBlockEdges } = await import('../dbos/feature-blockers-edges');
+const { mirrorWorkItemBlockingEdge } = await import('../dbos/work-item-deps-store');
 const { fireBuiltinReactionAction, PLAN_ITEM_LANE_RESYNC_ACTION } = await import('../events/builtin-actions');
 const { updateExternalBlockerHistory } = await import('../external-blockers');
 const { isClaimHoldParked } = await import('../work-items');
@@ -1691,6 +1692,81 @@ describe('resyncPlanItemLaneNow — inline lane resync off plans:set-item-blocke
       planSlug: plan,
       itemId: 'P-003',
       blockerWorkItemIds: ['F-new'],
+    });
+  });
+
+  it.each([
+    { label: 'empty provenance', prior: [] as string[] },
+    { label: 'replaced provenance', prior: ['F-old'] },
+  ])('EI-252075: preserves mixed-family SUCCESS blockers with $label', async ({ prior }) => {
+    const plan = 'p-mixed-success';
+    const target = stub({
+      id: 'F-target', harness: 'sheets', state: 'todo', family: 'feature',
+      payload: {
+        [PLAN_AUTHORED_BLOCKERS_KEY]: { planSlug: plan, itemId: 'P-003', blockerWorkItemIds: prior },
+      },
+    });
+    stub({ id: 'F-new', harness: 'sheets', state: 'todo', family: 'feature' });
+    await insertDependencyRows(['F-target', 'F-old', 'F-new', 'F-manual']);
+    await rootSql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, item_kind, status, payload, created_ts, updated_ts)
+      VALUES (${WS}, 'sheets', 'WI-source', 'bug', 'open', '{}'::jsonb, 0, 0)`;
+    await edge({ plan, item: 'P-002', srcKind: 'feature', srcRef: 'sheets#F-new' });
+    await edge({ plan, item: 'P-003', srcKind: 'feature', srcRef: 'sheets#F-target' });
+    await syncFeatureBlockEdges('sheets', 'F-target', prior);
+    for (const blocker of [
+      { kind: 'issue', ref: 'WI-source' },
+      { kind: 'feature', ref: 'sheets#F-manual' },
+    ]) {
+      await mirrorWorkItemBlockingEdge(blocker, { kind: 'feature', ref: 'sheets#F-target' }, {
+        satisfaction: 'success', createdBy: 'manual-source',
+      });
+    }
+    const manualEdges = () => rootSql`
+      SELECT id, blocker_kind, blocker_ref, satisfaction, created_by, created_at
+        FROM harness_shared.work_item_deps
+       WHERE blocked_ref = 'sheets#F-target'
+         AND blocker_ref IN ('WI-source', 'sheets#F-manual')
+       ORDER BY blocker_ref`;
+    const before = await manualEdges();
+    expect(before).toHaveLength(2);
+    expect(before.every((row) => row.satisfaction === 'success')).toBe(true);
+    h3.getPlanRow.mockResolvedValue({ items: [
+      { id: 'P-002', status: 'todo', blockedBy: [] },
+      { id: 'P-003', status: 'todo', blockedBy: ['P-002'] },
+    ] });
+
+    const result = await reconcilePlanAuthoredDependenciesNow(plan, 'P-003', null);
+
+    expect(result).toEqual({ canonicalId: 'F-target', desired: ['F-manual', 'F-new'], resolved: ['F-new'] });
+    expect(await manualEdges()).toEqual(before);
+    expect((await getFeatureBlockers('sheets')).get('F-target')?.sort()).toEqual(['F-manual', 'F-new']);
+    expect(target.payload?.[PLAN_AUTHORED_BLOCKERS_KEY]).toEqual({
+      planSlug: plan, itemId: 'P-003', blockerWorkItemIds: ['F-new'],
+    });
+
+    // Strengthening a retained plan edge must also survive an idempotent reconciliation.
+    await mirrorWorkItemBlockingEdge(
+      { kind: 'feature', ref: 'sheets#F-new' }, { kind: 'feature', ref: 'sheets#F-target' },
+      { satisfaction: 'success' },
+    );
+    // A repeat and then removal of the plan's last blocker must not touch either manual edge.
+    await reconcilePlanAuthoredDependenciesNow(plan, 'P-003', null);
+    expect(await manualEdges()).toEqual(before);
+    expect(await rootSql`
+      SELECT satisfaction FROM harness_shared.work_item_deps
+       WHERE blocked_ref = 'sheets#F-target' AND blocker_ref = 'sheets#F-new'`
+    ).toEqual([{ satisfaction: 'success' }]);
+    h3.getPlanRow.mockResolvedValue({ items: [
+      { id: 'P-002', status: 'todo', blockedBy: [] },
+      { id: 'P-003', status: 'todo', blockedBy: [] },
+    ] });
+    await reconcilePlanAuthoredDependenciesNow(plan, 'P-003', null);
+    expect(await manualEdges()).toEqual(before);
+    expect((await getFeatureBlockers('sheets')).get('F-target')).toEqual(['F-manual']);
+    expect(target.payload?.[PLAN_AUTHORED_BLOCKERS_KEY]).toEqual({
+      planSlug: plan, itemId: 'P-003', blockerWorkItemIds: [],
     });
   });
 

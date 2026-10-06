@@ -25,6 +25,7 @@ vi.mock("@papercusp/operator-core/lib/resource-governor/execution", async (impor
 }));
 
 import {
+  BOOTC_RELEASE_GUEST_TOOLS,
   BOOTC_TEMPLATE_PATH,
   actionableGrypeReport,
   buildBootcImageArtifact,
@@ -354,6 +355,23 @@ describe("bootc release request evidence readers", () => {
   it("requires a clean-room report before it will emit a request", () => {
     expect(() => parseBootcImageReleaseRequestCliArgs(["--input-file", "x.json"])).toThrow(/clean-room-report/);
     expect(parseBootcImageReleaseRequestCliArgs(["--input-file", "x.json", "--emit", "artifact"]).emit).toBe("artifact");
+  });
+
+  it("emits guest-tool versions only for a named provider (WI-10006408)", () => {
+    const parsed = parseBootcImageReleaseRequestCliArgs(["--input-file", "x.json", "--emit", "guest-tool-versions", "--provider", "gcp"]);
+    expect(parsed).toMatchObject({ emit: "guest-tool-versions", provider: "gcp" });
+    expect(() => parseBootcImageReleaseRequestCliArgs(["--input-file", "x.json", "--emit", "guest-tool-versions"])).toThrow(
+      /requires --provider aws\|gcp/,
+    );
+    expect(() =>
+      parseBootcImageReleaseRequestCliArgs(["--input-file", "x.json", "--emit", "guest-tool-versions", "--provider", "toString"]),
+    ).toThrow(/requires --provider/);
+    expect(() =>
+      parseBootcImageReleaseRequestCliArgs(["--input-file", "x.json", "--emit", "artifact", "--provider", "gcp"]),
+    ).toThrow(/only valid with --emit guest-tool-versions/);
+    // The GCP set includes the Google guest agent the shared bake installs; AWS its SSM agent.
+    expect(BOOTC_RELEASE_GUEST_TOOLS.gcp).toContain("google-guest-agent");
+    expect(BOOTC_RELEASE_GUEST_TOOLS.aws).toContain("amazon-ssm-agent");
   });
 });
 

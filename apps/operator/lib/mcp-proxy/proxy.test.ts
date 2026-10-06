@@ -1547,6 +1547,65 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
     expect(calls).toBe(3); // two boot-window 405s absorbed — the client never saw them
   });
 
+  it("keeps a non-MCP boot-route 404 from marking later MCP requests degraded", async () => {
+    let restrictedRouteCalls = 0;
+    const forwarded: Array<{ path: string; degradedAt: string | undefined }> = [];
+    const upstream = track(
+      http.createServer((req, res) => {
+        forwarded.push({
+          path: req.url ?? "",
+          degradedAt: req.headers[MCP_PROXY_DATA_PLANE_DEGRADED_AT_HEADER] as
+            | string
+            | undefined,
+        });
+        if (
+          req.url === "/api/agent-mcp/restricted-egress-check" &&
+          restrictedRouteCalls++ === 0
+        ) {
+          res.writeHead(404, { "content-type": "text/plain", "retry-after": "0" });
+          res.end("route not mounted");
+          return;
+        }
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end('{"result":"ok"}');
+      }),
+    );
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: "127.0.0.1",
+        targetPort: port(upstream),
+        retryWindowMs: 5_000,
+        retryBackoffMs: 20,
+        log: () => {},
+      }),
+    );
+    await listen(proxy);
+
+    const restricted = await request(
+      port(proxy),
+      '{"probe":true}',
+      "/api/agent-mcp/restricted-egress-check",
+    );
+    expect(restricted.status).toBe(200);
+    expect(restrictedRouteCalls).toBe(2); // the initial boot-window 404 was absorbed
+
+    const mcp = await request(port(proxy), '{"jsonrpc":"2.0"}', "/api/mcp");
+    expect(mcp.status).toBe(200);
+
+    const restrictedAttempts = forwarded.filter(
+      ({ path }) => path === "/api/agent-mcp/restricted-egress-check",
+    );
+    expect(restrictedAttempts.map(({ degradedAt }) => degradedAt)).toEqual([
+      undefined,
+      undefined,
+    ]);
+    expect(
+      forwarded.find(({ path }) => path === "/api/mcp")?.degradedAt,
+    ).toBeUndefined();
+  });
+
   it("EI-16883: kill-switch (PAPERCUSP_MCP_PROXY_ABSORB_BOOT=0) surfaces the 405 instead of absorbing it", async () => {
     const prev = process.env.PAPERCUSP_MCP_PROXY_ABSORB_BOOT;
     process.env.PAPERCUSP_MCP_PROXY_ABSORB_BOOT = "0";

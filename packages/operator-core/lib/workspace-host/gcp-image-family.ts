@@ -222,6 +222,13 @@ export interface GcpImageFamilyReleaseRequest {
     serviceAccountEmail: string;
     subnetwork: string;
   };
+  /**
+   * WI-10006408: the required guest-tool versions, derived by the request composer from the
+   * bake's syft SBOM (installed-rpm rows; `bootc-image-release-request-cli --emit
+   * guest-tool-versions --provider gcp`). The image provenance is pinned to exactly these; an
+   * operator `--guest-tool-versions-file` may only restate them (resolveSbomGuestToolVersions).
+   */
+  guestToolVersions?: Readonly<Record<string, string>>;
 }
 
 export type GcpImageFamilyReleaseResumePhase = 'scan' | 'publish';

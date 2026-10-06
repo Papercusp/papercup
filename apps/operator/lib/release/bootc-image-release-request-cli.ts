@@ -64,6 +64,7 @@ import {
   workspaceHostBootcBakeReleaseMismatch,
   workspaceHostBootcCloudArtifact,
 } from "@papercusp/operator-core/lib/workspace-host/bootc-bake-manifest";
+import { GCP_IMAGE_FAMILY_REQUIRED_GUEST_TOOLS } from "@papercusp/operator-core/lib/workspace-host/gcp-image-family";
 import { evaluateWorkspaceHostReleaseGate } from "@papercusp/operator-core/lib/workspace-host/workspace-host-release-gate";
 import { isCliEntry } from "@papercusp/operator-core/lib/util/cli-entry";
 import { activeWorkspaceId } from "@papercusp/operator-core/lib/workspace-registry";
@@ -82,13 +83,27 @@ export const BOOTC_SECRET_SCAN_MIN_COVERAGE = 5000;
 const SHA256_HEX = /^[0-9a-f]{64}$/;
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
 
-export type BootcEmit = "trust-report" | "artifact" | "clean-room-input" | "request";
+export type BootcEmit = "trust-report" | "artifact" | "clean-room-input" | "request" | "guest-tool-versions";
+
+/**
+ * The guest tools each provider's release pins, keyed by `--provider`. The AWS request carries
+ * its set itself (composeBootcAwsRequest); `--emit guest-tool-versions` derives either set from
+ * the same SBOM for a release request composed elsewhere (WI-10006408: GCP).
+ */
+export const BOOTC_RELEASE_GUEST_TOOLS = {
+  aws: AWS_AMI_REQUIRED_GUEST_TOOLS,
+  gcp: GCP_IMAGE_FAMILY_REQUIRED_GUEST_TOOLS,
+} as const;
+
+export type BootcReleaseProvider = keyof typeof BOOTC_RELEASE_GUEST_TOOLS;
 
 export interface BootcImageReleaseRequestCliArgs {
   inputFile: string;
   repoRoot: string;
   emit: BootcEmit;
   cleanRoomReportFile?: string;
+  /** Required by, and only valid with, `--emit guest-tool-versions`. */
+  provider?: BootcReleaseProvider;
 }
 
 function fail(message: string): never {
@@ -157,7 +172,7 @@ async function readJson(path: string, label: string): Promise<Record<string, unk
 }
 
 export function parseBootcImageReleaseRequestCliArgs(argv: readonly string[]): BootcImageReleaseRequestCliArgs {
-  const allowed = new Set(["input-file", "repo-root", "emit", "clean-room-report"]);
+  const allowed = new Set(["input-file", "repo-root", "emit", "clean-room-report", "provider"]);
   const values: Record<string, string> = {};
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index]!;
@@ -170,18 +185,27 @@ export function parseBootcImageReleaseRequestCliArgs(argv: readonly string[]): B
     index += 1;
   }
   const emit = (values.emit ?? "request") as BootcEmit;
-  if (!["trust-report", "artifact", "clean-room-input", "request"].includes(emit)) {
-    fail("--emit must be one of: trust-report, artifact, clean-room-input, request");
+  if (!["trust-report", "artifact", "clean-room-input", "request", "guest-tool-versions"].includes(emit)) {
+    fail("--emit must be one of: trust-report, artifact, clean-room-input, request, guest-tool-versions");
   }
   if (!values["input-file"]) fail("--input-file is required");
   if (emit === "request" && !values["clean-room-report"]) {
     fail("--emit request requires --clean-room-report (the gate ratifies a report, never an assertion)");
+  }
+  const provider = values.provider;
+  if (emit === "guest-tool-versions") {
+    if (provider === undefined || !Object.hasOwn(BOOTC_RELEASE_GUEST_TOOLS, provider)) {
+      fail(`--emit guest-tool-versions requires --provider ${Object.keys(BOOTC_RELEASE_GUEST_TOOLS).join("|")}`);
+    }
+  } else if (provider !== undefined) {
+    fail("--provider is only valid with --emit guest-tool-versions");
   }
   return {
     inputFile: values["input-file"]!,
     repoRoot: values["repo-root"] ?? process.cwd(),
     emit,
     ...(values["clean-room-report"] ? { cleanRoomReportFile: values["clean-room-report"] } : {}),
+    ...(provider !== undefined ? { provider: provider as BootcReleaseProvider } : {}),
   };
 }
 
@@ -1031,6 +1055,13 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
     return;
   }
   const built = await buildBootcImageArtifact(args);
+  if (args.emit === "guest-tool-versions") {
+    // A flat name -> version object: usable as a request's guestToolVersions or as the
+    // release CLI's --guest-tool-versions-file, and derived from the same SBOM either way.
+    process.stderr.write(`guest-tool versions for ${args.provider} from the SBOM of ${built.bake.digest}\n`);
+    write(requiredGuestToolVersions(built.installedRpms, BOOTC_RELEASE_GUEST_TOOLS[args.provider!]));
+    return;
+  }
   if (args.emit === "artifact") {
     write({ artifact: built.artifact, bootcBakeManifest: built.bake });
     return;

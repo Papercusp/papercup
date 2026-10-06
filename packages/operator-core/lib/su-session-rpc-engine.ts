@@ -315,7 +315,9 @@ export function startSuRpcEngine(
     emit(event as SuSessionEventInput<Backend>);
     if (event.type === 'card') host.transition(event.phase === 'opened' ? 'waiting-for-owner' : 'running',
       event.phase === 'opened' ? 'Native engine is waiting for your response' : 'Native response delivered');
-  }, boot.cwd);
+    // D-028: an OMP approval answered No stops the turn, so the owner says
+    // what to do instead (Codex's `cancel` decision stops its own turn).
+  }, { cwd: boot.cwd, stopTurn: () => { void controls.interrupt(); } });
   function nativeId(): string { return native.backend === 'codex' ? native.rolloutId ?? '' : native.ompThreadId ?? ''; }
   function resumeHandle(): NativeHandle {
     const persisted = Boolean(nativePath && existsSync(nativePath));

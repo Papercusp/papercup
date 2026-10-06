@@ -353,7 +353,12 @@ export function startClaudeSuEngine(
     if (event.type === 'card' && !closed && !adapter.host.snapshot().terminal) {
       adapter.host.transition(event.phase === 'opened' ? 'waiting-for-owner' : 'running', 'Claude native question');
     }
-  }, boot.cwd);
+  }, {
+    cwd: boot.cwd,
+    // D-028: option 2 on an edit switched Claude to accept-edits for the
+    // session, which is the auto-edit approvals mode (D-026).
+    approvalsChanged: (mode) => { currentApprovals = mode; adapter.host.updateApprovals(mode); },
+  });
   const model = splitModelSpec(options.model);
   const launch = suLaunchArgs('claude', { promptFile: boot.promptFile, nativeSessionId: nativeId });
   const su = (options.identity ?? 'su') === 'su';

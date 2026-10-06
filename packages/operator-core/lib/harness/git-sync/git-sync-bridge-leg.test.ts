@@ -502,8 +502,10 @@ describe('runGithubBridgeLeg — WI-10006470 bridge error transitions are journa
       : { action: 'clear' as const, needsOwner: false, signals: [], detail: '' },
     errors,
   });
-  const bridgeLines = (spy: ReturnType<typeof vi.spyOn>) =>
-    spy.mock.calls.map((c) => String(c[0])).filter((line) => line.startsWith(`[github-bridge] ${SLUG}:`));
+  const bridgeLines = (spy: { mock: { calls: unknown[][] } }) =>
+    spy.mock.calls
+      .map((c: unknown[]) => String(c[0]))
+      .filter((line: string) => line.startsWith(`[github-bridge] ${SLUG}:`));
 
   const runWith = async (prevErrors: unknown, errors: string[]) => {
     loadHarnessRegistryMock.mockResolvedValue({

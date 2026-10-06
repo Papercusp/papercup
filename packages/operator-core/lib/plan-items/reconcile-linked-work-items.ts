@@ -1336,8 +1336,8 @@ export interface PlanDependencyReconcileResult {
  * Reconcile ONE plan item's promoted dependency edges onto its canonical linked
  * work-item, per D-050. Fresh-reads the plan (never trusts a caller snapshot), resolves
  * each still-open `blockedBy` plan item to ITS canonical linked feature-family row, and
- * writes the replace-set through `syncFeatureBlockEdges` — the authoritative coord_links
- * writer with the work_item_deps mirror — even when the set is EMPTY, so removed plan
+ * writes only the prior owned subset through `syncFeatureBlockEdges` and canonical
+ * work_item_deps admission — even when the set is EMPTY, so removed plan
  * edges actually clear. The `_planAuthoredBlockers` marker is written ONLY after the
  * edge sync succeeds (a failed sync must not advance provenance). Null = nothing to do
  * (no plan/item, no canonical feature-family row) or the edge sync was refused (cycle) —
@@ -1356,9 +1356,8 @@ export async function reconcilePlanAuthoredDependenciesNow(
     if (!item) return null;
 
     // The canonical promoted row for THIS lane. Only feature-family rows participate:
-    // getFeatureBlockers/syncFeatureBlockEdges are the feature→feature seam, which is
-    // also what automatically preserves issue-family blockers (they live on edges this
-    // writer never touches).
+    // The reader is feature-only, but the canonical writer knows every endpoint family.
+    // Pass the prior owned subset below rather than replacing all of the target's edges.
     const { canonical } = selectCanonicalLinkedWorkItem(await findAllLinkedWorkItems(planSlug, itemId));
     if (!canonical || canonical.family !== 'feature' || !canonical.harness) return null;
     const harness = canonical.harness;
@@ -1392,7 +1391,7 @@ export async function reconcilePlanAuthoredDependenciesNow(
     // Write even an EMPTY set — that is exactly how a removed plan edge clears. A cycle
     // refusal (syncFeatureBlockEdges throws) aborts BEFORE the marker write below, so a
     // refused sync never advances provenance.
-    await syncFeatureBlockEdges(harness, canonical.id, desired);
+    await syncFeatureBlockEdges(harness, canonical.id, desired, { priorBlockerIds: prior });
     await mergeWorkItemPayload(
       canonical.id,
       { [PLAN_AUTHORED_BLOCKERS_KEY]: { planSlug, itemId, blockerWorkItemIds: resolved } },
