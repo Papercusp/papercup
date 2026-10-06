@@ -37,7 +37,9 @@ const arg = (name: string, fallback?: string) => {
   const i = process.argv.indexOf(`--${name}`);
   return i > 0 ? process.argv[i + 1] : fallback;
 };
-const cliName = arg('cli') as 'claude' | 'codex' | 'pui';
+/** A bare `--<name>` switch (no value). */
+const flag = (name: string) => process.argv.includes(`--${name}`);
+const cliName =arg('cli') as 'claude' | 'codex' | 'pui';
 const out = path.resolve(arg('out')!);
 const cols = 120;
 const rows = 40;
@@ -133,8 +135,14 @@ const CLIS: Record<string, Cli> = {
     ready: /^\s*›\s/m,
     statusCmds: ['/status'],
   },
+  // The battery grades the chat surface against Claude Code's and Codex's,
+  // so it runs `pui --solo` (the same chat that is bare `pui`'s main pane,
+  // P-030) full screen. `--pui-workbench` runs bare `pui` instead, to record
+  // frames of the chat workbench with its side panes.
   pui: {
-    launch: [arg('pui-bin', 'pui')!], resume: [arg('pui-bin', 'pui')!], exit: '/exit',
+    launch: [arg('pui-bin', 'pui')!, ...(flag('pui-workbench') ? [] : ['--solo'])],
+    resume: [arg('pui-bin', 'pui')!, ...(flag('pui-workbench') ? [] : ['--solo'])],
+    exit: '/exit',
     busy: /Running — Enter queues|Starting|Connecting|esc to interrupt/i,
     approve: { when: /Approve.*Decline|1 Approve|\[1\] Approve/i, key: '1' },
     startup: [],
