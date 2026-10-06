@@ -9,7 +9,7 @@
  * only the PUT goes through fetch.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { integrationModeQuestion } from '@papercusp/operator-core/lib/harness/git-sync/integration-mode-question';
 import IntegrationModeSection, { switchExplanation } from '../IntegrationModeSection';
@@ -52,6 +52,9 @@ function putCalls() {
   return mockFetch.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === 'PUT');
 }
 
+const radio = (value: 'direct' | 'review') =>
+  screen.getByTestId(`integration-mode-option-${value}`).closest('button[role="radio"]') as HTMLButtonElement;
+
 beforeEach(() => {
   mockFetch.mockReset();
   invalidate.mockReset();
@@ -81,7 +84,7 @@ describe('IntegrationModeSection', () => {
     expect(direct.textContent).toContain('Straight into acme/widgets');
     expect(direct.textContent).toContain('(current)');
     expect(review.textContent).toContain('Into a working copy of acme/widgets');
-    expect((direct.querySelector('input') as HTMLInputElement).checked).toBe(true);
+    expect(radio('direct').getAttribute('aria-checked')).toBe('true');
   });
 
   it('a switch saved elsewhere shows up live, with no reload (EI-25188362216785598)', async () => {
@@ -102,14 +105,14 @@ describe('IntegrationModeSection', () => {
     sync.rows = [settingsRow({ current: 'direct' })];
     render(<IntegrationModeSection slug="widgets" />);
     await screen.findByTestId('integration-mode-settings');
-    await userEvent.click(screen.getByTestId('integration-mode-option-review').querySelector('input')!);
+    await userEvent.click(radio('review'));
     const panel = screen.getByTestId('integration-mode-confirm-panel');
     expect(panel.textContent).toContain('acme/widgets receives their combined work only through a PR');
     expect(putCalls()).toHaveLength(0);
 
     await userEvent.click(screen.getByTestId('integration-mode-cancel'));
     expect(screen.queryByTestId('integration-mode-confirm-panel')).toBeNull();
-    expect((screen.getByTestId('integration-mode-option-direct').querySelector('input') as HTMLInputElement).checked).toBe(true);
+    expect(radio('direct').getAttribute('aria-checked')).toBe('true');
     expect(putCalls()).toHaveLength(0);
   });
 
@@ -118,7 +121,7 @@ describe('IntegrationModeSection', () => {
     mockFetch.mockResolvedValueOnce(json({ ok: true, mode: 'review', fork: { url: 'https://github.com/bot/widgets', created: true } }));
     render(<IntegrationModeSection slug="widgets" />);
     await screen.findByTestId('integration-mode-settings');
-    await userEvent.click(screen.getByTestId('integration-mode-option-review').querySelector('input')!);
+    await userEvent.click(radio('review'));
     await userEvent.click(screen.getByTestId('integration-mode-confirm'));
 
     await waitFor(() => expect(screen.queryByTestId('integration-mode-confirm-panel')).toBeNull());
@@ -138,7 +141,7 @@ describe('IntegrationModeSection', () => {
     );
     render(<IntegrationModeSection slug="widgets" />);
     await screen.findByTestId('integration-mode-settings');
-    await userEvent.click(screen.getByTestId('integration-mode-option-review').querySelector('input')!);
+    await userEvent.click(radio('review'));
     await userEvent.click(screen.getByTestId('integration-mode-confirm'));
 
     const err = await screen.findByTestId('integration-mode-error');
@@ -152,8 +155,14 @@ describe('IntegrationModeSection', () => {
     render(<IntegrationModeSection slug="widgets" />);
     await screen.findByTestId('integration-mode-settings');
     const review = screen.getByTestId('integration-mode-option-review');
-    expect((review.querySelector('input') as HTMLInputElement).disabled).toBe(true);
+    expect(radio('review').disabled).toBe(true);
     expect(review.textContent).toContain('This repository has no test suite');
+    radio('direct').focus();
+    fireEvent.keyDown(radio('direct'), { key: 'ArrowRight' });
+    expect(document.activeElement).toBe(radio('direct'));
+    expect(radio('direct').getAttribute('aria-checked')).toBe('true');
+    expect(screen.queryByTestId('integration-mode-confirm-panel')).toBeNull();
+    expect(putCalls()).toHaveLength(0);
   });
 
   it('renders nothing for a project that is not a pot', async () => {
@@ -201,7 +210,7 @@ describe('IntegrationModeSection — P-019 switching back', () => {
     mockFetch.mockResolvedValueOnce(json({ ok: false, error: 'standing_pr_open', message }, 409));
     render(<IntegrationModeSection slug="widgets" />);
     await screen.findByTestId('integration-mode-settings');
-    await userEvent.click(screen.getByTestId('integration-mode-option-direct').querySelector('input')!);
+    await userEvent.click(radio('direct'));
     expect(screen.getByTestId('integration-mode-confirm-panel').textContent).toContain('merged or closed first');
     await userEvent.click(screen.getByTestId('integration-mode-confirm'));
 
