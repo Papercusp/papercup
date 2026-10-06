@@ -22,6 +22,7 @@ import { bindCurrentCallerDispatch } from '../orchestration/current-caller-dispa
 // recipes:run lazy/eagerly imports these; replace so no PG/orchestration runs and
 // we can capture the `allowed` set the handler builds for the facade.
 const {
+  listRecipesMock,
   getRecipeMock,
   reviseRecipeSourceMock,
   recordRecipeRunMock,
@@ -60,6 +61,7 @@ const {
     structuralFingerprint: 'b'.repeat(64),
   };
   return {
+    listRecipesMock: vi.fn(),
     getRecipeMock: vi.fn(),
     reviseRecipeSourceMock: vi.fn(),
     recordRecipeRunMock: vi.fn(async () => {}),
@@ -93,6 +95,7 @@ vi.mock('../locks/su-lock-store', async (importOriginal) => ({
 }));
 vi.mock('../../code-recipes-store', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
+  listRecipes: listRecipesMock,
   getRecipe: getRecipeMock,
   reviseRecipeSource: reviseRecipeSourceMock,
   recordRecipeRun: recordRecipeRunMock,
@@ -132,7 +135,7 @@ vi.mock('../../telemetry-dispatch-wrapper', () => ({
 }));
 
 // Side-effect: register the recipes:* tools AFTER the mocks are hoisted.
-import './list';
+import recipeListTool from './list';
 import recipeGetTool from './get';
 import recipeReviseTool from './revise';
 import recipeSearchTool from './search';
@@ -153,6 +156,21 @@ const findTool = (name: string) => {
 };
 
 describe('recipes:* registration (P-005, P-013)', () => {
+  it('lists public recipe metadata through the formatter without exposing stored source', async () => {
+    const publicRecipe = {
+      id: 'recipe-public', title: 'Reusable lookup', description: 'Read current evidence',
+      toolsUsed: ['facts:list'], runCount: 3, successCount: 2,
+      lastRunAt: '2026-10-06T00:00:00.000Z', status: 'active',
+    };
+    listRecipesMock.mockResolvedValueOnce([{ ...publicRecipe, script: 'private source', executionTrace: { private: true } }]);
+    const result = await recipeListTool.handler({ limit: 7, includeTrivial: true } as never, {} as never);
+    expect(listRecipesMock).toHaveBeenLastCalledWith(orgSqlMock, { limit: 7, includeTrivial: true });
+    expect(result).toEqual({ data: { ok: true, count: 1, recipes: [publicRecipe] } });
+    listRecipesMock.mockResolvedValueOnce([]);
+    expect(await recipeListTool.handler({} as never, {} as never)).toEqual({ data: { ok: true, count: 0, recipes: [] } });
+    expect(listRecipesMock).toHaveBeenLastCalledWith(orgSqlMock, { limit: 25, includeTrivial: false });
+  });
+
   for (const name of ['recipes:list', 'recipes:get', 'recipes:search', 'recipes:run', 'recipes:candidates']) {
     it(`registers ${name} as a role-gated tool`, () => {
       const tool = findTool(name);

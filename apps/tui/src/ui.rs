@@ -3645,12 +3645,19 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
         } else {
             footer_hint = QUIET_SEND_HINT;
         }
+        // P-027 (G-11): a first Ctrl+C armed the exit; say what the second
+        // one does, the way Claude Code and Codex do.
+        if app.chat_ctrl_c_exit_armed() {
+            footer_hint = QUIET_CTRL_C_EXIT_HINT;
+        }
         ("", format!("> {}", app.chat_input), Theme::selected())
     } else if app.chat_composing {
         (
             // Chat-first names the Ctrl-O details view (P-003): the ids and raw
             // errors moved there, so the way to them must be on screen.
-            if app.chat_first && app.chat_streaming {
+            if app.chat_first && app.chat_ctrl_c_exit_armed() {
+                " Message — Press Ctrl+C again to exit "
+            } else if app.chat_first && app.chat_streaming {
                 " Message — Enter queue · Esc stop · Ctrl+R output · Ctrl+O details "
             } else if app.chat_first {
                 " Message — Enter send · / commands · @ files · ↑↓ history · Ctrl+O details "
@@ -3806,6 +3813,8 @@ pub const QUIET_SHORTCUTS_HINT: &str = "? for shortcuts";
 /// failure sentences say "press Enter to send your message again", and the
 /// PTY suite reads this hint as the composer being ready to send.
 pub const QUIET_SEND_HINT: &str = "Enter sends";
+/// The footer hint while a Ctrl+C has armed the exit (P-027, G-11).
+pub const QUIET_CTRL_C_EXIT_HINT: &str = "Press Ctrl+C again to exit";
 
 /// The keys the chat-first message box answers to, listed by `?` (P-021).
 /// Each one is a real binding of the composing arm in `App::on_key`, or of
@@ -3824,7 +3833,7 @@ const CHAT_SHORTCUTS: &[(&str, &str)] = &[
     ("Ctrl+R", "show tool output"),
     ("Ctrl+O", "details"),
     ("Ctrl+Z", "undo"),
-    ("Ctrl+C", "quit"),
+    ("Ctrl+C", "clear the box, or twice to quit"),
 ];
 
 /// The shortcut list as rows: two columns when both fit, else one.
@@ -9884,6 +9893,22 @@ mod tests {
         assert!(!frame.contains("Message Claude"), "{frame}");
         assert!(frame.contains(QUIET_SEND_HINT), "{frame}");
         assert!(!frame.contains(QUIET_SHORTCUTS_HINT), "{frame}");
+    }
+
+    /// P-027 (G-11): after a first Ctrl+C the footer says a second one exits;
+    /// once the window closes the usual hint returns.
+    #[test]
+    fn an_armed_ctrl_c_says_a_second_press_exits() {
+        let mut app = chat_first_bound_app();
+        app.chat_ctrl_c_armed = Some(std::time::Instant::now());
+        let frame = render(&app, 100, 24);
+        assert!(frame.contains(QUIET_CTRL_C_EXIT_HINT), "{frame}");
+        assert!(!frame.contains(QUIET_SHORTCUTS_HINT), "{frame}");
+        app.chat_ctrl_c_armed =
+            std::time::Instant::now().checked_sub(crate::app::CHAT_CTRL_C_EXIT_WINDOW);
+        let frame = render(&app, 100, 24);
+        assert!(!frame.contains(QUIET_CTRL_C_EXIT_HINT), "{frame}");
+        assert!(frame.contains(QUIET_SHORTCUTS_HINT), "{frame}");
     }
 
     #[test]

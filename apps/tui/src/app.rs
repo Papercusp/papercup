@@ -121,6 +121,10 @@ pub const SETUP_DISCONNECTED_LABEL: &str =
 /// echoed, "Starting Claude…" above it) before the setup form opens on the
 /// live reason (`App::chat_first_quiet_wait`, pui-chat-first-ux P-012).
 pub const CHAT_FIRST_QUIET_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
+/// pui-chat-first-ux P-027 (G-11): how long a Ctrl+C keeps the exit armed.
+/// Claude Code and Codex both quit on a second Ctrl+C pressed soon after the
+/// first, and both show a "press Ctrl+C again" line in the meantime.
+pub const CHAT_CTRL_C_EXIT_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
 pub const CHAT_DISCONNECTED_HINT: &str = "Not connected — press i and send a message to open setup, where l signs in to Papercusp cloud.";
 pub const SETUP_UNREACHABLE_NOTE: &str = "Nothing answered at that address. For a local setup, install and start the separate Papercusp Server package from your Papercusp release download page, then press r. The desktop app is optional; l signs in to cloud and h uses a remote host.";
 
@@ -2223,6 +2227,10 @@ pub struct App {
     /// quiet wait (`chat_first_quiet_wait`, P-012): past
     /// `CHAT_FIRST_QUIET_WAIT` the setup form opens on the live reason.
     pub chat_first_autostart_since: Option<std::time::Instant>,
+    /// pui-chat-first-ux P-027 (G-11): when a Ctrl+C in the chat-first message
+    /// box last armed the exit. A second Ctrl+C inside
+    /// `CHAT_CTRL_C_EXIT_WINDOW` quits; any other key disarms it.
+    pub chat_ctrl_c_armed: Option<std::time::Instant>,
     /// The operator's project list has answered at least once. Until then an
     /// unknown default project means "not loaded yet", not "no such project".
     pub harnesses_loaded: bool,
@@ -2928,6 +2936,7 @@ impl App {
             require_session_setup: false,
             chat_first_autostart: false,
             chat_first_autostart_since: None,
+            chat_ctrl_c_armed: None,
             harnesses_loaded: false,
             session_setup_accepted: false,
             chat_model: None,
@@ -4800,6 +4809,39 @@ impl App {
             });
         }
         Action::CancelChat
+    }
+
+    /// pui-chat-first-ux P-027 (G-11): Ctrl+C in the chat-first message box
+    /// works the way it does in Claude Code and Codex instead of quitting at
+    /// once and losing the draft. A draft is cleared first; it stays in ↑
+    /// history, so it is never lost. With an empty box a running reply is
+    /// stopped. Otherwise the first press arms the exit and only a second
+    /// press inside `CHAT_CTRL_C_EXIT_WINDOW` quits. Clearing a draft arms the
+    /// exit too, so Ctrl+C twice still leaves pui, as in Codex.
+    fn chat_first_ctrl_c(&mut self) -> Action {
+        if !self.chat_input.is_empty() {
+            let draft = self.chat_input.clone();
+            self.chat_history_push(&draft);
+            self.chat_clear_input();
+            self.chat_ctrl_c_armed = Some(std::time::Instant::now());
+            return Action::Render;
+        }
+        if self.chat_streaming {
+            self.chat_ctrl_c_armed = None;
+            return self.interrupt_chat_turn();
+        }
+        if self.chat_ctrl_c_exit_armed() {
+            self.should_quit = true;
+            return Action::Quit;
+        }
+        self.chat_ctrl_c_armed = Some(std::time::Instant::now());
+        Action::Render
+    }
+
+    /// A Ctrl+C has armed the exit and its window is still open.
+    pub(crate) fn chat_ctrl_c_exit_armed(&self) -> bool {
+        self.chat_ctrl_c_armed
+            .is_some_and(|armed| armed.elapsed() < CHAT_CTRL_C_EXIT_WINDOW)
     }
 
     fn chat_clear_input(&mut self) {
@@ -8710,11 +8752,18 @@ impl App {
         }
         // P-024: a running turn's working line moves (spinner frame, elapsed
         // seconds), so each idle tick repaints while a turn is in flight.
-        let idle = if self.chat_streaming {
+        let mut idle = if self.chat_streaming {
             Action::Render
         } else {
             Action::None
         };
+        // P-027 (G-11): the "Press Ctrl+C again to exit" hint leaves the screen
+        // when its window closes. A stale hint would promise an exit that the
+        // next Ctrl+C no longer performs (it only arms again).
+        if self.chat_ctrl_c_armed.is_some() && !self.chat_ctrl_c_exit_armed() {
+            self.chat_ctrl_c_armed = None;
+            idle = Action::Render;
+        }
         let Some(refresh) = self.session_browser.launch_refresh.as_mut() else {
             return idle;
         };
@@ -13709,9 +13758,15 @@ impl App {
         if self.operator_input_active() && self.chat_composing {
             let ctrl_c = code == KeyCode::Char('c') && mods.contains(KeyModifiers::CONTROL);
             if ctrl_c {
+                if self.chat_first {
+                    return self.chat_first_ctrl_c();
+                }
                 self.should_quit = true;
                 return Action::Quit;
             }
+            // Any other key in the box disarms a pending Ctrl+C exit, so a
+            // Ctrl+C typed after real work starts the two-press count again.
+            self.chat_ctrl_c_armed = None;
             // A toast names Esc as its dismiss key and pui toasts never expire,
             // so every Esc in the message box also clears it, on top of whatever
             // that Esc does below (WI-10004807: the warning for an unknown
@@ -18285,6 +18340,67 @@ mod tests {
         a.tab = Tab::Operator;
         a.chat_composing = true;
         a
+    }
+
+    /// P-027 (G-11): Ctrl+C with a draft clears it and keeps it in ↑ history;
+    /// only a second Ctrl+C quits (Codex parity). Before this, the first
+    /// Ctrl+C quit pui and lost the draft.
+    #[test]
+    fn chat_first_ctrl_c_clears_the_draft_before_it_quits() {
+        let mut a = chat_first_app();
+        a.chat_input = "half a thought".into();
+        a.chat_cursor = a.chat_input.len();
+        assert_eq!(a.on_key(KeyCode::Char('c'), KeyModifiers::CONTROL), Action::Render);
+        assert!(!a.should_quit, "the first Ctrl+C must not quit with a draft");
+        assert!(a.chat_input.is_empty());
+        assert_eq!(a.chat_cursor, 0);
+        assert_eq!(
+            a.chat_history.last().map(String::as_str),
+            Some("half a thought"),
+            "the cleared draft is recoverable with ↑"
+        );
+        assert!(a.chat_ctrl_c_exit_armed());
+        assert_eq!(a.on_key(KeyCode::Char('c'), KeyModifiers::CONTROL), Action::Quit);
+        assert!(a.should_quit);
+    }
+
+    /// P-027 (G-11): on an empty box one Ctrl+C only arms the exit. Typing
+    /// disarms it, and an arm older than the window does not count.
+    #[test]
+    fn chat_first_ctrl_c_on_an_empty_box_needs_a_second_press() {
+        let mut a = chat_first_app();
+        assert_eq!(a.on_key(KeyCode::Char('c'), KeyModifiers::CONTROL), Action::Render);
+        assert!(!a.should_quit);
+        assert!(a.chat_ctrl_c_exit_armed());
+        a.on_key(KeyCode::Char('h'), KeyModifiers::NONE);
+        assert!(!a.chat_ctrl_c_exit_armed(), "a typed key disarms the exit");
+        assert_eq!(a.chat_input, "h");
+        // This Ctrl+C clears the "h"; it does not quit.
+        assert_eq!(a.on_key(KeyCode::Char('c'), KeyModifiers::CONTROL), Action::Render);
+        assert!(!a.should_quit);
+        // An expired arm is not a first press, and the tick clears it.
+        a.chat_ctrl_c_armed = std::time::Instant::now().checked_sub(CHAT_CTRL_C_EXIT_WINDOW);
+        assert!(!a.chat_ctrl_c_exit_armed());
+        assert_eq!(a.on_tick(), Action::Render, "the stale hint is repainted away");
+        assert!(a.chat_ctrl_c_armed.is_none());
+        assert_eq!(a.on_key(KeyCode::Char('c'), KeyModifiers::CONTROL), Action::Render);
+        assert!(!a.should_quit);
+        assert_eq!(a.on_key(KeyCode::Char('c'), KeyModifiers::CONTROL), Action::Quit);
+        assert!(a.should_quit);
+    }
+
+    /// P-027 (G-11): with an empty box, Ctrl+C stops a running reply (as in
+    /// Claude Code and Codex) instead of quitting.
+    #[test]
+    fn chat_first_ctrl_c_stops_a_running_reply_before_it_quits() {
+        let mut a = chat_first_app();
+        a.chat_streaming = true;
+        assert_eq!(
+            a.on_key(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            Action::CancelChat
+        );
+        assert!(!a.should_quit);
+        assert!(!a.chat_ctrl_c_exit_armed());
     }
 
     /// Owner #783 (Claude Code / Codex parity): the first Enter in chat-first

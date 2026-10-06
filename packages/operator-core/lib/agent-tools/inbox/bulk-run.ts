@@ -934,7 +934,7 @@ const IntakeDecisionArg = z
         completionCheck: softText(LIMITS.ANNOTATION).optional(),
       })
       .optional()
-      .describe('promote/investigate: the acceptance contract you judged; all five fields are needed to execute'),
+      .describe('promote/investigate: acceptance contract; execution requires all five fields'),
     reproduction: z
       .object({
         kind: z.enum(BUG_REPRODUCTION_KINDS),
@@ -942,7 +942,7 @@ const IntakeDecisionArg = z
         buildSha: z.string().min(7).max(40),
       })
       .optional()
-      .describe('promote of a bug: the failure reproduced on the current build (test_runs:<id> / tool_invocations:<id> are checked)'),
+      .describe('promote bug: current-build failure; test_runs:<id>/tool_invocations:<id> checked'),
   })
   .describe(
     'intake inputs only: promote | merge (targetRef) | investigate | retain | reject | retry (missingInformation), each with a reason',
@@ -1068,29 +1068,29 @@ const OutcomeItem = z
       .string()
       .min(1)
       .optional()
-      .describe('the option id to pre-select for the owner (recommended). MUST be one the item offers.'),
+      .describe('Recommended option to pre-select; must be offered by the item.'),
     rationale: softText(LIMITS.ANNOTATION)
       .optional()
-      .describe('≤2 sentences of WHY — what the owner reads on a recommended item'),
+      .describe('Owner-facing reason, at most two sentences.'),
     draftAnswer: softText(LIMITS.ANNOTATION)
       .optional()
       .describe(
-        'a drafted free-text reply where the resolution path takes prose, so the owner edits rather than composes',
+        'Editable draft for a free-text resolution.',
       ),
     confidence: z
       .enum(['low', 'high'])
       .optional()
       .describe(
-        "'high' = settled from direct evidence or the asker's own reply; 'low' = a consult deadline lapsed and you inferred it anyway",
+        "'high': direct evidence or asker reply; 'low': inferred after consult timeout",
       ),
     consulted: z
       .boolean()
       .optional()
-      .describe('true when you sent the asking agent a directed consult about this item'),
+      .describe('True if you directed a consult to this item\'s asking agent.'),
     consultReply: softText(LIMITS.ANNOTATION).optional().describe("the asker's reply, verbatim, when one arrived"),
     error: softText(LIMITS.ANNOTATION)
       .optional()
-      .describe('why it was skipped, or how the dispatch failed — never leave this blank on skipped/failed'),
+      .describe('Required for skipped/failed: reason skipped or dispatch failure.'),
     recommendationKind: z.enum(BULK_RECOMMENDATION_KINDS).optional(),
     recommendationLabel: softText(LIMITS.ANNOTATION).optional(),
     recommendationRationale: softText(LIMITS.ANNOTATION).optional(),

@@ -92,9 +92,9 @@ const citationPathSchema = z.string().min(1).describe(
   'Repo-relative path. No leading `/` or `~`, no `..` segments — a citation that needs one is not evidence.',
 );
 const citationOptionalFields = {
-  line: z.number().int().positive().optional().describe('Optional line number, validated against the file\'s ACTUAL length — a hallucinated line is refused.'),
+  line: z.number().int().positive().optional().describe('Optional line number; must exist in the cited file.'),
   symbol: z.string().min(1).optional().describe('Optional symbol that must literally appear in the cited file.'),
-  ref: z.string().min(1).optional().describe('Doc id — for a `doc` citation naming a PG-canonical doc rather than a tree file. Requires `reason` too.'),
+  ref: z.string().min(1).optional().describe('PG-canonical doc id for a `doc` citation; requires `reason`.'),
   reason: z.string().min(1).optional().describe('REQUIRED for kind `none`, and for a `doc` cited by `ref` alone: why this item has no code-resolvable artifact.'),
 };
 const citationSchema = z.union([

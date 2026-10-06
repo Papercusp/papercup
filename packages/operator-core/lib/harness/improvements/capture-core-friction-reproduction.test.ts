@@ -49,6 +49,13 @@ describe('isStrandedToolFailureReview (EI-25176539351759672)', () => {
   it('does not flag an enrolled, ready, or differently-held row', () => {
     expect(isStrandedToolFailureReview({ implementationReadiness: awaiting, agentReview: { status: 'pending' } })).toBe(false);
     expect(isStrandedToolFailureReview({ implementationReadiness: { ...awaiting, status: 'ready' } })).toBe(false);
+    // P-003 / D-022: a triage place whose deployment screen could not answer is stranded too.
+    expect(
+      isStrandedToolFailureReview({ implementationReadiness: { ...awaiting, reason: 'deployment-freshness-unknown' } }),
+    ).toBe(true);
+    expect(
+      isStrandedToolFailureReview({ implementationReadiness: { ...awaiting, reason: 'awaiting-agent-review' } }),
+    ).toBe(false);
     expect(isStrandedToolFailureReview({ implementationReadiness: { status: 'unknown', reason: 'awaiting-agent-review' } })).toBe(false);
     expect(isStrandedToolFailureReview(null)).toBe(false);
   });

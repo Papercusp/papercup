@@ -600,6 +600,7 @@ describe('governed attempt persisted settlement receipts', () => {
     }, { enabled: async () => true, getSql: async () => sql, log: () => {} });
     expect(out).toMatchObject({ ok: true, value: 'recovered', costUsd: 0.02,
       settlement: { ok: true, reservation: { status: 'settled', usedUsd: 0.02 } } });
+    if (!out.ok) throw new Error('expected known-zero retry recovery');
     expect(call).toHaveBeenCalledTimes(2);
     expect(sleep.mock.calls).toEqual([[2_000]]);
     const fresh = postgres(testDatabaseUri, { max: 1, onnotice: () => {}, prepare: false });
