@@ -2259,10 +2259,10 @@ export async function lspWorkspaceSymbols(query: {
     const list = Array.isArray(raw) ? raw : [];
     const all = list
       .map((entry): SymbolSite | null => {
-        const e = entry as { location?: unknown; containerName?: string; kind?: number };
+        const e = entry as { location?: unknown; containerName?: string; kind?: number; name?: unknown };
         const site = toSite(e.location, query.rootPath);
         if (!site) return null;
-        return { ...site, detail: e.containerName ?? null };
+        return { ...site, detail: e.containerName ?? null, name: typeof e.name === 'string' ? e.name : null };
       })
       .filter((s): s is SymbolSite => s !== null);
 

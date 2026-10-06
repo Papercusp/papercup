@@ -30,12 +30,20 @@ const PLACEMENT_EXCLUSION_CONTROLS: ReadonlySet<string> = new Set([
   'existing-one-fleet',
   'drain-and-test-excluded',
 ]);
+const GOAL_RESPAWN_CONTROL_FIXTURE = 'packages/operator-core/lib/system-health/goal-liveness-watchdog.test.ts';
+const GOAL_RESPAWN_CONTROLS: ReadonlySet<string> = new Set([
+  'elected-loss-recovery',
+  'live-holder-no-double-spawn',
+  'concurrent-takeover-refusal',
+  'successful-recovery-control',
+]);
 
 export function resolveTestRunSource(
   env: {
     PAPERCUSP_TEST_RUN_SOURCE?: string;
     PAPERCUSP_MUTATION_PROBE?: string;
     PAPERCUSP_PLACEMENT_EXCLUSION_CONTROL?: string;
+    PAPERCUSP_GOAL_RESPAWN_CONTROL?: string;
     CI?: string;
   } = process.env,
   filePath?: string,
@@ -47,7 +55,13 @@ export function resolveTestRunSource(
     normalizedFilePath === PLACEMENT_EXCLUSION_FIXTURE &&
     env.PAPERCUSP_PLACEMENT_EXCLUSION_CONTROL !== undefined &&
     PLACEMENT_EXCLUSION_CONTROLS.has(env.PAPERCUSP_PLACEMENT_EXCLUSION_CONTROL);
-  if (env.PAPERCUSP_MUTATION_PROBE === '1' || controlledPlacementFixture) return 'mutation-probe';
+  const controlledGoalRespawnFixture =
+    normalizedFilePath === GOAL_RESPAWN_CONTROL_FIXTURE &&
+    env.PAPERCUSP_GOAL_RESPAWN_CONTROL !== undefined &&
+    GOAL_RESPAWN_CONTROLS.has(env.PAPERCUSP_GOAL_RESPAWN_CONTROL);
+  if (env.PAPERCUSP_MUTATION_PROBE === '1' || controlledPlacementFixture || controlledGoalRespawnFixture) {
+    return 'mutation-probe';
+  }
   const override = env.PAPERCUSP_TEST_RUN_SOURCE;
   if (override && VALID.has(override as TestRunSource)) {
     return override as TestRunSource;

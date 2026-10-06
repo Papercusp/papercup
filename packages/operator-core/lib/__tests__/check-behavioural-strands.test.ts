@@ -1040,6 +1040,16 @@ describe('injected-member trigger: a new call to an optional Deps member strands
         writeFileSync(resolve(dir, 'packages/p/package.json'), JSON.stringify({ name: '@tmp/p', version: '0.0.0' }));
         writeFileSync(resolve(dir, '.gitignore'), 'node_modules\n');
         writeFileSync(resolve(dir, 'packages/p/lib/watchdog.ts'), BEFORE);
+        // The barrel makes this test transitively reachable from watchdog.ts, but its generic
+        // fixture object is unrelated to the WatchdogDeps bundle and must not join by key names.
+        writeFileSync(
+          resolve(dir, 'packages/p/lib/index.ts'),
+          "export { tick } from './watchdog';\nexport const unrelated = 1;\n",
+        );
+        writeFileSync(
+          resolve(dir, 'packages/p/lib/unrelated.test.ts'),
+          "import { unrelated } from './index';\nconst deps = { now: () => 1, escalateGiveUp: () => Promise.resolve() };\nvoid unrelated;\nvoid deps;\n",
+        );
         writeFileSync(resolve(dir, 'packages/p/lib/stranded.test.ts'), `import { tick } from './watchdog';\n${PARTIAL_FIXTURE}`);
         const git = (...args: string[]) =>
           spawnSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args], { cwd: dir, encoding: 'utf8' });

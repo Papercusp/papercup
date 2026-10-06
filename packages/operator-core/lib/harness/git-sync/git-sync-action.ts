@@ -90,6 +90,13 @@ import { formatIntegratorTickStatus } from '../../sync/pot-git/integrator';
 import { runWorktreeBridgeTick, WORKTREE_BRIDGE_RETRY_TTL_MS } from '../../sync/pot-git/worktree-bridge-tick';
 import { catchUpWorktreeToWatermark } from '../../sync/pot-git/worktree-bridge';
 import {
+  type DivergenceObservation,
+  type WorktreeDivergence,
+  describeDivergenceTransition,
+  nextWorktreeDivergence,
+  parseWorktreeDivergence,
+} from './worktree-divergence';
+import {
   HiveEffectAuthorityError,
   loadHiveEffectAuthority,
   nextHivePublicationTerm,
@@ -2858,7 +2865,11 @@ async function contentNoticeRecipients(
  * fire. The routine metadata + pipeline event retain the structured provenance
  * regardless of delivery.
  */
-async function notifySkippedLockedPaths(slug: string, outcome: GitSyncOutcome): Promise<void> {
+async function notifySkippedLockedPaths(
+  slug: string,
+  workspaceId: string,
+  outcome: GitSyncOutcome,
+): Promise<void> {
   const skippedPaths = outcome.skippedPaths ?? [];
   if (skippedPaths.length === 0) return;
 
@@ -2911,6 +2922,88 @@ async function notifySkippedLockedPaths(slug: string, outcome: GitSyncOutcome): 
       body,
       category: 'git-sync',
     }).catch(() => {});
+  }
+
+  const migrationReservations = skippedPaths.filter(
+    (row): row is Extract<GitSyncSkippedPath, { reason: 'migration-reservation' }> =>
+      'reason' in row && row.reason === 'migration-reservation',
+  );
+  if (migrationReservations.length === 0) return;
+
+  let roster: AttributionRosterEntry[];
+  try {
+    roster = await loadAttributionRosterMerged(workspaceId);
+  } catch (error) {
+    console.warn(
+      `[git-sync] ${slug}: could not load attribution for migration-reservation refusals: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return;
+  }
+
+  let superRoot: string | undefined;
+  try {
+    const { projectDirForSlug } = await import('../../operator-notes');
+    superRoot = (await projectDirForSlug(slug, workspaceId)) ?? undefined;
+  } catch {
+    // Repo-relative edit-ledger entries still resolve without the checkout root.
+  }
+
+  const byAuthor = new Map<string, Array<Extract<GitSyncSkippedPath, { reason: 'migration-reservation' }>>>();
+  for (const skipped of migrationReservations) {
+    // agentsForScopedFiles resolves the right repo-relative map for each scope,
+    // including nested repo paths; keep its established first-declared-wins rule.
+    const [author] = agentsForScopedFiles(roster, [{ scope: skipped.scope, file: skipped.path }], superRoot);
+    if (!author) continue;
+    const rows = byAuthor.get(author) ?? [];
+    if (!rows.some((row) => row.scope === skipped.scope && row.path === skipped.path)) rows.push(skipped);
+    byAuthor.set(author, rows);
+  }
+
+  if (byAuthor.size === 0) {
+    console.warn(
+      `[git-sync] ${slug}: migration-reservation refusals had no matching file author in the attribution roster`,
+    );
+    return;
+  }
+
+  try {
+    const { upsertConditionWorkItem } = await import('../../coord/condition-upsert');
+    for (const [author, rows] of byAuthor) {
+      const signature = [...new Set(rows.map((row) => `${row.scope}\u001f${row.path}`))].sort().join('\u001e');
+      const signatureHash = createHash('sha256').update(signature).digest('hex').slice(0, 24);
+      const fileList = rows.map((row) => `${row.scope}/${row.path}`).join(', ');
+      const refusalDetails = rows.map((row) => `- ${row.scope}/${row.path}: ${row.detail}`).join('\n');
+      try {
+      await upsertConditionWorkItem(`git-sync-migration-reservation:${slug}:${author}:${signatureHash}`, {
+        kind: 'bug',
+        title: `git-sync migration reservation needs repair (${rows.length} migration(s), ${signatureHash})`,
+        summary:
+          `git-sync on ${slug} left these migrations out of the commit because their filenames do not match a reservation: ${fileList}\n` +
+          `${refusalDetails}\n\n` +
+          'To repair, run `npm run db:next-migration` to reserve the next number, rename the migration to the returned filename, and retry. Do not choose a number manually or reuse a number reserved for another migration.',
+        severity: 'major',
+        harness: slug,
+        workspaceId,
+        createdBy: GIT_SYNC_IDENTITY.ownerId,
+        assignee: author,
+        assignedBy: GIT_SYNC_IDENTITY.ownerId,
+        payload: {
+          source: 'git-sync-migration-reservation',
+          author,
+          signature: signatureHash,
+          migrations: rows.map(({ scope, path, detail }) => ({ scope, path, detail })),
+        },
+      });
+      } catch (error) {
+        console.warn(
+          `[git-sync] ${slug}: could not persist migration-reservation work item for ${author}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+  } catch (error) {
+    console.warn(
+      `[git-sync] ${slug}: could not load migration-reservation work-item upsert: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
 }
 
@@ -6980,15 +7073,22 @@ async function runWorktreeBridgeLeg(slug: string, workspaceId: string): Promise<
         } | null;
         integrator: { epoch: number } | null;
         ref_announce: RefAnnounceRoutineState | null;
+        worktree_divergence: unknown;
       }[]
     >`
       SELECT metadata->'worktree_bridge' AS worktree_bridge, metadata->'integrator' AS integrator,
-             metadata->'ref_announce' AS ref_announce
+             metadata->'ref_announce' AS ref_announce, metadata->'worktree_divergence' AS worktree_divergence
         FROM harness_shared.routines
        WHERE install_slug = ${slug} AND workspace_id = ${workspaceId} AND target_role = 'system:git-sync'
        LIMIT 1
     `;
     const priorState = rows[0]?.worktree_bridge ?? null;
+    // WI-10006476 / D-055: the persisted member/hive conflict fork, if any.
+    const catchUpCtx = {
+      slug,
+      workspaceId,
+      priorDivergence: parseWorktreeDivergence(rows[0]?.worktree_divergence),
+    };
     const lastEventId = priorState?.lastEventId ?? 0;
     const priorWatermark = { epochSeq: priorState?.epochSeq ?? null, stagingSha: priorState?.stagingSha ?? null };
 
@@ -7021,7 +7121,7 @@ async function runWorktreeBridgeLeg(slug: string, workspaceId: string): Promise<
       // drained). Nothing re-announces that staging, so retry it here.
       const idleWorktreePath = priorWatermark.stagingSha ? await projectDirForSlug(slug, workspaceId) : null;
       if (idleWorktreePath && priorWatermark.stagingSha) {
-        await runWorktreeCatchUp(slug, repoPath, idleWorktreePath, priorWatermark.stagingSha);
+        await runWorktreeCatchUp(catchUpCtx, repoPath, idleWorktreePath, priorWatermark.stagingSha);
       }
       return;
     }
@@ -7186,7 +7286,7 @@ async function runWorktreeBridgeLeg(slug: string, workspaceId: string): Promise<
     // (stale / replayed / held) re-bridged nothing, so it is also the moment to
     // retry a worktree still trailing the accepted watermark.
     if (outcome.acceptedCount === 0 && outcome.watermark.stagingSha) {
-      await runWorktreeCatchUp(slug, repoPath, worktreePath, outcome.watermark.stagingSha);
+      await runWorktreeCatchUp(catchUpCtx, repoPath, worktreePath, outcome.watermark.stagingSha);
     }
   } catch (e) {
     console.warn(`[git-sync] ${slug}: worktree-bridge-tick failed: ${e instanceof Error ? e.message : e}`);
@@ -7201,16 +7301,36 @@ async function runWorktreeBridgeLeg(slug: string, workspaceId: string): Promise<
  * staging until some OTHER advance happens to arrive. `catchUpWorktreeToWatermark`
  * is fetch-free and cheap when the worktree already contains the watermark, and
  * ff-only / dirty-safe otherwise, so it is safe to run on every idle tick.
- * Only a real advance or an error is logged: deferred-dirty and diverged-manual
- * are expected, self-describing waiting states and would flood the log.
+ * Only a real advance or an error is logged per tick: deferred-dirty and a clean
+ * diverged-manual are expected, self-describing waiting states and would flood
+ * the log. A diverged-manual that CONFLICTS is different (WI-10006476 / plan
+ * agent-capacity-and-cost-gcp-2026-09-30 D-055): it never resolves on its own,
+ * so it is persisted in `metadata.worktree_divergence` and logged once when it
+ * starts, when its path set changes, and when it clears.
  */
 async function runWorktreeCatchUp(
-  slug: string,
+  ctx: { slug: string; workspaceId: string; priorDivergence: WorktreeDivergence | null },
   repoPath: string,
   worktreePath: string,
   stagingSha: string,
 ): Promise<void> {
+  const { slug } = ctx;
   const r = await catchUpWorktreeToWatermark(repoPath, worktreePath, stagingSha);
+  try {
+    const obs: DivergenceObservation =
+      r.outcome === 'current' || r.outcome === 'advanced' || r.outcome === 'noop'
+        ? { kind: 'contained' }
+        : r.outcome === 'diverged-manual' && r.from
+          ? { kind: 'diverged', localHead: r.from, hiveSha: stagingSha, paths: r.conflictPaths ?? null }
+          : { kind: 'unknown' };
+    const now = Date.now();
+    const t = nextWorktreeDivergence(ctx.priorDivergence, obs, now);
+    if (t.write) await patchRoutineMetadata(slug, ctx.workspaceId, { worktree_divergence: t.next });
+    const line = describeDivergenceTransition(slug, ctx.priorDivergence, t, now);
+    if (line) (t.log === 'cleared' ? console.log : console.warn)(line);
+  } catch (e) {
+    console.warn(`[git-sync] ${slug}: recording worktree divergence failed: ${e instanceof Error ? e.message : e}`);
+  }
   if (r.outcome === 'advanced') {
     console.log(
       `[git-sync] ${slug}: worktree-bridge catch-up advanced the worktree ${r.from?.slice(0, 12) ?? '(unborn)'} -> ` +
@@ -7295,7 +7415,7 @@ async function recordAndEscalateTick(a: {
     },
   });
 
-  await notifySkippedLockedPaths(slug, outcome);
+  await notifySkippedLockedPaths(slug, workspaceId, outcome);
 
   if (outcome.status === 'conflict') {
     // P-010/P-012: refresh the escalation (listing every conflicted scope) + dispatch

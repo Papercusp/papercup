@@ -1915,6 +1915,20 @@ function errorDetail(error) {
   }
 }
 
+/** A serving-generation mismatch is a server-side pre-dispatch rejection. */
+export function isStaleToolContractFailure(error) {
+  const seen = new Set();
+  let current = error;
+  while (current && (typeof current === 'object' || typeof current === 'function')) {
+    if (seen.has(current)) break;
+    seen.add(current);
+    if (String(current.code ?? '').toLowerCase() === 'stale_tool_contract') return true;
+    if (/\bstale_tool_contract\b/i.test(String(current.message ?? ''))) return true;
+    current = current.cause;
+  }
+  return /\bstale_tool_contract\b/i.test(errorDetail(error));
+}
+
 /**
  * Whether a connection was rejected because this bearer is invalid for the
  * selected operator. Only this typed refusal may advance to another implicit
@@ -2366,7 +2380,7 @@ async function closeClientQuietly(client) {
  * session. A failed replay client is closed before the error is surfaced.
  * @param {any} client
  * @param {any} params
- * @param {{reconnect?: () => Promise<any>, maxAttempts?: number, timeoutMs?: number, replayProof?: unknown}} [options]
+ * @param {{reconnect?: () => Promise<any>, maxAttempts?: number, timeoutMs?: number, replayProof?: unknown, onStaleToolContract?: (context: {client: any, params: any, error: unknown}) => Promise<any>}} [options]
  */
 export async function callToolWithReplayRecovery(
   client,
@@ -2376,10 +2390,13 @@ export async function callToolWithReplayRecovery(
     maxAttempts = PTOOL_POST_CONNECT_RETRIES,
     timeoutMs = PTOOL_CALL_TOOL_TIMEOUT_MS,
     replayProof,
+    onStaleToolContract,
   } = {},
 ) {
   let activeClient = client;
+  let activeParams = params;
   let retriesUsed = 0;
+  let staleContractRefreshUsed = false;
   const requestedRetries = Number.isFinite(maxAttempts) ? Math.max(0, Math.floor(maxAttempts)) : 0;
   // No automatic replay exists. A caller must explicitly supply a valid,
   // server-owned proof for this exact code:run body, and even then only one
@@ -2390,9 +2407,38 @@ export async function callToolWithReplayRecovery(
   let preConnectRetriesUsed = 0;
   while (true) {
     try {
-      const result = await callToolWithPressureRetry(activeClient, params, { timeoutMs });
+      const result = await callToolWithPressureRetry(activeClient, activeParams, { timeoutMs });
       return { client: activeClient, result };
     } catch (error) {
+      if (
+        isStaleToolContractFailure(error) &&
+        !staleContractRefreshUsed &&
+        typeof onStaleToolContract === 'function'
+      ) {
+        staleContractRefreshUsed = true;
+        try {
+          const refreshedParams = await onStaleToolContract({
+            client: activeClient,
+            params: activeParams,
+            error,
+          });
+          if (
+            !refreshedParams ||
+            refreshedParams.name !== activeParams.name ||
+            canonicalJson(refreshedParams.arguments) !== canonicalJson(activeParams.arguments) ||
+            refreshedParams._meta?.idempotencyKey !== activeParams._meta?.idempotencyKey
+          ) {
+            throw new Error(
+              'ptool: stale tool-contract refresh must preserve the original tool name, arguments, and idempotency key',
+            );
+          }
+          activeParams = refreshedParams;
+          continue;
+        } catch (refreshError) {
+          if (activeClient !== client) await closeClientQuietly(activeClient);
+          throw refreshError;
+        }
+      }
       if (
         isPreConnectConnectionRefused(error) &&
         preConnectRetriesUsed < PTOOL_PRE_CONNECT_CALL_RETRIES &&
@@ -3155,6 +3201,62 @@ export async function listAllTools(
   return all;
 }
 
+/**
+ * Refresh a stale call's catalog entry and prepare one exact retry. A changed
+ * or missing input schema is surfaced for an explicit caller retry instead of
+ * dispatching arguments against a contract the user did not see.
+ * @param {{client: any, toolName: string, previousTool: any, callArgs: any, idempotencyKey: string, listTools?: (client: any) => Promise<any[]>, error?: unknown}} options
+ * @returns {Promise<{tool: any, params: any}>}
+ */
+export async function refreshToolCallAfterStaleContract({
+  client,
+  toolName,
+  previousTool,
+  callArgs,
+  idempotencyKey,
+  listTools = (targetClient) => listAllTools(targetClient),
+  error,
+} = {}) {
+  const refusal = (detail) => new Error(
+    'ptool: ' + toolName + ' was rejected before dispatch because the serving-generation contract was stale. ' +
+      detail + ' The original call was not retried.',
+    { cause: error },
+  );
+
+  let refreshedTools;
+  try {
+    refreshedTools = await listTools(client);
+  } catch (refreshError) {
+    throw refusal('Refreshing tools/list failed: ' + errorDetail(refreshError) + '.');
+  }
+  const currentTool = Array.isArray(refreshedTools)
+    ? refreshedTools.find((entry) => entry?.name === toolName)
+    : null;
+  if (!currentTool) {
+    throw refusal('The tool is no longer present in the refreshed catalog.');
+  }
+  if (
+    !previousTool?.inputSchema ||
+    !currentTool.inputSchema ||
+    canonicalJson(previousTool.inputSchema) !== canonicalJson(currentTool.inputSchema)
+  ) {
+    throw refusal('The input schema changed; inspect the current schema before retrying.');
+  }
+  const servingGeneration = currentTool._meta?.['papercusp/servingGeneration'];
+  if (typeof servingGeneration !== 'string' || !servingGeneration.trim()) {
+    throw refusal('The refreshed catalog did not provide a serving generation.');
+  }
+
+  return {
+    tool: currentTool,
+    params: buildCallToolParams(toolName, callArgs, {
+      outputSchema: currentTool.outputSchema,
+      servingGeneration,
+      idempotencyKey,
+    }),
+  };
+}
+
 /** Collect arg values for a tool by prompting per its inputSchema. Returns
  *  the assembled args object. */
 async function collectArgs(inputSchema) {
@@ -3610,10 +3712,8 @@ async function main() {
       process.exit(1);
     }
 
-    // Echo the generation attached by tools/list. The MCP host uses it to
-    // reject stateless calls when the server's loaded code, applied schema,
-    // or projected tool contracts moved after this catalog was fetched.
-    const servingGeneration = tool._meta?.['papercusp/servingGeneration'];
+    // Echo the generation attached by tools/list. If the host rejects this
+    // baseline before dispatch, refresh and revalidate the same call once.
 
     // Assemble args from the input parsed before connect, or prompt
     // interactively when no scripted source was provided.
@@ -3639,19 +3739,36 @@ async function main() {
     // Keep the receipt outside the try so a transport failure can surface the
     // exact key needed to replay the completed server result.
     const idempotencyKey = args.idempotencyKey || randomUUID();
+    let currentTool = tool;
+    const onStaleToolContract = async ({ client: callClient, error }) => {
+      console.error('ptool: serving generation changed before dispatch; refreshing tools/list.');
+      const refreshed = await refreshToolCallAfterStaleContract({
+        client: callClient,
+        toolName,
+        previousTool: currentTool,
+        callArgs,
+        idempotencyKey,
+        error,
+        listTools: (targetClient) => listAllTools(targetClient, {
+          retryLocalErrors: isLocalOperatorUrl(operatorUrl),
+        }),
+      });
+      currentTool = refreshed.tool;
+      return refreshed.params;
+    };
+    const currentCallParams = () => buildCallToolParams(toolName, callArgs, {
+      outputSchema: currentTool.outputSchema,
+      servingGeneration: currentTool._meta?.['papercusp/servingGeneration'],
+      idempotencyKey,
+    });
     try {
       let recovered = await callToolWithReplayRecovery(
         client,
-        buildCallToolParams(toolName, callArgs, {
-          outputSchema: tool.outputSchema,
-          servingGeneration,
-          // One key belongs to this logical CLI invocation. Reconnect recovery
-          // deliberately reuses these params so the server can deduplicate it.
-          idempotencyKey,
-        }),
+        currentCallParams(),
         {
           timeoutMs: timeoutForTool(toolName, callArgs),
           reconnect: () => connectOperator(),
+          onStaleToolContract,
         },
       );
       if (isRecoverableAuthorityDenial(recovered.result) && !args.url && operatorCandidates.length > 1) {
@@ -3662,14 +3779,11 @@ async function main() {
         await closeClientQuietly(recovered.client);
         recovered = await callToolWithReplayRecovery(
           await connectOperator({ preferredIndex: 1 }),
-          buildCallToolParams(toolName, callArgs, {
-            outputSchema: tool.outputSchema,
-            servingGeneration,
-            idempotencyKey,
-          }),
+          currentCallParams(),
           {
             timeoutMs: timeoutForTool(toolName, callArgs),
             reconnect: () => connectOperator(),
+            onStaleToolContract,
           },
         );
       }

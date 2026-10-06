@@ -5,8 +5,8 @@ import {
   appRowFromSourceRecord,
   appRowId,
   DATATYPE_FOR_APP,
+  APP_SYNC_SOURCE_REF,
   buildAppSyncBatch,
-  sourceRefForApp,
   type ProducerSourceRecord,
 } from './app-rows';
 import { APP_DELIVERY_TIMEOUT_MS, deliverAppSyncBatch } from './live-sink';
@@ -58,8 +58,18 @@ describe('app row mapping (P-011)', () => {
     expect(DATATYPE_FOR_APP).toEqual({ email: 'email-message', calendar: 'calendar-event' });
     expect(appRowId('m-1', '11111111-1111-4111-8111-111111111111')).toBe('11111111-1111-4111-8111-111111111111:m-1');
     expect(appRowId('m-1', null)).toBe('m-1');
-    expect(sourceRefForApp('email')).toBe('gmail');
-    expect(sourceRefForApp('calendar')).toBe('google-calendar');
+  });
+
+  // D-023 §2: the batch sourceRef names the producer's sync STREAM. A
+  // provider-named ref ('gmail', 'google-calendar') would mislabel every other
+  // provider's rows riding in the same batch.
+  it('names the sync stream with one provider-neutral ref for both apps', () => {
+    expect(APP_SYNC_SOURCE_REF).toBe('papercusp-vault');
+    for (const app of ['email', 'calendar'] as const) {
+      const body = buildAppSyncBatch(app, [{ id: 'x' }]).body;
+      expect(body.sourceRef).toBe(APP_SYNC_SOURCE_REF);
+      expect(String(body.sourceRef)).not.toMatch(/gmail|google|gcal|outlook/i);
+    }
   });
 
   it('maps a gmail event to an email message row, passing the payload through', () => {
@@ -171,11 +181,11 @@ describe('app row mapping (P-011)', () => {
 
   it('builds the strict batch body each app accepts', () => {
     const email = buildAppSyncBatch('email', [{ id: 'm-1' }], { cursor: 'cur-1' });
-    expect(email.body).toEqual({ messages: [{ id: 'm-1' }], contacts: [], sourceRef: 'gmail', cursor: 'cur-1' });
+    expect(email.body).toEqual({ messages: [{ id: 'm-1' }], contacts: [], sourceRef: 'papercusp-vault', cursor: 'cur-1' });
     expect(email.rowCount).toBe(1);
 
     const calendar = buildAppSyncBatch('calendar', [{ id: 'e-1' }]);
-    expect(calendar.body).toEqual({ events: [{ id: 'e-1' }], calendars: [], contacts: [], sourceRef: 'google-calendar' });
+    expect(calendar.body).toEqual({ events: [{ id: 'e-1' }], calendars: [], contacts: [], sourceRef: 'papercusp-vault' });
     // No cursor key at all when none is supplied — the schemas are .strict(),
     // so an explicit undefined would be a different (rejected) body.
     expect('cursor' in calendar.body).toBe(false);

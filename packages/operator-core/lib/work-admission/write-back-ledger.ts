@@ -23,6 +23,8 @@ export interface AdmissionWriteBackEntry {
   updateId: string | null;
   externalRef: string | null;
   detail: Record<string, unknown>;
+  /** The lifecycle event this write answered (lifecycle.ts), or null for a write a person asked for. */
+  lifecycleKey: string | null;
   createdAt: string;
 }
 
@@ -34,6 +36,7 @@ interface LedgerRow {
   update_id: string | null;
   external_ref: string | null;
   detail: Record<string, unknown> | null;
+  lifecycle_key: string | null;
   created_at: Date | string;
 }
 
@@ -46,6 +49,7 @@ function toEntry(r: LedgerRow): AdmissionWriteBackEntry {
     updateId: r.update_id,
     externalRef: r.external_ref,
     detail: r.detail ?? {},
+    lifecycleKey: r.lifecycle_key ?? null,
     createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at),
   };
 }
@@ -57,7 +61,8 @@ function clean(v: string | null | undefined): string | null {
 
 /**
  * Records one write. A second write reporting the same provider update id on the same source is
- * the same change (a retried call) and is not recorded twice.
+ * the same change (a retried call) and is not recorded twice; neither is a second write for the
+ * same lifecycle event of the same admission.
  */
 export async function recordAdmissionWriteBack(
   sql: AdmissionDb,
@@ -67,16 +72,40 @@ export async function recordAdmissionWriteBack(
     updateId?: string | null;
     externalRef?: string | null;
     detail?: Record<string, unknown>;
+    lifecycleKey?: string | null;
   },
 ): Promise<void> {
   const { admission } = input;
+  // Two partial unique indexes guard this table (provider update id, lifecycle key); a bare
+  // ON CONFLICT DO NOTHING covers either, so a retried write is a no-op whichever one matched.
   await sql`
     INSERT INTO harness_shared.admission_write_backs
-      (workspace_id, admission_id, work_item_id, data_source_id, action, update_id, external_ref, detail)
+      (workspace_id, admission_id, work_item_id, data_source_id, action, update_id, external_ref, detail, lifecycle_key)
     VALUES (${admission.workspaceId}, ${admission.id}::uuid, ${admission.workItemId},
             ${admission.dataSourceId}::uuid, ${input.action}, ${clean(input.updateId)},
-            ${clean(input.externalRef)}, ${sql.json((input.detail ?? {}) as never)})
-    ON CONFLICT (workspace_id, data_source_id, update_id) WHERE update_id IS NOT NULL DO NOTHING`;
+            ${clean(input.externalRef)}, ${sql.json((input.detail ?? {}) as never)}, ${clean(input.lifecycleKey)})
+    ON CONFLICT DO NOTHING`;
+}
+
+/** The lifecycle events already written back, per admission id (lifecycle.ts reads this before acting). */
+export async function lifecycleKeysByAdmission(
+  sql: AdmissionDb,
+  workspaceId: string,
+  admissionIds: readonly string[],
+): Promise<Map<string, Set<string>>> {
+  const out = new Map<string, Set<string>>();
+  if (admissionIds.length === 0) return out;
+  const rows = await sql<Array<{ admission_id: string; lifecycle_key: string }>>`
+    SELECT admission_id::text AS admission_id, lifecycle_key
+      FROM harness_shared.admission_write_backs
+     WHERE workspace_id = ${workspaceId} AND admission_id = ANY(${admissionIds as string[]}::uuid[])
+       AND lifecycle_key IS NOT NULL`;
+  for (const r of rows) {
+    const keys = out.get(r.admission_id) ?? new Set<string>();
+    keys.add(r.lifecycle_key);
+    out.set(r.admission_id, keys);
+  }
+  return out;
 }
 
 /**
@@ -91,7 +120,7 @@ export async function findAdmissionWriteBack(
   if (!updateId) return null;
   const [row] = await sql<LedgerRow[]>`
     SELECT admission_id::text AS admission_id, work_item_id, data_source_id::text AS data_source_id,
-           action, update_id, external_ref, detail, created_at
+           action, update_id, external_ref, detail, lifecycle_key, created_at
       FROM harness_shared.admission_write_backs
      WHERE workspace_id = ${input.workspaceId} AND data_source_id = ${input.dataSourceId}::uuid
        AND update_id = ${updateId}
@@ -107,7 +136,7 @@ export async function writeBacksForWorkItem(
 ): Promise<AdmissionWriteBackEntry[]> {
   const rows = await sql<LedgerRow[]>`
     SELECT admission_id::text AS admission_id, work_item_id, data_source_id::text AS data_source_id,
-           action, update_id, external_ref, detail, created_at
+           action, update_id, external_ref, detail, lifecycle_key, created_at
       FROM harness_shared.admission_write_backs
      WHERE workspace_id = ${workspaceId} AND work_item_id = ${workItemId}
      ORDER BY created_at DESC, id`;

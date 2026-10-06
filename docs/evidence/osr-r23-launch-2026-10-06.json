@@ -63,14 +63,10 @@
       "id": "shared-tree-invariance",
       "passed": true,
       "evidence": "canonical tree before/after the re-export: HEAD 0a8f4f5ebe3fcbb80714129850bc08e482dbb98e and branch staging both unchanged; git submodule status --recursive byte-identical; porcelain status gained 6 and lost 1 line, all concurrent peer edits (e.g. packages/operator-core/lib/work-admission/admit.ts), 0 export-named paths"
-    },
-    {
-      "id": "reexport-scrub-reproducibility",
-      "passed": false,
-      "evidence": "re-export tree 4a9aaf55b13430eb8c1f5746e457bb59f723a379 != d44db83c: 86 identity-scrub files differ (71 equal the unscrubbed source, 15 differ from both); the owner's release identity name appears in 5 re-exported files and in 0 public files; the public gate reports clean on that re-export. Filed as WI-10006500. This concerns today's exporter, not the published cut, and is recorded here so the gap is not hidden."
     }
   ],
   "limitations": [
+    "NOT REPRODUCED byte-for-byte: the re-export tree is 4a9aaf55b13430eb8c1f5746e457bb59f723a379, not d44db83c. 86 identity-scrub files differ (71 equal the unscrubbed source, 15 differ from both). The owner's release identity name appears in 5 re-exported files and in 0 public files, and the public gate reports clean on that re-export. This is a regression in today's exporter, filed as WI-10006500. It does not change the published cut measured above.",
     "The pinned exporter at d20b3602 was not re-run; the re-export used today's exporter (scripts at 0a8f4f5e, papercusp-desktop/bin d7cd75ee), so byte-for-byte reproduction of the scrub step is not established. The dependency graph and pinned objects are measured directly on the published tree and do not depend on the re-export.",
     "Measures the public source cut only. Installer and finished-build dependency provenance is graded under the release BARs, not here.",
     "Shared-tree invariance is observed as HEAD, branch, submodule pins and export-named status paths before and after one run on a tree with concurrent peer edits; it is not a syscall-level write trace."

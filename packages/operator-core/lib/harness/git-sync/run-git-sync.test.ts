@@ -155,6 +155,10 @@ describe('migrationDependencyFenceSkips (EI-24940157290396415)', () => {
         detail:
           'deferred because this path shares work-item attribution with a reservation-blocked migration at ' +
           'libs/sub/libs/db/sql/999-unreserved-migration.sql',
+        // WI-10006493: structured provenance, so dev:pipeline_position can name the blocker.
+        blockingMigrations: ['libs/sub/libs/db/sql/999-unreserved-migration.sql'],
+        blockingAgents: ['su-migration'],
+        blockingWorkItems: ['WI-migration'],
       },
     ]);
   });
@@ -171,6 +175,9 @@ describe('migrationDependencyFenceSkips (EI-24940157290396415)', () => {
         reason: 'migration-dependency-fence',
         detail:
           'deferred because a reservation-blocked migration could not be attributed; holding this path until its dependency is known',
+        blockingMigrations: ['libs/sub/libs/db/sql/999-unreserved-migration.sql'],
+        blockingAgents: [],
+        blockingWorkItems: [],
       },
       {
         scope: 'superproject',
@@ -178,6 +185,9 @@ describe('migrationDependencyFenceSkips (EI-24940157290396415)', () => {
         reason: 'migration-dependency-fence',
         detail:
           'deferred because a reservation-blocked migration could not be attributed; holding this path until its dependency is known',
+        blockingMigrations: ['libs/sub/libs/db/sql/999-unreserved-migration.sql'],
+        blockingAgents: [],
+        blockingWorkItems: [],
       },
     ]);
   });
@@ -201,6 +211,9 @@ describe('migrationDependencyFenceSkips (EI-24940157290396415)', () => {
         detail:
           'deferred because this path shares work-item attribution with a reservation-blocked migration at ' +
           'libs/sub/libs/db/sql/999-unreserved-migration.sql',
+        blockingMigrations: ['libs/sub/libs/db/sql/999-unreserved-migration.sql'],
+        blockingAgents: ['su-migration'],
+        blockingWorkItems: [],
       },
     ]);
   });
@@ -1916,6 +1929,60 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(git(originDir, 'show', `main:${exporterPath}`)).toContain('newValue');
     expect(git(originDir, 'show', `main:${importerPath}`)).toContain('newValue');
     expect(git(repo, 'status', '--porcelain', '--', exporterPath, importerPath)).toBe('');
+  });
+
+  it('EI-25203309445902479: a new importer created after the dirty census is held with its excluded dependencies', async () => {
+    const quarantinedPath = 'quarantined-export.ts';
+    const lockedPath = 'locked-export.ts';
+    const importerPath = 'staged-deletion-hold.test.ts';
+    const controlPath = 'control.txt';
+    const detector: ContentDetector = {
+      key: 'fake-broken-module',
+      glob: '**/quarantined-export.ts',
+      matches: (file) => file.endsWith('quarantined-export.ts'),
+      detect: (_file, text) => (text.includes('BROKEN') ? 'contains BROKEN' : null),
+      fixerRole: 'content-fixer',
+    };
+    writeFileSync(join(repo, quarantinedPath), 'export const quarantinedSymbol = 1;\nBROKEN\n');
+    writeFileSync(join(repo, lockedPath), 'export const lockedSymbol = 2;\n');
+    writeFileSync(join(repo, controlPath), 'unrelated work\n');
+
+    // The first live-lock refresh runs after the initial dirty census. Model a new
+    // untracked test file arriving in that window, importing both a content-quarantined
+    // module and a live-locked module. `git add -A` will see the test even though the
+    // earlier importer pass did not.
+    let refreshes = 0;
+    const refreshLiveLockHoldings = vi.fn(async () => {
+      refreshes += 1;
+      if (refreshes === 1) {
+        writeFileSync(
+          join(repo, importerPath),
+          `import { quarantinedSymbol } from './quarantined-export';\n` +
+            `import { lockedSymbol } from './locked-export';\n` +
+            `export const value = quarantinedSymbol + lockedSymbol;\n`,
+        );
+      }
+      return [{ path: lockedPath, owner: 'su-peer', intent: 'editing a new exporter' }];
+    });
+    const logs: string[] = [];
+
+    const out = await runGitSync('test', {
+      repoPath: repo,
+      config: cfg,
+      contentDetectors: [detector],
+      refreshLiveLockHoldings,
+      log: (message) => logs.push(message),
+    });
+
+    expect(refreshLiveLockHoldings).toHaveBeenCalledTimes(2);
+    expect(out.status).toBe('synced');
+    const committed = git(originDir, 'ls-tree', '-r', '--name-only', 'main');
+    expect(committed).toContain(controlPath);
+    expect(committed).not.toContain(importerPath);
+    expect(committed).not.toContain(quarantinedPath);
+    expect(committed).not.toContain(lockedPath);
+    expect(logs.join('\n')).toContain(importerPath);
+    expect(git(repo, 'status', '--porcelain', '--', importerPath)).toMatch(/staged-deletion-hold\.test\.ts/);
   });
 
   it('WI-40770: a repo with only live-held dirty paths still reports skipped-locked', async () => {

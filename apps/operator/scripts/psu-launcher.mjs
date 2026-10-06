@@ -3858,6 +3858,63 @@ export function mintRecycleArgs(
 }
 
 /**
+ * psu-process-free-parking-2026-10-06 P-015: the argv that brings a PARKED
+ * Claude child back as the SAME conversation.
+ *
+ * A park SIGKILLs an idle CLI to free its memory (~215 MB per agent, D-018/D-025
+ * of agent-capacity-and-cost-gcp-2026-09-30) while the psu host, its socket and
+ * its terminal stay up. Unparking must resume the transcript the killed process
+ * was writing, NOT open a fresh one, so this is the inverse of mintRecycleArgs:
+ *
+ *   - the LIVE child's `--session-id X` / `--resume X` becomes `--resume X`
+ *     (one id, the one the killed child was writing — the input is the live
+ *     child's argv, not the launch argv, so it is still right after a recycle
+ *     rotated the id);
+ *   - `--continue` / `--fork-session` are dropped (a fork would mint a new id
+ *     and the next park would then resume the wrong conversation);
+ *   - a trailing kickoff positional is stripped (stripKickoffPositional): the
+ *     resumed child must not re-run the launch prompt as a new turn;
+ *   - EVERYTHING ELSE IS COPIED VERBATIM, the `--system-prompt-file` included.
+ *     Re-rendering the persona here would change the system prompt and miss the
+ *     1h prompt cache that makes a park cost no extra tokens (D-018).
+ *
+ * Claude only (D-025: an idle Codex CLI is ~17 MB, not worth parking). Returns
+ * null — "this child cannot be parked" — for any other agent or when the argv
+ * carries no session id to resume. Pure; exported for tests.
+ *
+ * @param {string[]} [liveArgs]
+ * @param {{ agent?: string | null }} [opts]
+ * @returns {{ args: string[], nativeId: string } | null}
+ */
+export function mintParkResumeArgs(liveArgs = [], { agent = null } = {}) {
+  if (String(agent ?? "").trim().toLowerCase() !== "claude") return null;
+  const src = stripKickoffPositional(liveArgs.map((a) => String(a ?? "")));
+  let nativeId = null;
+  const out = [];
+  for (let i = 0; i < src.length; i++) {
+    const a = src[i];
+    if (a === "--session-id" || a === "--resume") {
+      const id = src[i + 1];
+      if (typeof id === "string" && id && !id.startsWith("-")) {
+        nativeId = nativeId ?? id;
+        i++;
+      }
+      continue;
+    }
+    if (a.startsWith("--session-id=") || a.startsWith("--resume=")) {
+      const id = a.slice(a.indexOf("=") + 1);
+      if (id) nativeId = nativeId ?? id;
+      continue;
+    }
+    if (a === "--continue" || a === "--fork-session") continue;
+    out.push(a);
+  }
+  if (!nativeId) return null;
+  out.push("--resume", nativeId);
+  return { args: out, nativeId };
+}
+
+/**
  * P-018 deterministic carry respawn: rotate the native Claude session id using
  * {@link mintRecycleArgs}, persist the bounded carry document as one owner-scoped
  * 0600 launch-context file, and layer it onto the fresh child. The original argv
@@ -12259,6 +12316,12 @@ export function runWrapper(options) {
                 notBeforeMs: modelObservationNotBeforeMs,
               }),
           })),
+        // psu-process-free-parking-2026-10-06 P-017: the host parks an idle
+        // Claude child and resumes it on this argv (same session id, same
+        // persona file, no kickoff). Injected like the other mints so the host
+        // stays launcher-agnostic; without it the host never parks.
+        mintParkResumeArgs: (a, o = {}) =>
+          mintParkResumeArgs(a, { agent: o.agent ?? env.PAPERCUSP_AGENT }),
         ensureCodexHome: () =>
           ensureCodexHomeViaOperator(
             ownerId,

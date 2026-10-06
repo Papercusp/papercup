@@ -403,8 +403,10 @@ describe.each(['codex', 'omp'] as const)('%s structured SU engine', (backend) =>
       : { type: 'extension_ui_request', id: 'approve', method: 'confirm', title: 'Approve this action?' });
     const opened = f.engine.adapter.host.recent.map(({ event }) => event).find((event) => event.type === 'card' && event.phase === 'opened');
     if (!opened || opened.type !== 'card' || opened.phase !== 'opened') throw new Error('PUI did not receive the native card');
+    // Codex's command approval is a D-028 approval card (option ids yes/always/no);
+    // OMP's generic confirm stays an ordinary choice card (Confirm is option 0).
     expect(resolveCardResponse({ correlationId: opened.card.correlationId, action: 'submit',
-      payload: { picks: ['0'] }, expectedWorkspaceId: 'workspace' })).toEqual({ ok: true });
+      payload: { picks: [backend === 'codex' ? 'yes' : '0'] }, expectedWorkspaceId: 'workspace' })).toEqual({ ok: true });
     await vi.waitFor(() => expect(f.sent).toContainEqual(backend === 'codex'
       ? { id: 23, result: { decision: 'accept' } }
       : { type: 'extension_ui_response', id: 'approve', confirmed: true }));

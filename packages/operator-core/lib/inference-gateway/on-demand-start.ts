@@ -28,6 +28,10 @@ export interface OnDemandStartDeps {
   /** Start the backend and wait for readiness. */
   start: () => Promise<OnDemandStartResult>;
   log: (level: 'info' | 'warn', msg: string) => void;
+  /** The ready budget the start was given, named in the failure line so a timeout is legible. */
+  budgetMs?: number;
+  /** Clock seam for tests. */
+  now?: () => number;
 }
 
 export async function startOnDemandBackendWithWatermark(
@@ -42,6 +46,8 @@ export async function startOnDemandBackendWithWatermark(
       `inference-gateway: could not pre-stamp last_busy_at before starting '${backendId}' — the idle-reaper may stop it as soon as it is ready: ${(e as Error).message}`,
     );
   }
+  const now = deps.now ?? Date.now;
+  const startedAt = now();
   const result = await deps.start();
   if (result.ok) {
     try {
@@ -49,6 +55,15 @@ export async function startOnDemandBackendWithWatermark(
     } catch (e) {
       deps.log('warn', `inference-gateway: started '${backendId}' but could not stamp last_busy_at: ${(e as Error).message}`);
     }
+  } else {
+    // WI-10006503: a failed on-demand start becomes a 502 for the request that triggered it. Before
+    // this line existed that path left NOTHING in the journal, so a ready budget set below the real
+    // cold-load time (300s vs a measured 304s) failed intermittently and invisibly.
+    const budget = deps.budgetMs === undefined ? 'unstated' : `${deps.budgetMs}ms`;
+    deps.log(
+      'warn',
+      `inference-gateway: on-demand start of '${backendId}' FAILED after ${now() - startedAt}ms (ready budget ${budget}): ${result.error ?? 'no error reported'} — the request that triggered it gets a 502; the unit is left running, so a retry may find it warm`,
+    );
   }
   return result;
 }

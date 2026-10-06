@@ -41,7 +41,9 @@ interface Fixture {
   syslog: string;
 }
 
-function makeFixture(opts: { setupExit?: number; withSetup?: boolean; withHeaders?: boolean } = {}): Fixture {
+function makeFixture(
+  opts: { setupExit?: number; withSetup?: boolean; withHeaders?: boolean; installsModule?: boolean } = {},
+): Fixture {
   const root = mkdtempSync(join(tmpdir(), 'vboxdrv-rebuild-hook-'));
   dirs.push(root);
   const setup = join(root, 'vboxdrv.sh');
@@ -60,6 +62,10 @@ function makeFixture(opts: { setupExit?: number; withSetup?: boolean; withHeader
         // Record exactly how the hook invoked the maintained rebuild path.
         `echo "argv=$* KERN_VER=\${KERN_VER:-}" >> "${calls}"`,
         'echo "building modules"',
+        // Like Oracle's vboxdrv.sh: a successful build leaves the module under misc/ for $2.
+        ...((opts.installsModule ?? true)
+          ? [`mkdir -p "${modules}/$2/misc" && : > "${modules}/$2/misc/vboxdrv.ko"`]
+          : []),
         `exit ${opts.setupExit ?? 0}`,
         '',
       ].join('\n'),

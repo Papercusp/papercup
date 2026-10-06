@@ -1399,6 +1399,68 @@ export function makeOwnerComposerGate({ capMs, now }?: {
     waitClear(): Promise<any>;
 };
 /**
+ * Resolve the park threshold from PAPERCUSP_PSU_PARK_IDLE_MS. Unset/blank or
+ * unparseable falls back to the default (the feature ships ON); an explicit
+ * `0` is the kill-switch. Pure; exported for tests.
+ * @param {Record<string, string | undefined>} [env]
+ */
+export function parkIdleMsFromEnv(env?: Record<string, string | undefined>): number;
+/**
+ * Count the live descendant processes of `rootPid` from /proc (one ppid map
+ * built from every /proc/<pid>/stat, then a walk down from the root). The park
+ * policy refuses while the CLI has ANY descendant: a running background shell,
+ * an in-flight hook or a stdio MCP server is work a SIGKILL of the tree would
+ * destroy. Returns null when the count cannot be taken (no /proc, unreadable
+ * root), and the policy FAILS CLOSED on null. Exported for tests (procRoot and
+ * the fs readers are injectable).
+ * @param {number} rootPid
+ * @param {{ procRoot?: string, readdir?: (p: string) => string[], readFile?: (p: string, enc: 'utf8') => string }} [opts]
+ * @returns {number | null}
+ */
+export function countProcessDescendants(rootPid: number, { procRoot, readdir, readFile }?: {
+    procRoot?: string;
+    readdir?: (p: string) => string[];
+    readFile?: (p: string, enc: "utf8") => string;
+}): number | null;
+/**
+ * psu-process-free-parking-2026-10-06 P-016: should the host park its child
+ * NOW? Every refusal names its reason (reported on the host event so "why
+ * didn't it park" is a read, not a guess). Ordered cheapest-first; the caller
+ * only pays for the /proc descendant walk when every other gate passed (pass a
+ * `descendants` thunk). Pure; exported for tests.
+ *
+ * @param {{
+ *   idleMs: number,
+ *   agent?: string | null,
+ *   now: number,
+ *   lastActivityAt: number,
+ *   childPromptReady: boolean,
+ *   parked?: boolean,
+ *   busy?: boolean,
+ *   composerPending?: boolean,
+ *   resumable?: boolean,
+ *   descendants: () => number | null,
+ * }} input
+ * @returns {{ park: boolean, reason: string, idleForMs?: number, descendants?: number | null }}
+ */
+export function parkVerdict({ idleMs, agent, now, lastActivityAt, childPromptReady, parked, busy, composerPending, resumable, descendants, }: {
+    idleMs: number;
+    agent?: string | null;
+    now: number;
+    lastActivityAt: number;
+    childPromptReady: boolean;
+    parked?: boolean;
+    busy?: boolean;
+    composerPending?: boolean;
+    resumable?: boolean;
+    descendants: () => number | null;
+}): {
+    park: boolean;
+    reason: string;
+    idleForMs?: number;
+    descendants?: number | null;
+};
+/**
  * Session activity tracker (agent-liveness-heartbeat-hardening-2026-06-12
  * P-006): the OUTPUT-side sibling of makeIdleGate. The pty stream is a true
  * mid-turn signal — a generating agent repaints its TUI constantly — so
@@ -3103,6 +3165,8 @@ export function resolveAgentPtyTarget({ command, args, env, cwd }: {
  *   supplied through {@link HEADLESS_NORMALIZED_LOG_ENV} in `o.env`
  * @param {(args:string[], options:{agent?:string, personaFile?:string|null})=>any} [o.mintRecycleArgs] mint argv for an ordinary recycle
  * @param {(args:string[], options:{systemPromptAddendum:string, ownerId:string, agent?:string, personaFile?:string|null, codexHome?:string})=>any} [o.mintCarryRespawnArgs] mint argv for a carry respawn
+ * @param {(args:string[], options:{agent?:string})=>({args:string[], nativeId:string}|null)} [o.mintParkResumeArgs]
+ *   mint the argv that resumes a parked child (null = not resumable, never park)
  * @param {()=>Promise<any>} [o.ensureCodexHome] repair the per-session Codex home before a carry mint
  * @param {()=>Promise<any>} [o.refreshPersonaFile] refresh the rendered persona before respawn
  * @param {(...args:any[])=>any} [o.onRespawn] lifecycle callback after a respawn
@@ -3153,6 +3217,12 @@ export function hostThroughPty(o: {
         personaFile?: string | null;
         codexHome?: string;
     }) => any) | undefined;
+    mintParkResumeArgs?: ((args: string[], options: {
+        agent?: string;
+    }) => ({
+        args: string[];
+        nativeId: string;
+    } | null)) | undefined;
     ensureCodexHome?: (() => Promise<any>) | undefined;
     refreshPersonaFile?: (() => Promise<any>) | undefined;
     onRespawn?: ((...args: any[]) => any) | undefined;
@@ -3269,6 +3339,16 @@ export const IDENTITY_ACTIVATION_REFUSED_REASON: "identity-activation-refused";
  *  re-derives that trio when absent (healContextTrimmingEnv), and
  *  psu-host-handoff-env.test.ts pins this list ⊇ contextTrimmingEnv's keys. */
 export const HOST_HANDOFF_ENV_KEYS: readonly string[];
+/**
+ * psu-process-free-parking-2026-10-06 P-016: how long a Claude child must sit
+ * idle at its prompt before the host PARKS it (SIGKILLs the CLI to free its
+ * ~215 MB while the host, socket and terminal stay up; D-002). 15 minutes:
+ * long enough that an attended session the owner is reading is not parked
+ * under them, short enough that an idle fleet sheds its CLI memory. A park
+ * costs no tokens inside the 1h prompt-cache TTL and ~1 s of wake latency
+ * (D-018/D-025 of agent-capacity-and-cost-gcp-2026-09-30).
+ */
+export const DEFAULT_PARK_IDLE_MS: number;
 /**
  * How long a SHUTDOWN gives the child to exit on SIGHUP before the host escalates
  * to a whole-process-tree SIGKILL. A claude TUI flushes its transcript on SIGHUP,

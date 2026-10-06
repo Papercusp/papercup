@@ -262,11 +262,12 @@ export default defineTool({
   name: 'tools:invoke',
   // The MCP host races nested dispatch against the target's effective MCP
   // deadline; the projected dispatcher also owns the target's timeout signal.
-  // Keep this wrapper outside the longest target MCP deadline (600s + buffer)
-  // so its watchdog cannot abort first and turn a successfully-completed target
+  // Keep this wrapper outside the longest known target MCP deadline. scorecards:emit
+  // declares 900s; the 60s margin lets its result settle before this watchdog can abort.
+  // This avoids turning a successfully-completed target
   // into the misleading "handler returned but signal had aborted" timeout
   // (EI-9242).
-  timeoutSec: 660,
+  timeoutSec: 960,
   description:
     'Call ANY tool in the full ~550-tool catalog by name, even one not in your loaded tool list. ' +
     // ⚠ THIS SENTENCE IS DELIBERATELY A HARD RAIL, AND MUST STAY ONE (D-047).

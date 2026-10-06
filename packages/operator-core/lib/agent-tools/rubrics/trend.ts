@@ -37,7 +37,7 @@ export default defineTool({
   agentRoles: [...COORD_ROLES],
   args: z
     .object({
-      rubricRef: z.string().optional().describe('the rubric to trend, e.g. "pot-coordination-health" (a trend is per-rubric)'),
+      rubricRef: z.string().min(1).describe('the rubric to trend, e.g. "pot-coordination-health" (a trend is per-rubric)'),
       sourceHive: z.string().optional().describe('restrict the trend to one source-hive'),
       since: z
         .string()
@@ -68,14 +68,11 @@ export default defineTool({
         .describe(
           'also return the resolved full rubric definition (default false — most trend consumers need only aggregates)',
         ),
-    })
-    .refine((a) => Boolean(a.rubricRef), {
-      message: 'pass `rubricRef` (required)',
     }),
   async handler(args, ctx) {
     resolveAgentIdentity(ctx);
     const trend = await scorecardTrend({
-      rubricRef: args.rubricRef!,
+      rubricRef: args.rubricRef,
       sourceHive: args.sourceHive,
       since: args.since,
       limit: args.limit,

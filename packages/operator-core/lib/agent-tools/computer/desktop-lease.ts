@@ -85,6 +85,15 @@ export function desktopLeaseKey(target: DesktopLeaseTarget): string {
 }
 
 /**
+ * The journal label for a lease. Deliberately NOT the lease key: pot leases keep the
+ * `pot=<slug>` form operators already grep host journals for, and an agent lease
+ * names both its owner and its desktop name rather than an opaque compound key.
+ */
+function leaseLogLabel(target: DesktopLeaseTarget): string {
+  return target.scope === 'pot' ? `pot=${target.pot}` : `agent=${target.ownerId} name=${target.name}`;
+}
+
+/**
  * The registry mirror: lease key → the PG row describing it. `leases` stays the
  * AUTHORITY for liveness — it holds the actual child process — and this map only
  * remembers which row describes it, so teardown can close the record.
@@ -257,7 +266,7 @@ async function recordLeaseInRegistry(key: string, entry: LeaseEntry): Promise<vo
     // `desktop_unavailable` with nothing in the journal to say why (D-439).
     const pg = err as { code?: string; constraint_name?: string; message?: string };
     console.warn(
-      `[desktop-lease] registry write failed for ${key} display=${desktop.display} workspace=${workspaceId}` +
+      `[desktop-lease] registry write failed for ${leaseLogLabel(target)} display=${desktop.display} workspace=${workspaceId}` +
         ` code=${pg.code ?? '-'} constraint=${pg.constraint_name ?? '-'}: ${pg.message ?? String(err)}`,
     );
   }
@@ -360,9 +369,10 @@ export async function reapDeadDesktops(): Promise<string[]> {
   const reaped: string[] = [];
   for (const [key, entry] of [...leases]) {
     if (entry.desktop.isAlive?.() !== false || leases.get(key) !== entry) continue;
-    console.warn(`[desktop-lease] ${key} display=${entry.desktop.display}: the desktop is gone — releasing its lease`);
+    const label = leaseLogLabel(entry.target);
+    console.warn(`[desktop-lease] ${label} display=${entry.desktop.display}: the desktop is gone — releasing its lease`);
     await releaseDesktop(entry.target).catch((err) => {
-      console.warn(`[desktop-lease] releasing dead desktop ${key} failed: ${String(err)}`);
+      console.warn(`[desktop-lease] releasing dead desktop ${label} failed: ${String(err)}`);
     });
     reaped.push(key);
   }

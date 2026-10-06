@@ -113,6 +113,105 @@ export interface GitBatchOptions {
   label?: string;
 }
 
+export interface GitBatchInvocation {
+  /** `$0` for `sh -c`, visible in `ps` and audit logs. */
+  label: string;
+  /** Random nonce used to distinguish helper frames from command output. */
+  nonce: string;
+  /** argv passed to `sh`, after the executable name. */
+  args: string[];
+}
+
+/** Build the exact `sh -c` invocation used by both local and sidecar batches. */
+export function buildGitBatchInvocation(
+  cmds: readonly GitBatchCommand[],
+  label = 'git-batch',
+): GitBatchInvocation {
+  const nonce = randomBytes(16).toString('hex');
+  const { script, argv } = buildGitBatchScript(cmds);
+  return { label, nonce, args: ['-c', script, label, nonce, ...argv] };
+}
+
+/**
+ * Strict recognizer for the only `sh` batch that may defer sidecar admission.
+ * The recognizer intentionally covers the dev-deploy-state command shapes only:
+ * `git log -1 --format=%H%n%ct%n%s <ref>^{commit}` and
+ * `git rev-list --count <from>..<to>`. Merely looking like a generated helper is
+ * not enough; each command must also be one of those read-only forms.
+ */
+export function isReadOnlyGitBatchExec(params: {
+  command: string;
+  args?: readonly string[];
+}): boolean {
+  if (params.command !== 'sh') return false;
+  const args = params.args ?? [];
+  if (
+    args[0] !== '-c' ||
+    args[2] !== 'dev-deploy-state' ||
+    !/^[0-9a-f]{32}$/.test(args[3] ?? '') ||
+    args.length < 6
+  ) return false;
+
+  const script = args[1] ?? '';
+  const lines = script.split('\n');
+  if (
+    lines.length < 4 ||
+    lines[0] !== 'n=$1' ||
+    lines[1] !== HELPER_FRAME_FN ||
+    lines[2] !== 'exec 3>&1'
+  ) return false;
+
+  const commands: GitBatchCommand[] = [];
+  let nextParameter = 2;
+  for (let index = 0; index < lines.length - 3; index += 1) {
+    const match = /^e=\$\( \{ git -C (.+) >&3; \} 2>&1 \); r=\$\?; f o(\d+) \$r; printf %s "\$e"; f e(\d+) 0$/.exec(lines[index + 3]!);
+    if (!match || match[2] !== String(index) || match[3] !== String(index)) return false;
+    const refsText = match[1]!;
+    const refs = [...refsText.matchAll(/"\$\{(\d+)\}"/g)].map((ref) => Number(ref[1]));
+    if (
+      refs.length < 2 ||
+      refsText !== refs.map((ref) => '"${' + ref + '}"').join(' ') ||
+      refs.some((ref, offset) => ref !== nextParameter + offset)
+    ) return false;
+    const values = refs.map((ref) => args[ref + 2]);
+    if (values.some((value) => typeof value !== 'string')) return false;
+    const [repo, ...gitArgs] = values as string[];
+    const safeShape =
+      (gitArgs.length === 4 &&
+        gitArgs[0] === 'log' &&
+        gitArgs[1] === '-1' &&
+        gitArgs[2] === '--format=%H%n%ct%n%s' &&
+        gitArgs[3] !== '' &&
+        !gitArgs[3]!.startsWith('-')) ||
+      (gitArgs.length === 3 &&
+        gitArgs[0] === 'rev-list' &&
+        gitArgs[1] === '--count' &&
+        gitArgs[2] !== '' &&
+        !gitArgs[2]!.startsWith('-'));
+    if (!safeShape) return false;
+    commands.push({ repo: repo!, args: gitArgs });
+    nextParameter += refs.length;
+  }
+
+  if (commands.length === 0 || args.length !== nextParameter + 2) return false;
+  const rebuilt = buildGitBatchScript(commands);
+  return rebuilt.script === script && rebuilt.argv.every((value, index) => value === args[index + 4]);
+}
+
+/** Parse the framed helper stdout; null marks a command with no complete frame. */
+export function parseGitBatchResults(
+  cmds: readonly GitBatchCommand[],
+  stdout: string,
+  nonce: string,
+): Array<GitBatchResult | null> {
+  const byTag = new Map(parseHelperFrames(stdout, nonce).map((section) => [section.tag, section]));
+  return cmds.map((_, index) => {
+    const out = byTag.get(`o${index}`);
+    if (!out) return null;
+    return { code: out.exit, stdout: out.out, stderr: byTag.get(`e${index}`)?.out ?? '' };
+  });
+}
+
 /**
  * Run `cmds` in one `sh`. Returns one entry per command, in order; `null` means the
  * command never completed (helper killed, timed out, or failed to start) — treat it as
@@ -124,11 +223,10 @@ export async function runGitBatch(
 ): Promise<Array<GitBatchResult | null>> {
   if (cmds.length === 0) return [];
   await nextForkSlot();
-  const nonce = randomBytes(16).toString('hex');
-  const { script, argv } = buildGitBatchScript(cmds);
+  const { nonce, args } = buildGitBatchInvocation(cmds, opts.label ?? 'git-batch');
   let stdout = '';
   try {
-    const out = await execFileAsync('sh', ['-c', script, opts.label ?? 'git-batch', nonce, ...argv], {
+    const out = await execFileAsync('sh', args, {
       encoding: 'utf8',
       maxBuffer: opts.maxBuffer ?? 32 * 1024 * 1024,
       timeout: opts.timeoutMs ?? 30_000,
@@ -139,10 +237,5 @@ export async function runGitBatch(
     // Timeout / maxBuffer / signal: keep whatever commands finished before it.
     stdout = String((error as { stdout?: unknown }).stdout ?? '');
   }
-  const byTag = new Map(parseHelperFrames(stdout, nonce).map((s) => [s.tag, s]));
-  return cmds.map((_, i) => {
-    const out = byTag.get(`o${i}`);
-    if (!out) return null;
-    return { code: out.exit, stdout: out.out, stderr: byTag.get(`e${i}`)?.out ?? '' };
-  });
+  return parseGitBatchResults(cmds, stdout, nonce);
 }

@@ -24,6 +24,7 @@ const rec = (over: Partial<DesktopSessionRecord> = {}): DesktopSessionRecord => 
   kind: 'xvfb-local',
   scope: 'pot',
   scopeRef: 'alpha',
+  name: null,
   hostRef: null,
   ownerPid: 1,
   ownerBootId: 'boot',

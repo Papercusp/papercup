@@ -740,6 +740,39 @@ describe('routines:list', () => {
     expect(out.warning).toContain('locked-path');
   });
 
+  // WI-10006505: the fixture above uses strings, but git-sync-action persists GitSyncSkippedPath
+  // OBJECTS. `stringList` dropped every one, so the real row always read skipped_count: 0, and a
+  // migration-guard deferral was labelled with the writer's hard-coded 'locked-path'.
+  it('counts the OBJECT entries the writer actually persists and names each guard reason', () => {
+    const out = deriveGitSyncExclusions({
+      last_status: 'synced',
+      last_skip_reason: 'locked-path',
+      last_skipped_paths: [
+        { scope: 'superproject', path: 'a.ts', owner: 'su-a', intent: 'edit a' },
+        { scope: 'superproject', path: 'b.ts', reason: 'migration-dependency-fence', detail: 'fenced' },
+        { scope: 'libs/papercusp', path: 'libs/db/sql/1234-x.sql', reason: 'migration-reservation', detail: 'r' },
+      ],
+    });
+    expect(out).toMatchObject({
+      skipped_count: 3,
+      skipped_sample: ['superproject:a.ts', 'superproject:b.ts', 'libs/papercusp:libs/db/sql/1234-x.sql'],
+      skip_reason: 'locked-path, migration-dependency-fence, migration-reservation',
+    });
+    expect(out.warning).toContain('3 path(s) excluded');
+    expect(out.warning).toContain('release the corresponding file lock(s)');
+    expect(out.warning).toContain('next-migration.mjs');
+  });
+
+  it('does not tell a migration-guard-only deferral to release file locks', () => {
+    const out = deriveGitSyncExclusions({
+      last_status: 'synced',
+      last_skip_reason: 'locked-path',
+      last_skipped_paths: [{ scope: 'superproject', path: 'b.ts', reason: 'migration-dependency-fence', detail: 'f' }],
+    });
+    expect(out.skip_reason).toBe('migration-dependency-fence');
+    expect(out.warning).not.toContain('release the corresponding file lock(s)');
+  });
+
   // The negative control for the test above: the block must still be EMITTED when nothing
   // was excluded, so "nothing was skipped" cannot be confused with "this reader does not
   // report skips" — the exact silence-equals-absence shape this field repairs.

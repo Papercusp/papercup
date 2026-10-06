@@ -341,6 +341,8 @@ export function bindLiveCompetitorDrivers(opts: BindLiveCompetitorsOptions): Com
         model: opts.model ?? DEFAULT_COMPETITOR_MODEL,
         baseUrl: opts.baseUrl ?? null,
         apiKeyEnv: opts.apiKeyEnv,
+        thinkingBudgetTokens: opts.thinkingBudgetTokens,
+        maxTokens: opts.maxTokens,
         maxIterations: opts.maxIterations,
         perTaskTimeoutMs: opts.perTaskTimeoutMs,
         concurrency: opts.concurrency,

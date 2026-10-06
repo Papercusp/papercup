@@ -697,10 +697,11 @@ export function replayLoadedRuntime(pid: number, identity: string | null, cmdlin
     if (row.kind === 'kernel-metadata') {
       try {
         const path = String(row.path);
-        const match = /^\/proc\/(self|[1-9]\d*)\/(stat|cgroup)$/.exec(path);
+        const match = /^\/proc\/(self|[1-9]\d*)\/(?:(stat|cgroup)|task\/([1-9]\d*)\/(children))$/.exec(path);
         const subjectPid = match ? (match[1] === 'self' ? pid : Number(match[1])) : pid;
         const subjectIdentity = reader.identity(subjectPid);
         if ((!match && path !== '/proc/sys/kernel/random/boot_id') ||
+            (match?.[3] && Number(match[3]) !== subjectPid) ||
             row.subjectPid !== subjectPid || !subjectIdentity || row.subjectIdentity !== subjectIdentity ||
             typeof row.text !== 'string' || replayHash(row.text) !== row.sha256)
           throw Error('metadata identity or bytes mismatch');
@@ -710,7 +711,8 @@ export function replayLoadedRuntime(pid: number, identity: string | null, cmdlin
           if (!row.text.startsWith(`${subjectPid} (`) || linuxProcessIdentityFromStat(boot, row.text) !== subjectIdentity ||
               linuxPpidFromProcStat(row.text) === null || linuxPpidFromProcStat(row.text) !== linuxPpidFromProcStat(current))
             throw Error('stat epoch or parent mismatch');
-        } else if (reader.text(match ? `/proc/${subjectPid}/cgroup` : path) !== row.text) {
+        } else if (reader.text(match?.[4] === 'children' ? `/proc/${subjectPid}/task/${subjectPid}/children` :
+          match ? `/proc/${subjectPid}/cgroup` : path) !== row.text) {
           throw Error('kernel control input changed');
         }
         if (reader.identity(subjectPid) !== subjectIdentity) throw Error('process changed during metadata validation');
@@ -735,6 +737,22 @@ export function replayLoadedRuntime(pid: number, identity: string | null, cmdlin
     } else if (row.kind === 'control-exit') {
       if (!receipts.some(launch => launch.kind === 'child-launch' && launch.launchId === row.launchId && launch.controlPurpose))
         unknown.push('orphan-control-exit');
+    } else if (row.kind === 'child-exit' || row.kind === 'child-error') {
+      const launches = receipts.filter(launch => launch.kind === 'child-launch' && launch.launchId === row.launchId);
+      const starts = receipts.filter(start => start.kind === 'child-started' && start.launchId === row.launchId);
+      const exits = receipts.filter(exit => exit.kind === row.kind && exit.launchId === row.launchId);
+      const start = starts[0];
+      const validOutcome = row.kind === 'child-error' ? typeof row.error === 'string' && row.error.length > 0 :
+        Number.isSafeInteger(row.childPid) && Number(row.childPid) > 0 && typeof row.childIdentity === 'string' &&
+        row.childIdentity.length > 0 &&
+        (row.code === null || (Number.isSafeInteger(row.code) && Number(row.code) >= 0)) &&
+        (row.signal === null || (typeof row.signal === 'string' && /^SIG[A-Z0-9]+$/.test(row.signal))) &&
+        ((row.code === null) !== (row.signal === null));
+      if (typeof row.launchId !== 'string' || launches.length !== 1 || launches[0].controlPurpose ||
+          starts.length !== 1 || exits.length !== 1 || row.childPid !== start?.childPid ||
+          row.childIdentity !== start?.childIdentity || !Number.isFinite(row.atMs) ||
+          !Number.isFinite(start?.atMs) || Number(start?.atMs) <= 0 || Number(row.atMs) < Number(start?.atMs) || !validOutcome)
+        unknown.push('unqualified-child-terminal');
     } else if (!['bootstrap', 'ready', 'native-load', 'unknown', 'child-launch', 'child-started'].includes(String(row.kind))) unknown.push('unsupported-runtime-receipt');
   }
   // Kernel map_files names the mapped inode even after disk replacement/unlink.

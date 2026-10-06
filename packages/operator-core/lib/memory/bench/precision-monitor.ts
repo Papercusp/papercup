@@ -24,6 +24,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
+import { memoryHost } from '@papercusp/memory';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { collectChildOutput } from '../../child-output';
@@ -41,6 +42,7 @@ import { evaluateRecallDrop, BASELINE_HISTORY_WINDOW, type PriorRun, type Recall
 import { fileRecallDropEi, resolveRecallDropEi } from './precision-alert-ei';
 import { tsxBin } from '../../harness-paths';
 import { PRECISION_BENCH_JEV_GATE_ENV, PRECISION_BENCH_RESULT_MARKER } from './precision-bench-core';
+import { PRECISION_BENCH_EMBEDDER_MODE_ENV } from './precision-bench-host';
 
 export {
   assertCorpusSeeded,
@@ -168,16 +170,23 @@ export async function runBenchInWorker(opts: {
   spawnProcess?: typeof spawn;
   timeoutMs?: number;
   jevGate?: boolean;
+  /** Resolved in the parent, whose memory host carries the live embedder cascade. */
+  embedderMode?: string;
 } = {}): Promise<MemoryPrecisionMetrics> {
   const spawnProcess = opts.spawnProcess ?? spawn;
   const timeoutMs = opts.timeoutMs ?? DEFAULT_WORKER_TIMEOUT_MS;
   let child: ChildProcess;
   try {
+    const embedderMode = opts.embedderMode ?? (await memoryHost().resolveEmbedder()).mode;
     const worker = precisionBenchWorkerInvocation(PRECISION_BENCH_WORKER);
     child = spawnProcess(worker.command, worker.args, {
       cwd: process.cwd(),
       // Set explicitly either way, so an inherited value can never gate a floor-only run.
-      env: { ...process.env, [PRECISION_BENCH_JEV_GATE_ENV]: opts.jevGate ? '1' : '0' },
+      env: {
+        ...process.env,
+        [PRECISION_BENCH_JEV_GATE_ENV]: opts.jevGate ? '1' : '0',
+        [PRECISION_BENCH_EMBEDDER_MODE_ENV]: String(embedderMode),
+      },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
   } catch (error) {

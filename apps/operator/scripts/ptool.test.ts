@@ -6,6 +6,7 @@ import {
   callToolWithPressureRetry,
   callToolWithReplayRecovery,
   buildCallToolParams,
+  refreshToolCallAfterStaleContract,
   canDispatchWithoutCatalog,
   buildMcpUrl,
   connectWithLocalRetry,
@@ -1338,6 +1339,160 @@ describe('ptool keyed result recovery without concurrent replay', () => {
     });
   });
 
+  it('refreshes one stale pre-dispatch contract and retries the unchanged call with the new generation', async () => {
+    const toolName = 'coord:inbox';
+    const callArgs = { directed: true };
+    const idempotencyKey = 'ptool-stale-generation-1';
+    const inputSchema = { type: 'object', properties: { directed: { type: 'boolean' } } };
+    const previousTool = {
+      name: toolName,
+      inputSchema,
+      outputSchema: { type: 'object' },
+      _meta: { 'papercusp/servingGeneration': 'serving-generation-v1:old' },
+    };
+    const refreshedTool = {
+      ...previousTool,
+      _meta: { 'papercusp/servingGeneration': 'serving-generation-v1:new' },
+    };
+    const originalParams = buildCallToolParams(toolName, callArgs, {
+      outputSchema: previousTool.outputSchema,
+      servingGeneration: previousTool._meta['papercusp/servingGeneration'],
+      idempotencyKey,
+    });
+    const staleFailure = Object.assign(new Error('stale_tool_contract'), {
+      code: 'stale_tool_contract',
+    });
+    const result = { content: [{ type: 'text', text: '{"ok":true}' }] };
+    const client = {
+      callTool: vi.fn().mockRejectedValueOnce(staleFailure).mockResolvedValueOnce(result),
+    };
+    const listTools = vi.fn().mockResolvedValue([refreshedTool]);
+    const onStaleToolContract = vi.fn(async ({ client: staleClient, error }) => {
+      const refreshed = await refreshToolCallAfterStaleContract({
+        client: staleClient,
+        toolName,
+        previousTool,
+        callArgs,
+        idempotencyKey,
+        listTools,
+        error,
+      });
+      return refreshed.params;
+    });
+    const reconnect = vi.fn();
+
+    await expect(callToolWithReplayRecovery(client, originalParams, {
+      reconnect,
+      onStaleToolContract,
+      timeoutMs: 5,
+    })).resolves.toEqual({ client, result });
+
+    const refreshedParams = buildCallToolParams(toolName, callArgs, {
+      outputSchema: refreshedTool.outputSchema,
+      servingGeneration: refreshedTool._meta['papercusp/servingGeneration'],
+      idempotencyKey,
+    });
+    expect(client.callTool).toHaveBeenNthCalledWith(
+      1,
+      originalParams,
+      undefined,
+      { timeout: 5, maxTotalTimeout: 5 },
+    );
+    expect(client.callTool).toHaveBeenNthCalledWith(
+      2,
+      refreshedParams,
+      undefined,
+      { timeout: 5, maxTotalTimeout: 5 },
+    );
+    expect(refreshedParams.arguments).toEqual(originalParams.arguments);
+    expect(refreshedParams._meta.idempotencyKey).toBe(originalParams._meta.idempotencyKey);
+    expect(refreshedParams._meta['papercusp/servingGeneration']).toBe('serving-generation-v1:new');
+    expect(listTools).toHaveBeenCalledExactlyOnceWith(client);
+    expect(onStaleToolContract).toHaveBeenCalledExactlyOnceWith({
+      client,
+      params: originalParams,
+      error: staleFailure,
+    });
+    expect(reconnect).not.toHaveBeenCalled();
+  });
+
+  it('does not replay a stale call when the refreshed input schema changed', async () => {
+    const toolName = 'coord:inbox';
+    const callArgs = { directed: true };
+    const idempotencyKey = 'ptool-stale-generation-schema-change';
+    const previousTool = {
+      name: toolName,
+      inputSchema: { type: 'object', properties: { directed: { type: 'boolean' } } },
+      outputSchema: { type: 'object' },
+    };
+    const refreshedTool = {
+      ...previousTool,
+      inputSchema: { type: 'object', properties: { directed: { type: 'string' } } },
+      _meta: { 'papercusp/servingGeneration': 'serving-generation-v1:new' },
+    };
+    const staleFailure = Object.assign(new Error('stale_tool_contract'), {
+      code: 'stale_tool_contract',
+    });
+    const client = { callTool: vi.fn().mockRejectedValueOnce(staleFailure) };
+    const listTools = vi.fn().mockResolvedValue([refreshedTool]);
+    const params = buildCallToolParams(toolName, callArgs, {
+      outputSchema: previousTool.outputSchema,
+      servingGeneration: 'serving-generation-v1:old',
+      idempotencyKey,
+    });
+
+    await expect(callToolWithReplayRecovery(client, params, {
+      onStaleToolContract: ({ client: staleClient, error }) => refreshToolCallAfterStaleContract({
+        client: staleClient,
+        toolName,
+        previousTool,
+        callArgs,
+        idempotencyKey,
+        listTools,
+        error,
+      }).then((refreshed) => refreshed.params),
+    })).rejects.toThrow('The input schema changed; inspect the current schema before retrying.');
+
+    expect(client.callTool).toHaveBeenCalledExactlyOnceWith(params, undefined, {
+      timeout: 30000,
+      maxTotalTimeout: 30000,
+    });
+    expect(listTools).toHaveBeenCalledExactlyOnceWith(client);
+  });
+
+  it('stops after a second stale serving-generation refusal', async () => {
+    const params = buildCallToolParams('coord:inbox', { directed: true }, {
+      idempotencyKey: 'ptool-stale-generation-2',
+      servingGeneration: 'serving-generation-v1:old',
+    });
+    const firstFailure = Object.assign(new Error('stale_tool_contract'), {
+      code: 'stale_tool_contract',
+    });
+    const secondFailure = Object.assign(new Error('stale_tool_contract'), {
+      code: 'stale_tool_contract',
+    });
+    const client = {
+      callTool: vi.fn().mockRejectedValueOnce(firstFailure).mockRejectedValueOnce(secondFailure),
+    };
+    const refreshedParams = buildCallToolParams('coord:inbox', { directed: true }, {
+      idempotencyKey: 'ptool-stale-generation-2',
+      servingGeneration: 'serving-generation-v1:new',
+    });
+    const onStaleToolContract = vi.fn().mockResolvedValue(refreshedParams);
+
+    await expect(callToolWithReplayRecovery(client, params, {
+      onStaleToolContract,
+      timeoutMs: 5,
+    })).rejects.toBe(secondFailure);
+
+    expect(client.callTool).toHaveBeenCalledTimes(2);
+    expect(onStaleToolContract).toHaveBeenCalledExactlyOnceWith({
+      client,
+      params,
+      error: firstFailure,
+    });
+  });
+
   it('negotiates projected object-schema calls as JSON instead of requesting the unprojected structured twin', () => {
     expect(buildCallToolParams(
       'sessions:read',
@@ -1390,14 +1545,17 @@ describe('ptool keyed result recovery without concurrent replay', () => {
       close: vi.fn(),
     };
     const reconnect = vi.fn();
+    const onStaleToolContract = vi.fn();
 
     await expect(callToolWithReplayRecovery(first, params, {
       reconnect,
+      onStaleToolContract,
       timeoutMs: 1,
     })).rejects.toBe(failure);
 
     expect(PTOOL_POST_CONNECT_RETRIES).toBe(0);
     expect(reconnect).not.toHaveBeenCalled();
+    expect(onStaleToolContract).not.toHaveBeenCalled();
     expect(first.close).not.toHaveBeenCalled();
     expect(first.callTool).toHaveBeenCalledWith(params, undefined, { timeout: 1, maxTotalTimeout: 1 });
   });

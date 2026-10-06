@@ -48,6 +48,8 @@ const MIGRATION_900 = join(SQL_DIR, '900-desktop-sessions-registry.sql');
  *  would — a hand-rolled CREATE TABLE here would silently fall behind the real
  *  schema the first time either migration changes. */
 const MIGRATION_905 = join(SQL_DIR, '905-desktop-session-lifecycle.sql');
+/** agent-multi-desktops-grid P-002: the `name` column registerDesktopSession now writes. */
+const MIGRATION_1386 = join(SQL_DIR, '1386-desktop-session-name.sql');
 
 const WS = 'ws-registry-test';
 let db: FreshPgDb | undefined;
@@ -78,6 +80,7 @@ beforeAll(async () => {
   sql = db.sql;
   await applyMigrationForTest(sql, MIGRATION_900);
   await applyMigrationForTest(sql, MIGRATION_905);
+  await applyMigrationForTest(sql, MIGRATION_1386);
 }, 180_000);
 
 afterAll(async () => {

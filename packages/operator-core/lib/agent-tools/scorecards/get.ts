@@ -41,10 +41,23 @@ export const scorecardGetArgs = z.object({
 // result door. The latter is much smaller than the shared 30k payload ceiling;
 // if it clips a complete criterion page, evidenceRead.complete lies about what
 // reached the model. Keep the exact same effective door settings as the host.
+
+// The handler body is serialized again as an MCP content item. Reserve room for
+// that wire envelope so tools:invoke's outer result door cannot force-project a
+// complete evidence page down to its generic string limit while leaving
+// evidenceRead.complete unchanged.
+const RESULT_DOOR_SERIALIZATION_RESERVE_CHARS = 256;
+
 function inlineResultBudgetChars(ownerId?: string | null): number {
   const resultDoorChars =
     computeTurnDoors(0, getDoorConstantsSync(ownerId)).resultEach * CHARS_PER_TOKEN_ESTIMATE;
-  return Math.max(1, Math.min(Math.floor(PAYLOAD_TIER_HARD_CEILING_CHARS / 2), resultDoorChars));
+  return Math.max(
+    1,
+    Math.min(
+      Math.floor(PAYLOAD_TIER_HARD_CEILING_CHARS / 2),
+      resultDoorChars - RESULT_DOOR_SERIALIZATION_RESERVE_CHARS,
+    ),
+  );
 }
 
 const evidenceReadCall = (issueId: string, criterionKey: string, evidenceOffset = 0) => ({

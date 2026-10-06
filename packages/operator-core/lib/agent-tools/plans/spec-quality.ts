@@ -194,6 +194,20 @@ export function specQualitySubjectRef(planSlug: string, classRef: PlanClassRubri
 }
 
 /**
+ * The plan items that owe a spec contract: every item except a deliberately
+ * dropped one. A dropped item is a recorded departure (`plans:set-status
+ * { status:'dropped', note }`), so demanding a clause or exemption for it forced
+ * authors to file fake exemptions just to start a plan (WI-10006208). Every
+ * caller that feeds `planItemIds` to the spec-quality evaluator or gate builds
+ * the list through this one function so the rule cannot drift between them.
+ */
+export function specQualityPlanItemIds(
+  items: ReadonlyArray<{ id: string; storedStatus?: string | null }>,
+): string[] {
+  return items.filter((item) => item.storedStatus !== 'dropped').map((item) => item.id);
+}
+
+/**
  * Grade one exact current set. Every plan item must either own an active behavior
  * clause or an explicit non-automated exemption; absence is never inferred as
  * non-behavioral.

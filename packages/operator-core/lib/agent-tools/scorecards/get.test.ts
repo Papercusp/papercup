@@ -184,6 +184,71 @@ describe('scorecards:get evidence-first projection', () => {
     }
   });
 
+  it('keeps nested tools:invoke evidence paging truthful at the final result door', async () => {
+    const evidence = 'e'.repeat(4_331);
+    const card = {
+      ...scorecard,
+      issueId: 'EI-nested-result-door',
+      criteria: [{ key: 'fixture-calibration', rating: 'not-applicable', evidence }],
+    };
+    readScorecardEvidenceM.mockResolvedValue({ kind: 'found', scorecard: card });
+    const projected = lookupByMcpName('scorecards:get');
+    if (!projected) throw new Error('scorecards:get should be registered');
+
+    const args = { issueId: card.issueId, criterionKey: 'fixture-calibration', evidenceOffset: 0 };
+    const dispatched = await dispatchProjectedTool(
+      projected,
+      'scorecards:get',
+      args,
+      makeDispatchContext(),
+      {},
+    );
+    expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
+    if (!dispatched.result) throw new Error('scorecards:get dispatch should return an MCP result');
+
+    const invokeTool = (await import('../tools/invoke')).default as unknown as {
+      handler: (args: unknown, context: unknown) => Promise<{
+        content: Array<{ type: 'text'; text: string }>;
+        _meta?: Record<string, unknown>;
+      }>;
+    };
+    const nested = dispatched.result as {
+      content: Array<{ type: 'text'; text: string }>;
+      _meta?: Record<string, unknown>;
+    };
+    const invoked = await invokeTool.handler(
+      { name: 'scorecards:get', args },
+      { dispatchTool: async () => nested },
+    );
+    const finalResult = applyResultDoor(invoked, {
+      toolName: 'tools:invoke',
+      workspaceId: 'scorecards-get-test',
+    });
+    const door = finalResult._meta?.resultDoor as { truncated?: boolean } | undefined;
+    expect(door?.truncated).not.toBe(true);
+
+    const payload = JSON.parse(finalResult.content[0]!.text) as {
+      scorecard: { criteria: Array<{ evidence: string }> };
+      evidenceRead: {
+        complete: boolean;
+        offset: number;
+        totalChars: number;
+        next?: { args: { evidenceOffset: number } };
+      };
+    };
+    const page = payload.scorecard.criteria[0]?.evidence ?? '';
+    expect(payload.evidenceRead.offset).toBe(0);
+    expect(payload.evidenceRead.totalChars).toBe(evidence.length);
+    if (payload.evidenceRead.complete) {
+      expect(page).toBe(evidence);
+      expect(payload.evidenceRead.next).toBeUndefined();
+    } else {
+      expect(page).toBe(evidence.slice(0, page.length));
+      expect(page.length).toBeLessThan(evidence.length);
+      expect(payload.evidenceRead.next?.args.evidenceOffset).toBe(page.length);
+    }
+  });
+
   it('keeps every exact evidence string recoverable through trimmed projected dispatch', async () => {
     readScorecardEvidenceM.mockResolvedValue({ kind: 'found', scorecard });
     const raw = (await getTool.handler(

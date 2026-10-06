@@ -29,6 +29,9 @@ vi.mock('@/lib/use-workspace-id', () => ({ useWorkspaceId: () => 'ws-test' }));
 // Heavy children — out of scope for this panel's own logic.
 vi.mock('./SavedPromptsSection', () => ({ default: () => <div data-testid="saved-prompts" /> }));
 vi.mock('./HarnessPluginsSection', () => ({ default: () => <div data-testid="plugins-section" /> }));
+vi.mock('./IntegrationModeSection', () => ({
+  default: ({ slug }: { slug: string }) => <div data-testid="integration-mode-section-mount">{slug}</div>,
+}));
 
 // The blueprint-params engine — fully mocked so we drive views + validation.
 let mockViews: Array<{ key: string; spec: Record<string, unknown>; value: unknown; overridden: boolean }>;
@@ -165,5 +168,16 @@ describe('BlueprintSettingsPanel (schema-driven per-harness settings)', () => {
     renderPanel(<BlueprintSettingsPanel slug="h" phase="production" />);
     await waitFor(() => expect(screen.getByTestId('saved-prompts')).toBeTruthy());
     expect(screen.getByTestId('plugins-section')).toBeTruthy();
+  });
+
+  // WI-10006501: this is the panel the Settings tab mounts by default
+  // (BLUEPRINT_AWARE_SETTINGS on), so the pot's working-copy switch (P-016) must be
+  // here too, keyed to the selected pot. Before the fix it existed only in the
+  // legacy HarnessSettingsPanel, so with defaults no user could reach it.
+  it("mounts the pot's working-copy switch for the selected pot, including while params load", async () => {
+    stubBlueprintParamsFetch({ blueprintId: 'coding', params: {} });
+    renderPanel(<BlueprintSettingsPanel slug="pot-review-pilot" phase="production" />);
+    await waitFor(() => expect(screen.getByTestId('integration-mode-section-mount')).toBeTruthy());
+    expect(screen.getByTestId('integration-mode-section-mount').textContent).toBe('pot-review-pilot');
   });
 });

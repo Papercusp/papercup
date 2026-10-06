@@ -457,6 +457,32 @@ vi.mock('../../agent-tools/coordination/messages', () => ({
   sendMessage: (...a: unknown[]) => sendMessageMock(a[0], a[1] as Record<string, unknown>),
 }));
 
+type TestAttributionRosterEntry = {
+  agent: string;
+  files: string[];
+  intent?: string;
+  workItems?: string[];
+  planSlug?: string;
+  sessionId?: string;
+};
+const readEditAttributionRosterMock = vi.fn(
+  async (_opts: { workspaceId: string | null }) => [] as TestAttributionRosterEntry[],
+);
+vi.mock('../../edit-attribution', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../edit-attribution')>()),
+  readEditAttributionRoster: (...a: unknown[]) =>
+    readEditAttributionRosterMock(a[0] as { workspaceId: string | null }),
+}));
+
+const listPresenceForAttributionMock = vi.fn(async (_opts: Record<string, unknown>) => [] as unknown[]);
+vi.mock('../../agent-tools/coordination/presence', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../agent-tools/coordination/presence')>()),
+  listPresence: (...a: unknown[]) =>
+    listPresenceForAttributionMock(a[0] as Record<string, unknown>) as unknown as ReturnType<
+      typeof import('../../agent-tools/coordination/presence').listPresence
+    >,
+}));
+
 const upsertConditionWorkItemMock = vi.fn(async (conditionKey: string, _input: Record<string, unknown>) => ({
   conditionKey,
   id: 'WI-CONTENT-TEST',
@@ -985,6 +1011,8 @@ beforeEach(() => {
   resolveLaunchTargetForEventMock.mockReset();
   loopbackFetchMock.mockReset();
   sendMessageMock.mockReset();
+  readEditAttributionRosterMock.mockReset().mockResolvedValue([]);
+  listPresenceForAttributionMock.mockReset().mockResolvedValue([]);
   upsertConditionWorkItemMock.mockReset();
   upsertConditionWorkItemMock.mockImplementation(async (conditionKey) => ({
     conditionKey,
@@ -3461,6 +3489,57 @@ describe('clean sync outcome', () => {
       category: 'git-sync',
     });
     expect((notice as { body: string }).body).toContain('unlocked remainder may have synced');
+  });
+
+  it('WI-10006478: assigns idempotent reservation guidance to the attributed author for nested repo paths', async () => {
+    const skippedPaths = [
+      {
+        scope: 'libs/sub',
+        path: 'libs/db/sql/999-unreserved-migration.sql',
+        reason: 'migration-reservation' as const,
+        detail: '[migration-reservation-guard] 999-unreserved-migration.sql has no reservation row',
+      },
+    ];
+    runGitSyncMock.mockResolvedValue({ ...syncedOutcome, skippedPaths });
+    readEditAttributionRosterMock.mockResolvedValue([
+      {
+        agent: 'su-migration-author',
+        files: ['libs/sub/libs/db/sql/999-unreserved-migration.sql'],
+        workItems: ['WI-MIGRATION-AUTHOR'],
+      },
+    ]);
+
+    await action(ctx);
+    await action(ctx);
+
+    expect(readEditAttributionRosterMock).toHaveBeenCalledWith({ workspaceId: 'ws-42' });
+    expect(upsertConditionWorkItemMock).toHaveBeenCalledTimes(2);
+    const [firstKey, input] = upsertConditionWorkItemMock.mock.calls[0]!;
+    const [secondKey] = upsertConditionWorkItemMock.mock.calls[1]!;
+    expect(firstKey).toMatch(/^git-sync-migration-reservation:papercup:su-migration-author:[a-f0-9]{24}$/);
+    expect(secondKey).toBe(firstKey);
+    expect(input).toMatchObject({
+      kind: 'bug',
+      severity: 'major',
+      harness: 'papercup',
+      workspaceId: 'ws-42',
+      createdBy: 'system:git-sync',
+      assignee: 'su-migration-author',
+      assignedBy: 'system:git-sync',
+      payload: {
+        source: 'git-sync-migration-reservation',
+        author: 'su-migration-author',
+        migrations: [
+          {
+            scope: 'libs/sub',
+            path: 'libs/db/sql/999-unreserved-migration.sql',
+            detail: '[migration-reservation-guard] 999-unreserved-migration.sql has no reservation row',
+          },
+        ],
+      },
+    });
+    expect((input as { summary: string }).summary).toContain('npm run db:next-migration');
+    expect((input as { summary: string }).summary).toContain('libs/sub/libs/db/sql/999-unreserved-migration.sql');
   });
 
   // P-009 (ex-P-028): last_skipped_paths is overwritten every tick, so the bounded

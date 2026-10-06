@@ -2,7 +2,7 @@
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import type { Sql } from 'postgres';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { OrgTestDb } from '../../../../test/_org-test-db';
 import type { HostedServiceContextRunner } from '../workos-lifecycle-postgres';
 import { shadowMonthBounds } from '../../../cupboard/shadow-metering-reader';
@@ -14,7 +14,8 @@ import type { HostedPrepaidFundingInput } from './budget-funding';
 import { PostgresHostedBudgetStore, type HostedBudgetContextReader, type HostedBudgetObservation,
   type HostedBudgetRequest, type HostedBudgetScope, type HostedPrepaidAllocationRequest, type HostedPrepaidFundingReader,
   createLockedHostedStripeFundingReader, evaluateLockedHostedPrepaidFunding,
-  readLockedHostedPrepaidAllocations, readLockedHostedStripeFundingPopulation } from './budget-store';
+  readLockedHostedPrepaidAllocations, readLockedHostedStripeFundingPopulation,
+  readLockedHostedBudgetPopulation } from './budget-store';
 
 const { createOrgTestDb } = await import('../../../../test/_org-test-db');
 let db: OrgTestDb;
@@ -204,12 +205,221 @@ describe('PostgresHostedBudgetStore (real hosted service transactions)', () => {
       liabilityMigration = readFileSync(new URL('../../../../../../libs/papercusp/libs/db/sql/1385-hosted-journal-liability-population.sql', import.meta.url), 'utf8');
     }
     await db.adminSql.unsafe(liabilityMigration); await db.adminSql.unsafe(liabilityMigration);
+    let budgetPopulationMigration: string;
+    try { budgetPopulationMigration = readFileSync(new URL('../../../../../../libs/papercusp/libs/db/sql/1388-hosted-budget-population-writer-fence.sql.DRAFT', import.meta.url), 'utf8'); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      budgetPopulationMigration = readFileSync(new URL('../../../../../../libs/papercusp/libs/db/sql/1388-hosted-budget-population-writer-fence.sql', import.meta.url), 'utf8');
+    }
+    await db.adminSql.unsafe(budgetPopulationMigration); await db.adminSql.unsafe(budgetPopulationMigration);
     await db.adminSql.unsafe(`CREATE TABLE papercusp_auth.test_budget_authority (
       control text NOT NULL, org text NOT NULL, cap bigint NOT NULL, funding bigint NOT NULL,
       retained bigint, workspace_cap bigint, PRIMARY KEY(control, org));
       GRANT SELECT, UPDATE ON papercusp_auth.test_budget_authority TO hosted_service`);
   }, 180_000);
   afterAll(async () => { await db?.cleanup(); });
+
+  it('takes the population writer fence before context reads even when empty, then inserts without an upgrade', async () => {
+    const s = await tenant();
+    const outcome = await store(async (sql, input) => {
+      const population = await readLockedHostedBudgetPopulation(sql);
+      expect(population).toEqual({ history: [], latest: [] });
+      const [fence] = await sql`SELECT mode FROM pg_locks WHERE pid = pg_backend_pid() AND granted
+        AND relation = 'papercusp_auth.hosted_budget_receipts'::regclass AND mode = 'ShareRowExclusiveLock'`;
+      expect(fence?.mode).toBe('ShareRowExclusiveLock');
+      // A zero-row writer still needs a table lock: row-only locks do not
+      // protect an empty population against a first admission.
+      await expect(db.adminSql.begin(async tx => {
+        await tx.unsafe("SET LOCAL lock_timeout = '100ms'");
+        await tx`LOCK TABLE papercusp_auth.hosted_budget_receipts IN ROW EXCLUSIVE MODE`;
+      })).rejects.toMatchObject({ code: '55P03' });
+      return readContext(sql, input);
+    }).reserve(request(s));
+    expect(outcome.outcome).toBe('reserved'); expect(await rows(s)).toHaveLength(1);
+    await db.adminSql.begin(async tx => {
+      await tx.unsafe("SET LOCAL lock_timeout = '100ms'");
+      await tx`LOCK TABLE papercusp_auth.hosted_budget_receipts IN ROW EXCLUSIVE MODE`;
+    });
+  });
+
+  it('refuses an absent or released writer fence instead of acquiring it after an account lock', async () => {
+    await expect(service(sql => readLockedHostedBudgetPopulation(sql)))
+      .rejects.toThrow('budget population requires the early writer fence');
+    // Autocommit releases the fence at statement end, even on the same pool.
+    await db.adminSql`SELECT papercusp_auth.lock_hosted_stripe_funding_population('budget-writer')`;
+    await expect(readLockedHostedBudgetPopulation(db.adminSql))
+      .rejects.toThrow('budget population requires the early writer fence');
+    await service(async sql => {
+      await readLockedHostedPrepaidAllocations(sql, populationInput.pool);
+      await expect(readLockedHostedBudgetPopulation(sql))
+        .rejects.toThrow('budget population requires the early writer fence');
+    });
+  });
+
+  it('refuses stale snapshot isolation even with a retained writer fence', async () => {
+    for (const isolation of ['REPEATABLE READ', 'SERIALIZABLE']) {
+      await expect(db.appSql.begin(async tx => {
+        await tx.unsafe(`SET TRANSACTION ISOLATION LEVEL ${isolation}`);
+        await tx.unsafe('SET LOCAL ROLE hosted_service');
+        await tx`SELECT papercusp_auth.lock_hosted_stripe_funding_population('budget-writer')`;
+        return readLockedHostedBudgetPopulation(tx as unknown as Sql);
+      })).rejects.toThrow('budget population requires read committed');
+    }
+  });
+
+  it('retains every exact revision and separates identical reservation IDs across controls and organizations', async () => {
+    const control = randomUUID(); const org = randomUUID(); const reservationId = randomUUID();
+    const scopes = [await tenant(control, org), await tenant(control), await tenant(randomUUID(), org)];
+    const current = request(scopes[0]!, { reservationId });
+    const unpriced = request(scopes[1]!, { reservationId, budgetKey: 'fixture.other-key' });
+    const oldTime = Date.UTC(2026, 8, 2);
+    const old = request(scopes[2]!, { reservationId, month: '2026-09', asOfMs: oldTime });
+    expect((await store().reserve(current)).outcome).toBe('reserved');
+    expect((await store().reserve(unpriced)).outcome).toBe('reserved');
+    expect((await store(readContext, service, () => oldTime).reserve(old)).outcome).toBe('reserved');
+    expect((await store().observe(observation(current, { costSource: 'provider-reported', providerFinal: false,
+      costMicros: 40_003, costMicrosExact: '40003.001' }))).outcome).toBe('recorded');
+    expect((await store().observe(observation(current, { revision: 2, observedAtMs: T + 2,
+      costMicros: 0, costMicrosExact: '0.002' }))).outcome).toBe('recorded');
+    expect((await store().observe(observation(old, { observedAtMs: oldTime + 1 }))).outcome).toBe('recorded');
+    await service(async sql => {
+      await sql`SELECT papercusp_auth.lock_hosted_stripe_funding_population('budget-writer')`;
+      const population = await readLockedHostedBudgetPopulation(sql);
+      const all = population.history.filter(r => r.reservationId === reservationId);
+      const latest = population.latest.filter(r => r.reservationId === reservationId);
+      expect(all).toHaveLength(6); expect(latest).toHaveLength(3);
+      expect(all.find(r => r.scope.organizationId === org && r.scope.controlWorkspaceId === control && r.revision === 1))
+        .toMatchObject({ costMicros: 40_003, costMicrosExact: '40003.001', providerFinal: false });
+      expect(latest.find(r => r.scope.controlWorkspaceId === control && r.scope.organizationId === org))
+        .toMatchObject({ revision: 2, costMicros: 0, costMicrosExact: '0.002', providerFinal: true,
+          providerLimitRef: 'fixture:enforced-limit', maximumCostMicros: 100_000 });
+      expect(latest.find(r => r.scope.organizationId === unpriced.scope.organizationId))
+        .toMatchObject({ revision: 0, costMicros: null, costSource: 'unpriced', budgetKey: 'fixture.other-key' });
+      expect(latest.find(r => r.scope.controlWorkspaceId === old.scope.controlWorkspaceId))
+        .toMatchObject({ month: '2026-09', costSource: 'provider-billed' });
+      expect(Object.isFrozen(population)).toBe(true); expect(Object.isFrozen(population.history)).toBe(true);
+      expect(Object.isFrozen(population.latest)).toBe(true);
+      for (const r of all) { expect(Object.isFrozen(r)).toBe(true); expect(Object.isFrozen(r.scope)).toBe(true); }
+    });
+  });
+
+  it('serializes actual reservation readers before organization/account locks and commits both without SHARE upgrades', async () => {
+    const scopes = [await tenant(), await tenant()]; const account = 'acct_BudgetCensus';
+    const snapshots: number[] = [];
+    const reader: HostedBudgetContextReader = async (sql, input) => {
+      await readLockedHostedPrepaidAllocations(sql, { controlWorkspaceId: input.scope.controlWorkspaceId,
+        stripeAccountId: account });
+      const population = await readLockedHostedBudgetPopulation(sql);
+      snapshots.push(population.latest.filter(r => scopes.some(s => s.organizationId === r.scope.organizationId)).length);
+      return readContext(sql, input);
+    };
+    const bounded: HostedServiceContextRunner = fn => service(async sql => {
+      await sql.unsafe("SET LOCAL statement_timeout = '5s'"); return fn(sql);
+    });
+    const results = await Promise.all(scopes.map(s => store(reader, bounded).reserve(request(s))));
+    expect(results.map(r => r.outcome)).toEqual(['reserved', 'reserved']);
+    expect(snapshots).toEqual([0, 1]);
+  });
+
+  it('holds the population through an actual observation INSERT and releases it after rollback', async () => {
+    const s = await tenant(); const r = request(s); await store().reserve(r);
+    await expect(service(async sql => {
+      await sql`SELECT papercusp_auth.lock_hosted_stripe_funding_population('budget-writer')`;
+      const inTransaction: HostedServiceContextRunner = fn => fn(sql);
+      expect((await store(readContext, inTransaction).observe(observation(r))).outcome).toBe('recorded');
+      const population = await readLockedHostedBudgetPopulation(sql);
+      expect(population.latest.find(p => p.reservationId === r.reservationId)?.revision).toBe(1);
+      await expect(db.adminSql.begin(async tx => {
+        await tx.unsafe("SET LOCAL lock_timeout = '100ms'");
+        await tx`LOCK TABLE papercusp_auth.hosted_budget_receipts IN ROW EXCLUSIVE MODE`;
+      })).rejects.toMatchObject({ code: '55P03' });
+      throw new Error('budget census rollback');
+    })).rejects.toThrow('budget census rollback');
+    expect(await rows(s)).toHaveLength(1);
+    expect((await store().observe(observation(r))).outcome).toBe('recorded');
+  });
+
+  it('waits at the early table fence for a real observation writer and reads its committed correction', async () => {
+    const s = await tenant(); const r = request(s); await store().reserve(r);
+    let ready!: () => void; let release!: () => void; let failed!: (error: unknown) => void;
+    const entered = new Promise<void>((resolve, reject) => { ready = resolve; failed = reject; });
+    const released = new Promise<void>(resolve => { release = resolve; });
+    let readerPid = 0;
+    const writer = service(async sql => {
+      const inTransaction: HostedServiceContextRunner = fn => fn(sql);
+      const result = await store(readContext, inTransaction).observe(observation(r,
+        { costMicros: 0, costMicrosExact: '0.001' }));
+      ready(); await released; return result;
+    });
+    void writer.catch(failed);
+    let reader: Promise<unknown> | undefined;
+    try {
+      await entered;
+      reader = store(async (sql, input) => {
+        const population = await readLockedHostedBudgetPopulation(sql);
+        expect(population.latest.find(p => p.reservationId === r.reservationId))
+          .toMatchObject({ revision: 1, costMicrosExact: '0.001' });
+        return readContext(sql, input);
+      }, fn => service(async sql => {
+        const [backend] = await sql`SELECT pg_backend_pid() AS pid`; readerPid = backend!.pid;
+        await sql.unsafe("SET LOCAL statement_timeout = '5s'"); return fn(sql);
+      })).reserve(request(s, { maximumCostMicros: 1 }));
+      await vi.waitFor(async () => {
+        const waiting = await db.adminSql`SELECT mode FROM pg_locks WHERE pid = ${readerPid} AND NOT granted
+          AND relation = 'papercusp_auth.hosted_budget_receipts'::regclass`;
+        expect(waiting).toEqual([{ mode: 'ShareRowExclusiveLock' }]);
+      }, { timeout: 2000 });
+    } finally { release(); await Promise.all([writer, reader]); }
+    expect((await writer).outcome).toBe('recorded');
+    expect(await reader).toMatchObject({ outcome: 'reserved' });
+  });
+
+  it('keeps the new phase service-only, refuses unknown phases, and adds no financial UPDATE grants', async () => {
+    const [permissions] = await db.adminSql`SELECT
+      has_function_privilege('hosted_service', 'papercusp_auth.lock_hosted_stripe_funding_population(text)', 'EXECUTE') AS service,
+      has_function_privilege('hosted_app', 'papercusp_auth.lock_hosted_stripe_funding_population(text)', 'EXECUTE') AS app,
+      has_function_privilege('harness_app', 'papercusp_auth.lock_hosted_stripe_funding_population(text)', 'EXECUTE') AS harness,
+      has_table_privilege('hosted_service', 'papercusp_auth.hosted_budget_receipts', 'UPDATE') AS update,
+      has_table_privilege('hosted_service', 'harness_shared.money_journal_entries', 'UPDATE') AS financial_update`;
+    expect(permissions).toEqual({ service: true, app: false, harness: false, update: false, financial_update: false });
+    await expect(service(sql => sql`SELECT papercusp_auth.lock_hosted_stripe_funding_population('arbitrary-table')`))
+      .rejects.toThrow('invalid hosted funding population phase');
+    await expect(service(sql => sql`SELECT papercusp_auth.lock_hosted_stripe_funding_population(NULL::text)`))
+      .rejects.toThrow('invalid hosted funding population phase');
+  });
+
+  it('refuses a late writer fence after either an account or the existing source phase', async () => {
+    await expect(service(async sql => {
+      await readLockedHostedPrepaidAllocations(sql, populationInput.pool);
+      await sql`SELECT papercusp_auth.lock_hosted_stripe_funding_population('budget-writer')`;
+    })).rejects.toThrow('budget writer fence must precede organization account and source locks');
+    await expect(service(async sql => {
+      await sql`SELECT papercusp_auth.lock_hosted_stripe_funding_population()`;
+      await sql`SELECT papercusp_auth.lock_hosted_stripe_funding_population('budget-writer')`;
+    })).rejects.toThrow('budget writer fence must precede organization account and source locks');
+  });
+
+  it('reproduces the unsafe concurrent SHARE-to-write upgrade in disposable transactions', async () => {
+    let readyCount = 0; let ready!: () => void; let release!: () => void;
+    const entered = new Promise<void>(resolve => { ready = resolve; });
+    const released = new Promise<void>(resolve => { release = resolve; });
+    const attempt = () => db.adminSql.begin(async tx => {
+      await tx.unsafe("SET LOCAL deadlock_timeout = '50ms'");
+      await tx.unsafe("SET LOCAL statement_timeout = '5s'");
+      await tx`LOCK TABLE papercusp_auth.hosted_budget_receipts IN SHARE MODE`;
+      if (++readyCount === 2) ready();
+      await released;
+      // This is the same table mode any INSERT must acquire, even into an
+      // empty population. No product-source mutation or fixture data damage.
+      await tx`LOCK TABLE papercusp_auth.hosted_budget_receipts IN ROW EXCLUSIVE MODE`;
+    }).then(() => ({ ok: true as const }), error => ({ ok: false as const, code: error.code }));
+    const attempts = [attempt(), attempt()];
+    try { await Promise.race([entered, Promise.all(attempts)]); }
+    finally { release(); }
+    const outcomes = await Promise.all(attempts);
+    expect(outcomes.filter(r => !r.ok && r.code === '40P01')).toHaveLength(1);
+    expect(outcomes.filter(r => r.ok)).toHaveLength(1);
+  });
 
   it('dispatches exactly once across concurrent instances, only after the reservation commits', async () => {
     const s = await tenant(); const r = request(s); const launches: string[] = [];

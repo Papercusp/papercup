@@ -39,7 +39,15 @@ if [ ! -d "$MODULES_DIR/$KVER/build" ]; then
 fi
 LOG="$LOG_DIR/vboxdrv-rebuild-$KVER.log"
 if KERN_VER="$KVER" "$SETUP" setup "$KVER" >"$LOG" 2>&1; then
-  "$LOGGER" -t vboxdrv-rebuild "rebuilt VirtualBox modules for $KVER" 2>/dev/null || true
+  # A zero exit is NOT proof (WI-10006520, spec FAIL-P-003): success is declared only when a
+  # vboxdrv module now exists for exactly this kernel. Oracle's vboxdrv.sh installs it under
+  # misc/; a DKMS build lands under updates/; either may be compressed (.ko.zst / .ko.xz).
+  if [ -n "$(find "$MODULES_DIR/$KVER" -name 'vboxdrv.ko*' -print 2>/dev/null | head -n 1)" ]; then
+    "$LOGGER" -t vboxdrv-rebuild "rebuilt VirtualBox modules for $KVER" 2>/dev/null || true
+  else
+    echo "vboxdrv-rebuild: FAILED — vboxdrv.sh setup exited 0 but no vboxdrv module exists under $MODULES_DIR/$KVER — see $LOG" >&2
+    "$LOGGER" -p user.err -t vboxdrv-rebuild "FAILED: setup exited 0 but no vboxdrv module for $KVER (see $LOG)" 2>/dev/null || true
+  fi
 else
   echo "vboxdrv-rebuild: FAILED to build VirtualBox modules for $KVER — see $LOG and /var/log/vbox-setup.log" >&2
   "$LOGGER" -p user.err -t vboxdrv-rebuild "FAILED to build VirtualBox modules for $KVER (see $LOG)" 2>/dev/null || true

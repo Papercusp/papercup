@@ -3758,6 +3758,142 @@ export function makeOwnerComposerGate({ capMs = DEFAULT_IDLE_WAIT_CAP_MS, now = 
 }
 
 /**
+ * psu-process-free-parking-2026-10-06 P-016: how long a Claude child must sit
+ * idle at its prompt before the host PARKS it (SIGKILLs the CLI to free its
+ * ~215 MB while the host, socket and terminal stay up; D-002). 15 minutes:
+ * long enough that an attended session the owner is reading is not parked
+ * under them, short enough that an idle fleet sheds its CLI memory. A park
+ * costs no tokens inside the 1h prompt-cache TTL and ~1 s of wake latency
+ * (D-018/D-025 of agent-capacity-and-cost-gcp-2026-09-30).
+ */
+export const DEFAULT_PARK_IDLE_MS = 15 * 60_000;
+
+/**
+ * Resolve the park threshold from PAPERCUSP_PSU_PARK_IDLE_MS. Unset/blank or
+ * unparseable falls back to the default (the feature ships ON); an explicit
+ * `0` is the kill-switch. Pure; exported for tests.
+ * @param {Record<string, string | undefined>} [env]
+ */
+export function parkIdleMsFromEnv(env = process.env) {
+  const raw = env?.PAPERCUSP_PSU_PARK_IDLE_MS;
+  if (raw === undefined || raw === null || String(raw).trim() === '') return DEFAULT_PARK_IDLE_MS;
+  const n = Number(String(raw).trim());
+  if (!Number.isFinite(n) || n < 0) return DEFAULT_PARK_IDLE_MS;
+  return Math.floor(n);
+}
+
+/**
+ * Count the live descendant processes of `rootPid` from /proc (one ppid map
+ * built from every /proc/<pid>/stat, then a walk down from the root). The park
+ * policy refuses while the CLI has ANY descendant: a running background shell,
+ * an in-flight hook or a stdio MCP server is work a SIGKILL of the tree would
+ * destroy. Returns null when the count cannot be taken (no /proc, unreadable
+ * root), and the policy FAILS CLOSED on null. Exported for tests (procRoot and
+ * the fs readers are injectable).
+ * @param {number} rootPid
+ * @param {{ procRoot?: string, readdir?: (p: string) => string[], readFile?: (p: string, enc: 'utf8') => string }} [opts]
+ * @returns {number | null}
+ */
+export function countProcessDescendants(
+  rootPid,
+  { procRoot = '/proc', readdir = readdirSync, readFile = readFileSync } = {},
+) {
+  if (!Number.isInteger(rootPid) || rootPid <= 0) return null;
+  let entries;
+  try {
+    entries = readdir(procRoot);
+  } catch {
+    return null;
+  }
+  const childrenOf = new Map();
+  let sawRoot = false;
+  for (const name of entries) {
+    if (!/^\d+$/.test(name)) continue;
+    let stat;
+    try {
+      stat = readFile(`${procRoot}/${name}/stat`, 'utf8');
+    } catch {
+      continue; // exited between readdir and read — not a descendant any more
+    }
+    // `pid (comm) state ppid …` — comm may contain spaces or ')', so split
+    // after the LAST ')'.
+    const close = stat.lastIndexOf(')');
+    if (close < 0) continue;
+    const fields = stat.slice(close + 2).split(' ');
+    const ppid = Number(fields[1]);
+    const pid = Number(name);
+    if (pid === rootPid) sawRoot = true;
+    if (!Number.isInteger(ppid)) continue;
+    if (!childrenOf.has(ppid)) childrenOf.set(ppid, []);
+    childrenOf.get(ppid).push(pid);
+  }
+  if (!sawRoot) return null;
+  let count = 0;
+  const stack = [...(childrenOf.get(rootPid) ?? [])];
+  const seen = new Set();
+  while (stack.length) {
+    const pid = stack.pop();
+    if (seen.has(pid)) continue;
+    seen.add(pid);
+    count++;
+    for (const kid of childrenOf.get(pid) ?? []) stack.push(kid);
+  }
+  return count;
+}
+
+/**
+ * psu-process-free-parking-2026-10-06 P-016: should the host park its child
+ * NOW? Every refusal names its reason (reported on the host event so "why
+ * didn't it park" is a read, not a guess). Ordered cheapest-first; the caller
+ * only pays for the /proc descendant walk when every other gate passed (pass a
+ * `descendants` thunk). Pure; exported for tests.
+ *
+ * @param {{
+ *   idleMs: number,
+ *   agent?: string | null,
+ *   now: number,
+ *   lastActivityAt: number,
+ *   childPromptReady: boolean,
+ *   parked?: boolean,
+ *   busy?: boolean,
+ *   composerPending?: boolean,
+ *   resumable?: boolean,
+ *   descendants: () => number | null,
+ * }} input
+ * @returns {{ park: boolean, reason: string, idleForMs?: number, descendants?: number | null }}
+ */
+export function parkVerdict({
+  idleMs,
+  agent = null,
+  now,
+  lastActivityAt,
+  childPromptReady,
+  parked = false,
+  busy = false,
+  composerPending = false,
+  resumable = true,
+  descendants,
+}) {
+  if (!(Number.isFinite(idleMs) && idleMs > 0)) return { park: false, reason: 'disabled' };
+  if (String(agent ?? '').trim().toLowerCase() !== 'claude') {
+    return { park: false, reason: 'agent-not-parkable' };
+  }
+  if (parked) return { park: false, reason: 'already-parked' };
+  if (busy) return { park: false, reason: 'busy' };
+  if (!resumable) return { park: false, reason: 'no-resumable-session-id' };
+  if (!childPromptReady) return { park: false, reason: 'prompt-not-ready' };
+  if (composerPending) return { park: false, reason: 'composer-pending' };
+  const idleForMs = Math.max(0, now - (Number(lastActivityAt) || 0));
+  if (idleForMs < idleMs) return { park: false, reason: 'not-idle-long-enough', idleForMs };
+  const n = typeof descendants === 'function' ? descendants() : null;
+  if (n === null || n === undefined) {
+    return { park: false, reason: 'descendants-unknown', idleForMs, descendants: null };
+  }
+  if (n > 0) return { park: false, reason: 'child-has-descendants', idleForMs, descendants: n };
+  return { park: true, reason: 'idle', idleForMs, descendants: 0 };
+}
+
+/**
  * Session activity tracker (agent-liveness-heartbeat-hardening-2026-06-12
  * P-006): the OUTPUT-side sibling of makeIdleGate. The pty stream is a true
  * mid-turn signal — a generating agent repaints its TUI constantly — so
@@ -8153,6 +8289,8 @@ export function resolveAgentPtyTarget({ command, args, env, cwd }, deps = {}) {
  *   supplied through {@link HEADLESS_NORMALIZED_LOG_ENV} in `o.env`
  * @param {(args:string[], options:{agent?:string, personaFile?:string|null})=>any} [o.mintRecycleArgs] mint argv for an ordinary recycle
  * @param {(args:string[], options:{systemPromptAddendum:string, ownerId:string, agent?:string, personaFile?:string|null, codexHome?:string})=>any} [o.mintCarryRespawnArgs] mint argv for a carry respawn
+ * @param {(args:string[], options:{agent?:string})=>({args:string[], nativeId:string}|null)} [o.mintParkResumeArgs]
+ *   mint the argv that resumes a parked child (null = not resumable, never park)
  * @param {()=>Promise<any>} [o.ensureCodexHome] repair the per-session Codex home before a carry mint
  * @param {()=>Promise<any>} [o.refreshPersonaFile] refresh the rendered persona before respawn
  * @param {(...args:any[])=>any} [o.onRespawn] lifecycle callback after a respawn
@@ -8181,6 +8319,11 @@ export function hostThroughPty(o) {
     // standalone host + existing tests behavior-identical (same args, no anchor).
     mintRecycleArgs = (a) => ({ args: a, nativeId: null }),
     mintCarryRespawnArgs = (a) => mintRecycleArgs(a),
+    // psu-process-free-parking-2026-10-06 P-017: the argv that resumes a PARKED
+    // child as the same conversation (launcher: mintParkResumeArgs). The default
+    // returns null, i.e. "not resumable", so a host the launcher did not wire
+    // never parks.
+    mintParkResumeArgs = () => null,
     // The launcher owns the authenticated operator repair route. Invoke it at
     // the carry boundary so an archived Codex home cannot make every successor
     // attempt fail before minting its AGENTS.md prompt.

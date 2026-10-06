@@ -13,6 +13,13 @@ const PLACEMENT_CONTROLS = [
   'existing-one-fleet',
   'drain-and-test-excluded',
 ] as const;
+const GOAL_RESPAWN_CONTROL_FILE = 'packages/operator-core/lib/system-health/goal-liveness-watchdog.test.ts';
+const GOAL_RESPAWN_CONTROLS = [
+  'elected-loss-recovery',
+  'live-holder-no-double-spawn',
+  'concurrent-takeover-refusal',
+  'successful-recovery-control',
+] as const;
 
 describe('resolveTestRunSource', () => {
   it("env override 'admin-ui' wins over CI", () => {
@@ -65,6 +72,25 @@ describe('resolveTestRunSource', () => {
       PLACEMENT_CONTROL_FILE,
     )).toBe('local');
     expect(resolveTestRunSource({ PAPERCUSP_PLACEMENT_EXCLUSION_CONTROL: 'holder-not-independent' }))
+      .toBe('local');
+  });
+
+  it.each(GOAL_RESPAWN_CONTROLS)('marks controlled goal respawn fixture %s as mutation-probe', (control) => {
+    expect(resolveTestRunSource({ PAPERCUSP_GOAL_RESPAWN_CONTROL: control }, GOAL_RESPAWN_CONTROL_FILE))
+      .toBe('mutation-probe');
+  });
+
+  it('limits goal respawn controls to known scenarios on the exact test file', () => {
+    expect(resolveTestRunSource({}, GOAL_RESPAWN_CONTROL_FILE)).toBe('local');
+    expect(resolveTestRunSource(
+      { PAPERCUSP_GOAL_RESPAWN_CONTROL: 'elected-loss-recovery' },
+      'packages/operator-core/lib/another.test.ts',
+    )).toBe('local');
+    expect(resolveTestRunSource(
+      { PAPERCUSP_GOAL_RESPAWN_CONTROL: 'unknown-control' },
+      GOAL_RESPAWN_CONTROL_FILE,
+    )).toBe('local');
+    expect(resolveTestRunSource({ PAPERCUSP_GOAL_RESPAWN_CONTROL: 'elected-loss-recovery' }))
       .toBe('local');
   });
 });

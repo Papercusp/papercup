@@ -39,6 +39,7 @@ import { setLaunchBlueprintResolver, installedAwareLaunchResolver } from '@paper
 import {
   backgroundWorkersEnabled,
   dbosLaunchesHere,
+  declareOperatorHostProcess,
   requestOnlyHost,
   utilityHostEnabled,
 } from '@papercusp/operator-core/lib/background-workers';
@@ -373,6 +374,12 @@ const CPU_WORKER_BREAKER_IDENTITY = {
 };
 
 export function runBootstrap(): void {
+  // WI-10006280: declare THIS process an operator host before anything else. Every
+  // host runs this (hono-host primary, each clustered request worker via onWorker,
+  // bg-host, the desktop's serve.ts), and it is what releases the wake-delivery
+  // loops `agent-tools/index.ts` queues through `whenOperatorHostProcess`. A script
+  // that only imports the registry never calls it, so it never sweeps. Idempotent.
+  declareOperatorHostProcess();
   if (BOOTSTRAP_STATE.ran) return;
   BOOTSTRAP_STATE.ran = true;
 

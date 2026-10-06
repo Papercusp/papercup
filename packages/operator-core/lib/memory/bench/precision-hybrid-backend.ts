@@ -17,7 +17,7 @@ import {
   type MemoryBackend,
 } from '@papercusp/memory';
 
-import { benchPgClient, releaseBenchSchema, ensureBenchSchema, setupBenchMemoryHost } from './bench-host';
+import { benchPgClient, releaseBenchSchema, ensureBenchSchema, setupBenchMemoryHost } from './bench-host-primitives';
 
 export const BENCH_SCOPE = 'bench';
 

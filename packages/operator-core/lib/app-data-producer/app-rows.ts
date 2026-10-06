@@ -79,10 +79,16 @@ export function appRowId(nativeId: string, sourceId?: string | null): string {
   return sid ? `${sid}:${nativeId}` : nativeId;
 }
 
-/** The app's sync `sourceRef`, matching each app's own default. */
-export function sourceRefForApp(app: ProducerApp): string {
-  return app === 'email' ? 'gmail' : 'google-calendar';
-}
+/**
+ * The sync STREAM the platform producer writes to, for every app (D-023 §2).
+ *
+ * It names the stream, not a provider: one producer batch can carry rows from
+ * several sources (a Gmail and an Outlook mailbox side by side), and each row
+ * already names its own source through `sourceId` / `mailbox.sourceId`. A
+ * provider-named ref here would mislabel every other provider's rows and give
+ * the app a cursor per provider name instead of per producer.
+ */
+export const APP_SYNC_SOURCE_REF = 'papercusp-vault';
 
 function isoTime(value: string | Date | null | undefined): string | undefined {
   if (!value) return undefined;
@@ -195,7 +201,7 @@ export function buildAppSyncBatch(
   const body: Record<string, unknown> = app === 'email'
     ? { messages: rows, contacts: [] }
     : { events: rows, calendars: [], contacts: [] };
-  body.sourceRef = sourceRefForApp(app);
+  body.sourceRef = APP_SYNC_SOURCE_REF;
   const cursor = options.cursor?.trim();
   if (cursor) body.cursor = cursor;
   return { app, body, rowCount: rows.length };

@@ -3677,6 +3677,72 @@ export function mainBufferIsStale(
 }
 
 /**
+ * WI-10006493: the last git-sync pass's deliberate deferral of the queried path, if any.
+ *
+ * git-sync defers a dirty path for three reasons: a live edit lock (`owner` + `intent`), a
+ * migration whose number reservation was refused (`migration-reservation`), or a superproject
+ * path held back with such a migration by the dependency fence (`migration-dependency-fence`).
+ * In all three a forced sync defers the path again, so `git-sync:run` is not a lever. The
+ * returned `lever` names what actually unblocks the path, and deliberately does NOT contain
+ * the `git-sync:run` token, because callers copy the lever verbatim.
+ *
+ * `skippedPaths` entries are repo-relative within their `scope` (a submodule path, or
+ * `superproject`); the queried path is superproject-relative, so the two are joined first.
+ * Pure: matches against the snapshot the resolver already read.
+ */
+export function gitSyncDeferralFor(
+  path: string | null,
+  gitSync: Pick<GitSyncLegs, 'skippedPaths' | 'syncAgeMs'>,
+): { reason: 'edit-lock' | 'migration-reservation' | 'migration-dependency-fence'; detail: string; lever: string } | null {
+  if (!path) return null;
+  const want = path.replace(/^\.\//, '');
+  const entry = (gitSync.skippedPaths ?? []).find((s) => {
+    const full = !s.scope || s.scope === 'superproject' ? s.path : `${s.scope}/${s.path}`;
+    return full === want;
+  });
+  if (!entry) return null;
+  const when =
+    gitSync.syncAgeMs === null || gitSync.syncAgeMs === undefined
+      ? 'The last git-sync pass'
+      : `The last git-sync pass (~${Math.max(0, Math.round(gitSync.syncAgeMs / 60_000))} min ago)`;
+  const listOr = (xs: readonly string[] | undefined, none: string): string =>
+    xs && xs.length > 0 ? xs.join(', ') : none;
+
+  if ('owner' in entry) {
+    return {
+      reason: 'edit-lock',
+      detail:
+        `${when} deferred this path because a live edit lock covers it (held by ${entry.owner}: "${entry.intent}"). ` +
+        'git-sync excludes locked paths from every commit, so forcing git-sync:run skips it again until the lock is released or expires.',
+      lever: `release the edit lock on this path (held by ${entry.owner}) — check locks:queue first: if it is already released, the next sweep commits the path`,
+    };
+  }
+  if (entry.reason === 'migration-reservation') {
+    return {
+      reason: 'migration-reservation',
+      detail:
+        `${when} deferred this migration because its number reservation was refused: ${entry.detail}. ` +
+        'git-sync re-checks the reservation on every pass, so forcing git-sync:run defers it again until the reservation is valid.',
+      lever:
+        'reserve a migration number with node scripts/next-migration.mjs --name <slug> --intent "..." and rename this file to the printed path; it commits on the next sweep after that',
+    };
+  }
+  const migrations = listOr(entry.blockingMigrations, 'an unidentified migration');
+  const authors = listOr(entry.blockingAgents, 'unattributed');
+  const workItems = listOr(entry.blockingWorkItems, 'none recorded');
+  return {
+    reason: 'migration-dependency-fence',
+    detail:
+      `${when} held this path behind the migration dependency fence: ${entry.detail}. ` +
+      `Blocking migration(s): ${migrations}; author(s): ${authors}; work-item(s): ${workItems}. ` +
+      'The fence holds the path for as long as that migration\'s reservation is refused, so forcing git-sync:run defers it again.',
+    lever:
+      `unblock the migration first — ${migrations} (author: ${authors}; work-item: ${workItems}) needs a valid reservation ` +
+      '(node scripts/next-migration.mjs, then rename it); this path commits with it on the next sweep after that',
+  };
+}
+
+/**
  * Derive the stage table from state the caller ALREADY computed — this function
  * makes no git calls and adds no measurement, so it is pure and unit-testable.
  * P-002/P-003/P-004 replace the `unknown` healths with real signals.
@@ -3700,6 +3766,11 @@ export function computeStages(
      * The resolver always passes it; a caller that omits it has no failed legs to report.
      */
     positionsUnknown?: readonly string[];
+    /**
+     * WI-10006493: the queried path, read only to match it against the last git-sync pass's
+     * `skippedPaths`. The resolver always passes it; a caller that omits it gets no deferral match.
+     */
+    input?: { path: string | null };
   },
   /**
    * WI-6525: set when there is genuinely nothing to measure a position for — no
@@ -3765,6 +3836,10 @@ export function computeStages(
   // EI-24049239243821100: an unreadable working tree cannot put this stage behind us —
   // "committed" is exactly the question the failed `git status` could not answer.
   const workingTreeUnknown = !p.dirtyUncommitted && (p.positionsUnknown?.includes('workingTree') ?? false);
+  // WI-10006493: git-sync:run is only the lever when a sync CAN commit this path. When the last
+  // pass deliberately deferred it (a migration guard, or a live edit lock), forcing another pass
+  // defers it again, so the blocker and its owner are named instead.
+  const deferral = p.dirtyUncommitted ? gitSyncDeferralFor(p.input?.path ?? null, p.gitSync) : null;
   stages.push({
     name: 'committed',
     plane: 'delivery',
@@ -3776,13 +3851,17 @@ export function computeStages(
         : targetUnresolvedDetail
           ? 'stalled'
           : 'advancing',
-    detail: p.dirtyUncommitted
+    detail: deferral
+      ? deferral.detail
+      : p.dirtyUncommitted
       ? 'Uncommitted edits in the working tree. The release gate checks out a COMMITTED candidate and cannot see the tree, so this change is invisible to it until git-sync commits. Force it now: git-sync:run.' +
         (sweep.detail ? ` ${sweep.detail}` : '')
       : workingTreeUnknown
         ? 'The working-tree status read failed, so whether this path has uncommitted edits is unknown. Treat nothing past this stage as proof the edit on disk is live.'
         : targetUnresolvedDetail,
-    lever: p.dirtyUncommitted
+    lever: deferral
+      ? deferral.lever
+      : p.dirtyUncommitted
       ? multiFileSweep
         ? `git-sync:run (commit the working tree — the gate cannot see it) — ⚠ this sweeps ALL ${sweep.dirtyPathCount} dirty paths in the tree, not just yours; only fire it once the set is complete`
         : 'git-sync:run (commit the working tree — the gate cannot see it)'

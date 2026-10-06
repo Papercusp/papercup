@@ -2807,6 +2807,82 @@ describe('computeStages: position x health', () => {
     expect(stage(s, 'committed')).toMatchObject({ position: 'past', health: 'advancing', detail: null });
   });
 
+  // WI-10006493 (residue of EI-25203408414398603): while git-sync's migration dependency fence
+  // deferred unrelated dirty paths, this surface said "BLOCKED AT COMMITTED -> git-sync:run".
+  // A forced sync defers the same path again, so the lever sent agents round a loop. When the
+  // last pass recorded the queried path as deferred, the stage must name the blocker and owner.
+  describe('WI-10006493: a path the last git-sync pass deferred is not unblocked by git-sync:run', () => {
+    const fenced = {
+      scope: 'superproject',
+      path: 'packages/operator-core/lib/schema-consumer.ts',
+      reason: 'migration-dependency-fence' as const,
+      detail:
+        'deferred because this path shares work-item attribution with a reservation-blocked migration at ' +
+        'libs/papercusp/libs/db/sql/1234-unreserved.sql',
+      blockingMigrations: ['libs/papercusp/libs/db/sql/1234-unreserved.sql'],
+      blockingAgents: ['su-migration-author'],
+      blockingWorkItems: ['WI-777'],
+    };
+    const deferred = (skippedPaths: StageInput['gitSync']['skippedPaths'], path: string) =>
+      input({
+        dirtyUncommitted: true,
+        input: { path },
+        gitSync: { ...HEALTHY_GIT_SYNC, syncAgeMs: 120_000, skippedPaths },
+      });
+
+    it('names the fence, the blocking migration, its author and work-item, and never advertises git-sync:run', () => {
+      const s = computeStages(deferred([fenced], fenced.path));
+      const committed = stage(s, 'committed');
+      expect(committed).toMatchObject({ position: 'pending', health: 'stalled' });
+      expect(committed.detail).toMatch(/migration dependency fence/);
+      expect(committed.detail).toContain('libs/papercusp/libs/db/sql/1234-unreserved.sql');
+      expect(committed.detail).toContain('su-migration-author');
+      expect(committed.detail).toContain('WI-777');
+      expect(committed.lever).toContain('libs/papercusp/libs/db/sql/1234-unreserved.sql');
+      expect(committed.lever).not.toMatch(/git-sync:run/);
+
+      const { blockedOn, nextAction } = deriveBlocker(s);
+      expect(blockedOn).toBe('committed');
+      expect(nextAction).not.toMatch(/git-sync:run/);
+      expect(nextAction).toContain('su-migration-author');
+    });
+
+    it('matches a submodule-scoped reservation deferral against the superproject-relative path', () => {
+      const reservation = {
+        scope: 'libs/papercusp',
+        path: 'libs/db/sql/1234-unreserved.sql',
+        reason: 'migration-reservation' as const,
+        detail: 'no reservation row for 1234',
+      };
+      const s = computeStages(deferred([reservation], 'libs/papercusp/libs/db/sql/1234-unreserved.sql'));
+      const committed = stage(s, 'committed');
+      expect(committed.detail).toContain('no reservation row for 1234');
+      expect(committed.lever).toMatch(/next-migration\.mjs/);
+      expect(committed.lever).not.toMatch(/git-sync:run/);
+    });
+
+    it('names the lock holder when a live edit lock deferred the path', () => {
+      const lock = { scope: 'superproject', path: 'apps/operator/lib/x.ts', owner: 'su-holder', intent: 'refactor x' };
+      const s = computeStages(deferred([lock], 'apps/operator/lib/x.ts'));
+      const committed = stage(s, 'committed');
+      expect(committed.detail).toContain('su-holder');
+      expect(committed.detail).toContain('refactor x');
+      expect(committed.lever).not.toMatch(/git-sync:run/);
+    });
+
+    it('keeps git-sync:run as the lever when the deferral is for a DIFFERENT path', () => {
+      // Control: the match is per path. A fence elsewhere in the tree must not hide the real lever.
+      const s = computeStages(deferred([fenced], 'packages/operator-core/lib/unrelated.ts'));
+      expect(stage(s, 'committed').lever).toMatch(/^git-sync:run/);
+      expect(deriveBlocker(s).nextAction).toMatch(/^git-sync:run/);
+    });
+
+    it('ignores a recorded deferral once the path is no longer dirty', () => {
+      const s = computeStages(input({ input: { path: fenced.path }, gitSync: { ...HEALTHY_GIT_SYNC, skippedPaths: [fenced] } }));
+      expect(stage(s, 'committed')).toMatchObject({ position: 'past', detail: null, lever: null });
+    });
+  });
+
   it('EI-21175951870654462: a fresh-invocation route is past serving with no restart blocker', () => {
     const runtime = classifyRuntimeOwner('apps/operator/lib/release/green-checkpoint.ts')!;
     const serving = evaluateServing({

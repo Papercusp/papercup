@@ -77,6 +77,16 @@
 set -uo pipefail
 
 MAX_AGE_SECS="${TESTVM_REAPER_MAX_AGE_SECS:-21600}"
+# KEEP LEASE (WI-10006429): a deliberate long run (e.g. a multi-hour restore
+# rehearsal on an HDD) would otherwise be reaped at MAX_AGE_SECS mid-run. Write
+# the epoch-seconds "keep until" time into $KEEP_DIR/<instance> and the reaper
+# skips that ONE instance until then. A lease further out than MAX_KEEP_SECS is
+# IGNORED (logged), so a typo or a forgotten far-future lease cannot pin a VM
+# forever; an expired lease is simply ignored. Example (12h):
+#   mkdir -p ~/.local/state/papercusp/testvm-keep
+#   echo $(( $(date +%s) + 43200 )) > ~/.local/state/papercusp/testvm-keep/<instance>
+KEEP_DIR="${TESTVM_REAPER_KEEP_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/papercusp/testvm-keep}"
+MAX_KEEP_SECS="${TESTVM_REAPER_MAX_KEEP_SECS:-172800}"
 DRY_RUN="${TESTVM_REAPER_DRY_RUN:-0}"
 VMCTL_TIMEOUT="${TESTVM_REAPER_VMCTL_TIMEOUT:-90}"
 
@@ -290,13 +300,31 @@ do_reap() {
 # ── main ─────────────────────────────────────────────────────────────────
 # Wrapped so this file can be `source`d (functions only, no sweep) by a
 # selftest — see reap-stale-testvms.selftest.sh.
+# keep_lease_state <instance> [now-epoch]
+#   prints the lease's until-epoch and returns 0 when a valid lease holds the VM;
+#   returns 1 when there is no usable lease (missing / unreadable / expired);
+#   returns 2 when a lease exists but is IGNORED (beyond MAX_KEEP_SECS, or the
+#   instance name is not a plain file name).
+keep_lease_state() {
+    local name="$1" now="${2:-$(date +%s)}" f lease_until
+    case "$name" in ''|*/*|.*) return 2 ;; esac
+    f="$KEEP_DIR/$name"
+    [ -f "$f" ] && [ -r "$f" ] || return 1
+    lease_until=$(head -c 64 "$f" | tr -dc '0-9' | head -c 12)
+    [ -n "$lease_until" ] || return 2
+    [ "$lease_until" -gt "$now" ] || return 1
+    [ $(( lease_until - now )) -le "$MAX_KEEP_SECS" ] || { echo "$lease_until"; return 2; }
+    echo "$lease_until"
+    return 0
+}
+
 main() {
     if any_orchestrator_alive; then
         log "a federation orchestrator script is live — skipping this sweep entirely (may legitimately hold VMs past the age threshold)"
         return 0
     fi
 
-    local checked=0 reaped=0 skipped_young=0
+    local checked=0 reaped=0 skipped_young=0 skipped_kept=0
 
     while IFS= read -r pid; do
         [ -z "$pid" ] && continue
@@ -313,12 +341,22 @@ main() {
             continue
         fi
 
+        local lease_until lrc
+        lease_until=$(keep_lease_state "$name"); lrc=$?
+        if [ "$lrc" -eq 0 ]; then
+            log "SKIP $name (pid=$pid, running=${et}s) — keep lease until $(date -d "@$lease_until" -Iseconds) ($KEEP_DIR/$name)"
+            skipped_kept=$(( skipped_kept + 1 ))
+            continue
+        elif [ "$lrc" -eq 2 ]; then
+            log "IGNORED keep lease for $name ($KEEP_DIR/$name): unreadable or beyond max ${MAX_KEEP_SECS}s"
+        fi
+
         log "REAP candidate: $name (pid=$pid, running=${et}s >= ${MAX_AGE_SECS}s, no live orchestrator)"
         do_reap "$pid" "$name"
         reaped=$(( reaped + 1 ))
     done < <(candidate_vm_pids)
 
-    log "Summary: checked=$checked reaped=$reaped skipped_young=$skipped_young max_age_secs=$MAX_AGE_SECS"
+    log "Summary: checked=$checked reaped=$reaped skipped_young=$skipped_young skipped_kept=$skipped_kept max_age_secs=$MAX_AGE_SECS"
 }
 
 # Only run the sweep when EXECUTED directly — a selftest sources this file to

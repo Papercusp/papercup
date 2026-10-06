@@ -4,9 +4,11 @@
  * conformance check that separates ADAPTER defects from engine weakness.
  *
  * Scoring lives in fair-comparison.ts and is pure. This file holds what talks to
- * the outside world: wrapping the 2026-10-02 `EngineArm`s (rg, GitNexus,
- * codebase-memory — reused rather than re-written), classifying how a query
- * failed, and writing the micro repo to disk.
+ * the outside world: wrapping a 2026-10-02 `EngineArm` (rg, reused rather than
+ * re-written), classifying how a query failed, and writing the micro repo to
+ * disk. GitNexus and codebase-memory have their own adapters in
+ * fair-comparison-engines.ts (D-015): their 2026-10-02 arms cap answers and
+ * never receive anchorFile or depth.
  *
  * A failed query is never an empty answer. D-011 requires declined, crashed,
  * timed-out and stale-index outcomes to be reported apart from wrong answers, so
@@ -18,7 +20,8 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { CorpusCase } from './acceptance-corpus';
 import type { EngineArm, PhaseCost } from './engine-comparison';
-import type { AnswerKey, AnswerStatus, ArmAnswer, ArmCapabilities, CaseScore, FairCase, OutcomeClass } from './fair-comparison';
+import { createRgBaselineArm, type ArmDeps } from './engine-comparison-arms';
+import type { AnswerKey, AnswerStatus, ArmAnswer, ArmCapabilities, CaseScore, FairCase, FairIntent, OutcomeClass } from './fair-comparison';
 import { scoreCase } from './fair-comparison';
 import { MICRO_REPO_FILES } from './fair-comparison-micro-repo';
 
@@ -123,6 +126,18 @@ export function fromEngineArm(engine: EngineArm, capabilities: ArmCapabilities, 
     ask: (kase) => engine.query(toCorpusCase(kase)),
     now,
   });
+}
+
+/**
+ * The rg baseline's intents: what scripted grep can be asked. It has no symbol
+ * table, so definition, references and impact are not declared.
+ */
+export const RG_INTENTS: readonly FairIntent[] = ['callers', 'callees', 'symbol-search', 'text-search'];
+
+/** The 2026-10-02 scripted-rg baseline as a fair arm. */
+export function createRgFairArm(treeRoot: string, deps: ArmDeps, rgBin?: string): FairArm {
+  const engine = createRgBaselineArm(treeRoot, deps, ...(rgBin ? [rgBin] : []));
+  return fromEngineArm(engine, { armId: 'rg', version: engine.version, intents: RG_INTENTS, licence: 'permissive' });
 }
 
 export interface AdapterDefect {

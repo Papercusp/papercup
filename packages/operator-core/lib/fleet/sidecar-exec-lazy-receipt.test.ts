@@ -21,10 +21,12 @@ import { join } from 'node:path';
 
 import type { AdmissionContext } from '../resource-governor/admission';
 import type { GovernedExecution } from '../resource-governor/execution';
+import { buildGitBatchInvocation, isReadOnlyGitBatchExec } from '../git-batch';
 import {
   execProcess,
   gitSubcommandOf,
   qualifiesForLazyReceipt,
+  qualifiesForLazyReceiptProcess,
   SIDECAR_LAZY_RECEIPT_DELAY_MS,
   sidecarReceiptMetadata,
   type ExecParams,
@@ -95,6 +97,32 @@ describe('gitSubcommandOf / qualifiesForLazyReceipt (pure)', () => {
   it('exposes a delay long enough that a ~4 ms read never mints but a network ls-remote does', () => {
     expect(SIDECAR_LAZY_RECEIPT_DELAY_MS).toBeGreaterThanOrEqual(250);
     expect(SIDECAR_LAZY_RECEIPT_DELAY_MS).toBeLessThanOrEqual(2_000);
+  });
+});
+
+describe('verified dev-deploy Git batch classification', () => {
+  const safeBatch = buildGitBatchInvocation([
+    { repo: '/repo', args: ['log', '-1', '--format=%H%n%ct%n%s', 'main^{commit}'] },
+    { repo: '/repo', args: ['rev-list', '--count', 'main..ready'] },
+  ], 'dev-deploy-state');
+
+  it('accepts only the generated read-only log/rev-list batch shape', () => {
+    expect(isReadOnlyGitBatchExec({ command: 'sh', args: safeBatch.args })).toBe(true);
+    expect(qualifiesForLazyReceiptProcess({ command: 'sh', args: safeBatch.args })).toBe(true);
+    expect(qualifiesForLazyReceiptProcess({ command: 'sh', args: ['-c', 'echo safe'] })).toBe(false);
+
+    const altered = [...safeBatch.args];
+    altered[1] += '; touch /tmp/sidecar-batch-must-not-run';
+    expect(isReadOnlyGitBatchExec({ command: 'sh', args: altered })).toBe(false);
+  });
+
+  it('records verified batches as read-only Git in receipt metadata', () => {
+    expect(sidecarReceiptMetadata({ command: 'sh', args: safeBatch.args })).toEqual({
+      processKind: 'sidecar-exec',
+      command: 'sh',
+      gitSubcommand: 'batch',
+      readOnlyGit: true,
+    });
   });
 });
 
@@ -186,6 +214,26 @@ describe('execProcess lazy receipt (real child processes)', () => {
 
     expect(result.code).toBe(0);
     expect(result.stdout).toContain('args=rev-parse HEAD');
+    expect(begin).not.toHaveBeenCalled();
+    expect(finish).not.toHaveBeenCalled();
+    expect(cancel).not.toHaveBeenCalled();
+  });
+
+  it('a fast verified read-only dev-deploy batch also avoids eager admission', async () => {
+    const { execution, finish, cancel } = receiptSpies();
+    const begin = vi.fn(async () => execution);
+    const batch = buildGitBatchInvocation([
+      { repo: '/repo', args: ['log', '-1', '--format=%H%n%ct%n%s', 'HEAD'] },
+    ], 'dev-deploy-state');
+    const result = await execProcess({
+      command: 'sh',
+      args: batch.args,
+      env: { PATH: `${bin}:${process.env.PATH ?? ''}` },
+      timeoutMs: 20_000,
+    }, { beginExecution: begin, lazyReceiptMs: 5_000 });
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain('args=-C /repo log -1 --format=%H%n%ct%n%s HEAD');
     expect(begin).not.toHaveBeenCalled();
     expect(finish).not.toHaveBeenCalled();
     expect(cancel).not.toHaveBeenCalled();

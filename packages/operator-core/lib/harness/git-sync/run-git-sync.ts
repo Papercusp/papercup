@@ -1273,7 +1273,21 @@ export interface GitSyncLockHolding {
 export type GitSyncSkippedPath =
   | { scope: string; path: string; owner: string; intent: string }
   | { scope: string; path: string; reason: 'migration-reservation'; detail: string }
-  | { scope: string; path: string; reason: 'migration-dependency-fence'; detail: string };
+  | {
+      scope: string;
+      path: string;
+      reason: 'migration-dependency-fence';
+      detail: string;
+      /**
+       * WI-10006493: the structured provenance of the deferral, so a reader such as
+       * dev:pipeline_position can name the migration that is blocking this path and
+       * who owns it, instead of telling the caller to force a sync that defers the
+       * path again. Each is a superproject-relative path, agent id or work-item id.
+       */
+      blockingMigrations?: string[];
+      blockingAgents?: string[];
+      blockingWorkItems?: string[];
+    };
 
 /**
  * Keep a superproject edit from outrunning a migration quarantined in one of its
@@ -1329,10 +1343,15 @@ export function migrationDependencyFenceSkips(
   }
 
   const rootAttributions = mapFor('');
-  const migrationLocations = refusedMigrations
-    .map((migration) => migration.scope + '/' + migration.path)
-    .slice(0, 3)
-    .join(', ');
+  // Superproject-relative, so a reader can match them against the paths it is asked about.
+  const blockingMigrations = [
+    ...new Set(
+      refusedMigrations.map((migration) =>
+        migration.scope && migration.scope !== 'superproject' ? migration.scope + '/' + migration.path : migration.path,
+      ),
+    ),
+  ];
+  const migrationLocations = blockingMigrations.slice(0, 3).join(', ');
   const details = (path: string): GitSyncSkippedPath => ({
     scope: 'superproject',
     path,
@@ -1340,6 +1359,9 @@ export function migrationDependencyFenceSkips(
     detail: unknownMigration
       ? 'deferred because a reservation-blocked migration could not be attributed; holding this path until its dependency is known'
       : 'deferred because this path shares work-item attribution with a reservation-blocked migration at ' + migrationLocations,
+    blockingMigrations,
+    blockingAgents: [...blockedAgents],
+    blockingWorkItems: [...blockedWorkItems],
   });
 
   return [...new Set(dirtySuperprojectPaths)]
@@ -3805,6 +3827,10 @@ export async function guardStagedIndexBeforeCommit(opts: {
   scope: string;
   refreshLiveLockHoldings?: () => Promise<GitSyncLockHolding[]>;
   readText: (relPath: string) => Promise<string | null>;
+  /** Paths excluded before staging (content/deletion/size guards, explicit exclusions, and package closures). */
+  excludedDependencies?: readonly string[];
+  /** Live-lock/cohort paths remain infectious even when an older copy exists in HEAD. */
+  alwaysInfectiousDependencies?: readonly string[];
   log: (message: string) => void;
 }): Promise<PostStageGuardResult> {
   const { runGit, repoPath, scope, log } = opts;
@@ -3888,21 +3914,37 @@ export async function guardStagedIndexBeforeCommit(opts: {
   }
 
   const held = [...new Set([...lateLocked, ...drifted])];
+  const packageClosure =
+    held.length > 0 ? await expandCargoPackageLiveLockExclusions(staged, held, opts.readText) : { paths: [], packages: [] };
+  // Re-scan the actual index immediately before commit, not only the earlier dirty
+  // census. New untracked importers can arrive while the lock refresh and content
+  // guards run, then enter through the later `git add -A`; they must stay with every
+  // dependency this commit is excluding.
+  const alwaysInfectious = new Set([
+    ...(opts.alwaysInfectiousDependencies ?? []),
+    ...lateLocked,
+    ...drifted,
+    ...packageClosure.paths,
+  ]);
+  const excludedDependencies = [...new Set([...(opts.excludedDependencies ?? []), ...alwaysInfectious])];
+  const importerOffenders = excludedDependencies.length > 0
+    ? await detectQuarantineImporters({
+        readText: opts.readText,
+        dirtyFiles: staged,
+        alreadyQuarantined: excludedDependencies,
+        isResolvableAtHead: async (path) => {
+          if (alwaysInfectious.has(path)) return false;
+          return isModuleResolvableAtHead(runGit, repoPath, path, log);
+        },
+        exclusionLabel: 'post-stage exclusion',
+        log,
+      })
+    : [];
+  const importers = importerOffenders.map((offender) => offender.file).filter((file) => stagedSet.has(file));
+  const pathsToUnstage = [...new Set([...excludedDependencies, ...importers])].filter((path) => stagedSet.has(path));
   let unstagedPaths: string[] = [];
-  if (held.length > 0) {
-    const packageClosure = await expandCargoPackageLiveLockExclusions(staged, held, opts.readText);
-    const atomicHeld = [...new Set([...held, ...packageClosure.paths])];
-    // Same conservative importer rule as the pre-stage live-lock exclusion: the HEAD copy of a
-    // held module may lack the symbols a staged importer now uses, so hold every dirty importer.
-    const importerOffenders = await detectQuarantineImporters({
-      readText: opts.readText,
-      dirtyFiles: staged,
-      alreadyQuarantined: atomicHeld,
-      exclusionLabel: 'post-stage late-lock/drift hold',
-      log,
-    });
-    const importers = importerOffenders.map((offender) => offender.file).filter((file) => stagedSet.has(file));
-    const unstage = await unstagePreStagedProtectedPaths(runGit, repoPath, [...atomicHeld, ...importers], log);
+  if (pathsToUnstage.length > 0) {
+    const unstage = await unstagePreStagedProtectedPaths(runGit, repoPath, pathsToUnstage, log);
     if (!unstage.ok) return { ok: false, error: `post-stage guard ${unstage.error}` };
     log(
       `[git-sync] ${scope}: post-stage guard held back ${unstage.paths.length} staged path(s) from this commit — ` +
@@ -4795,6 +4837,12 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
         scope: o.scope,
         refreshLiveLockHoldings: o.refreshLiveLockHoldings,
         readText: (rel) => o.readText(repoPath, rel),
+        excludedDependencies: excludePaths,
+        alwaysInfectiousDependencies: [
+          ...protectedHoldings.map((holding) => holding.path),
+          ...atomicExclusions.paths,
+          ...cargoPackageClosure.paths,
+        ],
         log: o.log,
       });
       if (guard.ok) {

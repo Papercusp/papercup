@@ -414,6 +414,8 @@ export function timeoutForTool(toolName: string, callArgs?: (Record<string, unkn
  * staging/release recovery, so it must provide the same bounded absorption.
  */
 export function isLoopPressureShed(error: any): boolean;
+/** A serving-generation mismatch is a server-side pre-dispatch rejection. */
+export function isStaleToolContractFailure(error: any): boolean;
 /**
  * Whether a connection was rejected because this bearer is invalid for the
  * selected operator. Only this typed refusal may advance to another implicit
@@ -524,13 +526,18 @@ export function formatOperatorConnectFailure(operatorUrl: any, error: any): stri
  * session. A failed replay client is closed before the error is surfaced.
  * @param {any} client
  * @param {any} params
- * @param {{reconnect?: () => Promise<any>, maxAttempts?: number, timeoutMs?: number, replayProof?: unknown}} [options]
+ * @param {{reconnect?: () => Promise<any>, maxAttempts?: number, timeoutMs?: number, replayProof?: unknown, onStaleToolContract?: (context: {client: any, params: any, error: unknown}) => Promise<any>}} [options]
  */
-export function callToolWithReplayRecovery(client: any, params: any, { reconnect, maxAttempts, timeoutMs, replayProof, }?: {
+export function callToolWithReplayRecovery(client: any, params: any, { reconnect, maxAttempts, timeoutMs, replayProof, onStaleToolContract, }?: {
     reconnect?: () => Promise<any>;
     maxAttempts?: number;
     timeoutMs?: number;
     replayProof?: unknown;
+    onStaleToolContract?: (context: {
+        client: any;
+        params: any;
+        error: unknown;
+    }) => Promise<any>;
 }): Promise<{
     client: any;
     result: any;
@@ -754,6 +761,25 @@ export function listAllTools(client: {
     rand?: () => number;
     retryJitterMs?: number;
 }): Promise<any[]>;
+/**
+ * Refresh a stale call's catalog entry and prepare one exact retry. A changed
+ * or missing input schema is surfaced for an explicit caller retry instead of
+ * dispatching arguments against a contract the user did not see.
+ * @param {{client: any, toolName: string, previousTool: any, callArgs: any, idempotencyKey: string, listTools?: (client: any) => Promise<any[]>, error?: unknown}} options
+ * @returns {Promise<{tool: any, params: any}>}
+ */
+export function refreshToolCallAfterStaleContract({ client, toolName, previousTool, callArgs, idempotencyKey, listTools, error, }?: {
+    client: any;
+    toolName: string;
+    previousTool: any;
+    callArgs: any;
+    idempotencyKey: string;
+    listTools?: (client: any) => Promise<any[]>;
+    error?: unknown;
+}): Promise<{
+    tool: any;
+    params: any;
+}>;
 /** The live stdout delivery-failure probe (injectable in printResult for tests).
  *  Node SWALLOWS EPIPE on process.stdout by design: when the consumer of a
  *  captured/piped stdout dies mid-invocation (a wake-harness capture, `| head`),

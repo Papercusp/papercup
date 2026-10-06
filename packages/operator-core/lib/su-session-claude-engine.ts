@@ -252,6 +252,10 @@ export function startClaudeSuEngine(
   let lastFrameAt = Date.now();
   let stallWatch: ManagedHandle | undefined;
   let stallReported = false;
+  // Permission requests whose approval card is open. While one is open the turn
+  // is waiting on the owner, not stalled: Claude sends no frames until it gets
+  // an answer (P-028 probe 13 reported a false 114s stall under an open card).
+  let awaitingOwnerAnswers = 0;
   function armStallWatch() {
     lastFrameAt = Date.now();
     stallReported = false;
@@ -263,7 +267,7 @@ export function startClaudeSuEngine(
     // "turn went quiet" event to subscribe to: silence is the signal.
     stallWatch ??= managedSetInterval('su-session-claude-turn-stall',
       Math.max(50, Math.round(turnStallTimeoutMs / 3)), () => {
-        if (closed || stallReported || !activeInputUuid) return;
+        if (closed || stallReported || !activeInputUuid || awaitingOwnerAnswers > 0) return;
         const idleMs = Date.now() - lastFrameAt;
         if (idleMs < turnStallTimeoutMs) return;
         stallReported = true;
@@ -419,7 +423,12 @@ export function startClaudeSuEngine(
         && !permission.matchedAskRule) {
         return Promise.resolve({ behavior: 'allow', updatedInput: input });
       }
-      return cards.handleClaude(toolName, input, activeOwnerTurnId, permission);
+      // The stall clock restarts once the owner answers.
+      awaitingOwnerAnswers += 1;
+      return cards.handleClaude(toolName, input, activeOwnerTurnId, permission).finally(() => {
+        awaitingOwnerAnswers -= 1;
+        lastFrameAt = Date.now();
+      });
     },
     disallowedTools,
     ...(model.model ? { model: model.model } : {}),

@@ -3734,9 +3734,10 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
 
       stage = 'pickers';
       // Every row comes from the operator's own inventory; the default row is
-      // named and an unsupported tier stays visible with its reason.
+      // named and an unsupported tier stays visible with its reason. On this
+      // live conversation the default row keeps its running model (P-026).
       const frames = {
-        model: await picker(pane, 'm', 'Model', ['Default (',
+        model: await picker(pane, 'm', 'Model', ['Keep the current model',
           ...config.effectiveTiers.map((tier) => `${tier.name} — ${tier.spec}`),
           ...disabledTiers.map((tier) => `${tier.name} — ${tier.spec} — not settable`),
           ...(disabledTiers.length > 0 ? ['not executable by Agent Chat loop'] : [])]),
@@ -3747,20 +3748,30 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       };
       for (const frame of Object.values(frames)) expect(frame).not.toContain(readSuperuserToken());
 
-      stage = 'restart-required-pick';
+      // D-025 (P-026): a model pick on a live conversation rides on its next
+      // turn. It opens no new-session route and launches nothing; reopening
+      // the picker marks the picked tier for the next turn (or as current
+      // when the session already runs it).
+      stage = 'next-turn-pick';
       const executable = config.effectiveTiers.findIndex((tier) => tier.loopCapability?.executable !== false);
       expect(executable).toBeGreaterThanOrEqual(0);
+      const picked = config.effectiveTiers[executable]!;
       const before = launches();
       pane.write('m');
       await pane.waitFor('Model — Enter select');
       pane.write('j'.repeat(executable + 1));
       pane.enter();
-      await pane.waitFor('New session — 1 Context');
-      await pane.waitFor('Applies to a new session');
-      const routeFrame = pane.screen();
+      await pane.waitForGone('Model — Enter select');
       expect(launches()).toBe(before);
+      pane.write('m');
+      await pane.waitFor('Model — Enter select');
+      const routeFrame = pane.screen();
+      const pickedRow = `${picked.name} — ${picked.spec}`;
+      expect(routeFrame.includes(`${pickedRow} · next turn`) || routeFrame.includes(`${pickedRow} · current`),
+        routeFrame).toBe(true);
+      expect(routeFrame).not.toContain('New session — 1 Context');
       pane.escape();
-      await pane.waitForGone('New session');
+      await pane.waitForGone('Model — Enter select');
       await pane.waitFor(prompt);
       // Nothing launched; the running conversation keeps its one SU session.
       expect(launches()).toBe(before);
@@ -4473,7 +4484,9 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       expect(md).not.toContain('## Parity heading');
       expect(md).not.toContain('`inline code`');
 
-      // Tool output: a three-line preview, Ctrl+R shows it all and hides it again.
+      // Tool output: a finished call collapses to one summary line, the way
+      // Claude Code prints `⎿ Read 8 lines` (P-025); Ctrl+R shows it all and
+      // hides it again.
       stage = 'tool-output';
       scriptedEngine.mode = 'success';
       scriptedEngine.successText = `P4 tool reply ${tag}`;
@@ -4481,12 +4494,11 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       pane.write(`read ${tag}`);
       pane.enter();
       await pane.waitFor(scriptedEngine.successText, { timeoutMs: 60_000 });
-      await pane.waitFor(`⎿ tool row 1 ${tag}`);
-      expect(pane.screen()).toContain(`tool row 3 ${tag}`);
-      expect(pane.screen()).not.toContain(`tool row 8 ${tag}`);
-      expect(pane.screen()).toContain('+5 lines (Ctrl+R to expand)');
+      await pane.waitFor('Read 8 lines  (Ctrl+R to expand)');
+      expect(pane.screen()).not.toContain(`tool row 1 ${tag}`);
       pane.write('\u0012');
       await pane.waitFor(`tool row 8 ${tag}`);
+      expect(pane.screen()).toContain(`⎿ tool row 1 ${tag}`);
       pane.write('\u0012');
       await pane.waitForGone(`tool row 8 ${tag}`);
 
@@ -4573,6 +4585,9 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       pane.write(`explain ${tag}`);
       pane.enter();
       await pane.waitFor(scriptedEngine.successText, { timeoutMs: 60_000 });
+      // The finished call is one summary line (P-025); Ctrl+R shows its output.
+      await pane.waitFor('Read 1 line');
+      pane.write('\u0012');
       await pane.waitFor(`P13 tool output ${tag}`);
       const frame = pane.screen();
       const lines = frame.split('\n');
@@ -4709,16 +4724,26 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       pane.write(`read ${tag}`);
       pane.enter();
       await pane.waitFor(scriptedEngine.successText, { timeoutMs: 60_000 });
+      // The finished call is one summary line (P-025); Ctrl+R shows the output
+      // whose redraw this stage checks, and hides it again before the card.
+      // The summary counts the numbered file lines (tool_display.rs
+      // `is_numbered_line`), so the trailing coloured line is not one of them.
+      await pane.waitFor('Read 2 lines');
+      pane.write('\u0012');
       await pane.waitFor(`const p011 = require('node:test'); // ${tag}`);
       incremental = pane.screen();
       // The tab is expanded where the text enters, and no control character
       // other than the terminal's own escape sequences ever reaches the PTY.
-      expect(incremental).toMatch(new RegExp(`⎿ {6}1 {2}const p011 = require\\('node:test'\\); // ${tag}`));
+      // P-025: the expanded output drops the lines' shared indent, so the
+      // line number's padding is not asserted, only the expanded tab.
+      expect(incremental).toMatch(new RegExp(`⎿ +1 {2}const p011 = require\\('node:test'\\); // ${tag}`));
       expect(incremental).toContain('coloured ok');
       expect(incremental).not.toContain('[32m');
       expect(pane.rawSince(rawStart)).not.toContain('\t');
       clean = await cleanRepaint();
       expect(incremental.split('\n')).toEqual(clean.split('\n'));
+      pane.write('\u0012');
+      await pane.waitForGone(`const p011 = require('node:test'); // ${tag}`);
 
       // The approval card draws over the tool preview above. Its arguments
       // carry a tab and a newline, the characters that shifted P-005's card.
@@ -4730,7 +4755,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       ];
       pane.write(`approve ${tag}`);
       pane.enter();
-      await pane.waitFor('Approve', { timeoutMs: 60_000 });
+      await pane.waitFor('Do you want to run this command?', { timeoutMs: 60_000 });
       await pane.waitFor(`P11-${tag}`);
       await new Promise((resolve) => setTimeout(resolve, 500));
       incremental = pane.screen();
@@ -5097,6 +5122,12 @@ function installedManifest(): Record<string, unknown> {
 /** A real engine's approval for the SU's own papercusp-su call (D-021). */
 function isSuToolApprovalCard(card: { prompt: string }): boolean {
   return SU_APPROVAL_HEADLINE.test(card.prompt.split('\n')[0] ?? '');
+}
+
+/** D-028: an approval card names its tool call in `approval.title` (a command
+ * is `Bash(<command>)`) above the question, so match the title and the prompt. */
+function cardMentions(card: { prompt: string; approval?: { title: string } | null }, text: string) {
+  return card.prompt.includes(text) || (card.approval?.title.includes(text) ?? false);
 }
 
 function pendingNativeCards(events: SuSessionEvent[] = scriptedEngine.events) {
@@ -6116,10 +6147,11 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-007 conversation editor (
     if (!peer) throw new Error('The approval fixture must raise two distinct requests');
     const focused = scriptedEngine.approvalRequests.find((r) => r.tag === focusedTag);
     if (!focused) throw new Error(`No approval request tagged ${focusedTag}`);
-    // Options are exactly Approve(1)/Decline(2): the non-question branch passes
-    // that pair with no free-text escape hatch appended.
-    await pane.waitFor('Approve');
-    await pane.waitFor('Decline');
+    // Options are exactly Yes(1)/No(2) (D-028): Claude offers no remembered
+    // rule for these calls, so there is no "don't ask again" row and no
+    // free-text escape hatch is appended.
+    await pane.waitFor('1. Yes');
+    await pane.waitFor('2. No, and tell Claude');
     expect(scriptedEngine.approvalVerdicts).toHaveLength(0);
     return { focused, peer };
   };
@@ -6137,7 +6169,7 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-007 conversation editor (
       expect(scriptedEngine.sdkPermissions).toEqual([{ mode: 'default', bypass: undefined }]);
       expect(launchRequests[0]).toMatchObject({ account: null });
       expect((launchRequests[0] as { mode?: unknown }).mode ?? null).toBeNull();
-      const peerCard = pendingNativeCards().find((card) => card.prompt.includes(String(peer.input.command)));
+      const peerCard = pendingNativeCards().find((card) => cardMentions(card, String(peer.input.command)));
       expect(peerCard, pane.screen()).toBeDefined();
 
       pane.write('1'); // Approve
@@ -6224,7 +6256,7 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-007 conversation editor (
     try {
       const { focused, peer } = await raiseTwoApprovals(pane, 'PUI approval collapse probe');
       const peerCommand = String(peer.input.command);
-      const peerCard = pendingNativeCards().find((card) => card.prompt.includes(peerCommand));
+      const peerCard = pendingNativeCards().find((card) => cardMentions(card, peerCommand));
       expect(peerCard, pane.screen()).toBeDefined();
       const before = pane.rawSince(0).length;
 
@@ -6241,7 +6273,7 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-007 conversation editor (
           interval: 50,
         });
         await pane.waitFor(peerCommand);
-        await pane.waitFor('Decline');
+        await pane.waitFor('2. No, and tell Claude');
         // Keep holding well past the moment the peer became answerable.
         await new Promise((resolve) => setTimeout(resolve, 1_000));
       } finally {
@@ -6323,7 +6355,7 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-007 conversation editor (
       expect(scriptedEngine.sdkPermissions).toEqual([{ mode: 'default', bypass: undefined }]);
       expect(launchRequests[0]).toMatchObject({ account: null });
       expect((launchRequests[0] as { mode?: unknown }).mode ?? null).toBeNull();
-      const peerCard = pendingNativeCards().find((card) => card.prompt.includes(String(peer.input.command)));
+      const peerCard = pendingNativeCards().find((card) => cardMentions(card, String(peer.input.command)));
       expect(peerCard, pane.screen()).toBeDefined();
 
       pane.write('2'); // Decline
@@ -7178,13 +7210,15 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         if (approvalCommand?.type !== 'owner_turn') {
           throw new Error('Approval probe lacks a durable owner-turn receipt');
         }
-        const approvalLabel = scriptedEngine.backend === 'omp' ? 'Confirm' : 'Approve';
+        // D-028: every engine's tool approval answers 1 Yes / 2 Yes, and don't
+        // ask again … / 3 No, and tell … what to do instead.
+        const approvalLabel = 'Yes';
         const pendingCards = () => pendingNativeCards(first.events);
         await vi.waitFor(
-          () => expect(pendingCards().some((card) => card.prompt.includes(approvalFixturePath))).toBe(true),
+          () => expect(pendingCards().some((card) => cardMentions(card, approvalFixturePath))).toBe(true),
           { timeout: 120_000, interval: 100 },
         );
-        const targetApprovalCard = pendingCards().find((card) => card.prompt.includes(approvalFixturePath));
+        const targetApprovalCard = pendingCards().find((card) => cardMentions(card, approvalFixturePath));
         if (!targetApprovalCard) throw new Error('Native tool approval card disappeared before it could be answered');
         approvalCard = targetApprovalCard;
         if (approvalCard.presentation?.kind !== 'radio' || !approvalCard.presentation.options) {
@@ -7193,7 +7227,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         const approvalIndex = approvalCard.presentation.options.findIndex((option) => option.label === approvalLabel);
         expect(approvalIndex).toBeGreaterThanOrEqual(0);
         await pane.waitFor(approvalCard.prompt.split('\n', 1)[0] ?? approvalCard.prompt);
-        await pane.waitFor(approvalLabel);
+        await pane.waitFor(`${approvalIndex + 1}. ${approvalLabel}`);
         frames.approval = pane.screen();
         const childCardReplies = () => first.responses.filter(({ path: responsePath }) =>
           responsePath.endsWith('/card-response'));

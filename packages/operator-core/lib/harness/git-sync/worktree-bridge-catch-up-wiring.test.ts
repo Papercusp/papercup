@@ -52,4 +52,15 @@ describe('WI-10003772: runWorktreeBridgeLeg runs the deferred-advance retry swee
     const sweep = functionBody(source, 'async function runWorktreeCatchUp(');
     expect(sweep).toMatch(/catchUpWorktreeToWatermark\(/);
   });
+
+  // WI-10006476 / plan agent-capacity-and-cost-gcp-2026-09-30 D-055: a member/hive
+  // content conflict must be persisted, not just returned. Both call sites pass the
+  // prior state read in the same SELECT, and the sweep writes the transition.
+  it('the sweep persists a conflicting divergence (D-055)', () => {
+    const sweep = functionBody(source, 'async function runWorktreeCatchUp(');
+    expect(sweep).toMatch(/nextWorktreeDivergence\(/);
+    expect(sweep).toMatch(/patchRoutineMetadata\([^)]*worktree_divergence/);
+    expect(source).toMatch(/metadata->'worktree_divergence' AS worktree_divergence/);
+    expect(source.match(/await runWorktreeCatchUp\(catchUpCtx,/g)?.length).toBe(2);
+  });
 });

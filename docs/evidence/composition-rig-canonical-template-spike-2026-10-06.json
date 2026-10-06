@@ -399,12 +399,12 @@
     "Parent source census remains124paths with104openUnknown; no finalD006, live-gate, deployed-main or shipment claim."
   ],
   "sourceActivationPreparation": {
-    "state": "revised exact preview1159049 routed for independent native BAR approval; amendment not applied; activation incomplete",
+    "state": "source plan ready; approved BAR2/audit3 and exact non-author-audited spec-quality prerequisite satisfied; P002 claimed but implementation not started",
     "sourcePlan": "composition-rig-canonical-schema-2026-10-06",
-    "subjectPlanRevision": 7,
+    "subjectPlanRevision": 8,
     "classRef": "plan-class-bugfix",
     "activationAudit": {
-      "seq": 2,
+      "seq": 3,
       "sourceRanges": [
         {
           "sourceKind": "codex",
@@ -413,12 +413,21 @@
           "toTurn": 19
         }
       ],
-      "sourceCoverageGap": "Audit2 now covers all20 indexed-compatible predecessor turns0–19 with gapTurns0/suppliedTurns20. Audit1's earlier16-head gap remains historical; audit2 underRead advisory retains19uncited turns and three candidates. Machine carry/wake and old fixture prose are not owner rig requirements."
+      "sourceCoverageGap": "Audit2 now covers all20 indexed-compatible predecessor turns0–19 with gapTurns0/suppliedTurns20. Audit1's earlier16-head gap remains historical; audit2 underRead advisory retains19uncited turns and three candidates. Machine carry/wake and old fixture prose are not owner rig requirements.",
+      "subjectPlanRevision": 8,
+      "subjectPlanContentHash": "cf20b8f6c449acf5a74e6d260a321d7bb1d622d70e7f20df8367046ef5c16a2c",
+      "sourceRefsResolved": 1,
+      "itemProvenance": {
+        "owner": 1,
+        "agentAdded": 2,
+        "unresolved": 0
+      },
+      "barSeed": "BAR2 unchanged; seven existing projections refreshed after guarded amendment"
     },
     "acceptanceRubric": {
       "ref": "acceptance-composition-rig-canonical-schema-2026-10-06",
-      "revision": 1,
-      "barSetHash": "9793533f0cd08ff6304ecfc9f9bbf28d3d06c1ef6279441234ea681e1537f1c8",
+      "revision": 2,
+      "barSetHash": "edd28c049d6b318f02e3c9030b0aa639e37bb3514779017f270f6ee5de8aa1f4",
       "barCount": 4,
       "projectionEdges": 7
     },
@@ -678,13 +687,34 @@
       "gradingIntegrity": "governing report-plan#D-009 permits mandatory standard automatic non-author grading-integrity reviewer/fallback and keeps executor allocation fixed.",
       "barAmendment": "Current canonical report-plan D-009 revision103 permits required native outside-lineage BAR-amendment review. Invoked exact immutable preview1158885 with live CAS rubric1/sourceplan7 and configured top expert rank claude/fable. The native router selected its standard independent fresh-reviewer fallback; no manual reviewer recruitment or executor expansion."
     },
-    "next": "Await the exact native consult reply recorded in nativeBarReview.resultAwait, then read the authenticated conversation answer/post and apply saved exact amendment only with actual approvalRef. An objection requires condition-preserving revision and another native preview. Refresh semantic source activation audit/spec-quality after approval, emit exact passing terminal draft, verify native non-author grading-integrity settlement, then plans:start. Original P002 remains unstarted.",
+    "next": "Resume claimed P002/WI-10006495 in the same existing source seat. Read current work-item checkpoint and source D-003/D-004 (D003's draft-status sentence is historical, current plan is ready). Replace private mini-DDL with the maintained current migration-keyed factory, preserve canonical parent/home/username seeds, HLC/authority/CDC/federation, scoped seed outbox effects, non-federated side-effect ledger, cleanup and extraDDL semantics. Ship meaningful conventional regression tests; P003 then verifies actual current consumer population and reconciles original WI10005142/WI10005120/parentcensus. No finalD006, shipment, new actor/fleet/runtime/model/account/carry or LIVE_GATE_OPS.",
     "qualityPreflight": {
       "verdict": "pass",
-      "specSetHash": "6c42a858d04431adb4f89e331b2087935a03cae52baf6c7f9e49d22390ab95cc",
-      "evidenceRef": "papercusp://scratch/papercusp-workspace/code:run/ecaa0f57-8fd7-4a74-81ac-960c736995c3/result-door-1791265518892-e702cf99.spill",
-      "status": "read-only snapshot; no terminal scorecard emission or settled grading-integrity audit",
-      "next": "Re-evaluate the exact current spec set after any approved amendment/audit refresh; emit that exact passing draft and verify native grading-integrity settlement."
+      "specSetHash": "ced991d69a01601ffff67d912d3a551761e4f5208dc06d106ee004704f0d9880",
+      "terminalCardId": "EI-25211326996945153",
+      "evidenceFingerprint": "546189427eb55b7c8a948cab51bafc0cfb7fefa8a7d66cadf437ae93fcd8ccbf",
+      "subjectRef": "spec-set:plan-class-bugfix:ced991d69a01601ffff67d912d3a551761e4f5208dc06d106ee004704f0d9880:62fa620fa49bdf23",
+      "status": "exact terminal card non-author grading-integrity passed",
+      "nativeAudit": {
+        "state": "passed",
+        "reservationKey": "grading-audit:EI-25211326996945153",
+        "reservedAt": "2026-10-06T06:43:18.311Z",
+        "targetedRepairResult": "skipped: another dispatcher already reserved this scorecard",
+        "resultAwait": {
+          "awaitId": 228041,
+          "event": "scorecard:grading-audit:EI-25211326996945153",
+          "timeoutSec": 900,
+          "onTimeout": "wake",
+          "status": "fired",
+          "deliveryId": 445027,
+          "payloadState": "passed",
+          "handled": "source turn; cancellation returned already_settled/delivered"
+        },
+        "auditIssueId": "EI-25211758595260315",
+        "auditor": "system:judge/su-a76557b0-d66d-4c0f-af77-ca0c55d4c667",
+        "auditedAt": "2026-10-06T06:50:12.329Z"
+      },
+      "next": "Prerequisite satisfied; retain exact source semantics, class policy and audit reference on implementation continuation."
     },
     "priorObjectionRef": "thread-post:1159007",
     "previewPost": "thread-post:1159049",
@@ -695,16 +725,47 @@
         "agent": "claude",
         "model": "fable"
       },
-      "state": "routed",
+      "state": "approved-and-applied",
       "conversationId": "conv-muwaebra-0000-13c11fdf3679467ab884dabf93af66a0",
       "resultAwait": {
         "awaitId": 227857,
         "event": "consult:reply:conv-muwaebra-0000-13c11fdf3679467ab884dabf93af66a0",
         "timeoutSec": 900,
-        "onTimeout": "wake"
+        "onTimeout": "wake",
+        "status": "fired",
+        "deliveryId": 444592,
+        "resultPostId": 1159089,
+        "handled": "same source turn; events:cancel returned already_settled/delivered"
       },
       "priorObjectionRef": "thread-post:1159007",
-      "scope": "required D-009 native outside-lineage review; no executor/model/account/carry configuration expansion"
+      "scope": "required D-009 native outside-lineage review; no executor/model/account/carry configuration expansion",
+      "approvalPostRef": "thread-post:1159089",
+      "approvalAuthor": "su-72412679-ba57-4dcd-8e48-a75b6a73bd76",
+      "applyReceipt": {
+        "idempotencyKey": "amend-e7fa608096712a71e2367486",
+        "rubricRevision": 2,
+        "barSetHash": "edd28c049d6b318f02e3c9030b0aa639e37bb3514779017f270f6ee5de8aa1f4",
+        "subjectPlanRevision": 8
+      }
+    },
+    "sourcePromotion": {
+      "result": "ready",
+      "lastReadPlanVersion": 10,
+      "operationalStartedAxis": "retired; no op_status start toggle",
+      "prerequisitesSatisfied": true,
+      "optionalCheckpointConsult": "recorded consulted:false override; existing bounded preflight/full conversation audit and two native review prerequisites were complete, no unresolved optional architecture question",
+      "items": [
+        {
+          "planItemId": "P-002",
+          "workItemId": "WI-10006495",
+          "claim": "coord:declare-intent claimed P002 for same source seat; no code edit yet"
+        },
+        {
+          "planItemId": "P-003",
+          "workItemId": "WI-10006496",
+          "stateAtRead": "blocked on P002"
+        }
+      ]
     }
   },
   "barAmendmentReviewHistory": [
@@ -1004,6 +1065,12 @@
   "receiptPortability": {
     "rootCause": "Authored receipt copied canonical test-run root verbatim, carrying a host-specific home path into a distributable repo artifact; existing identity-leak detector correctly quarantined it.",
     "fix": "Portable root placeholder with explicit provenance to authoritative native test-run identity; no guard exception.",
-    "verification": "Re-run registered DEFAULT_CONTENT_DETECTORS on this exact artifact with canonical repoPath; JSON readback must parse."
+    "verification": "JSON readback valid; registered secrets, identity-leak, nul-bytes and conflict-markers detectors each returned null against the exact canonical artifact."
+  },
+  "callerWakeCorrection": {
+    "workItem": "EI-25208773290609946",
+    "state": "done",
+    "completionAuthority": "proposed",
+    "meaning": "Caller process-terminal selection corrected and runtime-proven via immutable approval and independent grading-audit result events; not a provider-capacity incident."
   }
 }

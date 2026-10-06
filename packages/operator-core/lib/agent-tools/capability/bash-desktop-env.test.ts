@@ -136,7 +136,9 @@ describe('capability:bash — durable task provenance', () => {
       resolveIdentity: (() => ({ ownerId: 'su-owner' })) as never,
       readStamp: (() => ({ intentEventId: 1, assumptionSetId: null, goalRef: 'EI-21192501620501693' })) as never,
       resolveGoal,
-      readHeldWorkItems: (async () => []) as never,
+      // A declared goal is only a CANDIDATE: the resolver links it after the live
+      // held-claim read confirms the caller still holds it (bash-task-provenance.ts).
+      readHeldWorkItems: (async () => [{ id: 'EI-21192501620501693' }]) as never,
     });
 
     expect(result).toEqual({

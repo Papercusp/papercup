@@ -45,6 +45,7 @@ import * as path from 'node:path';
 import { pinModuleState } from '@papercusp/module-singleton';
 
 import { isSidecarEnabledFromEnv } from '../process-supervision/sidecar-spawn-shared';
+import { isReadOnlyGitBatchExec } from '../git-batch';
 import { SPAWNER_SOCKET_ENV, resolveSpawnerSocketPath } from './spawner-socket-path';
 import type { SpawnerCallOpts } from './spawner-ipc-client';
 import { reapDeadSidecar, sidecarContainmentCurrent, type SidecarContainment } from './sidecar-exec-lifetime';
@@ -403,8 +404,22 @@ function noteSidecarSuccess(): void {
  * the circuit breaker above.
  */
 export function noteSidecarFallback(subsystem: string, e: unknown, nowMs: number = Date.now()): void {
+  recordSidecarFallback(subsystem, e, nowMs, true);
+}
+
+/** Count a read-only batch deadline fallback without treating it as sidecar failure. */
+export function noteSidecarDeadlineFallback(subsystem: string, e: unknown, nowMs: number = Date.now()): void {
+  recordSidecarFallback(subsystem, e, nowMs, false);
+}
+
+function recordSidecarFallback(
+  subsystem: string,
+  e: unknown,
+  nowMs: number,
+  tripBreaker: boolean,
+): void {
   const reason = e instanceof Error ? e.message : String(e);
-  if (!(e instanceof SidecarCircuitOpenError)) {
+  if (tripBreaker && !(e instanceof SidecarCircuitOpenError)) {
     const b = __sidecarBreaker;
     b.consecutiveFailures += 1;
     b.probeStartedAtMs = null;
@@ -442,7 +457,7 @@ export function noteSidecarFallback(subsystem: string, e: unknown, nowMs: number
     breaker.state === 'closed'
       ? ''
       : ` [circuit ${breaker.state}: ${breaker.shortCircuited} call(s) skipped the sidecar, trips=${breaker.trips}]`;
-  console.warn(`[${subsystem}] spawner-sidecar git unavailable, using local spawn${since}${breakerNote}: ${reason}`);
+  console.warn(`[${subsystem}] spawner-sidecar fallback to local execution${since}${breakerNote}: ${reason}`);
 }
 
 /**
@@ -580,7 +595,12 @@ export async function runCommandViaSpawnerSidecar(
     // WI-10004674: per-read wall latency, kept for read-only git only. Measured HERE
     // (the client sees every exec) — NOT from the receipt ledger, which after the
     // lazy-receipt fix holds only the slow reads and so cannot give a per-read p50.
-    recordSidecarExecLatency({ command, args }, performance.now() - execStartedAt);
+    // One verified dev-deploy batch is one sidecar read-latency sample. Treat it
+    // as a `git log` read so the shared reader still observes bounded batch calls.
+    const latencyParams = isReadOnlyGitBatchExec({ command, args })
+      ? { command: 'git', args: ['log'] }
+      : { command, args };
+    recordSidecarExecLatency(latencyParams, performance.now() - execStartedAt);
     return res;
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);

@@ -182,8 +182,9 @@ const CLIS: Record<string, Cli> = {
     exit: '/exit',
     // An open approval card ("Card — answer above") is a turn still running.
     busy: /Running — Enter queues|Starting|Connecting|esc to interrupt|Card — answer above/i,
-    // The card draws `› 1. Approve` on its own row (P-025 frames, 2026-10-06).
-    approve: { when: /Approve.*Decline|1\.? Approve|\[1\] Approve/i, key: '1' },
+    // D-028 approval card: 'Do you want to …?' over `❯ 1. Yes`, footer
+    // 'Enter to select · ↑↓ to move · Esc to cancel' (P-028 frames, 2026-10-06).
+    approve: { when: /Enter to select · ↑↓ to move · Esc to cancel/, key: '1' },
     startup: [],
     afterResume: ['/resume'],
     env: { PUI_OPERATOR: arg('operator', 'http://127.0.0.1:3170')! },
@@ -656,6 +657,15 @@ async function runParity() {
   });
   await probe('13-edit-approval', async () => {
     const before = readFileSync(path.join(proj, 'calc.js'), 'utf8');
+    // `--pui-approvals-ask` (P-028): pui's Codex default lets in-workspace edits
+    // through, as stock Codex's does, so its approval card is only seen in ask
+    // mode. /approvals lists ask first and the picker clamps, so Up Up = ask.
+    if (cliName === 'pui' && flag('pui-approvals-ask')) {
+      await enter('/approvals');
+      await keys('\x1b[A\x1b[A', 400);
+      await keys('\r', 900);
+      frame('13-edit-approval.approvals-ask');
+    }
     await enter('Edit calc.js so that add() accepts an optional third number and adds it too.');
     const s = await settle('13-edit-approval', 240_000, { approve: true, film: true });
     frame('13-edit-approval');

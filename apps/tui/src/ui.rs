@@ -3515,11 +3515,14 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
             Some(_) => " · Ctrl+R details",
             None => "",
         };
-        (
-            " Card — answer above ",
-            format!("↑↓ move · Enter/number pick · Space toggle · Esc skip{details}"),
-            Theme::notify(),
-        )
+        // D-028: on an approval card Esc is No and there is nothing to toggle, so
+        // the generic hint would contradict the card's own footer.
+        let hint = if app.card_state.focused().is_some_and(|card| card.approval.is_some()) {
+            format!("Enter/number pick · Esc No, then tell it what to do{details}")
+        } else {
+            format!("↑↓ move · Enter/number pick · Space toggle · Esc skip{details}")
+        };
+        (" Card — answer above ", hint, Theme::notify())
     } else if app.voice_phase.is_active() {
         // Voice PTT in flight (voice-mode-tui-port-2026-06-05 P2) — the composer
         // line becomes the voice status: phase badge, plus a live mic meter while

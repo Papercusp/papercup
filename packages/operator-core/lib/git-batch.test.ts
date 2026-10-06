@@ -6,7 +6,13 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { buildGitBatchScript, parseHelperFrames, runGitBatch } from './git-batch';
+import {
+  buildGitBatchInvocation,
+  buildGitBatchScript,
+  isReadOnlyGitBatchExec,
+  parseHelperFrames,
+  runGitBatch,
+} from './git-batch';
 import { commitRefFromBatch } from './dev-deploy-state';
 
 let tmp: string;
@@ -35,6 +41,28 @@ afterAll(() => {
 });
 
 describe('runGitBatch', () => {
+  it('recognizes only the exact dev-deploy read-only batch invocation for lazy sidecar admission', () => {
+    const safe = buildGitBatchInvocation([
+      { repo, args: ['log', '-1', '--format=%H%n%ct%n%s', 'main^{commit}'] },
+      { repo, args: ['rev-list', '--count', 'main~1..main'] },
+    ], 'dev-deploy-state');
+    expect(isReadOnlyGitBatchExec({ command: 'sh', args: safe.args })).toBe(true);
+
+    const appendedShell = [...safe.args];
+    appendedShell[1] += '\n touch /tmp/untrusted';
+    expect(isReadOnlyGitBatchExec({ command: 'sh', args: appendedShell })).toBe(false);
+    expect(isReadOnlyGitBatchExec({ command: 'bash', args: safe.args })).toBe(false);
+    expect(isReadOnlyGitBatchExec({ command: 'sh', args: buildGitBatchInvocation([
+      { repo, args: ['fetch', 'origin'] },
+    ], 'dev-deploy-state').args })).toBe(false);
+    expect(isReadOnlyGitBatchExec({ command: 'sh', args: buildGitBatchInvocation([
+      { repo, args: ['log', '-1', '--output=/tmp/untrusted', 'HEAD'] },
+    ], 'dev-deploy-state').args })).toBe(false);
+    expect(isReadOnlyGitBatchExec({ command: 'sh', args: buildGitBatchInvocation([
+      { repo, args: ['log', '-1', '--format=%H%n%ct%n%s', 'HEAD'] },
+    ], 'other-caller').args })).toBe(false);
+  });
+
   it('returns each command’s stdout and exit, in order, identical to running them one by one', async () => {
     const cmds = [
       { repo, args: ['log', '-1', '--format=%H%n%ct%n%s', 'main^{commit}'] },

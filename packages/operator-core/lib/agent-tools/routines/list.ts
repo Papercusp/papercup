@@ -645,6 +645,29 @@ function stringList(raw: unknown): string[] {
 }
 
 /**
+ * WI-10006505: parse `last_skipped_paths`, which git-sync writes as GitSyncSkippedPath objects.
+ * A bare string (an older/hand-written row) is kept as-is with no reason. A lock entry reads as
+ * 'locked-path'; a guard entry carries its own `reason` (migration-reservation / -dependency-fence).
+ */
+function gitSyncSkippedEntries(raw: unknown): Array<{ key: string; reason: string | null }> {
+  if (!Array.isArray(raw)) return [];
+  const out: Array<{ key: string; reason: string | null }> = [];
+  for (const v of raw) {
+    if (typeof v === 'string') {
+      out.push({ key: v, reason: null });
+      continue;
+    }
+    if (!v || typeof v !== 'object') continue;
+    const r = v as Record<string, unknown>;
+    if (typeof r.path !== 'string') continue;
+    const key = typeof r.scope === 'string' && r.scope ? `${r.scope}:${r.path}` : r.path;
+    const reason = typeof r.reason === 'string' ? r.reason : typeof r.owner === 'string' ? 'locked-path' : null;
+    out.push({ key, reason });
+  }
+  return out;
+}
+
+/**
  * Surface the exclusion evidence git-sync already writes and this reader dropped
  * (EI-21900560691158244).
  *
@@ -677,7 +700,17 @@ export function deriveGitSyncExclusions(
   freshness: Record<string, unknown> | null = null,
   nowMs: number = Date.now(),
 ): Record<string, unknown> {
-  const skipped = stringList(metadata?.last_skipped_paths);
+  // WI-10006505: the writer persists `last_skipped_paths` as GitSyncSkippedPath OBJECTS
+  // ({scope,path,owner,intent} for a lock, {scope,path,reason,detail} for a migration guard).
+  // Reading it through `stringList` kept only strings, so every real skip was dropped and the
+  // count was always 0. Accept both shapes; render objects as `scope:path` like last_oversized.
+  const skippedEntries = gitSyncSkippedEntries(metadata?.last_skipped_paths);
+  const skipped = skippedEntries.map((entry) => entry.key);
+  const skipReasons = [...new Set(skippedEntries.map((entry) => entry.reason).filter((r): r is string => r !== null))];
+  const recordedSkipReason = typeof metadata?.last_skip_reason === 'string' ? metadata.last_skip_reason : null;
+  // The writer stamps 'locked-path' for every skip, including migration-guard deferrals; the
+  // entries themselves are the better witness whenever they carry a reason.
+  const skipReason = skipReasons.length > 0 ? skipReasons.join(', ') : recordedSkipReason;
   const oversized = stringList(metadata?.last_oversized);
   const bulkExcluded = stringList(metadata?.last_bulk_excluded);
   const skippedAtMs = epochMs(metadata?.last_skipped_at);
@@ -692,9 +725,16 @@ export function deriveGitSyncExclusions(
   const parts: string[] = [];
   const remedies: string[] = [];
   if (skipped.length > 0) {
-    const reason = typeof metadata?.last_skip_reason === 'string' ? metadata.last_skip_reason : 'unknown';
-    parts.push(`${skipped.length} path(s) excluded from the last completed sweep (${reason})`);
-    remedies.push('release the corresponding file lock(s)');
+    parts.push(`${skipped.length} path(s) excluded from the last completed sweep (${skipReason ?? 'unknown'})`);
+    const migrationGuarded = skipReasons.some((r) => r.startsWith('migration-'));
+    if (skipReasons.length === 0 || skipReasons.includes('locked-path')) {
+      remedies.push('release the corresponding file lock(s)');
+    }
+    if (migrationGuarded) {
+      remedies.push(
+        'give the refused migration a valid reservation (node scripts/next-migration.mjs, then rename it); paths fenced with it commit on the next sweep after that — dev:pipeline_position { path } names the blocking migration and its author',
+      );
+    }
   }
   if (hasByteExclusions) {
     if (sweepStale) {
@@ -717,11 +757,14 @@ export function deriveGitSyncExclusions(
     }
   }
   const warningParts = [...parts];
-  if (hasByteExclusions && !sweepStale) {
+  // WI-10006505: skip remedies used to render only when byte exclusions were also present, so a
+  // skip-only sweep never said what to do. Byte remedies are pushed only on the fresh branch
+  // above, so a stale byte record still contributes none.
+  if (remedies.length > 0) {
     warningParts.push(remedies.join('; '));
   }
   return {
-    skip_reason: typeof metadata?.last_skip_reason === 'string' ? metadata.last_skip_reason : null,
+    skip_reason: skipped.length > 0 ? skipReason : recordedSkipReason,
     skipped_at: isoAt(skippedAtMs),
     skipped_count: skipped.length,
     skipped_sample: skipped.slice(0, GIT_SYNC_EXCLUSION_SAMPLE),

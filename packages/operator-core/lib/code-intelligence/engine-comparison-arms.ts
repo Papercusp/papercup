@@ -331,4 +331,4 @@ export function createGitnexusArm(
   };
 }
 
-export { dirBytes, phaseOf, stat };
+export { analyzePhaseOf, dirBytes, phaseOf, stat };

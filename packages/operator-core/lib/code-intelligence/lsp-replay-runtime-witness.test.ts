@@ -115,6 +115,46 @@ describe('actual replay load-byte witness', () => {
       expect(qualify().some(reason => reason.startsWith(`unqualified-kernel-metadata:/proc/${pid}/stat:`))).toBe(true);
     });
   });
+  it('qualifies main-task children reads and refuses changed bytes, process epochs and task paths', async () => {
+    const f = fixture('mjs', `import {readFileSync} from 'node:fs';import {readFile} from 'node:fs/promises';
+      readFileSync('/proc/'+process.pid+'/task/'+process.pid+'/children');
+      await readFile('/proc/self/task/'+process.pid+'/children','utf8');
+      console.log(JSON.stringify({pids:[]}));setInterval(()=>{},1000);`);
+    await withLiveRuntime(f, pids => {
+      const pid = pids[0];
+      const { witness, reader } = liveWitness(f, [f.entry]);
+      const command = reader.text(`/proc/${pid}/cmdline`).split('\0').filter(Boolean);
+      const qualify = (r = reader) => replayLoadedRuntime(pid, reader.identity(pid), command, witness, r).unknown;
+      const rows = receipts(f.root);
+      const metadata = rows.filter(row => row.kind === 'kernel-metadata');
+      expect(metadata).toHaveLength(2);
+      for (const row of metadata) {
+        expect(row).toMatchObject({ subjectPid: pid, subjectIdentity: reader.identity(pid),
+          text: reader.text(`/proc/${pid}/task/${pid}/children`) });
+        expect(row.sha256).toBe(replayHash(row.text));
+      }
+      expect(qualify()).toEqual([]);
+      const changed = { ...reader, text: (path: string) => path.endsWith('/children') ? `${pid} ` : reader.text(path) };
+      expect(qualify(changed).some(reason => reason.includes('kernel control input changed'))).toBe(true);
+      const receiptPath = join(f.root, `${pid}.jsonl`);
+      const rewrite = (mutate: (row: Record<string, unknown>) => void) => {
+        const copy = JSON.parse(JSON.stringify(rows));
+        mutate(copy.find((row: Record<string, unknown>) => row.kind === 'kernel-metadata'));
+        writeFileSync(receiptPath, copy.map((row: Record<string, unknown>) => JSON.stringify(row)).join('\n') + '\n');
+      };
+      for (const mutate of [
+        (row: Record<string, unknown>) => { row.sha256 = replayHash('altered bytes'); },
+        (row: Record<string, unknown>) => { row.subjectIdentity = 'different-process-epoch'; },
+        (row: Record<string, unknown>) => { row.path = `/proc/${pid}/task/${pid + 1}/children`; },
+        (row: Record<string, unknown>) => { row.path = `/proc/${pid}/task/${pid}/status`; },
+      ]) {
+        rewrite(mutate);
+        expect(qualify().some(reason => reason.startsWith('unqualified-kernel-metadata:'))).toBe(true);
+      }
+      rewrite(row => { row.text = `${pid} `; row.sha256 = replayHash(String(row.text)); });
+      expect(qualify().some(reason => reason.includes('kernel control input changed'))).toBe(true);
+    });
+  });
   it('refuses altered metadata bytes and stat identity even when a receipt hash is recomputed', async () => {
     const f = fixture('mjs', `import {readFileSync} from 'node:fs';readFileSync('/proc/'+process.pid+'/stat','utf8');
       console.log(JSON.stringify({pids:[]}));setInterval(()=>{},1000);`);
@@ -202,6 +242,67 @@ describe('actual replay load-byte witness', () => {
         .toContain('unwitnessed-runtime-bootstrap');
     });
   }, 20_000);
+  it.each(['spawn', 'fork', 'execFile'] as const)('records anchored %s child exit codes and signals without requiring a live child', async route => {
+    for (const termination of ['code', 'signal'] as const) {
+      const f = fixture();
+      const worker = join(f.root, 'terminal-worker.cjs');
+      writeFileSync(worker, termination === 'code' ? 'process.exit(7);' : 'console.log("ready");setInterval(()=>{},1000);');
+      const args = route === 'fork' ? JSON.stringify(worker) : `process.execPath,[${JSON.stringify(worker)}]`;
+      const options = route === 'fork' ? '{silent:true}' : '{stdio:["ignore","pipe","pipe"]}';
+      writeFileSync(f.entry, `import {${route}} from 'node:child_process';
+        const c=${route}(${args},${options});
+        ${termination === 'signal' ? 'c.stdout.once("data",()=>c.kill("SIGTERM"));' : ''}
+        c.once('exit',()=>{console.log(JSON.stringify({pids:[]}));setInterval(()=>{},1000);});`);
+      await withLiveRuntime(f, pids => {
+        const rows = receipts(f.root).filter(row => row.pid === pids[0]);
+        const started = rows.find(row => row.kind === 'child-started');
+        const terminal = rows.filter(row => row.kind === 'child-exit');
+        expect(terminal).toHaveLength(1);
+        expect(terminal[0]).toMatchObject({ launchId: started.launchId, childPid: started.childPid,
+          childIdentity: started.childIdentity, code: termination === 'code' ? 7 : null,
+          signal: termination === 'signal' ? 'SIGTERM' : null });
+        expect(terminal[0].atMs).toBeGreaterThan(0);
+        const { witness, reader } = liveWitness(f, [f.entry, worker]);
+        const command = reader.text(`/proc/${pids[0]}/cmdline`).split('\0').filter(Boolean);
+        const qualify = () => replayLoadedRuntime(pids[0], reader.identity(pids[0]), command, witness, reader).unknown;
+        expect(qualify()).toEqual([]);
+        const rootPath = join(f.root, `${pids[0]}.jsonl`);
+        const original = readFileSync(rootPath, 'utf8');
+        for (const [field, value] of [['launchId', 'another-launch'], ['childIdentity', 'reused-epoch'],
+          ['atMs', null], ['code', -1], ['signal', 'invalid-signal']] as const) {
+          const saved = terminal[0][field];
+          terminal[0][field] = value;
+          writeFileSync(rootPath, rows.map(row => JSON.stringify(row)).join('\n') + '\n');
+          expect(qualify()).toContain('unqualified-child-terminal');
+          terminal[0][field] = saved;
+        }
+        writeFileSync(rootPath, [...rows, terminal[0]].map(row => JSON.stringify(row)).join('\n') + '\n');
+        expect(qualify()).toContain('unqualified-child-terminal');
+        writeFileSync(rootPath, original);
+        expect(qualify()).toEqual([]);
+      });
+    }
+  }, 20_000);
+  it('records child launch errors while preserving handled and unhandled error behavior', () => {
+    for (const handled of [true, false]) {
+      const f = fixture();
+      const worker = join(f.root, 'worker.cjs'); writeFileSync(worker, 'process.exit(0);');
+      writeFileSync(f.entry, `import {spawn} from 'node:child_process';
+        const c=spawn(process.execPath,[${JSON.stringify(worker)}],{cwd:${JSON.stringify(join(f.root, 'missing-directory'))}});
+        ${handled ? 'c.once("error",()=>console.log("handled"));' : ''}`);
+      const execute = () => execFileSync(process.execPath, f.launch.args,
+        { env: { ...process.env, NODE_OPTIONS: '' }, encoding: 'utf8', stdio: 'pipe' });
+      if (handled) expect(execute()).toContain('handled');
+      else expect(execute).toThrow();
+      const rows = receipts(f.root);
+      const started = rows.find(row => row.kind === 'child-started');
+      const terminal = rows.filter(row => row.kind === 'child-error');
+      expect(terminal).toHaveLength(1);
+      expect(terminal[0]).toMatchObject({ launchId: started.launchId, childPid: null, childIdentity: null });
+      expect(terminal[0].error).toContain('ENOENT');
+      expect(terminal[0].atMs).toBeGreaterThan(0);
+    }
+  });
   it('instruments the actual exact-env runner and its payload when the environment is replaced', async () => {
     const f = fixture();
     const runner = fileURLToPath(new URL('../systemd-scope-env-runner.mjs', import.meta.url));

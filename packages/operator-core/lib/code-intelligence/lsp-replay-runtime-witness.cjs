@@ -74,10 +74,11 @@ function startReplayRuntime(options) {
     const path = file instanceof URL ? fileURLToPath(file) : resolve(file);
     // These exact kernel control inputs are volatile, not frozen source files.
     // Preserve consumed bytes and process epochs; the evaluator rechecks them.
-    const metadata = /^\/proc\/(self|[1-9]\d*)\/(stat|cgroup)$/.exec(path);
+    const metadata = /^\/proc\/(self|[1-9]\d*)\/(?:(stat|cgroup)|task\/([1-9]\d*)\/(children))$/.exec(path);
     if (kind === 'file-read' && (metadata || path === '/proc/sys/kernel/random/boot_id')) {
       const subjectPid = metadata ? (metadata[1] === 'self' ? process.pid : Number(metadata[1])) : process.pid;
       try {
+        if (metadata?.[3] && Number(metadata[3]) !== subjectPid) throw Error('unsupported metadata task');
         const before = identity(subjectPid);
         const text = Buffer.isBuffer(bytes) ? bytes.toString('utf8') : bytes;
         if (typeof text !== 'string' || identity(subjectPid) !== before) throw Error('unstable metadata identity');
@@ -182,12 +183,25 @@ function startReplayRuntime(options) {
     if (!launch) return child;
     let childIdentity = null;
     if (child.pid) { try { childIdentity = identity(child.pid); } catch { /* refusal below */ } }
-    emit({ kind: 'child-started', launchId: launch.launchId, childPid: child.pid || null, childIdentity });
+    const childSubject = { launchId: launch.launchId, childPid: child.pid || null, childIdentity };
+    emit({ kind: 'child-started', ...childSubject, atMs: Date.now() });
     if (!child.pid || !childIdentity) emit({ kind: 'unknown', reason: 'child-process-identity-unavailable' });
     if (launch.controlPurpose) {
       child.once('error', error => emit({ kind: 'control-exit', launchId: launch.launchId, code: null,
         signal: null, error: String(error) }));
       child.once('exit', (code, signal) => emit({ kind: 'control-exit', launchId: launch.launchId, code, signal }));
+    } else {
+      // Capture the original child's terminal event, not a later /proc lookup
+      // whose PID may already have disappeared or been reused. These receipts
+      // diagnose termination; they do not certify a successful query.
+      child.once('error', error => {
+        emit({ kind: 'child-error', ...childSubject, atMs: Date.now(), error: String(error) });
+        // A diagnostic listener must not swallow an otherwise unhandled error.
+        // once() removes this listener before invoking it, leaving only the
+        // consumer's handlers in the count.
+        if (child.listenerCount('error') === 0) throw error;
+      });
+      child.once('exit', (code, signal) => emit({ kind: 'child-exit', ...childSubject, atMs: Date.now(), code, signal }));
     }
     return child;
   };

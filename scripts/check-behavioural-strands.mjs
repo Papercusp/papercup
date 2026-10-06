@@ -907,16 +907,17 @@ function objectLiteralKeys(literal) {
 
 /**
  * Test files holding a PARTIAL fixture for an injected member: an object literal that names at
- * least `min(2, siblings)` sibling members of the bundle but NOT the new member. Searched over
- * every reachable test file of ANY workspace, the changed one included — the measured stranded
- * fixtures were beside the change, and `test:affected` cannot be relied on to have run them.
+ * least `min(2, siblings)` sibling members of the bundle but NOT the new member. The fixture
+ * must also be in a test that directly imports the changed module. Transitive reachability is
+ * useful for assertion strands, but it lets generic keys such as `sql`, `workspaceId`, and `log`
+ * make unrelated fixtures look like this dependency bundle.
  *
  * Over-names on purpose (a literal that overrides two members of a `{ ...base }` spread matches
  * too): running the named file is the detector, and a clean bill for a real strand is the failure.
  *
  * @returns {{ file: string, hits: { member: string, line: number, present: string[] }[] }[]}
  */
-export function partialInjectionFixtures({ tests, readFile, injections }) {
+export function partialInjectionFixtures({ tests, readFile, injections, directlyImportsSource }) {
   const usable = injections.filter((inj) => inj.siblings.length > 0);
   if (usable.length === 0) return [];
   const result = [];
@@ -924,6 +925,12 @@ export function partialInjectionFixtures({ tests, readFile, injections }) {
     const raw = readFile(file);
     if (!raw || raw.length > MAX_SCAN_BYTES) continue;
     const candidates = usable.filter((inj) => {
+      if (
+        inj.sourceFile &&
+        (typeof directlyImportsSource !== 'function' || !directlyImportsSource(file, inj.sourceFile))
+      ) {
+        return false;
+      }
       const need = Math.min(2, inj.siblings.length);
       let seen = 0;
       for (const sibling of inj.siblings) if (raw.includes(sibling) && ++seen >= need) return true;
@@ -940,9 +947,10 @@ export function partialInjectionFixtures({ tests, readFile, injections }) {
           if (keys.has(inj.member)) continue;
           const present = inj.siblings.filter((s) => keys.has(s));
           if (present.length < Math.min(2, inj.siblings.length)) continue;
-          const prior = best.get(inj.member);
+          const hitKey = [inj.sourceFile ?? inj.owner, inj.member].join('\0');
+          const prior = best.get(hitKey);
           if (!prior || present.length > prior.present.length) {
-            best.set(inj.member, {
+            best.set(hitKey, {
               member: inj.member,
               line: source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1,
               present,
@@ -2619,12 +2627,40 @@ function main() {
           .filter((f) => hasPackageScriptAssertion(readFile(f), scriptProperties, f))
       : [];
   const wider = [...new Set([...reachableTests, ...scriptTests])].sort();
-  // Partial-injection fixtures: any reachable test file, the changed workspace INCLUDED.
-  const injections = triggers.flatMap((t) => t.injections ?? []);
+  // Candidate tests come from the reachability walk, then each injection is joined only to its
+  // changed module's direct importers.
+  const injections = triggers.flatMap((t) =>
+    (t.injections ?? []).map((injection) => ({ ...injection, sourceFile: t.file })),
+  );
+  const injectionFileSet = new Set(allFiles);
+  const directImportTargetsByTest = new Map();
+  const directlyImportsSource = (fromFile, sourceFile) => {
+    let targets = directImportTargetsByTest.get(fromFile);
+    if (!targets) {
+      targets = new Set();
+      const raw = readFile(fromFile);
+      if (raw && raw.length <= MAX_SCAN_BYTES) {
+        const text = stripCommentsOnly(raw);
+        for (const specifier of parseImportSpecifiers(text)) {
+          const target = resolveAcrossPackages({
+            specifier,
+            fromFile,
+            fileSet: injectionFileSet,
+            byDir,
+            byEntryDir,
+          });
+          if (target) targets.add(target);
+        }
+      }
+      directImportTargetsByTest.set(fromFile, targets);
+    }
+    return targets.has(sourceFile);
+  };
   const injectionBand = partialInjectionFixtures({
     tests: [...reachable].filter((f) => TEST_RE.test(f)).sort(),
     readFile,
     injections,
+    directlyImportsSource,
   });
   const injectionFiles = injectionBand.map((entry) => entry.file);
 

@@ -217,6 +217,7 @@ function localRecord(over: Partial<DesktopSessionRecord> = {}): DesktopSessionRe
     kind: 'xvfb-local',
     scope: 'pot',
     scopeRef: 'h1',
+    name: null,
     hostRef: null,
     ownerPid: process.pid,
     ownerBootId: 'boot-1',

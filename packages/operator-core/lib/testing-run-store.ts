@@ -12,10 +12,10 @@
  * a long dev session.
  *
  * P-014 persistence (admin-ui rows):
- * - For 'vitest' / 'playwright' spawns, we set `PAPERCUSP_TEST_RUN_SOURCE=admin-ui`
- *   on the child env. The admin-test-runs reporter inside the child reads it
- *   and writes per-file rows with `source='admin-ui'`. This preserves
- *   per-file granularity, including for vitest-multi (Run section / Run all).
+ * - For 'vitest' / 'playwright' spawns, the child reporter defaults to
+ *   `PAPERCUSP_TEST_RUN_SOURCE=admin-ui`. Internal callers can select a
+ *   different provenance when their rows need another documented adoption path.
+ *   Per-file granularity is preserved, including for vitest-multi (Run section / Run all).
  * - For 'node' / 'shell' spawns there's no in-process reporter, so the store
  *   itself writes one fallback row on close. Fail-soft (D-007) — never throws.
  */
@@ -32,6 +32,7 @@ import {
   type TestRunExecutionDetails,
 } from '@papercusp/test-config/execution-details';
 import { resolveGitContext } from './testing-branch-resolve';
+import type { TestRunSource } from './testing-run-source';
 import { captureWorktreeSnapshot, computeWorktreeDirty, type WorktreeGitSnapshot } from './testing-worktree';
 import { currentLoopLag, classifyLoopPressure } from './event-loop-lag-monitor';
 import {
@@ -460,8 +461,41 @@ async function readReportRecoveryTask(
        AND task_ledger.state IN ('exited', 'ended_unobserved')
      LIMIT 2
   `);
-  // Ambiguous launch identity and unavailable task reads cannot authorize ingestion.
-  return rows?.length === 1 ? rows[0]! : null;
+  // An unreadable or ambiguous task lookup is not evidence of an absent run.
+  if (rows === null || rows.length > 1) throw new TestingRunSnapshotUnavailableError();
+  return rows[0] ?? null;
+}
+
+/** Foreground routers have a task row, but never write a detached snapshot.
+ * Preserve their liveness before evidence recovery can abandon a missing origin. */
+async function readLiveForegroundSnapshot(
+  runId: string, scope: DetachedReportRecoveryScope, sql: SqlLike,
+): Promise<RunSnapshot | null> {
+  const rows = await boundedSnapshotQuery<Array<{
+    task_id: string; title: string; argv: unknown; state: string; started_at: Date | string | number;
+  }>>(sql`
+    SELECT task_id, title, argv, state, started_at
+      FROM harness_shared.task_ledger
+     WHERE workspace_id = ${scope.workspaceId}
+       AND cwd = ${scope.root}
+       AND (harness_slug = ${scope.harnessSlug} OR harness_slug IS NULL)
+       AND class = 'test-run' AND launched_by = ${`testing:run:${runId}`}
+       AND detail->>'runGroup' = ${runId} AND detail->>'foreground' = 'true'
+     LIMIT 2
+  `);
+  if (rows === null || rows.length > 1) throw new TestingRunSnapshotUnavailableError();
+  const row = rows[0];
+  if (!row) return null;
+  // Terminal task state permits an absence verdict, never a manufactured pass.
+  // A stranded owner can leave escaped children; keep that case unknown.
+  if (['exited', 'ended_unobserved', 'killed', 'timed_out'].includes(row.state)) return null;
+  const startedAt = epochMs(row.started_at);
+  const command = commandFromRow(row.argv);
+  if (!['pending', 'running'].includes(row.state) || startedAt === null || !command || !row.task_id)
+    throw new TestingRunSnapshotUnavailableError();
+  return { runId, taskId: row.task_id, kind: 'vitest', label: row.title, command,
+    status: 'running', exitCode: null, startedAt, finishedAt: null, truncated: false,
+    output: 'The exact managed foreground task is still in flight; no test verdict has been recorded.' };
 }
 
 async function readPersistedRunSnapshot(runId: string, sqlOverride?: SqlLike, recoveryScope?: DetachedReportRecoveryScope): Promise<RunSnapshot | null> {
@@ -496,7 +530,7 @@ async function readPersistedRunSnapshot(runId: string, sqlOverride?: SqlLike, re
   if (rows === null) throw new TestingRunSnapshotUnavailableError();
   const reportTaskRecovery = rows.length === 0 && recoveryScope !== undefined;
   const row = rows[0] ?? (recoveryScope ? await readReportRecoveryTask(runId, recoveryScope, sql) : null);
-  if (!row) return null;
+  if (!row) return recoveryScope ? readLiveForegroundSnapshot(runId, recoveryScope, sql) : null;
   // Exact evidence mappings supply the missing harness on older enrolments.
   // Their durable workspace and execution root must still agree.
   if (!row.task_harness_slug && recoveryScope && row.task_workspace_id === recoveryScope.workspaceId
@@ -884,6 +918,12 @@ export interface SpawnRequest {
   /** Environment values supplied by the caller for the child process. */
   env?: NodeJS.ProcessEnv;
   /**
+   * Reporter provenance for this run. The default remains admin-ui; detached
+   * testing:run recovery opts into local so an unscoped result can be adopted
+   * by the plan harness that later binds it.
+   */
+  testRunSource?: TestRunSource;
+  /**
    * Durable wall-clock ceiling for the task-manager scope. Detached recovery
    * must carry its requested timeout into systemd so an operator restart cannot
    * leave the child and its running snapshot alive indefinitely.
@@ -1132,7 +1172,7 @@ function prepareRun(req: SpawnRequest): PreparedRun {
     // rows with source='admin-ui' instead of inferring ci/local. For
     // node/shell runners we additionally write a single fallback row
     // from this store at close (see persistFallbackRow below).
-    PAPERCUSP_TEST_RUN_SOURCE: 'admin-ui',
+    PAPERCUSP_TEST_RUN_SOURCE: req.testRunSource ?? 'admin-ui',
   };
   const taskSpec: TaskSpec = {
     class: 'test-run',

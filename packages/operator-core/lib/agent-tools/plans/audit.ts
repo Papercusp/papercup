@@ -183,7 +183,13 @@ const itemProvenanceSchema = z.discriminatedUnion('kind', [
     kind: z.literal('agent-added'),
     reason: z.string().min(1).max(2000).describe('Why the agent added it; shown to the owner.'),
   }),
-]);
+]).meta({
+  // The compact discovery projection merges array-item union fields. Preserve
+  // this branch contract beside the schema so callers cannot combine fields
+  // from the `derived` and `agent-added` variants.
+  'x-papercusp-call-constraint':
+    'when kind=derived => from required; when kind!=derived => from forbidden; when kind=agent-added => note forbidden; when kind=agent-added => reason required; when kind!=agent-added => reason forbidden',
+});
 
 // RSR-P-008-A: the activation rules are reported alongside any shape defect.
 const argsSchema = refineEvenWithShapeIssues(z.object({

@@ -10,6 +10,7 @@ const baseStats = (over: Partial<GatewayStats> = {}): GatewayStats => ({
   totalRequests: 12,
   inFlight: 2,
   queueDepth: 5,
+  healthyAccounts: 1,
   admission: { running: 2, queued: 5, maxConcurrent: 24, byPriority: [{ priority: 100, count: 1 }, { priority: 0, count: 4 }] },
   // codexAdmission is a REQUIRED GatewayStats field — set it concretely (it previously came only from the
   // `...over` spread, so `baseStats().codexAdmission` was silently undefined and tripped the assignability check).
@@ -40,6 +41,10 @@ const baseStats = (over: Partial<GatewayStats> = {}): GatewayStats => ({
   beeFacing503: { egressExhausted: 0, tokenStall: 0 },
   pausedUntil: 0,
   pausedActuallyEnforced: false,
+  billing: {
+    byAccount: {},
+    metered: { requests: 0, inputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, outputTokens: 0, usageKnown: 0, outputKnown: 0 },
+  },
   cache: {
     read: 0, create: 0, input: 0, hits: 0, misses: 0, failoverMisses: 0, hitRate: null, byAccount: {},
     knownTokenTotals: { read: 0, create: 0, input: 0 },
@@ -68,6 +73,7 @@ test('projectHeadroom — maps the unified window + queue into the read-model', 
   assert.equal(h.resetInSec, 3600);
   assert.equal(h.paused, false);
   assert.equal(h.queueDepth, 5);
+  assert.equal(h.healthyAccounts, 1);
   assert.deepEqual(h.byPriority, [{ priority: 100, count: 1 }, { priority: 0, count: 4 }]);
 });
 

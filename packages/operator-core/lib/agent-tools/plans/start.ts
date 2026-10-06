@@ -55,6 +55,7 @@ import {
   validatePlanCandidateDependencies,
 } from './plan-candidate-dependencies';
 import { evaluatePlanSpecQualityGate, type PlanSpecQualityGateVerdict } from './plan-spec-quality-gate';
+import { specQualityPlanItemIds } from './spec-quality';
 import { mugKettleSystemEnabled } from '../../pot/started';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
 import { buildPromotedRows, upsertPromotedBlock } from '../coordination/tools/promote';
@@ -269,7 +270,7 @@ export default defineTool({
         // plans with zero first-class clauses remain explicitly report-only.
         let specQuality: PlanSpecQualityGateVerdict | undefined;
         if (read) {
-          const planItemIds = (read.row.items.length ? read.row.items : read.parsed.items).map((item) => item.id);
+          const planItemIds = specQualityPlanItemIds(read.row.items.length ? read.row.items : read.parsed.items);
           specQuality = await evaluatePlanSpecQualityGate({
             harnessSlug,
             planSlug: slug,
@@ -596,7 +597,7 @@ export default defineTool({
                 },
               };
               const currentSpecQuality = await evaluatePlanSpecQualityGate({
-                harnessSlug, planSlug: slug, planItemIds: lockedPlan.items.map((item) => item.id),
+                harnessSlug, planSlug: slug, planItemIds: specQualityPlanItemIds(lockedPlan.items),
               });
               if (!currentSpecQuality.satisfied) return {
                 newBody: null,

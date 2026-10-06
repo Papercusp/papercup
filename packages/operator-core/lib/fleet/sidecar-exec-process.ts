@@ -30,7 +30,8 @@ import { StringDecoder } from 'node:string_decoder';
 import { spawn, type StdioOptions } from 'node:child_process';
 import { processGroupLifetime } from './process-group-lifetime';
 
-import { gitSubcommandOf, qualifiesForLazyReceipt } from './sidecar-read-only-git';
+import { isReadOnlyGitBatchExec } from '../git-batch';
+import { gitSubcommandOf, qualifiesForLazyReceipt as qualifiesForLazyGitExec } from './sidecar-read-only-git';
 
 import type { AdmissionContext, ResourceDemand } from '../resource-governor/admission';
 import {
@@ -136,6 +137,13 @@ export const SIDECAR_LAZY_RECEIPT_DELAY_MS = 750;
  */
 export { gitSubcommandOf, qualifiesForLazyReceipt } from './sidecar-read-only-git';
 
+/** Lazy admission covers ordinary read-only Git and the strictly verified dev-deploy batch. */
+export function qualifiesForLazyReceiptProcess(
+  params: Pick<ExecParams, 'command' | 'args'>,
+): boolean {
+  return qualifiesForLazyGitExec(params) || isReadOnlyGitBatchExec(params);
+}
+
 /** What `execProcess` needs from the durable receipt, whether minted eagerly or late. */
 interface ReceiptHandle {
   /** Env override handed to the child (its nested-lineage context). */
@@ -208,12 +216,17 @@ export function sidecarReceiptMetadata(
   params: Pick<ExecParams, 'command' | 'args'>,
 ): Record<string, string | boolean> {
   const base = { processKind: 'sidecar-exec', command: params.command };
-  if (params.command !== 'git') return base;
-  return {
-    ...base,
-    gitSubcommand: gitSubcommandOf(params.args ?? []) ?? 'unknown',
-    readOnlyGit: qualifiesForLazyReceipt(params),
-  };
+  if (params.command === 'git') {
+    return {
+      ...base,
+      gitSubcommand: gitSubcommandOf(params.args ?? []) ?? 'unknown',
+      readOnlyGit: qualifiesForLazyGitExec(params),
+    };
+  }
+  if (isReadOnlyGitBatchExec(params)) {
+    return { ...base, gitSubcommand: 'batch', readOnlyGit: true };
+  }
+  return base;
 }
 
 async function beginSidecarProcessExecution(params: ExecParams): Promise<GovernedExecution> {
@@ -259,7 +272,7 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
   }
 
   const begin = deps.beginExecution ?? beginSidecarProcessExecution;
-  const lazyDelayMs = qualifiesForLazyReceipt(params) ? (deps.lazyReceiptMs ?? SIDECAR_LAZY_RECEIPT_DELAY_MS) : 0;
+  const lazyDelayMs = qualifiesForLazyReceiptProcess(params) ? (deps.lazyReceiptMs ?? SIDECAR_LAZY_RECEIPT_DELAY_MS) : 0;
   let execution: ReceiptHandle;
   try {
     // Lazy: nothing to admit yet — the receipt is minted only if the read outlives the delay.

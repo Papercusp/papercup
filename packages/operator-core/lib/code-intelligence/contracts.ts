@@ -144,6 +144,13 @@ export interface SymbolSite {
    * detail to give", never "the detail was empty".
    */
   readonly detail?: string | null;
+  /**
+   * The symbol's own name, on sites that name a symbol (a workspace-symbol
+   * hit). OPTIONAL for the same reason as `detail`. Exact-name questions need
+   * it: tsserver's symbol search is fuzzy, so a hit's location alone cannot say
+   * whether it IS the symbol that was asked for.
+   */
+  readonly name?: string | null;
 }
 
 /** Whether returned matches were cut off. This says nothing about index coverage. */

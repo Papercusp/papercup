@@ -508,6 +508,26 @@ describe('structured Claude SU engine', () => {
       expect(stalledReports(engine)).toEqual([]);
     });
 
+    it('does not report a stall while an approval card waits for the owner, and restarts the clock after the answer', async () => {
+      const p = peer({ holdResult: true }); const engine = open(p, { turnStallTimeoutMs: 150 }); await engine.ready;
+      await engine.adapter.host.startCommand(command(engine)).terminal;
+      // Claude sends no frames while it waits for a permission answer (P-028 probe 13
+      // reported a false 114s stall under an open card).
+      const permission = p.options()!.canUseTool!('Edit', { file_path: 'calc.js', old_string: 'a', new_string: 'b' }, {
+        signal: new AbortController().signal, toolUseID: 'edit', requestId: 'edit-request', title: 'Edit calc.js?',
+      });
+      await vi.waitFor(() => expect(openCards(engine)).toHaveLength(1));
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      expect(stalledReports(engine)).toEqual([]);
+      const [card] = openCards(engine);
+      expect(resolveCardResponse({ correlationId: card.correlationId, action: 'submit', payload: { picks: ['yes'] }, expectedWorkspaceId: 'workspace' }).ok).toBe(true);
+      await expect(permission).resolves.toMatchObject({ behavior: 'allow' });
+      // The silence after the answer is measured from the answer, and still reported.
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      expect(stalledReports(engine)).toEqual([]);
+      await vi.waitFor(() => expect(stalledReports(engine)).toHaveLength(1), { timeout: 2_000 });
+    });
+
     it('stops watching a stalled turn once the engine is closed', async () => {
       const p = peer({ holdResult: true }); const engine = open(p, { turnStallTimeoutMs: 150 }); await engine.ready;
       await engine.adapter.host.startCommand(command(engine)).terminal;
@@ -704,7 +724,8 @@ describe('structured Claude SU engine', () => {
     });
     await vi.waitFor(() => expect(openCards(engine)).toHaveLength(1));
     const card = openCards(engine)[0];
-    expect(resolveCardResponse({ correlationId: card.correlationId, action: 'submit', payload: { picks: ['1'] }, expectedWorkspaceId: 'workspace' }).ok).toBe(true);
+    // D-028 approval options have stable ids: yes / always / no.
+    expect(resolveCardResponse({ correlationId: card.correlationId, action: 'submit', payload: { picks: ['no'] }, expectedWorkspaceId: 'workspace' }).ok).toBe(true);
     await expect(permission).resolves.toMatchObject({ behavior: 'deny' });
     const questions = canUseTool('AskUserQuestion', { questions: [
       { question: 'First?', options: [{ label: 'Yes' }, { label: 'No' }] },
@@ -736,9 +757,10 @@ describe('structured Claude SU engine', () => {
       void canUseTool(name, {}, { ...request(id), ...(id === 'ask-rule' ? { matchedAskRule: { source: 'userSettings', toolName: name } } : {}) });
       await vi.waitFor(() => expect(openCards(engine)).toHaveLength(1));
       const card = openCards(engine)[0];
-      // The card names the tool in its human display form (su-session-approval-display).
-      expect(card.prompt).toContain(humanToolName(name));
-      resolveCardResponse({ correlationId: card.correlationId, action: 'submit', payload: { picks: ['1'] }, expectedWorkspaceId: 'workspace' });
+      // The card names the tool in its human display form (su-session-approval-display),
+      // in its D-028 title above the question.
+      expect(card.approval?.title).toContain(humanToolName(name));
+      resolveCardResponse({ correlationId: card.correlationId, action: 'submit', payload: { picks: ['no'] }, expectedWorkspaceId: 'workspace' });
       await vi.waitFor(() => expect(openCards(engine)).toHaveLength(0));
     }
   });
@@ -762,8 +784,8 @@ describe('structured Claude SU engine', () => {
     const otherWrite = canUseTool('mcp__papercusp-su__work_items_comment', {}, request('other-write'));
     await vi.waitFor(() => expect(openCards(engine)).toHaveLength(1));
     const otherCard = openCards(engine)[0];
-    expect(otherCard.prompt).toContain(humanToolName('mcp__papercusp-su__work_items_comment'));
-    resolveCardResponse({ correlationId: otherCard.correlationId, action: 'submit', payload: { picks: ['1'] }, expectedWorkspaceId: 'workspace' });
+    expect(otherCard.approval?.title).toContain(humanToolName('mcp__papercusp-su__work_items_comment'));
+    resolveCardResponse({ correlationId: otherCard.correlationId, action: 'submit', payload: { picks: ['no'] }, expectedWorkspaceId: 'workspace' });
     await expect(otherWrite).resolves.toMatchObject({ behavior: 'deny' });
     expect(openCards(engine)).toHaveLength(0);
 
@@ -772,8 +794,8 @@ describe('structured Claude SU engine', () => {
     });
     await vi.waitFor(() => expect(openCards(engine)).toHaveLength(1));
     const askRuleCard = openCards(engine)[0];
-    expect(askRuleCard.prompt).toContain(humanToolName(name));
-    resolveCardResponse({ correlationId: askRuleCard.correlationId, action: 'submit', payload: { picks: ['0'] }, expectedWorkspaceId: 'workspace' });
+    expect(askRuleCard.approval?.title).toContain(humanToolName(name));
+    resolveCardResponse({ correlationId: askRuleCard.correlationId, action: 'submit', payload: { picks: ['yes'] }, expectedWorkspaceId: 'workspace' });
     await expect(forcedByAskRule).resolves.toMatchObject({ behavior: 'allow' });
   });
 

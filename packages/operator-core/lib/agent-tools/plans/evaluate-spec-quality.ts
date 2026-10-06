@@ -5,7 +5,7 @@ import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { ctxToPlanSourceOpts, resolveEffectiveHarnessSlug } from './_ctx-opts';
 import { readPlanBySlug } from './source';
 import { listSpecClauses } from './spec-clauses-store';
-import { evaluatePlanSpecQuality } from './spec-quality';
+import { evaluatePlanSpecQuality, specQualityPlanItemIds } from './spec-quality';
 import { PLAN_CLASS_RUBRIC_REFS } from './spec-test-adequacy';
 import { evaluatePlanStartReadiness } from './plan-input-validation';
 import { resolvePersistedClassRef } from './plan-spec-quality-gate';
@@ -131,7 +131,7 @@ export default defineTool({
         wouldBlock: blockers.map((b) => b.code),
       } };
     }
-    const planItemIds = (read.row.items.length ? read.row.items : read.parsed.items).map((item) => item.id);
+    const planItemIds = specQualityPlanItemIds(read.row.items.length ? read.row.items : read.parsed.items);
     const evaluation = evaluatePlanSpecQuality({
       planSlug: args.slug,
       harnessSlug,

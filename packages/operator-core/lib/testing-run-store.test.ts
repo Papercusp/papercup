@@ -150,6 +150,29 @@ describe('startRun', () => {
     );
   });
 
+  it('preserves an explicit local provenance for detached recovery reporters', () => {
+    const snap = store.startRun(req({
+      testRunSource: 'local',
+      env: {
+        PAPERCUSP_TEST_RUN_HARNESS: 'papercusp',
+        PAPERCUSP_WORKSPACE_ID: 'papercusp-workspace',
+      },
+    }));
+
+    expect(spawnMock).toHaveBeenCalledWith(
+      'npx',
+      ['vitest', 'run'],
+      expect.objectContaining({
+        env: expect.objectContaining({
+          PAPERCUSP_TEST_RUN_SOURCE: 'local',
+          PAPERCUSP_TEST_RUN_HARNESS: 'papercusp',
+          PAPERCUSP_WORKSPACE_ID: 'papercusp-workspace',
+          PAPERCUSP_TEST_RUN_GROUP: snap.runId,
+        }),
+      }),
+    );
+  });
+
   it('enrols before spawning and wraps the command with the exact task spec/env/cwd', () => {
     const enrolment = {
       taskId: 'task-confined',
@@ -663,9 +686,16 @@ describe('durable detached snapshot lifecycle', () => {
         catch (error) { ledger.splice(before); throw error; }
       } });
 
-      const recovered = await store.getRunAsync(snapshot.runId, sql as unknown as Sql, options.legacy ? {
+      const recovery = store.getRunAsync(snapshot.runId, sql as unknown as Sql, options.legacy ? {
         root: '/tmp', harnessSlug: 'papercusp', workspaceId: options.wrongScope ? 'other-workspace' : 'papercusp-workspace',
       } : undefined);
+      if (options.ambiguous) {
+        await expect(recovery).rejects.toBeInstanceOf(store.TestingRunSnapshotUnavailableError);
+        expect(writes).toHaveLength(0);
+        await expect(readFile(reportPath, 'utf8')).resolves.toContain('testResults');
+        return;
+      }
+      const recovered = await recovery;
       if (options.expected === null) expect(recovered).toBeNull();
       else expect(recovered?.status).toBe(options.expected);
       if (options.expired) {
@@ -882,6 +912,66 @@ describe('durable detached snapshot lifecycle', () => {
       store.TestingRunSnapshotUnavailableError,
     );
     await expect(store.getRunAsync('missing-run', missingSql)).resolves.toBeNull();
+  });
+
+  it.each(['pending', 'running'])('keeps a %s foreground task in flight without a detached snapshot', async (state) => {
+    const scope = { workspaceId: 'workspace-one', harnessSlug: 'harness-one', root: '/tmp' };
+    const runId = 'foreground-origin';
+    const sql = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const statement = strings.join(' ');
+      if (statement.includes('FROM harness_shared.task_ledger') && values.includes(`testing:run:${runId}`)) {
+        return [{ task_id: 'foreground-task', title: `testing:run foreground ${runId}`,
+          argv: ['node', 'scripts/test-files.mjs'], state, started_at: new Date(1_700_000_000_000),
+          ended_at: null }];
+      }
+      return [];
+    }) as unknown as Sql;
+
+    await expect(store.getRunAsync(runId, sql, scope)).resolves.toMatchObject({
+      runId, taskId: 'foreground-task', status: 'running', finishedAt: null, exitCode: null,
+    });
+    const read = (sql as unknown as ReturnType<typeof vi.fn>).mock.calls.find((call) =>
+      call.slice(1).includes(`testing:run:${runId}`));
+    expect(read?.slice(1)).toEqual(expect.arrayContaining([scope.workspaceId, scope.root, scope.harnessSlug, runId]));
+    expect((read?.[0] as TemplateStringsArray).join(' ')).toContain("detail->>'foreground' = 'true'");
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it.each(['exited', 'ended_unobserved', 'killed', 'timed_out'])('does not invent a verdict for a %s foreground task', async (state) => {
+    const sql = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      if (strings.join(' ').includes('FROM harness_shared.task_ledger') && values.includes('testing:run:foreground-ended')) {
+        return [{ task_id: 'foreground-task', title: 'foreground', argv: ['node'], state,
+          started_at: new Date(1_700_000_000_000), ended_at: new Date(1_700_000_001_000) }];
+      }
+      return [];
+    }) as unknown as Sql;
+    await expect(store.getRunAsync('foreground-ended', sql,
+      { workspaceId: 'workspace-one', harnessSlug: 'harness-one', root: '/tmp' })).resolves.toBeNull();
+  });
+
+  it.each(['unreadable', 'ambiguous', 'unaccounted', 'stranded'])('fails closed for an %s foreground task lookup', async (mode) => {
+    const sql = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      if (strings.join(' ').includes('FROM harness_shared.task_ledger') && values.includes('testing:run:foreground-unknown')) {
+        if (mode === 'unreadable') throw new Error('task read failed');
+        const row = { task_id: 'foreground-task', title: 'foreground', argv: ['node'], state: ['unaccounted', 'stranded'].includes(mode) ? mode : 'running',
+          started_at: new Date(1_700_000_000_000), ended_at: null };
+        return mode === 'ambiguous' ? [row, { ...row, task_id: 'other-task' }] : [row];
+      }
+      return [];
+    }) as unknown as Sql;
+    await expect(store.getRunAsync('foreground-unknown', sql,
+      { workspaceId: 'workspace-one', harnessSlug: 'harness-one', root: '/tmp' }))
+      .rejects.toBeInstanceOf(store.TestingRunSnapshotUnavailableError);
+  });
+
+  it('keeps an unreadable report-task fallback unknown when the snapshot is missing', async () => {
+    const sql = vi.fn(async (strings: TemplateStringsArray) => {
+      if (strings.join(' ').includes('FROM harness_shared.task_ledger AS task_ledger')) throw new Error('task store unavailable');
+      return [];
+    }) as unknown as Sql;
+    await expect(store.getRunAsync('missing-snapshot', sql,
+      { workspaceId: 'workspace-one', harnessSlug: 'harness-one', root: '/tmp' }))
+      .rejects.toBeInstanceOf(store.TestingRunSnapshotUnavailableError);
   });
 
   it('recovers a terminal detached verdict from test_runs when its snapshot read is unavailable', async () => {

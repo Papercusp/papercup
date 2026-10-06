@@ -456,6 +456,10 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     expect(compact).toContain('kind:enum(derived|agent-added)');
     expect(compact).toContain('from?:array(1-50)<string>');
     expect(compact).toContain('reason?:string(1-2000)');
+    expect(compact).toContain('constraint:itemProvenance[] (');
+    expect(compact).toContain('when kind=derived => from required; when kind!=derived => from forbidden');
+    expect(compact).toContain('when kind=agent-added => reason required');
+    expect(compact).toContain('when kind=agent-added => note forbidden');
   });
 
   it('keeps the late plans:new BAR contract in compact discovery output', () => {

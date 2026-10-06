@@ -25,6 +25,7 @@ import {
   gateFailingTestsMeasurement,
   deriveInRoutineGateStalled,
   combineGateStallSignals,
+  skippedPathArr,
   type RawGateCounters,
 } from './git-pipeline-stats';
 import { decideStallNotification } from './release/stall-escalation-ladder';
@@ -1157,5 +1158,50 @@ describe('pickRetriageVerdict (EI-19399662484764592, pure)', () => {
         null,
       ),
     ).toBeNull();
+  });
+});
+
+// WI-10006493: git-sync persists every deferral variant in `last_skipped_paths`. This parser used
+// to keep only the lock-holder shape, so fence and reservation deferrals never reached
+// dev:pipeline_position, which then advertised a git-sync:run that could not help.
+describe('skippedPathArr: every persisted git-sync deferral variant survives the read', () => {
+  const lock = { scope: 'superproject', path: 'a.ts', owner: 'su-a', intent: 'edit a' };
+  const reservation = {
+    scope: 'libs/papercusp',
+    path: 'libs/db/sql/1234-x.sql',
+    reason: 'migration-reservation',
+    detail: 'no reservation row for 1234',
+  };
+  const fence = {
+    scope: 'superproject',
+    path: 'b.ts',
+    reason: 'migration-dependency-fence',
+    detail: 'deferred because ...',
+    blockingMigrations: ['libs/papercusp/libs/db/sql/1234-x.sql'],
+    blockingAgents: ['su-author'],
+    blockingWorkItems: ['WI-777'],
+  };
+
+  it('keeps lock, reservation and fence entries with their provenance', () => {
+    expect(skippedPathArr([lock, reservation, fence])).toEqual([lock, reservation, fence]);
+  });
+
+  it('accepts a fence entry written before the provenance fields existed', () => {
+    const legacy = { scope: 'superproject', path: 'c.ts', reason: 'migration-dependency-fence', detail: 'd' };
+    expect(skippedPathArr([legacy])).toEqual([legacy]);
+  });
+
+  it('drops malformed entries and unknown reasons instead of passing them through', () => {
+    expect(
+      skippedPathArr([
+        null,
+        'a.ts',
+        { scope: 'superproject', path: 'x.ts' },
+        { scope: 'superproject', path: 'y.ts', reason: 'something-new', detail: 'd' },
+        { scope: 'superproject', path: 'z.ts', reason: 'migration-reservation' },
+        { ...fence, blockingAgents: ['su-author', 7] },
+      ]),
+    ).toEqual([{ ...fence, blockingAgents: ['su-author'] }]);
+    expect(skippedPathArr(undefined)).toEqual([]);
   });
 });

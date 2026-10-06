@@ -23,10 +23,24 @@ import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
-import { gitSidecarEnabled, noteSidecarFallback, runGitViaSpawnerSidecar } from './fleet/git-via-sidecar';
+import {
+  gitSidecarEnabled,
+  isSidecarInfrastructureFault,
+  noteSidecarDeadlineFallback,
+  noteSidecarFallback,
+  runCommandViaSpawnerSidecar,
+  runGitViaSpawnerSidecar,
+} from './fleet/git-via-sidecar';
 import { type CellUnknown, cellUnknown, formatCellUnknown } from './cell-contract';
 import { resolveReleaseRoot } from './release/release-root';
-import { type GitBatchResult, runGitBatch } from './git-batch';
+import {
+  buildGitBatchInvocation,
+  isReadOnlyGitBatchExec,
+  parseGitBatchResults,
+  type GitBatchCommand,
+  type GitBatchResult,
+  runGitBatch,
+} from './git-batch';
 
 const pexec = promisify(execFile);
 
@@ -276,16 +290,78 @@ function commitRefArgs(ref: string): string[] {
   return ['log', '-1', '--format=%H%n%ct%n%s', ref + '^{commit}'];
 }
 
-/**
- * EI-24852529885337741: the local (sidecar-free) path runs each wave's reads in ONE `sh`
- * instead of one host fork per read (~160 ms of main-thread time each at 1.7–2.2 GB RSS).
- * The sidecar path is unchanged — it already keeps the forks off the host.
- */
-function useLocalGitBatch(useSpawnerSidecar: boolean): boolean {
-  return !(useSpawnerSidecar && gitSidecarEnabled('PAPERCUSP_DEV_DEPLOY_SPAWN_SIDECAR'));
+const DEV_DEPLOY_BATCH_TIMEOUT_MS = 60_000;
+export const DEV_DEPLOY_SIDECAR_BATCH_DEADLINE_MS = 2_000;
+
+export interface DevDeployGitBatchDeps {
+  sidecarEnabled?: () => boolean;
+  viaSidecar?: typeof runCommandViaSpawnerSidecar;
+  localBatch?: typeof runGitBatch;
+  noteFallback?: typeof noteSidecarFallback;
+  noteDeadlineFallback?: typeof noteSidecarDeadlineFallback;
 }
 
-const DEV_DEPLOY_BATCH_TIMEOUT_MS = 60_000;
+function isSidecarBatchDeadlineMiss(result: { code: number; stderr: string }): boolean {
+  return result.code === -1 && /timed out after \d+ms — killed by the spawner sidecar guard/.test(result.stderr);
+}
+
+/**
+ * One bounded sidecar attempt for the diagnostic's verified read-only Git batch.
+ * A missed child deadline is counted for visibility but does not trip the shared
+ * sidecar breaker; the same reads then run in the local one-shell batch.
+ */
+export async function runDevDeployGitBatch(
+  commands: readonly GitBatchCommand[],
+  useSpawnerSidecar: boolean,
+  deps: DevDeployGitBatchDeps = {},
+): Promise<Array<GitBatchResult | null>> {
+  const runLocal = deps.localBatch ?? runGitBatch;
+  const local = (): Promise<Array<GitBatchResult | null>> =>
+    runLocal(commands, { label: 'dev-deploy-state', timeoutMs: DEV_DEPLOY_BATCH_TIMEOUT_MS });
+  if (commands.length === 0) return [];
+
+  const sidecarEnabled = deps.sidecarEnabled ?? (() => gitSidecarEnabled('PAPERCUSP_DEV_DEPLOY_SPAWN_SIDECAR'));
+  if (!useSpawnerSidecar || !sidecarEnabled()) return local();
+
+  const invocation = buildGitBatchInvocation(commands, 'dev-deploy-state');
+  if (!isReadOnlyGitBatchExec({ command: 'sh', args: invocation.args })) return local();
+  const viaSidecar = deps.viaSidecar ?? runCommandViaSpawnerSidecar;
+  const recordFallback = deps.noteFallback ?? noteSidecarFallback;
+  const recordDeadline = deps.noteDeadlineFallback ?? noteSidecarDeadlineFallback;
+  let result: Awaited<ReturnType<typeof runCommandViaSpawnerSidecar>>;
+  try {
+    // Do not attach an AbortSignal: this is a read-only command batch, and the
+    // remote result is either a complete frame set or a counted deadline miss.
+    result = await viaSidecar('sh', invocation.args, {
+      cwd: process.cwd(),
+      env: process.env,
+      timeoutMs: DEV_DEPLOY_SIDECAR_BATCH_DEADLINE_MS,
+    });
+  } catch (error) {
+    recordFallback('dev-deploy', error);
+    return local();
+  }
+
+  if (isSidecarInfrastructureFault(result)) {
+    recordFallback('dev-deploy', new Error(result.stderr));
+    return local();
+  }
+  if (isSidecarBatchDeadlineMiss(result)) {
+    recordDeadline('dev-deploy', new Error(result.stderr));
+    return local();
+  }
+  if (result.code !== 0) {
+    recordFallback('dev-deploy', new Error(`read-only Git batch helper exited ${result.code}: ${result.stderr}`));
+    return local();
+  }
+
+  const parsed = parseGitBatchResults(commands, result.stdout, invocation.nonce);
+  if (parsed.some((entry) => entry === null)) {
+    recordFallback('dev-deploy', new Error('sidecar read-only Git batch returned an incomplete frame set'));
+    return local();
+  }
+  return parsed;
+}
 
 /** One `git log -1` result from a batch, classified exactly as {@link commitRef} does. */
 export function commitRefFromBatch(repo: string, ref: string, result: GitBatchResult | null): CommitRefResult {
@@ -307,12 +383,9 @@ async function commitRefs(
   specs: ReadonlyArray<readonly [repo: string, ref: string]>,
   useSpawnerSidecar: boolean,
 ): Promise<CommitRefResult[]> {
-  if (!useLocalGitBatch(useSpawnerSidecar)) {
-    return Promise.all(specs.map(([repo, ref]) => commitRef(repo, ref, useSpawnerSidecar)));
-  }
-  const results = await runGitBatch(
+  const results = await runDevDeployGitBatch(
     specs.map(([repo, ref]) => ({ repo, args: commitRefArgs(ref) })),
-    { label: 'dev-deploy-state', timeoutMs: DEV_DEPLOY_BATCH_TIMEOUT_MS },
+    useSpawnerSidecar,
   );
   return specs.map(([repo, ref], i) => commitRefFromBatch(repo, ref, results[i] ?? null));
 }
@@ -323,13 +396,10 @@ async function aheadCounts(
   pairs: ReadonlyArray<readonly [from: string, to: string] | null>,
   useSpawnerSidecar: boolean,
 ): Promise<Array<number | null>> {
-  if (!useLocalGitBatch(useSpawnerSidecar)) {
-    return Promise.all(pairs.map((p) => (p ? aheadCount(repo, p[0], p[1], useSpawnerSidecar) : Promise.resolve(null))));
-  }
   const live = pairs.flatMap((p, i) => (p ? [{ i, from: p[0], to: p[1] }] : []));
-  const results = await runGitBatch(
+  const results = await runDevDeployGitBatch(
     live.map(({ from, to }) => ({ repo, args: ['rev-list', '--count', from + '..' + to] })),
-    { label: 'dev-deploy-state', timeoutMs: DEV_DEPLOY_BATCH_TIMEOUT_MS },
+    useSpawnerSidecar,
   );
   const counts: Array<number | null> = pairs.map(() => null);
   live.forEach(({ i }, k) => {

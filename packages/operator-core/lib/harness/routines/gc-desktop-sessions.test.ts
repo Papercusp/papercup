@@ -39,6 +39,7 @@ function session(over: Partial<DesktopSessionRecord> = {}): DesktopSessionRecord
     kind: 'xvfb-local',
     scope: 'pot',
     scopeRef: 'pot-a',
+    name: null,
     hostRef: null,
     ownerPid: 4242,
     ownerBootId: 'boot-1',
@@ -62,10 +63,41 @@ function session(over: Partial<DesktopSessionRecord> = {}): DesktopSessionRecord
 }
 
 /** A deps double that RECORDS the call order — the property under test. */
+describe('P-004: agent desktops die with their owning session (D-007)', () => {
+  it("reaps an active agent desktop whose owner session has ended, keeps a live owner's, never asks about pot rows", async () => {
+    const dead = session({ id: 'agent-dead', scope: 'agent', scopeRef: 'owner-ended', taskId: 'task-dead' });
+    const alive = session({ id: 'agent-live', scope: 'agent', scopeRef: 'owner-live', taskId: 'task-live' });
+    const pot = session({ id: 'pot-row', taskId: 'task-pot' });
+    const ownerSessionStates = vi.fn(async () => new Map<string, string | null>([['owner-ended', 'ended'], ['owner-live', 'live']]));
+    const { d } = deps([dead, alive, pot], { ownerSessionStates });
+    const res = await gcDesktopSessions({ now: NOW, deps: d });
+    expect(ownerSessionStates).toHaveBeenCalledWith(['owner-ended', 'owner-live']);
+    expect(res.reaped).toBe(1);
+    expect(d.kill).toHaveBeenCalledWith('task-dead');
+    expect(d.kill).not.toHaveBeenCalledWith('task-live');
+    expect(res.sessions.find((s) => s.id === 'agent-dead')?.reason).toContain('has ended');
+  });
+
+  it('an unreadable oracle leaves agent desktops to the ordinary ladder', async () => {
+    const row = session({ id: 'agent-x', scope: 'agent', scopeRef: 'owner-x', taskId: 'task-x' });
+    const { d } = deps([row], { ownerSessionStates: vi.fn(async () => { throw new Error('pg down'); }) });
+    const res = await gcDesktopSessions({ now: NOW, deps: d });
+    expect(res.reaped).toBe(0);
+    expect(d.kill).not.toHaveBeenCalled();
+  });
+
+  it('does not consult the oracle when there are no agent desktops', async () => {
+    const { d } = deps([session()]);
+    await gcDesktopSessions({ now: NOW, deps: d });
+    expect(d.ownerSessionStates).not.toHaveBeenCalled();
+  });
+});
+
 function deps(sessions: DesktopSessionRecord[], over: Partial<GcDesktopSessionsDeps> = {}) {
   const calls: string[] = [];
   const d: GcDesktopSessionsDeps = {
     list: vi.fn(async () => sessions) as unknown as GcDesktopSessionsDeps['list'],
+    ownerSessionStates: vi.fn(async () => new Map<string, string | null>()),
     freeze: vi.fn(async (t: string) => {
       calls.push(`freeze:${t}`);
       return ok(t, 'freeze');

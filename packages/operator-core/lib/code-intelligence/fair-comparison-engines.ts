@@ -20,9 +20,10 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { isAbsolute, relative } from 'node:path';
-import type { SymbolSite } from './contracts';
+import { gitnexusStartLineBase, type SymbolSite } from './contracts';
 import type { PhaseCost } from './engine-comparison';
-import { execTimed, phaseOf, type ArmDeps } from './engine-comparison-arms';
+import { analyzePhaseOf, execTimed, gitnexusAnalyzeInvocation, phaseOf, type ArmDeps } from './engine-comparison-arms';
+import { cbmProjectName, parseSearchCode, parseSearchGraph, parseTrace, unwrapCbmEnvelope, withDaemonPeak, type CbmDeclaration } from './engine-comparison-cbm';
 import type { ArmCapabilities, FairCase, FairIntent } from './fair-comparison';
 import { guardedArm, type AcceptedEngineFault, type FairArm, type RawReply } from './fair-comparison-arms';
 
@@ -423,6 +424,293 @@ export function createCgcArm(cfg: EngineArmConfig, deps: ArmDeps, now?: () => nu
     async ask(kase) {
       session ??= openMcpSession(cfg, ['mcp', 'start'], env);
       return askCgc(await session, kase, cfg.treeRoot);
+    },
+    async close() {
+      if (session) await (await session).close();
+      session = null;
+    },
+  });
+}
+
+// ─── shared: same-name candidates ────────────────────────────────────────────
+
+/**
+ * Exact-name candidates narrowed to anchorFile when any of them lives there,
+ * otherwise all of them (D-013 rule 2: with no usable anchor the union is
+ * scored). The same rule trace-mcp's adapter applies, so every engine that
+ * resolves by name first is disambiguated identically.
+ */
+export function narrowToAnchor<T>(kase: FairCase, items: readonly T[], fileOf: (t: T) => string | undefined): T[] {
+  const inAnchor = kase.anchorFile ? items.filter((t) => posix(fileOf(t) ?? '') === kase.anchorFile) : [];
+  return inAnchor.length > 0 ? inAnchor : [...items];
+}
+
+// ─── GitNexus (PolyForm-Noncommercial-1.0.0) — answers over MCP stdio ────────
+//
+// Why not fromEngineArm over the 2026-10-02 GitNexus arm (D-015): that arm reads
+// through the production facade, which caps every answer at 100 sites, reduces
+// impact to a count and a risk grade, and receives only the subject, never
+// anchorFile or depth. Each of those breaks a D-013 rule, so this adapter talks
+// to the engine directly and reuses only the production analyze invocation and
+// the measured line base per version.
+
+/**
+ * GitNexus's intents. `context` answers callers, callees and the symbol itself;
+ * `impact` walks upstream to a depth. It has no references query (its incoming
+ * edges are calls) and no literal text search (`query` is concept search), so
+ * neither is declared.
+ */
+export const GITNEXUS_INTENTS: readonly FairIntent[] = ['callers', 'callees', 'impact', 'definition', 'symbol-search'];
+
+/** The JSON of a GitNexus MCP reply. GitNexus appends `\n---` next-step hints after the JSON; they are not part of the answer. */
+export function gitnexusJson(result: unknown): { json: Record<string, unknown>; isError: boolean } {
+  const r = result as { content?: Array<{ type?: string; text?: string }>; isError?: boolean };
+  const text = (r.content ?? []).filter((c) => c.type === 'text').map((c) => c.text ?? '').join('');
+  try {
+    return { json: JSON.parse(text.split('\n---')[0]!) as Record<string, unknown>, isError: r.isError === true };
+  } catch {
+    throw new Error(`gitnexus returned non-JSON (${text.length} chars): ${text.slice(0, 200)}`);
+  }
+}
+
+interface GnxNode {
+  readonly uid?: string;
+  readonly id?: string;
+  readonly name?: string;
+  readonly kind?: string;
+  readonly filePath?: string;
+  readonly startLine?: number;
+  /** The line on an `ambiguous` candidate (same base as startLine). */
+  readonly line?: number;
+}
+
+/** A one-based line from a GitNexus raw line, given the version's measured base (contracts.ts). */
+export const gitnexusLine1 = (raw: number | undefined, base: 0 | 1): number | null =>
+  typeof raw === 'number' ? raw + (base === 0 ? 1 : 0) : null;
+
+/** The node kind GitNexus encodes as the uid prefix (`Function:src/a.ts:f`, `File:src/a.ts`). */
+const gnxKind = (uid: string): string | null => (uid.includes(':') ? uid.slice(0, uid.indexOf(':')) : null);
+
+/** Answer one case through an open GitNexus MCP session (exported for tests with a fake session). */
+export async function askGitnexus(session: Pick<McpSession, 'call'>, kase: FairCase, base: 0 | 1): Promise<RawReply> {
+  const call = async (tool: string, args: Record<string, unknown>) => {
+    const { json, isError } = gitnexusJson(await session.call(tool, args));
+    if (isError) throw new Error(`gitnexus ${tool}: ${JSON.stringify(json).slice(0, 300)}`);
+    return json;
+  };
+  const notes: string[] = [];
+  const first = await call('context', { name: kase.subject });
+  let targets: Array<{ node: GnxNode; ctx: Record<string, unknown> | null }>;
+  if (first.status === 'found') {
+    targets = [{ node: (first.symbol as GnxNode | undefined) ?? {}, ctx: first }];
+  } else if (first.status === 'ambiguous') {
+    const listed = (first.candidates as GnxNode[] | undefined) ?? [];
+    // GitNexus lists at most 30 candidates (LIMIT 30 in its context resolver).
+    if (listed.length >= 30) notes.push('gitnexus: candidate list may be capped at 30');
+    targets = narrowToAnchor(kase, listed.filter((c) => c.name === kase.subject), (c) => c.filePath).map((node) => ({ node, ctx: null }));
+  } else if (typeof first.error === 'string' && /not found/i.test(first.error)) {
+    return { sites: [], error: null, note: 'gitnexus: symbol not found' };
+  } else {
+    throw new Error(`gitnexus context: unrecognized reply ${JSON.stringify(first).slice(0, 200)}`);
+  }
+  const note = () => (notes.length > 0 ? notes.join('; ') : null);
+
+  if (kase.intent === 'definition' || kase.intent === 'symbol-search') {
+    const exact = targets.filter((t) => t.node.name === kase.subject);
+    return { sites: exact.map((t) => site(t.node.filePath, gitnexusLine1(t.node.startLine ?? t.node.line, base), t.node.kind)), error: null, note: note() };
+  }
+
+  // Edge rows carry only uid/name/filePath. A File node is the file's top level
+  // (D-013 module scope: line 1); any other node's line comes from GitNexus's own
+  // context lookup by uid (D-013 rule 3).
+  const lines = new Map<string, number | null>();
+  const edgeSite = async (uid: string, filePath: string | undefined): Promise<SymbolSite> => {
+    if (uid.startsWith('File:')) return site(filePath ?? uid.slice(5), 1, 'file');
+    if (!lines.has(uid)) {
+      const j = await call('context', { uid });
+      lines.set(uid, j.status === 'found' ? gitnexusLine1((j.symbol as GnxNode | undefined)?.startLine, base) : null);
+    }
+    return site(filePath, lines.get(uid) ?? null, gnxKind(uid));
+  };
+
+  const sites: SymbolSite[] = [];
+  for (const t of targets) {
+    const uid = t.node.uid;
+    if (!uid) throw new Error(`gitnexus: candidate without a uid for ${kase.subject}`);
+    if (kase.intent === 'callers' || kase.intent === 'callees') {
+      const ctx = t.ctx ?? (await call('context', { uid }));
+      const side = ctx[kase.intent === 'callers' ? 'incoming' : 'outgoing'] as { calls?: GnxNode[] } | undefined;
+      for (const e of side?.calls ?? []) sites.push(await edgeSite(e.uid ?? '', e.filePath));
+    } else if (kase.intent === 'impact') {
+      const j = await call('impact', {
+        target: kase.subject,
+        target_uid: uid,
+        direction: 'upstream',
+        maxDepth: kase.depth ?? 2,
+        includeTests: true,
+        limit: 100_000,
+      });
+      if (typeof j.error === 'string') return { sites: [], error: `gitnexus impact: ${j.error.slice(0, 300)}` };
+      if (j.pagination || j.partial === true || j.truncated === true) notes.push('gitnexus: impact answer paginated or partial');
+      for (const rows of Object.values((j.byDepth as Record<string, GnxNode[]> | undefined) ?? {})) {
+        for (const r of rows) sites.push(await edgeSite(r.id ?? r.uid ?? '', r.filePath));
+      }
+    } else {
+      throw new Error(`declined: gitnexus has no query for intent '${kase.intent}'`);
+    }
+  }
+  return { sites, error: null, note: note() };
+}
+
+/**
+ * The GitNexus arm. Indexing runs the production `analyze` invocation
+ * (gitnexusAnalyzeInvocation: heap, stack and WAL pins); queries go to
+ * `gitnexus mcp` under the same isolated HOME, whose registry holds only this
+ * tree. The version's raw line base is measured, never assumed: an unmeasured
+ * version refuses to build the arm.
+ */
+export function createGitnexusFairArm(cfg: EngineArmConfig, deps: ArmDeps, now?: () => number): FairArm {
+  const base = gitnexusStartLineBase(cfg.version);
+  if (base === null) throw new Error(`gitnexus ${cfg.version}: no measured startLine base in GITNEXUS_START_LINE_BASE_BY_VERSION (contracts.ts)`);
+  const exec = deps.exec ?? execTimed;
+  const capabilities: ArmCapabilities = { armId: 'gitnexus', version: cfg.version, intents: GITNEXUS_INTENTS, licence: 'noncommercial' };
+  let session: Promise<McpSession> | null = null;
+  return guardedArm({
+    capabilities,
+    unavailable: null,
+    ...(now ? { now } : {}),
+    async index() {
+      const inv = gitnexusAnalyzeInvocation(cfg, ['analyze', '--skip-agents-md', '--force', '.']);
+      return analyzePhaseOf(await exec(inv.cmd, inv.args, { cwd: cfg.treeRoot, env: { ...cfg.env, ...inv.env }, timeoutMs: 4 * 3_600_000 }), deps);
+    },
+    async ask(kase) {
+      session ??= openMcpSession(cfg, ['mcp']);
+      return askGitnexus(await session, kase, base);
+    },
+    async close() {
+      if (session) await (await session).close();
+      session = null;
+    },
+  });
+}
+
+// ─── codebase-memory (MIT, DeusData/codebase-memory-mcp) — MCP stdio ─────────
+//
+// Why not fromEngineArm over the 2026-10-02 codebase-memory arm (D-015): it ran
+// trace_path at CBM's default depth 3 (so "callers" returned callers of callers)
+// with the default 100-row / 3200-token budget, ran search_code at its default
+// 10 results x 8 matches, and never received anchorFile or depth. This adapter
+// reuses that arm's parsers and its daemon-RSS sampling for indexing.
+
+/** CBM's intents. It has no references query, so references is not declared. */
+export const CBM_INTENTS: readonly FairIntent[] = ['callers', 'callees', 'impact', 'definition', 'symbol-search', 'text-search'];
+
+/** Every CBM cap the arm touches, at the engine's own maximum (D-013 rule 2). */
+export const CBM_LIMITS = Object.freeze({
+  searchGraph: { limit: 500, max_output_tokens: 1_000_000 },
+  tracePath: { limit: 5000, max_output_tokens: 1_000_000, include_tests: true },
+  searchCode: { result_limit: 500, match_limit: 500, raw_limit: 100, max_output_tokens: 1_000_000 },
+});
+
+const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * An exact-name alternation CBM's `name_pattern` accepts. CBM's regex engine has
+ * no non-capturing group: `^report$` matches, `^(?:report)$` matches NOTHING and
+ * reports no error (measured on the micro repo, 2026-10-06). A plain group works.
+ */
+export const cbmNameAlternation = (names: readonly string[]): string => `^(${[...new Set(names)].map(escapeRe).join('|')})$`;
+
+const cbmQn =(d: Pick<CbmDeclaration, 'qnPrefix' | 'name'>): string => (d.qnPrefix ? `${d.qnPrefix}.${d.name}` : d.name);
+
+/** Answer one case through an open CBM MCP session (exported for tests with a fake session). */
+export async function askCbm(session: Pick<McpSession, 'call'>, kase: FairCase, project: string): Promise<RawReply> {
+  const notes: string[] = [];
+  const call = async (tool: string, args: Record<string, unknown>): Promise<Record<string, unknown>> => {
+    const u = unwrapCbmEnvelope(JSON.stringify(await session.call(tool, { project, format: 'json', ...args })));
+    if (u.isError || u.payload === null) throw new Error(`cbm ${tool}: ${u.text.slice(0, 300)}`);
+    return u.payload;
+  };
+  const graph = async (pattern: string): Promise<CbmDeclaration[]> => {
+    const p = await call('search_graph', { name_pattern: pattern, ...CBM_LIMITS.searchGraph });
+    if (p.has_more === true || p.truncated === true) notes.push('cbm: search_graph hit its 500-row cap');
+    return parseSearchGraph(p);
+  };
+  const note = () => (notes.length > 0 ? [...new Set(notes)].join('; ') : null);
+
+  if (kase.intent === 'text-search') {
+    const p = await call('search_code', { pattern: kase.subject, mode: 'compact', ...CBM_LIMITS.searchCode });
+    const iOmitted = Array.isArray(p.cols) ? p.cols.indexOf('matches_omitted') : -1;
+    const omitted = iOmitted >= 0 && Array.isArray(p.rows) && p.rows.some((r) => Array.isArray(r) && typeof r[iOmitted] === 'number' && r[iOmitted] > 0);
+    if (p.has_more === true || p.raw_has_more === true || p.truncated === true || omitted) notes.push('cbm: search_code answer truncated');
+    return { sites: parseSearchCode(p), error: null, note: note() };
+  }
+
+  const candidates = narrowToAnchor(kase, (await graph(`^${escapeRe(kase.subject)}$`)).filter((d) => d.name === kase.subject), (d) => d.path);
+  if (kase.intent === 'definition' || kase.intent === 'symbol-search') {
+    return { sites: candidates.map((d) => site(d.path, d.line1, d.kind)), error: null, note: note() };
+  }
+  if (kase.intent !== 'callers' && kase.intent !== 'callees' && kase.intent !== 'impact') {
+    throw new Error(`declined: codebase-memory has no query for intent '${kase.intent}'`);
+  }
+  if (candidates.length === 0) return { sites: [], error: null, note: 'cbm: symbol not found' };
+
+  // trace_path names each related function (qn prefix + name) without a line;
+  // one search_graph call resolves the names to CBM's own declaration lines.
+  const direction = kase.intent === 'callees' ? 'outbound' : 'inbound';
+  const depth = kase.intent === 'impact' ? (kase.depth ?? 2) : 1;
+  const hits: Array<{ qnPrefix: string; name: string }> = [];
+  for (const c of candidates) {
+    const t = await call('trace_path', { function_name: cbmQn(c), direction, depth, ...CBM_LIMITS.tracePath });
+    if (t.status === 'ambiguous') throw new Error(`cbm trace_path: '${cbmQn(c)}' is ambiguous`);
+    const side = direction === 'inbound' ? 'callers' : 'callees';
+    if (t[`${side}_total_relation`] !== undefined && t[`${side}_total_relation`] !== 'eq') notes.push(`cbm: trace_path ${side} total is a bound, not exact`);
+    if (t.next_cursor || t.has_more === true) notes.push('cbm: trace_path answer paginated');
+    hits.push(...parseTrace(t, direction));
+  }
+  if (hits.length === 0) return { sites: [], error: null, note: note() };
+  const want = new Set(hits.map((h) => cbmQn(h)));
+  const decls = await graph(cbmNameAlternation(hits.map((h) => h.name)));
+  return { sites: decls.filter((d) => want.has(cbmQn(d))).map((d) => site(d.path, d.line1, d.kind)), error: null, note: note() };
+}
+
+export interface CbmFairConfig extends EngineArmConfig {
+  /** Scratch CBM_CACHE_DIR holding the project database, unique per tree. */
+  readonly cacheDir: string;
+  /** Daemon RSS sample period in ms (default 500). */
+  readonly sampleMs?: number;
+}
+
+/**
+ * The codebase-memory arm. Indexing is the one-shot `cli index_repository`
+ * with the indexing daemon's peak RSS sampled (the CLI client alone reads
+ * ~17 MB); queries go to the stdio MCP server over the same cache. `install`
+ * is never run: it writes agent hooks and MCP config.
+ */
+export function createCbmFairArm(cfg: CbmFairConfig, deps: ArmDeps, now?: () => number, sample?: () => Promise<number>): FairArm {
+  const exec = deps.exec ?? execTimed;
+  const capabilities: ArmCapabilities = { armId: 'codebase-memory', version: cfg.version, intents: CBM_INTENTS, licence: 'permissive' };
+  const extraEnv = { CBM_CACHE_DIR: cfg.cacheDir };
+  let project = cbmProjectName(cfg.treeRoot);
+  let session: Promise<McpSession> | null = null;
+  return guardedArm({
+    capabilities,
+    unavailable: null,
+    ...(now ? { now } : {}),
+    async index() {
+      const env = { ...cfg.env, ...extraEnv, HOME: cfg.home };
+      const r = await withDaemonPeak(
+        () => exec(cfg.bin, ['cli', '--json', 'index_repository', '--repo-path', cfg.treeRoot], { cwd: cfg.treeRoot, env, timeoutMs: 4 * 3_600_000 }),
+        cfg.sampleMs ?? 500,
+        sample,
+      );
+      const { payload, isError } = unwrapCbmEnvelope(r.stdout);
+      if (typeof payload?.project === 'string') project = payload.project;
+      return phaseOf(r, deps, r.code === 0 && !isError);
+    },
+    async ask(kase) {
+      session ??= openMcpSession(cfg, [], extraEnv);
+      return askCbm(await session, kase, project);
     },
     async close() {
       if (session) await (await session).close();

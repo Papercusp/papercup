@@ -238,7 +238,9 @@ export function createCodebaseMemoryArm(cfg: CbmArmConfig, deps: ArmDeps, exec: 
           const hits = parseTrace(u.payload, direction);
           if (hits.length === 0) return done([]);
           const names = [...new Set(hits.map((h) => h.name))];
-          const { decls, error } = await graphSearch(`^(?:${names.map(escapeRe).join('|')})$`, bytes);
+          // A plain group: CBM's regex engine has no `(?:…)` and silently matches nothing for it
+          // (measured 2026-10-06, P-017 D-015) — which emptied every callers/callees answer here.
+          const { decls, error } = await graphSearch(`^(${names.map(escapeRe).join('|')})$`, bytes);
           const want = new Set(hits.map((h) => `${h.qnPrefix}\u0000${h.name}`));
           return done(decls.filter((d) => want.has(`${d.qnPrefix}\u0000${d.name}`)), error);
         }

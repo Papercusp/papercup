@@ -101,7 +101,7 @@ export interface HostedBudgetExecutionGrant extends Omit<HostedBudgetRequest, 'a
   readonly policyRevision: number;
   readonly evidenceRef: string;
 }
-interface Receipt extends Omit<HostedBudgetRequest, 'asOfMs'> {
+export interface HostedBudgetReceipt extends Omit<HostedBudgetRequest, 'asOfMs'> {
   readonly eventId: string;
   readonly revision: number;
   readonly requestHash: string;
@@ -113,6 +113,13 @@ interface Receipt extends Omit<HostedBudgetRequest, 'asOfMs'> {
   readonly costMicrosExact?: string;
   readonly providerFinal: boolean;
   readonly evidenceRef: string;
+}
+type Receipt = HostedBudgetReceipt;
+export interface HostedBudgetPopulation {
+  /** Every immutable revision, including unpriced admissions and old windows. */
+  readonly history: readonly HostedBudgetReceipt[];
+  /** One current revision per control/organization/reservation, not per amount. */
+  readonly latest: readonly HostedBudgetReceipt[];
 }
 type Row = Record<string, unknown>;
 const identifier = (v: unknown) => typeof v === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/.test(v);
@@ -164,9 +171,49 @@ function receipt(r: Row): Receipt {
     evidenceRef: r.evidence_ref as string };
 }
 async function lock(sql: Sql, s: HostedBudgetScope): Promise<void> {
+  // The full local census and the subsequent receipt INSERT share this fence.
+  // Take a write-capable mode BEFORE organization/account/source locks: two
+  // SHARE readers that later INSERT would otherwise wait on each other's
+  // upgrades. Raw INSERT takes its table lock before the organization trigger,
+  // so store writers must use that same table-before-organization order.
+  await sql`SELECT papercusp_auth.lock_hosted_stripe_funding_population('budget-writer')`;
   // Use the identical SQL writer as the table guard, including JSON spacing.
   await sql`SELECT pg_advisory_xact_lock(hashtextextended(
     json_build_array('hosted-budget', ${s.controlWorkspaceId}::text, ${s.organizationId}::text)::text, 0))`;
+}
+
+/** Complete LOCAL receipt history through the caller's reservation transaction.
+ * The store takes the write-capable population fence before its organization
+ * lock, then preserves organization -> account -> source ordering. Require
+ * that already-held fence here; acquiring it after an account/source lock
+ * would invert the writer order. It remains held through the admission INSERT
+ * and commit/rollback, even with no rows. No runner, month or tenant filter.
+ *
+ * These receipts do not authenticate a provider account/invoice/generation or
+ * certify that a cost is absent from another ledger. Unknown costs, fractional
+ * corrections and opaque providerLimitRef values remain intact. This is not
+ * funding, a policy reader, an allowance, or provider completeness evidence.
+ */
+export async function readLockedHostedBudgetPopulation(sql: Sql): Promise<HostedBudgetPopulation> {
+  const [isolation] = await sql<{ transaction_isolation: string }[]>`SHOW transaction_isolation`;
+  if (isolation?.transaction_isolation !== 'read committed') throw new Error('budget population requires read committed');
+  const [started] = await sql<{ transaction_id: string }[]>`SELECT pg_current_xact_id()::text AS transaction_id`;
+  const [fence] = await sql<{ held: boolean }[]>`SELECT EXISTS (
+    SELECT 1 FROM pg_locks WHERE pid = pg_backend_pid() AND granted
+      AND relation = 'papercusp_auth.hosted_budget_receipts'::regclass
+      AND mode = 'ShareRowExclusiveLock'
+  ) AS held`;
+  if (!fence?.held) throw new Error('budget population requires the early writer fence');
+  const rows = await sql<Row[]>`SELECT * FROM papercusp_auth.hosted_budget_receipts
+    ORDER BY control_workspace_id COLLATE "C", organization_id COLLATE "C", reservation_id COLLATE "C", revision`;
+  const population = rows.map(r => Object.freeze(receipt(r)));
+  const current = new Map<string, HostedBudgetReceipt>();
+  for (const r of population) current.set(JSON.stringify([r.scope.controlWorkspaceId, r.scope.organizationId, r.reservationId]), r);
+  const [finished] = await sql<{ transaction_id: string }[]>`SELECT pg_current_xact_id()::text AS transaction_id`;
+  if (!started?.transaction_id || finished?.transaction_id !== started.transaction_id) {
+    throw new Error('budget population requires one transaction');
+  }
+  return Object.freeze({ history: Object.freeze(population), latest: Object.freeze([...current.values()]) });
 }
 async function history(sql: Sql, s: HostedBudgetScope, reservationId: string): Promise<Receipt[]> {
   const rows = await sql<Row[]>`SELECT * FROM papercusp_auth.hosted_budget_receipts

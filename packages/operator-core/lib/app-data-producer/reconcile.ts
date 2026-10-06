@@ -35,7 +35,7 @@ import {
 } from './live-sink';
 import { appServiceAuthHeader } from './app-auth';
 import { listAppOwnerMappings, type ProducerApp } from './owner-mapping';
-import { DATATYPE_FOR_APP, sourceRefForApp } from './app-rows';
+import { APP_SYNC_SOURCE_REF, DATATYPE_FOR_APP } from './app-rows';
 
 /** Rows per POST. Bounded so one pathological user cannot build an unsendable body. */
 export const RECONCILE_BATCH_SIZE = 200;
@@ -171,7 +171,7 @@ export async function fetchAppCursor(
 ): Promise<FetchAppCursorResult> {
   const baseUrl = options.baseUrl?.replace(/\/+$/, '') || readAppBaseUrl(app);
   const doFetch = options.fetchImpl ?? fetch;
-  const sourceRef = sourceRefForApp(app);
+  const sourceRef = APP_SYNC_SOURCE_REF;
   try {
     const authorization = await appServiceAuthHeader(app, ownerId, { secret: options.secret });
     const response = await doFetch(
