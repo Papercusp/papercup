@@ -517,6 +517,74 @@ describe('authenticated Stripe funding collection (locked server population stil
       .toEqual({ ok: false, reason: 'unreconciled-stripe-source' });
     expect(calls).toHaveLength(3);
   });
+
+  it.each([0, -1, 0.5, NaN, Infinity, 10_001])('rejects an invalid whole-collection deadline %s', async maximumDurationMs => {
+    const { client, calls } = collectorClient();
+    await expect(collectHostedStripeFunding(collection(), { client, maximumDurationMs })).rejects.toThrow('invalid Stripe funding collection');
+    expect(calls).toHaveLength(0);
+  });
+
+  it('shares one cancellation signal through every account, census and lineage read', async () => {
+    const { client } = collectorClient();
+    const parent = new AbortController();
+    expect(await collectHostedStripeFunding(collection(), { client, now: () => T, signal: parent.signal })).toMatchObject({ ok: true });
+    const signals = [client.readAccountCash, client.readAccountPaymentSources, client.readAccountTransactions,
+      client.readPaymentLineage].flatMap(fn => vi.mocked(fn).mock.calls.map(call => call[1]));
+    expect(signals).toHaveLength(7);
+    expect(signals.every(signal => signal instanceof AbortSignal && signal === signals[0])).toBe(true);
+    parent.abort();
+    expect(signals[0]?.aborted).toBe(true);
+  });
+
+  it('refuses a pre-cancelled collection without reading any provider stage', async () => {
+    const { client, calls } = collectorClient();
+    const parent = new AbortController(); parent.abort(new Error('private cancellation'));
+    expect(await collectHostedStripeFunding(collection(), { client, signal: parent.signal }))
+      .toEqual({ ok: false, reason: 'unverified-stripe-read' });
+    expect(calls).toHaveLength(0);
+  });
+
+  it('uses one deadline across successive reads instead of restarting it for each stage', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+    try {
+      const { client, calls } = collectorClient();
+      let cancelled = false;
+      const delay = (signal?: AbortSignal) => new Promise<void>((resolve, reject) => {
+        if (!signal) throw new Error('missing transport cancellation');
+        signal.throwIfAborted();
+        const abort = () => { cancelled = true; clearTimeout(timer); reject(new Error('private cancellation')); };
+        const timer = setTimeout(() => { signal.removeEventListener('abort', abort); resolve(); }, 6);
+        signal.addEventListener('abort', abort, { once: true });
+      });
+      const delayed: HostedStripeFundingCollectorClient = {
+        livemode: true,
+        readAccountCash: async (args, signal) => { await delay(signal); return client.readAccountCash(args, signal); },
+        readAccountPaymentSources: async (args, signal) => { await delay(signal); return client.readAccountPaymentSources(args, signal); },
+        readAccountTransactions: async (args, signal) => { await delay(signal); return client.readAccountTransactions(args, signal); },
+        readPaymentLineage: async (args, signal) => { await delay(signal); return client.readPaymentLineage(args, signal); },
+      };
+      const pending = collectHostedStripeFunding(collection(), { client: delayed, now: () => T, maximumDurationMs: 20 });
+      await vi.advanceTimersByTimeAsync(19);
+      expect(calls.map(call => call.kind)).toEqual(['cash', 'sources', 'transactions']);
+      expect(cancelled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await pending).toEqual({ ok: false, reason: 'unverified-stripe-read' });
+      expect(cancelled).toBe(true);
+      expect(calls).toHaveLength(3);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it.each(['final-read', 'reconciliation'] as const)('refuses completion past the monotonic collection deadline at %s before timer delivery', async phase => {
+    let elapsed = 0;
+    const clock = vi.spyOn(performance, 'now').mockImplementation(() => elapsed);
+    try {
+      const { client, calls } = collectorClient(stripeRead(), { beforeRead: index => { if (phase === 'final-read' && index === 6) elapsed = 20; } });
+      expect(await collectHostedStripeFunding(collection(), { client, now: () => { if (phase === 'reconciliation') elapsed = 20; return T; }, maximumDurationMs: 20 }))
+        .toEqual({ ok: false, reason: 'unverified-stripe-read' });
+      expect(calls).toHaveLength(7);
+    } finally { clock.mockRestore(); }
+  });
 });
 
 describe('Stripe funding reconciliation against the complete journal and receipt population', () => {

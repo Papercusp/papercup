@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
+import { createServer } from 'node:http';
 import { createStripeBillingClient, stripeKeyMode, type StripePaymentLineagePin } from './stripe-billing-client';
 
 interface Call { url: string; headers: Record<string, string>; form: URLSearchParams }
@@ -132,7 +133,7 @@ describe('authenticated account cash evidence', () => {
     expect(r.fetchImpl.mock.calls.map((c: unknown[]) => c[0])).toEqual([
       'https://api.stripe.com/v1/account', 'https://api.stripe.com/v1/customers/cus_A', 'https://api.stripe.com/v1/balance',
     ]);
-    for (const [, init] of r.fetchImpl.mock.calls) expect(init).toEqual({ method: 'GET', redirect: 'error', headers: { authorization: 'Bearer sk_live_key' } });
+    for (const [, init] of r.fetchImpl.mock.calls) expect(init).toEqual({ method: 'GET', redirect: 'error', headers: { authorization: 'Bearer sk_live_key' }, signal: expect.any(AbortSignal) });
     if (result.ok) { expect(Object.isFrozen(result.evidence)).toBe(true); expect(Object.isFrozen(result.evidence.requestIds)).toBe(true); }
     expect(JSON.stringify(result)).not.toContain('sk_live_key');
   });
@@ -246,6 +247,106 @@ describe('authenticated account cash evidence', () => {
   });
 });
 
+describe('authenticated Stripe read cancellation', () => {
+  const pin = { accountId: 'acct_A', customerId: 'cus_A', organizationId: ORG };
+  const refusal = { ok: false, code: 'provider-error', status: null, detail: 'stripe authenticated read failed' };
+
+  it.each([0, -1, 0.5, NaN, Infinity, 10_001])('refuses an invalid request deadline %s', readTimeoutMs => {
+    const fetchImpl = vi.fn();
+    expect(createStripeBillingClient({ secretKey: 'sk_live_key', liveModeAllowed: true,
+      fetchImpl: fetchImpl as typeof fetch, readTimeoutMs })).toEqual({ ok: false, code: 'invalid_read_timeout' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it.each(['fetch', 'body'] as const)('aborts a stalled %s and clears the request timer', async phase => {
+    vi.useFakeTimers();
+    try {
+      let signal: AbortSignal | undefined;
+      let pendingIo = false;
+      const fetchImpl = vi.fn(async (_url, init) => {
+        signal = init?.signal as AbortSignal;
+        const stall = () => new Promise<never>((_resolve, reject) => {
+          pendingIo = true;
+          signal!.addEventListener('abort', () => { pendingIo = false; reject(new Error('private provider error')); }, { once: true });
+        });
+        if (phase === 'fetch') return stall();
+        const response = new Response('{}', { headers: { 'request-id': 'req_Proof' } });
+        response.json = stall;
+        return response;
+      }) as typeof fetch;
+      const built = createStripeBillingClient({ secretKey: 'sk_live_key', fetchImpl, liveModeAllowed: true, readTimeoutMs: 20 });
+      if (!built.ok) throw new Error('fixture');
+      const pending = built.client.readAccountCash(pin);
+      await vi.advanceTimersByTimeAsync(19);
+      expect(pendingIo).toBe(true);
+      expect(signal?.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await pending).toEqual(refusal);
+      expect(signal?.aborted).toBe(true);
+      expect(pendingIo).toBe(false);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('refuses a pre-cancelled request without invoking the transport', async () => {
+    const fetchImpl = vi.fn();
+    const built = createStripeBillingClient({ secretKey: 'sk_live_key', fetchImpl: fetchImpl as typeof fetch, liveModeAllowed: true });
+    if (!built.ok) throw new Error('fixture');
+    const parent = new AbortController(); parent.abort(new Error('private cancellation reason'));
+    expect(await built.client.readAccountCash(pin, parent.signal)).toEqual(refusal);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it.each(['caller', 'error-status'] as const)('closes an actual streaming response connection on %s', async reason => {
+    let bodyOpened!: () => void;
+    const opened = new Promise<void>(resolve => { bodyOpened = resolve; });
+    let connectionClosed!: () => void;
+    const closed = new Promise<void>(resolve => { connectionClosed = resolve; });
+    const server = createServer((_request, response) => {
+      response.on('close', connectionClosed);
+      response.writeHead(reason === 'caller' ? 200 : 503, { 'content-type': 'application/json', 'request-id': 'req_Proof' });
+      response.write('{');
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('fixture');
+    const parent = new AbortController();
+    const fetchImpl: typeof fetch = async (_url, init) => {
+      const response = await fetch(`http://127.0.0.1:${address.port}`, init);
+      bodyOpened();
+      return response;
+    };
+    try {
+      const built = createStripeBillingClient({ secretKey: 'sk_live_key', fetchImpl, liveModeAllowed: true });
+      if (!built.ok) throw new Error('fixture');
+      const pending = built.client.readAccountCash(pin, parent.signal);
+      await opened;
+      if (reason === 'caller') parent.abort(new Error('private cancellation reason'));
+      expect(await pending).toEqual({ ...refusal, status: reason === 'caller' ? null : 503 });
+      await closed;
+    } finally {
+      parent.abort();
+      server.closeAllConnections();
+      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    }
+  });
+
+  it('refuses a completed response past its monotonic deadline even before the timer fires', async () => {
+    let elapsed = 0;
+    const clock = vi.spyOn(performance, 'now').mockImplementation(() => elapsed);
+    try {
+      const fetchImpl = vi.fn(async () => {
+        elapsed = 20;
+        return new Response(JSON.stringify({ object: 'account', id: 'acct_A' }), { headers: { 'request-id': 'req_Proof' } });
+      }) as typeof fetch;
+      const built = createStripeBillingClient({ secretKey: 'sk_live_key', fetchImpl, liveModeAllowed: true, readTimeoutMs: 20 });
+      if (!built.ok) throw new Error('fixture');
+      expect(await built.client.readAccountCash(pin)).toEqual(refusal);
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    } finally { clock.mockRestore(); }
+  });
+});
+
 describe('authenticated complete payment source enumeration', () => {
   const account = { object: 'account', id: 'acct_A' };
   const charge = { object: 'charge', id: 'ch_A', customer: 'cus_A', currency: 'usd', amount: 100,
@@ -297,7 +398,7 @@ describe('authenticated complete payment source enumeration', () => {
       const q = new URL(String(url)).searchParams;
       expect([...q.keys()].sort()).toEqual(cursors[i] === null ? ['limit'] : ['limit', 'starting_after']);
       expect(q.get('limit')).toBe('100'); expect(q.get('starting_after')).toBe(cursors[i]);
-      expect(init).toEqual({ method: 'GET', redirect: 'error', headers: { authorization: 'Bearer sk_live_key' } });
+      expect(init).toEqual({ method: 'GET', redirect: 'error', headers: { authorization: 'Bearer sk_live_key' }, signal: expect.any(AbortSignal) });
     }
     if (result.ok) {
       expect(result.evidence.collectionStartedAtMs).toBeLessThanOrEqual(result.evidence.observedAtMs);
@@ -484,7 +585,7 @@ describe('authenticated original payment and reversal lineage', () => {
       '/v1/account', '/v1/customers/cus_A', '/v1/refunds/re_A', '/v1/charges/ch_A',
       '/v1/balance_transactions/txn_Charge', '/v1/balance_transactions/txn_Refund',
     ]);
-    for (const [, init] of r.fetchImpl.mock.calls) expect(init).toEqual({ method: 'GET', redirect: 'error', headers: { authorization: 'Bearer sk_live_key' } });
+    for (const [, init] of r.fetchImpl.mock.calls) expect(init).toEqual({ method: 'GET', redirect: 'error', headers: { authorization: 'Bearer sk_live_key' }, signal: expect.any(AbortSignal) });
     expect(JSON.stringify(result)).not.toMatch(/private|receipt_email|destination_details|sk_live/);
     if (result.ok) {
       expect(Object.isFrozen(result.evidence.charge.balanceTransaction)).toBe(true);

@@ -60,6 +60,7 @@ vi.mock('./blueprint/operation-worker-binding', async (importOriginal) => {
 });
 
 const wi = await import('./work-items');
+const issues = await import('./issues-engineer');
 
 const WATCHDOG = 'watchdog-green-resolve';
 const AGENT = 'su-63319e40';
@@ -127,6 +128,37 @@ const rawRow = async (id: string) => {
     SELECT status, terminal_owner, authority, payload, updated_ts
       FROM harness_shared.work_items WHERE feature_id = ${id}`;
   return rows[0];
+};
+const TWIN_HARNESS = 'operator:wi10006010-settled-evidence-twin';
+
+async function seedSlugTwin(id: string): Promise<void> {
+  const [source] = await db.sql<Array<{ workspace_id: string; harness_slug: string }>>`
+    SELECT workspace_id, harness_slug
+      FROM harness_shared.work_items
+     WHERE feature_id = ${id} AND harness_slug = 'papercup'`;
+  expect(source).toBeDefined();
+  const columns = await db.sql<Array<{ column_name: string }>>`
+    SELECT column_name
+      FROM information_schema.columns
+     WHERE table_schema = 'harness_shared' AND table_name = 'work_items'
+       AND is_generated = 'NEVER' AND column_name <> 'harness_slug'
+     ORDER BY ordinal_position`;
+  const names = columns.map(({ column_name }) => `"${column_name}"`).join(', ');
+  await db.sql.unsafe(
+    `INSERT INTO harness_shared.work_items (harness_slug, ${names})
+     SELECT $1, ${names}
+       FROM harness_shared.work_items
+      WHERE workspace_id = $2 AND harness_slug = $3 AND feature_id = $4`,
+    [TWIN_HARNESS, source!.workspace_id, source!.harness_slug, id],
+  );
+}
+
+const physicalSnapshot = async (id: string, harness: string): Promise<unknown> => {
+  const [row] = await db.sql<Array<{ row: unknown }>>`
+    SELECT to_jsonb(w) - '_search' AS row
+      FROM harness_shared.work_items w
+     WHERE workspace_id = 'default' AND harness_slug = ${harness} AND feature_id = ${id}`;
+  return row?.row;
 };
 const attestations = (payload: any): any[] =>
   Array.isArray(payload?._completionAttestations) ? payload._completionAttestations : [];
@@ -277,5 +309,78 @@ describe('attachCompletionEvidenceToSettledItem — real PG', () => {
     });
     expect(res.outcome).toBe('not-found');
     expect(res.workItem).toBeNull();
+  });
+
+  it('keeps a slug twin byte-identical while attaching and archiving completion evidence (WI-10006010)', async () => {
+    const item = await wi.createWorkItem({ kind: 'bug', title: 'completion evidence slug twin', harness: 'papercup' });
+    await seedSlugTwin(item.id);
+    const twinBefore = await physicalSnapshot(item.id, 'papercup');
+
+    const closed = await wi.setWorkItemState(item.id, 'resolved', {
+      harness: TWIN_HARNESS,
+      by: WATCHDOG,
+      completionRef: 'auto-resolved with thin evidence',
+      completionEvidence: THIN,
+      completionAuthority: 'proposed',
+    });
+    expect(closed?.state).toBe('done');
+
+    const attached = await wi.attachCompletionEvidenceToSettledItem(item.id, {
+      harness: TWIN_HARNESS,
+      by: AGENT,
+      completionRef: 'committed verification',
+      completionEvidence: RICH,
+      completionAuthority: 'committed',
+    });
+
+    expect(attached.outcome).toBe('upgraded');
+    expect(await physicalSnapshot(item.id, 'papercup')).toEqual(twinBefore);
+    const target = await physicalSnapshot(item.id, TWIN_HARNESS) as {
+      terminal_owner: string;
+      authority: string;
+      payload: { _completionEvidence: CompletionVerificationEvidence; _completionAttestations: unknown[] };
+    };
+    expect(target.terminal_owner).toBe(AGENT);
+    expect(target.authority).toBe('committed');
+    expect(target.payload._completionEvidence.testResult).toBe(RICH.testResult);
+    expect(target.payload._completionAttestations).toHaveLength(1);
+  });
+
+  it('reopening with a null harness hint still changes only one physical row (WI-10006010)', async () => {
+    const item = await wi.createWorkItem({ kind: 'bug', title: 'reopen slug twin', harness: 'papercup' });
+    await seedSlugTwin(item.id);
+    const siblingBefore = await physicalSnapshot(item.id, 'papercup');
+
+    const closed = await issues.setIssueState(
+      item.id,
+      'resolved',
+      WATCHDOG,
+      'auto-resolved with thin evidence',
+      { harnessSlug: TWIN_HARNESS },
+    );
+    expect(closed).not.toBeNull();
+    expect(await physicalSnapshot(item.id, 'papercup')).toEqual(siblingBefore);
+
+    const reopened = await issues.setIssueState(item.id, 'open', AGENT, undefined, { harnessSlug: null });
+
+    expect(reopened).not.toBeNull();
+    expect(await physicalSnapshot(item.id, TWIN_HARNESS)).toMatchObject({ status: 'open' });
+    expect(await physicalSnapshot(item.id, 'papercup')).toEqual(siblingBefore);
+  });
+
+  it('merges payload only into the selected physical issue row among slug twins (WI-10006010)', async () => {
+    const item = await wi.createWorkItem({ kind: 'bug', title: 'payload merge slug twin', harness: 'papercup' });
+    await seedSlugTwin(item.id);
+    const twinBefore = await physicalSnapshot(item.id, 'papercup');
+
+    const merged = await wi.mergeWorkItemPayload(item.id, { wi10006010MergeProbe: 'target-only' }, {
+      harness: TWIN_HARNESS,
+    });
+
+    expect(merged).not.toBeNull();
+    expect(await physicalSnapshot(item.id, 'papercup')).toEqual(twinBefore);
+    expect(await physicalSnapshot(item.id, TWIN_HARNESS)).toMatchObject({
+      payload: { wi10006010MergeProbe: 'target-only' },
+    });
   });
 });

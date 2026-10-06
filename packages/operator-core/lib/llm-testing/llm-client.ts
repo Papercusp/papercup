@@ -32,6 +32,7 @@ import {
   type AgentBackend,
   type TurnError,
   type TurnProvider,
+  type RunAgentChatOptions,
 } from '../agent-chat-stream';
 import { readCredentials } from '../credentials';
 import { loopbackFetch } from '../loopback-fetch';
@@ -280,11 +281,17 @@ async function llmCallViaCodexGateway(
  * in-process calls here are framed automatically. If you add a NEW anthropic-direct path that bypasses
  * `buildSystemParam`, you MUST prepend `CLAUDE_CODE_IDENTIFIER` yourself or it will opus-429.
  */
-export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
-  if (opts.requireOutputTokenLimit) {
+export async function llmCall(
+  opts: LlmCallOpts & Pick<RunAgentChatOptions, 'authorizeStatelessRequest'>,
+): Promise<LlmCallResult> {
+  if (opts.requireOutputTokenLimit || opts.authorizeStatelessRequest !== undefined) {
     opts = { ...opts, messages: opts.messages.map(message => ({ ...message })) };
   }
   const backend = backendForLlmCall(opts.model);
+  if (opts.authorizeStatelessRequest !== undefined &&
+      (typeof opts.authorizeStatelessRequest !== 'function' || backend !== 'anthropic-direct')) {
+    throw Object.assign(new Error('Stateless request authorization requires the Anthropic HTTP backend'), { costUsd: 0 });
+  }
   if (opts.requireOutputTokenLimit && (!Number.isSafeInteger(opts.maxTokens) || opts.maxTokens! <= 0)) {
     throw Object.assign(new RangeError('Required output token limit needs a positive integer maxTokens'), { costUsd: 0 });
   }
@@ -339,6 +346,7 @@ export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
       promptText,
       maxTokens: opts.maxTokens,
       requireOutputTokenLimit: opts.requireOutputTokenLimit,
+      authorizeStatelessRequest: opts.authorizeStatelessRequest,
       temperature: opts.temperature,
       thinkingBudgetTokens: opts.thinkingBudgetTokens,
       signal: opts.signal,

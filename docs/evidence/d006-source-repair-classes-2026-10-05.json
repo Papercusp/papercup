@@ -622,6 +622,20 @@
       "class": "missing-schema",
       "state": "open-unknown",
       "item": "WI-10006170",
+      "focusedCurrentObservation": {
+        "canonicalTestRunId": 20823601,
+        "commitSha": "7d014f1450e67518fdb95fc59a19ccb2953e3883",
+        "nativeResult": "8PASS0FAIL0SKIP",
+        "source": "local",
+        "worktreeDirty": true,
+        "isScratchConfig": false,
+        "runGroupId": null,
+        "testSha256": "3e96fa29a94c7caca9b209931ed2bfede2ed5e0a879bcc6d4dfaf0209e74574a",
+        "logRef": "/tmp/wi10006170-pot-wake-current.log",
+        "logSha256": "5c90449381bff57ca1ae23f12d7d6585267182b0928ff305d3217cb65ffd0caa",
+        "reconciledHow": "Exact ledger row20823601 re-read; current test bytes still match the stored focused receipt. No test replay.",
+        "limits": "Positive focused receipt only; historical failure causal disposition, complete import/environment assurance and final D006 remain open. State stays open-unknown and population104 is unchanged."
+      },
       "lines": [
         14018
       ]

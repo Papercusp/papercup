@@ -41,7 +41,7 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
   getOrgPg: () => ({ sql: (...args: unknown[]) => silenceMocks.sql(...args) }),
 }));
 
-import tool from './headcount-target';
+import tool, { buildFleetTopUpRule } from './headcount-target';
 import {
   FLEET_MEMBER_SILENCE_THRESHOLD_MS,
   partitionSilentFleetMembers,
@@ -223,16 +223,62 @@ describe('fleet:headcount-target canonical launch profile', () => {
     });
   });
 
-  it('disables the governor without deleting or even rereading the saved profile', async () => {
+  it('disables the governor as an attributed, expiring no-top-up rule and keeps the saved profile (P-005 / D-030)', async () => {
+    // Every real read sets `enabled`; the shared legacy fixture predates it.
+    mocks.getFleetHeadcountTarget.mockResolvedValueOnce({ ...savedProfile, enabled: true });
+    const before = Date.now();
     const result = await tool.handler(
-      { fleet: 'byoc', target: null, harness: 'papercusp', plan: 'byoc-plan', replaceExisting: false } as never,
+      {
+        fleet: 'byoc', target: null, harness: 'papercusp', plan: 'byoc-plan', replaceExisting: false,
+        reason: 'D-001: no waves while the migration lands',
+      } as never,
       {} as never,
     );
-    expect(parse(result)).toMatchObject({ ok: true, disabled: true, launchProfilePreserved: true });
-    expect(mocks.setFleetHeadcountTarget).toHaveBeenCalledWith({
-      workspaceId: 'ws-test', fleetSlug: 'byoc', target: null,
+    const body = parse(result);
+    expect(body).toMatchObject({
+      ok: true,
+      disabled: true,
+      launchProfilePreserved: true,
+      topUpRule: {
+        kind: 'target-disabled',
+        ratifiedBy: 'su-leader',
+        reason: 'D-001: no waves while the migration lands',
+        // The target in force is what the expiry restores, not something lost.
+        suspendedTarget: 1,
+        suspendedSupervise: null,
+      },
     });
-    expect(mocks.getFleetHeadcountTarget).not.toHaveBeenCalled();
+    const rule = body.topUpRule as { until: number; ratifiedAt: number };
+    expect(rule.until - rule.ratifiedAt).toBe(24 * 3_600_000);
+    expect(rule.ratifiedAt).toBeGreaterThanOrEqual(before);
+    expect(mocks.setFleetHeadcountTarget).toHaveBeenCalledWith({
+      workspaceId: 'ws-test', fleetSlug: 'byoc', target: null, topUpRule: body.topUpRule,
+    });
+  });
+
+  it('reports no stored rule when a disabled fleet has no saved recipe to restore', async () => {
+    mocks.getFleetHeadcountTarget.mockResolvedValueOnce(null);
+    const result = await tool.handler(
+      { fleet: 'byoc', target: null, reason: 'never staffed' } as never,
+      {} as never,
+    );
+    expect(parse(result)).toMatchObject({ ok: true, disabled: true, launchProfilePreserved: false, topUpRule: null });
+  });
+
+  it('requires a reason for every no-top-up rule and bounds its lifetime', () => {
+    const disable = { fleet: 'byoc', target: null, harness: 'papercusp' };
+    expect(tool.args.safeParse(disable).success).toBe(false);
+    expect(tool.args.safeParse({ ...disable, reason: 'hold' }).success).toBe(true);
+    expect(tool.args.safeParse({ ...disable, reason: 'hold', untilHours: 72 }).success).toBe(true);
+    expect(tool.args.safeParse({ ...disable, reason: 'hold', untilHours: 73 }).success).toBe(false);
+    expect(
+      tool.args.safeParse({ fleet: 'byoc', target: 2, harness: 'papercusp', supervise: false }).success,
+    ).toBe(false);
+    expect(
+      tool.args.safeParse({ fleet: 'byoc', target: 2, harness: 'papercusp', supervise: false, reason: 'pause' }).success,
+    ).toBe(true);
+    // untilHours only means something on a rule; elsewhere it would be silently ignored.
+    expect(tool.args.safeParse({ fleet: 'byoc', target: 2, harness: 'papercusp', untilHours: 4 }).success).toBe(false);
   });
 
   it('refuses target:null recipe fields instead of silently dropping them', async () => {
@@ -255,7 +301,8 @@ describe('fleet:headcount-target canonical launch profile', () => {
     expect(parse(result)).toMatchObject({
       ok: false,
       error: 'invalid_args',
-      offending: ['agent', 'model', 'effort', 'account', 'replaceExisting', 'reason'],
+      // `reason` is no longer offending here: it is the rule's required reason.
+      offending: ['agent', 'model', 'effort', 'account', 'replaceExisting'],
     });
     expect(parse(result).message).toContain('would be ignored');
     expect(mocks.setFleetHeadcountTarget).not.toHaveBeenCalled();
@@ -453,12 +500,90 @@ describe('fleet:headcount-target canonical launch profile', () => {
     expect(parse(preserved)).toMatchObject({ ok: true, target: 2, config: { ...savedProfile.config, supervise: true } });
 
     const revoked = await tool.handler(
-      { fleet: 'byoc', target: 2, supervise: false, harness: 'papercusp', plan: 'byoc-plan' } as never,
+      {
+        fleet: 'byoc', target: 2, supervise: false, harness: 'papercusp', plan: 'byoc-plan',
+        reason: 'hand-staffing during the cutover', untilHours: 6,
+      } as never,
       {} as never,
     );
-    expect(parse(revoked)).toMatchObject({ ok: true, config: { ...savedProfile.config, supervise: false } });
+    // P-005 / D-030: a revoke is a no-top-up rule that remembers the grant it
+    // suspended, so its expiry puts supervision back.
+    const revokedBody = parse(revoked);
+    expect(revokedBody).toMatchObject({
+      ok: true,
+      config: { ...savedProfile.config, supervise: false },
+      topUpRule: {
+        kind: 'supervise-revoked',
+        ratifiedBy: 'su-leader',
+        reason: 'hand-staffing during the cutover',
+        suspendedTarget: 2,
+        suspendedSupervise: true,
+      },
+    });
+    const revokedRule = revokedBody.topUpRule as { until: number; ratifiedAt: number };
+    expect(revokedRule.until - revokedRule.ratifiedAt).toBe(6 * 3_600_000);
     expect(mocks.setFleetHeadcountTarget).toHaveBeenLastCalledWith(
-      expect.objectContaining({ config: { ...savedProfile.config, supervise: false } }),
+      expect.objectContaining({ config: { ...savedProfile.config, supervise: false }, topUpRule: revokedBody.topUpRule }),
     );
+
+    // A recipe edit that does not touch supervise keeps the standing rule…
+    mocks.getFleetHeadcountTarget.mockResolvedValue({
+      ...savedProfile,
+      target: 2,
+      config: { ...savedProfile.config, supervise: false, topUpRule: revokedBody.topUpRule },
+    });
+    const edited = await tool.handler(
+      { fleet: 'byoc', target: 3, harness: 'papercusp', plan: 'byoc-plan' } as never,
+      {} as never,
+    );
+    expect(parse(edited)).toMatchObject({ ok: true, topUpRule: revokedBody.topUpRule });
+    expect(parse(edited).config).not.toHaveProperty('topUpRule');
+
+    // …and re-granting supervision ends it.
+    const regranted = await tool.handler(
+      { fleet: 'byoc', target: 3, supervise: true, harness: 'papercusp', plan: 'byoc-plan' } as never,
+      {} as never,
+    );
+    expect(parse(regranted)).toMatchObject({ ok: true, topUpRule: null, config: { supervise: true } });
+    expect(parse(regranted).config).not.toHaveProperty('topUpRule');
+    expect(mocks.setFleetHeadcountTarget).toHaveBeenLastCalledWith(
+      expect.objectContaining({ target: 3, topUpRule: undefined }),
+    );
+  });
+});
+
+describe('buildFleetTopUpRule (P-005 / D-030)', () => {
+  const now = 1_800_000_000_000;
+  const base = { ratifiedBy: 'su-new-leader', reason: 'still frozen', now };
+
+  it('carries the originally suspended target forward when a disable is re-ratified', () => {
+    const first = buildFleetTopUpRule({
+      ...base, kind: 'target-disabled', targetInForce: null,
+      existing: { ...savedProfile, enabled: true, target: 4, config: { ...savedProfile.config, supervise: true } },
+    });
+    expect(first).toMatchObject({ suspendedTarget: 4, suspendedSupervise: true });
+
+    // The row is now disabled (target column NULL, read back as target=1); the
+    // renewal must still restore 4 + the grant, not the placeholder 1.
+    const renewed = buildFleetTopUpRule({
+      ...base, kind: 'target-disabled', targetInForce: null, untilHours: 48,
+      existing: { ...savedProfile, enabled: false, target: 1, config: { ...savedProfile.config, topUpRule: first } },
+    });
+    expect(renewed).toMatchObject({ suspendedTarget: 4, suspendedSupervise: true, ratifiedBy: 'su-new-leader' });
+    expect(renewed.until).toBe(now + 48 * 3_600_000);
+  });
+
+  it('suspends nothing restorable for a fleet that never had a target or a grant', () => {
+    expect(
+      buildFleetTopUpRule({ ...base, kind: 'target-disabled', targetInForce: null, existing: null }),
+    ).toMatchObject({ suspendedTarget: null, suspendedSupervise: null });
+  });
+
+  it('clamps the lifetime to the maximum even if a caller bypasses the schema', () => {
+    const rule = buildFleetTopUpRule({
+      ...base, kind: 'supervise-revoked', targetInForce: 2, existing: null, untilHours: 1_000,
+    });
+    expect(rule.until).toBe(now + 72 * 3_600_000);
+    expect(rule.suspendedTarget).toBe(2);
   });
 });

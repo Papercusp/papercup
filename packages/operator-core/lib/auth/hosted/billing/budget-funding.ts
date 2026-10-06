@@ -14,7 +14,7 @@ import type { StoredPaymentReceipt } from '../../../cupboard/payment-receipt-sto
 import { createHash } from 'node:crypto';
 import { journalVerdictForStripeBalanceTransaction, validatePolicy,
   type CustomerPaymentPolicy } from '../../../cupboard/money-journal-producers';
-import type { StripeBillingClient, StripePaymentLineagePin, StripeAccountCashEvidence, StripeAccountPaymentSourceEvidence,
+import type { StripeBillingClient, StripeBillingCallResult, StripePaymentLineagePin, StripeAccountCashEvidence, StripeAccountPaymentSourceEvidence,
   StripeAccountTransactionEvidence, StripePaymentLineageEvidence,
   StripeObservedBalanceTransaction } from './stripe-billing-client';
 
@@ -210,14 +210,20 @@ export async function collectHostedStripeFunding(input: HostedStripeFundingColle
   readonly now?: () => number;
   /** A bound refuses the whole collection, never a truncated population. */
   readonly maximumLineages?: number;
+  /** One deadline across every page and lineage, while local locks are held.
+   * Adapters must honor the supplied signal through transport/body reads. */
+  readonly maximumDurationMs?: number;
+  readonly signal?: AbortSignal;
 }): Promise<HostedStripeFundingResult> {
   input = structuredClone(input);
   const client = dependencies.client;
   const now = dependencies.now ?? Date.now;
   const maximumLineages = dependencies.maximumLineages ?? 1000;
+  const maximumDurationMs = dependencies.maximumDurationMs ?? 10_000;
   if (!id(input.scope.controlWorkspaceId) || !id(input.scope.organizationId) || !id(input.scope.customerWorkspaceId)
       || !/^acct_[A-Za-z0-9]+$/.test(input.accountId) || !/^cus_[A-Za-z0-9]+$/.test(input.customerId)
       || !safe(input.maximumAgeMs) || validatePolicy(input.policy) || !safe(maximumLineages) || maximumLineages < 1
+      || !safe(maximumDurationMs) || maximumDurationMs < 1 || maximumDurationMs > 10_000
       || !Array.isArray(input.entries) || !Array.isArray(input.receipts) || !Array.isArray(input.customers)) {
     throw new Error('invalid Stripe funding collection');
   }
@@ -230,17 +236,28 @@ export async function collectHostedStripeFunding(input: HostedStripeFundingColle
     customers.set(c.stripeCustomerId, c.organizationId);
   }
   if (customers.get(input.customerId) !== input.scope.organizationId) return reject('unverified-stripe-read');
+  const controller = new AbortController();
+  const signal = dependencies.signal ? AbortSignal.any([dependencies.signal, controller.signal]) : controller.signal;
+  const started = performance.now();
+  const timer = setTimeout(() => controller.abort(), maximumDurationMs);
+  async function read<T>(operation: (signal: AbortSignal) => Promise<StripeBillingCallResult<T>>) {
+    signal.throwIfAborted();
+    const result = await operation(signal);
+    signal.throwIfAborted();
+    if (performance.now() - started >= maximumDurationMs) throw new Error('stripe collection deadline');
+    return result;
+  }
   try {
     // Detach every response before the next await: an adapter must not change a
     // prior bracket in place and make observed provider drift disappear.
     const cashPin = { accountId: input.accountId, customerId: input.customerId, organizationId: input.scope.organizationId };
-    const cash1 = await client.readAccountCash({ ...cashPin });
+    const cash1 = await read(signal => client.readAccountCash({ ...cashPin }, signal));
     if (!cash1.ok) return reject('unverified-stripe-read');
     const cashBefore = structuredClone(cash1.evidence);
-    const sources1 = await client.readAccountPaymentSources({ accountId: input.accountId });
+    const sources1 = await read(signal => client.readAccountPaymentSources({ accountId: input.accountId }, signal));
     if (!sources1.ok) return reject('unverified-stripe-read');
     const sourcesBefore = structuredClone(sources1.evidence);
-    const tx1 = await client.readAccountTransactions({ accountId: input.accountId });
+    const tx1 = await read(signal => client.readAccountTransactions({ accountId: input.accountId }, signal));
     if (!tx1.ok) return reject('unverified-stripe-read');
     const transactionsBefore = structuredClone(tx1.evidence);
     const charges = new Map(sourcesBefore.charges.map(c => [c.id, c]));
@@ -276,24 +293,29 @@ export async function collectHostedStripeFunding(input: HostedStripeFundingColle
     if (sourcesBefore.disputes.length) return reject('unreconciled-stripe-source');
     const lineages: StripePaymentLineageEvidence[] = [];
     for (const p of pins) {
-      const result = await client.readPaymentLineage(p);
+      const result = await read(signal => client.readPaymentLineage(p, signal));
       if (!result.ok) return reject('unverified-stripe-read');
       lineages.push(structuredClone(result.evidence));
     }
-    const tx2 = await client.readAccountTransactions({ accountId: input.accountId });
+    const tx2 = await read(signal => client.readAccountTransactions({ accountId: input.accountId }, signal));
     if (!tx2.ok) return reject('unverified-stripe-read');
     const transactionsAfter = structuredClone(tx2.evidence);
-    const sources2 = await client.readAccountPaymentSources({ accountId: input.accountId });
+    const sources2 = await read(signal => client.readAccountPaymentSources({ accountId: input.accountId }, signal));
     if (!sources2.ok) return reject('unverified-stripe-read');
     const sourcesAfter = structuredClone(sources2.evidence);
-    const cash2 = await client.readAccountCash({ ...cashPin });
+    const cash2 = await read(signal => client.readAccountCash({ ...cashPin }, signal));
     if (!cash2.ok) return reject('unverified-stripe-read');
     const cashAfter = structuredClone(cash2.evidence);
-    return reconcileHostedStripeFunding({ ...input, cashBefore, sourcesBefore, transactionsBefore,
+    const result = reconcileHostedStripeFunding({ ...input, cashBefore, sourcesBefore, transactionsBefore,
       lineages, transactionsAfter, sourcesAfter, cashAfter, asOfMs: now() });
+    signal.throwIfAborted();
+    if (performance.now() - started >= maximumDurationMs) throw new Error('stripe collection deadline');
+    return result;
   } catch {
     // Provider failures cannot echo secrets or certify a partial collection.
     return reject('unverified-stripe-read');
+  } finally {
+    clearTimeout(timer);
   }
 }
 

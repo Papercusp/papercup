@@ -10,7 +10,8 @@ import { journalEntryForMovement } from '../../../cupboard/money-journal';
 import { postMoneyJournalEntry } from '../../../cupboard/money-journal-store';
 import { pgPaymentReceiptStore, type NewPaymentReceipt } from '../../../cupboard/payment-receipt-store';
 import { receiptCommitment } from '../../../cupboard/payment-receipt';
-import type { HostedPrepaidFundingInput } from './budget-funding';
+import { collectHostedStripeFunding, type HostedPrepaidFundingInput } from './budget-funding';
+import { createStripeBillingClient } from './stripe-billing-client';
 import { PostgresHostedBudgetStore, type HostedBudgetContextReader, type HostedBudgetObservation,
   type HostedBudgetRequest, type HostedBudgetScope, type HostedPrepaidAllocationRequest, type HostedPrepaidFundingReader,
   evaluateLockedHostedPrepaidFunding, readLockedHostedPrepaidAllocations, readLockedHostedStripeFundingPopulation } from './budget-store';
@@ -734,6 +735,59 @@ describe('PostgresHostedBudgetStore (real hosted service transactions)', () => {
     expect(population).toEqual({ allocations: [], entries: [], receipts: [], customers: [] });
     expect(Object.isFrozen(population)).toBe(true);
     expect('cashBacking' in population).toBe(false);
+  });
+
+  it('keeps source locks until cancelled Stripe I/O settles and releases them on reservation rollback', async () => {
+    const org = randomUUID();
+    const parent = new AbortController();
+    let started!: () => void;
+    const requestStarted = new Promise<void>(resolve => { started = resolve; });
+    let transportActive = false;
+    const fetchImpl: typeof fetch = async (_url, init) => new Promise((_resolve, reject) => {
+      const signal = init?.signal;
+      if (!signal) throw new Error('missing transport cancellation');
+      signal.throwIfAborted();
+      transportActive = true;
+      signal.addEventListener('abort', () => { transportActive = false; reject(new Error('private cancellation')); }, { once: true });
+      started();
+    });
+    const built = createStripeBillingClient({ secretKey: 'sk_live_fixture', fetchImpl, liveModeAllowed: true });
+    if (!built.ok) throw new Error('fixture');
+    await expect(service(async sql => {
+      await sql`INSERT INTO papercusp_auth.hosted_billing_customers (organization_id, stripe_customer_id, livemode)
+        VALUES (${org}::uuid, 'cus_CancelledPopulation', true)`;
+      const local = await readLockedHostedStripeFundingPopulation(sql, populationInput);
+      const pending = collectHostedStripeFunding({ scope: { controlWorkspaceId: populationInput.pool.controlWorkspaceId,
+        organizationId: org, customerWorkspaceId: 'fixture-cancelled-workspace' },
+        accountId: populationInput.pool.stripeAccountId, customerId: 'cus_CancelledPopulation',
+        policy: { daoBasisPoints: 0, refundReserveBasisPoints: 0 }, maximumAgeMs: 1000,
+        entries: local.entries, receipts: local.receipts, customers: local.customers },
+      { client: built.client, now: () => T, signal: parent.signal });
+      try {
+        await requestStarted;
+        expect(transportActive).toBe(true);
+        await expect(db.adminSql.begin(async tx => {
+          await tx.unsafe("SET LOCAL lock_timeout = '100ms'");
+          await tx`UPDATE harness_shared.payment_receipts SET workspace_id = workspace_id WHERE false`;
+        })).rejects.toMatchObject({ code: '55P03' });
+      } finally {
+        parent.abort();
+        expect(await pending).toEqual({ ok: false, reason: 'unverified-stripe-read' });
+      }
+      expect(transportActive).toBe(false);
+      throw new Error('cancelled reservation rollback');
+    })).rejects.toThrow('cancelled reservation rollback');
+    // The real transaction has ended; a writer can take each population lock.
+    await db.adminSql.begin(async tx => {
+      await tx.unsafe("SET LOCAL lock_timeout = '100ms'");
+      for (const table of ['harness_shared.money_journal_entries', 'harness_shared.money_journal_lines',
+        'harness_shared.payment_receipts', 'papercusp_auth.hosted_billing_customers']) {
+        const column = table === 'papercusp_auth.hosted_billing_customers' ? 'livemode' : 'workspace_id';
+        await tx.unsafe(`UPDATE ${table} SET ${column} = ${column} WHERE false`);
+      }
+    });
+    expect(await service(sql => sql`SELECT stripe_customer_id FROM papercusp_auth.hosted_billing_customers
+      WHERE organization_id = ${org}::uuid`)).toHaveLength(0);
   });
 
   it('locks every source relation even when empty, permits concurrent readers and releases on commit', async () => {

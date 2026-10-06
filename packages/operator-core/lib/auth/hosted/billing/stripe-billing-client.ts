@@ -45,13 +45,13 @@ export interface StripeBillingClient {
     readonly accountId: string;
     readonly customerId: string;
     readonly organizationId: string;
-  }): Promise<StripeBillingCallResult<{ evidence: StripeAccountCashEvidence }>>;
+  }, signal?: AbortSignal): Promise<StripeBillingCallResult<{ evidence: StripeAccountCashEvidence }>>;
   /** Exhaustive, unfiltered account history. Receipt/journal/reversal mapping
    * and freshness reconciliation are still required before funding admission. */
   readAccountTransactions(input: {
     readonly accountId: string;
     readonly maxPages?: number;
-  }): Promise<StripeBillingCallResult<{ evidence: StripeAccountTransactionEvidence }>>;
+  }, signal?: AbortSignal): Promise<StripeBillingCallResult<{ evidence: StripeAccountTransactionEvidence }>>;
   /** Exhaust every charge/refund/dispute list, including sources with no
    * posted balance transaction. These separate lists are not an atomic
    * snapshot: reconcile their collection interval with fresh movements/cash
@@ -60,12 +60,12 @@ export interface StripeBillingClient {
     readonly accountId: string;
     /** Per endpoint. Reaching the bound discards the entire partial result. */
     readonly maxPages?: number;
-  }): Promise<StripeBillingCallResult<{ evidence: StripeAccountPaymentSourceEvidence }>>;
+  }, signal?: AbortSignal): Promise<StripeBillingCallResult<{ evidence: StripeAccountPaymentSourceEvidence }>>;
   /** Resolve one payment/reversal against the original receipt's charge and
    * balance-transaction pins. This is evidence, not finality, completeness,
    * journal reconciliation or permission to spend. Pins must come from the
    * server's stored receipt/customer mapping, never a customer request body. */
-  readPaymentLineage(input: StripePaymentLineagePin): Promise<StripeBillingCallResult<{ evidence: StripePaymentLineageEvidence }>>;
+  readPaymentLineage(input: StripePaymentLineagePin, signal?: AbortSignal): Promise<StripeBillingCallResult<{ evidence: StripePaymentLineageEvidence }>>;
   createCustomer(input: {
     organizationId: string;
     email?: string | null;
@@ -241,6 +241,7 @@ function usdBalance(value: unknown): number | null {
 export type StripeBillingClientConstruction =
   | { readonly ok: true; readonly client: StripeBillingClient }
   | { readonly ok: false; readonly code: 'invalid_secret_key' }
+  | { readonly ok: false; readonly code: 'invalid_read_timeout' }
   | { readonly ok: false; readonly code: 'live_mode_not_allowed'; readonly refusal: RefusalContract };
 
 const malformed = (status: number, detail: string) =>
@@ -251,10 +252,16 @@ export function createStripeBillingClient(input: {
   fetchImpl: typeof fetch;
   /** The resolved value of the default-OFF owner-authority live-mode flag. */
   liveModeAllowed: boolean;
+  /** May shorten the 10-second authenticated GET deadline, never disable it. */
+  readTimeoutMs?: number;
 }): StripeBillingClientConstruction {
   // Pin injected credentials/transport once; mutation of the composition's
   // options must not switch the account between authenticated reads.
   const { secretKey, fetchImpl } = input;
+  const readTimeoutMs = input.readTimeoutMs ?? 10_000;
+  if (!Number.isSafeInteger(readTimeoutMs) || readTimeoutMs < 1 || readTimeoutMs > 10_000) {
+    return { ok: false, code: 'invalid_read_timeout' };
+  }
   const mode = stripeKeyMode(secretKey);
   if (!mode) return { ok: false, code: 'invalid_secret_key' };
   if (mode === 'live' && !input.liveModeAllowed) {
@@ -272,15 +279,26 @@ export function createStripeBillingClient(input: {
   }
   const post = (path: string, params: Record<string, unknown>, idempotencyKey?: string) =>
     postStripeForm({ url: `${STRIPE_API_BASE}${path}`, secretKey, params, fetchImpl, idempotencyKey });
-  const get = async (path: string): Promise<StripeBillingCallResult<{ body: StripeObject; requestId: string; status: number }>> => {
+  const get = async (path: string, parentSignal?: AbortSignal): Promise<StripeBillingCallResult<{ body: StripeObject; requestId: string; status: number }>> => {
+    const controller = new AbortController();
+    const signal = parentSignal ? AbortSignal.any([parentSignal, controller.signal]) : controller.signal;
+    const started = performance.now();
+    // Keep the deadline through body consumption. Aborting the actual fetch
+    // cancels transport/body I/O; a detached Promise timeout would not do that.
+    const timer = setTimeout(() => controller.abort(), readTimeoutMs);
     try {
+      signal.throwIfAborted();
       const response = await fetchImpl(`${STRIPE_API_BASE}${path}`, {
         method: 'GET', redirect: 'error', headers: { authorization: `Bearer ${secretKey}` },
+        signal,
       });
+      signal.throwIfAborted();
       // Never copy an error body, URL or transport exception containing a key
       // or customer PII into the evidence/result.
       if (!response.ok) return { ok: false, code: 'provider-error', status: response.status, detail: 'stripe authenticated read failed' };
       const body: unknown = await response.json();
+      signal.throwIfAborted();
+      if (performance.now() - started >= readTimeoutMs) throw new Error('stripe read deadline');
       const requestId = response.headers.get('request-id');
       if (!object(body) || !requestId || !/^req_[A-Za-z0-9]+$/.test(requestId)) {
         return malformed(response.status, 'stripe read lacks an object or request provenance');
@@ -288,16 +306,22 @@ export function createStripeBillingClient(input: {
       return { ok: true, body, requestId, status: response.status };
     } catch {
       return { ok: false, code: 'provider-error', status: null, detail: 'stripe authenticated read failed' };
+    } finally {
+      clearTimeout(timer);
+      // An error status returns without consuming its response body. Abort
+      // that transport too, rather than clearing its only deadline while an
+      // unread streaming body keeps the request alive.
+      controller.abort();
     }
   };
 
-  const readScope = async (accountId: string, customerId: string, organizationId: string): Promise<StripeBillingCallResult<{ requestIds: string[] }>> => {
+  const readScope = async (accountId: string, customerId: string, organizationId: string, signal?: AbortSignal): Promise<StripeBillingCallResult<{ requestIds: string[] }>> => {
     if (!/^acct_[A-Za-z0-9]+$/.test(accountId) || !/^cus_[A-Za-z0-9]+$/.test(customerId)
         || typeof organizationId !== 'string' || !organizationId.trim()) return malformed(0, 'invalid pinned stripe scope');
-    const account = await get('/account');
+    const account = await get('/account', signal);
     if (!account.ok) return account;
     if (account.body.object !== 'account' || account.body.id !== accountId) return malformed(account.status, 'stripe account pin mismatch');
-    const customer = await get(`/customers/${customerId}`);
+    const customer = await get(`/customers/${customerId}`, signal);
     if (!customer.ok) return customer;
     if (customer.body.object !== 'customer' || customer.body.id !== customerId || customer.body.deleted === true
         || customer.body.livemode !== (mode === 'live') || !object(customer.body.metadata)
@@ -305,8 +329,8 @@ export function createStripeBillingClient(input: {
     return { ok: true, requestIds: [account.requestId, customer.requestId] };
   };
 
-  const readMovement = async (id: string, sourceId: string): Promise<StripeBillingCallResult<{ transaction: StripeObservedBalanceTransaction; requestId: string }>> => {
-    const result = await get(`/balance_transactions/${id}`);
+  const readMovement = async (id: string, sourceId: string, signal?: AbortSignal): Promise<StripeBillingCallResult<{ transaction: StripeObservedBalanceTransaction; requestId: string }>> => {
+    const result = await get(`/balance_transactions/${id}`, signal);
     if (!result.ok) return result;
     const row = result.body;
     if (!validBalanceTransaction(row) || row.id !== id || row.currency !== 'usd' || referenceId(row.source) !== sourceId) {
@@ -371,7 +395,7 @@ export function createStripeBillingClient(input: {
       balanceTransactionIds: row.balance_transactions.map(v => referenceId(v) as string) };
   };
   const listSources = async <T extends { readonly id: string }>(path: string, maxPages: number,
-    select: (row: StripeObject) => T | null): Promise<StripeBillingCallResult<{ rows: T[]; requestIds: string[] }>> => {
+    select: (row: StripeObject) => T | null, signal?: AbortSignal): Promise<StripeBillingCallResult<{ rows: T[]; requestIds: string[] }>> => {
     const rows: T[] = []; const seen = new Set<string>(); const requestIds: string[] = [];
     let cursor: string | undefined;
     for (let page = 0; page < maxPages; page += 1) {
@@ -379,7 +403,7 @@ export function createStripeBillingClient(input: {
       if (cursor) query.set('starting_after', cursor);
       // No customer, charge, date, currency, status or payment filters: an
       // unposted reversal or another customer's liability cannot be hidden.
-      const result = await get(`${path}?${query}`);
+      const result = await get(`${path}?${query}`, signal);
       if (!result.ok) return result;
       const { data, has_more: more } = result.body;
       if (result.body.object !== 'list' || !Array.isArray(data) || data.length > 100 || typeof more !== 'boolean'
@@ -401,13 +425,13 @@ export function createStripeBillingClient(input: {
   const client: StripeBillingClient = {
     livemode: mode === 'live',
 
-    async readAccountCash(input) {
+    async readAccountCash(input, signal) {
       const { accountId, customerId, organizationId } = input;
       // /account identifies the credential's own account. Looking up an
       // arbitrary /accounts/:id could prove access rather than cash ownership.
-      const scope = await readScope(accountId, customerId, organizationId);
+      const scope = await readScope(accountId, customerId, organizationId, signal);
       if (!scope.ok) return scope;
-      const balance = await get('/balance');
+      const balance = await get('/balance', signal);
       if (!balance.ok) return balance;
       const available = usdBalance(balance.body.available); const pending = usdBalance(balance.body.pending);
       if (balance.body.object !== 'balance' || balance.body.livemode !== (mode === 'live')
@@ -420,12 +444,12 @@ export function createStripeBillingClient(input: {
       return { ok: true, evidence: Object.freeze({ ...selected, evidenceRef }) };
     },
 
-    async readAccountTransactions(input) {
+    async readAccountTransactions(input, signal) {
       const { accountId, maxPages = 100 } = input;
       if (!/^acct_[A-Za-z0-9]+$/.test(accountId) || !Number.isSafeInteger(maxPages) || maxPages < 1) {
         return malformed(0, 'invalid pinned stripe census scope');
       }
-      const account = await get('/account');
+      const account = await get('/account', signal);
       if (!account.ok) return account;
       if (account.body.object !== 'account' || account.body.id !== accountId) return malformed(account.status, 'stripe account pin mismatch');
       const requestIds = [account.requestId];
@@ -439,7 +463,7 @@ export function createStripeBillingClient(input: {
         // currency filters can omit a refund or another pool obligation.
         query.append('expand[]', 'data.source');
         query.append('expand[]', 'data.source.invoice');
-        const result = await get(`/balance_transactions?${query}`);
+        const result = await get(`/balance_transactions?${query}`, signal);
         if (!result.ok) return result;
         const { data, has_more: more } = result.body;
         if (result.body.object !== 'list' || !Array.isArray(data) || data.length > 100 || typeof more !== 'boolean'
@@ -465,20 +489,20 @@ export function createStripeBillingClient(input: {
       return malformed(0, 'stripe transaction census exceeds page budget');
     },
 
-    async readAccountPaymentSources(input) {
+    async readAccountPaymentSources(input, signal) {
       const { accountId, maxPages = 100 } = input;
       if (!/^acct_[A-Za-z0-9]+$/.test(accountId) || !Number.isSafeInteger(maxPages) || maxPages < 1) {
         return malformed(0, 'invalid pinned stripe payment source scope');
       }
       const collectionStartedAtMs = Date.now();
-      const account = await get('/account');
+      const account = await get('/account', signal);
       if (!account.ok) return account;
       if (account.body.object !== 'account' || account.body.id !== accountId) return malformed(account.status, 'stripe account pin mismatch');
-      const charges = await listSources('/charges', maxPages, selectCharge);
+      const charges = await listSources('/charges', maxPages, selectCharge, signal);
       if (!charges.ok) return charges;
-      const refunds = await listSources('/refunds', maxPages, selectRefund);
+      const refunds = await listSources('/refunds', maxPages, selectRefund, signal);
       if (!refunds.ok) return refunds;
-      const disputes = await listSources('/disputes', maxPages, selectDispute);
+      const disputes = await listSources('/disputes', maxPages, selectDispute, signal);
       if (!disputes.ok) return disputes;
       const originals = new Map(charges.rows.map(c => [c.id, c]));
       const movements = new Set<string>();
@@ -506,7 +530,7 @@ export function createStripeBillingClient(input: {
       return { ok: true, evidence: freezeEvidence({ ...selected, evidenceRef }) };
     },
 
-    async readPaymentLineage(input) {
+    async readPaymentLineage(input, signal) {
       // Snapshot nested caller pins too: an await must not permit changing the
       // original receipt or the reversal whose provenance is being verified.
       const { accountId, customerId, organizationId, chargeId, chargeBalanceTransactionId } = input;
@@ -516,12 +540,12 @@ export function createStripeBillingClient(input: {
           || !Object.hasOwn(prefixes, kind) || typeof sourceId !== 'string'
           || !new RegExp(`^${prefixes[kind]}_[A-Za-z0-9]+$`).test(sourceId)
           || (kind === 'charge' && sourceId !== chargeId)) return malformed(0, 'invalid stripe payment lineage pins');
-      const scope = await readScope(accountId, customerId, organizationId);
+      const scope = await readScope(accountId, customerId, organizationId, signal);
       if (!scope.ok) return scope;
       const requestIds = [...scope.requestIds];
       let reversal: StripeObject | null = null;
       if (kind !== 'charge') {
-        const result = await get(`/${kind === 'refund' ? 'refunds' : 'disputes'}/${sourceId}`);
+        const result = await get(`/${kind === 'refund' ? 'refunds' : 'disputes'}/${sourceId}`, signal);
         if (!result.ok) return result;
         reversal = result.body; requestIds.push(result.requestId);
         if (reversal.object !== kind || reversal.id !== sourceId || referenceId(reversal.charge) !== chargeId
@@ -531,7 +555,7 @@ export function createStripeBillingClient(input: {
           return malformed(result.status, 'stripe reversal charge pin mismatch');
         }
       }
-      const chargeResult = await get(`/charges/${chargeId}`);
+      const chargeResult = await get(`/charges/${chargeId}`, signal);
       if (!chargeResult.ok) return chargeResult;
       const charge = chargeResult.body; requestIds.push(chargeResult.requestId);
       if (charge.object !== 'charge' || charge.id !== chargeId || referenceId(charge.customer) !== customerId
@@ -541,7 +565,7 @@ export function createStripeBillingClient(input: {
           || charge.amount_captured > charge.amount || !wholeNonnegative(charge.amount_refunded)
           || charge.amount_refunded > charge.amount_captured
           || referenceId(charge.balance_transaction) !== chargeBalanceTransactionId) return malformed(chargeResult.status, 'stripe original charge pin mismatch');
-      const original = await readMovement(chargeBalanceTransactionId, chargeId);
+      const original = await readMovement(chargeBalanceTransactionId, chargeId, signal);
       if (!original.ok) return original;
       requestIds.push(original.requestId);
       if (!['charge', 'payment'].includes(original.transaction.type) || original.transaction.amount !== charge.amount_captured) {
@@ -573,7 +597,7 @@ export function createStripeBillingClient(input: {
           return malformed(0, 'invalid stripe reversal movement pins');
         }
         for (const [index, id] of ids.entries()) {
-          const movement = await readMovement(id, sourceId);
+          const movement = await readMovement(id, sourceId, signal);
           if (!movement.ok) return movement;
           const bt = movement.transaction;
           const correctAccounting = kind === 'refund'

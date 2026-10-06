@@ -12827,7 +12827,7 @@
           "POST"
         ]
       },
-      "description": "Persist a bounded target member count and canonical launch recipe for a fleet. target:null disables automatic top-up but PRESERVES the launch recipe for takeover/respawn. Existing boot-baked settings fail closed unless replaceExisting:true includes an audit reason.",
+      "description": "Persist a bounded target member count and canonical launch recipe for a fleet. target:null disables automatic top-up but PRESERVES the launch recipe for takeover/respawn. target:null or supervise:false records an attributed no-top-up rule (reason required) that EXPIRES after untilHours (default 24, max 72), when the governor restores what it suspended; re-call to re-ratify. Existing boot-baked settings fail closed unless replaceExisting:true includes an audit reason.",
       "capabilities": [
         "fleet:headcount-target"
       ],

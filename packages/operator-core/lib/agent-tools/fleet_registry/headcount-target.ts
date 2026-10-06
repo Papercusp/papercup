@@ -267,8 +267,14 @@ export default defineTool({
         replacementConflicts = resolution.conflicts;
       }
     }
+    // P-005 / D-030: the no-top-up rule is not part of the launch recipe. It is
+    // decided below and written apart, so a stale stored rule never rides the
+    // recipe spread into the response.
+    const { topUpRule: _storedRule, ...existingRecipe } = (existing?.config ?? {}) as Partial<
+      FleetHeadcountTarget['config']
+    >;
     const config = normalizePersistedFleetLaunchConfig({
-      ...(existing?.config ?? {}),
+      ...existingRecipe,
       ...(args.plan !== undefined ? { plan: args.plan } : {}),
       harness: args.harness,
       agent: args.agent ?? existing?.config.agent ?? 'claude',

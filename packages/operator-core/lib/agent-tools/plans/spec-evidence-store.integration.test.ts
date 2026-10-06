@@ -74,6 +74,7 @@ const MIGRATION_1175 = migration('1175-spec-evidence-dedup-partial-on-live.sql')
 // 1176 completes the expand/contract sequence after the predicate-aware writer is
 // deployed by dropping the obsolete total index (WI-10001850 / EI-23634085867209303).
 const MIGRATION_1176 = migration('1176-spec-evidence-drop-total-dedup-contract-phase.sql');
+const MIGRATION_1378 = migration('1378-preserve-spec-bound-test-runs.sql');
 const CTX = {
   isSuperuser: true,
   uiClientId: 'su-spec-evidence-integration',
@@ -228,6 +229,8 @@ beforeAll(async () => {
   await applyMigrationForTest(db.sql, MIGRATION_1175); // idempotent and replay-safe
   await applyMigrationForTest(db.sql, MIGRATION_1176);
   await applyMigrationForTest(db.sql, MIGRATION_1176); // idempotent and replay-safe
+  await applyMigrationForTest(db.sql, MIGRATION_1378);
+  await applyMigrationForTest(db.sql, MIGRATION_1378); // idempotent and replay-safe
 }, 90_000);
 
 afterAll(async () => {
@@ -1047,7 +1050,7 @@ describe('exact spec evidence bindings', () => {
     expect(absent).not.toHaveProperty('scopeMismatch');
   });
 
-  it('validates optional reference scope, detects pruned ledgers, and forbids history mutation', async () => {
+  it('preserves spec-bound test runs while detecting missing coverage and forbidding history mutation', async () => {
     await specs.setSpecClause(clause());
     const external = await seedExternalEvidence();
     const [otherSurface] = await db.sql<{ id: number }[]>`
@@ -1101,7 +1104,17 @@ describe('exact spec evidence bindings', () => {
          AND work_item_id = 'WI-101'`).rejects.toThrow(/append-only/);
 
     await db.sql`DELETE FROM harness_shared.coverage_evidence WHERE id = ${external.coverageEvidenceRef}`;
-    await db.sql`DELETE FROM harness_shared.test_runs WHERE id = ${external.testRunId}`;
+    const [unboundRun] = await db.sql<{ id: number }[]>`
+      INSERT INTO harness_shared.test_runs (workspace_id, harness_slug)
+      VALUES (${WORKSPACE}, ${HARNESS}) RETURNING id`;
+    const deletedRuns = await db.sql<{ id: number }[]>`
+      DELETE FROM harness_shared.test_runs
+       WHERE id IN (${external.testRunId}, ${unboundRun.id})
+       RETURNING id`;
+    expect(deletedRuns.map(({ id }) => Number(id))).toEqual([Number(unboundRun.id)]);
+    const [retainedRun] = await db.sql<{ id: number }[]>`
+      SELECT id FROM harness_shared.test_runs WHERE id = ${external.testRunId}`;
+    expect(Number(retainedRun.id)).toBe(external.testRunId);
     const [historical] = await evidenceStore.listSpecEvidence({
       harnessSlug: HARNESS,
       planSlugs: ['reconnect-plan'],
@@ -1118,7 +1131,7 @@ describe('exact spec evidence bindings', () => {
       testRunId: external.testRunId,
       currentness: {
         overall: 'stale',
-        staleReasons: ['coverageEvidence-stale', 'testRun-stale'],
+        staleReasons: ['coverageEvidence-stale'],
       },
     });
   });

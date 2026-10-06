@@ -4156,6 +4156,13 @@ impl App {
                             .su_pending_turn
                             .as_ref()
                             .is_some_and(|pending| pending.error.is_none()) => {}
+                    // P-025: Claude's engine reports `waiting-for-owner` while
+                    // its approval or question card is open and `running` once
+                    // it closes. That is a pause inside the turn: ending the
+                    // turn here stamped "Worked for" under the waiting tool row
+                    // and could send a queued draft into the running turn.
+                    crate::su_session::SuSessionLifecycleState::WaitingForOwner
+                        if self.card_state.focused().is_some() => {}
                     crate::su_session::SuSessionLifecycleState::Ready
                     | crate::su_session::SuSessionLifecycleState::WaitingForOwner
                     | crate::su_session::SuSessionLifecycleState::Interrupted
@@ -20270,6 +20277,48 @@ mod tests {
                 .and_then(|p| p.error.as_deref()),
             Some("SU-session: recovered engine failed")
         );
+    }
+
+    /// P-025: an approval card pauses the turn. Claude's engine reports
+    /// waiting-for-owner while its card is open (P-025 frames, 2026-10-06,
+    /// showed "Worked for 8s" under the waiting Update row); the turn must
+    /// keep running until the engine really settles.
+    #[test]
+    fn su_waiting_for_owner_under_an_open_card_pauses_the_turn() {
+        let mut app = App::new();
+        app.agent_chat_id = Some("chat-1".into());
+        app.set_su_session_binding(su_binding());
+        let lifecycle = |sequence: u64, previous: &str, state: &str| {
+            let mut event = su_event_base("lifecycle", sequence);
+            event["previousState"] = json!(previous);
+            event["state"] = json!(state);
+            event["runtimeGeneration"] = json!(1);
+            su_event(event)
+        };
+        app.apply_su_session_event(lifecycle(1, "ready", "running"));
+        assert!(app.chat_streaming);
+        let mut card = su_event_base("card", 2);
+        card["turnId"] = json!("turn-1");
+        card["phase"] = json!("opened");
+        card["card"] = json!({"correlationId":"approve-1","prompt":"Allow Update(calc.js)?",
+            "createdAt":2,"presentation":{"kind":"radio","options":[{"id":"yes","label":"Approve"}]}});
+        app.apply_su_session_event(su_event(card));
+        app.apply_su_session_event(lifecycle(3, "running", "waiting-for-owner"));
+        assert!(
+            app.chat_streaming,
+            "an open approval card pauses the turn; it does not end it"
+        );
+        let mut closed = su_event_base("card", 4);
+        closed["turnId"] = json!("turn-1");
+        closed["phase"] = json!("closed");
+        closed["correlationId"] = json!("approve-1");
+        closed["resolution"] = json!("submitted");
+        app.apply_su_session_event(su_event(closed));
+        app.apply_su_session_event(lifecycle(5, "waiting-for-owner", "running"));
+        assert!(app.chat_streaming);
+        // With no card open, waiting-for-owner is the real end of the turn.
+        app.apply_su_session_event(lifecycle(6, "running", "waiting-for-owner"));
+        assert!(!app.chat_streaming);
     }
 
     /// REGRESSION (P-012 diag10). An interrupted Claude turn ends with two

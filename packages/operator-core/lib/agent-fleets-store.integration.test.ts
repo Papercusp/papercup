@@ -27,6 +27,8 @@ import {
   getFleet,
   getFleetHeadcountTarget,
   claimFleetHeadcountAttempt,
+  lapseFleetTopUpRule,
+  listExpiredFleetTopUpRules,
   listFleetHeadcountTargets,
   recordFleetHeadcountAttempt,
   releaseFleetLaunchSlot,
@@ -40,6 +42,7 @@ import {
 } from './agent-fleets-store';
 import { latestFleetMembership } from './fleet-membership-store';
 import { fleetSlugOfAgent } from './fleet-transition-events';
+import type { FleetTopUpRule } from './fleet/top-up-rule';
 
 const WS = 'ws-flguard';
 const WINDOW = 60_000;
@@ -922,5 +925,256 @@ describe('fleet headcount target (WI-2479)', () => {
         workspaceId: WS, fleetSlug: 'headcount-legacy-active', now: 12_000_000, sql: rootSql,
       })).toMatchObject({ fleetSlug: 'headcount-legacy-active', target: 1 });
     });
+  });
+});
+
+// P-005 / D-030. An unheld fleet is held off by a visible, attributed rule that
+// EXPIRES. These tests exercise the SQL halves the unit suites mock out: the
+// rule riding the preserved recipe, the expired-rule listing, and the lapse
+// compare-and-set. Each exclusion has a positive control beside it, so a
+// predicate that refused everything could not pass.
+describe('fleet no-top-up rule (P-005 / D-030)', () => {
+  const config = {
+    plan: 'drain', harness: 'papercusp', agent: 'codex' as const,
+    model: 'gpt-5.6-luna', effort: 'max', account: 'default', headless: true,
+    carry: 'warm' as const, contextSize: 'trimmed' as const, compactionLimit: 825_000,
+    role: 'su', brief: 'drain bugs',
+  };
+  const rule = (over: Partial<FleetTopUpRule> = {}): FleetTopUpRule => ({
+    kind: 'target-disabled',
+    ratifiedBy: 'su-leader',
+    ratifiedAt: 1_000,
+    reason: 'plan paused for review',
+    until: 5_000,
+    suspendedTarget: 3,
+    suspendedSupervise: true,
+    ...over,
+  });
+
+  async function insertFleetIn(workspaceId: string, slug: string): Promise<void> {
+    await rootSql.unsafe(
+      `INSERT INTO harness_shared.agent_fleets (workspace_id, fleet_slug, created_at, updated_at)
+       VALUES ($1, $2, $3, $3)`,
+      [workspaceId, slug, Date.now()],
+    );
+  }
+
+  async function readRow(slug: string, workspaceId = WS): Promise<{
+    target: number | null;
+    config: (Record<string, unknown> & { topUpRule?: unknown; supervise?: unknown }) | null;
+  }> {
+    const [row] = await rootSql.unsafe<{ headcount_target: number | null; headcount_config: unknown }[]>(
+      `SELECT headcount_target, headcount_config
+         FROM harness_shared.agent_fleets
+        WHERE workspace_id = $1 AND fleet_slug = $2`,
+      [workspaceId, slug],
+    );
+    const raw = row?.headcount_config;
+    return {
+      target: row?.headcount_target ?? null,
+      config: (typeof raw === 'string' ? JSON.parse(raw) : raw) as never,
+    };
+  }
+
+  it('a disable merges the rule into the preserved recipe; a disable without one strips it', async () => {
+    await insertFleet('topup-merge');
+    await setFleetHeadcountTarget({
+      workspaceId: WS, fleetSlug: 'topup-merge', target: 3, config: { ...config, supervise: true }, sql: rootSql,
+    });
+    await setFleetHeadcountTarget({
+      workspaceId: WS, fleetSlug: 'topup-merge', target: null, topUpRule: rule(), sql: rootSql,
+    });
+    const ruled = await readRow('topup-merge');
+    expect(ruled.target).toBeNull();
+    expect(ruled.config).toMatchObject({ ...config, supervise: true, topUpRule: rule() });
+
+    await setFleetHeadcountTarget({ workspaceId: WS, fleetSlug: 'topup-merge', target: null, sql: rootSql });
+    const stripped = await readRow('topup-merge');
+    expect(stripped.target).toBeNull();
+    expect(stripped.config).toMatchObject({ ...config, supervise: true });
+    expect(stripped.config).not.toHaveProperty('topUpRule');
+  });
+
+  it('a row with no recipe stays NULL even when a rule is offered', async () => {
+    await insertFleet('topup-no-recipe');
+    await setFleetHeadcountTarget({
+      workspaceId: WS, fleetSlug: 'topup-no-recipe', target: null, topUpRule: rule(), sql: rootSql,
+    });
+    expect(await readRow('topup-no-recipe')).toEqual({ target: null, config: null });
+  });
+
+  it('a non-null write strips a stale stored rule unless the write ratifies one', async () => {
+    await insertFleet('topup-rearm');
+    // A recipe read back from the row still carries its old rule; re-arming with
+    // it must not resurrect that rule.
+    const staleRecipe = { ...config, supervise: true, topUpRule: rule() };
+    await setFleetHeadcountTarget({
+      workspaceId: WS, fleetSlug: 'topup-rearm', target: 4, config: staleRecipe, sql: rootSql,
+    });
+    const rearmed = await readRow('topup-rearm');
+    expect(rearmed.target).toBe(4);
+    expect(rearmed.config).toMatchObject({ ...config, supervise: true });
+    expect(rearmed.config).not.toHaveProperty('topUpRule');
+
+    const revoke = rule({ kind: 'supervise-revoked', suspendedTarget: null, suspendedSupervise: true });
+    await setFleetHeadcountTarget({
+      workspaceId: WS, fleetSlug: 'topup-rearm', target: 4,
+      config: { ...config, supervise: false }, topUpRule: revoke, sql: rootSql,
+    });
+    const revoked = await readRow('topup-rearm');
+    expect(revoked.target).toBe(4);
+    expect(revoked.config).toMatchObject({ ...config, supervise: false, topUpRule: revoke });
+  });
+
+  it('lists expired rules only, excluding in-force, winding-down and malformed ones', async () => {
+    const ws = 'ws-topup-list';
+    for (const slug of ['expired', 'in-force', 'wound', 'malformed', 'until-text', 'no-rule']) {
+      await insertFleetIn(ws, slug);
+      await setFleetHeadcountTarget({
+        workspaceId: ws, fleetSlug: slug, target: 2, config: { ...config, supervise: true }, sql: rootSql,
+      });
+    }
+    await setFleetHeadcountTarget({ workspaceId: ws, fleetSlug: 'expired', target: null, topUpRule: rule(), sql: rootSql });
+    await setFleetHeadcountTarget({
+      workspaceId: ws, fleetSlug: 'in-force', target: null, topUpRule: rule({ until: 50_000 }), sql: rootSql,
+    });
+    await setFleetHeadcountTarget({ workspaceId: ws, fleetSlug: 'wound', target: null, topUpRule: rule(), sql: rootSql });
+    expect(await setFleetControlState(
+      ws, 'wound', { state: 'winding-down', reason: 'plan shipped', by: 'su-test' }, rootSql,
+    )).toBeTruthy();
+    // Written raw: the typed writer could never store these shapes.
+    await rootSql.unsafe(
+      `UPDATE harness_shared.agent_fleets
+          SET headcount_target = NULL,
+              headcount_config = headcount_config || jsonb_build_object('topUpRule', $3::jsonb)
+        WHERE workspace_id = $1 AND fleet_slug = $2`,
+      [ws, 'malformed', JSON.stringify({ ...rule(), reason: '' })],
+    );
+    await rootSql.unsafe(
+      `UPDATE harness_shared.agent_fleets
+          SET headcount_target = NULL,
+              headcount_config = headcount_config || jsonb_build_object('topUpRule', $3::jsonb)
+        WHERE workspace_id = $1 AND fleet_slug = $2`,
+      [ws, 'until-text', JSON.stringify({ ...rule(), until: '5000' })],
+    );
+
+    // The wound fleet's rule is still stored: its exclusion is control_state, not absence.
+    expect((await readRow('wound', ws)).config).toMatchObject({ topUpRule: rule() });
+
+    const expired = await listExpiredFleetTopUpRules(ws, 10_000, rootSql);
+    expect(expired).toEqual([
+      {
+        workspaceId: ws,
+        fleetSlug: 'expired',
+        rule: rule(),
+        config: expect.objectContaining({ plan: 'drain', supervise: true }),
+      },
+    ]);
+
+    // Positive control: past its own until, the in-force rule lists too; the
+    // wound, malformed and text-until rows stay excluded at every instant.
+    const later = await listExpiredFleetTopUpRules(ws, 100_000, rootSql);
+    expect(later.map((r) => r.fleetSlug).sort()).toEqual(['expired', 'in-force']);
+    // The boundary is inclusive: a rule expires AT its until.
+    expect((await listExpiredFleetTopUpRules(ws, 5_000, rootSql)).map((r) => r.fleetSlug)).toEqual(['expired']);
+    expect(await listExpiredFleetTopUpRules(ws, 4_999, rootSql)).toEqual([]);
+  });
+
+  it('lapse with restore puts back the suspended target and grant of a target-disabled rule', async () => {
+    await insertFleet('topup-lapse-target');
+    await setFleetHeadcountTarget({
+      workspaceId: WS, fleetSlug: 'topup-lapse-target', target: 3, config: { ...config, supervise: true }, sql: rootSql,
+    });
+    await setFleetHeadcountTarget({
+      workspaceId: WS, fleetSlug: 'topup-lapse-target', target: null, topUpRule: rule(), sql: rootSql,
+    });
+    expect(await listFleetHeadcountTargets(WS, rootSql)).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ fleetSlug: 'topup-lapse-target' })]),
+    );
+
+    expect(await lapseFleetTopUpRule({
+      workspaceId: WS, fleetSlug: 'topup-lapse-target', expectedUntil: 5_000, restore: true, now: 9_000, sql: rootSql,
+    })).toBe(true);
+    const lapsed = await readRow('topup-lapse-target');
+    expect(lapsed.target).toBe(3);
+    expect(lapsed.config).toMatchObject({ ...config, supervise: true });
+    expect(lapsed.config).not.toHaveProperty('topUpRule');
+    expect(await listFleetHeadcountTargets(WS, rootSql)).toEqual(
+      expect.arrayContaining([expect.objectContaining({ fleetSlug: 'topup-lapse-target', target: 3 })]),
+    );
+    // A second lapse finds no rule and changes nothing.
+    expect(await lapseFleetTopUpRule({
+      workspaceId: WS, fleetSlug: 'topup-lapse-target', expectedUntil: 5_000, restore: true, sql: rootSql,
+    })).toBe(false);
+  });
+
+  it('lapse with restore on a supervise-revoked rule restores only the grant', async () => {
+    await insertFleet('topup-lapse-grant');
+    await setFleetHeadcountTarget({
+      workspaceId: WS, fleetSlug: 'topup-lapse-grant', target: 2, config: { ...config, supervise: false },
+      topUpRule: rule({ kind: 'supervise-revoked', suspendedTarget: 7, suspendedSupervise: true }), sql: rootSql,
+    });
+    expect(await lapseFleetTopUpRule({
+      workspaceId: WS, fleetSlug: 'topup-lapse-grant', expectedUntil: 5_000, restore: true, sql: rootSql,
+    })).toBe(true);
+    const lapsed = await readRow('topup-lapse-grant');
+    // suspendedTarget is ignored for this kind: the target was never suspended.
+    expect(lapsed.target).toBe(2);
+    expect(lapsed.config).toMatchObject({ ...config, supervise: true });
+    expect(lapsed.config).not.toHaveProperty('topUpRule');
+  });
+
+  it('lapse without restore only clears the rule', async () => {
+    await insertFleet('topup-lapse-clear');
+    await setFleetHeadcountTarget({
+      workspaceId: WS, fleetSlug: 'topup-lapse-clear', target: 3, config: { ...config, supervise: false }, sql: rootSql,
+    });
+    await setFleetHeadcountTarget({
+      workspaceId: WS, fleetSlug: 'topup-lapse-clear', target: null, topUpRule: rule(), sql: rootSql,
+    });
+    expect(await lapseFleetTopUpRule({
+      workspaceId: WS, fleetSlug: 'topup-lapse-clear', expectedUntil: 5_000, restore: false, sql: rootSql,
+    })).toBe(true);
+    const cleared = await readRow('topup-lapse-clear');
+    expect(cleared.target).toBeNull();
+    expect(cleared.config).toMatchObject({ ...config, supervise: false });
+    expect(cleared.config).not.toHaveProperty('topUpRule');
+  });
+
+  it('the until compare-and-set loses to a re-ratification, and a winding-down fleet is never lapsed', async () => {
+    await insertFleet('topup-cas');
+    await setFleetHeadcountTarget({
+      workspaceId: WS, fleetSlug: 'topup-cas', target: 3, config: { ...config, supervise: true }, sql: rootSql,
+    });
+    await setFleetHeadcountTarget({
+      workspaceId: WS, fleetSlug: 'topup-cas', target: null, topUpRule: rule(), sql: rootSql,
+    });
+    // The leader re-ratifies between the sweep's listing and its lapse.
+    const reRatified = rule({ ratifiedAt: 7_000, until: 80_000 });
+    await setFleetHeadcountTarget({
+      workspaceId: WS, fleetSlug: 'topup-cas', target: null, topUpRule: reRatified, sql: rootSql,
+    });
+    expect(await lapseFleetTopUpRule({
+      workspaceId: WS, fleetSlug: 'topup-cas', expectedUntil: 5_000, restore: true, sql: rootSql,
+    })).toBe(false);
+    expect(await readRow('topup-cas')).toMatchObject({ target: null, config: { topUpRule: reRatified } });
+    // Positive control: the CURRENT until lapses it.
+    expect(await lapseFleetTopUpRule({
+      workspaceId: WS, fleetSlug: 'topup-cas', expectedUntil: 80_000, restore: true, sql: rootSql,
+    })).toBe(true);
+    expect((await readRow('topup-cas')).target).toBe(3);
+
+    await insertFleet('topup-wound');
+    await setFleetHeadcountTarget({
+      workspaceId: WS, fleetSlug: 'topup-wound', target: 3, config: { ...config, supervise: true }, sql: rootSql,
+    });
+    await setFleetHeadcountTarget({
+      workspaceId: WS, fleetSlug: 'topup-wound', target: null, topUpRule: rule(), sql: rootSql,
+    });
+    await setFleetControlState(WS, 'topup-wound', { state: 'winding-down', reason: 'plan shipped', by: 'su-test' }, rootSql);
+    expect(await lapseFleetTopUpRule({
+      workspaceId: WS, fleetSlug: 'topup-wound', expectedUntil: 5_000, restore: true, sql: rootSql,
+    })).toBe(false);
+    expect(await readRow('topup-wound')).toMatchObject({ target: null, config: { topUpRule: rule() } });
   });
 });

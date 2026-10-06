@@ -20,7 +20,11 @@ import * as os from "node:os";
 import { dirname, join } from "node:path";
 import { createServer, type Server } from "node:http";
 
-const HOOK = join(__dirname, "..", "pretooluse-locks-acquire.sh");
+// Overridable so a falsifiability probe can point the suite at a COPY of an older
+// hook outside the shared tree (never mutate the tracked file in place).
+const HOOK =
+  process.env.PAPERCUSP_TEST_LOCKS_ACQUIRE_HOOK ??
+  join(__dirname, "..", "pretooluse-locks-acquire.sh");
 const POST_HOOK = join(__dirname, "..", "posttooluse-locks-release.sh");
 
 let home: string, cache: string, ws: string, repo: string;
@@ -1696,6 +1700,128 @@ describe("EI-19324697909459657: persistent-transient escalation", () => {
     );
     expect(out.hookSpecificOutput.permissionDecisionReason).not.toMatch(
       /PERSISTENT transient contention/i,
+    );
+  });
+});
+
+// WI-10006390: every lock entry is relative to its OWN repository, and one
+// locks:acquire names one coordination_domain. The hook used to send a
+// cross-repository path set with NO domain, so the server filed a submodule
+// file such as libs/papercusp/libs/db/sql/X under the superproject as
+// 'libs/db/sql/X' — a key that never conflicts with a peer's real lock on it.
+describe("WI-10006390: cross-repository edits never lock under the wrong domain", () => {
+  const SUB_REL = "libs/wi390-sub";
+  let sub: string;
+  const acquiresOf = () =>
+    requests.filter((request) => request.body.params.name === "locks:acquire");
+  const patchOf = (paths: string[]) =>
+    [
+      "*** Begin Patch",
+      ...paths.flatMap((path) => [`*** Update File: ${path}`, "@@", "-before", "+after"]),
+      "*** End Patch",
+    ].join("\n");
+
+  beforeAll(() => {
+    sub = join(repo, SUB_REL);
+    fs.mkdirSync(join(sub, "sql"), { recursive: true });
+    // A submodule's .git is a gitlink FILE, exactly like the fixture superproject's.
+    fs.writeFileSync(join(sub, ".git"), "gitdir: /nonexistent-wi390-sub\n");
+    for (const rel of ["sql/x.sql", "sql/y.sql"])
+      fs.writeFileSync(join(sub, rel), "before\n");
+    for (const rel of ["sub/wi390-top.ts", "sub/wi390-batch-top.ts"])
+      fs.writeFileSync(join(repo, rel), "before\n");
+  });
+
+  it("positive control: a submodule-only Codex patch locks submodule-relative paths in the submodule domain", async () => {
+    nextInner = { ok: true, lock_id: "wi390-sub-lock", newly_held: ["sql/x.sql"] };
+    const pre = await run(
+      {
+        tool_name: "apply_patch",
+        tool_input: patchOf([`${SUB_REL}/sql/x.sql`]),
+        tool_use_id: "tu-wi390-sub-only",
+        session_id: "codex-session",
+        cwd: repo,
+      },
+      { PAPERCUSP_LOCK_SID: "wi390-owner", PAPERCUSP_SID: "wi390-owner" },
+    );
+    expect(pre.status).toBe(0);
+    expect(pre.stdout).toBe("");
+    const acquires = acquiresOf();
+    expect(acquires).toHaveLength(1);
+    expect(acquires[0].body.params.arguments.paths).toEqual(["sql/x.sql"]);
+    expect(acquires[0].body.params.arguments.coordination_domain).toBe(
+      fs.realpathSync(sub),
+    );
+  });
+
+  it("a Codex patch spanning the superproject and a submodule is refused before any acquire", async () => {
+    const pre = await run(
+      {
+        tool_name: "apply_patch",
+        tool_input: patchOf([`${SUB_REL}/sql/x.sql`, "sub/wi390-top.ts"]),
+        tool_use_id: "tu-wi390-cross",
+        session_id: "codex-session",
+        cwd: repo,
+      },
+      { PAPERCUSP_LOCK_SID: "wi390-owner", PAPERCUSP_SID: "wi390-owner" },
+    );
+    expect(pre.status).toBe(0); // deny path emits JSON then exits 0
+    const out = JSON.parse(pre.stdout);
+    expect(out.hookSpecificOutput.permissionDecision).toBe("deny");
+    const reason: string = out.hookSpecificOutput.permissionDecisionReason;
+    expect(reason).toContain("2 repositories");
+    expect(reason).toContain(`${fs.realpathSync(sub)} -> sql/x.sql`);
+    expect(reason).toContain(`${fs.realpathSync(repo)} -> sub/wi390-top.ts`);
+    expect(reason).toContain("one apply_patch per repository");
+    // The defect was a GRANTED lock under the wrong keys; nothing may be acquired.
+    expect(acquiresOf()).toHaveLength(0);
+    expect(fs.existsSync(join(cache, "tu-wi390-cross.lock"))).toBe(false);
+  });
+
+  it("a Claude native batch spanning two repositories locks each call in its own domain", async () => {
+    const transcriptPath = join(home, "wi390-transcript.jsonl");
+    const subFile = join(sub, "sql/y.sql");
+    const topFile = join(repo, "sub/wi390-batch-top.ts");
+    fs.writeFileSync(
+      transcriptPath,
+      `${JSON.stringify({
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "tool_use", id: "tu-wi390-b-sub", name: "Edit", input: { file_path: subFile } },
+            { type: "tool_use", id: "tu-wi390-b-top", name: "Edit", input: { file_path: topFile } },
+          ],
+        },
+      })}\n`,
+    );
+    const env = { PAPERCUSP_SID: "wi390-batch", PAPERCUSP_LOCK_SID: "wi390-batch" };
+    const [first, second] = await Promise.all([
+      run(nativeBatchInput(transcriptPath, `${SUB_REL}/sql/y.sql`, "tu-wi390-b-sub"), env),
+      run(nativeBatchInput(transcriptPath, "sub/wi390-batch-top.ts", "tu-wi390-b-top"), env),
+    ]);
+    expect(first.status).toBe(0);
+    expect(second.status).toBe(0);
+    expect(first.stdout).toBe("");
+    expect(second.stdout).toBe("");
+
+    const byDomain = Object.fromEntries(
+      acquiresOf().map((request) => [
+        request.body.params.arguments.coordination_domain,
+        request.body.params.arguments.paths,
+      ]),
+    );
+    expect(acquiresOf()).toHaveLength(2);
+    expect(byDomain).toEqual({
+      [fs.realpathSync(sub)]: ["sql/y.sql"],
+      [fs.realpathSync(repo)]: ["sub/wi390-batch-top.ts"],
+    });
+    // Per-call fallback: each call caches its OWN release token and domain.
+    expect(fs.readFileSync(join(cache, "tu-wi390-b-sub.domain"), "utf8").trim()).toBe(
+      fs.realpathSync(sub),
+    );
+    expect(fs.readFileSync(join(cache, "tu-wi390-b-top.domain"), "utf8").trim()).toBe(
+      fs.realpathSync(repo),
     );
   });
 });

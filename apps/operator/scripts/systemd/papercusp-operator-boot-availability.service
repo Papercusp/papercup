@@ -11,7 +11,7 @@ Environment=PAPERCUSP_OPERATOR_BOOT_AVAILABILITY_STATE_DIR=%t/papercusp-operator
 RuntimeDirectory=papercusp-operator-boot-availability
 RuntimeDirectoryMode=0700
 RuntimeDirectoryPreserve=yes
-ExecStart=%h/papercupai-workspace/papercusp/apps/operator/scripts/systemd/papercusp-operator-boot-availability.sh
+ExecStart=/usr/bin/bash %h/papercupai-workspace/papercusp/apps/operator/scripts/systemd/papercusp-script-snapshot.sh %h/papercupai-workspace/papercusp/apps/operator/scripts/systemd/papercusp-operator-boot-availability.sh
 TimeoutStartSec=10
 UMask=0077
 NoNewPrivileges=yes

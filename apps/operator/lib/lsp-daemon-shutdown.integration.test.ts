@@ -28,10 +28,16 @@ it.runIf(process.platform === 'linux')('drains default resources before exiting,
   const adapterPath = fileURLToPath(new URL('../../../packages/operator-core/lib/code-intelligence/lsp-adapter.ts', import.meta.url));
   const shutdownPath = fileURLToPath(new URL('./lsp-daemon-shutdown.ts', import.meta.url));
   const script = `
-    const { runLspDaemonServer } = await import(${JSON.stringify(serverPath)});
-    const { createLspDaemonShutdown } = await import(${JSON.stringify(shutdownPath)});
-    const { lspQuery, lspClientInventory } = await import(${JSON.stringify(adapterPath)});
-    const { getOrgPg } = await import('@papercusp/db-org');
+    // tsx exposes the app's CommonJS package through default, whereas the
+    // operator-core and DB packages export ESM names. Normalize at this seam.
+    const load = async path => { const ns = await import(path); return ns.default ?? ns; };
+    const { runLspDaemonServer } = await load(${JSON.stringify(serverPath)});
+    const { createLspDaemonShutdown } = await load(${JSON.stringify(shutdownPath)});
+    const { lspQuery, lspClientInventory } = await load(${JSON.stringify(adapterPath)});
+    const { getOrgPg } = await load('@papercusp/db-org');
+    for (const fn of [runLspDaemonServer, createLspDaemonShutdown, lspQuery, lspClientInventory, getOrgPg]) {
+      if (typeof fn !== 'function') throw new Error('daemon fixture import preflight failed');
+    }
     (async () => {
       const sql = getOrgPg().sql;
       const [db] = await sql.unsafe('SELECT pg_backend_pid() AS pid');
@@ -59,10 +65,12 @@ it.runIf(process.platform === 'linux')('drains default resources before exiting,
   child.stderr.on('data', chunk => { errors = (errors + String(chunk)).slice(-12_000); });
   let socket: Socket | undefined;
   try {
-    await vi.waitFor(() => {
+    await Promise.race([vi.waitFor(() => {
       expect(child.exitCode, errors).toBeNull();
       expect(output, errors).toMatch(/^RESOURCES .+$/m);
-    }, { timeout: 60_000 });
+    }, { timeout: 60_000 }), terminal.then(([code, signal]) => {
+      throw new Error(`daemon exited before resource readiness (${code}/${signal}): ${errors}`);
+    })]);
     const resources = JSON.parse(output.match(/^RESOURCES (.+)$/m)![1]) as Resources;
     const [task] = await db.adminSql`SELECT scope_unit, cgroup_path, confined FROM harness_shared.task_ledger WHERE task_id = ${resources.taskId}`;
     expect(task).toMatchObject({ confined: true });

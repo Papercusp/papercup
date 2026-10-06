@@ -56,6 +56,28 @@ afterAll(() => {
 });
 
 describe('llmCall backend selection', () => {
+  it('forwards trusted-host stateless authorization without changing the frozen judge policy', async () => {
+    const { llmCall } = await import('../llm-client');
+    const authorizeStatelessRequest = vi.fn(async () => () => {});
+    events.splice(0, events.length, { type: 'result', finalText: 'authorized', tokensIn: 1, tokensOut: 1, costUsd: 0.1 });
+    try {
+      await llmCall({ model: 'claude-opus-4-8', messages: [{ role: 'user', content: 'fixture' }],
+        maxTokens: 2048, thinkingBudgetTokens: 1024, authorizeStatelessRequest });
+      expect(lastRunAgentChatOpts).toMatchObject({ authorizeStatelessRequest, model: 'claude-opus-4-8',
+        maxTokens: 2048, thinkingBudgetTokens: 1024 });
+    } finally { events.length = 0; }
+  });
+
+  it('refuses unsupported Codex stateless authorization before any gateway send', async () => {
+    const { llmCall } = await import('../llm-client');
+    const send = vi.fn(); vi.stubGlobal('fetch', send);
+    try {
+      await expect(llmCall({ model: 'gpt-6.1-sol', messages: [{ role: 'user', content: 'fixture' }],
+        authorizeStatelessRequest: async () => () => {} })).rejects.toMatchObject({ costUsd: 0 });
+      expect(send).not.toHaveBeenCalled();
+    } finally { vi.unstubAllGlobals(); }
+  });
+
   it('threads a required output limit without changing the model or output bound', async () => {
     const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
       expect(new Headers(init?.headers).get('x-papercusp-require-output-token-limit')).toBe('true');
