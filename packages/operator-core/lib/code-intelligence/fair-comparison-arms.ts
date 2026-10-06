@@ -131,11 +131,29 @@ export interface AdapterDefect {
   readonly why: string;
 }
 
+/**
+ * A defect shown to be the engine's own, not the adapter's: reproduced by
+ * calling the engine directly, outside the adapter, with the evidence recorded.
+ * It matches one case and one outcome, and for a crash one error pattern, so a
+ * different failure on the same case is still a defect.
+ */
+export interface AcceptedEngineFault {
+  readonly caseId: string;
+  readonly outcome: OutcomeClass;
+  /** Required for `crashed`: the engine's error must match it. */
+  readonly detail?: RegExp;
+  readonly evidence: string;
+}
+
 export interface ConformanceReport {
   readonly armId: string;
   readonly scores: readonly CaseScore[];
   /** Plain declared cases not answered exactly, and any crash: adapter defects until shown otherwise. */
   readonly defects: readonly AdapterDefect[];
+  /** Defects matched by an AcceptedEngineFault: measured engine faults, reported, never blocking. */
+  readonly acceptedFaults: readonly (AdapterDefect & { readonly evidence: string })[];
+  /** Accepted faults that did not occur this run: the engine changed, so the acceptance is stale and should be removed. */
+  readonly unusedAcceptances: readonly string[];
   readonly ok: boolean;
 }
 
@@ -156,10 +174,27 @@ const coarser = (s: CaseScore): boolean => s.outcome === 'partial' && s.precisio
  * defect too. Hard cases are reported in `scores` but never counted as defects:
  * that is the engine being measured.
  */
-export async function runConformance(arm: FairArm, cases: readonly FairCase[], keys: readonly AnswerKey[]): Promise<ConformanceReport> {
+export async function runConformance(
+  arm: FairArm,
+  cases: readonly FairCase[],
+  keys: readonly AnswerKey[],
+  accepted: readonly AcceptedEngineFault[] = [],
+): Promise<ConformanceReport> {
+  for (const a of accepted) {
+    if (a.outcome === 'crashed' && !a.detail) throw new Error(`accepted crash on ${a.caseId} needs a detail pattern`);
+    if (!a.evidence.trim()) throw new Error(`accepted fault on ${a.caseId} has no evidence`);
+  }
   const keyOf = new Map(keys.map((k) => [k.caseId, k]));
   const scores: CaseScore[] = [];
   const defects: AdapterDefect[] = [];
+  const acceptedFaults: (AdapterDefect & { evidence: string })[] = [];
+  const used = new Set<AcceptedEngineFault>();
+  const record = (d: AdapterDefect, detail: string) => {
+    const hit = accepted.find((a) => a.caseId === d.caseId && a.outcome === d.outcome && (!a.detail || a.detail.test(detail)));
+    if (!hit) return defects.push(d);
+    used.add(hit);
+    return acceptedFaults.push({ ...d, evidence: hit.evidence });
+  };
   for (const kase of cases) {
     const key = keyOf.get(kase.id);
     if (!key) throw new Error(`no answer key for micro case ${kase.id}`);
@@ -167,13 +202,17 @@ export async function runConformance(arm: FairArm, cases: readonly FairCase[], k
     const score = scoreCase(kase, arm.capabilities, key, ans);
     scores.push(score);
     if (score.outcome === 'crashed') {
-      defects.push({ caseId: kase.id, outcome: score.outcome, why: ans.detail ?? 'crashed without detail' });
+      record({ caseId: kase.id, outcome: score.outcome, why: ans.detail ?? 'crashed without detail' }, ans.detail ?? '');
     } else if (kase.tags.length === 0 && score.outcome !== 'undeclared' && score.outcome !== 'correct' && !coarser(score)) {
       const got = ans.sites.map((s) => `${s.path}:${s.line1 ?? '?'}`).join(', ') || '(none)';
-      defects.push({ caseId: kase.id, outcome: score.outcome, why: `plain case: expected ${key.sites.join(', ')}; got ${got}${ans.detail ? ` (${ans.detail})` : ''}` });
+      record(
+        { caseId: kase.id, outcome: score.outcome, why: `plain case: expected ${key.sites.join(', ')}; got ${got}${ans.detail ? ` (${ans.detail})` : ''}` },
+        ans.detail ?? '',
+      );
     }
   }
-  return { armId: arm.capabilities.armId, scores, defects, ok: defects.length === 0 };
+  const unusedAcceptances = accepted.filter((a) => !used.has(a)).map((a) => `${a.caseId}:${a.outcome}`);
+  return { armId: arm.capabilities.armId, scores, defects, acceptedFaults, unusedAcceptances, ok: defects.length === 0 };
 }
 
 const git = (cwd: string, args: readonly string[]): Promise<void> =>

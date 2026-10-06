@@ -6,8 +6,13 @@
 import { describe, expect, it } from 'vitest';
 import type { FairCase } from './fair-comparison';
 import {
+  askCgc,
   askTrace,
+  CGC_RESULT_LIMITS,
+  cgcPath,
+  cgcRequest,
   codegraphArgv,
+  parseCgc,
   parseCodegraph,
   traceCandidates,
   traceImpactSymbolIds,
@@ -134,5 +139,82 @@ describe('trace-mcp adapter', () => {
     expect(none).toMatchObject({ sites: [], error: null, note: 'trace-mcp: symbol not found' });
     const s = fake({ search: () => text({ items }), get_call_graph: () => text({ error: { code: 'INTERNAL', message: 'db locked' } }, true) });
     await expect(askTrace(s, k('callers', 'add'))).rejects.toThrow(/db locked/);
+  });
+});
+
+// Shapes captured from CodeGraphContext 0.6.13 over MCP stdio on the micro repo (2026-10-06).
+describe('CodeGraphContext adapter', () => {
+  const T = '/bench/micro-repo';
+  const reply = (results: Record<string, unknown>) => ({ success: true, results });
+
+  it('maps intents to CGC tools, passes anchorFile as context and depth, and declines references', () => {
+    expect(cgcRequest(k('callers', 'total', { anchorFile: 'src/app/report.ts' }))).toEqual({
+      tool: 'analyze_code_relationships',
+      args: { query_type: 'find_callers', target: 'total', context: 'src/app/report.ts' },
+    });
+    expect(cgcRequest(k('impact', 'scale', { depth: 3 })).args).toEqual({ query_type: 'find_all_callers', target: 'scale', depth: 3 });
+    expect(cgcRequest(k('text-search', 'grand total'))).toEqual({ tool: 'find_code', args: { query: 'grand total', fuzzy_search: false } });
+    expect(() => cgcRequest(k('references', 'sortRows'))).toThrow(/^declined/);
+  });
+
+  it('raises every result cap the arm uses', () => {
+    const limits = JSON.parse(CGC_RESULT_LIMITS) as Record<string, number>;
+    for (const tool of ['find_code', 'find_callers', 'find_callees', 'find_all_callers']) expect(limits[tool]).toBeGreaterThanOrEqual(100_000);
+  });
+
+  it('makes paths repo-relative and leaves an outside path absolute so it scores as wrong', () => {
+    expect(cgcPath(T, `${T}/src/app/report.ts`)).toBe('src/app/report.ts');
+    expect(cgcPath(T, '/elsewhere/x.ts')).toBe('/elsewhere/x.ts');
+  });
+
+  it('keeps every caller call line, duplicates included (raw), and callee declaration lines', () => {
+    const callers = reply({
+      results: [
+        { caller_function: 'total', caller_file_path: `${T}/src/app/report.ts`, caller_line_number: 6, call_line_number: 7 },
+        { caller_function: 'total', caller_file_path: `${T}/src/app/report.ts`, caller_line_number: 6, call_line_number: 8 },
+      ],
+      truncated: false,
+      result_limit: 1000000,
+    });
+    const r = parseCgc(k('callers', 'add'), callers, T);
+    expect(at(r.sites)).toEqual(['src/app/report.ts:7', 'src/app/report.ts:8']);
+    expect(r.note).toBeNull();
+    const callees = reply({ results: [{ called_function: 'doubled', called_file_path: `${T}/src/app/report.ts`, called_line_number: 12, call_line_number: 20 }], truncated: true, result_limit: 20 });
+    const c = parseCgc(k('callees', 'report'), callees, T);
+    expect(at(c.sites)).toEqual(['src/app/report.ts:12']);
+    expect(c.note).toMatch(/truncated at result_limit 20/);
+  });
+
+  it('keeps exact-name symbols across functions, classes and variables, and content matches for text search', () => {
+    const found = reply({
+      functions_by_name: [
+        { name: 'add', path: `${T}/src/app/format.ts`, line_number: 2 },
+        { name: 'addAll', path: `${T}/src/app/format.ts`, line_number: 9 },
+      ],
+      classes_by_name: [],
+      variables_by_name: [{ name: 'add', path: `${T}/src/util/math.ts`, line_number: 4 }],
+      content_matches: [{ type: 'function', name: 'report', path: `${T}/src/app/report.ts`, line_number: 19 }],
+    });
+    expect(at(parseCgc(k('symbol-search', 'add'), found, T).sites)).toEqual(['src/app/format.ts:2', 'src/util/math.ts:4']);
+    expect(at(parseCgc(k('text-search', 'grand'), found, T).sites)).toEqual(['src/app/report.ts:19']);
+  });
+
+  it('turns a query error inside a successful envelope into an error, never an empty answer', () => {
+    const broken = reply({ error: 'Error executing relationship query: Binder exception: Expression in WITH must be aliased (use AS).' });
+    const r = parseCgc(k('impact', 'doubled'), broken, T);
+    expect(r.sites).toEqual([]);
+    expect(r.error).toMatch(/Binder exception/);
+    expect(parseCgc(k('callers', 'x'), { success: false, error: 'no graph' }, T).error).toMatch(/no graph/);
+    expect(() => parseCgc(k('callers', 'x'), { success: true }, T)).toThrow(/no results object/);
+  });
+
+  it('answers through an MCP session and reports an MCP-level error', async () => {
+    const text = (j: unknown, isError = false) => ({ content: [{ type: 'text', text: JSON.stringify(j) }], ...(isError ? { isError: true } : {}) });
+    const seen: string[] = [];
+    const ok = { call: async (name: string, args: Record<string, unknown>) => (seen.push(`${name}:${String(args.query_type ?? args.query)}`), text(reply({ results: [] }))) };
+    expect(await askCgc(ok, k('callers', 'neverCalled'), T)).toEqual({ sites: [], error: null, note: null });
+    expect(seen).toEqual(['analyze_code_relationships:find_callers']);
+    const bad = { call: async () => text({ message: 'tool failed' }, true) };
+    expect((await askCgc(bad, k('callers', 'x'), T)).error).toMatch(/cgc analyze_code_relationships: .*tool failed/);
   });
 });

@@ -19,11 +19,12 @@
  */
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { isAbsolute, relative } from 'node:path';
 import type { SymbolSite } from './contracts';
 import type { PhaseCost } from './engine-comparison';
 import { execTimed, phaseOf, type ArmDeps } from './engine-comparison-arms';
 import type { ArmCapabilities, FairCase, FairIntent } from './fair-comparison';
-import { guardedArm, type FairArm, type RawReply } from './fair-comparison-arms';
+import { guardedArm, type AcceptedEngineFault, type FairArm, type RawReply } from './fair-comparison-arms';
 
 export interface EngineArmConfig {
   readonly version: string;
@@ -129,14 +130,15 @@ export function createCodegraphArm(cfg: EngineArmConfig, deps: ArmDeps, now?: ()
 export const TRACE_MCP_INTENTS: readonly FairIntent[] = ['callers', 'callees', 'impact', 'definition', 'references', 'symbol-search', 'text-search'];
 
 /** The JSON body of an MCP tool result. trace-mcp returns one text part holding JSON. */
-export function traceToolJson(result: unknown): { json: Record<string, unknown>; isError: boolean } {
+/** The JSON an MCP tool returned as text content. Non-JSON text throws, so a changed output shape surfaces as a crash. */
+export function mcpToolJson(result: unknown, engine: string): { json: Record<string, unknown>; isError: boolean } {
   const r = result as { content?: Array<{ type?: string; text?: string }>; isError?: boolean };
   const text = (r.content ?? []).filter((c) => c.type === 'text').map((c) => c.text ?? '').join('');
   let json: Record<string, unknown>;
   try {
     json = JSON.parse(text) as Record<string, unknown>;
   } catch {
-    throw new Error(`trace-mcp returned non-JSON: ${text.slice(0, 200)}`);
+    throw new Error(`${engine} returned non-JSON: ${text.slice(0, 200)}`);
   }
   return { json, isError: r.isError === true };
 }
@@ -182,17 +184,21 @@ export function traceImpactSymbolIds(json: Record<string, unknown>): string[] {
   return deps.flatMap((d) => (d.symbols ?? []).map((s) => s.symbolId).filter((s): s is string => typeof s === 'string'));
 }
 
-export interface TraceSession {
+export interface McpSession {
   call(name: string, args: Record<string, unknown>): Promise<unknown>;
   close(): Promise<void>;
 }
 
-/** Start `trace-mcp serve` in the tree and talk MCP to it over stdio. */
-export async function openTraceSession(cfg: EngineArmConfig): Promise<TraceSession> {
+/** Start an engine's MCP server in the tree (`<bin> <serveArgs>`) and talk MCP to it over stdio. */
+export async function openMcpSession(
+  cfg: EngineArmConfig,
+  serveArgs: readonly string[],
+  extraEnv: Readonly<Record<string, string>> = {},
+): Promise<McpSession> {
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) if (typeof v === 'string') env[k] = v;
-  Object.assign(env, cfg.env, { HOME: cfg.home, NO_COLOR: '1' });
-  const transport = new StdioClientTransport({ command: cfg.bin, args: ['serve'], cwd: cfg.treeRoot, env, stderr: 'ignore' });
+  Object.assign(env, cfg.env, extraEnv, { HOME: cfg.home, NO_COLOR: '1' });
+  const transport = new StdioClientTransport({ command: cfg.bin, args: [...serveArgs], cwd: cfg.treeRoot, env, stderr: 'ignore' });
   const client = new Client({ name: 'papercusp-fair-comparison', version: '1' });
   await client.connect(transport);
   const timeout = cfg.timeoutMs ?? 120_000;
@@ -203,9 +209,9 @@ export async function openTraceSession(cfg: EngineArmConfig): Promise<TraceSessi
 }
 
 /** Answer one case through an open trace-mcp session (exported for tests with a fake session). */
-export async function askTrace(session: Pick<TraceSession, 'call'>, kase: FairCase): Promise<RawReply> {
+export async function askTrace(session: Pick<McpSession, 'call'>, kase: FairCase): Promise<RawReply> {
   const call = async (name: string, args: Record<string, unknown>) => {
-    const { json, isError } = traceToolJson(await session.call(name, args));
+    const { json, isError } = mcpToolJson(await session.call(name, args), 'trace-mcp');
     if (isError) {
       const err = json.error as { code?: string; message?: string } | undefined;
       if (err?.code === 'NOT_FOUND') return null;
@@ -251,7 +257,7 @@ export async function askTrace(session: Pick<TraceSession, 'call'>, kase: FairCa
 export function createTraceMcpArm(cfg: EngineArmConfig, deps: ArmDeps, now?: () => number): FairArm {
   const exec = deps.exec ?? execTimed;
   const capabilities: ArmCapabilities = { armId: 'trace-mcp', version: cfg.version, intents: TRACE_MCP_INTENTS, licence: 'permissive' };
-  let session: Promise<TraceSession> | null = null;
+  let session: Promise<McpSession> | null = null;
   return guardedArm({
     capabilities,
     unavailable: null,
@@ -259,8 +265,164 @@ export function createTraceMcpArm(cfg: EngineArmConfig, deps: ArmDeps, now?: () 
     index: async () =>
       phaseOf(await exec(cfg.bin, ['index', '.', '--force'], { cwd: cfg.treeRoot, env: { ...cfg.env, HOME: cfg.home }, timeoutMs: 4 * 3_600_000 }), deps),
     async ask(kase) {
-      session ??= openTraceSession(cfg);
+      session ??= openMcpSession(cfg, ['serve']);
       return askTrace(await session, kase);
+    },
+    async close() {
+      if (session) await (await session).close();
+      session = null;
+    },
+  });
+}
+
+// ─── CodeGraphContext (MIT, PyPI codegraphcontext) — answers over MCP stdio ──
+
+/**
+ * CGC's intents. It has no references query (`analyze variable` covers
+ * variables only). Its text search is a full-text index over function sources
+ * and docstrings: it answers with the enclosing function, and module-level text
+ * is not indexed. That is CGC's text search, so it is declared and measured.
+ */
+export const CGC_INTENTS: readonly FairIntent[] = ['callers', 'callees', 'impact', 'definition', 'symbol-search', 'text-search'];
+
+/**
+ * CGC caps every tool at 15-50 results by default. It reads `TOOL_RESULT_LIMITS`
+ * from its environment, so the arm raises every cap it uses (D-013 rule 2).
+ */
+export const CGC_RESULT_LIMITS: string = JSON.stringify(
+  Object.fromEntries(['find_code', 'analyze_code_relationships', 'find_callers', 'find_callees', 'find_all_callers'].map((k) => [k, 1_000_000])),
+);
+
+/** The one CGC tool call for a case. `context` is CGC's own file scope; it resolves a repo-relative path against the server's cwd. */
+export function cgcRequest(kase: FairCase): { tool: string; args: Record<string, unknown> } {
+  const scope = kase.anchorFile ? { context: kase.anchorFile } : {};
+  const relationship = (query_type: string, extra: Record<string, unknown> = {}) => ({
+    tool: 'analyze_code_relationships',
+    args: { query_type, target: kase.subject, ...scope, ...extra },
+  });
+  switch (kase.intent) {
+    case 'callers':
+      return relationship('find_callers');
+    case 'callees':
+      return relationship('find_callees');
+    case 'impact':
+      return relationship('find_all_callers', { depth: kase.depth ?? 2 });
+    case 'definition':
+    case 'symbol-search':
+    case 'text-search':
+      return { tool: 'find_code', args: { query: kase.subject, fuzzy_search: false } };
+    default:
+      throw new Error(`declined: CodeGraphContext has no query for intent '${kase.intent}'`);
+  }
+}
+
+type CgcRow = Record<string, unknown>;
+const rows = (v: unknown, what: string): CgcRow[] => {
+  if (!Array.isArray(v)) throw new Error(`cgc: expected a '${what}' array`);
+  return v as CgcRow[];
+};
+const num = (v: unknown): number | null => (typeof v === 'number' ? v : null);
+const str = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined);
+
+/** CGC prints absolute paths; the score is on repo-relative ones. A path outside the tree stays absolute and scores as wrong. */
+export function cgcPath(treeRoot: string, p: string | undefined): string | undefined {
+  if (p === undefined) return undefined;
+  const rel = relative(treeRoot, p);
+  return rel.startsWith('..') || isAbsolute(rel) ? p : rel;
+}
+
+/**
+ * Read one CGC tool reply (the JSON CGC prints as text content). Raw (D-013):
+ * callers keep every reported call line (lines in one scope are aliases of one
+ * unit, D-012); callees and impact keep the declaration lines CGC reports;
+ * definition and symbol-search keep exact-name symbols; text-search keeps every
+ * content match. A query error CGC reports inside a successful envelope is an
+ * error, never an empty answer.
+ */
+export function parseCgc(kase: FairCase, json: Record<string, unknown>, treeRoot: string): RawReply {
+  if (json.success === false) return { sites: [], error: `cgc: ${String(json.error ?? json.message ?? 'success=false').slice(0, 300)}` };
+  const results = json.results as Record<string, unknown> | undefined;
+  if (!results || typeof results !== 'object') throw new Error('cgc: reply has no results object');
+  if (typeof results.error === 'string') return { sites: [], error: `cgc ${kase.intent}: ${results.error.slice(0, 300)}` };
+  const at = (p: unknown, line: unknown, kind: string | undefined) => site(cgcPath(treeRoot, str(p)), num(line), kind);
+
+  if (kase.intent === 'definition' || kase.intent === 'symbol-search') {
+    const buckets: Array<[string, string]> = [['functions_by_name', 'function'], ['classes_by_name', 'class'], ['variables_by_name', 'variable']];
+    const sites = buckets.flatMap(([field, kind]) =>
+      rows(results[field] ?? [], field).filter((r) => r.name === kase.subject).map((r) => at(r.path, r.line_number, kind)),
+    );
+    return { sites, error: null };
+  }
+  if (kase.intent === 'text-search') {
+    return { sites: rows(results.content_matches ?? [], 'content_matches').map((r) => at(r.path, r.line_number, str(r.type))), error: null };
+  }
+  const list = rows(results.results, 'results');
+  const truncated = results.truncated === true;
+  const sites =
+    kase.intent === 'callers'
+      ? list.map((r) => at(r.caller_file_path, r.call_line_number, 'call'))
+      : kase.intent === 'callees'
+        ? list.map((r) => at(r.called_file_path, r.called_line_number, 'function'))
+        : list.map((r) => at(r.caller_file_path, r.caller_line_number, 'function'));
+  return { sites, error: null, note: truncated ? `cgc: truncated at result_limit ${String(results.result_limit)}` : null };
+}
+
+/** Answer one case through an open CGC session (exported for tests with a fake session). */
+export async function askCgc(session: Pick<McpSession, 'call'>, kase: FairCase, treeRoot: string): Promise<RawReply> {
+  const { tool, args } = cgcRequest(kase);
+  const { json, isError } = mcpToolJson(await session.call(tool, args), 'cgc');
+  if (isError) return { sites: [], error: `cgc ${tool}: ${JSON.stringify(json).slice(0, 300)}` };
+  return parseCgc(kase, json, treeRoot);
+}
+
+const CGC_IMPACT_CRASH =
+  'CodeGraphContext 0.6.13 find_all_callers fails for every target on its default KuzuDB backend ("Binder exception: Expression in WITH must be aliased"). ' +
+  'Reproduced by calling analyze_code_relationships {query_type:"find_all_callers"} on its own MCP server, outside the adapter (2026-10-06).';
+
+/**
+ * Micro-repo defects shown to be CGC's own (AcceptedEngineFault): measured on
+ * the real corpus like any other answer, never blocking the arm. Each must stop
+ * occurring before it is removed; runConformance reports a stale one.
+ */
+export const CGC_ACCEPTED_FAULTS: readonly AcceptedEngineFault[] = Object.freeze([
+  { caseId: 'micro-impact-doubled', outcome: 'crashed', detail: /Binder exception/, evidence: CGC_IMPACT_CRASH },
+  { caseId: 'micro-impact-scale', outcome: 'crashed', detail: /Binder exception/, evidence: CGC_IMPACT_CRASH },
+  {
+    caseId: 'micro-text-search-grand-total',
+    outcome: 'wrong',
+    evidence:
+      'CGC content search is a single-token full-text index over function sources and docstrings. Its own CLI, `cgc find content "grand total"`, ' +
+      'also prints "No content matches found"; `cgc find content grand` finds only the enclosing function report (report.ts:19). The literal on ' +
+      'report.ts:3 is a module-level constant, which CGC does not index (2026-10-06).',
+  },
+]);
+
+/**
+ * The CGC arm. CGC keeps its graph under `$HOME/.codegraphcontext` in global
+ * mode, so `cfg.home` must be unique per tree: two trees under one HOME share a
+ * graph and answer for each other.
+ */
+export function createCgcArm(cfg: EngineArmConfig, deps: ArmDeps, now?: () => number): FairArm {
+  const exec = deps.exec ?? execTimed;
+  const capabilities: ArmCapabilities = { armId: 'codegraphcontext', version: cfg.version, intents: CGC_INTENTS, licence: 'permissive' };
+  const env = { TOOL_RESULT_LIMITS: CGC_RESULT_LIMITS };
+  let session: Promise<McpSession> | null = null;
+  return guardedArm({
+    capabilities,
+    unavailable: null,
+    ...(now ? { now } : {}),
+    index: async () =>
+      phaseOf(
+        await exec(cfg.bin, ['index', '.', '--force', '--no-progress'], {
+          cwd: cfg.treeRoot,
+          env: { ...cfg.env, ...env, HOME: cfg.home, NO_COLOR: '1' },
+          timeoutMs: 4 * 3_600_000,
+        }),
+        deps,
+      ),
+    async ask(kase) {
+      session ??= openMcpSession(cfg, ['mcp', 'start'], env);
+      return askCgc(await session, kase, cfg.treeRoot);
     },
     async close() {
       if (session) await (await session).close();

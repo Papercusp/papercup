@@ -141,6 +141,26 @@ describe('runConformance', () => {
     expect(extra.defects).toEqual([expect.objectContaining({ caseId: 'micro-references-sort-rows', outcome: 'partial' })]);
   });
 
+  it('reports an accepted engine fault without blocking, but still blocks a different crash and flags an unused acceptance', async () => {
+    const crash = (msg: string) => (c: FairCase) => ({ caseId: c.id, status: 'crashed' as const, sites: [], latencyMs: 1, detail: msg });
+    const accepted = [
+      { caseId: 'micro-impact-doubled', outcome: 'crashed' as const, detail: /Binder exception/, evidence: 'reproduced through the engine MCP server' },
+      { caseId: 'micro-callees-report', outcome: 'wrong' as const, evidence: 'engine fixed since; acceptance should go' },
+    ];
+    const ok = await runConformance(oracle((c) => (c.id === 'micro-impact-doubled' ? crash('Binder exception: alias')(c) : null)), MICRO_CASES, keys, accepted);
+    expect(ok.ok).toBe(true);
+    expect(ok.defects).toEqual([]);
+    expect(ok.acceptedFaults.map((f) => [f.caseId, f.evidence])).toEqual([['micro-impact-doubled', 'reproduced through the engine MCP server']]);
+    expect(ok.unusedAcceptances).toEqual(['micro-callees-report:wrong']);
+
+    const other = await runConformance(oracle((c) => (c.id === 'micro-impact-doubled' ? crash('parser blew up')(c) : null)), MICRO_CASES, keys, accepted);
+    expect(other.ok).toBe(false);
+    expect(other.defects.map((d) => d.caseId)).toEqual(['micro-impact-doubled']);
+
+    await expect(runConformance(oracle(), MICRO_CASES, keys, [{ caseId: 'x', outcome: 'crashed', evidence: 'e' }])).rejects.toThrow(/needs a detail pattern/);
+    await expect(runConformance(oracle(), MICRO_CASES, keys, [{ caseId: 'x', outcome: 'wrong', evidence: ' ' }])).rejects.toThrow(/no evidence/);
+  });
+
   it('does not count an undeclared intent as a defect', async () => {
     const r = await runConformance(oracle(() => null, ['text-search']), MICRO_CASES, keys);
     expect(r.ok).toBe(true);
