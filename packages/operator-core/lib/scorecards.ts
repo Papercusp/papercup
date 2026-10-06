@@ -21,7 +21,9 @@
  * scorecards flip per-workspace exactly like the engineer_issues store they ride.
  */
 import { createHash } from 'node:crypto';
+import postgres from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
+import { getHarnessAdminUrl } from './embedded-pg-discovery';
 import { GATE_REUSE_AUDIT_INSTRUMENT_KEY, measureGateReuseAuditWindow } from './release/gate-fire-ledger';
 import { acquireWithContentionRetry } from './agent-tools/locks/contention-retry';
 import {
@@ -1962,6 +1964,79 @@ export async function markGradingAuditAwaitingReemit(
   return true;
 }
 
+/** Dedicated cross-process advisory lock for grading-audit subject transitions. */
+const GRADING_AUDIT_SUBJECT_MUTEX_NAMESPACE = 'scorecards:grading-audit:subject';
+let _gradingAuditSubjectMutexSql: postgres.Sql | null = null;
+
+function gradingAuditSubjectMutexSql(): postgres.Sql {
+  if (!_gradingAuditSubjectMutexSql) {
+    _gradingAuditSubjectMutexSql = postgres(getHarnessAdminUrl(), {
+      onnotice: () => {},
+      max: 8,
+      idle_timeout: 0,
+      connection: {
+        application_name: ('pcusp:grading-audit-subject:p' + process.pid).slice(0, 63),
+      },
+    });
+  }
+  return _gradingAuditSubjectMutexSql;
+}
+
+function gradingAuditSubjectMutexKey(input: {
+  workspaceId: string;
+  subjectIssueId: string;
+}): string {
+  return [
+    GRADING_AUDIT_SUBJECT_MUTEX_NAMESPACE,
+    input.workspaceId,
+    input.subjectIssueId,
+  ]
+    .map((part) => String(part.length) + ':' + part)
+    .join('|');
+}
+
+/**
+ * Serialize grading-audit reservation and emission for one scorecard subject.
+ * This uses a dedicated direct connection because session advisory locks must
+ * stay on one backend; the ordinary org pool may use transaction pooling.
+ */
+export async function acquireGradingAuditSubjectMutex(input: {
+  workspaceId: string;
+  subjectIssueId: string;
+}): Promise<() => Promise<void>> {
+  const key = gradingAuditSubjectMutexKey(input);
+  const reserved = await gradingAuditSubjectMutexSql().reserve();
+  let acquired = false;
+  try {
+    await reserved.unsafe('SET lock_timeout = 0');
+    await reserved.unsafe('SET statement_timeout = 0');
+    await reserved.unsafe('SELECT pg_advisory_lock(hashtextextended($1, 0))', [key]);
+    acquired = true;
+    return async () => {
+      if (!acquired) return;
+      acquired = false;
+      try {
+        await reserved
+          .unsafe('SELECT pg_advisory_unlock(hashtextextended($1, 0))', [key])
+          .catch(() => {});
+      } finally {
+        reserved.release();
+      }
+    };
+  } catch (error) {
+    reserved.release();
+    throw error;
+  }
+}
+
+/** Test-only — close + drop the dedicated grading-audit mutex connection. */
+export async function _closeGradingAuditSubjectMutexForTests(): Promise<void> {
+  if (_gradingAuditSubjectMutexSql) {
+    await _gradingAuditSubjectMutexSql.end({ timeout: 1 }).catch(() => {});
+    _gradingAuditSubjectMutexSql = null;
+  }
+}
+
 /**
  * P-013: settle a graded card's audit-pending stamp after its audit scorecard filed.
  * The pending path is a compare-and-set write against the exact stamp read above;
@@ -2298,6 +2373,11 @@ export interface ListScorecardsFilter {
    */
   subjectRef?: string;
   /**
+   * Internal-only exact subject-type filter used by write-path deduplication.
+   * The public `scorecards:list` tool intentionally does not expose this field.
+   */
+  subjectKind?: string;
+  /**
    * Restrict to scorecards grading ANY of these subjects. The batched form of
    * `subjectRef`: one scan of the rubric's cards instead of one scan per subject.
    * The newest-first limit applies to the union, so a caller that needs a
@@ -2451,6 +2531,7 @@ async function listScorecardsAtLimit(filter: ListScorecardsFilter, limit: number
        AND ${filter.rubricRef ? tx`scorecard.payload -> 'observation' ->> 'rubricRef' = ${filter.rubricRef}` : tx`TRUE`}
        AND ${filter.sourceHive ? tx`scorecard.payload -> 'observation' ->> 'sourceHive' = ${filter.sourceHive}` : tx`TRUE`}
        AND ${filter.subjectRef ? tx`scorecard.payload -> 'observation' -> 'subject' ->> 'ref' = ${filter.subjectRef}` : tx`TRUE`}
+       AND ${filter.subjectKind ? tx`scorecard.payload -> 'observation' -> 'subject' ->> 'kind' = ${filter.subjectKind}` : tx`TRUE`}
        AND ${
          filter.subjectRefs
            ? tx`scorecard.payload -> 'observation' -> 'subject' ->> 'ref' = ANY(${[...filter.subjectRefs]}::text[])`

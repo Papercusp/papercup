@@ -45,6 +45,7 @@ import {
 } from '../../harness/improvements/observation-types';
 import { readRunningGeneration } from '../../scout/generation-watermark';
 import {
+  acquireGradingAuditSubjectMutex,
   auditVerdictFromRatings,
   listScorecards,
   evaluateScorecardInstrumentContract,
@@ -795,7 +796,8 @@ function unwrapSpecTestAdequacyReplay(result: unknown): unknown {
  * can exceed the result door and return a spill envelope instead of the payload
  * the guard must inspect. Force the evaluator's contract-equivalent summary
  * shape while retaining full-tier materialization so those compact fields are
- * never tier-trimmed.
+ * never tier-trimmed. Selection arguments stay exactly as recorded; forcing
+ * includeDraft false would replay draft-origin cards as selection_empty.
  */
 function compactSpecTestAdequacyReplayArgs(
   replayArgs: Record<string, unknown>,
@@ -803,7 +805,6 @@ function compactSpecTestAdequacyReplayArgs(
   return {
     ...replayArgs,
     detail: 'summary',
-    includeDraft: false,
     payloadTier: 'full',
   };
 }
@@ -1483,6 +1484,7 @@ export async function emitScorecard(
   const specTestAdequacyBindingError = validateSpecTestAdequacyBinding(args);
   if (specTestAdequacyBindingError) return { ok: false as const, ...specTestAdequacyBindingError };
   let releaseScorecardEmitMutex: (() => Promise<void>) | undefined;
+  let releaseGradingAuditSubjectMutex: (() => Promise<void>) | undefined;
   try {
     let runningGenerationRead = false;
     let runningGeneration: Awaited<ReturnType<typeof readRunningGeneration>> | null = null;
@@ -2370,6 +2372,12 @@ export async function emitScorecard(
             "grading-integrity audits a SCORECARD — pass subject:{ kind:'scorecard', ref:'<the graded card's issue id>' } (D-004: terminal cards only, one level deep)",
         };
       }
+      if (!process.env.VITEST || process.env.PAPERCUSP_SCORECARD_EMIT_MUTEX_TEST === '1') {
+        releaseGradingAuditSubjectMutex = await acquireGradingAuditSubjectMutex({
+          workspaceId: input.workspaceId ?? activeWorkspaceId(),
+          subjectIssueId: args.subject.ref,
+        });
+      }
       const graded = await getIssue(args.subject.ref);
       const gradedRawObservation =
         graded?.payload && typeof graded.payload === 'object' && !Array.isArray(graded.payload)
@@ -2778,7 +2786,18 @@ export async function emitScorecard(
         }),
       );
     }
-    const latest = (await listScorecards({ rubricRef: args.rubricRef, sourceHive, limit: 1 }))[0];
+    // The evidence fingerprint deliberately excludes subject for stored-row
+    // compatibility, so this read must select the exact typed subject before
+    // comparing fingerprints. Otherwise a newer unrelated card can mask the
+    // matching predecessor and cause a duplicate emission.
+    const latest = (
+      await listScorecards({
+        rubricRef: args.rubricRef,
+        sourceHive,
+        ...(args.subject ? { subjectRef: args.subject.ref, subjectKind: args.subject.kind } : {}),
+        limit: 1,
+      })
+    )[0];
     const latestFingerprint = latest
       ? (latest.evidenceFingerprint ??
         scorecardEvidenceFingerprint({
@@ -3175,6 +3194,10 @@ export async function emitScorecard(
         ...(auditContext.criteriaHash ? { criteriaHash: auditContext.criteriaHash } : {}),
         ...(args.supersedes ? { supersedesAuditIssueId: args.supersedes } : {}),
       });
+      if (releaseGradingAuditSubjectMutex) {
+        await releaseGradingAuditSubjectMutex();
+        releaseGradingAuditSubjectMutex = undefined;
+      }
       if (auditSettlement.ok) {
         try {
           await (deps.closeSourceAuditConsults ?? closeSourceAuditConsults)(
@@ -3320,6 +3343,10 @@ export async function emitScorecard(
     if (releaseScorecardEmitMutex) {
       await releaseScorecardEmitMutex().catch(() => {});
       releaseScorecardEmitMutex = undefined;
+    }
+    if (releaseGradingAuditSubjectMutex) {
+      await releaseGradingAuditSubjectMutex().catch(() => {});
+      releaseGradingAuditSubjectMutex = undefined;
     }
   }
 }
