@@ -84,12 +84,18 @@ describe('kopia-home-snapshot bounded execution contract', () => {
         KOPIA_HOME_SNAPSHOT_SUDO: sudoStub,
         KOPIA_HOME_SNAPSHOT_BIN: fakeKopia,
         KOPIA_TEST_KILL_LOG: killLog,
+        // The fake process never exits, so skip the SIGTERM flush grace.
+        KOPIA_HOME_SNAPSHOT_FLUSH_GRACE_SEC: '0',
       };
 
       writeFileSync(pidFile, `${exactPid}\n`);
       const killed = spawnSync('bash', [SCRIPT, '--cleanup'], { encoding: 'utf8', env });
       expect(killed.status).toBe(0);
-      expect(readFileSync(killLog, 'utf8')).toContain(`-KILL ${exactPid}`);
+      const killLogAfter = readFileSync(killLog, 'utf8');
+      expect(killLogAfter).toContain(`-KILL ${exactPid}`);
+      // SIGTERM first, so Kopia can flush (EI-25211496463956189); SIGKILL only after the grace.
+      expect(killLogAfter.indexOf(`-TERM ${exactPid}`)).toBeGreaterThanOrEqual(0);
+      expect(killLogAfter.indexOf(`-TERM ${exactPid}`)).toBeLessThan(killLogAfter.indexOf(`-KILL ${exactPid}`));
       expect(existsSync(pidFile)).toBe(false);
 
       writeFileSync(pidFile, `${reusedPid}\n`);
@@ -163,6 +169,7 @@ describe('kopia-home-snapshot bounded execution contract', () => {
         KOPIA_TEST_KILL_LOG: killLog,
         KOPIA_TEST_PROC_ROOT: procRoot,
         KOPIA_TEST_ROOT_VIEW: rootViewProcRoot,
+        KOPIA_HOME_SNAPSHOT_FLUSH_GRACE_SEC: '0',
       };
 
       writeFileSync(pidFile, `${rootPid}\n`);

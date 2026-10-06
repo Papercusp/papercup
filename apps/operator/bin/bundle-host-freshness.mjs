@@ -112,7 +112,13 @@ function transientOutputName(path, manifestPath, outfile) {
     // metafile. It is build-private state, not part of the runnable output
     // tree, so its later cleanup must not invalidate an otherwise exact proof.
     name.startsWith(`${basename(outfile)}.tmp.`) ||
-    name.startsWith(`${basename(manifestPath)}.tmp.`)
+    name.startsWith(`${basename(manifestPath)}.tmp.`) ||
+    // WI-10007018: bundle-host.sh keeps the restricted-hold gate's PID-suffixed
+    // esbuild metafiles (.restricted-gate-meta.$$) and last-known-good snapshot
+    // (.restricted-lkg.$$) inside OUTDIR, stamps, and only then lets its EXIT
+    // trap delete them. Hashing them made every stamp unverifiable.
+    name.startsWith(".restricted-gate-meta.") ||
+    name.startsWith(".restricted-lkg.")
   );
 }
 

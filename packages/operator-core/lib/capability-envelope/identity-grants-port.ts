@@ -710,6 +710,16 @@ function identityLaunchAuditStamp(
     : null;
 }
 
+/**
+ * WI-10007010: whether any provider binding in the policy reaches `toolName`.
+ * Such a tool is governed by its grant class; anything else is a platform tool
+ * the grant envelope never covers. Deliberately pot- and status-agnostic: a
+ * binding that reaches the tool in ANY state keeps it on the grant path.
+ */
+function providerReachable(policy: IdentityGrantPolicy, toolName: string): boolean {
+  return policy.bindings.some((binding) => (grantProviderToolReach(binding) ?? []).includes(toolName));
+}
+
 export async function checkIdentityGrantKernel(
   request: KernelEnforcementRequest,
   state: IdentityGrantKernelState,
@@ -872,9 +882,23 @@ export async function checkIdentityGrantKernel(
       );
     }
     if (!envelope.allowedTools.includes(toolName)) {
-      return denyUnlessRecoveryDoor(
-        request, 'outside-ceiling', classRefs[0] ?? null, toolName, policy.policyRevision,
-      );
+      // WI-10007010: grant classes govern PROVIDER tools only — the envelope reaches
+      // nothing else — so a deny-all accepted-operation identity could otherwise call
+      // none of its own requiredTools (work_items:claim, memory:search, …). A required
+      // tool that no provider binding reaches is a platform tool: the host-owned
+      // receipt (checked above) plus every role ceiling authorize it. A
+      // provider-reachable tool still needs its grant.
+      const cause = accepted && !providerReachable(policy, toolName)
+        ? identityGrantToolFailure({
+            toolName, ceilings: policy.ceilings, tools: policy.tools,
+            protectedAdditions: policy.protectedAdditions,
+          })
+        : 'outside-ceiling';
+      if (cause) {
+        return denyUnlessRecoveryDoor(
+          request, cause, classRefs[0] ?? null, toolName, policy.policyRevision,
+        );
+      }
     }
   }
   // The accepted tool list narrows WHAT a role may call. A separate live

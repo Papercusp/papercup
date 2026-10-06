@@ -22,6 +22,7 @@
 import { chmodSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 
 export interface MintArgs {
   hive: string;
@@ -128,7 +129,7 @@ async function main(): Promise<number> {
   return 0;
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isCliEntry(import.meta.url)) {
   main().then(
     (code) => process.exit(code),
     (e) => {
