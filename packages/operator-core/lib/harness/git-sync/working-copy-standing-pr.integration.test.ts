@@ -37,6 +37,12 @@ import type { StandingPrDeps } from './standing-pr';
 
 const FORK_URL = 'https://github.com/acme-bot/widgets.git';
 const UPSTREAM_URL = 'https://github.com/acme/widgets.git';
+/**
+ * "owner/repo" the host reports as an open standing PR's head repository. Publishing adopts
+ * only a PR whose head is THIS pot's fork (WI-10006271), so every fixture of "the existing
+ * standing PR" must carry it — without it the PR is correctly skipped and a duplicate opened.
+ */
+const FORK_REPO = 'acme-bot/widgets';
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync('git', args, {
@@ -215,6 +221,7 @@ describe('on-demand "send what is green now" with real git (P-020)', () => {
       title: 'standing',
       body: null,
       head_ref: STANDING_PR_BRANCH,
+      head_repo: FORK_REPO,
       base_ref: 'main',
       head_sha: fx.promotedSha,
       url: 'https://github.com/acme/widgets/pull/42',
@@ -413,6 +420,7 @@ describe('working-copy promotion with real git (P-020)', () => {
       title: 'standing',
       body: null,
       head_ref: STANDING_PR_BRANCH,
+      head_repo: FORK_REPO,
       base_ref: 'main',
       head_sha: fx.promotedSha,
       url: 'https://github.com/acme/widgets/pull/42',
@@ -447,6 +455,7 @@ describe('working-copy promotion with real git (P-020)', () => {
       title: 'standing',
       body: null,
       head_ref: STANDING_PR_BRANCH,
+      head_repo: FORK_REPO,
       base_ref: 'main',
       head_sha: fx.promotedSha,
       url: 'https://github.com/acme/widgets/pull/42',
