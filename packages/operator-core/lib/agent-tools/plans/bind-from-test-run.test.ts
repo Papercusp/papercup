@@ -363,12 +363,14 @@ describe('expandTestRunBinding: harness attribution', () => {
 
     it('refuses a canonical file that does not define the test, or lies outside the crate', async () => {
       const { d } = deps(cargoRun());
-      for (const canonicalTestPath of [`${CRATE}/src/other.rs`, TEST, `${CRATE}/src/missing.rs`, `${CRATE}/../${RS}`]) {
+      for (const canonicalTestPath of [`${CRATE}/src/other.rs`, TEST, `${CRATE}/src/missing.rs`]) {
         expect(await expandTestRunBinding(bindInput({ canonicalTestPath }), SCOPE, d)).toMatchObject({
           ok: false,
           error: 'test_run_canonical_path_mismatch',
         });
       }
+      // A `..` escape never reaches the mapper: the repo-relative path schema refuses it first.
+      expect(() => bindInput({ canonicalTestPath: `${CRATE}/../${RS}` })).toThrow();
     });
 
     it('accepts the defining file directly and rejects a sibling by name', () => {
