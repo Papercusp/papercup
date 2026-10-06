@@ -3,8 +3,8 @@
 P-004 / WI-10006918, `cloud-portal-docs-and-papercup-faq-2026-10-06`.
 Canonical source: `apps/papercusp-docs/src/content/docs/faq.mdx`.
 Review date: 2026-10-06. This records the author's source checks and the fresh
-independent review below. Approval of the revised FAQ remains pending.
-The FAQ is not accepted or shipped.
+independent review below. The revised FAQ has exact-hash sensitive-source
+approval. Novice validation, Avi's acceptance and shipment remain unverified.
 
 ## Demand and scope
 
@@ -135,3 +135,41 @@ the explicit `in_place` mode below it. That comment drift is filed and owned as
 `EI-25268923232895042`; the FAQ already warns about replacement of newer work.
 Approval of the revised FAQ, real novice observations, Avi's acceptance and
 exact production verification remain unverified. No shipment is claimed.
+
+## Revised source verification and guard certification
+
+After the allowance clarification, FAQ SHA-256 is
+`908687ae99d490db965919cb6f1297d409754453666e733027d505b7cbd2205a`.
+The maintained FAQ unit suite and Astro reader suite passed 7 and 10 tests,
+respectively, without skips (runs `20865068` and `20865070`, group
+`6280e119-cc0a-40c4-946f-dcb6a5060ecc`). Earlier browser evidence belongs to
+the prior prose revision and is not relabeled as a revised-source browser run.
+
+The maintained mutation runner disabled only the minimum-question guard in an
+isolated copy-out overlay. The current and unmutated-copy controls each passed
+all seven cases. Raw mutant run `20865121` failed the exact removed-question
+case, proving that the test detects a broken guard. The runner verified shared
+source integrity. Replay arguments, runner identity, result and bindings are
+preserved in [faq-count-mutation.json](./faq-count-mutation.json).
+
+The raw mutation is bound as `27525` to `AUTO-BAR-R-4-P-004@3` and `27526` to
+`DOCS-FAQ-COUNT@1`, paired with current successful case bindings `27494` and
+`27496`. `plans:certify-spec-clauses` evaluated both current clauses and filed
+two passing cards with zero refusals. This certifies the automated structural
+proof; it does not approve sensitive product claims or establish usability.
+
+The original reviewer session was recovered to continue post `1160766` in the
+existing consult. The resulting full `thread-post:1160798` was read. The reviewer
+verified the exact revised FAQ hash in the working tree and its committed blob,
+proved that only the allowance clarification changed, and approved billing and
+checkout, cloud cost and deletion, privacy and credentials, and backup and
+restore as source review at that hash. Fresh portal `billing.tsx` and `auth.tsx`
+reads resolved the prior confirmation and sign-in uncertainties.
+
+This approval covers sensitive-answer source truth only. Residual provider
+charges remain provider truth, and the entitlement provider does not yet supply
+metered allowances. It does not cover automated checks, novice observations,
+live payment, Avi's acceptance or exact production behavior. Further FAQ edits
+require renewed review. The portal's potentially misleading pending-payment
+notice is separately filed and assigned as `EI-25270514474947388`; the FAQ keeps
+its conservative confirmation language.
