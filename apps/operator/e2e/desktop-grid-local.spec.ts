@@ -17,6 +17,10 @@ import { containsAll, decodedThumbnailWidths, startDesktopGridFixtureServer } fr
 // 180s: on the shared fleet box (load ~200 on 128 cores, measured 2026-10-06) a trivial
 // assertion round-trip costs 2-5s and the first navigation ~13s.
 test.describe.configure({ mode: 'serial', timeout: 180_000 });
+// Evidence is the explicit capture() screenshots; an always-on video only adds encoder load
+// and a slow context teardown on that box. A click is ~6 renderer round-trips (scroll,
+// hit-target, move/down/up acks), so the 10s config actionTimeout is under that cost there.
+test.use({ video: 'off', actionTimeout: 30_000 });
 const output = process.env.DESKTOP_GRID_OUTPUT_DIR;
 let server: ViteDevServer;
 let origin: string;
@@ -63,7 +67,7 @@ function thumbnailRequests(page: Page): Promise<Record<string, number>> {
 async function capture(page: Page, name: string): Promise<void> {
   if (!output) return;
   await mkdir(output, { recursive: true });
-  await page.screenshot({ path: path.join(output, name), fullPage: true });
+  await page.screenshot({ path: path.join(output, name), fullPage: true, timeout: 60_000 });
 }
 
 test('[grid.local.tiles] This computer lists every agent desktop with a thumbnail and its owner/work-item', async ({ page }) => {
