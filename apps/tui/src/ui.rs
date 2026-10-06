@@ -969,8 +969,16 @@ fn draw_tab_body(f: &mut Frame, app: &App, tab: Tab, body: Rect) {
 /// verified Hives/Directory roster beside it. Both panes consume their existing
 /// typed read models, so consolidation does not fork transport or classifiers.
 fn draw_network_destination(f: &mut Frame, app: &App, area: Rect) {
+    // Narrower than the full board (the chat workbench's side column, D-034),
+    // the two boards stack instead of splitting the width into two columns
+    // too narrow to read.
+    let direction = if area.width < MIN_COLS {
+        Direction::Vertical
+    } else {
+        Direction::Horizontal
+    };
     let cols = Layout::default()
-        .direction(Direction::Horizontal)
+        .direction(direction)
         .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
         .split(area);
     crate::network::draw_network(f, app, cols[0]);
@@ -7482,6 +7490,100 @@ mod tests {
             .iter()
             .map(|c| c.symbol())
             .collect()
+    }
+
+    fn side_pane_app() -> App {
+        let mut app = App::new();
+        app.side_pane = true;
+        app.roster = vec![presence_entry("claude", "compact hud for the side pane")];
+        app.plans = vec![plan("pui-chat", "active")];
+        app
+    }
+
+    /// pui-chat-first-ux D-034: the chat workbench's side-pane HUD draws the
+    /// compact summary at the column the layout gives it on a 92x26 terminal
+    /// (30x18) and on a 200x50 one (68x45), never "Terminal too small".
+    #[test]
+    fn the_side_pane_hud_draws_the_compact_summary_in_its_column() {
+        let mut app = side_pane_app();
+        for (w, h) in [(30, 18), (68, 45)] {
+            app.viewport = (w, h);
+            let text = render(&app, w, h);
+            assert!(!text.contains("too small"), "{w}x{h}: {text}");
+            for heading in ["Needs you (0)", "Agents (1 live)", "Plans (1)", "Activity"] {
+                assert!(text.contains(heading), "{w}x{h} missing {heading}: {text}");
+            }
+            assert!(text.contains("compact hud"), "{w}x{h}: the live agent's intent: {text}");
+            assert!(text.contains("Title pui-chat"), "{w}x{h}: the active plan: {text}");
+            assert!(text.contains(COMPACT_HUD_FOOTER), "{w}x{h}: {text}");
+        }
+    }
+
+    /// At the compact floor (28x10) every heading still fits, with the footer.
+    #[test]
+    fn the_compact_summary_fits_every_heading_at_its_floor() {
+        let mut app = side_pane_app();
+        app.viewport = (COMPACT_MIN_COLS, COMPACT_MIN_ROWS);
+        let text = render(&app, COMPACT_MIN_COLS, COMPACT_MIN_ROWS);
+        for heading in ["Needs you", "Agents", "Plans", "Activity", COMPACT_HUD_FOOTER] {
+            assert!(text.contains(heading), "missing {heading}: {text}");
+        }
+    }
+
+    /// Below the compact floor the side pane names ITS floor and Alt+z, not
+    /// the terminal's 80x20; at the full minimum it is the full board again.
+    #[test]
+    fn the_side_pane_blocks_only_below_the_compact_floor() {
+        let mut app = side_pane_app();
+        app.viewport = (27, 30);
+        let shown = render(&app, 27, 30).split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(shown.contains("Pane too small — needs 28×10."), "{shown}");
+        assert!(!shown.contains("80×20"), "{shown}");
+        app.viewport = (92, 23);
+        let full = render(&app, 92, 23);
+        assert!(!full.contains(COMPACT_HUD_FOOTER) && !full.contains("too small"), "{full}");
+    }
+
+    /// D-034: in the side column the network pane stacks its two boards, so
+    /// each headline starts at the pane's left edge on its own row instead of
+    /// two unreadable half-width columns; the full board keeps the split.
+    #[test]
+    fn the_network_pane_stacks_its_boards_in_a_narrow_column() {
+        let headline_columns = |w: u16, h: u16| -> Vec<(usize, usize)> {
+            let mut app = App::new();
+            app.pinned = Some(Tab::Network);
+            app.tab = Tab::Network;
+            app.viewport = (w, h);
+            let text = render(&app, w, h);
+            let cells: Vec<char> = text.chars().collect();
+            cells
+                .chunks(w as usize)
+                .enumerate()
+                .filter_map(|(row, line)| {
+                    let line: String = line.iter().collect();
+                    line.find("Network ").map(|at| (row, line[..at].chars().count()))
+                })
+                .collect()
+        };
+        let narrow = headline_columns(30, 18);
+        assert_eq!(narrow.len(), 2, "{narrow:?}");
+        assert!(narrow[0].0 < narrow[1].0, "{narrow:?}");
+        assert!(narrow.iter().all(|&(_, col)| col < 4), "{narrow:?}");
+        let wide = headline_columns(120, 30);
+        assert_eq!(wide.len(), 2, "{wide:?}");
+        assert_eq!(wide[0].0, wide[1].0, "the full board keeps the side-by-side split: {wide:?}");
+    }
+
+    /// Rows are dealt fairly in priority order, so a long list cannot starve
+    /// the next section, and sections without a heading row are dropped last
+    /// first.
+    #[test]
+    fn compact_rows_are_dealt_fairly_in_priority_order() {
+        assert_eq!(compact_row_budget(6, &[5, 0, 3, 10]), vec![1, 0, 1, 0]);
+        assert_eq!(compact_row_budget(9, &[5, 0, 3, 10]), vec![2, 0, 2, 1]);
+        assert_eq!(compact_row_budget(40, &[2, 1, 0, 3]), vec![2, 1, 0, 3]);
+        assert_eq!(compact_row_budget(2, &[5, 5, 5, 5]), vec![0, 0]);
+        assert_eq!(compact_row_budget(0, &[5]), Vec::<usize>::new());
     }
 
     /// PUBLIC_RELEASE_UX.md "Below 80 columns or 20 rows": the whole screen is
