@@ -26,6 +26,7 @@ const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..'
 const SQL_DIR = join(REPO_ROOT, 'libs/papercusp/libs/db/sql');
 const M1332 = readFileSync(join(SQL_DIR, '1332-ticket-datatypes.sql'), 'utf8');
 const M1377 = readFileSync(join(SQL_DIR, '1377-ticket-workflow-tracker-fields.sql'), 'utf8');
+const M1397 = readFileSync(join(SQL_DIR, '1397-ticket-self-roles.sql'), 'utf8');
 
 type Schema = { properties: Record<string, Record<string, unknown>>; allOf?: unknown[]; [k: string]: unknown };
 
@@ -36,10 +37,10 @@ function seededSchema(id: string): Schema {
   return JSON.parse(row[1]!) as Schema;
 }
 
-/** The JSON literal 1377 places between `-- <marker>-BEGIN` and `-- <marker>-END`. */
-function patch<T = Record<string, Record<string, unknown>>>(marker: string): T {
-  const m = new RegExp(`-- ${marker}-BEGIN\\s*'([^']*)'::jsonb\\s*-- ${marker}-END`).exec(M1377);
-  if (!m) throw new Error(`1377 has no ${marker} block: the migration format changed, fix this parser`);
+/** The JSON literal a migration (1377 by default) places between `-- <marker>-BEGIN` and `-- <marker>-END`. */
+function patch<T = Record<string, Record<string, unknown>>>(marker: string, migration = M1377): T {
+  const m = new RegExp(`-- ${marker}-BEGIN\\s*'([^']*)'::jsonb\\s*-- ${marker}-END`).exec(migration);
+  if (!m) throw new Error(`migration has no ${marker} block: the migration format changed, fix this parser`);
   return JSON.parse(m[1]!) as T;
 }
 
@@ -48,8 +49,12 @@ const base1332StatusChange = seededSchema('ticket-status-change');
 const ticketPatch = patch('TICKET-PATCH');
 const statusChangePatch = patch('STATUS-CHANGE-PATCH');
 const statusChangeAllOf = patch<unknown[]>('STATUS-CHANGE-ALLOF');
+const selfRolesPatch = patch('SELF-ROLES-PATCH', M1397);
 
-const ticketSchema: Schema = { ...base1332Ticket, properties: { ...base1332Ticket.properties, ...ticketPatch } };
+const ticketSchema: Schema = {
+  ...base1332Ticket,
+  properties: { ...base1332Ticket.properties, ...ticketPatch, ...selfRolesPatch },
+};
 const statusChangeSchema: Schema = {
   ...base1332StatusChange,
   properties: { ...base1332StatusChange.properties, ...statusChangePatch },
@@ -79,7 +84,7 @@ const LINEAR_TICKET = {
   title: 'Sync stalls after token refresh', body: '…', state: 'open', statusCategory: 'in-progress',
   statusName: 'In Progress', priority: { level: 2, name: 'High' }, dueAt: '2026-10-10',
   parentExternalId: '9d0e7a52-6a55-4f1f-8d0e-0c3f6d2a1b44', projects: ['Integrations'], estimate: 3,
-  assignees: ['avi@example.com'], delegates: ['papercusp-agent'], labels: ['backend'],
+  assignees: ['avi@example.com'], delegates: ['papercusp-agent'], labels: ['backend'], selfRoles: ['delegate'],
   url: 'https://linear.app/acme/issue/ENG-123',
 };
 
@@ -87,7 +92,7 @@ const ASANA_TICKET = {
   provider: 'asana', externalId: '1209876543210123', container: '1209000000000001',
   title: 'Draft launch checklist', state: 'open', statusCategory: 'todo', section: 'Up next',
   projects: ['1209000000000001', '1209000000000002'], dueAt: '2026-10-14T17:00:00.000Z',
-  assignees: ['1201111111111111'], delegates: ['1201111111111111'],
+  assignees: ['Papercusp'], selfRoles: ['assignee'],
 };
 
 describe('migration 1377: ticket datatypes widened for workflow trackers', () => {
@@ -149,6 +154,27 @@ describe('migration 1377: ticket datatypes widened for workflow trackers', () =>
     expect(valid(statusChangeSchema, { ...moved, transition: 'archived' })).toBe(false);
     // The toCategory requirement binds `moved` only; an old-shape close needs no category.
     expect(valid(statusChangeSchema, { ...withoutTo, transition: 'closed' })).toBe(true);
+  });
+});
+
+describe('migration 1397: ticket.selfRoles (D-012)', () => {
+  it('adds only selfRoles, optional, without replacing a 1332 or 1377 property', () => {
+    expect(Object.keys(selfRolesPatch)).toEqual(['selfRoles']);
+    expect(base1332Ticket.properties.selfRoles).toBeUndefined();
+    expect(ticketPatch.selfRoles).toBeUndefined();
+    expect((base1332Ticket.required as string[] | undefined) ?? []).not.toContain('selfRoles');
+  });
+
+  it('accepts the roles the providers emit, and a ticket without selfRoles', () => {
+    expect(valid(ticketSchema, { ...LINEAR_TICKET, selfRoles: ['assignee', 'delegate'] })).toBe(true);
+    const { selfRoles: _omitted, ...withoutRoles } = ASANA_TICKET;
+    expect(valid(ticketSchema, withoutRoles)).toBe(true);
+  });
+
+  it('rejects a role outside assignee|delegate, a repeated role and a non-array', () => {
+    expect(valid(ticketSchema, { ...LINEAR_TICKET, selfRoles: ['watcher'] })).toBe(false);
+    expect(valid(ticketSchema, { ...LINEAR_TICKET, selfRoles: ['delegate', 'delegate'] })).toBe(false);
+    expect(valid(ticketSchema, { ...ASANA_TICKET, selfRoles: 'assignee' })).toBe(false);
   });
 });
 

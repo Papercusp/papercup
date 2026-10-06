@@ -131,6 +131,44 @@ export function validateAdmissionMatch(match: unknown): asserts match is Admissi
   }
 }
 
+/**
+ * Ticket admission presets (linear-asana-task-sync-2026-10-05 D-012): shorthand for the rules
+ * people ask for on a workflow tracker, each a match over CANONICAL ticket fields, so one
+ * vocabulary covers every ticket provider and nothing here names a provider:
+ *   delegated-to-papercusp  the ticket is delegated to the connected account (Linear agents)
+ *   assigned-to-papercusp   the ticket is assigned to the connected account
+ *   label <X>               the ticket carries label X (Asana tags arrive as labels)
+ *   team <X>                the ticket's container is X (a Linear team key)
+ *   project <X>             the ticket belongs to project X
+ * "The connected account" is whichever account the data source is connected as; the provider
+ * marks it per ticket in `selfRoles`, so no rule has to name a person. A preset whose field a
+ * provider never fills matches nothing, which the rules-set backfill count makes visible.
+ */
+export const TICKET_RULE_PRESETS = ['delegated-to-papercusp', 'assigned-to-papercusp', 'label', 'team', 'project'] as const;
+export type TicketRulePreset = (typeof TICKET_RULE_PRESETS)[number];
+
+/** The match a ticket preset stands for. `value` is required for label/team/project and refused otherwise. */
+export function ticketRulePreset(preset: TicketRulePreset, value?: string): AdmissionMatch {
+  const v = (value ?? '').trim();
+  if (preset === 'delegated-to-papercusp' || preset === 'assigned-to-papercusp') {
+    if (v) throw new Error(`admission_rule_invalid: preset '${preset}' takes no value`);
+    return { selfRoles: { contains: preset === 'delegated-to-papercusp' ? 'delegate' : 'assignee' } };
+  }
+  if (!v) throw new Error(`admission_rule_invalid: preset '${preset}' needs a value (the ${preset} name)`);
+  if (preset === 'label') return { labels: { contains: v } };
+  if (preset === 'team') return { container: { eq: v } };
+  return { projects: { contains: v } };
+}
+
+/**
+ * The work kind a matched record admits as: a record its provider labels `bug` is a bug,
+ * anything else the rule's own kind (D-012). Matching is case-insensitive, like rule matches.
+ */
+export function admittedKindFor(ruleKind: AdmittedKind, payload: Record<string, unknown>): AdmittedKind {
+  const labels = payload.labels;
+  return Array.isArray(labels) && labels.some((label) => scalar(label) === 'bug') ? 'bug' : ruleKind;
+}
+
 /** True when `payload` satisfies every field condition of `match`. */
 export function matchAdmissionRule(match: AdmissionMatch, payload: Record<string, unknown>): boolean {
   const entries = Object.entries(match ?? {});
@@ -289,7 +327,7 @@ export async function evaluateAdmissionRules(
         harness: rule.harness,
         source: { kind: RECORD_SOURCE_KIND, recordId: input.recordId },
         admitter: { via: 'rule', ruleId: rule.id, dataSourceId: rule.dataSourceId },
-        kind: rule.workKind,
+        kind: admittedKindFor(rule.workKind, input.payload),
       },
       deps,
     );
@@ -332,7 +370,7 @@ export async function applyAdmissionRule(
         harness: rule.harness,
         source: { kind: RECORD_SOURCE_KIND, recordId: rec.feature_id },
         admitter: { via: 'rule', ruleId: rule.id, dataSourceId: rule.dataSourceId },
-        kind: rule.workKind,
+        kind: admittedKindFor(rule.workKind, rec.payload ?? {}),
       },
       deps,
     );
@@ -341,4 +379,26 @@ export async function applyAdmissionRule(
     else summary.existing += 1;
   }
   return summary;
+}
+
+export interface SetAdmissionRuleResult {
+  rule: AdmissionRule;
+  /** For an enabled record rule: what applying it to the records its source already holds did. */
+  backfill?: Awaited<ReturnType<typeof applyAdmissionRule>>;
+}
+
+/**
+ * Sets a rule and, when it is an enabled record rule, applies it to the records its data source
+ * already holds (linear-asana-task-sync D-012), so adding "delegated to Papercusp" admits the
+ * delegated tickets synced before the rule existed. Admission is idempotent per record, so
+ * re-setting a rule never duplicates work. Chat rules have no held records and are only set.
+ */
+export async function setAdmissionRuleAndBackfill(
+  input: SetAdmissionRuleInput,
+  deps: AdmitDeps & { sql?: AdmissionDb } = {},
+): Promise<SetAdmissionRuleResult> {
+  const sql = deps.sql ?? getOrgPg().sql;
+  const rule = await setAdmissionRule(input, sql);
+  if (!rule.enabled || rule.sourceKind !== RECORD_SOURCE_KIND) return { rule };
+  return { rule, backfill: await applyAdmissionRule(input.workspaceId, rule.id, { ...deps, sql }) };
 }
