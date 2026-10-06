@@ -1960,6 +1960,19 @@ dependency_generation_fs_bytes() {
 # reserve everywhere (fail-closed).
 DEPENDENCY_GENERATION_RESERVE_FS_PATH="${DEPENDENCY_GENERATION_RESERVE_FS_PATH:-}"
 
+# Records `integration_root` as the reserve-protected filesystem unless a
+# caller already chose one. WI-10006767: sourced callers (setup-release-checkout
+# -> dependency_generation_ensure) never pass through main, so every entry that
+# receives an integration root records it here. An unresolvable root leaves the
+# path empty, which keeps the fail-closed full reserve.
+dependency_generation_record_reserve_fs() {
+  local integration_root="$1" physical
+  [ -z "${DEPENDENCY_GENERATION_RESERVE_FS_PATH:-}" ] || return 0
+  [ -n "$integration_root" ] || return 0
+  physical="$(cd "$integration_root" 2>/dev/null && pwd -P)" || return 0
+  DEPENDENCY_GENERATION_RESERVE_FS_PATH="$physical"
+}
+
 # Succeeds when `dir` is on the reserve-protected filesystem, or when that
 # cannot be established (unset path, stat failure) — unknown means protected.
 # DEPENDENCY_GENERATION_HEADROOM_SAME_FS=0|1 overrides the device comparison
@@ -2548,6 +2561,7 @@ dependency_generation_ensure_once() {
   local existing_generation_valid='false' cache_validation_outcome='miss' inflight_rc
   total_started_ms="$(dependency_generation_now_ms)"
   DEPENDENCY_GENERATION_TREES_INCREMENTAL=0
+  dependency_generation_record_reserve_fs "$integration_root"
   if [ -z "${DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT:-}" ]; then
     dependency_generation_configure_workspace_dirs "$integration_root" || return $?
   fi
@@ -3190,7 +3204,7 @@ dependency_generation_main() {
   build_root="$integration_root"
   # WI-10005931: git-sync fetches into the integration checkout, so its
   # filesystem is the one the percentage headroom reserve protects.
-  DEPENDENCY_GENERATION_RESERVE_FS_PATH="${DEPENDENCY_GENERATION_RESERVE_FS_PATH:-$integration_root}"
+  dependency_generation_record_reserve_fs "$integration_root"
   # Preserve an explicit CLI root, then honor the service-level override, then
   # the root that override recorded for this integration root (WI-10005159),
   # before falling back to the integration checkout's local generation store.
