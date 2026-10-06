@@ -118,6 +118,13 @@ const UPLOAD_ATTEMPTS = 2;
  */
 const COLDSNAP_UPLOAD_WORKERS = 16;
 const COLDSNAP_TRANSPORT_FAILURE = /dispatch failure|connection (?:reset|refused|closed)|timed out/i;
+/**
+ * coldsnap logs 'attempt N/N failed' when a block has used its last retry. The upload is lost from
+ * that moment, yet coldsnap keeps sending every remaining block and only then exits 1: P-012 chain14
+ * try2 lost 4 blocks around 00:10Z and reported it at 00:41Z. Stopping at the first such line starts
+ * the partial-snapshot cleanup and the single retry half an hour sooner.
+ */
+const COLDSNAP_BLOCK_EXHAUSTED = /\battempt (\d+)\/\1 failed\b/;
 const SNAPSHOT_ID_IN_OUTPUT = /\bsnap-[a-f0-9]+\b/g;
 const RUNNER_TIMEOUT_MS = 45 * 60 * 1000;
 const IMAGE_WAIT_TIMEOUT_MS = 60 * 60 * 1000;
@@ -413,6 +420,7 @@ export class SdkAwsAmiReleaseAdapter implements AwsAmiReleaseAdapter {
         args,
         env: await this.childEnv(region),
         timeoutMs: UPLOAD_TIMEOUT_MS,
+        abortOnStderr: COLDSNAP_BLOCK_EXHAUSTED,
       });
       if (upload.exitCode === 0) {
         const snapshotId = upload.stdout.trim().split(/\s+/).find((token) => SNAPSHOT_ID.test(token));
