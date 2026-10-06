@@ -955,7 +955,7 @@ it('eligible quota recovery recycles once under the same owner and settles the e
     "process.stdin.on('data',d=>{if(d.includes('\\x04'))process.exit(0);b+=d;if(!b.includes('\\r'))return;",
     "const prompt=b;b='';if(!recycled){process.stdout.write(\"You've hit your usage limit.\\n\");return;}",
     "fs.mkdirSync(path.dirname(process.env.TEST_TRANSCRIPT),{recursive:true});",
-    "fs.writeFileSync(process.env.TEST_TRANSCRIPT,JSON.stringify({timestamp:new Date().toISOString(),type:'response_item',payload:{type:'message',role:'user',content:[{type:'input_text',text:prompt}]}})+'\\n');",
+    "fs.appendFileSync(process.env.TEST_TRANSCRIPT,JSON.stringify({timestamp:new Date().toISOString(),type:'response_item',payload:{type:'message',role:'user',content:[{type:'input_text',text:prompt}]}})+'\\n');",
     "process.stdout.write('RECOVERED-TURN\\n');});",
     'setTimeout(()=>process.exit(0),20000);',
   ].join('');
@@ -1022,8 +1022,13 @@ it('eligible quota recovery recycles once under the same owner and settles the e
     }
     expect(captured()).toContain('RECOVERED-TURN');
     const transcriptLines = readFileSync(transcript, 'utf8').split(/\r?\n/).filter(Boolean);
-    const nativeRow = JSON.parse(transcriptLines[transcriptLines.length - 1]);
-    const nativePrompt = nativeRow.payload.content.map((part: { text?: string }) => part.text ?? '').join('');
+    const transcriptRows = transcriptLines.map((line) => JSON.parse(line));
+    const nativeRow = transcriptRows.find((row) => {
+      const prompt = row.payload.content.map((part: { text?: string }) => part.text ?? '').join('');
+      return leadingTurnOriginMarker(prompt) === marker;
+    });
+    expect(nativeRow, `native transcript rows: ${JSON.stringify(transcriptRows)}`).toBeDefined();
+    const nativePrompt = nativeRow?.payload.content.map((part: { text?: string }) => part.text ?? '').join('') ?? '';
     const respawnEvents = events.filter((event) => event.kind === 'respawned');
     const finalRespawnAtMs = Date.parse(String(respawnEvents[respawnEvents.length - 1]?.ts ?? ''));
     expect(nativeRow.timestamp).toBeTypeOf('string');

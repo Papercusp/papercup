@@ -342,6 +342,26 @@ describe('durable SU owner-turn acceptance', () => {
     });
     expect(store.reserve).not.toHaveBeenCalled();
   });
+
+  // pui-chat-first-ux P-026 / D-025: an owner turn may carry the model to run
+  // it on; omitted keeps the current one, but a present one must be a spec.
+  it('P-026: refuses an owner turn whose model is present but empty, before reserving', async () => {
+    const store: SuSessionCommandStore = { reserve: vi.fn(), finish: vi.fn() };
+    for (const model of ['', '   ', 42]) {
+      await expect(readyHost().acceptCommand({ ...command('owner_turn'), model } as never, store))
+        .rejects.toMatchObject({ code: 'invalid_command' });
+    }
+    expect(store.reserve).not.toHaveBeenCalled();
+  });
+
+  it('P-026: publishes the model an engine switched to, once', () => {
+    const host = readyHost();
+    const before = eventTypes(host).length;
+    expect(host.updateModel('claude-sonnet-4-5:high')).not.toBeNull();
+    expect(host.descriptor().model).toBe('claude-sonnet-4-5:high');
+    expect(host.updateModel('claude-sonnet-4-5:high')).toBeNull();
+    expect(eventTypes(host).slice(before)).toEqual(['session']);
+  });
 });
 
 afterEach(() => {

@@ -449,6 +449,15 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     expect(compact).toContain('classRef');
   });
 
+  it('publishes every plans:audit itemProvenance variant in compact discovery output', () => {
+    const { schemaByTool } = buildCorpus();
+    const compact = compactSchemaForResult(schemaByTool.get('plans:audit')) ?? '';
+
+    expect(compact).toContain('kind:enum(derived|agent-added)');
+    expect(compact).toContain('from?:array(1-50)<string>');
+    expect(compact).toContain('reason?:string(1-2000)');
+  });
+
   it('keeps the late plans:new BAR contract in compact discovery output', () => {
     expect(plansNew.name).toBe('plans:new');
     const { schemaByTool } = buildCorpus();

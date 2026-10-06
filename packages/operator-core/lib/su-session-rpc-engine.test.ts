@@ -438,6 +438,55 @@ describe.each(['codex', 'omp'] as const)('%s structured SU engine', (backend) =>
       .resolves.toMatchObject({ status: 'refused' });
     expect(f.sent.filter((frame) => frame.type === 'prompt' || frame.method === 'turn/start')).toHaveLength(1);
   });
+
+  // pui-chat-first-ux P-026 / D-025: the model picked in /model rides on the
+  // next owner turn, and the engine applies it before that turn runs.
+  const turnWithModel = (engine: SuRpcEngine, id: string, model: string) =>
+    ({ ...command(engine, 'owner_turn', id), model }) as never;
+
+  it('P-026: applies a chosen model to the next turn and names it on the session', async () => {
+    const f = fixture(backend); await f.engine.ready;
+    const spec = backend === 'codex' ? 'gpt-5.5:high' : 'anthropic/claude-sonnet-4-5:high';
+    await expect(f.engine.adapter.host.startCommand(turnWithModel(f.engine, 'switch', spec)).terminal)
+      .resolves.toMatchObject({ status: 'completed' });
+    if (backend === 'codex') {
+      expect(f.sent.find((frame) => frame.method === 'turn/start')?.params)
+        .toMatchObject({ model: 'gpt-5.5', effort: 'high' });
+    } else {
+      const order = f.sent.map((frame) => frame.type).filter((type) => type === 'set_model' || type === 'set_thinking_level' || type === 'prompt');
+      expect(order).toEqual(['set_model', 'set_thinking_level', 'prompt']);
+      expect(f.sent).toContainEqual({ type: 'set_model', provider: 'anthropic', modelId: 'claude-sonnet-4-5' });
+      expect(f.sent).toContainEqual({ type: 'set_thinking_level', level: 'high' });
+    }
+    expect(f.engine.adapter.host.descriptor().model).toBe(spec);
+  });
+
+  it('P-026: a turn naming the current model does not switch', async () => {
+    const f = fixture(backend); await f.engine.ready;
+    const current = backend === 'codex' ? 'codex-model' : 'openai/omp-model';
+    await f.engine.adapter.host.startCommand(turnWithModel(f.engine, 'same', current)).terminal;
+    expect(f.sent.some((frame) => frame.type === 'set_model')).toBe(false);
+    const start = f.sent.find((frame) => frame.method === 'turn/start')?.params as Record<string, unknown> | undefined;
+    expect(start?.model).toBeUndefined();
+  });
+
+  if (backend === 'omp') {
+    it('P-026: a refused OMP switch refuses the turn, sends nothing and keeps the session usable', async () => {
+      const f = fixture(backend, { request: async (frame) => {
+        if (frame.type === 'set_model') throw new Error('Model not found: anthropic/nope');
+        return undefined;
+      } });
+      await f.engine.ready;
+      await expect(f.engine.adapter.host.startCommand(turnWithModel(f.engine, 'refused', 'anthropic/nope')).terminal)
+        .resolves.toMatchObject({ status: 'refused', refusal: { code: 'model_switch_refused', retryable: false } });
+      expect(f.sent.some((frame) => frame.type === 'prompt')).toBe(false);
+      expect(f.engine.adapter.host.snapshot()).toMatchObject({ terminal: false, streamReady: true });
+      expect(f.engine.adapter.host.descriptor().model).not.toBe('anthropic/nope');
+      await expect(f.engine.adapter.host.startCommand(command(f.engine, 'owner_turn', 'after') as never).terminal)
+        .resolves.toMatchObject({ status: 'completed' });
+      expect(f.sent.filter((frame) => frame.type === 'prompt')).toHaveLength(1);
+    });
+  }
 });
 
 // WI-10003604: the OMP session's papercusp-su bearer must be the token THIS operator validates

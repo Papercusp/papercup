@@ -304,6 +304,54 @@ describe('structured Claude SU engine', () => {
     }));
   });
 
+  // pui-chat-first-ux P-026 / D-025: /model's pick rides on the next owner turn.
+  describe('P-026 model switching', () => {
+    function switchable(p: ReturnType<typeof peer>, controls: 'both' | 'none' = 'both') {
+      const order: string[] = [];
+      const setModel = vi.fn(async (model?: string) => { order.push(`setModel:${model}:after-${p.prompts.length}-prompts`); });
+      const applyFlagSettings = vi.fn(async (settings: { effortLevel?: string }) => {
+        order.push(`effort:${settings.effortLevel}:after-${p.prompts.length}-prompts`);
+      });
+      const factory: NonNullable<ClaudeEngineOptions['query']> = (args) => {
+        const query = p.factory(args);
+        return controls === 'both' ? Object.assign(query, { setModel, applyFlagSettings }) as typeof query : query;
+      };
+      return { peer: { ...p, factory }, setModel, applyFlagSettings, order };
+    }
+    const withModel = (engine: ClaudeSuEngine, model: string, id = 'switch') =>
+      ({ ...command(engine), commandId: `cmd-${id}`, turnId: `owner-${id}`, model });
+
+    it('switches before the turn is written and names the model on the session', async () => {
+      const s = switchable(peer());
+      const engine = open(s.peer, { model: 'claude-opus-4-1' }); await engine.ready;
+      const result = await engine.adapter.host.startCommand(withModel(engine, 'claude-sonnet-4-5:high')).terminal;
+      expect(result.status).toBe('completed');
+      expect(s.order).toEqual(['setModel:claude-sonnet-4-5:after-0-prompts', 'effort:high:after-0-prompts']);
+      expect(s.peer.prompts).toHaveLength(1);
+      expect(engine.adapter.host.descriptor().model).toBe('claude-sonnet-4-5:high');
+    });
+
+    it('does not switch for a turn naming the current model', async () => {
+      const s = switchable(peer());
+      const engine = open(s.peer, { model: 'claude-opus-4-1' }); await engine.ready;
+      await engine.adapter.host.startCommand(withModel(engine, 'claude-opus-4-1')).terminal;
+      expect(s.setModel).not.toHaveBeenCalled();
+      expect(s.peer.prompts).toHaveLength(1);
+    });
+
+    it('refuses the turn, writes nothing and stays usable when the connection cannot switch', async () => {
+      const s = switchable(peer(), 'none');
+      const engine = open(s.peer, { model: 'claude-opus-4-1' }); await engine.ready;
+      const refused = await engine.adapter.host.startCommand(withModel(engine, 'claude-haiku-4-5')).terminal;
+      expect(refused).toMatchObject({ status: 'refused', refusal: { code: 'model_switch_refused', retryable: false } });
+      expect(s.peer.prompts).toHaveLength(0);
+      expect(engine.adapter.host.descriptor().model).not.toBe('claude-haiku-4-5');
+      const next = await engine.adapter.host.startCommand({ ...command(engine), commandId: 'cmd-after', turnId: 'owner-after' }).terminal;
+      expect(next.status).toBe('completed');
+      expect(s.peer.prompts).toHaveLength(1);
+    });
+  });
+
   it('reports a turn that ended with no assistant content instead of completing it silently', async () => {
     const p = peer({ holdResult: true }); const engine = open(p); await engine.ready;
     await engine.adapter.host.startCommand(command(engine)).terminal;

@@ -30,6 +30,13 @@ import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-reg
 import Protomux from 'protomux';
 import c from 'compact-encoding';
 import { getSwarmGuard, type SwarmGuard } from './swarm-guard';
+import {
+  parseDhtBootstrap,
+  resolveDhtUniverseState,
+  resolveEffectiveDhtBootstrap,
+  type DhtBootstrapNode,
+  type DhtUniverseState,
+} from './dht-universe';
 import { getResourceProfile } from '../../resource-profile';
 import type { SignedAnnounce } from './announce';
 import type { AdmissionResult } from './read-admission';
@@ -3626,11 +3633,16 @@ export function resolveDefaultMaxPeers(): number {
   }
 }
 
-/** One DHT bootstrap node (host + UDP port). */
-export interface DhtBootstrapNode {
-  host: string;
-  port: number;
-}
+// The pure bootstrap parser + universe classifier live in ./dht-universe so host
+// probes (dev:service_health's isolated-DHT alarm, WI-10005995) can classify another
+// process without loading this module's import graph. Re-exported unchanged.
+export {
+  parseDhtBootstrap,
+  resolveDhtUniverseState,
+  resolveEffectiveDhtBootstrap,
+  type DhtBootstrapNode,
+  type DhtUniverseState,
+} from './dht-universe';
 
 /** Parse `PAPERCUSP_DHT_HOST` — an optional local bind/advertise host for
  * hyperdht. Hyperswarm does not forward `host` to HyperDHT, so callers that
@@ -3640,58 +3652,6 @@ export interface DhtBootstrapNode {
 export function parseDhtHost(raw: string | undefined): string | undefined {
   const host = raw?.trim();
   return host || undefined;
-}
-
-/**
- * Parse `PAPERCUSP_DHT_BOOTSTRAP` — a comma-separated `host:port` list — into
- * hyperdht bootstrap nodes. Returns undefined when unset/empty/all-malformed
- * (→ the swarm uses the real public DHT, the default). When set, every peer
- * that shares the value joins the SAME isolated DHT — which is how two
- * instances on ONE box deterministically discover each other without relying on
- * public-DHT NAT hairpinning (the same trick the in-process p079 live test uses
- * via `hyperdht/testnet`). Exported for unit testing.
- */
-export function parseDhtBootstrap(raw: string | undefined): DhtBootstrapNode[] | undefined {
-  if (!raw) return undefined;
-  const nodes = raw
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .map((s): DhtBootstrapNode | null => {
-      const i = s.lastIndexOf(':'); // lastIndexOf tolerates IPv6-ish hosts minimally
-      if (i <= 0) return null;
-      const host = s.slice(0, i);
-      const port = Number.parseInt(s.slice(i + 1), 10);
-      return host && Number.isFinite(port) && port > 0 ? { host, port } : null;
-    })
-    .filter((n): n is DhtBootstrapNode => n !== null);
-  return nodes.length ? nodes : undefined;
-}
-
-/**
- * WI-3604 (split-DHT-universe recurrence guard). The DHT universe this
- * process's shared swarm actually resolved to, at construction time:
- * `'isolated'` (a custom bootstrap list, e.g. the fed-a/fed-b rig DHT),
- * `'public'` (no `PAPERCUSP_DHT_BOOTSTRAP` set — the real public DHT), or
- * `'misconfigured'` (the env var WAS set but resolved to zero usable
- * bootstrap nodes — {@link parseDhtBootstrap}'s all-malformed case — which
- * silently falls back to the PUBLIC DHT, the exact "isolated federation
- * quietly breaks" failure this guards against).
- */
-export type DhtUniverseState =
-  | { mode: 'isolated'; bootstrap: DhtBootstrapNode[] }
-  | { mode: 'public' }
-  | { mode: 'misconfigured'; envValue: string };
-
-/** Pure classifier: given the raw `PAPERCUSP_DHT_BOOTSTRAP` value, resolve
- * which DHT universe a swarm constructed with it would join. Exported for
- * unit testing (no I/O). */
-export function resolveDhtUniverseState(envBootstrapRaw: string | undefined): DhtUniverseState {
-  const trimmed = envBootstrapRaw?.trim();
-  if (!trimmed) return { mode: 'public' };
-  const bootstrap = parseDhtBootstrap(trimmed);
-  if (bootstrap?.length) return { mode: 'isolated', bootstrap };
-  return { mode: 'misconfigured', envValue: trimmed };
 }
 
 /** Whether this process's effective DHT bootstrap (env, then file) was declared but resolved to
@@ -3839,11 +3799,13 @@ export function readEffectiveDhtBootstrapRaw(): string | undefined {
     const os = require('node:os') as typeof import('node:os');
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const path = require('node:path') as typeof import('node:path');
-    const filePath =
-      process.env.PAPERCUSP_DHT_BOOTSTRAP_FILE?.trim() ||
-      path.join(os.homedir(), '.papercusp', 'dht-bootstrap');
-    const contents = fs.readFileSync(filePath, 'utf8').trim();
-    return contents || undefined;
+    // The precedence itself lives in ./dht-universe so an outside probe of ANOTHER
+    // process (dev:service_health, WI-10005995) applies exactly the same rule.
+    return resolveEffectiveDhtBootstrap({
+      env: process.env,
+      defaultFilePath: path.join(os.homedir(), '.papercusp', 'dht-bootstrap'),
+      readFile: (p) => fs.readFileSync(p, 'utf8'),
+    }).raw;
   } catch {
     return undefined;
   }

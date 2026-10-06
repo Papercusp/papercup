@@ -753,6 +753,13 @@ async function startDbosOnce(): Promise<void> {
     // is fail-closed and a refusal would otherwise render as clean.
     const { startInstalledHookDriftWatchdog } = await import('../system-health/installed-hook-drift-watchdog');
     startInstalledHookDriftWatchdog();
+    // WI-10006236 (#1309 prevention): Claude Code updates itself, and 2.1.289 silently
+    // made 1M-default sessions run at 200k (WI-10006049). Once per new active build, and
+    // once per boot, run that build headlessly through the gateway and escalate if a
+    // 1M-default family is not served at 1M, or if the probe could not measure. Host
+    // singleton only: each probe is a real model request.
+    const { startClaudeUpdateCanary } = await import('../system-health/claude-update-canary');
+    startClaudeUpdateCanary();
     // WI-10002060: alarm when a live session's identity activation cannot be
     // reconciled with its launch record, which makes the kernel refuse EVERY
     // tool. The denial is SELF-SEALING — a wedged session cannot file its own

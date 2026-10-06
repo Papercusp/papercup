@@ -269,24 +269,27 @@ export function startClaudeSuEngine(
     controls: {
       async ownerTurn({ content, turnId, model: nextModel }) {
         if (!ready || closed) return unavailable('The structured Claude connection is not ready');
-        // P-026: switch BEFORE the turn is written, so a refused switch refuses
-        // this turn instead of running it on a model the owner did not pick.
-        if (nextModel && nextModel !== currentModel) {
-          try {
-            await applyClaudeModelSwitch(sdk, nextModel);
-          } catch (error) {
-            return { ok: false, code: 'model_switch_refused', retryable: false,
-              message: `Could not switch to ${nextModel}: ${error instanceof Error ? error.message : String(error)}` };
-          }
-          currentModel = nextModel;
-          adapter.host.updateModel(nextModel);
-        }
         const uuid = randomUUID();
         const receipt = deferred<ClaudeNativeCommandVerdict>();
         pending.set(uuid, receipt);
         let timer: ReturnType<typeof setTimeout> | undefined;
         inputTail = inputTail.then(async () => {
           if (closed) { receipt.resolve(unavailable('Claude closed before this saved turn was sent')); return; }
+          // P-026: switch in the input order, after any earlier queued turn has
+          // finished (so it never changes the model under that turn) and before
+          // this one is written (so a refused switch refuses this turn instead
+          // of running it on a model the owner did not pick).
+          if (nextModel && nextModel !== currentModel) {
+            try {
+              await applyClaudeModelSwitch(sdk, nextModel);
+            } catch (error) {
+              receipt.resolve({ ok: false, code: 'model_switch_refused', retryable: false,
+                message: `Could not switch to ${nextModel}: ${error instanceof Error ? error.message : String(error)}` });
+              return;
+            }
+            currentModel = nextModel;
+            adapter.host.updateModel(nextModel);
+          }
           const finished = deferred<void>();
           finishActiveTurn = () => finished.resolve();
           adapter.correlateOwnerTurn(turnId);

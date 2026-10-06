@@ -198,6 +198,12 @@ export interface ExternalTriggerBindingAdminRow {
     completedAt: string | null;
     error: string | null;
   } | null;
+  /**
+   * The trigger pack that owns this binding (P-013, D-016 §7). Arming an
+   * unreviewed pack binding goes through the pack review, not the toggle.
+   * Absent/null for hand-bound bindings; the admin snapshot always sets it.
+   */
+  pack?: { installationId: string; pluginName: string; reviewed: boolean } | null;
 }
 
 export type ExternalTriggerRunDisposition =
@@ -401,6 +407,9 @@ interface BindingDbRow {
   lastRunTriggeredAt: Date | string | null;
   lastRunCompletedAt: Date | string | null;
   lastRunError: string | null;
+  packInstallationId: string | null;
+  packPluginName: string | null;
+  packReviewed: boolean | null;
 }
 
 interface RunVisibilityDbRow {
@@ -1515,10 +1524,15 @@ export async function loadExternalTriggerAdminSnapshot(
              lr.status AS "lastRunStatus",
              lr.triggered_at AS "lastRunTriggeredAt",
              lr.completed_at AS "lastRunCompletedAt",
-             lr.error AS "lastRunError"
+             lr.error AS "lastRunError",
+             pi.id::text AS "packInstallationId",
+             pi.plugin_name AS "packPluginName",
+             (pi.reviewed_fingerprint IS NOT NULL) AS "packReviewed"
         FROM harness_shared.trigger_bindings b
         JOIN harness_shared.data_sources s
           ON s.workspace_id = b.workspace_id AND s.id = b.source_id
+        LEFT JOIN harness_shared.trigger_pack_installations pi
+          ON pi.workspace_id = b.workspace_id AND pi.id = b.pack_installation_id
         LEFT JOIN LATERAL (
           SELECT tr.id, tr.status, tr.triggered_at, tr.completed_at, tr.error
             FROM harness_shared.trigger_runs tr
@@ -1580,6 +1594,10 @@ export async function loadExternalTriggerAdminSnapshot(
               completedAt: iso(row.lastRunCompletedAt),
               error: row.lastRunError,
             }
+          : null,
+      pack:
+        row.packInstallationId && row.packPluginName
+          ? { installationId: row.packInstallationId, pluginName: row.packPluginName, reviewed: row.packReviewed === true }
           : null,
     }),
   );
@@ -1897,6 +1915,33 @@ export async function queueExternalTriggerLastEventTestRun(
   });
 }
 
+/**
+ * Arming a binding a trigger pack owns needs the pack's review (P-013, D-016 §3).
+ * `code` is stable for callers to map: the agent tool returns it, the admin route
+ * answers 409 with the installation so the Workflows tab can open the pack review.
+ */
+export class TriggerPackReviewRequiredError extends Error {
+  readonly code = 'trigger_pack_review_required';
+  constructor(
+    readonly bindingId: string,
+    readonly installationId: string,
+    readonly pluginName: string,
+  ) {
+    super(
+      `binding ${bindingId} belongs to trigger pack ${pluginName}, which has no current review; ` +
+        'review the pack and arm it with trigger-packs:arm',
+    );
+    this.name = 'TriggerPackReviewRequiredError';
+  }
+}
+
+/**
+ * The single arm chokepoint (triggers:arm, triggers:disarm, the Workflows toggle).
+ * Disarming is always allowed. Arming a pack-owned binding requires its
+ * installation to carry a review; the check sits inside the UPDATE itself, so a
+ * concurrent return-to-review (which clears the review before disarming) cannot
+ * be raced past.
+ */
 export async function setExternalTriggerBindingArmed(
   sql: postgres.Sql,
   workspaceId: string,
@@ -1904,12 +1949,35 @@ export async function setExternalTriggerBindingArmed(
   armed: boolean,
 ): Promise<{ id: string; armed: boolean; updatedAt: string } | null> {
   const rows = await sql<Array<{ id: string; armed: boolean; updatedAt: Date | string }>>`
-    UPDATE harness_shared.trigger_bindings
+    UPDATE harness_shared.trigger_bindings b
        SET armed = ${armed}, updated_at = now()
-     WHERE workspace_id = ${workspaceId} AND id = ${id}::uuid
-       AND detached_at IS NULL
-     RETURNING id::text, armed, updated_at AS "updatedAt"`;
-  if (!rows[0]) return null;
+     WHERE b.workspace_id = ${workspaceId} AND b.id = ${id}::uuid
+       AND b.detached_at IS NULL
+       AND (
+         ${armed}::boolean = FALSE
+         OR b.pack_installation_id IS NULL
+         OR EXISTS (
+           SELECT 1 FROM harness_shared.trigger_pack_installations i
+            WHERE i.workspace_id = b.workspace_id
+              AND i.id = b.pack_installation_id
+              AND i.reviewed_fingerprint IS NOT NULL
+         )
+       )
+     RETURNING b.id::text, b.armed, b.updated_at AS "updatedAt"`;
+  if (!rows[0]) {
+    if (armed) {
+      const [pack] = await sql<Array<{ installationId: string; pluginName: string }>>`
+        SELECT i.id::text AS "installationId", i.plugin_name AS "pluginName"
+          FROM harness_shared.trigger_bindings b
+          JOIN harness_shared.trigger_pack_installations i
+            ON i.workspace_id = b.workspace_id AND i.id = b.pack_installation_id
+         WHERE b.workspace_id = ${workspaceId} AND b.id = ${id}::uuid
+           AND b.detached_at IS NULL
+           AND i.reviewed_fingerprint IS NULL`;
+      if (pack) throw new TriggerPackReviewRequiredError(id, pack.installationId, pack.pluginName);
+    }
+    return null;
+  }
   return { ...rows[0], updatedAt: iso(rows[0].updatedAt) as string };
 }
 

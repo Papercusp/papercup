@@ -18,6 +18,7 @@
 // `identity-refusal-contract`: this module sits in the portal-prebundled hosted cone and
 // `hosted-auth-runtime.bundle-cone.test.ts` walks `import type` edges too (WI-10005197).
 import type { RefusalContract } from '../../../capability-envelope/refusal-contract-types';
+import { createHash } from 'node:crypto';
 import { postStripeForm } from '../../../cupboard/payment-adapters/stripe';
 
 export const STRIPE_API_BASE = 'https://api.stripe.com/v1';
@@ -37,6 +38,13 @@ export type StripeBillingCallResult<T> =
 
 export interface StripeBillingClient {
   readonly livemode: boolean;
+  /** Read-only provider evidence. This is NOT a payment/reversal census or
+   * transaction-bound funding authority; it must be reconciled with those. */
+  readAccountCash(input: {
+    readonly accountId: string;
+    readonly customerId: string;
+    readonly organizationId: string;
+  }): Promise<StripeBillingCallResult<{ evidence: StripeAccountCashEvidence }>>;
   createCustomer(input: {
     organizationId: string;
     email?: string | null;
@@ -58,6 +66,35 @@ export interface StripeBillingClient {
   }): Promise<StripeBillingCallResult<{ url: string }>>;
 }
 
+export interface StripeAccountCashEvidence {
+  readonly accountId: string;
+  readonly customerId: string;
+  readonly organizationId: string;
+  /** Verified on BOTH the authenticated balance and customer responses. */
+  readonly livemode: boolean;
+  /** Signed cents. Negative cash remains negative; pending cash is separate. */
+  readonly availableUsdCents: number;
+  readonly pendingUsdCents: number;
+  readonly observedAtMs: number;
+  readonly requestIds: readonly string[];
+  readonly evidenceRef: string;
+}
+
+type StripeObject = Record<string, unknown>;
+const object = (value: unknown): value is StripeObject => !!value && typeof value === 'object' && !Array.isArray(value);
+function usdBalance(value: unknown): number | null {
+  if (!Array.isArray(value)) return null;
+  const currencies = new Set<string>();
+  let usd = 0;
+  for (const row of value) {
+    if (!object(row) || typeof row.currency !== 'string' || !/^[a-z]{3}$/.test(row.currency)
+        || !Number.isSafeInteger(row.amount) || currencies.has(row.currency)) return null;
+    currencies.add(row.currency);
+    if (row.currency === 'usd') usd = row.amount as number;
+  }
+  return usd;
+}
+
 export type StripeBillingClientConstruction =
   | { readonly ok: true; readonly client: StripeBillingClient }
   | { readonly ok: false; readonly code: 'invalid_secret_key' }
@@ -72,7 +109,10 @@ export function createStripeBillingClient(input: {
   /** The resolved value of the default-OFF owner-authority live-mode flag. */
   liveModeAllowed: boolean;
 }): StripeBillingClientConstruction {
-  const mode = stripeKeyMode(input.secretKey);
+  // Pin injected credentials/transport once; mutation of the composition's
+  // options must not switch the account between authenticated reads.
+  const { secretKey, fetchImpl } = input;
+  const mode = stripeKeyMode(secretKey);
   if (!mode) return { ok: false, code: 'invalid_secret_key' };
   if (mode === 'live' && !input.liveModeAllowed) {
     return {
@@ -88,10 +128,57 @@ export function createStripeBillingClient(input: {
     };
   }
   const post = (path: string, params: Record<string, unknown>, idempotencyKey?: string) =>
-    postStripeForm({ url: `${STRIPE_API_BASE}${path}`, secretKey: input.secretKey, params, fetchImpl: input.fetchImpl, idempotencyKey });
+    postStripeForm({ url: `${STRIPE_API_BASE}${path}`, secretKey, params, fetchImpl, idempotencyKey });
+  const get = async (path: string): Promise<StripeBillingCallResult<{ body: StripeObject; requestId: string; status: number }>> => {
+    try {
+      const response = await fetchImpl(`${STRIPE_API_BASE}${path}`, {
+        method: 'GET', redirect: 'error', headers: { authorization: `Bearer ${secretKey}` },
+      });
+      // Never copy an error body, URL or transport exception containing a key
+      // or customer PII into the evidence/result.
+      if (!response.ok) return { ok: false, code: 'provider-error', status: response.status, detail: 'stripe authenticated read failed' };
+      const body: unknown = await response.json();
+      const requestId = response.headers.get('request-id');
+      if (!object(body) || !requestId || !/^req_[A-Za-z0-9]+$/.test(requestId)) {
+        return malformed(response.status, 'stripe read lacks an object or request provenance');
+      }
+      return { ok: true, body, requestId, status: response.status };
+    } catch {
+      return { ok: false, code: 'provider-error', status: null, detail: 'stripe authenticated read failed' };
+    }
+  };
 
   const client: StripeBillingClient = {
     livemode: mode === 'live',
+
+    async readAccountCash(input) {
+      const { accountId, customerId, organizationId } = input;
+      if (!/^acct_[A-Za-z0-9]+$/.test(accountId) || !/^cus_[A-Za-z0-9]+$/.test(customerId)
+          || typeof organizationId !== 'string' || !organizationId.trim()) {
+        return malformed(0, 'invalid pinned stripe scope');
+      }
+      // /account identifies the credential's own account. Looking up an
+      // arbitrary /accounts/:id could prove access rather than cash ownership.
+      const account = await get('/account');
+      if (!account.ok) return account;
+      if (account.body.object !== 'account' || account.body.id !== accountId) return malformed(account.status, 'stripe account pin mismatch');
+      const customer = await get(`/customers/${customerId}`);
+      if (!customer.ok) return customer;
+      if (customer.body.object !== 'customer' || customer.body.id !== customerId || customer.body.deleted === true
+          || customer.body.livemode !== (mode === 'live') || !object(customer.body.metadata)
+          || customer.body.metadata.organizationId !== organizationId) return malformed(customer.status, 'stripe customer pin mismatch');
+      const balance = await get('/balance');
+      if (!balance.ok) return balance;
+      const available = usdBalance(balance.body.available); const pending = usdBalance(balance.body.pending);
+      if (balance.body.object !== 'balance' || balance.body.livemode !== (mode === 'live')
+          || available === null || pending === null) return malformed(balance.status, 'unverified stripe cash balance');
+      const requestIds = Object.freeze([account.requestId, customer.requestId, balance.requestId]);
+      const observedAtMs = Date.now();
+      const selected = { accountId, customerId, organizationId, livemode: mode === 'live',
+        availableUsdCents: available, pendingUsdCents: pending, observedAtMs, requestIds };
+      const evidenceRef = `stripe-cash:${createHash('sha256').update(JSON.stringify(selected)).digest('hex')}`;
+      return { ok: true, evidence: Object.freeze({ ...selected, evidenceRef }) };
+    },
 
     async createCustomer({ organizationId, email, name }) {
       // Stripe's idempotency window is 24h; the store's unique (organization_id)

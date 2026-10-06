@@ -275,7 +275,7 @@ function nestedObjectProperties(
 
   for (const candidate of candidates) {
     if (!candidate.items || typeof candidate.items !== 'object' || Array.isArray(candidate.items)) continue;
-    const item = objectProperties(candidate.items as JsonSchemaNode);
+    const item = mergedNestedObjectProperties(candidate.items as JsonSchemaNode);
     if (item) return item;
   }
   return null;
@@ -707,7 +707,7 @@ function compactContractSynopsis(description: string): string | null {
     : `${candidate.slice(0, COMPACT_TOP_LEVEL_DESCRIPTION_MAX_CHARS - 1)}…`;
 }
 
-function compactTopLevelDescription(node: JsonSchemaNode): { text: string; priority: number } | null {
+function compactTopLevelDescription(node: JsonSchemaNode, fieldName: string): { text: string; priority: number } | null {
   if (typeof node.description !== 'string') return null;
   const description = node.description.replace(/\s+/g, ' ').trim();
   if (!description) return null;
@@ -719,7 +719,15 @@ function compactTopLevelDescription(node: JsonSchemaNode): { text: string; prior
       : `${projected.slice(0, COMPACT_TOP_LEVEL_DESCRIPTION_MAX_CHARS - 1)}…`;
   return {
     text: ` ${bounded}`,
-    priority: COMPACT_CONTRACT_DESCRIPTION_PATTERN.test(description) ? 100 : 10,
+    // Keep plans:audit's phase restriction visible even when its newly
+    // expanded itemProvenance union pushes the compact projection over budget.
+    // The activation-wide constraint is useful, but this field-level rule is
+    // the clearest guard against sending auditedSha on an activation call.
+    priority: fieldName === 'auditedSha' && /completion phase only/i.test(description)
+      ? 200
+      : COMPACT_CONTRACT_DESCRIPTION_PATTERN.test(description)
+        ? 100
+        : 10,
   };
 }
 
@@ -893,7 +901,7 @@ export function compactSchemaForResult(inputSchema: unknown): string | null {
     return {
       index,
       base: `${name}${projection.required.has(name) ? '' : '?'}${shape ? `:${shape}` : ''}`,
-      description: compactTopLevelDescription(node),
+      description: compactTopLevelDescription(node, name),
     };
   });
   if (parts.length === 0) return null;

@@ -26,14 +26,19 @@ import {
   heartbeatSharedResourceAtomic,
   releaseSharedResourceAtomic,
   SU_LOCKS_FEATURE_KEY,
+  stampResourceCoordinationDomainKind,
 } from '../su-lock-store';
 import { inWorkspaceTxn } from '../in-workspace-txn';
 
 async function dbLive(): Promise<boolean> {
   try {
+    // A disposable main database has no locks side database until bootstrap.
+    // Probe the initialized store, and never silently skip a broken private run.
+    await ensureBootstrap();
     await getTxPool()`SELECT 1`;
     return true;
-  } catch {
+  } catch (error) {
+    if (process.env.HOME?.includes('papercusp-test-runtime-')) throw error;
     return false;
   }
 }
@@ -195,5 +200,75 @@ describe('one-round-trip shared semaphore (locks sql/030, P-014(e))', async () =
       await resourceHolder.release();
     }
     expect((await acquire(ws, res, 'after', 200)).ok).toBe(true);
+  });
+});
+
+describe('host-global resource exclusion across legacy coordination domains', async () => {
+  const live = await dbLive();
+
+  async function hostResource(): Promise<string> {
+    const resource = await registered(unique('host-admin'), null);
+    await inWorkspaceTxn(unique('host-registration'), 'admin', tx =>
+      stampResourceCoordinationDomainKind(tx, resource, 'host-global'));
+    return resource;
+  }
+
+  const legacyExclusive = (domain: string, resource: string, owner: string) =>
+    inWorkspaceTxn(domain, owner, tx => tryAcquireResource(tx, {
+      coordinationDomain: domain, resource, owner, ownerLabel: owner,
+      mode: 'exclusive', reason: 'legacy caller regression', ttlSec: 60,
+    }));
+
+  const crossDomainError = { code: '23P01', constraint_name: 'resource_host_global_exclusion' };
+
+  it.skipIf(!live)('rejects a legacy exclusive over a shared lease in another domain', async () => {
+    const resource = await hostResource();
+    expect((await acquire(unique('reader-domain'), resource, 'reader')).ok).toBe(true);
+    await expect(legacyExclusive(unique('legacy-domain'), resource, 'writer'))
+      .rejects.toMatchObject(crossDomainError);
+  });
+
+  it.skipIf(!live)('rejects an atomic shared acquire over a foreign-domain exclusive', async () => {
+    const resource = await hostResource();
+    expect((await legacyExclusive(unique('legacy-domain'), resource, 'writer')).ok).toBe(true);
+    await expect(acquire(unique('reader-domain'), resource, 'reader'))
+      .rejects.toMatchObject(crossDomainError);
+  });
+
+  it.skipIf(!live)('serializes concurrent legacy exclusives even though their domain gates differ', async () => {
+    const resource = await hostResource();
+    const results = await Promise.allSettled([
+      legacyExclusive(unique('legacy-a'), resource, 'writer-a'),
+      legacyExclusive(unique('legacy-b'), resource, 'writer-b'),
+    ]);
+    expect(results.filter(r => r.status === 'fulfilled')).toHaveLength(1);
+    const refused = results.find(r => r.status === 'rejected');
+    expect(refused?.status === 'rejected' && refused.reason).toMatchObject(crossDomainError);
+    const [row] = await getTxPool()<Array<{ n: number }>>`
+      SELECT count(*)::int AS n FROM agent_resource_locks
+       WHERE resource = ${resource} AND expires_ts > clock_timestamp()`;
+    expect(row.n).toBe(1);
+  });
+
+  it.skipIf(!live)('does not permit a same-owner upgrade through a different domain', async () => {
+    const resource = await hostResource();
+    expect((await acquire(unique('reader-domain'), resource, 'same-owner')).ok).toBe(true);
+    await expect(legacyExclusive(unique('legacy-domain'), resource, 'same-owner'))
+      .rejects.toMatchObject(crossDomainError);
+  });
+
+  it.skipIf(!live)('allows shared readers across domains and ignores expired foreign leases', async () => {
+    const resource = await hostResource();
+    expect((await acquire(unique('reader-a'), resource, 'reader-a')).ok).toBe(true);
+    expect((await acquire(unique('reader-b'), resource, 'reader-b')).ok).toBe(true);
+    await getTxPool()`UPDATE agent_resource_locks
+      SET expires_ts = clock_timestamp() - interval '1 second' WHERE resource = ${resource}`;
+    expect((await legacyExclusive(unique('legacy-domain'), resource, 'writer')).ok).toBe(true);
+  });
+
+  it.skipIf(!live)('preserves independent domains for resources declared as tree-scoped', async () => {
+    const resource = await registered(unique('tree-admin'), null);
+    expect((await legacyExclusive(unique('tree-a'), resource, 'writer-a')).ok).toBe(true);
+    expect((await legacyExclusive(unique('tree-b'), resource, 'writer-b')).ok).toBe(true);
   });
 });

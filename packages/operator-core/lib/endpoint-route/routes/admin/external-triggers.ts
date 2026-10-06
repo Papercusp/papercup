@@ -13,8 +13,10 @@ import {
   loadExternalTriggerAdminSnapshot,
   loadExternalTriggerPlanAdminSnapshot,
   setExternalTriggerBindingArmed,
+  TriggerPackReviewRequiredError,
   updateExternalTriggerBindingStormPolicy,
 } from '../../../external-triggers/admin';
+import { armTriggerPack, buildTriggerPackReview } from '../../../cupboard/trigger-pack-lifecycle';
 import { connectOwnedSlackSource, SLACK_APP_MANIFEST_TEMPLATE } from '../../../external-triggers/slack';
 import { connectOrganizationSlackSource, SLACK_ORG_DISABLED_ERROR } from '../../../data-sources/slack-org-connector';
 import {
@@ -81,6 +83,17 @@ const mutationSchema = z.union([
       op: z.literal('set-armed'),
       id: z.string().uuid(),
       armed: z.boolean(),
+      confirm: z.boolean().optional(),
+    })
+    .strict(),
+  // Trigger packs (P-013, D-016 §7): a pack-owned binding arms through its pack's
+  // review on this same route, never through a second surface.
+  z.object({ op: z.literal('pack-review'), installationId: z.string().uuid() }).strict(),
+  z
+    .object({
+      op: z.literal('pack-arm'),
+      installationId: z.string().uuid(),
+      fingerprint: z.string().regex(/^[0-9a-f]{64}$/),
       confirm: z.boolean().optional(),
     })
     .strict(),
@@ -245,10 +258,53 @@ const mutate = defineTool({
           { status: 409 },
         );
       }
-      const binding = await setExternalTriggerBindingArmed(sql, workspaceId, parsed.data.id, parsed.data.armed);
+      let binding: Awaited<ReturnType<typeof setExternalTriggerBindingArmed>>;
+      try {
+        binding = await setExternalTriggerBindingArmed(sql, workspaceId, parsed.data.id, parsed.data.armed);
+      } catch (error) {
+        if (!(error instanceof TriggerPackReviewRequiredError)) throw error;
+        return Response.json(
+          {
+            ok: false,
+            error: error.code,
+            detail: error.message,
+            pack: { installationId: error.installationId, pluginName: error.pluginName },
+          },
+          { status: 409 },
+        );
+      }
       if (!binding) return Response.json({ ok: false, error: 'not_found' }, { status: 404 });
       void notifySyncInvalidate('externalTriggers.admin', { workspaceId }).catch(() => {});
       return Response.json({ ok: true, binding });
+    }
+    if (parsed.data.op === 'pack-review') {
+      const review = await buildTriggerPackReview(sql, workspaceId, parsed.data.installationId);
+      if (!review) return Response.json({ ok: false, error: 'not_found' }, { status: 404 });
+      return Response.json({ ok: true, review });
+    }
+    if (parsed.data.op === 'pack-arm') {
+      if (parsed.data.confirm !== true) {
+        return Response.json(
+          {
+            ok: false,
+            error: 'owner_confirmation_required',
+            detail: 'arming a trigger pack requires an explicit owner confirmation',
+            gate: { category: 'schedule-arm', authority: 'owner', reversible: true },
+          },
+          { status: 409 },
+        );
+      }
+      const user = await getSessionUserOrDefault(req.headers);
+      const result = await armTriggerPack(sql, workspaceId, {
+        installationId: parsed.data.installationId,
+        fingerprint: parsed.data.fingerprint,
+        reviewedBy: `owner:${user.id}`,
+      });
+      if (!result.ok) {
+        return Response.json(result, { status: result.error === 'not_found' ? 404 : 409 });
+      }
+      void notifySyncInvalidate('externalTriggers.admin', { workspaceId }).catch(() => {});
+      return Response.json(result);
     }
 
     const binding = await updateExternalTriggerBindingStormPolicy(sql, workspaceId, parsed.data.id, {

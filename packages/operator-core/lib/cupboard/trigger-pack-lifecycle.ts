@@ -431,14 +431,14 @@ export async function uninstallTriggerPack(
      WHERE workspace_id = ${workspaceId}
        AND detached_at IS NULL
        AND plan_harness_slug = ${row.harnessSlug}
-       AND plan_slug = ANY(${planSlugs})
+       AND plan_slug = ANY(${planSlugs}::text[])
        AND pack_installation_id IS DISTINCT FROM ${row.id}::uuid
      ORDER BY id`;
   const armedSchedules = await sql<Array<{ planSlug: string }>>`
     SELECT plan_slug AS "planSlug" FROM harness_shared.harness_plans
      WHERE workspace_id = ${workspaceId}
        AND harness_slug = ${row.harnessSlug}
-       AND plan_slug = ANY(${planSlugs})
+       AND plan_slug = ANY(${planSlugs}::text[])
        AND schedule_active IS TRUE
      ORDER BY plan_slug`;
 
@@ -452,7 +452,7 @@ export async function uninstallTriggerPack(
        SET archived = TRUE, op_updated_at = ${new Date().toISOString()}
      WHERE workspace_id = ${workspaceId}
        AND harness_slug = ${row.harnessSlug}
-       AND plan_slug = ANY(${planSlugs})
+       AND plan_slug = ANY(${planSlugs}::text[])
        AND archived IS NOT TRUE
      RETURNING plan_slug AS "planSlug"`;
 

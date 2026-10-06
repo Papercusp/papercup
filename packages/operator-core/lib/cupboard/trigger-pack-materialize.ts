@@ -50,6 +50,7 @@ import {
 } from '../external-triggers/binding-engine';
 import { ensureFlagshipPlan } from '../external-triggers/flagship-plan';
 import { providerRegistry, type ProviderRegistry } from '../integrations/provider-registry';
+import { reconcileTriggerPackReview, sha256 } from './trigger-pack-lifecycle';
 
 /** The edge event key every edge binding listens on. */
 export const TRIGGER_PACK_EDGE_EVENT_KEY = `ext:${TRIGGER_PACK_EDGE_SOURCE_KIND}:${TRIGGER_PACK_EDGE_EVENT}`;
@@ -98,8 +99,12 @@ export interface TriggerPackUnmet {
 }
 
 export interface TriggerPackResources {
-  /** Pack target id → the plan this installation owns. */
-  plans: Record<string, { planSlug: string }>;
+  /**
+   * Pack target id → the plan this installation owns, with the sha256 of the
+   * pack's template (P-013: the review covers the template, not the live plan,
+   * whose content moves with every run).
+   */
+  plans: Record<string, { planSlug: string; templateSha256?: string }>;
   /** Pack binding id → the trigger binding this installation owns. */
   bindings: Record<string, { triggerBindingId: string; sourceId: string; kind: 'external' | 'edge' }>;
   /** Manual bindings: launched by `plans:run-now`, so they own no binding row. */
@@ -119,8 +124,14 @@ export interface TriggerPackInstallation {
   inputs: Record<string, unknown>;
   resources: TriggerPackResources;
   unmet: TriggerPackUnmet[];
-  /** Materialization never crosses the autonomy-gated arm boundary. */
-  armed: false;
+  /**
+   * True only when an unchanged re-configure kept a reviewed pack armed (P-013,
+   * D-016). A fresh install, an update, or any change to the review is never
+   * armed: arming stays the separate, reviewed `trigger-packs:arm`.
+   */
+  armed: boolean;
+  /** The current review fingerprint and whether the installation is armed against it. */
+  review: { fingerprint: string; reviewed: boolean };
 }
 
 /** A refusal raised before any write. `code` is stable for callers to branch on. */
@@ -549,17 +560,20 @@ export async function materializeTriggerPack(
     bindings: { ...plan.priorResources.bindings },
     edgeSourceId: plan.priorResources.edgeSourceId,
   };
-  for (const [targetId, planned] of plan.plans) resources.plans[targetId] = { planSlug: planned.planSlug };
+  for (const [targetId, planned] of plan.plans) {
+    resources.plans[targetId] = { planSlug: planned.planSlug, templateSha256: sha256(planned.content) };
+  }
   const upserted = await sql<Array<{ id: string }>>`
     INSERT INTO harness_shared.trigger_pack_installations
-      (workspace_id, harness_slug, plugin_name, plugin_version, source_mappings, inputs, resources, created_by)
+      (workspace_id, harness_slug, plugin_name, plugin_version, source_mappings, inputs, resources, manifest, created_by)
     VALUES (
       ${workspaceId}, ${input.harnessSlug}, ${manifest.name}, ${manifest.version},
       ${JSON.stringify(plan.sourceMappings)}::text::jsonb, ${JSON.stringify(plan.inputs)}::text::jsonb,
-      ${JSON.stringify(resources)}::text::jsonb, ${createdBy}
+      ${JSON.stringify(resources)}::text::jsonb, ${JSON.stringify(manifest)}::text::jsonb, ${createdBy}
     )
     ON CONFLICT (workspace_id, harness_slug, plugin_name) DO UPDATE SET
       plugin_version = EXCLUDED.plugin_version,
+      manifest = EXCLUDED.manifest,
       source_mappings = EXCLUDED.source_mappings,
       inputs = EXCLUDED.inputs,
       resources = harness_shared.trigger_pack_installations.resources
@@ -673,6 +687,11 @@ export async function materializeTriggerPack(
            updated_at = now()
      WHERE workspace_id = ${workspaceId} AND id = ${installationId}::uuid`;
 
+  // ── 6. Update returns to review (P-013, D-016 §4) ─────────────────────────
+  // The plugin version is part of the review, so every version update differs;
+  // an identical re-configure keeps a reviewed pack armed.
+  const review = await reconcileTriggerPackReview(sql, workspaceId, installationId);
+
   return {
     id: installationId,
     workspaceId,
@@ -684,6 +703,7 @@ export async function materializeTriggerPack(
     inputs: plan.inputs,
     resources,
     unmet,
-    armed: false,
+    armed: review.current && review.armedBindingCount > 0,
+    review: { fingerprint: review.fingerprint, reviewed: review.current },
   };
 }
