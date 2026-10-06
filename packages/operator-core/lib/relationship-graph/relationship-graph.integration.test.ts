@@ -19,6 +19,8 @@
  *     `person` to `record` writes nothing to the graph;
  *   - replay and a full backfill converge on the same rows.
  */
+import { existsSync, readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import type { HostFetch, ProviderAdapter, ProviderDescriptor } from '@papercusp/plugin-sdk';
@@ -498,16 +500,16 @@ describe('platform relationship graph (P-002, R-1)', () => {
     expect(await graphRows('PER-', 'person')).toEqual([]);
   });
 
-  it('the person -> record kind default for interaction sources is HELD until the D-020 fix is live (migration 1395 over 1393, WI-10006570)', async () => {
-    // 1393 made person -> record the gmail/gcal default; 1395 holds it back because the release
-    // running connector-sync aborts a harnessless personal source's sync on it. When the re-grant
-    // migration lands, flip these two expectations back to include person: ['record'].
+  it('interaction sources grant person -> record by default (migration 1413 restores 1393 over the 1395 hold, D-017/D-020, WI-10006589)', async () => {
+    // 1393 made person -> record the gmail/gcal default; 1395 held it back while the release running
+    // connector-sync still aborted a harnessless personal source's sync on it; 1413 restores it once
+    // the D-020 fix served on the connector-sync host. Migrations apply in order, so this reads 1413.
     const defaults = await sql<Array<{ kind: string; policy: Record<string, string[]> }>>`
       SELECT k AS kind, (harness_shared.data_source_kind_defaults(k)).destination_policy AS policy
         FROM unnest(ARRAY['gmail', 'gcal', 'contacts']::text[]) AS k`;
     const byKind = Object.fromEntries(defaults.map((d) => [d.kind, d.policy]));
-    expect(byKind.gmail).toEqual({ 'email-message': ['document', 'event'] });
-    expect(byKind.gcal).toEqual({ 'calendar-event': ['document', 'event'] });
+    expect(byKind.gmail).toEqual({ 'email-message': ['document', 'event'], person: ['record'] });
+    expect(byKind.gcal).toEqual({ 'calendar-event': ['document', 'event'], person: ['record'] });
     // Contacts are not an interaction source: D-015 brings contacts in as connector person records.
     expect(byKind.contacts).toEqual({ contact: ['document', 'event'] });
 
@@ -522,9 +524,57 @@ describe('platform relationship graph (P-002, R-1)', () => {
     try {
       // Positive control: the trigger did apply the kind default (the interaction route is there).
       expect(row!.policy['email-message']).toEqual(['document', 'event']);
-      expect(row!.policy.person).toBeUndefined();
+      // The grant rides in with the default, so a newly connected Google source feeds the graph.
+      expect(row!.policy.person).toEqual(['record']);
     } finally {
       await sql`DELETE FROM harness_shared.data_sources WHERE id = ${row!.id}::uuid`;
+    }
+  });
+
+  it('migration 1413 re-grants person -> record on existing interaction sources, harnessless personal ones included, and re-runs as a no-op (WI-10006589)', async () => {
+    // The subject is the real migration file: the armed .sql, or its .DRAFT while it is being written.
+    // MIGRATION_1413_PATH points the test at a copy, which is how scripts/mutation-probe.sh proves it can fail.
+    const armed = fileURLToPath(new URL('../../../../libs/papercusp/libs/db/sql/1413-restore-interaction-person-grant.sql', import.meta.url));
+    const subject = process.env.MIGRATION_1413_PATH ?? (existsSync(armed) ? armed : `${armed}.DRAFT`);
+    const migration = readFileSync(subject, 'utf8');
+    const insert = async (kind: string, scope: 'personal' | 'organization', config: Record<string, string>, policy: Record<string, string[]>) => {
+      const [row] = await sql<{ id: string }[]>`
+        INSERT INTO harness_shared.data_sources
+          (workspace_id, kind, owner_user_id, provider_account_id, status, config, scope,
+           destination_policy, permission_mapping)
+        VALUES (${WS}, ${kind}, ${alice}, ${`${kind}-1413-${Date.now()}-${Math.random()}`}, 'connected',
+                ${sql.json(config)}, ${scope}, ${sql.json(policy)}, ${sql.json({ mode: 'source-acl' })})
+        RETURNING id::text`;
+      return row!.id;
+    };
+    // The shape 1395 left behind on the live database: a personal Google source with no harnessSlug.
+    const held = await insert('gmail', 'personal', {}, { 'email-message': ['document', 'event'] });
+    const otherRoute = await insert('gcal', 'organization', { harnessSlug: HARNESS }, { 'calendar-event': ['document', 'event'], person: ['document'] });
+    const notInteraction = await insert('slack', 'organization', { harnessSlug: HARNESS }, { 'chat-message': ['document', 'event'] });
+    const ids = [held, otherRoute, notInteraction];
+    const policies = async () =>
+      Object.fromEntries(
+        (await sql<Array<{ id: string; policy: Record<string, string[]> }>>`
+          SELECT id::text, destination_policy AS policy FROM harness_shared.data_sources WHERE id = ANY(${ids}::uuid[])`).map((r) => [r.id, r.policy]),
+      );
+    try {
+      // Positive control: the fixtures start without the grant, so the assertions below measure 1413.
+      const before = await policies();
+      expect(before[held]!.person).toBeUndefined();
+      expect(before[otherRoute]!.person).toEqual(['document']);
+
+      await sql.unsafe(migration);
+      const after = await policies();
+      expect(after[held]).toEqual({ 'email-message': ['document', 'event'], person: ['record'] });
+      // Other person routes a source already had are kept beside the grant.
+      expect(after[otherRoute]!.person).toEqual(['document', 'record']);
+      // Only sources that route an interaction datatype are touched.
+      expect(after[notInteraction]).toEqual({ 'chat-message': ['document', 'event'] });
+
+      await sql.unsafe(migration);
+      expect(await policies()).toEqual(after);
+    } finally {
+      await sql`DELETE FROM harness_shared.data_sources WHERE id = ANY(${ids}::uuid[])`;
     }
   });
 });
