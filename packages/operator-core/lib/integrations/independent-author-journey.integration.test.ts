@@ -93,6 +93,7 @@ const MAIL_DELTA = `${GRAPH}/me/mailFolders/inbox/messages/delta`;
 const CALENDAR_DELTA = `${GRAPH}/me/calendarView/delta`;
 const TOKEN_URL = 'https://login.microsoftonline.com/common/oauth2/v2.0/token';
 const EXFIL_HOST = 'graph-exfil.example.net';
+const EXFIL_NEXT = `https://${EXFIL_HOST}/v1.0/me/mailFolders/inbox/messages/delta?$skiptoken=steal`;
 /** Every credential the host holds for this account; none may cross into a daemon frame. */
 const SECRET_MARKERS = ['graph-access-', 'graph-refresh-'];
 
@@ -125,25 +126,22 @@ function emptyDeltaPage(base: string, token: string, extra: Record<string, unkno
   return { '@odata.deltaLink': `${base}?$deltatoken=${token}`, value: [], ...extra };
 }
 
-function graphResponse(url: URL, authorization: string | null): Record<string, unknown> | null {
+function graphResponse(url: URL): Record<string, unknown> | null {
   const href = `${url.origin}${url.pathname}`;
   const delta = url.searchParams.get('$deltatoken');
   const skip = url.searchParams.get('$skiptoken');
   if (href === MAIL_DELTA) {
+    // Whatever round the cursor is in, the next mail page links to an undeclared host.
+    if (net.exfilNextLink) return { '@odata.nextLink': EXFIL_NEXT, value: [] };
     if (skip === 'mail-page-2') return fixture('mail-delta-2');
     if (delta === 'mail-round-2') return fixture('mail-delta-3');
     if (delta === 'mail-round-3') {
       if (net.mailRound3 === 'replay-round-2') return fixture('mail-delta-3');
       if (net.mailRound3 === 'new-mail') return fixture('mail-delta-4');
-      return emptyDeltaPage(MAIL_DELTA, 'mail-round-3', net.leak ? { '@odata.debug': authorization } : {});
+      return emptyDeltaPage(MAIL_DELTA, 'mail-round-3');
     }
     if (delta === 'mail-round-4') return net.replayRound4 ? fixture('mail-delta-4') : emptyDeltaPage(MAIL_DELTA, 'mail-round-4');
-    if (!delta && !skip) {
-      if (net.exfilNextLink) {
-        return { '@odata.nextLink': `https://${EXFIL_HOST}/v1.0/me/mailFolders/inbox/messages/delta?$skiptoken=steal`, value: [] };
-      }
-      return fixture('mail-delta-1');
-    }
+    if (!delta && !skip) return fixture('mail-delta-1');
   }
   if (href === CALENDAR_DELTA) {
     if (delta === 'calendar-round-2') return emptyDeltaPage(CALENDAR_DELTA, 'calendar-round-2');
@@ -171,8 +169,9 @@ async function fakeFetch(input: RequestInfo | URL, init?: RequestInit): Promise<
   if (url.host === 'graph.microsoft.com') {
     if (!authorization?.startsWith('Bearer graph-access-')) return new Response('unauthorized', { status: 401 });
     if (url.pathname === '/v1.0/me') return Response.json({ id: 'outlook-user-1', userPrincipalName: 'owner@contoso.example' });
-    const body = graphResponse(url, authorization);
-    if (body) return Response.json(body);
+    const body = graphResponse(url);
+    // The leak control echoes the bearer into whatever page Graph serves, whatever the cursor round.
+    if (body) return Response.json(net.leak ? { ...body, '@odata.debug': authorization } : body);
   }
   return new Response(`fake graph: no route for ${method} ${url.href}`, { status: 599 });
 }
@@ -293,7 +292,8 @@ async function ingest(db: Sql, input: IngestExternalTriggerInput) {
 async function sync(): Promise<ConnectorSourceOutcome> {
   const result = await runConnectorSync(
     sql,
-    { workspaceId: WS, harness: HARNESS, sourceIds: [sourceId] },
+    // pollIntervalSeconds 0: back-to-back passes are each due, as successive Graph deltas would be.
+    { workspaceId: WS, harness: HARNESS, sourceIds: [sourceId], pollIntervalSeconds: 0 },
     { ingest, servicesFor: async () => undefined, leaseOwner: 'independent-author-journey' },
   );
   const outcome = result.sources.find((row) => row.sourceId === sourceId);
@@ -321,6 +321,12 @@ async function sourceCursor(): Promise<string> {
   const [row] = await sql<Array<{ cursor: unknown }>>`
     SELECT cursor FROM harness_shared.data_sources WHERE id = ${sourceId}::uuid`;
   return JSON.stringify(row.cursor ?? null);
+}
+
+/** The daemon's own cursor: an opaque JSON string the runtime stores under `cursor.provider`. */
+async function providerCursor(): Promise<{ mail?: { next: string | null }; calendar?: unknown } | null> {
+  const raw = (JSON.parse(await sourceCursor()) as { provider?: unknown } | null)?.provider;
+  return typeof raw === 'string' ? (JSON.parse(raw) as { mail?: { next: string | null }; calendar?: unknown }) : null;
 }
 
 function secretsInFrames(slice = frames): string[] {
@@ -646,14 +652,14 @@ describe('independent-author journey (P-014)', () => {
       expect(JSON.stringify(crossAccount) + String(crossAccount)).toMatch(/source|bound|account/i);
     });
 
-    it('cannot reach an undeclared host; the cursor does not move', async () => {
+    it('cannot reach an undeclared host; the cursor stops at the refused request', async () => {
       // Positive control: the fake edge records any host it is asked for.
       await fakeFetch(`https://${EXFIL_HOST}/probe`);
       expect(net.calls.some((c) => c.url.startsWith(`https://${EXFIL_HOST}/probe`))).toBe(true);
       net.calls.length = 0;
 
-      await sql`UPDATE harness_shared.data_sources SET cursor = NULL WHERE id = ${sourceId}::uuid`;
-      const cursorBefore = await sourceCursor();
+      const before = await providerCursor();
+      expect(before?.mail?.next ?? null).toBeNull(); // a settled delta position, nothing pending
       net.exfilNextLink = true;
       let outcome: ConnectorSourceOutcome;
       try {
@@ -663,10 +669,15 @@ describe('independent-author journey (P-014)', () => {
       }
       expect(outcome.outcome).toMatch(/fail|error/);
       const [row] = await sql<Array<{ lastError: string | null }>>`
-        SELECT sync_last_error AS "lastError" FROM harness_shared.data_sources WHERE id = ${sourceId}::uuid`;
+        SELECT last_error AS "lastError" FROM harness_shared.data_sources WHERE id = ${sourceId}::uuid`;
       expect(row.lastError ?? '').toMatch(/egress|undeclared|not declared|host/i);
       expect(net.calls.some((c) => c.url.includes(EXFIL_HOST))).toBe(false);
-      expect(await sourceCursor()).toBe(cursorBefore);
+      // The page that carried the link was admitted, so its cursor commits. The pass stops AT the
+      // refused request: the next pass retries that exact URL (and is refused again) rather than
+      // skipping past it, and the calendar stream is untouched.
+      const after = await providerCursor();
+      expect(after?.mail?.next).toBe(EXFIL_NEXT);
+      expect(after?.calendar).toEqual(before?.calendar);
     });
 
     it('refuses a call without host-mediated fetch before the daemon is contacted', async () => {
@@ -676,7 +687,7 @@ describe('independent-author journey (P-014)', () => {
       const before = syncFrames();
       await expect(
         runtime!.adapter.syncPage!({ source: sourceId, cursor: null, mode: 'incremental', config: {} } as never, undefined as never),
-      ).rejects.toThrow(/host-fetch|host fetch/i);
+      ).rejects.toThrow(/host-mediated fetch/i);
       expect(syncFrames()).toBe(before);
     });
 
