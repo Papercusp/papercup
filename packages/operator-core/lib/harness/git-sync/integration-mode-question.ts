@@ -9,6 +9,7 @@
  * control render from here so the owner-approved wording cannot drift.
  */
 import type { PotIntegrationMode } from './pot-integration-mode';
+import type { IntegrationModeRecommendation } from './integration-mode-recommendation';
 
 /** Owner-approved prompt (D-007). */
 export const INTEGRATION_MODE_QUESTION = "Where should the agents' work go?";
@@ -36,13 +37,22 @@ export interface IntegrationModeOption {
   available: boolean;
   /** Why the option is unavailable (plain language), when it is. */
   unavailableReason?: string;
+  /** P-018: the option the repo's facts recommend. */
+  recommended?: boolean;
 }
 
 export interface IntegrationModeQuestion {
   prompt: string;
   options: IntegrationModeOption[];
-  /** The answer used when the user does not choose: today's behaviour. */
+  /**
+   * The answer used when the user does not choose: today's behaviour
+   * ('direct'), the workspace default when one is set, or the locked answer.
+   */
   defaultValue: PotIntegrationMode;
+  /** P-018: the recommendation the options were marked from, when one was given. */
+  recommendation?: IntegrationModeRecommendation;
+  /** P-018: set when NO option can be chosen; the create step refuses with this. */
+  blocked?: string;
 }
 
 export interface IntegrationModeQuestionInput {
@@ -54,6 +64,10 @@ export interface IntegrationModeQuestionInput {
    * selectable; the create step re-checks and reports a refusal.
    */
   hasTestSuite?: boolean;
+  /** P-018: recommendIntegrationMode's answer for this repo. A locked one disables the other option. */
+  recommendation?: IntegrationModeRecommendation;
+  /** P-018: PotControlPolicy.newPotIntegrationMode — the unanswered default when set. */
+  defaultMode?: PotIntegrationMode | null;
 }
 
 function fill(template: string, repoLabel: string): string {
@@ -76,9 +90,34 @@ export function integrationModeQuestion(input: IntegrationModeQuestionInput): In
       opt.unavailableReason =
         'This repository has no test suite, so a PR could not show the work passed tests. Add a test command first.';
     }
+    const rec = input.recommendation;
+    if (rec) {
+      if (rec.recommended === value) opt.recommended = true;
+      else if (rec.locked) {
+        opt.available = false;
+        opt.unavailableReason = rec.reason;
+      }
+    }
     return opt;
   });
-  return { prompt: INTEGRATION_MODE_QUESTION, options, defaultValue: 'direct' };
+  const rec = input.recommendation;
+  const policyDefault = input.defaultMode === 'review' || input.defaultMode === 'direct' ? input.defaultMode : null;
+  let defaultValue: PotIntegrationMode = rec?.locked ? rec.recommended : (policyDefault ?? 'direct');
+  // Never default to an option that cannot be chosen.
+  if (!options.find((o) => o.value === defaultValue)?.available) {
+    const other = options.find((o) => o.available);
+    if (other) defaultValue = other.value;
+  }
+  const blocked = options.every((o) => !o.available)
+    ? (rec?.blocked ?? options.map((o) => o.unavailableReason).filter(Boolean).join(' '))
+    : undefined;
+  return {
+    prompt: INTEGRATION_MODE_QUESTION,
+    options,
+    defaultValue,
+    ...(rec ? { recommendation: rec } : {}),
+    ...(blocked ? { blocked } : {}),
+  };
 }
 
 /** Parse a user/tool answer; anything that is not a known mode reads as `null` (unanswered). */
