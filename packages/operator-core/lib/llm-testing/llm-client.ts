@@ -408,6 +408,7 @@ export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
       if (typeof existingCost !== 'number' || !Number.isFinite(existingCost) || existingCost < 0)
         Object.assign(failure, { costUsd: reportedCostUsd });
       if (unreportedFrames !== undefined && unreportedFrames > 0) Object.assign(failure, { unreportedFrames });
+      if (costUsdMeasurementMissing) Object.assign(failure, { costUsdMeasurementMissing: true });
       throw failure;
     }
     throw error;
@@ -421,6 +422,7 @@ export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
     // Missing usage must stay absent rather than become an invented free call.
     if (reportedCostUsd !== undefined) Object.assign(error, { costUsd: reportedCostUsd });
     if (unreportedFrames !== undefined && unreportedFrames > 0) Object.assign(error, { unreportedFrames });
+    if (costUsdMeasurementMissing) Object.assign(error, { costUsdMeasurementMissing: true });
     if (transportDiagnostics.length) Object.defineProperties(error, {
       transportDiagnostics: { value: Object.freeze([...transportDiagnostics]), enumerable: true },
       promptSha256: { value: promptSha256, enumerable: true },
