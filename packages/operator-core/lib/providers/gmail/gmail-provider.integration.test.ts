@@ -331,6 +331,49 @@ describe('Gmail syncs through the host connector driver (D-017)', () => {
     expect(state.next_in ?? 0).toBeGreaterThan(60);
     expect(await ledger(src)).toEqual([]);
   });
+
+  // Negative control for the Google cutover (P-011 / R-15, D-003): the owner's 2026-09-29
+  // instruction (directive #869) forbids automatic Gmail draft replies after sync or reconnect.
+  // The real trigger-binding sink runs here, so an armed control binding on the same event proves
+  // the deliveries reached the binding engine; only then is "the draft binding queued nothing"
+  // a measurement rather than an absence.
+  it('sync never auto-drafts: a disarmed draft-reply binding queues nothing and nothing is drafted or sent (D-003)', async () => {
+    const account = 'no-auto-draft@example.com';
+    const src = await connectGmail(account);
+    const bind = async (operationId: string, armed: boolean): Promise<string> => {
+      const [row] = await org.adminSql<{ id: string }[]>`
+        INSERT INTO harness_shared.trigger_bindings (workspace_id, source_id, event_pattern, action, armed)
+        VALUES (${WS}, ${src}::uuid, 'ext:gmail:message.received',
+                ${JSON.stringify({ type: 'blueprint-operation', operationHarnessSlug: 'email', operationId })}::text::jsonb,
+                ${armed})
+        RETURNING id::text`;
+      return row.id;
+    };
+    // The automatic draft-reply binding as the cutover carries it: disarmed.
+    const draftReply = await bind('draft-reply-for-trigger', false);
+    const control = await bind('p011-armed-control', true);
+    const mailbox: Mailbox = {
+      account,
+      messages: new Set(['n1', 'n2']),
+      history: {},
+      pages: { start: { messages: [{ id: 'n1' }, { id: 'n2' }] } },
+    };
+    const api = gmailApi(() => src, mailbox);
+
+    expect(await sync(src, api)).toMatchObject({ outcome: 'synced', mode: 'backfill', admitted: 2 });
+
+    const runs = await org.adminSql<{ binding_id: string; n: number }[]>`
+      SELECT binding_id::text, count(*)::int AS n
+        FROM harness_shared.trigger_runs
+       WHERE workspace_id = ${WS} AND binding_id IN (${draftReply}::uuid, ${control}::uuid)
+       GROUP BY binding_id`;
+    expect(Object.fromEntries(runs.map((r) => [r.binding_id, r.n]))).toEqual({ [control]: 2 });
+    const [binding] = await org.adminSql<{ armed: boolean }[]>`
+      SELECT armed FROM harness_shared.trigger_bindings WHERE workspace_id = ${WS} AND id = ${draftReply}::uuid`;
+    expect(binding.armed).toBe(false);
+    // Sync only reads: no draft, send or any other write reached Gmail.
+    expect(api.seen.filter((r) => r.method !== 'GET').map((r) => `${r.method} ${r.url}`)).toEqual([]);
+  });
 });
 
 describe('Gmail mail verbs dispatch through the registered provider (D-017 / D-019)', () => {
