@@ -33,6 +33,7 @@ import {
   getSessionBriefLifecycle,
   markSessionBriefPoisoned,
   markSessionBriefReleased,
+  markSessionBriefShutdown,
   PENDING_CARRY_RESPAWN_TTL_MS,
   restorePendingCarryRespawn,
   savePendingCarryRespawn,
@@ -225,6 +226,43 @@ describe('getSessionBrief (fail-soft read)', () => {
   it('ignores malformed release markers', async () => {
     fakeSql = recordingSql([{ control_state: { lifecycle: { released: { fleet: '' } } } }]).sql;
     await expect(getSessionBriefLifecycle('su-test-ei1742')).resolves.toBeNull();
+  });
+
+  it('reads an accepted managed-shutdown cutoff alongside the existing lifecycle markers', async () => {
+    const shutdown = { at: '2026-10-06T22:07:55.842Z', by: identity.ownerId };
+    const released = { fleet: 'backend', at: '2026-08-20T10:00:00Z', by: 'su-leader' };
+    fakeSql = recordingSql([{ control_state: { lifecycle: { shutdown, released } } }]).sql;
+    await expect(getSessionBriefLifecycle(identity.ownerId)).resolves.toEqual({ shutdown, released });
+  });
+
+  it.each([{ at: 'not-a-date', by: identity.ownerId }, { at: '2026-10-06T22:07:55.842Z', by: '' }])
+    ('does not turn malformed shutdown metadata into a terminal cutoff: %j', async (shutdown) => {
+      fakeSql = recordingSql([{ control_state: { lifecycle: { shutdown } } }]).sql;
+      await expect(getSessionBriefLifecycle(identity.ownerId)).resolves.toBeNull();
+    });
+
+  it('writes the cutoff into the existing control envelope, preserving sibling markers and attesting the consumer', async () => {
+    const shutdown = { at: '2026-10-06T22:07:55.842Z', by: identity.ownerId };
+    const rec = recordingSql([{ control_state: { lifecycle: { shutdown } } }]);
+    fakeSql = rec.sql;
+    await expect(markSessionBriefShutdown(identity.ownerId, 'ws-1', shutdown)).resolves.toBe(true);
+    expect(rec.calls[0]).toContain(JSON.stringify(shutdown));
+    // Setting the parent creates lifecycle even on an existing empty brief;
+    // JSONB merge keeps release/poison/control metadata rather than replacing it.
+    expect(rec.statements[0]).toContain("'{lifecycle}'");
+    expect(rec.statements[0]).toContain("|| EXCLUDED.control_state->'lifecycle'");
+    expect(rec.statements[0]).toContain('control_transition = NULL');
+  });
+
+  it('refuses a foreign shutdown writer and flags an unreadable consumer result', async () => {
+    const shutdown = { at: '2026-10-06T22:07:55.842Z', by: identity.ownerId };
+    const rec = recordingSql([{ control_state: { shutdown } }]);
+    fakeSql = rec.sql;
+    await expect(markSessionBriefShutdown(identity.ownerId, 'ws-1', { ...shutdown, by: 'su-other' })).resolves.toBe(false);
+    expect(rec.calls).toHaveLength(0);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await expect(markSessionBriefShutdown(identity.ownerId, 'ws-1', shutdown)).resolves.toBe(false);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('shutdown marker write'));
   });
 
   it('reads release and poison markers from the shared lifecycle envelope', async () => {

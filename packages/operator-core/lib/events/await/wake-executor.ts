@@ -3595,6 +3595,30 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       };
     }
 
+    // EI-25270078901082313: an early host ACK parks the durable delivery until
+    // a later retry observes completion. Intentional shutdown can remove that
+    // host (and its in-memory completed-ID map) before the retry, so PID death
+    // alone must NOT authorize reopening the same handled wake headlessly.
+    // The existing session-brief lifecycle is owner-scoped and survives native
+    // reactivation. Both accepted-host retries and failed-turn reopens cross
+    // this same cutoff; neither can replay work predating accepted shutdown.
+    const shutdownAtMs = lifecycle?.shutdown ? Date.parse(lifecycle.shutdown.at) : Number.NaN;
+    const managedShutdown = Number.isFinite(shutdownAtMs);
+    if (managedShutdown) {
+      const createdAtMs = Date.parse(d.createdAt);
+      if (Number.isFinite(createdAtMs) && createdAtMs <= shutdownAtMs) {
+        return {
+          kind: 'drop',
+          reason: `wake #${d.id} predates accepted managed shutdown at ${lifecycle!.shutdown!.at}; queued replay suppressed`,
+        };
+      }
+      // A genuinely newer wake is not dropped, but recovery must provide a
+      // managed host. A bare detached CLI would lose session:end/bench control.
+      if (!Number.isFinite(createdAtMs) || !findPsuHost(d.subscriberId)) {
+        return { kind: 'park', reason: 'managed shutdown requires a managed psu host for a new wake; no hostless resume' };
+      }
+    }
+
     // A wake may wait in the delivery queue after its emit-time admission. Re-read
     // the authoritative mode before any continuation/injection/resume branch so a
     // later manual pause moves the wake into the same owner-review queue as a
@@ -4191,6 +4215,13 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
         reason:
           'live psu host owns this session but did not take the wake inject; parked instead of starting a second process (WI-10005134)',
       };
+    }
+
+    // Recheck the boundary too: the host seen before injection may have
+    // disappeared during the socket attempt. Never let that race fall through
+    // to Channel 2's detached headless fallback after managed shutdown.
+    if (managedShutdown) {
+      return { kind: 'park', reason: 'managed psu host did not take the post-shutdown wake; no hostless resume' };
     }
 
     // A cold wake cannot safely use Channel 2: `resume-headless` restores the

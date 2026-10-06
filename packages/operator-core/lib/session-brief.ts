@@ -84,9 +84,18 @@ export interface SessionBriefPoisonMarker {
   evidence: string;
 }
 
+/** Owner-accepted managed shutdown is a durable wake cutoff, not a fleet
+ * release. Keep it across successor/reactivation writes: older deliveries must
+ * never become new work just because their in-memory host dedup disappeared. */
+export interface SessionBriefShutdownMarker {
+  at: string;
+  by: string;
+}
+
 export interface SessionBriefLifecycle {
   released?: SessionBriefReleaseMarker;
   poisoned?: SessionBriefPoisonMarker;
+  shutdown?: SessionBriefShutdownMarker;
 }
 
 export interface SessionBriefRecord {
@@ -416,7 +425,15 @@ function parseSessionBriefLifecycle(value: unknown): SessionBriefLifecycle | nul
   if (!lifecycle || typeof lifecycle !== 'object' || Array.isArray(lifecycle)) return null;
   const released = (lifecycle as { released?: unknown }).released;
   const poisoned = (lifecycle as { poisoned?: unknown }).poisoned;
+  const shutdown = (lifecycle as { shutdown?: unknown }).shutdown;
   const result: SessionBriefLifecycle = {};
+  if (shutdown && typeof shutdown === 'object' && !Array.isArray(shutdown)) {
+    const marker = shutdown as Partial<SessionBriefShutdownMarker>;
+    if (
+      typeof marker.at === 'string' && Number.isFinite(Date.parse(marker.at)) &&
+      typeof marker.by === 'string' && marker.by.trim()
+    ) result.shutdown = { at: marker.at, by: marker.by };
+  }
   if (released && typeof released === 'object' && !Array.isArray(released)) {
     const marker = released as Partial<SessionBriefReleaseMarker>;
     if (
@@ -452,7 +469,7 @@ function parseSessionBriefLifecycle(value: unknown): SessionBriefLifecycle | nul
   return Object.keys(result).length > 0 ? result : null;
 }
 
-export type SessionBriefLifecycleMarkerKind = 'released' | 'poisoned';
+export type SessionBriefLifecycleMarkerKind = 'released' | 'poisoned' | 'shutdown';
 
 /**
  * Consumer attestation for a lifecycle-marker write (WI-10005195, generalizing
@@ -520,6 +537,44 @@ export async function getSessionBriefLifecycle(ownerId: string): Promise<Session
  * anchor generation and clears its transition so the next consumer performs a
  * full resync from the authoritative row.
  */
+export async function markSessionBriefShutdown(
+  ownerId: string,
+  workspaceId: string,
+  marker: SessionBriefShutdownMarker,
+): Promise<boolean> {
+  try {
+    if (!ownerId || !workspaceId || marker.by !== ownerId || !Number.isFinite(Date.parse(marker.at))) return false;
+    const markerJson = JSON.stringify({ at: marker.at, by: marker.by });
+    const rows = await getOrgPg().sql<Array<{ control_state: unknown }>>`
+      INSERT INTO harness_shared.session_briefs
+        (owner_id, workspace_id, control_state, control_generation, control_updated_at)
+      VALUES (
+        ${ownerId}, ${workspaceId},
+        jsonb_build_object('lifecycle', jsonb_build_object('shutdown', ${markerJson}::text::jsonb)),
+        1, now()
+      )
+      ON CONFLICT (owner_id) DO UPDATE SET
+        control_state = jsonb_set(
+          COALESCE(harness_shared.session_briefs.control_state, '{}'::jsonb),
+          '{lifecycle}',
+          COALESCE(harness_shared.session_briefs.control_state->'lifecycle', '{}'::jsonb)
+            || EXCLUDED.control_state->'lifecycle',
+          true
+        ),
+        control_generation = harness_shared.session_briefs.control_generation + 1,
+        control_updated_at = now(), control_transition = NULL, updated_at = now()
+      RETURNING control_state
+    `;
+    // Reuse the existing lifecycle consumer attestation: a successful SQL
+    // receipt whose marker the wake parser cannot read is NOT a recorded guard.
+    return lifecycleWriteReadByConsumer(
+      'shutdown', ownerId, attestLifecycleConsumerView('shutdown', marker, rows[0]?.control_state),
+    );
+  } catch {
+    return false;
+  }
+}
+
 export async function markSessionBriefReleased(
   ownerId: string,
   workspaceId: string,
