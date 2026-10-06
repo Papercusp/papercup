@@ -50,6 +50,7 @@ import { SPAWNER_SOCKET_ENV, resolveSpawnerSocketPath } from './spawner-socket-p
 import type { SpawnerCallOpts } from './spawner-ipc-client';
 import { reapDeadSidecar, sidecarContainmentCurrent, type SidecarContainment } from './sidecar-exec-lifetime';
 import { recordSidecarExecLatency } from './sidecar-read-only-git';
+import { markSidecarPostDispatchFault } from './sidecar-dispatch-fault';
 import type { ProcessExecCallerLabel } from './sidecar-exec-process';
 
 /** The shape every `RunGit` seam in the repo returns. */

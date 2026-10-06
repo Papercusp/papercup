@@ -43,6 +43,7 @@ import { dirname, isAbsolute, join, resolve as resolvePath } from 'node:path';
 import { mapLiveLockHoldingsForRepo } from './live-lock-coordinates';
 import { projectDirForSlug } from '../../operator-notes';
 import { gitSidecarEnabled, isSidecarInfrastructureFault, noteSidecarFallback, runGitViaSpawnerSidecar } from '../../fleet/git-via-sidecar';
+import { gitReplayIsSafe, isSidecarPostDispatchFault, sidecarPostDispatchUnknownResult } from '../../fleet/sidecar-dispatch-fault';
 import { detectContentOffenders, parseDirtyPaths, type ContentOffender } from './content-guard';
 import {
   detectStagedDeletionsStillImported,
@@ -414,6 +415,14 @@ const runGitBoundedUnchecked = async (
       noteSidecarFallback('git-sync', e);
       if (options.signal?.aborted) {
         return { code: -1, stdout: '', stderr: 'git aborted after sidecar transport loss' };
+      }
+      // WI-10006716: the default runner passes no signal, so a transport loss
+      // AFTER dispatch arrives here as a throw. The sidecar child may have run
+      // (or still be running) — replaying a mutation locally could apply it
+      // twice or race its twin on index.lock. Surface an unknown outcome and
+      // let the caller re-read state; only reads may replay.
+      if (isSidecarPostDispatchFault(e) && !gitReplayIsSafe(effectiveArgs)) {
+        return sidecarPostDispatchUnknownResult(effectiveArgs, e);
       }
     }
   }
