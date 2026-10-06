@@ -1,6 +1,7 @@
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   TUNNEL, boxWireguard, edgeCoordinates, forwardedPorts, livekitInterfaceInclude,
@@ -153,5 +154,138 @@ describe("LiveKit picks up the edge tunnel interface", () => {
   it("keeps the edge driver syntactically valid", () => {
     const result = spawnSync("bash", ["-n", edgeScript], { encoding: "utf8" });
     expect(result.status, result.stderr).toBe(0);
+  });
+});
+
+// WI-10006571: `deploy.sh --rotate-secret` used to truncate livekit.env to the two
+// LiveKit lines, deleting the worker's DEEPGRAM_API_KEY (STT then resolved to a
+// fallback vendor and the worker refused to start) and any TELNYX_API_KEY (D-020).
+// PROBE_DEPLOY_SCRIPT lets scripts/mutation-probe.sh point these at a mutated copy.
+const probedDeployScript = process.env.PROBE_DEPLOY_SCRIPT ?? deployScript;
+
+/** The named top-level shell functions of deploy.sh, verbatim, so tests run the real code. */
+function extractShellFunctions(script: string, names: string[]): string {
+  const lines = readFileSync(script, "utf8").split("\n");
+  const out: string[] = [];
+  for (const name of names) {
+    const start = lines.findIndex((line) => line.startsWith(`${name}() {`));
+    expect(start, `${name}() must be defined in deploy.sh`).toBeGreaterThanOrEqual(0);
+    if (lines[start].trimEnd().endsWith("}")) { out.push(lines[start]); continue; }
+    const end = lines.findIndex((line, i) => i > start && line === "}");
+    expect(end).toBeGreaterThan(start);
+    out.push(...lines.slice(start, end + 1));
+  }
+  return out.join("\n");
+}
+
+describe("rotating the LiveKit secret keeps the rest of livekit.env", () => {
+  const script = probedDeployScript;
+  const shellFunctions = () => extractShellFunctions(script, ["die", "upsert_env_var", "write_livekit_credentials"]);
+
+  function rotate(existing: string | null) {
+    const dir = mkdtempSync(join(tmpdir(), "phone-env-"));
+    const envFile = join(dir, "livekit.env");
+    if (existing !== null) writeFileSync(envFile, existing, { mode: 0o600 });
+    const result = spawnSync("bash", ["-c", `set -euo pipefail\n${shellFunctions()}\nwrite_livekit_credentials NEWKEY NEWSECRET`], {
+      encoding: "utf8",
+      env: { ...process.env, CONF_DIR: dir, ENV_FILE: envFile },
+    });
+    expect(result.status, result.stderr).toBe(0);
+    const content = readFileSync(envFile, "utf8");
+    const mode = statSync(envFile).mode & 0o777;
+    rmSync(dir, { recursive: true, force: true });
+    return { content, mode };
+  }
+
+  it("replaces only the key pair and preserves every other credential", () => {
+    const { content, mode } = rotate([
+      "PHONE_LIVEKIT_API_KEY=OLDKEY",
+      "PHONE_LIVEKIT_API_SECRET=OLDSECRET",
+      "DEEPGRAM_API_KEY=dg-test",
+      "GOOGLE_CLOUD_PROJECT=proj-test",
+      "TELNYX_API_KEY=KEYtest",
+      "PHONE_EDGE_IFACE=phedge0",
+      "",
+    ].join("\n"));
+    const lines = content.split("\n").filter(Boolean);
+    expect(lines).toEqual(expect.arrayContaining([
+      "DEEPGRAM_API_KEY=dg-test",
+      "GOOGLE_CLOUD_PROJECT=proj-test",
+      "TELNYX_API_KEY=KEYtest",
+      "PHONE_EDGE_IFACE=phedge0",
+      "PHONE_LIVEKIT_API_KEY=NEWKEY",
+      "PHONE_LIVEKIT_API_SECRET=NEWSECRET",
+    ]));
+    expect(lines).toHaveLength(6);
+    expect(content).not.toContain("OLD");
+    expect(mode).toBe(0o600);
+  });
+
+  it("creates a private file holding just the key pair on first run", () => {
+    const { content, mode } = rotate(null);
+    expect(content.split("\n").filter(Boolean).sort()).toEqual([
+      "PHONE_LIVEKIT_API_KEY=NEWKEY",
+      "PHONE_LIVEKIT_API_SECRET=NEWSECRET",
+    ]);
+    expect(mode).toBe(0o600);
+  });
+
+  it("is the only path the credentials step uses to write the key pair", () => {
+    const deploy = readFileSync(script, "utf8");
+    expect(deploy).toContain('write_livekit_credentials "$KEY" "$SECRET"');
+    const truncating = deploy.split("\n").filter((line) => /[^>]>\s*"\$ENV_FILE"/.test(line));
+    expect(truncating.every((line) => line.includes('[[ -f "$ENV_FILE" ]] ||'))).toBe(true);
+  });
+
+  it("keeps the deployer syntactically valid", () => {
+    const result = spawnSync("bash", ["-n", script], { encoding: "utf8" });
+    expect(result.status, result.stderr).toBe(0);
+  });
+});
+
+// Both 2026-10-06 hosted redeploys exited 1 because one readiness read straight
+// after the restart caught the sidecar's HTTP endpoint a few seconds early.
+describe("the deployer waits for readiness to converge after a restart", () => {
+  function awaitReadiness(readyOnCall: number | null, attempts: number) {
+    const dir = mkdtempSync(join(tmpdir(), "phone-ready-"));
+    const counter = join(dir, "calls");
+    writeFileSync(counter, "0");
+    const stub = [
+      "report_status() {",
+      `  local n=$(( $(cat '${counter}') + 1 )); echo "$n" > '${counter}'`,
+      readyOnCall === null
+        ? '  echo "NOT_READY $n"; return 1'
+        : `  if (( n >= ${readyOnCall} )); then echo "READY $n"; else echo "NOT_READY $n"; return 1; fi`,
+      "}",
+    ].join("\n");
+    const fn = extractShellFunctions(probedDeployScript, ["await_readiness"]);
+    const result = spawnSync("bash", ["-c", `set -euo pipefail\n${stub}\n${fn}\nawait_readiness ${attempts}`], {
+      encoding: "utf8",
+      env: { ...process.env, PHONE_READINESS_RETRY_SEC: "0" },
+    });
+    const calls = Number(readFileSync(counter, "utf8").trim());
+    rmSync(dir, { recursive: true, force: true });
+    return { status: result.status, stdout: result.stdout, calls };
+  }
+
+  it("succeeds once a transiently unready component converges, printing one report", () => {
+    const { status, stdout, calls } = awaitReadiness(3, 30);
+    expect(status).toBe(0);
+    expect(stdout.trim()).toBe("READY 4");
+    expect(calls).toBe(4);
+  });
+
+  it("still fails closed, within its bound, when a component never converges", () => {
+    const { status, stdout, calls } = awaitReadiness(null, 5);
+    expect(status).not.toBe(0);
+    expect(stdout.trim()).toBe("NOT_READY 5");
+    expect(calls).toBe(5);
+  });
+
+  it("is what the deployer runs as its final health step", () => {
+    const deploy = readFileSync(probedDeployScript, "utf8");
+    const finalStep = deploy.slice(deploy.lastIndexOf('step "Health"'));
+    expect(finalStep).toMatch(/\nawait_readiness \d+\n/);
+    expect(finalStep).not.toMatch(/\nreport_status\n/);
   });
 });
