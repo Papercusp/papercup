@@ -104,6 +104,8 @@ import { SEED_EXCLUDED_TABLES, SEED_REDACT_IN_PLACE_TABLES } from './seed-exclud
  */
 export { SEED_PROJECTED_FROM_META_KEY, readCoreProjectedFrom } from './seed-projection-meta';
 import { SEED_PROJECTED_FROM_META_KEY } from './seed-projection-meta';
+import { bindSeedFrozenDependencies, SEED_EXECUTION_PATHS, type SeedFrozenExecution } from './seed-frozen-execution';
+export type { SeedFrozenExecution } from './seed-frozen-execution';
 
 /** What {@link mintFilteredSeedContentCore} produced, for the manifest. */
 export interface MintedSeedCore {
@@ -152,20 +154,6 @@ export interface SeedSourceInput {
   winners: readonly { table: string; hbKey: string; disposition: 'carry' | 'redact' | 'drop' }[];
 }
 
-export interface SeedFrozenExecution {
-  sourceCommit: string;
-  gitDirty: false;
-  nodeVersion: string;
-  packageLockSha256: string;
-  installedLockSha256: string;
-  dependencyGeneration: string;
-  directBlobs: { path: string; sha256: string }[];
-}
-
-const SEED_EXECUTION_PATHS = ['packages/operator-core/lib/sync/hyperbee/read-merge.ts',
-  'packages/operator-core/lib/sync/hyperbee/log-snapshot.ts',
-  'packages/operator-core/lib/sync/hyperbee/seed-provider-corestore.ts',
-  'apps/operator/lib/release/cut-seed-cli.ts'];
 // Capture at module load, before a long-lived TS runtime could outlive a source
 // edit. A stale runtime must not bind the new on-disk blobs as its loaded code.
 const LOADED_SEED_EXECUTION_BLOBS = (() => {
@@ -177,7 +165,7 @@ const LOADED_SEED_EXECUTION_BLOBS = (() => {
 
 /** D-175: execution must be the clean source TS blobs, not a stale bundle whose
  * files on disk merely resemble its code. Reuse the maintained release setup's
- * verified dependency generation markers and npm integrity entries. GO still
+ * verified dependency generation, committed input key and D-151 integrity. GO still
  * re-derives their installation and runtime provenance independently. */
 export async function readSeedFrozenExecution(): Promise<SeedFrozenExecution> {
   if (!LOADED_SEED_EXECUTION_BLOBS) {
@@ -190,22 +178,7 @@ export async function readSeedFrozenExecution(): Promise<SeedFrozenExecution> {
     throw new Error('[seed:corestore] frozen census requires a clean source commit');
   }
   const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
-  const lockBytes = await readFile(join(root, 'package-lock.json'));
-  const sourceLock = await readFile(join(root, 'node_modules/.papercusp-source-package-lock.json'));
-  const installedBytes = await readFile(join(root, 'node_modules/.package-lock.json'));
-  const marker = await readFile(join(root, 'node_modules/.papercusp-dependency-generation'), 'utf8');
-  const isolated = await readFile(join(root, 'node_modules/.papercusp-isolated-snapshot'), 'utf8');
-  const dependencyGeneration = /^identity=(v1-[0-9a-f]{64})$/m.exec(marker)?.[1];
-  if (!dependencyGeneration || !isolated.split('\n').includes(`generation=${dependencyGeneration}`)
-      || hash(lockBytes) !== hash(sourceLock)) throw new Error('[seed:corestore] frozen dependency generation/lock mismatch');
-  const lock = JSON.parse(lockBytes.toString()).packages;
-  const installed = JSON.parse(installedBytes.toString()).packages;
-  for (const [path, expected] of Object.entries(lock) as [string, { integrity?: string; version?: string; link?: boolean }][]) {
-    if (!path.includes('node_modules/') || expected.link || !expected.integrity) continue;
-    if (installed[path]?.integrity !== expected.integrity || installed[path]?.version !== expected.version) {
-      throw new Error('[seed:corestore] installed dependency integrity does not match frozen lock');
-    }
-  }
+  const dependencies = await bindSeedFrozenDependencies(root, sourceCommit);
   const directBlobs = await Promise.all(SEED_EXECUTION_PATHS.map(async path => ({ path, sha256: hash(await readFile(join(root, path))) })));
   if (JSON.stringify(directBlobs) !== JSON.stringify(LOADED_SEED_EXECUTION_BLOBS)) {
     throw new Error('[seed:corestore] loaded source modules do not match frozen blobs');
@@ -214,7 +187,7 @@ export async function readSeedFrozenExecution(): Promise<SeedFrozenExecution> {
     throw new Error('[seed:corestore] frozen execution changed while binding');
   }
   return { sourceCommit, gitDirty: false, nodeVersion: process.version,
-    packageLockSha256: hash(lockBytes), installedLockSha256: hash(installedBytes), dependencyGeneration, directBlobs };
+    ...dependencies, directBlobs };
 }
 
 const ORIGINAL_BLOCK_HASH = Symbol('proof-verified-original-block-sha256');

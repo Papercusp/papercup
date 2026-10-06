@@ -48,11 +48,21 @@ import {
 } from "./cut-seed-cli";
 
 describe('D166 private row-drop plan transport', () => {
+  const installedPackages = ['hypercore', 'hyperbee', 'hypercore-crypto', 'sodium-native', 'sodium-universal'].sort()
+    .map(name => ({ path: `node_modules/${name}`, name, version: '1.0.0' }));
   const execution = { sourceCommit: 'a'.repeat(40), gitDirty: false as const, nodeVersion: process.version,
-    packageLockSha256: 'b'.repeat(64), installedLockSha256: 'c'.repeat(64), dependencyGeneration: `v1-${'d'.repeat(64)}`,
+    dependencyInputSha256: 'b'.repeat(64), installedPackagesSha256: createHash('sha256').update(JSON.stringify(installedPackages)).digest('hex'),
+    dependencyGeneration: `v1-${'d'.repeat(64)}`, installedPackages,
+    dependencyGenerationSnapshotSha256: 'f'.repeat(64), materializedTreesSha256: '1'.repeat(64),
+    securityPackages: ['hypercore', 'hyperbee', 'hypercore-crypto', 'sodium-native', 'sodium-universal'].map(name => ({
+      path: `node_modules/${name}`, name, version: '1.0.0', resolved: `https://registry.npmjs.org/${name}/-/package.tgz`,
+      integrity: 'sha512-' + Buffer.alloc(64).toString('base64'), files: [{ path: 'package.json', sha256: '2'.repeat(64) }] })),
     directBlobs: ['packages/operator-core/lib/sync/hyperbee/read-merge.ts',
       'packages/operator-core/lib/sync/hyperbee/log-snapshot.ts',
-      'packages/operator-core/lib/sync/hyperbee/seed-provider-corestore.ts', 'apps/operator/lib/release/cut-seed-cli.ts']
+      'packages/operator-core/lib/sync/hyperbee/seed-provider-corestore.ts', 'apps/operator/lib/release/cut-seed-cli.ts',
+      'packages/operator-core/lib/sync/hyperbee/seed-frozen-execution.ts',
+      'packages/operator-core/lib/sync/hyperbee/hive-epoch-aead.ts',
+      'apps/operator/bin/release/dependency-generation.sh']
       .map(path => ({ path, sha256: 'e'.repeat(64) })) };
   const deps = { readFrozenExecution: async () => execution };
   it('exports the actual frozen manifest population read-only and refuses changed source identities', async () => {
