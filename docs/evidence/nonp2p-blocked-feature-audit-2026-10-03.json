@@ -2237,7 +2237,303 @@
    "qualification": {
     "status": "source-condition-identified-feasibility-not-final",
     "basis": "source snapshot 2026-10-03T08:39Z plus bounded current reads in native session 01a100fc",
-    "acceptanceWaived": false
+    "acceptanceWaived": false,
+    "evidenceQualification20261006": {
+     "status": "qualified-scoped-evidence-current-acceptance-open",
+     "observedAt": "2026-10-06T09:46:59.884921+00:00",
+     "source": {
+      "plan": "generic-rag-chunking-2026-09-29",
+      "version": 133,
+      "contentHash": "d6c8589bfc9cb22b173fe8c5567c8768f8fb7c2ccd46be210d81d900306c98c2",
+      "status": "ready",
+      "decisionsRead": [
+       "D-048",
+       "D-049",
+       "D-050",
+       "D-051"
+      ]
+     },
+     "currentItem": {
+      "state": "blocked",
+      "assignee": "su-ea145858-8dc8-4602-ae3d-675eb6c2b804",
+      "checkpointContentHash": "07e34cd6bb88",
+      "qualification": "Peer-owned; audit only. Old runtime observations in its checkpoint were not refreshed."
+     },
+     "rubric": {
+      "ref": "acceptance-generic-rag-chunking-2026-09-29",
+      "revision": 11,
+      "vetting": "Server reports current vetted rev11 under its no-qualified-responder waiver; independent current final acceptance grade is not established here."
+     },
+     "canonicalPredecessors": [
+      {
+       "id": "WI-10003943",
+       "state": "done",
+       "completionAuthority": "committed",
+       "closedAt": "2026-09-29T23:51:42.856Z",
+       "historicalTestsRun": "unit 162/162 (20146699-20146703); carry-notes-no-unread-vector.integration 3/3 (20147179)",
+       "historicalTestResult": "pass",
+       "historicalEmittedCommit": "5b483a0d0a9f4d535e8de5839beb79763911679e",
+       "qualification": "Dated terminal receipt, not a new current acceptance measurement."
+      },
+      {
+       "id": "WI-10003944",
+       "state": "done",
+       "completionAuthority": "committed",
+       "closedAt": "2026-09-30T14:01:35.585Z",
+       "historicalTestsRun": "test_runs 20254167 vector-leg.integration; 20254168 simple-addition.integration; 20254175 plans-chunk-leg.integration; 20254177 sources.integration; 20254197 parent-vector-sites; 20256712 import-boundary; mutation-probe caught: 20253949 R-16, 20254163 R-17, 20254174 R-41, 20256688 R-22, 20256698 R-39; live batteries R-25/R-26/R-27/R-37 (docs/evidence/generic-rag-chunking-2026-09-29/p015-live-r-*-battery.json); truncation census p015-truncation-census.json; plans:evaluate-spec-test-adequacy plan-wide 14:00Z",
+       "historicalTestResult": "pass: all plain runs green, all five mutants caught, adequacy 35 pass / 2 fail (R-33 deferred per D-033, R-36 belongs to P-016)",
+       "historicalEmittedCommit": null,
+       "qualification": "Dated terminal receipt, not a new current acceptance measurement."
+      }
+     ],
+     "bindingSelection": {
+      "bounded": {
+       "limit": 100,
+       "truncatedByLimit": false
+      },
+      "observedAt": "2026-10-06T09:41:20.860Z",
+      "rows": [
+       {
+        "id": 22217,
+        "specId": "AUTO-BAR-R-33-P-015",
+        "specRevision": 6,
+        "specFingerprint": "73bed434ee6cba04e6cc758d028b54f9ed3e4b38da07f7e48ffaf9d10d3056ea",
+        "testRunId": 20549109,
+        "testRunProvenance": {
+         "filePath": "docs/evidence/generic-rag-chunking-2026-09-29/p016-r33-record-op.json",
+         "commitSha": "3b0b1fcc5be2c695091b68bd8b8b4ea48efa6475",
+         "worktreeDirty": false
+        },
+        "currentness": {
+         "overall": "stale",
+         "dimensions": {
+          "spec": "current",
+          "source": "stale",
+          "test": "not-applicable",
+          "fixture": "not-applicable",
+          "rubric": "not-applicable",
+          "environment": "not-applicable",
+          "coverageEvidence": "not-applicable",
+          "testRun": "current"
+         },
+         "staleReasons": [
+          "source-stale"
+         ],
+         "unknownReasons": [],
+         "comparisonSupplied": true,
+         "provenance": "server-measured"
+        },
+        "movedPaths": [
+         {
+          "path": "packages/operator-core/lib/agent-tools/search/sources.ts",
+          "dimension": "source",
+          "change": "changed"
+         },
+         {
+          "path": "packages/operator-core/lib/work-items.ts",
+          "dimension": "source",
+          "change": "changed"
+         }
+        ]
+       },
+       {
+        "id": 18808,
+        "specId": "AUTO-BAR-R-36-P-016",
+        "specRevision": 5,
+        "specFingerprint": "2a767f238c8a5fe07a3961a18cb0f92a58f93451865e27a2d2d5a9ad9bbd8360",
+        "testRunId": 20388966,
+        "testRunProvenance": {
+         "filePath": "docs/evidence/generic-rag-chunking-2026-09-29/p016-r36-deployed.json",
+         "commitSha": "d499db39862610c9c7f3748293612cc8bf83092a",
+         "worktreeDirty": false
+        },
+        "currentness": {
+         "overall": "stale",
+         "dimensions": {
+          "spec": "current",
+          "source": "stale",
+          "test": "not-applicable",
+          "fixture": "not-applicable",
+          "rubric": "not-applicable",
+          "environment": "not-applicable",
+          "coverageEvidence": "not-applicable",
+          "testRun": "current"
+         },
+         "staleReasons": [
+          "source-stale"
+         ],
+         "unknownReasons": [],
+         "comparisonSupplied": true,
+         "provenance": "server-measured"
+        },
+        "movedPaths": [
+         {
+          "path": "packages/operator-core/lib/search/chunks/registry.ts",
+          "dimension": "source",
+          "change": "changed"
+         }
+        ]
+       }
+      ],
+      "qualification": "Complete selected two-spec query at this limit, not global absence or whole-plan adequacy."
+     },
+     "historicalR33": {
+      "path": "docs/evidence/generic-rag-chunking-2026-09-29/p016-r33-ab-record.json",
+      "sha256": "63962797eb8944de9c6cf422571d2bcf355c11e0d829c71077fdc3e923b15d24",
+      "loadCheck": {
+       "matched": true,
+       "band": {
+        "low": 55.9,
+        "high": 83.9
+       },
+       "start": 79.54,
+       "end": 78.33
+      },
+      "verdicts": [
+       {
+        "site": "plans",
+        "addedP95": 6.9,
+        "budget": 413,
+        "withinBudget": true
+       },
+       {
+        "site": "turns",
+        "addedP95": -13.4,
+        "budget": 348,
+        "withinBudget": true
+       },
+       {
+        "site": "work_item",
+        "addedP95": 7.6,
+        "budget": 402.3,
+        "withinBudget": true
+       },
+       {
+        "site": "work_items_search",
+        "addedP95": 81.2,
+        "budget": 100,
+        "withinBudget": true
+       },
+       {
+        "site": "consult",
+        "addedP95": 1.8,
+        "budget": 3.5,
+        "withinBudget": true
+       }
+      ],
+      "measuredCodeComparisons": [
+       {
+        "path": "packages/operator-core/lib/agent-tools/search/sources.ts",
+        "recordedBlob": "a24e4b2e5b6aa2bfaf945d8b1cbaf96ee287f550",
+        "currentHeadBlob": "7e73ff206d3a33953aa193504058abe8d56ba28f",
+        "recordMatchesHead": false,
+        "clean": true
+       },
+       {
+        "path": "packages/operator-core/lib/agent-tools/plans/semantic-leg.ts",
+        "recordedBlob": "e880231206b1f2197bdc09614149a41e86e5a7a7",
+        "currentHeadBlob": "e880231206b1f2197bdc09614149a41e86e5a7a7",
+        "recordMatchesHead": true,
+        "clean": true
+       },
+       {
+        "path": "packages/operator-core/lib/consult/peers-know.ts",
+        "recordedBlob": "33fe3ef9d95e56507167b8a8d6ed3e3d9a9bc127",
+        "currentHeadBlob": "33fe3ef9d95e56507167b8a8d6ed3e3d9a9bc127",
+        "recordMatchesHead": true,
+        "clean": true
+       },
+       {
+        "path": "packages/operator-core/lib/work-items.ts",
+        "recordedBlob": "b69f0d3508c8b18f9710c02cf1ed353f0ed16db6",
+        "currentHeadBlob": "c9988b6341f620ba2709a44b3891d6814ef5a670",
+        "recordMatchesHead": false,
+        "clean": true
+       },
+       {
+        "path": "packages/operator-core/lib/search/chunks/registry.ts",
+        "recordedBlob": "5d76da4f81ac9d09d22284a3838f4cb32ee95f37",
+        "currentHeadBlob": "5d76da4f81ac9d09d22284a3838f4cb32ee95f37",
+        "recordMatchesHead": true,
+        "clean": true
+       },
+       {
+        "path": "libs/generic/search/src/chunks/vector-leg.ts",
+        "recordedBlob": "cd0763646283d303c3034e0457f2b4fefb6dea4c",
+        "currentHeadBlob": "cd0763646283d303c3034e0457f2b4fefb6dea4c",
+        "recordMatchesHead": true,
+        "clean": true
+       }
+      ],
+      "qualification": "Historical passing record; sources.ts/work-items.ts differ today. D-051 keeps first band-matched reading on governed changed blobs. No new A/B or null run."
+     },
+     "historicalR36": {
+      "path": "docs/evidence/generic-rag-chunking-2026-09-29/p016-r36-deployed.json",
+      "sha256": "7f8484642bd65054434e3b038130477edd87be42bcfa3bc25f73d2be202084d6",
+      "qualification": "Oct1 receipt is dated; selected binding registry source is stale. No current release/gate/runtime/deployed-path observation made."
+     },
+     "instrumentRead": "Pure evaluator/CLI writer preserve same-vector paired arms, fixed budgets/noise floors and query hash, load-band validity, missing/error/empty-B rejection and measured blob recording. Existing registered unit guards are scoped detectors, not fresh operational acceptance proof.",
+     "currentSourceAndEvidencePins": [
+      {
+       "path": "packages/operator-core/lib/search/bench/chunk-search-ab.ts",
+       "sha256": "3b6d503881d3b5fc44e1d644e8e68b9ea5b013e5b397a4d7e1e982f43eb78fcf",
+       "headBlob": "0a0dc9afbe274c87bba1531e461898b40bc5b2cf",
+       "matchesOwnHead": true
+      },
+      {
+       "path": "packages/operator-core/lib/search/bench/chunk-search-ab-cli.ts",
+       "sha256": "080d5b8d05a4235ac44e36a606ebb22d3b5ae0edd9613315934b1fafbf8130d3",
+       "headBlob": "4c1d2030645bfd62bce8f609dffb83404a7795da",
+       "matchesOwnHead": true
+      },
+      {
+       "path": "packages/operator-core/lib/search/bench/chunk-search-ab.test.ts",
+       "sha256": "6ed6640ffd1b4a2d4215997dba552cf51598b66f5badc772743f859c4fe4ee56",
+       "headBlob": "0f6923a3f8c090cd4d998607836b2b092d29fe60",
+       "matchesOwnHead": true
+      },
+      {
+       "path": "packages/operator-core/lib/search/bench/chunk-search-latency.test.ts",
+       "sha256": "b3f4d8d1a4b0e1186c6025c2728c30d306932859c1221247b375ab661ac1b519",
+       "headBlob": "2da6121e8208989d592567702149a95f537022aa",
+       "matchesOwnHead": true
+      },
+      {
+       "path": "docs/evidence/generic-rag-chunking-2026-09-29/p016-r33-ab-record.json",
+       "sha256": "63962797eb8944de9c6cf422571d2bcf355c11e0d829c71077fdc3e923b15d24",
+       "headBlob": "3a1995035ea9d994f81d281f2733c98dc872975d",
+       "matchesOwnHead": true
+      },
+      {
+       "path": "docs/evidence/generic-rag-chunking-2026-09-29/p016-r33-record-op.json",
+       "sha256": "9edf477ec0e301165417d84344a5e4d427abd4da67362eea994a32eb9b0a072d",
+       "headBlob": "0796e6709d4ae65c0bfa0b72f3ec949776f15878",
+       "matchesOwnHead": true
+      },
+      {
+       "path": "docs/evidence/generic-rag-chunking-2026-09-29/p016-r33-null-runs.json",
+       "sha256": "3cf52de5f59e4d3801e1288adad70e5513d770692c1d09cf2fcd91ca99100b88",
+       "headBlob": "44cd8b026ae466ae25e4b817e580520a66d8edd2",
+       "matchesOwnHead": true
+      },
+      {
+       "path": "docs/evidence/generic-rag-chunking-2026-09-29/p016-r36-deployed.json",
+       "sha256": "7f8484642bd65054434e3b038130477edd87be42bcfa3bc25f73d2be202084d6",
+       "headBlob": "8561041fcf39ccc5bd291580dbd1b3cafb8e9376",
+       "matchesOwnHead": true
+      }
+     ],
+     "remainingAcceptance": [
+      "Current R-33 record on governed blobs and first-valid-reading rule.",
+      "Current complete R-36 deployed-path/content qualification from registered driver.",
+      "Current final per-item audit, adequacy, independent grade, implementer verdict and shipment."
+     ],
+     "scopeLimits": [
+      "No acceptance/requirement waiver or source/spec/rubric change.",
+      "No peer implementation, live gate operations, runtime probe, restart, deploy or git mutation.",
+      "Original200perID remains UNKNOWN; later172-row artifact is not replacement proof."
+     ]
+    }
    }
   },
   {
@@ -2266,7 +2562,81 @@
    "qualification": {
     "status": "source-condition-identified-feasibility-not-final",
     "basis": "source snapshot 2026-10-03T08:39Z plus bounded current reads in native session 01a100fc",
-    "acceptanceWaived": false
+    "acceptanceWaived": false,
+    "activationDoorEvidenceQualification": {
+     "status": "retained-incomplete-activation-door-and-unqualified-current-proof",
+     "basis": "PERSONAL retained audit, 2026-10-06; expired fire350 reconciled against the newer carry8998bc37c64e, which already records WI-10003945 audit1159549. No predecessor work replayed.",
+     "source": {
+      "plan": "agent-economy-flywheel-2026-08-30",
+      "revision": 100,
+      "contentHash": "fc68bbe66e2de5fdea2a667e37de106465287eea99c13d406789b207b4af7ca6",
+      "governingDecisions": ["D-005", "D-006", "D-007", "D-009", "D-010", "D-011", "D-012"],
+      "item": "P-016",
+      "itemState": "todo",
+      "workItemState": "blocked",
+      "assignee": null,
+      "checkpointHash": "18e2834faec1",
+      "requiredBehavior": "Every activation door must refuse an unfunded priced identity. D-011 requires current hosted funding reads; D-012 requires funded restart rebuilding, removal of refused stack entries, and typed refusal without inherited-render fallback when removal cannot cure it. Free layers and the kernel remain unaffected."
+     },
+     "canonicalClauses": [
+      {
+       "specId": "AUTO-BAR-R-2-P-016",
+       "revision": 2,
+       "contentHash": "874f12b9aa71a51aadb92f43c9a5a47a6a8bb9611d5ef8b87442c5d46deac210",
+       "lifecycle": "active",
+       "requiredEvidence": ["tree"],
+       "requiredTestLayers": ["unit"],
+       "probePath": "packages/operator-core/lib/cupboard/priced-identity-activation.test.ts",
+       "probePathQualification": "This exact named file is absent in the inspected current cupboard directory. Existing gate, I/O, layer, restart and door tests are separate files; their presence does not repair the clause's executable check or establish behavioral coverage of every door."
+      },
+      {
+       "specId": "AUTO-REQ-M-013-P-016",
+       "revision": 1,
+       "contentHash": "bfb78203c0eb7786d0db7fa13711e8744fd356c3b19f32106927b27f0e559872",
+       "lifecycle": "draft",
+       "qualification": "The broader identity-commerce requirement has no accepted falsifier or required evidence on this clause. No promotion or waiver was performed."
+      }
+     ],
+     "rubric": {
+      "ref": "acceptance-agent-economy-flywheel-2026-08-30",
+      "revision": 5,
+      "criteriaHash": "25dd447cc55337d60b91c38186c4c1867cb9d9e8c0ec2df4fe124bb7686d08c8",
+      "vettingState": "unvetted",
+      "vettingReason": "rejected-attestation",
+      "qualification": "R-2's behavior and exact check path agree with the active clause. Rubric active status does not establish independent vetting, test adequacy, grading integrity or final acceptance."
+     },
+     "implementationAndDetector": {
+      "doorTest": "packages/operator-core/lib/cupboard/identity-activation-doors.test.ts",
+      "observed": "Four named doors are in DOORS. The SU persona-refresh restart remains in PENDING_DOORS and is registered with it.todo. The current persona-refresh handler imports and calls rebuildSuLaunchArtifact, persists its returned artifact and reports ordinary render-failed errors; it does not invoke rebuildSuLaunchArtifactFunded. The shared funded restart helper exists and has refusal/removal tests, but this inspected route does not call that helper.",
+      "historicalReceipt": "WI-10004280 checkpoint dated 2026-09-30 19:09Z reports testRunId20294390: 6 pass and 1 skip, explicitly leaving persona-refresh pending. It also reports other per-file passes and a clean typecheck. These are dated partial implementation receipts, not a current all-door behavioral verdict.",
+      "guardQualification": "The door detector masks comments and strings and checks call spelling for the selected DOORS. Its positive and masking controls do not exercise funding/refusal behavior through the real routes. A pending required door is omitted from its active assertions, so a passing partial detector cannot establish R-2's universal requirement.",
+      "runtimeQualification": "No paid-identity activation, current hosted funding read, restart, native journey, exploit or deployed runtime behavior was measured in this audit. Other transitive behavior remains unqualified."
+     },
+     "prerequisites": {
+      "P015": "WI-10004279 is DONE with COMMITTED authority. Its stored completion reports R-1 adequacy, test16908/mutation16914/cardEI-24702145237373309 and dated unit/integration/mutation/typecheck results. That receipt establishes the predecessor's recorded disposition, not current P-016 funding or every-door acceptance.",
+      "externalP008": "WI-10002965 is currently BLOCKED and unassigned, checkpoint4523a3d011db. Its latest narrative records leader-directed claim release under cleanup D-008 and retains dated fixture035b/bindings23535-39 proof. The original P-016 blocker names older holders and file holds; those names are historical, not current ownership. The prerequisite is still nonterminal; present file release and acceptance ordering were not independently established.",
+      "residue": "EI-24703937425649159 remains OPEN and unassigned. No residue was closed or reassigned in this evidence-only audit."
+     },
+     "boundEvidenceSelection": {
+      "scope": "plans:get-spec-evidence for this work-item, then an independent exact two-clause selection in the same plan",
+      "selectedSpecIds": ["AUTO-BAR-R-2-P-016", "AUTO-REQ-M-013-P-016"],
+      "limit": 100,
+      "rows": [],
+      "truncatedByLimit": false,
+      "qualification": "The first work-item selection carried a transport-degraded warning. The independent exact-clause read returned an empty selection without that warning or truncation. This is scoped binding absence only; it does not prove global evidence absence, historical test failure or why a binding was not recorded."
+     },
+     "preservation": {
+      "priorArtifactSha256": "3d069652efcfd1d8c253354b6c9eb199baf4f82c25bceb2b1f6d242feb54d0f4",
+      "priorArtifactBytes": 338242,
+      "method": "Only this additive qualification is changed. Remove it and restore the prior trailing comma to recover the exact prior bytes; all prior cohort rows, dispositions, claims and original200perID UNKNOWN remain unchanged. Source/test pins and inverse checks are recorded with the audit receipt."
+     },
+     "notEstablished": [
+      "Current complete behavioral proof through every activation door, including SU persona refresh, ancestors and uncured restart refusal",
+      "Current executable clause check, accepted broader commerce clause, rubric vetting, adequacy, independent grade and grading-integrity acceptance",
+      "Present prerequisite file-release/acceptance ordering, funded hosted behavior, final whole-plan verdict, mainnet authorization or shipment"
+     ],
+     "scopeLimit": "PERSONAL qualification under WI-10005820 only. No feature/prerequisite claim, source/spec/rubric edit, peer implementation, live-gate operation, runtime/provider action or shipment."
+    }
    }
   },
   {
