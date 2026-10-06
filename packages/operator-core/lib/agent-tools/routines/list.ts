@@ -16,6 +16,7 @@ import { formatIdleAge } from '../../format/relative-time';
 // validator's pg/system-action-registry dependencies along.
 import { ROUTINE_VALIDATION_METADATA_KEY } from '../../startup/routine-validation-episode';
 import { WATCHDOG_HEALTH_METADATA_KEY } from '../../release/watchdog-health';
+import { reviveGitnexusHealth } from '../../harness/routines/dependency-snapshot-health';
 import { parseInFlightCandidate } from '../../release/in-flight-candidate';
 import { isAdmissionSyntheticCommitDate } from '../../release/admission-commit-date';
 import { gateAbortVintage } from '../../release/gate-abort-status';
@@ -331,7 +332,14 @@ function healthOf(metadata: Record<string, unknown> | null): Record<string, unkn
   const emit = (k: string): void => {
     const value = metadata[k];
     if (value === undefined || value === null) return;
-    out[k] = k === 'gate_health' ? attestGateHealth(value) : value;
+    // WI-10006666 — the stored dependency-snapshot age is a reading as of its own check; a
+    // long analyze makes `concurrency: 'skip'` drop every later fire, so derive it on read.
+    out[k] =
+      k === 'gate_health'
+        ? attestGateHealth(value)
+        : k === 'gitnexus_health'
+          ? reviveGitnexusHealth(value, Date.now())
+          : value;
   };
   // The explicit keys first, in declaration order, so `gate_health` keeps its position at
   // the head of the projection and this change is a pure ADDITION for every existing row.
