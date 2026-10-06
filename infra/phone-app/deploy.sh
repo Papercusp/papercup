@@ -95,6 +95,21 @@ upsert_env_var() {
   mv "$tmp" "$ENV_FILE"
 }
 
+# Mint or rotate the LiveKit API key pair by rewriting ONLY its two lines.
+# livekit.env is shared: it also carries the worker's vendor credentials
+# (DEEPGRAM_API_KEY, GOOGLE_*, ELEVEN_API_KEY from sync-worker-secrets.ts),
+# the public-edge coordinates and the carrier key (TELNYX_API_KEY, D-020).
+# Truncating it on --rotate-secret silently disabled the worker's STT
+# (WI-10006571), so the rest of the file must survive a rotation.
+write_livekit_credentials() {
+  local key="$1" secret="$2"
+  [[ -n "$key" && -n "$secret" ]] || die "write_livekit_credentials needs a key and a secret"
+  [[ -f "$ENV_FILE" ]] || ( umask 077; : > "$ENV_FILE" )
+  upsert_env_var PHONE_LIVEKIT_API_KEY "$key"
+  upsert_env_var PHONE_LIVEKIT_API_SECRET "$secret"
+  chmod 600 "$ENV_FILE"
+}
+
 report_status() {
   # A green LiveKit HTTP endpoint alone is NOT Phone readiness: SIP, the
   # worker and the portal sidecar may independently be down. This path is
@@ -348,10 +363,8 @@ if [[ ! -f "$ENV_FILE" || $ROTATE == 1 ]]; then
   SECRET="$(printf '%s' "$gen" | awk '/API Secret:/{print $NF}')"
   unset gen
   [[ -n "$KEY" && -n "$SECRET" ]] || die "could not parse a key pair out of 'livekit-server generate-keys'"
-  umask 077
-  printf 'PHONE_LIVEKIT_API_KEY=%s\nPHONE_LIVEKIT_API_SECRET=%s\n' \
-    "$KEY" "$SECRET" > "$ENV_FILE"
-  chmod 600 "$ENV_FILE"
+  write_livekit_credentials "$KEY" "$SECRET"
+  unset KEY SECRET
   say "wrote $ENV_FILE (0600) — secret not printed"
 else
   say "reusing existing key pair in $ENV_FILE"
