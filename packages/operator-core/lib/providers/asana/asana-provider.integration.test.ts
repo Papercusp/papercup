@@ -511,7 +511,7 @@ describe('Asana registers as a provider through the plugin host (P-005)', () => 
     expect(provider.pluginName).toBe(KIND);
     expect(provider.runtime).toBe('js');
     expect(provider.descriptor.datatypes).toEqual(TICKET_DATATYPES);
-    expect(provider.descriptor.capabilities).toEqual(['ticket.read', 'ticket.comment', 'ticket.transition']);
+    expect(provider.descriptor.capabilities).toEqual(['ticket.read', 'ticket.comment', 'ticket.transition', 'ticket.containers']);
     expect(provider.descriptor.egressHosts).toEqual(['app.asana.com']);
     const oauth = provider.descriptor.oauth!;
     expect(oauth).toMatchObject({ authorizeUrl: 'https://app.asana.com/-/oauth_authorize', tokenUrl: 'https://app.asana.com/-/oauth_token' });

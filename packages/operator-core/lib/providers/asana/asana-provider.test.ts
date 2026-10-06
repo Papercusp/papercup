@@ -156,7 +156,7 @@ describe('the Asana package declares an Asana ticket provider', () => {
       id: 'asana',
       contractVersion: 1,
       datatypes: ['ticket', 'ticket-status-change', 'ticket-comment'],
-      capabilities: ['ticket.read', 'ticket.comment', 'ticket.transition'],
+      capabilities: ['ticket.read', 'ticket.comment', 'ticket.transition', 'ticket.containers'],
       egressHosts: ['app.asana.com'],
       oauth: {
         authorizeUrl: 'https://app.asana.com/-/oauth_authorize',
@@ -603,6 +603,104 @@ describe('writes: ticket.read, ticket.comment, ticket.transition', () => {
   });
 });
 
+describe('ticket.containers lists what the source can be configured with (D-014)', () => {
+  const WS1 = { gid: 'ws-1', resource_type: 'workspace', name: 'Acme' } satisfies Schemas['WorkspaceCompact'];
+  const WS2 = { gid: 'ws-2', resource_type: 'workspace', name: 'Side project' } satisfies Schemas['WorkspaceCompact'];
+  const SIDE = { gid: 'proj-side', resource_type: 'project', name: 'Garden' } satisfies Schemas['ProjectCompact'];
+  const nextPage = (path: string, offset: string): Schemas['NextPage'] => ({ offset, path: `${path}?offset=${offset}`, uri: `${API}${path}?offset=${offset}` });
+
+  /** Asana with two workspaces; Acme's projects come back over two pages. */
+  function catalogue() {
+    return fakeHost((c) => {
+      if (c.method !== 'GET') return undefined;
+      if (c.path === '/workspaces') return json(200, { data: [WS1, WS2], next_page: null } satisfies Schemas['GetWorkspacesOk']);
+      if (c.path === '/projects') {
+        const page: Record<string, Schemas['GetProjectsOk']> = {
+          'ws-1:': { data: [ENG], next_page: nextPage('/projects', 'p2') },
+          'ws-1:p2': { data: [OPS], next_page: null },
+          'ws-2:': { data: [SIDE], next_page: null },
+        };
+        const body = page[`${c.query.get('workspace')}:${c.query.get('offset') ?? ''}`];
+        return body ? json(200, body) : undefined;
+      }
+      if (c.path === '/projects/proj-eng/sections') {
+        return json(200, { data: [SECTIONS.todo, SECTIONS.doing, SECTIONS.done], next_page: null } satisfies Schemas['GetSectionsForProjectOk']);
+      }
+      if (c.path === '/projects/proj-ops/sections') {
+        return json(200, { data: [SECTIONS.opsInbox], next_page: null } satisfies Schemas['GetSectionsForProjectOk']);
+      }
+      return undefined;
+    });
+  }
+  const containersReq = (args: Record<string, unknown>, config: Record<string, unknown> = CONFIG): ProviderInvokeRequest =>
+    ({ source: SOURCE, capability: 'ticket.containers', args, config });
+
+  it('lists every workspace and its unarchived projects; the configured projects carry their sections', async () => {
+    const fake = catalogue();
+    const result = await adapter.invoke(containersReq({}), fake.host);
+    expect(result).toEqual({
+      truncated: false,
+      containers: [
+        { id: 'ws-1', name: 'Acme', kind: 'workspace' },
+        {
+          id: 'proj-eng', name: 'Engineering', kind: 'project', parentId: 'ws-1',
+          sections: [{ id: 'sec-todo', name: 'To do' }, { id: 'sec-doing', name: 'Doing' }, { id: 'sec-done', name: 'Done' }],
+        },
+        { id: 'proj-ops', name: 'Operations', kind: 'project', parentId: 'ws-1', sections: [{ id: 'sec-ops-inbox', name: 'Inbox' }] },
+        { id: 'ws-2', name: 'Side project', kind: 'workspace' },
+        { id: 'proj-side', name: 'Garden', kind: 'project', parentId: 'ws-2' },
+      ],
+    });
+    const projectReads = fake.named('GET', '/projects');
+    expect(projectReads.map((c) => [c.query.get('workspace'), c.query.get('archived'), c.query.get('limit'), c.query.get('opt_fields')]))
+      .toEqual([['ws-1', 'false', '100', 'name'], ['ws-1', 'false', '100', 'name'], ['ws-2', 'false', '100', 'name']]);
+    expect(projectReads[1].query.get('offset')).toBe('p2');
+  });
+
+  it('reads only: every request is a GET through host.fetch, and the connected account is not resolved', async () => {
+    const fake = catalogue();
+    await adapter.invoke(containersReq({}), fake.host);
+    expect(fake.calls.every((c) => c.method === 'GET' && c.source === SOURCE)).toBe(true);
+    expect(fake.selfCalls).toHaveLength(0);
+  });
+
+  it('narrows to one workspace, and lists sections for the requested projects instead of the configured ones', async () => {
+    const fake = catalogue();
+    const result = await adapter.invoke(containersReq({ workspaceGid: 'ws-1', projectGids: ['proj-ops', 'proj-elsewhere'] }), fake.host);
+    expect(result.containers.map((c: { id: string; sections?: unknown[] }) => [c.id, c.sections?.length ?? null]))
+      .toEqual([['ws-1', null], ['proj-eng', null], ['proj-ops', 1]]);
+    expect(fake.calls.map((c) => c.path)).not.toContain('/projects/proj-eng/sections');
+    // A project the listing did not return is never read: no request for proj-elsewhere.
+    expect(fake.calls.map((c) => c.path).filter((p) => p.includes('proj-elsewhere'))).toEqual([]);
+  });
+
+  it('needs no source config: a fresh source (no projectGids yet) still gets its pickers, without sections', async () => {
+    const fake = catalogue();
+    const result = await adapter.invoke(containersReq({}, {}), fake.host);
+    expect(result.containers.filter((c: { kind: string }) => c.kind === 'project').map((c: { id: string }) => c.id))
+      .toEqual(['proj-eng', 'proj-ops', 'proj-side']);
+    expect(result.containers.some((c: { sections?: unknown }) => c.sections !== undefined)).toBe(false);
+  });
+
+  it('stops after 20 pages of one list and says the result is truncated', async () => {
+    let n = 0;
+    const endless = fakeHost((c) => {
+      if (c.path === '/workspaces') return json(200, { data: [{ ...WS1, gid: `ws-${++n}` }], next_page: nextPage('/workspaces', `o${n}`) } satisfies Schemas['GetWorkspacesOk']);
+      if (c.path === '/projects') return json(200, { data: [], next_page: null } satisfies Schemas['GetProjectsOk']);
+      return undefined;
+    });
+    const result = await adapter.invoke(containersReq({}, {}), endless.host);
+    expect(endless.named('GET', '/workspaces')).toHaveLength(20);
+    expect(result.truncated).toBe(true);
+    expect(result.containers.filter((c: { kind: string }) => c.kind === 'workspace')).toHaveLength(20);
+  });
+
+  it('an auth failure is the auth signal, as on every other Asana read', async () => {
+    const denied = fakeHost(() => json(401, { errors: [{ message: 'Not Authorized' }] } satisfies Schemas['ErrorResponse']));
+    await expect(adapter.invoke(containersReq({}), denied.host)).rejects.toMatchObject({ kind: 'auth' });
+  });
+});
+
 describe('every field the provider requests exists in Asana\'s OpenAPI document', () => {
   type Schema = { $ref?: string; allOf?: Schema[]; oneOf?: Schema[]; anyOf?: Schema[]; items?: Schema; properties?: Record<string, Schema>; description?: string };
   const schemas = (openapi as unknown as { components: { schemas: Record<string, Schema> } }).components.schemas;
@@ -635,6 +733,8 @@ describe('every field the provider requests exists in Asana\'s OpenAPI document'
     ['StoryResponse', 'story'],
     ['EventResponse', 'event'],
     ['SectionCompact', 'section'],
+    ['WorkspaceCompact', 'workspace'],
+    ['ProjectCompact', 'project'],
   ])('%s serves every %s opt_field', (root, kind) => {
     const fields = String(internal.fields[kind]).split(',');
     expect(fields.length).toBeGreaterThan(0);

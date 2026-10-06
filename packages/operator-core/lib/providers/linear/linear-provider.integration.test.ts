@@ -477,7 +477,7 @@ describe('Linear registers as a provider through the plugin host (P-004)', () =>
     expect(provider.pluginName).toBe(KIND);
     expect(provider.runtime).toBe('js');
     expect(provider.descriptor.datatypes).toEqual(TICKET_DATATYPES);
-    expect(provider.descriptor.capabilities).toEqual(['ticket.read', 'ticket.comment', 'ticket.transition']);
+    expect(provider.descriptor.capabilities).toEqual(['ticket.read', 'ticket.comment', 'ticket.transition', 'ticket.containers']);
     expect(provider.descriptor.egressHosts).toEqual(['api.linear.app', 'linear.app']);
     // D-005: Papercusp installs as its own Linear user and is delegated work, not assigned it.
     const oauth = provider.descriptor.oauth!;

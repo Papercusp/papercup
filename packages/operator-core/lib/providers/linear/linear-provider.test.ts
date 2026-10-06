@@ -255,6 +255,53 @@ describe('Linear failures map onto the host sync signals', () => {
   });
 });
 
+describe('ticket.containers lists the teams the source can sync (D-014)', () => {
+  const containers = (host: { fetch: HostFetch }, config: Record<string, unknown> = {}) =>
+    adapter.invoke({ source: SOURCE, capability: 'ticket.containers', args: {}, config }, host);
+
+  it('pages through every team, sorted by name, with the UUID teamIds expects and the key as a label', async () => {
+    const fake = fakeHost((op, vars) => {
+      expect(op).toBe('PapercuspTeams');
+      if (vars.after === null) {
+        return page('teams', [{ id: 'team-b', key: 'OPS', name: 'Operations' }, { id: 'team-a', key: 'ENG', name: 'Engineering' }], 'c1');
+      }
+      expect(vars.after).toBe('c1');
+      // A team seen on an earlier page is listed once.
+      return page('teams', [{ id: 'team-c', key: 'DES', name: 'Design' }, { id: 'team-a', key: 'ENG', name: 'Engineering' }]);
+    });
+    await expect(containers(fake.host)).resolves.toEqual({
+      truncated: false,
+      containers: [
+        { id: 'team-c', name: 'Design', kind: 'team', key: 'DES' },
+        { id: 'team-a', name: 'Engineering', kind: 'team', key: 'ENG' },
+        { id: 'team-b', name: 'Operations', kind: 'team', key: 'OPS' },
+      ],
+    });
+    expect(fake.calls.map((c) => c.op)).toEqual(['PapercuspTeams', 'PapercuspTeams']);
+  });
+
+  it('needs no teamIds (a freshly connected source has none) and reads nothing but teams', async () => {
+    const fake = fakeHost(() => page('teams', [{ id: 'team-a', key: 'ENG', name: 'Engineering' }]));
+    await expect(containers(fake.host, {})).resolves.toMatchObject({ containers: [{ id: 'team-a' }] });
+    expect(fake.calls.every((c) => /query PapercuspTeams/.test(JSON.parse(String(c.request.body)).query))).toBe(true);
+    expect(fake.calls.every((c) => c.request.headers?.authorization === undefined)).toBe(true);
+  });
+
+  it('stops after 20 pages and says the list is truncated', async () => {
+    let n = 0;
+    const fake = fakeHost(() => { n++; return page('teams', [{ id: `team-${n}`, key: `T${n}`, name: `Team ${n}` }], `c${n}`); });
+    const result = await containers(fake.host);
+    expect(fake.calls).toHaveLength(20);
+    expect(result.truncated).toBe(true);
+    expect(result.containers).toHaveLength(20);
+  });
+
+  it('maps an auth failure onto the auth signal', async () => {
+    const fake = fakeHost(() => json(401, { errors: [{ message: 'auth', extensions: { code: 'AUTHENTICATION_ERROR' } }] }));
+    await expect(containers(fake.host)).rejects.toMatchObject({ kind: 'auth' });
+  });
+});
+
 describe('writes: ticket.comment and ticket.transition', () => {
   it('comments through commentCreate and returns the comment phase\'s nativeId as updateId', async () => {
     const fake = fakeHost((op, vars) => {
@@ -288,6 +335,10 @@ describe('writes: ticket.comment and ticket.transition', () => {
     expect(moves).toEqual([
       'todo->st-todo', 'in-progress->st-doing', 'in-review->st-review', 'done->st-done', 'canceled->st-canceled', 'triage->st-triage',
     ]);
+  });
+
+  it('declares ticket.containers beside the writes', async () => {
+    expect((await adapter.describe()).capabilities).toEqual(['ticket.read', 'ticket.comment', 'ticket.transition', 'ticket.containers']);
   });
 
   it('leaves an issue already in the column alone, and refuses an unknown column or a capability it lacks', async () => {
