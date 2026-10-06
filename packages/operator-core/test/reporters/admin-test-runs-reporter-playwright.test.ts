@@ -21,8 +21,11 @@ vi.mock('@papercusp/operator-core/lib/testing-worktree', async importOriginal =>
 
 import Reporter from './admin-test-runs-reporter-playwright';
 
+// The mutation-probe markers are cleared too: this file may itself run inside
+// scripts/mutation-probe.sh, whose exported phase would otherwise leak in.
 const scopeKeys = ['PAPERCUSP_TEST_RUN_HARNESS', 'HARNESS_SLUG', 'PAPERCUSP_HARNESS_SLUG',
-  'PAPERCUSP_WORKSPACE_ID', 'PAPERCUSP_WORKSPACE', 'PAPERCUSP_DISABLE_TEST_RUNS_REPORTER'] as const;
+  'PAPERCUSP_WORKSPACE_ID', 'PAPERCUSP_WORKSPACE', 'PAPERCUSP_DISABLE_TEST_RUNS_REPORTER',
+  'PAPERCUSP_MUTATION_PROBE', 'PAPERCUSP_MUTATION_PHASE'] as const;
 
 async function record(status: TestResult['status'] = 'passed') {
   const reporter = new Reporter();
@@ -114,6 +117,21 @@ describe('Playwright execution ledger attribution', () => {
     expect(sql.json).toHaveBeenCalledWith(expect.objectContaining({
       harnessSlug: 'interactive-harness', workspaceId: 'interactive-workspace', passed: 0, failed: 1,
     }));
+  });
+
+  // EI-25233963573521241: without the phase, a caught mutant (an expected FAIL)
+  // is indistinguishable from an ordinary failing browser run.
+  it.each(['baseline', 'mutant'] as const)('records the mutation-probe %s phase like the Vitest writer', async (phase) => {
+    vi.stubEnv('PAPERCUSP_MUTATION_PROBE', '1');
+    vi.stubEnv('PAPERCUSP_MUTATION_PHASE', ` ${phase} `);
+    await record(phase === 'mutant' ? 'failed' : 'passed');
+    expect(sql.json).toHaveBeenCalledWith(expect.objectContaining({ mutationPhase: phase }));
+  });
+
+  it('records no mutation phase outside a probe run, even when a stray phase is exported', async () => {
+    vi.stubEnv('PAPERCUSP_MUTATION_PHASE', 'mutant');
+    await record('failed');
+    expect(sql.json).toHaveBeenCalledWith(expect.objectContaining({ mutationPhase: null }));
   });
 
   it('keeps deliberately unscoped CI rows unscoped', async () => {

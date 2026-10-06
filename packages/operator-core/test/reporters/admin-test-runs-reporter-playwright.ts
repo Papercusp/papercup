@@ -25,7 +25,12 @@ import { resolveGitContext } from '@papercusp/operator-core/lib/testing-branch-r
 import { resolveAgentWorkspaceRoot } from '@papercusp/operator-core/lib/agent-tools/capability/base-dir';
 import { captureWorktreeSnapshot, computeWorktreeDirty, type WorktreeGitSnapshot } from '@papercusp/operator-core/lib/testing-worktree';
 import { resolveTestRunSource } from '@papercusp/operator-core/lib/testing-run-source';
-import { describeWorktreeDirt, resolveTestRunHarnessSlug, resolveTestRunWorkspaceId } from '@papercusp/test-config/admin-test-runs-reporter';
+import {
+  describeWorktreeDirt,
+  resolveMutationProbePhase,
+  resolveTestRunHarnessSlug,
+  resolveTestRunWorkspaceId,
+} from '@papercusp/test-config/admin-test-runs-reporter';
 import type { TestRunExecutionDetails } from '@papercusp/test-config/execution-details';
 import { posix, relative } from 'node:path';
 
@@ -116,7 +121,10 @@ async function insertRow(row: TestRunRow, root: string, worktreeAfter: WorktreeG
     failed: row.failed,
     skipped: row.skipped,
     collectionFailed: false,
-    mutationPhase: null,
+    // EI-25233963573521241: a mutation-probe run must carry its baseline/mutant
+    // phase exactly like the Vitest writer, or the spec-adequacy evaluator reads
+    // a caught mutant (an expected FAIL) as an ordinary failing run.
+    mutationPhase: resolveMutationProbePhase(),
     commitSha: commit,
     worktreeDirty: row.worktreeDirty,
   };
