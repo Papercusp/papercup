@@ -152,6 +152,10 @@ struct CliInvocation {
     /// [`layout::CHAT_WORKBENCH_PANE_FLAG`]: this process is the chat pane of
     /// the chat workbench its launcher started (P-030). Undocumented.
     workbench_pane: bool,
+    /// [`layout::CHAT_WORKBENCH_SIDE_FLAG`]: this `pui hud` is the chat
+    /// workbench's narrow side pane and draws the compact summary (D-034).
+    /// Undocumented.
+    side_pane: bool,
     /// `--model <spec>`: model[:effort] a new conversation starts on (P-026).
     model: Option<String>,
     /// `--account <auto|default|name>`: the account route a new conversation
@@ -204,6 +208,7 @@ impl CliInvocation {
         let mut seat = None;
         let mut solo = false;
         let mut workbench_pane = false;
+        let mut side_pane = false;
         let mut model = None;
         let mut account = None;
         let mut pending: Option<&'static str> = None;
@@ -229,6 +234,7 @@ impl CliInvocation {
                 "--account" => pending = Some("--account"),
                 "--solo" => solo = true,
                 layout::CHAT_WORKBENCH_PANE_FLAG => workbench_pane = true,
+                layout::CHAT_WORKBENCH_SIDE_FLAG => side_pane = true,
                 _ if arg.starts_with("--fleet=") => {
                     set_cli_value(&mut fleet, "--fleet", &arg["--fleet=".len()..])?
                 }
@@ -261,6 +267,7 @@ impl CliInvocation {
             seat,
             solo,
             workbench_pane,
+            side_pane,
             model,
             account,
         })
@@ -597,6 +604,13 @@ async fn main() -> Result<()> {
     // them all on a 92-column terminal with nothing on screen saying so; the
     // chat's footer now names Alt+z instead (`ui::workbench_footer_hint`).
     let chat_workbench_pane = chat_workbench.is_some();
+    // pui-chat-first-ux D-034: the chat workbench's `pui hud` side pane draws
+    // a compact summary in its narrow column instead of "Terminal too small".
+    // It sits beside the chat, so it shares the chat's terminal background.
+    let side_pane = cli.side_pane && subcommand.as_deref() == Some("hud");
+    if side_pane {
+        crate::theme::Theme::set_transparent_surfaces(true);
+    }
 
     enable_raw_mode()?;
     let mut out = stdout();
@@ -682,6 +696,7 @@ async fn main() -> Result<()> {
         reactive_launch_panes,
         chat_first,
         chat_workbench_pane,
+        side_pane,
         kbd_enhanced,
     )
     .await;
@@ -1057,7 +1072,24 @@ mod cli_help_tests {
         assert_eq!(pane.fleet.as_deref(), Some("fed-drill"));
 
         let bare = CliInvocation::parse(args(&[]), None, None).unwrap();
-        assert!(!bare.solo && !bare.workbench_pane);
+        assert!(!bare.solo && !bare.workbench_pane && !bare.side_pane);
+    }
+
+    /// D-034: the chat workbench starts its HUD as `pui hud --side-pane`. The
+    /// flag marks the side pane and leaves `hud` as the only subcommand, so it
+    /// is still the reactive launch owner.
+    #[test]
+    fn side_pane_flag_marks_the_hud_without_adding_a_subcommand() {
+        let hud = CliInvocation::parse(
+            args(&["hud", crate::layout::CHAT_WORKBENCH_SIDE_FLAG]),
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(hud.side_pane && !hud.workbench_pane && !hud.solo);
+        assert_eq!(hud.positionals, ["hud"]);
+        let plain = CliInvocation::parse(args(&["hud"]), None, None).unwrap();
+        assert!(!plain.side_pane);
     }
 
     /// P-026 / D-023: `--model` and `--account` take a value in either form,
@@ -1879,6 +1911,7 @@ async fn run<B: Backend>(
     reactive_launch_panes: bool,
     chat_first: bool,
     chat_workbench_pane: bool,
+    side_pane: bool,
     kbd_enhanced: bool,
 ) -> Result<()> {
     let (tx, mut rx) = mpsc::unbounded_channel::<Event>();
@@ -1918,6 +1951,7 @@ async fn run<B: Backend>(
     // focused, so the first keystroke is the first word of the message.
     app.chat_first = chat_first;
     app.chat_workbench_pane = chat_workbench_pane;
+    app.side_pane = side_pane;
     if chat_first {
         app.tab = app::Tab::Operator;
         app.chat_composing = true;

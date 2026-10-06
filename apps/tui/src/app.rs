@@ -2108,6 +2108,12 @@ pub struct App {
     /// with the side panes beside it. Its footer then names the key that hides
     /// and shows them (D-033), since nothing else on screen does.
     pub chat_workbench_pane: bool,
+    /// This `pui hud` is the chat workbench's side pane (pui-chat-first-ux
+    /// D-034, `--side-pane`). The side column is far narrower than the full
+    /// board's 80×20 minimum, so below it the pane draws the compact summary
+    /// ([`App::compact_side`]) and blocks only below
+    /// `ui::COMPACT_MIN_COLS`×`ui::COMPACT_MIN_ROWS`.
+    pub side_pane: bool,
     /// The directory `pui` was started in (pui-chat-first-ux P-010). The
     /// default chat's `/resume` lists only conversations started here, the
     /// way Claude Code and Codex scope resume to the project directory.
@@ -2935,6 +2941,7 @@ impl App {
             pinned: None,
             chat_first: false,
             chat_workbench_pane: false,
+            side_pane: false,
             chat_details: None,
             chat_tools_expanded: false,
             chat_slash_selected: 0,
@@ -5636,11 +5643,38 @@ impl App {
     /// input hold both read this, so they cannot disagree. A pinned dock pane
     /// is sized by its layout, never by the owner, so it never blocks. Nor does
     /// chat-first: one wrapped transcript and a composer have no side rails to
-    /// clip, so it stays usable in any terminal `claude` would run in.
+    /// clip, so it stays usable in any terminal `claude` would run in. The
+    /// chat workbench's side pane blocks only below the compact minimum
+    /// (D-034); between that and the full minimum it draws the compact view.
     pub fn too_small(&self) -> bool {
-        self.pinned.is_none()
+        if self.pinned.is_some() || self.chat_first {
+            return false;
+        }
+        let (cols, rows) = self.viewport;
+        if self.side_pane {
+            crate::ui::too_small_for_compact(cols, rows)
+        } else {
+            crate::ui::too_small(cols, rows)
+        }
+    }
+
+    /// Whether the side pane is showing its compact summary (D-034): a
+    /// `--side-pane` HUD below the full board's minimum but at or above the
+    /// compact one. The summary is read-only, so input is held while it shows
+    /// ([`App::input_held`]), exactly as under the too-small view: no key
+    /// changes a board the owner cannot see.
+    pub fn compact_side(&self) -> bool {
+        self.side_pane
+            && self.pinned.is_none()
             && !self.chat_first
+            && !self.too_small()
             && crate::ui::too_small(self.viewport.0, self.viewport.1)
+    }
+
+    /// Input is held (all but quit) while the screen is the too-small view or
+    /// the side pane's read-only compact summary.
+    pub fn input_held(&self) -> bool {
+        self.too_small() || self.compact_side()
     }
 
     /// Chat-first (P-001) owns exactly two surfaces: the conversation and its
@@ -11504,8 +11538,9 @@ impl App {
         }
         match ev {
             Event::Paste(text) => {
-                // Held like keys while the blocking too-small view shows.
-                if self.too_small() {
+                // Held like keys while the blocking too-small view (or the side
+                // pane's read-only compact summary) shows.
+                if self.input_held() {
                     return Action::None;
                 }
                 // Text-entry overlays consume the paste as DATA. Newlines are
@@ -13278,7 +13313,7 @@ impl App {
     /// still reaches the terminal.
     pub fn on_mouse(&mut self, m: crossterm::event::MouseEvent) -> Action {
         use crossterm::event::{MouseButton, MouseEventKind};
-        if self.too_small() {
+        if self.input_held() {
             return Action::None;
         }
         let at = (m.column, m.row);
@@ -13616,8 +13651,9 @@ impl App {
         // Below the supported size the screen is the blocking too-small view
         // (PUBLIC_RELEASE_UX.md): q and Ctrl-C still quit, as they do from
         // navigation, and every other key is held so nothing the owner cannot
-        // see (the draft above all) changes underneath it.
-        if self.too_small() {
+        // see (the draft above all) changes underneath it. The side pane's
+        // compact summary (D-034) is read-only, so it holds keys the same way.
+        if self.input_held() {
             let ctrl_c = code == KeyCode::Char('c') && mods.contains(KeyModifiers::CONTROL);
             if code == KeyCode::Char('q') || ctrl_c {
                 self.should_quit = true;
@@ -25664,6 +25700,47 @@ mod tests {
         assert!(a.too_small());
         a.pinned = Some(Tab::Operator);
         assert!(!a.too_small());
+    }
+
+    /// D-034: the chat workbench's side-pane HUD draws its compact summary
+    /// between the compact and the full minimum, blocks only below the compact
+    /// one, and is the full board once the pane is big enough (Alt+z).
+    #[test]
+    fn a_side_pane_hud_is_compact_until_it_fits_the_full_board() {
+        let mut a = App::new();
+        a.side_pane = true;
+        for (w, h) in [(30, 18), (70, 47), (28, 10), (79, 40), (200, 19)] {
+            a.update(Event::Resize(w, h));
+            assert!(!a.too_small(), "{w}x{h}");
+            assert!(a.compact_side(), "{w}x{h}");
+            assert!(a.input_held(), "{w}x{h}");
+        }
+        for (w, h) in [(27, 30), (60, 9)] {
+            a.update(Event::Resize(w, h));
+            assert!(a.too_small(), "{w}x{h}");
+            assert!(!a.compact_side(), "{w}x{h}");
+        }
+        a.update(Event::Resize(92, 23));
+        assert!(!a.too_small() && !a.compact_side() && !a.input_held());
+        // The plain workbench HUD keeps the full minimum.
+        a.side_pane = false;
+        a.update(Event::Resize(30, 18));
+        assert!(a.too_small() && !a.compact_side());
+    }
+
+    /// The compact summary is read-only: q still quits, every other key is
+    /// held so nothing changes on a board the owner cannot see.
+    #[test]
+    fn the_compact_side_pane_holds_keys_but_still_quits_on_q() {
+        let mut a = App::new();
+        a.side_pane = true;
+        a.update(Event::Resize(30, 18));
+        let tab = a.tab;
+        a.on_key(KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(a.tab, tab);
+        assert!(!a.should_quit);
+        a.on_key(KeyCode::Char('q'), KeyModifiers::NONE);
+        assert!(a.should_quit);
     }
 
     /// q and Ctrl-C still quit from the blocking view, as they do from navigation.

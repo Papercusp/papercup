@@ -268,6 +268,14 @@ pub const CHAT_WORKBENCH_TRANSCRIPT_ENV: &str = "PUI_CHAT_WORKBENCH_TRANSCRIPT";
 /// the work shell would otherwise also believe it owns the session and stop it
 /// on exit. The flag marks the one process that does.
 pub const CHAT_WORKBENCH_PANE_FLAG: &str = "--workbench-pane";
+/// Undocumented flag the layout's `pui hud` side pane is started with
+/// (pui-chat-first-ux D-034). The side column is 35% of the terminal, so the
+/// HUD is narrower than the full board's 80×20 minimum on any terminal under
+/// ~230 columns. With this flag it draws a compact summary down to
+/// [`crate::ui::COMPACT_MIN_COLS`]×[`crate::ui::COMPACT_MIN_ROWS`] instead of
+/// "Terminal too small", and the full board once the pane is big enough (the
+/// pane's own Alt+z fullscreen).
+pub const CHAT_WORKBENCH_SIDE_FLAG: &str = "--side-pane";
 
 /// The bare-`pui` layout (pui-chat-first-ux P-030 / D-020): the chat is the
 /// main, focused pane, and the workbench panes Avi asked to keep sit beside it
@@ -296,7 +304,7 @@ layout {{
         pane name="side" stacked=true size="35%" {{
             pane name="hud" expanded=true {{
                 command "pui"
-                args "hud"
+                args "hud" "{side_flag}"
             }}
             pane name="wake" {{
                 command "pui"
@@ -317,6 +325,7 @@ layout {{
         toggle = CHAT_WORKBENCH_TOGGLE_HINT,
         keybinds = keybinds_kdl(CHAT_WORKBENCH_BINDS),
         pane_flag = CHAT_WORKBENCH_PANE_FLAG,
+        side_flag = CHAT_WORKBENCH_SIDE_FLAG,
     )
 }
 
@@ -1146,7 +1155,10 @@ mod tests {
             .into_iter()
             .filter_map(|(_, a)| a)
             .collect();
-        for wanted in ["\"hud\"", "\"wake-pane\"", "\"network-pane\""] {
+        // The HUD runs as a side pane (D-034): it draws the compact summary in
+        // the narrow column instead of "Terminal too small".
+        let hud = format!("\"hud\" \"{CHAT_WORKBENCH_SIDE_FLAG}\"");
+        for wanted in [hud.as_str(), "\"wake-pane\"", "\"network-pane\""] {
             assert!(args.iter().any(|a| a == wanted), "missing {wanted}: {args:?}");
         }
         assert!(kdl.contains("pane name=\"side\" stacked=true"));
@@ -1155,7 +1167,10 @@ mod tests {
         assert!(kdl.contains("zellij:tab-bar") && kdl.contains("zellij:status-bar"));
         // Exactly one pane is the reactive launch owner (`pui hud`): two would
         // race to open the same agent pane (EI-358).
-        assert_eq!(args.iter().filter(|a| *a == "\"hud\"").count(), 1);
+        assert_eq!(args.iter().filter(|a| a.starts_with("\"hud\"")).count(), 1);
+        // Only the HUD is a compact side pane; the boards are pinned and
+        // already render at any size.
+        assert_eq!(kdl.matches(CHAT_WORKBENCH_SIDE_FLAG).count(), 1);
     }
 
     /// DRIFT GUARD: the chat workbench KDL binds exactly CHAT_WORKBENCH_BINDS,
