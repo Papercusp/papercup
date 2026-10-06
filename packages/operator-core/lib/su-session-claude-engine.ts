@@ -22,6 +22,7 @@ import { probeScopeSupport } from './task-manager/managed-spawn';
 import { killTask } from './task-manager/control';
 import type { TaskSpec } from './task-manager/types';
 import { SuSessionStartupTimeoutError, type SuSessionHost, type SuSessionEventInput } from './su-session-host';
+import { claudeModelOptions } from './su-session-engine-models';
 import { SuNativeCards } from './su-session-native-cards';
 import { loadSuOwnerTurnReceipts } from './su-session-commands';
 
@@ -653,7 +654,7 @@ export function startClaudeSuEngine(
       }
     })();
     enterStartupStage('SDK initialization');
-    await sdk.initializationResult();
+    const initialization = await sdk.initializationResult();
     // A coding-assistant session loads no MCP servers, so it has no SU tool
     // connection to wait for.
     if (su) {
@@ -695,6 +696,10 @@ export function startClaudeSuEngine(
     adapter.host.transition('ready', su
       ? 'Claude structured stream, SU tools and command executor attached'
       : 'Claude structured stream and command executor attached');
+    // WI-10006652: /model lists the models this Claude reports, not the
+    // workspace's routing tiers. Published after every startup descriptor
+    // write so none of them can drop it.
+    adapter.host.updateModels(claudeModelOptions(initialization?.models));
   })();
   let timer: ReturnType<typeof setTimeout>;
   const readyPromise = Promise.race([
