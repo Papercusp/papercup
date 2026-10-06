@@ -25,7 +25,14 @@ import {
   isUnobservableLivenessSignature,
   gitSyncCheckoutMissingSignature,
   isGitSyncCheckoutMissingSignature,
+  gitSyncMissedIntervalsSignature,
+  isEvaluatedLivenessSignature,
+  EVALUATED_LIVENESS_SIGNATURES,
+  EVALUATED_LIVENESS_SIGNATURE_FAMILIES,
 } from './liveness-alarm';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { SystemHealth, HealthPanel, PanelKey, PanelStatus } from './types';
 import type { EscalationRecord } from '../agent-tools/coordination/escalations';
 
@@ -2644,6 +2651,109 @@ describe('EI-19462267124852221 — an UNREADABLE input must not auto-resolve as 
     const second = tickWith(nextHealth, [openRec('stale-paused-routines', 'esc-sp')]);
     await second.run();
     expect(second.resolvedIds).toEqual(['esc-sp']);
+  });
+});
+
+// WI-10006898 — a FOURTH absence reason: the signature belongs to a family this build never
+// emits (a newer build's), so this build's tick cannot have observed it either way. Measured
+// 2026-10-06: per-install git-sync-missed-intervals rows raised by :3170 were resolved by the
+// older :3070 within 6–32 s as "condition recovered — no per-signature evidence recorded".
+describe('WI-10006898 — a signature family this build does not evaluate must not auto-resolve', () => {
+  beforeEach(() => _resetLivenessAlarmDebounce());
+
+  function openRec(sig: string, msg_id: string): EscalationRecord {
+    return {
+      msg_id,
+      severity: 'advisory',
+      summary: `[infra-liveness] ${sig}`,
+      from: INFRA_LIVENESS_IDENTITY.ownerId,
+      livenessSignature: sig,
+      resolved: null,
+    } as unknown as EscalationRecord;
+  }
+
+  function tickWith(opens: EscalationRecord[], retiredSignatureFamilies?: readonly string[]) {
+    const health = mkHealth({ evaluatedAt: 100 * 60_000 });
+    const resolvedIds: string[] = [];
+    const notes: string[] = [];
+    return {
+      resolvedIds,
+      notes,
+      run: () =>
+        runLivenessAlarmTick('ws', {
+          readLast: () => health,
+          computeHealth: async () => health,
+          listOpen: async () => opens,
+          resolve: async (msg_id: string, _choice: string, note: string) => {
+            resolvedIds.push(msg_id);
+            notes.push(note);
+          },
+          escalate: async () => {},
+          page: async () => {},
+          now: () => 100 * 60_000 + 60_000,
+          snapshotStaleMs: 6 * 60_000,
+          ...(retiredSignatureFamilies ? { retiredSignatureFamilies } : {}),
+        }),
+    };
+  }
+
+  it('THE DEFECT: an open row of an unknown family survives a healthy tick', async () => {
+    const t = tickWith([openRec('future-family:papercusp', 'esc-future'), openRec('panel:not-a-panel', 'esc-panel')]);
+    const r = await t.run();
+    expect(isEvaluatedLivenessSignature('future-family:papercusp')).toBe(false);
+    expect(t.resolvedIds).toEqual([]);
+    expect(r.resolved).toEqual([]);
+  });
+
+  it('CALIBRATION: every evaluated family still resolves on the same healthy tick', async () => {
+    const sigs = [
+      'dead-routines',
+      gitSyncMissedIntervalsSignature('papercusp'),
+      gitSyncCheckoutMissingSignature('gone'),
+      'autoloop-fire-stale:queen',
+      'panel:queen',
+    ];
+    const t = tickWith(sigs.map((sig, i) => openRec(sig, `esc-${i}`)));
+    await t.run();
+    expect(t.resolvedIds).toEqual(sigs.map((_, i) => `esc-${i}`));
+  });
+
+  it('a retired family drains, labelled retired rather than recovered', async () => {
+    const t = tickWith([openRec('old-family:papercusp', 'esc-old'), openRec('future-family:x', 'esc-new')], ['old-family']);
+    await t.run();
+    expect(t.resolvedIds).toEqual(['esc-old']);
+    expect(t.notes[0]).toContain('retired signature family');
+    expect(t.notes[0]).not.toContain('condition recovered');
+  });
+
+  it('PIN: the registry covers exactly the keys evaluateLivenessAlarm writes', () => {
+    const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'liveness-alarm.ts'), 'utf8');
+    const start = src.indexOf('export function evaluateLivenessAlarm(');
+    const body = src.slice(start, src.indexOf('\n}\n', start));
+    const exprs = [...body.matchAll(/\bkey:\s*([^,\n]+)/g)].map((m) => m[1]!.trim());
+    // Positive control: the scan really read the evaluator (15 key writes on 2026-10-06).
+    expect(exprs.length).toBeGreaterThanOrEqual(15);
+    const emitted: string[] = [];
+    const unclassified: string[] = [];
+    for (const expr of exprs) {
+      const literal = /^'([^']+)'$/.exec(expr);
+      const template = /^`([a-z-]+):\$\{[^}]+\}`$/.exec(expr);
+      if (literal) emitted.push(literal[1]!);
+      else if (template?.[1] === 'panel') emitted.push(...PANEL_KEYS.map((k) => `panel:${k}`));
+      else if (template) emitted.push(`${template[1]}:sample`);
+      else if (expr.startsWith('gitSyncMissedIntervalsSignature(')) {
+        emitted.push(gitSyncMissedIntervalsSignature('sample'), gitSyncMissedIntervalsSignature(null));
+      } else if (expr.startsWith('gitSyncCheckoutMissingSignature(')) emitted.push(gitSyncCheckoutMissingSignature('sample'));
+      else unclassified.push(expr);
+    }
+    // A new key form must be taught to this scan AND registered, or its rows never auto-resolve.
+    expect(unclassified).toEqual([]);
+    expect(emitted.filter((s) => !isEvaluatedLivenessSignature(s))).toEqual([]);
+    // Reverse: a registered key the evaluator no longer writes belongs in the retired list instead.
+    expect([...EVALUATED_LIVENESS_SIGNATURES].filter((k) => !emitted.includes(k))).toEqual([]);
+    expect(
+      EVALUATED_LIVENESS_SIGNATURE_FAMILIES.filter((f) => !emitted.some((s) => s.startsWith(`${f}:`))),
+    ).toEqual([]);
   });
 });
 

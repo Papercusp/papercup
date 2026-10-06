@@ -515,6 +515,70 @@ export function isUnobservableLivenessSignature(unobservable: ReadonlySet<string
   );
 }
 
+/**
+ * WI-10006898: the signatures THIS BUILD's `evaluateLivenessAlarm` can emit. Auto-resolve reads
+ * "absent from this tick's signals" as "recovered", which is only sound for a signature this build
+ * evaluates at all. Two operator builds tick against the SAME durable escalation rows, and :3070
+ * can lag staging by a day while a frozen repair queue holds main. Measured 2026-10-06: :3170
+ * (carrying d57046a68d) raised per-install `git-sync-missed-intervals:<install>` rows and :3070
+ * (d740fc3802, bare family key only) resolved each one 6–32 s later as "condition recovered — no
+ * per-signature evidence recorded", because it never emits that key and so never sees it firing.
+ *
+ * A signature outside this registry is NOT OBSERVED by this build: its row stays open for a build
+ * that does evaluate it. Every `key:` that `evaluateLivenessAlarm` writes MUST be covered here —
+ * liveness-alarm.test.ts pins that by reading the evaluator's source, because a signal missing from
+ * the registry would never auto-resolve on its own build.
+ */
+export const EVALUATED_LIVENESS_SIGNATURES: ReadonlySet<string> = new Set([
+  'health-tick-stale',
+  GIT_SYNC_MISSED_INTERVALS_SIGNATURE,
+  'dead-routines-quiesced',
+  'dead-routines',
+  'stale-paused-routines',
+  'queen-dark',
+  'overwatch-dark',
+  'overwatch-scorecard-skipped',
+  'rubric-emission-dark',
+  'accounts-starved',
+  'pg-restarted',
+]);
+
+/** Families keyed `<family>:<subject>` (one row per install or role). `panel:<key>` is handled
+ *  separately: only a panel key this build's types know is evaluated, since the catch-all can only
+ *  raise for a panel this build computes. */
+export const EVALUATED_LIVENESS_SIGNATURE_FAMILIES: readonly string[] = [
+  GIT_SYNC_MISSED_INTERVALS_SIGNATURE,
+  GIT_SYNC_CHECKOUT_MISSING_SIGNATURE,
+  'autoloop-fire-stale',
+];
+
+/**
+ * WI-10006898: signature families this build no longer emits but whose open rows must still drain.
+ * Removing a signal from `evaluateLivenessAlarm` moves its key or family HERE, otherwise its open
+ * rows become unevaluated and stay open forever. Such a row resolves with an explicit "retired"
+ * reason, never as a recovery. Empty when introduced: over the 180 days before 2026-10-06 every
+ * stamped `livenessSignature` in coord_event_log belonged to a family above.
+ */
+export const RETIRED_LIVENESS_SIGNATURE_FAMILIES: readonly string[] = [];
+
+function inSignatureFamily(families: readonly string[], sig: string): boolean {
+  return families.some((family) => sig === family || sig.startsWith(`${family}:`));
+}
+
+export function isEvaluatedLivenessSignature(sig: string): boolean {
+  if (EVALUATED_LIVENESS_SIGNATURES.has(sig) || inSignatureFamily(EVALUATED_LIVENESS_SIGNATURE_FAMILIES, sig)) {
+    return true;
+  }
+  return sig.startsWith('panel:') && Object.prototype.hasOwnProperty.call(PANEL_LABELS, sig.slice('panel:'.length));
+}
+
+export function isRetiredLivenessSignature(
+  sig: string,
+  retired: readonly string[] = RETIRED_LIVENESS_SIGNATURE_FAMILIES,
+): boolean {
+  return inSignatureFamily(retired, sig);
+}
+
 export function evaluateLivenessAlarm(
   health: SystemHealth,
   snapshotAgeMs: number | null,
@@ -1575,6 +1639,8 @@ export interface AlarmDeps {
    *  resolution (including undefined from a test double) counts as a real
    *  open→resolved transition. */
   resolve?: (msg_id: string, choice: string, note: string) => Promise<unknown>;
+  /** WI-10006898: override RETIRED_LIVENESS_SIGNATURE_FAMILIES (tests only; the registry is the source). */
+  retiredSignatureFamilies?: readonly string[];
   now?: () => number;
   snapshotStaleMs?: number;
   debounceMs?: number;
@@ -2180,6 +2246,10 @@ export async function runLivenessAlarmTick(
   for (const [sig, recs] of openBySig) {
     if (currentSigs.has(sig)) continue; // still firing — keep the single open row
     if (isUnobservableLivenessSignature(unobservableSigs, sig)) continue; // NOT OBSERVED this tick ≠ recovered
+    // WI-10006898: a signature this build never emits (a newer build's family) is not observed by
+    // this build at all, so its absence says nothing. Retired families still drain, labelled as such.
+    const retiredSig = isRetiredLivenessSignature(sig, deps.retiredSignatureFamilies);
+    if (!retiredSig && !isEvaluatedLivenessSignature(sig)) continue;
     // NOTE: a POLICY-SUPPRESSED signature is deliberately NOT skipped here. Closing its
     // row is correct — an idle-by-design fleet needs no human attention, so the open
     // "no bees running" blocker is a false positive that must drain (the one-time
@@ -2210,7 +2280,9 @@ export async function runLivenessAlarmTick(
         // either side. A reader cannot tell a recovery from a reclassification if both
         // write the same sentence, and that is why six passes could not diagnose this.
         const d026Reclassified = sig === 'dead-routines' && d026QuiescenceIsActive(d026Quiescence);
-        const reason = d026Reclassified
+        const reason = retiredSig
+          ? 'retired signature family — this build no longer evaluates it (NOT an observed recovery)'
+          : d026Reclassified
           ? 'reclassified as expected D-026 quiescence — the condition is STILL TRUE (NOT recovered)'
           : policySuppressed
             ? 'withheld by a policy gate — the condition is STILL TRUE, reclassified as benign (NOT recovered)'
