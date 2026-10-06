@@ -10,7 +10,9 @@
 // history (Up), multiline (Ctrl+J and a trailing backslash), bracketed paste,
 // @ mention, status/context commands, an unknown command, Ctrl+C with a draft,
 // and resume. Keys are the bytes a plain terminal sends (lone ESC, \n for
-// Ctrl+J), so what each CLI does with them is the observation.
+// Ctrl+J), so what each CLI does with them is the observation. The emulator
+// answers terminal queries as a real terminal would; --silent-terminal drops
+// the answers (P-031: a CLI must not stall on a terminal that never answers).
 // --out must be OUTSIDE any git work tree: both CLIs read instruction files
 // (CLAUDE.md / AGENTS.md) from every parent directory up to the repository root,
 // so a project inside this repo would load the papercusp agent guide.
@@ -279,6 +281,13 @@ function start(argv: string[]) {
   // launch as exited and its goodbye text was painted into the next screen,
   // which read as "pui exits right after Starting PUI…".
   ownPty.onData((d) => { if (pty === ownPty) ownTerm.write(d); });
+  // A real terminal answers the queries a CLI sends at startup (device
+  // attributes, cursor position, keyboard protocol). pui-chat-first-ux P-031:
+  // before this, the emulator's answers were dropped, so any CLI that waits
+  // for one sat out its timeout and its startup time was measured wrong.
+  // `--silent-terminal` keeps the old behaviour, to check that a CLI does not
+  // depend on an answer.
+  if (!flag('silent-terminal')) ownTerm.onData((d) => { if (pty === ownPty) ownPty.write(d); });
   ownPty.onExit(() => { if (pty === ownPty) exited = true; });
 }
 
