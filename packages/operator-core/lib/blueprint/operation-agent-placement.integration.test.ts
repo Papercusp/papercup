@@ -45,7 +45,16 @@ const specification = compileAgentSpecification({
       id: 'leaf', version: 'A',
       target: { kind: 'work-item', itemKind: 'feature' },
       execution: { kind: 'agent', role: 'worker' },
+      policy: { identity: { kind: 'identity', ref: 'placement-worker', revision: '1.0.0', contentHash: 'b'.repeat(64) } },
       inputSchema: { type: 'object', properties: { value: { type: 'string' } } },
+      acceptance: { resultSchema: { type: 'object' } },
+    }, {
+      // An agent operation with no pinned worker identity: bootstrap-role can
+      // never bind its worker, so placement must not launch one.
+      id: 'unpinned', version: 'A',
+      target: { kind: 'work-item', itemKind: 'feature' },
+      execution: { kind: 'agent', role: 'worker' },
+      inputSchema: { type: 'object' },
       acceptance: { resultSchema: { type: 'object' } },
     }, {
       id: 'root', version: 'A',
@@ -68,7 +77,7 @@ async function workspace(id: string): Promise<string> {
   return id;
 }
 
-async function accept(workspaceId: string, operationId: 'leaf' | 'root', key: string) {
+async function accept(workspaceId: string, operationId: 'leaf' | 'unpinned' | 'root', key: string) {
   const accepted = await submitBlueprintOperation(sql, {
     workspaceId, harnessSlug, callerId: 'placement-caller', operationId,
     requestKey: key, input: operationId === 'leaf' ? { value: key } : {}, title: `Placement ${key}`,
@@ -125,6 +134,38 @@ describe('accepted agent operation placement (WI-10006859)', () => {
     const claimed = await claimAgentOperationPlacements(sql);
     expect(claimed.filter((p) => p.receiptId === root.receiptId)).toHaveLength(0);
     const row = await receipt(root.receiptId);
+    expect(row.agent_launch_attempts).toBe(0);
+    expect(row.agent_placement_retired_at).not.toBeNull();
+  }, 90_000);
+
+  it('never places an agent operation with no pinned worker identity, and retires it', async () => {
+    const ws = await workspace('placement-unpinned');
+    const unpinned = await accept(ws, 'unpinned', 'unpinned');
+    const pinned = await accept(ws, 'leaf', 'pinned');
+    const claimed = (await claimAgentOperationPlacements(sql)).filter((p) => p.workspaceId === ws);
+    expect(claimed.map((p) => p.receiptId)).toEqual([pinned.receiptId]);
+    const row = await receipt(unpinned.receiptId);
+    expect(row.agent_launch_attempts).toBe(0);
+    expect(row.agent_placement_retired_at).not.toBeNull();
+  }, 90_000);
+
+  it('never places a cancelled operation whose item is still open, and retires it', async () => {
+    const ws = await workspace('placement-cancelled');
+    const cancelled = await accept(ws, 'leaf', 'cancelled');
+    const withdrawn = await accept(ws, 'leaf', 'withdrawn-mark');
+    // Cancellation marks the item (payload.blueprintCancellation) without
+    // settling it — the shape cancelBlueprintOperation writes.
+    await sql`UPDATE harness_shared.work_items
+                 SET payload = jsonb_set(payload, '{blueprintCancellation}',
+                                         ${JSON.stringify({ eventId: 1, requestedBy: 'caller', reason: 'no longer wanted' })}::jsonb)
+               WHERE workspace_id = ${ws} AND feature_id = ${cancelled.workItemId}`;
+    // A null mark is not a cancellation (operation-service reads it the same way).
+    await sql`UPDATE harness_shared.work_items
+                 SET payload = jsonb_set(payload, '{blueprintCancellation}', 'null'::jsonb)
+               WHERE workspace_id = ${ws} AND feature_id = ${withdrawn.workItemId}`;
+    const claimed = (await claimAgentOperationPlacements(sql)).filter((p) => p.workspaceId === ws);
+    expect(claimed.map((p) => p.receiptId)).toEqual([withdrawn.receiptId]);
+    const row = await receipt(cancelled.receiptId);
     expect(row.agent_launch_attempts).toBe(0);
     expect(row.agent_placement_retired_at).not.toBeNull();
   }, 90_000);

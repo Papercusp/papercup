@@ -91,22 +91,28 @@ export async function claimAgentOperationPlacements(
        WHERE i.target_kind = 'work-item'
          AND i.agent_placement_retired_at IS NULL
          AND (
-           -- Not an agent operation in its pinned specification.
+           -- Not an agent operation in its pinned specification, or one with no
+           -- pinned worker identity: bootstrap-role refuses to bind such a
+           -- worker ('has no pinned worker identity'), so a launch only fails.
            NOT EXISTS (
              SELECT 1 FROM harness_shared.blueprint_specifications s
               CROSS JOIN LATERAL jsonb_array_elements(s.artifact->'configuration'->'operations') op
               WHERE s.workspace_id = i.workspace_id AND s.harness_slug = i.harness_slug
                 AND s.specification_revision = i.specification_revision
                 AND op->>'id' = i.operation_id
-                AND op->'execution'->>'kind' = 'agent')
-           -- Target item terminal or gone.
+                AND op->'execution'->>'kind' = 'agent'
+                AND jsonb_typeof(op->'policy'->'identity') = 'object')
+           -- Target item terminal, gone, or its operation cancelled (cancellation
+           -- is recorded as payload.blueprintCancellation; the item can stay open).
            OR NOT EXISTS (
              SELECT 1 FROM harness_shared.work_items wi
               WHERE wi.workspace_id = i.workspace_id
                 AND wi.harness_slug IN (COALESCE(i.target_harness_slug, i.harness_slug),
                                         'harness:' || i.harness_slug)
                 AND wi.feature_id = i.target_ref
-                AND wi.status <> ALL(${terminal}::text[]))
+                AND wi.status <> ALL(${terminal}::text[])
+                AND COALESCE(wi.payload->'blueprintCancellation', 'null'::jsonb)
+                    IN ('null'::jsonb, 'false'::jsonb))
            -- Attempts exhausted, and the last worker has had its window and is gone.
            OR (i.agent_launch_attempts >= ${o.maxAttempts}
                AND i.agent_last_launch_at <= now() - make_interval(secs => ${o.retryAfterSec})
@@ -165,6 +171,9 @@ export async function claimAgentOperationPlacements(
            -- A human-audience item can never be claimed by an agent worker; it
            -- stays unretired so a later reclassification makes it placeable.
            AND wi.audience IS DISTINCT FROM 'human'
+           -- Same reading as operation-service: a null/false mark is not a cancellation.
+           AND COALESCE(wi.payload->'blueprintCancellation', 'null'::jsonb) IN ('null'::jsonb, 'false'::jsonb)
+           AND jsonb_typeof(op->'policy'->'identity') = 'object'
            AND wi.payload->'blueprintOperation'->>'operationId' = i.operation_id
            AND wi.payload->'blueprintOperation'->>'specificationRevision' = i.specification_revision
            AND op->>'id' = i.operation_id
