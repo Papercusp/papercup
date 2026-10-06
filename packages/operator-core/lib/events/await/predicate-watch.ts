@@ -283,7 +283,9 @@ function deepEq(a: unknown, b: unknown): boolean {
   if (a == null || b == null) return false;
   if (typeof a !== 'object' || typeof b !== 'object') return false;
   try {
-    return JSON.stringify(a) === JSON.stringify(b);
+    // Persisted JSONB reorders object keys. Reuse the watch grouping's JSON
+    // canonicalization so key order cannot manufacture eq/ne/changed wakes.
+    return JSON.stringify(canonicalizeForKey(a)) === JSON.stringify(canonicalizeForKey(b));
   } catch {
     return false;
   }
