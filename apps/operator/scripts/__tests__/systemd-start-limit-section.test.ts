@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
 
 /**
@@ -20,6 +21,13 @@ import { join, relative, resolve } from 'node:path';
  */
 
 const SYSTEMD_DIR = process.env.SYSTEMD_START_LIMIT_DIR ?? resolve(__dirname, '..', 'systemd');
+const XDG_CONFIG_HOME = resolve(process.env.XDG_CONFIG_HOME ?? join(homedir(), '.config'));
+
+function systemdUnitDirectories(repoDir: string, configHome: string): string[] {
+  return [...new Set([repoDir, resolve(configHome, 'systemd', 'user')])];
+}
+
+const SYSTEMD_DIRS = systemdUnitDirectories(SYSTEMD_DIR, XDG_CONFIG_HOME);
 
 const UNIT_FILE = /\.(service|service\.in|socket|timer|path|target|mount|conf)$/;
 const START_LIMIT_KEY = /^(StartLimitIntervalSec|StartLimitInterval|StartLimitBurst|StartLimitAction)\s*=/;
@@ -59,6 +67,13 @@ function unitFiles(dir: string): string[] {
 }
 
 describe('systemd start-limit keys live in [Unit] (WI-10006428)', () => {
+  it('includes the host user-unit directory alongside repo units', () => {
+    expect(systemdUnitDirectories('/repo/systemd', '/home/test/.config')).toEqual([
+      '/repo/systemd',
+      '/home/test/.config/systemd/user',
+    ]);
+  });
+
   it('flags a start-limit key under [Service] and accepts the same key under [Unit] (control)', () => {
     // Control: without this, a detector that never matches would let the real scan below
     // pass vacuously.
@@ -74,19 +89,19 @@ describe('systemd start-limit keys live in [Unit] (WI-10006428)', () => {
     expect(findMisplacedStartLimitKeys('[Service]\n# StartLimitBurst=5\n')).toEqual([]);
   });
 
-  it('no tracked unit or drop-in puts a start-limit key outside [Unit]', () => {
-    const files = unitFiles(SYSTEMD_DIR);
-    // Positive control on the population: the scan must actually see unit files, and at
-    // least one of them must carry a start-limit key, or a broken walk reads as clean.
+  it('no repo or host user unit or drop-in puts a start-limit key outside [Unit]', () => {
+    const roots = SYSTEMD_DIRS.filter(existsSync);
+    const files = roots.flatMap((root) => unitFiles(root).map((path) => ({ root, path })));
+    // Positive control on the repo population: a broken walk must not read as clean.
     expect(files.length).toBeGreaterThan(10);
-    const withKey = files.filter((f) =>
-      readFileSync(f, 'utf8').split('\n').some((l) => START_LIMIT_KEY.test(l.trim())),
+    const withKey = files.filter(({ path }) =>
+      readFileSync(path, 'utf8').split('\n').some((l) => START_LIMIT_KEY.test(l.trim())),
     );
     expect(withKey.length).toBeGreaterThan(0);
 
-    const offenders = files.flatMap((f) =>
-      findMisplacedStartLimitKeys(readFileSync(f, 'utf8')).map(
-        (m) => `${relative(SYSTEMD_DIR, f)}:${m.line} ${m.key} in [${m.section ?? 'no section'}]`,
+    const offenders = files.flatMap(({ root, path }) =>
+      findMisplacedStartLimitKeys(readFileSync(path, 'utf8')).map(
+        (m) => `${relative(root, path)}:${m.line} ${m.key} in [${m.section ?? 'no section'}]`,
       ),
     );
     expect(offenders, 'start-limit keys must be in [Unit]; systemd ignores them elsewhere').toEqual([]);
