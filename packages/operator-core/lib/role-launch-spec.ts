@@ -989,9 +989,14 @@ export async function buildRoleLaunchSpec(input: BuildRoleLaunchSpecInput): Prom
       } } : {}),
     },
   });
+  // WI-10006959: the content identity is ref + contentHash — the same pair the producer-binding
+  // check above verifies. Do NOT compare `revision`: the compiler records a layer's revision as
+  // its contentHash unless a caller supplies layerRevisions (none does), while operation pins
+  // carry the identity's declared version (e.g. '0.1.0'). Comparing it refused every
+  // version-pinned operation worker at bootstrap-role; the hash already pins the exact document,
+  // declared version included.
   if (acceptedOperation && !compiled.specificationArtifact.inputs.some((entry) =>
     entry.kind === 'blueprint-layer' && entry.ref === acceptedOperation.identity.ref &&
-    entry.revision === acceptedOperation.identity.revision &&
     entry.contentHash === acceptedOperation.identity.contentHash)) {
     throw new Error('accepted blueprint worker identity changed during launch composition');
   }

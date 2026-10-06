@@ -22,8 +22,73 @@
  */
 
 import { redactSensitiveText } from '../../sensitive-text';
+import {
+  CHAT_REPORTER_NOTE_HEADER,
+  CHAT_THREAD_EXCERPT_HEADER,
+  quoteEndUserText,
+  quoteEndUserTitle,
+} from './untrusted-evidence';
 
 export const REPORT_CONTEXT_SCHEMA_VERSION = 1 as const;
+
+/**
+ * Bounds of the chat block (slack-messages-to-bug-reports-2026-10-05 P-005, D-012). The
+ * excerpt and note are a person's chat text, so beyond redaction and bounds they are
+ * stored QUOTED as untrusted evidence (unified D-003), and display names as one-line
+ * quoted titles: whatever renders this block shows them as evidence, never instructions.
+ */
+export const REPORT_CHAT_LIMITS = {
+  provider: 40,
+  id: 120,
+  name: 120,
+  permalink: 2000,
+  gesture: 40,
+  note: 2000,
+  threadExcerpt: 3000,
+  attachments: 20,
+  attachmentName: 200,
+  attachmentMimetype: 120,
+  attachmentUrl: 2000,
+} as const;
+
+export interface ReportChatPerson {
+  /** The provider's user id. Recorded, never resolved to a Papercusp principal (Slack D-004). */
+  externalUserId: string | null;
+  /** The provider display name, as a one-line quoted title. */
+  displayName: string | null;
+}
+
+export interface ReportChatAttachment {
+  name: string | null;
+  mimetype: string | null;
+  size: number | null;
+  /** A provider link to the file (https). Never the file's bytes or a private download URL. */
+  url: string;
+}
+
+/** Where in a chat workspace a report came from, and who made it. */
+export interface ReportChatContext {
+  provider: string;
+  workspace: { id: string | null; name: string | null };
+  channel: { id: string | null; name: string | null };
+  permalink: string | null;
+  /** How the report was made (Slack: reaction, shortcut, mention, bug-channel, new-thread). */
+  gesture: string | null;
+  reportedAt: string | null;
+  /** When the reported message was posted. */
+  postedAt: string | null;
+  /** The person who reported it (who reacted, used the shortcut, or posted in a bug channel). */
+  reporter: ReportChatPerson | null;
+  /** The person who wrote the reported message. */
+  author: ReportChatPerson | null;
+  /** The reporter's note from the report form, quoted as untrusted evidence. */
+  note: string | null;
+  /** A bounded excerpt of the thread, quoted as untrusted evidence. */
+  threadExcerpt: string | null;
+  attachments: ReportChatAttachment[];
+  /** Whether the reporter consented to attaching the files themselves (Slack D-004). */
+  attachmentConsent: boolean;
+}
 
 export const REPORT_CONTEXT_LIMITS = {
   app: 80,
@@ -69,6 +134,8 @@ export interface ReportContext {
   truncated: string[];
   /** Fields dropped as malformed or disallowed (e.g. an inline screenshot). */
   refused: string[];
+  /** Present only on a report made from a chat workspace (reporter kind 'chat'). */
+  chat?: ReportChatContext;
 }
 
 /** What a filing door may hand in. Every field is optional. */
@@ -79,6 +146,8 @@ export interface ReportContextInput {
   recentErrors?: unknown;
   logExcerpt?: unknown;
   screenshot?: unknown;
+  /** A chat report's context (ReportChatContext shape, every field optional). */
+  chat?: unknown;
 }
 
 /** The failing call a watchdog or agent captured, when there is one. */
@@ -168,6 +237,125 @@ function failureAsError(failure: ReportContextFailure | null | undefined, at: st
   return { at, source, message };
 }
 
+function cleanIso(v: unknown): string | null {
+  if (typeof v !== 'string' || !v.trim()) return null;
+  const ms = Date.parse(v);
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
+}
+
+function cleanHttps(v: unknown, limit: number): string | null {
+  if (typeof v !== 'string') return null;
+  const s = v.trim();
+  if (!/^https:\/\/\S+$/i.test(s) || s.length > limit) return null;
+  return s;
+}
+
+/** A one-line name a person chose (a display name): redacted, bounded, quoted as a title. */
+function quotedName(v: unknown, field: string, truncated: string[]): string | null {
+  const name = clean(typeof v === 'string' ? v.replace(/\s+/g, ' ') : v, REPORT_CHAT_LIMITS.name, field, truncated);
+  return name ? quoteEndUserTitle(name) : null;
+}
+
+function cleanPerson(v: unknown, field: string, truncated: string[], refused: string[]): ReportChatPerson | null {
+  if (v == null) return null;
+  if (typeof v !== 'object' || Array.isArray(v)) {
+    refused.push(field);
+    return null;
+  }
+  const p = v as Record<string, unknown>;
+  const externalUserId = clean(p.externalUserId, REPORT_CHAT_LIMITS.id, `${field}.externalUserId`, truncated);
+  const displayName = quotedName(p.displayName, `${field}.displayName`, truncated);
+  return externalUserId || displayName ? { externalUserId, displayName } : null;
+}
+
+function cleanAttachments(v: unknown, truncated: string[], refused: string[]): ReportChatAttachment[] {
+  if (v == null) return [];
+  if (!Array.isArray(v)) {
+    refused.push('chat.attachments');
+    return [];
+  }
+  if (v.length > REPORT_CHAT_LIMITS.attachments) truncated.push('chat.attachments');
+  const out: ReportChatAttachment[] = [];
+  for (const raw of v.slice(0, REPORT_CHAT_LIMITS.attachments)) {
+    const a = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : null;
+    const url = a ? cleanHttps(a.url, REPORT_CHAT_LIMITS.attachmentUrl) : null;
+    // A link only: a file without one, or with an inline/non-https URL, is dropped and named.
+    if (!a || !url) {
+      if (!refused.includes('chat.attachments')) refused.push('chat.attachments');
+      continue;
+    }
+    const size = typeof a.size === 'number' && Number.isFinite(a.size) && a.size >= 0 ? Math.floor(a.size) : null;
+    out.push({
+      name: clean(a.name, REPORT_CHAT_LIMITS.attachmentName, 'chat.attachments', truncated),
+      mimetype: clean(a.mimetype, REPORT_CHAT_LIMITS.attachmentMimetype, 'chat.attachments', truncated),
+      size,
+      url,
+    });
+  }
+  return out;
+}
+
+/** Text a person wrote in chat: redacted, bounded, then stored as quoted evidence. */
+function quotedChatText(
+  v: unknown,
+  limit: number,
+  field: string,
+  header: typeof CHAT_REPORTER_NOTE_HEADER | typeof CHAT_THREAD_EXCERPT_HEADER,
+  truncated: string[],
+): string | null {
+  const text = clean(v, limit, field, truncated);
+  return text ? quoteEndUserText(text, header) : null;
+}
+
+/**
+ * The chat block (Slack D-012). Null when the door sent none; an unusable block is
+ * refused as a whole ('chat'), never half-kept.
+ */
+function cleanChat(v: unknown, truncated: string[], refused: string[]): ReportChatContext | null {
+  if (v == null) return null;
+  if (typeof v !== 'object' || Array.isArray(v)) {
+    refused.push('chat');
+    return null;
+  }
+  const c = v as Record<string, unknown>;
+  const provider = clean(c.provider, REPORT_CHAT_LIMITS.provider, 'chat.provider', truncated);
+  if (!provider) {
+    refused.push('chat');
+    return null;
+  }
+  const place = (raw: unknown, field: string) => {
+    const r = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
+    return {
+      id: clean(r.id, REPORT_CHAT_LIMITS.id, `${field}.id`, truncated),
+      name: quotedName(r.name, `${field}.name`, truncated),
+    };
+  };
+  const permalinkRaw = c.permalink;
+  const permalink = cleanHttps(permalinkRaw, REPORT_CHAT_LIMITS.permalink);
+  if (permalinkRaw != null && !permalink) refused.push('chat.permalink');
+  return {
+    provider,
+    workspace: place(c.workspace, 'chat.workspace'),
+    channel: place(c.channel, 'chat.channel'),
+    permalink,
+    gesture: clean(c.gesture, REPORT_CHAT_LIMITS.gesture, 'chat.gesture', truncated),
+    reportedAt: cleanIso(c.reportedAt),
+    postedAt: cleanIso(c.postedAt),
+    reporter: cleanPerson(c.reporter, 'chat.reporter', truncated, refused),
+    author: cleanPerson(c.author, 'chat.author', truncated, refused),
+    note: quotedChatText(c.note, REPORT_CHAT_LIMITS.note, 'chat.note', CHAT_REPORTER_NOTE_HEADER, truncated),
+    threadExcerpt: quotedChatText(
+      c.threadExcerpt,
+      REPORT_CHAT_LIMITS.threadExcerpt,
+      'chat.threadExcerpt',
+      CHAT_THREAD_EXCERPT_HEADER,
+      truncated,
+    ),
+    attachments: cleanAttachments(c.attachments, truncated, refused),
+    attachmentConsent: c.attachmentConsent === true,
+  };
+}
+
 /**
  * Build the context block for a filing. Pure; never throws.
  *
@@ -223,6 +411,8 @@ export function buildReportContext(args: {
     }
   }
 
+  const chat = cleanChat(input.chat, truncated, refused);
+
   return {
     schemaVersion: REPORT_CONTEXT_SCHEMA_VERSION,
     capturedAt: args.capturedAt,
@@ -235,5 +425,6 @@ export function buildReportContext(args: {
     autoCaptured,
     truncated,
     refused,
+    ...(chat ? { chat } : {}),
   };
 }

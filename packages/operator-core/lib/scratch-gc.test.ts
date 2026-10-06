@@ -28,6 +28,10 @@ import {
   readdirSync,
   statSync,
   readFileSync,
+  symlinkSync,
+  openSync,
+  closeSync,
+  realpathSync,
 } from 'node:fs';
 import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
@@ -47,7 +51,13 @@ import {
   SCRATCH_GC_CRONTAB,
   SCRATCH_GC_SWEEP_PERIOD_MS,
   SCRATCH_RUN_DIR_MAX_AGE_MS,
+  WORKSPACE_SCRATCH_MARKER,
+  DEAD_WORKSPACE_QUIET_MS,
 } from './scratch-gc';
+import type { OpenWriterScan } from './native-bg-task-ledger';
+import { writeScratchReference } from './scratch-reference';
+import { scratchRootForWorkspace } from './scratch-uri';
+import { spawn } from 'node:child_process';
 
 // Tests run against a sandbox scratch root so they don't touch the
 // real ~/.papercusp/scratch tree. `os.homedir()` on Linux reads
@@ -81,6 +91,27 @@ function makeRunDir(workspaceId: string, toolName: string, runId: string, bytes:
   }
   return dir;
 }
+
+/** Stamp EVERY file and dir under `dir` (children first, then `dir`) `ageMs` into the past. */
+function ageTree(dir: string, ageMs: number): void {
+  const t = (Date.now() - ageMs) / 1000;
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const child = join(dir, entry.name);
+    if (entry.isDirectory()) ageTree(child, ageMs);
+    else utimesSync(child, t, t);
+  }
+  utimesSync(dir, t, t);
+}
+
+/** Size of a workspace root's WORKSPACE_SCRATCH_MARKER (it varies with the id and timestamp). */
+function markerBytes(workspaceId: string): number {
+  const size = statSync(join(process.env.PAPERCUSP_SCRATCH_ROOT!, workspaceId, WORKSPACE_SCRATCH_MARKER)).size;
+  expect(size).toBeGreaterThan(0);
+  return size;
+}
+
+/** A complete /proc scan that saw no holder anywhere. */
+const noHolders = async (): Promise<OpenWriterScan> => ({ byPath: new Map(), complete: true });
 
 describe('runScratchGc — retention', () => {
   it('keeps fresh run-dirs', async () => {
@@ -155,10 +186,11 @@ describe('scratch GC schedule — single source + max-age bound (WI-10004532)', 
 });
 
 describe('runScratchGc — dead-workspace cleanup', () => {
-  it('drops scratch dirs whose workspace is not in the registry', async () => {
+  it('drops a quiet, marked scratch root whose workspace is not in the registry', async () => {
     makeRunDir('ws-DEAD', 'demo:tool', UUID(1), 100);
     makeRunDir('ws-ALIVE', 'demo:tool', UUID(2), 100);
-    const r = await runScratchGc({ workspaceRegistry: ['ws-ALIVE'] });
+    ageTree(join(process.env.PAPERCUSP_SCRATCH_ROOT!, 'ws-DEAD'), DEAD_WORKSPACE_QUIET_MS + 60_000);
+    const r = await runScratchGc({ workspaceRegistry: ['ws-ALIVE'], scanOpenPaths: noHolders });
     expect(r.deadWorkspaces).toBe(1);
     expect(r.deadWorkspaceBytes).toBeGreaterThan(0);
     const scratchRoot = process.env.PAPERCUSP_SCRATCH_ROOT!;
@@ -246,7 +278,8 @@ describe('reserveScratchSpace — no synchronous walk on the hot path (WI-100045
     reserveScratchSpace({ workspaceId: 'ws-A', bytes: 10 });
     reserveScratchSpace({ workspaceId: 'ws-A', bytes: 10 });
     await refreshScratchUsage('ws-A'); // joins the in-flight measure started by the first reservation
-    expect(scratchUsageBytes('ws-A')).toBe(3000);
+    // The workspace-root marker (WI-10006512) is real bytes on disk and is counted too.
+    expect(scratchUsageBytes('ws-A')).toBe(3000 + markerBytes('ws-A'));
   });
 
   it('refreshScratchUsage measures the tree size asynchronously (missing tree = 0)', async () => {
@@ -255,7 +288,7 @@ describe('reserveScratchSpace — no synchronous walk on the hot path (WI-100045
     makeRunDir('ws-B', 'tool', UUID(3), 5000);
     makeRunDir('ws-B', 'tool', UUID(4), 7000);
     await refreshScratchUsage('ws-B');
-    expect(scratchUsageBytes('ws-B')).toBe(12000);
+    expect(scratchUsageBytes('ws-B')).toBe(12000 + markerBytes('ws-B'));
   });
 
   it('still enforces the workspace quota against the cached total', () => {
@@ -271,11 +304,12 @@ describe('runScratchGc — no synchronous fs on the event loop (WI-10005135)', (
   it('sweeps dead workspaces, expired runs and the quota pass with ZERO synchronous fs calls', async () => {
     // A tree that exercises every pass: a dead workspace, expired and fresh run dirs.
     makeRunDir('ws-DEAD', 'tool', UUID(1), 256);
+    ageTree(join(process.env.PAPERCUSP_SCRATCH_ROOT!, 'ws-DEAD'), DEAD_WORKSPACE_QUIET_MS + 60_000);
     for (let i = 0; i < 12; i++) makeRunDir('ws-A', `tool-${i % 3}`, UUID(10 + i), 128, RETENTION_MS + 60_000);
     for (let i = 0; i < 6; i++) makeRunDir('ws-A', `tool-${i % 3}`, UUID(40 + i), 128);
     for (const fn of [readdirSync, statSync, existsSync, rmSync, mkdirSync]) vi.mocked(fn).mockClear();
 
-    const r = await runScratchGc({ workspaceRegistry: ['ws-A'] });
+    const r = await runScratchGc({ workspaceRegistry: ['ws-A'], scanOpenPaths: noHolders });
 
     // It did the work (so the zero-call assertions below are not vacuous) ...
     expect(r.deadWorkspaces).toBe(1);
@@ -314,8 +348,192 @@ describe('runScratchGc — no synchronous fs on the event loop (WI-10005135)', (
       deadWorkspaceBytes: 0,
       quotaEvictions: 0,
       quotaEvictedBytes: 0,
+      markersWritten: 0,
+      unprovenEntries: 0,
+      deadWorkspacesDeferred: [],
     });
   });
+});
+
+/**
+ * WI-10006512 (2026-10-06): the 03:00 sweep `rm -rf`ed every top-level entry under the scratch
+ * root that was not a registered workspace id — including a running benchmark's PG datadir in
+ * `~/.papercusp/scratch/portable-bench/`, the location the bash resource gate tells agents to use.
+ * The pass may now delete only a tree it can PROVE is a dead workspace root, and only when quiet.
+ */
+describe('runScratchGc — deletes only provably-dead, quiet workspace roots (WI-10006512)', () => {
+  const OLD = DEAD_WORKSPACE_QUIET_MS + 60 * 60_000;
+  const root = (): string => process.env.PAPERCUSP_SCRATCH_ROOT!;
+
+  /** An agent's own scratch tree: no marker, aged far past every window. */
+  function makeAgentDir(name: string): string {
+    const dir = join(root(), name);
+    mkdirSync(join(dir, 'pg-shared', 'global'), { recursive: true });
+    writeFileSync(join(dir, 'pg-shared', 'global', 'pg_control'), Buffer.alloc(64));
+    writeFileSync(join(dir, 'run.sh'), '#!/bin/sh\n');
+    ageTree(dir, OLD);
+    return dir;
+  }
+
+  /** A workspace root left behind by a workspace that is no longer registered. */
+  function makeDeadWorkspace(workspaceId: string, ageMs = OLD): string {
+    makeRunDir(workspaceId, 'demo:tool', UUID(500), 100);
+    const dir = join(root(), workspaceId);
+    ageTree(dir, ageMs);
+    return dir;
+  }
+
+  it('never deletes an unmarked agent dir or `packs`, however old, and counts them', async () => {
+    const bench = makeAgentDir('portable-bench');
+    const packs = makeAgentDir('packs');
+    const r = await runScratchGc({ workspaceRegistry: ['papercusp-workspace'], scanOpenPaths: noHolders });
+    expect(existsSync(join(bench, 'pg-shared', 'global', 'pg_control'))).toBe(true);
+    expect(existsSync(packs)).toBe(true);
+    expect(r.deadWorkspaces).toBe(0);
+    expect(r.unprovenEntries).toBe(2);
+  });
+
+  it('a top-level FILE is never deleted either', async () => {
+    mkdirSync(root(), { recursive: true });
+    writeFileSync(join(root(), 'notes.txt'), 'keep me');
+    ageTree(root(), OLD);
+    const r = await runScratchGc({ workspaceRegistry: [], scanOpenPaths: noHolders });
+    expect(existsSync(join(root(), 'notes.txt'))).toBe(true);
+    expect(r.unprovenEntries).toBe(1);
+  });
+
+  it('the scratch writer marks a root it creates, and that root is collected once dead and quiet', async () => {
+    const wsRoot = scratchRootForWorkspace('ws-W');
+    const deferred: Promise<void>[] = [];
+    writeScratchReference({
+      filePath: join(wsRoot, 'tool:x', UUID(600), 'a.spill'),
+      payload: 'sync',
+      workspaceId: 'ws-W',
+      mediaType: 'text/plain',
+    });
+    writeScratchReference({
+      filePath: join(scratchRootForWorkspace('ws-V'), 'tool:x', UUID(601), 'b.spill'),
+      payload: 'deferred',
+      workspaceId: 'ws-V',
+      mediaType: 'text/plain',
+      deferredWrites: deferred,
+    });
+    await Promise.all(deferred);
+    for (const ws of ['ws-W', 'ws-V']) {
+      const marker = JSON.parse(readFileSync(join(root(), ws, WORKSPACE_SCRATCH_MARKER), 'utf8'));
+      expect(marker.workspaceId).toBe(ws);
+      ageTree(join(root(), ws), OLD);
+    }
+    const r = await runScratchGc({ workspaceRegistry: [], scanOpenPaths: noHolders });
+    expect(r.deadWorkspaces).toBe(2);
+    expect(existsSync(wsRoot)).toBe(false);
+  });
+
+  it('backfills the marker onto a registered root that predates markers, and never creates a root', async () => {
+    const wsRoot = join(root(), 'ws-LEGACY');
+    mkdirSync(join(wsRoot, 'tool', UUID(700)), { recursive: true });
+    const first = await runScratchGc({ workspaceRegistry: ['ws-LEGACY', 'ws-NO-ROOT'], scanOpenPaths: noHolders });
+    expect(first.markersWritten).toBe(1);
+    expect(existsSync(join(wsRoot, WORKSPACE_SCRATCH_MARKER))).toBe(true);
+    expect(existsSync(join(root(), 'ws-NO-ROOT'))).toBe(false);
+    // Once the workspace leaves the registry and goes quiet, the backfilled marker is the proof.
+    ageTree(wsRoot, OLD);
+    const second = await runScratchGc({ workspaceRegistry: [], scanOpenPaths: noHolders });
+    expect(second.deadWorkspaces).toBe(1);
+    expect(existsSync(wsRoot)).toBe(false);
+  });
+
+  it('keeps a dead workspace whose tree changed recently, even when only a deep file did', async () => {
+    const dir = makeDeadWorkspace('ws-BUSY');
+    // A deep write leaves every directory mtime old; only the file itself is fresh.
+    writeFileSync(join(dir, 'demo:tool', UUID(500), 'data.bin'), 'still writing');
+    const r = await runScratchGc({ workspaceRegistry: [], scanOpenPaths: noHolders });
+    expect(existsSync(dir)).toBe(true);
+    expect(r.deadWorkspacesDeferred).toEqual([{ workspaceId: 'ws-BUSY', reason: 'recent-write' }]);
+  });
+
+  it('keeps a dead workspace a process still holds open', async () => {
+    const dir = makeDeadWorkspace('ws-HELD');
+    const real = realpathSync(dir);
+    const scan = async (paths: readonly string[]): Promise<OpenWriterScan> => ({
+      byPath: new Map(paths.filter((p) => p === real).map((p) => [p, ['4242']])),
+      complete: true,
+    });
+    const r = await runScratchGc({ workspaceRegistry: [], scanOpenPaths: scan });
+    expect(existsSync(dir)).toBe(true);
+    expect(r.deadWorkspacesDeferred).toEqual([{ workspaceId: 'ws-HELD', reason: 'open-writer' }]);
+  });
+
+  it('fails closed when the process scan is incomplete or throws', async () => {
+    const a = makeDeadWorkspace('ws-PARTIAL');
+    const partial = await runScratchGc({
+      workspaceRegistry: [],
+      scanOpenPaths: async () => ({ byPath: new Map(), complete: false }),
+    });
+    expect(existsSync(a)).toBe(true);
+    expect(partial.deadWorkspacesDeferred).toEqual([{ workspaceId: 'ws-PARTIAL', reason: 'process-scan-incomplete' }]);
+
+    const thrown = await runScratchGc({
+      workspaceRegistry: [],
+      scanOpenPaths: async () => {
+        throw new Error('EACCES /proc');
+      },
+    });
+    expect(existsSync(a)).toBe(true);
+    expect(thrown.deadWorkspaces).toBe(0);
+  });
+
+  it('a marker naming ANOTHER workspace (a copied tree) is not proof', async () => {
+    const original = makeDeadWorkspace('ws-ORIG');
+    const copy = join(root(), 'ws-COPY');
+    mkdirSync(copy);
+    writeFileSync(join(copy, WORKSPACE_SCRATCH_MARKER), readFileSync(join(original, WORKSPACE_SCRATCH_MARKER)));
+    ageTree(copy, OLD);
+    const r = await runScratchGc({ workspaceRegistry: ['ws-ORIG'], scanOpenPaths: noHolders });
+    expect(existsSync(copy)).toBe(true);
+    expect(r.unprovenEntries).toBe(1);
+  });
+
+  it('a symlink at the top level is not followed into a marked tree', async () => {
+    const target = makeDeadWorkspace('ws-TARGET');
+    symlinkSync(target, join(root(), 'ws-LINK'));
+    const r = await runScratchGc({ workspaceRegistry: ['ws-TARGET'], scanOpenPaths: noHolders });
+    expect(existsSync(join(root(), 'ws-LINK'))).toBe(true);
+    expect(existsSync(target)).toBe(true);
+    expect(r.unprovenEntries).toBe(1);
+  });
+
+  // The DEFAULT scan (no seam): proves the real /proc wiring matches files BELOW the root
+  // (descendants) and working directories (includeCwd), not just the root path itself.
+  it('default scan: an open file deep inside the root keeps it', async () => {
+    const dir = makeDeadWorkspace('ws-FD');
+    const fd = openSync(join(dir, 'demo:tool', UUID(500), 'data.bin'), 'r');
+    try {
+      const r = await runScratchGc({ workspaceRegistry: [] });
+      expect(existsSync(dir)).toBe(true);
+      expect(r.deadWorkspaces).toBe(0);
+      expect(['open-writer', 'process-scan-incomplete']).toContain(r.deadWorkspacesDeferred[0]?.reason);
+    } finally {
+      closeSync(fd);
+    }
+  }, 60_000);
+
+  it('default scan: a process whose cwd is inside the root keeps it', async () => {
+    const dir = makeDeadWorkspace('ws-CWD');
+    const child = spawn('sleep', ['60'], { cwd: join(dir, 'demo:tool'), stdio: 'ignore' });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        child.once('spawn', () => resolve());
+        child.once('error', reject);
+      });
+      const r = await runScratchGc({ workspaceRegistry: [] });
+      expect(existsSync(dir)).toBe(true);
+      expect(r.deadWorkspaces).toBe(0);
+      expect(['open-writer', 'process-scan-incomplete']).toContain(r.deadWorkspacesDeferred[0]?.reason);
+    } finally {
+      child.kill('SIGKILL');
+    }
+  }, 60_000);
 });
 
 describe('runScratchGc — quota eviction', () => {

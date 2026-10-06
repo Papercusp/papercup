@@ -28,6 +28,8 @@
  */
 import type postgres from 'postgres';
 import { pinModuleState } from '@papercusp/module-singleton';
+import type { ReporterKind } from '../harness/improvements/provenance';
+import type { ReportContextInput } from '../harness/improvements/report-context';
 
 export type AdmissionDb = postgres.Sql | postgres.TransactionSql;
 
@@ -106,6 +108,12 @@ export interface ResolvedAdmissionSource {
    * instead of minting.
    */
   coveredBy?: readonly AdmissionSourceIdentity[];
+  /**
+   * What the source knows about the report's context (for a chat source: channel, author, post
+   * time, a bounded thread excerpt). Merged with the admitter's own context and handed to the bug
+   * intake, which redacts, bounds and quotes it (report-context.ts).
+   */
+  reportContext?: ReportContextInput;
 }
 
 /** A resolver's typed refusal. The verb surfaces `code` verbatim and mints nothing. */
@@ -171,6 +179,12 @@ export interface AdmissionTransitionResult {
 
 export interface AdmissionSourceResolver<Ref = unknown> {
   kind: AdmissionSourceKind;
+  /**
+   * Who files a report admitted from this source, whoever admits it: a chat source is always a
+   * person writing in a chat workspace ('chat', slack-messages-to-bug-reports D-012). Omit for
+   * sources whose reporter depends on the admitter (admit.ts admissionReporterKind).
+   */
+  reporterKind?: ReporterKind;
   /**
    * Validates and normalises the caller's raw `source` object, minus its `kind`. Throw an Error
    * whose message starts `admission_source_invalid:` to reject the input.

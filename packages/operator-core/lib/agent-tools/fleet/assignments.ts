@@ -389,7 +389,9 @@ export async function reconcileWakeability<T extends AgentAssignment & { session
     // WI-4400: the read is stale-ish when draining/suspect; expose the explicit
     // confirmation nudge through fleet:assignments (and coord:orient's me fold).
     a.confirmLiveness = v.confirmLiveness;
-    if (v.sessionState === 'recorded') a.alive = true;
+    // Positive oracle evidence supersedes the roster's stale heartbeat flag;
+    // otherwise downstream member verdicts can call a rescued parked owner dead.
+    if (v.sessionState === 'live' || v.sessionState === 'parked' || v.sessionState === 'recorded') a.alive = true;
     if (v.sessionState === 'ended' || v.sessionState === 'suspect' || v.sessionState === 'draining') a.alive = false;
   }
   return agents;

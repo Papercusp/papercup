@@ -382,7 +382,12 @@ test.describe('/adv shell tab navigation (P-011)', () => {
     // from cmdk's internal keyboard-navigation selection state).
     await expect(moreTrigger(page)).toHaveClass(/pc-advshell__more-trigger--active/);
     await moreTrigger(page).click();
-    await expect(page.locator('.pc-advshell__more-item[data-active]', { hasText: 'Git' })).toHaveCount(1);
+    // The More menu lists a visited section twice, once under 'Recent' and once
+    // in its own group, and both rows carry data-active (AdvMoreMenu, D-001).
+    // So assert the intent, not a count: Git is active and no OTHER section is
+    // (WI-10006792).
+    await expect(page.locator('.pc-advshell__more-item[data-active]', { hasText: 'Git' }).first()).toBeVisible();
+    await expect(page.locator('.pc-advshell__more-item[data-active]', { hasNotText: 'Git' })).toHaveCount(0);
   });
 
   test('the packaged 1280x720 header keeps every visible control in the viewport', async ({ page }) => {

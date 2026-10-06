@@ -63,6 +63,64 @@ export async function readFormerGoalHolderAwaits(
             AND m.mode = ${GOAL_MODE} AND m.subject = ${goalId})`;
 }
 
+/** Upper bound on former-holder claims released per goal per sweep tick (WI-10006948). */
+export const FORMER_GOAL_HOLDER_CLAIM_RELEASE_LIMIT = 50;
+
+/**
+ * WI-10006948: goal-stamped work-items still held by a FORMER holder of this goal
+ * (one whose GOAL exit on this subject is in the mode audit and who holds no GOAL row
+ * on it now), claimed during its tenure and untouched since that exit.
+ *
+ * The handoff only disarms the predecessor's loop and tells it to release its lane.
+ * A predecessor that never takes another turn (WI-10006814) keeps those claims for
+ * good: its session is parked, not ended, so the session-death release never fires.
+ * Measured 2026-10-06: WI-10006823 stayed wip on the epoch-25 holder of 60d3a8 for
+ * 2h after the lease moved to epoch 26.
+ *
+ * Two fences keep this to abandoned custody:
+ *  - `taken_at <= exit`: a claim taken AFTER the agent left GOAL is a later,
+ *    deliberate act, not residue of its tenure.
+ *  - `COALESCE(last_progress_at, taken_at) <= exit`: an item the agent kept
+ *    progressing after it left GOAL (a voluntary exit that kept working) is
+ *    live work and stays put.
+ * The exit row is written only when the elected row's handoff window has expired
+ * (retireSupersededGoalHolderModes) or by an explicit setMode disable, so nothing a
+ * predecessor could still legitimately finish inside its handoff window is selected.
+ */
+export async function readFormerGoalHolderTenureClaims(
+  sql: Sql,
+  workspaceId: string,
+  goalId: string,
+  terminalStatuses: readonly string[],
+) {
+  return await sql<Array<{ id: string; harness: string; owner_id: string; exited_at: Date }>>`
+    SELECT w.feature_id AS id, w.harness_slug AS harness, w.taken_by AS owner_id, x.exited_at
+      FROM harness_shared.work_items w
+      CROSS JOIN LATERAL (
+        SELECT max(c.changed_at) AS exited_at
+          FROM harness_shared.agent_mode_changes c
+         WHERE c.workspace_id = ${workspaceId}
+           AND c.owner_id = w.taken_by
+           AND c.old_mode = ${GOAL_MODE}
+           AND c.subject = ${goalId}
+      ) x
+     WHERE w.workspace_id = ${workspaceId}
+       AND w.goal_id = ${goalId}
+       AND w.taken_by IS NOT NULL AND w.taken_by <> ''
+       AND w.lane IS DISTINCT FROM 'observation'
+       AND NOT (w.status = ANY(${sql.array([...terminalStatuses])}::text[]))
+       AND x.exited_at IS NOT NULL
+       AND w.taken_at IS NOT NULL
+       AND w.taken_at <= x.exited_at
+       AND COALESCE(w.last_progress_at, w.taken_at) <= x.exited_at
+       AND NOT EXISTS (
+         SELECT 1 FROM harness_shared.agent_modes m
+          WHERE m.workspace_id = ${workspaceId} AND m.owner_id = w.taken_by
+            AND m.mode = ${GOAL_MODE} AND m.subject = ${goalId})
+     ORDER BY w.taken_at ASC, w.feature_id ASC
+     LIMIT ${FORMER_GOAL_HOLDER_CLAIM_RELEASE_LIMIT}`;
+}
+
 export type GoalHolderAuthorityStatus = 'none' | 'elected' | 'handoff' | 'superseded';
 
 export interface GoalHolderAuthority {

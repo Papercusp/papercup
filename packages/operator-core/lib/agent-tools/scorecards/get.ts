@@ -316,7 +316,7 @@ export default defineTool({
     notWhen:
       'You want scorecard history, trend inputs, or multiple rows — scorecards:list. You want a rubric definition — rubrics:get. You are filing a scorecard — scorecards:emit.',
     chaining:
-      'scorecards:get { issueId } → when evidenceRead.scope is criterion-index, follow evidenceRead.next until there is no next, then fetch each indexed criterion’s pages sequentially; batch independent criteria in small Promise.all groups. Sibling reads share the result door: before reading scorecard.criteria, detect and recover any `papercusp.output-envelope/v1` result via capability:read. A wrapper is not missing evidence. Concatenate complete pages, rerun probes, then emit the grading-integrity audit.',
+      'Page evidenceRead.next until the criterion index is complete, then fetch each criterion’s evidence pages in small parallel batches. Resolve result-door envelopes with capability:read before reading them. Concatenate complete pages, rerun probes, then emit the grading-integrity audit.',
     returns:
       'Returns `{ ok, scorecard, evidenceRead }`. The scorecard includes `evidenceFingerprint` when recorded. Full reads contain every exact criterion; an oversized read contains criteria:[] plus a complete or paged criterion index, not absent evidence. Index pages preserve scorecard metadata and report offset/totalCriteria/next; criterion pages retain full-card identity and nKeys/missingKeys and report offset/totalChars/next. Concatenate all index and evidence pages before grading.',
     seeAlso: ['scorecards:list', 'scorecards:emit', 'rubrics:get'],

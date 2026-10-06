@@ -204,8 +204,13 @@ async function gotoHarnessesTab(page: Page, search: string): Promise<boolean> {
 
 /** Open the create picker from the shell header's "New" button. */
 async function openPicker(page: Page): Promise<Locator> {
-  await page.getByTitle('Create or add a new harness').click();
-  const dialog = page.getByRole('dialog', { name: 'Add a harness' });
+  // Locate by the button's stable class, not its wording: the header button
+  // lost its `title` attribute to a <Tooltip>, and both its label and the
+  // dialog title now render through the lexicon (`Create or add a new
+  // ${t('pot')}` / `Add a ${t('pot')}`), so a literal 'harness' never matches
+  // (WI-10006792).
+  await page.locator('button.pc-advshell__action--new').first().click();
+  const dialog = page.getByRole('dialog', { name: /^Add a /i });
   await expect(dialog).toBeVisible({ timeout: 10_000 });
   return dialog;
 }

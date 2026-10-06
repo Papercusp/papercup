@@ -2614,10 +2614,19 @@ export async function runGoalHolderRespawnOnce(
     if (deps.retireSuperseded) {
       try {
         const retirement = await deps.retireSuperseded(goal);
-        if (retirement.retired.length > 0 || retirement.leftArmed.length > 0) {
+        if (
+          retirement.retired.length > 0 ||
+          retirement.leftArmed.length > 0 ||
+          retirement.claimsReleased.length > 0
+        ) {
           console.info(
             `[goal-holder-respawner] ${goal.goalId}: retired superseded holder GOAL rows ` +
               `[${retirement.retired.join(', ')}]; cancelled ${retirement.awaitsCancelled} goal-scoped await(s)` +
+              // WI-10006948: tenure claims a former holder left pinned, released back to the pool.
+              (retirement.claimsReleased.length > 0
+                ? `; released former-holder claims ` +
+                  `[${retirement.claimsReleased.map((c) => `${c.id}<-${c.ownerId}`).join(', ')}]`
+                : '') +
               (retirement.leftArmed.length > 0
                 ? `; refused (left armed) [${retirement.leftArmed.join(', ')}]`
                 : ''),

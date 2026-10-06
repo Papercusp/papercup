@@ -20,7 +20,7 @@ export type ScheduledWatchdogId = (typeof SCHEDULED_WATCHDOG_IDS)[number];
 
 export interface WatchdogSchedulerStatus {
   kind: 'dbos-operation';
-  parentWorkflow: 'routinesTick';
+  parentWorkflow: 'routinesSweepTick';
   operation: 'su-ideate-ungraded-sweep';
   lastExecutionAt: string | null;
   lastWorkflowStatus: string | null;
@@ -374,7 +374,7 @@ export async function readScheduledWatchdogStatus(args: {
     config,
     scheduler: {
       kind: 'dbos-operation' as const,
-      parentWorkflow: 'routinesTick' as const,
+      parentWorkflow: 'routinesSweepTick' as const,
       operation: 'su-ideate-ungraded-sweep' as const,
       lastExecutionAt: executionMs == null ? null : new Date(executionMs).toISOString(),
       lastWorkflowStatus: schedulerRow?.workflow_status ?? null,

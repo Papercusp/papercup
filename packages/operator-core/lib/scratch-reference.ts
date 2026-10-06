@@ -11,7 +11,12 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import type { OutputAudience, OutputEvidenceClass } from './output-envelope';
-import { reserveScratchSpace, RETENTION_MS } from './scratch-gc';
+import {
+  reserveScratchSpace,
+  RETENTION_MS,
+  markNewWorkspaceScratchRoot,
+  markNewWorkspaceScratchRootSync,
+} from './scratch-gc';
 
 export const SCRATCH_REFERENCE_SCHEMA_VERSION = 'papercusp.scratch-reference/v1' as const;
 export const SCRATCH_REFERENCE_MAGIC = `${SCRATCH_REFERENCE_SCHEMA_VERSION}\n`;
@@ -223,7 +228,12 @@ export function writeScratchReference(input: {
   if (input.deferredWrites) {
     const filePath = input.filePath;
     const write = (async () => {
-      await mkdir(dirname(filePath), { recursive: true, mode: 0o700 });
+      // WI-10006512: a root this mkdir creates is marked as a workspace scratch root, so the
+      // scratch GC can later prove it is ours before deleting it.
+      await markNewWorkspaceScratchRoot(
+        input.workspaceId,
+        await mkdir(dirname(filePath), { recursive: true, mode: 0o700 }),
+      );
       await writeFile(filePath, bytes, { mode: 0o600 });
     })();
     // Mark handled now: the caller awaits it later, and a fast failure must not reach the
@@ -232,7 +242,10 @@ export function writeScratchReference(input: {
     input.deferredWrites.push(write);
     return manifest;
   }
-  mkdirSync(dirname(input.filePath), { recursive: true, mode: 0o700 });
+  markNewWorkspaceScratchRootSync(
+    input.workspaceId,
+    mkdirSync(dirname(input.filePath), { recursive: true, mode: 0o700 }),
+  );
   writeFileSync(input.filePath, bytes, { mode: 0o600 });
   return manifest;
 }

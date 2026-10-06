@@ -92,7 +92,7 @@ function harness(over: Partial<GoalHolderRespawnDeps> = {}) {
     // uninjected one reaches the stub and warns on every test in this file.
     reconcileStrandedLatch: async () => ({ kind: 'noop' }),
     // WI-10005573: the superseded-holder reaper also runs for every swept goal.
-    retireSuperseded: async () => ({ retired: [], leftArmed: [], awaitsCancelled: 0 }),
+    retireSuperseded: async () => ({ retired: [], leftArmed: [], awaitsCancelled: 0, claimsReleased: [] }),
     // WI-10005559: production defers recovery until loss persists for 5 min. These
     // cases model boot-arm recovery on a single tick; the confirm window itself is
     // covered in goal-liveness-watchdog.test.ts.

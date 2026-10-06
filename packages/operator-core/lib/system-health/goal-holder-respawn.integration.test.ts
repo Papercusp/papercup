@@ -1110,6 +1110,7 @@ describe('superseded holder GOAL rows are retired after the handoff window (WI-1
       retired: [],
       leftArmed: [],
       awaitsCancelled: 0,
+      claimsReleased: [],
     });
     expect((await goalModeRows(goalId)).map((row) => row.owner_id).sort()).toEqual([
       'su-first',
@@ -1122,6 +1123,7 @@ describe('superseded holder GOAL rows are retired after the handoff window (WI-1
       retired: ['su-first', 'su-second'],
       leftArmed: [],
       awaitsCancelled: 0,
+      claimsReleased: [],
     });
     const rows = await goalModeRows(goalId);
     expect(rows.map((row) => row.owner_id)).toEqual(['su-third']);
@@ -1134,6 +1136,7 @@ describe('superseded holder GOAL rows are retired after the handoff window (WI-1
       retired: [],
       leftArmed: [],
       awaitsCancelled: 0,
+      claimsReleased: [],
     });
   }, 60_000);
 
@@ -1185,12 +1188,14 @@ describe('superseded holder GOAL rows are retired after the handoff window (WI-1
       retired: [],
       leftArmed: [],
       awaitsCancelled: 0,
+      claimsReleased: [],
     });
     await expireHandoff(goalId);
     await expect(retireSupersededGoalHolderModes(rootSql, WS, goalId)).resolves.toEqual({
       retired: ['su-first', 'su-second'],
       leftArmed: [],
       awaitsCancelled: 3,
+      claimsReleased: [],
     });
 
     const state = await rootSql<{ id: number; cancelled_at: Date | null }[]>`
@@ -1207,6 +1212,7 @@ describe('superseded holder GOAL rows are retired after the handoff window (WI-1
       retired: [],
       leftArmed: [],
       awaitsCancelled: 1,
+      claimsReleased: [],
     });
     const [after] = await rootSql<{ cancelled_at: Date | null }[]>`
       SELECT cancelled_at FROM harness_shared.event_awaits WHERE id = ${rearmed}`;
@@ -1238,6 +1244,7 @@ describe('superseded holder GOAL rows are retired after the handoff window (WI-1
       retired: ['su-legacy'],
       leftArmed: [],
       awaitsCancelled: 1,
+      claimsReleased: [],
     });
     // The retire row names the goal it cleared (setMode's disable audit carries the subject).
     const retireRows = await rootSql<{ subject: string | null }[]>`

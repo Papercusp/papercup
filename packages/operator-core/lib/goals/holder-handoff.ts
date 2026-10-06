@@ -19,8 +19,13 @@ import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { sendMessage } from '../agent-tools/coordination/messages';
 import { wakeRecipients } from '../agent-tools/coordination/inbox-wake';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
-import { readSupersededGoalHolderModes, readFormerGoalHolderAwaits } from './holder-authority';
-export { SUPERSEDED_GOAL_HOLDER_RETIRE_LIMIT } from './holder-authority';
+import {
+  readSupersededGoalHolderModes,
+  readFormerGoalHolderAwaits,
+  readFormerGoalHolderTenureClaims,
+} from './holder-authority';
+import { ALL_TERMINAL_STATUSES } from '../work-item-blocking';
+export { SUPERSEDED_GOAL_HOLDER_RETIRE_LIMIT, FORMER_GOAL_HOLDER_CLAIM_RELEASE_LIMIT } from './holder-authority';
 import {
   vacateDrainFleetLeadership,
   type DrainFleetVacancyOutcome,
@@ -158,6 +163,111 @@ export interface SupersededGoalHolderRetirement {
   leftArmed: string[];
   /** Pending goal-scoped event awaits cancelled for the retired predecessors. */
   awaitsCancelled: number;
+  /**
+   * WI-10006948: goal-stamped work-items a former holder claimed during its tenure and
+   * left untouched since its GOAL exit, released back to the pool by this sweep.
+   */
+  claimsReleased: Array<{ id: string; ownerId: string }>;
+}
+
+/** One former-holder claim the sweep is about to release (WI-10006948). */
+export interface FormerGoalHolderClaim {
+  workspaceId: string;
+  goalId: string;
+  id: string;
+  harness: string;
+  ownerId: string;
+  exitedAt: Date;
+}
+
+/**
+ * Release one former-holder claim. Returns true only when THIS call freed a row that
+ * `ownerId` still held; a claim that changed hands meanwhile is a no-op (false).
+ */
+export type ReleaseFormerGoalHolderClaim = (claim: FormerGoalHolderClaim) => Promise<boolean>;
+
+/**
+ * The production release, in the same order as the session-death sweep
+ * (work-item-lease-release.ts): snapshot the flight record while the holder link is
+ * intact, clear the coordination claim row, then compare-and-release the lease so a
+ * claim that moved to a live agent in the meantime is never clobbered. Imported lazily:
+ * work-items.ts is a large graph and this module sits on the respawner's boot path.
+ */
+export const releaseFormerGoalHolderClaimDefault: ReleaseFormerGoalHolderClaim = async (claim) => {
+  const [{ captureWorkItemFlightRecordsForItems }, { releaseClaimForItemByOwnerLocal }, { releaseWorkItem }] =
+    await Promise.all([
+      import('../work-item-flight-record'),
+      import('../work-item-claims'),
+      import('../work-items'),
+    ]);
+  await captureWorkItemFlightRecordsForItems({
+    ownerId: claim.ownerId,
+    workspaceId: claim.workspaceId,
+    cause: 'lease-release',
+    items: [{ id: claim.id, harness: claim.harness }],
+  });
+  try {
+    await releaseClaimForItemByOwnerLocal({
+      workspaceId: claim.workspaceId,
+      workItemId: claim.id,
+      owner: claim.ownerId,
+    });
+  } catch (error) {
+    console.warn(
+      `[goal-holder-handoff] claim-ledger release failed for ${claim.id} (${claim.ownerId}): ` +
+        `${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  let heldByOwner = false;
+  const released = await releaseWorkItem(claim.id, {
+    harness: claim.harness,
+    expectedAssignee: claim.ownerId,
+    onPriorState: (prior) => {
+      heldByOwner = prior.wasClaimed && prior.assignee === claim.ownerId;
+    },
+  });
+  return heldByOwner && released !== null && !released.assignee;
+};
+
+/**
+ * WI-10006948: release goal-stamped work-items that FORMER holders of this goal still
+ * hold from their tenure (see readFormerGoalHolderTenureClaims for the fences).
+ *
+ * The handoff tells the predecessor to "checkpoint and release your lane", and a
+ * predecessor that takes that turn does. One that never wakes again (its carry-respawn
+ * successor died, WI-10006814) leaves the claims pinned to a session that no longer
+ * holds the goal, so the work reads as owned while nobody can progress it. Selecting
+ * "formerly held, holds nothing now" rather than "retired this pass" also covers
+ * holders retired by an earlier sweep, the same reasoning as cancelFormerGoalHolderAwaits.
+ * Best-effort per row: one failed release never blocks the rest.
+ */
+export async function releaseFormerGoalHolderClaims(
+  sql: Sql,
+  workspaceId: string,
+  goalId: string,
+  release: ReleaseFormerGoalHolderClaim = releaseFormerGoalHolderClaimDefault,
+): Promise<Array<{ id: string; ownerId: string }>> {
+  const rows = await readFormerGoalHolderTenureClaims(sql, workspaceId, goalId, [...ALL_TERMINAL_STATUSES]);
+  const released: Array<{ id: string; ownerId: string }> = [];
+  for (const row of rows) {
+    try {
+      const ok = await release({
+        workspaceId,
+        goalId,
+        id: row.id,
+        harness: row.harness,
+        ownerId: row.owner_id,
+        exitedAt: row.exited_at,
+      });
+      if (ok) released.push({ id: row.id, ownerId: row.owner_id });
+    } catch (error) {
+      console.warn(
+        `[goal-holder-handoff] former-holder claim release failed for ${row.id} (${row.owner_id}) ` +
+          `on goal ${goalId}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+  return released;
 }
 
 /**
@@ -200,6 +310,7 @@ export async function retireSupersededGoalHolderModes(
   workspaceId: string,
   goalId: string,
   setBy: string = HANDOFF_IDENTITY.ownerId,
+  releaseClaim: ReleaseFormerGoalHolderClaim = releaseFormerGoalHolderClaimDefault,
 ): Promise<SupersededGoalHolderRetirement> {
   const rows = await readSupersededGoalHolderModes(sql, workspaceId, goalId);
   const retired: string[] = [];
@@ -232,7 +343,10 @@ export async function retireSupersededGoalHolderModes(
     });
   }
   const awaitsCancelled = await cancelFormerGoalHolderAwaits(sql, workspaceId, goalId);
-  return { retired, leftArmed, awaitsCancelled };
+  // WI-10006948: after the rows (and so the exit audit) are written, free the claims the
+  // former holders took during tenure and never touched again.
+  const claimsReleased = await releaseFormerGoalHolderClaims(sql, workspaceId, goalId, releaseClaim);
+  return { retired, leftArmed, awaitsCancelled, claimsReleased };
 }
 
 /**

@@ -18,7 +18,7 @@ function base(patch: Partial<Pick<ScheduledWatchdogStatus, 'config' | 'scheduler
     },
     scheduler: {
       kind: 'dbos-operation' as const,
-      parentWorkflow: 'routinesTick' as const,
+      parentWorkflow: 'routinesSweepTick' as const,
       operation: 'su-ideate-ungraded-sweep' as const,
       lastExecutionAt: '2026-07-19T00:01:00.000Z',
       lastWorkflowStatus: 'SUCCESS',

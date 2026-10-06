@@ -744,6 +744,37 @@ describe('buildRoleLaunchSpec', () => {
       expect(accepted.sid).toBe(launchIdentity.sid);
       expect(accepted.nativeSessionId).toBe(launchIdentity.nativeSessionId);
       expect(accepted.acceptedOperation).toEqual(acceptedOperation);
+
+      // WI-10006959: the canonical pin carries the identity's DECLARED version, not the
+      // compiler's revision label (which defaults to the contentHash). The content identity
+      // is ref + contentHash, so a version-pinned worker must bind...
+      const versionPinned = { ...acceptedOperation,
+        identity: { ...acceptedOperation.identity, revision: '0.1.0' } };
+      expect(versionPinned.identity.revision).not.toBe(identityInput!.revision);
+      vi.mocked(resolveProjectDir).mockResolvedValueOnce(dir);
+      assembleRolePromptMock.mockReturnValueOnce({
+        text: 'ROLE KERNEL',
+        meta: { role: 'worker', promptFile: '/h/prompts/worker.md', projectDir: dir,
+          stateDir: join(dir, '.papercusp'), harnessDir: '/h', runId: 'worker-WI-1-versioned' },
+      });
+      const versioned = await buildRoleLaunchSpec({
+        role: 'worker', workspaceId: 'workspace-a', harnessSlug: 'harness-a',
+        featureId: 'WI-1', operatorBaseUrl: 'http://localhost:3070', acceptedOperation: versionPinned,
+      });
+      expect(versioned.acceptedOperation?.identity.revision).toBe('0.1.0');
+      // ...while a pin whose content hash no longer matches the composed layer is still refused.
+      vi.mocked(resolveProjectDir).mockResolvedValueOnce(dir);
+      assembleRolePromptMock.mockReturnValueOnce({
+        text: 'ROLE KERNEL',
+        meta: { role: 'worker', promptFile: '/h/prompts/worker.md', projectDir: dir,
+          stateDir: join(dir, '.papercusp'), harnessDir: '/h', runId: 'worker-WI-1-stale' },
+      });
+      await expect(buildRoleLaunchSpec({
+        role: 'worker', workspaceId: 'workspace-a', harnessSlug: 'harness-a',
+        featureId: 'WI-1', operatorBaseUrl: 'http://localhost:3070',
+        acceptedOperation: { ...acceptedOperation,
+          identity: { ...acceptedOperation.identity, contentHash: 'c'.repeat(64) } },
+      })).rejects.toThrow(/accepted blueprint worker identity changed during launch composition/);
       expect(accepted.stack).toEqual(['domain:plain-domain']);
       expect(accepted.specificationArtifact.inputs).toContainEqual(expect.objectContaining({
         kind: 'blueprint-layer', ref: 'plain-domain', contentHash: identityInput!.contentHash,

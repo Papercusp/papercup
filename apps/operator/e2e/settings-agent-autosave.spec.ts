@@ -95,14 +95,19 @@ test.describe('/settings/agent auto-save validation', () => {
     assertMounted(await openPage(page), SKIP_MSG_BLANK);
     const input = page.locator(SPEC_INPUT);
     await input.waitFor({ state: 'visible', timeout: 10_000 });
-    await expect(input).toHaveValue('opus:xhigh'); // default-menu baseline
+    // Default-menu baseline, read from the page rather than hardcoded: this
+    // test is about blur-gated commits, not about which model is the Tier 5
+    // default (that changed opus:xhigh -> opus[1m]:xhigh and stranded the
+    // literal; DEFAULT_MODEL_TIERS owns that value — WI-10006792).
+    await expect(input).toHaveValue(/^\S+:\S+$/);
+    const baseline = await input.inputValue();
     await input.click();
     await input.pressSequentially('fab'); // mid-word, still focused — no blur
     await page.waitForTimeout(SAVE_WINDOW_MS);
     const cfg = await getStoredConfig(request);
     expect(cfg.tiers).toEqual([]); // still the untouched default menu
     await page.keyboard.press('Escape'); // revert the draft
-    await expect(input).toHaveValue('opus:xhigh');
+    await expect(input).toHaveValue(baseline);
   });
 
   test('an invalid spec is flagged inline and never persisted', async ({ page, request }) => {

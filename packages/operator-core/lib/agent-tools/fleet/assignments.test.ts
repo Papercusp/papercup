@@ -231,7 +231,7 @@ describe('reconcileWakeability (EI-6077)', () => {
     const owner = 'su-pty-activity-dead';
     const agent = baseAgent({
       agentId: owner,
-      alive: true,
+      alive: false,
       heartbeatAt: new Date().toISOString(),
     });
     const fetchFn = fakeFetch({
@@ -272,6 +272,9 @@ describe('reconcileWakeability (EI-6077)', () => {
 
     expect(out.sessionState).toBe('parked');
     expect(out.alive).toBe(true);
+    expect(
+      deriveMemberVerdict({ ...out, lastToolCallAtMs: Date.now() - VERDICT_SPEAKING_FRESH_MS - 1 }),
+    ).not.toBe('dead');
   });
 
   it('WI-4400: stale wakeable holder gets confirmLiveness before takeover', async () => {
