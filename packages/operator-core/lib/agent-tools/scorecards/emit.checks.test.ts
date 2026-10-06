@@ -410,9 +410,9 @@ describe('scorecards:emit deterministic criterion checks (P-011)', () => {
       return { kind: 'probe' as const, probe: child, observed: index === 0 ? count : failed,
         verdict: pass ? 'pass' as const : 'fail' as const,
         status: pass ? 'fresh' as const : 'stale' as const,
-        executed: true, measuredAt: '2026-10-03T07:00:00Z' };
+        executed: true as const, measuredAt: '2026-10-03T07:00:00Z' };
     });
-    const run = { kind: 'probe' as const, all: children, executed: true,
+    const run = { kind: 'probe' as const, all: children, executed: true as const,
       verdict: accepted ? 'pass' as const : 'fail' as const,
       status: accepted ? 'fresh' as const : 'stale' as const, measuredAt: children[0].measuredAt };
     const evaluateProbeChecks = vi.fn<typeof evaluateCriterionProbeChecks>().mockResolvedValue(accepted

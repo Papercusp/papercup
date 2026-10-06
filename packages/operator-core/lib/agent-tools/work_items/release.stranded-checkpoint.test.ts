@@ -138,6 +138,11 @@ const wi = (over: Partial<WorkItem> & Pick<WorkItem, 'id'>): WorkItem => ({
 const BG_CHECKPOINT =
   'Fix implemented + committed. test:affected running in background (bash id bx76day3h) to confirm ' +
   'no other suite depended on the old behavior — will report+complete once it finishes.';
+/** An isolated session-local handle: this must trigger without relying on other keywords. */
+const SESSION_LOCAL_TASK_HANDLE_CHECKPOINT = 'read task id bf5ryqqze output when it lands. If green -> complete.';
+/** A SQL column mention without a native task handle is ordinary source evidence. */
+const SQL_TASK_ID_COLUMN_CHECKPOINT =
+  'gcTerminalTasks deleted expired non-release ledger rows with RETURNING task_id only';
 /** The CONTROL: a real, substantial checkpoint that cites NO background job. */
 const PLAIN_CHECKPOINT =
   'Fix implemented + committed at 7a8371a1caf9. Ran npm run test:file -- swarm.test.ts: 61/61 green. ' +
@@ -173,6 +178,20 @@ describe('work_items:release — stranding warning (WI-38297)', () => {
     // It must tell the releaser what to actually DO, not merely that something is wrong.
     expect(w).toMatch(/work_items:complete/);
     expect(w).toMatch(/blocked/);
+  });
+
+  it('warns for an isolated session-local task handle', async () => {
+    getWorkItemCheckpoint.mockResolvedValue(SESSION_LOCAL_TASK_HANDLE_CHECKPOINT);
+    const b = await body({ id: 'WI-TASK-HANDLE' });
+    expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-TASK-HANDLE', released: true });
+    expect(b.results[0].strandedCheckpointWarning).toMatch(/BACKGROUND JOB/);
+  });
+
+  it('stays silent when a checkpoint names an SQL task_id column without a handle', async () => {
+    getWorkItemCheckpoint.mockResolvedValue(SQL_TASK_ID_COLUMN_CHECKPOINT);
+    const b = await body({ id: 'WI-SQL-TASK-ID' });
+    expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-SQL-TASK-ID', released: true });
+    expect(b.results[0].strandedCheckpointWarning).toBeUndefined();
   });
 
   it('reads the checkpoint under the item\'s own harness + the caller workspace', async () => {

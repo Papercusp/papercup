@@ -18,6 +18,46 @@ export function isQuickPanelWindow(): boolean {
 }
 
 /**
+ * Keyboard events do not bubble out of an iframe. Bind each loaded Docs window
+ * as well as the panel itself, including after a result navigates away from the
+ * search page. Run after the embedded page's own handlers so Escape can first
+ * leave an answer or another local interaction without dismissing the panel.
+ */
+export function bindQuickPanelEscape(
+  document: Document,
+  frame: HTMLIFrameElement | null,
+  dismiss: () => void,
+): () => void {
+  const onKey = (event: KeyboardEvent) => {
+    if (event.key !== 'Escape' || event.defaultPrevented) return;
+    event.preventDefault();
+    dismiss();
+  };
+  const parent = document.defaultView;
+  parent?.addEventListener('keydown', onKey);
+  let child: Window | null = null;
+  const onLoad = () => {
+    child?.removeEventListener('keydown', onKey);
+    child = null;
+    // contentDocument is null for cross-origin frames. A navigation must never
+    // let an inaccessible document break the parent window's dismissal handler.
+    try {
+      child = frame?.contentDocument?.defaultView ?? null;
+      child?.addEventListener('keydown', onKey);
+    } catch {
+      child = null;
+    }
+  };
+  frame?.addEventListener('load', onLoad);
+  onLoad();
+  return () => {
+    parent?.removeEventListener('keydown', onKey);
+    child?.removeEventListener('keydown', onKey);
+    frame?.removeEventListener('load', onLoad);
+  };
+}
+
+/**
  * Should a navigation FROM the Quick Panel window be handed off to the main app
  * instead of run in place? Returns the app-relative `path+search+hash` to open
  * in the main window, or null when the navigation should proceed normally —

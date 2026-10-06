@@ -42,6 +42,7 @@ vi.mock('../../consult/consult-dispatch', () => ({
 }));
 
 import tool from './get-feedback';
+import { lookupByMcpName } from '@papercusp/tooldef';
 import { BUDGET, promptWeight } from '../tool-guidance-budget';
 
 const handle = {
@@ -169,7 +170,10 @@ describe('consult:get_feedback requester interest handle (P-024)', () => {
 
 describe('consult:get_feedback requester guidance', () => {
   it('stays within the live prompt-weight budget', () => {
-    expect(promptWeight(tool)).toBeLessThanOrEqual(BUDGET);
+    const projected = lookupByMcpName('consult:get_feedback');
+    expect(projected).toBeDefined();
+    if (!projected) throw new Error('consult:get_feedback was not projected');
+    expect(promptWeight(projected)).toBeLessThanOrEqual(BUDGET);
   });
 
   it('clearly distinguishes opening a consult from reading an existing conversation', () => {

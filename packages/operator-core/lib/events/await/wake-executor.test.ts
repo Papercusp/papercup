@@ -2687,7 +2687,9 @@ describe('executeWake — the liveness ladder', () => {
       { ok: true, confirmation: 'acked' as const, reason: 'pending-delivery-id' },
       { ok: true, confirmation: 'acked' as const, reason: 'duplicate-delivery-id' },
     ];
-    const injectPsuHostWithConfirmation = vi.fn(async () => results.shift()!);
+    const injectPsuHostWithConfirmation = vi.fn<NonNullable<ExecuteWakeDeps['injectPsuHostWithConfirmation']>>(
+      async () => results.shift()!,
+    );
     const delivery = work({ wakeHandle: null, id: 901 });
     const wakeDeps = deps({
       findPsuHost: vi.fn(() => ({ sock: '/tmp/pending-host.sock' })) as never,

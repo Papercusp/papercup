@@ -64,6 +64,14 @@ describe('detectBgJobCheckpointClaim (EI-18654296679612119 — unverifiable bg-j
       ).toBe(true);
     });
 
+    it('does NOT treat an SQL task_id column as a background-job handle', () => {
+      expect(
+        detectBgJobCheckpointClaim(
+          'gcTerminalTasks deleted expired non-release ledger rows with RETURNING task_id only',
+        ),
+      ).toEqual({ detected: false });
+    });
+
     it('flags the underscored/hyphenated handle spellings', () => {
       expect(detectBgJobCheckpointClaim('see bash_id 29e05531-f6b for the verdict').detected).toBe(true);
       expect(detectBgJobCheckpointClaim('see bash-id 29e05531 for the verdict').detected).toBe(true);
