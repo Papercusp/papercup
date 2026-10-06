@@ -6831,7 +6831,7 @@ async fn recover_detached_runtime(
 ) -> Option<String> {
     match detached {
         DetachedRuntime::Unrecoverable(reason) => Some(format!(
-            "This session's agent runtime is gone and cannot be resumed ({reason}). Draft retained; start a new session to send it."
+            "This session's agent runtime is gone and cannot be resumed ({reason}). Draft retained; send it again to start the engine afresh."
         )),
         DetachedRuntime::Resumable => {
             *resume_requested = true;

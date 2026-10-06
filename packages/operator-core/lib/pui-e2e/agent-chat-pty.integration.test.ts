@@ -6761,7 +6761,7 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-013 terminal compatibilit
   test('P-024: "hi" shows at once with a working line; a stalled engine and a hung operator each say so', { timeout: 240_000 }, async ({ onTestFailed }) => {
     const ENTER_FEEDBACK_MS = 100;
     const HUNG_OPERATOR_SENTENCE_MS = 5_000;
-    const HUNG_SENTENCE = 'Papercusp is not answering; check that it is running, then press Enter to send your message again.';
+    const HUNG_SENTENCE = 'Papercusp is not answering; start or restart Papercusp Server, then press Enter to send your message again.';
     // ui.rs draws it as `<spinner> <phase>… (<n>s[ · …] · Esc to interrupt)`.
     const WORKING_LINE = /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] (Starting Claude|Still starting Claude[^…]*|Thinking|Working)… \((\d+)s[^)]* · Esc to interrupt\)/;
     /** The working line, when at least `sent` "hi" lines sit in the transcript
@@ -6905,7 +6905,10 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-013 terminal compatibilit
       pane.write('j'.repeat(index + 1));
       pane.enter();
       await pane.waitForGone('Model — Enter select');
-      await pane.waitFor(`next turn: ${picked.spec} · ${launchDir}`);
+      // P-029 / D-029: the footer names the approvals mode between the model
+      // and the directory once the session reports it.
+      const approvals = engine.adapter.host.descriptor().approvals;
+      await pane.waitFor(`next turn: ${picked.spec} · ${approvals ? `${approvals} · ` : ''}${launchDir}`);
       frames.pending = pane.screen();
       // The pick alone switches nothing: a turn's model never changes under it.
       expect(scriptedEngine.modelSwitches).toEqual([]);
@@ -6921,7 +6924,7 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-013 terminal compatibilit
         [{ model }, ...(effort ? [{ effort }] : [])]);
       expect(engine.adapter.host.descriptor().model).toBe(picked.spec);
       expect(scriptedEngine.engines, 'a live switch keeps the one running session').toHaveLength(engines);
-      await pane.waitFor(`${picked.spec} · ${launchDir}`);
+      await pane.waitFor(`${picked.spec} · ${approvals ? `${approvals} · ` : ''}${launchDir}`);
       await pane.waitForGone(`next turn: ${picked.spec}`);
       frames.switched = pane.screen();
       expect(chatJargonIn(frames.switched), frames.switched).toEqual([]);
