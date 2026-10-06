@@ -2029,12 +2029,16 @@ describe('code:run → mutation echo shaping (WI-1377)', () => {
     expect(shaped.warning).toBeUndefined();
   });
 
-  // EI-7784: `ok:true` alone is misleading when a write-effect call dispatched fine but reported
-  // its OWN ok:false (EI-7669's okFalseMutations) — the top-level `partial` flag + the
-  // okFalseWarning are the two structured/human-readable signals a caller must check alongside
-  // `ok`, not instead of relying on `ok` meaning "nothing went wrong".
-  it('ok:true with an okFalse mutation carries partial:true + a prominent okFalseWarning naming the tool', () => {
-    const okFalseResult = { ok: false, error: 'completion_integrity_required' };
+  // EI-7784: `ok:true` alone is misleading when a write-effect call dispatched without throwing
+  // but reported its own ok:false. Its error result may describe only the last stage of a
+  // multi-operation write, so the warning must preserve uncertainty about earlier effects.
+  it('ok:true with an okFalse mutation carries partial:true + an effect-uncertainty warning naming the tool', () => {
+    const okFalseResult = {
+      ok: false,
+      error: 'later command failed',
+      partial: true,
+      mutations: { count: 2, byTool: { 'capability:bash': 2 } },
+    };
     const shaped = shapeMutationEcho({
       ...base,
       dryRun: false,
@@ -2047,7 +2051,10 @@ describe('code:run → mutation echo shaping (WI-1377)', () => {
     expect(shaped.ok).toBe(true); // the script itself completed — this is exactly the misleading bit
     expect(shaped.partial).toBe(true);
     expect(shaped.okFalseWarning).toEqual(expect.stringContaining('work_items:set_state'));
-    expect(shaped.okFalseWarning).toEqual(expect.stringContaining('did NOT take effect'));
+    expect(shaped.okFalseWarning).toEqual(expect.stringContaining('reported ok:false'));
+    expect(shaped.okFalseWarning).toEqual(expect.stringContaining('effects may be partial or absent'));
+    expect(shaped.okFalseWarning).toEqual(expect.stringContaining('verify their effects before retrying'));
+    expect(shaped.okFalseWarning).not.toEqual(expect.stringContaining('did NOT take effect'));
     expect(shaped.okFalseMutations).toEqual([
       { tool: 'work_items:set_state', args: { id: 'WI-1', state: 'resolved' }, result: okFalseResult },
     ]);

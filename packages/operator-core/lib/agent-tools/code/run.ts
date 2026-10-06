@@ -2185,14 +2185,15 @@ export function shapeMutationEcho<T extends OrchestrationRunResult | Record<stri
           inFlightAttempts,
         )
       : {}),
-    // EI-7669: a write-effect call can dispatch fine (no throw) yet report its OWN semantic
-    // rejection (ok: false in its result body — e.g. work_items:set_state's completion-integrity
-    // check). Nothing in `result.ok` / `error` reflects this — the SCRIPT still ran to a normal
-    // finish — so a batched script that doesn't inspect every individual result silently miscounts
-    // a rejected write as executed. Surface it unconditionally (independent of result.ok) so it
-    // can't be missed the way a bare `Promise.allSettled` count would miss it. Defensive `?? []`:
-    // fixture results built by hand (tests predating this field) omit it — never let an older/
-    // partial result object throw here instead of just showing no okFalse warning.
+    // EI-7669: a write-effect call can dispatch fine (no throw) yet report its OWN `ok:false`
+    // (e.g. work_items:set_state's completion-integrity check). Nothing in `result.ok` / `error`
+    // reflects this — the SCRIPT still ran to a normal finish — so a batched script that doesn't
+    // inspect every individual result silently miscounts the outcome. Surface it unconditionally
+    // (independent of result.ok) so it can't be missed the way a bare `Promise.allSettled` count
+    // would miss it. Do not infer zero effects from `ok:false`: a child such as capability:bash
+    // may report a later command failure after earlier operations already caused side effects.
+    // Defensive `?? []`: fixture results built by hand (tests predating this field) omit it — never
+    // let an older/partial result object throw here instead of just showing no okFalse warning.
     ...(okFalseMutationsList.length > 0
       ? {
           // EI-7784: `partial: true` is ALSO on the result's top level (a structured signal a
@@ -2200,10 +2201,10 @@ export function shapeMutationEcho<T extends OrchestrationRunResult | Record<stri
           // to it, not the only place it's surfaced.
           okFalseWarning:
             `${okFalseMutationsList.length} write-effect call(s) dispatched without throwing but reported ` +
-            `ok:false in their own result (did NOT take effect): ` +
-            `${okFalseMutationsList.map((m) => m.tool).join(', ')}. Check okFalseMutations for details — ` +
-            'do not assume these succeeded just because the script did not throw. `partial: true` is set ' +
-            'on this result for exactly this reason — check it, not just `ok`.',
+            `ok:false in their own result: ${okFalseMutationsList.map((m) => m.tool).join(', ')}. ` +
+            'Their effects may be partial or absent. Check okFalseMutations for details and verify ' +
+            'their effects before retrying; do not assume success or that the whole call did nothing. ' +
+            '`partial: true` is set on this result for exactly this reason — check it, not just `ok`.',
           okFalseMutations: okFalseMutationsList,
         }
       : {}),
