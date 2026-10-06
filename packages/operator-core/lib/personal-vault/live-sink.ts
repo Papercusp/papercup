@@ -40,8 +40,9 @@ interface VaultRouteShape {
 
 interface VaultRoute {
   /**
-   * Vault category label. Display/uniqueness-domain only after D-010: renaming
-   * the provider-named `gmail` label belongs to the P-008 cutover.
+   * Vault partition (documents.source, so also the `personal:<category>` scope).
+   * Named for the DATATYPE, never a provider: every provider's mail lands in
+   * `mail` (migration 1414 renamed the old Google-named `gmail`, WI-10006490).
    */
   category: string;
   shape(payload: Record<string, unknown>): VaultRouteShape;
@@ -54,7 +55,7 @@ interface VaultRoute {
  */
 const VAULT_ROUTES: Readonly<Record<string, VaultRoute>> = {
   'email-message': {
-    category: 'gmail',
+    category: 'mail',
     shape: (p) => ({
       kind: 'message',
       participants: [...strings(p.from), ...strings(p.to), ...strings(p.cc)],
