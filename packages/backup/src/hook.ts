@@ -167,6 +167,25 @@ export function resolveKopiaBackupGuard(): string | null {
 
 const GUARD_LOG_LINE_PREFIX = 'KOPIA_BACKUP_GUARD ';
 const MAX_PENDING_GUARD_LOG_CHARS = 8_192;
+const MAX_DUMP_FAILURE_CHARS = 200;
+
+/**
+ * The failure text recorded for a failed dump pipeline: its stderr without the
+ * guard's own decision lines (already forwarded to the journal, see
+ * createGuardLogForwarder), keeping the END, where pg_dump's error and the
+ * watchdog's timeout line land. Quoting the first 200 chars instead recorded
+ * every timed-out dump on 2026-10-06 as "result=waiting reason=lock", hiding the
+ * timeout (EI-25211496463956189).
+ */
+export function summarizeDumpFailure(stderr: string): string {
+  const text = stderr
+    .split('\n')
+    .filter((line) => !line.startsWith(GUARD_LOG_LINE_PREFIX))
+    .join('\n')
+    .trim();
+  if (!text) return 'dump pipeline failed';
+  return text.length > MAX_DUMP_FAILURE_CHARS ? text.slice(-MAX_DUMP_FAILURE_CHARS) : text;
+}
 
 /**
  * Re-emit the guard's own decision lines from the captured stderr stream.
@@ -575,7 +594,10 @@ async function dumpPg(opts: {
   const guard = resolveKopiaBackupGuard();
   const dumpCommand = guard ?? 'pg_dump';
   const dumpArgs = guard
-    ? ['--mode', 'wait', '--label', WORKSPACE_BACKUP_GUARD_LABEL, '--', 'pg_dump', ...pgDumpArgs]
+    // --deadline-at-arrival: this dump is not restart-safe and, measured 2026-10-06,
+    // did not finish inside its own 900s budget, so it must not stop an overdue Kopia
+    // sweep that is still making progress (EI-25211496463956189).
+    ? ['--mode', 'wait', '--label', WORKSPACE_BACKUP_GUARD_LABEL, '--deadline-at-arrival', '--', 'pg_dump', ...pgDumpArgs]
     : pgDumpArgs;
   if (guard) {
     // Guard logs must not contaminate the SQL dump on stdout. FD 3 reports when
@@ -653,7 +675,7 @@ async function dumpPg(opts: {
           result = { ok: false, error };
         }
       } else {
-        const error = stderr.trim().slice(0, 200) || 'dump pipeline failed';
+        const error = summarizeDumpFailure(stderr);
         await unlink(tmp).catch(() => {});
         await opts.log(`pg ${opts.host}:${opts.port} FAIL: ${error}`);
         result = { ok: false, error };

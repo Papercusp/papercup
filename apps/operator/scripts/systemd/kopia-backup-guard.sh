@@ -11,7 +11,7 @@ set -uo pipefail
 # invocation and exit in one parsed list for the same reason.
 main() {
 usage() {
-  echo "usage: $0 --mode scheduled|wait [--label NAME] [--no-restart-safe] [--priority-on-contention] -- COMMAND [ARG ...]" >&2
+  echo "usage: $0 --mode scheduled|wait [--label NAME] [--no-restart-safe] [--priority-on-contention] [--deadline-at-arrival] -- COMMAND [ARG ...]" >&2
   exit 64
 }
 
@@ -55,6 +55,17 @@ restart_safe=1
 #
 # Default 0 keeps every other scheduled label byte-identical.
 priority_on_contention=0
+# --deadline-at-arrival gives a wait-mode producer a deadline: the moment it starts
+# waiting. A wait-mode marker without one counts as due at once and stops even an
+# overdue sweep that is still making progress (has_live_priority_waiter). With it,
+# the earliest-deadline-first hold and the I/O-progress check apply exactly as they
+# do to a scheduled waiter's .due, so the overdue sweep finishes first unless it
+# stalls (EI-25211496463956189). The per-workspace DB hook passes it. Measured
+# 2026-10-06 09:57 EDT: a hook dump stopped the overdue hot sweep (no snapshot since
+# 00:09 EDT) 3s after it began waiting, then was itself killed at its own 900s
+# budget, so the sweep was lost for a dump that never completed. Default 0 keeps
+# every other wait-mode label (daily-home-vm, protected-manual) byte-identical.
+deadline_at_arrival=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --mode)
@@ -75,6 +86,10 @@ while [ "$#" -gt 0 ]; do
       priority_on_contention=1
       shift
       ;;
+    --deadline-at-arrival)
+      deadline_at_arrival=1
+      shift
+      ;;
     --)
       shift
       break
@@ -85,6 +100,8 @@ done
 
 [ "$#" -gt 0 ] || usage
 case "$mode" in scheduled|wait) ;; *) usage ;; esac
+# A scheduled waiter's deadline comes from its own baseline; the flag is wait-only.
+[ "$deadline_at_arrival" = 0 ] || [ "$mode" = wait ] || usage
 
 is_number() {
   awk -v value="$1" 'BEGIN { exit !(value ~ /^[0-9]+([.][0-9]+)?$/) }'
@@ -323,6 +340,9 @@ register_priority_request() {
     due=$(awk -v base="$base" -v defer="$max_defer" 'BEGIN { printf "%d", base + defer }')
     priority_due_path="${lock_path}.${state_key}.$$.due"
     printf '%s\n' "$due" >"$priority_due_path" 2>/dev/null || priority_due_path=
+  elif [ "$mode" = wait ] && [ "$deadline_at_arrival" = 1 ]; then
+    priority_due_path="${lock_path}.${state_key}.$$.due"
+    printf '%s\n' "$(date +%s)" >"$priority_due_path" 2>/dev/null || priority_due_path=
   fi
   if ! printf '%s\n' "$$" >"$priority_request_path" 2>/dev/null; then
     priority_request_path=
