@@ -45,24 +45,45 @@ const retainedMigrations = [
   '1087-align-blocker-ref-indexability.sql',
 ];
 
-async function remainingDatabases(names: string[]): Promise<string[]> {
+interface DatabaseCleanupDisposition {
+  datname: string;
+  marker: string | null;
+  active_connections: number;
+  active_drop: boolean;
+}
+
+async function databaseCleanupDisposition(names: string[]): Promise<DatabaseCleanupDisposition[]> {
   const sql = postgres(await getTestPg(), { max: 1, prepare: false, onnotice: () => {} });
   try {
-    const rows = await sql<{ datname: string }[]>`SELECT datname FROM pg_database
-      WHERE datname::text = ANY(${sql.array(names, 1009)}::text[])`;
-    return rows.map((row) => row.datname);
+    return await sql<DatabaseCleanupDisposition[]>`
+      SELECT d.datname, c.description AS marker,
+        (SELECT count(*)::int FROM pg_stat_activity a WHERE a.datname = d.datname) AS active_connections,
+        EXISTS (SELECT 1 FROM pg_stat_activity a
+          WHERE a.state = 'active' AND a.datname = current_database()
+            AND a.query = 'DROP DATABASE IF EXISTS "' || d.datname || '" WITH (FORCE)') AS active_drop
+      FROM pg_database d
+      LEFT JOIN pg_shdescription c ON c.objoid = d.oid AND c.classoid = 'pg_database'::regclass
+      WHERE d.datname::text = ANY(${sql.array(names, 1009)}::text[])`;
   } finally {
     await sql.end({ timeout: 5 });
   }
 }
 
-async function expectDatabasesRemoved(names: string[]): Promise<void> {
-  // The maintained factory may defer a contended DROP or detach a started
-  // DROP after its caller budget. close() returns before that server-side
-  // operation finishes; preserve the absence oracle and observe convergence.
+function assertManagedCleanup(rows: DatabaseCleanupDisposition[]): void {
+  for (const row of rows) {
+    expect(row.active_connections, row.datname + ': cell connections must close').toBe(0);
+    expect(row.marker === 'papercusp-test-db-drop-deferred' || row.active_drop,
+      row.datname + ': a remaining database must have an explicit queued or active DROP').toBe(true);
+  }
+}
+
+async function expectManagedCleanup(names: string[]): Promise<void> {
+  // createFreshTestDb.drop() deliberately permits queued or detached drops.
+  // Verify that exact lifecycle contract rather than treating a caller return
+  // as proof of deletion. Ordinary managed markers do NOT qualify as cleanup.
   await vi.waitFor(async () => {
-    expect(await remainingDatabases(names)).toEqual([]);
-  }, { timeout: 30_000, interval: 100 });
+    assertManagedCleanup(await databaseCleanupDisposition(names));
+  }, { timeout: 5_000, interval: 100 });
 }
 
 describe('composition rig uses current canonical schema, preserving its cell contracts', () => {
@@ -89,7 +110,7 @@ describe('composition rig uses current canonical schema, preserving its cell con
 
   afterAll(async () => {
     await rig?.close();
-    await expectDatabasesRemoved(databases);
+    await expectManagedCleanup(databases);
   }, 60_000);
 
   it('provisions two independent cells through the maintained migration-keyed factory', async () => {
@@ -213,14 +234,28 @@ describe('composition rig uses current canonical schema, preserving its cell con
     }
   });
 
-  it('drops both cloned databases and restores the workspace after extra setup fails', async () => {
+  it('closes both cloned databases through managed cleanup and restores the workspace after extra setup fails', async () => {
     const workspaceBefore = process.env.PAPERCUSP_WORKSPACE_ID;
     await expect(bootCompositionRig({
       workspaceId: 'ws-failed-canonical-rig',
       extraCellSetup: async () => { throw new Error('extra setup failed'); },
     })).rejects.toThrow('extra setup failed');
     const failedDbs = await Promise.all(vi.mocked(createOrgTestDb).mock.results.slice(-2).map((result) => result.value));
-    await expectDatabasesRemoved(failedDbs.map((db) => db.dbName));
+    await expectManagedCleanup(failedDbs.map((db) => db.dbName));
     expect(process.env.PAPERCUSP_WORKSPACE_ID).toBe(workspaceBefore);
+  }, 60_000);
+
+  it('CONTROL: an unclosed canonical clone is rejected by the cleanup detector', async () => {
+    const db = await createOrgTestDb({ adminPoolMax: 4 });
+    try {
+      await db.adminSql`SELECT 1`;
+      const pending = await databaseCleanupDisposition([db.dbName]);
+      expect(pending).toHaveLength(1);
+      expect(pending[0].active_connections).toBeGreaterThan(0);
+      expect(() => assertManagedCleanup(pending)).toThrow();
+    } finally {
+      await db.cleanup();
+    }
+    await expectManagedCleanup([db.dbName]);
   }, 60_000);
 });
