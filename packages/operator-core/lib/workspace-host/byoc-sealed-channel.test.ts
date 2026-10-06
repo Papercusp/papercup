@@ -168,15 +168,17 @@ describe('BYOC sealed relay channel', () => {
   it('keeps inbound type checks independent of concurrent outbound sends', async () => {
     const p = await pair();
     await Promise.all([p.client.opened, p.host.opened]);
-    // Sweep the gap between an inbound packet landing and a local send starting, so some
-    // round puts the local flush window over the inbound decrypt whatever the hop count is.
-    const rounds = 9;
+    // Start a local send, then land an inbound packet `gap` microtask hops into it. Sweeping
+    // the gap puts some round's inbound decrypt inside the local flush window whatever the
+    // exact hop count of the streams is.
+    const rounds = 12;
     for (let gap = 0; gap < rounds; gap += 1) {
       p.relay.holdToClient();
       await p.host.send({ type: 'pty.data', gap });
-      p.relay.releaseToClient();
+      const sending = p.client.send({ type: 'pty.input', gap });
       for (let hop = 0; hop < gap; hop += 1) await Promise.resolve();
-      await p.client.send({ type: 'pty.input', gap });
+      p.relay.releaseToClient();
+      await sending;
       await settle();
     }
     expect(p.errors).toEqual([]);

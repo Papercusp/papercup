@@ -60,12 +60,35 @@ function decodePacket(value: string): Buffer {
   return packet;
 }
 
-/** Raw byte transport underneath SecretStream, projected onto relay packets. */
+/**
+ * Raw byte transport underneath SecretStream, projected onto relay packets.
+ *
+ * Inbound attribution (WI-10007006): each received chunk is tagged with its relay
+ * `contentType`, and `inboundType` names the tag of the chunk whose `'data'` emit is in
+ * progress. SecretStream decrypts synchronously inside that emit, so the channel can stamp
+ * each plaintext with the type of the exact packet that produced it. Nothing is shared
+ * across packets, so a same-tick burst cannot cross-attribute types.
+ */
 class RelayPacketDuplex extends Duplex {
+  /** Outbound label for the send window in progress (null for handshake writes). */
   contentType: string | null = null;
+  /** Type of the inbound chunk currently being consumed; null outside a `'data'` emit. */
+  inboundType: string | null = null;
+  private readonly inboundTypes = new WeakMap<Buffer, string | null>();
 
   constructor(private readonly emitPacket: (packet: Buffer, contentType: string | null) => void) {
     super();
+  }
+
+  override emit(event: string | symbol, ...args: unknown[]): boolean {
+    if (event !== 'data' || !Buffer.isBuffer(args[0])) return super.emit(event, ...args);
+    const previous = this.inboundType;
+    this.inboundType = this.inboundTypes.get(args[0]) ?? null;
+    try {
+      return super.emit(event, ...args);
+    } finally {
+      this.inboundType = previous;
+    }
   }
 
   override _read(_size: number): void {}
@@ -79,8 +102,10 @@ class RelayPacketDuplex extends Duplex {
     }
   }
 
-  receive(packet: Buffer): void {
-    if (!this.destroyed) this.push(packet);
+  receive(packet: Buffer, contentType: string | null): void {
+    if (this.destroyed) return;
+    this.inboundTypes.set(packet, contentType);
+    this.push(packet);
   }
 }
 
@@ -97,9 +122,12 @@ export class ByocSealedChannel {
   private readonly raw: RelayPacketDuplex;
   private readonly noise: InstanceType<typeof SecretStream>;
   private readonly expectedRemotePublicKey: Buffer | null;
-  private pendingType: string | null = null;
+  /** Relay type of the packet each decrypted plaintext came from (see RelayPacketDuplex). */
+  private readonly plaintextTypes = new WeakMap<Buffer, string | null>();
   private sendChain: Promise<void> = Promise.resolve();
   private receiveBuffer = '';
+  /** Relay type the buffered partial line arrived under; a line never spans two types. */
+  private receiveBufferType: string | null = null;
   private closed = false;
 
   constructor(private readonly options: ByocSealedChannelOptions) {
@@ -127,6 +155,13 @@ export class ByocSealedChannel {
       keyPair: options.localKeyPair,
       ...(this.expectedRemotePublicKey ? { remotePublicKey: this.expectedRemotePublicKey } : {}),
     });
+    // SecretStream pushes each decrypted message synchronously from inside the raw chunk's
+    // 'data' emit; stamp it there, because its own 'data' event is delivered later.
+    const push = this.noise.push.bind(this.noise);
+    this.noise.push = (chunk: Buffer | null) => {
+      if (Buffer.isBuffer(chunk)) this.plaintextTypes.set(chunk, this.raw.inboundType);
+      return push(chunk);
+    };
     this.noise.on('data', (data: Buffer) => this.acceptPlaintext(data));
     this.noise.on('error', (error: Error) => this.fail(error));
     this.raw.on('error', (error: Error) => this.fail(error));
@@ -147,14 +182,12 @@ export class ByocSealedChannel {
     const task = this.sendChain.then(async () => {
       await this.opened;
       if (this.closed) throw new Error('BYOC sealed channel is closed');
-      this.pendingType = type;
       this.raw.contentType = type;
       try {
         this.noise.write(Buffer.from(JSON.stringify(frame) + '\n'));
         await this.noise.flush();
       } finally {
         this.raw.contentType = null;
-        this.pendingType = null;
       }
     });
     this.sendChain = task.catch(() => {});
@@ -168,9 +201,8 @@ export class ByocSealedChannel {
       this.fail(new Error('sealed packet content type is invalid'));
       return;
     }
-    this.pendingType = value.contentType;
     try {
-      this.raw.receive(decodePacket(value.packet));
+      this.raw.receive(decodePacket(value.packet), value.contentType);
     } catch (error) {
       this.fail(error instanceof Error ? error : new Error(String(error)));
     }
@@ -184,7 +216,13 @@ export class ByocSealedChannel {
   }
 
   private acceptPlaintext(data: Buffer): void {
+    const chunkType = this.plaintextTypes.get(data) ?? null;
+    if (this.receiveBuffer.length > 0 && chunkType !== this.receiveBufferType) {
+      this.fail(new Error('sealed channel content type mismatch'));
+      return;
+    }
     this.receiveBuffer += data.toString('utf8');
+    this.receiveBufferType = chunkType;
     while (true) {
       const newline = this.receiveBuffer.indexOf('\n');
       if (newline < 0) return;
@@ -197,8 +235,10 @@ export class ByocSealedChannel {
         this.fail(new Error('sealed channel produced invalid JSON'));
         return;
       }
+      // Every application frame must arrive under the type it decrypts to. A null label is
+      // handshake-only: application content relabelled to null would skip relay policy.
       const decryptedType = frameType(parsed);
-      if (!decryptedType || (this.pendingType !== null && decryptedType !== this.pendingType)) {
+      if (!decryptedType || chunkType === null || decryptedType !== chunkType) {
         this.fail(new Error('sealed channel content type mismatch'));
         return;
       }
