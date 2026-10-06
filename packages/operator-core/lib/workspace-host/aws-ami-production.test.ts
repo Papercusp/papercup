@@ -135,9 +135,10 @@ describe('SdkAwsAmiReleaseAdapter.buildCandidate', () => {
     expect(runs[0]).toMatchObject({ command: 'coldsnap' });
     // Zero blocks skipped (WI-10006192); each run tag is a `--tag Key=K,Value=V` pair; the disk is last.
     const uploadArgs = (runs[0] as { args: string[] }).args;
-    expect(uploadArgs.slice(0, 3)).toEqual(['upload', '--wait', '--omit-zero-blocks']);
+    // 16 workers, not coldsnap's 64: on an uplink-bound upload 64 put each block near the 12 s read timeout.
+    expect(uploadArgs.slice(0, 5)).toEqual(['upload', '--wait', '--omit-zero-blocks', '--workers', '16']);
     expect(uploadArgs.at(-1)).toBe(diskPath);
-    const tagArgs = uploadArgs.slice(3, -1);
+    const tagArgs = uploadArgs.slice(5, -1);
     expect(tagArgs.filter((_, index) => index % 2 === 0).every((flag) => flag === '--tag')).toBe(true);
     expect(tagArgs).toEqual(expect.arrayContaining(['Key=papercusp:managed,Value=true']));
     expect((runs[0] as { env: Record<string, string> }).env).toMatchObject({ AWS_REGION: 'us-east-1' });

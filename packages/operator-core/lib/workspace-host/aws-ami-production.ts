@@ -109,6 +109,14 @@ const UPLOAD_TIMEOUT_MS = 60 * 60 * 1000;
  * re-running the whole release.
  */
 const UPLOAD_ATTEMPTS = 2;
+/**
+ * coldsnap PUTs 512 KiB blocks with a 12 s read timeout and 5 attempts each, from 64 workers by
+ * default. The upload is uplink-bound, so the workers share it: at the measured 4.8 MiB/s each block
+ * took ~6.7 s, and any competing upstream traffic pushed every in-flight block past 12 s at once
+ * (reproduced 2026-10-06: a second upload on the same link produced 'attempt 2/5 failed after 12.0s
+ * ... dispatch failure' within 4 min). 16 workers still saturate that link and leave ~1.7 s per block.
+ */
+const COLDSNAP_UPLOAD_WORKERS = 16;
 const COLDSNAP_TRANSPORT_FAILURE = /dispatch failure|connection (?:reset|refused|closed)|timed out/i;
 const SNAPSHOT_ID_IN_OUTPUT = /\bsnap-[a-f0-9]+\b/g;
 const RUNNER_TIMEOUT_MS = 45 * 60 * 1000;
@@ -395,7 +403,7 @@ export class SdkAwsAmiReleaseAdapter implements AwsAmiReleaseAdapter {
    *   failed run's output is its own: delete them, and name any that would not delete in the error.
    */
   private async uploadSnapshot(region: string, diskPath: string, tags: Readonly<Record<string, string>>): Promise<string> {
-    const args = ['upload', '--wait', '--omit-zero-blocks'];
+    const args = ['upload', '--wait', '--omit-zero-blocks', '--workers', String(COLDSNAP_UPLOAD_WORKERS)];
     for (const tag of tagList(tags)) args.push('--tag', `Key=${tag.Key},Value=${tag.Value}`);
     args.push(diskPath);
     const ec2 = this.deps.ec2(region);
