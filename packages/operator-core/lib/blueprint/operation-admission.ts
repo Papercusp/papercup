@@ -235,6 +235,25 @@ function validateOperationInput(schema: Record<string, unknown>, input: Record<s
   }
 }
 
+/** Direct agent work items need an immutable worker identity pin so the
+ * placement pass can bind the accepted item to the worker that will execute it.
+ * Keep this check at admission as well as blueprint authoring validation: older
+ * or otherwise precompiled snapshots can reach submit without that validator. */
+export function assertAdmissibleAgentOperation(operation: {
+  id: string;
+  target: { kind: string };
+  execution?: { kind: string };
+  policy?: { identity?: unknown };
+}): void {
+  if (operation.target.kind !== 'work-item' || operation.execution?.kind !== 'agent' || operation.policy?.identity) {
+    return;
+  }
+  throw new BlueprintOperationRefusal(
+    'invalid_request',
+    `agent work-item operation "${operation.id}" must declare a pinned policy.identity before admission`,
+  );
+}
+
 /** Select the current revision once, then accept that exact immutable artifact.
  * An author moving the mutable blueprint pointer afterward cannot change the
  * accepted item's contract, even if it happens before the work-item INSERT. */
@@ -370,6 +389,7 @@ async function acceptBlueprintDirectWorkItemScoped(
           );
           if (!specification) throw new Error('blueprint operation specification snapshot is missing');
           const { operation } = operationFromSpecification(specification, request.operationId);
+          assertAdmissibleAgentOperation(operation);
           if (operation.target.kind !== 'work-item') {
             throw new Error('blueprint operation ' + request.operationId + ' targets a plan, not a direct work item');
           }
@@ -433,6 +453,7 @@ async function acceptBlueprintDirectWorkItemScoped(
   );
   if (!specification) throw new Error('blueprint operation specification snapshot is missing');
   const { operation } = operationFromSpecification(specification, request.operationId);
+  assertAdmissibleAgentOperation(operation);
   if (operation.target.kind !== 'work-item') {
     throw new Error(`blueprint operation ${request.operationId} targets a plan, not a direct work item`);
   }

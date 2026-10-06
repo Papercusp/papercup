@@ -4,10 +4,13 @@
  * migrations, real admission (submitBlueprintOperation), a fake launcher.
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 import type { Sql } from 'postgres';
-import { compileAgentSpecification, type Blueprint } from '@papercusp/orchestrator/blueprint';
+import { compileAgentSpecification, replayAgentSpecification, type Blueprint } from '@papercusp/orchestrator/blueprint';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
+import { canonicalJson } from '../authority/authority-rpc-envelope';
 import { projectBlueprintToPg } from './project-to-pg';
+import { acceptBlueprintDirectWorkItem } from './operation-admission';
 import { submitBlueprintOperation } from './operation-service';
 import {
   buildAgentPlacementKickoff, claimAgentOperationPlacements, placeAcceptedAgentOperations,
@@ -54,6 +57,10 @@ const specification = compileAgentSpecification({
       id: 'unpinned', version: 'A',
       target: { kind: 'work-item', itemKind: 'feature' },
       execution: { kind: 'agent', role: 'worker' },
+      // Current authoring validation requires the pin. The test below removes it
+      // from a re-hashed legacy snapshot to exercise admission's defense in depth.
+      policy: { identity: { kind: 'identity', ref: 'placement-worker', revision: '1.0.0', contentHash: 'b'.repeat(64) } },
+      privateInputSchema: { type: 'object' },
       inputSchema: { type: 'object' },
       acceptance: { resultSchema: { type: 'object' } },
     }, {
@@ -66,15 +73,28 @@ const specification = compileAgentSpecification({
   },
 });
 
-async function workspace(id: string): Promise<string> {
+async function workspace(id: string, selected: typeof specification = specification): Promise<string> {
   await sql`
     INSERT INTO harness_shared.pots (workspace_id, pot_home_slug, public_key, keychain_id, created_at)
     VALUES (${id}, ${harnessSlug}, ${Buffer.from(id)}, ${`kc-${id}`}, 0)
     ON CONFLICT (workspace_id, pot_home_slug) DO NOTHING
   `;
   await projectBlueprintToPg(sql, { workspaceId: id, harnessSlug,
-    blueprint: specification.configuration as Blueprint, specification });
+    blueprint: selected.configuration as Blueprint, specification: selected });
   return id;
+}
+
+function legacyUnpinnedOperationSpecification() {
+  const legacy = JSON.parse(JSON.stringify(specification)) as Record<string, unknown>;
+  const configuration = legacy.configuration as {
+    operations: Array<{ id: string; policy?: Record<string, unknown> }>;
+  };
+  const operation = configuration.operations.find((entry) => entry.id === 'unpinned');
+  if (!operation?.policy) throw new Error('fixture operation policy is missing');
+  delete operation.policy.identity;
+  const { specificationRevision: _previousRevision, ...content } = legacy;
+  legacy.specificationRevision = createHash('sha256').update(canonicalJson(content)).digest('hex');
+  return replayAgentSpecification(legacy);
 }
 
 async function accept(workspaceId: string, operationId: 'leaf' | 'unpinned' | 'root', key: string) {
@@ -138,15 +158,35 @@ describe('accepted agent operation placement (WI-10006859)', () => {
     expect(row.agent_placement_retired_at).not.toBeNull();
   }, 90_000);
 
-  it('never places an agent operation with no pinned worker identity, and retires it', async () => {
-    const ws = await workspace('placement-unpinned');
-    const unpinned = await accept(ws, 'unpinned', 'unpinned');
+  it('refuses an agent operation without pinned worker identity before admission', async () => {
+    const legacy = legacyUnpinnedOperationSpecification();
+    const ws = await workspace('placement-unpinned', legacy);
+    await expect(acceptBlueprintDirectWorkItem(sql, {
+      workspaceId: ws, harnessSlug, callerId: 'placement-caller', operationId: 'unpinned',
+      requestKey: 'unpinned-low-level', input: {}, title: 'Unpinned direct admission',
+    })).rejects.toMatchObject({ name: 'BlueprintOperationRefusal', code: 'invalid_request' });
+    await expect(submitBlueprintOperation(sql, {
+      workspaceId: ws, harnessSlug, callerId: 'placement-caller', operationId: 'unpinned',
+      requestKey: 'unpinned-submit', input: {}, privateInput: { shouldNotPersist: true },
+      title: 'Unpinned submitted operation',
+    })).rejects.toMatchObject({ name: 'BlueprintOperationRefusal', code: 'invalid_request' });
+
+    const receipts = await sql<Array<{ id: number }>>`
+      SELECT id FROM harness_shared.blueprint_operation_invocations
+       WHERE workspace_id = ${ws} AND operation_id = 'unpinned'`;
+    const items = await sql<Array<{ feature_id: string }>>`
+      SELECT feature_id FROM harness_shared.work_items
+       WHERE workspace_id = ${ws} AND payload->'blueprintOperation'->>'operationId' = 'unpinned'`;
+    const privateInputs = await sql<Array<{ operation_id: string }>>`
+      SELECT operation_id FROM harness_shared.blueprint_operation_private_inputs
+       WHERE workspace_id = ${ws} AND operation_id = 'unpinned'`;
+    expect(receipts).toHaveLength(0);
+    expect(items).toHaveLength(0);
+    expect(privateInputs).toHaveLength(0);
+
     const pinned = await accept(ws, 'leaf', 'pinned');
     const claimed = (await claimAgentOperationPlacements(sql)).filter((p) => p.workspaceId === ws);
     expect(claimed.map((p) => p.receiptId)).toEqual([pinned.receiptId]);
-    const row = await receipt(unpinned.receiptId);
-    expect(row.agent_launch_attempts).toBe(0);
-    expect(row.agent_placement_retired_at).not.toBeNull();
   }, 90_000);
 
   it('never places a cancelled operation whose item is still open, and retires it', async () => {

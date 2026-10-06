@@ -10,7 +10,11 @@ import {
   type CompiledAgentSpecification,
 } from '@papercusp/orchestrator/blueprint';
 import { normalizeModelId } from '@papercusp/model-pricing';
-import { readAcceptedBlueprintDirectWorkItem, type AcceptedOperationPin } from './operation-admission';
+import {
+  assertAdmissibleAgentOperation,
+  readAcceptedBlueprintDirectWorkItem,
+  type AcceptedOperationPin,
+} from './operation-admission';
 import { readActiveOperationModelPolicy, type ActiveOperationAttestationContext } from './operation-worker-binding';
 import { checkAgainstJsonSchema } from '../json-schema-validation';
 import { canonicalJson } from '../authority/authority-rpc-envelope';
@@ -157,6 +161,10 @@ export function submitBlueprintOperation(
     const specification = await readBlueprintSpecificationSnapshot(sql, input.workspaceId, input.harnessSlug, revision);
     if (!specification) throw new Error('blueprint operation specification snapshot is missing');
     const { operation } = operationFromCurrentSpecification(specification, input);
+    // Validate before storing private input or creating an item/receipt. The
+    // submit path reads compiled snapshots directly and cannot rely on the
+    // separate blueprint authoring validator having run for this revision.
+    assertAdmissibleAgentOperation(operation);
     const targetKind = previous[0]?.target_kind ?? operation.target.kind;
     if (targetKind !== operation.target.kind) throw new Error('blueprint operation receipt and pinned target disagree');
 
