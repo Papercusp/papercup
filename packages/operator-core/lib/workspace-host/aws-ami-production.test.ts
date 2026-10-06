@@ -132,7 +132,14 @@ describe('SdkAwsAmiReleaseAdapter.buildCandidate', () => {
     await expect(adapter.buildCandidate(buildInput())).resolves.toEqual({ imageId: 'ami-0bbb' });
 
     expect(runs).toHaveLength(1);
-    expect(runs[0]).toMatchObject({ command: 'coldsnap', args: ['upload', '--wait', diskPath] });
+    expect(runs[0]).toMatchObject({ command: 'coldsnap' });
+    // Zero blocks skipped (WI-10006192); each run tag is a `--tag Key=K,Value=V` pair; the disk is last.
+    const uploadArgs = (runs[0] as { args: string[] }).args;
+    expect(uploadArgs.slice(0, 3)).toEqual(['upload', '--wait', '--omit-zero-blocks']);
+    expect(uploadArgs.at(-1)).toBe(diskPath);
+    const tagArgs = uploadArgs.slice(3, -1);
+    expect(tagArgs.filter((_, index) => index % 2 === 0).every((flag) => flag === '--tag')).toBe(true);
+    expect(tagArgs).toEqual(expect.arrayContaining(['Key=papercusp:managed,Value=true']));
     expect((runs[0] as { env: Record<string, string> }).env).toMatchObject({ AWS_REGION: 'us-east-1' });
     const register = calls.find((call) => call.name === 'RegisterImageCommand')!;
     expect(register.input).toMatchObject({ BlockDeviceMappings: [{ Ebs: { SnapshotId: 'snap-0abc123' } }], ImdsSupport: 'v2.0' });
@@ -148,6 +155,81 @@ describe('SdkAwsAmiReleaseAdapter.buildCandidate', () => {
       { ImageId: 'ami-0aaa' },
       { SnapshotId: 'snap-0abc123' },
     ]);
+  });
+
+  describe('coldsnap upload failure (WI-10006192)', () => {
+    const TRANSPORT = "[WARN ] block 24145: attempt 5/5 failed after 3.1s: Failed to put block 24145 for snapshot 'snap-0dead1': dispatch failure";
+    const OK = { exitCode: 0, stdout: 'Uploaded snapshot snap-0abc123\n', stderr: '' };
+
+    function sequencedAdapter(
+      results: { exitCode: number; stdout: string; stderr: string }[],
+      calls: Call[],
+      runs: unknown[],
+      deleteSnapshot: (input: Record<string, unknown>) => unknown = () => ({}),
+    ) {
+      return new SdkAwsAmiReleaseAdapter(
+        {
+          ec2: () =>
+            fakeSender(
+              {
+                RegisterImageCommand: () => ({ ImageId: 'ami-0aaa' }),
+                DescribeImagesCommand: () => ({ Images: [{ State: 'available' }] }),
+                CopyImageCommand: () => ({ ImageId: 'ami-0bbb' }),
+                DeregisterImageCommand: () => ({}),
+                DeleteSnapshotCommand: deleteSnapshot,
+              },
+              calls,
+            ),
+          ssm: () => fakeSender({}, calls),
+          childCredentials: async () => ({ AWS_ACCESS_KEY_ID: 'AKIA', AWS_SECRET_ACCESS_KEY: 'secret' }),
+          commands: { run: async (command) => (runs.push(command), results.shift() ?? OK) },
+          sleep: async () => {},
+        },
+        { guestToolVersions: { 'amazon-ssm-agent': '3.3.1', 'openssh-server': '9.6' } },
+      );
+    }
+    const deletedSnapshots = (calls: Call[]) => calls.filter((call) => call.name === 'DeleteSnapshotCommand').map((call) => call.input.SnapshotId);
+
+    it('deletes the partial snapshot of a transport failure, then retries the upload once', async () => {
+      const calls: Call[] = [];
+      const runs: unknown[] = [];
+      const adapter = sequencedAdapter([{ exitCode: 1, stdout: '', stderr: TRANSPORT }], calls, runs);
+      await expect(adapter.buildCandidate(buildInput())).resolves.toEqual({ imageId: 'ami-0bbb' });
+      expect(runs).toHaveLength(2);
+      // The partial goes first; the staging snapshot of the successful retry is removed after the copy.
+      expect(deletedSnapshots(calls)).toEqual(['snap-0dead1', 'snap-0abc123']);
+    });
+
+    it('gives up after the second transport failure and deletes both partial snapshots', async () => {
+      const calls: Call[] = [];
+      const runs: unknown[] = [];
+      const second = { exitCode: 1, stdout: '', stderr: TRANSPORT.replaceAll('snap-0dead1', 'snap-0dead2') };
+      const adapter = sequencedAdapter([{ exitCode: 1, stdout: '', stderr: TRANSPORT }, second], calls, runs);
+      await expect(adapter.buildCandidate(buildInput())).rejects.toThrow(/coldsnap upload \(attempt 2\/2\) exited 1: .*dispatch failure/);
+      expect(runs).toHaveLength(2);
+      expect(deletedSnapshots(calls)).toEqual(['snap-0dead1', 'snap-0dead2']);
+      expect(calls.some((call) => call.name === 'RegisterImageCommand')).toBe(false);
+    });
+
+    it('does not retry a non-transport failure, but still deletes its partial snapshot', async () => {
+      const calls: Call[] = [];
+      const runs: unknown[] = [];
+      const denied = { exitCode: 1, stdout: '', stderr: "Failed to start snapshot 'snap-0dead3': AccessDeniedException" };
+      const adapter = sequencedAdapter([denied], calls, runs);
+      await expect(adapter.buildCandidate(buildInput())).rejects.toThrow(/coldsnap upload \(attempt 1\/2\) exited 1: .*AccessDenied/);
+      expect(runs).toHaveLength(1);
+      expect(deletedSnapshots(calls)).toEqual(['snap-0dead3']);
+    });
+
+    it('names a partial snapshot that would not delete, and does not retry over it', async () => {
+      const calls: Call[] = [];
+      const runs: unknown[] = [];
+      const adapter = sequencedAdapter([{ exitCode: 1, stdout: '', stderr: TRANSPORT }], calls, runs, () => {
+        throw Object.assign(new Error('throttled'), { name: 'RequestLimitExceeded' });
+      });
+      await expect(adapter.buildCandidate(buildInput())).rejects.toThrow(/partial snapshot NOT deleted: snap-0dead1/);
+      expect(runs).toHaveLength(1);
+    });
   });
 
   it('refuses when a required guest tool version is not pinned', async () => {
