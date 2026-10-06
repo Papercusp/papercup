@@ -289,3 +289,66 @@ describe("the deployer waits for readiness to converge after a restart", () => {
     expect(finalStep).not.toMatch(/\nreport_status\n/);
   });
 });
+
+// WI-10006603: the public TURN server must not relay to private or loopback peers.
+// livekit-server gained that default in v1.12.0 and the per-participant relay cap
+// in v1.13.6; the 1.10.1 build that was deployed relayed anywhere, livekit-sip included.
+describe("the deployer refuses a livekit-server whose TURN relays to private peers", () => {
+  const floor = () => /^LK_MIN_VERSION="([^"]+)"$/m.exec(readFileSync(probedDeployScript, "utf8"))?.[1];
+
+  function requireVersion(reported: string) {
+    const dir = mkdtempSync(join(tmpdir(), "phone-lkver-"));
+    const bin = join(dir, "livekit-server");
+    writeFileSync(bin, `#!/usr/bin/env bash\necho 'livekit-server version ${reported}'\n`, { mode: 0o755 });
+    const fns = extractShellFunctions(probedDeployScript, ["say", "die", "require_livekit_version"]);
+    const result = spawnSync("bash", ["-c", `set -euo pipefail\n${fns}\nrequire_livekit_version '${bin}' '${floor()}'`], {
+      encoding: "utf8",
+    });
+    rmSync(dir, { recursive: true, force: true });
+    return { status: result.status, out: `${result.stdout}${result.stderr}` };
+  }
+
+  it("refuses the 1.10.1 build that was deployed, and every version below the floor", () => {
+    for (const old of ["1.10.1", "1.12.0", "1.13.5", "0.99.99"]) {
+      const { status, out } = requireVersion(old);
+      expect(status, old).not.toBe(0);
+      expect(out, old).toContain("WI-10006603");
+    }
+  });
+
+  it("accepts the floor and newer, comparing versions numerically rather than as text", () => {
+    for (const ok of ["1.13.6", "1.13.7", "1.13.10", "2.0.0"]) {
+      const { status, out } = requireVersion(ok);
+      expect(status, ok).toBe(0);
+      expect(out).toContain(`livekit-server ${ok}`);
+    }
+  });
+
+  it("refuses when the version cannot be read", () => {
+    const { status, out } = requireVersion("dev");
+    expect(status).not.toBe(0);
+    expect(out).toContain("cannot read a livekit-server version");
+  });
+
+  it("is the preflight check, at a floor that has both TURN protections", () => {
+    const [major, minor, patch] = (floor() ?? "0.0.0").split(".").map(Number);
+    expect(major * 1e6 + minor * 1e3 + patch).toBeGreaterThanOrEqual(1_013_006);
+    expect(readFileSync(probedDeployScript, "utf8")).toMatch(/\nrequire_livekit_version "\$LK_BIN" "\$LK_MIN_VERSION"\n/);
+  });
+});
+
+describe("the public TURN server keeps private and loopback peers unreachable", () => {
+  const live = (file: string) =>
+    readFileSync(file, "utf8").split("\n").filter((line) => !/^\s*#/.test(line)).join("\n");
+
+  it("never opts a restricted range back in, in the template or in what the deployer renders into it", () => {
+    for (const file of [template, probedDeployScript]) {
+      expect(live(file), file).not.toMatch(/allow_restricted_peer_cidrs/);
+    }
+  });
+
+  it("caps relay allocations per participant", () => {
+    const limit = /^\s+per_user_relay_allocation_limit:\s*(\d+)\s*$/m.exec(live(template))?.[1];
+    expect(Number(limit)).toBeGreaterThan(0);
+  });
+});

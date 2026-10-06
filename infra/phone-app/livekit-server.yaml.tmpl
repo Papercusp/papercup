@@ -38,6 +38,14 @@ redis:
 turn:
   enabled: true
   udp_port: 7893
+  # This TURN server is public (D-024/D-025). livekit-server >= 1.12 refuses to
+  # relay to private, loopback, link-local and multicast peers unless
+  # allow_restricted_peer_cidrs lists them. Keep that default: never list the
+  # box's LAN or loopback here. livekit-sip listens on every address, so a TURN
+  # credential would reach SIP past the edge's carrier-only firewall. The relay
+  # reaches the co-located SFU through its public edge candidate (WI-10006603).
+  # One participant may hold at most this many relays (upstream default, >= 1.13.6).
+  per_user_relay_allocation_limit: 12
   # Hosted mode validates the hostname, certificate and key before rendering.
   # The public TCP/443 frontend must reach this TLS backend (default 7894).
 ${PHONE_TURN_TLS_CONFIG}

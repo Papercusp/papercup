@@ -24,6 +24,10 @@ CONF_DIR="${PHONE_CONFIG_DIR:-$HOME/.config/papercusp-phone}"
 ENV_FILE="$CONF_DIR/livekit.env"
 UNIT_DIR="$HOME/.config/systemd/user"
 LK_BIN="${PHONE_LIVEKIT_BIN:-$HOME/.local/bin/livekit-server}"
+# The TURN server is public (D-024/D-025). livekit-server refuses to relay to
+# private/loopback peers only from v1.12.0, and caps relay allocations per
+# participant from v1.13.6; 1.10.1 relayed to any address (WI-10006603).
+LK_MIN_VERSION="1.13.6"
 SIP_BIN="${PHONE_SIP_BIN:-$HOME/.local/bin/livekit-sip}"
 HEALTH_URL="http://127.0.0.1:7890/"
 UNITS=(papercusp-phone-livekit.service papercusp-phone-sip.service)
@@ -82,6 +86,17 @@ done
 say() { printf '  %s\n' "$*"; }
 step() { printf '\n▸ %s\n' "$*"; }
 die() { printf '\n✗ %s\n' "$*" >&2; exit 1; }
+
+# Refuse a livekit-server older than the TURN policy needs. Installing a newer
+# binary by hand is not enough on its own: a stale one must not converge.
+require_livekit_version() {
+  local bin="$1" min="$2" have
+  have="$("$bin" --version 2>&1 | head -1 | awk '{print $NF}')" || true
+  [[ "$have" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "cannot read a livekit-server version from $bin (got '$have')"
+  [[ "$(printf '%s\n%s\n' "$min" "$have" | sort -V | head -1)" == "$min" ]] \
+    || die "livekit-server $have is older than $min: its TURN relays to private and loopback peers (WI-10006603)"
+  say "livekit-server $have"
+}
 
 upsert_env_var() {
   local key="$1" value="$2" tmp
@@ -320,7 +335,7 @@ if [[ $RENDER_ONLY == 0 ]]; then verify_artifacts; fi
 if [[ $RENDER_ONLY == 0 ]]; then
 step "Preflight"
 [[ -x "$LK_BIN" ]] || die "livekit-server not found at $LK_BIN"
-say "livekit-server $("$LK_BIN" --version 2>&1 | head -1 | awk '{print $NF}')"
+require_livekit_version "$LK_BIN" "$LK_MIN_VERSION"
 
 # livekit-sip ships only as a container image; we extract the binary to the host so
 # the unit needs no Docker at run time. It is dynamically linked, so its libraries
