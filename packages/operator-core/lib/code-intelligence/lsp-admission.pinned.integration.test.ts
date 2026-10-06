@@ -4,7 +4,8 @@ import { once } from 'node:events';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { CancellationTokenSource, createMessageConnection, StreamMessageReader, StreamMessageWriter } from 'vscode-jsonrpc/node';
 import type { Server } from 'node:net';
 import type postgres from 'postgres';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
@@ -35,7 +36,9 @@ vi.mock('../resource-governor/execution', async importOriginal => {
 import { runLspDaemonServer } from './lsp-daemon-server';
 import { callLspDaemonRpc, readLspDaemonAdmission, readLspDaemonHealth } from './lsp-daemon-client';
 import { LSP_DAEMON_SOCKET_ENV } from './lsp-daemon-socket';
-import { lspClientInventory, resolveServerBin, shutdownAllLspClients } from './lsp-adapter';
+import { lspClientInventory, resolveServerBin, resolveTsserverPath, shutdownAllLspClients,
+  shutdownLspClient, typescriptInitializationOptions } from './lsp-adapter';
+import { managedSpawn } from '../task-manager/managed-spawn';
 import { corpusCase } from './acceptance-corpus';
 import { buildLspAdmissionStatePayload } from '../agent-tools/state/lsp-admission';
 import { MAX_SITES_PER_ANSWER } from './lsp-daemon-facade';
@@ -67,6 +70,100 @@ afterAll(async () => {
 }, 30_000);
 
 describe('daemon admission against the pinned TypeScript server', () => {
+  it('measures semantic project responses without treating them as whole-reference completion', async () => {
+    const bin = resolveServerBin('typescript');
+    expect(bin).not.toBeNull();
+    // The omitted file is a source-authored negative control: a successful
+    // projectInfo response is still incomplete against the declared population.
+    for (const includeConsumer of [false, true]) {
+      const root = mkdtempSync(join(tmpdir(), 'lsp-semantic-project-proof-'));
+      const target = join(root, 'target.ts');
+      const consumer = join(root, 'consumer.ts');
+      writeFileSync(join(root, 'tsconfig.json'), JSON.stringify({ compilerOptions: { strict: true },
+        files: includeConsumer ? ['target.ts', 'consumer.ts'] : ['target.ts'] }));
+      const source = 'export function semanticTarget() { return 1; }\nsemanticTarget();\n';
+      writeFileSync(target, source);
+      writeFileSync(consumer, 'import { semanticTarget } from "./target";\nsemanticTarget();\n');
+      let task: Awaited<ReturnType<typeof managedSpawn>> | undefined;
+      let connection: ReturnType<typeof createMessageConnection> | undefined;
+      try {
+        task = await managedSpawn(bin!, ['--stdio'], { class: 'sidecar',
+          title: 'lsp-semantic-project-proof', argv: [bin!, '--stdio'], cwd: root,
+          launchedBy: 'test:lsp-semantic-project-proof', planSlug: 'lsp-fleet-scale-all-languages-2026-08-21' },
+        { spawnOptions: { cwd: root, stdio: ['pipe', 'pipe', 'pipe'] } });
+        // Drain the pipe; protocol errors are retained independently below.
+        task.child.stderr?.resume();
+        connection = createMessageConnection(new StreamMessageReader(task.child.stdout!),
+          new StreamMessageWriter(task.child.stdin!));
+        connection.onRequest('window/workDoneProgress/create', () => null);
+        connection.listen();
+        const request = async <T,>(method: string, args: unknown, token?: CancellationTokenSource): Promise<T> => {
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          try {
+            return await Promise.race([
+              token ? connection!.sendRequest<T>(method, args, token.token) : connection!.sendRequest<T>(method, args),
+              new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`${method} deadline`)), 20_000); }),
+            ]);
+          } finally { if (timer) clearTimeout(timer); }
+        };
+        const rootUri = pathToFileURL(root).href;
+        await request('initialize', { processId: process.pid, rootUri,
+          workspaceFolders: [{ uri: rootUri, name: 'authored-project-proof' }],
+          initializationOptions: typescriptInitializationOptions(resolveTsserverPath(), undefined, root),
+          capabilities: { window: { workDoneProgress: true } } });
+        await connection.sendNotification('initialized', {});
+        await connection.sendNotification('textDocument/didOpen', { textDocument: {
+          uri: pathToFileURL(target).href, languageId: 'typescript', version: 1, text: source } });
+        type NativeResponse<T> = { type: string; success?: boolean; body?: T };
+        type ProjectInfo = { configFileName: string; languageServiceDisabled: boolean; fileNames: string[] };
+        type NativeReferences = { refs: Array<{ file: string; start: { line: number; offset: number } }> };
+        const command = (name: string, args: unknown) => ({ command: 'typescript.tsserverRequest',
+          arguments: [name, args, { executionTarget: 0 }] }); // Pinned ExecutionTarget.Semantic.
+        const project = await request<NativeResponse<ProjectInfo>>('workspace/executeCommand',
+          command('projectInfo', { file: target, needFileNameList: true }));
+        expect(project).toMatchObject({ type: 'response', success: true,
+          body: { configFileName: join(root, 'tsconfig.json'), languageServiceDisabled: false } });
+        const declared = [target, consumer];
+        const missing = declared.filter(file => !project.body!.fileNames.includes(file));
+        expect(missing).toEqual(includeConsumer ? [] : [consumer]);
+        const expected = includeConsumer
+          ? [['consumer.ts', 1], ['consumer.ts', 2], ['target.ts', 1], ['target.ts', 2]]
+          : [['target.ts', 1], ['target.ts', 2]];
+        const samples: Array<Array<Array<string | number>>> = [];
+        for (let index = 0; index < 3; index++) {
+          const refs = await request<NativeResponse<NativeReferences>>('workspace/executeCommand',
+            command('references', { file: target, line: 2, offset: 2 }));
+          expect(refs).toMatchObject({ type: 'response', success: true });
+          const sites = refs.body!.refs.map(ref => [ref.file.slice(root.length + 1), ref.start.line])
+            .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+          expect(sites).toEqual(expected);
+          samples.push(sites);
+        }
+        // The pinned custom-command route omits executeCommand's cancellation
+        // token when calling executeCustom. A pre-cancelled request therefore
+        // still returns a normal response here; it cannot prove uncancelled
+        // traversal in a production completion mechanism.
+        const cancelled = new CancellationTokenSource();
+        try {
+          cancelled.cancel();
+          const response = await request<NativeResponse<ProjectInfo>>('workspace/executeCommand',
+            command('projectInfo', { file: target, needFileNameList: true }), cancelled);
+          expect(cancelled.token.isCancellationRequested).toBe(true);
+          expect(response).toMatchObject({ type: 'response', success: true });
+        } finally { cancelled.dispose(); }
+        console.info('WI41095_SEMANTIC_PROJECT_RESPONSES', JSON.stringify({ includeConsumer,
+          missing: missing.map(file => file.slice(root.length + 1)), samples,
+          customCommandCancellation: 'pre-cancelled-request-returned-success',
+          certification: 'unproven-outside-authored-project' }));
+      } finally {
+        try {
+          if (task && connection) await shutdownLspClient({ connection, child: task.child,
+            taskId: task.taskId, scopeUnit: task.scopeUnit });
+        } finally { rmSync(root, { recursive: true, force: true }); }
+      }
+    }
+  }, 120_000);
+
   it('preserves the readiness refusal for a source-complete stable warm reference answer', async () => {
     expect(resolveServerBin('typescript')).not.toBeNull();
     socketRoot = mkdtempSync(join(tmpdir(), 'lsp-stable-readiness-socket-'));
@@ -90,7 +187,13 @@ describe('daemon admission against the pinned TypeScript server', () => {
       expect(warm.freshness.health).toBe('healthy');
       expect(warm.sites.map(site => [site.path, site.line1])).toEqual([['target.ts', 1]]);
       const expected = [['consumer.ts', 1], ['consumer.ts', 2], ['target.ts', 1], ['target.ts', 2]];
-      const samples = [];
+      const samples: Array<{
+        sites: Array<Array<string | number | null>>;
+        health: string;
+        progressGeneration: number;
+        certifiedReadiness: string[];
+        unprovenReadiness: string[];
+      }> = [];
       for (let index = 0; index < 3; index++) {
         const answer = await callLspDaemonRpc(socket, { workspaceId, op: 'references', args, archive: true },
           90_000, `pinned/stable-readiness/${index}`);
