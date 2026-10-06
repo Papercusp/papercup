@@ -156,7 +156,12 @@ describe('the Asana package declares an Asana ticket provider', () => {
       id: 'asana',
       contractVersion: 1,
       datatypes: ['ticket', 'ticket-status-change', 'ticket-comment'],
-      capabilities: ['ticket.read', 'ticket.comment', 'ticket.transition', 'ticket.containers'],
+      capabilities: ['ticket.read', 'ticket.comment', 'ticket.transition', 'ticket.containers', 'push.subscribe', 'push.unsubscribe'],
+      // D-016: Asana's webhook handshake and signature, verified by the host.
+      push: {
+        handshake: { header: 'x-hook-secret' },
+        signature: { header: 'x-hook-signature', algorithm: 'hmac-sha256', encoding: 'hex' },
+      },
       egressHosts: ['app.asana.com'],
       oauth: {
         authorizeUrl: 'https://app.asana.com/-/oauth_authorize',
@@ -752,5 +757,110 @@ describe('every field the provider requests exists in Asana\'s OpenAPI document'
       const parent = resolvePath(root, path.split('.').slice(0, -1).join('.'));
       expect(parent?.description).toMatch(/\*user\* object/);
     }
+  });
+});
+
+describe('push.subscribe keeps one webhook per configured project on the target (D-016)', () => {
+  const TARGET = 'https://me.example.net/api/hooks/9b2d6c1e-1111-4222-8333-444455556666';
+  const OLD_TARGET = 'https://old.example.net/api/hooks/9b2d6c1e-1111-4222-8333-444455556666';
+  /** Webhooks Asana holds, by gid. */
+  function asanaWebhooks(initial: Record<string, { resource: string; target: string; active?: boolean }>) {
+    const hooks = new Map(Object.entries(initial).map(([gid, h]) => [gid, { active: true, ...h }]));
+    let next = 1;
+    const fake = fakeHost((c) => {
+      const hookPath = /^\/webhooks\/([^/]+)$/.exec(c.path);
+      if (hookPath && c.method === 'GET') {
+        const hook = hooks.get(decodeURIComponent(hookPath[1]));
+        return hook
+          ? json(200, { data: { gid: hookPath[1], active: hook.active, target: hook.target, resource: { gid: hook.resource } } })
+          : json(404, { errors: [{ message: 'webhook: Not a recognized ID' }] });
+      }
+      if (hookPath && c.method === 'DELETE') {
+        return hooks.delete(decodeURIComponent(hookPath[1])) ? json(200, { data: {} }) : json(404, { errors: [{ message: 'Not found' }] });
+      }
+      if (c.method === 'POST' && c.path === '/webhooks') {
+        const data = (c.body as { data: { resource: string; target: string } }).data;
+        if (data.resource === 'proj-broken') return json(400, { errors: [{ message: 'The remote server did not respond with the handshake secret.' }] });
+        const gid = `hook-new-${next++}`;
+        hooks.set(gid, { resource: data.resource, target: data.target, active: true });
+        return json(201, { data: { gid } });
+      }
+      return undefined;
+    });
+    return { ...fake, hooks };
+  }
+  const subscribe = (args: Record<string, unknown>, config: Record<string, unknown> = CONFIG): ProviderInvokeRequest =>
+    ({ source: SOURCE, capability: 'push.subscribe', args, config });
+
+  it('creates a webhook per configured project, in config order, pointed at the target', async () => {
+    const asana = asanaWebhooks({});
+    const result = await adapter.invoke(subscribe({ targetUrl: TARGET, subscriptions: [] }), asana.host);
+    expect(result).toEqual({
+      subscriptions: [{ id: 'hook-new-1', resource: 'proj-eng' }, { id: 'hook-new-2', resource: 'proj-ops' }],
+    });
+    expect(asana.named('POST', '/webhooks').map((c) => c.body)).toEqual([
+      { data: { resource: 'proj-eng', target: TARGET } },
+      { data: { resource: 'proj-ops', target: TARGET } },
+    ]);
+    expect(asana.calls.every((c) => c.source === SOURCE)).toBe(true);
+  });
+
+  it('keeps a live matching webhook, and replaces one that moved target, went inactive, or is gone', async () => {
+    const asana = asanaWebhooks({
+      'hook-eng': { resource: 'proj-eng', target: TARGET },
+      'hook-ops-old': { resource: 'proj-ops', target: OLD_TARGET },
+      'hook-dead': { resource: 'proj-eng', target: TARGET, active: false },
+    });
+    const result = await adapter.invoke(subscribe({
+      targetUrl: TARGET,
+      subscriptions: [
+        { id: 'hook-eng', resource: 'proj-eng' },
+        { id: 'hook-ops-old', resource: 'proj-ops' },
+        { id: 'hook-dead', resource: 'proj-eng' },
+        { id: 'hook-vanished', resource: 'proj-ops' },
+      ],
+    }), asana.host);
+    expect(result).toEqual({ subscriptions: [{ id: 'hook-eng', resource: 'proj-eng' }, { id: 'hook-new-1', resource: 'proj-ops' }] });
+    expect([...asana.hooks.keys()].sort()).toEqual(['hook-eng', 'hook-new-1']);
+    expect(asana.named('DELETE', '/webhooks/hook-ops-old')).toHaveLength(1);
+    expect(asana.named('DELETE', '/webhooks/hook-vanished')).toHaveLength(0);
+  });
+
+  it('deletes the webhook of a project the source no longer syncs', async () => {
+    const asana = asanaWebhooks({ 'hook-eng': { resource: 'proj-eng', target: TARGET }, 'hook-ops': { resource: 'proj-ops', target: TARGET } });
+    const result = await adapter.invoke(subscribe(
+      { targetUrl: TARGET, subscriptions: [{ id: 'hook-eng', resource: 'proj-eng' }, { id: 'hook-ops', resource: 'proj-ops' }] },
+      { ...CONFIG, projectGids: ['proj-eng'] },
+    ), asana.host);
+    expect(result).toEqual({ subscriptions: [{ id: 'hook-eng', resource: 'proj-eng' }] });
+    expect([...asana.hooks.keys()]).toEqual(['hook-eng']);
+  });
+
+  it('reports a project whose create failed and still returns the webhooks that exist', async () => {
+    const asana = asanaWebhooks({});
+    const result = await adapter.invoke(subscribe({ targetUrl: TARGET, subscriptions: [] }, { ...CONFIG, projectGids: ['proj-broken', 'proj-eng'] }), asana.host);
+    expect(result).toEqual({
+      subscriptions: [{ id: 'hook-new-1', resource: 'proj-eng' }],
+      failures: [{ resource: 'proj-broken', error: expect.stringContaining('handshake secret') }],
+    });
+  });
+
+  it('stops on a lost grant instead of recording it per project, and refuses a non-https target', async () => {
+    const denied = fakeHost(() => json(401, { errors: [{ message: 'Not Authorized' }] }));
+    await expect(adapter.invoke(subscribe({ targetUrl: TARGET, subscriptions: [] }), denied.host)).rejects.toMatchObject({ kind: 'auth' });
+    const asana = asanaWebhooks({});
+    await expect(adapter.invoke(subscribe({ targetUrl: 'http://me.example.net/hook', subscriptions: [] }), asana.host))
+      .rejects.toThrow('asana_push_target_invalid');
+    expect(asana.calls).toHaveLength(0);
+  });
+
+  it('push.unsubscribe deletes every stored webhook; one already gone is not an error', async () => {
+    const asana = asanaWebhooks({ 'hook-eng': { resource: 'proj-eng', target: TARGET } });
+    const result = await adapter.invoke(
+      { source: SOURCE, capability: 'push.unsubscribe', args: { subscriptions: [{ id: 'hook-eng', resource: 'proj-eng' }, { id: 'hook-gone', resource: 'proj-ops' }] }, config: CONFIG },
+      asana.host,
+    );
+    expect(result).toEqual({ deleted: 1 });
+    expect(asana.hooks.size).toBe(0);
   });
 });
