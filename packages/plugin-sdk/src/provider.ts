@@ -178,6 +178,12 @@ export interface ProviderInvokeRequest {
   source: string;
   capability: string;
   args: Record<string, unknown>;
+  /**
+   * The source's config, as `syncPage` receives it, when the host invokes on behalf of a data
+   * source (record write-back). A write may need it to map a canonical value onto the source's own
+   * vocabulary (Asana: which section is the `in-progress` column).
+   */
+  config?: Record<string, unknown>;
   /** Parameters of the descriptor's configured service credentials (D-018.1). */
   services?: ProviderServices;
 }
