@@ -141,7 +141,10 @@ dependency_generation_input_manifest() {
       find . \
         \( -type d \( -name .papercusp -o -name .papercusp-smoke-snapshots -o -name .git -o -name node_modules \
           -o -name 'node_modules.deploy-tmp.*' -o -name 'node_modules.deploy-old.*' \
-          -o -name '*.tmp.[0-9]*' -o -name '*.old.[0-9]*' \) -prune \) -o \
+          -o -name '*.tmp.[0-9]*' -o -name '*.old.[0-9]*' \
+          -o -path './papercusp-desktop/src-tauri/sidecar' \
+          -o -path './papercusp-desktop/src-tauri/env-sidecars' \
+          -o -path './papercusp-desktop/src-tauri/resources' \) -prune \) -o \
         \( -type f \( -name package-lock.json -o -name npm-shrinkwrap.json \
           -o \( -name '*.patch' -a -path '*/patches/*' \) \) -print \) \
         | LC_ALL=C sort
@@ -341,6 +344,9 @@ dependency_generation_configure_workspace_dirs() {
 # transient tree mid-snapshot and tear the gate's generation (exit 75).
 dependency_generation_enumerate_node_modules() {
   local root="$1" dir
+  # WI-10006855: emitted desktop payloads copy dependencies from source trees;
+  # those copies have no committed lock at the emitted path. Source generations
+  # include the desktop's own node_modules and ordinary source dirs named sidecar.
   if [ "${DEPENDENCY_GENERATION_SCOPE_MODE:-full}" = 'selected' ]; then
     [ -d "$root/node_modules" ] && printf '%s\n' "$root/node_modules"
     for dir in "${DEPENDENCY_GENERATION_WORKSPACE_DIRS[@]}"; do
@@ -353,7 +359,10 @@ dependency_generation_enumerate_node_modules() {
   find "$root" -mindepth 1 \
     \( -type d \( -name .papercusp -o -name .papercusp-smoke-snapshots -o -name .git \
       -o -name 'node_modules.deploy-tmp.*' -o -name 'node_modules.deploy-old.*' \
-      -o -name '*.tmp.[0-9]*' -o -name '*.old.[0-9]*' \) -prune \) -o \
+      -o -name '*.tmp.[0-9]*' -o -name '*.old.[0-9]*' \
+      -o -path "$root/papercusp-desktop/src-tauri/sidecar" \
+      -o -path "$root/papercusp-desktop/src-tauri/env-sidecars" \
+      -o -path "$root/papercusp-desktop/src-tauri/resources" \) -prune \) -o \
     \( -type d -name node_modules -prune -print \)
 }
 

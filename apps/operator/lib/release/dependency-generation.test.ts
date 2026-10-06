@@ -1838,6 +1838,33 @@ exec /bin/cp "$@"
     expect(afterDebris.stderr).not.toContain('node_modules.deploy-old.1592326');
   });
 
+  it('keeps emitted desktop dependency copies out of full source generations and input keys (WI-10006855)', () => {
+    const integration = makeIntegration();
+    const first = publish(integration);
+    expect(first.status, first.stderr).toBe(0);
+    for (const output of ['sidecar', 'env-sidecars', 'resources']) {
+      const dir = join(integration, 'papercusp-desktop/src-tauri', output);
+      mkdirSync(join(dir, 'node_modules/copied'), { recursive: true });
+      writeFileSync(join(dir, 'node_modules/copied/index.js'), 'emitted copy, no source lock binding\n');
+      writeFileSync(join(dir, 'package-lock.json'), '{"lockfileVersion":3,"packages":{}}\n');
+    }
+    const afterOutput = publish(integration);
+    expect(afterOutput.status, afterOutput.stderr).toBe(0);
+    expect(publishedIdentity(afterOutput.stdout)).toBe(publishedIdentity(first.stdout));
+    expect(afterOutput.stdout).toContain('reused=true');
+    expect(existsSync(join(publishedPath(afterOutput.stdout), 'tree/papercusp-desktop/src-tauri'))).toBe(false);
+    for (const source of ['papercusp-desktop', 'packages/sidecar']) {
+      const dir = join(integration, source);
+      mkdirSync(join(dir, 'node_modules/source-package'), { recursive: true });
+      writeFileSync(join(dir, 'node_modules/source-package/index.js'), 'source dependency\n');
+    }
+    const afterSource = publish(integration);
+    expect(afterSource.status, afterSource.stderr).toBe(0);
+    expect(publishedIdentity(afterSource.stdout)).not.toBe(publishedIdentity(first.stdout));
+    expect(existsSync(join(publishedPath(afterSource.stdout), 'tree/papercusp-desktop/node_modules/source-package'))).toBe(true);
+    expect(existsSync(join(publishedPath(afterSource.stdout), 'tree/packages/sidecar/node_modules/source-package'))).toBe(true);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
   it('ignores whole-directory swap siblings (<dir>.tmp.<pid> / <dir>.old.<pid>) in both manifests (WI-10005953)', () => {
     // build-desktop-sidecar.sh stages the sidecar as `sidecar.tmp.$$` and swaps the
     // previous one to `sidecar.old.$$`. Each sibling carries its own node_modules and
