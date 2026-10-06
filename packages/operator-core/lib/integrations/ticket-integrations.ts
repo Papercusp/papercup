@@ -18,7 +18,12 @@
  */
 import type postgres from 'postgres';
 import type { HostFetch, ProviderDescriptor } from '@papercusp/plugin-sdk';
-import { providerRegistry, type ProviderRegistry, type RegisteredProvider } from './provider-registry';
+import {
+  ProviderRegistryNotReadyError,
+  readyProviderRegistry,
+  type ProviderRegistry,
+  type RegisteredProvider,
+} from './provider-registry';
 import { createSourceHostFetch } from './source-host-fetch';
 import { descriptorOAuthPlugin } from './connection-lifecycle';
 import {
@@ -148,7 +153,22 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
 }
 
 /** Ticket providers that can be connected from the page: they produce tickets and declare OAuth. */
-export function ticketProviders(registry: ProviderRegistry = providerRegistry()): RegisteredProvider[] {
+/**
+ * The registry a request reads: the injected one, else the process registry once plugin discovery
+ * has registered its providers. A request-only host discovers plugins on first need, so reading the
+ * registry bare could list no providers at all (WI-10006703); not-ready answers 503, never an empty list.
+ */
+async function requestRegistry(deps: { registry?: ProviderRegistry }): Promise<ProviderRegistry> {
+  if (deps.registry) return deps.registry;
+  try {
+    return await readyProviderRegistry();
+  } catch (e) {
+    if (e instanceof ProviderRegistryNotReadyError) throw new TicketIntegrationError(e.code, e.message, 503);
+    throw e;
+  }
+}
+
+export function ticketProviders(registry: ProviderRegistry): RegisteredProvider[] {
   return registry
     .list()
     .filter((entry) => entry.descriptor.datatypes.includes(TICKET_DATATYPE) && entry.descriptor.oauth)
@@ -210,7 +230,7 @@ export async function ticketIntegrationsOverview(
   scope: TicketIntegrationsScope,
   deps: Pick<TicketIntegrationsDeps, 'registry'> = {},
 ): Promise<TicketIntegrationsOverview> {
-  const providers = ticketProviders(deps.registry ?? providerRegistry());
+  const providers = ticketProviders(await requestRegistry(deps));
   const byKind = new Map(providers.map((entry) => [entry.descriptor.id, entry]));
   const owned = (await listOwnedExternalTriggerSources(sql, scope.workspaceId, scope.ownerUserId)).filter((s) => byKind.has(s.kind));
   const ids = owned.map((s) => s.id);
@@ -329,7 +349,7 @@ export async function listTicketSourceContainers(
   input: TicketIntegrationsScope & { sourceId: string; args?: Record<string, unknown> },
   deps: TicketIntegrationsDeps = {},
 ): Promise<TicketContainerList> {
-  const registry = deps.registry ?? providerRegistry();
+  const registry = await requestRegistry(deps);
   const source = await ownedTicketSource(sql, input, registry);
   const { descriptor, adapter } = source.provider;
   const invoke = (adapter as { invoke?: RegisteredProvider['adapter']['invoke'] }).invoke;
@@ -367,7 +387,7 @@ export async function setTicketSourceConfig(
   input: TicketIntegrationsScope & { sourceId: string; patch: Record<string, unknown> },
   deps: Pick<TicketIntegrationsDeps, 'registry'> = {},
 ): Promise<TicketSourceConfigResult> {
-  const source = await ownedTicketSource(sql, input, deps.registry ?? providerRegistry());
+  const source = await ownedTicketSource(sql, input, await requestRegistry(deps));
   if (!isPlainObject(input.patch)) throw new TicketIntegrationError('ticket_source_config_invalid', 'patch must be an object');
   const merged: Record<string, unknown> = { ...source.config };
   for (const [key, value] of Object.entries(input.patch)) {
@@ -433,7 +453,7 @@ export async function setTicketSourceRule(
   input: SetTicketRuleInput,
   deps: Pick<TicketIntegrationsDeps, 'registry'> = {},
 ): Promise<SetAdmissionRuleResult> {
-  const source = await ownedTicketSource(sql, input, deps.registry ?? providerRegistry());
+  const source = await ownedTicketSource(sql, input, await requestRegistry(deps));
   if (!(TICKET_RULE_PRESETS as readonly string[]).includes(input.preset)) {
     throw new TicketIntegrationError('admission_rule_invalid', `preset must be one of ${TICKET_RULE_PRESETS.join(', ')}`);
   }
@@ -471,7 +491,7 @@ export async function disableTicketSourceRule(
   input: TicketIntegrationsScope & { sourceId: string; ruleId: string },
   deps: Pick<TicketIntegrationsDeps, 'registry'> = {},
 ): Promise<AdmissionRule> {
-  const source = await ownedTicketSource(sql, input, deps.registry ?? providerRegistry());
+  const source = await ownedTicketSource(sql, input, await requestRegistry(deps));
   const rules = await listAdmissionRules(input.workspaceId, { dataSourceId: source.id, includeDisabled: true }, sql);
   if (!rules.some((rule) => rule.id === input.ruleId)) {
     throw new TicketIntegrationError('admission_rule_not_found', `no rule '${input.ruleId}' on this source`, 404);

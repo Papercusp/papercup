@@ -24,7 +24,7 @@
 import type postgres from 'postgres';
 import type { HostFetch } from '@papercusp/plugin-sdk';
 import { pinModuleState } from '@papercusp/module-singleton';
-import { providerRegistry, type ProviderRegistry, type RegisteredProvider } from '../integrations/provider-registry';
+import { readyProviderRegistry, type ProviderRegistry, type RegisteredProvider } from '../integrations/provider-registry';
 import { createSourceHostFetch } from '../integrations/source-host-fetch';
 import { sourceTokenHarness } from '../external-triggers/source-store';
 import { ProviderCapabilityUnsupported } from '../capability-verbs/provider-dispatch';
@@ -110,7 +110,7 @@ function defaultHostFetchFor(
 }
 
 export function createRecordAdmissionSource(deps: RecordSourceDeps = {}): AdmissionSourceResolver<RecordRef> {
-  const registryOf = () => deps.registry ?? providerRegistry();
+  const registryOf = async (): Promise<ProviderRegistry> => deps.registry ?? (await readyProviderRegistry());
   const hostFetchFor = deps.hostFetchFor ?? defaultHostFetchFor;
   return {
     kind: RECORD_SOURCE_KIND,
@@ -154,7 +154,7 @@ export function createRecordAdmissionSource(deps: RecordSourceDeps = {}): Admiss
       };
     },
     async writeBack({ db, admission, text }) {
-      const target = await resolveRecordTarget(db, admission, recordWriteBackCapability, registryOf());
+      const target = await resolveRecordTarget(db, admission, recordWriteBackCapability, await registryOf());
       const result = await invokeRecordTarget(target, hostFetchFor, { externalId: target.externalId, text });
       return { posted: true, externalRef: str(result.externalRef) || null, updateId: str(result.updateId) || null };
     },
@@ -162,7 +162,7 @@ export function createRecordAdmissionSource(deps: RecordSourceDeps = {}): Admiss
       if (!isTicketStatusCategory(toCategory)) {
         throw new Error(`transition_category_invalid:${toCategory} (expected one of ${TICKET_STATUS_CATEGORIES.join('|')})`);
       }
-      const target = await resolveRecordTarget(db, admission, recordTransitionCapability, registryOf());
+      const target = await resolveRecordTarget(db, admission, recordTransitionCapability, await registryOf());
       // Only the category travels: title, description and assignee belong to the source (D-004).
       const result = await invokeRecordTarget(target, hostFetchFor, { externalId: target.externalId, toCategory });
       return {

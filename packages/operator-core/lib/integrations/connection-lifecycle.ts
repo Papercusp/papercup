@@ -39,7 +39,7 @@ import {
   upsertOwnedExternalTriggerSource,
   type OwnedExternalTriggerSourceRow,
 } from '../external-triggers/source-store';
-import { providerRegistry, type RegisteredProvider } from './provider-registry';
+import { providerRegistry, readyProviderRegistry, type RegisteredProvider } from './provider-registry';
 
 export interface ConnectionOwner {
   ownerUserId: string;
@@ -109,6 +109,17 @@ export function registerConnectionAdapter(adapter: ConnectionAdapter): void {
 }
 
 /** Adapter for a token-store plugin, first-party or descriptor-derived. */
+/**
+ * Wait until plugin discovery has registered its providers when `plugin` is a descriptor
+ * provider's token store, so the synchronous adapter lookups that follow can see it. Plugin
+ * providers enter the registry only during discovery, which a request-only host defers to first
+ * need (WI-10006703). Code-registered plugins (google, facebook, github) return at once and never
+ * start discovery. Throws ProviderRegistryNotReadyError if discovery takes too long.
+ */
+export async function awaitDescriptorProviders(plugin: string): Promise<void> {
+  if (plugin.startsWith(DESCRIPTOR_OAUTH_PLUGIN_PREFIX)) await readyProviderRegistry();
+}
+
 export function connectionAdapterForPlugin(plugin: string): ConnectionAdapter | null {
   return state.adapters.get(plugin) ?? descriptorConnectionAdapter(plugin);
 }
@@ -344,6 +355,9 @@ export async function connectionAccessToken(
     return descriptorRef ? { reconnectRequired: true, reason: `connection_credential_ref_invalid:${ref}` } : { accessToken: null };
   }
   const plugin = ref.slice(0, fieldSeparator);
+  // Without this a sync that runs before this process's plugin discovery finishes would find no
+  // descriptor adapter and mark a healthy source reconnect-required (WI-10006703).
+  await awaitDescriptorProviders(plugin);
   const adapter = connectionAdapterForPlugin(plugin);
   if (!adapter) {
     return descriptorRef ? { reconnectRequired: true, reason: `connection_provider_not_registered:${plugin}` } : { accessToken: null };
@@ -598,6 +612,7 @@ export async function resolveOAuthProvider(providerId: string): Promise<OAuthPro
     await loadAndRegisterProvidersFromDisk();
     return getProvider(providerId);
   }
+  await awaitDescriptorProviders(providerId);
   const members = descriptorGroupMembers(providerId);
   const lead = members[0]?.descriptor;
   if (!lead?.oauth) return null;

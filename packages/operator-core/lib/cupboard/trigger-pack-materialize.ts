@@ -49,7 +49,7 @@ import {
   TRIGGER_RUN_COMPLETION_DATATYPE,
 } from '../external-triggers/binding-engine';
 import { ensureFlagshipPlan } from '../external-triggers/flagship-plan';
-import { providerRegistry, type ProviderRegistry } from '../integrations/provider-registry';
+import { readyProviderRegistry, type ProviderRegistry } from '../integrations/provider-registry';
 import { reconcileTriggerPackReview, sha256 } from './trigger-pack-lifecycle';
 
 /** The edge event key every edge binding listens on. */
@@ -548,7 +548,7 @@ export async function materializeTriggerPack(
   input: MaterializeTriggerPackInput,
   deps: MaterializeTriggerPackDeps = {},
 ): Promise<TriggerPackInstallation> {
-  const registry = deps.registry ?? providerRegistry();
+  const registry = deps.registry ?? (await readyProviderRegistry());
   const createdBy = input.createdBy?.trim() || null;
   const { manifest } = input;
   const pack = manifest.triggerPack;

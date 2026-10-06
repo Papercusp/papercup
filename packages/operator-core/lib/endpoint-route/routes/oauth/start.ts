@@ -24,6 +24,7 @@ import { getSessionUserOrDefault } from '../../../auth';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { listOwnedExternalTriggerSources } from '../../../external-triggers/source-store';
 import {
+  awaitDescriptorProviders,
   connectionAdapterForPlugin,
   connectionScopes,
   resolveOAuthProvider,
@@ -68,6 +69,7 @@ export default defineTool({
     }
     // A managed-connection plugin is bound to exactly one OAuth provider; a
     // mismatched pair would write a credential the lifecycle cannot read.
+    await awaitDescriptorProviders(plugin);
     const adapter = connectionAdapterForPlugin(plugin);
     if (adapter && adapter.oauthProviderId !== providerId) {
       return Response.json(

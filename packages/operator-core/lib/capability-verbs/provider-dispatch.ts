@@ -26,7 +26,7 @@ import {
   sourceTokenHarness,
   type OwnedExternalTriggerSourceRow,
 } from '../external-triggers/source-store';
-import { providerRegistry, type ProviderRegistry, type RegisteredProvider } from '../integrations/provider-registry';
+import { readyProviderRegistry, type ProviderRegistry, type RegisteredProvider } from '../integrations/provider-registry';
 import { createSourceHostFetch } from '../integrations/source-host-fetch';
 import { resolveProviderServices } from '../integrations/service-credentials';
 import { string, type OutboundContext } from './resolve';
@@ -134,7 +134,7 @@ export async function resolveCapabilitySource(
   },
   deps: Pick<OutboundDispatchDeps, 'registry'> = {},
 ): Promise<OutboundTarget> {
-  const registry = deps.registry ?? providerRegistry();
+  const registry = deps.registry ?? (await readyProviderRegistry());
   const owned = await listOwnedExternalTriggerSources(sql, params.workspaceId, params.userId);
   const candidates: Candidate[] = owned.flatMap((row) => {
     const provider = providerForKind(row.kind, registry);

@@ -334,7 +334,7 @@ export async function registerPluginReactionRules(
   }
 }
 
-async function discover(): Promise<HostState> {
+async function discover(onProvidersRegistered: () => void = () => {}): Promise<HostState> {
   let loaded: LoadedPlugin[] = [];
   let loadErrors: Array<{ error: string; path: string }> = [];
   const harnessSlugs = discoverHarnessSlugs();
@@ -384,6 +384,9 @@ async function discover(): Promise<HostState> {
       path: err.plugin,
     });
   });
+  // Readers waiting in whenProvidersRegistered() can go now: the tool sweep below
+  // can take up to SWEEP_BUDGET_MS and providers do not depend on it.
+  onProvidersRegistered();
 
   // Wire plugin-contributed tools into agent-mcp's projected-tool registry
   // (PR 0c.A-E). Each manifest tools[] entry is mounted on both HTTP and
@@ -763,12 +766,40 @@ export function getPluginHost(): Promise<HostState> {
   }
   if (__cache.promise) return __cache.promise;
   __cache.rootAtCache = rootNow;
+  let markProvidersRegistered: () => void = () => {};
+  __cache.providersRegistered = new Promise<void>((resolve) => {
+    markProvidersRegistered = resolve;
+  });
   __cache.promise = (async () => {
-    const state = await discover();
-    __cache.state = state;
-    return state;
+    try {
+      const state = await discover(markProvidersRegistered);
+      __cache.state = state;
+      return state;
+    } finally {
+      // A discovery that threw before registering still releases its waiters.
+      markProvidersRegistered();
+    }
   })();
   return __cache.promise;
+}
+
+/**
+ * Resolves once THIS process's plugin discovery has registered its integration
+ * providers, starting discovery if nothing has yet. Never rejects.
+ *
+ * Providers enter providerRegistry() only during discovery. A request-only host
+ * (requestOnlyHost(): PAPERCUSP_BACKGROUND_WORKERS=0, :3170; :3070/:3270 under the
+ * bg-host topology) never warms the plugin host at boot, and the other hosts warm
+ * it fire-and-forget, so a synchronous registry read on a request or sync path can
+ * find it empty (WI-10006703). Registration runs before the dynamic-tool sweep, so
+ * this settles well before getPluginHost() when that sweep is slow. Readers use it
+ * through readyProviderRegistry() (integrations/provider-registry.ts).
+ */
+export function whenProvidersRegistered(): Promise<void> {
+  void getPluginHost().catch(() => undefined);
+  if (__cache.providersRegistered) return __cache.providersRegistered;
+  // A cache populated by an older module instance (no deferred): fall back to the host.
+  return __cache.promise ? __cache.promise.then(() => undefined, () => undefined) : Promise.resolve();
 }
 
 /**
@@ -1530,6 +1561,7 @@ export function _resetPluginHostForTests(): void {
   if (__cache.state) unregisterPluginProviders(__cache.state.loaded);
   __cache.promise = null;
   __cache.state = null;
+  __cache.providersRegistered = null;
   // Also clear Node's CJS require.cache for plugin entry files so
   // freshly-recompiled plugin code is actually re-read on next discovery.
   // Without this, `createRequire(...).require(entryPath)` returns the
@@ -1630,6 +1662,8 @@ export function _injectPluginHostForTests(loaded: LoadedPlugin[]): void {
   };
   __cache.state = state;
   __cache.promise = Promise.resolve(state);
+  // Injected hosts register their providers themselves (registerPluginProviders).
+  __cache.providersRegistered = Promise.resolve();
   // Pin rootAtCache so getPluginHost()'s workspace-switch invalidation
   // doesn't immediately wipe the injected state on first call.
   __cache.rootAtCache = papercuspRoot();

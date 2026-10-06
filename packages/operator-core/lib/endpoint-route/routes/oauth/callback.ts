@@ -20,6 +20,7 @@ import { safeOAuthReturnPath } from '../../../oauth/return-path';
 import { fsTokenStorage } from '../../../oauth/storage-fs';
 import { getOrgPg } from '@papercusp/db-org';
 import {
+  awaitDescriptorProviders,
   connectionAdapterFor,
   finishConnection,
   missingRefreshTokenRefusal,
@@ -173,6 +174,7 @@ export default defineTool({
       if (state) {
         const verified = await verifyAndConsumeState(state);
         if (verified.ok && verified.claims) {
+          await awaitDescriptorProviders(verified.claims.plugin);
           const path = callbackReturnPath(
             verified.claims.plugin,
             verified.claims.provider,
@@ -194,6 +196,7 @@ export default defineTool({
     }
 
     const { plugin, harness, field, provider: providerId } = verified.claims;
+    await awaitDescriptorProviders(plugin);
     const adapter = connectionAdapterFor(plugin, providerId);
     const returnPath = callbackReturnPath(plugin, providerId, harness, verified.privateContext);
     const fail = (message: string, legacyJsonStatus?: number) =>

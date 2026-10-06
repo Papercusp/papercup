@@ -11,6 +11,7 @@
  * through `pinModuleState` (CLAUDE.md "Shared-lib singletons").
  */
 import { pinModuleState } from '@papercusp/module-singleton';
+import { withBoundedTimeout } from '../bounded-timeout';
 import {
   isProviderAdapter,
   validateProviderDescriptor,
@@ -132,7 +133,51 @@ const state = pinModuleState('@papercusp/operator-core.integrations.provider-reg
   registry: createProviderRegistry(),
 }));
 
-/** The process-wide provider registry used by the plugin host and the connector driver. */
+/**
+ * The process-wide provider registry, AS IT IS RIGHT NOW. Plugin providers enter it only during
+ * plugin discovery, which may not have run in this process yet (WI-10006703), so a reader on a
+ * request or sync path uses readyProviderRegistry() instead. A bare call is for the plugin host's
+ * own registration/unregistration and for code that has already awaited readiness; the guard in
+ * provider-registry-readiness.test.ts lists every such call with its reason.
+ */
 export function providerRegistry(): ProviderRegistry {
+  return state.registry;
+}
+
+/** How long a reader waits for this process's first plugin discovery to register providers. */
+export const PROVIDER_REGISTRATION_TIMEOUT_MS = 30_000;
+
+/** Plugin discovery did not register providers in time; the registry would be missing some. */
+export class ProviderRegistryNotReadyError extends Error {
+  readonly code = 'provider_registry_not_ready' as const;
+  constructor(readonly waitedMs: number) {
+    super(`integration providers are still loading (waited ${waitedMs}ms for plugin discovery); try again shortly`);
+    this.name = 'ProviderRegistryNotReadyError';
+  }
+}
+
+export interface ReadyProviderRegistryOptions {
+  timeoutMs?: number;
+  /** Test seam: settles when providers are registered. Defaults to the plugin host's signal. */
+  whenRegistered?: () => Promise<void>;
+}
+
+/**
+ * The registry once THIS process's plugin discovery has registered its providers, starting
+ * discovery when nothing has (a request-only host defers it to the first request that needs it).
+ * Throws ProviderRegistryNotReadyError rather than return a registry that silently lacks the
+ * plugin providers, so a caller can say "still loading" instead of "none exist".
+ */
+export async function readyProviderRegistry(opts: ReadyProviderRegistryOptions = {}): Promise<ProviderRegistry> {
+  const timeoutMs = opts.timeoutMs ?? PROVIDER_REGISTRATION_TIMEOUT_MS;
+  // Dynamic: the plugin host imports this module, so a static import would be a cycle.
+  const whenRegistered =
+    opts.whenRegistered ??
+    (() => import('../plugin-host-runtime').then(({ whenProvidersRegistered }) => whenProvidersRegistered()));
+  const outcome = await withBoundedTimeout(
+    () => whenRegistered().then(() => true),
+    { fallback: false, timeoutMs, label: 'provider registration' },
+  );
+  if (!outcome.value) throw new ProviderRegistryNotReadyError(outcome.elapsedMs ?? timeoutMs);
   return state.registry;
 }
