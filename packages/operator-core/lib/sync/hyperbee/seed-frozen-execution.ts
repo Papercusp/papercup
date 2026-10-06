@@ -102,7 +102,7 @@ export async function readSeedInstalledPackages(root: string, trees: readonly st
     }
   }
   const actual = new Map<string, PackageRow>();
-  const exclude = async (path: string, expectedName?: string) => {
+  const exclude = async (path: string, requireMetadata = false) => {
     let metadata: { name?: unknown; version?: unknown } | undefined;
     try {
       const file = join(root, path, 'package.json');
@@ -111,7 +111,10 @@ export async function readSeedInstalledPackages(root: string, trees: readonly st
     } catch (error) {
       if (!['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
     }
-    if (expectedName && (metadata?.name !== expectedName || typeof metadata.version !== 'string' || !metadata.version)) {
+    // npm aliases retain the real package name in package.json; directory names
+    // (and their reify leftovers) may differ. Report those exact metadata bytes.
+    if (requireMetadata && (typeof metadata?.name !== 'string' || !metadata.name
+        || typeof metadata.version !== 'string' || !metadata.version)) {
       throw new Error(`excluded reify entry metadata mismatch: ${path}`);
     }
     excludedEntries.push({ path, name: typeof metadata?.name === 'string' ? metadata.name : null,
@@ -122,7 +125,7 @@ export async function readSeedInstalledPackages(root: string, trees: readonly st
       if (name.startsWith('.')) {
         const leftover = ROOT_TOOLING.has(name) ? null : REIFY_LEFTOVER.exec(name);
         if (!ROOT_TOOLING.has(name) && !leftover) throw new Error(`unknown hidden dependency entry: ${nm}/${name}`);
-        await exclude(`${nm}/${name}`, leftover?.[1]); continue;
+        await exclude(`${nm}/${name}`, Boolean(leftover)); continue;
       }
       const names: string[] = [];
       if (name.startsWith('@')) {
@@ -130,7 +133,7 @@ export async function readSeedInstalledPackages(root: string, trees: readonly st
           if (!child.startsWith('.')) { names.push(`${name}/${child}`); continue; }
           const leftover = REIFY_LEFTOVER.exec(child);
           if (!leftover) throw new Error(`unknown hidden dependency entry: ${nm}/${name}/${child}`);
-          await exclude(`${nm}/${name}/${child}`, `${name}/${leftover[1]}`);
+          await exclude(`${nm}/${name}/${child}`, true);
         }
       } else names.push(name);
       for (const name of names) {

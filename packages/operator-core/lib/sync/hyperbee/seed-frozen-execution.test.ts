@@ -54,6 +54,7 @@ describe('D177 installed dependency census', () => {
     const root = temp();
     pkg(root, 'node_modules/.a-1234abcd', 'a');
     pkg(root, 'node_modules/@scope/.b-1234abcd', '@scope/b');
+    pkg(root, 'node_modules/@typescript/.native-1234abcd', '@typescript/native-preview');
     pkg(root, 'node_modules/@scope/b', '@scope/b');
     const locks = [{ path: 'package-lock.json', packages: {
       'node_modules/@scope/b': { version: '1.0.0' } } }];
@@ -61,7 +62,8 @@ describe('D177 installed dependency census', () => {
     expect((await readSeedInstalledPackages(root, ['node_modules'], locks, excluded)).map(row => row.path))
       .toEqual(['node_modules/@scope/b']);
     expect(excluded).toEqual([{ path: 'node_modules/.a-1234abcd', name: 'a', version: '1.0.0' },
-      { path: 'node_modules/@scope/.b-1234abcd', name: '@scope/b', version: '1.0.0' }]);
+      { path: 'node_modules/@scope/.b-1234abcd', name: '@scope/b', version: '1.0.0' },
+      { path: 'node_modules/@typescript/.native-1234abcd', name: '@typescript/native-preview', version: '1.0.0' }]);
     pkg(root, 'node_modules/@scope/unlocked', '@scope/unlocked');
     await expect(readSeedInstalledPackages(root, ['node_modules'], locks)).rejects.toThrow('no committed lock entry');
   });
@@ -69,7 +71,7 @@ describe('D177 installed dependency census', () => {
     const root = temp(); pkg(root, 'node_modules/@scope/.other', '@scope/other');
     await expect(readSeedInstalledPackages(root, ['node_modules'], [])).rejects.toThrow('unknown hidden');
     rmSync(join(root, 'node_modules/@scope/.other'), { recursive: true });
-    pkg(root, 'node_modules/@scope/.b-1234abcd', '@scope/wrong');
+    pkg(root, 'node_modules/@scope/.b-1234abcd', '');
     await expect(readSeedInstalledPackages(root, ['node_modules'], [])).rejects.toThrow('metadata mismatch');
     const excluded = [{ path: 'node_modules/@scope/.b-1234abcd', name: '@scope/b', version: '1.0.0' }];
     expect(() => assertSeedExcludedModules(excluded, ['node_modules/@scope/b/index.js'])).not.toThrow();
