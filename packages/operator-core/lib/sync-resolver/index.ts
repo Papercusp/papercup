@@ -3956,6 +3956,30 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // integrations.tickets — Settings → Integrations, ticket providers (linear-asana-task-sync
+  // P-007, D-014): the OAuth ticket providers and the owner's sources with their config, counts
+  // and rules. One row: the whole page. Owner as an explicit argument, workspace server-derived,
+  // as personalVault.importJobs above. Writes through /user/integrations/tickets push this name;
+  // sync passes, rules and admissions written elsewhere arrive through the table bridge (mig 1399).
+  'integrations.tickets': {
+    backingTables: [
+      'harness_shared.data_sources',
+      'harness_shared.admission_rules',
+      'harness_shared.work_admissions',
+      'harness_shared.work_items',
+    ],
+    argsSchema: z.object({ userId: z.string().trim().min(1) }),
+    resolve: async (args) => {
+      const { userId } = args as { userId: string };
+      const [{ getOrgPg }, { activeWorkspaceId }, { ticketIntegrationsOverview }] = await Promise.all([
+        import('@papercusp/db-org'),
+        import('../workspace-registry'),
+        import('../integrations/ticket-integrations'),
+      ]);
+      return [await ticketIntegrationsOverview(getOrgPg().sql, { workspaceId: activeWorkspaceId(), ownerUserId: userId })];
+    },
+  },
+
   // userMemory.total — how many memories the Memory page COULD show, so its
   // bounded window can render a denominator ("Showing 500 of 2,465") instead
   // of a bare count (WI-39540). Without this the page's own row count was the

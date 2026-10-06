@@ -385,7 +385,9 @@ describe('plain launch kickoff turn-start proof', () => {
     }
   }, 12_000);
 
-  it('does not resend a kickoff whose native turn completed before marker proof returned', async () => {
+  // File publication can precede delivery of the child's stdout to the host.
+  // The delayed case keeps that observation gap in the maintained suite.
+  it.each([0, 150])('does not resend a kickoff whose native turn completed before marker proof returned (count output delayed %d ms)', async (outputDelayMs) => {
     const root = mkdtempSync(join(tmpdir(), 'psu-fast-kickoff-'));
     const codexHome = join(root, 'codex-home');
     const nativeFile = join(codexHome, 'sessions', '2026', '09', '23', 'rollout.jsonl');
@@ -400,7 +402,8 @@ describe('plain launch kickoff turn-start proof', () => {
       "process.stdin.setEncoding('utf8');process.stdin.setRawMode?.(true);",
       "let markerEchoed=false;process.stdin.on('data',d=>{if(!markerEchoed&&d.includes('⟧')){markerEchoed=true;echoScheduled=true;process.stdout.write('COMPOSER_ECHO:'+d+'\\n');}});",
       "let input='',seen=0,echoScheduled=false;process.stdout.write('62% context left\\n');",
-      "process.stdin.on('data',d=>{input+=d;const matches=input.match(/BEGIN_FAST_KICKOFF/g)||[];if(!echoScheduled&&matches.length){echoScheduled=true;const echo=input;setTimeout(()=>process.stdout.write('COMPOSER_ECHO:'+echo+'\\n'),75);}while(seen<matches.length){seen++;if(seen===1){fs.mkdirSync(path.dirname(process.env.NATIVE_FILE),{recursive:true});const at=new Date().toISOString();const turn='fast-'+seen;const rows=[{type:'response_item',timestamp:at,payload:{type:'message',role:'user',content:[{type:'input_text',text:input}]}},{type:'event_msg',timestamp:at,payload:{type:'task_started',turn_id:turn}},{type:'response_item',timestamp:at,payload:{type:'message',role:'assistant',content:[{type:'output_text',text:'done'}]}},{type:'event_msg',timestamp:at,payload:{type:'task_complete',turn_id:turn}}];fs.appendFileSync(process.env.NATIVE_FILE,rows.map(r=>JSON.stringify(r)+'\\n').join(''));}fs.appendFileSync(process.env.COUNT_FILE,seen+'\\n');process.stdout.write('KICKOFF_COUNT_'+seen+'\\n');}if(seen>0&&d.includes('\\r'))process.stdout.write('RESUBMIT_ACK\\n');if(input.includes('QUIT'))process.exit(0);});",
+      "const printKickoffCount=seen=>{const emit=()=>process.stdout.write('KICKOFF_COUNT_'+seen+'\\n');const delay=Number(process.env.KICKOFF_COUNT_STDOUT_DELAY_MS);if(delay>0)setTimeout(emit,delay);else emit();};",
+      "process.stdin.on('data',d=>{input+=d;const matches=input.match(/BEGIN_FAST_KICKOFF/g)||[];if(!echoScheduled&&matches.length){echoScheduled=true;const echo=input;setTimeout(()=>process.stdout.write('COMPOSER_ECHO:'+echo+'\\n'),75);}while(seen<matches.length){seen++;if(seen===1){fs.mkdirSync(path.dirname(process.env.NATIVE_FILE),{recursive:true});const at=new Date().toISOString();const turn='fast-'+seen;const rows=[{type:'response_item',timestamp:at,payload:{type:'message',role:'user',content:[{type:'input_text',text:input}]}},{type:'event_msg',timestamp:at,payload:{type:'task_started',turn_id:turn}},{type:'response_item',timestamp:at,payload:{type:'message',role:'assistant',content:[{type:'output_text',text:'done'}]}},{type:'event_msg',timestamp:at,payload:{type:'task_complete',turn_id:turn}}];fs.appendFileSync(process.env.NATIVE_FILE,rows.map(r=>JSON.stringify(r)+'\\n').join(''));}fs.appendFileSync(process.env.COUNT_FILE,seen+'\\n');printKickoffCount(seen);}if(seen>0&&d.includes('\\r'))process.stdout.write('RESUBMIT_ACK\\n');if(input.includes('QUIT'))process.exit(0);});",
       'setTimeout(()=>process.exit(0),5000);',
     ].join('');
     let done;
@@ -416,6 +419,7 @@ describe('plain launch kickoff turn-start proof', () => {
           CODEX_HOME: codexHome,
           NATIVE_FILE: nativeFile,
           COUNT_FILE: countFile,
+          KICKOFF_COUNT_STDOUT_DELAY_MS: String(outputDelayMs),
           PAPERCUSP_PSU_PTY_KICKOFF_TURN_POLL_MS: '10',
           PAPERCUSP_PSU_PTY_KICKOFF_TURN_POLLS: '1',
           PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '100',
@@ -437,8 +441,14 @@ describe('plain launch kickoff turn-start proof', () => {
       });
 
       const deadline = Date.now() + 3_000;
-      while (!existsSync(countFile) && Date.now() < deadline) await sleep(10);
-      expect(captured()).toContain('KICKOFF_COUNT_1');
+      while ((!existsSync(countFile) || !captured().includes('KICKOFF_COUNT_1')) && Date.now() < deadline) await sleep(10);
+      const phaseEvidence = JSON.stringify({
+        count: existsSync(countFile) ? readFileSync(countFile, 'utf8').trim() : null,
+        nativePublished: existsSync(nativeFile),
+        output: captured(),
+      });
+      expect(existsSync(countFile), phaseEvidence).toBe(true);
+      expect(captured(), phaseEvidence).toContain('KICKOFF_COUNT_1');
       await sleep(400); // enough for the bounded one-poll retry path to expose a duplicate
       await rawInject(sock, 'QUIT\n');
       expect(await done).toBe(0);
