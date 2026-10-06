@@ -132,7 +132,12 @@ const RE_RUN_UNKNOWN_RATINGS: ObservationRatings = {
 };
 const REPLAY_SPLIT_RATINGS: ObservationRatings = {
   're-runnable-evidence': { rating: 'pass', evidence: 'exact target recipe executed' },
-  'degenerate-distribution': { rating: 'fail', evidence: 'spot replay contradicted the uniform target card' },
+  'degenerate-distribution': {
+    rating: 'fail',
+    evidence: 'spot replay contradicted the uniform target card',
+    evidenceKind: 'test',
+    evidenceRef: 'surface:reconnect',
+  },
 };
 
 const RERUN_RECIPE = {
@@ -852,6 +857,59 @@ describe('scorecards:emit grading audit path (P-013)', () => {
     );
     expect(captureImprovement).not.toHaveBeenCalled();
     expect(recordGradingAudit).not.toHaveBeenCalled();
+  });
+
+  it('refuses a replay-consistent audit challenge without a structured evidence citation', async () => {
+    getRubric.mockResolvedValue(replayConsistencyAuditRubric());
+    getIssue.mockResolvedValue(replayConsistencyGradedCard());
+    const dispatchTool = vi.fn().mockResolvedValue(targetReplay('pass'));
+
+    const res = await emitScorecard(
+      {
+        ...auditArgs,
+        ratings: {
+          ...REPLAY_SPLIT_RATINGS,
+          'degenerate-distribution': {
+            rating: 'fail',
+            evidence: 'the spec may be checking the wrong behavior',
+          },
+        },
+      },
+      { createdBy: 'su-auditor', ctxHarness: 'papercusp' },
+      { dispatchTool },
+    );
+
+    expect(res).toMatchObject({ ok: false, code: 'grading_audit_replay_consistent' });
+    expect(captureImprovement).not.toHaveBeenCalled();
+    expect(recordGradingAudit).not.toHaveBeenCalled();
+  });
+
+  it('allows a replay-consistent audit challenge when it cites evidence outside the graded selection', async () => {
+    getRubric.mockResolvedValue(replayConsistencyAuditRubric());
+    getIssue.mockResolvedValue(replayConsistencyGradedCard());
+    readRunningGeneration.mockResolvedValue(runningGeneration('a'.repeat(40)));
+    const dispatchTool = vi.fn().mockResolvedValue(targetReplay('pass'));
+
+    const res = await emitScorecard(
+      {
+        ...auditArgs,
+        ratings: {
+          ...REPLAY_SPLIT_RATINGS,
+          'degenerate-distribution': {
+            ...REPLAY_SPLIT_RATINGS['degenerate-distribution'],
+            evidence: 'the bound run killed a tracker-only case; the spec falsifier is auto-open plus Retry',
+            evidenceKind: 'test-run',
+            evidenceRef: '20852939',
+          },
+        },
+      },
+      { createdBy: 'su-auditor', ctxHarness: 'papercusp' },
+      { dispatchTool },
+    );
+
+    expect(res.ok).toBe(true);
+    expect(captureImprovement).toHaveBeenCalledOnce();
+    expect(recordGradingAudit).toHaveBeenCalledWith('EI-CARD', expect.objectContaining({ verdict: 'failed' }));
   });
 
   it('allows the same audit split when the exact server replay really contradicts a target rating', async () => {
