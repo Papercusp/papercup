@@ -39,6 +39,11 @@ describe('Slack external-trigger adapter', () => {
     // slack-messages-to-bug-reports P-002: the report-bug gestures need the reaction
     // scope and the "Report a bug" message shortcut.
     expect(SLACK_APP_MANIFEST_TEMPLATE.oauth_config.scopes.bot).toEqual(expect.arrayContaining(['reactions:read', 'files:read']));
+    // The org connector's conversations.list and a report's channel name need the channel read
+    // scopes; the reporter's display name needs users:read (P-005, D-012).
+    expect(SLACK_APP_MANIFEST_TEMPLATE.oauth_config.scopes.bot).toEqual(
+      expect.arrayContaining(['channels:read', 'groups:read', 'users:read']),
+    );
     expect(SLACK_APP_MANIFEST_TEMPLATE.features.shortcuts).toEqual([
       expect.objectContaining({ type: 'message', callback_id: 'papercusp_report_bug', name: 'Report a bug' }),
     ]);

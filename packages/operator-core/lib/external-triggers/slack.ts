@@ -62,6 +62,12 @@ export const SLACK_APP_MANIFEST_TEMPLATE = {
         // Report-bug gestures: the bug-emoji reaction, and the files a reporter consents to attach.
         'reactions:read',
         'files:read',
+        // The org connector lists the channels the app is in (conversations.list) and a report's
+        // context names its channel (conversations.info): public and private channels.
+        'channels:read',
+        'groups:read',
+        // A report's context names the reporter (users.info; slack-messages-to-bug-reports D-012).
+        'users:read',
       ],
     },
   },
