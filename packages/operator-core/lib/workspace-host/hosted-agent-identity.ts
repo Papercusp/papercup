@@ -50,13 +50,30 @@ export interface HostedCustomerAgentIdentityOptions {
   readonly exists?: (path: string) => boolean;
 }
 
-function readOperatorSuperuserToken(localHome: string): string[] {
-  try {
-    const token = readFileSync(join(localHome, '.papercusp', 'superuser-token'), 'utf8').trim();
-    return token.length >= 16 ? [token] : [];
-  } catch {
-    return [];
+/**
+ * The operator's state roots: `<localHome>/.papercusp`, plus `$PAPERCUSP_HOME` when the
+ * operator runs with a scoped home — that is where its superuser token actually lives
+ * (superuser-token.ts), so both must be scrubbed (WI-10006617).
+ */
+function operatorStateRoots(localHome: string, env: NodeJS.ProcessEnv): string[] {
+  const roots = [join(localHome, '.papercusp')];
+  const papercuspHome = env.PAPERCUSP_HOME?.trim();
+  if (papercuspHome && !roots.includes(papercuspHome)) roots.push(papercuspHome);
+  return roots;
+}
+
+/** Every operator superuser token value under any state root (deduped). */
+function readOperatorSuperuserTokens(stateRoots: readonly string[]): string[] {
+  const tokens = new Set<string>();
+  for (const root of stateRoots) {
+    try {
+      const token = readFileSync(join(root, 'superuser-token'), 'utf8').trim();
+      if (token.length >= 16) tokens.add(token);
+    } catch {
+      /* absent under this root */
+    }
   }
+  return [...tokens];
 }
 
 /**
@@ -163,9 +180,7 @@ const HOSTED_HOME_LINKS = [
 export function hostedCustomerAgentIdentitySpec(options: HostedCustomerAgentIdentityOptions = {}): AgentIdentitySpec {
   const localHome = options.localHome ?? homedir();
   const toolchainBin = options.toolchainBin ?? WORKSPACE_HOST_CUSTOMER_AGENT_TOOLCHAIN_BIN;
-  const stateRoots = [join(localHome, '.papercusp')];
-  const papercuspHome = (options.baseEnv ?? process.env).PAPERCUSP_HOME?.trim();
-  if (papercuspHome && !stateRoots.includes(papercuspHome)) stateRoots.push(papercuspHome);
+  const stateRoots = operatorStateRoots(localHome, options.baseEnv ?? process.env);
   const fixedEnv = hostedFixedEnv(toolchainBin, options.exists ?? existsSync);
   return {
     ...(fixedEnv ? { fixedEnv } : {}),
@@ -184,13 +199,12 @@ export function hostedCustomerAgentIdentitySpec(options: HostedCustomerAgentIden
     homeLinks: HOSTED_HOME_LINKS,
     // The operator's embedded-PG credentials (WI-10003627) never cross to the customer:
     // embedded-pg.json carries the admin DSN, embedded-pg-credentials.json every role's password.
-    forbiddenSecretFiles: [
-      join(localHome, '.papercusp', 'superuser-token'),
-      ...stateRoots.flatMap((root) => [
-        join(root, 'embedded-pg.json'),
-        join(root, 'embedded-pg-credentials.json'),
-      ]),
-    ],
+    // The superuser token is forbidden under EVERY state root, incl. a scoped PAPERCUSP_HOME.
+    forbiddenSecretFiles: stateRoots.flatMap((root) => [
+      join(root, 'superuser-token'),
+      join(root, 'embedded-pg.json'),
+      join(root, 'embedded-pg-credentials.json'),
+    ]),
   };
 }
 
@@ -216,7 +230,9 @@ export function hostedCustomerAgentSpawnTransform(
     passthroughEnv: ['LANG', 'LC_ALL', 'TZ'],
     remotePath: hostedRemotePath(toolchainBin),
     homeLinks: HOSTED_HOME_LINKS,
-    forbiddenSecrets: options.forbiddenSecrets ?? readOperatorSuperuserToken(localHome),
+    forbiddenSecrets:
+      options.forbiddenSecrets ??
+      readOperatorSuperuserTokens(operatorStateRoots(localHome, options.baseEnv ?? process.env)),
   });
   return (request) => {
     const command = hostedCustomerAgentCommand(request.backend, toolchainBin);

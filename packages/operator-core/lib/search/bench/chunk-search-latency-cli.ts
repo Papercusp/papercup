@@ -35,8 +35,9 @@
  * bound is re-measured once with load average within 20% of the baseline run before
  * it is reported as a regression, and both readings are kept.
  */
-import { readFileSync, writeFileSync } from 'node:fs';
+import { writeFileSync } from 'node:fs';
 import os from 'node:os';
+import { readSuperuserToken, superuserTokenPath } from '../../superuser-token';
 import { performance } from 'node:perf_hooks';
 import { getOrgPg } from '@papercusp/db-org';
 import { peersKnowLookup } from '../../consult/peers-know';
@@ -66,7 +67,9 @@ const HARNESS = process.env.PAPERCUSP_HARNESS ?? 'papercusp';
 function readToken(): string {
   const fromEnv = process.env.PAPERCUSP_SUPERUSER_TOKEN?.trim();
   if (fromEnv) return fromEnv;
-  return readFileSync(`${os.homedir()}/.papercusp/superuser-token`, 'utf8').trim();
+  const token = readSuperuserToken();
+  if (!token) throw new Error(`chunk-search-latency: no superuser token at ${superuserTokenPath()}`);
+  return token;
 }
 
 let rpcId = 1;

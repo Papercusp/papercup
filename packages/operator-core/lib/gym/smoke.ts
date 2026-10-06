@@ -13,8 +13,9 @@
 import type { ChildProcess } from 'node:child_process';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, openSync, readFileSync, existsSync, readdirSync } from 'node:fs';
-import { tmpdir, homedir } from 'node:os';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { readSuperuserToken } from '../superuser-token';
 import { fileURLToPath } from 'node:url';
 import { moduleRepoRoot } from '../module-repo-root';
 import { randomBytes } from 'node:crypto';
@@ -182,8 +183,7 @@ async function main(): Promise<void> {
     // 6. Start the pipeline EXPLICITLY (deterministic) via the admin route + the
     //    superuser bearer (elevates trust past the loopback allowlist). Token read
     //    from disk, never logged.
-    const tokenPath = join(homedir(), '.papercusp', 'superuser-token');
-    const suToken = existsSync(tokenPath) ? readFileSync(tokenPath, 'utf8').trim() : '';
+    const suToken = readSuperuserToken() ?? '';
     report.superuserTokenPresent = suToken.length > 0;
     const start = await fetch(`http://127.0.0.1:${PORT}/api/admin/dbos/pipeline/start?superuser=1`, {
       method: 'POST',

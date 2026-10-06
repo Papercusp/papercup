@@ -22,9 +22,10 @@
  */
 import type { ChildProcess } from 'node:child_process';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, openSync, readFileSync, existsSync } from 'node:fs';
-import { tmpdir, homedir } from 'node:os';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, openSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { readSuperuserToken } from '../superuser-token';
 import { fileURLToPath } from 'node:url';
 import { moduleRepoRoot } from '../module-repo-root';
 import { randomBytes } from 'node:crypto';
@@ -179,8 +180,7 @@ async function main(): Promise<void> {
     const judge: JudgeLlmCall = FAKE ? fakeJudge : (await import('../llm-testing/llm-client')).llmCall;
 
     // 5. Ports + deps + config.
-    const tokenPath = join(homedir(), '.papercusp', 'superuser-token');
-    const suToken = existsSync(tokenPath) ? readFileSync(tokenPath, 'utf8').trim() : '';
+    const suToken = readSuperuserToken() ?? '';
     const ports = createGymRunnerPorts({ operatorBaseUrl: `http://127.0.0.1:${PORT}`, gymSql, superuserToken: suToken, workspaceId: WS });
     const deps = buildAbDeps({
       gymSql,

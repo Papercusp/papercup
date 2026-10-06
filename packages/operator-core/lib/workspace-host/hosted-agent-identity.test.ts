@@ -164,6 +164,27 @@ describe('hosted customer agent identity (D-421)', () => {
     expect(() => transform(codexRequest())).toThrow(AgentSpawnRefusedError);
   });
 
+  // WI-10006617: with a scoped PAPERCUSP_HOME the operator's REAL token lives there
+  // (superuser-token.ts), not under <localHome>/.papercusp — the scrub must cover it.
+  it('refuses the scoped-PAPERCUSP_HOME superuser token too', () => {
+    const scopedHome = join(serviceHome, 'scoped-home');
+    mkdirSync(scopedHome, { recursive: true });
+    writeFileSync(join(scopedHome, 'superuser-token'), 'scoped-su-token-0123456789abcdef');
+    writeFileSync(join(stagedCodexHome, 'config.toml'), 'headers = { Authorization = "Bearer scoped-su-token-0123456789abcdef" }\n');
+    const transform = hostedCustomerAgentSpawnTransform({
+      localHome: serviceHome,
+      baseEnv: { PAPERCUSP_HOME: scopedHome },
+      exists: () => true,
+    });
+    expect(() => transform(codexRequest())).toThrow(AgentSpawnRefusedError);
+  });
+
+  it('forbids the superuser-token FILE under a scoped PAPERCUSP_HOME', () => {
+    const spec = hostedCustomerAgentIdentitySpec({ localHome: '/var/lib/papercusp', baseEnv: { PAPERCUSP_HOME: '/srv/scoped' } });
+    expect(spec.forbiddenSecretFiles).toContain('/var/lib/papercusp/.papercusp/superuser-token');
+    expect(spec.forbiddenSecretFiles).toContain('/srv/scoped/superuser-token');
+  });
+
   it('once installed, every planned agent spawn is routed away from the service account', () => {
     expect(agentSpawnTransformConfigured()).toBe(false);
     installHostedCustomerAgentIdentity(withToolchain());
