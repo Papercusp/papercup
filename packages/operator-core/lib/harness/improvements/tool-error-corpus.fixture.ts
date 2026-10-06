@@ -125,6 +125,12 @@ export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
 
   // ── caller: bad input / scope (DX, not a tool bug) ─────────────────────────
   {
+    n: 1, errorCode: 'aborted', status: 'error',
+    message: 'tool "coord:declare-intent" was aborted by its parent signal after the handler returned',
+    expectedClass: 'caller',
+    note: 'dispatch-stack reports parent-signal cancellation as `aborted`; a completed handler plus parent cancellation is not a structural defect in the named tool (EI-25269217047946890)',
+  },
+  {
     n: 1, errorCode: 'invalid_args', status: 'invalid_input',
     message: 'Nested code:run rejected timeoutSec=60 because the live maximum is 45 seconds; use 45 or less.',
     expectedClass: 'caller',

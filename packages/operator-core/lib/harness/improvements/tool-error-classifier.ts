@@ -146,6 +146,11 @@ export const TOOL_ERROR_RULES: readonly ToolErrorRule[] = [
   },
   {
     class: 'caller',
+    errorCodes: ['aborted'],
+    why: 'the parent request/session cancelled the tool call; dispatch reports this control-flow outcome separately from a tool or handler defect',
+  },
+  {
+    class: 'caller',
     errorCodes: [
       'invalid_args', 'invalid_input', 'role_not_allowed', 'missing_capability',
       'quota_exceeded', 'harness_required', 'checkpoint_replace_would_drop_rows',

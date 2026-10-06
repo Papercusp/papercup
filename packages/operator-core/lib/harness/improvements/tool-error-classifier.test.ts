@@ -174,6 +174,13 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
     expect(classifyToolError('handler_error', 'error', 'code:run exceeded timeout after 45 seconds')).toBe('transient');
   });
 
+  it('classifies a parent-signal abort as caller control flow, not a structural tool defect', () => {
+    const message = 'tool "coord:declare-intent" was aborted by its parent signal after the handler returned';
+    expect(classifyToolError('aborted', 'error', message)).toBe('caller');
+    // Preserve the code-specific boundary: unrelated handler errors still fall through.
+    expect(classifyToolError('handler_error', 'error', message)).toBe('structural');
+  });
+
   it('classifies the code:run typed-root shape diagnostic as caller misuse, not a tool defect', () => {
     expect(classifyToolError(
       'handler_error',
