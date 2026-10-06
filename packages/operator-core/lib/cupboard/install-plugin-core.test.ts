@@ -167,6 +167,7 @@ status: draft
       bindingCount: 2,
       edgeCount: 1,
       sourceKinds: ['gmail'],
+      datatypes: [],
       planTargets: [{ id: 'draft-reply', path: 'plan.md', slug: 'email-draft-responder' }],
       armed: false,
     });
