@@ -1328,7 +1328,10 @@ run_guard() {
 # pattern set if a new runner's misuse message surfaces the same way; keep
 # additions narrow (a literal runner diagnostic, not a word that could appear
 # in genuine test output) so this cannot false-flag a real catch.
-RUNNER_MISUSE_ERE='No test files found|Unknown option|: command not found'
+# WI-10006604: `npm run test:file` waits on scripts/npm-install-safe.mjs's fs-mutex while a
+# peer installs; on timeout it prints NPM_INSTALL_SAFE_ERROR and exits 1 before a single test
+# runs (no TEST_FILE_RESULT line), which was scored "MUTANT CAUGHT" — a manufactured proof.
+RUNNER_MISUSE_ERE='No test files found|Unknown option|: command not found|NPM_INSTALL_SAFE_ERROR'
 detect_runner_misuse() {
   grep -Eo "$RUNNER_MISUSE_ERE" "$1" 2>/dev/null | sort -u | head -3 | tr '\n' ' '
 }

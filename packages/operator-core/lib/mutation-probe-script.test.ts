@@ -562,6 +562,28 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
     expect(read()).toBe(ORIGINAL);
   });
 
+  // WI-10006604 — `npm run test:file` blocks on npm-install-safe's fs-mutex while a peer
+  // installs; on timeout it exits 1 having run ZERO tests. That exit was scored as a catch.
+  it('reports an npm-install-safe mutex timeout in the mutant phase as harness-error, never as a caught mutant', () => {
+    // Built from parts so the contiguous marker never appears in THIS source: vitest's failure
+    // code-frame prints these lines, and a probe of mutation-probe.sh would otherwise read its
+    // own guard's code-frame as runner misuse (a self-match that hides a real catch).
+    const marker = ['NPM_INSTALL_SAFE', 'ERROR'].join('_');
+    const { code, out } = runProbeIO([
+      '--file',
+      subject,
+      '--mutate',
+      's/beta/BETA/',
+      '--test',
+      `if [ "$PAPERCUSP_MUTATION_PHASE" = mutant ]; then echo "${marker} Timed out after 180000ms waiting for fs-mutex writer"; exit 1; fi; grep -q "^beta$" {}`,
+    ]);
+    expect(code).toBe(2);
+    expect(out).toMatch(/verdict=harness-error/);
+    expect(out).toContain(`runner_misuse=${marker}`);
+    expect(out).not.toMatch(/MUTANT CAUGHT/);
+    expect(read()).toBe(ORIGINAL);
+  });
+
   it('calibration: a GENUINE mutant-phase assertion failure (no misuse marker in the output) is still scored CAUGHT', () => {
     // Same shape as the misuse test above but the mutant branch fails via a
     // real assertion, not a misuse string — proving the new detector does not
