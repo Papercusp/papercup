@@ -81,7 +81,8 @@ describe('proposeCandidate', () => {
     } catch (error) { caught = error; }
     expect(caught).toBe(failure);
     expect(caught).toMatchObject({ costUsdMeasurementMissing: true,
-      costUsd: 'costUsd' in usage && Number.isFinite(usage.costUsd) && usage.costUsd >= 0 ? usage.costUsd : 0 });
+      costUsd: 'costUsd' in usage && typeof usage.costUsd === 'number' && Number.isFinite(usage.costUsd)
+        && usage.costUsd >= 0 ? usage.costUsd : 0 });
   });
 
   it.each([0, 0.42])('retains a complete failed-call measurement of $%s', async costUsd => {

@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -8,6 +8,7 @@ import {
   admissionPrecheckSetupEnv,
   classifyTestFileRun,
   createCheckpointTreeFixPrecheckRunner,
+  defaultExec,
   dependencyGenerationInfraCode,
   evaluateFixPrecheck,
   isTestFilePath,
@@ -18,6 +19,7 @@ import {
   type ExecOptions,
   type ExecResult,
   type FixPrecheckRunResult,
+  type FixPrecheckProgress,
 } from './admission-fix-precheck';
 import {
   TEST_FILE_EXIT_FAILED,
@@ -182,6 +184,48 @@ describe('classifyTestFileRun', () => {
 });
 
 describe('createCheckpointTreeFixPrecheckRunner', () => {
+  it('advances the heartbeat on setup output before setup finishes or any file is measured', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'precheck-setup-progress-'));
+    const releaseFile = join(dir, 'release');
+    const snapshots: FixPrecheckProgress[] = [];
+    let setupFinished = false;
+    let filesMeasured = 0;
+    const exec = async (argv: readonly string[], opts: ExecOptions): Promise<ExecResult> => {
+      if (argv[0] !== 'bash') {
+        filesMeasured += 1;
+        return { exitCode: 0, signal: null, timedOut: false, output: '', durationMs: 1 };
+      }
+      const result = await defaultExec([
+        process.execPath, '-e',
+        "const fs = require('node:fs'); console.log('materializing dependencies'); " +
+          "console.error('setup stderr progress'); " +
+          "const timer = setInterval(() => { if (fs.existsSync(process.argv[1])) { clearInterval(timer); } }, 10);",
+        releaseFile,
+      ], { ...opts, cwd: process.cwd(), timeoutMs: 5_000 });
+      setupFinished = true;
+      return result;
+    };
+    const runner = createCheckpointTreeFixPrecheckRunner({
+      integrationRoot: process.cwd(), checkpointRoot: join(dir, 'checkpoint'),
+      exec, logDir: dir, runLockHeld: () => ({ held: false, elapsedSec: null }),
+    });
+    const startedAt = Date.now();
+    const pending = runner({ commit: C, files: ['lib/red.test.ts'], onProgress: (p) => { snapshots.push(p); } });
+    try {
+      await vi.waitFor(() => {
+        expect(snapshots.some((p) => p.heartbeatAtMs > startedAt)).toBe(true);
+      }, { timeout: 2_000 });
+      expect(setupFinished).toBe(false);
+      expect(filesMeasured).toBe(0);
+      expect(snapshots.at(-1)).toMatchObject({ currentFile: 'lib/red.test.ts', completedCount: 0, totalCount: 1 });
+    } finally {
+      writeFileSync(releaseFile, 'release setup');
+      const result = await pending;
+      rmSync(dir, { recursive: true, force: true });
+      expect(result).toMatchObject({ ran: true, results: [{ status: 'pass' }] });
+    }
+  });
+
   const base = { integrationRoot: '/repo', checkpointRoot: '/ckpt' };
 
   it('reports checkpoint-tree-busy without touching the tree when a gate run holds the run-lock', async () => {

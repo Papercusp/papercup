@@ -557,8 +557,8 @@ describe('GOAL admission receipt (EI-25166050736574344)', () => {
       ...await spawnProcess({ receiptId: 'WI-final-first', leaseId: 'lease-final-first' }),
       admissionContext: { receiptId: 'WI-final-first' }, goalAdmission: final,
     }));
-    spawnGovernedAgentProcessMock.mockResolvedValueOnce({ status: 'error', code: 409,
-      error: 'final seat already reserved', goalAdmission: refused });
+    spawnGovernedAgentProcessMock.mockImplementationOnce(async () => ({ status: 'error' as const, code: 409,
+      error: 'final seat already reserved', goalAdmission: refused }));
     const result = await launchAgent.handler({ brief: 'Hermetic final receipt test', count: 2,
       idempotencyKey: 'final-member-receipt' }, ctx);
     const launch = dataOf(result)?.launch;

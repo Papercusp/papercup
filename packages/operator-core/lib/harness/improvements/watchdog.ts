@@ -1561,6 +1561,11 @@ export async function fetchRedTestRows(
          -- synthetic fixture rows ('b', 'fail', 'no-such-bin') into test_runs;
          -- a real run always carries a repo-relative path with a separator.
          AND file_path LIKE '%/%'
+         -- The assertion-detail integration test deliberately runs the failure
+         -- fixture as a nested red test. That row is expected input to a passing
+         -- outer test, not a repository regression. Exclude it from both the fail
+         -- count and rn=1 freshness.
+         AND file_path !~ '(^|/)packages/operator-core/lib/agent-tools/testing/__tests__/run-failure-fixture[.]test[.]ts$'
          AND ${pathFilter}
          -- EI-18767688096795873: a run whose vitest config resolved OUTSIDE the repo
          -- tree (a throwaway/mutation-testing config synthesized under /tmp, aliasing

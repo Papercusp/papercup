@@ -123,22 +123,22 @@ export async function spawnGovernedAgentProcess(
     degradedReason: string | null = null) => {
     goalAdmission = finalGoalAdmission(input, goalId, resolution, degradedReason);
     return beginGovernedExecution(
-    {
-      idempotencyKey: input.idempotencyKey,
-      admissionClass: 'agent',
-      demand: input.demand ?? { cpuWeight: 1 },
-      payloadRef: input.payloadRef,
-      parent: input.parent,
-      metadata: {
-        ...input.metadata,
-        ...(goalId ? { goalId, goalReservation: true } : {}),
-        // Metadata values are scalar; preserve the exact final snapshot as JSON.
-        // Do not replace this with a post-spawn census or the batch preflight.
-        goalAdmission: JSON.stringify(goalAdmission),
+      {
+        idempotencyKey: input.idempotencyKey,
+        admissionClass: 'agent',
+        demand: input.demand ?? { cpuWeight: 1 },
+        payloadRef: input.payloadRef,
+        parent: input.parent,
+        metadata: {
+          ...input.metadata,
+          ...(goalId ? { goalId, goalReservation: true } : {}),
+          // Metadata values are scalar; preserve the exact final snapshot as JSON.
+          // Do not replace this with a post-spawn census or the batch preflight.
+          goalAdmission: JSON.stringify(goalAdmission),
+        },
       },
-    },
-    { owner: input.owner },
-    governedExecutionRuntime(input.workspaceId, 'agent-process'),
+      { owner: input.owner },
+      governedExecutionRuntime(input.workspaceId, 'agent-process'),
     );
   };
 

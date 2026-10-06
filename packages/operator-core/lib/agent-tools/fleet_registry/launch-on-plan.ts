@@ -5096,7 +5096,7 @@ export default defineTool({
         const message = `leader:'spawn' — the LEADER failed to open (${leaderResult.error}), so NO members were ` +
             `opened (deliberately: an unled fleet is worse than none). ${registryTruth} ` +
             `Recover by re-running this same leader:'spawn' call or taking leadership explicitly.`;
-        return { ...json({ ok: false, error: leaderResult.error, finalGoalAdmissions, message }, message), isError: true };
+        return { ...json({ ok: false, error: leaderResult.error, finalGoalAdmissions, message }), isError: true };
       }
       leaderAdmissionContext = leaderResult.admissionContext;
       // The leader is OPEN — only now does the registry learn who leads. Before this line the

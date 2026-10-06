@@ -346,9 +346,12 @@ pub fn attach_argv(session: &str) -> Vec<String> {
 /// explicitly named (see [`session_name`]) so exits/crashes can be reaped
 /// instead of leaking an auto-named detached server. The `options` subcommand
 /// layers per-session config overrides WITHOUT replacing the user's config:
-/// startup tips are suppressed — these are app-managed sessions (the workbench
-/// / the desktop chat dock), and the tips pane floats over the app's panes
-/// blocking everything until dismissed.
+/// startup tips AND first-run release notes are suppressed — these are
+/// app-managed sessions (the workbench, the desktop chat dock, the bare-`pui`
+/// chat workbench), and either popup floats over the app's panes blocking
+/// everything until dismissed. On a machine that has never run this zellij
+/// version the release-notes popup ("What's new?") covers the chat on the very
+/// first `pui` (P-030 PTY acceptance, 2026-10-06).
 ///
 /// ⚠ The layout MUST be passed as `--new-session-with-layout`, NOT `--layout`:
 /// on zellij 0.44 `--layout` + `--session` does not create a session — it is
@@ -367,7 +370,29 @@ pub fn launch_argv(layout_path: &str, session: &str) -> Vec<String> {
         "options".to_string(),
         "--show-startup-tips".to_string(),
         "false".to_string(),
+        "--show-release-notes".to_string(),
+        "false".to_string(),
     ]
+}
+
+/// `PATH` for an app-managed zellij session: the directory of the `pui` that
+/// starts it goes first. Every layout runs its panes as `command "pui"`, which
+/// zellij resolves on `PATH`; without this a launch from `./target/debug/pui`
+/// (or any `pui` that is not first on the user's `PATH`) fills its panes with
+/// a DIFFERENT build — the P-030 PTY acceptance caught the chat pane running
+/// an older installed `pui` that has no `--solo` and drew the dashboard
+/// instead. Panes, and a `pui` typed in the work shell, now run the same
+/// build as the launcher. `None` when `exe` has no directory to add.
+pub fn session_path_env(
+    exe: &Path,
+    inherited: Option<&std::ffi::OsStr>,
+) -> Option<std::ffi::OsString> {
+    let dir = exe.parent().filter(|d| !d.as_os_str().is_empty())?;
+    let mut dirs = vec![dir.to_path_buf()];
+    if let Some(path) = inherited {
+        dirs.extend(std::env::split_paths(path).filter(|d| d != dir));
+    }
+    std::env::join_paths(dirs).ok()
 }
 
 /// Lowercase + kdl-safe a lexicon label for use as a zellij pane `name`
@@ -1240,9 +1265,10 @@ mod tests {
         // `--new-session-with-layout` (NEVER `--layout`: combined with
         // `--session` zellij dispatches that as new-tab-in-EXISTING-session
         // and exits "There is no active session!") creates the named session;
-        // `options --show-startup-tips false` layers a per-session override
-        // (no user-config replacement): the tips pane floats over the
-        // app-managed session blocking the panes until dismissed.
+        // `options --show-startup-tips false --show-release-notes false`
+        // layers a per-session override (no user-config replacement): either
+        // popup floats over the app-managed session blocking the panes until
+        // dismissed.
         assert_eq!(
             launch_argv("/home/u/.papercusp/pui-workbench.kdl", "pui-wb-42"),
             vec![
@@ -1253,9 +1279,31 @@ mod tests {
                 "/home/u/.papercusp/pui-workbench.kdl",
                 "options",
                 "--show-startup-tips",
+                "false",
+                "--show-release-notes",
                 "false"
             ]
         );
+    }
+
+    #[test]
+    fn session_path_puts_the_launching_build_first_once() {
+        let exe = Path::new("/work/target/debug/pui");
+        let inherited = std::ffi::OsString::from("/home/u/.cargo/bin:/work/target/debug:/usr/bin");
+        let path = session_path_env(exe, Some(&inherited)).unwrap();
+        assert_eq!(
+            std::env::split_paths(&path).collect::<Vec<_>>(),
+            vec![
+                PathBuf::from("/work/target/debug"),
+                PathBuf::from("/home/u/.cargo/bin"),
+                PathBuf::from("/usr/bin"),
+            ],
+        );
+        assert_eq!(
+            session_path_env(exe, None).unwrap(),
+            std::ffi::OsString::from("/work/target/debug"),
+        );
+        assert_eq!(session_path_env(Path::new("pui"), Some(&inherited)), None);
     }
 
     #[test]

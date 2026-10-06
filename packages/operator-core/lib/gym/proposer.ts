@@ -67,16 +67,19 @@ export function costUsdOf(value: unknown): number {
   return typeof candidate === 'number' && Number.isFinite(candidate) && candidate > 0 ? candidate : 0;
 }
 
-/** Preserve already-burned provider spend when a call fails after dispatch. */
-export function throwWithCostUsd(error: unknown, incurredCostUsd: number): never {
+/** Preserve the known subtotal separately from whether this call's usage is complete.
+ * Validation failures may supply the completed response as their usage evidence. */
+export function throwWithCostUsd(error: unknown, incurredCostUsd: number, usageEvidence: unknown = error): never {
+  const usage = usageEvidence as { costUsd?: unknown; costUsdMeasurementMissing?: unknown; unreportedFrames?: unknown } | null;
+  const measured = typeof usage?.costUsd === 'number' && Number.isFinite(usage.costUsd) && usage.costUsd >= 0;
+  const unreportedFrames = typeof usage?.unreportedFrames === 'number' && usage.unreportedFrames > 0
+    ? usage.unreportedFrames : undefined;
+  const missing = !measured || usage?.costUsdMeasurementMissing === true || unreportedFrames !== undefined;
   const costUsd = costUsdOf(error) + costUsdOf(incurredCostUsd);
-  if (error instanceof Error) {
-    Object.assign(error, { costUsd });
-    throw error;
-  }
-  const wrapped = new Error(String(error));
-  Object.assign(wrapped, { costUsd });
-  throw wrapped;
+  const failure = error instanceof Error ? error : new Error(String(error));
+  Object.assign(failure, { costUsd, ...(missing ? { costUsdMeasurementMissing: true } : {}),
+    ...(unreportedFrames === undefined ? {} : { unreportedFrames }) });
+  throw failure;
 }
 
 export function buildProposerPrompt(input: ProposeInput): { system: string; user: string } {
@@ -181,6 +184,6 @@ export async function proposeCandidate(
     return { overlay, rationale: proposal.rationale, diffFromParent, costUsd: costUsdOf(res.costUsd) };
   } catch (error) {
     // The model response may have been billed even when parsing/validation rejects it.
-    throwWithCostUsd(error, res.costUsd);
+    throwWithCostUsd(error, res.costUsd, res);
   }
 }
