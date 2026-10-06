@@ -9,6 +9,12 @@ import {
   deriveWorkItemIntakeStage,
   implementationReadinessNormalExclusionSql,
   sealImplementationAcceptance,
+  VERIFICATION_TASK_SCHEMA_VERSION,
+  verificationConflict,
+  verificationConflictSql,
+  verificationParties,
+  verificationTaskConflict,
+  verificationTaskConflictSql,
   workItemIntakeStageSql,
   type ImplementationAcceptanceAuthority,
   type ImplementationAcceptanceContract,
@@ -342,5 +348,58 @@ describe('implementationReadinessNormalExclusionSql (claim floor)', () => {
           ${BUG_SOURCE.kind}::text, ${TITLE}::text, ${SUMMARY}::text, 0::bigint
         )) AS fixture(payload, item_kind, title, summary, created_ts)`;
     expect(row).toEqual({ passes, held: !passes });
+  });
+});
+
+describe('verifier-conflict SQL twins agree with the JS predicates (P-007 / D-021)', () => {
+  const task = (over: Record<string, unknown> = {}) => ({
+    verification: {
+      schemaVersion: VERIFICATION_TASK_SCHEMA_VERSION,
+      subject: 'EI-0',
+      check: 'reproduction',
+      reporters: ['su-reporter'],
+      implementers: ['su-implementer'],
+      ...over,
+    },
+  });
+  const cases: Array<{ id: string; payload: unknown; terminalOwner: string | null; claimant: string }> = [
+    { id: 'task reporter', payload: task(), terminalOwner: null, claimant: 'su-reporter' },
+    { id: 'task implementer', payload: task(), terminalOwner: null, claimant: 'su-implementer' },
+    { id: 'independent verifier', payload: task(), terminalOwner: null, claimant: 'su-verifier' },
+    { id: 'blank claimant', payload: task({ reporters: [''] }), terminalOwner: null, claimant: ' ' },
+    { id: 'missing check (NULL leg)', payload: task({ check: undefined }), terminalOwner: null, claimant: 'su-reporter' },
+    { id: 'unknown check', payload: task({ check: 'vibes' }), terminalOwner: null, claimant: 'su-reporter' },
+    { id: 'old schema', payload: task({ schemaVersion: 'verification-task-v0' }), terminalOwner: null, claimant: 'su-reporter' },
+    { id: 'blank subject', payload: task({ subject: ' ' }), terminalOwner: null, claimant: 'su-reporter' },
+    { id: 'scalar reporters', payload: task({ reporters: 'su-reporter' }), terminalOwner: null, claimant: 'su-reporter' },
+    { id: 'padded reporter id', payload: task({ reporters: [' su-reporter '] }), terminalOwner: null, claimant: 'su-reporter' },
+    { id: 'no block', payload: {}, terminalOwner: null, claimant: 'su-reporter' },
+    { id: 'null payload', payload: null, terminalOwner: null, claimant: 'su-reporter' },
+    { id: 'auto-filer', payload: { _ei: { created_by: 'improvement-triage' } }, terminalOwner: null, claimant: 'improvement-triage' },
+    // A complete review state: JS reads submittedBy only from one (readAgentReviewState),
+    // and the review selectors that use this twin already require a complete pending state.
+    {
+      id: 'submitter',
+      payload: { agentReview: { status: 'pending', submittedBy: 'su-sub', ledgerIdeaId: 'WI-7', round: 1 } },
+      terminalOwner: null,
+      claimant: 'su-sub',
+    },
+    { id: 'closer', payload: {}, terminalOwner: 'su-closer', claimant: 'su-closer' },
+  ];
+
+  it.each(cases)('$id: SQL twins match JS and are never NULL', async ({ payload, terminalOwner, claimant }) => {
+    const o = sql as unknown as OrgSql;
+    const [row] = await sql<Array<{ task_conflict: boolean | null; keeps: boolean | null; any_conflict: boolean | null }>>`
+      SELECT ${verificationTaskConflictSql(o, claimant, 'payload')} AS task_conflict,
+             NOT ${verificationTaskConflictSql(o, claimant, 'payload')} AS keeps,
+             ${verificationConflictSql(o, claimant, { payload: 'payload', terminalOwner: 'terminal_owner' })} AS any_conflict
+        FROM (VALUES (
+          ${payload == null ? null : sql.json(payload as postgres.JSONValue)}::jsonb,
+          ${terminalOwner}::text
+        )) AS fixture(payload, terminal_owner)`;
+    const jsTask = verificationTaskConflict(payload, claimant) !== null;
+    // createdBy is a column the SQL twin does not read (claimNextAgentReview re-checks it in JS).
+    const jsAny = verificationConflict(verificationParties({ terminalOwner, payload }), claimant) !== null;
+    expect(row).toEqual({ task_conflict: jsTask, keeps: !jsTask, any_conflict: jsAny });
   });
 });
