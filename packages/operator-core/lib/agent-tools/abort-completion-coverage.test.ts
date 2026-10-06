@@ -10,6 +10,7 @@ import gradeIdea from './scout/grade-idea';
 import repairQueue from './release/repair-queue';
 import scorecardsEmit from './scorecards/emit';
 import workItemsCreate from './work_items/create';
+import codeRun from './code/run';
 
 /**
  * WI-10005670 recurrence guard — the commit-unknown window.
@@ -39,6 +40,8 @@ const LATE_RETURN_MUTATORS = {
   // EI-25175620446966840: the write tool's p95 reached 82% of its dispatch budget.
   'release:repair-queue': repairQueue,
   'scorecards:emit': scorecardsEmit,
+  // EI-25216756674045452: code:run can complete nested writes after its dispatch deadline.
+  'code:run': codeRun,
   // WI-10005718: the INSERT precedes the response; a late return lost the id + downgrade notice.
   'work_items:create': workItemsCreate,
 } as const;
