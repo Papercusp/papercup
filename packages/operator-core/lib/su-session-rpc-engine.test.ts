@@ -37,7 +37,7 @@ vi.mock('../../../apps/operator/scripts/psu-launcher.mjs', async (original) => (
     ? ['--dangerously-bypass-hook-trust']
     : ['--approval-mode', 'yolo', '--system-prompt', '/sealed/su.md'] }),
 }));
-import { startSuRpcEngine, type SuRpcEngine } from './su-session-rpc-engine';
+import { codexApprovalsPolicy, startSuRpcEngine, type SuRpcEngine } from './su-session-rpc-engine';
 
 const engines: SuRpcEngine[] = [];
 const nativeDirs: string[] = [];
@@ -485,6 +485,43 @@ describe.each(['codex', 'omp'] as const)('%s structured SU engine', (backend) =>
       await expect(f.engine.adapter.host.startCommand(command(f.engine, 'owner_turn', 'after') as never).terminal)
         .resolves.toMatchObject({ status: 'completed' });
       expect(f.sent.filter((frame) => frame.type === 'prompt')).toHaveLength(1);
+    });
+  }
+
+  // pui-chat-first-ux P-027 / D-026: /approvals rides on the next owner turn
+  // the same way the model does.
+  const turnWithApprovals = (engine: SuRpcEngine, id: string, approvals: string) =>
+    ({ ...command(engine, 'owner_turn', id), approvals }) as never;
+
+  if (backend === 'codex') {
+    it('D-026: sends the chosen approvals mode on turn/start and names it on the session', async () => {
+      const f = fixture(backend); await f.engine.ready;
+      await expect(f.engine.adapter.host.startCommand(turnWithApprovals(f.engine, 'ro', 'read-only')).terminal)
+        .resolves.toMatchObject({ status: 'completed' });
+      expect(f.sent.find((frame) => frame.method === 'turn/start')?.params)
+        .toMatchObject({ approvalPolicy: 'on-request', sandboxPolicy: { type: 'readOnly' } });
+      expect(f.engine.adapter.host.descriptor().approvals).toBe('read-only');
+      // The same mode again does not resend the override.
+      await f.engine.adapter.host.startCommand(turnWithApprovals(f.engine, 'ro-again', 'read-only')).terminal;
+      const starts = f.sent.filter((frame) => frame.method === 'turn/start').map((frame) => frame.params as Record<string, unknown>);
+      expect(starts).toHaveLength(2);
+      expect(starts[1]!.approvalPolicy).toBeUndefined();
+    });
+
+    it('D-026: maps every mode to a Codex policy and has no full-access mode', () => {
+      expect(codexApprovalsPolicy('ask')).toEqual({ approvalPolicy: 'untrusted', sandboxPolicy: { type: 'workspaceWrite' } });
+      expect(codexApprovalsPolicy('auto-edit')).toEqual({ approvalPolicy: 'on-request', sandboxPolicy: { type: 'workspaceWrite' } });
+      expect(codexApprovalsPolicy('read-only')).toEqual({ approvalPolicy: 'on-request', sandboxPolicy: { type: 'readOnly' } });
+    });
+  } else {
+    it('D-026: OMP refuses an approvals switch, sends no prompt and stays usable', async () => {
+      const f = fixture(backend); await f.engine.ready;
+      await expect(f.engine.adapter.host.startCommand(turnWithApprovals(f.engine, 'ask', 'ask')).terminal)
+        .resolves.toMatchObject({ status: 'refused', refusal: { code: 'approvals_switch_refused', retryable: false } });
+      expect(f.sent.some((frame) => frame.type === 'prompt')).toBe(false);
+      expect(f.engine.adapter.host.descriptor().approvals).toBeUndefined();
+      await expect(f.engine.adapter.host.startCommand(command(f.engine, 'owner_turn', 'after') as never).terminal)
+        .resolves.toMatchObject({ status: 'completed' });
     });
   }
 });

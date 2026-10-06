@@ -11,7 +11,7 @@ import type { BootstrapSuResult } from './endpoint-route/routes/agent-mcp/bootst
 import { humanToolName } from './su-session-approval-display';
 import {
   CHILD_STDERR_TAIL_LIMIT, attachChildStderr, childStderrSuffix, claudeDirectiveDispositionSuTools,
-  claudeMemoryFilesInPrompt, claudeReadOnlySuTools, createChildStderrTail,
+  claudeMemoryFilesInPrompt, claudePermissionMode, claudeReadOnlySuTools, createChildStderrTail,
   formatStalledTurnMessage, redactChildStderr, startClaudeSuEngine,
   type ClaudeEngineOptions, type ClaudeSuEngine,
 } from './su-session-claude-engine';
@@ -349,6 +349,50 @@ describe('structured Claude SU engine', () => {
       const next = await engine.adapter.host.startCommand({ ...command(engine), commandId: 'cmd-after', turnId: 'owner-after' }).terminal;
       expect(next.status).toBe('completed');
       expect(s.peer.prompts).toHaveLength(1);
+    });
+  });
+
+  // pui-chat-first-ux P-027 / D-026: /approvals rides on the next owner turn.
+  describe('D-026 approvals switching', () => {
+    function permissionable(p: ReturnType<typeof peer>, withControl = true) {
+      const order: string[] = [];
+      const setPermissionMode = vi.fn(async (mode: string) => { order.push(`mode:${mode}:after-${p.prompts.length}-prompts`); });
+      const factory: NonNullable<ClaudeEngineOptions['query']> = (args) => {
+        const query = p.factory(args);
+        return withControl ? Object.assign(query, { setPermissionMode }) as typeof query : query;
+      };
+      return { peer: { ...p, factory }, setPermissionMode, order };
+    }
+    const withApprovals = (engine: ClaudeSuEngine, approvals: string, id = 'approvals') =>
+      ({ ...command(engine), commandId: `cmd-${id}`, turnId: `owner-${id}`, approvals }) as never;
+
+    it('a prompted launch reports ask, and a switch applies before the turn is written', async () => {
+      const s = permissionable(peer());
+      const engine = open(s.peer, { toolApproval: 'prompt' }); await engine.ready;
+      expect(engine.adapter.host.descriptor().approvals).toBe('ask');
+      const result = await engine.adapter.host.startCommand(withApprovals(engine, 'auto-edit')).terminal;
+      expect(result.status).toBe('completed');
+      expect(s.order).toEqual(['mode:acceptEdits:after-0-prompts']);
+      expect(engine.adapter.host.descriptor().approvals).toBe('auto-edit');
+      await engine.adapter.host.startCommand(withApprovals(engine, 'auto-edit', 'same')).terminal;
+      expect(s.setPermissionMode).toHaveBeenCalledTimes(1);
+    });
+
+    it('maps every mode to a Claude permission mode and has no bypass mode', () => {
+      expect(claudePermissionMode('ask')).toBe('default');
+      expect(claudePermissionMode('auto-edit')).toBe('acceptEdits');
+      expect(claudePermissionMode('read-only')).toBe('plan');
+    });
+
+    it('refuses the turn, writes nothing and stays usable when the connection cannot switch', async () => {
+      const s = permissionable(peer(), false);
+      const engine = open(s.peer, { toolApproval: 'prompt' }); await engine.ready;
+      const refused = await engine.adapter.host.startCommand(withApprovals(engine, 'read-only')).terminal;
+      expect(refused).toMatchObject({ status: 'refused', refusal: { code: 'approvals_switch_refused', retryable: false } });
+      expect(s.peer.prompts).toHaveLength(0);
+      expect(engine.adapter.host.descriptor().approvals).toBe('ask');
+      const next = await engine.adapter.host.startCommand({ ...command(engine), commandId: 'cmd-after', turnId: 'owner-after' }).terminal;
+      expect(next.status).toBe('completed');
     });
   });
 

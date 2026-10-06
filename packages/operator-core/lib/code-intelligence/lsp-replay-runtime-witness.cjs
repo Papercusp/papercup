@@ -34,7 +34,8 @@ function startReplayRuntime(options) {
   const emit = row => append(target, `${JSON.stringify({ schemaVersion: 'lsp-replay-runtime-receipt-v1',
     pid: process.pid, identity: processIdentity, runId: options.runId, ...row })}\n`);
   const startup = { kind: 'bootstrap', evalSha256,
-    node: process.version, entry: resolve(options.entry), nodeOptions: process.env.NODE_OPTIONS || '',
+    node: process.version, entry: resolve(options.entry), entryCanonical: fs.realpathSync(options.entry),
+    nodeOptions: process.env.NODE_OPTIONS || '',
     execArgv: process.execArgv, parent: options.parent || null,
     ppid: process.ppid, parentIdentity: identity(process.ppid) };
   fs.writeFileSync(target, '', { flag: 'wx', mode: 0o600 });
@@ -174,8 +175,16 @@ function startReplayRuntime(options) {
     if (url.startsWith('node:')) return result;
     if (!url.startsWith('file:') || result.source == null) {
       // CommonJS is witnessed at the actual compile boundary below.
-      if (url.startsWith('file:') && ['commonjs', 'commonjs-typescript'].includes(result.format)) return result;
+      if (url.startsWith('file:') && ['commonjs', 'commonjs-typescript'].includes(result.format)) {
+        emit({ kind: 'commonjs-load-pending', path: fileURLToPath(url), sha256: null, format: result.format });
+        return result;
+      }
       emit({ kind: 'unknown', reason: `unsupported-load:${url}:${result.format}` });
+      return result;
+    }
+    if (result.format == null) {
+      receipt('commonjs-load-pending', new URL(url), typeof result.source === 'string' ? result.source : Buffer.from(result.source),
+        { format: null });
       return result;
     }
     if (!['module', 'commonjs', 'json'].includes(result.format))

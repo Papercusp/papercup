@@ -42,6 +42,23 @@ describe('prelaunch replay runtime dependency population', () => {
     symlinkSync('../../live.js', join(f.pkg, 'live.js'));
     expect(() => freezeReplayRuntimeFiles([f.modules], { nativeDependencies: () => [] })).toThrow('escaping-replay-runtime-link');
   });
+  it('retains directory alias descendants regardless of canonical traversal order', () => {
+    const f = fixture();
+    const metadata = join(f.pkg, 'package.json'); writeFileSync(metadata, '{"main":"index.js"}');
+    const alias = join(f.modules, 'alias'); symlinkSync('external', alias);
+    for (const paths of [[f.pkg, alias], [alias, f.pkg], [f.modules]]) {
+      const files = freezeReplayRuntimeFiles(paths, { nativeDependencies: () => [] });
+      expect(files[join(alias, 'package.json')]).toBe(replayHash(readFileSync(metadata)));
+      expect(files[join(alias, 'index.js')]).toBe(files[f.entry]);
+      writeFileSync(metadata, '{"main":"changed.js"}');
+      expect(replayFileMismatches(files)).toContain(`changed-file:${join(alias, 'package.json')}`);
+      writeFileSync(metadata, '{"main":"index.js"}');
+    }
+  });
+  it('refuses canonical directory cycles rather than silently dropping their descendants', () => {
+    const f = fixture(); symlinkSync('.', join(f.pkg, 'loop'));
+    expect(() => freezeReplayRuntimeFiles([f.modules], { nativeDependencies: () => [] })).toThrow('cyclic-replay-runtime-link');
+  });
   it('refuses missing transitive libraries and changed files instead of returning a partial population', () => {
     const f = fixture();
     expect(() => freezeReplayRuntimeFiles([f.modules], { nativeDependencies: () => [join(f.root, 'missing.so')] })).toThrow();

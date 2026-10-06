@@ -10,6 +10,7 @@ import { PassThrough } from 'node:stream';
 import { query, type Options, type Query, type SDKMessage, type SDKUserMessage, type Settings } from '@anthropic-ai/claude-agent-sdk';
 import { applyDefaultClaudeAuthSettingsArgs, applyDefaultClaudeOAuthToken, applyGithubTokenEnv, assertLaunchPersona, enforceDefaultClaudeAccount, healContextTrimmingEnv, persistDefaultClaudeAuthSettings, recordSessionOwner, sanitizeInheritedEnv, startSupervisorBeat, suLaunchArgs } from '../../../apps/operator/scripts/psu-launcher.mjs';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
+import type { SuApprovalsMode } from '@papercusp/chat-protocol';
 import { splitModelSpec } from './agent-config-constants';
 import { resolveSpawnHostOperatorBaseUrl } from './mcp-base-url';
 import type { BootstrapSuResult } from './endpoint-route/routes/agent-mcp/bootstrap-su';
@@ -27,7 +28,18 @@ import { loadSuOwnerTurnReceipts } from './su-session-commands';
 export type ClaudeEngineQuery = AsyncIterable<SDKMessage> & Pick<Query, 'initializationResult' | 'mcpServerStatus' | 'interrupt' | 'close'>
   // P-026: the streaming-input model switch. Optional so a peer without it
   // still runs; asking that peer to switch refuses the turn instead.
-  & Partial<Pick<Query, 'setModel' | 'applyFlagSettings'>>;
+  & Partial<Pick<Query, 'setModel' | 'applyFlagSettings' | 'setPermissionMode'>>;
+
+/** D-026: the Claude permission mode for one engine-neutral approvals mode.
+ * There is no full-access mode: PUI never launches with
+ * allowDangerouslySkipPermissions. */
+export function claudePermissionMode(mode: SuApprovalsMode): 'default' | 'acceptEdits' | 'plan' {
+  switch (mode) {
+    case 'ask': return 'default';
+    case 'auto-edit': return 'acceptEdits';
+    case 'read-only': return 'plan';
+  }
+}
 
 /** P-026: the SDK calls that move a running Claude session onto `spec`
  * (`model[:effort]`) before the next owner turn. Effort is applied through the
@@ -227,6 +239,8 @@ export function startClaudeSuEngine(
   const pending = new Map<string, ReturnType<typeof deferred<ClaudeNativeCommandVerdict>>>();
   // P-026: the spec the session runs on, so a turn naming it again is no switch.
   let currentModel = options.model ?? null;
+  // D-026: a prompted launch runs in permissionMode 'default', which is `ask`.
+  let currentApprovals: SuApprovalsMode | undefined = options.toolApproval === 'prompt' ? 'ask' : undefined;
   const deliveryTimeoutMs = options.deliveryTimeoutMs ?? 30_000;
   // A turn that never ENDS emits no result frame, and BOTH existing detectors —
   // claude_turn_failed and claude_empty_turn — are nested under one, so neither
@@ -265,9 +279,10 @@ export function startClaudeSuEngine(
   });
   const adapter = createClaudeSuSessionAdapter(binding, runtime, {
     ...options, ready: false, runtimeReady: () => ready && !closed, ownerTurnCorrelation: 'transport', cardSource: 'transport',
+    ...(currentApprovals ? { approvals: currentApprovals } : {}),
     ownerTurnReceipts: (identity) => loadSuOwnerTurnReceipts(identity),
     controls: {
-      async ownerTurn({ content, turnId, model: nextModel }) {
+      async ownerTurn({ content, turnId, model: nextModel, approvals: nextApprovals }) {
         if (!ready || closed) return unavailable('The structured Claude connection is not ready');
         const uuid = randomUUID();
         const receipt = deferred<ClaudeNativeCommandVerdict>();
@@ -289,6 +304,19 @@ export function startClaudeSuEngine(
             }
             currentModel = nextModel;
             adapter.host.updateModel(nextModel);
+          }
+          // D-026: the approvals switch follows the same order and refusal rule.
+          if (nextApprovals && nextApprovals !== currentApprovals) {
+            try {
+              if (!sdk.setPermissionMode) throw new Error('This Claude connection cannot change permission mode mid-session');
+              await sdk.setPermissionMode(claudePermissionMode(nextApprovals));
+            } catch (error) {
+              receipt.resolve({ ok: false, code: 'approvals_switch_refused', retryable: false,
+                message: `Could not switch approvals to ${nextApprovals}: ${error instanceof Error ? error.message : String(error)}` });
+              return;
+            }
+            currentApprovals = nextApprovals;
+            adapter.host.updateApprovals(nextApprovals);
           }
           const finished = deferred<void>();
           finishActiveTurn = () => finished.resolve();

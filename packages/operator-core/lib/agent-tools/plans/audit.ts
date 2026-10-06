@@ -61,6 +61,7 @@ import {
 } from '../sessions/_shared';
 import { ensureActivationAuditRepairFiling } from './activation-audit-repair';
 import {
+  currentPlanItemIds,
   dbRefOriginLookup,
   evaluateActivationItemProvenance,
   itemProvenanceMissingProblems,
@@ -500,7 +501,11 @@ export default defineTool({
           .filter((problem) => problem.code !== 'invalid_plan_target')
           .map(({ mappingId, target }) => ({ mappingId, target }))
         : [];
-      const merged = mergeActivationAuditCoverage(previousAudit?.activation, submittedActivation, { deadTargets });
+      const merged = mergeActivationAuditCoverage(previousAudit?.activation, submittedActivation, {
+        deadTargets,
+        // WI-10006324: retire carried provenance for items the plan has since dropped.
+        ...(currentPlan ? { liveItemIds: currentPlanItemIds(currentPlan.content) } : {}),
+      });
       if (!merged.ok) {
         return { data: {
           ok: false as const,

@@ -256,6 +256,16 @@ export interface MergeActivationAuditCoverageOptions {
    * to correct its disposition. Every retirement is recorded in rejectedOrSuperseded.
    */
   deadTargets?: readonly DeadActivationTarget[];
+  /**
+   * The CURRENT plan revision's non-dropped item ids. A prior itemProvenance declaration
+   * for an item no longer among them (the item was dropped or deleted) is retired rather
+   * than carried: keeping it can never pass provenance validation, so without this a plan
+   * that drops any provenance-declared item could never be activation-re-audited again
+   * (WI-10006324). A declaration the caller SUBMITS for such an item is kept, so
+   * validation still refuses that explicit mistake. Every retirement is recorded in
+   * rejectedOrSuperseded. Omitted ⇒ declarations are carried unchanged.
+   */
+  liveItemIds?: readonly string[];
 }
 
 export type MergeActivationAuditCoverageResult =
@@ -264,6 +274,8 @@ export type MergeActivationAuditCoverageResult =
       activation: ActivationAuditPayload;
       carriedMappingIds: string[];
       retiredTargets: DeadActivationTarget[];
+      /** Item ids whose CARRIED provenance declaration was retired (see liveItemIds). */
+      retiredItemProvenance: string[];
     }
   | {
       ok: false;
@@ -293,7 +305,7 @@ export function mergeActivationAuditCoverage(
   options: MergeActivationAuditCoverageOptions = {},
 ): MergeActivationAuditCoverageResult {
   if (!previous) {
-    return { ok: true, activation: submitted, carriedMappingIds: [], retiredTargets: [] };
+    return { ok: true, activation: submitted, carriedMappingIds: [], retiredTargets: [], retiredItemProvenance: [] };
   }
 
   const conflicts: ActivationAuditCoverageConflict[] = [];
@@ -374,19 +386,38 @@ export function mergeActivationAuditCoverage(
   const unique = (values: readonly string[]) => [...new Set(values)];
   const retiredRecords = retiredTargets.map(({ mappingId, target }) =>
     `${mappingId} target ${target} retired: absent from the current plan revision`);
+
+  // A carried declaration for an item the current plan no longer holds as a live item is
+  // dead weight that validation would refuse forever (WI-10006324): retire it. A
+  // submitted declaration is never retired here — the caller named that item explicitly.
+  const liveItems = options.liveItemIds ? new Set(options.liveItemIds) : null;
+  const submittedProvenanceItems = new Set((submitted.itemProvenance ?? []).map((d) => d.itemId));
+  const retiredItemProvenance: string[] = [];
+  const carriedProvenance = (previous.itemProvenance ?? []).filter((declaration) => {
+    if (!liveItems || liveItems.has(declaration.itemId) || submittedProvenanceItems.has(declaration.itemId)) {
+      return true;
+    }
+    retiredItemProvenance.push(declaration.itemId);
+    return false;
+  });
+  const retiredProvenanceRecords = retiredItemProvenance.map((itemId) =>
+    `itemProvenance for ${itemId} retired: ${itemId} is dropped or absent from the current plan revision`);
+
   return {
     ok: true,
     carriedMappingIds,
     retiredTargets,
+    retiredItemProvenance,
     activation: {
       sourceRanges: [...ranges.values()],
       mappings,
       repairedOmissions: unique([...previous.repairedOmissions, ...submitted.repairedOmissions]),
       rejectedOrSuperseded: unique([
         ...previous.rejectedOrSuperseded, ...submitted.rejectedOrSuperseded, ...retiredRecords,
+        ...retiredProvenanceRecords,
       ]),
       unresolvedBlockers: unique([...previous.unresolvedBlockers, ...submitted.unresolvedBlockers]),
-      ...mergeItemProvenanceDeclarations(previous.itemProvenance, submitted.itemProvenance),
+      ...mergeItemProvenanceDeclarations(carriedProvenance, submitted.itemProvenance),
     },
   };
 }

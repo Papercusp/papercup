@@ -29,6 +29,7 @@ pub enum SlashKind {
     Effort,
     Status,
     Compact,
+    Approvals,
     Details,
     Expand,
     Copy,
@@ -75,6 +76,11 @@ pub const COMMANDS: &[SlashCommand] = &[
         name: "compact",
         summary: "Summarize the conversation to free up context (Claude)",
         kind: SlashKind::Compact,
+    },
+    SlashCommand {
+        name: "approvals",
+        summary: "Ask, auto-edit or read-only; applies from the next message (Shift+Tab)",
+        kind: SlashKind::Approvals,
     },
     SlashCommand {
         name: "expand",

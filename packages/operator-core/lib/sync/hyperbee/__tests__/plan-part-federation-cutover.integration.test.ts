@@ -37,6 +37,7 @@ import { buildHarnessPlansProjection, type HarnessPlanRow } from '../projections
 import { buildHarnessPlanPartsProjection, type PlanPartWireRow } from '../projections/harness-plan-parts';
 import { PgPlanPartsStore } from '../../../plan-parts/store';
 import { capturePlanParts } from '../../../plan-parts/federation';
+import { reconcilePlanParts } from '../../../plan-parts/reconcile';
 import { splitPlanIntoParts, type FederatedPart } from '@papercusp/plan-parser';
 import { hashPlanContent } from '@papercusp/plan-parser/content-hash';
 import {
@@ -144,6 +145,7 @@ async function setupSchema(sql: postgres.Sql): Promise<void> {
       content       TEXT NOT NULL DEFAULT '',
       content_hash  TEXT NOT NULL DEFAULT '',
       version       BIGINT NOT NULL DEFAULT 0,
+      updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(), -- read by the boot reconcile sweep (WI-10006276)
       archived      BOOLEAN NOT NULL DEFAULT false,
       is_legacy     BOOLEAN NOT NULL DEFAULT false,
       template      TEXT,            -- mig 329 (plan-template-mechanism)
@@ -906,5 +908,83 @@ describe('plan-part federation — G14 recompose no-op skip (real PG, flag ON)',
 
     expect(v2).toBe(v1); // version did NOT churn on the no-op recompose
     expect(outbox2).toBe(outbox1); // no spurious capture → no federation loop
+  });
+});
+
+// WI-10006276 — the boot reconcile sweep stamps a LOCAL plan's capture with the time its
+// CONTENT was written, not harness_plans.updated_at. Mig 211 bumps updated_at on
+// non-content writes too (op_status, archived, supersede links), and mig 214 stamps
+// fed_ts on them as well, so neither column dates the body. If a local row's newer
+// remote parts arrived but were not recomposed (a dependency-admission rejection or a
+// deferred batch), such a bump let the stale body out-rank them in the parts LWW and
+// the sweep federated the stale body back out over the newer edit.
+describe('plan-part reconcile sweep: content_ts is the content write time (real PG, WI-10006276)', () => {
+  let db: FreshPgDb;
+  const T1 = Date.UTC(2026, 9, 1, 12, 0, 0); // local body written; its revision is recorded
+  const T2 = T1 + 60_000; // a peer's newer P-001 part arrives here and is NOT recomposed
+  const T3 = T1 + 120_000; // a non-content write bumps updated_at past T2
+
+  beforeAll(async () => {
+    db = await createFreshPgDb('plan_part_reconcile_ts');
+    await setupSchema(db.sql);
+  }, 60_000);
+
+  afterAll(async () => {
+    await db?.cleanup();
+  });
+
+  beforeEach(async () => {
+    await db.sql`DELETE FROM harness_shared.harness_plan_parts`;
+    await db.sql`DELETE FROM harness_shared.harness_plans`;
+    await db.sql`DELETE FROM harness_shared.plan_revisions`;
+  });
+
+  const store = (): PgPlanPartsStore => new PgPlanPartsStore(db.sql, WS, H);
+
+  async function seedLocalPlan(content: string, revisionAt: number, updatedAt: number): Promise<void> {
+    await db.sql`
+      INSERT INTO harness_shared.harness_plans
+        (workspace_id, harness_slug, plan_slug, title, status, content, content_hash, origin, updated_at)
+      VALUES (${WS}, ${H}, ${SLUG}, 'Cutover Test', 'draft', ${content}, ${hashPlanContent(content)}, 'local',
+              to_timestamp(${updatedAt / 1000}))`;
+    await db.sql`
+      INSERT INTO harness_shared.plan_revisions
+        (workspace_id, harness_slug, plan_slug, seq, content_hash, content_snapshot, author_kind, author_id, created_at)
+      VALUES (${WS}, ${H}, ${SLUG}, 1, ${hashPlanContent(content)}, ${content}, 'agent', 'su-test', ${revisionAt})`;
+  }
+
+  async function seedRemoteParts(content: string, fedTs: number): Promise<void> {
+    for (const part of splitPlanIntoParts(content)) {
+      await store().upsertPart(SLUG, { ...part, fedTs, author: 'peer-b' }, 'remote');
+    }
+  }
+
+  async function storedP001(): Promise<string | undefined> {
+    const parts = [...(await store().getParts(SLUG)).values()];
+    return parts.find((x) => !x.tombstone && x.text.includes('**P-001**'))?.text;
+  }
+
+  it('a stale local body whose updated_at a non-content write bumped does NOT beat newer remote parts', async () => {
+    await seedLocalPlan(planMarkdown('alpha', 'beta'), T1, T3);
+    await seedRemoteParts(planMarkdown('alpha-remote', 'beta'), T2);
+
+    const result = await reconcilePlanParts({ workspaceId: WS, sql: db.sql });
+
+    expect(result.errors).toBe(0);
+    expect(result.plansScanned).toBe(1);
+    expect(await storedP001()).toContain('alpha-remote');
+  });
+
+  it('positive control: a local edit written AFTER the remote parts is still captured over them', async () => {
+    const T4 = T1 + 180_000;
+    await seedLocalPlan(planMarkdown('zeta', 'beta'), T4, T4);
+    await seedRemoteParts(planMarkdown('alpha-remote', 'beta'), T2);
+
+    const result = await reconcilePlanParts({ workspaceId: WS, sql: db.sql });
+
+    expect(result.errors).toBe(0);
+    const p001 = await storedP001();
+    expect(p001).toContain('zeta');
+    expect(p001).not.toContain('alpha-remote');
   });
 });

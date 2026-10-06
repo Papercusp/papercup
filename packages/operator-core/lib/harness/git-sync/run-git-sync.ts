@@ -37,8 +37,8 @@ import { spawn } from 'node:child_process';
 import { collectChildOutput } from '../../child-output.js';
 import { processGroupLifetime } from '../../fleet/process-group-lifetime';
 import { withGitFetchHeadroom } from './git-fetch-headroom';
-import { lstat, open, readFile, readlink, readdir, realpath, unlink, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { lstat, mkdir, open, readFile, readlink, readdir, realpath, unlink, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import { mapLiveLockHoldingsForRepo } from './live-lock-coordinates';
 import { projectDirForSlug } from '../../operator-notes';
 import { gitSidecarEnabled, isSidecarInfrastructureFault, noteSidecarFallback, runGitViaSpawnerSidecar } from '../../fleet/git-via-sidecar';
@@ -4185,6 +4185,104 @@ async function untrackLegacyDependencyGenerationStore(
 }
 
 /**
+ * The env-named generation-store record dependency-generation.sh writes under an
+ * integration root (WI-10005159). MUST equal the repo-relative form of
+ * `dependencyGenerationRootRecord()` in release/dependency-generation-prebuild.ts — pinned
+ * by a test, because importing that module here would drag Postgres into git-sync.
+ */
+export const DEPENDENCY_GENERATION_ROOT_RECORD = '.papercusp/dependency-generation-root';
+
+/**
+ * WI-10006277: the store above ignores itself through its own `.gitignore` (WI-42354),
+ * but a single FILE cannot, and only Papercusp's own root `.gitignore` names this
+ * record. In every other repository — a user's repo behind a repo pot — git-sync
+ * therefore committed a host-local absolute path, and a working-copy pot carried it
+ * into the standing PR to the user's main repository.
+ *
+ * Repair at the same seam as the store: make the record ignored through the repo's
+ * PRIVATE `info/exclude` (never the user's tracked `.gitignore`, which would itself
+ * become a change in their PR), then drop any copy an older git-sync already committed
+ * from the index, leaving the file on disk. No-op when the record is absent and
+ * untracked, or when the repo's own rules already ignore it (Papercusp's tree).
+ */
+async function excludeDependencyGenerationRootRecord(
+  runGit: RunGit,
+  repoPath: string,
+  log: (message: string) => void,
+): Promise<{ ok: true; excluded: boolean; untracked: boolean } | { ok: false; error: string }> {
+  const record = DEPENDENCY_GENERATION_ROOT_RECORD;
+  const fail = (what: string, r: { stdout: string; stderr: string }) => ({
+    ok: false as const,
+    error: `${what} (${record}): ${(r.stderr || r.stdout).trim().slice(0, 300)}`,
+  });
+  const tracked = await runGit(['ls-files', '-z', '--', record], repoPath);
+  if (tracked.code !== 0) return fail('could not census the dependency-generation root record', tracked);
+  const isTracked = tracked.stdout.split('\0').some(Boolean);
+  if (!isTracked) {
+    try {
+      await lstat(join(repoPath, record));
+    } catch {
+      return { ok: true, excluded: false, untracked: false };
+    }
+  }
+
+  // `--no-index`: a TRACKED file is otherwise never reported ignored.
+  const checkIgnored = () => runGit(['check-ignore', '-q', '--no-index', '--', record], repoPath);
+  let ignored = await checkIgnored();
+  let excluded = false;
+  if (ignored.code === 1) {
+    const gitPath = await runGit(['rev-parse', '--path-format=absolute', '--git-path', 'info/exclude'], repoPath);
+    if (gitPath.code !== 0) return fail('could not locate info/exclude', gitPath);
+    const excludeFile = gitPath.stdout.trim();
+    let existing = '';
+    try {
+      existing = await readFile(excludeFile, 'utf8');
+    } catch {
+      existing = '';
+    }
+    const rule = `/${record}`;
+    if (!existing.split('\n').includes(rule)) {
+      const sep = existing === '' || existing.endsWith('\n') ? '' : '\n';
+      await mkdir(dirname(excludeFile), { recursive: true });
+      await writeFile(
+        excludeFile,
+        `${existing}${sep}# Papercusp host-local state (WI-10006277) - never committed\n${rule}\n`,
+        'utf8',
+      );
+      excluded = true;
+    }
+    ignored = await checkIgnored();
+  }
+  if (ignored.code !== 0) {
+    // Still not ignored (e.g. the repo's own rules re-include it with `!`): leave the
+    // index alone — untracking a file the catch-all add re-adds would only churn.
+    if (ignored.code !== 1) return fail('could not check-ignore the dependency-generation root record', ignored);
+    log(`[git-sync] ${repoPath}: ${record} is re-included by the repo's own ignore rules; leaving it tracked`);
+    return { ok: true, excluded, untracked: false };
+  }
+  if (!isTracked) {
+    if (excluded) log(`[git-sync] ${repoPath}: excluded host-local ${record} via info/exclude`);
+    return { ok: true, excluded, untracked: false };
+  }
+
+  const rmArgs = ['rm', '-f', '--cached', '--ignore-unmatch', '--', record];
+  const removed = await recoverIndexLockContention(
+    await runGit(rmArgs, repoPath),
+    () => runGit(rmArgs, repoPath),
+    runGit,
+    repoPath,
+    'git rm --cached (dependency-generation root record)',
+    log,
+  );
+  if (removed.code !== 0) return fail('could not untrack the dependency-generation root record', removed);
+  log(
+    `[git-sync] ${repoPath}: removed legacy tracked ${record} from the index; ` +
+      'cached-only repair kept the host-local file on disk',
+  );
+  return { ok: true, excluded, untracked: true };
+}
+
+/**
  * WI-1416: the COMMIT half of one repo's sync — stage (`add -A` with oversized +
  * content-guard excludes) + commit. Replay-safe by construction: on an
  * already-committed (clean) tree it is a no-op (`nothing to commit` is benign), so
@@ -4233,6 +4331,19 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
       dirtyPathCount: 0,
       committedCount,
       error: dependencyGenerationRepair.error,
+      oversized,
+      contentErrors,
+      skippedPaths: [],
+    };
+  }
+  const rootRecordRepair = await excludeDependencyGenerationRootRecord(runGit, repoPath, o.log);
+  noteSlowPhase('dependency generation root record');
+  if (!rootRecordRepair.ok) {
+    return {
+      committedLocal: false,
+      dirtyPathCount: 0,
+      committedCount,
+      error: rootRecordRepair.error,
       oversized,
       contentErrors,
       skippedPaths: [],

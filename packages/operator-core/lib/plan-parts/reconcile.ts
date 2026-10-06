@@ -27,8 +27,12 @@ export interface PlanContentRow {
   plan_slug: string;
   content: string;
   /**
-   * Epoch ms of the write that produced `content` (harness_plans.updated_at). The
-   * capture is stamped with THIS, never with the sweep's clock. The sweep loads every
+   * Epoch ms of the write that produced `content`: the created_at of the latest
+   * plan_revisions row whose content_hash matches the body, capped by
+   * harness_plans.updated_at (updated_at alone when no revision matches). updated_at is
+   * not used by itself because non-content writes bump it too; a stale body stamped with
+   * such a bump out-ranked newer remote parts that were not recomposed yet
+   * (WI-10006276). The capture is stamped with THIS, never with the sweep's clock. The sweep loads every
    * plan up front and reaches each one minutes later, so a plan edited in between is
    * held here as its OLD body. Stamped `now()`, that old body beat the edit's own
    * capture in the parts LWW and the next recompose rewrote the plan with it — with
@@ -62,11 +66,25 @@ export interface ReconcilePlanPartsResult {
 }
 
 async function defaultLoadPlans(sql: Sql, workspaceId: string): Promise<PlanContentRow[]> {
+  // content_ts = when THIS body was written: the latest revision whose hash matches the
+  // current body, capped by updated_at (LEAST ignores the NULL when no revision matches,
+  // which falls back to updated_at). updated_at alone is not a content clock: mig 211
+  // bumps it on op_status / archived / supersede writes too (WI-10006276).
   const rows = await sql<Array<{ harness_slug: string; plan_slug: string; content: string; content_ts: string; origin: string | null }>>`
-    SELECT harness_slug, plan_slug, content, origin,
-           (EXTRACT(EPOCH FROM updated_at) * 1000)::bigint AS content_ts
-      FROM harness_shared.harness_plans
-     WHERE workspace_id = ${workspaceId} AND archived = false
+    SELECT p.harness_slug, p.plan_slug, p.content, p.origin,
+           LEAST(
+             (EXTRACT(EPOCH FROM p.updated_at) * 1000)::bigint,
+             (SELECT r.created_at
+                FROM harness_shared.plan_revisions r
+               WHERE r.workspace_id = p.workspace_id
+                 AND r.harness_slug = p.harness_slug
+                 AND r.plan_slug = p.plan_slug
+                 AND r.content_hash = p.content_hash
+               ORDER BY r.seq DESC
+               LIMIT 1)
+           ) AS content_ts
+      FROM harness_shared.harness_plans p
+     WHERE p.workspace_id = ${workspaceId} AND p.archived = false
   `;
   // bigint comes back as a string from postgres.js
   return rows.map((r) => ({ ...r, content_ts: Number(r.content_ts) }));

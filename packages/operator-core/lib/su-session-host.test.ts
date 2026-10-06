@@ -362,6 +362,25 @@ describe('durable SU owner-turn acceptance', () => {
     expect(host.updateModel('claude-sonnet-4-5:high')).toBeNull();
     expect(eventTypes(host).slice(before)).toEqual(['session']);
   });
+
+  // pui-chat-first-ux P-027 / D-026: an owner turn may carry an approvals mode.
+  it('D-026: refuses an owner turn whose approvals mode is unknown, before reserving', async () => {
+    const store: SuSessionCommandStore = { reserve: vi.fn(), finish: vi.fn() };
+    for (const approvals of ['', 'full-access', 'bypassPermissions', 3]) {
+      await expect(readyHost().acceptCommand({ ...command('owner_turn'), approvals } as never, store))
+        .rejects.toMatchObject({ code: 'invalid_command' });
+    }
+    expect(store.reserve).not.toHaveBeenCalled();
+  });
+
+  it('D-026: publishes the approvals mode an engine switched to, once', () => {
+    const host = readyHost();
+    const before = eventTypes(host).length;
+    expect(host.updateApprovals('read-only')).not.toBeNull();
+    expect(host.descriptor().approvals).toBe('read-only');
+    expect(host.updateApprovals('read-only')).toBeNull();
+    expect(eventTypes(host).slice(before)).toEqual(['session']);
+  });
 });
 
 afterEach(() => {

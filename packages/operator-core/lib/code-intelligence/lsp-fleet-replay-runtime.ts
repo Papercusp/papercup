@@ -92,17 +92,21 @@ export function freezeReplayRuntimeFiles(paths: readonly string[], options: {
     if (/=>\s+not found/.test(output)) throw new Error(`missing-replay-native-dependency:${file}`);
     return [...output.matchAll(/(?:=>\s+|^\s*)(\/[^\s]+)\s+\(/gm)].map(match => match[1]);
   });
-  const pending = paths.map(path => ({ path: resolve(path), root: realpathSync(path) }));
+  const pending = paths.map(path => ({ path: resolve(path), root: realpathSync(path), ancestors: [] as string[] }));
   let completed = 0;
   while (pending.length) {
-    const { path, root } = pending.pop()!;
+    const { path, root, ancestors } = pending.pop()!;
     const actual = realpathSync(path);
     if (!insideReplayRoot(root, actual)) throw new Error(`escaping-replay-runtime-link:${path}`);
     const before = statSync(actual, { bigint: true });
     if (before.isDirectory()) {
-      if (directories.has(actual)) continue;
-      directories.add(actual);
-      for (const entry of readdirSync(actual)) pending.push({ path: join(actual, entry), root });
+      // Keep every lexical package alias: consumers can read package.json
+      // through a symlink even when Node loads JS from its canonical target.
+      // A per-branch canonical ancestry rejects loops without erasing aliases.
+      if (ancestors.includes(actual)) throw new Error(`cyclic-replay-runtime-link:${path}`);
+      if (directories.has(path)) continue;
+      directories.add(path);
+      for (const entry of readdirSync(actual)) pending.push({ path: join(path, entry), root, ancestors: [...ancestors, actual] });
       continue;
     }
     if (!before.isFile()) throw new Error(`unsupported-replay-runtime-file:${path}`);
@@ -113,7 +117,7 @@ export function freezeReplayRuntimeFiles(paths: readonly string[], options: {
     if (['dev', 'ino', 'size', 'mtimeNs', 'ctimeNs'].some(key => before[key as keyof typeof before] !== after[key as keyof typeof after]))
       throw new Error(`changed-during-replay-runtime-freeze:${actual}`);
     files[path] = hash; files[actual] = hash;
-    for (const dependency of native) pending.push({ path: resolve(dependency), root: realpathSync(dependency) });
+    for (const dependency of native) pending.push({ path: resolve(dependency), root: realpathSync(dependency), ancestors: [] });
     completed++;
     if (completed % 4096 === 0 || !pending.length)
       options.onProgress?.({ phase: 'runtime-files-frozen', completed, total: completed + pending.length });
@@ -628,11 +632,27 @@ export function replayLoadedRuntime(pid: number, identity: string | null, cmdlin
       !anchored(pid, identity, cmdline, receipts)) unknown.push('unwitnessed-runtime-bootstrap');
   if (!receipts.some(row => row.kind === 'ready')) unknown.push('runtime-recorder-not-ready');
   const loads = receipts.filter(row => ['esm-load-return', 'commonjs-compile', 'json-load'].includes(String(row.kind)));
-  if (!loads.length || !loads.some(row => row.path === bootstrap?.entry)) unknown.push('runtime-entry-not-loaded');
+  const canonicalEntry = bootstrap?.entryCanonical ?? bootstrap?.entry;
+  if (typeof canonicalEntry !== 'string' || typeof bootstrap?.entry !== 'string' ||
+      !witness.files[bootstrap.entry] || witness.files[canonicalEntry] !== witness.files[bootstrap.entry])
+    unknown.push('unfrozen-runtime-entry-alias');
+  if (!loads.length || !loads.some(row => row.path === canonicalEntry)) unknown.push('runtime-entry-not-loaded');
   for (const row of receipts) {
     if (row.schemaVersion !== 'lsp-replay-runtime-receipt-v1' || row.pid !== pid || !identity ||
         row.identity !== identity || row.runId !== witness.runId) unknown.push('runtime-receipt-identity-mismatch');
     if (row.kind === 'unknown') unknown.push(String(row.reason));
+    if (row.kind === 'commonjs-load-pending') {
+      // A default load hook can defer the format decision until _compile.
+      // Qualification requires that actual compile, with matching source
+      // when nextLoad supplied it; a deferred receipt alone proves nothing.
+      if (!loads.some(load => load.kind === 'commonjs-compile' && load.path === row.path &&
+          (row.sha256 === null || row.sha256 === load.sha256)))
+        unknown.push(`uncompleted-commonjs-load:${String(row.path)}`);
+      if (typeof row.path !== 'string' || !witness.files[row.path] ||
+          (row.sha256 !== null && witness.files[row.path] !== row.sha256))
+        unknown.push(`unfrozen-loaded-bytes:${String(row.path)}`);
+      continue;
+    }
     if (['esm-load-return', 'commonjs-compile', 'json-load', 'file-read'].includes(String(row.kind))) {
       if (typeof row.path !== 'string' || witness.files[row.path] !== row.sha256)
         unknown.push(`unfrozen-loaded-bytes:${String(row.path)}`);

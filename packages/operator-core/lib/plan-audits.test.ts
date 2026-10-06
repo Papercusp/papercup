@@ -127,6 +127,47 @@ describe('activation audit accumulated source coverage', () => {
     }
     expect(mergeActivationAuditCoverage(previous, incoming).ok).toBe(false);
   });
+
+  // WI-10006324: a plan that drops a provenance-declared item must stay re-auditable.
+  const withDroppedItemProvenance = (): ActivationAuditPayload => {
+    const previous = payload(1);
+    previous.itemProvenance = [
+      { itemId: 'P-015', kind: 'derived', from: ['R-7', 'D-012'], note: 'added after a degraded grade' },
+      { itemId: 'P-016', kind: 'agent-added', reason: 'follow-up probe' },
+    ];
+    return previous;
+  };
+
+  it('retires a carried itemProvenance declaration whose item is no longer live, and records it', () => {
+    const merged = mergeActivationAuditCoverage(withDroppedItemProvenance(), payload(0), {
+      liveItemIds: ['P-001', 'P-016'],
+    });
+    expect(merged.ok).toBe(true);
+    if (!merged.ok) return;
+    expect(merged.retiredItemProvenance).toEqual(['P-015']);
+    expect(merged.activation.itemProvenance?.map((d) => d.itemId)).toEqual(['P-016']);
+    expect(merged.activation.rejectedOrSuperseded).toContain(
+      'itemProvenance for P-015 retired: P-015 is dropped or absent from the current plan revision');
+  });
+
+  it('never retires a declaration the caller submits, and carries everything when liveItemIds is omitted', () => {
+    const incoming = payload(0);
+    incoming.itemProvenance = [{ itemId: 'P-015', kind: 'agent-added', reason: 'still wanted' }];
+    const submitted = mergeActivationAuditCoverage(withDroppedItemProvenance(), incoming, {
+      liveItemIds: ['P-001', 'P-016'],
+    });
+    expect(submitted.ok).toBe(true);
+    if (!submitted.ok) return;
+    expect(submitted.retiredItemProvenance).toEqual([]);
+    expect(submitted.activation.itemProvenance).toContainEqual(
+      { itemId: 'P-015', kind: 'agent-added', reason: 'still wanted' });
+
+    const unscoped = mergeActivationAuditCoverage(withDroppedItemProvenance(), payload(0));
+    expect(unscoped.ok).toBe(true);
+    if (!unscoped.ok) return;
+    expect(unscoped.retiredItemProvenance).toEqual([]);
+    expect(unscoped.activation.itemProvenance?.map((d) => d.itemId)).toEqual(['P-015', 'P-016']);
+  });
 });
 
 let workspaceRoot: string;

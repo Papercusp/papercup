@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { replayHash, replayLoadedRuntime, replayRuntimeLaunch, type ReplayRuntimeWitness } from './lsp-fleet-replay-runtime';
@@ -76,6 +76,33 @@ describe('actual replay load-byte witness', () => {
     const rows = receipts(f.root);
     expect(rows).toContainEqual(expect.objectContaining({ kind: 'commonjs-compile', path: f.entry, sha256: replayHash(readFileSync(f.entry)) }));
     expect(rows).toContainEqual(expect.objectContaining({ kind: 'json-load', path: config, sha256: replayHash(readFileSync(config)) }));
+  });
+  it('qualifies real default-loader deferred CommonJS only after its actual compile', async () => {
+    const f = fixture('cjs', 'require("./worker.js");console.log(JSON.stringify({pids:[]}));setInterval(()=>{},1000);');
+    const worker = join(f.root, 'worker.js'); writeFileSync(worker, 'module.exports = 42;');
+    await withLiveRuntime(f, pids => {
+      const { witness, reader } = liveWitness(f, [f.entry, worker]);
+      const rows = receipts(f.root);
+      expect(rows).toContainEqual(expect.objectContaining({ kind: 'commonjs-load-pending', path: worker }));
+      expect(rows).toContainEqual(expect.objectContaining({ kind: 'commonjs-compile', path: worker, sha256: witness.files[worker] }));
+      expect(rows.filter(row => row.kind === 'unknown')).toEqual([]);
+      const command = reader.text(`/proc/${pids[0]}/cmdline`).split('\0').filter(Boolean);
+      expect(replayLoadedRuntime(pids[0], reader.identity(pids[0]), command, witness, reader).unknown).toEqual([]);
+    });
+  });
+  it('qualifies a declared symlink launcher through its recorded canonical loaded entry', async () => {
+    const f = fixture();
+    const entry = join(f.root, 'launcher.mjs'); symlinkSync('entry.mjs', entry);
+    writeFileSync(f.entry, 'console.log(JSON.stringify({pids:[]}));setInterval(()=>{},1000);');
+    const linked = { ...f, entry, launch: replayRuntimeLaunch(entry, f.root, 'witness-test') };
+    await withLiveRuntime(linked, pids => {
+      const { witness, reader } = liveWitness(linked, [entry, f.entry]);
+      expect(receipts(f.root)[0]).toMatchObject({ entry, entryCanonical: f.entry });
+      const command = reader.text(`/proc/${pids[0]}/cmdline`).split('\0').filter(Boolean);
+      expect(replayLoadedRuntime(pids[0], reader.identity(pids[0]), command, witness, reader).unknown).toEqual([]);
+      const incomplete = { ...witness, files: { [entry]: witness.files[entry], '/test-native-mapping': witness.files['/test-native-mapping'] } };
+      expect(replayLoadedRuntime(pids[0], reader.identity(pids[0]), command, incomplete, reader).unknown).toContain('unfrozen-runtime-entry-alias');
+    });
   });
   it('refuses preloads and later loader registration instead of claiming final executed bytes', () => {
     const f = fixture('mjs', 'import {registerHooks} from "node:module"; registerHooks({});');
@@ -190,6 +217,16 @@ describe('fail-closed runtime qualification', () => {
   it('qualifies matching executed bytes and actual mapped inode bytes', () => {
     const p = proof();
     expect(replayLoadedRuntime(42, 'epoch', [process.execPath, ...p.f.launch.args], p.witness, p.reader).unknown).toEqual([]);
+  });
+  it('refuses deferred CommonJS without the matching compile bytes', () => {
+    const p = proof();
+    p.rows.push({ ...p.rows[2], kind: 'commonjs-load-pending' });
+    const qualify = () => replayLoadedRuntime(42, 'epoch', [process.execPath, ...p.f.launch.args], p.witness, p.reader);
+    expect(qualify().unknown).toContain(`uncompleted-commonjs-load:${p.f.entry}`);
+    p.rows.push({ ...p.rows[2], kind: 'commonjs-compile', sha256: replayHash('different source') });
+    expect(qualify().unknown).toContain(`uncompleted-commonjs-load:${p.f.entry}`);
+    p.rows[p.rows.length - 1].sha256 = p.rows[2].sha256;
+    expect(qualify().unknown).toEqual([]);
   });
   it('opens canonical map_files ranges without padding or 64-bit address rounding', () => {
     for (const [printed, canonical] of [

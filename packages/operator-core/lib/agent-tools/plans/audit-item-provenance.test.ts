@@ -379,4 +379,27 @@ describe('plans:audit activation — re-audits', () => {
     expect(result).toMatchObject({ ok: false, error: 'item_provenance_missing', unresolvedItems: ['P-002'] });
     expect(mockRecordActivation).not.toHaveBeenCalled();
   });
+
+  // WI-10006324: the carried declaration used to fail provenance_item_unknown forever.
+  it('stays re-auditable after a provenance-declared item is dropped, retiring the carried declaration', async () => {
+    const declared = previous();
+    resolvePreviousActivation({
+      ...declared,
+      activation: {
+        ...declared.activation,
+        itemProvenance: [{ itemId: 'P-002', kind: 'agent-added', reason: 'Visible label for the owner.' }],
+      },
+    });
+    resolvePlanContent(planContent([
+      '- **P-001** `todo` Refuse unsourced items at activation.',
+      '- **P-002** `dropped` Add a GUI badge per item.',
+    ]));
+
+    const result = await run(activationArgs({ mappings: undefined, sourceRanges: undefined }));
+
+    expect(result).toMatchObject({ ok: true, itemProvenance: { unresolved: [] } });
+    expect(storedActivation()?.itemProvenance ?? []).toEqual([]);
+    expect(storedActivation()?.rejectedOrSuperseded).toContain(
+      'itemProvenance for P-002 retired: P-002 is dropped or absent from the current plan revision');
+  });
 });

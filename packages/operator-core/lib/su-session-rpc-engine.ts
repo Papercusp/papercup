@@ -4,7 +4,7 @@
 import { homedir } from 'node:os';
 import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import type { SuSessionJsonValue } from '@papercusp/chat-protocol';
+import type { SuApprovalsMode, SuSessionJsonValue } from '@papercusp/chat-protocol';
 import {
   applyGithubTokenEnv, assertLaunchPersona, modelArgsFor, ompCoreToolNames,
   ompResponsesCompatibilityEnv, recordSessionOwner, resolveOmpInjectHookPath,
@@ -89,6 +89,20 @@ function object(value: unknown): RpcFrame {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as RpcFrame : {};
 }
 function string(value: unknown): string { return typeof value === 'string' ? value : ''; }
+
+/** D-026: the Codex turn/start overrides for one engine-neutral approvals mode.
+ * Both fields apply "for this turn and subsequent turns" (TurnStartParams,
+ * codex-cli 0.160.1). There is no full-access mode. */
+export function codexApprovalsPolicy(mode: SuApprovalsMode): {
+  approvalPolicy: 'untrusted' | 'on-request';
+  sandboxPolicy: { type: 'workspaceWrite' } | { type: 'readOnly' };
+} {
+  switch (mode) {
+    case 'ask': return { approvalPolicy: 'untrusted', sandboxPolicy: { type: 'workspaceWrite' } };
+    case 'auto-edit': return { approvalPolicy: 'on-request', sandboxPolicy: { type: 'workspaceWrite' } };
+    case 'read-only': return { approvalPolicy: 'on-request', sandboxPolicy: { type: 'readOnly' } };
+  }
+}
 /** P-026: an owner's model switch the engine refused before any turn began. */
 
 export function startSuRpcEngine(
@@ -109,6 +123,10 @@ export function startSuRpcEngine(
   delete env.PAPERCUSP_TTY;
   env.PAPERCUSP_OPERATOR_URL = resolveSpawnHostOperatorBaseUrl();
   let selectedModel = options.model;
+  // D-026: the prompted Codex launch below (on-request + workspace-write) is
+  // `auto-edit`. An unprompted launch (never + full access) has no neutral mode.
+  let selectedApprovals: SuApprovalsMode | undefined =
+    backend === 'codex' && options.toolApproval === 'prompt' ? 'auto-edit' : undefined;
   let args: string[];
   let native: NativeHandle;
   let nativePath: string | null = null;
@@ -224,12 +242,14 @@ export function startSuRpcEngine(
             nativeStart = peer!.request({ method: 'turn/start', params: {
               threadId: nativeId(), input: [{ type: 'text', text: content }],
               ...(switchTo ? { model: switchTo.model, ...(switchTo.effort ? { effort: switchTo.effort } : {}) } : {}),
+              ...(approvalsTo ? codexApprovalsPolicy(approvalsTo) : {}),
             } }, options.deliveryTimeoutMs ?? 30_000);
             const result = await nativeStart;
             nativeTurnId = string(object(result.turn).id);
             if (!nativeTurnId) throw new Error('Codex accepted no identifiable native turn');
           } else await peer!.request({ type: 'prompt', message: content }, options.deliveryTimeoutMs ?? 30_000);
           if (switchTo) { selectedModel = nextModel; host.updateModel(nextModel!); }
+          if (approvalsTo) { selectedApprovals = approvalsTo; host.updateApprovals(approvalsTo); }
           await refreshResumeEvidence();
           acknowledged({ ok: true });
           await finished;
