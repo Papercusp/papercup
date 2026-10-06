@@ -275,14 +275,29 @@ cleanup_staging_candidate() {
 }
 
 prepare_staging_candidate() {
-  local target_sha="$1"
+  local target_sha="$1" setup_line=""
   local snapshot_script="$INTEGRATION_ROOT/apps/operator/scripts/systemd/papercusp-script-snapshot.sh"
   local setup_script="$INTEGRATION_ROOT/apps/operator/bin/release/setup-release-checkout.sh"
   create_staging_candidate "$target_sha" || return 1
   log "preparing isolated staging candidate $STAGING_CANDIDATE_ROOT at ${target_sha:0:10}"
   if ! PAPERCUSP_INTEGRATION_ROOT="$INTEGRATION_ROOT" PAPERCUSP_RELEASE_ROOT="$STAGING_CANDIDATE_ROOT" \
     bash "$snapshot_script" "$setup_script" \
-      --ref "$target_sha" --release "$STAGING_CANDIDATE_ROOT" --node-modules auto --build-spa; then
+      --ref "$target_sha" --release "$STAGING_CANDIDATE_ROOT" --node-modules auto --build-spa |
+    while IFS= read -r setup_line || [[ -n "$setup_line" ]]; do
+      printf '%s\n' "$setup_line"
+      # Reuse the materializer's existing semantic boundaries. Preparation
+      # includes source, dependencies and a SPA build: waiting for its final
+      # exit leaves all three under one deadline. Ordinary build chatter must
+      # never renew a deadline or conceal a stalled phase.
+      case "$setup_line" in
+        '[setup-release] submodule recursion:'*)
+          staging_sync_checkpoint "candidate source prepared" || exit "$?"
+          ;;
+        '[setup-release] building operator-vite SPA dist at the deployed sha'*)
+          staging_sync_checkpoint "candidate dependencies and runtime assets prepared" || exit "$?"
+          ;;
+      esac
+    done; then
     log "FATAL: candidate checkout preparation failed; the published staging alias is unchanged"
     return 1
   fi

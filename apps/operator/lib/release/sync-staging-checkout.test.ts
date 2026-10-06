@@ -1350,6 +1350,44 @@ describe('sync-staging-checkout.sh coordinated restart identity (EI-240774465417
 });
 
 describe('sync-staging-checkout.sh completed-phase startup budget (WI-10006606)', () => {
+  function prepareWithOutput(output: string, status = 0) {
+    return runFn(['staging_sync_checkpoint', 'prepare_staging_candidate'], [
+      'INTEGRATION_ROOT=/unused-staging-test',
+      'STAGING_ROOT=/absent-staging-test',
+      'create_staging_candidate() { STAGING_CANDIDATE_ROOT=/unused-candidate; }',
+      'log() { printf "%s\\n" "$*"; }',
+      'bash() { printf "%s\\n" "$SETUP_OUTPUT"; return "$SETUP_STATUS"; }',
+      'systemd-notify() { printf "NOTIFY:%s\\n" "$*"; }',
+      'prepare_staging_candidate 0123456789abcdef',
+    ].join('\n'), { env: { NOTIFY_SOCKET: '@test-staging-notify', SETUP_OUTPUT: output, SETUP_STATUS: String(status) } });
+  }
+
+  it('renews at completed setup milestones before the SPA build finishes', () => {
+    const sourceReady = '[setup-release] submodule recursion: cloned=2 archive-fallback=0 tracked plain=5 recursive=8 uninitialized=0';
+    const spaStart = '[setup-release] building operator-vite SPA dist at the deployed sha (this can take a minute)';
+    const result = prepareWithOutput([sourceReady, 'DEPENDENCIES', spaStart, 'SPA_FINISHED'].join('\n'));
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain(sourceReady);
+    expect(result.stdout).toContain(spaStart);
+    expect(result.stdout.match(/EXTEND_TIMEOUT_USEC=900000000/g) ?? []).toHaveLength(2);
+    expect(result.stdout.indexOf('candidate source prepared')).toBeLessThan(result.stdout.indexOf('DEPENDENCIES'));
+    expect(result.stdout.indexOf('candidate dependencies and runtime assets prepared')).toBeLessThan(result.stdout.indexOf('SPA_FINISHED'));
+  });
+
+  it('does not renew the deadline for arbitrary build output', () => {
+    const result = prepareWithOutput('still building\nchunk 1\nchunk 2');
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('still building\nchunk 1\nchunk 2');
+    expect(result.stdout).not.toContain('EXTEND_TIMEOUT_USEC');
+  });
+
+  it('preserves a setup failure through the progress stream', () => {
+    const result = prepareWithOutput('[setup-release] source failure', 17);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('candidate checkout preparation failed');
+    expect(result.stdout).not.toContain('--ready');
+  });
+
   it('renews a finite phase deadline without announcing readiness', () => {
     const result = runFn(['staging_sync_checkpoint'], [
       'systemd-notify() { printf "%s\\n" "$*"; }',
