@@ -34,12 +34,14 @@ import { promisify } from 'node:util';
 import { getOrgPg } from '@papercusp/db-org';
 import { createOneWorkItem } from '../agent-tools/work_items/_create-core';
 import {
+  idlePriorityArgv,
   parseAffectedProbe,
   parseFailingFilesLine,
   parseLoadavg1,
   parseSyncBatches,
   parseTscFailingFiles,
   type ConfirmVerdict,
+  type EditorHit,
   type LoadReading,
   type RadiusProbe,
   type RedFinding,
@@ -79,9 +81,12 @@ export interface SyncBatchDeltaDepsConfig {
   root: string;
   /** Integration branch (`staging` here). */
   branch: string;
+  /** Process seam — defaults to the real async argv spawn below. Tests inject a
+   *  recorder to assert WHICH legs run at idle priority without spawning anything. */
+  exec?: (cmd: string, args: string[], opts: { cwd: string; timeoutMs: number }) => Promise<RunResult | null>;
 }
 
-interface RunResult {
+export interface RunResult {
   status: number | null;
   stdout: string;
   stderr: string;
@@ -151,6 +156,15 @@ export function parseConfirmOutput(text: string): ConfirmVerdict {
 /** Bind `SyncBatchDeltaDeps` to the real box. Pure module decides; this executes. */
 export function buildSyncBatchDeltaDeps(cfg: SyncBatchDeltaDepsConfig): SyncBatchDeltaDeps {
   const script = (rel: string): string => path.join(cfg.root, rel);
+  const exec = cfg.exec ?? run;
+  /** A HEAVY leg (radius probe, affected suites, tsc, per-file confirm) runs at idle
+   *  CPU + IO priority (P-001): that, not skipping, is what keeps the check from
+   *  competing with the green-checkpoint suite. git and proc-guard stay normal —
+   *  they are millisecond reads and a starved cursor read would only add latency. */
+  const heavy = (cmd: string, args: string[], opts: { cwd: string; timeoutMs: number }) => {
+    const wrapped = idlePriorityArgv(cmd, args);
+    return exec(wrapped.cmd, wrapped.args, opts);
+  };
 
   return {
     async readCursor(): Promise<SyncDeltaCursor | null> {
@@ -196,7 +210,7 @@ export function buildSyncBatchDeltaDeps(cfg: SyncBatchDeltaDepsConfig): SyncBatc
       // proc-guard excludes the caller's own ancestor chain, so this cannot
       // self-match (root CLAUDE.md's pattern-poll trap). exit 0 = running,
       // 1 = not running, 2/other = usage error ⇒ undetectable.
-      const r = await run('node', [script('scripts/proc-guard.mjs'), 'check', 'green-checkpoint'], {
+      const r = await exec('node', [script('scripts/proc-guard.mjs'), 'check', 'green-checkpoint'], {
         cwd: cfg.root,
         timeoutMs: SYNC_DELTA_TIMEOUTS_MS.procGuard,
       });
@@ -207,7 +221,7 @@ export function buildSyncBatchDeltaDeps(cfg: SyncBatchDeltaDepsConfig): SyncBatc
     },
 
     async headSha(): Promise<string | null> {
-      const r = await run('git', ['-C', cfg.root, 'rev-parse', cfg.branch], {
+      const r = await exec('git', ['-C', cfg.root, 'rev-parse', cfg.branch], {
         cwd: cfg.root,
         timeoutMs: SYNC_DELTA_TIMEOUTS_MS.git,
       });
@@ -217,7 +231,7 @@ export function buildSyncBatchDeltaDeps(cfg: SyncBatchDeltaDepsConfig): SyncBatc
     },
 
     async listBatches(sinceSha: string): Promise<SyncBatch[] | null> {
-      const r = await run(
+      const r = await exec(
         'git',
         [
           '-C',
@@ -235,7 +249,7 @@ export function buildSyncBatchDeltaDeps(cfg: SyncBatchDeltaDepsConfig): SyncBatc
     },
 
     async probeRadius(paths: readonly string[]): Promise<RadiusProbe | null> {
-      const r = await run(
+      const r = await heavy(
         'node',
         [script('scripts/affected-tests.mjs'), '--changed-paths', paths.join(','), '--print-affected'],
         { cwd: cfg.root, timeoutMs: SYNC_DELTA_TIMEOUTS_MS.probe },
@@ -247,7 +261,7 @@ export function buildSyncBatchDeltaDeps(cfg: SyncBatchDeltaDepsConfig): SyncBatc
     async runAffected(
       paths: readonly string[],
     ): Promise<{ ok: boolean; failing: ReturnType<typeof parseFailingFilesLine> }> {
-      const r = await run('node', [script('scripts/affected-tests.mjs'), '--changed-paths', paths.join(',')], {
+      const r = await heavy('node', [script('scripts/affected-tests.mjs'), '--changed-paths', paths.join(',')], {
         cwd: cfg.root,
         timeoutMs: SYNC_DELTA_TIMEOUTS_MS.affected,
       });
@@ -259,7 +273,7 @@ export function buildSyncBatchDeltaDeps(cfg: SyncBatchDeltaDepsConfig): SyncBatc
     },
 
     async runTsc(files: readonly string[]): Promise<{ ok: boolean; failing: string[] }> {
-      const r = await run('node', [script('scripts/lint-tsc.mjs'), `--files=${files.join(',')}`], {
+      const r = await heavy('node', [script('scripts/lint-tsc.mjs'), `--files=${files.join(',')}`], {
         cwd: cfg.root,
         timeoutMs: SYNC_DELTA_TIMEOUTS_MS.tsc,
       });
@@ -270,7 +284,7 @@ export function buildSyncBatchDeltaDeps(cfg: SyncBatchDeltaDepsConfig): SyncBatc
     },
 
     async confirmOne(file: string): Promise<ConfirmVerdict> {
-      const r = await run('node', [script('scripts/test-files.mjs'), file], {
+      const r = await heavy('node', [script('scripts/test-files.mjs'), file], {
         cwd: cfg.root,
         timeoutMs: SYNC_DELTA_TIMEOUTS_MS.confirm,
       });
@@ -288,7 +302,14 @@ export function buildSyncBatchDeltaDeps(cfg: SyncBatchDeltaDepsConfig): SyncBatc
             title: finding.title,
             summary: finding.body,
             conditionKey: finding.conditionKey,
-            payload: { paths: finding.paths, filedBy: 'system:sync-batch-delta-check' },
+            payload: {
+              paths: finding.paths,
+              filedBy: 'system:sync-batch-delta-check',
+              authorSource: finding.authorSource,
+            },
+            // P-002 / D-002: route the fix-it to the agent whose edit broke it. Omitted
+            // (not null) when unattributed, so the item lands in the open queue as before.
+            ...(finding.assignee ? { assign_to: finding.assignee } : {}),
           },
           {
             ownerId: 'system:sync-batch-delta-check',
@@ -311,6 +332,27 @@ export function buildSyncBatchDeltaDeps(cfg: SyncBatchDeltaDepsConfig): SyncBatc
       } catch (e) {
         return { ok: false, error: e instanceof Error ? e.message : String(e) };
       }
+    },
+
+    async lookupEditors(files: readonly string[], sinceMs: number): Promise<EditorHit[] | null> {
+      // The author signal is the per-edit attribution ledger the lock hook writes
+      // (`harness_shared.edit_attribution_ledger`), NEVER git blame or a commit
+      // subject — git-sync sweeps the whole tree under one identity. Newest editor
+      // per file since the window opened; the pure side picks among them.
+      if (files.length === 0) return [];
+      const { sql } = getOrgPg();
+      const rows = await sql`
+        SELECT DISTINCT ON (file) file, agent_id, ts
+          FROM harness_shared.edit_attribution_ledger
+         WHERE workspace_id = ${cfg.workspaceId}
+           AND file = ANY(${[...files]}::text[])
+           AND ts >= to_timestamp(${sinceMs / 1000})
+         ORDER BY file, ts DESC`;
+      return rows.map((r) => ({
+        file: String(r.file),
+        agent: String(r.agent_id),
+        tsMs: new Date(r.ts as string | Date).getTime(),
+      }));
     },
 
     now: () => Date.now(),

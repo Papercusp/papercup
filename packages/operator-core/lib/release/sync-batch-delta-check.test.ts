@@ -138,12 +138,14 @@ describe('runSyncBatchDeltaCheck — cursor discipline', () => {
     expect(res.reason).toBe('host-load-unreadable');
   });
 
-  it('never fights the gate: skips while a green-checkpoint suite runs', async () => {
+  it('a running green-checkpoint suite REDUCES the budget instead of skipping (P-001)', async () => {
+    // The old rule skipped here; with the gate running for hours that judged almost
+    // nothing. Legs run at idle priority instead, so the window IS judged.
     const { deps, state } = makeDeps({ greenCheckpointRunning: async () => true }, { sha: SHA_A, updatedAtMs: 1 });
     const res = await runSyncBatchDeltaCheck(deps);
-    expect(res.status).toBe('skipped');
-    expect(res.reason).toBe('green-checkpoint-running');
-    expect(state.cursor?.sha).toBe(SHA_A);
+    expect(res.status).toBe('green');
+    expect(state.cursor?.sha).toBe(SHA_B);
+    expect(state.logs.some((l) => l.includes('reduced budget') && l.includes('green-checkpoint-running'))).toBe(true);
   });
 
   it('an undetermined affected run (red, no break-set line) holds the cursor', async () => {
