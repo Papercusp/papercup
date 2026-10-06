@@ -2002,9 +2002,29 @@ export function evaluateSpecTestAdequacy(input: {
   // could record a known hole in the proof on the binding and still collect a
   // machine PASS, because no evaluator field read the disclosure — so the gap
   // travelled with the evidence while the verdict said the clause was proven.
-  // Reading it here makes the disclosure cost something: it fails, and the gap
-  // text itself is named in the would-block reason rather than left on the row.
-  const disclosedGapRows = evidence.filter((row) => (detailsOf(row).disclosedGap ?? []).length > 0);
+  // Re-binding the same immutable proof can also append a newer metadata row
+  // without the disclosure. Keep that gap attached to the active logical
+  // reference while its run/fingerprints are unchanged, and until changed proof
+  // is server-current. A stale or unknown replacement has not closed the gap.
+  const logicalReferenceKey = (row: SpecEvidenceForAdequacy) =>
+    JSON.stringify([row.planSlug, row.specId, row.specRevision, row.evidenceKind, row.evidenceRef]);
+  const proofIdentity = (row: SpecEvidenceForAdequacy) =>
+    JSON.stringify([
+      row.testRunId ?? null,
+      row.coverageEvidenceRef ?? null,
+      row.fingerprints.sourceFingerprint ?? null,
+      row.fingerprints.testFingerprint ?? null,
+      row.fingerprints.fixtureFingerprint ?? null,
+      row.fingerprints.rubricFingerprint ?? null,
+      row.fingerprints.environmentFingerprint ?? null,
+    ]);
+  const activeByLogicalReference = new Map(exactEvidence.map((row) => [logicalReferenceKey(row), row]));
+  const disclosedGapRows = exactSelectorMatches.filter((row) => {
+    if ((detailsOf(row).disclosedGap ?? []).length === 0) return false;
+    const active = activeByLogicalReference.get(logicalReferenceKey(row));
+    if (!active) return false;
+    return proofIdentity(row) === proofIdentity(active) || active.currentness.overall !== 'current';
+  });
   ratings['disclosed-gap'] =
     disclosedGapRows.length > 0
       ? {

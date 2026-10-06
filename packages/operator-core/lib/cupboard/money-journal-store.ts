@@ -252,6 +252,75 @@ export async function readMicrosRollup(
   return rollupFromRow(rows[0]!, accruals.map((a) => a.accrual_id));
 }
 
+export interface MoneyJournalPopulation {
+  readonly entries: readonly { readonly workspaceId: string; readonly entry: JournalEntry }[];
+  readonly rollups: readonly { readonly workspaceId: string;
+    readonly rollup: Omit<MicrosRollup, 'accrualIds'>; readonly accrualIds: readonly string[] }[];
+  readonly accruals: readonly { readonly workspaceId: string; readonly rollupId: string;
+    readonly accrualId: string; readonly microsExact: string; readonly recordedAtMs: number }[];
+}
+
+/** Full LOCAL journal/rollup/accrual population in the caller's read-only
+ * transaction, including legacy workspaces and all currencies/times. Reuses
+ * the existing hosted funding lock bridge; no separate runner or transaction.
+ * A hosted funding composition must acquire its global account lock first.
+ * Retain these locks through reconciliation and commit/rollback; never invoke
+ * a journal/accrual/settlement writer under this SHARE population phase.
+ * Local identities do not authenticate provider account/invoice/generation
+ * joins, paid settlement, cash backing, or completeness outside this database.
+ */
+export async function readLockedMoneyJournalPopulation(sql: Sql): Promise<MoneyJournalPopulation> {
+  const [isolation] = await sql<{ transaction_isolation: string }[]>`SHOW transaction_isolation`;
+  if (isolation?.transaction_isolation !== 'read committed') throw new Error('journal population requires read committed');
+  const [started] = await sql<{ transaction_id: string }[]>`SELECT pg_current_xact_id()::text AS transaction_id`;
+  await sql`SELECT papercusp_auth.lock_hosted_stripe_funding_population()`;
+  const rollupRows = await sql<(RollupRow & { workspace_id: string })[]>`
+    SELECT workspace_id, rollup_id, currency, total_micros, settled_cents, rounding_micros
+      FROM harness_shared.money_journal_rollups
+     ORDER BY workspace_id COLLATE "C", rollup_id COLLATE "C"`;
+  const accrualRows = await sql<{ workspace_id: string; rollup_id: string; accrual_id: string;
+    micros: string | number; recorded_at: Date }[]>`
+    SELECT workspace_id, rollup_id, accrual_id, micros, recorded_at
+      FROM harness_shared.money_journal_micro_accruals
+     ORDER BY workspace_id COLLATE "C", rollup_id COLLATE "C", accrual_id COLLATE "C"`;
+  const entryRows = await sql<(EntryRow & { workspace_id: string })[]>`
+    SELECT workspace_id, entry_id, occurred_at, currency, movement, external_ref_kind, external_ref, rollup_id, memo
+      FROM harness_shared.money_journal_entries ORDER BY posting_seq`;
+  const lineRows = await sql<(LineRow & { workspace_id: string })[]>`
+    SELECT workspace_id, entry_id, line_no, account, side, cents FROM harness_shared.money_journal_lines`;
+  // Entry/rollup ids are workspace-local. Never merge identical ids from two
+  // workspaces or manufacture an account mapping from their names/amounts.
+  const linesByEntry = new Map<string, LineRow[]>();
+  for (const row of lineRows) {
+    const key = JSON.stringify([row.workspace_id, row.entry_id]);
+    const group = linesByEntry.get(key) ?? [];
+    group.push(row); linesByEntry.set(key, group);
+  }
+  const entries = entryRows.map(row => {
+    const entry = assemble([row], linesByEntry.get(JSON.stringify([row.workspace_id, row.entry_id])) ?? [])[0]!;
+    return Object.freeze({ workspaceId: row.workspace_id, entry: Object.freeze({ ...entry,
+      externalRef: Object.freeze(entry.externalRef), lines: Object.freeze(entry.lines.map(line => Object.freeze(line))) }) });
+  });
+  const accruals = accrualRows.map(row => Object.freeze({ workspaceId: row.workspace_id,
+    rollupId: row.rollup_id, accrualId: row.accrual_id, microsExact: splitMicrosDecimal(String(row.micros)).exact,
+    recordedAtMs: row.recorded_at.getTime() }));
+  const accrualsByRollup = new Map<string, string[]>();
+  for (const row of accruals) {
+    const key = JSON.stringify([row.workspaceId, row.rollupId]);
+    const ids = accrualsByRollup.get(key) ?? []; ids.push(row.accrualId); accrualsByRollup.set(key, ids);
+  }
+  const rollups = rollupRows.map(row => {
+    const { accrualIds: _ids, ...rollup } = rollupFromRow(row, []);
+    return Object.freeze({ workspaceId: row.workspace_id, rollup: Object.freeze(rollup),
+      accrualIds: Object.freeze(accrualsByRollup.get(JSON.stringify([row.workspace_id, row.rollup_id])) ?? []) });
+  });
+  const [finished] = await sql<{ transaction_id: string }[]>`SELECT pg_current_xact_id()::text AS transaction_id`;
+  if (!started?.transaction_id || finished?.transaction_id !== started.transaction_id) {
+    throw new Error('journal population requires one transaction');
+  }
+  return Object.freeze({ entries: Object.freeze(entries), rollups: Object.freeze(rollups), accruals: Object.freeze(accruals) });
+}
+
 export type AccrueStoreResult =
   | { ok: true; duplicate: boolean; totalMicros: number; roundingMicros: number; totalMicrosExact?: string; roundingMicrosExact?: string }
   | { ok: false; code: 'invalid-micros' | 'invalid-rollup' | 'currency-mismatch'; detail: string };
@@ -353,6 +422,12 @@ export async function settleUsageRollup(
 ): Promise<SettleStoreResult> {
   const result = await db(deps).begin(async (rawTx) => {
     const tx = rawTx as unknown as Tx;
+    // Take the rollup WRITE table lock before inserting a journal entry.
+    // FOR UPDATE alone takes only ROW SHARE: a population reader could then
+    // hold SHARE on rollups while waiting for our entry write, and our later
+    // rollup UPDATE would wait for that reader. Accrual already takes this
+    // mode with its first rollup INSERT; settlement must use the same order.
+    await tx`LOCK TABLE harness_shared.money_journal_rollups IN ROW EXCLUSIVE MODE`;
     const [rollup] = await tx<RollupRow[]>`
       SELECT rollup_id, currency, total_micros, settled_cents, rounding_micros
         FROM harness_shared.money_journal_rollups

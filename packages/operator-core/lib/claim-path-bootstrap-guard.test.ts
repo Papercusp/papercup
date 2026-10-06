@@ -11,8 +11,11 @@
  * the gate's affected radius, so nothing noticed until a sweep ran them.
  *
  * `applyClaimPathReadDeps` (test/_work-items-schema.ts) is the single list. This guard
- * fails an integration test under lib/ that calls a claim door AND builds its schema by
- * hand (inline `CREATE TABLE` or the `_work-items-schema` fixture) without calling it.
+ * fails an integration test under lib/ that calls a claim or delegated-task lifecycle
+ * door AND builds its schema by hand (inline `CREATE TABLE` or the
+ * `_work-items-schema` fixture) without calling it. Delegated creation/resolution
+ * also emit/retire awaited events and seal their notifications against the privacy
+ * ledger, so a base work-item table alone is insufficient.
  * Files that apply the real migration chain get the full schema and are exempt.
  */
 import { readdirSync, readFileSync } from 'node:fs';
@@ -27,7 +30,9 @@ const HERE = path.dirname(new URL(import.meta.url).pathname);
 
 const CLAIM_DOOR_RE =
   /\b(?:claimNextWorkItem|claimWorkItem|claimIssue|claimNextIssueWorkItem|getNextWorkItem|getNextForBee)\s*\(/;
+const DELEGATED_LIFECYCLE_DOOR_RE = /\b(?:createDelegatedTask|resolveDelegatedTask)\s*\(/;
 const HELPER_CALL_RE = /\bapplyClaimPathReadDeps\s*\(/;
+const DISCLOSURE_LEDGER_HELPER_RE = /\bapplyDisclosureLedgerForTest\s*\(/;
 const REAL_MIGRATIONS_RE = /\bapplyMigrationsForTest\s*\(/;
 const INLINE_DDL_RE = /\bCREATE\s+TABLE\b/i;
 const SCHEMA_FIXTURE_IMPORT_RE = /from\s+['"][^'"]*test\/_work-items-schema['"]/;
@@ -88,11 +93,14 @@ export function classify(raw: string, fileName: string): Classification {
   // Schema building and import specifiers live inside string literals, so for those
   // only comments are removed.
   const commentless = stripCommentsOnly(raw, fileName) as string;
-  if (!CLAIM_DOOR_RE.test(code) && !importsClaimTool(commentless, fileName)) {
+  const delegatedLifecycle = DELEGATED_LIFECYCLE_DOOR_RE.test(code);
+  if (!CLAIM_DOOR_RE.test(code) && !delegatedLifecycle
+    && !importsClaimTool(commentless, fileName)) {
     return { kind: 'not-claim-path' };
   }
   if (REAL_MIGRATIONS_RE.test(code)) return { kind: 'real-migrations' };
-  if (HELPER_CALL_RE.test(code)) return { kind: 'ok' };
+  if (HELPER_CALL_RE.test(code)
+    && (!delegatedLifecycle || DISCLOSURE_LEDGER_HELPER_RE.test(code))) return { kind: 'ok' };
   const handBuilt = INLINE_DDL_RE.test(commentless) || SCHEMA_FIXTURE_IMPORT_RE.test(commentless);
   return handBuilt ? { kind: 'violation' } : { kind: 'not-claim-path' };
 }
@@ -147,10 +155,15 @@ describe('claim-path fixture bootstrap guard (WI-10005130)', () => {
       .sort();
     expect(
       violations,
-      'These integration tests call a claim door on a hand-built schema without ' +
+      'These integration tests call a claim or delegated lifecycle door on a hand-built schema without ' +
         'applyClaimPathReadDeps((ddl) => db.sql.unsafe(ddl).simple()) from test/_work-items-schema. ' +
-        'Add the call after the base schema; every statement is IF NOT EXISTS.',
+        'Add the call after the base schema; every statement is IF NOT EXISTS. ' +
+        'Delegated lifecycle fixtures also need applyDisclosureLedgerForTest(db.sql) from test/_pg-helpers.',
     ).toEqual([]);
+  });
+
+  it('includes the real delegated lifecycle fixture in the protected population', () => {
+    expect(results.find((r) => r.rel === 'delegated-tasks.integration.test.ts')?.verdict.kind).toBe('ok');
   });
 
   it('allowlist entries still exist and still need the exemption', () => {
@@ -186,6 +199,28 @@ describe('claim-path fixture bootstrap guard (WI-10005130)', () => {
     it('does not count a helper named only in a comment', () => {
       const src = `// ${helper}( is applied elsewhere\nawait db.sql.unsafe(\`${ddl}\`);\nawait ${door}({});\n`;
       expect(classify(src, 'fixture.ts').kind).toBe('violation');
+    });
+
+    it.each(['createDelegatedTask', 'resolveDelegatedTask'])(
+      'requires the shared event substrate for %s on a hand-built schema', (lifecycleDoor) => {
+        const src = `await db.sql.unsafe(\`${ddl}\`);\nawait dt.${lifecycleDoor}({});\n`;
+        expect(classify(src, 'fixture.ts').kind).toBe('violation');
+        const withEvents = `${src}await ${helper}((d) => db.sql.unsafe(d).simple());\n`;
+        expect(classify(withEvents, 'fixture.ts').kind).toBe('violation');
+        expect(classify(`${withEvents}await applyDisclosureLedgerForTest(db.sql);\n`, 'fixture.ts').kind).toBe('ok');
+      },
+    );
+
+    it('does not accept a disclosure-ledger helper mentioned only in a comment', () => {
+      const src = `await db.sql.unsafe(\`${ddl}\`);\nawait dt.resolveDelegatedTask({});\n` +
+        `await ${helper}((d) => db.sql.unsafe(d).simple());\n// applyDisclosureLedgerForTest(db.sql);\n`;
+      expect(classify(src, 'fixture.ts').kind).toBe('violation');
+    });
+
+    it('does not classify delegated lifecycle names quoted only in prose as calls', () => {
+      const src = `// dt.createDelegatedTask({})\nconst example = 'dt.resolveDelegatedTask({})';\n` +
+        `await db.sql.unsafe(\`${ddl}\`);\n`;
+      expect(classify(src, 'fixture.ts').kind).toBe('not-claim-path');
     });
 
     // Tool-handler leg (WI-10005225): the door is reached through tool.handler, so the

@@ -357,7 +357,15 @@ export async function getAcceptanceRubricVettingStatus(
     };
     candidates.push(candidate);
     if (rejectedBy === 'grading-audit-unsettled' && card.gradingAudit?.state === 'pending') {
-      pendingAuditCandidates.push({ candidate, targetOwnerId: card.createdBy });
+      if (card.subject?.kind === 'rubric' && card.subjectRubricCurrentness?.state !== 'current') {
+        const subjectCurrentness = card.subjectRubricCurrentness;
+        candidate.detail =
+          `${detail}. The subject rubric is ${subjectCurrentness?.state ?? 'unknown'}` +
+          (subjectCurrentness?.reason ? ` (${subjectCurrentness.reason})` : '') +
+          '; scorecards:repair skips non-current rubric subjects, so re-attest against the current revision instead';
+      } else {
+        pendingAuditCandidates.push({ candidate, targetOwnerId: card.createdBy });
+      }
     }
     if (rejectedBy === null || rejectedBy === 'stale-revision') vettedCards.push(card);
     if (rejectedBy === null && !current) current = card;

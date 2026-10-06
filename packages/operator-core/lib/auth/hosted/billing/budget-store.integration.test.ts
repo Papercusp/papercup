@@ -195,6 +195,15 @@ describe('PostgresHostedBudgetStore (real hosted service transactions)', () => {
     try { populationMigration = readFileSync(populationDraft, 'utf8'); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; populationMigration = readFileSync(populationArmed, 'utf8'); }
     await db.adminSql.unsafe(populationMigration); await db.adminSql.unsafe(populationMigration);
+    // Apply the current extension LAST: replaying 1375 above intentionally
+    // replaces the bridge, so template application alone is insufficient.
+    let liabilityMigration: string;
+    try { liabilityMigration = readFileSync(new URL('../../../../../../libs/papercusp/libs/db/sql/1385-hosted-journal-liability-population.sql.DRAFT', import.meta.url), 'utf8'); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      liabilityMigration = readFileSync(new URL('../../../../../../libs/papercusp/libs/db/sql/1385-hosted-journal-liability-population.sql', import.meta.url), 'utf8');
+    }
+    await db.adminSql.unsafe(liabilityMigration); await db.adminSql.unsafe(liabilityMigration);
     await db.adminSql.unsafe(`CREATE TABLE papercusp_auth.test_budget_authority (
       control text NOT NULL, org text NOT NULL, cap bigint NOT NULL, funding bigint NOT NULL,
       retained bigint, workspace_cap bigint, PRIMARY KEY(control, org));

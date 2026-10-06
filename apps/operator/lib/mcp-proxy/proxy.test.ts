@@ -1606,6 +1606,45 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
     ).toBeUndefined();
   });
 
+  it("keeps a non-MCP upstream reset from marking later MCP requests degraded", async () => {
+    const restPath = "/api/agent-mcp/transport-probe";
+    let mcpDegradedAt: string | undefined;
+    const upstream = track(
+      http.createServer((req, res) => {
+        if (req.url === restPath) {
+          req.socket.destroy(); // a post-connect transport failure on the REST route
+          return;
+        }
+        if (req.url === "/api/mcp") {
+          mcpDegradedAt = req.headers[
+            MCP_PROXY_DATA_PLANE_DEGRADED_AT_HEADER
+          ] as string | undefined;
+        }
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end('{"result":"ok"}');
+      }),
+    );
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: "127.0.0.1",
+        targetPort: port(upstream),
+        retryWindowMs: 5_000,
+        retryBackoffMs: 20,
+        log: () => {},
+      }),
+    );
+    await listen(proxy);
+
+    const rest = await request(port(proxy), '{"probe":true}', restPath);
+    expect(rest.status).toBe(502);
+
+    const mcp = await request(port(proxy), '{"jsonrpc":"2.0"}', "/api/mcp");
+    expect(mcp.status).toBe(200);
+    expect(mcpDegradedAt).toBeUndefined();
+  });
+
   it("EI-16883: kill-switch (PAPERCUSP_MCP_PROXY_ABSORB_BOOT=0) surfaces the 405 instead of absorbing it", async () => {
     const prev = process.env.PAPERCUSP_MCP_PROXY_ABSORB_BOOT;
     process.env.PAPERCUSP_MCP_PROXY_ABSORB_BOOT = "0";

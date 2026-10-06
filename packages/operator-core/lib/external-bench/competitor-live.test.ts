@@ -11,6 +11,7 @@ import {
   parseRunnerResult,
   runnerScriptPath,
   RESULT_SENTINEL,
+  DEFAULT_COMPETITOR_MODEL,
   type ExecFn,
 } from './competitor-live';
 import { runCompetitorBacklog, clearCompetitorDrivers } from './competitor-runner';
@@ -134,6 +135,23 @@ describe('makeCompetitorDriver — runner protocol → canonical HiveBacklogResu
 });
 
 describe('bindLiveCompetitorDrivers — one-call binding', () => {
+  it.each([undefined, 'anthropic/custom-model'])('sends the documented model to every bound runner (override %s)', async (model) => {
+    const inputs: Array<Record<string, unknown>> = [];
+    const reply = okExec();
+    const exec: ExecFn = async (bin, args, stdin, opts) => {
+      inputs.push(JSON.parse(stdin) as Record<string, unknown>);
+      return reply(bin, args, stdin, opts);
+    };
+    bindLiveCompetitorDrivers({ model, clone, extractDiff, exec });
+    for (const arm of ['openhands-async', 'crewai', 'langgraph'] as const) {
+      const result = await runCompetitorBacklog(req(arm, ['a']));
+      expect(result.runError).toBeUndefined();
+      expect(result.taskResults[0].attempt.stopReason).toBe('done');
+    }
+    expect(inputs).toHaveLength(3);
+    expect(inputs.map((input) => input.model)).toEqual(Array(3).fill(model ?? DEFAULT_COMPETITOR_MODEL));
+  });
+
   it('binds the core three and routes runCompetitorBacklog through the live driver', async () => {
     const bound = bindLiveCompetitorDrivers({ model: 'anthropic/x', clone, extractDiff, exec: okExec() });
     expect(bound).toEqual(['openhands-async', 'crewai', 'langgraph']);

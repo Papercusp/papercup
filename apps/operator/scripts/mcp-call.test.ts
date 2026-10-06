@@ -406,6 +406,22 @@ describe('mcp-call result-format contract', () => {
     }).get('native_session')).toBe('codex-native');
   });
 
+  it('prefers the launcher-bound Claude id when /clear rotates the current session id', () => {
+    const client = 'su-claude';
+    const query = buildMcpSessionQuery({
+      client, workspace: 'papercusp-workspace',
+      env: {
+        PAPERCUSP_SID: client,
+        PAPERCUSP_AGENT: 'claude',
+        PAPERCUSP_NATIVE_SESSION_ID: 'bound-at-launch',
+        CLAUDE_CODE_SESSION_ID: 'rotated-after-clear',
+        CODEX_SESSION_ID: 'stale-codex-from-parent-shell',
+      },
+    });
+
+    expect(query.get('native_session')).toBe('bound-at-launch');
+  });
+
   it('does not attach the current native session to another or legacy client', () => {
     expect(buildMcpSessionQuery({
       client: 'su-other', workspace: 'papercusp-workspace',

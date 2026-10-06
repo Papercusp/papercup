@@ -5,9 +5,11 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { FairCase } from './fair-comparison';
+import { MICRO_CASES } from './fair-comparison-micro-repo';
 import {
   askCgc,
   askTrace,
+  CGC_ACCEPTED_FAULTS,
   CGC_RESULT_LIMITS,
   cgcPath,
   cgcRequest,
@@ -206,6 +208,15 @@ describe('CodeGraphContext adapter', () => {
     expect(r.error).toMatch(/Binder exception/);
     expect(parseCgc(k('callers', 'x'), { success: false, error: 'no graph' }, T).error).toMatch(/no graph/);
     expect(() => parseCgc(k('callers', 'x'), { success: true }, T)).toThrow(/no results object/);
+  });
+
+  it('accepts only engine faults that name a real micro case, with a crash pattern and evidence', () => {
+    const ids = new Set(MICRO_CASES.map((c) => c.id));
+    for (const f of CGC_ACCEPTED_FAULTS) {
+      expect(ids.has(f.caseId)).toBe(true);
+      expect(f.evidence.length).toBeGreaterThan(40);
+      if (f.outcome === 'crashed') expect(f.detail).toBeInstanceOf(RegExp);
+    }
   });
 
   it('answers through an MCP session and reports an MCP-level error', async () => {

@@ -31,6 +31,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Sql } from 'postgres';
 import type { HostFetch, HostFetchResponse, ProviderAdapter, ProviderDescriptor, ProviderInvokeRequest } from '@papercusp/plugin-sdk';
+import { validateProviderDescriptor } from '@papercusp/plugin-sdk';
 import { loadPlugins } from '@papercusp/plugin-loader';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { registerPluginProviders } from '../plugin-host-runtime';
@@ -100,7 +101,34 @@ const githubFetch: HostFetch = async ({ request }) => {
   return json(issues);
 };
 
-// ── A writable ticket provider (the GitHub provider is read-only, D-009) ─────
+/**
+ * GitHub's documented "Create an issue comment" response (201; the same schema as "Get an issue
+ * comment"), read from docs.github.com/en/rest/issues/comments on 2026-10-06: every top-level field
+ * the schema marks required, with its documented JSON type. `user` is "any of: null, Simple User".
+ * The recorded write below is calibrated against this, so the provider parses a faithful body.
+ */
+const GITHUB_ISSUE_COMMENT_REQUIRED: Readonly<Record<string, readonly string[]>> = {
+  id: ['number'], node_id: ['string'], url: ['string'], html_url: ['string'], user: ['null', 'object'],
+  created_at: ['string'], updated_at: ['string'], issue_url: ['string'],
+};
+
+/** Recorded GitHub: the 201 body of a created issue comment. */
+function recordedGithubComment(issueNumber: number, id: number, body: string): Record<string, unknown> {
+  return {
+    id,
+    node_id: `IC_kwDOAcmeTulip${id}`,
+    url: `https://api.github.com/repos/${OWNER}/${REPO}/issues/comments/${id}`,
+    html_url: `https://github.com/${OWNER}/${REPO}/issues/${issueNumber}#issuecomment-${id}`,
+    body,
+    user: null,
+    created_at: '2026-10-06T06:00:00Z',
+    updated_at: '2026-10-06T06:00:00Z',
+    issue_url: `https://api.github.com/repos/${OWNER}/${REPO}/issues/${issueNumber}`,
+    author_association: 'NONE',
+  };
+}
+
+// ── A writable ticket provider (GitHub declares ticket.comment only, D-008) ──
 
 const writableDescriptor: ProviderDescriptor = {
   id: WRITABLE,
@@ -266,8 +294,9 @@ beforeAll(async () => {
   expect(errors).toEqual([]);
   registry = createProviderRegistry();
   expect(await registerPluginProviders(loaded, () => {}, registry)).toEqual([GITHUB]);
-  registry.register({ descriptor: writableDescriptor, adapter: writableAdapter, pluginName: WRITABLE, runtime: 'js' } as never);
-  registry.register({ descriptor: readOnlyDescriptor, adapter: readOnlyAdapter, pluginName: READ_ONLY, runtime: 'js' } as never);
+  // register() runs the production descriptor validator and throws on an invalid descriptor.
+  await registry.register({ descriptor: writableDescriptor, adapter: writableAdapter, pluginName: WRITABLE, runtime: 'js' } as never);
+  await registry.register({ descriptor: readOnlyDescriptor, adapter: readOnlyAdapter, pluginName: READ_ONLY, runtime: 'js' } as never);
 });
 
 afterAll(async () => {
@@ -559,7 +588,7 @@ describe('ticket write-back requested by work-item id (linear-asana-task-sync P-
       posted.push({ source, url: request.url, method: request.method, body: JSON.parse(String(request.body)) });
       return {
         status: 201, headers: { 'content-type': 'application/json' }, bodyEncoding: 'utf8',
-        body: JSON.stringify({ id: 4242, html_url: `https://github.com/${OWNER}/${REPO}/issues/5#issuecomment-4242` }),
+        body: JSON.stringify(recordedGithubComment(5, 4242, String((JSON.parse(String(request.body)) as { body?: unknown }).body ?? ''))),
       };
     };
     const githubDeps = {
@@ -582,6 +611,17 @@ describe('ticket write-back requested by work-item id (linear-asana-task-sync P-
       ok: false, code: 'provider_capability_unsupported', message: `provider_capability_unsupported:${GITHUB}:ticket.transition`,
     });
     expect(posted).toHaveLength(1);
+  });
+
+  it('runs on calibrated fixtures: the fixture providers pass the production descriptor validator and the recorded GitHub comment carries every documented required field', async () => {
+    expect(validateProviderDescriptor(writableDescriptor)).toEqual([]);
+    expect(validateProviderDescriptor(readOnlyDescriptor)).toEqual([]);
+    const recorded = recordedGithubComment(5, 4242, 'x');
+    const typeOf = (v: unknown) => (v === null ? 'null' : typeof v);
+    for (const [field, types] of Object.entries(GITHUB_ISSUE_COMMENT_REQUIRED)) {
+      expect({ field, present: field in recorded, type: types.includes(typeOf(recorded[field])) }).toEqual({ field, present: true, type: true });
+    }
+    expect(Number.isInteger(recorded.id)).toBe(true);
   });
 
   it('refuses a work item that was never admitted from a data source', async () => {

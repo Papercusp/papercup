@@ -1,4 +1,5 @@
 {
+  "schemaVersion": 1,
   "kind": "operational-test-evidence",
   "name": "mdenseon P-005 V7 controlled five-block CPU performance: raw-sample provenance re-verification",
   "framework": "operational",
@@ -9,28 +10,14 @@
     ".papercusp/scratch/p005-v7-operational.mts"
   ],
   "exitCode": 0,
-  "startedAt": "2026-10-06T06:30:15.085Z",
-  "finishedAt": "2026-10-06T06:30:15.642Z",
+  "startedAt": "2026-10-06T06:49:16.665Z",
+  "finishedAt": "2026-10-06T06:49:17.290Z",
   "summary": "verifyCompletedPerformanceRun passed (no inference); 15 cells / 5 blocks; every reported latency distribution has its ordered raw request samples and exact local-http-client-worker route identity.",
   "assertions": [
     {
       "id": "v7-terminal-receipts-rederive-summary",
       "passed": true,
-      "evidence": {
-        "manifestSha256": "78f97d1b622d5507c80a44b9f2a0fe1b582897f94f14f671cfe08f302614bbc1",
-        "driver": {
-          "path": "$HOME/.cache/papercusp/model-validation/mdenseon-performance-WI10004539-20261001/performance-cpu-v7/driver.json",
-          "sha256": "06c167746b6c2581025ea3fc572fd0fbfdb33687aee57af549bf40607fc77a34",
-          "bytes": 758
-        },
-        "summary": {
-          "path": "$HOME/.cache/papercusp/model-validation/mdenseon-performance-WI10004539-20261001/performance-cpu-v7/performance-summary.json",
-          "sha256": "a7ca1070c7b0b8a2c81f0a9a1dd12cbc8b2119eb56f6321a507612dc1a7b07a3",
-          "bytes": 137130
-        },
-        "cells": 15,
-        "inferencePerformed": false
-      }
+      "evidence": "verifyCompletedPerformanceRun re-derived the summary from terminal receipts without inference: cells=15, inferencePerformed=false, manifestSha256=78f97d1b622d5507c80a44b9f2a0fe1b582897f94f14f671cfe08f302614bbc1; full structured result under top-level \"rederivation\""
     },
     {
       "id": "v7-raw-samples-ordered-and-complete",
@@ -478,5 +465,20 @@
       "samplesSha256": "360715626a858f6fb3df285d7eb1c1ecf568af7a0dba33f82c72783255f9002f",
       "traceSha256": "6d22bbb18453ae59d7ce04c44cf0425a7906aa8b1be14c4bcc1d57b39a451555"
     }
-  ]
+  ],
+  "rederivation": {
+    "manifestSha256": "78f97d1b622d5507c80a44b9f2a0fe1b582897f94f14f671cfe08f302614bbc1",
+    "driver": {
+      "path": "$HOME/.cache/papercusp/model-validation/mdenseon-performance-WI10004539-20261001/performance-cpu-v7/driver.json",
+      "sha256": "06c167746b6c2581025ea3fc572fd0fbfdb33687aee57af549bf40607fc77a34",
+      "bytes": 758
+    },
+    "summary": {
+      "path": "$HOME/.cache/papercusp/model-validation/mdenseon-performance-WI10004539-20261001/performance-cpu-v7/performance-summary.json",
+      "sha256": "a7ca1070c7b0b8a2c81f0a9a1dd12cbc8b2119eb56f6321a507612dc1a7b07a3",
+      "bytes": 137130
+    },
+    "cells": 15,
+    "inferencePerformed": false
+  }
 }

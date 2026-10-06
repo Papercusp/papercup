@@ -15,6 +15,7 @@ import {
   COORD_REPLY_ROLES,
   COORD_READ_ROLES,
   COORD_ROLES,
+  DESKTOP_AGENT_ROLES,
   QUEEN_PLACEMENT_ROLES,
   WORK_ITEM_LIFECYCLE_ROLES,
 } from './roles';
@@ -139,6 +140,16 @@ describe('COORD_ROLES', () => {
     }
     // placement/judgement is the Queen's — she keeps access.
     expect(QUEEN_PLACEMENT_ROLES).toContain('mug');
+  });
+
+  test('AUTH INVARIANT (agent-multi-desktops D-013): the worker cup may own desktops; read-mostly roles may not', () => {
+    for (const excluded of ['papercup', 'papercup-deep', 'kettle']) {
+      expect(DESKTOP_AGENT_ROLES, `${excluded} must never own a desktop`).not.toContain(excluded);
+    }
+    expect(DESKTOP_AGENT_ROLES).toContain('cup');
+    // Every placement role keeps desktop access — the set only ever GROWS by cup.
+    for (const role of QUEEN_PLACEMENT_ROLES) expect(DESKTOP_AGENT_ROLES).toContain(role);
+    expect(DESKTOP_AGENT_ROLES.length).toBe(QUEEN_PLACEMENT_ROLES.length + 1);
   });
 
   test(

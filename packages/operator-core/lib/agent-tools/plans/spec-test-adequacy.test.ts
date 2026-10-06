@@ -2246,6 +2246,67 @@ describe('disclosed-gap criterion (P-002: a disclosure cannot coexist with a mac
     expect(result.wouldBlock).toContain('disclosed-gap');
   });
 
+  it('keeps a disclosure when the same proof is rebound without its disclosedGap', () => {
+    const base = evidence();
+    const gap = 'commercial metering remains outside approved scope';
+    const original = evidence({
+      id: 23753,
+      createdAt: '2026-10-03T12:53:27.000Z',
+      details: {
+        ...base.details,
+        adequacy: { ...(base.details.adequacy as Record<string, unknown>), disclosedGap: [gap] },
+      },
+    });
+    const rebound = evidence({
+      id: 23762,
+      createdAt: '2026-10-03T13:07:22.000Z',
+      details: { ...base.details },
+    });
+
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [original, rebound],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings['disclosed-gap'].rating).toBe('fail');
+    expect(result.ratings['disclosed-gap'].evidence).toContain(gap);
+    expect(result.wouldBlock).toContain('disclosed-gap');
+  });
+
+  it.each([
+    ['a new test run', evidence({ testRunId: 44 })],
+    ['a new source fingerprint', evidence({ fingerprints: { ...evidence().fingerprints, sourceFingerprint: 'git:def' } })],
+  ])('allows %s to close an older disclosure', (_label, freshProof) => {
+    const base = evidence();
+    const original = evidence({
+      id: 23753,
+      createdAt: '2026-10-03T12:53:27.000Z',
+      details: {
+        ...base.details,
+        adequacy: {
+          ...(base.details.adequacy as Record<string, unknown>),
+          disclosedGap: ['commercial metering remains outside approved scope'],
+        },
+      },
+    });
+    const fresh = evidence({
+      ...freshProof,
+      id: 23762,
+      createdAt: '2026-10-03T13:07:22.000Z',
+      details: { ...base.details },
+    });
+
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [original, fresh],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings['disclosed-gap'].rating).toBe('not-applicable');
+    expect(result.wouldBlock).not.toContain('disclosed-gap');
+  });
+
   it('does not treat a blank or whitespace-only disclosure as a disclosure', () => {
     const base = evidence();
     const result = evaluateSpecTestAdequacy({

@@ -22,9 +22,9 @@ import type postgres from 'postgres';
 import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
+import { applyDisclosureLedgerForTest, createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
-import { HARNESS_FEATURES_CONSOLIDATED_DDL } from "./../test/_work-items-schema";
+import { applyClaimPathReadDeps, HARNESS_FEATURES_CONSOLIDATED_DDL } from "./../test/_work-items-schema";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../libs/papercusp/libs/db/sql');
@@ -65,6 +65,13 @@ let db: FreshPgDb;
 beforeAll(async () => {
   db = await createFreshPgDb('delegated-tasks');
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
+  // Creation and resolution emit/retire lifecycle events through the same
+  // substrate as claims. Provision the maintained schema rather than a local
+  // table slice that falls behind the event engine's next dependency.
+  await applyClaimPathReadDeps((ddl) => db.sql.unsafe(ddl).simple());
+  // Settled-event notification writers seal messages against the real privacy
+  // ledger even when the fixture contains no personal disclosures.
+  await applyDisclosureLedgerForTest(db.sql);
   h.sql = db.sql;
   await ensureCoordCapabilityTables(db.sql);
   await db.sql.unsafe(COORD_EVENT_LOG_DDL);

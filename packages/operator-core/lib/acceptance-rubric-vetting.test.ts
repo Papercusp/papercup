@@ -416,6 +416,33 @@ describe('getAcceptanceRubricVettingStatus names the repair call for a pending a
     expect(byId.get('EI-held')).toContain('stand-down');
   });
 
+  it('does not offer repair for a pending audit whose rubric subject is stale', async () => {
+    const result = await getAcceptanceRubricVettingStatus(
+      rubric,
+      deps([
+        card({
+          ...pendingAudit,
+          subject: { kind: 'rubric', ref: 'acceptance-plan' },
+          subjectRubricCurrentness: {
+            state: 'stale',
+            reason: 'meaning-revision-mismatch',
+            recordedRevision: 3,
+            currentRevision: 4,
+            recordedCriteriaHash: 'hash-old',
+            currentCriteriaHash: 'hash-current',
+          },
+        }),
+      ]),
+    );
+
+    expect(result).toMatchObject({ satisfied: false, state: 'unvetted', reason: 'rejected-attestation' });
+    expect(result.candidates[0]).toMatchObject({ rejectedBy: 'grading-audit-unsettled' });
+    expect(result.candidates[0]!.detail).toContain('subject rubric is stale (meaning-revision-mismatch)');
+    expect(result.candidates[0]!.detail).toContain('scorecards:repair skips non-current rubric subjects');
+    expect(result.pendingGradingAuditRepair).toBeUndefined();
+    expect(result.diagnosis).not.toContain("scorecards:repair { targetIds: ['EI-vetting'] }");
+  });
+
   it('does not offer repair for a FAILED audit, which a new auditor would not settle', async () => {
     const result = await getAcceptanceRubricVettingStatus(
       rubric,

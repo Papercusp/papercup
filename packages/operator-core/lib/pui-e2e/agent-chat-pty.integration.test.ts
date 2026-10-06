@@ -4521,7 +4521,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       expect(scriptedEngine.approvalVerdicts[0]).toMatchObject({ tag: shown[0].tag, verdict: { behavior: 'allow' } });
       const peer = scriptedEngine.approvalRequests.find((r) => r.tag !== shown[0].tag);
       await pane.waitFor(String(peer?.input.command));
-      await pane.waitFor('Decline');
+      await pane.waitFor('2. No, and tell Claude');
       pane.write('2');
       await vi.waitFor(() => expect(scriptedEngine.approvalVerdicts).toHaveLength(2), { timeout: 30_000, interval: 100 });
       expect(scriptedEngine.approvalVerdicts[1]).toMatchObject({ tag: peer?.tag, verdict: { behavior: 'deny' } });
