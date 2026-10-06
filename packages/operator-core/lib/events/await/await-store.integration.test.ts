@@ -17,6 +17,7 @@ vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@p
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => h.ws }));
 
 const store = await import('./store');
+const { reconcileInterestEventAwaits } = await import('../../interest-auto-arm');
 const { createOrgTestDb } = await import('../../../test/_org-test-db');
 
 describe('event_awaits + event_wake_deliveries (real PG)', () => {
@@ -165,6 +166,63 @@ describe('event_awaits + event_wake_deliveries (real PG)', () => {
     expect(history.filter((row) => row.cancelled_at == null)).toHaveLength(1);
     expect(history.find((row) => row.id === first.id)?.cancelled_at).not.toBeNull();
     expect(history.find((row) => row.id === second.id)?.cancelled_at).not.toBeNull();
+  });
+
+  it.each([
+    ['unfiltered', null],
+    ['filtered', { result: { equals: 'ready' } }],
+  ])('auto-arm preserves the original bounded %s wait identity, deadline and predicate', async (name, payloadFilter) => {
+    const subscriberId = `su-preserve-explicit-${name}`;
+    const eventKey = `work-item:done:source-${name}`;
+    const manual = await store.registerAwait({
+      subscriberId, eventKey, timeoutSec: 3600, timeoutBehavior: 'expire', payloadFilter,
+      note: 'explicit source wait', wakeHandle: { kind: 'plan-run', runId: 9 },
+    });
+    const out = await reconcileInterestEventAwaits(
+      { ownerId: subscriberId, eventKeys: [eventKey], boundTo: { kind: 'work-item-blocked', ref: `WI-${name}` }, note: 'blocked-item-holder auto-arm' },
+      { captureHandle: async () => ({ handle: { kind: 'plan-run', runId: 10 }, note: 'reachable' }), listActive: store.listActiveAwaits, register: store.registerAwait, cancel: store.cancelAwait },
+    );
+    expect(out.await_ids).toEqual([manual.id]);
+    expect(await store.listActiveAwaits(subscriberId)).toEqual([manual]);
+  });
+
+  it.each([
+    ['unfiltered', null],
+    ['filtered', { result: { equals: 'ready' } }],
+  ])('preserves a bounded %s wait registered after the reconciliation snapshot', async (name, payloadFilter) => {
+    const subscriberId = `su-preserve-late-${name}`;
+    const eventKey = `work-item:done:late-${name}`;
+    let manual: Awaited<ReturnType<typeof store.registerAwait>>;
+    const out = await reconcileInterestEventAwaits(
+      { ownerId: subscriberId, eventKeys: [eventKey], boundTo: { kind: 'work-item-blocked', ref: `WI-late-${name}` }, note: 'blocked-item-holder auto-arm' },
+      {
+        captureHandle: async () => ({ handle: { kind: 'plan-run', runId: 10 }, note: 'reachable' }),
+        listActive: async (ownerId) => {
+          const snapshot = await store.listActiveAwaits(ownerId);
+          manual = await store.registerAwait({ subscriberId, eventKey, timeoutSec: 3600, payloadFilter, note: 'late explicit wait' });
+          return snapshot;
+        },
+        register: store.registerAwait, cancel: store.cancelAwait,
+      },
+    );
+    expect(out.await_ids).toEqual([manual!.id]);
+    expect(await store.listActiveAwaits(subscriberId)).toEqual([manual!]);
+  });
+
+  it('concurrent preservation registrations reuse the original deadline without inserting replacements', async () => {
+    const subscriberId = 'su-preserve-concurrent';
+    const eventKey = 'work-item:done:concurrent-source';
+    const manual = await store.registerAwait({ subscriberId, eventKey, timeoutSec: 3600, note: 'explicit source wait' });
+    const registered = await Promise.all(Array.from({ length: 6 }, () => store.registerAwait({
+      subscriberId, eventKey, boundTo: { kind: 'work-item-blocked', ref: 'WI-concurrent' },
+      ...{ preserveExplicitWait: true },
+    })));
+    expect(registered.every((row) => row.id === manual.id && row.expiresTs === manual.expiresTs)).toBe(true);
+    expect(await store.listActiveAwaits(subscriberId)).toEqual([manual]);
+    const history = await db.adminSql<{ id: number }[]>`
+      SELECT id FROM harness_shared.event_awaits WHERE subscriber_id = ${subscriberId} AND event_key = ${eventKey}
+    `;
+    expect(history.map((row) => Number(row.id))).toEqual([manual.id]);
   });
 
   it('keeps filtered predicates and fleet benches distinct from ordinary exact dedup', async () => {
