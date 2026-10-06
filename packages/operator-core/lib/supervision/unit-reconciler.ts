@@ -762,6 +762,12 @@ export interface ReconcilerDeps {
    */
   readUnitJournal?: (unit: string) => Promise<string>;
   now: () => number;
+  /**
+   * D-004 (reboot-residue-service-repairs-2026-10-03): also run the host-scoped census of failed,
+   * non-transient user units the registry does not cover. Production (`supervision-reconcile-action`)
+   * sets it; registry-only callers and fixtures omit it and keep the registry-only call sequence.
+   */
+  failedUnitCensus?: boolean;
   /** Broadcast a coord message. Mirrors service-health.ts's `sendMessage(HEALTH_IDENTITY, …)`. */
   notify: (opts: { summary: string; kind?: 'message' | 'escalation'; category?: string }) => Promise<void>;
   autoRestartFlagOn: () => Promise<boolean>;
@@ -1612,8 +1618,8 @@ export async function reconcileTick(deps: ReconcilerDeps): Promise<ReconcileTick
 
   await reconcilePauses(deps, pausedThisTick, observedThisTick, now);
 
+  if (!deps.failedUnitCensus) return { checked: registry.length, actions, degraded: false };
   const unregisteredFailed = await censusUnregisteredFailedUnits(deps, registry, log);
-
   return { checked: registry.length, actions, degraded: false, unregisteredFailed };
 }
 

@@ -92,6 +92,9 @@ function productionDeps(ctx: SystemActionCtx): ReconcilerDeps {
         harnessSlug: ctx.installSlug,
       })),
     autoRestartFlagOn: () => getFlag(FLAGS.SUPERVISOR_AUTO_RESTART, 'system').catch(() => false),
+    // reboot-residue-service-repairs-2026-10-03 D-004: report failed, non-transient user units the
+    // static registry does not cover (host-specific services such as agenticmail / llama-ornith).
+    failedUnitCensus: true,
     // EI-22777309029828628: systemd `ActiveState=active` is only the first half of a staging
     // recovery verdict. The reconciler invokes this named HTTP probe (with its own bounded
     // timeout) only after systemd classifies the unit healthy/recovered, so :3170 must also accept
