@@ -295,6 +295,13 @@ describe('affected-tests selector — graph suggestions are SUPERSET-ONLY', () =
     ['stale importer (hash drift)', () => writeSnapshot('stale.json', snapshotOf([{ ...goodEdge, importerSha256: sha256Hex('different') }])), /status=applied accepted=0 rejected=1 added=none/],
     ['invalid snapshot', () => writeSnapshot('invalid.json', '{"schema":"wrong"}'), /status=invalid reason=schema-mismatch accepted=0 rejected=0 added=none/],
     ['unparseable snapshot', () => writeSnapshot('garbage.json', 'not json at all'), /status=invalid reason=unparseable/],
+    // A reindex can SUCCEED while the snapshot file it leaves behind is empty or cut off
+    // mid-write (rubric R-5's "empty or corrupt snapshot after a successful reindex"). The
+    // producer refuses to write either (gen-graph-dependency-snapshot.test.ts), so these
+    // pin the CONSUMER half: whatever is on disk, a non-snapshot never changes the selection.
+    ['empty snapshot file (0 bytes)', () => writeSnapshot('empty.json', ''), /status=invalid reason=unparseable accepted=0 rejected=0 added=none/],
+    ['truncated snapshot (write cut off mid-file)', () => writeSnapshot('truncated.json', JSON.stringify(snapshotOf([goodEdge])).slice(0, 60)), /status=invalid reason=unparseable accepted=0 rejected=0 added=none/],
+    ['schema-valid snapshot with zero edges', () => writeSnapshot('zero-edges.json', snapshotOf([])), /status=applied accepted=0 rejected=0 added=none/],
     ['graph unavailable (no snapshot file)', () => join(tmp, 'does-not-exist.json'), /^GRAPH_SUGGESTIONS status=unavailable reason=absent .*added=none .*source=env$/],
     ['uncorroborated edge', () => writeSnapshot('uncorr.json', snapshotOf([{ importer: IMPORTER, imported: 'apps/operator-docs/src/never-imported.ts', importerSha256: sha256Hex(IMPORTER_SRC) }])), /status=applied accepted=0 rejected=1 added=none/],
   ];
