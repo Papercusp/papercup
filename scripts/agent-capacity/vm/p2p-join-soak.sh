@@ -20,7 +20,8 @@
 #    result is inconclusive. Do not combine with CONFLICT_AT_OBS: an unresolved D-055 conflict
 #    parks the joiner, which looks exactly like a revoke.
 # Required env: DEB (gs:// URL of a test-artifact .deb), SHA (its sha256), JOIN_BODY (local file
-# with the join-link POST body; it carries a join token, so it stays out of the repo).
+# with the join-link POST body; it carries a join token, so it stays out of the repo). Mint it with
+# `npx tsx scripts/agent-capacity/vm/mint-join-body.ts --hive <POT> --out <file>` (WI-10006697).
 # Optional env: RUN (p2pjoin) · VM (cap-$RUN) · GCP_PROJECT · GCP_ZONE · POT (hello-world-3-pot) ·
 # HIVE (the tower's worktree for POT) · OBSERVE_SEC (10800) · OBS_INTERVAL_SEC (300) · OBS_LIMIT
 # (0 = no cap on observations) · MACHINE_TYPE (e2-standard-4; on-demand, D-036) · MAX_HOURS (5) ·
