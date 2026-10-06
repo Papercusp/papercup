@@ -12,12 +12,22 @@ import {
   runConnectorSync,
   runConnectorWakes,
 } from '../../providers/connector-runtime';
+import { formatConnectorPushLog, reconcileConnectorPush, type ConnectorPushResult } from '../../providers/connector-push';
 import { runPendingParticipantBackfills } from '../../relationship-graph/participant-backfill';
 import { registerSystemAction } from './system-actions';
 
 registerSystemAction('connector-sync', async (ctx) => {
   const sql = getOrgPg().sql;
   const options = { workspaceId: ctx.workspaceId, harness: ctx.installSlug };
+  // Provider webhooks (linear-asana-task-sync D-016): keep each push-capable source's remote
+  // webhooks matching its config and public hook URL. Diagnostics only, never a failed pass.
+  const push = await reconcileConnectorPush(sql, options).catch(
+    (cause: unknown): ConnectorPushResult => ({
+      sources: [{ sourceId: '*', providerId: '*', outcome: 'failed', subscriptions: 0, error: cause instanceof Error ? cause.message : String(cause) }],
+    }),
+  );
+  if (push.sources.length > 0) console.log(formatConnectorPushLog(push));
+  const pushFailed = push.sources.filter((source) => source.outcome === 'failed');
   // Push wake first (D-018.2): a provider's doorbell marks its sources due so
   // this same tick syncs them. A wake failure is diagnostics, never a failed pass.
   const wakes = await runConnectorWakes(sql, options);
@@ -40,6 +50,9 @@ registerSystemAction('connector-sync', async (ctx) => {
     ...(backfillFailed.length > 0
       ? [`participant backfill: ${backfillFailed.length} source(s) failed: ${backfillFailed.map((b) => `${b.sourceId}:${b.error ?? 'failed'}`).join('; ')}`]
       : []),
+    ...(pushFailed.length > 0
+      ? [`push subscribe: ${pushFailed.length} source(s) failed: ${pushFailed.map((s) => `${s.sourceId}:${s.error ?? 'failed'}`).join('; ')}`]
+      : []),
   ];
   return {
     diagnostics: {
@@ -51,6 +64,8 @@ registerSystemAction('connector-sync', async (ctx) => {
       wakeFailed: wakes.sources.filter((source) => source.outcome === 'failed').length,
       participantBackfilled: backfills.filter((b) => b.outcome === 'backfilled').length,
       participantBackfillFailed: backfillFailed.length,
+      pushSubscribed: push.sources.filter((source) => source.outcome === 'subscribed').length,
+      pushFailed: pushFailed.length,
     },
     ...(softErrors.length > 0 ? { softError: softErrors.join(' | ').slice(0, 1000) } : {}),
   };

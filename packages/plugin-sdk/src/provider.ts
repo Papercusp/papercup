@@ -121,6 +121,12 @@ export interface ProviderPushSubscription {
  */
 export interface ProviderPushSubscribeResult {
   subscriptions: ProviderPushSubscription[];
+  /**
+   * Resources the provider could not subscribe this time. Their siblings in `subscriptions` still
+   * exist remotely, so the host stores them and retries the rest later instead of losing track of
+   * webhooks that were created before the failure.
+   */
+  failures?: Array<{ resource: string; error: string }>;
 }
 
 /** Capability that reconciles a source's remote webhooks (D-016). */

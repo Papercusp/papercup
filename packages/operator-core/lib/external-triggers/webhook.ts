@@ -256,6 +256,15 @@ export interface WebhookDeliveryDependencies {
   encryptionKey?: string;
   now?: () => Date;
   ingest?: typeof ingestExternalTriggerEvent;
+  /**
+   * A provider's own webhook addressed to a connector source (linear-asana-task-sync D-016,
+   * providers/connector-push.ts). Asked only when the id names no webhook source; null = not a
+   * push source either, answered 404. Omitted = webhook sources only.
+   */
+  connectorPush?: (
+    request: WebhookDeliveryRequest,
+    base: Pick<WebhookDeliveryDependencies, 'sql' | 'remoteAccessEnabled' | 'encryptionKey' | 'now'>,
+  ) => Promise<WebhookDeliveryResponse | null>;
 }
 
 function refuse(status: number, error: string, extra: Record<string, unknown> = {}, headers?: Record<string, string>): WebhookDeliveryResponse {
@@ -279,13 +288,26 @@ export async function handleWebhookDelivery(
   if (request.rawBody.byteLength > WEBHOOK_MAX_BODY_BYTES) {
     return refuse(413, 'body_too_large', { limitBytes: WEBHOOK_MAX_BODY_BYTES });
   }
-  const body = parseJsonObject(request.rawBody);
-  if (!body) return refuse(400, 'invalid_body', { message: 'the body must be a JSON object' });
+  // An empty body is only ever a provider's subscription handshake (Asana sends its secret in a
+  // header with no body); a webhook source refuses it below, once the source is known.
+  const empty = request.rawBody.byteLength === 0;
+  const body = empty ? null : parseJsonObject(request.rawBody);
+  if (!empty && !body) return refuse(400, 'invalid_body', { message: 'the body must be a JSON object' });
 
   const sourceId = request.sourceId.toLowerCase();
   if (!isWebhookSourceId(sourceId)) return refuse(404, 'not_found');
   const target = await loadDeliveryTarget(deps.sql, sourceId, deps.encryptionKey ?? getDbEncryptionKey());
-  if (!target || target.status === 'disabled') return refuse(404, 'not_found');
+  if (!target) {
+    const pushed = deps.connectorPush
+      ? await deps.connectorPush(
+          { ...request, sourceId },
+          { sql: deps.sql, remoteAccessEnabled: deps.remoteAccessEnabled, encryptionKey: deps.encryptionKey, now: deps.now },
+        )
+      : null;
+    return pushed ?? refuse(404, 'not_found');
+  }
+  if (target.status === 'disabled') return refuse(404, 'not_found');
+  if (!body) return refuse(400, 'invalid_body', { message: 'the body must be a JSON object' });
 
   if (!(await deps.remoteAccessEnabled(target.workspaceId))) return refuse(403, 'remote_access_off');
 

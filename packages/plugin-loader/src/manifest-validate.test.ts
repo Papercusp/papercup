@@ -326,14 +326,15 @@ describe('validateManifest: provider descriptor schema matches the SDK type', ()
     expect(validateManifest(manifest({ ...provider, serviceCredentials: [{ ref: 'x', hosts: ['pubsub.example.com'], secret: 'y' }] })).ok).toBe(false);
   });
 
-  it('refuses a push scheme with an unknown key, an unsupported algorithm, or a handshake without the push capabilities', () => {
+  it('refuses a push scheme with an unknown key, an unsupported algorithm or a non-lowercase header', () => {
+    // Schema shape only. The capability rule (a handshake needs push.subscribe/unsubscribe) is
+    // semantic: validateProviderDescriptor, covered in plugin-sdk/src/provider.test.ts.
     const signature = provider.push.signature;
     expect(validateManifest(manifest({ ...provider, push: { signature, secret: 'x' } })).ok).toBe(false);
     expect(validateManifest(manifest({ ...provider, push: { signature: { ...signature, algorithm: 'sha1' } } })).ok).toBe(false);
     expect(validateManifest(manifest({ ...provider, push: { signature: { ...signature, header: 'X-Hook-Signature' } } })).ok).toBe(false);
-    expect(validateManifest(manifest({ ...provider, capabilities: ['ticket.read'] })).ok).toBe(false);
-    // A signature-only scheme (no handshake) needs no subscribe capability.
-    expect(validateManifest(manifest({ ...provider, capabilities: ['ticket.read'], push: { signature } })).issues).toEqual([]);
+    expect(validateManifest(manifest({ ...provider, push: { handshake: { header: 'x-hook-secret' } } })).ok).toBe(false);
+    expect(validateManifest(manifest({ ...provider, push: { signature } })).issues).toEqual([]);
   });
 });
 

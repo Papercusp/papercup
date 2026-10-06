@@ -65,3 +65,36 @@ describe('validateProviderDescriptor: oauth.identity request', () => {
     }))).toContain('provider.oauth endpoint host "elsewhere.test" is not in provider.egressHosts');
   });
 });
+
+/** Push-wake scheme (linear-asana-task-sync-2026-10-05 D-016): pure data the host verifies. */
+describe('validateProviderDescriptor: push', () => {
+  const base = descriptor({ url: 'https://api.example.com/user', idField: 'id' });
+  const signature = { header: 'x-hook-signature', algorithm: 'hmac-sha256', encoding: 'hex' } as const;
+  const withPush = (push: unknown, capabilities = ['ticket.read', 'push.subscribe', 'push.unsubscribe']) =>
+    validateProviderDescriptor({ ...base, capabilities, push } as ProviderDescriptor);
+
+  it('accepts a handshake scheme with both push capabilities, and a signature-only scheme without them', () => {
+    expect(withPush({ handshake: { header: 'x-hook-secret' }, signature })).toEqual([]);
+    expect(withPush({ signature }, ['ticket.read'])).toEqual([]);
+  });
+
+  it('a handshake needs push.subscribe and push.unsubscribe, since its secret only arrives during a subscribe', () => {
+    expect(withPush({ handshake: { header: 'x-hook-secret' }, signature }, ['ticket.read', 'push.subscribe']))
+      .toEqual(['provider.push.handshake needs capability push.unsubscribe']);
+    expect(withPush({ handshake: { header: 'x-hook-secret' }, signature }, ['ticket.read'])).toHaveLength(2);
+  });
+
+  it('refuses a missing or malformed signature, a non-lowercase header, and a handshake sharing the signature header', () => {
+    expect(withPush({})).toEqual([
+      'provider.push.signature.header must be a lowercase header name',
+      'provider.push.signature.algorithm must be hmac-sha256',
+      'provider.push.signature.encoding must be hex',
+    ]);
+    expect(withPush({ signature: { ...signature, header: 'X-Hook-Signature' } }))
+      .toContain('provider.push.signature.header must be a lowercase header name');
+    expect(withPush({ signature: { ...signature, algorithm: 'sha1' } })).toContain('provider.push.signature.algorithm must be hmac-sha256');
+    expect(withPush({ handshake: { header: 'x-hook-signature' }, signature }))
+      .toContain('provider.push.handshake.header must differ from provider.push.signature.header');
+    expect(withPush('push')).toEqual(['provider.push must be an object']);
+  });
+});

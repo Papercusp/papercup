@@ -21,6 +21,8 @@ import {
   type WebhookDeliveryRequest,
   type WebhookDeliveryResponse,
 } from '../../../external-triggers/webhook';
+import { readyProviderRegistry } from '../../../integrations/provider-registry';
+import { handleConnectorPushDelivery } from '../../../providers/connector-push';
 
 type AnyRoute = RouteDefinition<any>;
 
@@ -74,6 +76,11 @@ const routes: ReadonlyArray<AnyRoute> = createWebhookRoutes({
         return getOrgPg().sql;
       },
       remoteAccessEnabled: async (workspaceId) => (await getRemoteAccess(workspaceId)).enabled,
+      // A provider's own webhook for a connector source (linear-asana-task-sync D-016): it only
+      // wakes that source's next sync. The registry is read once plugin discovery has registered
+      // the providers, so a request-only host never mistakes "not loaded yet" for "no scheme".
+      connectorPush: (pushRequest, base) =>
+        handleConnectorPushDelivery(pushRequest, { ...base, registry: () => readyProviderRegistry() }),
     }),
 });
 
