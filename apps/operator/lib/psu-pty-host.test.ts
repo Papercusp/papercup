@@ -3190,6 +3190,73 @@ describe('findNativeTranscriptMarker (fresh row provenance)', () => {
     '</environment_context>',
   ].join('\n');
 
+  describe('Claude resumed tool results', () => {
+    const claudeConfig = pathJoin(scratch, 'claude-resumed-tools');
+    const projects = pathJoin(claudeConfig, 'projects');
+    const transcript = pathJoin(projects, 'resumed-native.jsonl');
+    nodeFs.mkdirSync(projects, { recursive: true });
+    const sinceMs = Date.parse('2026-10-06T01:09:30Z');
+    const marker = '⟦turn-origin:fleet-kickoff nonce:f68000ac91914d47⟧';
+    const userRow = (content: unknown, atMs = sinceMs + 11_686) => ({
+      type: 'user', timestamp: new Date(atMs).toISOString(),
+      message: { role: 'user', content },
+    });
+    const toolResult = (content: unknown) => ({
+      type: 'tool_result', tool_use_id: 'interrupted-call', is_error: true, content,
+    });
+    const write = (...rows: unknown[]) => nodeFs.writeFileSync(
+      transcript, `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`,
+    );
+    const find = () => findNativeTranscriptMarker({
+      agent: 'claude', env: { CLAUDE_CONFIG_DIR: claudeConfig },
+      marker, sinceMs, nativeId: 'resumed-native', home: scratch,
+    });
+
+    // EI-25197116252839092: resuming an interrupted call writes a fresh user
+    // tool_result before the kickoff, even though it is not a new task prompt.
+    it.each(['fleet-kickoff', 'carry-respawn'])('verifies a resumed Claude %s after interrupted tool results', async (origin) => {
+      const kickoffMarker = `⟦turn-origin:${origin} nonce:f68000ac91914d47⟧`;
+      const kickoff = `${kickoffMarker}\nResume the registered work.`;
+      write(
+        userRow('Previous owner task', sinceMs - 60_000),
+        userRow([toolResult('Tool call interrupted: the session ended before its result was recorded.')], sinceMs + 9_135),
+        userRow([toolResult([{ type: 'text', text: kickoffMarker }])], sinceMs + 10_000),
+        userRow(kickoff),
+      );
+      const writeCr = vi.fn();
+      await expect(verifyNativeTurnStartWithRetry({
+        agent: 'claude', env: { CLAUDE_CONFIG_DIR: claudeConfig },
+        text: kickoff, sinceMs, nativeId: 'resumed-native', home: scratch,
+        timeoutMs: 0, writeCr,
+      })).resolves.toMatchObject({ persisted: true, nativeRef: transcript, retried: false });
+      expect(writeCr).not.toHaveBeenCalled();
+    });
+
+    it.each(['string', 'text-blocks'])('rejects a kickoff marker in %s tool output without a task prompt', (format) => {
+      const output = format === 'string' ? marker : [{ type: 'text', text: marker }];
+      write(userRow([toolResult(output)]));
+      expect(find()).toBeNull();
+    });
+
+    it('verifies user text alongside a tool result without reading the tool output', () => {
+      write(userRow([
+        toolResult('⟦turn-origin:carry-respawn nonce:0123456789abcdef⟧'),
+        { type: 'text', text: `${marker}\nResume the registered work.` },
+      ]));
+      expect(find()).toBe(transcript);
+    });
+
+    it.each(['before', 'after'])('keeps a real first prompt with tool results %s its text as a proof barrier', (position) => {
+      const text = { type: 'text', text: 'Do another task first.' };
+      const output = toolResult(marker);
+      write(
+        userRow(position === 'before' ? [output, text] : [text, output]),
+        userRow(`${marker}\nResume the registered work.`),
+      );
+      expect(find()).toBeNull();
+    });
+  });
+
   it.each(['fleet-kickoff', 'carry-respawn'])('verifies a resumed Codex %s after standalone environment context', async (origin) => {
     const codexHome = pathJoin(scratch, `codex-environment-${origin}`);
     const sessions = pathJoin(codexHome, 'sessions');
