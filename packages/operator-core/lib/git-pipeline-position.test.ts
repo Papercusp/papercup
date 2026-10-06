@@ -408,11 +408,11 @@ describe('gitPipelinePosition diagnostic defaults (EI-21306970701615848)', () =>
     expect(probe.mock.calls.every(([, exec]) => typeof exec === 'function')).toBe(true);
   });
 
-  it('keeps the default release readers on local git instead of the spawner sidecar', () => {
+  it('routes only the bounded dev-deploy reader through the sidecar and keeps the pipeline snapshot local', () => {
     const source = readFileSync(new URL('./git-pipeline-position.ts', import.meta.url), 'utf8');
 
     expect(source).toContain(
-      'const loadDeploy = deps.loadDeploy ?? (() => devDeployState({ useSpawnerSidecar: false }));',
+      'const loadDeploy = deps.loadDeploy ?? (() => devDeployState({ useSpawnerSidecar: true }));',
     );
     expect(source).toContain(
       'deps.loadSnapshot ?? (() => gitPipelineSnapshot(undefined, { useSpawnerSidecar: false }));',
