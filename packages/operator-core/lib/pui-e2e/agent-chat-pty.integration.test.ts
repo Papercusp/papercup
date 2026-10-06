@@ -4150,10 +4150,21 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
         const panes = (JSON.parse(listed.stdout) as ZellijPane[]).filter((pane) => !pane.is_plugin);
         const chat = panes.find((pane) => /(^|\/)pui --solo --workbench-pane$/.test(command(pane)));
         expect(chat, JSON.stringify(panes)).toMatchObject({ is_focused: true });
-        for (const board of ['hud', 'wake-pane', 'network-pane']) {
+        for (const board of ['hud --side-pane', 'wake-pane', 'network-pane']) {
           expect(panes.some((pane) => new RegExp(`(^|/)pui ${board}$`).test(command(pane))), `${board} pane in ${JSON.stringify(panes)}`).toBe(true);
         }
       }, { timeout: 15_000, interval: 250 });
+      // pui-chat-first-ux D-034 (WI-10006754): the HUD side pane is ~70
+      // columns of this 200-column terminal, under the full board's 80. It
+      // draws the compact summary, never "Terminal too small".
+      await vi.waitFor(() => {
+        const frame = wb.pane.screen();
+        expect(frame, frame).not.toContain('too small');
+        expect(frame, frame).toMatch(/Needs you \(\d+\)/);
+        expect(frame, frame).toMatch(/Agents \(\d+ live\)/);
+        expect(frame, frame).toMatch(/Plans \(\d+\)/);
+        expect(frame, frame).toContain('Alt+z full board');
+      }, { timeout: 30_000, interval: 250 });
       // Keyboard focus is the chat: typed text lands in its message box.
       wb.pane.write('p030 focus probe');
       await wb.pane.waitFor('p030 focus probe', { timeoutMs: 10_000 });
@@ -4205,7 +4216,41 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       // … and the same key brings them back.
       wb.pane.write('\u001bz');
       await vi.waitFor(() => expect(paneTitle('hud').test(wb.pane.screen()), wb.pane.screen()).toBe(true), { timeout: 15_000, interval: 250 });
-      console.info('PUI_P030_NARROW_ACCEPTANCE', JSON.stringify({ binary: bin, binarySha256, session: wb.session, opened, hidden }));
+      // pui-chat-first-ux D-034 (WI-10006754): every side pane shows real
+      // content in its ~30-column column, never "Terminal too small". The HUD
+      // is the expanded pane of the stack and draws the compact summary.
+      await vi.waitFor(() => {
+        const frame = wb.pane.screen();
+        expect(frame, frame).not.toContain('too small');
+        expect(frame, frame).toMatch(/Needs you \(\d+\)/);
+        expect(frame, frame).toMatch(/Agents \(\d+ live\)/);
+        expect(frame, frame).toContain('Alt+z full board');
+      }, { timeout: 30_000, interval: 250 });
+      const hud = wb.pane.screen();
+      // Moving focus down the stack expands each board in turn.
+      const moveFocus = (direction: 'right' | 'down') => {
+        const moved = paneZellij(['--session', wb.session, 'action', 'move-focus', direction]);
+        expect(moved.status, moved.stderr).toBe(0);
+      };
+      moveFocus('right');
+      moveFocus('down');
+      await vi.waitFor(() => {
+        const frame = wb.pane.screen();
+        expect(paneTitle('wake').test(frame), frame).toBe(true);
+        expect(frame, frame).toContain('Staged wakes');
+        expect(frame, frame).not.toContain('too small');
+      }, { timeout: 15_000, interval: 250 });
+      const wake = wb.pane.screen();
+      moveFocus('down');
+      await vi.waitFor(() => {
+        const frame = wb.pane.screen();
+        expect(paneTitle('network').test(frame), frame).toBe(true);
+        // Stacked, not split: both boards' headlines are on screen.
+        expect(frame.match(/Network /g)?.length ?? 0, frame).toBeGreaterThanOrEqual(2);
+        expect(frame, frame).not.toContain('too small');
+      }, { timeout: 15_000, interval: 250 });
+      const network = wb.pane.screen();
+      console.info('PUI_P030_NARROW_ACCEPTANCE', JSON.stringify({ binary: bin, binarySha256, session: wb.session, opened, hidden, hud, wake, network }));
     } finally { await wb.cleanup(); }
   }, 180_000);
 

@@ -7549,29 +7549,34 @@ mod tests {
     /// two unreadable half-width columns; the full board keeps the split.
     #[test]
     fn the_network_pane_stacks_its_boards_in_a_narrow_column() {
-        let headline_columns = |w: u16, h: u16| -> Vec<(usize, usize)> {
+        let headline_columns = |w: u16, h: u16| -> (Vec<(usize, usize)>, String) {
             let mut app = App::new();
             app.pinned = Some(Tab::Network);
             app.tab = Tab::Network;
             app.viewport = (w, h);
-            let text = render(&app, w, h);
-            let cells: Vec<char> = text.chars().collect();
-            cells
-                .chunks(w as usize)
+            let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+            term.draw(|f| draw(f, &app)).unwrap();
+            let buf = term.backend().buffer().clone();
+            let rows: Vec<String> = (0..h)
+                .map(|y| (0..w).map(|x| buf[(x, y)].symbol().to_string()).collect())
+                .collect();
+            let found = rows
+                .iter()
                 .enumerate()
-                .filter_map(|(row, line)| {
-                    let line: String = line.iter().collect();
-                    line.find("Network ").map(|at| (row, line[..at].chars().count()))
+                .flat_map(|(row, line)| {
+                    line.match_indices("Network ")
+                        .map(move |(at, _)| (row, line[..at].chars().count()))
                 })
-                .collect()
+                .collect();
+            (found, rows.join("\n"))
         };
-        let narrow = headline_columns(30, 18);
-        assert_eq!(narrow.len(), 2, "{narrow:?}");
-        assert!(narrow[0].0 < narrow[1].0, "{narrow:?}");
-        assert!(narrow.iter().all(|&(_, col)| col < 4), "{narrow:?}");
-        let wide = headline_columns(120, 30);
-        assert_eq!(wide.len(), 2, "{wide:?}");
-        assert_eq!(wide[0].0, wide[1].0, "the full board keeps the side-by-side split: {wide:?}");
+        let (narrow, text) = headline_columns(30, 18);
+        assert_eq!(narrow.len(), 2, "{narrow:?}\n{text}");
+        assert!(narrow[0].0 < narrow[1].0, "{narrow:?}\n{text}");
+        assert!(narrow.iter().all(|&(_, col)| col < 4), "{narrow:?}\n{text}");
+        let (wide, text) = headline_columns(120, 30);
+        assert_eq!(wide.len(), 2, "{wide:?}\n{text}");
+        assert_eq!(wide[0].0, wide[1].0, "the full board keeps the side-by-side split: {wide:?}\n{text}");
     }
 
     /// Rows are dealt fairly in priority order, so a long list cannot starve
