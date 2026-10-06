@@ -136,6 +136,23 @@ function pidAlive(pid: number): boolean {
   }
 }
 
+/**
+ * End the session after a failed test body WITHOUT masking the body's error.
+ * `finally { expect(await h.quit()).toBe(0) }` replaces the original assertion
+ * failure with the quit's own timeout whenever the failure also wedged the host,
+ * which is how a real P-019 defect first read as "timed out waiting for QUIT".
+ */
+async function quitAfterFailure(h: { quit(): Promise<number> }, error: unknown): Promise<unknown> {
+  try {
+    await h.quit();
+  } catch (quitError) {
+    if (error instanceof Error) {
+      error.message += `\n(the quit afterwards also failed: ${(quitError as Error)?.message ?? String(quitError)})`;
+    }
+  }
+  return error;
+}
+
 const cleanups: Array<() => void> = [];
 afterEach(() => {
   for (const fn of cleanups.splice(0)) {
@@ -236,10 +253,19 @@ function startParkHost({
     argvLog: () => readJsonl<ArgvEntry>(argvLog),
     inputLog: () => readJsonl<InputEntry>(inputLog),
     readMeta: () => JSON.parse(readFileSync(meta, 'utf8')) as Record<string, unknown>,
-    /** End the session: QUIT resumes a parked child first, then it exits 0. */
+    /** End the session: QUIT resumes a parked child first, then it exits 0. A hang
+     *  names the host's own event trail, so the failure says WHERE it stuck. */
     async quit() {
       if (existsSync(sock)) await controlInject(sock, 'raw', 'QUIT\r');
-      return withDeadline(done, 10_000, 'the host to exit after QUIT');
+      return withDeadline(done, 10_000, 'the host to exit after QUIT').catch((error: Error) => {
+        const trail = events()
+          .slice(-12)
+          .map((e) => `${e.kind}${e.trigger ? `(${String(e.trigger)})` : ''}${e.reason ? `[${String(e.reason)}]` : ''}`)
+          .join(' → ');
+        const boots = readJsonl<ArgvEntry>(argvLog).length;
+        const inputs = readJsonl<InputEntry>(inputLog).map((e) => `${e.pid}:${e.line}`).join(', ');
+        throw new Error(`${error.message}; boots=${boots}; inputs=[${inputs}]; last events: ${trail}`);
+      });
     },
   };
 }
@@ -332,9 +358,10 @@ describe('psu process-free parking (P-017) — real pty round trip', () => {
         expect(h.eventsOf('child-unparked')[0]).toMatchObject({ trigger: 'owner-input', nativeId: SESSION_ID });
         // Replayed exactly once.
         expect(h.inputLog().filter((e) => e.line.includes('OWNER_TYPED_HELLO'))).toHaveLength(1);
-      } finally {
-        expect(await h.quit()).toBe(0);
+      } catch (error) {
+        throw await quitAfterFailure(h, error);
       }
+      expect(await h.quit()).toBe(0);
     },
     30_000,
   );
@@ -364,9 +391,10 @@ describe('psu process-free parking (P-017) — real pty round trip', () => {
         await controlInject(h.sock, 'turn', 'AFTER_CLEAR');
         await waitFor(() => h.inputLog().find((e) => e.line.includes('AFTER_CLEAR')), 'the post-/clear turn');
         expect(h.argvLog()[1].argv).toEqual(['--resume', CLEARED_ID]);
-      } finally {
-        expect(await h.quit()).toBe(0);
+      } catch (error) {
+        throw await quitAfterFailure(h, error);
       }
+      expect(await h.quit()).toBe(0);
     },
     30_000,
   );
@@ -386,9 +414,10 @@ describe('psu process-free parking (P-017) — real pty round trip', () => {
         expect(h.eventsOf('child-parked')).toEqual([]);
         expect(h.readMeta().parked ?? false).toBe(false);
         expect(h.readMeta().ptyPid).toBe(h.argvLog()[0].pid);
-      } finally {
-        expect(await h.quit()).toBe(0);
+      } catch (error) {
+        throw await quitAfterFailure(h, error);
       }
+      expect(await h.quit()).toBe(0);
     },
     30_000,
   );
@@ -403,9 +432,10 @@ describe('psu process-free parking (P-017) — real pty round trip', () => {
         expect(h.eventsOf('child-parked')).toEqual([]);
         expect(h.eventsOf('child-park-deferred')).toEqual([]);
         expect(pidAlive(h.argvLog()[0].pid)).toBe(true);
-      } finally {
-        expect(await h.quit()).toBe(0);
+      } catch (error) {
+        throw await quitAfterFailure(h, error);
       }
+      expect(await h.quit()).toBe(0);
     },
     30_000,
   );
@@ -446,8 +476,8 @@ describe('psu process-free parking (P-019) — a failed resume never loses a del
 
         await controlInject(h.sock, 'turn', 'HELD_TURN_TOKEN');
         const failed = await waitFor(() => h.eventsOf('child-unpark-failed')[0], 'the failed resume');
-        expect(failed).toMatchObject({ trigger: 'control:turn', reason: 'spawn-failed' });
-        expect(JSON.stringify(failed)).toContain('forkpty');
+        // hostErrorEvidence records the error's name and code, never its message.
+        expect(failed).toMatchObject({ trigger: 'control:turn', reason: 'spawn-failed', errorCode: 'EAGAIN' });
         expect(await waitFor(() => h.eventsOf('parked-delivery-held')[0], 'the held delivery')).toMatchObject({
           mode: 'turn',
           reason: 'spawn-failed',
@@ -476,9 +506,10 @@ describe('psu process-free parking (P-019) — a failed resume never loses a del
         await sleep(300);
         expect(h.inputLog().filter((e) => e.line.includes('HELD_TURN_TOKEN'))).toHaveLength(1);
         expect(h.exitCode()).toBeNull();
-      } finally {
-        expect(await h.quit()).toBe(0);
+      } catch (error) {
+        throw await quitAfterFailure(h, error);
       }
+      expect(await h.quit()).toBe(0);
     },
     30_000,
   );
@@ -517,9 +548,10 @@ describe('psu process-free parking (P-019) — a failed resume never loses a del
           expect(rows[0].pid).toBe(boots[1].pid);
         }
         expect(h.eventsOf('child-unparked')[0]).toMatchObject({ trigger: 'owner-input', nativeId: SESSION_ID });
-      } finally {
-        expect(await h.quit()).toBe(0);
+      } catch (error) {
+        throw await quitAfterFailure(h, error);
       }
+      expect(await h.quit()).toBe(0);
     },
     30_000,
   );
@@ -596,9 +628,10 @@ describe('psu process-free parking (D-003) — session lifecycle while parked', 
         expect(h.eventsOf('child-unparked')[0]).toMatchObject({ trigger: 'control:recycle', nativeId: SESSION_ID });
         expect(h.inputLog().filter((e) => e.line.includes('RECYCLE_CARRY_TOKEN'))).toHaveLength(1);
         expect(h.exitCode()).toBeNull();
-      } finally {
-        expect(await h.quit()).toBe(0);
+      } catch (error) {
+        throw await quitAfterFailure(h, error);
       }
+      expect(await h.quit()).toBe(0);
     },
     45_000,
   );
