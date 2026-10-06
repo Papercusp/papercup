@@ -44,7 +44,8 @@ import {
 } from '../external-triggers/ingestion';
 import { providerRegistry, type ProviderRegistry, type RegisteredProvider } from '../integrations/provider-registry';
 import { createSourceHostFetch } from '../integrations/source-host-fetch';
-import { createPersonalVaultExternalSinkForSource } from '../personal-vault/live-sink';
+import { createPersonalVaultExternalSinkForSource, VAULT_DATATYPES } from '../personal-vault/live-sink';
+import { createDatatypeDestinationSinks } from '../data-sources/datatype-destination-sink';
 import { createAppDeliverySinkIfConfigured } from '../app-data-producer/live-sink';
 import { DATATYPE_FOR_APP } from '../app-data-producer/app-rows';
 
@@ -350,9 +351,19 @@ export async function wakeConnectorSource(
   return rows.length === 1;
 }
 
+/**
+ * Where one record goes, by DATATYPE only (D-010, D-015): a datatype the personal Vault routes
+ * goes to the owner's Vault; every other datatype goes where the datatype registry's nature and
+ * the source's destination policy put it (record / event / document). Apps subscribe by datatype.
+ */
 async function defaultSinksFor(sql: postgres.Sql, source: ConnectorSourceRow, datatype: string): Promise<ExternalTriggerSink[]> {
-  if (!source.ownerUserId) return [];
-  const sinks: ExternalTriggerSink[] = [await createPersonalVaultExternalSinkForSource(sql, source.workspaceId, source.id)];
+  const sinks: ExternalTriggerSink[] = [];
+  if (VAULT_DATATYPES.includes(datatype)) {
+    if (source.ownerUserId) sinks.push(await createPersonalVaultExternalSinkForSource(sql, source.workspaceId, source.id));
+  } else {
+    sinks.push(...(await createDatatypeDestinationSinks(sql, { workspaceId: source.workspaceId, sourceId: source.id, datatype })));
+  }
+  if (!source.ownerUserId) return sinks;
   for (const [app, appDatatype] of Object.entries(DATATYPE_FOR_APP) as [keyof typeof DATATYPE_FOR_APP, string][]) {
     if (appDatatype !== datatype) continue;
     const appSink = await createAppDeliverySinkIfConfigured(sql, source.workspaceId, source.id, app);
