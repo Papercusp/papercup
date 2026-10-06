@@ -83,7 +83,7 @@ function deps(over: Partial<LostRunSweepDeps> = {}): LostRunSweepDeps & {
   return {
     nowMs: NOW,
     selfPid: SELF_PID,
-    pidAlive: (pid) => pid !== DEAD_PID,
+    pidAlive: (pid: number) => pid !== DEAD_PID,
     hostFleetSlug: null,
     claim: claimLostRunAlarm,
     readHolder: async () => 'su-holder',

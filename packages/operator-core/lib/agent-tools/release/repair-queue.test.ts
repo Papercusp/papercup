@@ -97,6 +97,8 @@ const mocks = vi.hoisted(() => ({
   emitAwaitedEvent: vi.fn(),
   // WI-10004151 part 2: the admit door's dependency-generation prediction seam.
   predict: vi.fn(),
+  // P-004: the sole-editor fallback's tagged-template read of edit_attribution_ledger.
+  attributionSql: vi.fn(),
 }));
 vi.mock('../../release/dependency-admission-prediction', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../release/dependency-admission-prediction')>()),
@@ -138,12 +140,17 @@ vi.mock('../../release/judged-sha-containment', () => ({
   integrationBranch: () => 'staging',
   containmentForPaths: mocks.containment,
 }));
-vi.mock('../../release/repair-head-admission', () => ({
+vi.mock('../../release/repair-head-admission', async (importOriginal) => ({
+  // Real pure helpers (normalizeAdmissionPath, used by the P-004 attribution verdict).
+  ...(await importOriginal<typeof import('../../release/repair-head-admission')>()),
   admitPathsOntoRepairHead: mocks.admit,
   realAdmissionGit: mocks.admissionGit,
   retractAdmission: mocks.retract,
 }));
-vi.mock('../../release/hunk-exact-admission', () => ({
+vi.mock('../../release/hunk-exact-admission', async (importOriginal) => ({
+  // The REAL attributeUnledgeredPaths + SOLE_EDITOR_WINDOW_MARGIN_MS: the P-004 fallback's verdict
+  // is exercised end-to-end through the door, not re-mocked.
+  ...(await importOriginal<typeof import('../../release/hunk-exact-admission')>()),
   buildHunkExactSource: mocks.hunkExact,
   buildCommittedPatchSource: mocks.committedPatch,
   summarizeForeignHunks: mocks.foreign,
@@ -251,7 +258,9 @@ const admissionOf = (published: boolean, paths = ['lib/red.test.ts'], commit = N
 });
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/db-org')>()),
-  getOrgPg: () => ({ sql: { unsafe: mocks.audit } }),
+  getOrgPg: () => ({
+    sql: Object.assign((...a: unknown[]) => mocks.attributionSql(...a), { unsafe: mocks.audit }),
+  }),
 }));
 
 const repairQueueModule = await import('./repair-queue');
@@ -343,6 +352,7 @@ beforeEach(() => {
   mocks.retract.mockReturnValue(true);
   mocks.admissionGit.mockReturnValue({ status: 0, stdout: `${'f'.repeat(40)}\n`, stderr: '' });
   mocks.ledger.mockResolvedValue([]);
+  mocks.attributionSql.mockResolvedValue([]);
   mocks.foreign.mockReturnValue({ count: 0, agents: [], byPath: {} });
   mocks.importPreflight.mockReturnValue(() => null);
   mocks.hunkExact.mockReturnValue(hunkExactOf());
@@ -579,6 +589,22 @@ describe('release:repair-queue', () => {
 
   it('dry run: the primitive builds + proves with dryRun:true onto the CURRENT repairHead, and nothing is published or persisted', async () => {
     mocks.admit.mockReturnValue(admissionOf(false));
+    // The realistic hunk-exact world: the caller's edit reached the frozen ledger. (An empty ledger
+    // would make hunk-exact refuse `no-ledgered-hunks` and route through the P-004 sole-editor
+    // fallback instead, which is covered by its own tests.)
+    mocks.ledger.mockResolvedValueOnce([
+      {
+        id: 1,
+        candidate: queue.candidate,
+        agent: 'su-test',
+        path: 'lib/red.test.ts',
+        hunk: { kind: 'edit', old: 'a', new: 'b', replaceAll: false },
+        atMs: Date.now(),
+        toolUseId: 'toolu_dry',
+        editIndex: 0,
+        workItem: null,
+      },
+    ]);
     const result = body(
       await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'] } as never, { role: 'su' } as never),
     );
@@ -616,6 +642,86 @@ describe('release:repair-queue', () => {
       'containment',
     ]);
     expect(result.timings.steps.every((s: { ms: number; ok: boolean }) => s.ok && s.ms >= 0)).toBe(true);
+  });
+
+  describe('P-004 sole post-freeze editor fallback (EI-24313562050732849 / EI-24557368838482892)', () => {
+    const PIN = '7'.repeat(40);
+    const CUT_SEC = 1_700_000_000;
+    /** Route the fallback's git reads by argv; everything else keeps the suite default. */
+    const routeGit = () =>
+      mocks.admissionGit.mockImplementation((argv: string[]) => {
+        if (argv[0] === 'show' && argv.includes('--format=%ct')) return { status: 0, stdout: `${CUT_SEC}\n`, stderr: '' };
+        if (argv[0] === 'rev-parse' && (argv[2] === 'staging^{commit}' || argv[2] === `${PIN}^{commit}`)) {
+          return { status: 0, stdout: `${PIN}\n`, stderr: '' };
+        }
+        return { status: 0, stdout: `${'f'.repeat(40)}\n`, stderr: '' };
+      });
+    const attributionRow = (agent: string) => ({
+      file: 'lib/red.test.ts',
+      agent_id: agent,
+      ts: new Date(CUT_SEC * 1000 + 60_000),
+    });
+
+    it('nothing ledgered + only the caller in the edit attribution ledger ⇒ admits staging’s blob pinned to the tip read now, under a recorded auto reason', async () => {
+      routeGit();
+      mocks.attributionSql.mockResolvedValueOnce([attributionRow('su-test')]);
+      mocks.admit.mockReturnValue(admissionOf(false));
+      const result = body(
+        await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'] } as never, { role: 'su' } as never),
+      );
+      expect(mocks.attributionSql).toHaveBeenCalledTimes(1);
+      // Never the hunk replay: there is nothing ledgered to replay.
+      expect(mocks.hunkExact).not.toHaveBeenCalled();
+      expect(mocks.admit).toHaveBeenCalledTimes(1);
+      expect(mocks.admit.mock.calls[0]![0]).toMatchObject({
+        paths: ['lib/red.test.ts'],
+        source: { ref: PIN, recordAsRef: 'staging' },
+        dryRun: true,
+      });
+      expect(result).toMatchObject({ ok: true, verdict: 'would-admit', mode: 'whole-blob' });
+      expect(result.timings.steps.map((s: { step: string }) => s.step)).toEqual(
+        expect.arrayContaining(['sole-editor-candidate-time', 'sole-editor-pin']),
+      );
+    });
+
+    it('a peer in the edit attribution ledger ⇒ no whole-blob fallback; the hunk-exact refusal names the peer', async () => {
+      routeGit();
+      mocks.attributionSql.mockResolvedValueOnce([attributionRow('su-test'), attributionRow('su-peer')]);
+      mocks.hunkExact.mockReturnValueOnce({
+        ok: false,
+        code: 'no-ledgered-hunks',
+        detail: 'lib/red.test.ts has no ledgered hunk by su-test',
+        path: 'lib/red.test.ts',
+        exits: [],
+      });
+      const result = body(
+        await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'] } as never, { role: 'su' } as never),
+      );
+      expect(mocks.attributionSql).toHaveBeenCalledTimes(1);
+      expect(mocks.admit).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ ok: false, refused: true, reason: 'no-ledgered-hunks', mode: 'hunk-exact' });
+      expect(result.detail).toMatch(/edit attribution ledger: .*su-peer/);
+    });
+
+    it('a ledgered hunk on the path ⇒ the attribution ledger is never consulted', async () => {
+      mocks.ledger.mockResolvedValueOnce([
+        {
+          id: 1,
+          candidate: queue.candidate,
+          agent: 'su-test',
+          path: 'lib/red.test.ts',
+          hunk: { kind: 'edit', old: 'a', new: 'b', replaceAll: false },
+          atMs: Date.now(),
+          toolUseId: 'toolu_x',
+          editIndex: 0,
+          workItem: null,
+        },
+      ]);
+      mocks.admit.mockReturnValue(admissionOf(false));
+      await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'] } as never, { role: 'su' } as never);
+      expect(mocks.attributionSql).not.toHaveBeenCalled();
+      expect(mocks.hunkExact).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('returns a structured read-only timeout when a dry-run admission worker reaches its deadline', async () => {
