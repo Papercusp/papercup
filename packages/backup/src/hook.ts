@@ -36,7 +36,20 @@ import { homedir } from 'node:os';
 interface HookContext {
   workspaceId: string;
   workspaceRoot: string;
+  /**
+   * Why the snapshot is being taken (workspace-backup's SnapshotTriggerReason).
+   * Only a ROUTINE `interval` dump defers to an overdue Kopia sweep that is still
+   * making progress (the guard's --deadline-at-arrival). Every other reason, and an
+   * absent one, is treated as a safety dump and keeps the guard's due-now priority
+   * (WI-10004871): `pre_destructive` fails CLOSED without a verified dump, so a
+   * deferred dump would time out at its 900s lock wait and block the migration it
+   * guards; `pre-deploy` is the deploy's DB rollback point.
+   */
+  triggerReason?: string;
 }
+
+/** The one trigger reason whose dump yields to a progressing overdue sweep. */
+const ROUTINE_SNAPSHOT_TRIGGER = 'interval';
 
 // Embedded PG port is no longer fixed — desktop picks at boot and writes
 // it to ~/.papercusp/embedded-pg.json (or honors PAPERCUSP_PG_PORT env).
@@ -526,6 +539,7 @@ async function runPreSnapshotHookNow(ctx: HookContext): Promise<PreSnapshotHookR
     ...target,
     outPath,
     log,
+    deferToProgressingSweep: ctx.triggerReason === ROUTINE_SNAPSHOT_TRIGGER,
   });
 
   await log(`hook done (${result.ok ? 'ok' : 'degraded'})`);
@@ -540,6 +554,8 @@ async function dumpPg(opts: {
   database: string;
   outPath: string;
   log: (msg: string) => Promise<void>;
+  /** See HookContext.triggerReason: true only for a routine interval dump. */
+  deferToProgressingSweep: boolean;
 }): Promise<PreSnapshotHookResult> {
   const tmp = allocateDumpTempPath(opts.outPath);
   // A crash/timeout from an earlier attempt must not become the next
@@ -593,11 +609,14 @@ async function dumpPg(opts: {
   ];
   const guard = resolveKopiaBackupGuard();
   const dumpCommand = guard ?? 'pg_dump';
+  // --deadline-at-arrival, for a routine interval dump only: measured 2026-10-06, an
+  // interval dump (snapshot 78261, 09:57 EDT) stopped the overdue Kopia sweep 3s after
+  // it began waiting and then failed its own 900s budget anyway, so it must not stop a
+  // sweep that is still making progress (EI-25211496463956189). A safety dump
+  // (pre_destructive, pre-deploy, or no stated reason) keeps due-now priority.
+  const deadlineAtArrival = opts.deferToProgressingSweep ? ['--deadline-at-arrival'] : [];
   const dumpArgs = guard
-    // --deadline-at-arrival: this dump is not restart-safe and, measured 2026-10-06,
-    // did not finish inside its own 900s budget, so it must not stop an overdue Kopia
-    // sweep that is still making progress (EI-25211496463956189).
-    ? ['--mode', 'wait', '--label', WORKSPACE_BACKUP_GUARD_LABEL, '--deadline-at-arrival', '--', 'pg_dump', ...pgDumpArgs]
+    ? ['--mode', 'wait', '--label', WORKSPACE_BACKUP_GUARD_LABEL, ...deadlineAtArrival, '--', 'pg_dump', ...pgDumpArgs]
     : pgDumpArgs;
   if (guard) {
     // Guard logs must not contaminate the SQL dump on stdout. FD 3 reports when

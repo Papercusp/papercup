@@ -293,12 +293,10 @@ describe('runPreSnapshotHook admin-URL → spawn args', () => {
     const pgDumpIndex = c.args.indexOf('pg_dump');
 
     expect(c.cmd).toBe(h.guardBin);
-    // --deadline-at-arrival keeps this non-restart-safe dump from stopping an
-    // overdue sweep that is still making progress (EI-25211496463956189).
+    // No trigger reason = a safety dump: due-now priority, no --deadline-at-arrival.
     expect(c.args.slice(0, pgDumpIndex)).toEqual([
       '--mode', 'wait',
       '--label', WORKSPACE_BACKUP_GUARD_LABEL,
-      '--deadline-at-arrival',
       '--',
     ]);
     expect(pgDumpIndex).toBeGreaterThan(-1);
@@ -309,6 +307,27 @@ describe('runPreSnapshotHook admin-URL → spawn args', () => {
     expect(h.spawnCalls.find((call) => call.cmd === h.guardBin)?.stdio).toEqual([
       'ignore', 'pipe', 'pipe', 'pipe',
     ]);
+  });
+
+  // EI-25211496463956189 vs WI-10004871: only a ROUTINE interval dump yields to an
+  // overdue Kopia sweep that is still making progress. A pre_destructive dump fails
+  // closed (a deferred dump would time out at its 900s lock wait and block its
+  // migration) and a pre-deploy dump is the deploy's rollback point, so both keep
+  // the guard's due-now priority.
+  it.each([
+    ['interval', true],
+    ['pre_destructive', false],
+    ['pre-deploy', false],
+    ['manual', false],
+  ] as const)('trigger reason %s → --deadline-at-arrival %s', async (triggerReason, expected) => {
+    await runPreSnapshotHook({ ...ctx, triggerReason });
+    const c = pgDumpCall()!;
+    const guardArgs = c.args.slice(0, c.args.indexOf('pg_dump'));
+
+    expect(c.cmd).toBe(h.guardBin);
+    expect(guardArgs.includes('--deadline-at-arrival')).toBe(expected);
+    expect(guardArgs.slice(0, 4)).toEqual(['--mode', 'wait', '--label', WORKSPACE_BACKUP_GUARD_LABEL]);
+    expect(guardArgs[guardArgs.length - 1]).toBe('--');
   });
 
   it('starts the 900s pg_dump watchdog only after the guard reports lock readiness', async () => {

@@ -1507,14 +1507,18 @@ describe('Kopia managed entrypoint contract', () => {
   // since 2026-09-30 23:50Z were the dump, and the dumps went 18h without an off-host
   // copy. Between two OVERDUE producers the one whose deadline passed first goes first.
   // The "keeps holding while making progress" cases. The guard stamps progress in
-  // whole seconds and the child forks `sleep` per loop, so on a loaded host (load
-  // ~150 measured 2026-10-06) the gap between two observed counter changes reached
-  // 3s against a 1s limit and a progressing sweep was yielded as stalled. 4s absorbs
-  // that; 160 loops (~8s nominal) keeps the sweep longer than the limit, so a guard
-  // that stopped tracking progress still yields mid-sweep and fails the test.
-  const HOLD_PROGRESS_STALL_SEC = 4;
-  const HOLD_PROGRESS_LOOPS = 160;
-  const HOLD_PROGRESS_TEST_TIMEOUT_MS = 90_000;
+  // whole seconds and the child forks `sleep` per loop, so on a loaded host the
+  // child itself goes unscheduled: measured 2026-10-06, gaps between two progress
+  // writes of 1-3s at load ~150 and 8s at load ~230, against a 1s limit, yielded a
+  // progressing sweep as stalled. A 10s limit absorbs that; 80 loops of 0.25s
+  // (~20s nominal, fewer forks) keep the sweep longer than the limit, so a guard that
+  // stopped tracking progress still yields mid-sweep and fails the test. The 300s
+  // extension keeps the EDF hold window from ending before a slow sweep does.
+  const HOLD_PROGRESS_STALL_SEC = 10;
+  const HOLD_PROGRESS_LOOPS = 80;
+  const HOLD_PROGRESS_SLEEP = '0.25';
+  const HOLD_PROGRESS_EXTENSION_SEC = 300;
+  const HOLD_PROGRESS_TEST_TIMEOUT_MS = 180_000;
 
   function edfScenario(opts: {
     extensionSec: number;
@@ -1524,6 +1528,7 @@ describe('Kopia managed entrypoint contract', () => {
     // `hotWritesProgress` makes the sweep's child advance it on every loop.
     progressStallSec?: number;
     hotWritesProgress?: boolean;
+    hotSleep?: string;
   }) {
     const fx = fixture();
     const { dir } = fx;
@@ -1533,6 +1538,7 @@ describe('Kopia managed entrypoint contract', () => {
       KOPIA_BACKUP_MAX_DEFER_SEC: '10',
       KOPIA_BACKUP_PRIORITY_HOLD_EXTENSION_SEC: String(opts.extensionSec),
       HOT_PROGRESS: '',
+      HOT_SLEEP: opts.hotSleep ?? '0.05',
     };
     if (opts.progressStallSec !== undefined) {
       writeFileSync(progressPath, '8:0 rbytes=0 wbytes=0 rios=0 wios=0\n');
@@ -1552,7 +1558,7 @@ describe('Kopia managed entrypoint contract', () => {
         '-c',
         `
         set -uo pipefail
-        "$GUARD" --mode scheduled --label hot -- bash -c 'touch "$1"; for i in $(seq 1 "$3"); do [ -z "$4" ] || printf "8:0 rbytes=%s wbytes=0\\n" "$i" >"$4"; sleep 0.05; done; date +%s.%N >"$2"' _ "$HOT_READY" "$HOT_DONE" "$HOT_LOOPS" "$HOT_PROGRESS" >"$HOT_LOG" 2>&1 &
+        "$GUARD" --mode scheduled --label hot -- bash -c 'touch "$1"; for i in $(seq 1 "$3"); do [ -z "$4" ] || printf "8:0 rbytes=%s wbytes=0\\n" "$i" >"$4"; sleep "$5"; done; date +%s.%N >"$2"' _ "$HOT_READY" "$HOT_DONE" "$HOT_LOOPS" "$HOT_PROGRESS" "$HOT_SLEEP" >"$HOT_LOG" 2>&1 &
         hot=$!
         for _ in $(seq 1 100); do [ -e "$HOT_READY" ] && break; sleep 0.01; done
         [ -e "$HOT_READY" ] || exit 91
@@ -1574,7 +1580,7 @@ describe('Kopia managed entrypoint contract', () => {
           DB_LOG: dbLog,
           DB_RAN: dbRan,
         },
-        timeout: 75_000,
+        timeout: 170_000,
       },
     );
     const hotOut = existsSync(hotLog) ? readFileSync(hotLog, 'utf8') : 'missing';
@@ -1651,11 +1657,12 @@ describe('Kopia managed entrypoint contract', () => {
     // limit (a guard that stopped tracking progress would still yield mid-sweep)
     // while tolerating multi-second scheduling gaps on a loaded host.
     const r = edfScenario({
-      extensionSec: 60,
+      extensionSec: HOLD_PROGRESS_EXTENSION_SEC,
       dumpAgeSec: 12,
       hotLoops: HOLD_PROGRESS_LOOPS,
       progressStallSec: HOLD_PROGRESS_STALL_SEC,
       hotWritesProgress: true,
+      hotSleep: HOLD_PROGRESS_SLEEP,
     });
 
     expect(r.scenario.stdout, r.evidence).toContain('db_rc=0 hot_rc=0');
@@ -1686,7 +1693,13 @@ describe('Kopia managed entrypoint contract', () => {
   // waiting, then was killed at its own 900s budget. --deadline-at-arrival gives such a
   // waiter its arrival as its deadline, so the earliest-deadline hold and the progress
   // check apply to it.
-  function arrivalWaiterScenario(opts: { hotLoops: number; hotWritesProgress: boolean; progressStallSec?: number }) {
+  function arrivalWaiterScenario(opts: {
+    hotLoops: number;
+    hotWritesProgress: boolean;
+    progressStallSec?: number;
+    hotSleep?: string;
+    extensionSec?: number;
+  }) {
     const fx = fixture();
     const { dir } = fx;
     const progressPath = join(dir, 'io.stat');
@@ -1702,7 +1715,7 @@ describe('Kopia managed entrypoint contract', () => {
         '-c',
         `
         set -uo pipefail
-        "$GUARD" --mode scheduled --label hot -- bash -c 'touch "$1"; for i in $(seq 1 "$3"); do [ -z "$4" ] || printf "8:0 rbytes=%s wbytes=0\\n" "$i" >"$4"; sleep 0.05; done; date +%s.%N >"$2"' _ "$HOT_READY" "$HOT_DONE" "$HOT_LOOPS" "$HOT_PROGRESS" >"$HOT_LOG" 2>&1 &
+        "$GUARD" --mode scheduled --label hot -- bash -c 'touch "$1"; for i in $(seq 1 "$3"); do [ -z "$4" ] || printf "8:0 rbytes=%s wbytes=0\\n" "$i" >"$4"; sleep "$5"; done; date +%s.%N >"$2"' _ "$HOT_READY" "$HOT_DONE" "$HOT_LOOPS" "$HOT_PROGRESS" "$HOT_SLEEP" >"$HOT_LOG" 2>&1 &
         hot=$!
         for _ in $(seq 1 100); do [ -e "$HOT_READY" ] && break; sleep 0.01; done
         [ -e "$HOT_READY" ] || exit 91
@@ -1718,10 +1731,11 @@ describe('Kopia managed entrypoint contract', () => {
         env: {
           ...fx.env,
           KOPIA_BACKUP_MAX_DEFER_SEC: '10',
-          KOPIA_BACKUP_PRIORITY_HOLD_EXTENSION_SEC: '60',
+          KOPIA_BACKUP_PRIORITY_HOLD_EXTENSION_SEC: String(opts.extensionSec ?? 60),
           KOPIA_BACKUP_PROGRESS_PATH: progressPath,
           KOPIA_BACKUP_PROGRESS_STALL_SEC: String(opts.progressStallSec ?? 1),
           HOT_PROGRESS: opts.hotWritesProgress ? progressPath : '',
+          HOT_SLEEP: opts.hotSleep ?? '0.05',
           HOT_READY: join(dir, 'hot-ready'),
           HOT_DONE: hotDone,
           HOT_LOOPS: String(opts.hotLoops),
@@ -1729,7 +1743,7 @@ describe('Kopia managed entrypoint contract', () => {
           WAIT_LOG: waitLog,
           WAIT_RAN: waitRan,
         },
-        timeout: 75_000,
+        timeout: 170_000,
       },
     );
     const hotOut = existsSync(hotLog) ? readFileSync(hotLog, 'utf8') : 'missing';
@@ -1748,6 +1762,8 @@ describe('Kopia managed entrypoint contract', () => {
       hotLoops: HOLD_PROGRESS_LOOPS,
       hotWritesProgress: true,
       progressStallSec: HOLD_PROGRESS_STALL_SEC,
+      hotSleep: HOLD_PROGRESS_SLEEP,
+      extensionSec: HOLD_PROGRESS_EXTENSION_SEC,
     });
 
     expect(r.scenario.stdout, r.evidence).toContain('wait_rc=0 hot_rc=0');
