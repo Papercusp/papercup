@@ -45,6 +45,7 @@ import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { resolveOperatorBase } from '../apps/operator/scripts/operator-discovery.mjs';
 
 /** The JSON-RPC id we send; parseSse selects the frame that answers it. */
 const REQUEST_ID = 1;
@@ -433,6 +434,33 @@ export function superuserTokenPath(env = process.env, home = homedir()) {
   return join(env.PAPERCUSP_HOME || join(home, '.papercusp'), 'superuser-token');
 }
 
+/** Resolve the local operator port from the configured bare base URL. */
+export function resolveOperatorUrlPort(env = process.env) {
+  const configuredUrl = typeof env.PAPERCUSP_OPERATOR_URL === 'string'
+    ? env.PAPERCUSP_OPERATOR_URL.trim()
+    : '';
+  if (!configuredUrl) return null;
+
+  let parsed;
+  try {
+    const base = resolveOperatorBase({}, { PAPERCUSP_OPERATOR_URL: configuredUrl });
+    parsed = new URL(base);
+  } catch {
+    throw new Error('PAPERCUSP_OPERATOR_URL must be a valid local operator base URL.');
+  }
+
+  const loopbackHosts = new Set(['127.0.0.1', 'localhost', '[::1]', '::1']);
+  if (parsed.protocol !== 'http:' || !loopbackHosts.has(parsed.hostname) ||
+      (parsed.pathname !== '' && parsed.pathname !== '/') || parsed.search || parsed.hash) {
+    throw new Error(
+      'mcp-call only sends the local superuser bearer to a loopback HTTP operator; ' +
+      'PAPERCUSP_OPERATOR_URL must be a bare local base URL.',
+    );
+  }
+
+  return parsed.port || '80';
+}
+
 /** Resolve the local resilient MCP proxy port using the same default as ptool. */
 export function resolveMcpProxyPort(env = process.env) {
   const DEFAULT_MCP_PROXY_PORT = '9071';
@@ -453,7 +481,8 @@ export function resolveCandidatePorts(flags = {}, env = process.env) {
     }
     return { configuredPort: pinned, candidatePorts: [pinned], pinned: true };
   }
-  const configuredPort = env.PAPERCUSP_HONO_PORT ?? CANONICAL_PORT;
+  const operatorUrlPort = env.PAPERCUSP_HONO_PORT == null ? resolveOperatorUrlPort(env) : null;
+  const configuredPort = env.PAPERCUSP_HONO_PORT ?? operatorUrlPort ?? CANONICAL_PORT;
   const proxyPort = resolveMcpProxyPort(env);
   return {
     configuredPort: String(configuredPort),
@@ -462,6 +491,12 @@ export function resolveCandidatePorts(flags = {}, env = process.env) {
     candidatePorts: [...new Set([String(configuredPort), CANONICAL_PORT, proxyPort])],
     pinned: false,
   };
+}
+
+export function buildSuperuserBearerDiagnostic({ tokenPath, port }) {
+  return 'mcp-call: the operator on port ' + port + ' rejected the bearer read from ' + tokenPath +
+    ' (superuser_invalid_bearer). Set PAPERCUSP_OPERATOR_URL or PAPERCUSP_HONO_PORT to the ' +
+    'matching local operator; mcp-call did not substitute another token.';
 }
 
 /**
@@ -731,6 +766,7 @@ async function main() {
 
   let res;
   let raw;
+  let responsePort = null;
   let authorityFallback = false;
   let configuredPortError = null;
   const attempts = [];
@@ -757,6 +793,7 @@ async function main() {
       }
       res = candidateRes;
       raw = candidateRaw;
+      responsePort = port;
       if (!pinned && port !== String(configuredPort)) {
         console.error(buildFallbackWarning({
           configuredPort,
@@ -779,6 +816,18 @@ async function main() {
   }
   if (flags.raw) { process.stdout.write(raw); return; }
   const out = parseSse(raw, REQUEST_ID);
+  const failedPayload = out.error ?? (
+    out.result && typeof out.result === 'object' &&
+    (out.result.isError === true || toolResultNotOkReason(out.result) !== null)
+      ? out.result
+      : null
+  );
+  if (failedPayload && JSON.stringify(failedPayload).includes('superuser_invalid_bearer')) {
+    console.error(buildSuperuserBearerDiagnostic({
+      tokenPath: superuserTokenPath(),
+      port: responsePort ?? configuredPort,
+    }));
+  }
   if (out.error) {
     console.error('MCP_ERROR:', JSON.stringify(out.error));
     process.exit(1);

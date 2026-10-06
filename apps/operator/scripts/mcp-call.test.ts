@@ -27,8 +27,10 @@ import {
   resolveCandidatePorts,
   resolveMcpProxyPort,
   superuserTokenPath,
+  resolveOperatorUrlPort,
   isRecoverableAuthorityDenial,
   buildFallbackWarning,
+  buildSuperuserBearerDiagnostic,
   buildUnreachableDiagnostic,
   buildConnectionRetryDiagnostic,
   fetchWithConnectionRecovery,
@@ -201,12 +203,22 @@ describe('mcp-call argument parsing', () => {
     expect(resolveCandidatePorts({}, {
       PAPERCUSP_HONO_PORT: '3271',
       PAPERCUSP_MCP_PROXY_PORT: '9171',
+      PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:9172',
     })).toEqual({
       configuredPort: '3271',
       candidatePorts: ['3271', '3070', '9171'],
       pinned: false,
     });
     expect(resolveMcpProxyPort({ PAPERCUSP_MCP_PROXY_PORT: '9171' })).toBe('9171');
+  });
+
+  it('uses the configured local operator URL instead of silently defaulting to :3070', () => {
+    expect(resolveOperatorUrlPort({ PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:9071/api/mcp' }))
+      .toBe('9071');
+    expect(resolveCandidatePorts({}, { PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:9071/api/mcp' }))
+      .toEqual({ configuredPort: '9071', candidatePorts: ['9071', '3070'], pinned: false });
+    expect(() => resolveOperatorUrlPort({ PAPERCUSP_OPERATOR_URL: 'https://operator.example' }))
+      .toThrow('loopback HTTP operator');
   });
 
   // WI-10006600: an isolated verify-tauri-headless sidecar mints its own bearer
@@ -238,6 +250,17 @@ describe('mcp-call argument parsing', () => {
     expect(isRecoverableAuthorityDenial(stale)).toBe(true);
     expect(isRecoverableAuthorityDenial('authorization_denied: role is not allowed')).toBe(false);
     expect(isRecoverableAuthorityDenial('current session authority could not be read')).toBe(false);
+  });
+
+  it('explains which local bearer path and port an invalid-bearer refusal used', () => {
+    const diagnostic = buildSuperuserBearerDiagnostic({
+      tokenPath: '/tmp/scoped-home/superuser-token',
+      port: '3070',
+    });
+    expect(diagnostic).toContain('port 3070');
+    expect(diagnostic).toContain('/tmp/scoped-home/superuser-token');
+    expect(diagnostic).toContain('superuser_invalid_bearer');
+    expect(diagnostic).toContain('did not substitute another token');
   });
 });
 
