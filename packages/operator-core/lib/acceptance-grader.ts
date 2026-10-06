@@ -2254,7 +2254,12 @@ export async function resolveAcceptanceGrader(
     discover?: typeof prodDiscoverGrader;
     openCascade?: typeof prodOpenGradingCascade;
     readSettlement?: typeof readAcceptanceGradingSettlement;
-    reserveReviewTarget?: typeof reserveAcceptanceReviewTarget;
+    // Typed by what this function CONSUMES, not by the full producer signature:
+    // the reservation also reports what it settled (WI-10006637), which the
+    // recruiter does not read, so a stub owes only the reference + `created`.
+    reserveReviewTarget?: (
+      ...args: Parameters<typeof reserveAcceptanceReviewTarget>
+    ) => Promise<AcceptanceReviewReservationRef & { created: boolean }>;
     readIneligibleHolders?: typeof prodReadIneligibleGradingHolders;
     nowMs?: () => number;
   } = {},
