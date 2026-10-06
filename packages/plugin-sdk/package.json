@@ -7,6 +7,7 @@
   "types": "src/index.ts",
   "scripts": {
     "test": "vitest run --passWithNoTests",
+    "pack:dist": "node scripts/pack-dist.mjs",
     "typecheck": "bash ../../scripts/pc-heavy.sh tsc --noEmit -p tsconfig.json"
   },
   "exports": {
