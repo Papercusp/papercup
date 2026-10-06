@@ -16,6 +16,13 @@ import type { SpecClauseSql } from './spec-clauses-store';
 import { resolvePlanScope } from './source';
 import { ensureBootstrap, getTxPool, readQueue } from '../locks/su-lock-store';
 import {
+  fingerprintRepoFileSetAtCommit,
+  listCommittedGlobMatches,
+  repoFileSetFingerprint,
+  resolveMeasurementCommit,
+  type CommittedTreeDeps,
+} from './committed-tree-reader';
+import {
   MEASUREMENT_PIN_DETAILS_KEY,
   buildMeasurementPin,
   diffMeasuredFiles,
@@ -169,8 +176,9 @@ async function fingerprintRepoFileSet(
     entries.push({ path, sha256 });
     files.push({ path, sha256, gitBlob: gitBlobId(content) });
   }
-  const digest = createHash('sha256').update(JSON.stringify(entries)).digest('hex');
-  return { fingerprint: `sha256-file-set-v1:${digest}`, files };
+  // One formula for the working-tree and the committed measurement (D-001), so a binding
+  // reads current at commit M exactly when its stored fingerprint equals the bytes at M.
+  return { fingerprint: repoFileSetFingerprint(entries), files };
 }
 
 async function expandRepoMeasurementGlobsAtRoot(root: string, globs: readonly string[]): Promise<string[]> {
@@ -372,6 +380,42 @@ export async function measureRepoFilesEvidenceDetailedAtRoot(
   const detailed = await fingerprintRepoFilesMeasurement(root, parsed, sourcePaths);
   await refuseMutationProbePaths(root, measuredPaths);
   return detailed;
+}
+
+/**
+ * Measure a repo-files recipe from the bytes COMMITTED at `commit` (D-001): the commit-side
+ * twin of measureRepoFilesEvidenceDetailedAtRoot, with the same digest, the same glob bounds
+ * and the same per-file `{ path, sha256, gitBlob }`. It needs no mutation-probe fence: a
+ * probe's mutant is an uncommitted working-tree edit, so it is in no commit's objects.
+ */
+export async function measureRepoFilesEvidenceDetailedAtCommit(
+  repoRoot: string,
+  measurement: RepoFilesEvidenceMeasurement,
+  commit: string,
+  deps: CommittedTreeDeps = {},
+): Promise<DetailedRepoEvidenceMeasurement> {
+  const parsed = repoFilesEvidenceMeasurementSchema.parse(measurement);
+  const root = await realpath(repoRoot);
+  const globPaths = await listCommittedGlobMatches(
+    root,
+    commit,
+    parsed.sourceGlobs ?? [],
+    { maxMatches: MAX_REPO_MEASUREMENT_GLOB_MATCHES, maxDepth: MAX_REPO_MEASUREMENT_GLOB_DEPTH },
+    deps,
+  );
+  const sourcePaths = [...new Set([...parsed.sourcePaths, ...globPaths])].sort();
+  const [source, test] = await Promise.all([
+    fingerprintRepoFileSetAtCommit(root, commit, sourcePaths, deps),
+    parsed.testPaths ? fingerprintRepoFileSetAtCommit(root, commit, parsed.testPaths, deps) : Promise.resolve(null),
+  ]);
+  return {
+    sourceFingerprint: source.fingerprint,
+    testFingerprint: test?.fingerprint ?? null,
+    files: [
+      ...source.files.map((file) => ({ ...file, dimension: 'source' as const })),
+      ...(test?.files ?? []).map((file) => ({ ...file, dimension: 'test' as const })),
+    ],
+  };
 }
 
 async function repoFilesMeasuredPathsAtRoot(root: string, parsed: RepoFilesEvidenceMeasurement): Promise<string[]> {
@@ -1967,7 +2011,25 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
     measurementRoots.set(rootHarnessSlug, root);
     return root;
   };
-  const probeSnapshots = await readRepoFilesProbeSnapshots(recipes, measurementRootFor);
+  // D-001: ONE measurement commit M per measurement root per evaluation — the root's HEAD,
+  // resolved once and shared by every binding measured there. A repo-files binding is
+  // measured from git objects at M, so an uncommitted peer edit to a closure file never
+  // stales it, while a committed change still does. A root that is not a git top level
+  // resolves null and keeps the working-tree measurement and its mutation-probe fence.
+  const measurementCommits = new Map<string, Promise<string | null>>();
+  const measurementCommitFor = (root: string): Promise<string | null> => {
+    const commit = measurementCommits.get(root) ?? resolveMeasurementCommit(root);
+    measurementCommits.set(root, commit);
+    return commit;
+  };
+  const workingTreeRecipes = await Promise.all(
+    recipes.map(async (recipe) => {
+      if (!recipe || recipe.kind === 'work-items') return recipe;
+      const root = await measurementRootFor(recipe).catch(() => null);
+      return root && (await measurementCommitFor(root)) ? null : recipe;
+    }),
+  );
+  const probeSnapshots = await readRepoFilesProbeSnapshots(workingTreeRecipes, measurementRootFor);
   const serverMeasurements = await Promise.all(
     rows.map(async (row, index) => {
       // A REPLAY RE-MEASURES UNLESS THE CALLER HANDS US SERVER-MEASURED PROOF.
@@ -1999,17 +2061,21 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
       try {
         let measured: MeasuredRepoEvidenceFingerprints;
         let files: MeasuredRepoFile[] | null = null;
+        let measuredAtCommit: string | null = null;
         if (recipe.kind === 'work-items') {
           // Ledger state has no checkout to resolve: the digest is recomputed from the rows.
           measured = await measureWorkItemsEvidenceForScope(scope.workspaceId, scope.harnessSlug, recipe);
         } else {
           const measurementRoot = await measurementRootFor(recipe);
+          measuredAtCommit = await measurementCommitFor(measurementRoot);
           // Same single read as before; the per-file hashes it now also returns are what
           // name the moved paths below at zero extra IO. Under a batch probe snapshot the
           // pre-read fence is decided locally; its post-read half runs after this loop.
           const snapshot = probeSnapshots.get(measurementRoot);
           let detailed: DetailedRepoEvidenceMeasurement;
-          if (snapshot) {
+          if (measuredAtCommit) {
+            detailed = await measureRepoFilesEvidenceDetailedAtCommit(measurementRoot, recipe, measuredAtCommit);
+          } else if (snapshot) {
             const sourcePaths = await expandedRepoSourcePathsAtRoot(measurementRoot, recipe);
             const measuredPaths = [...sourcePaths, ...(recipe.testPaths ?? [])];
             const refusal = mutationProbeRefusal(snapshot.resolved, snapshot.probes, measuredPaths);
@@ -2024,6 +2090,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
         return {
           status: 'measured' as const,
           files,
+          measuredAtCommit,
           current: {
             planSlug: row.plan_slug,
             specId: row.spec_id,
@@ -2198,6 +2265,9 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
                       ...(measured.current.testFingerprint === null ? [] : ['test']),
                     ],
                     ...(attestedDimensions.length > 0 ? { attestedDimensions } : {}),
+                    // D-001: the commit whose objects were measured; absent for a
+                    // working-tree (non-git root) or ledger measurement.
+                    ...(measured.measuredAtCommit ? { measuredAtCommit: measured.measuredAtCommit } : {}),
                     current: measured.current,
                     ...(movement
                       ? movement.pinned

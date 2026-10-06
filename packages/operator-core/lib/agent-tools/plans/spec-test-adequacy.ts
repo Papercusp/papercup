@@ -389,6 +389,7 @@ export interface SpecEvidenceLineageAssessment {
 
 interface AdequacyDetails {
   fixtureCalibrated?: boolean;
+  fixtureFree?: boolean;
   falsifiable?: boolean;
   testLayer?: string;
   pathReachable?: boolean;
@@ -677,6 +678,7 @@ function detailsOf(evidence: SpecEvidenceForAdequacy): AdequacyDetails {
   if (raw.targeted !== undefined && targeted === undefined) contractMetadataIssues.push('targeted:invalid');
   return {
     ...(bool('fixtureCalibrated') !== undefined ? { fixtureCalibrated: bool('fixtureCalibrated') } : {}),
+    ...(bool('fixtureFree') !== undefined ? { fixtureFree: bool('fixtureFree') } : {}),
     ...(bool('falsifiable') !== undefined ? { falsifiable: bool('falsifiable') } : {}),
     ...(typeof raw.testLayer === 'string' ? { testLayer: raw.testLayer } : {}),
     ...(bool('pathReachable') !== undefined ? { pathReachable: bool('pathReachable') } : {}),
@@ -786,6 +788,7 @@ function bindingDescription(row: SpecEvidenceForAdequacy): string {
         `testRunLedgerWorktreeDirty=${row.testRunProvenance.worktreeDirty ?? 'unknown'}`
       : null,
     details.fixtureCalibrated !== undefined ? `fixtureCalibrated=${details.fixtureCalibrated}` : null,
+    details.fixtureFree !== undefined ? `fixtureFree=${details.fixtureFree}` : null,
     details.falsifiable !== undefined ? `falsifiable=${details.falsifiable}` : null,
     details.testLayer !== undefined ? `testLayer=${JSON.stringify(details.testLayer)}` : null,
     details.pathReachable !== undefined ? `pathReachable=${details.pathReachable}` : null,
@@ -1645,14 +1648,51 @@ export function evaluateSpecTestAdequacy(input: {
   );
   const fixtureOutsideCurrent = fixtureBindings.filter((row) => !evidence.includes(row));
   const probeDeclaresFixtureUse = /\bfixtures?\b/i.test(clause.falsifier?.probeMethod ?? '');
+  const executableFixtureFreeProof = exactEvidence.filter(
+    (row) => EXECUTABLE_EVIDENCE_KINDS.has(row.evidenceKind) && detailsOf(row).fixtureFree === true,
+  );
+  const unclassifiedFixtureProof = exactEvidence.filter(
+    (row) =>
+      EXECUTABLE_EVIDENCE_KINDS.has(row.evidenceKind) &&
+      row.fingerprints.fixtureFingerprint === null &&
+      detailsOf(row).fixtureFree === undefined,
+  );
+  const fixtureFreeConflicts = exactEvidence.filter(
+    (row) =>
+      detailsOf(row).fixtureFree === true &&
+      (row.evidenceKind === 'fixture' || row.fingerprints.fixtureFingerprint !== null),
+  );
+  const fixtureUseAttested = exactEvidence.some((row) => detailsOf(row).fixtureFree === false);
   const fixtureApplicable =
     clause.requiredEvidence.some((entry) => /fixture/i.test(entry)) ||
     fixtureBindings.length > 0 ||
-    probeDeclaresFixtureUse;
+    probeDeclaresFixtureUse ||
+    fixtureUseAttested ||
+    unclassifiedFixtureProof.length > 0;
   const fixtureProofEvidence = evidence.filter(
     (row) => row.evidenceKind === 'fixture' || row.fingerprints.fixtureFingerprint !== null,
   );
-  const fixtureRating: AdequacyRatingEntry = fixtureApplicable
+  const fixtureRating: AdequacyRatingEntry = fixtureFreeConflicts.length > 0
+    ? {
+        rating: 'fail',
+        evidence: evidenceWithBindings(
+          `Binding(s) claim fixtureFree=true while also carrying fixture evidence for ${clauseIdentity(clause)}.`,
+          fixtureFreeConflicts,
+        ),
+        suggestion: 'Remove the contradictory fixture-free attestation or bind the fixture evidence under a separate row.',
+      }
+    : unclassifiedFixtureProof.length > 0
+      ? {
+          rating: 'unknown',
+          evidence: evidenceWithBindings(
+            'A null fixtureFingerprint does not establish fixture-free proof; executable binding(s) have no fixture-free classification for ' +
+              clauseIdentity(clause) + '.',
+            unclassifiedFixtureProof,
+          ),
+          suggestion:
+            'For each executable binding, bind a measured fixture fingerprint and calibration proof or explicitly attest adequacy.fixtureFree=true; a missing fingerprint alone is insufficient.',
+        }
+      : fixtureApplicable
     ? booleanRating(fixtureProofEvidence, (d) => d.fixtureCalibrated, {
         pass: 'An applicable binding explicitly attests fixtureCalibrated=true.',
         fail: 'Applicable binding metadata explicitly attests fixtureCalibrated=false.',
@@ -1660,7 +1700,12 @@ export function evaluateSpecTestAdequacy(input: {
       })
     : {
         rating: 'not-applicable',
-        evidence: `No fixture binding or fixture fingerprint is present for ${clauseIdentity(clause)}; the exact bindings inspected were ${bindingSummary(exactEvidence)}.`,
+        evidence: executableFixtureFreeProof.length > 0
+          ? evidenceWithBindings(
+              `Executable binding(s) explicitly attest fixtureFree=true for ${clauseIdentity(clause)}; fixture calibration is not applicable.`,
+              executableFixtureFreeProof,
+            )
+          : `No fixture-dependent proof is bound for ${clauseIdentity(clause)}; the exact bindings inspected were ${bindingSummary(exactEvidence)}.`,
       };
   ratings['fixture-calibration'] =
     fixtureOutsideCurrent.length > 0
@@ -2369,7 +2414,13 @@ export function evaluateSpecTestAdequacy(input: {
   // absence has no such row and is omitted rather than reported with an empty list.
   const draggingRows: Partial<Record<AdequacyCriterion, SpecEvidenceForAdequacy[]>> = {
     traceability: ephemeralEvidence.length > 0 ? ephemeralEvidence : unknownLineageEvidence,
-    'fixture-calibration': evidence.filter((row) => detailsOf(row).fixtureCalibrated === false),
+    'fixture-calibration': [
+      ...evidence.filter((row) => {
+        const details = detailsOf(row);
+        return details.fixtureCalibrated === false || details.fixtureFree === false;
+      }),
+      ...unclassifiedFixtureProof,
+    ],
     falsifiability: [
       ...evidence.filter((row) => detailsOf(row).falsifiable === false),
       ...mutationInCohortNotExecutable,
