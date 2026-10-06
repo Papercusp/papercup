@@ -2263,6 +2263,9 @@ pub struct App {
     /// D-026: an approvals mode picked with /approvals or Shift+Tab. It rides
     /// on the next owner turn (taken into `PendingSuTurn.approvals`).
     pub su_next_approvals: Option<String>,
+    /// D-028: the owner just answered a tool approval No, so the empty message
+    /// box asks what the engine should do instead, until the next message.
+    pub su_tell_instead: bool,
     /// Fleet/seat context inherited from the PUI process launch. A remote PUI
     /// uses these on every fresh SU session so bootstrap-su consumes the same
     /// delegated seat a remote psu launch would.
@@ -2964,6 +2967,7 @@ impl App {
             chat_mode: None,
             su_next_model: None,
             su_next_approvals: None,
+            su_tell_instead: false,
             su_launch_fleet: None,
             su_launch_seat: None,
             account_rows: Vec::new(),
@@ -5430,6 +5434,7 @@ impl App {
                 model: self.su_next_model.take(),
                 approvals: self.su_next_approvals.take(),
             });
+            self.su_tell_instead = false;
             if clear_composer {
                 self.chat_clear_input();
             }
@@ -5653,6 +5658,16 @@ impl App {
             ..
         } = &action
         {
+            // D-028: No on a tool approval stops the turn; the message box then
+            // asks what to do instead, and is where the keys go next.
+            let declined_approval = self.card_state.focused().is_some_and(|c| c.approval.is_some())
+                && payload.as_ref().and_then(|p| p.get("picks")) == Some(&serde_json::json!(["no"]));
+            if declined_approval {
+                self.su_tell_instead = true;
+                if self.chat_first {
+                    self.chat_composing = true;
+                }
+            }
             let summary = self
                 .card_state
                 .focused()
@@ -5684,6 +5699,16 @@ impl App {
         );
 
         match code {
+            // D-028: on a tool approval Esc is option 3 (No) and Shift+Tab is
+            // option 2 (Yes, don't ask again), the keys Claude Code uses.
+            KeyCode::Esc if self.card_state.approval_pick("no").is_some() => {
+                let resp = self.card_state.approval_pick("no").expect("checked above");
+                self.card_finish(resp)
+            }
+            KeyCode::BackTab if self.card_state.approval_pick("always").is_some() => {
+                let resp = self.card_state.approval_pick("always").expect("checked above");
+                self.card_finish(resp)
+            }
             KeyCode::Esc => {
                 // Esc declines when the card allows it, else cancels the run
                 // (the brain's tool resolves {action:'cancel'}).
@@ -7268,6 +7293,10 @@ impl App {
 
     /// pui-chat-first-ux P-021: the dim text an empty message box shows.
     pub fn chat_placeholder(&self) -> String {
+        if self.su_tell_instead {
+            // D-028: after No, stock Claude Code and Codex wait for what to do instead.
+            return format!("Tell {} what to do instead", self.chat_engine_label());
+        }
         format!("Message {}", self.chat_engine_label())
     }
 
@@ -7496,7 +7525,7 @@ impl App {
         // permission prompt, nothing moves while it waits: no spinner and no
         // ticking timer, so the screen holds still until the user answers.
         if let Some(card) = self.card_state.focused() {
-            let phase = if card.prompt.trim_start().starts_with("Allow ") {
+            let phase = if card.approval.is_some() || card.prompt.trim_start().starts_with("Allow ") {
                 "Waiting for your approval"
             } else {
                 "Waiting for your answer"
@@ -20338,6 +20367,47 @@ mod tests {
         // With no card open, waiting-for-owner is the real end of the turn.
         app.apply_su_session_event(lifecycle(6, "running", "waiting-for-owner"));
         assert!(!app.chat_streaming);
+    }
+
+    /// pui-chat-first-ux D-028: a tool approval answers with Claude Code's
+    /// keys. Esc is No (option 3), Shift+Tab is "Yes, don't ask again"
+    /// (option 2), and after No the empty message box asks what to do instead.
+    #[test]
+    fn su_tool_approval_takes_claude_code_keys() {
+        let approval_card = |sequence: u64, id: &str| {
+            let mut card = su_event_base("card", sequence);
+            card["turnId"] = json!("turn-1");
+            card["phase"] = json!("opened");
+            card["card"] = json!({"correlationId": id, "prompt": "Do you want to make this edit to calc.js?",
+                "createdAt": 2, "approval": {"title": "Update(calc.js)",
+                    "question": "Do you want to make this edit to calc.js?", "body": ["- a", "+ b"]},
+                "presentation": {"kind": "radio", "options": [
+                    {"id": "yes", "label": "Yes"},
+                    {"id": "always", "label": "Yes, and allow all edits this session"},
+                    {"id": "no", "label": "No, and tell Claude what to do instead"}]}});
+            su_event(card)
+        };
+        let picks = |action: Action| match action {
+            Action::CardRespond { payload, .. } => payload.and_then(|p| p.get("picks").cloned()),
+            _ => None,
+        };
+        for (key, expected) in [(KeyCode::BackTab, "always"), (KeyCode::Esc, "no"), (KeyCode::Char('1'), "yes")] {
+            let mut app = App::new();
+            app.agent_chat_id = Some("chat-1".into());
+            app.set_su_session_binding(su_binding());
+            app.apply_su_session_event(approval_card(1, "approve-1"));
+            assert!(app.card_state.asks_about("Update(calc.js)"));
+            let waiting = app.chat_working_line(std::time::Instant::now());
+            assert!(waiting.contains("Waiting for your approval"), "{waiting}");
+            let action = app.on_key(key, KeyModifiers::NONE);
+            assert_eq!(picks(action), Some(json!([expected])), "{key:?}");
+            assert_eq!(
+                app.chat_placeholder().starts_with("Tell "),
+                expected == "no",
+                "only No asks what to do instead: {}",
+                app.chat_placeholder()
+            );
+        }
     }
 
     /// REGRESSION (P-012 diag10). An interrupted Claude turn ends with two

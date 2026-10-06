@@ -4022,10 +4022,13 @@ fn card_block_height(app: &App, area: Rect) -> u16 {
     if app.card_state.focused_answered().is_some() {
         return 1;
     }
-    let inner_w = area.width.saturating_sub(2).max(1) as usize;
+    // D-028: a tool approval has only a top rule; other cards a full border.
+    let approval = app.card_state.focused().is_some_and(|c| c.approval.is_some());
+    let border = if approval { 1 } else { 2 };
+    let inner_w = area.width.saturating_sub(if approval { 0 } else { 2 }).max(1) as usize;
     let lines = card_lines(app, inner_w);
     let content = lines.len() as u16;
-    let want = content.saturating_add(2); // borders
+    let want = content.saturating_add(border);
     let cap = (area.height as f32 * 0.6) as u16;
     want.min(cap.max(4)).max(4)
 }
@@ -4038,6 +4041,9 @@ fn card_lines(app: &App, inner_w: usize) -> Vec<Line<'static>> {
     let Some(card) = app.card_state.focused() else {
         return lines;
     };
+    if let Some(approval) = &card.approval {
+        return approval_card_lines(app, card, approval, inner_w);
+    }
     // Prompt (wrapped). P-020: a first line promoted to the border title is not
     // repeated here; a tool approval's `- old` / `+ new` lines read as a diff.
     let skip = usize::from(card_promoted_title(card, inner_w).is_some());
@@ -4200,6 +4206,75 @@ fn card_lines(app: &App, inner_w: usize) -> Vec<Line<'static>> {
     lines
 }
 
+/// pui-chat-first-ux D-028: a tool approval drawn the way Claude Code draws its
+/// permission prompt (stock 2.1.289 frame): the call's title, the change once
+/// between dashed rules, the question, the numbered answers with their keys,
+/// and a one-line footer. The strip's top rule is the full-width line above it.
+fn approval_card_lines(
+    app: &App,
+    card: &crate::card_view::OpenCard,
+    approval: &crate::card_view::CardApproval,
+    inner_w: usize,
+) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let text_w = inner_w.saturating_sub(2).max(8);
+    let indented = |text: &str, style: Style, lines: &mut Vec<Line<'static>>| {
+        for wl in wrap_text(text, text_w) {
+            lines.push(Line::from(Span::styled(format!(" {wl}"), style)));
+        }
+    };
+    indented(&approval.title, Theme::header(), &mut lines);
+    if !approval.body.is_empty() {
+        let rule = Line::from(Span::styled("╌".repeat(inner_w.max(1)), Theme::dim()));
+        lines.push(rule.clone());
+        for raw in &approval.body {
+            let style = if raw.starts_with("+ ") {
+                Theme::success()
+            } else if raw.starts_with("- ") {
+                Theme::danger()
+            } else {
+                Style::default()
+            };
+            indented(raw, style, &mut lines);
+        }
+        lines.push(rule);
+    }
+    // P-008: the raw arguments stay behind Ctrl+R.
+    if app.chat_tools_expanded {
+        if let Some(details) = card.details() {
+            for raw in details.lines() {
+                indented(raw, Theme::dim(), &mut lines);
+            }
+        }
+    }
+    indented(
+        &approval.question,
+        Style::default().add_modifier(ratatui::style::Modifier::BOLD),
+        &mut lines,
+    );
+    for (i, opt) in card.presentation.options().iter().enumerate() {
+        let selected = i == app.card_state.sel;
+        let marker = if selected { "❯" } else { " " };
+        // The keys that pick an answer directly, as Claude Code labels them.
+        let key = match opt.id.as_str() {
+            "always" => " (shift+tab)",
+            "no" => " (esc)",
+            _ => "",
+        };
+        let row = format!(" {marker} {}. {}{key}", i + 1, opt.label);
+        let style = if selected { Theme::selected() } else { Style::default() };
+        for (li, wl) in wrap_text(&row, inner_w).into_iter().enumerate() {
+            let text = if li == 0 { wl } else { format!("      {wl}") };
+            lines.push(Line::from(Span::styled(text, style)));
+        }
+    }
+    lines.push(Line::from(Span::styled(
+        " Enter to select · ↑↓ to move · Esc to cancel",
+        Theme::dim(),
+    )));
+    lines
+}
+
 /// P-020: the card's first prompt line (`Allow Update(calc.js)?`, a short
 /// question) when it fits on the card's top border with room for a queue count,
 /// so the border carries the question instead of a status banner. `None` keeps
@@ -4228,7 +4303,11 @@ fn answered_card_line(
     } else {
         ("✓ ", Theme::success())
     };
-    let prompt = card.prompt.lines().next().unwrap_or("").trim().to_string();
+    // D-028: an approval names the call it answered (`Update(calc.js)`).
+    let prompt = match &card.approval {
+        Some(approval) => approval.title.trim().to_string(),
+        None => card.prompt.lines().next().unwrap_or("").trim().to_string(),
+    };
     let more = if remaining > 0 {
         format!(" · {remaining} more")
     } else {
@@ -4277,6 +4356,23 @@ fn draw_card(f: &mut Frame, app: &App, area: Rect) {
     let Some(card) = app.card_state.focused() else {
         return;
     };
+    if card.approval.is_some() {
+        // D-028: Claude Code's permission prompt sits under one full-width
+        // rule, no box; a queued approval behind it is counted on the rule.
+        let lines = card_lines(app, area.width.max(1) as usize);
+        let mut block = Block::default()
+            .borders(Borders::TOP)
+            .border_style(Theme::notify());
+        if remaining > 0 {
+            block = block.title(Line::from(Span::styled(
+                format!(" {remaining} more "),
+                Theme::notify(),
+            )));
+        }
+        f.render_widget(Clear, area);
+        f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }).block(block), area);
+        return;
+    }
     let inner_w = area.width.saturating_sub(2).max(1) as usize;
     let lines = card_lines(app, inner_w);
     // Say what the card asks, not which Papercusp component raised it
