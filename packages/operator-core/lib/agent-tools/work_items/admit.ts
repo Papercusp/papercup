@@ -139,8 +139,9 @@ type AdmitToolArgs = {
     match?: Record<string, unknown>;
     sourceKind?: (typeof ADMISSION_RULE_SOURCE_KINDS)[number];
     action?: (typeof ADMISSION_RULE_ACTIONS)[number];
-    preset?: ChatRulePreset;
+    preset?: (typeof RULE_PRESETS)[number];
     channelId?: string;
+    value?: string;
     workKind?: (typeof ADMITTED_KINDS)[number];
     enabled?: boolean;
     lifecycle?: Record<string, unknown>;
