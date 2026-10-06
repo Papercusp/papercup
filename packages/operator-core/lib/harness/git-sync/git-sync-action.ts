@@ -3721,9 +3721,11 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
       runGitSync(slug, {
         repoPath,
         config: cfg,
-        runGit: async (args, cwd) => {
+        runGit: async (args, cwd, gitOptions) => {
           liveness.assertActive();
           const execution = runGitBounded(args, cwd, gitTimeoutMsFor(args), {
+            // WI-10006705: forward the attributed commit's private GIT_INDEX_FILE.
+            env: gitOptions?.env,
             signal: liveness.signal,
             onProgress: () => {
               liveness.touch();
