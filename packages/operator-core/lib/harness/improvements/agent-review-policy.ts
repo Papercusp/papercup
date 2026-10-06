@@ -16,6 +16,11 @@ import { ALL_SUCCESSFUL_STATUSES, ALL_TERMINAL_STATUSES } from '../../work-item-
 import { WORK_ITEM_PRESENTATION_STAGES, type WorkItemPresentationStage } from '../../work-item-presentation-contract';
 export { WORK_ITEM_PRESENTATION_STAGES, type WorkItemPresentationStage } from '../../work-item-presentation-contract';
 import {
+  BUG_REPRODUCTION_KINDS,
+  readBugReproductionReceipt,
+  type BugReproductionReceipt,
+} from '../../attention/bug-reproduction';
+import {
   activeExternalBlockers,
   externalBlockerCapabilityPolicy,
   type ExternalBlockerCapability,
@@ -105,12 +110,31 @@ export interface ImplementationAcceptanceProposal {
   completionCheck: string;
 }
 
+/**
+ * P-006 (unified-bug-pipeline D-019): acceptance is the ONE verification stage,
+ * and the check it applies is chosen by kind. A bug needs a reproduction receipt
+ * (D-023, or the D-024/D-011 encounter receipt recorded at filing). A change,
+ * feature or task needs proposal review: agent-review authority from a reviewer
+ * who is not the submitter. No other path makes a contract qualify.
+ */
+export type CandidateStageCheck = 'reproduction' | 'proposal-review';
+
+export function candidateStageCheckForKind(kind: string): CandidateStageCheck {
+  return kind === 'bug' ? 'reproduction' : 'proposal-review';
+}
+
+export type ImplementationAcceptanceVerification =
+  | { check: 'reproduction'; receipt: BugReproductionReceipt }
+  | { check: 'proposal-review' };
+
 export interface ImplementationAcceptanceContract extends ImplementationAcceptanceProposal {
   contractVersion: typeof IMPLEMENTATION_ACCEPTANCE_CONTRACT_VERSION;
   authority: ImplementationAcceptanceAuthority;
   reason: string;
   sourceRevision: string;
   acceptedAt: string;
+  /** Which kind-specific check cleared the contract (P-006). */
+  verification: ImplementationAcceptanceVerification;
 }
 
 export const IMPLEMENTATION_ACCEPTANCE_PROPOSAL_FIELDS = [
@@ -129,7 +153,9 @@ export const IMPLEMENTATION_ACCEPTANCE_SEAL_FIELDS = [
 ] as const;
 export type ImplementationAcceptanceField =
   | (typeof IMPLEMENTATION_ACCEPTANCE_PROPOSAL_FIELDS)[number]
-  | (typeof IMPLEMENTATION_ACCEPTANCE_SEAL_FIELDS)[number];
+  | (typeof IMPLEMENTATION_ACCEPTANCE_SEAL_FIELDS)[number]
+  /** The kind-specific check (P-006) did not pass: reported by readers, never by the seal. */
+  | 'verification';
 
 export interface ImplementationAcceptanceSource {
   /** Storage kind (`item_kind`): bug/change/task/feature. */
@@ -372,6 +398,11 @@ export function evaluateImplementationAcceptance(
   if (currentRevision !== acceptedRevision) {
     return { state: 'stale-revision', missing: [], acceptedRevision, currentRevision };
   }
+  // A matching revision means `source` was supplied, so its kind is the judged kind.
+  const verification = acceptanceVerificationFor(acceptance, (source as ImplementationAcceptanceSource).kind);
+  if (!verification) {
+    return { state: 'incomplete', missing: ['verification'], acceptedRevision, currentRevision };
+  }
   const contract: ImplementationAcceptanceContract = {
     contractVersion: IMPLEMENTATION_ACCEPTANCE_CONTRACT_VERSION,
     ...(readImplementationAcceptanceProposal(payload) as ImplementationAcceptanceProposal),
@@ -379,19 +410,45 @@ export function evaluateImplementationAcceptance(
     reason: (acceptance.reason as string).trim(),
     sourceRevision: acceptedRevision,
     acceptedAt: acceptance.acceptedAt as string,
+    verification,
   };
   return { state: 'qualifying', missing: [], contract, acceptedRevision, currentRevision };
+}
+
+/**
+ * The kind-specific check of the one verification stage, read back from a
+ * stored contract (P-006). A bug qualifies only with a recorded reproduction
+ * receipt that would still parse today. A change, feature or task qualifies
+ * through proposal review, which is agent-review authority; contracts sealed
+ * before P-006 carry no `verification` marker but already name that authority.
+ */
+function acceptanceVerificationFor(
+  acceptance: Record<string, unknown>,
+  kind: string,
+): ImplementationAcceptanceVerification | null {
+  if (candidateStageCheckForKind(kind) === 'reproduction') {
+    const recorded = record(acceptance.verification);
+    if (recorded.check !== 'reproduction') return null;
+    const receipt = readBugReproductionReceipt(recorded.receipt);
+    return receipt ? { check: 'reproduction', receipt } : null;
+  }
+  return record(acceptance.authority).kind === 'agent-review' ? { check: 'proposal-review' } : null;
 }
 
 export type SealImplementationAcceptanceResult =
   | { ok: true; contract: ImplementationAcceptanceContract }
   | { ok: false; refusal: 'incomplete'; missing: ImplementationAcceptanceField[] }
-  | { ok: false; refusal: 'invalid-authority' };
+  | { ok: false; refusal: 'invalid-authority' }
+  /** P-006: a bug cannot be accepted without a reproduction receipt (D-023/D-024/D-011). */
+  | { ok: false; refusal: 'reproduction-missing' }
+  /** P-006: a change, feature or task is accepted only by proposal review (agent-review authority). */
+  | { ok: false; refusal: 'proposal-review-missing' };
 
 /**
- * The only constructor of a qualifying contract. Refuses — never defaults — when
- * any of problem/evidence/outcome/scope/completion check/authority/reason is
- * missing, and binds the result to the source revision judged.
+ * The only constructor of a qualifying contract, and so the one verification
+ * stage (P-006). Refuses — never defaults — when any of problem/evidence/outcome/
+ * scope/completion check/authority/reason is missing or the kind-specific check
+ * fails, and binds the result to the source revision judged.
  */
 export function sealImplementationAcceptance(input: {
   proposal: Partial<ImplementationAcceptanceProposal> | null | undefined;
@@ -399,6 +456,8 @@ export function sealImplementationAcceptance(input: {
   reason: string;
   source: ImplementationAcceptanceSource;
   acceptedAt?: string;
+  /** Required when `source.kind` is a bug: the receipt the reviewer or the filer recorded. */
+  reproduction?: unknown;
 }): SealImplementationAcceptanceResult {
   const proposal = record(input.proposal);
   const missing: ImplementationAcceptanceField[] = [];
@@ -409,6 +468,15 @@ export function sealImplementationAcceptance(input: {
   if (!nonEmptyString(input.source?.title)) missing.push('sourceRevision');
   if (missing.length > 0) return { ok: false, refusal: 'incomplete', missing };
   if (!acceptanceAuthorityValid(input.authority)) return { ok: false, refusal: 'invalid-authority' };
+  let verification: ImplementationAcceptanceVerification;
+  if (candidateStageCheckForKind(input.source.kind) === 'reproduction') {
+    const receipt = readBugReproductionReceipt(input.reproduction);
+    if (!receipt) return { ok: false, refusal: 'reproduction-missing' };
+    verification = { check: 'reproduction', receipt };
+  } else {
+    if (input.authority.kind !== 'agent-review') return { ok: false, refusal: 'proposal-review-missing' };
+    verification = { check: 'proposal-review' };
+  }
   const authority: ImplementationAcceptanceAuthority =
     input.authority.kind === 'agent-review'
       ? {
@@ -431,6 +499,7 @@ export function sealImplementationAcceptance(input: {
       reason: input.reason.trim(),
       sourceRevision: acceptanceSourceRevision(input.source),
       acceptedAt: input.acceptedAt ?? new Date().toISOString(),
+      verification,
     },
   };
 }
@@ -661,6 +730,7 @@ export function implementationAcceptanceStateSql(sql: OrgSql, columns: WorkItemI
     sql,
     sql`(COALESCE(${payload}, '{}'::jsonb) -> 'implementationReadiness')`,
     acceptanceSourceRevisionSql(sql, columns),
+    sql.unsafe(columns.itemKind ?? 'item_kind'),
   );
 }
 
@@ -674,6 +744,8 @@ export function implementationAcceptanceStateFromReadinessSql(
   sql: OrgSql,
   readinessJson: postgres.Fragment,
   currentRevision: postgres.Fragment,
+  /** The row's current kind: it picks the stage's kind-specific check (P-006). */
+  itemKind: postgres.Fragment,
 ) {
   const acc = sql`(${readinessJson} -> 'evidence' -> 'acceptance')`;
   const authority = sql`(${acc} -> 'authority')`;
@@ -726,6 +798,21 @@ export function implementationAcceptanceStateFromReadinessSql(
       ELSE FALSE
     END
   )`;
+  // P-006 twin of `acceptanceVerificationFor` + `readBugReproductionReceipt`: a bug
+  // needs a recorded reproduction receipt; any other kind needs agent-review authority.
+  const reproductionKinds = [...BUG_REPRODUCTION_KINDS];
+  const receipt = sql`(${acc} -> 'verification' -> 'receipt')`;
+  const kindVerified = sql`COALESCE((
+    CASE WHEN ${itemKind} = 'bug' THEN (
+      ${acc} -> 'verification' ->> 'check' = 'reproduction'
+      AND jsonb_typeof(${receipt}) = 'object'
+      AND jsonb_typeof(${receipt} -> 'kind') = 'string'
+      AND ${receipt} ->> 'kind' = ANY(${reproductionKinds}::text[])
+      AND ${nonEmptyText(sql`(${receipt} -> 'ref')`)}
+      AND jsonb_typeof(${receipt} -> 'buildSha') = 'string'
+      AND (${receipt} ->> 'buildSha') ~ '^[[:space:]]*[0-9a-fA-F]{7,40}[[:space:]]*$'
+    ) ELSE ${authority} ->> 'kind' = 'agent-review' END
+  ), FALSE)`;
   return sql`(CASE
     WHEN NOT (${readinessValid})
       OR jsonb_typeof(${acc}) IS DISTINCT FROM 'object'
@@ -733,6 +820,7 @@ export function implementationAcceptanceStateFromReadinessSql(
     WHEN NOT (${proposalComplete} AND ${sealComplete}) THEN 'incomplete'
     WHEN NOT (${authorityValid}) THEN 'invalid-authority'
     WHEN (${acc} ->> 'sourceRevision') IS DISTINCT FROM ${currentRevision} THEN 'stale-revision'
+    WHEN NOT (${kindVerified}) THEN 'incomplete'
     ELSE 'qualifying'
   END)`;
 }
@@ -1187,6 +1275,7 @@ export function implementationReadinessProjectedFloorSql(
       sql,
       row.readiness,
       acceptanceSourceRevisionFromFragmentsSql(sql, row.itemKind, row.title, row.summary),
+      row.itemKind,
     ),
     createdBeforeCutover: sql`(COALESCE(${row.createdTs}, 0) < ${IMPLEMENTATION_ACCEPTANCE_ENFORCEMENT_CUTOVER_MS}::bigint)`,
   });
