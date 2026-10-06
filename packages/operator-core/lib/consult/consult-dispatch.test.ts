@@ -201,6 +201,7 @@ function makeFakes(
     // Same for the cool-down reader (WI-10003198): no history ⇒ no cool-down.
     readSourceDispatchRecords: async () => opts.sourceRecords ?? [],
     readReviewerModel: async () => null,
+    isConsultOpen: async () => true,
     // No transcript is poisoned unless a test says so; never read the real fs here.
     analyzeClaudeTranscript: () => null,
     nowMs: () => NOW_MS,
@@ -570,6 +571,45 @@ describe('dispatchConsultResponder — the walk', () => {
     // invariant), so there is nothing to pre-pin and nothing pinned.
     expect(cmd).toContain('--owner-id=su-answer-1');
     expect(r.answeringOwnerId).toBe('su-answer-1');
+  });
+
+  it('does not start a reviewer when the consult closes during async capacity preflight', async () => {
+    let consultOpen = true;
+    let answeringOwnerStamped = false;
+    const { deps, calls } = makeFakes({
+      probeBackendAvailable: async () => {
+        consultOpen = false;
+        return { available: true, detail: 'backend has headroom' };
+      },
+      isConsultOpen: async () => consultOpen,
+    });
+    const r = await dispatchConsultResponder({
+      ...OPTS,
+      onAnsweringOwner: () => { answeringOwnerStamped = true; },
+    }, CTX, deps);
+
+    expect(r).toMatchObject({ dispatched: false, answeringOwnerId: null });
+    expect(r.attempts).toMatchObject([{ outcome: 'skipped', reason: 'consult-closed' }]);
+    expect(answeringOwnerStamped).toBe(false);
+    expect(calls.spawn).toHaveLength(0);
+  });
+
+  it('re-checks consult state after the async answering-owner stamp and before spawn', async () => {
+    let statusReads = 0;
+    let answeringOwnerStamped = false;
+    const { deps, calls } = makeFakes({
+      isConsultOpen: async () => ++statusReads === 1,
+    });
+    const r = await dispatchConsultResponder({
+      ...OPTS,
+      onAnsweringOwner: () => { answeringOwnerStamped = true; },
+    }, CTX, deps);
+
+    expect(statusReads).toBe(2);
+    expect(answeringOwnerStamped).toBe(true);
+    expect(r).toMatchObject({ dispatched: false, answeringOwnerId: null });
+    expect(r.attempts).toMatchObject([{ outcome: 'skipped', reason: 'consult-closed' }]);
+    expect(calls.spawn).toHaveLength(0);
   });
 
   it('skips a rank whose LAUNCH fails and dispatches the next', async () => {

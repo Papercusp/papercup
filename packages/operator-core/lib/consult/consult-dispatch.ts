@@ -217,7 +217,8 @@ export type DispatchSkipReason =
   | 'launch-failed'
   | 'kickoff-not-persisted'
   | 'launch-exited'
-  | 'first-turn-rejected';
+  | 'first-turn-rejected'
+  | 'consult-closed';
 
 export interface ConsultDispatchAttempt {
   rank: number;
@@ -280,6 +281,8 @@ export interface BackendAvailability {
 export interface ConsultDispatchDeps extends ExpertModelAllowlistDeps {
   /** Test seam for the saved per-review model, read again on every cascade leg. */
   readReviewerModel?: (workspaceId: string, conversationId: string) => Promise<ConsultReviewerModel | null>;
+  /** Re-read the consult before launching a reviewer; cascades can race closure. */
+  isConsultOpen: (workspaceId: string, conversationId: string) => Promise<boolean>;
   resolveResumeTarget: typeof resolveResumeTarget;
   /** Reuse the port route's exact backend/owner guard for an older incarnation. */
   checkEvidenceIncarnationOwnedBy: (target: ResumeTarget, sessionId: string) => Promise<boolean>;
@@ -851,6 +854,22 @@ async function defaultProbeBackendAvailable(
   }
 }
 
+/** A cascade CAS can succeed just before another responder closes the row. */
+async function defaultIsConsultOpen(workspaceId: string, conversationId: string): Promise<boolean> {
+  const { getOrgPg } = await import('@papercusp/db-org');
+  const [row] = await getOrgPg().sql<Array<{ state: string; closed_at: Date | string | null }>>`
+    SELECT state, closed_at
+      FROM harness_shared.consult_state
+     WHERE workspace_id = ${workspaceId} AND conversation_id = ${conversationId}
+     LIMIT 1
+  `;
+  return Boolean(
+    row &&
+      row.closed_at == null &&
+      (row.state === 'awaiting_responder' || row.state === 'active'),
+  );
+}
+
 /**
  * Confirm the source has something a fork/convert can actually read. Delegated
  * to the shared preflight so the launch paths cannot diverge on what counts as
@@ -960,6 +979,7 @@ export async function dispatchConsultResponder(
         { coordOwnerId: target.ownerId, agent: target.agent }, sessionId);
     },
     checkResumeTranscript: defaultCheckResumeTranscript,
+    isConsultOpen: defaultIsConsultOpen,
     analyzeClaudeTranscript: analyzeClaudeResumeTranscriptFile,
     buildAgentLaunchCommand,
     injectLaunchedByArg,
@@ -1244,6 +1264,11 @@ async function walkConsultDispatch(
         ...(evidenceSource ? { evidenceSource } : {}),
       }, ctx, d, launchTarget, rank, operation);
       attempts.push(attempt.record);
+      // Closure is not a failed rank. Continuing would spend more launch
+      // capacity on a consult whose terminal answer already won the race.
+      if (attempt.record.reason === 'consult-closed') {
+        return give(attempt.record.detail);
+      }
       // WI-10004645: every fork rank replays the SAME source history, and a
       // "Tool reference … not found" first reply comes from a reference in that
       // history the fork's toolset lacks. Once one fork of this source is
@@ -1301,6 +1326,15 @@ async function launchAnsweringSession(
     answeringOwnerId: null,
     verified: null,
   });
+  const skipped = (reason: DispatchSkipReason, detail: string) => ({
+    record: { ...base, outcome: 'skipped' as const, reason, detail },
+    answeringOwnerId: null,
+    verified: null,
+  });
+  const consultClosed = () => skipped(
+    'consult-closed',
+    `consult ${opts.conversationId} is no longer open; skipped ${rank.agent}/${rank.model} before spawn`,
+  );
 
   // Both the tracked fork and the prepared port bind a new answering identity
   // before the child can reply; the expert retains its own identity and work.
@@ -1369,6 +1403,7 @@ async function launchAnsweringSession(
   // crossing that boundary so consult:reply already recognizes the child.
   // Keep the post-receipt write below as a retry if this best-effort stamp fails.
   let answeringOwnerStamped = false;
+  if (!(await d.isConsultOpen(ctx.workspaceId, opts.conversationId))) return consultClosed();
   if (opts.onAnsweringOwner) {
     try {
       await opts.onAnsweringOwner(answeringOwnerId);
@@ -1377,6 +1412,9 @@ async function launchAnsweringSession(
       /* retry after the kickoff receipt */
     }
   }
+  // The answer-owner stamp is async too. Close can win while it is writing, so
+  // validate again immediately before crossing the side-effecting spawn seam.
+  if (!(await d.isConsultOpen(ctx.workspaceId, opts.conversationId))) return consultClosed();
 
   const spawn = await d.spawnHeadless({
     envelope: {
