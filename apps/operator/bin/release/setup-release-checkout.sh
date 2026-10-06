@@ -318,6 +318,11 @@ refresh_release_worktree() {
 # on the real tree regardless of how the caller named the root.
 INTEGRATION_ROOT="$(realpath "$INTEGRATION_ROOT")"
 RELEASE_ROOT="$(realpath -m "$RELEASE_ROOT")"
+# WI-10006767: this script sources dependency-generation.sh instead of running
+# its main, so record the integration root as the headroom reserve's protected
+# filesystem here. Otherwise every copy (including generation builds on the
+# data disk) falls back to the full percentage reserve.
+dependency_generation_record_reserve_fs "$INTEGRATION_ROOT"
 
 # Worktree-safe repo check: ASK GIT, never stat `.git`. A git WORKTREE's `.git` is a
 # FILE (`gitdir: <path>`), not a directory, so the old `[ -d "$INTEGRATION_ROOT/.git" ]`
