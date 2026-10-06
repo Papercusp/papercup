@@ -74,6 +74,8 @@ export interface BuildLoopDepsConfig {
   proposerCall: GymLlmCall;
   /** Proposer model id (should differ from the judge's). */
   proposerModel: string;
+  /** Caller-supplied native proposer output limit, forwarded unchanged. */
+  proposerMaxTokens?: number;
   /** The task pools the loop evaluates each variant over (train + dev-anchor [+ probe]). */
   tasks: LoopTask[];
   /** The frozen judge rubric (defaults to GYM_JUDGE_RUBRIC_V1). */
@@ -149,6 +151,7 @@ export interface BuildLoopDepsConfig {
 }
 
 export function buildLoopDeps(cfg: BuildLoopDepsConfig): LoopDeps {
+  const proposerMaxTokens = cfg.proposerMaxTokens;
   const rubric = cfg.rubric ?? GYM_JUDGE_RUBRIC_V1;
   const now = cfg.now ?? (() => Date.now());
   const sleep = cfg.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
@@ -412,6 +415,7 @@ export function buildLoopDeps(cfg: BuildLoopDepsConfig): LoopDeps {
           worstTraces,
           changelog,
           proposerModel: cfg.proposerModel,
+          ...(proposerMaxTokens === undefined ? {} : { maxTokens: proposerMaxTokens }),
           // P-032: routed-idea candidate directions ride every propose call (additive).
           ...(cfg.candidateDirections?.length ? { candidateDirections: cfg.candidateDirections } : {}),
           // P-030: measured champion outcomes ride every propose call (additive).

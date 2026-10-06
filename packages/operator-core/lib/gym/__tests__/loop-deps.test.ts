@@ -4,7 +4,7 @@
  * the proposer are all injected fakes, so the POOL→VariantEval aggregation, the worst-trace
  * selection, and the persist/record seams are verified with zero LLM / no PG / no operator.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import { buildLoopDeps, type LoopTask } from '../loop-deps';
 import { composite, GYM_JUDGE_RUBRIC_V1, rubricHash } from '../judge-scoring';
@@ -383,6 +383,29 @@ describe('buildLoopDeps.evaluate — pool → VariantEval aggregation', () => {
 });
 
 describe('buildLoopDeps — propose / persistCycle / recordProposal seams', () => {
+  it('carries the supplied proposer bound through the real native binding after config mutation', async () => {
+    const { bindNativeGymLlmCalls } = await import('../proposer');
+    const requests: Parameters<GymLlmCall>[0][] = [];
+    const native = bindNativeGymLlmCalls(async request => {
+      requests.push(request); return { text: '', json: { promptOverrides: { worker: 'x' }, rationale: 'r' },
+        costUsd: 0, inputTokens: 0, outputTokens: 0 };
+    }, 'native-harness', { log: () => {} });
+    const config = { proposerCall: native.proposer, proposerMaxTokens: 257 };
+    const { deps } = makeDeps(config);
+    config.proposerMaxTokens = 1;
+    await deps.propose({ promptOverrides: {} }, [], '');
+    expect(requests[0]).toMatchObject({ model: 'claude-sonnet-4-6', maxTokens: 257,
+      requireOutputTokenLimit: true, priority: 'gym', harnessSlug: 'native-harness' });
+  });
+
+  it('refuses a native proposer with no supplied bound before the real transport', async () => {
+    const { bindNativeGymLlmCalls } = await import('../proposer');
+    const call = vi.fn(async () => ({ text: '{}', costUsd: 0, inputTokens: 0, outputTokens: 0 }));
+    const { proposer } = bindNativeGymLlmCalls(call, 'native-harness', { log: () => {} });
+    const { deps } = makeDeps({ proposerCall: proposer });
+    await expect(deps.propose({ promptOverrides: {} }, [], '')).rejects.toMatchObject({ costUsd: 0 });
+    expect(call).not.toHaveBeenCalled();
+  });
   it('propose feeds worst traces + changelog to the proposer and returns a merged overlay', async () => {
     const { deps, proposerCalls } = makeDeps();
     const parentOverlay = { promptOverrides: { validator: '# Validator\nbe strict' } };
