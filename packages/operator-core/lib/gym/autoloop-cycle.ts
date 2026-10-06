@@ -59,6 +59,7 @@ import { resolveGymAccountWorkspace } from './account-workspace';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { LEARNING_MODEL_SPEC } from '../learning/model-policy';
+import { withGymLlmNetworkRetry } from './proposer';
 
 // Anchored on the checkout, not on this module's directory: this module is inlined into the
 // esbuild host bundle, where import.meta.url is the bundle's URL, so both a `..` climb and a
@@ -448,33 +449,17 @@ export async function runOneAutoloopCycle(
     // on this box). A provisioned cycle is EXPENSIVE (container + operator boot
     // ~2.5min) — retry the bare-network failure class (never HTTP-status errors:
     // the gateway already owns those semantics) 2× with short backoff.
-    const withNetRetry = <A extends unknown[], R>(fn: (...a: A) => Promise<R>) =>
-      async (...a: A): Promise<R> => {
-        let lastErr: unknown;
-        for (let attempt = 0; attempt <= 2; attempt++) {
-          try {
-            return await fn(...a);
-          } catch (e) {
-            lastErr = e;
-            const msg = e instanceof Error ? e.message : String(e);
-            if (!/fetch failed|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EAI_AGAIN/i.test(msg)) throw e;
-            log(`llm call transient network failure (attempt ${attempt + 1}/3): ${msg.slice(0, 120)}`);
-            await new Promise((r) => setTimeout(r, 2_000 * (attempt + 1)));
-          }
-        }
-        throw lastErr;
-      };
     const rawGymLlm = FAKE ? null : await import('../llm-testing/llm-client');
     const judge: JudgeLlmCall = FAKE
       ? fakeJudge
-      : withNetRetry((opts: Parameters<JudgeLlmCall>[0]) =>
+      : withGymLlmNetworkRetry((opts: Parameters<JudgeLlmCall>[0]) =>
           rawGymLlm!.llmCall({ ...opts, priority: 'gym', harnessSlug: slug }),
-        );
+        { log });
     const proposer: GymLlmCall = FAKE
       ? fakeProposer
-      : (withNetRetry((opts: Parameters<GymLlmCall>[0]) =>
+      : (withGymLlmNetworkRetry((opts: Parameters<GymLlmCall>[0]) =>
           rawGymLlm!.llmCall({ ...(opts as object), priority: 'gym', harnessSlug: slug } as never),
-        ) as unknown as GymLlmCall);
+        { log }) as unknown as GymLlmCall);
 
     // 5. Ports + loop deps.
     const tokenPath = join(homedir(), '.papercusp', 'superuser-token');

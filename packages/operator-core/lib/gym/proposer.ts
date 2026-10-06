@@ -61,6 +61,28 @@ export interface CandidateProposal {
   unreportedFrames?: number;
 }
 
+/** Native judge/proposer network recovery; injected sleep keeps verification zero-spend. */
+export function withGymLlmNetworkRetry<A extends unknown[], R>(
+  fn: (...args: A) => Promise<R>,
+  deps: { log: (message: string) => void; sleep?: (ms: number) => Promise<void> },
+): (...args: A) => Promise<R> {
+  const sleep = deps.sleep ?? (async (ms: number) => { await new Promise(resolve => setTimeout(resolve, ms)); });
+  return async (...args: A): Promise<R> => {
+    let lastErr: unknown;
+    for (let attempt = 0; attempt <= 2; attempt++) {
+      try { return await fn(...args); }
+      catch (error) {
+        lastErr = error;
+        const message = error instanceof Error ? error.message : String(error);
+        if (!/fetch failed|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EAI_AGAIN/i.test(message)) throw error;
+        deps.log(`llm call transient network failure (attempt ${attempt + 1}/3): ${message.slice(0, 120)}`);
+        await sleep(2_000 * (attempt + 1));
+      }
+    }
+    throw lastErr;
+  };
+}
+
 /** Read a provider-reported cost from a successful value or a thrown error. */
 export function costUsdOf(value: unknown): number {
   const candidate =

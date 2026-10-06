@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { buildProposerPrompt, parseProposal, proposeCandidate, throwWithCostUsd, type ProposeInput } from '../proposer';
+import { describe, it, expect, vi } from 'vitest';
+import { buildProposerPrompt, parseProposal, proposeCandidate, throwWithCostUsd, withGymLlmNetworkRetry, type ProposeInput } from '../proposer';
 import type { GymLlmCall } from '../task-generator';
 
 /**
@@ -17,6 +17,66 @@ const input: ProposeInput = {
   changelog: 'cycle 1: tightened worker error-handling (accepted, +0.4).',
   proposerModel: 'claude-sonnet-4-6',
 };
+
+describe('native Gym network retry spend evidence', () => {
+  it.each([
+    ['absent', {}], ['positive', { costUsd: 0.23 }],
+    ['negative', { costUsd: -1 }], ['nonfinite', { costUsd: NaN }],
+    ['non-numeric', { costUsd: '0' }],
+    ['missing zero', { costUsd: 0, costUsdMeasurementMissing: true }],
+    ['partial zero', { costUsd: 0, unreportedFrames: 1 }],
+    ['invalid completeness', { costUsd: 0, costUsdMeasurementMissing: 'false' }],
+    ['invalid frame count', { costUsd: 0, unreportedFrames: NaN }],
+  ])('preserves %s failed spend without another dispatch', async (_label, usage) => {
+    const failure = Object.assign(new Error('fetch failed'), usage);
+    const call = vi.fn().mockRejectedValueOnce(failure).mockResolvedValue({ costUsd: 0.02 });
+    const sleep = vi.fn(async () => {});
+    await expect(withGymLlmNetworkRetry(call, { log: () => {}, sleep })()).rejects.toBe(failure);
+    expect(call).toHaveBeenCalledTimes(1);
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it('recovers only after complete measured-zero failures and preserves the successful receipt', async () => {
+    const receipt = { costUsd: 0.02, costUsdMeasurementMissing: true, unreportedFrames: 1 };
+    const call = vi.fn().mockRejectedValueOnce(Object.assign(new Error('ECONNREFUSED'), { costUsd: 0 }))
+      .mockRejectedValueOnce(Object.assign(new Error('EAI_AGAIN'), {
+        costUsd: 0, costUsdMeasurementMissing: false, unreportedFrames: 0,
+      })).mockResolvedValue(receipt);
+    const sleep = vi.fn(async () => {});
+    const args = { model: input.proposerModel };
+    await expect(withGymLlmNetworkRetry(call, { log: () => {}, sleep })(args)).resolves.toBe(receipt);
+    expect(call.mock.calls).toEqual([[args], [args], [args]]);
+    expect(sleep.mock.calls).toEqual([[2_000], [4_000]]);
+  });
+
+  it('stops at a later unknown-spend failure, preserving that exact error', async () => {
+    const unknown = new Error('ECONNRESET');
+    const call = vi.fn().mockRejectedValueOnce(Object.assign(new Error('fetch failed'), { costUsd: 0 }))
+      .mockRejectedValueOnce(unknown).mockResolvedValue({ costUsd: 0.02 });
+    const sleep = vi.fn(async () => {});
+    await expect(withGymLlmNetworkRetry(call, { log: () => {}, sleep })()).rejects.toBe(unknown);
+    expect(call).toHaveBeenCalledTimes(2);
+    expect(sleep.mock.calls).toEqual([[2_000]]);
+  });
+
+  it('exhausts three known-zero attempts without sleeping after the last', async () => {
+    const failure = Object.assign(new Error('ETIMEDOUT'), { costUsd: 0 });
+    const call = vi.fn().mockRejectedValue(failure);
+    const sleep = vi.fn(async () => {});
+    await expect(withGymLlmNetworkRetry(call, { log: () => {}, sleep })()).rejects.toBe(failure);
+    expect(call).toHaveBeenCalledTimes(3);
+    expect(sleep.mock.calls).toEqual([[2_000], [4_000]]);
+  });
+
+  it('keeps non-network errors outside the retry lane', async () => {
+    const failure = Object.assign(new Error('HTTP 400'), { costUsd: 0 });
+    const call = vi.fn().mockRejectedValue(failure);
+    const sleep = vi.fn(async () => {});
+    await expect(withGymLlmNetworkRetry(call, { log: () => {}, sleep })()).rejects.toBe(failure);
+    expect(call).toHaveBeenCalledTimes(1);
+    expect(sleep).not.toHaveBeenCalled();
+  });
+});
 
 describe('buildProposerPrompt', () => {
   it('feeds the failures, rationales, and changelog, and asks for a JSON prompt diff', () => {
