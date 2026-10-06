@@ -222,13 +222,16 @@ describe('Codex startup process evidence (EI-24353430528930250)', () => {
 
 describe('plain launch kickoff turn-start proof', () => {
   it.each([
-    { receiptState: 'empty', receiptAllowed: true },
-    { receiptState: 'nonempty', receiptAllowed: false },
-  ])('preserves and submits a long Codex kickoff when the composer only renders its tail ($receiptState receipt)', async ({ receiptAllowed }) => {
+    { receiptState: 'empty', receiptAllowed: true, nativePublication: 'immediate' },
+    { receiptState: 'nonempty', receiptAllowed: false, nativePublication: 'immediate' },
+    { receiptState: 'empty', receiptAllowed: true, nativePublication: 'gated' },
+    { receiptState: 'nonempty', receiptAllowed: false, nativePublication: 'gated' },
+  ])('preserves and submits a long Codex kickoff when the composer only renders its tail ($receiptState receipt, $nativePublication native publication)', async ({ receiptAllowed, nativePublication }) => {
     const root = mkdtempSync(join(tmpdir(), 'psu-codex-viewport-'));
     const codexHome = join(root, 'codex-home');
     const nativeFile = join(codexHome, 'sessions', '2026', '09', '26', 'rollout.jsonl');
     const submitFile = join(root, 'submitted.txt');
+    const nativeReleaseFile = join(root, 'publish-native');
     const proofPath = join(root, 'kickoff-proof.json');
     const proofToken = 'd'.repeat(48);
     writeFileSync(proofPath, receiptAllowed ? '' : 'reserved', { mode: 0o600 });
@@ -246,7 +249,8 @@ describe('plain launch kickoff turn-start proof', () => {
       "let wire='',composer='',submitted=false,paint;const start='\x1b[200~',end='\x1b[201~';",
       "process.stdout.write('\x1b[?2004hmodel: GPT-5.6-Sol high\\nReady · GPT-5.6-Sol high · Context 100% left\\n');",
       "function repaint(){clearTimeout(paint);paint=setTimeout(()=>process.stdout.write('COMPOSER_ECHO:'+composer.slice(-160)+'\\n'),30);}",
-      "function submit(){if(submitted){setTimeout(()=>process.stdout.write('RESUBMIT_ACK\\n'),75);return;}submitted=true;fs.writeFileSync(process.env.SUBMIT_FILE,composer);fs.mkdirSync(path.dirname(process.env.NATIVE_FILE),{recursive:true});const timestamp=new Date().toISOString();const rows=[{type:'response_item',timestamp,payload:{type:'message',role:'user',content:[{type:'input_text',text:composer}]}},{type:'event_msg',timestamp,payload:{type:'task_started',turn_id:'viewport-1'}},{type:'event_msg',timestamp,payload:{type:'task_complete',turn_id:'viewport-1'}}];fs.writeFileSync(process.env.NATIVE_FILE,rows.map(r=>JSON.stringify(r)+'\\n').join(''));setTimeout(()=>process.stdout.write('SUBMITTED\\n'),75);}",
+      "function publishNative(){fs.mkdirSync(path.dirname(process.env.NATIVE_FILE),{recursive:true});const timestamp=new Date().toISOString();const rows=[{type:'response_item',timestamp,payload:{type:'message',role:'user',content:[{type:'input_text',text:composer}]}},{type:'event_msg',timestamp,payload:{type:'task_started',turn_id:'viewport-1'}},{type:'event_msg',timestamp,payload:{type:'task_complete',turn_id:'viewport-1'}}];fs.writeFileSync(process.env.NATIVE_FILE,rows.map(r=>JSON.stringify(r)+'\\n').join(''));setTimeout(()=>process.stdout.write('SUBMITTED\\n'),75);}",
+      "function submit(){if(submitted){setTimeout(()=>process.stdout.write('RESUBMIT_ACK\\n'),75);return;}submitted=true;fs.writeFileSync(process.env.SUBMIT_FILE,composer);if(process.env.NATIVE_PUBLICATION==='gated'){const gate=setInterval(()=>{if(fs.existsSync(process.env.NATIVE_RELEASE_FILE)){clearInterval(gate);publishNative();}},5);}else publishNative();}",
       "process.stdin.on('data',d=>{if(d.includes('\x04'))process.exit(0);wire+=d;while(wire){if(wire.startsWith(start)){const at=wire.indexOf(end,start.length);if(at<0)break;composer+=wire.slice(start.length,at);wire=wire.slice(at+end.length);repaint();continue;}if(start.startsWith(wire))break;const next=wire.indexOf(start);const take=next<0?wire.length:next;const text=wire.slice(0,take);wire=wire.slice(take);for(const c of text){if(c==='\\r')submit();else composer+=c;}repaint();}});",
       'setTimeout(()=>process.exit(0),4000);',
     ].join('');
@@ -257,6 +261,7 @@ describe('plain launch kickoff turn-start proof', () => {
         env: {
           ...hermeticEnv(), PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'codex',
           CODEX_HOME: codexHome, NATIVE_FILE: nativeFile, SUBMIT_FILE: submitFile,
+          NATIVE_PUBLICATION: nativePublication, NATIVE_RELEASE_FILE: nativeReleaseFile,
           [KICKOFF_PROOF_PATH_ENV]: proofPath, [KICKOFF_PROOF_TOKEN_ENV]: proofToken,
           PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '2000',
           PAPERCUSP_PSU_PTY_KICKOFF_MARKER_ECHO_TIMEOUT_MS: '1000',
@@ -275,7 +280,15 @@ describe('plain launch kickoff turn-start proof', () => {
       await vi.waitFor(() => expect(existsSync(submitFile), captured()).toBe(true), { timeout: 2500 });
       expect(readFileSync(submitFile, 'utf8')).toBe(kickoff);
       expect(captured()).toContain('COMPOSER_ECHO:' + marker);
-      expect(readFileSync(nativeFile, 'utf8')).toContain(marker);
+      if (nativePublication === 'gated') {
+        // Submission precedes transcript publication. The old immediate read
+        // fails here while the host is live and the fixture home is intact.
+        expect(existsSync(sock)).toBe(true);
+        expect(existsSync(root)).toBe(true);
+        expect(() => readFileSync(nativeFile, 'utf8')).toThrowError(expect.objectContaining({ code: 'ENOENT' }));
+        writeFileSync(nativeReleaseFile, 'publish');
+      }
+      await vi.waitFor(() => expect(readFileSync(nativeFile, 'utf8')).toContain(marker), { timeout: 1500 });
       if (receiptAllowed) {
         await vi.waitFor(() => {
           const proof = readFileSync(proofPath, 'utf8');
@@ -2798,12 +2811,15 @@ describe('RECYCLE / backend-aware RESET — kill + respawn the child in the same
       const sock = socketPathFor(ownerId);
       const meta = metaPathFor(ownerId);
       const { captured, io } = fakeIo();
+      const fixtureRoot = mkdtempSync(join(tmpdir(), 'psu-recycle-boot-'));
+      const bootRelease = join(fixtureRoot, 'ready');
 
       // Child prints BOOT:<pid> once on start, echoes stdin lines, exits on QUIT
       // (or a 15s safety net). The per-boot pid marker lets us prove the process
       // was actually replaced by the recycle, not just re-injected.
       const childCode =
-        "process.stdout.write('BOOT:'+process.pid+'\\n');" +
+        "const fs=require('fs');process.stdout.write('BOOT_PENDING\\n');" +
+        "const boot=setInterval(()=>{if(fs.existsSync(process.env.BOOT_RELEASE)){clearInterval(boot);process.stdout.write('BOOT:'+process.pid+'\\n');}},10);" +
         "process.stdin.setEncoding('utf8');let b='';" +
         "process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const line=b.slice(0,i);b=b.slice(i+1);" +
         "if(line==='QUIT'){process.exit(0);}process.stdout.write('ECHO:'+line+'\\n');}});" +
@@ -2817,6 +2833,7 @@ describe('RECYCLE / backend-aware RESET — kill + respawn the child in the same
         env: {
           ...hermeticEnv(),
           PAPERCUSP_SID: ownerId,
+          BOOT_RELEASE: bootRelease,
           // Reproduce the live failure deterministically: the fake successor
           // emits BOOT output but never Codex's version-specific composer
           // footer. The bounded fallback must admit it via output quiescence.
@@ -2836,7 +2853,12 @@ describe('RECYCLE / backend-aware RESET — kill + respawn the child in the same
         onExit: (c: number) => { exitCode = c; },
       });
 
-      // BOOT is a child phase, not a promise that the scheduler runs it in 600ms.
+      try {
+      // Deliberately hold BOOT until the test releases it. A fixed post-spawn
+      // sleep cannot prove readiness; this real child exists before BOOT does.
+      await vi.waitFor(() => expect(captured()).toContain('BOOT_PENDING'), { timeout: 8000 });
+      expect([...captured().matchAll(/BOOT:(\d+)/g)]).toHaveLength(0);
+      writeFileSync(bootRelease, 'ready');
       const bootsBefore = await vi.waitFor(() => {
         const boots = [...captured().matchAll(/BOOT:(\d+)/g)].map((m) => Number(m[1]));
         expect(boots).toHaveLength(1);
@@ -2876,6 +2898,11 @@ describe('RECYCLE / backend-aware RESET — kill + respawn the child in the same
       expect(exitCode).toBe(0);
       expect(existsSync(sock)).toBe(false);
       expect(existsSync(meta)).toBe(false);
+      } finally {
+        if (existsSync(sock)) await rawInject(sock, 'QUIT\n');
+        await done.catch(() => undefined);
+        rmSync(fixtureRoot, { recursive: true, force: true });
+      }
     },
     25_000,
   );
