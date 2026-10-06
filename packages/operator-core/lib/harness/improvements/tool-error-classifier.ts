@@ -72,8 +72,10 @@ export interface ToolErrorRule {
 // ── The shared message patterns (dual-engine; see the module header) ──────────
 
 /** A timeout, including one that surfaced as `handler_error`
- *  ("exceeded timeout … handler returned but signal had aborted"). */
-export const TIMEOUT_MESSAGE_PATTERN = 'exceeded timeout|timed? *out';
+ *  ("exceeded timeout … handler returned but signal had aborted"). Word boundaries
+ *  keep argument names such as `timeoutSec` from looking like a timeout outcome. */
+export const TIMEOUT_MESSAGE_PATTERN =
+  'exceeded timeout([^a-zA-Z]|$)|(^|[^a-zA-Z])timed? *out([^a-zA-Z]|$)';
 
 /** Caller-side auth/arg/scope error in the MESSAGE: a retained
  *  `missing_capability:` prefix from a nested `tools:invoke` refusal, or an `invalid_args:` prefix

@@ -125,6 +125,12 @@ export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
 
   // ── caller: bad input / scope (DX, not a tool bug) ─────────────────────────
   {
+    n: 1, errorCode: 'invalid_args', status: 'invalid_input',
+    message: 'Nested code:run rejected timeoutSec=60 because the live maximum is 45 seconds; use 45 or less.',
+    expectedClass: 'caller',
+    note: '`timeoutSec` is an argument name, not an elapsed-timeout outcome; preserve the caller classification (EI-25198945153644636)',
+  },
+  {
     n: 3, errorCode: 'mcp_auth_failed', status: 'error',
     message: 'superuser_invalid_bearer',
     expectedClass: 'caller',

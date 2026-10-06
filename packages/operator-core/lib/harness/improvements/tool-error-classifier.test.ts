@@ -155,6 +155,17 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
     expect(classifyToolError(null, 'error', 'invalid_args: note: Too big')).toBe('caller');
   });
 
+  it('does not mistake the timeoutSec argument name for a runtime timeout', () => {
+    expect(
+      classifyToolError(
+        'invalid_args',
+        'invalid_input',
+        'Nested code:run rejected timeoutSec=60 because the live maximum is 45 seconds; use 45 or less.',
+      ),
+    ).toBe('caller');
+    expect(classifyToolError('handler_error', 'error', 'code:run exceeded timeout after 45 seconds')).toBe('transient');
+  });
+
   it('classifies an MCP auth-gate refusal as caller/auth without broadly matching its message', () => {
     expect(classifyToolError('mcp_auth_failed', 'error', 'superuser_invalid_bearer')).toBe('caller');
     expect(classifyToolError('handler_error', 'error', 'superuser_invalid_bearer')).toBe('structural');
