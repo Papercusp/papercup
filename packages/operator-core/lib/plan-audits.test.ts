@@ -22,6 +22,7 @@ import {
   __repoCitationTrackingCacheStatsForTests,
   __resetRepoCitationTrackingCacheForTests,
   prewarmRepoCitationTracking,
+  measureCitationBlobsAtHead,
   citationBlobSha,
   citationBlobShaAt,
   foldEffectiveItemAudits,
@@ -696,6 +697,111 @@ describe('repoCitationDeps — Git trackedness (EI-21729074760905025)', () => {
     } finally {
       __resetRepoCitationTrackingCacheForTests();
     }
+  });
+});
+
+// proof-freshness-pinned-candidate-2026-10-06 P-019 (D-001): the ship gate measures cited
+// blobs at the committed HEAD of each top-level repository, so a peer's UNCOMMITTED edit to
+// a cited file is invisible while a COMMITTED change reads stale.
+describe('measureCitationBlobsAtHead — committed measurement commit M (P-019)', () => {
+  const initRepo = (repo: string): void => {
+    git(repo, 'init', '-q');
+    git(repo, 'config', 'user.email', 'plan-audits-test@example.com');
+    git(repo, 'config', 'user.name', 'Plan Audits Test');
+  };
+
+  it('measures the committed blob at HEAD and ignores an uncommitted edit', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'plan-audits-measure-'));
+    const cited = path.join(root, 'src', 'cited.ts');
+    const committed = 'export const cited = "committed";\n';
+    try {
+      fs.mkdirSync(path.dirname(cited), { recursive: true });
+      fs.writeFileSync(cited, committed);
+      initRepo(root);
+      git(root, 'add', '--', 'src/cited.ts');
+      git(root, 'commit', '-qm', 'committed bytes');
+      const head = git(root, 'rev-parse', 'HEAD').trim();
+      fs.writeFileSync(cited, 'export const cited = "peer uncommitted edit";\n');
+
+      const measured = await measureCitationBlobsAtHead([code('src/cited.ts')], repoCitationDeps(root));
+      expect(measured.blobs.get('src/cited.ts')).toBe(gitBlobSha(committed));
+      expect(measured.commits.get('src/cited.ts')).toBe(head);
+
+      // Once committed, the same edit IS what M measures.
+      const edited = 'export const cited = "now committed";\n';
+      fs.writeFileSync(cited, edited);
+      git(root, 'commit', '-qam', 'commit the edit');
+      const after = await measureCitationBlobsAtHead([code('src/cited.ts')], repoCitationDeps(root));
+      expect(after.blobs.get('src/cited.ts')).toBe(gitBlobSha(edited));
+      expect(after.commits.get('src/cited.ts')).toBe(git(root, 'rev-parse', 'HEAD').trim());
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('measures an uncommitted new file as null (not a committed file at M)', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'plan-audits-measure-new-'));
+    try {
+      fs.mkdirSync(path.join(root, 'src'), { recursive: true });
+      fs.writeFileSync(path.join(root, 'src', 'old.ts'), 'export const old = 1;\n');
+      initRepo(root);
+      git(root, 'add', '--', 'src/old.ts');
+      git(root, 'commit', '-qm', 'base');
+      fs.writeFileSync(path.join(root, 'src', 'new.ts'), 'export const fresh = 1;\n');
+
+      const measured = await measureCitationBlobsAtHead([code('src/new.ts')], repoCitationDeps(root));
+      expect(measured.blobs.has('src/new.ts')).toBe(true);
+      expect(measured.blobs.get('src/new.ts')).toBeNull();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('reads a submodule citation at the gitlink the superproject HEAD pins, with no sync Git child', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'plan-audits-measure-sub-'));
+    const childRoot = path.join(root, 'child');
+    const superprojectRoot = path.join(root, 'superproject');
+    const pinned = 'export const pinned = true;\n';
+    __resetRepoCitationTrackingCacheForTests();
+    try {
+      fs.mkdirSync(path.join(childRoot, 'src'), { recursive: true });
+      fs.mkdirSync(superprojectRoot, { recursive: true });
+      fs.writeFileSync(path.join(childRoot, 'src', 'index.ts'), pinned);
+      initRepo(childRoot);
+      initRepo(superprojectRoot);
+      git(childRoot, 'add', '--', 'src/index.ts');
+      git(childRoot, 'commit', '-qm', 'child source');
+      git(superprojectRoot, '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', childRoot, 'libs/child');
+      git(superprojectRoot, 'commit', '-qm', 'pin child');
+      const head = git(superprojectRoot, 'rev-parse', 'HEAD').trim();
+
+      // The child moves on (committed inside the submodule) but the superproject gitlink is
+      // NOT bumped: M is the superproject HEAD, so the pinned bytes are what it measures.
+      const sub = path.join(superprojectRoot, 'libs', 'child');
+      git(sub, 'config', 'user.email', 'plan-audits-test@example.com');
+      git(sub, 'config', 'user.name', 'Plan Audits Test');
+      fs.writeFileSync(path.join(sub, 'src', 'index.ts'), 'export const pinned = false;\n');
+      git(sub, 'commit', '-qam', 'unpinned child commit');
+
+      const citation = code('libs/child/src/index.ts');
+      await prewarmRepoCitationTracking([superprojectRoot], [citation]);
+      const spawnsBefore = __repoCitationSyncSpawnsForTests();
+      const measured = await measureCitationBlobsAtHead([citation], repoCitationDeps(superprojectRoot));
+      expect(measured.blobs.get('libs/child/src/index.ts')).toBe(gitBlobSha(pinned));
+      expect(measured.commits.get('libs/child/src/index.ts')).toBe(head);
+      expect(__repoCitationSyncSpawnsForTests()).toBe(spawnsBefore);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('measures nothing for deps without `locate`, so callers keep the working-tree fingerprint', async () => {
+    const measured = await measureCitationBlobsAtHead([code('src/x.ts')], {
+      statFile: () => ({ isFile: true }),
+      readFile: () => 'x',
+    });
+    expect(measured.blobs.size).toBe(0);
+    expect(measured.commits.size).toBe(0);
   });
 });
 
