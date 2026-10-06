@@ -13,6 +13,7 @@
  * it is reported as ungranted and contributes nothing.
  */
 import type { Sql } from 'postgres';
+import { isCodingAgentRole } from '../personal-vault/coding-roles';
 import { readTeamInteractions } from '../personal-vault/team-disclosure';
 import type { PersonalToolContext } from '../personal-vault/types';
 import type { CanonicalExternalEvent } from '../external-triggers/ingestion';
@@ -62,6 +63,8 @@ export async function backfillInteractionParticipants(
   input: ParticipantBackfillInput,
   deps: ParticipantSinkDeps = {},
 ): Promise<ParticipantBackfillResult> {
+  // D-001 fence up front: the refusal must not depend on whether a granted source has documents.
+  if (isCodingAgentRole(input.ctx.role)) return { ok: false, reason: 'coding_agent_denied', sources: [] };
   const batchSize = Math.max(1, Math.min(input.batchSize ?? 500, 2000));
   const groups = await sql<Array<{ source_id: string; kind: string; source: string; policy: Record<string, unknown> | null }>>`
     SELECT d.source_id::text AS source_id, d.kind, min(d.source) AS source, s.destination_policy AS policy

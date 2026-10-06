@@ -16,8 +16,10 @@ import type { PersonalToolContext } from '../personal-vault/types';
 import { backfillInteractionParticipants, runPendingParticipantBackfills } from './participant-backfill';
 import { searchPeople } from './people';
 
-const WS = 'participant-backfill-test';
-const HARNESS = 'participant-backfill-test';
+// The `person` datatype is registered for this workspace only (migration 1383), and the record
+// sink needs it: a workspace without it gets no person -> record sink, so nothing is granted.
+const WS = 'papercusp-workspace';
+const HARNESS = 'papercusp';
 const CTX: PersonalToolContext = { workspaceId: WS, role: 'crm-sales-agent' };
 const OWNER = 'owner@me.example';
 const LEAD = 'lead@prospect.example';
@@ -95,13 +97,16 @@ beforeAll(async () => {
 
 afterAll(async () => {
   if (org && userId) {
-    await sql`DELETE FROM harness_shared.work_items WHERE workspace_id = ${WS}`.catch(() => {});
-    await sql`DELETE FROM harness_shared.trigger_deliveries WHERE workspace_id = ${WS}`.catch(() => {});
+    // Scoped to this file's own rows: the workspace is shared with other graph tests.
+    const ids = [mailSource, calendarSource].filter(Boolean);
+    await sql`DELETE FROM harness_shared.work_items WHERE workspace_id = ${WS} AND item_kind = 'person'
+               AND (feature_id LIKE 'PER-%' OR payload->>'dataSourceId' = ANY(${sql.array(ids)}::text[]))`.catch(() => {});
+    await sql`DELETE FROM harness_shared.trigger_deliveries WHERE workspace_id = ${WS} AND source_id = ANY(${sql.array(ids)}::uuid[])`.catch(() => {});
     for (const table of ['personal_disclosures', 'personal_grants', 'personal_documents']) {
-      await sql.unsafe(`DELETE FROM harness_shared.${table} WHERE workspace_id = $1`, [WS]).catch(() => {});
+      await sql.unsafe(`DELETE FROM harness_shared.${table} WHERE workspace_id = $1 AND user_id = $2::uuid`, [WS, userId]).catch(() => {});
     }
-    await sql`DELETE FROM harness_shared.personal_vault_settings WHERE workspace_id = ${WS}`.catch(() => {});
-    await sql`DELETE FROM harness_shared.data_sources WHERE workspace_id = ${WS}`.catch(() => {});
+    await sql`DELETE FROM harness_shared.personal_vault_settings WHERE workspace_id = ${WS} AND user_id = ${userId}::uuid`.catch(() => {});
+    await sql`DELETE FROM harness_shared.data_sources WHERE workspace_id = ${WS} AND owner_user_id = ${userId}::uuid`.catch(() => {});
     await sql`DELETE FROM harness_shared.users WHERE id = ${userId}`.catch(() => {});
   }
   await org?.cleanup();

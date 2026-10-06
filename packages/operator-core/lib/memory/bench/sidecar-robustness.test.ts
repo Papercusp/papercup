@@ -81,7 +81,8 @@ describe('robustness verdict re-derived from raw samples', () => {
     const summary = summarizeRobustnessReport(input, expected, report(input));
     expect(summary.failures).toEqual([]);
     expect(summary.verdict).toBe('pass');
-    expect(summary.crash).toEqual([{ cycle: 0, startedBeforeCrash: { active: 1, pending: 1 }, interrupted: 1, recoveredMs: expect.any(Number) }]);
+    expect(summary.crash).toEqual([{ cycle: 0, startedBeforeCrash: { active: 1, pending: 1 }, interrupted: 1, rescued: 0,
+      workerAfterCrash: { alive: false, disabled: false, pendingCount: 0 }, recoveredMs: expect.any(Number) }]);
   });
   it.each([
     ['a timeout phase whose long request beats the deadline', { longMs: 50 }, /timeout phase is vacuous/],

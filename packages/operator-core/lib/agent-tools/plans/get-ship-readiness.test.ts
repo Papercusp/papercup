@@ -182,6 +182,10 @@ afterEach(async () => {
 });
 
 describe('plans:get — shipReadiness', () => {
+  it('declares a target budget beyond the nested dispatcher 55s default (EI-21665387998856992)', () => {
+    expect(tool.timeoutSec).toBeGreaterThan(55);
+  });
+
   it('attributes cold source latency and never replays build timings on a cache hit', async () => {
     const fixture = await M.readPlanBySlug('timing');
     let clock = 0;

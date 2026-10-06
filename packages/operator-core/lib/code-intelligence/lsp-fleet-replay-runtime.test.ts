@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import ts from 'typescript';
 import { freezeCompilerReplayConfig, freezeReplayRuntimeFiles, materializeReplaySource, replayBoundaryProblems, replayDurableReport, replayEvidenceProblems, replayFileMismatches, replayHash, replayOracleFingerprint,
   replayPopulationFingerprint, replayProcessIdentity, replayServerPopulation, replaySourceFingerprint, replayWireOverlap,
   runDaemonReplay, validateDaemonReplayConfig, type DaemonReplayConfig, type ReplayBoundary, type ReplayOracleInput } from './lsp-fleet-replay-runtime';
@@ -432,6 +433,37 @@ describe('daemon replay qualification', () => {
     expect(oracle.corpus.definition.oracle.sites).toEqual([{ path: 'source.ts', line1: 1 }]);
     expect(oracle.corpus['hot-references'].oracle.sites).toEqual([{ path: 'consumer.ts', line1: 1 },
       { path: 'consumer.ts', line1: 2 }, { path: 'source.ts', line1: 1 }, { path: 'source.ts', line1: 2 }]);
+  });
+  it.each(['hot', 'hot: alias'])('counts the exported property of dynamic-import destructuring (%s), excluding local uses and a same-name export', binding => {
+    const frozen = config();
+    const root = frozen.rootPath;
+    const options = { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext, moduleResolution: ts.ModuleResolutionKind.Bundler };
+    writeFileSync(join(root, 'tsconfig.json'), JSON.stringify({ compilerOptions: { target: 'ES2022', module: 'ESNext', moduleResolution: 'Bundler' }, files: ['source.ts', 'consumer.ts', 'decoy.ts'] }));
+    writeFileSync(join(root, 'decoy.ts'), 'export function hot() {}\n');
+    writeFileSync(join(root, 'consumer.ts'), ['export async function consume() {',
+      `  const [{ ${binding} }, { hot: shadow }] = await Promise.all([import('./source'), import('./decoy')]);`,
+      `  ${binding === 'hot' ? 'hot' : 'alias'}(); shadow();`, '}'].join('\n'));
+    // An independent checker observation distinguishes a missing export-property
+    // reference from a same-spelling local binding or another module's export.
+    const program = ts.createProgram(['source.ts', 'consumer.ts', 'decoy.ts'].map(file => join(root, file)), options);
+    const checker = program.getTypeChecker();
+    const source = program.getSourceFile(join(root, 'source.ts'))!;
+    const target = checker.getSymbolAtLocation((source.statements[0] as ts.FunctionDeclaration).name!)!;
+    const consumer = program.getSourceFile(join(root, 'consumer.ts'))!;
+    const fn = consumer.statements[0] as ts.FunctionDeclaration;
+    const declaration = (fn.body!.statements[0] as ts.VariableStatement).declarationList.declarations[0];
+    const patterns = (declaration.name as ts.ArrayBindingPattern).elements as ts.NodeArray<ts.BindingElement>;
+    const element = (patterns[0].name as ts.ObjectBindingPattern).elements[0];
+    expect(checker.getTypeAtLocation(element.parent).getProperty('hot')).toBe(target);
+    expect(checker.getSymbolAtLocation(element.name)).not.toBe(target);
+    expect(checker.getTypeAtLocation(patterns[1].name).getProperty('hot')).not.toBe(target);
+    const oracle = freezeCompilerReplayConfig({ runId: 'dynamic-binding', rootPath: root, socketPath: frozen.socketPath,
+      workspaceId: 'test', levels: [1], requestTimeoutMs: 90_000, tsconfigPath: 'tsconfig.json',
+      definition: { file: 'source.ts', line1: 2, character: 1 }, references: { file: 'source.ts', line1: 2, character: 1 },
+      runtimeFiles: [], evidenceRef: 'independent-dynamic-binding-fixture' });
+    expect(oracle.corpus['hot-references'].oracle.sites).toEqual([
+      { path: 'consumer.ts', line1: 2 }, { path: 'source.ts', line1: 1 }, { path: 'source.ts', line1: 2 },
+    ]);
   });
   it('freezes inherited config and declaration dependencies that determine symbol binding', () => {
     const frozen = config();

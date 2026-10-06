@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 949,
+  "count": 951,
   "tools": [
     {
       "name": "ablation:report",
@@ -20669,6 +20669,153 @@
       "guidance": {
         "when": "User asks \"what's queued up?\", \"what events are pending?\", or you need to inspect the hook-event backlog.",
         "notWhen": "For approvals (plan reviews, escalations awaiting user yes/no), use `pending_reviews_list`. Pending EVENTS are hook plumbing; pending REVIEWS are user-facing decisions."
+      }
+    },
+    {
+      "name": "people:get",
+      "http": {
+        "path": "/api/agent-tools/people/get",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Fetch canonical persons by PER- id from the workspace relationship graph. A merged-away id resolves to its survivor (the returned person.id is the survivor). Pass `id` or `ids`. Returns { ok, results:[{ ok, id, person? | error }], counts }. Read-only.",
+      "capabilities": [
+        "intel:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "operator",
+        "oracle",
+        "cup",
+        "mug",
+        "planner",
+        "orchestrator",
+        "promote",
+        "security-reviewer",
+        "infra-reviewer",
+        "crosscheck",
+        "ui-qa",
+        "auditor",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager",
+        "release-fixer",
+        "doc-steward",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "researcher",
+        "research-director",
+        "searcher",
+        "discoverer",
+        "finding-verifier",
+        "findings-synthesizer",
+        "synthesizer",
+        "review-director",
+        "dimension-reviewer",
+        "verifier",
+        "migration-director",
+        "migration-verifier",
+        "transformer",
+        "gym-director",
+        "judge",
+        "task-generator",
+        "variant-runner",
+        "proposer",
+        "scanner",
+        "director",
+        "committer",
+        "tester",
+        "test-writer",
+        "monitor",
+        "blender",
+        "foreign-session"
+      ],
+      "guidance": {
+        "when": "You hold PER- ids (stored by an app, or from people:search) and need the current person.",
+        "notWhen": "To find persons by name, address or number, use people:search."
+      }
+    },
+    {
+      "name": "people:search",
+      "http": {
+        "path": "/api/agent-tools/people/search",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Search canonical persons (PER- ids) in the workspace relationship graph by free text (name, email, phone digits) and/or exact `emails` / `phones`. Exact identity matches rank first. Returns { ok, people:[{ id, displayName, emails, phones, organizationId, title, sourceRecordCount }], count }. Read-only.",
+      "capabilities": [
+        "intel:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "operator",
+        "oracle",
+        "cup",
+        "mug",
+        "planner",
+        "orchestrator",
+        "promote",
+        "security-reviewer",
+        "infra-reviewer",
+        "crosscheck",
+        "ui-qa",
+        "auditor",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager",
+        "release-fixer",
+        "doc-steward",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "researcher",
+        "research-director",
+        "searcher",
+        "discoverer",
+        "finding-verifier",
+        "findings-synthesizer",
+        "synthesizer",
+        "review-director",
+        "dimension-reviewer",
+        "verifier",
+        "migration-director",
+        "migration-verifier",
+        "transformer",
+        "gym-director",
+        "judge",
+        "task-generator",
+        "variant-runner",
+        "proposer",
+        "scanner",
+        "director",
+        "committer",
+        "tester",
+        "test-writer",
+        "monitor",
+        "blender",
+        "foreign-session"
+      ],
+      "guidance": {
+        "when": "An app or agent needs the person behind a name, address or number (contact lookup, recipient autocomplete, CRM person list).",
+        "notWhen": "For one known PER- id, use people:get. For message or meeting content, use personal:search.",
+        "chaining": "people:search → people:get { ids } after a stored id may have been merged."
       }
     },
     {

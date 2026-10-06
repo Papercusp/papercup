@@ -242,6 +242,35 @@ mechanism for the chosen frontend and TURN termination, then prove authenticated
 The repository's isolated TLS and config tests provide software regression
 evidence; they do not discharge those public network or renewal requirements.
 
+## Public media edge (`edge/`, D-024/D-025)
+
+This box sits behind a home router, so a small cloud VM is its public L4 edge.
+`infra/phone-app/edge/edge.sh` provisions and converges it reproducibly; non-secret
+coordinates persist in `~/.config/papercusp-phone/edge.env`.
+
+```bash
+infra/phone-app/edge/edge.sh provision   # GCP static IP + firewall + e2-micro (idempotent)
+infra/phone-app/edge/edge.sh dns         # A records, DNS only (never Cloudflare-proxied)
+infra/phone-app/edge/edge.sh apply-vm    # WireGuard, nftables DNAT, nginx SNI router, WSS cert
+infra/phone-app/edge/edge.sh apply-box   # box WireGuard + policy routing, ufw, TURN cert
+infra/phone-app/edge/edge.sh status      # tunnel / DNS / certificate facts, changes nothing
+```
+
+How traffic flows: WireGuard joins VM `10.77.0.1` and box `10.77.0.2`, with the box
+dialling out so home needs no inbound port. The VM DNATs RTC UDP `7892`, RTC TCP `7891` and
+TURN/UDP `7893` to `10.77.0.2` without masquerading, so LiveKit sees real client
+addresses. The box policy-routes only traffic sourced from `10.77.0.2` (table `7792`) back
+through the tunnel, and the VM masquerades it. LiveKit's `use_external_ip` STUN therefore
+maps the tunnel interface (`PHONE_EDGE_IFACE`, rendered into `interfaces.includes`) to the
+edge's public IP. The box never holds that IP itself, because the WireGuard endpoint would
+then be a local address. On TCP/443 nginx routes by SNI: the WSS host is terminated on the
+VM (certbot HTTP-01; renewal reloads nginx) and proxied to internal `7890`, and the TURN
+host is passed through to LiveKit's own TURN/TLS on `7894`. The box renews that certificate
+with certbot DNS-01 via Cloudflare, and a deploy hook copies it into
+`~/.config/papercusp-phone/tls/turn/` and restarts LiveKit. SIP `5070` and RTP
+`40000–40200` are forwarded only with `PHONE_EDGE_FORWARD_SIP=1` and stay closed at the
+cloud firewall until P-004 opens them to the carrier's published source ranges.
+
 ## Credentials
 
 The API key/secret pair lives in `~/.config/papercusp-phone/livekit.env` (0600) and
