@@ -8,6 +8,7 @@ import { listSpecClauses } from './spec-clauses-store';
 import {
   evidenceCurrentInputKey,
   listSpecEvidence,
+  readCurrentOperationalArtifactDisclosures,
   evidenceCurrentInputSchema,
   type EvidenceCurrentInput,
 } from './spec-evidence-store';
@@ -372,6 +373,34 @@ export default defineTool({
         },
       };
     }
+    const artifactDisclosures = await readCurrentOperationalArtifactDisclosures(
+      typeof ctx.workspaceId === 'string' ? ctx.workspaceId : '',
+      harnessSlug,
+      allEvidence,
+    );
+    const evaluationEvidence = allEvidence.map((row) => {
+      const gaps = row.id === undefined ? undefined : artifactDisclosures.get(row.id);
+      if (!gaps?.length) return row;
+      const existing = row.details.adequacy;
+      const adequacy = existing && typeof existing === 'object' && !Array.isArray(existing)
+        ? existing as Record<string, unknown>
+        : {};
+      const existingGaps = Array.isArray(adequacy.disclosedGap)
+        ? adequacy.disclosedGap.filter((gap): gap is string => typeof gap === 'string')
+        : typeof adequacy.disclosedGap === 'string'
+          ? [adequacy.disclosedGap]
+          : [];
+      return {
+        ...row,
+        details: {
+          ...row.details,
+          adequacy: {
+            ...adequacy,
+            disclosedGap: [...new Set([...existingGaps, ...gaps])],
+          },
+        },
+      };
+    });
     const explicitSelection =
       args.specIds !== undefined ||
       args.workItemIds !== undefined ||
@@ -474,7 +503,7 @@ export default defineTool({
     const rows = eligible.map((clause) =>
       evaluateSpecTestAdequacy({
         clause,
-        evidence: allEvidence,
+        evidence: evaluationEvidence,
         classRef: args.classRef,
         harness: harnessSlug,
         current: (() => {

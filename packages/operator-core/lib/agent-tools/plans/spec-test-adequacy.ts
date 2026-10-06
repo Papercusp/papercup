@@ -116,6 +116,13 @@ export interface SpecEvidenceForAdequacy {
      * a line starts with exactly `<entry>: ` — never parsed out of free text (WI-10006745).
      */
     mutationFailureLines?: string[];
+    /**
+     * The failed mutant run's recorded failed-case identities (execution_details.failedCaseTitles,
+     * TestCase.fullName). When present, a declared case is measured only by EXACT membership —
+     * prefix-matching `mutationFailureLines` would let `suite > a` claim a failed `suite > a: b`
+     * (WI-10006753). Absent on legacy rows, which keep the line-prefix fallback.
+     */
+    mutationFailedCaseTitles?: string[];
   } | null;
   details: Record<string, unknown>;
   observedAt?: string;
@@ -1427,6 +1434,9 @@ function isWellFormedCaseTitle(title: unknown): title is string {
  */
 export function mutationMeasuredFailedCase(mutation: SpecEvidenceForAdequacy, caseTitle: unknown): boolean {
   if (!isWellFormedCaseTitle(caseTitle)) return false;
+  // WI-10006753: recorded identities are exact — never re-admit the prefix ambiguity on them.
+  const recordedTitles = mutation.testRunProvenance?.mutationFailedCaseTitles;
+  if (recordedTitles !== undefined) return recordedTitles.includes(caseTitle);
   const prefix = `${caseTitle}: `;
   return (mutation.testRunProvenance?.mutationFailureLines ?? []).some((line) => line.startsWith(prefix));
 }

@@ -503,6 +503,127 @@ export async function measureAndPinEvidenceForScope(
   return measureAndPinRepoFilesEvidenceAtRoot(await resolveMeasurementRoot(workspaceId, harnessSlug, measurement), measurement);
 }
 
+const MAX_OPERATIONAL_ARTIFACT_BYTES = 8 * 1024 * 1024;
+
+type OperationalEvidenceDisclosureRow = {
+  id?: number;
+  evidenceKind: SpecEvidenceKind;
+  evidenceRef: string;
+  details: Record<string, unknown>;
+  currentness: { overall: string };
+  serverMeasurement?: { status: string };
+};
+
+/**
+ * Read explicit coverage disclosures from a current, server-measured operational
+ * evidence artifact. Opaque/manual bindings and caller-attested fingerprints are
+ * deliberately excluded: only a file included in the repo-files measurement and
+ * measured current by listSpecEvidence can contribute artifact disclosures.
+ */
+export async function readCurrentOperationalArtifactDisclosures(
+  workspaceId: string,
+  harnessSlug: string,
+  rows: readonly OperationalEvidenceDisclosureRow[],
+): Promise<Map<number, string[]>> {
+  const candidates = rows.flatMap((row) => {
+    if (
+      row.id === undefined ||
+      !Number.isSafeInteger(row.id) ||
+      row.evidenceKind !== 'operational' ||
+      row.currentness.overall !== 'current' ||
+      row.serverMeasurement?.status !== 'measured'
+    ) return [];
+    const measurement = evidenceMeasurementSchema.safeParse(row.details.currentMeasurement);
+    return measurement.success &&
+      measurement.data.kind === 'repo-files' &&
+      measurement.data.sourcePaths.includes(row.evidenceRef)
+      ? [{ row, measurement: measurement.data }]
+      : [];
+  });
+  if (candidates.length === 0) return new Map();
+
+  const roots = new Map<string, Promise<string>>();
+  const byReference = new Map<string, Promise<string[]>>();
+  const readOne = (
+    evidenceRef: string,
+    measurement: RepoFilesEvidenceMeasurement,
+  ): Promise<string[]> => {
+    const rootKey = measurement.rootHarnessSlug ?? harnessSlug;
+    const key = JSON.stringify([rootKey, evidenceRef]);
+    const existing = byReference.get(key);
+    if (existing) return existing;
+    const task = (async () => {
+      let root: string;
+      try {
+        let rootPromise = roots.get(rootKey);
+        if (!rootPromise) {
+          rootPromise = realpath(await resolveMeasurementRoot(workspaceId, harnessSlug, measurement));
+          roots.set(rootKey, rootPromise);
+        }
+        root = await rootPromise;
+      } catch (error) {
+        const reason = error instanceof Error ? error.message.split('\n')[0] : String(error);
+        return [`The measured operational evidence repository could not be resolved for disclosure verification: ${reason.slice(0, 180)}`];
+      }
+      const pathParts = evidenceRef.split('/');
+      if (
+        isAbsolute(evidenceRef) ||
+        evidenceRef.includes('\\') ||
+        pathParts.some((part) => part === '' || part === '.' || part === '..')
+      ) return ['The current operational evidence artifact path is unsafe, so its disclosure fields could not be verified.'];
+      const candidate = resolve(root, evidenceRef);
+      if (!containedBy(root, candidate)) {
+        return ['The current operational evidence artifact resolves outside its repository root, so its disclosure fields could not be verified.'];
+      }
+      try {
+        const canonical = await realpath(candidate);
+        if (!containedBy(root, canonical)) {
+          return ['The current operational evidence artifact follows a path outside its repository root, so its disclosure fields could not be verified.'];
+        }
+        const info = await stat(canonical);
+        if (!info.isFile() || info.size > MAX_OPERATIONAL_ARTIFACT_BYTES) {
+          return ['The current operational evidence artifact is not a bounded regular file, so its disclosure fields could not be verified.'];
+        }
+        const parsed: unknown = JSON.parse(await readFile(canonical, 'utf8'));
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          return ['The current operational evidence artifact is not a JSON object, so its disclosure fields could not be verified.'];
+        }
+        const artifact = parsed as Record<string, unknown>;
+        if (artifact.kind !== 'operational-test-evidence') return [];
+        const gaps: string[] = [];
+        for (const field of ['disclosures', 'couldNotDetermine'] as const) {
+          const value = artifact[field];
+          if (Array.isArray(value)) {
+            for (const entry of value) {
+              const detail = typeof entry === 'string'
+                ? entry.trim()
+                : JSON.stringify(entry);
+              gaps.push(detail
+                ? `Artifact ${field}: ${detail}`
+                : `Artifact ${field} contains an entry whose disclosure could not be read.`);
+            }
+          } else if (value !== undefined && value !== null) {
+            gaps.push(`Artifact ${field} is malformed, so its disclosure could not be verified.`);
+          }
+        }
+        return gaps;
+      } catch (error) {
+        const reason = error instanceof Error ? error.message.split('\\n')[0] : String(error);
+        return [`The current operational evidence artifact could not be read for disclosure fields: ${reason.slice(0, 180)}`];
+      }
+    })();
+    byReference.set(key, task);
+    return task;
+  };
+
+  const output = new Map<number, string[]>();
+  await Promise.all(candidates.map(async ({ row, measurement }) => {
+    const gaps = await readOne(row.evidenceRef, measurement);
+    if (gaps.length > 0) output.set(row.id!, gaps);
+  }));
+  return output;
+}
+
 function measurementFromDetails(details: Record<string, unknown>): EvidenceMeasurement | null {
   const parsed = evidenceMeasurementSchema.safeParse(details.currentMeasurement);
   return parsed.success ? parsed.data : null;
@@ -1116,6 +1237,21 @@ export function mutationFailureLines(tail: string, executionDetails?: unknown): 
     .map((line) => line.trimEnd())
     .filter((line) => line.length > 0)
     .slice(0, 64);
+}
+
+/**
+ * The mutant run's recorded failed-case titles, for EXACT-membership case matching (WI-10006753).
+ * `mutationFailureLines` re-renders these as `<title>: …` lines, and prefix matching over those
+ * lines lets a declared `suite > a` claim a recorded failed `suite > a: b`; the adequacy
+ * evaluator prefers this list when present. `undefined` = no structured titles (legacy row or no
+ * execution details) → the evaluator falls back to line-prefix matching. Malformed execution proof
+ * yields `[]` (measures nothing), mirroring `mutationFailureLines`' refusal to fall back to text.
+ */
+export function mutationFailedCaseTitles(executionDetails?: unknown): string[] | undefined {
+  if (executionDetails == null) return undefined;
+  const execution = parseTestRunExecutionDetails(executionDetails);
+  if (!execution) return [];
+  return execution.failedCaseTitles === undefined ? undefined : [...execution.failedCaseTitles];
 }
 
 interface EvidenceRow extends CurrentnessRow {
@@ -2013,6 +2149,10 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
             ...(row.mutation_failure_tail || row.mutation_execution_details != null
               ? { mutationFailureLines: mutationFailureLines(row.mutation_failure_tail ?? '', row.mutation_execution_details) }
               : {}),
+            ...(() => {
+              const titles = mutationFailedCaseTitles(row.mutation_execution_details);
+              return titles === undefined ? {} : { mutationFailedCaseTitles: titles };
+            })(),
           },
       details: row.provisionalProofBase
         ? {
