@@ -310,6 +310,9 @@ HISTORICAL_MODE=0
 DELETES_ACK=0
 FAKE_DESTRUCTIVE=0
 SANDBOX_ROOT=""
+# bwrap args mounting a PRIVATE tmpfs over each vite config temp dir inside the
+# --sandbox-root sandbox (EI-25217198562906119); filled in at sandbox preflight.
+SANDBOX_TMPFS_ARGS=()
 # Copy-out relocation strategy (EI-24799401310241778): auto = overlay when bwrap
 # can bind on this host, else the repo mirror; overlay/mirror force one.
 RELOCATION="auto"
@@ -1103,6 +1106,50 @@ SHIM
   log "fake-destructive: shims installed ($FAKE_BIN); intercepted calls -> $DESTRUCTIVE_LOG"
 fi
 
+# EI-25217198562906119: the temp dir vite writes its bundled config into, one per
+# vite/vitest config tracked under each given git root (submodules included):
+# <config's nearest node_modules>/.vite-temp, as vite's loadConfigFromBundledFile
+# resolves it. Configs with no node_modules up to their root are skipped (vite
+# then writes beside the config, which no scoped allowance can cover).
+sandbox_vite_temp_dirs() {
+  local root cfg dir
+  for root in "$@"; do
+    [ -n "$root" ] || continue
+    git -C "$root" ls-files --recurse-submodules -z -- \
+        ':(glob)**/vitest*.config.*' ':(glob)**/vite.config.*' 2>/dev/null \
+      | while IFS= read -r -d '' cfg; do
+          dir="$(dirname "$root/$cfg")"
+          while :; do
+            if [ -d "$dir/node_modules" ]; then printf '%s\n' "$dir/node_modules/.vite-temp"; break; fi
+            if [ "$dir" = "$root" ] || [ "$dir" = "/" ]; then break; fi
+            dir="$(dirname "$dir")"
+          done
+        done
+  done | sort -u
+}
+
+# EI-25217198562906119: under --sandbox-root a guard that writes anywhere outside
+# the writable binds dies with EROFS before measuring anything, and the bare
+# "BASELINE FAILED" that follows reads as "your guard is broken". When the log
+# shows a read-only refusal, name the sandbox as the cause and the route around it.
+sandbox_readonly_hint() {
+  local log_file="$1" label="$2" hits
+  [ "$DELETES_ACK" -eq 1 ] || return 0
+  hits="$(grep -E 'EROFS|Read-only file system' "$log_file" 2>/dev/null | head -5)"
+  [ -n "$hits" ] || return 0
+  log "SANDBOX READ-ONLY WRITE: the $label tried to WRITE outside the --sandbox-root sandbox, and the read-only / refused it (EROFS). This is the SANDBOX, not your guard — nothing was measured:
+$hits
+
+      Writable inside the sandbox: $SANDBOX_ROOT, $SCRATCH (also \$TMPDIR), and a
+      private tmpfs over each vite config temp dir (node_modules/.vite-temp).
+
+      Usual cause: \`npm run test:file\` runs through pc-heavy (/run/user/$(id -u)/pc-heavy-slots)
+      and npm-install-safe (/tmp/pcv/fs-mutex-locks); both write host state the
+      sandbox forbids. Call the test router DIRECTLY instead:
+          --test 'node --import ./scripts/lib/committed-source-loader.mjs scripts/test-files.mjs <path>'
+      If the guard itself writes elsewhere, point it at \$TMPDIR or under $SANDBOX_ROOT."
+}
+
 if [ "$DELETES_ACK" -eq 1 ]; then
   command -v bwrap >/dev/null 2>&1 \
     || die "--i-know-this-deletes needs bwrap (bubblewrap) for its read-only sandbox and this host has none. Use --fake-destructive instead."
@@ -1112,6 +1159,27 @@ if [ "$DELETES_ACK" -eq 1 ]; then
       REFUSING to run destructive code unsandboxed. Use --fake-destructive instead."
   fi
   log "sandbox: guard runs will execute under bwrap — / read-only; writable: $SANDBOX_ROOT + $SCRATCH"
+  # EI-25217198562906119 (measured 2026-10-06): vitest bundles its config into
+  # <nearest node_modules>/.vite-temp BEFORE collecting a single test, so under
+  # the read-only / every vitest guard died in its baseline with EROFS — the
+  # direct test router included. Give each such dir a PRIVATE tmpfs: the bundler
+  # gets its scratch write, and a mutant can reach nothing on the host there.
+  # bwrap cannot create a mountpoint under the read-only /, so the (gitignored,
+  # empty) dirs are created first, out here.
+  sandbox_git_roots=()
+  for sandbox_from in "$PWD" "$(dirname "$FILE")"; do
+    sandbox_root_dir="$(git -C "$sandbox_from" rev-parse --show-superproject-working-tree 2>/dev/null)"
+    [ -n "$sandbox_root_dir" ] || sandbox_root_dir="$(git -C "$sandbox_from" rev-parse --show-toplevel 2>/dev/null)"
+    [ -n "$sandbox_root_dir" ] && sandbox_git_roots+=("$sandbox_root_dir")
+  done
+  while IFS= read -r sandbox_vite_temp; do
+    [ -n "$sandbox_vite_temp" ] || continue
+    mkdir -p "$sandbox_vite_temp" 2>/dev/null || continue
+    SANDBOX_TMPFS_ARGS+=(--tmpfs "$sandbox_vite_temp")
+  done < <(sandbox_vite_temp_dirs ${sandbox_git_roots[@]+"${sandbox_git_roots[@]}"})
+  if [ "${#SANDBOX_TMPFS_ARGS[@]}" -gt 0 ]; then
+    log "sandbox: private tmpfs over $(( ${#SANDBOX_TMPFS_ARGS[@]} / 2 )) vite config temp dir(s) (node_modules/.vite-temp)"
+  fi
 fi
 
 # EI-22133917471532652 (2026-09-02): pc-heavy allocates its after-ready
@@ -1272,6 +1340,7 @@ run_guard() {
         exec ${guard_prefix[@]+"${guard_prefix[@]}"} \
           bwrap --ro-bind / / --dev /dev --ro-bind-try /dev/shm /dev/shm --proc /proc \
           --bind "$SANDBOX_ROOT" "$SANDBOX_ROOT" --bind "$SCRATCH" "$SCRATCH" \
+          ${SANDBOX_TMPFS_ARGS[@]+"${SANDBOX_TMPFS_ARGS[@]}"} \
           ${overlay_args[@]+"${overlay_args[@]}"} \
           --die-with-parent -- bash "$SCRATCH/guard-cmd.sh"
       fi
@@ -1918,6 +1987,7 @@ if run_guard baseline "baseline guard" "$BASE_CMD" "$BASELINE_LOG"; then
 else
   BASELINE_RC=$?
   log "BASELINE FAILED (guard exited $BASELINE_RC) — refusing to score the mutant"
+  sandbox_readonly_hint "$BASELINE_LOG" "baseline guard"
   printf 'MUTATION_PROBE_RESULT verdict=harness-error expected=%s target=%s baseline_exit=%d guard_exit=-1\n' \
     "$EXPECT" "$TARGET_MODE" "$BASELINE_RC"
   exit 2
@@ -1976,6 +2046,7 @@ if [ "$TARGET_MODE" = "copy-out" ]; then
   else
     COPY_BASELINE_RC=$?
     log "COPY-BASELINE FAILED (guard exited $COPY_BASELINE_RC against the UNMUTATED relocated copy) — refusing to score the mutant"
+    sandbox_readonly_hint "$COPY_BASELINE_LOG" "unmutated-copy baseline guard"
     printf 'MUTATION_PROBE_RESULT verdict=harness-error expected=%s target=%s baseline_exit=%d guard_exit=-1 copy_baseline_exit=%d relocation=%s\n' \
       "$EXPECT" "$TARGET_MODE" "$BASELINE_RC" "$COPY_BASELINE_RC" "$RELOCATION_USED"
     if [ "$RELOCATION_USED" = "overlay" ]; then
