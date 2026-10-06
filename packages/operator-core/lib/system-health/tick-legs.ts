@@ -15,6 +15,11 @@
  *     (the hung one is among them, usually alone);
  *   - when a tick finishes slower than `slowTickMs`, log its slowest legs.
  *
+ * When NO leg is unsettled the tick is blocked on an await that is not wrapped in a leg. The
+ * in-flight report then names the leg that settled last and how long ago, so the unwrapped await
+ * locates itself as "the code right after <label>". (Observed 2026-10-06 20:52-20:56Z: a 276s tick
+ * logged "unsettled legs: (none)" at 60s and 180s, which said nothing about where it was.)
+ *
  * Deliberately observation-only: it adds no timeout and changes no control flow. Choosing a bound
  * (a per-leg deadline versus releasing the single-flight slot) needs a MEASURED slow leg first;
  * this is the instrument that produces that measurement.
@@ -33,6 +38,10 @@ export interface TickLegTracker {
   pending(): LegTiming[];
   /** Settled legs, slowest first, at most `n`. */
   slowest(n: number): LegTiming[];
+  /** While no leg is unsettled: the leg that settled most recently (`label: ''` if none has
+   *  settled yet) and how long ago, measured from tracker creation when none has. `null` while
+   *  any leg is still running. */
+  idle(): LegTiming | null;
 }
 
 /** Tracker for callers that do not instrument (every non-tick caller of computeSystemHealth). */
@@ -40,18 +49,23 @@ export const NOOP_TICK_LEGS: TickLegTracker = {
   leg: async (_label, work) => work(),
   pending: () => [],
   slowest: () => [],
+  idle: () => null,
 };
 
 export function createTickLegTracker(now: () => number = Date.now): TickLegTracker {
   const started = new Map<string, number>();
   const settled: LegTiming[] = [];
+  const createdAt = now();
+  let lastSettled: { label: string; at: number } | null = null;
   return {
     leg<T>(label: string, work: () => Promise<T> | T): Promise<T> {
       const t0 = now();
       started.set(label, t0);
       const done = (): void => {
         started.delete(label);
-        settled.push({ label, ms: now() - t0 });
+        const at = now();
+        settled.push({ label, ms: at - t0 });
+        lastSettled = { label, at };
       };
       let p: Promise<T>;
       try {
@@ -80,11 +94,30 @@ export function createTickLegTracker(now: () => number = Date.now): TickLegTrack
     slowest(n: number): LegTiming[] {
       return [...settled].sort((a, b) => b.ms - a.ms).slice(0, n);
     },
+    idle(): LegTiming | null {
+      if (started.size > 0) return null;
+      const t = now();
+      return lastSettled
+        ? { label: lastSettled.label, ms: t - lastSettled.at }
+        : { label: '', ms: t - createdAt };
+    },
   };
 }
 
 export function formatLegs(legs: LegTiming[]): string {
   return legs.length === 0 ? '(none)' : legs.map((l) => `${l.label}=${l.ms}ms`).join(', ');
+}
+
+/** The in-flight report's leg clause. With nothing unsettled, say where the tick is instead of
+ *  just "(none)": after which leg, or before the first one. */
+export function formatInFlight(legs: TickLegTracker): string {
+  const pending = legs.pending();
+  if (pending.length > 0) return formatLegs(pending);
+  const idle = legs.idle();
+  if (!idle) return '(none)';
+  return idle.label
+    ? `(none; blocked outside any leg for ${idle.ms}ms since ${idle.label} settled)`
+    : `(none; no leg has settled yet, ${idle.ms}ms into the tick)`;
 }
 
 /** A tick slower than this logs its slowest legs. Normal ticks measure ~2s. */
@@ -129,7 +162,7 @@ export async function watchTick<T>(
       if (finished) return;
       log(
         `[system-health] tick ${label} still in flight after ${now() - startedAt}ms; ` +
-          `unsettled legs: ${formatLegs(legs.pending())}`,
+          `unsettled legs: ${formatInFlight(legs)}`,
       );
       arm(delayMs * 2);
     }, delayMs);

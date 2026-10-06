@@ -166,4 +166,73 @@ describe('watchTick (EI-25221129396992808)', () => {
     expect(SLOW_TICK_MS).toBe(20_000);
     expect(IN_FLIGHT_WARN_MS).toBe(60_000);
   });
+
+  // Observed 2026-10-06 20:52-20:56Z: a 276s tick logged "unsettled legs: (none)" at 60s and 180s
+  // because it was blocked on an await that was not wrapped in a leg. The report must say where.
+  it('locates a tick blocked on an UNWRAPPED await after a leg settled', async () => {
+    const h = harness();
+    const unwrapped = deferred();
+    const tick = watchTick(
+      'ws-3',
+      async (legs) => {
+        await legs.leg('pot-started', async () => undefined);
+        await unwrapped.promise; // not a leg
+        return 'snapshot';
+      },
+      { now: h.now, log: h.log, setTimer: h.setTimer },
+    );
+    await flush();
+    h.advanceTo(1_000_000 + 60_000);
+    expect(h.logs).toEqual([
+      '[system-health] tick ws-3 still in flight after 60000ms; unsettled legs: ' +
+        '(none; blocked outside any leg for 60000ms since pot-started settled)',
+    ]);
+    unwrapped.resolve();
+    expect(await tick).toBe('snapshot');
+  });
+
+  it('says so when the tick is blocked before ANY leg has settled', async () => {
+    const h = harness();
+    const unwrapped = deferred();
+    const tick = watchTick(
+      'ws-4',
+      async () => {
+        await unwrapped.promise; // e.g. a slow import before the first leg
+        return 'snapshot';
+      },
+      { now: h.now, log: h.log, setTimer: h.setTimer },
+    );
+    await flush();
+    h.advanceTo(1_000_000 + 60_000);
+    expect(h.logs).toEqual([
+      '[system-health] tick ws-4 still in flight after 60000ms; unsettled legs: ' +
+        '(none; no leg has settled yet, 60000ms into the tick)',
+    ]);
+    unwrapped.resolve();
+    expect(await tick).toBe('snapshot');
+  });
+});
+
+describe('createTickLegTracker idle() (EI-25221129396992808)', () => {
+  it('is null while any leg runs, then names the last-settled leg and its age', async () => {
+    const h = harness();
+    const legs = createTickLegTracker(h.now);
+    h.advanceTo(1_000_250);
+    expect(legs.idle()).toEqual({ label: '', ms: 250 }); // nothing settled: age since creation
+    const a = deferred();
+    const b = deferred();
+    const pa = legs.leg('a', () => a.promise);
+    const pb = legs.leg('b', () => b.promise);
+    expect(legs.idle()).toBeNull();
+    h.advanceTo(1_001_000);
+    a.resolve();
+    await pa;
+    expect(legs.idle()).toBeNull(); // b still running
+    h.advanceTo(1_002_000);
+    b.resolve();
+    await pb;
+    h.advanceTo(1_005_000);
+    expect(legs.idle()).toEqual({ label: 'b', ms: 3_000 }); // the LAST to settle, not the first
+    expect(NOOP_TICK_LEGS.idle()).toBeNull();
+  });
 });
