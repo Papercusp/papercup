@@ -338,7 +338,7 @@ export function bindLiveCompetitorDrivers(opts: BindLiveCompetitorsOptions): Com
         competitorId: id,
         pythonBin: venvPython(id),
         runnerScript: runnerScriptPath(id),
-        model: opts.model,
+        model: opts.model ?? DEFAULT_COMPETITOR_MODEL,
         baseUrl: opts.baseUrl ?? null,
         apiKeyEnv: opts.apiKeyEnv,
         maxIterations: opts.maxIterations,
