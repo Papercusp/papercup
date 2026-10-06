@@ -118,7 +118,38 @@ Playwright `7 passed (51.9s)`. Log: `.papercusp/scratch/d006-rig-run6.log`. This
 live check for WI-10006826: the ElevenLabs leg failed in run 5 on the cached `kokoro` engine and
 passes in run 6 with the cache removed.
 
-## Hosted portal — pending
+## Hosted portal — reaches the chat-create refusal; round trip moves to the guided session (D-009)
 
-A signed-in test account is needed; asked Avi (conversation
-`conv-muwxkot8-0000-71edfc77ed724982ae24c1522a48d51e`).
+Spec: `portal/e2e/portal-voice-synthetic-roundtrip.spec.ts` (portal checkout), run as
+`PORTAL_VOICE_SYNTHETIC_E2E=1 PORTAL_VOICE_SYNTHETIC_EVIDENCE_OUT=<receipt> npx playwright test e2e/portal-voice-synthetic-roundtrip.spec.ts --reporter=list`.
+The fixture admits an isolated WorkOS TEST tenant (no help from Avi needed) and deletes it afterwards.
+The browser is system Chrome with the fake media device. An init script replaces the mic track with a
+Web Audio track, and the spec plays Kokoro speech into it.
+
+What a fresh TEST tenant can reach, measured in runs 2–6 (logs and receipts in
+`.papercusp/scratch/d006-portal-run{2..6}*`):
+
+- Instrument control passes: Whisper transcribes the Kokoro question (run 2 onward, after the spec's
+  Whisper path was fixed to `/v1/audio/transcriptions`).
+- Sign-in passes: `/api/hosted/auth/session` returns 200 with an `organizationId`, and `workspaceId` is null.
+- Shell entry passes: `/?firstRun=deferred&chatPane=true` gets past the first-run card and opens the
+  chat dock that holds the voice control.
+- **Chat create is refused** (run 6, 18:43:27Z): GET and POST `/api/papercup-chat/conversations` both
+  return 403 `{"ok":false,"error":"portal_chat_workspace_not_selected"}`. A portal chat runs on the
+  selected workspace's own machine (`portal/apps/host/src/chat-instance-boundary.ts`), and a TEST tenant
+  has none. Without a conversation there is no voice room. Without a room, push-to-talk never asks for
+  the microphone, so the denial check cannot run either.
+
+**Product defect found: WI-10006841.** Before the fix, the voice control showed "Connecting voice…"
+(button "Voice mode — connecting") for the whole 60 s timeout. The page's only alert was empty, because
+the shell's periodic refresh clears the shared error banner whenever it succeeds. Fix: the shell keeps a
+separate voice-start error, and the voice control shows the refusal as a sentence
+("Voice needs a workspace — create or select one, then retry.") on its retry button and status line;
+Retry asks for the chat again. Unit tests are in `portal/tests/voice-session.test.ts` (11/11 pass) and
+the portal typecheck is clean (2946 files).
+
+Rescope (plan D-009): the spec's first test now checks that the refusal is named and that no room and
+no microphone open. The spoken round trip and the denial test skip with a stated reason when the account
+has no workspace, and run unchanged on an account that has one. The hosted spoken round trip and
+microphone denial on the portal are covered by Avi's guided session (D-005), on his account, which has a
+workspace. No synthetic portal round-trip evidence is claimed for this release.
