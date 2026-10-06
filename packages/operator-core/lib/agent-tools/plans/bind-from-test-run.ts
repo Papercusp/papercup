@@ -199,6 +199,8 @@ export interface DerivedTestRunBinding {
   measurement: {
     schemaVersion: 1;
     kind: 'repo-files';
+    /** WI-10006610: the registered sibling checkout the paths are relative to (absent = the plan harness). */
+    rootHarnessSlug?: string;
     sourcePaths: string[];
     sourceGlobs?: string[];
     testPaths: string[];
@@ -732,7 +734,74 @@ export interface TestRunBindingDeps {
   /** Conditionally stamp a still-unattributed run with the caller's scope; true when this call (or a racer) did. */
   adoptRun(scope: TestRunBindingScope, testRunId: number): Promise<boolean>;
   resolveRoot(scope: TestRunBindingScope): Promise<string>;
+  /** WI-10006610: the registered sibling checkout a run recorded outside the harness checkout ran in. Absent = never. */
+  resolveSiblingRoot?(
+    scope: TestRunBindingScope,
+    harnessRoot: string,
+    recordedRoot: string | null,
+  ): Promise<SiblingCheckout | null>;
   git?: GitRunner;
+}
+
+export interface SiblingCheckout {
+  /** The registry's content path for the checkout: the root the evidence store re-measures at. */
+  root: string;
+  harnessSlug: string;
+}
+
+async function realOrResolved(path: string): Promise<string> {
+  try {
+    return await realpath(path);
+  } catch {
+    return resolve(path);
+  }
+}
+
+function isWithin(parent: string, child: string): boolean {
+  return child === parent || child.startsWith(parent.endsWith(sep) ? parent : `${parent}${sep}`);
+}
+
+/**
+ * WI-10006610: the registered checkout, OTHER than the plan harness's own, that a run's recorded
+ * root lives in — a hive app such as email or portal. testing:run evidence already measures
+ * there through `measurement.rootHarnessSlug` (EI-25203154942838341, run.ts
+ * registeredHarnessSlugForRoot); a ledger row recorded in that checkout (a mutation probe, a
+ * direct vitest run with the admin reporter) maps the same way instead of being refused as
+ * outside the harness. The deepest registered checkout containing the root wins, so a nested
+ * workspace run that recorded its package directory still resolves; on a tie a non-hive project
+ * beats a repo-less hive borrowing the same path. Null when the root is inside the plan harness
+ * checkout (submodules keep their existing mapping) or inside no registered checkout (a
+ * disposable clone or copy-out mirror, which the as-committed / canonical paths handle), and on
+ * a registry failure, which must not break those in-harness mappings.
+ */
+export async function registeredSiblingCheckout(
+  scope: TestRunBindingScope,
+  harnessRoot: string,
+  recordedRoot: string | null | undefined,
+  loadRegistry: typeof loadHarnessRegistry = loadHarnessRegistry,
+): Promise<SiblingCheckout | null> {
+  if (!recordedRoot || !isAbsolute(recordedRoot)) return null;
+  const recorded = await realOrResolved(recordedRoot);
+  if (isWithin(await realOrResolved(harnessRoot), recorded)) return null;
+  let registry: Awaited<ReturnType<typeof loadHarnessRegistry>>;
+  try {
+    registry = await loadRegistry(scope.workspaceId);
+  } catch {
+    return null;
+  }
+  let best: { root: string; real: string; harnessSlug: string; hive: boolean } | null = null;
+  for (const project of registry.projects) {
+    if (project.slug === scope.harnessSlug) continue;
+    const path = resolveHarnessContentPath(registry, project.slug);
+    if (!path || !isAbsolute(path)) continue;
+    const real = await realOrResolved(path);
+    if (real === sep || !isWithin(real, recorded)) continue;
+    const hive = project.harness_kind === 'hive';
+    if (!best || real.length > best.real.length || (real.length === best.real.length && best.hive && !hive)) {
+      best = { root: resolve(path), real, harnessSlug: project.slug, hive };
+    }
+  }
+  return best && { root: best.root, harnessSlug: best.harnessSlug };
 }
 
 export const defaultTestRunBindingDeps: TestRunBindingDeps = {
@@ -772,6 +841,7 @@ export const defaultTestRunBindingDeps: TestRunBindingDeps = {
     if (!root) throw new Error(`repo_measurement_harness_root_unavailable:${scope.harnessSlug}`);
     return root;
   },
+  resolveSiblingRoot: (scope, harnessRoot, recordedRoot) => registeredSiblingCheckout(scope, harnessRoot, recordedRoot),
 };
 
 /** Load, scope-check, adopt if unattributed, then derive. */
@@ -822,7 +892,13 @@ export async function expandTestRunBinding(
       message: `test-run ${testRunId} ran under harness '${row.harness_slug}'; bind it with harness '${row.harness_slug}'.`,
     };
   }
-  const root = await deps.resolveRoot(scope);
+  const harnessRoot = await deps.resolveRoot(scope);
+  // WI-10006610: a run recorded in a registered sibling checkout (a hive app) maps and measures
+  // at THAT checkout, and the binding names it so the store re-measures there.
+  const sibling = deps.resolveSiblingRoot
+    ? await deps.resolveSiblingRoot(scope, harnessRoot, row.root ?? null)
+    : null;
+  const root = sibling?.root ?? harnessRoot;
   let testPath = await recordedTestPath(root, row, deps.git);
   // WI-10004898: a clean run in a disposable clone (lint:as-committed) maps by commit content.
   let asCommitted: AsCommittedMapping | null = null;
@@ -907,6 +983,9 @@ export async function expandTestRunBinding(
     };
   }
   const result = deriveBindingFromTestRun(input, { ...row, file_path: testPath }, root, attribution);
+  if (result.ok && sibling) {
+    result.binding.measurement = { ...result.binding.measurement, rootHarnessSlug: sibling.harnessSlug };
+  }
   if (result.ok && asCommitted) {
     const { testPaths } = result.binding.measurement;
     const sourcePaths = await expandRepoFilesEvidenceSourcePathsAtRoot(root, result.binding.measurement);
@@ -948,6 +1027,7 @@ export async function expandTestRunBinding(
     Object.assign(result.binding.details.testRun as Record<string, unknown>, {
       recordedRoot: row.root ?? null,
       recordedFilePath: row.file_path,
+      ...(sibling ? { rootHarnessSlug: sibling.harnessSlug } : {}),
       ...(input.canonicalTestPath ? { canonicalTestPathOverride: input.canonicalTestPath } : {}),
       ...(asCommitted
         ? { asCommitted: { commitSha: asCommitted.commitSha, repoPrefix: asCommitted.repoPrefix, contentVerified: true } }

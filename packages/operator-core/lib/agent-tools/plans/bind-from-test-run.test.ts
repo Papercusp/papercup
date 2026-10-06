@@ -1,6 +1,6 @@
 /** P-044 (RSR-P-044-A): deriving a proof binding from a recorded test run — pure derivation + scope rules. */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { mkdtemp, mkdir, rm, utimes, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, realpath, rm, symlink, utimes, writeFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -15,6 +15,7 @@ import {
   measurementLowerBound,
   repoRelativeTestPath,
   recordedTestPath,
+  registeredSiblingCheckout,
   testRunBindingSchema,
   withRepoIdentityMemo,
   type TestRunBindingDeps,
@@ -699,6 +700,134 @@ describe('WI-10004898: a clean run in a deleted disposable clone binds by commit
           asCommitted: { commitSha: superCommit, repoPrefix: '', contentVerified: true },
         });
       });
+    });
+  });
+});
+
+// WI-10006610: a ledger row recorded in a registered SIBLING checkout (a hive app such as email,
+// reached through a symlink) maps and measures at that checkout and names it in
+// measurement.rootHarnessSlug, the way testing:run evidence already does — instead of being
+// refused test_run_file_outside_root.
+describe('expandTestRunBinding: registered sibling checkout (WI-10006610)', () => {
+  const SIB_TEST = 'tests/seam.integration.test.ts';
+  const SIB_SUBJECT = 'packages/core/src/service.ts';
+  let sib = '';
+  let linkDir = '';
+  let link = '';
+
+  beforeAll(async () => {
+    sib = await realpath(await mkdtemp(path.join(tmpdir(), 'bind-sibling-')));
+    await mkdir(path.join(sib, 'tests'), { recursive: true });
+    await mkdir(path.join(sib, 'packages/core/src'), { recursive: true });
+    await writeFile(path.join(sib, SIB_TEST), "import '../packages/core/src/service';\n");
+    await writeFile(path.join(sib, SIB_SUBJECT), 'export const service = 1;\n');
+    execFileSync('git', ['init', '-q', sib]);
+    linkDir = await mkdtemp(path.join(tmpdir(), 'bind-sibling-link-'));
+    link = path.join(linkDir, 'email');
+    await symlink(sib, link);
+  });
+
+  afterAll(async () => {
+    await rm(sib, { recursive: true, force: true });
+    await rm(linkDir, { recursive: true, force: true });
+  });
+
+  function registry(extra: Record<string, unknown>[] = []) {
+    const calls = { load: 0 };
+    const load = async () => {
+      calls.load += 1;
+      return {
+        projects: [
+          { slug: 'web', path: root },
+          { slug: 'email', path: link },
+          ...extra,
+        ],
+      } as never;
+    };
+    return { load, calls };
+  }
+
+  const siblingRow = (over: Partial<TestRunEvidenceRow> = {}) =>
+    run({
+      root: sib,
+      file_path: SIB_TEST,
+      source: 'mutation-probe',
+      execution_details: { collectionFailed: false, mutationPhase: 'mutant' },
+      ...over,
+    });
+
+  function deps(row: TestRunEvidenceRow, load: ReturnType<typeof registry>['load']): TestRunBindingDeps {
+    return {
+      loadRun: async () => row,
+      adoptRun: async () => true,
+      resolveRoot: async () => root,
+      resolveSiblingRoot: (scope, harnessRoot, recordedRoot) =>
+        registeredSiblingCheckout(scope, harnessRoot, recordedRoot, load),
+    };
+  }
+
+  it('resolves a root inside a registered sibling to the registry path, deepest checkout first', async () => {
+    const { load } = registry([
+      // An ancestor hive that also contains the sibling must lose to the deeper checkout.
+      { slug: 'hive-home', harness_kind: 'hive', self_repo: true, path: path.dirname(sib) },
+    ]);
+    expect(await registeredSiblingCheckout(SCOPE, root, path.join(sib, 'packages/core'), load)).toEqual({
+      root: link,
+      harnessSlug: 'email',
+    });
+  });
+
+  it('prefers a non-hive project over a repo-less hive sharing the same checkout', async () => {
+    const { load } = registry([{ slug: 'email-hive', harness_kind: 'hive', self_repo: true, path: sib }]);
+    expect(await registeredSiblingCheckout(SCOPE, root, sib, load)).toMatchObject({ harnessSlug: 'email' });
+  });
+
+  it('never consults the registry for a root inside the plan harness checkout, and is null outside every checkout', async () => {
+    const { load, calls } = registry();
+    expect(await registeredSiblingCheckout(SCOPE, root, path.join(root, 'libs/child'), load)).toBeNull();
+    expect(await registeredSiblingCheckout(SCOPE, root, null, load)).toBeNull();
+    expect(calls.load).toBe(0);
+    const outside = await mkdtemp(path.join(tmpdir(), 'bind-unregistered-'));
+    try {
+      expect(await registeredSiblingCheckout(SCOPE, root, outside, load)).toBeNull();
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
+    const failing = async () => {
+      throw new Error('registry down');
+    };
+    expect(await registeredSiblingCheckout(SCOPE, root, sib, failing)).toBeNull();
+  });
+
+  it('binds a mutation-probe row recorded in the sibling with paths relative to it and rootHarnessSlug set', async () => {
+    const { load } = registry();
+    const out = await expandTestRunBinding(input(), SCOPE, deps(siblingRow(), load));
+    expect(out).toMatchObject({
+      ok: true,
+      binding: {
+        evidenceKind: 'mutation',
+        evidenceRef: expect.stringContaining(SIB_TEST),
+        measurement: { rootHarnessSlug: 'email', testPaths: [SIB_TEST], sourcePaths: [SIB_SUBJECT] },
+        details: { testRun: { recordedRoot: sib, recordedFilePath: SIB_TEST, rootHarnessSlug: 'email' } },
+      },
+    });
+  });
+
+  it('keeps an in-harness run on the plan harness root, with no rootHarnessSlug', async () => {
+    const { load } = registry();
+    const out = await expandTestRunBinding(input(), SCOPE, deps(run(), load));
+    expect(out.ok).toBe(true);
+    if (out.ok) {
+      expect(out.binding.measurement).not.toHaveProperty('rootHarnessSlug');
+      expect(out.binding.measurement.testPaths).toEqual([TEST]);
+    }
+  });
+
+  it('still refuses the same sibling row when no sibling resolver is wired (the pre-fix behaviour)', async () => {
+    const { resolveSiblingRoot: _omit, ...withoutSibling } = deps(siblingRow(), registry().load);
+    expect(await expandTestRunBinding(input(), SCOPE, withoutSibling)).toMatchObject({
+      ok: false,
+      error: 'test_run_file_outside_root',
     });
   });
 });
