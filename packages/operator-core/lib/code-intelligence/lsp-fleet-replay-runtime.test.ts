@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { freezeCompilerReplayConfig, materializeReplaySource, replayDurableReport, replayEvidenceProblems, replayFileMismatches, replayHash, replayOracleFingerprint,
+import { freezeCompilerReplayConfig, freezeReplayRuntimeFiles, materializeReplaySource, replayDurableReport, replayEvidenceProblems, replayFileMismatches, replayHash, replayOracleFingerprint,
   replayPopulationFingerprint, replayProcessIdentity, replayServerPopulation, replaySourceFingerprint, replayWireOverlap,
   validateDaemonReplayConfig, type DaemonReplayConfig, type ReplayOracleInput } from './lsp-fleet-replay-runtime';
 import { scopeUnitForTask } from '../task-manager/types';
@@ -14,6 +15,49 @@ vi.mock('./code-intel-bench.ts', () => { throw new Error('legacy benchmark must 
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+describe('prelaunch replay runtime dependency population', () => {
+  function fixture() {
+    const root = mkdtempSync(join(tmpdir(), 'lsp-runtime-population-')); roots.push(root);
+    const modules = join(root, 'node_modules'); mkdirSync(modules);
+    const pkg = join(modules, 'external'); mkdirSync(pkg);
+    const entry = join(pkg, 'index.js'); writeFileSync(entry, 'module.exports = 7;');
+    return { root, modules, pkg, entry };
+  }
+  it('freezes external files, canonical aliases and the declared native dependency graph before launch', () => {
+    const f = fixture();
+    const addon = join(f.pkg, 'pty.node'); writeFileSync(addon, 'native addon');
+    const library = join(f.root, 'libutil.so.1'); writeFileSync(library, 'native library');
+    symlinkSync('index.js', join(f.pkg, 'alias.js'));
+    const files = freezeReplayRuntimeFiles([f.modules], { nativeDependencies: path => path === addon ? [library] : [] });
+    expect(files[f.entry]).toBe(replayHash(readFileSync(f.entry)));
+    expect(files[join(f.pkg, 'alias.js')]).toBe(files[f.entry]);
+    expect(files[addon]).toBe(replayHash('native addon'));
+    expect(files[library]).toBe(replayHash('native library'));
+    writeFileSync(f.entry, 'module.exports = 8;');
+    expect(replayFileMismatches(files)).toContain(`changed-file:${f.entry}`);
+  });
+  it('refuses a dependency symlink escaping the independently copied input root', () => {
+    const f = fixture();
+    writeFileSync(join(f.root, 'live.js'), 'live donor');
+    symlinkSync('../../live.js', join(f.pkg, 'live.js'));
+    expect(() => freezeReplayRuntimeFiles([f.modules], { nativeDependencies: () => [] })).toThrow('escaping-replay-runtime-link');
+  });
+  it('refuses missing transitive libraries and changed files instead of returning a partial population', () => {
+    const f = fixture();
+    expect(() => freezeReplayRuntimeFiles([f.modules], { nativeDependencies: () => [join(f.root, 'missing.so')] })).toThrow();
+    expect(() => freezeReplayRuntimeFiles([f.modules], { nativeDependencies: path => {
+      writeFileSync(path, 'changed during dependency discovery'); return [];
+    } })).toThrow('changed-during-replay-runtime-freeze');
+  });
+  it.runIf(process.platform === 'linux')('captures the actual Node ELF dependency graph with the default scanner', () => {
+    const files = freezeReplayRuntimeFiles([process.execPath]);
+    const libraries = [...execFileSync('ldd', [process.execPath], { encoding: 'utf8' })
+      .matchAll(/(?:=>\s+|^\s*)(\/[^\s]+)\s+\(/gm)].map(match => realpathSync(match[1]));
+    expect(libraries.length).toBeGreaterThan(0);
+    for (const file of [realpathSync(process.execPath), ...libraries])
+      expect(files[file]).toBe(replayHash(readFileSync(file)));
+  });
+});
 function config(): DaemonReplayConfig {
   const rootPath = mkdtempSync(join(tmpdir(), 'lsp-replay-config-')); roots.push(rootPath);
   const file = join(rootPath, 'source.ts');

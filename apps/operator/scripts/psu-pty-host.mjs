@@ -949,8 +949,14 @@ function isClaudeLocalCommandRow(row, text) {
   return row?.isMeta === true || CLAUDE_LOCAL_COMMAND_ROW_RE.test(String(text ?? ''));
 }
 
-function isNativeLaunchContextPrompt(text) {
-  return String(text ?? '').replace(/\r\n?/g, '\n').trimStart().startsWith('# AGENTS.md instructions\n');
+function isNativeLaunchContextPrompt(text, agent) {
+  const normalized = String(text ?? '').replace(/\r\n?/g, '\n').trim();
+  if (normalized.startsWith('# AGENTS.md instructions\n')) return true;
+  // WI-10006270: Codex resume writes a separate environment setup user row
+  // after AGENTS.md and before the kickoff. It must not end the first-task
+  // proof scan. Only a complete standalone block is setup; owner text around
+  // the tags, incomplete blocks, and other backends remain task prompts.
+  return agent === 'codex' && /^<environment_context>\n[\s\S]*\n<\/environment_context>$/.test(normalized);
 }
 
 /** The ONE native-transcript scan behind marker and exact-prompt proofs.
@@ -1025,7 +1031,7 @@ function scanNativeTranscriptMarker({
             const userContent = nativeUserPromptContent(row);
             if (userContent == null) continue;
             userPromptText = nativeUserPromptText(userContent);
-            if (isNativeLaunchContextPrompt(userPromptText)) continue;
+            if (isNativeLaunchContextPrompt(userPromptText, agent)) continue;
             if (isClaudeLocalCommandRow(row, userPromptText)) continue;
           }
           const rawTimestamp = row?.timestamp ?? row?.time ?? row?.createdAt ?? row?.created_at;

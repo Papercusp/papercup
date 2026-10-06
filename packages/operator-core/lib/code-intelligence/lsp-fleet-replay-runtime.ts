@@ -65,6 +65,61 @@ function replayFileHash(file: string, buffer: Buffer): string {
 }
 export const replaySourceFingerprint = (files: DaemonReplayConfig['files']) => replayHash(JSON.stringify(Object.entries(files).sort()));
 export const replayOracleFingerprint = (oracle: Pick<ReplayOracle, 'sites' | 'staleSites'>) => replayHash(JSON.stringify(oracle));
+/** Freeze the declared dependency trees before launch, including canonical
+ * symlink targets and the native libraries the selected executables require.
+ * Loaded-byte verification still refuses anything outside this population. */
+export function freezeReplayRuntimeFiles(paths: readonly string[], options: {
+  nativeDependencies?: (file: string) => readonly string[];
+  onProgress?: (progress: { phase: string; completed: number; total: number }) => void;
+} = {}): Record<string, string> {
+  const files: Record<string, string> = {};
+  const directories = new Set<string>();
+  const buffer = Buffer.allocUnsafe(64 * 1024);
+  const dependencies = options.nativeDependencies ?? ((file: string) => {
+    if (!/(?:\.node|\.so(?:\.\d+)*|\/node)$/.test(file)) return [];
+    const fd = openSync(file, 'r');
+    const header = Buffer.alloc(20);
+    try { if (readSync(fd, header, 0, header.length, 0) !== header.length ||
+      !header.subarray(0, 4).equals(Buffer.from([0x7f, 0x45, 0x4c, 0x46]))) return []; }
+    finally { closeSync(fd); }
+    // Packages can include foreign-architecture addons. Their bytes are frozen,
+    // but only host ELF binaries have a dependency graph this loader can use.
+    const machine = header[5] === 1 ? header.readUInt16LE(18) : header.readUInt16BE(18);
+    const hostMachines: Partial<Record<typeof process.arch, number>> = { x64: 62, arm64: 183, ia32: 3, arm: 40 };
+    const hostMachine = hostMachines[process.arch];
+    if (machine !== hostMachine) return [];
+    const output = execFileSync('ldd', [file], { encoding: 'utf8', timeout: 10_000 });
+    if (/=>\s+not found/.test(output)) throw new Error(`missing-replay-native-dependency:${file}`);
+    return [...output.matchAll(/(?:=>\s+|^\s*)(\/[^\s]+)\s+\(/gm)].map(match => match[1]);
+  });
+  const pending = paths.map(path => ({ path: resolve(path), root: realpathSync(path) }));
+  let completed = 0;
+  while (pending.length) {
+    const { path, root } = pending.pop()!;
+    const actual = realpathSync(path);
+    if (!insideReplayRoot(root, actual)) throw new Error(`escaping-replay-runtime-link:${path}`);
+    const before = statSync(actual, { bigint: true });
+    if (before.isDirectory()) {
+      if (directories.has(actual)) continue;
+      directories.add(actual);
+      for (const entry of readdirSync(actual)) pending.push({ path: join(actual, entry), root });
+      continue;
+    }
+    if (!before.isFile()) throw new Error(`unsupported-replay-runtime-file:${path}`);
+    if (files[actual]) { files[path] = files[actual]; continue; }
+    const hash = replayFileHash(actual, buffer);
+    const native = dependencies(actual);
+    const after = statSync(actual, { bigint: true });
+    if (['dev', 'ino', 'size', 'mtimeNs', 'ctimeNs'].some(key => before[key as keyof typeof before] !== after[key as keyof typeof after]))
+      throw new Error(`changed-during-replay-runtime-freeze:${actual}`);
+    files[path] = hash; files[actual] = hash;
+    for (const dependency of native) pending.push({ path: resolve(dependency), root: realpathSync(dependency) });
+    completed++;
+    if (completed % 4096 === 0 || !pending.length)
+      options.onProgress?.({ phase: 'runtime-files-frozen', completed, total: completed + pending.length });
+  }
+  return files;
+}
 export interface ReplayOracleInput {
   readonly runId: string;
   readonly rootPath: string;
