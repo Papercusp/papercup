@@ -229,6 +229,77 @@ describe('manifest-bound resource reservations', () => {
       resources: { armId, inputTokens, outputTokens }, expectedResourceBudget: caps },
   });
 
+  it('runs the governed helper only after the exact resource row exists and settles that same row', async () => {
+    const loopId = await register();
+    const input = request(loopId, budget(), 'control', 3, 4);
+    let called = false;
+    const out = await runGovernedSpendAttempt({ ...input, attemptKind: 'evaluation', accumulate: false,
+      run: async grant => {
+        called = true;
+        const fresh = postgres(testDatabaseUri, { max: 1, onnotice: () => {}, prepare: false });
+        try {
+          const rows = await listLearningSpendReservations(fresh, { workspaceId: WS, loopId });
+          expect(rows).toHaveLength(1);
+          expect(rows[0]).toMatchObject({ id: input.exact.reservationId, status: 'open',
+            runRef: `manifest:${input.exact.binding}/attempt:${input.exact.reservationId}`,
+            requestedUsd: 1, reservedUsd: 1, resources: input.exact.resources });
+          expect(grant).toEqual({ reservationId: input.exact.reservationId, reservedUsd: 1,
+            clamped: false, resources: input.exact.resources });
+          return { costUsd: 0.02, value: 'scored' };
+        } finally { await fresh.end({ timeout: 5 }); }
+      } }, { enabled: async () => true, getSql: async () => sql, log: () => {} });
+    expect(called).toBe(true);
+    expect(out).toMatchObject({ ok: true, value: 'scored', reservationId: input.exact.reservationId,
+      settlement: { ok: true, reservation: { id: input.exact.reservationId, status: 'settled', usedUsd: 0.02 } } });
+    expect((await getLearningLoop(sql, { workspaceId: WS, loopId }))!.spentUsd).toBe(0);
+    expect(await listLearningSpendEvents(sql, { workspaceId: WS, loopId })).toHaveLength(1);
+    expect(await sumOpenReservedUsd(sql, { workspaceId: WS, loopId })).toBe(0);
+  });
+
+  it('refuses a concurrent resource-cap contender and a settled replay before either callback runs', async () => {
+    const caps = { ...budget(), requestsPerArm: 1 };
+    const loopId = await register(caps);
+    let calls = 0;
+    const run = async () => { calls += 1; return { costUsd: 0, value: 'zero-dollar completion' }; };
+    const input = { ...request(loopId, caps), attemptKind: 'proposer' as const, accumulate: false, run };
+    const deps = { enabled: async () => true, getSql: async () => sql, log: () => {} };
+    const results = await Promise.all([runGovernedSpendAttempt(input, deps),
+      runGovernedSpendAttempt({ ...input, exact: { ...input.exact, reservationId: randomUUID() } }, deps)]);
+    expect(calls).toBe(1);
+    expect(results.filter(r => r.ok)).toHaveLength(1);
+    expect(results.find(r => !r.ok)).toMatchObject({ reason: 'refused', refusal: 'resource-cap-exceeded' });
+    const rows = await listLearningSpendReservations(sql, { workspaceId: WS, loopId });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ status: 'settled', usedUsd: 0, resources: input.exact.resources });
+    const fresh = postgres(testDatabaseUri, { max: 1, onnotice: () => {}, prepare: false });
+    try {
+      const replay = { ...input, exact: { ...input.exact, reservationId: rows[0]!.id } };
+      expect(await runGovernedSpendAttempt(replay, { ...deps, getSql: async () => fresh }))
+        .toMatchObject({ reason: 'refused', refusal: 'resource-cap-exceeded' });
+    } finally { await fresh.end({ timeout: 5 }); }
+    expect(calls).toBe(1);
+    expect(await listLearningSpendEvents(sql, { workspaceId: WS, loopId })).toHaveLength(0);
+  });
+
+  it('retains exact resource admission after incomplete usage and refuses stale policy before dispatch', async () => {
+    const loopId = await register();
+    const input = request(loopId);
+    let calls = 0;
+    const run = async () => { calls += 1; return { costUsd: 0.02, costUsdMeasurementMissing: true, value: 'partial' }; };
+    const deps = { enabled: async () => true, getSql: async () => sql, log: () => {} };
+    const out = await runGovernedSpendAttempt({ ...input, attemptKind: 'evaluation', accumulate: false, run }, deps);
+    expect(out).toMatchObject({ ok: true, value: 'partial', costUsd: 0.02,
+      costUsdMeasurementMissing: true, settlement: null, reservationId: input.exact.reservationId });
+    expect((await listLearningSpendReservations(sql, { workspaceId: WS, loopId }))[0])
+      .toMatchObject({ status: 'open', usedUsd: 0, resources: input.exact.resources });
+    expect(await sumOpenReservedUsd(sql, { workspaceId: WS, loopId })).toBe(1);
+    const stale = { ...request(loopId), attemptKind: 'evaluation' as const, run };
+    stale.exact.expectedResourceBudget.outputTokens += 1;
+    expect(await runGovernedSpendAttempt(stale, deps)).toMatchObject({ reason: 'refused', refusal: 'stale-binding' });
+    expect(calls).toBe(1);
+    expect(await listLearningSpendEvents(sql, { workspaceId: WS, loopId })).toHaveLength(0);
+  });
+
   it.each(['input', 'output', 'requests'] as const)('serializes competing %s grants independently of dollar headroom', async axis => {
     const caps = budget();
     if (axis === 'requests') caps.requestsPerArm = 1;

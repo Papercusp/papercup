@@ -21,6 +21,7 @@ import {
 import type {
   RecordLearningSpendInput,
   RegisterLearningLoopInput,
+  ReserveLearningSpendInput,
   ReserveLearningSpendResult,
   SettleLearningSpendResult,
 } from './store';
@@ -153,6 +154,60 @@ describe('runGovernedSpendAttempt — complete usage settles, incomplete usage r
       return { costUsd: 0, value: 'completed' };
     }), deps);
     expect(out).toMatchObject({ ok: true, reservationId: 'res-1', clamped: true });
+  });
+
+  it('snapshots the exact reservation policy and settlement identity before asynchronous preflight', async () => {
+    const { deps } = fakeAttemptDeps();
+    const exact = { reservationId: 'res-1', binding: 'a'.repeat(64), expectedBudgetUsd: 10,
+      resources: { armId: 'judge', inputTokens: 12, outputTokens: 4 },
+      expectedResourceBudget: { inputTokens: 24, outputTokens: 8, requestsPerArm: 2, armIds: ['judge'] } };
+    const input = { ...attempt(async () => ({ costUsd: 0.1, value: 'original work' })),
+      exact, floorUsd: 0, accumulate: false };
+    const expectedExact = structuredClone(exact);
+    let reservedInput: ReserveLearningSpendInput | undefined;
+    let settlementWorkspace: string | undefined;
+    const reserve = deps.reserve!;
+    const settle = deps.settle!;
+    deps.enabled = async () => {
+      input.workspaceId = 'other-workspace';
+      input.loopId = 'other-loop';
+      input.requestedUsd = 99;
+      input.accumulate = true;
+      input.exact.binding = 'b'.repeat(64);
+      input.exact.resources.outputTokens = 999;
+      input.exact.expectedResourceBudget.armIds.push('invented');
+      input.run = async () => { throw new Error('replacement work'); };
+      return true;
+    };
+    deps.reserve = async (sql, request) => { reservedInput = request; return reserve(sql, request); };
+    deps.settle = async (sql, request) => {
+      settlementWorkspace = request.workspaceId;
+      expect(request.accumulate).toBe(false);
+      return settle(sql, request);
+    };
+    const out = await runGovernedSpendAttempt(input, deps);
+    expect(reservedInput).toMatchObject({ workspaceId: 'w', loopId: 'frontier:x', requestedUsd: 1,
+      floorUsd: 0, exact: expectedExact });
+    expect(settlementWorkspace).toBe('w');
+    expect(out).toMatchObject({ ok: true, value: 'original work', costUsd: 0.1 });
+  });
+
+  it('gives dispatch immutable resource bounds from the actual reservation rather than the request', async () => {
+    const { deps } = fakeAttemptDeps();
+    const reserved = await deps.reserve!(SQL, {} as never);
+    if (!reserved.ok) throw new Error('fixture must grant');
+    const resources = { armId: 'judge', inputTokens: 12, outputTokens: 4 };
+    reserved.reservation.resources = resources;
+    const out = await runGovernedSpendAttempt(attempt(async grant => {
+      expect(grant).toMatchObject({ resources: { armId: 'judge', inputTokens: 12, outputTokens: 4 } });
+      const dispatched = (grant as unknown as { resources: object }).resources;
+      expect(Object.isFrozen(dispatched)).toBe(true);
+      expect(() => Object.defineProperty(dispatched, 'outputTokens', { value: 999 })).toThrow(TypeError);
+      resources.outputTokens = 999;
+      expect(grant).toMatchObject({ resources: { outputTokens: 4 } });
+      return { costUsd: 0, value: 'bounded dispatch' };
+    }), deps);
+    expect(out).toMatchObject({ ok: true, value: 'bounded dispatch', reservationId: 'res-1' });
   });
 
   it('settles a PARTIAL attempt at the partial cost, not the reservation', async () => {
