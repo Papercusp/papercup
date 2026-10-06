@@ -2755,7 +2755,19 @@ export default defineTool({
               // moment happens, instead of leaving the caller to a 60s re-poll.
               advice: IDLE_PULL_MISS_ADVICE,
             };
-    const payload = retiredSoloPlanSpec ? { ...basePayload, retiredSoloPlanSpec } : basePayload;
+    // P-007 Phase B (D-027): a verifier-lane pull names the work it served and the next call.
+    const verification = res?.verificationKind
+      ? {
+          lane: 'verification' as const,
+          kind: res.verificationKind,
+          next:
+            res.verificationKind === 'agent-review'
+              ? "Review it, then grade it with blender:grade-idea { ideaId: payload.agentReview.ledgerIdeaId, grade, feedback? }."
+              : "Run the task's payload.verification.check against payload.verification.subject, then complete the task with the result.",
+        }
+      : null;
+    const lanePayload = verification ? { ...basePayload, verification } : basePayload;
+    const payload = retiredSoloPlanSpec ? { ...lanePayload, retiredSoloPlanSpec } : lanePayload;
     // P-003: `tool_invocations` has no inline result JSON. Stamp the one fact a
     // later launch verifier needs — claimed vs diagnosed no-claim — onto the
     // invocation's existing metadata writer. This is intentionally the only

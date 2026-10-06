@@ -607,7 +607,14 @@ export async function getNextForBee(args: {
   onPlanLaneBlocked?: (block: PlanItemLaneBlock & { workItemId: string }) => void;
   /** Exact last entered claim phase, for timeout attribution. Observability only. */
   onClaimStep?: (step: string) => void;
-}): Promise<(GetNextResult & { specSource: ClaimSpecRecord['source'] }) | null> {
+}): Promise<
+  | (GetNextResult & {
+      specSource: ClaimSpecRecord['source'];
+      /** P-007 Phase B (D-027): set only when a verifier-lane spec served verification work. */
+      verificationKind?: 'agent-review' | 'verification-task';
+    })
+  | null
+> {
   const claimStep = (step: string): void => {
     try {
       args.onClaimStep?.(step);
@@ -717,6 +724,24 @@ export async function getNextForBee(args: {
   // on claims (fleet:leader-brief, work_items:claim) never applied it. All four now share
   // evaluateClaimConcurrency so they cannot answer differently.
   if (concurrency?.blocked) return null;
+
+  // P-007 Phase B (D-027): a verifier-lane spec never pulls implementation work. It is served
+  // pending agent reviews, then verification tasks, both through the conflict-checked writers.
+  if (record.spec.lane === 'verification') {
+    claimStep('verification-lane');
+    const { claimNextVerificationWork } = await import('../harness/improvements/agent-review');
+    const served = await claimNextVerificationWork({ verifier: args.cupId, harnessSlug: args.harness });
+    if (!served) {
+      if (args.checkIdleDrainOnMiss) maybeEmitFleetIdleDrain(args.cupId, args.workspaceId);
+      return null;
+    }
+    return {
+      workItem: served.workItem,
+      claimedUnder: { specId: record.spec.specId, revision: record.spec.revision },
+      specSource: record.source,
+      verificationKind: served.kind,
+    };
+  }
 
   // WI-3667: the global floors (claimFloorsWhereSql) enforce EXPLICIT `blocks` dep
   // edges + the coarse plan-WIDE reserved-lane floor, but nothing checks a linked

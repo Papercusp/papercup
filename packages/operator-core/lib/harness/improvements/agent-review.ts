@@ -68,6 +68,7 @@ import {
   verificationConflict,
   verificationConflictSql,
   verificationParties,
+  verificationTaskConflictSql,
   type VerificationConflictRole,
 } from './agent-review-policy';
 import { readBornVerifiedReproduction } from '../../attention/bug-reproduction';
@@ -1069,4 +1070,51 @@ export async function claimNextAgentReview(
     if (claimed) return claimed;
   }
   return null;
+}
+
+/**
+ * P-007 Phase B (D-027): the verification-task leg of the verifier lane. A verification
+ * task (payload.verification, stamped by `investigate`) is an ordinary ready row, so it is
+ * claimed through claimWorkItem, the by-id writer that enforces the D-021 conflict rule,
+ * the floors and admission. The SQL only orders candidates and applies the self-select
+ * dependency floor; it admits nothing the writer would refuse.
+ */
+export async function claimNextVerificationTask(
+  input: { verifier: string; harnessSlug?: string },
+  deps: Pick<AgentReviewDeps, 'claimWorkItem'> = defaultDeps,
+): Promise<WorkItem | null> {
+  const verifier = input.verifier.trim();
+  if (!verifier) return null;
+  const { sql } = getOrgPg();
+  const ws = activeWorkspaceId();
+  const rows = await sql<{ feature_id: string; harness_slug: string | null }[]>`
+    SELECT feature_id, harness_slug
+      FROM harness_shared.work_items wi
+     WHERE workspace_id = ${ws}
+       AND status = 'open'
+       AND (taken_by IS NULL OR btrim(taken_by) = '')
+       AND jsonb_typeof(COALESCE(payload, '{}'::jsonb) -> 'verification') = 'object'
+       ${input.harnessSlug ? sql`AND harness_slug = ${input.harnessSlug}` : sql``}
+       AND ${depsBlockedExclusionSql(sql)}
+       AND NOT ${verificationTaskConflictSql(sql, verifier, 'wi.payload')}
+     ORDER BY created_at ASC, feature_id ASC
+     LIMIT 20`;
+  for (const row of rows) {
+    const claimed = await deps.claimWorkItem(row.feature_id, verifier, row.harness_slug ? { harness: row.harness_slug } : {});
+    if (claimed) return claimed;
+  }
+  return null;
+}
+
+export type VerificationWorkKind = 'agent-review' | 'verification-task';
+
+/** P-007 Phase B (D-027): one verifier-lane pull. Pending reviews first, then verification tasks. */
+export async function claimNextVerificationWork(
+  input: { verifier: string; harnessSlug?: string },
+  deps: AgentReviewDeps = defaultDeps,
+): Promise<{ workItem: WorkItem; kind: VerificationWorkKind } | null> {
+  const review = await claimNextAgentReview({ reviewer: input.verifier, harnessSlug: input.harnessSlug }, deps);
+  if (review) return { workItem: review, kind: 'agent-review' };
+  const task = await claimNextVerificationTask(input, deps);
+  return task ? { workItem: task, kind: 'verification-task' } : null;
 }

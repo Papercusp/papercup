@@ -123,6 +123,26 @@ const CLAIM_DOORS: ReadonlyMap<string, DoorEntry> = new Map([
     },
   ],
   [
+    'harness/improvements/agent-review.ts#claimNextVerificationTask',
+    {
+      klass: 'self-select-gating',
+      note:
+        'P-007 Phase B (D-027) verifier-lane self-select for verification tasks. Applies ' +
+        'depsBlockedExclusionSql and the verification-task conflict SQL to order candidates, then ' +
+        'claims each through claimWorkItem, which keeps the security/admission floor and CAS.',
+    },
+  ],
+  [
+    'harness/improvements/agent-review.ts#claimNextVerificationWork',
+    {
+      klass: 'self-select-gating',
+      note:
+        'P-007 Phase B (D-027) verifier-lane pull. Claims only through its two self-select ' +
+        'siblings, claimNextAgentReview then claimNextVerificationTask, each of which applies ' +
+        'depsBlockedExclusionSql (asserted for both) before claiming via claimWorkItem.',
+    },
+  ],
+  [
     'harness/improvements/agent-review.ts#claimNextAgentReview',
     {
       klass: 'self-select-gating',
@@ -427,6 +447,16 @@ describe('the two structural claims the classification rests on', () => {
       'claimNextAgentReview is a self-select door, so it must apply the shared issue-family ' +
         'dependency floor before serving pending review work.',
     ).toBe(true);
+  });
+
+  it('the verifier-lane verification-task door applies the dependency floor and claims through claimWorkItem (D-027)', () => {
+    const src = read('harness/improvements/agent-review.ts');
+    const start = src.indexOf('export async function claimNextVerificationTask(');
+    expect(start).toBeGreaterThan(-1);
+    const body = src.slice(start, src.indexOf('\n}', start));
+    expect(body.includes('depsBlockedExclusionSql(sql)')).toBe(true);
+    expect(body.includes('verificationTaskConflictSql(sql, verifier')).toBe(true);
+    expect(/deps\.claimWorkItem\(/.test(body)).toBe(true);
   });
 
   it('EVERY by-id door keeps the security floor and none grows a readiness floor (D-008)', () => {
