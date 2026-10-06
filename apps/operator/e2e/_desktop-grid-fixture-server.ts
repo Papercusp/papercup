@@ -74,7 +74,11 @@ export async function startDesktopGridFixtureServer(
         });
       },
     }],
-    server: { host: '127.0.0.1', port: 0, strictPort: false },
+    // No HMR and no file watcher. root is the whole shared tree that the fleet edits
+    // continuously: a watched change sent a full-reload mid-test (trace 2026-10-06:
+    // the page re-navigated to / 20s after load, detaching the tile under a click),
+    // and chokidar crawling the monorepo spends this job's CPU on a loaded box.
+    server: { host: '127.0.0.1', port: 0, strictPort: false, hmr: false, watch: null },
   });
   await server.listen();
   return { server, origin: server.resolvedUrls!.local[0]!.replace(/\/$/, '') };
