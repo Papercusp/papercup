@@ -35,7 +35,7 @@ import { getRemoteAccess } from '../connected-apps/remote-access';
 import { getDbEncryptionKey } from '../db-encryption';
 import { webhookUrls } from '../agent-tools/triggers/_webhook';
 import type { WebhookDeliveryRequest, WebhookDeliveryResponse } from '../external-triggers/webhook';
-import { providerRegistry, type ProviderRegistry, type RegisteredProvider } from '../integrations/provider-registry';
+import { readyProviderRegistry, type ProviderRegistry, type RegisteredProvider } from '../integrations/provider-registry';
 import { resolveProviderServices } from '../integrations/service-credentials';
 import { createSourceHostFetch } from '../integrations/source-host-fetch';
 import { CONNECTOR_SYNC_STATUSES, ProviderSyncFailure, wakeConnectorSource } from './connector-runtime';
@@ -373,7 +373,9 @@ export async function reconcileConnectorPush(
   opts: ConnectorPushOptions,
   deps: ConnectorPushDeps = {},
 ): Promise<ConnectorPushResult> {
-  const registry = deps.registry ?? providerRegistry();
+  // Await plugin discovery: on a request-only host the bare registry is empty until it runs,
+  // which would silently skip every push source (provider-registry-readiness.test.ts).
+  const registry = deps.registry ?? (await readyProviderRegistry());
   const pushers = registry
     .list()
     .filter((p) => p.descriptor.push && p.descriptor.capabilities.includes(PROVIDER_PUSH_SUBSCRIBE_CAPABILITY));
