@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { REPO_ROOT } from '../agent-tools/docs/_repo-paths';
 import {
   GUI_E2E_SURFACE_SCHEDULED_SID,
+  RUN_TIMEOUT_MS,
   guiE2eSurfaceSuiteEnv,
   runGuiE2eSurfaceScheduledRun,
   parseGuiE2eSurfaceSuiteOutput,
@@ -287,7 +288,7 @@ describe('runGuiE2eSurfaceScheduledRun', () => {
       const kill = vi.fn();
       (child as unknown as { kill: typeof kill }).kill = kill;
       const p = runGuiE2eSurfaceScheduledRun(fakeIo);
-      await vi.advanceTimersByTimeAsync(40 * 60 * 1000 + 1);
+      await vi.advanceTimersByTimeAsync(RUN_TIMEOUT_MS + 1);
       const r = await p;
       expect(r.ran).toBe(true);
       expect(r.timedOut).toBe(true);

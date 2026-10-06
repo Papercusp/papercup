@@ -25,7 +25,7 @@ async function runGoalReportNative(evidenceDir: string) {
   const workspaceId = process.env.PAPERCUSP_WORKSPACE!;
   const isolatedPg = resolveScriptPgUrl();
   assert.ok(pid && origin && workspaceId &&
-    isolatedPg.source === 'env' && isolatedPg.via === 'HARNESS_ADMIN_DATABASE_URL' &&
+    isolatedPg.source === 'env' && 'via' in isolatedPg && isolatedPg.via === 'HARNESS_ADMIN_DATABASE_URL' &&
     !isolatedPg.envLocal.applied.includes('HARNESS_ADMIN_DATABASE_URL'),
     'Requires an explicitly supplied isolated admin database URL');
   const out = process.env.TAURI_GOAL_REPORT_OUT ?? evidenceDir;

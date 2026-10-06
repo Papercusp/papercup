@@ -46,12 +46,14 @@ import { escalateAlarm } from '../alarm-attention';
 const SUITE_SCRIPT = 'scripts/tauri-surface-verify-suite.sh';
 
 /**
- * Bounded — 8 sequential legs, each a real isolated-Xvfb Tauri boot (the
- * live P-004 gym leg alone took ~1-3min to boot). 40 minutes gives generous
- * margin without letting a wedged leg hold the slot indefinitely; mirrors
- * `desktop-perf-scheduled-run`'s own SIGKILL-on-timeout shape.
+ * Bounded — 23 sequential legs, each a real Xvfb Tauri boot. Measured 2026-10-06 (WI-10006730): one
+ * isolated-DB leg (ticket-integrations) took ~5.5 min end to end, and the first boot after a
+ * source change adds a host bundle (~7-8 min). At ~4-5 min a leg the suite needs ~1.5-2 h, so
+ * 150 minutes leaves margin without letting a wedged leg hold the slot indefinitely. (It was 40
+ * minutes, sized for the original 8 legs, and only went unnoticed because no leg ran at all until
+ * the scheduled run got a PAPERCUSP_SID.) Mirrors `desktop-perf-scheduled-run`'s SIGKILL-on-timeout.
  */
-export const RUN_TIMEOUT_MS = 40 * 60 * 1000;
+export const RUN_TIMEOUT_MS = 150 * 60 * 1000;
 
 /** Bound the tail kept for logs/escalation body — an excerpt, not a report. */
 const LOG_TAIL_CHARS = 4000;
