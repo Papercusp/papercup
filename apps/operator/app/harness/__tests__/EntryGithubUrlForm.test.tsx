@@ -545,7 +545,7 @@ describe('integration-mode question (new hive)', () => {
     },
   };
   const radio = (value: 'direct' | 'review') =>
-    screen.getByTestId(`integration-mode-${value}`).querySelector('input') as HTMLInputElement;
+    screen.getByTestId(`integration-mode-${value}`).closest('button[role="radio"]') as HTMLButtonElement;
 
   it('asks the owner-approved question, names the repo, and defaults to Straight into', async () => {
     const user = userEvent.setup();
@@ -556,8 +556,8 @@ describe('integration-mode question (new hive)', () => {
     expect(screen.getByTestId('integration-mode-direct').textContent).toContain('Straight into acme/web');
     expect(screen.getByTestId('integration-mode-review').textContent).toContain('Into a working copy of acme/web');
     expect(screen.getByTestId('integration-mode-review').textContent).toContain('reaches acme/web only through PRs');
-    expect(radio('direct').checked).toBe(true);
-    expect(radio('review').checked).toBe(false);
+    expect(radio('direct').getAttribute('aria-checked')).toBe('true');
+    expect(radio('review').getAttribute('aria-checked')).toBe('false');
   });
 
   it('the default answer sends NO integrationMode (today\'s behaviour)', async () => {
@@ -576,7 +576,7 @@ describe('integration-mode question (new hive)', () => {
     renderForm();
     await user.type(screen.getByPlaceholderText('https://github.com/owner/repo'), VALID_URL);
     await user.click(radio('review'));
-    expect(radio('review').checked).toBe(true);
+    expect(radio('review').getAttribute('aria-checked')).toBe('true');
     await user.click(screen.getByRole('button', { name: 'Create hive' }));
     await waitFor(() => expect(postedBodies('/api/harness/pots/from-repo')).toHaveLength(1));
     expect(postedBodies('/api/harness/pots/from-repo')[0]).toMatchObject({ githubUrl: VALID_URL, integrationMode: 'review' });
@@ -597,7 +597,7 @@ describe('integration-mode question (new hive)', () => {
     expect(screen.getByTestId('integration-mode-reason').textContent).toBe('Other people commit to acme/web.');
     expect(screen.queryByTestId('integration-mode-direct-recommended')).toBeNull();
     expect(radio('direct').disabled).toBe(false);
-    expect(radio('direct').checked).toBe(true);
+    expect(radio('direct').getAttribute('aria-checked')).toBe('true');
     // Explicitly choosing straight in sends it, so a workspace default cannot override the owner.
     await user.click(radio('direct'));
     await user.click(screen.getByRole('button', { name: 'Create hive' }));
@@ -615,7 +615,7 @@ describe('integration-mode question (new hive)', () => {
     await waitFor(() => expect(radio('direct').disabled).toBe(true));
     expect(screen.getByTestId('integration-mode-direct').textContent).toContain(reason);
     expect(screen.getByTestId('integration-mode-review-recommended').textContent).toBe('Required');
-    expect(radio('review').checked).toBe(true);
+    expect(radio('review').getAttribute('aria-checked')).toBe('true');
     // Unanswered → nothing sent; the server applies the lock it re-probes.
     await user.click(screen.getByRole('button', { name: 'Create hive' }));
     await waitFor(() => expect(postedBodies('/api/harness/pots/from-repo')).toHaveLength(1));
