@@ -348,7 +348,7 @@ export function parseArgs(argv) {
     else if (arg === '--any') any = true;
     else if (arg.startsWith('--ref=')) ref = arg.slice('--ref='.length);
     else if (arg === '--help' || arg === '-h')
-      return { help: true, scripts: [], forward: [], ref, keep, any, unknown };
+      return { help: true, scripts: [], forward: [], ref, keep, any, unknown, sawSeparator };
     else if (arg.startsWith('-')) unknown.push(arg);
     else scripts.push(arg);
   }
@@ -365,7 +365,71 @@ export function parseArgs(argv) {
   // of guessing is silent: both scripts run, one of them against operands meant for the
   // other, and the summary reports on whatever came back. Refuse instead.
   const forwardAmbiguous = forward.length > 0 && scripts.length > 1;
-  return { help: false, scripts, forward, ref, keep, any, unknown, nonLint, selfRecursive, forwardAmbiguous };
+  return { help: false, scripts, forward, ref, keep, any, unknown, nonLint, selfRecursive, forwardAmbiguous, sawSeparator };
+}
+
+/**
+ * A positional that is a file operand, not an npm script name. No script in the root
+ * package.json contains a '/' or ends in a file extension, so either one means the
+ * caller meant this as an operand to FORWARD.
+ */
+function looksLikePathOperand(arg) {
+  return arg.includes('/') || /\.[A-Za-z0-9]+$/.test(arg);
+}
+
+/**
+ * Detect the invocation npm silently rewrote (EI-25262907465098145).
+ *
+ *     npm run lint:as-committed test:file --any --keep -- path/to/one.test.ts
+ *
+ * Without a `--` straight after the script name, npm parses `--any` / `--keep` /
+ * `--ref=` as ITS OWN config and consumes the first `--` as its own separator. This
+ * script then receives only `test:file path/to/one.test.ts`, and the nonLint refusal
+ * told the caller to "Pass --any", which they already had. That advice sent callers in
+ * circles.
+ *
+ * Measured on npm 11.19: `--keep` and `--ref=X` survive as `npm_config_keep=true` /
+ * `npm_config_ref=X`, but `--any` vanishes with NO environment trace. So the env check
+ * alone cannot see the commonest case. The structural signal does: a file operand
+ * arriving as a positional with no separator, which only happens when npm ate the `--`.
+ *
+ * Returns null when nothing was swallowed. Otherwise returns what was lost and a
+ * corrected command that would run what the caller meant.
+ */
+export function diagnoseNpmSwallow(parsed, env = process.env) {
+  if (!parsed || parsed.help) return null;
+  // npm_config_* is INHERITED by every descendant process, so it only describes THIS
+  // argv when npm launched this script itself. A direct `node scripts/lint-as-committed.mjs`
+  // under an outer `npm run …` (a test runner, the gate) must not be refused for flags
+  // given to that outer command.
+  const viaNpm = env.npm_lifecycle_event === 'lint:as-committed';
+  const swallowedFlags = [];
+  const truthy = (v) => v !== undefined && v !== '' && v !== 'false';
+  if (viaNpm && truthy(env.npm_config_keep) && !parsed.keep) swallowedFlags.push('--keep');
+  if (viaNpm && truthy(env.npm_config_any) && !parsed.any) swallowedFlags.push('--any');
+  if (viaNpm && truthy(env.npm_config_ref) && env.npm_config_ref !== 'true' && parsed.ref === 'HEAD') {
+    swallowedFlags.push(`--ref=${env.npm_config_ref}`);
+  }
+  const pathOperands = parsed.sawSeparator ? [] : parsed.scripts.filter(looksLikePathOperand);
+  if (swallowedFlags.length === 0 && pathOperands.length === 0) return null;
+
+  const realScripts = parsed.scripts.filter((s) => !pathOperands.includes(s));
+  const flags = [...swallowedFlags];
+  if (parsed.keep && !flags.includes('--keep')) flags.push('--keep');
+  if (parsed.ref !== 'HEAD' && !flags.some((f) => f.startsWith('--ref='))) flags.push(`--ref=${parsed.ref}`);
+  // `--any` leaves no trace, so infer it: the corrected command must be runnable, and a
+  // non-lint script without it would only hit the nonLint refusal next.
+  const needsAny = realScripts.some((s) => !s.startsWith('lint:'));
+  const anyInferred = needsAny && !parsed.any && !flags.includes('--any');
+  if (needsAny && !flags.includes('--any')) flags.push('--any');
+  const operands = [...pathOperands, ...parsed.forward];
+  const correctedCommand = [
+    'npm run lint:as-committed --',
+    ...realScripts,
+    ...flags,
+    ...(operands.length > 0 ? ['--', ...operands] : []),
+  ].join(' ');
+  return { viaNpm, swallowedFlags, pathOperands, anyInferred, correctedCommand };
 }
 
 /**
@@ -726,7 +790,33 @@ export function showAtRef(repoRoot, ref, path) {
 function main() {
   const args = parseArgs(process.argv.slice(2));
 
-  if (args.help || args.scripts.length === 0) {
+  if (args.help) {
+    process.stdout.write(USAGE);
+    process.exit(0);
+  }
+  // Before every other refusal: once npm has rewritten the argv, each later message
+  // (usage, nonLint) describes an invocation the caller never typed.
+  const swallow = diagnoseNpmSwallow(args, process.env);
+  if (swallow) {
+    const lost = [
+      ...swallow.swallowedFlags.map((f) => `flag ${f}`),
+      ...(swallow.pathOperands.length > 0 ? [`the '--' before ${swallow.pathOperands.join(' ')}`] : []),
+    ];
+    const head = swallow.viaNpm
+      ? `lint-as-committed: npm consumed part of this command before it reached the script (lost: ${lost.join('; ')}).\n` +
+        `  Without a '--' right after 'lint:as-committed', npm treats --any/--keep/--ref= as its own config\n` +
+        `  and eats the first '--'. (npm drops --any without any trace, so it may be missing from the list above.)\n`
+      : `lint-as-committed: ${swallow.pathOperands.join(' ')} is a file operand, not an npm script name.\n` +
+        `  Operands are forwarded only after a '--'.\n`;
+    console.error(
+      head +
+        `  Run instead:\n` +
+        `    ${swallow.correctedCommand}\n` +
+        (swallow.anyInferred ? `  (--any was added because a non-lint script is named.)\n` : ''),
+    );
+    process.exit(2);
+  }
+  if (args.scripts.length === 0) {
     process.stdout.write(USAGE);
     process.exit(args.help ? 0 : 2);
   }
@@ -756,7 +846,9 @@ function main() {
     console.error(
       `lint-as-committed: refusing to run non-lint script(s): ${args.nonLint.join(', ')}\n` +
         `  This tool extracts a tree and runs a command in it — safe for a read-only scanner,\n` +
-        `  not for a build/migrate/deploy script. Pass --any if you really mean it.\n`,
+        `  not for a build/migrate/deploy script. Pass --any if you really mean it.\n` +
+        `  Already passed --any? npm swallowed it: put '--' straight after 'lint:as-committed', e.g.\n` +
+        `    npm run lint:as-committed -- ${args.nonLint[0]} --any\n`,
     );
     process.exit(2);
   }

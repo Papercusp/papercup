@@ -66,7 +66,18 @@ const {
   showAtRef,
   summarize,
   isDirectCliInvocation,
+  diagnoseNpmSwallow,
 } = mod as {
+  diagnoseNpmSwallow: (
+    parsed: unknown,
+    env?: Record<string, string | undefined>,
+  ) => {
+    viaNpm: boolean;
+    swallowedFlags: string[];
+    pathOperands: string[];
+    anyInferred: boolean;
+    correctedCommand: string;
+  } | null;
   cloneWorkspaceTarget: (realTarget: unknown, repoRoot: unknown, workRoot: unknown) => string | null;
   linkNodeModulesShadow: (
     sharedNm: string,
@@ -414,6 +425,73 @@ describe('parseArgs', () => {
     // The early return is a separate code path from the main loop; an undefined
     // `forward` there would throw on `.length` at the ambiguity guard.
     expect(parseArgs(['--help']).forward).toEqual([]);
+  });
+});
+
+describe('diagnoseNpmSwallow (EI-25262907465098145 — npm ate --any and the separator)', () => {
+  const npmEnv = (extra: Record<string, string> = {}) => ({ npm_lifecycle_event: 'lint:as-committed', ...extra });
+
+  it('a correct invocation is not flagged', () => {
+    const parsed = parseArgs(['test:file', '--any', '--', 'packages/x/lib/a.test.ts']);
+    expect(diagnoseNpmSwallow(parsed, npmEnv())).toBeNull();
+    expect(diagnoseNpmSwallow(parseArgs(['lint:mdx', '--keep']), npmEnv({ npm_config_keep: 'true' }))).toBeNull();
+    expect(diagnoseNpmSwallow(parseArgs(['--help']), npmEnv({ npm_config_keep: 'true' }))).toBeNull();
+  });
+
+  it('a file operand with no separator means npm consumed the --, even though --any left no trace', () => {
+    // What `npm run lint:as-committed test:file --any -- a.test.ts` delivers on npm 11:
+    // the flag is gone with no env trace, and the operand arrives as a positional.
+    const d = diagnoseNpmSwallow(parseArgs(['test:file', 'packages/x/lib/a.test.ts']), npmEnv());
+    expect(d).not.toBeNull();
+    expect(d!.pathOperands).toEqual(['packages/x/lib/a.test.ts']);
+    expect(d!.anyInferred).toBe(true);
+    expect(d!.correctedCommand).toBe('npm run lint:as-committed -- test:file --any -- packages/x/lib/a.test.ts');
+  });
+
+  it('recovers --keep and --ref= from npm_config_* when npm launched this script', () => {
+    const d = diagnoseNpmSwallow(
+      parseArgs(['test:file', 'a.test.ts']),
+      npmEnv({ npm_config_keep: 'true', npm_config_ref: 'origin/staging' }),
+    );
+    expect(d!.swallowedFlags).toEqual(['--keep', '--ref=origin/staging']);
+    expect(d!.correctedCommand).toBe(
+      'npm run lint:as-committed -- test:file --keep --ref=origin/staging --any -- a.test.ts',
+    );
+    // A lint script needs no --any, and a lost --keep alone is still a refusal: running
+    // without it silently deletes the tree the caller asked to keep.
+    const lint = diagnoseNpmSwallow(parseArgs(['lint:mdx']), npmEnv({ npm_config_keep: 'true' }));
+    expect(lint!.swallowedFlags).toEqual(['--keep']);
+    expect(lint!.anyInferred).toBe(false);
+    expect(lint!.correctedCommand).toBe('npm run lint:as-committed -- lint:mdx --keep');
+  });
+
+  it('ignores INHERITED npm_config_* when npm did not launch this script', () => {
+    // A direct `node scripts/lint-as-committed.mjs` under an outer `npm run test:file --keep`
+    // inherits npm_config_keep. That flag was for the outer command, not this one.
+    const inherited = { npm_lifecycle_event: 'test:file', npm_config_keep: 'true', npm_config_ref: 'x' };
+    expect(diagnoseNpmSwallow(parseArgs(['lint:mdx']), inherited)).toBeNull();
+    expect(diagnoseNpmSwallow(parseArgs(['lint:mdx']), {})).toBeNull();
+    // The structural signal still applies: a path is never a script name.
+    const d = diagnoseNpmSwallow(parseArgs(['test:file', 'a.test.ts']), inherited);
+    expect(d!.viaNpm).toBe(false);
+    expect(d!.swallowedFlags).toEqual([]);
+  });
+
+  it('end-to-end: the real npm swallow is refused with a runnable corrected command', () => {
+    // Runs real npm, because the env/argv shape npm produces is the thing under test.
+    // It exits 2 before any git work, so it is cheap.
+    const env = { ...process.env };
+    for (const k of Object.keys(env)) if (k.startsWith('npm_config_') || k === 'npm_lifecycle_event') delete env[k];
+    const run = spawnSync(
+      'npm',
+      ['run', '--silent', 'lint:as-committed', 'test:file', '--any', '--keep', '--', 'packages/x/lib/a.test.ts'],
+      { cwd: repoRoot, encoding: 'utf8', env, timeout: 60_000, killSignal: 'SIGKILL' },
+    );
+    expect(run.error).toBeUndefined();
+    expect(run.status, run.stderr).toBe(2);
+    expect(run.stderr).toContain('npm consumed part of this command');
+    expect(run.stderr).toContain('npm run lint:as-committed -- test:file --keep --any -- packages/x/lib/a.test.ts');
+    expect(run.stderr).not.toContain('Pass --any if you really mean it');
   });
 });
 
