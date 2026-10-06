@@ -163,12 +163,12 @@ function bindingRow(
   },
   fingerprints: { sourceFingerprint: string; testFingerprint: string | null },
 ): Record<string, unknown> {
-  const mutationFailureCaseTitle =
+  // Mirrors the store's SQL (WI-10006745): a failed mutation-probe run's raw ledger tail.
+  const mutationFailureTail =
     over.evidenceKind === 'mutation' &&
     over.testRunSource === 'mutation-probe' &&
-    over.testRunStatus === 'fail' &&
-    over.testRunOutputTail?.includes(' — ')
-      ? over.testRunOutputTail.split(' — ')[0]?.trim() ?? null
+    over.testRunStatus === 'fail'
+      ? over.testRunOutputTail ?? null
       : null;
   return {
     id: over.id,
@@ -197,7 +197,7 @@ function bindingRow(
     test_run_file_path: 'test/reconnect.test.ts',
     test_run_commit_sha: 'fixture-clean-commit',
     test_run_worktree_dirty: false,
-    mutation_failure_case_title: mutationFailureCaseTitle,
+    mutation_failure_tail: mutationFailureTail,
     details: {
       adequacy: {
         ...ADEQUACY,
@@ -367,7 +367,9 @@ describe('spec-test-adequacy evaluator → scorecards:emit round trip', () => {
       testRunId: 44,
       testRunSource: 'mutation-probe',
       testRunStatus: 'fail',
-      testRunOutputTail: "code-search.callers-lookup — measurement and promotion state > expected 'needs-widening' to be 'equivalent'",
+      // The ledger reporter's real format: `<case full name>: <message>` (the em dash is part
+      // of the describe title, exactly as in live rows — WI-10006745).
+      testRunOutputTail: "code-search.callers-lookup — measurement and promotion state > keeps the lane honest: expected 'needs-widening' to be 'equivalent'",
     }, await measureRepoFilesEvidenceAtRoot(root, MEASUREMENT)));
 
     const result = await runEvaluator({

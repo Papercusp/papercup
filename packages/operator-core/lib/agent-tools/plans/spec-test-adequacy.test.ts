@@ -103,11 +103,11 @@ function evidence(over: Partial<SpecEvidenceForAdequacy> = {}): SpecEvidenceForA
   if (
     row.evidenceKind === 'mutation' &&
     row.testRunProvenance &&
-    !row.testRunProvenance.mutationFailedCaseTitle
+    !row.testRunProvenance.mutationFailureLines
   ) {
     row.testRunProvenance = {
       ...row.testRunProvenance,
-      mutationFailedCaseTitle: DEFAULT_MUTATION_TEST_CASE,
+      mutationFailureLines: [`${DEFAULT_MUTATION_TEST_CASE}: expected true to be false`],
     };
   }
   return row;
@@ -983,7 +983,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
         filePath: testPath,
         commitSha: 'abc123',
         worktreeDirty: false,
-        mutationFailedCaseTitle: failedCaseTitle,
+        mutationFailureLines: [`${failedCaseTitle}: expected true to be false`],
       },
       details: {
         adequacy: {
@@ -1040,7 +1040,9 @@ describe('spec-test-adequacy per-clause evaluator', () => {
         filePath: testPath,
         commitSha: 'abc123',
         worktreeDirty: false,
-        ...(failedCaseTitle === undefined ? {} : { mutationFailedCaseTitle: failedCaseTitle }),
+        ...(failedCaseTitle === undefined
+          ? {}
+          : { mutationFailureLines: [`${failedCaseTitle}: expected true to be false`] }),
       },
       details: {
         adequacy: {
