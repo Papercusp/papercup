@@ -67,7 +67,7 @@ export function syncCallSites(fileName: string, text: string): string[] {
   return out.sort();
 }
 
-/** Calls to any of `names` that are not the direct operand of `await`. */
+/** Calls whose result is not awaited, including through a promise chain. */
 export function unawaitedCalls(fileName: string, text: string, names: readonly string[]): string[] {
   const sf = parse(fileName, text);
   const out: string[] = [];
@@ -75,9 +75,24 @@ export function unawaitedCalls(fileName: string, text: string, names: readonly s
     if (ts.isCallExpression(node)) {
       const name = calleeName(node);
       if (name && names.includes(name)) {
-        let p: ts.Node = node.parent;
-        while (ts.isParenthesizedExpression(p)) p = p.parent;
-        if (!ts.isAwaitExpression(p)) {
+        let result: ts.Node = node;
+        while (result.parent) {
+          const parent = result.parent;
+          if (ts.isParenthesizedExpression(parent)) {
+            result = parent;
+            continue;
+          }
+          if (
+            ts.isPropertyAccessExpression(parent) && parent.expression === result &&
+            ['then', 'catch', 'finally'].includes(parent.name.text) &&
+            ts.isCallExpression(parent.parent) && parent.parent.expression === parent
+          ) {
+            result = parent.parent;
+            continue;
+          }
+          break;
+        }
+        if (!ts.isAwaitExpression(result.parent)) {
           const { line } = sf.getLineAndCharacterOfPosition(node.getStart(sf));
           out.push(`${fileName}:${line + 1}:${name}`);
         }
@@ -132,6 +147,19 @@ describe('turn-provenance ledger I/O stays off the event loop (WI-10005327)', ()
       'These calls are not awaited. An un-awaited tag can type the turn before its ledger row ' +
         'exists (the hook then classifies it unverified), and an un-awaited GC is a floating promise.',
     ).toEqual([]);
+  });
+
+  it('accepts awaited promise chains while rejecting floating and unrelated method calls', () => {
+    const names = ['tagTurnForInjection'];
+    expect(unawaitedCalls('x.ts',
+      'await (tagTurnForInjection(x)).then(format).catch(onError).finally(cleanup);', names,
+    )).toEqual([]);
+    expect(unawaitedCalls('x.ts',
+      'tagTurnForInjection(x).then(format).catch(onError);', names,
+    )).toEqual(['x.ts:1:tagTurnForInjection']);
+    expect(unawaitedCalls('x.ts',
+      'await tagTurnForInjection(x).toString();', names,
+    )).toEqual(['x.ts:1:tagTurnForInjection']);
   });
 
   it('FALSIFIABLE controls: both detectors flag the shapes they exist to catch', () => {
