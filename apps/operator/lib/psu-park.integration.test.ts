@@ -16,6 +16,8 @@
  *   - a child with a live descendant is never parked, and `0` disables parking;
  *   - P-019: a resume that FAILS holds the delivery (and owner keystrokes) until a
  *     retry or a later trigger resumes, then delivers it exactly once;
+ *   - WI-10006574: a resumed CLI that EXITS before its prompt re-parks and holds the
+ *     same way, and only a run of such exits ends the session, with a clear event;
  *   - D-003: a shutdown or host signal while parked ends the session without
  *     resuming the CLI, and a recycle reaching a parked host resumes first.
  */
@@ -44,12 +46,23 @@ const SESSION_ID = '11111111-2222-4333-8444-555555555555';
  * child (the original or the resumed one) received a byte. It paints the
  * standalone composer glyph Claude's readiness detector keys on. With
  * `--with-descendant` it keeps a `sleep` child alive (an in-flight tool call).
+ * With FAKE_CLAUDE_RESUME_EXITS=N, its first N `--resume` boots behave like a
+ * resume whose transcript is gone: print the CLI's error and exit 1 before any
+ * prompt (WI-10006574).
  */
 const FAKE_CLAUDE = `
 const fs = require('node:fs');
 const { spawn } = require('node:child_process');
 const argv = process.argv.slice(2);
 fs.appendFileSync(process.env.FAKE_CLAUDE_ARGV_LOG, JSON.stringify({ pid: process.pid, argv }) + '\\n');
+const resumeExits = Number(process.env.FAKE_CLAUDE_RESUME_EXITS || 0);
+if (resumeExits > 0 && argv.includes('--resume')) {
+  const resumes = fs.readFileSync(process.env.FAKE_CLAUDE_ARGV_LOG, 'utf8').split('\\n').filter((l) => l.includes('"--resume"')).length;
+  if (resumes <= resumeExits) {
+    process.stdout.write('No conversation found with session ID: ' + argv[argv.indexOf('--resume') + 1] + '\\n');
+    process.exit(1);
+  }
+}
 if (argv.includes('--with-descendant')) spawn('sleep', ['30'], { stdio: 'ignore' });
 process.stdout.write('BOOT:' + process.pid + '\\n\\u276f\\n');
 process.stdin.setEncoding('utf8');
@@ -552,6 +565,101 @@ describe('psu process-free parking (P-019) — a failed resume never loses a del
         throw await quitAfterFailure(h, error);
       }
       expect(await h.quit()).toBe(0);
+    },
+    30_000,
+  );
+});
+
+describe('psu process-free parking (WI-10006574) — a resumed CLI that exits before its prompt', () => {
+  it(
+    're-parks instead of ending the session, holds the turn, and the retry delivers it exactly once',
+    async () => {
+      const h = startParkHost({
+        label: 'resume-exit',
+        // Long enough that the parked state can be asserted before the retry fires.
+        extraEnv: { PAPERCUSP_PSU_PARK_UNPARK_RETRY_MS: '1000', FAKE_CLAUDE_RESUME_EXITS: '1' },
+      });
+      try {
+        await waitFor(() => h.eventsOf('child-parked')[0], 'the park');
+
+        await controlInject(h.sock, 'turn', 'HELD_PAST_EARLY_EXIT');
+        const failed = await waitFor(() => h.eventsOf('child-unpark-failed')[0], 'the early-exit resume');
+        expect(failed).toMatchObject({
+          trigger: 'control:turn',
+          reason: 'resumed-child-exited',
+          exitCode: 1,
+          signal: null,
+          streak: 1,
+          nativeId: SESSION_ID,
+        });
+        expect(await waitFor(() => h.eventsOf('parked-delivery-held')[0], 'the held delivery')).toMatchObject({
+          mode: 'turn',
+          reason: 'resumed-child-exited',
+          held: 1,
+        });
+        // Back to parked, not ended: the stand-in advertises no pid and nothing received the turn.
+        expect(h.exitCode()).toBeNull();
+        expect(h.readMeta().parked).toBe(true);
+        expect(h.readMeta().ptyPid).toBeNull();
+        expect(h.eventsOf('child-unparked')).toEqual([]);
+        expect(h.inputLog()).toEqual([]);
+
+        // The retry resumes the same conversation and the held turn lands in it, once.
+        const got = await waitFor(
+          () => h.inputLog().find((e) => e.line.includes('HELD_PAST_EARLY_EXIT')),
+          'the held turn to reach the retried resume',
+        );
+        const boots = h.argvLog();
+        expect(boots).toHaveLength(3);
+        expect(boots[1].argv).toEqual(['--resume', SESSION_ID]);
+        expect(boots[2].argv).toEqual(['--resume', SESSION_ID]);
+        expect(got.pid).toBe(boots[2].pid);
+        expect(h.eventsOf('child-unparked')).toHaveLength(1);
+        expect(h.eventsOf('child-unparked')[0]).toMatchObject({ trigger: 'retry', promptReady: true });
+        await sleep(300);
+        expect(h.inputLog().filter((e) => e.line.includes('HELD_PAST_EARLY_EXIT'))).toHaveLength(1);
+        expect(h.eventsOf('child-unpark-abandoned')).toEqual([]);
+        expect(h.exitCode()).toBeNull();
+      } catch (error) {
+        throw await quitAfterFailure(h, error);
+      }
+      expect(await h.quit()).toBe(0);
+    },
+    30_000,
+  );
+
+  it(
+    'ends the session with a clear event after the configured run of early exits',
+    async () => {
+      const h = startParkHost({
+        label: 'resume-exit-cap',
+        extraEnv: {
+          PAPERCUSP_PSU_PARK_UNPARK_RETRY_MS: '200',
+          PAPERCUSP_PSU_PARK_RESUME_EXIT_MAX: '2',
+          FAKE_CLAUDE_RESUME_EXITS: '99',
+        },
+      });
+      await waitFor(() => h.eventsOf('child-parked')[0], 'the park');
+      await controlInject(h.sock, 'turn', 'NEVER_DELIVERED');
+
+      // The child's own exit code is the session's: a resume that cannot come back is a failure.
+      expect(await withDeadline(h.done, 10_000, 'the host to end after the resume cap')).toBe(1);
+      const failures = h.eventsOf('child-unpark-failed');
+      expect(failures).toHaveLength(1);
+      expect(failures[0]).toMatchObject({ reason: 'resumed-child-exited', streak: 1 });
+      const abandoned = h.eventsOf('child-unpark-abandoned');
+      expect(abandoned).toHaveLength(1);
+      expect(abandoned[0]).toMatchObject({
+        trigger: 'retry',
+        reason: 'resumed-child-exited',
+        exitCode: 1,
+        streak: 2,
+        max: 2,
+        nativeId: SESSION_ID,
+      });
+      // Launch + two resumes; the held turn was never written into any of them.
+      expect(h.argvLog()).toHaveLength(3);
+      expect(h.inputLog()).toEqual([]);
     },
     30_000,
   );
