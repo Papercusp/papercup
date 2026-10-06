@@ -146,10 +146,6 @@ export default defineTool({
         clauses.push({ ...base, card: { status: 'not-passing' } });
         continue;
       }
-      if (dryRun) {
-        clauses.push({ ...base, card: { status: 'would-file' } });
-        continue;
-      }
       const draft =
         row.scorecardDraft && typeof row.scorecardDraft === 'object' && !Array.isArray(row.scorecardDraft)
           ? (row.scorecardDraft as Record<string, unknown>)
@@ -175,20 +171,28 @@ export default defineTool({
         });
         continue;
       }
-      const emitted = (await emitScorecardForToolContext(parsed.data, ctx)) as {
+      const emitted = (await emitScorecardForToolContext(parsed.data, ctx, { previewOnly: dryRun })) as {
         ok?: unknown;
         created?: unknown;
         issueId?: unknown;
+        previousIssueId?: unknown;
+        reason?: unknown;
         code?: unknown;
         error?: unknown;
       };
       if (emitted.ok === true) {
+        const unchanged = emitted.created === false && emitted.reason === 'unchanged-evidence';
+        const card = dryRun && !unchanged
+          ? { status: 'would-file' as const }
+          : {
+              status: unchanged ? 'unchanged' as const : 'filed' as const,
+              issueId: unchanged
+                ? (typeof emitted.previousIssueId === 'string' ? emitted.previousIssueId : null)
+                : (typeof emitted.issueId === 'string' ? emitted.issueId : null),
+            };
         clauses.push({
           ...base,
-          card: {
-            status: emitted.created === false ? 'unchanged' : 'filed',
-            issueId: typeof emitted.issueId === 'string' ? emitted.issueId : null,
-          },
+          card,
         });
       } else {
         clauses.push({

@@ -427,6 +427,67 @@ describe('plans:certify-spec-clauses', () => {
     expect(dispatchTool).not.toHaveBeenCalled();
   });
 
+  it('dryRun reports a pending grading-audit refusal for an existing clause card', async () => {
+    const subjectRef = specTestAdequacySubjectRef(PLAN, 'SPEC-PASS', 1);
+    listScorecards.mockResolvedValueOnce([{
+      issueId: 'EI-existing-pending',
+      createdBy: 'su-prior-grader',
+      subject: { kind: 'plan', ref: subjectRef },
+      gradingAudit: { state: 'pending' },
+      supersededBy: null,
+    }] as never);
+
+    const result = await certify({ specIds: ['SPEC-PASS'], dryRun: true });
+
+    expect(result).toMatchObject({
+      ok: false,
+      dryRun: true,
+      counts: { clauses: 1, passing: 1, filed: 0, unchanged: 0, refused: 1, notPassing: 0 },
+      clauses: [{
+        specId: 'SPEC-PASS',
+        card: { status: 'refused', code: 'grading_audit_required' },
+      }],
+    });
+    expect(result.clauses?.[0]?.card.error).toContain('pending grading audit');
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
+
+  it('dryRun reports unchanged when the same evaluator evidence is already filed', async () => {
+    const filed = await certify({ specIds: ['SPEC-PASS'] });
+    expect(filed.clauses?.[0]?.card.status).toBe('filed');
+    const raw = (captureImprovement.mock.calls[0]![0] as { payloadExtra: { observation: unknown } })
+      .payloadExtra.observation;
+    const observation = asStructuredObservation(raw);
+    const subjectRef = specTestAdequacySubjectRef(PLAN, 'SPEC-PASS', 1);
+    expect(observation?.evidenceFingerprint).toBeTruthy();
+    listScorecards.mockResolvedValue([{
+      issueId: 'EI-existing-same-evidence',
+      createdBy: 'su-certifier',
+      sourceHive: 'papercusp',
+      subject: { kind: 'plan', ref: subjectRef },
+      rubricRef: 'spec-test-adequacy',
+      rubricRevision: 7,
+      criteriaHash: null,
+      rubricMeaningRevision: null,
+      evidenceFingerprint: observation!.evidenceFingerprint,
+      rubricResolved: true,
+      missingKeys: [],
+      extraKeys: [],
+      synthesized: false,
+    }] as never);
+
+    const preview = await certify({ specIds: ['SPEC-PASS'], dryRun: true });
+
+    expect(preview).toMatchObject({
+      ok: true,
+      dryRun: true,
+      counts: { filed: 0, unchanged: 1, refused: 0 },
+      clauses: [{ card: { status: 'unchanged', issueId: 'EI-existing-same-evidence' } }],
+    });
+    expect(captureImprovement).toHaveBeenCalledTimes(1);
+    expect(dispatchTool).toHaveBeenCalledTimes(1);
+  });
+
   it('attributes an emit refusal to its clause and reports ok:false when the replay no longer reproduces the pass', async () => {
     // The proven source moves between grading and the gate's replay.
     dispatchTool.mockImplementationOnce(async (_name: string, args: Record<string, unknown>) => {
