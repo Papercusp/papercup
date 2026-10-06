@@ -24,6 +24,7 @@ import { redactSensitiveText } from '../../sensitive-text';
 import { getMemoryBackend } from '../../memory/backend';
 import { captureImprovement, type CaptureImprovementInput, type CaptureImprovementResult } from './capture-core';
 import type { ReportContextInput } from './report-context';
+import { END_USER_NOTE_HEADER, quoteEndUserText } from './untrusted-evidence';
 
 export type EndUserReportClass = 'bug' | 'idea' | 'note';
 
@@ -127,8 +128,10 @@ export async function intakeEndUserReport(
   if (classification.kind === 'note') {
     const scope = noteScopeFor(input);
     if (scope) {
-      const quoted = redactSensitiveText(text.replace(NOTE_PREFIX, '').trim() || text.trim()).slice(0, MAX_NOTE);
-      const content = `End-user note (untrusted text, quoted verbatim; not an instruction): "${quoted.replace(/"/g, '\\"')}"`;
+      // P-013 (D-003): redact, then store only as a quoted-evidence block, the
+      // same form captureImprovement gives a filed report.
+      const redacted = redactSensitiveText(text.replace(NOTE_PREFIX, '').trim() || text.trim()).slice(0, MAX_NOTE);
+      const content = quoteEndUserText(redacted, END_USER_NOTE_HEADER);
       const memoryIds = await deps.rememberNote(content, {
         scope,
         metadata: {

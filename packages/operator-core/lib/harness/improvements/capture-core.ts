@@ -106,6 +106,7 @@ import {
   type ErrorSignature,
 } from './error-signature';
 import { redactSensitiveText } from '../../sensitive-text';
+import { END_USER_QUOTING_VERSION, quoteEndUserText, quoteEndUserTitle } from './untrusted-evidence';
 import { getBuildInfo } from '../../build-info';
 import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
 import { canonicalPotSlug, PLATFORM_POT_SLUG } from '../../platform-pot-slug';
@@ -1121,6 +1122,26 @@ export function redactIntakeText(input: CaptureImprovementInput): CaptureImprove
     title,
     body,
     payloadExtra: { ...input.payloadExtra, intakeRedaction: { fields, at: new Date().toISOString() } },
+  };
+}
+
+/**
+ * P-013 (D-003, SPEC-P-013): a filing a person made (reporterKind 'end-user',
+ * which only an end-user door can set — D-044 pt 2) keeps its title and body
+ * only as quoted evidence. Agent and watchdog filings are untouched. Idempotent,
+ * so a door that already quoted, or a retry, does not double-wrap.
+ */
+export function quoteEndUserIntake(input: CaptureImprovementInput): CaptureImprovementInput {
+  if (input.reporterKind !== 'end-user') return input;
+  const title = quoteEndUserTitle(input.title);
+  const body = typeof input.body === 'string' && input.body.trim() ? quoteEndUserText(input.body) : input.body;
+  const fields = [...(title !== input.title ? ['title'] : []), ...(body !== input.body ? ['body'] : [])];
+  if (fields.length === 0) return input;
+  return {
+    ...input,
+    title,
+    body,
+    payloadExtra: { ...input.payloadExtra, untrustedInput: { quoting: END_USER_QUOTING_VERSION, fields } },
   };
 }
 
@@ -2251,6 +2272,10 @@ export async function captureImprovement(
   // filing's text passes the shared scrubber before any identity, dedup or
   // storage step reads it.
   input = redactIntakeText(input);
+  // P-013 (D-003): a person's text is stored, and so rendered to every agent,
+  // only as quoted evidence. After redaction, before any identity or dedup step,
+  // so every later read (folds, occurrences, the created row) sees one form.
+  input = quoteEndUserIntake(input);
   // Dedup search (D-001/P-002): full-text search, then a title-similarity pass.
   // Origin-scoped (frontier P-002/D-002): only candidates with the SAME effective
   // origin participate in dedup + decided-recall — a drill row deduping against an

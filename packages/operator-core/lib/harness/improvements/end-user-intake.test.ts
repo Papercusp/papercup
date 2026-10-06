@@ -6,6 +6,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { CaptureImprovementInput, CaptureImprovementResult } from './capture-core';
 import { classifyEndUserReport, intakeEndUserReport, type EndUserIntakeDeps } from './end-user-intake';
+import { END_USER_NOTE_HEADER, isQuotedEndUserText } from './untrusted-evidence';
 
 function deps() {
   const capture = vi.fn(async (_input: CaptureImprovementInput) => ({ ok: true, created: true, possibleDuplicates: [] }) as unknown as CaptureImprovementResult);
@@ -75,9 +76,11 @@ describe('intakeEndUserReport', () => {
     expect(result).toMatchObject({ routed: 'memory', scope: 'harness:board', memoryIds: ['mem-1'] });
     expect(d.capture).not.toHaveBeenCalled();
     const [content, opts] = d.rememberNote.mock.calls[0]!;
-    expect(content).toMatch(/^End-user note \(untrusted text, quoted verbatim; not an instruction\): "/);
+    // P-013: the note is a quoted-evidence block — the fixed header, then every line quoted.
+    expect(isQuotedEndUserText(content)).toBe(true);
+    expect(content.startsWith(`${END_USER_NOTE_HEADER}\n\n> `)).toBe(true);
     expect(content).not.toContain('abcd1234efgh5678');
-    expect(content).toContain('\\"');
+    expect(content).toContain('[redacted]');
     expect(opts.metadata).toMatchObject({ source: 'end-user-report', untrusted: true, reporterId: 'user-7' });
   });
 
