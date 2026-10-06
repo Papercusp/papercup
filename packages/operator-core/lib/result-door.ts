@@ -89,6 +89,8 @@ export interface DoorableResult {
 export interface ResultDoorOpts {
   /** Canonical tool name (colon form) — names the scratch subdir + pointer line. */
   toolName: string;
+  /** When the outer call is tools:invoke, the nested target whose result reached this door. */
+  nestedTargetToolName?: string;
   /** Caller's workspace id; '*'/invalid shapes spill under 'unscoped'. */
   workspaceId?: string | null;
   /** Spawn run id when it is a UUID; otherwise a fresh UUID names the spill dir. */
@@ -298,10 +300,24 @@ function hasStructuredSummaryNoticeTruncation(text: string): boolean {
   }
 }
 
-function innerTruncationRecoveryInstruction(toolName: string, markers: readonly string[]): string {
+function innerTruncationRecoveryInstruction(
+  toolName: string,
+  markers: readonly string[],
+  nestedTargetToolName?: string,
+): string {
   if (toolName === 'coord:send') return COORD_SEND_RECEIPT_RECOVERY;
   if (toolName === 'code:run' && markers.includes('summaryNotice.truncated')) {
     return 'Re-run code:run with a smaller return, splitting the script output into bounded slices.';
+  }
+  if (markers.includes('textTruncated') && toolName === 'work_items:get') {
+    return 'The clipped prior-attempt record has a field-specific recovery handle: read its rawRef and pass it in priorAttemptRefs to work_items:get. payloadTier:\'full\' does not expand source text already clipped by the tool.';
+  }
+  if (markers.includes('textTruncated') && toolName === 'tools:invoke') {
+    if (nestedTargetToolName === 'work_items:get') {
+      return 'The nested work_items:get target marked prior-attempt text as textTruncated. Read the affected record rawRef and pass it in priorAttemptRefs to work_items:get. payloadTier:\'full\' does not expand source text already clipped by the tool, and work_items:get has no wider per-field limit argument.';
+    }
+    const target = nestedTargetToolName ? ' (' + nestedTargetToolName + ')' : '';
+    return 'The nested target' + target + ' already marked a field as truncated. Re-read through that target\'s documented field-specific recovery handle or narrower arguments; tools:invoke has no generic per-field limit.';
   }
   if (toolName === 'capability:read') {
     return (
@@ -309,7 +325,7 @@ function innerTruncationRecoveryInstruction(toolName: string, markers: readonly 
       'file with `byte_offset` + `byte_limit` (without `evidence_class`) and follow the returned `next_cursor`.'
     );
   }
-  return `Re-call ${toolName} with a wider per-field limit.`;
+  return 'The ' + toolName + ' result already marked a field as truncated. Re-read using that field\'s documented recovery handle or narrower arguments; a wider per-field limit may not exist.';
 }
 
 function upstreamProjectionRecoveryInstruction(toolName: string): string {
@@ -799,7 +815,7 @@ type SpillReason =
  */
 function spillRecoveryNote(
   reason: SpillReason,
-  input: { toolName: string; upstreamProjection?: boolean; innerTruncationMarkers?: readonly string[]; aggregateMode?: ResultDoorAggregateScope['mode'] },
+  input: { toolName: string; nestedTargetToolName?: string; upstreamProjection?: boolean; innerTruncationMarkers?: readonly string[]; aggregateMode?: ResultDoorAggregateScope['mode'] },
 ): string {
   const referenceReader =
     'The `uri` in `content` is a framed scratch-reference container, not a raw JSON file. ' +
@@ -830,7 +846,7 @@ function spillRecoveryNote(
       'The emitted result was written to the reference in `content` — page it to inspect what the tool emitted. ' +
       referenceReader +
       `However, the emitted result already carries upstream partial marker(s) (${innerTruncationMarkers.join(', ')}); ` +
-      `paging this reference cannot recover the omitted fields, rows, or text. ${innerTruncationRecoveryInstruction(input.toolName, innerTruncationMarkers)}`
+      `paging this reference cannot recover the omitted fields, rows, or text. ${innerTruncationRecoveryInstruction(input.toolName, innerTruncationMarkers, input.nestedTargetToolName)}`
     );
   }
   if (reason === 'under-budget-partial-result') {
@@ -988,6 +1004,7 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
             recoverable: !sourceWasPartial,
             note: spillRecoveryNote(input.reason, {
               toolName: input.opts.toolName,
+              nestedTargetToolName: input.opts.nestedTargetToolName,
               upstreamProjection: Boolean(upstreamProjection?.truncated),
               innerTruncationMarkers,
               aggregateMode: input.aggregate?.mode,
@@ -1315,7 +1332,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
           `# detected marker(s): ${innerTruncationMarkers.join(', ')} — these mark field(s) the tool cut\n` +
           `# short BEFORE this door ever ran. This file holds everything the tool DID emit, but the\n` +
           `# marked field(s) are themselves incomplete and were never fully serialized — paging this\n` +
-          `# file will NOT recover them. ${innerTruncationRecoveryInstruction(opts.toolName, innerTruncationMarkers)}\n\n`
+          `# file will NOT recover them. ${innerTruncationRecoveryInstruction(opts.toolName, innerTruncationMarkers, opts.nestedTargetToolName)}\n\n`
         : // EI-18762253154342502: never claim "FULL" unconditionally — no marker firing
           // proves nothing was cut upstream, only that no DETECTED marker was found (a
           // tool can truncate a field with a plain ellipsis and no `_truncated` flag,
@@ -1438,7 +1455,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       : `the tool marked ${innerTruncationMarkers.join(', ')}`;
     const partialJsonReRead = upstreamJsonProjection
       ? upstreamProjectionRecoveryInstruction(opts.toolName)
-      : innerTruncationRecoveryInstruction(opts.toolName, innerTruncationMarkers);
+      : innerTruncationRecoveryInstruction(opts.toolName, innerTruncationMarkers, opts.nestedTargetToolName);
     // TWO different byte streams reach a caller here, and ONE offset cannot
     // serve both — EI-21239097430071791 followed this cursor exactly as written
     // and landed mid-body, because the offset was measured against a stream the
@@ -1545,7 +1562,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
                   : innerTruncationMarkers.length > 0
                     ? ` ⚠ The TOOL ITSELF already truncated field(s) before this door ` +
                       `(${innerTruncationMarkers.join(', ')}); paging preserves what it emitted but cannot ` +
-                      `recover those fields. ${innerTruncationRecoveryInstruction(opts.toolName, innerTruncationMarkers)}`
+                      `recover those fields. ${innerTruncationRecoveryInstruction(opts.toolName, innerTruncationMarkers, opts.nestedTargetToolName)}`
                     : ` No upstream truncation marker was detected; that does not prove the tool emitted ` +
                       `every field in full.`) +
               buildProjectionHint(textItems, opts.toolName, bodyShape),

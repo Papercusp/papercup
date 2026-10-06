@@ -2318,6 +2318,63 @@ describe('applyResultDoor', () => {
       expect(readSpill('ws-1', 'work_items:get', RUN_ID)).toContain('checkpoint prefix');
     });
 
+    it('routes work_items:get prior-attempt truncation to its rawRef argument', () => {
+      const text = JSON.stringify({
+        results: [{
+          id: 'WI-1',
+          priorAttempts: {
+            attempts: [{
+              rawRef: 'WI-1#completion',
+              textTruncated: true,
+              text: 'completion prefix…[TRUNCATED +1200 chars]',
+            }],
+          },
+          padding: 'P'.repeat(BUDGET_CHARS * 3),
+        }],
+      });
+      const doored = applyResultDoor(
+        { content: [{ type: 'text' as const, text }], _meta: { explicitFullRequest: true } },
+        { toolName: 'work_items:get', workspaceId: 'ws-1', runId: RUN_ID },
+      );
+      const envelope = JSON.parse((doored.content[0] as { text: string }).text);
+      expect(envelope.incomplete).toMatchObject({
+        reason: 'explicit-full-request-overflow',
+        recoverable: false,
+      });
+      expect(envelope.incomplete.note).toContain('priorAttemptRefs');
+      expect(envelope.incomplete.note).toContain('rawRef');
+      expect(envelope.incomplete.note).not.toContain('wider per-field limit');
+    });
+
+    it('routes a nested tools:invoke work_items:get textTruncated marker to priorAttemptRefs', () => {
+      const text = JSON.stringify({
+        results: [{
+          id: 'EI-1',
+          priorAttempts: {
+            attempts: [{ rawRef: 'EI-1#completion', textTruncated: true, text: 'prefix…' }],
+          },
+          padding: 'P'.repeat(BUDGET_CHARS * 3),
+        }],
+      });
+      const doored = applyResultDoor(
+        { content: [{ type: 'text' as const, text }], _meta: { explicitFullRequest: true } },
+        {
+          toolName: 'tools:invoke',
+          nestedTargetToolName: 'work_items:get',
+          workspaceId: 'ws-1',
+          runId: '88888888-7777-4888-9999-bbbbbbbbbbbb',
+        },
+      );
+      const envelope = JSON.parse((doored.content[0] as { text: string }).text);
+      expect(envelope.incomplete).toMatchObject({
+        reason: 'explicit-full-request-overflow',
+        recoverable: false,
+      });
+      expect(envelope.incomplete.note).toContain('priorAttemptRefs');
+      expect(envelope.incomplete.note).toContain('work_items:get has no wider per-field limit argument');
+      expect(envelope.incomplete.note).not.toContain('Re-call tools:invoke with a wider per-field limit');
+    });
+
     it('a small explicit-full body that FITS the door passes through untouched (no spill, no note)', () => {
       const result = {
         content: [{ type: 'text' as const, text: 'small full result' }],
