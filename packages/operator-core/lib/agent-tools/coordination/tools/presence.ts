@@ -15,7 +15,11 @@
 import { z } from 'zod';
 import { defineTool, readJsonResult, type SeeAlsoEntry } from '@papercusp/agent-mcp';
 import { pgResultDiagnosticSnapshot, type PgResultDiagnostic } from '@papercusp/db-org';
-import { resolvePresenceScope, assemblePresenceSnapshot } from '../presence-snapshot';
+import {
+  resolvePresenceScope,
+  assemblePresenceSnapshot,
+  type PresenceSnapshotDiagnostic,
+} from '../presence-snapshot';
 import { readIdentity } from '../../locks/identity';
 import { resolveSelfRef, markSelfRows } from '../self-marker';
 import { shapeCoordPresence } from './presence-shape';
@@ -342,7 +346,9 @@ export default defineTool({
         results: PgResultDiagnostic[];
         limitations: string;
       };
+      snapshotDiagnostics?: PresenceSnapshotDiagnostic[];
     }> = [];
+    const snapshotDiagnostics: PresenceSnapshotDiagnostic[] = [];
     // Reuse the invocation ledger and PG diagnostic ring. These durations are
     // dependency wall time; the snapshot contains parallel work internally.
     // A query attempt joins records by identity, never by timestamp proximity.
@@ -376,6 +382,9 @@ export default defineTool({
         stages.push({ name, elapsedMs: Math.max(0, performance.now() - start), status,
           queryDiagnostics: { ...attempt.context, stage: 'scope-query',
             coverage: 'queries-created-during-phase', timing: 'query-build-to-terminal-not-acquisition' },
+          ...(name === 'snapshot' && snapshotDiagnostics.length > 0
+            ? { snapshotDiagnostics: [...snapshotDiagnostics] }
+            : {}),
           completedQueries: {
             available, coverage: 'retained-completed-results-for-exact-attempt',
             selection: 'newest-retained-first', matchingRetained: matching.length,
@@ -447,6 +456,7 @@ export default defineTool({
       ...(owner ? { owner } : {}),
       ...(owners?.length ? { owners } : {}),
       ...(detail ? { detail } : {}),
+      onDiagnostic: (diagnostic) => snapshotDiagnostics.push(diagnostic),
     }));
     // Self-identification overlay (caller-dependent, so applied HERE, after the
     // shared/byte-stable snapshot — never inside it; see self-marker.ts): a

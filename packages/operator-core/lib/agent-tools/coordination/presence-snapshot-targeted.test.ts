@@ -118,7 +118,11 @@ vi.mock('../locks/su-lock-store', () => ({
 vi.mock('./watermarks', () => ({ writeWatermark: vi.fn(async () => undefined) }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'test-ws' }));
 
-import { assemblePresenceSnapshot, type ResolvedPresenceScope } from './presence-snapshot';
+import {
+  assemblePresenceSnapshot,
+  type PresenceSnapshotDiagnostic,
+  type ResolvedPresenceScope,
+} from './presence-snapshot';
 import { RECORDED_ENDED_SESSION_SOURCE, RECORDED_SESSION_SOURCE } from './recorded-sessions';
 
 const RESOLVED: ResolvedPresenceScope = { scope: 'workspace', wsId: 'test-ws', potId: null };
@@ -222,6 +226,29 @@ describe('assemblePresenceSnapshot targeted { owner } lookup (EI-9454)', () => {
 
     const snap = await assemblePresenceSnapshot(RESOLVED, {});
     expect(snap.active.find((r) => r.ownerId === owner)?.sessionState).toBe('recorded');
+  });
+
+  it('reports snapshot legs and synchronous host lookup cost through the diagnostic seam', async () => {
+    const owner = 'su-pty-live';
+    listPresenceMock.mockResolvedValue([{ ...row(owner, false), agentRole: 'su', source: 'psu' }]);
+    wakeabilityMock.mockResolvedValue(new Map([[owner, { wakeable: false, liveTurn: false }]]));
+    findLiveHostMock.mockImplementation((id: string) => (id === owner ? { ownerId: id } : null));
+    const diagnostics: PresenceSnapshotDiagnostic[] = [];
+
+    await assemblePresenceSnapshot(RESOLVED, {
+      onDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+    });
+
+    expect(diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ phase: 'source', name: 'initialReadBatch', status: 'ok' }),
+      expect.objectContaining({ phase: 'enrichment', name: 'enrichmentBatch', status: 'ok' }),
+      expect.objectContaining({ phase: 'enrichment', name: 'gatherOnDesktopSessions', status: 'ok' }),
+      expect.objectContaining({ phase: 'derivation', name: 'deriveVerdictAndRowDecorators', status: 'ok' }),
+    ]));
+    const derivation = diagnostics.find((item) => item.name === 'deriveVerdictAndRowDecorators');
+    expect(derivation?.details?.hostLookupCalls).toBeGreaterThan(0);
+    expect(derivation?.details?.hostLookupTotalMs).toEqual(expect.any(Number));
+    expect(derivation?.details?.hostLookupMaxMs).toEqual(expect.any(Number));
   });
 
   // WI-10006738: coord:presence used to omit the oracle's positive ended-session
