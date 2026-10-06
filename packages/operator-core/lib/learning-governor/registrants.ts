@@ -223,8 +223,12 @@ function validDispatchReservation<T>(
     !Number.isSafeInteger(resources.outputTokens) || resources.outputTokens <= 0)) return false;
   if (input.cycle !== undefined) {
     const ref = cycleReservationRunRef(input.cycle, reservation.id);
+    const expected = input.cycle.resources;
     return input.exact === undefined && input.runRef == null && ref !== null &&
-      reservation.runRef === ref && headroomUsd! <= input.cycle.budgetUsd;
+      reservation.runRef === ref && headroomUsd! <= input.cycle.budgetUsd &&
+      (expected === undefined ? resources === undefined : resources !== undefined &&
+        resources.armId === expected.armId && resources.inputTokens === expected.inputTokens &&
+        resources.outputTokens === expected.outputTokens);
   }
   if (!input.exact) return reservation.runRef === (input.runRef ?? null);
   const exact = input.exact;
@@ -262,7 +266,12 @@ export async function runGovernedSpendAttempt<T>(
   // An async flag/pool preflight must not let the caller replace the manifest,
   // resource policy, dispatch callback or settlement identity after admission
   // begins. The store validates this snapshot against the registered policy.
-  input = { ...input, ...(input.cycle !== undefined ? { cycle: { ...input.cycle } } : {}), ...(input.exact ? { exact: { ...input.exact,
+  input = { ...input, ...(input.cycle !== undefined ? { cycle: { ...input.cycle,
+    ...(input.cycle.resources ? { resources: { ...input.cycle.resources } } : {}),
+    ...(input.cycle.expectedResourceBudget ? { expectedResourceBudget: { ...input.cycle.expectedResourceBudget,
+      armIds: Array.isArray(input.cycle.expectedResourceBudget.armIds) ? [...input.cycle.expectedResourceBudget.armIds] : [],
+    } } : {}),
+  } } : {}), ...(input.exact ? { exact: { ...input.exact,
     ...(input.exact.resources ? { resources: { ...input.exact.resources } } : {}),
     ...(input.exact.expectedResourceBudget ? { expectedResourceBudget: { ...input.exact.expectedResourceBudget,
       armIds: Array.isArray(input.exact.expectedResourceBudget.armIds) ? [...input.exact.expectedResourceBudget.armIds] : [],
