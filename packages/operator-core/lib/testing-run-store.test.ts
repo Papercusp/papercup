@@ -285,6 +285,38 @@ describe('task lifecycle handlers', () => {
       await rm(reportDir, { recursive: true, force: true });
     }
   });
+
+  // WI-10006949: an unscoped artifact (a superuser call carries the '*' harness) used to be
+  // marked consumed and DELETED with no test_runs row, so the run's evidence vanished silently.
+  it('retains an UNSCOPED report and says its rows were not written, instead of deleting it', async () => {
+    const reportDir = await mkdtemp('/tmp/papercusp-testing-run-unscoped-');
+    const reportPath = join(reportDir, 'report.json');
+    const previousPersistOptIn = process.env.PAPERCUSP_TEST_RUNS_PERSIST;
+    process.env.PAPERCUSP_TEST_RUNS_PERSIST = '1';
+    try {
+      await writeFile(reportPath, JSON.stringify({ testResults: [{
+        name: '/tmp/lib/unscoped.integration.test.ts', status: 'passed',
+        assertionResults: [{ status: 'passed' }],
+      }] }));
+      let finalized!: () => void;
+      const done = new Promise<void>(resolve => { finalized = resolve; });
+      persistSqlMock.mockImplementation(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+        const statement = strings.join(' ');
+        if (statement.includes('INSERT INTO harness_shared.testing_run_snapshots') && values[5] === 'pass') finalized();
+        return [];
+      });
+      store.startRun(req({ detachedReportArtifacts: [{ reportPath, root: '/tmp' }] }));
+      lastChild._emitClose(0);
+      await done;
+      await expect(readFile(reportPath, 'utf8')).resolves.toContain('testResults');
+      expect(persistSqlMock.mock.calls.some(call => call[0].join(' ').includes('INSERT INTO harness_shared.test_runs'))).toBe(false);
+      expect(JSON.stringify(persistSqlMock.mock.calls)).toContain('were NOT written to test_runs');
+    } finally {
+      if (previousPersistOptIn === undefined) delete process.env.PAPERCUSP_TEST_RUNS_PERSIST;
+      else process.env.PAPERCUSP_TEST_RUNS_PERSIST = previousPersistOptIn;
+      await rm(reportDir, { recursive: true, force: true });
+    }
+  });
   it('finishes once on child error even when the child subsequently closes', () => {
     const snap = store.startRun(req());
     const enrolment = taskManagerMocks.begin.mock.results[0]?.value;

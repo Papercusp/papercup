@@ -6,6 +6,10 @@ const { createOrgTestDb } = await import('../test/_org-test-db');
 
 describe('foreground evidence recovery (real PG)', () => {
   let db: OrgTestDb;
+  // postgres.js `Sql` is not structurally assignable to the store's narrower tagged-template
+  // `SqlLike` parameter (its call signature's values are `ParameterOrFragment`, not `unknown`),
+  // so pass the real-PG client through the store's own declared parameter type.
+  const storeSql = () => db.adminSql as unknown as NonNullable<Parameters<typeof getRunAsync>[1]>;
   const scope = { workspaceId: 'foreground-workspace', harnessSlug: 'foreground-harness', root: '/fixture' };
   const runId = 'foreground-origin';
 
@@ -34,7 +38,7 @@ describe('foreground evidence recovery (real PG)', () => {
 
   it.each(['pending', 'running'])('preserves a %s foreground task with no snapshot', async state => {
     await insertTask({ state });
-    await expect(getRunAsync(runId, db.adminSql, scope)).resolves.toMatchObject({
+    await expect(getRunAsync(runId, storeSql(), scope)).resolves.toMatchObject({
       runId, taskId: 'foreground-task', status: 'running', finishedAt: null, exitCode: null,
     });
   });
@@ -46,22 +50,22 @@ describe('foreground evidence recovery (real PG)', () => {
     await insertTask(input);
     const positive = await db.adminSql`SELECT task_id FROM harness_shared.task_ledger WHERE task_id = 'foreground-task'`;
     expect(positive).toHaveLength(1);
-    await expect(getRunAsync(runId, db.adminSql, scope)).resolves.toBeNull();
+    await expect(getRunAsync(runId, storeSql(), scope)).resolves.toBeNull();
   });
 
   it('keeps an ambiguous foreground identity unknown', async () => {
     await insertTask();
     await insertTask({ taskId: 'other-foreground-task' });
-    await expect(getRunAsync(runId, db.adminSql, scope)).rejects.toBeInstanceOf(TestingRunSnapshotUnavailableError);
+    await expect(getRunAsync(runId, storeSql(), scope)).rejects.toBeInstanceOf(TestingRunSnapshotUnavailableError);
   });
 
   it('does not use a stranded process as evidence that the whole task ended', async () => {
     await insertTask({ state: 'stranded' });
-    await expect(getRunAsync(runId, db.adminSql, scope)).rejects.toBeInstanceOf(TestingRunSnapshotUnavailableError);
+    await expect(getRunAsync(runId, storeSql(), scope)).rejects.toBeInstanceOf(TestingRunSnapshotUnavailableError);
   });
 
   it('does not turn an ended foreground task into a passing test', async () => {
     await insertTask({ state: 'ended_unobserved' });
-    await expect(getRunAsync(runId, db.adminSql, scope)).resolves.toBeNull();
+    await expect(getRunAsync(runId, storeSql(), scope)).resolves.toBeNull();
   });
 });

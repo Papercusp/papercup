@@ -1285,8 +1285,17 @@ async function persistDetachedReportArtifacts(
             if (result.written !== missing.length) throw new Error('detached_report_ledger_write_failed');
           });
           consumed = true;
-        } else {
-          consumed = rows.length > 0;
+        } else if (rows.length > 0) {
+          // WI-10006949: with no concrete harness/workspace scope these rows cannot be
+          // written to test_runs. This branch used to mark the report consumed and delete
+          // it, so the run's per-file evidence vanished with no row and no trace. Keep the
+          // report and say so in the run output, so the verdict is never silently unbindable.
+          appendSnapshotOutput(
+            snapshot,
+            `\n[detached-recovery] ${rows.length} per-file result row(s) were NOT written to test_runs: ` +
+              `this run had no concrete harness/workspace scope (pass harness on testing:run). ` +
+              `The Vitest JSON report is kept at ${artifact.reportPath}.\n`,
+          );
         }
       } catch {
         /* swallow — D-007 */
