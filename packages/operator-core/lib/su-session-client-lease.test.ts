@@ -111,6 +111,31 @@ describe('su-session client lease', () => {
     expect(onExpired).toHaveBeenCalledTimes(1);
   });
 
+  // WI-10006906: in the real-PTY run a resumed pui attached (its grant landed),
+  // then the process stalled ~3.5s and the sweep read the fresh lease as lapsed
+  // while this same process was serving that client's stream, ending the engine
+  // it should have reattached to. The renewer was frozen by the same stall, so
+  // the sweep must not contradict it.
+  it('a lapsed lease whose stream THIS process still serves is renewed, not ended', async () => {
+    const onExpired = vi.fn();
+    superviseSuClientLease(15, onExpired);
+    const release = trackSuClientStream(15);
+    // No renew timer fires (real timers, nothing advanced): the stalled renewer.
+    mem.advance(suClientLeaseConfig().ttlMs + 1);
+    expect(await mem.store.expired([15])).toEqual([15]); // control: it does read as lapsed
+
+    await _sweepSuClientLeasesForTest();
+    expect(onExpired).not.toHaveBeenCalled();
+    expect(mem.calls.renew).toEqual([[15]]);
+    expect(await mem.store.expired([15])).toEqual([]); // the sweep healed the lease
+
+    // The client really leaves: its stream closes and the next lapse ends it.
+    release();
+    mem.advance(suClientLeaseConfig().ttlMs + 1);
+    await _sweepSuClientLeasesForTest();
+    expect(onExpired).toHaveBeenCalledTimes(1);
+  });
+
   it('a session with no lease granted yet is never ended', async () => {
     const onExpired = vi.fn();
     superviseSuClientLease(13, onExpired);

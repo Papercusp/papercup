@@ -255,9 +255,21 @@ async function sweep(): Promise<void> {
       warnOnce('sweep', error);
       return;
     }
+    const watched: number[] = [];
     for (const advSessionId of expired) {
       const supervision = state.supervised.get(advSessionId);
       if (!supervision) continue;
+      // WI-10006906: a session whose event stream THIS process is serving has
+      // a client watching, by construction (the renewer renews every open
+      // stream). Its lapse only means this process's own renewal did not land
+      // in time, e.g. after an event-loop stall or a slow write, so the
+      // sweep must not contradict the renewer: renew now instead of ending it.
+      // A client that really goes away closes its stream, and the next sweep
+      // ends the engine as before.
+      if ((state.streams.get(advSessionId) ?? 0) > 0) {
+        watched.push(advSessionId);
+        continue;
+      }
       state.supervised.delete(advSessionId);
       // Ending an engine awaits its process teardown. Not awaited here: one
       // engine whose close hangs must not hold `sweeping` and so stop every
@@ -265,6 +277,13 @@ async function sweep(): Promise<void> {
       void Promise.resolve()
         .then(() => supervision.onExpired())
         .catch((error) => console.warn(`[su-client-lease] ending unattended session ${advSessionId} failed`, error));
+    }
+    if (watched.length > 0) {
+      try {
+        await store().renew(watched, suClientLeaseConfig().ttlMs);
+      } catch (error) {
+        warnOnce('renew', error);
+      }
     }
   } finally {
     state.sweeping = false;
