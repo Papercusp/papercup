@@ -18,7 +18,18 @@
 // app's live bundle).
 import { afterEach, describe, expect, it } from 'vitest';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -523,4 +534,72 @@ describe('vite-build-singleflight — a red build must not destroy the bundle (E
     expect(io.stderr()).toContain('PAPERCUSP_RETAIN_DIST_CHUNKS=0');
     expect(io.stderr()).toContain('Importing a module script failed');
   }, 10_000);
+});
+
+// WI-10006797: the bundle carries its own source-read time, dated AFTER the
+// singleflight lock wait. scripts/lib/spa-require-built.sh compares it with
+// source mtimes; the caller's earlier stamp made every edit made while the build
+// was queued (38 min, measured 2026-10-06) look unbuilt.
+describe('vite-build-singleflight — source-read stamp (WI-10006797)', () => {
+  const stampPath = () => join(tmp, 'dist', '.vite-build-source-read-at');
+  const mtime = (p: string) => statSync(p).mtimeMs;
+  const marksLeft = () => readdirSync(tmp).filter((n) => n.startsWith('.vite-build-source-read.'));
+
+  it('dates the stamp to when the build began reading source — after its lock wait, not when it queued', async () => {
+    tmp = mkdtempSync(join(tmpdir(), 'vbsf-'));
+    const started = join(tmp, 'first-started');
+    const release = join(tmp, 'first-release');
+    const cmdAt = join(tmp, 'second-cmd-at');
+    const first = collect(launch({ TEST_STARTED: started, TEST_RELEASE: release, VITE_BUILD_CMD: holdBuild }));
+    await waitForFile(started);
+    const second = collect(launch({ TEST_CMD_AT: cmdAt, VITE_BUILD_CMD: `touch "$TEST_CMD_AT"; ${fakeVite(0)}` }));
+    await sleep(1500);
+    const releasedAt = Date.now();
+    writeFileSync(release, '');
+    expect(await first.exited).toBe(0);
+    expect(await second.exited).toBe(0);
+    expect(distIndex()).toBe('NEW-BUNDLE');
+    const stamp = mtime(stampPath());
+    // Kernel timestamps are coarse (a few ms) and can trail Date.now() slightly.
+    expect(stamp).toBeGreaterThanOrEqual(releasedAt - 100);
+    expect(stamp).toBeLessThanOrEqual(mtime(cmdAt));
+    expect(marksLeft()).toEqual([]);
+  }, 20_000);
+
+  it('a retain-regime build stamps dist/ in place', async () => {
+    tmp = mkdtempSync(join(tmpdir(), 'vbsf-'));
+    seedWorkingBundle();
+    const io = collect(
+      launch({
+        PAPERCUSP_RETAIN_DIST_CHUNKS: '1',
+        VITE_BUILD_CMD: 'echo NEW-IN-PLACE > "$VITE_BUILD_OUT_ROOT/dist/index.html"; exit 0',
+      }),
+    );
+    expect(await io.exited).toBe(0);
+    expect(distIndex()).toBe('NEW-IN-PLACE');
+    expect(existsSync(stampPath())).toBe(true);
+    expect(mtime(stampPath())).toBeLessThanOrEqual(mtime(join(tmp, 'dist', 'index.html')));
+    expect(marksLeft()).toEqual([]);
+  }, 10_000);
+
+  it('a failed build or a build that produced no bundle leaves the previous stamp exactly as it was', async () => {
+    tmp = mkdtempSync(join(tmpdir(), 'vbsf-'));
+    seedWorkingBundle();
+    const oldSec = Math.floor(Date.now() / 1000) - 3600;
+    writeFileSync(stampPath(), '');
+    utimesSync(stampPath(), oldSec, oldSec);
+    utimesSync(join(tmp, 'dist', 'index.html'), oldSec, oldSec);
+    const cases: Record<string, string>[] = [
+      { VITE_BUILD_CMD: fakeVite(1) }, // staged, fails after writing a bundle
+      { VITE_BUILD_CMD: 'true' }, // staged, exits 0 with no bundle
+      { PAPERCUSP_RETAIN_DIST_CHUNKS: '1', VITE_BUILD_CMD: 'exit 3' }, // in place, fails
+      { PAPERCUSP_RETAIN_DIST_CHUNKS: '1', VITE_BUILD_CMD: 'true' }, // in place, no bundle
+    ];
+    for (const env of cases) {
+      await collect(launch(env)).exited;
+      expect(Math.round(mtime(stampPath()))).toBe(oldSec * 1000);
+    }
+    expect(distIndex()).toBe('OLD-WORKING-BUNDLE');
+    expect(marksLeft()).toEqual([]);
+  }, 30_000);
 });
