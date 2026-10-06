@@ -280,8 +280,8 @@ export function evaluatePlanSpecQuality(input: {
   }
   // A sourceBar pin makes this clause a projection of the canonical acceptance
   // BAR, repeated once for each mapped plan item. It is not an independently
-  // authored item contract. Require item coverage and grade behavior quality on
-  // unpinned clauses; the canonical rubric remains the source of BAR meaning.
+  // authored item contract. Grade item quality on unpinned clauses; acceptance
+  // rubric writes separately validate new or meaning-changed BAR projections.
   const isProjectedBar = (clause: SpecClauseRevision) => clause.sourceBar != null;
   const isUnpinnedAutoBar = (clause: SpecClauseRevision) =>
     !clause.sourceBar && clause.specId.startsWith('AUTO-BAR-');
@@ -326,7 +326,7 @@ export function evaluatePlanSpecQuality(input: {
   const coveredItems = new Set([...independentItemBehavioral, ...validExemptions].map((clause) => clause.planItemId));
   const uncoveredPlanItemIds = planItemIds.filter((itemId) => !coveredItems.has(itemId));
   const projectionEvidence = behavioral.some((clause) => clause.sourceBar)
-    ? ` ${behavioral.filter((clause) => clause.sourceBar).length} sourceBar-pinned projection(s) remain linked to their canonical acceptance BAR and do not substitute for item contracts.`
+    ? ` ${behavioral.filter((clause) => clause.sourceBar).length} sourceBar-pinned projection(s) are excluded as copies of canonical acceptance BARs; added or meaning-changed BAR projections are checked on rubric writes, while unchanged legacy BARs are not re-certified here.`
     : '';
   ratings['item-contract-coverage'] = uncoveredPlanItemIds.length
     ? fail(
@@ -393,7 +393,7 @@ export function evaluatePlanSpecQuality(input: {
   const atomicityCoverage =
     ` Coverage: ${atomicityEvaluatedCount} of ${behavioral.length} behavioral clause(s) evaluated` +
     (atomicityExcludedCount
-      ? `; ${atomicityExcludedCount} sourceBar-pinned BAR projection(s) excluded (their meaning is graded on the canonical acceptance rubric)`
+      ? `; ${atomicityExcludedCount} sourceBar-pinned BAR projection(s) excluded (new or meaning-changed canonical BAR projections are checked on rubric writes; unchanged legacy BARs are not re-certified here)`
       : '') +
     '; per-clause dispositions are in details.atomicityClauseDiagnostics.';
   ratings['atomic-observable-behavior'] =

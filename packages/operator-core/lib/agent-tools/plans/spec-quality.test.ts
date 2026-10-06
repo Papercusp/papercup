@@ -178,6 +178,9 @@ describe('evaluatePlanSpecQuality', () => {
       expect(atomicity.evidence).toContain(
         'Coverage: 3 of 6 behavioral clause(s) evaluated; 3 sourceBar-pinned BAR projection(s) excluded',
       );
+      expect(atomicity.evidence).toContain(
+        'new or meaning-changed canonical BAR projections are checked on rubric writes; unchanged legacy BARs are not re-certified here',
+      );
       expect(atomicity.evidence).not.toContain('AUTO-BAR-');
       expect(result.details.atomicityClauseDiagnostics).toHaveLength(6);
       for (const bundle of bundles) {
