@@ -55,6 +55,7 @@ import {
 import { createPersonalVaultExternalSinkForSource, VAULT_DATATYPES } from '../personal-vault/live-sink';
 import { createDatatypeDestinationSinks } from '../data-sources/datatype-destination-sink';
 import { createRelationshipGraphSink } from '../relationship-graph/graph-sink';
+import { createInteractionParticipantSink, isInteractionDatatype } from '../relationship-graph/participants';
 import { isGraphEntityDatatype } from '../relationship-graph/resolver';
 import { createAppDeliverySinkIfConfigured, reportAppSinkGateError } from '../app-data-producer/live-sink';
 import { DATATYPE_FOR_APP } from '../app-data-producer/app-rows';
@@ -416,6 +417,8 @@ export interface ConnectorSinkSeams {
   createDatatypeSinks?: typeof createDatatypeDestinationSinks;
   /** The relationship-graph resolve sink appended after a stored person/organization record. */
   createGraphSink?: typeof createRelationshipGraphSink;
+  /** The relationship-graph sink that projects a stored interaction's participants as persons. */
+  createParticipantSink?: typeof createInteractionParticipantSink;
   createAppSink?: (
     sql: postgres.Sql,
     workspaceId: string,
@@ -455,6 +458,7 @@ export async function connectorSinksFor(
   const createDatatypeSinks = seams.createDatatypeSinks ?? createDatatypeDestinationSinks;
   const createAppSink = seams.createAppSink ?? defaultAppSink;
   const createGraphSink = seams.createGraphSink ?? createRelationshipGraphSink;
+  const createParticipantSink = seams.createParticipantSink ?? createInteractionParticipantSink;
   const sinks: ExternalTriggerSink[] = [];
   if (VAULT_DATATYPES.includes(datatype)) {
     if (source.ownerUserId) sinks.push(await createPersonalSink(sql, source.workspaceId, source.id));
@@ -467,6 +471,12 @@ export async function connectorSinksFor(
     if (isGraphEntityDatatype(datatype) && datatypeSinks.some((s) => s.kind === 'data-source-record')) {
       sinks.push(createGraphSink(sql, { workspaceId: source.workspaceId, sourceId: source.id, datatype }));
     }
+  }
+  // A stored interaction (Vault mail/calendar, corpus call) projects its participants into the graph
+  // as persons (P-002, D-013): identity only, and only from a source that routes person to record.
+  if (isInteractionDatatype(datatype) && sinks.length > 0) {
+    const participantSink = await createParticipantSink(sql, { workspaceId: source.workspaceId, sourceId: source.id, datatype });
+    if (participantSink) sinks.push(participantSink);
   }
   if (!source.ownerUserId) return sinks;
   for (const [app, appDatatype] of Object.entries(DATATYPE_FOR_APP) as [keyof typeof DATATYPE_FOR_APP, string][]) {

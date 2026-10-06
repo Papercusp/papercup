@@ -8,3 +8,4 @@ export * from './identity-keys';
 export * from './merge';
 export * from './resolver';
 export * from './graph-sink';
+export * from './participants';

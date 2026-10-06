@@ -140,6 +140,22 @@ function newer(a: SourceEntityRecord, b: SourceEntityRecord): boolean {
   return a.id < b.id;
 }
 
+/** `derivedFrom` of a person record projected from an interaction participant (plan D-013). */
+export const PARTICIPANT_DERIVATION = 'interaction-participant';
+
+/** A value a source states about the entity (1) outranks one read off an interaction header (0). */
+function directness(record: SourceEntityRecord): number {
+  return record.payload.derivedFrom === PARTICIPANT_DERIVATION ? 0 : 1;
+}
+
+/** Scalar winner order: a direct record over a participant-derived one, then the newer observation. */
+function outranks(a: SourceEntityRecord, b: SourceEntityRecord): boolean {
+  const da = directness(a);
+  const db = directness(b);
+  if (da !== db) return da > db;
+  return newer(a, b);
+}
+
 function recordSource(record: SourceEntityRecord): ProvenanceSource {
   return { kind: 'record', recordId: record.id, dataSourceId: record.dataSourceId, provider: record.provider };
 }
@@ -168,7 +184,7 @@ export function mergeEntity(
     let best: SourceEntityRecord | null = null;
     for (const member of members) {
       if (!text(member.payload[field])) continue;
-      if (!best || newer(member, best)) best = member;
+      if (!best || outranks(member, best)) best = member;
     }
     if (best) {
       fields[field] = text(best.payload[field]);

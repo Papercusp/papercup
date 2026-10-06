@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { personIdentityKeys } from './identity-keys';
-import { clusterByKeys, listProvenanceKey, mergeEntity, PERSON_FIELDS, type SourceEntityRecord } from './merge';
+import { clusterByKeys, listProvenanceKey, mergeEntity, PARTICIPANT_DERIVATION, PERSON_FIELDS, type SourceEntityRecord } from './merge';
 
 function record(id: string, observedAt: string, payload: Record<string, unknown>, source = 'src-a'): SourceEntityRecord {
   return { id, harness: 'papercusp', dataSourceId: source, provider: `provider-${source}`, observedAt, createdTs: 1, payload };
@@ -66,5 +66,15 @@ describe('mergeEntity', () => {
     const a = record('DSR-a', '2026-10-01T00:00:00.000Z', { displayName: 'From A' });
     const b = record('DSR-b', '2026-10-01T00:00:00.000Z', { displayName: 'From B' });
     expect(mergeEntity(PERSON_FIELDS, [b, a]).fields.displayName).toBe('From A');
+  });
+
+  it('a name a source states outranks a newer one read off an interaction header (D-013)', () => {
+    const contact = record('DSR-contact', '2026-09-01T00:00:00.000Z', { displayName: 'Ada Lovelace', emails: ['ada@acme.com'] }, 'crm');
+    const header = record('DSR-header', '2026-10-05T00:00:00.000Z', { displayName: 'ada', emails: ['ada@acme.com'], derivedFrom: PARTICIPANT_DERIVATION }, 'gmail');
+    const merged = mergeEntity(PERSON_FIELDS, [header, contact]);
+    expect(merged.fields.displayName).toBe('Ada Lovelace');
+    expect(merged.provenance.displayName?.source).toMatchObject({ recordId: 'DSR-contact' });
+    // With no direct record, the participant-derived name is used, so a person minted from mail has a name.
+    expect(mergeEntity(PERSON_FIELDS, [header]).fields.displayName).toBe('ada');
   });
 });

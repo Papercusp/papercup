@@ -5,6 +5,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   interactionParticipantKeys,
+  interactionParticipants,
+  isAutomatedEmail,
   isFreeMailDomain,
   normalizeDomain,
   normalizeEmail,
@@ -108,5 +110,33 @@ describe('interactionParticipantKeys', () => {
   });
   it('an unknown datatype has no participants', () => {
     expect(interactionParticipantKeys('social-post', { author: '@ada' })).toEqual([]);
+  });
+});
+
+describe('interactionParticipants (D-013 projection)', () => {
+  it('reads the header display name and dedupes a participant named twice', () => {
+    expect(interactionParticipants('email-message', {
+      from: '"Ada Lovelace" <Ada@Acme.com>', to: ['ada@acme.com', 'bob@beta.io'], subject: 'Pricing', body: 'secret',
+    })).toEqual([
+      { key: 'email:ada@acme.com', emails: ['ada@acme.com'], phones: [], displayName: 'Ada Lovelace' },
+      { key: 'email:bob@beta.io', emails: ['bob@beta.io'], phones: [], displayName: null },
+    ]);
+  });
+  it('an object participant carries both its email and its phone, keyed by the email', () => {
+    expect(interactionParticipants('call', {
+      from: '+1 (555) 123-4567', participants: [{ name: 'Ada Lovelace', email: 'ada@acme.com', phone: '+1 555 123 4567' }],
+    })).toEqual([
+      { key: 'email:ada@acme.com', emails: ['ada@acme.com'], phones: ['+15551234567'], displayName: 'Ada Lovelace' },
+      { key: 'phone:+15551234567', emails: [], phones: ['+15551234567'], displayName: null },
+    ]);
+  });
+  it('drops automated senders but keeps a phone the same participant also has', () => {
+    expect(interactionParticipants('email-message', { from: 'No Reply <no-reply@acme.com>', to: 'notifications+x@acme.com' })).toEqual([]);
+    expect(interactionParticipants('call', { participants: [{ email: 'noreply@acme.com', phone: '+15550001111' }] }))
+      .toEqual([{ key: 'phone:+15550001111', emails: [], phones: ['+15550001111'], displayName: null }]);
+  });
+  it('isAutomatedEmail matches machine mailboxes only', () => {
+    expect(['no-reply@a.io', 'noreply@a.io', 'donotreply@a.io', 'mailer-daemon@a.io', 'bounce+1@a.io'].map(isAutomatedEmail)).toEqual([true, true, true, true, true]);
+    expect(['ada@a.io', 'noreen@a.io', 'replies@a.io', 'alert.team.lead@a.io'].map(isAutomatedEmail)).toEqual([false, false, false, true]);
   });
 });

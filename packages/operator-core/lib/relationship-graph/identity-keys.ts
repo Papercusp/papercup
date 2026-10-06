@@ -174,12 +174,84 @@ function keysOfContact(value: unknown): IdentityKey[] {
  * A datatype with no resolvable participant field (social-post handles) yields [].
  */
 export function interactionParticipantKeys(datatype: string, payload: Record<string, unknown>): IdentityKey[] {
-  const fieldsByDatatype: Record<string, readonly string[]> = {
-    'email-message': ['from', 'to', 'cc', 'bcc'],
-    'calendar-event': ['organizer', 'attendees'],
-    'chat-message': ['sender'],
-    call: ['from', 'to', 'participants'],
-  };
-  const fields = fieldsByDatatype[datatype] ?? [];
+  const fields = PARTICIPANT_FIELDS[datatype] ?? [];
   return uniqueSorted(fields.flatMap((field) => keysOfContact(payload[field])));
+}
+
+/** The payload fields that name the participants of each interaction datatype. */
+export const PARTICIPANT_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
+  'email-message': ['from', 'to', 'cc', 'bcc'],
+  'calendar-event': ['organizer', 'attendees'],
+  'chat-message': ['sender'],
+  call: ['from', 'to', 'participants'],
+});
+
+/** One participant of an interaction as the graph projects it (plan D-013): identity only, never content. */
+export interface InteractionParticipant {
+  /** The participant's primary identity key: its email key when it has one, else its phone key. */
+  key: IdentityKey;
+  emails: string[];
+  phones: string[];
+  displayName: string | null;
+}
+
+/** Mailboxes that only send machine mail (`no-reply@`, `mailer-daemon@`, ...) never name a human. */
+const AUTOMATED_LOCAL_PART_RE =
+  /^(?:no-?reply|do-?not-?reply|donotreply|mailer-daemon|postmaster|bounces?|notifications?|alerts?)(?:[+._-].*)?$/i;
+
+/** True for a normalized email whose mailbox only ever sends automated mail. */
+export function isAutomatedEmail(email: string): boolean {
+  return AUTOMATED_LOCAL_PART_RE.test(email.split('@')[0] ?? '');
+}
+
+/** `"Ada Lovelace" <ada@acme.com>` → `Ada Lovelace`; a bare address → null. */
+function headerDisplayName(raw: string): string | null {
+  const match = /^\s*"?([^"<]*?)"?\s*<[^<>]+>\s*$/.exec(raw);
+  return match && match[1]!.trim() ? match[1]!.trim() : null;
+}
+
+function participantOf(item: unknown): InteractionParticipant | null {
+  let email: string | null = null;
+  let phone: string | null = null;
+  let displayName: string | null = null;
+  if (typeof item === 'string') {
+    email = normalizeEmail(item);
+    if (email) displayName = headerDisplayName(item);
+    else phone = normalizePhone(item);
+  } else if (item && typeof item === 'object') {
+    const obj = item as Record<string, unknown>;
+    email = normalizeEmail(obj.email) ?? normalizeEmail(obj.address) ?? normalizeEmail(obj.value);
+    phone = normalizePhone(obj.phone) ?? normalizePhone(obj.number) ?? (email ? null : normalizePhone(obj.value));
+    displayName = text(obj.name) || text(obj.displayName) || (typeof obj.address === 'string' ? headerDisplayName(obj.address) : null);
+  }
+  if (email && isAutomatedEmail(email)) email = null;
+  if (!email && !phone) return null;
+  const key = (email ? `email:${email}` : `phone:${phone}`) as IdentityKey;
+  return { key, emails: email ? [email] : [], phones: phone ? [phone] : [], displayName: displayName || null };
+}
+
+/**
+ * The participants of one interaction, deduplicated by primary key and sorted. A participant
+ * known only by an automated address is dropped. Subjects, bodies and descriptions are never read.
+ */
+export function interactionParticipants(datatype: string, payload: Record<string, unknown>): InteractionParticipant[] {
+  const byKey = new Map<IdentityKey, InteractionParticipant>();
+  for (const field of PARTICIPANT_FIELDS[datatype] ?? []) {
+    const value = payload[field];
+    const items = Array.isArray(value) ? value : value === undefined || value === null ? [] : [value];
+    for (const item of items) {
+      const participant = participantOf(item);
+      if (!participant) continue;
+      const prior = byKey.get(participant.key);
+      byKey.set(participant.key, prior
+        ? {
+            key: participant.key,
+            emails: uniqueSorted([...prior.emails, ...participant.emails]),
+            phones: uniqueSorted([...prior.phones, ...participant.phones]),
+            displayName: prior.displayName ?? participant.displayName,
+          }
+        : participant);
+    }
+  }
+  return [...byKey.values()].sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
 }
