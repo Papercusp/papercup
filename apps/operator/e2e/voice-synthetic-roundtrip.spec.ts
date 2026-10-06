@@ -309,14 +309,26 @@ async function transcribeInPage(page: Page, audio: Buffer): Promise<{ status: nu
       await voice(page, (h) => h.setMode('push-to-talk'));
       const nextReply = await captureNextTtsReply(page, 240_000);
       await holdToTalk(page);
-      await expect.poll(() => postedTurns.length, { timeout: 60_000, message: 'the spoken question was posted as a turn' })
+      // The same route also persists the agent's reply (role 'assistant', which can
+      // land within seconds), so turn identity is judged on the USER-role posts only
+      // (measured, rig run 2 2026-10-06: exactly one role:'user' POST per hold).
+      // Compare the PARSED text, never the raw body: JSON escapes a newline as
+      // `\n`, which norm() turns into a stray "n" token.
+      const userTexts = () => postedBodies.flatMap((b) => {
+        try {
+          const turn = JSON.parse(b) as { role?: unknown; text?: unknown };
+          return turn.role === 'user' ? [String(turn.text ?? '')] : [];
+        } catch { return []; }
+      });
+      await expect.poll(() => userTexts().length, { timeout: 60_000, message: 'the spoken question was posted as a turn' })
         .toBeGreaterThan(0);
-      // R-4 turn/transcript identity: one hold posts ONE turn, and what it posts is
-      // the transcript the user was shown — not a re-recognition or a stale one.
+      // R-4 turn/transcript identity: one hold posts ONE user turn, and what it posts
+      // IS the transcript the user was shown — not a re-recognition or a stale one.
       const transcript = (await voice(page, (h) => h.getState())).lastTranscript;
       expect(norm(transcript)).toContain('quick brown fox');
-      expect(postedTurns, 'one hold posts exactly one turn').toHaveLength(1);
-      expect(norm(postedBodies[0] ?? ''), `posted turn body: ${postedBodies[0]}`).toContain(norm(transcript));
+      expect(userTexts(), `one hold posts exactly one user turn; all posted turn bodies: ${JSON.stringify(postedBodies)}`)
+        .toHaveLength(1);
+      expect(norm(userTexts()[0] ?? ''), `posted user turn text: ${JSON.stringify(userTexts()[0])}`).toBe(norm(transcript));
       const reply = await nextReply();
       expect(reply.status).toBe(200);
       expect(reply.text.length, 'the agent reply sent to TTS').toBeGreaterThan(0);
@@ -329,7 +341,10 @@ async function transcribeInPage(page: Page, audio: Buffer): Promise<{ status: nu
       expect(matched.length, `reply sent to TTS: ${JSON.stringify(reply.text)}; whisper heard: ${JSON.stringify(heard.text)}`)
         .toBeGreaterThanOrEqual(Math.min(2, sentWords.size));
       expect((await events(page)).filter((e) => e.phase === 'playback')).toEqual([]);
-      expect(postedTurns, 'the reply did not post a second user turn').toHaveLength(1);
+      expect(userTexts(), `the spoken reply did not post a second user turn; all posted turn bodies: ${JSON.stringify(postedBodies)}`)
+        .toHaveLength(1);
+      expect(postedTurns.length, 'every posted turn is either the one user turn or an assistant reply')
+        .toBe(postedBodies.length);
     });
   });
 });
@@ -424,7 +439,10 @@ async function transcribeInPage(page: Page, audio: Buffer): Promise<{ status: nu
 
       await page.evaluate((t) => (window as VoiceWindow).__pcVoiceTest!.speak(t), REPLY);
       await expect.poll(() => status(page), { timeout: 60_000, message: 'the next reply plays' }).toBe('speaking');
-      expect(sent.map((s) => s.status)).toEqual([503, 200]);
+      // 'speaking' is set before the synthesis request goes out, so wait for the
+      // routed request itself rather than reading `sent` at that instant.
+      await expect.poll(() => sent.map((s) => s.status), { timeout: 60_000, message: 'the next reply was synthesized' })
+        .toEqual([503, 200]);
       expect(sent.map((s) => s.engine), 'no silent engine substitution').toEqual([sent[0]!.engine, sent[0]!.engine]);
       if (engine) expect(sent[0]!.engine).toBe(engine === 'browser' ? 'kokoro' : engine);
     });

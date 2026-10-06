@@ -237,6 +237,9 @@ export function isVoiceOutputMuted(): boolean {
 
 /** Mute/unmute spoken (TTS) responses; broadcasts so the toggle UI re-syncs. */
 export function setVoiceOutputMuted(muted: boolean): void {
+  // Muting silences the reply that is already playing too, not only the next
+  // one (R-4 output mute, WI-10004760). speak() alone only gates new replies.
+  if (muted) stopSpeechPlayback();
   if (typeof localStorage === 'undefined') return;
   try {
     localStorage.setItem(wsLocalKey(OUTPUT_MUTED_KEY), muted ? '1' : '0');
@@ -2786,6 +2789,18 @@ export function speak(
   // Dev test seam: record the reply text regardless of the gates below (we want
   // the brain's reply even on a tab that won't emit TTS). See __lastSpokenForTest.
   __lastSpokenForTest = { text, role, at: Date.now() };
+  // Local Papercup replies are produced by the same `speak()` seam used by
+  // typed text. Keep the canonical sentence/completion events observational;
+  // the existing queue and TTS behavior remain untouched. An instant ack can
+  // leave the turn open so the substantive response records its own sentence
+  // and end-to-end latency. This runs BEFORE the output gates below: a reply
+  // that is muted, gated by voice-off, or silenced on a follower tab is still
+  // the turn's answer, so the turn completes instead of being recorded as
+  // interrupted by the next one (WI-10006893).
+  if (localCanonicalAdapter.activeTurnId) {
+    localCanonicalAdapter.assistantSentence(text);
+    if (!options.preserveAwaitingResponse) localCanonicalAdapter.complete();
+  }
   if (!state.supported) {
     silenceSpeak('tts-unsupported', text);
     return;
@@ -2841,15 +2856,6 @@ export function speak(
     role,
     preserveAwaitingResponse: options.preserveAwaitingResponse === true,
   });
-  // Local Papercup replies are produced by the same `speak()` seam used by
-  // typed text. Keep the canonical sentence/completion events observational;
-  // the existing queue and TTS behavior remain untouched. An instant ack can
-  // leave the turn open so the substantive response records its own sentence
-  // and end-to-end latency.
-  if (localCanonicalAdapter.activeTurnId) {
-    localCanonicalAdapter.assistantSentence(text);
-    if (!options.preserveAwaitingResponse) localCanonicalAdapter.complete();
-  }
   // Cap queue depth: drop the oldest items beyond MAX so newer (more
   // relevant) utterances win. Critical when a stuck TTS engine + a
   // chatty caller (background scanner during always-on voice) would
@@ -3014,6 +3020,16 @@ export function cancelAllSpeech(): void {
   // Barge-in / mode-off terminates any local canonical turn still awaiting a
   // substantive answer. The existing audio cancellation semantics are kept.
   if (localCanonicalAdapter.activeTurnId) localCanonicalAdapter.interrupt('user');
+  stopSpeechPlayback();
+}
+
+/**
+ * Stop the audible reply: drop queued sentences and silence whatever engine is
+ * playing, WITHOUT touching the voice turn. Output mute uses this (R-4,
+ * WI-10004760): muting must silence the reply already playing, but it is not a
+ * barge-in, so the turn and its answer in the chat stay intact.
+ */
+function stopSpeechPlayback(): void {
   synthQueue = [];
   isSynthSpeaking = false;
   // BARGE-IN CLOSES THE INTERVAL TOO (WI-954890). The old code cleared

@@ -247,6 +247,32 @@ describe('canonical Papercup local voice-turn events (P-003)', () => {
     }
   });
 
+  // WI-10006893: a reply silenced by output mute is still the turn's answer. It
+  // must complete the canonical turn, so the NEXT utterance does not record the
+  // previous turn as interrupted.
+  it('completes the turn when its reply is muted, so the next turn records no interruption', async () => {
+    const prefs = await import('./voice-prefs-client');
+    prefs.setVoicePrefsClient({ ...prefs.loadVoicePrefsClient(), ttsEngine: 'browser' });
+    const mod = await loadVoiceMode();
+    mod.setVoiceMode('push-to-talk');
+    mod.setVoiceOutputMuted(true);
+    const captured = captureCanonical();
+    try {
+      mod.__simulateUtterance('muted question', 'localWhisper');
+      mod.speak('Muted answer.', 'system:operator', 'polite');
+      expect((globalThis as any).window.speechSynthesis.speak, 'a muted reply stays silent').not.toHaveBeenCalled();
+      expect(captured.events.map((event) => event.type)).toEqual([
+        'transcript.final', 'assistant.sentence', 'completed',
+      ]);
+      mod.__simulateUtterance('next question', 'localWhisper');
+      expect(captured.events.map((event) => event.type)).not.toContain('interruption');
+    } finally {
+      captured.stop();
+      mod.setVoiceOutputMuted(false);
+      mod.setVoiceMode('off');
+    }
+  });
+
   it('does not duplicate hosted provider events in the browser adapter', async () => {
     const mod = await loadVoiceMode();
     const captured = captureCanonical();
