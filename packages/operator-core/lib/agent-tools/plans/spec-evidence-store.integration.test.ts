@@ -476,6 +476,64 @@ describe('ad-hoc work-items carry spec evidence with no plan (P-022 / D-018)', (
     expect(new Set(items.map((r) => Number(r.seq))).size, 'seq must stay distinct').toBe(2);
   });
 
+  it('explains an omitted slug when a real-plan clause is absent from the default ad-hoc scope', async () => {
+    await specs.setSpecClause(clause());
+    const binding = {
+      workItemId: 'WI-101',
+      specId: 'SPEC-003-01',
+      evidenceKind: 'test' as const,
+      evidenceRef: 'test/reconnect.integration.ts#missing-slug',
+      sourceFingerprint: 'git:missing-slug',
+    };
+    const refused = await bindTool.handler({ binding, harness: HARNESS }, CTX);
+    expect(refused).toMatchObject({
+      ok: false,
+      results: [
+        {
+          status: 'spec_not_found',
+          slug: ADHOC,
+          specId: binding.specId,
+          message: expect.stringContaining('no slug supplied'),
+        },
+      ],
+    });
+    const row = (refused as { results: Array<{ message: string }> }).results[0]!;
+    expect(row.message).toContain(ADHOC);
+    expect(row.message).toContain('pass slug');
+    const edges = await db.sql`
+      SELECT id FROM harness_shared.spec_evidence_bindings
+       WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS}`;
+    expect(edges, 'a refusal must not write a binding').toHaveLength(0);
+
+    const rebound = await bindTool.handler({ binding, harness: HARNESS, slug: 'reconnect-plan' }, CTX);
+    expect(rebound).toMatchObject({
+      ok: true,
+      results: [{ status: 'created', slug: 'reconnect-plan', specId: binding.specId }],
+    });
+  });
+
+  it('does not blame an explicit plan miss on an omitted slug', async () => {
+    const refused = await bindTool.handler(
+      {
+        slug: 'reconnect-plan',
+        harness: HARNESS,
+        binding: {
+          workItemId: 'WI-101',
+          specId: 'ABSENT-SPEC',
+          evidenceKind: 'test',
+          evidenceRef: 'test/reconnect.integration.ts#absent-spec',
+          sourceFingerprint: 'git:explicit-miss',
+        },
+      },
+      CTX,
+    );
+    expect(refused).toMatchObject({
+      ok: false,
+      results: [{ status: 'spec_not_found', slug: 'reconnect-plan', specId: 'ABSENT-SPEC' }],
+    });
+    expect((refused as { results: Array<Record<string, unknown>> }).results[0]).not.toHaveProperty('message');
+  });
+
   it('still honours an explicit plan slug — the ad-hoc path is a fallback, not a takeover', async () => {
     await specs.setSpecClause(clause());
     const bound = await evidenceStore.bindSpecEvidence({
