@@ -969,6 +969,51 @@ const bashOutputResultSchema = z
   })
   .catchall(z.unknown());
 
+const bashOutputHandleSchemas = {
+  bash_id: z
+    .string()
+    .min(1)
+    .describe('The process-local id returned by capability:bash (run_in_background). Use only in the launching context.'),
+  task_id: z
+    .string()
+    .min(1)
+    .describe('The durable task id returned by capability:bash. Preferred after compaction/carry; attachment never restarts the job.'),
+};
+
+const bashOutputOptionSchemas = {
+  filter: z
+    .string()
+    .optional()
+    .describe(
+      'Regex; only output LINES matching it are returned (the read cursor still advances past ALL output, matching or not). Mirrors the native BashOutput filter. A leading bare PCRE-style inline-flag prefix — (?i), (?im), (?is) — is honored as JS case-insensitive/multiline/dotAll flags rather than rejected as invalid.',
+    ),
+  peek: z.boolean().optional().describe('Read without advancing the read cursor (default false).'),
+  tail: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe(
+      'Return only the LAST N lines of the output text in THIS response (whichever of `output`/`output_tail` it carries — every response branch, including stranded/recovered ones, is covered). The read cursor still advances past the ENTIRE chunk regardless, exactly like `filter` — this only narrows what is RETURNED. Composes with `filter`: filter is applied first, then tail keeps the last N of what remains.',
+    ),
+};
+
+// A root union enforces and publishes the at-least-one handle requirement.
+// The former superRefine enforced it only at runtime, so tools:find showed two
+// optional IDs and invited callers to submit neither.
+const bashOutputArgsSchema = z.union([
+  z.object({
+    bash_id: bashOutputHandleSchemas.bash_id,
+    task_id: bashOutputHandleSchemas.task_id.optional(),
+    ...bashOutputOptionSchemas,
+  }),
+  z.object({
+    bash_id: bashOutputHandleSchemas.bash_id.optional(),
+    task_id: bashOutputHandleSchemas.task_id,
+    ...bashOutputOptionSchemas,
+  }),
+]);
+
 export default defineTool({
   name: 'capability:bash_output',
   description:
@@ -994,54 +1039,7 @@ export default defineTool({
   // retain the ambient workspace transaction across that control-path I/O.
   skipWorkspaceTx: true,
   agentRoles: [...AGENT_ROLES],
-  args: z
-    .object({
-      bash_id: z
-        .string()
-        .min(1)
-        .optional()
-        .describe(
-          'The process-local id returned by capability:bash (run_in_background). Use only in the launching context.',
-        ),
-      task_id: z
-        .string()
-        .min(1)
-        .optional()
-        .describe(
-          'The durable task id returned by capability:bash. Preferred after compaction/carry; attachment never restarts the job.',
-        ),
-      filter: z
-        .string()
-        .optional()
-        .describe(
-          'Regex; only output LINES matching it are returned (the read cursor still advances past ALL output, matching or not). Mirrors the native BashOutput filter. A leading bare PCRE-style inline-flag prefix — (?i), (?im), (?is) — is honored as JS case-insensitive/multiline/dotAll flags rather than rejected as invalid.',
-        ),
-      peek: z.boolean().optional().describe('Read without advancing the read cursor (default false).'),
-      tail: z
-        .number()
-        .int()
-        .positive()
-        .optional()
-        .describe(
-          'Return only the LAST N lines of the output text in THIS response (whichever of `output`/`output_tail` it carries — every response branch, including stranded/recovered ones, is covered). The read cursor still advances past the ENTIRE chunk regardless, exactly like `filter` — this only narrows what is RETURNED. Composes with `filter`: filter is applied first, then tail keeps the last N of what remains.',
-        ),
-    })
-    .superRefine((args, refinementCtx) => {
-      // EI-21240465530065342: capability:bash hands the caller BOTH ids at
-      // launch, so passing both back is the NATURAL recovery call — and it is
-      // exactly the call an agent makes after a carry, when it still holds the
-      // launch result. Rejecting that shape put a schema error on the one path
-      // that recovers a job whose worker-local JOBS entry is gone. Only the
-      // no-handle case is a real caller error here; a both-ids call that
-      // disagrees is caught in the handler, where the ledger can adjudicate.
-      if (!args.bash_id && !args.task_id) {
-        refinementCtx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: 'Pass at least one of bash_id or task_id.',
-          path: ['bash_id'],
-        });
-      }
-    }),
+  args: bashOutputArgsSchema,
   async handler(args, ctx) {
     // EI-22068327735595657: the ENTIRE existing body below is unchanged and now
     // runs inside this IIFE; `tail` is applied uniformly to whatever it returns,

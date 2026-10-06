@@ -124,6 +124,8 @@ describe('capability:bash_output — durable task attachment', () => {
     expect(bashOutput.args.safeParse({ task_id: 'task-1' }).success).toBe(true);
     expect(bashOutput.args.safeParse({ bash_id: 'bash-1', task_id: 'task-1' }).success).toBe(true);
     expect(bashOutput.args.safeParse({}).success).toBe(false);
+    expect(bashOutput.args.safeParse({ filter: '^keep' }).success).toBe(false);
+    expect(bashOutput.args.safeParse({ bash_id: '', task_id: 'task-1' }).success).toBe(false);
   });
 
   it('resolves through task_id when both handles are supplied and agree', async () => {
