@@ -26,6 +26,7 @@ import {
   codexStartupAction,
   codexTaskCompleted,
   isCodexPromptReady,
+  RESUME_RECALL_EXPECTATION,
   taskAnsweredAfterPrompt,
 } from './p005-codex-readiness.js';
 import {
@@ -460,7 +461,7 @@ async function runP005() {
     await settle('05c-resume-picked', 30_000);
     frame('05c-resume-picked');
   }
-  await task('05-resume-recall', 'What change did we make to calc.js earlier in this conversation? One sentence.', 240_000, /optional third number|third parameter|c\s*=\s*0/i);
+  await task('05-resume-recall', 'What change did we make to calc.js earlier in this conversation? One sentence.', 240_000, RESUME_RECALL_EXPECTATION);
   await send(cli.exit);
   await sleep(3000);
   try { pty.kill(); } catch { /* gone */ }
@@ -851,7 +852,7 @@ async function runParity() {
     frame('26-resume-picked');
   }
   await probe('26-resume-recall', async () => {
-    await task('26-resume-recall', 'What change did we make to calc.js earlier in this conversation? One sentence.', 240_000, /optional third number|third parameter|c\s*=\s*0/i);
+    await task('26-resume-recall', 'What change did we make to calc.js earlier in this conversation? One sentence.', 240_000, RESUME_RECALL_EXPECTATION);
     return {};
   });
   await send(cli.exit);

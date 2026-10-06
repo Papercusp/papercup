@@ -6,6 +6,7 @@ import {
   codexStartupAction,
   codexTaskCompleted,
   isCodexPromptReady,
+  RESUME_RECALL_EXPECTATION,
   taskAnsweredAfterPrompt,
 } from './p005-codex-readiness.js';
 
@@ -46,12 +47,35 @@ describe('P-005 Codex TUI readiness', () => {
 
   it('matches the expected answer only after the echoed prompt, never in earlier transcript text', () => {
     const recall = 'What change did we make to calc.js earlier in this conversation? One sentence.';
-    const expected = /optional third number|third parameter|c\s*=\s*0/i;
+    const expected = RESUME_RECALL_EXPECTATION;
     const earlier = '❯ Edit calc.js so that add() accepts an optional third number and adds it too.\n● Done.\n';
     // The P-022 false pass: the words sit in an EARLIER prompt and nothing answered the recall.
     expect(taskAnsweredAfterPrompt(`${earlier}┌ Conversation ┐\n│ Loading earlier conversations… │\n> Message Claude`, recall, expected)).toBe(false);
     expect(taskAnsweredAfterPrompt(`${earlier}❯ ${recall}\n✶ Thinking…`, recall, expected)).toBe(false);
     expect(taskAnsweredAfterPrompt(`${earlier}❯ ${recall}\n● We changed add to add(a, b, c = 0).`, recall, expected)).toBe(true);
+    // P-032 false negative: stock Claude Code 2.1.289 answered correctly in this wording.
+    expect(taskAnsweredAfterPrompt(
+      `${earlier}❯ ${recall}\n● We changed add to accept an optional third argument c (default 0), so it now returns a + b + c.`,
+      recall,
+      expected,
+    )).toBe(true);
+    expect(taskAnsweredAfterPrompt(`${earlier}❯ ${recall}\n● It now takes a third parameter.`, recall, expected)).toBe(true);
+    // P-032: stock Codex 0.160.1 dropped the "?" from its prompt echo and answered correctly.
+    const codexRecallScreen = [
+      '› Edit calc.js so that add() accepts an optional third number and adds it too.',
+      '• Updated calc.js:1: add(a, b, c = 0) now adds all three numbers.',
+      '› What change did we make to calc.js earlier in this conversation One sentence.',
+      '• We changed add() to accept an optional third argument, defaulting to zero, and add it to the first two numbers.',
+      '  Worked for 23s • 8:02 AM',
+      '› Ask Codex to do anything',
+      '  GPT-6.1-Sol default · /tmp/proj · Respond to greeting',
+      '  ← for agents · ? for shortcuts',
+    ].join('\n');
+    expect(taskAnsweredAfterPrompt(codexRecallScreen, recall, expected)).toBe(true);
+    // Only the dropped punctuation is forgiven: the earlier edit text still cannot answer it.
+    expect(taskAnsweredAfterPrompt(codexRecallScreen.split('\n').slice(0, 3).join('\n'), recall, expected)).toBe(false);
+    // A wrong recall must still fail.
+    expect(taskAnsweredAfterPrompt(`${earlier}❯ ${recall}\n● We renamed mul to multiply.`, recall, expected)).toBe(false);
     // A short prompt is anchored on its input echo, so "Hi!" in the reply is not mistaken for it.
     expect(taskAnsweredAfterPrompt('❯ hi\n● Hi! What would you like to work on?', 'hi', CODEX_GREETING_EXPECTATION)).toBe(true);
     const codexEarlier = `› Edit calc.js so add takes an optional third number\n• Updated.\n› ${recall}\n› Ask Codex to do anything`;

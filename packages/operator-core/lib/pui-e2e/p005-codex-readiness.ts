@@ -2,6 +2,11 @@ import { posix as posixPath } from 'node:path';
 
 export const CODEX_HOME_SOCKET_PATH_BUDGET_BYTES = 100;
 export const CODEX_GREETING_EXPECTATION = /what can i help you with|how can i help|what would you like to work on/i;
+/** The resume probe asks what the earlier edit changed (add() gained an optional
+ * third operand). Engines word it differently: "optional third number",
+ * "third parameter", "c = 0", or "optional third argument c (default 0)". */
+export const RESUME_RECALL_EXPECTATION =
+  /optional third (?:number|argument|parameter|operand)|third (?:parameter|argument)|\bc\s*=\s*0|\bc\b[^.\n]{0,24}default(?:s|ing)?(?: to)?\s*(?:value\s*)?(?:of\s*)?0/i;
 
 export function codexHomeControlSocketPath(home: string): string {
   return posixPath.join(home, 'app-server-control', 'app-server-control.sock');
@@ -49,7 +54,12 @@ export function taskAnsweredAfterPrompt(screen: string, prompt: string, expected
   const normalize = (value: string) => value.replace(/\s+/g, ' ').trim().toLowerCase();
   const escape = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const visible = normalize(screen);
-  const echo = new RegExp(`[›❯>]\\s*${escape(normalize(prompt))}`, 'g');
+  // Punctuation in the echo is optional: stock Codex 0.160.1 echoed
+  // "…this conversation One sentence." for a prompt typed with "?" (P-032).
+  const echoPattern = [...normalize(prompt)]
+    .map((ch) => (/[?!.,;:]/.test(ch) ? `${escape(ch)}?` : escape(ch)))
+    .join('');
+  const echo = new RegExp(`[›❯>]\\s*${echoPattern}`, 'g');
   let end = -1;
   for (let m = echo.exec(visible); m; m = echo.exec(visible)) end = m.index + m[0].length;
   if (end < 0) return false;
