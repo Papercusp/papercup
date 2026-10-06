@@ -417,7 +417,7 @@ describe('scorecards:emit deterministic criterion checks (P-011)', () => {
       status: accepted ? 'fresh' as const : 'stale' as const, measuredAt: children[0].measuredAt };
     const evaluateProbeChecks = vi.fn<typeof evaluateCriterionProbeChecks>().mockResolvedValue(accepted
       ? { ok: true, checkRuns: { 'det-outcome': run } }
-      : { ok: false, error: 'probe_contradicted', criterionKey: 'det-outcome', run, detail: 'ALL child predicate failed' });
+      : { ok: false, error: 'probe_contradicted', criterionKey: 'det-outcome', rating: RATINGS['det-outcome'].rating, run, detail: 'ALL child predicate failed' });
     const result = await emitScorecard(emitArgs() as never, EMIT_INPUT, { evaluateProbeChecks });
     expect(evaluateProbeChecks).toHaveBeenCalledOnce();
     expect(evaluateProbeChecks.mock.calls[0][0].criteria[1].check).toEqual({ kind: 'probe', all });

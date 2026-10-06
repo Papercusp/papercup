@@ -6,8 +6,8 @@
   "population": {
     "failedFiles": 124,
     "repairedFocused": 5,
-    "repairedPeerFocused": 7,
-    "openUnknown": 112
+    "repairedPeerFocused": 10,
+    "openUnknown": 109
   },
   "classes": {
     "assertion": 62,
@@ -21,7 +21,8 @@
     "peer-feed-fixture": 3,
     "hook-mutex-cleanup": 4,
     "profile-replay": 3,
-    "stale-migration-list": 3
+    "peer-work-item-fixture": 2,
+    "peer-memory-fixture": 1
   },
   "files": [
     {
@@ -104,7 +105,18 @@
         17369,
         17393,
         17588
-      ]
+      ],
+      "latestLocalReceipt": {
+        "id": 20793735,
+        "filePath": "apps/operator/lib/psu-pty-host-turn.integration.test.ts",
+        "status": "pass",
+        "commitSha": "54c6f7604a2462fe28b85cff05f3aa894dd1b45d",
+        "worktreeDirty": true,
+        "isScratchConfig": false,
+        "root": "<repo-root>",
+        "startedAt": "2026-10-06T00:14:02.830Z"
+      },
+      "latestReceiptMeaning": "Observed focused result only; causal repair attribution and complete current source/import/environment assurance remain unknown."
     },
     {
       "path": "packages/operator-core/lib/work-items-stale-claims.integration.test.ts",
@@ -122,7 +134,18 @@
       "item": "WI-10006170",
       "lines": [
         12834
-      ]
+      ],
+      "latestLocalReceipt": {
+        "id": 20775649,
+        "filePath": "packages/operator-core/lib/issues-engineer.integration.test.ts",
+        "status": "pass",
+        "commitSha": "694f4df59f38acb75c72f0212a2f00cbd089d7f8",
+        "worktreeDirty": true,
+        "isScratchConfig": false,
+        "root": "<repo-root>",
+        "startedAt": "2026-10-05T23:12:48.417Z"
+      },
+      "latestReceiptMeaning": "Observed focused result only; causal repair attribution and complete current source/import/environment assurance remain unknown."
     },
     {
       "path": "packages/operator-core/lib/consult/consult-verbs-core.integration.test.ts",
@@ -539,7 +562,21 @@
       "lines": [
         12932,
         12933
-      ]
+      ],
+      "registeredRepairItem": "EI-25188751918038775",
+      "repairStage": "registered-owned-awaiting-exact-dispatch; source-unedited",
+      "diagnosis": "Current private WORK_ITEMS_SIGN_OF_LIFE_DDL omits fed_ts read by current federated content-clock fallback; source-read plus same8-case precondition reproduced missing-column. Fix not yet verified.",
+      "currentPrecondition": {
+        "status": "fail",
+        "casesPassed": 6,
+        "casesFailed": 2,
+        "casesSkipped": 0,
+        "log": "/tmp/wi-10006170-claim-lease-precondition.log",
+        "sha256": "5823aae88e971088132bf0bf303a7682ebee9b00a1273cb2cda7081d8fb1f4d4",
+        "wrapperHead": "ae71fe3f73",
+        "wrapperProvenance": "stamped",
+        "uncommittedTestPaths": 0
+      }
     },
     {
       "path": "packages/operator-core/lib/delegated-tasks.integration.test.ts",
@@ -575,7 +612,18 @@
       "item": "WI-10006170",
       "lines": [
         13396
-      ]
+      ],
+      "latestLocalReceipt": {
+        "id": 20793753,
+        "filePath": "packages/operator-core/lib/dream/dream-sink.integration.test.ts",
+        "status": "pass",
+        "commitSha": "54c6f7604a2462fe28b85cff05f3aa894dd1b45d",
+        "worktreeDirty": false,
+        "isScratchConfig": false,
+        "root": "/tmp/papercusp-lint-as-committed-54c6f7604a-I4I82x",
+        "startedAt": "2026-10-06T00:16:39.062Z"
+      },
+      "latestReceiptMeaning": "Observed focused result only; causal repair attribution and complete current source/import/environment assurance remain unknown."
     },
     {
       "path": "packages/operator-core/lib/goals/package-goal-e2e.integration.test.ts",
@@ -595,7 +643,18 @@
       "lines": [
         13740,
         13759
-      ]
+      ],
+      "latestLocalReceipt": {
+        "id": 20794452,
+        "filePath": "packages/operator-core/lib/harness/join-hive-from-repo-incremental-federation.integration.test.ts",
+        "status": "pass",
+        "commitSha": "d152edfe0371ce04abb94d19eee265c7d6829809",
+        "worktreeDirty": true,
+        "isScratchConfig": false,
+        "root": "<repo-root>",
+        "startedAt": "2026-10-06T00:28:42.057Z"
+      },
+      "latestReceiptMeaning": "Observed focused result only; causal repair attribution and complete current source/import/environment assurance remain unknown."
     },
     {
       "path": "packages/operator-core/lib/experiment/producer-lifecycle-store.integration.test.ts",
@@ -1000,7 +1059,18 @@
       "lines": [
         13482,
         13500
-      ]
+      ],
+      "latestLocalReceipt": {
+        "id": 20793752,
+        "filePath": "packages/operator-core/lib/fleet/hive-roster.integration.test.ts",
+        "status": "pass",
+        "commitSha": "54c6f7604a2462fe28b85cff05f3aa894dd1b45d",
+        "worktreeDirty": false,
+        "isScratchConfig": false,
+        "root": "/tmp/papercusp-lint-as-committed-54c6f7604a-I4I82x",
+        "startedAt": "2026-10-06T00:16:37.067Z"
+      },
+      "latestReceiptMeaning": "Observed focused result only; causal repair attribution and complete current source/import/environment assurance remain unknown."
     },
     {
       "path": "packages/operator-core/lib/agent-tools/harness/__tests__/create-atomic-registry.integration.test.ts",
@@ -1027,7 +1097,18 @@
       "item": "WI-10006170",
       "lines": [
         13277
-      ]
+      ],
+      "latestLocalReceipt": {
+        "id": 20775658,
+        "filePath": "packages/operator-core/lib/code-intelligence/lsp-admission.pinned.integration.test.ts",
+        "status": "pass",
+        "commitSha": "9ed707ed5a4539052908a51c5d45226542fb362a",
+        "worktreeDirty": true,
+        "isScratchConfig": false,
+        "root": "<repo-root>",
+        "startedAt": "2026-10-05T23:14:14.285Z"
+      },
+      "latestReceiptMeaning": "Observed focused result only; causal repair attribution and complete current source/import/environment assurance remain unknown."
     },
     {
       "path": "packages/operator-core/lib/harness/improvements/watchdog-red-test-scratch-config.integration.test.ts",
@@ -1235,21 +1316,37 @@
     },
     {
       "path": "packages/operator-core/lib/work-items-attribution-backfill.integration.test.ts",
-      "class": "stale-migration-list",
-      "state": "open-unknown",
-      "item": "WI-10006170",
+      "class": "peer-work-item-fixture",
+      "state": "repaired-peer-focused",
+      "item": "WI-10006183",
       "lines": [
         12194
-      ]
+      ],
+      "historicalSymptomClass": "stale-migration-list",
+      "afterTestRun": 20786846,
+      "receiptCommit": "78d22d5887ebaf19a7ca525917aec766a5c905d4",
+      "testSha256": "89a458774babf19b34d0648a4b52436bb45b88b7ff39cd1ef5aad5cffe9a38ef",
+      "testFileAtReceiptMatchesCurrent": true,
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "completeImportGraphCurrentness": "unknown"
     },
     {
       "path": "packages/operator-core/lib/coord/condition-bridge.integration.test.ts",
-      "class": "stale-migration-list",
-      "state": "open-unknown",
-      "item": "WI-10006170",
+      "class": "peer-work-item-fixture",
+      "state": "repaired-peer-focused",
+      "item": "WI-10006183",
       "lines": [
         12250
-      ]
+      ],
+      "historicalSymptomClass": "stale-migration-list",
+      "afterTestRun": 20786847,
+      "receiptCommit": "78d22d5887ebaf19a7ca525917aec766a5c905d4",
+      "testSha256": "6e5e5dfab04006e94df51a804cf43f4d2c29de73f698bee2e1a3a5a85aaaab3c",
+      "testFileAtReceiptMatchesCurrent": true,
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "completeImportGraphCurrentness": "unknown"
     },
     {
       "path": "packages/operator-core/lib/fleet/assignments.integration.test.ts",
@@ -1273,12 +1370,20 @@
     },
     {
       "path": "packages/operator-core/lib/sync/hyperbee/__tests__/memory-federation-privacy.integration.test.ts",
-      "class": "stale-migration-list",
-      "state": "open-unknown",
-      "item": "WI-10006170",
+      "class": "peer-memory-fixture",
+      "state": "repaired-peer-focused",
+      "item": "WI-10006187",
       "lines": [
         12342
-      ]
+      ],
+      "historicalSymptomClass": "stale-migration-list",
+      "afterTestRun": 20789808,
+      "receiptCommit": "cd747dda55a8f0aa124926f0e8374969d1440888",
+      "testSha256": "edc7b2ac31bda0d7741310906938cc14ab1406c19b35fe51d56ded4ddc3d7ed9",
+      "testFileAtReceiptMatchesCurrent": true,
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "completeImportGraphCurrentness": "unknown"
     },
     {
       "path": "libs/papercusp/libs/db/src/work-items-cdc-capture.integration.test.ts",
@@ -1484,14 +1589,18 @@
       "commit": "7e205c4211eaf42648e7513eb2f4f3825a3c4825"
     },
     {
-      "class": "stale-migration-list",
-      "count": 3,
-      "status": "open-unknown",
-      "item": "WI-10006170",
-      "owner": "su-a20d4635-81b0-4323-b33e-6e838a21d8fe",
-      "scope": "diagnosis-and-placement",
-      "rootCause": "unproved",
-      "next": "Inspect exact saved error/source, deduplicate accepted defect and focused guard before source edits."
+      "class": "peer-work-item-fixture",
+      "count": 2,
+      "status": "repaired-peer-focused",
+      "item": "WI-10006183",
+      "rootCause": "Stored normal committed closure: stale audited work_items migration substrate and historical721 view mismatch; exact2cleanreceipt/currenttestbytes verified."
+    },
+    {
+      "class": "peer-memory-fixture",
+      "count": 1,
+      "status": "repaired-peer-focused",
+      "item": "WI-10006187",
+      "rootCause": "Stored normal committed closure: required1312 missing and inherited dark behavior precondition; realPG privacy/LWW/OFF guards preserved."
     }
   ],
   "prerequisites": [
@@ -1500,5 +1609,13 @@
     "P004 alone sequences finalexpensiveD006 after focusedrepairs/preconditionaudits and appropriate current-source/cleancausal evidence; readinessnotestablished."
   ],
   "parserMethod": "ANSI-stripped actual FAIL headers matched by first path token, including suite headers with trailing [ repeated file ]; task-bounded canonical124-file population; symptoms do not prove root cause.",
-  "peerEvidenceScope": "Exact durable PASS rows from successful committed peer closures were read; clean as-committed/non-scratch and current TEST FILE bytes match receipt commit. This is not full dependency/import/environment/finalD006 source assurance."
+  "peerEvidenceScope": "Exact durable PASS rows from successful committed peer closures were read; clean as-committed/non-scratch and current TEST FILE bytes match receipt commit. This is not full dependency/import/environment/finalD006 source assurance.",
+  "receiptLookupScope": {
+    "source": "local",
+    "since": "2026-10-05T22:29:37Z",
+    "queriedExactPaths": 112,
+    "canonicalRowsRetained": 6,
+    "unsupportedOrReadGapPaths": 106,
+    "meaning": "Unsupported/empty response shapes preserve UNKNOWN; this is not evidence that those paths have no runs or remain red."
+  }
 }
