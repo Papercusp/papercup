@@ -9,7 +9,7 @@
  * Three tabs:
  *   - Prompts (DEFAULT) — the Workflowy-style saved-prompts outline
  *     (PromptsTab.tsx), backed by harness_shared.saved_prompts.
- *   - Docs — the unchanged Pagefind search page, embedded same-origin
+ *   - Docs — the packaged filesystem search page, embedded same-origin
  *     (/internal/docs/search-palette.html) so the previous behavior of the
  *     popup survives verbatim as one tab.
  *   - Brainstorm — the existing BrainstormFull surface (write/map/canvas +
@@ -21,7 +21,7 @@
  * URL-backed (nuqs) per the repo rule — deep-linkable and agent-drivable
  * via ui:dispatch.
  */
-import { Suspense, useEffect, useMemo, type ReactNode } from 'react';
+import { Suspense, useEffect, useMemo, useRef, type ReactNode } from 'react';
 import * as Tabs from '@radix-ui/react-tabs';
 import { parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import { BookOpenText, Lightbulb, ListTree } from 'lucide-react';
@@ -30,6 +30,7 @@ import { FLAGS } from '@papercusp/flags';
 import { lazyWithRetry } from '@papercusp/operator-core/lib/lazy-with-retry';
 import {
   isQuickPanelWindow,
+  bindQuickPanelEscape,
   openRouteInApp,
   resolveQuickPanelHandoff,
 } from '@papercusp/operator-core/lib/client-navigation';
@@ -151,6 +152,18 @@ export default function QuickPanelPage({
     `${queryPrefix}tab`,
     parseAsStringEnum<QpTab>([...QP_TABS]).withDefault('prompts'),
   );
+  const docsFrame = useRef<HTMLIFrameElement>(null);
+
+  useEffect(() => {
+    if (!enabled || !isQuickPanelWindow()) return;
+    return bindQuickPanelEscape(document, docsFrame.current, () => {
+      // Rust intercepts CloseRequested and hides this reusable palette window.
+      // Invoke from the parent: navigated iframe docs do not carry Tauri's API.
+      void import('@tauri-apps/api/window')
+        .then(({ getCurrentWindow }) => getCurrentWindow().close())
+        .catch((error) => console.warn('[quick-panel] could not dismiss window', error));
+    });
+  }, [enabled, tab]);
 
   // WI-4827: the Quick Panel window is chromeless by ROUTE only — a control that
   // links into the full app (the chat sidebar's mic-settings gear → /settings/voice,
@@ -230,9 +243,9 @@ export default function QuickPanelPage({
         </Tabs.Content>
 
         <Tabs.Content className="pc-qp__pane" value="docs">
-          {/* The pre-tabs popup verbatim: same Pagefind index, same page, just
-              demoted from "the whole window" to one tab (D-004). Same-origin. */}
+          {/* Package-local docs search and result navigation remain same-origin. */}
           <iframe
+            ref={docsFrame}
             className="pc-qp__docsframe"
             src="/internal/docs/search-palette.html"
             title="Docs search"
