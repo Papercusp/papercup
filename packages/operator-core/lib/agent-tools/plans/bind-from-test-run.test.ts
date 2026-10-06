@@ -660,6 +660,20 @@ describe('WI-10004898: a clean run in a deleted disposable clone binds by commit
     });
   });
 
+  it('WI-10006842: maps a SUPERPROJECT clone run of a file inside a pinned submodule by descending the gitlink', async () => {
+    // The node:test ledger runs papercusp-desktop/test/*.test.js from the superproject clone
+    // root, so the row carries the SUPERPROJECT commit and a path below a 160000 entry.
+    const viaGitlink = cleanRow({ file_path: `${SUB}/src/s.test.ts` });
+    expect(await asCommittedTestPath(harness, viaGitlink)).toEqual({
+      testPath: `${SUB}/src/s.test.ts`, repoPrefix: '', commitSha: superCommit,
+    });
+    // Descending the gitlink is not a free pass: a path absent at the PINNED submodule commit
+    // still maps to nothing.
+    expect(await asCommittedTestPath(harness, cleanRow({ file_path: `${SUB}/src/missing.test.ts` }))).toBeNull();
+    const bound = await expandTestRunBinding(input({ sourcePaths: [`${SUB}/src/s.ts`] }), SCOPE, binder(viaGitlink));
+    expect(bound).toMatchObject({ ok: true });
+  });
+
   it('never maps a dirty, commit-less, foreign-commit, absent-file or plain-directory run', async () => {
     expect(await asCommittedTestPath(harness, cleanRow({ worktree_dirty: true }))).toBeNull();
     expect(await asCommittedTestPath(harness, cleanRow({ worktree_dirty: null }))).toBeNull();

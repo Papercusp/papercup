@@ -435,7 +435,10 @@ export async function asCommittedTestPath(
       // of the superproject — that would re-anchor the file under the wrong path.
       const top = (await git(repo, ['rev-parse', '--show-toplevel'])).trim();
       if (!(await sameDirectory(top, repo))) continue;
-      await git(repo, ['cat-file', '-e', `${commitSha}:${inClone}`]);
+      // WI-10006842: descend gitlinks exactly like verifyAsCommittedContent does. A superproject
+      // clone run of a SUBMODULE file (papercusp-desktop/test/...) names a path below a 160000
+      // entry, which a bare `cat-file -e <commit>:<path>` reports absent.
+      if (!(await blobAtCommit(repo, commitSha, inClone, git))) continue;
       return { testPath: repoPrefix ? `${repoPrefix}/${inClone}` : inClone, repoPrefix, commitSha };
     } catch {
       // Not a repository here, or X / the file is not in it: try the next candidate.
