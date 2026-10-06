@@ -90,6 +90,124 @@ export function produceSnapshotFromEdges({ edges, index, readSource, now }: {
         duplicates: number;
     };
 };
+/**
+ * Nearest-ancestor tsconfig `paths` entries for an importer as `[prefix, target, wildcard]`,
+ * target REPO-RELATIVE (a dir with trailing slash for a wildcard key, the file itself for an
+ * exact key), parsed by the selector's own tsconfig reader (`tsconfigPathEntriesFor`, one parser)
+ * so `@/` resolves as related-test selection resolves it. A target escaping the root is dropped.
+ * @param {{ root: string, hasTsconfig: (relDir: string) => boolean, entriesFor?: (absDir: string) => Array<{ prefix: string, target: string, wildcard: boolean }> }} o
+ * @returns {(importer: string) => Array<[string, string, boolean]>}
+ */
+export function nearestTsconfigAliases({ root, hasTsconfig, entriesFor }: {
+    root: string;
+    hasTsconfig: (relDir: string) => boolean;
+    entriesFor?: (absDir: string) => Array<{
+        prefix: string;
+        target: string;
+        wildcard: boolean;
+    }>;
+}): (importer: string) => Array<[string, string, boolean]>;
+/**
+ * Resolve `spec` against tsconfig `paths` entries the way TypeScript does: an EXACT key matches
+ * by equality only and wins outright; otherwise the LONGEST matching wildcard prefix wins
+ * (independent of declaration order). Returns the repo-relative base path, or null when no key
+ * matches. A first-match prefix scan here is the bug WI-10006809 measured: the exact key
+ * `@papercusp/operator-core` captured `@papercusp/operator-core/lib/x` ahead of its wildcard.
+ * @param {Array<[string, string, boolean]>} entries
+ * @param {string} spec
+ * @returns {string | null}
+ */
+export function matchTsconfigPath(entries: Array<[string, string, boolean]>, spec: string): string | null;
+/**
+ * FIRST-PARTY edges (WI-10006809; plan gitnexus-deterministic-integration-2026-10-05, D-026):
+ * import edges derived straight from tracked source — no graph backend, no server, no index on
+ * disk. Each importer's specifiers are read with the selector's OWN extractor and resolved with
+ * its OWN candidate expansion (`relativeCandidates` / `baseCandidates`), so every edge emitted
+ * here is one the selector's source corroboration can re-derive; `buildSnapshot` still verifies
+ * each one. A specifier naming a TRACKED workspace package resolves into that package (these
+ * undeclared cross-workspace edges are what the snapshot exists to add); every other bare
+ * specifier is out of graph by design. An unresolved specifier is COUNTED, never guessed.
+ * @param {{ files: string[], readSource: (rel: string) => string | null, aliasesForImporter?: (importer: string) => Array<[string, string, boolean]>, workspacePackages?: Array<[string, string[]]>, resolvePackageDir?: (name: string, importer: string) => string | null }} o
+ */
+export function deriveFirstPartyEdges({ files, readSource, aliasesForImporter, workspacePackages, resolvePackageDir }: {
+    files: string[];
+    readSource: (rel: string) => string | null;
+    aliasesForImporter?: (importer: string) => Array<[string, string, boolean]>;
+    workspacePackages?: Array<[string, string[]]>;
+    resolvePackageDir?: (name: string, importer: string) => string | null;
+}): {
+    edges: {
+        importer: string;
+        imported: string;
+    }[];
+    stats: {
+        importers: number;
+        unreadable: number;
+        relativeUnresolved: number;
+        aliasResolved: number;
+        aliasUnresolved: number;
+        packageResolved: number;
+        packageUnresolved: number;
+        packageAmbiguous: number;
+        bare: number;
+    };
+};
+/**
+ * Workspace packages as `[name, repoRelativeDir]`, from every tracked `package.json` outside
+ * node_modules. A NAME claimed by two directories is AMBIGUOUS and dropped (its specifiers then
+ * count as bare) — resolving it to either copy would be a guess, and a guessed edge is exactly
+ * what source corroboration exists to refuse.
+ * @param {{ files: string[], readSource: (rel: string) => string | null }} o
+ * @returns {Array<[string, string]>}
+ */
+export function workspacePackagesFrom({ files, readSource }: {
+    files: string[];
+    readSource: (rel: string) => string | null;
+}): Array<[string, string]>;
+/**
+ * First-party producer: derive edges from `files`, then build through the SAME fail-closed
+ * `produceSnapshotFromEdges` path (index identity required; an empty corroborated set refuses).
+ * The index identity is the source tree's HEAD — each edge is still bound to its importer's
+ * content hash, so working-tree drift past HEAD is caught per edge by the selector.
+ */
+export function produceSnapshotFromSource({ files, readSource, aliasesForImporter, headCommit, now }: {
+    files: any;
+    readSource: any;
+    aliasesForImporter: any;
+    headCommit: any;
+    now: any;
+}): {
+    derive: {
+        importers: number;
+        unreadable: number;
+        relativeUnresolved: number;
+        aliasResolved: number;
+        aliasUnresolved: number;
+        packageResolved: number;
+        packageUnresolved: number;
+        packageAmbiguous: number;
+        bare: number;
+    };
+    rows: any;
+    pages: number;
+    snapshot: {
+        schema: string;
+        index: any;
+        generatedAt: string;
+        edges: {
+            importer: any;
+            imported: any;
+            importerSha256: string;
+        }[];
+    };
+    stats: {
+        input: number;
+        kept: number;
+        skippedMissing: number;
+        skippedUncorroborated: number;
+        duplicates: number;
+    };
+};
 /** Write atomically (tmp in the same dir + rename) so a reader never sees a half-written file. */
 export function writeSnapshotAtomic(outPath: any, snapshot: any): number;
 export function parseArgs(argv: any): {
@@ -108,6 +226,7 @@ export function parseArgs(argv: any): {
         indexCommit: null;
         gitnexusBin: null;
         registry: null;
+        firstParty: boolean;
     };
     error?: undefined;
 };
@@ -172,3 +291,9 @@ export class GraphReadError extends Error {
     constructor(code: string, message: string);
     code: string;
 }
+/** Index backend name a first-party snapshot records (`snapshot.index.backend`). */
+export const FIRST_PARTY_BACKEND: "first-party-imports";
+/** Default output for `--first-party`: a SIBLING of the shared snapshot, never the file the
+ * selector reads, so producing one cannot displace the gitnexus snapshot until the swap is
+ * decided (WI-10006809: keep gitnexus until first-party is shown at least as good, P-012). */
+export const FIRST_PARTY_SNAPSHOT_NAME: "dependency-snapshot.first-party.json";

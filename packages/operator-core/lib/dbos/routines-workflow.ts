@@ -78,6 +78,8 @@ import {
   type OverlapCheckDeps,
 } from './routine-tick-overlap-guard';
 import { CaplessAdaptiveController } from '../resource-governor/controller';
+import { computeNextFire, expandOccurrences, type ScheduleTrigger } from '../harness/routines/schedule-next';
+import { pinModuleState } from '@papercusp/module-singleton';
 import { HEALTH_ANALYSIS_SCHEMA_VERSION, type HealthVerdict } from '../resource-governor/health-analysis';
 // Side-effect import: registers every `system:<action>` handler before the first tick.
 import '../harness/routines/register-system-actions';
@@ -239,6 +241,8 @@ export function orderDueRoutinesByAge<T extends DueRoutine>(due: readonly T[]): 
 export interface RoutineDispatchQueueDecision {
   readonly queueName: string;
   readonly inFlight: number;
+  /** Caller-supplied demand floor for this queue this epoch (0 = none; WI-10006946). */
+  readonly minimumWindow: number;
   readonly desiredWindow: number;
   readonly effectiveWindow: number;
   readonly controllerAvailableStarts: number;
@@ -280,6 +284,125 @@ export function createRoutineDispatchController(): CaplessAdaptiveController {
 }
 
 const routineDispatchController = createRoutineDispatchController();
+
+/**
+ * WI-10006946: the demand-derived liveness floor for the routines-critical lane.
+ *
+ * The adaptive window is process-local and cold-starts at 1, `elevated` pool readings
+ * hold it, and `critical` ones halve it. Measured 2026-10-06 on the tower bg-host it sat
+ * at 4-7 for long stretches (it restarts about every 30 min), while the lane's cron
+ * demand needed about 8 concurrent fires: 74 git-sync routines on a 10-minute cron are
+ * ~7.5 fires/min at a 45 s mean run. Supply (6.2 fires/min) fell below demand, the
+ * backlog reached 31 overdue routines, and skip-old dropped their missed slots.
+ *
+ * Little's law gives the concurrency the lane needs to keep up: fires per unit time x
+ * slot occupancy. Starts happen only on scheduler ticks, so a freed slot idles until the
+ * next tick and occupancy rounds the mean run up to whole ticks. The result is bounded by
+ * the lane's routine count (one routine cannot have two fires in flight). The window
+ * never sits below this floor under `ok`/`elevated`; `critical` pressure still clamps
+ * the lane to one in-flight start in evaluateRoutineDispatchEpoch.
+ */
+export function criticalLaneDemandFloor(input: {
+  /** Occurrences in the next hour, summed over every active cron routine in the lane. */
+  readonly firesPerHour: number;
+  /** Active cron routines in the lane. */
+  readonly routineCount: number;
+  /** Measured mean started->completed run of recent lane fires; null when none finished. */
+  readonly meanRunMs: number | null;
+  /** Scheduler tick period. */
+  readonly tickMs: number;
+}): number {
+  const routineCount = Math.max(0, Math.floor(Number.isFinite(input.routineCount) ? input.routineCount : 0));
+  const firesPerHour = Number.isFinite(input.firesPerHour) && input.firesPerHour > 0 ? input.firesPerHour : 0;
+  if (routineCount === 0 || firesPerHour === 0) return 0;
+  const tickMs = Number.isFinite(input.tickMs) && input.tickMs > 0 ? input.tickMs : 30_000;
+  const runMs =
+    input.meanRunMs !== null && Number.isFinite(input.meanRunMs) && input.meanRunMs > 0 ? input.meanRunMs : tickMs;
+  const slotMs = Math.ceil(runMs / tickMs) * tickMs;
+  const concurrency = (firesPerHour / 3_600_000) * slotMs;
+  return Math.min(routineCount, Math.max(1, Math.ceil(concurrency - 1e-9)));
+}
+
+/** Tick period derived from the scheduler's own crontab (env-overridable), not restated. */
+function routinesTickPeriodMs(nowMs: number): number {
+  const first = computeNextFire({ cron: TICK_CRONTAB }, new Date(nowMs));
+  const second = first ? computeNextFire({ cron: TICK_CRONTAB }, first) : null;
+  const period = first && second ? second.getTime() - first.getTime() : NaN;
+  return Number.isFinite(period) && period > 0 ? period : 30_000;
+}
+
+/** Measurement window for the lane's mean fire run time. */
+const CRITICAL_LANE_RUN_WINDOW_MS = 15 * 60_000;
+/** Demand changes on install/uninstall scale, so it is re-read at most this often. */
+const CRITICAL_LANE_DEMAND_TTL_MS = 5 * 60_000;
+
+/**
+ * Read the routines-critical lane's demand: its active durable cron population (same
+ * filter as listDueCronRoutines, minus the due gate, classified by queueForRoutine) and
+ * the mean run of its fires that completed in the last 15 minutes (index on completed_at).
+ */
+export async function readCriticalLaneDemand(
+  sql: ReturnType<typeof getOrgPg>['sql'],
+  nowMs: number,
+): Promise<{ firesPerHour: number; routineCount: number; meanRunMs: number | null }> {
+  const routines = await sql<{ target_role: string; install_slug: string | null; trigger_config: unknown }[]>`
+    SELECT target_role, install_slug, trigger_config
+      FROM harness_shared.routines
+     WHERE active = TRUE
+       AND trigger_kind = 'cron'
+       AND tier = 'durable'
+       AND target_role LIKE ${`${SYSTEM_TARGET_PREFIX}%`}`;
+  const from = new Date(nowMs);
+  const to = new Date(nowMs + 3_600_000);
+  let routineCount = 0;
+  let firesPerHour = 0;
+  for (const row of routines) {
+    if (queueForRoutine(row.target_role, row.install_slug) !== ROUTINES_CRITICAL_QUEUE) continue;
+    const cfg = (row.trigger_config ?? null) as ScheduleTrigger | null;
+    routineCount += 1;
+    // Half-open [now, now+1h): drop an occurrence landing exactly on the far edge.
+    firesPerHour += expandOccurrences(cfg, from, to).filter((at) => at.getTime() < to.getTime()).length;
+  }
+  const [run] = await sql<{ mean_run_ms: number | string | null }[]>`
+    SELECT avg(completed_at - started_at_epoch_ms)::float8 AS mean_run_ms
+      FROM dbos.workflow_status
+     WHERE completed_at > ${nowMs - CRITICAL_LANE_RUN_WINDOW_MS}
+       AND queue_name = ${ROUTINES_CRITICAL_QUEUE}
+       AND name = 'routineFire'
+       AND status IN ('SUCCESS', 'ERROR')
+       AND started_at_epoch_ms IS NOT NULL`;
+  const meanRunMs = run?.mean_run_ms === null || run?.mean_run_ms === undefined ? null : Number(run.mean_run_ms);
+  return { firesPerHour, routineCount, meanRunMs: Number.isFinite(meanRunMs) ? meanRunMs : null };
+}
+
+const criticalLaneDemandCache = pinModuleState('@papercusp/operator-core.routines-critical-demand-floor', () => ({
+  floor: 0,
+  readAtMs: 0,
+}));
+
+/**
+ * The cached, fail-soft floor used by routinesTick. It is refreshed at most every
+ * CRITICAL_LANE_DEMAND_TTL_MS and never under critical pool pressure (the last value
+ * stands; the epoch clamps the lane to one start then anyway). A failed read keeps the
+ * last floor: an instrument on the dispatch path must never break dispatch.
+ */
+export async function criticalLaneDemandFloorFor(
+  sql: ReturnType<typeof getOrgPg>['sql'],
+  pressure: PoolPressure,
+  nowMs: number,
+): Promise<number> {
+  const cache = criticalLaneDemandCache;
+  const fresh = cache.readAtMs > 0 && nowMs - cache.readAtMs < CRITICAL_LANE_DEMAND_TTL_MS;
+  if (fresh || pressure === 'critical') return cache.floor;
+  try {
+    const demand = await readCriticalLaneDemand(sql, nowMs);
+    cache.floor = criticalLaneDemandFloor({ ...demand, tickMs: routinesTickPeriodMs(nowMs) });
+  } catch (err) {
+    console.warn(`[routines-tick] critical-lane demand read failed; keeping floor=${cache.floor}:`, err);
+  }
+  cache.readAtMs = nowMs;
+  return cache.floor;
+}
 
 /**
  * Read actual queued/running routine-fire occupancy from DBOS's partial in-flight
@@ -396,6 +519,8 @@ export function evaluateRoutineDispatchEpoch(input: {
   readonly activeQueues: readonly string[];
   readonly controller?: CaplessAdaptiveController;
   readonly atMs?: number;
+  /** Per-queue demand floors (WI-10006946); critical pressure still clamps the critical lane. */
+  readonly minimumWindowByQueue?: Readonly<Record<string, number>>;
 }): RoutineDispatchAdmissionEpoch {
   const atMs = Math.max(0, Math.floor(input.atMs ?? Date.now()));
   const active = new Set(input.activeQueues);
@@ -403,12 +528,17 @@ export function evaluateRoutineDispatchEpoch(input: {
     (queueName) => active.has(queueName) || (input.inFlightByQueue[queueName] ?? 0) > 0,
   );
   const controller = input.controller ?? routineDispatchController;
+  const floorFor = (queueName: string): number => {
+    const value = input.minimumWindowByQueue?.[queueName];
+    return value !== undefined && Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
+  };
   const decision = controller.step({
     verdict: routinePoolHealthVerdict(input.pressure, input.probeMs, atMs),
     classes: queues.map((queueName) => ({
       admissionClass: queueName,
       inFlight: Math.max(0, Math.floor(input.inFlightByQueue[queueName] ?? 0)),
       demand: { databaseConnections: 1 },
+      minimumWindow: floorFor(queueName),
     })),
     atMs,
   });
@@ -433,6 +563,7 @@ export function evaluateRoutineDispatchEpoch(input: {
         return Object.freeze({
           queueName,
           inFlight,
+          minimumWindow: floorFor(queueName),
           desiredWindow: lane.desiredWindow,
           effectiveWindow: lane.effectiveWindow,
           controllerAvailableStarts: lane.availableStarts,
@@ -1062,14 +1193,19 @@ async function routinesTickImpl(): Promise<void> {
   // routineFire workflow fan-out — one prior-cohort health epoch reads indexed
   // DBOS in-flight rows before claim/start, then the loop spends only its credit.
   const dispatchEpoch = await DBOS.runStep(
-    async () =>
-      evaluateRoutineDispatchEpoch({
+    async () => {
+      const atMs = Date.now();
+      // WI-10006946: the critical lane never drops below its cron demand under ok/elevated.
+      const criticalFloor = await criticalLaneDemandFloorFor(sql, pool, atMs);
+      return evaluateRoutineDispatchEpoch({
         pressure: pool,
         probeMs: poolProbeMs,
         inFlightByQueue: await readRoutineFireInFlightByQueue(sql),
         activeQueues: due.map((routine) => queueForRoutine(routine.targetRole, routine.installSlug)),
-        atMs: Date.now(),
-      }),
+        atMs,
+        minimumWindowByQueue: { [ROUTINES_CRITICAL_QUEUE]: criticalFloor },
+      });
+    },
     { name: 'routine-dispatch-feedback-epoch' },
   );
   const queueAdmission = new Map(dispatchEpoch.queues.map((item) => [item.queueName, item]));
@@ -1092,7 +1228,8 @@ async function routinesTickImpl(): Promise<void> {
         console.warn(
           `[routines-tick] HELD ${queueName} dispatch — feedback epoch has ` +
             `window=${admission?.effectiveWindow ?? 0}, inFlight=${admission?.inFlight ?? 0}, ` +
-            `available=0, pool=${dispatchEpoch.pressure} (${dispatchEpoch.probeMs}ms); ` +
+            `available=0, pool=${dispatchEpoch.pressure} (${dispatchEpoch.probeMs}ms), ` +
+            `demandFloor=${admission?.minimumWindow ?? 0}; ` +
             `unclaimed routines remain due for the next epoch (EI-224330)`,
         );
       }

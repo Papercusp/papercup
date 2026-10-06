@@ -43,7 +43,13 @@ import {
   recordFrozenRepairEdit,
   type FrozenRepairEditLedgerRow,
 } from '../../release/frozen-repair-edit-ledger';
-import { summarizeForeignHunks, type HunkExactSuccess } from '../../release/hunk-exact-admission';
+import {
+  attributeUnledgeredPaths,
+  summarizeForeignHunks,
+  SOLE_EDITOR_WINDOW_MARGIN_MS,
+  type EditAttributionRow,
+  type HunkExactSuccess,
+} from '../../release/hunk-exact-admission';
 import { integrationBranch } from '../../release/judged-sha-containment';
 import { realAdmissionGit } from '../../release/repair-head-admission';
 // WI-10005223: every admission git sequence below runs on the admission worker thread, never
@@ -1166,9 +1172,10 @@ export default defineTool({
       // is a synthesised commit = repairHead + ONLY the caller's ledgered hunks per path, so a
       // peer's concurrent work in the same file never rides in. `wholeBlob:true` (with a
       // reason) is the explicit, ledgered widening; `includeHunksFrom` replays named peers.
-      const wholeBlob = args.wholeBlob === true;
+      let wholeBlob = args.wholeBlob === true;
       const includeHunksFrom = (args.includeHunksFrom ?? []).map((a) => a.trim()).filter((a) => a.length > 0);
-      const mode = args.patchCommit !== undefined ? 'committed-patch' : wholeBlob ? 'whole-blob' : 'hunk-exact';
+      let mode: 'committed-patch' | 'whole-blob' | 'hunk-exact' =
+        args.patchCommit !== undefined ? 'committed-patch' : wholeBlob ? 'whole-blob' : 'hunk-exact';
       if (
         args.patchCommit !== undefined &&
         (wholeBlob ||
@@ -1216,6 +1223,71 @@ export default defineTool({
       } catch (err) {
         ledgerReadError = (err as Error).message;
       }
+      // P-004 (gate-throughput-shift-left-2026-10-06, EI-24313562050732849 / EI-24557368838482892):
+      // when NOTHING on any requested path reached the hunk ledger, ask the independent edit
+      // attribution ledger. Caller-only editors on every path ⇒ admit staging's blob, pinned to the
+      // sha read now, under an automatic recorded reason. Otherwise hunk-exact refuses as before,
+      // with the attribution verdict appended so the refusal names exactly why.
+      let attributionNote: string | null = null;
+      // The sole-editor fallback supplies these. Never reassign `args`: any reassignment drops the
+      // op:'admit' narrowing inside the closures below (buildAdmission reads both).
+      let effectiveSourceCommit = args.sourceCommit;
+      let effectiveReason = args.reason;
+      if (
+        mode === 'hunk-exact' &&
+        ledgerReadError === null &&
+        paths.every((p) => !ledgerRows.some((r) => r.path === p))
+      ) {
+        try {
+          const cut = await runJob('sole-editor-candidate-time', {
+            kind: 'git',
+            argv: ['show', '-s', '--format=%ct', queue.candidate],
+            cwd: root,
+          });
+          const tip = await runJob('sole-editor-pin', {
+            kind: 'git',
+            argv: ['rev-parse', '--verify', `${branch}^{commit}`],
+            cwd: root,
+          });
+          const cutSec = Number(cut.stdout.trim());
+          const pinned = tip.stdout.trim();
+          if (cut.status === 0 && Number.isFinite(cutSec) && tip.status === 0 && FULL_COMMIT_SHA.test(pinned)) {
+            const windowStartMs = cutSec * 1000 - SOLE_EDITOR_WINDOW_MARGIN_MS;
+            const raw = await getOrgPg().sql`
+              SELECT file, agent_id, ts
+                FROM harness_shared.edit_attribution_ledger
+               WHERE workspace_id = ${inspected.target.workspaceId}
+                 AND file = ANY(${[...paths]}::text[])
+                 AND ts >= to_timestamp(${windowStartMs / 1000})`;
+            const rows: EditAttributionRow[] = raw.map((r) => ({
+              path: String(r.file),
+              agent: String(r.agent_id),
+              tsMs: new Date(r.ts as string | Date).getTime(),
+            }));
+            const verdict = attributeUnledgeredPaths({
+              paths,
+              actor: identity.ownerId,
+              includeHunksFrom,
+              rows,
+              windowStartMs,
+            });
+            if (verdict.ok) {
+              wholeBlob = true;
+              mode = 'whole-blob';
+              effectiveSourceCommit = pinned;
+              effectiveReason =
+                `auto: sole post-freeze editor — no hunk reached the frozen ledger, and the edit attribution ledger ` +
+                `records only ${identity.ownerId} editing ${paths.join(', ')} since the candidate cut`;
+            } else {
+              attributionNote = `edit attribution ledger: ${verdict.detail}`;
+            }
+          } else {
+            attributionNote = 'edit attribution ledger: not consulted (could not read the candidate time or pin the integration tip)';
+          }
+        } catch (err) {
+          attributionNote = `edit attribution ledger: unreadable (${(err as Error).message})`;
+        }
+      }
       let sourceRef = branch;
       let hunkExact: HunkExactSuccess | null = null;
       let patch: FrozenRepairAdmission['patch'];
@@ -1230,7 +1302,7 @@ export default defineTool({
               patchCommit,
               integrationRef: branch,
               paths,
-              reason: args.reason!,
+              reason: effectiveReason!,
             },
           });
         if (!built.ok) {
@@ -1250,7 +1322,7 @@ export default defineTool({
         patch = built.patch;
         sourceRef = built.sourceCommit;
       } else if (wholeBlob) {
-        if (!args.reason || args.reason.trim().length < 8) {
+        if (!effectiveReason || effectiveReason.trim().length < 8) {
           return json({
             ok: false,
             admitted: false,
@@ -1266,8 +1338,8 @@ export default defineTool({
             ...base,
           });
         }
-        if (args.sourceCommit !== undefined) {
-          const sourceCommitArg = args.sourceCommit;
+        if (effectiveSourceCommit !== undefined) {
+          const sourceCommitArg = effectiveSourceCommit;
           const resolved = await runJob('source-commit-resolve', {
               kind: 'git',
               argv: ['rev-parse', '--verify', `${sourceCommitArg}^{commit}`],
@@ -1282,7 +1354,7 @@ export default defineTool({
               dryRun,
               verdict: 'refused',
               reason: 'source-commit-unresolvable',
-              detail: `sourceCommit ${args.sourceCommit} does not resolve to a commit in the integration repository`,
+              detail: `sourceCommit ${effectiveSourceCommit} does not resolve to a commit in the integration repository`,
               judgedSha: queue.repairHead,
               mode,
               ...base,
@@ -1350,7 +1422,7 @@ export default defineTool({
             dryRun,
             verdict: 'refused',
             reason: built.code,
-            detail: built.detail,
+            detail: attributionNote ? `${built.detail}; ${attributionNote}` : built.detail,
             ...(built.path ? { path: built.path } : {}),
             ...(built.foreignAgents ? { foreignAgents: built.foreignAgents } : {}),
             ...(built.hunkIndex !== undefined ? { hunkIndex: built.hunkIndex } : {}),
@@ -1405,10 +1477,10 @@ export default defineTool({
             paths,
             source: {
               ref: sourceRef,
-              ...(wholeBlob && args.sourceCommit !== undefined ? { recordAsRef: branch } : {}),
+              ...(wholeBlob && effectiveSourceCommit !== undefined ? { recordAsRef: branch } : {}),
             },
             actor: identity.ownerId,
-            reason: args.reason,
+            reason: effectiveReason,
             nowMs: Date.now(),
             dryRun: dry,
           },
@@ -1420,7 +1492,7 @@ export default defineTool({
           // or npm install rewrites the lock and the promoted pin can never certify. Both checks
           // are rebuilt from this spec on the worker thread (admissionPreflightFromSpec).
           preflight: {
-            probeRef: wholeBlob && args.sourceCommit !== undefined ? sourceRef : branch,
+            probeRef: wholeBlob && effectiveSourceCommit !== undefined ? sourceRef : branch,
             ...(wholeBlob ? { enforceSourceCohort: true as const } : {}),
           },
         });
@@ -1867,7 +1939,7 @@ export default defineTool({
       }
       const auditRecorded = await recordAudit(identity.ownerId, {
         op: 'admit',
-        reason: args.reason ?? null,
+        reason: effectiveReason ?? null,
         workItem: args.workItem ?? null,
         candidate: queue.candidate,
         from: queue.repairHead,

@@ -120,7 +120,18 @@ export function extractSpecifiers(source) {
 
 /** Candidate repo-relative files a RELATIVE specifier written in `importer` can name. */
 export function relativeCandidates(importer, specifier) {
-  const base = posix.normalize(posix.join(posix.dirname(importer), specifier));
+  return baseCandidates(posix.normalize(posix.join(posix.dirname(importer), specifier)));
+}
+
+/**
+ * Candidate repo-relative files for an already-resolved module path `base` (repo-relative, as
+ * written — no extension added yet): the extension / `index` / `.js`→`.ts` expansion. Shared by
+ * relative resolution above and by the first-party snapshot producer's alias resolution
+ * (WI-10006809), so both name the same files in the same order.
+ * @param {string} base
+ * @returns {Set<string>}
+ */
+export function baseCandidates(base) {
   const out = new Set();
   for (const ext of RESOLVE_EXTS) out.add(`${base}${ext}`);
   for (const ext of RESOLVE_EXTS) out.add(`${base}/index${ext}`);

@@ -1,0 +1,242 @@
+/**
+ * listSpecEvidence judges repo-files proof against ONE measurement commit M per measurement
+ * root (proof-freshness-pinned-candidate-2026-10-06 P-002/P-004, decision D-001; BARs R-1, R-2).
+ *
+ * R-1: an uncommitted working-tree edit to a closure file never stales a binding.
+ * R-2: a committed closure change (superproject or submodule) still reads source-stale and
+ *      names the moved path; a binding stored before this change, against unchanged bytes,
+ *      still reads current; every binding under one root in one call reports the same M.
+ *
+ * Every case runs against a real temporary superproject with a nested repository recorded
+ * as a gitlink. The DB, harness registry and lock queue are the only seams mocked.
+ */
+import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+const h = vi.hoisted(() => ({
+  rows: [] as Array<Record<string, unknown>>,
+  measurementRoot: '',
+  lockReads: 0,
+  resolveCalls: [] as string[],
+  // Runs once, right after the measurement commit is resolved: a commit landing mid-call.
+  afterResolve: null as null | (() => void),
+}));
+
+vi.mock('../locks/su-lock-store', () => ({
+  ensureBootstrap: vi.fn(async () => undefined),
+  getTxPool: vi.fn(() => ({})),
+  readQueue: vi.fn(async () => {
+    h.lockReads += 1;
+    return { active_locks: [], waiting: [], completed: [] };
+  }),
+}));
+
+vi.mock('@papercusp/db-org', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@papercusp/db-org')>();
+  return {
+    ...actual,
+    withWorkspace: async <T>(_workspaceId: string, fn: (tx: unknown) => Promise<T>) => {
+      const tx = ((strings: TemplateStringsArray | string[]) =>
+        Promise.resolve(Array.from(strings).join(' ').includes('provisional') ? [] : h.rows)) as unknown;
+      return fn(tx);
+    },
+  };
+});
+
+vi.mock('./source', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./source')>();
+  return { ...actual, resolvePlanScope: async () => ({ workspaceId: 'workspace-test', harnessSlug: 'papercusp' }) };
+});
+
+vi.mock('../../harness-registry', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../harness-registry')>();
+  return { ...actual, loadHarnessRegistry: async () => ({}) as never, resolveHarnessContentPath: () => h.measurementRoot };
+});
+
+vi.mock('./committed-tree-reader', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./committed-tree-reader')>();
+  return {
+    ...actual,
+    resolveMeasurementCommit: async (root: string, ...rest: unknown[]) => {
+      h.resolveCalls.push(root);
+      const commit = await actual.resolveMeasurementCommit(root, ...(rest as []));
+      const hook = h.afterResolve;
+      h.afterResolve = null;
+      hook?.();
+      return commit;
+    },
+  };
+});
+
+const { listSpecEvidence, measureAndPinRepoFilesEvidenceAtRoot, MEASUREMENT_PIN_DETAILS_KEY } = await import(
+  './spec-evidence-store'
+);
+
+const git = (cwd: string, ...args: string[]) =>
+  execFileSync('git', ['-C', cwd, '-c', 'user.email=t@example.test', '-c', 'user.name=t', '-c', 'commit.gpgsign=false', ...args], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim();
+
+let root: string;
+let sub: string;
+
+/** The sha256-file-set-v1 formula over CURRENT file bytes, re-stated independently of the code under test. */
+function fileSetFingerprint(base: string, paths: string[]): string {
+  const entries = [...new Set(paths)].sort().map((path) => ({
+    path,
+    sha256: createHash('sha256').update(readFileSync(join(base, path))).digest('hex'),
+  }));
+  return `sha256-file-set-v1:${createHash('sha256').update(JSON.stringify(entries)).digest('hex')}`;
+}
+
+type Recipe = { schemaVersion: 1; kind: 'repo-files'; sourcePaths: string[] };
+
+/** A binding stored now, against the CURRENT (clean) bytes, with its P-018 pin. */
+async function storedBinding(id: number, sourcePaths: string[]): Promise<Record<string, unknown>> {
+  const recipe: Recipe = { schemaVersion: 1, kind: 'repo-files', sourcePaths };
+  const { pin } = await measureAndPinRepoFilesEvidenceAtRoot(root, recipe);
+  return {
+    id,
+    work_item_id: `WI-${id}`,
+    plan_slug: 'plan-one',
+    spec_id: `SPEC-001-0${id}`,
+    source_val_id: `VAL-001-0${id}`,
+    spec_revision: 1,
+    current_revision: 1,
+    spec_fingerprint: 'sha256:spec-v1',
+    evidence_kind: 'test',
+    evidence_ref: `vitest:binding-${id}`,
+    source_fingerprint: fileSetFingerprint(root, sourcePaths),
+    test_fingerprint: null,
+    fixture_fingerprint: null,
+    rubric_fingerprint: null,
+    environment_fingerprint: null,
+    coverage_evidence_ref: null,
+    coverage_evidence_present: false,
+    test_run_id: null,
+    test_run_present: false,
+    details: { currentMeasurement: recipe, [MEASUREMENT_PIN_DETAILS_KEY]: pin },
+    observed_at: '2026-10-06 18:00:00-04',
+    binding_fingerprint: `sha256:binding-${id}`,
+    created_by: 'su-test',
+    created_at: '2026-10-06T22:00:01.000Z',
+    spec_is_current: true,
+  };
+}
+
+type Row = {
+  currentness: { overall: string; staleReasons: string[] };
+  serverMeasurement?: { status: string; measuredAtCommit?: string; movedPaths?: Array<{ path: string; change: string }> };
+};
+const list = async () =>
+  (await listSpecEvidence({ harnessSlug: 'papercusp', planSlugs: ['plan-one'] })) as unknown as Row[];
+
+beforeEach(async () => {
+  root = realpathSync(mkdtempSync(join(tmpdir(), 'spec-evidence-committed-')));
+  git(root, 'init', '-q', '-b', 'main');
+  mkdirSync(join(root, 'src'), { recursive: true });
+  writeFileSync(join(root, 'src/a.ts'), 'export const a = 1;\n');
+  writeFileSync(join(root, 'src/b.ts'), 'export const b = 1;\n');
+  sub = join(root, 'libs/sub');
+  mkdirSync(join(sub, 'sql'), { recursive: true });
+  git(sub, 'init', '-q', '-b', 'main');
+  writeFileSync(join(sub, 'sql/001.sql'), 'select 1;\n');
+  git(sub, 'add', '.');
+  git(sub, 'commit', '-q', '-m', 'sub init');
+  git(root, 'add', 'src', 'libs/sub');
+  git(root, 'commit', '-q', '-m', 'root init');
+  h.measurementRoot = root;
+  h.rows = [await storedBinding(1, ['src/a.ts']), await storedBinding(2, ['src/b.ts', 'libs/sub/sql/001.sql'])];
+  h.lockReads = 0;
+  h.resolveCalls = [];
+  h.afterResolve = null;
+});
+
+afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+describe('listSpecEvidence measures repo-files proof at the measurement commit', () => {
+  it('reads a binding stored before this change, against unchanged bytes, as current at HEAD', async () => {
+    const rows = await list();
+    const head = git(root, 'rev-parse', 'HEAD');
+    expect(rows.map((row) => row.currentness.overall)).toEqual(['current', 'current']);
+    expect(rows.map((row) => row.serverMeasurement?.measuredAtCommit)).toEqual([head, head]);
+    // Committed bytes cannot hold a probe mutant, so no lock-queue fence is read.
+    expect(h.lockReads).toBe(0);
+  });
+
+  it('R-1: an uncommitted edit to a closure file, superproject or submodule, leaves every verdict current', async () => {
+    writeFileSync(join(root, 'src/a.ts'), 'export const a = 2; // peer edit in flight\n');
+    writeFileSync(join(sub, 'sql/001.sql'), 'select 2; -- peer edit in flight\n');
+    const rows = await list();
+    expect(rows.map((row) => row.currentness.overall)).toEqual(['current', 'current']);
+    expect(rows.flatMap((row) => row.currentness.staleReasons)).toEqual([]);
+  });
+
+  it('R-2: a committed superproject closure change reads source-stale and names the moved path', async () => {
+    writeFileSync(join(root, 'src/a.ts'), 'export const a = 2;\n');
+    git(root, 'commit', '-q', '-am', 'change a');
+    const [changed, untouched] = await list();
+    expect(changed?.currentness.overall).toBe('stale');
+    expect(changed?.currentness.staleReasons).toContain('source-stale');
+    expect(changed?.serverMeasurement?.movedPaths).toEqual([{ path: 'src/a.ts', dimension: 'source', change: 'changed' }]);
+    expect(untouched?.currentness.overall).toBe('current');
+  });
+
+  it('R-2: a committed submodule change reads stale once the superproject records the new gitlink', async () => {
+    writeFileSync(join(sub, 'sql/001.sql'), 'select 2;\n');
+    git(sub, 'commit', '-q', '-am', 'sub change');
+    // M still records the old gitlink, so the committed submodule change is not yet in M.
+    expect((await list())[1]?.currentness.overall).toBe('current');
+
+    git(root, 'add', 'libs/sub');
+    git(root, 'commit', '-q', '-m', 'bump sub');
+    const [untouched, changed] = await list();
+    expect(changed?.currentness.overall).toBe('stale');
+    expect(changed?.serverMeasurement?.movedPaths).toEqual([
+      { path: 'libs/sub/sql/001.sql', dimension: 'source', change: 'changed' },
+    ]);
+    expect(untouched?.currentness.overall).toBe('current');
+  });
+
+  it('R-2: resolves M once per root per call, so a commit landing mid-call changes no binding', async () => {
+    const before = git(root, 'rev-parse', 'HEAD');
+    h.rows = [...h.rows, await storedBinding(3, ['src/a.ts', 'src/b.ts'])];
+    h.afterResolve = () => {
+      writeFileSync(join(root, 'src/a.ts'), 'export const a = 3;\n');
+      git(root, 'commit', '-q', '-am', 'lands mid-call');
+    };
+    const rows = await list();
+    expect(h.resolveCalls).toEqual([root]);
+    expect(git(root, 'rev-parse', 'HEAD')).not.toBe(before);
+    expect(new Set(rows.map((row) => row.serverMeasurement?.measuredAtCommit))).toEqual(new Set([before]));
+    expect(rows.map((row) => row.currentness.overall)).toEqual(['current', 'current', 'current']);
+  });
+});
+
+describe('a measurement root that is not a git top level', () => {
+  it('keeps the working-tree measurement and its mutation-probe fence', async () => {
+    const plain = realpathSync(mkdtempSync(join(tmpdir(), 'spec-evidence-plain-')));
+    try {
+      mkdirSync(join(plain, 'src'));
+      writeFileSync(join(plain, 'src/a.ts'), 'export const a = 1;\n');
+      h.measurementRoot = plain;
+      const recipe: Recipe = { schemaVersion: 1, kind: 'repo-files', sourcePaths: ['src/a.ts'] };
+      h.rows = [{ ...h.rows[0], source_fingerprint: fileSetFingerprint(plain, ['src/a.ts']), details: { currentMeasurement: recipe } }];
+      h.lockReads = 0;
+      const [unchanged] = await list();
+      expect(unchanged?.currentness.overall).toBe('current');
+      expect(unchanged?.serverMeasurement?.measuredAtCommit).toBeUndefined();
+      expect(h.lockReads).toBeGreaterThan(0);
+
+      writeFileSync(join(plain, 'src/a.ts'), 'export const a = 2;\n');
+      expect((await list())[0]?.currentness.overall).toBe('stale');
+    } finally {
+      rmSync(plain, { recursive: true, force: true });
+    }
+  });
+});

@@ -408,6 +408,105 @@ Preserve this plan body.
     expect((await rubrics.listRubrics({})).map((x) => x.rubricId)).toEqual(['pot-coordination-health']);
   });
 
+  it('guards normalized BAR projections on proposal and amendment while preserving unchanged legacy BARs', async () => {
+    const subjectPlan = 'acceptance-bar-atomicity-subject';
+    await db.adminSql`
+      INSERT INTO harness_shared.harness_plans
+        (workspace_id, harness_slug, plan_slug, content, content_hash, version, title, status,
+         created, updated, owner, archived, template, origin)
+      VALUES (${activeWorkspaceId()}, 'papercusp', ${subjectPlan}, '', md5(${subjectPlan}), 1,
+              'Acceptance BAR atomicity subject', 'active', '2026-09-04', '2026-09-04', 'su-test', false, NULL, 'local')`;
+
+    const criterion = (bar: string) => ({
+      key: 'R-1',
+      barKey: 'R-1',
+      title: 'Request outcome',
+      evidencePlane: 'tree' as const,
+      // Deliberately author only the read alias. The writer must canonicalize it
+      // to `model` before checking the exact behavior projected into AUTO-BAR.
+      bar: `Request outcome. ${bar}`,
+      method: 'Observe the request response at the public boundary.',
+      driftMarkers: 'An accepted request does not produce the expected response.',
+      check: { kind: 'instrument' as const, instrumentKey: 'none' },
+    });
+    const bundled = [criterion('A valid event is accepted and its payload is streamed.')];
+
+    await expect(
+      rubrics.proposeRubric({
+        rubricId: 'non-atomic-bar-proposal',
+        kind: 'acceptance',
+        subjectPlan,
+        characteristic: 'plan-acceptance',
+        title: 'Non-atomic proposal',
+        criteria: bundled,
+        by: 'atomicity-author',
+      }),
+    ).rejects.toThrow('acceptance_bar_non_atomic_projection');
+    expect(await rubrics.getRubric('non-atomic-bar-proposal')).toBeNull();
+
+    const accepted = await rubrics.proposeRubric({
+      rubricId: 'atomic-bar-amendment',
+      kind: 'acceptance',
+      subjectPlan,
+      characteristic: 'plan-acceptance',
+      title: 'Atomic BAR amendment',
+      criteria: [criterion('A request is accepted.')],
+      by: 'atomicity-author',
+    });
+    const priorRevision = accepted.revision;
+    await expect(
+      rubrics.amendRubric({
+        rubricId: accepted.rubricId,
+        criteria: bundled,
+        by: 'atomicity-author',
+      }),
+    ).rejects.toThrow('acceptance_bar_non_atomic_projection');
+    expect((await rubrics.getRubric(accepted.rubricId))?.revision).toBe(priorRevision);
+    expect((await rubrics.getRubric(accepted.rubricId))?.criteria[0]?.model)
+      .toBe('Request outcome. A request is accepted.');
+
+    const legacySlug = 'unchanged-legacy-non-atomic-bar';
+    const legacySubjectPlan = 'acceptance-bar-atomicity-legacy-subject';
+    await db.adminSql`
+      INSERT INTO harness_shared.harness_plans
+        (workspace_id, harness_slug, plan_slug, content, content_hash, version, title, status,
+         created, updated, owner, archived, template, origin)
+      VALUES (${activeWorkspaceId()}, 'papercusp', ${legacySubjectPlan}, '', md5(${legacySubjectPlan}), 1,
+              'Legacy acceptance BAR subject', 'active', '2026-09-04', '2026-09-04', 'su-test', false, NULL, 'local')`;
+    const legacyBehavior = 'The request is accepted. Its payload is returned.';
+    await insertRubricPlan(legacySlug, {
+      data: {
+        ...rubricData,
+        kind: 'acceptance',
+        subjectPlan: legacySubjectPlan,
+        ratingScale: ['pass', 'fail', 'unknown'],
+        criteria: [{
+          key: 'legacy-outcome',
+          title: 'Legacy outcome',
+          model: legacyBehavior,
+          method: 'Observe the stored response behavior.',
+          driftMarkers: 'The request is not accepted or its payload is not returned.',
+          check: { kind: 'instrument', instrumentKey: 'none' },
+        }],
+      },
+    });
+    const legacyBefore = (await rubrics.getRubric(legacySlug))!;
+    const legacyAfter = await rubrics.proposeRubric({
+      rubricId: legacySlug,
+      kind: 'acceptance',
+      subjectPlan: legacySubjectPlan,
+      characteristic: legacyBefore.characteristic,
+      title: legacyBefore.title,
+      description: legacyBefore.description,
+      criteria: legacyBefore.criteria,
+      ratingScale: legacyBefore.ratingScale,
+      methodRef: 'legacy-outcome-runbook',
+      by: 'legacy-editor',
+    });
+    expect(legacyAfter.methodRef).toBe('legacy-outcome-runbook');
+    expect(legacyAfter.criteria[0]?.model).toBe(legacyBehavior);
+  });
+
   it('persists and reads normalized unpinned standard-rubric composition refs', async () => {
     const parent = await rubrics.proposeRubric({
       rubricId: 'composition-parent',

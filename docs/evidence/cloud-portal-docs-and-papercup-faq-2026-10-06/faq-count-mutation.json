@@ -1,0 +1,39 @@
+{
+  "plan": "cloud-portal-docs-and-papercup-faq-2026-10-06",
+  "workItem": "WI-10006918",
+  "faqSha256": "908687ae99d490db965919cb6f1297d409754453666e733027d505b7cbd2205a",
+  "sourceContractSha256": "0c34fba93956b0cfa1ce8ff4fe0d02a1a8f43ffc6351fb5e3039cee5f024904e",
+  "testSha256": "124f6e17fdefbb79b8cf818c4789c69e2823a360230c7b418aa7323654c57271",
+  "testPath": "packages/operator-core/lib/harness/docs/public-manual-faq.test.ts",
+  "failedCase": "canonical public FAQ publication contract rejects a removed question and broken existing bookmark",
+  "controls": { "currentPassed": 7, "unmutatedOverlayPassed": 7 },
+  "mutant": { "testRunId": 20865121, "passed": 6, "failed": 1 },
+  "sharedSourceIntegrity": "verified byte-identical by mutation runner",
+  "runnerCommit": "bb530e861377845d392d0aa10e87d37869dcba20",
+  "runnerPath": "scripts/mutation-probe.sh",
+  "runnerSha256": "408fd44771e580cc0a7d2124e4451a266f54a28b13fcd390b831d5b74cd7e12a",
+  "cwd": ".",
+  "argv": [
+    "--file", "apps/papercusp-docs/scripts/source-contract.mjs",
+    "--mutate", "s/if \\(entries\\.length < 20\\)/if (false)/",
+    "--test", "test -f {} && npm run test:file -- packages/operator-core/lib/harness/docs/public-manual-faq.test.ts",
+    "--relocation", "overlay"
+  ],
+  "result": {
+    "baselineExit": 0,
+    "relocation": "overlay",
+    "expected": "caught",
+    "mutantParse": "ok",
+    "guardExit": 1,
+    "target": "copy-out",
+    "assertionEvidence": "test-file-assertion-failure",
+    "verdict": "caught",
+    "mutantLedger": "test_runs:20865121"
+  },
+  "clauseBindings": [
+    { "specId": "AUTO-BAR-R-4-P-004", "revision": 3, "mutationBinding": 27525, "pairedTestBinding": 27494 },
+    { "specId": "DOCS-FAQ-COUNT", "revision": 1, "mutationBinding": 27526, "pairedTestBinding": 27496 }
+  ],
+  "certification": { "clauses": 2, "passing": 2, "filed": 2, "refused": 0, "notPassing": 0 },
+  "scope": "Automated FAQ structure only; revised sensitive review, novice validation, owner acceptance and shipment are unverified."
+}

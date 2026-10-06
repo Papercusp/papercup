@@ -661,6 +661,11 @@ defineTestDomain({
     { id: 'freshness', label: 'Freshness + steward', globs: [
         'packages/operator-core/lib/harness/docs/**/*.test.ts',
       ] },
+    // The public manual's served build vs its source (WI-10006957): /docs serves a
+    // tracked copy that only a manual rebuild refreshes, so a guide can ship unbuilt.
+    { id: 'public-manual', label: 'Public manual build', globs: [
+        'apps/papercusp-docs/lib/**/*.test.ts',
+      ] },
   ],
 });
 

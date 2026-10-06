@@ -1811,6 +1811,13 @@
           "globs": [
             "packages/operator-core/lib/harness/docs/**/*.test.ts"
           ]
+        },
+        {
+          "id": "public-manual",
+          "label": "Public manual build",
+          "globs": [
+            "apps/papercusp-docs/lib/**/*.test.ts"
+          ]
         }
       ]
     },

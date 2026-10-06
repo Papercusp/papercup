@@ -13,6 +13,7 @@ import {
   evidenceMeasurementSchema,
   MEASUREMENT_PIN_DETAILS_KEY,
   measureAndPinEvidenceForScope,
+  measureAndPinRepoFilesEvidenceAtCommitForScope,
   retractSpecEvidence,
   SPEC_EVIDENCE_KINDS,
   supersedeSpecEvidenceAtRevision,
@@ -54,6 +55,7 @@ const coverageRungsSchema = z
 const adequacyBindingDetailsSchema = z
   .object({
     fixtureCalibrated: z.boolean().optional(),
+    fixtureFree: z.boolean().optional(),
     falsifiable: z.boolean().optional(),
     testLayer: z.string().optional(),
     pathReachable: z.boolean().optional(),
@@ -78,6 +80,7 @@ const adequacyBindingDetailsSchema = z
 // persisted binding whose metadata is silently inert.
 const ADEQUACY_DETAIL_KEYS = new Set([
   'fixtureCalibrated',
+  'fixtureFree',
   'falsifiable',
   'testLayer',
   'pathReachable',
@@ -227,7 +230,13 @@ function isTestRunBinding(item: object): item is TestRunBindingInput {
 }
 
 type ResolvedBinding =
-  | { ok: true; binding: z.infer<typeof bindingSchema>; derived?: Record<string, unknown> }
+  | {
+      ok: true;
+      binding: z.infer<typeof bindingSchema>;
+      derived?: Record<string, unknown>;
+      /** A clean commit-stamped run: measure its binding at the commit that ran (D-001 (b)). */
+      asCommitted?: { commitSha: string; repoPrefix: string | null };
+    }
   | { ok: false; error: TestRunBindingError | 'derived_binding_invalid'; testRunId: number; message: string };
 
 const argsSchema = refineEvenWithShapeIssues(
@@ -518,9 +527,19 @@ export default defineTool({
             message: parsed.error.issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`).join('; '),
           };
         }
+        const testRun = (expansion.binding.details as { testRun?: { asCommitted?: { commitSha?: unknown; repoPrefix?: unknown } } })
+          ?.testRun;
+        const asCommitted =
+          typeof testRun?.asCommitted?.commitSha === 'string'
+            ? {
+                commitSha: testRun.asCommitted.commitSha,
+                repoPrefix: typeof testRun.asCommitted.repoPrefix === 'string' ? testRun.asCommitted.repoPrefix : null,
+              }
+            : undefined;
         return {
           ok: true,
           binding: parsed.data,
+          ...(asCommitted ? { asCommitted } : {}),
           derived: {
             testRunId: expansion.binding.testRunId,
             evidenceKind: expansion.binding.evidenceKind,
@@ -563,9 +582,19 @@ export default defineTool({
             ...targetingRefusal,
           };
         }
-        const measured = binding.measurement
-          ? await measureAndPinEvidenceForScope(measurementScope!.workspaceId, harnessSlug, binding.measurement)
-          : null;
+        // D-001 (b): a clean commit-stamped run stores the closure bytes AT the commit that ran,
+        // never the live working tree, so later shared-tree movement neither refuses this bind
+        // nor launders freshness on a re-bind of the same run.
+        const measured = !binding.measurement
+          ? null
+          : entry.asCommitted && binding.measurement.kind === 'repo-files'
+            ? await measureAndPinRepoFilesEvidenceAtCommitForScope(
+                measurementScope!.workspaceId,
+                harnessSlug,
+                binding.measurement,
+                entry.asCommitted,
+              )
+            : await measureAndPinEvidenceForScope(measurementScope!.workspaceId, harnessSlug, binding.measurement);
         const { measurement, ...declared } = binding;
         const result = await bindSpecEvidence({
           ...declared,

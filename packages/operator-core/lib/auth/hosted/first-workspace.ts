@@ -74,6 +74,7 @@ import {
   type WorkspaceHostBringUp,
 } from '../../workspace-host/hosted-bring-up';
 import { admissionIdentity, HostedWorkspaceAdmissionError } from './workspace-admission';
+import { HOSTED_GCP_MAX_EXPECTED_AGENTS, hostedGcpSizeForAgents, isValidExpectedAgents } from './hosted-vm-size';
 import type { HostedWorkspaceAdmissionDependencies } from './workspace-admission';
 import type { HostedOnboardingWorkspacePort } from './onboarding';
 
@@ -100,6 +101,13 @@ export interface HostedFirstWorkspaceRequest {
   readonly provider?: PapercuspHostedProvider;
   /** Bring-your-own-cloud only; Papercusp hosting derives every cloud field on the server. */
   readonly configuration?: HostedProviderDelegationConfiguration;
+  /**
+   * How many agents the workspace will run (WI-10006498). Sizes a GCP host from the measured
+   * shapes (hosted-vm-size.ts); absent keeps GCP_FIRST_WORKSPACE_DEFAULTS.size. A count one
+   * measured VM cannot hold is refused, never silently under-provisioned. AWS hosts ignore it:
+   * no AWS shape is measured yet.
+   */
+  readonly expectedAgents?: number;
 }
 
 export type ResolveFirstWorkspaceSpec = HostedWorkspaceAdmissionDependencies['resolveDesiredSpec'];
@@ -269,9 +277,19 @@ export const PAPERCUSP_HOSTED_GCP_PROVISIONING_MODEL = 'spot' as const;
 export function gcpFirstWorkspaceDesiredSpec(input: {
   hostId: string;
   record: HostedProviderDelegationRecord;
+  /** WI-10006498: sizes the VM from the measured shapes; absent keeps the default size. */
+  expectedAgents?: number;
 }): WorkspaceHostDesiredSpec {
   if (input.record.configuration.provider !== 'gcp') {
     throw new HostedWorkspaceAdmissionError('first-workspace spec supports GCP only', 'invalid_input');
+  }
+  const size =
+    input.expectedAgents === undefined ? GCP_FIRST_WORKSPACE_DEFAULTS.size : hostedGcpSizeForAgents(input.expectedAgents);
+  if (!size) {
+    throw new HostedWorkspaceAdmissionError(
+      `expectedAgents must be a whole number from 1 to ${HOSTED_GCP_MAX_EXPECTED_AGENTS}`,
+      'invalid_input',
+    );
   }
   const source = input.record.configuration.source;
   const papercuspHosted = source.method === 'papercusp-hosted';
@@ -285,7 +303,7 @@ export function gcpFirstWorkspaceDesiredSpec(input: {
     scope: { kind: 'project', id: source.projectId },
     region: location.region,
     zone: location.zone,
-    size: GCP_FIRST_WORKSPACE_DEFAULTS.size,
+    size,
     image: { ...GCP_FIRST_WORKSPACE_DEFAULTS.image },
     data: { encrypted: true, volumeGiB: GCP_FIRST_WORKSPACE_DEFAULTS.volumeGiB },
     credentials: { cloudCredentialRef: { kind: 'cloud', ref: input.record.credentialRef } },
@@ -458,7 +476,8 @@ export function createHostedFirstWorkspace(deps: HostedFirstWorkspaceDependencie
         !HOSTED_FIRST_WORKSPACE_ATTEMPT_KEY.test(request.attemptKey) ||
         (hosting !== 'papercusp' && hosting !== 'byoc') ||
         (hosting === 'byoc' && (!configuration || typeof configuration !== 'object')) ||
-        (hosting === 'papercusp' && request.provider !== undefined && request.provider !== 'gcp' && request.provider !== 'aws')
+        (hosting === 'papercusp' && request.provider !== undefined && request.provider !== 'gcp' && request.provider !== 'aws') ||
+        (request.expectedAgents !== undefined && !isValidExpectedAgents(request.expectedAgents))
       ) {
         return failure('invalid_request', 400, false);
       }
@@ -585,7 +604,13 @@ export function createHostedFirstWorkspace(deps: HostedFirstWorkspaceDependencie
         resolveSpec = async (spec) =>
           awsFirstWorkspaceDesiredSpec({ hostId: spec.hostId, record: verified, infrastructure });
       } else {
-        resolveSpec = async (spec) => gcpFirstWorkspaceDesiredSpec({ hostId: spec.hostId, record: verified });
+        const expectedAgents = request.expectedAgents;
+        resolveSpec = async (spec) =>
+          gcpFirstWorkspaceDesiredSpec({
+            hostId: spec.hostId,
+            record: verified,
+            ...(expectedAgents !== undefined ? { expectedAgents } : {}),
+          });
       }
 
       // D-401 + aws-byoc-gcp-parity D-015: every GCP and AWS machine this door admits is set up

@@ -238,6 +238,38 @@ describe('CaplessAdaptiveController', () => {
     expect(lane(recovered, 'inference').desiredWindow).toBe(18);
   });
 
+  it('honours a caller-supplied per-class floor on a cold start and through contraction (WI-10006946)', () => {
+    const controller = new CaplessAdaptiveController({ initialWindow: 1, contractionCooldownMs: 0 });
+    const cold = controller.step({
+      verdict: verdict(),
+      classes: [
+        { admissionClass: 'critical-lane', inFlight: 0, demand: { databaseConnections: 1 }, minimumWindow: 8 },
+        { admissionClass: 'ordinary', inFlight: 0, demand: { databaseConnections: 1 } },
+      ],
+    });
+    expect(lane(cold, 'critical-lane')).toMatchObject({ desiredWindow: 8, availableStarts: 8 });
+    expect(lane(cold, 'ordinary')).toMatchObject({ desiredWindow: 1, availableStarts: 1 });
+
+    const contracted = controller.step({
+      verdict: verdict({ state: 'degraded', severity: 'critical', resource: 'database', atMs: START + 1 }),
+      classes: [
+        { admissionClass: 'critical-lane', inFlight: 6, demand: { databaseConnections: 1 }, minimumWindow: 8 },
+      ],
+      atMs: START + 1,
+    });
+    // Critical feedback would halve 8 -> 4; the floor stops it at 8.
+    expect(lane(contracted, 'critical-lane').desiredWindow).toBe(8);
+    expect(lane(contracted, 'critical-lane').feedback[0]?.desiredWindowAfter).toBe(8);
+
+    // Dropping the floor restores ordinary contraction for the same feedback.
+    const unfloored = controller.step({
+      verdict: verdict({ state: 'degraded', severity: 'critical', resource: 'database', atMs: START + 2 }),
+      classes: [{ admissionClass: 'critical-lane', inFlight: 6, demand: { databaseConnections: 1 } }],
+      atMs: START + 2,
+    });
+    expect(lane(unfloored, 'critical-lane').desiredWindow).toBe(4);
+  });
+
   it('holds the current window when degradation is not actionably attributed', () => {
     const controller = new CaplessAdaptiveController({ initialWindow: 24 });
     const decision = controller.step({

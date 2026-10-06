@@ -339,7 +339,7 @@ describe('runGate through the real census spawn boundary (WI-10005770)', () => {
       snapshotDir: relativeSnapshot,
       metafiles: [main],
       preflight: ({ repoRoot: root, inputsFile }) =>
-        runBundleRestrictedHoldPreflight({ repoRoot: root, inputsFile, spawn: childCensus(seen) as never }),
+        runBundleRestrictedHoldPreflight({ repoRoot: root, inputsFile, env: {}, spawn: childCensus(seen) as never }),
       log: (line) => lines.push(line),
     });
     expect(seen.cwd).toBe(repoRoot);
@@ -347,5 +347,53 @@ describe('runGate through the real census spawn boundary (WI-10005770)', () => {
     expect(lines.join('\n')).not.toMatch(/BUNDLE_RESTRICTED_HOLD_REFUSED/);
     expect(code).toBe(GATE_EXIT.admit);
     expect(readFileSync(join(outdir, 'hono-host.mjs'), 'utf8')).toBe('new host');
+  });
+});
+
+describe('GitHub Actions runners host no Papercusp operator (WI-10006976)', () => {
+  const failingChild = (calls: string[]) => (_cmd: string, args: readonly string[]) => {
+    calls.push(args.join(' '));
+    return { status: 1, stdout: '', stderr: 'disclosure_ledger_unavailable', signal: null };
+  };
+
+  it('the bundle preflight skips the census on GITHUB_ACTIONS=true and runs it otherwise', () => {
+    const calls: string[] = [];
+    const inputsFile = join(work, 'inputs.json');
+    expect(runBundleRestrictedHoldPreflight({ repoRoot: work, inputsFile, env: { GITHUB_ACTIONS: 'true' }, spawn: failingChild(calls) as never }))
+      .toEqual({ verdict: 'skipped', reason: 'github-actions' });
+    expect(calls).toHaveLength(0);
+    // Control: the generic CI flag (which local tooling also sets) is NOT a skip; the census runs and fails closed.
+    expect(runBundleRestrictedHoldPreflight({ repoRoot: work, inputsFile, env: { CI: 'true' }, spawn: failingChild(calls) as never }))
+      .toMatchObject({ verdict: 'refuse', error: 'restricted_hold_state_unknown' });
+    expect(calls).toHaveLength(1);
+  });
+
+  it('runGate keeps the fresh bundle on the github-actions skip and discloses it', () => {
+    snapshotArtifacts({ outdir, snapshotDir, artifacts: ['hono-host.mjs'] });
+    publish('hono-host.mjs', 'new host');
+    const main = writeMetafile('hono-host.mjs.meta.json', ['bin/hono-host.ts']);
+    const lines: string[] = [];
+    const code = runGate({
+      root: work, baseDir, outdir, snapshotDir, metafiles: [main],
+      preflight: () => ({ verdict: 'skipped', reason: 'github-actions' }) as never,
+      log: (line) => lines.push(line),
+    });
+    expect(code).toBe(GATE_EXIT.admit);
+    expect(readFileSync(join(outdir, 'hono-host.mjs'), 'utf8')).toBe('new host');
+    expect(existsSync(snapshotDir)).toBe(false);
+    expect(lines.join('\n')).toMatch(/census skipped \(github-actions/);
+  });
+
+  it('runGate still fails closed on any other skip reason', () => {
+    snapshotArtifacts({ outdir, snapshotDir, artifacts: ['hono-host.mjs'] });
+    publish('hono-host.mjs', 'new host');
+    const main = writeMetafile('hono-host.mjs.meta.json', ['bin/hono-host.ts']);
+    const code = runGate({
+      root: work, baseDir, outdir, snapshotDir, metafiles: [main],
+      preflight: () => ({ verdict: 'skipped', reason: 'testing-run' }) as never,
+      log: () => {},
+    });
+    expect(code).toBe(GATE_EXIT.refuse);
+    expect(readFileSync(join(outdir, 'hono-host.mjs'), 'utf8')).toBe('old host');
   });
 });

@@ -101,7 +101,7 @@ type LivenessEntry = { awaitingPong: boolean; connector: HostedConnectorBinding 
  * traffic to the workspace machine's OWN loopback operator. Its client is the
  * portal backend acting for the ticket's user; nothing ever dials a VM address.
  */
-export type HostedWorkspaceChannelKind = 'pty' | 'psu' | 'desktop' | 'operator-http' | 'app-http' | 'app-key-mint';
+export type HostedWorkspaceChannelKind = 'pty' | 'psu' | 'desktop' | 'operator-http' | 'app-http' | 'app-key-mint' | 'device-http';
 
 /**
  * A terminal channel: the customer's shell (`pty`), or psu started by the host (`psu`, D-002).
@@ -520,7 +520,7 @@ export class HostedWorkspaceSessionBroker implements AppRelayPort {
       type: 'relay.open',
       channelId,
       kind,
-      audience: kind === 'app-key-mint' ? 'portal-oauth' : 'app',
+      audience: kind === 'app-key-mint' ? 'portal-oauth' : kind === 'device-http' ? 'device' : 'app',
       role: 'controller',
       // P-328: this month's relay usage (counts only), so the machine can raise the limit alert.
       ...(kind === 'app-http' && openOptions.relayUsage ? { relayUsage: openOptions.relayUsage } : {}),

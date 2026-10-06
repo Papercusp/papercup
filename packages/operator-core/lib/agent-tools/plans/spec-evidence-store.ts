@@ -392,21 +392,40 @@ export async function measureRepoFilesEvidenceDetailedAtCommit(
   repoRoot: string,
   measurement: RepoFilesEvidenceMeasurement,
   commit: string,
-  deps: CommittedTreeDeps = {},
+  options: { repoPrefix?: string | null; deps?: CommittedTreeDeps } = {},
 ): Promise<DetailedRepoEvidenceMeasurement> {
   const parsed = repoFilesEvidenceMeasurementSchema.parse(measurement);
   const root = await realpath(repoRoot);
-  const globPaths = await listCommittedGlobMatches(
-    root,
-    commit,
-    parsed.sourceGlobs ?? [],
-    { maxMatches: MAX_REPO_MEASUREMENT_GLOB_MATCHES, maxDepth: MAX_REPO_MEASUREMENT_GLOB_DEPTH },
-    deps,
-  );
+  const deps = options.deps ?? {};
+  // `commit` belongs to the repository at `repoPrefix` ('' / null = the root repository).
+  // An as-committed run inside a submodule records the SUBMODULE's commit, so its files are
+  // read in that repository while the digest keeps root-relative paths, exactly as stored.
+  const prefix = options.repoPrefix || null;
+  const repoDir = prefix ? join(root, prefix) : root;
+  const inRepo = (path: string) => {
+    if (!prefix) return path;
+    if (!path.startsWith(`${prefix}/`)) throw new Error(`repo_measurement_outside_run_repository:${path}`);
+    return path.slice(prefix.length + 1);
+  };
+  const fromRepo = (path: string) => (prefix ? `${prefix}/${path}` : path);
+  const fileSetAt = async (paths: readonly string[]) => {
+    const measured = await fingerprintRepoFileSetAtCommit(repoDir, commit, paths.map(inRepo), deps);
+    const files = measured.files.map((file) => ({ ...file, path: fromRepo(file.path) }));
+    return { fingerprint: repoFileSetFingerprint(files), files };
+  };
+  const globPaths = (
+    await listCommittedGlobMatches(
+      repoDir,
+      commit,
+      (parsed.sourceGlobs ?? []).map(inRepo),
+      { maxMatches: MAX_REPO_MEASUREMENT_GLOB_MATCHES, maxDepth: MAX_REPO_MEASUREMENT_GLOB_DEPTH },
+      deps,
+    )
+  ).map(fromRepo);
   const sourcePaths = [...new Set([...parsed.sourcePaths, ...globPaths])].sort();
   const [source, test] = await Promise.all([
-    fingerprintRepoFileSetAtCommit(root, commit, sourcePaths, deps),
-    parsed.testPaths ? fingerprintRepoFileSetAtCommit(root, commit, parsed.testPaths, deps) : Promise.resolve(null),
+    fileSetAt(sourcePaths),
+    parsed.testPaths ? fileSetAt(parsed.testPaths) : Promise.resolve(null),
   ]);
   return {
     sourceFingerprint: source.fingerprint,
@@ -465,6 +484,29 @@ export async function measureAndPinRepoFilesEvidenceAtRoot(
 ): Promise<MeasuredRepoEvidenceFingerprints & { pin: MeasurementPin }> {
   const detailed = await measureRepoFilesEvidenceDetailedAtRoot(repoRoot, measurement);
   const pin = await buildMeasurementPin(await realpath(repoRoot), detailed.files, options);
+  return { sourceFingerprint: detailed.sourceFingerprint, testFingerprint: detailed.testFingerprint, pin };
+}
+
+/**
+ * Measure and pin a repo-files recipe from the bytes committed at the commit an
+ * as-committed test run executed (D-001 (b)): the bind stores what actually ran, so the
+ * shared checkout moving past that commit neither refuses the bind nor leaks into its
+ * fingerprint. The pin's per-file sha256 (what names moved paths later) comes from that
+ * commit; its head/clean fields still describe the checkout's HEAD at bind time.
+ */
+export async function measureAndPinRepoFilesEvidenceAtCommitForScope(
+  workspaceId: string,
+  harnessSlug: string,
+  measurement: RepoFilesEvidenceMeasurement,
+  at: { commitSha: string; repoPrefix: string | null },
+  options: { git?: GitRunner } = {},
+): Promise<MeasuredRepoEvidenceFingerprints & { pin: MeasurementPin }> {
+  const root = await realpath(await resolveMeasurementRoot(workspaceId, harnessSlug, measurement));
+  const detailed = await measureRepoFilesEvidenceDetailedAtCommit(root, measurement, at.commitSha, {
+    repoPrefix: at.repoPrefix,
+    ...(options.git ? { deps: { git: options.git } } : {}),
+  });
+  const pin = await buildMeasurementPin(root, detailed.files, options);
   return { sourceFingerprint: detailed.sourceFingerprint, testFingerprint: detailed.testFingerprint, pin };
 }
 

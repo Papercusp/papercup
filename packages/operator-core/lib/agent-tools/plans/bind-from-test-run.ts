@@ -539,13 +539,10 @@ async function verifyAsCommittedContent(
       const where = mapping.repoPrefix ? `the ${mapping.repoPrefix} repository` : 'the harness repository';
       return { ok: false, path, reason: `is absent at ${at} (looked up in ${where})` };
     }
-    let current = '';
-    try {
-      current = (await git(committed.repo, ['hash-object', '--', committed.rel])).trim();
-    } catch {
-      return { ok: false, path, reason: 'is unreadable in this checkout' };
-    }
-    if (current !== committed.blob) return { ok: false, path, reason: `differs from its content at ${at}` };
+    // proof-freshness-pinned-candidate-2026-10-06 D-001 (b): the working-tree bytes are NOT
+    // compared any more. The binding's fingerprint is measured from git objects at this
+    // commit (bind-spec-evidence -> measureAndPinRepoFilesEvidenceAtCommitForScope), so it
+    // describes exactly the code that ran however far the shared checkout has moved since.
   }
   return { ok: true };
 }
@@ -1072,8 +1069,9 @@ export async function expandTestRunBinding(
     result.binding.measurement = { ...result.binding.measurement, rootHarnessSlug: sibling.harnessSlug };
   }
   if (result.ok && asCommitted) {
-    const { testPaths } = result.binding.measurement;
-    const sourcePaths = await expandRepoFilesEvidenceSourcePathsAtRoot(root, result.binding.measurement);
+    // Declared paths only: source globs are expanded against the commit itself when the
+    // binding is measured there, so a glob match that exists only in this checkout is moot.
+    const { testPaths, sourcePaths } = result.binding.measurement;
     const measured = [...new Set([...testPaths, ...sourcePaths])].sort();
     const content = await verifyAsCommittedContent(root, asCommitted, measured, deps.git ?? defaultGitRunner);
     if (!content.ok) {
@@ -1083,8 +1081,8 @@ export async function expandTestRunBinding(
         testRunId,
         message:
           `test-run ${testRunId} ran clean at ${asCommitted.commitSha.slice(0, 12)} in a disposable clone, but ${content.path} ` +
-          `${content.reason} in this checkout, so the binding's fingerprint would not describe the code that ran. ` +
-          'Re-run the test as-committed at a commit this checkout matches and bind that run.',
+          `${content.reason}, so the binding would name a file the run never had. ` +
+          'Bind only paths committed at the run\'s commit, or re-run the test at a commit that contains them.',
       };
     }
   }
@@ -1115,7 +1113,7 @@ export async function expandTestRunBinding(
       ...(sibling ? { rootHarnessSlug: sibling.harnessSlug } : {}),
       ...(input.canonicalTestPath ? { canonicalTestPathOverride: input.canonicalTestPath } : {}),
       ...(asCommitted
-        ? { asCommitted: { commitSha: asCommitted.commitSha, repoPrefix: asCommitted.repoPrefix, contentVerified: true } }
+        ? { asCommitted: { commitSha: asCommitted.commitSha, repoPrefix: asCommitted.repoPrefix, measuredAtCommit: true } }
         : {}),
     });
   }

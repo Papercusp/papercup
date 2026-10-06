@@ -407,6 +407,7 @@ describe('listSpecEvidence timestamp normalization', () => {
     expect(row.testRunProvenance?.mutationFailureLines).toEqual([
       'suite > failed with a long DOM error: (recorded failed assertion)',
     ]);
+    expect(row.testRunProvenance?.mutationFailedCaseTitles).toEqual(['suite > failed with a long DOM error']);
     expect(h.queries.find(query => query.sql.includes('SELECT b.id'))?.sql).toMatch(
       /WHEN b\.evidence_kind = 'mutation'\s+AND tr\.source = 'mutation-probe'\s+AND tr\.status = 'fail'\s+THEN tr\.execution_details/,
     );

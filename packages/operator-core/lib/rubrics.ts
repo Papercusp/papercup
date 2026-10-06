@@ -76,6 +76,7 @@ import {
   rerenderAmendedRequirementBlocks,
 } from './acceptance-bar-amendment-requirements-drift';
 import { assertRubricRatingVocabulary } from './rubric-rating-vocabulary';
+import { assertChangedAcceptanceBarProjectionsAtomic } from './acceptance-bar-projection';
 
 // Structured criterion grading-window (EI-12146): schema + the pure resolver live in
 // rubric-template.ts (dependency-free, so instruments can import them without this
@@ -1851,9 +1852,8 @@ export function computeAcceptanceBarSetHash(
  */
 export function normalizeAcceptanceBarCriterion(criterion: ProposeRubricCriterion): ProposeRubricCriterion {
   criterion = normalizeRequirementSections(criterion);
-  const carriesBarContract =
+  const carriesBarContractFields =
     criterion.intent !== undefined ||
-    criterion.bar !== undefined ||
     criterion.barHash !== undefined ||
     criterion.barKey !== undefined ||
     criterion.role !== undefined ||
@@ -1865,13 +1865,27 @@ export function normalizeAcceptanceBarCriterion(criterion: ProposeRubricCriterio
     criterion.passRatings !== undefined ||
     criterion.coversBarKeys !== undefined ||
     criterion.barProvenance !== undefined;
+  const model = normalizedBarText(criterion.model);
+  const alias = normalizedBarText(criterion.bar);
+  // The read projection mirrors canonical model text into `bar` for every
+  // acceptance criterion. An equal echo on a model-only legacy row is not an
+  // opt-in to the BAR contract; remove that read alias and keep the legacy row
+  // writable. An alias-only input or any explicit BAR field still opts in.
+  const equalLegacyReadAlias =
+    criterion.bar !== undefined &&
+    model.length > 0 &&
+    model === alias &&
+    !carriesBarContractFields;
+  if (equalLegacyReadAlias) {
+    const { bar: _readAlias, ...legacy } = criterion;
+    return legacy;
+  }
+  const carriesBarContract = carriesBarContractFields || criterion.bar !== undefined;
   // A model-only acceptance criterion predates the BAR contract. Preserve it
   // byte-for-byte until migration explicitly marks its cohort/provenance; merely
   // re-proposing a legacy rubric must not pretend its bar was predeclared.
   if (!carriesBarContract) return criterion;
 
-  const model = normalizedBarText(criterion.model);
-  const alias = normalizedBarText(criterion.bar);
   if (model && alias && model !== alias) {
     throw new Error(
       `invalid_args: acceptance criterion '${criterion.key}' supplied conflicting model and bar text; ` +
@@ -3280,8 +3294,15 @@ export function createRubricRevisionCapture(
 export async function proposeRubric(input: ProposeRubricInput): Promise<Rubric> {
   // Every preflight and writer must inspect the same canonical fields. In
   // particular, a nested verification.check must participate in the check floor.
-  input = { ...input, criteria: input.criteria.map(normalizeRequirementSections) };
   const kind = input.kind ?? 'standard';
+  input = {
+    ...input,
+    criteria: input.criteria.map((criterion) =>
+      kind === 'acceptance'
+        ? normalizeAcceptanceBarCriterion(criterion)
+        : normalizeRequirementSections(criterion),
+    ),
+  };
   // Validate FIRST (fail-loud) before any write, so a malformed rubric never persists a
   // half-state (a body with no/invalid template_data).
   let builtTemplateData = buildRubricTemplateData(input);
@@ -3303,6 +3324,12 @@ export async function proposeRubric(input: ProposeRubricInput): Promise<Rubric> 
   // subjectPlan would never gate anything, silently.
   const stored = await getRubric(input.rubricId);
   if (stored) assertRubricWritable(stored, 'proposeRubric');
+  if (kind === 'acceptance') {
+    assertChangedAcceptanceBarProjectionsAtomic(
+      input.criteria,
+      stored?.kind === 'acceptance' ? stored.criteria.map(normalizeAcceptanceBarCriterion) : [],
+    );
+  }
   if (stored?.subjectHarnessSlug) {
     if ((input.subjectHarnessSlug && input.subjectHarnessSlug !== stored.subjectHarnessSlug) ||
         input.subjectPlan !== stored.subjectPlan) {
@@ -4483,6 +4510,11 @@ async function amendAcceptanceBarRubric(
       }
 
       const amended = applyRubricAmendment(stored, input);
+      amended.criteria = amended.criteria.map(normalizeAcceptanceBarCriterion);
+      assertChangedAcceptanceBarProjectionsAtomic(
+        amended.criteria,
+        stored.criteria.map(normalizeAcceptanceBarCriterion),
+      );
       const built = buildRubricTemplateData(amended);
       await assertRubricCompositionLinksResolve(amended);
       // EI-24372605712471072: before the subject plan starts, its BARs may name proof
@@ -5478,6 +5510,13 @@ export async function amendRubric(input: AmendRubricInput): Promise<Rubric | nul
       // the loss guards and template schema on the same side of the advisory lock
       // as the read-modify-write itself.
       const amended = applyRubricAmendment(stored, input);
+      if (amended.kind === 'acceptance') {
+        amended.criteria = amended.criteria.map(normalizeAcceptanceBarCriterion);
+        assertChangedAcceptanceBarProjectionsAtomic(
+          amended.criteria,
+          stored.criteria.map(normalizeAcceptanceBarCriterion),
+        );
+      }
       const builtTemplateData = buildRubricTemplateData(amended);
       await assertRubricCompositionLinksResolve(amended);
       const templateData = builtTemplateData.data;

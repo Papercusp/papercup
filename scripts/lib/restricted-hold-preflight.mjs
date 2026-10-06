@@ -178,13 +178,18 @@ export function runVitestRootPreflight({ repoRoot, files, env = process.env, tim
  * The host-bundle door (WI-10005745): bg-host's ExecStartPre bundles the LIVE shared tree and runs
  * it with the network. apps/operator/bin/bundle-restricted-hold-gate.mjs writes the bundle's exact
  * inputs (esbuild metafile inputs + verbatim-copied files/dirs) to `inputsFile` and calls this
- * before it lets the fresh bundle stand. No skip reasons: a bundle is never nested in a test run,
- * and the release/staging checkouts simply hold nothing, so their census admits on its own.
+ * before it lets the fresh bundle stand. A bundle is never nested in a test run, and the
+ * release/staging checkouts simply hold nothing, so their census admits on its own. The ONE skip is
+ * GitHub Actions (WI-10006976), for the same reason the vitest-root and tree doors skip there: the
+ * runner hosts no Papercusp operator, so no restricted session and no disclosure ledger exist, and a
+ * census could only fail closed (restricted_hold_state_unknown). That broke every hosted build of the
+ * host bundle, e.g. papercup-rust-mobile's Android CI counterpart build.
  * Same census child and fail-closed table as the router.
  * @param {{ repoRoot: string, inputsFile: string, env?: NodeJS.ProcessEnv, timeoutMs?: number, spawn?: typeof spawnSync }} opts
- * @returns {{ verdict: 'admit' } | { verdict: 'refuse', error: string, hint: string }}
+ * @returns {{ verdict: 'admit' } | { verdict: 'skipped', reason: 'github-actions' } | { verdict: 'refuse', error: string, hint: string }}
  */
 export function runBundleRestrictedHoldPreflight({ repoRoot, inputsFile, env = process.env, timeoutMs = DEFAULT_TIMEOUT_MS, spawn = spawnSync }) {
+  if (env.GITHUB_ACTIONS === 'true') return { verdict: 'skipped', reason: 'github-actions' };
   // WI-10005770: the census child runs with cwd=repoRoot, but bundle-host.sh hands the gate a
   // snapshot dir relative to apps/operator (the default OUTFILE is dist-host/hono-host.mjs). A
   // relative path crossing that cwd change made every default build fail closed with ENOENT, so

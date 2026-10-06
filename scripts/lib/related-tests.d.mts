@@ -92,10 +92,33 @@ export function classifySpecifier(spec: any): "relative" | "alias" | "bare";
  * Moved here from affected-tests.mjs (WI-10006650) so the e2e fixture-spec selector
  * resolves `@/` exactly as related-test selection does — one parser, not two.
  *
+ * This prefix view FLATTENS every `paths` key into a prefix, including an EXACT key such as
+ * `"@papercusp/operator-core": ["…/lib/index.ts"]` (no `*`), whose target is a FILE that this
+ * view then gives a trailing slash. That is harmless for this module's own resolvers, which
+ * only consult aliases for `@/`, `~/` and `#` specifiers (see `classifySpecifier`); a caller
+ * resolving every specifier must use `tsconfigPathEntriesFor` below, which keeps the
+ * distinction (WI-10006809: the flattened view captured `@papercusp/operator-core/lib/x` under
+ * the exact key and resolved it to `…/lib/index.ts/lib/x`, dropping 692 edges).
+ *
  * @param {string} wsRoot absolute workspace root holding tsconfig.json
  * @returns {Record<string, string>} prefix → absolute dir (trailing slash)
  */
 export function tsconfigAliasesFor(wsRoot: string): Record<string, string>;
+/**
+ * The same tsconfig `compilerOptions.paths`, parsed ONCE, as ordered entries that keep what
+ * the prefix view above discards: whether the key is a WILDCARD (`"@/*"`, matched by prefix)
+ * or EXACT (`"pkg"`, matched by equality only, target is the file itself). TypeScript tries an
+ * exact key before any wildcard, and among wildcards the LONGEST matching prefix wins.
+ * Returns [] on any problem (same fail-safe as above).
+ *
+ * @param {string} wsRoot absolute workspace root holding tsconfig.json
+ * @returns {Array<{ prefix: string, target: string, wildcard: boolean }>} target is absolute
+ */
+export function tsconfigPathEntriesFor(wsRoot: string): Array<{
+    prefix: string;
+    target: string;
+    wildcard: boolean;
+}>;
 /**
  * Walk the transitive static module graph from a small set of entry files.
  *

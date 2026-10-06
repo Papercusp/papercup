@@ -5,6 +5,7 @@ import runTool, {
   buildDetachedTestRunRequest,
   emptyDistilledRunRefusal,
   nameFilterNoMatchRefusal,
+  resolveDetachedHarnessSlug,
   testEvidenceRecoveryRunId,
 } from './run';
 import { REPO_ROOT } from '../docs/_repo-paths';
@@ -198,5 +199,51 @@ describe('testing:run selector arbitration', () => {
     // measure-nothing hazard wearing a different hat.
     expect(runTool.args.safeParse({ files: [] }).success).toBe(false);
     expect(runTool.args.safeParse({ changedPaths: [] }).success).toBe(false);
+  });
+});
+
+/**
+ * WI-10006949: an operator/superuser `testing:run` carries the '*' harness sentinel, and a
+ * detached recovery request without a concrete harness had no scope — so its recovered report
+ * rows were silently never written to test_runs. The detached harness must resolve from the
+ * registry entry that owns the root whenever the caller did not name a concrete one.
+ */
+describe('resolveDetachedHarnessSlug', () => {
+  const root = '/fixture/checkout';
+  const lookups: Array<[string, string]> = [];
+  const lookup = async (r: string, w: string) => { lookups.push([r, w]); return 'registered-harness'; };
+
+  it.each([undefined, '*'])('resolves the registered harness when the caller sent %s', async (harnessSlug) => {
+    lookups.length = 0;
+    await expect(resolveDetachedHarnessSlug({
+      root, workspaceId: 'ws-1', detachedEnabled: true, ...(harnessSlug !== undefined ? { harnessSlug } : {}),
+    }, lookup)).resolves.toBe('registered-harness');
+    expect(lookups).toEqual([[root, 'ws-1']]);
+  });
+
+  it('keeps an explicit concrete harness without a registry lookup', async () => {
+    lookups.length = 0;
+    await expect(resolveDetachedHarnessSlug({
+      root, workspaceId: 'ws-1', harnessSlug: 'papercusp', detachedEnabled: true,
+    }, lookup)).resolves.toBe('papercusp');
+    expect(lookups).toEqual([]);
+  });
+
+  it('does not look up a harness when detached recovery is off or the workspace is not concrete', async () => {
+    lookups.length = 0;
+    await expect(resolveDetachedHarnessSlug({ root, workspaceId: 'ws-1', harnessSlug: '*', detachedEnabled: false }, lookup))
+      .resolves.toBe('*');
+    await expect(resolveDetachedHarnessSlug({ root, workspaceId: '*', detachedEnabled: true }, lookup)).resolves.toBeUndefined();
+    await expect(resolveDetachedHarnessSlug({ root, detachedEnabled: true }, lookup)).resolves.toBeUndefined();
+    expect(lookups).toEqual([]);
+  });
+
+  it('falls back to what the caller sent when the root is unregistered or the lookup fails', async () => {
+    await expect(resolveDetachedHarnessSlug(
+      { root, workspaceId: 'ws-1', harnessSlug: '*', detachedEnabled: true }, async () => undefined,
+    )).resolves.toBe('*');
+    await expect(resolveDetachedHarnessSlug(
+      { root, workspaceId: 'ws-1', detachedEnabled: true }, async () => { throw new Error('registry unavailable'); },
+    )).resolves.toBeUndefined();
   });
 });

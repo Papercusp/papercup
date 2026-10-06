@@ -1648,11 +1648,16 @@ export function evaluateSpecTestAdequacy(input: {
   );
   const fixtureOutsideCurrent = fixtureBindings.filter((row) => !evidence.includes(row));
   const probeDeclaresFixtureUse = /\bfixtures?\b/i.test(clause.falsifier?.probeMethod ?? '');
+  const fixtureUseRequired =
+    clause.requiredEvidence.some((entry) => /fixture/i.test(entry)) || probeDeclaresFixtureUse;
   const executableFixtureFreeProof = exactEvidence.filter(
     (row) => EXECUTABLE_EVIDENCE_KINDS.has(row.evidenceKind) && detailsOf(row).fixtureFree === true,
   );
+  const fixtureUseAttested = exactEvidence.some((row) => detailsOf(row).fixtureFree === false);
   const unclassifiedFixtureProof = exactEvidence.filter(
     (row) =>
+      fixtureBindings.length === 0 &&
+      !fixtureUseRequired &&
       EXECUTABLE_EVIDENCE_KINDS.has(row.evidenceKind) &&
       row.fingerprints.fixtureFingerprint === null &&
       detailsOf(row).fixtureFree === undefined,
@@ -1660,13 +1665,11 @@ export function evaluateSpecTestAdequacy(input: {
   const fixtureFreeConflicts = exactEvidence.filter(
     (row) =>
       detailsOf(row).fixtureFree === true &&
-      (row.evidenceKind === 'fixture' || row.fingerprints.fixtureFingerprint !== null),
+        (row.evidenceKind === 'fixture' || row.fingerprints.fixtureFingerprint !== null),
   );
-  const fixtureUseAttested = exactEvidence.some((row) => detailsOf(row).fixtureFree === false);
   const fixtureApplicable =
-    clause.requiredEvidence.some((entry) => /fixture/i.test(entry)) ||
+    fixtureUseRequired ||
     fixtureBindings.length > 0 ||
-    probeDeclaresFixtureUse ||
     fixtureUseAttested ||
     unclassifiedFixtureProof.length > 0;
   const fixtureProofEvidence = evidence.filter(

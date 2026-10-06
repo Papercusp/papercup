@@ -26,7 +26,13 @@ export interface ByocSealedPacket {
 export interface ByocSealedChannelOptions {
   initiator: boolean;
   localKeyPair: { publicKey: Buffer; secretKey: Buffer };
-  expectedRemotePublicKey: Buffer;
+  /** A single pinned peer key (a provisioned endpoint). Exactly one of this or `verifyRemotePublicKey`. */
+  expectedRemotePublicKey?: Buffer;
+  /**
+   * Responder only: accept any peer whose static key this resolves (D-013 #6 — one key per
+   * paired phone, read from `connected_apps.noise_public_key`). Resolves false to refuse.
+   */
+  verifyRemotePublicKey?: (remotePublicKey: Buffer) => Promise<boolean>;
   sendPacket: (packet: ByocSealedPacket) => void;
   onFrame: (frame: Record<string, unknown>) => void;
   onError?: (error: Error) => void;
@@ -90,14 +96,21 @@ export class ByocSealedChannel {
   readonly opened: Promise<void>;
   private readonly raw: RelayPacketDuplex;
   private readonly noise: InstanceType<typeof SecretStream>;
-  private readonly expectedRemotePublicKey: Buffer;
+  private readonly expectedRemotePublicKey: Buffer | null;
   private pendingType: string | null = null;
   private sendChain: Promise<void> = Promise.resolve();
   private receiveBuffer = '';
   private closed = false;
 
   constructor(private readonly options: ByocSealedChannelOptions) {
-    this.expectedRemotePublicKey = canonicalKey(options.expectedRemotePublicKey, 'expected remote public key');
+    const verify = options.verifyRemotePublicKey;
+    if ((options.expectedRemotePublicKey === undefined) === (verify === undefined)) {
+      throw new Error('BYOC sealed channel needs exactly one of expectedRemotePublicKey or verifyRemotePublicKey');
+    }
+    if (verify && options.initiator) throw new Error('verifyRemotePublicKey is responder-only');
+    this.expectedRemotePublicKey = options.expectedRemotePublicKey === undefined
+      ? null
+      : canonicalKey(options.expectedRemotePublicKey, 'expected remote public key');
     canonicalKey(options.localKeyPair.publicKey, 'local public key');
     if (!Buffer.isBuffer(options.localKeyPair.secretKey) || options.localKeyPair.secretKey.length !== 64) {
       throw new Error('local Noise secret key must be 64 bytes');
@@ -112,16 +125,18 @@ export class ByocSealedChannel {
     });
     this.noise = new SecretStream(options.initiator, this.raw, {
       keyPair: options.localKeyPair,
-      remotePublicKey: this.expectedRemotePublicKey,
+      ...(this.expectedRemotePublicKey ? { remotePublicKey: this.expectedRemotePublicKey } : {}),
     });
     this.noise.on('data', (data: Buffer) => this.acceptPlaintext(data));
     this.noise.on('error', (error: Error) => this.fail(error));
     this.raw.on('error', (error: Error) => this.fail(error));
-    this.opened = this.noise.opened.then((ok) => {
-      if (!ok || !this.noise.remotePublicKey ||
-          !timingSafeEqual(Buffer.from(this.noise.remotePublicKey), this.expectedRemotePublicKey)) {
-        throw new Error('BYOC sealed channel remote key mismatch');
-      }
+    this.opened = this.noise.opened.then(async (ok) => {
+      const remote = ok && this.noise.remotePublicKey ? Buffer.from(this.noise.remotePublicKey) : null;
+      if (!remote || remote.length !== 32) throw new Error('BYOC sealed channel remote key mismatch');
+      const accepted = this.expectedRemotePublicKey
+        ? timingSafeEqual(remote, this.expectedRemotePublicKey)
+        : await verify!(remote).catch(() => false);
+      if (!accepted) throw new Error('BYOC sealed channel remote key mismatch');
     });
   }
 

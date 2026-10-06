@@ -9,6 +9,7 @@ import {
   awsFirstWorkspaceDesiredSpec,
   createHostedFirstWorkspace,
   firstWorkspaceIdentity,
+  GCP_FIRST_WORKSPACE_DEFAULTS,
   gcpFirstWorkspaceDesiredSpec,
   PAPERCUSP_HOSTED_AWS_PROVISIONING_MODEL,
   type HostedFirstWorkspaceDependencies,
@@ -392,6 +393,58 @@ describe('hosted first-workspace bootstrap (D-384)', () => {
     expect(await bootstrap.run({ ...REQUEST, hosting: 'someone-else' as never })).toMatchObject({ code: 'invalid_request' });
     expect(await bootstrap.run({ ...REQUEST, configuration: undefined })).toMatchObject({ code: 'invalid_request' });
     expect(deps.onboardDelegation).not.toHaveBeenCalled();
+  });
+
+  describe('VM size from the expected agent count (WI-10006498)', () => {
+    const gcpRecord = () =>
+      buildHostedProviderDelegationOnboarding({
+        organizationId: 'org-a',
+        workspaceId: 'ws-1',
+        connectionId: 'conn-1',
+        label: 'x',
+        credentialRef: 'delegation://ws-1/conn-1',
+        configuration: GCP,
+      }).record;
+
+    it('keeps the default shape when no count is given', () => {
+      expect(gcpFirstWorkspaceDesiredSpec({ hostId: 'host-1', record: gcpRecord() }).size).toBe(GCP_FIRST_WORKSPACE_DEFAULTS.size);
+    });
+
+    it('picks the smallest measured shape that holds the count, at each boundary', () => {
+      const sizeFor = (expectedAgents: number) =>
+        gcpFirstWorkspaceDesiredSpec({ hostId: 'host-1', record: gcpRecord(), expectedAgents }).size;
+      expect(sizeFor(1)).toBe('e2-standard-4');
+      expect(sizeFor(15)).toBe('e2-standard-4');
+      expect(sizeFor(16)).toBe('e2-standard-8');
+      expect(sizeFor(50)).toBe('e2-standard-8');
+      expect(sizeFor(68)).toBe('e2-standard-8');
+      expect(sizeFor(69)).toBe('e2-custom-16-32768');
+      expect(sizeFor(158)).toBe('e2-custom-16-32768');
+    });
+
+    it('refuses a count no measured VM holds instead of provisioning one too small', () => {
+      for (const expectedAgents of [0, -1, 1.5, 159, Number.NaN]) {
+        expect(() => gcpFirstWorkspaceDesiredSpec({ hostId: 'host-1', record: gcpRecord(), expectedAgents })).toThrow(
+          HostedWorkspaceAdmissionError,
+        );
+      }
+    });
+
+    it('rejects a bad count at the request, before any delegation is onboarded', async () => {
+      const { deps } = harness();
+      const bootstrap = createHostedFirstWorkspace(deps);
+      for (const expectedAgents of [0, 159, 2.5, '50' as never]) {
+        expect(await bootstrap.run({ ...PAPERCUSP_REQUEST, expectedAgents })).toMatchObject({ code: 'invalid_request' });
+      }
+      expect(deps.onboardPapercuspHostedDelegation).not.toHaveBeenCalled();
+    });
+
+    it('provisions a Papercusp-hosted workspace on the shape its count needs', async () => {
+      const { deps, resolvedSpecs } = harness();
+      const result = await createHostedFirstWorkspace(deps).run({ ...PAPERCUSP_REQUEST, expectedAgents: 50 });
+      expect(result).toMatchObject({ ok: true });
+      expect(resolvedSpecs[0]).toMatchObject({ size: 'e2-standard-8' });
+    });
   });
 });
 

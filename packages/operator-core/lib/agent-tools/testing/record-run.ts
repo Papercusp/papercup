@@ -78,6 +78,8 @@ const operationalEvidenceArtifactSchema = z
       originalTestRunId: z.number().int().positive(),
       rawLogFile: z.string().min(1).max(400),
       rawLogSha256: sha256Schema,
+      // Preserve raw proof in Git when the published working copy is redacted.
+      rawLogCommit: z.string().regex(/^[a-f0-9]{40}$/).optional(),
     }).optional(),
   })
   .passthrough();
@@ -89,7 +91,7 @@ export interface CommittedOperationalEvidence {
   filePath: string;
   sha256: string;
   commit: string;
-  /** Exact committed bytes loaded by the inspector, never caller-supplied names. */
+  /** Exact bytes from HEAD or rawLogCommit, never the redacted publication. */
   archiveLog?: string;
 }
 
@@ -283,14 +285,28 @@ export async function inspectCommittedOperationalEvidence(
     const path = archive.rawLogFile;
     if (!path.startsWith('docs/evidence/') || !path.endsWith('.log') || path.includes('\\')
       || path.split('/').includes('..') || path.includes('\0')) throw new Error('evidence_archive_path_invalid');
-    const absoluteLog = realpathSync(resolve(realRoot, path));
-    if (!insideRoot(realRoot, absoluteLog) || !statSync(absoluteLog).isFile()) throw new Error('evidence_archive_path_invalid');
-    if (statSync(absoluteLog).size > 2 * 1024 * 1024) throw new Error('evidence_archive_too_large');
-    const logBytes = readFileSync(absoluteLog);
+    let logBytes: Buffer;
+    if (archive.rawLogCommit) {
+      const object = `${archive.rawLogCommit}:${path}`;
+      let size: number;
+      try {
+        size = Number((await gitOutput(realRoot, ['cat-file', '-s', object])).toString('utf8').trim());
+      } catch {
+        throw new Error('evidence_archive_commit_unavailable');
+      }
+      if (!Number.isSafeInteger(size) || size < 0) throw new Error('evidence_archive_commit_unavailable');
+      if (size > 2 * 1024 * 1024) throw new Error('evidence_archive_too_large');
+      logBytes = await gitOutput(realRoot, ['show', object]);
+    } else {
+      const absoluteLog = realpathSync(resolve(realRoot, path));
+      if (!insideRoot(realRoot, absoluteLog) || !statSync(absoluteLog).isFile()) throw new Error('evidence_archive_path_invalid');
+      if (statSync(absoluteLog).size > 2 * 1024 * 1024) throw new Error('evidence_archive_too_large');
+      logBytes = readFileSync(absoluteLog);
+    }
     if (createHash('sha256').update(logBytes).digest('hex') !== archive.rawLogSha256) {
       throw new Error('evidence_archive_sha256_mismatch');
     }
-    if (!(await gitOutput(realRoot, ['show', `HEAD:${path}`])).equals(logBytes)) {
+    if (!archive.rawLogCommit && !(await gitOutput(realRoot, ['show', `HEAD:${path}`])).equals(logBytes)) {
       throw new Error('evidence_archive_not_committed');
     }
     archiveLog = logBytes.toString('utf8');
@@ -488,7 +504,7 @@ export async function recordOperationalRun(
 export default defineTool({
   name: 'testing:record-run',
   description:
-    `Register a completed non-Vitest check in harness_shared.test_runs and return testRunIds for plans:bind-spec-evidence. Commit docs/evidence/*.json with schemaVersion:1, kind:"operational-test-evidence", command, timestamps, exitCode, summary, and assertions; pass expectedSha256 for those bytes. Mutation probes need exact MUTATION_PROBE_EVIDENCE_JSON records and cannot use shared .papercusp/scratch. Optional archivedMutation:{originalTestRunId,rawLogFile,rawLogSha256} adds failed-case identities from a committed raw log after validating the original scoped receipt; it never changes that receipt or runs a test. Evidence JSON limit: ${MAX_OPERATIONAL_EVIDENCE_BYTES} bytes; pin bulky raw artifacts by SHA-256. Verdict derives from exitCode + assertions, not caller input. Idempotent by artifact hash.`,
+    `Register a completed non-Vitest check in harness_shared.test_runs and return testRunIds for plans:bind-spec-evidence. Commit docs/evidence/*.json with schemaVersion:1, kind:"operational-test-evidence", command, timestamps, exitCode, summary, and assertions; pass expectedSha256 for those bytes. Mutation probes need exact MUTATION_PROBE_EVIDENCE_JSON records and cannot use shared .papercusp/scratch. Optional archivedMutation:{originalTestRunId,rawLogFile,rawLogSha256,rawLogCommit?} adds failed-case identities from a committed raw log after validating the original scoped receipt; rawLogCommit pins a full Git revision when the published log is redacted. It never changes that receipt or runs a test. Evidence JSON limit: ${MAX_OPERATIONAL_EVIDENCE_BYTES} bytes; pin bulky raw artifacts by SHA-256. Verdict derives from exitCode + assertions, not caller input. Idempotent by artifact hash.`,
   guidance: {
     when: 'A completed Playwright, Cargo, node, shell, desktop, or other operational acceptance run needs a numeric ledger record; or historical mutation case identities need recovery.',
     notWhen:

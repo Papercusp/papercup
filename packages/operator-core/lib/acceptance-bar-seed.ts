@@ -38,6 +38,9 @@ import {
 import { guardAcceptanceBarTemplateDataWrite } from './agent-tools/plans/rubric-loss-guard';
 import { synchronizeAcceptanceBarRevision } from './acceptance-bar-amendment';
 import { requirementSections } from './requirement-contract';
+import { acceptanceBarProjectedBehavior } from './acceptance-bar-projection';
+
+export { acceptanceBarProjectedBehavior } from './acceptance-bar-projection';
 import {
   ACCEPTANCE_BAR_REQUIREMENT_BLOCK_TEMPLATE,
   acceptanceBarContractGaps,
@@ -313,36 +316,6 @@ export function acceptanceBarBehaviorClass(
   return evidencePlane === 'tree' || (requiredTestLayers?.length ?? 0) > 0
     ? 'happy-path'
     : 'non-automated';
-}
-
-/**
- * The clause behavior DERIVED from a BAR criterion.
- *
- * `model` is rubric prose and routinely opens by restating its own title, which
- * reads naturally in a rubric and is fatal in a spec clause: the projected
- * behavior becomes two sentences and fails spec-quality's
- * `atomic-observable-behavior`, which blocks plan-item promotion and shipping.
- *
- * Repairing the projected clause instead is not a fix. `preserveRefinements` in
- * acceptance-bar-amendment only protects a clause edit while the BAR's hash
- * material is unchanged (or only test layers moved), so the first amendment that
- * touches meaning silently re-derives the clause and discards the repair —
- * measured on ship-main-greening-program-2026-09-15, where clause revisions 3-12
- * held the atomic form and revision 13 reverted all six bars at once
- * (EI-23920059935763829). Strip the duplicated opening at the SOURCE of the
- * derivation so the repair cannot be lost, and every re-projection is atomic.
- */
-export function acceptanceBarProjectedBehavior(
-  criterion: { title?: string | null; model?: string | null },
-): string {
-  const model = String(criterion.model ?? '').trim();
-  const title = String(criterion.title ?? '').trim().replace(/[.\s]+$/, '');
-  if (!model || !title) return model;
-  const prefix = `${title}.`;
-  if (!model.startsWith(prefix)) return model;
-  const rest = model.slice(prefix.length).replace(/^\s+/, '');
-  // A model that is ONLY its own title carries no separate behavior to keep.
-  return rest.length > 0 ? rest : model;
 }
 
 /** Parse the plan's existing design table. A third `evidence plane` column is

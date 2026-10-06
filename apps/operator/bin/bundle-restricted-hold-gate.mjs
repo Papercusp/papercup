@@ -156,6 +156,13 @@ export function runGate({ root, baseDir, outdir, snapshotDir, metafiles, metafil
     log(`✓ restricted-hold gate: ${inputCount} bundle inputs checked, none is a held restricted write (D-012)`);
     return GATE_EXIT.admit;
   }
+  if (verdict.verdict === 'skipped' && verdict.reason === 'github-actions') {
+    // WI-10006976: a hosted runner has no Papercusp operator, so no restricted session can hold a
+    // write there; the preflight declines to census rather than fail closed. Disclosed, never silent.
+    rmSync(snapshotDir, { recursive: true, force: true });
+    log(`✓ restricted-hold gate: census skipped (${verdict.reason}: no Papercusp operator or restricted session on this runner); ${inputCount} bundle inputs kept`);
+    return GATE_EXIT.admit;
+  }
   const restored = restoreArtifacts({ outdir, snapshotDir });
   rmSync(snapshotDir, { recursive: true, force: true });
   log(formatBundleRestrictedHoldRefusal(verdict));

@@ -63,6 +63,7 @@ describe('plans:bind-spec-evidence repo-files measurement contract', () => {
 describe('plans:bind-spec-evidence adequacy completeness metadata', () => {
   const flatAdequacyFields: ReadonlyArray<readonly [string, unknown]> = [
     ['fixtureCalibrated', true],
+    ['fixtureFree', true],
     ['falsifiable', true],
     ['testLayer', 'integration'],
     ['pathReachable', true],
@@ -144,6 +145,7 @@ describe('plans:bind-spec-evidence adequacy completeness metadata', () => {
 
   it.each([
     'fixtureCalibrated',
+    'fixtureFree',
     'falsifiable',
     'pathReachable',
     'oracleIndependent',

@@ -140,6 +140,7 @@ import { DBOS } from '@dbos-inc/dbos-sdk';
 import { registerSystemAction } from '../harness/routines/system-actions';
 import {
   createRoutineDispatchController,
+  criticalLaneDemandFloor,
   evaluateRoutineDispatchEpoch,
   orderDueRoutinesByAge,
   ROUTINE_FIRE_QUEUES,
@@ -370,6 +371,129 @@ describe('evaluateRoutineDispatchEpoch — capless delayed-feedback admission (E
       controllerAvailableStarts: 0,
       availableStarts: 0,
       controllerProtected: false,
+    });
+  });
+
+  // WI-10006946. Measured 2026-10-06 on the tower bg-host: the cold-started window sat at
+  // 4-7 after restarts and critical halvings while 74 git-sync routines on a 10-min cron
+  // needed ~8 concurrent fires; supply fell below demand and 31 routines went overdue.
+  describe('critical-lane demand floor (WI-10006946)', () => {
+    it('derives the floor from cron demand x tick-rounded mean run (Little’s law)', () => {
+      // 74 routines x 6 fires/h + papercusp every 3 min (20/h) = 464 fires/h.
+      // A 45 s mean run occupies a slot for two 30 s ticks: 464/h x 60 s = 7.73 -> 8.
+      expect(
+        criticalLaneDemandFloor({ firesPerHour: 464, routineCount: 75, meanRunMs: 45_000, tickMs: 30_000 }),
+      ).toBe(8);
+      // Slower fires need proportionally more concurrency.
+      expect(
+        criticalLaneDemandFloor({ firesPerHour: 464, routineCount: 75, meanRunMs: 95_000, tickMs: 30_000 }),
+      ).toBe(16);
+      // No finished fire yet: occupancy is one tick, never zero.
+      expect(criticalLaneDemandFloor({ firesPerHour: 464, routineCount: 75, meanRunMs: null, tickMs: 30_000 })).toBe(4);
+      // One routine can never have two fires in flight.
+      expect(
+        criticalLaneDemandFloor({ firesPerHour: 464, routineCount: 3, meanRunMs: 600_000, tickMs: 30_000 }),
+      ).toBe(3);
+      // No demand, no floor.
+      expect(criticalLaneDemandFloor({ firesPerHour: 0, routineCount: 75, meanRunMs: 45_000, tickMs: 30_000 })).toBe(0);
+      expect(criticalLaneDemandFloor({ firesPerHour: 464, routineCount: 0, meanRunMs: 45_000, tickMs: 30_000 })).toBe(0);
+    });
+
+    it('a cold controller admits the demand floor on its first tick instead of one start', () => {
+      const epoch = evaluateRoutineDispatchEpoch({
+        pressure: 'ok',
+        probeMs: 4,
+        inFlightByQueue: { [ROUTINES_CRITICAL_QUEUE]: 0 },
+        activeQueues: [ROUTINES_CRITICAL_QUEUE],
+        controller: createRoutineDispatchController(),
+        atMs: START,
+        minimumWindowByQueue: { [ROUTINES_CRITICAL_QUEUE]: 8 },
+      });
+      expect(queue(epoch, ROUTINES_CRITICAL_QUEUE)).toMatchObject({
+        minimumWindow: 8,
+        desiredWindow: 8,
+        availableStarts: 8,
+      });
+    });
+
+    it('elevated pressure holds at the floor rather than below it', () => {
+      const epoch = evaluateRoutineDispatchEpoch({
+        pressure: 'elevated',
+        probeMs: 400,
+        inFlightByQueue: { [ROUTINES_CRITICAL_QUEUE]: 3 },
+        activeQueues: [ROUTINES_CRITICAL_QUEUE],
+        controller: new CaplessAdaptiveController({ initialWindow: 4 }),
+        atMs: START,
+        minimumWindowByQueue: { [ROUTINES_CRITICAL_QUEUE]: 8 },
+      });
+      expect(queue(epoch, ROUTINES_CRITICAL_QUEUE).desiredWindow).toBe(8);
+      expect(queue(epoch, ROUTINES_CRITICAL_QUEUE).availableStarts).toBe(5);
+    });
+
+    it('critical pressure still clamps the lane to one in-flight start, and contraction stops at the floor', () => {
+      const controller = new CaplessAdaptiveController({ initialWindow: 16, contractionCooldownMs: 0 });
+      const critical = evaluateRoutineDispatchEpoch({
+        pressure: 'critical',
+        probeMs: 2_800,
+        inFlightByQueue: { [ROUTINES_CRITICAL_QUEUE]: 0 },
+        activeQueues: [ROUTINES_CRITICAL_QUEUE],
+        controller,
+        atMs: START,
+        minimumWindowByQueue: { [ROUTINES_CRITICAL_QUEUE]: 8 },
+      });
+      // The floor never widens what critical pressure admits.
+      expect(queue(critical, ROUTINES_CRITICAL_QUEUE).availableStarts).toBe(1);
+
+      const occupied = evaluateRoutineDispatchEpoch({
+        pressure: 'critical',
+        probeMs: 2_800,
+        inFlightByQueue: { [ROUTINES_CRITICAL_QUEUE]: 12 },
+        activeQueues: [ROUTINES_CRITICAL_QUEUE],
+        controller,
+        atMs: START + 30_000,
+        minimumWindowByQueue: { [ROUTINES_CRITICAL_QUEUE]: 8 },
+      });
+      // An occupied, attributable lane halves 16 -> 8, and a second halving stops at 8.
+      expect(queue(occupied, ROUTINES_CRITICAL_QUEUE).desiredWindow).toBe(8);
+      expect(queue(occupied, ROUTINES_CRITICAL_QUEUE).availableStarts).toBe(0);
+      const again = evaluateRoutineDispatchEpoch({
+        pressure: 'critical',
+        probeMs: 2_800,
+        inFlightByQueue: { [ROUTINES_CRITICAL_QUEUE]: 12 },
+        activeQueues: [ROUTINES_CRITICAL_QUEUE],
+        controller,
+        atMs: START + 60_000,
+        minimumWindowByQueue: { [ROUTINES_CRITICAL_QUEUE]: 8 },
+      });
+      expect(queue(again, ROUTINES_CRITICAL_QUEUE).desiredWindow).toBe(8);
+
+      // Without the floor the same feedback keeps halving: the floor is what holds it.
+      const unfloored = new CaplessAdaptiveController({ initialWindow: 16, contractionCooldownMs: 0 });
+      for (const atMs of [START, START + 30_000]) {
+        evaluateRoutineDispatchEpoch({
+          pressure: 'critical',
+          probeMs: 2_800,
+          inFlightByQueue: { [ROUTINES_CRITICAL_QUEUE]: 12 },
+          activeQueues: [ROUTINES_CRITICAL_QUEUE],
+          controller: unfloored,
+          atMs,
+        });
+      }
+      expect(unfloored.snapshot(START + 30_000).classes[0].desiredWindow).toBe(4);
+    });
+
+    it('other queues are unaffected by the critical-lane floor', () => {
+      const epoch = evaluateRoutineDispatchEpoch({
+        pressure: 'ok',
+        probeMs: 4,
+        inFlightByQueue: {},
+        activeQueues: [ROUTINES_QUEUE, ROUTINES_CRITICAL_QUEUE],
+        controller: new CaplessAdaptiveController(),
+        atMs: START,
+        minimumWindowByQueue: { [ROUTINES_CRITICAL_QUEUE]: 8 },
+      });
+      expect(queue(epoch, ROUTINES_QUEUE)).toMatchObject({ minimumWindow: 0, availableStarts: 1 });
+      expect(queue(epoch, ROUTINES_CRITICAL_QUEUE).availableStarts).toBe(8);
     });
   });
 

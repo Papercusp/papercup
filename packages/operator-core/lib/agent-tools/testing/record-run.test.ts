@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { findBoxIdentityPaths, redactIdentityLeaks } from '../../../../../scripts/lib/identity-leak-patterns.mjs';
 import {
   MAX_OPERATIONAL_EVIDENCE_BYTES,
   inspectCommittedOperationalEvidence,
@@ -122,6 +123,64 @@ function archivedMutationFixture() {
 }
 
 describe('archived mutation identity recovery (EI-25248905256718690)', () => {
+  it('reads hash-pinned historical bytes after publishing a portable log, without changing receipt identity', async () => {
+    const repo = mkdtempSync(join(tmpdir(), 'record-archived-publication-'));
+    try {
+      git(repo, ['init', '-q']);
+      git(repo, ['config', 'user.email', 'test@example.invalid']);
+      git(repo, ['config', 'user.name', 'Test']);
+      mkdirSync(join(repo, 'docs/evidence'), { recursive: true });
+      mkdirSync(join(repo, 'scripts'));
+      const runner = '#!/bin/sh\nexit 0\n';
+      writeFileSync(join(repo, 'scripts/mutation-probe.sh'), runner);
+      const { evidence, original, scope, titles } = archivedMutationFixture();
+      const privatePath = ['file:', '', 'home', 'archive-writer', 'runner.js'].join('/');
+      const runnerSha256 = createHash('sha256').update(runner).digest('hex');
+      const raw = `${evidence.archiveLog!.replace(MUTATION_PROBE.runnerSha256, runnerSha256)}\n    at ${privatePath}:1:2\n`;
+      writeFileSync(join(repo, 'docs/evidence/mutation.log'), raw);
+      git(repo, ['add', '.']);
+      git(repo, ['commit', '-qm', 'original raw proof']);
+      const rawLogCommit = git(repo, ['rev-parse', 'HEAD']);
+      const publicView = redactIdentityLeaks(raw, []);
+      expect(findBoxIdentityPaths(raw)).not.toHaveLength(0);
+      expect(findBoxIdentityPaths(publicView)).toHaveLength(0);
+      expect(publicView).not.toBe(raw);
+      writeFileSync(join(repo, 'docs/evidence/mutation.log'), publicView);
+      const artifact = { ...evidence.artifact,
+        mutationProbes: evidence.artifact.mutationProbes!.map(probe => ({ ...probe,
+          runnerSha256 })),
+        archivedMutation: { ...evidence.artifact.archivedMutation!, rawLogCommit,
+          rawLogSha256: createHash('sha256').update(raw).digest('hex') },
+      };
+      const publish = (value: typeof artifact) => {
+        const bytes = JSON.stringify(value);
+        writeFileSync(join(repo, 'docs/evidence/archive.json'), bytes);
+        git(repo, ['add', '.']);
+        git(repo, ['commit', '-qm', 'portable publication']);
+        return createHash('sha256').update(bytes).digest('hex');
+      };
+      const hash = publish(artifact);
+      const loaded = await inspectCommittedOperationalEvidence(repo, 'docs/evidence/archive.json', hash);
+      expect(loaded.archiveLog).toBe(raw);
+      const saved = structuredClone(original);
+      expect(recoverArchivedMutationFailures(loaded, original, scope).titles)
+        .toEqual(titles);
+      expect(original).toEqual(saved);
+      expect(git(repo, ['show', `${rawLogCommit}:docs/evidence/mutation.log`])).toBe(raw.trim());
+      const badHash = publish({ ...artifact, archivedMutation: { ...artifact.archivedMutation,
+        rawLogSha256: createHash('sha256').update(publicView).digest('hex') } });
+      await expect(inspectCommittedOperationalEvidence(repo, 'docs/evidence/archive.json', badHash))
+        .rejects.toThrow('evidence_archive_sha256_mismatch');
+      const unavailable = publish({ ...artifact, archivedMutation: { ...artifact.archivedMutation,
+        rawLogCommit: 'e'.repeat(40) } });
+      await expect(inspectCommittedOperationalEvidence(repo, 'docs/evidence/archive.json', unavailable))
+        .rejects.toThrow('evidence_archive_commit_unavailable');
+      const unsafe = { ...artifact, archivedMutation: { ...artifact.archivedMutation, rawLogCommit: 'HEAD' } };
+      expect(() => parseOperationalEvidenceArtifact(Buffer.from(JSON.stringify(unsafe))))
+        .toThrow('archivedMutation.rawLogCommit');
+    } finally { rmSync(repo, { recursive: true, force: true }); }
+  });
+
   it('requires the archive hash and exact committed log bytes before reading a receipt', async () => {
     const repo = mkdtempSync(join(tmpdir(), 'record-archived-mutation-'));
     try {

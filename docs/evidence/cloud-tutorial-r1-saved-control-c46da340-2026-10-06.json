@@ -72,6 +72,7 @@
   "archivedMutation": {
     "originalTestRunId": 20845162,
     "rawLogFile": "docs/evidence/cloud-tutorial-r1-saved-control-c46da340-2026-10-06.log",
+    "rawLogCommit": "5abf62bf3c4f4a82132dde189795e7877f7600cb",
     "rawLogSha256": "85f0cea4001bdcc163a3d67d399af9250098f2f351703f4186e40be32e1fe988"
   },
   "archiveProvenance": {
@@ -88,6 +89,8 @@
     "testFile": "apps/operator/lib/onboarding/cloud-tutorial-session.integration.test.tsx",
     "rawLog": {
       "filePath": "docs/evidence/cloud-tutorial-r1-saved-control-c46da340-2026-10-06.log",
+      "commit": "5abf62bf3c4f4a82132dde189795e7877f7600cb",
+      "publication": "The working log is a portable view produced by scripts/lib/identity-leak-patterns.mjs:redactIdentityLeaks. Recover the exact original bytes with git show <commit>:<filePath>; the raw digest below belongs to that historical blob, not the public view. Original receipt20845162 and recovered receipt20847791 remain unchanged.",
       "originalPath": "/tmp/cloud-tutorial-r1-correlation-c46da340-20261006T1630.log",
       "sha256": "85f0cea4001bdcc163a3d67d399af9250098f2f351703f4186e40be32e1fe988",
       "bytes": 43311

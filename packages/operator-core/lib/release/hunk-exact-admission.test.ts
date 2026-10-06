@@ -12,7 +12,14 @@ import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ADMISSION_GIT_DATE, admitPathsOntoRepairHead, realAdmissionGit } from './repair-head-admission';
 import type { AdmissionGitRunner } from './repair-head-admission';
-import { buildCommittedPatchSource, buildHunkExactSource, summarizeForeignHunks } from './hunk-exact-admission';
+import {
+  attributeUnledgeredPaths,
+  buildCommittedPatchSource,
+  buildHunkExactSource,
+  SOLE_EDITOR_WINDOW_MARGIN_MS,
+  summarizeForeignHunks,
+  type EditAttributionRow,
+} from './hunk-exact-admission';
 import type { FrozenRepairEditLedgerRow } from './frozen-repair-edit-ledger';
 
 const TEMP: string[] = [];
@@ -295,5 +302,71 @@ describe('summarizeForeignHunks — what a whole-blob admission may carry (D-008
     ];
     expect(summarizeForeignHunks(ledger, ['./lib/a.ts', 'lib/b.ts'], 'me')).toEqual({ count: 3, agents: ['other', 'peer'], byPath: { 'lib/a.ts': 2, 'lib/b.ts': 1 } });
     expect(summarizeForeignHunks(ledger, ['lib/a.ts'], 'me', ['peer'])).toEqual({ count: 0, agents: [], byPath: {} });
+  });
+});
+
+// P-004 (gate-throughput-shift-left-2026-10-06, R-4): attribution when the hunk ledger missed.
+describe('attributeUnledgeredPaths — sole post-freeze editor', () => {
+  const W = 1_000_000;
+  const row = (path: string, agent: string, tsMs = W + 1): EditAttributionRow => ({ path, agent, tsMs });
+
+  it('attributes every path to the caller when the caller is the only recorded editor (the EI-24557368838482892 shape)', () => {
+    const v = attributeUnledgeredPaths({
+      paths: ['lib/adv-sessions.test.ts', 'lib/queue.test.ts'],
+      actor: 'su-me',
+      rows: [row('lib/adv-sessions.test.ts', 'su-me'), row('lib/queue.test.ts', 'su-me'), row('lib/queue.test.ts', 'su-me', W + 5)],
+      windowStartMs: W,
+    });
+    expect(v).toEqual({ ok: true, agentsByPath: { 'lib/adv-sessions.test.ts': ['su-me'], 'lib/queue.test.ts': ['su-me'] } });
+  });
+
+  it("refuses, naming them, when a peer also edited the path — a peer's concurrent hunk is never admitted", () => {
+    const v = attributeUnledgeredPaths({
+      paths: ['lib/a.ts'],
+      actor: 'su-me',
+      rows: [row('lib/a.ts', 'su-me'), row('lib/a.ts', 'su-peer')],
+      windowStartMs: W,
+    });
+    expect(v).toMatchObject({ ok: false, reason: 'peer-edits', path: 'lib/a.ts', peers: ['su-peer'] });
+    if (!v.ok) expect(v.detail).toContain('su-peer');
+  });
+
+  it('a system writer counts as a peer, and includeHunksFrom widens who counts as the caller', () => {
+    expect(
+      attributeUnledgeredPaths({ paths: ['lib/a.ts'], actor: 'su-me', rows: [row('lib/a.ts', 'su-me'), row('lib/a.ts', 'system:gen')], windowStartMs: W }),
+    ).toMatchObject({ ok: false, reason: 'peer-edits', peers: ['system:gen'] });
+    expect(
+      attributeUnledgeredPaths({
+        paths: ['lib/a.ts'],
+        actor: 'su-me',
+        includeHunksFrom: ['su-pair'],
+        rows: [row('lib/a.ts', 'su-me'), row('lib/a.ts', 'su-pair')],
+        windowStartMs: W,
+      }),
+    ).toMatchObject({ ok: true });
+  });
+
+  it('refuses no-recorded-edits when nobody is recorded, and ignores edits before the window', () => {
+    const v = attributeUnledgeredPaths({
+      paths: ['lib/a.ts'],
+      actor: 'su-me',
+      rows: [row('lib/a.ts', 'su-me', W - 1), row('lib/other.ts', 'su-me')],
+      windowStartMs: W,
+    });
+    expect(v).toMatchObject({ ok: false, reason: 'no-recorded-edits', path: 'lib/a.ts', peers: [] });
+  });
+
+  it('one unattributable path refuses the whole admission (no partial widening)', () => {
+    const v = attributeUnledgeredPaths({
+      paths: ['lib/a.ts', 'lib/b.ts'],
+      actor: 'su-me',
+      rows: [row('lib/a.ts', 'su-me'), row('lib/b.ts', 'su-peer')],
+      windowStartMs: W,
+    });
+    expect(v).toMatchObject({ ok: false, path: 'lib/b.ts' });
+  });
+
+  it('the window opens before the candidate cut by the sweep margin', () => {
+    expect(SOLE_EDITOR_WINDOW_MARGIN_MS).toBeGreaterThanOrEqual(15 * 60_000);
   });
 });

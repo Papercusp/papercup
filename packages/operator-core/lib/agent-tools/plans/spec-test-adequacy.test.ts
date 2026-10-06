@@ -1716,7 +1716,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(result.verdict).toBe('unknown');
   });
 
-  it('leaves fixture calibration not-applicable for a tree-only spec despite an explicit flag on non-fixture evidence', () => {
+  it('requires an explicit fixture-free attestation for executable proof with a null fixture fingerprint', () => {
     const row = evidence({
       evidenceKind: 'counterexample',
       evidenceRef: 'counterexample:tree-only-spec',
@@ -1742,9 +1742,61 @@ describe('spec-test-adequacy per-clause evaluator', () => {
       classRef: 'plan-class-bugfix',
     });
 
-    expect(result.ratings['fixture-calibration'].rating).toBe('not-applicable');
-    expect(result.ratings['fixture-calibration'].evidence).toContain('No fixture binding or fixture fingerprint is present');
+    expect(result.ratings['fixture-calibration'].rating).toBe('unknown');
+    expect(result.ratings['fixture-calibration'].evidence).toContain(
+      'A null fixtureFingerprint does not establish fixture-free proof',
+    );
     expect(result.ratings['fixture-calibration'].evidence).toContain('fixtureCalibrated=true');
+  });
+
+  it('accepts fixture-free proof only when the exact executable binding attests fixtureFree=true', () => {
+    const base = evidence();
+    const row = evidence({
+      evidenceKind: 'test',
+      evidenceRef: 'test:explicitly-fixture-free',
+      fingerprints: { ...base.fingerprints, fixtureFingerprint: null },
+      details: {
+        adequacy: {
+          ...((base.details.adequacy ?? {}) as Record<string, unknown>),
+          fixtureCalibrated: undefined,
+          fixtureFree: true,
+        },
+      },
+    });
+
+    const result = evaluateSpecTestAdequacy({
+      clause: clause({ requiredEvidence: ['integration test'] }),
+      evidence: [row],
+      classRef: 'plan-class-bugfix',
+    });
+
+    expect(result.ratings['fixture-calibration'].rating).toBe('not-applicable');
+    expect(result.ratings['fixture-calibration'].evidence).toContain('explicitly attest fixtureFree=true');
+  });
+
+  it('rejects fixtureFree=true when the same binding carries fixture evidence', () => {
+    const base = evidence();
+    const row = evidence({
+      evidenceKind: 'test',
+      evidenceRef: 'test:fixture-free-conflict',
+      details: {
+        adequacy: {
+          ...((base.details.adequacy ?? {}) as Record<string, unknown>),
+          fixtureFree: true,
+        },
+      },
+    });
+
+    const result = evaluateSpecTestAdequacy({
+      clause: clause({ requiredEvidence: ['integration test'] }),
+      evidence: [row],
+      classRef: 'plan-class-bugfix',
+    });
+
+    expect(result.ratings['fixture-calibration'].rating).toBe('fail');
+    expect(result.ratings['fixture-calibration'].evidence).toContain(
+      'claim fixtureFree=true while also carrying fixture evidence',
+    );
   });
 
   it('requires fixture calibration when the falsifier probe method uses a fixture provider', () => {
@@ -2759,6 +2811,7 @@ describe('non-code clauses can reach an all-pass verdict (EI-23793489732627099)'
       details: {
         adequacy: {
           fixtureCalibrated: true,
+          fixtureFree: true,
           falsifiable: true,
           pathReachable: true,
           oracleIndependent: true,

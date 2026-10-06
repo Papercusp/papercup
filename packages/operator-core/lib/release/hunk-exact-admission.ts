@@ -407,6 +407,84 @@ export function buildCommittedPatchSource(input: {
   }
 }
 
+// ── P-004 (gate-throughput-shift-left-2026-10-06): attribution without the hunk ledger ──
+
+/** One row of `harness_shared.edit_attribution_ledger` — who edited a file, and when.
+ *  Written by the edit hook through a different path from the frozen hunk ledger, so it
+ *  survives the misses that produce `no-ledgered-hunks` (measured: all three edits in
+ *  EI-24313562050732849 and EI-24557368838482892 are present there with the right agent). */
+export interface EditAttributionRow {
+  path: string;
+  agent: string;
+  tsMs: number;
+}
+
+/** How far before the candidate's commit time the attribution window opens. An edit is
+ *  swept into a commit minutes after it is made, so a peer's edit made just before the cut
+ *  but committed after it is still inside this window — and therefore still refuses. */
+export const SOLE_EDITOR_WINDOW_MARGIN_MS = 30 * 60_000;
+
+export type SoleEditorVerdict =
+  | { ok: true; agentsByPath: Record<string, string[]> }
+  | {
+      ok: false;
+      reason: 'peer-edits' | 'no-recorded-edits';
+      path: string;
+      peers: string[];
+      detail: string;
+    };
+
+/**
+ * Decide whether an admission whose paths carry NO ledgered hunk at all may still be
+ * attributed to the caller. It may only when, for EVERY path, the attribution ledger
+ * records at least one edit since the window opened and every recorded edit is by the
+ * caller (∪ includeHunksFrom). Then staging's whole post-freeze change to those paths is
+ * the caller's, and admitting staging's blob carries no peer work. Any other recorded
+ * editor — a `system:` writer included — refuses, naming them: a peer's concurrent hunk
+ * is never admitted. An edit no hook recorded at all cannot be seen by any attribution
+ * source; that residual risk is the same one `wholeBlob:true` already carries.
+ */
+export function attributeUnledgeredPaths(input: {
+  paths: readonly string[];
+  actor: string;
+  includeHunksFrom?: readonly string[];
+  rows: readonly EditAttributionRow[];
+  windowStartMs: number;
+}): SoleEditorVerdict {
+  const accepted = new Set([input.actor.trim(), ...(input.includeHunksFrom ?? []).map((a) => a.trim()).filter(Boolean)]);
+  const agentsByPath: Record<string, string[]> = {};
+  for (const raw of input.paths) {
+    const path = normalizeAdmissionPath(raw) ?? raw;
+    const rows = input.rows.filter((r) => r.path === path && r.tsMs >= input.windowStartMs);
+    const agents = [...new Set(rows.map((r) => r.agent))].sort();
+    const peers = agents.filter((a) => !accepted.has(a));
+    if (peers.length > 0) {
+      return {
+        ok: false,
+        reason: 'peer-edits',
+        path,
+        peers,
+        detail:
+          `${path} has no ledgered hunk, and the edit attribution ledger shows ${peers.join(', ')} also edited it ` +
+          `since the freeze window opened — staging's blob would carry their work, so it cannot be admitted as yours`,
+      };
+    }
+    if (agents.length === 0) {
+      return {
+        ok: false,
+        reason: 'no-recorded-edits',
+        path,
+        peers: [],
+        detail:
+          `${path} has no ledgered hunk, and the edit attribution ledger records no edit to it by anyone since the ` +
+          `freeze window opened — the change cannot be attributed to ${input.actor.trim()}`,
+      };
+    }
+    agentsByPath[path] = agents;
+  }
+  return { ok: true, agentsByPath };
+}
+
 /** Ledgered hunks on `paths` by agents other than `actor` (∪ include) — what a whole-blob admission may carry. */
 export function summarizeForeignHunks(
   ledger: readonly FrozenRepairEditLedgerRow[],

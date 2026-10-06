@@ -32,7 +32,16 @@ export function parseSnapshot(text: any): {
 /** Module specifiers an import/export-from/require/dynamic-import in `source` names. */
 export function extractSpecifiers(source: any): string[];
 /** Candidate repo-relative files a RELATIVE specifier written in `importer` can name. */
-export function relativeCandidates(importer: any, specifier: any): Set<any>;
+export function relativeCandidates(importer: any, specifier: any): Set<string>;
+/**
+ * Candidate repo-relative files for an already-resolved module path `base` (repo-relative, as
+ * written — no extension added yet): the extension / `index` / `.js`→`.ts` expansion. Shared by
+ * relative resolution above and by the first-party snapshot producer's alias resolution
+ * (WI-10006809), so both name the same files in the same order.
+ * @param {string} base
+ * @returns {Set<string>}
+ */
+export function baseCandidates(base: string): Set<string>;
 /** Does `source` (the importer's current text) actually import `imported`? */
 export function sourceCorroborates(source: any, importer: any, imported: any): boolean;
 /** Verify ONE snapshot edge against the current tree. */

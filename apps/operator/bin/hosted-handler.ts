@@ -32,6 +32,7 @@ import {
   InMemoryHostedAppRelayUsageStore,
   PostgresHostedAppRelayUsageStore,
   handleHostedAppRelay,
+  handleHostedDeviceRelay,
   type AppRelayLimits,
   type HostedAppRelayDependencies,
   type HostedAppRelayUsageStore,
@@ -277,6 +278,8 @@ export function createHostedHandler(
 
   app.all("/api/workspaces/:workspaceId/agent-tools/*", (context) => handleHostedAppRelay(context.req.raw, appRelay));
   app.all("/api/workspaces/:workspaceId/mcp", (context) => handleHostedAppRelay(context.req.raw, appRelay));
+  // android-public-release D-013 #2: a phone's device-API call to a cloud workspace.
+  app.all("/api/workspaces/:workspaceId/api/device/*", (context) => handleHostedDeviceRelay(context.req.raw, appRelay));
   // P-017 (D-032 #4): a signed webhook, relayed without an app key; the machine checks the signature.
   app.all("/api/workspaces/:workspaceId/hooks/:sourceId", (context) => handleHostedAppRelay(context.req.raw, appRelay));
 

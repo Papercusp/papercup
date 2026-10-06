@@ -19,7 +19,7 @@
  * the build. Census method and findings: see `PLAINTEXT_CONSUMERS` below.
  */
 
-export type HostedRelayPlane = 'envelope' | 'workspace-session' | 'operator-http' | 'app-http' | 'desktop-viewer';
+export type HostedRelayPlane = 'envelope' | 'workspace-session' | 'operator-http' | 'app-http' | 'device-http' | 'desktop-viewer';
 export type HostedRelaySensitivity = 'content' | 'control';
 
 export interface HostedRelayFrameClass {
@@ -62,13 +62,13 @@ export const HOSTED_RELAY_FRAME_REGISTRY: Readonly<Record<string, HostedRelayFra
   'file.result': { planes: ['workspace-session'], sensitivity: 'content', note: 'listings / file bytes' },
   'file.progress': { planes: ['workspace-session'], sensitivity: 'content', note: 'carries path alongside byte counts' },
   // ── operator-http + app-http (shared wire, hosted-operator-http.ts) ──
-  'http.request': { planes: ['operator-http', 'app-http'], sensitivity: 'content', note: 'method, path, headers, body' },
-  'http.response': { planes: ['operator-http', 'app-http'], sensitivity: 'content', note: 'status + headers' },
-  'http.body': { planes: ['operator-http', 'app-http'], sensitivity: 'content', note: 'body chunks' },
-  'http.end': { planes: ['operator-http', 'app-http'], sensitivity: 'control', note: 'stream end' },
-  'http.abort': { planes: ['operator-http', 'app-http'], sensitivity: 'control', note: 'client abort' },
+  'http.request': { planes: ['operator-http', 'app-http', 'device-http'], sensitivity: 'content', note: 'method, path, headers, body' },
+  'http.response': { planes: ['operator-http', 'app-http', 'device-http'], sensitivity: 'content', note: 'status + headers' },
+  'http.body': { planes: ['operator-http', 'app-http', 'device-http'], sensitivity: 'content', note: 'body chunks' },
+  'http.end': { planes: ['operator-http', 'app-http', 'device-http'], sensitivity: 'control', note: 'stream end' },
+  'http.abort': { planes: ['operator-http', 'app-http', 'device-http'], sensitivity: 'control', note: 'client abort' },
   'http.ready': { planes: ['operator-http'], sensitivity: 'control', note: 'channel ready' },
-  'http.error': { planes: ['operator-http', 'app-http'], sensitivity: 'control', contentFields: ['message'], note: 'code is control; message may echo a path' },
+  'http.error': { planes: ['operator-http', 'app-http', 'device-http'], sensitivity: 'control', contentFields: ['message'], note: 'code is control; message may echo a path' },
   // ── app-http: key mint + OAuth token relay ──
   'mint.request': { planes: ['app-http'], sensitivity: 'content', note: 'scopes + approver; yields a secret' },
   'mint.issued': { planes: ['app-http'], sensitivity: 'content', note: 'carries a pcapp_ secret' },

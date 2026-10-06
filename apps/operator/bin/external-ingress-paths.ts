@@ -34,29 +34,10 @@ const OAUTH_VERBS = ['protected-resource', 'authorization-server', 'register', '
 export const DEVICE_GRANT_PATHS = ['/api/connected-apps/device/code', '/api/connected-apps/device/token'] as const;
 
 // EI-24788399827381729: the maintained tunnel must also carry the native client.
-// Pair redeems a desktop-minted one-use secret; every other listed device route
-// requires a device JWT. Never allow /api/device/*: desktop mint/list/revoke and
-// the public QR renderer must remain inaccessible from the external listener.
-export const PHONE_DEVICE_PATHS = [
-  '/api/device/pair', '/api/device/workspace/switch', '/api/device/devices',
-  '/api/device/runtime-config', '/api/device/workspaces', '/api/device/heartbeat',
-  '/api/device/rest-query', '/api/device/attention', '/api/device/monitoring',
-  '/api/device/harnesses', '/api/device/running', '/api/device/push/register',
-  '/api/device/notifications/recent', '/api/device/actions/recent',
-  '/api/device/operator/pause', '/api/device/operator/cards',
-  '/api/device/operator/standing-candidates', '/api/device/operator/standing-candidates/decide',
-  '/api/device/operator/conversation', '/api/device/operator/conversation/turns', '/api/device/operator/converse',
-  '/api/device/plans', '/api/device/voice-lease', '/api/device/voice-lease/claim',
-  '/api/device/voice-lease/heartbeat', '/api/device/voice-session-init',
-  '/api/device/voice/turn', '/api/device/voice/warmup',
-] as const;
-
-const PHONE_DEVICE_PATH_SHAPES = [
-  /^\/api\/device\/devices\/[A-Za-z0-9_-]+$/,
-  /^\/api\/device\/harnesses\/[A-Za-z0-9._-]+(?:\/(?:replan|smoke-test|cleanup|log\/stream))?$/,
-  /^\/api\/device\/plans\/[A-Za-z0-9._-]+(?:\/items\/P-\d{3,}\/status)?$/,
-  /^\/api\/device\/voice-tool\/[A-Za-z0-9._-]+$/,
-];
+// The phone route list is shared with the portal's device-http relay plane
+// (android-public-release-2026-10-01 D-013 #2), so it lives in operator-core.
+import { PHONE_DEVICE_PATHS, isPhoneDevicePath } from '@papercusp/operator-core/lib/device-ingress-paths';
+export { PHONE_DEVICE_PATHS };
 
 export const EXTERNAL_INGRESS_SERVED_PATHS: ReadonlySet<string> = new Set([
   ...Object.keys(MCP_OAUTH_WELL_KNOWN),
@@ -76,7 +57,7 @@ export const EXTERNAL_INGRESS_SERVED_PATHS: ReadonlySet<string> = new Set([
 export function isServedOnExternalIngress(pathname: string): boolean {
   const normalized = pathname.length > 1 ? pathname.replace(/\/+$/, '') : pathname;
   return EXTERNAL_INGRESS_SERVED_PATHS.has(normalized) || isWebhookPath(normalized) ||
-    PHONE_DEVICE_PATH_SHAPES.some((pattern) => pattern.test(normalized));
+    isPhoneDevicePath(normalized);
 }
 
 /** The refusal for any other path: a plain 404, so the listener does not advertise what exists. */

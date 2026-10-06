@@ -9,6 +9,7 @@ import {
 async function pair(overrides: {
   clientExpected?: Buffer;
   hostExpected?: Buffer;
+  hostVerify?: (remotePublicKey: Buffer) => Promise<boolean>;
   clientPacket?: (packet: ByocSealedPacket) => ByocSealedPacket;
 } = {}) {
   const clientKey = SecretStream.keyPair(Buffer.alloc(32, 11));
@@ -34,7 +35,9 @@ async function pair(overrides: {
   host = new ByocSealedChannel({
     initiator: false,
     localKeyPair: hostKey,
-    expectedRemotePublicKey: overrides.hostExpected ?? clientKey.publicKey,
+    ...(overrides.hostVerify
+      ? { verifyRemotePublicKey: overrides.hostVerify }
+      : { expectedRemotePublicKey: overrides.hostExpected ?? clientKey.publicKey }),
     sendPacket(packet) {
       hostPackets.push(packet);
       queueMicrotask(() => client.receive(packet));
@@ -68,6 +71,36 @@ describe('BYOC sealed relay channel', () => {
     expect(p.hostFrames).toEqual([]);
     p.client.close();
     p.host.close();
+  });
+
+  it('responder verifier mode accepts any peer key it resolves (one key per paired phone)', async () => {
+    const seen: string[] = [];
+    const p = await pair({
+      hostVerify: async (key) => { seen.push(key.toString('base64')); return true; },
+    });
+    await Promise.all([p.client.opened, p.host.opened]);
+    expect(seen).toEqual([p.clientKey.publicKey.toString('base64')]);
+    await p.client.send({ type: 'http.request', id: 'r1' });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(p.hostFrames).toEqual([{ type: 'http.request', id: 'r1' }]);
+    p.client.close();
+    p.host.close();
+  });
+
+  it('responder verifier mode refuses a peer key it does not resolve, before any frame', async () => {
+    const p = await pair({ hostVerify: async () => false });
+    await expect(p.host.opened).rejects.toThrow(/remote key mismatch/);
+    expect(p.hostFrames).toEqual([]);
+    p.client.close();
+    p.host.close();
+  });
+
+  it('refuses ambiguous key configuration and an initiator-side verifier', () => {
+    const k = SecretStream.keyPair(Buffer.alloc(32, 44));
+    const base = { localKeyPair: k, sendPacket: () => {}, onFrame: () => {} };
+    expect(() => new ByocSealedChannel({ ...base, initiator: false })).toThrow(/exactly one/);
+    expect(() => new ByocSealedChannel({ ...base, initiator: false, expectedRemotePublicKey: k.publicKey, verifyRemotePublicKey: async () => true })).toThrow(/exactly one/);
+    expect(() => new ByocSealedChannel({ ...base, initiator: true, verifyRemotePublicKey: async () => true })).toThrow(/responder-only/);
   });
 
   it('detects relay relabelling instead of delivering ciphertext under another allowed type', async () => {

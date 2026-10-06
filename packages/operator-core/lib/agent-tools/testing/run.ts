@@ -864,6 +864,21 @@ export async function registeredHarnessSlugForRoot(
 }
 
 /**
+ * The harness a detached recovery run is scoped to (WI-10006949). An operator/superuser call
+ * carries the '*' harness sentinel, and with no concrete harness the detached request had no
+ * scope, so a recovered report's rows were never ingested into test_runs. An explicit harness
+ * wins; otherwise resolve the one that registers `root`; otherwise keep what the caller sent.
+ */
+export async function resolveDetachedHarnessSlug(
+  input: { harnessSlug?: string; workspaceId?: string; root: string; detachedEnabled: boolean },
+  lookup: (root: string, workspaceId: string) => Promise<string | undefined> = registeredHarnessSlugForRoot,
+): Promise<string | undefined> {
+  if (input.harnessSlug && input.harnessSlug !== '*') return input.harnessSlug;
+  if (!input.detachedEnabled || !input.workspaceId || input.workspaceId === '*') return input.harnessSlug;
+  return (await lookup(input.root, input.workspaceId).catch(() => undefined)) ?? input.harnessSlug;
+}
+
+/**
  * Accept the two path vocabularies exposed by the release pipeline:
  * repo-root-relative paths (the router's native contract) and paths relative to exactly one
  * declared npm workspace (the gate's `{ workspace, file }` contract). A workspace-relative
@@ -3325,15 +3340,22 @@ export async function runTestFilesCore(opts: {
       // checkouts have no scripts/test-files.mjs route, so they retain the
       // existing explicit recovery hint until that route can be represented as
       // one store run.
+      const detachedEnabled = hasRouter && opts.allowDetachedRecovery !== false;
+      const detachedHarnessSlug = await resolveDetachedHarnessSlug({
+        root,
+        detachedEnabled,
+        ...(opts.harnessSlug !== undefined ? { harnessSlug: opts.harnessSlug } : {}),
+        ...(opts.workspaceId !== undefined ? { workspaceId: opts.workspaceId } : {}),
+      });
       const detachedStart =
-        hasRouter && opts.allowDetachedRecovery !== false
+        detachedEnabled
           ? await startRunDurable(
               buildDetachedTestRunRequest({
                 root,
                 files: pathResolution.files,
                 ...(opts.testNamePattern !== undefined ? { testNamePattern: opts.testNamePattern } : {}),
                 ...(opts.workspaceId !== undefined ? { workspaceId: opts.workspaceId } : {}),
-                ...(opts.harnessSlug !== undefined ? { harnessSlug: opts.harnessSlug } : {}),
+                ...(detachedHarnessSlug !== undefined ? { harnessSlug: detachedHarnessSlug } : {}),
                 ...(opts.workItemId !== undefined ? { workItemId: opts.workItemId } : {}),
                 timeoutMs: recoveryTimeoutMs,
               }),

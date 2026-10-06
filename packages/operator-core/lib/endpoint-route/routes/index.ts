@@ -347,6 +347,7 @@ import desktopSetupWizardState from './desktop/setup-wizard-state';
 import desktopTelemetryConfig from './desktop/telemetry-config';
 import desktopTelemetryFlush from './desktop/telemetry-flush';
 import desktopTelemetryReport from './desktop/telemetry-report';
+import desktopReportProblem from './desktop/report-problem';
 import desktopVoiceConfig from './desktop/voice-config';
 import desktopWorkspaceValidate from './desktop/workspace-validate';
 import desktopInstallPapercuspFiles from './desktop/install-papercusp-files';
@@ -868,6 +869,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(desktopTelemetryConfig as AnyRoute),
   ...flatten(desktopTelemetryFlush as AnyRoute),
   ...flatten(desktopTelemetryReport as AnyRoute[]),
+  ...flatten(desktopReportProblem as AnyRoute),
   ...flatten(desktopVoiceConfig as AnyRoute[]),
   ...flatten(desktopWorkspaceValidate as AnyRoute),
   ...flatten(desktopInstallPapercuspFiles as AnyRoute[]),

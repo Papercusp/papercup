@@ -723,6 +723,8 @@ export function createHostedBrowserRoutes(configuration: HostedBrowserRouteConfi
         label: fields.label as string,
         hosting: fields.hosting as never,
         ...(fields.provider !== undefined ? { provider: fields.provider as never } : {}),
+        // WI-10006498: the workspace's agent count sizes its VM; first-workspace validates it.
+        ...(fields.expectedAgents !== undefined ? { expectedAgents: fields.expectedAgents as number } : {}),
         configuration: fields.configuration as never,
       });
       if (!result.ok) {

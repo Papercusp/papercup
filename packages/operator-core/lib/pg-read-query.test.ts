@@ -1225,6 +1225,45 @@ describe('buildTenantScopeAdvisory — test_runs CI-row null trap (EI-1932463348
     expect(calls).toHaveLength(0);
   });
 
+  it('allows an exact primary-key equality without tenant predicates, including NULL-tenant rows', async () => {
+    const { sql, calls } = stubClient([]);
+    const advisory = await buildTenantScopeAdvisory(
+      'SELECT id, file_path, status FROM harness_shared.test_runs WHERE id = 20852828',
+      { client: sql },
+    );
+    expect(advisory).toBeNull();
+    expect(calls).toHaveLength(0);
+  });
+
+  it('allows a finite literal primary-key IN-list without tenant predicates', async () => {
+    const { sql, calls } = stubClient([]);
+    const advisory = await buildTenantScopeAdvisory(
+      'SELECT id, file_path, status FROM harness_shared.test_runs ' + 'WHERE id IN (20852828, 20852471)',
+      { client: sql },
+    );
+    expect(advisory).toBeNull();
+    expect(calls).toHaveLength(0);
+  });
+
+  it('keeps the CI-null warning when an exact id is only one branch of a broader OR', async () => {
+    const { sql } = stubClient([]);
+    const advisory = await buildTenantScopeAdvisory(
+      "SELECT * FROM harness_shared.test_runs WHERE id IN (20852828, 20852471) OR status = 'fail'",
+      { client: sql },
+    );
+    expect(advisory).toContain('NULL-by-design');
+  });
+
+  it('does not borrow an id predicate from a nested query block', async () => {
+    const { sql } = stubClient([]);
+    const advisory = await buildTenantScopeAdvisory(
+      'WITH ids AS (SELECT 20852828 AS id) ' +
+        'SELECT * FROM harness_shared.test_runs WHERE EXISTS (SELECT 1 FROM ids WHERE id = 20852828)',
+      { client: sql },
+    );
+    expect(advisory).toContain('NULL-by-design');
+  });
+
   // EI-22773920937987602: local acceptance evidence is also recovered by an
   // exact file path, newest-first, with a one-row result cap. The explicit
   // tenant fence identifies the local reporter population; the cap keeps this

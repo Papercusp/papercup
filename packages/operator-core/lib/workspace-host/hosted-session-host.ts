@@ -40,7 +40,7 @@ import {
   type HostedDesktopGrant,
 } from '../desktop/hosted-desktop-channel';
 import { OperatorHttpChannel, type OperatorHttpFetch } from './hosted-operator-http';
-import { AppKeyMintChannel, createAppHttpChannel } from './hosted-app-relay';
+import { AppKeyMintChannel, createAppHttpChannel, createDeviceHttpChannel, type DeviceChannelBinding } from './hosted-app-relay';
 import { hostedPsuPtySpawnSpec, parseHostedPsuCustomerArgv } from './hosted-psu-session';
 import { ByocSealedChannel, isByocSealedPacket } from './byoc-sealed-channel';
 
@@ -113,14 +113,14 @@ export type HostedHostChannelKind = 'pty' | 'psu' | 'desktop' | 'operator-http';
 export type HostedHostTerminalProgram = 'shell' | 'psu';
 
 /** Every kind a `relay.open` can ask for, including the two app planes (P-007, P-325). */
-export type HostedHostOpenKind = HostedHostChannelKind | 'app-http' | 'app-key-mint';
+export type HostedHostOpenKind = HostedHostChannelKind | 'app-http' | 'app-key-mint' | 'device-http';
 
 /**
  * The channels a relay-linked local install serves (EAA P-008, D-031 #7): outside apps only.
  * pty, desktop and operator-http would hand the portal a terminal, the screen, or
  * loopback-trusted access to a home computer, so they are refused.
  */
-export const LOCAL_RELAY_CHANNEL_KINDS: ReadonlySet<HostedHostOpenKind> = new Set(['app-http', 'app-key-mint']);
+export const LOCAL_RELAY_CHANNEL_KINDS: ReadonlySet<HostedHostOpenKind> = new Set(['app-http', 'app-key-mint', 'device-http']);
 
 export interface HostedHostRelayOpen {
   type: 'relay.open';
@@ -370,7 +370,14 @@ export interface HostedWorkspaceHostOptions {
   /** Independently provisioned endpoint keys. The relay never receives either secret. */
   byocSealedChannel?: {
     localKeyPair: { publicKey: Buffer; secretKey: Buffer };
-    expectedRemotePublicKey: Buffer;
+    /** A single provisioned peer key, pinned for every sealed non-device channel. */
+    expectedRemotePublicKey?: Buffer;
+    /**
+     * D-013 #6: resolves a phone's static Noise key (canonical base64) to its live paired
+     * device id, or null for an unregistered key. Required for a sealed `device-http`
+     * channel; without it that channel is refused `sealed_channel_unavailable`.
+     */
+    resolveDeviceNoiseKey?: (noisePublicKeyBase64: string) => Promise<string | null>;
   };
 }
 
@@ -495,7 +502,7 @@ type Channel =
        * with the app plane's route and header policy and no ticket user — the app's
        * own key is the credential, checked by this operator's bearer chain.
        */
-      plane?: 'app';
+      plane?: 'app' | 'device';
     }
   /**
    * One key mint for a grant the portal's consent page approved (P-325, D-021). Carries only
@@ -1029,6 +1036,32 @@ export class HostedWorkspaceHostSessionAdapter {
       }
       return;
     }
+    if (message.kind === 'device-http') {
+      // android-public-release D-013 #2: a phone's device-API call relayed by the portal. The
+      // forwarded device JWT (shape-checked) is the credential; the operator verifies it, and
+      // the ingress marker keeps the operator from granting the call loopback trust.
+      const deviceChannelId = string(message.channelId, 256);
+      if (!deviceChannelId || message.audience !== 'device') return;
+      if (this.channels.has(deviceChannelId)) {
+        this.options.send({ type: 'relay.close', channelId: deviceChannelId, reason: 'channel_already_open' });
+        return;
+      }
+      // A sealed channel binds the phone's handshake key to a device; its JWT must name it.
+      const boundDevice: DeviceChannelBinding | undefined = message.sealed === true ? { deviceId: null } : undefined;
+      if (boundDevice && !this.openSealedChannel(deviceChannelId, boundDevice)) return;
+      const identity = { userId: 'device-relay', hostedSessionId: deviceChannelId };
+      const http = createDeviceHttpChannel({
+        ...(boundDevice ? { boundDevice } : {}),
+        send: (payload) => this.send(deviceChannelId, payload),
+        audit: (action, detail) => this.audit(action.replace(/^operator_http_/, 'device_http_'), identity, deviceChannelId, detail),
+        ...(this.options.operatorHttp?.origin ? { origin: this.options.operatorHttp.origin } : {}),
+        ...(this.options.operatorHttp?.fetch ? { fetch: this.options.operatorHttp.fetch } : {}),
+      });
+      this.channels.set(deviceChannelId, { kind: 'operator-http', ...identity, http, plane: 'device' });
+      this.send(deviceChannelId, { type: 'http.ready' });
+      this.audit('device_http_attached', identity, deviceChannelId);
+      return;
+    }
     if (message.kind === 'app-key-mint') {
       // P-325 (D-021): the portal's MCP OAuth token endpoint asks this machine to mint the key
       // for a grant its consent page approved. The machine mints and keeps checking the key.
@@ -1324,16 +1357,42 @@ export class HostedWorkspaceHostSessionAdapter {
     await this.acceptPayload(channelId, payload);
   }
 
-  private openSealedChannel(channelId: string): boolean {
+  /**
+   * Opens the responder end of a sealed channel. With `deviceBinding` (a `device-http`
+   * channel) the phone's handshake key is resolved to its paired device and recorded in the
+   * binding; an unregistered key is admitted unbound (it can still redeem a pair, never use a
+   * JWT), and a resolver failure refuses the handshake. Every other channel pins the single
+   * provisioned key.
+   */
+  private openSealedChannel(channelId: string, deviceBinding?: DeviceChannelBinding): boolean {
     const keys = this.options.byocSealedChannel;
-    if (!keys) {
+    const resolve = keys?.resolveDeviceNoiseKey;
+    const remoteKeyPolicy = !keys
+      ? null
+      : deviceBinding
+        ? resolve
+          ? {
+            verifyRemotePublicKey: async (remotePublicKey: Buffer) => {
+              try {
+                deviceBinding.deviceId = await resolve(remotePublicKey.toString('base64'));
+                return true;
+              } catch {
+                return false;
+              }
+            },
+          }
+          : null
+        : keys.expectedRemotePublicKey
+          ? { expectedRemotePublicKey: keys.expectedRemotePublicKey }
+          : null;
+    if (!keys || !remoteKeyPolicy) {
       this.options.send({ type: 'relay.close', channelId, reason: 'sealed_channel_unavailable' });
       return false;
     }
     const channel = new ByocSealedChannel({
       initiator: false,
       localKeyPair: keys.localKeyPair,
-      expectedRemotePublicKey: keys.expectedRemotePublicKey,
+      ...remoteKeyPolicy,
       sendPacket: (packet) => this.options.send({ type: 'relay', channelId, payload: packet }),
       onFrame: (frame) => { void this.acceptPayload(channelId, frame); },
       onError: () => this.detach(channelId, 'sealed_channel_failed'),
