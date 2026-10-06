@@ -43,6 +43,9 @@ pub struct PendingSuTurn {
     /// /model for this turn. The engine applies it before running the turn;
     /// `None` keeps the model the session already runs on.
     pub model: Option<String>,
+    /// D-026: the approvals mode picked with /approvals or Shift+Tab for this
+    /// turn. `None` keeps the mode the session already runs in.
+    pub approvals: Option<String>,
 }
 
 /// `model[:effort]` with any effort suffix removed, the Rust twin of the
@@ -2257,6 +2260,9 @@ pub struct App {
     /// for a live bound session. It rides on the next owner turn (taken into
     /// `PendingSuTurn.model` at dispatch) and the footer names it until then.
     pub su_next_model: Option<String>,
+    /// D-026: an approvals mode picked with /approvals or Shift+Tab. It rides
+    /// on the next owner turn (taken into `PendingSuTurn.approvals`).
+    pub su_next_approvals: Option<String>,
     /// Fleet/seat context inherited from the PUI process launch. A remote PUI
     /// uses these on every fresh SU session so bootstrap-su consumes the same
     /// delegated seat a remote psu launch would.
@@ -2957,6 +2963,7 @@ impl App {
             chat_account: None,
             chat_mode: None,
             su_next_model: None,
+            su_next_approvals: None,
             su_launch_fleet: None,
             su_launch_seat: None,
             account_rows: Vec::new(),
@@ -4934,6 +4941,7 @@ impl App {
                 self.chat_toast("info", line);
                 Action::Render
             }
+            SlashKind::Approvals => self.open_approvals_picker(),
             // pui-chat-first-ux P-027 (G-4): a new conversation, as in Claude
             // Code and Codex. The running engine is ended the way /exit ends
             // it, so the old conversation stays resumable from /resume; the
@@ -5382,6 +5390,7 @@ impl App {
                 // P-026: the /model pick rides on this turn. A refusal keeps it
                 // on the pending turn, so a retry asks for the same model.
                 model: self.su_next_model.take(),
+                approvals: self.su_next_approvals.take(),
             });
             if clear_composer {
                 self.chat_clear_input();
@@ -6827,6 +6836,13 @@ impl App {
                 return Action::Render;
             }
             Ok((id, label)) => {
+                // D-026: an approvals pick belongs to the running conversation
+                // and rides on its next owner turn, never on a launch setup.
+                if axis == crate::session_config::PickerAxis::Approvals {
+                    self.session_picker = None;
+                    self.choose_approvals(&id);
+                    return Action::Render;
+                }
                 // pui-chat-first-ux P-026 / D-025: a live bound session switches
                 // model and effort from its next turn (the owner turn carries
                 // the spec), so these picks stay on this conversation rather
@@ -6900,7 +6916,8 @@ impl App {
                             setup.account = session_config::chat_account_pick(&id)
                         }
                         PickerAxis::Mode => setup.mode = session_config::mode_pick(&id),
-                        PickerAxis::Conversation => return Action::Render,
+                        // Handled above: approvals never touch a launch setup.
+                        PickerAxis::Conversation | PickerAxis::Approvals => return Action::Render,
                     }
                     setup.note = Some(if applies_to_new_session {
                         format!("Applies to a new session: {label}. Review launches it; Esc keeps the current one.")
@@ -6911,6 +6928,8 @@ impl App {
                     return Action::Render;
                 }
                 match axis {
+                    // Handled at the top of the Ok arm (D-026).
+                    crate::session_config::PickerAxis::Approvals => {}
                     crate::session_config::PickerAxis::Conversation => {
                         if let Some(chat_id) = id.strip_prefix("chat:") {
                             let role = self
@@ -7152,6 +7171,85 @@ impl App {
     }
 
     /// The engine this conversation runs on, in product words ("Claude").
+    /// D-026: the approvals mode the engine reports now, if it has one.
+    fn current_approvals(&self) -> Option<String> {
+        self.su_session
+            .as_ref()
+            .and_then(|s| s.descriptor.as_ref())
+            .and_then(|d| d.approvals.clone())
+    }
+
+    /// D-026: OMP has no approval-mode RPC, so /approvals and Shift+Tab say so
+    /// instead of storing a pick its engine would refuse.
+    fn approvals_unavailable(&mut self) -> bool {
+        if self.chat_engine_label() != "OMP" {
+            return false;
+        }
+        self.chat_toast("warn", "/approvals is not available for OMP; it always asks.".into());
+        true
+    }
+
+    /// pui-chat-first-ux P-027 (G-6) / D-026: /approvals opens a three-row
+    /// picker with the current mode marked, as Codex's /approvals does.
+    pub(crate) fn open_approvals_picker(&mut self) -> Action {
+        if self.approvals_unavailable() {
+            return Action::Render;
+        }
+        let current = self.current_approvals();
+        let pending = self.su_next_approvals.clone();
+        let mut picker = crate::session_config::SessionPicker::new(
+            crate::session_config::PickerAxis::Approvals,
+            crate::session_config::approvals_options(current.as_deref(), pending.as_deref()),
+        );
+        let marked = pending.or(current);
+        if let Some(index) = crate::session_config::APPROVALS_MODES
+            .iter()
+            .position(|(mode, _)| Some(*mode) == marked.as_deref())
+        {
+            picker.sel = index;
+        }
+        self.session_picker = Some(picker);
+        Action::Render
+    }
+
+    /// D-026: Shift+Tab steps to the next approvals mode, as in Claude Code.
+    pub(crate) fn cycle_approvals(&mut self) -> Action {
+        if self.approvals_unavailable() {
+            return Action::Render;
+        }
+        let modes = crate::session_config::APPROVALS_MODES;
+        let base = self
+            .su_next_approvals
+            .clone()
+            .or_else(|| self.current_approvals())
+            .unwrap_or_else(|| "ask".into());
+        let index = modes
+            .iter()
+            .position(|(mode, _)| *mode == base)
+            .map_or(0, |i| (i + 1) % modes.len());
+        self.choose_approvals(modes[index].0);
+        Action::Render
+    }
+
+    /// Store `next` as the mode the next owner turn carries (D-026), or clear
+    /// the pending pick when `next` is already the running mode.
+    fn choose_approvals(&mut self, next: &str) {
+        let Some((next, about)) = crate::session_config::APPROVALS_MODES
+            .iter()
+            .copied()
+            .find(|(mode, _)| *mode == next)
+        else {
+            return;
+        };
+        let current = self.current_approvals();
+        self.su_next_approvals = (current.as_deref() != Some(next)).then(|| next.to_string());
+        let when = if self.su_next_approvals.is_some() { "from your next message" } else { "already on" };
+        self.chat_toast(
+            "info",
+            format!("Approvals: {next} ({about}), {when}. Shift+Tab for the next mode."),
+        );
+    }
+
     fn chat_engine_label(&self) -> &'static str {
         self.su_session
             .as_ref()
@@ -7198,11 +7296,19 @@ impl App {
             None if self.agent_chat_id.is_some() => "not running",
             None => "new",
         };
+        // D-026: name the approvals mode when the engine has one.
+        let approvals = match (self.current_approvals(), self.su_next_approvals.as_deref()) {
+            (Some(now), Some(next)) => format!(" · approvals {now} · next turn: {next}"),
+            (None, Some(next)) => format!(" · approvals next turn: {next}"),
+            (Some(now), None) => format!(" · approvals {now}"),
+            (None, None) => String::new(),
+        };
         format!(
-            "Model {} · account {} · engine {} · conversation {}",
+            "Model {} · account {} · engine {}{} · conversation {}",
             self.chat_model_label(),
             account,
             backend.label(),
+            approvals,
             state
         )
     }
@@ -14065,6 +14171,9 @@ impl App {
                 {
                     self.chat_first_esc()
                 }
+                // D-026 (P-027 G-6): Shift+Tab steps the approvals mode, as in
+                // Claude Code.
+                KeyCode::BackTab if self.chat_first => self.cycle_approvals(),
                 KeyCode::Esc => {
                     self.chat_composing = false;
                     Action::Render
@@ -16359,6 +16468,7 @@ mod tests {
             uncertain: false,
             error: None,
             model: None,
+            approvals: None,
         });
         app.chat_streaming = true;
         let mut ready = su_event_base("lifecycle", 1);
@@ -18783,6 +18893,103 @@ mod tests {
         assert_eq!(a.su_next_model, None);
     }
 
+    /// A live Claude session whose engine reports approvals mode `mode`.
+    fn chat_first_app_with_approvals(mode: &str) -> App {
+        let mut a = chat_first_app_on_live_session("haiku");
+        a.su_session.as_mut().unwrap().descriptor.as_mut().unwrap().approvals = Some(mode.into());
+        a
+    }
+
+    fn toast_text(a: &App) -> String {
+        a.toast.as_ref().map(|t| t.message.clone()).unwrap_or_default()
+    }
+
+    /// pui-chat-first-ux P-027 (G-6) / D-026: `/approvals` opens a three-row
+    /// picker with the running mode marked; the pick rides on the next owner
+    /// turn, and dispatch hands it to that turn and clears it.
+    #[test]
+    fn approvals_picker_marks_the_current_mode_and_the_pick_rides_on_the_next_turn() {
+        use crate::session_config::PickerAxis;
+        let mut a = chat_first_app_with_approvals("ask");
+
+        a.chat_input = "/approvals".into();
+        a.chat_cursor = a.chat_input.len();
+        assert!(matches!(a.on_key(KeyCode::Enter, KeyModifiers::NONE), Action::Render));
+        assert!(a.su_pending_turn.is_none(), "opening the picker sends nothing");
+        let picker = a.session_picker.as_ref().expect("the approvals picker is open");
+        assert_eq!(picker.axis, PickerAxis::Approvals);
+        let labels: Vec<&str> = picker.options.iter().map(|o| o.label.as_str()).collect();
+        assert_eq!(labels, ["ask (current)", "auto-edit", "read-only"]);
+        assert!(picker.options.iter().all(|o| o.hint.is_some()), "every row has a one-line description");
+        assert_eq!(picker.sel, 0, "the cursor starts on the running mode");
+
+        pick(&mut a, PickerAxis::Approvals, "read-only");
+        assert!(a.session_picker.is_none());
+        assert!(a.session_setup.is_none(), "an approvals pick never opens the new-session form");
+        assert_eq!(a.su_next_approvals.as_deref(), Some("read-only"));
+        assert!(toast_text(&a).contains("read-only"), "{}", toast_text(&a));
+        assert!(toast_text(&a).contains("from your next message"), "{}", toast_text(&a));
+        let status = a.chat_status_report();
+        assert!(status.contains(" · approvals ask · next turn: read-only"), "{status}");
+
+        // Reopened, the pending pick is marked and selected.
+        a.open_approvals_picker();
+        let picker = a.session_picker.as_ref().unwrap();
+        assert_eq!(picker.options[2].label, "read-only (next message)");
+        assert_eq!(picker.sel, 2);
+        // Choosing the running mode discards the pending pick.
+        pick(&mut a, PickerAxis::Approvals, "ask");
+        assert_eq!(a.su_next_approvals, None);
+        assert!(toast_text(&a).contains("already on"), "{}", toast_text(&a));
+
+        // Dispatch moves the pick onto the owner turn and clears it.
+        a.open_approvals_picker();
+        pick(&mut a, PickerAxis::Approvals, "auto-edit");
+        a.chat_input = "hi".into();
+        a.chat_cursor = a.chat_input.len();
+        a.on_key(KeyCode::Enter, KeyModifiers::NONE);
+        let pending = a.su_pending_turn.as_ref().expect("the turn is pending");
+        assert_eq!(pending.approvals.as_deref(), Some("auto-edit"));
+        assert_eq!(a.su_next_approvals, None);
+        assert!(pending.model.is_none(), "an approvals pick does not switch the model");
+    }
+
+    /// D-026: Shift+Tab in the composer steps ask -> auto-edit -> read-only ->
+    /// ask, starting from the mode the engine reports, as in Claude Code.
+    #[test]
+    fn shift_tab_cycles_the_approvals_mode_from_the_running_one() {
+        let mut a = chat_first_app_with_approvals("auto-edit");
+        a.chat_composing = true;
+        a.on_key(KeyCode::BackTab, KeyModifiers::SHIFT);
+        assert_eq!(a.su_next_approvals.as_deref(), Some("read-only"));
+        assert!(toast_text(&a).contains("Shift+Tab for the next mode"), "{}", toast_text(&a));
+        a.on_key(KeyCode::BackTab, KeyModifiers::SHIFT);
+        assert_eq!(a.su_next_approvals.as_deref(), Some("ask"));
+        // Back round to the running mode: nothing is pending any more.
+        a.on_key(KeyCode::BackTab, KeyModifiers::SHIFT);
+        assert_eq!(a.su_next_approvals, None);
+        assert!(toast_text(&a).contains("already on"), "{}", toast_text(&a));
+        assert!(a.su_pending_turn.is_none(), "cycling never sends a message");
+        assert_eq!(a.chat_status_report().contains(" · approvals auto-edit · conversation"), true);
+    }
+
+    /// D-026: OMP has no approval-mode RPC, so /approvals and Shift+Tab say so
+    /// and store nothing its engine would refuse.
+    #[test]
+    fn approvals_is_refused_for_omp_without_storing_a_pick() {
+        let mut a = chat_first_app();
+        a.su_backend = Some(crate::su_session::SuSessionBackend::Omp);
+        a.chat_input = "/approvals".into();
+        a.chat_cursor = a.chat_input.len();
+        a.on_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(a.session_picker.is_none());
+        assert!(toast_text(&a).contains("not available for OMP"), "{}", toast_text(&a));
+        a.chat_composing = true;
+        a.on_key(KeyCode::BackTab, KeyModifiers::SHIFT);
+        assert_eq!(a.su_next_approvals, None);
+        assert!(!a.chat_status_report().contains("approvals"));
+    }
+
     /// pui-chat-first-ux P-026 / D-023: `pui --model`/`--account` set what a new
     /// conversation starts on; `/status` reports what a bound one RUNS on.
     #[test]
@@ -19839,6 +20046,7 @@ mod tests {
             uncertain: false,
             error: None,
             model: None,
+            approvals: None,
         });
         let error_at = |sequence: u64, message: &str| {
             let mut event = su_event_base("error", sequence);
@@ -24799,6 +25007,7 @@ mod tests {
             uncertain: true,
             error: Some("connection lost".into()),
             model: None,
+            approvals: None,
         });
         app.chat_streaming = false;
 
