@@ -96,7 +96,7 @@ async function newSource(config: Record<string, unknown>, status = 'connected'):
     INSERT INTO harness_shared.data_sources
       (workspace_id, kind, owner_user_id, provider_account_id, status, config, scope, destination_policy, permission_mapping)
     VALUES (${WS}, 'asana', ${owner}, ${`push-test-${Date.now()}-${Math.random()}`}, ${status},
-            ${sql.json(config)}, 'personal', ${sql.json(DESTINATIONS)}, ${sql.json({ mode: 'owner' })})
+            ${sql.json(config as Parameters<typeof sql.json>[0])}, 'personal', ${sql.json(DESTINATIONS)}, ${sql.json({ mode: 'owner' })})
     RETURNING id::text`;
   return row!.id;
 }
