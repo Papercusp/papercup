@@ -1203,14 +1203,33 @@ export async function validateGradingAuditReplayConsistency(
       replayRating && typeof replayRating.rating === 'string' ? ratingVerdict(replayRating.rating) : null;
     return replayVerdict !== gradedVerdict || wouldBlock.has(criterion) ? [criterion] : [];
   });
-  if (mismatches.length > 0) return undefined;
+  // Replaying the exact evaluator proves deterministic reproduction, not that the
+  // selected test case semantically exercises the clause. An independent auditor
+  // may find that mismatch in the same bound evidence. Let that challenge proceed
+  // only with the existing structured citation fields, and only when the cited
+  // artifact is outside the graded card's exact evidence selection. A free-form
+  // disagreement or a citation back to the same selection still fails closed.
+  const auditFinding = auditRatings?.['degenerate-distribution'];
+  const independentEvidenceRef = auditFinding?.evidenceRef?.trim();
+  const replayEvidenceRefs = new Set([
+    ...selection.evidence.map(({ evidenceRef }) => evidenceRef),
+    ...(parsedRecipe.data.args.evidenceRefs ?? []),
+    ...(parsedRecipe.data.args.bindingIds ?? []).flatMap((id) => [String(id), `binding:${id}`]),
+  ]);
+  const citesIndependentEvidence =
+    typeof auditFinding?.evidenceKind === 'string' &&
+    auditFinding.evidenceKind.trim().length > 0 &&
+    !!independentEvidenceRef &&
+    !replayEvidenceRefs.has(independentEvidenceRef);
+  if (mismatches.length > 0 || citesIndependentEvidence) return undefined;
 
   return {
     code: 'grading_audit_replay_consistent',
     error:
       `grading-integrity cannot accept degenerate-distribution='fail' alongside ` +
       `re-runnable-evidence='pass': the graded card's exact server-side evaluator replay reproduced ` +
-      `every applicable rating with no wouldBlock contradiction; no audit card was persisted`,
+      `every applicable rating, and the audit supplied no separately cited evidence outside the replay selection; ` +
+      'no audit card was persisted',
   };
 }
 
