@@ -28,6 +28,7 @@ import { wsLocalKey } from '../browser-workspace';
 import { runCommand, runQuery, list } from '../commands/registry';
 import type { CommandContext, Definition } from '../commands/types';
 import { OPERATOR_PERSONA_PROMPT } from '../operator-persona';
+import { fetchVoiceSessionPrompt } from './voice-session-prompt-client';
 import { OPERATOR_CONVERSE_PROMPT } from '../operator-converse-prompt';
 import { readOperatorModeFromSession } from '../operator-converse-tags';
 import { eligibleBeats } from '../op-backstory-bank';
@@ -36,6 +37,16 @@ import '../commands/defs';
 
 interface StartArgs {
   agentId: string;
+  /**
+   * Connecting to the two-tier front agent (plan
+   * voice-two-tier-elevenlabs-agent-2026-10-06). Its session prompt comes from
+   * the server (persona + recent turns, workspace-scoped, secrets redacted)
+   * instead of the legacy client-side persona assembly. Set by the engine
+   * wiring (P-007).
+   */
+  twoTier?: boolean;
+  /** Conversation the two-tier session belongs to; the server defaults to the active one. */
+  conversationId?: string;
   conversationToken: string;
   workspace: string;
   tabId: string;
@@ -145,7 +156,12 @@ export async function startElevenLabsConv(args: StartArgs): Promise<ElevenLabsHa
       ? window.localStorage.getItem(wsLocalKey('harnessElShellMode')) !== '0'
       : true;
   let sessionsContext = '';
-  if (!bareMode && !shellMode) {
+  if (!bareMode && args.twoTier) {
+    // Two-tier front agent (P-004): persona + recent turns of this workspace's
+    // conversation, built and secret-redacted on the server.
+    const userName = await fetchUserName().catch(() => null);
+    sessionsContext = await fetchVoiceSessionPrompt({ conversationId: args.conversationId, userName });
+  } else if (!bareMode && !shellMode) {
     const [delegatesBlock, personaName, backstoryBlock] = await Promise.all([
       fetchDelegatesBlock(args.workspace),
       fetchUserName().catch(() => null),

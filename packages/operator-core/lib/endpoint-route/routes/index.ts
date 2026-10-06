@@ -265,6 +265,7 @@ import agentMcp_operatorTts from './agent-mcp/operator-tts';
 import agentMcp_operatorTtsPreview from './agent-mcp/operator-tts-preview';
 import agentMcp_operatorTtsSpend from './agent-mcp/operator-tts-spend';
 import agentMcp_operatorVoicePrefs from './agent-mcp/operator-voice-prefs';
+import agentMcp_operatorVoiceSession from './agent-mcp/operator-voice-session';
 import agentMcp_provision from './agent-mcp/provision';
 import agentMcp_runCommandResult from './agent-mcp/run-command-result';
 import agentMcp_runCommandSse from './agent-mcp/run-command-sse';
@@ -606,6 +607,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(agentMcp_operatorTtsPreview as AnyRoute),
   ...flatten(agentMcp_operatorTtsSpend as AnyRoute[]),
   ...flatten(agentMcp_operatorVoicePrefs as AnyRoute[]),
+  ...flatten(agentMcp_operatorVoiceSession as AnyRoute[]),
   ...flatten(agentMcp_provision as AnyRoute),
   ...flatten(agentMcp_runCommandResult as AnyRoute),
   ...flatten(agentMcp_runCommandSse as AnyRoute),
