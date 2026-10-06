@@ -46,7 +46,7 @@ import { pinModuleState } from '@papercusp/module-singleton';
 import { managedSpawn, markManagedSpawnTeardown } from '../task-manager/managed-spawn.ts';
 import { killScopeUnit, killTask } from '../task-manager/control.ts';
 import { recordLspWireRequest } from './lsp-query-evidence.ts';
-import { requestSemanticCompletion, semanticCompletionPlugins, snapshotSemanticCompletionRequest,
+import { SEMANTIC_COMPLETION_COMMAND, requestSemanticCompletion, semanticCompletionPlugins, snapshotSemanticCompletionRequest,
   type SemanticCompletionContext, type SemanticCompletionPluginDeclaration } from './lsp-semantic-completion';
 import {
   initializeCapabilityObservations, lspCapabilityStore, lspServerIdentity,
@@ -2011,9 +2011,11 @@ export async function lspQuery(
   let releaseProjectLease: (() => void) | null = null;
   try {
     const semantic = query.semanticCompletion;
-    if (semantic && (language !== 'typescript' || intent !== 'references'))
+    if (semantic && (language !== 'typescript' || (intent !== 'references' && intent !== 'definition')))
       return fail('semantic completion refused: unsupported-intent');
-    const semanticRequest = semantic ? snapshotSemanticCompletionRequest({ file: query.file,
+    // Definition warmup must start the same declared plugin-bearing client that
+    // references will reuse. Only references invokes the native completion proof.
+    const semanticRequest = semantic && intent === 'references' ? snapshotSemanticCompletionRequest({ file: query.file,
       line: query.line1, offset: query.character + 1, population: semantic.population }) : undefined;
     if (semantic) semanticCompletionPlugins(semantic.plugin);
     if (query.signal?.aborted) return fail('semantic completion refused: outer-cancelled');
@@ -2026,7 +2028,7 @@ export async function lspQuery(
       await requireClientCapability(client, 'references');
       const result = await requestSemanticCompletion(semanticRequest,
         { get isCancellationRequested() { return query.signal?.aborted === true; } },
-        (command, args) => recordLspWireRequest({ method: 'workspace/executeCommand',
+        (command, args) => recordLspWireRequest({ method: 'workspace/executeCommand', command: SEMANTIC_COMPLETION_COMMAND,
           taskId: client.taskId, pid: client.child.pid ?? null }, () => client.connection.sendRequest('workspace/executeCommand', {
           command: 'typescript.tsserverRequest', arguments: [command, args, { executionTarget: 0 }],
         })));
