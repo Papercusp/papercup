@@ -2231,6 +2231,10 @@ pub struct App {
     /// box last armed the exit. A second Ctrl+C inside
     /// `CHAT_CTRL_C_EXIT_WINDOW` quits; any other key disarms it.
     pub chat_ctrl_c_armed: Option<std::time::Instant>,
+    /// pui-chat-first-ux P-027 (G-3): when a first Esc on a chat-first draft
+    /// armed the clear. A second Esc inside `CHAT_CTRL_C_EXIT_WINDOW` clears
+    /// the draft (Claude Code's double Esc); any other key disarms it.
+    pub chat_esc_armed: Option<std::time::Instant>,
     /// The operator's project list has answered at least once. Until then an
     /// unknown default project means "not loaded yet", not "no such project".
     pub harnesses_loaded: bool,
@@ -2937,6 +2941,7 @@ impl App {
             chat_first_autostart: false,
             chat_first_autostart_since: None,
             chat_ctrl_c_armed: None,
+            chat_esc_armed: None,
             harnesses_loaded: false,
             session_setup_accepted: false,
             chat_model: None,
@@ -4836,6 +4841,32 @@ impl App {
         }
         self.chat_ctrl_c_armed = Some(std::time::Instant::now());
         Action::Render
+    }
+
+    /// pui-chat-first-ux P-027 (G-3): Esc in the chat-first box with nothing
+    /// running. An empty box ignores it. A draft needs a second Esc inside the
+    /// window to clear (Claude Code's double Esc), so one stray Esc never
+    /// loses typing; the cleared draft stays in ↑ history.
+    fn chat_first_esc(&mut self) -> Action {
+        if self.chat_input.is_empty() {
+            self.chat_esc_armed = None;
+            return Action::Render;
+        }
+        if self.chat_esc_clear_armed() {
+            let draft = self.chat_input.clone();
+            self.chat_history_push(&draft);
+            self.chat_clear_input();
+            self.chat_esc_armed = None;
+            return Action::Render;
+        }
+        self.chat_esc_armed = Some(std::time::Instant::now());
+        Action::Render
+    }
+
+    /// A first Esc on a draft has armed the clear and its window is open.
+    pub(crate) fn chat_esc_clear_armed(&self) -> bool {
+        self.chat_esc_armed
+            .is_some_and(|armed| armed.elapsed() < CHAT_CTRL_C_EXIT_WINDOW)
     }
 
     /// A Ctrl+C has armed the exit and its window is still open.
@@ -8762,6 +8793,10 @@ impl App {
         // next Ctrl+C no longer performs (it only arms again).
         if self.chat_ctrl_c_armed.is_some() && !self.chat_ctrl_c_exit_armed() {
             self.chat_ctrl_c_armed = None;
+            idle = Action::Render;
+        }
+        if self.chat_esc_armed.is_some() && !self.chat_esc_clear_armed() {
+            self.chat_esc_armed = None;
             idle = Action::Render;
         }
         let Some(refresh) = self.session_browser.launch_refresh.as_mut() else {
@@ -13766,7 +13801,11 @@ impl App {
             }
             // Any other key in the box disarms a pending Ctrl+C exit, so a
             // Ctrl+C typed after real work starts the two-press count again.
+            // The same holds for a pending Esc clear and any key but Esc.
             self.chat_ctrl_c_armed = None;
+            if code != KeyCode::Esc {
+                self.chat_esc_armed = None;
+            }
             // A toast names Esc as its dismiss key and pui toasts never expire,
             // so every Esc in the message box also clears it, on top of whatever
             // that Esc does below (WI-10004807: the warning for an unknown
@@ -13885,6 +13924,18 @@ impl App {
                 // the resuming engine and left the owner stuck in the box).
                 KeyCode::Esc if self.chat_streaming && !self.su_nothing_to_interrupt() => {
                     self.interrupt_chat_turn()
+                }
+                // pui-chat-first-ux P-027 (G-3): in chat-first the message box
+                // is the whole app, so with nothing running Esc stays in it, as
+                // in Claude Code and Codex. A read-only conversation still
+                // leaves the box: its title routes the owner "Esc, then
+                // s:Sessions" to start a new one.
+                KeyCode::Esc
+                    if self.chat_first
+                        && self.su_dispatch_decision().target
+                            != crate::su_session::SuDispatchTarget::ReadOnly =>
+                {
+                    self.chat_first_esc()
                 }
                 KeyCode::Esc => {
                     self.chat_composing = false;
@@ -18124,7 +18175,7 @@ mod tests {
         assert!(!a.chat_shortcuts_open);
         assert!(a.chat_composing, "the first Esc only closes the list");
         a.update(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
-        assert!(!a.chat_composing);
+        assert!(a.chat_composing, "P-027 (G-3): Esc never leaves the chat-first box");
     }
 
     /// P-018: Up/Down are message history while typing, so PgUp/PgDn scroll
@@ -18387,6 +18438,37 @@ mod tests {
         assert!(!a.should_quit);
         assert_eq!(a.on_key(KeyCode::Char('c'), KeyModifiers::CONTROL), Action::Quit);
         assert!(a.should_quit);
+    }
+
+    /// P-027 (G-3): with nothing running, Esc keeps the chat-first box. One
+    /// Esc on a draft only arms the clear; a second clears it into ↑ history.
+    #[test]
+    fn chat_first_esc_stays_in_the_box_and_double_esc_clears_the_draft() {
+        let mut a = chat_first_app();
+        assert_eq!(a.on_key(KeyCode::Esc, KeyModifiers::NONE), Action::Render);
+        assert!(a.chat_composing, "Esc on an empty box must not leave it");
+        for c in "keep".chars() {
+            a.on_key(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        a.on_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert!(a.chat_composing);
+        assert_eq!(a.chat_input, "keep", "one Esc never loses typing");
+        assert!(a.chat_esc_clear_armed());
+        // A typed key in between disarms the clear.
+        a.on_key(KeyCode::Char('!'), KeyModifiers::NONE);
+        assert!(!a.chat_esc_clear_armed());
+        a.on_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(a.chat_input, "keep!");
+        a.on_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert!(a.chat_input.is_empty(), "the second Esc clears the draft");
+        assert!(a.chat_composing);
+        assert_eq!(a.chat_history.last().map(String::as_str), Some("keep!"));
+        // An expired arm is not a first Esc.
+        a.on_key(KeyCode::Char('x'), KeyModifiers::NONE);
+        a.on_key(KeyCode::Esc, KeyModifiers::NONE);
+        a.chat_esc_armed = std::time::Instant::now().checked_sub(CHAT_CTRL_C_EXIT_WINDOW);
+        a.on_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(a.chat_input, "x");
     }
 
     /// P-027 (G-11): with an empty box, Ctrl+C stops a running reply (as in
@@ -18893,7 +18975,7 @@ mod tests {
     #[test]
     fn chat_first_esc_in_an_empty_message_box_dismisses_the_toast() {
         // WI-10004807: toasts have no expiry, so the message box's own Esc
-        // (the branch that leaves compose mode) must clear one too.
+        // must clear one too. Since P-027 (G-3) that Esc keeps the box.
         let mut a = chat_first_app();
         a.chat_toast("warn", "something to dismiss".into());
         assert!(a.chat_input.is_empty());
@@ -18903,8 +18985,8 @@ mod tests {
             Action::Render
         ));
         assert!(
-            !a.chat_composing,
-            "the message box's own Esc branch handled the key"
+            a.chat_composing,
+            "the message box's own Esc branch handled the key and kept the box"
         );
         assert!(a.toast.is_none(), "Esc dismissed the toast");
     }
@@ -19908,10 +19990,11 @@ mod tests {
     }
 
     /// WI-10004247: Esc on a just-reopened chat, while the engine restores
-    /// the saved conversation, leaves the message box. Nothing is running, so
-    /// no interrupt goes to the resuming engine.
+    /// the saved conversation, sends no interrupt: nothing is running. Since
+    /// P-027 (G-3) it also keeps the chat-first message box, as with any Esc
+    /// that has nothing to stop.
     #[test]
-    fn chat_first_esc_while_restoring_leaves_the_box_without_interrupting() {
+    fn chat_first_esc_while_restoring_keeps_the_box_without_interrupting() {
         // Opening: no session bound yet, the open request is in flight.
         let mut opening = chat_first_app();
         opening.agent_chat_id = Some("chat-1".into());
@@ -19920,7 +20003,7 @@ mod tests {
         opening.chat_composing = true;
         let action = opening.on_key(KeyCode::Esc, KeyModifiers::NONE);
         assert_eq!(action, Action::Render, "no interrupt while the session opens");
-        assert!(!opening.chat_composing, "Esc leaves the message box while opening");
+        assert!(opening.chat_composing, "Esc keeps the message box while opening");
 
         // Starting: the real reopened-Claude window (WI-10004247) — the
         // engine reported `starting` when Esc arrived, before `resuming`.
@@ -19939,7 +20022,7 @@ mod tests {
         starting.chat_composing = true;
         let action = starting.on_key(KeyCode::Esc, KeyModifiers::NONE);
         assert_eq!(action, Action::Render, "no interrupt while the engine starts");
-        assert!(!starting.chat_composing, "Esc leaves the message box while starting");
+        assert!(starting.chat_composing, "Esc keeps the message box while starting");
 
         let mut a = chat_first_app();
         a.agent_chat_id = Some("chat-1".into());
@@ -19953,7 +20036,7 @@ mod tests {
         a.chat_composing = true;
         let action = a.on_key(KeyCode::Esc, KeyModifiers::NONE);
         assert_eq!(action, Action::Render, "no interrupt while restoring");
-        assert!(!a.chat_composing, "Esc leaves the message box");
+        assert!(a.chat_composing, "Esc keeps the message box");
 
         // Calibration: once an owner turn is in flight, Esc stops it.
         a.chat_composing = true;
