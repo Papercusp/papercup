@@ -83,6 +83,8 @@ export const SECRET_ENV_TRANSPORT_RELEASE_GRACE_MS = 60_000;
 export interface SecretEnvironmentTransport {
   /** `/proc/<operator-pid>/fd/<fd>`; the backing file is unlinked immediately. */
   sourcePath: string;
+  /** The open descriptor, for a caller that deliberately inherits it into a scope. */
+  fd: number;
   /** Close the operator-side reference after the consumer has started. */
   release: () => void;
 }
@@ -175,6 +177,7 @@ export function createSecretEnvironmentTransport(
   releaseTimer.unref?.();
   return {
     sourcePath: `/proc/${process.pid}/fd/${fd}`,
+    fd,
     release,
   };
 }
@@ -385,6 +388,8 @@ export interface TaskScopeProperties {
   /** Environment explicitly bound to a transient SERVICE. A service is not a
    * child of the launching process, so it cannot inherit the caller's env. */
   env?: Readonly<Record<string, string | undefined>>;
+  /** Opt into passing a scope environment payload through this inherited fd slot. */
+  environmentFdIndex?: number;
   memoryMaxBytes?: number | null;
   cpuWeight?: number | null;
   tasksMax?: number | null;
@@ -536,6 +541,7 @@ export function buildExactEnvPayload(base: readonly string[], env: NodeJS.Proces
 export interface BuiltTaskArgv {
   argv: string[];
   transport: SecretEnvironmentTransport | null;
+  inheritFd?: { index: number; fd: number };
 }
 
 function buildTaskArgv(base: string[], props: TaskScopeProperties, kind: 'scope' | 'service'): BuiltTaskArgv {
@@ -552,11 +558,23 @@ function buildTaskArgv(base: string[], props: TaskScopeProperties, kind: 'scope'
   // env at the launch site (see managed-spawn.ts).
   const deadlineEnv = taskDeadlineEnv(props.runtimeMaxSec);
   const payloadEnv = props.env ? { ...props.env, ...deadlineEnv } : null;
+  const environmentFdIndex = props.environmentFdIndex;
+  if (
+    environmentFdIndex !== undefined &&
+    (kind !== 'scope' || !payloadEnv || !Number.isSafeInteger(environmentFdIndex) || environmentFdIndex < 3)
+  ) {
+    throw new TypeError('environmentFdIndex requires a scope environment payload and an integer slot >= 3');
+  }
   const payload = payloadEnv
     ? kind === 'service'
       ? buildServiceEnvPayloadWithTransport(payloadBase, payloadEnv)
       : buildExactEnvPayloadWithTransport(payloadBase, payloadEnv)
     : null;
+  const inheritFd =
+    payload && environmentFdIndex !== undefined ? { index: environmentFdIndex, fd: payload.transport.fd } : undefined;
+  const payloadArgv = inheritFd
+    ? environmentRunnerPayload(payloadBase, `/proc/self/fd/${inheritFd.index}`, 'fd-path')
+    : (payload?.argv ?? payloadBase);
   const argv = [
     'systemd-run',
     '--user',
@@ -589,8 +607,8 @@ function buildTaskArgv(base: string[], props: TaskScopeProperties, kind: 'scope'
   }
   if (payload?.credentialProperty) argv.push(payload.credentialProperty);
   appendTaskProperties(argv, props);
-  argv.push(...(payload?.argv ?? payloadBase));
-  return { argv, transport: payload?.transport ?? null };
+  argv.push(...payloadArgv);
+  return { argv, transport: payload?.transport ?? null, ...(inheritFd ? { inheritFd } : {}) };
 }
 
 export function buildTaskScopeArgvWithTransport(base: string[], props: TaskScopeProperties): BuiltTaskArgv {

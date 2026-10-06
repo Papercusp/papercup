@@ -123,6 +123,19 @@ const LEDGER_REGISTRATION_RETRY_BASE_MS = 1_000;
 const LEDGER_REGISTRATION_RETRY_MAX_MS = 30_000;
 const MAX_LEDGER_REGISTRATION_FAILURES = 8;
 
+type SpawnStdioArray = Exclude<SpawnOptions['stdio'], string | undefined>;
+
+function normalizeSpawnStdio(stdio: SpawnOptions['stdio']): SpawnStdioArray {
+  const normalized =
+    stdio === undefined || stdio === 'pipe'
+      ? ['pipe', 'pipe', 'pipe']
+      : typeof stdio === 'string'
+        ? [stdio, stdio, stdio]
+        : [...stdio];
+  while (normalized.length < 3) normalized.push('pipe');
+  return normalized as SpawnStdioArray;
+}
+
 function errorMessage(error: unknown): string {
   return redactSensitiveText(error instanceof Error ? error.message : String(error)).slice(0, 500);
 }
@@ -348,11 +361,15 @@ export async function managedSpawn(
   // payload gets the caller's exactly, via a memory-only fd transport. Unconfined spawns are
   // untouched — there is no client to protect, and node applies `env` itself.
   const payloadEnv = opts.spawnOptions?.env;
+  const environmentStdio =
+    scopeOk && payloadEnv !== undefined ? normalizeSpawnStdio(opts.spawnOptions?.stdio) : null;
+  const environmentFdIndex = environmentStdio ? Math.max(3, environmentStdio.length) : undefined;
   const builtLaunch = scopeOk
     ? buildTaskScopeArgvWithTransport([command, ...args], {
         unit: scopeUnit!,
         slice: sliceForClass(spec.class),
         env: payloadEnv,
+        environmentFdIndex,
         memoryMaxBytes: spec.memoryMaxBytes,
         // WI-41206: carry the caller's swap policy through. Omitted => 'allow' (page, don't
         // OOM-kill) — see ScopeSwapPolicy in systemd-scope.ts.
@@ -369,9 +386,16 @@ export async function managedSpawn(
   // Everything else the caller asked for (stdio, cwd, detached) still applies to
   // the client, and a `--scope` payload inherits all three from it.
   let launchSpawnOptions: SpawnOptions = opts.spawnOptions ?? {};
-  if (scopeOk && payloadEnv) {
+  if (scopeOk && payloadEnv !== undefined) {
     const { env: _payloadEnvMovedIntoArgv, ...rest } = launchSpawnOptions;
-    launchSpawnOptions = rest;
+    const inheritedFd = builtLaunch?.inheritFd;
+    if (environmentStdio && inheritedFd) {
+      environmentStdio[inheritedFd.index] = inheritedFd.fd;
+    }
+    launchSpawnOptions = {
+      ...rest,
+      ...(environmentStdio ? { stdio: environmentStdio } : {}),
+    };
   } else if (scopeOk && spec.runtimeMaxSec && spec.runtimeMaxSec > 0) {
     // WI-1639265: with no payload env there is no exact-env transport to fold the deadline
     // into, and a `--scope` payload is forked from THIS client — so the client's env is the
@@ -413,8 +437,15 @@ export async function managedSpawn(
   // long-lived scope or an abnormal client handoff).
   if (environmentTransport) {
     const releaseEnvironmentTransport = (): void => environmentTransport.release();
-    child.once('exit', releaseEnvironmentTransport);
-    child.once('error', releaseEnvironmentTransport);
+    if (builtLaunch?.inheritFd) {
+      // libuv duplicated the descriptor into the systemd-run client before spawn returned.
+      // The scope runner owns its inherited copy now, so the operator can release its copy
+      // immediately even when it exits before systemd admits the scope.
+      releaseEnvironmentTransport();
+    } else {
+      child.once('exit', releaseEnvironmentTransport);
+      child.once('error', releaseEnvironmentTransport);
+    }
   }
 
   const pid = child.pid ?? null;
