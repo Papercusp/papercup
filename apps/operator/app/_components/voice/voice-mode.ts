@@ -2759,6 +2759,11 @@ if (
     // flip it — headless verification needs this seam (WI-4838 live-verify).
     setMode: (m: VoiceMode) => setVoiceMode(m),
     getState: () => getVoiceState(),
+    // D-006 synthetic round trips (voice-final-public-release-2026-10-01):
+    // drive the real reply-playback path (speak → synth → Audio) and its
+    // barge-in stop without needing a brain reply first.
+    speak: (t: string) => speak(t, 'system:operator', 'polite', { force: true }),
+    cancel: () => cancelAllSpeech(),
   };
 }
 
