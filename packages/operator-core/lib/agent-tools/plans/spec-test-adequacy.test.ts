@@ -1015,6 +1015,14 @@ describe('spec-test-adequacy per-clause evaluator', () => {
       evidence: [evidence(), successfulTest([failedCaseTitle]), mutation],
     });
     expect(exactCase.ratings.falsifiability.rating).toBe('pass');
+
+    // WI-10006745: an earlier same-clause same-file binding with no testCases must not shadow a
+    // later one that declares the measured case (the evaluator used to inspect only the first).
+    const shadowedByOlderBinding = evaluateSpecTestAdequacy({
+      ...input,
+      evidence: [evidence(), successfulTestBinding(testPath), successfulTest([failedCaseTitle]), mutation],
+    });
+    expect(shadowedByOlderBinding.ratings.falsifiability.rating).toBe('pass');
   });
 
   it.each([

@@ -1386,9 +1386,17 @@ function clauseBoundCurrentTest(
   mutation: SpecEvidenceForAdequacy,
   evidence: readonly SpecEvidenceForAdequacy[],
 ): SpecEvidenceForAdequacy | null {
+  return clauseBoundCurrentTests(clause, mutation, evidence)[0] ?? null;
+}
+
+function clauseBoundCurrentTests(
+  clause: SpecClauseRevision,
+  mutation: SpecEvidenceForAdequacy,
+  evidence: readonly SpecEvidenceForAdequacy[],
+): SpecEvidenceForAdequacy[] {
   const filePath = mutation.testRunProvenance?.filePath;
-  if (!filePath || filePath.trim().length === 0) return null;
-  return evidence.find(
+  if (!filePath || filePath.trim().length === 0) return [];
+  return evidence.filter(
     (row) =>
       row.evidenceKind === 'test' &&
       row.planSlug === clause.planSlug &&
@@ -1398,7 +1406,7 @@ function clauseBoundCurrentTest(
       row.testRunProvenance?.filePath === filePath &&
       row.currentness.overall === 'current' &&
       isSuccessfulRepairedEvidence(row),
-  ) ?? null;
+  );
 }
 
 function isWellFormedCaseTitle(title: unknown): title is string {
@@ -1438,11 +1446,13 @@ function clauseBoundMutationTest(
   mutation: SpecEvidenceForAdequacy,
   evidence: readonly SpecEvidenceForAdequacy[],
 ): SpecEvidenceForAdequacy | null {
-  const testBinding = clauseBoundCurrentTest(clause, mutation, evidence);
-  if (!testBinding || mutation.evidenceKind !== 'mutation') return testBinding;
-  return (detailsOf(testBinding).testCases ?? []).some((caseTitle) => mutationMeasuredFailedCase(mutation, caseTitle))
-    ? testBinding
-    : null;
+  if (mutation.evidenceKind !== 'mutation') return clauseBoundCurrentTest(clause, mutation, evidence);
+  // WI-10006745: ANY successful current same-clause same-file test binding may carry the
+  // declared case. Checking only the first such row let an older binding without testCases
+  // shadow a newer one that declares the measured case.
+  return clauseBoundCurrentTests(clause, mutation, evidence).find((testBinding) =>
+    (detailsOf(testBinding).testCases ?? []).some((caseTitle) => mutationMeasuredFailedCase(mutation, caseTitle)),
+  ) ?? null;
 }
 
 function isClauseBoundMutationTest(
