@@ -25,7 +25,7 @@ export async function resolveCouplingIdentityPair(
 ): Promise<CouplingIdentityPairResult> {
   const [a, b]: [ExplicitAgentOwnerResolution, ExplicitAgentOwnerResolution] = await Promise.all([
     rawA === undefined
-      ? Promise.resolve({ ok: true, ownerId: callerOwnerId })
+      ? Promise.resolve<ExplicitAgentOwnerResolution>({ ok: true, ownerId: callerOwnerId })
       : resolveExplicitAgentOwnerId(rawA, callerOwnerId, workspaceId),
     resolveExplicitAgentOwnerId(rawB, callerOwnerId, workspaceId),
   ]);
