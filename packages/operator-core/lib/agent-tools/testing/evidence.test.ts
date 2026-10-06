@@ -103,6 +103,32 @@ describe('test-time evidence continuity', () => {
     expect(plain.measure.mock.calls[0][1]).not.toHaveProperty('rootHarnessSlug');
   });
 
+  it('keeps source globs in validated test evidence, measurements, and the stored run recipe', async () => {
+    const sourceGlobs = ['dynamic/plugins/*/papercusp.json'];
+    const globbedRequest = testEvidenceSchema.parse({
+      ...request,
+      bindings: [{ ...binding, sourceGlobs }],
+    });
+    const d = deps();
+    const prepared = await prepareTestEvidence(globbedRequest, runId, [binding.testPath], scope, d);
+    const expectedMeasurement = {
+      schemaVersion: 1,
+      kind: 'repo-files',
+      sourcePaths: binding.sourcePaths,
+      sourceGlobs,
+      testPaths: [binding.testPath],
+    };
+
+    expect(d.measure).toHaveBeenCalledWith(scope.root, expectedMeasurement);
+    expect(prepared[0]!.measurement).toEqual(expectedMeasurement);
+    expect(prepared[0]!.input.details?.currentMeasurement).toEqual(expectedMeasurement);
+    expect(prepared[0]!.input.details?.testExecution).toMatchObject({ binding: { sourceGlobs } });
+
+    await finishTestEvidence(prepared, runId, runId, scope, result(), d);
+    expect(d.bind.mock.calls[1]![0].details.currentMeasurement).toEqual(expectedMeasurement);
+    expect(d.bind.mock.calls[1]![0].details.testExecution).toMatchObject({ binding: { sourceGlobs } });
+  });
+
   it('returns a bounded pending recovery bundle for foreground timeouts', () => {
     const detached = '1a40bd16-98ca-4092-8b88-5707ed6e0e64';
     const bundle = deferredTestEvidenceRecoveryBundle(request, runId, detached, scope.harnessSlug);
@@ -165,6 +191,10 @@ describe('test-time evidence continuity', () => {
     await expect(prepareTestEvidence(request, runId, ['test/unrelated.test.ts'], scope, d)).rejects.toThrow('evidence_test_not_selected');
     expect(d.bind).not.toHaveBeenCalled();
     expect(() => testEvidenceSchema.parse({ ...request, bindings: [{ ...binding, sourcePaths: ['../secret'] }] })).toThrow();
+    expect(() => testEvidenceSchema.parse({
+      ...request,
+      bindings: [{ ...binding, sourceGlobs: ['../outside/*.json'] }],
+    })).toThrow();
   });
 
   it.each([
