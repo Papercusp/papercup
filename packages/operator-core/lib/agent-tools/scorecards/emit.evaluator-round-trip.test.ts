@@ -170,6 +170,25 @@ function bindingRow(
     over.testRunStatus === 'fail'
       ? over.testRunOutputTail ?? null
       : null;
+  const mutationFailedCaseTitle =
+    'code-search.callers-lookup — measurement and promotion state > keeps the lane honest';
+  const executionDetails = {
+    schemaVersion: 1,
+    root: '/repo',
+    filePath: 'test/reconnect.test.ts',
+    runGroupId: null,
+    workspaceId: 'workspace-test',
+    harnessSlug: 'papercusp',
+    testNamePattern: null,
+    passed: mutationFailureTail === null ? 1 : 0,
+    failed: mutationFailureTail === null ? 0 : 1,
+    skipped: 0,
+    collectionFailed: false,
+    mutationPhase: mutationFailureTail === null ? null : 'mutant',
+    ...(mutationFailureTail === null ? {} : { failedCaseTitles: [mutationFailedCaseTitle] }),
+    commitSha: 'fixture-clean-commit',
+    worktreeDirty: false,
+  };
   return {
     id: over.id,
     work_item_id: 'WI-101',
@@ -197,7 +216,9 @@ function bindingRow(
     test_run_file_path: 'test/reconnect.test.ts',
     test_run_commit_sha: 'fixture-clean-commit',
     test_run_worktree_dirty: false,
+    test_run_execution_details: executionDetails,
     mutation_failure_tail: mutationFailureTail,
+    ...(mutationFailureTail === null ? {} : { mutation_execution_details: executionDetails }),
     details: {
       adequacy: {
         ...ADEQUACY,
