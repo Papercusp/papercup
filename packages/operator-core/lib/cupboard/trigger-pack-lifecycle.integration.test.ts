@@ -118,6 +118,11 @@ afterAll(async () => {
 
 beforeEach(async () => {
   WS = `${BASE_WS}-${++workspaceSeq}`;
+  // Grants are keyed by (plugin, version, harness), not workspace, so a fresh workspace
+  // alone does not isolate them: clear this suite's harness slugs between cases.
+  await sql`
+    DELETE FROM harness_shared.plugin_capability_grants
+     WHERE plugin_name = ${PLUGIN} AND harness_slug IN (${HARNESS}, ${`${HARNESS}-other`})`;
   await seedPackWorkspace(sql, WS, HARNESS);
   scratch = await fs.mkdtemp(join(tmpdir(), 'trigger-pack-lifecycle-'));
   await fs.mkdir(join(scratch, 'tmp'), { recursive: true });
