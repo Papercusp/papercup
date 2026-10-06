@@ -20,7 +20,14 @@ case "$cmd" in
   *install-server.sh*)
     printf 'T_APT=3\nSERVER_HEALTH=ok\nSERVER_PORT=4321\nSERVER_CGROUP=/sys/fs/cgroup/fake\n'
     exit "$((FAKE_INSTALL_RC + 0))" ;;
-  *join-link*) printf '{"pubkeyBase64":"ABCDEFGHIJKL","await_admission_merge":{"ok":true}}\nHTTP=200\n' ;;
+  *"install -y -q gh git"*)
+    if [ "$((FAKE_GH_MISSING + 0))" = 1 ]; then printf 'GH_ABSENT\nE: Unable to locate package gh\n'; else echo 'gh version 2.45.0 (fake)'; fi ;;
+  *"gh auth login"*) [ "$((FAKE_GH_LOGIN_FAIL + 0))" = 1 ] || echo papercupai ;;
+  *join-link*)
+    case "$FAKE_JOIN_HTTP" in
+      '' | 200) printf '{"pubkeyBase64":"ABCDEFGHIJKL","await_admission_merge":{"ok":true}}\nHTTP=200\n' ;;
+      *) printf '{"error":"GitHub authentication required","code":"gh_auth_required"}\nHTTP=%s\n' "$FAKE_JOIN_HTTP" ;;
+    esac ;;
   *read-routine-metadata*) printf 'ROUTINE_META slug=hello-world-3-pot routine=git-sync key=worktree_divergence rows=1 value={"paths":["d055-conflict.txt"]}\nJDIVLOG=1\n' ;;
   *"tar -C"*) printf 'TGZ' ;;
   # S8: a joiner marker write "federates" into the tower's repo when sync works (FAKE_S8_* knobs).
@@ -178,6 +185,51 @@ describe('vm/p2p-join-soak.sh (faked gcloud, gcp-rails, mcp-call)', () => {
     expect(r.out).toMatch(/INSTALL_RC=7/);
     expect(calls()).toMatch(/gcp-rails\.ts teardown/);
     expect(calls()).not.toMatch(/join-link/);
+  });
+
+  it('installs gh only after install-server.sh (apt lists fresh, dpkg idle) and logs its version', () => {
+    const r = run({ OBS_LIMIT: '1' });
+    expect(r.code).toBe(0);
+    expect(r.out).toMatch(/^GH gh version 2\.45\.0 \(fake\)/m);
+    expect(r.out).toMatch(/^GH_LOGIN papercupai /m);
+    const s = ssh();
+    const server = s.findIndex((c) => c.includes('install-server.sh'));
+    const gh = s.findIndex((c) => c.includes('install -y -q gh git'));
+    expect(server).toBeGreaterThan(-1);
+    expect(gh).toBeGreaterThan(server);
+    // retried, with the package lists refreshed between attempts
+    expect(s[gh]).toMatch(/for i in \$\(seq 1 12\).*sleep 10; sudo apt-get update -qq/);
+  });
+
+  // c1006j (2026-10-06): gh never landed on the VM, the join answered 401 gh_auth_required, and the
+  // soak went on observing a VM with no clone. Each of these must stop BEFORE the observation loop.
+  it('gh missing on the VM exits 5 with the apt error, never joins, and tears down', () => {
+    const r = run({ FAKE_GH_MISSING: '1', RIG_LOCK: 'lock-9' });
+    expect(r.code).toBe(5);
+    expect(r.out).toMatch(/GH_INSTALL_FAILED \[GH_ABSENT E: Unable to locate package gh/);
+    expect(calls()).not.toMatch(/join-link/);
+    expect(r.out).not.toMatch(/^OBS n=/m);
+    expect(calls()).toMatch(/gcp-rails\.ts teardown --run=p2pjoin/);
+    expect(calls()).toMatch(/locks:release_resource \{"lock_id":"lock-9"\}/);
+  });
+
+  it('a gh login that prints no login exits 6 before the join', () => {
+    const r = run({ FAKE_GH_LOGIN_FAIL: '1' });
+    expect(r.code).toBe(6);
+    expect(r.out).toMatch(/GH_LOGIN_FAILED/);
+    expect(calls()).not.toMatch(/join-link/);
+    expect(calls()).toMatch(/gcp-rails\.ts teardown/);
+  });
+
+  it('a refused join (HTTP 401) exits 6 with the reply body instead of observing an empty VM', () => {
+    const r = run({ FAKE_JOIN_HTTP: '401', RIG_LOCK: 'lock-9' });
+    expect(r.code).toBe(6);
+    expect(r.out).toMatch(/JOIN_END T_JOIN=[0-9.]+ HTTP=401/);
+    expect(r.out).toMatch(/JOIN_FAILED HTTP=401 body=\[\{"error":"GitHub authentication required","code":"gh_auth_required"\}/);
+    expect(r.out).not.toMatch(/^OBS n=/m);
+    expect(r.out).not.toMatch(/OBSERVE_DONE/);
+    expect(calls()).toMatch(/gcp-rails\.ts teardown --run=p2pjoin/);
+    expect(calls()).toMatch(/locks:release_resource \{"lock_id":"lock-9"\}/);
   });
 
   it('refuses missing inputs (exit 2) before touching GCP', () => {
