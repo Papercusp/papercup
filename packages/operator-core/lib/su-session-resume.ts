@@ -8,7 +8,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import {
   applyCodexGatewayRoute, applyOmpResumeAccountRoute, buildResumeEnv,
   codexThreadWriterHolder, ensureCodexHomeViaOperator, ensureInteractiveConfigViaOperator,
-  ensureResumeTranscriptPresent, isClaudeConfigDirLaunchReady, isCodexHomeLaunchReady,
+  ensureResumeTranscriptPresent, isClaudeConfigDirLaunchReady, codexHomeLaunchReadiness,
   normalizeArgvProbeResumeLocalLivenessEvidence, normalizeCodexResumeLocalLivenessEvidence,
   normalizeModelSpecForAgent,
   ompTrackedResumeEnv, rehealResumeCodexAuth, rehealResumeCredentials, sessionProcessHolder, tryRematerializeFromArchive,
@@ -169,7 +169,10 @@ export async function prepareStructuredSuResume(record: DurableSuSessionRecord) 
         requireGatewayProvider: accountRoute.mode !== 'default',
         headless: spec.headless ?? row.launchArgv?.includes('--headless') === true,
       });
-      if (!isCodexHomeLaunchReady(native.codexHome, record.ownerId)) throw new Error('The saved Codex SU configuration is not ready');
+      // Name the failing check: a bare "not ready" was undiagnosable once the
+      // home was gone (WI-10006770).
+      const codexNotReady = codexHomeLaunchReadiness(native.codexHome, record.ownerId);
+      if (codexNotReady) throw new Error(`The saved Codex SU configuration is not ready: ${codexNotReady}`);
       if (accountRoute.mode === 'default') rehealResumeCodexAuth(native.codexHome);
       applyCodexGatewayRoute(native.codexHome, { ...accountRoute, ownerId: record.ownerId,
         priority: 'su', keepProviderTableWhenUnrouted: true });
