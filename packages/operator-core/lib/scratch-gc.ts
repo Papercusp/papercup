@@ -5,8 +5,15 @@
  * SCRATCH_RUN_DIR_MAX_AGE_MS = RETENTION_MS + one sweep period, i.e. 24–48h):
  *   1. Walk ~/.papercusp/scratch/<workspace>/<toolName>/<runId>/ dirs;
  *      delete any older than RETENTION_MS (24h default).
- *   2. List ~/.papercusp/scratch/<workspace>/ dirs; if a workspace
- *      isn't in the registry, drop the whole tree (dead workspace).
+ *   2. List ~/.papercusp/scratch/ top-level entries; drop a whole tree ONLY
+ *      when it is PROVABLY a dead workspace scratch root (WI-10006512):
+ *      not in the registry, carries a valid WORKSPACE_SCRATCH_MARKER naming
+ *      itself, nothing in it changed for DEAD_WORKSPACE_QUIET_MS, and a
+ *      fail-closed /proc scan finds no process with a file open (or its cwd)
+ *      inside it. Anything else at the top level — agent scratch dirs,
+ *      `packs`, a benchmark's PG datadir — is not ours and is never deleted.
+ *      The marker is written when a workspace root is created (the scratch
+ *      writers) and backfilled onto every registered root each sweep.
  *   3. After deletion, check per-workspace usage against
  *      WORKSPACE_QUOTA_BYTES; FIFO-evict by run-dir mtime until
  *      under quota.
@@ -26,10 +33,19 @@
  * Plan ref: phase-4-endpoint-system-2026-05-12.md § T2.3.
  */
 
-import { mkdirSync } from 'node:fs';
-import { readdir as readdirAsync, stat as statAsync, rm as rmAsync } from 'node:fs/promises';
-import { join } from 'node:path';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import {
+  readdir as readdirAsync,
+  stat as statAsync,
+  lstat as lstatAsync,
+  rm as rmAsync,
+  readFile as readFileAsync,
+  writeFile as writeFileAsync,
+  realpath as realpathAsync,
+} from 'node:fs/promises';
+import { join, sep } from 'node:path';
 import { pinModuleState } from '@papercusp/module-singleton';
+import { openWriterPidsMany, NATIVE_BG_SCAN_DEADLINE_MS, type OpenWriterScan } from './native-bg-task-ledger';
 import { scratchRoot, scratchRootForWorkspace } from './scratch-uri';
 
 /** Retention window for run-dirs since last mtime. 24h default. */
@@ -59,6 +75,108 @@ export const SCRATCH_GC_SWEEP_PERIOD_MS = 24 * 60 * 60 * 1000;
  */
 export const SCRATCH_RUN_DIR_MAX_AGE_MS = RETENTION_MS + SCRATCH_GC_SWEEP_PERIOD_MS;
 
+/* ─── Workspace-root proof (WI-10006512) ─────────────────────────────────
+ *
+ * The dead-workspace pass used to treat EVERY top-level entry of the scratch root that was not a
+ * registered workspace id as a dead workspace and `rm -rf` it, with no age or open-file check. The
+ * scratch root is also where agents are told to put their own scratch (the bash resource gate
+ * names `~/.papercusp/scratch/<session-or-task>/`) and where `packs` lives, so the 03:00 sweep
+ * deleted a running benchmark's PG datadir mid-run (2026-10-06). A name is not proof: an agent dir
+ * matches the workspace-id grammar. So a workspace root now carries a marker naming its workspace,
+ * and the sweep deletes only a tree that carries one.
+ */
+
+/** File in a workspace scratch root that proves the dir belongs to that workspace. */
+export const WORKSPACE_SCRATCH_MARKER = '.papercusp-workspace-scratch-root';
+
+const WORKSPACE_SCRATCH_MARKER_KIND = 'papercusp-workspace-scratch-root';
+
+/**
+ * A provably-dead workspace root is kept while anything in it changed this recently. Same window
+ * as run-dir retention: a workspace that stopped writing a day ago is as dead as an expired run.
+ */
+export const DEAD_WORKSPACE_QUIET_MS = RETENTION_MS;
+
+function workspaceScratchMarkerBody(workspaceId: string, now = Date.now()): string {
+  return `${JSON.stringify({ kind: WORKSPACE_SCRATCH_MARKER_KIND, workspaceId, markedAt: new Date(now).toISOString() })}\n`;
+}
+
+/**
+ * Mark a workspace scratch root that a `mkdir(..., { recursive: true })` call just created.
+ * `firstCreated` is that call's return value (the first directory it created, or undefined when
+ * the whole chain already existed). The marker is written only when the workspace root itself was
+ * created by that call, so the steady-state write path costs nothing. A root that pre-existed is
+ * marked by the sweep's backfill instead. Best-effort: a marker failure never fails the write.
+ */
+export function markNewWorkspaceScratchRootSync(workspaceId: string, firstCreated: string | undefined): void {
+  if (!firstCreated) return;
+  try {
+    const wsRoot = scratchRootForWorkspace(workspaceId);
+    if (wsRoot !== firstCreated && !wsRoot.startsWith(firstCreated + sep)) return;
+    writeFileSync(join(wsRoot, WORKSPACE_SCRATCH_MARKER), workspaceScratchMarkerBody(workspaceId), {
+      flag: 'wx',
+      mode: 0o600,
+    });
+  } catch {
+    /* EEXIST (already marked), an invalid workspace id, or a vanished root: nothing to mark. */
+  }
+}
+
+/** Async twin of markNewWorkspaceScratchRootSync, for the non-blocking write path. */
+export async function markNewWorkspaceScratchRoot(workspaceId: string, firstCreated: string | undefined): Promise<void> {
+  if (!firstCreated) return;
+  try {
+    const wsRoot = scratchRootForWorkspace(workspaceId);
+    if (wsRoot !== firstCreated && !wsRoot.startsWith(firstCreated + sep)) return;
+    await writeMarkerIfAbsent(wsRoot, workspaceId);
+  } catch {
+    /* see markNewWorkspaceScratchRootSync */
+  }
+}
+
+/** Write the marker into an EXISTING root. Returns true when it wrote one. Never creates the root. */
+async function writeMarkerIfAbsent(wsRoot: string, workspaceId: string): Promise<boolean> {
+  try {
+    await writeFileAsync(join(wsRoot, WORKSPACE_SCRATCH_MARKER), workspaceScratchMarkerBody(workspaceId), {
+      flag: 'wx',
+      mode: 0o600,
+    });
+    return true;
+  } catch {
+    return false; // EEXIST = already marked; ENOENT = no root to mark
+  }
+}
+
+/**
+ * True only when `dir` is a real directory (not a symlink) whose marker names `name` as its
+ * workspace. A copied or renamed tree carries a marker naming a different workspace, so it fails.
+ */
+async function isProvenWorkspaceScratchRoot(dir: string, name: string): Promise<boolean> {
+  try {
+    if (!(await lstatAsync(dir)).isDirectory()) return false;
+    const marker = JSON.parse(await readFileAsync(join(dir, WORKSPACE_SCRATCH_MARKER), 'utf8')) as {
+      kind?: unknown;
+      workspaceId?: unknown;
+    };
+    return marker.kind === WORKSPACE_SCRATCH_MARKER_KIND && marker.workspaceId === name;
+  } catch {
+    return false;
+  }
+}
+
+/** Why a provably-dead workspace root was kept this sweep. */
+export type DeadWorkspaceDeferral = 'recent-write' | 'open-writer' | 'process-scan-incomplete';
+
+/** Default open-writer scan: descendants + cwd, fail-closed, deadline-bounded (as fleet-logs-gc). */
+function defaultScanOpenPaths(paths: readonly string[]): Promise<OpenWriterScan> {
+  return openWriterPidsMany(paths, {
+    descendants: true,
+    includeCwd: true,
+    failClosed: true,
+    deadlineMs: NATIVE_BG_SCAN_DEADLINE_MS,
+  });
+}
+
 export class ScratchQuotaError extends Error {
   constructor(message: string) {
     super(message);
@@ -81,9 +199,10 @@ export function _resetScratchGcCountersForTests(): void {
 /**
  * Run one full GC sweep over the scratch tree.
  *
- *   workspaceRegistry: list of known workspace IDs. Dead workspaces
- *     (dirs present in scratch but not in the registry) are removed
- *     wholesale.
+ *   workspaceRegistry: list of known workspace IDs. A top-level dir not
+ *     in the registry is removed wholesale ONLY when it is provably a dead
+ *     workspace root (marker), quiet, and held by no process (WI-10006512);
+ *     every other top-level entry is left alone and counted.
  *
  * Returns a summary for logging / tests. Designed to be safe even if
  * the scratch root doesn't exist (no-op).
@@ -102,11 +221,22 @@ export interface ScratchGcSummary {
   deadWorkspaceBytes: number;
   quotaEvictions: number;
   quotaEvictedBytes: number;
+  /** Registered workspace roots that got their WORKSPACE_SCRATCH_MARKER this sweep (backfill). */
+  markersWritten: number;
+  /**
+   * Top-level entries that are neither registered nor provably a workspace scratch root (agent
+   * scratch, `packs`, ...). Counted so growth stays visible; NEVER deleted by this sweep.
+   */
+  unprovenEntries: number;
+  /** Provably-dead workspace roots this sweep kept, and why. */
+  deadWorkspacesDeferred: Array<{ workspaceId: string; reason: DeadWorkspaceDeferral }>;
 }
 
 export async function runScratchGc(opts: {
   workspaceRegistry: ReadonlyArray<string>;
   now?: number;
+  /** Test seam for the /proc open-writer scan. Missing or partial evidence always keeps a tree. */
+  scanOpenPaths?: (paths: readonly string[]) => Promise<OpenWriterScan>;
 }): Promise<ScratchGcSummary> {
   const now = opts.now ?? Date.now();
   const root = scratchRoot();
@@ -117,19 +247,69 @@ export async function runScratchGc(opts: {
     deadWorkspaceBytes: 0,
     quotaEvictions: 0,
     quotaEvictedBytes: 0,
+    markersWritten: 0,
+    unprovenEntries: 0,
+    deadWorkspacesDeferred: [],
   };
 
   const registrySet = new Set(opts.workspaceRegistry);
 
-  // Step 2 (before step 1 so we don't waste work on dead workspaces):
-  // remove dead workspace dirs wholesale. A missing root lists as empty.
-  for (const workspaceId of await listDir(root)) {
-    if (registrySet.has(workspaceId)) continue;
-    const dir = join(root, workspaceId);
-    const bytes = await sizeOfDirAsync(dir);
-    await rmAsync(dir, { recursive: true, force: true });
-    summary.deadWorkspaces += 1;
-    summary.deadWorkspaceBytes += bytes;
+  // Backfill: every registered workspace root that exists gets its marker, so that once the
+  // workspace leaves the registry its root is provably ours. Never creates a root.
+  for (const workspaceId of opts.workspaceRegistry) {
+    let wsRoot: string;
+    try {
+      wsRoot = scratchRootForWorkspace(workspaceId);
+    } catch {
+      continue; // an id with no valid scratch shape has no scratch root
+    }
+    if (await writeMarkerIfAbsent(wsRoot, workspaceId)) summary.markersWritten += 1;
+  }
+
+  // Step 2 (before step 1 so we don't waste work on dead workspaces): remove PROVABLY dead
+  // workspace roots wholesale (WI-10006512). A missing root lists as empty.
+  const candidates: Array<{ workspaceId: string; dir: string; realDir: string; bytes: number }> = [];
+  for (const name of await listDir(root)) {
+    if (registrySet.has(name)) continue;
+    const dir = join(root, name);
+    if (!(await isProvenWorkspaceScratchRoot(dir, name))) {
+      summary.unprovenEntries += 1;
+      continue;
+    }
+    const tree = await treeStatsAsync(dir);
+    if (now - tree.newestMtimeMs < DEAD_WORKSPACE_QUIET_MS) {
+      summary.deadWorkspacesDeferred.push({ workspaceId: name, reason: 'recent-write' });
+      continue;
+    }
+    // /proc fd and cwd links name REAL paths, so the scan must be given the real path too.
+    let realDir: string;
+    try {
+      realDir = await realpathAsync(dir);
+    } catch {
+      continue; // vanished mid-sweep
+    }
+    candidates.push({ workspaceId: name, dir, realDir, bytes: tree.bytes });
+  }
+  if (candidates.length > 0) {
+    let scan: OpenWriterScan = { byPath: new Map(), complete: false };
+    try {
+      scan = await (opts.scanOpenPaths ?? defaultScanOpenPaths)(candidates.map((c) => c.realDir));
+    } catch {
+      /* no process evidence is not permission to delete */
+    }
+    for (const c of candidates) {
+      if (scan.byPath.get(c.realDir)?.length) {
+        summary.deadWorkspacesDeferred.push({ workspaceId: c.workspaceId, reason: 'open-writer' });
+        continue;
+      }
+      if (!scan.complete) {
+        summary.deadWorkspacesDeferred.push({ workspaceId: c.workspaceId, reason: 'process-scan-incomplete' });
+        continue;
+      }
+      await rmAsync(c.dir, { recursive: true, force: true });
+      summary.deadWorkspaces += 1;
+      summary.deadWorkspaceBytes += c.bytes;
+    }
   }
 
   // Step 1: retention sweep, per-workspace.
@@ -265,6 +445,39 @@ async function sizeOfDirAsync(dir: string): Promise<number> {
 }
 
 /**
+ * Bytes AND the newest mtime anywhere in a tree, the root included, in one sequential async walk.
+ * lstat throughout: a symlink is judged by itself, never by what it points at. A missing or
+ * unreadable tree reports { bytes: 0, newestMtimeMs: 0 } (nothing recent in it).
+ */
+async function treeStatsAsync(dir: string): Promise<{ bytes: number; newestMtimeMs: number }> {
+  let newestMtimeMs = 0;
+  let bytes = 0;
+  try {
+    newestMtimeMs = (await lstatAsync(dir)).mtimeMs;
+  } catch {
+    return { bytes: 0, newestMtimeMs: 0 };
+  }
+  for (const name of await listDir(dir)) {
+    const child = join(dir, name);
+    let st;
+    try {
+      st = await lstatAsync(child);
+    } catch {
+      continue; // vanished mid-walk
+    }
+    if (st.isDirectory()) {
+      const sub = await treeStatsAsync(child);
+      bytes += sub.bytes;
+      if (sub.newestMtimeMs > newestMtimeMs) newestMtimeMs = sub.newestMtimeMs;
+    } else {
+      bytes += st.size;
+      if (st.mtimeMs > newestMtimeMs) newestMtimeMs = st.mtimeMs;
+    }
+  }
+  return { bytes, newestMtimeMs };
+}
+
+/**
  * Re-measure a workspace's scratch usage in the background and replace the cached total.
  * Concurrent callers share the one in-flight measurement. Exported for tests and for any host
  * that wants to warm the cache.
@@ -352,7 +565,7 @@ export function ensureScratchRunDir(opts: {
   runId: string;
 }): string {
   const dir = join(scratchRootForWorkspace(opts.workspaceId), opts.toolName, opts.runId);
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  markNewWorkspaceScratchRootSync(opts.workspaceId, mkdirSync(dir, { recursive: true, mode: 0o700 }));
   return dir;
 }
 
