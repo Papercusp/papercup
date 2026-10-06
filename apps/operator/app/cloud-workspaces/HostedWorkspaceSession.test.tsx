@@ -78,6 +78,13 @@ vi.mock("@xterm/addon-fit", () => ({ FitAddon: M.FakeFitAddon }));
 vi.mock("@xterm/addon-web-links", () => ({
   WebLinksAddon: M.FakeWebLinksAddon,
 }));
+// The viewer (noVNC, its own socket) has its own tests; here only WHICH desktop the
+// connection opens, and in which mode, is under test.
+vi.mock("./HostedDesktopViewer", () => ({
+  HostedDesktopViewer: (props: { desktopSessionId: string; mode: string }) => (
+    <section aria-label={`Live ${props.desktopSessionId}`} data-mode={props.mode} />
+  ),
+}));
 
 import {
   DESKTOP_START_TIMEOUT_MS,
@@ -749,23 +756,45 @@ describe("HostedWorkspaceSession", () => {
     await waitFor(() =>
       expect(sentMessages().some((message) => message.type === "desktop.roster")).toBe(true),
     );
-    const rosterRequest = sentMessages().find(
-      (message) => message.type === "desktop.roster",
-    );
-    expect(rosterRequest?.requestId).toBeTruthy();
-    socket.emit("message", {
-      data: JSON.stringify({
-        type: "desktop.roster.result",
-        requestId: rosterRequest?.requestId,
-        desktops: [],
-      }),
-    });
-    if (showDesktop) await waitFor(() => expect(screen.getByText("No desktops are available yet")).toBeTruthy());
+    expect(
+      sentMessages().find((message) => message.type === "desktop.roster")?.requestId,
+    ).toBeTruthy();
+    // Answer EVERY roster read, as the relay does: the visible grid also refreshes
+    // the roster (P-006), and the auto-start rightly waits for a settled roster.
+    const answered = new Set<string>();
+    const answerRosters = async () => {
+      for (const message of sentMessages()) {
+        if (message.type !== "desktop.roster" || !message.requestId) continue;
+        if (answered.has(message.requestId)) continue;
+        answered.add(message.requestId);
+        await act(async () =>
+          socket.emit("message", {
+            data: JSON.stringify({
+              type: "desktop.roster.result",
+              requestId: message.requestId,
+              desktops: [],
+            }),
+          }),
+        );
+      }
+    };
+    await answerRosters();
+    if (showDesktop) {
+      await waitFor(async () => {
+        await answerRosters();
+        expect(screen.getByText("No desktops are available yet")).toBeTruthy();
+      });
+    }
+    // A settled roster is a bounded number of reads, never a read storm.
+    expect(
+      sentMessages().filter((message) => message.type === "desktop.roster").length,
+    ).toBeLessThanOrEqual(3);
     expect(sentMessages().some((message) => message.type === "desktop.start")).toBe(false);
 
     await act(async () => socket.emit("message", {
       data: JSON.stringify({ type: "session.role", role: "controller" }),
     }));
+    await answerRosters();
     await waitFor(() =>
       expect(
         sentMessages().filter((message) => message.type === "desktop.start"),
@@ -831,13 +860,11 @@ describe("HostedWorkspaceSession", () => {
       return { socket, sent, button };
     }
 
-    const desktopSocketFor = (desktopSessionId: string, mode: string) =>
-      M.sockets.find(
-        (socket) =>
-          socket.url.includes("kind=desktop") &&
-          socket.url.includes(`desktopSessionId=${desktopSessionId}`) &&
-          socket.url.includes(`desktopMode=${mode}`),
-      );
+    /** The mode the open viewer shows `desktopSessionId` in, or null when it is not open. */
+    const openMode = (desktopSessionId: string) =>
+      screen
+        .queryByRole("region", { name: `Live ${desktopSessionId}` })
+        ?.getAttribute("data-mode") ?? null;
 
     it("asks for the caller's own desktop and opens the result in Take control (R-5)", async () => {
       const { socket, sent, button } = await openConnection(
@@ -851,7 +878,7 @@ describe("HostedWorkspaceSession", () => {
       const start = sent().find((message) => message.type === "desktop.start");
       expect(start?.personal).toBe(true);
       await waitFor(() => expect(button.textContent).toBe("Starting my desktop…"));
-      expect(desktopSocketFor("mine", "takeover")).toBeUndefined();
+      expect(openMode("mine")).toBeNull();
 
       await act(async () =>
         socket.emit("message", {
@@ -862,8 +889,8 @@ describe("HostedWorkspaceSession", () => {
           }),
         }),
       );
-      await waitFor(() => expect(desktopSocketFor("mine", "takeover")).toBeTruthy());
-      expect(desktopSocketFor("mine", "watch")).toBeUndefined();
+      await waitFor(() => expect(openMode("mine")).toBe("takeover"));
+      expect(openMode("desk-1")).toBeNull();
       expect(button.getAttribute("data-my-desktop")).toBe("running");
     });
 
@@ -877,9 +904,9 @@ describe("HostedWorkspaceSession", () => {
       );
       expect(button.getAttribute("data-my-desktop")).toBe("running");
       // Nothing is open before the click, so the socket below is the click's doing.
-      expect(desktopSocketFor("mine", "takeover")).toBeUndefined();
+      expect(openMode("mine")).toBeNull();
       fireEvent.click(button);
-      await waitFor(() => expect(desktopSocketFor("mine", "takeover")).toBeTruthy());
+      await waitFor(() => expect(openMode("mine")).toBe("takeover"));
       expect(sent().some((message) => message.type === "desktop.start")).toBe(false);
     });
 
@@ -909,7 +936,7 @@ describe("HostedWorkspaceSession", () => {
         ).toContain("My desktop could not be opened (personal_desktop_unavailable)."),
       );
       expect(button.textContent).toBe("My desktop");
-      expect(desktopSocketFor("mine", "takeover")).toBeUndefined();
+      expect(openMode("mine")).toBeNull();
     });
 
     it("says another tab holds the controller role instead of sending a start it would refuse", async () => {
