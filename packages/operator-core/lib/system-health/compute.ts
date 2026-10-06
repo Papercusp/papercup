@@ -3330,12 +3330,15 @@ export async function computeSystemHealth(
       // (summed) rather than just the representative one. OFF (the dark default) ⇒
       // the single representative hive, byte-identical to today.
       const { isWorkspaceCoordinationOn } = await import('../workspace-brain-scope');
-      const on = await isWorkspaceCoordinationOn();
+      // EI-25221129396992808: these two awaits sat outside any leg, so a 276s tick reported
+      // "unsettled legs: (none)" while it was blocked somewhere in here. Every await on the tick
+      // path is a named leg.
+      const on = await L.leg('coordination-flag', () => isWorkspaceCoordinationOn());
       let scopeSlugs = [potSlug];
       if (on) {
         try {
           const { listPots } = await import('../agent-tools/pot/_resolve');
-          const all = (await listPots(ws)).map((h) => h.slug);
+          const all = (await L.leg('list-pots-all', () => listPots(ws))).map((h) => h.slug);
           if (all.length > 0) scopeSlugs = all;
         } catch { /* registry unreadable → fall back to the representative hive */ }
       }
@@ -3357,7 +3360,7 @@ export async function computeSystemHealth(
   let gatewayEnabled = false;
   let gatewayReachable: boolean | null = null;
   try {
-    gatewayEnabled = await getFlag(FLAGS.INFERENCE_GATEWAY, 'system');
+    gatewayEnabled = await L.leg('gateway-flag', () => getFlag(FLAGS.INFERENCE_GATEWAY, 'system'));
     if (gatewayEnabled) gatewayReachable = await L.leg('gateway-healthz', () => probeGatewayHealthz());
   } catch { /* flag IO hiccup — treat as direct egress */ }
 
@@ -3646,7 +3649,7 @@ async function runSystemHealthTickUncached(ws: string, L: TickLegTracker = NOOP_
   try {
     if (health.panels.infra?.status === 'crit' && prev?.panels?.infra?.status !== 'crit') {
       const { preserveIncidentCapture } = await import('./perf-budgets');
-      await preserveIncidentCapture('infra-crit');
+      await L.leg('incident-capture', () => preserveIncidentCapture('infra-crit'));
     }
   } catch { /* incident-capture preservation must never break the tick */ }
   // EI-219699: make the complete durable queue census visible to the canonical
