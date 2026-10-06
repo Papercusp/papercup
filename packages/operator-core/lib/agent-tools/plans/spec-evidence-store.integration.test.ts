@@ -485,8 +485,10 @@ describe('ad-hoc work-items carry spec evidence with no plan (P-022 / D-018)', (
       evidenceRef: 'test/reconnect.integration.ts#missing-slug',
       sourceFingerprint: 'git:missing-slug',
     };
-    const refused = await bindTool.handler({ binding, harness: HARNESS }, CTX);
-    expect(refused).toMatchObject({
+    const refused = (await bindTool.handler({ binding, harness: HARNESS }, CTX)) as {
+      data: { results: Array<{ message: string }> };
+    };
+    expect(refused.data).toMatchObject({
       ok: false,
       results: [
         {
@@ -497,7 +499,7 @@ describe('ad-hoc work-items carry spec evidence with no plan (P-022 / D-018)', (
         },
       ],
     });
-    const row = (refused as { results: Array<{ message: string }> }).results[0]!;
+    const row = refused.data.results[0]!;
     expect(row.message).toContain(ADHOC);
     expect(row.message).toContain('pass slug');
     const edges = await db.sql`
@@ -507,13 +509,15 @@ describe('ad-hoc work-items carry spec evidence with no plan (P-022 / D-018)', (
 
     const rebound = await bindTool.handler({ binding, harness: HARNESS, slug: 'reconnect-plan' }, CTX);
     expect(rebound).toMatchObject({
-      ok: true,
-      results: [{ status: 'created', slug: 'reconnect-plan', specId: binding.specId }],
+      data: {
+        ok: true,
+        results: [{ status: 'created', slug: 'reconnect-plan', specId: binding.specId }],
+      },
     });
   });
 
   it('does not blame an explicit plan miss on an omitted slug', async () => {
-    const refused = await bindTool.handler(
+    const refused = (await bindTool.handler(
       {
         slug: 'reconnect-plan',
         harness: HARNESS,
@@ -526,12 +530,12 @@ describe('ad-hoc work-items carry spec evidence with no plan (P-022 / D-018)', (
         },
       },
       CTX,
-    );
-    expect(refused).toMatchObject({
+    )) as { data: { results: Array<Record<string, unknown>> } };
+    expect(refused.data).toMatchObject({
       ok: false,
       results: [{ status: 'spec_not_found', slug: 'reconnect-plan', specId: 'ABSENT-SPEC' }],
     });
-    expect((refused as { results: Array<Record<string, unknown>> }).results[0]).not.toHaveProperty('message');
+    expect(refused.data.results[0]).not.toHaveProperty('message');
   });
 
   it('still honours an explicit plan slug — the ad-hoc path is a fallback, not a takeover', async () => {
