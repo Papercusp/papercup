@@ -130,6 +130,78 @@ describe('AI SDK v6 prompt mapping', () => {
 });
 
 describe('createAiSdkPort', () => {
+  it('preserves OpenRouter generation and reported charge separately from token pricing', async () => {
+    const port = createAiSdkPort({ resolveModel: () => ({
+      model: fakeModel([
+        { type: 'response-metadata', id: 'gen-reported-1' },
+        { type: 'response-metadata', modelId: 'vendor/served-model' },
+        { type: 'response-metadata', id: 'gen-reported-1' },
+        { type: 'finish', finishReason: { unified: 'stop', raw: 'stop' },
+          usage: { inputTokens: { total: 10 }, outputTokens: { total: 4 } },
+          providerMetadata: { openrouter: { usage: { cost: 0.00000001,
+            costDetails: { upstreamInferenceCost: 50 } }, secret: 'never-copy-this' } } },
+      ]), provider: 'openrouter', modelId: 'gpt-5.4',
+    }) });
+    const events = [];
+    for await (const event of port.stream({ model: 'openrouter/vendor/model', messages: [] })) events.push(event);
+    expect(events.at(-1)).toMatchObject({ type: 'stop', providerResponse: {
+      provider: 'openrouter', id: 'gen-reported-1', modelId: 'vendor/served-model', reportedCostUsd: 0.00000001,
+    } });
+    expect(JSON.stringify(events)).not.toContain('never-copy-this');
+    expect(JSON.stringify(events)).not.toContain('upstreamInferenceCost');
+    const stop = events.at(-1);
+    expect(stop?.type === 'stop' && stop.usage?.costUsd).not.toBe(0.00000001);
+  });
+
+  it.each([0, 0.25])('retains a valid reported charge %s without inventing an id', async (cost) => {
+    const port = createAiSdkPort({ resolveModel: () => ({ model: fakeModel([
+      { type: 'finish', finishReason: { unified: 'stop', raw: 'stop' },
+        usage: { inputTokens: {}, outputTokens: {} }, providerMetadata: { openrouter: { usage: { cost } } } },
+    ]), provider: 'openrouter', modelId: 'vendor/unpriced-model' }) });
+    const events = [];
+    for await (const event of port.stream({ model: 'openrouter/vendor/unpriced-model', messages: [] })) events.push(event);
+    expect(events.at(-1)).toEqual({ type: 'stop', reason: 'end_turn', usage: { inputTokens: 0, outputTokens: 0 },
+      providerResponse: { provider: 'openrouter', reportedCostUsd: cost } });
+  });
+
+  it.each([undefined, null, '0.25', -1, Number.NaN, Number.POSITIVE_INFINITY, 1e20])(
+    'does not invent a provider charge from invalid or missing metadata %s', async (cost) => {
+      const port = createAiSdkPort({ resolveModel: () => ({ model: fakeModel([
+        { type: 'finish', finishReason: { unified: 'stop', raw: 'stop' },
+          usage: { inputTokens: {}, outputTokens: {} },
+          providerMetadata: { openrouter: { usage: { cost: cost as never } } } },
+      ]), provider: 'openrouter', modelId: 'vendor/unpriced-model' }) });
+      const events = [];
+      for await (const event of port.stream({ model: 'openrouter/vendor/unpriced-model', messages: [] })) events.push(event);
+      expect(events.at(-1)).toEqual({ type: 'stop', reason: 'end_turn', usage: { inputTokens: 0, outputTokens: 0 } });
+    },
+  );
+
+  it.each([
+    ['gen-first', 'gen-different'], ['gen-first', '../secret'], ['../secret', 'gen-later'],
+    ['gen-first', ''], ['gen-' + 'a'.repeat(125)],
+  ])('omits an invalid or ambiguous generation sequence %j', async (ids) => {
+    const port = createAiSdkPort({ resolveModel: () => ({ model: fakeModel([
+      ...ids.map((id) => ({ type: 'response-metadata' as const, id })),
+      { type: 'finish', finishReason: { unified: 'stop', raw: 'stop' },
+        usage: { inputTokens: {}, outputTokens: {} } },
+    ]), provider: 'openrouter', modelId: 'vendor/unpriced-model' }) });
+    const events = [];
+    for await (const event of port.stream({ model: 'openrouter/vendor/unpriced-model', messages: [] })) events.push(event);
+    expect(events.at(-1)).toEqual({ type: 'stop', reason: 'end_turn', usage: { inputTokens: 0, outputTokens: 0 } });
+  });
+
+  it('ignores OpenRouter-shaped metadata returned on another provider route', async () => {
+    const port = createAiSdkPort({ resolveModel: () => ({ model: fakeModel([
+      { type: 'response-metadata', id: 'gen-wrong-route', modelId: 'vendor/model' },
+      { type: 'finish', finishReason: { unified: 'stop', raw: 'stop' },
+        usage: { inputTokens: {}, outputTokens: {} }, providerMetadata: { openrouter: { usage: { cost: 0.25 } } } },
+    ]), provider: 'openai', modelId: 'unpriced-model' }) });
+    const events = [];
+    for await (const event of port.stream({ model: 'openai/unpriced-model', messages: [] })) events.push(event);
+    expect(events.at(-1)).toEqual({ type: 'stop', reason: 'end_turn', usage: { inputTokens: 0, outputTokens: 0 } });
+  });
+
   it('maps v3 text/reasoning/tool/finish stream parts onto ModelStreamEvent', async () => {
     let observed: LanguageModelV3CallOptions | null = null;
     const model = fakeModel([

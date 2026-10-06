@@ -2568,6 +2568,12 @@ export function shouldReapDetachedPtyScopeResidue({ bridgeTty, headless, launche
  *  after "dis"), but explicit negatives keep this robust to copy drift. Pure —
  *  exported for tests. */
 export function mcpServerRowStatus(line: any, name: any): "unknown" | "connected" | "not-connected" | null;
+/** Is the /mcp dialog showing the single-server DETAIL view for `name`? Claude
+ *  can open /mcp straight into it (header `Papercusp MCP Server`, then action
+ *  rows such as `1. Authenticate  2. Reconnect  3. Disable`), so there is no
+ *  list row to select (WI-10006598). Ink may drop inter-word gaps, so compare
+ *  case-insensitively with whitespace removed. Pure — exported for tests. */
+export function mcpDialogShowsServerDetail(visible: any, name: any): boolean;
 /** Does the freshest paint read as "`name` is connected"? Two shapes exist:
  *  the LIST view puts name + status on ONE row (mcpServerRowStatus decides);
  *  the DETAIL view shows the name as a header and `Status: … connected` on its
@@ -2583,6 +2589,24 @@ export function headlessRoleKickoffRequiresMcp({ agent, role, headless, hasKicko
     headless: any;
     hasKickoff: any;
     isResume: any;
+}): boolean;
+/** Upper bound on one runMcpReconnectMacro run with these options. The waits
+ *  poll every 150 ms, so each bounded wait may overrun by one poll.
+ *  @param {Partial<McpReconnectMacroBudgets>} [overrides] */
+export function mcpReconnectMacroWorstCaseMs(overrides?: Partial<McpReconnectMacroBudgets>): number;
+/** Worst case of the fresh headless-role MCP verify that gates a kickoff. The
+ *  parent's KICKOFF_PROOF_WINDOW_MS must exceed it, or the parent gives up and
+ *  deletes the receipt before the host can report a refusal. */
+export function headlessRoleMcpVerifyWorstCaseMs(): number;
+/** WI-10006598: the host refused a headless kickoff, but its negative receipt
+ *  never reached the detached caller (the caller timed out and removed the
+ *  request, so publication failed). Nobody will reap this process and it can
+ *  never become the requested agent, so the host must end itself instead of
+ *  idling as a zombie that dedupes every relaunch. Pure — exported for tests. */
+export function unreportedKickoffRefusalStrandsHost({ delivered, headless, receipt }: {
+    delivered: any;
+    headless: any;
+    receipt: any;
 }): boolean;
 /** Reuse the existing closed-loop /mcp walker, with one bounded second chance
  * for a server that was still connecting when the first dialog opened. */
@@ -2613,7 +2637,7 @@ export function mcpDialogRowSelected(visible: any, test: any): any;
  *   5. wait for the target row to read connected; Esc Esc out either way.
  * Returns { ok, step, detail } — the caller appendHostEvent()s it durably.
  */
-export function runMcpReconnectMacro({ serverName, write, readTap, resetTap, sleep, crDelayMs, settleMs, paintBudgetMs, reconnectBudgetMs, maxArrows, }: {
+export function runMcpReconnectMacro({ serverName, write, readTap, resetTap, sleep, crDelayMs, settleMs, paintBudgetMs, reconnectBudgetMs, maxArrows, closeWaitMs, }: {
     serverName: any;
     write: any;
     readTap: any;
@@ -2624,6 +2648,7 @@ export function runMcpReconnectMacro({ serverName, write, readTap, resetTap, sle
     paintBudgetMs?: number | undefined;
     reconnectBudgetMs?: number | undefined;
     maxArrows?: number | undefined;
+    closeWaitMs?: number | undefined;
 }): Promise<{
     ok: boolean;
     step: string;
@@ -3533,6 +3558,18 @@ export const SCROLLBACK_ERASE_RE: RegExp;
  * from the first output byte. A detector miss then makes delivery slower
  * instead of typing into a booting TUI. */
 export const CODEX_TUI_START_UNOBSERVED_FALLBACK_MULTIPLIER: 4;
+/** Defaults of runMcpReconnectMacro, shared with its worst-case bound. Typed
+ *  as plain numbers: an inferred literal type would leak into the generated
+ *  .d.mts as `crDelayMs?: 150` and reject every caller's own budget.
+ *  @typedef {{ crDelayMs: number, settleMs: number, paintBudgetMs: number,
+ *    reconnectBudgetMs: number, maxArrows: number, closeWaitMs: number }} McpReconnectMacroBudgets
+ *  @type {Readonly<McpReconnectMacroBudgets>} */
+export const MCP_RECONNECT_MACRO_DEFAULTS: Readonly<McpReconnectMacroBudgets>;
+/** A headless role has exactly one (role-scoped) MCP server, so the list and
+ *  the detail view hold a handful of rows; 8 arrows is ample and keeps the
+ *  verify inside the parent's kickoff-proof window (WI-10006598). */
+export const HEADLESS_ROLE_MCP_MAX_ARROWS: 8;
+export const HEADLESS_ROLE_MCP_VERIFY_ATTEMPTS: 2;
 /** Default TTL a delivery id is remembered as "already accepted" (EI-19311270129974785).
  *  Sized comfortably above the client's own retry envelope — `markDeliveryFailed`'s
  *  backoff caps at 10min and the pump gives up after a bounded attempt count — so a
@@ -3606,5 +3643,18 @@ export type EnvironmentMap = Record<string, string | undefined>;
  * the file/IO/safety logic (which is exactly how this stayed codex-only).
  */
 export type TurnRowVerdict = "turn-completed" | "turn-started" | "ignore";
+/**
+ * Defaults of runMcpReconnectMacro, shared with its worst-case bound. Typed
+ * as plain numbers: an inferred literal type would leak into the generated
+ * .d.mts as `crDelayMs?: 150` and reject every caller's own budget.
+ */
+export type McpReconnectMacroBudgets = {
+    crDelayMs: number;
+    settleMs: number;
+    paintBudgetMs: number;
+    reconnectBudgetMs: number;
+    maxArrows: number;
+    closeWaitMs: number;
+};
 import { readFileSync } from 'node:fs';
 import { stageAgentIdentityTty } from '../../../libs/papercusp-shared/src/agent/loopback-identity-tty.mjs';

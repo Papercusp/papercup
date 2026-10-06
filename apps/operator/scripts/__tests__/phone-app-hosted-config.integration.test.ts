@@ -75,8 +75,10 @@ describe('Phone existing deployer public media preparation', () => {
     expect(first.stdout + first.stderr).not.toContain('test-secret-withheld');
     const file = join(f.conf, 'livekit-server.yaml');
     const config = parse(readFileSync(file, 'utf8'));
-    expect(config.turn).toMatchObject({ enabled: true, udp_port: 7893, tls_port: 7894,
+    expect(config.turn).toMatchObject({ enabled: true, tls_port: 7894,
       domain: 'turn.example.com', cert_file: certPath, key_file: keyPath });
+    // TURN is TLS-only: a UDP port would issue turn:<home IP> to public clients (WI-10006616).
+    expect(config.turn).not.toHaveProperty('udp_port');
     expect(config.keys).toEqual({ 'test-key': 'test-secret-withheld' });
     expect(parse(readFileSync(join(f.conf, 'livekit-sip.yaml'), 'utf8')).ws_url).toBe('ws://127.0.0.1:7890');
     expect(statSync(file).mode & 0o777).toBe(0o600);

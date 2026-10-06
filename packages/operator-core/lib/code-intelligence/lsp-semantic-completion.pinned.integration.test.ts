@@ -52,7 +52,7 @@ async function finishOwnedTask(taskId: string): Promise<void> {
   if (!outcome.ok && outcome.error !== 'already_gone') {
     throw new Error(`native completion fixture cleanup refused: ${outcome.error}`);
   }
-  if (outcome.error === 'already_gone') {
+  if (!outcome.ok && outcome.error === 'already_gone') {
     await closeTask(taskId, { state: 'stranded', exitReason: 'fixture verified process gone at teardown' });
   }
   await expect.poll(async () => {
@@ -71,7 +71,7 @@ async function finishOwnedTask(taskId: string): Promise<void> {
 }
 
 const pluginName = 'papercusp-semantic-completion-fixture';
-const controls = ['complete', 'missing-file', 'extra-file', 'missing-project', 'extra-project',
+const controls = ['complete', 'complete-projects', 'missing-file', 'extra-file', 'missing-project', 'extra-project',
   'disabled', 'cancel-before', 'cancel-after'] as const;
 
 // Only this fixture wrapper mutates native state. Production candidate code is
@@ -79,12 +79,21 @@ const controls = ['complete', 'missing-file', 'extra-file', 'missing-project', '
 const controlWrapper = String.raw`
 const candidate = module.exports.default;
 const fs = require('node:fs');
+const activationFile = require('node:path').join(__dirname, '../../../native-plugin-activations.jsonl');
+const sessionIds = new WeakMap();
+let nextSessionId = 0;
+let nextFactoryId = 0;
 module.exports = function(modules) {
+  const factoryId = ++nextFactoryId;
   const plugin = candidate(modules);
   return { create(info) {
     const session = info.session;
+    if (!sessionIds.has(session)) sessionIds.set(session, ++nextSessionId);
+    const activation = { factoryId, sessionId: sessionIds.get(session),
+      projectName: info.project.getProjectName(), registrations: 0, ok: false };
     const add = session.addProtocolHandler;
     session.addProtocolHandler = function(command, handler) {
+      activation.registrations++;
       return add.call(this, command, function(request) {
         const control = request.arguments && request.arguments.nativeControl;
         let pipe;
@@ -114,8 +123,17 @@ module.exports = function(modules) {
         }
       });
     };
-    try { return plugin.create(info); }
-    finally { session.addProtocolHandler = add; }
+    try {
+      const service = plugin.create(info);
+      activation.ok = true;
+      return service;
+    } catch (error) {
+      activation.error = String(error);
+      throw error;
+    } finally {
+      session.addProtocolHandler = add;
+      fs.appendFileSync(activationFile, JSON.stringify(activation) + '\n');
+    }
   } };
 };
 `;
@@ -139,6 +157,17 @@ describe('candidate completion through the pinned native plugin package', () => 
       files: ['target.ts', 'consumer.ts'] }));
     writeFileSync(target, source);
     writeFileSync(consumer, 'import { semanticTarget } from "./target";\nsemanticTarget();\n');
+    const secondConsumer = join(root, 'second', 'consumer.ts');
+    if (control === 'complete-projects') {
+      const secondConfig = join(root, 'second', 'tsconfig.json');
+      mkdirSync(join(root, 'second'));
+      writeFileSync(secondConfig, JSON.stringify({ compilerOptions: { strict: true, noLib: true, types: [] },
+        files: ['consumer.ts'] }));
+      writeFileSync(secondConsumer, 'import { semanticTarget } from "../target";\nsemanticTarget();\n');
+      // Independently authored imported-source closure, before native startup.
+      population.push({ projectName: secondConfig, anchorFile: secondConsumer,
+        files: [target, secondConsumer, secondConfig] });
+    }
     const pluginRoot = join(root, 'probe');
     const packageRoot = join(pluginRoot, 'node_modules', pluginName);
     mkdirSync(packageRoot, { recursive: true });
@@ -180,6 +209,23 @@ describe('candidate completion through the pinned native plugin package', () => 
       // projectInfo is used to wait for plugin registration, NEVER to author
       // the population or the expected reference sites.
       await native('projectInfo', { file: target, needFileNameList: false });
+      if (control === 'complete-projects') {
+        await connection.sendNotification('textDocument/didOpen', { textDocument: {
+          uri: pathToFileURL(secondConsumer).href, languageId: 'typescript', version: 1,
+          text: 'import { semanticTarget } from "../target";\nsemanticTarget();\n' } });
+        await native('projectInfo', { file: secondConsumer, needFileNameList: false });
+        const activations = readFileSync(join(root, 'native-plugin-activations.jsonl'), 'utf8')
+          .trim().split('\n').map(line => JSON.parse(line) as {
+            factoryId: number; sessionId: number; projectName: string; registrations: number; ok: boolean; error?: string;
+          });
+        expect(activations.map(row => row.projectName).sort()).toEqual(population.map(project => project.projectName).sort());
+        expect(new Set(activations.map(row => row.factoryId)).size).toBe(2);
+        expect(new Set(activations.map(row => row.sessionId)).size).toBe(1);
+        expect(activations, `actual native plugin activations: ${JSON.stringify(activations)}`)
+          .toEqual(expect.arrayContaining([expect.objectContaining({ ok: true }), expect.objectContaining({ ok: true })]));
+        expect(activations.every(row => row.ok), JSON.stringify(activations)).toBe(true);
+        expect(activations.reduce((sum, row) => sum + row.registrations, 0)).toBe(1);
+      }
       const request: SemanticCompletionRequest & { nativeControl?: string } = {
         file: target, line: 2, offset: 2,
         population: population.map(project => ({ ...project, files: [...project.files] })),
@@ -198,12 +244,15 @@ describe('candidate completion through the pinned native plugin package', () => 
         await native('projectInfo', { file: join(extra, 'extra.ts'), needFileNameList: false });
       }
       if (['disabled', 'cancel-before', 'cancel-after'].includes(control)) request.nativeControl = control;
-      if (control === 'complete') {
+      if (control === 'complete' || control === 'complete-projects') {
         const result = await requestSemanticCompletion(request, { isCancellationRequested: false }, native);
-        expect(result.population).toEqual([{ ...population[0], files: [...population[0].files].sort() }]);
+        expect(result.population).toEqual(population.map(project => ({ ...project, files: [...project.files].sort() }))
+          .sort((a, b) => a.projectName.localeCompare(b.projectName)));
         const sites = result.refs.map(ref => [ref.file.slice(root.length + 1), ref.start.line, ref.start.offset])
           .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
-        expect(sites).toEqual([['consumer.ts', 1, 10], ['consumer.ts', 2, 1], ['target.ts', 1, 17], ['target.ts', 2, 1]]);
+        const expectedSites = [['consumer.ts', 1, 10], ['consumer.ts', 2, 1], ['target.ts', 1, 17], ['target.ts', 2, 1]];
+        if (control === 'complete-projects') expectedSites.push(['second/consumer.ts', 1, 10], ['second/consumer.ts', 2, 1]);
+        expect(sites).toEqual(expectedSites.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))));
         // Characterize the wrapper's ignored token, then require our outer
         // boundary to refuse the same pre-cancelled caller independently.
         const cancelled = new CancellationTokenSource();

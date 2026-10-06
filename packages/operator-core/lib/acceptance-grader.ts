@@ -163,6 +163,22 @@ export function isAcceptanceGradingRequestForPlan(
 export const ACCEPTANCE_GRADING_REQUEST_UNHELD_GRACE_MS = 6 * 60 * 60 * 1000;
 
 /**
+ * The rubric revision a grading request was filed against, read from
+ * `payload.acceptanceReviewTarget.revision`. A review-target reservation and a
+ * consult-expiry pullable review converted from one both carry it. Returns
+ * `null` for an explicit legacy (revision-less) target and `undefined` when the
+ * payload says nothing usable. It never guesses a revision.
+ */
+export function acceptanceGradingRequestTargetRevision(payload: unknown): number | null | undefined {
+  if (!payload || typeof payload !== 'object') return undefined;
+  const target = (payload as { acceptanceReviewTarget?: unknown }).acceptanceReviewTarget;
+  if (!target || typeof target !== 'object') return undefined;
+  const revision = (target as { revision?: unknown }).revision;
+  if (revision === null) return null;
+  return typeof revision === 'number' && Number.isInteger(revision) && revision >= 0 ? revision : undefined;
+}
+
+/**
  * Is this task a grading request that is actually IN FLIGHT — the only kind that may
  * suppress recruiting a grader? Identity alone is not enough: an unheld request is
  * graded by nobody, and suppressing dispatch behind it strands the plan for good.
@@ -178,13 +194,34 @@ export const ACCEPTANCE_GRADING_REQUEST_UNHELD_GRACE_MS = 6 * 60 * 60 * 1000;
  * EI-22678191183363422 protects.
  */
 export function isInFlightAcceptanceGradingRequest(
-  workItem: Pick<WorkItem, 'title' | 'summary' | 'createdBy' | 'assignee' | 'createdAt' | 'lastProgressAt'>,
+  workItem: Pick<WorkItem, 'title' | 'summary' | 'createdBy' | 'assignee' | 'createdAt' | 'lastProgressAt'> & {
+    payload?: unknown;
+  },
   planSlug: string,
   nowMs: number,
   ineligibleHolders?: ReadonlySet<string>,
+  currentRubricRevision?: number | null,
 ): boolean {
   if (!isAcceptanceGradingRequestForPlan(workItem, planSlug)) return false;
   if (workItem.assignee) return !ineligibleHolders?.has(workItem.assignee);
+  // WI-10006620: an UNHELD request filed for a different rubric revision targets
+  // a superseded rubric, so nobody is grading the current one. A review-target
+  // reservation that the consult-expiry path turned into a pullable review quotes
+  // `scorecards:emit` and so matches the identity markers. Without this check it
+  // suppressed recruitment for the current revision for the whole grace window,
+  // even after its own target had been graded. The reservation key already
+  // separates revisions (acceptanceReviewTargetConditionKey), so this dedup must
+  // too. Compare only when both revisions are known integers; anything unknown
+  // keeps the previous behaviour. Held requests are excluded on purpose: an
+  // eligible holder can still emit against the current revision.
+  const targetRevision = acceptanceGradingRequestTargetRevision(workItem.payload);
+  if (
+    typeof targetRevision === 'number' &&
+    typeof currentRubricRevision === 'number' &&
+    targetRevision !== currentRubricRevision
+  ) {
+    return false;
+  }
   const lastMovedMs = Date.parse(workItem.lastProgressAt ?? workItem.createdAt);
   return Number.isFinite(lastMovedMs) && nowMs - lastMovedMs < ACCEPTANCE_GRADING_REQUEST_UNHELD_GRACE_MS;
 }
@@ -2285,6 +2322,9 @@ export async function resolveAcceptanceGrader(
       // only a request held by an agent who could grade it (or one filed within
       // the grace window) counts as in flight; an abandoned one, or one held by
       // the shipper or another excluded party, grades nothing (WI-10002459).
+      // Read once: the in-flight guard compares each request's target revision with
+      // it (WI-10006620), and the review-target reservation below keys on it.
+      const rubricRevision = (rubric as unknown as { revision?: number | null }).revision ?? null;
       let existingGradingRequest: WorkItem | undefined;
       try {
         const candidates = await (deps.listWork ?? listWorkItems)({
@@ -2317,7 +2357,7 @@ export async function resolveAcceptanceGrader(
               },
             );
         existingGradingRequest = candidates.find((candidate) =>
-          isInFlightAcceptanceGradingRequest(candidate, planSlug, nowMs, ineligibleHolders),
+          isInFlightAcceptanceGradingRequest(candidate, planSlug, nowMs, ineligibleHolders, rubricRevision),
         );
       } catch (err) {
         // This read is a duplicate guard, not a prerequisite for grading. A
@@ -2342,7 +2382,6 @@ export async function resolveAcceptanceGrader(
       // reservation protects the durable reviewer-visible target across retries
       // and concurrent dispatches. The key includes the nullable rubric revision
       // so distinct revisions remain independent.
-      const rubricRevision = (rubric as unknown as { revision?: number | null }).revision ?? null;
       const reserved = await (deps.reserveReviewTarget ?? reserveAcceptanceReviewTarget)(
         {
           workspaceId: plan.row.workspaceId,

@@ -125,6 +125,15 @@ export function scoreRuns(
 ): ScoredComparison {
   const foreign = runs.filter((r) => r.preregHash !== prereg.hash).map((r) => r.capabilities.armId);
   if (foreign.length > 0) throw new Error(`score refused: runs from another preregistration (${foreign.join(', ')})`);
+  // One run per arm. A superseded run left beside its rerun (a renamed
+  // `<arm>.index-failed.run.json`) otherwise scores the arm twice: its answers
+  // pool into the key and it appears twice in the aggregates (EI-25227522600988042).
+  const seen = new Set<string>();
+  const repeated = new Set<string>();
+  for (const r of runs) (seen.has(r.capabilities.armId) ? repeated : seen).add(r.capabilities.armId);
+  if (repeated.size > 0) {
+    throw new Error(`score refused: more than one run for arm(s) ${[...repeated].join(', ')}; keep only the run to be scored`);
+  }
   const keys = seedKeys.map((k) => applyAdjudication(k, verdicts[k.caseId] ?? []));
   const keyOf = new Map(keys.map((k) => [k.caseId, k]));
   const caseOf = new Map(cases.map((c) => [c.id, c]));

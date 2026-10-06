@@ -17,7 +17,7 @@
  *     gym_autoloop_config, so accumulating here would double-count).
  */
 import type { Sql, TransactionSql } from 'postgres';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   checkLoopVerdict,
   LEARNING_GOVERNOR_BUDGET_FLOOR_USD,
@@ -440,6 +440,10 @@ export async function sumOpenReservedUsd(
 export interface CycleSpendReservationScope {
   runId: string;
   budgetUsd: number;
+  /** Optional native resource policy, matched against the registered policy.
+   * Bounds are retained for every disposition and scoped to this run. */
+  resources?: LearningReservationResources;
+  expectedResourceBudget?: LearningReservationResourceBudget;
 }
 
 const cycleUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -448,7 +452,20 @@ const cycleUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a
 export function cycleReservationRunRef(cycle: CycleSpendReservationScope, reservationId: string): string | null {
   if (!cycle || typeof cycle.runId !== 'string' || !cycleUuid.test(cycle.runId) ||
     exactUsdMicros(cycle.budgetUsd) === null || typeof reservationId !== 'string' || !cycleUuid.test(reservationId)) return null;
-  return `cycle:${cycle.runId.toLowerCase()}/cap:${exactUsdMicros(cycle.budgetUsd)}/attempt:${reservationId.toLowerCase()}`;
+  let resourcePolicy = '';
+  if (cycle.resources !== undefined || cycle.expectedResourceBudget !== undefined) {
+    const resources = cycle.resources, budget = cycle.expectedResourceBudget;
+    if (!resources || !resourceBudgetValid(budget) || !resourceArm(resources.armId) ||
+      !resourceCount(resources.inputTokens) || !resourceCount(resources.outputTokens) || resources.outputTokens === 0) return null;
+    // Retain the frozen policy in the existing run identity. A registration
+    // change cannot renew a running cycle's token/request allowance. Arm order
+    // is immaterial, just as it is in the registered-policy equality check.
+    const hash = createHash('sha256').update(JSON.stringify({ inputTokens: budget.inputTokens,
+      outputTokens: budget.outputTokens, requestsPerArm: budget.requestsPerArm,
+      armIds: [...budget.armIds].sort() })).digest('hex');
+    resourcePolicy = `/resources:${hash}`;
+  }
+  return `cycle:${cycle.runId.toLowerCase()}/cap:${exactUsdMicros(cycle.budgetUsd)}${resourcePolicy}/attempt:${reservationId.toLowerCase()}`;
 }
 
 export interface ReserveLearningSpendInput {
@@ -509,7 +526,11 @@ export async function reserveLearningSpend(
   sql: Sql,
   q: ReserveLearningSpendInput,
 ): Promise<ReserveLearningSpendResult> {
-  q = { ...q, ...(q.cycle !== undefined ? { cycle: { ...q.cycle } } : {}), ...(q.exact ? { exact: { ...q.exact,
+  q = { ...q, ...(q.cycle !== undefined ? { cycle: { ...q.cycle,
+    ...(q.cycle.resources ? { resources: { ...q.cycle.resources } } : {}),
+    ...(q.cycle.expectedResourceBudget ? { expectedResourceBudget: { ...q.cycle.expectedResourceBudget,
+      armIds: Array.isArray(q.cycle.expectedResourceBudget.armIds) ? [...q.cycle.expectedResourceBudget.armIds] : [] } } : {}),
+  } } : {}), ...(q.exact ? { exact: { ...q.exact,
     ...(q.exact.resources ? { resources: { ...q.exact.resources } } : {}),
     ...(q.exact.expectedResourceBudget ? { expectedResourceBudget: { ...q.exact.expectedResourceBudget,
       armIds: Array.isArray(q.exact.expectedResourceBudget.armIds) ? [...q.exact.expectedResourceBudget.armIds] : [] } } : {}),
@@ -536,8 +557,8 @@ export async function reserveLearningSpend(
   // The legacy test seam may run without begin; exact grants must NEVER take
   // a FOR UPDATE lock in autocommit and then insert outside its transaction.
   if (exact && typeof begin !== 'function') return refuse('transaction-required');
-  const resources = exact?.resources;
-  const expectedResources = exact?.expectedResourceBudget;
+  const resources = exact?.resources ?? cycle?.resources;
+  const expectedResources = exact?.expectedResourceBudget ?? cycle?.expectedResourceBudget;
   if ((resources || expectedResources) && (!resources || !resourceBudgetValid(expectedResources) ||
     !resourceArm(resources.armId) || !resourceCount(resources.inputTokens) ||
     !resourceCount(resources.outputTokens) || resources.outputTokens === 0)) return refuse('invalid-exact-request');
@@ -555,7 +576,8 @@ export async function reserveLearningSpend(
       workspaceId: q.workspaceId, potSlug: reg.potSlug,
     }))) return refuse('pot-disabled');
     if (reg && !reg.enabled) return refuse('disabled');
-    if ((reg?.meta?.reservationBinding != null || reg?.meta?.reservationResourceBudget != null) && !exact) {
+    if ((reg?.meta?.reservationBinding != null && !exact) ||
+      (reg?.meta?.reservationResourceBudget != null && !exact && !cycle)) {
       return refuse('binding-required');
     }
     if (exact) {
@@ -578,6 +600,7 @@ export async function reserveLearningSpend(
         resourceBudget.armIds.length !== expectedResources.armIds.length ||
         resourceBudget.armIds.some(id => !expectedResources.armIds.includes(id))) return refuse('stale-binding');
       if (!resourceBudget.armIds.includes(resources.armId)) return refuse('resource-cap-exceeded');
+      const attemptPrefix = exact ? `manifest:${exact.binding}/attempt:` : cycleRef!.slice(0, -reservationId.length);
       // No status filter: a failed/cancelled/settled request may have spent
       // tokens. Releasing USD is not authority to refund any resource bound.
       // GROUP BY keeps the result bounded by the frozen arm population, and
@@ -586,9 +609,10 @@ export async function reserveLearningSpend(
         SELECT arm_id, SUM(reserved_input_tokens) AS inputs, SUM(reserved_output_tokens) AS outputs,
           COUNT(*) AS requests,
           BOOL_AND(reserved_input_tokens IS NOT NULL AND reserved_output_tokens IS NOT NULL
-            AND run_ref IS NOT DISTINCT FROM ${`manifest:${exact!.binding}/attempt:`} || id::text) AS complete
+            AND run_ref IS NOT DISTINCT FROM ${attemptPrefix} || id::text) AS complete
         FROM harness_shared.learning_spend_reservations
         WHERE workspace_id = ${q.workspaceId} AND loop_id = ${q.loopId}
+          ${cycle ? tx`AND run_ref LIKE ${`cycle:${cycle.runId.toLowerCase()}/%`}` : tx``}
         GROUP BY arm_id`) as Row[];
       let inputs = resources.inputTokens, outputs = resources.outputTokens;
       let armRequests = 1;
@@ -614,7 +638,7 @@ export async function reserveLearningSpend(
     );
     if (cycle !== undefined) {
       const runPrefix = `cycle:${cycle.runId.toLowerCase()}/`;
-      const attemptPrefix = `${runPrefix}cap:${micros(cycle.budgetUsd)}/attempt:`;
+      const attemptPrefix = cycleRef!.slice(0, -reservationId.length);
       // OPEN rows hold their full reservation, even when a caller knows only
       // a usage subtotal. Every terminal disposition charges its actual use.
       // Mirror accumulate:false therefore cannot reopen this run's capacity.
@@ -742,8 +766,12 @@ export async function settleLearningSpend(
     if (current.runRef?.startsWith('cycle:')) {
       const parts = current.runRef.split('/');
       const scope = { runId: parts[0].slice(6), budgetUsd: Number(parts[1]?.slice(4)) / 1_000_000 };
+      const monetaryRef = cycleReservationRunRef(scope, current.id);
+      const resourceHash = /^resources:([a-f0-9]{64})$/.exec(parts[2] ?? '')?.[1];
+      const expectedRef = resourceHash && current.resources
+        ? monetaryRef?.replace('/attempt:', `/resources:${resourceHash}/attempt:`) : monetaryRef;
       if (typeof begin !== 'function' || exactUsdMicros(q.usedUsd) === null ||
-        current.runRef !== cycleReservationRunRef(scope, current.id)) {
+        current.runRef !== expectedRef || (current.resources !== undefined && !resourceHash)) {
         return { ok: false, reason: 'cycle-settlement-required', reservation: current };
       }
     }

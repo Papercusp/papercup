@@ -3117,6 +3117,9 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
                 // message is typed or waiting to be resent the hint is noise.
                 if app.su_pending_turn.is_some() || !app.chat_input.is_empty() {
                     ""
+                } else if app.chat_first_offers_resume() {
+                    // P-031 (G-12): offer the earlier conversation on start.
+                    "Type a message below and press Enter. /resume continues an earlier conversation."
                 } else {
                     "Type a message below and press Enter."
                 }
@@ -10913,6 +10916,20 @@ mod tests {
         assert!(frame.contains("Starting Claude…"), "{frame}");
         assert!(
             frame.contains("Type a message below and press Enter."),
+            "{frame}"
+        );
+        assert!(!frame.contains("/resume continues"), "{frame}");
+
+        // P-031 (G-12): with an earlier conversation in this directory the
+        // empty chat offers it.
+        let earlier: crate::agent_chats::AgentChatSummary =
+            serde_json::from_value(serde_json::json!({ "id": "chat-earlier", "role": "operator" }))
+                .expect("summary");
+        app.agent_chat_summaries = vec![earlier];
+        app.agent_chats_loaded_for = Some(app.harness.clone());
+        let frame = render(&app, 120, 24);
+        assert!(
+            frame.contains("/resume continues an earlier conversation."),
             "{frame}"
         );
     }

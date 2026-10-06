@@ -36,7 +36,7 @@ export function forwardedPorts({ sip = false } = {}) {
   const media = [
     { proto: 'udp', ports: '7892', what: 'LiveKit RTC UDP mux' },
     { proto: 'tcp', ports: '7891', what: 'LiveKit RTC TCP fallback' },
-    { proto: 'udp', ports: '7893', what: 'LiveKit TURN/UDP' },
+    // No TURN/UDP: TURN is TLS-only, reached through the TCP/443 SNI route (WI-10006616).
   ];
   const carrier = [
     { proto: 'udp', ports: '5070', what: 'livekit-sip signalling' },

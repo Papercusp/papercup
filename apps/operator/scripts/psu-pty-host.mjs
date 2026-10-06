@@ -7020,10 +7020,27 @@ export function shouldReapDetachedPtyScopeResidue({
 export function mcpServerRowStatus(line, name) {
   const l = String(line ?? '');
   if (!l.includes(name)) return null;
-  if (/\b(disconnected|failed|error|needs authentication|connecting|pending|retrying)\b/i.test(l))
+  if (/\b(disconnected|failed|error|needs authentication|connecting|pending|retrying|disabled)\b/i.test(l))
     return 'not-connected';
+  // Status glyphs Claude paints in front of a list row (✘ failed, ◯ connecting).
+  if (/[✘✗◯]/u.test(l)) return 'not-connected';
   if (/\bconnected\b/i.test(l)) return 'connected';
+  // WI-10006598: Claude 2.1.289 paints a healthy list row as `✔ papercusp
+  // 27 tools` — a check glyph and a tool count, no word "connected".
+  if (/[✔✓]/u.test(l) || /\d+\s*tools?\b/i.test(l)) return 'connected';
   return 'unknown';
+}
+
+/** Is the /mcp dialog showing the single-server DETAIL view for `name`? Claude
+ *  can open /mcp straight into it (header `Papercusp MCP Server`, then action
+ *  rows such as `1. Authenticate  2. Reconnect  3. Disable`), so there is no
+ *  list row to select (WI-10006598). Ink may drop inter-word gaps, so compare
+ *  case-insensitively with whitespace removed. Pure — exported for tests. */
+export function mcpDialogShowsServerDetail(visible, name) {
+  const header = `${String(name ?? '')}mcpserver`.replace(/\s+/gu, '').toLowerCase();
+  return String(visible ?? '')
+    .split('\n')
+    .some((l) => l.replace(/\s+/gu, '').toLowerCase().includes(header));
 }
 
 /** Does the freshest paint read as "`name` is connected"? Two shapes exist:
@@ -7040,10 +7057,14 @@ export function mcpConnectedVerdict(visible, name) {
   for (let i = lines.length - 1; i >= 0; i--) {
     const l = lines[i];
     const rowSt = mcpServerRowStatus(l, name);
-    if (rowSt) return rowSt === 'connected';
+    // A line that merely NAMES the server (the cwd header, the .mcp.json
+    // diagnostics path) is not a verdict; keep scanning (WI-10006598).
+    if (rowSt === 'connected') return true;
+    if (rowSt === 'not-connected') return false;
     if (/\bstatus\b/i.test(l)) {
       if (/\b(disconnected|failed|error|connecting|pending|retrying|needs authentication)\b/i.test(l)) return false;
-      if (/\bconnected\b/i.test(l)) return true;
+      if (/status:?\s*[✘✗◯]/iu.test(l)) return false;
+      if (/\bconnected\b/i.test(l) || /status:?\s*[✔✓]/iu.test(l)) return true;
     }
   }
   return false;
@@ -7054,6 +7075,64 @@ export function mcpConnectedVerdict(visible, name) {
 export function headlessRoleKickoffRequiresMcp({ agent, role, headless, hasKickoff, isResume }) {
   return agent === 'claude' && Boolean(role) && headless === true &&
     hasKickoff === true && isResume !== true;
+}
+
+/** Defaults of runMcpReconnectMacro, shared with its worst-case bound. Typed
+ *  as plain numbers: an inferred literal type would leak into the generated
+ *  .d.mts as `crDelayMs?: 150` and reject every caller's own budget.
+ *  @typedef {{ crDelayMs: number, settleMs: number, paintBudgetMs: number,
+ *    reconnectBudgetMs: number, maxArrows: number, closeWaitMs: number }} McpReconnectMacroBudgets
+ *  @type {Readonly<McpReconnectMacroBudgets>} */
+export const MCP_RECONNECT_MACRO_DEFAULTS = Object.freeze({
+  crDelayMs: 150,
+  settleMs: 300,
+  paintBudgetMs: 8_000,
+  reconnectBudgetMs: 20_000,
+  maxArrows: 40,
+  closeWaitMs: 400,
+});
+
+/** A headless role has exactly one (role-scoped) MCP server, so the list and
+ *  the detail view hold a handful of rows; 8 arrows is ample and keeps the
+ *  verify inside the parent's kickoff-proof window (WI-10006598). */
+export const HEADLESS_ROLE_MCP_MAX_ARROWS = 8;
+export const HEADLESS_ROLE_MCP_VERIFY_ATTEMPTS = 2;
+
+/** Upper bound on one runMcpReconnectMacro run with these options. The waits
+ *  poll every 150 ms, so each bounded wait may overrun by one poll.
+ *  @param {Partial<McpReconnectMacroBudgets>} [overrides] */
+export function mcpReconnectMacroWorstCaseMs(overrides = {}) {
+  const o = { ...MCP_RECONNECT_MACRO_DEFAULTS, ...overrides };
+  const poll = 150;
+  return (
+    o.crDelayMs +
+    o.paintBudgetMs + poll +
+    o.settleMs + // first-frame settle
+    o.maxArrows * o.settleMs + o.settleMs + // (3) select the server row, Enter
+    o.maxArrows * o.settleMs + // (4) select the Reconnect action
+    o.reconnectBudgetMs + poll + // (5) connected wait
+    3 * (o.closeWaitMs + poll) // closeOut: up to three Esc waits
+  );
+}
+
+/** Worst case of the fresh headless-role MCP verify that gates a kickoff. The
+ *  parent's KICKOFF_PROOF_WINDOW_MS must exceed it, or the parent gives up and
+ *  deletes the receipt before the host can report a refusal. */
+export function headlessRoleMcpVerifyWorstCaseMs() {
+  return HEADLESS_ROLE_MCP_VERIFY_ATTEMPTS *
+    mcpReconnectMacroWorstCaseMs({ maxArrows: HEADLESS_ROLE_MCP_MAX_ARROWS });
+}
+
+/** WI-10006598: the host refused a headless kickoff, but its negative receipt
+ *  never reached the detached caller (the caller timed out and removed the
+ *  request, so publication failed). Nobody will reap this process and it can
+ *  never become the requested agent, so the host must end itself instead of
+ *  idling as a zombie that dedupes every relaunch. Pure — exported for tests. */
+export function unreportedKickoffRefusalStrandsHost({ delivered, headless, receipt }) {
+  if (delivered === true || headless !== true) return false;
+  if (!receipt || receipt.published !== false) return false;
+  // No request at all: the caller never opted in to the receipt handshake.
+  return receipt.reason !== 'kickoff-proof-request-missing';
 }
 
 /** Reuse the existing closed-loop /mcp walker, with one bounded second chance
@@ -7105,21 +7184,17 @@ export async function runMcpReconnectMacro({
   readTap,
   resetTap,
   sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
-  crDelayMs = 150,
-  settleMs = 300,
-  paintBudgetMs = 8_000,
-  reconnectBudgetMs = 20_000,
-  maxArrows = 40,
+  crDelayMs = MCP_RECONNECT_MACRO_DEFAULTS.crDelayMs,
+  settleMs = MCP_RECONNECT_MACRO_DEFAULTS.settleMs,
+  paintBudgetMs = MCP_RECONNECT_MACRO_DEFAULTS.paintBudgetMs,
+  reconnectBudgetMs = MCP_RECONNECT_MACRO_DEFAULTS.reconnectBudgetMs,
+  maxArrows = MCP_RECONNECT_MACRO_DEFAULTS.maxArrows,
+  closeWaitMs = MCP_RECONNECT_MACRO_DEFAULTS.closeWaitMs,
 }) {
   const ESC = '\x1b';
   const DOWN = '\x1b[B';
   const CR = '\r';
   const visible = () => stripAnsi(readTap());
-  const closeOut = async () => {
-    write(ESC);
-    await sleep(150);
-    write(ESC);
-  };
   const waitFor = async (test, budgetMs) => {
     const until = Date.now() + budgetMs;
     for (;;) {
@@ -7128,6 +7203,24 @@ export async function runMcpReconnectMacro({
       if (Date.now() >= until) return null;
       await sleep(150);
     }
+  };
+  const squash = (v) => v.replace(/\s+/gu, '').toLowerCase();
+  const dialogDismissed = (v) => squash(v).includes('mcpdialogdismissed');
+  const rewindOpen = (v) =>
+    squash(v).includes('nothingtorewindto') || v.split('\n').some((l) => /^rewind$/i.test(l.trim()));
+  // WI-10006598: Esc from the detail view goes BACK to the list and Esc from
+  // the list closes the dialog, so the number of Escs needed varies. A blind
+  // second Esc at an empty prompt opens Rewind and leaves it on screen, so
+  // send the second only while the dialog is still up, and close a Rewind
+  // that opened anyway.
+  const closeOut = async () => {
+    resetTap();
+    write(ESC);
+    if (await waitFor(dialogDismissed, closeWaitMs)) return;
+    resetTap();
+    write(ESC);
+    const after = await waitFor((v) => dialogDismissed(v) || rewindOpen(v), closeWaitMs);
+    if (after && rewindOpen(after)) write(ESC);
   };
   const targetRowStatus = (v) => {
     const lines = v.split('\n');
@@ -7161,8 +7254,11 @@ export async function runMcpReconnectMacro({
   resetTap();
   write(CR);
 
-  // (2) painted?
-  const painted = await waitFor((v) => v.includes(serverName), paintBudgetMs);
+  // (2) painted? (a list row naming the server, or the detail-view header)
+  const painted = await waitFor(
+    (v) => v.includes(serverName) || mcpDialogShowsServerDetail(v, serverName),
+    paintBudgetMs,
+  );
   if (!painted) {
     await closeOut();
     return { ok: false, step: 'open-dialog', detail: `'${serverName}' never painted within ${paintBudgetMs}ms` };
@@ -7170,27 +7266,51 @@ export async function runMcpReconnectMacro({
   if (directReconnectSucceeded(painted)) {
     return { ok: true, step: 'direct-reconnected', detail: 'Claude /mcp confirmed this server reconnected' };
   }
-  if (targetRowStatus(painted) === 'connected') {
+  // The first match can arrive before the rest of the dialog; judge the
+  // shape off the whole first frame (the tap is not reset here).
+  await sleep(settleMs);
+  const frame = visible();
+  if (directReconnectSucceeded(frame)) {
+    return { ok: true, step: 'direct-reconnected', detail: 'Claude /mcp confirmed this server reconnected' };
+  }
+  const alreadyConnected = async () => {
     await closeOut();
-    return { ok: true, step: 'already-connected', detail: 'target row reads connected — nothing to heal' };
+    return { ok: true, step: 'already-connected', detail: 'target reads connected — nothing to heal' };
+  };
+  if (targetRowStatus(frame) === 'connected' || mcpConnectedVerdict(frame, serverName)) {
+    return alreadyConnected();
   }
 
-  // (3) cursor onto the target row
-  const onTarget = () => mcpDialogRowSelected(visible(), (l) => l.includes(serverName));
-  let selected = onTarget();
-  for (let i = 0; !selected && i < maxArrows; i++) {
-    resetTap();
-    write(DOWN);
-    await sleep(settleMs);
-    selected = onTarget();
+  // (3) cursor onto the target row — skipped when /mcp opened straight into
+  // the server's detail view (WI-10006598): there is no row to select, and
+  // the action rows below belong to the target already.
+  let inDetail = mcpDialogShowsServerDetail(frame, serverName);
+  if (!inDetail) {
+    const onTarget = () => mcpDialogRowSelected(visible(), (l) => l.includes(serverName));
+    let selected = onTarget();
+    for (let i = 0; !selected && i < maxArrows; i++) {
+      resetTap();
+      write(DOWN);
+      await sleep(settleMs);
+      const v = visible();
+      // The server can finish connecting while we navigate.
+      if (mcpConnectedVerdict(v, serverName)) return alreadyConnected();
+      if (mcpDialogShowsServerDetail(v, serverName)) {
+        inDetail = true;
+        break;
+      }
+      selected = onTarget();
+    }
+    if (!selected && !inDetail) {
+      await closeOut();
+      return { ok: false, step: 'select-server', detail: `cursor never reached '${serverName}' in ${maxArrows} downs` };
+    }
+    if (selected) {
+      resetTap();
+      write(CR);
+      await sleep(settleMs);
+    }
   }
-  if (!selected) {
-    await closeOut();
-    return { ok: false, step: 'select-server', detail: `cursor never reached '${serverName}' in ${maxArrows} downs` };
-  }
-  resetTap();
-  write(CR);
-  await sleep(settleMs);
 
   // (4) a reconnect action row (if this version paints one)
   if (/\breconnect\b/i.test(visible())) {
@@ -8702,6 +8822,9 @@ export function hostThroughPty(o) {
   // verifier cannot let later injections create another unbounded CR window.
   let submitVerifyExhausted = false;
   let terminateSubmitVerifyExhaustion = () => false;
+  // WI-10006598: assigned once cleanup exists (beside the submit-exhaustion
+  // terminator); ends a headless host whose kickoff refusal went unreported.
+  let terminateUnreportedKickoffRefusal = () => false;
 
   // Output taps (mcp-transport-resilience P-003): live subscribers to the
   // child's raw output bytes — the mcp-reconnect macro reads the TUI screen
@@ -10075,7 +10198,8 @@ export function hostThroughPty(o) {
               write: (bytes) => child.write(bytes),
               readTap: tap.read,
               resetTap: tap.reset,
-            }));
+              maxArrows: HEADLESS_ROLE_MCP_MAX_ARROWS,
+            }), HEADLESS_ROLE_MCP_VERIFY_ATTEMPTS);
             appendHostEvent(ownerId, result.ok ? 'launch-role-mcp-ready' : 'launch-role-mcp-unavailable', {
               step: result.step,
               attempts: result.attempts,
@@ -10178,11 +10302,24 @@ export function hostThroughPty(o) {
           // even when the PTY submission never started. Otherwise the parent
           // waits out its proof window and cannot distinguish "not submitted"
           // from a host that died before it could report.
-          publishKickoffProof({
+          const receipt = publishKickoffProof({
             persisted: false,
             nativeRef: null,
             reason: `kickoff-not-submitted:${r.reason ?? 'unknown'}`,
           });
+          // WI-10006598: a refusal the caller can no longer hear leaves an
+          // idle headless session nobody reaps. End the host instead.
+          if (unreportedKickoffRefusalStrandsHost({
+            delivered: false,
+            headless: env.PAPERCUSP_PSU_HEADLESS === '1',
+            receipt,
+          })) {
+            terminateUnreportedKickoffRefusal({
+              kickoffReason: r.reason ?? 'unknown',
+              receiptReason: receipt?.reason ?? null,
+              receiptErrorCode: receipt?.errorCode ?? null,
+            });
+          }
           return;
         }
         let proof;
@@ -12692,6 +12829,21 @@ export function hostThroughPty(o) {
         process.stderr.write(
           `psu-pty-host: ${extra.label} submit verification exhausted for ${ownerId} ` +
             `after ${extra.resubmits ?? '?'} resubmit CRs — terminating host (WI-41044)\n`,
+        );
+      } catch {
+        /* diagnostic only */
+      }
+      cleanup(1, 'SIGTERM');
+      return true;
+    };
+    terminateUnreportedKickoffRefusal = (details = {}) => {
+      if (cleaned) return false;
+      appendHostEvent(ownerId, 'kickoff-refusal-unreported-terminating', details);
+      try {
+        process.stderr.write(
+          `psu-pty-host: kickoff not submitted (${details.kickoffReason ?? 'unknown'}) and the ` +
+            `refusal receipt could not be published (${details.receiptReason ?? 'unknown'}) for ` +
+            `${ownerId} — terminating headless host (WI-10006598)\n`,
         );
       } catch {
         /* diagnostic only */

@@ -674,8 +674,9 @@ async function main(): Promise<void> {
       execution: embedExecutionTarget(), threads: ORT_SESSION_OPTIONS, onnxBindingPin: getOnnxBindingPin(), summary }, null, 2),
     { flag: 'wx', mode: 0o600 });
     await handle.close(); await shutdownLocalEmbedder();
-    console.log('wrote', outPath, `verdict=${summary.verdict}`, summary.failures.join(' | '));
-    process.exit(summary.verdict === 'pass' ? 0 : 1);
+    console.log('wrote', outPath, `verdict=${summary.verdict}`, [...summary.invalidReasons, ...summary.failures].join(' | '));
+    // 2 = invalid (a suspended window voids the timing evidence; re-run), 1 = fail (D-010).
+    process.exit(summary.verdict === 'pass' ? 0 : summary.verdict === 'invalid' ? 2 : 1);
   }
 
   // Which corpus/gold-set pair to score against. 'memory' (default) keeps the

@@ -186,6 +186,60 @@ Host notes (not pui defects):
   already bound to a different engine or project" (WI-10006533, to fix before the P-032 battery);
   one run's `m` key opened no Model picker within 25 s and did not reproduce (WI-10006528).
 
+## P-029 resolution (2026-10-06, WI-10006565)
+
+- **G-2, G-8, G-9**: each engine's own usage and todo data now reach pui (D-029; wire shape amended by D-031).
+  The Claude, Codex and OMP adapters feed context tokens, context window and cost or usage into the session
+  descriptor (`host.updateUsage`), and the todo/plan list (`host.updatePlan`). pui no longer fails on an
+  event type it does not know.
+- The footer reads `model · approvals mode · directory`, then context left (%) and session cost or usage, and
+  warns near the context limit. `/status` repeats all of it. The todo list is a checklist above the message box.
+- Verified: agent-chat-pty `P-029` and `P-026` cases on the real binary, operator and PG (testing:run
+  01a696ae, pass 11:17Z); `cargo test --bin pui` green.
+
+## P-031 resolution (2026-10-06, WI-10006609)
+
+- **G-1 startup**. Cause: `crossterm::supports_keyboard_enhancement()` waits up to 2 s for a terminal reply.
+  This checklist's driver never passed the terminal's replies back, so every pui start waited the full 2 s.
+  pui now enables the keyboard flags without asking; terminals without the protocol ignore the request
+  (main.rs). The driver (`p005-side-by-side.mts`) now answers like a real terminal; `--silent-terminal`
+  keeps the old behaviour.
+
+  | Run | Time to a usable prompt |
+  |---|---|
+  | pui before the fix, silent terminal | 2,111 ms |
+  | pui after the fix, silent terminal | 103 ms |
+  | pui after the fix, answering terminal | 102 ms |
+  | Stock Claude Code, silent terminal | 2,017 ms |
+  | Stock Claude Code, answering terminal | 7,624 ms |
+
+  The two pui builds differed only in that one probe. The Claude Code numbers are single samples on the busy
+  box; the 805 ms in row 1 did not reproduce. pui is no longer slower than Claude Code in either mode. Evidence:
+  `/tmp/p031-silent-{pui-ab,pui}/summary.json`, `/tmp/p031-start-answer`, `/tmp/p031-claude-*/summary.json`.
+- **G-13 errors with a next step** (`App::chat_failure_sentence`), one sentence each:
+  - Missing engine login: "Claude is not signed in; in a terminal on the computer running Papercusp, run
+    claude and type /login, then …" (Codex: `run codex login`; OMP: `run omp and type /login`). Before, it
+    said only "sign in to Claude".
+  - Operator unreachable: "PUI cannot reach Papercusp; start Papercusp Server, then …". Before, it said "PUI
+    lost its connection to Claude", which pointed at the engine.
+  - Operator hung: "Papercusp is not answering; start or restart Papercusp Server, then …".
+  - Dead session: "Claude stopped; press Enter to send your message again." This was already accurate: the
+    next message reopens the conversation. The raw text kept behind details no longer says "start a new
+    session".
+  - Usage limit (row 23): P-025 already shows it as one failure line, not a reply. It still gives no next step,
+    because switching accounts mid-conversation has no route yet (WI-10006626).
+- **G-12 offer resume**: when this directory has an earlier conversation, an empty chat reads "Type a message
+  below and press Enter. /resume continues an earlier conversation." It reads the same list `/resume` shows,
+  and only once that list has loaded. Starting `pui` in a directory with a live or resumable conversation still
+  opens it directly (D-008).
+- **G-14**: closed by P-026 (`pui --account`, and the account in `/status`, D-023).
+- Tests: `chat_first_missing_login_says_how_to_sign_in`,
+  `chat_first_refused_launch_shows_the_operators_reason` (unreachable),
+  `chat_first_slow_send_failures_say_what_was_slow` (hung),
+  `chat_first_offers_resume_only_when_this_directory_has_an_earlier_conversation`, and
+  `chat_first_startup_progress_is_plain_words` (the offer on screen). The agent-chat-pty hung-operator case
+  checks the new sentence.
+
 ## Where pui is already level or ahead
 
 Instant echo and working line after Enter (P-024), history recall, multiline input (three ways), the @ file

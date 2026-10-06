@@ -1349,6 +1349,56 @@ describe('sync-staging-checkout.sh coordinated restart identity (EI-240774465417
   });
 });
 
+describe('sync-staging-checkout.sh completed-phase startup budget (WI-10006606)', () => {
+  it('renews a finite phase deadline without announcing readiness', () => {
+    const result = runFn(['staging_sync_checkpoint'], [
+      'systemd-notify() { printf "%s\\n" "$*"; }',
+      'staging_sync_checkpoint "candidate checkout and SPA prepared"',
+    ].join('\n'), { env: { NOTIFY_SOCKET: '@test-staging-notify' } });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('EXTEND_TIMEOUT_USEC=900000000');
+    expect(result.stdout).toContain('candidate checkout and SPA prepared');
+    expect(result.stdout).not.toContain('--ready');
+  });
+
+  it('does not require a systemd notification socket for direct invocations', () => {
+    const result = runFn(['staging_sync_checkpoint'], [
+      'systemd-notify() { echo UNEXPECTED_NOTIFY; exit 91; }',
+      'staging_sync_checkpoint "candidate prepared"',
+    ].join('\n'), { env: { NOTIFY_SOCKET: '' } });
+    expect(result.status).toBe(0);
+    expect(result.stdout).not.toContain('UNEXPECTED_NOTIFY');
+  });
+
+  it.each([0, 17])('preserves exit %i and sends READY only for success', (status) => {
+    const result = runFn(['finish_staging_sync'], [
+      'cleanup_staging_candidate() { echo CLEANED; }',
+      'systemd-notify() { printf "%s\\n" "$*"; }',
+      'trap finish_staging_sync EXIT',
+      `exit ${status}`,
+    ].join('\n'), { env: { NOTIFY_SOCKET: '@test-staging-notify' } });
+    expect(result.status).toBe(status);
+    expect(result.stdout).toContain('CLEANED');
+    expect(result.stdout.includes('--ready')).toBe(status === 0);
+  });
+
+  it('fails closed when the phase deadline extension cannot be delivered', () => {
+    const result = runFn(['staging_sync_checkpoint'], [
+      'systemd-notify() { return 42; }',
+      'staging_sync_checkpoint "candidate prepared"',
+    ].join('\n'), { env: { NOTIFY_SOCKET: '@test-staging-notify' } });
+    expect(result.status).toBe(42);
+  });
+
+  it('enrolls the snapshot unit in notify with a finite startup budget', () => {
+    const dropIn = readFileSync(join(__dirname, '../../scripts/systemd/papercup-staging-sync.service.d/50-script-snapshot.conf'), 'utf8');
+    expect(dropIn).toContain('Type=notify');
+    expect(dropIn).toContain('NotifyAccess=all');
+    expect(dropIn).toContain('TimeoutStartSec=15min');
+    expect(readFileSync(SCRIPT_PATH, 'utf8')).toContain('trap finish_staging_sync EXIT');
+  });
+});
+
 describe('sync-staging-checkout.sh post-restart readiness budget (EI-23131564135958331)', () => {
   const script = readFileSync(SCRIPT_PATH, 'utf8');
 

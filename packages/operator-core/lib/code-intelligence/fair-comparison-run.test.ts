@@ -91,4 +91,12 @@ describe('scoreRuns', () => {
     const a = await runArm(fakeArm(capsA, {}), cases, other);
     expect(() => scoreRuns([a], cases, keys, {}, prereg)).toThrow(/another preregistration/);
   });
+  it('refuses two runs of the same arm, so a superseded run is never scored beside its rerun', async () => {
+    const failed = await runArm(fakeArm(capsA, { 'c-def': ['a.ts:1'] }), cases, prereg);
+    const rerun = await runArm(fakeArm(capsA, { 'c-def': ['a.ts:1'], 'c-callers': ['a.ts:3'] }), cases, prereg);
+    const b = await runArm(fakeArm(capsB, {}), cases, prereg);
+    expect(() => scoreRuns([failed, b, rerun], cases, keys, {}, prereg)).toThrow(/more than one run for arm\(s\) arm-a/);
+    // Control: the same runs with the superseded one removed score normally.
+    expect(scoreRuns([b, rerun], cases, keys, {}, prereg).aggregates.filter((x) => x.armId === 'arm-a')).toHaveLength(1);
+  });
 });

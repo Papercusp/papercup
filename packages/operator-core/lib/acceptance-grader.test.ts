@@ -2153,6 +2153,109 @@ describe('resolveAcceptanceGrader (P-011 / D-009 discovery-first)', () => {
     });
   });
 
+  describe('an unheld request for a SUPERSEDED rubric revision does not suppress recruitment (WI-10006620)', () => {
+    const assigned = () =>
+      vi.fn(async () => ({
+        verdict: 'assigned' as const,
+        graders: [{ ownerId: 'su-independent', score: 0.71, liveness: 'live', via: 'floor' as const }],
+        routing: { selection: { min: 1, max: 2, selected: [] } },
+        excluded: [],
+      }));
+
+    // The shape that stranded a real plan: a review-target reservation that the
+    // consult-expiry path converted into a pullable review. Its summary quotes
+    // scorecards:emit, so it matches the identity markers, and only its payload
+    // records which rubric revision it targets. The rubric fixture is revision 3.
+    const pullableReview = (targetRevision: number | null, assignee: string | null = null) => ({
+      id: 'WI-pullable-review',
+      kind: 'task',
+      state: 'open',
+      title: 'Acceptance review-target reservation — ship-the-thing (acceptance-ship-the-thing)',
+      summary:
+        'PULLABLE REVIEW. To review: claim this item and grade the rubric with scorecards:emit, ' +
+        'with concrete evidence per criterion.',
+      createdBy: null,
+      assignee,
+      createdAt: new Date(NOW - 60_000).toISOString(),
+      lastProgressAt: null,
+      payload: {
+        acceptanceReviewTarget: {
+          planSlug: 'ship-the-thing',
+          rubricId: 'acceptance-ship-the-thing',
+          revision: targetRevision,
+          harnessSlug: 'papercusp',
+          workspaceId: 'papercusp-workspace',
+        },
+      },
+    });
+
+    it('the fixture matches the identity markers and is fresh, so these cases exercise the revision rule', () => {
+      expect(isAcceptanceGradingRequestForPlan(pullableReview(2) as never, 'ship-the-thing')).toBe(true);
+      expect(isInFlightAcceptanceGradingRequest(pullableReview(3) as never, 'ship-the-thing', NOW, undefined, 3)).toBe(
+        true,
+      );
+    });
+
+    it('treats an unheld request filed for an older revision as not in flight', () => {
+      expect(isInFlightAcceptanceGradingRequest(pullableReview(2) as never, 'ship-the-thing', NOW, undefined, 3)).toBe(
+        false,
+      );
+    });
+
+    it('keeps the previous behaviour when either revision is unknown', () => {
+      expect(isInFlightAcceptanceGradingRequest(pullableReview(2) as never, 'ship-the-thing', NOW)).toBe(true);
+      expect(isInFlightAcceptanceGradingRequest(pullableReview(2) as never, 'ship-the-thing', NOW, undefined, null)).toBe(
+        true,
+      );
+      expect(
+        isInFlightAcceptanceGradingRequest(pullableReview(null) as never, 'ship-the-thing', NOW, undefined, 3),
+      ).toBe(true);
+      expect(
+        isInFlightAcceptanceGradingRequest(
+          { ...pullableReview(2), payload: null } as never,
+          'ship-the-thing',
+          NOW,
+          undefined,
+          3,
+        ),
+      ).toBe(true);
+    });
+
+    it('still lets an eligible HOLDER of an older-revision request suppress (they can emit against the current one)', () => {
+      expect(
+        isInFlightAcceptanceGradingRequest(pullableReview(2, 'su-independent') as never, 'ship-the-thing', NOW, new Set(), 3),
+      ).toBe(true);
+    });
+
+    it('recruits past an unheld request for an older revision', async () => {
+      const discover = assigned();
+
+      const result = await resolveAcceptanceGrader('ship-the-thing', ctx, {
+        ...deps(freshLaunch()),
+        listWork: vi.fn(async () => [pullableReview(2)]) as never,
+        discover: discover as never,
+        openCascade: vi.fn(async () => ({ conversationId: 'conv-1', woke: 1 })) as never,
+      });
+
+      expect(result.state).not.toBe('deduped');
+      expect(discover).toHaveBeenCalled();
+    });
+
+    it('still dedupes onto an unheld request for the CURRENT revision (positive control)', async () => {
+      const discover = assigned();
+
+      const result = await resolveAcceptanceGrader('ship-the-thing', ctx, {
+        ...deps(freshLaunch()),
+        listWork: vi.fn(async () => [pullableReview(3)]) as never,
+        discover: discover as never,
+        openCascade: vi.fn(async () => ({ conversationId: 'conv-1', woke: 1 })) as never,
+      });
+
+      expect(result).toMatchObject({ state: 'deduped', existingWorkItemId: 'WI-pullable-review' });
+      expect(discover).not.toHaveBeenCalled();
+    });
+  });
+
   describe('a HELD request suppresses only when its holder could grade it (WI-10002459)', () => {
     const assigned = () =>
       vi.fn(async () => ({
