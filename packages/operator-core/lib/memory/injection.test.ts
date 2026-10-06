@@ -221,7 +221,10 @@ it('cancels upstream search when the existing injection phase deadline expires',
     });
     await didStart;
     await vi.advanceTimersByTimeAsync(MEMORY_INJECT_TIMEOUT_MS + 1);
-    await expect(block).resolves.toContain('memory leg: timed-out');
+    const timedOutBlock = await block;
+    expect(timedOutBlock).toContain('memory leg: timed-out');
+    expect(timedOutBlock).toContain('authorized memory reader');
+    expect(timedOutBlock).not.toContain('memory:search');
     expect(upstream.aborted).toBe(true);
     expect(upstream.reason).toBeInstanceOf(MemoryTimeoutError);
     expect(backend.search).toHaveBeenCalledOnce();
@@ -937,7 +940,7 @@ describe('push-path recall telemetry is recorded PER POOL (P-026)', () => {
           { id: 'm3', text: 'charlie charlie charlie charlie charlie charlie' },
         ]),
       );
-      await buildMemoryContextBlock({
+      const block = await buildMemoryContextBlock({
         userId: 'u1',
         workspaceId: 'ws',
         queryContext: 'why is the recall empty',
@@ -946,6 +949,10 @@ describe('push-path recall telemetry is recorded PER POOL (P-026)', () => {
         budgetChars: 60,
       });
       await flush();
+
+      expect(block).toContain('more learnings withheld this turn');
+      expect(block).toContain('authorized memory reader');
+      expect(block).not.toContain('memory:search');
 
       const { admission } = recordRecallStatsMock.mock.calls[0]![1] as {
         admission: { returned: number; admitted: number; truncated: boolean; dropped: Record<string, number> };
@@ -2087,13 +2094,17 @@ describe('corpus leg carries its own retrieval health (P-001)', () => {
     const block = await run();
     expect(block).toContain('Memory retrieval was DEGRADED');
     expect(block).toContain('timed-out');
-    // The marker must carry its own recovery, or it is just an apology.
-    expect(block).toContain('memory:search');
+    // The marker must carry recovery that does not assume this recipient's role.
+    expect(block).toContain('authorized memory reader');
+    expect(block).not.toContain('memory:search');
   });
 
   it('marks a FAILED corpus leg the same way', async () => {
     corpusIoResult = oneLine({ lines: [], candidateCount: 0, outcome: 'failed' });
-    expect(await run()).toContain('Memory retrieval was DEGRADED');
+    const block = await run();
+    expect(block).toContain('Memory retrieval was DEGRADED');
+    expect(block).toContain('authorized memory reader');
+    expect(block).not.toContain('memory:search');
   });
 
   /**
