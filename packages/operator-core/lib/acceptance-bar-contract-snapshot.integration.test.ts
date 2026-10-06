@@ -326,9 +326,20 @@ describe('acceptance BAR contract snapshot — real Postgres reuse preflight', (
         state: 'current',
         currentEvidence: 1,
         staleEvidence: 0,
+        // Evaluator rev 4 (SPEC_TEST_ADEQUACY_EVALUATOR_REVISION): a counterexample alone cannot
+        // establish falsifiability — its canonical test file must ALSO be bound as a successful
+        // current test on the same clause revision. The proof is still reused exactly (current,
+        // one row); only adequacy waits for that corroboration, which bindAttempt(2, 'pass')
+        // below supplies and the `selected` read asserts flips adequacy to pass.
         adequacy: {
-          state: 'pass',
-          checks: [{ specId: SPEC, revision: promotedRevision, verdict: 'pass', wouldBlock: [], evidenceRefs: [EVIDENCE_REF] }],
+          state: 'unknown',
+          checks: [{
+            specId: SPEC,
+            revision: promotedRevision,
+            verdict: 'unknown',
+            wouldBlock: ['falsifiability', 'plan-class-risk-floor'],
+            evidenceRefs: [EVIDENCE_REF],
+          }],
         },
       },
       grading: {
