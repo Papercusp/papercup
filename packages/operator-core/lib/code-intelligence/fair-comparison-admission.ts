@@ -107,12 +107,28 @@ export const ARM_ADMISSIONS: readonly ArmAdmission[] = Object.freeze<ArmAdmissio
 const baseId = (armId: string): string => armId.split('@')[0]!;
 
 /**
- * Refuse an arm that has no admission, or whose admission is incomplete. Returns
- * the environment the arm's processes must run under (telemetry off).
+ * The one engine allowed to run under a non-permissive licence: the incumbent
+ * (D-004, D-005). It runs so the candidates have a measured bar to beat. It is
+ * not a candidate. Every other third-party arm must be permissive (SPEC-P-017).
  */
-export function admitArm(armId: string): { admission: ArmAdmission; env: Readonly<Record<string, string>> } {
-  const admission = ARM_ADMISSIONS.find((a) => a.armId === baseId(armId));
+export const INCUMBENT_ARM_ID = 'gitnexus';
+
+/**
+ * Refuse an arm that has no admission, whose admission is incomplete, or that is
+ * a non-permissive candidate. Returns the environment the arm's processes must
+ * run under (telemetry off). `admissions` is injectable for tests only.
+ */
+export function admitArm(
+  armId: string,
+  admissions: readonly ArmAdmission[] = ARM_ADMISSIONS,
+): { admission: ArmAdmission; env: Readonly<Record<string, string>> } {
+  const admission = admissions.find((a) => a.armId === baseId(armId));
   if (!admission) throw new Error(`arm ${armId} has no admission record: read its LICENSE and telemetry defaults first (D-011)`);
+  if (admission.licence !== 'permissive' && admission.licence !== 'first-party' && admission.armId !== INCUMBENT_ARM_ID) {
+    throw new Error(
+      `arm ${armId}: ${admission.spdx} is not a permissive licence; only the incumbent (${INCUMBENT_ARM_ID}) may run under one (SPEC-P-017)`,
+    );
+  }
   const thirdParty = admission.licence !== 'first-party';
   if (thirdParty && admission.armId !== 'rg' && !admission.licenceSha256Prefix) {
     throw new Error(`arm ${armId}: third-party licence admitted without a pinned LICENSE hash`);
