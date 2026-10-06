@@ -96,12 +96,17 @@ describe('llmCall backend selection', () => {
     } finally { vi.unstubAllGlobals(); }
   });
 
-  it('refuses a required output limit on an unimplemented backend before executing it', async () => {
+  it('threads a required Anthropic output limit and preserves the frozen judge policy', async () => {
     const { llmCall } = await import('../llm-client');
     lastRunAgentChatOpts = undefined;
-    await expect(llmCall({ model: 'claude-sonnet-5', messages: [{ role: 'user', content: 'fixture' }],
-      maxTokens: 8, requireOutputTokenLimit: true })).rejects.toMatchObject({ costUsd: 0 });
-    expect(lastRunAgentChatOpts).toBeUndefined();
+    events.splice(0, events.length, { type: 'result', finalText: 'bounded', tokensIn: 1, tokensOut: 1, costUsd: 0.1 });
+    try {
+      await expect(llmCall({ model: 'claude-opus-4-8', messages: [{ role: 'user', content: 'fixture' }],
+        maxTokens: 2048, thinkingBudgetTokens: 1024, temperature: 0, requireOutputTokenLimit: true }))
+        .resolves.toMatchObject({ text: 'bounded', costUsd: 0.1 });
+      expect(lastRunAgentChatOpts).toMatchObject({ backend: 'anthropic-direct', model: 'claude-opus-4-8',
+        maxTokens: 2048, thinkingBudgetTokens: 1024, temperature: 0, requireOutputTokenLimit: true });
+    } finally { events.length = 0; }
   });
   it('routes OpenAI-family model ids to Codex even when a stale backend override is set', async () => {
     const { backendForLlmCall, modelForLlmCall } = await import('../llm-client');
