@@ -36,6 +36,8 @@ import {
 } from '@papercusp/test-config/admin-test-runs-reporter';
 import { posix, relative } from 'node:path';
 import {
+  isRecordedCaseTitle,
+  MAX_RECORDED_FAILED_CASES,
   TEST_RUN_EXECUTION_DETAILS_SCHEMA_VERSION,
   type TestRunExecutionDetails,
 } from '@papercusp/test-config/execution-details';
@@ -51,6 +53,27 @@ interface TestRunRow {
   passed: number;
   failed: number;
   skipped: number;
+  /** Exact failing case identities (WI-10006806): what a filed red names as "the failing tests". */
+  failedCaseTitles?: string[];
+}
+
+/**
+ * WI-10006806: the identity of one Playwright case below its file — describe blocks then the test
+ * title, joined with ' > ' like Vitest's `TestCase.fullName`. Playwright's `titlePath()` is
+ * `['', <project>, <file>, ...describes, <title>]`; the root, project and file segments are
+ * dropped so one case reads the same under every project. Returns null when the title is not a
+ * valid recorded identity (the shared parser would reject the whole row otherwise).
+ */
+export function playwrightCaseTitle(test: Partial<Pick<TestCase, 'titlePath' | 'title'>>): string | null {
+  let parts: string[] = [];
+  try {
+    if (typeof test.titlePath === 'function') parts = test.titlePath().slice(3).filter((part) => part.length > 0);
+  } catch {
+    parts = [];
+  }
+  if (parts.length === 0 && typeof test.title === 'string' && test.title.length > 0) parts = [test.title];
+  const title = parts.map((part) => part.replace(/[\u0000-\u001f\u007f]/g, ' ').trim()).join(' > ');
+  return isRecordedCaseTitle(title) ? title : null;
 }
 
 /**
@@ -79,6 +102,9 @@ export function playwrightExecutionDetails(
     mutationPhase: null,
     commitSha: run.commitSha,
     worktreeDirty: row.worktreeDirty,
+    ...(row.failedCaseTitles && row.failedCaseTitles.length > 0
+      ? { failedCaseTitles: row.failedCaseTitles.slice(0, Math.min(MAX_RECORDED_FAILED_CASES, row.failed)) }
+      : {}),
   };
 }
 
@@ -183,6 +209,7 @@ interface PerFile {
   passed: number;
   failed: number;
   skipped: number;
+  failedTitles: Set<string>;
 }
 
 export default class AdminTestRunsPlaywrightReporter implements Reporter {
@@ -213,6 +240,7 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
         passed: 0,
         failed: 0,
         skipped: 0,
+        failedTitles: new Set<string>(),
       };
 
       const endMs = (result.startTime?.getTime() ?? Date.now()) + result.duration;
@@ -233,6 +261,10 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
           existing.allSkipped = false;
           for (const e of result.errors ?? []) {
             if (e.message) existing.errors.push(e.message);
+          }
+          {
+            const title = playwrightCaseTitle(test);
+            if (title && existing.failedTitles.size < MAX_RECORDED_FAILED_CASES) existing.failedTitles.add(title);
           }
           break;
         case 'skipped':
@@ -285,6 +317,7 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
               passed: agg.passed,
               failed: agg.failed,
               skipped: agg.skipped,
+              failedCaseTitles: [...agg.failedTitles],
             }, worktreeAfter, this.runRoot),
           );
         } catch {
