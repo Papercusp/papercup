@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   codexHomeForAdvSession,
+  codexWakeGatewayInputs,
   executeWake,
   findCodexRolloutSessionId,
   injectOmpWakeTurnWhenReady,
@@ -3161,6 +3162,85 @@ describe('executeWake — the liveness ladder', () => {
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
+  });
+
+  // WI-10006825: every Channel-2 codex wake rewrote config.toml WITHOUT the
+  // gateway provider because the repair seam was never told the persisted
+  // `--account` route, so `--account=auto` fleet members resumed on the shared
+  // ChatGPT login, hit its usage wall, and died ~60s later (respawn churn).
+  it.each([
+    {
+      argv: ['psu', '--no-picker', '--agent=codex', '--headless', '--account=auto'],
+      expected: { requireGatewayProvider: true, codexGatewayAccountId: null },
+    },
+    {
+      argv: ['psu', '--no-picker', '--agent=codex', '--headless', '--account=acct-codex-pin'],
+      expected: { requireGatewayProvider: false, codexGatewayAccountId: 'acct-codex-pin' },
+    },
+    {
+      argv: ['psu', '--no-picker', '--agent=codex', '--headless', '--account=default'],
+      expected: { requireGatewayProvider: false, codexGatewayAccountId: null },
+    },
+    {
+      argv: null,
+      expected: { requireGatewayProvider: false, codexGatewayAccountId: null },
+    },
+  ])('codex wake repair carries the persisted route (argv $argv)', async ({ argv, expected }) => {
+    const advSessionId = 1002;
+    const home = codexHomeForAdvSession(advSessionId);
+    const nativeId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+    const spawnDetached = vi.fn(() => 4321);
+    const repair = vi.fn(async () => ({ ok: true, repaired: true }));
+    rmSync(home, { recursive: true, force: true });
+    const sessionsDir = join(home, 'sessions', '2026', '10', '06');
+    mkdirSync(sessionsDir, { recursive: true });
+    writeFileSync(join(sessionsDir, `rollout-2026-10-06T18-00-00-${nativeId}.jsonl`), '{}');
+    try {
+      const out = await executeWake(
+        work({ wakeHandle: advHandle({ agent: 'codex', sessionId: nativeId, advSessionId }) }),
+        deps({
+          alive: vi.fn(() => false),
+          getSession: vi.fn(async () =>
+            session({
+              id: advSessionId,
+              agent: 'codex',
+              sessionId: nativeId,
+              coordOwnerId: 'su-codex-route',
+              launchArgv: argv,
+            }),
+          ) as never,
+          ensureCodexHomeForWake: repair as never,
+          spawnDetached,
+        }),
+      );
+      expect(out).toEqual({ kind: 'delivered', channel: 'resume-headless' });
+      expect(repair).toHaveBeenCalledTimes(1);
+      expect(repair).toHaveBeenCalledWith(
+        expect.objectContaining({ advSessionId, owner: 'su-codex-route', codexHome: home, ...expected }),
+      );
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('codexWakeGatewayInputs maps every account mode like the psu launcher route', () => {
+    expect(codexWakeGatewayInputs(wakeAccountRouteFromArgv(['--account=auto'], 'su-x'))).toEqual({
+      requireGatewayProvider: true,
+      codexGatewayAccountId: null,
+    });
+    expect(codexWakeGatewayInputs(wakeAccountRouteFromArgv(['--account=gateway'], 'su-x'))).toEqual({
+      requireGatewayProvider: true,
+      codexGatewayAccountId: null,
+    });
+    expect(codexWakeGatewayInputs(wakeAccountRouteFromArgv(['--account=acct-1'], 'su-x'))).toEqual({
+      requireGatewayProvider: false,
+      codexGatewayAccountId: 'acct-1',
+    });
+    expect(codexWakeGatewayInputs(wakeAccountRouteFromArgv(['--account=system'], 'su-x'))).toEqual({
+      requireGatewayProvider: false,
+      codexGatewayAccountId: null,
+    });
+    expect(codexWakeGatewayInputs(null)).toEqual({ requireGatewayProvider: false, codexGatewayAccountId: null });
   });
 
   it('a session row marked ended is exited even if the recorded pid is reused-alive', async () => {

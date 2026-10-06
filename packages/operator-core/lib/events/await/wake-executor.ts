@@ -597,8 +597,32 @@ export interface EnsureCodexHomeForWakeInput {
   /** Channel-2 wake resumes are detached/headless and must retain that config policy. */
   headless: true;
   sessionRow?: CodexRepairSessionRow | null;
-  /** The launcher passes this when the rollout is bound to the gateway provider. */
+  /**
+   * Keep (or restore) the unpinned gateway route in the rewritten config.toml.
+   * Channel-2 wakes set this from the session's persisted `--account=auto`;
+   * without it the repair treats any gateway block as drift and strips it, so
+   * the resumed thread falls back to the shared ChatGPT login (WI-10006825).
+   */
   requireGatewayProvider?: boolean;
+  /** Persisted `--account=<id>` hard pin for the resumed thread (null = no pin). */
+  codexGatewayAccountId?: string | null;
+}
+
+/**
+ * The gateway inputs a codex wake repair must carry, derived from the session's
+ * persisted `--account` exactly as the psu launcher derives them on an
+ * interactive resume (`applyCodexGatewayRoute`): `auto` → unpinned gateway
+ * provider, a pin → the gateway provider with that account header, `default` or
+ * an absent/legacy argv → no gateway (today's behavior). Exported for tests.
+ */
+export function codexWakeGatewayInputs(
+  route: WakeAccountRoute | null,
+): Pick<EnsureCodexHomeForWakeInput, 'requireGatewayProvider' | 'codexGatewayAccountId'> {
+  if (route?.mode === 'auto') return { requireGatewayProvider: true, codexGatewayAccountId: null };
+  if (route?.mode === 'pin' && route.accountId) {
+    return { requireGatewayProvider: false, codexGatewayAccountId: route.accountId };
+  }
+  return { requireGatewayProvider: false, codexGatewayAccountId: null };
 }
 
 export type EnsureCodexHomeForWakeResult = {
@@ -665,8 +689,10 @@ async function defaultEnsureCodexHomeForWake(
         sid: input.owner,
         model: record.model,
         token: readSuperuserToken(),
+        codexGatewayAccountId: input.codexGatewayAccountId ?? null,
         codexGatewayAuto: input.requireGatewayProvider === true,
-        codexGatewayPriority: input.requireGatewayProvider === true ? 'su' : null,
+        codexGatewayPriority:
+          input.requireGatewayProvider === true || !!input.codexGatewayAccountId ? 'su' : null,
         headless: input.headless,
         trustDir: null,
         projectDir: input.sessionRow?.cwd,
@@ -4412,12 +4438,17 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
         // the rollout, but BEFORE resolving its native UUID. The repair helper
         // never recreates/removes the home, so it cannot erase the exact archive
         // that the resume safety check below is about to select.
+        // WI-10006825: carry the persisted `--account` route into the repair.
+        // `accountRoute` above is Claude-only (it feeds `--settings`); codex
+        // routes through config.toml, which this repair rewrites, so omitting
+        // the route here stripped the gateway on every wake.
         await ensureCodexHomeForWake({
           advSessionId: handle.advSessionId,
           owner: fresh?.coordOwnerId ?? d.subscriberId,
           codexHome: home,
           headless: true,
           sessionRow: fresh,
+          ...codexWakeGatewayInputs(wakeAccountRouteFromArgv(fresh?.launchArgv, d.subscriberId)),
         }).catch((err) => {
           console.warn(
             `[wake-executor] codex home repair seam failed: ${err instanceof Error ? err.message : String(err)}`,
