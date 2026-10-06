@@ -540,6 +540,19 @@ export interface DeployHealth {
    *  escalation forever, so a fresh starvation on any other install deduped onto that row unnamed.
    *  Optional: absent = a snapshot written before this field existed (the alarm falls back to the max). */
   gitSyncMissedIntervalsByInstall?: Array<{ installSlug: string; missedIntervals: number }>;
+  /** WI-10006867: active installs whose checkout has VANISHED — the last fire skipped with
+   *  `no_path` (registry entry gone, or its path no longer exists). These are EXCLUDED from
+   *  `gitSyncMissedIntervalsByInstall` / `gitSyncMaxMissedIntervals`: their `last_synced_at` froze
+   *  when the checkout went, so a missed-interval count there names the scheduler for a fault that
+   *  is not the scheduler's. `sinceMs` is the first `no_path` skip (missing-checkout.ts; null for a
+   *  row last skipped before that was recorded); `retireAtMs` is when that module retires the
+   *  routine (null when `sinceMs` is unknown). Optional: absent = a snapshot predating this field. */
+  gitSyncCheckoutMissingByInstall?: Array<{
+    installSlug: string;
+    path: string | null;
+    sinceMs: number | null;
+    retireAtMs: number | null;
+  }>;
   /** True when the git-sync routine read FAILED (the fail-soft catch fired), so a null
    *  `gitSyncMaxMissedIntervals` means "not observed", never "recovered". */
   gitSyncMissedIntervalsUnreadable?: boolean;
