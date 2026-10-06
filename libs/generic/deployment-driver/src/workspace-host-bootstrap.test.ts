@@ -55,6 +55,7 @@ import {
   parseWorkspaceHostReadelfNeeded,
   parseWorkspaceHostBootstrapAttestation,
   validateWorkspaceHostBootstrapAttestation,
+  workspaceHostBootcPinnedImageRef,
   type WorkspaceHostBootstrapAttestation,
   type WorkspaceHostBootstrapInput,
 } from "./workspace-host-bootstrap";
@@ -2559,7 +2560,7 @@ describe('workspace-host bootstrap attestation', () => {
         bootcBaseImage: WORKSPACE_HOST_BOOTC_BASE_IMAGE,
         release: {
           version: base.release.version,
-          source: bootcInput().bootc!.image,
+          source: workspaceHostBootcPinnedImageRef(bootcInput().bootc!),
           imageDigest: bootcInput().bootc!.imageDigest,
           signaturePolicyPath: bootcInput().bootc!.signaturePolicyPath,
           signatureVerified: true,
@@ -2849,6 +2850,38 @@ describe('workspace-host bootstrap attestation', () => {
       expect(verdict.errors).toContain(
         'attested image digest does not match the pinned release image',
       );
+    });
+
+    // WI-10006339: a correct host boots `repo@digest` (the bake and the bootstrap both pin the
+    // digest), so the attested ref is checked against that, never against the tag ref.
+    it('accepts the digest-pinned booted ref on a registry with a port, refuses the tag ref and another repository', () => {
+      const input = bootcInput({
+        bootc: {
+          ...bootcInput().bootc!,
+          image: '127.0.0.1:5096/papercusp/workspace-host:papercusp-workspace-host-aws-a-r62b',
+        },
+      });
+      const digest = input.bootc!.imageDigest;
+      const withSource = (source: string) =>
+        validateWorkspaceHostBootstrapAttestation(
+          bootcAttestation({ release: { ...bootcAttestation().release, source } }),
+          input,
+        );
+      expect(workspaceHostBootcPinnedImageRef(input.bootc!)).toBe(
+        `127.0.0.1:5096/papercusp/workspace-host@${digest}`,
+      );
+      expect(withSource(`127.0.0.1:5096/papercusp/workspace-host@${digest}`).ok).toBe(true);
+      for (const source of [
+        input.bootc!.image,
+        `127.0.0.1:5096/papercusp/other-host@${digest}`,
+        `127.0.0.1@${digest}`,
+      ]) {
+        const verdict = withSource(source);
+        expect(verdict.ok, source).toBe(false);
+        expect(verdict.errors).toContain(
+          'attested booted image ref does not match the pinned release image',
+        );
+      }
     });
 
     // Both directions. The second is the quiet one: a caller who passes a bootc block on an
