@@ -58,7 +58,33 @@ import {
   buildCargoExecutionDetails,
   resolveCargoTestRunScope,
   resolveCargoTestRunSource,
+  cargoWorktreeProvenance,
 } from './lib/cargo-result.mjs';
+
+/**
+ * WI-10006860: the vitest reporter's worktree snapshot (whole-tree porcelain, the copy-out
+ * origin root, the in-tree probe-subject exemption) so both frameworks record one measured answer
+ * to "did every loaded file come from one commit?". `test_runs.worktree_dirty` is NOT NULL
+ * DEFAULT false, so a row written without it claims a clean tree. An unloadable snapshotter only
+ * makes the rows fail-safe dirty — the ledger never fails the test run (D-007).
+ */
+async function loadWorktreeSnapshotter() {
+  try {
+    return await import('../libs/test-config/src/admin-test-runs-reporter.ts');
+  } catch (err) {
+    console.error(`[report-cargo-tests] WARNING: worktree snapshot unavailable (${err instanceof Error ? err.message : String(err)}); rows are recorded dirty.`);
+    return null;
+  }
+}
+
+async function snapshotWorktree(snapshotter) {
+  if (!snapshotter) return null;
+  try {
+    return await snapshotter.captureWorktreeSnapshot();
+  } catch {
+    return null;
+  }
+}
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..');
@@ -337,7 +363,7 @@ async function tryGetPg() {
   }
 }
 
-async function insertRows(sql, rows) {
+async function insertRows(sql, rows, worktree) {
   if (!sql) return 0;
   let inserted = 0;
   const { loopLagP95Ms, rssMb } = captureReporterSaturationSnapshot();
@@ -345,14 +371,14 @@ async function insertRows(sql, rows) {
   const { harnessSlug, workspaceId } = resolveCargoTestRunScope();
   for (const row of rows) {
     // WI-10006849: a complete per-row record, or the strict contract parser discards it.
-    const executionDetails = buildCargoExecutionDetails({ ...row.execution, root: REPO_ROOT, filePath: row.filePath, harnessSlug, workspaceId });
+    const executionDetails = buildCargoExecutionDetails({ ...row.execution, root: REPO_ROOT, filePath: row.filePath, harnessSlug, workspaceId, worktree });
     try {
       await Promise.race([
         sql`
           INSERT INTO harness_shared.test_runs
-            (file_path, framework, status, duration_ms, started_at, finished_at, output_tail, source, loop_lag_p95_ms, rss_mb, harness_slug, workspace_id, execution_details)
+            (file_path, framework, status, duration_ms, started_at, finished_at, output_tail, source, loop_lag_p95_ms, rss_mb, harness_slug, workspace_id, execution_details, commit_sha, worktree_dirty)
           VALUES
-            (${row.filePath}, 'cargo', ${row.status}, ${row.durationMs}, ${row.startedAt}, ${row.finishedAt}, ${row.outputTail}, ${row.source}, ${loopLagP95Ms}, ${rssMb}, ${harnessSlug}, ${workspaceId}, ${executionDetails ? sql.json(executionDetails) : null})
+            (${row.filePath}, 'cargo', ${row.status}, ${row.durationMs}, ${row.startedAt}, ${row.finishedAt}, ${row.outputTail}, ${row.source}, ${loopLagP95Ms}, ${rssMb}, ${harnessSlug}, ${workspaceId}, ${executionDetails ? sql.json(executionDetails) : null}, ${worktree.commitSha}, ${worktree.worktreeDirty})
         `,
         new Promise((_, reject) => setTimeout(() => reject(new Error('pg_insert_timeout')), 2000)),
       ]);
@@ -382,7 +408,15 @@ async function main() {
       ? `[report-cargo-tests] running: cargo llvm-cov --manifest-path ${manifestPath} --no-fail-fast --lcov --output-path ${relative(REPO_ROOT, coverage.outputPath).split(sep).join('/')}`
       : `[report-cargo-tests] running: cargo test --manifest-path ${manifestPath} --no-fail-fast`,
   );
+  const snapshotter = await loadWorktreeSnapshotter();
+  const worktreeBefore = await snapshotWorktree(snapshotter);
   const { code, stdout, stderr, startedAt, finishedAt, diskAdmission } = await runCargoTest(manifestAbs, cargoArgs, coverage);
+  const worktree = cargoWorktreeProvenance({
+    before: worktreeBefore,
+    after: await snapshotWorktree(snapshotter),
+    describeDirt: snapshotter?.describeWorktreeDirt,
+    resolveCommit: snapshotter?.resolveTestRunCommit,
+  });
   const combined = `${stdout}\n${stderr}`;
   process.stdout.write(stdout);
   if (stderr) process.stderr.write(stderr.endsWith('\n') ? stderr : `${stderr}\n`);
@@ -449,7 +483,7 @@ async function main() {
   console.log(formatCargoResultLine(cargoResult));
 
   const sql = await tryGetPg();
-  const inserted = await insertRows(sql, rows);
+  const inserted = await insertRows(sql, rows, worktree);
   if (sql) {
     try { await sql.end({ timeout: 2 }); } catch { /* swallow */ }
   }

@@ -45,6 +45,8 @@ import {
   resolveCargoBin,
   resolveCargoTargetDir,
   buildCargoExecutionDetails,
+  cargoWorktreeProvenance,
+  UNMEASURED_CARGO_WORKTREE,
   resolveCargoMutationPhase,
   resolveCargoTestRunScope,
   resolveCargoTestRunSource,
@@ -54,6 +56,7 @@ import {
 } from '../../../../scripts/lib/cargo-result.mjs';
 import { parseTestRunExecutionDetails } from '@papercusp/test-config/execution-details';
 import { mutationFailureLines } from '../agent-tools/plans/spec-evidence-store';
+import { describeWorktreeDirt } from '../../../../libs/test-config/src/admin-test-runs-reporter';
 
 const GIB = 1024 ** 3;
 const TEST_DIR = dirname(fileURLToPath(import.meta.url));

@@ -111,12 +111,14 @@ function isCargoCaseTitle(value) {
  * `{ mutationPhase }` WI-10006828 wrote — parses as malformed, and the spec evaluator then treats
  * the run as having NO measured failing case, so no cargo mutation run could ever establish
  * falsifiability. `failedCaseTitles` carries cargo's own test path (`tests::name`), the identity
- * a spec binding declares in `adequacy.testCases`. Cargo does not snapshot the worktree around a
- * run and observes no commit, so `worktreeDirty` is true (with its reason) and `commitSha` null.
+ * a spec binding declares in `adequacy.testCases`. `worktree` is the provenance the reporter
+ * MEASURED around the run (`cargoWorktreeProvenance`, WI-10006860); without one the record is
+ * fail-safe dirty, never an unmeasured claim of a clean tree.
  */
 export function buildCargoExecutionDetails({
   root, filePath, passed = 0, failed = 0, skipped = 0, collectionFailed = false,
   failedCaseTitles = [], harnessSlug = null, workspaceId = null, env = process.env,
+  worktree = UNMEASURED_CARGO_WORKTREE,
 }) {
   const titles = collectionFailed
     ? []
@@ -135,10 +137,40 @@ export function buildCargoExecutionDetails({
     collectionFailed,
     ...(titles.length > 0 ? { failedCaseTitles: titles } : {}),
     mutationPhase: resolveCargoMutationPhase(env),
-    commitSha: null,
-    worktreeDirty: true,
-    worktreeDirtyReason: 'cargo reporter does not snapshot the worktree around the run',
+    commitSha: worktree.commitSha,
+    worktreeDirty: worktree.worktreeDirty,
+    ...(worktree.worktreeDirty ? { worktreeDirtyReason: worktree.worktreeDirtyReason } : {}),
   };
+}
+
+/** The provenance of a run nobody snapshotted: dirty, with no commit (WI-10006860). */
+export const UNMEASURED_CARGO_WORKTREE = Object.freeze({
+  commitSha: null,
+  worktreeDirty: true,
+  worktreeDirtyReason: 'the worktree was not snapshotted around the cargo run',
+});
+
+/**
+ * WI-10006860: the worktree provenance of one cargo run, from git snapshots taken immediately
+ * before and after it. `harness_shared.test_runs.worktree_dirty` is NOT NULL DEFAULT false, so a
+ * reporter that omits the column claims every run — in-tree mutants included — came from a clean
+ * tree, and spec freshness then rates the run current. `describeDirt` is the vitest reporter's
+ * own `describeWorktreeDirt` (same semantics: unreadable HEAD or status, a moved HEAD, or any
+ * porcelain line is dirt), injected so both frameworks answer one question one way. A missing
+ * snapshot or a throwing describer is dirty, never clean.
+ */
+export function cargoWorktreeProvenance({ before, after, describeDirt, resolveCommit = (commit) => commit }) {
+  if (!before || !after || typeof describeDirt !== 'function') return UNMEASURED_CARGO_WORKTREE;
+  let reason;
+  try {
+    reason = describeDirt(before, after);
+  } catch (err) {
+    reason = `worktree snapshot comparison failed: ${err instanceof Error ? err.message : String(err)}`;
+  }
+  const commitSha = resolveCommit(after.commit ?? before.commit ?? null) ?? null;
+  return reason === null
+    ? { commitSha, worktreeDirty: false, worktreeDirtyReason: null }
+    : { commitSha, worktreeDirty: true, worktreeDirtyReason: reason };
 }
 
 /**
