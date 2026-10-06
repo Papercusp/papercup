@@ -468,6 +468,14 @@ pub struct SuSessionDescriptor {
     /// or `read-only`). An engine without a switchable mode omits it.
     #[serde(default)]
     pub approvals: Option<String>,
+    /// D-029/D-031: what the engine measured about context and cost. Absent
+    /// until the first measurement, and on an older operator.
+    #[serde(default)]
+    pub usage: Option<SuSessionUsage>,
+    /// D-031: the agent's latest todo/plan list (each update replaces it).
+    /// Absent for an engine without a plan tool or before its first update.
+    #[serde(default)]
+    pub plan: Option<Vec<SuPlanItem>>,
     #[serde(default)]
     pub account_route: Option<String>,
     pub carry: String,
@@ -475,6 +483,55 @@ pub struct SuSessionDescriptor {
     pub modes: Vec<String>,
     pub capabilities: SuSessionCapabilities,
     pub backend_extension: SuSessionBackendExtension,
+}
+
+/// D-029/D-031: engine-measured usage. Every field is optional; a field the
+/// engine did not report stays `None` and is never guessed.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SuSessionUsage {
+    #[serde(default)]
+    pub context_tokens: Option<u64>,
+    #[serde(default)]
+    pub context_window: Option<u64>,
+    #[serde(default)]
+    pub input_tokens: Option<u64>,
+    #[serde(default)]
+    pub output_tokens: Option<u64>,
+    /// Running session cost in USD (Claude, OMP). Codex reports none.
+    #[serde(default)]
+    pub cost_usd: Option<f64>,
+}
+
+// The descriptor derives `Eq`. JSON cannot carry NaN, so `cost_usd` is always a
+// real number here and equality is total in practice.
+impl Eq for SuSessionUsage {}
+
+impl SuSessionUsage {
+    /// Percent of the context window still free, when both sides were measured.
+    pub fn context_left_percent(&self) -> Option<u8> {
+        let window = self.context_window.filter(|w| *w > 0)?;
+        let used = self.context_tokens?;
+        let left = window.saturating_sub(used) as f64 * 100.0 / window as f64;
+        Some(left.round().clamp(0.0, 100.0) as u8)
+    }
+}
+
+/// One row of the agent's todo/plan list. `status` stays a string so a status
+/// a newer operator adds cannot fail the whole descriptor decode.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct SuPlanItem {
+    pub text: String,
+    pub status: String,
+}
+
+impl SuPlanItem {
+    pub fn is_completed(&self) -> bool {
+        self.status == "completed"
+    }
+    pub fn is_in_progress(&self) -> bool {
+        self.status == "in_progress"
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -944,7 +1001,30 @@ pub enum SuSessionEvent {
         #[serde(default)]
         details: Option<Value>,
     },
+    /// An event type this PUI predates (a newer operator added it). Only its
+    /// envelope is kept, so sequence tracking stays contiguous and the stream
+    /// keeps flowing; the body is ignored. Never deserialized directly:
+    /// [`decode_su_session_event`] builds it for a `type` not in
+    /// [`SU_SESSION_EVENT_TYPES`] (plan pui-chat-first-ux D-031).
+    #[serde(skip)]
+    Unrecognized {
+        envelope: SuSessionEventEnvelope,
+        kind: String,
+    },
 }
+
+/// The `type` tags this PUI can decode; any other tag is
+/// [`SuSessionEvent::Unrecognized`]. Keep in step with the variants above.
+pub const SU_SESSION_EVENT_TYPES: &[&str] = &[
+    "session",
+    "lifecycle",
+    "command_result",
+    "transcript",
+    "tool",
+    "card",
+    "backend",
+    "error",
+];
 
 impl SuSessionEvent {
     pub fn envelope(&self) -> &SuSessionEventEnvelope {
@@ -956,7 +1036,8 @@ impl SuSessionEvent {
             | Self::Tool { envelope, .. }
             | Self::Card { envelope, .. }
             | Self::Backend { envelope, .. }
-            | Self::Error { envelope, .. } => envelope,
+            | Self::Error { envelope, .. }
+            | Self::Unrecognized { envelope, .. } => envelope,
         }
     }
 }
@@ -968,8 +1049,25 @@ pub fn decode_su_session_event(frame: &SseFrame) -> Result<SuSessionEvent> {
     if frame.event != "session_event" && frame.event != "message" {
         bail!("unsupported SU-session SSE event `{}`", frame.event);
     }
-    let event: SuSessionEvent =
+    let value: Value =
         serde_json::from_str(&frame.data).with_context(|| "decode SU-session SSE payload")?;
+    let kind = value
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    // D-031: a closed enum used to turn any new event type into a decode
+    // error, which ended the stream and failed the pending turn. An unknown
+    // type now keeps its envelope (schema/protocol are still checked below)
+    // and is skipped by the consumers.
+    let event = if SU_SESSION_EVENT_TYPES.contains(&kind.as_str()) {
+        serde_json::from_value::<SuSessionEvent>(value)
+            .with_context(|| "decode SU-session SSE payload")?
+    } else {
+        let envelope: SuSessionEventEnvelope = serde_json::from_value(value)
+            .with_context(|| format!("decode SU-session `{kind}` event envelope"))?;
+        SuSessionEvent::Unrecognized { envelope, kind }
+    };
     let envelope = event.envelope();
     if envelope.schema != SU_SESSION_SCHEMA {
         return Err(anyhow!(
