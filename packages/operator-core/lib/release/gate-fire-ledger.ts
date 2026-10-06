@@ -202,6 +202,30 @@ export function isTerminalGateOutcomeStatus(status: string): boolean {
 
 export const GATE_REUSE_AUDIT_INSTRUMENT_KEY = 'gate-test-reuse.audit-window';
 
+/** The display candidate can remain frozen after a different repair head was judged. */
+function matchesRecordedGateJudgedSha(detail: Record<string, unknown>, judgedSha: string): boolean {
+  const sha = (value: unknown): value is string =>
+    typeof value === 'string' && /^[0-9a-f]{12,40}$/.test(value);
+  if (!sha(detail.candidate)) return false;
+  if (judgedSha.startsWith(detail.candidate)) return true;
+  const provenance = detail.verdictProvenance;
+  if (!provenance || typeof provenance !== 'object' || Array.isArray(provenance)) return false;
+  const p = provenance as Record<string, unknown>;
+  return detail.frozenCandidate === detail.candidate && sha(detail.repairHead) &&
+    judgedSha.startsWith(detail.repairHead) && p.frozenCandidate === detail.frozenCandidate &&
+    p.repairHead === detail.repairHead && p.frozenCandidateVerdict === 'full-gate-red' &&
+    ((p.repairHeadVerdict === 'full-gate-red' &&
+      ['awaiting-fixer', 'ready-to-verify', 'blocked'].includes(p.phase as string)) ||
+     (p.repairHeadVerdict === 'isolated-repair-green' && p.phase === 'ready-to-promote'));
+}
+
+/** Duplicate writers must agree on the measured identity as well as the display pin. */
+function gateReuseOutcomeIdentity(row: PipelineEventRow): string {
+  return JSON.stringify([row.status, row.detail.runId, row.detail.candidate,
+    row.detail.frozenCandidate, row.detail.repairHead, row.detail.verdictProvenance,
+    row.detail.candidateSource, row.detail.diagnostic, row.detail.testPassReuse]);
+}
+
 /** Derive the invocation population from fire anchors and terminal archives, never a grader's list. */
 export function evaluateGateReuseAuditWindow(read: PipelineEventWindowRead) {
   const fireIds: string[] = [];
@@ -237,10 +261,7 @@ export function evaluateGateReuseAuditWindow(read: PipelineEventWindowRead) {
     }
     // Producer and scheduled fallback may both archive one terminal result. They may collapse
     // only when their measurement payloads agree; host/vintage/display stamps are irrelevant.
-    const identity = (r: typeof read.rows[number]) => JSON.stringify([
-      r.status, r.detail.runId, r.detail.candidate, r.detail.testPassReuse,
-    ]);
-    if (new Set(outcomes.map(identity)).size !== 1) return unknown('Conflicting terminal archives name the same fire.');
+    if (new Set(outcomes.map(gateReuseOutcomeIdentity)).size !== 1) return unknown('Conflicting terminal archives name the same fire.');
     const outcome = outcomes.reduce((a, b) => a.createdAtMs <= b.createdAtMs ? a : b);
     const cls = classifyGateOutcomeStatus(outcome.status);
     if (cls === 'skip' && outcome.detail.testPassReuse === undefined) {
@@ -252,10 +273,8 @@ export function evaluateGateReuseAuditWindow(read: PipelineEventWindowRead) {
     }
     const archive = parseTestPassReuseAuditArchive(outcome.detail.testPassReuse);
     const runId = outcome.detail.runId;
-    const candidate = outcome.detail.candidate;
     if (!archive || typeof runId !== 'string' || !runId.trim() || seenRuns.has(runId) ||
-        typeof candidate !== 'string' || !/^[0-9a-f]{12,64}$/.test(candidate) ||
-        !archive.judgedSha.startsWith(candidate) || archive.recordedAtMs < anchor.createdAtMs ||
+        !matchesRecordedGateJudgedSha(outcome.detail, archive.judgedSha) || archive.recordedAtMs < anchor.createdAtMs ||
         archive.recordedAtMs > outcome.createdAtMs) {
       return unknown('The immutable archive lacks matching run, source or suite boundaries.');
     }
@@ -335,8 +354,7 @@ export function evaluateFirstPostCaptureGateReuse(input: {
   }
   const source = groups.get(capture.gateFireId);
   if (!source?.some((r) => r.kind === 'green_checkpoint' && isTerminalGateOutcomeStatus(r.status) &&
-      r.detail.runId === capture.runId && typeof r.detail.candidate === 'string' &&
-      /^[0-9a-f]{12,40}$/.test(r.detail.candidate) && capture.judgedSha.startsWith(r.detail.candidate) &&
+      r.detail.runId === capture.runId && matchesRecordedGateJudgedSha(r.detail, capture.judgedSha) &&
       isCheckpointCandidateSource(r.detail.candidateSource) && r.detail.candidateSource !== 'pinned' &&
       r.detail.diagnostic === undefined &&
       r.createdAtMs <= capture.capture!.evidence.startedAtMs)) {
@@ -352,10 +370,7 @@ export function evaluateFirstPostCaptureGateReuse(input: {
   for (const { anchor, rows } of later) {
     const outcomes = rows.filter((r) => r.kind === 'green_checkpoint' && isTerminalGateOutcomeStatus(r.status));
     if (!outcomes.length) return result('unknown', 'An earlier subsequent attempt has no completed outcome.');
-    const identity = (r: PipelineEventRow) => JSON.stringify([
-      r.status, r.detail.runId, r.detail.candidate, r.detail.candidateSource, r.detail.diagnostic, r.detail.testPassReuse,
-    ]);
-    if (new Set(outcomes.map(identity)).size !== 1) {
+    if (new Set(outcomes.map(gateReuseOutcomeIdentity)).size !== 1) {
       return result('unknown', 'An earlier subsequent attempt has conflicting terminal archives.');
     }
     const outcome = outcomes.reduce((a, b) => a.createdAtMs <= b.createdAtMs ? a : b);
@@ -375,8 +390,7 @@ export function evaluateFirstPostCaptureGateReuse(input: {
     if (!archive || !suite || suite.runGroupId !== outcome.detail.runId ||
         seenRunIds.has(suite.runGroupId) ||
         suite.startedAtMs < anchor.createdAtMs || archive.recordedAtMs > outcome.createdAtMs ||
-        typeof outcome.detail.candidate !== 'string' || !/^[0-9a-f]{12,40}$/.test(outcome.detail.candidate) ||
-        !archive.judgedSha.startsWith(outcome.detail.candidate)) {
+        !matchesRecordedGateJudgedSha(outcome.detail, archive.judgedSha)) {
       return result('unknown', 'An earlier subsequent suite lacks measured command, run or source boundaries.');
     }
     seenRunIds.add(suite.runGroupId);

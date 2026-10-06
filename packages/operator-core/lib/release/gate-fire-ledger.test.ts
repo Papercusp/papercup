@@ -81,7 +81,7 @@ describe('first required suite after named pure capture', () => {
     const frozenCandidate = 'b'.repeat(12);
     const repairHead = sha.slice(0, 12);
     Object.assign(detail, { candidate: frozenCandidate, frozenCandidate, repairHead,
-      verdictProvenance: { frozenCandidate, repairHead, phase: 'repairing',
+      verdictProvenance: { frozenCandidate, repairHead, phase: 'ready-to-verify',
         frozenCandidateVerdict: 'full-gate-red', repairHeadVerdict: 'full-gate-red' } });
   };
   it.each([1, 3])('uses recorded judged repair-head provenance at outcome index %s', (index) => {
@@ -162,7 +162,7 @@ describe('reuse audit population from immutable gate events', () => {
     const r = fixture(); const detail = r.rows[1]!.detail;
     const frozenCandidate = 'b'.repeat(12); const repairHead = sha.slice(0, 12);
     Object.assign(detail, { candidate: frozenCandidate, frozenCandidate, repairHead,
-      verdictProvenance: { frozenCandidate, repairHead, phase: 'repairing',
+      verdictProvenance: { frozenCandidate, repairHead, phase: 'ready-to-verify',
         frozenCandidateVerdict: 'full-gate-red', repairHeadVerdict: 'full-gate-red' } });
     expect(evaluateGateReuseAuditWindow(r)).toMatchObject({ verdict: 'pass', audited: 1, runIds: ['run-1'] });
     (detail.verdictProvenance as Record<string, unknown>).repairHeadVerdict = 'not-judged';

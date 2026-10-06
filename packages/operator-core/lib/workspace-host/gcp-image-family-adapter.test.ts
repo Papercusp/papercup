@@ -54,6 +54,7 @@ import {
 } from './gcp-image-family';
 import {
   GoogleComputeGcpImageFamilyReleaseAdapter,
+  NodeGcpImageFamilyCommandRunner,
   parseGcpImageFamilyPackerOutput,
   parseGcpImageFamilyProvenance,
   type GcpImageFamilyCleanRoomRunInput,
@@ -1241,5 +1242,56 @@ describe('GCP image-family production adapter', () => {
     });
     expect(compute.deprecations).toHaveLength(1);
     expect(compute.inserts[0]?.input.sourceImage).toBe(CANDIDATE_ID);
+  });
+});
+
+describe('NodeGcpImageFamilyCommandRunner abortOnStderr (WI-10006192)', () => {
+  const runner = new NodeGcpImageFamilyCommandRunner();
+  // coldsnap's line for a block that has used its last retry.
+  const LOST = /\battempt (\d+)\/\1 failed\b/;
+
+  it('stops the process at the first matching stderr line and keeps the output it captured', async () => {
+    const started = Date.now();
+    const result = await runner.run({
+      command: '/bin/sh',
+      args: ['-c', "echo 'attempt 2/5 failed' >&2; echo 'attempt 5/5 failed snap-0dead' >&2; exec sleep 30"],
+      abortOnStderr: LOST,
+      timeoutMs: 60_000,
+    });
+    expect(Date.now() - started).toBeLessThan(10_000);
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr).toContain('attempt 5/5 failed snap-0dead');
+    expect(result.stderr).toMatch(/stopped early: stderr matched/);
+  });
+
+  it('sees a match split across two stderr writes', async () => {
+    const started = Date.now();
+    const result = await runner.run({
+      command: '/bin/sh',
+      args: ['-c', "printf 'attempt 5/' >&2; sleep 0.3; printf '5 failed\\n' >&2; exec sleep 30"],
+      abortOnStderr: LOST,
+      timeoutMs: 60_000,
+    });
+    expect(Date.now() - started).toBeLessThan(10_000);
+    expect(result.exitCode).not.toBe(0);
+  });
+
+  it('lets a run whose stderr never matches finish with its own exit code and output', async () => {
+    const result = await runner.run({
+      command: '/bin/sh',
+      args: ['-c', "echo 'attempt 2/5 failed' >&2; echo done"],
+      abortOnStderr: LOST,
+    });
+    expect(result).toEqual({ exitCode: 0, stdout: 'done\n', stderr: 'attempt 2/5 failed\n' });
+  });
+
+  it('accepts a global pattern without skipping a later match', async () => {
+    const result = await runner.run({
+      command: '/bin/sh',
+      args: ['-c', "echo 'attempt 1/5 failed' >&2; sleep 0.2; echo 'attempt 5/5 failed' >&2; exec sleep 30"],
+      abortOnStderr: /\battempt (\d+)\/\1 failed\b/g,
+      timeoutMs: 60_000,
+    });
+    expect(result.stderr).toMatch(/stopped early/);
   });
 });
