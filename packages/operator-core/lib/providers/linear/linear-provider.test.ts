@@ -222,6 +222,15 @@ describe('Linear failures map onto the host sync signals', () => {
     await expect(adapter.syncPage({ source: SOURCE, config, cursor: null }, host)).rejects.toMatchObject({ kind: 'rate-limited', retryAfterSeconds: 12 });
   });
 
+  it('classifies by extensions.type too, the field @linear/sdk reads (errorMap: "ratelimited", "authentication error")', async () => {
+    const limited = fakeHost(() => json(400, { errors: [{ message: 'slow down', extensions: { type: 'ratelimited' } }] }, { 'retry-after': '7' })).host;
+    await expect(adapter.syncPage({ source: SOURCE, config, cursor: null }, limited)).rejects.toMatchObject({ kind: 'rate-limited', retryAfterSeconds: 7 });
+    const denied = fakeHost(() => json(400, { errors: [{ message: 'auth', extensions: { type: 'authentication error' } }] })).host;
+    await expect(adapter.syncPage({ source: SOURCE, config, cursor: null }, denied)).rejects.toMatchObject({ kind: 'auth' });
+    const forbidden = fakeHost(() => json(200, { errors: [{ message: 'no', extensions: { type: 'forbidden' } }] })).host;
+    await expect(adapter.syncPage({ source: SOURCE, config, cursor: null }, forbidden)).rejects.toMatchObject({ kind: 'auth' });
+  });
+
   it('an authentication error is auth; any other GraphQL error is transient', async () => {
     const denied = fakeHost(() => json(400, { errors: [{ message: 'auth', extensions: { code: 'AUTHENTICATION_ERROR' } }] })).host;
     await expect(adapter.syncPage({ source: SOURCE, config, cursor: null }, denied)).rejects.toMatchObject({ kind: 'auth' });
