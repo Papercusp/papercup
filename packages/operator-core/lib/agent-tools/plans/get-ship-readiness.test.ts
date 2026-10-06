@@ -182,8 +182,14 @@ afterEach(async () => {
 });
 
 describe('plans:get — shipReadiness', () => {
-  it('declares a target budget beyond the nested dispatcher 55s default (EI-21665387998856992)', () => {
-    expect(tool.timeoutSec).toBeGreaterThan(55);
+  it('rejects the nested dispatcher default in a broken control (EI-21665387998856992)', () => {
+    const hasDedicatedNestedBudget = (timeoutSec: number | undefined) =>
+      typeof timeoutSec === 'number' && timeoutSec > 55;
+    // Counterexample control: the old flat nested-call deadline is insufficient.
+    const brokenRegistration = { timeoutSec: 55 };
+    expect(hasDedicatedNestedBudget(brokenRegistration.timeoutSec)).toBe(false);
+    // Calibration: the imported production registration must satisfy the same guard.
+    expect(hasDedicatedNestedBudget(tool.timeoutSec)).toBe(true);
   });
 
   it('attributes cold source latency and never replays build timings on a cache hit', async () => {
