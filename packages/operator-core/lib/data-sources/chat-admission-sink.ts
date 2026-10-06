@@ -40,6 +40,7 @@ import type { CanonicalExternalEvent, ExternalTriggerSink } from '../external-tr
 import { admitWorkItem, type AdmitDeps, type AdmitResult } from '../work-admission/admit';
 import { listAdmissionRules, matchAdmissionRule, type AdmissionRule } from '../work-admission/admission-rules';
 import { CHAT_MESSAGE_SOURCE_KIND, CHAT_THREAD_SOURCE_KIND } from './chat-admission-sources';
+import { suggestChatBug, type ChatSuggestionResult } from './chat-bug-suggestions';
 import { upsertChatMessages, type ChatMessageInput } from './chat-retrieval-units';
 
 export const CHAT_ADMISSION_SINK_KIND = 'data-source-chat-admission';
@@ -73,6 +74,12 @@ export interface ChatAdmissionAdapter {
   fromEvent(subject: ChatSubject & { text: string }, payload: Record<string, unknown>): ChatMessageInput;
   /** Fetches the subject from the provider. Null when the provider no longer has it. */
   fetch(subject: ChatSubject): Promise<ChatMessageInput | null>;
+  /**
+   * Privately tells a post's author how to report it (P-007, D-010). 'no-route' when no report
+   * gesture is switched on in the channel, so nothing was sent. Throws when the provider refuses
+   * the note. Absent when the provider cannot send private notes: nothing is suggested.
+   */
+  suggest?(notice: { subject: ChatSubject; authorExternalId: string }): Promise<'notified' | 'no-route'>;
 }
 
 export interface ChatAdmissionOutcome {
@@ -82,6 +89,8 @@ export interface ChatAdmissionOutcome {
   admitted: Array<{ ruleId: string; sourceKind: string; result: AdmitResult }>;
   /** Rules that matched with action 'suggest'. Nothing was created for them. */
   suggested: Array<{ ruleId: string; sourceKind: string; harness: string }>;
+  /** What the private "looks like a bug" suggestion did, when a suggest rule matched (D-010). */
+  suggestion: ChatSuggestionResult | null;
 }
 
 export interface ChatAdmissionDeps extends AdmitDeps {
@@ -183,7 +192,7 @@ export async function admitChatEvent(
   input: { workspaceId: string; dataSourceId: string; payload: Record<string, unknown> },
   deps: ChatAdmissionDeps,
 ): Promise<ChatAdmissionOutcome> {
-  const outcome: ChatAdmissionOutcome = { subject: null, threadStart: null, admitted: [], suggested: [] };
+  const outcome: ChatAdmissionOutcome = { subject: null, threadStart: null, admitted: [], suggested: [], suggestion: null };
   const subject = chatSubjectOf(input.payload);
   if (!subject) return outcome;
   const rules = await (deps.listRules
@@ -240,6 +249,23 @@ export async function admitChatEvent(
       { ...deps, sql: deps.sql ?? sql },
     );
     outcome.admitted.push({ ruleId: rule.id, sourceKind: rule.sourceKind, result });
+  }
+  // A suggest rule offers privately, at most once per event, and only when nothing was filed for
+  // the same event (an admit rule that matched already did more than a suggestion would).
+  if (outcome.suggested.length > 0 && !outcome.admitted.some(({ result }) => result.ok)) {
+    outcome.suggestion = await suggestChatBug(
+      sql,
+      {
+        workspaceId: input.workspaceId,
+        dataSourceId: input.dataSourceId,
+        payload: input.payload,
+        subject,
+        keys,
+        ruleId: outcome.suggested[0].ruleId,
+        rules: chatRules,
+      },
+      { adapter: deps.adapter },
+    );
   }
   return outcome;
 }
