@@ -102,9 +102,9 @@ export interface WorktreeCoverageDeps {
   log?: (message: string) => void;
 }
 
-function runGitLocal(args: string[], cwd: string): Promise<string> {
+function runGitLocal(args: string[], cwd: string, env?: NodeJS.ProcessEnv): Promise<string> {
   return new Promise((resolve, reject) => {
-    execFile('git', args, { cwd, timeout: 30_000 }, (err, stdout, stderr) => {
+    execFile('git', args, { cwd, timeout: 30_000, ...(env ? { env } : {}) }, (err, stdout, stderr) => {
       if (err) reject(new Error(stderr?.toString().trim() || err.message));
       else resolve(stdout.toString());
     });
@@ -114,8 +114,8 @@ function runGitLocal(args: string[], cwd: string): Promise<string> {
 /** Seams for {@link runWatchdogGit}; production uses the real sidecar + local spawn. */
 export interface WatchdogGitSeams {
   sidecarEnabled?: () => boolean;
-  viaSidecar?: (args: string[], cwd: string) => Promise<GitRunResult>;
-  local?: (args: string[], cwd: string) => Promise<string>;
+  viaSidecar?: (args: string[], cwd: string, timeoutMs: number, env: NodeJS.ProcessEnv) => Promise<GitRunResult>;
+  local?: (args: string[], cwd: string, env: NodeJS.ProcessEnv) => Promise<string>;
   onFallback?: (e: unknown) => void;
 }
 
@@ -133,13 +133,16 @@ export async function runWatchdogGit(
   cwd: string,
   seams: WatchdogGitSeams = {},
 ): Promise<string> {
+  const env = args[0] === 'status'
+    ? { ...process.env, GIT_OPTIONAL_LOCKS: '0' }
+    : process.env;
   const enabled = seams.sidecarEnabled ?? (() => gitSidecarEnabled('PAPERCUSP_WORKTREE_COVERAGE_SPAWN_SIDECAR'));
   const onFallback = seams.onFallback ?? ((e: unknown) => noteSidecarFallback('worktree-coverage', e));
   if (enabled()) {
     let res: GitRunResult | null = null;
     try {
       // Pass THIS process's env: the sidecar otherwise runs git under its own env.
-      res = await (seams.viaSidecar ?? ((a, c) => runGitViaSpawnerSidecar(a, c, 30_000, process.env)))(args, cwd);
+      res = await (seams.viaSidecar ?? runGitViaSpawnerSidecar)(args, cwd, 30_000, env);
     } catch (e) {
       onFallback(e);
     }
@@ -152,7 +155,7 @@ export async function runWatchdogGit(
       return res.stdout;
     }
   }
-  return (seams.local ?? runGitLocal)(args, cwd);
+  return (seams.local ?? runGitLocal)(args, cwd, env);
 }
 
 function defaultRunGit(args: string[], cwd: string): Promise<string> {

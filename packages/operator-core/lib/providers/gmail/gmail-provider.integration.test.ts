@@ -48,6 +48,12 @@ let emitted: string[];
 
 const b64url = (text: string) => Buffer.from(text, 'utf8').toString('base64url');
 const decodeRaw = (raw: unknown) => Buffer.from(String(raw), 'base64url').toString('utf8');
+/** The decoded text of a single-part, base64 transfer-encoded RFC 5322 message. */
+function singlePartBody(raw: string): string {
+  expect(raw).toMatch(/^Content-Transfer-Encoding: base64\r$/m);
+  const [, ...body] = raw.split('\r\n\r\n');
+  return Buffer.from(body.join('').replace(/\r\n/g, ''), 'base64').toString('utf8');
+}
 
 function message(id: string) {
   return {
@@ -258,7 +264,7 @@ describe('Gmail syncs through the host connector driver (D-017)', () => {
     const first = await sync(src, api);
     expect(first).toMatchObject({ outcome: 'synced', mode: 'backfill', admitted: 3, hasMore: false });
     const keys = ['m1', 'm2', 'm3'].map((id) => receivedKey(src, id)).sort();
-    expect((await ledger(src)).map((row) => row.dedupe_key)).toEqual(expect.arrayContaining(keys));
+    expect([...new Set((await ledger(src)).map((row) => row.dedupe_key))].sort()).toEqual(keys);
     for (const row of await ledger(src)) expect(row.n, row.dedupe_key).toBe(1);
     // The profile historyId was pinned before any read, and the cursor committed past every page.
     expect(api.seen.findIndex((r) => r.url.endsWith('/profile'))).toBe(0);
@@ -305,7 +311,9 @@ describe('Gmail syncs through the host connector driver (D-017)', () => {
     expect(api.seen.some((r) => new URL(r.url).pathname.endsWith('/messages'))).toBe(false);
     expect(new URL(api.seen.find((r) => r.url.includes('/history?'))!.url).searchParams.get('startHistoryId')).toBe('900');
     expect((await sourceState(src)).cursor).toMatchObject({ historyId: '905', backfill: { status: 'complete' } });
-    expect((await ledger(src)).map((row) => row.dedupe_key)).toEqual([receivedKey(src, 'n1')]);
+    // One delivery key, admitted once into each of the source's sinks.
+    expect([...new Set((await ledger(src)).map((row) => row.dedupe_key))]).toEqual([receivedKey(src, 'n1')]);
+    for (const row of await ledger(src)) expect(row.n, row.dedupe_key).toBe(1);
   });
 
   it('a Gmail 429 backs the source off and leaves its committed cursor where it was', async () => {
@@ -370,8 +378,8 @@ describe('Gmail mail verbs dispatch through the registered provider (D-017 / D-0
     const raw = decodeRaw(draft.raw);
     expect(raw).toMatch(/^In-Reply-To: <r1@mail\.example\.com>\r$/m);
     expect(raw).toMatch(/^Subject: Re: Subject r1\r$/m);
-    expect(raw).toContain('ada@example.com');
-    expect(raw).toContain('Thanks, Ada.');
+    expect(raw).toMatch(/^To: .*ada@example\.com.*\r$/m);
+    expect(singlePartBody(raw)).toContain('Thanks, Ada.');
     expect(reply).toMatchObject({ mode: 'draft', threadId: 't-r1', subject: 'Re: Subject r1' });
   });
 

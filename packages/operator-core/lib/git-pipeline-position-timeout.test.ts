@@ -72,6 +72,33 @@ describe('git-pipeline-position subprocess bounds (EI-20262192515275987)', () =>
     expect(childProcessMocks.execFile).not.toHaveBeenCalled();
   });
 
+  it('disables optional index locking for status reads in both runner paths', async () => {
+    childProcessMocks.execFile.mockImplementation((_command, _args, _options, callback) => {
+      callback(null, ' M tracked.ts\n', '');
+    });
+
+    await expect(realGit('/repo', ['status', '--porcelain'])).resolves.toBe('M tracked.ts');
+    expect(childProcessMocks.execFile).toHaveBeenCalledWith(
+      'git',
+      ['-C', '/repo', 'status', '--porcelain'],
+      expect.objectContaining({
+        env: expect.objectContaining({ GIT_OPTIONAL_LOCKS: '0' }),
+      }),
+      expect.any(Function),
+    );
+
+    childProcessMocks.execFile.mockClear();
+    sidecarMocks.enabled.mockReturnValue(true);
+    sidecarMocks.run.mockResolvedValue({ code: 0, stdout: ' M tracked.ts\n', stderr: '' });
+    await expect(realGit('/repo', ['status', '--porcelain'])).resolves.toBe('M tracked.ts');
+    expect(sidecarMocks.run).toHaveBeenCalledWith(
+      ['-C', '/repo', 'status', '--porcelain'],
+      process.cwd(),
+      GIT_PIPELINE_POSITION_SUBPROCESS_TIMEOUT_MS,
+      expect.objectContaining({ GIT_OPTIONAL_LOCKS: '0' }),
+    );
+  });
+
   it('treats a real non-zero sidecar git result as null without spawning the same command locally', async () => {
     sidecarMocks.enabled.mockReturnValue(true);
     sidecarMocks.run.mockResolvedValue({ code: 128, stdout: '', stderr: 'bad revision' });

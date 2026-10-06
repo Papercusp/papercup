@@ -3322,7 +3322,12 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
                     )));
                 }
             }
-            if let ToolOutcome::Failed(msg) = &tc.outcome {
+            // An empty reason means the `⎿` result line below carries it.
+            let failed_reason = match &tc.outcome {
+                ToolOutcome::Failed(msg) if !msg.is_empty() => Some(msg),
+                _ => None,
+            };
+            if let Some(msg) = failed_reason {
                 for wl in wrap_text(msg, inner_w.saturating_sub(4)) {
                     lines.push(Line::from(Span::styled(
                         format!("    {wl}"),
@@ -10741,6 +10746,53 @@ mod tests {
             !unrelated.contains("waiting for your answer"),
             "{unrelated}"
         );
+    }
+
+    /// pui-chat-first-ux-2026-09-28 P-025: a failed tool row reads like stock
+    /// Claude/Codex: a `✗` on the row and the output on its `⎿` line. It used
+    /// to add a fixed "SU-session tool failed" line under every failure, which
+    /// is internal jargon and says nothing the `✗` does not. A reason the
+    /// engine actually gave (non-empty) still renders.
+    #[test]
+    fn failed_tool_row_shows_its_output_and_no_fixed_failure_sentence() {
+        use crate::models::{ChatMessage, ChatToolCall};
+
+        let failed = |outcome: ToolOutcome| {
+            let mut calls = ChatMessage::assistant("");
+            calls.tools.push(ChatToolCall {
+                name: "Bash".into(),
+                id: Some("call-1".into()),
+                needs_approval: false,
+                input: Some(serde_json::json!({ "command": "git status --short" })),
+                result: Some(serde_json::json!("fatal: not a git repository")),
+                outcome,
+            });
+            let mut app = App::new();
+            app.tab = Tab::Operator;
+            app.set_chat_history(
+                "c1".into(),
+                vec![ChatMessage::user("status?"), calls],
+                false,
+                None,
+            );
+            render(&app, 100, 30)
+        };
+
+        // Cells from the row to its `⎿` line: a blank reason row would add a
+        // whole frame row here (wrap_text("") yields one empty line).
+        let gap = |text: &str| {
+            let row = text.find("⚙ Bash(git status --short)").expect(text);
+            let result = text.find("⎿ fatal: not a git repository").expect(text);
+            text[row..result].chars().count()
+        };
+        let text = failed(ToolOutcome::Failed(String::new()));
+        assert!(text.contains("✗"), "{text}");
+        assert!(!text.contains("SU-session"), "{text}");
+        assert_eq!(gap(&text), gap(&failed(ToolOutcome::Ok)), "{text}");
+
+        let text = failed(ToolOutcome::Failed("exit status 128".into()));
+        assert!(text.contains("exit status 128"), "{text}");
+        assert!(text.contains("⎿ fatal: not a git repository"), "{text}");
     }
 
     /// pui-chat-first-ux-2026-09-28 P-013: the tool rows render above the

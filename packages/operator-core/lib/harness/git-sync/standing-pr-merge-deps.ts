@@ -45,6 +45,11 @@ export const STANDING_PR_MERGE_REF_PREFIX = 'refs/papercusp/standing-merge';
 export interface StandingPrMergeMetaStore {
   readMeta(installSlug: string): Promise<object>;
   patchMeta(installSlug: string, patch: Record<string, unknown>): Promise<void>;
+  /**
+   * Make sure the record can be written for this pot. A store keyed to a row that may
+   * not exist creates it here (the poll store's pr-poll routine, WI-10006418).
+   */
+  ensureRecordRow?(installSlug: string, workspaceId: string): Promise<void>;
 }
 
 /** Run the suite on `sha`. true = passed, false = ran and failed; throws when it could not run. */
@@ -108,6 +113,15 @@ export function createDefaultStandingPrMergeDeps(args: DefaultStandingPrMergeDep
     if (rec) all[String(n)] = rec;
     else delete all[String(n)];
     await store.patchMeta(installSlug, { [STANDING_PR_MERGE_TESTS_META_KEY]: all });
+    // This record is what lets a merge go ahead, so a write the store dropped without an
+    // error must fail here. Otherwise every merge re-tests forever (WI-10006418).
+    const saved = (await readAll())[String(n)];
+    const kept = rec
+      ? isMergeTestRecord(saved) && saved.mergeSha === rec.mergeSha && saved.result === rec.result
+      : saved === undefined;
+    if (!kept) {
+      throw new Error(`The merge-test record for PR #${n} on ${installSlug} was not saved, so the merge cannot go ahead.`);
+    }
   }
 
   async function readTargetTip(baseBranch: string): Promise<string> {

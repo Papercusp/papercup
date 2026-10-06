@@ -111,7 +111,12 @@ Environment=PAPERCUSP_EMBED_DEVICE=auto
 # glibc otherwise grows up to 8×cores malloc arenas for the ORT/worker threads,
 # which holds freed native memory as RSS (memory audit WI-10002858, F5).
 Environment=MALLOC_ARENA_MAX=2
-ExecStartPre=/usr/bin/bash -c 'exec bin/bundle-host.sh bin/embed-sidecar.ts dist-sidecar/embed-sidecar.mjs'
+# WI-10006398: bundle-host.sh runs from a frozen snapshot (papercusp-script-snapshot.sh) so an
+# edit landing mid-build cannot change the program bash is reading. From the snapshot it cannot
+# find the checkout by its own path, so the checkout is pinned; bundle-host.sh honours the pin
+# only when it runs from a snapshot.
+Environment=BUNDLE_HOST_OPERATOR_DIR=%h/papercupai-workspace/papercusp/apps/operator
+ExecStartPre=%h/papercupai-workspace/papercusp/apps/operator/scripts/systemd/papercusp-script-snapshot.sh %h/papercupai-workspace/papercusp/apps/operator/bin/bundle-host.sh bin/embed-sidecar.ts dist-sidecar/embed-sidecar.mjs
 ExecStart=/usr/bin/bash -c 'exec node dist-sidecar/embed-sidecar.mjs'
 Restart=always
 RestartSec=2

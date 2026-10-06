@@ -604,6 +604,37 @@ const sendAnthropicTrial = (port: number, token: string = trialToken, signal?: A
     headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
     body: anthropicTrialBody() });
 
+it.each([null, [], ['anthropic-messages', 'anthropic-messages'], ['unobserved-protocol'], 'anthropic-messages'])(
+  'rejects malformed protocol allowance %j before serving requests', protocols => {
+    expect(() => createInferenceGateway({ accountId: 'unused', token: async () => 'unused',
+      carryTrial: { ...trialBinding(async attempt => fixtureReservation(attempt)), protocols: protocols as never },
+    })).toThrow('invalid carry trial protocols');
+  });
+
+it('Anthropic binding authenticates the final API-key account without retaining the binding token', async () => {
+  const attempts: GatewayCarryTrialAttempt[] = [];
+  let wire: { body: string; authorization: string | undefined; apiKey: string | undefined } | undefined;
+  upstream = http.createServer(async (req, res) => {
+    const chunks: Buffer[] = []; for await (const chunk of req) chunks.push(Buffer.from(chunk));
+    wire = { body: Buffer.concat(chunks).toString(), authorization: req.headers.authorization,
+      apiKey: req.headers['x-api-key'] as string | undefined };
+    res.setHeader('content-type', 'application/json'); res.end('{}');
+  });
+  const upstreamPort = await listen(upstream);
+  gateway = createInferenceGateway({ upstreamBase: `http://127.0.0.1:${upstreamPort}`,
+    pool: createFailoverPool([{ accountId: 'native-api', authMode: 'api-key', token: async () => 'PRIVATE_API_KEY' }]),
+    requestAbsorbMs: 0, selfHeal: { enabled: false },
+    carryTrial: anthropicTrialBinding(async attempt => { attempts.push(attempt); return fixtureReservation(attempt); }),
+  });
+  const response = await sendAnthropicTrial(await gateway.listen(0));
+  expect(response.status).toBe(200); await response.text();
+  expect(wire).toMatchObject({ authorization: undefined, apiKey: 'PRIVATE_API_KEY' });
+  expect(attempts).toHaveLength(1);
+  expect(attempts[0]).toMatchObject({ transport: 'anthropic-http', accountId: 'native-api',
+    credentialHeader: 'x-api-key', credentialSha256: sha256('PRIVATE_API_KEY'),
+    body: wire!.body, bodySha256: sha256(wire!.body) });
+});
+
 it.each(['missing-token', 'wrong-token', 'refused', 'threw', 'expired', 'wrong-clock', 'replayed-receipt', 'empty-ref'] as const)(
   'Anthropic binding prevents the actual pooled HTTP write for %s', async mode => {
     let writes = 0, authorizations = 0;
@@ -631,6 +662,7 @@ it.each(['missing-token', 'wrong-token', 'refused', 'threw', 'expired', 'wrong-c
     expect(await response.text()).not.toMatch(/PRIVATE_/);
     expect(writes).toBe(0);
     expect(authorizations).toBe(mode === 'missing-token' || mode === 'wrong-token' ? 0 : 1);
+    expect(gateway.stats().upstreamErrors).toBe(0);
   });
 
 it.each([true, false])('Anthropic binding reauthorizes each actual failover send (allow=%s)', async allow => {

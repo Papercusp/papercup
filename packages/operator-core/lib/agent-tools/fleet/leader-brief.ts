@@ -2229,6 +2229,43 @@ export function renderFalsifierCall(tool: string, args: Record<string, unknown>)
   return parts.length > 0 ? `${tool} { ${parts.join(', ')} }` : `${tool} {}`;
 }
 
+/**
+ * P-005 / D-030 step 5: the brief's view of the UNDER-staff alert — the pure
+ * evaluation plus the falsifier a fired alert must ship. The falsifier reads live
+ * members and their claims straight from fleet:assignments, independent of the
+ * productive-seat projection that fired the alert. PURE — exported so the wiring
+ * is testable without the handler's DI ceremony.
+ */
+export function buildFleetUnderStaffedBriefAlert(input: {
+  fleet: string | null | undefined;
+  headcount: Parameters<typeof computeFleetUnderStaffedAlert>[0]['headcount'];
+  /** null/undefined when the fleet record could not be read: the alert stays unknown. */
+  controlState: string | null | undefined;
+  fleetPaused?: boolean | null;
+}): (FleetUnderStaffedEvaluation & { falsifier?: AlertFalsifier }) | undefined {
+  const evaluation = computeFleetUnderStaffedAlert({
+    headcount: input.headcount,
+    controlState: input.controlState,
+    fleetPaused: input.fleetPaused,
+  });
+  if (!evaluation?.alert) return evaluation;
+  return {
+    ...evaluation,
+    falsifier: {
+      tool: 'fleet:assignments',
+      check: renderFalsifierCall('fleet:assignments', { fleet: input.fleet }),
+      measurement:
+        'each live member and the work-item it holds right now, read from presence and claims — ' +
+        'not from the productive-seat count `summary.headcount.current` this alert fired on',
+      kills:
+        evaluation.target != null
+          ? `${evaluation.target} or more members are live and each holds a claim → headcount.current ` +
+            'under-read them; do not launch more workers from this alert.'
+          : 'at least one live member holds a claim → the fleet is not empty; do not launch from this alert.',
+    },
+  };
+}
+
 const DARK_FLEET_MIN_MEMBERS = 3;
 const DARK_FLEET_ACTIVITY_WINDOW_SEC = 30 * 60;
 
@@ -4998,31 +5035,13 @@ export async function buildLeaderBrief(
   }
   // P-005 / D-030 step 5: the UNDER-staff counterpart of the over-staff alert
   // above. Plan-independent: a fleet with zero workers is short whatever it drains.
-  // The falsifier reads live claims straight from fleet:assignments, independent of
-  // the productive-seat projection that fired it.
-  const fleetUnderStaffed: (FleetUnderStaffedEvaluation & { falsifier?: AlertFalsifier }) | undefined = (() => {
-    const evaluation = computeFleetUnderStaffedAlert({
-      headcount,
-      controlState: fleetRecordReadAvailable ? (fleetRecord?.controlState ?? null) : null,
-      fleetPaused: fleetPause.paused,
-    });
-    if (!evaluation?.alert) return evaluation;
-    return {
-      ...evaluation,
-      falsifier: {
-        tool: 'fleet:assignments',
-        check: renderFalsifierCall('fleet:assignments', { fleet }),
-        measurement:
-          'each live member and the work-item it holds right now, read from presence and claims — ' +
-          'not from the productive-seat count `summary.headcount.current` this alert fired on',
-        kills:
-          evaluation.target != null
-            ? `${evaluation.target} or more members are live and each holds a claim → headcount.current ` +
-              'under-read them; do not launch more workers from this alert.'
-            : 'at least one live member holds a claim → the fleet is not empty; do not launch from this alert.',
-      },
-    };
-  })();
+  // An unread fleet record passes a null control state, so the alert stays unknown.
+  const fleetUnderStaffed = buildFleetUnderStaffedBriefAlert({
+    fleet,
+    headcount,
+    controlState: fleetRecordReadAvailable ? (fleetRecord?.controlState ?? null) : null,
+    fleetPaused: fleetPause.paused,
+  });
   const announcedGates = await boundedLeaderBriefRead(
     'announced-gates',
     () =>
@@ -5304,6 +5323,8 @@ export async function buildLeaderBrief(
         ...(fleetHeadcountVsExecutableFrontierAlert
           ? { fleetHeadcountVsExecutableFrontierAlert: fleetHeadcountVsExecutableFrontierAlert.alert }
           : {}),
+        // P-005 / D-030: absent = unknown or not applicable, never a clean false.
+        ...(fleetUnderStaffed ? { fleetUnderStaffedAlert: fleetUnderStaffed.alert } : {}),
         // P-009: null is load-bearing — the dependency population was not
         // measured or one of the alarm's required row legs was unknown.
         leaderBlockerStallAlert: leaderBlockerStall.alert,
@@ -5471,6 +5492,12 @@ export async function buildLeaderBrief(
         ? {
             fleetHeadcountVsExecutableFrontierAlertReason: fleetHeadcountVsExecutableFrontierAlert.reason,
             fleetHeadcountVsExecutableFrontierAlertFalsifier: fleetHeadcountVsExecutableFrontierAlert.falsifier,
+          }
+        : {}),
+      ...(fleetUnderStaffed?.alert
+        ? {
+            fleetUnderStaffedAlertReason: fleetUnderStaffed.reason,
+            fleetUnderStaffedAlertFalsifier: fleetUnderStaffed.falsifier,
           }
         : {}),
       ...(idleWithClaimableAlert

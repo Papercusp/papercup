@@ -57,7 +57,34 @@ set -euo pipefail
 # a restart afterwards silently runs the STALE bundle
 # (internal-docs/agent-insights/bg-host-runs-stale-routine-code.md again).
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+# >>> operator-dir resolution (WI-10006398; executed verbatim by systemd-script-snapshot.test.ts)
+# systemd runs this script through papercusp-script-snapshot.sh, which executes a COPY from a
+# private temp directory so an edit landing mid-build cannot change the program bash is reading.
+# From that copy SCRIPT_DIR is the temp directory, so the checkout comes from
+# BUNDLE_HOST_OPERATOR_DIR, which the unit pins with Environment=.
+# The override is honoured ONLY from a snapshot. bg-host's Environment= reaches every process it
+# spawns, including deploy-cli, which runs papercup-release's copy of this script IN PLACE; an
+# in-place run that honoured an inherited value would bundle the staging tree into a release.
+# So an in-place run drops the value and locates itself, exactly as before the override existed.
+if [[ -n "${PAPERCUSP_SCRIPT_SNAPSHOT_ROOT:-}" && "$SCRIPT_DIR/" == "$PAPERCUSP_SCRIPT_SNAPSHOT_ROOT"/* ]]; then
+  if [[ -z "${BUNDLE_HOST_OPERATOR_DIR:-}" ]]; then
+    echo "bundle-host.sh: running from a script snapshot ($SCRIPT_DIR) without BUNDLE_HOST_OPERATOR_DIR — pin it with Environment= in the unit" >&2
+    exit 78
+  fi
+else
+  unset BUNDLE_HOST_OPERATOR_DIR
+fi
+OPERATOR_DIR="$(cd "${BUNDLE_HOST_OPERATOR_DIR:-$SCRIPT_DIR/..}" && pwd)" || {
+  echo "bundle-host.sh: operator directory does not exist: ${BUNDLE_HOST_OPERATOR_DIR:-$SCRIPT_DIR/..}" >&2
+  exit 78
+}
+# <<< operator-dir resolution
+REPO_ROOT="$(cd "$OPERATOR_DIR/../.." && pwd)"
+# Node helpers run from the CHECKOUT, never from a snapshot: they import through node_modules and
+# ../../../scripts, which do not resolve from a temp directory. That costs no protection — each
+# runs under the committed-source loader, which reads its whole module before executing, unlike
+# bash. The sourced bundle-host-common.sh stays beside this script, frozen with it.
+HELPER_DIR="$OPERATOR_DIR/bin"
 
 # WI-10005802 (D-012): every node helper this script runs BEFORE the restricted-hold gate judges
 # the build (the install-mutex re-entry, the freshness proof, the probe-window gate, the bundle
@@ -79,14 +106,14 @@ if ! "${COMMITTED_NODE[@]}" --input-type=module -e \
     --repo-root "$REPO_ROOT" --exec-under-lock -- "$SCRIPT_DIR/bundle-host.sh" "$@"
 fi
 
-cd "$SCRIPT_DIR/.."
+cd "$OPERATOR_DIR"
 
 ENTRY="${1:-bin/hono-host.ts}"
 OUTFILE="${2:-dist-host/hono-host.mjs}"
 OUTDIR="$(dirname "$OUTFILE")"
 STALE_MARKER="$OUTDIR/.bundle-stale.json"
 FRESH_MARKER="$OUTDIR/.bundle-fresh.json"
-FRESHNESS_HELPER="$SCRIPT_DIR/bundle-host-freshness.mjs"
+FRESHNESS_HELPER="$HELPER_DIR/bundle-host-freshness.mjs"
 
 # EI-22636310973765418: staging-sync builds the expensive host bundle while the
 # old :3170 process is still serving. Its subsequent systemd ExecStartPre may
@@ -181,6 +208,11 @@ HOST_EXTERNALS+=(
   --external:acorn
   --external:fast-check
   --external:@mcp-ui/server
+  # WI-10006409: EC2 contributes 2.31 MB and SSM 0.45 MB of generated SDK
+  # source to each host. Both resolve compiled JS in staging and release;
+  # retain their plain-Node runtime boundary instead of inlining the SDKs.
+  --external:@aws-sdk/client-ec2
+  --external:@aws-sdk/client-ssm
   --external:viem
   --external:iconv-lite
   --external:@smithy/core
@@ -235,7 +267,7 @@ SYSTEMD_ENV_RUNNER_TMP=""
 # (esbuild metafiles + verbatim-copied files/dirs) and restores the snapshot on anything but an
 # admit. It runs on the normal path below AND from the EXIT trap, so every exit after a fresh
 # publish (including the worker/spawner stale-start exits) is gated. bundle-restricted-hold-gate.mjs.
-GATE_HELPER="$SCRIPT_DIR/bundle-restricted-hold-gate.mjs"
+GATE_HELPER="$HELPER_DIR/bundle-restricted-hold-gate.mjs"
 GATE_SNAPSHOT_DIR="$OUTDIR/.restricted-lkg.$$"
 BUNDLE_HOST_GATE_META_DIR="$OUTDIR/.restricted-gate-meta.$$"
 GATE_LOG="$OUTFILE.restricted-hold-gate.log"
@@ -268,7 +300,7 @@ restricted_hold_fallback() { # <log> — sets FALLBACK_RC; the caller exits with
     FALLBACK_RC=1
     return
   fi
-  "${COMMITTED_NODE[@]}" "$SCRIPT_DIR/write-bundle-stale-marker.mjs" "$STALE_MARKER" "$ENTRY" "$OUTFILE" "$log" || true
+  "${COMMITTED_NODE[@]}" "$HELPER_DIR/write-bundle-stale-marker.mjs" "$STALE_MARKER" "$ENTRY" "$OUTFILE" "$log" || true
   echo "🚨 dist-host/ is the LAST-KNOWN-GOOD bundle, NOT the current tree: the restricted-hold gate"
   echo "🚨   refused this build (D-012, WI-10005745). /api/health reports bundleStale."
   echo "🚨   Marker: $STALE_MARKER — restart the host after the disclosure is released."
@@ -292,7 +324,7 @@ bundle_host_on_exit() {
       rc=$FALLBACK_RC
     else
       rm -f "$FRESH_MARKER"
-      "${COMMITTED_NODE[@]}" "$SCRIPT_DIR/write-bundle-stale-marker.mjs" "$STALE_MARKER" "$ENTRY" "$OUTFILE" "$GATE_LOG" || true
+      "${COMMITTED_NODE[@]}" "$HELPER_DIR/write-bundle-stale-marker.mjs" "$STALE_MARKER" "$ENTRY" "$OUTFILE" "$GATE_LOG" || true
     fi
   fi
   rm -rf "$GATE_SNAPSHOT_DIR" "$BUNDLE_HOST_GATE_META_DIR"
@@ -426,7 +458,7 @@ bundle_rc=0
   # tested compound command. An unwrapped checker failure therefore fell through to ascii-escape + mv,
   # publishing the rejected bundle and returning success. Fail explicitly before the atomic swap.
   if ! "${COMMITTED_NODE[@]}" "$REPO_ROOT/scripts/check-bundled-cli-entry-guards.mjs" \
-    --metafile "$METAFILE" --base-dir "$SCRIPT_DIR/.."; then
+    --metafile "$METAFILE" --base-dir "$OPERATOR_DIR"; then
     exit 1
   fi
   # WI-10005745: the restricted-hold gate reads these exact inputs after every step has published.
@@ -435,7 +467,7 @@ bundle_rc=0
   # below, so the swap stays atomic and a failure here leaves the last-known-good
   # $OUTFILE untouched. The helper never exits non-zero — a bundle that skipped
   # the escape is correct, just fatter, and is not worth failing a boot over.
-  "${COMMITTED_NODE[@]}" "$SCRIPT_DIR/ascii-escape-bundle.mjs" "$TMPFILE"
+  "${COMMITTED_NODE[@]}" "$HELPER_DIR/ascii-escape-bundle.mjs" "$TMPFILE"
   # WI-10005299: syntax-gate the FINAL bytes before the swap. ascii-escape's own check only
   # judges its rewrite, and on failure it keeps the input on the assumption that escaping
   # broke it. When the INPUT was already invalid (a banner/module `__dirname` redeclaration),
@@ -455,7 +487,7 @@ fi
 
 if [[ $bundle_rc -ne 0 ]]; then
   if [[ -f "$OUTFILE" ]]; then
-    "${COMMITTED_NODE[@]}" "$SCRIPT_DIR/write-bundle-stale-marker.mjs" \
+    "${COMMITTED_NODE[@]}" "$HELPER_DIR/write-bundle-stale-marker.mjs" \
       "$STALE_MARKER" "$ENTRY" "$OUTFILE" "$BUILD_LOG" || true
     # WI-55467: this used to assert "the esbuild error is above" unconditionally. The
     # bundle step is esbuild + the CLI-entry guard check + ascii-escape + the atomic
@@ -710,7 +742,7 @@ if [[ $worker_rc -ne 0 ]]; then
     exit 1
   fi
   worker_outfile="$OUTDIR/${BUNDLE_HOST_WORKER_FAILED_OUTPUT:-${HOST_WORKER_OUTPUTS[0]}}"
-  "${COMMITTED_NODE[@]}" "$SCRIPT_DIR/write-bundle-stale-marker.mjs" \
+  "${COMMITTED_NODE[@]}" "$HELPER_DIR/write-bundle-stale-marker.mjs" \
     "$STALE_MARKER" "$failed_worker" "$worker_outfile" "$WORKER_BUILD_LOG" || true
   echo "🚨 ERROR: bundling runtime worker $failed_worker FAILED — output above; full log: $WORKER_BUILD_LOG"
   echo "🚨 FALLING BACK to the last-known-good worker already on disk:"
@@ -734,7 +766,7 @@ case "${ENTRY##*/}" in
     SPAWNER_BUILD_LOG="$OUTDIR/spawner-sidecar.mjs.build-error.log"
     if ! bundle_host_spawner "$REPO_ROOT" "$OUTDIR" "${BUNDLED_SOURCE_SHA_DEFINE[@]}" "${HOST_EXTERNALS[@]}" >"$SPAWNER_BUILD_LOG" 2>&1; then
       cat "$SPAWNER_BUILD_LOG"
-      "${COMMITTED_NODE[@]}" "$SCRIPT_DIR/write-bundle-stale-marker.mjs" \
+      "${COMMITTED_NODE[@]}" "$HELPER_DIR/write-bundle-stale-marker.mjs" \
         "$STALE_MARKER" "bin/spawner-sidecar.ts" "$OUTDIR/spawner-sidecar.mjs" "$SPAWNER_BUILD_LOG" || true
       echo "ERROR: standalone spawner build failed; prior sibling remains unchanged, or the resolver uses the full host when absent."
       if [[ "${PAPERCUSP_BUNDLE_ALLOW_STALE_START:-0}" == "1" && -s "$OUTFILE" ]]; then

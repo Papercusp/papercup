@@ -130,6 +130,8 @@ export interface PollStore {
   readTrust(workspaceId: string, installSlug: string, viewerId: number): Promise<ReadonlySet<number>>;
   readMeta(installSlug: string): Promise<PollMeta>;
   patchMeta(installSlug: string, patch: Record<string, unknown>): Promise<void>;
+  /** Create this pot's pr-poll routine row (inactive) when it has none (WI-10006418). */
+  ensureRecordRow?(installSlug: string, workspaceId: string): Promise<void>;
   setNextFireAt(installSlug: string, at: Date): Promise<void>;
   /** Best-effort WI↔PR row (resolves feature_id via completion_ref; no-op if unlinked). */
   upsertFeaturePr(args: { workspaceId: string; installSlug: string; pr: Pr }): Promise<void>;
@@ -619,6 +621,20 @@ export function makeSqlStore(sql: Sql): PollStore {
         );
       } catch {
         // Metadata is observability/idempotency state — never sink the poll on a write blip.
+      }
+    },
+
+    async ensureRecordRow(installSlug, workspaceId) {
+      // patchMeta writes into this pot's pr-poll routine row. Only the PR-reviewer settings
+      // route created one, so a working-copy pot without that role had no row, and its
+      // standing-PR merge-test record was silently dropped (WI-10006418). Create it
+      // inactive: this stores records and does not turn polling on.
+      const { getPrPollRoutine, seedPrPollRoutineForHarness } = await import('./pr-poll-routine');
+      if (await getPrPollRoutine(sql, installSlug)) return;
+      const seeded = await seedPrPollRoutineForHarness({ workspaceId, installSlug, active: false }, { sql });
+      if (!seeded.seeded) {
+        const why = seeded.reason === 'error' ? `${seeded.reason}: ${seeded.message}` : seeded.reason;
+        throw new Error(`Could not create the row that stores ${installSlug}'s merge tests (${why}).`);
       }
     },
 

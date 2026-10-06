@@ -106,6 +106,7 @@ export function makeLiveStandingPrMerge(opts: {
       if (!command) {
         return { action: 'error', detail: `${args.installSlug} has no test suite to run on the merge result; not merging.` };
       }
+      await opts.store.ensureRecordRow?.(args.installSlug, args.workspaceId);
       const deps = r.buildDeps({
         repoDir,
         installSlug: args.installSlug,

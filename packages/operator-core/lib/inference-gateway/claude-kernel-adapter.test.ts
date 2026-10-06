@@ -26,6 +26,7 @@ import {
 } from './claude-kernel-adapter';
 import {
   executeGatewayRequestKernel,
+  GatewayRequestKernelError,
   type ExecuteGatewayRequestKernelOptions,
   type GatewayKernelAccountPin,
   type GatewayKernelPolicy,
@@ -263,6 +264,18 @@ describe('claude kernel adapter', () => {
     await executeGatewayRequestKernel(options);
     expect(prepared).toHaveLength(1);
     expect(prepared[0]!.accountId).toBe('A');
+  });
+
+  it('preserves a typed authorization refusal without retrying a provider route', async () => {
+    const refusal = new GatewayRequestKernelError('private reservation refused', {
+      code: 'invalid-route', outcome: 'gateway-error', status: 403, retryable: false,
+    });
+    let sends = 0;
+    const { options, prepared } = harness(async (_target, init) => {
+      sends++; expect(init.diagnosticAccountId).toBe('A'); throw refusal;
+    });
+    await expect(executeGatewayRequestKernel(options)).rejects.toBe(refusal);
+    expect(sends).toBe(1); expect(prepared).toHaveLength(1);
   });
 
   it('preserves undici fetch diagnostics and the original cause on transport failure', async () => {

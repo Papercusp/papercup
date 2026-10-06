@@ -4300,7 +4300,12 @@ impl App {
                             } else if answered {
                                 ToolOutcome::Ok
                             } else {
-                                ToolOutcome::Failed("SU-session tool failed".into())
+                                // P-025: the ✗ on the row already says it
+                                // failed and the `⎿` result line carries the
+                                // reason (stock Claude/Codex show exactly
+                                // that). A fixed sentence here was an extra,
+                                // internal-jargon line under every failure.
+                                ToolOutcome::Failed(String::new())
                             };
                             break;
                         }
@@ -16711,7 +16716,7 @@ mod tests {
                 question("Bad schema?"),
                 None,
                 true,
-                ToolOutcome::Failed("SU-session tool failed".into()),
+                ToolOutcome::Failed(String::new()),
             ),
             (
                 "bash-declined",
@@ -16719,7 +16724,7 @@ mod tests {
                 json!({"command":"ls"}),
                 Some("declined"),
                 true,
-                ToolOutcome::Failed("SU-session tool failed".into()),
+                ToolOutcome::Failed(String::new()),
             ),
         ];
         for (call, name, input, resolution, is_error, expected) in cases {

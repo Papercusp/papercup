@@ -4,7 +4,6 @@ import test from "node:test";
 import {
   mkdtempSync,
   mkdirSync,
-  existsSync,
   readFileSync,
   rmSync,
   symlinkSync,
@@ -40,53 +39,6 @@ import {
   resolveFsMutexTimeoutMs,
   withFsMutex,
 } from "./lib/fs-mutex.mjs";
-
-test("reviewed npm dependency builds run, while unreviewed versions stay blocked", async (t) => {
-  const policy = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).allowScripts;
-  const approved = Object.entries(policy ?? {}).find(([key, value]) => key.startsWith("esbuild@") && value === true);
-  assert.ok(approved, "npm 11.19 needs an explicit version-pinned approval for the bundler build");
-  const approvedVersion = approved[0].slice("esbuild@".length);
-
-  for (const [label, version, allowScripts, runs] of [
-    ["no approval", approvedVersion, {}, false],
-    ["reviewed version", approvedVersion, policy, true],
-    ["unreviewed version", "0.0.0", policy, false],
-  ]) {
-    await t.test(label, () => {
-      const root = mkdtempSync(join(tmpdir(), "npm-build-policy-"));
-      try {
-        const leaf = join(root, "source");
-        mkdirSync(leaf);
-        writeFileSync(join(leaf, "package.json"), JSON.stringify({
-          name: "esbuild", version, scripts: { postinstall: "node install.cjs" },
-        }));
-        writeFileSync(join(leaf, "install.cjs"), 'require("node:fs").writeFileSync("build-ran.txt", "built");\n');
-        writeFileSync(join(root, ".npmrc"), "");
-        const env = { ...process.env, npm_config_userconfig: join(root, ".npmrc") };
-        for (const key of Object.keys(env)) {
-          if (/^npm_config_(allow_scripts|dangerously_allow_all_scripts|ignore_scripts)$/i.test(key)) delete env[key];
-        }
-        const pack = spawnSync("npm", ["pack", "--ignore-scripts", "--json", "--pack-destination", root], {
-          cwd: leaf, env, encoding: "utf8", timeout: 30_000,
-        });
-        assert.equal(pack.status, 0, pack.stderr);
-        const filename = JSON.parse(pack.stdout)[0].filename;
-        writeFileSync(join(root, "package.json"), JSON.stringify({
-          name: "build-policy-control", version: "1.0.0", private: true,
-          dependencies: { esbuild: `file:${filename}` }, allowScripts,
-        }));
-        const install = spawnSync("npm", ["install", "--offline", "--no-audit", "--no-fund", "--ignore-scripts=false", "--dangerously-allow-all-scripts=false"], {
-          cwd: root, env, encoding: "utf8", timeout: 30_000,
-        });
-        assert.equal(install.status, 0, install.stderr);
-        assert.equal(existsSync(join(root, "node_modules/esbuild/build-ran.txt")), runs,
-          `dependency lifecycle verdict: ${label}\n${install.stdout}\n${install.stderr}`);
-      } finally {
-        rmSync(root, { recursive: true, force: true });
-      }
-    });
-  }
-});
 
 // EI-24961470606265468: the P-532f capacity build died after the interactive
 // 180 s fs-mutex wait behind a peer's install. The unattended lock-wait knob

@@ -121,7 +121,8 @@ export async function livePrViewerDeps(slug: string): Promise<PrViewerDeps> {
         // Reached only via actOnPr after its permissions.review check, so this is a
         // reviewer's decision to merge: it is the approval (WI-10006351).
         const { makeLiveStandingPrMerge } = await import('../harness/git-sync/standing-pr-merge-live');
-        return makeLiveStandingPrMerge({ store })({ workspaceId, installSlug: slug, remote, pr, autoMerge: true, authorRevoked,
+        const onError = (err: unknown) => console.warn(`[pr-viewer] ${slug}: standing PR merge run failed:`, err);
+        return makeLiveStandingPrMerge({ store, onError })({ workspaceId, installSlug: slug, remote, pr, autoMerge: true, authorRevoked,
           viewerApproved: true });
       }
       const { tryAutoMerge } = await import('./auto-merge');

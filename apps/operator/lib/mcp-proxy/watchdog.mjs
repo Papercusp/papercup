@@ -406,7 +406,12 @@ export async function readMcpProxyHotPathState(deps = {}) {
     shImpl(
       'git',
       ['-C', root, 'status', '--porcelain=v1', '-z', '--untracked-files=all', '--', ...MCP_PROXY_COMMITTED_HOT_PATHS, ...MCP_PROXY_DIRTY_PATH_EXCLUSIONS],
-      { timeout: 3000, cwd: root, maxBuffer: 4 * 1024 * 1024 },
+      {
+        timeout: 3000,
+        cwd: root,
+        maxBuffer: 4 * 1024 * 1024,
+        env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
+      },
     ),
   ]);
 

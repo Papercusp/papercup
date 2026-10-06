@@ -5,7 +5,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Pr } from '../../pr-host/types';
 import { makeLiveStandingPrMerge, type LiveStandingPrMergeResolvers } from './standing-pr-merge-live';
 import type { StandingPrMergeDeps } from './standing-pr-merge';
-import { nodeInstallCommandFor, pickNodeInstallCommand } from './standing-pr-merge-deps';
+import {
+  createDefaultStandingPrMergeDeps,
+  nodeInstallCommandFor,
+  pickNodeInstallCommand,
+  type StandingPrMergeMetaStore,
+} from './standing-pr-merge-deps';
 
 const PR = {
   ref: { number: 7 },
@@ -152,5 +157,64 @@ describe('nodeInstallCommandFor', () => {
       .toBe('npm install --no-audit --no-fund');
     expect(await nodeInstallCommandFor(await repo({ 'package.json': '{}', 'package-lock.json': '{}' }))).toBe('npm ci');
     expect(await nodeInstallCommandFor(await repo({ 'README.md': 'no node here' }))).toBeNull();
+  });
+});
+
+describe('WI-10006418: the merge-test record has somewhere to live, and a dropped write is loud', () => {
+  const tested = { mergeSha: 'c'.repeat(40), prHeadSha: 'a'.repeat(40), targetTipSha: 'b'.repeat(40), result: 'pass' as const };
+  const depsOn = (s: StandingPrMergeMetaStore) =>
+    createDefaultStandingPrMergeDeps({ repoDir: '/repo', installSlug: 'pot', prNumber: 7, store: s, runSuite: async () => true });
+
+  it('saving fails when the store drops the write without an error (a pot with no pr-poll row)', async () => {
+    const dropping: StandingPrMergeMetaStore = { readMeta: async () => ({}), patchMeta: async () => undefined };
+    await expect(depsOn(dropping).saveTest(7, tested)).rejects.toThrow(/PR #7 on pot was not saved/);
+  });
+
+  it('a store that keeps the write saves the record, and the next merge reads it back', async () => {
+    let meta: Record<string, unknown> = {};
+    const keeping: StandingPrMergeMetaStore = {
+      readMeta: async () => meta,
+      patchMeta: async (_slug, patch) => {
+        meta = { ...meta, ...patch };
+      },
+    };
+    const deps = depsOn(keeping);
+    await deps.saveTest(7, tested);
+    expect(await deps.loadLastTest(7)).toEqual(tested);
+  });
+
+  it('asks the store to create its row before the merge step builds its deps', async () => {
+    const calls: string[] = [];
+    const ensuring: StandingPrMergeMetaStore = {
+      ...store,
+      ensureRecordRow: async (slug, ws) => {
+        calls.push(`ensure ${ws}/${slug}`);
+      },
+    };
+    const step = makeLiveStandingPrMerge({
+      store: ensuring,
+      resolvers: resolvers({ buildDeps: () => (calls.push('build'), fakeDeps()) }),
+    });
+    await step(args);
+    expect(calls).toEqual(['ensure ws/pot', 'build']);
+  });
+
+  it('reports an error instead of re-testing forever when the row cannot be created', async () => {
+    let built = 0;
+    const failing: StandingPrMergeMetaStore = {
+      ...store,
+      ensureRecordRow: async () => {
+        throw new Error("Could not create the row that stores pot's merge tests (no_remote).");
+      },
+    };
+    const step = makeLiveStandingPrMerge({
+      store: failing,
+      resolvers: resolvers({ buildDeps: () => (built++, fakeDeps()) }),
+    });
+    expect(await step(args)).toEqual({
+      action: 'error',
+      detail: "Could not create the row that stores pot's merge tests (no_remote).",
+    });
+    expect(built).toBe(0);
   });
 });

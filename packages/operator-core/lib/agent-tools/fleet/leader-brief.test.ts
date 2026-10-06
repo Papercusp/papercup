@@ -7,6 +7,7 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import {
+  buildFleetUnderStaffedBriefAlert,
   buildLeaderBlockerStallBriefView,
   buildLeaderDependencyBottleneckView,
   computeBenchSuggestion,
@@ -74,6 +75,7 @@ import {
   STALLED_ITEM_ROTATION_THRESHOLD_MS,
 } from './stalled-item-rotation';
 import type { AgentClaim } from '../../fleet/assignments';
+import type { FleetHeadcountState } from '../../agent-fleets-store';
 import { computeMemberIdleVerdict } from '../../fleet-member-idle-verdict';
 import type { DependencyBottleneckResult } from '../../dependency-traversal';
 import type { FleetAdmissionBlock } from '../coordination/fleet-scope-admission-blocks';
@@ -4098,5 +4100,79 @@ describe('silentMembersSummary (P-007 / R-17)', () => {
       status: 'unknown',
       reason: 'execution or await leg unreadable',
     });
+  });
+});
+
+// P-005 / D-030 step 5: the brief's UNDER-staff alert view. The handler passes a
+// null control state when the fleet record was not read, so that leg must stay
+// unknown; a fired alert must carry its reason and a read-only falsifier.
+describe('buildFleetUnderStaffedBriefAlert (P-005 / D-030)', () => {
+  const headcount = (over: Partial<FleetHeadcountState> = {}): FleetHeadcountState => ({
+    enabled: true,
+    target: 3,
+    current: 1,
+    shortfall: 2,
+    underStrength: true,
+    verdict: 'under-strength',
+    held: false,
+    notHeldBecause: 'supervise-not-granted',
+    topUpRule: { status: 'none', kind: null, inherited: null, ratifiedBy: null, reason: null, until: null },
+    basis: {
+      kind: 'agent-origin-execution-attested',
+      liveRosterMembers: 1,
+      executingMembers: 1,
+      transactionWorkerReadyMembers: null,
+    },
+    countEvidence: { productive: null, liveRoster: null, transactionWorkerReady: null, note: '' },
+    ...over,
+  });
+
+  it('fires below target with its reason and a fleet:assignments falsifier for this fleet', () => {
+    const out = buildFleetUnderStaffedBriefAlert({
+      fleet: 'short-fleet',
+      headcount: headcount(),
+      controlState: 'active',
+      fleetPaused: false,
+    });
+    expect(out).toMatchObject({ alert: true, current: 1, target: 3, shortfall: 2 });
+    expect(out?.reason).toContain('1 of 3 target worker(s) are productive');
+    expect(out?.falsifier).toMatchObject({
+      tool: 'fleet:assignments',
+      check: "fleet:assignments { fleet: 'short-fleet' }",
+    });
+    expect(out?.falsifier?.kills).toContain('3 or more members are live');
+    expect(FALSIFIER_FORBIDDEN_TOOLS).not.toContain(out!.falsifier!.tool);
+  });
+
+  it('names the empty-fleet kill condition when no target is set', () => {
+    const out = buildFleetUnderStaffedBriefAlert({
+      fleet: 'empty-fleet',
+      headcount: headcount({ target: null, current: 0, notHeldBecause: 'no-target' }),
+      controlState: 'active',
+    });
+    expect(out?.alert).toBe(true);
+    expect(out?.falsifier?.kills).toContain('at least one live member holds a claim');
+  });
+
+  it('reports a measured no-alert at target, with no falsifier attached', () => {
+    const out = buildFleetUnderStaffedBriefAlert({
+      fleet: 'full-fleet',
+      headcount: headcount({ current: 3 }),
+      controlState: 'active',
+    });
+    expect(out).toMatchObject({ alert: false, current: 3, target: 3 });
+    expect(out?.falsifier).toBeUndefined();
+  });
+
+  it('stays unknown when the fleet record was not read, and fires once it is (positive control)', () => {
+    const unread = { fleet: 'f', headcount: headcount(), controlState: null };
+    expect(buildFleetUnderStaffedBriefAlert(unread)).toBeUndefined();
+    expect(buildFleetUnderStaffedBriefAlert({ ...unread, controlState: 'active' })?.alert).toBe(true);
+  });
+
+  it('stays quiet for a paused or winding-down fleet', () => {
+    const base = { fleet: 'f', headcount: headcount(), controlState: 'active' };
+    expect(buildFleetUnderStaffedBriefAlert({ ...base, fleetPaused: true })).toBeUndefined();
+    expect(buildFleetUnderStaffedBriefAlert({ ...base, controlState: 'winding-down' })).toBeUndefined();
   });
 });

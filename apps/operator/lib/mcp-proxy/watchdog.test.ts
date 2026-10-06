@@ -116,11 +116,11 @@ describe('mcp-proxy watchdog — committed hot-path activation (EI-2264723281798
   });
 
   it('reads a non-test committed proxy change while treating every dirty entry as unsafe', async () => {
-    const calls: string[][] = [];
+    const calls: Array<{ args: string[]; options?: { env?: NodeJS.ProcessEnv } }> = [];
     const state = await readMcpProxyHotPathState({
       root: '/repo',
-      sh: async (_command, args) => {
-        calls.push(args);
+      sh: async (_command, args, options) => {
+        calls.push({ args, options });
         if (args.includes('log')) return { err: null, stdout: '950\u0000abcdef1234567890\n' };
         return {
           err: null,
@@ -139,14 +139,16 @@ describe('mcp-proxy watchdog — committed hot-path activation (EI-2264723281798
       ],
       error: null,
     });
-    const logArgs = calls.find((args) => args.includes('log'))!;
-    const statusArgs = calls.find((args) => args.includes('status'))!;
+    const logArgs = calls.find((call) => call.args.includes('log'))!.args;
+    const statusCall = calls.find((call) => call.args.includes('status'))!;
+    const statusArgs = statusCall.args;
     expect(logArgs).toContain(':(glob)apps/operator/lib/mcp-proxy/**/*.ts');
     expect(logArgs).toContain(':(exclude,glob)**/*.test.ts');
     expect(logArgs).toContain(':(exclude)apps/operator/lib/mcp-proxy/watchdog.mjs');
     expect(statusArgs).toContain('--untracked-files=all');
     expect(statusArgs).toContain('apps/operator/lib/mcp-proxy');
     expect(statusArgs).toContain(':(exclude)apps/operator/lib/mcp-proxy/watchdog.test.ts');
+    expect(statusCall.options?.env).toMatchObject({ GIT_OPTIONAL_LOCKS: '0' });
   });
 
   it('fails closed when either git read fails', async () => {

@@ -124,6 +124,9 @@ export function gitPipelinePositionSidecarEnabled(env: NodeJS.ProcessEnv = proce
 
 export const realGit: GitRunner = async (repo, args) => {
   const argv = ['-C', repo, ...args];
+  const env = args[0] === 'status'
+    ? { ...process.env, GIT_OPTIONAL_LOCKS: '0' }
+    : process.env;
   // EI-22737582656157929: a decisive bg-host CPU profile attributed 23.9% of real sampled CPU
   // to this runner's native spawn calls. Reuse the existing small-process git sidecar rather
   // than forking from the multi-GB bg host. A real non-zero git result remains a fail-soft null;
@@ -135,7 +138,7 @@ export const realGit: GitRunner = async (repo, args) => {
         argv,
         process.cwd(),
         GIT_PIPELINE_POSITION_SUBPROCESS_TIMEOUT_MS,
-        process.env,
+        env,
       );
       return result.code === 0 ? result.stdout.trim() : null;
     } catch (error) {
@@ -146,6 +149,7 @@ export const realGit: GitRunner = async (repo, args) => {
     const { stdout } = await pexec('git', argv, {
       maxBuffer: 16 * 1024 * 1024,
       timeout: GIT_PIPELINE_POSITION_SUBPROCESS_TIMEOUT_MS,
+      ...(args[0] === 'status' ? { env } : {}),
     });
     return stdout.trim();
   } catch {

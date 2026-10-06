@@ -198,6 +198,8 @@ export interface ClaudeFetchInit {
   method: string;
   headers: Record<string, string>;
   body: Uint8Array | null;
+  /** Account whose resolved credential is present in these exact headers. */
+  diagnosticAccountId: string;
   signal: AbortSignal;
   dispatcher: unknown;
 }
@@ -576,10 +578,15 @@ export function createClaudeKernelAdapter(opts: ClaudeAdapterOptions): ClaudeKer
           method: prepared.method,
           headers: prepared.headers,
           body: prepared.body,
+          diagnosticAccountId: prepared.accountId,
           signal: context.signal,
           dispatcher: prepared.dispatcher,
         });
       } catch (error) {
+        // A trusted policy refusal at fetch is already classified. Rewriting it
+        // as a retryable network failure would retry a refused reservation and
+        // penalize a provider account that received no request.
+        if (error instanceof GatewayRequestKernelError) throw error;
         // A raw throw normalizes to retryable:FALSE, which would silently disable
         // the transport-failure branch of selectReattempt — one of this lane's
         // three same-account retries (gateway.ts:4212, the sibling-egress rotate).

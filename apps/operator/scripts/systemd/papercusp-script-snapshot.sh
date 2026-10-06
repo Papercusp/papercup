@@ -115,6 +115,10 @@ snapshot_root="$(new_temp_dir)" || {
   echo "[script-snapshot] unable to create invocation snapshot directory" >&2
   exit 73
 }
+# Lets a target tell that it is running from this snapshot rather than in place, and so
+# honour a checkout override only then (apps/operator/bin/bundle-host.sh, WI-10006398). A
+# script run in place never sits under this root, so the value is inert if inherited.
+export PAPERCUSP_SCRIPT_SNAPSHOT_ROOT="$snapshot_root"
 self_dir="${PAPERCUSP_SCRIPT_SNAPSHOT_SELF_DIR:-}"
 
 cleanup() {

@@ -538,7 +538,12 @@ describe('runWatchdogGit (sidecar routing)', () => {
     const viaSidecar = vi.fn(async () => ({ code: 0, stdout: ' M a.ts\n', stderr: '' }));
     const s = seams({ viaSidecar });
     await expect(runWatchdogGit(ARGS, CWD, s)).resolves.toBe(' M a.ts\n');
-    expect(viaSidecar).toHaveBeenCalledWith(ARGS, CWD);
+    expect(viaSidecar).toHaveBeenCalledWith(
+      ARGS,
+      CWD,
+      30_000,
+      expect.objectContaining({ GIT_OPTIONAL_LOCKS: '0' }),
+    );
     expect(s.local).not.toHaveBeenCalled();
     expect(s.onFallback).not.toHaveBeenCalled();
   });
@@ -546,7 +551,11 @@ describe('runWatchdogGit (sidecar routing)', () => {
   it('falls back to a local spawn when the sidecar is unreachable', async () => {
     const s = seams({ viaSidecar: vi.fn(async () => { throw new Error('circuit open'); }) });
     await expect(runWatchdogGit(ARGS, CWD, s)).resolves.toBe('local-out');
-    expect(s.local).toHaveBeenCalledWith(ARGS, CWD);
+    expect(s.local).toHaveBeenCalledWith(
+      ARGS,
+      CWD,
+      expect.objectContaining({ GIT_OPTIONAL_LOCKS: '0' }),
+    );
     expect(s.onFallback).toHaveBeenCalledTimes(1);
   });
 
@@ -569,6 +578,11 @@ describe('runWatchdogGit (sidecar routing)', () => {
     const s = seams({ viaSidecar, sidecarEnabled: () => false });
     await expect(runWatchdogGit(ARGS, CWD, s)).resolves.toBe('local-out');
     expect(viaSidecar).not.toHaveBeenCalled();
+    expect(s.local).toHaveBeenCalledWith(
+      ARGS,
+      CWD,
+      expect.objectContaining({ GIT_OPTIONAL_LOCKS: '0' }),
+    );
   });
 
   it('WIRING: the sibling-checkout pass sends its git calls to the sidecar when no runner is injected', async () => {

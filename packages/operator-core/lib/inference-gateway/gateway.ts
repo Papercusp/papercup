@@ -1183,8 +1183,9 @@ export interface GatewayCarryTrialAttempt {
   readonly attemptId: string;
   readonly manifestSha256: string;
   readonly armId: string;
-  readonly transport: 'oauth-http' | 'bearer-http';
+  readonly transport: 'oauth-http' | 'bearer-http' | 'anthropic-http';
   readonly accountId: string;
+  readonly credentialHeader: 'authorization' | 'x-api-key';
   readonly credentialSha256: string;
   readonly target: string;
   readonly body: string;
@@ -1196,6 +1197,9 @@ export interface GatewayCarryTrialAttempt {
 export interface GatewayCarryTrialBinding {
   readonly manifestSha256: string;
   readonly armId: string;
+  /** Explicit host-owned inference protocols. Omission retains the original
+   * OpenAI-only binding; an Anthropic arm cannot use unobserved alternate routes. */
+  readonly protocols?: readonly ('openai-responses' | 'anthropic-messages')[];
   /** SHA256 of a controller-issued high-entropy Bearer token for THIS arm.
    * This is a dedicated gateway binding, not a caller-selected owner/arm header. */
   readonly requestTokenSha256: string;
@@ -2326,7 +2330,16 @@ export function accumulateGatewayRouteUsage(
 export function createInferenceGateway(deps: GatewayDeps) {
   // Snapshot the binding so a mutable dependency cannot change an arm or remove
   // its enforcement while the request is queued or waiting on authorization.
-  const carryTrial = deps.carryTrial ? Object.freeze({ ...deps.carryTrial }) : null;
+  const carryTrialProtocols = deps.carryTrial?.protocols === undefined
+    ? ['openai-responses'] : deps.carryTrial.protocols;
+  if (deps.carryTrial && (!Array.isArray(carryTrialProtocols) || carryTrialProtocols.length === 0 ||
+    carryTrialProtocols.length > 2 || new Set(carryTrialProtocols).size !== carryTrialProtocols.length ||
+    carryTrialProtocols.some(protocol => protocol !== 'openai-responses' && protocol !== 'anthropic-messages'))) {
+    throw new Error('inference-gateway: invalid carry trial protocols');
+  }
+  const carryTrial = deps.carryTrial ? Object.freeze({ ...deps.carryTrial,
+    protocols: Object.freeze([...carryTrialProtocols]),
+  }) : null;
   if (carryTrial && (!/^[a-f0-9]{64}$/.test(carryTrial.manifestSha256) ||
     !/^[a-f0-9]{64}$/.test(carryTrial.requestTokenSha256) || !carryTrial.armId.trim() ||
     typeof carryTrial.authorizeAttempt !== 'function')) {
@@ -2345,8 +2358,14 @@ export function createInferenceGateway(deps: GatewayDeps) {
   ): Promise<() => void> {
     if (!carryTrial) return () => {};
     if (!carryTrialRequests.has(req) || !accountId || !init.body || init.signal.aborted) throw trialRefusal();
-    const authorization = new Headers(init.headers).get('authorization');
-    if (!authorization) throw trialRefusal();
+    const headers = new Headers(init.headers);
+    const authorization = headers.get('authorization');
+    const apiKey = transport === 'anthropic-http' ? headers.get('x-api-key') : null;
+    // Hash the actual selected provider credential, not the incoming binding
+    // token. Ambiguous auth shapes cannot establish which credential pays.
+    if ((!authorization && !apiKey) || (authorization && apiKey)) throw trialRefusal();
+    const credentialHeader = authorization ? 'authorization' : 'x-api-key';
+    const credential = authorization ?? apiKey!;
     const body = Buffer.from(init.body).toString('utf8');
     const attemptId = randomUUID();
     let reservation: Awaited<ReturnType<GatewayCarryTrialBinding['authorizeAttempt']>>;
@@ -2355,7 +2374,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         attemptId, manifestSha256: carryTrial.manifestSha256, armId: carryTrial.armId,
         transport, accountId, target, body,
         bodySha256: createHash('sha256').update(init.body).digest('hex'),
-        credentialSha256: createHash('sha256').update(authorization).digest('hex'),
+        credentialHeader, credentialSha256: createHash('sha256').update(credential).digest('hex'),
         clockId: processMonotonicClock.id, signal: init.signal,
       }));
     } catch { throw trialRefusal(); } // Do not expose private controller errors.
@@ -6629,6 +6648,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
             const fetchInit: FetchInit = { method: init.method, headers: init.headers, signal: init.signal };
             if (init.body) fetchInit.body = init.body as unknown as BodyInit;
             if (init.dispatcher) fetchInit.dispatcher = init.dispatcher as UndiciDispatcher;
+            const check = await authorizeCarryTrialAttempt(req, 'anthropic-http', init.diagnosticAccountId, target, init);
+            if (carryTrial) fetchInit.redirect = 'error';
+            // Authorization sees the adapter's final body and selected provider
+            // account. Re-check its copied receipt synchronously at every send.
+            check();
             const upstream = await doFetch(target, fetchInit as RequestInit);
             return {
               status: upstream.status,
@@ -6737,6 +6761,12 @@ export function createInferenceGateway(deps: GatewayDeps) {
                 const egressKey = context.route.value.egress.key;
 
                 if (error) {
+                  // A controller refusal occurred before provider I/O. It is a
+                  // gateway policy outcome, not an account or egress failure.
+                  if (error.code === 'invalid-route') {
+                    lastTransportHadProxy = false;
+                    return;
+                  }
                   const requestRef = `${gatewayProcessInstanceId}:${stageSpan?.requestId ?? 'unobserved'}`;
                   // A client disconnect is not evidence that the upstream or its
                   // egress proxy failed. Keep the kernel's typed cancellation
@@ -7534,6 +7564,13 @@ export function createInferenceGateway(deps: GatewayDeps) {
             } catch {
               /* already torn down */
             }
+            return;
+          }
+
+          if (failure.code === 'invalid-route') {
+            sendJson(res, failure.status ?? 403, { type: 'error', gateway: true,
+              error: { type: 'invalid_request_error', message: failure.message } },
+              { 'x-should-retry': 'false' });
             return;
           }
 
@@ -10359,8 +10396,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
       const token = /^Bearer ([^\s]+)$/.exec(requestHeader(req, 'authorization') ?? '')?.[1];
       const authenticated = token && timingSafeEqual(createHash('sha256').update(token).digest(),
         Buffer.from(carryTrial.requestTokenSha256, 'hex'));
-      const supported = (req.method === 'POST' && requestPath === '/v1/responses') ||
-        (req.method === 'GET' && requestPath === '/v1/models');
+      const openaiAllowed = carryTrial.protocols.includes('openai-responses');
+      const anthropicAllowed = carryTrial.protocols.includes('anthropic-messages');
+      const supported = (openaiAllowed && req.method === 'POST' && requestPath === '/v1/responses') ||
+        (openaiAllowed && req.method === 'GET' && requestPath === '/v1/models') ||
+        (anthropicAllowed && req.method === 'POST' && requestPath === '/v1/messages');
       if (!authenticated || !supported) {
         req.resume();
         sendJson(res, 403, { error: { message: 'carry trial request not authorized' } },

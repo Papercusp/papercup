@@ -500,6 +500,7 @@ function compactSummary(value: unknown, ultra = false): unknown {
     'darkFleetAlert',
     'fleetExecutionCollapseAlert',
     'fleetHeadcountVsExecutableFrontierAlert',
+    'fleetUnderStaffedAlert',
     'leaderBlockerStallAlert',
     'customInvariantAlert',
     'unowned_criticals',
@@ -1225,7 +1226,12 @@ export function shapeLeaderBrief(data: unknown, tier: LeaderBriefPayloadTier): u
     },
   };
   // P-010/P-011: keep fleet-level detector evidence at the emergency tier too.
-  for (const alert of ['darkFleetAlert', 'fleetExecutionCollapseAlert', 'fleetHeadcountVsExecutableFrontierAlert']) {
+  for (const alert of [
+    'darkFleetAlert',
+    'fleetExecutionCollapseAlert',
+    'fleetHeadcountVsExecutableFrontierAlert',
+    'fleetUnderStaffedAlert',
+  ]) {
     const reasonKey = `${alert}Reason`;
     const falsifierKey = `${alert}Falsifier`;
     if (source[reasonKey] !== undefined) {
