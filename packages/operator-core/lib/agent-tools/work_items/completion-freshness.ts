@@ -1659,35 +1659,35 @@ export async function completionTreeStampForEvidence(
   // primary checkout by callers. If that directory is itself an independent nested
   // repository, scoring the primary root would make the writer compare the file against
   // the parent tree (where the path is untracked) and record a false stale completion.
-  // Discover those nested roots before scoring so the path can be re-rooted to the checkout
-  // that actually owns its HEAD. This is deliberately bounded by the declared paths and
-  // their ancestor chains; it never walks the repository tree.
+  // Discover nested roots beneath every registered candidate: a release checkout may
+  // archive-extract a submodule while the canonical workspace checkout has its Git metadata.
+  // This is deliberately bounded by the declared paths and their ancestor chains; it never
+  // walks a repository tree.
   const nestedOwners = new Map<string, { absolutePath: string; root: string }>();
   for (const raw of declared) {
     const declaredPath = raw.trim();
     if (!declaredPath || declaredPath.includes('*') || declaredPath.includes('?')) continue;
-    const absolutePath = nodePath.resolve(primaryRoot, declaredPath);
-    const underPrimary = absolutePath === primaryRoot || absolutePath.startsWith(primaryRoot + nodePath.sep);
+    const absolutePath = nodePath.isAbsolute(declaredPath) ? nodePath.resolve(declaredPath) : undefined;
+    const rootsToSearch = absolutePath ? [undefined] : roots;
+    for (const candidateRoot of rootsToSearch) {
+      const candidatePath = absolutePath ?? nodePath.resolve(candidateRoot!, declaredPath);
+      const underRoot =
+        candidateRoot !== undefined &&
+        (candidatePath === candidateRoot || candidatePath.startsWith(candidateRoot + nodePath.sep));
+      if (!underRoot && !nodePath.isAbsolute(declaredPath)) continue;
 
-    // EI-21937921955988010: an ABSOLUTE path outside the primary checkout used to be
-    // skipped here, which is precisely why a suite-app completion never acquired an
-    // owning root: the apps live in independent checkouts under
-    // ~/.papercusp-workspaces/<ws>/.papercusp/apps/*, so every one of their paths fell
-    // through this `continue` and the stamp collapsed to the papercusp repo alone.
-    // Walk up to the checkout that actually owns it, bounded by the path's own ancestor
-    // chain exactly as the nested case is — this never walks a repository tree.
-    if (!underPrimary && !nodePath.isAbsolute(declaredPath)) continue;
-
-    let dir = nodePath.dirname(absolutePath);
-    const stopAt = underPrimary ? primaryRoot : undefined;
-    for (let depth = 0; depth < 64 && dir !== stopAt; depth += 1) {
-      if (isCheckoutRoot(dir)) {
-        nestedOwners.set(declaredPath, { absolutePath, root: dir });
-        break;
+      let dir = nodePath.dirname(candidatePath);
+      const stopAt = underRoot ? candidateRoot : undefined;
+      for (let depth = 0; depth < 64 && dir !== stopAt; depth += 1) {
+        if (isCheckoutRoot(dir)) {
+          nestedOwners.set(declaredPath, { absolutePath: candidatePath, root: dir });
+          break;
+        }
+        const parent = nodePath.dirname(dir);
+        if (parent === dir) break;
+        dir = parent;
       }
-      const parent = nodePath.dirname(dir);
-      if (parent === dir) break;
-      dir = parent;
+      if (nestedOwners.has(declaredPath)) break;
     }
   }
 
