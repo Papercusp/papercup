@@ -117,7 +117,7 @@ describe('social:search scope fence, against real Postgres', () => {
     await seedMixedSources();
     // The realistic grant: the owner granted mail AND social. Nothing but the
     // local intersection stops the mail row from coming back.
-    const granted = ['personal:gmail', 'personal:bluesky', 'personal:reddit'];
+    const granted = ['personal:mail', 'personal:bluesky', 'personal:reddit'];
 
     const outcome = await searchSocialPosts(org.adminSql, {
       workspaceId: WS,
@@ -146,11 +146,11 @@ describe('social:search scope fence, against real Postgres', () => {
       // when a caller passes the unfiltered set.
       grantedScopes: naivePassThroughScopes(granted),
     });
-    expect(leaked.scopesSearched).not.toContain('personal:gmail');
+    expect(leaked.scopesSearched).not.toContain('personal:mail');
     // And the naive selector, used directly, really does keep the mail scope —
     // so the control is a genuine mutant, not a no-op.
-    expect(naivePassThroughScopes(granted)).toContain('personal:gmail');
-    expect(selectGrantedSocialScopes(granted)).not.toContain('personal:gmail');
+    expect(naivePassThroughScopes(granted)).toContain('personal:mail');
+    expect(selectGrantedSocialScopes(granted)).not.toContain('personal:mail');
   });
 
   it('mints a postId that resolves back to the stored row', async () => {
@@ -217,7 +217,7 @@ describe('social:search scope fence, against real Postgres', () => {
         workspaceId: WS,
         userId,
         query: 'deploy pipeline',
-        grantedScopes: ['personal:gmail'],
+        grantedScopes: ['personal:mail'],
       }),
     ).rejects.toBeInstanceOf(SocialSearchNotGranted);
   });

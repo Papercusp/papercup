@@ -3883,7 +3883,7 @@ export function assertSingleReadStatement(raw: string): string {
  * reach these tables, and MEASURED 2026-09-18 (WI-10001796) in ONE session,
  * seconds apart:
  *
- *   personal:search { scopes:['personal:gmail'] }  -> allowed:false, no_live_grant
+ *   personal:search { scopes:['personal:mail'] }  -> allowed:false, no_live_grant
  *   SELECT count(*) FROM harness_shared.personal_documents -> 32,653 gmail messages
  *
  * ⚠ The data-layer control is NOT missing, it is INERT — do not "fix" this by

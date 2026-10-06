@@ -158,7 +158,7 @@ describe('voice context projection', () => {
             id: 'owner-secret',
             externalId: 'owner-secret',
             providerAccountId: 'owner@example.com',
-            scope: 'personal:gmail',
+            scope: 'personal:mail',
           },
         }),
       ],

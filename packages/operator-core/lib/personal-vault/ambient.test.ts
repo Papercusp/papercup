@@ -25,7 +25,7 @@ function result(overrides: Partial<PersonalSearchResult> = {}): PersonalSearchRe
   return {
     id: 'doc-1',
     source: 'gmail',
-    scopeKey: 'personal:gmail',
+    scopeKey: 'personal:mail',
     sourceId: '00000000-0000-4000-8000-000000000101',
     providerAccountId: 'owner@example.com',
     kind: 'mail',
@@ -53,7 +53,7 @@ function deps(overrides: Partial<PersonalAmbientDeps> = {}): PersonalAmbientDeps
     } satisfies PersonalToolContext),
     authorize: vi.fn().mockResolvedValue({
       allowed: true,
-      scopes: ['personal:gmail'],
+      scopes: ['personal:mail'],
       principal: { type: 'plan-template', id: 'meeting-prep-brief' },
     }),
     embedQuery: vi.fn().mockResolvedValue([0.1, 0.2]),
@@ -118,12 +118,12 @@ describe('buildPersonalAmbientContextBlock', () => {
     const block = await buildPersonalAmbientContextBlock(input, d);
 
     expect(block).toContain('## Granted Personal Vault context');
-    expect(block).toContain('scopes: personal:gmail');
+    expect(block).toContain('scopes: personal:mail');
     expect(block).toContain('Acme review follow-up');
-    expect(block).toContain('[personal:gmail · account:owner@example.com · 2026-08-20 · thread-1]');
+    expect(block).toContain('[personal:mail · account:owner@example.com · 2026-08-20 · thread-1]');
     expect(d.search).toHaveBeenCalledWith(d.sql, 'ws-1', 'user-1', {
       query: input.query,
-      scopes: ['personal:gmail'],
+      scopes: ['personal:mail'],
       limit: 4,
       snippetChars: 360,
       queryEmbedding: [0.1, 0.2],

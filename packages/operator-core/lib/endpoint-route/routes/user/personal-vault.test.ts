@@ -169,7 +169,7 @@ beforeEach(() => {
   mocks.enabled.mockResolvedValue(true);
   mocks.stats.mockResolvedValue({ sources: [{ source: 'gmail', documents: 2, newest_at: null }], unembedded: 1 });
   mocks.listGrants.mockResolvedValue([]);
-  mocks.replaceGrant.mockResolvedValue({ id: 'grant-1', scopes: ['personal:gmail'], revoked: 0 });
+  mocks.replaceGrant.mockResolvedValue({ id: 'grant-1', scopes: ['personal:mail'], revoked: 0 });
   mocks.revokeGrant.mockResolvedValue(true);
   mocks.purge.mockResolvedValue({ documents: 2, cursors: 1, aliases: 1, identities: 1 });
   mocks.reserveImport.mockResolvedValue({
@@ -272,7 +272,7 @@ beforeEach(() => {
       'https://www.googleapis.com/auth/contacts.readonly',
     ],
   });
-  mocks.parsePlan.mockReturnValue({ frontmatter: { raw: { personalScopes: ['personal:gmail'] } } });
+  mocks.parsePlan.mockReturnValue({ frontmatter: { raw: { personalScopes: ['personal:mail'] } } });
   mocks.sql.mockResolvedValue([
     { plan_slug: 'meeting-prep', harness_slug: 'papercusp', template_slug: null, content: 'plan' },
   ]);
@@ -931,7 +931,7 @@ describe('Personal Vault owner routes', () => {
     await expect(preview.json()).resolves.toMatchObject({
       principalType: 'plan-template',
       principalId: 'meeting-prep',
-      declaredScopes: ['personal:gmail'],
+      declaredScopes: ['personal:mail'],
     });
 
     const approval = await invoke(
@@ -955,7 +955,7 @@ describe('Personal Vault owner routes', () => {
       expect.objectContaining({
         principalType: 'plan-template',
         principalId: 'meeting-prep',
-        scopes: ['personal:gmail'],
+        scopes: ['personal:mail'],
       }),
     );
   });
@@ -963,9 +963,9 @@ describe('Personal Vault owner routes', () => {
 
 describe('declaredPersonalScopes', () => {
   it('normalizes aliases and deduplicates them', () => {
-    expect(declaredPersonalScopes({ personalScopes: ['Gmail', 'personal:gmail', 'calendar'] })).toEqual([
+    expect(declaredPersonalScopes({ personalScopes: ['Mail', 'personal:mail', 'calendar'] })).toEqual([
       'personal:calendar',
-      'personal:gmail',
+      'personal:mail',
     ]);
   });
 });

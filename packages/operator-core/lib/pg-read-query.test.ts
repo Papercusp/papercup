@@ -3897,7 +3897,7 @@ describe('personalVaultRefusal — the Personal Vault fence (WI-10001796)', () =
   it('refuses a vault WRITE — forging a consent row is worse than reading one', () => {
     expect(() =>
       assertSingleWriteStatement(
-        "INSERT INTO harness_shared.personal_grants (principal_id, scopes) VALUES ('operator', '{personal:gmail}')",
+        "INSERT INTO harness_shared.personal_grants (principal_id, scopes) VALUES ('operator', '{personal:mail}')",
       ),
     ).toThrow(/Personal Vault/);
   });

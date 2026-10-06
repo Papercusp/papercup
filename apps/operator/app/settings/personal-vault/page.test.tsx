@@ -330,7 +330,7 @@ beforeEach(() => {
           harnessSlug: "papercusp",
           principalType: "plan-template",
           principalId: "meeting-prep-brief",
-          declaredScopes: ["personal:gmail", "personal:calendar"],
+          declaredScopes: ["personal:mail", "personal:calendar"],
         });
       }
       if (
@@ -512,7 +512,7 @@ describe("PersonalVaultSettingsPage", () => {
         /vectors are produced only by the local EmbeddingGemma model/i,
       ),
     ).toBeTruthy();
-    expect(screen.getAllByText("personal:gmail").length).toBeGreaterThanOrEqual(
+    expect(screen.getAllByText("personal:mail").length).toBeGreaterThanOrEqual(
       1,
     );
     expect(screen.getByText("12")).toBeTruthy();
@@ -576,12 +576,12 @@ describe("PersonalVaultSettingsPage", () => {
 
     fireEvent.click(
       within(sourceSection!).getByRole("button", {
-        name: "Purge personal:gmail for owner@example.com",
+        name: "Purge personal:mail for owner@example.com",
       }),
     );
     expect(
       await screen.findByRole("heading", {
-        name: "Purge personal:gmail for owner@example.com?",
+        name: "Purge personal:mail for owner@example.com?",
       }),
     ).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Permanently purge" }));
@@ -965,7 +965,7 @@ describe("PersonalVaultSettingsPage", () => {
        `getByText` throws on 0 or 2+, so this pins each declared scope to
        exactly one row of the dialog's list. */
     const approval = within(screen.getByRole("dialog"));
-    expect(approval.getByText("personal:gmail")).toBeTruthy();
+    expect(approval.getByText("personal:mail")).toBeTruthy();
     expect(approval.getByText("personal:calendar")).toBeTruthy();
     expect(
       (
@@ -1021,7 +1021,7 @@ describe("PersonalVaultSettingsPage", () => {
       };
       expect(body.principalType).toBe("agent-role");
       expect(body.principalId).toBe("operator");
-      expect(body.scopes).toEqual(["personal:gmail"]);
+      expect(body.scopes).toEqual(["personal:mail"]);
       expect(new Date(String(body.expiresAt)).getTime()).toBeGreaterThan(
         Date.now(),
       );

@@ -111,7 +111,7 @@ describe('mail reply account routing', () => {
       messageId: 'shared-message',
       text: 'Must not guess',
       mode: 'draft',
-    })).rejects.toThrow('canonical_document_ambiguous:gmail:shared-message');
+    })).rejects.toThrow('canonical_document_ambiguous:mail:shared-message');
   });
 
   it('keeps provider-only legacy calls compatible when exactly one account owns the message', async () => {
