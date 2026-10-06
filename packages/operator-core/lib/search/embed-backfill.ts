@@ -1086,20 +1086,27 @@ async function _runSweepLogged(label: string): Promise<void> {
       const total = r.reduce((acc, s) => acc + s.embedded, 0);
       const scanned = r.reduce((acc, s) => acc + s.scanned, 0);
       const errors = r.reduce((acc, s) => acc + s.errors, 0);
+      const writeSkipped = r.reduce((acc, s) => acc + s.writeSkipped, 0);
+      // WI-10006735: rows whose write was skipped because another writer held them.
+      // Printed only when non-zero, so it names lock contention without changing
+      // the line otherwise.
+      const skipNote = (n: number) => (n > 0 ? `(locked${n})` : '');
       if (total > 0) {
         console.log(
           `[embed-backfill] ${label} sweep complete: ` +
-            r.map((s) => `${s.table.split('.').pop()}=${s.embedded}/${s.scanned}`).join(' '),
+            r.map((s) => `${s.table.split('.').pop()}=${s.embedded}/${s.scanned}${skipNote(s.writeSkipped)}`).join(' '),
         );
       } else if (scanned > 0 || errors > 0) {
         // WI-7327: a sweep that looked at rows and embedded NONE is a fault, not a
         // quiet success — it is what a code/schema width skew looks like (every
         // UPDATE rejected into the per-row catch). This used to print nothing, so
-        // "healthy" and "totally broken" were byte-identical: silence.
+        // "healthy" and "totally broken" were byte-identical: silence. A sweep whose
+        // every write met a held row says so with `locked=N`.
         console.warn(
-          `[embed-backfill] ${label} sweep embedded NOTHING (scanned=${scanned} errors=${errors}) — ` +
+          `[embed-backfill] ${label} sweep embedded NOTHING (scanned=${scanned} errors=${errors}` +
+            `${writeSkipped > 0 ? ` locked=${writeSkipped}` : ''}) — ` +
             r.filter((s) => s.scanned > 0 || s.errors > 0)
-              .map((s) => `${s.table.split('.').pop()}=${s.embedded}/${s.scanned}(err${s.errors})`)
+              .map((s) => `${s.table.split('.').pop()}=${s.embedded}/${s.scanned}(err${s.errors})${skipNote(s.writeSkipped)}`)
               .join(' '),
         );
       }
