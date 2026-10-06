@@ -9,6 +9,7 @@ import {
   retractRefusedTestEvidence,
   testEvidenceOutcome,
   testEvidenceSchema,
+  PENDING_TEST_EVIDENCE_ABANDONMENT_GRACE_MS,
   RECOVERY_WAIT_CEILING_MS,
 } from './evidence';
 import type { TestFilesCoreResult } from './run';
@@ -41,6 +42,7 @@ const deps = () => ({
   list: vi.fn<typeof listSpecEvidence>().mockResolvedValue([]),
   unattributed: vi.fn().mockResolvedValue(0),
   runStatus: vi.fn(async (_runId: string): Promise<RunSnapshot | null> => null),
+  now: vi.fn(() => Date.parse('2026-10-06T01:00:00.000Z')),
   retract: vi.fn(async (options: RetractSpecEvidenceOptions) => ({
     status: 'retracted' as const,
     bindingId: options.bindingId,
@@ -131,13 +133,14 @@ describe('test-time evidence continuity', () => {
     expect(d.bind.mock.calls[1][0].details.adequacy).toMatchObject({ outcome: 'unknown', executed: false });
   });
 
-  it('keeps a genuinely absent run pending rather than calling it unattributed', async () => {
+  it('keeps a genuinely absent run pending without appending another pending row', async () => {
     const d = deps();
     d.ledger.mockResolvedValue([]);
     const prepared = await prepareTestEvidence(request, runId, [binding.testPath], scope, d);
     const bundle = await finishTestEvidence(prepared, runId, runId, scope, undefined, d);
-    expect(bundle.rows[0]).toMatchObject({ phase: 'pending' });
-    expect(d.bind.mock.calls[1][0].details.testExecution).toMatchObject({ ledgerAttribution: 'absent' });
+    expect(bundle.rows[0]).toMatchObject({ phase: 'pending', bindingStatus: 'pending-retained' });
+    expect(d.unattributed).toHaveBeenCalledOnce();
+    expect(d.bind).toHaveBeenCalledTimes(1);
   });
 
   it('refuses an unselected test before registering any mapping', async () => {
@@ -200,7 +203,9 @@ describe('test-time evidence continuity', () => {
     const prepared = await prepareTestEvidence(request, runId, [binding.testPath], scope, d);
     d.ledger.mockResolvedValue(ledger);
     const bundle = await finishTestEvidence(prepared, runId, runId, scope, result(), d);
-    expect(bundle.rows[0]).toMatchObject({ testRunId: null, phase: 'pending', outcome: 'unknown' });
+    expect(bundle.rows[0]).toMatchObject({ testRunId: null, phase: 'pending', outcome: 'unknown',
+      bindingStatus: 'pending-retained' });
+    expect(d.bind).toHaveBeenCalledTimes(1);
   });
 
   it('retains the original fingerprint when files change during execution', async () => {
@@ -438,7 +443,44 @@ describe('test-time evidence continuity', () => {
     expect(bundle.detachedRunStatus).toMatchObject({ status: 'running' });
     expect(bundle.recoveryWait).toMatchObject({ limitMs: 0, outcome: 'still-running' });
     expect(d.retract).not.toHaveBeenCalled();
-    expect(d.bind).toHaveBeenCalledTimes(2);
+    expect(bundle.rows[0]).toMatchObject({ bindingStatus: 'pending-retained' });
+    expect(d.bind).toHaveBeenCalledTimes(1);
+  });
+
+  it('retires an unknown run without adding a duplicate pending binding after the grace period', async () => {
+    const d = deps();
+    d.ledger.mockResolvedValue([]);
+    d.unattributed.mockResolvedValue(0);
+    await prepareTestEvidence(request, runId, [binding.testPath], scope, d);
+    d.list.mockResolvedValue([pendingEvidenceRow(1, d.bind.mock.calls[0]![0].details)]);
+
+    const bundle = await recoverTestEvidence({ workItemId: 'WI-1', planSlug: 'p1',
+      originRunId: runId, runId, waitMs: 0 }, scope, d);
+
+    expect(bundle).toMatchObject({ status: 'abandoned', recoveryWait: { outcome: 'abandoned' },
+      rows: [{ phase: 'abandoned', outcome: 'unknown', bindingStatus: 'abandoned' }],
+      pendingRetirement: { status: 'complete', retiredCount: 1, bindingIds: [1] } });
+    expect(d.retract.mock.calls.map(([options]) => options.bindingId)).toEqual([1]);
+    expect(d.retract.mock.calls[0]![0].reason).toContain(
+      `${Math.round(PENDING_TEST_EVIDENCE_ABANDONMENT_GRACE_MS / 1000)}s pending grace`);
+    expect(d.bind).toHaveBeenCalledTimes(1);
+  });
+
+  it('retains a young unknown run without creating another pending binding', async () => {
+    const d = deps();
+    d.ledger.mockResolvedValue([]);
+    d.unattributed.mockResolvedValue(0);
+    await prepareTestEvidence(request, runId, [binding.testPath], scope, d);
+    d.now.mockReturnValue(Date.parse('2026-09-24T00:00:30.000Z'));
+    d.list.mockResolvedValue([pendingEvidenceRow(1, d.bind.mock.calls[0]![0].details)]);
+
+    const bundle = await recoverTestEvidence({ workItemId: 'WI-1', planSlug: 'p1',
+      originRunId: runId, runId, waitMs: 0 }, scope, d);
+
+    expect(bundle).toMatchObject({ recoveryWait: { outcome: 'not-found' },
+      rows: [{ phase: 'pending', outcome: 'unknown', bindingStatus: 'pending-retained' }] });
+    expect(d.retract).not.toHaveBeenCalled();
+    expect(d.bind).toHaveBeenCalledTimes(1);
   });
 
   // EI-24207525450988644: one recovery call waits for the detached run itself, replacing the

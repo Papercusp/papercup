@@ -24,6 +24,7 @@ import { runWithWorkspace } from './workspace-als';
 import { activeWorkspaceId } from './workspace-registry';
 import { OrgTxnTimeoutError } from './pg-bounded-txn';
 import { PLAN_ADVISORY_LOCK_NAMESPACE, planAdvisoryLockKey } from './agent-tools/plans/plan-lock-key';
+import { hashPlanContent } from './agent-tools/plans/content-hash';
 import setTemplateDataTool from './agent-tools/plans/set-template-data';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
@@ -698,6 +699,123 @@ Preserve this plan body.
        WHERE plan_slug = ${rubricId}`;
     expect(await rubrics.getRubric(rubricId, 1)).toBeNull();
     expect((await rubrics.getRubric(rubricId, 2))?.criteriaHash).toBe(current?.criteriaHash);
+  });
+
+  it('appends an exact current first-party snapshot without rewriting divergent history', async () => {
+    rubrics.__resetRubricSeedStateForTests();
+    try {
+      await runWithWorkspace(activeWorkspaceId(), () => rubrics.ensureFirstPartyRubricsSeeded());
+      const rubricId = 'fleet-execution-health';
+      const [seeded] = await db.adminSql<{
+        version: number;
+        content: string;
+        content_hash: string;
+        owner: string;
+        template: string;
+        template_slug: string | null;
+        archived: boolean;
+        template_data: unknown;
+      }[]>`
+        SELECT version, content, content_hash, owner, template, template_slug, archived, template_data
+          FROM harness_shared.harness_plans
+         WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug = 'papercusp'
+           AND plan_slug = ${rubricId}`;
+      expect(seeded).toBeDefined();
+      const targetRevision = Number(seeded!.version) + 1;
+      const updatedBody = `${seeded!.content}\n\n# Current-version backfill fixture\n`;
+      const updatedHash = hashPlanContent(updatedBody);
+      await db.adminSql`
+        UPDATE harness_shared.harness_plans
+           SET version = ${targetRevision}, content = ${updatedBody}, content_hash = ${updatedHash}
+         WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug = 'papercusp'
+           AND plan_slug = ${rubricId}`;
+
+      const scope = { workspaceId: activeWorkspaceId(), harnessSlug: 'papercusp' };
+      const priorRows = await db.adminSql<{
+        seq: number;
+        content_hash: string;
+        content_snapshot: string;
+        author_id: string;
+      }[]>`
+        SELECT seq, content_hash, content_snapshot, author_id
+          FROM harness_shared.plan_revisions
+         WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug = 'papercusp'
+           AND plan_slug = ${rubricId}
+         ORDER BY seq ASC`;
+      expect(priorRows.length).toBeGreaterThan(0);
+
+      const wholeChain = await rubrics.repairLegacyRubricRevisionSnapshots(rubricId, scope, { dryRun: true });
+      expect(wholeChain).toMatchObject({ status: 'not_eligible', revisionsToRepair: 0 });
+
+      const preview = await rubrics.repairLegacyRubricRevisionSnapshots(rubricId, scope, {
+        dryRun: true,
+        rubricRevision: targetRevision,
+      });
+      expect(preview).toMatchObject({
+        status: 'dry_run',
+        currentRevision: targetRevision,
+        revisionsToRepair: 1,
+        revisionsRepaired: 0,
+      });
+      const stillPrior = await db.adminSql<{ seq: number; content_snapshot: string; author_id: string }[]>`
+        SELECT seq, content_snapshot, author_id
+          FROM harness_shared.plan_revisions
+         WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug = 'papercusp'
+           AND plan_slug = ${rubricId}
+         ORDER BY seq ASC`;
+      expect(stillPrior).toEqual(priorRows.map(({ seq, content_snapshot, author_id }) => ({ seq, content_snapshot, author_id })));
+
+      const identity = {
+        ownerId: 'test-current-rubric-backfill',
+        ownerLabel: 'test-current-rubric-backfill',
+        source: 'static-client' as const,
+        workspaceId: null,
+        userId: null,
+      };
+      const applied = await rubrics.repairLegacyRubricRevisionSnapshots(rubricId, scope, {
+        dryRun: false,
+        rubricRevision: targetRevision,
+        identity,
+      });
+      expect(applied).toMatchObject({
+        status: 'repaired',
+        revisionsToRepair: 1,
+        revisionsRepaired: 1,
+      });
+      expect(applied.revisionSeq).toBe(priorRows.at(-1)!.seq + 1);
+
+      const afterRows = await db.adminSql<{
+        seq: number;
+        content_hash: string;
+        content_snapshot: string;
+        author_id: string;
+      }[]>`
+        SELECT seq, content_hash, content_snapshot, author_id
+          FROM harness_shared.plan_revisions
+         WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug = 'papercusp'
+           AND plan_slug = ${rubricId}
+         ORDER BY seq ASC`;
+      expect(afterRows.slice(0, priorRows.length)).toEqual(priorRows);
+      expect(afterRows).toHaveLength(priorRows.length + 1);
+      expect(afterRows.at(-1)).toMatchObject({
+        seq: applied.revisionSeq,
+        content_hash: updatedHash,
+        author_id: identity.ownerId,
+      });
+      expect(afterRows.at(-1)!.content_snapshot).toContain(`"rubricRevision": ${targetRevision},`);
+      expect((await rubrics.getRubric(rubricId, targetRevision))?.revision).toBe(targetRevision);
+
+      const repeated = await rubrics.repairLegacyRubricRevisionSnapshots(rubricId, scope, {
+        dryRun: false,
+        rubricRevision: targetRevision,
+        identity,
+      });
+      expect(repeated).toMatchObject({ status: 'already_repaired', revisionsRepaired: 0 });
+      expect(await db.adminSql`SELECT id FROM harness_shared.plan_revisions WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug = 'papercusp' AND plan_slug = ${rubricId}`)
+        .toHaveLength(priorRows.length + 1);
+    } finally {
+      rubrics.__resetRubricSeedStateForTests();
+    }
   });
 
   it('reads an immutable historical rubric revision without falling back to current template_data', async () => {

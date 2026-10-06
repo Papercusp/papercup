@@ -321,7 +321,8 @@ export function parseArgs(argv) {
  * and the ~6,000-char result door); the CLI prints the same `{markdown,row_count}` body with
  * neither budget, so `parseCypherText` reads it unchanged. `--repo` is always named: the CLI
  * resolves its target from the GLOBAL registry and refuses when two repos are registered.
- * @param {{ bin: string, repo: string, cwd: string, execFile?: Function, timeoutMs?: number }} o
+ * @param {{ bin: string, repo: string, cwd: string, runToFile?: (bin: string, argv: string[], opts: { cwd: string, timeoutMs: number }) => Promise<string>, timeoutMs?: number }} o
+ * @returns {(statement: string) => Promise<string>}
  */
 export function directCypherRunner({ bin, repo, cwd, runToFile = runCliToFile, timeoutMs = DIRECT_QUERY_TIMEOUT_MS }) {
   return async (statement) => runToFile(bin, ["cypher", "--repo", repo, statement], { cwd, timeoutMs });
@@ -364,6 +365,7 @@ export async function runCliToFile(bin, argv, { cwd, timeoutMs }) {
  * Index identity for DIRECT mode, read from the gitnexus registry file the CLI itself resolves
  * against (`~/.gitnexus/registry.json`, an array of `{name,lastCommit,indexedAt}`). Read before
  * AND after paging by produceSnapshotFromGraph, so an index swapped mid-read is refused.
+ * @param {{ registry: string, repo: string, readFile?: (p: string) => string, backendVersion?: string | null }} o
  */
 export function registryIndexReader({ registry, repo, readFile = (p) => readFileSync(p, "utf8"), backendVersion = null }) {
   return async () => {

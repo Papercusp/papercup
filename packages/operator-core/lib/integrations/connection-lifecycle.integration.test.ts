@@ -54,7 +54,8 @@ import {
   GOOGLE_GMAIL_PROFILE_ENDPOINT,
   GOOGLE_WORKSPACE_OAUTH_PLUGIN,
 } from '../external-triggers/google-workspace';
-import { GMAIL_RESPOND_DRAFT_HARNESS } from '../external-triggers/gmail-flagship';
+/** An ordinary hive harness for the fixture; nothing here depends on its name. */
+const GMAIL_RESPOND_DRAFT_HARNESS = 'email';
 import { providerRegistry } from './provider-registry';
 import {
   connectionAdapterFor,

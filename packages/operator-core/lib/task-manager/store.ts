@@ -1651,6 +1651,16 @@ export async function upsertUnaccounted(
   const localBearer = readSuperuserToken();
   const diagnosticSecrets = localBearer ? [localBearer] : [];
   for (const g of groups) {
+    // A residue with its own exact `pc-<taskId>` unit is still positively
+    // cgroup-confined even though the live owner row disappeared. The group
+    // came from the kernel census, so require its observed path to end at that
+    // unit under our slice before recording confinement.
+    const hasOwnedTaskScope = Boolean(
+      g.scopeUnit &&
+      taskIdFromScopeUnit(g.scopeUnit) === g.taskId &&
+      g.cgroupPath.includes('/papercusp.slice/') &&
+      g.cgroupPath.endsWith(`/${g.scopeUnit}`),
+    );
     // Residue samples originate in `/proc/<pid>/cmdline` and are persisted so the
     // reconciler can retain history. Redact before the durable boundary, and before
     // capping, so a credential-shaped assignment cannot survive in the ledger.
@@ -1663,13 +1673,14 @@ export async function upsertUnaccounted(
       ) VALUES (
         ${g.taskId}, ${ws}, ${g.taskId}, 'other',
         ${title},
-        '[]'::jsonb, 'unknown', ${g.scopeUnit}, ${g.cgroupPath}, ${g.pids[0] ?? null}, false, 'unaccounted',
+        '[]'::jsonb, 'unknown', ${g.scopeUnit}, ${g.cgroupPath}, ${g.pids[0] ?? null}, ${hasOwnedTaskScope}, 'unaccounted',
         ${JSON.stringify({ pids: g.pids, scopeUnit: g.scopeUnit })}::text::jsonb,
         ${g.metrics?.lastMemoryBytes ?? null}, ${g.metrics?.peakMemoryBytes ?? null},
         ${g.metrics?.cpuUsec ?? null}, ${g.metrics?.pidsCurrent ?? null}
       )
       ON CONFLICT (task_id) DO UPDATE
         SET title = EXCLUDED.title,
+            confined = harness_shared.task_ledger.confined OR EXCLUDED.confined,
             scope_unit = COALESCE(EXCLUDED.scope_unit, harness_shared.task_ledger.scope_unit),
             last_seen_at = now(),
             updated_at = now(),

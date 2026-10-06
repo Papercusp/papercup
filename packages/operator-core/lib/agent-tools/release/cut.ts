@@ -340,6 +340,7 @@ function cutRuntimeEnv(
     ownerName: string;
     ownerEmail?: string;
     fullHistory?: boolean;
+    deferTag?: boolean;
     reuseSeed?: boolean;
     seedFindingProof?: string;
     seedUuidIdempotency?: CutRuntimeEnv['seedUuidIdempotency'];
@@ -354,6 +355,7 @@ function cutRuntimeEnv(
     ownerEmail: args.ownerEmail,
     ...(harnessSlug ? { harnessSlug } : {}),
     ...(args.fullHistory ? { fullHistory: true } : {}),
+    ...(args.deferTag ? { deferTag: true } : {}),
     reuseSeed: args.reuseSeed,
     ...(args.seedFindingProof ? { seedFindingProof: args.seedFindingProof } : {}),
     ...(args.seedUuidIdempotency ? { seedUuidIdempotency: args.seedUuidIdempotency } : {}),
@@ -911,6 +913,7 @@ export default defineTool({
   args: z.discriminatedUnion('op', [
     z.object({
       op: z.literal('preflight'),
+      deferTag: z.boolean().optional().describe('Approved build-only run: defer the tag check until a containment receipt matches the built sourceSha; no candidate/GO/publication.'),
       mac: z.boolean().optional().describe(MAC_LEG_ARGUMENT_DESCRIPTION),
       windows: z.boolean().optional().describe(WINDOWS_LEG_ARGUMENT_DESCRIPTION),
       arm64: z.boolean().optional().describe('Include the linux-arm64 cross-compile leg.'),
@@ -951,6 +954,7 @@ export default defineTool({
     }),
     z.object({
       op: z.literal('run'),
+      deferTag: z.boolean().optional().describe('Approved build-only run: create no tags or canonical version writeback. Bind the exact tag only after a matching containment receipt; no candidate/GO/publication.'),
       work_item_id: z.string().trim().min(1).max(120).optional()
         .describe('Held work-item for this cut and its slow-attempt gate. Required when you hold multiple items; overrides a stale session goal stamp.'),
       version: z.string().min(1).describe('Release version X.Y.Z (optional -prerelease), e.g. 0.0.8 or 1.2.3-rc.1.'),
@@ -1011,6 +1015,7 @@ export default defineTool({
     }),
     z.object({
       op: z.literal('run-leg'),
+      deferTag: z.boolean().optional().describe('Approved build-only leg: create no tags or canonical version writeback. Bind the exact tag only after a matching containment receipt; no candidate/GO/publication.'),
       work_item_id: z.string().trim().min(1).max(120).optional()
         .describe('Held work-item for this cut and its slow-attempt gate. Required when you hold multiple items; overrides a stale session goal stamp.'),
       platform: z.enum(PLATFORMS as [Platform, ...Platform[]]).describe('Which platform leg to fire on its own unit.'),
@@ -1118,15 +1123,20 @@ export default defineTool({
         args.version && args.sourceSha
           ? { version: args.version, channel: (args.channel ?? 'alpha') as Channel, sourceSha: args.sourceSha }
           : undefined;
-      const result = preflightCut(legsFrom(args), { root: selected.desktopRoot, release });
+      const result = preflightCut(legsFrom(args), {
+        root: selected.desktopRoot, release, ...(args.deferTag ? { deferTag: true } : {}),
+      });
       return json({
         ok: true,
         op: 'preflight',
         root: selected.desktopRoot,
         ...(selected.selector ? { rootSelector: selected.selector, worktreeRoot: selected.worktreeRoot } : {}),
         ...result,
+        deferTag: args.deferTag === true,
         note: result.go
-          ? 'Ready to cut. release:cut{op:run,version,channel,confirm:true} fires it detached. LOCAL-only — hand the owner the artifacts (op:handoff), never publish to GitHub.'
+          ? args.deferTag
+            ? 'Ready for build-only cut. Tags and canonical version writeback are deferred; matching containment receipt and exact tag binding required before candidate/GO/publication.'
+            : 'Ready to cut. release:cut{op:run,version,channel,confirm:true} fires it detached. LOCAL-only — hand the owner the artifacts (op:handoff), never publish to GitHub.'
           : `Not ready — resolve the blocker(s) first: ${result.blockers.join('; ')}`,
       });
     }
@@ -1163,7 +1173,10 @@ export default defineTool({
       }
 
       const channel = args.channel as Channel;
-      const selected = await resolveCutRoot(args.root);
+      // Ref-only operation: a completed speculative build leaves version/sidecar
+      // residue in its isolated root. Do not apply the clean-build precondition
+      // here; the helper still validates the exact commit and create-only lease.
+      const selected = await resolveCutRoot(args.root, undefined, { readOnly: true });
       const tag = desktopReleaseTag(args.version, channel);
       if (!selected.ok) {
         // An implicit auto-managed checkout is unsafe for the write, but a
@@ -1476,6 +1489,7 @@ export default defineTool({
         platform,
         root: selected.desktopRoot,
         release: { version: args.version, channel, sourceSha: args.sourceSha },
+        ...(args.deferTag ? { deferTag: true } : {}),
       });
       const orderingNote =
         platform === 'linux'
@@ -1513,6 +1527,7 @@ export default defineTool({
           sourceSha: args.sourceSha,
           seedMode: seedMode.mode,
           fullHistory: args.fullHistory === true,
+          deferTag: args.deferTag === true,
           migrationBootSmokeOverride: args.migrationBootSmokeOverride ?? null,
           root: selected.desktopRoot,
           orchestratorRoot,
@@ -1607,6 +1622,7 @@ export default defineTool({
         legs,
         seedMode: seedMode.mode,
         fullHistory: args.fullHistory === true,
+        deferTag: args.deferTag === true,
         ...(selected.selector ? { rootSelector: selected.selector, worktreeRoot: selected.worktreeRoot } : {}),
         localOnly: true,
         launched: launch.launched,
@@ -1630,6 +1646,7 @@ export default defineTool({
         legs,
         seedMode: seedMode.mode,
         fullHistory: args.fullHistory === true,
+        deferTag: args.deferTag === true,
         root: selected.desktopRoot,
         orchestratorRoot,
         ...(selected.selector ? { rootSelector: selected.selector, worktreeRoot: selected.worktreeRoot } : {}),
@@ -1688,6 +1705,7 @@ export default defineTool({
     const pre = preflightCut(legs, {
       root: selected.desktopRoot,
       release: { version: args.version, channel, sourceSha: args.sourceSha },
+      ...(args.deferTag ? { deferTag: true } : {}),
     });
     const inFlight = pre.checks.find((c) => c.name === 'no-cut-in-flight');
     if (inFlight && !inFlight.ok) {
@@ -1720,6 +1738,7 @@ export default defineTool({
         sourceSha: args.sourceSha,
         seedMode: seedMode.mode,
         fullHistory: args.fullHistory === true,
+        deferTag: args.deferTag === true,
         migrationBootSmokeOverride: args.migrationBootSmokeOverride ?? null,
         root: selected.desktopRoot,
         orchestratorRoot,
@@ -1809,6 +1828,7 @@ export default defineTool({
       legs,
       seedMode: seedMode.mode,
       fullHistory: args.fullHistory === true,
+      deferTag: args.deferTag === true,
       ...(selected.selector ? { rootSelector: selected.selector, worktreeRoot: selected.worktreeRoot } : {}),
       localOnly: true,
       launched: launch.launched,
@@ -1829,6 +1849,7 @@ export default defineTool({
       legs,
       seedMode: seedMode.mode,
       fullHistory: args.fullHistory === true,
+      deferTag: args.deferTag === true,
       root: selected.desktopRoot,
       orchestratorRoot,
       ...(selected.selector ? { rootSelector: selected.selector, worktreeRoot: selected.worktreeRoot } : {}),

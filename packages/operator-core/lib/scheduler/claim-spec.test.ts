@@ -24,6 +24,7 @@ import {
   positiveIdCohortIds,
   formatSpecRef,
   CLAIM_SPEC_FENCE_MACROS,
+  CLAIM_SPEC_LANES,
   type ClaimSpec,
 } from './claim-spec';
 
@@ -350,6 +351,40 @@ describe('validateClaimSpec — invalid: rank vocabulary', () => {
       rank: { mode: 'lexicographic', terms: [] },
     });
     expect(r.ok).toBe(false);
+  });
+});
+
+describe('validateClaimSpec — lane (P-007 Phase B / D-027)', () => {
+  const base = {
+    specVersion: '1.0',
+    specId: 'verifier-lane',
+    revision: 0,
+    view: {},
+    rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+  };
+
+  it('names exactly the implementation and verification pools', () => {
+    expect([...CLAIM_SPEC_LANES]).toEqual(['implementation', 'verification']);
+  });
+
+  it.each(CLAIM_SPEC_LANES)('accepts lane %s and keeps it on the parsed spec', (lane) => {
+    const r = validateClaimSpec({ ...base, lane });
+    expect(r.errors).toEqual([]);
+    expect(r.ok).toBe(true);
+    expect(r.spec?.lane).toBe(lane);
+  });
+
+  it('leaves lane absent when the spec omits it (the ordinary implementation pull)', () => {
+    const r = validateClaimSpec(base);
+    expect(r.ok).toBe(true);
+    expect(r.spec?.lane).toBeUndefined();
+    expect(DEFAULT_CLAIM_SPEC.lane).toBeUndefined();
+  });
+
+  it('rejects an unknown lane with a lane-named error', () => {
+    const r = validateClaimSpec({ ...base, lane: 'review' });
+    expect(r.ok).toBe(false);
+    expect(r.errors.some((e) => e.startsWith('lane'))).toBe(true);
   });
 });
 

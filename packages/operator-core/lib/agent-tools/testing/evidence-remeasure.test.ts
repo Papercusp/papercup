@@ -11,6 +11,7 @@ import {
   planTestEvidenceRemeasure,
   remeasureJudgmentLossWarning,
   retireRemeasuredPredecessors,
+  PENDING_TEST_EVIDENCE_ABANDONMENT_GRACE_MS,
 } from './evidence';
 
 type Currentness = {
@@ -30,6 +31,9 @@ function row(id: number, opts: {
   adequacy?: Record<string, unknown>;
   /** Bound by hand (plans:bind-spec-evidence): no stored recipe, only the measured paths. */
   handBound?: boolean;
+  runId?: string;
+  originRunId?: string;
+  observedAt?: string;
 }) {
   const specId = opts.specId ?? 'S-1';
   const testPath = opts.testPath ?? 'src/subject.test.ts';
@@ -48,9 +52,14 @@ function row(id: number, opts: {
     details: {
       ...(handBound
         ? { currentMeasurement: { schemaVersion: 1, kind: 'repo-files', testPaths: [testPath], sourcePaths: ['src/subject.ts'] } }
-        : { testExecution: { phase: opts.phase ?? 'settled', binding: recipe(specId, testPath) } }),
+        : { testExecution: { phase: opts.phase ?? 'settled',
+            ...(opts.runId ? { runId: opts.runId } : {}),
+            ...(opts.originRunId ? { originRunId: opts.originRunId } : {}),
+            binding: recipe(specId, testPath) } }),
       adequacy: { outcome: opts.outcome ?? 'pass', ...(handBound ? { testLayer: 'unit' } : {}), ...opts.adequacy },
     },
+    testRunId: null,
+    observedAt: opts.observedAt ?? '2026-10-06T00:00:00.000Z',
     currentness,
     ...(opts.moved ? { serverMeasurement: { status: 'measured', movedPaths: opts.moved } } : {}),
   } as never;
@@ -126,6 +135,14 @@ describe('planTestEvidenceRemeasure', () => {
     ]);
   });
 
+  it('re-measures an abandoned pending proof even when its file fingerprints are current', () => {
+    const plan = planTestEvidenceRemeasure([row(12, { phase: 'pending' })], new Set([12]));
+
+    expect(plan.selected).toMatchObject([{ bindingId: 12, staleReasons: [], abandonedPending: true,
+      supersedes: [12], binding: recipe('S-1', 'src/subject.test.ts') }]);
+    expect(plan.skipped).toEqual([]);
+  });
+
   it('ignores counterexample proofs, which assert a failure against a deliberately broken subject', () => {
     expect(planTestEvidenceRemeasure([row(1, { kind: 'counterexample', currentness: sourceStale })]))
       .toEqual({ selected: [], skipped: [] });
@@ -190,6 +207,56 @@ describe('buildTestEvidenceRemeasure', () => {
     expect(built.request).toEqual({ workItemId: 'WI-1', planSlug: 'p', bindings: [recipe('S-1', 'src/subject.test.ts')] });
     expect(built.files).toEqual(['src/subject.test.ts']);
   });
+
+  it('treats an old pending binding as abandoned only when its run and exact file ledger are absent', async () => {
+    const now = Date.parse('2026-10-06T00:00:00.000Z');
+    const oldRun = 'f04cdb70-ad2d-4757-9ff0-3a3d9f4440ad';
+    const list = vi.fn().mockResolvedValue([row(12, {
+      phase: 'pending', currentness: sourceStale, runId: oldRun, originRunId: oldRun,
+      observedAt: new Date(now - PENDING_TEST_EVIDENCE_ABANDONMENT_GRACE_MS - 1).toISOString(),
+    })]);
+    const runStatus = vi.fn().mockResolvedValue(null);
+    const ledger = vi.fn().mockResolvedValue([]);
+
+    const built = await buildTestEvidenceRemeasure({ workItemId: 'WI-1', planSlug: 'p' },
+      { harnessSlug: 'h', workspaceId: 'ws', root: '/repo' }, { list, runStatus, ledger, now: () => now });
+
+    expect(built.abandonedPendingBindingIds).toEqual([12]);
+    expect(built.request?.bindings).toEqual([recipe('S-1', 'src/subject.test.ts')]);
+    expect(built.plan.selected[0]).toMatchObject({ bindingId: 12, abandonedPending: true });
+    expect(runStatus).toHaveBeenCalledExactlyOnceWith(oldRun, undefined,
+      { workspaceId: 'ws', harnessSlug: 'h', root: '/repo' });
+    expect(ledger).toHaveBeenCalledExactlyOnceWith({ workspaceId: 'ws', harnessSlug: 'h',
+      runGroupId: oldRun, filePaths: ['src/subject.test.ts'] });
+  });
+
+  it.each(['inside grace', 'a live run snapshot', 'an existing file ledger row', 'an unreadable file ledger'])
+    ('keeps pending evidence in flight when it is %s', async reason => {
+      const now = Date.parse('2026-10-06T00:00:00.000Z');
+      const oldRun = 'f04cdb70-ad2d-4757-9ff0-3a3d9f4440ad';
+      const pending = row(12, {
+        phase: 'pending', currentness: sourceStale, runId: oldRun, originRunId: oldRun,
+        observedAt: new Date(now - PENDING_TEST_EVIDENCE_ABANDONMENT_GRACE_MS - 1).toISOString(),
+      });
+      if (reason === 'inside grace') pending.observedAt = new Date(now - 1_000).toISOString();
+      const list = vi.fn().mockResolvedValue([pending]);
+      const runStatus = vi.fn().mockResolvedValue(reason === 'a live run snapshot'
+        ? { runId: oldRun, status: 'running', startedAt: now - 10_000, finishedAt: null } as never
+        : null);
+      const ledger = vi.fn().mockResolvedValue(reason === 'an existing file ledger row'
+        ? [{ id: 77, file_path: 'src/subject.test.ts' }] as never
+        : reason === 'an unreadable file ledger' ? null : []);
+
+      const built = await buildTestEvidenceRemeasure({ workItemId: 'WI-1', planSlug: 'p' },
+        { harnessSlug: 'h', workspaceId: 'ws', root: '/repo' }, { list, runStatus, ledger, now: () => now });
+
+      expect(built.abandonedPendingBindingIds).toEqual([]);
+      expect(built.request).toBeNull();
+      expect(built.plan.skipped).toEqual([{ specId: 'S-1', testPath: 'src/subject.test.ts',
+        bindingId: 12, reason: 'run-in-flight' }]);
+      if (reason === 'inside grace') expect(runStatus).not.toHaveBeenCalled();
+      else expect(runStatus).toHaveBeenCalledOnce();
+    });
 
   it('builds a fresh test request from a hand-bound row without carrying forward its old pass or quality claims', async () => {
     const list = vi.fn().mockResolvedValue([

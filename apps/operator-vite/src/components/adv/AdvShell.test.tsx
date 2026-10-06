@@ -553,6 +553,23 @@ describe('AdvShell — Discord-parity shortcuts', () => {
     expect(localStorage.getItem(LS_KEY())).toBe('pot-b');
   });
 
+  it.each(['harness.next', 'harness.prev'])(
+    '%s leaves All Pots when its sole pot is already the retained selection',
+    async (shortcut) => {
+      stubProjects([PROJECTS[0]]);
+      nuqsState.slug = 'pot-a';
+      nuqsState.scope = 'all';
+      nuqsState.harness = 'pot-a-child';
+      await renderShell();
+      act(() => shortcutHandlers.get(shortcut)!());
+      await waitFor(() => expect(nuqsSetters.scope).toHaveBeenCalledWith('expanded'));
+      await waitFor(() => expect(nuqsSetters.slug).toHaveBeenCalledWith('pot-a'));
+      await waitFor(() => expect(nuqsSetters.harness).toHaveBeenCalledWith(null));
+      expect(localStorage.getItem(LS_KEY())).toBe('pot-a');
+      nuqsState.harness = undefined;
+    },
+  );
+
   it('goto.inbox jumps to Conversations and harness.create opens the picker', async () => {
     await renderShell();
     act(() => shortcutHandlers.get('goto.inbox')!());

@@ -12,6 +12,8 @@ import {
   SU_SESSION_PROTOCOL_VERSION,
   SU_SESSION_SCHEMA,
   isSuSessionCommandType,
+  isSuApprovalsMode,
+  type SuApprovalsMode,
   type SuSessionBackend,
   type SuSessionCommand,
   type SuSessionCommandResultEvent,
@@ -339,6 +341,16 @@ export class SuSessionHost<B extends SuSessionBackend = SuSessionBackend> {
     } as SuSessionEventInput<B>);
   }
 
+  /** D-026: publish the approvals mode the engine now runs in, after it applied
+   * an owner's switch, so /status reads the engine's mode. */
+  updateApprovals(approvals: SuApprovalsMode): SuSessionEvent<B> | null {
+    if (this.descriptorValue.approvals === approvals) return null;
+    return this.emit({
+      type: 'session',
+      descriptor: { ...this.descriptorValue, approvals },
+    } as SuSessionEventInput<B>);
+  }
+
   /** Attach one replacement engine to a descriptor-only restored host. Keep
    * its channel and replay receipts; an existing executor cannot be displaced. */
   attachRuntime(options: Pick<SuSessionHostOptions<B>, 'descriptor' | 'executeCommand' | 'runtimeReady'>): void {
@@ -581,6 +593,10 @@ export class SuSessionHost<B extends SuSessionBackend = SuSessionBackend> {
     // P-026: an omitted model keeps the current one; a present one must be a spec.
     if (command.model !== undefined && (typeof command.model !== 'string' || !command.model.trim())) {
       throw new SuSessionHostError('invalid_command', 'owner turn model must be a non-empty model[:effort] spec');
+    }
+    // D-026: an omitted approvals mode keeps the current one.
+    if (command.approvals !== undefined && !isSuApprovalsMode(command.approvals)) {
+      throw new SuSessionHostError('invalid_command', 'owner turn approvals must be one of ask, auto-edit, read-only');
     }
     const fingerprint = canonicalJson(command);
     const pending = this.durableCommands.get(command.commandId);

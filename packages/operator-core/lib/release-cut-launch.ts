@@ -182,6 +182,9 @@ export interface CutRuntimeEnv {
    * cutter distinguishes this from its depth-1 default by a PRESENT-EMPTY env
    * value, so the launcher must render the empty string rather than omit it. */
   fullHistory?: boolean;
+  /** Approved speculative build only: leave all release tags and canonical
+   * version manifests untouched until a matching containment receipt arrives. */
+  deferTag?: boolean;
   /** Explicit retry-only fast path: reuse a seed already cut in this isolated root. */
   reuseSeed?: boolean;
   /** Reviewed private D-140 exact-content seed finding evidence, never a path skip. */
@@ -257,6 +260,8 @@ export function buildCutEnv(
   if (overrideError) throw new Error(overrideError);
   const env: Record<string, string> = {
     PAPERCUSP_PUBLISH_GITHUB: '0',
+    // Reset inherited state for ordinary cuts, including detached retries.
+    PAPERCUSP_RELEASE_DEFER_TAG: runtime.deferTag === true ? '1' : '0',
     PAPERCUSP_EXPECTED_SOURCE_SHA: expectedSourceSha,
     PAPERCUSP_RELEASE_OWNER_NAME: requiredOwnerName(runtime.ownerName),
     // A release cut may execute a frozen exact-source dependency-generation
@@ -1401,6 +1406,8 @@ export function preflightCut(
     /** The release this cut would produce. When given, preflight also checks the exact
      *  dogfood-pin tag on the canonical remote (EI-24611322499942803). */
     release?: { version: string; channel: Channel; sourceSha: string };
+    /** Build-only opt-in; defers the tag probe, never signing/source gates. */
+    deferTag?: boolean;
   } = {},
   deps: PreflightDeps = {},
 ): PreflightResult {
@@ -1580,7 +1587,15 @@ export function preflightCut(
   // tag is not already on the canonical remote at the exact source sha, and only op:prepare-tag
   // creates it. Preflight used to skip this, so go:true could precede a run that was certain
   // to fail at the pin check (after bumping the manifests, which left the cut root dirty).
-  if (opts.release) {
+  if (opts.release && opts.deferTag === true) {
+    checks.push({
+      name: 'release-tag',
+      ok: true,
+      warnOnly: true,
+      detail: `${desktopReleaseTag(opts.release.version, opts.release.channel)} deferred for a build-only run; ` +
+        'bind the exact tag only after a containment receipt matches the built sourceSha. Candidate/GO/publication remain blocked.',
+    });
+  } else if (opts.release) {
     const { version, channel, sourceSha } = opts.release;
     const tag = desktopReleaseTag(version, channel);
     const where = `${DOGFOOD_CANONICAL_REMOTE} refs/tags/${tag}`;

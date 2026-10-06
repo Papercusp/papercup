@@ -5,9 +5,87 @@ import {
   redactTriggerArgsForPlanInputs,
   type TriggerRunArgs,
 } from './plan-run-payload';
-import { GMAIL_RESPOND_DRAFT_INPUT_SCHEMA } from './gmail-flagship';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { SLACK_RESPOND_IN_THREAD_INPUT_SCHEMA } from './slack-flagship';
 import { evaluatePlanStartReadiness } from '../agent-tools/plans/plan-input-validation';
+
+type JsonSchema = {
+  const?: unknown;
+  default?: unknown;
+  type?: string;
+  required?: string[];
+  properties?: Record<string, JsonSchema>;
+};
+
+interface PackPlanTarget {
+  label: string;
+  inputSchema: JsonSchema & { properties: { trigger: JsonSchema } };
+  /** The full envelope the engine stores (payload included), built from the schema. */
+  args: TriggerRunArgs;
+  /** Top-level inputs a binding supplies beside the projected envelope. */
+  bindingInput: Record<string, unknown>;
+}
+
+/** A minimal value that satisfies `schema` — consts and defaults win, then the type. */
+function sampleFor(schema: JsonSchema): unknown {
+  if ('const' in schema) return schema.const;
+  if (schema.default !== undefined) return schema.default;
+  switch (schema.type) {
+    case 'integer':
+    case 'number':
+      return 1;
+    case 'boolean':
+      return true;
+    case 'array':
+      return [];
+    case 'object': {
+      const out: Record<string, unknown> = {};
+      for (const key of schema.required ?? []) out[key] = sampleFor(schema.properties?.[key] ?? {});
+      return out;
+    }
+    default:
+      return 'sample-value';
+  }
+}
+
+function findTriggerPack(node: unknown): { targets?: Array<Record<string, unknown>> } | null {
+  if (!node || typeof node !== 'object') return null;
+  const record = node as Record<string, unknown>;
+  if (record.triggerPack && typeof record.triggerPack === 'object') return record.triggerPack as never;
+  for (const value of Object.values(record)) {
+    const found = findTriggerPack(value);
+    if (found) return found;
+  }
+  return null;
+}
+
+/** Every first-party pack plan target whose input schema receives a trigger envelope. */
+function firstPartyTriggerPackPlanTargets(): PackPlanTarget[] {
+  const pluginsDir = fileURLToPath(new URL('../../../../libs/papercusp/plugins/', import.meta.url));
+  const targets: PackPlanTarget[] = [];
+  for (const dir of readdirSync(pluginsDir).sort()) {
+    const manifestPath = `${pluginsDir}${dir}/papercusp.json`;
+    if (!existsSync(manifestPath)) continue;
+    const pack = findTriggerPack(JSON.parse(readFileSync(manifestPath, 'utf8')));
+    for (const target of pack?.targets ?? []) {
+      const inputSchema = target.inputSchema as PackPlanTarget['inputSchema'] | undefined;
+      const triggerSchema = inputSchema?.properties?.trigger;
+      if (target.kind !== 'plan' || !triggerSchema) continue;
+      const trigger = sampleFor(triggerSchema) as Record<string, unknown>;
+      const payloadSchema = triggerSchema.properties?.payload;
+      const args = {
+        trigger: { ...trigger, payload: payloadSchema ? sampleFor(payloadSchema) : { text: 'PRIVATE' } },
+      } as unknown as TriggerRunArgs;
+      const bindingInput: Record<string, unknown> = {};
+      for (const key of inputSchema.required ?? []) {
+        if (key !== 'trigger') bindingInput[key] = sampleFor(inputSchema.properties[key as 'trigger'] ?? {});
+      }
+      targets.push({ label: `${dir}/${String(target.id)}`, inputSchema, args, bindingInput });
+    }
+  }
+  return targets;
+}
 
 function gmailArgs(): TriggerRunArgs {
   return {
@@ -89,14 +167,31 @@ describe('redactTriggerArgsForPlanInputs', () => {
  * `evaluatePlanStartReadiness` that `plan-run-action.ts` consults — so the two
  * halves cannot drift apart without a red test.
  */
-describe('projected plan inputs satisfy the flagship input schemas', () => {
-  it('gmail: the redacted envelope is start-ready', () => {
-    const verdict = evaluatePlanStartReadiness(
-      { template: null, inputSchema: GMAIL_RESPOND_DRAFT_INPUT_SCHEMA },
-      redactTriggerArgsForPlanInputs(gmailArgs()),
-    );
-    expect(verdict).toEqual({ ready: true, source: 'input-schema' });
+describe('projected plan inputs satisfy every shipped trigger input schema', () => {
+  /**
+   * Every first-party trigger pack's plan target is installed as that plan's
+   * input_schema (trigger-pack-materialize.ts), so each one is checked against
+   * the engine's real projection. Discovered from the manifests, so a new pack
+   * is covered without editing this file (WI-10006318: 15 pack targets once
+   * required the payload the engine strips, and only the flagship was pinned).
+   */
+  const packTargets = firstPartyTriggerPackPlanTargets();
+
+  it('discovers the first-party trigger-pack plan targets (non-vacuous)', () => {
+    expect(packTargets.length).toBeGreaterThanOrEqual(10);
+    expect(packTargets.map((target) => target.label)).toContain('email-draft-responder/draft-reply');
   });
+
+  it.each(packTargets.map((target) => [target.label, target] as const))(
+    '%s: the redacted envelope is start-ready',
+    (_label, target) => {
+      const verdict = evaluatePlanStartReadiness(
+        { template: null, inputSchema: target.inputSchema },
+        { ...redactTriggerArgsForPlanInputs(target.args), ...target.bindingInput },
+      );
+      expect(verdict).toEqual({ ready: true, source: 'input-schema' });
+    },
+  );
 
   it('slack: the redacted envelope is start-ready', () => {
     const verdict = evaluatePlanStartReadiness(
@@ -106,10 +201,17 @@ describe('projected plan inputs satisfy the flagship input schemas', () => {
     expect(verdict).toEqual({ ready: true, source: 'input-schema' });
   });
 
-  it('neither flagship schema still requires the private payload', () => {
-    for (const schema of [GMAIL_RESPOND_DRAFT_INPUT_SCHEMA, SLACK_RESPOND_IN_THREAD_INPUT_SCHEMA]) {
-      expect(schema.properties.trigger.required).not.toContain('payload');
-      expect(schema.properties.trigger.properties).not.toHaveProperty('payload');
+  it('no shipped trigger schema still requires the private payload', () => {
+    expect(SLACK_RESPOND_IN_THREAD_INPUT_SCHEMA.properties.trigger.required).not.toContain('payload');
+    expect(SLACK_RESPOND_IN_THREAD_INPUT_SCHEMA.properties.trigger.properties).not.toHaveProperty('payload');
+    for (const target of packTargets) {
+      const trigger = target.inputSchema.properties.trigger;
+      expect({ target: target.label, required: trigger.required ?? [] }).not.toEqual(
+        expect.objectContaining({ required: expect.arrayContaining(['payload']) }),
+      );
+      expect({ target: target.label, properties: trigger.properties ?? {} }).not.toEqual(
+        expect.objectContaining({ properties: expect.objectContaining({ payload: expect.anything() }) }),
+      );
     }
   });
 
@@ -121,17 +223,34 @@ describe('projected plan inputs satisfy the flagship input schemas', () => {
    */
   it('CONTROL: a schema that still requires payload rejects the projection', () => {
     const stale = {
-      ...GMAIL_RESPOND_DRAFT_INPUT_SCHEMA,
+      ...SLACK_RESPOND_IN_THREAD_INPUT_SCHEMA,
       properties: {
         trigger: {
-          ...GMAIL_RESPOND_DRAFT_INPUT_SCHEMA.properties.trigger,
-          required: [...GMAIL_RESPOND_DRAFT_INPUT_SCHEMA.properties.trigger.required, 'payload'],
+          ...SLACK_RESPOND_IN_THREAD_INPUT_SCHEMA.properties.trigger,
+          required: [...SLACK_RESPOND_IN_THREAD_INPUT_SCHEMA.properties.trigger.required, 'payload'],
         },
       },
     };
     const verdict = evaluatePlanStartReadiness(
       { template: null, inputSchema: stale },
-      redactTriggerArgsForPlanInputs(gmailArgs()),
+      redactTriggerArgsForPlanInputs(slackArgs()),
+    );
+    expect(verdict.ready).toBe(false);
+  });
+
+  it('CONTROL: a pack target that still requires payload rejects the projection', () => {
+    const target = packTargets.find((candidate) => candidate.label === 'email-draft-responder/draft-reply')!;
+    const trigger = target.inputSchema.properties.trigger;
+    const stale = {
+      ...target.inputSchema,
+      properties: {
+        ...target.inputSchema.properties,
+        trigger: { ...trigger, required: [...(trigger.required ?? []), 'payload'] },
+      },
+    };
+    const verdict = evaluatePlanStartReadiness(
+      { template: null, inputSchema: stale },
+      { ...redactTriggerArgsForPlanInputs(target.args), ...target.bindingInput },
     );
     expect(verdict.ready).toBe(false);
   });
@@ -143,8 +262,8 @@ describe('projected plan inputs satisfy the flagship input schemas', () => {
    */
   it('CONTROL: the unredacted envelope is also start-ready under the shipped schema', () => {
     const verdict = evaluatePlanStartReadiness(
-      { template: null, inputSchema: GMAIL_RESPOND_DRAFT_INPUT_SCHEMA },
-      gmailArgs(),
+      { template: null, inputSchema: SLACK_RESPOND_IN_THREAD_INPUT_SCHEMA },
+      slackArgs(),
     );
     expect(verdict.ready).toBe(true);
   });

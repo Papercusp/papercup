@@ -17880,6 +17880,8 @@ mod tests {
         a.chat_first = true;
         a.launch_cwd = Some("/work/app".into());
         a.agent_chat_summaries = vec![chat_summary_for("chat-earlier")];
+        // The list has arrived; an unloaded one is re-fetched (P-027 G-12).
+        a.agent_chats_loaded_for = Some(a.harness.clone());
         let mut earlier = inventory_row_for(
             "chat-earlier",
             crate::su_session::SuSessionReconciliation::EndedArchived,

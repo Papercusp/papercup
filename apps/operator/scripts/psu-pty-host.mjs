@@ -914,13 +914,21 @@ export function composerEchoMarkerWhitespaceLoss(marker, visible) {
 /** Read the user-message content from Claude, Codex, or OMP native row shapes. */
 function nativeUserPromptContent(row) {
   const payload = row?.payload && typeof row.payload === 'object' ? row.payload : null;
-  if (row?.type === 'user' && row?.message?.role === 'user') return row.message.content;
-  if (row?.type === 'response_item' && payload?.type === 'message' && payload?.role === 'user') {
-    return payload.content;
+  let content;
+  if (row?.type === 'user' && row?.message?.role === 'user') content = row.message.content;
+  else if (row?.type === 'response_item' && payload?.type === 'message' && payload?.role === 'user') {
+    content = payload.content;
+  } else if (row?.type === 'message' && row?.role === 'user') content = row.content;
+  else if (row?.message?.role === 'user') content = row.message.content;
+  else return null;
+  if (Array.isArray(content)) {
+    // Claude resume writes interrupted tool results as fresh user rows.
+    // Tool output must neither end the first-task scan nor certify a marker;
+    // genuine user text in a mixed row still owns that prompt's proof barrier.
+    const promptBlocks = content.filter((block) => block?.type !== 'tool_result');
+    return promptBlocks.length ? promptBlocks : null;
   }
-  if (row?.type === 'message' && row?.role === 'user') return row.content;
-  if (row?.message?.role === 'user') return row.message.content;
-  return null;
+  return content;
 }
 
 /** Flatten native user text blocks without reading metadata or assistant rows. */

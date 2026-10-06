@@ -13,6 +13,7 @@ import { createInterface } from 'node:readline';
 
 import {
   assertNeverSuSession,
+  type SuApprovalsMode,
   type SuSessionCapabilities,
   type SuSessionCommand,
   type SuSessionDescriptor,
@@ -70,7 +71,7 @@ export type CodexNativeCommandVerdict = { ok: true } | { ok: false; code: string
 
 export interface CodexSuSessionControls {
   /** `model` (P-026): a `model[:effort]` spec to apply before this turn; omitted keeps the current one. */
-  ownerTurn(input: { ownerId: string; turnId: string; content: string; model?: string }): Promise<CodexNativeCommandVerdict>;
+  ownerTurn(input: { ownerId: string; turnId: string; content: string; model?: string; approvals?: SuApprovalsMode }): Promise<CodexNativeCommandVerdict>;
   interrupt(input: { ownerId: string; reason?: string }): Promise<CodexNativeCommandVerdict>;
   resume(input: {
     ownerId: string;
@@ -84,6 +85,8 @@ export interface CodexSuSessionControls {
 export interface CodexSuSessionDescriptorOptions {
   agentChatId: string;
   model?: string | null;
+  /** D-026: the approvals mode the engine launched in, when it has one. */
+  approvals?: SuApprovalsMode;
   accountRoute?: string | null;
   servedAccountReader?: SuSessionServedAccountReader;
   carry?: 'warm' | 'cold';
@@ -414,6 +417,7 @@ function descriptorFor(
     runtimeGeneration: options.runtimeGeneration ?? 0,
     role: 'su',
     model: options.model ?? null,
+    ...(options.approvals ? { approvals: options.approvals } : {}),
     accountServed: null,
     accountRoute: options.accountRoute ?? null,
     carry: options.carry ?? 'warm',
@@ -764,6 +768,7 @@ export class CodexSuSessionAdapter {
           turnId: command.turnId,
           content: command.content,
           ...(command.model ? { model: command.model } : {}),
+          ...(command.approvals ? { approvals: command.approvals } : {}),
         });
         if (!verdict.ok) context.transition('waiting-for-owner', verdict.message);
         break;

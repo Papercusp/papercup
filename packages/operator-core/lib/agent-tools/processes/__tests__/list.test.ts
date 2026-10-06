@@ -1023,6 +1023,8 @@ describe('processes:list confinement (P-023/D-111)', () => {
       dispatched.result?.structuredContent as {
         tasks: Array<{
           taskId: string;
+          confined: boolean;
+          scopeUnit: string | null;
           confinement: {
             confined: boolean;
             cgroupPath: string | null;
@@ -1046,6 +1048,36 @@ describe('processes:list confinement (P-023/D-111)', () => {
     expect(task!.confinement.cgroupPath).toContain('pc-agent-row.scope');
     expect(task!.confinement.cgroupPath).not.toBe(STORED_SPAWNER_CGROUP);
     expect(task!.confinement.cgroupPath).not.toContain('papercup-dev-api.service');
+  });
+
+  it('reports an unaccounted exact task scope from its observed cgroup path', async () => {
+    const taskId = 'abc123';
+    const scopeUnit = 'pc-abc123.scope';
+    const observedPath =
+      `/user.slice/user-1000.slice/user@1000.service/papercusp.slice/papercusp-sidecar.slice/${scopeUnit}`;
+    const [task] = await tasksFor(
+      confinedRow({
+        taskId,
+        rootTaskId: taskId,
+        class: 'other',
+        state: 'unaccounted',
+        confined: false,
+        scopeUnit,
+        cgroupPath: observedPath,
+      }),
+    );
+
+    expect(task).toMatchObject({
+      taskId,
+      confined: true,
+      scopeUnit,
+      confinement: {
+        confined: true,
+        cgroupPath: observedPath,
+        scopeUnit,
+        source: 'observed-at-reconcile',
+      },
+    });
   });
 
   it('reports a confined row with no scope unit as UNKNOWN, not as unconfined', async () => {

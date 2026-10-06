@@ -115,8 +115,10 @@ import { writePlanIndexRows } from './agent-tools/plans/plan-index-rows';
 import { summarizeForcedPast } from './agent-tools/plans/forced-past-stamp';
 import { recordPlanRevisionInTransaction, type PlanRevisionSql } from './agent-tools/plans/revisions';
 import {
+  applyPlanRevisionSnapshotBackfill,
   applyPlanRevisionSnapshotRepair,
   readPlanRevisionRepairTarget,
+  type PlanRevisionSnapshotBackfillPlan,
   type PlanRevisionRepairScope,
   type PlanRevisionSnapshotRepairSpec,
 } from './agent-tools/plans/revisions-repair';
@@ -2712,12 +2714,14 @@ export interface LegacyRubricRevisionRepairResult {
   revisionsToRepair: number;
   revisionsRepaired: number;
   currentRevision?: number;
+  revisionSeq?: number;
   reason?: string;
 }
 
 export interface PreparedLegacyRubricRevisionRepair {
   result: LegacyRubricRevisionRepairResult;
   spec?: PlanRevisionSnapshotRepairSpec;
+  backfillSpec?: PlanRevisionSnapshotBackfillPlan;
 }
 
 function legacyRubricRepairResult(
@@ -2859,8 +2863,40 @@ export async function inspectLegacyRubricRevisionRepair(
 export async function repairLegacyRubricRevisionSnapshots(
   rubricId: string,
   scope: Omit<PlanRevisionRepairScope, 'planSlug'>,
-  opts: { dryRun?: boolean } = {},
+  opts: { dryRun?: boolean; rubricRevision?: number; identity?: AgentIdentity } = {},
 ): Promise<LegacyRubricRevisionRepairResult> {
+  if (opts.rubricRevision !== undefined) {
+    const prepared = await inspectCurrentRubricRevisionBackfill(rubricId, opts.rubricRevision, scope);
+    if (!prepared.backfillSpec) return prepared.result;
+    if (opts.dryRun !== false) return { ...prepared.result, status: 'dry_run' };
+    if (!opts.identity) {
+      return {
+        ...prepared.result,
+        status: 'error',
+        reason: 'resolved writer identity is required to record a current-version backfill',
+      };
+    }
+
+    const applied = await applyPlanRevisionSnapshotBackfill({
+      ...prepared.backfillSpec,
+      identity: opts.identity,
+    });
+    if (applied.status === 'recorded') {
+      return {
+        ...prepared.result,
+        status: 'repaired',
+        revisionsRepaired: 1,
+        revisionSeq: applied.revisionSeq,
+      };
+    }
+    return {
+      ...prepared.result,
+      status: applied.status,
+      revisionsRepaired: 0,
+      ...('reason' in applied && applied.reason ? { reason: applied.reason } : {}),
+    };
+  }
+
   const prepared = await inspectLegacyRubricRevisionRepair(rubricId, scope);
   if (!prepared.spec) return prepared.result;
   if (opts.dryRun !== false) return { ...prepared.result, status: 'dry_run' };
@@ -2878,6 +2914,134 @@ export async function repairLegacyRubricRevisionSnapshots(
     status: applied.status,
     revisionsRepaired: applied.revisionsRepaired,
     ...('reason' in applied && applied.reason ? { reason: applied.reason } : {}),
+  };
+}
+
+/**
+ * Prepare an append-only snapshot for one missing CURRENT first-party revision.
+ * This does not reconstruct an older version from today's template_data: the
+ * caller must name the live plan version, which must still exactly match the
+ * bundled standard rubric under the CAS applied at write time.
+ */
+export async function inspectCurrentRubricRevisionBackfill(
+  rubricId: string,
+  rubricRevision: number,
+  scope: Omit<PlanRevisionRepairScope, 'planSlug'>,
+): Promise<PreparedLegacyRubricRevisionRepair> {
+  const planScope: PlanRevisionRepairScope = { ...scope, planSlug: rubricId };
+  const target = await readPlanRevisionRepairTarget(planScope);
+  if (!target) {
+    return { result: legacyRubricRepairResult(rubricId, 'not_found', 0, 0, 'rubric plan row not found') };
+  }
+
+  const { plan, revisions } = target;
+  const inspected = revisions.length;
+  const currentRevision = Number.isFinite(plan.version) ? plan.version : undefined;
+  const reject = (reason: string): PreparedLegacyRubricRevisionRepair => ({
+    result: legacyRubricRepairResult(rubricId, 'not_eligible', inspected, 0, reason, currentRevision),
+  });
+
+  if (!Number.isInteger(rubricRevision) || rubricRevision <= 0) {
+    return reject('rubric revision must be a positive integer');
+  }
+  if (currentRevision !== rubricRevision) {
+    return reject('only the exact current rubric revision can be backfilled');
+  }
+  if (plan.owner !== FIRST_PARTY_RUBRIC_SEED_OWNER) return reject('rubric plan is not first-party seeded');
+  if (plan.template !== RUBRIC_TEMPLATE_NAME) return reject('rubric plan does not use the rubric template');
+  if (plan.templateSlug !== null) return reject('rubric plan is a template instance, not a rubric definition');
+  if (plan.archived) return reject('rubric plan is archived');
+
+  const parsed = rubricTemplateDataSchema.safeParse(plan.templateData);
+  if (!parsed.success) return reject('current first-party rubric template_data is malformed');
+  if (rubricKindOf(parsed.data) !== 'standard') return reject('acceptance rubrics are outside this backfill');
+  if (parsed.data.classRef) return reject('delegated-class rubrics are outside this backfill');
+
+  const bundled = listLocalRubrics().find(
+    (candidate) => candidate.rubricId === rubricId && candidate.source === 'first-party',
+  );
+  if (!bundled) return reject('matching first-party bundled rubric source is unavailable');
+  const liveBundleHash = computeSeedContentHash(parsed.data);
+  if (liveBundleHash !== computeSeedContentHash(bundled)) {
+    return reject('current rubric differs from the first-party bundle');
+  }
+  if (parsed.data.seedContentHash && parsed.data.seedContentHash !== liveBundleHash) {
+    return reject('current rubric seed content hash does not match its stored fields');
+  }
+  if (plan.contentHash !== hashPlanContent(plan.content)) {
+    return reject('current rubric body hash is inconsistent');
+  }
+
+  const marker = `"rubricRevision": ${rubricRevision},`;
+  const markedRows = revisions.filter((revision) => revision.contentSnapshot.includes(marker));
+  if (markedRows.length > 0) {
+    if (markedRows.length === 1) {
+      const existing = parseRubricRevisionSnapshot(markedRows[0]!.contentSnapshot);
+      if (
+        existing?.rubricRevision === rubricRevision &&
+        markedRows[0]!.contentHash === plan.contentHash &&
+        isDeepStrictEqual(existing.templateData, parsed.data)
+      ) {
+        return {
+          result: legacyRubricRepairResult(rubricId, 'already_repaired', inspected, 0, undefined, currentRevision),
+        };
+      }
+    }
+    return reject('a conflicting or malformed snapshot already claims this rubric revision');
+  }
+
+  const latest = revisions[revisions.length - 1];
+  const latestParsed = latest ? parseRubricRevisionSnapshot(latest.contentSnapshot) : null;
+  if (
+    latest && latestParsed?.rubricRevision === undefined &&
+    latest.contentHash === plan.contentHash &&
+    isDeepStrictEqual(latestParsed.templateData, parsed.data)
+  ) {
+    return {
+      result: legacyRubricRepairResult(rubricId, 'already_repaired', inspected, 0, undefined, currentRevision),
+    };
+  }
+
+  const currentRubric = planRowToRubric({
+    plan_slug: rubricId,
+    workspace_id: plan.workspaceId,
+    harness_slug: plan.harnessSlug,
+    title: null,
+    status: 'active',
+    created: null,
+    updated: null,
+    updated_at: new Date(0).toISOString(),
+    version: plan.version,
+    owner: plan.owner,
+    archived: plan.archived,
+    template_data: parsed.data,
+  });
+  if (!currentRubric?.criteriaHash) return reject('current rubric criteria hash could not be computed');
+
+  const backfillSpec: PlanRevisionSnapshotBackfillPlan = {
+    scope: planScope,
+    expectedPlan: {
+      version: plan.version,
+      contentHash: plan.contentHash,
+      content: plan.content,
+      owner: plan.owner,
+      template: plan.template,
+      templateSlug: plan.templateSlug,
+      archived: plan.archived,
+      templateData: parsed.data,
+    },
+    expectedRevisionIds: revisions.map((revision) => revision.id),
+    contentSnapshot: formatRubricRevisionSnapshot(
+      plan.content,
+      parsed.data,
+      currentRubric.criteriaHash,
+      rubricRevision,
+    ),
+    rationale: `rubrics:repair backfilled missing current rubric revision ${rubricRevision} from exact first-party plan state`,
+  };
+  return {
+    result: legacyRubricRepairResult(rubricId, 'repairable', inspected, 1, undefined, currentRevision),
+    backfillSpec,
   };
 }
 

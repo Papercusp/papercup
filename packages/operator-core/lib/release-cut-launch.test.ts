@@ -7,7 +7,7 @@
  *
  * Run: cd packages/operator-core && npx vitest run lib/release-cut-launch.test.ts
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -118,6 +118,7 @@ describe('buildCutEnv — LOCAL-only enforced', () => {
   it('always disables GitHub publish; adds only requested legs', () => {
     expect(buildCutEnv({}, sourceSha, runtime)).toEqual({
       PAPERCUSP_PUBLISH_GITHUB: '0',
+      PAPERCUSP_RELEASE_DEFER_TAG: '0',
       PAPERCUSP_EXPECTED_SOURCE_SHA: sourceSha,
       PAPERCUSP_RELEASE_OWNER_NAME: 'Avi',
       DEPENDENCY_GENERATION_FORCE_COPY: '1',
@@ -126,6 +127,7 @@ describe('buildCutEnv — LOCAL-only enforced', () => {
     });
     expect(buildCutEnv({ mac: true, windows: true, arm64: true }, sourceSha, runtime)).toEqual({
       PAPERCUSP_PUBLISH_GITHUB: '0',
+      PAPERCUSP_RELEASE_DEFER_TAG: '0',
       PAPERCUSP_EXPECTED_SOURCE_SHA: sourceSha,
       PAPERCUSP_RELEASE_OWNER_NAME: 'Avi',
       DEPENDENCY_GENERATION_FORCE_COPY: '1',
@@ -138,6 +140,7 @@ describe('buildCutEnv — LOCAL-only enforced', () => {
     // A false/undefined leg is not injected.
     expect(buildCutEnv({ mac: false }, sourceSha, { ownerName: ' Avi ', ownerEmail: ' owner@example.test ', reuseSeed: true })).toEqual({
       PAPERCUSP_PUBLISH_GITHUB: '0',
+      PAPERCUSP_RELEASE_DEFER_TAG: '0',
       PAPERCUSP_EXPECTED_SOURCE_SHA: sourceSha,
       PAPERCUSP_RELEASE_OWNER_NAME: 'Avi',
       PAPERCUSP_RELEASE_OWNER_EMAIL: 'owner@example.test',
@@ -150,6 +153,15 @@ describe('buildCutEnv — LOCAL-only enforced', () => {
       .toHaveProperty('PAPERCUSP_SKIP_SEED_CUT', '1');
     expect(() => buildCutEnv({}, sourceSha, { ownerName: 'Avi', reuseSeed: true, seedless: true }))
       .toThrow(/seed_mode_conflict/);
+  });
+
+  it('defers tags only by explicit opt-in while keeping publish disabled and exact source binding', () => {
+    const env = buildCutEnv({}, sourceSha, { ...runtime, deferTag: true });
+    expect(env).toMatchObject({ PAPERCUSP_RELEASE_DEFER_TAG: '1', PAPERCUSP_PUBLISH_GITHUB: '0',
+      PAPERCUSP_EXPECTED_SOURCE_SHA: sourceSha });
+    for (const deferTag of [undefined, false]) {
+      expect(buildCutEnv({}, sourceSha, { ...runtime, deferTag })).toHaveProperty('PAPERCUSP_RELEASE_DEFER_TAG', '0');
+    }
   });
 
   it('renders full-history as a present-empty seed depth and rejects modes that skip the seed cut', () => {
@@ -640,6 +652,20 @@ describe('preflightCut', () => {
       expect(calls).toEqual([['/root', 'desktop-v0.0.25-alpha', DOGFOOD_CANONICAL_REMOTE]]);
       expect(r.go).toBe(false);
       expect(r.blockers.join()).toMatch(/release-tag: .*desktop-v0\.0\.25-alpha is missing .*prepare-tag/);
+    });
+    it('approved tag deferral never probes refs and retains signing and in-flight blockers', () => {
+      const remoteTagSha = vi.fn(() => { throw new Error('must not probe deferred refs'); });
+      const r = preflightCut({}, { root, release, deferTag: true }, { ...base, remoteTagSha });
+      expect(r.go).toBe(true);
+      expect(remoteTagSha).not.toHaveBeenCalled();
+      expect(r.checks.find((c) => c.name === 'release-tag')?.detail).toContain('Candidate/GO/publication remain blocked');
+      const blocked = preflightCut({}, { root, release, deferTag: true }, {
+        ...base, remoteTagSha, exists: (p) => allPresent.has(p) && p !== key, isUnitActive: () => true,
+      });
+      expect(blocked.go).toBe(false);
+      expect(blocked.blockers.join()).toMatch(/signing-key/);
+      expect(blocked.blockers.join()).toMatch(/no-cut-in-flight/);
+      expect(remoteTagSha).not.toHaveBeenCalled();
     });
     it('a tag pointing at another commit is a HARD blocker', () => {
       const r = preflightCut({}, { root, release }, { ...base, remoteTagSha: () => 'c'.repeat(40) });

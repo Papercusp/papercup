@@ -118,15 +118,19 @@ export function parseArgs(argv: any): {
  * and the ~6,000-char result door); the CLI prints the same `{markdown,row_count}` body with
  * neither budget, so `parseCypherText` reads it unchanged. `--repo` is always named: the CLI
  * resolves its target from the GLOBAL registry and refuses when two repos are registered.
- * @param {{ bin: string, repo: string, cwd: string, execFile?: Function, timeoutMs?: number }} o
+ * @param {{ bin: string, repo: string, cwd: string, runToFile?: (bin: string, argv: string[], opts: { cwd: string, timeoutMs: number }) => Promise<string>, timeoutMs?: number }} o
+ * @returns {(statement: string) => Promise<string>}
  */
 export function directCypherRunner({ bin, repo, cwd, runToFile, timeoutMs }: {
     bin: string;
     repo: string;
     cwd: string;
-    execFile?: Function;
+    runToFile?: (bin: string, argv: string[], opts: {
+        cwd: string;
+        timeoutMs: number;
+    }) => Promise<string>;
     timeoutMs?: number;
-}): (statement: any) => Promise<any>;
+}): (statement: string) => Promise<string>;
 /**
  * Run a CLI with stdout bound to a FILE, then read it. ⚠ Never a pipe: `gitnexus cypher` exits
  * before a pipe drains, so a piped answer is cut at exactly 65,536 bytes (measured 2026-10-06: a
@@ -141,17 +145,18 @@ export function runCliToFile(bin: any, argv: any, { cwd, timeoutMs }: {
  * Index identity for DIRECT mode, read from the gitnexus registry file the CLI itself resolves
  * against (`~/.gitnexus/registry.json`, an array of `{name,lastCommit,indexedAt}`). Read before
  * AND after paging by produceSnapshotFromGraph, so an index swapped mid-read is refused.
+ * @param {{ registry: string, repo: string, readFile?: (p: string) => string, backendVersion?: string | null }} o
  */
 export function registryIndexReader({ registry, repo, readFile, backendVersion }: {
-    registry: any;
-    repo: any;
-    readFile?: ((p: any) => string) | undefined;
-    backendVersion?: null | undefined;
+    registry: string;
+    repo: string;
+    readFile?: (p: string) => string;
+    backendVersion?: string | null;
 }): () => Promise<{
     lastCommit: any;
     indexedAt: any;
     backend: string;
-    backendVersion: null;
+    backendVersion: string | null;
 }>;
 /** The installed gitnexus version next to a CLI binary (`…/node_modules/.bin/gitnexus`). */
 export function backendVersionNearBin(bin: any, readFile?: (p: any) => string): any;

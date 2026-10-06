@@ -41,6 +41,11 @@ export const testEvidenceSchema = z.object({
 export const RECOVERY_WAIT_DEFAULT_MS = 30_000;
 export const RECOVERY_WAIT_CEILING_MS = 40_000;
 export const RECOVERY_WAIT_POLL_MS = 2_000;
+/**
+ * A pending evidence row is registered before a test process starts. Give the process
+ * admission/snapshot write a bounded window before treating a missing run as abandoned.
+ */
+export const PENDING_TEST_EVIDENCE_ABANDONMENT_GRACE_MS = 60_000;
 export const recoverTestEvidenceSchema = z.object({
   workItemId: z.string().min(1).max(200), planSlug: z.string().min(1).max(120).optional(),
   originRunId: z.string().uuid(), runId: z.string().uuid(),
@@ -50,7 +55,8 @@ export const recoverTestEvidenceSchema = z.object({
 type Request = z.infer<typeof testEvidenceSchema>;
 type Recovery = z.infer<typeof recoverTestEvidenceSchema>;
 type Scope = { workspaceId: string; harnessSlug: string; actorId: string; root: string };
-type Prepared = { input: BindSpecEvidenceInput; binding: Request['bindings'][number]; measurement: RepoFilesEvidenceMeasurement };
+type Prepared = { input: BindSpecEvidenceInput; binding: Request['bindings'][number]; measurement: RepoFilesEvidenceMeasurement;
+  observedAt?: string };
 type Deps = {
   bind: typeof bindSpecEvidence; measure: typeof measureRepoFilesEvidenceAtRoot;
   ledger: typeof readHarnessTestRunEvidence; list: typeof listSpecEvidence;
@@ -103,6 +109,12 @@ const succeeded = (status: string) => status === 'created' || status === 'unchan
 
 function isTerminalRunSnapshot(run: RunSnapshot | null | undefined): run is RunSnapshot {
   return run != null && run.finishedAt !== null && run.status !== 'running';
+}
+
+function pendingEvidenceAgeMs(observedAt: string | undefined, now: number): number | null {
+  if (typeof observedAt !== 'string') return null;
+  const observedAtMs = Date.parse(observedAt);
+  return Number.isFinite(observedAtMs) && observedAtMs <= now ? now - observedAtMs : null;
 }
 
 type PendingRetirement = {
@@ -415,6 +427,16 @@ export async function finishTestEvidence(prepared: Prepared[], originRunId: stri
         bindingStatus: retirement.failures.length > 0 ? 'retirement-incomplete' : 'not-bound' });
       continue;
     }
+    // Recovery or a caller-aborted run can have no attributed file row yet. The original
+    // prepare step already wrote the pending marker; appending another pending binding here
+    // only creates twins that every later remeasure also has to skip. Keep the original row
+    // until a reporter result arrives or the bounded abandonment check retires it.
+    if (phase === 'pending') {
+      rows.push({ specId: row.input.specId, specRevision: row.input.specRevision,
+        evidenceRef: row.input.evidenceRef, testRunId: null, ledgerRunGroupId: null,
+        phase, outcome: 'unknown', bindingStatus: 'pending-retained' });
+      continue;
+    }
     const receipt = await deps.bind({ ...row.input, testRunId: run?.id ?? null, details });
     let bindingStatus: string = receipt.status;
     if (succeeded(receipt.status) && (phase === 'settled' || phase === 'source-changed')) {
@@ -523,6 +545,8 @@ export type RemeasureSkip = { specId: string; testPath: string; bindingId: numbe
   detail?: string };
 export type RemeasureSelection = { specId: string; testPath: string; bindingId: number;
   staleReasons: string[]; movedPaths?: unknown; binding: Request['bindings'][number];
+  /** The latest pending attempt was checked and has no live run or scoped file ledger row. */
+  abandonedPending?: true;
   /** Every live row of this recipe at this revision — withdrawn only once a fresh run PASSES. */
   supersedes: number[];
   /** Reviewer judgment those rows carried (WI-10004452): the fresh run will not reproduce it. */
@@ -622,7 +646,8 @@ function handBoundTestBinding(
  * still REPORTED (`no-recipe` / `probe-required`), never silently dropped — a silent drop
  * let the completion gate fail freshness on bindings this pass said nothing about.
  */
-export function planTestEvidenceRemeasure(rows: readonly EvidenceRow[]): { selected: RemeasureSelection[]; skipped: RemeasureSkip[] } {
+export function planTestEvidenceRemeasure(rows: readonly EvidenceRow[],
+  abandonedPendingBindingIds: ReadonlySet<number> = new Set()): { selected: RemeasureSelection[]; skipped: RemeasureSkip[] } {
   const latest = new Map<string, { row: EvidenceRow; binding: Request['bindings'][number] | null; testPath: string; phase?: string }>();
   const members = new Map<string, number[]>();
   const judgments = new Map<string, { fields: Set<string>; bindingIds: number[] }>();
@@ -647,7 +672,8 @@ export function planTestEvidenceRemeasure(rows: readonly EvidenceRow[]): { selec
       ? JSON.stringify([...new Set(identityPaths)].sort())
       : `unrecorded:${row.evidenceRef}`;
     const key = `${row.specId}\0${row.evidenceKind}\0${pathIdentity}`;
-    if (!latest.has(key)) latest.set(key, { row, binding, testPath, phase: execution?.phase });
+    const phase = abandonedPendingBindingIds.has(row.id) ? 'abandoned' : execution?.phase;
+    if (!latest.has(key)) latest.set(key, { row, binding, testPath, phase });
     if (row.specRevision === latest.get(key)!.row.specRevision) {
       members.set(key, [...(members.get(key) ?? []), row.id]);
       if (row.testRunProvenance?.worktreeDirty === false) clean.set(key, [...(clean.get(key) ?? []), row.id]);
@@ -666,6 +692,7 @@ export function planTestEvidenceRemeasure(rows: readonly EvidenceRow[]): { selec
     const base = { specId: row.specId, testPath, bindingId: row.id };
     const { overall, dimensions, staleReasons } = row.currentness;
     const outcome = (row.details?.adequacy as { outcome?: string } | undefined)?.outcome;
+    const abandonedPending = phase === 'abandoned';
     // Freshness alone does not make a failed measurement a reusable proof (WI-10004097).
     const settledFailure = phase === 'settled' && (outcome === 'error' || outcome === 'fail');
     const moved = (row as { serverMeasurement?: { movedPaths?: unknown } }).serverMeasurement?.movedPaths;
@@ -674,7 +701,8 @@ export function planTestEvidenceRemeasure(rows: readonly EvidenceRow[]): { selec
       (row.details?.testExecution as { binding?: unknown } | undefined)?.binding === undefined;
     if (dimensions.spec === 'stale') skipped.push({ ...base, reason: 'clause-moved' });
     else if (phase === 'pending') skipped.push({ ...base, reason: 'run-in-flight' });
-    else if (overall === 'current' && !settledFailure && (phase === 'settled' || !binding || hasNoStoredTestBinding))
+    else if (overall === 'current' && !settledFailure && !abandonedPending
+      && (phase === 'settled' || !binding || hasNoStoredTestBinding))
       skipped.push({ ...base, reason: 'current' });
     else if (!binding) {
       const why = (overall === 'unknown' ? row.currentness.unknownReasons : staleReasons).join(',') || overall;
@@ -688,6 +716,7 @@ export function planTestEvidenceRemeasure(rows: readonly EvidenceRow[]): { selec
           }
         : { ...base, reason: 'no-recipe', detail: `${why}: bound by hand, so re-prove via testing:run { evidence } (which stores the recipe)`.slice(0, 240) });
     } else if (
+      (abandonedPending && overall === 'current') ||
       (overall === 'current' && settledFailure) ||
       (overall === 'stale' && staleReasons.every((reason) => REMEASURABLE_STALE_REASONS.has(reason))) ||
       // A completed run whose sources moved WHILE it ran is the same drift, observed early.
@@ -697,6 +726,7 @@ export function planTestEvidenceRemeasure(rows: readonly EvidenceRow[]): { selec
       const cleanIds = clean.get(key);
       selected.push({ ...base, staleReasons, ...(moved !== undefined ? { movedPaths: moved } : {}),
         binding: { ...binding, specRevision: row.specRevision }, supersedes: (members.get(key) ?? []).sort((a, b) => a - b),
+        ...(abandonedPending ? { abandonedPending: true as const } : {}),
         ...(judgment ? { judgment: { fields: [...judgment.fields].sort(), bindingIds: [...judgment.bindingIds].sort((a, b) => a - b) } } : {}),
         ...(cleanIds ? { cleanBindingIds: [...cleanIds].sort((a, b) => a - b) } : {}) });
     } else if (overall === 'unknown') skipped.push({ ...base, reason: 'unmeasurable', detail: row.currentness.unknownReasons.join(',').slice(0, 240) });
@@ -714,16 +744,75 @@ export function planTestEvidenceRemeasure(rows: readonly EvidenceRow[]): { selec
  * ordinary `evidence` request plus the exact test files to run. `request` is null when
  * nothing needs re-measuring, and the caller then starts no process at all.
  */
-export async function buildTestEvidenceRemeasure(remeasure: Remeasure, scope: Pick<Scope, 'harnessSlug'>, deps: Pick<Deps, 'list'> = defaults) {
+async function abandonedPendingBindingIds(rows: readonly EvidenceRow[],
+  scope: Pick<Scope, 'harnessSlug'> & Partial<Pick<Scope, 'workspaceId' | 'root'>>,
+  deps: Pick<Deps, 'list'> & Partial<Pick<Deps, 'ledger' | 'runStatus' | 'now'>>): Promise<Set<number>> {
+  if (!scope.workspaceId || !scope.root || !deps.ledger || !deps.runStatus) return new Set();
+  const now = deps.now?.() ?? Date.now();
+  const candidates = rows.flatMap((row) => {
+    const execution = row.details?.testExecution as { phase?: string; runId?: string; originRunId?: string; binding?: unknown } | undefined;
+    const parsed = row.evidenceKind === 'test' ? bindingSchema.safeParse(execution?.binding) : null;
+    const ageMs = pendingEvidenceAgeMs(row.observedAt, now);
+    if (execution?.phase !== 'pending' || row.testRunId != null || !parsed?.success
+      || typeof execution.runId !== 'string' || ageMs === null
+      || ageMs < PENDING_TEST_EVIDENCE_ABANDONMENT_GRACE_MS) return [];
+    return [{ row, runId: execution.runId,
+      originRunId: typeof execution.originRunId === 'string' ? execution.originRunId : execution.runId,
+      binding: parsed.data }];
+  });
+  const checks = new Map<string, Promise<boolean>>();
+  const abandoned = new Set<number>();
+  await Promise.all(candidates.map(async ({ row, runId, originRunId, binding }) => {
+    const key = JSON.stringify([runId, originRunId, binding.testPath]);
+    let check = checks.get(key);
+    if (!check) {
+      check = (async () => {
+        let snapshot: RunSnapshot | null;
+        try {
+          snapshot = await deps.runStatus!(runId, undefined, {
+            workspaceId: scope.workspaceId!, harnessSlug: scope.harnessSlug, root: scope.root!,
+          });
+        } catch {
+          return false;
+        }
+        // Missing and terminal snapshots mean no live process. An unreadable or malformed
+        // snapshot must fail closed; it is not evidence that the process stopped.
+        if (snapshot !== null && !isTerminalRunSnapshot(snapshot)) return false;
+        const runGroups = [...new Set([runId, originRunId])];
+        for (const runGroupId of runGroups) {
+          let ledgerRows: HarnessTestRunEvidence[] | null;
+          try {
+            ledgerRows = await deps.ledger!({ workspaceId: scope.workspaceId!, harnessSlug: scope.harnessSlug,
+              runGroupId, filePaths: [binding.testPath] });
+          } catch {
+            return false;
+          }
+          if (ledgerRows === null || ledgerRows.length > 0) return false;
+        }
+        return true;
+      })();
+      checks.set(key, check);
+    }
+    if (await check) abandoned.add(row.id);
+  }));
+  return abandoned;
+}
+
+export async function buildTestEvidenceRemeasure(remeasure: Remeasure,
+  scope: Pick<Scope, 'harnessSlug'> & Partial<Pick<Scope, 'workspaceId' | 'root'>>,
+  deps: Pick<Deps, 'list'> & Partial<Pick<Deps, 'ledger' | 'runStatus' | 'now'>> = defaults) {
   const rows = await deps.list({ harnessSlug: scope.harnessSlug,
     planSlugs: [remeasure.planSlug ?? ADHOC_WORK_ITEM_SPEC_SCOPE], workItemIds: [remeasure.workItemId],
     ...(remeasure.specIds ? { specIds: remeasure.specIds } : {}), evidenceKinds: [...REMEASURE_EVIDENCE_KINDS], limit: 500 });
-  const plan = planTestEvidenceRemeasure(rows);
+  const abandoned = await abandonedPendingBindingIds(rows, scope, deps);
+  const plan = planTestEvidenceRemeasure(rows, abandoned);
   const request = plan.selected.length === 0 ? null : testEvidenceSchema.parse({
     workItemId: remeasure.workItemId, ...(remeasure.planSlug ? { planSlug: remeasure.planSlug } : {}),
     bindings: plan.selected.map((entry) => entry.binding) });
   return { request, files: [...new Set(plan.selected.map((entry) => entry.testPath))], plan,
-    summary: { examined: rows.length, selected: plan.selected.length, skipped: plan.skipped.length } };
+    abandonedPendingBindingIds: [...abandoned].sort((a, b) => a - b),
+    summary: { examined: rows.length, selected: plan.selected.length, skipped: plan.skipped.length,
+      abandonedPending: abandoned.size } };
 }
 
 /**
@@ -835,6 +924,28 @@ async function awaitRecoveryLedgerRows(prepared: Prepared[], originRunId: string
   }
 }
 
+/** `null` means at least one exact scoped read was unavailable; unreadable is not empty. */
+async function recoveryLedgerPresence(prepared: readonly Prepared[], originRunId: string, runId: string,
+  scope: Scope, deps: Deps): Promise<boolean | null> {
+  const runGroups = [...new Set([runId, originRunId])];
+  let unavailable = false;
+  for (const row of prepared) {
+    for (const runGroupId of runGroups) {
+      let ledger: HarnessTestRunEvidence[] | null;
+      try {
+        ledger = await deps.ledger({ workspaceId: scope.workspaceId, harnessSlug: scope.harnessSlug,
+          runGroupId, filePaths: [row.binding.testPath] });
+      } catch {
+        unavailable = true;
+        continue;
+      }
+      if (ledger === null) unavailable = true;
+      else if (ledger.length > 0) return true;
+    }
+  }
+  return unavailable ? null : false;
+}
+
 /** Rehydrate exact persisted mappings; no transcript or user-retyped fingerprints. */
 export async function recoverTestEvidence(recovery: Recovery, scope: Scope, deps: Deps = defaults) {
   // Audit withdrawn mappings to recover a reporter result that arrived after a
@@ -885,7 +996,7 @@ export async function recoverTestEvidence(recovery: Recovery, scope: Scope, deps
       evidenceKind: row.evidenceKind, evidenceRef: row.evidenceRef,
       testRunId: row.testRunId, coverageEvidenceRef: row.coverageEvidenceRef, details: row.details,
       sourceFingerprint: row.fingerprints.sourceFingerprint, testFingerprint: row.fingerprints.testFingerprint,
-    } });
+    }, observedAt: row.observedAt });
   }
   if (prepared.length === 0) throw new Error('evidence_recovery_not_found');
   if (recoveredRunIds.size !== 1) throw new Error('evidence_recovery_ambiguous_run_id');
@@ -902,6 +1013,48 @@ export async function recoverTestEvidence(recovery: Recovery, scope: Scope, deps
       Math.max(0, waitLimitMs - waitedMs), deps)
     : 0;
   const totalWaitedMs = waitedMs + ledgerWaitedMs;
+  const now = deps.now ?? defaults.now!;
+  const allPastAbandonmentGrace = prepared.every(row => {
+    const ageMs = pendingEvidenceAgeMs(row.observedAt, now());
+    return ageMs !== null && ageMs >= PENDING_TEST_EVIDENCE_ABANDONMENT_GRACE_MS;
+  });
+  const allPreparedAttemptsPending = prepared.every(row => {
+    const execution = row.input.details?.testExecution as { phase?: string } | undefined;
+    return execution?.phase === 'pending' && row.input.testRunId == null;
+  });
+  if (runSnapshot === null && !runStatusError && allPreparedAttemptsPending && allPastAbandonmentGrace
+    && await recoveryLedgerPresence(prepared, recovery.originRunId, recoveredRunId, scope, deps) === false) {
+    const retirements = await Promise.all(prepared.map(row => retirePendingAttemptBindings(row,
+      recovery.originRunId, recoveredRunId, scope,
+      `Detached test run ${recoveredRunId} has no live snapshot or scoped file ledger after the ` +
+        `${Math.round(PENDING_TEST_EVIDENCE_ABANDONMENT_GRACE_MS / 1000)}s pending grace; this attempt is abandoned and must be rerun.`, deps)));
+    const retiredIds = [...new Set(retirements.flatMap(retirement => retirement.bindingIds))].sort((a, b) => a - b);
+    const failures = retirements.flatMap(retirement => retirement.failures);
+    return {
+      status: failures.length === 0 ? 'abandoned' as const : 'incomplete' as const,
+      acceptance: 'requires-review' as const,
+      rows: prepared.slice(0, 6).map(row => ({ specId: row.input.specId,
+        specRevision: row.input.specRevision, evidenceRef: row.input.evidenceRef,
+        testRunId: null, ledgerRunGroupId: null, phase: 'abandoned' as const, outcome: 'unknown' as const,
+        bindingStatus: failures.length === 0 ? 'abandoned' as const : 'retirement-incomplete' as const })),
+      total: prepared.length, omitted: Math.max(0, prepared.length - 6),
+      readRef: { tool: 'plans:get-spec-evidence', args: { harness: scope.harnessSlug,
+        slug: recovery.planSlug ?? ADHOC_WORK_ITEM_SPEC_SCOPE, workItemIds: [recovery.workItemId],
+        evidenceRefs: prepared.map(row => row.input.evidenceRef) } },
+      pendingRetirement: { status: failures.length === 0 ? 'complete' as const : 'partial' as const,
+        retiredCount: retiredIds.length, bindingIds: retiredIds.slice(0, 20),
+        omitted: Math.max(0, retiredIds.length - 20), failures: failures.slice(0, 20),
+        failuresOmitted: Math.max(0, failures.length - 20) },
+      recovery: { tool: 'testing:run', args: { harness: scope.harnessSlug, recoverEvidence: {
+        workItemId: recovery.workItemId, planSlug: recovery.planSlug,
+        originRunId: recovery.originRunId, runId: recovery.runId,
+      } } },
+      recoveryWait: { limitMs: waitLimitMs, waitedMs: totalWaitedMs, ledgerWaitedMs: 0,
+        outcome: 'abandoned' as const,
+        nextStep: 'The pending attempt was retired. Re-run testing:run { remeasureEvidence } to create fresh evidence.' },
+      detachedRunStatus: { status: 'not-found' as const },
+    };
+  }
   const bundle = await finishTestEvidence(prepared, recovery.originRunId, recoveredRunId, scope, undefined, deps, terminalRun);
   const stillRunning = runSnapshot !== null && !terminalRun;
   return { ...bundle,

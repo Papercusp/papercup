@@ -405,7 +405,7 @@ describe('rubrics:get handler (bulk keyed-array)', () => {
       rubricRef: 'r-1',
       error:
         'rubric revision 3 exists, but its immutable snapshot could not be projected. ' +
-        'If this is a first-party exact-current-body legacy chain, preview rubrics:repair with dryRun:true.',
+        'Preview rubrics:repair { rubricRef, rubricRevision: 3, dryRun:true } for a missing current first-party version; omit rubricRevision to inspect an exact-current-body legacy chain.',
     });
   });
 

@@ -14,6 +14,7 @@ import { shadowMonthBounds } from '../../../cupboard/shadow-metering-reader';
 import { addMicrosDecimals, splitMicrosDecimal } from '../../../cupboard/money-journal';
 import { evaluateHostedBudget, settleHostedReservation, type HostedBudgetDecision, type HostedBudgetPolicy } from './budget-policy';
 import { HOSTED_COST_SOURCE_RANK, type HostedCostSource } from './usage-statement';
+import { evaluateHostedPrepaidFunding, type HostedPrepaidAllocation, type HostedPrepaidFundingInput } from './budget-funding';
 
 export interface HostedBudgetScope {
   readonly controlWorkspaceId: string;
@@ -54,6 +55,23 @@ export interface HostedBudgetContext {
  * funding and policy rows through THIS sql transaction. Browser values, cached
  * balances and forecasts are not this authority. No installed reader = refusal. */
 export type HostedBudgetContextReader = (sql: Sql, request: HostedBudgetRequest) => Promise<HostedBudgetContext | null>;
+
+export interface HostedPrepaidPool {
+  readonly controlWorkspaceId: string;
+  readonly stripeAccountId: string;
+}
+export interface HostedPrepaidAllocationRequest {
+  readonly scope: HostedBudgetScope;
+  readonly stripeAccountId: string;
+  readonly allocation: HostedPrepaidAllocation;
+  readonly month: string;
+  readonly asOfMs: number;
+}
+/** Authenticated server composition only. Called AFTER the global pool lock;
+ * all journal, cash, source and prior-charge reads use the supplied transaction.
+ * A caller-supplied allocation list cannot replace the durable population. */
+export type HostedPrepaidFundingReader = (sql: Sql, request: HostedPrepaidAllocationRequest) =>
+  Promise<Omit<HostedPrepaidFundingInput, 'allocations'> | null>;
 
 export interface HostedBudgetObservation {
   readonly scope: HostedBudgetScope;
@@ -158,12 +176,104 @@ async function insert(sql: Sql, r: Receipt): Promise<void> {
       ${r.providerFinal}, ${r.evidenceRef})`;
 }
 
+/** Lock the entire Stripe account, including an EMPTY allocation population.
+ * The database writer guard uses the same key. The account lock deliberately
+ * omits organization/workspace/key/control: none may hide a competing partition.
+ * Call this BEFORE collecting external evidence in a reservation context reader.
+ * The lock remains held until that SAME reservation transaction commits. */
+export async function readLockedHostedPrepaidAllocations(sql: Sql, pool: HostedPrepaidPool): Promise<readonly HostedPrepaidAllocation[]> {
+  if (!identifier(pool.controlWorkspaceId) || !/^acct_[A-Za-z0-9]+$/.test(pool.stripeAccountId)) throw new Error('invalid prepaid pool');
+  pool = Object.freeze({ controlWorkspaceId: pool.controlWorkspaceId, stripeAccountId: pool.stripeAccountId });
+  await sql`SELECT pg_advisory_xact_lock(hashtextextended(
+    json_build_array('hosted-prepaid', ${pool.stripeAccountId}::text)::text, 0))`;
+  const rows = await sql<Row[]>`SELECT * FROM papercusp_auth.hosted_prepaid_allocations
+    WHERE stripe_account_id = ${pool.stripeAccountId} ORDER BY allocation_id`;
+  if (rows.some(r => r.control_workspace_id !== pool.controlWorkspaceId)) throw new Error('prepaid pool control mismatch');
+  return Object.freeze(rows.map(r => {
+    const value = splitMicrosDecimal(String(r.micros));
+    return Object.freeze({ allocationId: r.allocation_id as string, paymentTransactionId: r.payment_transaction_id as string,
+      organizationId: r.organization_id as string, customerWorkspaceId: r.customer_workspace_id as string | null,
+      budgetKey: r.budget_key as string, micros: value.micros,
+      ...(value.exact.includes('.') ? { microsExact: value.exact } : {}) });
+  }));
+}
+
+/** Keep other organizations' unrelated payments out of the customer projection,
+ * but retain EVERY partition of a selected payment. Reusing that payment under
+ * a second organization therefore fails the existing scope validator. */
+function fundingAllocations(input: Omit<HostedPrepaidFundingInput, 'allocations'>, population: readonly HostedPrepaidAllocation[]) {
+  const payments = new Set(input.payments.map(p => p.receipt.transaction.id));
+  return population.filter(a => a.organizationId === input.scope.organizationId || payments.has(a.paymentTransactionId));
+}
+
+export async function evaluateLockedHostedPrepaidFunding(sql: Sql, input: Omit<HostedPrepaidFundingInput, 'allocations'>) {
+  input = structuredClone(input);
+  const population = await readLockedHostedPrepaidAllocations(sql, { controlWorkspaceId: input.scope.controlWorkspaceId,
+    stripeAccountId: input.snapshot.stripeAccountId });
+  return evaluateHostedPrepaidFunding({ ...input, allocations: fundingAllocations(input, population) });
+}
+
+const allocationHash = (pool: HostedPrepaidPool, a: HostedPrepaidAllocation) => digest([pool.controlWorkspaceId,
+  pool.stripeAccountId, a.allocationId, a.paymentTransactionId, a.organizationId, a.customerWorkspaceId,
+  a.budgetKey, exactCounter(a.micros, a.microsExact)]);
+
 export class PostgresHostedBudgetStore {
   private readonly run: HostedServiceContextRunner;
   private readonly readContext: HostedBudgetContextReader;
-  constructor(options: { run?: HostedServiceContextRunner; readContext?: HostedBudgetContextReader } = {}) {
+  private readonly readPrepaidFunding: HostedPrepaidFundingReader;
+  constructor(options: { run?: HostedServiceContextRunner; readContext?: HostedBudgetContextReader;
+    readPrepaidFunding?: HostedPrepaidFundingReader } = {}) {
     this.run = options.run ?? withHostedServiceContext;
     this.readContext = options.readContext ?? (async () => null);
+    this.readPrepaidFunding = options.readPrepaidFunding ?? (async () => null);
+  }
+
+  /** Persist one immutable prepaid partition after fresh server verification.
+   * This never creates cash, dispatches work, expires funding or reallocates an
+   * existing grant. The same account lock is used by reservation context reads.
+   * No production funding reader is installed by this module. */
+  async allocatePrepaid(input: HostedPrepaidAllocationRequest) {
+    if (!input || Object.keys(input).some(k => !['scope', 'stripeAccountId', 'allocation', 'month', 'asOfMs'].includes(k))
+        || !/^acct_[A-Za-z0-9]+$/.test(input.stripeAccountId) || !safe(input.asOfMs)) throw new Error('invalid prepaid allocation request');
+    const a = input.allocation;
+    const s = scope(input.scope);
+    if (!a || Object.keys(a).some(k => !['allocationId', 'paymentTransactionId', 'organizationId', 'customerWorkspaceId', 'budgetKey', 'micros', 'microsExact'].includes(k))
+        || !identifier(a.allocationId) || !identifier(a.paymentTransactionId) || !identifier(a.budgetKey)
+        || a.organizationId !== s.organizationId || (a.customerWorkspaceId !== null && a.customerWorkspaceId !== s.customerWorkspaceId)) {
+      throw new Error('prepaid allocation scope mismatch');
+    }
+    exactCounter(a.micros, a.microsExact);
+    input = Object.freeze({ ...input, scope: s, allocation: Object.freeze({ ...a }) });
+    const { startMs } = shadowMonthBounds(input.month);
+    const pool = { controlWorkspaceId: s.controlWorkspaceId, stripeAccountId: input.stripeAccountId };
+    const hash = allocationHash(pool, input.allocation);
+    return this.run(async sql => {
+      // All store operations take the organization lock before a pool lock;
+      // the pool reader never locks another organization's mutable row.
+      await lock(sql, s);
+      const population = await readLockedHostedPrepaidAllocations(sql, pool);
+      const previous = population.find(p => p.allocationId === input.allocation.allocationId);
+      if (previous) {
+        const matches = allocationHash(pool, previous) === hash;
+        return { outcome: matches ? 'duplicate' as const : 'conflict' as const, allocation: matches ? previous : null };
+      }
+      const received = await this.readPrepaidFunding(sql, input);
+      if (!received) return { outcome: 'refused' as const, reason: 'unconfigured-funding', allocation: null };
+      if (!sameScope(scope(received.scope), s) || received.budgetKey !== input.allocation.budgetKey
+          || received.windowStartMs !== startMs || received.asOfMs !== input.asOfMs
+          || received.snapshot.stripeAccountId !== pool.stripeAccountId) throw new Error('prepaid funding authority mismatch');
+      const funding = evaluateHostedPrepaidFunding({ ...received,
+        allocations: [...fundingAllocations(received, population), input.allocation] });
+      if (!funding.ok) return { outcome: 'refused' as const, reason: funding.reason, allocation: null };
+      await sql`INSERT INTO papercusp_auth.hosted_prepaid_allocations
+        (control_workspace_id, stripe_account_id, allocation_id, payment_transaction_id, organization_id,
+         binding_customer_workspace_id, customer_workspace_id, budget_key, micros, allocation_hash, observed_at_ms, evidence_ref)
+        VALUES (${s.controlWorkspaceId}, ${pool.stripeAccountId}, ${input.allocation.allocationId},
+          ${input.allocation.paymentTransactionId}, ${s.organizationId}, ${s.customerWorkspaceId}, ${input.allocation.customerWorkspaceId},
+          ${input.allocation.budgetKey}, ${exactCounter(input.allocation.micros, input.allocation.microsExact)},
+          ${hash}, ${input.asOfMs}, ${funding.evidenceRef})`;
+      return { outcome: 'allocated' as const, allocation: input.allocation, funding };
+    });
   }
 
   /** Commit the full exposure BEFORE invoking a provider, at most once.

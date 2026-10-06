@@ -18711,7 +18711,7 @@
           "POST"
         ]
       },
-      "description": "Reply to one email the owner already has, named by its canonical messageId and optional sourceId. You supply no addressee: the server resolves recipient, thread, subject, reply headers, and the exact connected account from the stored message. Drafts by default; mode:\"send\" sends.",
+      "description": "Reply to one email the owner already has: its canonical messageId (+ optional sourceId), or the planRunId of a plan run that email triggered. You supply no addressee: the server resolves recipient, thread, subject, reply headers, and the exact connected account from the stored message. Drafts by default; mode:\"send\" sends.",
       "capabilities": [
         "operator:write"
       ],
@@ -18731,9 +18731,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "The owner asks you to answer a specific email. Locate it with personal:search { scopes:[\"personal:gmail\"] } and pass both externalId as messageId and sourceId when returned.",
+        "when": "The owner asks you to answer a specific email — locate it with personal:search { scopes:[\"personal:gmail\"] }, pass externalId as messageId and sourceId. Or an email-triggered plan step asks you to answer it — pass payload.plan_run.runId as planRunId.",
         "notWhen": "Writing to a NEW recipient or starting a fresh thread — that is mail:send, which checks the addressee. Not for Slack (chat:reply). You cannot choose who this reaches.",
-        "chaining": "personal:search → { externalId, sourceId } → mail:reply. Report the echoed to/subject/threadId back to the owner as evidence of where it actually went."
+        "chaining": "personal:search → { externalId, sourceId } → mail:reply. Report the echoed to/subject/threadId back to the owner as evidence of where it actually went. With planRunId a run replies once; a retry returns alreadyCreated:true."
       }
     },
     {
@@ -29091,7 +29091,7 @@
           "POST"
         ]
       },
-      "description": "Repair a first-party rubric revision chain whose legacy markdown-only snapshots are provably the exact current body. Requires the live rubric data to match the bundled first-party source and every revision to have the current body hash; rewrites only content_snapshot, preserving ids, seq, hashes, authorship, sessions, and timestamps. Dry-run by default; pass dryRun:false to apply an atomic CAS-guarded repair.",
+      "description": "Repair first-party rubric revision snapshots. Without rubricRevision, only repairs a complete chain whose every row is the exact current body, preserving each row identity and provenance. With rubricRevision, appends one explicit snapshot only when that value equals the current plan version and the structured rubric still matches its bundled first-party source; it never reconstructs older history from current data. Dry-run by default; pass dryRun:false to apply the CAS-guarded repair.",
       "capabilities": [
         "plans:write"
       ],
@@ -29152,9 +29152,9 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "rubrics:get reports an existing immutable first-party revision cannot be projected and the complete chain is known to be unchanged since the current body was written.",
-        "notWhen": "A revision differs from the current body, the rubric is locally edited, the source is unavailable, or the rubric is acceptance/delegated-class history. Those cases must remain fail-closed.",
-        "chaining": "rubrics:repair { rubricRef, dryRun:true } → inspect the candidate counts → rubrics:repair { rubricRef, dryRun:false } → rubrics:get { rubricRef, revision }."
+        "when": "rubrics:get reports an immutable first-party revision cannot be projected. For a missing current version, pass rubricRevision; for a whole legacy chain repair, omit it and require every revision to be the exact current body.",
+        "notWhen": "The requested rubricRevision is not the live plan version, the current structured rubric differs from the bundled source, a snapshot already claims that version inconsistently, or the rubric is acceptance/delegated-class history. Those cases remain fail-closed.",
+        "chaining": "Current-version path: rubrics:repair { rubricRef, rubricRevision, dryRun:true } → inspect the candidate → snapshot_create if a persistent backfill will be applied → rubrics:repair { rubricRef, rubricRevision, dryRun:false } → rubrics:get { rubricRef, revision: rubricRevision }. Legacy whole-chain path: omit rubricRevision and apply only when the complete history is exact-current-body."
       }
     },
     {
@@ -32894,7 +32894,7 @@
       "guidance": {
         "when": "An external-trigger plan item tells you to read the triggering message. Pass payload.plan_run.runId as planRunId; the message is not embedded in the plan inputs.",
         "notWhen": "A run that did not originate from an external trigger, or to browse other runs — this returns only the event for the planRunId you name, inside your own workspace.",
-        "chaining": "triggers:read-payload → compose the response → gmail:create-draft / slack:respond-in-thread with the SAME planRunId."
+        "chaining": "triggers:read-payload → compose the response → mail:reply / slack:respond-in-thread with the SAME planRunId."
       }
     },
     {

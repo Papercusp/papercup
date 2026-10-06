@@ -559,9 +559,9 @@ const CLOSE_INTENT_STATES = new Set([...TERMINAL_WORK_ITEM_STATES, 'done', 'comp
 const COMPLETE_CLOSE_SHAPE_MESSAGE =
   'to CLOSE a work-item, pass { id, state, assumptions: "none"|[fact keys], completion: { summary } } ' +
   '(or items:[{ id, state, assumptions: "none"|[fact keys], completion: { summary } }] for many) — ' +
-  '`state` is the terminal lifecycle (feature/chunk: "passed"|"deprecated"; issue: "resolved"|"closed"; ' +
-  'the unified aliases "done"|"dropped" are also accepted and preserve success vs discard semantics) ' +
-  'and is REQUIRED to actually close it: a completion with no `state` only records the note, ' +
+  '`state` expresses terminal intent: feature/chunk success is "passed" and discard is "deprecated"; ' +
+  'issue success is "resolved" and discard is "closed". Unified "done" (success) and "dropped" ' +
+  '(discard) are also accepted; legacy issue "closed" maps to "dropped". `state` is REQUIRED to actually close it: a completion with no `state` only records the note, ' +
   'the item stays claimable. `assumptions` is also REQUIRED; pass "none" when no recorded fact ' +
   'supports the close (see work_items:set_state to change state alone, without a completion record).';
 
@@ -4887,7 +4887,7 @@ async function completeOne(
   const claimabilityHint = planGateParked
     ? `it is durably parked out of scheduler:get_next until the linked plan-item gate is cleared`
     : nonTerminalHint;
-  const terminalVocab = `(feature: 'passed'|'deprecated'; issue: 'resolved'|'closed')`;
+  const terminalVocab = `(feature/chunk success: 'passed', discard: 'deprecated'; issue success: 'resolved'/'done', discard: 'closed'/'dropped')`;
   //
   // EI-19362441037986499: the terminal arm of that first condition is what made the
   // record-only-on-a-closed-item discard SILENT — "the item is closed" was read as "there is
@@ -4899,9 +4899,9 @@ async function completeOne(
     (!finalState || TERMINAL_WORK_ITEM_STATES.has(finalState)
       ? undefined
       : stateError
-        ? `recorded a completion for ${it.id} but it is NOT closed — still '${workItem?.state ?? existing.state}', ${claimabilityHint}. Your state '${effectiveState}' was REJECTED by the state write: ${stateError}. Re-sending the same state will fail the same way — fix the cause, or pass a valid TERMINAL state ${terminalVocab}.`
+        ? `recorded a completion for ${it.id} but it is NOT closed — still '${workItem?.state ?? existing.state}', ${claimabilityHint}. Your state '${effectiveState}' was REJECTED by the state write: ${stateError}. Re-sending the same state will fail the same way — fix the cause, or choose a terminal state by intent ${terminalVocab}.`
         : effectiveState
-          ? `recorded a completion for ${it.id} but it is NOT closed — still '${workItem?.state ?? existing.state}', ${nonTerminalHint}. Your state '${requestedState ?? effectiveState}' WAS received and applied as '${appliedState ?? workItem?.state ?? existing.state}', which is NOT terminal${aliasNote ? ` (${aliasNote})` : ''}. Do NOT re-send the same value — pass a TERMINAL state ${terminalVocab}.`
+          ? `recorded a completion for ${it.id} but it is NOT closed — still '${workItem?.state ?? existing.state}', ${nonTerminalHint}. Your state '${requestedState ?? effectiveState}' WAS received and applied as '${appliedState ?? workItem?.state ?? existing.state}', which is NOT terminal${aliasNote ? ` (${aliasNote})` : ''}. Do NOT re-send the same value — choose a terminal state by intent ${terminalVocab}.`
           : `recorded a completion for ${it.id} but it is NOT closed — still '${workItem?.state ?? existing.state}', ${nonTerminalHint}. No top-level \`state\` was passed. Pass top-level \`state\` ${terminalVocab} to close it.`);
 
   // flush-to-proceed-stretch-discipline-2026-07-04 P-006: verification linting. A settled
@@ -5314,8 +5314,8 @@ async function completeOne(
     : stateError
       ? `COMPLETION RECORDED, BUT ${it.id} DID NOT CLOSE — it is still '${landedState}' and ${claimabilityHint}. The state write failed: ${stateError}`
       : ambiguousOmittedState
-        ? `COMPLETION RECORDED, BUT ${it.id} DID NOT CLOSE — no top-level state was passed and recordOnly:true was not requested; the item is still '${landedState}'. Re-call the SAME completion with a terminal state (issue: 'resolved'|'closed'; feature: 'passed'|'deprecated'), or pass recordOnly:true for a deliberate progress record.`
-      : `COMPLETION RECORDED, BUT ${it.id} DID NOT CLOSE — you requested state '${requestedState ?? effectiveState}' and it applied as '${appliedState ?? landedState}'${aliasNote ? ` (${aliasNote})` : ''}, which is NOT terminal, so the item stays claimable and the auto-loop may re-place work on it. Pass a TERMINAL state (issue: 'resolved'|'closed'; feature: 'passed'|'deprecated').`;
+        ? `COMPLETION RECORDED, BUT ${it.id} DID NOT CLOSE — no top-level state was passed and recordOnly:true was not requested; the item is still '${landedState}'. Re-call the SAME completion with a terminal state by intent (issue success: 'resolved'/'done', discard: 'closed'/'dropped'; feature/chunk success: 'passed', discard: 'deprecated'), or pass recordOnly:true for a deliberate progress record.`
+      : `COMPLETION RECORDED, BUT ${it.id} DID NOT CLOSE — you requested state '${requestedState ?? effectiveState}' and it applied as '${appliedState ?? landedState}'${aliasNote ? ` (${aliasNote})` : ''}, which is NOT terminal, so the item stays claimable and the auto-loop may re-place work on it. Choose a terminal state by intent (issue success: 'resolved'/'done', discard: 'closed'/'dropped'; feature/chunk success: 'passed', discard: 'deprecated').`;
 
   const finish = closeLanded
     ? await synchronizeFinishWork({
@@ -5550,7 +5550,7 @@ const workItemsCompleteTool = defineTool({
   name: 'work_items:complete',
   profile: 'engineer',
   description:
-    'Complete work-items with evidence. For terminal closes use `passed`/`deprecated` (feature/chunk) or `resolved`/`closed` (issue); `done`/`dropped` aliases are accepted. `closed`/`deprecated` discard work. Pass terminal `state` plus `assumptions` (`"none"` or fact keys); deliberate record-only calls pass `recordOnly:true`.',
+    'Complete work-items with evidence. For terminal closes use `passed`/`deprecated` (feature/chunk) or `resolved`/`closed` (issue); `done`/`dropped` aliases are accepted. `closed`/`deprecated` discard work. For issue work, `resolved`/`done` means success and `closed`/`dropped` means discard or wontfix. Pass terminal `state` plus `assumptions` (`"none"` or fact keys); deliberate record-only calls pass `recordOnly:true`.',
   guidance: {
     returns: 'Check `finish.complete`/`stateWarning`.',
     when: 'Pass `completion`, terminal `state`, required `assumptions`. Use discard states only for discard/wontfix. `specAdequacy`/`outputPayload` are top-level siblings of `completion` (auto-hoisted); read `results[].workItem.payload.out` from `work_items:get` (`payloadTier:"full"`). Universal claims require `completion.verification.coverage`: partition each entry exactly once across checked/notChecked/notApplicable; residue is separate (`[]` or `["none"]` means zero). Keep deferred/coordNotes at completion level, not inside verification. Put `testsRun`, `testResult`, `verifiedHow`, and `filesChanged` at the root of `completion`; the single-item call also accepts those fields at the argument root as legacy aliases. Keep `verification.tests`, `verification.typecheck`, `verification.diff` out of `completion.verification`. Removals: `filesDeleted`; dupes: `completion.duplicateOf`.',

@@ -134,6 +134,12 @@ const foldsToBlocked = (s: string): boolean => {
 };
 const BLOCKED_INPUT_STATES = NON_TERMINAL_INPUT_STATES.filter(foldsToBlocked);
 const PROGRESS_INPUT_STATES = NON_TERMINAL_INPUT_STATES.filter((s) => !foldsToBlocked(s));
+const BLOCKED_STATE_SCHEMA_GUIDANCE =
+  'Use only after an active typed blocker exists: call work_items:set_blocker for an external blocker or work_items:link { rel:"blocks" } for a work-item dependency. Plan-linked feature items use plans:set-status.';
+const blockedStateSchema = () =>
+  z
+    .preprocess(foldStateCase, z.enum(asEnumValues(BLOCKED_INPUT_STATES)))
+    .describe(BLOCKED_STATE_SCHEMA_GUIDANCE);
 
 /**
  * EI-24917736184136483: a `reason` / `note` on an open / wip / needs-human write is
@@ -263,7 +269,7 @@ const progressItem = itemBase.extend({
 }).superRefine((it, ctx) => rejectCompletionRefAliasConflict(it, ctx));
 
 const blockedItem = itemBase.extend({
-  state: z.preprocess(foldStateCase, z.enum(asEnumValues(BLOCKED_INPUT_STATES))),
+  state: blockedStateSchema(),
 });
 
 const itemSpec = z.union([terminalItem, progressItem, blockedItem], { error: aliasAwareUnionError });
@@ -333,7 +339,7 @@ const progressInlineShape = {
 };
 
 const blockedInlineShape = {
-  state: z.preprocess(foldStateCase, z.enum(asEnumValues(BLOCKED_INPUT_STATES))),
+  state: blockedStateSchema(),
   ...nonTerminalInlineCommon,
 };
 

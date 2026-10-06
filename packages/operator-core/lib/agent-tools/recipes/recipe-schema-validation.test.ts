@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { ProjectedTool } from '@papercusp/tooldef';
 import { validateRecipeScriptAgainstCatalog } from './recipe-schema-validation';
 import orientTool from '../coordination/tools/orient';
+import workItemsGetTool from '../work_items/get';
 import '../pre-prompt-registry-config';
 
 const tool = (
@@ -133,6 +134,34 @@ describe('validateRecipeScriptAgainstCatalog', () => {
     );
 
     expect(result).toEqual({ ok: true, issues: [], staticToolNames: ['release:trace'] });
+  });
+
+  it('does not treat intrinsic Array members as tool-result schema fields', async () => {
+    const workItemsGet = tool(
+      'work_items:get',
+      z.toJSONSchema(workItemsGetTool.args),
+      z.toJSONSchema(workItemsGetTool.result!),
+    );
+    const script =
+      'const item = await tools.workItems.get({ id: "WI-1" });\n' +
+      'return item.results?.map((row) => row.id);';
+
+    const accepted = await validateRecipeScriptAgainstCatalog(script, [workItemsGet]);
+    expect(accepted).toEqual({ ok: true, issues: [], staticToolNames: ['work_items:get'] });
+
+    const misspelled = await validateRecipeScriptAgainstCatalog(
+      script.replace('results?.map', 'results?.mapp'),
+      [workItemsGet],
+    );
+    expect(misspelled.ok).toBe(false);
+    expect(misspelled.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        tool: 'work_items:get',
+        path: 'result.results.mapp',
+        kind: 'output-field',
+        message: expect.stringContaining('not declared in the current output schema'),
+      }),
+    ]));
   });
 
   it('accepts optional result reads protected by short-circuit guards and fallbacks', async () => {

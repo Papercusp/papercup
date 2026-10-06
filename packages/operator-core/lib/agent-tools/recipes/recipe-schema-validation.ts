@@ -62,6 +62,53 @@ type JsonSchema = {
   minItems?: number;
 };
 
+// `checkScript` records property access chains from tool results. When the
+// result is an array, that chain can end in a built-in Array property/method
+// (for example `result.rows.map`), which is valid JavaScript but is not a JSON
+// schema field. Keep this set explicit so an unknown member such as `rows.mapp`
+// still fails closed.
+const ARRAY_MEMBERS = new Set([
+  'length',
+  'at',
+  'concat',
+  'copyWithin',
+  'entries',
+  'every',
+  'fill',
+  'filter',
+  'find',
+  'findIndex',
+  'findLast',
+  'findLastIndex',
+  'flat',
+  'flatMap',
+  'forEach',
+  'includes',
+  'indexOf',
+  'join',
+  'keys',
+  'lastIndexOf',
+  'map',
+  'pop',
+  'push',
+  'reduce',
+  'reduceRight',
+  'reverse',
+  'shift',
+  'slice',
+  'some',
+  'sort',
+  'splice',
+  'toLocaleString',
+  'toReversed',
+  'toSorted',
+  'toSpliced',
+  'toString',
+  'unshift',
+  'values',
+  'with',
+]);
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value);
 
@@ -162,6 +209,9 @@ function outputPathFailure(
 
   let child: JsonSchema | undefined;
   if (schema.type === 'array') {
+    // Validate the array path itself, but do not mistake an intrinsic Array
+    // member for a field the tool must declare in its JSON output schema.
+    if (offset === path.length - 1 && ARRAY_MEMBERS.has(segment)) return null;
     const index = Number(segment);
     if (!Number.isInteger(index) || index < 0 || !schema.items) {
       return { reason: 'missing', path: path.slice(0, offset + 1) };

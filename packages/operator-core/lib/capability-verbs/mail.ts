@@ -304,6 +304,110 @@ export async function replyToCanonicalMail(
   };
 }
 
+export interface MailRunReplyResult extends MailReplyResult {
+  planRunId: number;
+  /** True only when THIS call produced the reply. */
+  created: boolean;
+  /** The run already replied; the stored result is returned and nothing is re-sent. */
+  alreadyCreated: boolean;
+}
+
+interface TriggerRunReplyRow {
+  id: string;
+  args: unknown;
+  outcome: unknown;
+}
+
+function recordOf(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+/**
+ * `mail:reply { planRunId }` — reply to the message that LAUNCHED a triggered
+ * plan run (plan generalized-integrations-…-2026-10-05 D-019.1).
+ *
+ * The run anchors the target: the message coordinates come from the run's
+ * stored trigger envelope (`trigger_runs.args.trigger.{externalId, sourceId}`),
+ * never from the caller, so a triggered plan can only answer the message that
+ * started it. Everything after that is `replyToCanonicalMail`, rails included.
+ * The result is recorded on the trigger run under `outcome.mailReply`, so a
+ * retried step returns the first reply instead of drafting or sending twice.
+ */
+export async function replyToTriggerPlanRun(
+  sql: postgres.Sql | postgres.TransactionSql,
+  params: {
+    workspaceId: string;
+    userId: string;
+    planRunId: number;
+    text: string;
+    mode?: 'draft' | 'send';
+    agentOwnerId: string | null;
+  },
+  deps: MailDeps & { now?: () => Date } = {},
+): Promise<MailRunReplyResult> {
+  const planRunId = params.planRunId;
+  if (!Number.isSafeInteger(planRunId) || planRunId <= 0) throw new Error('mail_reply_plan_run_id_invalid');
+  const replyInTransaction = async (tx: postgres.TransactionSql | postgres.Sql): Promise<MailRunReplyResult> => {
+    const rows = await tx<TriggerRunReplyRow[]>`
+      SELECT tr.id::text, tr.args, tr.outcome
+        FROM harness_shared.trigger_runs tr
+       WHERE tr.workspace_id = ${params.workspaceId}
+         AND tr.plan_run_ref = ${String(planRunId)}
+         AND tr.status = 'succeeded'
+       ORDER BY tr.completed_at DESC NULLS LAST, tr.id
+       LIMIT 1
+       FOR UPDATE OF tr`;
+    const row = rows[0];
+    if (!row) throw new Error(`mail_reply_trigger_run_not_found:${planRunId}`);
+    const outcome = recordOf(row.outcome);
+    const prior = recordOf(outcome.mailReply);
+    if (string(prior.to)) {
+      const priorMode = prior.mode === 'send' ? 'send' : 'draft';
+      return {
+        planRunId,
+        created: false,
+        alreadyCreated: true,
+        mode: priorMode,
+        to: string(prior.to),
+        subject: string(prior.subject),
+        threadId: string(prior.threadId),
+        messageId: string(prior.messageId),
+        ...(string(prior.draftId) ? { draftId: string(prior.draftId) } : {}),
+      };
+    }
+    const trigger = recordOf(recordOf(row.args).trigger);
+    const datatype = string(trigger.datatypeId);
+    if (datatype !== 'email-message') {
+      throw new Error(`mail_reply_run_not_email:${datatype || 'unknown'} — this run was not started by an email`);
+    }
+    const messageId = string(trigger.externalId);
+    if (!messageId) throw new Error('mail_reply_trigger_coordinates_missing');
+    const reply = await replyToCanonicalMail(
+      tx as unknown as postgres.Sql,
+      {
+        workspaceId: params.workspaceId,
+        userId: params.userId,
+        messageId,
+        sourceId: string(trigger.sourceId) || null,
+        text: params.text,
+        mode: params.mode,
+        agentOwnerId: params.agentOwnerId,
+      },
+      deps,
+    );
+    const repliedAt = (deps.now ?? (() => new Date()))().toISOString();
+    await tx`
+      UPDATE harness_shared.trigger_runs
+         SET outcome = ${JSON.stringify({ ...outcome, mailReply: { ...reply, repliedAt } })}::text::jsonb,
+             updated_at = now()
+       WHERE workspace_id = ${params.workspaceId} AND id = ${row.id}::uuid`;
+    return { planRunId, created: true, alreadyCreated: false, ...reply };
+  };
+  return 'begin' in sql
+    ? (sql as postgres.Sql).begin((tx) => replyInTransaction(tx)) as Promise<MailRunReplyResult>
+    : replyInTransaction(sql);
+}
+
 /**
  * `mail:send` — create-shaped, so the addressee IS caller-supplied and D-020
  * rail 2 applies. Every recipient is classified and refused if it carries the

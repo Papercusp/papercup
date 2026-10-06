@@ -274,6 +274,7 @@ export function sharedSnapshotPath(repoName = GRAPH_SNAPSHOT_REPO, home = homedi
  * shared routine-written path; the legacy per-checkout path. Under Vitest (`VITEST` set) with no
  * explicit path the default lookup is OFF: dozens of tests spawn the selector and assert exact
  * workspace sets, and a host snapshot leaking into them would make those sets host-dependent.
+ * @param {{ env: Record<string, string | undefined>, root: string, home?: string, exists?: (p: string) => boolean }} args
  * @returns {{ path: string | null, source: "env" | "shared" | "checkout" | "hermetic-test" }}
  */
 export function resolveSnapshotPath({ env, root, home = homedir(), exists = existsSync }) {
@@ -303,7 +304,7 @@ export function loadSnapshotFile(path, { readFile }) {
 /**
  * One-call integration seam for the selector: snapshot path in, workspace NAMES to add out.
  * `ownerOfPath(file)` maps a repo-relative file to the workspace names that own it.
- * @param {{ changed: string[], snapshotPath: string, readFile: (p: string) => string, readSource: (rel: string) => string | null, ownerOfPath: (file: string) => string[], now: number, maxAgeMs?: number }} args
+ * @param {{ changed: string[], snapshotPath: string | null, readFile: (p: string) => string, readSource: (rel: string) => string | null, ownerOfPath: (file: string) => string[], now: number, maxAgeMs?: number }} args
  */
 export function computeGraphSuggestions({ changed, snapshotPath, readFile, readSource, ownerOfPath, now, maxAgeMs }) {
   if (!snapshotPath) {
@@ -350,6 +351,10 @@ export function formatSnapshotAge(ageMs) {
  * AFFECTED_WS list, so no stdout parser sees it). Printing it when the snapshot is absent or
  * stale is the point: P-008's suggestions sat inert for days because this line was silent then.
  * `source` names where the snapshot was looked for (env | shared | checkout | hermetic-test).
+ * @param {{ status: string, reason?: string | null, accepted: number, rejected: number, index?: { lastCommit?: string } | null, ageMs?: number | null }} report
+ * @param {string[]} added
+ * @param {string | null} [source]
+ * @returns {string}
  */
 export function formatSuggestionLine(report, added, source = null) {
   const idx = report.index?.lastCommit ? report.index.lastCommit.slice(0, 10) : "none";

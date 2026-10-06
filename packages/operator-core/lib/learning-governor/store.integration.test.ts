@@ -648,7 +648,8 @@ describe('governed attempt persisted settlement receipts', () => {
     const loopId = `gym:rate-spend-${randomUUID()}`;
     await registerLearningLoop(sql, { workspaceId: WS, loopId, budgetKind: 'lifetime', budgetUsd: 10 });
     const failure = Object.assign(new LlmCallError({ class: 'rate_limited', message: '429', retryAfterMs: 1 }), usage);
-    const call = vi.fn().mockRejectedValueOnce(failure).mockResolvedValue({ costUsd: 0.02, value: 'later success' });
+    const call = vi.fn<() => Promise<{ costUsd: number; value: string }>>()
+      .mockRejectedValueOnce(failure).mockResolvedValue({ costUsd: 0.02, value: 'later success' });
     const sleep = vi.fn(async () => {});
     const out = await runGovernedSpendAttempt({ workspaceId: WS, loopId, attemptKind: 'evaluation',
       requestedUsd: 1, accumulate: false,
@@ -675,7 +676,8 @@ describe('governed attempt persisted settlement receipts', () => {
     const loopId = `gym:rate-zero-${randomUUID()}`;
     await registerLearningLoop(sql, { workspaceId: WS, loopId, budgetKind: 'lifetime', budgetUsd: 10 });
     const failure = Object.assign(new LlmCallError({ class: 'rate_limited', message: '429', retryAfterMs: 1 }), { costUsd: 0 });
-    const call = vi.fn().mockRejectedValueOnce(failure).mockResolvedValue({ costUsd: 0.02, value: 'recovered' });
+    const call = vi.fn<() => Promise<{ costUsd: number; value: string }>>()
+      .mockRejectedValueOnce(failure).mockResolvedValue({ costUsd: 0.02, value: 'recovered' });
     const sleep = vi.fn(async () => {});
     const out = await runGovernedSpendAttempt({ workspaceId: WS, loopId, attemptKind: 'evaluation',
       requestedUsd: 1, accumulate: false,

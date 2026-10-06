@@ -29,10 +29,6 @@ const sourceMocks = vi.hoisted(() => ({
       cursor: {},
     },
   ]),
-  ensureGmailBinding: vi.fn(async () => ({
-    plan: { created: true, schemaAdded: true },
-    binding: { id: 'binding-1', armed: false },
-  })),
   provisionFacebook: vi.fn(async () => ({
     id: '33333333-3333-4333-8333-333333333333',
     workspaceId: 'workspace-1',
@@ -76,9 +72,6 @@ vi.mock('../../external-triggers/source-store', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../external-triggers/source-store')>()),
   listOwnedExternalTriggerSources: sourceMocks.listOwned,
   renameOwnedExternalTriggerSourceAccount: sourceMocks.renameAccount,
-}));
-vi.mock('../../external-triggers/gmail-flagship', () => ({
-  ensureGmailRespondDraftBinding: sourceMocks.ensureGmailBinding,
 }));
 vi.mock('../../external-triggers/facebook', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../external-triggers/facebook')>()),
@@ -187,7 +180,6 @@ beforeEach(async () => {
   providers.__resetRegistryForTest();
   sourceMocks.provision.mockClear();
   sourceMocks.provisionFacebook.mockClear();
-  sourceMocks.ensureGmailBinding.mockClear();
   sourceMocks.resolveGoogleAccount.mockReset();
   sourceMocks.resolveGoogleAccount.mockResolvedValue({
     providerAccountId: 'owner@example.com',
@@ -342,12 +334,6 @@ describe('GET /api/oauth/callback', () => {
       field: 'owner-22222222-2222-4222-8222-222222222222',
       createdBy: 'owner:22222222-2222-4222-8222-222222222222',
     });
-    expect(sourceMocks.ensureGmailBinding).toHaveBeenCalledWith(
-      sourceMocks.sql,
-      'workspace-1',
-      expect.objectContaining({ kind: 'gmail', ownerUserId: '22222222-2222-4222-8222-222222222222' }),
-      'owner:22222222-2222-4222-8222-222222222222',
-    );
     const cfg = JSON.parse(await fs.readFile(cfgPath, 'utf8'));
     expect(cfg['owner-22222222-2222-4222-8222-222222222222']).toBe('google-access');
     expect(cfg['owner-22222222-2222-4222-8222-222222222222_refresh']).toBe('google-refresh');

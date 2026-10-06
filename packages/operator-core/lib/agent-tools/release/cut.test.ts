@@ -574,6 +574,28 @@ describe('release:cut — explicit registered root routing', () => {
     expect(preflightM).toHaveBeenCalledWith({}, { root: desktopRoot });
   });
 
+  it('transports explicit tag deferral through preflight and both preview/confirmed launch paths', async () => {
+    useRegisteredRoot();
+    const common = { root: 'isolated', version: '0.0.29', channel: 'alpha', sourceSha, deferTag: true };
+    const preflight = { op: 'preflight', ...common };
+    expect(tool.args.safeParse(preflight).success).toBe(true);
+    await tool.handler(preflight as never, { role: 'operator' } as never);
+    expect(preflightM).toHaveBeenLastCalledWith({}, {
+      root: desktopRoot, release: { version: common.version, channel: common.channel, sourceSha }, deferTag: true,
+    });
+    for (const op of ['run', 'run-leg']) {
+      const args = { op, ...common, ownerName: 'Avi', ...(op === 'run-leg' ? { platform: 'linux' } : {}) };
+      expect(tool.args.safeParse(args).success).toBe(true);
+      const preview = body(await tool.handler(args as never, { role: 'operator' } as never));
+      expect(preview.wouldRun).toContain("PAPERCUSP_RELEASE_DEFER_TAG='1'");
+      await tool.handler({ ...args, confirm: true } as never, { role: 'operator' } as never);
+      expect(launchM).toHaveBeenLastCalledWith(expect.objectContaining({
+        root: desktopRoot, expectedSourceSha: sourceSha, runtime: expect.objectContaining({ deferTag: true }),
+      }));
+      expect(preflightM).toHaveBeenLastCalledWith({}, expect.objectContaining({ root: desktopRoot, deferTag: true }));
+    }
+  });
+
   it('routes status through a registered root and reads that root\'s status files', async () => {
     useRegisteredRoot();
     statusM.mockReturnValue({
@@ -803,6 +825,24 @@ describe('release:cut — prepare-tag (explicit create-only remote ref)', () => 
       }),
       expect.any(Function),
     );
+  });
+
+  it('binds a tag from a build-dirty isolated root without allowing a dirty build launch', async () => {
+    const worktreeRoot = '/registered/isolated-worktree';
+    registryM.mockResolvedValue({ projects: [{ slug: 'isolated', path: worktreeRoot }] });
+    mockExecFile((command, argv) => {
+      if (command === 'git' && argv[2] === 'worktree') return `worktree ${worktreeRoot}\nHEAD ${sourceSha}\n\n`;
+      if (command === 'git' && argv[2] === 'status') return ' M papercusp-desktop\n';
+      if (command.endsWith('/bin/release-local.sh')) return 'created exact tag\n';
+      throw new Error(`unexpected command: ${command} ${argv.join(' ')}`);
+    });
+    const bound = body(await tool.handler({ ...args, root: 'isolated', confirm: true } as never, { role: 'operator' } as never));
+    expect(bound).toMatchObject({ ok: true, sourceSha, tag: 'desktop-v0.0.18-alpha' });
+    const run = body(await tool.handler({ op: 'run', version: args.version, channel: args.channel, sourceSha,
+      root: 'isolated', ownerName: 'Avi', deferTag: true, confirm: true } as never, { role: 'operator' } as never));
+    expect(run).toMatchObject({ ok: false, refused: true });
+    expect(run.reason).toMatch(/root_not_clean/);
+    expect(launchM).not.toHaveBeenCalled();
   });
 
   it('returns a structured refusal when create detects an existing mismatch', async () => {

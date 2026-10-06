@@ -6,8 +6,12 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { OrgTestDb } from '../../../../test/_org-test-db';
 import type { HostedServiceContextRunner } from '../workos-lifecycle-postgres';
 import { shadowMonthBounds } from '../../../cupboard/shadow-metering-reader';
+import { journalEntryForMovement } from '../../../cupboard/money-journal';
+import { receiptCommitment } from '../../../cupboard/payment-receipt';
+import type { HostedPrepaidFundingInput } from './budget-funding';
 import { PostgresHostedBudgetStore, type HostedBudgetContextReader, type HostedBudgetObservation,
-  type HostedBudgetRequest, type HostedBudgetScope } from './budget-store';
+  type HostedBudgetRequest, type HostedBudgetScope, type HostedPrepaidAllocationRequest, type HostedPrepaidFundingReader,
+  evaluateLockedHostedPrepaidFunding, readLockedHostedPrepaidAllocations } from './budget-store';
 
 const { createOrgTestDb } = await import('../../../../test/_org-test-db');
 let db: OrgTestDb;
@@ -65,6 +69,35 @@ const observation = (r: HostedBudgetRequest, change: Partial<HostedBudgetObserva
 const rows = (s: HostedBudgetScope) => db.adminSql`SELECT * FROM papercusp_auth.hosted_budget_receipts
   WHERE control_workspace_id = ${s.controlWorkspaceId} AND organization_id = ${s.organizationId}`;
 
+const prepaidRequest = (s: HostedBudgetScope, stripeAccountId = 'acct_' + randomUUID().replaceAll('-', '')): HostedPrepaidAllocationRequest => ({
+  scope: s, stripeAccountId, month: '2026-10', asOfMs: T,
+  allocation: { allocationId: randomUUID(), paymentTransactionId: 'txn_source', organizationId: s.organizationId,
+    customerWorkspaceId: s.customerWorkspaceId, budgetKey: 'consumption.usd_cents', micros: 100_000 },
+});
+// Authenticated-source-shaped fixture, not a production verifier. The real
+// callback must read Stripe/bank/provider/journal/entitlement evidence itself.
+function prepaidEvidence(r: HostedPrepaidAllocationRequest, grossCents = 100): Omit<HostedPrepaidFundingInput, 'allocations'> {
+  const transaction = { id: r.allocation.paymentTransactionId, amount: grossCents, fee: 0, currency: 'usd', created: T / 1000 };
+  const built = journalEntryForMovement({ entryId: 'stripe-bt:' + transaction.id, occurredAtMs: T, currency: 'USD',
+    externalRef: { kind: 'stripe-balance-transaction', id: transaction.id },
+    movement: { kind: 'credit-purchase', grossCents, feeCents: 0, taxCents: 0 } });
+  if (!built.ok) throw new Error(built.detail);
+  const salt = 'a'.repeat(64);
+  return { scope: r.scope, budgetKey: r.allocation.budgetKey, windowStartMs: shadowMonthBounds(r.month).startMs, asOfMs: r.asOfMs,
+    snapshot: { controlWorkspaceId: r.scope.controlWorkspaceId, organizationId: r.scope.organizationId,
+      stripeAccountId: r.stripeAccountId, stripeCustomerId: 'cus_A', livemode: true, complete: true,
+      asOfMs: r.asOfMs, evidenceRef: 'fixture:source-census' },
+    payments: [{ entry: built.entry, available: true, receipt: { transaction, receiptSeq: 1, salt,
+      commitment: receiptCommitment(transaction, salt), sourceId: 'ch_fixture', sourceCustomer: 'cus_A' } }],
+    reversals: [], priorCharges: [], cashBacking: { controlWorkspaceId: r.scope.controlWorkspaceId, stripeAccountId: r.stripeAccountId,
+      asOfMs: r.asOfMs, livemode: true, complete: true, evidenceRef: 'fixture:cash-census', journalEntries: [built.entry],
+      availableMicros: grossCents * 10_000, unpaidProviderMicros: 0, retainedReserveMicros: 0 } };
+}
+const prepaidStore = (reader: HostedPrepaidFundingReader = async (_sql, r) => prepaidEvidence(r), run = service) =>
+  new PostgresHostedBudgetStore({ readPrepaidFunding: reader, run });
+const allocationRows = (account: string) => db.adminSql`SELECT * FROM papercusp_auth.hosted_prepaid_allocations
+  WHERE stripe_account_id = ${account}`;
+
 describe('PostgresHostedBudgetStore (real hosted service transactions)', () => {
   beforeAll(async () => {
     db = await createOrgTestDb();
@@ -80,6 +113,12 @@ describe('PostgresHostedBudgetStore (real hosted service transactions)', () => {
     try { exactMigration = readFileSync(exactDraft, 'utf8'); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; exactMigration = readFileSync(exactArmed, 'utf8'); }
     await db.adminSql.unsafe(exactMigration); await db.adminSql.unsafe(exactMigration);
+    const allocationDraft = new URL('../../../../../../libs/papercusp/libs/db/sql/1372-hosted-prepaid-allocations.sql.DRAFT', import.meta.url);
+    const allocationArmed = new URL('../../../../../../libs/papercusp/libs/db/sql/1372-hosted-prepaid-allocations.sql', import.meta.url);
+    let allocationMigration: string;
+    try { allocationMigration = readFileSync(allocationDraft, 'utf8'); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; allocationMigration = readFileSync(allocationArmed, 'utf8'); }
+    await db.adminSql.unsafe(allocationMigration); await db.adminSql.unsafe(allocationMigration);
     await db.adminSql.unsafe(`CREATE TABLE papercusp_auth.test_budget_authority (
       control text NOT NULL, org text NOT NULL, cap bigint NOT NULL, funding bigint NOT NULL,
       retained bigint, workspace_cap bigint, PRIMARY KEY(control, org));
@@ -419,5 +458,157 @@ describe('PostgresHostedBudgetStore (real hosted service transactions)', () => {
     const foreign = { ...s, customerWorkspaceId: randomUUID() };
     await expect(store().reserve(request(foreign, { maximumCostMicros: 0 }))).rejects.toThrow(/foreign key/);
     expect(await rows(s)).toHaveLength(1);
+  });
+
+  it('refuses allocation without an installed verifier or with foreign/stale/insolvent evidence', async () => {
+    const r = prepaidRequest(await tenant());
+    expect(await new PostgresHostedBudgetStore({ run: service }).allocatePrepaid(r))
+      .toMatchObject({ outcome: 'refused', reason: 'unconfigured-funding' });
+    for (const change of [
+      (e: ReturnType<typeof prepaidEvidence>) => ({ ...e, snapshot: { ...e.snapshot, complete: false } }),
+      (e: ReturnType<typeof prepaidEvidence>) => ({ ...e, snapshot: { ...e.snapshot, asOfMs: T - 1 } }),
+      (e: ReturnType<typeof prepaidEvidence>) => ({ ...e, cashBacking: null }),
+    ]) expect((await prepaidStore(async (_sql, q) => change(prepaidEvidence(q))).allocatePrepaid(r)).outcome).toBe('refused');
+    await expect(prepaidStore(async (_sql, q) => ({ ...prepaidEvidence(q), scope: { ...q.scope, organizationId: randomUUID() } }))
+      .allocatePrepaid(r)).rejects.toThrow('authority mismatch');
+    expect(await allocationRows(r.stripeAccountId)).toHaveLength(0);
+  });
+
+  it('serializes concurrent exact partitions across instances and every budget key', async () => {
+    const r = prepaidRequest(await tenant());
+    const outcomes = await Promise.all(Array.from({ length: 16 }, (_, i) => prepaidStore().allocatePrepaid({ ...r,
+      allocation: { ...r.allocation, allocationId: randomUUID(), budgetKey: i % 2 ? 'storage.usd_cents' : r.allocation.budgetKey } })));
+    expect(outcomes.filter(o => o.outcome === 'allocated')).toHaveLength(10);
+    expect(outcomes.filter(o => o.outcome === 'refused' && o.reason === 'funding-overallocated')).toHaveLength(6);
+    expect(await allocationRows(r.stripeAccountId)).toHaveLength(10);
+  });
+
+  it('keeps fractional partitions lossless through replay/restart and refuses the smallest excess', async () => {
+    const r = prepaidRequest(await tenant());
+    const precise = { ...r, allocation: { ...r.allocation, micros: 9_999, microsExact: '9999.9999999999999999999' } };
+    const oneCent: HostedPrepaidFundingReader = async (_sql, q) => prepaidEvidence(q, 1);
+    expect((await prepaidStore(oneCent).allocatePrepaid(precise)).outcome).toBe('allocated');
+    expect(await prepaidStore(oneCent).allocatePrepaid(precise)).toMatchObject({ outcome: 'duplicate', allocation: precise.allocation });
+    expect(await prepaidStore(oneCent).allocatePrepaid({ ...precise, allocation: { ...precise.allocation,
+      microsExact: '9999.9999999999999999998' } })).toMatchObject({ outcome: 'conflict', allocation: null });
+    const extra = { ...r, allocation: { ...r.allocation, allocationId: randomUUID(), micros: 0, microsExact: '0.0000000000000000002' } };
+    expect(await prepaidStore(oneCent).allocatePrepaid(extra)).toMatchObject({ outcome: 'refused', reason: 'funding-overallocated' });
+    const [saved] = await allocationRows(r.stripeAccountId);
+    expect(String(saved!.micros)).toBe(precise.allocation.microsExact);
+  });
+
+  it('retains other organizations in the global population and refuses reuse of their payment', async () => {
+    const a = await tenant(); const b = await tenant(a.controlWorkspaceId);
+    const r = prepaidRequest(a);
+    expect((await prepaidStore().allocatePrepaid(r)).outcome).toBe('allocated');
+    const foreign = { ...prepaidRequest(b, r.stripeAccountId), allocation: { ...r.allocation, allocationId: randomUUID(),
+      organizationId: b.organizationId, customerWorkspaceId: b.customerWorkspaceId } };
+    expect(await prepaidStore().allocatePrepaid(foreign)).toMatchObject({ outcome: 'refused', reason: 'funding-scope-mismatch' });
+    expect(await prepaidStore().allocatePrepaid({ ...foreign, allocation: { ...foreign.allocation, allocationId: r.allocation.allocationId } }))
+      .toMatchObject({ outcome: 'conflict', allocation: null });
+    const ownPayment = { ...foreign, allocation: { ...foreign.allocation, paymentTransactionId: 'txn_other' } };
+    const fullPool: HostedPrepaidFundingReader = async (_sql, q) => {
+      const e = prepaidEvidence(q); const other = prepaidEvidence(r);
+      return { ...e, cashBacking: { ...e.cashBacking!, availableMicros: 2_000_000,
+        journalEntries: [...e.cashBacking!.journalEntries, ...other.cashBacking!.journalEntries] } };
+    };
+    expect((await prepaidStore(fullPool).allocatePrepaid(ownPayment)).outcome).toBe('allocated');
+    await service(async sql => { const all = await readLockedHostedPrepaidAllocations(sql,
+      { controlWorkspaceId: a.controlWorkspaceId, stripeAccountId: r.stripeAccountId });
+      expect(all).toHaveLength(2); expect(Object.isFrozen(all)).toBe(true); expect(all.every(Object.isFrozen)).toBe(true); });
+  });
+
+  it('locks even an empty pool before collecting source evidence, with the identical database writer key', async () => {
+    const r = prepaidRequest(await tenant());
+    const reader: HostedPrepaidFundingReader = async (_sql, q) => {
+      const held = await db.adminSql.begin(async other => {
+        const [row] = await other`SELECT pg_try_advisory_xact_lock(hashtextextended(
+          json_build_array('hosted-prepaid', ${q.stripeAccountId}::text)::text, 0)) AS granted`;
+        return row?.granted;
+      });
+      expect(held).toBe(false);
+      expect(await allocationRows(q.stripeAccountId)).toHaveLength(0);
+      return prepaidEvidence(q);
+    };
+    expect((await prepaidStore(reader).allocatePrepaid(r)).outcome).toBe('allocated');
+  });
+
+  it('reads funding and writes a reservation under the same pool lock and transaction', async () => {
+    const s = await tenant(); const r = prepaidRequest(s);
+    expect((await prepaidStore().allocatePrepaid(r)).outcome).toBe('allocated');
+    const context: HostedBudgetContextReader = async (sql, q) => {
+      const funding = await evaluateLockedHostedPrepaidFunding(sql, prepaidEvidence(r));
+      if (!funding.ok) return null;
+      const [lock] = await db.adminSql.begin(other => other`SELECT pg_try_advisory_xact_lock(hashtextextended(
+        json_build_array('hosted-prepaid', ${r.stripeAccountId}::text)::text, 0)) AS granted`);
+      expect(lock?.granted).toBe(false);
+      expect(await rows(s)).toHaveLength(0);
+      const c = (await readContext(sql, q))!;
+      return { ...c, limits: c.limits.map(l => ({ ...l, ...funding.organization })) };
+    };
+    const crashing: HostedServiceContextRunner = fn => service(async sql => { await fn(sql); throw new Error('atomic reservation rollback'); });
+    await expect(store(context, crashing).reserve(request(s))).rejects.toThrow('atomic reservation rollback');
+    expect(await rows(s)).toHaveLength(0);
+    expect((await store(context).reserve(request(s))).outcome).toBe('reserved');
+    expect(await rows(s)).toHaveLength(1);
+    expect(await allocationRows(r.stripeAccountId)).toHaveLength(1);
+  });
+
+  it('never accepts a caller replacement population or hides a formerly allocated payment after a reversal', async () => {
+    const r = prepaidRequest(await tenant());
+    const all = { ...r, allocation: { ...r.allocation, micros: 1_000_000, customerWorkspaceId: null } };
+    expect((await prepaidStore().allocatePrepaid(all)).outcome).toBe('allocated');
+    await service(async sql => {
+      const e = prepaidEvidence(r);
+      const transaction = { id: 'txn_refund', amount: -50, fee: 0, currency: 'usd', created: T / 1000 };
+      const built = journalEntryForMovement({ entryId: 'stripe-bt:txn_refund', occurredAtMs: T, currency: 'USD',
+        externalRef: { kind: 'stripe-balance-transaction', id: transaction.id },
+        movement: { kind: 'refund', amountCents: 50, taxCents: 0 } });
+      if (!built.ok) throw new Error(built.detail);
+      const salt = 'b'.repeat(64);
+      const refunded = { ...e, reversals: [{ entry: built.entry, paymentTransactionId: r.allocation.paymentTransactionId,
+        receipt: { transaction, receiptSeq: 2, salt, commitment: receiptCommitment(transaction, salt), sourceId: 're_fixture', sourceCustomer: 'cus_A' } }],
+        cashBacking: { ...e.cashBacking!, availableMicros: 500_000, journalEntries: [...e.cashBacking!.journalEntries, built.entry] } };
+      expect(await evaluateLockedHostedPrepaidFunding(sql, { ...refunded, allocations: [] } as typeof refunded))
+        .toMatchObject({ ok: false, reason: 'funding-overallocated' });
+    });
+    expect(await allocationRows(r.stripeAccountId)).toHaveLength(1);
+  });
+
+  it('rolls back allocations atomically and snapshots mutable requests before waiting for authority', async () => {
+    const r = prepaidRequest(await tenant()); const original = structuredClone(r);
+    const crashing: HostedServiceContextRunner = fn => service(async sql => { await fn(sql); throw new Error('allocation rollback'); });
+    await expect(prepaidStore(undefined, crashing).allocatePrepaid(r)).rejects.toThrow('allocation rollback');
+    expect(await allocationRows(r.stripeAccountId)).toHaveLength(0);
+    const mutating: HostedPrepaidFundingReader = async (_sql, q) => {
+      Object.assign(r.allocation, { micros: 1, paymentTransactionId: 'txn_changed' });
+      Object.assign(r.scope, { customerWorkspaceId: randomUUID() });
+      return prepaidEvidence(q);
+    };
+    expect(await prepaidStore(mutating).allocatePrepaid(r)).toMatchObject({ outcome: 'allocated', allocation: original.allocation });
+    expect(await allocationRows(original.stripeAccountId)).toHaveLength(1);
+  });
+
+  it('enforces service-only immutable exact partitions and global account/organization scope at the SQL boundary', async () => {
+    const s = await tenant(); const r = prepaidRequest(s); await prepaidStore().allocatePrepaid(r);
+    await expect(db.appSql`SELECT * FROM papercusp_auth.hosted_prepaid_allocations`).rejects.toThrow(/permission denied/);
+    await expect(service(sql => sql`UPDATE papercusp_auth.hosted_prepaid_allocations SET micros = 1`)).rejects.toThrow(/permission denied/);
+    await expect(db.adminSql`UPDATE papercusp_auth.hosted_prepaid_allocations SET micros = 1 WHERE stripe_account_id = ${r.stripeAccountId}`)
+      .rejects.toThrow('append-only');
+    await expect(db.adminSql`DELETE FROM papercusp_auth.hosted_prepaid_allocations WHERE stripe_account_id = ${r.stripeAccountId}`)
+      .rejects.toThrow('append-only');
+    const other = await tenant(s.controlWorkspaceId);
+    for (const change of [
+      { allocation_id: randomUUID(), organization_id: other.organizationId, customer_workspace_id: other.customerWorkspaceId },
+      { allocation_id: randomUUID(), control_workspace_id: randomUUID() },
+      { allocation_id: randomUUID(), micros: '0.' + '0'.repeat(324) + '1', payment_transaction_id: 'txn_precision' },
+      { allocation_id: randomUUID(), customer_workspace_id: null, binding_customer_workspace_id: randomUUID(), payment_transaction_id: 'txn_unbound' },
+    ]) await expect(db.adminSql`INSERT INTO papercusp_auth.hosted_prepaid_allocations
+      SELECT (jsonb_populate_record(NULL::papercusp_auth.hosted_prepaid_allocations, to_jsonb(a) || ${db.adminSql.json(change)})).*
+      FROM papercusp_auth.hosted_prepaid_allocations a WHERE stripe_account_id = ${r.stripeAccountId}`).rejects.toThrow();
+    const unbound = { ...r, stripeAccountId: 'acct_' + randomUUID().replaceAll('-', ''), scope: { ...s, customerWorkspaceId: randomUUID() },
+      allocation: { ...r.allocation, customerWorkspaceId: null } };
+    await expect(prepaidStore().allocatePrepaid(unbound)).rejects.toThrow(/foreign key/);
+    expect(await allocationRows(r.stripeAccountId)).toHaveLength(1);
   });
 });

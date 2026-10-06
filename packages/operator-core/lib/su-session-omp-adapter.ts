@@ -13,6 +13,7 @@ import { basename, join } from 'node:path';
 import {
   assertNeverSuSession,
   type OpenCardSnapshot,
+  type SuApprovalsMode,
   type SuSessionCapabilities,
   type SuSessionCommand,
   type SuSessionDescriptor,
@@ -68,7 +69,7 @@ export type OmpNativeCommandVerdict =
 
 export interface OmpSuSessionControls {
   /** `model` (P-026): a `model[:effort]` spec to apply before this turn; omitted keeps the current one. */
-  ownerTurn(input: { ownerId: string; turnId: string; content: string; model?: string }): Promise<OmpNativeCommandVerdict>;
+  ownerTurn(input: { ownerId: string; turnId: string; content: string; model?: string; approvals?: SuApprovalsMode }): Promise<OmpNativeCommandVerdict>;
   interrupt(input: { ownerId: string; reason?: string }): Promise<OmpNativeCommandVerdict>;
   resume(input: {
     ownerId: string;
@@ -606,6 +607,7 @@ export class OmpSuSessionAdapter {
         verdict = await this.controls.ownerTurn({
           ownerId, turnId: command.turnId, content: command.content,
           ...(command.model ? { model: command.model } : {}),
+          ...(command.approvals ? { approvals: command.approvals } : {}),
         });
         if (!verdict.ok) context.transition('waiting-for-owner', verdict.message);
         break;

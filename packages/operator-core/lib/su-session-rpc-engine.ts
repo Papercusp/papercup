@@ -179,8 +179,16 @@ export function startSuRpcEngine(
   let initializingFrameBytes = 0;
   const unavailable = (message: string) => ({ ok: false as const, code: 'engine_delivery_unknown', message, retryable: false });
   const controls = {
-    async ownerTurn({ content, turnId, model: nextModel }: { content: string; turnId: string; model?: string }) {
+    async ownerTurn({ content, turnId, model: nextModel, approvals: nextApprovals }: { content: string; turnId: string; model?: string; approvals?: SuApprovalsMode }) {
       if (!ready || closed) return unavailable(`${backend} connection is not ready`);
+      // D-026: Codex takes an approvals switch on this turn's turn/start. OMP has
+      // no approval-mode RPC, so a switch refuses the turn instead of running it
+      // in a mode the owner did not pick.
+      const approvalsTo = nextApprovals && nextApprovals !== selectedApprovals ? nextApprovals : null;
+      if (approvalsTo && backend !== 'codex') {
+        return { ok: false as const, code: 'approvals_switch_refused', retryable: false,
+          message: `/approvals is not available for ${backend === 'omp' ? 'OMP' : backend}` };
+      }
       // P-026: Codex takes the switch on this turn's turn/start; OMP takes it as
       // set_model (+ set_thinking_level) before the prompt. A refused OMP switch
       // refuses the turn rather than running it on the old model.
@@ -273,6 +281,9 @@ export function startSuRpcEngine(
   };
   const shared = {
     ...options, controls, ready: false, runtimeReady: () => ready && !closed,
+    // D-026: a prompted Codex launch is on-request + workspace-write, which is
+    // `auto-edit`. OMP has no switchable mode, so its descriptor omits one.
+    ...(backend === 'codex' && selectedApprovals ? { approvals: selectedApprovals } : {}),
     ownerTurnReceipts: options.ownerTurnReceipts ?? ((identity: SuOwnerTurn['target']) => loadSuOwnerTurnReceipts(identity)),
   };
   const adapter = backend === 'codex'

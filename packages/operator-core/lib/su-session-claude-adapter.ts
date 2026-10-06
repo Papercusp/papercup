@@ -14,6 +14,7 @@ import { basename, join } from 'node:path';
 import {
   assertNeverSuSession,
   type OpenCardSnapshot,
+  type SuApprovalsMode,
   type SuSessionCapabilities,
   type SuSessionCommand,
   type SuSessionDescriptor,
@@ -73,7 +74,7 @@ export type ClaudeNativeCommandVerdict =
 
 export interface ClaudeSuSessionControls {
   /** `model` (P-026): a `model[:effort]` spec to apply before this turn; omitted keeps the current one. */
-  ownerTurn(input: { ownerId: string; turnId: string; content: string; model?: string }): Promise<ClaudeNativeCommandVerdict>;
+  ownerTurn(input: { ownerId: string; turnId: string; content: string; model?: string; approvals?: SuApprovalsMode }): Promise<ClaudeNativeCommandVerdict>;
   interrupt(input: { ownerId: string; reason?: string }): Promise<ClaudeNativeCommandVerdict>;
   resume(input: {
     ownerId: string;
@@ -87,6 +88,8 @@ export interface ClaudeSuSessionControls {
 export interface ClaudeSuSessionDescriptorOptions {
   agentChatId: string;
   model?: string | null;
+  /** D-026: the approvals mode the engine launched in, when it has one. */
+  approvals?: SuApprovalsMode;
   accountRoute?: string | null;
   servedAccountReader?: SuSessionServedAccountReader;
   carry?: 'warm' | 'cold';
@@ -338,6 +341,7 @@ function descriptorFor(
     runtimeGeneration: options.runtimeGeneration ?? 0,
     role: 'su',
     model: options.model ?? null,
+    ...(options.approvals ? { approvals: options.approvals } : {}),
     accountServed: null,
     accountRoute: options.accountRoute ?? null,
     carry: options.carry ?? 'warm',
@@ -795,6 +799,7 @@ export class ClaudeSuSessionAdapter {
         verdict = await this.controls.ownerTurn({
           ownerId, turnId: command.turnId, content: command.content,
           ...(command.model ? { model: command.model } : {}),
+          ...(command.approvals ? { approvals: command.approvals } : {}),
         });
         if (!verdict.ok) context.transition('waiting-for-owner', verdict.message);
         break;

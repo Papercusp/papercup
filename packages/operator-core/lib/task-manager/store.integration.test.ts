@@ -897,8 +897,8 @@ describe('gcTerminalTasks retention', () => {
 describe('upsertUnaccounted scope identity', () => {
   it('persists managed scope_unit canonically and backfills it on conflict without erasing it', async () => {
     const group = {
-      taskId: 't-scope-unit',
-      cgroupPath: '/sys/fs/cgroup/papercusp.slice/pc-t-scope-unit.scope',
+      taskId: 'tscopeunit',
+      cgroupPath: '/sys/fs/cgroup/papercusp.slice/pc-tscopeunit.scope',
       scopeUnit: null as string | null,
       pids: [11],
       sampleCmdline: 'managed residue',
@@ -906,21 +906,24 @@ describe('upsertUnaccounted scope identity', () => {
 
     await store.upsertUnaccounted([group], { workspaceId: WS });
     let [row] = await db.sql`
-      SELECT scope_unit FROM harness_shared.task_ledger WHERE task_id = ${group.taskId}
+      SELECT scope_unit, confined FROM harness_shared.task_ledger WHERE task_id = ${group.taskId}
     `;
     expect(row!.scope_unit).toBeNull();
+    expect(row!.confined).toBe(false);
 
-    await store.upsertUnaccounted([{ ...group, scopeUnit: 'pc-t-scope-unit.scope', pids: [12] }], { workspaceId: WS });
+    await store.upsertUnaccounted([{ ...group, scopeUnit: 'pc-tscopeunit.scope', pids: [12] }], { workspaceId: WS });
     [row] = await db.sql`
-      SELECT scope_unit FROM harness_shared.task_ledger WHERE task_id = ${group.taskId}
+      SELECT scope_unit, confined FROM harness_shared.task_ledger WHERE task_id = ${group.taskId}
     `;
-    expect(row!.scope_unit).toBe('pc-t-scope-unit.scope');
+    expect(row!.scope_unit).toBe('pc-tscopeunit.scope');
+    expect(row!.confined).toBe(true);
 
     await store.upsertUnaccounted([{ ...group, pids: [13] }], { workspaceId: WS });
     [row] = await db.sql`
-      SELECT scope_unit FROM harness_shared.task_ledger WHERE task_id = ${group.taskId}
+      SELECT scope_unit, confined FROM harness_shared.task_ledger WHERE task_id = ${group.taskId}
     `;
-    expect(row!.scope_unit).toBe('pc-t-scope-unit.scope');
+    expect(row!.scope_unit).toBe('pc-tscopeunit.scope');
+    expect(row!.confined).toBe(true);
   });
 
   it('persists unaccounted cgroup metrics and preserves lifecycle probes on refresh', async () => {

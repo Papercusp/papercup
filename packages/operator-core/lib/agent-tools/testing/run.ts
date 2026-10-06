@@ -3649,7 +3649,11 @@ export default defineTool({
       if (!remeasureHarness || !ctx.workspaceId || ctx.workspaceId === '*')
         return { data: { ok: false, error: 'evidence_requires_concrete_scope' } };
       try {
-        remeasure = await buildTestEvidenceRemeasure(args.remeasureEvidence, { harnessSlug: remeasureHarness });
+        remeasure = await buildTestEvidenceRemeasure(args.remeasureEvidence, {
+          harnessSlug: remeasureHarness,
+          workspaceId: ctx.workspaceId,
+          root: resolveAgentWorkspaceRoot(ctx),
+        });
       } catch (error) {
         return { data: { ok: false, error: 'evidence_remeasure_plan_failed', message: String(error) } };
       }
@@ -3663,6 +3667,7 @@ export default defineTool({
             mode: 'evidence-remeasure',
             ran: false,
             summary: remeasure.summary,
+            abandonedPendingBindingIds: remeasure.abandonedPendingBindingIds,
             skipped: remeasure.plan.skipped.slice(0, 20),
           },
         };
@@ -3958,6 +3963,7 @@ export default defineTool({
       remeasure && prepared && evidenceScope
         ? {
             summary: remeasure.summary,
+            abandonedPendingBindingIds: remeasure.abandonedPendingBindingIds,
             ...(remeasureJudgmentWarning ? { warning: remeasureJudgmentWarning } : {}),
             selected: remeasure.plan.selected
               .map(({ binding: _binding, supersedes: _supersedes, ...entry }) => entry)

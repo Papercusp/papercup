@@ -28,7 +28,6 @@ import {
   listOwnedExternalTriggerSources,
   renameOwnedExternalTriggerSourceAccount,
 } from '../external-triggers/source-store';
-import { ensureGmailRespondDraftBinding } from '../external-triggers/gmail-flagship';
 import {
   defaultPreviousFields,
   registerConnectionAdapter,
@@ -113,10 +112,10 @@ export const googleWorkspaceConnectionAdapter: ConnectionAdapter = {
       field: input.field,
       createdBy: input.createdBy,
     });
-    const gmail = sources.find((source) => source.kind === 'gmail');
-    if (!gmail) throw new Error('google_workspace_gmail_source_missing');
-    // Creates (or reuses) the draft-reply binding DISARMED; it never arms one (D-003).
-    await ensureGmailRespondDraftBinding(sql, input.owner.workspaceId, gmail, input.createdBy);
+    if (!sources.some((source) => source.kind === 'gmail')) throw new Error('google_workspace_gmail_source_missing');
+    // No trigger binding is created on connect (plan generalized-integrations-…-2026-10-05
+    // D-019.3): owner directive #869 forbids auto-composing draft replies, so a draft
+    // responder is opt-in through the email-draft-responder trigger pack.
   },
 };
 
