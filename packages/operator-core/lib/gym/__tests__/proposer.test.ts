@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildProposerPrompt, parseProposal, proposeCandidate, type ProposeInput } from '../proposer';
+import { buildProposerPrompt, parseProposal, proposeCandidate, throwWithCostUsd, type ProposeInput } from '../proposer';
 import type { GymLlmCall } from '../task-generator';
 
 /**
@@ -66,6 +66,50 @@ function fakeLlm(json: unknown): GymLlmCall {
 }
 
 describe('proposeCandidate', () => {
+  it.each([
+    { label: 'absent', usage: {} },
+    { label: 'NaN', usage: { costUsd: NaN } },
+    { label: 'infinite', usage: { costUsd: Infinity } },
+    { label: 'negative', usage: { costUsd: -1 } },
+    { label: 'partial', usage: { costUsd: 0.42, unreportedFrames: 1 } },
+    { label: 'marked missing', usage: { costUsd: 0.42, costUsdMeasurementMissing: true } },
+  ])('retains incomplete $label failed-call usage instead of inventing a complete zero', async ({ usage }) => {
+    const failure = Object.assign(new Error('failed after dispatch'), usage);
+    let caught: unknown;
+    try {
+      await proposeCandidate(input, { llmCall: async () => { throw failure; } });
+    } catch (error) { caught = error; }
+    expect(caught).toBe(failure);
+    expect(caught).toMatchObject({ costUsdMeasurementMissing: true,
+      costUsd: 'costUsd' in usage && Number.isFinite(usage.costUsd) && usage.costUsd >= 0 ? usage.costUsd : 0 });
+  });
+
+  it.each([0, 0.42])('retains a complete failed-call measurement of $%s', async costUsd => {
+    const failure = Object.assign(new Error('measured failed call'), { costUsd });
+    await expect(proposeCandidate(input, { llmCall: async () => { throw failure; } }))
+      .rejects.toMatchObject({ costUsd });
+    expect(failure).not.toHaveProperty('costUsdMeasurementMissing');
+  });
+
+  it('preserves missingness and the subtotal when a non-Error failure is wrapped', () => {
+    const failure = { costUsd: 0.2, unreportedFrames: 1, costUsdMeasurementMissing: true };
+    expect(() => throwWithCostUsd(failure, 0.3)).toThrow();
+    try { throwWithCostUsd(failure, 0.3); } catch (error) {
+      expect(error).toMatchObject({ costUsd: 0.5, costUsdMeasurementMissing: true, unreportedFrames: 1 });
+    }
+  });
+
+  it('a measured zero response remains complete when validation fails', async () => {
+    let caught: unknown;
+    try {
+      await proposeCandidate(input, { llmCall: async () => ({ text: 'invalid', costUsd: 0,
+        inputTokens: 0, outputTokens: 0 }) });
+    } catch (error) { caught = error; }
+    expect(caught).toBeInstanceOf(Error);
+    expect(caught).toMatchObject({ costUsd: 0 });
+    expect(caught).not.toHaveProperty('costUsdMeasurementMissing');
+  });
+
   it('merges the proposed role change onto the parent overlay (prompts-only)', async () => {
     const cand = await proposeCandidate(input, {
       llmCall: fakeLlm({ promptOverrides: { validator: '# validator stricter' }, rationale: 'stop rubber-stamping' }),

@@ -2,7 +2,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import postgres from 'postgres';
 import {
   ensureBootstrap, getTxPool, registerResource, readResourceCoordinationDomainKinds,
-  stampResourceCoordinationDomainKind, _resetForTests,
+  stampResourceCoordinationDomainKind, tryAcquireResource, tryReleaseResource,
+  readResourceQueue, _resetForTests,
 } from '../su-lock-store';
 import { inWorkspaceTxn } from '../in-workspace-txn';
 import { hostGlobalLockDomain } from '../coordination-domain';
@@ -10,6 +11,9 @@ import {
   __resetResourceDomainKindsForTest, declaredResourceDomainKind, ensureResourceDomainKindsFresh,
 } from '../resource-domain-kinds';
 import registerTool from '../register_resource';
+import { guardResource } from '../resource-lock-guard';
+import { _resetListenersForTests } from '../workspace-listener';
+import type { AgentIdentity } from '../../coordination/identity';
 
 // These names identify real host resources. Only the maintained disposable
 // runtime may exercise their registry publication; a private lock domain alone
@@ -40,6 +44,7 @@ describe.skipIf(!isolated)('maintained host-resource domain publication in isola
 
   afterAll(async () => {
     __resetResourceDomainKindsForTest();
+    await _resetListenersForTests();
     await _resetForTests();
   });
 
@@ -72,4 +77,70 @@ describe.skipIf(!isolated)('maintained host-resource domain publication in isola
       await ensureResourceDomainKindsFresh();
       expect(declaredResourceDomainKind(resource)).toBe('host-global');
     });
+
+  it.each([
+    ['staging-server', 0], ['staging-server-cooldown', 0],
+    ['staging-server', 0.02], ['staging-server-cooldown', 0.02],
+  ] as const)(
+    'a refreshed legacy declaration reader excludes a distinct-owner %s body with drain budget %s',
+    async (resource, maxDrainSec) => {
+      await inWorkspaceTxn(hostGlobalLockDomain(), owner, async tx => {
+        await registerResource(tx, { resource });
+        await stampResourceCoordinationDomainKind(tx, resource, 'tree');
+      });
+      __resetResourceDomainKindsForTest();
+      await ensureResourceDomainKindsFresh();
+      // Exercise the declaration-only branch used by an older reader whose
+      // hardcoded host-resource set does not contain these two names. This
+      // does not execute or attest the live older background-host process.
+      const legacyDomain = () => declaredResourceDomainKind(resource) === 'host-global'
+        ? hostGlobalLockDomain() : '/private/legacy-checkout';
+      expect(legacyDomain()).toBe('/private/legacy-checkout');
+
+      const published = await registerTool.handler({ resource }, {
+        isSuperuser: true, uiClientId: owner,
+      } as never);
+      if (!('content' in published) || published.content[0].type !== 'text') {
+        throw new Error('Registration did not return text evidence');
+      }
+      expect(JSON.parse(published.content[0].text)).toMatchObject({ ok: true, created: false });
+      __resetResourceDomainKindsForTest();
+      await ensureResourceDomainKindsFresh();
+      const domain = legacyDomain();
+      expect(domain).toBe(hostGlobalLockDomain());
+
+      const probeOwner = `declaration-probe-${resource}-${maxDrainSec}`;
+      const restartOwner = `declaration-restart-${resource}-${maxDrainSec}`;
+      const held = await inWorkspaceTxn(domain, probeOwner, tx => tryAcquireResource(tx, {
+        coordinationDomain: domain, resource, mode: 'shared', owner: probeOwner,
+        ownerLabel: 'private probe', reason: 'declaration-reader regression', ttlSec: 30,
+      }));
+      const identity: AgentIdentity = {
+        ownerId: restartOwner, ownerLabel: 'private restart', source: 'static-client',
+        workspaceId: null, userId: null,
+      };
+      try {
+        expect(held.ok).toBe(true);
+        let bodyRuns = 0;
+        const refused = await guardResource({ coordinationDomain: domain,
+          ownerId: restartOwner, ownerLabel: identity.ownerLabel, coordIdentity: identity,
+          resource, mode: 'exclusive', maxDrainSec,
+        }, async () => { bodyRuns += 1; });
+        expect(refused.acquired).toBe(false);
+        expect(bodyRuns).toBe(0);
+        const queue = await readResourceQueue(getTxPool(), { coordinationDomain: domain, resource });
+        expect(queue.holders.some(holder => holder.owner === restartOwner)).toBe(false);
+        expect(queue.holders.some(holder => holder.owner === probeOwner && holder.status === 'held')).toBe(true);
+      } finally {
+        await inWorkspaceTxn(domain, restartOwner, tx => tryReleaseResource(tx, {
+          coordinationDomain: domain, resource, owner: restartOwner,
+        }));
+        await inWorkspaceTxn(domain, probeOwner, tx => tryReleaseResource(tx, {
+          coordinationDomain: domain, resource, owner: probeOwner,
+        }));
+      }
+      const after = await readResourceQueue(getTxPool(), { coordinationDomain: domain, resource });
+      expect(after.holders.some(holder => [probeOwner, restartOwner].includes(holder.owner))).toBe(false);
+    },
+  );
 });

@@ -546,6 +546,51 @@ describe('the one visible number (P-003 verification)', () => {
 /* ── reservation + settlement (P-005), migration 1116 ────────────────────── */
 
 describe('governed attempt persisted settlement receipts', () => {
+  it.each([
+    { label: 'absent', usage: {}, costUsd: 0, incomplete: true },
+    { label: 'partial', usage: { costUsd: 0.42, unreportedFrames: 1 }, costUsd: 0.42, incomplete: true },
+    { label: 'zero', usage: { costUsd: 0 }, costUsd: 0, incomplete: false },
+    { label: 'positive', usage: { costUsd: 0.42 }, costUsd: 0.42, incomplete: false },
+  ])('native proposer $label failure retains its actual SQL reservation disposition', async ({ usage, costUsd, incomplete }) => {
+    const loopId = `gym:proposer-failure-${randomUUID()}`;
+    const runRef = `native-proposer:${randomUUID()}`;
+    await registerLearningLoop(sql, { workspaceId: WS, loopId, budgetKind: 'lifetime', budgetUsd: 10 });
+    const unexpected = async () => { throw new Error('proposer fixture must not evaluate'); };
+    const abDeps: AbDeps = {
+      store: { upsertVariant: unexpected, upsertTask: unexpected, startRun: unexpected,
+        finishRun: unexpected, recordScore: unexpected, comparison: unexpected },
+      runPipeline: unexpected, collectAndDistill: unexpected, llmCall: unexpected,
+      newRunId: () => { throw new Error('proposer fixture must not allocate an evaluation'); }, now: () => 0,
+    };
+    const native = buildLoopDeps({ gymSql: sql, ports: {} as never, abDeps, judgeCall: unexpected,
+      proposerCall: async () => { throw Object.assign(new Error('native proposer failed after dispatch'), usage); },
+      proposerModel: 'controlled', tasks: [], baseline: { variantId: 'baseline', overlay: { promptOverrides: {} } },
+      harnessCommit: 'controlled', workspaceId: WS, scratchRoot: '/unused-proposer-fixture',
+      timeoutMs: 100, pollIntervalMs: 1, maxDistillChars: 100 });
+    const out = await runGovernedSpendAttempt({ workspaceId: WS, loopId, attemptKind: 'proposer',
+      requestedUsd: 1, runRef, accumulate: false, run: async () => {
+        const value = await native.propose({ promptOverrides: {} }, [], '');
+        return { costUsd: value.costUsd, value };
+      } }, { enabled: async () => true, getSql: async () => sql, log: () => {} });
+    if (out.ok || out.reason !== 'failed' || !out.reservationId) throw new Error('expected reserved proposer failure');
+    expect(out.costUsd).toBe(costUsd);
+    if (incomplete) expect(out).toMatchObject({ costUsdMeasurementMissing: true, settlement: null });
+    else expect(out.settlement).toMatchObject({ ok: true, reservation: { status: 'failed', usedUsd: costUsd } });
+    const fresh = postgres(testDatabaseUri, { max: 1, onnotice: () => {}, prepare: false });
+    try {
+      const rows = await listLearningSpendReservations(fresh, { workspaceId: WS, loopId });
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ id: out.reservationId, requestedUsd: 1, reservedUsd: 1, runRef,
+        status: incomplete ? 'open' : 'failed', usedUsd: incomplete ? 0 : costUsd });
+      expect(rows[0]!.settledAt === null).toBe(incomplete);
+      expect(await listLearningSpendEvents(fresh, { workspaceId: WS, loopId }))
+        .toHaveLength(incomplete || costUsd === 0 ? 0 : 1);
+      expect((await getLearningSpendPositions(fresh, { workspaceId: WS, loopId })).spend)
+        .toMatchObject({ unsettledUsd: incomplete ? 1 : 0, usedUsd: incomplete ? 0 : costUsd });
+      expect((await getLearningLoop(fresh, { workspaceId: WS, loopId }))?.spentUsd).toBe(0);
+    } finally { await fresh.end({ timeout: 5 }); }
+  });
+
   it.each([0, 0.42])('retains OPEN reservations for incomplete usage with known subtotal $%s', async costUsd => {
     const loopId = `gym:unknown-usage-${randomUUID()}`;
     const runRef = `incomplete-pipeline:${randomUUID()}`;

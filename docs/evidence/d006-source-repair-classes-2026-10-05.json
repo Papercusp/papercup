@@ -6,19 +6,22 @@
   "population": {
     "failedFiles": 124,
     "repairedFocused": 5,
-    "openUnknown": 119
+    "repairedPeerFocused": 7,
+    "openUnknown": 112
   },
   "classes": {
-    "assertion": 64,
+    "assertion": 62,
     "migration-stage": 1,
     "missing-schema": 16,
     "blueprint-fixture": 1,
     "console-guard": 10,
-    "unclassified": 18,
+    "unclassified": 16,
+    "peer-db-schema-notify": 4,
     "compat-view-insert": 1,
-    "stale-migration-list": 6,
+    "peer-feed-fixture": 3,
     "hook-mutex-cleanup": 4,
-    "profile-replay": 3
+    "profile-replay": 3,
+    "stale-migration-list": 3
   },
   "files": [
     {
@@ -674,12 +677,20 @@
     },
     {
       "path": "packages/operator-core/lib/sync-resolver/__tests__/cache-tag-trigger-coverage.integration.test.ts",
-      "class": "assertion",
-      "state": "open-unknown",
-      "item": "WI-10006170",
+      "class": "peer-db-schema-notify",
+      "state": "repaired-peer-focused",
+      "item": "WI-10006171",
       "lines": [
         15388
-      ]
+      ],
+      "historicalSymptomClass": "assertion",
+      "afterTestRun": 20775650,
+      "testSha256": "d899a252ef785ace8071c41cf904048cba9ed06b4f81054cb5c6d0e3f20300cd",
+      "receiptCommit": "694f4df59f38acb75c72f0212a2f00cbd089d7f8",
+      "testFileAtReceiptMatchesCurrent": true,
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "completeImportGraphCurrentness": "unknown"
     },
     {
       "path": "packages/operator-core/lib/sync/hyperbee/projections/__tests__/fed-ts-lww-guard.integration.test.ts",
@@ -1113,12 +1124,20 @@
     },
     {
       "path": "packages/operator-core/lib/adjacency-cross-feed-io.integration.test.ts",
-      "class": "stale-migration-list",
-      "state": "open-unknown",
-      "item": "WI-10006170",
+      "class": "peer-feed-fixture",
+      "state": "repaired-peer-focused",
+      "item": "WI-10006181",
       "lines": [
         12022
-      ]
+      ],
+      "historicalSymptomClass": "stale-migration-list",
+      "afterTestRun": 20779536,
+      "testSha256": "a4b6de4bbde0c38eeb73a1fb9ee1c355ec56c8f51e85df13dede1d587d499633",
+      "receiptCommit": "0933c2aa47c984468df16f35ef0af6df299ffab0",
+      "testFileAtReceiptMatchesCurrent": true,
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "completeImportGraphCurrentness": "unknown"
     },
     {
       "path": "packages/operator-core/lib/adv-sessions-reanchor.integration.test.ts",
@@ -1182,21 +1201,37 @@
     },
     {
       "path": "packages/operator-core/lib/peer-surface-source.integration.test.ts",
-      "class": "stale-migration-list",
-      "state": "open-unknown",
-      "item": "WI-10006170",
+      "class": "peer-feed-fixture",
+      "state": "repaired-peer-focused",
+      "item": "WI-10006181",
       "lines": [
         12104
-      ]
+      ],
+      "historicalSymptomClass": "stale-migration-list",
+      "afterTestRun": 20779537,
+      "testSha256": "27864d7b2ca0d7c81bb826d09021ea2558b3cdbf21af6afd7ba2b32d6a57c7ab",
+      "receiptCommit": "0933c2aa47c984468df16f35ef0af6df299ffab0",
+      "testFileAtReceiptMatchesCurrent": true,
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "completeImportGraphCurrentness": "unknown"
     },
     {
       "path": "packages/operator-core/lib/topic-matcher-io.integration.test.ts",
-      "class": "stale-migration-list",
-      "state": "open-unknown",
-      "item": "WI-10006170",
+      "class": "peer-feed-fixture",
+      "state": "repaired-peer-focused",
+      "item": "WI-10006181",
       "lines": [
         12149
-      ]
+      ],
+      "historicalSymptomClass": "stale-migration-list",
+      "afterTestRun": 20779535,
+      "testSha256": "577a31f77d1295639e121cab671419e8653395866c2617242fd81924dd53c0f0",
+      "receiptCommit": "0933c2aa47c984468df16f35ef0af6df299ffab0",
+      "testFileAtReceiptMatchesCurrent": true,
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "completeImportGraphCurrentness": "unknown"
     },
     {
       "path": "packages/operator-core/lib/work-items-attribution-backfill.integration.test.ts",
@@ -1247,9 +1282,9 @@
     },
     {
       "path": "libs/papercusp/libs/db/src/work-items-cdc-capture.integration.test.ts",
-      "class": "unclassified",
-      "state": "open-unknown",
-      "item": "WI-10006170",
+      "class": "peer-db-schema-notify",
+      "state": "repaired-peer-focused",
+      "item": "WI-10006171",
       "lines": [
         17943,
         17944,
@@ -1257,26 +1292,50 @@
         17946,
         17947,
         17948
-      ]
+      ],
+      "historicalSymptomClass": "unclassified",
+      "afterTestRun": 20775642,
+      "testSha256": "7fb985e4be1068d93c1f4b4ce7d4b887e2fb613d5996353f2ceafd068de10f50",
+      "receiptCommit": "1c714094d41a606d010a8d6c6ddfa838e80b01aa",
+      "testFileAtReceiptMatchesCurrent": true,
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "completeImportGraphCurrentness": "unknown"
     },
     {
       "path": "libs/papercusp/libs/db/src/legacy-human-parks-migration.integration.test.ts",
-      "class": "unclassified",
-      "state": "open-unknown",
-      "item": "WI-10006170",
+      "class": "peer-db-schema-notify",
+      "state": "repaired-peer-focused",
+      "item": "WI-10006171",
       "lines": [
         17897
-      ]
+      ],
+      "historicalSymptomClass": "unclassified",
+      "afterTestRun": 20775643,
+      "testSha256": "8ff485cdad94dc5273fcb0dbd2fd291ec5eaf41836534867b8999d2d2286a33a",
+      "receiptCommit": "1c714094d41a606d010a8d6c6ddfa838e80b01aa",
+      "testFileAtReceiptMatchesCurrent": true,
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "completeImportGraphCurrentness": "unknown"
     },
     {
       "path": "libs/papercusp/libs/db/src/work-item-deps.integration.test.ts",
-      "class": "assertion",
-      "state": "open-unknown",
-      "item": "WI-10006170",
+      "class": "peer-db-schema-notify",
+      "state": "repaired-peer-focused",
+      "item": "WI-10006171",
       "lines": [
         17905,
         17924
-      ]
+      ],
+      "historicalSymptomClass": "assertion",
+      "afterTestRun": 20775644,
+      "testSha256": "292ca3e471c371ff9115b7e5e99be3bf08c84c9b3301e327f52f578158637b5e",
+      "receiptCommit": "1c714094d41a606d010a8d6c6ddfa838e80b01aa",
+      "testFileAtReceiptMatchesCurrent": true,
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "completeImportGraphCurrentness": "unknown"
     },
     {
       "path": "libs/papercusp/libs/db/src/idle-in-tx-timeout.integration.test.ts",
@@ -1328,7 +1387,7 @@
   "classDisposition": [
     {
       "class": "assertion",
-      "count": 64,
+      "count": 62,
       "status": "open-unknown",
       "item": "WI-10006170",
       "owner": "su-a20d4635-81b0-4323-b33e-6e838a21d8fe",
@@ -1374,13 +1433,20 @@
     },
     {
       "class": "unclassified",
-      "count": 18,
+      "count": 16,
       "status": "open-unknown",
       "item": "WI-10006170",
       "owner": "su-a20d4635-81b0-4323-b33e-6e838a21d8fe",
       "scope": "diagnosis-and-placement",
       "rootCause": "unproved",
       "next": "Inspect exact saved error/source, deduplicate accepted defect and focused guard before source edits."
+    },
+    {
+      "class": "peer-db-schema-notify",
+      "count": 4,
+      "status": "repaired-peer-focused",
+      "item": "WI-10006171",
+      "rootCause": "Stored verified completion: stale fullschema fixtures, dependency/mapped notification producers; exact4D006receiptfiles matchcurrent."
     },
     {
       "class": "compat-view-insert",
@@ -1393,14 +1459,11 @@
       "next": "Inspect exact saved error/source, deduplicate accepted defect and focused guard before source edits."
     },
     {
-      "class": "stale-migration-list",
-      "count": 6,
-      "status": "open-unknown",
-      "item": "WI-10006170",
-      "owner": "su-a20d4635-81b0-4323-b33e-6e838a21d8fe",
-      "scope": "diagnosis-and-placement",
-      "rootCause": "unproved",
-      "next": "Inspect exact saved error/source, deduplicate accepted defect and focused guard before source edits."
+      "class": "peer-feed-fixture",
+      "count": 3,
+      "status": "repaired-peer-focused",
+      "item": "WI-10006181",
+      "rootCause": "Stored verified completion: stale declared schema and existing enrichment precondition; exact3integration receiptfiles matchcurrent."
     },
     {
       "class": "hook-mutex-cleanup",
@@ -1419,6 +1482,16 @@
       "item": "EI-25184116853759962",
       "rootCause": "Obsolete1154 replay after full migrated fixture ALTERed compatibility VIEW.",
       "commit": "7e205c4211eaf42648e7513eb2f4f3825a3c4825"
+    },
+    {
+      "class": "stale-migration-list",
+      "count": 3,
+      "status": "open-unknown",
+      "item": "WI-10006170",
+      "owner": "su-a20d4635-81b0-4323-b33e-6e838a21d8fe",
+      "scope": "diagnosis-and-placement",
+      "rootCause": "unproved",
+      "next": "Inspect exact saved error/source, deduplicate accepted defect and focused guard before source edits."
     }
   ],
   "prerequisites": [
@@ -1426,5 +1499,6 @@
     "Preserve historicalD006124failed/298skipped/census/source-environment gaps.",
     "P004 alone sequences finalexpensiveD006 after focusedrepairs/preconditionaudits and appropriate current-source/cleancausal evidence; readinessnotestablished."
   ],
-  "parserMethod": "ANSI-stripped actual FAIL headers matched by first path token, including suite headers with trailing [ repeated file ]; task-bounded canonical124-file population; symptoms do not prove root cause."
+  "parserMethod": "ANSI-stripped actual FAIL headers matched by first path token, including suite headers with trailing [ repeated file ]; task-bounded canonical124-file population; symptoms do not prove root cause.",
+  "peerEvidenceScope": "Exact durable PASS rows from successful committed peer closures were read; clean as-committed/non-scratch and current TEST FILE bytes match receipt commit. This is not full dependency/import/environment/finalD006 source assurance."
 }

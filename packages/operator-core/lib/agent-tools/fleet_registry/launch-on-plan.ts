@@ -44,7 +44,7 @@ import { defineTool, SU_ROLES, fuzzyEnumAsync } from '@papercusp/agent-mcp';
 import { assembleRolePrompt } from '@papercusp/orchestrator/role-prompt';
 import { buildConsoleEnvelope } from '../../console-launcher';
 import { spawnConsole, spawnHeadless } from '../../console-spawn';
-import { spawnGovernedAgentProcess } from '../../resource-governor/spawn-execution';
+import { spawnGovernedAgentProcess, type GoalProcessAdmission } from '../../resource-governor/spawn-execution';
 import type { AdmissionContext } from '../../resource-governor/admission';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { papercuspPathForWorkspace } from '../../papercusp-root';
@@ -4846,6 +4846,9 @@ export default defineTool({
     }> = [];
     const failed: Array<{ ownerId?: string; error: string; code: number }> = [];
     const goalAdmissionWarnings: string[] = [];
+    const finalGoalAdmissions: Array<{
+      ownerId: string; receiptId: string | null; admission: GoalProcessAdmission | null; outcome: 'opened' | 'failed';
+    }> = [];
     let persistedLaunchRevision = priorLaunchTransaction
       ? {
           transactionId: priorLaunchTransaction.transactionId,
@@ -5073,6 +5076,10 @@ export default defineTool({
         },
       );
       goalAdmissionWarnings.push(...(leaderResult.goalAdmissionDegraded ?? []).map((reason) => `⚠ ${reason}`));
+      finalGoalAdmissions.push({
+        ownerId: spawnedLeaderOwnerId, receiptId: leaderResult.admissionContext?.receiptId ?? null,
+        admission: leaderResult.goalAdmission ?? null, outcome: leaderResult.status === 'ok' ? 'opened' : 'failed',
+      });
       if (leaderResult.status !== 'ok') {
         // Nothing else has opened yet, so release the launch slot — an immediate, legitimate
         // retry must not be suppressed for the whole 5-minute window by a launch that
@@ -5086,11 +5093,10 @@ export default defineTool({
           ? `Fleet \`${fleetSlug}\` still records its prior absent leader ` +
             `\`${delegatedSpawnReplacementExpectedLeader ?? 'none'}\`; that value was not cleared or replaced.`
           : `Fleet \`${fleetSlug}\` now exists and is LEADERLESS — no leader was recorded, because none launched.`;
-        return err(
-          `leader:'spawn' — the LEADER failed to open (${leaderResult.error}), so NO members were ` +
+        const message = `leader:'spawn' — the LEADER failed to open (${leaderResult.error}), so NO members were ` +
             `opened (deliberately: an unled fleet is worse than none). ${registryTruth} ` +
-            `Recover by re-running this same leader:'spawn' call or taking leadership explicitly.`,
-        );
+            `Recover by re-running this same leader:'spawn' call or taking leadership explicitly.`;
+        return { ...json({ ok: false, error: leaderResult.error, finalGoalAdmissions, message }, message), isError: true };
       }
       leaderAdmissionContext = leaderResult.admissionContext;
       // The leader is OPEN — only now does the registry learn who leads. Before this line the
@@ -5267,6 +5273,10 @@ export default defineTool({
               const i = indices[offset];
               const memberOwnerId = requestedMemberIds[i];
               goalAdmissionWarnings.push(...(result.goalAdmissionDegraded ?? []).map((reason) => `⚠ ${reason}`));
+              finalGoalAdmissions.push({
+                ownerId: memberOwnerId, receiptId: result.admissionContext?.receiptId ?? null,
+                admission: result.goalAdmission ?? null, outcome: result.status === 'ok' ? 'opened' : 'failed',
+              });
               if (result.status === 'ok') {
                 openedThisWave.push(memberOwnerId);
                 launchTransaction.openedMemberIds.push(memberOwnerId);
@@ -5511,6 +5521,7 @@ export default defineTool({
           requestedOpenCount,
           launchEvidence,
           completionPending: true,
+          finalGoalAdmissions,
           completionHandle,
           launchTransaction,
           opened,
@@ -5837,6 +5848,7 @@ export default defineTool({
         // WI-10004545: which goal the launching agent attributed the plan to (null = not a
         // goal launch / nothing attributed); `error` is set when the best-effort stamp threw.
         planGoalAttribution,
+        finalGoalAdmissions,
         leaderRole,
         callerMembership,
         // Machine-readable fact about the ACTUAL registered leader, never inferred from

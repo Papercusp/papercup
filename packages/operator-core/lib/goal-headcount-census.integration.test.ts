@@ -272,6 +272,28 @@ describe('goalHeadcount same-query population in real Postgres', () => {
     expect(counted.measurement?.counted.filter((row) => row.ownerId === 'live')).toHaveLength(1);
   });
 
+  it('supplies the exact locked final population to the receipt writer before registration', async () => {
+    const register = vi.fn(async (goalId: string | null, resolution: GoalLaunchResolution | null, degradedReason: string | null) => {
+      expect(goalId).toBe(GOAL);
+      expect(degradedReason).toBeNull();
+      await receipt('final-proof', { metadata: { goalId: GOAL, goalReservation: true,
+        targetOwnerId: 'final-proof', fleetSlug: FLEET, goalAdmission: JSON.stringify(resolution) } });
+      return 'final-proof';
+    });
+    const result = await registerGoalLaunch({
+      workspaceId: WS, launcherOwnerId: 'fixture-launcher', targetOwnerId: 'final-proof',
+      excludeOwnerIds: ['replacement'], fleetSlug: FLEET, sql: db.sql, resolve: policy(),
+    }, register);
+    expect(register).toHaveBeenCalledOnce();
+    expect(register.mock.calls[0][1]).toBe(result.resolution);
+    const rows = await db.sql`SELECT payload->'resource_governor'->'metadata'->>'goalAdmission' AS admission
+      FROM harness_shared.work_items WHERE feature_id = 'receipt-final-proof'`;
+    expect(JSON.parse(rows[0].admission)).toEqual(result.resolution);
+    expect(result.resolution?.headcountMeasurement?.excludedOwnerIds).toEqual(['replacement', 'final-proof']);
+    expect(result.resolution?.headcount.total).toBe(4);
+    expect((await goalHeadcount({ workspaceId: WS, goalId: GOAL, sql: db.sql })).headcount.total).toBe(6);
+  });
+
   it('reserves the fleet seat independently of the goal ceiling and preserves replacement exclusion', async () => {
     const guarded = await Promise.all(['fleet-a', 'fleet-b'].map((targetOwnerId) => registerGoalLaunch({
       workspaceId: WS, launcherOwnerId: 'fixture-launcher', targetOwnerId, fleetSlug: FLEET,
@@ -302,6 +324,6 @@ describe('goalHeadcount same-query population in real Postgres', () => {
     expect(result).toEqual({ value: GOAL, resolution: null,
       degradedReason: 'goal admission registration not enforced — fixture lock unavailable' });
     expect(register).toHaveBeenCalledTimes(1);
-    expect(register).toHaveBeenCalledWith(GOAL);
+    expect(register).toHaveBeenCalledWith(GOAL, null, 'goal admission registration not enforced — fixture lock unavailable');
   });
 });

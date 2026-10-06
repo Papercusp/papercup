@@ -3521,6 +3521,9 @@ describe('fleet:launch-on-plan handler — spawn failures surface failed[], neve
 
     expect(payload.ok).toBe(false);
     expect(payload.opened).toEqual([]);
+    expect(payload.finalGoalAdmissions).toEqual([{
+      ownerId: payload.launchTransaction.requestedMemberIds[0], receiptId: null, admission: null, outcome: 'failed',
+    }]);
     expect(payload.failed).toEqual([
       {
         ownerId: payload.launchTransaction.requestedMemberIds[0],

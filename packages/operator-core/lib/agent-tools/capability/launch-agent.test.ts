@@ -541,6 +541,39 @@ describe('GOAL alternate plan-placement entry guard (P-006 / A-04)', () => {
 });
 
 describe('GOAL admission receipt (EI-25166050736574344)', () => {
+  it('keeps the batch check separate from each final decision and persists a later member refusal', async () => {
+    goalLaunchResolveMock.mockResolvedValueOnce({
+      goalId: 'goal-1', settings: null, goalBrief: null, effective: {},
+      ceilings: { maxAgents: 6, maxPerFleet: 3 }, headcount: { total: 0, fleet: null },
+      headcountMeasurement: { measuredAt: 'preflight', populationComplete: true,
+        candidate: { total: 0, fleet: null }, counted: [], oracleEndedOwnerIds: [], excludedOwnerIds: [] },
+      budget: null, refusal: null, degraded: false, degradedReasons: [],
+    });
+    const final = { stage: 'final', goalId: 'goal-1', decision: 'admitted', headcount: { total: 5, fleet: null },
+      measurement: { measuredAt: 'final-first', populationComplete: false, counted: [], excludedOwnerIds: ['retained'] } };
+    const refused = { ...final, decision: 'refused', headcount: { total: 6, fleet: null },
+      measurement: { ...final.measurement, measuredAt: 'final-second' } };
+    spawnGovernedAgentProcessMock.mockImplementationOnce(async (_input, spawnProcess) => ({
+      ...await spawnProcess({ receiptId: 'WI-final-first', leaseId: 'lease-final-first' }),
+      admissionContext: { receiptId: 'WI-final-first' }, goalAdmission: final,
+    }));
+    spawnGovernedAgentProcessMock.mockResolvedValueOnce({ status: 'error', code: 409,
+      error: 'final seat already reserved', goalAdmission: refused });
+    const result = await launchAgent.handler({ brief: 'Hermetic final receipt test', count: 2,
+      idempotencyKey: 'final-member-receipt' }, ctx);
+    const launch = dataOf(result)?.launch;
+    expect(launch).toMatchObject({
+      goalAdmission: { stage: 'batch-preflight', headcount: { total: 0, fleet: null } },
+      finalGoalAdmissions: [
+        { memberIndex: 0, receiptId: 'WI-final-first', admission: final, outcome: 'opened' },
+        { memberIndex: 1, receiptId: null, admission: refused, outcome: 'failed' },
+      ],
+    });
+    expect(recordAgentLaunchResultMock).toHaveBeenCalledWith(expect.objectContaining({
+      summary: expect.objectContaining({ finalGoalAdmissions: launch?.finalGoalAdmissions }),
+    }));
+  });
+
   it.each([false, true])('persists the resolver measurement and unknown capacity on count failure=%s', async (countFailed) => {
     const measurement = {
       measuredAt: '2026-10-05 18:40:16+00', populationComplete: true,
