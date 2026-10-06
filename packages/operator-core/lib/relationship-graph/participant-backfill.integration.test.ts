@@ -8,6 +8,8 @@
  * ungranted source contributes nobody, and replaying the backfill adds no person.
  */
 import { randomUUID } from 'node:crypto';
+import { existsSync, readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import type postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
@@ -76,6 +78,11 @@ beforeAll(async () => {
   org = await createOrgTestDb();
   sql = org.adminSql;
   h.sql = sql;
+  // Migration 1415 (participant_backfill_cursor) is idempotent, so it is applied here whether or not
+  // the throwaway database already ran it: the armed file first, its draft before it is armed.
+  // MIGRATION_1415_PATH points at a copy, which is how scripts/mutation-probe.sh proves it can fail.
+  const armed1415 = fileURLToPath(new URL('../../../../libs/papercusp/libs/db/sql/1415-participant-backfill-cursor.sql', import.meta.url));
+  await sql.unsafe(readFileSync(process.env.MIGRATION_1415_PATH ?? (existsSync(armed1415) ? armed1415 : `${armed1415}.DRAFT`), 'utf8'));
   const [user] = await sql<{ id: string }[]>`
     INSERT INTO harness_shared.users (username, display_name)
     VALUES (${'participant-backfill-' + Date.now()}, 'Participant backfill')
