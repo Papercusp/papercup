@@ -202,6 +202,82 @@ describe('loadRoleCapabilities', () => {
   );
 
   test(
+    'merge-resolver can use its documented native conflict tools and report findings (both dispatch gates)',
+    { timeout: 60_000 },
+    async () => {
+      const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'merge-resolver');
+      for (const capability of [
+        'coord:read',
+        'coord:write',
+        'work_items:read',
+        'work_items:write',
+        'features:read',
+        'locks:read',
+        'locks:write',
+      ]) {
+        expect(caps.has(capability), `merge-resolver missing ${capability}`).toBe(true);
+      }
+      for (const capability of [
+        'features:write',
+        'plans:write',
+        'operator:write',
+        'testing:run',
+        'capability:fs-write',
+        'capability:bash',
+      ]) {
+        expect(caps.has(capability), `merge-resolver must not receive ${capability}`).toBe(false);
+      }
+
+      const [
+        { COORD_ROLES },
+        { default: acquireResource },
+        { default: releaseResource },
+        { default: locksList },
+        { default: workItemGet },
+        { default: workItemCreate },
+        { default: capture },
+        { default: featureGet },
+        { default: presence },
+        { default: ask },
+        { default: send },
+        { default: awaitInbox },
+        { default: escalate },
+      ] = await Promise.all([
+        import('../../../agent-tools/coordination/roles.js'),
+        import('../../../agent-tools/locks/acquire_resource.js'),
+        import('../../../agent-tools/locks/release_resource.js'),
+        import('../../../agent-tools/locks/list.js'),
+        import('../../../agent-tools/work_items/get.js'),
+        import('../../../agent-tools/work_items/create.js'),
+        import('../../../agent-tools/improvements/capture.js'),
+        import('../../../agent-tools/features/get.js'),
+        import('../../../agent-tools/coordination/tools/presence.js'),
+        import('../../../agent-tools/coordination/tools/ask.js'),
+        import('../../../agent-tools/coordination/tools/send.js'),
+        import('../../../agent-tools/coordination/tools/await-inbox.js'),
+        import('../../../agent-tools/coordination/tools/escalate.js'),
+      ]);
+      expect(COORD_ROLES).toContain('merge-resolver');
+      for (const [name, tool] of [
+        ['locks:acquire_resource', acquireResource],
+        ['locks:release_resource', releaseResource],
+        ['locks:list', locksList],
+        ['work_items:get', workItemGet],
+        ['work_items:create', workItemCreate],
+        ['improvements:capture', capture],
+        ['features:get', featureGet],
+        ['coord:presence', presence],
+        ['coord:ask', ask],
+        ['coord:send', send],
+        ['coord:await-inbox', awaitInbox],
+        ['coord:escalate', escalate],
+      ] as const) {
+        expect(tool.agentRoles, `${name} must admit merge-resolver`).toContain('merge-resolver');
+      }
+    },
+  );
+
+  test(
     'judge can read rubric docs and use read-only SQL/LSP evidence fallbacks without write access',
     { timeout: 60_000 },
     async () => {

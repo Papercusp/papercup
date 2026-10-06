@@ -286,6 +286,11 @@ import {
   governedProcessIdempotencyKey,
   runGovernedTestProcess,
 } from "./lib/governed-test-process.mjs";
+import { applyGitOptionalLocksDefault } from "./lib/git-optional-locks.mjs";
+
+// WI-10006785 — this runner SIGKILLs test trees too; a `git status` killed while holding its
+// optional `.git/index.lock` leaves it behind and freezes every commit in the shared tree.
+applyGitOptionalLocksDefault();
 
 // EI-15802: an agent running this as a BACKGROUND task only sees the harness's
 // own truncated tail (~150 lines) plus an exit-code notification — on a long

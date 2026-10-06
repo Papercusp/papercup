@@ -51,6 +51,8 @@ import { fetchOverDuplex } from './fetch-transport';
 import { wireHiveGitServe, openHiveGitFetchDuplex, _testing as serveTesting } from './serve-wiring';
 import { scopeRepoWireKey } from './scope-repo';
 import { setPotGitMode, getPotGitMode } from '../../harness/git-sync/hive-git-mode';
+import { addRevokedHivePubkeys } from '../../hive-membership-store';
+import { loadRevokedHivePubkeysForLocalPot, unsafeFederatedPotScope } from '../../federated-pot-scope';
 
 const WORKSPACE_ID = `ws-serve-wiring-${randomUUID().slice(0, 8)}`;
 const HIVE = `hive-serve-wiring-${randomUUID().slice(0, 8)}`;
@@ -413,6 +415,70 @@ describe('pot-git serve-wiring (P-201: serveUploadPack over the papercusp/pot-gi
       }
       await new Promise<void>((r) => badServer.close(() => r()));
     }
+  });
+
+  /**
+   * WI-10006827 — a REVOKED device must not pull the pot's MAIN repo. Soak c1010r measured the
+   * hole live: the tower logged `serve OK ... peer=ywj8zjsF` four minutes after that device was
+   * revoked, because only scopes/ repos consulted the caller's device. The revocation here is
+   * written by the same writer substrate:revoke_contributor uses (addRevokedHivePubkeys) and read
+   * back through the exact lookup the gate uses, so this pins the real row, not a stub.
+   */
+  it('WI-10006827: refuses the main repo to a REVOKED verified device, fast and named; a non-revoked device is still served', async () => {
+    const REVOKED = Buffer.alloc(32, 11).toString('base64');
+    const MEMBER = Buffer.alloc(32, 12).toString('base64');
+    await db.adminSql`INSERT INTO harness_shared.pot_members (workspace_id, pot_home_slug, github_user_id, github_username)
+      VALUES (${WORKSPACE_ID}, ${HIVE}, 4242, 'owner-under-test') ON CONFLICT DO NOTHING`;
+    await addRevokedHivePubkeys(
+      WORKSPACE_ID,
+      unsafeFederatedPotScope(HIVE, 'test fixture: this hive home is its own federated scope'),
+      4242,
+      [REVOKED],
+    );
+    // Positive control on the fixture: the gate's own lookup sees the revocation.
+    expect(await loadRevokedHivePubkeysForLocalPot(WORKSPACE_ID, HIVE)).toContain(REVOKED);
+
+    const fetchAs = async (peer: string, tag: string) => {
+      const sock = join(root, `revoke-${tag}.sock`);
+      const srv = createServer({ allowHalfOpen: true }, (srvConn) => {
+        srvConn.on('error', () => {});
+        wireHiveGitServe(new SecretStream(false, srvConn), TOPIC, {
+          potHomeSlug: HIVE,
+          workspaceId: WORKSPACE_ID,
+          resolvePeerDevicePubkey: () => peer,
+        });
+      });
+      await new Promise<void>((r) => srv.listen(sock, () => r()));
+      const s = await new Promise<Socket>((resolve, reject) => {
+        const conn = connect({ path: sock, allowHalfOpen: true });
+        conn.once('connect', () => resolve(conn));
+        conn.once('error', reject);
+      });
+      s.on('error', () => {});
+      const noise = new SecretStream(true, s);
+      await noise.opened;
+      try {
+        const duplex = await openHiveGitFetchDuplex(noise, TOPIC, { repoKey: 'repo-1' });
+        const t0 = Date.now();
+        const res = await fetchOverDuplex(clientRepo, duplex, [`+refs/heads/work:refs/heads/revoke-${tag}`], {
+          timeoutMs: 15_000,
+        });
+        return { res, elapsedMs: Date.now() - t0 };
+      } finally {
+        try {
+          s.destroy();
+        } catch {
+          /* ignore */
+        }
+        await new Promise<void>((r) => srv.close(() => r()));
+      }
+    };
+
+    const refused = await fetchAs(REVOKED, 'revoked');
+    expectFastNamedRefusal(refused.res, refused.elapsedMs, /serve refused: revoked-device/);
+    // Control: the same wiring, the same repo, a device that is not revoked, is served.
+    const served = await fetchAs(MEMBER, 'member');
+    expect(served.res.code, served.res.stderr).toBe(0);
   });
 
   it('EI-18752434722211671: a peer that never opens AND never closes the channel fails soft instead of hanging forever', async () => {

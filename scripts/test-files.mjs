@@ -95,6 +95,7 @@ import {
 } from './lib/restricted-hold-preflight.mjs';
 import { repoLockName } from './npm-install-safe.mjs';
 import { ensurePapercuspTmpdir } from '../libs/test-config/src/tmpdir-guard.ts';
+import { applyGitOptionalLocksDefault } from './lib/git-optional-locks.mjs';
 
 // EI-20767792192323374 — MUST happen HERE, in the launcher, and not in vitest.config.ts.
 // Vitest fixes its module-cache root as a class field initializer (`_tmpDir = join(tmpdir(),
@@ -108,6 +109,11 @@ import { ensurePapercuspTmpdir } from '../libs/test-config/src/tmpdir-guard.ts';
 // covers workspaces whose config does NOT import @papercusp/test-config (the libs/generic
 // submodules, which generic-first forbids from depending on it).
 ensurePapercuspTmpdir();
+
+// WI-10006785 — this router SIGKILLs whole test trees (watchdog / teardown). A `git status`
+// killed mid-run leaves a holderless `.git/index.lock` that blocks every commit in the shared
+// tree. Default every descendant to GIT_OPTIONAL_LOCKS=0 so read-only git never takes it.
+applyGitOptionalLocksDefault();
 
 export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
