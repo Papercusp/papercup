@@ -278,7 +278,8 @@ describe('affected-tests selector — graph suggestions are SUPERSET-ONLY', () =
     expect(base.status, base.stderr.slice(0, 400)).toBe(0);
     expect(base.names.size).toBeGreaterThan(0);
     expect(base.names.has(IMPORTER_WS), 'precondition: the fixture importer workspace must be outside the baseline closure').toBe(false);
-    expect(base.line).toBeNull();
+    // Printed on EVERY run since P-001 — a disabled path says so instead of staying silent.
+    expect(base.line).toMatch(/^GRAPH_SUGGESTIONS status=unavailable reason=disabled .*added=none/);
   });
 
   it('positive: a verified edge ADDS the importer workspace and keeps the whole baseline', () => {
@@ -294,7 +295,7 @@ describe('affected-tests selector — graph suggestions are SUPERSET-ONLY', () =
     ['stale importer (hash drift)', () => writeSnapshot('stale.json', snapshotOf([{ ...goodEdge, importerSha256: sha256Hex('different') }])), /status=applied accepted=0 rejected=1 added=none/],
     ['invalid snapshot', () => writeSnapshot('invalid.json', '{"schema":"wrong"}'), /status=invalid reason=schema-mismatch accepted=0 rejected=0 added=none/],
     ['unparseable snapshot', () => writeSnapshot('garbage.json', 'not json at all'), /status=invalid reason=unparseable/],
-    ['graph unavailable (no snapshot file)', () => join(tmp, 'does-not-exist.json'), /^$/],
+    ['graph unavailable (no snapshot file)', () => join(tmp, 'does-not-exist.json'), /^GRAPH_SUGGESTIONS status=unavailable reason=absent .*added=none .*source=env$/],
     ['uncorroborated edge', () => writeSnapshot('uncorr.json', snapshotOf([{ importer: IMPORTER, imported: 'apps/operator-docs/src/never-imported.ts', importerSha256: sha256Hex(IMPORTER_SRC) }])), /status=applied accepted=0 rejected=1 added=none/],
   ];
   for (const [label, makeSnap, lineRe] of degraded) {

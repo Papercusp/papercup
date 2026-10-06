@@ -12,14 +12,19 @@
  */
 import { describe, it, expect, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
+  DIRECT_PAGE_SIZE,
   GraphReadError,
+  backendVersionNearBin,
+  directCypherRunner,
   parseArgs,
+  registryIndexReader,
+  runCliToFile,
   parseCypherText,
   produceSnapshotFromEdges,
   produceSnapshotFromGraph,
@@ -284,5 +289,151 @@ describe('produceSnapshotFromEdges / writeSnapshotAtomic / parseArgs', () => {
       expect(r.status).toBe(2);
       expect(r.stderr).toMatch(/status=usage-error/);
     });
+  });
+});
+
+/**
+ * DIRECT mode (gitnexus-deterministic-integration P-001): the reindex routine runs the producer
+ * against the gitnexus CLI itself, not through MCP (which took ~29 min / 2,274 pages). Two
+ * measured traps are pinned here: the CLI's answer is cut at 65,536 bytes when stdout is a PIPE,
+ * and `gitnexus cypher` refuses without `--repo` once two repos are registered.
+ */
+describe('DIRECT mode (--gitnexus-bin)', () => {
+  const dirs: string[] = [];
+  afterEach(() => {
+    for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  });
+  const tmp = () => {
+    const d = mkdtempSync(join(tmpdir(), 'gen-graph-direct-'));
+    dirs.push(d);
+    return d;
+  };
+  /** A fake executable: a node script with a shebang, in a tmp dir with no package.json (CJS). */
+  const fakeBin = (dir: string, name: string, body: string) => {
+    const p = join(dir, name);
+    writeFileSync(p, `#!${process.execPath}\n${body}\n`);
+    chmodSync(p, 0o755);
+    return p;
+  };
+
+  it('parseArgs: --gitnexus-bin pages in large steps unless --page-size is explicit, and excludes --edges-file', () => {
+    expect(parseArgs(['--gitnexus-bin', '/x/gitnexus']).opts).toMatchObject({ gitnexusBin: '/x/gitnexus', pageSize: DIRECT_PAGE_SIZE });
+    expect(parseArgs(['--gitnexus-bin', '/x/gitnexus', '--page-size', '7']).opts).toMatchObject({ pageSize: 7 });
+    expect(parseArgs(['--edges-file', 'e.json', '--index-commit', 'abc', '--gitnexus-bin', '/x']).error).toMatch(/exclusive/);
+  });
+
+  it('directCypherRunner always names --repo and runs in the source root', async () => {
+    const calls: Array<{ bin: string; argv: string[]; opts: { cwd: string; timeoutMs: number } }> = [];
+    const run = directCypherRunner({
+      bin: '/x/gitnexus',
+      repo: 'papercusp',
+      cwd: '/src',
+      timeoutMs: 1234,
+      runToFile: async (bin: string, argv: string[], opts: { cwd: string; timeoutMs: number }) => {
+        calls.push({ bin, argv, opts });
+        return 'ANSWER';
+      },
+    });
+    expect(await run('MATCH (n) RETURN count(*) AS n')).toBe('ANSWER');
+    expect(calls).toEqual([
+      { bin: '/x/gitnexus', argv: ['cypher', '--repo', 'papercusp', 'MATCH (n) RETURN count(*) AS n'], opts: { cwd: '/src', timeoutMs: 1234 } },
+    ]);
+  });
+
+  it('registryIndexReader reads the CLI registry (array or {repositories}) and refuses a missing repo or unreadable file', async () => {
+    const entry = { name: 'papercusp', lastCommit: INDEX.lastCommit, indexedAt: INDEX.indexedAt };
+    const ok = registryIndexReader({ registry: 'r.json', repo: 'papercusp', readFile: () => JSON.stringify([{ name: 'other', lastCommit: 'x' }, entry]), backendVersion: '1.6.9' });
+    expect(await ok()).toEqual({ lastCommit: INDEX.lastCommit, indexedAt: INDEX.indexedAt, backend: 'gitnexus', backendVersion: '1.6.9' });
+    const wrapped = registryIndexReader({ registry: 'r.json', repo: 'papercusp', readFile: () => JSON.stringify({ repositories: [entry] }) });
+    expect((await wrapped()).lastCommit).toBe(INDEX.lastCommit);
+    const missing = registryIndexReader({ registry: 'r.json', repo: 'papercusp', readFile: () => '[]' });
+    expect(await failCode(missing())).toBe('backend-unavailable');
+    const unreadable = registryIndexReader({
+      registry: 'r.json',
+      repo: 'papercusp',
+      readFile: () => {
+        throw new Error('ENOENT');
+      },
+    });
+    expect(await failCode(unreadable())).toBe('backend-unavailable');
+  });
+
+  it('backendVersionNearBin reads the gitnexus package beside a node_modules/.bin entry', () => {
+    const files: Record<string, string> = { [join('/v/node_modules', 'gitnexus', 'package.json')]: JSON.stringify({ version: '1.6.9' }) };
+    expect(backendVersionNearBin('/v/node_modules/.bin/gitnexus', (p: string) => files[p] ?? (() => { throw new Error('no'); })())).toBe('1.6.9');
+    expect(backendVersionNearBin('/nowhere/.bin/gitnexus', () => { throw new Error('no'); })).toBeNull();
+  });
+
+  it('runCliToFile binds the child stdout to a FILE and returns an answer far past 64 KiB intact', async () => {
+    const d = tmp();
+    // Reports whether fd 1 is a regular file — a pipe-backed runner fails this outright, which is
+    // the regression that truncated every 5,000-row page at exactly 65,536 bytes.
+    const bin = fakeBin(
+      d,
+      'dump',
+      `const fs = require('node:fs');
+fs.writeSync(1, JSON.stringify({ stdoutIsFile: fs.fstatSync(1).isFile(), argv: process.argv.slice(2), pad: 'x'.repeat(200000) }));
+process.exit(0);`,
+    );
+    const text = await runCliToFile(bin, ['cypher', 'Q'], { cwd: d, timeoutMs: 30_000 });
+    expect(text.length).toBeGreaterThan(200_000);
+    const parsed = JSON.parse(text);
+    expect(parsed.stdoutIsFile).toBe(true);
+    expect(parsed.argv).toEqual(['cypher', 'Q']);
+  });
+
+  it('runCliToFile rejects a non-zero exit instead of returning partial output', async () => {
+    const d = tmp();
+    const bin = fakeBin(d, 'fail', `process.stdout.write('{"partial":'); process.exit(3);`);
+    await expect(runCliToFile(bin, ['cypher', 'Q'], { cwd: d, timeoutMs: 30_000 })).rejects.toThrow(/exited 3/);
+  });
+
+  it('real CLI end to end against a scripted gitnexus binary: pages via the CLI, binds the registry index, writes the snapshot', () => {
+    const d = tmp();
+    const src = join(d, 'src');
+    for (const [rel, text] of Object.entries(SOURCES)) {
+      mkdirSync(dirname(join(src, rel)), { recursive: true });
+      writeFileSync(join(src, rel), text);
+    }
+    const registry = join(d, 'registry.json');
+    writeFileSync(registry, JSON.stringify([{ name: 'papercusp', lastCommit: INDEX.lastCommit, indexedAt: INDEX.indexedAt }]));
+    const edgesFile = join(d, 'edges.json');
+    writeFileSync(edgesFile, JSON.stringify(EDGES));
+    const log = join(d, 'argv.log');
+    const bin = fakeBin(
+      d,
+      'gitnexus',
+      `const fs = require('node:fs');
+const argv = process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify(argv) + '\\n');
+if (argv[0] !== 'cypher' || argv[1] !== '--repo') { process.stderr.write('Multiple repositories indexed'); process.exit(1); }
+const edges = JSON.parse(fs.readFileSync(${JSON.stringify(edgesFile)}, 'utf8'));
+const q = argv[3];
+const table = (h, rows) => [ '| ' + h.join(' | ') + ' |', '| ' + h.map(() => '---').join(' | ') + ' |', ...rows.map((r) => '| ' + r.join(' | ') + ' |') ].join('\\n');
+let body;
+if (q.includes('count(*)')) body = { markdown: table(['n'], [[String(edges.length)]]), row_count: 1 };
+else {
+  const skip = Number(/SKIP (\\d+)/.exec(q)[1]);
+  const limit = Number(/LIMIT (\\d+)/.exec(q)[1]);
+  const rows = edges.slice(skip, skip + limit).map((e) => [e.importer, e.imported]);
+  body = { markdown: table(['importer', 'imported'], rows), row_count: rows.length };
+}
+fs.writeSync(1, JSON.stringify(body, null, 2) + '\\n\\n---\\n**Next:** …');
+process.exit(0);`,
+    );
+    const out = join(d, 'out', 'snap.json');
+    const r = spawnSync(
+      process.execPath,
+      [CLI, '--gitnexus-bin', bin, '--registry', registry, '--repo', 'papercusp', '--source-root', src, '--out', out, '--page-size', '2'],
+      { encoding: 'utf8', cwd: REPO_ROOT, timeout: 60_000 },
+    );
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stderr).toMatch(/GRAPH_SNAPSHOT status=written edges=3 input=3 .* pages=2 .* index=0ce3904e0d /);
+    const parsed = parseSnapshot(readFileSync(out, 'utf8'));
+    expect(parsed.snapshot?.edges.length).toBe(3);
+    expect(parsed.snapshot?.index).toMatchObject({ lastCommit: INDEX.lastCommit, backend: 'gitnexus' });
+    const argvs = readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l) as string[]);
+    expect(argvs.length).toBeGreaterThanOrEqual(4); // count, 2 pages, re-count
+    for (const a of argvs) expect(a.slice(0, 3)).toEqual(['cypher', '--repo', 'papercusp']);
   });
 });
