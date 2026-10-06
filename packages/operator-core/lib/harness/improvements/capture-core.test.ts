@@ -96,6 +96,26 @@ function deps(
   };
 }
 
+function semanticCoverageAssessment(
+  verdict: NonNullable<SemanticDupeResult['coverage']>['verdict'],
+): NonNullable<SemanticDupeResult['coverage']> {
+  return {
+    source: 'work_items:semantic-dupe-guard',
+    verdict,
+    coverage: verdict === 'healthy' ? 0.99 : verdict === 'degraded' ? 0.5 : null,
+    recentCoverage: null,
+    surfaces: [],
+    unknownSurfaces: verdict === 'unknown' ? ['harness_shared.work_items.embedding'] : [],
+    note: `fixture coverage is ${verdict}`,
+  };
+}
+
+function healthySemanticResult(
+  thresholds: SemanticDupeResult['thresholds'] = { hard: 0.93, soft: 0.9 },
+): SemanticDupeResult {
+  return { hard: [], soft: [], thresholds, coverage: semanticCoverageAssessment('healthy') };
+}
+
 describe('storageKindOf — the native column mapping (close-loop D-002)', () => {
   it('bug → bug; change → change; feature → change (payload refinement)', () => {
     expect(storageKindOf('bug')).toBe('bug');
@@ -1594,9 +1614,16 @@ describe('captureImprovement — search-first dedup (D-001)', () => {
     });
     const d = deps({ found: [] });
     d.findSemanticDupes = async () => ({
-      hard: [{ id: prior.id, similarity: 0.96 }],
+      hard: [{
+        id: prior.id,
+        title: prior.title,
+        state: prior.state,
+        harness: 'papercusp',
+        similarity: 0.96,
+      }],
       soft: [],
       thresholds: { hard: 0.9, soft: 0.8 },
+      coverage: semanticCoverageAssessment('healthy'),
     });
     d.getIssue = async () => prior;
     const input = {
@@ -2839,10 +2866,10 @@ describe('P-007 — dedupCoverage: an empty result must disclose whether it coul
     expect(res.dedupCoverage).toEqual({ lexical: 'ok', semantic: 'unavailable', degraded: true });
   });
 
-  it('reports semantic OK + not degraded when the embedding leg DOES answer — so [] is a real all-clear', async () => {
+  it('reports semantic OK + not degraded only when the embedding leg and index coverage are healthy', async () => {
     const d = {
       ...deps(),
-      findSemanticDupes: async () => ({ hard: [], soft: [], thresholds: { hard: 0.9, soft: 0.8 } }),
+      findSemanticDupes: async () => healthySemanticResult({ hard: 0.9, soft: 0.8 }),
     };
     const res = await captureImprovement(
       { title: 'some novel symptom string', kind: 'bug', checkDuplicatesOnly: true },
@@ -2850,6 +2877,31 @@ describe('P-007 — dedupCoverage: an empty result must disclose whether it coul
     );
     expect(res.possibleDuplicates).toEqual([]);
     expect(res.dedupCoverage).toEqual({ lexical: 'ok', semantic: 'ok', degraded: false });
+  });
+
+  it.each([
+    { name: 'below-floor index', verdict: 'degraded' as const, semantic: 'partial' as const, degraded: true },
+    { name: 'unknown index coverage', verdict: 'unknown' as const, semantic: 'unavailable' as const, degraded: true },
+    { name: 'unmapped semantic source', verdict: 'not-semantic' as const, semantic: 'unavailable' as const, degraded: true },
+    { name: 'missing coverage assessment', verdict: undefined, semantic: 'unavailable' as const, degraded: true },
+  ])('does not call an empty result clean with $name', async ({ verdict, semantic, degraded }) => {
+    const d = {
+      ...deps(),
+      findSemanticDupes: async () => ({
+        hard: [],
+        soft: [],
+        thresholds: { hard: 0.93, soft: 0.9 },
+        ...(verdict ? { coverage: semanticCoverageAssessment(verdict) } : {}),
+      }),
+    };
+
+    const res = await captureImprovement(
+      { title: 'same title queried against an incomplete semantic index', kind: 'bug', checkDuplicatesOnly: true },
+      d,
+    );
+
+    expect(res.possibleDuplicates).toEqual([]);
+    expect(res.dedupCoverage).toEqual({ lexical: 'ok', semantic, degraded });
   });
 
   it('CONTROL: the two cases above are DISTINGUISHABLE — pre-fix they were byte-identical', async () => {
@@ -2861,7 +2913,7 @@ describe('P-007 — dedupCoverage: an empty result must disclose whether it coul
     );
     const up = await captureImprovement(
       { title: 'some novel symptom string', kind: 'bug', checkDuplicatesOnly: true },
-      { ...deps(), findSemanticDupes: async () => ({ hard: [], soft: [], thresholds: { hard: 0.9, soft: 0.8 } }) },
+      { ...deps(), findSemanticDupes: async () => healthySemanticResult({ hard: 0.9, soft: 0.8 }) },
     );
     expect(down.possibleDuplicates).toEqual(up.possibleDuplicates); // the pre-fix payload: identical
     expect(down.dedupCoverage).not.toEqual(up.dedupCoverage); // the fix: no longer identical
@@ -2898,7 +2950,7 @@ describe('EI-20275452450016416 — the achieved coverage is PERSISTED, not just 
     const d = deps();
     await captureImprovement(
       { title: 'a brand new finding', kind: 'bug' },
-      { ...d, findSemanticDupes: async () => ({ hard: [], soft: [], thresholds: { hard: 0.9, soft: 0.8 } }) },
+      { ...d, findSemanticDupes: async () => healthySemanticResult({ hard: 0.9, soft: 0.8 }) },
     );
     expect(coverageOf(d)).toEqual({ lexical: 'ok', semantic: 'ok', degraded: false });
   });
@@ -2912,7 +2964,7 @@ describe('EI-20275452450016416 — the achieved coverage is PERSISTED, not just 
     const up = deps();
     await captureImprovement(
       { title: 'a brand new finding', kind: 'bug' },
-      { ...up, findSemanticDupes: async () => ({ hard: [], soft: [], thresholds: { hard: 0.9, soft: 0.8 } }) },
+      { ...up, findSemanticDupes: async () => healthySemanticResult({ hard: 0.9, soft: 0.8 }) },
     );
     expect(coverageOf(down)).not.toEqual(coverageOf(up));
   });
@@ -2958,7 +3010,7 @@ describe('WI-38403 — stable identity + fail-closed DRAIN admission', () => {
           searchIssues: async () => {
             throw new Error('search unavailable');
           },
-          findSemanticDupes: async () => ({ hard: [], soft: [], thresholds: { hard: 0.93, soft: 0.9 } }),
+          findSemanticDupes: async () => healthySemanticResult(),
         },
       );
       expect(res.dedupCoverage).toEqual({ lexical: 'unavailable', semantic: 'ok', degraded: true });
@@ -2979,11 +3031,7 @@ describe('WI-38403 — stable identity + fail-closed DRAIN admission', () => {
         {
           ...d,
           searchIssues: async () => hangingSearch,
-          findSemanticDupes: async () => ({
-            hard: [],
-            soft: [],
-            thresholds: { hard: 0.93, soft: 0.9 },
-          }),
+          findSemanticDupes: async () => healthySemanticResult(),
         },
       );
 
@@ -3018,7 +3066,7 @@ describe('WI-38403 — stable identity + fail-closed DRAIN admission', () => {
     const d = deps();
     const res = await captureImprovement(
       { title: 'verified unique direct drain blocker', kind: 'bug', requireCompleteDedupCoverage: true },
-      { ...d, findSemanticDupes: async () => ({ hard: [], soft: [], thresholds: { hard: 0.93, soft: 0.9 } }) },
+      { ...d, findSemanticDupes: async () => healthySemanticResult() },
     );
     expect(res.created).toBe(true);
     expect(payloadOf(d)?.dedupCoverage).toEqual({ lexical: 'ok', semantic: 'ok', degraded: false });
