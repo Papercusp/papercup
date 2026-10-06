@@ -29,6 +29,8 @@ export const SubmitArgsSchema = z.object({
   operationId: z.string().trim().min(1).max(200).describe('Operation id declared by the harness blueprint.'),
   requestKey,
   input: z.record(z.string(), z.unknown()).describe('Operation input; validated against the declared inputSchema.'),
+  privateInput: z.unknown().optional()
+    .describe('Only for operations declaring privateInputSchema: content for the worker, kept out of the work item and deleted when it ends.'),
   title: z.string().trim().min(1).max(200).optional(),
   summary: z.string().max(4_000).optional(),
 }).strict();

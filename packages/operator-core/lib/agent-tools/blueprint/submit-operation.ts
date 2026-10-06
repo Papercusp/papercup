@@ -24,6 +24,7 @@ export default defineTool({
       handle: await submitBlueprintOperation(scope.sql, {
         workspaceId: scope.workspaceId, harnessSlug: args.harness, callerId: scope.callerId,
         operationId: args.operationId, requestKey: args.requestKey, input: args.input,
+        privateInput: args.privateInput,
         title: args.title, summary: args.summary,
       }),
     }));

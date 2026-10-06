@@ -51,6 +51,7 @@ export function operationFromCurrentSpecification(
 }
 import { seedContentHash, type RubricSeedSource } from '../cupboard/rubric-store';
 import { BlueprintOperationRefusal } from './operation-refusal';
+import { storeOperationPrivateInput } from './operation-private-input';
 
 /** Exported for the shared public contract (operation-contract.ts). */
 export const OperationHandleSchema = z.object({
@@ -74,6 +75,9 @@ export interface SubmitBlueprintOperationInput {
   operationId: string;
   requestKey: string;
   input: Record<string, unknown>;
+  /** D-014: content for the worker that must NOT enter the work-item payload.
+   * Accepted only by an operation declaring privateInputSchema. */
+  privateInput?: unknown;
   title?: string;
   summary?: string;
 }
@@ -155,6 +159,18 @@ export function submitBlueprintOperation(
     const { operation } = operationFromCurrentSpecification(specification, input);
     const targetKind = previous[0]?.target_kind ?? operation.target.kind;
     if (targetKind !== operation.target.kind) throw new Error('blueprint operation receipt and pinned target disagree');
+
+    // D-014: private input is stored BEFORE acceptance, so the worker that claims
+    // the item can always read it. Only a work-item target has a holder to read it.
+    const privateInputSchema = (operation as { privateInputSchema?: Record<string, unknown> }).privateInputSchema;
+    if (targetKind !== 'work-item' && (privateInputSchema || input.privateInput !== undefined)) {
+      throw new BlueprintOperationRefusal('invalid_request',
+        `blueprint operation "${input.operationId}" targets a plan; privateInput is only supported for work-item operations`);
+    }
+    await storeOperationPrivateInput(sql, {
+      workspaceId: input.workspaceId, harnessSlug: input.harnessSlug, callerId,
+      operationId: input.operationId, requestKey,
+    }, { schema: privateInputSchema, value: input.privateInput, alreadyAccepted: previous.length > 0 });
 
     let target: BlueprintOperationHandle['target'];
     if (targetKind === 'work-item') {
