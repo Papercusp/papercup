@@ -489,6 +489,9 @@ import './cargo-test-action';
 // records each spec into test_runs under the run group operator-e2e-nightly:<fire>. Landed with
 // its TARGET_ROLE_SPEND entry, its seed script and its BESPOKE_ACTIVE_SEEDS row.
 import './operator-e2e-isolated-action';
+// WI-10006806 (same plan, P-003): every red in the newest completed nightly group gets an owned
+// work-item, deduped by spec. Hourly and idempotent; seeded by the same seed script.
+import './operator-e2e-red-filer';
 // WI-36794: daily Linux GUI-only nightly release cut. The action returns after
 // launching the long build through managedSpawn, so the durable routine step stays
 // short while the child remains tracked and resource-capped.
