@@ -1055,6 +1055,25 @@ describe('ptool timeoutForTool — sessions:list census outlives the flat client
   });
 });
 
+describe('ptool timeoutForTool — bulk resolver live-action reads outlive the flat client deadline (EI-25227543877278075)', () => {
+  const LIVE_ACTION_TOOLS = [
+    'inbox:bulk-run-manifest',
+    'inbox:bulk-run-act',
+    'inbox:bulk-run-report',
+  ];
+
+  it.each(LIVE_ACTION_TOOLS)('%s gets a deadline beyond the MCP transport cap for direct calls', (name) => {
+    const timeout = timeoutForTool(name, {});
+    expect(timeout).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeout).toBeGreaterThan(MCP_TRANSPORT_CAP_MS);
+    expect(timeout).not.toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
+  });
+
+  it.each(LIVE_ACTION_TOOLS)('%s keeps the long-call deadline through tools:invoke', (name) => {
+    expect(timeoutForTool('tools:invoke', { name })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+  });
+});
+
 describe('ptool serviceOf / groupTools', () => {
   it('splits the service off the colon', () => {
     expect(serviceOf('work_items:list')).toBe('work_items');
