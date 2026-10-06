@@ -1736,8 +1736,10 @@ export {
   PROVIDER_PUSH_SUBSCRIBE_CAPABILITY,
   PROVIDER_PUSH_UNSUBSCRIBE_CAPABILITY,
   PROVIDER_PUSH_HEADER_PATTERN,
+  PROVIDER_DESTINATIONS,
 } from './provider';
 export type {
+  ProviderDestination,
   ProviderDaemonCallParams,
   ProviderDaemonFetchParams,
   ProviderContractVersion,

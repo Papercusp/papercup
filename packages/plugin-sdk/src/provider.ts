@@ -62,6 +62,14 @@ export interface ProviderOAuthIdentity {
   body?: string;
 }
 
+/**
+ * Where a source's records of one datatype go (`data_sources.destination_policy` values): a
+ * mirrored `record`, a create-once `event`, or a documents-corpus `document`. The host writes a
+ * datatype only to its own registered nature, so a destination naming another nature routes nothing.
+ */
+export const PROVIDER_DESTINATIONS = ['record', 'event', 'document'] as const;
+export type ProviderDestination = (typeof PROVIDER_DESTINATIONS)[number];
+
 export interface ProviderDescriptor {
   /** Stable provider id, e.g. `gmail`, `google-calendar`, `outlook-mail`, `github-issues`. */
   id: string;
@@ -78,6 +86,14 @@ export interface ProviderDescriptor {
   egressHosts: string[];
   /** JSON Schema for per-source configuration (account/calendar choices etc.). */
   configSchema?: Record<string, unknown>;
+  /**
+   * Destination policy a newly connected source starts with: datatype -> the destinations its
+   * records go to (the shape of `data_sources.destination_policy`). The host writes it when it
+   * creates the source, and on a reconnect only when the source still has no policy, so a policy
+   * the owner edited is never overwritten. Every key must be one of `datatypes`. Omit it and a new
+   * source routes nothing until its policy is set.
+   */
+  defaultDestinations?: Record<string, ProviderDestination[]>;
   /**
    * Host-held service credentials, by reference (D-018.1). A request to one of
    * `hosts` carries the credential the host registered under `ref` instead of
@@ -415,6 +431,28 @@ export function validateProviderDescriptor(descriptor: unknown): string[] {
   }
   if (d.configSchema !== undefined && (typeof d.configSchema !== 'object' || d.configSchema === null || Array.isArray(d.configSchema))) {
     issues.push('provider.configSchema must be a JSON Schema object');
+  }
+  if (d.defaultDestinations !== undefined) {
+    const defaults = d.defaultDestinations as unknown;
+    if (!defaults || typeof defaults !== 'object' || Array.isArray(defaults)) {
+      issues.push('provider.defaultDestinations must map datatypes to destination lists');
+    } else {
+      for (const [datatype, destinations] of Object.entries(defaults as Record<string, unknown>)) {
+        if (!datatypes.includes(datatype)) {
+          issues.push(`provider.defaultDestinations key "${datatype}" is not one of provider.datatypes`);
+        }
+        const list = Array.isArray(destinations) ? destinations : [];
+        if (list.length === 0) issues.push(`provider.defaultDestinations.${datatype} must list at least one destination`);
+        for (const destination of list) {
+          if (!(PROVIDER_DESTINATIONS as readonly unknown[]).includes(destination)) {
+            issues.push(`provider.defaultDestinations.${datatype} entry "${String(destination)}" must be one of ${PROVIDER_DESTINATIONS.join(', ')}`);
+          }
+        }
+        for (const dup of duplicates(list.filter(isNonEmptyString))) {
+          issues.push(`provider.defaultDestinations.${datatype} repeats "${dup}"`);
+        }
+      }
+    }
   }
   if (d.serviceCredentials !== undefined) {
     if (!Array.isArray(d.serviceCredentials)) {

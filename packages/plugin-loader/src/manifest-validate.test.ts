@@ -300,6 +300,7 @@ describe('validateManifest: provider descriptor schema matches the SDK type', ()
     oauth,
     egressHosts: ['api.example.com', 'example.com', 'pubsub.example.com'],
     configSchema: { type: 'object' },
+    defaultDestinations: { ticket: ['record'] },
     serviceCredentials: [{ ref: 'example-service', hosts: ['pubsub.example.com'] }],
     push: {
       handshake: { header: 'x-hook-secret' },
@@ -319,6 +320,13 @@ describe('validateManifest: provider descriptor schema matches the SDK type', ()
     expect(validateManifest(manifest({ ...provider, oauth: { ...oauth, identity: { ...identity, token: 'x' } } })).ok).toBe(false);
     expect(validateManifest(manifest({ ...provider, oauth: { ...oauth, identity: { url: identity.url } } })).ok).toBe(false);
     expect(validateManifest(manifest({ ...provider, oauth: { ...oauth, identity: { ...identity, method: 'PUT' } } })).ok).toBe(false);
+  });
+
+  it('refuses a default destination outside record/event/document, an empty list or a repeat', () => {
+    expect(validateManifest(manifest({ ...provider, defaultDestinations: { ticket: ['inbox'] } })).ok).toBe(false);
+    expect(validateManifest(manifest({ ...provider, defaultDestinations: { ticket: [] } })).ok).toBe(false);
+    expect(validateManifest(manifest({ ...provider, defaultDestinations: { ticket: ['record', 'record'] } })).ok).toBe(false);
+    expect(validateManifest(manifest({ ...provider, defaultDestinations: ['ticket'] })).ok).toBe(false);
   });
 
   it('still refuses a malformed service credential', () => {

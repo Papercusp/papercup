@@ -25,6 +25,29 @@ function descriptor(identity: Record<string, unknown>): ProviderDescriptor {
 
 const GRAPHQL_BODY = JSON.stringify({ query: '{ organization { id name } }' });
 
+/** A new source's starting destination policy (WI-10006213): keyed by declared datatypes only. */
+describe('validateProviderDescriptor: defaultDestinations', () => {
+  const base = { ...descriptor({ url: 'https://api.example.com/user', idField: 'id' }), datatypes: ['ticket', 'ticket-comment'] };
+
+  it('accepts declared datatypes routed to record, event or document', () => {
+    expect(validateProviderDescriptor({ ...base, defaultDestinations: { ticket: ['record'], 'ticket-comment': ['document'] } })).toEqual([]);
+  });
+
+  it('refuses a datatype the provider does not declare', () => {
+    expect(validateProviderDescriptor({ ...base, defaultDestinations: { 'email-message': ['document'] } }))
+      .toContain('provider.defaultDestinations key "email-message" is not one of provider.datatypes');
+  });
+
+  it('refuses an unknown destination, an empty list, a repeat and a non-map', () => {
+    const issues = (defaults: unknown) =>
+      validateProviderDescriptor({ ...base, defaultDestinations: defaults as ProviderDescriptor['defaultDestinations'] });
+    expect(issues({ ticket: ['inbox'] })).toContain('provider.defaultDestinations.ticket entry "inbox" must be one of record, event, document');
+    expect(issues({ ticket: [] })).toContain('provider.defaultDestinations.ticket must list at least one destination');
+    expect(issues({ ticket: ['record', 'record'] })).toContain('provider.defaultDestinations.ticket repeats "record"');
+    expect(issues(['ticket'])).toContain('provider.defaultDestinations must map datatypes to destination lists');
+  });
+});
+
 describe('validateProviderDescriptor: oauth.scopeSeparator', () => {
   it('accepts a space or a comma and refuses anything else', () => {
     const base = descriptor({ url: 'https://api.example.com/user', idField: 'id' });

@@ -55,6 +55,12 @@ export interface CreateOwnedExternalTriggerSourceInput {
   config?: Record<string, unknown>;
   cursor?: Record<string, unknown>;
   createdBy?: string | null;
+  /**
+   * Starting destination policy (the provider's `defaultDestinations`). Written when the row is
+   * created, and on a reconnect only while the stored policy is still empty, so a policy the
+   * owner edited is never overwritten (WI-10006213).
+   */
+  destinationPolicy?: Record<string, unknown>;
 }
 
 export interface ExternalTriggerSourceSyncState {
@@ -127,13 +133,14 @@ export async function upsertOwnedExternalTriggerSource(
   const status = input.status?.trim() || 'connected';
   const config = JSON.stringify(input.config ?? {});
   const cursor = JSON.stringify(input.cursor ?? {});
+  const destinationPolicy = JSON.stringify(input.destinationPolicy ?? {});
   const rows = await sql<ExternalTriggerSourceRow[]>`
     INSERT INTO harness_shared.data_sources
       (workspace_id, kind, owner_user_id, provider_account_id, credential_ref, status, config, cursor,
-       last_connected_at, last_error, created_by)
+       destination_policy, last_connected_at, last_error, created_by)
     VALUES (
       ${workspaceId}, ${kind}, ${ownerUserId}::uuid, ${providerAccountId}, ${credentialRef}, ${status},
-      ${config}::text::jsonb, ${cursor}::text::jsonb, now(), NULL,
+      ${config}::text::jsonb, ${cursor}::text::jsonb, ${destinationPolicy}::text::jsonb, now(), NULL,
       ${input.createdBy?.trim() || null}
     )
     ON CONFLICT (workspace_id, kind, owner_user_id, provider_account_id)
@@ -144,6 +151,10 @@ export async function upsertOwnedExternalTriggerSource(
                  WHEN data_sources.config @> '{"capabilityEnabled":false}'::jsonb THEN 'disabled'
                  ELSE EXCLUDED.status
                END,
+      destination_policy = CASE
+                             WHEN data_sources.destination_policy = '{}'::jsonb THEN EXCLUDED.destination_policy
+                             ELSE data_sources.destination_policy
+                           END,
       last_connected_at = now(),
       last_error = NULL,
       updated_at = now()

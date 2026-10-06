@@ -159,6 +159,16 @@
           }
         },
         "configSchema": { "type": "object" },
+        "defaultDestinations": {
+          "type": "object",
+          "description": "Destination policy a newly connected source starts with: datatype -> destinations (record, event, document). Keys must be declared datatypes; the host never overwrites a policy the owner set.",
+          "additionalProperties": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": { "type": "string", "enum": ["record", "event", "document"] }
+          }
+        },
         "push": {
           "type": "object",
           "additionalProperties": false,
