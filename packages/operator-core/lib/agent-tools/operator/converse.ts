@@ -380,7 +380,7 @@ export default defineTool({
     if (
       brainSessionReuseEligible({
         conversationId: convId,
-        backendIsClaudeCode: resolveBackend({ promptText: '', backend: operatorBackend }) === 'claude-code',
+        isClaudeCodeBackend: () => resolveBackend({ promptText: '', backend: operatorBackend }) === 'claude-code',
         retainSession: input.retainSession,
       })
     ) {

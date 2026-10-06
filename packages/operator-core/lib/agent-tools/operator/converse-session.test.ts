@@ -44,30 +44,42 @@ afterEach(() => {
 // store entirely: a one-off conversation's dir is never reclaimed, because a
 // dir is only dropped when the SAME conversation takes another turn.
 describe('brainSessionReuseEligible', () => {
+  const claude = () => true;
+  const notClaude = () => false;
+
   it('is eligible for a claude-code conversation when the caller does not opt out', () => {
-    expect(brainSessionReuseEligible({ conversationId: CONV, backendIsClaudeCode: true })).toBe(true);
+    expect(brainSessionReuseEligible({ conversationId: CONV, isClaudeCodeBackend: claude })).toBe(true);
     expect(
-      brainSessionReuseEligible({ conversationId: CONV, backendIsClaudeCode: true, retainSession: true }),
+      brainSessionReuseEligible({ conversationId: CONV, isClaudeCodeBackend: claude, retainSession: true }),
     ).toBe(true);
   });
 
   it('retainSession:false refuses reuse even on claude-code with a conversation', () => {
     expect(
-      brainSessionReuseEligible({ conversationId: CONV, backendIsClaudeCode: true, retainSession: false }),
+      brainSessionReuseEligible({ conversationId: CONV, isClaudeCodeBackend: claude, retainSession: false }),
     ).toBe(false);
   });
 
   it('is never eligible without a conversation or off claude-code', () => {
-    expect(brainSessionReuseEligible({ conversationId: null, backendIsClaudeCode: true })).toBe(false);
-    expect(brainSessionReuseEligible({ conversationId: '', backendIsClaudeCode: true })).toBe(false);
-    expect(brainSessionReuseEligible({ conversationId: CONV, backendIsClaudeCode: false })).toBe(false);
+    expect(brainSessionReuseEligible({ conversationId: null, isClaudeCodeBackend: claude })).toBe(false);
+    expect(brainSessionReuseEligible({ conversationId: '', isClaudeCodeBackend: claude })).toBe(false);
+    expect(brainSessionReuseEligible({ conversationId: CONV, isClaudeCodeBackend: notClaude })).toBe(false);
+  });
+
+  it('does not resolve the backend for a turn that cannot reuse (short-circuit order)', () => {
+    const probe = vi.fn(() => true);
+    brainSessionReuseEligible({ conversationId: null, isClaudeCodeBackend: probe });
+    brainSessionReuseEligible({ conversationId: CONV, isClaudeCodeBackend: probe, retainSession: false });
+    expect(probe).not.toHaveBeenCalled();
+    brainSessionReuseEligible({ conversationId: CONV, isClaudeCodeBackend: probe });
+    expect(probe).toHaveBeenCalledTimes(1);
   });
 
   it('an opted-out turn leaves no session dir behind', () => {
     // The caller contract: when ineligible, getChatBrainSession is never
     // called, so nothing for this conversation exists under chat-brains.
     const phoneConv = 'phone-call:room-xyz';
-    if (brainSessionReuseEligible({ conversationId: phoneConv, backendIsClaudeCode: true, retainSession: false })) {
+    if (brainSessionReuseEligible({ conversationId: phoneConv, isClaudeCodeBackend: claude, retainSession: false })) {
       getChatBrainSession(phoneConv, hashSystemPrompt(SYS));
     }
     expect(existsSync(join(fakeHome, '.papercusp', 'chat-brains'))).toBe(false);

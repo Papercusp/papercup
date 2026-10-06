@@ -76,13 +76,16 @@ export function hashSystemPrompt(systemPromptText: string): string {
  * own retention policy (a phone call under D-022's 30-day rule) passes
  * `retainSession: false`, and then nothing is resumed or written regardless
  * of backend or flag (WI-10006465). Omitted ⇒ unchanged behavior.
+ *
+ * `isClaudeCodeBackend` is a thunk so the backend is only resolved for a turn
+ * that could reuse at all (same short-circuit order as before this gate).
  */
 export function brainSessionReuseEligible(input: {
   conversationId: string | null;
-  backendIsClaudeCode: boolean;
+  isClaudeCodeBackend: () => boolean;
   retainSession?: boolean;
 }): boolean {
-  return Boolean(input.conversationId) && input.backendIsClaudeCode && input.retainSession !== false;
+  return Boolean(input.conversationId) && input.retainSession !== false && input.isClaudeCodeBackend();
 }
 
 function dirFor(conversationId: string): string {
