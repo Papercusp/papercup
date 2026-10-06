@@ -105,6 +105,17 @@ describe('a Linear issue becomes one canonical ticket', () => {
     });
   });
 
+  it('marks the roles the connected account (the viewer) holds, by user id, never by name (D-012)', () => {
+    // issue() is delegated to u-app (display name "Papercusp") and assigned to Bob.
+    expect(internal.issueToTicket(issue(), 'u-app').selfRoles).toEqual(['delegate']);
+    const app = { id: 'u-app', name: 'papercusp', displayName: 'Papercusp' };
+    expect(internal.issueToTicket(issue({ assignee: app }), 'u-app').selfRoles).toEqual(['assignee', 'delegate']);
+    // Another account sees the same issue as someone else's, even though a delegate is named "Papercusp".
+    expect(internal.issueToTicket(issue(), 'u-other')).not.toHaveProperty('selfRoles');
+    expect(internal.issueToTicket(issue())).not.toHaveProperty('selfRoles');
+    expect(internal.issueToTicket(issue({ assignee: null, delegate: null }), 'u-app')).not.toHaveProperty('selfRoles');
+  });
+
   it('a completed issue is closed with its completion time; an unassigned undelegated issue has empty people', () => {
     const ticket = internal.issueToTicket(issue({
       state: STATES.done, completedAt: '2026-10-03T10:00:00.000Z', assignee: null, delegate: null, parent: null, project: null,
