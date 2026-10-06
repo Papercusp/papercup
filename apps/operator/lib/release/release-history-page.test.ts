@@ -1348,3 +1348,46 @@ describe('a platform-only hotfix shares the card of the release it patches (WI-1
     ]);
   });
 });
+
+// open-source-release-2026-09-29 D-030: an artifact pulled from the channel keeps its
+// registry entry (marked `withdrawn`) but must not be offered for download anywhere.
+describe('withdrawn artifacts', () => {
+  const opts = { generatedAt: GENERATED_AT, analytics: null, redact: [] };
+  const listed = {
+    product: 'gui' as const,
+    platform: 'linux-x86_64',
+    name: 'Papercusp GUI_0.0.25_amd64.deb',
+    url: 'desktop-v0.0.25-alpha/Papercusp GUI_0.0.25_amd64.deb',
+    size: 1_000,
+    sha256: 'aaa',
+  };
+  const pulled = {
+    product: 'gui' as const,
+    platform: 'linux-x86_64',
+    name: 'Papercusp_GUI_0.0.25_amd64.AppImage',
+    url: 'desktop-v0.0.25-alpha/Papercusp_GUI_0.0.25_amd64.AppImage',
+    size: 2_000,
+    sha256: 'bbb',
+    withdrawn: { at: '2026-10-06T11:00:00Z', reason: 'fails the installer license scan', ref: 'D-030' },
+  };
+  const rel = hydrated({ row: row({ version: '0.0.25', artifacts: [listed, pulled] }) });
+
+  it('the releases page links the listed artifact and not the withdrawn one', () => {
+    const html = renderIndexHtml([rel], opts);
+    expect(html).toContain('Papercusp GUI_0.0.25_amd64.deb');
+    expect(html).not.toContain('Papercusp_GUI_0.0.25_amd64.AppImage');
+  });
+
+  it('history.json (the in-app update feed) omits the withdrawn artifact', () => {
+    const json = JSON.parse(renderHistoryJson([rel], opts)) as {
+      releases: Array<{ artifacts: Array<{ name: string }> }>;
+    };
+    expect(json.releases[0]!.artifacts.map((a) => a.name)).toEqual(['Papercusp GUI_0.0.25_amd64.deb']);
+  });
+
+  it('a release whose only artifact is withdrawn says it has no downloads', () => {
+    const html = renderIndexHtml([hydrated({ row: row({ version: '0.0.25', artifacts: [pulled] }) })], opts);
+    expect(html).not.toContain('Papercusp_GUI_0.0.25_amd64.AppImage');
+    expect(html).toContain('No downloadable artifacts recorded for this release.');
+  });
+});

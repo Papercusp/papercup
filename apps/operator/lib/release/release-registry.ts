@@ -61,6 +61,31 @@ export interface ReleaseArtifact {
   url: string;
   size: number;
   sha256: string;
+  /**
+   * Set when the artifact was pulled from the channel after it shipped (e.g. it
+   * failed a license scan, or its object is missing from the bucket). The row
+   * keeps the entry so the release record stays complete; the releases page and
+   * history.json stop linking it (`isListedArtifact`). Plan
+   * open-source-release-2026-09-29 D-030.
+   */
+  withdrawn?: ArtifactWithdrawal;
+}
+
+/** Why and when a shipped artifact stopped being offered for download. */
+export interface ArtifactWithdrawal {
+  /** ISO-8601 timestamp of the withdrawal. */
+  at: string;
+  reason: string;
+  /** The decision / work item that authorised it, e.g. `open-source-release-2026-09-29#D-030`. */
+  ref?: string;
+}
+
+/**
+ * True when an artifact is offered for download: not a detached updater
+ * signature, and not withdrawn from the channel.
+ */
+export function isListedArtifact(a: ReleaseArtifact): boolean {
+  return !a.name.endsWith('.sig') && !a.withdrawn;
 }
 
 /** One shipped work item, as frozen into the release row. */

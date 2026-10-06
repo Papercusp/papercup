@@ -63,7 +63,7 @@
 
 import { marked } from 'marked';
 import type { ReleaseArtifact, ReleaseRow, ShippedItem, ShippedPlan } from './release-registry';
-import { groupItemsByPlan } from './release-registry';
+import { groupItemsByPlan, isListedArtifact } from './release-registry';
 import {
   HOLDING_PAGE_MARKER,
   PUBLISHED_CONTACT_EMAIL,
@@ -810,7 +810,7 @@ function renderArtifacts(
   artifacts: ReleaseArtifact[],
   platformNotes: ReadonlyMap<string, string> = new Map(),
 ): string {
-  const real = artifacts.filter((a) => !a.name.endsWith('.sig'));
+  const real = artifacts.filter(isListedArtifact);
   if (real.length === 0) {
     return `<p class="empty">No downloadable artifacts recorded for this release.</p>`;
   }
@@ -1330,7 +1330,7 @@ export function renderHistoryJson(releases: HydratedRelease[], opts: PageOptions
       pub_date: (r.row.publishedAt ?? r.row.cutAt).toISOString(),
       prerelease: r.row.channel !== 'stable',
       artifacts: r.row.artifacts
-        .filter((a) => !a.name.endsWith('.sig'))
+        .filter(isListedArtifact)
         .map((a) => ({
           product: a.product,
           platform: a.platform,
