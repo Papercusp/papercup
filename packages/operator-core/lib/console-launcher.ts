@@ -16,9 +16,10 @@
  * Server-only.
  */
 import { randomUUID } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join, resolve as resolvePath } from 'node:path';
+import { readSuperuserToken } from './superuser-token';
 
 import { resolveBackend } from '@papercusp/papercusp-shared/agent';
 
@@ -199,7 +200,6 @@ export interface BuildEnvelopeOpts {
 
 // (kickoff-kind allowlist moved to @/lib/agent-kickoff/kickoff-kind in P-032,
 //  when the omp launch flavour was retired from this module.)
-const TOKEN_PATH = join(homedir(), '.papercusp', 'superuser-token');
 
 /**
  * Where the bundled `papercup` shim + `papercup-status.mjs` live so the
@@ -250,16 +250,6 @@ export function buildSuperuserMcpUrl(
   return url.toString();
 }
 
-/** Read the superuser bearer token. Returns null if not yet installed. */
-function readSuperuserToken(): string | null {
-  if (!existsSync(TOKEN_PATH)) return null;
-  try {
-    const t = readFileSync(TOKEN_PATH, 'utf8').trim();
-    return t.length > 0 ? t : null;
-  } catch {
-    return null;
-  }
-}
 
 /**
  * EI-10938 — the cwd for a workspace-only (no-slug) launch.

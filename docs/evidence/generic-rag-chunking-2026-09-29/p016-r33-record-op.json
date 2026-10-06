@@ -1,53 +1,53 @@
 {
   "schemaVersion": 1,
   "kind": "operational-test-evidence",
-  "name": "generic-rag-chunking-2026-09-29 R-33: search stays fast — paired A/B reading of record (D-040 method, D-041 load band) passes all five sites",
+  "name": "generic-rag-chunking-2026-09-29 R-33: search stays fast — paired A/B reading of record (D-040 method, D-041 load band, D-051 rule) FAILS consult",
   "framework": "operational",
   "command": [
-    "systemd-run --user --unit p016-r33-record-d049 bash .papercusp/scratch/rag-carry/r33-ab-record-d049.sh (quiet gate: the six measured files committed and unchanged for 10 minutes, then readings until the first band-matched run)",
-    "inside the unit: npx tsx packages/operator-core/lib/search/bench/chunk-search-ab-cli.ts — 3 rounds x 30 fixed queries per site, arm A = pre-change query path (D-024 baseline, preChangeRef 9a9473af95), arm B = shipped chunk-aware path, same build, same DB, interleaved pairs",
-    "load check per D-041: 1-minute loadavg at start and end must both lie in the band [55.9, 83.9]; an out-of-band run is not a reading",
-    "post-run: git rev-parse HEAD:<path> for each of the six measured files == the headBlob recorded in the reading (re-checked 2026-10-02T17:46Z, all six SAME and clean)"
+    "capability:bash task 0muw98cndrjvlyy7jpw: bash .papercusp/scratch/rag-ea145/r33-ab-record-d051.sh (R33_RUN_TAG=run2; quiet gate: the six measured files committed and unchanged for 10 minutes, then attempts until the first band-matched run)",
+    "inside the script: npx tsx packages/operator-core/lib/search/bench/chunk-search-ab-cli.ts --rounds 3 --band-wait-min 3 — 3 rounds x 30 fixed queries per site, arm A = pre-change query path (D-024 baseline, preChangeRef 9a9473af95), arm B = shipped chunk-aware path, same build, same DB, interleaved pairs",
+    "load check per D-041: 1-minute loadavg at start and end must both lie in the band [55.9, 83.9]; an out-of-band run is not a reading (attempts 1-5 of run 2 were out of band)",
+    "post-run: git rev-parse HEAD:<path> for each of the six measured files == the headBlob recorded in the reading (re-checked 2026-10-06T15:09Z, all six equal and clean)"
   ],
-  "exitCode": 0,
-  "startedAt": "2026-10-02T17:39:01.249Z",
-  "finishedAt": "2026-10-02T17:40:19.629Z",
-  "summary": "Reading of record per D-049/D-050: unit p016-r33-record-d049 attempt 2 (attempt 1 ended out of band at 38.75 and is not a reading). Load 79.54 -> 78.33, inside the D-041 band. Added p95 per site (ms, budget): plans +6.9 (413), turns -13.4 (348), work_item +7.6 (402.3), work_items_search +81.2 (100), consult +1.8 (3.5). Every site within budget; 0 arm-A and 0 arm-B errors over 90 measured pairs per site; 0 queries where B returned no rows while A did. Source file docs/evidence/generic-rag-chunking-2026-09-29/p016-r33-ab-record.json, committed in 054e0705a647432a87febfd896156303ab632d41, sha256 63962797eb8944de9c6cf422571d2bcf355c11e0d829c71077fdc3e923b15d24.",
+  "exitCode": 1,
+  "startedAt": "2026-10-06T14:59:18.338Z",
+  "finishedAt": "2026-10-06T15:00:31.439Z",
+  "summary": "Reading of record per D-051: run 2 attempt 6 (attempts 1-5 were out of band and are not readings). Load 79.05 -> 70.52, inside the D-041 band. Added p95 per site (ms, budget): plans +6.5 (413), turns +45.4 (348), work_item +7.1 (402.3), work_items_search +71.7 (100), consult +4.4 (3.5). Consult is over its budget, so the reading FAILS; the other four sites pass. 0 arm-A and 0 arm-B errors over 90 measured pairs per site; 0 queries where B returned no rows while A did. Per D-043/D-041 point 4 the bound is not widened: the next step is cutting consult's chunk-leg cost, and a run on the fixed query starts a new reading of record (R-33 rev 11 method). Source file docs/evidence/generic-rag-chunking-2026-09-29/p016-r33-ab-record.json, sha256 a40d69a3adb14651562fc4846651ac181c2e0b4cbe8ea37135ae57a209fc03ec.",
   "assertions": [
     {
       "id": "r33-reading-load-band-matched",
       "passed": true,
-      "evidence": "loadCheck.matched true: start 79.54, end 78.33, band 55.9-83.9 (D-041). reading = 'valid'."
+      "evidence": "loadCheck.matched true: start 79.05, end 70.52, band 55.9-83.9 (D-041). reading = 'valid'."
     },
     {
       "id": "r33-plans-within-budget",
       "passed": true,
-      "evidence": "plans: A p95 7.3 ms, B p95 14.2 ms, added +6.9 ms vs budget 413 ms; 90 pairs, 0/0 errors, bEmptyWhereAHadRows 0."
+      "evidence": "plans: A p95 7.0 ms, B p95 13.5 ms, added +6.5 ms vs budget 413 ms; 90 pairs, 0/0 errors, bEmptyWhereAHadRows 0."
     },
     {
       "id": "r33-turns-within-budget",
       "passed": true,
-      "evidence": "turns: A p95 410.2 ms, B p95 396.8 ms, added -13.4 ms vs budget 348 ms; 90 pairs, 0/0 errors, bEmptyWhereAHadRows 0."
+      "evidence": "turns: A p95 382.7 ms, B p95 428.1 ms, added +45.4 ms vs budget 348 ms; 90 pairs, 0/0 errors, bEmptyWhereAHadRows 0."
     },
     {
       "id": "r33-work-item-within-budget",
       "passed": true,
-      "evidence": "work_item: A p95 11.9 ms, B p95 19.5 ms, added +7.6 ms vs budget 402.3 ms; 90 pairs, 0/0 errors, bEmptyWhereAHadRows 0."
+      "evidence": "work_item: A p95 9.2 ms, B p95 16.3 ms, added +7.1 ms vs budget 402.3 ms; 90 pairs, 0/0 errors, bEmptyWhereAHadRows 0."
     },
     {
       "id": "r33-work-items-search-within-budget",
       "passed": true,
-      "evidence": "work_items_search: A p95 21.9 ms, B p95 103.1 ms, added +81.2 ms vs budget 100 ms; 90 pairs, 0/0 errors, bEmptyWhereAHadRows 0."
+      "evidence": "work_items_search: A p95 18.6 ms, B p95 90.3 ms, added +71.7 ms vs budget 100 ms; 90 pairs, 0/0 errors, bEmptyWhereAHadRows 0."
     },
     {
       "id": "r33-consult-within-budget",
-      "passed": true,
-      "evidence": "consult: A p95 6.9 ms, B p95 8.7 ms, added +1.8 ms vs budget 3.5 ms; 90 pairs, 0/0 errors, bEmptyWhereAHadRows 0."
+      "passed": false,
+      "evidence": "consult: A p95 7.0 ms, B p95 11.4 ms, added +4.4 ms vs budget 3.5 ms (paired median delta +3.24 ms); 90 pairs, 0/0 errors, bEmptyWhereAHadRows 0. Over budget."
     },
     {
       "id": "r33-measured-code-is-committed-head",
       "passed": true,
-      "evidence": "measuredCode: superproject 46bfcc2a98, libs/generic/search 093bf1c098; sources.ts a24e4b2e5b, semantic-leg.ts e880231206, peers-know.ts 33fe3ef9d9, work-items.ts, chunks/registry.ts, vector-leg.ts — all dirty:false at run time and equal to HEAD blobs at 2026-10-02T17:46Z."
+      "evidence": "measuredCode: superproject c548333b00, libs/generic/search c4f2c6e22f; sources.ts 7e73ff206d, semantic-leg.ts e880231206, peers-know.ts 33fe3ef9d9, work-items.ts 98b3ae4baf, chunks/registry.ts 5d76da4f81, vector-leg.ts cd07636462 — all dirty:false at run time and equal to HEAD blobs at 2026-10-06T15:09Z."
     }
   ],
   "plan": "generic-rag-chunking-2026-09-29",
@@ -58,19 +58,21 @@
     "D-024",
     "D-040",
     "D-041",
-    "D-045",
-    "D-048",
+    "D-043",
     "D-049",
-    "D-050"
+    "D-051"
   ],
-  "measuredBy": "su-e8708a1c-a5a4-4a8b-9acb-8bcceab2a91c",
+  "measuredBy": "su-ea145858-8dc8-4602-ae3d-675eb6c2b804",
   "details": {
     "sourceReading": {
       "path": "docs/evidence/generic-rag-chunking-2026-09-29/p016-r33-ab-record.json",
-      "commit": "054e0705a647432a87febfd896156303ab632d41",
-      "sha256": "63962797eb8944de9c6cf422571d2bcf355c11e0d829c71077fdc3e923b15d24"
+      "sha256": "a40d69a3adb14651562fc4846651ac181c2e0b4cbe8ea37135ae57a209fc03ec"
     },
     "supersededReadings": [
+      {
+        "path": "docs/evidence/generic-rag-chunking-2026-09-29/p016-r33-ab-record-46bfcc2a98.json",
+        "note": "D-050 reading on 46bfcc2a98: all five sites passed (consult +1.8); peer edits after it staled its measured blobs, so D-051 made the next band-matched run the reading of record"
+      },
       {
         "path": "docs/evidence/generic-rag-chunking-2026-09-29/p016-r33-ab-record-e8369026d6.json",
         "note": "D-045 reading on e8369026d6: consult +7.9 vs 3.5, fail"

@@ -10,10 +10,8 @@
  * assembly.
  */
 
-import { homedir } from 'node:os';
-import { join } from 'node:path';
-import { readFileSync } from 'node:fs';
 import { readOperatorState, writeOperatorState } from '../../operator-state-pg';
+import { readSuperuserToken } from '../../superuser-token';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { readSystemPrincipal } from '../../system-principal';
 import {
@@ -287,12 +285,8 @@ export async function buildOracleMcpConfig(opts: { uiClientId: string | null }):
 } | null> {
   const oracleP = await readSystemPrincipal('oracle');
   if (!oracleP?.bearer) return null;
-  let superuserToken: string | null = null;
-  try {
-    const tokenPath = join(homedir(), '.papercusp', 'superuser-token');
-    superuserToken = readFileSync(tokenPath, 'utf8').trim();
-    if (!superuserToken || superuserToken.length < 16) superuserToken = null;
-  } catch { /* */ }
+  // Shared reader: honours PAPERCUSP_HOME and the 16-char floor (WI-10006617).
+  const superuserToken = readSuperuserToken();
   if (!superuserToken) return null;
 
   const oracleBase = operatorApiBase();
