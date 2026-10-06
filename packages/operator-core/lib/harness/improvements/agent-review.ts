@@ -65,6 +65,10 @@ import {
   readImplementationReadiness,
   type AgentReviewState,
   type ImplementationReadinessState,
+  verificationConflict,
+  verificationConflictSql,
+  verificationParties,
+  type VerificationConflictRole,
 } from './agent-review-policy';
 import { readBornVerifiedReproduction } from '../../attention/bug-reproduction';
 // The canonical "this session can still act" set, IMPORTED rather than re-derived.
@@ -860,8 +864,18 @@ export type ClaimAgentReviewReason =
   | 'owner-capability'
   | 'agent-review-not-pending'
   | 'own-submission'
+  /** P-007: the reviewer filed or reported the subject. */
+  | 'reporter-conflict'
+  /** P-007: the reviewer implemented the subject (terminal owner or a recorded implementer). */
+  | 'implementer-conflict'
   | 'claim-conflict'
   | 'claim-not-claimable';
+
+function conflictReason(role: VerificationConflictRole | null): ClaimAgentReviewReason | null {
+  if (role === 'reporter') return 'reporter-conflict';
+  if (role === 'implementer') return 'implementer-conflict';
+  return null;
+}
 
 export interface ClaimAgentReviewResult {
   claimed: boolean;
@@ -907,12 +921,16 @@ export async function claimAgentReview(
   if (current.submittedBy === input.reviewer) {
     return { claimed: false, workItem: null, reason: 'own-submission' };
   }
+  const parties = verificationParties(workItem);
+  const conflict = conflictReason(verificationConflict(parties, input.reviewer));
+  if (conflict) return { claimed: false, workItem: null, reason: conflict };
 
   const agentReviewAdmission = mintAgentReviewClaimAdmission({
     itemId: workItem.id,
     reviewer: input.reviewer,
     harnessSlug: input.harnessSlug,
     review: current,
+    parties,
   });
   if (!agentReviewAdmission) {
     return { claimed: false, workItem: null, reason: 'claim-not-claimable' };
@@ -941,6 +959,8 @@ export async function claimAgentReview(
     if (latestReview.submittedBy === input.reviewer) {
       return { claimed: false, workItem: null, reason: 'own-submission' };
     }
+    const latestConflict = conflictReason(verificationConflict(verificationParties(latest), input.reviewer));
+    if (latestConflict) return { claimed: false, workItem: null, reason: latestConflict };
     const holder = latest.assignee?.trim();
     if (holder && holder !== input.reviewer) {
       return {
@@ -964,7 +984,7 @@ export async function claimAgentReview(
       ? 'agent-review-not-pending'
       : claimedState.submittedBy === input.reviewer
         ? 'own-submission'
-        : null;
+        : conflictReason(verificationConflict(verificationParties(claimed), input.reviewer));
   if (postClaimReason) {
     const released = await deps.releaseWorkItem(claimed.id, {
       ...(claimed.harness ? { harness: claimed.harness } : {}),
@@ -995,6 +1015,7 @@ export async function claimNextAgentReview(
        AND ${depsBlockedExclusionSql(sql)}
        AND ${agentReviewPendingSelectorSql(sql)}
        AND COALESCE(payload, '{}'::jsonb) -> 'agentReview' ->> 'submittedBy' IS DISTINCT FROM ${input.reviewer}
+       AND NOT ${verificationConflictSql(sql, input.reviewer, { payload: 'wi.payload', terminalOwner: 'wi.terminal_owner' })}
        AND ${input.harnessSlug ? sql`harness_slug = ${input.harnessSlug}` : sql`TRUE`}
      ORDER BY feature_order ASC NULLS LAST, created_ts ASC
      LIMIT 25`;
@@ -1003,6 +1024,8 @@ export async function claimNextAgentReview(
     if (!workItem || !agentReviewEligibility(workItem).eligible) continue;
     const review = readAgentReviewState(workItem.payload);
     if (review?.status !== 'pending' || review.submittedBy === input.reviewer) continue;
+    const parties = verificationParties(workItem);
+    if (verificationConflict(parties, input.reviewer)) continue;
     // A 'pending' round whose ledger row ALREADY carries a standing grade is not reviewable:
     // `enterAgentReview` enrolls with `preserveExisting`, so a pre-existing su-ideate row that
     // the owner had already graded keeps that sovereign grade while the payload starts at
@@ -1036,6 +1059,7 @@ export async function claimNextAgentReview(
           reviewer: input.reviewer,
           harnessSlug: workItem.harness,
           review,
+          parties,
         })
       : null;
     const claimed = await deps.claimWorkItem(workItem.id, input.reviewer, {

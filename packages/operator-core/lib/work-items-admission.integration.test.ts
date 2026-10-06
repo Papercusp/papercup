@@ -446,6 +446,7 @@ describe('pending agent-review claims keep the shared admission floor narrow (re
       reviewer: 'su-reviewer',
       harnessSlug: HARNESS,
       review: payload.agentReview,
+      parties: { reporters: [], implementers: [] },
     });
     expect(admission).not.toBeNull();
     const candidate = await getWorkItem('F-REVIEW', HARNESS);
@@ -526,6 +527,7 @@ describe('pending agent-review claims keep the shared admission floor narrow (re
       reviewer: 'su-reviewer',
       harnessSlug: HARNESS,
       review: stalePayload.agentReview,
+      parties: { reporters: [], implementers: [] },
     });
     expect(staleAdmission).not.toBeNull();
     await h.sql`

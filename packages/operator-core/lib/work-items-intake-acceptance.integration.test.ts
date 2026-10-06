@@ -318,13 +318,27 @@ describe('R-25 reviewer access stays scoped to the intake row', () => {
     await seed('WI-R25-OTHER', { createdTs: POST, payload: { agentReview: { ...review, ledgerIdeaId: 'idea-other' }, ...readiness('unknown', 'creation-enrollment') } });
     expect(await viewIds('WI-R25-')).toEqual([]);
     expect(await byIdClaims('WI-R25-PENDING', 'worker-r25')).toBe(false);
-    const admission = mintAgentReviewClaimAdmission({ itemId: 'WI-R25-PENDING', reviewer: 'su-reviewer', harnessSlug: H, review });
+    const admission = mintAgentReviewClaimAdmission({
+      itemId: 'WI-R25-PENDING',
+      reviewer: 'su-reviewer',
+      harnessSlug: H,
+      review,
+      parties: { reporters: [], implementers: [] },
+    });
     expect(admission).not.toBeNull();
     // The admission is bound to its row: presenting it for the sibling row admits nothing.
     expect(await byIdClaims('WI-R25-OTHER', 'su-reviewer', { agentReviewAdmission: admission })).toBe(false);
     expect(await byIdClaims('WI-R25-PENDING', 'su-reviewer', { agentReviewAdmission: admission })).toBe(true);
     // ...and the submitter can never mint one for its own filing.
-    expect(mintAgentReviewClaimAdmission({ itemId: 'WI-R25-PENDING', reviewer: 'su-author', harnessSlug: H, review })).toBeNull();
+    expect(
+      mintAgentReviewClaimAdmission({
+        itemId: 'WI-R25-PENDING',
+        reviewer: 'su-author',
+        harnessSlug: H,
+        review,
+        parties: { reporters: [], implementers: [] },
+      }),
+    ).toBeNull();
     expect(await drainIds('WI-R25-')).toEqual([]);
   });
 });

@@ -17,7 +17,9 @@ import { WORK_ITEM_PRESENTATION_STAGES, type WorkItemPresentationStage } from '.
 export { WORK_ITEM_PRESENTATION_STAGES, type WorkItemPresentationStage } from '../../work-item-presentation-contract';
 import {
   BUG_REPRODUCTION_KINDS,
+  BUG_REPRODUCTION_SCHEMA_VERSION,
   readBugReproductionReceipt,
+  readStoredBugReproduction,
   type BugReproductionReceipt,
 } from '../../attention/bug-reproduction';
 import {
@@ -1043,11 +1045,151 @@ export interface AgentReviewClaimAdmission {
 
 const agentReviewClaimAdmissions = new WeakSet<object>();
 
+/*
+ * P-007 (unified-bug-pipeline D-021): the verifier-conflict rule. A verification task
+ * (an agent-review round, the repro task `investigate` spawns, a completion check) is
+ * refused to its subject's REPORTER and to its IMPLEMENTER at every verification door.
+ * One predicate and one SQL twin; the doors differ only in where they read the subject.
+ *
+ * Reporters: the filer (`_ei.created_by`), the agent-review submitter, the D-024
+ * encounter filer, and any reporter a verification task carries. Implementers: the
+ * row's terminal owner and any implementer a verification task carries. A subject's
+ * prior implementation claimants are captured onto the TASK when it is created (never
+ * read from the task's own claim history), so a reviewer of an earlier round is not
+ * mistaken for an implementer.
+ */
+export const VERIFICATION_TASK_SCHEMA_VERSION = 'verification-task-v1' as const;
+export const VERIFICATION_CHECKS = ['reproduction', 'proposal-review', 'completion'] as const;
+export type VerificationCheck = (typeof VERIFICATION_CHECKS)[number];
+export type VerificationConflictRole = 'reporter' | 'implementer';
+
+export interface VerificationParties {
+  readonly reporters: readonly string[];
+  readonly implementers: readonly string[];
+}
+
+export interface VerificationTask extends VerificationParties {
+  readonly schemaVersion: typeof VERIFICATION_TASK_SCHEMA_VERSION;
+  /** The work item being verified. */
+  readonly subject: string;
+  readonly check: VerificationCheck;
+}
+
+function distinctIds(values: readonly unknown[]): string[] {
+  const out = new Set<string>();
+  for (const value of values) {
+    const id = typeof value === 'string' ? value.trim() : '';
+    if (id) out.add(id);
+  }
+  return [...out];
+}
+
+export function createVerificationTask(input: {
+  subject: string;
+  check: VerificationCheck;
+  reporters: readonly unknown[];
+  implementers: readonly unknown[];
+}): VerificationTask {
+  return {
+    schemaVersion: VERIFICATION_TASK_SCHEMA_VERSION,
+    subject: input.subject.trim(),
+    check: input.check,
+    reporters: distinctIds(input.reporters),
+    implementers: distinctIds(input.implementers),
+  };
+}
+
+/** The verification block on a task row, when it is a current-version one. */
+export function readVerificationTask(payload: unknown): VerificationTask | null {
+  const stored = record(record(payload).verification);
+  if (stored.schemaVersion !== VERIFICATION_TASK_SCHEMA_VERSION) return null;
+  if (typeof stored.subject !== 'string' || !stored.subject.trim()) return null;
+  if (!(VERIFICATION_CHECKS as readonly unknown[]).includes(stored.check)) return null;
+  return createVerificationTask({
+    subject: stored.subject,
+    check: stored.check as VerificationCheck,
+    reporters: Array.isArray(stored.reporters) ? stored.reporters : [],
+    implementers: Array.isArray(stored.implementers) ? stored.implementers : [],
+  });
+}
+
+/** Everyone a verifier of this row must not be, read from the row itself. */
+export function verificationParties(subject: {
+  createdBy?: string | null;
+  terminalOwner?: string | null;
+  payload: unknown;
+}): VerificationParties {
+  const payload = record(subject.payload);
+  const task = readVerificationTask(payload);
+  return {
+    reporters: distinctIds([
+      subject.createdBy,
+      record(payload._ei).created_by,
+      readAgentReviewState(payload)?.submittedBy,
+      readStoredBugReproduction(payload)?.filedBy,
+      ...(task?.reporters ?? []),
+    ]),
+    implementers: distinctIds([subject.terminalOwner, ...(task?.implementers ?? [])]),
+  };
+}
+
+/** Which conflicting role `verifier` holds, or null when it may verify. */
+export function verificationConflict(parties: VerificationParties, verifier: string): VerificationConflictRole | null {
+  const who = verifier.trim();
+  if (!who) return null;
+  if (parties.reporters.includes(who)) return 'reporter';
+  if (parties.implementers.includes(who)) return 'implementer';
+  return null;
+}
+
+/**
+ * The claim-writer leg: a row carrying a verification block refuses its reporters and
+ * implementers whatever door the claim came through. Only the TASK's parties count
+ * here: the task row's own filer is the reviewer who decided to investigate, who is
+ * independent of the subject and may run the repro.
+ */
+export function verificationTaskConflict(payload: unknown, claimant: string): VerificationConflictRole | null {
+  const task = readVerificationTask(payload);
+  return task ? verificationConflict(task, claimant) : null;
+}
+
+/**
+ * SQL twin of `verificationConflict(verificationParties(row), verifier)`: TRUE when
+ * `verifier` is a reporter or implementer of the row. Every leg is null-safe, so the
+ * expression is never NULL and `NOT (...)` keeps rows with no parties at all.
+ */
+export function verificationConflictSql(
+  sql: OrgSql,
+  verifier: string,
+  columns: { payload: 'wi.payload' | 'payload' | 'target.payload'; terminalOwner: 'wi.terminal_owner' | 'terminal_owner' | 'target.terminal_owner' },
+) {
+  const payload = sql`COALESCE(${sql.unsafe(columns.payload)}, '{}'::jsonb)`;
+  const who = verifier.trim();
+  return sql`(
+    ${payload} -> '_ei' ->> 'created_by' IS NOT DISTINCT FROM ${who}
+    OR ${payload} -> 'agentReview' ->> 'submittedBy' IS NOT DISTINCT FROM ${who}
+    OR (
+      ${payload} -> 'reproduction' ->> 'schemaVersion' IS NOT DISTINCT FROM ${BUG_REPRODUCTION_SCHEMA_VERSION}
+      AND ${payload} -> 'reproduction' ->> 'filedBy' IS NOT DISTINCT FROM ${who}
+    )
+    OR (
+      ${payload} -> 'verification' ->> 'schemaVersion' IS NOT DISTINCT FROM ${VERIFICATION_TASK_SCHEMA_VERSION}
+      AND (
+        COALESCE(${payload} -> 'verification' -> 'reporters', '[]'::jsonb) ? ${who}
+        OR COALESCE(${payload} -> 'verification' -> 'implementers', '[]'::jsonb) ? ${who}
+      )
+    )
+    OR ${sql.unsafe(columns.terminalOwner)} IS NOT DISTINCT FROM ${who}
+  )`;
+}
+
 export function mintAgentReviewClaimAdmission(input: {
   itemId: string;
   reviewer: string;
   harnessSlug: string;
   review: AgentReviewState;
+  /** P-007: the subject's reporters and implementers; a conflicting reviewer gets no admission. */
+  parties: VerificationParties;
 }): AgentReviewClaimAdmission | null {
   const itemId = input.itemId.trim();
   const reviewer = input.reviewer.trim();
@@ -1059,6 +1201,7 @@ export function mintAgentReviewClaimAdmission(input: {
     !harnessSlug ||
     review.status !== 'pending' ||
     review.submittedBy === reviewer ||
+    verificationConflict(input.parties, reviewer) !== null ||
     !review.ledgerIdeaId.trim() ||
     !Number.isInteger(review.round) ||
     review.round < 1
@@ -1083,14 +1226,16 @@ export function isAgentReviewClaimAdmission(value: unknown): value is AgentRevie
 
 export function matchesAgentReviewClaimAdmission(
   value: unknown,
-  item: { id: string; harness?: string | null; payload: unknown },
+  item: { id: string; harness?: string | null; payload: unknown; createdBy?: string | null; terminalOwner?: string | null },
   reviewer: string,
 ): value is AgentReviewClaimAdmission {
   if (
     !isAgentReviewClaimAdmission(value) ||
     value.itemId !== item.id ||
     value.reviewer !== reviewer ||
-    value.harnessSlug !== item.harness
+    value.harnessSlug !== item.harness ||
+    // P-007: re-derived from the row the writer is about to claim, not trusted from the mint.
+    verificationConflict(verificationParties(item), reviewer) !== null
   ) {
     return false;
   }
