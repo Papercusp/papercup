@@ -45,35 +45,75 @@ interface VoiceHook {
   getState(): { status: string; lastTranscript: string; mode: string };
   lastSilenced(): { reason: string } | null;
   speak(t: string): void;
+  /** A non-forced reply: the same gates an agent reply passes (voice off, output mute, leader). */
+  reply(t: string): void;
+  outputMuted(): boolean;
   cancel(): void;
   ttsEngine(): string | null;
 }
-type VoiceWindow = Window & { __pcVoiceTest?: VoiceHook; __voiceEvents?: Array<{ phase: string; message: string }> };
+type VoiceWindow = Window & {
+  __pcVoiceTest?: VoiceHook;
+  __voiceEvents?: Array<{ phase: string; message: string }>;
+  /** Every MediaStream the page obtained from getUserMedia (R-4 cleanup legs). */
+  __micStreams?: MediaStream[];
+};
 
 /** Install the dev-only voice hook + an event recorder, then open the shell. */
-async function openShell(page: Page, opts: { denyMic?: boolean } = {}): Promise<{ postedTurns: string[] }> {
+async function openShell(
+  page: Page,
+  opts: { denyMic?: boolean } = {},
+): Promise<{ postedTurns: string[]; postedBodies: string[] }> {
   await page.addInitScript((denyMic) => {
     const w = window as VoiceWindow & { __PAPERCUSP_DEV_WRAPPER__?: boolean };
     w.__PAPERCUSP_DEV_WRAPPER__ = true;
     sessionStorage.setItem('oracle-tutorial-complete', 'true');
     w.__voiceEvents = [];
+    w.__micStreams = [];
     window.addEventListener('papercusp:voiceTimeout', (e) => {
       w.__voiceEvents!.push((e as CustomEvent<{ phase: string; message: string }>).detail);
     });
     if (denyMic) {
       navigator.mediaDevices.getUserMedia = () =>
         Promise.reject(new DOMException('Permission denied', 'NotAllowedError'));
+    } else {
+      const real = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+      navigator.mediaDevices.getUserMedia = async (c) => {
+        const stream = await real(c);
+        w.__micStreams!.push(stream);
+        return stream;
+      };
     }
   }, opts.denyMic ?? false);
   const postedTurns: string[] = [];
+  const postedBodies: string[] = [];
   page.on('request', (r) => {
-    if (r.method() === 'POST' && /\/api\/operator\/conversations\/[^/]+\/turns/.test(r.url())) postedTurns.push(r.url());
+    if (r.method() === 'POST' && /\/api\/operator\/conversations\/[^/]+\/turns/.test(r.url())) {
+      postedTurns.push(r.url());
+      postedBodies.push(r.postData() ?? '');
+    }
   });
   await page.goto('/harness');
   await expect(page.getByRole('button', { name: 'Voice mode' })).toBeVisible({ timeout: 60_000 });
   await page.waitForFunction(() => !!(window as VoiceWindow).__pcVoiceTest, undefined, { timeout: 30_000 });
-  return { postedTurns };
+  return { postedTurns, postedBodies };
 }
+
+/** Microphone tracks the page obtained that are still capturing. */
+const liveMicTracks = (page: Page) => page.evaluate(() =>
+  ((window as VoiceWindow).__micStreams ?? [])
+    .flatMap((s) => s.getAudioTracks())
+    .filter((t) => t.readyState === 'live').length);
+
+/** Count operator-tts-preview POSTs from now on (one per synthesized utterance). */
+function countTtsPosts(page: Page): { readonly n: number } {
+  const counter = { n: 0 };
+  page.on('request', (r) => {
+    if (r.method() === 'POST' && r.url().includes('/api/agent-mcp/operator-tts-preview')) counter.n += 1;
+  });
+  return counter;
+}
+
+const status = async (page: Page) => (await voice(page, (h) => h.getState())).status;
 
 const voice = <T>(page: Page, fn: (hook: VoiceHook) => T) =>
   page.evaluate((src) => {
@@ -265,12 +305,18 @@ async function transcribeInPage(page: Page, audio: Buffer): Promise<{ status: nu
       'writes a real conversation turn: isolated-DB desktop rig only');
     test.setTimeout(330_000);
     await withLocalEnginePrefs(page, async () => {
-      const { postedTurns } = await openShell(page);
+      const { postedTurns, postedBodies } = await openShell(page);
       await voice(page, (h) => h.setMode('push-to-talk'));
       const nextReply = await captureNextTtsReply(page, 240_000);
       await holdToTalk(page);
       await expect.poll(() => postedTurns.length, { timeout: 60_000, message: 'the spoken question was posted as a turn' })
         .toBeGreaterThan(0);
+      // R-4 turn/transcript identity: one hold posts ONE turn, and what it posts is
+      // the transcript the user was shown — not a re-recognition or a stale one.
+      const transcript = (await voice(page, (h) => h.getState())).lastTranscript;
+      expect(norm(transcript)).toContain('quick brown fox');
+      expect(postedTurns, 'one hold posts exactly one turn').toHaveLength(1);
+      expect(norm(postedBodies[0] ?? ''), `posted turn body: ${postedBodies[0]}`).toContain(norm(transcript));
       const reply = await nextReply();
       expect(reply.status).toBe(200);
       expect(reply.text.length, 'the agent reply sent to TTS').toBeGreaterThan(0);
@@ -283,6 +329,104 @@ async function transcribeInPage(page: Page, audio: Buffer): Promise<{ status: nu
       expect(matched.length, `reply sent to TTS: ${JSON.stringify(reply.text)}; whisper heard: ${JSON.stringify(heard.text)}`)
         .toBeGreaterThanOrEqual(Math.min(2, sentWords.size));
       expect((await events(page)).filter((e) => e.phase === 'playback')).toEqual([]);
+      expect(postedTurns, 'the reply did not post a second user turn').toHaveLength(1);
+    });
+  });
+});
+
+/**
+ * R-4 LIFECYCLE SCENARIOS (voice-final-public-release-2026-10-01 AUTO-BAR R-4):
+ * output mute, voice off, and a TTS provider outage on the shipped desktop client.
+ * Default (non-serial) mode so one red leg does not skip the others; the CLI runs
+ * --workers=1, so they still execute one at a time against the one local Whisper.
+ */
+(live ? test.describe : test.describe.skip)('SYNTHETIC voice lifecycle (R-4)', () => {
+  const LONG_REPLY = `${REPLY} `.repeat(6);
+
+  test('mute: muting mid-reply stops it, a muted reply stays silent, unmuting speaks again', async ({ page }) => {
+    test.setTimeout(180_000);
+    await withLocalEnginePrefs(page, async () => {
+      const tts = countTtsPosts(page);
+      await openShell(page);
+      await voice(page, (h) => h.setMode('push-to-talk'));
+      await page.evaluate((t) => (window as VoiceWindow).__pcVoiceTest!.reply(t), LONG_REPLY);
+      await expect.poll(() => status(page), { timeout: 60_000 }).toBe('speaking');
+      await page.getByRole('button', { name: 'Mute spoken voice replies' }).click();
+      expect(await voice(page, (h) => h.outputMuted())).toBe(true);
+      await expect.poll(() => status(page), { timeout: 2_000, message: 'mute silences the reply already playing' })
+        .not.toBe('speaking');
+      await page.waitForTimeout(3_000); // queued sentences must not resume it
+      expect(await status(page)).not.toBe('speaking');
+
+      const before = tts.n;
+      await page.evaluate((t) => (window as VoiceWindow).__pcVoiceTest!.reply(t), REPLY);
+      await page.waitForTimeout(4_000);
+      expect(tts.n, 'a muted reply is not synthesized').toBe(before);
+      expect((await voice(page, (h) => h.lastSilenced()))?.reason).toBe('output-muted');
+
+      await page.getByRole('button', { name: 'Unmute spoken voice replies' }).click();
+      await page.evaluate((t) => (window as VoiceWindow).__pcVoiceTest!.reply(t), REPLY);
+      await expect.poll(() => status(page), { timeout: 60_000, message: 'unmuted replies speak again' }).toBe('speaking');
+      expect(tts.n).toBeGreaterThan(before);
+    });
+  });
+
+  test('off: turning voice off releases the microphone and stops a reply mid-playback', async ({ page }) => {
+    test.setTimeout(180_000);
+    await withLocalEnginePrefs(page, async () => {
+      await openShell(page);
+      await voice(page, (h) => h.setMode('always-on'));
+      await expect.poll(() => liveMicTracks(page), { timeout: 30_000, message: 'always-on opened the microphone' })
+        .toBeGreaterThan(0);
+      await voice(page, (h) => h.setMode('off'));
+      await expect.poll(() => liveMicTracks(page), { timeout: 3_000, message: 'voice off released every mic track' })
+        .toBe(0);
+      expect(await status(page)).toBe('off');
+
+      await voice(page, (h) => h.setMode('push-to-talk'));
+      await page.evaluate((t) => (window as VoiceWindow).__pcVoiceTest!.speak(t), LONG_REPLY);
+      await expect.poll(() => status(page), { timeout: 60_000 }).toBe('speaking');
+      await voice(page, (h) => h.setMode('off'));
+      await expect.poll(() => status(page), { timeout: 2_000, message: 'voice off stops the reply' }).toBe('off');
+      await page.waitForTimeout(3_000);
+      expect(await status(page)).toBe('off');
+      expect(await liveMicTracks(page)).toBe(0);
+    });
+  });
+
+  test('tts outage: a failed synthesis says so on the same engine, and the next reply plays', async ({ page }) => {
+    test.setTimeout(180_000);
+    await withLocalEnginePrefs(page, async () => {
+      const sent: Array<{ engine: unknown; status: number }> = [];
+      let failNext = true;
+      await page.route('**/api/agent-mcp/operator-tts-preview', async (route) => {
+        if (route.request().method() !== 'POST') return route.continue();
+        const { engine } = JSON.parse(route.request().postData() ?? '{}') as { engine?: unknown };
+        if (failNext) {
+          failNext = false;
+          sent.push({ engine, status: 503 });
+          await route.fulfill({ status: 503, body: 'synthetic outage' });
+          return;
+        }
+        const response = await route.fetch();
+        sent.push({ engine, status: response.status() });
+        await route.fulfill({ response });
+      });
+      await openShell(page);
+      await voice(page, (h) => h.setMode('push-to-talk'));
+      const engine = await voice(page, (h) => h.ttsEngine());
+      await page.evaluate((t) => (window as VoiceWindow).__pcVoiceTest!.speak(t), REPLY);
+      await expect.poll(async () => (await events(page)).find((e) => e.phase === 'playback')?.message ?? '', {
+        timeout: 30_000,
+      }).toMatch(/Couldn't generate speech \(.+ returned 503\) — the reply is in the chat\./);
+      await expect.poll(() => status(page), { timeout: 10_000, message: 'a failed reply does not stick in speaking' })
+        .not.toBe('speaking');
+
+      await page.evaluate((t) => (window as VoiceWindow).__pcVoiceTest!.speak(t), REPLY);
+      await expect.poll(() => status(page), { timeout: 60_000, message: 'the next reply plays' }).toBe('speaking');
+      expect(sent.map((s) => s.status)).toEqual([503, 200]);
+      expect(sent.map((s) => s.engine), 'no silent engine substitution').toEqual([sent[0]!.engine, sent[0]!.engine]);
+      if (engine) expect(sent[0]!.engine).toBe(engine === 'browser' ? 'kokoro' : engine);
     });
   });
 });
