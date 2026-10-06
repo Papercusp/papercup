@@ -27,16 +27,21 @@ describe('D178 process module census', () => {
     const root = temp();
     write(join(root, 'esm.mjs'), 'export default 1;');
     write(join(root, 'cjs.cjs'), 'module.exports = 1;');
+    write(join(root, 'typed.ts'), 'import { value } from "./typed-dep"; export const typed: number = value;');
+    write(join(root, 'typed-dep.ts'), 'export const value: number = 1;');
     const script = `import { createRequire } from 'node:module';
       await import(${JSON.stringify(pathToFileURL(join(root, 'esm.mjs')).href)});
+      await import(${JSON.stringify(pathToFileURL(join(root, 'typed.ts')).href)});
       const require = createRequire(process.cwd() + '/package.json');
       require(${JSON.stringify(join(root, 'cjs.cjs'))}); require('sodium-native');
       const t = globalThis[Symbol.for('papercusp.seed-module-census')];
       console.log(JSON.stringify([...new Set([...t.paths, ...Object.keys(require.cache)])]));`;
     const paths: string[] = JSON.parse(execFileSync(process.execPath,
-      ['--import', moduleCensus, '--input-type=module', '-e', script], { encoding: 'utf8' }));
+      ['--import', moduleCensus, '--import', 'tsx', '--input-type=module', '-e', script], { encoding: 'utf8' }));
     expect(paths).toContain(join(root, 'esm.mjs'));
     expect(paths).toContain(join(root, 'cjs.cjs'));
+    expect(paths).toContain(join(root, 'typed.ts'));
+    expect(paths).toContain(join(root, 'typed-dep.ts'));
     expect(paths.some(path => path.includes('/sodium-native/') && path.endsWith('.node'))).toBe(true);
     expect(() => execFileSync(process.execPath,
       ['--import', 'tsx', '--import', moduleCensus, '--input-type=module', '-e', ''],
