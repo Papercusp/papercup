@@ -1301,4 +1301,87 @@ describe('floor #16 implementation-readiness: view, 12-arg floor labels and the 
 
     expect(await drainInlineClaimIds()).toEqual(expected);
   });
+
+  it('P-006 / D-019: the verification check is chosen by kind — after the cutover the view, the TS twin and the drain refuse a bug with no reproduction receipt and a change with no proposal review', async () => {
+    const CHANGE_TITLE = 'Collapse the duplicate intake gates into one stage';
+    const sealedChange = (): ImplementationAcceptanceContract => {
+      const sealed = sealImplementationAcceptance({
+        proposal: PROPOSAL,
+        authority: { kind: 'agent-review', reviewer: 'su-reviewer', submittedBy: 'su-author', round: 1 },
+        reason: 'agent-review-approved (grade 5/5)',
+        source: { kind: 'change', title: CHANGE_TITLE, summary: SUMMARY },
+        acceptedAt: UPDATED_AT,
+      });
+      if (!sealed.ok) throw new Error('fixture change contract must seal');
+      return sealed.contract;
+    };
+    // A bug contract with its receipt removed: the shape of an acceptance written before P-006.
+    const bugWithoutReceipt: Record<string, unknown> = { ...sealedFor(TITLE) };
+    delete bugWithoutReceipt.verification;
+    expect(bugWithoutReceipt).not.toHaveProperty('verification');
+    // A bug that carries the change-kind check instead of a reproduction receipt.
+    const bugWrongCheck = { ...sealedFor(TITLE), verification: { check: 'proposal-review' } };
+    // A change accepted by a policy authority: no proposal review took place.
+    const changeByPolicy = {
+      ...sealedChange(),
+      authority: { kind: 'policy', policy: 'trusted-tool-failure-promotion', actor: 'capture' },
+    };
+    const kindCases: Array<{ id: string; kind: string; title: string; createdTs: number; acceptance: object; admit: boolean }> = [
+      { id: 'WI-K16-POST-BUG-RECEIPT', kind: 'bug', title: TITLE, createdTs: POST, acceptance: sealedFor(TITLE), admit: true },
+      { id: 'WI-K16-POST-BUG-NO-RECEIPT', kind: 'bug', title: TITLE, createdTs: POST, acceptance: bugWithoutReceipt, admit: false },
+      { id: 'WI-K16-POST-BUG-WRONG-CHECK', kind: 'bug', title: TITLE, createdTs: POST, acceptance: bugWrongCheck, admit: false },
+      { id: 'WI-K16-POST-CHANGE-REVIEWED', kind: 'change', title: CHANGE_TITLE, createdTs: POST, acceptance: sealedChange(), admit: true },
+      { id: 'WI-K16-POST-CHANGE-POLICY', kind: 'change', title: CHANGE_TITLE, createdTs: POST, acceptance: changeByPolicy, admit: false },
+      // Before the WI-10005016 cutover the legacy branch still admits an incomplete contract (D-019).
+      { id: 'WI-K16-PRE-BUG-NO-RECEIPT', kind: 'bug', title: TITLE, createdTs: PRE, acceptance: bugWithoutReceipt, admit: true },
+      { id: 'WI-K16-PRE-CHANGE-POLICY', kind: 'change', title: CHANGE_TITLE, createdTs: PRE, acceptance: changeByPolicy, admit: true },
+    ];
+    for (const c of kindCases) {
+      await seed(c.id, {
+        kind: c.kind,
+        createdTs: c.createdTs,
+        payload: readiness('ready', 'agent-review', c.acceptance),
+        title: c.title,
+      });
+    }
+    await db.sql`UPDATE harness_shared.work_items SET summary = ${SUMMARY} WHERE feature_id LIKE 'WI-K16-%'`;
+    const expected = kindCases.filter((c) => c.admit).map((c) => c.id).sort();
+
+    for (const c of kindCases) {
+      const admits = implementationReadinessAdmitsClaim({
+        payload: readiness('ready', 'agent-review', c.acceptance),
+        kind: c.kind,
+        title: c.title,
+        summary: SUMMARY,
+        createdAtMs: c.createdTs,
+      });
+      expect([c.id, admits]).toEqual([c.id, c.admit]);
+    }
+
+    const viewIds = (
+      await db.sql<{ feature_id: string }[]>`
+        SELECT feature_id FROM harness_shared.work_items_claimable WHERE feature_id LIKE 'WI-K16-%'`
+    )
+      .map((r) => r.feature_id)
+      .sort();
+    expect(viewIds).toEqual(expected);
+
+    const labels = await db.sql<{ feature_id: string; floors: string[] }[]>`
+      SELECT feature_id,
+             harness_shared.work_item_claim_floors(
+               workspace_id, status, taken_by, origin, title, terminal_owner, terminal_completion_ref,
+               payload, feature_id, item_kind, summary, created_ts
+             ) AS floors
+        FROM harness_shared.work_items
+       WHERE feature_id LIKE 'WI-K16-%'
+       ORDER BY feature_id`;
+    expect(labels).toHaveLength(kindCases.length);
+    for (const r of labels) {
+      const refused = !expected.includes(r.feature_id);
+      expect([r.feature_id, r.floors.includes('implementation-readiness')]).toEqual([r.feature_id, refused]);
+      expect([r.feature_id, r.floors.filter((f) => f !== 'implementation-readiness')]).toEqual([r.feature_id, []]);
+    }
+
+    expect(await drainInlineClaimIds()).toEqual(expected);
+  });
 });
