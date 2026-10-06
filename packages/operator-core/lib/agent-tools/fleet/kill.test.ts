@@ -315,6 +315,41 @@ describe('killOne', () => {
     );
   });
 
+  it('lets a host finish a graceful SIGTERM teardown that outlasts 1.5 s (WI-10006628)', async () => {
+    // A resumed CLI flushing its transcript on SIGHUP kept the host alive ~2.4 s after
+    // SIGTERM; the old 6 × 250 ms grace SIGKILLed it and turned an owner's `/exit` into
+    // ended_signal SIGKILL + outer exit 137. Simulate a host that exits after 2.5 s.
+    const TEARDOWN_MS = 2_500;
+    let elapsedMs = 0;
+    let termAt: number | null = null;
+    const kills: Array<{ pid: number; signal: string }> = [];
+    const ended: Array<{ id: string; signal: string }> = [];
+    const deps: KillDeps = {
+      cancelNursery: async () => null,
+      findHost: () => host(300),
+      readProc: () => null,
+      kill: (pid, signal) => {
+        kills.push({ pid, signal });
+        if (pid === 300 && signal === 'SIGTERM' && termAt === null) termAt = elapsedMs;
+        return true;
+      },
+      alive: (pid) => pid === 300 && (termAt === null || elapsedMs - termAt < TEARDOWN_MS),
+      sleep: async (ms) => {
+        elapsedMs += ms;
+      },
+      markSessionEnded: async (id, signal) => {
+        ended.push({ id, signal });
+      },
+    };
+
+    const r = await killOne({ actor: 'su-me', target: 'su-target', closeTerminal: false, reason: 'session end' }, deps);
+
+    expect(r.ok).toBe(true);
+    expect(r.signal).toBe('SIGTERM');
+    expect(kills.filter((k) => k.pid === 300).map((k) => k.signal)).toEqual(['SIGTERM']);
+    expect(ended.map((e) => e.signal)).not.toContain('SIGKILL');
+  });
+
   it('closes an authenticated discovery terminal when host ancestry is detached', async () => {
     const t = makeProcTree({
       300: { ppid: 1, cmdline: 'node psu-launcher.mjs' },

@@ -74,7 +74,18 @@ const CONSOLE_MARKER = '.papercup-console-active';
 
 const CONSOLE_IDENTITY_ENV = 'PAPERCUSP_CONSOLE_IDENTITY';
 
-const KILL_WAIT_POLLS = 6;
+/**
+ * Grace between SIGTERM and SIGKILL for a session host: KILL_WAIT_POLLS × KILL_WAIT_MS = 5 s,
+ * the same escalation window every other killTask caller uses.
+ *
+ * WI-10006628: the native SessionEnd hook (lifecycle-report.sh) reaps the managed PTY host
+ * through this path on every genuine `/exit`. The host's SIGTERM teardown SIGHUPs the CLI so
+ * it can flush its transcript, which measured 0.86 s for a live `/exit`. With a 1.5 s grace
+ * (6 polls), a freshly resumed (unparked) CLI pushed the teardown past it: the host was
+ * SIGKILLed mid-cleanup, the owner's deliberate exit was recorded as ended_signal SIGKILL,
+ * and the outer psu process exited 137. A genuinely stuck host still escalates, just later.
+ */
+const KILL_WAIT_POLLS = 20;
 const KILL_WAIT_MS = 250;
 
 // ── injectable process primitives (the DI seam, mirrors turn/interrupt) ──
