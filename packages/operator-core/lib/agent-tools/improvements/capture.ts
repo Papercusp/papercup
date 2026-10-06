@@ -758,8 +758,7 @@ export default defineTool({
               .max(10),
           })
           .strict()
-          .optional()
-          .describe('Bug only: the exact error text you saw; same-error reports fold into one bug.'),
+          .optional(),
         // EI-12176 compatibility aliases. Older generated guidance advertised these at
         // top level. Declaring + normalising them prevents tools:invoke's permissive
         // envelope from silently stripping a scorecard while keeping observation.* as
