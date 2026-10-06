@@ -358,4 +358,6 @@ const result = await runHarness({
     return { ok: true };
   },
 });
+// The per-leg contract line scripts/tauri-surface-verify-suite.sh and its scheduled producer parse.
+console.log(`P004_TAURI_SURFACE_VERIFY_${result.verdict === 'pass' ? 'OK' : 'FAIL'} leg=goal-report verdict=${result.verdict}`);
 process.exitCode = result.verdict === 'pass' ? 0 : 1;

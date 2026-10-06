@@ -98,6 +98,20 @@ export interface GuiE2eSurfaceScheduledRunResult {
   escalated?: boolean;
 }
 
+/**
+ * The identity every leg's verifier is attributed to when the suite runs on the schedule
+ * (WI-10006730). scripts/verify-tauri-headless.sh refuses to boot without a PAPERCUSP_SID, its
+ * provenance anchor that tells an agent rig apart from the owner's live desktop. bg-host carries
+ * none, so before this every scheduled leg died at that check and the suite ran zero legs.
+ */
+export const GUI_E2E_SURFACE_SCHEDULED_SID = 'system-gui-e2e-surface-scheduled-run';
+
+/** The suite's spawn env: the host env plus an attributable PAPERCUSP_SID (a caller's own wins). */
+export function guiE2eSurfaceSuiteEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const sid = base.PAPERCUSP_SID?.trim();
+  return { ...base, PAPERCUSP_SID: sid ? sid : GUI_E2E_SURFACE_SCHEDULED_SID };
+}
+
 /** IO seam for tests. */
 export interface GuiE2eSurfaceScheduledRunIO {
   spawnFn: (command: string, args: readonly string[], options: Record<string, unknown>) => ChildProcess;
@@ -136,7 +150,7 @@ export async function runGuiE2eSurfaceScheduledRun(
   return new Promise((resolve) => {
     const child = io.spawnFn('bash', [SUITE_SCRIPT], {
       cwd: REPO_ROOT,
-      env: process.env,
+      env: guiE2eSurfaceSuiteEnv(process.env),
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     const { stdout, stderr } = collectChildOutput(child);
