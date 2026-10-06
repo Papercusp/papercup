@@ -1246,6 +1246,7 @@ dependency_generation_try_inflight() {
 # before the caller's own no-output watchdog kills this process blind.
 dependency_generation_wait_inflight() {
   local generation_root="$1" identity="$2" lock host stall_sec progress seen='' last_change now
+  local holder_pid='' copy_io='' last_copy_io='' sample_sec next_sample
   lock="$generation_root/.inflight-$identity"
   host="$(dependency_generation_host)"
   stall_sec="${DEPENDENCY_GENERATION_INFLIGHT_STALL_SEC:-1500}"
@@ -1253,6 +1254,13 @@ dependency_generation_wait_inflight() {
   dependency_generation_log \
     "joining in-flight build of $identity ($(dependency_generation_publish_lock_holder "$lock")) instead of copying the same trees in parallel"
   last_change="$(date +%s)"
+  sample_sec="${DEPENDENCY_GENERATION_COPY_PROGRESS_SEC:-60}"
+  case "$sample_sec" in ''|*[!0-9]*|0) sample_sec=60 ;; esac
+  if [ "$(sed -n 's/^host=//p' "$lock/writer" 2>/dev/null)" = "$host" ]; then
+    holder_pid="$(sed -n 's/^pid=//p' "$lock/writer" 2>/dev/null)"
+    last_copy_io="$(dependency_generation_subtree_io "$holder_pid" cp-written)"
+  fi
+  next_sample=$((last_change + sample_sec))
   while [ -d "$lock" ]; do
     dependency_generation_inflight_is_abandoned "$lock" "$host" && break
     progress="$(cat "$lock/progress" 2>/dev/null || true)"
@@ -1261,6 +1269,18 @@ dependency_generation_wait_inflight() {
       seen="$progress"
       last_change="$now"
       dependency_generation_log "in-flight build of $identity: ${progress#* }"
+    fi
+    # WI-10006561: a builder's copied script may not emit its copy progress.
+    # Observe actual cp writes independently; the builder's polling reads and
+    # log writes must never manufacture progress for an idle copy.
+    if [ "$now" -ge "$next_sample" ]; then
+      next_sample=$((now + sample_sec))
+      copy_io="$(dependency_generation_subtree_io "$holder_pid" cp-written)"
+      if [ -n "$copy_io" ] && [ "$copy_io" -gt "${last_copy_io:-0}" ]; then
+        last_change="$now"
+        dependency_generation_log "in-flight build of $identity: copy writes advanced to ${copy_io} bytes"
+      fi
+      last_copy_io="$copy_io"
     fi
     if [ $((now - last_change)) -ge "$stall_sec" ]; then
       dependency_generation_log \
@@ -1783,7 +1803,7 @@ dependency_generation_copy_lock_file() {
 # as the holder making progress; a child exiting also changes it, which is
 # still activity. Reads only /proc, so a sample costs milliseconds.
 dependency_generation_subtree_io() {
-  local root="$1" pids p total='' r w
+  local root="$1" mode="${2:-all}" pids p total='' r w
   case "$root" in ''|*[!0-9]*) return 0 ;; esac
   kill -0 "$root" 2>/dev/null || return 0
   pids="$( { ps -e -o pid=,ppid= 2>/dev/null || true; } | awk -v root="$root" '
@@ -1798,6 +1818,15 @@ dependency_generation_subtree_io() {
     }')"
   for p in $pids; do
     [ -r "/proc/$p/io" ] || continue
+    if [ "$mode" = cp-written ]; then
+      [ "$(cat "/proc/$p/comm" 2>/dev/null)" = cp ] || continue
+      # copy_file_range grows write_bytes; userspace/tmpfs copies grow wchar.
+      r="$(awk '/^(wchar|write_bytes):/ { if ($2 > m) m = $2 } END { if (NR) printf "%.0f\n", m }' \
+        "/proc/$p/io" 2>/dev/null || true)"
+      case "$r" in ''|*[!0-9]*) continue ;; esac
+      total=$(( ${total:-0} + r ))
+      continue
+    fi
     r="$(awk '$1 == "rchar:" { print $2 }' "/proc/$p/io" 2>/dev/null || true)"
     w="$(awk '$1 == "wchar:" { print $2 }' "/proc/$p/io" 2>/dev/null || true)"
     [ -n "$r$w" ] || continue

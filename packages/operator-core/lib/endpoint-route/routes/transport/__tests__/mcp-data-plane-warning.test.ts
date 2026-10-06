@@ -63,6 +63,23 @@ describe('withMcpDiagnosticWarnings', () => {
     expect(annotated._meta).toBeUndefined();
   });
 
+  it.each([
+    ['loop:status', { ok: true, ownerId: 'su-1', loop: { active: true, goal: 'keep working' } }],
+    ['scheduler:get_next', { ok: true, workItem: { id: 'EI-25212384048274593', state: 'open' } }],
+  ])('does not warn for a populated %s result envelope', (_tool, body) => {
+    const result: McpCallResult = {
+      content: [{ type: 'text', text: JSON.stringify(body) }],
+    };
+    const annotated = withMcpDiagnosticWarnings(
+      result,
+      context({ dataPlaneDegradedAtMs: Date.parse('2026-10-06T09:18:42.036Z') }),
+    );
+
+    expect(annotated).toBe(result);
+    expect(annotated._meta).toBeUndefined();
+    expect(JSON.parse((annotated.content[0] as { text: string }).text)).toEqual(body);
+  });
+
   it('does not warn for a populated scorecards:get result with complete criterion evidence', () => {
     const result: McpCallResult = {
       content: [{ type: 'text', text: JSON.stringify({

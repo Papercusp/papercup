@@ -2954,6 +2954,68 @@ describe('WI-10004094: one build per dependency identity, with visible copy prog
     );
   }, NATIVE_SHELL_TIMEOUT_MS);
 
+  it.each(['advancing', 'idle'] as const)('uses copy writes, not static text or holder polling, for an %s joined build', (activity) => {
+    const root = mkdtempSync(join(tmpdir(), 'papercusp-inflight-copy-wait-'));
+    roots.push(root);
+    const wrapper = [
+      'set -uo pipefail',
+      'source "$SCRIPT"',
+      'lock="$ROOT/.inflight-$ID"; mkdir "$lock"',
+      'printf "host=%s\\npid=%s\\nstarted=0\\n" "$(dependency_generation_host)" "$$" > "$lock/writer"',
+      'printf "0 copying dependency tree: node_modules\\n" > "$lock/progress"',
+      'echo 0 > "$ROOT/tick"',
+      // Only the clock and kernel counter seam are controlled. The production
+      // waiter must outlive its stall budget on writes and reject a flat counter.
+      'date() { cat "$ROOT/tick"; }',
+      'dependency_generation_inflight_is_abandoned() { return 1; }',
+      'dependency_generation_subtree_io() { [ "$2" = cp-written ] || return 1; if [ "$ACTIVITY" = advancing ]; then echo $((100 + $(cat "$ROOT/tick") * 1024)); else echo 100; fi; }',
+      'sleep() { local tick; tick=$(( $(cat "$ROOT/tick") + 1 )); echo "$tick" > "$ROOT/tick"; if [ "$ACTIVITY" = advancing ] && [ "$tick" -ge 6 ]; then rm -rf -- "$lock"; fi; }',
+      'rc=0; dependency_generation_wait_inflight "$ROOT" "$ID" || rc=$?',
+      'printf "RC=%s TICK=%s\\n" "$rc" "$(cat "$ROOT/tick")"',
+    ].join('\n');
+    const result = spawnSync('bash', ['-c', wrapper], {
+      encoding: 'utf8', timeout: NATIVE_SHELL_TIMEOUT_MS,
+      env: { ...process.env, SCRIPT, ROOT: root, ID: `v1-${'b'.repeat(64)}`, ACTIVITY: activity,
+        DEPENDENCY_GENERATION_COPY_PROGRESS_SEC: '1', DEPENDENCY_GENERATION_INFLIGHT_STALL_SEC: '2' },
+    });
+    expect(result.status, result.stderr).toBe(0);
+    if (activity === 'advancing') {
+      expect(result.stdout).toContain('RC=79 TICK=6');
+      expect(result.stderr).toContain('copy writes advanced');
+      expect(result.stderr).not.toContain('FATAL');
+    } else {
+      expect(result.stdout).toContain('RC=73 TICK=2');
+      expect(result.stderr).not.toContain('copy writes advanced');
+    }
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('measures an actual copy child while excluding holder reads and shell writes', () => {
+    const root = mkdtempSync(join(tmpdir(), 'papercusp-inflight-copy-io-'));
+    roots.push(root);
+    const wrapper = [
+      'set -euo pipefail',
+      'source "$SCRIPT"',
+      'printf holder-polling > "$ROOT/noise"; cat "$ROOT/noise" >/dev/null',
+      'printf "IDLE=%s\\n" "$(dependency_generation_subtree_io $$ cp-written)"',
+      'mkfifo "$ROOT/fifo"',
+      'cp "$ROOT/fifo" "$ROOT/sink" & copier=$!',
+      'trap \'kill "$copier" 2>/dev/null || true\' EXIT',
+      'exec 9> "$ROOT/fifo"',
+      'printf "%1048576s" "" >&9',
+      'while [ "$(stat -c %s "$ROOT/sink" 2>/dev/null || echo 0)" -lt 1048576 ]; do kill -0 "$copier"; sleep 0.05; done',
+      'printf "ACTIVE=%s\\n" "$(dependency_generation_subtree_io $$ cp-written)"',
+      'exec 9>&-; wait "$copier"; trap - EXIT',
+    ].join('\n');
+    const result = spawnSync('bash', ['-c', wrapper], {
+      encoding: 'utf8', timeout: NATIVE_SHELL_TIMEOUT_MS,
+      env: { ...process.env, SCRIPT, ROOT: root },
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toMatch(/^IDLE=\s*$/m);
+    const written = Number(/^ACTIVE=(\d+)$/m.exec(result.stdout)?.[1]);
+    expect(written).toBeGreaterThanOrEqual(1_048_576);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
   function copyScenario(shimBody: string): ShellResult {
     const root = mkdtempSync(join(tmpdir(), 'papercusp-copy-progress-'));
     roots.push(root);

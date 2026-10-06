@@ -194,6 +194,60 @@ describe('gmail syncPage cursor phases (D-017.4)', () => {
   });
 });
 
+describe('gmail provisions its Pub/Sub topic and renews the push watch (D-018.3)', () => {
+  // Every Pub/Sub and watch request is matched on METHOD as well as URL: Pub/Sub's
+  // topics.getIamPolicy is a GET and a POST answers 404, which is how live Gmail sync
+  // failed after the cutover (WI-10006554, a regression of WI-41682).
+  it('creates the topic, reads its IAM policy with GET, grants Gmail publish, then watches it', async () => {
+    const topic = 'projects/p-fixture/topics/gmail-push';
+    const topicUrl = `https://pubsub.googleapis.com/v1/${topic}`;
+    const expiresAt = Date.now() + 7 * 86_400_000;
+    const h = host((request) => {
+      const method = request.method ?? 'GET';
+      if (request.url === topicUrl && method === 'PUT') return { status: 409, json: { error: { status: 'ALREADY_EXISTS' } } };
+      if (request.url === `${topicUrl}:getIamPolicy` && method === 'GET') {
+        return { json: { etag: 'etag-1', bindings: [{ role: 'roles/pubsub.viewer', members: ['user:me@example.com'] }] } };
+      }
+      if (request.url === `${topicUrl}:setIamPolicy` && method === 'POST') return { json: {} };
+      if (request.url === `${BASE}/watch` && method === 'POST') return { json: { historyId: '500', expiration: String(expiresAt) } };
+      if (request.url.startsWith(`${BASE}/history?`) && method === 'GET') return { json: { historyId: '600' } };
+      return undefined;
+    });
+
+    const page = (await adapter.syncPage(
+      {
+        source: SOURCE,
+        cursor: pinned,
+        mode: 'incremental',
+        services: { 'google-pubsub': { projectId: 'p-fixture', topicName: topic } },
+      },
+      h,
+    )) as ProviderSyncPage;
+
+    expect(h.calls.slice(0, 4).map((request) => `${request.method ?? 'GET'} ${request.url}`)).toEqual([
+      `PUT ${topicUrl}`,
+      `GET ${topicUrl}:getIamPolicy`,
+      `POST ${topicUrl}:setIamPolicy`,
+      `POST ${BASE}/watch`,
+    ]);
+    expect(h.calls[1].body).toBeUndefined();
+    expect(JSON.parse(String(h.calls[2].body))).toEqual({
+      policy: {
+        etag: 'etag-1',
+        bindings: [
+          { role: 'roles/pubsub.viewer', members: ['user:me@example.com'] },
+          { role: 'roles/pubsub.publisher', members: ['serviceAccount:gmail-api-push@system.gserviceaccount.com'] },
+        ],
+      },
+    });
+    expect(JSON.parse(String(h.calls[3].body))).toEqual({ topicName: topic });
+    expect(gmail._internal.decodeCursor(page.nextCursor)).toMatchObject({
+      historyId: '600',
+      watch: { topicName: topic, topicReady: topic, expiration: new Date(expiresAt).toISOString() },
+    });
+  });
+});
+
 describe('gmail maps HTTP failures to the host sync signals (D-017.4)', () => {
   const failingHistory = (status: number, json: unknown, headers?: Record<string, string>): Route => (request) =>
     request.url.startsWith(`${BASE}/history?`) ? { status, json, headers } : undefined;

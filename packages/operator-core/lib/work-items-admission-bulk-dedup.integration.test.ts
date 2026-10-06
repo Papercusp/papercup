@@ -12,7 +12,7 @@ const { runWorkItemAdmissionBulkDedup: runBulkImpl } = await import('./work-item
 const { ADMISSION_MERGE_QUALITY_GOLD_CORPUS, admissionMergeQualityGoldJudgements } =
   await import('./work-items-admission-merge-quality');
 const { LEARNING_MODEL_SPEC } = await import('./learning/model-policy');
-const { runWorkItemAdmissionCensus } = await import('./work-items-admission-census');
+const { readCompletedAdmissionCensus, runWorkItemAdmissionCensus } = await import('./work-items-admission-census');
 
 type BulkOptions = Parameters<typeof runBulkImpl>[0];
 const MERGE_QUALITY_SENTINEL = ADMISSION_MERGE_QUALITY_GOLD_CORPUS[0]!.pair.pairKey;
@@ -1437,6 +1437,92 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
     expect(
       await db.sql<Array<{ a: string; b: string }>>`SELECT a, b FROM harness_shared.dedup_adjudications`,
     ).toEqual([{ a: 'a', b: 'b' }]);
+  }, 60_000);
+
+  // WI-10006553: a recovered pass re-ran a COMPLETED stage's result census from
+  // scratch, resetting its row to 'running' (~16 min live) while the next stage
+  // and the daily digest (complete-only) depended on it.
+  it('rehydrates a completed stage result census on recovery instead of re-running it', async () => {
+    await seed();
+    await db.sql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, title, summary, status, lane, payload,
+         item_kind, condition_key, created_ts, updated_ts, embedding, embedding_mode, admission,
+         admitted_at, admitted_by)
+      VALUES (${WS}, ${HARNESS}, 'd', 'Unrelated sibling', 'Separate second pair', 'open', NULL, '{}'::jsonb,
+              'change', 'watch:other', 4, 4, '[0,0.999,0.04]'::vector, 'gemma', 'admitted', now(), 'test')`;
+    await db.sql`UPDATE harness_shared.work_items SET condition_key = NULL WHERE feature_id IN ('c', 'd')`;
+    const rootRunId = 'bulk-result-census-recovery';
+    const resultCensusId = `${rootRunId}-stage-1-census-after`;
+    const censusRuns: string[] = [];
+    let interruptStageTwo = true;
+    // DBOS-faithful steps: a step that completed returns its recorded output on
+    // recovery instead of executing again (census-0 is NOT recomputed).
+    const recorded = new Map<string, unknown>();
+    const step = async <T>(name: string, fn: () => Promise<T>): Promise<T> => {
+      if (recorded.has(name)) return recorded.get(name) as T;
+      const value = await fn();
+      recorded.set(name, value);
+      return value;
+    };
+    const options = {
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: rootRunId,
+      sql: db.sql,
+      step,
+      maxStages: 2,
+      maxPairsPerStage: 1,
+      census: { chunkCount: 2, targetTokens: 1_000, fullCorpusPairThreshold: 0 },
+      llmCall: async (input) => {
+        const keys = [...input.messages[0]!.content.matchAll(/^([^\s]+::[^\s]+) \|/gm)].map((match) => match[1]!);
+        return {
+          text: '',
+          json: { judgements: keys.map((pairKey) => ({ pairKey, verdict: 'distinct', reason: 'Separate findings' })) },
+          inputTokens: 25,
+          outputTokens: 10,
+        };
+      },
+      runCensus: async (censusOpts) => {
+        censusRuns.push(censusOpts.runId ?? '');
+        return runWorkItemAdmissionCensus(censusOpts);
+      },
+      beforePostStageCensus: async (_sql, stageIndex) => {
+        if (stageIndex !== 2 || !interruptStageTwo) return;
+        interruptStageTwo = false;
+        throw new Error('injected stage-2 interruption');
+      },
+    } satisfies BulkOptions;
+    const readResultCensusRow = async () =>
+      (
+        await db.sql<Array<{ started: string; finished: string | null; status: string }>>`
+          SELECT started_at::text AS started, finished_at::text AS finished, detail->>'status' AS status
+            FROM harness_shared.admission_runs WHERE id = ${resultCensusId}`
+      )[0];
+
+    await expect(runBulk(options)).rejects.toThrow('injected stage-2 interruption');
+    const before = await readResultCensusRow();
+    expect(before).toMatchObject({ status: 'complete' });
+    expect(before?.finished).not.toBeNull();
+    expect(censusRuns.filter((id) => id === resultCensusId)).toHaveLength(1);
+
+    censusRuns.length = 0;
+    const result = await runBulk(options);
+    expect(result.stages).toHaveLength(2);
+    expect(result.stages[0]).toMatchObject({ resultCensusRunId: resultCensusId });
+    expect(censusRuns).not.toContain(resultCensusId);
+    expect(await readResultCensusRow()).toEqual(before);
+
+    // Reader contract: only a complete row rehydrates; anything else returns null
+    // so the driver runs (and, for an unfinished row, resumes) the census instead.
+    const scope = { workspaceId: WS, harnessSlug: HARNESS };
+    await expect(readCompletedAdmissionCensus(db.sql, scope, resultCensusId)).resolves.toMatchObject({
+      runId: resultCensusId,
+    });
+    await db.sql`
+      UPDATE harness_shared.admission_runs SET detail = jsonb_set(detail, '{status}', '"running"')
+       WHERE id = ${resultCensusId}`;
+    await expect(readCompletedAdmissionCensus(db.sql, scope, resultCensusId)).resolves.toBeNull();
   }, 60_000);
 
   // WI-10006336: the 10-05 scheduled stage failed "56606 -> 65264" because 39

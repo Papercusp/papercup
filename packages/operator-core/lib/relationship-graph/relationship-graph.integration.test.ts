@@ -28,6 +28,7 @@ import { ingestExternalTriggerEvent, type IngestExternalTriggerInput } from '../
 import { runConnectorSync } from '../providers/connector-runtime';
 import { dataSourceRecordId } from '../data-sources/datatype-destination-sink';
 import { listProvenanceKey } from './merge';
+import { getPeople, searchPeople } from './people';
 import {
   acceptEntityField,
   findEntityByIdentity,
@@ -364,6 +365,17 @@ describe('platform relationship graph (P-002, R-1)', () => {
     const adas = live(await graphRows('PER-', 'person')).filter((r) => (r.payload.identityKeys as string[]).includes('email:ada@acme.com'));
     expect(adas).toHaveLength(1);
     const ada = adas[0]!;
+    // P-003 (D-016/D-017): the person read path apps use answers with that ONE person, whether
+    // asked by exact address (any casing) or by free text.
+    for (const found of [
+      await searchPeople(sql, WS, { emails: ['ADA@acme.com'] }),
+      await searchPeople(sql, WS, { query: 'lovelace' }),
+      await searchPeople(sql, WS, { query: 'ada@acme' }),
+    ]) {
+      expect(found.map((p) => p.id)).toEqual([ada.feature_id]);
+      expect(found[0]).toMatchObject({ emails: ['ada@acme.com'], displayName: expect.stringContaining('Ada') });
+    }
+    expect((await getPeople(sql, WS, [ada.feature_id])).get(ada.feature_id)?.id).toBe(ada.feature_id);
     expect(ada.payload).toMatchObject({
       canonical: true,
       displayName: 'Ada Lovelace',
@@ -426,5 +438,30 @@ describe('platform relationship graph (P-002, R-1)', () => {
     expect(kinds, JSON.stringify(kinds)).not.toContain('relationship-graph-participants');
     expect(await graphRows('DSR-', 'person')).toEqual([]);
     expect(await graphRows('PER-', 'person')).toEqual([]);
+  });
+
+  it('interaction source kinds grant person -> record by default; contacts do not (D-017, migration 1393)', async () => {
+    const defaults = await sql<Array<{ kind: string; policy: Record<string, string[]> }>>`
+      SELECT k AS kind, (harness_shared.data_source_kind_defaults(k)).destination_policy AS policy
+        FROM unnest(ARRAY['gmail', 'gcal', 'contacts']::text[]) AS k`;
+    const byKind = Object.fromEntries(defaults.map((d) => [d.kind, d.policy]));
+    expect(byKind.gmail).toEqual({ 'email-message': ['document', 'event'], person: ['record'] });
+    expect(byKind.gcal).toEqual({ 'calendar-event': ['document', 'event'], person: ['record'] });
+    // Contacts are not an interaction source: D-015 brings contacts in as connector person records.
+    expect(byKind.contacts).toEqual({ contact: ['document', 'event'] });
+
+    // The INSERT trigger applies the kind default to a newly connected source with no policy.
+    const [row] = await sql<Array<{ id: string; policy: Record<string, string[]> }>>`
+      INSERT INTO harness_shared.data_sources
+        (workspace_id, kind, owner_user_id, provider_account_id, status, config, scope,
+         destination_policy, permission_mapping)
+      VALUES (${WS}, 'gmail', ${alice}, ${`gmail-default-${Date.now()}-${Math.random()}`}, 'connected',
+              ${sql.json({ harnessSlug: HARNESS })}, 'organization', '{}'::jsonb, ${sql.json({ mode: 'source-acl' })})
+      RETURNING id::text, destination_policy AS policy`;
+    try {
+      expect(row!.policy.person).toEqual(['record']);
+    } finally {
+      await sql`DELETE FROM harness_shared.data_sources WHERE id = ${row!.id}::uuid`;
+    }
   });
 });

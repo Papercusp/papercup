@@ -54,6 +54,18 @@ beforeEach(() => {
 });
 
 describe('activity:tool-log timestamp boundaries', () => {
+  it('advertises and enforces max_lines as an integer in the range 5..200', () => {
+    const schema = z.toJSONSchema(argsSchema as never) as {
+      properties?: Record<string, { type?: string; minimum?: number; maximum?: number }>;
+    };
+
+    expect(schema.properties?.max_lines).toMatchObject({ type: 'integer', minimum: 5, maximum: 200 });
+    expect(argsSchema.safeParse({ owner: 'self', max_lines: 5 }).success).toBe(true);
+    expect(argsSchema.safeParse({ owner: 'self', max_lines: 200 }).success).toBe(true);
+    expect(argsSchema.safeParse({ owner: 'self', max_lines: 4 }).success).toBe(false);
+    expect(argsSchema.safeParse({ owner: 'self', max_lines: 201 }).success).toBe(false);
+  });
+
   it('advertises and enforces top_k as an integer in the range 1..25', () => {
     const schema = z.toJSONSchema(argsSchema as never) as {
       properties?: Record<string, { type?: string; minimum?: number; maximum?: number; description?: string }>;

@@ -46,6 +46,7 @@ const {
   admissionPairKey,
   applyReviewedAdmissionCleanup,
   closeMootAdmissionReviews,
+  DEFAULT_FAIL_OPEN_BATCH_SIZE,
   judgedPairsMissingAdjudication,
   persistAdmissionPlan,
   previewReviewedAdmissionCleanup,
@@ -116,6 +117,9 @@ const DDL = `
     ) STORED,
     see_also text[],
     origin text NOT NULL DEFAULT 'local',
+    -- WI-10006515: issueOwnAuthorWhereSql reads author_pubkey to tell an own-node row stranded
+    -- at origin='remote' from a true peer row.
+    author_pubkey text,
     completion_ref jsonb,
     terminal_completion_ref text,
     authority text,
@@ -280,12 +284,13 @@ async function seedItem(input: {
   sourcePlanSlug?: string | null;
   goalId?: string | null;
   origin?: string;
+  authorPubkey?: string | null;
 }): Promise<void> {
   await db.sql`
     INSERT INTO harness_shared.work_items
       (workspace_id, harness_slug, feature_id, title, summary, status, item_kind, parent_id,
        taken_by, admission, admitted_at, first_claimed_at, condition_key, lane, payload,
-       created_ts, updated_ts, closed_ts, authority, expected_cost_cents, origin, source_plan_slug, goal_id,
+       created_ts, updated_ts, closed_ts, authority, expected_cost_cents, origin, author_pubkey, source_plan_slug, goal_id,
        embedding, embedding_mode, embedding_profile)
     VALUES (${input.workspaceId ?? WS}, ${input.harness ?? HARNESS}, ${input.id},
             ${input.title ?? 'vitest clone failure'},
@@ -297,7 +302,7 @@ async function seedItem(input: {
             ${JSON.stringify(input.payload ?? {})}::text::jsonb,
             ${input.createdAtMs ?? NOW - 10_000}, ${input.createdAtMs ?? NOW - 10_000},
             ${input.closedTs ?? null}, ${input.authority ?? null}, ${input.expectedCostCents ?? null},
-            ${input.origin ?? 'local'}, ${input.sourcePlanSlug ?? null}, ${input.goalId ?? null},
+            ${input.origin ?? 'local'}, ${input.authorPubkey ?? null}, ${input.sourcePlanSlug ?? null}, ${input.goalId ?? null},
             ${input.vector === undefined ? '[1,0,0]' : input.vector}::vector,
             ${input.vector === null ? null : 'gemma'},
             ${input.vector === null ? null : (input.embeddingProfile ?? null)})`;
@@ -2010,6 +2015,40 @@ describe('work-item admission promoter (real Postgres)', () => {
     ]);
   });
 
+  it('caps each fail-open update at the oldest eligible rows', async () => {
+    const firstCreatedAt = NOW - 2 * 60 * 60_000;
+    const count = DEFAULT_FAIL_OPEN_BATCH_SIZE + 1;
+    for (let index = 0; index < count; index += 1) {
+      await seedItem({
+        id: `WI-fail-open-batch-${String(index).padStart(3, '0')}`,
+        createdAtMs: firstCreatedAt + index,
+        vector: null,
+      });
+    }
+
+    const result = await runWorkItemAdmissionFailOpen({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: 'fail-open-bounded-batch',
+      sql: db.sql,
+      now: () => NOW,
+    });
+
+    expect(result.autoPromoted).toHaveLength(DEFAULT_FAIL_OPEN_BATCH_SIZE);
+    const pending = await db.sql<Array<{ feature_id: string; admission: string }>>`
+      SELECT feature_id, admission
+        FROM harness_shared.work_items
+       WHERE admission = 'pending'
+       ORDER BY created_ts ASC, feature_id ASC`;
+    expect(pending).toEqual([{
+      feature_id: `WI-fail-open-batch-${String(count - 1).padStart(3, '0')}`,
+      admission: 'pending',
+    }]);
+    const [run] = await db.sql<Array<{ batch_size: number }>>`
+      SELECT batch_size FROM harness_shared.admission_runs WHERE id = 'fail-open-bounded-batch'`;
+    expect(run?.batch_size).toBe(DEFAULT_FAIL_OPEN_BATCH_SIZE);
+  });
+
   // The promoter is seeded per-harness by a hand-run script that defaults to the operator home
   // harness, so in practice only ONE harness ever has one. A harness-scoped fail-open therefore
   // guarantees liveness for that harness and silently starves every other one: measured
@@ -3170,4 +3209,49 @@ describe('review-debt policy (P-007): moot terminal reviews and the no-model pas
     const model = await readPendingBatch(db.sql, WS, HARNESS, 10);
     expect(model.map((item) => item.id)).toEqual(['WI-pending-stamped', 'WI-unreviewed-plain', 'WI-pending-plain']);
   });
+});
+
+describe('own-node rows stranded at origin=remote (WI-10006515)', () => {
+  it('promotes an OWN-NODE row stranded at origin=remote and still refuses a true peer row as remote-owned', async () => {
+    // K-own is one of THIS workspace's keys: a local row carries it. K-peer never appears locally.
+    // Distinct titles/summaries and no vectors, so no dedup pair forms and no model is consulted.
+    const own = { vector: null, authorPubkey: 'K-own' } as const;
+    await seedItem({ ...own, id: 'WI-own-anchor', title: 'anchor row for the local key', summary: 'alpha', admission: 'admitted', origin: 'local', createdAtMs: NOW - 60_000 });
+    await seedItem({ ...own, id: 'WI-own-strand', title: 'own row stranded by a sync echo', summary: 'bravo', admission: 'pending', origin: 'remote', createdAtMs: NOW - 10_000 });
+    await seedItem({ id: 'WI-peer', title: 'genuine peer authored row', summary: 'charlie', admission: 'pending', origin: 'remote', authorPubkey: 'K-peer', vector: null, createdAtMs: NOW - 20_000 });
+
+    const snapshots = await readAdmissionMergeSnapshots(db.sql, {
+      workspaceId: WS, harnessSlug: HARNESS, ids: ['WI-own-strand', 'WI-peer'],
+    });
+    expect(snapshots.get('WI-own-strand')?.ownNode).toBe(true);
+    // Absent, not false: a row that is not own-node keeps its snapshot fingerprint unchanged.
+    expect(snapshots.get('WI-peer')).toBeDefined();
+    expect('ownNode' in snapshots.get('WI-peer')!).toBe(false);
+
+    // Well-formed if reached, so an unexpected call fails the assertion below instead of crashing the run.
+    const llmCall = vi.fn(async () => ({ text: '', json: { judgements: [] }, inputTokens: 0, outputTokens: 0 }));
+    const result = await runWorkItemAdmissionPromoter({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: 'own-node-strand',
+      sql: db.sql,
+      targetItemIds: ['WI-own-strand', 'WI-peer'],
+      llmCall,
+      now: () => NOW,
+    });
+
+    expect(llmCall).not.toHaveBeenCalled();
+    expect(result.promoted).toBe(1);
+    expect(result.guardRefusals).toEqual([
+      expect.objectContaining({ reason: 'remote-owned', detail: expect.stringContaining('WI-peer') }),
+    ]);
+    const rows = await db.sql<Array<{ feature_id: string; admission: string }>>`
+      SELECT feature_id, admission FROM harness_shared.work_items
+       WHERE workspace_id = ${WS} AND feature_id = ANY(ARRAY['WI-own-strand','WI-peer']::text[])
+       ORDER BY feature_id`;
+    expect(rows).toEqual([
+      { feature_id: 'WI-own-strand', admission: 'admitted' },
+      { feature_id: 'WI-peer', admission: 'pending' },
+    ]);
+  }, 60_000);
 });

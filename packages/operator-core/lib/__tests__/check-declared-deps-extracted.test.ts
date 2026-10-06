@@ -263,6 +263,46 @@ describe('bundle-safe CLI entry detection', () => {
 });
 
 describe('package-local version guard catches readable stale dev tools (EI-20863794002653922)', () => {
+  it.each([
+    ['4.1.8', {}, '4.1.8'],
+    ['$vitest', { vitest: '4.1.8' }, '4.1.8'],
+    [{ '.': '$vitest' }, { vitest: '4.1.8' }, '4.1.8'],
+  ])('checks an installed dev tool against the root override %j', (override, hostDeps, effective) => {
+    const root = fixture({
+      packages: { 'libs/downloader': { devDependencies: { vitest: '^4.1.9' } } },
+      extracted: { 'libs/downloader': ['vitest'] },
+    });
+    writeFileSync(join(root, 'package.json'), JSON.stringify({
+      workspaces: ['libs/downloader'], devDependencies: hostDeps,
+      overrides: { vitest: override },
+    }));
+    const installedPath = join(root, 'libs/downloader/node_modules/vitest/package.json');
+    writeFileSync(installedPath, JSON.stringify({ name: 'vitest', version: '4.1.10' }));
+    expect(findInvalidWorkspacePackageVersions({ repoRoot: root })).toEqual([
+      { package: 'vitest', workspace: 'libs/downloader', declared: effective, installed: '4.1.10' },
+    ]);
+    writeFileSync(installedPath, JSON.stringify({ name: 'vitest', version: '4.1.8' }));
+    expect(findInvalidWorkspacePackageVersions({ repoRoot: root })).toEqual([]);
+  });
+
+  it('honors a direct root override for hoisted runtime dependencies without leaking child rules', () => {
+    const root = fixture({
+      packages: { 'libs/image': { dependencies: { sharp: '^0.34.0', undici: '^6.0.0' } } },
+      extracted: { '': ['sharp', 'undici'] },
+    });
+    writeFileSync(join(root, 'package.json'), JSON.stringify({
+      workspaces: ['libs/image'],
+      overrides: { sharp: '^0.35.0', other: { undici: '^7.0.0' } },
+    }));
+    writeFileSync(join(root, 'node_modules/sharp/package.json'), JSON.stringify({ version: '0.35.0' }));
+    writeFileSync(join(root, 'node_modules/undici/package.json'), JSON.stringify({ version: '6.28.1' }));
+    expect(findUnsatisfiedDeclaredDepRanges({ repoRoot: root })).toEqual([]);
+    writeFileSync(join(root, 'node_modules/sharp/package.json'), JSON.stringify({ version: '0.34.5' }));
+    expect(findUnsatisfiedDeclaredDepRanges({ repoRoot: root })).toEqual([
+      { dep: 'sharp', workspace: 'libs/image', declared: '^0.35.0', installed: '0.34.5' },
+    ]);
+  });
+
   it('FLAGS Vitest 3 retained under an SSE declaration that now requires Vitest 4', () => {
     const root = fixture({
       packages: {

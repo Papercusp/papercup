@@ -111,6 +111,73 @@ describe('runGovernedSpendAttempt — complete usage settles, incomplete usage r
     run,
   });
 
+  const cycleRunId = '6ac8aa8a-7f50-49ac-9f62-8a89a506a5d9';
+  const cycleReservationId = '07850477-4239-41b5-8f0e-dfb5456994dd';
+  function cycleDeps() {
+    const fixture = fakeAttemptDeps();
+    const reserve = fixture.deps.reserve!;
+    const requests: ReserveLearningSpendInput[] = [];
+    fixture.deps.reserve = async (sql, input) => {
+      requests.push(input);
+      const receipt = await reserve(sql, input);
+      if (!receipt.ok) throw new Error('fixture must grant');
+      Object.assign(receipt.reservation, { id: cycleReservationId,
+        runRef: `cycle:${cycleRunId}/cap:10000000/attempt:${cycleReservationId}` });
+      return receipt;
+    };
+    return { ...fixture, requests };
+  }
+
+  it('forwards a cycle scope to the issuer and settles that attempt with mirror accounting', async () => {
+    const { deps, requests } = cycleDeps();
+    let settlementInput: unknown;
+    const settle = deps.settle!;
+    deps.settle = async (sql, input) => { settlementInput = input; return settle(sql, input); };
+    const out = await runGovernedSpendAttempt({ ...attempt(async grant => {
+      expect(grant.reservationId).toBe(cycleReservationId);
+      return { costUsd: 0.4, value: 'native judge' };
+    }), cycle: { runId: cycleRunId, budgetUsd: 10 }, accumulate: false }, deps);
+    expect(requests[0]).toMatchObject({ cycle: { runId: cycleRunId, budgetUsd: 10 } });
+    expect(out).toMatchObject({ ok: true, settlement: { ok: true, reservation: { id: cycleReservationId } } });
+    expect(settlementInput).toMatchObject({ reservationId: cycleReservationId, usedUsd: 0.4, accumulate: false });
+  });
+
+  it('snapshots the cycle scope before asynchronous admission', async () => {
+    const { deps, requests } = cycleDeps();
+    let resume!: () => void;
+    deps.enabled = () => new Promise(resolve => { resume = () => resolve(true); });
+    const cycle = { runId: cycleRunId, budgetUsd: 10 };
+    const pending = runGovernedSpendAttempt({ ...attempt(async () => ({ costUsd: 0, value: null })), cycle }, deps);
+    cycle.runId = '368d69c4-8ea2-478c-9f9f-3499a914f7d1';
+    cycle.budgetUsd = 100;
+    resume();
+    expect(await pending).toMatchObject({ ok: true });
+    expect(requests[0]).toMatchObject({ cycle: { runId: cycleRunId, budgetUsd: 10 } });
+  });
+
+  it.each(['foreign-cycle', 'foreign-attempt', 'missing-scope', 'headroom-above-cap'])(
+    'refuses a cycle receipt with %s without dispatching or settling', async mismatch => {
+      const { deps, settlements } = cycleDeps();
+      const reserve = deps.reserve!;
+      deps.reserve = async (sql, input) => {
+        const receipt = await reserve(sql, input);
+        if (!receipt.ok) throw new Error('fixture must grant');
+        if (mismatch === 'foreign-cycle') receipt.reservation.runRef = `cycle:${'368d69c4-8ea2-478c-9f9f-3499a914f7d1'}/cap:10000000/attempt:${cycleReservationId}`;
+        if (mismatch === 'foreign-attempt') receipt.reservation.runRef = `cycle:${cycleRunId}/cap:10000000/attempt:${cycleRunId}`;
+        if (mismatch === 'missing-scope') receipt.reservation.runRef = null;
+        if (mismatch === 'headroom-above-cap') receipt.headroomUsd = 11;
+        return receipt;
+      };
+      let ran = false;
+      const out = await runGovernedSpendAttempt({ ...attempt(async () => {
+        ran = true; return { costUsd: 0, value: null };
+      }), cycle: { runId: cycleRunId, budgetUsd: 10 } }, deps);
+      expect(ran).toBe(false);
+      expect(settlements).toEqual([]);
+      expect(out).toMatchObject({ ok: false, reason: 'failed', reservationId: null });
+    },
+  );
+
   it('settles a completed attempt as used, at its actual cost', async () => {
     const { deps, settlements } = fakeAttemptDeps();
     const out = await runGovernedSpendAttempt(

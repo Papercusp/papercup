@@ -949,10 +949,10 @@ async function routinesTickImpl(): Promise<void> {
   // Fail-soft: poolPressure() returns 'ok' on any probe error (never shed on no signal).
   //
   // EI-11171 CRITICAL-ROUTINE FLOOR: a critical shed no longer goes fully dark. The original
-  // bare `return` here skipped the ENTIRE fire loop below — including git-sync, which is fired
-  // into the protected ROUTINES_CRITICAL_QUEUE precisely so it can NEVER be starved (its
-  // starvation froze every commit + deploy for 7h on 2026-06-23). Shedding it too silently
-  // re-armed that exact incident class. Instead we set `poolCritical` and fall through to a
+  // bare `return` here skipped the ENTIRE fire loop below — including git-sync and the bounded
+  // deterministic admission fail-open, which use ROUTINES_CRITICAL_QUEUE so a pool shed cannot
+  // starve commit persistence or the pending-admission floor. Shedding them too silently
+  // re-armed those incident classes. Instead we set `poolCritical` and fall through to a
   // MINIMAL pass: fire ONLY critical-queue routines (shouldFireUnderPoolShed), then return
   // before the heavy sweeps. Non-critical fires and heavy sweeps remain shed;
   // the liveness-critical loop-rebase pass below also survives the shed.
@@ -964,7 +964,7 @@ async function routinesTickImpl(): Promise<void> {
     const probeRawMs = lastPoolProbeRawMs();
     const loopP99DiscountMs = lastPoolProbeLoopDelayMs();
     console.warn(
-      `[routines-tick] slow pool probe — shedding heavy sweeps; still firing CRITICAL-queue routines only (git-sync floor, EI-11171/P-006/W4); pool-shed #${shedCount}`,
+      `[routines-tick] slow pool probe — shedding heavy sweeps; still firing CRITICAL-queue routines only (git-sync + bounded admission fail-open floors, EI-11171/P-006/W4); pool-shed #${shedCount}`,
       {
         probeRawMs,
         probeNetMs: Math.max(0, probeRawMs - loopP99DiscountMs),
@@ -1036,8 +1036,8 @@ async function routinesTickImpl(): Promise<void> {
   const loggedWithheldQueues = new Set<string>();
   const dueByAge = orderDueRoutinesByAge(due);
   for (const r of dueByAge) {
-    // EI-11171 critical-routine floor: under a pool-starvation shed, fire ONLY the protected
-    // critical-queue routines (git-sync); everything else sheds with the heavy sweeps below.
+    // EI-11171 critical-routine floor: under a pool-starvation shed, fire ONLY protected
+    // critical-queue routines (git-sync and bounded admission fail-open); everything else sheds.
     if (poolCritical && !shouldFireUnderPoolShed(r.targetRole)) continue;
     const queueName = queueForRoutine(r.targetRole, r.installSlug);
     // EI-224330 stage 2: admission is checked BEFORE claim, from the epoch's

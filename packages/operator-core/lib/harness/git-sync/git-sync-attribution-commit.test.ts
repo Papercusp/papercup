@@ -1,4 +1,9 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
+import { execFile } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { mkdtemp, mkdir, rm, utimes, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { commitAttributedGroups, dirtyFiles } from './run-git-sync';
 import type { FileAttribution } from './git-sync-attribution';
 
@@ -11,6 +16,9 @@ function fakeGit(opts: {
   commitResults?: Array<Partial<GitResult>>;
   /** WI-38594: stdout for the per-group `git diff --cached --numstat` read. */
   numstat?: string;
+  /** WI-10006519: answer for `rev-parse --absolute-git-dir` (the stale-lock recovery
+   *  looks for `<gitDir>/index.lock`). Defaults to a path that does not exist. */
+  gitDir?: string;
 }): { runGit: RunGit; calls: string[][] } {
   const calls: string[][] = [];
   let addIdx = 0;
@@ -18,6 +26,9 @@ function fakeGit(opts: {
   const runGit: RunGit = async (args) => {
     calls.push(args);
     if (args[0] === 'status') return { code: 0, stdout: opts.porcelain ?? '', stderr: '' };
+    if (args[0] === 'rev-parse' && args.includes('--absolute-git-dir')) {
+      return { code: 0, stdout: `${opts.gitDir ?? '/nonexistent-git-sync-attribution-test/.git'}\n`, stderr: '' };
+    }
     if (args[0] === 'add') {
       const r = opts.addResults?.[addIdx++] ?? { code: 0 };
       return { code: r.code ?? 0, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
@@ -38,6 +49,20 @@ function fakeGit(opts: {
 }
 
 const MSG = 'chore(git-sync): auto-commit papercup [skip ci]';
+
+const tmpDirs: string[] = [];
+afterEach(async () => {
+  await Promise.all(tmpDirs.splice(0).map((d) => rm(d, { recursive: true, force: true })));
+});
+
+/** A real git runner for the on-disk regression below. */
+const realRunGit: RunGit = (args, cwd) =>
+  new Promise((resolve) => {
+    execFile('git', args, { cwd, encoding: 'utf8' }, (err, stdout, stderr) => {
+      const code = err ? (typeof (err as { code?: unknown }).code === 'number' ? (err as { code: number }).code : 1) : 0;
+      resolve({ code, stdout, stderr });
+    });
+  });
 
 describe('dirtyFiles (-z porcelain parse)', () => {
   it('lists modified/untracked/deleted paths and skips a rename origin', async () => {
@@ -96,20 +121,32 @@ describe('commitAttributedGroups (P-004 + WI-38594 diff subjects)', () => {
     expect(calls.some((c) => c[0] === 'add' || c.includes('commit'))).toBe(false);
   });
 
-  it('returns an error when an attributed add fails and does not commit the unstaged group', async () => {
+  it('returns an error when an attributed add keeps hitting a FRESH (live) index.lock, and never removes it', async () => {
+    // WI-10006519: a fresh lock is a live writer's. Recovery retries a bounded number of
+    // times and then surfaces the error; it must not unlink the lock.
+    const gitDir = await mkdtemp(join(tmpdir(), 'gs-attr-fresh-'));
+    tmpDirs.push(gitDir);
+    await writeFile(join(gitDir, 'index.lock'), '');
+    const lockErr = { code: 1, stderr: "fatal: Unable to create '.git/index.lock': File exists" };
     const { runGit, calls } = fakeGit({
       porcelain: ' M a.ts\0 M b.ts\0',
-      addResults: [{ code: 1, stderr: "fatal: Unable to create '.git/index.lock': File exists" }],
+      addResults: [lockErr, lockErr, lockErr, lockErr, lockErr, lockErr],
+      gitDir,
     });
     const attribution = new Map<string, FileAttribution>([['a.ts', { agent: 'ag1', intent: 'fix a' }]]);
+    const logs: string[] = [];
 
-    const res = await commitAttributedGroups(runGit, '/repo', attribution, [], MSG);
+    const res = await commitAttributedGroups(runGit, '/repo', attribution, [], MSG, { log: (m) => logs.push(m) });
 
     expect(res.committedAny).toBe(false);
     expect(res.committedCount).toBe(0);
     expect(res.error).toMatch(/attributed add failed:.*index\.lock/);
-    expect(calls.find((c) => c[0] === 'add')).toEqual(['add', '--', 'a.ts']);
+    const adds = calls.filter((c) => c[0] === 'add');
+    expect(adds[0]).toEqual(['add', '--', 'a.ts']);
+    expect(adds.length).toBe(4); // first try + 3 bounded retries; the fresh lock is never cleared
     expect(calls.some((c) => c[0] === 'diff' || c.includes('commit'))).toBe(false);
+    expect(existsSync(join(gitDir, 'index.lock'))).toBe(true);
+    expect(logs.some((m) => m.includes('FRESH'))).toBe(true);
   });
 
   it('skips excluded (oversized/content) files even when attributed', async () => {
@@ -126,7 +163,8 @@ describe('commitAttributedGroups (P-004 + WI-38594 diff subjects)', () => {
   it('surfaces a real commit failure as an error (but tolerates nothing-to-commit)', async () => {
     const { runGit } = fakeGit({
       porcelain: ' M a.ts\0',
-      commitResults: [{ code: 1, stderr: 'fatal: Unable to create index.lock' }],
+      // A non-lock failure: lock failures now go through stale-lock recovery (WI-10006519).
+      commitResults: [{ code: 1, stderr: 'error: gpg failed to sign the data' }],
     });
     const attribution = new Map<string, FileAttribution>([['a.ts', { agent: 'ag1', intent: 'x' }]]);
     const res = await commitAttributedGroups(runGit, '/repo', attribution, [], MSG);
@@ -181,5 +219,36 @@ describe('commitAttributedGroups (P-004 + WI-38594 diff subjects)', () => {
     const newCommit = commits.find((c) => c.includes('new lane'))!;
     expect(oldCommit).toContain('Papercusp-Work-Item: WI-40700');
     expect(newCommit.some((a) => a.startsWith('Papercusp-Work-Item:'))).toBe(false);
+  });
+});
+
+describe('commitAttributedGroups stale index.lock recovery (WI-10006519, real git)', () => {
+  it('clears an aged, holderless index.lock and commits the attributed group instead of failing every tick', async () => {
+    // 2026-10-06 07:09Z and 08:00Z: a 0-byte index.lock left by a killed git process made
+    // the attributed `git add` fail on every git-sync tick. This is that state on disk.
+    const repo = await mkdtemp(join(tmpdir(), 'gs-attr-stale-'));
+    tmpDirs.push(repo);
+    expect((await realRunGit(['init', '-q'], repo)).code).toBe(0);
+    await mkdir(join(repo, 'src'));
+    await writeFile(join(repo, 'src', 'a.ts'), 'export const a = 1;\n');
+    const lockPath = join(repo, '.git', 'index.lock');
+    await writeFile(lockPath, '');
+    const tenMinutesAgo = new Date(Date.now() - 10 * 60_000);
+    await utimes(lockPath, tenMinutesAgo, tenMinutesAgo);
+    // Positive control: with the orphan in place, a plain add really does fail.
+    const plain = await realRunGit(['add', '--', 'src/a.ts'], repo);
+    expect(plain.code).not.toBe(0);
+    expect(`${plain.stdout}${plain.stderr}`).toMatch(/index\.lock/);
+
+    const attribution = new Map<string, FileAttribution>([['src/a.ts', { agent: 'ag1', intent: 'add a' }]]);
+    const logs: string[] = [];
+    const res = await commitAttributedGroups(realRunGit, repo, attribution, [], MSG, { log: (m) => logs.push(m) });
+
+    expect(res.error).toBeUndefined();
+    expect(res.committedCount).toBe(1);
+    expect(existsSync(lockPath)).toBe(false);
+    expect(logs.some((m) => m.includes('cleared STALE index.lock'))).toBe(true);
+    const files = await realRunGit(['show', '--name-only', '--format=', 'HEAD'], repo);
+    expect(files.stdout.trim()).toBe('src/a.ts');
   });
 });

@@ -115,7 +115,7 @@ vi.mock('../../scorecard-emitted-events', () => ({ emitScorecardEmitted: async (
 import evaluatorTool, { argsSchema as evaluatorArgsSchema } from '../plans/evaluate-spec-test-adequacy';
 import { listSpecClauses } from '../plans/spec-clauses-store';
 import { measureRepoFilesEvidenceAtRoot } from '../plans/spec-evidence-store';
-import { ADEQUACY_CRITERIA } from '../plans/spec-test-adequacy';
+import { ADEQUACY_CRITERIA, SPEC_TEST_ADEQUACY_EVALUATOR_REVISION } from '../plans/spec-test-adequacy';
 import { resolveLocalRubric } from '../../cupboard/rubric-store';
 import { emitScorecard, scorecardEmitArgs } from './emit';
 
@@ -342,6 +342,26 @@ describe('spec-test-adequacy evaluator → scorecards:emit round trip', () => {
     // The recipe carries the SERVER-measured tuple, so emit's supplied:false refusal
     // cannot be what lets freshness through.
     expect(row!.scorecardDraft.rerunRecipe.current.supplied).toBe(true);
+    const recipe = row!.scorecardDraft.rerunRecipe;
+    // The graded rule revision is envelope metadata; executable args stay valid against
+    // the evaluator's strict schema while preserving the full scored input population.
+    expect(recipe.evaluatorRevision).toBe(SPEC_TEST_ADEQUACY_EVALUATOR_REVISION);
+    expect(recipe.args).not.toHaveProperty('evaluatorRevision');
+    expect(recipe.args.evaluatorBuild).toEqual(recipe.evaluatorBuild);
+    expect(recipe.args).toMatchObject({
+      harness: 'papercusp',
+      slug: PLAN,
+      classRef: 'plan-class-feature-ship',
+      specIds: [SPEC],
+      specRevision: recipe.selection.specRevision,
+      specFingerprint: recipe.selection.specFingerprint,
+      replaySnapshot: true,
+      bindingIds: [1, 2, 3],
+      current: recipe.current.fingerprints,
+    });
+    expect(recipe.args.evidenceRefs).toEqual(
+      recipe.selection.evidence.map(({ evidenceRef }) => evidenceRef).sort((a, b) => a.localeCompare(b)),
+    );
     expect(row!.scorecardDraft.rerunRecipe.args).toMatchObject({ replaySnapshot: true, bindingIds: [1, 2, 3] });
     expect(scorecardEmitArgs.parse(row!.scorecardDraft).rerunRecipe?.selection.bindingIds).toEqual([1, 2, 3]);
 

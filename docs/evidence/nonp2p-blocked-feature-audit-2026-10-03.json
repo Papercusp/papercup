@@ -2045,7 +2045,140 @@
    "qualification": {
     "status": "source-condition-identified-feasibility-not-final",
     "basis": "source snapshot 2026-10-03T08:39Z plus bounded current reads in native session 01a100fc",
-    "acceptanceWaived": false
+    "acceptanceWaived": false,
+    "currentEvidenceQualification": {
+     "status": "retained-owner-review-and-current-snapshot-qualification-open",
+     "measuredAt": "2026-10-06T09:06:28Z",
+     "proofWorkItem": "WI-10005820",
+     "ownerId": "su-25bc0450-2829-42b9-a2dd-1431c99e4ba8",
+     "sourcePlan": {
+      "slug": "dhh-source-preview-2026-09-28",
+      "revision": 39,
+      "contentHash": "c2d2ecedbafd55b7bbd1314734e114bb15908f48bb8273796c93c98446b583fc",
+      "sectionsRead": [
+       "Requirements",
+       "Now",
+       "Decisions"
+      ],
+      "decisionsRead": [
+       "D-001",
+       "D-002",
+       "D-003",
+       "D-004",
+       "D-005",
+       "D-006",
+       "D-007"
+      ],
+      "planItemsRead": [
+       "P-001",
+       "P-002",
+       "P-003",
+       "P-004",
+       "P-005",
+       "P-006"
+      ],
+      "ownerReviewSpec": {
+       "id": "dhh-preview-owner-review",
+       "revision": 2,
+       "contentHash": "34924f471da828285681ff7b2b60e6d4b9ee07b533ec6fe0e243664dc08d305d",
+       "lifecycleStatus": "exempt",
+       "behavior": "The owner reviews the private preview repository contents before any recipient is added.",
+       "exemptionScope": "The canonical exemption identifies a human judgment gate and states that no automated test can stand in for Avi approving the contents. It does not establish that this review happened."
+      },
+      "currentClauseRead": "The complete current-only plans:get-specs response returned nineteen clause rows. The writer reports count=specs.length; this is a returned clause population, not nineteen accepted requirements.",
+      "rubric": {
+       "ref": "acceptance-dhh-source-preview-2026-09-28",
+       "revision": 1,
+       "criteriaHash": "b3625952894a3092866aaf1a669559244112f6e4a873559367f8f8a7497f09d8",
+       "barSetHash": "cb394ecf8a126a28f7d317fbb6184c7248b669502daeb3617feba4df856f9f49",
+       "vetting": "unvetted:missing-attestation",
+       "gradingAuthority": "independent"
+      },
+      "guideContractMismatch": {
+       "decision": "D-007 requires README.md, its release-page link and the corrected server-versus-GUI source explanation, based on owner directive795.",
+       "sourceRequirement": "R-4 still names START-HERE.md.",
+       "autoClause": "AUTO-BAR-R-4-P-002@1, f356ce43c36267041d19b153ee9cf79d1fc588795999666cf7013402f3c16518, remains draft and names START-HERE.md.",
+       "behaviorClause": "dhh-preview-start-here@1, 144a032588465bfa3295b7dac9ff15176491c9f3f1e706c98027f7aea5dc1d8c, remains active and names START-HERE.md.",
+       "implementationAndGuard": "scripts/source-preview.mjs injects README.md. source-preview-export.test.ts asserts README.md, release-page content and refusal without the release host.",
+       "qualification": "D-007 and the inspected implementation agree on README.md; the older current requirement, clauses and rubric have not been reconciled. This audit does not amend or accept them."
+      }
+     },
+     "workItemStateAtRead": {
+      "WI-10003639": "done; stored P001..P004 implementation receipt",
+      "WI-10003658": "done; stored P004 publication receipt",
+      "WI-10003659": "blocked; unassigned; active P005 product-decision condition; no stored checkpoint",
+      "WI-10003660": "blocked; unassigned; P006 depends on P005 settlement"
+     },
+     "historicalReceipt": {
+      "receiptHeadSha": "623bcc1c5f08a7463509ec0317c5038138c1a0da",
+      "previewCommitAtReceipt": "811d06c3",
+      "previewTreeAtReceipt": "9b3cfdf8",
+      "sourceCommitAtReceipt": "09e39c5d",
+      "storedTestResult": "September28 terminal payloads report export10/10, gate14/14, sync9/9, share18/18, release-actions246/246, live four-leg gate clean and preview:check in sync.",
+      "laterPlanNow": "Source39 Now reports the D007 README update at preview commit6bcdd335/tree d4991098 and the same source09e39c5d; it still leaves P005 review and P006 invitations open.",
+      "scope": "Historical payload and plan claims were read, not reproduced as current tests, current remote identity or independent acceptance."
+     },
+     "boundEvidence": {
+      "queryScope": "Only this plan and workItemIds WI-10003639, WI-10003658, WI-10003659, WI-10003660; limit1000, truncatedByLimit:false.",
+      "returnedBindingIds": [],
+      "qualification": "No bindings were returned for this exact selection. This is not a global absence claim and does not negate stored completion receipts or evidence on other work items.",
+      "writerRead": "get-spec-evidence.ts counts returned rows after a limit-plus-one query and derives currentness from spec-evidence-store.ts."
+     },
+     "remoteObservation": {
+      "repository": "Papercusp/papercusp-preview",
+      "private": true,
+      "archived": false,
+      "defaultBranch": "main",
+      "tipCommit": "9ac6f2575f6502ab0f463c1e6ea090aa3f5b567e",
+      "tipTree": "6caa68d01a49f3d2ef791bfe25ced0355a5d2181",
+      "tipParentCount": 1,
+      "secondReturnedCommit": "fec252bf202c0e818a37edb9f42722e2df4c81be",
+      "secondReturnedParentCount": 1,
+      "commitQueryScope": "First two default-branch commits only; no complete history census was performed.",
+      "pinnedManifestRead": "MANIFEST.json and the recursive tree were explicitly read at tipCommit; tree response truncated:false.",
+      "manifestTarget": "public",
+      "manifestPurpose": "public source release \u2014 public-safe cut (plan open-source-release-2026-09-29)",
+      "manifestSourceCommit": "9ce4866fb74e00186ab7acf40c6ee13c88063c70",
+      "manifestSubmodule": {
+       "path": "libs/papercusp",
+       "sha": "ff4ba3feb34987c1d89e63ca46a275020f1ddccb"
+      },
+      "manifestSelectedFileCount": 16,
+      "fileCountWriter": "source-preview.mjs assigns manifest.fileCount from listFiles(partial) before generated NOTICE, README, MANIFEST and public community/license files are added. It is not the final remote tree size.",
+      "manifestSha256": "8d1fdc8e191245036a9a57041425bd5030f73b5fe5fe207b56abe957f62455fb",
+      "readmeObservation": "The unpinned default-branch README read returned6156 bytes, SHA256 2eae940dd7d6f6c837bab0998c201ad1918a8cf95d08d8839580011022614224, and included source.tar.zst, GUI and releases markers. This read was not pinned to the commit and is not an owner-review or exact download-link proof.",
+      "mismatch": "The observed preview tip differs from both historical publication identities, has a parent, and carries a public-target manifest. Current inspected TARGETS maps preview to this private repo with replace history and public to Papercusp/papercusp-app with append history; assertRemoteMatchesTarget refuses the other target's named repo.",
+      "couldNotDetermine": "Who or which mechanism wrote this remote snapshot; whether a later explicit owner decision authorized this content or target change; current complete collaborator/invitation population; present scanner verdict; Avi's actual review of these contents.",
+      "acceptanceImplication": "The historical P004 receipt and source39 Now do not qualify this observed remote as today's reviewed, gated private preview. No cause, present secret leak, current scanner pass or publication acceptance is inferred."
+     },
+     "detectorsInspected": {
+      "sharingGuard": "share-source.mjs accepts only the named preview repo and read/pull permission, and dry-run mutation returns before gh when confirm is absent.",
+      "sharingTest": "share-source-cli.test.ts asserts zero gh calls for dry-run add/remove, exact permission=pull for confirmed add, and refusal of another repo or stronger permission.",
+      "ownerReviewLimit": "These code guards enforce target, permission and confirm behavior; they do not observe Avi's subjective contents review.",
+      "sourcePins": {
+       "scripts/source-preview.mjs": "ed3f5bcccca0198c2105587113e0ab18a0b4bc8db5f950db80ed17f142355d7f",
+       "scripts/share-source.mjs": "edc5af407184855a1d0c5193f54c307b2a90bc4889e252be0b6c5c75f4674bd9",
+       "packages/operator-core/lib/source-preview-export.test.ts": "7e0a721c416c0ef00a7b2a8097505d8bb962366558724c06f7b65b28592363d0",
+       "packages/operator-core/lib/share-source-cli.test.ts": "0f10fbdd49073c071d6dcda2f786ae7b935f48ff91fb4b2a4bbcacd1cc01b470",
+       "packages/operator-core/lib/agent-tools/plans/get-spec-evidence.ts": "8e1a336b5a3650349a9f2cfb26099c02460ec1534d0ce80d709c3c522207ce54",
+       "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts": "46474c95cbde2f6f35398f6d727bb00453115a1708d27bb1c1ffbdafb9cd9240"
+      },
+      "pinScope": "Each selected source/test file matched its own repository HEAD blob at inspection; no historical dirty test run is requalified."
+     },
+     "remaining": [
+      "Reconcile D007 README wording with the current R4 requirement, clauses and unvetted rubric without silently weakening the contract.",
+      "Trace and qualify the observed remote target/history/content identity before treating a prior gate or review receipt as current.",
+      "Obtain evidence of Avi reviewing the exact private-preview contents, or an explicit revised review requirement.",
+      "Retain P006 dependency on P005 and current per-person access evidence; no invitation has been issued by this audit."
+     ],
+     "acceptanceGranted": false,
+     "shipped": false,
+     "invitationsSent": false,
+     "sourceBehaviorEdited": false,
+     "specOrRubricEdited": false,
+     "priorSuitesReplayed": false,
+     "otherFrozenRowsChanged": false
+    }
    }
   },
   {

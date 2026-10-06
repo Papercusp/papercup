@@ -206,6 +206,7 @@ describe('carry-respawn native-turn delivery authority', () => {
           PAPERCUSP_SID: ownerId,
           PAPERCUSP_AGENT: 'claude',
           CLAUDE_CONFIG_DIR: claudeConfig,
+          PAPERCUSP_PSU_HEADLESS: '0',
           TERM: 'xterm-256color',
           PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '50',
           PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '50',
@@ -224,6 +225,9 @@ describe('carry-respawn native-turn delivery authority', () => {
           nativeId,
           launchContextPath: '/tmp/carry.md',
         }),
+        // Native binding is a separate precondition from native turn proof.
+        // This fixture reaches the latter with a confirmed fake reanchor.
+        onRespawn: async () => true,
         onExit: () => {},
       });
 
@@ -256,6 +260,10 @@ describe('carry-respawn native-turn delivery authority', () => {
         }
 
         expect(captured()).toContain('PAINT');
+        expect(events).toContainEqual(expect.objectContaining({
+          kind: 'respawn-binding-confirmed',
+          nativeId,
+        }));
         // The first retry is the verifier's raw CR retry. If that still cannot
         // prove a native turn, production carry policy deliberately cuts one
         // fresh epoch and verifies again; that second epoch has its own

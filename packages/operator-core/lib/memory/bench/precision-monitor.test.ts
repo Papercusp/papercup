@@ -13,6 +13,7 @@ import {
   parsePrecisionBenchWorkerOutput,
   PRECISION_BENCH_JEV_CONSUMER,
   PRECISION_BENCH_JEV_GATE_ENV,
+  PRECISION_BENCH_EMBEDDER_MODE_ENV,
   PRECISION_BENCH_RESULT_MARKER,
   precisionBenchWorkerInvocation,
   resolvePrecisionBenchWorkerTarget,
@@ -338,21 +339,38 @@ describe('precision bench worker protocol', () => {
   });
 
   it('tells the worker explicitly whether to gate, so an inherited value can never gate a floor-only run', async () => {
-    const seen: Array<string | undefined> = [];
+    const seen: Array<Record<string, string | undefined>> = [];
     const spawnProcess = ((_cmd: string, _args: string[], o: { env: NodeJS.ProcessEnv }) => {
-      seen.push(o.env[PRECISION_BENCH_JEV_GATE_ENV]);
+      seen.push({
+        jevGate: o.env[PRECISION_BENCH_JEV_GATE_ENV],
+        mode: o.env[PRECISION_BENCH_EMBEDDER_MODE_ENV],
+        openai: o.env.OPENAI_API_KEY,
+        anthropic: o.env.ANTHROPIC_API_KEY,
+      });
       throw new Error('stop before spawning');
     }) as unknown as typeof import('node:child_process').spawn;
     const prior = process.env[PRECISION_BENCH_JEV_GATE_ENV];
     process.env[PRECISION_BENCH_JEV_GATE_ENV] = '1';
     try {
-      await expect(runBenchInWorker({ spawnProcess })).rejects.toThrow(/stop before spawning/);
-      await expect(runBenchInWorker({ spawnProcess, jevGate: true })).rejects.toThrow(/stop before spawning/);
+      const run = (jevGate = false) => runBenchInWorker({
+        spawnProcess,
+        jevGate,
+        embedderMode: 'local',
+        resolveWorkerCredentials: async () => ({
+          openai_api_key: 'stored-openai-key',
+          anthropic_api_key: 'stored-anthropic-key',
+        }),
+      });
+      await expect(run()).rejects.toThrow(/stop before spawning/);
+      await expect(run(true)).rejects.toThrow(/stop before spawning/);
     } finally {
       if (prior === undefined) delete process.env[PRECISION_BENCH_JEV_GATE_ENV];
       else process.env[PRECISION_BENCH_JEV_GATE_ENV] = prior;
     }
-    expect(seen).toEqual(['0', '1']);
+    expect(seen).toEqual([
+      { jevGate: '0', mode: 'local', openai: 'stored-openai-key', anthropic: 'stored-anthropic-key' },
+      { jevGate: '1', mode: 'local', openai: 'stored-openai-key', anthropic: 'stored-anthropic-key' },
+    ]);
   });
 });
 

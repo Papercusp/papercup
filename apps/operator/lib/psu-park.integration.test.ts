@@ -77,15 +77,34 @@ function readJsonl<T>(path: string): T[] {
     .map((l) => JSON.parse(l) as T);
 }
 
+/**
+ * Bound an await so a hang fails naming WHAT hung. Without it, a stuck socket or
+ * host exit surfaces only as vitest's bare test timeout (reported as
+ * "STACK_TRACE_ERROR"), which also masks an assertion that failed before the
+ * `finally` quit hung (one such opaque red, 2026-10-06 09:21Z, WI-10006516).
+ */
+function withDeadline<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`timed out after ${ms}ms waiting for ${what}`)), ms);
+  });
+  return Promise.race([p, timeout]).finally(() => clearTimeout(timer));
+}
+
 function controlInject(sock: string, mode: 'turn' | 'raw', data: string): Promise<void> {
-  return new Promise((resolve) => {
-    const c = net.connect(sock, () => {
-      c.write(encodeControl({ mode, data, ownerId: basename(sock, '.sock') }));
-      c.end();
+  let c: net.Socket | undefined;
+  const closed = new Promise<void>((resolve) => {
+    c = net.connect(sock, () => {
+      c!.write(encodeControl({ mode, data, ownerId: basename(sock, '.sock') }));
+      c!.end();
     });
     c.on('data', () => {});
     c.on('error', () => resolve());
     c.on('close', () => resolve());
+  });
+  return withDeadline(closed, 10_000, `the control socket to close after a ${mode} inject`).catch((error) => {
+    c?.destroy();
+    throw error;
   });
 }
 
@@ -203,7 +222,7 @@ function startParkHost({
     /** End the session: QUIT resumes a parked child first, then it exits 0. */
     async quit() {
       if (existsSync(sock)) await controlInject(sock, 'raw', 'QUIT\r');
-      return done;
+      return withDeadline(done, 10_000, 'the host to exit after QUIT');
     },
   };
 }

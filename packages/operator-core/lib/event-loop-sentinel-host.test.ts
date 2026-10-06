@@ -344,6 +344,11 @@ describe('startEventLoopSentinel', () => {
     expect(result.stderr).toContain('mainThreadEventLoopResponse: not-answered');
     expect(result.stderr).toContain('Runtime.evaluate not answered within 3000ms');
     expect(result.stderr).toContain('WEDGED — observe mode, NOT killing');
+    // WI-10006344: an unanswered probe names where the main thread is blocked
+    // (here Atomics.wait = an interruptible futex sleep), on the failure line itself.
+    const failed = result.stderr.split('\n').find(l => l.includes('STALL profile capture failed'));
+    expect(failed, result.stderr).toBeDefined();
+    expect(failed).toContain('mainThreadState: S');
   }, 30_000);
 
   it.skipIf(process.platform !== 'linux')('WI-10005529: discards a probe answered only after heartbeat recovery', () => {

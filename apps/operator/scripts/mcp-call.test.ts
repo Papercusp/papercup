@@ -28,6 +28,9 @@ import {
   resolveMcpProxyPort,
   isRecoverableAuthorityDenial,
   buildFallbackWarning,
+  buildUnreachableDiagnostic,
+  buildConnectionRetryDiagnostic,
+  fetchWithConnectionRecovery,
   // @ts-expect-error -- plain .mjs launcher script, no type declarations.
 } from '../../../scripts/mcp-call.mjs';
 
@@ -270,6 +273,57 @@ describe('mcp-call fallback diagnostics', () => {
 
     expect(warning).toContain('The environment setting is canonical');
     expect(warning).not.toMatch(/port is STALE|may be stale/);
+  });
+});
+
+describe('mcp-call connection refusal diagnostics', () => {
+  const refused = () => new TypeError('fetch failed', {
+    cause: Object.assign(new Error('connect refused'), { code: 'ECONNREFUSED' }),
+  });
+
+  it('keeps retries scoped to this mcp-call process instead of inferring an operator restart', async () => {
+    let nowMs = 1_000;
+    let fetchCalls = 0;
+    const retryMessages: string[] = [];
+    const success = new Response('ok');
+
+    const result = await fetchWithConnectionRecovery('http://localhost:3170', {}, {
+      fetchImpl: async () => {
+        fetchCalls += 1;
+        if (fetchCalls === 1) throw refused();
+        return success;
+      },
+      retryWindowMs: 25,
+      retryDelayMs: 10,
+      sleepImpl: async (ms: number) => { nowMs += ms; },
+      now: () => nowMs,
+      onRetry: ({ attempt, delayMs, remainingMs }: { attempt: number; delayMs: number; remainingMs: number }) => {
+        retryMessages.push(buildConnectionRetryDiagnostic({
+          port: '3170', attempt, delayMs, remainingMs,
+        }));
+      },
+    });
+
+    expect(result).toBe(success);
+    expect(fetchCalls).toBe(2);
+    expect(retryMessages).toHaveLength(1);
+    expect(retryMessages[0]).toContain('connection to port 3170 was refused from this mcp-call process');
+    expect(retryMessages[0]).toContain('does not identify the cause');
+    expect(retryMessages[0]).not.toMatch(/operator may be restarting|operator is restarting/);
+  });
+
+  it('limits an exhausted refusal diagnosis to this caller and the exact endpoints tried', () => {
+    const diagnostic = buildUnreachableDiagnostic({
+      attempts: [{ port: '3170', error: refused() }],
+      configuredPort: '3170',
+      pinned: true,
+    });
+
+    expect(diagnostic).toContain('Every connection attempt was refused before an MCP request could be sent');
+    expect(diagnostic).toContain("this mcp-call process's attempts to the listed ports");
+    expect(diagnostic).toContain('same execution environment that ran mcp-call');
+    expect(diagnostic).toContain('does not identify why a connection was refused');
+    expect(diagnostic).not.toMatch(/operator may be restarting|operator is restarting/);
   });
 });
 

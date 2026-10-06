@@ -2703,6 +2703,8 @@ describe('RECYCLE / backend-aware RESET — kill + respawn the child in the same
             nativeId: nativeIds[epoch - 1],
           };
         },
+        // The fake CLI has a known identity before testing MCP recovery.
+        onRespawn: async () => true,
         mcpReconnectMacro: async ({ serverName }: { serverName: string }) => {
           reconnectAttempts.push({ epoch, serverName });
           if (epoch === 1) {
@@ -3269,6 +3271,7 @@ describe('P-020 carry-respawn drill correlation', () => {
         io,
         bridgeTty: false,
         mintCarryRespawnArgs: (args: string[]) => ({ args, nativeId, launchContextPath: carryPath }),
+        onRespawn: async () => true,
         onExit: (code: number) => { exitCode = code; },
       });
 
@@ -3291,6 +3294,10 @@ describe('P-020 carry-respawn drill correlation', () => {
         expect(captured()).toContain('MCP_DIALOG');
         expect(captured().indexOf('MCP_DIALOG')).toBeLessThan(captured().indexOf('ECHO:⟦carry-drill:d-1⟧'));
         const events = readFileSync(eventLog, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+        expect(events).toContainEqual(expect.objectContaining({
+          kind: 'respawn-binding-confirmed',
+          nativeId,
+        }));
         expect(events).toContainEqual(expect.objectContaining({
           kind: 'carry-drill-respawned',
           drillId: 'd-1',
@@ -3377,6 +3384,8 @@ describe('carry-respawn native turn-start proof (EI-21561923024113260)', () => {
         bridgeTty: false,
         nativePersistenceTimeoutMs: 200,
         mintCarryRespawnArgs: (args: string[]) => ({ args, nativeId, launchContextPath: '/tmp/carry.md' }),
+        // Confirm identity so failure is specifically missing native turn proof.
+        onRespawn: async () => true,
         onExit: () => {},
       });
 

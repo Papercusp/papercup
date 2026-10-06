@@ -71,6 +71,8 @@ const PLUGIN = `provider:${GROUP}`;
 const PROVIDER_PLUGIN_NAME = 'fake-suite-plugin';
 const TOKEN_URL = 'https://auth.example-mail.test/token';
 const IDENTITY_URL = 'https://api.example-mail.test/me';
+/** A GraphQL-shaped identity request (linear-asana-task-sync P-004): the host must POST this body. */
+const IDENTITY_BODY = JSON.stringify({ query: '{ viewer { id } }' });
 
 const CTX: RouteContext = {
   principal: null,
@@ -116,7 +118,7 @@ function descriptor(id: string, datatype: string, capability: string, withIdenti
       scopes: [capability],
       pkce: true,
       credentialGroup: GROUP,
-      ...(withIdentity ? { identity: { url: IDENTITY_URL, idField: 'id', displayNameField: 'profile.name' } } : {}),
+      ...(withIdentity ? { identity: { url: IDENTITY_URL, idField: 'id', displayNameField: 'profile.name', method: 'POST' as const, body: IDENTITY_BODY } } : {}),
     },
   };
 }
@@ -145,7 +147,11 @@ async function fakeFetch(input: string | URL | Request, init?: RequestInit): Pro
       scope: 'mail.read calendar.read',
     });
   }
-  if (href === IDENTITY_URL) return Response.json({ id: net.account.id, profile: { name: net.account.name } });
+  if (href === IDENTITY_URL) {
+    // Answers only the declared request: POST with the descriptor's JSON body.
+    if (init?.method !== 'POST' || init?.body !== IDENTITY_BODY) return new Response('method not allowed', { status: 405 });
+    return Response.json({ id: net.account.id, profile: { name: net.account.name } });
+  }
   if (href === GOOGLE_GMAIL_PROFILE_ENDPOINT) return Response.json({ emailAddress: net.gmailEmail });
   throw new Error(`unexpected fetch ${href}`);
 }
@@ -321,7 +327,11 @@ describe('descriptor credential group through the real OAuth callback', () => {
     });
     // The identity endpoint was called by the host with the fresh token; the provider never received it.
     const identityCall = vi.mocked(fetch).mock.calls.find(([input]) => String(input instanceof URL ? input.href : input) === IDENTITY_URL);
-    expect(identityCall?.[1]).toMatchObject({ headers: { authorization: 'Bearer access-1' } });
+    expect(identityCall?.[1]).toMatchObject({
+      method: 'POST',
+      body: IDENTITY_BODY,
+      headers: { authorization: 'Bearer access-1', 'content-type': 'application/json' },
+    });
   });
 
   it('keeps source ids and cursors when the same account reconnects', async () => {

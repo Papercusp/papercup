@@ -17,6 +17,7 @@ import { listDueCronRoutines } from '@papercusp/db-org';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
 import { claimDueRoutine } from './claim';
 import { materializeLoop } from './loop';
+import { persistMonitorNoDeltaBudget } from './monitor-standdown';
 import { reconcileLoopRoutines } from './reconcile-loop-routines';
 
 let org: OrgTestDb;
@@ -144,6 +145,74 @@ async function readFire(id: string): Promise<{ parked: boolean; nextFireMs: numb
     nextFireMs: row.parked || !row.next_fire_at ? null : row.next_fire_at.getTime(),
   };
 }
+
+describe('persistMonitorNoDeltaBudget — overlapping same-fire settlement (real PG)', () => {
+  it('does not let a stale concurrent pass overwrite the first settlement', async () => {
+    const ownerId = `su-monitor-budget-race-${++rtSeq}`;
+    const fireToken = String(T0);
+    const routine = await materializeLoop({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      ownerId,
+      intervalSec: 60,
+      kickoff: 'same-fire monitor budget race',
+      mode: 'monitor',
+      monitor: {
+        predicateKey: 'fleet:budget-race',
+        stopCondition: 'the same fire settles once',
+        noDeltaBudget: 3,
+        remainingNoDeltaBudget: 3,
+        authority: { kind: 'fleet-leader', fleet: 'budget-race' },
+      },
+      now: new Date(T0),
+      sql,
+    });
+    const winner = await sql.reserve();
+    const stalePass = await sql.reserve();
+    let winnerTransactionOpen = false;
+    let staleWrite: Promise<boolean> | undefined;
+
+    try {
+      await winner`BEGIN`;
+      winnerTransactionOpen = true;
+      const winnerBackend = await winner<Array<{ pid: number }>>`SELECT pg_backend_pid() AS pid`;
+      expect(await persistMonitorNoDeltaBudget(winner, routine.id, 2, fireToken)).toBe(true);
+
+      // Keep the winning update uncommitted so the stale pass is demonstrably in flight
+      // against the same row and fire token, rather than merely running after it.
+      const staleBackend = await stalePass<Array<{ pid: number }>>`SELECT pg_backend_pid() AS pid`;
+      staleWrite = persistMonitorNoDeltaBudget(stalePass, routine.id, 1, fireToken);
+      const deadline = Date.now() + 2_000;
+      let blockedByWinner = false;
+      while (Date.now() < deadline) {
+        const waits = await winner<Array<{ blocked: boolean }>>`
+          SELECT ${winnerBackend[0]!.pid} = ANY(pg_blocking_pids(${staleBackend[0]!.pid})) AS blocked`;
+        if (waits[0]?.blocked) {
+          blockedByWinner = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(blockedByWinner).toBe(true);
+
+      await winner`COMMIT`;
+      winnerTransactionOpen = false;
+      expect(await staleWrite).toBe(true);
+
+      const persisted = await winner<Array<{ remaining_budget: number; settled_fire: string | null }>>`
+        SELECT (payload_template #>> '{monitor,remainingNoDeltaBudget}')::int AS remaining_budget,
+               metadata->>'monitor_budget_fire_at' AS settled_fire
+          FROM harness_shared.routines
+         WHERE id = ${routine.id}`;
+      expect(persisted).toEqual([{ remaining_budget: 2, settled_fire: fireToken }]);
+    } finally {
+      if (winnerTransactionOpen) await winner`ROLLBACK`.catch(() => {});
+      if (staleWrite) await staleWrite.catch(() => {});
+      stalePass.release();
+      winner.release();
+    }
+  });
+});
 
 describe('reconcileLoopRoutines — pure loop completion-rebase', () => {
   it('re-arms a parked loop N sec after the turn settles (lifecycle signal)', async () => {

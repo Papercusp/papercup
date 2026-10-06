@@ -278,11 +278,14 @@ describe('validateManifest: provider descriptor schema matches the SDK type', ()
     url: 'https://api.example.com/user',
     idField: 'id',
     displayNameField: 'login',
+    method: 'POST',
+    body: '{"query":"{ viewer { id } }"}',
   };
   const oauth: Required<ProviderOAuthDescriptor> = {
     authorizeUrl: 'https://example.com/oauth/authorize',
     tokenUrl: 'https://example.com/oauth/token',
     scopes: ['read'],
+    scopeSeparator: ',',
     pkce: true,
     clientRegistrationRef: 'example',
     credentialGroup: 'example-suite',
@@ -311,6 +314,7 @@ describe('validateManifest: provider descriptor schema matches the SDK type', ()
     expect(validateManifest(manifest({ ...provider, oauth: { ...oauth, clientSecret: 'x' } })).ok).toBe(false);
     expect(validateManifest(manifest({ ...provider, oauth: { ...oauth, identity: { ...identity, token: 'x' } } })).ok).toBe(false);
     expect(validateManifest(manifest({ ...provider, oauth: { ...oauth, identity: { url: identity.url } } })).ok).toBe(false);
+    expect(validateManifest(manifest({ ...provider, oauth: { ...oauth, identity: { ...identity, method: 'PUT' } } })).ok).toBe(false);
   });
 
   it('still refuses a malformed service credential', () => {

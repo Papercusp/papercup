@@ -219,6 +219,12 @@ export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
     note: 'rubrics:get rejected an unsupported rubricRef@revision form; revision is supplied separately as a numeric argument',
   },
   {
+    n: 1, errorCode: 'handler_error', status: 'error',
+    message: 'scratch_line_window_too_large: This scratch-reference line window is too large for one result. Use a smaller offset/limit/tail window, or byte_offset+byte_limit when a single line is too large.',
+    expectedClass: 'caller',
+    note: 'intentional capability:read scratch-reference size refusal nested through tools:invoke; retain the actionable paging guidance and keep it out of the structural bug lane (EI-25217974819289093)',
+  },
+  {
     n: 3, errorCode: 'handler_error', status: 'error',
     message: 'acceptance BAR contract is not ready for vetting — 7 of 7 BAR(s) blocking, 0 clean: R-1: bar_snapshot_role_invalid; R-2: bar_snapshot_role_invalid; R-3: bar_snapshot_role_invalid; R-4: bar_snapshot_role_invalid; R-5: bar_snapshot_role_invalid; R-6: bar_snapshot_role_invalid; R-7: bar_snapshot_role_invalid',
     expectedClass: 'caller',

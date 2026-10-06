@@ -96,6 +96,142 @@ afterAll(async () => {
   if (!process.env.KEEP_TEST_PG) await teardownTestPg().catch(() => {});
 });
 
+describe('per-cycle run reservations', () => {
+  const register = async (budgetUsd = 10) => {
+    const loopId = `native-cycle:${randomUUID()}`;
+    await registerLearningLoop(sql, { workspaceId: WS, loopId, budgetKind: 'per-cycle', budgetUsd });
+    return loopId;
+  };
+  const request = (loopId: string, runId: string, requestedUsd: number, budgetUsd = 10) => ({
+    workspaceId: WS, loopId, requestedUsd, cycle: { runId, budgetUsd },
+  });
+
+  it('clamps simultaneous attempts to one run cap and gives another run independent capacity', async () => {
+    const loopId = await register();
+    const runId = randomUUID();
+    const results = await Promise.all([reserveLearningSpend(sql, request(loopId, runId, 6)),
+      reserveLearningSpend(sql, request(loopId, runId, 6))]);
+    const granted = results.filter(r => r.ok);
+    expect(granted.map(r => r.reservation.reservedUsd).sort()).toEqual([4, 6]);
+    expect(granted.every(r => r.reservation.runRef === `cycle:${runId}/cap:10000000/attempt:${r.reservation.id}`)).toBe(true);
+    expect(await reserveLearningSpend(sql, request(loopId, runId, 1))).toMatchObject({ ok: false, reason: 'no-headroom' });
+    expect(await reserveLearningSpend(sql, request(loopId, randomUUID(), 10))).toMatchObject({ ok: true, clamped: false });
+  });
+
+  it.each(['used', 'failed', 'cancelled'] as const)('charges %s attempts against their run even with accumulate:false', async disposition => {
+    const loopId = await register();
+    const runId = randomUUID();
+    const first = await reserveLearningSpend(sql, request(loopId, runId, 6));
+    if (!first.ok) throw new Error('first attempt must grant');
+    expect(await settleLearningSpend(sql, { workspaceId: WS, reservationId: first.reservation.id,
+      disposition, usedUsd: 5, accumulate: false })).toMatchObject({ ok: true });
+    expect(await reserveLearningSpend(sql, request(loopId, runId, 6)))
+      .toMatchObject({ ok: true, clamped: true, headroomUsd: 5, reservation: { reservedUsd: 5 } });
+    expect((await getLearningLoop(sql, { workspaceId: WS, loopId }))?.spentUsd).toBe(0);
+  });
+
+  it('retains unknown spend and refuses invalid settlement rather than releasing run capacity', async () => {
+    const loopId = await register();
+    const runId = randomUUID();
+    const first = await reserveLearningSpend(sql, request(loopId, runId, 10));
+    if (!first.ok) throw new Error('first attempt must grant');
+    for (const usedUsd of [undefined, NaN, Infinity, -1, 0.0000001]) {
+      expect(await settleLearningSpend(sql, { workspaceId: WS, reservationId: first.reservation.id,
+        disposition: 'failed', usedUsd, accumulate: false }))
+        .toMatchObject({ ok: false, reason: 'cycle-settlement-required', reservation: { status: 'open' } });
+    }
+    expect(await reserveLearningSpend(sql, request(loopId, runId, 1))).toMatchObject({ ok: false, reason: 'no-headroom' });
+    expect(await settleLearningSpend(sql, { workspaceId: WS, reservationId: first.reservation.id,
+      disposition: 'failed', usedUsd: 0, accumulate: false })).toMatchObject({ ok: true });
+    expect(await reserveLearningSpend(sql, request(loopId, runId, 10))).toMatchObject({ ok: true, clamped: false });
+  });
+
+  it('records an overrun in full and refuses further spending in that run', async () => {
+    const loopId = await register();
+    const runId = randomUUID();
+    const first = await reserveLearningSpend(sql, request(loopId, runId, 1));
+    if (!first.ok) throw new Error('first attempt must grant');
+    expect(await settleLearningSpend(sql, { workspaceId: WS, reservationId: first.reservation.id,
+      disposition: 'used', usedUsd: 12, accumulate: false })).toMatchObject({ ok: true, overrunUsd: 11 });
+    expect(await reserveLearningSpend(sql, request(loopId, runId, 1))).toMatchObject({ ok: false, reason: 'no-headroom' });
+    expect(await reserveLearningSpend(sql, request(loopId, randomUUID(), 10))).toMatchObject({ ok: true });
+  });
+
+  it('uses microdollar arithmetic without a lifetime floor', async () => {
+    const loopId = await register(0.3);
+    const runId = randomUUID();
+    expect(await reserveLearningSpend(sql, request(loopId, runId, 0.1, 0.3))).toMatchObject({ ok: true });
+    expect(await reserveLearningSpend(sql, request(loopId, runId, 0.2, 0.3))).toMatchObject({ ok: true, clamped: false });
+    expect(await reserveLearningSpend(sql, request(loopId, runId, 0.000001, 0.3))).toMatchObject({ ok: false, reason: 'no-headroom' });
+  });
+
+  it('requires a transaction and a current per-cycle registration cap', async () => {
+    const loopId = await register();
+    const input = request(loopId, randomUUID(), 1);
+    expect(await reserveLearningSpend({} as postgres.Sql, input)).toMatchObject({ ok: false, reason: 'transaction-required' });
+    await registerLearningLoop(sql, { workspaceId: WS, loopId, budgetUsd: 9 });
+    expect(await reserveLearningSpend(sql, input)).toMatchObject({ ok: false, reason: 'stale-cycle-budget' });
+    await registerLearningLoop(sql, { workspaceId: WS, loopId, budgetKind: 'lifetime', budgetUsd: 10 });
+    expect(await reserveLearningSpend(sql, input)).toMatchObject({ ok: false, reason: 'unsupported-budget-kind' });
+  });
+
+  it.each(['bad-run', 'bad-cap', 'bad-amount', 'ambiguous-ref', 'exact-and-cycle'])(
+    'refuses invalid cycle input %s without inserting a reservation', async invalid => {
+      const loopId = await register();
+      const input = request(loopId, randomUUID(), 1);
+      if (invalid === 'bad-run') input.cycle.runId = '../other';
+      if (invalid === 'bad-cap') input.cycle.budgetUsd = NaN;
+      if (invalid === 'bad-amount') input.requestedUsd = 0.0000001;
+      const invalidInput = { ...input,
+        ...(invalid === 'ambiguous-ref' ? { runRef: 'other-run' } : {}),
+        ...(invalid === 'exact-and-cycle' ? { exact: { reservationId: randomUUID(), binding: 'a'.repeat(64), expectedBudgetUsd: 10 } } : {}),
+      };
+      expect(await reserveLearningSpend(sql, invalidInput)).toMatchObject({ ok: false, reason: 'invalid-cycle-request' });
+      expect(await listLearningSpendReservations(sql, { workspaceId: WS, loopId })).toEqual([]);
+    },
+  );
+
+  it('reserves the cycle namespace for scoped issuer requests', async () => {
+    const loopId = await register();
+    expect(await reserveLearningSpend(sql, { workspaceId: WS, loopId, requestedUsd: 1,
+      runRef: `cycle:${randomUUID()}/attempt:${randomUUID()}` }))
+      .toMatchObject({ ok: false, reason: 'cycle-binding-required' });
+  });
+
+  it('retains the frozen cap across later registration changes for the same run', async () => {
+    const loopId = await register();
+    const runId = randomUUID();
+    expect(await reserveLearningSpend(sql, request(loopId, runId, 1))).toMatchObject({ ok: true });
+    await registerLearningLoop(sql, { workspaceId: WS, loopId, budgetUsd: 20 });
+    expect(await reserveLearningSpend(sql, request(loopId, runId, 1))).toMatchObject({ ok: false, reason: 'stale-cycle-budget' });
+    expect(await reserveLearningSpend(sql, request(loopId, runId, 1, 20)))
+      .toMatchObject({ ok: false, reason: 'cycle-accounting-incomplete' });
+    expect(await reserveLearningSpend(sql, request(loopId, randomUUID(), 20, 20))).toMatchObject({ ok: true });
+  });
+
+  it('copies cycle admission before a transaction wait can mutate its caller', async () => {
+    const loopId = await register();
+    const runId = randomUUID();
+    const input = request(loopId, runId, 1);
+    let resume!: () => void;
+    const gate = new Promise<void>(resolve => { resume = resolve; });
+    const gatedSql = new Proxy(sql, { get(target, key) {
+      if (key === 'begin') return async (run: (tx: postgres.TransactionSql) => Promise<unknown>) => {
+        await gate; return target.begin(run);
+      };
+      return Reflect.get(target, key);
+    } });
+    const pending = reserveLearningSpend(gatedSql, input);
+    input.cycle.runId = randomUUID();
+    input.cycle.budgetUsd = 100;
+    resume();
+    const receipt = await pending;
+    expect(receipt).toMatchObject({ ok: true });
+    if (!receipt.ok) throw new Error('original cycle must grant');
+    expect(receipt.reservation.runRef).toBe(`cycle:${runId}/cap:10000000/attempt:${receipt.reservation.id}`);
+  });
+});
+
 describe('exact manifest-bound reservations', () => {
   const binding = 'a'.repeat(64);
   const register = async (budgetUsd = 10) => {

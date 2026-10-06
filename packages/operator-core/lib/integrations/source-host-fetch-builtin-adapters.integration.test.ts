@@ -116,6 +116,14 @@ beforeAll(async () => {
       (${WS}, ${sourceId}, ${PROVIDER_ID}, 'poll', 'personal', 'connected',
        ${`${GOOGLE_WORKSPACE_OAUTH_PLUGIN}:${FIELD}`}, ${ownerUserId}, 'owner@example.com')`;
 
+  expiredSourceId = randomUUID();
+  await sql`
+    INSERT INTO harness_shared.data_sources
+      (workspace_id, id, kind, sync_mode, scope, status, credential_ref, owner_user_id, provider_account_id)
+    VALUES
+      (${WS}, ${expiredSourceId}, ${PROVIDER_ID}, 'poll', 'personal', 'connected',
+       ${`${GOOGLE_WORKSPACE_OAUTH_PLUGIN}:${EXPIRED_FIELD}`}, ${ownerUserId}, 'expired@example.com')`;
+
   const registry = providerRegistry();
   registry.unregisterPlugin(PLUGIN_NAME);
   await registry.register({ descriptor, adapter, pluginName: PLUGIN_NAME });
@@ -123,8 +131,13 @@ beforeAll(async () => {
 
 afterAll(async () => {
   providerRegistry().unregisterPlugin(PLUGIN_NAME);
+  vi.unstubAllGlobals();
   if (previousHome === undefined) delete process.env.PAPERCUSP_HOME;
   else process.env.PAPERCUSP_HOME = previousHome;
+  if (previousOsHome === undefined) delete process.env.HOME;
+  else process.env.HOME = previousOsHome;
+  if (previousRedirect === undefined) delete process.env.PAPERCUSP_GOOGLE_OAUTH_REDIRECT_URI;
+  else process.env.PAPERCUSP_GOOGLE_OAUTH_REDIRECT_URI = previousRedirect;
   await fs.rm(home, { recursive: true, force: true });
   await org?.cleanup();
 }, 300_000);
@@ -153,5 +166,46 @@ describe('production host.fetch in a process that never served an OAuth route', 
 
     expect(response.status).toBe(200);
     expect(seen).toEqual([`Bearer ${STORED_TOKEN}`]);
+  });
+
+  it('refreshes an expired Google token without an OAuth route having loaded the provider', async () => {
+    // Precondition: the `google` OAuth provider is not registered, as in a
+    // bg-host that has never served an OAuth route.
+    __resetRegistryForTest();
+    expect(getProvider('google')).toBeNull();
+
+    const tokenRequests: string[] = [];
+    vi.stubGlobal('fetch', (async (url: string | URL | Request, init?: RequestInit) => {
+      const href = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url;
+      if (href !== GOOGLE_TOKEN_URL) throw new Error(`unexpected global fetch: ${href}`);
+      tokenRequests.push(String(init?.body));
+      return Response.json({ access_token: REFRESHED_TOKEN, expires_in: 3600 });
+    }) as typeof fetch);
+
+    const seen: Array<string | null> = [];
+    const hostFetch = createSourceHostFetch(sql, {
+      providerId: PROVIDER_ID,
+      workspaceId: WS,
+      harness: HARNESS,
+      fetchImpl: (async (_url: string | URL | Request, init?: RequestInit) => {
+        seen.push(new Headers(init?.headers).get('authorization'));
+        return Response.json({ items: [] });
+      }) as typeof fetch,
+    });
+
+    try {
+      const response = await hostFetch({
+        source: expiredSourceId,
+        request: { url: 'https://www.googleapis.com/calendar/v3/calendars/primary/events', method: 'GET' },
+      });
+      expect(response.status).toBe(200);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+
+    expect(tokenRequests).toHaveLength(1);
+    expect(new URLSearchParams(tokenRequests[0]).get('grant_type')).toBe('refresh_token');
+    expect(new URLSearchParams(tokenRequests[0]).get('refresh_token')).toBe(REFRESH_TOKEN);
+    expect(seen).toEqual([`Bearer ${REFRESHED_TOKEN}`]);
   });
 });

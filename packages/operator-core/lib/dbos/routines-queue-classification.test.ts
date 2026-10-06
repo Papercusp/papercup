@@ -20,15 +20,18 @@ import {
 import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 
 /**
- * 2026-06-23 routines-queue-starvation fix: git-sync must land on the protected `routines-critical` lane so
- * a saturated shared `routines` queue (long routines holding every slot) can never starve it (the 7h
- * deploy-freeze). EI-21386288922867645 adds a separate latency-isolated loop lane after a five-minute loop
+ * 2026-06-23 routines-queue-starvation fix: must-never-starve quick actions land on the protected
+ * `routines-critical` lane so a saturated shared `routines` queue (long routines holding every slot) cannot
+ * starve git-sync (the 7h deploy-freeze) or the deterministic admission floor. EI-21386288922867645 adds a
+ * separate latency-isolated loop lane after a five-minute loop
  * sat behind the shared queue for ~11 minutes. Long/unknown system actions and agent roles still default to
  * the shared queue, so neither protected lane can be silently occupied by a new arbitrary routine.
  */
-describe('queueForRoutine — the protected git-sync lane', () => {
+describe('queueForRoutine — the protected critical lane', () => {
   it('routes the critical system action (git-sync) to the protected lane', () => {
     expect(queueForRoutine('system:git-sync')).toBe(ROUTINES_CRITICAL_QUEUE);
+    expect(queueForRoutine('system:work-item-admission-fail-open')).toBe(ROUTINES_CRITICAL_QUEUE);
+    expect(queueForRoutine('system:work-item-admission-promoter')).toBe(ROUTINES_QUEUE);
   });
 
   it('routes EVERY critical action in the set to the protected lane', () => {
@@ -55,8 +58,8 @@ describe('queueForRoutine — the protected git-sync lane', () => {
     expect(queueForRoutine('system:pre-git-sync')).toBe(ROUTINES_QUEUE);
   });
 
-  it('the protected set is deliberately minimal — only git-sync today', () => {
-    expect([...CRITICAL_ROUTINE_ACTIONS]).toEqual(['git-sync']);
+  it('the protected set contains only the must-never-starve quick actions', () => {
+    expect([...CRITICAL_ROUTINE_ACTIONS]).toEqual(['git-sync', 'work-item-admission-fail-open']);
   });
 });
 
@@ -124,9 +127,9 @@ describe('queueForRoutine — bounded heavy/background lane (EI-2246949658731145
   // D-005 (work-queue-bulk-cleanup-remediation-2026-10-01): a bulk-dedup stage held a
   // shared-queue slot for 1h53m while the window was 3, and 117 cron routines went
   // overdue. Its fires must never share the housekeeping lane again.
-  it('routes bulk-dedup fires to the heavy lane and keeps its sibling admission actions shared', () => {
+  it('routes bulk-dedup to heavy, protects fail-open, and keeps other admission actions shared', () => {
     expect(queueForRoutine('system:work-item-admission-bulk-dedup')).toBe(ROUTINES_HEAVY_QUEUE);
-    expect(queueForRoutine('system:work-item-admission-fail-open')).toBe(ROUTINES_QUEUE);
+    expect(queueForRoutine('system:work-item-admission-fail-open')).toBe(ROUTINES_CRITICAL_QUEUE);
     expect(queueForRoutine('system:work-item-admission-promoter')).toBe(ROUTINES_QUEUE);
     expect(queueForRoutine('system:work-item-admission-bulk-dedup-census')).toBe(ROUTINES_QUEUE);
   });
@@ -166,9 +169,7 @@ describe('queueForRoutine — the deploy-launcher lane (EI-23909857328600541)', 
     expect(queueForRoutine('release-trigger')).toBe(ROUTINES_QUEUE);
   });
 
-  it('does NOT ride the git-sync critical lane, whose set stays git-sync-only', () => {
-    // The critical lane is concurrency-2 and deliberately single-action; widening it
-    // would re-create inside that lane the contention it exists to prevent.
+  it('does NOT ride the critical lane, whose actions must be quick and must-never-starve', () => {
     expect(CRITICAL_ROUTINE_ACTIONS.has('release-trigger')).toBe(false);
     expect(queueForRoutine('system:release-trigger')).not.toBe(ROUTINES_CRITICAL_QUEUE);
     expect(shouldFireUnderPoolShed('system:release-trigger')).toBe(false);
@@ -247,6 +248,8 @@ describe('queueForRoutine — the external-source poll lane (WI-41662)', () => {
 describe('shouldFireUnderPoolShed — the critical-routine floor (EI-11171)', () => {
   it('FIRES git-sync under a shed (the must-never-starve floor)', () => {
     expect(shouldFireUnderPoolShed('system:git-sync')).toBe(true);
+    expect(shouldFireUnderPoolShed('system:work-item-admission-fail-open')).toBe(true);
+    expect(shouldFireUnderPoolShed('system:work-item-admission-promoter')).toBe(false);
   });
 
   it('FIRES every protected critical action under a shed', () => {

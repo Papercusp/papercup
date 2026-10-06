@@ -349,7 +349,10 @@ describe('control-anchor kernel resolver (D-030)', () => {
     const denied = await controlAnchorKernelResolver(request({
       ctx: ctx({ advSessionId: 32433 }),
     }));
-    expect(denied).toMatchObject({ decision: 'deny', code: 'policy-unavailable' });
+    expect(denied).toMatchObject({
+      decision: 'deny', code: 'policy-unavailable',
+      serverAudit: { authorityUnavailableSources: ['verified-caller-row-unavailable'] },
+    });
     expect(denied?.serverAudit?.identityLaunchRecord).toBeUndefined();
   });
 
@@ -658,6 +661,7 @@ describe('control-anchor kernel resolver (D-030)', () => {
     await expect(controlAnchorKernelResolver(request())).resolves.toMatchObject({
       decision: 'deny',
       code: 'policy-unavailable',
+      serverAudit: { authorityUnavailableSources: ['control-anchor-query-failed'] },
     });
     db.rows.push([]);
     await expect(controlAnchorKernelResolver(request())).resolves.toMatchObject({ decision: 'allow', availability: 'unavailable' });
@@ -738,13 +742,17 @@ describe('control-anchor kernel resolver (D-030)', () => {
     db.failClient = true;
     await expect(controlAnchorKernelResolver(request())).resolves.toMatchObject({
       decision: 'deny', code: 'policy-unavailable',
+      serverAudit: { authorityUnavailableSources: ['authority-reader-initialization-failed'] },
     });
     db.failClient = false;
     db.sql.mockResolvedValueOnce([anchorRow({ activation: appliedActivation() })])
       .mockRejectedValueOnce(new Error('credential authority unavailable'));
     await expect(controlAnchorKernelResolver(request({
       ctx: ctx({ isSuperuser: false, isPowerUser: true, uiClientId: 'pus-a' }),
-    }))).resolves.toMatchObject({ decision: 'deny', code: 'policy-unavailable' });
+    }))).resolves.toMatchObject({
+      decision: 'deny', code: 'policy-unavailable',
+      serverAudit: { authorityUnavailableSources: ['power-user-revocation-query-failed'] },
+    });
   });
 });
 

@@ -103,6 +103,22 @@ describe('D166 private row-drop plan transport', () => {
       expect(originalManifest).toMatchObject({ sourceSelection: 'enumerateOwnStoreCoreKeys',
         stores: [{ kind: 'corestore', meta: { coreKeys: [own.keyHex], coreLengths: { [own.keyHex]: 2 } } }] });
       expect(originalManifest.stores[0].meta.sourceHeads[own.keyHex]).toEqual(originalConfig.sources[0].sourceInput.sourceHead);
+      const replayDir = join(dir, 'original-replay'); await mkdir(replayDir, { mode: 0o700 });
+      const replayInputs = { ...inputs, storeDir: originalConfig.originalSpanReplicaDir,
+        manifestPath: originalConfig.sourceManifestPath, manifestSha256: originalConfig.sourceManifestSha256, outputDir: replayDir };
+      const replayPath = await exportSeedUuidIdempotencyCensus(replayInputs, deps);
+      const replay = JSON.parse(await readFile(replayPath, 'utf8'));
+      expect(replay.sources[0].sourceInput).toEqual(originalConfig.sources[0].sourceInput);
+      const changed = { ...originalManifest, stores: [{ ...originalManifest.stores[0], meta: {
+        ...originalManifest.stores[0].meta, sourceHeads: { [own.keyHex]: {
+          ...originalManifest.stores[0].meta.sourceHeads[own.keyHex], treeHash: '0'.repeat(64) } } } }] };
+      const alteredPath = join(dir, 'changed-original.json'); const alteredBytes = JSON.stringify(changed);
+      await writeFile(alteredPath, alteredBytes, { mode: 0o600 });
+      const refusedHeadDir = join(dir, 'refused-head'); await mkdir(refusedHeadDir, { mode: 0o700 });
+      await expect(exportSeedUuidIdempotencyCensus({ ...replayInputs, outputDir: refusedHeadDir,
+        manifestPath: alteredPath, manifestSha256: createHash('sha256').update(alteredBytes).digest('hex') }, deps))
+        .rejects.toThrow('signed head changed');
+      expect(await readdir(refusedHeadDir)).not.toContain('uuid-census.private.json');
       const refusedDir = join(dir, 'refused'); await mkdir(refusedDir, { mode: 0o700 });
       await expect(exportSeedUuidIdempotencyCensus({ ...inputs, outputDir: refusedDir },
         { readFrozenExecution: async () => { throw new Error('fixture clean execution refused'); } }))

@@ -100,6 +100,22 @@ describe('askLspQuery', () => {
     const r = await askLspQuery(failing, kase('references', 'add', 'src/a.ts'), '/t', readLine);
     expect(r).toEqual({ sites: [], error: 'server crashed' });
   });
+  it('index() warms up inside the configured project, not at a root that spans nested projects', async () => {
+    const anchors: string[] = [];
+    const rootRefusing: LspDoor = {
+      ...door,
+      workspaceSymbols: async (q) => {
+        anchors.push(q.anchor);
+        return q.anchor === '/t' ? answer([], 'directory anchor /t spans 113 nested tsconfig project(s)') : answer([]);
+      },
+    };
+    const anchored = await createLspQueryArm({ version: 'v', treeRoot: '/t', warmupAnchor: 'pkg/src/index.ts' }, rootRefusing).index();
+    expect(anchors).toEqual(['/t/pkg/src/index.ts']);
+    expect(anchored).toMatchObject({ ok: true, error: null });
+    // Without the anchor, the root refusal fails the index phase (the 2026-10-06 run).
+    const rooted = await createLspQueryArm({ version: 'v', treeRoot: '/t' }, rootRefusing).index();
+    expect(rooted.ok).toBe(false);
+  });
   it('the arm declares no call-hierarchy intents (lsp:query has none)', async () => {
     const arm = createLspQueryArm({ version: 'v', treeRoot: '/t' }, door);
     expect(arm.capabilities.intents).toEqual(['definition', 'references', 'symbol-search']);

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
-import { buildProposerPrompt, parseProposal, proposeCandidate, throwWithCostUsd, withGymLlmNetworkRetry, type ProposeInput } from '../proposer';
+import { bindNativeGymLlmCalls, buildProposerPrompt, parseProposal, proposeCandidate, throwWithCostUsd, withGymLlmNetworkRetry, type ProposeInput } from '../proposer';
 import type { GymLlmCall } from '../task-generator';
+type NativeGymRequest = Parameters<Parameters<typeof bindNativeGymLlmCalls>[0]>[0];
 
 /**
  * Reflective proposer (P-015, prompts-only per D-015). Reads the parent's worst
@@ -17,6 +18,61 @@ const input: ProposeInput = {
   changelog: 'cycle 1: tightened worker error-handling (accepted, +0.4).',
   proposerModel: 'claude-sonnet-4-6',
 };
+
+describe('native Gym LLM consumer binding', () => {
+  const receipt = { text: '{}', costUsd: 0, inputTokens: 0, outputTokens: 0 };
+  const judgeRequest = () => ({ model: 'claude-opus-4-8', thinkingBudgetTokens: 32_000,
+    maxTokens: 36_096, messages: [{ role: 'user' as const, content: 'frozen task' }] });
+
+  it('requires the frozen judge bound on the actual cycle transport without changing model or thinking', async () => {
+    const call = vi.fn(async (_request: NativeGymRequest) => receipt);
+    const { judge } = bindNativeGymLlmCalls(call, 'native-harness', { log: () => {} });
+    const request = judgeRequest();
+    await expect(judge(request)).resolves.toBe(receipt);
+    expect(call.mock.calls[0]![0]).toEqual({ ...request, requireOutputTokenLimit: true,
+      priority: 'gym', harnessSlug: 'native-harness' });
+  });
+
+  it.each([undefined, 0, -1, 0.5, NaN, Infinity])('refuses invalid frozen judge bound %s before transport', async maxTokens => {
+    const call = vi.fn(async (_request: NativeGymRequest) => receipt);
+    const { judge } = bindNativeGymLlmCalls(call, 'native-harness', { log: () => {} });
+    await expect(judge({ ...judgeRequest(), maxTokens })).rejects.toMatchObject({ costUsd: 0 });
+    expect(call).not.toHaveBeenCalled();
+  });
+
+  it('preserves the private frozen request across a known-zero retry and caller mutation', async () => {
+    const request = judgeRequest();
+    const original = structuredClone(request);
+    const call = vi.fn().mockRejectedValueOnce(Object.assign(new Error('fetch failed'), { costUsd: 0 }))
+      .mockResolvedValue(receipt);
+    const sleep = vi.fn(async () => {
+      request.model = 'changed-model'; request.maxTokens = 1; request.thinkingBudgetTokens = 0;
+      request.messages[0]!.content = 'changed task';
+    });
+    const { judge } = bindNativeGymLlmCalls(call, 'native-harness', { log: () => {}, sleep });
+    await expect(judge(request)).resolves.toBe(receipt);
+    expect(call.mock.calls).toEqual([0, 1].map(() => [{ ...original, requireOutputTokenLimit: true,
+      priority: 'gym', harnessSlug: 'native-harness' }]));
+  });
+
+  it('preserves an unsupported-provider refusal and does not retry or change the frozen bound', async () => {
+    const failure = Object.assign(new Error('Required output token limit unsupported'), { costUsd: 0 });
+    const call = vi.fn().mockRejectedValue(failure);
+    const sleep = vi.fn(async () => {});
+    const { judge } = bindNativeGymLlmCalls(call, 'native-harness', { log: () => {}, sleep });
+    await expect(judge(judgeRequest())).rejects.toBe(failure);
+    expect(call).toHaveBeenCalledTimes(1); expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it('keeps the proposer model and existing supplied bounds on the native transport', async () => {
+    const call = vi.fn(async (_request: NativeGymRequest) => receipt);
+    const { proposer } = bindNativeGymLlmCalls(call, 'native-harness', { log: () => {} });
+    const request = { model: 'gpt-6.1-sol:xhigh', maxTokens: 500,
+      messages: [{ role: 'user' as const, content: 'propose' }] };
+    await expect(proposer(request)).resolves.toBe(receipt);
+    expect(call.mock.calls[0]![0]).toEqual({ ...request, priority: 'gym', harnessSlug: 'native-harness' });
+  });
+});
 
 describe('native Gym network retry spend evidence', () => {
   it.each([

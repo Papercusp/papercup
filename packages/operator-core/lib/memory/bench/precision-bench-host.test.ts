@@ -1,25 +1,32 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const mocks = vi.hoisted(() => ({
-  configureMemory: vi.fn(),
-  getHarnessAdminUrl: vi.fn(() => 'postgres://bench-host'),
-  readCredentials: vi.fn(async () => ({ openai_api_key: 'openai-test', anthropic_api_key: 'anthropic-test' })),
-  buildEmbedderForMode: vi.fn(async () => vi.fn(async () => [1, 2, 3])),
-  resolveEmbedderForMode: vi.fn(async (mode: string) => ({
-    mode,
-    dims: 768,
-    profile: { targetDims: 768 },
-    embed: vi.fn(async () => [1, 2, 3]),
-  })),
+const mocks = vi.hoisted(() => {
+  const embed = vi.fn(async () => [1, 2, 3]);
+  return {
+    embed,
+    configureMemory: vi.fn(),
+    getHarnessAdminUrl: vi.fn(() => 'postgres://bench-host'),
+    buildLocalEmbedder: vi.fn(async () => embed),
+    buildGemmaEmbedder: vi.fn(() => embed),
+    buildHarrierEmbedder: vi.fn(() => embed),
+    buildSidecarFirstEmbedder: vi.fn((options: { fallback: () => unknown }) => options.fallback()),
+  };
+});
+
+vi.mock('@papercusp/memory', () => ({
+  buildLocalEmbedder: mocks.buildLocalEmbedder,
+  buildGemmaEmbedder: mocks.buildGemmaEmbedder,
+  buildHarrierEmbedder: mocks.buildHarrierEmbedder,
+  buildSidecarFirstEmbedder: mocks.buildSidecarFirstEmbedder,
+  configureMemory: mocks.configureMemory,
+  EMBEDDER_DIM_SPECS: {
+    openai: { targetDims: 1536 },
+    local: { targetDims: 384 },
+    gemma: { targetDims: 768 },
+    harrier: { targetDims: 768 },
+  },
 }));
-
-vi.mock('@papercusp/memory', () => ({ configureMemory: mocks.configureMemory }));
-vi.mock('../../credentials', () => ({ readCredentials: mocks.readCredentials }));
 vi.mock('../../embedded-pg-discovery', () => ({ getHarnessAdminUrl: mocks.getHarnessAdminUrl }));
-vi.mock('../worker-embedder', () => ({
-  buildEmbedderForMode: mocks.buildEmbedderForMode,
-  resolveEmbedderForMode: mocks.resolveEmbedderForMode,
-}));
 
 import {
   configurePrecisionBenchMemoryHost,
@@ -29,8 +36,11 @@ import {
 
 describe('precision bench host bootstrap', () => {
   beforeEach(() => vi.clearAllMocks());
+  afterEach(() => vi.unstubAllEnvs());
 
-  it('configures the isolated process with the resolved embedder and bench-safe host seams', async () => {
+  it('builds the resolved embedder from host-free primitives and reads credentials from the worker env', async () => {
+    vi.stubEnv('OPENAI_API_KEY', 'openai-test');
+    vi.stubEnv('ANTHROPIC_API_KEY', 'anthropic-test');
     const host = createPrecisionBenchMemoryHost('gemma');
     expect(host.schema).toBe('harness_shared');
     expect(host.defaultDbName).toBe('papercusp');
@@ -41,9 +51,16 @@ describe('precision bench host bootstrap', () => {
       openai_api_key: 'openai-test',
       anthropic_api_key: 'anthropic-test',
     });
-    expect((await host.resolveEmbedder()).mode).toBe('gemma');
-    expect(mocks.resolveEmbedderForMode).toHaveBeenCalledWith('gemma');
-    expect(host.buildEmbedderForMode).toBe(mocks.buildEmbedderForMode);
+    expect(await host.resolveEmbedder()).toMatchObject({
+      mode: 'gemma',
+      dims: 768,
+      profile: { targetDims: 768 },
+      embed: mocks.embed,
+    });
+    expect(mocks.buildSidecarFirstEmbedder).toHaveBeenCalledWith(expect.objectContaining({ model: 'gemma', kind: 'document' }));
+    expect(mocks.buildGemmaEmbedder).toHaveBeenCalledWith({ kind: 'document' });
+    expect(await host.buildEmbedderForMode('local')).toBe(mocks.embed);
+    expect(mocks.buildLocalEmbedder).toHaveBeenCalledOnce();
   });
 
   it('installs the host only when the child received the resolved mode', () => {

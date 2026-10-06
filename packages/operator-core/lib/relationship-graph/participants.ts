@@ -72,6 +72,34 @@ export async function createInteractionParticipantSink(
   deps: ParticipantSinkDeps = {},
 ): Promise<ExternalTriggerSink | null> {
   if (!isInteractionDatatype(input.datatype)) return null;
+  const chain = await createParticipantChain(sql, input, deps);
+  if (!chain) return null;
+  return {
+    kind: INTERACTION_PARTICIPANT_SINK_KIND,
+    ref: `${input.sourceId}:${input.datatype}`,
+    async deliver(event: CanonicalExternalEvent) {
+      const participants = interactionParticipants(input.datatype, event.payload ?? {});
+      await chain.deliverParticipants(event, participants);
+      return { participants: participants.map((p) => p.key) };
+    },
+  };
+}
+
+/** Delivers already-extracted participants of one interaction event into the graph. */
+export interface ParticipantChain {
+  deliverParticipants(event: CanonicalExternalEvent, participants: readonly InteractionParticipant[]): Promise<void>;
+}
+
+/**
+ * The person-record + resolver chain one source's participants go through, shared by live delivery
+ * (createInteractionParticipantSink) and the stored-interaction backfill. Null when the source does
+ * not route `person` to `record`: that routing is the grant (D-013 point 4, D-017 point 1).
+ */
+export async function createParticipantChain(
+  sql: Sql,
+  input: { workspaceId: string; sourceId: string; datatype: string },
+  deps: ParticipantSinkDeps = {},
+): Promise<ParticipantChain | null> {
   const createPersonSinks = deps.createPersonSinks ?? createDatatypeDestinationSinks;
   const createGraphSink = deps.createGraphSink ?? createRelationshipGraphSink;
   const personSinks = await createPersonSinks(sql, { workspaceId: input.workspaceId, sourceId: input.sourceId, datatype: PERSON_DATATYPE });
@@ -79,10 +107,7 @@ export async function createInteractionParticipantSink(
   const graphSink = createGraphSink(sql, { workspaceId: input.workspaceId, sourceId: input.sourceId, datatype: PERSON_DATATYPE }, deps.resolver);
   const chain = [...personSinks, graphSink];
   return {
-    kind: INTERACTION_PARTICIPANT_SINK_KIND,
-    ref: `${input.sourceId}:${input.datatype}`,
-    async deliver(event: CanonicalExternalEvent) {
-      const participants = interactionParticipants(input.datatype, event.payload ?? {});
+    async deliverParticipants(event, participants) {
       for (const participant of participants) {
         const nativeId = participantNativeId(participant.key);
         const personEvent: CanonicalExternalEvent = {
@@ -101,7 +126,6 @@ export async function createInteractionParticipantSink(
         // In order: the record sink must store the row before admission reads it and the resolver merges it.
         for (const sink of chain) await sink.deliver(personEvent);
       }
-      return { participants: participants.map((p) => p.key) };
     },
   };
 }

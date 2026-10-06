@@ -742,6 +742,34 @@ describe('captureImprovement — correlated tool-failure probation (P-013)', () 
     expect(d.created).toHaveLength(0);
   });
 
+  it.each(['missing', 'unreadable'] as const)('preserves a committed promotion when its optional review refresh is %s', async refresh => {
+    const normalized = normalizeSuspectedToolFailure(metadataToolFailure);
+    const prior = existing({ id: 'EI-REFRESH', title: 'first report', scope: 'harness:papercusp',
+      payload: { lane: 'observation', watchdogKey: normalized.watchdogKey,
+        toolFailureProbation: { ...normalized, state: 'probation', reporters: ['su-a'], report: metadataToolFailure } } });
+    const d = { ...deps(), findIssuesByToolFailureClassKeys: async () => [prior],
+      findIssuesByWatchdogKeys: async () => [prior],
+      updateIssuePatch: async (_id: string, patch: object) => Object.assign(prior, patch),
+      mergeIssuePayload: async (_id: string, patch: object, opts?: { unset?: readonly string[] }) => {
+        const payload = { ...(prior.payload as Record<string, unknown>), ...patch };
+        for (const key of opts?.unset ?? []) delete payload[key];
+        prior.payload = payload; return prior;
+      }, tagIssue: vi.fn(async () => {}), untagIssue: vi.fn(async () => {}),
+      enterAgentReview: vi.fn(async () => ({ entered: true })),
+      getIssue: vi.fn(async () => {
+        if (refresh === 'unreadable') throw new Error('review refresh unavailable');
+        return null;
+      }),
+    } satisfies CaptureDeps;
+    const result = await captureToolInvocationFriction({ workspaceId: 'ws', harnessSlug: 'papercusp', ownerId: 'su-b',
+      invokedAt: '2026-09-08T12:00:00Z', failure: metadataToolFailure }, d);
+    expect(d.enterAgentReview).toHaveBeenCalledOnce();
+    expect(d.getIssue).toHaveBeenCalledExactlyOnceWith('EI-REFRESH');
+    expect(result).toMatchObject({ ok: true, created: false, reason: 'promoted',
+      issue: { id: 'EI-REFRESH', payload: { toolFailureProbation: { state: 'promoted', reporters: ['su-a', 'su-b'] } } } });
+    expect(d.created).toHaveLength(0);
+  });
+
   it.each(['schema', 'runtime', 'scope'] as const)('R-7 changed %s cannot corroborate or rewrite the old observation', async dimension => {
     const normalized = normalizeSuspectedToolFailure(metadataToolFailure);
     const prior = existing({ id: 'EI-OTHER', title: 'first report', scope: 'harness:papercusp',

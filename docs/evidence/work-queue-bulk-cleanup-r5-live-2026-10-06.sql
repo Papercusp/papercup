@@ -1,10 +1,12 @@
 -- R-5 live measurement for plan work-queue-bulk-cleanup-remediation-2026-10-01 (AUTO-BAR-R-5-P-009 / P-010).
 -- Run: sudo -n -u postgres psql -d papercusp -At -F'|' -v ON_ERROR_STOP=1 \
---        -v prevstart='2026-10-06 07:24:41+00' -v bgstart='2026-10-06 08:26:20+00' -f <this file>
+--        -v prevstart='2026-10-06 08:26:20+00' -v bgstart='2026-10-06 08:53:54+00' -f <this file>
 -- Scope: workspace_id='papercusp-workspace' (harness 'papercusp' where the relation is harness-keyed).
--- bg-host processes: :prevstart = PID 1690631 start (07:24:41Z), :bgstart = current PID 1479514 start
--- (08:26:20Z). Both were built from trees whose runner sources are byte-identical (bulk-dedup.ts mtime
--- 07:06:25Z; promoter/reaper/inbox action committed in 202743ceba). Rows are labelled by process.
+-- bg-host processes (final run 2026-10-06 ~09:3xZ): :prevstart = PID 1479514 start (08:26:20Z, ran until
+-- 08:51:21Z), :bgstart = current PID 3201933 start (08:53:54Z, build 6b949fee10). Runner blobs at
+-- 6b949fee10 equal HEAD for bulk-dedup.ts (030d5637e3, the WI-10006491 post-commit fix), promoter.ts
+-- (425aa9e391), census.ts (9beee5e1e6), inbox-bulk-resolve-action.ts (197e66a853) and
+-- admission-runs-reaper.ts (78ac892d94). Rows are labelled by process.
 -- Runtime identity is measured separately via dev:pipeline_position servingRuntimes (evidence JSON).
 -- Writers read before comparing (source paths in the evidence JSON):
 --   inbox runs/skip strings: packages/operator-core/lib/harness/routines/inbox-bulk-resolve-action.ts
@@ -100,7 +102,7 @@ SELECT id, detail->>'status', started_at, finished_at, detail->>'sourceCensusRun
 -- ───────────── Partition (3): promoter model ticks ─────────────
 \echo '## P3a fixed before/after promoter-tick population (window|ticks|model_ticks|model_ticks_with_yield|promoted|merged|failed)'
 -- before = 2026-10-01 10:00Z..14:00Z (pre-fix baseline); after = 14:00Z 10-01 .. 08:00Z 10-06 (fixed end);
--- current = ticks started on the current bg-host (>= 07:24:41Z 10-06). Model tick = tokens_in > 0.
+-- prior/current = ticks started on the prior / current bg-host process (:prevstart / :bgstart). Model tick = tokens_in > 0.
 SELECT w.label, count(ar.id),
        count(ar.id) FILTER (WHERE coalesce(ar.tokens_in,0) > 0),
        count(ar.id) FILTER (WHERE coalesce(ar.tokens_in,0) > 0 AND coalesce(ar.promoted,0) + coalesce(ar.merged,0) > 0),
@@ -127,6 +129,25 @@ SELECT w.label,
   LEFT JOIN harness_shared.admission_runs ar
     ON ar.workspace_id = 'papercusp-workspace' AND ar.harness_slug = 'papercusp' AND ar.run_kind = 'promoter-tick'
    AND ar.started_at >= w.lo AND ar.started_at < w.hi
+ GROUP BY w.label ORDER BY w.label;
+
+\echo '## P3e promoter-tick wall-clock latency per fixed window, finished ticks only (window|finished_ticks|p50_s|p90_s|max_s|model_p50_s|model_p90_s)'
+-- Same windows as P3a. Latency = finished_at - started_at (the writer stamps both on the tick row).
+SELECT w.label, count(ar.id),
+       round(percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch FROM ar.finished_at - ar.started_at))::numeric, 1),
+       round(percentile_cont(0.9) WITHIN GROUP (ORDER BY extract(epoch FROM ar.finished_at - ar.started_at))::numeric, 1),
+       round(max(extract(epoch FROM ar.finished_at - ar.started_at))::numeric, 1),
+       round((percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch FROM ar.finished_at - ar.started_at))
+              FILTER (WHERE coalesce(ar.tokens_in,0) > 0))::numeric, 1),
+       round((percentile_cont(0.9) WITHIN GROUP (ORDER BY extract(epoch FROM ar.finished_at - ar.started_at))
+              FILTER (WHERE coalesce(ar.tokens_in,0) > 0))::numeric, 1)
+  FROM (VALUES ('1-before', '2026-10-01 10:00+00'::timestamptz, '2026-10-01 14:00+00'::timestamptz),
+               ('2-after',  '2026-10-01 14:00+00'::timestamptz, '2026-10-06 08:00+00'::timestamptz),
+               ('3-prior-process-same-runner-blobs', :'prevstart'::timestamptz, :'bgstart'::timestamptz),
+               ('4-current-process', :'bgstart'::timestamptz, now())) AS w(label, lo, hi)
+  LEFT JOIN harness_shared.admission_runs ar
+    ON ar.workspace_id = 'papercusp-workspace' AND ar.harness_slug = 'papercusp' AND ar.run_kind = 'promoter-tick'
+   AND ar.started_at >= w.lo AND ar.started_at < w.hi AND ar.finished_at IS NOT NULL
  GROUP BY w.label ORDER BY w.label;
 
 \echo '## P3d current-build prescreen dispositions, samples removed (id|prescreen)'
