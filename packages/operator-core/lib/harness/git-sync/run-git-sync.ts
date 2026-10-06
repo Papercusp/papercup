@@ -4131,6 +4131,122 @@ function attributedMessageArgs(
   return args;
 }
 
+/** Where a git-sync commit builds private indexes (WI-10006705 / WI-10006725). */
+interface PrivateIndexSite {
+  gitDir: string;
+  sharedIndex: string | null;
+  newIndexFile: () => string;
+  bindIndex: (indexFile: string) => RunGit;
+}
+
+/**
+ * Locate the git dir and prove the runner forwards `GitRunOptions.env`. A runner that
+ * drops it would run read-tree/add/reset on the SHARED index, so this fails closed.
+ * `label` prefixes the errors (e.g. `attributed commits`); `tag` names the index files.
+ */
+async function openPrivateIndexSite(
+  runGit: RunGit,
+  repoPath: string,
+  label: string,
+  tag: string,
+): Promise<{ ok: true; site: PrivateIndexSite } | { ok: false; error: string }> {
+  const gitDirRes = await runGit(['rev-parse', '--absolute-git-dir'], repoPath);
+  const gitDir = gitDirRes.stdout.trim();
+  if (gitDirRes.code !== 0 || !gitDir) {
+    return { ok: false, error: `${label} could not locate the git dir: ${gitFailureDetail(gitDirRes)}` };
+  }
+  const newIndexFile = (): string => join(gitDir, `papercusp-git-sync-${tag}-${process.pid}-${randomUUID()}.index`);
+  const bindIndex = (indexFile: string): RunGit => (args, cwd, options) =>
+    runGit(args, cwd, { ...options, env: { ...options?.env, GIT_INDEX_FILE: indexFile } });
+  const probe = newIndexFile();
+  const seen = await resolveIndexPath(bindIndex(probe), repoPath);
+  if (seen !== resolvePath(probe)) {
+    return {
+      ok: false,
+      error:
+        `${label} refused: the git runner did not forward GIT_INDEX_FILE ` +
+        `(git reported ${seen ?? 'no index path'}), so a private index cannot be isolated from the shared one`,
+    };
+  }
+  return { ok: true, site: { gitDir, sharedIndex: await resolveIndexPath(runGit, repoPath), newIndexFile, bindIndex } };
+}
+
+/**
+ * Seed `indexFile` (bound into `privateGit`) at HEAD, the CAS base. `read-tree -m` over a
+ * copy of the shared index keeps its stat cache, so later diffs stay cheap; an unmerged
+ * shared index refuses that merge, so it falls back to a plain read. A non-zero HEAD read
+ * is an unborn branch (or an unreadable HEAD — the empty-old CAS then refuses).
+ */
+async function seedPrivateIndex(
+  runGit: RunGit,
+  privateGit: RunGit,
+  repoPath: string,
+  indexFile: string,
+  sharedIndex: string | null,
+  label: string,
+): Promise<{ ok: true; base: string | null; baseTree: string } | { ok: false; error: string }> {
+  const headRes = await runGit(['rev-parse', '--verify', '-q', 'HEAD^{commit}'], repoPath);
+  const base = headRes.code === 0 && headRes.stdout.trim() ? headRes.stdout.trim() : null;
+  if (base && sharedIndex) await copyFile(sharedIndex, indexFile).catch(() => {});
+  let seed = await privateGit(base ? ['read-tree', '-m', base] : ['read-tree', '--empty'], repoPath);
+  if (seed.code !== 0 && base) {
+    await rm(indexFile, { force: true }).catch(() => {});
+    seed = await privateGit(['read-tree', base], repoPath);
+  }
+  if (seed.code !== 0) {
+    return { ok: false, error: `${label} could not seed its private index: ${gitFailureDetail(seed)}` };
+  }
+  const baseTreeRes = base
+    ? await runGit(['rev-parse', '--verify', '-q', `${base}^{tree}`], repoPath)
+    : await privateGit(['write-tree'], repoPath); // the empty tree, in this repo's hash
+  const baseTree = baseTreeRes.stdout.trim();
+  if (baseTreeRes.code !== 0 || !baseTree) {
+    return { ok: false, error: `${label} could not read the base tree: ${gitFailureDetail(baseTreeRes)}` };
+  }
+  return { ok: true, base, baseTree };
+}
+
+/**
+ * Commit exactly what the private index holds and publish it only if HEAD is still `base`:
+ * `write-tree` (equal to the base tree = nothing to commit), `commit-tree -p <base>`, then
+ * `update-ref HEAD <new> <base>`. The message is built lazily, after the nothing check.
+ */
+async function publishPrivateIndexCommit(
+  runGit: RunGit,
+  privateGit: RunGit,
+  repoPath: string,
+  p: {
+    base: string | null;
+    baseTree: string;
+    label: string;
+    reflogMessage: string;
+    messageArgs: () => Promise<string[]>;
+  },
+): Promise<
+  | { status: 'nothing' }
+  | { status: 'committed'; commit: string; tree: string }
+  | { status: 'cas-refused'; detail: string }
+  | { status: 'error'; error: string }
+> {
+  const treeRes = await privateGit(['write-tree'], repoPath);
+  const tree = treeRes.stdout.trim();
+  if (treeRes.code !== 0 || !tree) return { status: 'error', error: `${p.label} failed: ${gitFailureDetail(treeRes)}` };
+  if (tree === p.baseTree) return { status: 'nothing' };
+  const commitArgs = [
+    ...GIT_SYNC_IDENTITY_ARGS,
+    'commit-tree',
+    tree,
+    ...(p.base ? ['-p', p.base] : []),
+    ...(await p.messageArgs()),
+  ];
+  const c = await runGit(commitArgs, repoPath);
+  const commit = c.stdout.trim();
+  if (c.code !== 0 || !commit) return { status: 'error', error: `${p.label} failed: ${gitFailureDetail(c)}` };
+  const cas = await runGit(['update-ref', '-m', p.reflogMessage, 'HEAD', commit, p.base ?? ''], repoPath);
+  if (cas.code !== 0) return { status: 'cas-refused', detail: gitFailureDetail(cas) };
+  return { status: 'committed', commit, tree };
+}
+
 /**
  * P-004 (git-sync-dx-hardening): peel each declaring agent's dirty files into its OWN commit
  * (intent subject + a Co-Authored-By trailer), preserving the CI-skip marker. Excluded files
@@ -4182,53 +4298,19 @@ export async function commitAttributedGroups(
   let committedAny = false;
   let committedCount = 0;
 
-  const gitDirRes = await runGit(['rev-parse', '--absolute-git-dir'], repoPath);
-  const gitDir = gitDirRes.stdout.trim();
-  if (gitDirRes.code !== 0 || !gitDir) {
-    return { committedAny, committedCount, error: `attributed commits could not locate the git dir: ${gitFailureDetail(gitDirRes)}` };
-  }
-  const privateIndexPath = (): string => join(gitDir, `papercusp-git-sync-attributed-${process.pid}-${randomUUID()}.index`);
-  const bindIndex = (indexFile: string): RunGit => (args, cwd, options) =>
-    runGit(args, cwd, { ...options, env: { ...options?.env, GIT_INDEX_FILE: indexFile } });
   // Fail closed: a runner that drops `env` would run read-tree/add/reset on the SHARED index.
-  const probe = privateIndexPath();
-  const seen = await resolveIndexPath(bindIndex(probe), repoPath);
-  if (seen !== resolvePath(probe)) {
-    return {
-      committedAny,
-      committedCount,
-      error:
-        `attributed commits refused: the git runner did not forward GIT_INDEX_FILE ` +
-        `(git reported ${seen ?? 'no index path'}), so a private index cannot be isolated from the shared one`,
-    };
-  }
-  const sharedIndex = await resolveIndexPath(runGit, repoPath);
+  const opened = await openPrivateIndexSite(runGit, repoPath, 'attributed commits', 'attributed');
+  if (!opened.ok) return { committedAny, committedCount, error: opened.error };
+  const { site } = opened;
 
   for (const g of groups) {
-    const indexFile = privateIndexPath();
-    const privateGit = bindIndex(indexFile);
+    const indexFile = site.newIndexFile();
+    const privateGit = site.bindIndex(indexFile);
     try {
-      // 1. The CAS base. A non-zero answer is an unborn branch (or unreadable HEAD — the
-      //    empty-old CAS below then refuses, so nothing lands either way).
-      const headRes = await runGit(['rev-parse', '--verify', '-q', 'HEAD^{commit}'], repoPath);
-      const base = headRes.code === 0 && headRes.stdout.trim() ? headRes.stdout.trim() : null;
-      if (base && sharedIndex) await copyFile(sharedIndex, indexFile).catch(() => {});
-      let seed = await privateGit(base ? ['read-tree', '-m', base] : ['read-tree', '--empty'], repoPath);
-      if (seed.code !== 0 && base) {
-        // An unmerged shared index refuses the stat-preserving merge; build from scratch.
-        await rm(indexFile, { force: true }).catch(() => {});
-        seed = await privateGit(['read-tree', base], repoPath);
-      }
-      if (seed.code !== 0) {
-        return { committedAny, committedCount, error: `attributed commit could not seed its private index: ${gitFailureDetail(seed)}` };
-      }
-      const baseTreeRes = base
-        ? await runGit(['rev-parse', '--verify', '-q', `${base}^{tree}`], repoPath)
-        : await privateGit(['write-tree'], repoPath); // the empty tree, in this repo's hash
-      const baseTree = baseTreeRes.stdout.trim();
-      if (baseTreeRes.code !== 0 || !baseTree) {
-        return { committedAny, committedCount, error: `attributed commit could not read the base tree: ${gitFailureDetail(baseTreeRes)}` };
-      }
+      // 1. The CAS base and a private index seeded from it.
+      const seeded = await seedPrivateIndex(runGit, privateGit, repoPath, indexFile, site.sharedIndex, 'attributed commit');
+      if (!seeded.ok) return { committedAny, committedCount, error: seeded.error };
+      const { base, baseTree } = seeded;
 
       // 2. Stage ONLY this group's files, then guard exactly that index.
       const add = await privateGit(['add', '--', ...g.files], repoPath);
@@ -4240,52 +4322,40 @@ export async function commitAttributedGroups(
         if (!guard.ok) return { committedAny, committedCount, error: guard.error };
       }
 
-      // 3. The tree the guard checked. Equal to the base tree = nothing left to commit.
-      const treeRes = await privateGit(['write-tree'], repoPath);
-      const tree = treeRes.stdout.trim();
-      if (treeRes.code !== 0 || !tree) {
-        return { committedAny, committedCount, error: `attributed commit failed: ${gitFailureDetail(treeRes)}` };
-      }
-      if (tree === baseTree) continue;
-
-      // WI-38594 (flag GIT_SYNC_DIFF_SUBJECTS): the subject describes the DIFF (what this
-      // commit actually contains — from the private index's numstat against the base);
-      // the agent's intent line (the pre-WI-38594 subject) rides as the first BODY
-      // paragraph, ahead of the provenance trailers, so it stays greppable without
-      // masquerading as a diff summary. A failed numstat only drops the ±counts.
-      let subject = g.subject;
-      let intentBody: string | null = null;
-      if (opts.diffSubjects !== false) {
-        const ns = await privateGit(['diff', '--cached', '--numstat', ...(base ? [base] : []), '--', ...g.files], repoPath);
-        subject = diffDerivedSubject(g.files, ns.code === 0 ? parseNumstat(ns.stdout) : undefined);
-        if (g.subject && g.subject !== DEFAULT_GIT_SYNC_SUBJECT) intentBody = g.subject;
-      }
-      const commitArgs = [
-        ...GIT_SYNC_IDENTITY_ARGS,
-        'commit-tree',
-        tree,
-        ...(base ? ['-p', base] : []),
-        ...attributedMessageArgs(g, subject, suffix, intentBody),
-      ];
-      const c = await runGit(commitArgs, repoPath);
-      const commit = c.stdout.trim();
-      if (c.code !== 0 || !commit) {
-        return { committedAny, committedCount, error: `attributed commit failed: ${gitFailureDetail(c)}` };
-      }
-
-      // 4. Publish only if HEAD is still the base the commit was built on.
-      const cas = await runGit(
-        ['update-ref', '-m', `git-sync: attributed commit for ${g.agent}`, 'HEAD', commit, base ?? ''],
-        repoPath,
-      );
-      if (cas.code !== 0) {
+      // 3-4. Commit the tree the guard checked (equal to the base tree = nothing left to
+      //      commit) and publish it only if HEAD is still the base it was built on.
+      //      WI-38594 (flag GIT_SYNC_DIFF_SUBJECTS): the subject describes the DIFF (what
+      //      this commit actually contains — from the private index's numstat against the
+      //      base); the agent's intent line (the pre-WI-38594 subject) rides as the first
+      //      BODY paragraph, ahead of the provenance trailers, so it stays greppable without
+      //      masquerading as a diff summary. A failed numstat only drops the ±counts.
+      const published = await publishPrivateIndexCommit(runGit, privateGit, repoPath, {
+        base,
+        baseTree,
+        label: 'attributed commit',
+        reflogMessage: `git-sync: attributed commit for ${g.agent}`,
+        messageArgs: async () => {
+          let subject = g.subject;
+          let intentBody: string | null = null;
+          if (opts.diffSubjects !== false) {
+            const ns = await privateGit(['diff', '--cached', '--numstat', ...(base ? [base] : []), '--', ...g.files], repoPath);
+            subject = diffDerivedSubject(g.files, ns.code === 0 ? parseNumstat(ns.stdout) : undefined);
+            if (g.subject && g.subject !== DEFAULT_GIT_SYNC_SUBJECT) intentBody = g.subject;
+          }
+          return attributedMessageArgs(g, subject, suffix, intentBody);
+        },
+      });
+      if (published.status === 'nothing') continue;
+      if (published.status === 'error') return { committedAny, committedCount, error: published.error };
+      if (published.status === 'cas-refused') {
         log(
           `[git-sync] ${repoPath}: HEAD moved while ${g.agent}'s attributed commit was being built ` +
-            `(update-ref CAS refused: ${gitFailureDetail(cas)}) — not published; its ${g.files.length} file(s) ` +
+            `(update-ref CAS refused: ${published.detail}) — not published; its ${g.files.length} file(s) ` +
             'stay dirty for the catch-all or the next tick',
         );
         continue;
       }
+      const { commit, tree } = published;
       committedAny = true;
       committedCount += 1;
 
@@ -4628,6 +4698,25 @@ async function excludeDependencyGenerationRootRecord(
  * a durable-step re-run or a reaped-and-requeued fire cannot double-commit.
  */
 async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts): Promise<CommitRepoResult> {
+  // WI-10006725: scratch files the catch-all creates (its private index, the shared-index
+  // refresh pathspec) are removed on EVERY exit path, a thrown runner included.
+  const scratch: string[] = [];
+  try {
+    return await commitOneRepoWithScratch(runGit, repoPath, o, scratch);
+  } finally {
+    for (const file of scratch) {
+      await rm(file, { force: true }).catch(() => {});
+      await rm(`${file}.lock`, { force: true }).catch(() => {});
+    }
+  }
+}
+
+async function commitOneRepoWithScratch(
+  runGit: RunGit,
+  repoPath: string,
+  o: CommitRepoOpts,
+  scratch: string[],
+): Promise<CommitRepoResult> {
   const { message } = o;
   // A routine heartbeat says only that a git call settled. Name slow pre-stage
   // phases so a live lease can be diagnosed without guessing from its age.
@@ -5099,7 +5188,32 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
     }
     // Catch-all = today's single whole-tree commit: sweeps the unattributed remainder (or
     // EVERYTHING when no attribution), including anything a path-specific add missed (rename
-    // origin-sides, etc.). Byte-identical to the pre-P-004 commit path.
+    // origin-sides, etc.).
+    // WI-10006725: it is built in a PRIVATE index, like each attributed group. The shared
+    // index is writable by anything on the tree, and `git commit` records ALL of it, so a
+    // path the post-stage guard held back (a late lock, drift, an importer of an excluded
+    // module) that a peer re-staged before the commit was published anyway. `stageGit` is
+    // the runner for every index read and write below, and the commit is write-tree →
+    // commit-tree → update-ref CAS. STRANDING GUARD: when the runner does not forward
+    // GIT_INDEX_FILE, or the seed fails, it falls back to the shared index + `git commit`;
+    // committing the tree outranks isolating it.
+    let stageGit: RunGit = runGit;
+    let catchAllPrivate: { base: string | null; baseTree: string; gitDir: string } | null = null;
+    const catchAllSite = await openPrivateIndexSite(runGit, repoPath, 'catch-all commit', 'catch-all');
+    if (catchAllSite.ok) {
+      const indexFile = catchAllSite.site.newIndexFile();
+      scratch.push(indexFile);
+      const privateGit = catchAllSite.site.bindIndex(indexFile);
+      const seeded = await seedPrivateIndex(runGit, privateGit, repoPath, indexFile, catchAllSite.site.sharedIndex, 'catch-all commit');
+      if (seeded.ok) {
+        stageGit = privateGit;
+        catchAllPrivate = { base: seeded.base, baseTree: seeded.baseTree, gitDir: catchAllSite.site.gitDir };
+      } else {
+        o.log(`[git-sync] ${repoPath}: ${seeded.error} — committing the catch-all through the shared index instead`);
+      }
+    } else {
+      o.log(`[git-sync] ${repoPath}: ${catchAllSite.error} — committing the catch-all through the shared index instead`);
+    }
     const buildAddArgs = (extraExcludes: string[], omittedExcludes: readonly string[] = []): string[] => {
       const omitted = new Set(omittedExcludes);
       const ex = [...new Set([...stagingExcludePaths, ...extraExcludes])].filter((path) => !omitted.has(path));
