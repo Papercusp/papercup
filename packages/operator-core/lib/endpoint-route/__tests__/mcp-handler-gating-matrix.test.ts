@@ -153,6 +153,7 @@ const h = vi.hoisted(() => {
         uiClientId?: string | null;
         isSuperuser?: boolean;
         transport?: string;
+        requestOrigin?: UnifiedToolContext['requestOrigin'];
       };
       args?: unknown;
       metadataJson?: Record<string, unknown> | null;
@@ -4896,7 +4897,7 @@ describe('su identity precedence (EI-7066: explicit SID before Mcp-Session-Id)',
 describe('successful native-session audit (get-feedback D-006)', () => {
   it.each([
     { carrier: 'header:x-papercusp-native-session', query: '&client=su-owner', headers: { 'x-papercusp-native-session': 'native-owner-session' } },
-    { carrier: 'query:native_session', query: '&client=su-owner&native_session=native-owner-session', headers: {} },
+    { carrier: 'query:native_session', query: '&client=su-owner&native_session=native-owner-session', headers: {} as Record<string, string> },
   ])('persists the $carrier fingerprint and bound row on the invocation context', async ({ carrier, query, headers }) => {
     h.nativeSessionRows = new Map([['su-owner', [{ id: 541, session_id: 'native-owner-session', active: true }]]]);
     const res = await callTool('gatingtest:scoped', {}, superuserExtra(query, headers));

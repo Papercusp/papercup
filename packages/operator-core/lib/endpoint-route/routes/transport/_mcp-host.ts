@@ -1630,6 +1630,7 @@ export async function tryBuildSpawnContext(
       };
     };
     let verifiedAdvSessionId: number | null = null;
+    let nativeSessionAudit: RequestOriginMetadata['nativeSession'];
     if (suIdentity && nativeSessionId) {
       try {
         const binding = await classifyOwnerNativeSession({ ownerId: suIdentity, sessionId: nativeSessionId });
@@ -1639,6 +1640,10 @@ export async function tryBuildSpawnContext(
             reason: 'superuser_foreign_native_session',
             nativeSessionFailure: nativeSessionFailure(binding.advSessionId),
           };
+        }
+        const observation = nativeSessionFailure(binding.advSessionId);
+        if (observation) {
+          nativeSessionAudit = { ...observation, binding: binding.binding };
         }
         if (
           binding.binding === 'bound' &&
@@ -1823,7 +1828,9 @@ export async function tryBuildSpawnContext(
         // Session payload tier (context-trimming-tiers D-004) — env-expanded by
         // psu into the user-level MCP URL, like `tools=`.
         contextTier: parsePayloadTier(url.searchParams.get('ctx_tier')),
-        requestOrigin,
+        requestOrigin: nativeSessionAudit
+          ? { ...requestOrigin, transport: 'mcp', nativeSession: nativeSessionAudit }
+          : requestOrigin,
       },
     };
   }
