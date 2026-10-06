@@ -51,6 +51,166 @@
       "No fixed-cohort credit, normal parent acceptance or shipment claim."
     ]
   },
+  "ongoingCurrentBuildTrial": {
+    "conversationId": "conv-muvxj55p-0000-2f13c764fead4560a1bdc21d7dc5556c",
+    "originTaskRef": "WI-10005889",
+    "classification": "current Codex-source isolated Claude conversion; ongoing partial evidence, no matrix pass",
+    "endpoint": "http://127.0.0.1:3170",
+    "sourceOwnerId": "su-0f0a6f2a-3bf0-417d-88fd-22dd7b234197",
+    "answeringOwnerId": "su-be2ecc34-8ab6-4b01-a112-a34a64b09668",
+    "requestTimedOut": true,
+    "transportReplayKey": "1b016816-6b80-460f-b4ad-99aeed32ebd1",
+    "repeatLaunches": 0,
+    "nativeReceipt": {
+      "portId": "01a725b0-c1a7-47d3-b7ed-456b59883dfb",
+      "status": "delivered",
+      "sourceAdvSessionId": 34377,
+      "targetAdvSessionId": 34535,
+      "sourceNativeSessionId": "01a10d90-17a6-7752-9d1c-6793d261de0a",
+      "targetNativeSessionId": "4e6aae21-3989-458c-b8ec-22c974081063",
+      "sourceBackend": "codex",
+      "targetBackend": "claude",
+      "fidelity": "full",
+      "renderer": 3,
+      "hashes": {
+        "source": "04dd1586b8e645b69f484fbd3f9f73b05f37df915941279004b4c6d3738d6617",
+        "rendered": "e87ebc3dd4d767167f708336794374544a5e06d20363296639d4ca5c178c895c",
+        "normalized": "cc2a89c5c05905a0f55141d51617be155be86d3113377e23da32333dbb890933"
+      },
+      "bootstrapReceiptCommitted": true,
+      "bootstrapReceiptTargetAdvSessionId": 34535,
+      "authorityCarried": false
+    },
+    "nativeFrame": {
+      "line": 4,
+      "uuid": "22d4b6ad-0643-4ba7-933b-a980d188bdac",
+      "portIdPresent": true,
+      "renderedHashPresent": true,
+      "textSha256": "de798139ed30059be5e1b04c5c9c870673086ecc1863fc165f2e3a4c420ad64d"
+    },
+    "sourceLaunchRowsObserved": {
+      "asOf": "2026-10-06T00:21:48.625Z",
+      "sourceRowIds": [
+        33955,
+        34158,
+        34377
+      ],
+      "filter": "Every observed source-owner row, without port_id filtering; current native row values are a later snapshot, not port source identity."
+    },
+    "sourceClaimsBefore": {
+      "asOf": "2026-10-06T00:17:02.859Z",
+      "ownerId": "su-0f0a6f2a-3bf0-417d-88fd-22dd7b234197",
+      "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+      "fleetRole": "member",
+      "claims": [
+        {
+          "type": "work-item",
+          "harnessSlug": "papercusp",
+          "planSlug": null,
+          "id": "EI-24966800800754357",
+          "status": "open",
+          "acquiredTs": "2026-10-05 15:00:17.784958-04",
+          "active": true
+        },
+        {
+          "type": "work-item",
+          "harnessSlug": "papercusp",
+          "planSlug": null,
+          "id": "EI-25162493878921404",
+          "status": "open",
+          "acquiredTs": "2026-10-05 19:29:19.557234-04",
+          "active": true
+        }
+      ]
+    },
+    "sourceClaimsInterim": {
+      "asOf": "2026-10-06T00:23:56.272Z",
+      "ownerId": "su-0f0a6f2a-3bf0-417d-88fd-22dd7b234197",
+      "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+      "fleetRole": "member",
+      "claims": [
+        {
+          "type": "work-item",
+          "harnessSlug": "papercusp",
+          "planSlug": null,
+          "id": "EI-24966800800754357",
+          "status": "open",
+          "acquiredTs": "2026-10-05 15:00:17.784958-04",
+          "active": true
+        },
+        {
+          "type": "work-item",
+          "harnessSlug": "papercusp",
+          "planSlug": null,
+          "id": "EI-25162493878921404",
+          "status": "open",
+          "acquiredTs": "2026-10-05 19:29:19.557234-04",
+          "active": true
+        }
+      ]
+    },
+    "interimEndpointSignaturesIdentical": true,
+    "actorInterim": {
+      "start": "2026-10-06T00:17:02.859Z",
+      "end": "2026-10-06T00:23:58.412Z",
+      "scope": "Exact listed MCP verbs only; interim before first answer, not settled actor/ABA proof.",
+      "rows": [
+        {
+          "id": 31829272,
+          "tool_name": "locks:release",
+          "status": "ok",
+          "coord_owner_id": "su-0f0a6f2a-3bf0-417d-88fd-22dd7b234197",
+          "invoked_at": "2026-10-06T00:17:52.126Z",
+          "subject_id": null,
+          "subject_row": null,
+          "launch": {
+            "xmin": "786984700",
+            "advSessionId": "34377"
+          }
+        },
+        {
+          "id": 31830254,
+          "tool_name": "coord:declare-intent",
+          "status": "ok",
+          "coord_owner_id": "su-0f0a6f2a-3bf0-417d-88fd-22dd7b234197",
+          "invoked_at": "2026-10-06T00:20:39.760Z",
+          "subject_id": null,
+          "subject_row": null,
+          "launch": {
+            "xmin": "787160674",
+            "advSessionId": "34377"
+          }
+        },
+        {
+          "id": 31830269,
+          "tool_name": "coord:orient",
+          "status": "ok",
+          "coord_owner_id": "su-0f0a6f2a-3bf0-417d-88fd-22dd7b234197",
+          "invoked_at": "2026-10-06T00:20:40.447Z",
+          "subject_id": null,
+          "subject_row": null,
+          "launch": {
+            "xmin": "787160674",
+            "advSessionId": "34377"
+          }
+        }
+      ],
+      "unboundSourceRowsRemainUnknown": true
+    },
+    "substantiveReply": null,
+    "limitations": [
+      "First-answer and post-settlement proof pending.",
+      "Three interim source-owned MCP rows lack selection; no actor/ABA or universal immutability verdict.",
+      "First answering startup call31829230 used owner-workspace-fallback.",
+      "Fixed R6 cohort receives no credit from this post-cut trial."
+    ],
+    "privateEvidencePaths": [
+      "/tmp/get-feedback-fire103-claims-before.json",
+      "/tmp/get-feedback-fire103-claims-interim.json",
+      "/tmp/get-feedback-fire103-lineage.json",
+      "/tmp/get-feedback-fire103-actors-interim.json"
+    ]
+  },
   "trial": {
     "conversationId": "conv-muvsow6d-0000-9db0d462af354281ae14190a8776e7bf",
     "requesterId": "su-48ca22e5-deca-4778-9acb-d6ae2fb48dd4",
