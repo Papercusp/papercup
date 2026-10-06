@@ -43,6 +43,7 @@ import type { ScorecardFreshnessStatus } from '../scorecard-freshness';
 import { accountFull } from '../deployment/account-pool';
 import { projectLiveEdgeThrottle } from '../deployment/account-pool-store';
 import { dedupeInFlight } from '../dedupe-in-flight';
+import { NOOP_TICK_LEGS, watchTick, type TickLegTracker } from './tick-legs';
 import type { LiveHealthReading, LiveHealthSignalKey, LiveHealthSnapshot } from '../resource-governor/live-health';
 import type {
   SystemHealth,
@@ -3258,9 +3259,16 @@ async function collectContextInjection(ctx: HealthCtx): Promise<HealthPanel<Cont
  * regardless). Resolves the hive + the shared open-placement + gateway reads
  * once, then runs every panel collector in parallel under `panelSafe`.
  */
-export async function computeSystemHealth(workspaceId?: string): Promise<SystemHealth> {
+export async function computeSystemHealth(
+  workspaceId?: string,
+  opts: { legs?: TickLegTracker } = {},
+): Promise<SystemHealth> {
   const ws = workspaceId ?? activeWorkspaceId();
   const now = Date.now();
+  // EI-25221129396992808: every await below has no deadline, and the tick is single-flighted, so
+  // one hung leg stalls the whole snapshot. The tick passes a tracker that names unsettled legs;
+  // every other caller gets the no-op one.
+  const L = opts.legs ?? NOOP_TICK_LEGS;
 
   // Resolve the hive (prefer a started one) + the shared best-effort reads.
   let potSlug: string | null = null;
@@ -3268,10 +3276,14 @@ export async function computeSystemHealth(workspaceId?: string): Promise<SystemH
   try {
     const { listPots } = await import('../agent-tools/pot/_resolve');
     const { getPotStarted } = await import('../pot/started');
-    const hives = await listPots(ws);
-    for (const h of hives) {
-      if (await getPotStarted(ws, h.slug).catch(() => false)) { potSlug = h.slug; started = true; break; }
-    }
+    const hives = await L.leg('list-pots', () => listPots(ws));
+    const startedSlug = await L.leg('pot-started', async () => {
+      for (const h of hives) {
+        if (await getPotStarted(ws, h.slug).catch(() => false)) return h.slug;
+      }
+      return null;
+    });
+    if (startedSlug) { potSlug = startedSlug; started = true; }
     if (!potSlug && hives.length > 0) potSlug = hives[0].slug;
   } catch { /* registry unreadable — queen/work-feed degrade to 'unknown' */ }
 
@@ -3294,7 +3306,9 @@ export async function computeSystemHealth(workspaceId?: string): Promise<SystemH
           if (all.length > 0) scopeSlugs = all;
         } catch { /* registry unreadable → fall back to the representative hive */ }
       }
-      const sums = await Promise.all(scopeSlugs.map((slug) => summarizeOpenPlacements(ws, slug)));
+      const sums = await L.leg('open-placements', () =>
+        Promise.all(scopeSlugs.map((slug) => summarizeOpenPlacements(ws, slug))),
+      );
       openPlacements = sums.reduce(
         (acc, op) => ({
           recovering: acc.recovering + op.recovering,
@@ -3311,7 +3325,7 @@ export async function computeSystemHealth(workspaceId?: string): Promise<SystemH
   let gatewayReachable: boolean | null = null;
   try {
     gatewayEnabled = await getFlag(FLAGS.INFERENCE_GATEWAY, 'system');
-    if (gatewayEnabled) gatewayReachable = await probeGatewayHealthz();
+    if (gatewayEnabled) gatewayReachable = await L.leg('gateway-healthz', () => probeGatewayHealthz());
   } catch { /* flag IO hiccup — treat as direct egress */ }
 
   // Overwatch liveness (B-09 / D-004) — resolved ONCE here so the SAME value feeds
@@ -3324,7 +3338,8 @@ export async function computeSystemHealth(workspaceId?: string): Promise<SystemH
   if (potSlug) {
     try {
       const { isOverwatchAlive } = await import('../overwatch/cross-monitor');
-      overwatchAlive = await isOverwatchAlive(ws, potSlug, { now });
+      const slug = potSlug;
+      overwatchAlive = await L.leg('overwatch-alive', () => isOverwatchAlive(ws, slug, { now }));
     } catch {
       /* leave null — overwatch liveness not computable; null = not-computed (D-004) */
     }
@@ -3340,12 +3355,17 @@ export async function computeSystemHealth(workspaceId?: string): Promise<SystemH
     plans, escalations, autonomy, observations, improvements, infra, suFleet, overwatch, scout,
     toolEfficiency, loops, coordination, memory, contextInjection,
   ] = await Promise.all([
-    collectQueen(ctx), collectBees(ctx), collectWorkItems(ctx), collectWorkFeed(ctx),
-    collectTokens(ctx), collectWatchdog(ctx), collectDeploy(ctx), collectPlans(ctx),
-    collectEscalations(ctx), collectAutonomy(ctx), collectObservations(ctx),
-    collectImprovements(ctx), collectInfra(ctx), collectSuFleet(ctx), collectOverwatch(ctx),
-    collectScout(ctx), collectToolEfficiency(ctx), collectLoops(ctx), collectCoordination(ctx),
-    collectMemory(ctx), collectContextInjection(ctx),
+    L.leg('queen', () => collectQueen(ctx)), L.leg('bees', () => collectBees(ctx)),
+    L.leg('workItems', () => collectWorkItems(ctx)), L.leg('workFeed', () => collectWorkFeed(ctx)),
+    L.leg('tokens', () => collectTokens(ctx)), L.leg('watchdog', () => collectWatchdog(ctx)),
+    L.leg('deploy', () => collectDeploy(ctx)), L.leg('plans', () => collectPlans(ctx)),
+    L.leg('escalations', () => collectEscalations(ctx)), L.leg('autonomy', () => collectAutonomy(ctx)),
+    L.leg('observations', () => collectObservations(ctx)),
+    L.leg('improvements', () => collectImprovements(ctx)), L.leg('infra', () => collectInfra(ctx)),
+    L.leg('suFleet', () => collectSuFleet(ctx)), L.leg('overwatch', () => collectOverwatch(ctx)),
+    L.leg('scout', () => collectScout(ctx)), L.leg('toolEfficiency', () => collectToolEfficiency(ctx)),
+    L.leg('loops', () => collectLoops(ctx)), L.leg('coordination', () => collectCoordination(ctx)),
+    L.leg('memory', () => collectMemory(ctx)), L.leg('contextInjection', () => collectContextInjection(ctx)),
   ]);
 
   // P-001 (health-tab-v2): the paused-Mug cry-wolf fix — reconcile the queen
@@ -3386,7 +3406,7 @@ export async function computeSystemHealth(workspaceId?: string): Promise<SystemH
   // pending) leaves the snapshot exactly as computed above.
   try {
     const { readHealthAcks, applyHealthAcks } = await import('./acks');
-    applyHealthAcks(snapshot, await readHealthAcks(ws), now);
+    applyHealthAcks(snapshot, await L.leg('read-acks', () => readHealthAcks(ws)), now);
   } catch { /* acks unreadable — un-acked snapshot stands */ }
 
   return snapshot;
@@ -3519,7 +3539,13 @@ const tickInFlight = new Map<string, Promise<SystemHealth>>();
  */
 export async function runSystemHealthTick(workspaceId?: string): Promise<SystemHealth> {
   const ws = workspaceId ?? activeWorkspaceId();
-  return dedupeInFlight(tickInFlight, ws, () => runSystemHealthTickUncached(ws));
+  // EI-25221129396992808: watchTick sits INSIDE the single-flight slot, so there is exactly one
+  // watcher per real aggregation, and a joined caller never starts a second one. It logs a tick
+  // still running past 60s with its unsettled legs, and a finished tick slower than 20s with its
+  // slowest legs. Observation only: no timeout, no change to the result.
+  return dedupeInFlight(tickInFlight, ws, () =>
+    watchTick(ws, (legs) => runSystemHealthTickUncached(ws, legs)),
+  );
 }
 
 /**
@@ -3554,27 +3580,29 @@ export async function publishGovernorStateSnapshot(
   }
 }
 
-async function runSystemHealthTickUncached(ws: string): Promise<SystemHealth> {
+async function runSystemHealthTickUncached(ws: string, L: TickLegTracker = NOOP_TICK_LEGS): Promise<SystemHealth> {
   const localPrev = cache.get(ws) ?? null;
   // Hydrate a cold tick host from the cross-process snapshot before computing the next
   // health payload. collectInfra reads the predecessor's disk bands from this cache while
   // classifying the new statfs sample; without this read, a host restart loses hysteresis
   // and a 94→95 boundary can falsely resolve/re-fire infra-liveness.
-  const sharedPrev = localPrev ? null : await readSharedSystemHealthSnapshot(ws).catch(() => null);
+  const sharedPrev = localPrev
+    ? null
+    : await L.leg('read-shared-prev', () => readSharedSystemHealthSnapshot(ws)).catch(() => null);
   const prev = selectPreviousHealthSnapshot(localPrev, sharedPrev);
-  const health = await computeSystemHealth(ws);
+  const health = await computeSystemHealth(ws, { legs: L });
   // P-004 (health-tab-v2): auto-clear acks whose panel recovered / snooze
   // expired, and re-apply the survivors. Fail-soft — never breaks the tick.
   try {
     const { sweepHealthAcks } = await import('./acks');
-    await sweepHealthAcks(health, Date.now());
+    await L.leg('sweep-acks', () => sweepHealthAcks(health, Date.now()));
   } catch { /* ack sweep unavailable (migration pending) — snapshot stands */ }
   // P-005 (health-tab-v2): persist status history — transition rows for every
   // panel that changed vs the previous tick + the compact per-tick statuses row
   // (14d retention). Fail-soft — history must never break the tick.
   try {
     const { recordHealthHistory } = await import('./history');
-    await recordHealthHistory(prev, health);
+    await L.leg('record-history', () => recordHealthHistory(prev, health));
   } catch { /* history unavailable (migration pending) — tick proceeds */ }
   // EI-12982: preserve a forensic perf-signals-v1 snapshot the moment the infra
   // panel edge-transitions into `crit` (covers the "PER-THREAD WEDGE" verdict).
@@ -3591,7 +3619,7 @@ async function runSystemHealthTickUncached(ws: string): Promise<SystemHealth> {
   // EI-219699: make the complete durable queue census visible to the canonical
   // governor state resolver. No process-local admission/recovery verdict is
   // available to this health tick, so publish only queue evidence.
-  await publishGovernorStateSnapshot(ws, health.evaluatedAt);
+  await L.leg('governor-snapshot', () => publishGovernorStateSnapshot(ws, health.evaluatedAt));
   cache.set(ws, health);
   // P-001 (precompute-sync-reads-phase2): publish the freshly-computed snapshot to
   // the cross-process SHARED store so a reader process that never runs this tick
@@ -3601,18 +3629,18 @@ async function runSystemHealthTickUncached(ws: string): Promise<SystemHealth> {
   // Fire-and-forget + fail-soft: the in-process cache above is authoritative on
   // THIS host, so a shared-write hiccup only forgoes the cross-process benefit; it
   // must never slow or break the tick.
-  if (await precomputeSharedHealthEnabled()) {
+  if (await L.leg('precompute-flag', () => precomputeSharedHealthEnabled())) {
     void writeSharedSnapshot(SYSTEM_HEALTH_SNAPSHOT_KEY, ws, health, SYSTEM_HEALTH_SNAPSHOT_VERSION).catch(
       (e) => console.warn(`[system-health] shared-snapshot write failed for ${ws}: ${e instanceof Error ? e.message : e}`),
     );
   }
-  await notifySyncInvalidate('health.snapshot', undefined).catch(() => {});
-  await notifySyncInvalidate('health.history', undefined).catch(() => {});
+  await L.leg('invalidate-health', () => notifySyncInvalidate('health.snapshot', undefined)).catch(() => {});
+  await L.leg('invalidate-history', () => notifySyncInvalidate('health.history', undefined)).catch(() => {});
   // The Overwatch pane (B-08) reads the SAME SystemHealth as its brief snapshot
   // (overwatch.snapshot, D-006 "one aggregation, two consumers"), so invalidate it
   // on the same tick — the pane stays SSE-live without a second aggregation. Safe
   // no-op when no overwatch pane is subscribed.
-  await notifySyncInvalidate('overwatch.snapshot', undefined).catch(() => {});
+  await L.leg('invalidate-overwatch', () => notifySyncInvalidate('overwatch.snapshot', undefined)).catch(() => {});
   // P-059: the sibling `mugBrief.floorView` invalidation is gone with the query
   // itself — its client (the chat sidebar's pot-status panel) was stripped by
   // WI-37654 and the Mug brief it projected retired with the tier. Invalidating

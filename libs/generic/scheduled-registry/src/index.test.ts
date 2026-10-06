@@ -170,6 +170,77 @@ describe('managedSetInterval / listManaged', () => {
     expect(getManaged('slow')!.running).toBe(false);
   });
 
+  it('a wedged async tick is VISIBLE: runningSince + skippedWhileRunning + O(log n) log lines (EI-25221129396992808)', async () => {
+    const h = harness();
+    const logs: string[] = [];
+    configureScheduledRegistry({ log: (m) => logs.push(m) });
+    let resolveFn!: () => void;
+    managedSetInterval('wedged', 30_000, () => new Promise<void>((r) => {
+      resolveFn = r;
+    }), { category: 'global-sweep' });
+
+    h.setNow(1_000_000);
+    h.intervals[0].cb(); // tick starts and never settles on its own
+    await Promise.resolve();
+    expect(getManaged('wedged')!.runningSince).toBe(1_000_000);
+    expect(getManaged('wedged')!.skippedWhileRunning).toBe(0);
+
+    // Ten later fires land while the first tick is still in flight.
+    for (let i = 1; i <= 10; i += 1) {
+      h.setNow(1_000_000 + i * 30_000);
+      h.intervals[0].cb();
+    }
+    await flush();
+    const entry = getManaged('wedged')!;
+    expect(entry.running).toBe(true);
+    expect(entry.fires).toBe(0); // frozen: this is the silent signature the counter exposes
+    expect(entry.skippedWhileRunning).toBe(10);
+    // One skip is jitter and is not reported; 2, 4 and 8 are (power-of-two backoff).
+    const still = logs.filter((m) => m.includes('tick still running'));
+    expect(still).toHaveLength(3);
+    expect(still[0]).toContain('wedged tick still running after 60000ms (2 fire(s) skipped');
+    expect(still[2]).toContain('after 240000ms (8 fire(s) skipped');
+
+    h.setNow(1_000_000 + 330_000);
+    resolveFn();
+    await flush();
+    const done = getManaged('wedged')!;
+    expect(done.running).toBe(false);
+    expect(done.runningSince).toBeNull();
+    expect(done.fires).toBe(1);
+    expect(done.skippedWhileRunning).toBe(10); // cumulative, survives the episode
+    expect(logs.filter((m) => m.includes('long tick finished'))).toEqual([
+      'wedged long tick finished after 330000ms (10 fire(s) skipped while it ran, interval 30000ms)',
+    ]);
+
+    // The episode counter resets: a single later overlap is jitter again and logs nothing new.
+    logs.length = 0;
+    h.intervals[0].cb();
+    await Promise.resolve();
+    h.intervals[0].cb();
+    resolveFn();
+    await flush();
+    expect(logs).toEqual([]);
+    expect(getManaged('wedged')!.skippedWhileRunning).toBe(11);
+  });
+
+  it('a tick that overruns by ONE interval is not reported (jitter, not a wedge)', async () => {
+    const h = harness();
+    const logs: string[] = [];
+    configureScheduledRegistry({ log: (m) => logs.push(m) });
+    let resolveFn!: () => void;
+    managedSetInterval('jitter', 1000, () => new Promise<void>((r) => {
+      resolveFn = r;
+    }), { category: 'global-sweep' });
+    h.intervals[0].cb();
+    await Promise.resolve();
+    h.intervals[0].cb(); // one skipped fire
+    resolveFn();
+    await flush();
+    expect(getManaged('jitter')!.skippedWhileRunning).toBe(1);
+    expect(logs).toEqual([]);
+  });
+
   it('shed: a shed:true timer skips a cycle when shouldShed() is true; a non-shed timer does not', async () => {
     const h = harness();
     let shedCalls = 0;

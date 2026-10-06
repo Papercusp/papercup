@@ -349,17 +349,42 @@ function makeTick(name: string, fn: () => void | Promise<void>, opts: ManagedTim
       rec.entry.lastError = err instanceof Error ? err.message : String(err);
       state.resolved.log(`${name} tick failed (next interval retries): ${rec.entry.lastError}`);
     }
-    rec.entry.lastFireAt = state.resolved.now();
+    const settledAt = state.resolved.now();
+    if (rec.episodeSkips >= LONG_TICK_REPORT_MIN_SKIPS && rec.entry.runningSince !== null) {
+      // Close the episode the skip log opened, with the measured duration, so a long tick has a
+      // definite end in the log instead of just going quiet.
+      state.resolved.log(
+        `${name} long tick finished after ${settledAt - rec.entry.runningSince}ms ` +
+          `(${rec.episodeSkips} fire(s) skipped while it ran, interval ${rec.entry.intervalMs}ms)`,
+      );
+    }
+    rec.entry.lastFireAt = settledAt;
     rec.entry.fires += 1;
     rec.running = false;
     rec.entry.running = false;
+    rec.entry.runningSince = null;
+    rec.episodeSkips = 0;
   };
   return () => {
     if (rec.stopped) return;
-    if (rec.running) return; // re-entrancy guard — a slow tick never piles up a second run
+    if (rec.running) {
+      // Re-entrancy guard: a slow tick never piles up a second run. Count the swallowed fire and
+      // report a tick that has held the guard for several intervals, since nothing else will.
+      rec.episodeSkips += 1;
+      rec.entry.skippedWhileRunning += 1;
+      if (shouldReportSkip(rec.episodeSkips) && rec.entry.runningSince !== null) {
+        state.resolved.log(
+          `${name} tick still running after ${state.resolved.now() - rec.entry.runningSince}ms ` +
+            `(${rec.episodeSkips} fire(s) skipped by the re-entrancy guard, interval ${rec.entry.intervalMs}ms)`,
+        );
+      }
+      return;
+    }
     if (opts.shed && state.resolved.shouldShed(name)) return; // shed this cycle under load
     rec.running = true;
     rec.entry.running = true;
+    rec.entry.runningSince = state.resolved.now();
+    rec.episodeSkips = 0;
     // Run a SYNCHRONOUS tick synchronously — this preserves the bare-setInterval timing
     // semantics (a sync watchdog tick must complete in THIS turn, not a deferred microtask);
     // only a genuinely-async tick (returns a thenable) is awaited, so the re-entrancy guard
@@ -478,13 +503,22 @@ export function managedSetInterval(
     lastFireAt: null,
     lastError: null,
     running: false,
+    runningSince: null,
+    skippedWhileRunning: 0,
     fires: 0,
     shed: opts.shed ?? false,
     instanced,
     instances: 1,
     classification: opts.classification ?? null,
   };
-  const rec: InternalRecord = { entry, key, timer: { unref: undefined }, running: false, stopped: false };
+  const rec: InternalRecord = {
+    entry,
+    key,
+    timer: { unref: undefined },
+    running: false,
+    stopped: false,
+    episodeSkips: 0,
+  };
   const tick = makeTick(name, fn, opts, rec);
   rec.timer = state.resolved.setIntervalImpl(tick, intervalMs);
   if (!opts.ref) rec.timer.unref?.();
@@ -543,6 +577,11 @@ export function listManaged(): ManagedEntry[] {
       if (r.entry.lastFireAt != null) g.lastFireAt = Math.max(g.lastFireAt ?? 0, r.entry.lastFireAt);
       if (r.entry.lastError) g.lastError = r.entry.lastError;
       g.running = g.running || r.entry.running;
+      g.skippedWhileRunning += r.entry.skippedWhileRunning;
+      // The OLDEST in-flight instance is the one that matters for "is anything wedged".
+      if (r.entry.runningSince !== null) {
+        g.runningSince = g.runningSince === null ? r.entry.runningSince : Math.min(g.runningSince, r.entry.runningSince);
+      }
       if (g.classification == null && r.entry.classification != null) g.classification = r.entry.classification;
     }
   }
