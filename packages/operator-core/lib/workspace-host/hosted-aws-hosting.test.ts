@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { AWS_WORKSPACE_HOST_PERMISSION_ACTIONS } from './aws-connection';
+import { AWS_WORKSPACE_HOST_IMAGE_KEY_ACTIONS, AWS_WORKSPACE_HOST_PERMISSION_ACTIONS } from './aws-connection';
 import { AWS_WORKSPACE_HOST_MANAGED_TAG_KEYS } from './aws-safety';
 import { GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS } from './gcp-safety';
 import { AWS_SPOT_SERVICE_LINKED_ROLE_ACTION, awsSpotServiceLinkedRoleStatement } from './hosted-aws-host-stack';
@@ -53,9 +53,29 @@ describe('Papercusp-hosted AWS hosting role (aws-byoc-gcp-parity D-017)', () => 
       expect(PAPERCUSP_HOSTING_ACTION_CLASSES[action], action).toBeDefined();
     }
     // Nothing beyond the client's own list, except the Spot service-linked role EC2 creates with
-    // the caller's permission (pinned to that one role by the next test).
-    const allowed: readonly string[] = [...AWS_WORKSPACE_HOST_PERMISSION_ACTIONS, AWS_SPOT_SERVICE_LINKED_ROLE_ACTION];
+    // the caller's permission (pinned to that one role by the next test) and the EC2-only use of
+    // the AMI snapshot key (pinned by the AMI-key test).
+    const allowed: readonly string[] = [
+      ...AWS_WORKSPACE_HOST_PERMISSION_ACTIONS,
+      ...AWS_WORKSPACE_HOST_IMAGE_KEY_ACTIONS,
+      AWS_SPOT_SERVICE_LINKED_ROLE_ACTION,
+    ];
     for (const action of granted) expect(allowed, action).toContain(action);
+  });
+
+  it('lets EBS decrypt the AMI snapshot for a launch, through EC2 in the host region only (WI-10006815)', () => {
+    // Without it every hosted launch from the encrypted Papercusp AMI dies at start with
+    // Client.InvalidKMSKey.InvalidState. The AMI key is the publisher's, so any account, but never a
+    // direct Decrypt and never another region's EC2.
+    const imageKey = AWS_WORKSPACE_HOST_IMAGE_KEY_ACTIONS.flatMap((action) => grants(action, 'arn:aws:kms:us-east-1:'));
+    expect([...new Set(imageKey.map((s) => s.Sid))]).toEqual(['ImageKeyUse']);
+    expect(imageKey[0]).toEqual({
+      Sid: 'ImageKeyUse',
+      Effect: 'Allow',
+      Action: [...AWS_WORKSPACE_HOST_IMAGE_KEY_ACTIONS],
+      Resource: 'arn:aws:kms:us-east-1:*:key/*',
+      Condition: { StringLike: { 'kms:ViaService': 'ec2.us-east-1.amazonaws.com' } },
+    });
   });
 
   it('lets the role create only EC2\'s Spot service-linked role, no other role or service (WI-10005389)', () => {

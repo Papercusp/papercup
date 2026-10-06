@@ -1146,6 +1146,19 @@ describe('SDK-backed preflight client', () => {
     expect(aws.commands('SimulatePrincipalPolicyCommand')[0]!.input.PolicySourceArn).toBe(
       `arn:aws:iam::${ACCOUNT}:role/aws-reserved/sso.amazonaws.com/PapercuspByoc`,
     );
+    // WI-10006815: the AMI-key grant holds only through EC2, so it is simulated the way EBS calls it,
+    // separately from the unconditional lifecycle list.
+    const simulations = aws.commands('SimulatePrincipalPolicyCommand').map((command) => command.input);
+    expect(simulations).toHaveLength(2);
+    expect(simulations[0]!.ContextEntries).toBeUndefined();
+    expect(simulations[1]).toMatchObject({
+      PolicySourceArn: `arn:aws:iam::${ACCOUNT}:role/aws-reserved/sso.amazonaws.com/PapercuspByoc`,
+      ActionNames: ['kms:Decrypt', 'kms:ReEncryptFrom'],
+      ContextEntries: [{ ContextKeyName: 'kms:ViaService', ContextKeyValues: [`ec2.${REGION}.amazonaws.com`], ContextKeyType: 'string' }],
+    });
+    expect(report.permissions.map((entry) => entry.action)).toEqual(
+      expect.arrayContaining(['kms:Decrypt', 'kms:ReEncryptFrom']),
+    );
     expect(report.quotas[0]).toMatchObject({ value: 32 });
     expect(JSON.stringify(report)).not.toContain(SECRET);
   });

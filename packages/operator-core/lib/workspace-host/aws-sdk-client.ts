@@ -61,7 +61,7 @@ import {
   type Snapshot,
   type Volume,
 } from '@aws-sdk/client-ec2';
-import { GetRoleCommand, IAMClient, SimulatePrincipalPolicyCommand } from '@aws-sdk/client-iam';
+import { type ContextEntry, GetRoleCommand, IAMClient, SimulatePrincipalPolicyCommand } from '@aws-sdk/client-iam';
 import { DescribeKeyCommand, KMSClient } from '@aws-sdk/client-kms';
 import { GetProductsCommand, PricingClient } from '@aws-sdk/client-pricing';
 import {
@@ -104,6 +104,7 @@ import type {
 } from '@papercusp/deployment-driver';
 import {
   AWS_WORKSPACE_HOST_TARGET,
+  awsEc2ViaService,
   planAwsSdkCredentialProvider,
   type AwsCallerIdentityEvidence,
   type AwsImageEvidence,
@@ -113,9 +114,9 @@ import {
   type AwsSdkCredentialProviderPlan,
   type AwsSubnetEvidence,
   type AwsWorkspaceHostCredentialSource,
-  type AwsWorkspaceHostPermissionAction,
   type AwsWorkspaceHostPermissionEvidence,
   type AwsWorkspaceHostPermissionRequest,
+  type AwsWorkspaceHostPreflightAction,
   type AwsWorkspaceHostPreflightClient,
   type AwsWorkspaceHostQuotaEvidence,
   type AwsWorkspaceHostQuotaRequirement,
@@ -1752,14 +1753,30 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
   ): Promise<readonly AwsWorkspaceHostPermissionEvidence[]> {
     const identity = await this.callerIdentity();
     const principalArn = await this.simulationPrincipal(identity.arn);
+    return [
+      ...(await this.simulateActions(principalArn, request.actions)),
+      // WI-10006815: the AMI-key grant holds only through EC2, so simulate it the way EBS calls it.
+      ...(await this.simulateActions(principalArn, request.imageKeyActions, [
+        { ContextKeyName: 'kms:ViaService', ContextKeyValues: [awsEc2ViaService(request.region)], ContextKeyType: 'string' },
+      ])),
+    ];
+  }
+
+  private async simulateActions(
+    principalArn: string,
+    actions: readonly AwsWorkspaceHostPreflightAction[],
+    contextEntries?: ContextEntry[],
+  ): Promise<AwsWorkspaceHostPermissionEvidence[]> {
     const evidence: AwsWorkspaceHostPermissionEvidence[] = [];
+    if (actions.length === 0) return evidence;
     let marker: string | undefined;
     do {
       const page = await this.call('simulate-principal-policy', () =>
         this.clients().iam.send(
           new SimulatePrincipalPolicyCommand({
             PolicySourceArn: principalArn,
-            ActionNames: [...request.actions],
+            ActionNames: [...actions],
+            ...(contextEntries ? { ContextEntries: contextEntries } : {}),
             Marker: marker,
           }),
         ),
@@ -1768,7 +1785,7 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
         if (!result.EvalActionName) continue;
         const allowed = result.EvalDecision === 'allowed';
         evidence.push({
-          action: result.EvalActionName as AwsWorkspaceHostPermissionAction,
+          action: result.EvalActionName as AwsWorkspaceHostPreflightAction,
           allowed,
           evidenceRef: `aws:iam:SimulatePrincipalPolicy:${page.$metadata.requestId ?? 'unknown'}`,
           ...(allowed ? {} : { reason: result.EvalDecision ?? 'implicitDeny' }),

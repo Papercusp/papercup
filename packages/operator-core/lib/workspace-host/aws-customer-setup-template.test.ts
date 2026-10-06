@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { AWS_WORKSPACE_HOST_PERMISSION_ACTIONS } from './aws-connection';
+import { AWS_WORKSPACE_HOST_IMAGE_KEY_ACTIONS, AWS_WORKSPACE_HOST_PERMISSION_ACTIONS } from './aws-connection';
 import {
   AWS_CUSTOMER_OPERATOR_ROLE_LOGICAL_ID,
   AWS_CUSTOMER_SETUP_CONNECTION_FIELDS,
@@ -50,7 +50,7 @@ describe('awsCustomerSetupTemplate — the customer-run (desktop) AWS setup temp
     const role = operatorRole(doc());
     expect(role.Policies).toHaveLength(1);
     const statements = role.Policies[0].PolicyDocument.Statement;
-    expect(statements).toHaveLength(2);
+    expect(statements).toHaveLength(3);
     expect(statements[0].Effect).toBe('Allow');
     expect([...statements[0].Action].sort()).toEqual([...AWS_WORKSPACE_HOST_PERMISSION_ACTIONS].sort());
     expect(statements[0].Action.some((action) => action.includes('*'))).toBe(false);
@@ -62,6 +62,20 @@ describe('awsCustomerSetupTemplate — the customer-run (desktop) AWS setup temp
       Resource: 'arn:aws:iam::*:role/aws-service-role/spot.amazonaws.com/AWSServiceRoleForEC2Spot',
       Condition: { StringEquals: { 'iam:AWSServiceName': 'spot.amazonaws.com' } },
     });
+    // WI-10006815: EBS decrypts the Papercusp AMI's snapshot with the launching role's permission.
+    // Without this every launch from an encrypted AMI died Client.InvalidKMSKey.InvalidState. Only
+    // the two actions it needs, and only through EC2: never a direct Decrypt.
+    expect(statements[2]).toEqual({
+      Sid: 'PapercuspImageKeyUse',
+      Effect: 'Allow',
+      Action: [...AWS_WORKSPACE_HOST_IMAGE_KEY_ACTIONS],
+      Resource: '*',
+      Condition: { StringLike: { 'kms:ViaService': 'ec2.*.amazonaws.com' } },
+    });
+    expect(AWS_WORKSPACE_HOST_IMAGE_KEY_ACTIONS).toEqual(['kms:Decrypt', 'kms:ReEncryptFrom']);
+    for (const action of AWS_WORKSPACE_HOST_IMAGE_KEY_ACTIONS) {
+      expect(statements[0].Action, `${action} must never be granted unconditionally`).not.toContain(action);
+    }
     expect(awsWorkspaceHostLeastPrivilegePolicy()).toEqual(role.Policies[0].PolicyDocument);
   });
 

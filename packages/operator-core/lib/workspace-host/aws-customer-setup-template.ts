@@ -20,7 +20,11 @@
  * customer's own account or a principal inside it, never Papercusp's.
  */
 import { assertWorkspaceHostSecretIsolation } from '@papercusp/deployment-driver';
-import { AWS_WORKSPACE_HOST_PERMISSION_ACTIONS } from './aws-connection';
+import {
+  AWS_WORKSPACE_HOST_PERMISSION_ACTIONS,
+  awsWorkspaceHostImageKeyStatement,
+  type AwsWorkspaceHostImageKeyStatement,
+} from './aws-connection';
 import {
   HOSTED_AWS_HOST_TAG_KEY,
   HOSTED_AWS_REGION,
@@ -86,12 +90,15 @@ export interface AwsCustomerSetupTemplate {
  * The second statement lets a spot host's first launch create EC2's Spot service-linked role
  * (WI-10005389) and no other role; an identity policy only reaches its own account, so the
  * account segment is a wildcard and the same document works standalone and in the stack.
+ * The third lets EBS decrypt the Papercusp AMI's snapshot for a launch, through EC2 only
+ * (WI-10006815); without it every launch from an encrypted AMI dies at start.
  */
 export function awsWorkspaceHostLeastPrivilegePolicy(): {
   Version: '2012-10-17';
   Statement: [
     { Sid: string; Effect: 'Allow'; Action: string[]; Resource: '*' },
     AwsSpotServiceLinkedRoleStatement,
+    AwsWorkspaceHostImageKeyStatement,
   ];
 } {
   return {
@@ -104,6 +111,7 @@ export function awsWorkspaceHostLeastPrivilegePolicy(): {
         Resource: '*',
       },
       awsSpotServiceLinkedRoleStatement('*'),
+      awsWorkspaceHostImageKeyStatement(),
     ],
   };
 }

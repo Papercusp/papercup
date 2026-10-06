@@ -28,7 +28,11 @@
  *
  * Pure: no SDK imports, so first-workspace and the delegation module can use it freely.
  */
-import { AWS_WORKSPACE_HOST_PERMISSION_ACTIONS, type AwsWorkspaceHostPermissionAction } from './aws-connection';
+import {
+  AWS_WORKSPACE_HOST_PERMISSION_ACTIONS,
+  awsWorkspaceHostImageKeyStatement,
+  type AwsWorkspaceHostPermissionAction,
+} from './aws-connection';
 import { AWS_WORKSPACE_HOST_MANAGED_TAG_KEYS } from './aws-safety';
 import { HOSTED_AWS_HOST_KMS_ALIAS, awsSpotServiceLinkedRoleStatement, hostedAwsHostNames } from './hosted-aws-host-stack';
 import { HOSTED_AWS_CUSTOMER_ROLE_NAME_PREFIX, organizationDelegationRoleName } from './hosted-aws-identity';
@@ -353,6 +357,10 @@ export function papercuspHostingPolicy(input: PapercuspHostingPolicyInput): Reco
           Bool: { 'kms:GrantIsForAWSResource': 'true' },
         },
       },
+      // WI-10006815: a launch re-encrypts the Papercusp AMI's snapshot to the host key, and EBS uses
+      // the AMI key with this role's permission. EC2-only and region-pinned; any account, because the
+      // AMI key belongs to the publisher, which need not be the hosting account.
+      awsWorkspaceHostImageKeyStatement({ region, resource: `arn:${partition}:kms:${region}:*:key/*`, sid: 'ImageKeyUse' }),
     ],
   };
 }
