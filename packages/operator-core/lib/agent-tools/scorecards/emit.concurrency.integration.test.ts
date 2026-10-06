@@ -128,6 +128,24 @@ afterAll(async () => {
   else process.env.PAPERCUSP_SCORECARD_EMIT_MUTEX_TEST = SAVED_MUTEX_TEST_FLAG;
 });
 
+async function waitForScorecardMutexWait(applicationName: string): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const waiting = await db.adminSql`
+      SELECT 1
+        FROM pg_stat_activity
+       WHERE datname = current_database()
+         AND application_name = ${applicationName}
+         AND wait_event_type = 'Lock'
+         AND wait_event = 'advisory'
+         AND query LIKE '%pg_advisory_lock%'
+       LIMIT 1`;
+    if (waiting.length > 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`scorecard mutex session ${applicationName} did not reach its advisory-lock wait`);
+}
+
 describe('scorecards:emit final dedup read-to-write mutex, real PG', () => {
   it('clears inherited lock timeout before waiting for an in-flight emitter', async () => {
     // Configure only this throwaway database so the newly-created dedicated
@@ -194,6 +212,69 @@ describe('scorecards:emit final dedup read-to-write mutex, real PG', () => {
       sourceHive: SOURCE_HIVE,
       evidenceFingerprint: expect.any(String),
     });
+  }, 120_000);
+
+  it('does not block a different dedup key behind an emitter waiting on PostgreSQL', async () => {
+    const input = {
+      createdBy: OWNER,
+      ctxHarness: SOURCE_HIVE,
+      workspaceId: activeWorkspaceId(),
+    };
+    const blockedKey = scorecardEmitMutexKey({
+      workspaceId: input.workspaceId,
+      rubricRef: RUBRIC,
+      sourceHive: SOURCE_HIVE,
+    });
+    const applicationName = `pcusp:scorecard-emit-mutex:p${process.pid}`.slice(0, 63);
+    const postgresModule = await import('postgres');
+    const holder = postgresModule.default(db.adminDsn, { max: 1, onnotice: () => {} });
+    let held = false;
+    let blockedOutcome: Promise<
+      | { state: 'resolved'; result: Awaited<ReturnType<typeof emitScorecard>> }
+      | { state: 'rejected'; error: string }
+    > | undefined;
+    let unrelatedOutcome: typeof blockedOutcome;
+    let unrelatedBeforeRelease: Awaited<NonNullable<typeof unrelatedOutcome>> | { state: 'timeout' } | undefined;
+
+    try {
+      await holder`SELECT pg_advisory_lock(hashtextextended(${blockedKey}, 0))`;
+      held = true;
+      blockedOutcome = emitScorecard(
+        { rubricRef: RUBRIC, ratings: RATINGS },
+        input,
+      ).then(
+        (result) => ({ state: 'resolved' as const, result }),
+        (error) => ({ state: 'rejected' as const, error: String(error) }),
+      );
+      await waitForScorecardMutexWait(applicationName);
+
+      unrelatedOutcome = emitScorecard(
+        { rubricRef: TIMEOUT_RUBRIC, ratings: RATINGS },
+        input,
+      ).then(
+        (result) => ({ state: 'resolved' as const, result }),
+        (error) => ({ state: 'rejected' as const, error: String(error) }),
+      );
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      unrelatedBeforeRelease = await Promise.race([
+        unrelatedOutcome,
+        new Promise<{ state: 'timeout' }>((resolve) => {
+          timer = setTimeout(() => resolve({ state: 'timeout' }), 2_000);
+        }),
+      ]);
+      if (timer) clearTimeout(timer);
+    } finally {
+      if (held) {
+        await holder`SELECT pg_advisory_unlock(hashtextextended(${blockedKey}, 0))`.catch(() => {});
+      }
+      await holder.end({ timeout: 5 });
+      await Promise.all([blockedOutcome, unrelatedOutcome].filter(Boolean));
+    }
+
+    expect(unrelatedBeforeRelease?.state).toBe('resolved');
+    const [blocked, unrelated] = await Promise.all([blockedOutcome, unrelatedOutcome]);
+    expect(blocked).toMatchObject({ state: 'resolved', result: { ok: true, reason: 'unchanged-evidence' } });
+    expect(unrelated).toMatchObject({ state: 'resolved', result: { ok: true, reason: 'unchanged-evidence' } });
   }, 120_000);
 
   it('does not file a second audit when two direct-fallback emitters share one pending lease', async () => {
