@@ -286,11 +286,6 @@ async function discoverRealPackage() {
   const target = join(projectDir, 'plugins', 'github-issues');
   await fs.mkdir(target, { recursive: true });
   for (const file of readdirSync(PACKAGE_DIR)) await fs.copyFile(join(PACKAGE_DIR, file), join(target, file));
-  // Mutation-probe seam (scripts/mutation-probe.sh copy-out mode): a mutated index.cjs held
-  // OUTSIDE the tree replaces the real one, so proving these assertions can fail never dirties
-  // the shared checkout. Unset in every normal run.
-  const indexOverride = process.env.GITHUB_ISSUES_PROVIDER_INDEX_OVERRIDE;
-  if (indexOverride) await fs.copyFile(indexOverride, join(target, 'index.cjs'));
   const emptyGlobal = join(ROOT, 'no-global-plugins');
   await fs.mkdir(emptyGlobal, { recursive: true });
   return loadPlugins({ projectDir, harnessSlugs: [], globalPluginsDir: emptyGlobal });
