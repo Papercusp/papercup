@@ -18,7 +18,12 @@
  */
 
 import { activeWorkspaceId } from '../../workspace-registry';
-import { listEndedAdvSessionsByOwners, listRecordedLiveSessions, recordedLiveOwnerIds } from '../../adv-sessions';
+import {
+  endedRecordedOwnerIds,
+  listEndedAdvSessionsByOwners,
+  listRecordedLiveSessions,
+  recordedLiveOwnerIds,
+} from '../../adv-sessions';
 import { listPresence, sweepStalePresence } from './presence';
 import { listFederatedPresence } from './federated-presence';
 import { reconcileRosterSources, synthesizeEndedRosterRows } from './recorded-sessions';
@@ -550,6 +555,8 @@ export async function assemblePresenceSnapshot(
   let joins = new Map<string, PresenceTier1Joins>();
   let wakeability = new Map<string, WakeabilitySignals>();
   let recordedLiveOwners = new Set<string>();
+  // WI-10006738: positive session-log death evidence (latest adv_session ended).
+  let recordedEndedOwners = new Set<string>();
   let onDesktopOwners = new Set<string>();
   let viewerAttachedOwners = new Set<string>();
   // Named-fleet membership (P-005): the SOFT coord_presence label, joined in per-owner
@@ -597,6 +604,22 @@ export async function assemblePresenceSnapshot(
           nurseryAliasRows.length === 0
             ? s
             : new Set([...s, ...nurseryAliasRows.map((r) => r.alias)]);
+      })
+      .catch(() => {}),
+    // WI-10006738: the oracle's POSITIVE ended-session leg — the same input
+    // resolveSessionStates (fleet:status / fleet:assignments / the send-miss
+    // report) already feeds deriveVerdict. Without it this surface kept a session
+    // whose latest adv_session had ENDED (a launch failure closed as 'cleanup', a
+    // clean exit) at `parked`/wakeable for as long as its heartbeat stayed warm,
+    // while every other surface said `ended`. A newer recorded-live successor row
+    // wins (the query reads only the latest row per owner), and the psu-host
+    // positive rescue below still applies. Best-effort: a read failure degrades
+    // to the older verdict, never to a death claim. Deferred through a thunk so a
+    // throwing accessor (a partial test mock) lands in the catch, not the batch.
+    Promise.resolve()
+      .then(() => endedRecordedOwnerIds(localAllIds))
+      .then((s) => {
+        recordedEndedOwners = s;
       })
       .catch(() => {}),
     // On-desktop (live OS window) owners — best-effort, box-local (empty on a
@@ -690,6 +713,7 @@ export async function assemblePresenceSnapshot(
       undefined,
       { enabled: true, negative: false, positive: true, findHostFn: findLiveHost },
       selfWakeSignals.get(r.ownerId),
+      recordedEndedOwners,
     );
     return {
       ...r,
