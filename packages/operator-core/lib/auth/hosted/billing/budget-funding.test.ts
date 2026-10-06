@@ -1,9 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { journalEntryForMovement, type JournalEntry, type MoneyMovement } from '../../../cupboard/money-journal';
 import { receiptCommitment } from '../../../cupboard/payment-receipt';
 import { evaluateHostedBudget } from './budget-policy';
-import { evaluateHostedPrepaidFunding, reconcileHostedStripeFunding, type HostedCashBacking,
-  type HostedPrepaidFundingInput, type HostedStripeFundingRead } from './budget-funding';
+import { collectHostedStripeFunding, evaluateHostedPrepaidFunding, reconcileHostedStripeFunding, type HostedCashBacking,
+  type HostedPrepaidFundingInput, type HostedStripeFundingRead, type HostedStripeFundingCollection,
+  type HostedStripeFundingCollectorClient } from './budget-funding';
 import type { StripeObservedBalanceTransaction } from './stripe-billing-client';
 
 const T = Date.UTC(2026, 9, 2);
@@ -345,6 +346,178 @@ function stripeRead(changes: Partial<HostedStripeFundingRead> = {}): HostedStrip
     entries: [built.entry], receipts: [{ transaction, salt, commitment: receiptCommitment(transaction, salt),
       receiptSeq: 1, sourceId: 'ch_A', sourceCustomer: 'cus_A' }], ...changes };
 }
+
+function collection(s = stripeRead()): HostedStripeFundingCollection {
+  return { scope: s.scope, accountId: s.accountId, customerId: s.customerId, maximumAgeMs: s.maximumAgeMs,
+    policy: s.policy, entries: s.entries, receipts: s.receipts,
+    customers: [...new Map(s.lineages.map(l => [l.customerId,
+      { stripeCustomerId: l.customerId, organizationId: l.organizationId, livemode: true }])).values()] };
+}
+function collectorClient(s = stripeRead(), options: { failAt?: number; throwAt?: number; beforeRead?: (index: number) => void } = {}) {
+  const steps = [
+    { kind: 'cash', evidence: s.cashBefore }, { kind: 'sources', evidence: s.sourcesBefore },
+    { kind: 'transactions', evidence: s.transactionsBefore },
+    ...s.lineages.map(evidence => ({ kind: 'lineage', evidence })),
+    { kind: 'transactions', evidence: s.transactionsAfter }, { kind: 'sources', evidence: s.sourcesAfter },
+    { kind: 'cash', evidence: s.cashAfter },
+  ];
+  const calls: { kind: string; args: unknown }[] = [];
+  async function take<T>(kind: string, args: unknown): Promise<{ ok: true; evidence: T }
+    | { ok: false; code: 'provider-error'; status: number; detail: string }> {
+    const index = calls.length;
+    calls.push({ kind, args: structuredClone(args) });
+    expect(steps[index]?.kind).toBe(kind);
+    options.beforeRead?.(index);
+    if (options.throwAt === index) throw new Error('upstream secret must not escape');
+    if (options.failAt === index) return { ok: false, code: 'provider-error', status: 503, detail: 'upstream secret must not escape' };
+    return { ok: true, evidence: steps[index]!.evidence as T };
+  }
+  const client: HostedStripeFundingCollectorClient = {
+    livemode: true,
+    readAccountCash: vi.fn(args => take<HostedStripeFundingRead['cashBefore']>('cash', args)),
+    readAccountPaymentSources: vi.fn(args => take<HostedStripeFundingRead['sourcesBefore']>('sources', args)),
+    readAccountTransactions: vi.fn(args => take<HostedStripeFundingRead['transactionsBefore']>('transactions', args)),
+    readPaymentLineage: vi.fn(args => take<HostedStripeFundingRead['lineages'][number]>('lineage', args)),
+  };
+  return { client, calls };
+}
+
+describe('authenticated Stripe funding collection (locked server population still required)', () => {
+  it('collects brackets in order and pins the original stored receipt before reconciliation', async () => {
+    const s = stripeRead(); const { client, calls } = collectorClient(s);
+    const result = await collectHostedStripeFunding(collection(s), { client, now: () => T });
+    expect(result).toEqual(reconcileHostedStripeFunding(s));
+    expect(calls.map(c => c.kind)).toEqual(['cash', 'sources', 'transactions', 'lineage', 'transactions', 'sources', 'cash']);
+    expect(calls[3]!.args).toEqual({ accountId: 'acct_A', customerId: 'cus_A', organizationId: 'org-a',
+      chargeId: 'ch_A', chargeBalanceTransactionId: 'txn_Charge', source: { kind: 'charge', id: 'ch_A' } });
+    if (!result.ok) throw new Error('fixture');
+    expect(evaluateHostedPrepaidFunding(input({ ...result, allocations: [], cashBacking: null })))
+      .toEqual({ ok: false, reason: 'unverified-cash-backing' });
+    expect(Object.isFrozen(result.payments[0]!.receipt.transaction)).toBe(true);
+  });
+  it.each([0, 1, 2, 3, 4, 5, 6])('refuses provider error at stage %s without granting a partial read', async failAt => {
+    const { client, calls } = collectorClient(stripeRead(), { failAt });
+    expect(await collectHostedStripeFunding(collection(), { client, now: () => T }))
+      .toEqual({ ok: false, reason: 'unverified-stripe-read' });
+    expect(calls).toHaveLength(failAt + 1);
+  });
+  it.each([0, 1, 2, 3, 4, 5, 6])('refuses thrown provider error at stage %s without leaking its message', async throwAt => {
+    const { client } = collectorClient(stripeRead(), { throwAt });
+    expect(await collectHostedStripeFunding(collection(), { client, now: () => T }))
+      .toEqual({ ok: false, reason: 'unverified-stripe-read' });
+  });
+  it.each(['missing', 'foreign', 'test', 'duplicate'] as const)('refuses %s persisted customer binding before a provider call', async variant => {
+    const { client, calls } = collectorClient(); const c = collection();
+    const customers = variant === 'missing' ? [] : variant === 'foreign' ? [{ ...c.customers[0]!, organizationId: 'org-b' }]
+      : variant === 'test' ? [{ ...c.customers[0]!, livemode: false }] : [c.customers[0]!, c.customers[0]!];
+    expect(await collectHostedStripeFunding({ ...c, customers }, { client, now: () => T }))
+      .toEqual({ ok: false, reason: 'unverified-stripe-read' });
+    expect(calls).toHaveLength(0);
+  });
+  it('refuses a test-mode client before any network operation', async () => {
+    const { client, calls } = collectorClient();
+    expect(await collectHostedStripeFunding(collection(), { client: { ...client, livemode: false } }))
+      .toEqual({ ok: false, reason: 'unverified-stripe-read' });
+    expect(calls).toHaveLength(0);
+  });
+  it.each(['missing', 'source', 'customer', 'duplicate'] as const)('refuses %s original receipt pins before lineage collection', async variant => {
+    const c = collection(); const r = c.receipts[0]!;
+    const receipts = variant === 'missing' ? [] : variant === 'source' ? [{ ...r, sourceId: 'ch_Wrong' }]
+      : variant === 'customer' ? [{ ...r, sourceCustomer: 'cus_Wrong' }] : [r, r];
+    const { client, calls } = collectorClient();
+    expect(await collectHostedStripeFunding({ ...c, receipts }, { client, now: () => T }))
+      .toEqual({ ok: false, reason: 'unreconciled-stripe-source' });
+    expect(calls.map(x => x.kind)).not.toContain('lineage');
+  });
+  it('snapshots the local inputs before the first await', async () => {
+    const c = structuredClone(collection());
+    const { client, calls } = collectorClient(stripeRead(), { beforeRead: i => {
+      if (i === 0) { (c.scope as { organizationId: string }).organizationId = 'org-other';
+        (c.receipts[0]! as { sourceId: string }).sourceId = 'ch_Other'; }
+    } });
+    expect(await collectHostedStripeFunding(c, { client, now: () => T })).toMatchObject({ ok: true,
+      snapshot: { organizationId: 'org-a' } });
+    expect(calls[3]!.args).toMatchObject({ organizationId: 'org-a', chargeId: 'ch_A' });
+  });
+  it('detaches the before census when a client reuses and changes its response objects', async () => {
+    const s = stripeRead();
+    const { client } = collectorClient(s, { beforeRead: i => {
+      if (i === 5) (s.sourcesAfter.charges[0]! as { capturedCents: number }).capturedCents = 99;
+    } });
+    expect(await collectHostedStripeFunding(collection(s), { client, now: () => T }))
+      .toEqual({ ok: false, reason: 'stripe-read-changed' });
+  });
+  it.each([T - 2, T + 1001, NaN])('refuses observations outside the server completion clock %s', async timestamp => {
+    expect(await collectHostedStripeFunding(collection(), { client: collectorClient().client, now: () => timestamp }))
+      .toEqual({ ok: false, reason: 'unverified-stripe-read' });
+  });
+  it('collects another customer with its own persisted organization and refuses a missing foreign binding', async () => {
+    const s = stripeRead(); const original = s.transactionsAfter.transactions[0]!;
+    const bt: StripeObservedBalanceTransaction = { ...original, id: 'txn_Other',
+      source: { object: 'charge', id: 'ch_Other', customer: 'cus_Other', metadata: { purpose: 'prepaid-credits' }, invoice: null } };
+    const built = journalEntryForMovement({ entryId: 'stripe-bt:txn_Other', occurredAtMs: bt.created * 1000,
+      currency: 'USD', externalRef: { kind: 'stripe-balance-transaction', id: bt.id },
+      movement: { kind: 'credit-purchase', grossCents: 100, feeCents: 3, taxCents: 0 } });
+    if (!built.ok) throw new Error('fixture');
+    const transaction = { ...s.receipts[0]!.transaction, id: bt.id };
+    const r = { ...s.receipts[0]!, transaction, sourceId: 'ch_Other', sourceCustomer: 'cus_Other',
+      commitment: receiptCommitment(transaction, s.receipts[0]!.salt) };
+    const charge = { ...s.sourcesBefore.charges[0]!, id: 'ch_Other', customerId: 'cus_Other', balanceTransactionId: bt.id };
+    const l = { ...s.lineages[0]!, customerId: 'cus_Other', organizationId: 'org-other',
+      charge: { ...s.lineages[0]!.charge, id: charge.id, balanceTransaction: bt },
+      source: { ...s.lineages[0]!.source, id: charge.id, balanceTransactions: [bt] } };
+    const full = stripeRead({ sourcesBefore: { ...s.sourcesBefore, charges: [...s.sourcesBefore.charges, charge] },
+      sourcesAfter: { ...s.sourcesAfter, charges: [...s.sourcesAfter.charges, charge] },
+      transactionsBefore: { ...s.transactionsBefore, transactions: [original, bt] },
+      transactionsAfter: { ...s.transactionsAfter, transactions: [original, bt] },
+      entries: [...s.entries, built.entry], receipts: [...s.receipts, r], lineages: [...s.lineages, l] });
+    const { client, calls } = collectorClient(full);
+    const result = await collectHostedStripeFunding(collection(full), { client, now: () => T });
+    expect(result).toMatchObject({ ok: true });
+    if (!result.ok) throw new Error('fixture');
+    expect(result.payments).toHaveLength(1);
+    expect(calls[4]!.args).toMatchObject({ customerId: 'cus_Other', organizationId: 'org-other', chargeId: 'ch_Other' });
+    expect(await collectHostedStripeFunding({ ...collection(full), customers: collection(s).customers },
+      { client: collectorClient(full).client, now: () => T })).toEqual({ ok: false, reason: 'unreconciled-stripe-source' });
+    expect(await collectHostedStripeFunding(collection(full),
+      { client: collectorClient(full).client, now: () => T, maximumLineages: 1 }))
+      .toEqual({ ok: false, reason: 'unreconciled-stripe-source' });
+  });
+  it('collects successful refunds with the original charge pins and preserves linked backing reductions', async () => {
+    const s = stripeRead(); const original = s.transactionsBefore.transactions[0]!;
+    const bt: StripeObservedBalanceTransaction = { ...original, id: 'txn_Refund', type: 'refund', amount: -30, fee: 0, net: -30,
+      source: { object: 'refund', id: 're_A', customer: 'cus_A' } };
+    const built = journalEntryForMovement({ entryId: 'stripe-bt:txn_Refund', occurredAtMs: bt.created * 1000, currency: 'USD',
+      externalRef: { kind: 'stripe-balance-transaction', id: bt.id }, movement: { kind: 'refund', amountCents: 30, taxCents: 0 } });
+    if (!built.ok) throw new Error('fixture');
+    const transaction = { id: bt.id, amount: bt.amount, fee: bt.fee, currency: bt.currency, created: bt.created };
+    const r = { ...s.receipts[0]!, transaction, sourceId: 're_A', commitment: receiptCommitment(transaction, s.receipts[0]!.salt) };
+    const charge = { ...s.sourcesBefore.charges[0]!, refundedCents: 30 };
+    const refund = { id: 're_A', chargeId: 'ch_A', currency: 'usd', amountCents: 30, status: 'succeeded', created: bt.created,
+      balanceTransactionId: bt.id, failureBalanceTransactionId: null };
+    const chargeLineage = { ...s.lineages[0]!, charge: { ...s.lineages[0]!.charge, refundedUsdCents: 30 } };
+    const refundLineage = { ...chargeLineage, source: { kind: 'refund' as const, id: 're_A', status: 'succeeded',
+      amountUsdCents: 30, balanceTransactions: [bt] } };
+    const full = stripeRead({ sourcesBefore: { ...s.sourcesBefore, charges: [charge], refunds: [refund] },
+      sourcesAfter: { ...s.sourcesAfter, charges: [charge], refunds: [refund] },
+      transactionsBefore: { ...s.transactionsBefore, transactions: [original, bt] },
+      transactionsAfter: { ...s.transactionsAfter, transactions: [original, bt] },
+      entries: [...s.entries, built.entry], receipts: [...s.receipts, r], lineages: [chargeLineage, refundLineage] });
+    const { client, calls } = collectorClient(full);
+    expect(await collectHostedStripeFunding(collection(full), { client, now: () => T }))
+      .toMatchObject({ ok: true, reversals: [{ paymentTransactionId: 'txn_Charge' }] });
+    expect(calls[4]!.args).toMatchObject({ chargeId: 'ch_A', chargeBalanceTransactionId: 'txn_Charge',
+      source: { kind: 'refund', id: 're_A' } });
+  });
+  it('never treats an unsupported dispute population as permission to spend', async () => {
+    const s = stripeRead(); const dispute = { id: 'dp_A', chargeId: 'ch_A', currency: 'usd', amountCents: 100,
+      status: 'won', created: (T - 1000) / 1000, balanceTransactionIds: [] };
+    const { client, calls } = collectorClient({ ...s, sourcesBefore: { ...s.sourcesBefore, disputes: [dispute] } });
+    expect(await collectHostedStripeFunding(collection(s), { client, now: () => T }))
+      .toEqual({ ok: false, reason: 'unreconciled-stripe-source' });
+    expect(calls).toHaveLength(3);
+  });
+});
 
 describe('Stripe funding reconciliation against the complete journal and receipt population', () => {
   const rejected = (changes: Partial<HostedStripeFundingRead>, reason: string) =>
