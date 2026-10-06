@@ -93,6 +93,7 @@ import {
   DEFAULT_SIGNAL_ORIGIN,
   deriveReporterProvenance,
   effectiveOrigin,
+  isPersonReporterKind,
   mergeReporterKinds,
   type ReporterKind,
   type ReporterProvenance,
@@ -445,10 +446,9 @@ export interface PossibleDuplicate {
 export interface DedupCoverage {
   /** Token-based title match. 'unavailable' means the backing search failed. */
   lexical: 'ok' | 'unavailable' | 'skipped';
-  /** Embedding leg. 'unavailable' = it returned no verdict (embedder down / over budget /
-   *  disabled), so a differently-worded duplicate would NOT have been found. */
-  semantic: 'ok' | 'unavailable' | 'skipped';
-  /** True when any leg could not run — i.e. an empty result is NOT a clean bill of health. */
+  /** Embedding leg. 'partial' means the query ran over a below-floor index; 'unavailable' means no complete coverage verdict (embedder down / over budget / disabled, or coverage unknown). */
+  semantic: 'ok' | 'partial' | 'unavailable' | 'skipped';
+  /** True when either leg is unavailable or partial — an empty result is NOT a clean bill of health. */
   degraded: boolean;
 }
 
@@ -1126,13 +1126,14 @@ export function redactIntakeText(input: CaptureImprovementInput): CaptureImprove
 }
 
 /**
- * P-013 (D-003, SPEC-P-013): a filing a person made (reporterKind 'end-user',
- * which only an end-user door can set — D-044 pt 2) keeps its title and body
- * only as quoted evidence. Agent and watchdog filings are untouched. Idempotent,
- * so a door that already quoted, or a retry, does not double-wrap.
+ * P-013 (D-003, SPEC-P-013): a filing a person made (reporterKind 'end-user'
+ * or 'chat', which only a person's door can set — D-044 pt 2; Slack D-012)
+ * keeps its title and body only as quoted evidence. Agent and watchdog filings
+ * are untouched. Idempotent, so a door that already quoted, or a retry, does
+ * not double-wrap.
  */
 export function quoteEndUserIntake(input: CaptureImprovementInput): CaptureImprovementInput {
-  if (input.reporterKind !== 'end-user') return input;
+  if (!isPersonReporterKind(input.reporterKind)) return input;
   const title = quoteEndUserTitle(input.title);
   const body = typeof input.body === 'string' && input.body.trim() ? quoteEndUserText(input.body) : input.body;
   const fields = [...(title !== input.title ? ['title'] : []), ...(body !== input.body ? ['body'] : [])];
@@ -2743,7 +2744,17 @@ export async function captureImprovement(
         ...(input.body ? { summary: input.body } : {}),
       });
       if (sem) {
-        semanticLeg = 'ok';
+        // The shared guard's coverage assessment is part of the verdict. An empty
+        // band over a sparse or unmeasured vector index cannot establish absence;
+        // only a healthy assessment earns semantic:"ok". Keep hits from a partial
+        // result (they remain useful), while marking misses as incomplete.
+        const coverageVerdict = sem.coverage?.verdict;
+        semanticLeg =
+          coverageVerdict === 'healthy'
+            ? 'ok'
+            : coverageVerdict === 'degraded'
+              ? 'partial'
+              : 'unavailable';
         for (const band of ['hard', 'soft'] as const) {
           for (const c of sem[band])
             if (!semanticBand.has(c.id)) semanticBand.set(c.id, { similarity: c.similarity, band });
@@ -2861,7 +2872,11 @@ export async function captureImprovement(
     lexical: lexicalLeg,
     semantic: semanticLeg,
     degraded:
-      lexicalLeg === 'unavailable' || semanticLeg === 'unavailable' || exactKeyLookupFailed || classKeyLookupFailed,
+      lexicalLeg === 'unavailable' ||
+      semanticLeg === 'unavailable' ||
+      semanticLeg === 'partial' ||
+      exactKeyLookupFailed ||
+      classKeyLookupFailed,
   };
 
   // "Already decided" recall (P-003): signature-match this capture against the

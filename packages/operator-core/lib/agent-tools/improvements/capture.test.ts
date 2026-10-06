@@ -318,6 +318,8 @@ describe('improvements:capture — duplicate verdicts are annotations, not inacc
     const returns = captureTool.guidance?.returns ?? '';
     expect(returns).toContain('created row carries `payload.dedupVerdict');
     expect(returns).not.toContain('May DECLINE your capture');
+    expect(returns).toContain('semantic:"partial"');
+    expect(returns).toContain('index coverage is unknown/unmeasured');
     expect(captureTool.guidance?.seeAlso?.[0]).toContain('checkDuplicatesOnly:true');
   });
 });
