@@ -970,6 +970,99 @@ describe("cc PreToolUse hook — operator decision rendering (stub operator)", (
     });
   });
 
+  // WI-10006831: the already-held edit above used to reach no attribution at
+  // all (no release token ⇒ no native_edit_proof ⇒ no ledger row). The attest
+  // sidecar carries it to a retain:true release that keeps the hold.
+  describe("already-held attestation (WI-10006831)", () => {
+    const releaseCalls = () =>
+      requests.filter((r) => r.body.params?.name === "locks:release");
+    const successfulEdit = (rel: string, toolUseId: string) => ({
+      ...editOf(rel, toolUseId),
+      hook_event_name: "PostToolUse",
+      tool_response: { filePath: join(repo, rel), oldString: "a", newString: "b" },
+    });
+
+    it("attests a successful edit with retain and proof-only paths, never a release selector", async () => {
+      nextInner = { ok: true, lock_id: "manual-lock", newly_held: [] };
+      await run(editOf("sub/attest.ts", "tu-attest"));
+      expect(
+        JSON.parse(fs.readFileSync(join(cache, "tu-attest.attest"), "utf8")),
+      ).toMatchObject({ paths: ["sub/attest.ts"], domain: repo });
+
+      requests = [];
+      nextInner = {
+        ok: true,
+        retained: ["sub/attest.ts"],
+        released: [],
+        attributed: ["sub/attest.ts"],
+      };
+      const r = await runPost(successfulEdit("sub/attest.ts", "tu-attest"));
+      expect(r.status).toBe(0);
+
+      const calls = releaseCalls();
+      expect(calls).toHaveLength(1);
+      const args = calls[0].body.params.arguments;
+      expect(args).toEqual({
+        retain: true,
+        coordination_domain: repo,
+        native_edit_proof: {
+          success: true,
+          source: "claude",
+          tool: "Edit",
+          paths: ["sub/attest.ts"],
+        },
+      });
+      // An operator predating `retain` strips it; without these keys it must
+      // refuse instead of releasing the deliberate hold.
+      expect(args).not.toHaveProperty("paths");
+      expect(args).not.toHaveProperty("lock_id");
+      expect(fs.existsSync(join(cache, "tu-attest.attest"))).toBe(false);
+      expect(
+        JSON.parse(fs.readFileSync(join(cache, "last-attest.json"), "utf8")),
+      ).toMatchObject({ attributed: true, paths: ["sub/attest.ts"] });
+    });
+
+    it("consumes the sidecar without any release call when the edit failed", async () => {
+      nextInner = { ok: true, lock_id: "manual-lock", newly_held: [] };
+      await run(editOf("sub/attest-fail.ts", "tu-attest-fail"));
+      expect(fs.existsSync(join(cache, "tu-attest-fail.attest"))).toBe(true);
+
+      requests = [];
+      await runPost({
+        ...editOf("sub/attest-fail.ts", "tu-attest-fail"),
+        hook_event_name: "PostToolUse",
+        tool_response: { is_error: true, content: "old_string not found" },
+      });
+
+      expect(releaseCalls()).toHaveLength(0);
+      expect(fs.existsSync(join(cache, "tu-attest-fail.attest"))).toBe(false);
+    });
+
+    it("records an unconfirmed attestation instead of claiming it", async () => {
+      nextInner = { ok: true, lock_id: "manual-lock", newly_held: [] };
+      await run(editOf("sub/attest-refused.ts", "tu-attest-refused"));
+
+      nextInner = { ok: false, error: "retain_paths_not_held", not_held: ["sub/attest-refused.ts"] };
+      await runPost(successfulEdit("sub/attest-refused.ts", "tu-attest-refused"));
+
+      expect(
+        JSON.parse(fs.readFileSync(join(cache, "last-attest.json"), "utf8")),
+      ).toMatchObject({ attributed: false });
+    });
+
+    it.each([
+      ["a fresh grant (the path is released, not attested)", { ok: true, lock_id: "fresh-lock", newly_held: ["sub/attest-fresh.ts"] }],
+      ["an operator that does not report newly_held", { ok: true, lock_id: "old-op-lock" }],
+    ])("writes no attest sidecar for %s", async (_label, grant) => {
+      nextInner = grant;
+      await run(editOf("sub/attest-fresh.ts", "tu-attest-fresh"));
+      expect(fs.existsSync(join(cache, "tu-attest-fresh.attest"))).toBe(false);
+      for (const suffix of [".lock", ".paths", ".domain", ".owner"]) {
+        fs.rmSync(join(cache, `tu-attest-fresh${suffix}`), { force: true });
+      }
+    });
+  });
+
   it("coordinates an absolute HOME config edit through the reserved external lock key", async () => {
     const configFile = join(home, ".config", "mimeapps.list");
     fs.mkdirSync(join(home, ".config"), { recursive: true });
