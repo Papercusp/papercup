@@ -37,6 +37,8 @@ import coordSend from '../coordination/tools/send';
 import coordHandoff from '../coordination/tools/handoff';
 import sessionsRead from '../sessions/read';
 import capabilityRead from '../capability/read';
+import bashOutput from '../capability/bash_output';
+import bashKill from '../capability/bash_kill';
 import factsAssert from '../facts/assert';
 import agentReview from '../improvements/agent-review';
 import captureTool from '../improvements/capture';
@@ -509,6 +511,25 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     expect(entry?.argSchema).toContain('path?:string');
     expect(entry?.argSchema).toContain('sha?:string');
     expect(schemaByTool.get('release:trace')).toMatchObject({ anyOf: expect.any(Array) });
+  });
+
+  it('publishes the bash recovery handle requirement in full and compact discovery', () => {
+    expect(bashOutput.name).toBe('capability:bash_output');
+    expect(bashKill.name).toBe('capability:bash_kill');
+    const { corpus, schemaByTool } = buildCorpus();
+
+    for (const toolName of ['capability:bash_output', 'capability:bash_kill']) {
+      const entry = corpus.find((candidate) => candidate.tool === toolName);
+      const schema = schemaByTool.get(toolName) as { anyOf?: Array<{ required?: string[] }> } | undefined;
+      const compact = compactSchemaForResult(schema) ?? '';
+
+      expect(entry?.argSchema).toContain('one-of:bash_id|task_id');
+      expect(compact).toContain('one-of:bash_id|task_id');
+      expect(compact).toContain('bash_id?:string');
+      expect(compact).toContain('task_id?:string');
+      expect(schema?.anyOf?.some((branch) => branch.required?.includes('bash_id'))).toBe(true);
+      expect(schema?.anyOf?.some((branch) => branch.required?.includes('task_id'))).toBe(true);
+    }
   });
 
   it('EI-22449939490325270: tells callers that resubmit forbids harness', () => {
