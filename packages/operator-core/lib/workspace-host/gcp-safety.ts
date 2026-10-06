@@ -471,6 +471,24 @@ function cloneObserved(
   return { ...observation, resource: { ...observation.resource }, labels: { ...observation.labels } };
 }
 
+/**
+ * Keep only the profile's managed keys from a provider tag/label set. Observed resources carry
+ * whatever tags the provider and the customer put on them, including keys the public-metadata
+ * secret guard rejects: AWS volumes and snapshots carry Papercusp's own `papercusp:client-token`
+ * idempotency tag (WI-10006843). The census and the ambiguous-recovery record reason only over
+ * the managed keys, so they persist exactly those and never the rest.
+ */
+function managedLabelsOnly(
+  labels: Readonly<Record<string, string>>,
+  keys: WorkspaceHostCensusProfile['managedLabelKeys'],
+): Record<string, string> {
+  const kept: Record<string, string> = {};
+  for (const key of [keys.managed, keys.hostId, keys.workspaceId]) {
+    if (Object.prototype.hasOwnProperty.call(labels, key)) kept[key] = labels[key]!;
+  }
+  return kept;
+}
+
 /** Build a deterministic reaper plan from fresh provider inventory plus durable controller records. */
 export function censusGcpWorkspaceHostResources(
   input: GcpWorkspaceHostResourceCensusInput,
@@ -480,9 +498,16 @@ export function censusGcpWorkspaceHostResources(
 
 /** The provider-neutral census; `censusGcpWorkspaceHostResources` / `censusAwsWorkspaceHostResources` bind a profile. */
 export function censusManagedWorkspaceHostResources<K extends string>(
-  input: WorkspaceHostResourceCensusInput<K>,
+  rawInput: WorkspaceHostResourceCensusInput<K>,
   profile: WorkspaceHostCensusProfile<K>,
 ): WorkspaceHostResourceCensus<K> {
+  const input: WorkspaceHostResourceCensusInput<K> = {
+    ...rawInput,
+    observed: rawInput.observed.map((entry) => ({
+      ...entry,
+      labels: managedLabelsOnly(entry.labels, profile.managedLabelKeys),
+    })),
+  };
   assertWorkspaceHostSecretIsolation(input, `${profile.target}Safety.census`);
   const assertResource = (resource: WorkspaceHostResourceRef, label: string) =>
     assertCensusResource(resource, label, profile.target);
@@ -714,10 +739,19 @@ export function createGcpWorkspaceHostAmbiguousOperationRecoveryRecord(
 
 /** Produce the only typed evidence that may manually close an ambiguous operation on any provider. */
 export function createManagedWorkspaceHostAmbiguousOperationRecoveryRecord<Kind extends string, RunbookRef extends string>(
-  input: WorkspaceHostAmbiguousOperationRecoveryInput,
+  rawInput: WorkspaceHostAmbiguousOperationRecoveryInput,
   profile: WorkspaceHostAmbiguousOperationRecoveryProfile<Kind, RunbookRef>,
 ): WorkspaceHostAmbiguousOperationRecoveryRecord<Kind, RunbookRef> {
   const census = profile.census;
+  const input: WorkspaceHostAmbiguousOperationRecoveryInput = rawInput.providerRead.labels
+    ? {
+        ...rawInput,
+        providerRead: {
+          ...rawInput.providerRead,
+          labels: managedLabelsOnly(rawInput.providerRead.labels, census.managedLabelKeys),
+        },
+      }
+    : rawInput;
   assertWorkspaceHostSecretIsolation(input, `${census.target}Safety.ambiguousRecovery`);
   requireNonEmpty(input.operationId, 'ambiguous operationId');
   requireNonEmpty(input.idempotencyKey, 'ambiguous idempotencyKey');
