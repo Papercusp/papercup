@@ -2464,7 +2464,9 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
       workspaceId: ctx.workspaceId,
       installSlug: ctx.installSlug,
       kind: 'green_checkpoint',
-      status: 'skipped-disabled',
+      // WI-10006317: a gated hive whose gate can never promote is a FAULT, not a choice —
+      // record it distinctly so no surface reads it as a deliberately disabled (or healthy) gate.
+      status: routing.skip.misconfigured ? 'skipped-misconfigured' : 'skipped-disabled',
       detail: withGateFireId({ reason: routing.skip.reason }),
     });
     // EI-17065: a green-checkpoint-{stall,watchdog} escalation for THIS installSlug can

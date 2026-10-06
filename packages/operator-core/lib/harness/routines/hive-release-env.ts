@@ -151,6 +151,37 @@ export interface HiveReleaseEnv {
   /** True when greenCmd came from the per-hive owner override (hive_settings), not the
    *  blueprint knob / detected testCommand / build fallback (P-014 /admin/git surface). */
   greenCmdOverridden?: boolean;
+  /** Set when the hive is gated but its gate CANNOT promote (WI-10006317). The hive stays
+   *  `enabled` so its routines are still seeded and the fault stays visible; routing turns
+   *  it into an explicit `skipped-misconfigured` fire instead of a silent 'up-to-date'. */
+  misconfiguration?: GateMisconfiguration;
+}
+
+/** A gate configuration that can never produce a promotion (WI-10006317). */
+export interface GateMisconfiguration {
+  code: 'integration-equals-release';
+  detail: string;
+}
+
+/**
+ * PURE (WI-10006317): a gate whose integration branch IS its release ref judges the release
+ * ref against itself, so every fire reads 'up-to-date' (from == candidate) and nothing is
+ * ever tested or promoted — while every surface reports it healthy. Observed on the P-023
+ * pilot: a create_from_repo pot whose GitHub default branch is `main` resolved
+ * integrationBranch 'main' == releaseRef 'main'. Returns the fault, or null when the gate
+ * can promote.
+ */
+export function gateMisconfiguration(
+  gate: Pick<HiveReleaseGate, 'integrationBranch' | 'releaseRef'>,
+): GateMisconfiguration | null {
+  if (gate.integrationBranch !== gate.releaseRef) return null;
+  return {
+    code: 'integration-equals-release',
+    detail:
+      `integration branch '${gate.integrationBranch}' is the release ref itself, so the gate ` +
+      `can never test or promote anything; set releaseGate.integrationBranch (e.g. 'staging') ` +
+      `or releaseGate.releaseRef in the pot blueprint`,
+  };
 }
 
 function disabled(reason: HiveReleaseEnv['reason']): HiveReleaseEnv {
@@ -205,6 +236,7 @@ export async function resolveHiveReleaseEnv(slug: string, workspaceId: string): 
     return { enabled: true, env: {}, clearEnv: [], hasDeploy: !!gate.deploy, isOperatorHome: true };
   }
 
+  const misconfiguration = gateMisconfiguration(gate);
   const parent = dirname(entry.path);
   // Per-hive owner override (P-014): top precedence over the blueprint knob / detected
   // testCommand / build fallback, so editing the green command on /admin/git actually
@@ -282,6 +314,7 @@ export async function resolveHiveReleaseEnv(slug: string, workspaceId: string): 
     isOperatorHome: false,
     greenCmd,
     greenCmdOverridden: greenCmdOverride != null,
+    ...(misconfiguration ? { misconfiguration } : {}),
   };
 }
 
@@ -293,8 +326,10 @@ export interface CheckpointRouting {
   /** Env keys to DELETE from the inherited env before `extraEnv` is applied (EMPTY for
    *  operator-home / default — its behavior stays byte-identical, D-007). */
   clearEnv: string[];
-  /** Present when this installSlug should NOT run a suite (not a gated coding hive). */
-  skip?: { reason: string };
+  /** Present when this installSlug should NOT run a suite (not a gated coding hive).
+   *  `misconfigured` marks a gated hive whose gate cannot promote (WI-10006317) — the
+   *  handler records it as `skipped-misconfigured`, not as a deliberately disabled gate. */
+  skip?: { reason: string; misconfigured?: boolean };
 }
 
 /**
@@ -329,6 +364,13 @@ export async function resolveCheckpointRouting(
   const hive = await resolveHiveReleaseEnv(ctx.installSlug, ctx.workspaceId);
   if (!hive.enabled)
     return { root: defaultRoot, extraEnv: {}, clearEnv: [], skip: { reason: hive.reason ?? 'not-gated' } };
+  if (hive.misconfiguration)
+    return {
+      root: defaultRoot,
+      extraEnv: {},
+      clearEnv: [],
+      skip: { reason: `${hive.misconfiguration.code}: ${hive.misconfiguration.detail}`, misconfigured: true },
+    };
   // CRUCIAL (P-019): `root` is the TOOLING root — where green-checkpoint.ts + setup-release-
   // checkout.sh + tsx physically live (the papercusp operator tree, `defaultRoot`). It is NOT
   // the hive's repo: the hive's checkout has no release scripts. The hive is the SUBJECT,
