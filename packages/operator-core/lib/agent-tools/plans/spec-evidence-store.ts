@@ -7,6 +7,7 @@ import fastGlob from 'fast-glob';
 import { z } from 'zod';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { withWorkspace } from '@papercusp/db-org';
+import { parseTestRunExecutionDetails } from '@papercusp/test-config/execution-details';
 import { pgTimestampToIso } from '../../pg-timestamp';
 import { planItemRef } from '../../issue-blocks-merge';
 import { loadHarnessRegistry, resolveHarnessContentPath } from '../../harness-registry';
@@ -1098,10 +1099,18 @@ export function classifySpecEvidenceCurrentness(
 /**
  * Split a failed mutation-probe run's ledger tail into its non-empty lines (WI-10006745). The
  * ledger reporter writes one `<case full name>: <message>` line per failed case; the adequacy
- * evaluator matches a declared test case against those line prefixes rather than parsing a title
- * out of free text. Bounded twice over: the ledger keeps 4000 chars, and we keep 64 lines.
+ * evaluator matches a declared test case against those line prefixes. Prefer structured failed
+ * identities (EI-25248905256718690): large DOM diagnostics can erase all names from that tail.
+ * Old valid rows retain their legacy path; malformed execution proof never falls back to text.
  */
-export function mutationFailureLines(tail: string): string[] {
+export function mutationFailureLines(tail: string, executionDetails?: unknown): string[] {
+  if (executionDetails != null) {
+    const execution = parseTestRunExecutionDetails(executionDetails);
+    if (!execution) return [];
+    if (execution.failedCaseTitles !== undefined) {
+      return execution.failedCaseTitles.map(title => `${title}: (recorded failed assertion)`);
+    }
+  }
   return tail
     .split('\n')
     .map((line) => line.trimEnd())
@@ -1138,6 +1147,8 @@ interface EvidenceRow extends CurrentnessRow {
   test_run_worktree_dirty: boolean | null;
   /** Ledger output tail of a FAILED mutation-probe run bound as mutation evidence; else NULL. */
   mutation_failure_tail: string | null;
+  /** Same source/status fence as the tail; optional for legacy mock/read envelopes. */
+  mutation_execution_details?: unknown;
   provisionalProofBase?: boolean;
   provisionalScorecard?: ProvisionalScorecardProof;
 }
@@ -1721,6 +1732,13 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
              THEN tr.output_tail
              ELSE NULL
            END AS mutation_failure_tail,
+           CASE
+             WHEN b.evidence_kind = 'mutation'
+               AND tr.source = 'mutation-probe'
+               AND tr.status = 'fail'
+             THEN tr.execution_details
+             ELSE NULL
+           END AS mutation_execution_details,
            ${specIsCurrent} AS spec_is_current,
            (b.coverage_evidence_ref IS NOT NULL AND EXISTS (
               SELECT 1 FROM harness_shared.coverage_evidence ce
@@ -1992,7 +2010,9 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
             filePath: row.test_run_file_path,
             commitSha: row.test_run_commit_sha,
             worktreeDirty: row.test_run_worktree_dirty,
-            ...(row.mutation_failure_tail ? { mutationFailureLines: mutationFailureLines(row.mutation_failure_tail) } : {}),
+            ...(row.mutation_failure_tail || row.mutation_execution_details != null
+              ? { mutationFailureLines: mutationFailureLines(row.mutation_failure_tail ?? '', row.mutation_execution_details) }
+              : {}),
           },
       details: row.provisionalProofBase
         ? {

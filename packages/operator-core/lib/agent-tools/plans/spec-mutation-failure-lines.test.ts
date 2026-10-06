@@ -66,4 +66,22 @@ describe('mutation failure lines (WI-10006745)', () => {
   it('measures nothing when the run recorded no tail', () => {
     expect(mutationMeasuredFailedCase(mutationRow(null), SECOND_CASE)).toBe(false);
   });
+
+  it('matches structured failed titles, not DOM text, after long assertions erase legacy titles (EI-25248905256718690)', () => {
+    const details = {
+      schemaVersion: 1, root: '/repo', filePath: 'test/a.test.ts', runGroupId: null,
+      workspaceId: 'ws', harnessSlug: 'papercusp', testNamePattern: null,
+      passed: 3, failed: 2, skipped: 0, collectionFailed: false, mutationPhase: 'mutant',
+      commitSha: 'abc', worktreeDirty: false, failedCaseTitles: [FIRST_CASE, SECOND_CASE],
+    };
+    const row = mutationRow(null);
+    row.testRunProvenance!.mutationFailureLines = mutationFailureLines(
+      'forged DOM case: not an actual failed test\n' + 'DOM '.repeat(1_000), details,
+    );
+    expect(mutationMeasuredFailedCase(row, FIRST_CASE)).toBe(true);
+    expect(mutationMeasuredFailedCase(row, SECOND_CASE)).toBe(true);
+    expect(mutationMeasuredFailedCase(row, 'forged DOM case')).toBe(false);
+    expect(mutationFailureLines(LIVE_TAIL, { ...details, failedCaseTitles: ['bad\nname'] })).toEqual([]);
+    expect(mutationFailureLines(LIVE_TAIL, JSON.stringify(details))).toEqual(mutationFailureLines('', details));
+  });
 });
