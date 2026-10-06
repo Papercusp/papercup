@@ -488,13 +488,13 @@ export async function recordOperationalRun(
 export default defineTool({
   name: 'testing:record-run',
   description:
-    `Record an already-executed non-Vitest operational check in harness_shared.test_runs and return its numeric testRunIds for plans:bind-spec-evidence. The evidence must be a committed docs/evidence/*.json artifact with schemaVersion:1, kind:"operational-test-evidence", command, timestamps, exitCode, summary, and explicit assertions; expectedSha256 pins the exact bytes. Mutation-probe evidence must include exact per-probe records copied from MUTATION_PROBE_EVIDENCE_JSON and cannot cite shared .papercusp/scratch commands. Optional archivedMutation:{originalTestRunId,rawLogFile,rawLogSha256} recovers failed case identities from a committed raw log after validating the original scoped receipt; it appends an archived row without changing that receipt or executing a new test. Evidence JSON is capped at ${MAX_OPERATIONAL_EVIDENCE_BYTES} bytes; keep it compact and store bulky payloads as raw artifacts pinned by SHA-256. The verdict is derived from exitCode + assertions, never accepted as a caller boolean. Idempotent by artifact hash.`,
+    `Register a completed non-Vitest check in harness_shared.test_runs and return testRunIds for plans:bind-spec-evidence. Commit docs/evidence/*.json with schemaVersion:1, kind:"operational-test-evidence", command, timestamps, exitCode, summary, and assertions; pass expectedSha256 for those bytes. Mutation probes need exact MUTATION_PROBE_EVIDENCE_JSON records and cannot use shared .papercusp/scratch. Optional archivedMutation:{originalTestRunId,rawLogFile,rawLogSha256} adds failed-case identities from a committed raw log after validating the original scoped receipt; it never changes that receipt or runs a test. Evidence JSON limit: ${MAX_OPERATIONAL_EVIDENCE_BYTES} bytes; pin bulky raw artifacts by SHA-256. Verdict derives from exitCode + assertions, not caller input. Idempotent by artifact hash.`,
   guidance: {
-    when: 'A real Playwright, Cargo, node, shell, desktop, or other operational acceptance run already completed and needs an honest numeric execution-ledger anchor; or a historical mutation receipt needs additive case-identity recovery from its committed raw log.',
+    when: 'A completed Playwright, Cargo, node, shell, desktop, or other operational acceptance run needs a numeric ledger record; or historical mutation case identities need recovery.',
     notWhen:
-      'Executing Vitest files (use testing:run), recording a temporary /tmp log, or manufacturing proof for a run that did not happen. Commit a self-describing docs/evidence JSON artifact first.',
+      'Not for Vitest (use testing:run), temporary logs, or checks that did not run.',
     chaining:
-      'Run the operational check → write and commit its docs/evidence JSON artifact → testing:record-run → bind the returned numeric testRunIds with plans:bind-spec-evidence.',
+      'Run check → commit docs/evidence JSON → testing:record-run → bind returned IDs with plans:bind-spec-evidence.',
   },
   capability: 'testing:run',
   requirePrincipal: false,
