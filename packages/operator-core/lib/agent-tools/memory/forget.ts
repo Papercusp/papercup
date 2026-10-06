@@ -58,8 +58,8 @@ export default defineTool({
   // (memory-taxonomy-and-debt-followups P-004).
   args: z
     .object({
-      id: z.string().min(1).optional().describe('a single memory id (n=1 shorthand for ids:[id])'),
-      ids: z.array(z.string().min(1)).min(1).max(200).optional().describe('memory ids to delete (1–200)'),
+      id: z.string().uuid('Memory ID must be a valid UUID').optional().describe('a single memory UUID (n=1 shorthand for ids:[id])'),
+      ids: z.array(z.string().uuid('Memory ID must be a valid UUID')).min(1).max(200).optional().describe('memory UUIDs to delete (1–200)'),
       soft: z
         .boolean()
         .optional()

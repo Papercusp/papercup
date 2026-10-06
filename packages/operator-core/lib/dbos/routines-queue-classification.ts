@@ -76,7 +76,6 @@ export const FLEET_CONTROL_ACTIONS = new Set<string>(['fleet-headcount-governor'
  * the lane exists to prevent.
  */
 export const TRIGGER_POLL_ACTIONS = new Set<string>([
-  'google-calendar-poll',
   'pr-poll',
   'facebook-personal-vault-poll',
   'slack-org-sync',

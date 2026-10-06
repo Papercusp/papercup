@@ -296,6 +296,21 @@ describe('launch-spec route + visibility enforcement (EI-21304203620302419)', ()
 });
 
 describe('memberLaunchCommand (WI-1408 — fleet:launch-on-plan threads --fleet into the member launch)', () => {
+  it('keeps mode participation while withholding the launching leader mission and authority from members', () => {
+    const launchMode = { mode: 'drain' as const, subject: 'leader-only',
+      instructions: 'Lead this fleet as su-leader.', ownerDirected: true };
+    const member = memberLaunchCommand({ ...base, launchMode });
+    expect(member).toContain('--mode=drain');
+    expect(member).not.toContain('--mode-subject');
+    expect(member).not.toContain('--mode-instructions');
+    expect(member).not.toContain('--mode-owner-directed');
+    const leader = memberLaunchCommand({ ...base, fleetRole: 'leader', launchMode });
+    expect(leader).toContain('--fleet-role=leader');
+    expect(leader).toContain('--mode-subject=leader-only');
+    expect(leader).toContain("--mode-instructions='Lead this fleet as su-leader.'");
+    expect(leader).toContain('--mode-owner-directed');
+  });
+
   it('always includes --fleet=<slug> — never a colour-only, unfleeted member launch', () => {
     const cmd = memberLaunchCommand(base);
     expect(cmd).toMatch(/(^|\s)--fleet=atlas-fleet(\s|$)/);

@@ -103,12 +103,14 @@ function startReplayRuntime(options) {
     if (spawnOptions.shell) { emit({ kind: 'unknown', reason: 'unsupported-child-shell' }); return null; }
     const env = spawnOptions.env || process.env;
     const cwd = resolve(String(spawnOptions.cwd || process.cwd()));
-    const scopeProbe = basename(command) === 'systemd-run' && JSON.stringify(args) ===
-      JSON.stringify(['--user', '--scope', '--quiet', '--collect', '--', 'true']);
+    // The launcher freezes the maintained availability argv into its witnessed
+    // evaluator. Descendants inherit it rather than maintaining a second list.
+    const scopeProbe = basename(command) === 'systemd-run' && Array.isArray(options.scopeProbeArgv) &&
+      JSON.stringify(args) === JSON.stringify(options.scopeProbeArgv);
     if (scopeProbe) {
       const launchId = `${process.pid}:${++launchSequence}`;
       const controlOptions = { entry: options.entry, directory: options.directory, runId: options.runId,
-        controlPurpose: 'systemd-scope-availability',
+        controlPurpose: 'systemd-scope-availability', scopeProbeArgv: options.scopeProbeArgv,
         parent: { pid: process.pid, identity: processIdentity, evalSha256, launchId } };
       const code = `(${recorder})(${JSON.stringify(controlOptions)});`;
       const nodeArgv = ['--eval', code];
@@ -166,7 +168,8 @@ function startReplayRuntime(options) {
     }
     const launchId = `${process.pid}:${++launchSequence}`;
     const childOptions = { entry: resolve(cwd, entry), args: entryArgs, directory: options.directory,
-      runId: options.runId, parent: { pid: process.pid, identity: processIdentity, evalSha256, launchId } };
+      runId: options.runId, scopeProbeArgv: options.scopeProbeArgv,
+      parent: { pid: process.pid, identity: processIdentity, evalSha256, launchId } };
     const code = `(${recorder})(${JSON.stringify(childOptions)});`;
     const childArgv = [...flags, '--eval', code];
     const launchedCommand = prefix.length ? command : node;

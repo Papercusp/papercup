@@ -121,6 +121,81 @@ export const DEFAULT_BULK_BATCH_RETRY_BACKOFFS_MS = [500, 1_500, 4_000] as const
  * a ~24h fire after ~3.7h of judging.
  */
 export const DEFAULT_BULK_TRANSPORT_RETRY_BACKOFFS_MS = [15_000, 30_000, 60_000, 120_000] as const;
+
+/**
+ * WI-10006427: per-attempt deadline on ONE bulk judge call. The codex transport
+ * reuses loopbackFetch's launch dispatcher, whose headers/body cap (46 min) is
+ * sized for queen launches, so without this one hung upstream request held a
+ * batch for 46 min per attempt — ~3h across the short ladder — while the stage
+ * lease (2h) was never renewed. Measured 2026-10-06: a healthy gpt-6.1-sol:xhigh
+ * batch lands in 2-4 min, and a stage canary sat 34+ min on a single request
+ * while a direct probe of the same model answered in 12s. A deadline hit is a
+ * retryable `TimeoutError`, so it reaches the heartbeating transport ladder.
+ */
+export const DEFAULT_BULK_JUDGE_CALL_TIMEOUT_MS = 15 * 60_000;
+/** WI-10006427: lease renewal cadence while one judge call is in flight. */
+export const DEFAULT_BULK_JUDGE_HEARTBEAT_MS = 5 * 60_000;
+
+/** WI-10006427: a bulk judge call exceeded its per-attempt deadline. Named
+ * `TimeoutError` so {@link isRetryableModelCallError} classifies it transient. */
+export class BulkJudgeCallTimeoutError extends Error {
+  constructor(readonly timeoutMs: number) {
+    super(`bulk judge call exceeded its ${timeoutMs}ms per-attempt deadline`);
+    this.name = 'TimeoutError';
+  }
+}
+
+/**
+ * WI-10006427: run one judge call under a per-attempt deadline, calling
+ * `heartbeat` every `heartbeatMs` while it is in flight. At the deadline the
+ * call's AbortSignal fires (freeing the socket) and this rejects with
+ * {@link BulkJudgeCallTimeoutError}, whatever the transport reports for the
+ * abort. A throwing heartbeat (a sibling shard failed the stage) aborts the call
+ * and propagates. A non-positive / non-finite `heartbeatMs` disables the ticks.
+ */
+export async function runBulkJudgeCallWithDeadline<T>(
+  call: (signal: AbortSignal) => Promise<T>,
+  opts: { timeoutMs: number; heartbeatMs: number; heartbeat: () => Promise<void> },
+): Promise<T> {
+  const controller = new AbortController();
+  const timeout = new BulkJudgeCallTimeoutError(opts.timeoutMs);
+  let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<'deadline'>((resolve) => {
+    deadlineTimer = setTimeout(() => resolve('deadline'), opts.timeoutMs);
+  });
+  const settled = Promise.resolve()
+    .then(() => call(controller.signal))
+    .then(
+      (value) => ({ ok: true as const, value }),
+      (error: unknown) => ({ ok: false as const, error }),
+    );
+  const ticks = Number.isFinite(opts.heartbeatMs) && opts.heartbeatMs > 0;
+  try {
+    for (;;) {
+      let tickTimer: ReturnType<typeof setTimeout> | undefined;
+      const tick = ticks
+        ? new Promise<'tick'>((resolve) => {
+            tickTimer = setTimeout(() => resolve('tick'), opts.heartbeatMs);
+          })
+        : null;
+      const winner = await Promise.race(tick ? [settled, deadline, tick] : [settled, deadline]);
+      clearTimeout(tickTimer);
+      if (winner === 'tick') {
+        await opts.heartbeat();
+        continue;
+      }
+      if (winner === 'deadline') {
+        controller.abort(timeout);
+        throw timeout;
+      }
+      if (winner.ok) return winner.value;
+      throw winner.error;
+    }
+  } finally {
+    clearTimeout(deadlineTimer);
+    if (!controller.signal.aborted) controller.abort();
+  }
+}
 export const BULK_STAGE_SCHEMA_VERSION = 'work-item-admission-bulk-stage-v2';
 export const BULK_BATCH_CHECKPOINT_SCHEMA_VERSION = 'work-item-admission-bulk-batch-v1';
 /** A live owner refreshes this lease before and after every batch. Two hours is
@@ -409,6 +484,12 @@ export interface BulkDedupRunOptions {
   transportRetryBackoffsMs?: readonly number[];
   /** Injectable sleep seam for retry tests; production uses setTimeout. */
   batchRetryDelay?: (ms: number) => Promise<void>;
+  /** WI-10006427: per-attempt deadline on one judge call. Defaults to
+   * DEFAULT_BULK_JUDGE_CALL_TIMEOUT_MS; a hit is retried as a transport timeout. */
+  judgeCallTimeoutMs?: number;
+  /** WI-10006427: stage-lease renewal cadence while a judge call is in flight.
+   * Defaults to DEFAULT_BULK_JUDGE_HEARTBEAT_MS. */
+  judgeHeartbeatMs?: number;
   runCensus?: CensusRunner;
   /** Model/account capacity check. Production supplies the shared probe/readers;
    * direct tests may omit it, which is recorded as unknown and then proven by
@@ -1498,6 +1579,8 @@ async function runAdmissionMergeQualityReplay(
     transportRetryBackoffsMs?: readonly number[];
     batchRetryDelay: (ms: number) => Promise<void>;
     now: () => number;
+    /** WI-10006427: per-attempt deadline on the replay's judge call. */
+    judgeCallTimeoutMs?: number;
   },
 ): Promise<AdmissionMergeQualityReport> {
   const startedAtMs = opts.now();
@@ -1507,15 +1590,26 @@ async function runAdmissionMergeQualityReplay(
   let replayTokensOut = 0;
   let replayServedAccount: string | null = null;
   const replayServedAccounts = new Set<string>();
+  // WI-10006427: the same per-attempt deadline as the stage batches. The replay
+  // runs before any stage batch, so it has no lease ticks of its own.
   const callReplayModel = () =>
-    opts.llmCall({
-      model: prepared.model,
-      system: prepared.prompt.system,
-      messages: [{ role: 'user', content: prepared.prompt.user }],
-      responseFormat: 'json',
-      maxTokens: bulkJudgeMaxTokens(prepared.pairs.length),
-      ...(opts.ownerId ? { ownerId: opts.ownerId } : {}),
-    });
+    runBulkJudgeCallWithDeadline(
+      (signal) =>
+        opts.llmCall({
+          model: prepared.model,
+          system: prepared.prompt.system,
+          messages: [{ role: 'user', content: prepared.prompt.user }],
+          responseFormat: 'json',
+          maxTokens: bulkJudgeMaxTokens(prepared.pairs.length),
+          ...(opts.ownerId ? { ownerId: opts.ownerId } : {}),
+          signal,
+        }),
+      {
+        timeoutMs: opts.judgeCallTimeoutMs ?? DEFAULT_BULK_JUDGE_CALL_TIMEOUT_MS,
+        heartbeatMs: 0,
+        heartbeat: async () => undefined,
+      },
+    );
   try {
     const attempted = await callBulkModelBatchWithRetry(
       async () => {
@@ -1606,6 +1700,9 @@ async function judgeBulkPairs(
      * and their spend is not folded into this stage's counters.
      */
     priorRunCheckpoints?: readonly BulkBatchCheckpoint[];
+    /** WI-10006427: per-attempt judge deadline / in-flight lease cadence. */
+    judgeCallTimeoutMs?: number;
+    judgeHeartbeatMs?: number;
     /** Merge-quality gate key every new checkpoint is stamped with. */
     qualityGateKey: string;
     /**
@@ -1797,14 +1894,33 @@ async function judgeBulkPairs(
       const callBatch = () =>
         callBulkModelBatchWithRetry(
           () =>
-            opts.llmCall({
-              model: opts.model,
-              system: prompt.system,
-              messages: [{ role: 'user', content: prompt.user }],
-              responseFormat: 'json',
-              maxTokens: bulkJudgeMaxTokens(batch.length),
-              ...(opts.ownerId ? { ownerId: opts.ownerId } : {}),
-            }),
+            // WI-10006427: bound each attempt and keep the lease visibly alive
+            // while it is in flight; a hung request becomes a retryable timeout.
+            runBulkJudgeCallWithDeadline(
+              (signal) =>
+                opts.llmCall({
+                  model: opts.model,
+                  system: prompt.system,
+                  messages: [{ role: 'user', content: prompt.user }],
+                  responseFormat: 'json',
+                  maxTokens: bulkJudgeMaxTokens(batch.length),
+                  ...(opts.ownerId ? { ownerId: opts.ownerId } : {}),
+                  signal,
+                }),
+              {
+                timeoutMs: opts.judgeCallTimeoutMs ?? DEFAULT_BULK_JUDGE_CALL_TIMEOUT_MS,
+                heartbeatMs: opts.judgeHeartbeatMs ?? DEFAULT_BULK_JUDGE_HEARTBEAT_MS,
+                heartbeat: async () => {
+                  stopIfSiblingFailed();
+                  await heartbeatBulkStage(opts.sql, {
+                    id: opts.stageRunId,
+                    ownerId: opts.executionId,
+                    nowMs: opts.now(),
+                    leaseMs: opts.leaseMs,
+                  });
+                },
+              },
+            ),
           (response) => parsePromoterJudgements(responsePayload(response)),
           {
             backoffsMs: opts.batchRetryBackoffsMs,
@@ -2096,6 +2212,7 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
               transportRetryBackoffsMs,
               batchRetryDelay,
               now,
+              judgeCallTimeoutMs: opts.judgeCallTimeoutMs,
             }),
       );
       mergeQualityStepSeen = true;
@@ -2431,6 +2548,8 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
         step,
         checkpoints: savedCheckpoints,
         priorRunCheckpoints,
+        judgeCallTimeoutMs: opts.judgeCallTimeoutMs,
+        judgeHeartbeatMs: opts.judgeHeartbeatMs,
         qualityGateKey: mergeQualityPrepared.gateKey,
         inputFingerprintMatched: leaseState.reused,
       });

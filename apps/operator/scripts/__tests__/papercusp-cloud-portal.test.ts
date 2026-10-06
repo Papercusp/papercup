@@ -233,7 +233,17 @@ describe("Cloud Portal systemd deployment contract", () => {
       expect(result.stdout).toContain("Type=notify");
       expect(result.stdout).toContain("NotifyAccess=all");
       expect(result.stdout).toContain("WatchdogSec=15s");
-      expect(result.stdout).toContain("Environment=PORTAL_READINESS_TIMEOUT_MS=60000");
+      // The 2026-10-06 crash recovery needed 90.71s of PostgreSQL fsync before
+      // the Portal could answer HTTP. Keep the readiness budget above that
+      // measured recovery and leave systemd enough time to observe the result.
+      const readinessTimeoutMs = Number(
+        result.stdout.match(/^Environment=PORTAL_READINESS_TIMEOUT_MS=(\d+)$/m)?.[1],
+      );
+      const systemdStartTimeoutMs = Number(
+        result.stdout.match(/^TimeoutStartSec=(\d+)s$/m)?.[1],
+      ) * 1_000;
+      expect(readinessTimeoutMs).toBeGreaterThanOrEqual(180_000);
+      expect(systemdStartTimeoutMs).toBeGreaterThanOrEqual(readinessTimeoutMs + 60_000);
       expect(result.stdout).toContain(
         `Environment=PORTAL_RUNTIME_ROOT=${files.runtimeRoot.replaceAll(" ", "\\ ")}`,
       );

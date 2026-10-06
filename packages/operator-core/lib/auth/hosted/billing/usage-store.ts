@@ -31,6 +31,11 @@ type ReceiptRow = {
 
 export type OpenRouterGenerationBinding = Omit<OpenRouterUsageBinding, 'revision' | 'credentialSha256'>
   & { readonly credentialSha256: string };
+export interface HostedUsagePopulation {
+  readonly records: readonly HostedUsageRecord[];
+  /** Private execution metadata, never included in public usage records. */
+  readonly openRouterBindings: readonly OpenRouterGenerationBinding[];
+}
 const sameTenant = (row: ReceiptRow, scope: HostedUsageScope) => row.control_workspace_id === scope.controlWorkspaceId
   && row.organization_id === scope.organizationId && row.customer_workspace_id === scope.customerWorkspaceId;
 const sameBinding = (row: ReceiptRow, binding?: OpenRouterGenerationBinding) => !binding
@@ -65,6 +70,50 @@ export type HostedUsageAppendResult = 'recorded' | 'duplicate' | 'replay-mismatc
 
 export class PostgresHostedUsageStore {
   constructor(private readonly run: HostedServiceContextRunner = withHostedServiceContext) {}
+
+  /** Server-only local census through the caller's reservation transaction.
+   * Includes ALL stored revisions, providers, tenants and times; neither the
+   * monthly statement read nor the rotating binding batch is a census.
+   * SHARE protects even an empty table against existing and direct SQL writers
+   * until this transaction ends. Call before collecting provider evidence; do
+   * not append usage inside this read-only population phase (lock upgrades by
+   * concurrent readers would deadlock).
+   *
+   * Row/binding presence establishes neither provider account ownership nor
+   * provider completeness, final bills, paid settlements or cash backing.
+   * Unbound legacy rows and unknown costs are retained for reconciliation,
+   * rather than assigned to an account or silently treated as zero.
+   */
+  async readLockedPopulation(sql: Sql): Promise<HostedUsagePopulation> {
+    const [isolation] = await sql<{ transaction_isolation: string }[]>`SHOW transaction_isolation`;
+    if (isolation?.transaction_isolation !== 'read committed') throw new Error('usage population requires read committed');
+    const [started] = await sql<{ transaction_id: string }[]>`SELECT pg_current_xact_id()::text AS transaction_id`;
+    await sql`SELECT papercusp_auth.lock_hosted_usage_population()`;
+    const rows = await sql<ReceiptRow[]>`
+      SELECT * FROM papercusp_auth.hosted_usage_receipts
+       ORDER BY control_workspace_id COLLATE "C", organization_id COLLATE "C",
+         customer_workspace_id COLLATE "C", provider COLLATE "C", usage_id COLLATE "C", revision`;
+    const records = rows.map(row => Object.freeze(receipt(row)));
+    const openRouterBindings = rows.filter(row => row.openrouter_credential_ref !== null).map(row => {
+      const r = receipt(row);
+      const binding: OpenRouterGenerationBinding = {
+        scope: { controlWorkspaceId: r.controlWorkspaceId, organizationId: r.organizationId,
+          customerWorkspaceId: r.customerWorkspaceId },
+        generationId: r.usageId, payer: r.payer, isByok: row.openrouter_is_byok!,
+        credentialRef: row.openrouter_credential_ref!, credentialSha256: row.openrouter_key_sha256!,
+        occurredAtMs: r.occurredAtMs, observedAtMs: r.observedAtMs, evidenceRef: r.sourceRef,
+      };
+      openRouterUsageRecord({ ...binding, revision: r.revision }, {
+        data: { id: binding.generationId, is_byok: binding.isByok, total_cost: null },
+      });
+      return Object.freeze({ ...binding, scope: Object.freeze(binding.scope) });
+    });
+    const [finished] = await sql<{ transaction_id: string }[]>`SELECT pg_current_xact_id()::text AS transaction_id`;
+    if (!started?.transaction_id || finished?.transaction_id !== started.transaction_id) {
+      throw new Error('usage population requires one transaction');
+    }
+    return Object.freeze({ records: Object.freeze(records), openRouterBindings: Object.freeze(openRouterBindings) });
+  }
 
   async append(record: HostedUsageRecord): Promise<HostedUsageAppendResult> {
     return this.appendBound(record);

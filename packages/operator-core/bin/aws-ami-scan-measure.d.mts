@@ -2,6 +2,7 @@
 export declare const AWS_AMI_SCAN_TOOL: 'papercusp-aws-ami-scan';
 export declare const AWS_AMI_DESCRIPTION_PATTERN: RegExp;
 export declare const PAPERCUSP_BUNDLE_PATH: string;
+export declare const SECRET_BUNDLED_SAMPLE_CAP: number;
 export declare const GUEST_PACKAGE_PROBES: readonly string[];
 
 export interface AwsAmiScanRequest {
@@ -24,8 +25,13 @@ export interface AwsAmiScanMeasurement {
   vulnerabilityFixableBySeverity: Record<string, number>;
   vulnerabilityByEcosystem: Record<string, number>;
   vulnerabilityByScope: Record<string, number>;
+  vulnerabilityCriticalHighByScope: Record<string, number>;
+  bundleCatalogedArtifacts: number;
   secretFindings: number;
+  secretsByScope: Record<string, number>;
   secretSample: { rule: unknown; file: unknown; line: unknown }[];
+  secretBundledSample: { rule: unknown; file: unknown; line: unknown }[];
+  secretBundledSampleComplete: boolean;
   mountedFilesystems: number;
   candidateRootProof: string;
   catalogedArtifacts: { total: number; npm: number; rpm: number };

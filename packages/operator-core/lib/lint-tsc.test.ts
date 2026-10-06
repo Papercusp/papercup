@@ -2765,12 +2765,13 @@ describe('the gate REPORT actually prints the diagnostics (wiring, EI-1945421106
     "lib/a.ts(597,60): error TS1320: Type of 'await' operand must either be a valid promise or must not contain a callable 'then' member.";
 
   /** Run the real gate over canned compiler output; returns its combined output. */
-  function runGate(baseline: Record<string, number>): string {
+  function runGate(baseline: Record<string, number>, extraFile?: { path: string; diagnostic: string }): string {
     const root = mkdtempSync(join(tmpdir(), 'tsc-gate-wiring-'));
     try {
       mkdirSync(join(root, 'lib'), { recursive: true });
       writeFileSync(join(root, 'lib/a.ts'), 'export const fixture = 1;\n');
-      writeFileSync(join(root, 'tsc-output.txt'), `${TSC_LINES}\n`);
+      if (extraFile) writeFileSync(join(root, extraFile.path), 'export const peerFixture = 1;\n');
+      writeFileSync(join(root, 'tsc-output.txt'), `${TSC_LINES}\n${extraFile?.diagnostic ?? ''}\n`);
       // The baseline is `{ files: {...} }`, not a flat map. Writing a flat map here made the
       // gate read NO baseline at all and default the file to 0 — which still produced a green
       // "0 → 2" for the baseline-0 case, i.e. the test would have passed for the wrong reason.
@@ -2909,6 +2910,16 @@ describe('the gate REPORT actually prints the diagnostics (wiring, EI-1945421106
     expect(out).toContain('lib/a.ts: 1 → 2');
     expect(out).toContain('PRE-DATE');
     expect(out).not.toContain('every error above is new');
+  });
+
+  it('prints new-file diagnostics alongside an attributed regression without another compile', () => {
+    const diagnostic = "lib/new-peer.ts(7,4): error TS2339: Property 'peerOnly' does not exist on type '{}'.";
+    const out = runGate({ 'lib/a.ts': 0 }, { path: 'lib/new-peer.ts', diagnostic });
+    expect(out).toContain('lib/a.ts: 0 → 2');
+    expect(out).toContain('also 1 NEW file(s) with errors');
+    expect(out).toContain('lib/new-peer.ts: 0 → 1');
+    expect(out).toContain(diagnostic);
+    expect(out).toContain('status=regressed');
   });
 
   it('a TS1xxx hard failure prints the compiler message without calling it a parse error', () => {

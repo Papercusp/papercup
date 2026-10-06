@@ -5,16 +5,18 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { freezeCompilerReplayConfig, freezeReplayRuntimeFiles, materializeReplaySource, replayDurableReport, replayEvidenceProblems, replayFileMismatches, replayHash, replayOracleFingerprint,
   replayPopulationFingerprint, replayProcessIdentity, replayServerPopulation, replaySourceFingerprint, replayWireOverlap,
-  validateDaemonReplayConfig, type DaemonReplayConfig, type ReplayOracleInput } from './lsp-fleet-replay-runtime';
+  runDaemonReplay, validateDaemonReplayConfig, type DaemonReplayConfig, type ReplayOracleInput } from './lsp-fleet-replay-runtime';
+import { callLspDaemonRpc } from './lsp-daemon-client';
 import { scopeUnitForTask } from '../task-manager/types';
 import { buildReplayTrace, type ReplayReport } from './lsp-fleet-replay';
 import type { LspDaemonAnswer } from './lsp-daemon-protocol';
 import { runSaturationCli } from './lsp-saturation-bench-cli';
 
 vi.mock('./code-intel-bench.ts', () => { throw new Error('legacy benchmark must not load in independent replay mode'); });
+vi.mock('./lsp-daemon-client', () => ({ callLspDaemonRpc: vi.fn(), readLspDaemonAdmission: vi.fn() }));
 
 const roots: string[] = [];
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+afterEach(() => { vi.clearAllMocks(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 describe('prelaunch replay runtime dependency population', () => {
   function fixture() {
     const root = mkdtempSync(join(tmpdir(), 'lsp-runtime-population-')); roots.push(root);
@@ -106,6 +108,26 @@ function report(): ReplayReport {
     classes: {} as ReplayReport['classes'], sourceFingerprint: 'source', oracleFingerprint: 'oracle',
     complete: true, accountingErrors: [], certifiedFalseEmpty: 0, certifiedStale: 0, failures: [], classesOverlap: true };
 }
+describe('daemon replay RPC cursor origin', () => {
+  it.each(['relative', 'absolute'])('uses the declared source root for %s cursor files without rewriting the oracle', async kind => {
+    const frozen = config();
+    if (kind === 'relative') for (const corpus of Object.values(frozen.corpus)) corpus.cursor.file = 'source.ts';
+    const original = JSON.stringify(frozen);
+    const answer: LspDaemonAnswer = { backend: 'lsp-adapter', intent: 'definition', query: 'fixture', sites: [],
+      truncation: { truncated: false, totalAvailable: 0, continuation: null },
+      freshness: { health: 'degraded', indexedAt: null, indexedCommit: null, staleVsDisk: false }, latencyMs: 0, error: null };
+    vi.mocked(callLspDaemonRpc).mockImplementation(async (_socket, request) => {
+      if (request.op === 'health') throw new Error('fixture-stop-before-load');
+      return answer;
+    });
+    await expect(runDaemonReplay(frozen, frozen.rootPath)).rejects.toThrow('fixture-stop-before-load');
+    const queries = vi.mocked(callLspDaemonRpc).mock.calls.filter(([, request]) => request.op !== 'health');
+    expect(queries.map(([, request]) => [request.op, request.args.file, request.args.rootPath]))
+      .toEqual(['symbol', 'references'].map(op => [op, join(frozen.rootPath, 'source.ts'), frozen.rootPath]));
+    expect(JSON.stringify(frozen)).toBe(original);
+    expect(JSON.parse(readFileSync(join(frozen.rootPath, frozen.runId, 'config.json'), 'utf8')).config).toEqual(frozen);
+  });
+});
 describe('independent replay source materialization', () => {
   function fixture() {
     const frozen = config();

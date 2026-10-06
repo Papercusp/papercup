@@ -92,6 +92,7 @@ async function agenda(realAdmission = false) {
     // and unrelated final acceptance are controlled inputs: this proves priority,
     // not launch admission or a plan acceptance verdict.
     deps: { planSlugs: async () => [], ownerDirectives: async () => [], waitingOn: async () => [], consultReconciliations: async () => [],
+      fleetStaffing: async () => [],
       ownerReport: async () => null,
       planAcceptance: async () => ({ satisfied: true, buildProvenance: { sha: null, version: 'fixture' } }),
       // Priority cases control admission as well as launch feasibility. The

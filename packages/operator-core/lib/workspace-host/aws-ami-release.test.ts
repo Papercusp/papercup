@@ -331,6 +331,13 @@ class FakeAdapter implements AwsAmiReleaseAdapter {
       secretFindings: 0,
       mountedFilesystems: 2,
       candidateRootProof: '/mnt/candidate/sda1/etc/os-release',
+      // The attribution the scoped AWS policy requires (WI-10006421), partitioning the totals.
+      vulnerabilityByScope: { 'inherited-base-image': 2, 'papercusp-bundled': 1 },
+      vulnerabilityCriticalHighByScope: {},
+      bundleCatalogedArtifacts: 289,
+      secretsByScope: {},
+      secretBundledSample: [],
+      secretBundledSampleComplete: true,
       evidenceRef: `aws://scan/${input.imageId}`,
     };
   }

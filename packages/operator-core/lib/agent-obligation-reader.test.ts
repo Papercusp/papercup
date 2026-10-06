@@ -137,6 +137,7 @@ function deps(overrides: Partial<AgentObligationReaderDeps> = {}): AgentObligati
     ownerDirectives: vi.fn(async () => []),
     waitingOn: vi.fn(async () => []),
     consultReconciliations: vi.fn(async () => []),
+    fleetStaffing: vi.fn(async () => []),
     ...overrides,
   };
 }
@@ -307,6 +308,58 @@ describe('shared agent obligation reader', () => {
       measurementFailure: { code: 'canonical-plan-placement-read-failed' },
     });
     expect(read.degradedSources.some((entry) => entry.includes('goal portfolio'))).toBe(true);
+  });
+
+  it('P-005 / D-030: a failed fleet-staffing read is an explicit unknown row and a degraded source, never "staffed"', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const read = await readAgentObligationAgenda({
+      workspaceId: 'ws',
+      ownerId: 'su-goal',
+      now: NOW,
+      deps: deps({
+        fleetStaffing: vi.fn(async () => {
+          throw new Error('fleet registry unavailable');
+        }),
+      }),
+    });
+    warn.mockRestore();
+    const staffing = read.agenda.evaluations.filter((entry) => entry.family === 'fleet-staffing');
+    expect(staffing).toHaveLength(1);
+    expect(staffing[0]).toMatchObject({
+      status: 'unknown',
+      measurementFailure: { code: 'canonical-fleet-staffing-read-failed' },
+    });
+    expect(read.degradedSources.some((entry) => entry.includes('fleet staffing'))).toBe(true);
+  });
+
+  it('P-005 / D-030: an unheld empty led fleet reaches the agenda as a due fleet-staffing row', async () => {
+    const read = await readAgentObligationAgenda({
+      workspaceId: 'ws',
+      ownerId: 'su-goal',
+      now: NOW,
+      deps: deps({
+        fleetStaffing: vi.fn(async () => [
+          {
+            fleetSlug: 'fleet-empty',
+            evaluation: {
+              alert: true,
+              current: 0,
+              target: 2,
+              shortfall: 2,
+              held: false,
+              notHeldBecause: 'supervise-not-granted' as const,
+              topUpRule: null,
+              repair: 'fleet:headcount-target { target, supervise:true }',
+              reason: '0 of 2 target worker(s) are productive (short 2).',
+            },
+          },
+        ]),
+      }),
+    });
+    const staffing = read.agenda.evaluations.filter((entry) => entry.family === 'fleet-staffing');
+    expect(staffing).toHaveLength(1);
+    expect(staffing[0]).toMatchObject({ status: 'due' });
+    expect(read.degradedSources.some((entry) => entry.includes('fleet staffing'))).toBe(false);
   });
 
   it('keeps the generation stable when only observation clocks change', async () => {

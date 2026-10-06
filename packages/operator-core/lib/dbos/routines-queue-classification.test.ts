@@ -209,9 +209,9 @@ describe('queueForRoutine — the external-source poll lane (WI-41662)', () => {
   });
 
   it('routes the measured-starved polls specifically (the regression this lane exists for)', () => {
-    // Gmail sync moved onto the provider connector (P-008), so its lane is connector-sync's.
+    // Gmail (P-008) and Google Calendar (P-009) sync moved onto the provider connector, so
+    // their lane is connector-sync's.
     expect(queueForRoutine('system:connector-sync')).toBe(ROUTINES_TRIGGERS_QUEUE);
-    expect(queueForRoutine('system:google-calendar-poll')).toBe(ROUTINES_TRIGGERS_QUEUE);
   });
 
   it('keeps the LONG routine that starved them OFF this lane — else the starvation returns inside it', () => {

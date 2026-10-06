@@ -2,7 +2,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import type { Sql } from 'postgres';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { OrgTestDb } from '../../../../test/_org-test-db';
 import type { HostedServiceContextRunner } from '../workos-lifecycle-postgres';
 import { PILOT_COST_CATEGORIES } from './unit-economics';
@@ -84,8 +84,179 @@ describe('PostgresHostedUsageStore (real Postgres and hosted_service)', () => {
       bindingMigration = readFileSync(new URL('../../../../../../libs/papercusp/libs/db/sql/1355-hosted-openrouter-generation-binding.sql', import.meta.url), 'utf8');
     }
     await db.adminSql.unsafe(bindingMigration); await db.adminSql.unsafe(bindingMigration);
+    let populationMigration: string;
+    try { populationMigration = readFileSync(new URL('../../../../../../libs/papercusp/libs/db/sql/1382-hosted-usage-population-lock.sql.DRAFT', import.meta.url), 'utf8'); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      populationMigration = readFileSync(new URL('../../../../../../libs/papercusp/libs/db/sql/1382-hosted-usage-population-lock.sql', import.meta.url), 'utf8');
+    }
+    await db.adminSql.unsafe(populationMigration); await db.adminSql.unsafe(populationMigration);
   }, 180_000);
   afterAll(async () => { await db?.cleanup(); });
+
+  async function withPopulationHeld(fn: () => Promise<void>, rollback = false) {
+    let ready!: () => void; let release!: () => void;
+    const started = new Promise<void>(resolve => { ready = resolve; });
+    const released = new Promise<void>(resolve => { release = resolve; });
+    const sentinel = new Error('usage population rollback');
+    const held = runService(async sql => {
+      await store().readLockedPopulation(sql); ready(); await released;
+      if (rollback) throw sentinel;
+    }).catch(error => { if (error !== sentinel) throw error; });
+    try { await Promise.race([started, held]); await fn(); }
+    finally { release(); await held; }
+  }
+  const boundedWriter = () => new PostgresHostedUsageStore(fn => runService(async sql => {
+    await sql.unsafe("SET LOCAL lock_timeout = '100ms'"); return fn(sql);
+  }));
+
+  it('locks an empty local population against real receipt/binding writers and direct SQL until commit', async () => {
+    const a = await tenant(); const r = record(a); const b: OpenRouterGenerationBinding = {
+      scope: a, generationId: 'gen-' + randomUUID(), payer: 'consumption', isByok: false,
+      credentialRef: 'env:FIXTURE_OPENROUTER_KEY', credentialSha256: 'a'.repeat(64),
+      occurredAtMs: T, observedAtMs: T, evidenceRef: 'execution:population-binding',
+    };
+    await runService(async sql => {
+      const population = await store().readLockedPopulation(sql);
+      expect(population).toEqual({ records: [], openRouterBindings: [] });
+      expect(Object.hasOwn(population, 'complete')).toBe(false);
+    });
+    await withPopulationHeld(async () => {
+      await expect(boundedWriter().append(r)).rejects.toMatchObject({ code: '55P03' });
+      await expect(boundedWriter().bindOpenRouterGeneration(b)).rejects.toMatchObject({ code: '55P03' });
+      await expect(db.adminSql.begin(async tx => {
+        await tx.unsafe("SET LOCAL lock_timeout = '100ms'");
+        await tx`INSERT INTO papercusp_auth.hosted_usage_receipts
+          (control_workspace_id, organization_id, customer_workspace_id, provider, record_id,
+           usage_id, revision, category, payer, occurred_at_ms, observed_at_ms, quantity,
+           unit, cost_source, cost_micros, source_ref)
+          VALUES (${a.controlWorkspaceId}, ${a.organizationId}, ${a.customerWorkspaceId}, 'fixture-provider',
+            ${r.recordId}, ${r.usageId}, 1, 'compute', 'consumption', ${T}, ${T}, 60, 'seconds', 'estimate', 10001,
+            'provider-fixture:receipt')`;
+      })).rejects.toMatchObject({ code: '55P03' });
+    });
+    expect(await store().append(r)).toBe('recorded');
+    expect(await store().bindOpenRouterGeneration(b)).toBe('recorded');
+    expect(await read(a)).toHaveLength(2);
+  });
+
+  it('retains all providers, scopes, times and revisions beyond the rotating 25-binding batch', async () => {
+    const a = await tenant(); const otherOrg = await tenant(a.controlWorkspaceId);
+    const otherControl = await tenant();
+    const old = record(a, { occurredAtMs: Date.UTC(2026, 7, 1), observedAtMs: Date.UTC(2026, 7, 2),
+      costSource: 'unpriced', costMicros: null });
+    const future = record(otherOrg, { occurredAtMs: Date.UTC(2026, 10, 1), observedAtMs: Date.UTC(2026, 10, 1),
+      costSource: 'provider-billed', costMicros: 0, costMicrosExact: '0.0000001' });
+    const revised = { ...future, recordId: randomUUID(), revision: 2, observedAtMs: future.observedAtMs + 1,
+      costMicrosExact: '0.0000002' };
+    const foreign = record(otherControl, { payer: 'customer-direct' });
+    for (const r of [old, future, revised, foreign]) expect(await store().append(r)).toBe('recorded');
+    const capturedBindings: OpenRouterGenerationBinding[] = Array.from({ length: 30 }, (_, index) => ({
+      scope: index % 2 ? a : otherControl, generationId: 'gen-' + randomUUID(),
+      payer: index % 2 ? 'consumption' : 'customer-direct', isByok: index % 2 === 0,
+      credentialRef: 'env:FIXTURE_OPENROUTER_KEY', credentialSha256: 'b'.repeat(64),
+      occurredAtMs: old.occurredAtMs, observedAtMs: old.observedAtMs,
+      evidenceRef: 'execution:population-capture',
+    }));
+    for (const b of capturedBindings) expect(await store().bindOpenRouterGeneration(b)).toBe('recorded');
+    // The constructor's scoped runner cannot substitute a different transaction.
+    const localReader = new PostgresHostedUsageStore(async () => { throw new Error('separate runner must not execute'); });
+    const population = await runService(sql => localReader.readLockedPopulation(sql));
+    expect(population.records).toEqual(expect.arrayContaining([old, future, revised, foreign]));
+    const ids = new Set(capturedBindings.map(b => b.generationId));
+    expect(population.openRouterBindings.filter(b => ids.has(b.generationId))).toEqual(expect.arrayContaining(capturedBindings));
+    expect(population.openRouterBindings.filter(b => ids.has(b.generationId))).toHaveLength(30);
+    const allRows = await db.adminSql`SELECT record_id FROM papercusp_auth.hosted_usage_receipts`;
+    expect(population.records.map(r => r.recordId).sort()).toEqual(allRows.map(r => r.record_id).sort());
+    expect(Object.isFrozen(population)).toBe(true);
+    expect(Object.isFrozen(population.records)).toBe(true);
+    expect(Object.isFrozen(population.openRouterBindings)).toBe(true);
+    expect(population.records.every(Object.isFrozen)).toBe(true);
+    expect(population.openRouterBindings.every(b => Object.isFrozen(b) && Object.isFrozen(b.scope))).toBe(true);
+    expect(JSON.stringify(population.records)).not.toMatch(/credential|sha256|FIXTURE_OPENROUTER/);
+    expect(Object.hasOwn(population, 'complete')).toBe(false);
+  });
+
+  it('reads its own uncommitted binding and releases receipt locks and rows on rollback', async () => {
+    const a = await tenant(); const generationId = 'gen-' + randomUUID();
+    await expect(runService(async sql => {
+      const sameTransaction = new PostgresHostedUsageStore(fn => fn(sql));
+      expect(await sameTransaction.bindOpenRouterGeneration({ scope: a, generationId, payer: 'consumption', isByok: false,
+        credentialRef: 'env:FIXTURE_OPENROUTER_KEY', credentialSha256: 'c'.repeat(64),
+        occurredAtMs: T, observedAtMs: T + 1, evidenceRef: 'execution:uncommitted-binding' })).toBe('recorded');
+      const population = await sameTransaction.readLockedPopulation(sql);
+      expect(population.openRouterBindings.some(b => b.generationId === generationId)).toBe(true);
+      expect(population.records.some(r => r.usageId === generationId)).toBe(true);
+      throw new Error('uncommitted population rollback');
+    })).rejects.toThrow('uncommitted population rollback');
+    expect(await read(a)).toEqual([]);
+    const r = record(a);
+    await withPopulationHeld(async () => {
+      await expect(boundedWriter().append(r)).rejects.toMatchObject({ code: '55P03' });
+    }, true);
+    expect(await store().append(r)).toBe('recorded');
+    expect(await read(a)).toEqual([r]);
+  });
+
+  it('includes a writer that commits while the population lock is waiting', async () => {
+    const a = await tenant(); const r = record(a);
+    let inserted!: () => void; let release!: () => void; let readerPid = 0;
+    const started = new Promise<void>(resolve => { inserted = resolve; });
+    const released = new Promise<void>(resolve => { release = resolve; });
+    const writer = runService(async sql => {
+      expect(await new PostgresHostedUsageStore(fn => fn(sql)).append(r)).toBe('recorded');
+      inserted(); await released;
+    });
+    let reader: ReturnType<PostgresHostedUsageStore['readLockedPopulation']> | undefined;
+    try {
+      await Promise.race([started, writer]);
+      reader = runService(async sql => {
+        const [row] = await sql`SELECT pg_backend_pid() AS pid`; readerPid = row!.pid;
+        await sql.unsafe("SET LOCAL statement_timeout = '5s'");
+        return store().readLockedPopulation(sql);
+      });
+      await vi.waitFor(async () => {
+        const waiting = await db.adminSql`SELECT pid FROM pg_locks WHERE pid = ${readerPid}
+          AND relation = 'papercusp_auth.hosted_usage_receipts'::regclass AND mode = 'ShareLock' AND NOT granted`;
+        expect(waiting).toHaveLength(1);
+      }, { timeout: 3000, interval: 10 });
+      release(); await writer;
+      expect((await reader).records).toEqual(expect.arrayContaining([r]));
+    } finally { release(); await Promise.allSettled([writer, ...(reader ? [reader] : [])]); }
+  });
+
+  it('rejects an autocommit pool whose read locks ended between statements', async () => {
+    await expect(store().readLockedPopulation(db.adminSql)).rejects.toThrow('usage population requires one transaction');
+  });
+
+  it('rejects stale-snapshot isolation in both the reader and the fixed lock helper', async () => {
+    for (const isolation of ['REPEATABLE READ', 'SERIALIZABLE']) {
+      for (const readPopulation of [true, false]) {
+        await expect(db.appSql.begin(async tx => {
+          await tx.unsafe(`SET TRANSACTION ISOLATION LEVEL ${isolation}`);
+          await tx.unsafe('SET LOCAL ROLE hosted_service');
+          if (readPopulation) await store().readLockedPopulation(tx as unknown as Sql);
+          else await tx`SELECT papercusp_auth.lock_hosted_usage_population()`;
+        })).rejects.toThrow('usage population requires read committed');
+      }
+    }
+  });
+
+  it('restricts the fixed lock helper to hosted_service without widening receipt write privileges', async () => {
+    await expect(db.appSql`SELECT papercusp_auth.lock_hosted_usage_population()`).rejects.toMatchObject({ code: '42501' });
+    await expect(db.appSql.begin(async tx => {
+      await tx.unsafe('SET LOCAL ROLE hosted_app'); await tx`SELECT papercusp_auth.lock_hosted_usage_population()`;
+    })).rejects.toMatchObject({ code: '42501' });
+    for (const privilege of ['UPDATE', 'DELETE', 'TRUNCATE']) {
+      const [row] = await db.adminSql`SELECT has_table_privilege('hosted_service',
+        'papercusp_auth.hosted_usage_receipts', ${privilege}) AS allowed`;
+      expect(row!.allowed).toBe(false);
+    }
+    const [role] = await runService(async sql => {
+      await store().readLockedPopulation(sql); return sql`SELECT current_user AS role`;
+    });
+    expect(role!.role).toBe('hosted_service');
+  });
 
   it('records an exact receipt once across concurrent deliveries and a new store instance', async () => {
     const scope = await tenant(); const r = record(scope);

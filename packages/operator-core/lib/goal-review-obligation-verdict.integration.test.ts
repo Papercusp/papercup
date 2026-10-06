@@ -98,6 +98,7 @@ async function readAgenda(refusal: GoalLaunchRefusal | null = null, admission: '
     // and final acceptance are controlled for review/budget cases. The canonical
     // admission cases below opt into the production preflight explicitly.
     deps: { planSlugs: async () => [], ownerDirectives: async () => [], waitingOn: async () => [], consultReconciliations: async () => [],
+      fleetStaffing: async () => [],
       ownerReport: async () => null,
       planAcceptance: async () => ({ satisfied: true, buildProvenance: { sha: null, version: 'fixture' } }),
       ...(admission === 'controlled-ready' ? { planAdmission: async () => ({

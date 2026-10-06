@@ -2397,6 +2397,111 @@
   },
   {
    "id": "WI-10004541",
+   "hardwareBoundaryPrerequisiteQualification": {
+    "status": "retained-scoped-boundary-evidence; full-R5-acceptance-unqualified",
+    "observedAt": "2026-10-06T05:47:51Z",
+    "sourceRef": "thread-post:1158953",
+    "workItem": "WI-10004540",
+    "sourceItem": "P-006",
+    "requirement": "R-5",
+    "sourcePlanVersion": 11,
+    "sourcePlanContentHash": "a5972967126ccfd937627d3a4b943b1df444e83215cf44dd4c9fb0d566566e3b",
+    "currentClauses": [
+     {
+      "specId": "AUTO-BAR-R-5-P-006",
+      "revision": 2,
+      "contentHash": "fcf2fb864ceaa5af4d660a71d33904b8ad9ad173eb83b3dae4b30ce1ebfe3367"
+     },
+     {
+      "specId": "MDENSE-actual-parity-cell",
+      "revision": 1,
+      "contentHash": "b1d95c0371719161c50d0c706f282862f1b778868ba696950843b59e33814fed"
+     }
+    ],
+    "checkpointQualification": {
+     "contentHash": "596e4f3b7fd4",
+     "fullBodyRead": true,
+     "charactersRead": 21753,
+     "savedCheckRowsRead": 9,
+     "stateAtRead": "open",
+     "claimAtRead": "assigned to an existing peer; preserved",
+     "freshness": "unknown; no measured dependency verdict",
+     "qualification": "The complete retained checkpoint preserves finite native ownership/lifecycle observations, successful selected diagnostics and failed full GPU evidence. Its later mechanical checkpoint explicitly concerns the holder session and is not item verification."
+    },
+    "selectedConsumer": {
+     "workItem": "WI-10004541",
+     "stateAtRead": "blocked",
+     "assigneeAtRead": null,
+     "checkpointStatus": "absent",
+     "typedNextActionStatus": "missing"
+    },
+    "boundEvidenceWindow": {
+     "workItemIds": [
+      "WI-10004540"
+     ],
+     "limit": 100,
+     "bindings": [],
+     "truncatedByLimit": false,
+     "scopeLimitation": "This selected prerequisite returned no bindings; evidence elsewhere is not ruled out. P-006 is qualified under its retained P-007 dependent without adding a row to the frozen blocked population."
+    },
+    "retainedDossier": {
+     "path": "docs/evidence/mdenseon-boundary-tf32-2026-10-01.json",
+     "bytes": 189851,
+     "sha256": "09d26293b196a7372309cd807a0dc9ff46d5e44d842e0bc06fbaf562792bbc66",
+     "selectedImmutablePinsChecked": 14,
+     "pinScope": "Paired Python TF32 receipt/reference/summary/profile eight pins, CPU summary/profile two pins, and later native paddedV7 capture/result/terminal/assessment four pins. No full raw cohort or matrix was replayed.",
+     "pairedTf32": {
+      "requestSha256": "7fbfac87beafc5709269e8a22eb5abbeb025d4cea9813c2e4f2b7e5bcae4c243",
+      "requestInputAndReferenceIdentitiesMatch": true,
+      "cell": "single-short-query",
+      "tokenLength": 6,
+      "fixedMaximumAbsoluteError": 0.00003,
+      "tf32OnMaximumAbsoluteError": 0.00010596215724945068,
+      "tf32OffMaximumAbsoluteError": 0.00000025331974029541016,
+      "tf32OnPassed": false,
+      "tf32OffPassed": true,
+      "bothDiagnosticOnly": true,
+      "bothFullPopulationCompatible": false,
+      "qualification": "The retained controlled pair distinguishes the TF32 error in this one cell. Each summary verifies requested-provider execution and explicitly leaves the other boundary cells unmeasured; it does not accept the complete R5 outcome."
+     },
+     "cpuSummary": {
+      "sha256": "19f1cf4ae80045562709e669bb47a90af320171f99ad16f284f23b9f5fd72966",
+      "declaredCells": 10,
+      "reportedFullPopulationCompatible": true,
+      "reportedDiagnosticOnly": false,
+      "reportedFixedVectorAndRankGatesPassed": true,
+      "qualification": "The pinned historical summary reports all eight single inputs plus padded and mixed-length CPU cells, including actual8192 and over-limit handling. The writer's full-population flag requires complete selection plus fixed vector/rank gates. Individual raw CPU metrics were not rederived in this audit."
+     },
+     "laterNativePaddedGroup": {
+      "captureSha256": "57f90a2703d1e40a35b7a1a2234fbd6ed81fc562956d147f3610082f7c3eb5c9",
+      "assessmentSha256": "f5ad6d116a5f80e33098121904255cfbe5a948665e67aeb2e01cbacdcaf819d1",
+      "terminalSha256": "60e1331305f3f78b5510c7e02011dbc7f9321b1435f9cdc78e869cbf59002ee1",
+      "actualTerminalEof": true,
+      "actualTerminalExitCode": 0,
+      "actualInferenceBatchSize": 1,
+      "diagnosticOnly": true,
+      "fullGpuPopulationComplete": false,
+      "qualification": "Five exact prerequisite singles and five group members were measured one text per native inference. Later kernel/request and loader-closure qualification covers this selected group; it does not establish a padded tensor, full8192/over-limit/mixed-length GPU cells or full eight-input rankings. The failed fullV2 cell remains preserved."
+     },
+     "historicalHeapBoundary": "The retained dossier and checkpoint explicitly leave the historical heap-corruption cause and durable fix unresolved. Finite normal shape-error cleanup and the deliberately corrupted allocator control have separate scopes. No later global resolution or global evidence absence is inferred."
+    },
+    "currentDetectorInspection": {
+     "helperPath": "packages/operator-core/lib/memory/bench/mdenseon-vectors.py",
+     "helperSha256": "964ec8aa90bc3941316c248996c1b987e084e94e5d894c8bc8e26cd4476ad52c",
+     "olderCorrectedRunHelperSha256": "c812b246fc016a70a99b80480ca07aa84dc16e1f00101e36a5ab5db1963c2e5b",
+     "testPath": "packages/operator-core/lib/memory/bench/mdenseon-config.test.ts",
+     "testSha256": "081bf1d5ba975f0b20deb65d5fcdd72865295d93e72152641c7d3c987a83a77d",
+     "qualification": "Current source visibly submits default use_tf32=0 and rejects fallback or unacknowledged precision, missing boundary cells and relaxed gates. Conventional negative tests exist and were read. The helper differs from the older corrected-run pin; inspection establishes neither a current test pass nor a regression."
+    },
+    "openAcceptance": [
+     "Qualify the complete current CPU and verified GPU length/input/batch population, preserving fixed vector/token/ranking thresholds and explicitly diagnosed incompatible cells.",
+     "Keep selected Python/native recipes, one-text native groups, failed full GPU cells and historical heap diagnostics distinct; resolve required failure diagnosis and recurrence guards without broadening diagnostic proof.",
+     "Bind current immutable evidence and complete required source/completion audits and independent acceptance before canonical settlement."
+    ],
+    "acceptanceWaived": false,
+    "generationPerformed": false,
+    "disposition": "Retain the blocked P-007 consumer and preserve the existing P-006 peer claim. This dated qualification changes no historical population, state, dependency or completion authority; original40/200 and complete109-root unknowns remain unchanged."
+   },
    "state": "blocked",
    "disposition": "retained-current-dependency",
    "reason": "Current canonical dependency settlement or authority predicate remains unsatisfied.",

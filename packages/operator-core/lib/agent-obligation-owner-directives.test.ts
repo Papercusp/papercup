@@ -188,6 +188,7 @@ function readerDeps(
     // passed, so the suite read green while the run exited non-zero.
     waitingOn: async () => [],
     consultReconciliations: async () => [],
+    fleetStaffing: async () => [],
   };
 }
 

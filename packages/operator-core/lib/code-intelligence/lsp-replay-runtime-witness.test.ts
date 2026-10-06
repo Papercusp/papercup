@@ -6,7 +6,9 @@ import { join } from 'node:path';
 import { replayHash, replayLoadedRuntime, replayRuntimeLaunch, type ReplayRuntimeWitness } from './lsp-fleet-replay-runtime';
 import { readProcessIdentity } from '../process-identity';
 import { fileURLToPath } from 'node:url';
-import { buildTaskScopeArgvWithTransport, SYSTEMD_ENV_RUNNER_PATH } from '../systemd-scope';
+import { buildTaskScopeArgvWithTransport, SYSTEMD_ENV_RUNNER_PATH, SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS } from '../systemd-scope';
+
+const scopeProbeArgv = ['--user', '--scope', '--quiet', ...SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS, '--', 'true'];
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -245,7 +247,7 @@ describe('actual replay load-byte witness', () => {
   }, 20_000);
   it('witnesses the exact managed availability probe as terminal control evidence and rejects incomplete or altered proof', async () => {
     const f = fixture('mjs', `import {spawn} from 'node:child_process';
-      const c=spawn('systemd-run',['--user','--scope','--quiet','--collect','--','true'],{stdio:['ignore','ignore','pipe']});
+      const c=spawn('systemd-run',${JSON.stringify(scopeProbeArgv)},{stdio:['ignore','ignore','pipe']});
       let errors='';c.stderr.on('data',chunk=>errors+=chunk);c.on('exit',code=>{if(code!==0)throw Error(errors);
       console.log(JSON.stringify({pids:[]}));setInterval(()=>{},1000);});`);
     await withLiveRuntime(f, pids => {
@@ -256,10 +258,18 @@ describe('actual replay load-byte witness', () => {
       expect(qualify()).toEqual([]);
       const rows = receipts(f.root).filter(row => row.pid === pid);
       const launch = rows.find(row => row.kind === 'child-launch');
-      expect(launch).toMatchObject({ controlPurpose: 'systemd-scope-availability', originalArgv: ['--user','--scope','--quiet','--collect','--','true'] });
+      expect(launch).toMatchObject({ controlPurpose: 'systemd-scope-availability', originalArgv: scopeProbeArgv });
       expect(receipts(f.root).filter(row => row.pid !== pid).map(row => row.kind)).toEqual(['bootstrap','control-complete']);
       const rootPath = join(f.root, `${pid}.jsonl`);
       const original = readFileSync(rootPath, 'utf8');
+      for (const field of ['originalArgv', 'argv']) {
+        const saved = launch[field];
+        launch[field] = saved.filter((arg: string) => arg !== '--property=CollectMode=inactive-or-failed');
+        writeFileSync(rootPath, rows.map(row => JSON.stringify(row)).join('\n') + '\n');
+        expect(qualify().some(reason => reason.includes('unsupported control launch'))).toBe(true);
+        launch[field] = saved;
+        writeFileSync(rootPath, original);
+      }
       const unfrozen = { ...witness, files: { ...witness.files } }; delete unfrozen.files[process.execPath];
       expect(replayLoadedRuntime(pid, reader.identity(pid), command, unfrozen, reader).unknown
         .some(reason => reason.startsWith('unqualified-control-probe:'))).toBe(true);
@@ -280,9 +290,13 @@ describe('actual replay load-byte witness', () => {
       expect(qualify().some(reason => reason.includes('unwitnessed control completion'))).toBe(true);
     });
   }, 20_000);
-  it('keeps near-match native availability commands unqualified', () => {
+  it.each([
+    [...scopeProbeArgv, 'extra'],
+    scopeProbeArgv.map(arg => arg === '--property=CollectMode=inactive-or-failed' ? '--property=CollectMode=inactive' : arg),
+    scopeProbeArgv.filter(arg => arg !== '--property=CollectMode=inactive-or-failed'),
+  ])('keeps altered native availability commands unqualified (%j)', (...argv) => {
     const f = fixture('mjs', `import {spawn} from 'node:child_process';
-      const c=spawn('systemd-run',['--user','--scope','--quiet','--collect','--','true','extra'],{stdio:'ignore'});
+      const c=spawn('systemd-run',${JSON.stringify(argv)},{stdio:'ignore'});
       await new Promise(resolve=>c.on('exit',resolve));`);
     execFileSync(process.execPath, f.launch.args, { env: { ...process.env, NODE_OPTIONS: '' }, stdio: 'pipe' });
     expect(receipts(f.root)).toContainEqual(expect.objectContaining({ kind: 'unknown', reason: 'unsupported-child-launch:true' }));

@@ -2863,10 +2863,14 @@ export function bodyShrinkTripped(existingBody: string | undefined | null, newBo
 export async function updateIssue(
   id: string,
   patch: UpdateIssuePatch,
+  opts: { workspaceId?: string; harnessSlug?: string | null } = {},
 ): Promise<EngineerIssue | null | ShrinkGuardTripped> {
   const { sql } = getOrgPg();
+  const workspaceId = opts.workspaceId ?? await resolveIssueWorkspace(id);
+  const physicalSlug = await resolveIssuePhysicalSlug(sql, workspaceId, id, opts.harnessSlug);
+  if (physicalSlug === null) return null;
   if (patch.body !== undefined && !patch.confirmShrink) {
-    const existing = await getIssue(id);
+    const existing = await getIssueInWorkspace(workspaceId, id, { baseHarnessSlug: physicalSlug });
     const tripped = existing ? bodyShrinkTripped(existing.body, patch.body) : null;
     if (tripped) return tripped;
   }
@@ -2881,7 +2885,9 @@ export async function updateIssue(
       parent_id = ${patch.parent !== undefined ? patch.parent : sql`parent_id`},
       origin = 'local',
       updated_at = now()
-    WHERE workspace_id = ${issuesScopeWorkspace()} AND issue_id = ${id}
+    WHERE workspace_id = ${workspaceId}
+      AND issue_id = ${id}
+      AND base_harness_slug = ${physicalSlug}
     RETURNING ${sql.unsafe(ISSUE_COLS)}`;
   if (!rows[0]) return null;
   const issue = toIssue(rows[0]);

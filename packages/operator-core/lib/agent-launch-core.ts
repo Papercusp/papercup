@@ -165,15 +165,18 @@ function boundedLaunchModeText(value: unknown, maxChars: number): string | null 
 }
 
 /** Normalize an untrusted launch-mode value before it reaches argv or JSON. */
-export function normalizeLaunchMode(value: unknown): LaunchMode | null {
+export function normalizeLaunchMode(value: unknown, opts: { fleetRole?: 'member' | 'leader' } = {}): LaunchMode | null {
   if (!value || typeof value !== 'object') return null;
   const input = value as Record<string, unknown>;
   if (input.mode !== 'drain' && input.mode !== 'grade' && input.mode !== 'test') return null;
+  // A new member can participate in the caller's mode, but the caller's
+  // personal mission and owner-directed provenance do not belong to that identity.
+  const member = opts.fleetRole === 'member';
   return {
     mode: input.mode,
-    subject: boundedLaunchModeText(input.subject, LAUNCH_MODE_SUBJECT_MAX_CHARS),
-    instructions: boundedLaunchModeText(input.instructions, LAUNCH_MODE_INSTRUCTIONS_MAX_CHARS),
-    ownerDirected: input.ownerDirected === true,
+    subject: member ? null : boundedLaunchModeText(input.subject, LAUNCH_MODE_SUBJECT_MAX_CHARS),
+    instructions: member ? null : boundedLaunchModeText(input.instructions, LAUNCH_MODE_INSTRUCTIONS_MAX_CHARS),
+    ownerDirected: !member && input.ownerDirected === true,
   };
 }
 
@@ -1073,7 +1076,9 @@ export function memberLaunchCommand(opts: MemberLaunchOpts): string {
   if (opts.seat) parts.push(`--seat=${quoteLaunchValue(opts.seat)}`);
   for (const dir of opts.addDir ?? []) if (dir) parts.push(`--add-dir=${quoteLaunchValue(dir)}`);
   if (opts.launchMode) {
-    const launchMode = normalizeLaunchMode(opts.launchMode);
+    const launchMode = normalizeLaunchMode(opts.launchMode, {
+      fleetRole: opts.fleetRole === 'leader' ? 'leader' : 'member',
+    });
     if (launchMode) {
       parts.push(`--mode=${launchMode.mode}`);
       if (launchMode.subject) parts.push(`--mode-subject=${quoteLaunchValue(launchMode.subject)}`);

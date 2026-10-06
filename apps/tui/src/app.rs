@@ -3375,8 +3375,7 @@ impl App {
         if !pending_draft {
             // P-025: an accepted turn failed; show why under its prompt. A
             // pending draft never reached the transcript, so the note covers it.
-            self.chat_messages
-                .push(crate::models::ChatMessage::turn_error(message));
+            crate::models::ChatMessage::push_turn_error(&mut self.chat_messages, message);
         }
         self.su_active_command_id = None;
         self.last_error = Some(message.to_string());
@@ -4394,8 +4393,10 @@ impl App {
                         self.finish_chat_turn();
                         // P-025: say what failed under the prompt, as stock
                         // CLIs do; the status line alone is hidden chat-first.
-                        self.chat_messages
-                            .push(crate::models::ChatMessage::turn_error(&message));
+                        crate::models::ChatMessage::push_turn_error(
+                            &mut self.chat_messages,
+                            &message,
+                        );
                         self.su_active_command_id = None;
                         self.last_error = Some(format!("SU-session: {message}"));
                         self.session_note = Some(

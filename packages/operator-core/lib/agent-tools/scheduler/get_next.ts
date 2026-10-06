@@ -460,11 +460,14 @@ export function shadowedFleetSpecNote(args: {
  * which is why the false verdict reads as rigorously confirmed. Hence the check below runs BEFORE
  * the re-check, not merely before the verdict.
  */
-function concurrencyBlockedRefusal(concurrency: {
-  activeClaims: number;
-  maxConcurrentClaims: number;
-  heldIds: string[];
-}): { error: string; diagnosis: Record<string, unknown> } {
+function concurrencyBlockedRefusal(
+  concurrency: {
+    activeClaims: number;
+    maxConcurrentClaims: number;
+    heldIds: string[];
+  },
+  ownerId: string,
+): { error: string; diagnosis: Record<string, unknown> } {
   return {
     // EI-19931420102632438: lead with the CAP, never with a lane-contents claim. A caller refused
     // on its own cap had the lane never consulted at all.
@@ -474,7 +477,10 @@ function concurrencyBlockedRefusal(concurrency: {
       `held: ${concurrency.heldIds.join(', ')}. (The claim lane itself was NOT evaluated — this is ` +
       `not a statement about lane contents.) A parked or externally-blocked claim STILL counts ` +
       `(EI-11796: declaring a blocker does not buy a slot). To hold more than one lane at once the ` +
-      `LEADER raises your cap with scheduler:set_claim_spec { limits: { maxConcurrentClaims: N } } — ` +
+      `LEADER raises your cap by reading scheduler:get_claim_spec { cupId: '${ownerId}' } and ` +
+      `replacing it with scheduler:set_claim_spec { cupId: '${ownerId}', spec: { ...current.spec, ` +
+      `limits: { ...current.spec.limits, maxConcurrentClaims: N } } }. The write requires exactly one ` +
+      `target selector (cupId or fleet) and a full replacement spec — ` +
       `do not work around it, and do not release a parked item you still own just to pull other work.`,
     diagnosis: {
       concurrencyBlocked: true,
@@ -725,7 +731,7 @@ async function buildMissDiagnosis(args: {
     if (concurrency?.blocked) {
       // WI-6409: the message + diagnosis now live in `concurrencyBlockedRefusal` so the
       // fleet-scoped branch returns the IDENTICAL verdict instead of a false divergence.
-      return concurrencyBlockedRefusal(concurrency);
+      return concurrencyBlockedRefusal(concurrency, args.ownerId);
     }
 
     // D-002 (drain-claim-spec-hardening-2026-07-13, fixes EI-11300): mirror getNextWorkItem's
@@ -1874,7 +1880,7 @@ export default defineTool({
           content: [
             {
               type: 'text' as const,
-              text: JSON.stringify({ ok: false, ...concurrencyBlockedRefusal(capped) }),
+              text: JSON.stringify({ ok: false, ...concurrencyBlockedRefusal(capped, ident.ownerId) }),
             },
           ],
         };

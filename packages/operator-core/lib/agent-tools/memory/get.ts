@@ -104,8 +104,8 @@ export default defineTool({
   crossWorkspace: true,
   args: z
     .object({
-      id: z.string().min(1).optional().describe('a single memory id (n=1 shorthand for ids:[id])'),
-      ids: z.array(z.string().min(1)).min(1).max(50).optional().describe('memory ids to read (1–50)'),
+      id: z.string().uuid('Memory ID must be a valid UUID').optional().describe('a single memory UUID (n=1 shorthand for ids:[id])'),
+      ids: z.array(z.string().uuid('Memory ID must be a valid UUID')).min(1).max(50).optional().describe('memory UUIDs to read (1–50)'),
     })
     .refine((a) => Boolean(a.id) || (a.ids?.length ?? 0) > 0, { message: 'pass `id` (one) or `ids` (many)' }),
   async handler(args, ctx) {

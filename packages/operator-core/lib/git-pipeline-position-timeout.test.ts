@@ -74,7 +74,9 @@ describe('git-pipeline-position subprocess bounds (EI-20262192515275987)', () =>
 
   it('disables optional index locking for status reads in both runner paths', async () => {
     childProcessMocks.execFile.mockImplementation((_command, _args, _options, callback) => {
-      callback(null, ' M tracked.ts\n', '');
+      // The generic promisified mock resolves its first value as execFile's
+      // `{ stdout, stderr }` result object.
+      callback(null, { stdout: ' M tracked.ts\n', stderr: '' });
     });
 
     await expect(realGit('/repo', ['status', '--porcelain'])).resolves.toBe('M tracked.ts');

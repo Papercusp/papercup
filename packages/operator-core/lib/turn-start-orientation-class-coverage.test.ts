@@ -46,6 +46,7 @@ import {
 } from './agent-obligations';
 import {
   consultReconciliationObligations,
+  fleetStaffingObligations,
   ownerDirectiveObligations,
   waitingOnObligations,
 } from './agent-obligation-providers';
@@ -716,6 +717,37 @@ const FAMILY_PROBES: Record<string, FamilyProbe> = {
         },
       }),
     marker: /consult-coverage-probe/,
+  },
+  // P-005 / D-030: the real provider, on the row whose absence is the failure this
+  // family exists for — a led fleet at zero workers that nothing will restore.
+  'fleet-staffing': {
+    build: () =>
+      fleetStaffingObligations({
+        workspaceId: 'papercusp-workspace',
+        ownerId: 'su-coverage-probe',
+        observedAt: FAMILY_OBSERVED_AT,
+        sourceGeneration: 'coverage-probe',
+        read: {
+          status: 'known',
+          value: [
+            {
+              fleetSlug: 'fleet-coverage-probe',
+              evaluation: {
+                alert: true,
+                current: 0,
+                target: 3,
+                shortfall: 3,
+                held: false,
+                notHeldBecause: 'supervise-not-granted',
+                topUpRule: null,
+                repair: 'fleet:headcount-target { target, supervise:true }',
+                reason: '0 of 3 target worker(s) are productive (short 3).',
+              },
+            },
+          ],
+        },
+      }),
+    marker: /fleet-coverage-probe/,
   },
 };
 

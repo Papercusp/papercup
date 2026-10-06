@@ -279,6 +279,7 @@ export function startClaudeSuEngine(
   });
   const adapter = createClaudeSuSessionAdapter(binding, runtime, {
     ...options, ready: false, runtimeReady: () => ready && !closed, ownerTurnCorrelation: 'transport', cardSource: 'transport',
+    resultErrorSource: 'transport',
     ...(currentApprovals ? { approvals: currentApprovals } : {}),
     ownerTurnReceipts: (identity) => loadSuOwnerTurnReceipts(identity),
     controls: {

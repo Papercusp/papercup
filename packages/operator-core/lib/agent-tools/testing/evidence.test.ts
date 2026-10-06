@@ -439,6 +439,7 @@ describe('test-time evidence continuity', () => {
     const bundle = await recoverTestEvidence({ workItemId: 'WI-1', planSlug: 'p1',
       originRunId: runId, runId: detached, waitMs: 0 }, scope, d);
 
+    expect(bundle.status).toBe('incomplete');
     expect(bundle.rows[0]).toMatchObject({ phase: 'pending', outcome: 'unknown' });
     expect(bundle.detachedRunStatus).toMatchObject({ status: 'running' });
     expect(bundle.recoveryWait).toMatchObject({ limitMs: 0, outcome: 'still-running' });

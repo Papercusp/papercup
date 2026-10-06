@@ -95,6 +95,47 @@ re-captured in P-032.
 | Ctrl+G external editor (Claude) | Ruled out: Codex has no such key, and the box already edits multi-line text with undo | — |
 | Context left and cost in /status | Not P-027: G-8 belongs to P-029 | — |
 
+## P-025 resolution (2026-10-06, WI-10006349)
+
+Rows 5–7, measured per engine with `--battery parity --probes 10,11,12,13` against the staging operator
+(:3170, sha 335341d37a for Codex, d182bf3e2f for OMP and Claude) and a pui debug build from this tree. Claude ran
+with `--account auto`: the box's default Claude account had hit its weekly limit. Frames: `/tmp/pui-p025-codex2`,
+`/tmp/pui-p025-omp2`, `/tmp/pui-p025-claude3` (not durable; P-032 re-captures them).
+Unit tests: `cargo test --bin pui` 1332 passed, 0 failed; `su-session-claude-engine.test.ts` 67 passed.
+
+| Gap / row | Now | Where |
+|---|---|---|
+| 5 Streaming text (count 1..40) | Claude: 2 jumps, the same two-block pattern as stock Claude (3, 40). Codex: 5 distinct counts (9, 18, 30, 37, 40); stock Codex showed 10. OMP: 4 (12, 28, 36, 40). Each engine streams as fast as it delivers text | app.rs SU-session delta arm |
+| 6 Tool call and result | One compact row when the call starts and a one-line result when it ends, on every engine: `⚙ Read(calc.js) ✓` / `⎿ Read 9 lines (Ctrl+R to expand)`; Codex shell calls read `⚙ Bash(cat calc.js) ✓` / `⎿ function add(a, b) { … +6 lines`. "Worked for" closes the turn below its rows | tool_display.rs, ui.rs `tool_detail_lines` |
+| 7 Edit with diff | `⚙ Update(calc.js) ✓` / `⎿ Updated calc.js` (OMP) or `⎿ Added 2 lines, removed 2 lines` (Claude) after one approval card; the file changed. Codex: its approval cards render, but in this run Codex never reached the edit (see the host note below); its file-change row is covered by `codex_and_omp_tool_calls_get_claude_style_rows` | tool_display.rs, change_card.rs |
+| Thinking / reasoning | One dim `∴` line (newest heading while streaming); Ctrl+R expands it | ui.rs `reasoning_lines`, app.rs `push_chat_reasoning` |
+| Failed turn | A refused turn leaves one line under its prompt with the provider's sentence (`⎿ API Error 400: <reason>`, `⎿ You've hit your weekly limit · resets 1pm`), instead of nothing, and not three times | models.rs `turn_error_text`, `ChatMessage::push_turn_error`, ui.rs |
+| Failed tool | `✗` on the row and the output on its `⎿` line; the fixed "SU-session tool failed" line under every failure is gone | app.rs, ui.rs |
+
+Defects found while measuring, all fixed with tests:
+
+- OMP ended the turn at every tool call: it marks a tool-calling message with stop reason `toolUse`, which the
+  operator read as a turn end, so pui printed "Worked for" mid-turn and could send a queued draft into a running
+  turn (packages/operator-core/lib/su-session-omp-adapter.ts, commit 335341d37).
+- OMP edit rows had no file name (the file is named only inside the patch); they read `Update(calc.js)` now.
+- Claude's "waiting for you" while an approval card is open ended the turn in pui; it is a pause now.
+- A refused Claude turn showed three times: the SDK's synthetic assistant text, the adapter's error and the
+  engine's error in its diagnostic wording. The engine is now the one reporter (`resultErrorSource:
+  'transport'`), pui shows the sentence after the diagnostic prefix, and an assistant line that only repeats
+  the error is replaced by it.
+- The battery logged a step stuck on a setup or connection screen, or answered by an account limit, as a
+  normal duration; it now aborts with `BATTERY_BLOCKED`.
+
+Host notes (not pui defects):
+
+- The operator service spawned Codex by bare name and its PATH found a stale `~/.local/bin/codex` (0.157.1),
+  which the server refuses the default model for: every Codex turn failed with a 400 that pui showed as nothing.
+  Mitigated on this host; the durable fix is WI-10006412.
+- `~/.codex/AGENTS.md` on this host carries the papercusp-su playbook, so Codex in the scratch project tried to
+  take a file lock over the network before editing and the sandbox kept asking to escalate (13-edit timed out).
+- Found on the full Codex leg, outside P-025: a relaunched `pui --solo` exited after "Starting PUI…", and the
+  picked backend is not carried into the next launch (WI-10006423, blocks P-032).
+
 ## Where pui is already level or ahead
 
 Instant echo and working line after Enter (P-024), history recall, multiline input (three ways), the @ file

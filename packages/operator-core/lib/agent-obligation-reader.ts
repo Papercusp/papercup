@@ -36,6 +36,7 @@ import type { GoalPlanFleetObservation } from './system-health/goal-drain-fleet-
 import type { GoalOwnerReportObligation } from './system-health/goal-owner-report-watchdog';
 import type { GoalPlacementProgressState } from './goal-placement-progress';
 import { fleetSlugFromName } from './agent-fleets-store';
+import type { FleetStaffingRow } from './fleet/fleet-staffing-read';
 import type { ExactPlanAdmission } from './agent-tools/plans/plan-admission-preflight';
 
 export const AGENT_OBLIGATION_OPTIONAL_READ_TIMEOUT_MS = 900;
@@ -123,6 +124,12 @@ export interface AgentObligationReaderDeps {
    * active goal — any session can open a `proceed` consult.
    */
   consultReconciliations: (workspaceId: string, ownerId: string) => Promise<ConsultReconciliationRow[]>;
+  /**
+   * P-005 / D-030 step 6: staffing of every active fleet this owner leads. REQUIRED
+   * for the same reason as `waitingOn`. Not gated on an active goal: any session can
+   * lead a fleet. An empty array means the owner leads no active fleet.
+   */
+  fleetStaffing: (workspaceId: string, ownerId: string) => Promise<FleetStaffingRow[]>;
 }
 
 interface ReadOutcome<T> {
@@ -383,7 +390,14 @@ export async function readAgentObligationAgenda(input: {
     [] as ConsultReconciliationRow[],
     sourceTimeoutMs,
   );
-  const [portfolio, admission, launch, fleet, report, ownAcceptances, worklistAcceptance, directives, waits, planning, consults] =
+  // Not gated on goalId either: see AgentObligationReaderDeps.fleetStaffing.
+  const fleetStaffingPromise = boundedRead(
+    'fleet-staffing',
+    deps.fleetStaffing(input.workspaceId, input.ownerId),
+    [] as FleetStaffingRow[],
+    sourceTimeoutMs,
+  );
+  const [portfolio, admission, launch, fleet, report, ownAcceptances, worklistAcceptance, directives, waits, planning, consults, staffing] =
     await Promise.all([
       portfolioPromise,
       admissionPromise,
@@ -396,6 +410,7 @@ export async function readAgentObligationAgenda(input: {
       waitingOnPromise,
       planningPromise,
       consultsPromise,
+      fleetStaffingPromise,
     ]);
   const planSlugs = [...ownPlanSlugs, ...worklistAcceptance.planSlugs];
   const acceptances = [...ownAcceptances, ...worklistAcceptance.acceptances];
@@ -403,6 +418,7 @@ export async function readAgentObligationAgenda(input: {
   if (directives.degraded) degradedSources.push(readFailure('owner directives', directives));
   if (waits.degraded) degradedSources.push(readFailure('waiting-on', waits));
   if (consults.degraded) degradedSources.push(readFailure('consult reconciliation', consults));
+  if (staffing.degraded) degradedSources.push(readFailure('fleet staffing', staffing));
   const consultReconciliation: ConsultReconciliationProviderInput = {
     workspaceId: input.workspaceId,
     ownerId: input.ownerId,
@@ -679,9 +695,50 @@ export async function readAgentObligationAgenda(input: {
     };
   });
 
+  // P-005 / D-030 step 6. Row facts only, no clock, for the same dedup reason as
+  // waitingOn: an unchanged staffing picture keeps an unchanged generation.
+  const fleetStaffing: NonNullable<Parameters<typeof buildAgentObligationAgenda>[0]['fleetStaffing']> = {
+    workspaceId: input.workspaceId,
+    ownerId: input.ownerId,
+    observedAt,
+    sourceGeneration: agentObligationSourceGeneration({
+      fleetStaffing: staffing.degraded
+        ? 'unknown'
+        : staffing.value.map((row) => [
+            row.fleetSlug,
+            row.evaluation?.alert ?? null,
+            row.evaluation?.current ?? null,
+            row.evaluation?.target ?? null,
+            row.evaluation?.held ?? null,
+            row.evaluation?.notHeldBecause ?? null,
+            row.evaluation?.topUpRule?.status ?? null,
+            row.unknownReason ?? null,
+          ]),
+    }),
+    read: staffing.degraded
+      ? {
+          status: 'unknown',
+          failure: {
+            code: 'canonical-fleet-staffing-read-failed',
+            detail: readFailure('fleet-staffing', staffing),
+            retry: 'retry fleet:leader-brief for each fleet you lead',
+          },
+        }
+      : { status: 'known', value: staffing.value },
+  };
+
   return {
     agenda: buildAgentObligationAgenda(
-      { planPlacement, goalPlanning, ownerReport, independentVerification, ownerDirectives, waitingOn, consultReconciliation },
+      {
+        planPlacement,
+        goalPlanning,
+        ownerReport,
+        independentVerification,
+        ownerDirectives,
+        waitingOn,
+        consultReconciliation,
+        fleetStaffing,
+      },
       observedAt,
     ),
     goalId,
@@ -853,6 +910,9 @@ export async function readAgentGoalModeState(input: {
 
 export function defaultAgentObligationReaderDeps(): AgentObligationReaderDeps {
   return {
+    // P-005 / D-030 step 6: the brief's own headcount primitives, loaded lazily.
+    fleetStaffing: async (workspaceId, ownerId) =>
+      (await import('./fleet/fleet-staffing-read')).readLedFleetStaffing({ workspaceId, ownerId }),
     goalSubject: async (workspaceId, ownerId) => {
       const [{ getModes }, { goalIdFromModes }] = await Promise.all([
         import('./modes/store'),

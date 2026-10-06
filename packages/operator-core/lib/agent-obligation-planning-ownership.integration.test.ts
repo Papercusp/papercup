@@ -64,6 +64,7 @@ async function planning() {
     // Real mode binding, portfolio, scoped review ledger and goal-pot authority.
     // No worker is launched; unrelated agenda sources alone are replaced.
     deps: { planSlugs: async () => [], ownerDirectives: async () => [], waitingOn: async () => [], consultReconciliations: async () => [],
+      fleetStaffing: async () => [],
       ownerReport: async () => null,
       goalLaunch: async () => ({ goalId: GOAL, settings: null, goalBrief: null, effective: {},
         ceilings: { maxAgents: null, maxPerFleet: null }, headcount: { total: 0, fleet: null },

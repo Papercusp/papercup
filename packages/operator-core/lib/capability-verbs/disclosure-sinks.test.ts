@@ -14,7 +14,9 @@
  * because some earlier step failed, not because the ledger refused.
  */
 import type postgres from 'postgres';
+import type { HostFetch, ProviderAdapter, ProviderDescriptor, ProviderInvokeRequest } from '@papercusp/plugin-sdk';
 import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
+import { createProviderRegistry } from '../integrations/provider-registry';
 
 const ledger = vi.hoisted(() => ({ assertDisclosurePermits: vi.fn() }));
 vi.mock('../personal-vault/disclosure-ledger', async (importActual) => ({
@@ -101,22 +103,53 @@ function outboundContext() {
   return { installSlug: 'install-1', userId: USER, source: sourceRow('s1', 'gmail') };
 }
 
-/** Every provider seam a verb can reach, as spies. */
-function providers() {
-  return {
-    resolveAccessToken: vi.fn(async () => 'access-token'),
-    sendMessage: vi.fn(async () => ({ messageId: 'm1', threadId: 't1' })),
-    createDraft: vi.fn(async () => ({ draftId: 'd1', messageId: 'm1', threadId: 't1' })),
-    sendDraft: vi.fn(async () => ({ messageId: 'm1', threadId: 't1' })),
-    readDraftRecipients: vi.fn(async () => ({ to: ['dana@draft.example'], cc: ['erin@draft.example'], subject: 'Draft' })),
+type Args = Record<string, unknown>;
+
+function recorder(descriptor: ProviderDescriptor, invoke: (request: ProviderInvokeRequest) => Promise<unknown>): ProviderAdapter {
+  return { describe: () => descriptor, syncPage: async () => ({ records: [], nextCursor: null, hasMore: false }), invoke };
+}
+
+/**
+ * Every provider seam a verb can reach, as spies. Mail and calendar reach their
+ * sources' registered providers (Gmail P-008, Google Calendar P-009), so those
+ * seams are the providers' capabilities, split by what each one delivers.
+ */
+async function providers() {
+  const seams = {
     probeMailbox: vi.fn(allowAllMailboxProbe),
-    createEvent: vi.fn(async () => ({ eventId: 'e1', htmlLink: null })),
-    updateEvent: vi.fn(async () => ({ eventId: 'e1', htmlLink: null })),
+    mailSend: vi.fn(async (args: Args) => ({ messageId: 'm1', threadId: String(args.threadId ?? 't1') })),
+    mailDraftWrite: vi.fn(async (args: Args) => ({ draftId: 'd1', messageId: 'm1', threadId: String(args.threadId ?? 't1') })),
+    mailDraftRead: vi.fn(async (args: Args) => ({ draftId: args.draftId, to: ['dana@draft.example'], cc: ['erin@draft.example'], subject: 'Draft' })),
+    calendarWrite: vi.fn(async (_args: Args) => ({ id: 'e1', htmlLink: null, status: 'confirmed', attendees: [] })),
     resolveCredentials: vi.fn(async () => ({ botToken: 'xoxb', appToken: 'xapp' })),
     postThreadMessage: vi.fn(async () => ({ channelId: 'C1', messageTs: '1.0' })),
   };
+  const registry = createProviderRegistry();
+  await registry.register({
+    pluginName: 'gmail',
+    descriptor: { id: 'gmail', contractVersion: 1, datatypes: ['email-message'], capabilities: ['mail.draft', 'mail.send'], egressHosts: ['gmail.googleapis.com'] },
+    adapter: recorder(
+      { id: 'gmail', contractVersion: 1, datatypes: ['email-message'], capabilities: ['mail.draft', 'mail.send'], egressHosts: ['gmail.googleapis.com'] },
+      async ({ capability, args }) => {
+        if (capability === 'mail.send') return seams.mailSend(args);
+        return args.operation === 'read' ? seams.mailDraftRead(args) : seams.mailDraftWrite(args);
+      },
+    ),
+  });
+  await registry.register({
+    pluginName: 'google-calendar',
+    descriptor: { id: 'gcal', contractVersion: 1, datatypes: ['calendar-event'], capabilities: ['calendar.write'], egressHosts: ['www.googleapis.com'] },
+    adapter: recorder(
+      { id: 'gcal', contractVersion: 1, datatypes: ['calendar-event'], capabilities: ['calendar.write'], egressHosts: ['www.googleapis.com'] },
+      async ({ args }) => seams.calendarWrite(args),
+    ),
+  });
+  const noHttp: HostFetch = async () => {
+    throw new Error('provider recorders perform no HTTP');
+  };
+  return { ...seams, registry, hostFetchFor: () => noHttp };
 }
-type Providers = ReturnType<typeof providers>;
+type Providers = Awaited<ReturnType<typeof providers>>;
 
 interface SinkCase {
   verb: string;
@@ -138,7 +171,7 @@ const CASES: SinkCase[] = [
       direction: 'inbound', from: 'alice@inbound.example', threadId: 't1', messageId: '<m1@inbound.example>', subject: 'Hi',
     }),
     run: (p) => replyToCanonicalMail(sql, { workspaceId: WORKSPACE, userId: USER, messageId: 'ext-1', text: 'reply', mode: 'send', agentOwnerId: AGENT }, p as never),
-    delivery: (p) => [p.resolveAccessToken, p.sendMessage, p.createDraft],
+    delivery: (p) => [p.mailSend, p.mailDraftWrite],
   },
   {
     verb: 'mail:send',
@@ -148,7 +181,7 @@ const CASES: SinkCase[] = [
       workspaceId: WORKSPACE, userId: USER, to: ['bob@to.example'], cc: ['carol@cc.example'], subject: 'Hello', text: 'body', provenance: OWNER, agentOwnerId: AGENT,
     }, p as never),
     // The deliverability probe contacts the recipient's mail host, so it is a sink too.
-    delivery: (p) => [p.probeMailbox, p.resolveAccessToken, p.sendMessage],
+    delivery: (p) => [p.probeMailbox, p.mailSend],
   },
   {
     verb: 'mail:send-draft',
@@ -159,7 +192,7 @@ const CASES: SinkCase[] = [
       workspaceId: WORKSPACE, userId: USER, draftId: 'draft-1', expectedTo: ['dana@draft.example'], expectedCc: ['erin@draft.example'], provenance: OWNER, agentOwnerId: AGENT,
     }, p as never),
     // Reading the draft's recipients precedes the check by design; sending does not.
-    delivery: (p) => [p.probeMailbox, p.sendDraft],
+    delivery: (p) => [p.probeMailbox, p.mailSend],
   },
   {
     verb: 'calendar:propose',
@@ -169,7 +202,7 @@ const CASES: SinkCase[] = [
       workspaceId: WORKSPACE, userId: USER, summary: 'Sync', start: '2026-10-02T10:00:00Z', end: '2026-10-02T11:00:00Z',
       attendees: ['frank@invite.example'], provenance: OWNER, agentOwnerId: AGENT,
     }, p as never),
-    delivery: (p) => [p.resolveAccessToken, p.createEvent],
+    delivery: (p) => [p.calendarWrite],
   },
   {
     verb: 'calendar:update',
@@ -180,7 +213,7 @@ const CASES: SinkCase[] = [
     run: (p) => updateCalendarEvent(sql, {
       workspaceId: WORKSPACE, userId: USER, eventId: 'ext-1', attendees: ['hank@added.example'], provenance: OWNER, agentOwnerId: AGENT,
     }, p as never),
-    delivery: (p) => [p.resolveAccessToken, p.updateEvent],
+    delivery: (p) => [p.calendarWrite],
   },
   {
     verb: 'chat:reply',
@@ -221,7 +254,7 @@ const CASES: SinkCase[] = [
 /** Stops a social verb at the credential seam, so no real adapter is ever invoked. */
 const REACHED_CREDENTIALS = new Error('reached_outbound_credentials');
 
-function arrange(c: SinkCase): Providers {
+async function arrange(c: SinkCase): Promise<Providers> {
   resolve.resolveCanonicalDocument.mockReset().mockImplementation(async () => {
     if (!c.document) throw new Error(`${c.verb} resolved a document it should not need`);
     return c.document;
@@ -250,7 +283,7 @@ describe('every outbound capability verb asks the disclosure ledger before deliv
   describe.each(CASES)('$verb', (c) => {
     it('passes the ledger the audience it is about to reach', async () => {
       ledger.assertDisclosurePermits.mockResolvedValue(undefined);
-      const p = arrange(c);
+      const p = await arrange(c);
       await c.run(p).catch((error: unknown) => {
         if (error !== REACHED_CREDENTIALS) throw error;
       });
@@ -268,7 +301,7 @@ describe('every outbound capability verb asks the disclosure ledger before deliv
       ledger.assertDisclosurePermits.mockRejectedValue(
         new DisclosureRefused('disclosure_reader_set_violation', 'test refusal', { violating: ['x@outside.example'] }),
       );
-      const p = arrange(c);
+      const p = await arrange(c);
 
       await expect(c.run(p)).rejects.toBeInstanceOf(DisclosureRefused);
       for (const spy of c.delivery(p)) expect(spy).not.toHaveBeenCalled();

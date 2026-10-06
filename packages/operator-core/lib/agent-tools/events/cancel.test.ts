@@ -7,6 +7,7 @@
  * ack-miss riding alongside a successful cancel never poisons the result).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { invalidInputCorrections, strictArgs, unknownArgHint } from '@papercusp/tooldef/define-tool';
 
 const identityState = vi.hoisted(() => ({ workspaceId: 'ws-x' as string | null }));
 
@@ -55,6 +56,27 @@ const cancelledAwait = (overrides: Record<string, unknown> = {}) => ({
 });
 
 describe('events:cancel dual-path result', () => {
+  it.each([
+    ['await', { await_id: 7 }],
+    ['delivery', { delivery_id: 3 }],
+    ['batch', { await_ids: [7], delivery_ids: [3] }],
+  ])('explains the internal reason boundary for a rejected %s call without changing its IDs', (_kind, selectedIds) => {
+    const schema = strictArgs(cancel.args);
+    const input = { ...selectedIds, reason: 'cleanup' };
+    const rejected = schema.safeParse(input);
+    expect(rejected.success).toBe(false);
+    if (rejected.success) throw new Error('reason must remain an internal cancellation field');
+
+    const corrections = invalidInputCorrections(rejected.error.issues, cancel.args, cancel.guidance?.argRedirects, input);
+    expect(corrections).toMatchObject([{ rejectedArg: 'reason', kind: 'authored-drop' }]);
+    const hint = unknownArgHint(rejected.error.issues, cancel.args, cancel.guidance?.argRedirects, input, 'events:cancel');
+    expect(hint).toContain('drop the key');
+    expect(hint).toContain('cancel_reason database requirement');
+    expect(hint).toContain('records operator internally');
+    expect(hint).toContain('delivery_id only ACKs');
+    expect(schema.parse(selectedIds)).toEqual(selectedIds);
+  });
+
   it('cancel-only success → ok:true, cancelled:true, no reason', async () => {
     vi.mocked(cancelAwaitDetailed).mockResolvedValue(cancelledAwait());
     const out = await call({ await_id: 7 });

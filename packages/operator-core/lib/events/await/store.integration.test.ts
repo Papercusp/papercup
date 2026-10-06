@@ -77,6 +77,7 @@ const { defineAgentObligation, evaluateAgentObligations } = await import('../../
 const { classifyVerifiedWaitTimeout } = await import('./verified-wait');
 const { observeCheckpointProducer } = await import('./checkpoint-verified-wait');
 import type { ProducerHealthCertificate } from './verified-wait';
+import { AWAIT_CANCEL_REASONS } from './cancel-reasons';
 
 let rootSql: postgres.Sql;
 
@@ -1321,6 +1322,13 @@ describe('await-event store (PG)', () => {
       confirmStanding: true,
     })).toBe(true);
     expect(await cancelAwait({ awaitId: internalCancelled.id, subscriberId: 'leader' })).toBe(true);
+    const reasons = await rootSql<Array<{ id: number; cancel_reason: string | null }>>`
+      SELECT id, cancel_reason FROM harness_shared.event_awaits
+       WHERE id IN (${operatorCancelled.id}, ${internalCancelled.id})`;
+    expect(Object.fromEntries(reasons.map((row) => [Number(row.id), row.cancel_reason]))).toEqual({
+      [operatorCancelled.id]: 'operator',
+      [internalCancelled.id]: AWAIT_CANCEL_REASONS.internalCleanup,
+    });
     expect(await listOperatorCancelledAwaits('leader', [key, 'fleet:drained:alpha'])).toMatchObject([
       { id: operatorCancelled.id, subscriberId: 'leader', eventKey: key },
     ]);

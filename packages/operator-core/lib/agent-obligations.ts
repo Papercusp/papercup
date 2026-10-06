@@ -50,7 +50,14 @@ export type AgentObligationFamily =
    * Until now that debt was an honour-system instruction — no row, no terminal
    * state, so a compaction or a lapsed consult silently dropped it.
    */
-  | 'consult-reconciliation';
+  | 'consult-reconciliation'
+  /**
+   * P-005 / D-030 step 6: a fleet this session leads is under-staffed and nothing
+   * will restore it (the headcount governor does not hold it). Rendered on every
+   * wake so a leader loop cannot keep recording quiet wakes over an empty fleet;
+   * clears when the governor holds the fleet, it reaches target, or it winds down.
+   */
+  | 'fleet-staffing';
 export type AgentObligationStatus = 'due' | 'in-progress' | 'blocked' | 'satisfied' | 'not-applicable' | 'unknown';
 export type AgentObligationPriority = 'critical' | 'high' | 'normal' | 'low';
 export type AgentObligationFreshness = 'current' | 'stale' | 'unknown';

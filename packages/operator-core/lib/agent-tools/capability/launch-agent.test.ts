@@ -1111,6 +1111,18 @@ describe('ad-hoc launch (a brief, no plan, no fleet — D-002/D-003)', () => {
     expect(spawnedCommand()).toContain('--mode-owner-directed');
   });
 
+  it('withholds caller DRAIN mission and owner-directed provenance from a fresh fleet member', async () => {
+    getModesMock.mockResolvedValue([{ mode: 'drain', subject: 'leader-only', ownerDirected: true }]);
+    listFactsMock.mockResolvedValue([{ key: 'mode-instructions:drain', body: 'Lead the fleet as su-caller.' }]);
+    const result = await launchAgent.handler({ fleet: 'test-fleet', brief: 'Pull admitted member source work.' }, ctx);
+    expect(isError(result)).toBe(false);
+    expect(spawnedCommand()).toContain('--fleet=test-fleet');
+    expect(spawnedCommand()).toContain('--mode=drain');
+    expect(spawnedCommand()).not.toContain('--mode-subject');
+    expect(spawnedCommand()).not.toContain('--mode-instructions');
+    expect(spawnedCommand()).not.toContain('--mode-owner-directed');
+  });
+
   it('allows an operator-scope caller to bind an explicit harness (WI-3329)', async () => {
     const operatorCtx = { workspaceId: 'ws-test', harnessSlug: '*', role: 'su' } as never;
     await launchAgent.handler({ brief: 'run the disposable harness check', harness: 'papercusp' }, operatorCtx);

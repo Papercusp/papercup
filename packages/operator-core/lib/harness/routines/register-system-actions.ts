@@ -275,12 +275,12 @@ import './blueprint-operation-action';
 import './goal-start-action';
 import './external-trigger-dispatch-action';
 import './facebook-personal-vault-poll-action';
-import './google-calendar-poll-action';
 // enterprise-data-sources-2026-10-01 P-016 / D-026: Slack organization connector cadence
 // (membership sync + paced backfill); inert while papercusp-slack-org-connector is dark.
 import './slack-org-sync-action';
-// GitHub Issues has no poll action of its own: it is a provider plugin synced by connector-sync
-// (generalized-integrations-google-migration-cupboard-workflows-2026-10-05 P-010 / D-015).
+// GitHub Issues, Gmail and Google Calendar have no poll action of their own: they are provider
+// plugins synced by connector-sync (generalized-integrations-google-migration-cupboard-workflows-
+// 2026-10-05 P-010 / D-015, P-008 / D-017, P-009 / D-021).
 import './connector-sync-action';
 import './personal-vault-import-action';
 // overwatch-role-2026-06-15 B-04 (C-3): the `system:overwatch-launch` action the

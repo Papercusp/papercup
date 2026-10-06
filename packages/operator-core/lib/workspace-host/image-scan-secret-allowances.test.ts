@@ -17,25 +17,31 @@ import {
   WORKSPACE_HOST_SECRET_ALLOWANCES,
   type ImageScanSecretFinding,
 } from './image-scan-secret-allowances';
-import { AWS_IMAGE_SCAN_POLICY, evaluateImageScanPolicy, GCP_IMAGE_SCAN_POLICY } from './image-scan-policy';
+import {
+  AWS_IMAGE_SCAN_POLICY,
+  AZURE_IMAGE_SCAN_POLICY,
+  evaluateImageScanPolicy,
+  GCP_IMAGE_SCAN_POLICY,
+} from './image-scan-policy';
 
-/** The image-side path prefix the guest scanner reports, mount point and all. */
-const BUNDLE = '/mnt/candidate/sda1/opt/papercusp/releases/0.0.18';
+/** The image-side path prefix the scanner reports, mount point and all. */
+const BUNDLE = '/mnt/candidate/sda1/opt/papercusp/releases/0.0.21-p318r62b';
 
 /**
- * The 0.0.18 candidate's real bundled population, reproduced 2026-08-30 by running the pinned
- * gitleaks 8.30.1 over the published bundle at .papercusp/p046-r14-publication/extracted/ — the
- * same artifact baked into the candidate image, confirmed by the content-hashed filename
- * chunk-ZUYEQ4TG-50072df8.js appearing in both, and RE-MEASURED 2026-09-02 against the r19
- * bundle (pin aea66c75) whose sidecar rebuild added one entropy match to serve.mjs:
- * 2 gcp-api-key + 30 generic-api-key = 32, which matches the image scan's own bundled census
- * to the unit. Both numbers are reproductions of a real scan, never a count chosen to pass.
+ * The 0.0.21-p318r62b bundle's real bundled population, measured 2026-10-06 (WI-10006421) by
+ * the AWS AMI scan of candidate A-r62b and reproduced by running the pinned gitleaks 8.30.1
+ * directly over that release root's serve.mjs and Monaco file: 2 gcp-api-key + 31
+ * generic-api-key in serve.mjs + 1 generic-api-key in the vendored Monaco editor = 34, which
+ * matches the image scan's own bundled census to the unit. The earlier measurements this
+ * replaced (0.0.18, r19) are recorded on the allowance list itself. These are reproductions
+ * of a real scan, never a count chosen to pass.
  */
 function realBundledFindings(): ImageScanSecretFinding[] {
   return [
     { rule: 'gcp-api-key', file: `${BUNDLE}/spa/assets/chunk-ZUYEQ4TG-50072df8.js` },
     { rule: 'gcp-api-key', file: `${BUNDLE}/spa/excalidraw/chunk-ZUYEQ4TG.js` },
-    ...Array.from({ length: 30 }, () => ({ rule: 'generic-api-key', file: `${BUNDLE}/serve.mjs` })),
+    ...Array.from({ length: 31 }, () => ({ rule: 'generic-api-key', file: `${BUNDLE}/serve.mjs` })),
+    { rule: 'generic-api-key', file: `${BUNDLE}/spa/monaco/vs/editor-KLE6jdfb.js` },
   ];
 }
 
@@ -61,7 +67,7 @@ function scanWith(
 }
 
 describe('workspace-host secret allowances — the real population', () => {
-  it('accounts for every one of the 32 measured findings, leaving nothing to judge', () => {
+  it('accounts for every one of the 34 measured findings, leaving nothing to judge', () => {
     const outcome = applySecretAllowances(realBundledFindings(), WORKSPACE_HOST_SECRET_ALLOWANCES);
     expect(outcome.unjustified).toEqual([]);
     expect(outcome.overflowed).toEqual([]);
@@ -70,12 +76,14 @@ describe('workspace-host secret allowances — the real population', () => {
     expect(outcome.unused).toEqual([]);
   });
 
-  it('accepts the real 0.0.18 bundled population at the GCP gate, with maxSecretFindings still 0', () => {
-    const verdict = evaluateImageScanPolicy(scanWith(realBundledFindings()), GCP_IMAGE_SCAN_POLICY);
-    expect(verdict.failures).toEqual([]);
-    expect(verdict.accepted).toBe(true);
-    // The bar itself never moved. That is the whole claim of this mechanism.
-    expect(GCP_IMAGE_SCAN_POLICY.maxSecretFindings).toBe(0);
+  it('accepts the real bundled population at the GCP and AWS gates, with maxSecretFindings still 0', () => {
+    for (const policy of [GCP_IMAGE_SCAN_POLICY, AWS_IMAGE_SCAN_POLICY]) {
+      const verdict = evaluateImageScanPolicy(scanWith(realBundledFindings()), policy);
+      expect(verdict.failures).toEqual([]);
+      expect(verdict.accepted).toBe(true);
+      // The bar itself never moved. That is the whole claim of this mechanism.
+      expect(policy.maxSecretFindings).toBe(0);
+    }
   });
 
   it('every entry carries a real justification, not a rubber stamp', () => {
@@ -105,11 +113,12 @@ describe('workspace-host secret allowances — the excusing direction', () => {
   });
 
   it('DENIES a NEW secret hiding in an already-justified file', () => {
-    // The realistic leak: serve.mjs is justified for 30 entropy matches, so a real credential
-    // bundled into it would arrive as a 31st. maxFindings is what stops it being absorbed.
+    // The realistic leak: serve.mjs is justified for 31 entropy matches, so a real credential
+    // bundled into it would arrive as a 32nd. maxFindings is what stops it being absorbed.
     // This boundary moves with the justified count and must never be raised without one:
     // the r19 bump 29→30 was paid for by identifying the added match as the minified form of
-    // `const verdictFns = await import(...)`, not by widening the number to clear a red gate.
+    // `const verdictFns = await import(...)`, and the 0.0.21 bump 30→31 by reading both added
+    // matches (WI-10006421), not by widening the number to clear a red gate.
     const findings = [
       ...realBundledFindings(),
       { rule: 'generic-api-key', file: `${BUNDLE}/serve.mjs` },
@@ -208,8 +217,8 @@ describe('workspace-host secret allowances — matching cannot widen by accident
 
 describe('workspace-host secret allowances — scope of the mechanism', () => {
   it('leaves a policy with no allowances behaving exactly as before', () => {
-    // AWS/Azure carry none, and must keep denying on the raw bundled count.
-    expect(AWS_IMAGE_SCAN_POLICY.secretAllowances ?? []).toEqual([]);
+    // Azure carries none, and must keep denying on the raw count.
+    expect(AZURE_IMAGE_SCAN_POLICY.secretAllowances ?? []).toEqual([]);
     const verdict = evaluateImageScanPolicy(
       {
         vulnerabilityFindings: 0,
@@ -218,7 +227,7 @@ describe('workspace-host secret allowances — scope of the mechanism', () => {
         mountedFilesystems: 3,
         candidateRootProof: '/mnt/candidate/sda1/etc/os-release',
       },
-      AWS_IMAGE_SCAN_POLICY,
+      AZURE_IMAGE_SCAN_POLICY,
     );
     expect(verdict.accepted).toBe(false);
     expect(verdict.failures.some((f) => f.code === 'secret-threshold')).toBe(true);
@@ -239,8 +248,9 @@ describe('workspace-host secret allowances — scope of the mechanism', () => {
     const codes = verdict.failures.map((failure) => failure.code);
     expect(codes).toContain('secret-allowance-unusable');
     expect(codes).toContain('secret-threshold');
-    // All 32 judged — none quietly excused by a list that could not be trusted.
-    expect(verdict.policyViolatingSecrets).toBe(32);
+    // All 34 judged — none quietly excused by a list that could not be trusted.
+    expect(verdict.policyViolatingSecrets).toBe(realBundledFindings().length);
+    expect(verdict.policyViolatingSecrets).toBe(34);
   });
 
   it('does not require a sample when the bundle is clean', () => {

@@ -42,6 +42,15 @@ const flag = (name: string) => process.argv.includes(`--${name}`);
 /** Extra pui launch arguments from `--pui-args "<a> <b>"`, split on whitespace. */
 const puiArgs = () => (arg('pui-args') ?? '').split(/\s+/).filter(Boolean);
 /**
+ * Extra stock-CLI launch arguments from `--stock-args "<a> <b>"` (claude and
+ * codex only), appended to both the launch and the resume argv. P-028 records
+ * the stock approval prompts with `--stock-args "--permission-mode default"`
+ * (Claude) and `--stock-args "-a untrusted"` (Codex): the 2026-10-05 run let
+ * both CLIs pick their own mode, which was auto / full access, so neither
+ * ever asked.
+ */
+const stockArgs = () => (arg('stock-args') ?? '').split(/\s+/).filter(Boolean);
+/**
  * `--probes 10,11,12` runs only the parity probes whose label starts with one
  * of those numbers (the resume leg is probe 26). Omitted runs them all.
  */
@@ -135,8 +144,8 @@ const CLIS: Record<string, Cli> = {
   claude: {
     // User settings (papercusp hooks, plugins) and every configured MCP server are
     // this box's customisation, not what a new Claude Code user gets.
-    launch: ['claude', '--setting-sources', 'project,local', '--strict-mcp-config'],
-    resume: ['claude', '--setting-sources', 'project,local', '--strict-mcp-config', '--continue'], exit: '/exit',
+    launch: ['claude', '--setting-sources', 'project,local', '--strict-mcp-config', ...stockArgs()],
+    resume: ['claude', '--setting-sources', 'project,local', '--strict-mcp-config', ...stockArgs(), '--continue'], exit: '/exit',
     busy: /esc to interrupt/i,
     // ONLY the tool-permission prompt. A bare `❯ 1. Yes` also matches Claude's
     // other select dialogs (measured: it accepted "Teach auto mode about your
@@ -151,7 +160,7 @@ const CLIS: Record<string, Cli> = {
     statusCmds: ['/status', '/context'],
   },
   codex: {
-    launch: ['codex'], resume: ['codex', 'resume', '--last'], exit: '/quit',
+    launch: ['codex', ...stockArgs()], resume: ['codex', ...stockArgs(), 'resume', '--last'], exit: '/quit',
     busy: /esc to interrupt|Working \(/i,
     approve: { when: /Would you like to (run|make)|Allow command|Yes, proceed/i, key: 'y' },
     startup: [],
@@ -181,7 +190,9 @@ const CLIS: Record<string, Cli> = {
     // Esc with nothing running leaves pui's message box (app.rs, the composing
     // branch's `KeyCode::Esc => self.chat_composing = false`); `i` re-enters it.
     refocus: { unless: /Message — Enter send|Enter sends|\? for shortcuts/, key: 'i' },
-    blocked: /Connection: Unavailable|Not connected · send a message|no longer available for this backend|is not available on this operator|no longer offered by the operator/,
+    // An account wall or API refusal (P-025: a weekly-limit Claude account
+    // answered every step in ~6s with the refusal) means no conversation ran.
+    blocked: /Connection: Unavailable|Not connected · send a message|no longer available for this backend|is not available on this operator|no longer offered by the operator|hit your (?:weekly |daily |session |usage )?limit|⎿ API Error (?:40[0-3]|429)|without a usable reply/,
   },
 };
 const battery = (arg('battery', 'p005') ?? 'p005') as 'p005' | 'parity';

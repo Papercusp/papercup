@@ -88,6 +88,7 @@ const NO_OWNER_DIRECTIVES = {
   ownerDirectives: async () => [],
   waitingOn: async () => [],
   consultReconciliations: async () => [],
+  fleetStaffing: async () => [],
   planAcceptance: async (_workspaceId: string, planSlug: string) => M.evaluate(planSlug),
 };
 let currentBody: string;

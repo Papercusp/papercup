@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   GATE_CODE_OWNERSHIP,
   buildAgentObligationAgenda,
+  fleetStaffingObligations,
+  type FleetStaffingProviderInput,
   independentVerificationObligation,
   ownerReportObligation,
   planPlacementObligation,
@@ -26,6 +28,7 @@ import type { ExactPlanAdmission, ExactPlanAdmissionReason } from './agent-tools
 import { AGENT_OBLIGATION_SCHEMA_VERSION, formatAgentObligationLine } from './agent-obligations';
 import { projectAgentTurnStartObligationBrief } from './agent-obligation-reader';
 import { deliveredGoalPlacementRows } from './goal-placement-turn-receipts';
+import type { FleetUnderStaffedEvaluation } from './fleet/under-staffed-alert';
 
 const NOW = '2026-09-05T20:00:00.000Z';
 const base = { workspaceId: 'ws', ownerId: 'su-goal', observedAt: NOW, sourceGeneration: 'rev-42' };
@@ -1222,5 +1225,107 @@ describe('frozen provider matrix: waiting-on (P-011)', () => {
     expect(new Set(rows.map((row) => row.episode)).size).toBe(2);
     expect(rows[1]!.reason).toContain('no deadline');
     expect(rows[1]!.dueAt).toBeUndefined();
+  });
+});
+
+describe('frozen provider matrix: fleet staffing (P-005 / D-030)', () => {
+  type Evaluation = FleetUnderStaffedEvaluation;
+  const staffingInput = (read: FleetStaffingProviderInput['read']): FleetStaffingProviderInput => ({ ...base, read });
+  const evaluation = (over: Partial<Evaluation> = {}): Evaluation => ({
+    alert: true,
+    current: 0,
+    target: 3,
+    shortfall: 3,
+    held: false,
+    notHeldBecause: 'supervise-not-granted',
+    topUpRule: null,
+    repair: 'fleet:headcount-target { target, supervise:true }',
+    reason: '0 of 3 target worker(s) are productive (short 3).',
+    ...over,
+  });
+  const known = (fleetSlug: string, e: Evaluation | null, unknownReason?: string) =>
+    staffingInput({
+      status: 'known',
+      value: [{ fleetSlug, evaluation: e, ...(unknownReason ? { unknownReason } : {}) }],
+    });
+
+  it('reports a failed read as ONE unknown row, never as "leads no under-staffed fleet"', () => {
+    const rows = fleetStaffingObligations(staffingInput({ status: 'unknown', failure }));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.status).toBe('unknown');
+    expect(rows[0]!.applicableDemand).toBe(0);
+    expect(rows[0]!.reason).toBe(failure.detail);
+    expect(rows[0]!.measurementFailure).toEqual(failure);
+  });
+
+  it('emits nothing when the session leads no active fleet', () => {
+    expect(fleetStaffingObligations(staffingInput({ status: 'known', value: [] }))).toEqual([]);
+  });
+
+  it('makes an unheld EMPTY fleet a high-priority due repair that names the fleet and the tool', () => {
+    const [row] = fleetStaffingObligations(known('fleet-empty', evaluation()));
+    expect(row!.family).toBe('fleet-staffing');
+    expect(row!.status).toBe('due');
+    expect(row!.priority).toBe('high');
+    expect(row!.applicableDemand).toBe(1);
+    expect(row!.title).toContain('fleet-empty');
+    expect(row!.title).toContain('short 3 of 3');
+    expect(row!.action).toMatchObject({ kind: 'repair', tool: 'fleet:headcount-target', targetRef: 'fleet:fleet-empty' });
+    expect(row!.evidence[0]!.ref).toBe('fleet:fleet-empty');
+  });
+
+  it('keeps a partly-staffed unheld fleet due, at normal priority', () => {
+    const [row] = fleetStaffingObligations(known('fleet-thin', evaluation({ current: 1, shortfall: 2 })));
+    expect(row!.status).toBe('due');
+    expect(row!.priority).toBe('normal');
+  });
+
+  it('stays due when whether the governor holds the fleet is UNKNOWN: nothing confirms a restore', () => {
+    const [row] = fleetStaffingObligations(known('fleet-unsure', evaluation({ held: null, notHeldBecause: null })));
+    expect(row!.status).toBe('due');
+  });
+
+  it('emits no row for a held fleet below target: the governor is already restoring it', () => {
+    expect(fleetStaffingObligations(known('fleet-held', evaluation({ held: true, notHeldBecause: null })))).toEqual([]);
+  });
+
+  it('emits no row for a fleet at target', () => {
+    expect(
+      fleetStaffingObligations(known('fleet-full', evaluation({ alert: false, current: 3, shortfall: 0 }))),
+    ).toEqual([]);
+  });
+
+  it('titles a zero-worker fleet with no target by that cause, not by a shortfall', () => {
+    const [row] = fleetStaffingObligations(
+      known('fleet-untargeted', evaluation({ target: null, shortfall: null, notHeldBecause: 'no-target' })),
+    );
+    expect(row!.title).toBe('Fleet fleet-untargeted has no workers and no headcount target');
+  });
+
+  it('makes an unmeasured fleet an UNKNOWN row that points at the brief, not a due repair', () => {
+    const [row] = fleetStaffingObligations(known('fleet-dark', null, 'the live roster could not be read'));
+    expect(row!.status).toBe('unknown');
+    expect(row!.applicableDemand).toBe(0);
+    expect(row!.reason).toBe('the live roster could not be read');
+    expect(row!.action).toMatchObject({ tool: 'fleet:leader-brief', targetRef: 'fleet:fleet-dark' });
+  });
+
+  it('keys the episode on the fleet and its cause, so a re-render is the same obligation and a new cause is not', () => {
+    const first = fleetStaffingObligations(known('fleet-a', evaluation()))[0]!;
+    const again = fleetStaffingObligations({
+      ...known('fleet-a', evaluation()),
+      sourceGeneration: 'rev-43',
+      observedAt: '2026-09-05T20:30:00.000Z',
+    })[0]!;
+    const newCause = fleetStaffingObligations(known('fleet-a', evaluation({ notHeldBecause: 'top-up-rule' })))[0]!;
+    expect(again.episode).toBe(first.episode);
+    expect(again.id).toBe(first.id);
+    expect(newCause.episode).not.toBe(first.episode);
+  });
+
+  it('reaches the shared agenda as a due row', () => {
+    const agenda = buildAgentObligationAgenda({ fleetStaffing: known('fleet-agenda', evaluation()) }, NOW);
+    expect(agenda.primary[0]?.family).toBe('fleet-staffing');
+    expect(agenda.evaluations.map((entry) => entry.status)).toEqual(['due']);
   });
 });

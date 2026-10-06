@@ -47,20 +47,12 @@ export const OUTBOUND_CAPABILITIES = {
 } as const;
 
 /**
- * TRANSITIONAL (D-014.5). The first-party Google kinds the host still serves
- * with its own Gmail and Calendar functions. Selected by the SOURCE KIND, never
- * as a fallback, so a non-Google source can never reach Google code. A kind
- * with a registered provider of the same id uses the provider instead. Gmail
- * is a registered provider since P-008; P-009 deletes the `gcal` entry when it
- * registers Google Calendar.
+ * The provider serving a source. Every outbound source is served by a
+ * registered provider since P-009 (Gmail and Google Calendar are bundled
+ * provider plugins); a source whose kind has no registered provider is not an
+ * outbound candidate at all.
  */
-const GOOGLE_BUILTIN_KINDS: Readonly<Record<string, { datatype: OutboundDatatype; capabilities: readonly string[] }>> = {
-  gcal: { datatype: 'calendar-event', capabilities: ['calendar.read', 'calendar.write'] },
-};
-
-export type OutboundProvider =
-  | { kind: 'registered'; id: string; entry: RegisteredProvider }
-  | { kind: 'google-builtin'; id: string };
+export type OutboundProvider = { kind: 'registered'; id: string; entry: RegisteredProvider };
 
 export interface OutboundTarget extends OutboundContext {
   source: OwnedExternalTriggerSourceRow;
@@ -90,25 +82,19 @@ export class ProviderCapabilityUnsupported extends Error {
 
 function providerForKind(kind: string, registry: ProviderRegistry): OutboundProvider | null {
   const entry = registry.get(kind);
-  if (entry) return { kind: 'registered', id: entry.descriptor.id, entry };
-  if (GOOGLE_BUILTIN_KINDS[kind]) return { kind: 'google-builtin', id: kind };
-  return null;
+  return entry ? { kind: 'registered', id: entry.descriptor.id, entry } : null;
 }
 
 function producesDatatype(provider: OutboundProvider, datatype: OutboundDatatype): boolean {
-  return provider.kind === 'registered'
-    ? provider.entry.descriptor.datatypes.includes(datatype)
-    : GOOGLE_BUILTIN_KINDS[provider.id]?.datatype === datatype;
+  return provider.entry.descriptor.datatypes.includes(datatype);
 }
 
 function capabilitiesOf(provider: OutboundProvider): readonly string[] {
-  return provider.kind === 'registered'
-    ? provider.entry.descriptor.capabilities
-    : GOOGLE_BUILTIN_KINDS[provider.id]?.capabilities ?? [];
+  return provider.entry.descriptor.capabilities;
 }
 
 function needsCredential(provider: OutboundProvider): boolean {
-  return provider.kind === 'google-builtin' || Boolean(provider.entry.descriptor.oauth);
+  return Boolean(provider.entry.descriptor.oauth);
 }
 
 interface Candidate {
@@ -213,7 +199,6 @@ export async function invokeOutboundProvider(
   deps: OutboundDispatchDeps = {},
 ): Promise<Record<string, unknown>> {
   const { provider } = target;
-  if (provider.kind !== 'registered') throw new Error(`outbound_provider_not_registered:${provider.id}`);
   // Re-checked at the call: the resolver already refused, but a verb invoking a
   // capability it did not ask the resolver about must not reach the provider.
   if (!provider.entry.descriptor.capabilities.includes(capability)) {

@@ -15,10 +15,11 @@ async function writeExecutable(path: string, body: string) {
   await chmod(path, 0o755);
 }
 
-async function runWrapper(cwd: string, args: string[], extraEnv: Record<string, string> = {}) {
+async function runWrapper(cwd: string, args: string[], extraEnv: Record<string, string> = {}, unset: string[] = []) {
   const env: NodeJS.ProcessEnv = { ...process.env, TMPDIR: cwd, ...extraEnv };
   delete env.PAPERCUSP_SCRIPT_SNAPSHOT_SELF_COPIED;
   delete env.PAPERCUSP_SCRIPT_SNAPSHOT_SELF_DIR;
+  for (const name of unset) delete env[name];
 
   return await new Promise<{ status: number | null; stdout: string; stderr: string }>(
     (resolveResult, reject) => {
@@ -369,12 +370,9 @@ const REPO_ROOT = resolve(__dirname, '..', '..', '..', '..');
 const SHARED_TREE_PREFIX = '%h/papercupai-workspace/papercusp/';
 const LAUNCHER_REL = 'apps/operator/scripts/systemd/papercusp-script-snapshot.sh';
 
-const UNWRAPPED_ALLOWLIST: Record<string, string> = {
-  'apps/operator/scripts/systemd/papercup-bg-host.service.d/95-bundled-entry.conf ExecStartPre apps/operator/bin/bundle-host.sh':
-    'bundle-host.sh derives REPO_ROOT from its own directory, cds there, re-execs itself under a lock and reads .mjs helpers beside itself; it needs a repo-root override before it can run from a snapshot.',
-  'apps/operator/scripts/systemd/papercup-embed-sidecar.service ExecStartPre apps/operator/bin/bundle-host.sh':
-    'Same bundle-host.sh constraint as the bg-host drop-in: self-located repo root, lock re-exec, sibling .mjs helpers.',
-};
+// Empty since WI-10006398 wrapped the two bundle-host.sh units. Keep it empty: add an entry
+// only with a reason the script cannot run from a snapshot, and a work-item to fix that.
+const UNWRAPPED_ALLOWLIST: Record<string, string> = {};
 
 type ExecFinding = { key: string; wrapped: boolean; scripts: string[] };
 
@@ -585,6 +583,7 @@ describe('wrapped scripts pin their checkout instead of climbing out of the snap
         'apps/operator/scripts/papercup-dht-liveness-check.sh',
         'infra/estate-backup/pc-estate-mirror-alert.sh',
         'papercusp-desktop/bin/live-federation-gate.sh',
+        'apps/operator/bin/bundle-host.sh',
       ]),
     );
     expect(
@@ -596,5 +595,119 @@ describe('wrapped scripts pin their checkout instead of climbing out of the snap
       'allowlist entries no longer measured: delete them (the allowlist is shrink-only)',
     ).toEqual([]);
     for (const [key, reason] of Object.entries(SELF_CLIMB_ALLOWLIST)) expect(reason.length, key).toBeGreaterThan(40);
+  });
+});
+
+// ── bundle-host.sh honours its checkout pin ONLY from a snapshot (WI-10006398) ──
+// bg-host pins BUNDLE_HOST_OPERATOR_DIR with Environment=, and that value reaches every process
+// bg-host spawns — including deploy-cli, which runs papercup-release's copy of bundle-host.sh IN
+// PLACE. An in-place run that honoured the inherited value would bundle the staging tree into a
+// release. These cases execute the script's REAL resolution block (extracted between its
+// markers) — directly, and through the real launcher.
+
+// Overridable so scripts/mutation-probe.sh can point these cases at a mutated COPY.
+const BUNDLE_HOST = process.env.BUNDLE_HOST_PIN_PROBE_SCRIPT ?? join(REPO_ROOT, 'apps', 'operator', 'bin', 'bundle-host.sh');
+const PIN_ENV = ['BUNDLE_HOST_OPERATOR_DIR', 'PAPERCUSP_SCRIPT_SNAPSHOT_ROOT'];
+
+async function operatorDirBlock(): Promise<string> {
+  const text = await readFile(BUNDLE_HOST, 'utf8');
+  const match = /^# >>> operator-dir resolution.*\n([\s\S]*?)^# <<< operator-dir resolution$/m.exec(text);
+  expect(match, 'bundle-host.sh lost its "# >>> / # <<< operator-dir resolution" markers').not.toBeNull();
+  // Calibration: the block must still be the code under test, not an emptied shell.
+  expect(match![1]).toContain('BUNDLE_HOST_OPERATOR_DIR');
+  expect(match![1]).toContain('PAPERCUSP_SCRIPT_SNAPSHOT_ROOT');
+  return match![1];
+}
+
+// Same shell options as bundle-host.sh, and SCRIPT_DIR computed the same way it computes it.
+function probeScript(block: string): string {
+  return [
+    '#!/usr/bin/env bash',
+    'set -euo pipefail',
+    'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"',
+    block,
+    'printf "%s" "$OPERATOR_DIR"',
+    '',
+  ].join('\n');
+}
+
+describe('bundle-host.sh checkout pin is honoured only from a snapshot (WI-10006398)', () => {
+  it('ignores an inherited pin in place, honours it from a snapshot, and refuses a snapshot without one', async () => {
+    const block = await operatorDirBlock();
+    const root = await mkdtemp(join(tmpdir(), 'bundle-host-pin-'));
+    try {
+      const checkoutOperator = join(root, 'checkout', 'apps', 'operator');
+      const pinned = join(root, 'pinned', 'apps', 'operator');
+      const snapRoot = join(root, 'snap');
+      await mkdir(join(checkoutOperator, 'bin'), { recursive: true });
+      await mkdir(pinned, { recursive: true });
+      await mkdir(join(snapRoot, 'script-1'), { recursive: true });
+      await mkdir(join(root, 'snap-sibling', 'script-1'), { recursive: true });
+      const body = probeScript(block);
+      for (const dir of [join(checkoutOperator, 'bin'), join(snapRoot, 'script-1'), join(root, 'snap-sibling', 'script-1')]) {
+        await writeExecutable(join(dir, 'probe.sh'), body);
+      }
+      const run = (script: string, env: Record<string, string>) => {
+        const childEnv: NodeJS.ProcessEnv = { ...process.env };
+        for (const name of PIN_ENV) delete childEnv[name];
+        return spawnSync('bash', [script], { encoding: 'utf8', env: { ...childEnv, ...env } });
+      };
+
+      // In place with an inherited pin (the deploy-cli case): the pin is ignored.
+      const inPlace = run(join(checkoutOperator, 'bin', 'probe.sh'), { BUNDLE_HOST_OPERATOR_DIR: pinned });
+      expect([inPlace.status, inPlace.stdout, inPlace.stderr]).toEqual([0, checkoutOperator, '']);
+      // ...even when an unrelated snapshot root is inherited too.
+      const inPlaceWithRoot = run(join(checkoutOperator, 'bin', 'probe.sh'), {
+        BUNDLE_HOST_OPERATOR_DIR: pinned,
+        PAPERCUSP_SCRIPT_SNAPSHOT_ROOT: snapRoot,
+      });
+      expect([inPlaceWithRoot.status, inPlaceWithRoot.stdout]).toEqual([0, checkoutOperator]);
+      // A directory that merely shares the root's string prefix is not inside it.
+      const sibling = run(join(root, 'snap-sibling', 'script-1', 'probe.sh'), {
+        BUNDLE_HOST_OPERATOR_DIR: pinned,
+        PAPERCUSP_SCRIPT_SNAPSHOT_ROOT: snapRoot,
+      });
+      expect([sibling.status, sibling.stdout]).toEqual([0, join(root, 'snap-sibling')]);
+      // From a snapshot: the pin is honoured...
+      const snap = run(join(snapRoot, 'script-1', 'probe.sh'), {
+        BUNDLE_HOST_OPERATOR_DIR: pinned,
+        PAPERCUSP_SCRIPT_SNAPSHOT_ROOT: snapRoot,
+      });
+      expect([snap.status, snap.stdout]).toEqual([0, pinned]);
+      // ...and required: a snapshot must never fall back to locating itself in a temp dir.
+      const unpinned = run(join(snapRoot, 'script-1', 'probe.sh'), { PAPERCUSP_SCRIPT_SNAPSHOT_ROOT: snapRoot });
+      expect(unpinned.status).toBe(78);
+      expect(unpinned.stdout).toBe('');
+      expect(unpinned.stderr).toContain('BUNDLE_HOST_OPERATOR_DIR');
+      // A pin naming a missing directory refuses rather than resolving to an empty path.
+      const missing = run(join(snapRoot, 'script-1', 'probe.sh'), {
+        BUNDLE_HOST_OPERATOR_DIR: join(root, 'absent'),
+        PAPERCUSP_SCRIPT_SNAPSHOT_ROOT: snapRoot,
+      });
+      expect([missing.status, missing.stdout]).toEqual([78, '']);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('the real launcher marks its snapshot so the pin is honoured end to end', async () => {
+    const block = await operatorDirBlock();
+    const root = await mkdtemp(join(tmpdir(), 'bundle-host-launch-'));
+    try {
+      const bin = join(root, 'checkout', 'apps', 'operator', 'bin');
+      const pinned = join(root, 'pinned', 'apps', 'operator');
+      await mkdir(bin, { recursive: true });
+      await mkdir(pinned, { recursive: true });
+      const probe = join(bin, 'probe.sh');
+      await writeExecutable(probe, probeScript(block));
+
+      const viaLauncher = await runWrapper(root, [probe], { BUNDLE_HOST_OPERATOR_DIR: pinned }, PIN_ENV.slice(1));
+      expect([viaLauncher.status, viaLauncher.stdout, viaLauncher.stderr]).toEqual([0, pinned, '']);
+      const unpinned = await runWrapper(root, [probe], {}, PIN_ENV);
+      expect(unpinned.status).toBe(78);
+      expect(unpinned.stderr).toContain('running from a script snapshot');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });

@@ -42,7 +42,7 @@ Run all of it. Stop and report if any check fails.
    `apps/operator/app/settings/voice/page.tsx`,
    `packages/operator-core/lib/voice-release-availability.ts`,
    `packages/operator-core/lib/voice-prefs.ts`,
-   `packages/operator-core/lib/tts-synth.ts`,
+   `packages/operator-core/lib/endpoint-route/routes/agent-mcp/tts-synth.ts`,
    `apps/tui/src/voice.rs`, `apps/tui/src/client.rs`, `apps/tui/src/app.rs`.
    These bind the session to the promoted artifact for R-6. A path whose blob differs
    at promotion gets a focused re-check on the artifact.

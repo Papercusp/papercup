@@ -3582,16 +3582,17 @@ export async function attachCompletionEvidenceToSettledItem(
 export async function selfHealAuthorOriginIfStranded(
   id: string,
   callerOwnerId: string,
-  /** WI-10006010: the pinned physical row; omitted, every same-id twin is eligible. */
-  harnessSlug?: string | null,
+  /** WI-10006010: only this resolved physical row may be healed. */
+  physicalRow: { workspaceId: string; harnessSlug: string },
 ): Promise<boolean> {
-  if (!id || !callerOwnerId) return false;
+  if (!id || !callerOwnerId || !physicalRow.workspaceId || !physicalRow.harnessSlug) return false;
   const { sql } = getOrgPg();
   const rows = await sql<{ feature_id: string }[]>`
     UPDATE harness_shared.work_items
        SET origin = 'local'
-     WHERE feature_id = ${id}
-       ${harnessSlug ? sql`AND harness_slug = ${harnessSlug}` : sql``}
+     WHERE workspace_id = ${physicalRow.workspaceId}
+       AND harness_slug = ${physicalRow.harnessSlug}
+       AND feature_id = ${id}
        AND origin = 'remote'
        AND payload #>> '{_ei,created_by}' = ${callerOwnerId}
     RETURNING feature_id`;
@@ -4085,6 +4086,7 @@ export async function setWorkItemState(
       id,
       opts.harness,
     );
+    if (issueSlug === null) return null;
     // EI-19313515375179600 (WI-6822 follow-up): `origin` can flip local→remote well after
     // creation (an unresolved federation/replay-provenance defect, still under investigation —
     // see the work-item's own body). Trusting `origin` ALONE here strands the true author: they
@@ -4102,7 +4104,10 @@ export async function setWorkItemState(
     // never a row genuinely owned by a different peer) — this un-blocks the trigger for the
     // write that follows.
     if (wi.origin === 'remote' && opts.by && wi.createdBy && opts.by === wi.createdBy) {
-      const healed = await selfHealAuthorOriginIfStranded(id, opts.by, issueSlug);
+      const healed = await selfHealAuthorOriginIfStranded(id, opts.by, {
+        workspaceId: issueWorkspaceId,
+        harnessSlug: issueSlug,
+      });
       if (healed) wi.origin = 'local';
     }
     // EI-22189521072988065: a THIRD stranding, sibling to the two below — the caller
@@ -10189,6 +10194,14 @@ export async function updateWorkItem(
     const updated = await updateWorkItemGoal(id, wi, patch.goal);
     return updated ? { ok: true, item: updated } : { ok: false, reason: 'not_found' };
   }
+  const issueWorkspaceId = await resolveIssueWorkspace(id);
+  const issueSlug = await resolveIssuePhysicalSlug(
+    getOrgPg().sql,
+    issueWorkspaceId,
+    id,
+    opts.harness ?? wi.harness,
+  );
+  if (issueSlug === null) return { ok: false, reason: 'not_found' };
   // EI-14948: a federated (origin='remote') issue-family row is owned by its authoring
   // peer's core — the engineer_issues view's INSTEAD OF trigger (516/521) deliberately
   // no-ops a local UPDATE against it and reports 0 rows affected (RETURN NULL) so the
@@ -10204,7 +10217,10 @@ export async function updateWorkItem(
   // back to 'local' first (see selfHealAuthorOriginIfStranded's docblock) so the write
   // that follows isn't ALSO silently blocked by the same trigger.
   if (wi.origin === 'remote' && by && wi.createdBy && by === wi.createdBy) {
-    const healed = await selfHealAuthorOriginIfStranded(id, by);
+    const healed = await selfHealAuthorOriginIfStranded(id, by, {
+      workspaceId: issueWorkspaceId,
+      harnessSlug: issueSlug,
+    });
     if (healed) wi.origin = 'local';
   }
   if (wi.origin === 'remote') return { ok: false, reason: 'remote_origin_not_editable' };
@@ -10213,7 +10229,10 @@ export async function updateWorkItem(
   // in the view patch would be a silent no-op. Destructuring also keeps the issue writer's
   // patch contract honest and makes this separation compile-time visible.
   const { goal, ...issuePatch } = patch;
-  const issue = await updateIssue(id, { ...issuePatch, by });
+  const issue = await updateIssue(id, { ...issuePatch, by }, {
+    workspaceId: issueWorkspaceId,
+    harnessSlug: issueSlug,
+  });
   if (issue === null) return { ok: false, reason: 'not_found' };
   if ('shrinkGuardTripped' in issue) {
     return { ok: false, reason: 'body_shrink_guard', existingLength: issue.existingLength, newLength: issue.newLength };

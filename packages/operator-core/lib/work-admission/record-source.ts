@@ -10,21 +10,30 @@
  * Identity: the record's own id. It is deterministic over (workspace, data source, datatype,
  * provider object), so it is stable across re-syncs and re-ingest.
  *
- * Write-back: a plain-text comment on the source object, dispatched by CAPABILITY (D-015.5).
- * The record's data source names its provider; that provider must offer `<datatype>.comment`
- * and is invoked through a host.fetch bound to exactly that one source. The coordinates come
- * from the durable admission's source_ref, never from the caller. A provider that does not
- * offer the capability (a read-only one) is refused with `provider_capability_unsupported`.
+ * Write-back, dispatched by CAPABILITY (D-015.5; linear-asana-task-sync P-002):
+ *   - `<datatype>.comment`    a plain-text comment on the source object;
+ *   - `<datatype>.transition` a move to a canonical workflow category (ticket-vocabulary).
+ * The record's data source names its provider (resolved from the source id, never from a
+ * provider name); that provider must offer the capability and is invoked through a host.fetch
+ * bound to exactly that one source. The coordinates come from the durable admission's
+ * source_ref, never from the caller. A provider that does not offer the capability is refused
+ * with `provider_capability_unsupported:<provider>:<capability>` before any host.fetch exists.
+ * Field authority is unchanged: a transition sends only the target category, never the
+ * source-owned title, description or assignee.
  */
 import type postgres from 'postgres';
 import type { HostFetch } from '@papercusp/plugin-sdk';
 import { pinModuleState } from '@papercusp/module-singleton';
-import { providerRegistry, type ProviderRegistry } from '../integrations/provider-registry';
+import { providerRegistry, type ProviderRegistry, type RegisteredProvider } from '../integrations/provider-registry';
 import { createSourceHostFetch } from '../integrations/source-host-fetch';
+import { ProviderCapabilityUnsupported } from '../capability-verbs/provider-dispatch';
+import { isTicketStatusCategory, TICKET_STATUS_CATEGORIES } from '../data-sources/ticket-vocabulary';
 import {
   DEFAULT_FIELD_AUTHORITY,
   registerAdmissionSource,
+  type AdmissionDb,
   type AdmissionRefusal,
+  type AdmissionRow,
   type AdmissionSourceResolver,
   type ResolvedAdmissionSource,
 } from './admission-sources';
@@ -47,6 +56,11 @@ export interface RecordSourceDeps {
 /** The capability a record of `datatype` is written back through: `<datatype>.comment`. */
 export function recordWriteBackCapability(datatype: string): string {
   return `${datatype.replace(/-/g, '')}.comment`;
+}
+
+/** The capability that moves a record of `datatype` to a workflow category: `<datatype>.transition`. */
+export function recordTransitionCapability(datatype: string): string {
+  return `${datatype.replace(/-/g, '')}.transition`;
 }
 
 interface RecordRow {
@@ -137,32 +151,84 @@ export function createRecordAdmissionSource(deps: RecordSourceDeps = {}): Admiss
       };
     },
     async writeBack({ db, admission, text }) {
-      const ref = admission.sourceRef;
-      const sourceId = str(admission.dataSourceId);
-      const datatype = str(ref.datatype);
-      const externalId = str(ref.externalId);
-      if (!sourceId || !datatype || !externalId) throw new Error('write_back_coordinates_missing');
-      const sql = db as unknown as postgres.Sql;
-      const [source] = await sql<Array<{ kind: string; config: Record<string, unknown> | null }>>`
-        SELECT kind, config FROM harness_shared.data_sources
-         WHERE workspace_id = ${admission.workspaceId} AND id = ${sourceId}::uuid`;
-      if (!source) throw new Error(`write_back_source_missing:${sourceId}`);
-      const provider = registryOf().get(source.kind);
-      if (!provider) throw new Error(`write_back_provider_not_registered:${source.kind}`);
-      const capability = recordWriteBackCapability(datatype);
-      if (!provider.descriptor.capabilities.includes(capability)) {
-        throw new Error(`provider_capability_unsupported:${provider.descriptor.id}:${capability}`);
+      const target = await resolveRecordTarget(db, admission, recordWriteBackCapability, registryOf());
+      const result = await invokeRecordTarget(target, hostFetchFor, { externalId: target.externalId, text });
+      return { posted: true, externalRef: str(result.externalRef) || null, updateId: str(result.updateId) || null };
+    },
+    async transition({ db, admission, toCategory }) {
+      if (!isTicketStatusCategory(toCategory)) {
+        throw new Error(`transition_category_invalid:${toCategory} (expected one of ${TICKET_STATUS_CATEGORIES.join('|')})`);
       }
-      const harness = str(source.config?.harnessSlug);
-      if (!harness) throw new Error(`write_back_source_harness_missing:${sourceId}`);
-      const fetch = hostFetchFor(sql, { workspaceId: admission.workspaceId, providerId: provider.descriptor.id, sourceId, harness });
-      const result = (await provider.adapter.invoke(
-        { source: sourceId, capability, args: { externalId, text } },
-        { fetch },
-      )) as { externalRef?: unknown } | null;
-      return { posted: true, externalRef: str(result?.externalRef) || null };
+      const target = await resolveRecordTarget(db, admission, recordTransitionCapability, registryOf());
+      // Only the category travels: title, description and assignee belong to the source (D-004).
+      const result = await invokeRecordTarget(target, hostFetchFor, { externalId: target.externalId, toCategory });
+      return {
+        transitioned: result.changed !== false,
+        updateId: str(result.updateId) || null,
+        externalRef: str(result.externalRef) || null,
+      };
     },
   };
+}
+
+interface RecordTarget {
+  sql: postgres.Sql;
+  workspaceId: string;
+  sourceId: string;
+  harness: string;
+  externalId: string;
+  provider: RegisteredProvider;
+  capability: string;
+}
+
+/**
+ * The provider, capability and coordinates a write to this admission's record goes through.
+ * The provider is the one registered for the record's data source KIND (looked up by source id);
+ * a provider without the capability is refused here, before any host.fetch is built.
+ */
+async function resolveRecordTarget(
+  db: AdmissionDb,
+  admission: AdmissionRow,
+  capabilityFor: (datatype: string) => string,
+  registry: ProviderRegistry,
+): Promise<RecordTarget> {
+  const ref = admission.sourceRef;
+  const sourceId = str(admission.dataSourceId);
+  const datatype = str(ref.datatype);
+  const externalId = str(ref.externalId);
+  if (!sourceId || !datatype || !externalId) throw new Error('write_back_coordinates_missing');
+  const sql = db as unknown as postgres.Sql;
+  const [source] = await sql<Array<{ kind: string; config: Record<string, unknown> | null }>>`
+    SELECT kind, config FROM harness_shared.data_sources
+     WHERE workspace_id = ${admission.workspaceId} AND id = ${sourceId}::uuid`;
+  if (!source) throw new Error(`write_back_source_missing:${sourceId}`);
+  const provider = registry.get(source.kind);
+  if (!provider) throw new Error(`write_back_provider_not_registered:${source.kind}`);
+  const capability = capabilityFor(datatype);
+  if (!provider.descriptor.capabilities.includes(capability)) {
+    throw new ProviderCapabilityUnsupported(provider.descriptor.id, capability);
+  }
+  const harness = str(source.config?.harnessSlug);
+  if (!harness) throw new Error(`write_back_source_harness_missing:${sourceId}`);
+  return { sql, workspaceId: admission.workspaceId, sourceId, harness, externalId, provider, capability };
+}
+
+async function invokeRecordTarget(
+  target: RecordTarget,
+  hostFetchFor: NonNullable<RecordSourceDeps['hostFetchFor']>,
+  args: Record<string, unknown>,
+): Promise<{ externalRef?: unknown; updateId?: unknown; changed?: unknown }> {
+  const fetch = hostFetchFor(target.sql, {
+    workspaceId: target.workspaceId,
+    providerId: target.provider.descriptor.id,
+    sourceId: target.sourceId,
+    harness: target.harness,
+  });
+  const result = await target.provider.adapter.invoke(
+    { source: target.sourceId, capability: target.capability, args },
+    { fetch },
+  );
+  return result && typeof result === 'object' ? (result as Record<string, unknown>) : {};
 }
 
 /** The process-wide registration. Idempotent across module re-imports (same object). */

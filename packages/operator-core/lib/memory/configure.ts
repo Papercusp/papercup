@@ -36,7 +36,11 @@ import {
 } from '@papercusp/memory';
 import { readCredentials } from '../credentials';
 import { loadVoicePrefs } from '../voice-prefs';
-import { buildSidecarAwareEmbedder, hasLocalEmbedEngineOverride } from './embed-sidecar-wiring';
+import {
+  buildDeferredSidecarAwareEmbedder,
+  buildSidecarAwareEmbedder,
+  hasLocalEmbedEngineOverride,
+} from './embed-sidecar-wiring';
 import { embedAdmission, headersToRecord, EmbedBudgetExhaustedError } from './embed-admission';
 import { clearEmbedExhaustionAlertIfActive, maybeEscalateEmbedExhaustion } from './embed-exhaustion-alert';
 import { getHarnessAdminUrl } from '../embedded-pg-discovery';
@@ -665,10 +669,19 @@ async function resolveEmbedder(): Promise<ResolvedEmbedder> {
     buildOpenAi: buildOpenAiEmbedder,
     // Sidecar-first local legs (P-004) — shared warm model when available,
     // bit-identical in-process fallback otherwise.
-    buildLocal: () => buildSidecarAwareEmbedder('local', 'document'),
+    //
+    // DEFERRED (P-532f, extends D-050): resolving the memory embedder must not
+    // start the embed sidecar. Maintenance callers resolve it only to learn the
+    // active mode — activeVecTable() on the canonical-memory leg of EVERY
+    // embed-backfill tick, plus the scout/dream/semantic legs — and the eager
+    // builder ensured (spawned) the ~2 GB sidecar on each of those, so a drained
+    // Server's sidecar came back every tick with nothing to embed. The cascade
+    // above picks the mode without building, so deferring changes no choice; the
+    // first real embed still pays the spawn.
+    buildLocal: async () => buildDeferredSidecarAwareEmbedder('local', 'document'),
     // Storage/mem0 embed with the document prompt (search uses the query prompt).
-    buildGemma: () => buildSidecarAwareEmbedder('gemma', 'document'),
-    buildHarrier: () => buildSidecarAwareEmbedder('harrier', 'document'),
+    buildGemma: async () => buildDeferredSidecarAwareEmbedder('gemma', 'document'),
+    buildHarrier: async () => buildDeferredSidecarAwareEmbedder('harrier', 'document'),
     isOpenAiRecentlyExhausted: isOpenAiEmbedInCooldown,
   });
 }

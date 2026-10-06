@@ -253,14 +253,25 @@ describe('bundle-host.sh wiring', () => {
       '"$FRESHNESS_HELPER" check',
       '"$GATE_HELPER" snapshot',
       '"$GATE_HELPER" "${args[@]}"',
-      '"$SCRIPT_DIR/write-bundle-stale-marker.mjs"',
+      '"$HELPER_DIR/write-bundle-stale-marker.mjs"',
       '"$REPO_ROOT/scripts/mutation-probe-window-gate.mjs" wait',
       '"$REPO_ROOT/scripts/check-bundled-cli-entry-guards.mjs"',
-      '"$SCRIPT_DIR/ascii-escape-bundle.mjs"',
+      '"$HELPER_DIR/ascii-escape-bundle.mjs"',
       '"$FRESHNESS_HELPER" stamp',
     ]) {
       expect(script, `bundle-host.sh lost the loader on ${helper}`).toContain(`"\${COMMITTED_NODE[@]}" ${helper}`);
     }
+    // WI-10006398: systemd runs bundle-host.sh from a temp-dir snapshot, where SCRIPT_DIR is that
+    // temp dir. Node helpers import through node_modules and ../../../scripts, which resolve only
+    // from the checkout, so they must come from HELPER_DIR ($OPERATOR_DIR/bin), never SCRIPT_DIR.
+    expect(script).toContain('HELPER_DIR="$OPERATOR_DIR/bin"');
+    for (const name of ['FRESHNESS_HELPER', 'GATE_HELPER']) {
+      expect(script).toMatch(new RegExp(`^${name}="\\$HELPER_DIR/`, 'm'));
+    }
+    const snapshotRelativeHelpers = script
+      .split('\n')
+      .filter((line) => !line.trimStart().startsWith('#') && /\$SCRIPT_DIR\/[\w.-]+\.m?js\b/.test(line));
+    expect(snapshotRelativeHelpers, 'a node helper is resolved beside the (snapshot) script').toEqual([]);
   });
 
   it("bundle-host-common.sh's helpers use bundle-host.sh's loader, and plain node for other callers", () => {

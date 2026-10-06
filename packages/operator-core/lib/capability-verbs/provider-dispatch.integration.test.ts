@@ -13,8 +13,9 @@
  *
  * HTTP is mocked at the provider boundary: each fake provider reaches its API
  * only through the host-built `host.fetch`, whose underlying fetch records every
- * request. The Google seams are wired to throw, so any fallback to Google fails
- * loudly instead of passing quietly.
+ * request. There is no host-side Google path left to fall back to (P-009): the
+ * owner's sources here are all non-Google, so any request outside the fake
+ * providers' hosts fails the recorder.
  *
  * The falsifiers this file pins (R-5): dispatch falls back to Google, silently
  * chooses the first account, or bypasses the shared addressee / disclosure
@@ -111,10 +112,6 @@ const providerHttp = (async (input: URL | RequestInfo, init?: RequestInit) => {
   );
 }) as typeof fetch;
 
-const googleCalled = async (): Promise<never> => {
-  throw new Error('google_called');
-};
-
 function mailDeps(): MailDeps {
   return {
     registry,
@@ -127,9 +124,6 @@ function calendarDeps(): CalendarDeps {
   return {
     registry,
     hostFetchImpl: providerHttp,
-    resolveAccessToken: googleCalled,
-    createEvent: googleCalled,
-    updateEvent: googleCalled,
   };
 }
 

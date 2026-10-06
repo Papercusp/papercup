@@ -14,7 +14,10 @@ import { lspEvidenceNow } from './lsp-query-evidence';
 import { taskIdFromScopeUnit } from '../task-manager/types';
 import { absCgroupDir, parseProcCgroup, walkCgroupTree, type CgroupFs } from '../task-manager/cgroup-read';
 import { linuxPpidFromProcStat, linuxProcessIdentityFromStat, readProcessIdentity } from '../process-identity';
+import { SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS } from '../systemd-scope';
 import ts from 'typescript';
+
+const replayScopeProbeArgv = ['--user', '--scope', '--quiet', ...SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS, '--', 'true'];
 
 export interface ReplayCorpus {
   readonly cursor: Required<Pick<LspFacadeArgs, 'file' | 'line1' | 'character'>>;
@@ -48,7 +51,8 @@ export interface ReplayRuntimeWitness {
  * route. The recorder runs from literal argv bytes, never a later self-disk read. */
 export function replayRuntimeLaunch(entry: string, directory: string, runId: string, args: readonly string[] = []) {
   const recorder = readFileSync(fileURLToPath(new URL('./lsp-replay-runtime-witness.cjs', import.meta.url)), 'utf8');
-  const code = `${recorder}\n;startReplayRuntime(${JSON.stringify({ entry: resolve(entry), directory: resolve(directory), runId, args })});`;
+  const code = `${recorder}\n;startReplayRuntime(${JSON.stringify({ entry: resolve(entry), directory: resolve(directory), runId, args,
+    scopeProbeArgv: replayScopeProbeArgv })});`;
   return { args: ['--eval', code], evalSha256: replayHash(code), entry: resolve(entry) };
 }
 export const replayHash = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
@@ -641,12 +645,12 @@ export function replayLoadedRuntime(pid: number, identity: string | null, cmdlin
     try {
       if (launch.controlPurpose !== 'systemd-scope-availability' || launch.route !== 'systemd-scope' ||
           receipts.filter(row => row.kind === 'child-launch' && row.launchId === launch.launchId).length !== 1 ||
-          JSON.stringify(launch.originalArgv) !== JSON.stringify(['--user', '--scope', '--quiet', '--collect', '--', 'true']) ||
+          JSON.stringify(launch.originalArgv) !== JSON.stringify(replayScopeProbeArgv) ||
           typeof launch.command !== 'string' || basename(launch.command) !== 'systemd-run' ||
           typeof launch.node !== 'string' || !witness.files[launch.node] || !Array.isArray(launch.nodeArgv) || launch.nodeArgv.length !== 2 ||
           launch.nodeArgv[0] !== '--eval' || typeof launch.nodeArgv[1] !== 'string' ||
           replayHash(launch.nodeArgv[1]) !== launch.evalSha256 ||
-          JSON.stringify(launch.argv) !== JSON.stringify(['--user', '--scope', '--quiet', '--collect', '--', launch.node, ...launch.nodeArgv]))
+          JSON.stringify(launch.argv) !== JSON.stringify([...replayScopeProbeArgv.slice(0, -1), launch.node, ...launch.nodeArgv]))
         throw Error('unsupported control launch');
       const starts = receipts.filter(row => row.kind === 'child-started' && row.launchId === launch.launchId);
       const exits = receipts.filter(row => row.kind === 'control-exit' && row.launchId === launch.launchId);
@@ -838,7 +842,8 @@ export async function runDaemonReplay(config: DaemonReplayConfig, archiveParent:
   process.env[LSP_DAEMON_SOCKET_ENV] = config.socketPath;
   const query = (queryClass: ReplayClass, id: string, actorId: string) => callLspDaemonRpc(config.socketPath, {
     op: queryClass === 'definition' ? 'symbol' : 'references', workspaceId: config.workspaceId,
-    args: { ...config.corpus[queryClass].cursor, rootPath: config.rootPath }, actorId, archive: true,
+    args: { ...config.corpus[queryClass].cursor,
+      file: resolve(config.rootPath, config.corpus[queryClass].cursor.file), rootPath: config.rootPath }, actorId, archive: true,
     deadlineAtMs: Date.now() + config.requestTimeoutMs,
   }, config.requestTimeoutMs + 5_000, id);
   const boundary = async (label: string) => {

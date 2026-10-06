@@ -28,7 +28,9 @@ describe('host runtime packages use the plain Node loader', () => {
     const options = {
       stdin: {
         contents: "import { EC2Client } from '@aws-sdk/client-ec2'; import { SSMClient } from '@aws-sdk/client-ssm'; console.log(EC2Client.name, SSMClient.name);",
-        resolveDir: dirname(hostEntry),
+        // The production builder runs from apps/operator. dist-host is a
+        // generated output directory and is absent in a clean test checkout.
+        resolveDir: resolve(dirname(hostEntry), '..'),
       },
       bundle: true, platform: 'node' as const, format: 'cjs' as const, write: false, metafile: true,
     };

@@ -1716,7 +1716,11 @@ export default defineTool({
               allowSubagents: folded.allowSubagents,
               addDir: folded.addDir ?? null,
               launchContext: folded.launchContext ?? null,
-              launchMode,
+              // Fresh fleet members receive mode participation, not the launching
+              // leader's personal mission or sticky owner-directed authority.
+              launchMode: fleetSlug && !isSuccessor
+                ? normalizeLaunchMode(launchMode, { fleetRole: 'member' })
+                : launchMode,
               extraArgs: folded.extraArgs ?? null,
             });
       } catch (e) {

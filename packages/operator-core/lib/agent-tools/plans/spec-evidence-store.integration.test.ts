@@ -310,7 +310,7 @@ describe('test execution carries mappings into the real evidence ledger', () => 
     expect(exact![0].execution_details).toEqual(details);
     const recovered = await recoverTestEvidence(recovery, scope, deps);
     expect(recovered.rows[0]).toMatchObject({ phase: 'settled', outcome: 'pass', testRunId: Number(row.id) });
-    expect(recovered.verificationFingerprint).toBeTruthy();
+    expect(recovered).toHaveProperty('verificationFingerprint', expect.any(String));
     // Two matching receipts are ambiguous, even when both say pass.
     await db.sql`INSERT INTO harness_shared.test_runs
       (workspace_id,harness_slug,file_path,status,finished_at,run_group_id,commit_sha,worktree_dirty,execution_details)

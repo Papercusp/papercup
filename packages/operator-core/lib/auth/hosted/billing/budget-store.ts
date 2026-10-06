@@ -18,7 +18,10 @@ import type { JournalEntry } from '../../../cupboard/money-journal';
 import type { HostedBillingCustomer } from './billing-store';
 import { evaluateHostedBudget, settleHostedReservation, type HostedBudgetDecision, type HostedBudgetPolicy } from './budget-policy';
 import { HOSTED_COST_SOURCE_RANK, type HostedCostSource } from './usage-statement';
-import { evaluateHostedPrepaidFunding, type HostedPrepaidAllocation, type HostedPrepaidFundingInput } from './budget-funding';
+import { collectHostedStripeFunding, evaluateHostedPrepaidFunding, type HostedPrepaidAllocation,
+  type HostedPrepaidFundingInput, type HostedStripeFundingResult } from './budget-funding';
+import { createStripeBillingClient } from './stripe-billing-client';
+import { validatePolicy, type CustomerPaymentPolicy } from '../../../cupboard/money-journal-producers';
 
 export interface HostedBudgetScope {
   readonly controlWorkspaceId: string;
@@ -256,6 +259,64 @@ export async function readLockedHostedStripeFundingPopulation(sql: Sql, input: {
   return Object.freeze({ allocations, entries: Object.freeze(entries), receipts: Object.freeze([...receipts]),
     customers: Object.freeze(customers.map(c => Object.freeze({ organizationId: c.organization_id,
       stripeCustomerId: c.stripe_customer_id, livemode: c.livemode }))) });
+}
+
+export type HostedLockedStripeFundingReader = (sql: Sql, customerScope: HostedBudgetScope, signal?: AbortSignal) =>
+  Promise<Extract<HostedStripeFundingResult, { ok: false }> | (Extract<HostedStripeFundingResult, { ok: true }> & {
+    readonly allocations: readonly HostedPrepaidAllocation[];
+    readonly entries: readonly JournalEntry[];
+  })>;
+
+/** Server-only composition of the existing locked population and authenticated
+ * Stripe collector. Supply the billing runtime's account/credential/owner flag
+ * and the reconciliation runtime's journal workspace/payment policy. These are
+ * server configuration, never fields on a reservation or browser request.
+ *
+ * The credential's own /account and persisted customer's organization are
+ * authenticated by the client on each collection. The target customer is read
+ * from THIS transaction, including uncommitted bindings; no second store/runner
+ * can substitute a different snapshot. The caller retains all locks through
+ * reservation commit. This returns source evidence only: bank/cash backing,
+ * provider obligations and entitlements are still required independently.
+ */
+export function createLockedHostedStripeFundingReader(configuration: {
+  readonly pool: HostedPrepaidPool;
+  readonly journalWorkspaceId: string;
+  readonly policy: CustomerPaymentPolicy;
+  readonly maximumAgeMs: number;
+}, dependencies: {
+  readonly secretKey: string;
+  readonly liveModeAllowed: boolean;
+  readonly fetchImpl?: typeof fetch;
+  readonly now?: () => number;
+  readonly maximumDurationMs?: number;
+}): { readonly ok: true; readonly read: HostedLockedStripeFundingReader }
+  | { readonly ok: false; readonly reason: 'unverified-stripe-read' } {
+  configuration = structuredClone(configuration);
+  const maximumDurationMs = dependencies.maximumDurationMs ?? 10_000;
+  const now = dependencies.now ?? Date.now;
+  if (!identifier(configuration.pool.controlWorkspaceId) || !/^acct_[A-Za-z0-9]+$/.test(configuration.pool.stripeAccountId)
+      || !identifier(configuration.journalWorkspaceId) || validatePolicy(configuration.policy)
+      || !safe(configuration.maximumAgeMs) || !safe(maximumDurationMs) || maximumDurationMs < 1
+      || maximumDurationMs > 10_000 || typeof now !== 'function') throw new Error('invalid locked Stripe funding configuration');
+  const built = createStripeBillingClient({ secretKey: dependencies.secretKey, liveModeAllowed: dependencies.liveModeAllowed,
+    fetchImpl: dependencies.fetchImpl ?? fetch, readTimeoutMs: maximumDurationMs });
+  if (!built.ok || !built.client.livemode) return { ok: false, reason: 'unverified-stripe-read' };
+  const client = built.client;
+  return { ok: true, read: async (sql, customerScope, signal) => {
+    const s = scope(customerScope);
+    if (signal?.aborted || s.controlWorkspaceId !== configuration.pool.controlWorkspaceId) {
+      return { ok: false, reason: 'unverified-stripe-read' };
+    }
+    const population = await readLockedHostedStripeFundingPopulation(sql, configuration);
+    const customer = population.customers.find(c => c.organizationId === s.organizationId);
+    if (!customer || !customer.livemode) return { ok: false, reason: 'unverified-stripe-read' };
+    const result = await collectHostedStripeFunding({ scope: s, accountId: configuration.pool.stripeAccountId,
+      customerId: customer.stripeCustomerId, maximumAgeMs: configuration.maximumAgeMs, policy: configuration.policy,
+      entries: population.entries, receipts: population.receipts, customers: population.customers },
+    { client, now, maximumDurationMs, signal });
+    return result.ok ? { ...result, allocations: population.allocations, entries: population.entries } : result;
+  } };
 }
 
 /** Keep other organizations' unrelated payments out of the customer projection,

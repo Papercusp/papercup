@@ -2852,6 +2852,16 @@ pub struct ChatMessage {
 pub fn turn_error_text(raw: &str) -> String {
     let raw = raw.trim();
     let raw = raw.strip_prefix("SU-session:").map(str::trim).unwrap_or(raw);
+    // The operator wraps a refused turn in a diagnostic for its own logs
+    // (`Claude ended this turn without a usable reply (success, stop reason
+    // stop_sequence): You've hit your weekly limit …`). The reader wants the
+    // provider's sentence, as stock CLIs show it; the wrapper stays in the log.
+    let raw = raw
+        .find(" without a usable reply (")
+        .and_then(|at| raw[at..].find("): ").map(|end| at + end + 3))
+        .map(|start| raw[start..].trim())
+        .filter(|detail| !detail.is_empty())
+        .unwrap_or(raw);
     let parsed = raw
         .find('{')
         .and_then(|start| serde_json::from_str::<serde_json::Value>(&raw[start..]).ok());
@@ -2940,6 +2950,27 @@ impl ChatMessage {
             streaming: false,
             worked_for: None,
         }
+    }
+    /// P-025: record a failed turn under its prompt, once. Claude delivers an
+    /// API refusal twice: as a synthetic assistant message whose text is the
+    /// refusal ("You've hit your weekly limit …") and as the turn's error. Stock
+    /// Claude Code shows it once, as the `⎿` failure line, so an assistant
+    /// bubble that only repeats the error is replaced by it.
+    pub fn push_turn_error(messages: &mut Vec<ChatMessage>, raw: &str) {
+        let error = ChatMessage::turn_error(raw);
+        let norm = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+        let sentence = norm(&error.content);
+        if let Some(last) = messages.last() {
+            let said = norm(&last.content);
+            let echoes = last.role == "assistant"
+                && last.tools.is_empty()
+                && !said.is_empty()
+                && sentence.ends_with(&said);
+            if echoes {
+                messages.pop();
+            }
+        }
+        messages.push(error);
     }
     /// The in-flight assistant bubble — empty, `streaming`, accumulates deltas.
     pub fn streaming_assistant() -> Self {
@@ -3611,6 +3642,45 @@ mod fleet_rate_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// P-025, seen live on a weekly-limit refusal: pui drew the refusal three
+    /// times (the synthetic assistant text and two failure lines, one in the
+    /// operator's diagnostic wording). It is one `⎿` line with the provider's
+    /// sentence now; a real reply before an error is kept.
+    #[test]
+    fn a_refused_turn_is_one_plain_failure_line() {
+        let wrapped = "Claude ended this turn without a usable reply (success, stop reason \
+                       stop_sequence): You've hit your weekly limit · resets 1pm (America/New_York)";
+        assert_eq!(
+            turn_error_text(wrapped),
+            "You've hit your weekly limit · resets 1pm (America/New_York)"
+        );
+        // No detail after the wrapper: the wrapper is all there is to show.
+        assert_eq!(
+            turn_error_text("Claude ended this turn without a usable reply (error_during_execution)"),
+            "Claude ended this turn without a usable reply (error_during_execution)"
+        );
+
+        let mut messages = vec![
+            ChatMessage::user("hi"),
+            ChatMessage::assistant("You've hit your weekly limit · resets 1pm (America/New_York)"),
+        ];
+        ChatMessage::push_turn_error(&mut messages, wrapped);
+        let roles: Vec<&str> = messages.iter().map(|m| m.role.as_str()).collect();
+        assert_eq!(roles, ["user", "error"]);
+        assert_eq!(
+            messages[1].content,
+            "You've hit your weekly limit · resets 1pm (America/New_York)"
+        );
+
+        let mut messages = vec![
+            ChatMessage::user("hi"),
+            ChatMessage::assistant("Partial answer"),
+        ];
+        ChatMessage::push_turn_error(&mut messages, wrapped);
+        let roles: Vec<&str> = messages.iter().map(|m| m.role.as_str()).collect();
+        assert_eq!(roles, ["user", "assistant", "error"]);
+    }
 
     #[test]
     fn turn_error_text_reads_the_provider_sentence_out_of_a_json_body() {

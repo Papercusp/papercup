@@ -113,6 +113,87 @@ describe('evaluatePlanSpecQuality', () => {
       expect(result.ratings.falsifiability.rating).toBe('pass');
       expect(result.ratings['implementation-independence'].rating).toBe('pass');
       expect(result.verdict).toBe('pass');
+      expect(result.details.atomicityClauseDiagnostics).toHaveLength(6);
+      expect(result.details.atomicityClauseDiagnostics.find((entry) => entry.specId === 'AUTO-BAR-R-1-P-001'))
+        .toMatchObject({ disposition: 'excluded', rating: 'not-applicable' });
+      expect(result.details.atomicityClauseDiagnostics.find((entry) => entry.specId === 'CONTRACT-P-001'))
+        .toMatchObject({ disposition: 'evaluated', rating: 'pass', reason: null });
+    });
+
+    it('reports the exact cloud dashboard AUTO-BAR bundles as excluded from atomicity claims', () => {
+      const bundles = [
+        {
+          specId: 'AUTO-BAR-R-1-P-001',
+          planItemId: 'P-001',
+          behavior: 'Both distinct configured offers are test-only and the runtime refuses wrong-account or unapproved live credentials.',
+        },
+        {
+          specId: 'AUTO-BAR-R-2-P-002',
+          planItemId: 'P-002',
+          behavior: 'Billing-authorized organizations can complete either deployed cloud subscription lifecycle through real TEST Checkout, webhook-persisted active state and customer-portal cancellation while organization isolation and non-manager mutation denial remain enforced.',
+        },
+        {
+          specId: 'AUTO-BAR-R-3-P-003',
+          planItemId: 'P-003',
+          behavior: 'Real-suite tests pass and exact deployed artifact/config has verified test-mode checkout, signed webhook state and cancellation evidence for both offers.',
+        },
+      ] as const;
+      const bundleProjections = bundles.map((entry, index) =>
+        clause({
+          specId: entry.specId,
+          sourceValId: null,
+          planItemId: entry.planItemId,
+          behavior: entry.behavior,
+          sourceBar: { ...sourceBar, barKey: 'R-' + (index + 1) },
+        }),
+      );
+      const independentContracts = [
+        clause({
+          specId: 'CLOUD-DASHBOARD-TEST-LIFECYCLE',
+          sourceValId: null,
+          planItemId: 'P-002',
+          behavior: 'A billing-authorized organization can complete the subscription lifecycle of either dashboard cloud offer through Stripe TEST Checkout, signed webhook activation and customer-portal cancellation.',
+        }),
+        clause({
+          specId: 'CLOUD-JOURNEY-SERVED-ARTIFACT',
+          sourceValId: null,
+          planItemId: 'P-003',
+          behavior: 'Each deployed cloud billing journey records the immutable artifact served at its authenticated start.',
+        }),
+        clause({
+          specId: 'CLOUD-TEST-OFFER-ACCOUNT',
+          sourceValId: null,
+          planItemId: 'P-001',
+          behavior: 'Configured cloud offers can create TEST Checkout sessions only within the expected Papercups LLC Stripe account.',
+        }),
+      ];
+
+      const result = evaluate([...bundleProjections, ...independentContracts]);
+      const atomicity = result.ratings['atomic-observable-behavior'];
+      expect(atomicity.rating).toBe('pass');
+      expect(atomicity.evidence).toContain('3 independent item behavior clause(s) are structurally atomic.');
+      expect(atomicity.evidence).not.toContain('AUTO-BAR-');
+      expect(result.details.atomicityClauseDiagnostics).toHaveLength(6);
+      for (const bundle of bundles) {
+        expect(result.details.atomicityClauseDiagnostics.find((entry) => entry.specId === bundle.specId))
+          .toMatchObject({
+            planItemId: bundle.planItemId,
+            behavior: bundle.behavior,
+            disposition: 'excluded',
+            rating: 'not-applicable',
+            reason: expect.stringContaining('sourceBar-pinned'),
+          });
+      }
+      for (const contract of independentContracts) {
+        expect(result.details.atomicityClauseDiagnostics.find((entry) => entry.specId === contract.specId))
+          .toMatchObject({
+            planItemId: contract.planItemId,
+            behavior: contract.behavior,
+            disposition: 'evaluated',
+            rating: 'pass',
+            reason: null,
+          });
+      }
     });
 
     it('does not count pinned BAR projections as item coverage', () => {
@@ -306,6 +387,14 @@ describe('evaluatePlanSpecQuality', () => {
 
     expect(result.ratings['atomic-observable-behavior'].rating).toBe('fail');
     expect(result.ratings['atomic-observable-behavior'].evidence).toContain('AUTO-BAR-R-004-P-003:');
+    expect(result.details.atomicityClauseDiagnostics).toContainEqual(
+      expect.objectContaining({
+        specId: 'AUTO-BAR-R-004-P-003',
+        disposition: 'evaluated',
+        rating: 'fail',
+        reason: expect.any(String),
+      }),
+    );
   });
 
   it('keeps a single outcome with a while-condition atomic', () => {

@@ -7,9 +7,9 @@
  * `calendar.write` capability, never a provider. `resolveCapabilitySource`
  * picks the owner's connected calendar source and the provider that serves it,
  * refusing by name when the choice is ambiguous or the provider lacks the
- * capability. A registered provider receives `calendar.write` with
- * `{ operation: 'create' | 'update', … }`; the first-party `gcal` kind is still
- * served by the host's Google functions until P-009 registers that provider.
+ * capability. The provider receives `calendar.write` with
+ * `{ operation: 'create' | 'update', … }`; Google Calendar is the bundled
+ * `gcal` provider plugin (P-009, D-021), with no host-side Google path.
  *
  * Calendar is where D-020's create-shaped rail earns its keep. `calendar:propose`
  * genuinely takes caller-supplied attendees — rail 1 cannot cover it — so every
@@ -18,8 +18,6 @@
  * identically for every provider.
  */
 import type postgres from 'postgres';
-import { createGoogleCalendarEvent, updateGoogleCalendarEvent } from '../external-triggers/google-calendar';
-import { resolveGoogleWorkspaceAccessToken } from '../external-triggers/google-workspace';
 import { assertDisclosurePermits } from '../personal-vault/disclosure-ledger';
 import { assertTrustedAddressees, type AddresseeDecision, type AddresseeProvenance } from './addressing';
 import {
@@ -47,18 +45,8 @@ export interface CalendarProposeResult extends CalendarWriteResult {
   summary: string;
 }
 
-/**
- * Injectable seams. `registry` / `hostFetchFor` / `hostFetchImpl` reach a
- * registered provider; the Google-named ones serve the transitional first-party
- * `gcal` kind only (D-014.5) and go when P-009 deletes that branch.
- */
-export type CalendarDeps = OutboundDispatchDeps & {
-  resolveAccessToken?: typeof resolveGoogleWorkspaceAccessToken;
-  createEvent?: typeof createGoogleCalendarEvent;
-  updateEvent?: typeof updateGoogleCalendarEvent;
-  fetch?: typeof fetch;
-  apiOrigin?: string;
-};
+/** Injectable seams: `registry` / `hostFetchFor` / `hostFetchImpl` reach the provider. */
+export type CalendarDeps = OutboundDispatchDeps;
 
 /** The event fields a write carries; `undefined` means "leave unchanged" on update. */
 interface CalendarEventFields {
@@ -93,11 +81,6 @@ async function writeViaProvider(
     status: resultString(result, 'status', target, capability, false) || null,
     attendees: resultStrings(result, 'attendees'),
   };
-}
-
-/** TRANSITIONAL (D-014.5): the first-party Google token, for `gcal`-kind sources only. */
-function googleCalendarToken(target: OutboundTarget, deps: CalendarDeps): Promise<string> {
-  return (deps.resolveAccessToken ?? resolveGoogleWorkspaceAccessToken)(target.source, target.installSlug);
 }
 
 /**
@@ -173,15 +156,7 @@ export async function proposeCalendarEvent(
     timeZone: params.timeZone ?? null,
     attendees: invited.map((decision) => decision.address),
   };
-  if (target.provider.kind === 'registered') {
-    const created = await writeViaProvider(sql, target, { operation: 'create' }, fields, deps);
-    return { ...created, invited, summary };
-  }
-  const token = await googleCalendarToken(target, deps);
-  const created = await (deps.createEvent ?? createGoogleCalendarEvent)(token, fields, {
-    fetch: deps.fetch,
-    apiOrigin: deps.apiOrigin,
-  });
+  const created = await writeViaProvider(sql, target, { operation: 'create' }, fields, deps);
   return { ...created, invited, summary };
 }
 
@@ -268,20 +243,12 @@ export async function updateCalendarEvent(
     ...(params.attendees?.length ? { attendees: invited.map((decision) => decision.address) } : {}),
   };
   const summary = params.summary?.trim() || string(doc.payload.summary);
-  if (target.provider.kind === 'registered') {
-    const updated = await writeViaProvider(
-      sql,
-      target,
-      { operation: 'update', eventId: doc.externalId },
-      fields,
-      deps,
-    );
-    return { ...updated, invited, summary };
-  }
-  const token = await googleCalendarToken(target, deps);
-  const updated = await (deps.updateEvent ?? updateGoogleCalendarEvent)(token, doc.externalId, fields, {
-    fetch: deps.fetch,
-    apiOrigin: deps.apiOrigin,
-  });
+  const updated = await writeViaProvider(
+    sql,
+    target,
+    { operation: 'update', eventId: doc.externalId },
+    fields,
+    deps,
+  );
   return { ...updated, invited, summary };
 }

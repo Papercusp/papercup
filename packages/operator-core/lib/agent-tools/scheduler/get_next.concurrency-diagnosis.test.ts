@@ -120,7 +120,13 @@ describe('scheduler:get_next miss diagnosis is concurrency-aware (EI-12095)', ()
     // EI-11796 rule that a parked/blocked claim still counts, so a member told to "pull other
     // lane work while blocked" learns why it cannot and what would let it — instead of reading
     // a bare wall and releasing a parked item it still owns (the single-fixer failure mode).
-    expect(b.error).toMatch(/scheduler:set_claim_spec \{ limits: \{ maxConcurrentClaims: N \} \}/);
+    expect(b.error).toContain("scheduler:get_claim_spec { cupId: 'su-member' }");
+    expect(b.error).toContain(
+      "scheduler:set_claim_spec { cupId: 'su-member', spec: { ...current.spec, " +
+        'limits: { ...current.spec.limits, maxConcurrentClaims: N } } }',
+    );
+    expect(b.error).toContain('exactly one target selector (cupId or fleet) and a full replacement spec');
+    expect(b.error).not.toMatch(/scheduler:set_claim_spec \{ limits:/);
     expect(b.error).toMatch(/LEADER raises your cap/);
     expect(b.error).toMatch(/parked or externally-blocked claim STILL counts/);
     expect(b.diagnosis).toMatchObject({

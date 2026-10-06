@@ -30,6 +30,23 @@ export const AWS_AMI_DESCRIPTION_PATTERN = /^papercusp-workspace-host (\S+) rele
 export const PAPERCUSP_BUNDLE_PATH = '/opt/papercusp';
 
 /**
+ * Safety rail on `secretBundledSample`, NOT a sampling rate — the same cap and the same reason
+ * as the GCP guest scanner (papercusp-image-scan.mjs). The bundled population must reach zero
+ * unjustified findings to ship, so it is small by construction; the cap only stops a mis-built
+ * image from returning a multi-megabyte array, and whether it bound is reported alongside.
+ */
+export const SECRET_BUNDLED_SAMPLE_CAP = 500;
+
+/** Bounding slash so a sibling such as /opt/papercusp-old is never attributed to the bundle. */
+function inBundlePath(path) {
+  return String(path ?? '').includes(`${PAPERCUSP_BUNDLE_PATH}/`);
+}
+
+function scopeLabel(bundled) {
+  return bundled ? 'papercusp-bundled' : 'inherited-base-image';
+}
+
+/**
  * Packages whose installed versions are reported as evidence: the RPM names in
  * AWS_AMI_REQUIRED_GUEST_TOOLS (aws-ami-release.ts), which is what the CentOS Stream 9
  * bootc image installs (WI-10005605). Mirrored rather than imported because this bin
@@ -193,8 +210,23 @@ export function measureAwsAmiScan(input) {
 
   const matches = vuln.matches;
   const inBundle = (match) =>
-    Array.isArray(match?.artifact?.locations) &&
-    match.artifact.locations.some((location) => String(location?.path ?? '').includes(`${PAPERCUSP_BUNDLE_PATH}/`));
+    Array.isArray(match?.artifact?.locations) && match.artifact.locations.some((location) => inBundlePath(location?.path));
+  // The at/above-high band, matched case-insensitively exactly like the GCP guest jq. The
+  // scoped release policy reads only this band's bundled bucket (SCOPE_ATTRIBUTED_THRESHOLD).
+  const atOrAboveHigh = (match) => {
+    const severity = String(match?.vulnerability?.severity ?? '').toLowerCase();
+    return severity === 'critical' || severity === 'high';
+  };
+  // SBOM PACKAGES (not findings) under the bundle path: the one number that tells "we looked at
+  // the bundle and it is clean" apart from "we never found the bundle". Zero is emitted as zero
+  // and the release policy denies on it — never coerced into a pass here.
+  const bundleCatalogedArtifacts = sbom.artifacts.filter(
+    (artifact) => Array.isArray(artifact?.locations) && artifact.locations.some((location) => inBundlePath(location?.path)),
+  ).length;
+  // Location only, never the matched value — the same non-disclosure rule as secretSample.
+  const bundledSecrets = secrets
+    .filter((finding) => inBundlePath(finding?.File))
+    .map((finding) => ({ rule: finding?.RuleID, file: finding?.File, line: finding?.StartLine }));
   const guestPackages = {};
   for (const name of GUEST_PACKAGE_PROBES) {
     const hit = sbom.artifacts.find((artifact) => artifact && artifact.type === 'rpm' && artifact.name === name);
@@ -209,10 +241,19 @@ export function measureAwsAmiScan(input) {
       matches.filter((match) => match?.vulnerability?.fix?.state === 'fixed').map((match) => match?.vulnerability?.severity),
     ),
     vulnerabilityByEcosystem: countBy(matches.map((match) => match?.artifact?.type)),
-    vulnerabilityByScope: countBy(matches.map((match) => (inBundle(match) ? 'papercusp-bundled' : 'inherited-base-image'))),
+    // D-204 attribution, the same four maps the GCP guest scanner emits, so the AWS release gate can
+    // judge the content papercusp ships (WI-10006421). Each partitions its total exactly; the
+    // policy re-checks that and denies on any mismatch.
+    vulnerabilityByScope: countBy(matches.map((match) => scopeLabel(inBundle(match)))),
+    vulnerabilityCriticalHighByScope: countBy(matches.filter(atOrAboveHigh).map((match) => scopeLabel(inBundle(match)))),
+    bundleCatalogedArtifacts,
     secretFindings: secrets.length,
+    secretsByScope: countBy(secrets.map((finding) => scopeLabel(inBundlePath(finding?.File)))),
     // Rule and file only — never the matched secret: echoing it would turn a detection into a disclosure.
     secretSample: secrets.slice(0, 50).map((finding) => ({ rule: finding?.RuleID, file: finding?.File, line: finding?.StartLine })),
+    // EVERY bundled finding by file, so each one can be matched against the committed allowances.
+    secretBundledSample: bundledSecrets.slice(0, SECRET_BUNDLED_SAMPLE_CAP),
+    secretBundledSampleComplete: bundledSecrets.length <= SECRET_BUNDLED_SAMPLE_CAP,
     mountedFilesystems: input.mountedFilesystems,
     candidateRootProof,
     catalogedArtifacts: { total: sbom.artifacts.length, npm: npmCataloged, rpm: rpmCataloged },

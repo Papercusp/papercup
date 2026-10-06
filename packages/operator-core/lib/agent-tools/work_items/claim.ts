@@ -239,6 +239,7 @@ export function blockedClaimWarning(blockers: readonly UnresolvedDepBlocker[] | 
 export function concurrencyClaimWarning(
   verdict: ClaimConcurrencyVerdict | null | undefined,
   claimedId: string,
+  targetOwnerId: string,
   dispatchedAssignee?: string | null,
 ): string | null {
   if (!verdict?.blocked) return null;
@@ -262,8 +263,12 @@ export function concurrencyClaimWarning(
     `scheduler:get_next WILL now refuse to serve ${serveSubject} (concurrencyBlocked), so do not read this ` +
     `success as "the queue agrees ${subject} ${isDispatch ? 'has' : 'have'} capacity". Either release/complete a held item ` +
     '(work_items:release / work_items:complete), or — if this lane genuinely needs more than ' +
-    'one item at a time — raise the cap deliberately with scheduler:set_claim_spec ' +
-    '{ limits: { maxConcurrentClaims: N } } rather than accumulating past it one claim at a time. ' +
+    'one item at a time — raise the per-target cap deliberately. First read the existing spec with ' +
+    `scheduler:get_claim_spec { cupId: '${targetOwnerId}' }, then preserve it in ` +
+    `scheduler:set_claim_spec { cupId: '${targetOwnerId}', spec: { ...current.spec, ` +
+    'limits: { ...current.spec.limits, maxConcurrentClaims: N } } }. The write requires exactly one ' +
+    'target selector (cupId or fleet) and a full replacement spec; limits belongs inside spec. ' +
+    'Do not accumulate past the cap one claim at a time. ' +
     `A PARKED item still counts: it retains taken_by; ${subject} must account for it under ${possessive} cap.`
   );
 }
@@ -856,7 +861,7 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
     // assignee whose capacity was measured. Pass that identity through so the prose cannot
     // make the leader think its own lane changed (EI-21731818164781453).
     const dispatchedAssignee = claimer !== claimerDefault ? claimer : null;
-    const concurrencyWarning = concurrencyClaimWarning(concurrency, it.id, dispatchedAssignee);
+    const concurrencyWarning = concurrencyClaimWarning(concurrency, it.id, claimer, dispatchedAssignee);
     const suggestedWatches = suggestedWatchesForItemBlockers({
       itemId: it.id,
       blockers: workItem.externalBlockers,

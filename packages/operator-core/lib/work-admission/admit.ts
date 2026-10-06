@@ -39,9 +39,18 @@ import {
   type AdmissionDb,
   type AdmissionRow,
   type AdmissionSourceIdentity,
+  type AdmissionSourceResolver,
+  type AdmissionTransitionResult,
+  type AdmissionWriteBackResult,
   type Admitter,
   type FieldAuthority,
 } from './admission-sources';
+import { recordAdmissionWriteBack } from './write-back-ledger';
+import {
+  isTicketStatusCategory,
+  TICKET_STATUS_CATEGORIES,
+  type TicketStatusCategory,
+} from '../data-sources/ticket-vocabulary';
 
 /** Issue-family kinds an admission may mint. */
 export const ADMITTED_KINDS = ['change', 'bug', 'task'] as const;
@@ -349,19 +358,47 @@ export async function refreshAdmittedFromSource(
   return { refreshed, skipped };
 }
 
+export interface WriteBackDeps {
+  /** The resolver for a source kind; the process-wide registration by default (tests inject). */
+  resolverFor?: (kind: string) => AdmissionSourceResolver<unknown> | undefined;
+}
+
+type WriteBackRefusal = { ok: false; code: string; message: string };
+
+const CAPABILITY_UNSUPPORTED = 'provider_capability_unsupported';
+
+/**
+ * A provider that lacks the capability is an expected, named refusal (D-007: report the
+ * unsupported capability explicitly), not a crash. Matched by message so a duplicated module
+ * record of the error class cannot defeat it.
+ */
+function capabilityRefusal(err: unknown): WriteBackRefusal | null {
+  const message = err instanceof Error ? err.message : '';
+  return message.startsWith(`${CAPABILITY_UNSUPPORTED}:`) ? { ok: false, code: CAPABILITY_UNSUPPORTED, message } : null;
+}
+
 /**
  * Writes a plain-text note back to the source of an admitted work item, through the source
  * resolver's capability. The caller passes only the internal work item id; the external
- * coordinates come from the durable admission row (slack-flagship.ts pattern).
+ * coordinates come from the durable admission row (slack-flagship.ts pattern). Every write is
+ * ledgered with the provider's update id (write-back-ledger.ts) for echo suppression.
  */
 export async function writeBackAdmission(
   workspaceId: string,
   workItemId: string,
   text: string,
   sql: AdmissionDb = getOrgPg().sql,
+  deps: WriteBackDeps = {},
 ): Promise<
-  | { ok: true; posted: boolean; alreadyPosted?: boolean; externalRef?: string | null; sourceKind: string }
-  | { ok: false; code: string; message: string }
+  | {
+      ok: true;
+      posted: boolean;
+      alreadyPosted?: boolean;
+      externalRef?: string | null;
+      updateId?: string | null;
+      sourceKind: string;
+    }
+  | WriteBackRefusal
 > {
   const body = text.trim();
   if (!body) return { ok: false, code: 'write_back_text_required', message: 'text is required' };
@@ -370,10 +407,75 @@ export async function writeBackAdmission(
   }
   const [admission] = await admissionsForWorkItem(workspaceId, workItemId, sql);
   if (!admission) return { ok: false, code: 'not_admitted', message: `${workItemId} was not admitted from a data source` };
-  const resolver = getAdmissionSource(String(admission.sourceKind));
+  const resolver = (deps.resolverFor ?? getAdmissionSource)(String(admission.sourceKind));
   if (!resolver?.writeBack) {
     return { ok: false, code: 'write_back_unsupported', message: `source kind '${admission.sourceKind}' has no write-back capability` };
   }
-  const res = await resolver.writeBack({ db: sql, admission, text: body });
+  let res: AdmissionWriteBackResult;
+  try {
+    res = await resolver.writeBack({ db: sql, admission, text: body });
+  } catch (err) {
+    const refusal = capabilityRefusal(err);
+    if (refusal) return refusal;
+    throw err;
+  }
+  if (res.posted && !res.alreadyPosted) {
+    await recordAdmissionWriteBack(sql, {
+      admission,
+      action: 'comment',
+      updateId: res.updateId,
+      externalRef: res.externalRef,
+    });
+  }
   return { ok: true, sourceKind: String(admission.sourceKind), ...res };
+}
+
+/**
+ * Moves the source of an admitted work item to a canonical workflow category (for example
+ * `in-progress` on claim, `done` on completion), through the source resolver's
+ * `<datatype>.transition` capability. Only the status moves; the source-owned title,
+ * description and assignee are never sent. Ledgered like {@link writeBackAdmission}.
+ */
+export async function transitionAdmission(
+  workspaceId: string,
+  workItemId: string,
+  toCategory: string,
+  sql: AdmissionDb = getOrgPg().sql,
+  deps: WriteBackDeps = {},
+): Promise<
+  | { ok: true; transitioned: boolean; toCategory: TicketStatusCategory; updateId?: string | null; externalRef?: string | null; sourceKind: string }
+  | WriteBackRefusal
+> {
+  const category = toCategory.trim();
+  if (!isTicketStatusCategory(category)) {
+    return {
+      ok: false,
+      code: 'transition_category_invalid',
+      message: `toCategory must be one of ${TICKET_STATUS_CATEGORIES.join('|')}`,
+    };
+  }
+  const [admission] = await admissionsForWorkItem(workspaceId, workItemId, sql);
+  if (!admission) return { ok: false, code: 'not_admitted', message: `${workItemId} was not admitted from a data source` };
+  const resolver = (deps.resolverFor ?? getAdmissionSource)(String(admission.sourceKind));
+  if (!resolver?.transition) {
+    return { ok: false, code: 'transition_unsupported', message: `source kind '${admission.sourceKind}' has no workflow to move` };
+  }
+  let res: AdmissionTransitionResult;
+  try {
+    res = await resolver.transition({ db: sql, admission, toCategory: category });
+  } catch (err) {
+    const refusal = capabilityRefusal(err);
+    if (refusal) return refusal;
+    throw err;
+  }
+  if (res.transitioned) {
+    await recordAdmissionWriteBack(sql, {
+      admission,
+      action: 'transition',
+      updateId: res.updateId,
+      externalRef: res.externalRef,
+      detail: { toCategory: category },
+    });
+  }
+  return { ok: true, sourceKind: String(admission.sourceKind), toCategory: category, ...res };
 }

@@ -791,6 +791,44 @@ describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
     });
   });
 
+  // P-005 / D-030 step 5: the under-staff alarm must reach the leader at every
+  // tier — the summary flag, the reason and the read-only falsifier.
+  const UNDER_STAFFED = {
+    fleetUnderStaffedAlertReason:
+      '0 of 3 target worker(s) are productive (short 3). Target 3 is recorded but supervise was never ' +
+      'granted, so the governor does not hold it. Repair: fleet:headcount-target { target, supervise:true }.',
+    fleetUnderStaffedAlertFalsifier: {
+      tool: 'fleet:assignments',
+      check: "fleet:assignments { fleet: 'short-fleet' }",
+      measurement: 'each live member and the work-item it holds right now',
+      kills: '3 or more members are live and each holds a claim',
+    },
+  };
+
+  it('keeps the under-staff alert, its reason and falsifier in the trimmed projection', () => {
+    const out = shapeLeaderBrief(
+      { ok: true, summary: { fleet: 'short-fleet', members: 1, fleetUnderStaffedAlert: true }, ...UNDER_STAFFED },
+      'trimmed',
+    ) as Record<string, unknown>;
+    expect(out.summary).toMatchObject({ fleetUnderStaffedAlert: true });
+    expect(out).toMatchObject({
+      fleetUnderStaffedAlertReason: expect.stringContaining('0 of 3 target worker(s)'),
+      fleetUnderStaffedAlertFalsifier: { tool: 'fleet:assignments' },
+    });
+  });
+
+  it('keeps the under-staff alert, its reason and falsifier when emergency shaping drops rows', () => {
+    const input = { ...largeBrief(), ...UNDER_STAFFED };
+    (input.summary as Record<string, unknown>).fleetUnderStaffedAlert = true;
+
+    const out = shapeLeaderBrief(input, 'trimmed') as Record<string, unknown>;
+
+    expect(out.leaderBriefProjection).toMatchObject({ tier: 'trimmed', emergency: true });
+    expect(out.summary).toMatchObject({ fleetUnderStaffedAlert: true });
+    expect(out.fleetUnderStaffedAlertReason).toEqual(expect.stringContaining('0 of 3 target worker(s)'));
+    expect(out.fleetUnderStaffedAlertFalsifier).toMatchObject({ tool: 'fleet:assignments' });
+  });
+
   it('keeps the measured dependency ranking and its population contract together', () => {
     const out = shapeLeaderBrief(
       {

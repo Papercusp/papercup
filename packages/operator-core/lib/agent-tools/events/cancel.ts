@@ -53,6 +53,12 @@ export default defineTool({
     when: 'The thing you were waiting on no longer matters (cancel the await), or a parked wake reached you in-turn via the inbox and you handled it (ack the delivery so the system does not also resume you). For a standing watch, inspect events:status and pass confirm_standing:true deliberately.',
     notWhen: 'A fired await needs no cancel (one-shot — it already cleared). Do not use await_id as a mistaken substitute for the narrow delivery_id ACK path. You cannot cancel or ack a peer’s.',
     chaining: 'events:status to find the await_id / delivery_id / declaration id → events:cancel.',
+    argRedirects: {
+      reason: {
+        drop: true,
+        note: 'reason is an internal cancel_reason database requirement, not a tool argument. Await cancellation records operator internally; delivery_id only ACKs the wake delivery. Omit reason and keep the selected ID.',
+      },
+    },
     seeAlso: [
       'events:status (find the await_id / delivery_id / declaration id to cancel)',
       'events:await (re-arm a wait after cancelling)',

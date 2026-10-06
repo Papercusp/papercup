@@ -158,11 +158,15 @@ describe('memory:get', () => {
     expect(await run({ id: 'm1' })).toEqual({ ok: false, reason: 'went_away', results: [], missing: [] });
   });
 
-  it('rejects a call with neither id nor ids', () => {
+  it('requires a single valid memory UUID or a non-empty list of valid UUIDs', () => {
     const schema = (get as unknown as { args: { safeParse: (v: unknown) => { success: boolean } } }).args;
+    const uuid = '550e8400-e29b-41d4-a716-446655440000';
     expect(schema.safeParse({}).success).toBe(false);
     expect(schema.safeParse({ ids: [] }).success).toBe(false);
-    expect(schema.safeParse({ id: 'm1' }).success).toBe(true);
-    expect(schema.safeParse({ ids: Array.from({ length: 51 }, (_, i) => `m${i}`) }).success).toBe(false);
+    expect(schema.safeParse({ id: uuid }).success).toBe(true);
+    expect(schema.safeParse({ ids: [uuid] }).success).toBe(true);
+    expect(schema.safeParse({ id: '556477b3' }).success).toBe(false);
+    expect(schema.safeParse({ ids: ['556477b3'] }).success).toBe(false);
+    expect(schema.safeParse({ ids: Array.from({ length: 51 }, () => uuid) }).success).toBe(false);
   });
 });

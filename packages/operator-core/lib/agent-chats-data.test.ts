@@ -56,6 +56,7 @@ import {
   continueChat,
   archiveChat,
   appendExternalChatTurn,
+  deleteExternalChatTurns,
   LIST_CHATS_DEFAULT_LIMIT,
   toPuiSessionRuntimeClass,
 } from './agent-chats-data';
@@ -668,5 +669,39 @@ describe('appendExternalChatTurn (P-010)', () => {
       sourceId: 'room-1:1', source: 'phone-livekit',
     });
     expect(result).toEqual({ ok: false, status: 404, error: 'chat not found' });
+  });
+});
+
+describe('deleteExternalChatTurns (WI-10006406)', () => {
+  it('removes only this room\'s phone turns, scoped to the active workspace', async () => {
+    unsafe.mockResolvedValueOnce([{ removed: 2 }]);
+    const result = await deleteExternalChatTurns({
+      slug: 'portal', chatId: 'c1', source: 'phone-livekit', roomName: 'room-1',
+    });
+    expect(result).toEqual({ ok: true, data: { removed: 2 } });
+    expect(calls()).toHaveLength(1);
+    const [call] = calls();
+    expect(call?.sql).toContain('starts_with');
+    expect(call?.sql).toContain('ORDER BY t.ord');
+    expect(call?.sql).toContain('workspace_id = $1');
+    // The trailing colon is what keeps room-1 from matching room-10's ids.
+    expect(call?.args.slice(0, 4)).toEqual([TEST_WS, 'c1', 'phone-livekit', 'room-1:']);
+  });
+
+  it('reports a missing chat as 404 and a no-op deletion as removed 0', async () => {
+    unsafe.mockResolvedValueOnce([]);
+    expect(await deleteExternalChatTurns({ slug: 'portal', chatId: 'gone', source: 'phone-livekit', roomName: 'r' }))
+      .toEqual({ ok: false, status: 404, error: 'chat not found' });
+    unsafe.mockResolvedValueOnce([{ removed: '0' }]);
+    expect(await deleteExternalChatTurns({ slug: 'portal', chatId: 'c1', source: 'phone-livekit', roomName: 'r' }))
+      .toEqual({ ok: true, data: { removed: 0 } });
+  });
+
+  it('refuses a room name that could prefix-match another room before touching the database', async () => {
+    for (const roomName of ['', '   ', 'a:b', 'x'.repeat(201)]) {
+      expect(await deleteExternalChatTurns({ slug: 'portal', chatId: 'c1', source: 'phone-livekit', roomName }))
+        .toEqual({ ok: false, status: 400, error: 'roomName is invalid' });
+    }
+    expect(calls()).toHaveLength(0);
   });
 });

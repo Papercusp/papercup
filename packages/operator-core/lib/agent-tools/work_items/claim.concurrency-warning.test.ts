@@ -167,16 +167,16 @@ beforeEach(() => {
 
 describe('concurrencyClaimWarning (pure)', () => {
   it('returns null when the caller was not at its cap', () => {
-    expect(concurrencyClaimWarning(null, 'WI-1')).toBeNull();
-    expect(concurrencyClaimWarning(undefined, 'WI-1')).toBeNull();
+    expect(concurrencyClaimWarning(null, 'WI-1', 'me')).toBeNull();
+    expect(concurrencyClaimWarning(undefined, 'WI-1', 'me')).toBeNull();
     // Holding NOTHING under a cap of 1 — the ordinary claim, which must stay silent.
-    expect(concurrencyClaimWarning(verdict([], 1), 'WI-1')).toBeNull();
+    expect(concurrencyClaimWarning(verdict([], 1), 'WI-1', 'me')).toBeNull();
     // Holding 1 under a leader-authored cap of 2 — the false-positive this warning must not fire.
-    expect(concurrencyClaimWarning(verdict(['WI-9'], 2), 'WI-1')).toBeNull();
+    expect(concurrencyClaimWarning(verdict(['WI-9'], 2), 'WI-1', 'me')).toBeNull();
   });
 
   it('reports the counts, names the held lanes, and says the claim SUCCEEDED on purpose', () => {
-    const w = concurrencyClaimWarning(verdict(['WI-9', 'EI-8'], 1), 'WI-NEW');
+    const w = concurrencyClaimWarning(verdict(['WI-9', 'EI-8'], 1), 'WI-NEW', 'me');
     expect(w).toBeTruthy();
     // The held ids are the actionable part: an agent told only "you are at cap" cannot act.
     expect(w).toContain('WI-9');
@@ -189,6 +189,13 @@ describe('concurrencyClaimWarning (pure)', () => {
     // And the remedy has to include the legitimate one — raising the cap deliberately — or the
     // only advice on offer is "release work", which is wrong for a lane that genuinely runs 2-up.
     expect(w).toMatch(/scheduler:set_claim_spec/);
+    expect(w).toContain("scheduler:get_claim_spec { cupId: 'me' }");
+    expect(w).toContain(
+      "scheduler:set_claim_spec { cupId: 'me', spec: { ...current.spec, " +
+        'limits: { ...current.spec.limits, maxConcurrentClaims: N } } }',
+    );
+    expect(w).toContain('exactly one target selector (cupId or fleet)');
+    expect(w).not.toContain('scheduler:set_claim_spec { limits:');
     // The non-obvious cause of the original divergence, stated where it is needed.
     expect(w).toMatch(/PARKED/i);
   });
@@ -196,13 +203,13 @@ describe('concurrencyClaimWarning (pure)', () => {
   it('subtracts the item just claimed, so a re-claim never reports itself as another lane', () => {
     // The verdict is read PRE-claim so this should not arise; asserting it means a later move of
     // the read to post-claim cannot silently start double-counting the subject item.
-    const w = concurrencyClaimWarning(verdict(['WI-SELF'], 1), 'WI-SELF')!;
+    const w = concurrencyClaimWarning(verdict(['WI-SELF'], 1), 'WI-SELF', 'me')!;
     expect(w).not.toContain('holding: WI-SELF');
   });
 
   it('caps the named list but still reports the true totals', () => {
     const many = Array.from({ length: 12 }, (_, i) => `WI-${i + 1}`);
-    const w = concurrencyClaimWarning(verdict(many, 1), 'WI-NEW')!;
+    const w = concurrencyClaimWarning(verdict(many, 1), 'WI-NEW', 'me')!;
     expect(w).toContain('12/1');
     expect(w).toContain('+4 more');
     expect(w).not.toContain('WI-9,');
@@ -335,6 +342,11 @@ describe('work_items:claim — an at-cap by-id claim SUCCEEDS and WARNS (by-id-u
 
     expect(result.concurrencyWarning).toMatch(/member-7 WAS ALREADY AT THEIR CONCURRENCY CAP/i);
     expect(result.concurrencyWarning).toContain('scheduler:get_next WILL now refuse to serve member-7');
+    expect(result.concurrencyWarning).toContain("scheduler:get_claim_spec { cupId: 'member-7' }");
+    expect(result.concurrencyWarning).toContain(
+      "scheduler:set_claim_spec { cupId: 'member-7', spec: { ...current.spec, " +
+        'limits: { ...current.spec.limits, maxConcurrentClaims: N } } }',
+    );
     expect(result.concurrencyWarning).not.toMatch(/\bYOU WERE ALREADY AT YOUR CONCURRENCY CAP\b/i);
     expect(result.concurrency).toMatchObject({
       activeClaims: 1,

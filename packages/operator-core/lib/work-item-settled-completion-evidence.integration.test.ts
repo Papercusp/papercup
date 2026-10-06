@@ -383,4 +383,39 @@ describe('attachCompletionEvidenceToSettledItem — real PG', () => {
       payload: { wi10006010MergeProbe: 'target-only' },
     });
   });
+
+  it('pins null-hint metadata writes and author-origin repair to one physical row (WI-10006010)', async () => {
+    const item = await wi.createWorkItem({
+      kind: 'bug', title: 'metadata update slug twin', harness: 'papercup', createdBy: AGENT,
+    });
+    await seedSlugTwin(item.id);
+    await db.sql`UPDATE harness_shared.work_items SET updated_ts = updated_ts + 60000
+                  WHERE workspace_id = 'default' AND harness_slug = 'papercup' AND feature_id = ${item.id}`;
+    const twinBefore = await physicalSnapshot(item.id, TWIN_HARNESS);
+
+    const metadata = await issues.updateIssue(
+      item.id,
+      { title: 'null-hint metadata update', silent: true },
+      { harnessSlug: null },
+    );
+    expect(metadata).toMatchObject({ title: 'null-hint metadata update' });
+    expect(await physicalSnapshot(item.id, TWIN_HARNESS)).toEqual(twinBefore);
+
+    await db.sql`UPDATE harness_shared.work_items SET origin = 'remote'
+                  WHERE workspace_id = 'default' AND feature_id = ${item.id}`;
+    const papercupBefore = await physicalSnapshot(item.id, 'papercup');
+    const updated = await wi.updateWorkItem(
+      item.id,
+      { title: 'author repair update' },
+      AGENT,
+      { harness: TWIN_HARNESS },
+    );
+
+    expect(updated).toMatchObject({ ok: true });
+    expect(await physicalSnapshot(item.id, 'papercup')).toEqual(papercupBefore);
+    expect(await physicalSnapshot(item.id, TWIN_HARNESS)).toMatchObject({
+      title: 'author repair update',
+      origin: 'local',
+    });
+  });
 });

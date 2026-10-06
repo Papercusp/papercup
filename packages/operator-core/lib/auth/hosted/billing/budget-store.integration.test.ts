@@ -10,11 +10,11 @@ import { journalEntryForMovement } from '../../../cupboard/money-journal';
 import { postMoneyJournalEntry } from '../../../cupboard/money-journal-store';
 import { pgPaymentReceiptStore, type NewPaymentReceipt } from '../../../cupboard/payment-receipt-store';
 import { receiptCommitment } from '../../../cupboard/payment-receipt';
-import { collectHostedStripeFunding, type HostedPrepaidFundingInput } from './budget-funding';
-import { createStripeBillingClient } from './stripe-billing-client';
+import type { HostedPrepaidFundingInput } from './budget-funding';
 import { PostgresHostedBudgetStore, type HostedBudgetContextReader, type HostedBudgetObservation,
   type HostedBudgetRequest, type HostedBudgetScope, type HostedPrepaidAllocationRequest, type HostedPrepaidFundingReader,
-  evaluateLockedHostedPrepaidFunding, readLockedHostedPrepaidAllocations, readLockedHostedStripeFundingPopulation } from './budget-store';
+  createLockedHostedStripeFundingReader, evaluateLockedHostedPrepaidFunding,
+  readLockedHostedPrepaidAllocations, readLockedHostedStripeFundingPopulation } from './budget-store';
 
 const { createOrgTestDb } = await import('../../../../test/_org-test-db');
 let db: OrgTestDb;
@@ -115,6 +115,40 @@ const populationEntry = (id: string) => {
   if (!built.ok) throw new Error(built.detail);
   return built.entry;
 };
+const stripeFundingConfiguration = () => ({ ...structuredClone(populationInput),
+  policy: { daoBasisPoints: 0, refundReserveBasisPoints: 0 }, maximumAgeMs: 1000 });
+function emptyStripeTransport(organizationId: string, accountId = populationInput.pool.stripeAccountId) {
+  const calls: string[] = [];
+  const fetchImpl: typeof fetch = async (url, init) => {
+    expect(new Headers(init?.headers).get('authorization')).toBe('Bearer sk_live_fixture');
+    expect(init?.signal).toBeInstanceOf(AbortSignal);
+    expect(init?.redirect).toBe('error');
+    const path = new URL(String(url)).pathname; calls.push(path);
+    let body: unknown;
+    if (path === '/v1/account') body = { object: 'account', id: accountId };
+    else if (path === '/v1/customers/cus_ServerBinding') body = { object: 'customer', id: 'cus_ServerBinding',
+      livemode: true, metadata: { organizationId } };
+    else if (path === '/v1/balance') body = { object: 'balance', livemode: true, available: [], pending: [] };
+    else if (['/v1/charges', '/v1/refunds', '/v1/disputes', '/v1/balance_transactions'].includes(path)) {
+      body = { object: 'list', data: [], has_more: false };
+    } else throw new Error('unexpected Stripe fixture path');
+    return new Response(JSON.stringify(body), { status: 200, headers: { 'request-id': 'req_BindingFixture' } });
+  };
+  return { calls, fetchImpl };
+}
+async function withStripeBinding(check: (sql: Sql, s: HostedBudgetScope) => Promise<void>, livemode = true) {
+  const s = { controlWorkspaceId: populationInput.pool.controlWorkspaceId, organizationId: randomUUID(),
+    customerWorkspaceId: 'fixture-server-bound-workspace' };
+  const rollback = new Error('stripe binding fixture rollback');
+  try {
+    await service(async sql => {
+      await sql`INSERT INTO papercusp_auth.hosted_billing_customers (organization_id, stripe_customer_id, livemode)
+        VALUES (${s.organizationId}::uuid, 'cus_ServerBinding', ${livemode})`;
+      await check(sql, s);
+      throw rollback;
+    });
+  } catch (error) { if (error !== rollback) throw error; }
+}
 async function withPopulationHeld(check: () => Promise<void>, rollback = false) {
   let release!: () => void; let announce!: () => void; let failed!: (error: unknown) => void;
   const unblock = new Promise<void>(resolve => { release = resolve; });
@@ -737,6 +771,96 @@ describe('PostgresHostedBudgetStore (real hosted service transactions)', () => {
     expect('cashBacking' in population).toBe(false);
   });
 
+  it('selects the persisted customer in the same transaction and authenticates the configured account', async () => {
+    await withStripeBinding(async (sql, s) => {
+      // The uncommitted binding is visible only through this exact Sql.
+      expect(await db.adminSql`SELECT 1 FROM papercusp_auth.hosted_billing_customers
+        WHERE organization_id = ${s.organizationId}::uuid`).toHaveLength(0);
+      const transport = emptyStripeTransport(s.organizationId);
+      const configuration = stripeFundingConfiguration();
+      const built = createLockedHostedStripeFundingReader(configuration,
+        { secretKey: 'sk_live_fixture', liveModeAllowed: true, fetchImpl: transport.fetchImpl });
+      if (!built.ok) throw new Error('fixture');
+      // Mutating the original configuration cannot redirect the pinned reader.
+      configuration.pool.stripeAccountId = 'acct_Mutated'; configuration.journalWorkspaceId = 'mutated-workspace';
+      const result = await built.read(sql, s);
+      expect(result).toMatchObject({ ok: true, snapshot: { stripeAccountId: populationInput.pool.stripeAccountId,
+        stripeCustomerId: 'cus_ServerBinding', organizationId: s.organizationId, livemode: true },
+      payments: [], reversals: [], allocations: [], entries: [] });
+      expect(transport.calls).toContain('/v1/customers/cus_ServerBinding');
+      expect('cashBacking' in result).toBe(false);
+      expect('limits' in result).toBe(false);
+      // Successful remote collection does not release any of the source locks.
+      await expect(db.adminSql.begin(async tx => {
+        await tx.unsafe("SET LOCAL lock_timeout = '100ms'");
+        await tx`UPDATE harness_shared.payment_receipts SET workspace_id = workspace_id WHERE false`;
+      })).rejects.toMatchObject({ code: '55P03' });
+    });
+  });
+
+  it.each(['account', 'organization'] as const)('refuses authenticated %s mismatch before using the remote population', async mismatch => {
+    await withStripeBinding(async (sql, s) => {
+      const transport = emptyStripeTransport(mismatch === 'organization' ? randomUUID() : s.organizationId,
+        mismatch === 'account' ? 'acct_OtherCredential' : populationInput.pool.stripeAccountId);
+      const built = createLockedHostedStripeFundingReader(stripeFundingConfiguration(),
+        { secretKey: 'sk_live_fixture', liveModeAllowed: true, fetchImpl: transport.fetchImpl });
+      if (!built.ok) throw new Error('fixture');
+      expect(await built.read(sql, s)).toEqual({ ok: false, reason: 'unverified-stripe-read' });
+      expect(transport.calls).toEqual(mismatch === 'account' ? ['/v1/account']
+        : ['/v1/account', '/v1/customers/cus_ServerBinding']);
+    });
+  });
+
+  it.each(['missing', 'test'] as const)('refuses a %s stored target binding without contacting Stripe', async binding => {
+    await withStripeBinding(async (sql, s) => {
+      const transport = emptyStripeTransport(s.organizationId);
+      const built = createLockedHostedStripeFundingReader(stripeFundingConfiguration(),
+        { secretKey: 'sk_live_fixture', liveModeAllowed: true, fetchImpl: transport.fetchImpl });
+      if (!built.ok) throw new Error('fixture');
+      expect(await built.read(sql, binding === 'missing' ? { ...s, organizationId: randomUUID() } : s))
+        .toEqual({ ok: false, reason: 'unverified-stripe-read' });
+      expect(transport.calls).toEqual([]);
+    }, binding !== 'test');
+  });
+
+  it('keeps other customer modes actual and refuses an unverified mixed pool', async () => {
+    await withStripeBinding(async (sql, s) => {
+      await sql`INSERT INTO papercusp_auth.hosted_billing_customers (organization_id, stripe_customer_id, livemode)
+        VALUES (${randomUUID()}::uuid, 'cus_OtherTestCustomer', false)`;
+      const transport = emptyStripeTransport(s.organizationId);
+      const built = createLockedHostedStripeFundingReader(stripeFundingConfiguration(),
+        { secretKey: 'sk_live_fixture', liveModeAllowed: true, fetchImpl: transport.fetchImpl });
+      if (!built.ok) throw new Error('fixture');
+      expect(await built.read(sql, s)).toEqual({ ok: false, reason: 'unverified-stripe-read' });
+      expect(transport.calls).toEqual([]);
+    });
+  });
+
+  it('refuses a different control workspace and prior cancellation before taking SQL locks', async () => {
+    const transport = emptyStripeTransport('unused');
+    const built = createLockedHostedStripeFundingReader(stripeFundingConfiguration(),
+      { secretKey: 'sk_live_fixture', liveModeAllowed: true, fetchImpl: transport.fetchImpl });
+    if (!built.ok) throw new Error('fixture');
+    const s = { controlWorkspaceId: 'different-control', organizationId: randomUUID(), customerWorkspaceId: 'fixture-workspace' };
+    // Autocommit would fail the population reader; these refuse BEFORE that read.
+    expect(await built.read(db.adminSql, s)).toEqual({ ok: false, reason: 'unverified-stripe-read' });
+    expect(await built.read(db.adminSql, { ...s, controlWorkspaceId: populationInput.pool.controlWorkspaceId }, AbortSignal.abort()))
+      .toEqual({ ok: false, reason: 'unverified-stripe-read' });
+    expect(transport.calls).toEqual([]);
+  });
+
+  it.each([{ secretKey: 'sk_test_fixture', liveModeAllowed: true },
+    { secretKey: 'sk_live_fixture', liveModeAllowed: false },
+    { secretKey: 'invalid', liveModeAllowed: true }])('never installs a source reader from $secretKey with live allowed $liveModeAllowed', dependencies => {
+    expect(createLockedHostedStripeFundingReader(stripeFundingConfiguration(), dependencies))
+      .toEqual({ ok: false, reason: 'unverified-stripe-read' });
+  });
+
+  it.each([0, 10_001, Number.POSITIVE_INFINITY])('cannot disable or extend the collection deadline to %s', maximumDurationMs => {
+    expect(() => createLockedHostedStripeFundingReader(stripeFundingConfiguration(),
+      { secretKey: 'sk_live_fixture', liveModeAllowed: true, maximumDurationMs })).toThrow('invalid locked Stripe funding configuration');
+  });
+
   it('keeps source locks until cancelled Stripe I/O settles and releases them on reservation rollback', async () => {
     const org = randomUUID();
     const parent = new AbortController();
@@ -751,18 +875,14 @@ describe('PostgresHostedBudgetStore (real hosted service transactions)', () => {
       signal.addEventListener('abort', () => { transportActive = false; reject(new Error('private cancellation')); }, { once: true });
       started();
     });
-    const built = createStripeBillingClient({ secretKey: 'sk_live_fixture', fetchImpl, liveModeAllowed: true });
+    const built = createLockedHostedStripeFundingReader(stripeFundingConfiguration(),
+      { secretKey: 'sk_live_fixture', fetchImpl, liveModeAllowed: true, now: () => T });
     if (!built.ok) throw new Error('fixture');
     await expect(service(async sql => {
       await sql`INSERT INTO papercusp_auth.hosted_billing_customers (organization_id, stripe_customer_id, livemode)
         VALUES (${org}::uuid, 'cus_CancelledPopulation', true)`;
-      const local = await readLockedHostedStripeFundingPopulation(sql, populationInput);
-      const pending = collectHostedStripeFunding({ scope: { controlWorkspaceId: populationInput.pool.controlWorkspaceId,
-        organizationId: org, customerWorkspaceId: 'fixture-cancelled-workspace' },
-        accountId: populationInput.pool.stripeAccountId, customerId: 'cus_CancelledPopulation',
-        policy: { daoBasisPoints: 0, refundReserveBasisPoints: 0 }, maximumAgeMs: 1000,
-        entries: local.entries, receipts: local.receipts, customers: local.customers },
-      { client: built.client, now: () => T, signal: parent.signal });
+      const pending = built.read(sql, { controlWorkspaceId: populationInput.pool.controlWorkspaceId,
+        organizationId: org, customerWorkspaceId: 'fixture-cancelled-workspace' }, parent.signal);
       try {
         await requestStarted;
         expect(transportActive).toBe(true);

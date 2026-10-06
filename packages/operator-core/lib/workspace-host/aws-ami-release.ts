@@ -164,6 +164,19 @@ export interface AwsAmiScanEvidence {
    */
   mountedFilesystems: number;
   candidateRootProof: string;
+  /**
+   * D-204 scope attribution, the same fields the GCP evidence carries (gcp-image-family.ts).
+   * AWS_IMAGE_SCAN_POLICY judges the 'papercusp-bundled' scope (WI-10006421), so the release
+   * gate denies with `scope-attribution-missing` when any of the four maps is absent, and the
+   * bundled secret list is what the committed allowances are matched against. Optional in the
+   * type only because the gate, not the type, is where absence must be refused.
+   */
+  vulnerabilityByScope?: Readonly<Record<string, number>>;
+  vulnerabilityCriticalHighByScope?: Readonly<Record<string, number>>;
+  bundleCatalogedArtifacts?: number;
+  secretsByScope?: Readonly<Record<string, number>>;
+  secretBundledSample?: readonly unknown[];
+  secretBundledSampleComplete?: boolean;
   evidenceRef: string;
 }
 

@@ -435,6 +435,22 @@ describe('structured Claude SU engine', () => {
     })));
   });
 
+  // pui-chat-first-ux P-025: the adapter also reported a failed result record,
+  // so one refused turn produced two error events and PUI drew two failure
+  // lines under the prompt (seen live on a weekly-limit refusal).
+  it('reports a refused turn exactly once', async () => {
+    const p = peer({ holdResult: true }); const engine = open(p); await engine.ready;
+    await engine.adapter.host.startCommand(command(engine)).terminal;
+    p.output.write({ type: 'result', subtype: 'success', session_id: nativeId,
+      is_error: true, stop_reason: 'stop_sequence', result: "You've hit your weekly limit" });
+    const errors = () => engine.adapter.host.recent.map(({ event }) => event).filter((event) => event.type === 'error');
+    await vi.waitFor(() => expect(engine.adapter.host.descriptor().lifecycle).toBe('waiting-for-owner'));
+    await vi.waitFor(() => expect(errors().length).toBeGreaterThan(0));
+    expect(errors()).toEqual([expect.objectContaining({
+      code: 'claude_turn_failed', message: expect.stringContaining("You've hit your weekly limit"),
+    })]);
+  });
+
   it('does not report an answered turn as empty or failed', async () => {
     const p = peer(); const engine = open(p); await engine.ready;
     await engine.adapter.host.startCommand(command(engine)).terminal;

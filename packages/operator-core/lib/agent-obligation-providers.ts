@@ -26,6 +26,7 @@ import type { GoalPlanFleetAlert } from './system-health/goal-drain-fleet-watchd
 import type { GoalOwnerReportObligation } from './system-health/goal-owner-report-watchdog';
 import { GOAL_OWNER_REPORT_HEADING_LIST } from './goal-owner-report';
 import type { PlanAcceptanceGateCode } from './plan-acceptance-gate';
+import type { FleetStaffingRow } from './fleet/fleet-staffing-read';
 import type { PlanClosureGateFields } from './goals/plan-closure-observations';
 import { advanceGoalPlacementProgress, goalPlacementProgressScopeKey } from './goal-placement-progress';
 import type { ExactPlanAdmission, ExactPlanAdmissionReason } from './agent-tools/plans/plan-admission-preflight';
@@ -38,6 +39,7 @@ export const INDEPENDENT_VERIFICATION_OBLIGATION_REVISION = 'plan-independent-ve
 export const OWNER_DIRECTIVE_OBLIGATION_REVISION = 'owner-directive-disposition-v1';
 export const WAITING_ON_OBLIGATION_REVISION = 'waiting-on-progress-v1';
 export const CONSULT_RECONCILIATION_OBLIGATION_REVISION = 'consult-proceed-reconciliation-v1';
+export const FLEET_STAFFING_OBLIGATION_REVISION = 'fleet-staffing-v1';
 
 interface ProviderBase {
   workspaceId: string;
@@ -1802,6 +1804,126 @@ export function consultReconciliationObligations(input: ConsultReconciliationPro
   });
 }
 
+export interface FleetStaffingProviderInput extends ProviderBase {
+  read: ProviderRead<FleetStaffingRow[]>;
+}
+
+const FLEET_STAFFING_SOURCE = 'fleet-staffing:headcount+under-staffed-alert';
+
+/**
+ * P-005 / D-030 step 6: the fleets this session leads, as obligation rows.
+ *
+ * DUE when a fleet is under-staffed and nothing will restore it: `held` is not
+ * true (not held, unknown, or held back by a no-top-up rule, including an expired
+ * one the governor has not lapsed yet). A held fleet below target, a fleet at
+ * target, and a winding-down fleet produce no row, which is how the obligation
+ * clears. A fleet whose headcount cannot be measured is an UNKNOWN row: unknown
+ * is not zero, so it neither alarms nor reads as staffed.
+ */
+export function fleetStaffingObligations(input: FleetStaffingProviderInput): AgentObligation[] {
+  const common = {
+    ruleId: 'fleet-staffing',
+    ruleRevision: FLEET_STAFFING_OBLIGATION_REVISION,
+    family: 'fleet-staffing' as const,
+    scope: { workspaceId: input.workspaceId, ownerId: input.ownerId },
+    responsibleOwnerId: input.ownerId,
+    causalRank: 2,
+    sourceGeneration: input.sourceGeneration,
+  };
+  if (input.read.status === 'unknown') {
+    return [
+      defineAgentObligation({
+        ...common,
+        title: 'Staffing of the fleets you lead is unavailable',
+        episode: `unknown:${input.sourceGeneration}`,
+        status: 'unknown',
+        priority: 'normal',
+        authority: policyAuthority(FLEET_STAFFING_SOURCE, FLEET_STAFFING_OBLIGATION_REVISION),
+        reason: input.read.failure.detail,
+        applicableDemand: 0,
+        evidence: [],
+        action: { kind: 'inspect', summary: input.read.failure.retry, targetRef: FLEET_STAFFING_SOURCE },
+        clearsWhen: {
+          id: 'fleet-staffing-readable',
+          summary: 'the led-fleet staffing read succeeds again',
+          evidenceKind: 'state',
+          sourceRef: FLEET_STAFFING_SOURCE,
+        },
+        measurementFailure: input.read.failure,
+      }),
+    ];
+  }
+  const out: AgentObligation[] = [];
+  for (const row of input.read.value) {
+    const ref = `fleet:${row.fleetSlug}`;
+    const brief = `fleet:leader-brief { fleet: '${row.fleetSlug}' }`;
+    if (row.evaluation == null) {
+      const detail = row.unknownReason ?? 'productive headcount is unmeasured';
+      out.push(
+        defineAgentObligation({
+          ...common,
+          title: `Staffing of fleet ${row.fleetSlug} is unmeasured`,
+          episode: `unknown:${row.fleetSlug}`,
+          status: 'unknown',
+          priority: 'normal',
+          authority: policyAuthority(ref, FLEET_STAFFING_OBLIGATION_REVISION),
+          reason: detail,
+          applicableDemand: 0,
+          evidence: [],
+          action: { kind: 'inspect', summary: `read ${brief} for its headcount`, tool: 'fleet:leader-brief', targetRef: ref },
+          clearsWhen: {
+            id: `fleet-staffing-measured:${row.fleetSlug}`,
+            summary: "the fleet's productive headcount is measurable again",
+            evidenceKind: 'state',
+            sourceRef: ref,
+          },
+          measurementFailure: { code: 'fleet-headcount-unmeasured', detail, retry: brief },
+        }),
+      );
+      continue;
+    }
+    const e = row.evaluation;
+    if (!e.alert || e.held === true) continue;
+    out.push(
+      defineAgentObligation({
+        ...common,
+        title:
+          e.target != null
+            ? `Fleet ${row.fleetSlug} is short ${e.shortfall} of ${e.target} worker(s) and nothing will restore it`
+            : `Fleet ${row.fleetSlug} has no workers and no headcount target`,
+        episode: `fleet:${row.fleetSlug}:${e.target ?? 'none'}:${e.notHeldBecause ?? 'unknown'}`,
+        status: 'due',
+        priority: e.current === 0 ? 'high' : 'normal',
+        authority: policyAuthority(ref, FLEET_STAFFING_OBLIGATION_REVISION),
+        reason: e.reason ?? `${e.current} productive worker(s) against target ${e.target ?? 'none'}`,
+        applicableDemand: 1,
+        evidence: [
+          evidence(
+            ref,
+            input.observedAt,
+            input.sourceGeneration,
+            `current=${e.current}, target=${e.target ?? 'none'}, held=${e.held}, ` +
+              `notHeldBecause=${e.notHeldBecause ?? 'unknown'}`,
+          ),
+        ],
+        action: {
+          kind: 'repair',
+          summary: e.repair ?? 'fleet:headcount-target { target, supervise:true }',
+          tool: 'fleet:headcount-target',
+          targetRef: ref,
+        },
+        clearsWhen: {
+          id: `fleet-staffed:${row.fleetSlug}`,
+          summary: 'the headcount governor holds the fleet, it reaches its target, or it winds down',
+          evidenceKind: 'state',
+          sourceRef: ref,
+        },
+      }),
+    );
+  }
+  return out;
+}
+
 export function buildAgentObligationAgenda(
   inputs: {
     planPlacement?: PlanPlacementProviderInput;
@@ -1811,6 +1933,7 @@ export function buildAgentObligationAgenda(
     ownerDirectives?: OwnerDirectivesProviderInput;
     waitingOn?: WaitingOnProviderInput;
     consultReconciliation?: ConsultReconciliationProviderInput;
+    fleetStaffing?: FleetStaffingProviderInput;
   },
   evaluatedAt: string,
 ): AgentObligationAgenda {
@@ -1822,6 +1945,7 @@ export function buildAgentObligationAgenda(
     ...(inputs.ownerDirectives ? ownerDirectiveObligations(inputs.ownerDirectives) : []),
     ...(inputs.waitingOn ? waitingOnObligations(inputs.waitingOn) : []),
     ...(inputs.consultReconciliation ? consultReconciliationObligations(inputs.consultReconciliation) : []),
+    ...(inputs.fleetStaffing ? fleetStaffingObligations(inputs.fleetStaffing) : []),
   ];
   return evaluateAgentObligations(obligations, evaluatedAt);
 }

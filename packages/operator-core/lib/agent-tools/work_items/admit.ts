@@ -18,7 +18,8 @@ import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { getSessionUserOrDefault } from '../../auth';
-import { ADMITTED_KINDS, admitWorkItem, writeBackAdmission } from '../../work-admission/admit';
+import { ADMITTED_KINDS, admitWorkItem, transitionAdmission, writeBackAdmission } from '../../work-admission/admit';
+import { TICKET_STATUS_CATEGORIES } from '../../data-sources/ticket-vocabulary';
 import { listAdmissionSourceKinds } from '../../work-admission/admission-sources';
 import {
   ADMISSION_BACKFILL_MAX,
@@ -32,7 +33,7 @@ import '../../work-admission/record-source';
 // P-021: registers the 'chat-message' and 'chat-thread' admission resolvers (D-030).
 import '../../data-sources/chat-admission-sources';
 
-const OPS = ['admit', 'write-back', 'rules-set', 'rules-list', 'rules-disable', 'rules-apply'] as const;
+const OPS = ['admit', 'write-back', 'transition', 'rules-set', 'rules-list', 'rules-disable', 'rules-apply'] as const;
 
 /** Thrown rule errors carry a `code: detail` prefix; surface them as a typed refusal. */
 function ruleRefusal(err: unknown): { ok: false; code: string; message: string } | null {
@@ -45,7 +46,7 @@ export default defineTool({
   name: 'work_items:admit',
   profile: 'engineer',
   description:
-    "Admit ingested data into work (D-004). op 'admit' turns a source (e.g. { kind:'record', recordId }) into one linked, attributed work item, idempotent per source. 'write-back' posts a note to the admitted item's source. 'rules-*' manage per-data-source rules that admit matching records on ingest.",
+    "Admit ingested data into work (D-004). op 'admit' turns a source (e.g. { kind:'record', recordId }) into one linked, attributed work item, idempotent per source. 'write-back' posts a note to the admitted item's source; 'transition' moves it to toCategory. 'rules-*' manage per-data-source rules that admit matching records on ingest.",
   guidance: {
     when: 'A person promotes an ingested ticket, message or thread into work, writes a note back to its source, or sets a rule that admits matching records automatically.',
     notWhen: 'Filing work that has no data source (work_items:create), or editing an admitted item (title/description belong to the source; update it there).',
@@ -66,8 +67,9 @@ export default defineTool({
       .describe("admit: { kind, ...ref }, e.g. { kind:'record', recordId }."),
     title: z.string().min(1).max(300).optional().describe("admit: title override; defaults to the source's title."),
     kind: z.enum(ADMITTED_KINDS).optional().describe("admit: work kind, default 'change'."),
-    workItemId: z.string().min(1).max(200).optional().describe('write-back: the admitted work item.'),
+    workItemId: z.string().min(1).max(200).optional().describe('write-back / transition: the admitted work item.'),
     text: z.string().min(1).max(4000).optional().describe('write-back: plain-text note.'),
+    toCategory: z.enum(TICKET_STATUS_CATEGORIES).optional().describe('transition: target workflow category.'),
     rule: z
       .object({
         id: z.string().min(1).max(200).optional(),
@@ -98,6 +100,7 @@ type AdmitToolArgs = {
   kind?: (typeof ADMITTED_KINDS)[number];
   workItemId?: string;
   text?: string;
+  toCategory?: (typeof TICKET_STATUS_CATEGORIES)[number];
   rule?: {
     id?: string;
     dataSourceId: string;
@@ -155,6 +158,11 @@ async function runAdmitOp(args: AdmitToolArgs, ctx: AdmitToolCtx) {
         if (!args.workItemId) return need('workItemId');
         if (!args.text) return need('text');
         return writeBackAdmission(workspaceId, args.workItemId, args.text);
+      }
+      case 'transition': {
+        if (!args.workItemId) return need('workItemId');
+        if (!args.toCategory) return need('toCategory');
+        return transitionAdmission(workspaceId, args.workItemId, args.toCategory);
       }
       case 'rules-set': {
         if (!args.rule) return need('rule');

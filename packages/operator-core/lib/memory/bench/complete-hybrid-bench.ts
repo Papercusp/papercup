@@ -28,7 +28,7 @@ import type { Client } from 'pg';
 import {
   configureMemory, memoryHost, Mem0Backend, HybridBackend, LexicalLegBackend,
   MEMORY_VECTOR_STORAGE_PROFILES, buildMdenseOnEmbedder, buildGemmaEmbedder, buildHarrierEmbedder,
-  shutdownLocalEmbedder, type MemoryEntry, type ResolvedEmbedder, type EmbedFn,
+  shutdownLocalEmbedder, disposeMemoryClient, type MemoryEntry, type ResolvedEmbedder, type EmbedFn,
 } from '@papercusp/memory';
 import { reciprocalRank } from '@papercusp/memory/bench';
 import { isCliEntry } from '../../util/cli-entry';
@@ -137,6 +137,10 @@ const keyOf = (h: MemoryEntry) => String(h.metadata?.corpus_key ?? h.id);
 export interface CompleteRunOptions {
   snapshot: string; gold: string; model: ArmModel; corpus: Corpus; out: string;
   modelDirectory?: string; ages?: string; leakSample?: number;
+  /** PROTOCOL TESTS ONLY: a synthetic document embedder replacing the arm's
+   *  real weights. The report records `binding.syntheticEmbedder: true`, so
+   *  such a run can never be read as a model measurement. */
+  embed?: EmbedFn;
 }
 
 export async function runCompleteHybrid(opts: CompleteRunOptions) {
@@ -145,15 +149,15 @@ export async function runCompleteHybrid(opts: CompleteRunOptions) {
   const entries = snapshot.suites[opts.corpus].entries;
   const queries = labels[opts.corpus];
   validateHeldout(entries, queries);
-  if (opts.model === 'mdenseon' && !opts.modelDirectory) throw new Error('mDenseOn requires its validated local model');
+  if (opts.model === 'mdenseon' && !opts.modelDirectory && !opts.embed) throw new Error('mDenseOn requires its validated local model');
   if (fs.existsSync(opts.out)) throw new Error(`refusing to overwrite ${opts.out}`);
   const agesFile = opts.ages ? JSON.parse(fs.readFileSync(opts.ages, 'utf8')) as { snapshotAt: string; ages: Record<string, number> } : null;
   if (agesFile && agesFile.snapshotAt !== snapshot.snapshotAt) throw new Error('ages were frozen for a different snapshot');
 
   const schema = BENCH_SCHEMA;
-  const embed: EmbedFn = opts.model === 'mdenseon'
+  const embed: EmbedFn = opts.embed ?? (opts.model === 'mdenseon'
     ? buildMdenseOnEmbedder({ kind: 'document', model: opts.modelDirectory! })
-    : opts.model === 'gemma' ? buildGemmaEmbedder({ kind: 'document', dims: 768 }) : buildHarrierEmbedder({ kind: 'document' });
+    : opts.model === 'gemma' ? buildGemmaEmbedder({ kind: 'document', dims: 768 }) : buildHarrierEmbedder({ kind: 'document' }));
   let embedCalls = 0;
   const counted: EmbedFn = async (text, signal) => { embedCalls += 1; return embed(text, signal); };
   const { resolved, candidateStorage } = armBinding(opts.model, schema, counted);
@@ -234,7 +238,8 @@ export async function runCompleteHybrid(opts: CompleteRunOptions) {
     const report = {
       formatVersion: 1, runner: 'complete-hybrid-bench', model: opts.model, corpus: opts.corpus,
       binding: { schema, mode: resolved.mode, profileId: resolved.profile.profileId,
-        table: MEMORY_VECTOR_STORAGE_PROFILES[resolved.mode].table, candidateStorage: candidateStorage ?? null },
+        table: MEMORY_VECTOR_STORAGE_PROFILES[resolved.mode].table, candidateStorage: candidateStorage ?? null,
+        syntheticEmbedder: Boolean(opts.embed) },
       inputs: { snapshot: opts.snapshot, snapshotSha256: sha256(opts.snapshot), snapshotAt: snapshot.snapshotAt,
         gold: opts.gold, goldSha256: sha256(opts.gold), ages: opts.ages ?? null, agesSha256: opts.ages ? sha256(opts.ages) : null },
       seed: { documents: entries.length, leakDecoys: leakKeys.length, seedMs, seedEmbedCalls, memories: Number(census.memories),
@@ -257,6 +262,9 @@ export async function runCompleteHybrid(opts: CompleteRunOptions) {
       entities: report.seed.entities, agedRows, floor, summary: Object.fromEntries(ROUTES.map((rt) => [rt, summary[rt].mrr])), out: opts.out }));
     return report;
   } finally {
+    // The mem0 client caches its schema/embedder at construction; dispose it so
+    // nothing outlives this arm's schema (and a later run rebuilds from config).
+    await disposeMemoryClient().catch(() => {});
     await releaseBenchSchema(db, schema);
     await db.end();
     await shutdownLocalEmbedder();

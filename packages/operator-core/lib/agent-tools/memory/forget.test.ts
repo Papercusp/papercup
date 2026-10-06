@@ -186,4 +186,13 @@ describe('memory:forget handler (bulk keyed-array)', () => {
     expect(r).toMatchObject({ ok: false, reason: 'memory_backend_disabled' });
     expect(b.forget).not.toHaveBeenCalled();
   });
+
+  it('requires valid memory UUIDs at its public argument boundary', () => {
+    const schema = (forget as unknown as { args: { safeParse: (value: unknown) => { success: boolean } } }).args;
+    const uuid = '550e8400-e29b-41d4-a716-446655440000';
+    expect(schema.safeParse({ id: uuid }).success).toBe(true);
+    expect(schema.safeParse({ ids: [uuid] }).success).toBe(true);
+    expect(schema.safeParse({ id: '556477b3' }).success).toBe(false);
+    expect(schema.safeParse({ ids: ['556477b3'] }).success).toBe(false);
+  });
 });

@@ -57,7 +57,7 @@ const SBOM = JSON.stringify({
   artifacts: [
     { type: 'rpm', name: 'curl', version: '7.76.1-31.el9' },
     { type: 'rpm', name: 'nftables', version: '1.0.9-3.el9' },
-    { type: 'npm', name: 'axios', version: '1.7.9' },
+    { type: 'npm', name: 'axios', version: '1.7.9', locations: [{ path: '/opt/papercusp/node_modules/axios/package.json' }] },
   ],
 });
 const VULN = JSON.stringify({
@@ -156,7 +156,12 @@ describe('papercusp-aws-ami-scan measurement', () => {
     expect(measurement.vulnerabilityBySeverity).toEqual({ Low: 1, Negligible: 1 });
     expect(Object.values(measurement.vulnerabilityBySeverity).reduce((sum, count) => sum + count, 0)).toBe(2);
     expect(measurement.vulnerabilityByScope).toEqual({ 'inherited-base-image': 1, 'papercusp-bundled': 1 });
+    expect(measurement.vulnerabilityCriticalHighByScope).toEqual({});
+    expect(measurement.bundleCatalogedArtifacts).toBe(1);
     expect(measurement.secretFindings).toBe(0);
+    expect(measurement.secretsByScope).toEqual({});
+    expect(measurement.secretBundledSample).toEqual([]);
+    expect(measurement.secretBundledSampleComplete).toBe(true);
     expect(measurement.sbomSha256).toMatch(/^[a-f0-9]{64}$/);
     expect(measurement.guestPackages).toMatchObject({ curl: '7.76.1-31.el9', nftables: '1.0.9-3.el9', 'amazon-ssm-agent': null });
     // Ubuntu-era names are no longer probed: they never existed on the bootc image (WI-10005605).
@@ -188,10 +193,87 @@ describe('papercusp-aws-ami-scan measurement', () => {
     const evidence = buildAwsAmiScanEvidence(REQUEST, provenance, measureAwsAmiScan(CLEAN), { syft: 'syft 1.51.0' });
     expect(evidence).toMatchObject({ ...REQUEST, trusted: true, snapshotId: 'snap-0abc' });
     expect(evidence.evidenceRef).toMatch(/^aws-ami-scan:us-east-1\/ami-0123456789abcdef0\/snap-0abc:sha256:[a-f0-9]{64}$/);
-    const policyInput = { ...evidence, vulnerabilityFindings: 0, vulnerabilityBySeverity: {} };
-    expect(evaluateImageScanPolicy(policyInput, AWS_IMAGE_SCAN_POLICY).accepted).toBe(true);
-    const unproven = { ...policyInput, candidateRootProof: '' };
+    expect(evaluateImageScanPolicy(evidence, AWS_IMAGE_SCAN_POLICY).accepted).toBe(true);
+    const unproven = { ...evidence, candidateRootProof: '' };
     expect(evaluateImageScanPolicy(unproven, AWS_IMAGE_SCAN_POLICY).accepted).toBe(false);
+  });
+});
+
+/**
+ * WI-10006421: the first bootc candidate to reach the AWS gate (A-r62b) carried 1073 at/above-high
+ * findings, 1066 of them CentOS Stream base packages and none in the bundle, plus 44 secrets of
+ * which 34 were bundled false positives. These cases pin the scoped verdict against that shape.
+ */
+describe('papercusp-aws-ami-scan scope attribution at the AWS release gate', () => {
+  const BASE = '/candidate/loop6p4/ostree/deploy/default/deploy/abc.0';
+  const RELEASE = `${BASE}/opt/papercusp/releases/0.0.21`;
+  const highIn = (path: string) => ({
+    vulnerability: { severity: 'High', fix: { state: 'not-fixed' } },
+    artifact: { type: 'rpm', locations: [{ path }] },
+  });
+  const secret = (RuleID: string, File: string) => ({ RuleID, File, StartLine: 1, Secret: 'x', Match: 'x' });
+
+  function evidenceFor(input: { matches: unknown[]; secrets: unknown[]; sbomArtifacts?: unknown[] }) {
+    const sbomText = JSON.stringify({
+      artifacts: input.sbomArtifacts ?? [
+        { type: 'rpm', name: 'kernel', version: '6.12.0', locations: [{ path: `${BASE}/usr/lib/sysimage/rpm/rpmdb.sqlite` }] },
+        { type: 'npm', name: 'hono', version: '4.6.0', locations: [{ path: `${RELEASE}/node_modules/hono/package.json` }] },
+      ],
+    });
+    const measurement = measureAwsAmiScan({
+      ...CLEAN,
+      sbomText,
+      vulnText: JSON.stringify({ matches: input.matches }),
+      secretsText: JSON.stringify(input.secrets),
+    });
+    return buildAwsAmiScanEvidence(REQUEST, assertAwsAmiProvenance(image(), REQUEST), measurement, {});
+  }
+
+  it('attributes every finding to exactly one scope, partitioning each total', () => {
+    const evidence = evidenceFor({
+      matches: [highIn(`${BASE}/usr/lib/sysimage/rpm/rpmdb.sqlite`), highIn(`${RELEASE}/node_modules/x/package.json`)],
+      secrets: [secret('generic-api-key', `${RELEASE}/serve.mjs`), secret('private-key', `${BASE}/usr/share/misc/magic.mgc`)],
+    });
+    expect(evidence.vulnerabilityCriticalHighByScope).toEqual({ 'inherited-base-image': 1, 'papercusp-bundled': 1 });
+    expect(evidence.secretsByScope).toEqual({ 'inherited-base-image': 1, 'papercusp-bundled': 1 });
+    expect(evidence.secretBundledSample).toEqual([{ rule: 'generic-api-key', file: `${RELEASE}/serve.mjs`, line: 1 }]);
+    expect(JSON.stringify(evidence)).not.toContain('"Match"');
+  });
+
+  it('accepts unfixable base-image findings and justified bundled secrets, judging only the bundle', () => {
+    const evidence = evidenceFor({
+      matches: Array.from({ length: 840 }, () => highIn(`${BASE}/usr/lib/sysimage/rpm/rpmdb.sqlite`)),
+      secrets: [
+        ...Array.from({ length: 31 }, () => secret('generic-api-key', `${RELEASE}/serve.mjs`)),
+        secret('generic-api-key', `${RELEASE}/spa/monaco/vs/editor-KLE6jdfb.js`),
+        secret('private-key', `${BASE}/usr/share/misc/magic.mgc`),
+      ],
+    });
+    const verdict = evaluateImageScanPolicy(evidence, AWS_IMAGE_SCAN_POLICY);
+    expect(verdict.failures).toEqual([]);
+    expect(verdict).toMatchObject({ accepted: true, evaluatedScope: 'papercusp-bundled', policyViolatingVulnerabilities: 0 });
+  });
+
+  it('still denies a high finding inside the bundle, and an unjustified bundled secret', () => {
+    const vulnerable = evidenceFor({ matches: [highIn(`${RELEASE}/bin/kopia`)], secrets: [] });
+    expect(evaluateImageScanPolicy(vulnerable, AWS_IMAGE_SCAN_POLICY).failures.map((f) => f.code)).toContain(
+      'vulnerability-threshold',
+    );
+    const leaked = evidenceFor({ matches: [], secrets: [secret('aws-access-token', `${RELEASE}/config/credentials`)] });
+    expect(evaluateImageScanPolicy(leaked, AWS_IMAGE_SCAN_POLICY).accepted).toBe(false);
+  });
+
+  it('denies when the bundle was never cataloged, instead of reading silence as clean', () => {
+    const evidence = evidenceFor({
+      matches: [],
+      secrets: [],
+      sbomArtifacts: [
+        { type: 'rpm', name: 'kernel', version: '6.12.0', locations: [{ path: `${BASE}/usr/lib/sysimage/rpm/rpmdb.sqlite` }] },
+        { type: 'npm', name: 'npm', version: '10.0.0', locations: [{ path: `${BASE}/usr/lib/node_modules/npm/package.json` }] },
+      ],
+    });
+    expect(evidence.bundleCatalogedArtifacts).toBe(0);
+    expect(evaluateImageScanPolicy(evidence, AWS_IMAGE_SCAN_POLICY).accepted).toBe(false);
   });
 });
 

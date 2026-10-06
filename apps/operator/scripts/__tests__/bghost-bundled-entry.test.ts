@@ -27,6 +27,7 @@ const README = join(SCRIPTS_DIR, 'systemd', 'README.md');
  * identity-lint leg of green-checkpoint rejects.
  */
 const BUNDLE_HOST_UNIT_PATH = '%h/papercupai-workspace/papercusp/apps/operator/bin/bundle-host.sh';
+const SNAPSHOT_LAUNCHER_UNIT_PATH = '%h/papercupai-workspace/papercusp/apps/operator/scripts/systemd/papercusp-script-snapshot.sh';
 
 /**
  * SCOPE — THIS SUITE READS REPO FILES ONLY. It cannot see systemd and must never be
@@ -97,8 +98,9 @@ describe('papercup-bg-host bundled-entry file contract (EI-21434335931587523)', 
     const execLines = serviceLines.filter((line) => line.startsWith('ExecStart'));
     const environmentLines = serviceLines.filter((line) => line.startsWith('Environment='));
 
+    // WI-10006398: bundle-host.sh runs from a frozen snapshot, with the checkout pinned.
     expect(execLines).toEqual([
-      `ExecStartPre=${BUNDLE_HOST_UNIT_PATH}`,
+      `ExecStartPre=${SNAPSHOT_LAUNCHER_UNIT_PATH} ${BUNDLE_HOST_UNIT_PATH}`,
       'ExecStart=',
       'ExecStart=/usr/bin/bash -c "set -a; [ -f .env.local ] && . ./.env.local; PAPERCUSP_GOOGLE_PUBSUB_SERVICE_ACCOUNT_PATH=$${PAPERCUSP_GOOGLE_PUBSUB_SERVICE_ACCOUNT_PATH:-$$GOOGLE_APPLICATION_CREDENTIALS}; unset GOOGLE_APPLICATION_CREDENTIALS; set +a; exec env \\',
     ]);
@@ -109,7 +111,10 @@ describe('papercup-bg-host bundled-entry file contract (EI-21434335931587523)', 
     // Supervisor policy belongs on the unit; child runtime configuration stays
     // inline in ExecStart. Requiring the exact set catches drift in either
     // direction without rejecting the stale-bundle availability opt-in.
-    expect(environmentLines).toEqual(['Environment=PAPERCUSP_BUNDLE_ALLOW_STALE_START=1']);
+    expect(environmentLines).toEqual([
+      'Environment=PAPERCUSP_BUNDLE_ALLOW_STALE_START=1',
+      'Environment=BUNDLE_HOST_OPERATOR_DIR=%h/papercupai-workspace/papercusp/apps/operator',
+    ]);
 
     for (const assignment of [
       'PAPERCUSP_HONO_PORT=3271',

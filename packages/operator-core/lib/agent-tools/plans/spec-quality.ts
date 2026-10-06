@@ -44,6 +44,7 @@ export interface PlanSpecQualityResult {
     uncoveredPlanItemIds: string[];
     invalidExemptionSpecIds: string[];
     draftSpecIds: string[];
+    atomicityClauseDiagnostics: SpecQualityAtomicityClauseDiagnostic[];
   };
   scorecardDraft: {
     rubricRef: typeof SPEC_QUALITY_RUBRIC_REF;
@@ -54,6 +55,32 @@ export interface PlanSpecQualityResult {
     terminal: true;
   };
 }
+
+export type SpecQualityAtomicityClauseDiagnostic =
+  | {
+      specId: string;
+      planItemId: string;
+      behavior: string;
+      disposition: 'evaluated';
+      rating: 'pass';
+      reason: null;
+    }
+  | {
+      specId: string;
+      planItemId: string;
+      behavior: string;
+      disposition: 'evaluated';
+      rating: 'fail';
+      reason: string;
+    }
+  | {
+      specId: string;
+      planItemId: string;
+      behavior: string;
+      disposition: 'excluded';
+      rating: 'not-applicable';
+      reason: string;
+    };
 
 const CONTRACT_STATUSES = new Set(['active', 'accepted']);
 const CURRENT_SET_STATUSES = new Set(['draft', 'active', 'accepted', 'exempt']);
@@ -306,9 +333,44 @@ export function evaluatePlanSpecQuality(input: {
         )
       : pass(`All ${planItemIds.length} plan item(s) are covered by active item clauses or explicit exemptions.${projectionEvidence}`);
 
-  const atomicityFailures = itemBehavioral
-    .map((clause) => ({ clause, reason: specBehaviorNonAtomicReason(clause.behavior) }))
-    .filter((entry): entry is { clause: SpecClauseRevision; reason: string } => Boolean(entry.reason));
+  const atomicityEvaluation = behavioral.map((clause) => {
+    let diagnostic: SpecQualityAtomicityClauseDiagnostic;
+    if (isProjectedBar(clause)) {
+      diagnostic = {
+        specId: clause.specId,
+        planItemId: clause.planItemId,
+        behavior: clause.behavior,
+        disposition: 'excluded',
+        rating: 'not-applicable',
+        reason: 'sourceBar-pinned BAR projection is not an independent item behavior clause.',
+      };
+    } else {
+      const reason = specBehaviorNonAtomicReason(clause.behavior);
+      diagnostic = reason === null
+        ? {
+            specId: clause.specId,
+            planItemId: clause.planItemId,
+            behavior: clause.behavior,
+            disposition: 'evaluated',
+            rating: 'pass',
+            reason: null,
+          }
+        : {
+            specId: clause.specId,
+            planItemId: clause.planItemId,
+            behavior: clause.behavior,
+            disposition: 'evaluated',
+            rating: 'fail',
+            reason,
+          };
+    }
+    return { clause, diagnostic };
+  });
+  const atomicityClauseDiagnostics = atomicityEvaluation.map(({ diagnostic }) => diagnostic);
+  const atomicityFailures = atomicityEvaluation.flatMap(({ clause, diagnostic }) => {
+    if (diagnostic.disposition !== 'evaluated' || diagnostic.rating !== 'fail') return [];
+    return [{ clause, reason: diagnostic.reason }];
+  });
   ratings['atomic-observable-behavior'] =
     behavioral.length === 0
       ? notApplicable('0 behavioral clause(s) are available for structural atomicity evaluation.')
@@ -426,7 +488,12 @@ export function evaluatePlanSpecQuality(input: {
     ratings,
     verdict,
     wouldBlock,
-    details: { uncoveredPlanItemIds, invalidExemptionSpecIds, draftSpecIds },
+    details: {
+      uncoveredPlanItemIds,
+      invalidExemptionSpecIds,
+      draftSpecIds,
+      atomicityClauseDiagnostics,
+    },
     scorecardDraft: {
       rubricRef: SPEC_QUALITY_RUBRIC_REF,
       subject: { kind: 'plan', ref: subjectRef },

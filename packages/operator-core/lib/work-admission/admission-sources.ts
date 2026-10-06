@@ -141,6 +141,26 @@ export interface AdmissionWriteBackResult {
   alreadyPosted?: boolean;
   /** Provider-side id or permalink of the written object. */
   externalRef?: string | null;
+  /**
+   * The provider's id for the change, spelled the way its own sync later reports it (its
+   * nativeId). The verb ledgers it so the change is recognised as an echo when sync ingests it.
+   */
+  updateId?: string | null;
+}
+
+export interface AdmissionTransitionInput {
+  db: AdmissionDb;
+  admission: AdmissionRow;
+  /** A canonical ticket workflow category (data-sources/ticket-vocabulary). */
+  toCategory: string;
+}
+
+export interface AdmissionTransitionResult {
+  /** False when the source was already in that category and the provider changed nothing. */
+  transitioned: boolean;
+  /** As on {@link AdmissionWriteBackResult.updateId}. */
+  updateId?: string | null;
+  externalRef?: string | null;
 }
 
 export interface AdmissionSourceResolver<Ref = unknown> {
@@ -154,6 +174,11 @@ export interface AdmissionSourceResolver<Ref = unknown> {
   resolve(ctx: AdmissionResolveContext, ref: Ref): Promise<ResolvedAdmissionSource | AdmissionRefusal>;
   /** Optional write-back to the source through its capability (server-side coordinates only). */
   writeBack?(input: AdmissionWriteBackInput): Promise<AdmissionWriteBackResult>;
+  /**
+   * Optional move of the source object to a workflow category, through its capability. Only the
+   * status moves: fields the source owns (title, description, assignee) are never sent.
+   */
+  transition?(input: AdmissionTransitionInput): Promise<AdmissionTransitionResult>;
 }
 
 interface RegistryState {

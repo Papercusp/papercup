@@ -1115,6 +1115,9 @@ export type PromoterLlmCall = (input: {
   maxTokens: number;
   /** Stable owner identity for gateway attribution of this durable run. */
   ownerId?: string;
+  /** WI-10006427: aborts the in-flight call (a caller-owned per-attempt deadline);
+   * production wrappers spread it into llmCall's `signal`. */
+  signal?: AbortSignal;
 }) => Promise<PromoterLlmResult>;
 
 const PROMOTER_LLM_TRANSIENT_RETRY_BACKOFFS_MS = [1_000, 9_000] as const;
