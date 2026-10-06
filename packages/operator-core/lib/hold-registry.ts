@@ -85,7 +85,6 @@ const owner = (ref: string): HoldClearer => ({ kind: 'owner', ref });
 const AGENT_REVIEW_LANE = lane('improvements:agent-review (claim_next)');
 const INTAKE_REVIEW_LANE = lane('attention:bulk-review (promote or investigate the intake candidate)');
 const TRIAGE_LANE = lane('improvement-triage');
-const STRANDED_SWEEP = routine('stranded-tool-failure-sweep (papercusp-invocation-friction watchdog pass)');
 
 /** Prefix stem of the free-text legacy-adoption reason ('legacy-acceptance-adoption cohort <k> run <id>'). */
 export const LEGACY_ACCEPTANCE_ADOPTION_REASON_PREFIX = 'legacy-acceptance-adoption';
@@ -119,8 +118,10 @@ export const HOLD_REGISTRY: readonly HoldRegistryEntry[] = [
   entry('readiness', 'awaiting-agent-review', 'transient', AGENT_REVIEW_LANE, HOUR),
   entry('readiness', 'agent-review-resubmitted', 'transient', AGENT_REVIEW_LANE, HOUR),
   entry('readiness', 'triage-alone-does-not-establish-readiness', 'transient', AGENT_REVIEW_LANE, DAY),
-  entry('readiness', 'corroborated-tool-failure-awaiting-review', 'transient', STRANDED_SWEEP, HOUR),
-  entry('readiness', 'deployment-freshness-unknown', 'transient', STRANDED_SWEEP, HOUR),
+  // P-008 / D-038 (plan unified-bug-pipeline-and-honest-queue-2026-10-05): the probation
+  // reason corroborated-tool-failure-awaiting-review and the freshness reason
+  // deployment-freshness-unknown are retired. Their writers stamp awaiting-agent-review,
+  // and migration 1398 rewrote the open rows, so no writer may produce them again.
   entry('readiness', 'no-acceptance-evidence-at-creation', 'transient', INTAKE_REVIEW_LANE, DAY),
   entry('readiness', LEGACY_ACCEPTANCE_ADOPTION_REASON_PREFIX, 'transient', INTAKE_REVIEW_LANE, DAY, { match: 'prefix' }),
   entry('readiness', 'citation-evidence-unresolved', 'transient', TRIAGE_LANE, DAY),
