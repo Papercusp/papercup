@@ -1519,7 +1519,7 @@ const ensureCodexHome = defineTool({
         headers: JSON_HEADERS,
       });
     }
-    const [{ readSuLaunchSpecByOwner, recordSuLaunchSpec }, { parseSuLaunchSpecRecord, pinnedSuRecoveryPrompt, rebuildSuLaunchArtifact }, { composeModePromptSection }, { ensureSuCodexHomeConfig }, { readSuperuserToken }, { requestSessionIdentityActivation }, { CODEX_DEFAULT_MODEL, resolveCodexModel }, { buildLaunchSpec }] =
+    const [{ readSuLaunchSpecByOwner, recordSuLaunchSpec }, { parseSuLaunchSpecRecord, pinnedSuRecoveryPrompt, rebuildSuLaunchArtifact }, { composeModePromptSection }, { ensureSuCodexHomeConfig }, { readSuperuserToken }, { requestSessionIdentityActivation }, { CODEX_DEFAULT_MODEL, resolveCodexModel }, { buildLaunchSpec }, { wakeAccountRouteFromArgv }, { codexWakeGatewayInputs }] =
       await Promise.all([
         import('../../../adv-sessions'),
         import('../../../su-persona-render'),
@@ -1529,6 +1529,8 @@ const ensureCodexHome = defineTool({
         import('../../../agent-tools/coordination/control-anchor'),
         import('../../../model-context-budget.mjs'),
         import('../../../role-launch-spec'),
+        import('../../../inference-gateway/spawn-env'),
+        import('../../../events/await/wake-executor'),
       ]);
     const persistedRecord = parseSuLaunchSpecRecord(await readSuLaunchSpecByOwner(owner));
     const sessionRow = await getAdvSession(advSessionId);
@@ -1576,14 +1578,20 @@ const ensureCodexHome = defineTool({
     } : record;
     const modelChanged = repairRecord.model !== record.model ||
       repairRecord.modelSource !== record.modelSource;
+    // Carry refreshes have no rollout provider hint and send the legacy flag
+    // as false. Preserve the saved launch route instead of treating that
+    // absence of a hint as a request to switch to the local login.
+    const gatewayInputs = codexWakeGatewayInputs(wakeAccountRouteFromArgv(sessionRow?.launchArgv, owner));
+    const repairGatewayAuto = gatewayInputs.requireGatewayProvider === true || body.requireGatewayProvider === true;
     const ensureConfig = (mcpUrl: string, promptText: string) => ensureSuCodexHomeConfig({
       sessionKey: advSessionId,
       mcpUrl,
       sid: owner,
       model: repairModel,
       token: readSuperuserToken(),
-      codexGatewayAuto: body.requireGatewayProvider === true,
-      codexGatewayPriority: body.requireGatewayProvider === true ? 'su' : null,
+      codexGatewayAccountId: gatewayInputs.codexGatewayAccountId,
+      codexGatewayAuto: repairGatewayAuto,
+      codexGatewayPriority: repairGatewayAuto || gatewayInputs.codexGatewayAccountId ? 'su' : null,
       headless: repairHeadless,
       trustDir: null, // the home's inherited trust tables already cover the cwd
       projectDir: sessionRow?.cwd,

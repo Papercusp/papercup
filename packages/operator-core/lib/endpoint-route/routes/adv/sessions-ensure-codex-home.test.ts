@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   ensureHome: vi.fn(),
   recordLaunchSpec: vi.fn(),
   requestActivation: vi.fn(),
+  sessionRow: vi.fn(),
 }));
 
 const OWNER = 'su-p006-pinned-codex';
@@ -25,7 +26,7 @@ const savedRecord = {
 vi.mock('../../../adv-sessions', async (original) => ({
   ...(await original<typeof import('../../../adv-sessions')>()),
   readSuLaunchSpecByOwner: vi.fn(async () => savedRecord),
-  getAdvSession: vi.fn(async () => ({ coordOwnerId: OWNER, agent: 'codex' })),
+  getAdvSession: mocks.sessionRow,
   recordSuLaunchSpec: mocks.recordLaunchSpec,
 }));
 vi.mock('../../../su-persona-render', async (original) => ({
@@ -63,19 +64,63 @@ beforeAll(async () => {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.sessionRow.mockResolvedValue({ coordOwnerId: OWNER, agent: 'codex' });
+  mocks.recordLaunchSpec.mockResolvedValue(true);
   mocks.pinnedPrompt.mockReturnValue({ promptText: 'PINNED V1 INSTRUCTIONS', specificationRevision: REVISION });
   mocks.buildLaunchSpec.mockResolvedValue({ mcpUrl: 'http://localhost:3170/api/mcp?superuser=1' });
   mocks.ensureHome.mockReturnValue({ repaired: true, promptRepaired: true,
     codexHome: '/tmp/p006-home' });
 });
 
-async function call(model?: string) {
+async function call(model?: string, extra: { requireGatewayProvider?: boolean } = {}) {
   return ensureCodexHome(new Request('http://localhost:3170/api/adv/sessions/ensure-codex-home', {
-    method: 'POST', body: JSON.stringify({ owner: OWNER, advSessionId: 123, model }),
+    method: 'POST', body: JSON.stringify({ owner: OWNER, advSessionId: 123, model, ...extra }),
   }));
 }
 
 describe('ensure-codex-home pinned-source recovery', () => {
+  it.each([
+    { name: 'auto', launchArgv: ['psu', '--account=auto'], auto: true, accountId: null },
+    { name: 'pin', launchArgv: ['psu', '--account', 'pool-a'], auto: false, accountId: 'pool-a' },
+    { name: 'default', launchArgv: ['psu', '--account=default'], auto: false, accountId: null },
+    { name: 'legacy', launchArgv: undefined, auto: false, accountId: null },
+  ])('preserves the $name launch route when a carry refresh has no provider hint', async ({ launchArgv, auto, accountId }) => {
+    mocks.sessionRow.mockResolvedValue({ coordOwnerId: OWNER, agent: 'codex', launchArgv });
+    mocks.rebuild.mockResolvedValue({
+      spec: { mcpUrl: 'http://localhost:3170/api/mcp?superuser=1' },
+      promptText: 'PINNED V1 INSTRUCTIONS',
+      artifact: { stack: savedRecord.stack, specificationRevision: REVISION },
+    });
+    const response = await call(undefined, { requireGatewayProvider: false });
+    expect(response.status).toBe(200);
+    expect(mocks.ensureHome).toHaveBeenCalledWith(expect.objectContaining({
+      codexGatewayAuto: auto,
+      codexGatewayAccountId: accountId,
+      codexGatewayPriority: auto || accountId ? 'su' : null,
+    }));
+  });
+
+  it('restores the legacy bound gateway provider when the launch argv is unavailable', async () => {
+    mocks.rebuild.mockResolvedValue({
+      spec: { mcpUrl: 'http://localhost:3170/api/mcp?superuser=1' },
+      promptText: 'PINNED V1 INSTRUCTIONS',
+      artifact: { stack: savedRecord.stack, specificationRevision: REVISION },
+    });
+    const response = await call(undefined, { requireGatewayProvider: true });
+    expect(response.status).toBe(200);
+    expect(mocks.ensureHome).toHaveBeenCalledWith(expect.objectContaining({
+      codexGatewayAuto: true, codexGatewayAccountId: null,
+    }));
+  });
+
+  it('preserves auto routing through pinned instruction recovery', async () => {
+    mocks.sessionRow.mockResolvedValue({ coordOwnerId: OWNER, agent: 'codex', launchArgv: ['psu', '--account=auto'] });
+    mocks.rebuild.mockRejectedValue(new Error('selected identity inherited source revision changed before SU artifact rebuild'));
+    const response = await call(undefined, { requireGatewayProvider: false });
+    expect(response.status).toBe(200);
+    expect(mocks.ensureHome).toHaveBeenCalledWith(expect.objectContaining({ codexGatewayAuto: true }));
+  });
+
   it('persists the actual model when the prompt and home are already current', async () => {
     mocks.rebuild.mockResolvedValue({
       spec: { mcpUrl: 'http://localhost:3170/api/mcp?superuser=1' },
