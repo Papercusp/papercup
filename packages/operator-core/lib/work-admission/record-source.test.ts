@@ -27,6 +27,9 @@ const WS = 'ws-record-source-unit';
 const TRACKER_SOURCE = '00000000-0000-4000-8000-000000000001';
 const READ_ONLY_SOURCE = '00000000-0000-4000-8000-000000000002';
 
+/** The data source's config; the provider receives it as `syncPage` does (P-005: Asana's section mapping). */
+const SOURCE_CONFIG = { harnessSlug: 'papercusp', sectionCategories: { Doing: 'in-progress' } };
+
 /** A tagged-template stand-in for postgres.Sql that only answers the data-source lookup. */
 function fakeSql(kinds: Record<string, string>): { sql: postgres.Sql; queries: string[] } {
   const queries: string[] = [];
@@ -35,7 +38,7 @@ function fakeSql(kinds: Record<string, string>): { sql: postgres.Sql; queries: s
     queries.push(text);
     if (text.includes('FROM harness_shared.data_sources')) {
       const kind = kinds[String(values[1])];
-      return Promise.resolve(kind ? [{ kind, config: { harnessSlug: 'papercusp' } }] : []);
+      return Promise.resolve(kind ? [{ kind, config: SOURCE_CONFIG }] : []);
     }
     return Promise.reject(new Error(`unexpected query: ${text}`));
   }) as unknown as postgres.Sql;
@@ -135,7 +138,7 @@ describe('record write-back dispatches by the data source, through the capabilit
 
     expect(res).toEqual({ posted: true, externalRef: 'https://tracker.example.com/c/1', updateId: 'comment:1' });
     expect(h.trackerCalls).toEqual([
-      { source: TRACKER_SOURCE, capability: 'ticket.comment', args: { externalId: 'T-1', text: 'triaged' } },
+      { source: TRACKER_SOURCE, capability: 'ticket.comment', args: { externalId: 'T-1', text: 'triaged' }, config: SOURCE_CONFIG },
     ]);
     expect(h.bound).toEqual([{ workspaceId: WS, providerId: 'tracker', sourceId: TRACKER_SOURCE, harness: 'papercusp' }]);
     expect(h.decoyInvoke).not.toHaveBeenCalled();
@@ -150,7 +153,7 @@ describe('record write-back dispatches by the data source, through the capabilit
     expect(moved).toEqual({ transitioned: true, updateId: 'history:9', externalRef: null });
     // Field authority: title, description and assignee belong to the source and never travel.
     expect(h.trackerCalls).toEqual([
-      { source: TRACKER_SOURCE, capability: 'ticket.transition', args: { externalId: 'T-1', toCategory: 'done' } },
+      { source: TRACKER_SOURCE, capability: 'ticket.transition', args: { externalId: 'T-1', toCategory: 'done' }, config: SOURCE_CONFIG },
     ]);
 
     h.setTrackerChanged(false);
