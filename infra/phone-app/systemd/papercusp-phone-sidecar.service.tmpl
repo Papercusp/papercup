@@ -54,6 +54,10 @@ Environment=PHONE_OPERATOR_HARNESS=portal
 # Source deployments converge through deploy.sh, which restarts this unit.
 # A failed child now fails the unit and systemd retries the real HTTP process.
 ExecStart=${PHONE_NODE_BIN} --import tsx src/index.ts
+# Record this start's code identity in the runtime-vintage ledger (WI-10006790): the
+# Phone rubric's live BARs name this unit as their evidenceRuntime. `-` = never fail
+# the unit; the script itself always exits 0 and gives up after a few seconds.
+ExecStartPost=-${PHONE_NODE_BIN} ${PHONE_VINTAGE_SCRIPT} --unit papercusp-phone-sidecar.service
 Restart=on-failure
 RestartSec=5
 
