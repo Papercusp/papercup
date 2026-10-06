@@ -21,6 +21,7 @@ import {
   cgcPath,
   cgcRequest,
   codegraphArgv,
+  createCodegraphArm,
   parseCgc,
   parseCodegraph,
   traceCandidates,
@@ -40,6 +41,20 @@ const k = (intent: FairCase['intent'], subject: string, extra: Partial<FairCase>
 const at = (sites: ReadonlyArray<{ path: string; line1: number | null }>) => sites.map((s) => `${s.path}:${s.line1}`);
 
 describe('codegraph adapter', () => {
+  it('indexes with the watchdog off, so a busy indexer is not killed as wedged', async () => {
+    const envs: Array<Record<string, string | undefined>> = [];
+    const exec = (async (_bin: string, _args: readonly string[], opts: { env?: Record<string, string | undefined> }) => {
+      envs.push({ ...opts.env });
+      return { code: 0, stdout: '', stderr: '', wallMs: 1, peakRssKb: null };
+    }) as unknown as NonNullable<Parameters<typeof createCodegraphArm>[1]['exec']>;
+    const arm = createCodegraphArm(
+      { version: 'v', bin: '/bin/codegraph', treeRoot: '/t', home: '/h', env: { CODEGRAPH_TELEMETRY: '0' } },
+      { loadAvg1: () => null, exec },
+    );
+    expect((await arm.index()).ok).toBe(true);
+    expect(envs[0]).toMatchObject({ CODEGRAPH_NO_WATCHDOG: '1', CODEGRAPH_TELEMETRY: '0', HOME: '/h' });
+  });
+
   it('passes anchorFile, depth and a raised limit', () => {
     expect(codegraphArgv(k('callers', 'add', { anchorFile: 'src/util/math.ts' }))).toEqual(['callers', 'add', '-j', '-l', '10000', '-f', 'src/util/math.ts']);
     expect(codegraphArgv(k('impact', 'scale', { depth: 3 }))).toEqual(['impact', 'scale', '-j', '-d', '3']);

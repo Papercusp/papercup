@@ -376,7 +376,7 @@ export async function readSeedUuidIdempotencyDropPlans(
  * live writer, refreshes history, or replaces an existing export. Independent GO must
  * reproduce the export against the actual frozen source and final candidate. */
 export async function exportSeedUuidIdempotencyCensus(input: {
-  storeDir: string; manifestPath: string; manifestSha256: string;
+  storeDir: string; manifestPath?: string; manifestSha256?: string; potId?: string;
   epochKeysPath: string; epochKeysSha256: string; outputDir: string;
   redactValues?: readonly string[];
   /** D-176 creates an original proof-built replica here; never a storage copy. */
@@ -387,33 +387,59 @@ export async function exportSeedUuidIdempotencyCensus(input: {
   const readExecution = deps.readFrozenExecution ?? readSeedFrozenExecution;
   const executionBinding = await readExecution();
   if (!(await lstat(input.storeDir)).isDirectory()) throw new Error('UUID frozen source store missing');
-  const manifestBytes = await readFile(input.manifestPath);
-  if (!/^[0-9a-f]{64}$/.test(input.manifestSha256)
-      || createHash('sha256').update(manifestBytes).digest('hex') !== input.manifestSha256) {
-    throw new Error('UUID source manifest binding changed');
-  }
-  const manifest = decodeManifest(manifestBytes.toString('utf8'));
-  const entries = manifest.stores.filter(entry => entry.kind === 'corestore');
-  if (entries.length !== 1) throw new Error('UUID source must contain exactly one Corestore entry');
-  const meta = entries[0]!.meta as { coreKeys?: unknown; coreLengths?: Record<string, unknown> };
-  const coreLengths = meta?.coreLengths;
-  if (!Array.isArray(meta?.coreKeys) || !meta.coreKeys.length
-      || new Set(meta.coreKeys).size !== meta.coreKeys.length || !coreLengths
-      || meta.coreKeys.some(key => typeof key !== 'string' || !/^[0-9a-f]{64}$/.test(key)
-        || !Number.isSafeInteger(coreLengths[key]) || (coreLengths[key] as number) <= 0)) {
-    throw new Error('UUID source core coverage incomplete');
+  let manifestPath = input.manifestPath;
+  let manifestSha256 = input.manifestSha256;
+  let potId = input.potId;
+  let coreKeys: string[] | undefined;
+  let coreLengths: Record<string, unknown> = {};
+  if (manifestPath || manifestSha256) {
+    if (!manifestPath || !manifestSha256) throw new Error('UUID source manifest binding incomplete');
+    const manifestBytes = await readFile(manifestPath);
+    if (!/^[0-9a-f]{64}$/.test(manifestSha256)
+        || createHash('sha256').update(manifestBytes).digest('hex') !== manifestSha256) {
+      throw new Error('UUID source manifest binding changed');
+    }
+    const manifest = decodeManifest(manifestBytes.toString('utf8'));
+    if (potId && potId !== manifest.potId) throw new Error('UUID source pot binding changed');
+    potId = manifest.potId;
+    const entries = manifest.stores.filter(entry => entry.kind === 'corestore');
+    if (entries.length !== 1) throw new Error('UUID source must contain exactly one Corestore entry');
+    const meta = entries[0]!.meta as { coreKeys?: unknown; coreLengths?: Record<string, unknown> };
+    const lengths = meta?.coreLengths;
+    if (!Array.isArray(meta?.coreKeys) || !meta.coreKeys.length
+        || new Set(meta.coreKeys).size !== meta.coreKeys.length || !lengths
+        || meta.coreKeys.some(key => typeof key !== 'string' || !/^[0-9a-f]{64}$/.test(key)
+          || !Number.isSafeInteger(lengths[key]) || (lengths[key] as number) <= 0)) {
+      throw new Error('UUID source core coverage incomplete');
+    }
+    coreKeys = meta.coreKeys as string[];
+    coreLengths = lengths;
+  } else if (!input.captureOriginalSpan || !potId) {
+    throw new Error('UUID source requires a bound manifest or original capture with an explicit pot');
   }
   const store = new Corestore(input.storeDir, { readOnly: true, wait: false });
   try {
     await store.ready();
+    if (!coreKeys) {
+      // Exactly the release producer's default source population, on this ONE
+      // held original view. Never substitute an already projected seed's keys.
+      coreKeys = await enumerateOwnStoreCoreKeys(store);
+      if (coreKeys.length !== 1) throw new Error('UUID original own-log selection incomplete');
+      for (const key of coreKeys) {
+        const core = store.get({ key: Buffer.from(key, 'hex'), valueEncoding: 'json' }) as { ready(): Promise<void>; length: number };
+        await core.ready();
+        if (!Number.isSafeInteger(core.length) || core.length <= 0) throw new Error('UUID original own-log head missing');
+        coreLengths[key] = core.length;
+      }
+    }
     const sources = [];
     const foldNow = Date.now();
     let replicaDir: string | undefined;
     if (input.captureOriginalSpan) {
-      if (meta.coreKeys.length !== 1) throw new Error('UUID original span capture currently requires one manifest-bound core');
+      if (coreKeys.length !== 1) throw new Error('UUID original span capture currently requires one manifest-bound core');
       replicaDir = join(input.outputDir, 'original-signed-span');
     }
-    for (const [index, key] of (meta.coreKeys as string[]).entries()) {
+    for (const [index, key] of coreKeys.entries()) {
       const exported = await exportSeedUuidIdempotencySource({ sourceStore: store,
         sourceKeyHex: key, sourceLength: coreLengths[key] as number,
         outputDir: input.outputDir, segment: `segment-${String(index + 1).padStart(6, '0')}.blob`,
@@ -439,8 +465,19 @@ export async function exportSeedUuidIdempotencyCensus(input: {
     if (JSON.stringify(await readExecution()) !== JSON.stringify(executionBinding)) {
       throw new Error('UUID frozen execution changed during census');
     }
+    if (!manifestPath) {
+      // Private source-population descriptor, not a shipped SeedManifest or a
+      // fabricated physical-store hash. Each head was actually signature-verified.
+      manifestPath = join(input.outputDir, 'original-source-manifest.private.json');
+      const bytes = JSON.stringify({ schema: 'papercusp-original-signed-source-span-v1', potId,
+        sourceSelection: 'enumerateOwnStoreCoreKeys', stores: [{ kind: 'corestore', meta: {
+          coreKeys, coreLengths, sourceHeads: Object.fromEntries(sources.map(source =>
+            [source.sourceKeyHex, source.sourceInput.sourceHead])) } }] });
+      await writeFile(manifestPath, bytes, { mode: 0o600, flag: 'wx' });
+      manifestSha256 = createHash('sha256').update(bytes).digest('hex');
+    }
     await writeFile(configPath, JSON.stringify({ reviewRef: 'p2p-public-release-endgame-2026-09-01#D-166',
-      potId: manifest.potId, sourceManifestPath: input.manifestPath, sourceManifestSha256: input.manifestSha256,
+      potId, sourceManifestPath: manifestPath, sourceManifestSha256: manifestSha256,
       epochKeysPath: input.epochKeysPath, epochKeysSha256: input.epochKeysSha256, sources,
       ...(replicaDir ? { originalSpanReplicaDir: replicaDir } : {}) }), { mode: 0o600, flag: 'wx' });
     return configPath;
@@ -1571,11 +1608,11 @@ export function parseHeadSnapshotTimeoutMs(args: Args, env: NodeJS.ProcessEnv = 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   if ('export-uuid-idempotency-census' in args) {
-    const fields = ['store-dir', 'uuid-source-manifest', 'uuid-source-manifest-sha256',
-      'uuid-epoch-keys', 'uuid-epoch-keys-sha256', 'export-uuid-idempotency-census'] as const;
+    const fields = ['store-dir', 'uuid-epoch-keys', 'uuid-epoch-keys-sha256', 'export-uuid-idempotency-census'] as const;
     if (fields.some(name => !str(args, name))) throw new Error('UUID source export requires exact frozen store, manifest/hash, epoch-keys/hash and a private output directory');
     const config = await exportSeedUuidIdempotencyCensus({ storeDir: str(args, 'store-dir')!,
-      manifestPath: str(args, 'uuid-source-manifest')!, manifestSha256: str(args, 'uuid-source-manifest-sha256')!,
+      manifestPath: str(args, 'uuid-source-manifest'), manifestSha256: str(args, 'uuid-source-manifest-sha256'),
+      potId: str(args, 'hive') ?? DEFAULT_HIVE,
       epochKeysPath: str(args, 'uuid-epoch-keys')!, epochKeysSha256: str(args, 'uuid-epoch-keys-sha256')!,
       outputDir: str(args, 'export-uuid-idempotency-census')!,
       redactValues: releaseSeedRedactionValues(resolveWorkspaceRoot()),

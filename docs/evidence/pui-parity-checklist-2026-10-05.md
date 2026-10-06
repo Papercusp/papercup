@@ -136,6 +136,56 @@ Host notes (not pui defects):
 - Found on the full Codex leg, outside P-025: a relaunched `pui --solo` exited after "Starting PUI…", and the
   picked backend is not carried into the next launch (WI-10006423, blocks P-032).
 
+## P-028 resolution (2026-10-06, WI-10006466)
+
+Row 8. The stock prompts were captured first, under each CLI's default permission mode (driver flag
+`--stock-args`; frames in `~/.papercusp/evidence/pui-parity-2026-10-05/p028-stock/`): Claude Code 2.1.289
+asks "Do you want to make this edit to calc.js?" with `❯ 1. Yes` / `2. Yes, and switch to accept edits …
+(shift+tab)` / `3. No`; Codex 0.160.1 asks "Would you like to run the following command?" with `1. Yes,
+proceed` / `2. Yes, and don't ask again for commands that start with …` / `3. No, and tell Codex what to do
+differently (esc)`. The contract pui now follows is plan decision D-028. Measured with `--battery parity
+--probes 13-edit-approval` against the staging operator (:3170) and a pui debug build from this tree. Frames:
+`/tmp/pui-p028k-claude`, `/tmp/pui-p028j-codex`, `/tmp/pui-p028d-omp` (not durable; P-032 re-captures them).
+Unit tests: `cargo test --bin pui` 1337 passed, 0 failed.
+
+| Gap / key | Now | Where |
+|---|---|---|
+| One prompt, numbered choices | Every engine shows the same card: a full-width rule, the tool (`Update(calc.js)`, `Bash(…)`), the change once between dashed rules, the question, `❯ 1. Yes` / `2. Yes, and don't ask again for <this> this session (shift+tab)` / `3. No, and tell <Claude\|Codex\|OMP> what to do instead (esc)`, footer `Enter to select · ↑↓ to move · Esc to cancel` | su-session-native-cards.ts (`approval` field, option ids `yes` / `always` / `no`); ui.rs `approval_card_lines`, `draw_card` |
+| The diff appears once | While the card is open the transcript row reads `⚙ Update(calc.js) ◆ waiting for your answer`; the change is only in the card | ui.rs, app.rs |
+| Keys | 1 / 2 / 3 answer at once; ↑↓ + Enter; Esc = No; Shift+Tab = option 2; Ctrl+R raw arguments | app.rs card keys |
+| Option 2 per engine | Claude: its allow-rule or accept-edits suggestion, scoped to the session; Codex: `acceptForSession`; OMP: remembered by pui for this run (edit tools by name, commands by exact text) | engine adapters (D-028 §3) |
+| Option 3 | Rejects and stops the turn; the composer opens with "Tell <engine> what to do instead" | engine adapters, app.rs |
+| Claude leg | One card, answered with 1; calc.js changed; turn finished in 33 s | `/tmp/pui-p028k-claude` |
+| Codex leg | In ask mode (`--pui-approvals-ask`, i.e. `/approvals` → ask) five command cards rendered and were answered; a long Python command is cut to ` … +8 lines (Ctrl+R to expand)` with all three answers on screen | `/tmp/pui-p028j-codex` |
+| OMP leg | One card, answered; the file changed | `/tmp/pui-p028d-omp` |
+
+Defects found while measuring, all fixed with tests:
+
+- A long command filled the card strip, so the answers were never on screen and nothing could answer it. The
+  change is now cut to the strip's height with a ` … +N lines (Ctrl+R to expand)` row
+  (`approval_card_keeps_answers_visible_under_a_long_command`).
+- Each blank line in a command pushed one row (the footer, then the last answer) off the bottom of the card.
+  ratatui 0.29 draws a whitespace-only line as two rows under `Wrap { trim: false }`, and the card's height
+  counts one row per line. Blank lines are now empty, the approval card is drawn without re-wrapping (its lines
+  are already wrapped to the strip), and other cards' whitespace-only lines are emptied the same way
+  (`approval_card_keeps_its_footer_under_a_multi_line_title`, 4 sizes, docked and chat-first).
+- A command's indentation was dropped; code lines keep it now, as a hanging indent when they wrap.
+- An answer longer than the strip wrapped six columns past its edge; it wraps under its own text now.
+- pui showed "Claude produced no stream frame for 114s" while a card was simply waiting; the stall timer pauses
+  while a card is open.
+- The hint under a card said "Esc skip"; on an approval card Esc is No, and the hint says so.
+- A chat-first start whose operator answered once and then stopped answering (a restart) dropped into
+  install setup; it now keeps "Starting <engine>…" and re-checks every 2 s, then says the operator "stopped
+  answering; it may be restarting" (`chat_first_quick_start_rechecks_an_operator_that_stopped_answering`).
+
+Host notes (not pui defects):
+
+- Codex on this host reads the papercusp-su playbook from `~/.codex/AGENTS.md`, so in the scratch project it
+  spent its turns on lock commands and rarely reached the edit itself (`fileChanged=false` on the Codex leg).
+- Open, found here: a second back-to-back launch in a fresh project dir was refused "The conversation is
+  already bound to a different engine or project" (WI-10006533, to fix before the P-032 battery);
+  one run's `m` key opened no Model picker within 25 s and did not reproduce (WI-10006528).
+
 ## Where pui is already level or ahead
 
 Instant echo and working line after Enter (P-024), history recall, multiline input (three ways), the @ file

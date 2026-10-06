@@ -2201,6 +2201,23 @@ describe('disclosed-gap criterion (P-002: a disclosure cannot coexist with a mac
     expect(result.wouldBlock).not.toContain('disclosed-gap');
   });
 
+  it('surfaces free-form notes for review without treating them as structured disclosures', () => {
+    const note = 'Only the staffing half is covered; blocker naming is not established.';
+    const base = evidence();
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [evidence({details: {...base.details, note}})],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings['disclosed-gap'].rating).toBe('not-applicable');
+    expect(result.ratings['disclosed-gap'].evidence).toContain('note=' + JSON.stringify(note));
+    expect(result.ratings['disclosed-gap'].evidence).toContain(
+      'Record any coverage limitation under details.adequacy.disclosedGap',
+    );
+    expect(result.wouldBlock).not.toContain('disclosed-gap');
+  });
+
   it('fails the clause and names the gap text when the disclosure is nested under adequacy', () => {
     const base = evidence();
     const result = evaluateSpecTestAdequacy({
@@ -2272,6 +2289,65 @@ describe('disclosed-gap criterion (P-002: a disclosure cannot coexist with a mac
     expect(result.ratings['disclosed-gap'].rating).toBe('fail');
     expect(result.ratings['disclosed-gap'].evidence).toContain(gap);
     expect(result.wouldBlock).toContain('disclosed-gap');
+  });
+
+  it('preserves same-proof scenario coverage across rebinds and pins every source binding in reruns', () => {
+    const base = successfulTestBinding(CASE_SCOPED_TEST_PATH);
+    const baseAdequacy = base.details.adequacy as Record<string, unknown>;
+    const earlier = {
+      ...base,
+      id: 23753,
+      evidenceRef: 'test-run-group:27fc109b-8102-46c5-b201-23068af16109:0',
+      createdAt: '2026-10-03T12:53:27.000Z',
+      details: {
+        ...base.details,
+        adequacy: {
+          ...baseAdequacy,
+          pathReachable: true,
+          scenarioIds: ['elected-loss-recovery', RECONNECT_FALSIFIER_SCENARIO],
+        },
+      },
+    };
+    const rebound = {
+      ...base,
+      id: 23762,
+      evidenceRef: earlier.evidenceRef,
+      createdAt: '2026-10-03T13:07:22.000Z',
+      details: {
+        ...base.details,
+        adequacy: {
+          ...baseAdequacy,
+          pathReachable: true,
+          scenarioIds: ['elected-loss-recovery'],
+        },
+      },
+    };
+    const scenarioClause = clause({
+      falsifier: {
+        observation: 'Both outcomes from this unchanged test run are represented.',
+        requiredScenarios: ['elected-loss-recovery', RECONNECT_FALSIFIER_SCENARIO],
+      },
+    });
+
+    const sameProof = evaluateSpecTestAdequacy({
+      clause: scenarioClause,
+      evidence: [earlier, rebound],
+      classRef: 'plan-class-feature-ship',
+    });
+    expect(sameProof.ratings['correct-layer'].rating).toBe('pass');
+    expect(sameProof.ratings['correct-layer'].evidence).toContain('Every canonical acceptance scenario');
+    expect(sameProof.ratings['correct-layer'].evidence).toContain(RECONNECT_FALSIFIER_SCENARIO);
+    expect(sameProof.ratings['correct-layer'].evidence).toContain('sameProofMetadataBindingIds=[23753,23762]');
+    expect(sameProof.scorecardDraft.rerunRecipe.args.bindingIds).toEqual([23753, 23762]);
+
+    const newRun = evaluateSpecTestAdequacy({
+      clause: scenarioClause,
+      evidence: [earlier, { ...rebound, id: 23763, testRunId: 44 }],
+      classRef: 'plan-class-feature-ship',
+    });
+    expect(newRun.ratings['correct-layer'].rating).toBe('fail');
+    expect(newRun.ratings['correct-layer'].evidence).toContain(RECONNECT_FALSIFIER_SCENARIO);
+    expect(newRun.scorecardDraft.rerunRecipe.args.bindingIds).toEqual([23763]);
   });
 
   it.each([

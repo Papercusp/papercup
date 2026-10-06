@@ -540,6 +540,8 @@ const SEED_CODE_BY_CONTRACT_GAP: Record<AcceptanceBarContractGap, AcceptanceBarS
   check_missing: 'bar_contract_check_missing',
   test_layers_missing: 'bar_contract_test_layers_missing',
   check_layer_mismatch: 'bar_contract_check_layer_mismatch',
+  // The finding's detail names the unrecordable layer and the recorded vocabulary (WI-10006536).
+  test_layer_unrecordable: 'bar_contract_check_layer_mismatch',
 };
 
 /**

@@ -42,7 +42,7 @@ const rubric = {
 
 /** The ledger readings measured for the witnessed window (WI-10005807 live probe). */
 const witnessed = (): GoalHolderBehaviorMetrics => ({
-  version: 1,
+  version: 2,
   window: {
     workspaceId: 'default',
     goalId: '60d3a8',
@@ -70,7 +70,15 @@ const witnessed = (): GoalHolderBehaviorMetrics => ({
     noNewPlanReviewsOverUnplannedCluster: 7,
     reviewsWithUncoveredClusterNeed: 0,
   },
-  ownerReports: { reports: 2, costNotMeasured: 2, walledEntries: 6, bareWalledEntries: 2 },
+  ownerReports: {
+    reports: 2,
+    costCitedMeasured: 0,
+    costNotMeasured: 2,
+    costGoalSpendUnmeasured: 0,
+    costUnverified: 0,
+    walledEntries: 6,
+    bareWalledEntries: 2,
+  },
   loop: { deliveredFires: 3, suppressedFires: 2, windowHours: 1.33 },
   nudges: {
     timedReminders: 3,
@@ -97,7 +105,15 @@ const healthy = (): GoalHolderBehaviorMetrics => ({
     overdueClustersNudged: 0,
   },
   ideation: { ...witnessed().ideation, plansNew: 1, ideasFiled: 1, noNewPlanReviews: 0, noNewPlanReviewsOverUnplannedCluster: 0 },
-  ownerReports: { reports: 2, costNotMeasured: 0, walledEntries: 2, bareWalledEntries: 0 },
+  ownerReports: {
+    reports: 2,
+    costCitedMeasured: 2,
+    costNotMeasured: 0,
+    costGoalSpendUnmeasured: 0,
+    costUnverified: 0,
+    walledEntries: 2,
+    bareWalledEntries: 0,
+  },
   loop: { deliveredFires: 5, suppressedFires: 0, windowHours: 1.33 },
   nudges: { timedReminders: 2, fired: 2, cancelled: 0, cancelledWithReason: 0, dischargedCancels: 0, watchChurnWithoutReason: 0 },
 });

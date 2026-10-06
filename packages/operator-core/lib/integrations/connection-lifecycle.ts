@@ -26,7 +26,7 @@ import { promises as fs } from 'node:fs';
 import type postgres from 'postgres';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { providerEgressAllows, type ProviderDescriptor } from '@papercusp/plugin-sdk';
-import { getProvider, type OAuthProvider, type TokenResponse } from '../oauth/providers';
+import { getProvider, loadAndRegisterProvidersFromDisk, type OAuthProvider, type TokenResponse } from '../oauth/providers';
 import { operatorApiBase } from '../operator-api-base';
 import type { OAuthFlowPrivateContext } from '../oauth/state';
 import { fsTokenStorage } from '../oauth/storage-fs';
@@ -582,6 +582,14 @@ export function makeDescriptorOAuthProvider(
 export async function resolveOAuthProvider(providerId: string): Promise<OAuthProvider | null> {
   const registered = getProvider(providerId);
   if (registered) return registered;
+  if (!providerId.startsWith(DESCRIPTOR_OAUTH_PLUGIN_PREFIX)) {
+    // Code-registered providers (google, facebook, github) come from host-held
+    // client files. Load them here instead of relying on an OAuth route having
+    // run first in this process: the connector sync driver refreshes tokens in
+    // a process that may never serve one (WI-10006541).
+    await loadAndRegisterProvidersFromDisk();
+    return getProvider(providerId);
+  }
   const members = descriptorGroupMembers(providerId);
   const lead = members[0]?.descriptor;
   if (!lead?.oauth) return null;

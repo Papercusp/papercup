@@ -557,9 +557,15 @@ export async function isOwnNodeAuthoredRemoteRow(workspaceId: string, id: string
  * WI-10006515 — batch twin of {@link isOwnNodeAuthoredRemoteRow} for a READ that classifies many
  * rows at once (a report must not write, so it cannot heal). Returns the subset of `ids` that are
  * origin='remote' rows authored by one of this workspace's own keys. Empty on any read failure
- * (fail-closed: every row keeps its remote classification).
+ * (fail-closed: every row keeps its remote classification). `harnessSlug` pins the physical row
+ * when the caller's rows are harness-scoped, so a same-id twin elsewhere cannot mark them. Reads on
+ * the shared pool, never a caller's transaction: a failed read here must not poison that tx.
  */
-export async function ownNodeAuthoredRemoteIds(workspaceId: string, ids: readonly string[]): Promise<Set<string>> {
+export async function ownNodeAuthoredRemoteIds(
+  workspaceId: string,
+  ids: readonly string[],
+  opts: { harnessSlug?: string | null } = {},
+): Promise<Set<string>> {
   const out = new Set<string>();
   if (!workspaceId || ids.length === 0) return out;
   try {
@@ -567,6 +573,7 @@ export async function ownNodeAuthoredRemoteIds(workspaceId: string, ids: readonl
     const rows = await sql<{ feature_id: string }[]>`
       SELECT DISTINCT wi.feature_id FROM harness_shared.work_items wi
        WHERE wi.workspace_id = ${workspaceId} AND wi.feature_id = ANY(${[...ids]}::text[])
+         ${opts.harnessSlug ? sql`AND wi.harness_slug = ${opts.harnessSlug}` : sql``}
          AND wi.origin = 'remote' AND ${issueOwnAuthorWhereSql(sql, workspaceId)}`;
     for (const r of rows) out.add(r.feature_id);
   } catch {

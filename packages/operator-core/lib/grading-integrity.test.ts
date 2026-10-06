@@ -211,6 +211,80 @@ describe('dispatchPendingGradingAudits', () => {
     expect(d.launch).not.toHaveBeenCalled();
   });
 
+  it('retires only live one-shot tasks that predate an old settled audit', async () => {
+    const d = deps();
+    const nowMs = Date.parse('2026-10-06T08:00:00.000Z');
+    const passedAt = '2026-10-06T07:30:00.000Z';
+    const failedAt = '2026-10-06T07:35:00.000Z';
+    const recentAt = '2026-10-06T07:59:30.000Z';
+    const settled = (issueId: string, state: 'passed' | 'failed', auditedAt: string) =>
+      card(issueId, {
+        gradingAudit: {
+          state,
+          metaRubricRef: GRADING_INTEGRITY_RUBRIC_REF,
+          stampedAt: '2026-10-06T07:00:00.000Z',
+          auditedAt,
+        },
+      });
+    d.listScorecards.mockResolvedValue([
+      settled('EI-25100000000000001', 'passed', passedAt),
+      settled('EI-25100000000000002', 'failed', failedAt),
+      settled('EI-25100000000000003', 'passed', recentAt),
+      settled('EI-25100000000000004', 'passed', passedAt),
+    ]);
+    d.listTasks.mockResolvedValue([
+      {
+        taskId: 'task-settled-passed',
+        state: 'running',
+        startedAt: '2026-10-06T07:20:00.000Z',
+        detail: { label: 'grading-audit:EI-25100000000000001' },
+      } as unknown as TaskRow,
+      {
+        taskId: 'task-settled-failed',
+        state: 'running',
+        startedAt: '2026-10-06T07:20:00.000Z',
+        detail: { label: 'grading-audit:EI-25100000000000002' },
+      } as unknown as TaskRow,
+      {
+        taskId: 'task-recent-settlement',
+        state: 'running',
+        startedAt: '2026-10-06T07:20:00.000Z',
+        detail: { label: 'grading-audit:EI-25100000000000003' },
+      } as unknown as TaskRow,
+      {
+        taskId: 'task-started-after-settlement',
+        state: 'running',
+        startedAt: '2026-10-06T07:31:00.000Z',
+        detail: { label: 'grading-audit:EI-25100000000000004' },
+      } as unknown as TaskRow,
+    ]);
+    const killTask = vi.fn(async (taskId: string) => ({ ok: true as const, taskId, action: 'kill' }));
+
+    const result = await reconcilePendingGradingAudits(
+      { ctx, harness: 'papercusp' },
+      { ...d, killTask, now: () => nowMs },
+    );
+
+    expect(d.listTasks).toHaveBeenCalledWith({
+      workspaceId: 'ws-test',
+      states: ['pending', 'running'],
+      launchedBy: GRADING_AUDIT_DISPATCH_ACTOR,
+      labelPrefix: 'grading-audit:',
+      limit: 2_000,
+    });
+    expect(killTask).toHaveBeenCalledTimes(2);
+    expect(killTask).toHaveBeenCalledWith('task-settled-passed', {
+      includeSubtree: true,
+      escalateAfterMs: 5_000,
+    });
+    expect(killTask).toHaveBeenCalledWith('task-settled-failed', {
+      includeSubtree: true,
+      escalateAfterMs: 5_000,
+    });
+    expect(result.receipts).toEqual([]);
+    expect(d.launch).not.toHaveBeenCalled();
+  });
+
   it('fresh-launches generation-bound cards only from a compatible dispatcher build', async () => {
     const d = deps();
     d.listScorecards.mockResolvedValue([

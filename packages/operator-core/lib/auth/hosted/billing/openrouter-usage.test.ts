@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { createServer } from 'node:http';
 import { describe, expect, it, vi } from 'vitest';
 import { OpenRouterHostedUsageCollector, createOpenRouterHostedUsageCollector, openRouterUsageRecord, type OpenRouterUsageBinding } from './openrouter-usage';
 import { createHostedUsageSource } from './usage-service';
@@ -186,7 +187,9 @@ describe('OpenRouter hosted usage collector', () => {
     const timeout = vi.spyOn(AbortSignal, 'timeout').mockReturnValue(abort.signal);
     const readCredential = vi.fn(async () => 'server-secret');
     const fetch = vi.fn<typeof globalThis.fetch>(async (_url, options) => {
-      expect(options?.signal).toBe(abort.signal); abort.abort(); throw new Error('timed out');
+      const requestSignal = options?.signal;
+      expect(requestSignal?.aborted).toBe(false); abort.abort();
+      expect(requestSignal?.aborted).toBe(true); throw new Error('timed out');
     });
     try {
       const collector = createOpenRouterHostedUsageCollector({ store: { readOpenRouterBindings: async () => [b, { ...b, generationId: 'gen-other' }] }, readCredential, fetch });
@@ -239,5 +242,121 @@ describe('OpenRouter hosted usage collector', () => {
       { scope: { ...scope, account: 'other' }, generationId: binding.generationId },
     ]) await expect(s.collector.collect(input)).rejects.toThrow(/invalid OpenRouter usage/);
     expect(s.readBinding).not.toHaveBeenCalled(); expect(s.fetch).not.toHaveBeenCalled();
+  });
+});
+
+describe('OpenRouter authenticated read cancellation', () => {
+  const input = { scope, generationId: binding.generationId };
+  const refusal = { outcome: 'unavailable', reason: 'provider-read-failed' };
+
+  it('refuses a pre-cancelled request before binding, credential or provider I/O', async () => {
+    const s = setup(); const parent = new AbortController();
+    parent.abort(new Error('private cancellation reason'));
+    expect(await s.collector.collect(input, parent.signal)).toEqual(refusal);
+    expect(s.readBinding).not.toHaveBeenCalled(); expect(s.readCredential).not.toHaveBeenCalled();
+    expect(s.fetch).not.toHaveBeenCalled(); expect(s.append).not.toHaveBeenCalled();
+  });
+
+  it.each(['fetch', 'body'] as const)('bounds stalled %s despite a non-expiring parent signal', async phase => {
+    vi.useFakeTimers();
+    const parent = new AbortController();
+    let pending: Promise<unknown> | undefined;
+    try {
+      let requestSignal: AbortSignal | undefined; let pendingIo = false; let settled = false;
+      const fetch: typeof globalThis.fetch = async (_url, options) => {
+        requestSignal = options?.signal ?? undefined;
+        const stall = () => new Promise<never>((_resolve, reject) => {
+          pendingIo = true;
+          requestSignal!.addEventListener('abort', () => { pendingIo = false; reject(new Error('private provider error')); }, { once: true });
+        });
+        if (phase === 'fetch') return stall();
+        const response = new Response('{}'); response.text = stall; return response;
+      };
+      const s = setup({ fetch });
+      pending = s.collector.collect(input, parent.signal).then(result => { settled = true; return result; });
+      await vi.advanceTimersByTimeAsync(9_999);
+      expect(pendingIo).toBe(true); expect(requestSignal?.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(settled).toBe(true);
+      expect(await pending).toEqual(refusal);
+      expect(requestSignal?.aborted).toBe(true); expect(parent.signal.aborted).toBe(false);
+      expect(pendingIo).toBe(false); expect(s.append).not.toHaveBeenCalled(); expect(vi.getTimerCount()).toBe(0);
+    } finally { parent.abort(); await pending; vi.useRealTimers(); }
+  });
+
+  it.each(['success', 'error-status', 'invalid-body'] as const)('owns the request controller through %s and releases its timer', async outcome => {
+    vi.useFakeTimers();
+    try {
+      let requestSignal: AbortSignal | undefined;
+      const parent = new AbortController();
+      const s = setup({ fetch: async (_url: unknown, options: RequestInit) => {
+        requestSignal = options.signal ?? undefined;
+        return outcome === 'success' ? new Response(JSON.stringify(payload()))
+          : outcome === 'error-status' ? new Response('private body', { status: 503 }) : new Response('{');
+      } });
+      const result = await s.collector.collect(input, parent.signal);
+      expect(result.outcome).toBe(outcome === 'success' ? 'recorded' : 'unavailable');
+      expect(requestSignal).not.toBe(parent.signal); expect(requestSignal?.aborted).toBe(true);
+      expect(parent.signal.aborted).toBe(false); expect(vi.getTimerCount()).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it.each(['fetch', 'body'] as const)('refuses a late %s result before timer delivery', async phase => {
+    let elapsed = 0; const clock = vi.spyOn(performance, 'now').mockImplementation(() => elapsed);
+    try {
+      const s = setup({ fetch: async () => {
+        const response = new Response(JSON.stringify(payload()));
+        if (phase === 'fetch') elapsed = 10_000;
+        else response.text = async () => { elapsed = 10_000; return JSON.stringify(payload()); };
+        return response;
+      } });
+      expect(await s.collector.collect(input, new AbortController().signal)).toEqual(refusal);
+      expect(s.append).not.toHaveBeenCalled();
+    } finally { clock.mockRestore(); }
+  });
+
+  it.each(['caller', 'error-status'] as const)('closes an actual streaming HTTP connection on %s', async reason => {
+    let bodyOpened!: () => void; const opened = new Promise<void>(resolve => { bodyOpened = resolve; });
+    let connectionClosed!: () => void; const closed = new Promise<void>(resolve => { connectionClosed = resolve; });
+    const server = createServer((_request, response) => {
+      response.on('close', connectionClosed);
+      response.writeHead(reason === 'caller' ? 200 : 503, { 'content-type': 'application/json' }); response.write('{');
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address(); if (!address || typeof address === 'string') throw new Error('fixture');
+    const parent = new AbortController(); let requestSignal: AbortSignal | undefined;
+    const fetchImpl: typeof fetch = async (_url, options) => {
+      requestSignal = options?.signal ?? undefined;
+      const response = await fetch(`http://127.0.0.1:${address.port}`, options); bodyOpened(); return response;
+    };
+    try {
+      const s = setup({ fetch: fetchImpl }); const pending = s.collector.collect(input, parent.signal);
+      await opened; if (reason === 'caller') parent.abort(new Error('private reason'));
+      expect(await pending).toEqual(reason === 'caller' ? refusal
+        : { outcome: 'unavailable', reason: 'provider-http-error', status: 503 });
+      expect(requestSignal?.aborted).toBe(true); expect(s.append).not.toHaveBeenCalled(); await closed;
+    } finally {
+      parent.abort(); server.closeAllConnections();
+      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    }
+  });
+
+  it('does not restart the batch deadline for successive reads even before timer delivery', async () => {
+    let elapsed = 0; const clock = vi.spyOn(performance, 'now').mockImplementation(() => elapsed);
+    try {
+      const request = { scope, month: '2026-10', asOfMs: time + 2000 };
+      const bindings = Array.from({ length: 5 }, (_, index) => ({ ...binding,
+        generationId: `gen-batch-${index}`, observedAtMs: request.asOfMs }));
+      const fetchImpl = vi.fn<typeof fetch>(async url => {
+        elapsed += 3_000;
+        const generationId = new URL(String(url)).searchParams.get('id');
+        return new Response(JSON.stringify(payload(0.001, { id: generationId })));
+      });
+      const collector = createOpenRouterHostedUsageCollector({ store: { readOpenRouterBindings: async () => bindings },
+        readCredential: async () => 'server-secret', fetch: fetchImpl });
+      const result = await collector.read(request);
+      expect(result.complete).toBe(false); expect(result.records).toHaveLength(3);
+      expect(fetchImpl).toHaveBeenCalledTimes(4);
+    } finally { clock.mockRestore(); }
   });
 });

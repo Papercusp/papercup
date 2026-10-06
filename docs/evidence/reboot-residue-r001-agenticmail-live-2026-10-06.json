@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "kind": "operational-test-evidence",
   "name": "reboot-residue R-001 live: agenticmail.service stable, API entry under the exec'd node's global root, configured health 200",
-  "framework": "host-live-probe",
+  "framework": "operational",
   "command": ["bash", "docs/evidence/reboot-residue-live-probes-2026-10-06/r001-live-probe.sh"],
   "commandCwd": ".",
   "exitCode": 0,

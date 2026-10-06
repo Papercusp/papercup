@@ -105,7 +105,12 @@ export function parseCodegraph(kase: FairCase, stdout: string, stderr = ''): { s
 
 export function createCodegraphArm(cfg: EngineArmConfig, deps: ArmDeps, now?: () => number): FairArm {
   const exec = deps.exec ?? execTimed;
-  const env = { ...cfg.env, HOME: cfg.home, NO_COLOR: '1' };
+  // CODEGRAPH_NO_WATCHDOG: CodeGraph's watchdog kills a process whose main
+  // thread is unresponsive for ~60s (upstream #850). Indexing this tree trips
+  // it, so the 2026-10-06 run killed the indexer and the arm answered no case.
+  // The watchdog guards a long-lived server; it changes no answer. The 4h index
+  // timeout below still bounds a real hang.
+  const env = { ...cfg.env, HOME: cfg.home, NO_COLOR: '1', CODEGRAPH_NO_WATCHDOG: '1' };
   const run = (args: readonly string[], timeoutMs = cfg.timeoutMs ?? 120_000) => exec(cfg.bin, args, { cwd: cfg.treeRoot, env, timeoutMs });
   const capabilities: ArmCapabilities = { armId: 'codegraph', version: cfg.version, intents: CODEGRAPH_INTENTS, licence: 'permissive' };
   return guardedArm({

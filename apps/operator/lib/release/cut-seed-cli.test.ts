@@ -94,6 +94,15 @@ describe('D166 private row-drop plan transport', () => {
       expect(capturedConfig.originalSpanReplicaDir).toBe(join(captureDir, 'original-signed-span'));
       expect(capturedConfig.sources[0].sourceInput.sourceHead).toEqual(config.sources[0].sourceInput.sourceHead);
       expect(capturedConfig.sources[0].sourceInput.proofInventorySha256).toBe(config.sources[0].sourceInput.proofInventorySha256);
+      const originalDir = join(dir, 'original-capture'); await mkdir(originalDir, { mode: 0o700 });
+      const originalConfigPath = await exportSeedUuidIdempotencyCensus({ ...inputs, storeDir: join(dir, 'source'),
+        manifestPath: undefined, manifestSha256: undefined, potId: 'fixture-pot', outputDir: originalDir,
+        captureOriginalSpan: true }, deps);
+      const originalConfig = JSON.parse(await readFile(originalConfigPath, 'utf8'));
+      const originalManifest = JSON.parse(await readFile(originalConfig.sourceManifestPath, 'utf8'));
+      expect(originalManifest).toMatchObject({ sourceSelection: 'enumerateOwnStoreCoreKeys',
+        stores: [{ kind: 'corestore', meta: { coreKeys: [own.keyHex], coreLengths: { [own.keyHex]: 2 } } }] });
+      expect(originalManifest.stores[0].meta.sourceHeads[own.keyHex]).toEqual(originalConfig.sources[0].sourceInput.sourceHead);
       const refusedDir = join(dir, 'refused'); await mkdir(refusedDir, { mode: 0o700 });
       await expect(exportSeedUuidIdempotencyCensus({ ...inputs, outputDir: refusedDir },
         { readFrozenExecution: async () => { throw new Error('fixture clean execution refused'); } }))

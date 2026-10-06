@@ -56,6 +56,15 @@ async function remainingDatabases(names: string[]): Promise<string[]> {
   }
 }
 
+async function expectDatabasesRemoved(names: string[]): Promise<void> {
+  // The maintained factory may defer a contended DROP or detach a started
+  // DROP after its caller budget. close() returns before that server-side
+  // operation finishes; preserve the absence oracle and observe convergence.
+  await vi.waitFor(async () => {
+    expect(await remainingDatabases(names)).toEqual([]);
+  }, { timeout: 30_000, interval: 100 });
+}
+
 describe('composition rig uses current canonical schema, preserving its cell contracts', () => {
   let rig: CompositionRig;
   const databases: string[] = [];
@@ -80,7 +89,7 @@ describe('composition rig uses current canonical schema, preserving its cell con
 
   afterAll(async () => {
     await rig?.close();
-    expect(await remainingDatabases(databases)).toEqual([]);
+    await expectDatabasesRemoved(databases);
   }, 60_000);
 
   it('provisions two independent cells through the maintained migration-keyed factory', async () => {
@@ -211,7 +220,7 @@ describe('composition rig uses current canonical schema, preserving its cell con
       extraCellSetup: async () => { throw new Error('extra setup failed'); },
     })).rejects.toThrow('extra setup failed');
     const failedDbs = await Promise.all(vi.mocked(createOrgTestDb).mock.results.slice(-2).map((result) => result.value));
-    expect(await remainingDatabases(failedDbs.map((db) => db.dbName))).toEqual([]);
+    await expectDatabasesRemoved(failedDbs.map((db) => db.dbName));
     expect(process.env.PAPERCUSP_WORKSPACE_ID).toBe(workspaceBefore);
   }, 60_000);
 });

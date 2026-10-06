@@ -9,16 +9,23 @@
  * This file deliberately imports NO OAuth route module: importing one registers
  * the built-in adapters as a side effect, which is exactly what hid the defect
  * from connection-lifecycle.integration.test.ts.
+ *
+ * The second case covers the same defect one step later: once the adapter
+ * resolved, an EXPIRED token failed with
+ * `google_workspace_oauth_provider_not_registered`, because the `google` OAuth
+ * provider was loaded from its client file only by OAuth routes and the
+ * retired legacy Google poll routines.
  */
 import { randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import type { ProviderAdapter, ProviderDescriptor } from '@papercusp/plugin-sdk';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { GOOGLE_WORKSPACE_OAUTH_PLUGIN } from '../external-triggers/google-workspace';
+import { __resetRegistryForTest, getProvider } from '../oauth/providers';
 import { connectionAdapterForPlugin } from './connection-lifecycle';
 import { providerRegistry } from './provider-registry';
 import { createSourceHostFetch } from './source-host-fetch';
@@ -29,6 +36,10 @@ const PLUGIN_NAME = 'source-host-fetch-builtin-test-plugin';
 const PROVIDER_ID = 'gcal';
 const FIELD = 'owner-fixture-account';
 const STORED_TOKEN = 'stored-google-access-token';
+const EXPIRED_FIELD = 'expired-fixture-account';
+const REFRESH_TOKEN = 'google-refresh-token-fixture';
+const REFRESHED_TOKEN = 'refreshed-google-access-token';
+const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
 
 const descriptor: ProviderDescriptor = {
   id: PROVIDER_ID,
@@ -54,20 +65,40 @@ let org: OrgTestDb;
 let sql: Sql;
 let home: string;
 let previousHome: string | undefined;
+let previousOsHome: string | undefined;
+let previousRedirect: string | undefined;
 let sourceId: string;
+let expiredSourceId: string;
 
 beforeAll(async () => {
   org = await createOrgTestDb();
   sql = org.adminSql;
 
   previousHome = process.env.PAPERCUSP_HOME;
+  previousOsHome = process.env.HOME;
+  previousRedirect = process.env.PAPERCUSP_GOOGLE_OAUTH_REDIRECT_URI;
   home = await fs.mkdtemp(join(tmpdir(), 'paperhome-source-host-fetch-builtin-'));
   process.env.PAPERCUSP_HOME = home;
+  // The Google Desktop client file lives under the OS home directory; point it
+  // at the fixture so the test never reads the developer's real credential.
+  process.env.HOME = home;
+  process.env.PAPERCUSP_GOOGLE_OAUTH_REDIRECT_URI = 'http://127.0.0.1:3070/api/oauth/callback';
+  await fs.mkdir(join(home, '.config', 'papercusp'), { recursive: true });
+  await fs.writeFile(
+    join(home, '.config', 'papercusp', 'google-oauth-client.json'),
+    JSON.stringify({ installed: { client_id: 'fixture-client', client_secret: 'fixture-secret', token_uri: GOOGLE_TOKEN_URL } }),
+  );
   const configDir = join(home, 'harnesses', HARNESS, 'plugin-configs');
   await fs.mkdir(configDir, { recursive: true });
   await fs.writeFile(
     join(configDir, `${GOOGLE_WORKSPACE_OAUTH_PLUGIN}.json`),
-    JSON.stringify({ [FIELD]: STORED_TOKEN, [`${FIELD}_expires_at`]: Date.now() + 3_600_000 }),
+    JSON.stringify({
+      [FIELD]: STORED_TOKEN,
+      [`${FIELD}_expires_at`]: Date.now() + 3_600_000,
+      [EXPIRED_FIELD]: 'expired-google-access-token',
+      [`${EXPIRED_FIELD}_expires_at`]: Date.now() - 60_000,
+      [`${EXPIRED_FIELD}_refresh`]: REFRESH_TOKEN,
+    }),
   );
 
   // Mirrors the live failing source (personal scope, owned): a personal

@@ -259,6 +259,9 @@ beforeEach(async () => {
   h.rows = [
     bindingRow({ id: 1, evidenceKind: 'coverage-census', evidenceRef: 'surface:reconnect', outcome: 'passed' }, bound),
     bindingRow({ id: 2, evidenceKind: 'counterexample', evidenceRef: 'counterexample:reconnect', outcome: 'pass' }, bound),
+    // Evaluator revision 4 requires a successful current test binding for the mutation or
+    // counterexample's canonical test file on this exact clause revision.
+    bindingRow({ id: 3, evidenceKind: 'test', evidenceRef: 'test:reconnect', outcome: 'passed' }, bound),
   ];
   listClauses.mockResolvedValue([activeClause as never]);
 
@@ -339,8 +342,8 @@ describe('spec-test-adequacy evaluator → scorecards:emit round trip', () => {
     // The recipe carries the SERVER-measured tuple, so emit's supplied:false refusal
     // cannot be what lets freshness through.
     expect(row!.scorecardDraft.rerunRecipe.current.supplied).toBe(true);
-    expect(row!.scorecardDraft.rerunRecipe.args).toMatchObject({ replaySnapshot: true, bindingIds: [1, 2] });
-    expect(scorecardEmitArgs.parse(row!.scorecardDraft).rerunRecipe?.selection.bindingIds).toEqual([1, 2]);
+    expect(row!.scorecardDraft.rerunRecipe.args).toMatchObject({ replaySnapshot: true, bindingIds: [1, 2, 3] });
+    expect(scorecardEmitArgs.parse(row!.scorecardDraft).rerunRecipe?.selection.bindingIds).toEqual([1, 2, 3]);
 
     const result = await emitDraft(row!.scorecardDraft);
 
@@ -356,7 +359,7 @@ describe('spec-test-adequacy evaluator → scorecards:emit round trip', () => {
     expect(captureImprovement).toHaveBeenCalledTimes(1);
   });
 
-  it('refuses the same card once the proven source moves — the replay re-measures, it does not echo', async () => {
+  it('refuses the same card once the proven source moves because its current test witness no longer qualifies', async () => {
     const live = await runEvaluator({
       harness: 'papercusp',
       slug: PLAN,
@@ -366,7 +369,8 @@ describe('spec-test-adequacy evaluator → scorecards:emit round trip', () => {
     });
     expect(live.rows[0]!.ratings.freshness.rating, live.rows[0]!.ratings.freshness.evidence).toBe('pass');
 
-    // The code under proof changes after grading and before filing.
+    // The code under proof changes after grading and before filing. The replay re-measures;
+    // evaluator revision 4 withdraws falsifiability first because its canonical test witness is stale.
     await writeSubject('export const ackedEventsReplayed = true;\n');
 
     const result = await emitDraft(live.rows[0]!.scorecardDraft);
@@ -374,7 +378,7 @@ describe('spec-test-adequacy evaluator → scorecards:emit round trip', () => {
     expect(result).toMatchObject({
       ok: false,
       code: 'invalid_spec_test_adequacy_binding',
-      error: expect.stringContaining("cannot claim freshness='pass'"),
+      error: expect.stringContaining("cannot claim falsifiability='pass'"),
     });
     expect(dispatchTool).toHaveBeenCalledTimes(1);
     expect(captureImprovement).not.toHaveBeenCalled();

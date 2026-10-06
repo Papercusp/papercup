@@ -4626,7 +4626,7 @@ async function amendAcceptanceBarRubric(
       // the ship snapshot calls its depth `undeclared` even after its test runs.
       // Reuse the activation seed's completeness rule before outside approval or
       // any revision-invalidating write, while leaving unchanged legacy BARs alone.
-      const missingLayers = candidate.bars.flatMap((bar) =>
+      const changedBarGaps = candidate.bars.flatMap((bar) =>
         changedBars.includes(bar.barKey)
           ? acceptanceBarContractGaps({
               role: bar.role,
@@ -4634,13 +4634,18 @@ async function amendAcceptanceBarRubric(
               check: bar.check,
               requiredTestLayers: bar.requiredTestLayers,
               automatedProofRequired: barRequiresAutomatedProof(bar),
-            })
-              .filter((finding) => finding.gap === 'test_layers_missing')
-              .map((finding) => `${bar.barKey}: ${finding.detail}`)
+            }).map((finding) => ({ gap: finding.gap, line: `${bar.barKey}: ${finding.detail}` }))
           : [],
       );
+      const missingLayers = changedBarGaps.filter((g) => g.gap === 'test_layers_missing').map((g) => g.line);
       if (startedBar && missingLayers.length > 0) {
         throw new Error(`acceptance_bar_amendment_test_layers_missing: ${missingLayers.join('; ')}`);
+      }
+      // WI-10006536: a layer the run ledger never records can never pass correct-layer, on a
+      // started contract or not — refuse it here instead of after proof is bound against it.
+      const unrecordableLayers = changedBarGaps.filter((g) => g.gap === 'test_layer_unrecordable').map((g) => g.line);
+      if (unrecordableLayers.length > 0) {
+        throw new Error(`acceptance_bar_amendment_test_layer_unrecordable: ${unrecordableLayers.join('; ')}`);
       }
       // A classRef bind is metadata-only: it changes neither the BAR set nor any
       // criterion meaning. Do not make this repair depend on the started contract

@@ -1722,7 +1722,21 @@ export async function getWorkItem(
   // halves of one id space disagreed, and the issue half was the one being trusted.
   // WI-10006010: `harness` is a PREFERENCE among same-id slug twins, never a filter.
   const issue = await getIssue(id, opts, client, harness);
-  if (issue) return issueToWorkItem(issue);
+  if (issue) {
+    const issueItem = issueToWorkItem(issue);
+    // WI-10006534: the preference must also hold ACROSS families. When the caller named a
+    // harness, the issue row that came back belongs to a DIFFERENT harness, and that named
+    // harness owns a FEATURE-family row with the same id, the caller's row is the feature
+    // row. Returning the issue row made the feature row unreachable by any tool (measured
+    // 2026-10-06: email's WI-10000680 could not be dropped; set_state wrote papercusp's
+    // WI-10000680 instead). Still a preference, not a filter: with no exact-harness
+    // feature row, the issue row is returned exactly as before (harnessScopeMismatch warns).
+    if (harness && harnessScopeMismatchLeaf(issueItem, harness)) {
+      const exact = await getFeatureWorkItemOnly(id, harness, opts, client);
+      if (exact) return exact;
+    }
+    return issueItem;
+  }
   return getFeatureWorkItemOnly(id, harness, opts, client);
 }
 
@@ -1736,6 +1750,7 @@ export async function getWorkItem(
  * `undefined` at precisely the call sites it exists to protect.
  */
 export { harnessScopeMismatch, type HarnessScopeMismatch } from './work-items-harness-scope';
+import { harnessScopeMismatch as harnessScopeMismatchLeaf } from './work-items-harness-scope';
 // EI-21919769900781478: kept in a LEAF module (the write verbs mock this file wholesale
 // in their unit tests), re-exported here so it stays discoverable beside
 // `selfHealAuthorOriginIfStranded`, which handles the sibling stranding.

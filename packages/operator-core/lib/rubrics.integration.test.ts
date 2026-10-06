@@ -2025,6 +2025,20 @@ describe('template_data persistence boundary — the set-template-data door', ()
     };
     expect((await rubrics.previewAcceptanceBarAmendment(withUnitLayer))?.changedBars).toEqual(['R-1', 'R-2']);
 
+    // WI-10006536: 'component' is not a layer the run ledger records, so it can never pass
+    // correct-layer — refused at the amendment door, before approval or any revision write.
+    const withComponentLayer = {
+      ...testsWithoutLayer,
+      criteria: testsWithoutLayer.criteria.map((criterion) => ({
+        ...criterion,
+        requiredTestLayers: ['component', 'unit'],
+      })),
+    };
+    await expect(rubrics.previewAcceptanceBarAmendment(withComponentLayer)).rejects.toThrow(
+      /acceptance_bar_amendment_test_layer_unrecordable.*R-1.*component/,
+    );
+    expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(before.revision);
+
     const manual = {
       ...testsWithoutLayer,
       criteria: testsWithoutLayer.criteria.map((criterion) => ({
@@ -2379,13 +2393,15 @@ describe('template_data persistence boundary — the set-template-data door', ()
           reason: 'Replace the canonical layers while retaining the atomic e2e requirement.',
           criteria: rubricAfter.criteria.map((criterion) =>
             criterion.barKey === before.sourceBar!.barKey
-              ? { ...criterion, requiredTestLayers: ['component'] }
+              // A RECORDED layer: 'component' (used here before WI-10006536) is now refused at
+              // the amendment door because no test run can ever record it.
+              ? { ...criterion, requiredTestLayers: ['browser'] }
               : criterion,
           ),
         };
         await rubrics.amendRubric({ ...replacement, approvalRef: await postApproval(replacement) });
         const replaced = (await listSpecClauses(scope)).find((clause) => clause.specId === before.specId)!;
-        expect(replaced.requiredTestLayers).toEqual(['component', 'e2e']);
+        expect(replaced.requiredTestLayers).toEqual(['browser', 'e2e']);
         expect(replaced.behavior).toBe(before.behavior);
         expect(replaced.falsifier).toEqual(before.falsifier);
         expect(replaced.behaviorClass).toBe(before.behaviorClass);

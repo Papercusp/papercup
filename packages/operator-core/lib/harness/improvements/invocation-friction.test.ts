@@ -111,16 +111,21 @@ describe('R7 durable invocation capture', () => {
   it('uses original scope/reporter/contract/build and strips unmeasured direct evidence', async () => {
     const f = fixture();
     f.rows[0].metadata_json.toolFailure = { reproduced: true, hardInternal: true };
-    f.capture.mockImplementationOnce(async input => {
-      expect(currentRequestWorkspaceId()).toBe('ws-a');
-      expect(input).toEqual({ workspaceId: 'ws-a', harnessSlug: 'papercusp', ownerId: 'su-a',
-        invokedAt: new Date(f.rows[0].invoked_at).toISOString(), failure: { toolName: 'coord:send', status: 'invalid-input',
-          errorCode: 'invalid_input', message: 'body: must be an array', schemaRevision: 'schema-v1', runtimeVersion: 'loaded-build' } });
+    let captureWorkspace: ReturnType<typeof currentRequestWorkspaceId> | undefined;
+    f.capture.mockImplementationOnce(async () => {
+      captureWorkspace = currentRequestWorkspaceId();
       return { ok: true, issue: { id: 'EI-one' } };
     });
     expect(await recoverInvocationFriction('ws-b', f)).toEqual({ delivered: 0, pending: 0, expired: 0 });
     await recoverInvocationFriction('ws-a', f);
     expect(f.capture).toHaveBeenCalledTimes(1);
+    // Assert after recovery so its sanitized callback-error handling cannot hide
+    // the actual provenance difference from this test's failure output.
+    expect(captureWorkspace).toBe('ws-a');
+    expect(f.capture.mock.calls[0][0]).toEqual({ workspaceId: 'ws-a', harnessSlug: 'papercusp', ownerId: 'su-a',
+      invocationId: '1', servingBuildSha: 'loaded-build',
+      invokedAt: new Date(f.rows[0].invoked_at).toISOString(), failure: { toolName: 'coord:send', status: 'invalid-input',
+        errorCode: 'invalid_input', message: 'body: must be an array', schemaRevision: 'schema-v1', runtimeVersion: 'loaded-build' } });
   });
 
   it('leaves missing or untrusted contract provenance unknown', async () => {

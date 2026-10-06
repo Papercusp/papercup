@@ -112,6 +112,9 @@ export const GRADING_AUDIT_BACKLOG_SCAN_LIMIT = 500;
  * before the auditor emits its audit card.
  */
 export const GRADING_AUDIT_RESERVATION_TTL_MS = 15 * 60 * 1000;
+/** Allow a successful emit to return to its headless caller before retiring it. */
+const GRADING_AUDIT_TERMINAL_TASK_REAP_GRACE_MS = 60 * 1000;
+const GRADING_AUDIT_TASK_LABEL_PREFIX = 'grading-audit:';
 /**
  * A route/launch failure that has no provider reset still needs a bounded retry
  * window. Releasing the reservation without one lets every sweep reserve the
@@ -1711,7 +1714,136 @@ export async function reconcilePendingGradingAudits(
   input: DispatchPendingGradingAuditsInput,
   deps: DispatchPendingGradingAuditsDeps = {},
 ): Promise<PendingGradingAuditDispatchResult> {
+  await retireSettledGradingAuditTasks(input, deps);
   return dispatchPendingGradingAudits(input, deps);
+}
+
+/**
+ * A grading auditor is a one-shot headless task. Once its target's audit has
+ * settled, the headless launcher still keeps the session alive for inbox wakes.
+ * Reconcile those tasks from the existing audit sweep instead of relying on a
+ * human or a session-side shutdown request (headless tasks have no terminal to
+ * close). The start/audit timestamps protect a newer re-audit launched after a
+ * previously settled verdict, and the grace period lets the final emit response
+ * return before the task is retired.
+ */
+async function retireSettledGradingAuditTasks(
+  input: DispatchPendingGradingAuditsInput,
+  deps: DispatchPendingGradingAuditsDeps,
+): Promise<void> {
+  const workspaceId = input.ctx.workspaceId?.trim();
+  if (!workspaceId) return;
+
+  const readTasks = deps.listTasks ?? listTasks;
+  let liveTasks: Awaited<ReturnType<typeof listTasks>>;
+  try {
+    liveTasks = await readTasks({
+      workspaceId,
+      states: ['pending', 'running'],
+      launchedBy: GRADING_AUDIT_DISPATCH_ACTOR,
+      labelPrefix: GRADING_AUDIT_TASK_LABEL_PREFIX,
+      limit: 2_000,
+    });
+  } catch (error) {
+    console.warn(
+      '[grading-integrity] settled auditor task scan failed:',
+      error instanceof Error ? error.message : error,
+    );
+    return;
+  }
+
+  const issueIds = [
+    ...new Set(
+      liveTasks.flatMap((task) => {
+        const label = task.detail?.label;
+        if (typeof label !== 'string' || !label.startsWith(GRADING_AUDIT_TASK_LABEL_PREFIX)) return [];
+        const issueId = label.slice(GRADING_AUDIT_TASK_LABEL_PREFIX.length);
+        return issueId.startsWith('EI-') || issueId.startsWith('WI-') ? [issueId] : [];
+      }),
+    ),
+  ];
+  if (issueIds.length === 0) return;
+
+  const readCards = deps.listScorecards ?? listScorecards;
+  const cards: ScorecardRow[] = [];
+  try {
+    // listScorecards has a 500-row ceiling; exact-id pages keep the live task
+    // scan complete without widening any historical scorecard read.
+    for (let offset = 0; offset < issueIds.length; offset += 500) {
+      const pageIds = issueIds.slice(offset, offset + 500);
+      cards.push(
+        ...(await readCards({
+          includeSuperseded: true,
+          includeRetracted: true,
+          issueIds: pageIds,
+          limit: pageIds.length,
+        })),
+      );
+    }
+  } catch (error) {
+    console.warn(
+      '[grading-integrity] settled auditor scorecard read failed:',
+      error instanceof Error ? error.message : error,
+    );
+    return;
+  }
+
+  const cardById = new Map(cards.map((card) => [card.issueId, card] as const));
+  const nowMs = deps.now?.() ?? Date.now();
+  const settledTasks = liveTasks.flatMap((task) => {
+    const label = task.detail?.label;
+    if (typeof label !== 'string' || !label.startsWith(GRADING_AUDIT_TASK_LABEL_PREFIX)) return [];
+    const issueId = label.slice(GRADING_AUDIT_TASK_LABEL_PREFIX.length);
+    const audit = cardById.get(issueId)?.gradingAudit;
+    if (!audit || (audit.state !== 'passed' && audit.state !== 'failed') || !audit.auditedAt) return [];
+    const auditedAtMs = Date.parse(audit.auditedAt);
+    const startedAtMs = Date.parse(task.startedAt);
+    if (
+      !Number.isFinite(auditedAtMs) ||
+      !Number.isFinite(startedAtMs) ||
+      nowMs - auditedAtMs < GRADING_AUDIT_TERMINAL_TASK_REAP_GRACE_MS ||
+      startedAtMs > auditedAtMs
+    ) {
+      return [];
+    }
+    return [{ task, issueId, auditedAtMs }];
+  });
+  const oldestSettledTasks = settledTasks
+    .sort((a, b) => a.auditedAtMs - b.auditedAtMs || a.task.taskId.localeCompare(b.task.taskId))
+    .slice(0, GRADING_AUDIT_DISPATCH_LIMIT);
+  if (oldestSettledTasks.length === 0) return;
+
+  const terminateTask = deps.killTask ?? killTask;
+  const retired = await mapWithConcurrency(
+    oldestSettledTasks,
+    GRADING_AUDIT_DISPATCH_CONCURRENCY,
+    async ({ task, issueId }) => {
+      try {
+        const result = await terminateTask(task.taskId, { includeSubtree: true, escalateAfterMs: 5_000 });
+        if (
+          result.ok ||
+          result.error === 'not_live' ||
+          result.error === 'task_not_found' ||
+          result.error === 'already_gone'
+        ) {
+          return task.taskId;
+        }
+        console.warn(
+          `[grading-integrity] settled auditor task '${task.taskId}' for ${issueId} could not be retired: ${result.error}`,
+        );
+      } catch (error) {
+        console.warn(
+          `[grading-integrity] settled auditor task '${task.taskId}' for ${issueId} retirement failed:`,
+          error instanceof Error ? error.message : error,
+        );
+      }
+      return null;
+    },
+  );
+  const retiredTaskIds = retired.filter((taskId): taskId is string => typeof taskId === 'string');
+  if (retiredTaskIds.length > 0) {
+    console.info(`[grading-integrity] retired ${retiredTaskIds.length} settled auditor task(s): ${retiredTaskIds.join(', ')}`);
+  }
 }
 
 /** P-013 write-side gate. Fail-soft to OFF (no stamp — pre-P-013 behavior) when flag

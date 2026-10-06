@@ -43,6 +43,7 @@ export interface OpenRouterUsageCollectorOptions {
 }
 const GENERATION = /^gen-[0-9A-Za-z-]{1,124}$/;
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/;
+const READ_TIMEOUT_MS = 10_000;
 const record = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value);
 
@@ -115,8 +116,10 @@ export class OpenRouterHostedUsageCollector {
     if (!record(input) || Object.keys(input).some(k => !['scope', 'generationId'].includes(k))
         || !GENERATION.test(input.generationId)) throw new Error('invalid OpenRouter usage request');
     const scope = snapshotScope(input.scope); const generationId = input.generationId;
+    if (signal?.aborted) return { outcome: 'unavailable' as const, reason: 'provider-read-failed' as const };
     if (!this.options.readBinding || !this.options.readCredential) return { outcome: 'unavailable' as const, reason: 'unconfigured' as const };
     const received = await this.options.readBinding(scope, generationId);
+    if (signal?.aborted) return { outcome: 'unavailable' as const, reason: 'provider-read-failed' as const };
     if (!received) return { outcome: 'unavailable' as const, reason: 'unbound-generation' as const };
     const binding: OpenRouterUsageBinding = Object.freeze({ ...received, scope: snapshotScope(received.scope) });
     if (!sameScope(scope, binding.scope) || generationId !== binding.generationId) {
@@ -132,25 +135,43 @@ export class OpenRouterHostedUsageCollector {
         && createHash('sha256').update(secret).digest('hex') !== binding.credentialSha256) {
       return { outcome: 'unavailable' as const, reason: 'credential-mismatch' as const };
     }
-    let response: Response;
+    // As on the Stripe read rail, own the cancellable transport deadline even
+    // when a caller supplies a signal. Keep it through body consumption and
+    // abort unread error bodies before clearing the request's ownership.
+    const controller = new AbortController();
+    const requestSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
+    const started = performance.now();
+    const expired = () => performance.now() - started >= READ_TIMEOUT_MS;
+    const timer = setTimeout(() => controller.abort(), READ_TIMEOUT_MS);
+    let body: string;
     try {
+      requestSignal.throwIfAborted();
       const url = new URL('https://openrouter.ai/api/v1/generation'); url.searchParams.set('id', generationId);
-      response = await (this.options.fetch ?? globalThis.fetch)(url, { method: 'GET', redirect: 'error', cache: 'no-store',
-        headers: { Authorization: `Bearer ${secret}` }, signal: signal ?? AbortSignal.timeout(10_000) });
+      const response = await (this.options.fetch ?? globalThis.fetch)(url, { method: 'GET', redirect: 'error', cache: 'no-store',
+        headers: { Authorization: `Bearer ${secret}` }, signal: requestSignal });
+      requestSignal.throwIfAborted();
+      if (expired()) throw new Error('OpenRouter read deadline');
+      if (!response.ok) return { outcome: 'unavailable' as const, reason: 'provider-http-error' as const, status: response.status };
+      body = await response.text();
+      requestSignal.throwIfAborted();
+      if (expired()) throw new Error('OpenRouter read deadline');
     } catch {
       // Provider error text may contain a secret or customer content.
       return { outcome: 'unavailable' as const, reason: 'provider-read-failed' as const };
+    } finally {
+      clearTimeout(timer);
+      controller.abort();
     }
-    if (!response.ok) return { outcome: 'unavailable' as const, reason: 'provider-http-error' as const, status: response.status };
     let normalized: HostedUsageRecord;
     try {
-      const payload: unknown = JSON.parse(await response.text(), (key, value: unknown, context?: { source?: string }) =>
+      const payload: unknown = JSON.parse(body, (key, value: unknown, context?: { source?: string }) =>
         key === 'total_cost' && typeof value === 'number'
           // A runtime without source-token support stays explicitly unpriced.
           ? new ProviderDecimal(context?.source ?? '') : value);
       normalized = openRouterUsageRecord(binding, payload);
     }
     catch { return { outcome: 'unavailable' as const, reason: 'invalid-provider-report' as const }; }
+    if (signal?.aborted || expired()) return { outcome: 'unavailable' as const, reason: 'provider-read-failed' as const };
     const append = this.options.append ?? (r => new PostgresHostedUsageStore().append(r));
     const outcome = await append(normalized);
     return { outcome, record: normalized };
@@ -182,11 +203,13 @@ export function createOpenRouterHostedUsageCollector(options: {
         openRouterUsageRecord(binding, { data: { id: binding.generationId, is_byok: binding.isByok, total_cost: null } });
       }
       const records: HostedUsageRecord[] = [];
-      const deadline = AbortSignal.timeout(10_000);
+      const started = performance.now();
+      const deadline = AbortSignal.timeout(READ_TIMEOUT_MS);
+      const expired = () => deadline.aborted || performance.now() - started >= READ_TIMEOUT_MS;
       // Sequential provider reads keep account rate pressure bounded. No
       // incomplete/failed read is represented as a zero charge or full census.
       for (const binding of bindings) {
-        if (deadline.aborted) break;
+        if (expired()) break;
         const collector = new OpenRouterHostedUsageCollector({
           readBinding: async (scope, generationId) => sameScope(scope, binding.scope)
             && generationId === binding.generationId ? binding : null,
@@ -195,6 +218,7 @@ export function createOpenRouterHostedUsageCollector(options: {
           append: async () => 'recorded',
         });
         const result = await collector.collect({ scope: binding.scope, generationId: binding.generationId }, deadline);
+        if (expired()) break;
         if (result.outcome === 'recorded' && 'record' in result) records.push(result.record);
       }
       return { scope: input.scope, month: input.month, complete: false,

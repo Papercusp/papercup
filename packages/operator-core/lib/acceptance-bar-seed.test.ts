@@ -469,6 +469,15 @@ describe('activation seed contract completeness (requireContractCompleteness)', 
     const mismatch = buildAcceptanceBarSeed({ ...input, planContent: plan({ requirements: block(unitOnly), map: oneBarMap }),
       requireContractCompleteness: true });
     expect(mismatch).toMatchObject({ ok: false, error: 'bar_contract_check_layer_mismatch' });
+
+    // WI-10006536: a declared layer the run ledger never records cannot pass correct-layer.
+    const unrecordable = { ...completeSections, acceptance: { ...completeSections.acceptance,
+      requiredTestLayers: ['integration', 'component'] } };
+    const refused = buildAcceptanceBarSeed({ ...input, planContent: plan({ requirements: block(unrecordable), map: oneBarMap }),
+      requireContractCompleteness: true });
+    expect(refused).toMatchObject({ ok: false, error: 'bar_contract_check_layer_mismatch' });
+    if (refused.ok) throw new Error('expected refusal');
+    expect(refused.problems[0]!.contractGaps).toEqual(['test_layer_unrecordable']);
   });
 
   it('requires layers for a live-plane tests check while preserving an explicit manual check', () => {

@@ -43,6 +43,7 @@ import {
   findFlockWriteHolderPid,
   codexThreadWriterLockPath,
   codexThreadWriterHolder,
+  codexNativeIdForPty,
   codexThreadWriterStatErrorCode,
   codexResumeHome,
   codexActiveWriterMessage,
@@ -57,6 +58,32 @@ afterEach(() => {
 });
 
 const LIVE_THREAD = '01a038ff-9f8b-7ce2-aedc-d7d3268579ea';
+
+describe('Codex carry startup identity (EI-24961854655864836)', () => {
+  const readStartupPid = () => 42;
+  const held = { held: true, pid: 42, lockPath: '/isolated/thread.lock', sessionId: LIVE_THREAD, reason: 'held' };
+
+  it('uses the exact native child process as the writer-lock filter', () => {
+    const calls: unknown[] = [];
+    const readHolder = (...args: unknown[]) => { calls.push(args); return held; };
+    expect(codexNativeIdForPty('/isolated', 12, { readHolder, readStartupPid })).toBe(LIVE_THREAD);
+    expect(calls).toEqual([['/isolated', null, { holderPid: 42 }]]);
+  });
+
+  it('rejects a sibling or nested Codex writer even inside the same PTY tree', () => {
+    const readHolder = () => ({ ...held, pid: 43 });
+    expect(codexNativeIdForPty('/isolated', 12, { readHolder, readStartupPid })).toBeNull();
+  });
+
+  it('never substitutes an unlocked predecessor or an unknown native process', () => {
+    expect(codexNativeIdForPty('/isolated', 12, {
+      readStartupPid, readHolder: () => ({ ...held, held: false }),
+    })).toBeNull();
+    expect(codexNativeIdForPty('/isolated', 12, {
+      readStartupPid: () => null, readHolder: () => held,
+    })).toBeNull();
+  });
+});
 
 /** A verbatim /proc/locks excerpt from the box while the bug was reproducing.
  *  Row 995 is the real holder of the real session's writer lock. */

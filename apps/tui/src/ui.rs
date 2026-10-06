@@ -12013,6 +12013,11 @@ mod tests {
                 let rows = rows.join("\n");
                 assert!(text.contains("3. No, and tell Codex"), "{layout} {w}x{h} last answer:\n{rows}");
                 assert!(text.contains("Enter to select"), "{layout} {w}x{h} footer:\n{rows}");
+                // (Shorter strips cut the change before this line.)
+                assert!(
+                    h < 40 || text.contains("     print('Papercusp credentials"),
+                    "{layout} {w}x{h} the code keeps its indentation:\n{rows}"
+                );
             }
         }
     }

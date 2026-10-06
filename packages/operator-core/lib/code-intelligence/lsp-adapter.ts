@@ -475,40 +475,18 @@ export interface LspDiagnostic {
 const PROJECT_READY_TIMEOUT_MS = 60_000;
 
 /**
- * tsserver's V8 old-space ceiling in MB, or null to leave node's default
- * (WI-2142840).
- *
- * `typescript-language-server` turns this into `--max-old-space-size=<N>` on
- * the tsserver fork (`getExecArgv`). Unset, tsserver runs at node's DEFAULT
- * old-space — measured 2240MB on this box — and self-aborts with SIGABRT when
- * a second large program is added to a server that already holds one. That
- * abort is what took every TypeScript answer down.
- *
- * MEASURED both ways, same probe, one variable changed:
- *   default ceiling  -> peak RSS 4314MB, `Signal: SIGABRT`, query answers
- *                       `[nothing]`, and every later TypeScript answer is empty
- *   6144             -> peak RSS 4981MB, server ALIVE, and the operator-core
- *                       query returns the correct site
- *
- * 6144 is chosen as measured-sufficient with headroom, not guessed. The
- * apparent cost — "up to 6GB per agent on a box running ~100 of them" — is
- * mostly illusory, and that is the non-obvious part: this is a CAP, not an
- * allocation. A small project still sits at ~200MB. It binds only on programs
- * that were ALREADY consuming 4.3GB immediately before aborting, so the real
- * marginal cost over the status quo is the ~700MB between crashing and
- * working.
- *
- * It is a ceiling, not a cure: it does not stop ONE tsserver accumulating
- * every project an agent touches (see `resolveProjectRoot`, which returns
- * `fallbackRoot` unconditionally and so leaves the `clientKey(language,
- * rootPath)` registry key inert). A big enough working set will still reach
- * any ceiling; defect A's liveness eviction is what makes that survivable.
+ * Historical old-space floor (WI-2142840): the 6144MB setting survived the
+ * original operator-core probe where Node's default heap aborted. FIRE75's
+ * larger configured project exhausted that same floor. The wrapper translates
+ * maxTsServerMemory into a child --max-old-space-size option; this limits heap
+ * growth without allocating the entire budget at launch.
  */
 const MIN_TSSERVER_MEMORY_MB = 6144;
 
 /**
  * Size the existing workspace-wide server from its configured source population.
- * FIRE75 reached the 6144MB ceiling loading 196MB of operator-core roots alone.
+ * FIRE75 reached the 6144MB ceiling while loading operator-core. A separate
+ * source census measured 196MB; its file population differs from logged roots.
  * Closing the previous project already worked; a fixed ceiling still stops a
  * growing individual program. Keep all configured files, including tests.
  *
@@ -522,31 +500,52 @@ export function typescriptWorkspaceMemoryMb(rootPath: string, tsserverPath: stri
     readConfigFile: (path: string, reader: (path: string) => string | undefined) => {
       config: unknown; error?: unknown;
     };
-    parseJsonConfigFileContent: (config: unknown, host: unknown, directory: string) => {
-      fileNames: string[]; errors: Array<{ code: number }>;
+    parseJsonConfigFileContent: (config: unknown, host: unknown, directory: string,
+      options: undefined, configPath: string) => {
+      fileNames: string[]; errors: Array<{ code: number }>; projectReferences?: Array<{ path: string }>;
     };
+    resolveProjectReferencePath: (reference: { path: string }) => string;
   };
   const pending = [rootPath];
   const files = new Set<string>();
+  const configs = new Set<string>();
+  const inferredFiles = new Set<string>();
   const excludedDirectories = new Set(['node_modules', 'dist', 'dist-host', 'target']);
   while (pending.length) {
     const directory = pending.pop()!;
     for (const entry of readdirSync(directory, { withFileTypes: true })) {
       if (entry.isDirectory() && !entry.name.startsWith('.') && !excludedDirectories.has(entry.name)) {
         pending.push(join(directory, entry.name));
+      } else if (entry.isFile() && /\.(?:[cm]?tsx?|[cm]?jsx?)$/.test(entry.name)) {
+        inferredFiles.add(join(directory, entry.name));
       }
     }
-    const configPath = join(directory, 'tsconfig.json');
-    if (!existsSync(configPath)) continue;
+    for (const name of ['tsconfig.json', 'jsconfig.json']) {
+      const configPath = join(directory, name);
+      if (existsSync(configPath)) configs.add(configPath);
+    }
+  }
+  // A config-free workspace is an inferred project; it must grow with its
+  // source too. Configured projects retain the compiler's include/exclude rules.
+  if (!configs.size) for (const file of inferredFiles) files.add(file);
+  const pendingConfigs = [...configs];
+  const parsedConfigs = new Set<string>();
+  while (pendingConfigs.length) {
+    const configPath = pendingConfigs.pop()!;
+    if (parsedConfigs.has(configPath)) continue;
+    parsedConfigs.add(configPath);
     const config = compiler.readConfigFile(configPath, compiler.sys.readFile);
     if (config.error) throw new Error(`Cannot size TypeScript project: ${configPath}`);
-    const project = compiler.parseJsonConfigFileContent(config.config, compiler.sys, directory);
+    const project = compiler.parseJsonConfigFileContent(config.config, compiler.sys, dirname(configPath), undefined, configPath);
     // A solution/empty config contributes no roots; other parse errors must not
     // silently turn a failed census into the old undersized default.
-    if (project.errors.some(error => error.code !== 18003)) {
+    if (project.errors.some(error => error.code !== 18003 && error.code !== 18002)) {
       throw new Error(`Cannot size TypeScript project: ${configPath}`);
     }
     for (const file of project.fileNames) files.add(file);
+    for (const reference of project.projectReferences ?? []) {
+      pendingConfigs.push(compiler.resolveProjectReferencePath(reference));
+    }
   }
   let sourceBytes = 0;
   for (const file of files) sourceBytes += statSync(file).size;
@@ -557,12 +556,8 @@ export function typescriptWorkspaceMemoryMb(rootPath: string, tsserverPath: stri
  * A workspace-wide tsserver may retain one foreground configured/inferred
  * project (plus that project's own references) at a time (WI-2142895).
  *
- * This is intentionally one, not an unmeasured larger guess. The failure that
- * prompted the bound was a second large program added to an already-loaded
- * client: semantic tsserver reached 4314MB and aborted under node's default
- * old-space ceiling. The 6144MB cap above makes that observed case survive,
- * but only closing the previous project's documents prevents every project a
- * long-lived agent touches from accumulating forever.
+ * Closing the previous project's documents prevents accumulation across
+ * projects. This is separate from the heap budget for one growing project.
  */
 const MAX_FOREGROUND_TYPESCRIPT_PROJECTS = 1;
 
@@ -747,10 +742,14 @@ export function typescriptInitializationOptions(
   maxTsServerMemoryMb?: number | null,
   rootPath?: string,
 ): { tsserver: { path: string }; maxTsServerMemory?: number } {
-  const override = Number(process.env.PAPERCUSP_LSP_MAX_TSSERVER_MEMORY_MB ?? '') || undefined;
+  const setting = process.env.PAPERCUSP_LSP_MAX_TSSERVER_MEMORY_MB?.trim();
+  const override = setting ? Number(setting) : undefined;
   const memoryMb = maxTsServerMemoryMb === undefined
     ? override ?? (rootPath ? typescriptWorkspaceMemoryMb(rootPath, tsserverPath) : MIN_TSSERVER_MEMORY_MB)
     : maxTsServerMemoryMb;
+  if (memoryMb !== null && (!Number.isSafeInteger(memoryMb) || memoryMb <= 0)) {
+    throw new Error('TypeScript server memory must be a positive integer in MB');
+  }
   return {
     tsserver: { path: tsserverPath },
     ...(memoryMb ? { maxTsServerMemory: memoryMb } : {}),

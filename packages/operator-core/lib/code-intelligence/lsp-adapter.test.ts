@@ -476,6 +476,38 @@ describe('WI-41095 — workspace source sizing', () => {
     expect(typescriptInitializationOptions(tsserverPath, 8192, root).maxTsServerMemory).toBe(8192);
     expect(typescriptInitializationOptions(tsserverPath, null, root)).not.toHaveProperty('maxTsServerMemory');
   });
+
+  it('sizes inferred and JavaScript projects rather than reverting to a fixed ceiling', async () => {
+    await rm(join(root, 'tsconfig.json'));
+    const small = typescriptWorkspaceMemoryMb(root, tsserverPath);
+    await truncate(join(root, 'source.ts'), 80 * 1024 * 1024);
+    expect(typescriptWorkspaceMemoryMb(root, tsserverPath)).toBeGreaterThan(small);
+    await rm(join(root, 'source.ts'));
+    await writeFile(join(root, 'jsconfig.json'), '{"include":["*.js"]}');
+    await writeFile(join(root, 'source.js'), '');
+    await truncate(join(root, 'source.js'), 80 * 1024 * 1024);
+    expect(typescriptWorkspaceMemoryMb(root, tsserverPath)).toBeGreaterThan(small);
+  });
+
+  it('follows named project references, deduplicates roots and terminates cycles', async () => {
+    await mkdir(join(root, 'project'));
+    await writeFile(join(root, 'tsconfig.json'), '{"files":[],"references":[{"path":"./project/tsconfig.build.json"}]}');
+    await writeFile(join(root, 'project', 'tsconfig.build.json'), '{"include":["../source.ts"],"references":[{"path":"../tsconfig.json"}]}');
+    const small = typescriptWorkspaceMemoryMb(root, tsserverPath);
+    await truncate(join(root, 'source.ts'), 80 * 1024 * 1024);
+    const large = typescriptWorkspaceMemoryMb(root, tsserverPath);
+    expect(large).toBeGreaterThan(small);
+    await writeFile(join(root, 'project', 'tsconfig.json'), '{"include":["../source.ts"]}');
+    expect(typescriptWorkspaceMemoryMb(root, tsserverPath)).toBe(large);
+  });
+
+  it.each(['invalid', '-1', '0', 'Infinity', '1.5'])('refuses invalid memory setting %s before a child starts', setting => {
+    vi.stubEnv('PAPERCUSP_LSP_MAX_TSSERVER_MEMORY_MB', setting);
+    expect(() => typescriptInitializationOptions(tsserverPath, undefined, root)).toThrow('positive integer');
+    // Explicit caller choices take precedence over an unrelated bad setting.
+    expect(typescriptInitializationOptions(tsserverPath, 8192, root).maxTsServerMemory).toBe(8192);
+    expect(typescriptInitializationOptions(tsserverPath, null, root)).not.toHaveProperty('maxTsServerMemory');
+  });
 });
 
 describe('WI-2142895 — one foreground TypeScript project per client', () => {

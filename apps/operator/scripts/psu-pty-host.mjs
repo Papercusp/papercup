@@ -3856,6 +3856,7 @@ export function countProcessDescendants(
  *   childPromptReady: boolean,
  *   parked?: boolean,
  *   busy?: boolean,
+ *   quotaBlocked?: boolean,
  *   composerPending?: boolean,
  *   resumable?: boolean,
  *   descendants: () => number | null,
@@ -3870,6 +3871,7 @@ export function parkVerdict({
   childPromptReady,
   parked = false,
   busy = false,
+  quotaBlocked = false,
   composerPending = false,
   resumable = true,
   descendants,
@@ -3880,6 +3882,11 @@ export function parkVerdict({
   }
   if (parked) return { park: false, reason: 'already-parked' };
   if (busy) return { park: false, reason: 'busy' };
+  // D-005: a quota-walled Claude TUI can hold a submission it auto-continues at
+  // the reset ("continuing automatically at 1pm"). That pending turn lives only
+  // in the CLI's memory, so a SIGKILL would drop it silently. Stay resident
+  // until the wall clears; the reset turn then runs and the child parks after.
+  if (quotaBlocked) return { park: false, reason: 'quota-wait' };
   if (!resumable) return { park: false, reason: 'no-resumable-session-id' };
   if (!childPromptReady) return { park: false, reason: 'prompt-not-ready' };
   if (composerPending) return { park: false, reason: 'composer-pending' };
@@ -3891,6 +3898,54 @@ export function parkVerdict({
   }
   if (n > 0) return { park: false, reason: 'child-has-descendants', idleForMs, descendants: n };
   return { park: true, reason: 'idle', idleForMs, descendants: 0 };
+}
+
+/**
+ * psu-process-free-parking P-017: the id of the newest top-level Claude
+ * transcript in a PER-SESSION config dir (`<configDir>/projects/<cwd>/<id>.jsonl`).
+ * An in-TUI `/clear` starts a new conversation under a new id that the launch
+ * argv never learns, so resuming the argv's id alone could revive the wrong
+ * conversation. Only trusted when the config dir is this session's isolation
+ * dir (its path names `ownerId`): in a shared dir the newest file can belong to
+ * another session. Returns null when it cannot tell. Exported for tests.
+ * @param {string | null | undefined} configDir
+ * @param {{ ownerId?: string | null, readdir?: (p: string) => string[], stat?: (p: string) => { mtimeMs: number, isFile: () => boolean } }} [opts]
+ * @returns {{ id: string, mtimeMs: number } | null}
+ */
+export function newestSessionTranscriptId(
+  configDir,
+  { ownerId = null, readdir = readdirSync, stat = statSync } = {},
+) {
+  if (!configDir || !ownerId || !String(configDir).includes(String(ownerId))) return null;
+  const projects = `${configDir}/projects`;
+  let dirs;
+  try {
+    dirs = readdir(projects);
+  } catch {
+    return null;
+  }
+  /** @type {{ id: string, mtimeMs: number } | null} */
+  let best = null;
+  for (const dir of dirs) {
+    let files;
+    try {
+      files = readdir(`${projects}/${dir}`);
+    } catch {
+      continue;
+    }
+    for (const file of files) {
+      if (!file.endsWith('.jsonl')) continue;
+      let st;
+      try {
+        st = stat(`${projects}/${dir}/${file}`);
+      } catch {
+        continue;
+      }
+      if (!st.isFile()) continue;
+      if (!best || st.mtimeMs > best.mtimeMs) best = { id: file.slice(0, -'.jsonl'.length), mtimeMs: st.mtimeMs };
+    }
+  }
+  return best;
 }
 
 /**
@@ -6195,8 +6250,10 @@ export function makeClaudeResumeCompactionRecoveryStateMachine({
     recoveryStarted: () => recoveryStartedAt > 0,
     status: () => ({
       ...snapshot(),
-      startedAt,
-      detectionExpiresAt: startedAt + detectionWindowMs,
+      // EI-25217214806027261: this read an unbound `startedAt` (ReferenceError on every
+      // status() call); the machine's own clock is detectionStartedAt.
+      startedAt: detectionStartedAt,
+      detectionExpiresAt: detectionStartedAt === null ? null : detectionStartedAt + detectionWindowMs,
       recoveryExpiresAt: recoveryStartedAt ? recoveryStartedAt + recoveryWindowMs : null,
       bufferedChars: observed.length,
     }),
@@ -7875,6 +7932,45 @@ export function submitVerifyQuietMs(env = process.env) {
  *  the same path works from the staging AND release checkouts. */
 export const SESSION_COMPACTED_EMIT_ENTRY = join(HOST_SCRIPT_DIR, 'emit-session-compacted.ts');
 
+/** EI-24961854655864836: authenticate the successor before submitting its work.
+ * A failed first report may confirm through the launcher's existing durable retry.
+ * The bounded wait never treats submission/transcript proof as identity authority.
+ * @param {{nativeId?: string | null, readNativeId?: () => string | null,
+ * report?: (id: string, options: {onConfirmed: (id?: string) => void}) => any,
+ * isCurrent?: () => boolean, timeoutMs?: number, pollMs?: number,
+ * alreadyConfirmed?: boolean}} options
+ */
+export async function waitForRespawnBinding({
+  nativeId = null, readNativeId = () => null, report = () => false,
+  isCurrent = () => true, timeoutMs = 2_000, pollMs = 50, alreadyConfirmed = false,
+}) {
+  const deadline = Date.now() + timeoutMs;
+  let confirmed = alreadyConfirmed && Boolean(nativeId);
+  let reporting = false;
+  while (isCurrent()) {
+    if (!nativeId) {
+      try { nativeId = readNativeId(); } catch { /* next bounded startup check */ }
+    }
+    if (nativeId && !reporting && !confirmed) {
+      reporting = true;
+      const expectedId = nativeId;
+      const onConfirmed = (id = expectedId) => {
+        if (id === expectedId && isCurrent()) confirmed = true;
+      };
+      void Promise.resolve().then(() => isCurrent() ? report(expectedId, { onConfirmed }) : false)
+        .then((ok) => { if (ok === true) onConfirmed(); }, () => {});
+    }
+    if (confirmed) return { ok: true, nativeId, reason: 'successor-reanchor-confirmed' };
+    const left = deadline - Date.now();
+    if (left <= 0) return {
+      ok: false, nativeId,
+      reason: nativeId ? 'successor-reanchor-unconfirmed' : 'successor-native-id-missing',
+    };
+    await new Promise((resolve) => setTimeout(resolve, Math.min(pollMs, left)));
+  }
+  return { ok: false, nativeId, reason: 'superseded' };
+}
+
 /**
  * Complete the existing carry lifecycle after native delivery and mapping are
  * proven. Codex assigns its id at startup: use the exact isolated rollout from
@@ -8294,6 +8390,7 @@ export function resolveAgentPtyTarget({ command, args, env, cwd }, deps = {}) {
  * @param {()=>Promise<any>} [o.ensureCodexHome] repair the per-session Codex home before a carry mint
  * @param {()=>Promise<any>} [o.refreshPersonaFile] refresh the rendered persona before respawn
  * @param {(...args:any[])=>any} [o.onRespawn] lifecycle callback after a respawn
+ * @param {((pid:number)=>string|null)|null} [o.resolveRespawnNativeId] startup native identity of the exact PTY child
  * @param {typeof fireSessionCompactedEvent} [o.emitCompacted] verified carry completion bridge (tests)
  * @param {((...args:any[])=>any) | null} [o.onReexec] handoff callback for host re-exec
  * @param {()=>any} [o.hostCodeStalenessFn] injectable loaded-vs-disk probe
@@ -8339,6 +8436,7 @@ export function hostThroughPty(o) {
       reason: "not-wired",
     }),
     onRespawn = () => {},
+    resolveRespawnNativeId = null,
     emitCompacted = fireSessionCompactedEvent,
     // WI-38292: hand the session to a FRESH launcher process instead of respawning
     // the CLI child inside this stale one. Injected like the mints, and for a
@@ -8880,6 +8978,10 @@ export function hostThroughPty(o) {
     }
     return true;
   };
+  // psu-process-free-parking-2026-10-06 P-017: the park policy rides this
+  // existing tick (D-002: no new timer). Assigned once the park machinery below
+  // exists; a no-op until then.
+  let parkTick = () => {};
   const activityTimer = setInterval(() => {
     let ownKey = true;
     try {
@@ -8891,6 +8993,11 @@ export function hostThroughPty(o) {
     if (ownKey && (snap.lastActivityAt ?? 0) > lastPersisted) {
       lastPersisted = snap.lastActivityAt ?? 0;
       writeMeta();
+    }
+    try {
+      parkTick();
+    } catch {
+      /* a park decision must never break the activity persist */
     }
   }, activityPersistMs);
   if (typeof activityTimer.unref === 'function') activityTimer.unref();
@@ -9574,11 +9681,12 @@ export function hostThroughPty(o) {
             return { delivered: false, reason: 'first-turn-started', attempts };
           }
           if (prepareBeforeWrite) {
-            const prepared = await prepareBeforeWrite();
+            const prepared = await prepareBeforeWrite({ deadline });
             if (!prepared.ok) {
               return { delivered: false, reason: prepared.reason ?? 'prewrite-rejected', attempts };
             }
             if (child !== injectChild) return { delivered: false, reason: 'superseded', attempts };
+            if (freshChildWasInterrupted()) return { delivered: false, reason: 'fresh-child-owner-input', attempts };
           }
           // The text is the first step; later steps are delayed submit CRs, so
           // readiness is captured now, not after them.
@@ -9869,6 +9977,28 @@ export function hostThroughPty(o) {
   // Scripted fresh launches and resumes share the managed first-turn seam;
   // prompts stay out of argv. Only a fresh Codex thread can use startup proof
   // instead of output silence. Resume/fork may already be running a turn.
+  let launchKickoffSettled = !launchKickoff;
+  let confirmedCarryChild = null;
+  let confirmedCarryNativeId = null;
+  const prepareCarryBinding = async (nativeId, deadline, alreadyConfirmed = false) => {
+    const target = child;
+    const result = await waitForRespawnBinding({
+      nativeId,
+      readNativeId: () => resolveRespawnNativeId?.(target.pid) ?? null,
+      report: onRespawn,
+      isCurrent: () => child === target && !hostCleanedUp && !shuttingDown,
+      alreadyConfirmed: alreadyConfirmed || (confirmedCarryChild === target && confirmedCarryNativeId === nativeId),
+      timeoutMs: Math.max(0, deadline - Date.now()),
+    });
+    appendHostEvent(ownerId, result.ok ? 'respawn-binding-confirmed' : 'respawn-binding-unconfirmed', {
+      nativeId: result.nativeId, reason: result.reason,
+    });
+    if (result.ok) {
+      confirmedCarryChild = target;
+      confirmedCarryNativeId = result.nativeId;
+    }
+    return result;
+  };
   if (launchKickoff) {
     const requireRoleMcp = headlessRoleKickoffRequiresMcp({
       agent: env.PAPERCUSP_AGENT,
@@ -9917,7 +10047,13 @@ export function hostThroughPty(o) {
             CODEX_STARTING_KICKOFF_HOLD_CEILING_MS,
           ),
         }),
-        prepareBeforeWrite: requireRoleMcp ? async () => {
+        prepareBeforeWrite: async ({ deadline }) => {
+          if (adoptedCarryRespawn && (adoptedCarryRespawn.nativeId || resolveRespawnNativeId)) {
+            const binding = await prepareCarryBinding(adoptedCarryRespawn.nativeId, deadline);
+            if (!binding.ok) return binding;
+            adoptedCarryRespawn.nativeId = binding.nativeId;
+          }
+          if (!requireRoleMcp) return { ok: true };
           const tap = makeOutputTap();
           try {
             const result = await verifyHeadlessRoleMcp(() => runMcpReconnectMacro({
@@ -9935,7 +10071,7 @@ export function hostThroughPty(o) {
           } finally {
             tap.close();
           }
-        } : null,
+        },
         // Read per attempt, so a replacement child is judged against the owner
         // input generation current at its own kickoff.
         freshChildOwnerInputGeneration: env.PAPERCUSP_AGENT === 'codex' && !isResumeLaunch
@@ -10113,6 +10249,7 @@ export function hostThroughPty(o) {
             agent: env.PAPERCUSP_AGENT,
             nativeId: adoptedCarryRespawn.nativeId ?? null,
             proof,
+            alreadyReported: confirmedCarryChild === adoptedCarryChild,
             report: onRespawn,
             emit: emitCompacted,
             timeoutMs: respawnReportTimeoutMs,
@@ -10286,6 +10423,10 @@ export function hostThroughPty(o) {
       try { process.stderr.write(`psu: managed kickoff failed: ${error?.message ?? error}\n`); }
       catch { /* diagnostics are best-effort */ }
       try { child.kill(); } catch { /* already exited */ }
+    }).finally(() => {
+      // psu-process-free-parking P-017: a park must never cut off a first
+      // prompt that is still waiting to be typed.
+      launchKickoffSettled = true;
     });
   }
 
@@ -10469,6 +10610,324 @@ export function hostThroughPty(o) {
     isSuperseded: (msg) =>
       isCarryRespawnSuperseded(msg.receivedAtMs, lastRespawnAtMs),
   });
+
+  // ── Process-free parking (psu-process-free-parking-2026-10-06 P-017) ───────
+  // An idle Claude child is SIGKILLed to free its memory while this host, its
+  // control socket, discovery file and terminal stay up (D-002). The first
+  // owner keystroke, control-socket delivery or recycle brings it back on the
+  // SAME conversation (mintParkResumeArgs). While parked, `child` is a stand-in
+  // with no pid: nothing can signal a recycled pid, and killing the stand-in
+  // ends the session through the ordinary child-exit path (so shutdown, a
+  // host signal and an orphaned terminal all behave exactly as with a live
+  // child).
+  const parkIdleMs = parkIdleMsFromEnv(env);
+  const parkResumeWaitMs = positiveNumber(env.PAPERCUSP_PSU_PARK_RESUME_WAIT_MS, 60_000);
+  let parked = false;
+  /** @type {Promise<boolean> | null} */
+  let parkPromise = null;
+  /** @type {Promise<{ unparked: boolean, reason: string }> | null} */
+  let unparkPromise = null;
+  let parkedAtMs = 0;
+  let lastUnparkAtMs = 0;
+  /** @type {{ args: string[], nativeId: string } | null} */
+  let parkResume = null;
+  let deliveriesInFlight = 0;
+  let lastParkDeferReason = null;
+  /** Owner keystrokes typed while parked, replayed once the resumed prompt is up. */
+  const heldOwnerInput = [];
+  let heldOwnerInputBytes = 0;
+  const HELD_OWNER_INPUT_CAP_BYTES = 4096;
+  const parkInProgress = () => parked || parkPromise !== null || unparkPromise !== null;
+  const makeParkedChild = () => {
+    const listeners = [];
+    let exitEvent = null;
+    const fire = (fn) => setImmediate(() => {
+      try {
+        fn(exitEvent);
+      } catch {
+        /* a listener must never break another */
+      }
+    });
+    return {
+      pid: undefined,
+      write() {},
+      resize() {},
+      onData() {
+        return { dispose() {} };
+      },
+      onExit(fn) {
+        if (exitEvent) fire(fn);
+        else listeners.push(fn);
+        return { dispose() {} };
+      },
+      // Asynchronous like node-pty's own exit event, so a teardown that records
+      // its signal before killing (WI-38054) still wins the race.
+      kill(signal = 'SIGHUP') {
+        if (exitEvent) return;
+        exitEvent = {
+          exitCode: 0,
+          signal: typeof signal === 'string' ? (osConstants.signals[signal] ?? 0) : Number(signal) || 0,
+        };
+        for (const fn of listeners.splice(0)) fire(fn);
+      },
+    };
+  };
+  const mintResumeForPark = () => {
+    try {
+      const configDir = env.CLAUDE_CONFIG_DIR || null;
+      const newest = newestSessionTranscriptId(configDir, { ownerId });
+      const base = mintParkResumeArgs(liveChildArgs, { agent: env.PAPERCUSP_AGENT });
+      if (!base || !Array.isArray(base.args) || !base.nativeId) return null;
+      if (newest && newest.id !== base.nativeId) {
+        const switched = mintParkResumeArgs(liveChildArgs, {
+          agent: env.PAPERCUSP_AGENT,
+          nativeId: newest.id,
+        });
+        if (switched && Array.isArray(switched.args) && switched.nativeId) {
+          return { ...switched, switchedFrom: base.nativeId };
+        }
+      }
+      return base;
+    } catch {
+      return null;
+    }
+  };
+  const clearParkedState = (trigger, extra = {}) => {
+    const parkedForMs = parkedAtMs ? Date.now() - parkedAtMs : null;
+    parked = false;
+    parkedAtMs = 0;
+    parkResume = null;
+    lastUnparkAtMs = Date.now();
+    baseMeta.parked = false;
+    baseMeta.parkedAt = null;
+    return { trigger, parkedForMs, ...extra };
+  };
+  const parkChild = async (verdict) => {
+    const resume = mintResumeForPark();
+    if (!resume) return false;
+    const parkedChild = child;
+    const childPid = Number.isInteger(parkedChild?.pid) ? parkedChild.pid : null;
+    // `recycling` makes the child-exit handler ignore THIS kill: a park is not
+    // the session ending, and the operator must never see it as one (D-002).
+    recycling = true;
+    try {
+      stopStartupTrace('park');
+      const dead = new Promise((res) => {
+        try {
+          parkedChild.onExit(() => res(true));
+        } catch {
+          res(true);
+        }
+      });
+      killPtyProcessTree(parkedChild, 'SIGKILL');
+      const exited = await Promise.race([
+        dead,
+        new Promise((res) => setTimeout(() => res(false), RECYCLE_FORCE_KILL_WAIT_MS * 5)),
+      ]);
+      if (normalizedLog) normalizedLog.flush();
+      childStartupOutput = '';
+      childStartupReady = false;
+      childPromptReady = false;
+      childStartupFirstOutputAt = 0;
+      childBracketedPaste = false;
+      childBracketedPasteTail = '';
+      childBackendTuiStartedAt = 0;
+      childBackendFirstFrameAt = 0;
+      lastMachineTurnWriteStartedAtMs = 0;
+      quotaBlockDetector.reset();
+      ownerComposerGate.markSubmitted();
+      child = makeParkedChild();
+      wireChildExit();
+      parked = true;
+      parkedAtMs = Date.now();
+      parkResume = resume;
+      baseMeta.parked = true;
+      baseMeta.parkedAt = parkedAtMs;
+      // A dead pid is recycled within hours here; never advertise one.
+      baseMeta.ptyPid = null;
+      writeMeta();
+      try {
+        // The killed TUI left its terminal modes (mouse reporting, bracketed
+        // paste) armed; reset them so a mouse move is not read as a keystroke.
+        if (bridgeTty) {
+          const handoff = respawnTerminalHandoffBytes({
+            rows: sanePtyDim(stdout.rows, 0, 500) || undefined,
+            separator: false,
+          });
+          if (handoff) stdout.write(handoff);
+        }
+        stdout.write(
+          `\r\n[psu] Agent parked after ${Math.round((verdict.idleForMs ?? parkIdleMs) / 60_000)} min idle ` +
+            `to free memory. Type, or send it a message, to resume the same conversation.\r\n`,
+        );
+      } catch {
+        /* the notice is advisory */
+      }
+      appendHostEvent(ownerId, 'child-parked', {
+        idleForMs: verdict.idleForMs ?? null,
+        childPid,
+        exited,
+        nativeId: resume.nativeId,
+        switchedFrom: resume.switchedFrom ?? null,
+      });
+      return true;
+    } finally {
+      recycling = false;
+    }
+  };
+  parkTick = () => {
+    if (parkInProgress() || hostCleanedUp || shuttingDown || recycling) return;
+    const now = Date.now();
+    const snap = activity.snapshot();
+    const lastActivityAt = Math.max(
+      snap.lastActivityAt ?? 0,
+      lastRespawnAtMs,
+      lastUnparkAtMs,
+      baseMeta.startedAt ?? 0,
+    );
+    const busy =
+      deliveriesInFlight > 0 ||
+      machineTurnActive ||
+      carryRearm.pendingCount() > 0 ||
+      !launchKickoffSettled;
+    const verdict = parkVerdict({
+      idleMs: parkIdleMs,
+      agent: env.PAPERCUSP_AGENT,
+      now,
+      lastActivityAt,
+      childPromptReady,
+      parked,
+      busy,
+      quotaBlocked: quotaBlockDetector.isBlocked(),
+      composerPending: ownerComposerGate.hasPending(),
+      // Only pay for the transcript-dir scan once the child is idle enough to
+      // park; before that the verdict refuses on idleness anyway.
+      resumable: now - lastActivityAt >= parkIdleMs ? mintResumeForPark() !== null : true,
+      descendants: () => countProcessDescendants(child?.pid),
+    });
+    if (!verdict.park) {
+      // Report WHY an idle child was not parked, once per reason change, so
+      // "why is this idle agent still holding memory" is a read, not a guess.
+      const idleFor = now - lastActivityAt;
+      if (
+        parkIdleMs > 0 &&
+        idleFor >= parkIdleMs &&
+        verdict.reason !== lastParkDeferReason &&
+        !['disabled', 'agent-not-parkable', 'already-parked', 'not-idle-long-enough'].includes(verdict.reason)
+      ) {
+        appendHostEvent(ownerId, 'child-park-deferred', {
+          reason: verdict.reason,
+          idleForMs: idleFor,
+          descendants: verdict.descendants ?? null,
+        });
+      }
+      lastParkDeferReason = verdict.reason;
+      return;
+    }
+    lastParkDeferReason = null;
+    parkPromise = parkChild(verdict)
+      .catch((error) => {
+        appendHostEvent(ownerId, 'child-park-failed', hostErrorEvidence(error));
+        return false;
+      })
+      .finally(() => {
+        parkPromise = null;
+      });
+  };
+  /**
+   * Bring a parked child back on the same conversation. Single-flight: every
+   * trigger that arrives while a resume is in progress shares it. Resolves once
+   * the resumed TUI shows its prompt (or the wait cap passes — the delivery
+   * gates downstream still guard the write).
+   * @param {string} trigger
+   */
+  const unparkChild = (trigger) => {
+    if (unparkPromise) return unparkPromise;
+    if (!parked && !parkPromise) return Promise.resolve({ unparked: false, reason: 'not-parked' });
+    unparkPromise = (async () => {
+      const startedAt = Date.now();
+      try {
+        if (parkPromise) await parkPromise;
+        if (!parked) return { unparked: false, reason: 'not-parked' };
+        if (hostCleanedUp || shuttingDown) return { unparked: false, reason: 'host-ending' };
+        const resume = parkResume;
+        if (!resume) {
+          appendHostEvent(ownerId, 'child-unpark-failed', { trigger, reason: 'no-resume-args' });
+          return { unparked: false, reason: 'no-resume-args' };
+        }
+        let resumed;
+        try {
+          resumed = spawnChild(resume.args);
+        } catch (error) {
+          appendHostEvent(ownerId, 'child-unpark-failed', {
+            trigger,
+            reason: 'spawn-failed',
+            ...hostErrorEvidence(error),
+          });
+          return { unparked: false, reason: 'spawn-failed' };
+        }
+        child = resumed;
+        stopStartupTrace = startCodexStartupProcessTrace({
+          agent: env.PAPERCUSP_AGENT, ownerId, pid: child.pid,
+        });
+        const details = clearParkedState(trigger, { nativeId: resume.nativeId });
+        baseMeta.ptyPid = child.pid;
+        writeMeta();
+        wireChildData();
+        wireChildExit();
+        activity.touchOutput();
+        const deadline = Date.now() + parkResumeWaitMs;
+        while (!childPromptReady && child === resumed && !hostCleanedUp && Date.now() < deadline) {
+          await new Promise((res) => setTimeout(res, 100));
+        }
+        appendHostEvent(ownerId, 'child-unparked', {
+          ...details,
+          childPid: Number.isInteger(resumed.pid) ? resumed.pid : null,
+          promptReady: childPromptReady,
+          latencyMs: Date.now() - startedAt,
+        });
+        if (child === resumed && heldOwnerInput.length) {
+          const replay = heldOwnerInput.splice(0);
+          heldOwnerInputBytes = 0;
+          for (const chunk of replay) forwardOwnerInput(chunk);
+        }
+        return { unparked: true, reason: 'resumed' };
+      } finally {
+        unparkPromise = null;
+      }
+    })();
+    return unparkPromise;
+  };
+  /** Owner bytes typed while parked: keep the real keystrokes for replay, drop
+   *  the terminal's own replies (they answered the dead TUI), and resume. */
+  const holdOwnerInputWhileParked = (input, ownerTyped) => {
+    if (!ownerTyped) return;
+    const bytes = Buffer.byteLength(input, 'utf8');
+    if (heldOwnerInputBytes + bytes <= HELD_OWNER_INPUT_CAP_BYTES) {
+      heldOwnerInput.push(input);
+      heldOwnerInputBytes += bytes;
+    }
+    if (!unparkPromise) {
+      try {
+        stdout.write('\r\n[psu] Resuming the agent…\r\n');
+      } catch {
+        /* advisory */
+      }
+    }
+    void unparkChild('owner-input');
+  };
+  /** Every control-socket delivery resumes a parked child before its gates run
+   *  (never refused: the host accepted it, WI-10005134), and counts as busy so
+   *  the policy cannot park the child out from under it. */
+  const deliverAfterUnpark = async (mode, run) => {
+    deliveriesInFlight++;
+    try {
+      if (mode !== 'osc' && parkInProgress()) await unparkChild(`control:${mode}`);
+      return await run();
+    } finally {
+      deliveriesInFlight--;
+    }
+  };
 
   // Control socket: a connector writes one v1 envelope (or legacy raw bytes);
   // we inject it into the pty (a wake turn / a force-interrupt control byte).
@@ -11462,7 +11921,7 @@ export function hostThroughPty(o) {
       // its own try/catch/finally above already handles every expected outcome
       // and durably records it; this outer .catch exists only so a genuinely
       // unexpected throw can never surface as an unhandled promise rejection.
-      void runGatedDelivery()
+      void deliverAfterUnpark(msg.mode, runGatedDelivery)
         .then((deliveryOutcome) => {
           if (!coalescedDeliveryIds.size) return;
           for (const deliveryId of coalescedDeliveryIds) {
@@ -11845,7 +12304,8 @@ export function hostThroughPty(o) {
     if (freshChildOwnerInterruptionDetector.sawOwnerInput(input)) {
       ownerInputGeneration++;
     }
-    if (ownerInputDetector.sawOwnerInput(input)) {
+    const ownerTyped = ownerInputDetector.sawOwnerInput(input);
+    if (ownerTyped) {
       idleGate.touch();
       activity.touchInput();
       // owner-presence-human-turn-signal-2026-07-11 P-003: a real human keystroke into
@@ -11854,6 +12314,17 @@ export function hostThroughPty(o) {
       // reports. Socket-injected agent wakes bypass stdin, so they never reach here.
       if (bridgeTty) reportOwnerHumanTurn();
     }
+    // psu-process-free-parking P-017: no child to type into while parked —
+    // hold the keystrokes, resume, and replay them at the resumed prompt.
+    if (parkInProgress()) {
+      holdOwnerInputWhileParked(input, ownerTyped);
+      return;
+    }
+    forwardOwnerInput(input);
+  };
+  /** Owner bytes → the child (or the post-submit queue while a machine turn
+   *  owns the line). Shared by the live bridge and the parked-input replay. */
+  function forwardOwnerInput(input) {
     if (bridgeTty) {
       if (machineTurnActive) {
         // The machine turn owns the current text→CR gap. Replay these bytes only
@@ -11869,7 +12340,7 @@ export function hostThroughPty(o) {
     } catch {
       /* ignore */
     }
-  };
+  }
   stdin.on('data', onStdin);
 
   // terminal resize (SIGWINCH) -> pty resize
@@ -12635,6 +13106,16 @@ export function hostThroughPty(o) {
         stopStartupTrace = startCodexStartupProcessTrace({
           agent: env.PAPERCUSP_AGENT, ownerId, pid: child.pid,
         });
+        // P-017: a recycle that reaches a PARKED host had no live child to kill
+        // (the stand-in exited at once); the fresh child ends the park.
+        if (parked) {
+          heldOwnerInput.length = 0;
+          heldOwnerInputBytes = 0;
+          appendHostEvent(ownerId, 'child-unparked', {
+            ...clearParkedState('recycle', { nativeId: nativeId ?? null }),
+            childPid: Number.isInteger(child.pid) ? child.pid : null,
+          });
+        }
         // Re-anchor the fresh native id → coord ownerId so a LATER untracked
         // resume still recovers this identity (else the 2026-07-02 orphaning bug
         // recurs). The launcher callback also repairs the authoritative
@@ -12848,37 +13329,41 @@ export function hostThroughPty(o) {
         // A recycled Claude su session can arrive while the native Papercusp
         // MCP endpoint is still reconnecting. Keep the carry out of the composer
         // until the closed-loop reconnect check proves papercusp-su ready.
-        prepareBeforeWrite:
-          respawnMode === 'carry-respawn' &&
+        prepareBeforeWrite: async ({ deadline }) => {
+          if (respawnMode === 'carry-respawn' && (nativeId || resolveRespawnNativeId)) {
+            const binding = await prepareCarryBinding(nativeId, deadline, respawnReported);
+            if (!binding.ok) return binding;
+            nativeId = binding.nativeId;
+            respawnReported = true;
+          }
+          if (!(respawnMode === 'carry-respawn' &&
           String(env.PAPERCUSP_AGENT ?? '').trim().toLowerCase() === 'claude' &&
-          sessionClass === 'claude-su'
-            ? async () => {
-                const tap = makeOutputTap();
-                try {
-                  const result = await verifyHeadlessRoleMcp(() => mcpReconnectMacro({
-                    serverName: 'papercusp-su',
-                    write: (bytes) => child.write(bytes),
-                    readTap: tap.read,
-                    resetTap: tap.reset,
-                  }));
-                  appendHostEvent(
-                    ownerId,
-                    result.ok ? 'respawn-carry-mcp-ready' : 'respawn-carry-mcp-unavailable',
-                    {
-                      mode: respawnMode,
-                      nativeId: nativeId ?? null,
-                      serverName: 'papercusp-su',
-                      step: result.step,
-                      attempts: result.attempts,
-                      detail: result.detail,
-                    },
-                  );
-                  return { ok: result.ok, reason: 'carry-mcp-unavailable' };
-                } finally {
-                  tap.close();
-                }
-              }
-            : null,
+          sessionClass === 'claude-su')) return { ok: true };
+          const tap = makeOutputTap();
+          try {
+            const result = await verifyHeadlessRoleMcp(() => mcpReconnectMacro({
+              serverName: 'papercusp-su',
+              write: (bytes) => child.write(bytes),
+              readTap: tap.read,
+              resetTap: tap.reset,
+            }));
+            appendHostEvent(
+              ownerId,
+              result.ok ? 'respawn-carry-mcp-ready' : 'respawn-carry-mcp-unavailable',
+              {
+                mode: respawnMode,
+                nativeId: nativeId ?? null,
+                serverName: 'papercusp-su',
+                step: result.step,
+                attempts: result.attempts,
+                detail: result.detail,
+              },
+            );
+            return { ok: result.ok, reason: 'carry-mcp-unavailable' };
+          } finally {
+            tap.close();
+          }
+        },
       });
       const retryOnFreshEpoch = (reason, proofReason = null) => {
         if (!shouldRetryCarryOnFreshEpoch({

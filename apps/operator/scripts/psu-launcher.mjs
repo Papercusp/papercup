@@ -80,6 +80,7 @@ import {
   appendHostEvent,
   fireSessionCompactedEvent,
   hostThroughPty,
+  resolveLinuxCodexStartupPid,
   fleetOscFromEnv,
   findLiveHostFor,
   hostIdleMs,
@@ -3880,13 +3881,16 @@ export function mintRecycleArgs(
  *
  * Claude only (D-025: an idle Codex CLI is ~17 MB, not worth parking). Returns
  * null — "this child cannot be parked" — for any other agent or when the argv
- * carries no session id to resume. Pure; exported for tests.
+ * carries no session id to resume. `nativeId` overrides the argv's id: the host
+ * passes the id of the session's newest transcript when it differs, because an
+ * in-TUI `/clear` starts a new conversation the argv never learns about.
+ * Pure; exported for tests.
  *
  * @param {string[]} [liveArgs]
- * @param {{ agent?: string | null }} [opts]
+ * @param {{ agent?: string | null, nativeId?: string | null }} [opts]
  * @returns {{ args: string[], nativeId: string } | null}
  */
-export function mintParkResumeArgs(liveArgs = [], { agent = null } = {}) {
+export function mintParkResumeArgs(liveArgs = [], { agent = null, nativeId: overrideId = null } = {}) {
   if (String(agent ?? "").trim().toLowerCase() !== "claude") return null;
   const src = stripKickoffPositional(liveArgs.map((a) => String(a ?? "")));
   let nativeId = null;
@@ -3909,9 +3913,11 @@ export function mintParkResumeArgs(liveArgs = [], { agent = null } = {}) {
     if (a === "--continue" || a === "--fork-session") continue;
     out.push(a);
   }
-  if (!nativeId) return null;
-  out.push("--resume", nativeId);
-  return { args: out, nativeId };
+  const override = typeof overrideId === "string" && /^[A-Za-z0-9._-]+$/.test(overrideId) ? overrideId : null;
+  const resumeId = override ?? nativeId;
+  if (!resumeId) return null;
+  out.push("--resume", resumeId);
+  return { args: out, nativeId: resumeId };
 }
 
 /**
@@ -12292,7 +12298,7 @@ export function runWrapper(options) {
                 agent: env.PAPERCUSP_AGENT,
                 configDir: env.CLAUDE_CONFIG_DIR || null,
                 codexHome: env.CODEX_HOME || null,
-                advSessionId: env.PAPERCUSP_ADV_SESSION_ID || advSessionId || null,
+                advSessionId: env.PAPERCUSP_ADV_SESSION_ID || null,
                 modelSource: env.PAPERCUSP_MODEL_SOURCE || null,
                 notBeforeMs: modelObservationNotBeforeMs,
               }),
@@ -12311,7 +12317,7 @@ export function runWrapper(options) {
                 agent: o.agent ?? env.PAPERCUSP_AGENT,
                 configDir: env.CLAUDE_CONFIG_DIR || null,
                 codexHome: env.CODEX_HOME || null,
-                advSessionId: env.PAPERCUSP_ADV_SESSION_ID || advSessionId || null,
+                advSessionId: env.PAPERCUSP_ADV_SESSION_ID || null,
                 modelSource: env.PAPERCUSP_MODEL_SOURCE || null,
                 notBeforeMs: modelObservationNotBeforeMs,
               }),
@@ -12321,19 +12327,19 @@ export function runWrapper(options) {
         // persona file, no kickoff). Injected like the other mints so the host
         // stays launcher-agnostic; without it the host never parks.
         mintParkResumeArgs: (a, o = {}) =>
-          mintParkResumeArgs(a, { agent: o.agent ?? env.PAPERCUSP_AGENT }),
+          mintParkResumeArgs(a, { agent: o.agent ?? env.PAPERCUSP_AGENT, nativeId: o.nativeId ?? null }),
         ensureCodexHome: () =>
           ensureCodexHomeViaOperator(
             ownerId,
             env.CODEX_HOME || null,
-            env.PAPERCUSP_ADV_SESSION_ID || advSessionId || null,
+            env.PAPERCUSP_ADV_SESSION_ID || null,
             {
               model: detectRespawnModelSpec(args, {
                 ownerId,
                 agent: env.PAPERCUSP_AGENT,
                 configDir: env.CLAUDE_CONFIG_DIR || null,
                 codexHome: env.CODEX_HOME || null,
-                advSessionId: env.PAPERCUSP_ADV_SESSION_ID || advSessionId || null,
+                advSessionId: env.PAPERCUSP_ADV_SESSION_ID || null,
                 modelSource: env.PAPERCUSP_MODEL_SOURCE || null,
                 includeInherited: true,
                 notBeforeMs: modelObservationNotBeforeMs,
@@ -12365,6 +12371,11 @@ export function runWrapper(options) {
         adoptedCarryRespawn,
         onKickoffPersisted: (proof) =>
           reportSessionPortDelivery(sessionPort, proof),
+        // Codex chooses its id at startup, before it persists a user turn.
+        // Read the existing writer lock and accept only this PTY's process tree.
+        resolveRespawnNativeId: env.PAPERCUSP_AGENT === "codex" && process.platform === "linux"
+          ? (pid) => codexNativeIdForPty(env.CODEX_HOME, pid)
+          : null,
         onRespawn: (freshId, { onConfirmed } = {}) => {
           recordSessionOwner(freshId, ownerId, {
             advSessionId: env.PAPERCUSP_ADV_SESSION_ID || null,
@@ -12650,6 +12661,10 @@ const readProcLocksText = () => readFileSync("/proc/locks", "utf8");
  * carry-respawn mints a new uuid, and adv row #18052 still recorded 01a036a4-…
  * while 01a038ff-… was the live thread.
  * Pure apart from the injected readers — exported for tests.
+ * @param {string | null | undefined} codexHome
+ * @param {string | null} sessionId
+ * @param {{readProcLocks?: () => string, statFile?: typeof statSync,
+ * listDir?: typeof safeReaddir, holderPid?: number | null}} [options]
  */
 export function codexThreadWriterHolder(
   codexHome,
@@ -12658,6 +12673,7 @@ export function codexThreadWriterHolder(
     readProcLocks = readProcLocksText,
     statFile = statSync,
     listDir = safeReaddir,
+    holderPid = null,
   } = {},
 ) {
   const miss = (reason, lockPath = null, statErrorCodes = []) => ({
@@ -12714,7 +12730,7 @@ export function codexThreadWriterHolder(
       minor,
       inode: st.ino,
     });
-    if (pid)
+    if (pid && (holderPid == null || pid === holderPid))
       return {
         held: true,
         pid,
@@ -12812,6 +12828,29 @@ export function procAncestorPids(
 }
 
 const readProcStatText = (pid) => readFileSync(`/proc/${pid}/stat`, "utf8");
+
+/** The startup native id of THIS PTY, never a sibling/nested writer in its home.
+ * Reuses Codex's writer-lock oracle and the existing native-process reader.
+ * @param {string | undefined} codexHome
+ * @param {number} ptyPid
+ * @param {{readHolder?: typeof codexThreadWriterHolder, readStartupPid?: typeof resolveLinuxCodexStartupPid}} [options]
+ */
+export function codexNativeIdForPty(codexHome, ptyPid, {
+  readHolder = codexThreadWriterHolder,
+  readStartupPid = resolveLinuxCodexStartupPid,
+} = {}) {
+  if (!Number.isSafeInteger(ptyPid) || ptyPid <= 0) return null;
+  try {
+    const nativePid = readStartupPid(ptyPid);
+    if (!nativePid) return null;
+    const holder = readHolder(codexHome, null, { holderPid: nativePid });
+    if (!holder.held || !holder.sessionId || !holder.pid) return null;
+    if (holder.pid !== nativePid) return null;
+    return holder.sessionId;
+  } catch {
+    return null;
+  }
+}
 const readProcCmdlineText = (pid) =>
   readFileSync(`/proc/${pid}/cmdline`, "utf8");
 

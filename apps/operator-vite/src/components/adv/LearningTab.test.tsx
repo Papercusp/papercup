@@ -751,6 +751,7 @@ const setTestingFlag = (on: boolean) =>
 import LearningTab, {
   ARMING_WORKFLOWS_KIND,
   ARMING_WORKFLOWS_TAB,
+  graderChipLabel,
   railChipPromise,
 } from "./LearningTab";
 
@@ -2689,6 +2690,35 @@ describe("LearningTab — grading, the only row control the merge kept (P-005: c
     expect(screen.getByLabelText("Review idea grade")).toBeTruthy();
     // ...and the ungraded row still invites a first grade.
     expect(screen.getByLabelText("Grade this idea")).toBeTruthy();
+  });
+
+  it("10b. the grade chip shortens a peer agent's session id; the title keeps it whole (WI-10006513)", () => {
+    // A full `su-<uuid>` made the nowrap chip ~250px and pushed the row's note
+    // button out of its cell at 1366px. The chip shows the presence-style
+    // short id; the full id stays in the title.
+    const longId = "su-2f324ce6-c2d6-415e-8572-f263eca5d1b0";
+    expect(graderChipLabel(longId, "brain")).toBe("su-2f324");
+    expect(graderChipLabel("owner", "brain")).toBe("Owner");
+    expect(graderChipLabel("auto-grader", "brain")).toBe("brain");
+    // A non-id label passes through untouched rather than being mangled.
+    expect(graderChipLabel("reviewer-7", "brain")).toBe("reviewer-7");
+
+    scoutResult = {
+      ...scoutResult,
+      data: [
+        {
+          ...scoutSnapshot,
+          recent: scoutSnapshot.recent.map((idea) =>
+            idea.humanGrade != null ? { ...idea, gradedBy: longId } : idea,
+          ),
+        },
+      ],
+    };
+    render(<LearningTab />);
+    const chip = document.querySelector(".pc-learning__gradechip");
+    expect(chip?.textContent?.replace(/\s+/g, " ")).toContain("su-2f324");
+    expect(chip?.textContent).not.toContain(longId);
+    expect(chip?.getAttribute("title")).toContain(longId);
   });
 
   it("11. renders lens weights as shares, sorted descending", () => {

@@ -32,6 +32,7 @@ vi.mock("nuqs", async () => {
   return {
     parseAsString: parser(),
     parseAsStringEnum: () => parser(),
+    parseAsArrayOf: () => parser(),
     useQueryState: (key: string, config?: { defaultValue?: unknown }) => {
       const [value, setValue] = React.useState<unknown>(
         H.params[key] ?? config?.defaultValue ?? null,

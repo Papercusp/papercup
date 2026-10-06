@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "kind": "operational-test-evidence",
   "name": "reboot-residue R-002 live: disk-cold Ornith served through the :8788 gateway on demand, 200 after 353s, no OOM/drift",
-  "framework": "host-live-probe",
+  "framework": "operational",
   "command": ["bash", "docs/evidence/reboot-residue-live-probes-2026-10-06/r002-live-probe.sh"],
   "commandCwd": ".",
   "exitCode": 0,

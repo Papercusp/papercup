@@ -203,6 +203,49 @@ describe("hosted desktop browser protocol", () => {
     });
   });
 
+  it("carries owner, scope, name and the owner's work-item on roster rows (P-006)", () => {
+    expect(
+      parseHostedDesktopProtocolMessage({
+        type: "desktop.roster.result",
+        requestId: "roster-2",
+        desktops: [
+          {
+            desktopSessionId: "desktop-a",
+            state: "running",
+            scope: "agent",
+            owner: "su-1a2b",
+            name: "browser",
+            workItemId: "WI-12",
+            workItemIntent: "build the grid",
+          },
+          // Unknown scope dropped; an intent without its id is not shown alone.
+          {
+            desktopSessionId: "desktop-b",
+            state: "running",
+            scope: "everyone",
+            owner: "",
+            workItemIntent: "orphan intent",
+          },
+        ],
+      }),
+    ).toEqual({
+      kind: "roster",
+      requestId: "roster-2",
+      desktops: [
+        {
+          desktopSessionId: "desktop-a",
+          state: "running",
+          scope: "agent",
+          owner: "su-1a2b",
+          name: "browser",
+          workItemId: "WI-12",
+          workItemIntent: "build the grid",
+        },
+        { desktopSessionId: "desktop-b", state: "running" },
+      ],
+    });
+  });
+
   it("adapts JSON/base64 relay frames to noVNC's raw channel contract", () => {
     const socket = new FakeSocket();
     const channel = new HostedDesktopRelayChannel(socket);

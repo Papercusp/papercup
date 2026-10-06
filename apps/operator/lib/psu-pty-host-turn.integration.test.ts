@@ -584,10 +584,10 @@ it(
   15_000,
 );
 
-describe('host-code-adopted carry with a late Codex native id (WI-10004791)', () => {
-  it.each([true, false] as const)(
-    'reports and emits only after exact first-turn proof when mapping confirmation is %s',
-    async (mappingConfirmed) => {
+describe('host-code-adopted carry with a late Codex native id (EI-24961854655864836)', () => {
+  it.each([['adopted', true], ['adopted', false], ['in-place', true], ['in-place', false]] as const)(
+    'gates %s carry before submission, then proves delivery (confirmation %s)',
+    async (route, mappingConfirmed) => {
       const root = mkdtempSync(join(tmpdir(), 'codex-adopted-carry-proof-'));
       const ownerId = uniqueOwner('ADOPTED-CARRY-LATE-ID');
       const nativeId = '12345678-1234-4234-8234-123456789abc';
@@ -606,6 +606,7 @@ describe('host-code-adopted carry with a late Codex native id (WI-10004791)', ()
       const { captured, io } = fakeIo();
       const order: string[] = [];
       const reportedIds: string[] = [];
+      let confirmBinding: (() => void) | null = null;
       const emitted: Array<{ ownerId: string; focus: string; nativeId: string | null }> = [];
       const childCode = [
         "const fs=require('node:fs');process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');",
@@ -636,17 +637,23 @@ describe('host-code-adopted carry with a late Codex native id (WI-10004791)', ()
           PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_MAX_CR: '1',
           PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '100',
           PAPERCUSP_PSU_PTY_RESPAWN_REPORT_TIMEOUT_MS: '80',
+          PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '1500',
         }),
         ownerId,
         io,
         bridgeTty: false,
-        kickoff,
-        adoptedCarryRespawn: { nativeId: null },
+        kickoff: route === 'adopted' ? kickoff : null,
+        adoptedCarryRespawn: route === 'adopted' ? { nativeId: null } : null,
+        resolveRespawnNativeId: () => nativeId,
+        mintCarryRespawnArgs: () => ({ args: ['-e', childCode], nativeId: null }),
         nativePersistenceTimeoutMs: 1_000,
-        onRespawn: async (freshId: string) => {
+        onRespawn: async (freshId: string, { onConfirmed }: { onConfirmed: (id: string) => void }) => {
           order.push('reanchor');
           reportedIds.push(freshId);
-          return mappingConfirmed;
+          confirmBinding = () => { order.push('confirmed'); onConfirmed(freshId); };
+          // The initial report fails; production's existing durable retry owns
+          // the eventual confirmation. No user work can reach this child yet.
+          return false;
         },
         emitCompacted: (emittedOwner: string, focus: string, options: { nativeId?: string | null } = {}) => {
           order.push('emit');
@@ -656,12 +663,23 @@ describe('host-code-adopted carry with a late Codex native id (WI-10004791)', ()
         onExit: () => {},
       });
 
+      let carryDispatch: Promise<unknown> | null = null;
       try {
         expect(await waitForOutput(captured, 'FRESH-BOOT', CHILD_START_OUTPUT_TIMEOUT_MS)).toBe(true);
-        expect(await waitForOutput(captured, 'SUBMITTED', 5_000)).toBe(true);
-        const proofDeadline = Date.now() + 2_000;
-        while (!existsSync(nativePath) && Date.now() < proofDeadline) await sleep(20);
-        expect(existsSync(nativePath)).toBe(true);
+        if (route === 'in-place') {
+          carryDispatch = injectIntoHost(socketPathFor(ownerId), {
+            mode: 'carry-respawn', data: kickoff, systemPromptAddendum: 'saved task', ownerId,
+          });
+        }
+        const reportDeadline = Date.now() + 2_000;
+        while (!confirmBinding && Date.now() < reportDeadline) await sleep(20);
+        expect(confirmBinding).toBeTypeOf('function');
+        expect(existsSync(nativePath)).toBe(false);
+        expect(captured()).not.toContain('SUBMITTED');
+        if (mappingConfirmed) {
+          confirmBinding!();
+          expect(await waitForOutput(captured, 'SUBMITTED', 5_000)).toBe(true);
+        }
 
         const terminalDeadline = Date.now() + 2_000;
         let events: Array<Record<string, unknown>> = [];
@@ -674,22 +692,22 @@ describe('host-code-adopted carry with a late Codex native id (WI-10004791)', ()
               .map((line) => JSON.parse(line));
             if (events.some((event) =>
               event.kind === 'respawn-carry-delivered' ||
-              event.kind === 'respawn-compaction-unannounced')) break;
+              event.kind === 'startup-turn-dropped')) break;
           }
           await sleep(20);
         }
 
         expect(reportedIds).toEqual([nativeId]);
-        expect(readFileSync(nativePath, 'utf8')).toContain(marker);
         if (mappingConfirmed) {
+          expect(readFileSync(nativePath, 'utf8')).toContain(marker);
           const unannounced = events.find((event) => event.kind === 'respawn-compaction-unannounced');
-          expect(order, 'unannounced reason=' + String(unannounced?.reason)).toEqual(['reanchor', 'emit']);
+          expect(order, 'unannounced reason=' + String(unannounced?.reason)).toEqual(['reanchor', 'confirmed', 'emit']);
           expect(emitted).toEqual([{ ownerId, focus: 'carry-respawn', nativeId }]);
           expect(events).toContainEqual(expect.objectContaining({
             kind: 'respawn-carry-delivered',
             nativeId,
             turnStartVerified: true,
-            adopted: true,
+            ...(route === 'adopted' ? { adopted: true } : {}),
           }));
           expect(events).not.toContainEqual(expect.objectContaining({
             kind: 'respawn-compaction-unannounced',
@@ -698,12 +716,14 @@ describe('host-code-adopted carry with a late Codex native id (WI-10004791)', ()
         } else {
           expect(order).toEqual(['reanchor']);
           expect(emitted).toHaveLength(0);
+          expect(existsSync(nativePath)).toBe(false);
+          expect(captured()).not.toContain('SUBMITTED');
           expect(events).toContainEqual(expect.objectContaining({
-            kind: 'respawn-compaction-unannounced',
+            kind: 'respawn-binding-unconfirmed',
             nativeId,
             reason: 'successor-reanchor-unconfirmed',
-            adopted: true,
           }));
+          expect(events).not.toContainEqual(expect.objectContaining({ kind: 'respawn-carry-delivered' }));
         }
       } finally {
         await injectIntoHost(socketPathFor(ownerId), {
@@ -712,6 +732,7 @@ describe('host-code-adopted carry with a late Codex native id (WI-10004791)', ()
           ownerId,
         }).catch(() => false);
         await done;
+        await carryDispatch;
         rmSync(eventLog, { force: true });
         rmSync(metaPathFor(ownerId), { force: true });
         rmSync(root, { recursive: true, force: true });

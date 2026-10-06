@@ -117,6 +117,24 @@ export interface SpecEvidenceForAdequacy {
   /** True when evidenceRef resolves to a provisional scorecard working note. */
   provisionalProofBase?: boolean;
   provisionalScorecard?: ProvisionalScorecardProof;
+  /** Binding rows whose same-proof coverage metadata was preserved on this active row. */
+  supportingBindingIds?: number[];
+}
+
+function logicalEvidenceReferenceKey(row: SpecEvidenceForAdequacy): string {
+  return JSON.stringify([row.planSlug, row.specId, row.specRevision, row.evidenceKind, row.evidenceRef]);
+}
+
+function proofIdentity(row: SpecEvidenceForAdequacy): string {
+  return JSON.stringify([
+    row.testRunId ?? null,
+    row.coverageEvidenceRef ?? null,
+    row.fingerprints.sourceFingerprint ?? null,
+    row.fingerprints.testFingerprint ?? null,
+    row.fingerprints.fixtureFingerprint ?? null,
+    row.fingerprints.rubricFingerprint ?? null,
+    row.fingerprints.environmentFingerprint ?? null,
+  ]);
 }
 
 function hasTestAttemptReference(row: SpecEvidenceForAdequacy): boolean {
@@ -266,7 +284,53 @@ export function activeSpecEvidence<T extends SpecEvidenceForAdequacy>(rows: read
     if (!previous || row.id! < previous.id) anchors.set(key, { id: row.id!, scope });
   }
   const latest = latestLogicalEvidence(rows);
-  const candidates = latest.map((row) => {
+  const byReference = new Map<string, T[]>();
+  for (const row of rows) {
+    const key = logicalEvidenceReferenceKey(row);
+    const bucket = byReference.get(key) ?? [];
+    bucket.push(row);
+    byReference.set(key, bucket);
+  }
+  // Scenario and causal-pair ids are set-valued coverage metadata. When a re-bind
+  // changes only that metadata, the newest immutable row must retain the union from
+  // earlier rows for the same proof; otherwise latestLogicalEvidence silently hides
+  // coverage the unchanged run already established. A new run or changed fingerprint
+  // remains a new proof identity and starts a new metadata set.
+  const reconciled = latest.map((row) => {
+    const rawAdequacy = row.details.adequacy;
+    if (
+      rawAdequacy !== undefined &&
+      (!rawAdequacy || typeof rawAdequacy !== 'object' || Array.isArray(rawAdequacy))
+    ) return row;
+    const adequacy = (rawAdequacy ?? {}) as Record<string, unknown>;
+    const ownDetails = detailsOf(row);
+    const sameProofRows = (byReference.get(logicalEvidenceReferenceKey(row)) ?? [row])
+      .filter((candidate) => proofIdentity(candidate) === proofIdentity(row));
+    const mergedAdequacy = { ...adequacy };
+    let changed = false;
+    for (const key of ['scenarioIds', 'causalPairIds'] as const) {
+      if (ownDetails.contractMetadataIssues?.includes(`${key}:invalid`)) continue;
+      const values = [...new Set(sameProofRows.flatMap((candidate) => {
+        const details = detailsOf(candidate);
+        return details.contractMetadataIssues?.includes(`${key}:invalid`) ? [] : details[key] ?? [];
+      }))].sort((a, b) => a.localeCompare(b));
+      const own = ownDetails[key] ?? [];
+      if (JSON.stringify(values) === JSON.stringify(own)) continue;
+      if (values.length === 0) continue;
+      mergedAdequacy[key] = values;
+      changed = true;
+    }
+    if (!changed) return row;
+    const supportingBindingIds = [...new Set(sameProofRows
+      .map((candidate) => candidate.id)
+      .filter((id): id is number => Number.isSafeInteger(id) && id! > 0))].sort((a, b) => a - b);
+    return {
+      ...row,
+      details: { ...row.details, adequacy: mergedAdequacy },
+      ...(supportingBindingIds.length > 1 ? { supportingBindingIds } : {}),
+    };
+  });
+  const candidates = reconciled.map((row) => {
     const scope = identity(row);
     const anchor = anchors.get(logicalKey(row));
     // An annotation cannot change the registered proof's identity or source scope.
@@ -292,7 +356,7 @@ export function activeSpecEvidence<T extends SpecEvidenceForAdequacy>(rows: read
     )
       superseded.add(candidate.row);
   }
-  return latest.filter((row) => !superseded.has(row));
+  return reconciled.filter((row) => !superseded.has(row));
 }
 
 export type SpecEvidenceLineage = 'durable' | 'ephemeral' | 'unknown';
@@ -612,6 +676,9 @@ function bindingDescription(row: SpecEvidenceForAdequacy): string {
     // P-019: lead with the row id so a reader can act on THIS row (retract it, or re-bind
     // over it with supersedeAtRevision) without a separate plans:get-spec-evidence hunt.
     Number.isSafeInteger(row.id) ? `id=${row.id}` : null,
+    row.supportingBindingIds && row.supportingBindingIds.length > 1
+      ? `sameProofMetadataBindingIds=${JSON.stringify(row.supportingBindingIds)}`
+      : null,
     `kind=${row.evidenceKind}`,
     `ref=${JSON.stringify(evidenceRef)}`,
     `lineage=${lineage.lineage}`,
@@ -675,6 +742,28 @@ function bindingSummary(rows: SpecEvidenceForAdequacy[]): string {
   const maxRows = 6;
   const shown = ordered.slice(0, maxRows).map(bindingDescription).join('; ');
   return ordered.length > maxRows ? `${shown}; +${ordered.length - maxRows} more binding(s)` : shown;
+}
+
+function bindingNotesSummary(rows: SpecEvidenceForAdequacy[]): string {
+  const notes = rows
+    .map((row) => {
+      const note = typeof row.details.note === 'string' ? row.details.note.trim() : '';
+      if (note.length === 0) return null;
+      const excerpt = note.length > 500 ? note.slice(0, 500) + '…[truncated]' : note;
+      const id = Number.isSafeInteger(row.id) ? 'id=' + row.id + ' ' : '';
+      return id + 'note=' + JSON.stringify(excerpt);
+    })
+    .filter((note): note is string => note !== null);
+  if (notes.length === 0) return '';
+  const maxNotes = 6;
+  const shown = notes.slice(0, maxNotes).join('; ');
+  const omitted = notes.length > maxNotes ? '; +' + (notes.length - maxNotes) + ' more note(s)' : '';
+  return (
+    ' Free-form binding notes are visible for review but are not interpreted as disclosures: ' +
+    shown +
+    omitted +
+    '.'
+  );
 }
 
 function evidenceWithBindings(statement: string, rows: SpecEvidenceForAdequacy[]): string {
@@ -1009,7 +1098,7 @@ function rerunRecipeFor(
       : [...new Set(selection?.evidenceRefs ?? [])].sort((a, b) => a.localeCompare(b));
   const replayBindingIds =
     evidence.length > 0 && evidence.every((row) => Number.isSafeInteger(row.id) && row.id! > 0)
-      ? [...new Set(evidence.map((row) => row.id!))].sort((a, b) => a - b)
+      ? [...new Set(evidence.flatMap((row) => row.supportingBindingIds ?? [row.id!]))].sort((a, b) => a - b)
       : selection?.bindingIds !== undefined
         ? [...new Set(selection.bindingIds)].sort((a, b) => a - b)
         // An empty graded population is still an exact selection. Leaving the selector
@@ -2006,25 +2095,28 @@ export function evaluateSpecTestAdequacy(input: {
   // without the disclosure. Keep that gap attached to the active logical
   // reference while its run/fingerprints are unchanged, and until changed proof
   // is server-current. A stale or unknown replacement has not closed the gap.
-  const logicalReferenceKey = (row: SpecEvidenceForAdequacy) =>
-    JSON.stringify([row.planSlug, row.specId, row.specRevision, row.evidenceKind, row.evidenceRef]);
-  const proofIdentity = (row: SpecEvidenceForAdequacy) =>
-    JSON.stringify([
-      row.testRunId ?? null,
-      row.coverageEvidenceRef ?? null,
-      row.fingerprints.sourceFingerprint ?? null,
-      row.fingerprints.testFingerprint ?? null,
-      row.fingerprints.fixtureFingerprint ?? null,
-      row.fingerprints.rubricFingerprint ?? null,
-      row.fingerprints.environmentFingerprint ?? null,
-    ]);
-  const activeByLogicalReference = new Map(exactEvidence.map((row) => [logicalReferenceKey(row), row]));
+  const activeByLogicalReference = new Map(exactEvidence.map((row) => [logicalEvidenceReferenceKey(row), row]));
   const disclosedGapRows = exactSelectorMatches.filter((row) => {
     if ((detailsOf(row).disclosedGap ?? []).length === 0) return false;
-    const active = activeByLogicalReference.get(logicalReferenceKey(row));
+    const active = activeByLogicalReference.get(logicalEvidenceReferenceKey(row));
     if (!active) return false;
     return proofIdentity(row) === proofIdentity(active) || active.currentness.overall !== 'current';
   });
+  const freeFormNoteRows = exactSelectorMatches.filter((row) => {
+    const note = row.details.note;
+    if (typeof note !== 'string' || note.trim().length === 0) return false;
+    const active = activeByLogicalReference.get(logicalEvidenceReferenceKey(row));
+    if (!active) return false;
+    return proofIdentity(row) === proofIdentity(active) || active.currentness.overall !== 'current';
+  });
+  const noDisclosureStatement =
+    'No bound proof for ' +
+    clauseIdentity(clause) +
+    ' records a structured author-disclosed gap.' +
+    bindingNotesSummary(freeFormNoteRows) +
+    (freeFormNoteRows.length > 0
+      ? ' Record any coverage limitation under details.adequacy.disclosedGap so machine grading blocks it.'
+      : '');
   ratings['disclosed-gap'] =
     disclosedGapRows.length > 0
       ? {
@@ -2045,11 +2137,8 @@ export function evaluateSpecTestAdequacy(input: {
           // provisional one especially), including the criteria that found nothing.
           evidence:
             evidence.length > 0
-              ? evidenceWithBindings(
-                  `No bound proof for ${clauseIdentity(clause)} records a disclosed gap.`,
-                  evidence,
-                )
-              : `No bound proof for ${clauseIdentity(clause)} records a disclosed gap.`,
+              ? evidenceWithBindings(noDisclosureStatement, evidence)
+              : noDisclosureStatement,
         };
 
   // P-019: surface the ledger requirement on every ledger-gated criterion that is still
