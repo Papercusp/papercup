@@ -27,6 +27,7 @@ import { createProviderRegistry, type ProviderRegistry } from '../integrations/p
 import { ingestExternalTriggerEvent, type IngestExternalTriggerInput } from '../external-triggers/ingestion';
 import { runConnectorSync } from '../providers/connector-runtime';
 import { dataSourceRecordId } from '../data-sources/datatype-destination-sink';
+import { listProvenanceKey } from './merge';
 import {
   acceptEntityField,
   findEntityByIdentity,
@@ -50,20 +51,26 @@ const HARNESS = 'papercusp';
 const CRM = 'graph-crm-fixture';
 const PHONE = 'graph-phone-fixture';
 
+const MAIL = 'graph-mail-fixture';
+const FIXTURE_DATATYPES = ['person', 'organization', 'email-message', 'calendar-event', 'call'] as const;
+
 interface FixtureRecord {
-  datatype: 'person' | 'organization';
+  datatype: (typeof FIXTURE_DATATYPES)[number];
   nativeId: string;
   payload: Record<string, unknown>;
+  occurredAt?: string;
 }
 
-const feeds: Record<string, FixtureRecord[]> = { [CRM]: [], [PHONE]: [] };
+const feeds: Record<string, FixtureRecord[]> = { [CRM]: [], [PHONE]: [], [MAIL]: [] };
 
 function fixtureProvider(id: string): { descriptor: ProviderDescriptor; adapter: ProviderAdapter } {
   const descriptor: ProviderDescriptor = {
     id,
     contractVersion: 1,
-    datatypes: ['person', 'organization'],
-    capabilities: ['person.read', 'organization.read'],
+    datatypes: [...FIXTURE_DATATYPES],
+    // Capabilities are `<domain>.<verb>` (no hyphen), so the mail and calendar datatypes read
+    // under the same `mail.read` / `calendar.read` domains the real providers declare.
+    capabilities: ['person.read', 'organization.read', 'mail.read', 'calendar.read', 'call.read'],
     egressHosts: [`${id}.example.com`],
   };
   const adapter: ProviderAdapter = {
@@ -74,6 +81,7 @@ function fixtureProvider(id: string): { descriptor: ProviderDescriptor; adapter:
         nativeId: r.nativeId,
         event: `${r.datatype}-updated`,
         payload: { provider: id, externalId: r.nativeId, ...r.payload },
+        ...(r.occurredAt ? { occurredAt: r.occurredAt } : {}),
       })),
       nextCursor: null,
       hasMore: false,
@@ -138,16 +146,17 @@ const live = (rows: GraphRow[]) => rows.filter((r) => !r.payload.mergedInto);
 
 async function clean(): Promise<void> {
   const sources = await sql<{ id: string }[]>`
-    SELECT id::text FROM harness_shared.data_sources WHERE workspace_id = ${WS} AND kind IN (${CRM}, ${PHONE})`;
+    SELECT id::text FROM harness_shared.data_sources WHERE workspace_id = ${WS} AND kind IN (${CRM}, ${PHONE}, ${MAIL})`;
   const ids = sources.map((s) => s.id);
   await sql`DELETE FROM harness_shared.work_items WHERE workspace_id = ${WS} AND item_kind IN ('person', 'organization')
              AND (feature_id LIKE 'PER-%' OR feature_id LIKE 'ORG-%' OR payload->>'dataSourceId' = ANY(${sql.array(ids)}::text[]))`;
   if (ids.length > 0) {
     await sql`DELETE FROM harness_shared.trigger_deliveries WHERE workspace_id = ${WS} AND source_id = ANY(${sql.array(ids)}::uuid[])`;
   }
-  await sql`DELETE FROM harness_shared.data_sources WHERE workspace_id = ${WS} AND kind IN (${CRM}, ${PHONE})`;
+  await sql`DELETE FROM harness_shared.data_sources WHERE workspace_id = ${WS} AND kind IN (${CRM}, ${PHONE}, ${MAIL})`;
   feeds[CRM] = [];
   feeds[PHONE] = [];
+  feeds[MAIL] = [];
 }
 
 beforeAll(async () => {
@@ -158,10 +167,13 @@ beforeAll(async () => {
     INSERT INTO harness_shared.users (username, display_name) VALUES (${`relationship-graph-alice-${Date.now()}`}, 'alice') RETURNING id`;
   alice = a!.id;
   registry = createProviderRegistry();
-  for (const id of [CRM, PHONE]) {
+  for (const id of [CRM, PHONE, MAIL]) {
     const { descriptor, adapter } = fixtureProvider(id);
-    registry.register({ descriptor, adapter, pluginName: id, runtime: 'js' } as never);
+    // Awaited: register() is async and validates the descriptor, so an un-awaited rejection would
+    // leave the registry empty and surface only as every sync returning `sources: []`.
+    await registry.register({ descriptor, adapter, pluginName: id, runtime: 'js' } as never);
   }
+  expect(registry.list().map((p) => p.descriptor.id).sort()).toEqual([CRM, MAIL, PHONE].sort());
 });
 
 afterAll(async () => {
@@ -310,6 +322,95 @@ describe('platform relationship graph (P-002, R-1)', () => {
     feeds[CRM] = [{ datatype: 'person', nativeId: 'crm-ada', payload: { displayName: 'Ada', emails: ['ada@acme.com'] } }];
     const crm = await connect(CRM, { organization: ['record'] });
     await sync(crm);
+    expect(await graphRows('DSR-', 'person')).toEqual([]);
+    expect(await graphRows('PER-', 'person')).toEqual([]);
+  });
+
+  it('ingesting an email, a calendar event and a phone call for the same address yields exactly one person (SPEC-P-002, R-1)', async () => {
+    const policy = { person: ['record'], organization: ['record'], call: ['document'] };
+    const email = { from: '"Ada Lovelace" <ada@acme.com>', to: ['me@papercusp.test'], subject: 'Renewal pricing', body: 'CONFIDENTIAL-BODY' };
+    const event = { title: 'Renewal review', organizer: 'me@papercusp.test', attendees: [{ email: 'ADA@acme.com', displayName: 'Ada' }], description: 'CONFIDENTIAL-AGENDA' };
+    const call = { title: 'Call with Ada', from: '+1 (555) 123-4567', to: ['+15550009999'], participants: [{ name: 'Ada Lovelace', email: 'ada@acme.com', phone: '+1 555 123 4567' }], text: 'CONFIDENTIAL-TRANSCRIPT' };
+    feeds[MAIL] = [
+      { datatype: 'email-message', nativeId: 'msg-1', payload: email, occurredAt: '2026-10-02T09:00:00.000Z' },
+      { datatype: 'email-message', nativeId: 'msg-2', payload: { from: 'No Reply <no-reply@acme.com>', to: ['me@papercusp.test'], subject: 'Receipt' }, occurredAt: '2026-10-02T10:00:00.000Z' },
+      { datatype: 'calendar-event', nativeId: 'evt-1', payload: event, occurredAt: '2026-10-03T15:00:00.000Z' },
+    ];
+    feeds[PHONE] = [{ datatype: 'call', nativeId: 'call-1', payload: call, occurredAt: '2026-10-04T11:00:00.000Z' }];
+    const mail = await connect(MAIL, policy);
+    const phone = await connect(PHONE, policy);
+    await sync(mail);
+    await sync(phone);
+
+    // Each interaction was stored by its own store sink (Vault for mail/calendar, corpus for the call)
+    // and projected by the participant sink, with no delivery error.
+    const deliveries = await sql<{ datatype_id: string; sink_kind: string; error: string | null }[]>`
+      SELECT datatype_id, sink_kind, error FROM harness_shared.trigger_deliveries
+       WHERE workspace_id = ${WS} AND source_id = ANY(${sql.array([mail, phone])}::uuid[])
+         AND datatype_id IN ('email-message', 'calendar-event', 'call')`;
+    expect(deliveries.filter((d) => d.error)).toEqual([]);
+    for (const datatype of ['email-message', 'calendar-event', 'call']) {
+      const kinds = new Set(deliveries.filter((d) => d.datatype_id === datatype).map((d) => d.sink_kind));
+      expect(kinds.has('relationship-graph-participants'), datatype).toBe(true);
+      expect([...kinds].some((k) => k !== 'relationship-graph-participants'), datatype).toBe(true);
+    }
+
+    // Exactly one platform person for that address (the SPEC-P-002 falsifier is two).
+    const adas = live(await graphRows('PER-', 'person')).filter((r) => (r.payload.identityKeys as string[]).includes('email:ada@acme.com'));
+    expect(adas).toHaveLength(1);
+    const ada = adas[0]!;
+    expect(ada.payload).toMatchObject({
+      canonical: true,
+      displayName: 'Ada Lovelace',
+      emails: ['ada@acme.com'],
+      phones: ['+15551234567'],
+      identityKeys: ['email:ada@acme.com', 'phone:+15551234567'],
+    });
+    expect([...(ada.payload.memberRecordIds as string[])].sort()).toEqual([
+      dataSourceRecordId(WS, mail, 'person', 'participant:email:ada@acme.com'),
+      dataSourceRecordId(WS, phone, 'person', 'participant:email:ada@acme.com'),
+      dataSourceRecordId(WS, phone, 'person', 'participant:phone:+15551234567'),
+    ].sort());
+
+    // The three interaction records resolve to that one person.
+    for (const [datatype, payload] of [['email-message', email], ['calendar-event', event], ['call', call]] as const) {
+      expect((await resolveInteractionParticipants(sql, WS, datatype, payload)).personIds, datatype).toContain(ada.feature_id);
+    }
+
+    // Every field carries source, observed-at and accepted-by provenance.
+    const provenance = ada.payload.provenance as Record<string, { source?: unknown; observedAt?: unknown; acceptedBy?: unknown }>;
+    for (const key of ['displayName', listProvenanceKey('emails', 'ada@acme.com'), listProvenanceKey('phones', '+15551234567')]) {
+      expect(Object.keys(provenance), key).toContain(key);
+    }
+    for (const [key, entry] of Object.entries(provenance)) {
+      expect(entry.source, key).toEqual(expect.any(Object));
+      expect(entry.observedAt, key).toEqual(expect.any(String));
+      expect(entry.acceptedBy === null || typeof entry.acceptedBy === 'string', key).toBe(true);
+    }
+    expect(provenance.displayName).toMatchObject({ source: { kind: 'record', dataSourceId: phone }, observedAt: '2026-10-04T11:00:00.000Z', acceptedBy: null });
+
+    // Identity only: no subject, body, agenda or transcript reached the graph.
+    const graphText = JSON.stringify([...(await graphRows('PER-', 'person')), ...(await graphRows('DSR-', 'person'))]);
+    for (const secret of ['CONFIDENTIAL', 'Renewal pricing', 'Renewal review', 'Receipt']) expect(graphText).not.toContain(secret);
+
+    // An automated sender is not a person.
+    expect(await findEntityByIdentity(sql, WS, 'person', 'email:no-reply@acme.com')).toBeNull();
+
+    // Replaying both sources adds no person.
+    const before = live(await graphRows('PER-', 'person')).map((r) => r.feature_id);
+    await sync(mail);
+    await sync(phone);
+    expect(live(await graphRows('PER-', 'person')).map((r) => r.feature_id)).toEqual(before);
+  });
+
+  it('a source that does not route person to record projects no interaction participants (D-013 grant)', async () => {
+    feeds[PHONE] = [{ datatype: 'call', nativeId: 'call-1', payload: { from: '+1 555 123 4567', participants: [{ name: 'Ada', email: 'ada@acme.com' }] } }];
+    const phone = await connect(PHONE, { call: ['document'] });
+    await sync(phone);
+    // Positive control: the call itself was stored, so the empty graph is the grant, not a dropped delivery.
+    const stored = await sql<{ sink_kind: string }[]>`
+      SELECT sink_kind FROM harness_shared.trigger_deliveries WHERE workspace_id = ${WS} AND source_id = ${phone}::uuid AND datatype_id = 'call'`;
+    expect(stored.map((s) => s.sink_kind)).toEqual(['data-source-document']);
     expect(await graphRows('DSR-', 'person')).toEqual([]);
     expect(await graphRows('PER-', 'person')).toEqual([]);
   });
