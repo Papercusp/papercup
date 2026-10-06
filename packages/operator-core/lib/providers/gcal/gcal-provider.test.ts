@@ -256,7 +256,11 @@ describe('sync phases', () => {
       ['all-day', 'event-upcoming', 'upcoming:2026-10-06'],
     ]);
     expect(page.hasMore).toBe(false);
-    expect(next).toMatchObject({ phase: 'changes', syncToken: 'sync-1', upcoming: { pageToken: null, windowStart: null } });
+    expect(next).toMatchObject({
+      phase: 'changes',
+      syncToken: 'sync-1',
+      upcoming: { pageToken: null, windowStart: null, windowEnd: null, coveredUntil: new Date(NOW.getTime() + 30 * 60_000).toISOString() },
+    });
   });
 
   it('pages the upcoming window on one fixed windowStart', async () => {
@@ -271,6 +275,76 @@ describe('sync phases', () => {
     );
     expect(second.urls[0]!.searchParams.get('timeMin')).toBe(NOW.toISOString());
     expect(second.page.hasMore).toBe(false);
+  });
+
+  describe('a sync outage longer than the lead (WI-10006640)', () => {
+    const LEAD = 15 * 60_000;
+    const DAY = 24 * 60 * 60_000;
+    const t = NOW.getTime();
+    const iso = (ms: number) => new Date(ms).toISOString();
+
+    /** A calendar that answers the upcoming list with the events overlapping [timeMin, timeMax), like Google. */
+    function calendar(events: Array<ReturnType<typeof event>>): Route {
+      return (_r, url) => {
+        if (url.searchParams.get('singleEvents') !== 'true') return { json: { items: [], nextSyncToken: 'sync-2' } };
+        const min = Date.parse(url.searchParams.get('timeMin')!);
+        const max = Date.parse(url.searchParams.get('timeMax')!);
+        const overlapping = events.filter(
+          (e) => Date.parse((e.end as { dateTime: string }).dateTime) > min && Date.parse((e.start as { dateTime: string }).dateTime) < max,
+        );
+        return { json: { items: overlapping } };
+      };
+    }
+
+    it('announces an event that started and ended between two passes', async () => {
+      const inGap = event('in-gap', { start: { dateTime: iso(t + LEAD + 60_000) }, end: { dateTime: iso(t + LEAD + 5 * 60_000) } });
+      const route = calendar([inGap]);
+
+      // A pass at t reads [t, t + lead): the event is not in it yet.
+      const first = await syncPage(cursorOf({ phase: 'upcoming', syncToken: 'sync-1' }), route);
+      expect(first.page.records).toEqual([]);
+      expect(first.cursor!.upcoming).toEqual({ pageToken: null, windowStart: null, windowEnd: null, coveredUntil: iso(t + LEAD) });
+
+      // No pass runs again until t + 2 * lead, by which time the event is over.
+      vi.setSystemTime(new Date(t + 2 * LEAD));
+      const changes = await syncPage(first.page.nextCursor, route);
+      expect(changes.cursor).toMatchObject({ phase: 'upcoming', upcoming: { coveredUntil: iso(t + LEAD) } });
+
+      const next = await syncPage(changes.page.nextCursor, route);
+      expect(next.urls[0]!.searchParams.get('timeMin')).toBe(iso(t + LEAD));
+      expect(next.urls[0]!.searchParams.get('timeMax')).toBe(iso(t + 3 * LEAD));
+      expect(next.page.records.map((r) => [r.nativeId, r.event, r.version])).toEqual([
+        ['in-gap', 'event-upcoming', `upcoming:${iso(t + LEAD + 60_000)}`],
+      ]);
+      expect(next.cursor!.upcoming.coveredUntil).toBe(iso(t + 3 * LEAD));
+    });
+
+    it('reaches back at most a day, and passes that overlap start at now', async () => {
+      const stale = await syncPage(
+        cursorOf({ phase: 'upcoming', syncToken: 's', upcoming: { pageToken: null, windowStart: null, coveredUntil: iso(t - 3 * DAY) } }),
+        () => ({ json: { items: [] } }),
+      );
+      expect(stale.urls[0]!.searchParams.get('timeMin')).toBe(iso(t - DAY));
+      expect(stale.urls[0]!.searchParams.get('timeMax')).toBe(iso(t + LEAD));
+
+      const overlapping = await syncPage(
+        cursorOf({ phase: 'upcoming', syncToken: 's', upcoming: { pageToken: null, windowStart: null, coveredUntil: iso(t + 10 * 60_000) } }),
+        () => ({ json: { items: [] } }),
+      );
+      expect(overlapping.urls[0]!.searchParams.get('timeMin')).toBe(NOW.toISOString());
+      expect(overlapping.urls[0]!.searchParams.get('timeMax')).toBe(iso(t + LEAD));
+    });
+
+    it('finishes a window opened by an older cursor without windowEnd on its own lead', async () => {
+      const opened = iso(t - 60_000);
+      const { urls, cursor } = await syncPage(
+        cursorOf({ phase: 'upcoming', syncToken: 's', upcoming: { pageToken: 'up-2', windowStart: opened } }),
+        (_r, url) => (url.searchParams.get('pageToken') === 'up-2' ? { json: { items: [] } } : undefined),
+      );
+      expect(urls[0]!.searchParams.get('timeMin')).toBe(opened);
+      expect(urls[0]!.searchParams.get('timeMax')).toBe(iso(t - 60_000 + LEAD));
+      expect(cursor!.upcoming.coveredUntil).toBe(iso(t - 60_000 + LEAD));
+    });
   });
 
   it('defaults to a 15 minute lead, clamps it at a day, and reads the configured calendar', async () => {
@@ -454,7 +528,7 @@ describe('cursor adoption from the retired host poll (D-021.5)', () => {
       pageToken: null,
       lastSyncAt: '2026-10-06T05:36:00.000Z',
       changesStartedAt: null,
-      upcoming: { pageToken: null, windowStart: null },
+      upcoming: { pageToken: null, windowStart: null, windowEnd: null, coveredUntil: null },
       legacyUpcoming: { from: '2026-10-06T05:36:00.000Z' },
     });
 
