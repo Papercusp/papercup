@@ -2671,7 +2671,177 @@
      "summary": "plan lane agent-economy-flywheel-2026-08-30#P-018 is blocked — linked work-item parked until the lane clears (system:plan-item-lane-sync)"
     }
    ],
-   "claimHold": false
+   "claimHold": false,
+   "qualification": {
+    "status": "retained-current-dependency",
+    "basis": "Current source and evidence qualification; this is not behavioral acceptance.",
+    "acceptanceWaived": false,
+    "itemizedStatementEvidenceQualification": {
+     "auditDate": "2026-10-06",
+     "scope": "PERSONAL WI-10005820 frozen-cohort audit of WI-10004282 / P-018. Expired fire352 was reconciled against newer carry7c384e2bbf29, which already records P-016 audit1159584; no completed audit was replayed.",
+     "source": {
+      "plan": "agent-economy-flywheel-2026-08-30",
+      "revision": 100,
+      "contentHash": "fc68bbe66e2de5fdea2a667e37de106465287eea99c13d406789b207b4af7ca6",
+      "item": "P-018",
+      "itemState": "todo",
+      "workItemState": "blocked",
+      "assignee": null,
+      "checkpoint": null,
+      "governingDecisions": [
+       "D-005",
+       "D-007",
+       "D-009",
+       "D-010"
+      ],
+      "requiredBehavior": "Buyer and seller statements itemize each priced identity's inference cost, markup, DAO share and component splits in micros. Stacked paid layers bill separately; D-007 makes the DAO share 10% of markup, rather than an added buyer surcharge. Preserve D-009's specificationRevision identity key and null harness branch. D-005/P-018 also require an evidence-ledger cost-per-accepted-outcome listing stat."
+     },
+     "canonicalClauses": [
+      {
+       "specId": "AUTO-BAR-R-4-P-018",
+       "revision": 2,
+       "contentHash": "457d81d5683cc6736b5fdf3e033781e49acfa2fa8cf71da73b7287c9fe24eacc",
+       "lifecycle": "active",
+       "requiredEvidence": [
+        "tree"
+       ],
+       "requiredTestLayers": [
+        "unit"
+       ],
+       "probePath": "packages/operator-core/lib/cupboard/commerce-dashboards.test.ts",
+       "qualification": "The named test exists and passed in the focused run below, but its assertions cover ordinary checkout/catalog/refund/support/audit projections. Its per-use assertion checks offer terms, not a settled priced identity's separate markup and DAO lines."
+      },
+      {
+       "specId": "AUTO-REQ-M-013-P-018",
+       "revision": 1,
+       "contentHash": "b7abae64795ab6dace9e95683a4c0807396e4d5f717bcd31a460b5ae0334d31d",
+       "lifecycle": "draft"
+      },
+      {
+       "specId": "AUTO-REQ-M-016-P-018",
+       "revision": 1,
+       "contentHash": "2a09790e8b726693f518f59b2c38f8793d9e641df49c46e74dda6fe231ca7351",
+       "lifecycle": "draft"
+      },
+      {
+       "specId": "AUTO-REQ-M-020-P-018",
+       "revision": 1,
+       "contentHash": "b675b33651286625956892fb1938591196a0e8312f64a4176c177af719774792",
+       "lifecycle": "draft"
+      }
+     ],
+     "contractQualification": "The selected current P-018 clauses comprise R-4 and three draft requirements. R-4 is narrower than the complete item: it does not establish seller/component/inference lines, stacking, the null-scope case, or the mandatory accepted-outcome listing stat. No accepted executable stat clause or evidence was established by this selection; do not infer global absence.",
+     "rubric": {
+      "ref": "acceptance-agent-economy-flywheel-2026-08-30",
+      "revision": 5,
+      "criteriaHash": "25dd447cc55337d60b91c38186c4c1867cb9d9e8c0ec2df4fe124bb7686d08c8",
+      "vettingState": "unvetted",
+      "vettingReason": "rejected-attestation",
+      "qualification": "R-4 agrees with the active clause. Current vetting rejects the attestation because its grading-integrity criteria hash is stale. Active rubric metadata is not independent acceptance."
+     },
+     "implementationAndDetector": {
+      "observed": "The cupboard:commerce-dashboards tool delegates to commerceDashboardsDoor. gateCommerceDashboards selects catalog/checkout/refunds/audit/per-use; its per-use branch calls perUseDashboard. That writer returns org-visible channel positions and recomputed claimed, settled, pending, reversed and net micros. PerUseChannelPosition carries releaseRef/payer/seller and channel amounts, with no inference/identity-markup/DAO/component statement-line fields. These inspected output types and writers do not implement the required itemized statement.",
+      "statQualification": "A repository search for cost-per-accepted forms found Scout costPerAcceptedIdeaUsd. Its writer divides Scout tick spend by accepted ideas; that is not an identity listing's accepted-outcome evidence ledger. No P-018 stat writer or fixture was established in the inspected commerce route. This is a bounded source finding, not a repository-wide absence claim.",
+      "tests": {
+       "command": "npm run test:file -- packages/operator-core/lib/cupboard/commerce-dashboards.test.ts packages/operator-core/lib/cupboard/ledger-p2p-bridge.test.ts",
+       "exitCode": 0,
+       "results": [
+        {
+         "path": "packages/operator-core/lib/cupboard/commerce-dashboards.test.ts",
+         "passed": 35
+        },
+        {
+         "path": "packages/operator-core/lib/cupboard/ledger-p2p-bridge.test.ts",
+         "passed": 22
+        }
+       ],
+       "skipped": 0,
+       "head": "8cb8de85071d7c131e9c8dddb27742216cab5c39",
+       "startedAt": "2026-10-06T10:23:23.276Z",
+       "qualification": "The named files were clean before and after the run; eight inspected source/test files match HEAD. This proves these existing suites passed, not R-4 or full P-018 coverage. The runner warned that PAPERCUSP_TEST_RUN_HARNESS was unset; authoritative ledger scope was not verified, and no spec binding or test-run id was invented."
+      },
+      "sourcePins": [
+       {
+        "path": "packages/operator-core/lib/cupboard/commerce-dashboards.ts",
+        "sha256": "e88df4d58dc23551533e9625568435abdc98b2430cbd62e87eb7a73271738e85",
+        "headBlob": "889552c8e65f2ae36a8adad1f8e31dc08d2f611b",
+        "workingBlob": "889552c8e65f2ae36a8adad1f8e31dc08d2f611b",
+        "matchesHead": true
+       },
+       {
+        "path": "packages/operator-core/lib/cupboard/commerce-dashboards.test.ts",
+        "sha256": "572ba10879c6b5b2595b1e483f571145a3a30eb14e3ffaf3b00604c336ad6446",
+        "headBlob": "d2a5806b067a16cbbf415390cd2b4f35ce216347",
+        "workingBlob": "d2a5806b067a16cbbf415390cd2b4f35ce216347",
+        "matchesHead": true
+       },
+       {
+        "path": "packages/operator-core/lib/cupboard/ledger-p2p-bridge.ts",
+        "sha256": "0eaf5cf97d8889c0a0b884d097048fae8049c199546f8d1fd5915cc88fb0de9c",
+        "headBlob": "479fd4eb9fb19467cf5531f0e98052330493ccd7",
+        "workingBlob": "479fd4eb9fb19467cf5531f0e98052330493ccd7",
+        "matchesHead": true
+       },
+       {
+        "path": "packages/operator-core/lib/cupboard/ledger-p2p-bridge.test.ts",
+        "sha256": "36e37d4563efd6a2ae2b31726b1ee53f0c07e647518825c85c728f953c29d73a",
+        "headBlob": "187c048af5fae63ccb3ef417df92609ba7b2b957",
+        "workingBlob": "187c048af5fae63ccb3ef417df92609ba7b2b957",
+        "matchesHead": true
+       },
+       {
+        "path": "packages/operator-core/lib/cupboard/commerce-door-gate.ts",
+        "sha256": "f904a4efbabe47904c89ca50442f0120c9863ec1868afa6bdfb94cea343e36d3",
+        "headBlob": "70f92037518efafef9c680f435608e7d99753f41",
+        "workingBlob": "70f92037518efafef9c680f435608e7d99753f41",
+        "matchesHead": true
+       },
+       {
+        "path": "packages/operator-core/lib/cupboard/commerce-door-gate-io.ts",
+        "sha256": "4e86d2fd8b35170b5d5a7646ce0defa6cfcfc468c99cb7351bb2cc229c4b4262",
+        "headBlob": "6e933430d1574c6c1b92e11975dc08adea65a097",
+        "workingBlob": "6e933430d1574c6c1b92e11975dc08adea65a097",
+        "matchesHead": true
+       },
+       {
+        "path": "packages/operator-core/lib/agent-tools/cupboard/commerce-dashboards.ts",
+        "sha256": "71589ca34a7178e5791d5c912e5f26c405778bf9880cd871ed5ba7846bd8ff80",
+        "headBlob": "539e9e83f2ac10bdb432de6b59221b22c90ad7ec",
+        "workingBlob": "539e9e83f2ac10bdb432de6b59221b22c90ad7ec",
+        "matchesHead": true
+       },
+       {
+        "path": "packages/operator-core/lib/cupboard/commerce-ledger.ts",
+        "sha256": "d15b8c9689b50806c3ad4512cdb533110de9ed54f37bee472e7094a8a62dcc5e",
+        "headBlob": "8f1ed3561e0afd252c83a5f7e2ef7929cdf86763",
+        "workingBlob": "8f1ed3561e0afd252c83a5f7e2ef7929cdf86763",
+        "matchesHead": true
+       }
+      ],
+      "runtimeQualification": "No paid-identity turn, dashboard API, hosted settlement, native UI, testnet/mainnet journey, deployed behavior or shipment was measured."
+     },
+     "prerequisites": {
+      "P017": "WI-10004281 is currently BLOCKED and unassigned, with no checkpoint and no terminal authority. plans:items reports P-018 blocked on P-017, and P-017 blocked on P-016. No feature/prerequisite claim or disposition was changed."
+     },
+     "boundEvidenceSelection": {
+      "scope": "plans:get-spec-evidence for the exact four current P-018 specIds in this plan",
+      "limit": 100,
+      "evidence": [],
+      "truncatedByLimit": false,
+      "qualification": "This untruncated selection has no bound rows. It does not prove global evidence absence, test failure or why no binding exists."
+     },
+     "preservation": {
+      "priorArtifactSha256": "2c6ef163d50e815fc1681283ac88e718289f0181fe1b34bc76f7be12a6888c59",
+      "priorArtifactBytes": 345149,
+      "method": "Only this additive qualification changes. Remove it and restore claimHold's prior trailing-comma form to recover exact prior bytes. Keep every prior cohort row, disposition, dependency, claim and original200perID UNKNOWN."
+     },
+     "notEstablished": [
+      "Complete buyer/seller identity statement and accepted-outcome stat behavior",
+      "Current full-item executable contract, bound proof, rubric vetting, adequacy, independent grade and grading-integrity acceptance",
+      "P-017 terminal acceptance, whole-plan acceptance, testnet/mainnet authorization or shipment"
+     ]
+    }
+   }
   },
   {
    "id": "WI-10004284",
