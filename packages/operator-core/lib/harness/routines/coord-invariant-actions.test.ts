@@ -99,6 +99,32 @@ describe('runProbeCycle + evaluateProbe', () => {
     expect(verdict.sloBreached).toBe(false);
   });
 
+  it('reports ack and lock subphase timings inside the measured steps', async () => {
+    const deps = fakeDeps();
+    const acquire = deps.acquire;
+    deps.acquire = async (owner) => ({
+      ...(await acquire(owner)),
+      detail: 'inWorkspaceTxn=12ms; tryAcquire=2ms',
+    });
+    const release = deps.release;
+    deps.release = async (owner) => {
+      await release(owner);
+      return { detail: 'inWorkspaceTxn=8ms; tryRelease=1ms' };
+    };
+
+    const steps = await runProbeCycle(deps, idA, idB);
+    expect(steps.find((step) => step.step === 'ack')?.detail)
+      .toBe('appendAck/sendMessage=10ms; readAckedMsgIds=10ms');
+    expect(steps.find((step) => step.step === 'lock-acquire')?.detail)
+      .toBe('inWorkspaceTxn=12ms; tryAcquire=2ms');
+    expect(steps.find((step) => step.step === 'lock-contend')?.detail)
+      .toBe('inWorkspaceTxn=12ms; tryAcquire=2ms');
+    expect(steps.find((step) => step.step === 'lock-release')?.detail)
+      .toBe('inWorkspaceTxn=8ms; tryRelease=1ms');
+    expect(steps.find((step) => step.step === 'lock-regrant')?.detail)
+      .toBe('inWorkspaceTxn=12ms; tryAcquire=2ms; regrant release: inWorkspaceTxn=8ms; tryRelease=1ms');
+  });
+
   it('a contender GRANTED a held lock is a violation, and the holder still releases', async () => {
     const deps = fakeDeps({
       acquire: async () => ({ ok: true }), // mutual exclusion broken

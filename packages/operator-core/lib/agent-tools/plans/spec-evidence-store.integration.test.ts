@@ -221,6 +221,7 @@ beforeAll(async () => {
       -- bind-from-test-run also reads the run's measurement lower bound.
       started_at timestamptz NOT NULL DEFAULT now(),
       finished_at timestamptz,
+      output_tail text,
       run_group_id text,
       commit_sha text,
       worktree_dirty boolean NOT NULL DEFAULT false,
@@ -1397,7 +1398,7 @@ describe('narrowed reruns carry sibling scenarios only from a CURRENT ledger row
 
     const bundle = await run({ runId: RERUN, pattern: 'recover' });
     expect(bundle.rows[0]).toMatchObject({ phase: 'settled', outcome: 'pass' });
-    expect(bundle.verificationFingerprint).toBeTruthy();
+    expect(bundle).toHaveProperty('verificationFingerprint', expect.any(String));
 
     const settled = await persisted(RERUN);
     const priorRow = await persisted(PRIOR_RUN);
@@ -1419,7 +1420,7 @@ describe('narrowed reruns carry sibling scenarios only from a CURRENT ledger row
 
     const bundle = await run({ runId: RERUN, pattern: 'recover' });
     expect(bundle.rows[0]).toMatchObject({ phase: 'stale-sibling-evidence', outcome: 'unknown' });
-    expect(bundle.verificationFingerprint).toBeNull();
+    expect(bundle).toHaveProperty('verificationFingerprint', null);
 
     const refused = await persisted(RERUN);
     expect(refused!.details.adequacy).toMatchObject({ outcome: 'unknown', executed: false });
@@ -1445,7 +1446,7 @@ describe('narrowed reruns carry sibling scenarios only from a CURRENT ledger row
 
     const bundle = await run({ runId: RERUN });
     expect(bundle.rows[0]).toMatchObject({ phase: 'settled', outcome: 'pass' });
-    expect(bundle.verificationFingerprint).toBeTruthy();
+    expect(bundle).toHaveProperty('verificationFingerprint', expect.any(String));
     expect((await persisted(RERUN))!.details.testExecution.rerunScope).toBeUndefined();
   });
 
@@ -1458,7 +1459,7 @@ describe('narrowed reruns carry sibling scenarios only from a CURRENT ledger row
 
     const bundle = await run({ runId: RERUN, pattern: 'recover', scenarioIds: ['recover'] });
     expect(bundle.rows[0]).toMatchObject({ phase: 'settled', outcome: 'pass' });
-    expect(bundle.verificationFingerprint).toBeTruthy();
+    expect(bundle).toHaveProperty('verificationFingerprint', expect.any(String));
     expect((await persisted(RERUN))!.details.testExecution.rerunScope).toBeUndefined();
   });
 });

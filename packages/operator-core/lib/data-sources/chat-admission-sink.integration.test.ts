@@ -79,10 +79,19 @@ function admitDeps(): AdmitDeps {
   };
 }
 
-/** A fake Slack Web API: conversations.history / conversations.replies over `slackMessages`. */
-const fakeSlackFetch = (async (input: string | URL) => {
+/**
+ * A fake Slack Web API: conversations.history / conversations.replies over `slackMessages`, and
+ * chat.postEphemeral (P-007), which answers `ephemeralError` when one is set.
+ */
+let ephemeralError: string | null = null;
+const fakeSlackFetch = (async (input: string | URL, init?: RequestInit) => {
   const url = new URL(String(input));
   const method = url.pathname.replace('/api/', '');
+  if (method === 'chat.postEphemeral') {
+    slackCalls.push({ method, params: JSON.parse(String(init?.body ?? '{}')) as Record<string, string> });
+    const body = ephemeralError ? { ok: false, error: ephemeralError } : { ok: true, message_ts: '1777009999.000001' };
+    return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
+  }
   const params = Object.fromEntries(url.searchParams.entries());
   slackCalls.push({ method, params });
   const message = slackMessages[params.ts ?? params.latest ?? ''];
@@ -163,12 +172,24 @@ beforeEach(async () => {
   created = [];
   slackCalls = [];
   slackMessages = {};
+  ephemeralError = null;
   await sql`DELETE FROM harness_shared.work_admissions WHERE workspace_id = ${WS}`;
   await sql`DELETE FROM harness_shared.trigger_deliveries WHERE workspace_id = ${WS}`;
   await sql`DELETE FROM harness_shared.data_sources WHERE workspace_id = ${WS}`;
   source = await upsertOwnedExternalTriggerSource(sql, {
     workspaceId: WS, kind: 'slack', ownerUserId: userId, credentialRef: 'slack-socket:owner', status: 'connected',
-    config: { installSlug: 'papercusp', teamId: TEAM, botUserId: 'UPAPER', reportBug: { channels: { CBUGS: { bugChannel: true, reaction: true } } } },
+    config: {
+      installSlug: 'papercusp', teamId: TEAM, botUserId: 'UPAPER',
+      reportBug: {
+        channels: {
+          CBUGS: { bugChannel: true, reaction: true },
+          // P-007: suggest-only channels. CSUG lets people report with the bug reaction; CQUIET has
+          // the suggest switch but no report gesture switched on.
+          CSUG: { suggest: true, reaction: true },
+          CQUIET: { suggest: true },
+        },
+      },
+    },
   });
 });
 
@@ -366,5 +387,145 @@ describe('Slack bug rules on admission_rules (P-003)', () => {
     // Replaying the same envelope is deduplicated by the delivery ledger.
     await ingestSlackSocketEnvelope(sql, source, envelope, ingest, [sink]);
     expect(created).toHaveLength(1);
+  });
+});
+
+/**
+ * slack-messages-to-bug-reports-2026-10-05 P-007 (R-7, D-010): in a suggest-only channel the
+ * classifier only reminds, privately, and never files. Only the person's own report gesture does.
+ */
+describe('looks-like-a-bug suggestions (P-007)', () => {
+  const BUGGY = 'the export button is broken again, every time I click it nothing downloads';
+
+  function slackPost(eventId: string, channel: string, ts: string, text: string, user = 'U7'): SlackSocketEnvelope {
+    return {
+      envelope_id: `env-${eventId}`, type: 'events_api',
+      payload: { event_id: eventId, event_time: 1_777_000_000, event: { type: 'message', channel, channel_type: 'channel', user, text, ts } },
+    };
+  }
+
+  async function suggestionRows() {
+    return sql<{ channel_id: string; provider_message_id: string; author_external_id: string; outcome: string; error: string | null; classifier_version: string }[]>`
+      SELECT channel_id, provider_message_id, author_external_id, outcome, error, classifier_version
+        FROM harness_shared.chat_bug_suggestions
+       WHERE workspace_id = ${WS}
+       ORDER BY created_at, provider_message_id`;
+  }
+
+  const ephemerals = () => slackCalls.filter((c) => c.method === 'chat.postEphemeral').map((c) => c.params);
+
+  function ingestVia() {
+    const emit = vi.fn(async (opts: { key: string }) => ({ ok: true as const, key: opts.key, woken: 0, notified: [], msgId: null, waiters: 0 }));
+    return (db: Sql, input: Parameters<typeof ingestExternalTriggerEvent>[1]) => ingestExternalTriggerEvent(db, input, { emit: emit as never });
+  }
+
+  it('R-7: a bug-like post in a suggest-only channel gets one private note and files nothing; the reaction it asks for files one bug', async () => {
+    await rule('report-bug', 'CSUG');
+    const suggestRule = await rule('new-thread', 'CSUG', 'suggest');
+    const ingest = ingestVia();
+    const sink = createChatAdmissionSink(sql, source, deps());
+
+    const envelope = slackPost('EvS1', 'CSUG', '1777000200.000100', BUGGY);
+    const normalized = await ingestSlackSocketEnvelope(sql, source, envelope, ingest, [sink]);
+    expect(normalized?.event).toBe('message');
+    expect(created).toEqual([]);
+    expect(await admissionCount()).toBe(0);
+    expect(ephemerals()).toEqual([{ channel: 'CSUG', user: 'U7', text: 'Looks like a bug. React :bug: to report it.' }]);
+    expect(await suggestionRows()).toEqual([{
+      channel_id: `${TEAM}:CSUG`, provider_message_id: '1777000200.000100', author_external_id: 'U7',
+      outcome: 'notified', error: null, classifier_version: 'lexical-v1',
+    }]);
+
+    // The same envelope replayed, and the same post arriving as a second event, never send again.
+    await ingestSlackSocketEnvelope(sql, source, envelope, ingest, [sink]);
+    const second = await admitChatEvent(sql, {
+      workspaceId: WS, dataSourceId: source.id, payload: post('CSUG', '1777000200.000100', BUGGY),
+    }, deps());
+    expect(second.suggested).toEqual([{ ruleId: suggestRule.id, sourceKind: CHAT_THREAD_SOURCE_KIND, harness: BUGS }]);
+    expect(second.suggestion).toMatchObject({ outcome: 'duplicate' });
+    expect(ephemerals()).toHaveLength(1);
+    expect(created).toEqual([]);
+
+    // The person follows the note: their bug reaction is a report and files exactly one bug.
+    const reacted = await admitChatEvent(sql, {
+      workspaceId: WS, dataSourceId: source.id, payload: signal('reaction', 'CSUG', '1777000200.000100'),
+    }, deps());
+    expect(reacted.admitted).toHaveLength(1);
+    expect(reacted.admitted[0]!.result).toMatchObject({ ok: true, reason: 'admitted' });
+    expect(created).toEqual([{ kind: 'bug', title: BUGGY, harness: BUGS }]);
+  });
+
+  it('a post that does not look like a bug gets nothing, and stores nothing', async () => {
+    await rule('report-bug', 'CSUG');
+    await rule('new-thread', 'CSUG', 'suggest');
+    const out = await admitChatEvent(sql, {
+      workspaceId: WS, dataSourceId: source.id, payload: post('CSUG', '1777000210.000100', 'lunch at 12:30 today?'),
+    }, deps());
+    expect(out.suggestion).toMatchObject({ outcome: 'below-threshold' });
+    expect(ephemerals()).toEqual([]);
+    expect(await suggestionRows()).toEqual([]);
+    expect(await admissionCount()).toBe(0);
+  });
+
+  it('one note per person per channel within the cooldown; another person still gets theirs', async () => {
+    await rule('report-bug', 'CSUG');
+    await rule('new-thread', 'CSUG', 'suggest');
+    const run = (ts: string, sender: string) => admitChatEvent(sql, {
+      workspaceId: WS, dataSourceId: source.id, payload: { ...post('CSUG', ts, BUGGY), sender },
+    }, deps());
+    expect((await run('1777000220.000100', 'U7')).suggestion).toMatchObject({ outcome: 'notified' });
+    expect((await run('1777000221.000100', 'U7')).suggestion).toMatchObject({ outcome: 'cooldown' });
+    expect((await run('1777000222.000100', 'U8')).suggestion).toMatchObject({ outcome: 'notified' });
+    expect(ephemerals().map((p) => p.user)).toEqual(['U7', 'U8']);
+  });
+
+  it('no note when the advice would do nothing: no rule files a report there, or no report gesture is switched on', async () => {
+    // Suggest rule only: a reaction in CSUG would file nothing, so no note is sent.
+    await rule('new-thread', 'CSUG', 'suggest');
+    const unfiled = await admitChatEvent(sql, {
+      workspaceId: WS, dataSourceId: source.id, payload: post('CSUG', '1777000230.000100', BUGGY),
+    }, deps());
+    expect(unfiled.suggestion).toMatchObject({ outcome: 'no-route' });
+
+    // A report rule exists in CQUIET but no gesture is switched on there.
+    await rule('report-bug', 'CQUIET');
+    await rule('new-thread', 'CQUIET', 'suggest');
+    const quiet = await admitChatEvent(sql, {
+      workspaceId: WS, dataSourceId: source.id, payload: post('CQUIET', '1777000231.000100', BUGGY),
+    }, deps());
+    expect(quiet.suggestion).toMatchObject({ outcome: 'no-route' });
+
+    expect(ephemerals()).toEqual([]);
+    expect((await suggestionRows()).map((r) => [r.channel_id, r.outcome])).toEqual([
+      [`${TEAM}:CSUG`, 'no-route'],
+      [`${TEAM}:CQUIET`, 'no-route'],
+    ]);
+    expect(await admissionCount()).toBe(0);
+  });
+
+  it('a refused note is recorded with its error, does not fail the delivery, and files nothing', async () => {
+    await rule('report-bug', 'CSUG');
+    await rule('new-thread', 'CSUG', 'suggest');
+    ephemeralError = 'missing_scope';
+    const sink = createChatAdmissionSink(sql, source, deps());
+    await ingestSlackSocketEnvelope(sql, source, slackPost('EvS5', 'CSUG', '1777000240.000100', BUGGY), ingestVia(), [sink]);
+    const rows = await suggestionRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ outcome: 'failed' });
+    expect(rows[0]!.error).toContain('missing_scope');
+    const deliveries = await sql<{ outcome: string }[]>`
+      SELECT outcome FROM harness_shared.trigger_deliveries WHERE workspace_id = ${WS} AND sink_kind = ${CHAT_ADMISSION_SINK_KIND}`;
+    expect(deliveries).toEqual([{ outcome: 'delivered' }]);
+    expect(await admissionCount()).toBe(0);
+  });
+
+  it('a post in a channel without the suggest switch never reaches the rules', async () => {
+    await rule('report-bug', 'COTHER');
+    await rule('new-thread', 'COTHER', 'suggest');
+    const sink = createChatAdmissionSink(sql, source, deps());
+    const normalized = await ingestSlackSocketEnvelope(sql, source, slackPost('EvS6', 'COTHER', '1777000250.000100', BUGGY), ingestVia(), [sink]);
+    expect(normalized).toBeNull();
+    expect(ephemerals()).toEqual([]);
+    expect(await suggestionRows()).toEqual([]);
   });
 });

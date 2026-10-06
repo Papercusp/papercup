@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 952,
+  "count": 953,
   "tools": [
     {
       "name": "ablation:report",
@@ -20956,6 +20956,79 @@
       }
     },
     {
+      "name": "people:merge",
+      "http": {
+        "path": "/api/agent-tools/people/merge",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Merge duplicate canonical persons (PER- ids) in the workspace relationship graph into one. The oldest id survives; every other id then resolves to it via people:get. Idempotent. Returns { ok, person, merged, alreadyMerged } or { ok:false, error }.",
+      "capabilities": [
+        "intel:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "operator",
+        "oracle",
+        "cup",
+        "mug",
+        "planner",
+        "orchestrator",
+        "promote",
+        "security-reviewer",
+        "infra-reviewer",
+        "crosscheck",
+        "ui-qa",
+        "auditor",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager",
+        "release-fixer",
+        "doc-steward",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "researcher",
+        "research-director",
+        "searcher",
+        "discoverer",
+        "finding-verifier",
+        "findings-synthesizer",
+        "synthesizer",
+        "review-director",
+        "dimension-reviewer",
+        "verifier",
+        "migration-director",
+        "migration-verifier",
+        "transformer",
+        "gym-director",
+        "judge",
+        "task-generator",
+        "variant-runner",
+        "proposer",
+        "scanner",
+        "director",
+        "committer",
+        "tester",
+        "test-writer",
+        "monitor",
+        "blender",
+        "foreign-session"
+      ],
+      "guidance": {
+        "when": "A user confirmed two PER- persons are the same human (a duplicate the email/phone keys missed).",
+        "notWhen": "Persons sharing an email or phone merge automatically; to correct one field, not a whole person, this is the wrong tool."
+      }
+    },
+    {
       "name": "people:search",
       "http": {
         "path": "/api/agent-tools/people/search",
@@ -29392,7 +29465,7 @@
       "guidance": {
         "when": "Before filing an observation — check whether an ACTIVE rubric fits the characteristic you are assessing, so you can file a structured (rated) observation instead of free-text. Overwatch/Blender: discover the rubric set to grade against. Need the acceptance rubric for a specific plan? Pass `subjectPlan: \"<plan slug>\"` (implies kind:'acceptance').",
         "notWhen": "You already have the rubric_id and want the full criteria — rubrics:get. Free-text keyword lookup — rubrics:search. Scoping to a harness/project — not supported: rubrics are workspace-global, never pass a `harness` key (rejected as an unrecognized key).",
-        "chaining": "rubrics:list { status: \"active\" } → rubrics:get { rubricRef } → file a structured observation."
+        "chaining": "rubrics:list { status: \"active\" } → while hasMore, repeat the same filters with offset: nextOffset → rubrics:get { rubricRef } → file a structured observation."
       }
     },
     {

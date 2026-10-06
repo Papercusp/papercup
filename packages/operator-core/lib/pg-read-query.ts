@@ -3027,6 +3027,96 @@ export function buildDbosWorkflowStatusSchemaHint(
 }
 
 /**
+ * Warn when a DBOS interval join starts from every workflow before a window
+ * high-water mark, then checks operation overlap. The row cap does not bound
+ * the scan, and workflow_status has no composite index that makes a name plus
+ * an upper-only start-time predicate selective. Build a small candidate UUID
+ * set from the operation window (with a separate path for still-running
+ * operations), or join an explicit workflow UUID set, before reading workflow
+ * status. This preserves operations whose workflow began before the window.
+ */
+export function buildDbosHistoricalIntervalJoinAdvisory(rawSql: string): string | null {
+  const tables = extractReferencedTables(rawSql).map((table) => table.toLowerCase());
+  if (
+    !tables.includes('dbos.workflow_status') ||
+    !tables.includes('dbos.operation_outputs')
+  ) {
+    return null;
+  }
+
+  const body = stripSqlLiteralsAndComments(rawSql);
+  const reservedAliases = new Set([
+    'cross', 'except', 'fetch', 'full', 'group', 'inner', 'intersect', 'join', 'left',
+    'limit', 'offset', 'on', 'order', 'outer', 'right', 'union', 'where',
+  ]);
+  const aliasFor = (relation: string): string | null => {
+    const relationPattern = relation.replace('.', '\\s*\\.\\s*');
+    const match = body.match(
+      new RegExp(
+        '\\b(?:from|join)\\s+(?:only\\s+)?' +
+          relationPattern +
+          '\\s+(?:as\\s+)?([a-z_][a-z0-9_]*)',
+        'i',
+      ),
+    );
+    const alias = match?.[1]?.toLowerCase();
+    return alias && !reservedAliases.has(alias) ? alias : null;
+  };
+
+  const workflowAlias = aliasFor('dbos.workflow_status');
+  const operationAlias = aliasFor('dbos.operation_outputs');
+  if (!workflowAlias || !operationAlias) return null;
+
+  const workflowPrefix = '\\b' + workflowAlias + '\\s*\\.\\s*';
+  const operationPrefix = '\\b' + operationAlias + '\\s*\\.\\s*';
+  const workflowHasUpperBound = new RegExp(
+    workflowPrefix + 'started_at_epoch_ms\\s*(?:<|<=)',
+    'i',
+  ).test(body);
+  const workflowHasLowerBound = new RegExp(
+    workflowPrefix + 'started_at_epoch_ms\\s*(?:>=|>)',
+    'i',
+  ).test(body);
+  const operationHasUpperBound = new RegExp(
+    operationPrefix + 'started_at_epoch_ms\\s*(?:<|<=)',
+    'i',
+  ).test(body);
+  const operationHasLowerBound = new RegExp(
+    operationPrefix + 'started_at_epoch_ms\\s*(?:>=|>)',
+    'i',
+  ).test(body);
+  const operationHasOverlapEnd = new RegExp(
+    operationPrefix + 'completed_at_epoch_ms\\s*(?:>=|>)',
+    'i',
+  ).test(body);
+  const operationIncludesRunningRows = new RegExp(
+    operationPrefix + 'completed_at_epoch_ms\\s+is\\s+null',
+    'i',
+  ).test(body);
+
+  if (
+    !workflowHasUpperBound ||
+    workflowHasLowerBound ||
+    !operationHasUpperBound ||
+    operationHasLowerBound ||
+    !operationHasOverlapEnd ||
+    !operationIncludesRunningRows
+  ) {
+    return null;
+  }
+
+  return (
+    '⚠ DBOS historical interval join: the workflow start predicate has only a window upper bound, ' +
+    'so every earlier workflow remains a candidate before the operation-overlap test; maxRows limits ' +
+    'returned rows, not scan work. For a narrow window, first reduce operation candidates by the ' +
+    'interval, handle completed and still-running rows as separate paths, then join workflow_status ' +
+    'by workflow_uuid (or join an explicit workflow UUID set). Do not add a lower bound to workflow ' +
+    'start time if that would exclude operations whose workflow began before the window, and do not ' +
+    'raise timeoutMs as a workaround. (EI-25237971414928998).'
+  );
+}
+
+/**
  * Flag an unbounded substring search over the large tool-invocation JSONB
  * columns (EI-21663090256112441).
  *

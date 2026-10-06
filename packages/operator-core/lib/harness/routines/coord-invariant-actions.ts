@@ -316,8 +316,8 @@ export interface ProbeDeps {
   inboxHas: (owner: string, msgId: string, sinceTs: string) => Promise<boolean>;
   ack: (acker: AgentIdentity, msgId: string, from: string) => Promise<void>;
   ackedHas: (acker: string, msgId: string) => Promise<boolean>;
-  acquire: (owner: string) => Promise<{ ok: boolean; busyOwner?: string }>;
-  release: (owner: string) => Promise<void>;
+  acquire: (owner: string) => Promise<{ ok: boolean; busyOwner?: string; detail?: string }>;
+  release: (owner: string) => Promise<void | { detail?: string }>;
   now?: () => number;
 }
 
@@ -367,8 +367,16 @@ export async function runProbeCycle(deps: ProbeDeps, idA: AgentIdentity, idB: Ag
   // 3. … B acks, and the ack is readable.
   if (
     !(await timed('ack', async () => {
+      const appendStartedAt = now();
       await deps.ack(idB, msgId, idA.ownerId);
-      return { ok: await deps.ackedHas(idB.ownerId, msgId) };
+      const appendMs = now() - appendStartedAt;
+      const readbackStartedAt = now();
+      const acked = await deps.ackedHas(idB.ownerId, msgId);
+      const readbackMs = now() - readbackStartedAt;
+      return {
+        ok: acked,
+        detail: `appendAck/sendMessage=${appendMs}ms; readAckedMsgIds=${readbackMs}ms`,
+      };
     }))
   ) {
     return steps;
@@ -381,7 +389,7 @@ export async function runProbeCycle(deps: ProbeDeps, idA: AgentIdentity, idB: Ag
       const r = await deps.acquire(idB.ownerId);
       return {
         ok: !r.ok && r.busyOwner === idA.ownerId,
-        detail: r.ok ? 'contender was GRANTED a held lock' : undefined,
+        detail: r.ok ? 'contender was GRANTED a held lock' : r.detail,
       };
     }))
   ) {
@@ -392,8 +400,11 @@ export async function runProbeCycle(deps: ProbeDeps, idA: AgentIdentity, idB: Ag
   // 6. A releases…
   if (
     !(await timed('lock-release', async () => {
-      await deps.release(idA.ownerId);
-      return { ok: true };
+      const released = await deps.release(idA.ownerId);
+      return {
+        ok: true,
+        detail: released && typeof released === 'object' ? released.detail : undefined,
+      };
     }))
   ) {
     return steps;
@@ -401,8 +412,17 @@ export async function runProbeCycle(deps: ProbeDeps, idA: AgentIdentity, idB: Ag
   // 7. …and the former contender now wins.
   await timed('lock-regrant', async () => {
     const r = await deps.acquire(idB.ownerId);
-    if (r.ok) await deps.release(idB.ownerId);
-    return { ok: r.ok };
+    let releaseDetail: string | undefined;
+    if (r.ok) {
+      const released = await deps.release(idB.ownerId);
+      if (released && typeof released === 'object') releaseDetail = released.detail;
+    }
+    return {
+      ok: r.ok,
+      detail: [r.detail, releaseDetail ? `regrant release: ${releaseDetail}` : undefined]
+        .filter((part): part is string => typeof part === 'string' && part.length > 0)
+        .join('; ') || undefined,
+    };
   });
   return steps;
 }
@@ -435,23 +455,39 @@ function liveProbeDeps(): ProbeDeps {
     },
     ackedHas: async (acker, msgId) => (await readAckedMsgIds(acker)).has(msgId),
     acquire: async (owner) => {
-      const r = await inWorkspaceTxn(PROBE_DOMAIN, owner, (tx) =>
-        tryAcquire(tx, {
-          coordinationDomain: PROBE_DOMAIN,
-          owner,
-          ownerLabel: `probe:${owner}`,
-          paths: normalizePaths([PROBE_PATH]),
-          intent: 'coord probe-pair canary',
-          ttlSec: 120,
-        }),
-      );
-      if (r.ok) return { ok: true };
-      return { ok: false, busyOwner: r.busy[0]?.owner };
+      const transactionStartedAt = Date.now();
+      let tryAcquireMs = 0;
+      const r = await inWorkspaceTxn(PROBE_DOMAIN, owner, async (tx) => {
+        const operationStartedAt = Date.now();
+        try {
+          return await tryAcquire(tx, {
+            coordinationDomain: PROBE_DOMAIN,
+            owner,
+            ownerLabel: `probe:${owner}`,
+            paths: normalizePaths([PROBE_PATH]),
+            intent: 'coord probe-pair canary',
+            ttlSec: 120,
+          });
+        } finally {
+          tryAcquireMs = Date.now() - operationStartedAt;
+        }
+      });
+      const detail = `inWorkspaceTxn=${Date.now() - transactionStartedAt}ms; tryAcquire=${tryAcquireMs}ms`;
+      if (r.ok) return { ok: true, detail };
+      return { ok: false, busyOwner: r.busy[0]?.owner, detail };
     },
     release: async (owner) => {
-      await inWorkspaceTxn(PROBE_DOMAIN, owner, (tx) =>
-        tryRelease(tx, { coordinationDomain: PROBE_DOMAIN, owner, allMine: true }),
-      );
+      const transactionStartedAt = Date.now();
+      let tryReleaseMs = 0;
+      await inWorkspaceTxn(PROBE_DOMAIN, owner, async (tx) => {
+        const operationStartedAt = Date.now();
+        try {
+          return await tryRelease(tx, { coordinationDomain: PROBE_DOMAIN, owner, allMine: true });
+        } finally {
+          tryReleaseMs = Date.now() - operationStartedAt;
+        }
+      });
+      return { detail: `inWorkspaceTxn=${Date.now() - transactionStartedAt}ms; tryRelease=${tryReleaseMs}ms` };
     },
   };
 }

@@ -125,12 +125,16 @@ const defaultMsgResolver: RefResolver = async (ref, budget) => {
 
 const defaultWorkItemResolver: RefResolver = async (ref, budget) => {
   if (ref.kind !== 'work-item') return null;
-  const wi = await getWorkItem(ref.id);
-  if (!wi) return null;
+  const wi = await getWorkItem(ref.id, ref.harness);
+  // `getWorkItem` treats harness as a preference and can fall back to another
+  // harness. A rendered ref is authoritative, so never decorate it with a
+  // cross-harness fallback row.
+  if (!wi || (ref.harness && wi.harness !== ref.harness)) return null;
   const assignee = wi.assignee ? ` @${shortHandle(wi.assignee)}` : '';
   const terminalSubject = terminalSubjectFor(wi);
+  const scope = ref.harness ? ` in ${ref.harness}` : '';
   return {
-    label: wi.id + ' [' + wi.kind + '/' + workItemDisplayState(wi) + assignee + ']',
+    label: wi.id + ' [' + wi.kind + '/' + workItemDisplayState(wi) + scope + assignee + ']',
     snippet: workItemSnippet(wi, budget.snippetChars),
     ...(terminalSubject ? { terminalSubject } : {}),
   };
@@ -158,11 +162,16 @@ const DEFAULT_RESOLVERS: RefResolvers = {
  */
 export const bodyRefWorkItemResolver: RefResolver = async (ref, budget) => {
   if (ref.kind !== 'work-item') return null;
-  const wi = await getWorkItem(ref.id);
-  if (!wi) return null;
+  // WI-NNN ids are allocated from a per-database sequence and can repeat in
+  // different harnesses. A free-prose mention with no stamped harness has no
+  // safe target; keep the author's id visible and omit the optional decoration.
+  if (!ref.harness && /^WI-\d+$/i.test(ref.id)) return null;
+  const wi = await getWorkItem(ref.id, ref.harness);
+  if (!wi || (ref.harness && wi.harness !== ref.harness)) return null;
   const assignee = wi.assignee ? ` @${shortHandle(wi.assignee)}` : '';
   const terminalSubject = terminalSubjectFor(wi);
-  const label = wi.id + ' [' + wi.kind + '/' + workItemDisplayState(wi) + assignee + ']';
+  const scope = ref.harness ? ` in ${ref.harness}` : '';
+  const label = wi.id + ' [' + wi.kind + '/' + workItemDisplayState(wi) + scope + assignee + ']';
   let tail = '';
   try {
     const [{ getWorkItemCheckpoint }, { activeWorkspaceId }] = await Promise.all([

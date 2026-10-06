@@ -10,6 +10,12 @@ export function executedMapRecordingEnabled(env?: Record<string, string | undefi
  * (libs/test-config/src/admin-test-runs-reporter.ts `tryGetPg`), so reader and writer can
  * never disagree about which database holds the rows. Pure over an env.
  *
+ * The dedicated ledger variable wins over the app's admin URL (WI-10006736). An isolated
+ * verifier (verify-tauri-headless.sh VERIFY_TAURI_ISOLATED_DB=1) exports
+ * HARNESS_ADMIN_DATABASE_URL pointing at its throwaway database, so a run that must keep
+ * its results sets PAPERCUSP_TEST_RUNS_DB_URL to the shared ledger. With the old order
+ * every isolated result was written into the throwaway database and destroyed at teardown.
+ *
  * @param {Record<string, string | undefined>} [env]
  * @returns {{ url: string, source: 'HARNESS_ADMIN_DATABASE_URL' | 'PAPERCUSP_TEST_RUNS_DB_URL' | 'default' }}
  */

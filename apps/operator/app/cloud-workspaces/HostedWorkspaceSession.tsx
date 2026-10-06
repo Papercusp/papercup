@@ -70,8 +70,9 @@ export interface HostedWorkspaceDesktopBridge {
    * Ask the host to start the workspace desktop, or return the running one
    * (D-405). False without sending when this tab is not the controller: the
    * host refuses an observer, and watching must never start a desktop.
+   * `personal` asks for the caller's own desktop instead (personal-cloud-desktop P-005).
    */
-  requestStart: () => boolean;
+  requestStart: (options?: { personal?: boolean }) => boolean;
 }
 
 export type HostedDesktopOperation = "roster" | "thumbnail" | "start";
@@ -301,10 +302,16 @@ export function HostedWorkspaceSession({
     [send],
   );
 
-  const requestDesktopStart = useCallback(() => {
+  const requestDesktopStart = useCallback((options?: { personal?: boolean }) => {
     if (roleRef.current !== "controller") return false;
     const requestIdValue = requestId("desktop-start");
-    if (!send({ type: "desktop.start", requestId: requestIdValue })) {
+    if (
+      !send({
+        type: "desktop.start",
+        requestId: requestIdValue,
+        ...(options?.personal ? { personal: true } : {}),
+      })
+    ) {
       callbackRefs.current.onDesktopQueryStateChange?.(
         "error",
         "start",

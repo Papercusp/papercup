@@ -41,7 +41,7 @@ import { redactSensitiveText } from '../sensitive-text';
 import { nativeProviderRequestSignal, nativeProviderTraceOrigin } from './native-provider-trace';
 import { HARNESS_TAG } from './release-acceptance';
 import { puiQuitBounds } from './pui-quit-bounds';
-import { sessionProcessHolder } from '../../../../apps/operator/scripts/psu-launcher.mjs';
+import { isClaudeConfigDirLaunchReady, sessionProcessHolder } from '../../../../apps/operator/scripts/psu-launcher.mjs';
 
 // A [sync-slow] line (resolve-observability.ts, 2s default) is a perf signal
 // that load on the shared box trips at random; fail-on-console turned it into
@@ -1202,23 +1202,67 @@ async function seedAgentChat(input: SeedAgentChat): Promise<void> {
  * pui-chat-first-ux D-030: Agent Chat's front door only opens a chat whose
  * session inventory row places it in PUI's launch directory. A seeded chat
  * with no adv session has no snapshot, so it belongs to no directory, and a
- * default launch never lands on it (EI-25245893959522241). Seed what a real
- * quit leaves behind: an ENDED adv session launched in `cwd`, bound to the
- * chat through the production bind call, with a resumable native id. The
- * snapshot route then rehydrates it as ended-archived with `launchCwd = cwd`.
+ * default launch never lands on it (EI-25245893959522241). Bind an adv session
+ * launched in `cwd` to the chat through the production bind call; the
+ * snapshot route then rehydrates it with `launchCwd = cwd`.
+ * - 'ended' is what a real quit leaves (ended-archived, resumable native id).
+ *   PUI auto-resumes it on landing, which this scripted fixture cannot serve,
+ *   so use it only where the test never needs a ready composer.
+ * - 'attached' is a live session (this process's pid, not ended): PUI lands
+ *   on it and attaches without launching anything.
  * The pane's default cwd is REPO_ROOT; PUI reads its own current_dir, which
  * the kernel reports resolved, hence realpath.
  */
-async function seedEndedSuSession(input: { agentChatId: string; cwd?: string }): Promise<number> {
+async function seedBoundSuSession(input: {
+  agentChatId: string; cwd?: string;
+  /** The seeded chat's turns, written as the native Claude transcript a real
+   * session leaves. A resumed host replays history ONLY from that file
+   * (su-session-claude-adapter.ts findClaudeTranscript), so without it a
+   * reconnected seeded chat shows 'No messages yet'. */
+  transcript?: Array<{ role: string; content: string }>;
+}): Promise<number> {
   const { bindSuSessionToAdvSession } = await import('../su-session-persistence');
+  const { launchContextPathFor } = await import('../su-launch-context');
   const cwd = input.cwd ?? realpathSync(REPO_ROOT);
   const nativeSessionId = `native-${input.agentChatId}`;
+  // An ENDED pui session, as a real launch leaves it once its engine exits.
+  // Selecting it resumes through su-session-resume.ts. A seed with a live pid
+  // is refused there ('saved native process is still alive').
   const [row] = await db.adminSql<Array<{ id: number }>>`
     INSERT INTO harness_shared.adv_sessions
-      (workspace_id, mode, agent, session_id, coord_owner_id, pid, ended_at, cwd)
-    VALUES (${WORKSPACE}, 'omp', 'claude', ${nativeSessionId}, ${OWNER}, NULL, now(), ${cwd})
+      (workspace_id, mode, agent, session_id, coord_owner_id, pid, ended_at, cwd, launch_spec)
+    VALUES (${WORKSPACE}, 'omp', 'claude', ${nativeSessionId}, ${OWNER},
+            ${null}, ${new Date()}, ${cwd},
+            -- A pui-launched session records its launch spec. launch-su's
+            -- attach refuses a workspace-scoped row for a harness-scoped chat,
+            -- and a reconnect reads the owner's newest v1 spec for its scope.
+            ${JSON.stringify({ v: 1, agent: 'claude', workspaceId: WORKSPACE, harnessSlug: HARNESS })}::jsonb)
     RETURNING id`;
   const advSessionId = Number(row.id);
+  // What a real launch leaves for the resume: a launch-ready Claude config dir
+  // (.claude.json with mcpServers, the shape of a pruned fleet copy) and the
+  // saved full instruction artifact. Without them the resume refuses with
+  // 'The saved Claude SU configuration is not ready' (WI-10003592 attempt 7).
+  const configDir = path.join(home, 'seeded-claude', input.agentChatId);
+  mkdirSync(configDir, { recursive: true });
+  writeFileSync(path.join(configDir, '.claude.json'), JSON.stringify({ mcpServers: {} }));
+  if (input.transcript?.length) {
+    // The same record shape the scripted engine persists for a live turn.
+    const projectDir = path.join(configDir, 'projects', 'pui-e2e');
+    mkdirSync(projectDir, { recursive: true });
+    writeFileSync(path.join(projectDir, `${nativeSessionId}.jsonl`), input.transcript.map((turn, index) =>
+      JSON.stringify(turn.role === 'user'
+        ? { type: 'user', uuid: `${nativeSessionId}-${index}`, sessionId: nativeSessionId,
+          message: { role: 'user', content: turn.content } }
+        : { type: 'assistant', uuid: `${nativeSessionId}-${index}`, sessionId: nativeSessionId,
+          message: { role: 'assistant', content: [{ type: 'text', text: turn.content }] } })).join('\n') + '\n');
+  }
+  const promptFile = launchContextPathFor(advSessionId);
+  mkdirSync(path.dirname(promptFile), { recursive: true });
+  // psu refuses a persona file under 2000 bytes as an unrendered playbook
+  // (context-trimming-tiers P-016), so the stand-in is a full-size artifact.
+  writeFileSync(promptFile, `# Seeded SU launch context for ${input.agentChatId}\n\n`
+    + 'Fixture playbook line: a real launch renders the full SU persona here.\n'.repeat(40));
   const supported = { state: 'supported', implementation: 'native' } as const;
   const descriptor = {
     identity: {
@@ -1249,12 +1293,23 @@ async function seedEndedSuSession(input: { agentChatId: string; cwd?: string }):
         usage: supported, compaction: supported, approvals: supported, context: supported, modes: supported,
       },
     },
-    backendExtension: { backend: 'claude', configDir: path.join(home, '.claude'), configDirSource: 'live-process' },
+    backendExtension: { backend: 'claude', configDir, configDirSource: 'live-process' },
   } as unknown as SuSessionDescriptor;
   const result = await bindSuSessionToAdvSession({
     advSessionId, agentChatId: input.agentChatId, workspaceId: WORKSPACE, descriptor,
   });
-  expect(result.status, `bind seeded ended session for ${input.agentChatId}`).toBe('bound');
+  expect(result.status, `bind seeded session for ${input.agentChatId}`).toBe('bound');
+  // Preflight the scope checks launch-su and the reconnect apply, so a seed
+  // they would refuse fails here in milliseconds rather than as a 40 s
+  // screen timeout (WI-10003592 attempt audit).
+  const { getAdvSession, readSuLaunchSpecByOwner } = await import('../adv-sessions');
+  const { parseSuLaunchSpecRecord } = await import('../su-persona-render');
+  const stored = await getAdvSession(advSessionId);
+  expect(stored?.harnessSlug, 'seeded adv session harness').toBe(HARNESS);
+  const spec = parseSuLaunchSpecRecord(await readSuLaunchSpecByOwner(OWNER));
+  expect({ agent: spec?.agent, workspaceId: spec?.workspaceId, harnessSlug: spec?.harnessSlug },
+    'owner launch spec the reconnect reads').toEqual({ agent: 'claude', workspaceId: WORKSPACE, harnessSlug: HARNESS });
+  expect(isClaudeConfigDirLaunchReady(configDir), 'seeded Claude config dir the resume checks').toBe(true);
   return advSessionId;
 }
 
@@ -2190,7 +2245,7 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-008 sessions and context 
       outputTokens: 0,
       costCents: 0,
     });
-    await seedEndedSuSession({ agentChatId: chatId });
+    await seedBoundSuSession({ agentChatId: chatId });
     await putViewState('Operator');
 
     const pane = new PuiPane(bin, operatorPort, home);
@@ -2359,8 +2414,8 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-008 sessions and context 
       transcript: turns('alpha'), createdAt: now + 120_000, updatedAt: now + 120_000,
     });
     // D-030: both conversations were started in the pane's directory.
-    await seedEndedSuSession({ agentChatId: alpha.id });
-    await seedEndedSuSession({ agentChatId: beta.id });
+    await seedBoundSuSession({ agentChatId: alpha.id, transcript: turns('alpha') });
+    await seedBoundSuSession({ agentChatId: beta.id, transcript: turns('beta') });
     // Durable work context: one canonical task per session, keyed only by its
     // own session id — the same rows the Context projection reads.
     for (const [sessionId, content] of [[alpha.id, alpha.task], [beta.id, beta.task]]) {
@@ -2469,9 +2524,9 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-008 sessions and context 
       id: active.id, title: active.title, runtimeClass: 'su-session', transcript: turns(active.answer),
       createdAt: now + 300_000, updatedAt: now + 300_000,
     });
-    // D-030: the active conversation was started (and last quit) in the
-    // pane's directory, the state a real owner relaunches into.
-    await seedEndedSuSession({ agentChatId: active.id });
+    // D-030: the active conversation was started in the pane's directory.
+    // It is ended and resumable, so the compose stage reconnects it.
+    await seedBoundSuSession({ agentChatId: active.id, transcript: turns(active.answer) });
     await seedAgentChat({
       id: unrelated.id, title: unrelated.title, runtimeClass: 'su-session', featureId: unrelated.workItem,
       transcript: turns(unrelated.answer), createdAt: now + 400_000, updatedAt: now + 400_000,
@@ -3798,12 +3853,19 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       { headers: { authorization: `Bearer ${readSuperuserToken()}` } });
     expect(served.status).toBe(200);
     const config = await served.json() as {
-      effectiveTiers: Array<{ name: string; spec: string; loopCapability?: { executable?: boolean } }>;
+      effectiveTiers: Array<{ name: string; spec: string; backend?: string | null; loopCapability?: { executable?: boolean } }>;
       effortLevels: string[];
       launchableModes: Array<{ title: string }>;
     };
     expect(config.effectiveTiers.length).toBeGreaterThan(0);
-    const disabledTiers = config.effectiveTiers.filter((tier) => tier.loopCapability?.executable === false);
+    // WI-10006652: a chat's /model offers only the tiers that run on its
+    // engine (a tier with no backend runs on every engine), mirroring
+    // `tier_runs_on` in apps/tui/src/app.rs. Other engines' tiers are absent.
+    const engine = scriptedEngine.backend;
+    const chatTiers = config.effectiveTiers.filter((tier) => !tier.backend || tier.backend === engine
+      || (tier.backend === 'claude-code' && engine === 'claude'));
+    expect(chatTiers.length).toBeGreaterThan(0);
+    const disabledTiers = chatTiers.filter((tier) => tier.loopCapability?.executable === false);
     const launches = () => sessionTraffic.filter((entry) => entry.path === '/api/adv/sessions/launch-su')
       .reduce((total, entry) => total + Number(entry.count ?? 1), 0);
 
@@ -3835,7 +3897,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       // live conversation the default row keeps its running model (P-026).
       const frames = {
         model: await picker(pane, 'm', 'Model', ['Keep the current model',
-          ...config.effectiveTiers.map((tier) => `${tier.name} — ${tier.spec}`),
+          ...chatTiers.map((tier) => `${tier.name} — ${tier.spec}`),
           ...disabledTiers.map((tier) => `${tier.name} — ${tier.spec} — not settable`),
           ...(disabledTiers.length > 0 ? ['not executable by Agent Chat loop'] : [])]),
         effort: await picker(pane, 'e', 'Effort', ['Model/default effort', ...config.effortLevels]),
@@ -3844,15 +3906,20 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
         conversation: await picker(pane, 'l', 'Conversation', []),
       };
       for (const frame of Object.values(frames)) expect(frame).not.toContain(readSuperuserToken());
+      const chatRows = new Set(chatTiers.map((tier) => `${tier.name} — ${tier.spec}`));
+      for (const tier of config.effectiveTiers) {
+        const row = `${tier.name} — ${tier.spec}`;
+        if (!chatRows.has(row)) expect(frames.model, `${row} runs on ${tier.backend}, not ${engine}`).not.toContain(row);
+      }
 
       // D-025 (P-026): a model pick on a live conversation rides on its next
       // turn. It opens no new-session route and launches nothing; reopening
       // the picker marks the picked tier for the next turn (or as current
       // when the session already runs it).
       stage = 'next-turn-pick';
-      const executable = config.effectiveTiers.findIndex((tier) => tier.loopCapability?.executable !== false);
+      const executable = chatTiers.findIndex((tier) => tier.loopCapability?.executable !== false);
       expect(executable).toBeGreaterThanOrEqual(0);
-      const picked = config.effectiveTiers[executable]!;
+      const picked = chatTiers[executable]!;
       const before = launches();
       pane.write('m');
       await pane.waitFor('Model — Enter select');
@@ -3878,7 +3945,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       expect(binding.sessions).toBe(1);
       console.info('PUI_SETTINGS_PICKERS_ACCEPTANCE', JSON.stringify({ binary: bin, binarySha256, chatId: chat.id,
         servedTiers: config.effectiveTiers.map((tier) => tier.spec), disabledTiers: disabledTiers.map((tier) => tier.spec),
-        pickedTier: config.effectiveTiers[executable].spec, frames, routeFrame }));
+        chatTiers: chatTiers.map((tier) => tier.spec), pickedTier: picked.spec, frames, routeFrame }));
     } finally { await pane?.stop().catch(() => {}); }
   }, 240_000);
 
@@ -6847,9 +6914,18 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-013 terminal compatibilit
     const spawnedAt = performance.now();
     const pane = new PuiPane(bin, operatorPort, home, { cols: 120, rows: 40, silentTerminal: true });
     try {
-      await pane.waitFor('Starting PUI', { timeoutMs: 10_000 });
+      // pui-chat-first-ux P-031 (G-1) dropped the 2 s keyboard-protocol probe,
+      // so a silent terminal no longer holds the progress line on screen: it is
+      // written before the first frame and that frame's clear replaces it within
+      // milliseconds. A rendered-screen poll can miss it, so read the PTY bytes:
+      // the line must precede the first-frame clear (CSI 2J).
       await pane.waitFor('· pui ·', { timeoutMs: 40_000 });
       const usableMs = performance.now() - spawnedAt;
+      const startup = pane.rawSince(0);
+      const progressAt = startup.indexOf('Starting PUI');
+      expect(progressAt, JSON.stringify(startup.slice(0, 400))).toBeGreaterThanOrEqual(0);
+      const firstClear = startup.indexOf('\u001b[2J');
+      expect(firstClear === -1 || progressAt < firstClear, JSON.stringify(startup.slice(0, 400))).toBe(true);
       await pane.waitForGone('Starting PUI');
       console.info('PUI_P013_STARTUP_PROGRESS_ACCEPTANCE', JSON.stringify({
         binary: bin, binarySha256, optimised: optimised(), progressMs, usableMs,

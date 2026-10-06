@@ -19,6 +19,7 @@ import {
   classifySlackReportBugEnvelope,
   slackReportBugConfig,
   slackReportBugModalView,
+  slackSuggestPostEvent,
   SLACK_REPORT_BUG_SHORTCUT_CALLBACK_ID,
   type SlackReportModalRequest,
 } from './slack-report-bug';
@@ -90,7 +91,8 @@ export interface SlackSocketEnvelope {
 }
 
 export interface SlackNormalizedEvent {
-  event: 'mention' | 'dm' | 'slash-command' | 'report-bug';
+  /** 'message': an ordinary top-level post in a channel whose `suggest` switch is on (bug-reports D-010). */
+  event: 'mention' | 'dm' | 'slash-command' | 'report-bug' | 'message';
   externalId: string;
   dedupeKey: string;
   occurredAt: string | null;
@@ -341,9 +343,12 @@ export async function ingestSlackSocketEnvelope(
   /** Sinks beyond the event bus and binding engine — the chat admission sink (D-009). */
   additionalSinks: ExternalTriggerSink[] = [],
 ): Promise<SlackNormalizedEvent | null> {
-  const reportBug = classifySlackReportBugEnvelope(envelope, slackReportBugConfig(source.config));
+  const config = slackReportBugConfig(source.config);
+  const reportBug = classifySlackReportBugEnvelope(envelope, config);
   if (reportBug && reportBug.kind !== 'signal') return null;
-  const normalized = reportBug?.event ?? normalizeSlackSocketEnvelope(envelope);
+  // An ordinary top-level post reaches the chat rules only in a channel whose `suggest` switch is
+  // on, so a suggest rule can offer "looks like a bug" privately (bug-reports D-010).
+  const normalized = reportBug?.event ?? normalizeSlackSocketEnvelope(envelope) ?? slackSuggestPostEvent(envelope, config);
   if (!normalized) return null;
   const result = await ingest(sql, {
     workspaceId: source.workspaceId,
@@ -439,6 +444,36 @@ export async function postSlackThreadMessage(
   );
   if (!body.ts) throw new Error('slack_reply_message_ts_missing');
   return { channelId: body.channel?.trim() || channelId, threadId, messageTs: body.ts };
+}
+
+/**
+ * Post a note only one person in the channel can see (Slack chat.postEphemeral, scope chat:write).
+ * Used for the private "looks like a bug" suggestion (slack-messages-to-bug-reports D-010).
+ */
+export async function postSlackEphemeralMessage(
+  botToken: string,
+  input: { channelId: string; userId: string; text: string },
+  deps: { fetch?: typeof fetch; apiOrigin?: string } = {},
+): Promise<void> {
+  const channelId = input.channelId.trim();
+  const userId = input.userId.trim();
+  const message = input.text.trim();
+  if (!channelId || channelId.length > 80) throw new Error('slack_ephemeral_channel_invalid');
+  if (!userId || userId.length > 80) throw new Error('slack_ephemeral_user_invalid');
+  if (!message || message.length > 4_000) throw new Error('slack_ephemeral_text_invalid');
+  const origin = (deps.apiOrigin ?? SLACK_API_ORIGIN).replace(/\/$/, '');
+  await slackJson<{ ok?: boolean; message_ts?: string }>(
+    await (deps.fetch ?? fetch)(`${origin}/api/chat.postEphemeral`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${assertToken(botToken, 'xoxb-', 'bot_token')}`,
+        accept: 'application/json',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ channel: channelId, user: userId, text: message }),
+    }),
+    'chat_post_ephemeral',
+  );
 }
 
 function historyChannels(source: ExternalTriggerSourceRow): string[] {

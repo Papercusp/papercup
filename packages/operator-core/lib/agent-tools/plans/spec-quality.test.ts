@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { SpecClauseRevision } from './spec-clauses-store';
+import { specBehaviorNonAtomicReason } from './spec-clause-compiler';
 import { evaluatePlanSpecQuality } from './spec-quality';
 import evaluateSpecQualityTool from './evaluate-spec-quality';
 import startPlanTool from './start';
@@ -339,8 +340,17 @@ describe('evaluatePlanSpecQuality', () => {
     expect(result.ratings['implementation-independence'].evidence).toContain('"class OrientationState"');
   });
 
+  it('flags passive acceptance joined to streaming as multiple observable outcomes', () => {
+    const compound = 'Opening one’s own personal desktop in watch mode through the hosted session host is accepted and streams the desktop.';
+
+    expect(specBehaviorNonAtomicReason(compound)).toBe('behavior joins multiple independently observable outcomes');
+    expect(specBehaviorNonAtomicReason('Opening one’s own personal desktop in watch mode is accepted.')).toBeNull();
+    expect(specBehaviorNonAtomicReason('Opening one’s own personal desktop in watch mode streams the desktop.')).toBeNull();
+  });
+
   it('fails atomicity for independently falsifiable outcomes joined across a clause', () => {
     const behaviors = [
+      'Opening one’s own personal desktop in watch mode through the hosted session host is accepted and streams the desktop.',
       'orders:promote and orders:dismiss { reason } exist, dismiss refuses an empty reason, and a dismissed row stays queryable rather than being deleted.',
       'Every declared orientation category reaches a rendered prompt for a live-shaped session fixture, a build-time guard turns red when any declared category does not render, and a permanent control entry declared but deliberately left unrendered keeps that guard from passing vacuously.',
       'Class-A rows render exactly once per change and never on an unchanged turn, while class-B rows for walls-with-recheck and waiting-on render every turn until they are discharged.',

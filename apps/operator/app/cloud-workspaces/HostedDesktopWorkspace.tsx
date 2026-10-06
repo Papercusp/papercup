@@ -25,6 +25,44 @@ export type DesktopSelection = {
   mode: HostedDesktopViewerMode;
 };
 
+/**
+ * The caller's own running desktop, if the roster lists one. The host lists a
+ * `user` desktop only to its owner (personal-cloud-desktop P-004), so any `user`
+ * entry in THIS viewer's roster is theirs.
+ */
+export function myDesktopEntry(
+  roster: readonly HostedDesktopRosterEntry[],
+): HostedDesktopRosterEntry | null {
+  return roster.find((entry) => entry.scope === "user") ?? null;
+}
+
+/**
+ * Which desktop to open once a start answers. A personal desktop is the person's
+ * own seat, asked for by clicking My desktop, so it opens in Take control even over
+ * an open viewer (P-005). The automatic workspace start (D-405) opens in watch
+ * mode, and only when nothing is open yet.
+ */
+export function selectionAfterStart(
+  desktop: HostedDesktopRosterEntry,
+  current: DesktopSelection | null,
+): DesktopSelection | null {
+  if (desktop.scope === "user") {
+    return { desktopSessionId: desktop.desktopSessionId, mode: "takeover" };
+  }
+  return current ? null : { desktopSessionId: desktop.desktopSessionId, mode: "watch" };
+}
+
+/** What a person reads when My desktop could not be opened, by failure code. */
+export function myDesktopErrorMessage(code: string): string {
+  if (code === "personal_desktop_unavailable") {
+    return "This workspace machine cannot run a personal desktop yet. Its desktop pack needs to be installed or updated.";
+  }
+  if (code === "controller_required") {
+    return "Another tab controls this workspace. Open My desktop from that tab.";
+  }
+  return "Your desktop could not be started.";
+}
+
 export interface HostedDesktopWorkspaceProps {
   hostName: string;
   workspaceId: string | null;
@@ -47,6 +85,11 @@ export interface HostedDesktopWorkspaceProps {
   onPinnedChange: (pinned: string[]) => void;
   filter: string;
   onFilterChange: (filter: string) => void;
+  /**
+   * personal-cloud-desktop P-005: open the caller's own desktop in Take control,
+   * starting it when none runs. Absent: the entry is not offered.
+   */
+  onOpenMyDesktop?: () => void;
 }
 
 function desktopLabel(entry: HostedDesktopRosterEntry): string {
@@ -57,6 +100,7 @@ function desktopLabel(entry: HostedDesktopRosterEntry): string {
 }
 
 function ownerLabel(entry: HostedDesktopRosterEntry): string | null {
+  if (entry.scope === "user") return "My desktop";
   if (!entry.owner) return entry.scope === "workspace" ? "Workspace desktop" : null;
   return entry.scope === "pot" ? `Pot ${entry.owner}` : `Agent ${entry.owner}`;
 }
@@ -103,7 +147,14 @@ export function HostedDesktopWorkspace({
   onPinnedChange,
   filter,
   onFilterChange,
+  onOpenMyDesktop,
 }: HostedDesktopWorkspaceProps) {
+  const myDesktop = myDesktopEntry(roster);
+  // A start in flight with no personal desktop listed yet is the My desktop start;
+  // its failure is shown here rather than left behind a spinner (R-15).
+  const myDesktopStarting = Boolean(onOpenMyDesktop) && !myDesktop && startState === "loading";
+  const myDesktopError =
+    onOpenMyDesktop && !myDesktop && startState === "error" && startError ? startError : null;
   const selectedEntry = roster.find(
     (entry) => entry.desktopSessionId === selectedDesktop?.desktopSessionId,
   );
@@ -178,6 +229,17 @@ export function HostedDesktopWorkspace({
           </h3>
           <p>Watch your desktops and step in when you need to.</p>
         </div>
+        {onOpenMyDesktop ? (
+          <Button
+            variant="primary"
+            onClick={onOpenMyDesktop}
+            disabled={!bridge || !workspaceId || !routeLabel || myDesktopStarting}
+            aria-label="Open my desktop"
+            data-my-desktop={myDesktop ? "running" : "absent"}
+          >
+            {myDesktopStarting ? "Starting my desktop…" : "My desktop"}
+          </Button>
+        ) : null}
         <span
           className={styles.desktopConnection}
           data-connected={Boolean(bridge)}
@@ -189,6 +251,16 @@ export function HostedDesktopWorkspace({
       {rosterError ? (
         <p className={styles.desktopRosterError} role="alert">
           Desktop list unavailable: {rosterError}
+        </p>
+      ) : null}
+      {myDesktopError ? (
+        <p
+          className={styles.desktopRosterError}
+          role="alert"
+          data-error-code={myDesktopError}
+        >
+          My desktop could not be opened ({myDesktopError}).{" "}
+          {myDesktopErrorMessage(myDesktopError)}
         </p>
       ) : null}
       <div className={styles.desktopWorkspaceLayout}>

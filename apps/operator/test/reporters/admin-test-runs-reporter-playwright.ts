@@ -29,7 +29,11 @@ import {
   type WorktreeGitSnapshot,
 } from '@papercusp/operator-core/lib/testing-worktree';
 import { resolveTestRunSource } from '@papercusp/operator-core/lib/testing-run-source';
-import { describeWorktreeDirt } from '@papercusp/test-config/admin-test-runs-reporter';
+import {
+  describeWorktreeDirt,
+  resolveTestRunHarnessSlug,
+  resolveTestRunWorkspaceId,
+} from '@papercusp/test-config/admin-test-runs-reporter';
 import { posix, relative } from 'node:path';
 import {
   TEST_RUN_EXECUTION_DETAILS_SCHEMA_VERSION,
@@ -143,14 +147,12 @@ async function insertRow(row: TestRunRow, worktreeAfter: WorktreeGitSnapshot, ro
   const source = resolveTestRunSource();
   const runGroupId = process.env.PAPERCUSP_TEST_RUN_GROUP ?? null;
   const { loopLagP95Ms, rssMb } = captureReporterSaturationSnapshot();
-  // WI-6583: this reporter never wrote harness_slug/workspace_id at all —
-  // matching the Vitest reporter's fix (libs/test-config's
-  // admin-test-runs-reporter.ts resolveTestRunHarnessSlug/WorkspaceId): check
-  // the explicit dogfood override first, then the two OTHER naming
-  // conventions that carry the same identity on most real runs.
-  const harnessSlug =
-    process.env.PAPERCUSP_TEST_RUN_HARNESS || process.env.HARNESS_SLUG || process.env.PAPERCUSP_HARNESS_SLUG || null;
-  const workspaceId = process.env.PAPERCUSP_WORKSPACE_ID || process.env.PAPERCUSP_WORKSPACE || null;
+  // WI-6583: this reporter never wrote harness_slug/workspace_id at all. It now calls the
+  // Vitest reporter's resolvers directly instead of an inline copy: the copy had already
+  // drifted once (it lacked the PAPERCUSP_TEST_RUN_WORKSPACE override, so isolated e2e rows
+  // were stamped with the rig's throwaway workspace — WI-10006804).
+  const harnessSlug = resolveTestRunHarnessSlug();
+  const workspaceId = resolveTestRunWorkspaceId();
 
   try {
     await Promise.race([

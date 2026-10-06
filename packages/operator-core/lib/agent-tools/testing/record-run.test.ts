@@ -9,6 +9,8 @@ import {
   inspectCommittedOperationalEvidence,
   parseOperationalEvidenceArtifact,
   recordOperationalRun,
+  recoverArchivedMutationFailures,
+  type ArchivedMutationRun,
   type CommittedOperationalEvidence,
   type RecordOperationalRunDeps,
 } from './record-run';
@@ -86,6 +88,100 @@ function git(repo: string, args: string[]): string {
   if (result.status !== 0) throw new Error(`git ${args.join(' ')} failed: ${result.stderr ?? ''}`);
   return (result.stdout ?? '').trim();
 }
+
+function archivedMutationFixture() {
+  const filePath = 'packages/operator-core/example.integration.test.ts';
+  const scope = { workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp' };
+  const titles = ['suite > long DOM failure', 'suite > literal "quoted": failure'];
+  const probe = { ...MUTATION_PROBE, result: { ...MUTATION_PROBE.result,
+    assertionEvidence: 'test-file-assertion-failure' } };
+  const original: ArchivedMutationRun = {
+    id: 42, file_path: filePath, source: 'mutation-probe', status: 'fail', framework: 'vitest',
+    workspace_id: scope.workspaceId, harness_slug: scope.harnessSlug,
+    commit_sha: probe.runnerCommit, worktree_dirty: false,
+    started_at: ARTIFACT.startedAt, finished_at: ARTIFACT.finishedAt,
+    execution_details: { schemaVersion: 1, root: '/immutable', filePath, runGroupId: null,
+      ...scope, testNamePattern: null, testLayer: 'integration', mutationPhase: 'mutant',
+      commitSha: probe.runnerCommit, worktreeDirty: false,
+      passed: 1, failed: 2, skipped: 0, collectionFailed: false },
+  };
+  const archiveLog = [
+    'TEST_FILE_PROVENANCE head=dddddddddd testedPaths=1 uncommitted=0 unknown=0 phase=pre-run startedAt=2026-09-08T02:00:00.000Z',
+    ...titles.map(title => `TEST_FILE_ASSERTION_FAILURE file=${JSON.stringify(`/immutable/${filePath}`)} name=${JSON.stringify(title)} message=${JSON.stringify('<aside>'.repeat(1500))}`),
+    '      Tests  2 failed | 1 passed (3)',
+    'TEST_FILE_PROVENANCE head=dddddddddd testedPaths=1 uncommitted=0 unknown=0 phase=post-run startedAt=2026-09-08T02:06:00.000Z',
+    'TEST_FILE_RESULT requested=1 executed=1 matched=1 status=failed head=dddddddddd uncommittedPaths=0/1 provenance=stamped startedAt=2026-09-08T02:00:00.000Z skippedTests=0',
+    `MUTATION_PROBE_EVIDENCE_JSON=${JSON.stringify(probe)}`,
+  ].join('\n');
+  const evidence: CommittedOperationalEvidence = { ...EVIDENCE, archiveLog,
+    artifact: { ...ARTIFACT, framework: 'shell', mutationProbes: [probe], archivedMutation: {
+      originalTestRunId: 42, rawLogFile: 'docs/evidence/mutation.log',
+      rawLogSha256: createHash('sha256').update(archiveLog).digest('hex'),
+    } } };
+  return { evidence, original, scope, titles };
+}
+
+describe('archived mutation identity recovery (EI-25248905256718690)', () => {
+  it('recovers exact machine identities despite long DOM messages and preserves the original receipt', async () => {
+    const { evidence, original, scope, titles } = archivedMutationFixture();
+    const saved = structuredClone(original);
+    const d = deps({ inspectEvidence: vi.fn(() => evidence), readArchivedRun: vi.fn(async () => original) });
+    const result = await recordOperationalRun({ evidenceFile: evidence.filePath, expectedSha256: evidence.sha256,
+      harness: scope.harnessSlug }, { ...scope, projectDir: process.cwd() }, d);
+    expect(result).toMatchObject({ ok: true, status: 'fail', recoveredFromTestRunId: 42, testRunIds: [77] });
+    expect(d.readArchivedRun).toHaveBeenCalledWith(42, scope);
+    expect(d.persist).toHaveBeenCalledWith(expect.objectContaining({ source: 'mutation-probe',
+      root: '/immutable', commit: original.commit_sha, worktreeDirty: false,
+      rows: [expect.objectContaining({ filePath: original.file_path, status: 'fail',
+        outputTail: expect.stringContaining('No new test execution.'),
+        execution: { passed: 1, failed: 2, skipped: 0, collectionFailed: false,
+          testLayer: 'integration', failedCaseTitles: titles } })] }));
+    expect(original).toEqual(saved);
+  });
+
+  it('returns the existing recovery record without inserting a second one', async () => {
+    const { evidence, original, scope } = archivedMutationFixture();
+    const d = deps({ inspectEvidence: vi.fn(() => evidence), readArchivedRun: vi.fn(async () => original),
+      findIds: vi.fn(async () => [88]) });
+    expect(await recordOperationalRun({ evidenceFile: evidence.filePath, expectedSha256: evidence.sha256,
+      harness: scope.harnessSlug }, scope, d)).toMatchObject({ ok: true, alreadyRecorded: true, testRunIds: [88] });
+    expect(d.persist).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['missing receipt', (r: ArchivedMutationRun) => null],
+    ['wrong id', (r: ArchivedMutationRun) => ({ ...r, id: 43 })],
+    ['wrong workspace', (r: ArchivedMutationRun) => ({ ...r, workspace_id: 'elsewhere' })],
+    ['wrong harness', (r: ArchivedMutationRun) => ({ ...r, harness_slug: 'elsewhere' })],
+    ['ordinary failed run', (r: ArchivedMutationRun) => ({ ...r, source: 'local' })],
+    ['successful run', (r: ArchivedMutationRun) => ({ ...r, status: 'pass' })],
+    ['dirty execution', (r: ArchivedMutationRun) => ({ ...r, worktree_dirty: true })],
+    ['different commit', (r: ArchivedMutationRun) => ({ ...r, commit_sha: 'e'.repeat(40) })],
+    ['malformed measurement', (r: ArchivedMutationRun) => ({ ...r, execution_details: {} })],
+    ['different time window', (r: ArchivedMutationRun) => ({ ...r, finished_at: '2026-09-09T02:00:00.000Z' })],
+  ])('refuses %s before inserting evidence', async (_name, change) => {
+    const { evidence, original, scope } = archivedMutationFixture();
+    const d = deps({ inspectEvidence: vi.fn(() => evidence), readArchivedRun: vi.fn(async () => change(original)) });
+    expect(await recordOperationalRun({ evidenceFile: evidence.filePath, expectedSha256: evidence.sha256,
+      harness: scope.harnessSlug }, scope, d)).toMatchObject({ ok: false });
+    expect(d.persist).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['foreign file', (s: string) => s.replace('/immutable/packages/', '/foreign/packages/')],
+    ['missing failure', (s: string) => s.split('\n').filter(line => !line.includes('literal')).join('\n')],
+    ['misleading DOM identity', (s: string) => s.replace('name="suite > long DOM failure"', 'name="<aside>"')],
+    ['wrong counts', (s: string) => s.replace('2 failed | 1 passed', '2 failed | 2 passed')],
+    ['unproven verdict', (s: string) => s.replace('provenance=stamped', 'provenance=unknown')],
+    ['different probe', (s: string) => s.replace('"guardExit":1', '"guardExit":0')],
+  ])('rejects %s from a saved log', (_name, change) => {
+    const { evidence, original, scope } = archivedMutationFixture();
+    // A changed, syntactically valid title must not disagree with prior structured identities.
+    const receipt = { ...original, execution_details: { ...(original.execution_details as object),
+      failedCaseTitles: archivedMutationFixture().titles } };
+    expect(() => recoverArchivedMutationFailures({ ...evidence, archiveLog: change(evidence.archiveLog!) }, receipt, scope)).toThrow();
+  });
+});
 
 describe('testing:record-run', () => {
   it('derives a pass, persists through the shared writer, and returns numeric IDs', async () => {

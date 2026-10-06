@@ -16,6 +16,11 @@ describe('consult follow-up confirmed-dead classifier', () => {
 });
 
 describe('consult:reply abort completion receipt', () => {
+  it('declares enough time for post-commit requester and cascade delivery', () => {
+    // The nested MCP deadline is timeoutSec + 5s, above its flat 55s floor.
+    expect(consultReplyTool.timeoutSec).toBe(120);
+  });
+
   it('surfaces the exact post recorded before a late cascade completion', () => {
     expect(consultReplyTool.idempotent).not.toBe(true);
     expect(consultReplyTool.abortCompletionReceipt).toEqual(expect.any(Function));

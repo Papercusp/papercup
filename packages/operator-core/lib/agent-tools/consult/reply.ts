@@ -62,6 +62,12 @@ export default defineTool({
   capability: 'coord:write',
   requirePrincipal: false,
   agentRoles: [...COORD_REPLY_ROLES],
+  // Reply handling persists the post, then waits for the requester signal and
+  // (for a responder perspective) cascade dispatch. The nested tools:invoke
+  // transport otherwise cuts this off at 55s, before the target's completion
+  // receipt can identify a post that already landed. Keep enough budget for
+  // that synchronous delivery path; the MCP nested deadline adds its 5s buffer.
+  timeoutSec: 120,
   abortCompletionReceipt: consultReplyAbortCompletionReceipt,
   args: z
     .object({

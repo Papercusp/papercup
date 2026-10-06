@@ -28,7 +28,8 @@ import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import type { TokenStorage } from '../oauth/token';
 import { fsTokenStorage } from '../oauth/storage-fs';
-import { storeSlackSocketCredentials } from '../external-triggers/slack';
+import { postSlackEphemeralMessage, storeSlackSocketCredentials } from '../external-triggers/slack';
+import { slackReportBugConfig, slackSuggestionNote } from '../external-triggers/slack-report-bug';
 import {
   type ExternalTriggerSourceRow,
   updateExternalTriggerSourceSyncState,
@@ -368,6 +369,18 @@ export function createSlackChatAdmissionAdapter(
       const found = (top.messages ?? []).find((m) => text(m.ts) === subject.ts)
         ?? (await fetchReplies(deps, token, subject.channelId, subject.ts)).find((m) => text(m.ts) === subject.ts);
       return found ? toChatMessage(team(), subject.channelId, found) : null;
+    },
+    async suggest({ subject, authorExternalId }) {
+      // Names only the report gestures switched on in this channel (D-010); none, nothing sent.
+      const note = slackSuggestionNote(slackReportBugConfig(source.config ?? {}), subject.channelId);
+      if (!note) return 'no-route';
+      await assertEnabled(deps);
+      await postSlackEphemeralMessage(
+        await botToken(),
+        { channelId: subject.channelId, userId: authorExternalId, text: note },
+        { fetch: deps.fetch, apiOrigin: deps.apiOrigin },
+      );
+      return 'notified';
     },
   };
 }

@@ -29,8 +29,10 @@ export interface HostedDesktopRosterEntry {
   displayNumber?: number;
   geometry?: string;
   lastActiveAt?: string;
-  /** P-006 / D-009: who the desktop belongs to and what its owner is on now. */
-  scope?: "pot" | "agent" | "workspace";
+  /** P-006 / D-009: who the desktop belongs to and what its owner is on now.
+   *  `user` is a person's own desktop (personal-cloud-desktop-2026-10-06); the host
+   *  lists one only to its owner, so a `user` entry is always the viewer's own. */
+  scope?: "pot" | "agent" | "workspace" | "user";
   owner?: string;
   name?: string;
   workItemId?: string;
@@ -90,7 +92,10 @@ function roster(value: unknown): HostedDesktopRosterEntry[] {
     const geometry = nonEmptyString(item?.geometry);
     const lastActiveAt = nonEmptyString(item?.lastActiveAt);
     const scope =
-      item?.scope === "pot" || item?.scope === "agent" || item?.scope === "workspace"
+      item?.scope === "pot" ||
+      item?.scope === "agent" ||
+      item?.scope === "workspace" ||
+      item?.scope === "user"
         ? item.scope
         : null;
     const owner = nonEmptyString(item?.owner);
@@ -146,11 +151,19 @@ export function buildDesktopRosterRequest(requestId: string): string {
 /**
  * Ask the workspace host to start its desktop, or return the running one
  * (D-405). The host answers only on a controller session.
+ *
+ * `personal` asks for the CALLER's own desktop instead (personal-cloud-desktop
+ * P-005). Whose desktop it is comes from the authenticated channel on the host,
+ * so the request deliberately carries no user id.
  */
-export function buildDesktopStartRequest(requestId: string): string {
+export function buildDesktopStartRequest(
+  requestId: string,
+  options: { personal?: boolean } = {},
+): string {
   return JSON.stringify({
     type: "desktop.start",
     requestId,
+    ...(options.personal ? { personal: true } : {}),
   });
 }
 

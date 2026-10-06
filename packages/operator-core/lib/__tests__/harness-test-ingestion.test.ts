@@ -83,6 +83,26 @@ describe('parseVitestJsonForHarnessRows', () => {
     expect(rows[0].outputTail).toContain('Expected 1 to be 2');
   });
 
+  it('persists exact failed names separately from truncated DOM diagnostics (EI-25248905256718690)', async () => {
+    const names = ['suite > first failure', 'suite — second > failure: with a colon'];
+    const [row] = parseVitestJsonForHarnessRows(report([{
+      name: `${ROOT}/src/dom.test.ts`, status: 'failed',
+      assertionResults: [
+        { status: 'passed', fullName: 'suite > passes' },
+        ...names.map(fullName => ({ status: 'failed', fullName, failureMessages: ['DOM '.repeat(3_000)] })),
+      ],
+    }]), ROOT);
+    expect(row.outputTail).toHaveLength(4_000);
+    expect(row.execution).toEqual({ passed: 1, failed: 2, skipped: 0, collectionFailed: false, failedCaseTitles: names });
+    const { sql, calls } = makeRecordingSql();
+    expect(await persistHarnessTestRuns({
+      root: ROOT, harnessSlug: 'papercusp', workspaceId: 'ws', rows: [row],
+      runGroupId: 'retained-dom', commit: 'abc', worktreeDirty: false, sql,
+    })).toBe(1);
+    const stored = calls[0].find(value => typeof value === 'object' && value !== null && 'schemaVersion' in value);
+    expect(stored).toMatchObject({ failedCaseTitles: names, failed: 2 });
+  });
+
   it('maps an all-skipped "passed" file to skip (not pass)', () => {
     const json = report([
       {

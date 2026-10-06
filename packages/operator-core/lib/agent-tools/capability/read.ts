@@ -705,32 +705,68 @@ export default defineTool({
       if (!reference) return err('not_a_reference', 'evidence_class requires a stable scratch reference.');
       const selectors = (reference.evidence ?? []).filter((entry) => entry.evidenceClass === args.evidence_class);
       if (selectors.length === 0) return err('evidence_class_not_found', `scratch reference has no ${args.evidence_class} evidence.`);
+      let selectionBytes = bytes;
+      if (reference.bodyOffsetInPayload !== undefined) {
+        const bodyOffset = reference.bodyOffsetInPayload;
+        if (!Number.isSafeInteger(bodyOffset) || bodyOffset < 0 || bodyOffset >= bytes.length) {
+          return err('evidence_not_selectable', 'scratch reference has an invalid declared JSON body offset.');
+        }
+        selectionBytes = bytes.subarray(bodyOffset);
+      }
       let decoded: unknown;
-      try { decoded = JSON.parse(bytes.toString('utf8')); }
+      try { decoded = JSON.parse(selectionBytes.toString('utf8')); }
       catch {
         return err(
           'evidence_not_selectable',
-          'scratch reference payload is not JSON. Use line or byte windows for text or Markdown spills.',
+          'scratch reference JSON body is not valid JSON. Use line or byte windows for text or Markdown spills.',
         );
       }
       const row = decoded && typeof decoded === 'object' ? decoded as Record<string, unknown> : null;
       const content = row?.content;
-      if (!Array.isArray(content)) return err('evidence_not_selectable', 'scratch reference payload has no MCP content array.');
+      const isMcpContentEnvelope = Array.isArray(content) && content.some((item) =>
+        item && typeof item === 'object' && (item as { type?: unknown }).type === 'text' &&
+        typeof (item as { text?: unknown }).text === 'string');
       const resolvePointer = (value: unknown, pointer: string): unknown => pointer.split('/').slice(1).reduce<unknown>((cursor, segment) => {
         if (cursor === null || typeof cursor !== 'object') return undefined;
         return (cursor as Record<string, unknown>)[segment.replace(/~1/g, '/').replace(/~0/g, '~')];
       }, value);
-      const evidence = selectors.flatMap((selector) => {
-        const item = content[selector.contentIndex] as { text?: unknown } | undefined;
-        if (!item || typeof item.text !== 'string') return [];
-        let parsed: unknown;
-        try { parsed = JSON.parse(item.text); } catch { return []; }
-        return selector.jsonPointers.map((jsonPointer) => ({
+      let evidence: Array<{ contentIndex: number; jsonPointer: string; value: unknown }>;
+      if (isMcpContentEnvelope) {
+        evidence = selectors.flatMap((selector) => {
+          const item = content[selector.contentIndex] as { text?: unknown } | undefined;
+          if (!item || typeof item.text !== 'string') return [];
+          let parsed: unknown;
+          try { parsed = JSON.parse(item.text); } catch { return []; }
+          return selector.jsonPointers.map((jsonPointer) => ({
+            contentIndex: selector.contentIndex,
+            jsonPointer,
+            value: resolvePointer(parsed, jsonPointer),
+          }));
+        });
+      } else if (reference.bodyOffsetInPayload !== undefined) {
+        // Ordinary JSON spills store the selected JSON body directly after the
+        // human-readable prefix. Their selectors still refer to original MCP
+        // content indexes, so accept this shape only when all indexed evidence
+        // came from one text block; otherwise the raw body cannot disambiguate it.
+        const evidenceIndexes = new Set((reference.evidence ?? []).map((entry) => entry.contentIndex));
+        if (evidenceIndexes.size !== 1 || !selectors.every((entry) => entry.contentIndex === [...evidenceIndexes][0])) {
+          return err('evidence_not_selectable', 'raw JSON spill evidence spans multiple MCP content items.');
+        }
+        const contentIndex = [...evidenceIndexes][0];
+        if (!reference.content.some((entry) => entry.index === contentIndex && entry.type === 'text')) {
+          return err('evidence_not_selectable', 'raw JSON spill selector does not point to a text content item.');
+        }
+        evidence = selectors.flatMap((selector) => selector.jsonPointers.map((jsonPointer) => ({
           contentIndex: selector.contentIndex,
           jsonPointer,
-          value: resolvePointer(parsed, jsonPointer),
-        }));
-      });
+          value: resolvePointer(decoded, jsonPointer),
+        })));
+        if (evidence.length === 0 || evidence.some((entry) => entry.value === undefined)) {
+          return err('evidence_not_selectable', 'raw JSON spill does not contain every indexed evidence value.');
+        }
+      } else {
+        return err('evidence_not_selectable', 'scratch reference payload has no MCP content array or declared JSON body.');
+      }
       return { content: [{ type: 'text' as const, text: JSON.stringify({
         ok: true, file_path: abs, reference, evidence_class: args.evidence_class, evidence,
       }) }] };

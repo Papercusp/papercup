@@ -1116,6 +1116,14 @@ describe('dispatchPendingGradingAudits', () => {
     expect(brief).toContain("Dispatch lease: key 'grading-audit:EI-state-recheck', reservedAt '2026-09-08T00:00:00.000Z'");
     expect(brief).toContain("gradingAuditReservation:{ key:'grading-audit:EI-state-recheck', reservedAt:'2026-09-08T00:00:00.000Z' }");
     expect(brief).toContain('Before reading criterion evidence');
+    // WI-10006794: an auditor whose lease lapsed mid-audit must still emit; only a DIFFERENT
+    // (newer) reservation is a stop. Without this the emit-side lapsed-lease admission
+    // (EI-25246208524832409) is unreachable because the auditor declines before calling it.
+    expect(brief).toContain('This strict check applies only at the START of the audit');
+    expect(brief).toContain('a dispatchReservation that is ABSENT means only that your lease lapsed');
+    expect(brief).toContain('it is NOT a reason to stop');
+    expect(brief).toContain('emit with your original gradingAuditReservation unchanged');
+    expect(brief).toContain('Stop without emitting only when a dispatchReservation IS present and its key or reservedAt differs');
   });
 
   it('selects a settled card whose audit identity is stale and forwards currentness for atomic reopening', async () => {

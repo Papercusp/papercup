@@ -1,7 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { HostedDesktopWorkspace } from "./HostedDesktopWorkspace";
+import {
+  HostedDesktopWorkspace,
+  myDesktopEntry,
+  selectionAfterStart,
+} from "./HostedDesktopWorkspace";
 import type { HostedDesktopViewerState } from "./HostedDesktopViewer";
 import {
   HostedWorkspaceSession,
@@ -113,12 +117,27 @@ function DesktopConnection({
           ? current
           : [...current, desktop],
       );
-      if (!selectionRef.current) {
-        setSelection({ desktopSessionId: desktop.desktopSessionId, mode: "watch" });
-      }
+      const next = selectionAfterStart(desktop, selectionRef.current);
+      if (next) setSelection(next);
     },
     [setSelection],
   );
+  // personal-cloud-desktop P-005: "My desktop" opens the caller's own desktop in Take
+  // control — the running one straight from the roster, else a personal start whose
+  // result `selectionAfterStart` opens. A refusal shows up as `startError`.
+  const onOpenMyDesktop = useCallback(() => {
+    const own = myDesktopEntry(roster);
+    if (own) {
+      setSelection({ desktopSessionId: own.desktopSessionId, mode: "takeover" });
+      return;
+    }
+    if (!bridge) return;
+    setStartError(null);
+    if (!bridge.requestStart({ personal: true })) {
+      setStartState("error");
+      setStartError("controller_required");
+    }
+  }, [bridge, roster, setSelection]);
   const onRosterChange = useCallback((next: HostedDesktopRosterEntry[]) => {
     setRoster(next);
     setRosterError(null);
@@ -195,6 +214,7 @@ function DesktopConnection({
           hostId={workspace.id}
           routeLabel={routeLabel}
           bridge={bridge}
+          onOpenMyDesktop={onOpenMyDesktop}
           roster={roster}
           rosterState={rosterState}
           rosterError={rosterError}

@@ -145,14 +145,27 @@ async function backup(out, { replace = false } = {}) {
 // Read the existing Phone usage ledger; never infer "zero spend" from a
 // missing/unreadable policy or ledger. Only aggregate counts leave the process:
 // owner IDs, rate sheets, database URLs and provider events remain private.
+// The ledger (or the clock) could not be read. Distinct from an empty ledger:
+// this condition sends an operator to the database, so only a real read failure
+// may raise it (WI-10006811).
+export function usageTelemetryUnavailable() {
+  return { ok: false, action: 'usage-status', accountsChecked: 0,
+    alerts: [{ condition: 'usage-telemetry-unavailable', owner: 'phone-operations',
+      action: 'Verify the Phone usage ledger and approved policy source before admitting carrier traffic.' }] };
+}
+
 export function assessUsageAccounts(accounts, now = Date.now()) {
   const counts = { missingPolicy: 0, suspended: 0, expired: 0, exhausted: 0, malformed: 0 };
   const nonemptyText = value => typeof value === 'string' && value.trim().length > 0;
-  if (!Array.isArray(accounts) || accounts.length === 0 || accounts.length > 1000 ||
-      !Number.isFinite(now)) {
+  if (!Array.isArray(accounts) || accounts.length > 1000 || !Number.isFinite(now)) {
+    return usageTelemetryUnavailable();
+  }
+  if (accounts.length === 0) {
+    // Readable ledger, no account: still fail closed (no approved hard cap
+    // means carrier traffic must not be admitted, D-021), but name it for what it is.
     return { ok: false, action: 'usage-status', accountsChecked: 0,
-      alerts: [{ condition: 'usage-telemetry-unavailable', owner: 'phone-operations',
-        action: 'Verify the Phone usage ledger and approved policy source before admitting carrier traffic.' }] };
+      alerts: [{ condition: 'usage-account-missing', owner: 'phone-operations',
+        action: 'No Phone usage account with an approved hard cap exists; provision one (P-011, D-021) before admitting carrier traffic.' }] };
   }
   for (const account of accounts) {
     const policy = account?.policy;
@@ -204,7 +217,7 @@ async function usageStatus() {
     if (!result.ok) process.exitCode = 1;
   } catch {
     // Driver errors can embed a database URL. Refuse instead of leaking it.
-    console.log(JSON.stringify(assessUsageAccounts([])));
+    console.log(JSON.stringify(usageTelemetryUnavailable()));
     process.exitCode = 1;
   } finally { await sql.end({ timeout: 5 }).catch(() => {}); }
 }

@@ -156,6 +156,41 @@ describe('check-sidecar-fallback-reported guard', () => {
     expect(findUnreportedFallbacks(source)).toHaveLength(0);
     expect(findUnreportedFallbacks(source.replace("noteSidecarFallback('worktree-coverage', e)", 'console.warn(e)'))).toHaveLength(1);
   });
+
+  // WI-10006774: an injected seam with a sidecar DEFAULT reaches the sidecar through an
+  // indirect callee — `(seams.viaSidecar ?? runGitViaSpawnerSidecar)(...)`. The callee is
+  // a ParenthesizedExpression, not an Identifier, and the guard used to skip it entirely,
+  // so swapping the reporter for console.warn passed. Each shape must be policed exactly
+  // like a direct call: FIRE without the reporter, stay QUIET with it.
+  it.each([
+    ['parenthesized ?? default', '(seams.viaSidecar ?? runGitViaSpawnerSidecar)(args, cwd)'],
+    ['parenthesized || default', '(seams.viaSidecar || runGitViaSpawnerSidecar)(args, cwd)'],
+    ['ternary branch', '(useLocal ? runLocal : runGitStdinViaSpawnerSidecar)(args, cwd)'],
+    ['type-asserted callee', '(runGitViaSpawnerSidecar as typeof runLocal)(args, cwd)'],
+    ['const alias of an indirect default', 'viaSidecar(args, cwd)'],
+  ])('polices an indirect sidecar callee: %s', (_label, call) => {
+    const source = `
+      async function run(seams = {}, useLocal = false) {
+        const viaSidecar = seams.viaSidecar ?? runGitViaSpawnerSidecar;
+        try { return await ${call}; }
+        catch (e) { console.warn(e); }
+      }
+    `;
+    expect(findUnreportedFallbacks(source)).toHaveLength(1);
+    expect(findUnreportedFallbacks(source.replace('console.warn(e)', "noteSidecarFallback('x', e)"))).toHaveLength(0);
+  });
+
+  it('does not treat a let-bound or parameter callee as a sidecar call (no false positive)', () => {
+    const source = `
+      async function run(viaParam) {
+        let viaLet = runGitViaSpawnerSidecar;
+        viaLet = runLocal;
+        try { await viaLet(args, cwd); await viaParam(args, cwd); }
+        catch (e) { console.warn(e); }
+      }
+    `;
+    expect(findUnreportedFallbacks(source)).toHaveLength(0);
+  });
 });
 
 /**

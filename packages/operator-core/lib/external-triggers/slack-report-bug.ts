@@ -35,6 +35,12 @@ export interface SlackReportBugChannelRule {
   shortcut: boolean;
   mention: boolean;
   bugChannel: boolean;
+  /**
+   * Ordinary top-level posts in the channel reach the channel's chat rules, so a suggest rule
+   * can offer "looks like a bug" privately (slack-messages-to-bug-reports D-010). Routing only:
+   * a post is never a report by itself; the channel's admission rules decide what happens.
+   */
+  suggest: boolean;
 }
 
 export interface SlackReportBugConfig {
@@ -98,6 +104,7 @@ export function slackReportBugConfig(sourceConfig: Record<string, unknown>): Sla
       shortcut: rule.shortcut === true,
       mention: rule.mention === true,
       bugChannel: rule.bugChannel === true,
+      suggest: rule.suggest === true,
     };
   }
   const botUserId = text(sourceConfig.botUserId).trim();
@@ -117,6 +124,74 @@ export function slackReportBugGestureEnabled(
   const rule = config.channels[channelId] ?? config.channels['*'];
   if (!rule) return false;
   return gesture === 'bug-channel' ? rule.bugChannel : rule[gesture];
+}
+
+function channelRule(config: SlackReportBugConfig, channelId: string | null): SlackReportBugChannelRule | null {
+  if (!channelId) return null;
+  return config.channels[channelId] ?? config.channels['*'] ?? null;
+}
+
+/**
+ * An ordinary top-level post in a channel whose `suggest` switch is on, as a chat event the chat
+ * admission sink can evaluate (D-010). Null for anything else: a DM, a reply, a bot or edited
+ * message, a post in a bug channel (that is already a report), or a channel without the switch.
+ */
+export function slackSuggestPostEvent(
+  envelope: SlackSocketEnvelope,
+  config: SlackReportBugConfig,
+): SlackNormalizedEvent | null {
+  if (envelope.type !== 'events_api') return null;
+  const payload = envelope.payload ?? {};
+  const event = record(payload.event);
+  const eventId = text(payload.event_id);
+  if (!event || !eventId || text(event.type) !== 'message' || event.bot_id || event.subtype) return null;
+  const channelId = text(event.channel) || null;
+  const ts = slackTs(event.ts);
+  const user = text(event.user);
+  const message = text(event.text);
+  if (!channelId || !ts || !user || !message || user === config.botUserId) return null;
+  const channelType = text(event.channel_type);
+  if (channelType === 'im' || channelType === 'mpim' || channelId.startsWith('D')) return null;
+  const threadTs = slackTs(event.thread_ts);
+  if (threadTs && threadTs !== ts) return null;
+  const rule = channelRule(config, channelId);
+  if (!rule?.suggest || rule.bugChannel) return null;
+  const occurredAt = occurredAtOf(ts);
+  return {
+    event: 'message',
+    externalId: eventId,
+    dedupeKey: `slack:${eventId}`,
+    occurredAt,
+    channelId,
+    payload: compact({
+      id: eventId,
+      channelId,
+      threadId: ts,
+      sender: user,
+      text: message,
+      occurredAt: occurredAt ?? undefined,
+      mentions: mentionsIn(message),
+      slackEventType: 'message',
+      target: { channelId, ts, text: message },
+    }),
+  };
+}
+
+/**
+ * The private "looks like a bug" note for a post in this channel, naming only the report gestures
+ * switched on there (D-010). Null when none is, because then the note would advise something that
+ * does nothing.
+ */
+export function slackSuggestionNote(config: SlackReportBugConfig, channelId: string): string | null {
+  const rule = channelRule(config, channelId);
+  if (!rule) return null;
+  const ways: string[] = [];
+  if (rule.reaction) ways.push(`react :${config.emoji}:`);
+  if (rule.shortcut) ways.push('use the "Report a bug" shortcut on it');
+  if (rule.mention && config.botUserId) ways.push(`reply in its thread with <@${config.botUserId}> bug`);
+  if (ways.length === 0) return null;
+  const list = ways.length === 1 ? ways[0] : `${ways.slice(0, -1).join(', ')} or ${ways[ways.length - 1]}`;
+  return `Looks like a bug. ${list.charAt(0).toUpperCase()}${list.slice(1)} to report it.`;
 }
 
 /**

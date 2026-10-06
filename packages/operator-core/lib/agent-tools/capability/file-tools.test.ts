@@ -504,6 +504,40 @@ describe('capability:read', () => {
     });
   });
 
+  it('resolves typed evidence from an ordinary JSON spill using its declared body offset', async () => {
+    const f = join(DIR, 'ordinary-json-evidence-reference.txt');
+    const prefix = '# Result summary and paging guidance\n\n';
+    const body = JSON.stringify({
+      ok: true,
+      results: [{ id: 'EI-123', workItem: { id: 'EI-123', state: 'open' } }],
+    });
+    writeScratchReference({
+      filePath: f,
+      payload: `${prefix}${body}`,
+      workspaceId: 'ws-1',
+      mediaType: 'text/plain',
+      content: [{ index: 0, type: 'text', byteCount: Buffer.byteLength(body) }],
+      evidence: [{ evidenceClass: 'work-item', contentIndex: 0, jsonPointers: ['/results/0/workItem'] }],
+      bodyOffsetInPayload: Buffer.byteLength(prefix),
+    });
+
+    const selected = (await readTool.handler!(
+      { file_path: f, evidence_class: 'work-item' },
+      { ...baseCtx, workspaceId: 'ws-1' } as never,
+    )) as { content: Array<{ text: string }>; isError?: boolean };
+
+    expect(selected.isError).not.toBe(true);
+    expect(parse(selected)).toMatchObject({
+      ok: true,
+      evidence_class: 'work-item',
+      evidence: [{
+        contentIndex: 0,
+        jsonPointer: '/results/0/workItem',
+        value: { id: 'EI-123', state: 'open' },
+      }],
+    });
+  });
+
   it('directs text scratch spills to byte windows when evidence selection needs JSON', async () => {
     const f = join(DIR, 'markdown-evidence-reference.txt');
     const payload = '## Work item\nID: EI-123\n';
@@ -524,7 +558,7 @@ describe('capability:read', () => {
     expect(parse(selected)).toMatchObject({
       ok: false,
       reason: 'evidence_not_selectable',
-      message: 'scratch reference payload is not JSON. Use line or byte windows for text or Markdown spills.',
+      message: 'scratch reference JSON body is not valid JSON. Use line or byte windows for text or Markdown spills.',
     });
 
     const bytes = (await readTool.handler!(

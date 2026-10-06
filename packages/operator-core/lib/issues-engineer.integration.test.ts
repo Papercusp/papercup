@@ -310,11 +310,48 @@ describe('engineer issues surface (real PG)', () => {
       createdBy: 'agA',
       payload: { reporterNote: 'preserved' },
     });
-    // (The creation-enrollment readiness stamp is asserted on its own below.)
+    // (The creation-enrollment readiness stamp and the reporter stamp are
+    // asserted on their own below.)
     expect(task.payload).toEqual({
       reporterNote: 'preserved',
       implementationReadiness: expect.objectContaining({ source: 'creation-enrollment' }),
+      reporter: expect.objectContaining({ kind: 'agent' }),
+      reporterKinds: ['agent'],
     });
+  });
+
+  it('stamps reporter provenance on every issue-family row, deriving it for writers that bypass capture (unified-bug-pipeline P-010)', async () => {
+    const stamp = Date.now();
+    const agent = await issues.createIssue({ title: `reporter agent ${stamp}`, kind: 'bug', createdBy: 'agA' });
+    expect(agent.payload).toMatchObject({
+      reporter: { kind: 'agent', id: 'agA', basis: 'agent-session', at: expect.any(String) },
+      reporterKinds: ['agent'],
+    });
+
+    // The falsifier class measured on 2026-10-06: machine conditions written
+    // straight to createIssue with no session (LEARNING LOOP, LOOP WEDGED, green-stall).
+    const noSession = await issues.createIssue({ title: `reporter no-session ${stamp}`, kind: 'bug' });
+    expect(noSession.payload).toMatchObject({
+      reporter: { kind: 'watchdog', id: null, basis: 'no-session' },
+      reporterKinds: ['watchdog'],
+    });
+
+    const system = await issues.createIssue({
+      title: `reporter system ${stamp}`,
+      kind: 'bug',
+      createdBy: 'system:green-checkpoint',
+    });
+    expect(system.payload).toMatchObject({ reporter: { kind: 'watchdog', basis: 'system-identity' } });
+
+    // A door that already stamped the row (capture, the end-user reporter) is never overwritten.
+    const preset = { kind: 'end-user', id: 'install-7', basis: 'explicit', at: '2026-10-06T00:00:00.000Z' };
+    const endUser = await issues.createIssue({
+      title: `reporter end-user ${stamp}`,
+      kind: 'bug',
+      createdBy: 'system:relay',
+      payload: { reporter: preset, reporterKinds: ['end-user'] },
+    });
+    expect(endUser.payload).toMatchObject({ reporter: preset, reporterKinds: ['end-user'] });
   });
 
   it('enrolls verdict-less issue-family rows as unknown at creation, never ready (P-005 D-009a / D-011)', async () => {

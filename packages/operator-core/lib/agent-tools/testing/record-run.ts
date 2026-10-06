@@ -14,6 +14,8 @@ import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
+import { getOrgPg } from '@papercusp/db-org';
+import { parseTestRunExecutionDetails, isRecordedCaseTitle } from '@papercusp/test-config/execution-details';
 import { runGit } from '../../harness/docs/git-runner';
 import {
   findHarnessTestRunIds,
@@ -69,6 +71,11 @@ const operationalEvidenceArtifactSchema = z
       .min(1)
       .max(100),
     mutationProbes: z.array(mutationProbeReplaySchema).min(1).max(100).optional(),
+    archivedMutation: z.object({
+      originalTestRunId: z.number().int().positive(),
+      rawLogFile: z.string().min(1).max(400),
+      rawLogSha256: sha256Schema,
+    }).optional(),
   })
   .passthrough();
 
@@ -79,6 +86,23 @@ export interface CommittedOperationalEvidence {
   filePath: string;
   sha256: string;
   commit: string;
+  /** Exact committed bytes loaded by the inspector, never caller-supplied names. */
+  archiveLog?: string;
+}
+
+export interface ArchivedMutationRun {
+  id: number | string;
+  file_path: string;
+  status: string;
+  source: string;
+  framework: string;
+  workspace_id: string | null;
+  harness_slug: string | null;
+  commit_sha: string | null;
+  worktree_dirty: boolean;
+  started_at: string | Date;
+  finished_at: string | Date | null;
+  execution_details: unknown;
 }
 
 type RecordContext = {
@@ -95,12 +119,22 @@ export interface RecordOperationalRunDeps {
   ) => CommittedOperationalEvidence | Promise<CommittedOperationalEvidence>;
   findIds: typeof findHarnessTestRunIds;
   persist: (params: PersistHarnessTestRunsParams) => Promise<PersistHarnessTestRunsResult>;
+  readArchivedRun?: (id: number, scope: { workspaceId: string; harnessSlug: string }) => Promise<ArchivedMutationRun | null>;
 }
 
 const DEFAULT_DEPS: RecordOperationalRunDeps = {
   inspectEvidence: inspectCommittedOperationalEvidence,
   findIds: findHarnessTestRunIds,
   persist: persistHarnessTestRunsWithIds,
+  async readArchivedRun(id, scope) {
+    const { sql } = getOrgPg();
+    const rows = await sql`
+      SELECT id, file_path, status, source, framework, workspace_id, harness_slug,
+             commit_sha, worktree_dirty, started_at, finished_at, execution_details
+        FROM harness_shared.test_runs
+       WHERE id = ${id} AND workspace_id = ${scope.workspaceId} AND harness_slug = ${scope.harnessSlug}`;
+    return (rows[0] as unknown as ArchivedMutationRun | undefined) ?? null;
+  },
 };
 
 function insideRoot(root: string, candidate: string): boolean {
@@ -137,6 +171,9 @@ export function parseOperationalEvidenceArtifact(bytes: Buffer): OperationalEvid
     throw new Error(`evidence_schema_invalid: ${issues.join('; ') || 'invalid'}${more}`);
   }
   const artifact = result.data;
+  if (artifact.archivedMutation && !artifact.mutationProbes?.length) {
+    throw new Error('evidence_archived_mutation_probe_required');
+  }
   const mutationProbeEvidence =
     artifact.mutationProbes !== undefined ||
     artifact.command.some((part) => /mutation[-_ ]probe/i.test(part)) ||
@@ -237,12 +274,95 @@ export async function inspectCommittedOperationalEvidence(
     }
   }
 
+  let archiveLog: string | undefined;
+  if (artifact.archivedMutation) {
+    const archive = artifact.archivedMutation;
+    const path = archive.rawLogFile;
+    if (!path.startsWith('docs/evidence/') || !path.endsWith('.log') || path.includes('\\')
+      || path.split('/').includes('..') || path.includes('\0')) throw new Error('evidence_archive_path_invalid');
+    const absoluteLog = realpathSync(resolve(realRoot, path));
+    if (!insideRoot(realRoot, absoluteLog) || !statSync(absoluteLog).isFile()) throw new Error('evidence_archive_path_invalid');
+    if (statSync(absoluteLog).size > 2 * 1024 * 1024) throw new Error('evidence_archive_too_large');
+    const logBytes = readFileSync(absoluteLog);
+    if (createHash('sha256').update(logBytes).digest('hex') !== archive.rawLogSha256) {
+      throw new Error('evidence_archive_sha256_mismatch');
+    }
+    if (!(await gitOutput(realRoot, ['show', `HEAD:${path}`])).equals(logBytes)) {
+      throw new Error('evidence_archive_not_committed');
+    }
+    archiveLog = logBytes.toString('utf8');
+  }
   return {
     artifact,
     filePath: normalized,
     sha256,
     commit,
+    ...(archiveLog === undefined ? {} : { archiveLog }),
   };
+}
+
+/** Validate a saved machine log against an exact scoped receipt. No historical row is updated. */
+export function recoverArchivedMutationFailures(
+  evidence: CommittedOperationalEvidence,
+  original: ArchivedMutationRun | null,
+  scope: { workspaceId: string; harnessSlug: string },
+) {
+  const archive = evidence.artifact.archivedMutation;
+  const detail = parseTestRunExecutionDetails(original?.execution_details);
+  if (!archive || !evidence.archiveLog || !original || !detail
+    || Number(original.id) !== archive.originalTestRunId
+    || original.workspace_id !== scope.workspaceId || original.harness_slug !== scope.harnessSlug
+    || detail.workspaceId !== scope.workspaceId || detail.harnessSlug !== scope.harnessSlug
+    || original.source !== 'mutation-probe' || original.status !== 'fail' || original.framework !== 'vitest'
+    || original.worktree_dirty !== false || detail.worktreeDirty !== false
+    || detail.collectionFailed !== false || detail.mutationPhase !== 'mutant'
+    || detail.failed === 0 || original.commit_sha !== detail.commitSha
+    || !original.commit_sha || !/^[a-f0-9]{40}$/.test(original.commit_sha)
+    || original.file_path !== detail.filePath) throw new Error('evidence_archive_receipt_mismatch');
+  const lines = evidence.archiveLog.split('\n');
+  const titles: string[] = [];
+  const quoted = '"(?:[^"\\\\]|\\\\.)*"';
+  const assertion = new RegExp(`^TEST_FILE_ASSERTION_FAILURE file=(${quoted}) name=(${quoted}) message=`);
+  for (const line of lines.filter(line => line.startsWith('TEST_FILE_ASSERTION_FAILURE '))) {
+    const match = assertion.exec(line);
+    if (!match) throw new Error('evidence_archive_assertion_invalid');
+    const file: unknown = JSON.parse(match[1]);
+    const title: unknown = JSON.parse(match[2]);
+    if (file !== resolve(detail.root, detail.filePath) || !isRecordedCaseTitle(title)) {
+      throw new Error('evidence_archive_assertion_mismatch');
+    }
+    titles.push(title);
+  }
+  if (titles.length !== detail.failed || new Set(titles).size !== titles.length
+    || (detail.failedCaseTitles !== undefined && JSON.stringify(detail.failedCaseTitles) !== JSON.stringify(titles))) {
+    throw new Error('evidence_archive_failed_cases_mismatch');
+  }
+  const probes = lines.filter(line => line.startsWith('MUTATION_PROBE_EVIDENCE_JSON='));
+  if (probes.length !== 1 || evidence.artifact.mutationProbes?.length !== 1) throw new Error('evidence_archive_probe_mismatch');
+  const probe = mutationProbeReplaySchema.parse(JSON.parse(probes[0].slice('MUTATION_PROBE_EVIDENCE_JSON='.length)));
+  if (JSON.stringify(probe) !== JSON.stringify(evidence.artifact.mutationProbes[0])
+    || probe.runnerCommit !== original.commit_sha || probe.result.verdict !== 'caught'
+    || probe.result.expected !== 'caught' || probe.result.guardExit === 0 || probe.result.baselineExit !== 0
+    || probe.result.assertionEvidence !== 'test-file-assertion-failure') throw new Error('evidence_archive_probe_mismatch');
+  const marker = lines.filter(line => line.startsWith('TEST_FILE_RESULT ')).at(-1) ?? '';
+  if (!marker.includes('requested=1 executed=1 matched=1 status=failed ')
+    || !marker.includes(`head=${original.commit_sha.slice(0, 10)} `)
+    || !marker.includes('uncommittedPaths=0/1 provenance=stamped ')
+    || !marker.endsWith(`skippedTests=${detail.skipped}`)) throw new Error('evidence_archive_verdict_mismatch');
+  const summary = lines.filter(line => /^\s*Tests\s/.test(line)).at(-1) ?? '';
+  const count = (status: string) => Number(new RegExp(`(\\d+) ${status}`).exec(summary)?.[1] ?? 0);
+  if (count('failed') !== detail.failed || count('passed') !== detail.passed || count('skipped') !== detail.skipped) {
+    throw new Error('evidence_archive_counts_mismatch');
+  }
+  const stamps = lines.filter(line => line.startsWith('TEST_FILE_PROVENANCE ')).slice(-2);
+  const pre = /phase=pre-run startedAt=(\S+)/.exec(stamps[0] ?? '');
+  const post = /phase=post-run startedAt=(\S+)/.exec(stamps[1] ?? '');
+  const startedAt = new Date(original.started_at);
+  const finishedAt = new Date(original.finished_at ?? NaN);
+  if (!pre || !post || !Number.isFinite(startedAt.getTime()) || !Number.isFinite(finishedAt.getTime())
+    || !(Date.parse(pre[1]) <= startedAt.getTime() && startedAt.getTime() <= finishedAt.getTime()
+      && finishedAt.getTime() <= Date.parse(post[1]))) throw new Error('evidence_archive_time_mismatch');
+  return { detail, titles, startedAt, finishedAt };
 }
 
 function derivedVerdict(artifact: OperationalEvidenceArtifact): 'pass' | 'fail' {
@@ -278,6 +398,38 @@ export async function recordOperationalRun(
     evidence = await deps.inspectEvidence(resolveAgentWorkspaceRoot(ctx), args.evidenceFile, args.expectedSha256);
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : 'evidence_unreadable' };
+  }
+
+  if (evidence.artifact.archivedMutation) {
+    const archive = evidence.artifact.archivedMutation;
+    try {
+      const original = await deps.readArchivedRun?.(archive.originalTestRunId, { workspaceId, harnessSlug }) ?? null;
+      const recovered = recoverArchivedMutationFailures(evidence, original, { workspaceId, harnessSlug });
+      const runGroupId = `archive-mutation:${archive.originalTestRunId}:${evidence.sha256.slice(0, 40)}`;
+      const existing = await deps.findIds({ workspaceId, harnessSlug, runGroupId, filePath: original!.file_path });
+      if (existing.length > 0) return { ok: true, alreadyRecorded: true, runGroupId, testRunIds: existing,
+        status: 'fail' as const, recoveredFromTestRunId: archive.originalTestRunId,
+        evidence: { filePath: evidence.filePath, sha256: evidence.sha256, commit: evidence.commit } };
+      const { root, testNamePattern, mutationPhase, passed, failed, skipped, collectionFailed,
+        testLayer, runStartedAt } = recovered.detail;
+      const execution = { passed, failed, skipped, collectionFailed,
+        ...(testLayer === undefined ? {} : { testLayer }),
+        ...(runStartedAt === undefined ? {} : { runStartedAt }) };
+      const persisted = await deps.persist({ workspaceId, harnessSlug, runGroupId, root, testNamePattern, mutationPhase,
+        source: 'mutation-probe', commit: original!.commit_sha, worktreeDirty: false,
+        rows: [{ filePath: original!.file_path, framework: 'vitest', status: 'fail',
+          startedAt: recovered.startedAt, finishedAt: recovered.finishedAt,
+          durationMs: recovered.finishedAt.getTime() - recovered.startedAt.getTime(),
+          outputTail: `ARCHIVED MUTATION: original_test_run_id=${archive.originalTestRunId}; artifact=${evidence.filePath}; artifact_sha256=${evidence.sha256}; raw_log_sha256=${archive.rawLogSha256}. No new test execution.`,
+          execution: { ...execution, failedCaseTitles: recovered.titles } }],
+      });
+      if (persisted.written !== 1 || persisted.ids.length !== 1) return { ok: false, error: 'ledger_write_failed' as const, runGroupId };
+      return { ok: true, alreadyRecorded: false, runGroupId, testRunIds: persisted.ids, status: 'fail' as const,
+        recoveredFromTestRunId: archive.originalTestRunId,
+        evidence: { filePath: evidence.filePath, sha256: evidence.sha256, commit: evidence.commit } };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : 'evidence_archive_unreadable' };
+    }
   }
 
   const runGroupId = `operational:${evidence.sha256.slice(0, 40)}`;
@@ -339,6 +491,7 @@ export default defineTool({
       'Executing Vitest files (use testing:run), recording a temporary /tmp log, or manufacturing proof for a run that did not happen. Commit a self-describing docs/evidence JSON artifact first.',
     chaining:
       'Run the operational check → write and commit its docs/evidence JSON artifact → testing:record-run → bind the returned numeric testRunIds with plans:bind-spec-evidence.',
+    notes: 'For a completed clean mutation-probe whose ledger tail lost case names, the artifact may include archivedMutation:{originalTestRunId,rawLogFile,rawLogSha256}. The committed machine log must match the exact scoped receipt, probe, verdict, counts, file and time window. This appends an explicitly labelled recovery record; it does not execute tests or overwrite the original receipt.',
   },
   capability: 'testing:run',
   requirePrincipal: false,

@@ -2587,17 +2587,20 @@ describe('runGitSync (real git, no submodule)', () => {
   it('clearStaleIndexLock unit edges: already-gone lock ⇒ retry ok; unlink failure ⇒ no retry', async () => {
     const fakeRunGit: RunGit = async () => ({ code: 0, stdout: '/fake/.git\n', stderr: '' });
     const logs: string[] = [];
+    // One STABLE snapshot: clearStaleIndexLock inspects before and after the holder
+    // check and refuses when the two differ (WI-10006519).
+    const orphan = { mtimeMs: Date.now() - 10 * 60_000, size: 0, dev: 1, ino: 2 };
     // lock vanished between the failure and the heal (holder finished) — retry is safe
     expect(
       await clearStaleIndexLock(fakeRunGit, '/fake', (m) => logs.push(m), {
-        statMtimeMs: async () => null,
+        inspectLock: async () => null,
         hasLiveHolder: async () => false,
       }),
     ).toBe(true);
     // stale but unlink throws (permissions) — do NOT claim healed
     expect(
       await clearStaleIndexLock(fakeRunGit, '/fake', (m) => logs.push(m), {
-        statMtimeMs: async () => Date.now() - 10 * 60_000,
+        inspectLock: async () => orphan,
         hasLiveHolder: async () => false,
         unlinkFile: async () => {
           throw new Error('EACCES');
@@ -2610,11 +2613,12 @@ describe('runGitSync (real git, no submodule)', () => {
     const fakeRunGit: RunGit = async () => ({ code: 0, stdout: '/fake/.git\n', stderr: '' });
     const logs: string[] = [];
     const unlinked: string[] = [];
+    const orphan = { mtimeMs: Date.now() - 10 * 60_000, size: 0, dev: 1, ino: 2 };
     // mtime says stale (staleMs:0 makes ANY age stale), but a live writer holds the fd —
     // this is the exact shape that truncated the canonical index to 0 bytes.
     expect(
       await clearStaleIndexLock(fakeRunGit, '/fake', (m) => logs.push(m), {
-        statMtimeMs: async () => Date.now() - 10 * 60_000,
+        inspectLock: async () => orphan,
         staleMs: 0,
         hasLiveHolder: async () => true,
         unlinkFile: async (p) => {
@@ -2627,7 +2631,7 @@ describe('runGitSync (real git, no submodule)', () => {
     // same lock, same age, but no live holder ⇒ the stale-orphan path unlinks as before
     expect(
       await clearStaleIndexLock(fakeRunGit, '/fake', (m) => logs.push(m), {
-        statMtimeMs: async () => Date.now() - 10 * 60_000,
+        inspectLock: async () => orphan,
         staleMs: 0,
         hasLiveHolder: async () => false,
         unlinkFile: async (p) => {
@@ -2636,6 +2640,61 @@ describe('runGitSync (real git, no submodule)', () => {
       }),
     ).toBe(true);
     expect(unlinked).toEqual(['/fake/.git/index.lock']);
+  });
+
+  it('clearStaleIndexLock CHECK-THEN-ACT guard (WI-10006519): a lock REPLACED during the holder check is never unlinked', async () => {
+    const fakeRunGit: RunGit = async () => ({ code: 0, stdout: '/fake/.git\n', stderr: '' });
+    const logs: string[] = [];
+    const unlinked: string[] = [];
+    // The aged 0-byte orphan is judged, then — while the (slow) holder scan runs —
+    // it is removed and a different writer creates a fresh lock at the same path.
+    // On 2026-10-06 the bg-host scan took ~10 min, so this window was real.
+    const orphan = { mtimeMs: Date.now() - 10 * 60_000, size: 0, dev: 1, ino: 2 };
+    const liveWriter = { mtimeMs: Date.now(), size: 3_900_000, dev: 1, ino: 3 };
+    const inspections = [orphan, liveWriter];
+    expect(
+      await clearStaleIndexLock(fakeRunGit, '/fake', (m) => logs.push(m), {
+        inspectLock: async () => inspections.shift() ?? null,
+        hasLiveHolder: async () => false,
+        unlinkFile: async (p) => {
+          unlinked.push(p);
+        },
+      }),
+    ).toBe(false);
+    expect(unlinked).toEqual([]);
+    expect(logs.some((m) => m.includes('CHANGED during the holder check'))).toBe(true);
+
+    // The orphan simply disappears during the check (its owner cleaned up) — retry, no unlink.
+    const vanishing = [orphan, null];
+    expect(
+      await clearStaleIndexLock(fakeRunGit, '/fake', (m) => logs.push(m), {
+        inspectLock: async () => vanishing.shift() ?? null,
+        hasLiveHolder: async () => false,
+        unlinkFile: async (p) => {
+          unlinked.push(p);
+        },
+      }),
+    ).toBe(true);
+    expect(unlinked).toEqual([]);
+  });
+
+  it('clearStaleIndexLock logs how long the holder check took, and flags a slow one (WI-10006519)', async () => {
+    const fakeRunGit: RunGit = async () => ({ code: 0, stdout: '/fake/.git\n', stderr: '' });
+    const logs: string[] = [];
+    const orphan = { mtimeMs: 0, size: 0, dev: 1, ino: 2 };
+    // now(): 10 min after the orphan's mtime for the age read, then the holder
+    // check is timed at start and end, 12.3 s apart.
+    const clock = [600_000, 600_000, 612_300];
+    expect(
+      await clearStaleIndexLock(fakeRunGit, '/fake', (m) => logs.push(m), {
+        inspectLock: async () => orphan,
+        now: () => clock.shift() ?? 612_300,
+        hasLiveHolder: async () => false,
+        unlinkFile: async () => {},
+      }),
+    ).toBe(true);
+    const cleared = logs.find((m) => m.includes('cleared STALE index.lock'));
+    expect(cleared).toContain('holder check 12.3s — SLOW (WI-10006519)');
   });
 
   it('clearStaleConfigLock removes only an old empty holderless lock', async () => {
@@ -3358,6 +3417,52 @@ describe('runGitSync (real git, with a submodule) — P-007 submodule-push-first
       // and that submodule commit exists on the submodule's origin (pin is reachable remotely)
       expect(() => git(subOrigin, 'cat-file', '-e', `${subHead}^{commit}`)).not.toThrow();
     });
+  });
+
+  it('EI-25243356801974396: merges a submodule pin when the incoming pin is an ancestor of the local pin', async () => {
+    const subRepo = join(repo, 'libs/sub');
+    git(subRepo, 'switch', 'main');
+
+    // The remote superproject will point at this commit; the local pointer will
+    // advance one commit further, so merge-ort should retain the local gitlink.
+    writeFileSync(join(subRepo, 'incoming.txt'), 'incoming submodule commit\n');
+    git(subRepo, 'add', '-A');
+    git(subRepo, 'commit', '--no-verify', '-m', 'incoming submodule commit');
+    const incomingSub = git(subRepo, 'rev-parse', 'HEAD');
+    git(subRepo, 'push', 'origin', 'HEAD:main');
+
+    writeFileSync(join(subRepo, 'local.txt'), 'local descendant\n');
+    git(subRepo, 'add', '-A');
+    git(subRepo, 'commit', '--no-verify', '-m', 'local submodule descendant');
+    const localSub = git(subRepo, 'rev-parse', 'HEAD');
+    git(subRepo, 'commit-graph', 'write', '--reachable');
+
+    writeFileSync(join(repo, 'local-superproject.txt'), 'local superproject commit\n');
+    git(repo, 'add', 'libs/sub', 'local-superproject.txt');
+    git(repo, 'commit', '--no-verify', '-m', 'local superproject descendant pin');
+
+    // Publish a sibling superproject commit whose gitlink points at incomingSub.
+    const other = join(root, 'other');
+    git(root, 'clone', superOrigin, other);
+    configUser(other);
+    git(other, ...allowFile, 'submodule', 'update', '--init', '--recursive');
+    const otherSub = join(other, 'libs/sub');
+    git(otherSub, 'fetch', 'origin', 'main');
+    git(otherSub, 'checkout', '--detach', incomingSub);
+    writeFileSync(join(other, 'remote-superproject.txt'), 'remote superproject commit\n');
+    git(other, 'add', 'libs/sub', 'remote-superproject.txt');
+    git(other, 'commit', '--no-verify', '-m', 'remote superproject descendant pin');
+    git(other, 'push', 'origin', 'main');
+
+    const out = await runGitSync('test', {
+      repoPath: repo,
+      config: { push: false, pushSubmodules: false },
+    });
+
+    expect(out.status, JSON.stringify(out)).toBe('synced');
+    expect(git(repo, 'show', 'HEAD:remote-superproject.txt')).toBe('remote superproject commit');
+    expect(git(repo, 'rev-parse', 'HEAD:libs/sub')).toBe(localSub);
+    expect(git(repo, 'status', '--porcelain')).toBe('');
   });
 
   const makeMigrationFenceInputs = () => {

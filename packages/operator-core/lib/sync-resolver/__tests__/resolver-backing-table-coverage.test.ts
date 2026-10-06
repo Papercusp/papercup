@@ -136,6 +136,15 @@ const PUSH_EXEMPT: Record<string, string> = {
   'sidebar.hives :: harness_shared.shared_presence':
     'continuous presence heartbeat; per-row notify = notify-storm. Poll-only by design.',
 
+  // Local desktops reads the desktop-session roster and each session owner's current claim.
+  // Registry writes explicitly announce desktops.local; claims are lease-renewed and the
+  // visible grid refreshes them on its visible tick instead of emitting a row notification.
+  // RE-ARM: replace these with mapped, appropriately scoped producers if either contract changes.
+  'desktops.local :: harness_shared.desktop_sessions':
+    'desktop-session-registry calls announceRosterChange() after roster-visible writes; keep that push on every registry writer.',
+  'desktops.local :: harness_shared.work_item_claims':
+    'claim attribution refreshes on the visible grid tick; per-row NOTIFY would fire on lease-renewal heartbeats. Add a scoped/debounced producer before requiring immediate refresh.',
+
   // The derived-reads precompute substrate. These six resolvers are plain SELECTs against the
   // snapshot table, and the PRODUCER already pushes for them: derived-reads/registry.ts fires
   // notifySyncInvalidate(producer.key) after the upsert and ONLY when the payload md5 actually

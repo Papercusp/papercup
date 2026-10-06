@@ -220,12 +220,14 @@ describe('scorecards:get evidence-first projection', () => {
       { name: 'scorecards:get', args },
       { dispatchTool: async () => nested },
     );
+    doorConstantsMock.mockReturnValue({ ...BAKED_DOOR_CONSTANTS, maxTurnFloorTokens: 3_200 });
     const finalResult = applyResultDoor(invoked, {
       toolName: 'tools:invoke',
+      nestedTargetToolName: 'scorecards:get',
       workspaceId: 'scorecards-get-test',
     });
     const door = finalResult._meta?.resultDoor as { truncated?: boolean } | undefined;
-    expect(door?.truncated).not.toBe(true);
+    expect(door?.truncated).toBe(true);
 
     const payload = JSON.parse(finalResult.content[0]!.text) as {
       scorecard: { criteria: Array<{ evidence: string }> };
@@ -239,6 +241,9 @@ describe('scorecards:get evidence-first projection', () => {
     const page = payload.scorecard.criteria[0]?.evidence ?? '';
     expect(payload.evidenceRead.offset).toBe(0);
     expect(payload.evidenceRead.totalChars).toBe(evidence.length);
+    expect(payload.evidenceRead.complete).toBe(false);
+    expect(page.length).toBeLessThan(evidence.length);
+    expect(payload.evidenceRead.next?.args.evidenceOffset).toBe(page.length);
     if (payload.evidenceRead.complete) {
       expect(page).toBe(evidence);
       expect(payload.evidenceRead.next).toBeUndefined();

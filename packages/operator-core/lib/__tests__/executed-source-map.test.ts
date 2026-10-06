@@ -244,19 +244,38 @@ describe('env toggles + database precedence', () => {
   });
 
   it('reads the map from the SAME database the recording reporter writes to', () => {
+    // WI-10006736: the dedicated ledger variable wins, so an isolated verifier that points
+    // HARNESS_ADMIN_DATABASE_URL at a throwaway database still records into the shared ledger.
     expect(resolveExecutedMapPgUrl({ HARNESS_ADMIN_DATABASE_URL: 'postgresql://a', PAPERCUSP_TEST_RUNS_DB_URL: 'postgresql://b' })).toEqual({
-      url: 'postgresql://a',
-      source: 'HARNESS_ADMIN_DATABASE_URL',
-    });
-    expect(resolveExecutedMapPgUrl({ PAPERCUSP_TEST_RUNS_DB_URL: 'postgresql://b' })).toEqual({
       url: 'postgresql://b',
       source: 'PAPERCUSP_TEST_RUNS_DB_URL',
+    });
+    expect(resolveExecutedMapPgUrl({ HARNESS_ADMIN_DATABASE_URL: 'postgresql://a' })).toEqual({
+      url: 'postgresql://a',
+      source: 'HARNESS_ADMIN_DATABASE_URL',
     });
     const dflt = resolveExecutedMapPgUrl({});
     expect(dflt.source).toBe('default');
     // Pinned against the reporter's own fallback so the two sides cannot drift apart silently.
     const reporter = readFileSync(join(REPO_ROOT, 'libs/test-config/src/admin-test-runs-reporter.ts'), 'utf8');
     expect(reporter).toContain(`'${dflt.url}'`);
+  });
+
+  it('every live test-ledger writer resolves the dedicated ledger URL before the app admin URL', () => {
+    // The writers are separate `??` chains, not one shared function, so this pins their
+    // ORDER: a writer that reverts to HARNESS_ADMIN_DATABASE_URL-first silently sends an
+    // isolated run's rows into the throwaway database (WI-10006736).
+    const writers = [
+      'libs/test-config/src/admin-test-runs-reporter.ts',
+      'apps/operator/test/reporters/admin-test-runs-reporter-playwright.ts',
+      'apps/operator/scripts/prune-test-runs.ts',
+    ];
+    const chain = /process\.env\.(PAPERCUSP_TEST_RUNS_DB_URL|HARNESS_ADMIN_DATABASE_URL)\s*\?\?\s*process\.env\.(PAPERCUSP_TEST_RUNS_DB_URL|HARNESS_ADMIN_DATABASE_URL)\s*\?\?/g;
+    for (const rel of writers) {
+      const src = readFileSync(join(REPO_ROOT, rel), 'utf8');
+      const chains = [...src.matchAll(chain)].map((m) => `${m[1]}>${m[2]}`);
+      expect(chains, rel).toEqual(['PAPERCUSP_TEST_RUNS_DB_URL>HARNESS_ADMIN_DATABASE_URL']);
+    }
   });
 });
 

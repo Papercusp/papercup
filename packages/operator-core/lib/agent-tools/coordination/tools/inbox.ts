@@ -53,9 +53,11 @@ import { annotateBlockedOnStatus } from "../blocked-on-status";
 import { resolveBestEffort, knownOwnerIdSet } from "../recipient-resolve";
 import {
   BODY_REF_SNIPPET_CHARS,
+  canonicalRefKey,
   detectEntryBodyRefs,
   isBodyRefEligible,
   readBodyRefsOptOut,
+  type HydratableRef,
   type HydratedRef,
 } from "../ref-hydrate";
 import {
@@ -1524,27 +1526,28 @@ export default defineTool({
     // travels verbatim in the prose. Newest-biased global cap, like P-005.
     let bodyRefs: Map<string, HydratedRef> | undefined;
     try {
-      const ids = [
-        ...new Set(
-          (injectionEntries as unknown as Array<Record<string, unknown>>)
-            .filter((en) => isBodyRefEligible(en) && !readBodyRefsOptOut(en))
-            .flatMap((en) =>
-              detectEntryBodyRefs(en).flatMap((r) => (r.kind === "work-item" ? [r.id] : [])),
-            ),
-        ),
-      ].slice(-BODY_REF_MAX_TOTAL);
-      if (ids.length) {
+      const refByKey = new Map<string, HydratableRef>();
+      for (const en of injectionEntries as unknown as Array<Record<string, unknown>>) {
+        if (!isBodyRefEligible(en) || readBodyRefsOptOut(en)) continue;
+        for (const ref of detectEntryBodyRefs(en)) {
+          if (ref.kind === "work-item") refByKey.set(canonicalRefKey(ref), ref);
+        }
+      }
+      const refs = [...refByKey.values()].slice(-BODY_REF_MAX_TOTAL);
+      if (refs.length) {
         const hydrated = await measureInboxPhase("work-item-body-reference-hydration", () =>
           hydrateRefs(
-            ids.map((id) => ({ kind: "work-item" as const, id })),
+            refs,
             {
-              budget: { snippetChars: BODY_REF_SNIPPET_CHARS, maxRefs: ids.length },
+              budget: { snippetChars: BODY_REF_SNIPPET_CHARS, maxRefs: refs.length },
               resolvers: { "work-item": bodyRefWorkItemResolver },
             },
           ),
         );
         bodyRefs = new Map(
-          hydrated.flatMap((h) => (h.ref.kind === "work-item" ? [[h.ref.id, h] as const] : [])),
+          hydrated.flatMap((h) =>
+            h.ref.kind === "work-item" ? [[canonicalRefKey(h.ref), h] as const] : [],
+          ),
         );
       }
     } catch {

@@ -383,6 +383,9 @@ describe('GitHub issues registers as a provider through the plugin host (R-14)',
     expect(registry.forDatatype('ticket', 'ticket.read').map((p) => p.descriptor.id)).toEqual([KIND]);
     expect(registry.forDatatype('ticket', recordTransitionCapability('ticket'))).toEqual([]);
     expect(registry.forDatatype('ticket', 'ticket.update')).toEqual([]);
+    // R-14 (D-028): the declared subset is read + comment, so containers is undeclared too.
+    expect(registry.forDatatype('ticket', 'ticket.containers')).toEqual([]);
+    expect(provider.descriptor.capabilities).not.toContain('ticket.containers');
 
     const sourceId = await createSource('personal');
     // ticket.read is served, through host.fetch only.
@@ -404,6 +407,11 @@ describe('GitHub issues registers as a provider through the plugin host (R-14)',
       { source: sourceId, capability: 'ticket.transition', args: { externalId: `${OWNER}/${REPO}#1`, toCategory: 'done' } },
       { fetch: recordedHostFetch },
     )).rejects.toThrow('provider_capability_unsupported:ticket.transition');
+    await expect(provider.adapter!.invoke(
+      { source: sourceId, capability: 'ticket.containers', args: {} },
+      { fetch: recordedHostFetch },
+    )).rejects.toThrow('provider_capability_unsupported:ticket.containers');
+    expect(gh.calls).toEqual([]);
     // …and by the host's record write-back dispatch before any host.fetch is built.
     const hostFetchFor = vi.fn(() => recordedHostFetch);
     const recordSource = createRecordAdmissionSource({ registry, hostFetchFor });

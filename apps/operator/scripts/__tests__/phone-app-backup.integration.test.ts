@@ -156,8 +156,15 @@ it('emits actionable cost alerts from existing usage accounts without disclosing
       expect(report.stdout + report.stderr).not.toContain('private-owner-id');
       expect(report.stdout + report.stderr).not.toContain(new URL(server.urls.admin).password);
     }
+    // A readable ledger with no account still fails closed, but must not claim
+    // telemetry loss (WI-10006811): the table exists and was read.
     await sql.unsafe('DELETE FROM phone_usage_accounts');
-    expect(JSON.parse((await check()).stdout).alerts[0].condition).toBe('usage-telemetry-unavailable');
+    const emptyLedger = await check();
+    expect(emptyLedger.code).not.toBe(0);
+    expect(JSON.parse(emptyLedger.stdout)).toMatchObject({
+      ok: false, accountsChecked: 0,
+      alerts: [{ condition: 'usage-account-missing', owner: 'phone-operations', action: expect.any(String) }],
+    });
   } finally {
     await sql.end({ timeout: 5 }).catch(() => {});
     await server.stop().catch(() => {});

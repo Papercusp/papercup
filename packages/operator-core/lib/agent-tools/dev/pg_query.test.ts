@@ -1019,6 +1019,32 @@ describe('dev:pg_query — P-005 guard wiring', () => {
     });
   });
 
+  it('returns DBOS interval-join scan guidance when a narrow-looking history join times out', async () => {
+    pgReadQueryMock.mockRejectedValue(
+      Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' }),
+    );
+    const sql = [
+      'WITH target(window_label, lo_ms, hi_ms) AS (',
+      "  VALUES ('09:45-09:46Z', 1000, 2000)",
+      ')',
+      'SELECT w.workflow_uuid, o.function_name',
+      'FROM target t',
+      'JOIN dbos.workflow_status w',
+      "  ON w.name IN ('routinesTick', 'routineFire')",
+      ' AND w.started_at_epoch_ms < t.hi_ms',
+      'JOIN dbos.operation_outputs o',
+      '  ON o.workflow_uuid = w.workflow_uuid',
+      ' AND o.started_at_epoch_ms < t.hi_ms',
+      ' AND (o.completed_at_epoch_ms IS NULL OR o.completed_at_epoch_ms >= t.lo_ms)',
+    ].join('\n');
+    const res = await pgQueryTool.handler({ sql } as never, {} as never);
+
+    expect((res as { isError?: boolean }).isError).toBe(true);
+    expect(payloadOf(res as never)).toMatchObject({ code: '57014' });
+    expect(payloadOf(res as never).advisory).toContain('DBOS historical interval join');
+    expect(payloadOf(res as never).advisory).toContain('join workflow_status by workflow_uuid');
+  });
+
   it('adds a targeted hint for a UNION column-count mismatch', async () => {
     pgReadQueryMock.mockRejectedValue(
       Object.assign(new Error('each UNION query must have the same number of columns'), {

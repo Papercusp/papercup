@@ -39,8 +39,7 @@ export const scorecardGetArgs = z.object({
 
 // Bound the JSON-encoded result before both payload shaping and the later MCP
 // result door. The latter is much smaller than the shared 30k payload ceiling;
-// if it clips a complete criterion page, evidenceRead.complete lies about what
-// reached the model. Keep the exact same effective door settings as the host.
+// the result door must preserve paging truth when its own projection clips a page.
 
 // The handler body is serialized again as an MCP content item. Reserve room for
 // that wire envelope so tools:invoke's outer result door cannot force-project a

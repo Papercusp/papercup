@@ -203,6 +203,42 @@ describe("hosted desktop browser protocol", () => {
     });
   });
 
+  it("asks for the caller's own desktop and keeps its user scope (personal-cloud-desktop R-5)", () => {
+    // A personal start carries `personal: true`; a plain start never does,
+    // so a sandbox start cannot be mistaken for the caller's own seat.
+    expect(JSON.parse(buildDesktopStartRequest("start-p", { personal: true }))).toEqual({
+      type: "desktop.start",
+      requestId: "start-p",
+      personal: true,
+    });
+    expect(JSON.parse(buildDesktopStartRequest("start-s", { personal: false }))).toEqual({
+      type: "desktop.start",
+      requestId: "start-s",
+    });
+    expect(
+      parseHostedDesktopProtocolMessage({
+        type: "desktop.start.result",
+        requestId: "start-p",
+        desktop: { desktopSessionId: "mine", state: "ready", scope: "user" },
+      }),
+    ).toEqual({
+      kind: "started",
+      requestId: "start-p",
+      desktop: { desktopSessionId: "mine", state: "ready", scope: "user" },
+    });
+    expect(
+      parseHostedDesktopProtocolMessage({
+        type: "desktop.roster.result",
+        requestId: "roster-p",
+        desktops: [{ desktopSessionId: "mine", state: "running", scope: "user" }],
+      }),
+    ).toEqual({
+      kind: "roster",
+      requestId: "roster-p",
+      desktops: [{ desktopSessionId: "mine", state: "running", scope: "user" }],
+    });
+  });
+
   it("carries owner, scope, name and the owner's work-item on roster rows (P-006)", () => {
     expect(
       parseHostedDesktopProtocolMessage({

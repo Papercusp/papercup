@@ -9,6 +9,8 @@ import {
   slackMentionHasBugIntent,
   slackReportBugConfig,
   slackReportBugModalView,
+  slackSuggestionNote,
+  slackSuggestPostEvent,
   SLACK_REPORT_BUG_ATTACHMENT_CONSENT,
   SLACK_REPORT_BUG_MODAL_CALLBACK_ID,
   SLACK_REPORT_BUG_SHORTCUT_CALLBACK_ID,
@@ -189,7 +191,7 @@ describe('Slack report-bug gestures', () => {
     const parsed = slackReportBugConfig({ reportBug: { emoji: 42, channels: { C1: { reaction: 'yes', mention: 1 }, '': { reaction: true }, C2: 'all' } } });
     expect(parsed).toEqual({
       emoji: 'bug', botUserId: null,
-      channels: { C1: { reaction: false, shortcut: false, mention: false, bugChannel: false } },
+      channels: { C1: { reaction: false, shortcut: false, mention: false, bugChannel: false, suggest: false } },
     });
   });
 
@@ -209,5 +211,68 @@ describe('Slack report-bug gestures', () => {
       .filter((result) => result?.kind === 'signal')
       .map((result) => (result as { event: { payload: Record<string, unknown> } }).event.payload.gesture);
     expect(signals).toEqual(['reaction', 'mention', 'shortcut', 'bug-channel']);
+  });
+});
+
+/**
+ * slack-messages-to-bug-reports-2026-10-05 P-007 (D-010): the per-channel `suggest` switch routes
+ * ordinary top-level posts to the channel's chat rules, and the private note names only the report
+ * gestures that are switched on.
+ */
+describe('Slack suggest-only channels', () => {
+  const SUGGEST = config({ channels: { CSUG: { suggest: true, reaction: true }, CBUGS: { bugChannel: true, suggest: true } } });
+  const POST = { type: 'message', channel: 'CSUG', channel_type: 'channel', user: 'U7', text: 'the export button is broken again', ts: '1777000100.000100' };
+
+  it('turns a person’s top-level post in a suggest channel into a chat event whose target is the post', () => {
+    const event = slackSuggestPostEvent(events(POST, 'EvPost'), SUGGEST);
+    expect(event).toMatchObject({
+      event: 'message',
+      externalId: 'EvPost',
+      dedupeKey: 'slack:EvPost',
+      channelId: 'CSUG',
+      payload: {
+        channelId: 'CSUG', sender: 'U7', text: POST.text, threadId: POST.ts,
+        target: { channelId: 'CSUG', ts: POST.ts, text: POST.text },
+      },
+    });
+    // A post is never a report by itself: it carries no report-bug signal.
+    expect(event?.payload).not.toHaveProperty('signal');
+  });
+
+  it('routes nothing else: switch off, replies, DMs, bots, edits, the bot itself, or a bug channel', () => {
+    const off = config({ channels: { CSUG: { reaction: true } } });
+    expect(slackSuggestPostEvent(events(POST), off)).toBeNull();
+    expect(slackSuggestPostEvent(events({ ...POST, thread_ts: '1777000000.000001' }), SUGGEST)).toBeNull();
+    expect(slackSuggestPostEvent(events({ ...POST, channel: 'D123', channel_type: 'im' }), config({ channels: { '*': { suggest: true } } }))).toBeNull();
+    expect(slackSuggestPostEvent(events({ ...POST, bot_id: 'B1' }), SUGGEST)).toBeNull();
+    expect(slackSuggestPostEvent(events({ ...POST, subtype: 'message_changed' }), SUGGEST)).toBeNull();
+    expect(slackSuggestPostEvent(events({ ...POST, user: 'UPAPER' }), SUGGEST)).toBeNull();
+    // In a bug channel the post is already a report (bug-channel gesture), not a suggestion candidate.
+    expect(slackSuggestPostEvent(events({ ...POST, channel: 'CBUGS' }), SUGGEST)).toBeNull();
+    expect(slackSuggestPostEvent(events({ type: 'app_mention', channel: 'CSUG', user: 'U7', text: 'hi', ts: '1.0' }), SUGGEST)).toBeNull();
+  });
+
+  it('a top-level post a thread opens with (thread_ts equal to ts) still counts as top-level', () => {
+    expect(slackSuggestPostEvent(events({ ...POST, thread_ts: POST.ts }), SUGGEST)).not.toBeNull();
+  });
+
+  it('the note names exactly the gestures switched on in the channel, and is null when none is', () => {
+    const cfg = config({
+      emoji: 'beetle',
+      channels: {
+        CR: { reaction: true },
+        CALL: { reaction: true, shortcut: true, mention: true },
+        CNONE: { suggest: true },
+      },
+    });
+    expect(slackSuggestionNote(cfg, 'CR')).toBe('Looks like a bug. React :beetle: to report it.');
+    expect(slackSuggestionNote(cfg, 'CALL')).toBe(
+      'Looks like a bug. React :beetle:, use the "Report a bug" shortcut on it or reply in its thread with <@UPAPER> bug to report it.',
+    );
+    expect(slackSuggestionNote(cfg, 'CNONE')).toBeNull();
+    expect(slackSuggestionNote(cfg, 'CUNKNOWN')).toBeNull();
+    // Without a known bot user id a mention cannot be named, so it is not offered.
+    const noBot = slackReportBugConfig({ reportBug: { channels: { CM: { mention: true } } } });
+    expect(slackSuggestionNote(noBot, 'CM')).toBeNull();
   });
 });

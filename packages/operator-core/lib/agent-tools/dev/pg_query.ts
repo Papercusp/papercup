@@ -29,6 +29,7 @@ import {
   buildAdvSessionsLivenessAdvisory,
   buildAgentFactsSupersessionAdvisory,
   buildEventFireWindowAdvisory,
+  buildDbosHistoricalIntervalJoinAdvisory,
   buildSplitCompletionEvidenceAdvisory,
   buildJsonTextSearchAdvisory,
   buildSilentNullPathAdvisory,
@@ -708,6 +709,13 @@ export default defineTool({
     // is deliberately no clearing clause — the honest fix is to downgrade the
     // claim to "unknown", not to rewrite the SQL.
     const eventFireWindowAdvisory = advisoryOf(() => buildEventFireWindowAdvisory(sql));
+    // EI-25237971414928998: an upper-only workflow start predicate leaves all
+    // earlier DBOS rows in the candidate set even when joined operations use
+    // narrow windows. maxRows caps output, not scan cost, so carry this warning
+    // through both success and error payloads.
+    const dbosHistoricalIntervalJoinAdvisory = advisoryOf(() =>
+      buildDbosHistoricalIntervalJoinAdvisory(sql),
+    );
     // EI-20103748074297088 — two more ways a read returns a well-formed ZERO that reads as a
     // real answer. Kept as their own builders, like the three above, because each is a
     // DIFFERENT failure: the tenant advisory warns the rows may be from the wrong tenant;
@@ -763,6 +771,7 @@ export default defineTool({
       backlogFlowAdvisory,
       agentFactsSupersessionAdvisory,
       eventFireWindowAdvisory,
+      dbosHistoricalIntervalJoinAdvisory,
       nullPathAdvisory,
       jsonbTypeofAdvisory,
       jsonNullArrowAdvisory,

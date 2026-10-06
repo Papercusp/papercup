@@ -1216,6 +1216,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // name themselves (desktop-session-registry LOCAL_DESKTOPS_QUERY), and the grid
   // re-reads on its visible tick because a claim can change with no registry write.
   'desktops.local': {
+    backingTables: ['harness_shared.desktop_sessions', 'harness_shared.work_item_claims'],
     resolve: async () => {
       const [{ activeWorkspaceId }, { readLocalDesktopRoster }] = await Promise.all([
         import('../workspace-registry'),

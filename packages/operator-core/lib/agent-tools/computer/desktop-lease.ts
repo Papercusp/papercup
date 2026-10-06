@@ -467,6 +467,47 @@ export function leasedDesktopBySessionId(desktopSessionId: string): SandboxDeskt
   return undefined;
 }
 
+/**
+ * Who a live lease belongs to, by its registry id — read from the lease this process
+ * HOLDS, never from a registry row another process could have written. The hosted relay
+ * uses it to admit only the owner to a person's desktop (personal-cloud-desktop P-004).
+ */
+export function leaseOwnerBySessionId(
+  desktopSessionId: string,
+): { scope: DesktopLeaseInfo['scope']; scopeRef: string } | undefined {
+  for (const [key, sessionId] of sessionIds) {
+    if (sessionId !== desktopSessionId) continue;
+    const entry = leases.get(key);
+    if (!entry || entry.desktop.isAlive?.() === false) return undefined;
+    const { scope, scopeRef } = infoFor(key, entry);
+    return { scope, scopeRef };
+  }
+  return undefined;
+}
+
+// ── Personal-desktop API (personal-cloud-desktop-2026-10-06 P-003) ──────────────
+
+/** A person's own desktop target: one per hosted user. */
+export function personalDesktopTarget(userId: string): DesktopLeaseTarget {
+  return { scope: 'user', userId };
+}
+
+/**
+ * Lease ONE person's own desktop, or return the live one, and name its registry row.
+ *
+ * Idempotent per user (R-3): a double click or a second tab returns the same lease and
+ * the same row, because the lease key is the user. It provisions ONLY through the
+ * personal worker (R-9), and a host without that worker refuses with
+ * `personal_desktop_unavailable` before anything starts (R-22) — the refusal comes from
+ * `provisionPersonalDesktop`, so no lease and no row are created.
+ */
+export async function ensurePersonalDesktop(userId: string, opts?: ProvisionOptions): Promise<string | undefined> {
+  if (!userId) throw new Error('ensurePersonalDesktop requires the hosted userId');
+  const target = personalDesktopTarget(userId);
+  await ensureDesktop(target, opts);
+  return desktopSessionIdFor(target);
+}
+
 // ── Pot-lease API: the original per-hive surface, kept as wrappers (D-004/D-012) ──
 
 const potTarget = (potSlug: string): DesktopLeaseTarget => ({ scope: 'pot', pot: potSlug });

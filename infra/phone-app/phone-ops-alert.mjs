@@ -21,7 +21,7 @@ const repo = join(here, '../..');
 const permitted = {
   readiness: new Set(['media', 'sip', 'worker', 'sidecar', 'media-http', 'sidecar-http', 'worker-ingest',
     'turn-certificate']),
-  usage: new Set(['usage-telemetry-unavailable', 'missingPolicy', 'suspended',
+  usage: new Set(['usage-telemetry-unavailable', 'usage-account-missing', 'missingPolicy', 'suspended',
     'expired', 'exhausted', 'malformed']),
   backup: new Set(['backup-stale', 'backup-integrity-unavailable']),
 };

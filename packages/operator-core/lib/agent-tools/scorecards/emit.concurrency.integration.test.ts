@@ -148,13 +148,16 @@ async function waitForScorecardMutexWait(applicationName: string): Promise<void>
 
 describe('scorecards:emit final dedup read-to-write mutex, real PG', () => {
   it('clears inherited lock timeout before waiting for an in-flight emitter', async () => {
-    // Configure only this throwaway database so the newly-created dedicated
-    // mutex session inherits finite lock and statement timeouts. The current
-    // code used to surface 55P03 here after 100ms; the fixed mutex session
-    // clears both settings before pg_advisory_lock and waits for release.
-    const dbIdent = db.dbName.replaceAll('"', '""');
-    await db.adminSql.unsafe(`ALTER DATABASE "${dbIdent}" SET lock_timeout = '100ms'`);
-    await db.adminSql.unsafe(`ALTER DATABASE "${dbIdent}" SET statement_timeout = '100ms'`);
+    // Pass finite timeouts only to the dedicated mutex pool's sessions. ALTER
+    // DATABASE would also affect any admin-pool connections opened during this
+    // test and leave their inherited settings in place after RESET, making the
+    // later concurrency cases order-dependent.
+    const previousAdminUrl = process.env.HARNESS_ADMIN_DATABASE_URL;
+    const mutexUrl = new URL(db.adminDsn);
+    mutexUrl.searchParams.set('options', '-c lock_timeout=100ms -c statement_timeout=100ms');
+    await _closeScorecardEmitMutexForTests();
+    process.env.HARNESS_ADMIN_DATABASE_URL = mutexUrl.toString();
+    _resetHarnessAdminUrlCacheForTests();
     const holder = (await import('postgres')).default(db.adminDsn, { max: 1, onnotice: () => {} });
     const key = scorecardEmitMutexKey({
       workspaceId: activeWorkspaceId(),
@@ -176,8 +179,10 @@ describe('scorecards:emit final dedup read-to-write mutex, real PG', () => {
       await expect(emit).resolves.toMatchObject({ ok: true, created: true });
     } finally {
       await holder.end({ timeout: 5 });
-      await db.adminSql.unsafe(`ALTER DATABASE "${dbIdent}" RESET lock_timeout`);
-      await db.adminSql.unsafe(`ALTER DATABASE "${dbIdent}" RESET statement_timeout`);
+      await _closeScorecardEmitMutexForTests();
+      if (previousAdminUrl === undefined) delete process.env.HARNESS_ADMIN_DATABASE_URL;
+      else process.env.HARNESS_ADMIN_DATABASE_URL = previousAdminUrl;
+      _resetHarnessAdminUrlCacheForTests();
     }
   }, 120_000);
 

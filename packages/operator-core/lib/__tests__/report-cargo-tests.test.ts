@@ -1361,3 +1361,65 @@ describe('affected-tests cargo failure labelling (EI-21950408988436927)', () => 
     expect(forgivingControl({ code: 1 }).gating).toBe(true);
   });
 });
+
+// WI-10006749: on 2026-10-06 a reclaim under disk pressure deleted <target>/release whole,
+// minutes after a build, and with it the test-artifact .deb archived inside it.
+// papercusp-desktop/bin/build-and-archive-deb.sh now archives under
+// <target>/.papercusp-deb-archive/<profile>/. This pins the other half of that contract: no
+// reclaim candidate may ever contain that directory.
+describe('deb archives survive a full reclaim of the Cargo target (WI-10006749)', () => {
+  it('reclaims every stale profile but never <target>/.papercusp-deb-archive', () => {
+    const root = mkdtempSync(resolve(tmpdir(), 'papercusp-deb-archive-reclaim-'));
+    const target = resolve(root, 'cargo-target');
+    const archived = resolve(target, '.papercusp-deb-archive', 'release', 'archive', 'x-Papercusp Server.deb');
+    const testArtifact = resolve(target, '.papercusp-deb-archive', 'release', 'test-artifacts', 'x-TEST-ARTIFACT-Papercusp Server.deb');
+    // The old location, inside a candidate. Its deletion is the calibration that this reclaim
+    // really had the authority to delete an archive left where the script used to put it.
+    const oldLocation = resolve(target, 'release', 'bundle', 'deb', 'test-artifacts', 'old-TEST-ARTIFACT.deb');
+    try {
+      for (const f of [archived, testArtifact, oldLocation]) {
+        mkdirSync(dirname(f), { recursive: true });
+        writeFileSync(f, 'deb');
+      }
+      ensureCargoCacheTag(target);
+      const old = (Date.now() - 60_000) / 1000;
+      for (const d of [
+        dirname(oldLocation),
+        resolve(target, 'release', 'bundle', 'deb'),
+        resolve(target, 'release', 'bundle'),
+        resolve(target, 'release'),
+        dirname(archived),
+        dirname(testArtifact),
+        resolve(target, '.papercusp-deb-archive', 'release'),
+        resolve(target, '.papercusp-deb-archive'),
+        target,
+      ]) {
+        utimesSync(d, old, old);
+      }
+
+      const result = reclaimInactiveCargoArtifacts({
+        tmpDir: root,
+        cargoRoots: [target],
+        configuredTargetDir: target,
+        now: Date.now(),
+        policy: {
+          ...DEFAULT_CARGO_RECLAIM_POLICY,
+          cargoTtlMs: 1,
+          heartbeatTtlMs: 1,
+          minCargoArtifactBytes: 0,
+          maxBytes: 1024 * 1024,
+          maxEntries: 50,
+        },
+        pathIsLive: () => false,
+        slotLockIsHeld: () => false,
+      });
+
+      expect(result.reclaimed).toBeGreaterThan(0);
+      expect(existsSync(oldLocation)).toBe(false);
+      expect(readFileSync(archived, 'utf8')).toBe('deb');
+      expect(readFileSync(testArtifact, 'utf8')).toBe('deb');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

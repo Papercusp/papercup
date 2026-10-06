@@ -7,7 +7,8 @@
  * (`agent-capability-confinement-2026-06-13`).
  */
 
-import { mkdirSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, statSync } from 'node:fs';
+import { replaceFileContents } from './replace-file';
 import { dirname, isAbsolute, resolve } from 'node:path';
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
@@ -144,7 +145,9 @@ export default defineTool({
         return displayFormattedRefused(abs);
       }
       mkdirSync(dirname(abs), { recursive: true });
-      writeFileSync(abs, args.content, 'utf8');
+      // Rename into place, never rewrite the inode: a running bash script reads the
+      // file by byte offset (WI-10006772).
+      replaceFileContents(abs, args.content);
       const bytes = Buffer.byteLength(args.content, 'utf8');
       const lines = args.content === '' ? 0 : args.content.split('\n').length;
       return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, path: abs, bytes, lines }) }] };

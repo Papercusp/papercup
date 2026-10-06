@@ -1072,6 +1072,34 @@ export async function validateScoutEvidenceCitations(
 }
 
 /** The native column kind for a capture: feature is a payload refinement of change. */
+/**
+ * The reporter stamp for this capture (P-010). Reads the RAW `input.sourceRole`,
+ * never the `'human'` default the capture path applies, which every agent
+ * filing would otherwise carry.
+ */
+export function reporterOf(input: Pick<CaptureImprovementInput, 'reporterKind' | 'createdBy' | 'sourceRole'>, at: string = new Date().toISOString()): ReporterProvenance {
+  return deriveReporterProvenance({ explicitKind: input.reporterKind, createdBy: input.createdBy, sourceRole: input.sourceRole, at });
+}
+
+/**
+ * The context block a newly minted bug carries (P-010). The serving build fills
+ * whatever the reporter omitted; a captured tool failure supplies the recent
+ * error when the reporter sent none.
+ */
+function reportContextFor(input: CaptureImprovementInput, at: string) {
+  const build = getBuildInfo();
+  const probation = input.payloadExtra?.toolFailureProbation as { report?: ReportContextFailure } | undefined;
+  return buildReportContext({
+    input: input.reportContext ?? null,
+    defaults: {
+      app: 'papercusp',
+      appVersion: build.sha ? `${build.version}+${build.sha.slice(0, 12)}` : build.version ?? null,
+    },
+    failure: probation?.report ?? null,
+    capturedAt: at,
+  });
+}
+
 export function storageKindOf(kind: ImprovementKind): 'bug' | 'change' {
   return kind === 'bug' ? 'bug' : 'change';
 }
@@ -1816,6 +1844,8 @@ async function coalesceWatchdogWinner(args: {
   }
   if (input.filedByRole) mergePatch.filedByRole = input.filedByRole;
   if ((input.sourceRole ?? 'human') !== 'human') mergePatch.sourceRole = input.sourceRole;
+  // P-010: the corroboration record names every reporter KIND that filed this.
+  mergePatch.reporterKinds = mergeReporterKinds(priorPayload, reporterOf(input).kind);
   const merged = await (deps.mergeIssuePayload ?? mergeIssuePayload)(prior.id, mergePatch);
   const refreshed = await (deps.updateIssuePatch ?? updateIssue)(prior.id, {
     title: input.title,
@@ -2172,6 +2202,8 @@ export async function captureImprovement(
   );
   const reviewHarness = input.reviewHarness ?? harnessFromScope(input.scope);
   const sourceRole = input.sourceRole ?? 'human';
+  // P-010 (D-001): who filed this — derived from the RAW input, see reporterOf.
+  const reporter = reporterOf(input);
   const identity = admissionIdentity(input.title, input.watchdogKey);
   const skippedDedupCoverage: DedupCoverage = {
     lexical: 'skipped',
@@ -2394,6 +2426,7 @@ export async function captureImprovement(
       if (input.payloadExtra) Object.assign(mergePatch, input.payloadExtra);
       if (input.filedByRole) mergePatch.filedByRole = input.filedByRole;
       if (sourceRole !== 'human') mergePatch.sourceRole = sourceRole;
+      mergePatch.reporterKinds = mergeReporterKinds(openKeyPrior.payload, reporter.kind);
       const merged = await (deps.mergeIssuePayload ?? mergeIssuePayload)(openKeyPrior.id, mergePatch);
       // Best-effort title/body refresh — never blocks the coalesce (the payload
       // bump above is the load-bearing part). Silent: a detector re-fire must not
@@ -2489,6 +2522,7 @@ export async function captureImprovement(
           if (input.payloadExtra) Object.assign(mergePatch, input.payloadExtra);
           if (input.filedByRole) mergePatch.filedByRole = input.filedByRole;
           if (sourceRole !== 'human') mergePatch.sourceRole = sourceRole;
+          mergePatch.reporterKinds = mergeReporterKinds(autoResolvedPrior.payload, reporter.kind);
           const merged = await (deps.mergeIssuePayload ?? mergeIssuePayload)(autoResolvedPrior.id, mergePatch).catch(
             () => null,
           );
@@ -2786,6 +2820,7 @@ export async function captureImprovement(
           if (input.payloadExtra) Object.assign(mergePatch, input.payloadExtra);
           if (input.filedByRole) mergePatch.filedByRole = input.filedByRole;
           if (sourceRole !== 'human') mergePatch.sourceRole = sourceRole;
+          mergePatch.reporterKinds = mergeReporterKinds(prior.payload, reporter.kind);
           const merged = await (deps.mergeIssuePayload ?? mergeIssuePayload)(prior.id, mergePatch);
           const refreshed = await (deps.updateIssuePatch ?? updateIssue)(prior.id, {
             title: input.title,
@@ -3076,6 +3111,7 @@ export async function captureImprovement(
       }
       if (input.filedByRole) mergePatch.filedByRole = input.filedByRole;
       if (sourceRole !== 'human') mergePatch.sourceRole = sourceRole;
+      mergePatch.reporterKinds = mergeReporterKinds(prior.payload, reporter.kind);
       const merged = await (deps.mergeIssuePayload ?? mergeIssuePayload)(prior.id, mergePatch);
       // Best-effort title/body refresh — never blocks the coalesce (a shrink-guard
       // trip or transient error just keeps the prior text; the payload bump above is
@@ -3185,6 +3221,7 @@ export async function captureImprovement(
       };
       if (input.payloadExtra) Object.assign(mergePatch, input.payloadExtra);
       if (input.filedByRole) mergePatch.filedByRole = input.filedByRole;
+      mergePatch.reporterKinds = mergeReporterKinds(priorPayload, reporter.kind);
       const merged = await (deps.mergeIssuePayload ?? mergeIssuePayload)(prior.id, mergePatch).catch(() => null);
       if (merged) {
         // NOTE the asymmetry with the keyed path, which refreshes title/body:
@@ -3316,6 +3353,12 @@ export async function captureImprovement(
   if (input.filedByRole) payload.filedByRole = input.filedByRole;
   // Structured-field seam (D-005): the observation's { kind, scope, confidence, refs }.
   if (input.payloadExtra) Object.assign(payload, input.payloadExtra);
+  // unified-bug-pipeline P-010 (D-001): who filed this, the corroboration
+  // tally's first entry, and — for a bug — the reporter's captured context.
+  // After payloadExtra on purpose: the derived stamp is authoritative.
+  payload.reporter = reporter;
+  payload.reporterKinds = [reporter.kind];
+  if (input.kind === 'bug') payload.reportContext = reportContextFor(input, reporter.at);
   // P-004: every newly claimable capture enrolls in the shared readiness
   // contract. Observations stay outside the work queue and therefore carry no
   // implementation verdict. Existing immediate paths remain ready by policy;

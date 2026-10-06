@@ -32,7 +32,9 @@ import {
 } from '../desktop/desktop-session-registry';
 import {
   ensureHiveDesktop,
+  ensurePersonalDesktop,
   hiveDesktopSessionId,
+  leaseOwnerBySessionId,
   leasedDesktopBySessionId,
   leasedDesktopSessionIds,
   reapDeadDesktops,
@@ -186,6 +188,10 @@ export function createDefaultDesktopBackend(
       await ensureHiveDesktop(HOSTED_WORKSPACE_DESKTOP_LEASE);
       return hiveDesktopSessionId(HOSTED_WORKSPACE_DESKTOP_LEASE);
     },
+    // personal-cloud-desktop-2026-10-06: a person's own desktop, provisioned ONLY through
+    // the pack's personal worker as the customer account; a host without it refuses.
+    ensurePersonalDesktop: (userId) => ensurePersonalDesktop(userId),
+    leaseOwner: leaseOwnerBySessionId,
     // Sole owner by construction: a workspace host runs one operator, and its
     // desktops die with that operator's socket (D-363), so every row it holds no
     // lease for was left by a previous incarnation of it (WI-10002797).

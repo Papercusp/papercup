@@ -106,7 +106,7 @@ export interface CompileSpecClausesResult {
 const STRICT_VAL_ID_RE = /^VAL-[A-Za-z0-9._-]+$/;
 const STRICT_SPEC_ID_RE = /^\S+$/;
 const OBSERVABLE_VERB =
-  '(?:accepts?|allows?|becomes?|creates?|deletes?|denies|emits?|fails?|includes?|omits?|records?|rejects?|remains?|returns?|shows?|starts?|stops?|updates?|writes?)';
+  '(?:accept(?:s|ed|ing)?|allows?|becomes?|creates?|deletes?|denies|emits?|fails?|includes?|omits?|records?|rejects?|remains?|returns?|shows?|starts?|stops?|streams?|streamed|streaming|updates?|writes?)';
 const MULTI_OBSERVABLE_CONJUNCTION_RE = new RegExp(
   `\\b${OBSERVABLE_VERB}\\b[^.;\\n]{0,160}\\b(?:and|or)\\b[^.;\\n]{0,160}\\b${OBSERVABLE_VERB}\\b`,
   'i',

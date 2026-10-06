@@ -27,6 +27,8 @@ import type { ImprovementCandidate } from '../harness/improvements/policy';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { gitSidecarEnabled, noteSidecarFallback, runGitViaSpawnerSidecar } from '../fleet/git-via-sidecar';
+import { pinModuleState } from '@papercusp/module-singleton';
+import { createPushBacklogReader } from './push-backlog-reader';
 import { probeHttpReachable } from '../escalating-http-probe';
 import { activeWorkspaceId, readRegistry } from '../workspace-registry';
 import { ALWAYS_ON_SYSTEM_ROUTINE_NAMES, isReaffirmed } from '../harness/routines/bespoke-active-seeds-check';
@@ -1744,7 +1746,9 @@ export async function collectDeploy(ctx: HealthCtx): Promise<HealthPanel<DeployH
         const md = (r.metadata ?? {}) as Record<string, unknown>;
         const derived = deriveSystemHealthGitSyncStatus(r, ctx.now, deriveGitSyncFreshness);
         const rawEt = Number(md.consecutive_error_ticks ?? 0) || 0;
-        const backlog = rawEt > 0 ? await liveGitSyncPushBacklog(r.install_slug) : null;
+        // WI-10006803: bounded + cached — the live probe is ~117 git spawns / ~30s on a
+        // big tree, so the tick waits at most the reader's deadline (null = unknown).
+        const backlog = rawEt > 0 ? await gitSyncPushBacklogReader.read(r.install_slug) : null;
         if (backlog !== null) gitSyncPushBacklog = Math.max(gitSyncPushBacklog ?? 0, backlog);
         const et = backlog === 0 ? 0 : rawEt;
         // worst-wins: the most-failing routine drives the panel status.
@@ -1958,6 +1962,16 @@ async function liveGitSyncPushBacklog(slug: string): Promise<number | null> {
     return null;
   }
 }
+
+/**
+ * The tick-facing reader for {@link liveGitSyncPushBacklog} (WI-10006803): single-flight,
+ * stale-while-revalidate, and a short cold-miss deadline, so collectDeploy never blocks a
+ * health tick on the serial fetch sweep. Pinned so a split module record cannot run a
+ * second, uncached probe beside the first.
+ */
+const gitSyncPushBacklogReader = pinModuleState('@papercusp/operator-core.system-health.git-sync-push-backlog', () => ({
+  read: createPushBacklogReader({ probe: liveGitSyncPushBacklog }),
+}));
 
 /**
  * PURE: tally plan-index rows into PlansHealth. `startedDraft` = plans force-STARTED

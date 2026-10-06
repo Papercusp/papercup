@@ -1788,6 +1788,46 @@ describe('list / get / search over written rubrics', () => {
     expect(all.map((r) => r.rubricId)).toEqual(['active-a', 'proposed-b']);
   });
 
+  it('paginates the ordered result and stops with a null nextOffset', async () => {
+    const first = await rubrics.listRubricsPage({ limit: 1 });
+    expect(first.rubrics.map((r) => r.rubricId)).toEqual(['active-a']);
+    expect(first.hasMore).toBe(true);
+    expect(first.nextOffset).toBe(1);
+
+    const second = await rubrics.listRubricsPage({ limit: 1, offset: first.nextOffset! });
+    expect(second.rubrics.map((r) => r.rubricId)).toEqual(['proposed-b']);
+    expect(second.hasMore).toBe(false);
+    expect(second.nextOffset).toBeNull();
+    expect((await rubrics.listRubrics({ limit: 1, offset: 1 })).map((r) => r.rubricId)).toEqual(['proposed-b']);
+  });
+
+  it('continues beyond the former 500-row SQL cap', async () => {
+    await db.adminSql`
+      INSERT INTO harness_shared.harness_plans
+        (workspace_id, harness_slug, plan_slug, content, content_hash, version, title, status,
+         created, updated, owner, archived, template, template_data, template_slug, origin)
+      SELECT ${activeWorkspaceId()}, 'papercusp', 'rubric-page-' || lpad(series.id::text, 3, '0'),
+             '', md5('rubric-page-' || lpad(series.id::text, 3, '0')), 1,
+             'Rubric page ' || series.id::text, 'active',
+             '2026-06-20', '2026-06-20', 'queen-1', false, 'rubric',
+             ${JSON.stringify(rubricData)}::text::jsonb, NULL, 'local'
+        FROM generate_series(1, 501) AS series(id)`;
+
+    const first = await rubrics.listRubricsPage({ limit: 500 });
+    expect(first.rubrics).toHaveLength(500);
+    expect(first.hasMore).toBe(true);
+    expect(first.nextOffset).toBe(500);
+
+    const second = await rubrics.listRubricsPage({ limit: 500, offset: first.nextOffset! });
+    const ids = [...first.rubrics, ...second.rubrics].map((r) => r.rubricId);
+    expect(second.rubrics).toHaveLength(3);
+    expect(second.hasMore).toBe(false);
+    expect(second.nextOffset).toBeNull();
+    expect(ids).toHaveLength(503);
+    expect(new Set(ids).size).toBe(503);
+    expect(ids).toContain('rubric-page-501');
+  });
+
   it('list filters by status and by characteristic', async () => {
     expect((await rubrics.listRubrics({ status: 'active' })).map((r) => r.rubricId)).toEqual(['active-a']);
     expect((await rubrics.listRubrics({ characteristic: 'memory-recall' })).map((r) => r.rubricId)).toEqual([

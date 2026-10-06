@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -10,8 +10,10 @@ const SCRIPT = process.env.PROBE_SCRIPT ?? path.join(__dirname, 'deb-soak-chain.
 const BUILD_TEST_DEB = path.join(__dirname, 'build-test-deb.sh');
 
 // Fakes on PATH: systemctl reports the build unit active for FAKE_ACTIVE_POLLS polls; gcloud records the
-// upload (FAKE_UPLOAD_RC); node stands in for mcp-call (FAKE_RIG_BUSY_TRIES refusals before a lock_id).
-// The soak itself is a fake p2p-join-soak.sh that records the environment it was given.
+// upload, crashing the way a concurrent gcloud did on its first FAKE_UPLOAD_FAILS calls (WI-10006787), then
+// exiting FAKE_UPLOAD_RC; node stands in for mcp-call (FAKE_RIG_BUSY_TRIES refusals before a lock_id).
+// The soak itself is a fake p2p-join-soak.sh that records the environment it was given and whether it
+// inherited the chain's rig flock descriptor (fd 9).
 const FAKE_SYSTEMCTL = String.raw`#!/usr/bin/env bash
 echo "systemctl $*" >> "$FAKE/calls.log"
 n=$(cat "$FAKE/polls" 2>/dev/null || echo 0); echo $((n + 1)) > "$FAKE/polls"
@@ -19,6 +21,10 @@ n=$(cat "$FAKE/polls" 2>/dev/null || echo 0); echo $((n + 1)) > "$FAKE/polls"
 `;
 const FAKE_GCLOUD = String.raw`#!/usr/bin/env bash
 echo "gcloud $*" >> "$FAKE/calls.log"
+n=$(cat "$FAKE/gcloud-tries" 2>/dev/null || echo 0); echo $((n + 1)) > "$FAKE/gcloud-tries"
+if [ "$n" -lt "$((FAKE_UPLOAD_FAILS + 0))" ]; then
+  echo 'ERROR: gcloud crashed (OperationalError): database is locked' >&2; exit 1
+fi
 exit "$((FAKE_UPLOAD_RC + 0))"
 `;
 const FAKE_NODE = String.raw`#!/usr/bin/env bash
@@ -28,6 +34,7 @@ if [ "$n" -lt "$((FAKE_RIG_BUSY_TRIES + 0))" ]; then echo '{"ok": false, "status
 `;
 const FAKE_SOAK = String.raw`#!/usr/bin/env bash
 env | grep -E '^(RUN|DEB|SHA|RIG_LOCK|SU|AGENT_CAPACITY_OUT|CONFLICT_AT_OBS|REVOKE)=' | sort > "$FAKE/soak-env"
+if [ -e "/proc/$$/fd/9" ]; then echo open; else echo closed; fi > "$FAKE/soak-fd9"
 echo "fake soak ran"
 exit "$((FAKE_SOAK_RC + 0))"
 `;
@@ -80,6 +87,7 @@ describe('vm/deb-soak-chain.sh (faked systemctl, gcloud, mcp-call, soak)', () =>
         GCS_PREFIX: 'gs://fake-bucket',
         RIG_SLEEP_SEC: '0',
         WAIT_POLL_SEC: '0',
+        GCS_RETRY_SEC: '0',
         ...env,
       },
       encoding: 'utf8',
@@ -98,8 +106,11 @@ describe('vm/deb-soak-chain.sh (faked systemctl, gcloud, mcp-call, soak)', () =>
     expect(chain()).toMatch(/CHAIN_MARKERS ok=d055acc-bundle d055s2-mark /);
     expect(chain()).toContain(`DEB_SHA256 ${sha} `);
     expect(calls()).toContain(`gcloud storage cp ${deb()} gs://fake-bucket/c9999k/c9999k.deb --no-user-output-enabled`);
+    expect(chain()).toMatch(/RIG_FLOCK_HELD .*\/\.cache\/agent-capacity\/rig\.flock /);
     expect(chain()).toMatch(/RIG_LOCK lk-123 /);
     expect(chain()).toMatch(/CHAIN_SOAK_EXIT=0 /);
+    // The soak must not hold the flock: anything it leaves running would otherwise pin the rig.
+    expect(readFileSync(path.join(root, 'soak-fd9'), 'utf8')).toBe('closed\n');
     expect(soakEnv()).toBe([
       `AGENT_CAPACITY_OUT=${out()}`,
       'CONFLICT_AT_OBS=2',
@@ -161,10 +172,47 @@ describe('vm/deb-soak-chain.sh (faked systemctl, gcloud, mcp-call, soak)', () =>
     expect(soakEnv()).toBe('');
   });
 
-  it('a failed upload aborts before the rig lock', () => {
-    expect(run({ FAKE_UPLOAD_RC: '1' }).code).toBe(4);
-    expect(chain()).toMatch(/CHAIN_ABORT upload to gs:\/\/fake-bucket\/c9999k\/c9999k\.deb failed /);
+  it('a failed upload aborts before the rig lock, after GCS_TRIES attempts', () => {
+    expect(run({ FAKE_UPLOAD_RC: '1', GCS_TRIES: '3' }).code).toBe(4);
+    expect(calls().split('\n').filter((l) => l.startsWith('gcloud storage cp '))).toHaveLength(3);
+    expect(chain()).toMatch(/CHAIN_ABORT upload to gs:\/\/fake-bucket\/c9999k\/c9999k\.deb failed after 3 tries /);
     expect(calls()).not.toMatch(/^node /m);
+    expect(soakEnv()).toBe('');
+  });
+
+  it('retries an upload that a concurrent gcloud crashed (the c1010k abort, WI-10006787)', () => {
+    expect(run({ FAKE_UPLOAD_FAILS: '2' }).code).toBe(0);
+    expect(calls().split('\n').filter((l) => l.startsWith('gcloud storage cp '))).toHaveLength(3);
+    expect(chain().match(/CHAIN_UPLOAD_RETRY try=\d\/4 ERROR: gcloud crashed \(OperationalError\): database is locked /g)).toHaveLength(2);
+    expect(chain()).toMatch(/DEB_UPLOADED gs:\/\/fake-bucket\/c9999k\/c9999k\.deb /);
+    expect(chain()).toMatch(/CHAIN_SOAK_EXIT=0 /);
+  });
+
+  it('a second chain as the same SU waits on the host rig flock, which the named lock alone never did (WI-10006817)', async () => {
+    const flock = path.join(root, 'rig.flock');
+    // Stand in for a chain whose soak is still running: hold the flock the way the chain does (fd 9).
+    const holder = spawn('bash', ['-c', 'exec 9>>"$1" && flock 9 && echo held && exec sleep 60', '_', flock], {
+      stdio: ['ignore', 'pipe', 'inherit'],
+    });
+    const exited = new Promise((resolve) => holder.once('exit', resolve));
+    try {
+      await new Promise<void>((resolve, reject) => {
+        holder.stdout!.on('data', (d) => { if (String(d).includes('held')) resolve(); });
+        void exited.then(() => reject(new Error('flock holder exited before it held the lock')));
+      });
+      // The fake mcp-call grants the named lock at once, exactly as the real one re-grants it to its holder.
+      expect(run({ RIG_FLOCK: flock, RIG_TRIES: '1', RIG_SLEEP_SEC: '1' }).code).toBe(5);
+      expect(chain()).toMatch(/CHAIN_ABORT rig flock .*rig\.flock still held by another chain after 1s /);
+      expect(calls()).not.toMatch(/^node /m);
+      expect(soakEnv()).toBe('');
+    } finally {
+      holder.kill('SIGKILL');
+    }
+    await exited;
+    // Control: once the holder is gone the same chain takes the rig and runs the soak.
+    expect(run({ RIG_FLOCK: flock, RIG_TRIES: '1', RIG_SLEEP_SEC: '1' }).code).toBe(0);
+    expect(chain()).toMatch(/RIG_FLOCK_HELD .*rig\.flock /);
+    expect(soakEnv()).toContain('RIG_LOCK=lk-123');
   });
 
   it('retries a held rig lock, and gives up after RIG_TRIES without running the soak', () => {

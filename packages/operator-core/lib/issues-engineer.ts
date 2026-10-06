@@ -75,7 +75,7 @@ import {
 } from './work-item-completion-authority';
 import { pgTimestampToIso, pgTimestampToIsoOrNull } from './pg-timestamp';
 import { clearGoalClaimedIfMatches } from './agent-state-stamp';
-import { DEFAULT_SIGNAL_ORIGIN, type SignalOrigin } from './harness/improvements/provenance';
+import { DEFAULT_SIGNAL_ORIGIN, deriveReporterProvenance, type SignalOrigin } from './harness/improvements/provenance';
 import { createBlockingEdgeReader, ISSUE_TERMINAL_STATUSES } from './work-item-blocking';
 import { planItemRef } from './issue-blocks-merge';
 import { mirrorWorkItemBlockingEdge, removeMirroredWorkItemBlockingEdge } from './dbos/work-item-deps-store';
@@ -1127,6 +1127,22 @@ export async function createIssue(input: CreateIssueInput): Promise<EngineerIssu
       deployBuildIdentity: build.sha ? `${build.sha}@${build.version}` : build.version,
       linkedFixRefs: [],
     });
+  }
+  // unified-bug-pipeline P-010 (D-001): every issue-family row records who filed
+  // it. Capture stamps it explicitly; a writer that bypasses capture (a machine
+  // emitter calling createIssue with no session, work_items:create) gets the
+  // same derivation here, so no filing is left without reporter provenance.
+  if (
+    (['bug', 'change', 'task'] as const).includes(storageKind as 'bug' | 'change' | 'task') &&
+    inputPayload.reporter == null
+  ) {
+    const reporter = deriveReporterProvenance({
+      createdBy: input.createdBy ?? null,
+      sourceRole: inputPayload.sourceRole,
+      at: created,
+    });
+    inputPayload.reporter = reporter;
+    if (!Array.isArray(inputPayload.reporterKinds)) inputPayload.reporterKinds = [reporter.kind];
   }
   // observation-candidate-acceptance-promotion D-009a (P-005): every issue-family
   // writer funnels through this insert, so this is the producer-enrollment seam.

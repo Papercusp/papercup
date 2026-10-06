@@ -38,9 +38,10 @@ import { collectChildOutput } from '../../child-output.js';
 import { processGroupLifetime } from '../../fleet/process-group-lifetime';
 import { withGitFetchHeadroom } from './git-fetch-headroom';
 import { randomUUID } from 'node:crypto';
-import { copyFile, lstat, mkdir, open, readFile, readlink, readdir, realpath, rm, unlink, writeFile } from 'node:fs/promises';
+import { copyFile, lstat, mkdir, open, readFile, readdir, realpath, rm, unlink, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, resolve as resolvePath } from 'node:path';
 import { mapLiveLockHoldingsForRepo } from './live-lock-coordinates';
+import { scanProcForOpenFile } from './proc-open-file-scan';
 import { projectDirForSlug } from '../../operator-notes';
 import { gitSidecarEnabled, isSidecarInfrastructureFault, noteSidecarFallback, runGitViaSpawnerSidecar } from '../../fleet/git-via-sidecar';
 import { gitReplayIsSafe, isSidecarPostDispatchFault, sidecarPostDispatchUnknownResult } from '../../fleet/sidecar-dispatch-fault';
@@ -2465,32 +2466,40 @@ function runLsof(
 }
 
 /** Linux: scan `/proc/<pid>/fd/*` for a descriptor resolving to `lockPath`.
- *  null = no usable /proc on this host (the caller falls back to lsof). */
-async function procLockHolder(lockPath: string): Promise<boolean | null> {
-  let pids: string[];
+ *  null = no usable /proc on this host, or the bounded scan ran out of time
+ *  (the caller falls back to lsof, then assumes held). Parallel and
+ *  deadline-bounded since WI-10006519: the old serial walk took ~10 min inside
+ *  the busy bg-host while an orphaned lock froze every papercusp commit. */
+export async function procLockHolder(
+  lockPath: string,
+  opts: Parameters<typeof scanProcForOpenFile>[1] = {},
+): Promise<boolean | null> {
+  return (await scanProcForOpenFile((target) => target === lockPath, opts)).held;
+}
+
+interface GitLockSnapshot {
+  mtimeMs: number;
+  size: number;
+  dev?: number;
+  ino?: number;
+}
+
+async function inspectGitLockFile(p: string): Promise<GitLockSnapshot | null> {
   try {
-    pids = (await readdir('/proc')).filter((n) => /^[0-9]+$/.test(n));
+    const st = await lstat(p);
+    return { mtimeMs: st.mtimeMs, size: st.size, dev: st.dev, ino: st.ino };
   } catch {
     return null;
   }
-  if (pids.length === 0) return null;
-  for (const pid of pids) {
-    let fds: string[];
-    try {
-      fds = await readdir(`/proc/${pid}/fd`);
-    } catch {
-      continue; // process exited or not ours to inspect — cannot be holding it on our behalf
-    }
-    for (const fd of fds) {
-      try {
-        if ((await readlink(`/proc/${pid}/fd/${fd}`)) === lockPath) return true;
-      } catch {
-        /* fd closed between readdir and readlink */
-      }
-    }
-  }
-  return false;
 }
+
+function sameGitLockFile(a: GitLockSnapshot, b: GitLockSnapshot): boolean {
+  return a.mtimeMs === b.mtimeMs && a.size === b.size && a.dev === b.dev && a.ino === b.ino;
+}
+
+/** A holder check slower than this is logged as SLOW, so a stall in the scan
+ *  is visible in the journal instead of looking like a silent ~10-minute gap. */
+export const SLOW_LOCK_HOLDER_CHECK_MS = 10_000;
 
 async function clearStaleGitLock(
   runGit: RunGit,
@@ -2498,7 +2507,8 @@ async function clearStaleGitLock(
   lockName: 'index.lock' | 'config.lock',
   log: (m: string) => void,
   deps: {
-    statMtimeMs?: (p: string) => Promise<number | null>;
+    /** lstat-shaped identity of the lock file; null = it does not exist. */
+    inspectLock?: (p: string) => Promise<GitLockSnapshot | null>;
     unlinkFile?: (p: string) => Promise<void>;
     now?: () => number;
     staleMs?: number;
@@ -2510,15 +2520,7 @@ async function clearStaleGitLock(
     hasLiveHolder?: (lockPath: string) => Promise<boolean>;
   } = {},
 ): Promise<boolean> {
-  const statMtimeMs =
-    deps.statMtimeMs ??
-    (async (p: string) => {
-      try {
-        return (await lstat(p)).mtimeMs;
-      } catch {
-        return null;
-      }
-    });
+  const inspectLock = deps.inspectLock ?? inspectGitLockFile;
   const unlinkFile = deps.unlinkFile ?? unlink;
   const now = deps.now ?? Date.now;
   const staleMs = deps.staleMs ?? STALE_INDEX_LOCK_MS;
@@ -2526,18 +2528,33 @@ async function clearStaleGitLock(
   const gd = await runGit(['rev-parse', '--absolute-git-dir'], repoPath);
   if (gd.code !== 0) return false;
   const lockPath = join(gd.stdout.trim(), lockName);
-  const mtime = await statMtimeMs(lockPath);
-  if (mtime === null) return true; // already gone (holder finished/cleaned up) — just retry
-  const ageMs = now() - mtime;
+  const before = await inspectLock(lockPath);
+  if (before === null) return true; // already gone (holder finished/cleaned up) — just retry
+  const ageMs = now() - before.mtimeMs;
   if (ageMs < staleMs) {
     log(
       `[git-sync] ${repoPath}: ${lockName} is FRESH (${Math.round(ageMs / 1000)}s old) — live contention, not touching it; this tick fails and the next one self-heals if the writer died`,
     );
     return false;
   }
-  if (await hasLiveHolder(lockPath)) {
+  const holderCheckStarted = now();
+  const held = await hasLiveHolder(lockPath);
+  const holderCheckMs = now() - holderCheckStarted;
+  const holderCheck = `holder check ${(holderCheckMs / 1000).toFixed(1)}s${holderCheckMs >= SLOW_LOCK_HOLDER_CHECK_MS ? ' — SLOW (WI-10006519)' : ''}`;
+  if (held) {
     log(
-      `[git-sync] ${repoPath}: ${lockName} is ${Math.round(ageMs / 1000)}s old but a LIVE process still holds it open — FRESH-BY-HOLDER, not touching it (unlinking under a live writer truncates the index; EI-22703121889295786)`,
+      `[git-sync] ${repoPath}: ${lockName} is ${Math.round(ageMs / 1000)}s old but a LIVE process still holds it open — FRESH-BY-HOLDER, not touching it (unlinking under a live writer truncates the index; EI-22703121889295786; ${holderCheck})`,
+    );
+    return false;
+  }
+  // CHECK-THEN-ACT GUARD (WI-10006519): the holder check can take seconds or more,
+  // and the orphan we aged can be removed and replaced by a DIFFERENT writer's
+  // fresh lock in that window. Unlink only the exact file we judged.
+  const after = await inspectLock(lockPath);
+  if (after === null) return true; // removed during the holder check — just retry
+  if (!sameGitLockFile(before, after)) {
+    log(
+      `[git-sync] ${repoPath}: ${lockName} CHANGED during the ${holderCheck} (was ${before.size}B ino ${before.ino ?? '?'}, now ${after.size}B ino ${after.ino ?? '?'}) — another writer's lock, not touching it`,
     );
     return false;
   }
@@ -2548,7 +2565,7 @@ async function clearStaleGitLock(
     return false;
   }
   log(
-    `[git-sync] ${repoPath}: cleared STALE ${lockName} (${Math.round(ageMs / 1000)}s old — its writer is dead) and retrying (previously: every tick failed until a human removed it)`,
+    `[git-sync] ${repoPath}: cleared STALE ${lockName} (${Math.round(ageMs / 1000)}s old — its writer is dead; ${holderCheck}) and retrying (previously: every tick failed until a human removed it)`,
   );
   return true;
 }
@@ -2608,15 +2625,8 @@ async function recoverIndexLockContention(
   return result;
 }
 
-interface ConfigLockSnapshot {
-  mtimeMs: number;
-  size: number;
-  dev?: number;
-  ino?: number;
-}
-
 interface ClearStaleConfigLockDeps {
-  inspectLock?: (p: string) => Promise<ConfigLockSnapshot | null>;
+  inspectLock?: (p: string) => Promise<GitLockSnapshot | null>;
   isOpen?: (p: string) => Promise<boolean | null>;
   unlinkFile?: (p: string) => Promise<void>;
   now?: () => number;
@@ -2635,16 +2645,7 @@ export async function clearStaleHolderlessEmptyGitLock(
   log: (m: string) => void,
   deps: ClearStaleConfigLockDeps = {},
 ): Promise<boolean> {
-  const inspectLock =
-    deps.inspectLock ??
-    (async (p: string): Promise<ConfigLockSnapshot | null> => {
-      try {
-        const st = await lstat(p);
-        return { mtimeMs: st.mtimeMs, size: st.size, dev: st.dev, ino: st.ino };
-      } catch {
-        return null;
-      }
-    });
+  const inspectLock = deps.inspectLock ?? inspectGitLockFile;
   const isOpen = deps.isOpen ?? defaultOpenFileCheck;
   const unlinkFile = deps.unlinkFile ?? unlink;
   const now = deps.now ?? Date.now;
@@ -2683,12 +2684,7 @@ export async function clearStaleHolderlessEmptyGitLock(
   // longer the empty orphan we proved above, so leave it for the next tick.
   const after = await inspectLock(lockPath);
   if (after === null) return true;
-  if (
-    after.mtimeMs !== before.mtimeMs ||
-    after.size !== before.size ||
-    after.dev !== before.dev ||
-    after.ino !== before.ino
-  ) {
+  if (!sameGitLockFile(before, after)) {
     log(`[git-sync] ${repoPath}: ${lockName} changed during orphan inspection — not touching it`);
     return false;
   }
@@ -2842,30 +2838,10 @@ async function tempPackHasReferences(gitDir: string, entry: TempPackEntry): Prom
 async function procSeesOpenFile(path: string): Promise<boolean | null> {
   const canonical = await realpath(path).catch(() => null);
   if (!canonical) return null;
-  let pids: string[];
-  try {
-    pids = await readdir('/proc');
-  } catch {
-    return null;
-  }
-  for (const pid of pids) {
-    if (!/^\d+$/.test(pid)) continue;
-    let fds: string[];
-    try {
-      fds = await readdir(`/proc/${pid}/fd`);
-    } catch {
-      continue;
-    }
-    for (const fd of fds) {
-      try {
-        const target = await readlink(`/proc/${pid}/fd/${fd}`);
-        if (target === canonical || target === `${canonical} (deleted)`) return true;
-      } catch {
-        // Processes can exit or close a descriptor while the directory is scanned.
-      }
-    }
-  }
-  return false;
+  // Same bounded parallel scanner as procLockHolder (WI-10006519); past its
+  // deadline the answer is null, which every caller treats as "keep the file".
+  const deleted = `${canonical} (deleted)`;
+  return (await scanProcForOpenFile((target) => target === canonical || target === deleted)).held;
 }
 
 /** macOS has no `/proc`; `lsof` is part of the base system and is read-only here. */
@@ -3978,6 +3954,28 @@ export async function guardStagedIndexBeforeCommit(opts: {
   const held = [...new Set([...lateLocked, ...drifted])];
   const packageClosure =
     held.length > 0 ? await expandCargoPackageLiveLockExclusions(staged, held, opts.readText) : { paths: [], packages: [] };
+  // An attributed commit's private index may omit a tracked provider whose edit
+  // is staged elsewhere or remains unstaged. Unlike an untracked module, that
+  // path still resolves in HEAD, but only to the old API; a staged importer that
+  // needs a newly added export can therefore make the committed tree unbuildable.
+  // Compare the working tree with this exact commit index and keep changed source
+  // modules infectious until the provider version is included in a commit.
+  const changedPathsRes = await runGit(
+    ['diff', '--name-only', '--no-renames', '--diff-filter=ACMT', '-z', '--ignore-submodules=all'],
+    repoPath,
+  );
+  if (changedPathsRes.code !== 0) {
+    return {
+      ok: false,
+      error: `post-stage guard could not read tracked changes outside this index: ${gitFailureDetail(changedPathsRes)}`,
+    };
+  }
+  const changedTrackedModulesOutsideIndex = new Set(
+    changedPathsRes.stdout
+      .split('\0')
+      .filter(Boolean)
+      .filter((path) => /\.(?:[cm]?[jt]sx?)$/i.test(path)),
+  );
   // Re-scan the actual index immediately before commit, not only the earlier dirty
   // census. New untracked importers can arrive while the lock refresh and content
   // guards run, then enter through the later `git add -A`; they must stay with every
@@ -3987,6 +3985,7 @@ export async function guardStagedIndexBeforeCommit(opts: {
     ...lateLocked,
     ...drifted,
     ...packageClosure.paths,
+    ...changedTrackedModulesOutsideIndex,
   ]);
   const excludedDependencies = [...new Set([...(opts.excludedDependencies ?? []), ...alwaysInfectious])];
   // WI-10006734: an untracked module is absent from this commit whether or not anything
@@ -4444,6 +4443,8 @@ type ReconcileRepoOpts = Pick<
   'remote' | 'defaultBranch' | 'log' | 'staleTempPackMs' | 'isTempPackOpen'
 > & {
   doPush: boolean;
+  /** Disable Git's commit-graph ancestry fast path when this repo merges submodule gitlinks. */
+  disableCommitGraphForSubmoduleMerge?: boolean;
   /** A child repo's stale remote-tracking ref cannot prove its current pin is publishable. */
   requireRemoteVerification?: boolean;
   /**
@@ -5614,7 +5615,15 @@ async function reconcileAndPushOneRepo(
   // its merge was the FIRST index writer to meet an orphaned index.lock — and it
   // returned "merge failed (no conflicted paths)" every tick forever (P-203 Mac VM,
   // libs/papercusp-db, 2026-09-27: lock 65+ min old, lsof proved no holder).
-  const mergeArgs = [...GIT_SYNC_IDENTITY_ARGS, 'merge', '--no-edit', `${remote}/${branch}`];
+  // Git's submodule merge-ort path calls repo_in_merge_bases() on the submodule repo,
+  // but the commit-graph fast path currently parses through the process-global
+  // superproject repository. That makes valid submodule commits look unreadable.
+  // Keep the slower object-walk fallback scoped to superprojects with submodules.
+  const mergeIdentityArgs = [
+    ...GIT_SYNC_IDENTITY_ARGS,
+    ...(o.disableCommitGraphForSubmoduleMerge ? ['-c', 'core.commitGraph=false'] : []),
+  ];
+  const mergeArgs = [...mergeIdentityArgs, 'merge', '--no-edit', `${remote}/${branch}`];
   const merge = await recoverIndexLockContention(
     await runGit(mergeArgs, repoPath),
     () => runGit(mergeArgs, repoPath),
@@ -5657,7 +5666,7 @@ async function reconcileAndPushOneRepo(
       ...o.syncBack,
       integrationBranch: branch,
       runNetworkGit: (args, cwd) => runNetworkGitWithGitHubHttpsFallback(runGit, args, cwd, o.log),
-      identityArgs: GIT_SYNC_IDENTITY_ARGS,
+      identityArgs: mergeIdentityArgs,
       log: o.log,
     });
     if (syncBack.status === 'merged') mergedNew = true;
@@ -6418,7 +6427,12 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
         runGit,
         repo,
         // P-016: sync-back rides the superproject reconcile only (never syncOneRepo's submodules).
-        { ...repoO, defaultBranch: branch, ...(cfg.syncBack ? { syncBack: cfg.syncBack } : {}) },
+        {
+          ...repoO,
+          defaultBranch: branch,
+          disableCommitGraphForSubmoduleMerge: submodulePaths.length > 0,
+          ...(cfg.syncBack ? { syncBack: cfg.syncBack } : {}),
+        },
         commitRes.committedLocal,
       )),
       headSha: await headSha(runGit, repo),

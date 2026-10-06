@@ -5,7 +5,7 @@
  * (`agent-capability-confinement-2026-06-13`).
  */
 
-import { readFileSync, statSync, writeFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
@@ -14,6 +14,7 @@ import { recordEditAttribution } from '../../edit-attribution';
 import { resolveCapabilityBaseDir } from './base-dir';
 import { refuseRestrictedRuntimeWrite } from './write';
 import { occurrences, spliceLiteral, squashWhitespace } from './text-splice';
+import { replaceFileContents } from './replace-file';
 
 function frozenRepairCaptureWarning(result: {
   content?: ReadonlyArray<unknown>;
@@ -101,7 +102,9 @@ export default defineTool({
       // exactly once when !replace_all.
       const next = spliceLiteral(raw, args.old_string, args.new_string, args.replace_all === true);
       try {
-        writeFileSync(abs, next, 'utf8');
+        // Rename into place, never rewrite the inode: a running bash script reads the
+        // file by byte offset (WI-10006772).
+        replaceFileContents(abs, next);
       } catch (e: unknown) {
         return err('write_failed', e instanceof Error ? e.message : String(e));
       }

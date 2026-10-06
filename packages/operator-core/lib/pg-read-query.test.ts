@@ -46,6 +46,7 @@ import {
   buildEventFireWindowAdvisory,
   buildEpochUnitAdvisory,
   buildDbosWorkflowStatusSchemaHint,
+  buildDbosHistoricalIntervalJoinAdvisory,
   buildSplitCompletionEvidenceAdvisory,
   buildDerivedColumnRedirect,
   buildToolRoutingAdvisory,
@@ -3093,6 +3094,56 @@ describe('buildDbosWorkflowStatusSchemaHint (EI-23095186684817118)', () => {
       buildDbosWorkflowStatusSchemaHint(
         `SELECT priority FROM ${WORKFLOW_STATUS}`,
         { code: '42703', message: 'column "priority" does not exist' },
+      ),
+    ).toBeNull();
+  });
+});
+
+describe('buildDbosHistoricalIntervalJoinAdvisory (EI-25237971414928998)', () => {
+  const historyWideJoin = [
+    'WITH target(window_label, lo_ms, hi_ms) AS (',
+    "  VALUES ('09:45-09:46Z', 1000, 2000)",
+    ')',
+    'SELECT w.workflow_uuid, o.function_name',
+    'FROM target t',
+    'JOIN dbos.workflow_status w',
+    "  ON w.name IN ('routinesTick', 'routineFire')",
+    ' AND w.started_at_epoch_ms < t.hi_ms',
+    'JOIN dbos.operation_outputs o',
+    '  ON o.workflow_uuid = w.workflow_uuid',
+    ' AND o.started_at_epoch_ms < t.hi_ms',
+    ' AND (o.completed_at_epoch_ms IS NULL OR o.completed_at_epoch_ms >= t.lo_ms)',
+  ].join('\n');
+
+  it('warns when a narrow operation window is joined after an upper-only workflow history scan', () => {
+    const advisory = buildDbosHistoricalIntervalJoinAdvisory(historyWideJoin);
+    expect(advisory).toContain('DBOS historical interval join');
+    expect(advisory).toContain('every earlier workflow remains a candidate');
+    expect(advisory).toContain('join workflow_status by workflow_uuid');
+    expect(advisory).toContain('maxRows limits returned rows, not scan work');
+  });
+
+  it('stays silent when workflow start time is bounded on both sides or has no upper-only predicate', () => {
+    expect(
+      buildDbosHistoricalIntervalJoinAdvisory(
+        historyWideJoin.replace('w.started_at_epoch_ms < t.hi_ms', 'w.workflow_uuid = t.workflow_uuid'),
+      ),
+    ).toBeNull();
+    expect(
+      buildDbosHistoricalIntervalJoinAdvisory(
+        historyWideJoin.replace(
+          'w.started_at_epoch_ms < t.hi_ms',
+          'w.started_at_epoch_ms >= t.lo_ms AND w.started_at_epoch_ms < t.hi_ms',
+        ),
+      ),
+    ).toBeNull();
+  });
+
+  it('ignores unrelated and comment/literal-only DBOS mentions', () => {
+    expect(buildDbosHistoricalIntervalJoinAdvisory('SELECT 1')).toBeNull();
+    expect(
+      buildDbosHistoricalIntervalJoinAdvisory(
+        "SELECT 'dbos.workflow_status w JOIN dbos.operation_outputs o' AS note -- w.started_at_epoch_ms < 1",
       ),
     ).toBeNull();
   });

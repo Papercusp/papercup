@@ -180,4 +180,39 @@ describe('WI-10006734: importers of untracked modules absent from the commit', (
       '?? lib/integrations/ticket-integrations.ts\n?? lib/sync-resolver/index.ts',
     );
   });
+
+  it('holds an attributed importer when its tracked provider changed outside that private index', async () => {
+    const providerPath = 'lib/provider.ts';
+    const importerPath = 'lib/importer.ts';
+    const controlPath = 'lib/control.ts';
+    write(repo, providerPath, 'export const oldValue = 1;\n');
+    await git(repo, 'add', '--', providerPath);
+    await git(repo, 'commit', '-q', '-m', 'seed tracked provider');
+
+    // The provider's new symbol exists in the working tree but not in the private
+    // index this attributed group will commit.
+    write(repo, providerPath, 'export const oldValue = 1;\nexport const newValue = 2;\n');
+    write(repo, importerPath, "import { newValue } from './provider';\nexport const value = newValue;\n");
+    write(repo, controlPath, 'export const control = 1;\n');
+    const attribution = new Map<string, FileAttribution>([
+      [controlPath, { agent: 'ag1', intent: 'work' }],
+      [importerPath, { agent: 'ag1', intent: 'work' }],
+    ]);
+
+    const result = await commitAttributedGroups(runGit, repo, attribution, [], MSG, {
+      beforeCommit: (privateRunGit) => guard(privateRunGit),
+      log,
+    });
+
+    expect(result).toEqual({ committedAny: true, committedCount: 1 });
+    expect(await git(repo, 'show', '--name-only', '--format=', 'HEAD')).toBe(controlPath);
+    expect(await git(repo, 'show', `HEAD:${providerPath}`)).toContain('oldValue');
+    expect(await git(repo, 'show', `HEAD:${providerPath}`)).not.toContain('newValue');
+    expect(await git(repo, 'ls-tree', '-r', '--name-only', 'HEAD', '--', importerPath)).toBe('');
+    expect(readFileSync(join(repo, providerPath), 'utf8')).toContain('newValue');
+    expect(readFileSync(join(repo, importerPath), 'utf8')).toContain('newValue');
+    const status = await git(repo, 'status', '--porcelain', '-uall', '--', providerPath, importerPath);
+    expect(status).toContain('lib/provider.ts');
+    expect(status).toContain('lib/importer.ts');
+  });
 });

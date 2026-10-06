@@ -29,6 +29,8 @@ import { resolveAgentWorkspaceRoot } from './agent-tools/capability/base-dir';
 import {
   TEST_RUN_EXECUTION_DETAILS_SCHEMA_VERSION,
   parseTestRunExecutionDetails,
+  isRecordedCaseTitle,
+  MAX_RECORDED_FAILED_CASES,
   type TestRunExecutionDetails,
 } from '@papercusp/test-config/execution-details';
 import { resolveGitContext } from './testing-branch-resolve';
@@ -1646,7 +1648,7 @@ export interface HarnessTestFileRow {
   finishedAt: Date;
   outputTail: string | null;
   /** Exact completed assertion counts when the source report exposed them. */
-  execution?: Pick<TestRunExecutionDetails, 'passed' | 'failed' | 'skipped' | 'collectionFailed'>;
+  execution?: Pick<TestRunExecutionDetails, 'passed' | 'failed' | 'skipped' | 'collectionFailed' | 'failedCaseTitles'>;
 }
 
 /** Minimal shape of the jest-compatible vitest `--reporter=json` output. */
@@ -1670,11 +1672,17 @@ function countVitestAssertions(assertions: VitestJsonAssertion[]): HarnessTestFi
   let passed = 0;
   let failed = 0;
   let skipped = 0;
+  const failedCaseTitles = new Set<string>();
   for (const assertion of assertions) {
     if (!assertion || typeof assertion !== 'object') return undefined;
     switch (assertion.status) {
       case 'passed': passed += 1; break;
-      case 'failed': failed += 1; break;
+      case 'failed':
+        failed += 1;
+        if (isRecordedCaseTitle(assertion.fullName) && failedCaseTitles.size < MAX_RECORDED_FAILED_CASES) {
+          failedCaseTitles.add(assertion.fullName);
+        }
+        break;
       // Vitest's completed JSON reporter calls filtered-out tests "pending".
       case 'skipped':
       case 'pending':
@@ -1690,6 +1698,7 @@ function countVitestAssertions(assertions: VitestJsonAssertion[]): HarnessTestFi
     failed,
     skipped,
     collectionFailed: false,
+    ...(failedCaseTitles.size > 0 ? { failedCaseTitles: [...failedCaseTitles] } : {}),
   };
 }
 
@@ -1778,8 +1787,8 @@ export function parseVitestJsonForHarnessRows(jsonText: string, rootAbs: string)
 // So this is a SECOND PURE PROJECTION over the SAME parsed JSON, not a second
 // parser and never a stdout scrape (D-022). The two differ only in grain:
 // `parseVitestJsonForHarnessRows` collapses every failure message into a
-// 4000-char `outputTail` and DISCARDS `assertionResults[].fullName`; this one
-// keeps the test identity and drops everything the agent will not read.
+// 4000-char `outputTail`; exact failed identities now also survive in execution
+// details. This projection keeps the richer per-test diagnostics an agent reads.
 
 /** One failing test, identified precisely enough to re-run it with `-t`. */
 export interface DistilledTestFailure {
