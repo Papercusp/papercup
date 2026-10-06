@@ -89,7 +89,9 @@ describe('affected-tests selector ⟷ graph snapshot producer (integration, SUPE
     expect(base.status, base.stderr.slice(0, 400)).toBe(0);
     expect(base.names.size).toBeGreaterThan(0);
     expect(base.names.has(IMPORTER_WS), 'precondition: importer workspace must be outside the baseline closure').toBe(false);
-    expect(base.line).toBeNull();
+    // The status line prints on EVERY run (gitnexus-deterministic-integration P-001): a disabled or
+    // dormant snapshot must say so instead of staying silent for days.
+    expect(base.line).toMatch(/^GRAPH_SUGGESTIONS status=unavailable reason=disabled accepted=0 rejected=0 added=none index=none age=none$/);
   });
 
   it('positive: a PRODUCED snapshot ADDS exactly the importer workspace and keeps the whole baseline', () => {
@@ -138,7 +140,39 @@ describe('affected-tests selector ⟷ graph snapshot producer (integration, SUPE
     });
     expect(got.status, got.stderr.slice(0, 400)).toBe(0);
     expectEqualToBaseline(got.names, baseline().names);
-    expect(got.line).toBeNull();
+    expect(got.line).toMatch(/^GRAPH_SUGGESTIONS status=unavailable reason=absent .*added=none .*source=env$/);
+  });
+
+  it('under Vitest with no explicit path the default lookup is OFF (hermetic-test), so host snapshots never leak in', () => {
+    const got = runSelector({ PAPERCUSP_AFFECTED_GRAPH_SNAPSHOT: '' });
+    expect(got.status, got.stderr.slice(0, 400)).toBe(0);
+    expectEqualToBaseline(got.names, baseline().names);
+    expect(got.line).toMatch(/status=unavailable reason=no-snapshot-path .*source=hermetic-test$/);
+  });
+
+  it('gate-shaped env (no Vitest, no explicit path, HOME admitted) reads the SHARED routine-written snapshot', () => {
+    // The green-checkpoint gate forwards HOME but not PAPERCUSP_AFFECTED_GRAPH_SNAPSHOT, and its
+    // isolated checkout holds no `.papercusp/` snapshot — so the shared file under HOME is the
+    // ONLY one it can read. Before P-001 this path did not exist and the gate applied nothing.
+    const { snapshot } = produce('unused-shared-source.json', [{ importer: IMPORTER, imported: IMPORTED }]);
+    const home = join(tmp, 'home');
+    const shared = join(home, '.papercusp', 'graph-snapshot', 'papercusp', 'dependency-snapshot.json');
+    mkdirSync(dirname(shared), { recursive: true });
+    writeFileSync(shared, JSON.stringify(snapshot));
+    const env: Record<string, string> = {};
+    for (const [k, v] of Object.entries(process.env)) {
+      if (v !== undefined && k !== 'VITEST' && k !== 'PAPERCUSP_AFFECTED_GRAPH_SNAPSHOT') env[k] = v;
+    }
+    const r = spawnSync(process.execPath, [SELECTOR, '--changed-paths', IMPORTED, '--print-affected'], {
+      cwd: REPO_ROOT,
+      encoding: 'utf8',
+      env: { ...env, HOME: home, PAPERCUSP_AFFECTED_GRAPH_SOURCE_ROOT: srcRoot, PAPERCUSP_AFFECTED_GRAPH_MAX_AGE_MS: TEN_YEARS_MS },
+      timeout: 90_000,
+    });
+    expect(r.status, r.stderr.slice(0, 400)).toBe(0);
+    const line = r.stderr.split('\n').find((l) => l.startsWith('GRAPH_SUGGESTIONS ')) ?? '';
+    expect(line).toMatch(/status=applied accepted=1 rejected=0 added=.*@papercusp\/backup.* source=shared$/);
+    expect(r.stdout.split('\n')).toContain(`AFFECTED_WS\t${IMPORTER_WS}`);
   });
 
   it('suggestions disabled (PAPERCUSP_AFFECTED_GRAPH_SUGGESTIONS=0) ignores even a valid produced snapshot', () => {

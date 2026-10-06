@@ -195,6 +195,11 @@ export interface IntegrationPushConfig {
    * Set only on the `fork` path; absent means no sync-back.
    */
   syncBack?: { upstreamRemote: string; upstreamBranch: string };
+  /**
+   * WI-10006301 (D-011): the branch git-sync commits and pushes. On the `fork`
+   * path this is {@link WORKING_COPY_INTEGRATION_BRANCH}, never the release ref.
+   */
+  branch?: string;
 }
 
 /**
@@ -204,11 +209,153 @@ export interface IntegrationPushConfig {
  */
 export const SYNC_BACK_UPSTREAM_BRANCH = 'main';
 
+/**
+ * WI-10006301 (plan D-011): the branch a working-copy pot integrates on.
+ *
+ * git-sync commits and pushes here and sync-back merges the main repository into
+ * it; the pot's green gate judges it and promotes it to the copy's `main`, which
+ * is the standing PR's head. It must differ from the release ref: a working copy
+ * that integrated on `main` itself left its gate permanently "up-to-date"
+ * (integration branch == release ref), so nothing was ever promoted and the
+ * standing PR never opened (P-023 pilot, pipeline_events 586805).
+ */
+export const WORKING_COPY_INTEGRATION_BRANCH = 'staging';
+
+/** What {@link ensureWorkingCopyIntegrationBranch} found and did. */
+export type IntegrationBranchLayout =
+  | { kind: 'on-branch' }
+  | { kind: 'attached'; from: string | null; created: boolean; fastForwarded: boolean }
+  | { kind: 'conflict'; message: string };
+
+/**
+ * Put the working copy's checkout on {@link WORKING_COPY_INTEGRATION_BRANCH}
+ * without touching the worktree or the index.
+ *
+ * Already there: nothing to do. Otherwise the branch is created at HEAD, or an
+ * existing branch that is an ancestor of HEAD is fast-forwarded to it, and HEAD
+ * is re-pointed with `symbolic-ref`. HEAD's commit never changes, so agents'
+ * uncommitted edits are untouched. A branch that is ahead of or diverged from
+ * HEAD is a `conflict`: moving it would discard work, so the caller commits
+ * locally and pushes nowhere until a person resolves it.
+ */
+export async function ensureWorkingCopyIntegrationBranch(
+  repoPath: string,
+  runGit: RunGit = defaultRunGit,
+): Promise<IntegrationBranchLayout> {
+  const branch = WORKING_COPY_INTEGRATION_BRANCH;
+  const ref = `refs/heads/${branch}`;
+  const read = async (args: string[]): Promise<string | null> => {
+    try {
+      return (await runGit(args, repoPath)).stdout.trim();
+    } catch {
+      return null;
+    }
+  };
+  const current = (await read(['symbolic-ref', '--quiet', '--short', 'HEAD'])) || null;
+  if (current === branch) return { kind: 'on-branch' };
+  const head = await read(['rev-parse', '--verify', 'HEAD^{commit}']);
+  if (!head) return { kind: 'conflict', message: `cannot resolve HEAD in ${repoPath}` };
+  const existing = (await read(['rev-parse', '--verify', '--quiet', `${ref}^{commit}`])) || null;
+  const on = current ? `'${current}'` : 'a detached HEAD';
+  if (existing && existing !== head && (await read(['merge-base', '--is-ancestor', existing, head])) === null) {
+    return {
+      kind: 'conflict',
+      message:
+        `local '${branch}' (${existing.slice(0, 12)}) is ahead of or diverged from ${on} (${head.slice(0, 12)}); ` +
+        `moving it would discard work`,
+    };
+  }
+  try {
+    // The expected old value makes each ref move atomic: all-zeros means "must not exist yet".
+    if (existing !== head) await runGit(['update-ref', ref, head, existing ?? '0'.repeat(40)], repoPath);
+    await runGit(['symbolic-ref', 'HEAD', ref], repoPath);
+  } catch (err) {
+    return {
+      kind: 'conflict',
+      message: `could not move ${on} onto '${branch}': ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+  return { kind: 'attached', from: current, created: existing === null, fastForwarded: existing !== null && existing !== head };
+}
+
+/** What {@link ensureForkIntegrationBranch} found and did. */
+export type ForkBranchSeed =
+  | { kind: 'present' }
+  | { kind: 'seeded'; sha: string }
+  /** The fork could not be asked; git-sync's own fetch reports the network error. */
+  | { kind: 'unknown'; message: string }
+  | { kind: 'failed'; message: string };
+
+/**
+ * Make sure the fork has {@link WORKING_COPY_INTEGRATION_BRANCH} before git-sync
+ * fetches it.
+ *
+ * git-sync reconciles by fetching `<remote> <branch>` and treats a missing remote
+ * branch as a failed fetch ("cannot reconcile"), deliberately: a mistyped branch
+ * must fail rather than silently create one. A fresh fork only has `main`, so the
+ * first working-copy tick failed exactly that way (P-023 pilot, 02:58Z). This
+ * creates the fork's `staging` at the fork's own `main` tip: a commit the fork
+ * already has, so nothing new is published, and git-sync's normal fetch / merge /
+ * fast-forward push takes over from there.
+ */
+export async function ensureForkIntegrationBranch(
+  repoPath: string,
+  runGit: RunGit = defaultRunGit,
+): Promise<ForkBranchSeed> {
+  const branch = WORKING_COPY_INTEGRATION_BRANCH;
+  const release = SYNC_BACK_UPSTREAM_BRANCH;
+  const errText = (err: unknown) => (err instanceof Error ? err.message : String(err));
+  try {
+    // Fetched before: the remote-tracking ref exists, so the fork has the branch.
+    await runGit(['rev-parse', '--verify', '--quiet', `refs/remotes/${POT_FORK_REMOTE_NAME}/${branch}`], repoPath);
+    return { kind: 'present' };
+  } catch {
+    /* not fetched yet — ask the fork */
+  }
+  let listed: string;
+  try {
+    listed = (await runGit(['ls-remote', POT_FORK_REMOTE_NAME, `refs/heads/${branch}`, `refs/heads/${release}`], repoPath))
+      .stdout;
+  } catch (err) {
+    return { kind: 'unknown', message: errText(err) };
+  }
+  const refs = new Map(
+    listed
+      .split('\n')
+      .map((line) => line.trim().split(/\s+/))
+      .filter((cols) => cols.length === 2)
+      .map(([sha, ref]) => [ref, sha] as const),
+  );
+  if (refs.has(`refs/heads/${branch}`)) return { kind: 'present' };
+  const sha = refs.get(`refs/heads/${release}`);
+  if (!sha) return { kind: 'failed', message: `the fork has neither '${branch}' nor '${release}' to start from` };
+  try {
+    try {
+      await runGit(['cat-file', '-e', `${sha}^{commit}`], repoPath);
+    } catch {
+      await runGit(['fetch', POT_FORK_REMOTE_NAME, `refs/heads/${release}`], repoPath);
+    }
+    await runGit(['push', POT_FORK_REMOTE_NAME, `${sha}:refs/heads/${branch}`], repoPath);
+  } catch (err) {
+    return { kind: 'failed', message: `could not create the fork's '${branch}' at ${sha.slice(0, 12)}: ${errText(err)}` };
+  }
+  return { kind: 'seeded', sha };
+}
+
 /** Why a working-copy tick commits locally and pushes nowhere. */
 export type IntegrationCommitOnlyReason =
   | Extract<IntegrationPushDecision, { kind: 'commit-only' }>['reason']
   | 'working_copy_no_repo_path'
-  | 'working_copy_fork_remote_setup_failed';
+  | 'working_copy_fork_remote_setup_failed'
+  | 'working_copy_branch_layout_conflict'
+  | 'working_copy_fork_branch_seed_failed';
+
+/** Seams for {@link applyIntegrationPushTarget}; the defaults run real git. */
+export interface ApplyIntegrationPushDeps {
+  ensureRemote?: (repoPath: string, url: string) => Promise<unknown>;
+  ensureBranch?: (repoPath: string) => Promise<IntegrationBranchLayout>;
+  ensureForkBranch?: (repoPath: string) => Promise<ForkBranchSeed>;
+}
 
 /**
  * pot-review-integration-mode P-014: apply this tick's working-copy push target
@@ -219,14 +366,22 @@ export type IntegrationCommitOnlyReason =
  * them would leak unreviewed work past the PR). `commit-only`, or a fork remote
  * that cannot be set up, commits locally and pushes nowhere. Never falls back to
  * the main repository. Returns the commit-only reason, or null when it pushes.
+ *
+ * WI-10006301 (D-011): the `fork` path also puts the checkout on
+ * {@link WORKING_COPY_INTEGRATION_BRANCH} and sets `cfg.branch` to it, so the
+ * pot integrates on `staging` and its gate can promote to `main`. A branch layout
+ * it cannot fix safely is commit-only, loudly.
  */
 export async function applyIntegrationPushTarget(
   slug: string,
   cfg: IntegrationPushConfig,
   decision: IntegrationPushDecision | undefined,
   repoPath: string | null | undefined,
-  ensureRemote: (repoPath: string, url: string) => Promise<unknown> = ensurePotForkGitRemote,
+  deps: ApplyIntegrationPushDeps = {},
 ): Promise<IntegrationCommitOnlyReason | null> {
+  const ensureRemote = deps.ensureRemote ?? ensurePotForkGitRemote;
+  const ensureBranch = deps.ensureBranch ?? ((p: string) => ensureWorkingCopyIntegrationBranch(p));
+  const ensureForkBranch = deps.ensureForkBranch ?? ((p: string) => ensureForkIntegrationBranch(p));
   if (!decision || decision.kind === 'unchanged') return null;
   const commitOnly = (reason: IntegrationCommitOnlyReason): IntegrationCommitOnlyReason => {
     cfg.push = false;
@@ -250,6 +405,35 @@ export async function applyIntegrationPushTarget(
     );
     return commitOnly('working_copy_fork_remote_setup_failed');
   }
+  const layout = await ensureBranch(repoPath);
+  if (layout.kind === 'conflict') {
+    console.log(
+      `[git-sync] ${slug}: ⚠ working copy cannot integrate on '${WORKING_COPY_INTEGRATION_BRANCH}' — ` +
+        `${layout.message}. Committing locally, pushing nowhere until the branches are reconciled by hand.`,
+    );
+    return commitOnly('working_copy_branch_layout_conflict');
+  }
+  if (layout.kind === 'attached') {
+    console.log(
+      `[git-sync] ${slug}: moved the working copy from ${layout.from ? `'${layout.from}'` : 'a detached HEAD'} ` +
+        `onto '${WORKING_COPY_INTEGRATION_BRANCH}'` +
+        (layout.created ? ' (created at HEAD)' : layout.fastForwarded ? ' (fast-forwarded to HEAD)' : ''),
+    );
+  }
+  const seed = await ensureForkBranch(repoPath);
+  if (seed.kind === 'failed') {
+    console.log(
+      `[git-sync] ${slug}: ⚠ the fork has no '${WORKING_COPY_INTEGRATION_BRANCH}' branch and it could not be created — ` +
+        `${seed.message}. Committing locally, pushing nowhere.`,
+    );
+    return commitOnly('working_copy_fork_branch_seed_failed');
+  }
+  if (seed.kind === 'seeded') {
+    console.log(
+      `[git-sync] ${slug}: created the fork's '${WORKING_COPY_INTEGRATION_BRANCH}' at its '${SYNC_BACK_UPSTREAM_BRANCH}' (${seed.sha.slice(0, 12)})`,
+    );
+  }
+  cfg.branch = WORKING_COPY_INTEGRATION_BRANCH;
   // P-016: capture the main repository's remote BEFORE repointing the push at the
   // fork — sync-back fetches upstream from it and merges into the copy's staging.
   cfg.syncBack = { upstreamRemote: cfg.remote ?? 'origin', upstreamBranch: SYNC_BACK_UPSTREAM_BRANCH };

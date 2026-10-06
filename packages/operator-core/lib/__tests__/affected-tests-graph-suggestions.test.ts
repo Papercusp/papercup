@@ -25,10 +25,15 @@ import {
   GRAPH_SNAPSHOT_SCHEMA,
   MAX_VISITED_FILES,
   buildSnapshot,
+  computeGraphSuggestions,
   extractSpecifiers,
+  formatSnapshotAge,
+  formatSuggestionLine,
   parseSnapshot,
   relativeCandidates,
+  resolveSnapshotPath,
   sha256Hex,
+  sharedSnapshotPath,
   sourceCorroborates,
   suggestFromSnapshot,
   unionSuperset,
@@ -57,6 +62,58 @@ function snapshotOf(edges: Array<{ importer: string; imported: string; importerS
   return { schema: GRAPH_SNAPSHOT_SCHEMA, index: INDEX, generatedAt, edges };
 }
 const goodEdge = { importer: IMPORTER, imported: IMPORTED, importerSha256: sha256Hex(IMPORTER_SRC) };
+
+describe('snapshot location + status line (gitnexus-deterministic-integration P-001)', () => {
+  const home = '/fixture-home';
+  const root = '/repo';
+  const shared = '/fixture-home/.papercusp/graph-snapshot/papercusp/dependency-snapshot.json';
+  const legacy = '/repo/.papercusp/graph-snapshot/dependency-snapshot.json';
+
+  it('the shared path lives under HOME, outside every checkout', () => {
+    expect(sharedSnapshotPath('papercusp', home)).toBe(shared);
+  });
+
+  it('resolves env > shared > legacy checkout, and names the source', () => {
+    const has = (...paths: string[]) => (p: string) => paths.includes(p);
+    expect(resolveSnapshotPath({ env: { PAPERCUSP_AFFECTED_GRAPH_SNAPSHOT: '/x.json' }, root, home, exists: has(shared, legacy) })).toEqual({ path: '/x.json', source: 'env' });
+    expect(resolveSnapshotPath({ env: {}, root, home, exists: has(shared, legacy) })).toEqual({ path: shared, source: 'shared' });
+    expect(resolveSnapshotPath({ env: {}, root, home, exists: has(legacy) })).toEqual({ path: legacy, source: 'checkout' });
+    // Nothing on disk: report the SHARED path, so the status line says where the routine writes.
+    expect(resolveSnapshotPath({ env: {}, root, home, exists: has() })).toEqual({ path: shared, source: 'shared' });
+  });
+
+  it('under Vitest with no explicit path the lookup is off — a host snapshot must not make selection host-dependent', () => {
+    expect(resolveSnapshotPath({ env: { VITEST: 'true' }, root, home, exists: () => true })).toEqual({ path: null, source: 'hermetic-test' });
+    expect(resolveSnapshotPath({ env: { VITEST: 'true', PAPERCUSP_AFFECTED_GRAPH_SNAPSHOT: '/x.json' }, root, home, exists: () => false }).source).toBe('env');
+  });
+
+  it('a null snapshot path is unavailable/no-snapshot-path, never a read of some default file', () => {
+    const r = computeGraphSuggestions({
+      changed: [IMPORTED],
+      snapshotPath: null,
+      readFile: () => {
+        throw new Error('must not read');
+      },
+      readSource: () => null,
+      ownerOfPath: () => [],
+      now: NOW,
+    });
+    expect(r).toMatchObject({ status: 'unavailable', reason: 'no-snapshot-path', workspaces: [], ageMs: null });
+  });
+
+  it('the line carries age and source on every outcome', () => {
+    expect(formatSnapshotAge(null)).toBe('none');
+    expect(formatSnapshotAge(90 * 60_000)).toBe('1.5h');
+    const applied = { status: 'applied', reason: null, accepted: 2, rejected: 1, index: { lastCommit: INDEX.lastCommit }, ageMs: 3 * 3_600_000 };
+    expect(formatSuggestionLine(applied, ['@papercusp/backup'], 'shared')).toBe(
+      'GRAPH_SUGGESTIONS status=applied accepted=2 rejected=1 added=@papercusp/backup index=0ce3904e0d age=3.0h source=shared',
+    );
+    const absent = { status: 'unavailable', reason: 'absent', accepted: 0, rejected: 0, index: null, ageMs: null };
+    expect(formatSuggestionLine(absent, [], 'shared')).toBe(
+      'GRAPH_SUGGESTIONS status=unavailable reason=absent accepted=0 rejected=0 added=none index=none age=none source=shared',
+    );
+  });
+});
 
 describe('graph-dependency-suggestions — pure module', () => {
   it('rejects a malformed snapshot as a whole, with a reason', () => {

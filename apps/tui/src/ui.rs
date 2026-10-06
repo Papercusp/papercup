@@ -5702,8 +5702,12 @@ fn draw_session_picker(f: &mut Frame, picker: &crate::session_config::SessionPic
         .options
         .iter()
         .map(|o| {
+            // On the conversation picker a disabled row is a status line
+            // ("Loading…", "No earlier conversations", an error), not a
+            // setting; "not settable" there misread as a fault (P-027 G-12).
+            let status_row = picker.axis == crate::session_config::PickerAxis::Conversation;
             let mut lines = vec![Line::from(Span::styled(
-                if o.disabled {
+                if o.disabled && !status_row {
                     format!("{} — not settable", o.label)
                 } else {
                     o.label.clone()

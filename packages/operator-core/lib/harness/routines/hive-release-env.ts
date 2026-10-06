@@ -62,8 +62,18 @@ export interface HiveReleaseGate {
  * through here is a no-op for that case and changes nothing for the papercusp-style
  * monorepo blueprints that rely on the `staging` convention. Omitted ⇒ the old hardcoded
  * `'staging'` fallback (unknown-branch / no registry entry available to the caller).
+ *
+ * `workingCopyBranch` (WI-10006301, plan pot-review-integration-mode D-011) — set when the
+ * owning pot is a working copy: the branch git-sync integrates on. It wins over the knob and
+ * the registry default, because git-sync commits there unconditionally and the gate must
+ * judge where the work actually lands. Without it a working copy cloned from a `main`-default
+ * repo judged `main` against release ref `main`: permanently up-to-date, never promoted.
  */
-export function resolveHiveReleaseGate(hivePath: string, registryDefaultBranch?: string): HiveReleaseGate | null {
+export function resolveHiveReleaseGate(
+  hivePath: string,
+  registryDefaultBranch?: string,
+  workingCopyBranch?: string,
+): HiveReleaseGate | null {
   const bpFile = join(hivePath, '.papercusp', 'blueprint.yaml');
   if (!existsSync(bpFile)) return null;
   let childObj: Record<string, unknown>;
@@ -110,9 +120,8 @@ export function resolveHiveReleaseGate(hivePath: string, registryDefaultBranch?:
   return {
     enabled,
     integrationBranch:
-      typeof gate.integrationBranch === 'string'
-        ? gate.integrationBranch
-        : registryDefaultBranch || 'staging',
+      workingCopyBranch ||
+      (typeof gate.integrationBranch === 'string' ? gate.integrationBranch : registryDefaultBranch || 'staging'),
     releaseRef: typeof gate.releaseRef === 'string' ? gate.releaseRef : 'main',
     greenCmd: typeof gate.greenCmd === 'string' ? gate.greenCmd : null,
     spaBuildWorkspace,
@@ -149,6 +158,23 @@ function disabled(reason: HiveReleaseEnv['reason']): HiveReleaseEnv {
 }
 
 /**
+ * WI-10006301: the integration branch a working-copy pot's git-sync commits on, or
+ * undefined for a direct pot. Same pot-home rule git-sync uses (git-sync-action.ts):
+ * a member's `hive_slug`, else a self_repo home's own slug. Dynamically imported so this
+ * module stays free of a static settings-store dependency.
+ */
+async function workingCopyIntegrationBranchFor(
+  workspaceId: string,
+  entry: { slug: string; hive_slug?: string; self_repo?: boolean },
+): Promise<string | undefined> {
+  const potHomeSlug = entry.hive_slug ?? (entry.self_repo ? entry.slug : undefined);
+  if (!potHomeSlug) return undefined;
+  const { readPotIntegrationMode, WORKING_COPY_INTEGRATION_BRANCH } = await import('../git-sync/pot-integration-mode');
+  const read = await readPotIntegrationMode(workspaceId, potHomeSlug);
+  return read.mode === 'review' ? WORKING_COPY_INTEGRATION_BRANCH : undefined;
+}
+
+/**
  * Compute the per-hive release-gate env overlay for the green-checkpoint / deploy
  * subprocess. Returns `{ enabled:false, reason }` when the hive shouldn't be gated
  * (not found / no blueprint / gate disabled / no repo) — callers skip seeding/running.
@@ -158,7 +184,11 @@ export async function resolveHiveReleaseEnv(slug: string, workspaceId: string): 
   const entry = reg.projects.find((p) => p.slug === slug);
   if (!entry) return disabled('not_found');
 
-  const gate = resolveHiveReleaseGate(entry.path, entry.github_default_branch);
+  const gate = resolveHiveReleaseGate(
+    entry.path,
+    entry.github_default_branch,
+    await workingCopyIntegrationBranchFor(workspaceId, entry),
+  );
   if (!gate) return disabled('no_blueprint');
   if (!gate.enabled) return disabled('gate_disabled');
 

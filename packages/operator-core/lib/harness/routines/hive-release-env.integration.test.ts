@@ -161,6 +161,27 @@ describe('resolveHiveReleaseGate', () => {
     const gate = resolveHiveReleaseGate(makeHiveDir('coding-factory'));
     expect(gate?.integrationBranch).toBe('staging');
   });
+
+  it('WI-10006301: a working copy judges the branch git-sync integrates on, never its release ref', async () => {
+    // A create_from_repo pot of a `main`-default repo: without the working-copy branch the
+    // gate judged main against release ref main — permanently up-to-date, never promoted.
+    const { resolveHiveReleaseGate } = await import('./hive-release-env');
+    const direct = resolveHiveReleaseGate(makeHiveDir('coding-factory'), 'main');
+    expect(direct?.integrationBranch).toBe(direct?.releaseRef); // the trap, as configured for a direct pot
+    const copy = resolveHiveReleaseGate(makeHiveDir('coding-factory'), 'main', 'staging');
+    expect(copy?.integrationBranch).toBe('staging');
+    expect(copy?.integrationBranch).not.toBe(copy?.releaseRef);
+  });
+
+  it('WI-10006301: the working-copy branch wins over an explicit blueprint knob (git-sync commits there regardless)', async () => {
+    const { resolveHiveReleaseGate } = await import('./hive-release-env');
+    const gate = resolveHiveReleaseGate(
+      makeHiveDir('coding-factory', { extraKnobs: '  releaseGate:\n    integrationBranch: main' }),
+      'main',
+      'staging',
+    );
+    expect(gate?.integrationBranch).toBe('staging');
+  });
 });
 
 describe('resolveHiveReleaseEnv', () => {

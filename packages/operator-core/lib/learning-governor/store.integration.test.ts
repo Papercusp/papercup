@@ -33,6 +33,8 @@ import { runGovernedSpendAttempt } from './registrants';
 import { llmCall } from '../llm-testing/llm-client';
 import { buildLoopDeps } from '../gym/loop-deps';
 import { withGymLlmNetworkRetry } from '../gym/proposer';
+import { runWithRatePause } from '../gym/rate-pause';
+import { LlmCallError } from '@papercusp/testing-shell/llm';
 import type { AbDeps } from '../gym/ab-runner';
 
 const failureUsage = vi.hoisted(() => ({ costUsd: 0 as number | undefined }));
@@ -638,6 +640,62 @@ describe('the one visible number (P-003 verification)', () => {
 /* ── reservation + settlement (P-005), migration 1116 ────────────────────── */
 
 describe('governed attempt persisted settlement receipts', () => {
+  it.each([
+    ['unknown', {}, true, 0],
+    ['positive', { costUsd: 0.23 }, false, 0.23],
+    ['incomplete subtotal', { costUsd: 0.23, costUsdMeasurementMissing: true }, true, 0.23],
+  ])('rate pause preserves %s spend in the original reservation', async (_label, usage, incomplete, costUsd) => {
+    const loopId = `gym:rate-spend-${randomUUID()}`;
+    await registerLearningLoop(sql, { workspaceId: WS, loopId, budgetKind: 'lifetime', budgetUsd: 10 });
+    const failure = Object.assign(new LlmCallError({ class: 'rate_limited', message: '429', retryAfterMs: 1 }), usage);
+    const call = vi.fn().mockRejectedValueOnce(failure).mockResolvedValue({ costUsd: 0.02, value: 'later success' });
+    const sleep = vi.fn(async () => {});
+    const out = await runGovernedSpendAttempt({ workspaceId: WS, loopId, attemptKind: 'evaluation',
+      requestedUsd: 1, accumulate: false,
+      run: async () => await runWithRatePause(call, { now: () => 0, sleep }),
+    }, { enabled: async () => true, getSql: async () => sql, log: () => {} });
+    expect(out).toMatchObject({ ok: false, reason: 'failed', costUsd });
+    expect(call).toHaveBeenCalledTimes(1);
+    expect(sleep).not.toHaveBeenCalled();
+    if (out.ok || out.reason !== 'failed') throw new Error('expected original reserved dispatch failure');
+    if (incomplete) expect(out).toMatchObject({ costUsdMeasurementMissing: true, settlement: null });
+    else expect(out.settlement).toMatchObject({ ok: true, reservation: { status: 'failed', usedUsd: costUsd } });
+    const fresh = postgres(testDatabaseUri, { max: 1, onnotice: () => {}, prepare: false });
+    try {
+      const rows = await listLearningSpendReservations(fresh, { workspaceId: WS, loopId });
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ id: out.reservationId, status: incomplete ? 'open' : 'failed',
+        requestedUsd: 1, reservedUsd: 1, usedUsd: incomplete ? 0 : costUsd });
+      expect(await listLearningSpendEvents(fresh, { workspaceId: WS, loopId })).toHaveLength(incomplete ? 0 : 1);
+      expect((await getLearningLoop(fresh, { workspaceId: WS, loopId }))?.spentUsd).toBe(0);
+    } finally { await fresh.end({ timeout: 5 }); }
+  });
+
+  it('rate pause retries a measured-zero failure and settles its successful receipt', async () => {
+    const loopId = `gym:rate-zero-${randomUUID()}`;
+    await registerLearningLoop(sql, { workspaceId: WS, loopId, budgetKind: 'lifetime', budgetUsd: 10 });
+    const failure = Object.assign(new LlmCallError({ class: 'rate_limited', message: '429', retryAfterMs: 1 }), { costUsd: 0 });
+    const call = vi.fn().mockRejectedValueOnce(failure).mockResolvedValue({ costUsd: 0.02, value: 'recovered' });
+    const sleep = vi.fn(async () => {});
+    const out = await runGovernedSpendAttempt({ workspaceId: WS, loopId, attemptKind: 'evaluation',
+      requestedUsd: 1, accumulate: false,
+      run: async () => await runWithRatePause(call, { now: () => 0, sleep }),
+    }, { enabled: async () => true, getSql: async () => sql, log: () => {} });
+    expect(out).toMatchObject({ ok: true, costUsd: 0.02, value: 'recovered',
+      settlement: { ok: true, reservation: { status: 'settled', usedUsd: 0.02 } } });
+    expect(call).toHaveBeenCalledTimes(2);
+    expect(sleep.mock.calls).toEqual([[1]]);
+    if (!out.ok) throw new Error('expected measured-zero recovery');
+    const fresh = postgres(testDatabaseUri, { max: 1, onnotice: () => {}, prepare: false });
+    try {
+      const rows = await listLearningSpendReservations(fresh, { workspaceId: WS, loopId });
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ id: out.reservationId, status: 'settled', usedUsd: 0.02 });
+      expect(await listLearningSpendEvents(fresh, { workspaceId: WS, loopId })).toHaveLength(1);
+      expect((await getLearningLoop(fresh, { workspaceId: WS, loopId }))?.spentUsd).toBe(0);
+    } finally { await fresh.end({ timeout: 5 }); }
+  });
+
   it.each([
     ['unknown', {}, true, 0],
     ['positive', { costUsd: 0.23 }, false, 0.23],

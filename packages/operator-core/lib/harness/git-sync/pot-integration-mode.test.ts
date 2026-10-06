@@ -25,8 +25,12 @@ import {
   resolveIntegrationPushRemote,
   ensurePotForkGitRemote,
   applyIntegrationPushTarget,
+  ensureWorkingCopyIntegrationBranch,
+  ensureForkIntegrationBranch,
+  WORKING_COPY_INTEGRATION_BRANCH,
   setPotIntegrationMode,
   choosePotIntegrationMode,
+  type ApplyIntegrationPushDeps,
   type ChoosePotIntegrationModeInput,
   type IntegrationPushConfig,
   type RunGit,
@@ -137,33 +141,49 @@ describe('applyIntegrationPushTarget (the git-sync tick rewrite)', () => {
     vi.spyOn(console, 'log').mockImplementation(() => {});
   });
 
+  const onBranch = () =>
+    vi.fn<NonNullable<ApplyIntegrationPushDeps['ensureBranch']>>().mockResolvedValue({ kind: 'on-branch' });
+  const forkHasBranch = () =>
+    vi.fn<NonNullable<ApplyIntegrationPushDeps['ensureForkBranch']>>().mockResolvedValue({ kind: 'present' });
+
   it('leaves the config untouched for a direct pot or no decision', async () => {
     const ensure = vi.fn();
+    const ensureBranch = onBranch();
     for (const decision of [
       undefined,
       resolveIntegrationPushRemote({ read: { mode: 'direct', source: 'absent' } }),
     ]) {
       const cfg = baseCfg();
-      expect(await applyIntegrationPushTarget('p', cfg, decision, '/repo', ensure)).toBeNull();
+      expect(await applyIntegrationPushTarget('p', cfg, decision, '/repo', { ensureRemote: ensure, ensureBranch })).toBeNull();
       expect(cfg).toEqual(baseCfg());
     }
     expect(ensure).not.toHaveBeenCalled();
+    expect(ensureBranch).not.toHaveBeenCalled();
   });
 
-  it('a fork decision pushes the pot-fork remote and stops pushing submodule origins', async () => {
+  it('a fork decision pushes the pot-fork remote on the staging branch and stops pushing submodule origins', async () => {
     const ensure = vi.fn().mockResolvedValue('added');
+    const ensureBranch = onBranch();
+    const ensureForkBranch = forkHasBranch();
     const cfg = baseCfg();
-    expect(await applyIntegrationPushTarget('p', cfg, forkDecision, '/repo', ensure)).toBeNull();
+    expect(
+      await applyIntegrationPushTarget('p', cfg, forkDecision, '/repo', { ensureRemote: ensure, ensureBranch, ensureForkBranch }),
+    ).toBeNull();
     expect(ensure).toHaveBeenCalledWith('/repo', FORK);
+    expect(ensureBranch).toHaveBeenCalledWith('/repo');
+    expect(ensureForkBranch).toHaveBeenCalledWith('/repo');
     // P-016: the fork path also arms sync-back FROM the main repository's remote
     // (captured before the remote is rewritten), never from the fork itself.
+    // WI-10006301 (D-011): it integrates on staging, never on the release ref.
     expect(cfg).toEqual({
       push: true,
       remote: POT_FORK_REMOTE_NAME,
       pushSubmoduleOrigins: false,
+      branch: WORKING_COPY_INTEGRATION_BRANCH,
       syncBack: { upstreamRemote: 'origin', upstreamBranch: SYNC_BACK_UPSTREAM_BRANCH },
     });
     expect(cfg.syncBack?.upstreamRemote).not.toBe(POT_FORK_REMOTE_NAME);
+    expect(cfg.branch).not.toBe(SYNC_BACK_UPSTREAM_BRANCH);
   });
 
   it('only the fork path arms sync-back — commit-only and direct decisions never do', async () => {
@@ -174,24 +194,31 @@ describe('applyIntegrationPushTarget (the git-sync tick rewrite)', () => {
       resolveIntegrationPushRemote({ read: { mode: 'review', source: 'set' } }),
     ]) {
       const cfg = baseCfg();
-      await applyIntegrationPushTarget('p', cfg, decision, '/repo', ensure);
+      await applyIntegrationPushTarget('p', cfg, decision, '/repo', { ensureRemote: ensure, ensureBranch: onBranch() });
       expect(cfg.syncBack).toBeUndefined();
+      expect(cfg.branch).toBeUndefined();
     }
   });
 
-  it('a commit-only decision pushes nowhere and never touches the remote', async () => {
+  it('a commit-only decision pushes nowhere and never touches the remote or the branch', async () => {
     const ensure = vi.fn();
+    const ensureBranch = onBranch();
     const cfg = baseCfg();
     const decision = resolveIntegrationPushRemote({ read: { mode: 'review', source: 'set' } });
-    expect(await applyIntegrationPushTarget('p', cfg, decision, '/repo', ensure)).toBe('working_copy_fork_missing');
+    expect(await applyIntegrationPushTarget('p', cfg, decision, '/repo', { ensureRemote: ensure, ensureBranch })).toBe(
+      'working_copy_fork_missing',
+    );
     expect(cfg).toEqual({ push: false, remote: 'origin', pushSubmoduleOrigins: false });
     expect(ensure).not.toHaveBeenCalled();
+    expect(ensureBranch).not.toHaveBeenCalled();
   });
 
   it('with no checkout path it pushes nowhere rather than the main repository', async () => {
     const ensure = vi.fn();
     const cfg = baseCfg();
-    expect(await applyIntegrationPushTarget('p', cfg, forkDecision, null, ensure)).toBe('working_copy_no_repo_path');
+    expect(
+      await applyIntegrationPushTarget('p', cfg, forkDecision, null, { ensureRemote: ensure, ensureBranch: onBranch() }),
+    ).toBe('working_copy_no_repo_path');
     expect(cfg.push).toBe(false);
     expect(cfg.remote).toBe('origin');
     expect(ensure).not.toHaveBeenCalled();
@@ -200,10 +227,194 @@ describe('applyIntegrationPushTarget (the git-sync tick rewrite)', () => {
   it('if the fork remote cannot be set up it pushes nowhere — never falls back to origin', async () => {
     const ensure = vi.fn().mockRejectedValue(new Error('git remote add failed'));
     const cfg = baseCfg();
-    expect(await applyIntegrationPushTarget('p', cfg, forkDecision, '/repo', ensure)).toBe(
-      'working_copy_fork_remote_setup_failed',
-    );
+    expect(
+      await applyIntegrationPushTarget('p', cfg, forkDecision, '/repo', { ensureRemote: ensure, ensureBranch: onBranch() }),
+    ).toBe('working_copy_fork_remote_setup_failed');
     expect(cfg).toEqual({ push: false, remote: 'origin', pushSubmoduleOrigins: false });
+  });
+
+  it('WI-10006301: a branch layout it cannot fix safely pushes nowhere and never integrates on main', async () => {
+    const ensureBranch = vi
+      .fn<NonNullable<ApplyIntegrationPushDeps['ensureBranch']>>()
+      .mockResolvedValue({ kind: 'conflict', message: "local 'staging' is ahead of 'main'" });
+    const cfg = baseCfg();
+    expect(
+      await applyIntegrationPushTarget('p', cfg, forkDecision, '/repo', {
+        ensureRemote: vi.fn().mockResolvedValue('unchanged'),
+        ensureBranch,
+      }),
+    ).toBe('working_copy_branch_layout_conflict');
+    expect(cfg).toEqual({ push: false, remote: 'origin', pushSubmoduleOrigins: false });
+  });
+
+  it("WI-10006301: a fork whose 'staging' cannot be created pushes nowhere", async () => {
+    const cfg = baseCfg();
+    expect(
+      await applyIntegrationPushTarget('p', cfg, forkDecision, '/repo', {
+        ensureRemote: vi.fn().mockResolvedValue('unchanged'),
+        ensureBranch: onBranch(),
+        ensureForkBranch: vi
+          .fn<NonNullable<ApplyIntegrationPushDeps['ensureForkBranch']>>()
+          .mockResolvedValue({ kind: 'failed', message: "the fork has neither 'staging' nor 'main'" }),
+      }),
+    ).toBe('working_copy_fork_branch_seed_failed');
+    expect(cfg).toEqual({ push: false, remote: 'origin', pushSubmoduleOrigins: false });
+  });
+
+  it('a fork that could not be asked still pushes — git-sync’s own fetch reports the network error', async () => {
+    const cfg = baseCfg();
+    expect(
+      await applyIntegrationPushTarget('p', cfg, forkDecision, '/repo', {
+        ensureRemote: vi.fn().mockResolvedValue('unchanged'),
+        ensureBranch: onBranch(),
+        ensureForkBranch: vi
+          .fn<NonNullable<ApplyIntegrationPushDeps['ensureForkBranch']>>()
+          .mockResolvedValue({ kind: 'unknown', message: 'Could not resolve host: github.com' }),
+      }),
+    ).toBeNull();
+    expect(cfg.push).toBe(true);
+    expect(cfg.branch).toBe(WORKING_COPY_INTEGRATION_BRANCH);
+  });
+});
+
+describe('ensureForkIntegrationBranch (WI-10006301: a fresh fork has only main)', () => {
+  const MAIN = 'c'.repeat(40);
+  function fakeGit(o: { tracking: boolean; listed: string; haveObject?: boolean; pushFails?: boolean; lsFails?: boolean }) {
+    const calls: string[][] = [];
+    const run: RunGit = async (args) => {
+      calls.push(args);
+      if (args[0] === 'rev-parse') {
+        if (!o.tracking) throw new Error('exit 1');
+        return { stdout: MAIN };
+      }
+      if (args[0] === 'ls-remote') {
+        if (o.lsFails) throw new Error('Could not resolve host: github.com');
+        return { stdout: o.listed };
+      }
+      if (args[0] === 'cat-file' && !o.haveObject) throw new Error('missing');
+      if (args[0] === 'push' && o.pushFails) throw new Error('permission denied');
+      return { stdout: '' };
+    };
+    return { run, calls };
+  }
+  const pushes = (calls: string[][]) => calls.filter((c) => c[0] === 'push');
+
+  it('already fetched once: present, and the fork is not even asked', async () => {
+    const g = fakeGit({ tracking: true, listed: '' });
+    expect(await ensureForkIntegrationBranch('/repo', g.run)).toEqual({ kind: 'present' });
+    expect(g.calls.some((c) => c[0] === 'ls-remote')).toBe(false);
+  });
+
+  it('the fork has staging: present, nothing pushed', async () => {
+    const g = fakeGit({ tracking: false, listed: `${MAIN}\trefs/heads/main\n${MAIN}\trefs/heads/staging\n` });
+    expect(await ensureForkIntegrationBranch('/repo', g.run)).toEqual({ kind: 'present' });
+    expect(pushes(g.calls)).toEqual([]);
+  });
+
+  it("the fork has only main: creates staging at the fork's own main tip (publishes nothing new)", async () => {
+    const g = fakeGit({ tracking: false, listed: `${MAIN}\trefs/heads/main\n`, haveObject: true });
+    expect(await ensureForkIntegrationBranch('/repo', g.run)).toEqual({ kind: 'seeded', sha: MAIN });
+    expect(pushes(g.calls)).toEqual([['push', POT_FORK_REMOTE_NAME, `${MAIN}:refs/heads/staging`]]);
+    expect(g.calls.some((c) => c[0] === 'fetch')).toBe(false);
+  });
+
+  it("fetches the fork's main first when the checkout does not have that commit", async () => {
+    const g = fakeGit({ tracking: false, listed: `${MAIN}\trefs/heads/main\n`, haveObject: false });
+    expect(await ensureForkIntegrationBranch('/repo', g.run)).toMatchObject({ kind: 'seeded' });
+    expect(g.calls).toContainEqual(['fetch', POT_FORK_REMOTE_NAME, 'refs/heads/main']);
+  });
+
+  it('a fork with neither branch, or a refused push, fails without guessing', async () => {
+    expect(await ensureForkIntegrationBranch('/repo', fakeGit({ tracking: false, listed: '' }).run)).toMatchObject({ kind: 'failed' });
+    expect(
+      await ensureForkIntegrationBranch(
+        '/repo',
+        fakeGit({ tracking: false, listed: `${MAIN}\trefs/heads/main\n`, haveObject: true, pushFails: true }).run,
+      ),
+    ).toMatchObject({ kind: 'failed' });
+  });
+
+  it('an unreachable fork is unknown, not failed', async () => {
+    const g = fakeGit({ tracking: false, listed: '', lsFails: true });
+    expect(await ensureForkIntegrationBranch('/repo', g.run)).toMatchObject({ kind: 'unknown' });
+    expect(pushes(g.calls)).toEqual([]);
+  });
+});
+
+describe('ensureWorkingCopyIntegrationBranch (WI-10006301, D-011)', () => {
+  const HEAD = 'a'.repeat(40);
+  const OLD = 'b'.repeat(40);
+  const ZERO = '0'.repeat(40);
+  /** A fake git holding HEAD's branch, HEAD's sha, and an optional local staging ref. */
+  function fakeGit(o: { current: string | null; staging: string | null; stagingIsAncestor?: boolean }) {
+    const calls: string[][] = [];
+    const run: RunGit = async (args) => {
+      calls.push(args);
+      const key = args.join(' ');
+      if (key === 'symbolic-ref --quiet --short HEAD') {
+        if (o.current === null) throw new Error('fatal: ref HEAD is not a symbolic ref');
+        return { stdout: `${o.current}\n` };
+      }
+      if (key === 'rev-parse --verify HEAD^{commit}') return { stdout: `${HEAD}\n` };
+      if (key === 'rev-parse --verify --quiet refs/heads/staging^{commit}') {
+        if (o.staging === null) throw new Error('exit 1');
+        return { stdout: `${o.staging}\n` };
+      }
+      if (args[0] === 'merge-base') {
+        if (!o.stagingIsAncestor) throw new Error('exit 1');
+        return { stdout: '' };
+      }
+      return { stdout: '' };
+    };
+    return { run, calls };
+  }
+  const writes = (calls: string[][]) => calls.filter((c) => c[0] === 'update-ref' || (c[0] === 'symbolic-ref' && c[1] === 'HEAD'));
+
+  it('already on staging: nothing to do, no writes', async () => {
+    const g = fakeGit({ current: 'staging', staging: HEAD });
+    expect(await ensureWorkingCopyIntegrationBranch('/repo', g.run)).toEqual({ kind: 'on-branch' });
+    expect(writes(g.calls)).toEqual([]);
+  });
+
+  it('on main with no staging: creates staging at HEAD (must-not-exist guard) and attaches it', async () => {
+    const g = fakeGit({ current: 'main', staging: null });
+    expect(await ensureWorkingCopyIntegrationBranch('/repo', g.run)).toEqual({
+      kind: 'attached',
+      from: 'main',
+      created: true,
+      fastForwarded: false,
+    });
+    expect(writes(g.calls)).toEqual([
+      ['update-ref', 'refs/heads/staging', HEAD, ZERO],
+      ['symbolic-ref', 'HEAD', 'refs/heads/staging'],
+    ]);
+  });
+
+  it('staging at the same commit as HEAD: only re-points HEAD', async () => {
+    const g = fakeGit({ current: 'main', staging: HEAD });
+    expect(await ensureWorkingCopyIntegrationBranch('/repo', g.run)).toMatchObject({ kind: 'attached', created: false, fastForwarded: false });
+    expect(writes(g.calls)).toEqual([['symbolic-ref', 'HEAD', 'refs/heads/staging']]);
+  });
+
+  it('staging behind HEAD: fast-forwards it (compare-and-swap on the old sha) and attaches', async () => {
+    const g = fakeGit({ current: 'main', staging: OLD, stagingIsAncestor: true });
+    expect(await ensureWorkingCopyIntegrationBranch('/repo', g.run)).toMatchObject({ kind: 'attached', fastForwarded: true });
+    expect(writes(g.calls)).toEqual([
+      ['update-ref', 'refs/heads/staging', HEAD, OLD],
+      ['symbolic-ref', 'HEAD', 'refs/heads/staging'],
+    ]);
+  });
+
+  it('a detached HEAD is attached the same way', async () => {
+    const g = fakeGit({ current: null, staging: null });
+    expect(await ensureWorkingCopyIntegrationBranch('/repo', g.run)).toMatchObject({ kind: 'attached', from: null, created: true });
+  });
+
+  it('staging ahead of or diverged from HEAD: conflict, and nothing is moved', async () => {
+    const g = fakeGit({ current: 'main', staging: OLD, stagingIsAncestor: false });
+    const r = await ensureWorkingCopyIntegrationBranch('/repo', g.run);
+    expect(r.kind).toBe('conflict');
+    expect(writes(g.calls)).toEqual([]);
   });
 });
 

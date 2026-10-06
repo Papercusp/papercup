@@ -359,6 +359,11 @@ describe('sweepStrandedToolFailures (executor)', () => {
     const h = harness({ enterResult: { entered: false, reason: 'owner-capability' } });
     const result = await sweepStrandedToolFailures('ws-1', h.deps);
     expect(result).toMatchObject({ review: 0, enrolFailed: 1 });
+    // The cause is reported, not just counted (first live run: 3 rows, cause invisible).
+    expect(result.enrolFailures).toEqual([
+      { id: 'EI-review', message: 'agent-review enrollment was not entered: owner-capability' },
+    ]);
+    expect(renderStrandedSweepNote(result)).toContain('enrolFailures=EI-review:owner-capability');
     expect(h.captureMerge).toHaveBeenCalledWith('EI-review', expect.objectContaining({
       agentReviewFailure: expect.objectContaining({ phase: 'enrollment' }),
     }));
@@ -391,7 +396,7 @@ describe('renderStrandedSweepNote', () => {
   it('renders counts and the top review reasons', () => {
     expect(
       renderStrandedSweepNote({
-        scanned: 4, verified: 1, retired: 1, review: 2, enrolFailed: 0, deferred: 0, failed: 0,
+        scanned: 4, verified: 1, retired: 1, review: 2, enrolFailed: 0, enrolFailures: [], deferred: 0, failed: 0,
         reviewReasons: { 'tool-unchanged-since-report': 2 },
       }),
     ).toBe(

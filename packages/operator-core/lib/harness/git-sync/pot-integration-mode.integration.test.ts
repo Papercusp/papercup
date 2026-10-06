@@ -31,6 +31,7 @@ import {
   applyIntegrationPushTarget,
   POT_FORK_REMOTE_NAME,
   resolveIntegrationPushRemote,
+  WORKING_COPY_INTEGRATION_BRANCH,
   type PotIntegrationModeRead,
 } from './pot-integration-mode';
 import { parseIntegrationModeAnswer } from './integration-mode-question';
@@ -64,8 +65,10 @@ async function configRepo(dir: string): Promise<void> {
 }
 
 const tipOf = (bare: string): Promise<string> => git(['rev-parse', 'main'], bare);
+/** WI-10006301 (D-011): a working copy's git-sync lands on `staging`; `main` moves only on a gate promotion. */
+const stagingOf = (repo: string): Promise<string> => git(['rev-parse', 'refs/heads/staging'], repo);
 const headOf = (dir: string): Promise<string> => git(['rev-parse', 'HEAD'], dir);
-const filesAt = (bare: string): Promise<string> => git(['ls-tree', '-r', '--name-only', 'main'], bare);
+const filesAt = (bare: string, ref = 'main'): Promise<string> => git(['ls-tree', '-r', '--name-only', ref], bare);
 
 interface Topology {
   /** The main repository — the pot clone's `origin`. */
@@ -146,13 +149,55 @@ describe('pot integration mode — where a real git-sync tick pushes (P-014, SPE
     // the real `pot-fork` git remote now points at the fork
     expect(await git(['remote', 'get-url', POT_FORK_REMOTE_NAME], t.work)).toBe(t.fork);
 
+    // WI-10006301 (D-011): the working copy integrates on staging, not on the release ref
+    expect(r.cfg.branch).toBe(WORKING_COPY_INTEGRATION_BRANCH);
+    expect(await git(['symbolic-ref', '--short', 'HEAD'], t.work)).toBe(WORKING_COPY_INTEGRATION_BRANCH);
     const head = await headOf(t.work);
     expect(head).not.toBe(t.seed);
-    expect(await tipOf(t.fork)).toBe(head);
-    expect(await filesAt(t.fork)).toContain('agent.txt');
+    expect(await stagingOf(t.fork)).toBe(head);
+    expect(await filesAt(t.fork, 'staging')).toContain('agent.txt');
+    // the fork's main moves only when the green gate promotes staging, never on a tick
+    expect(await tipOf(t.fork)).toBe(t.seed);
     // the main repository is untouched — unreviewed work never reaches it
     expect(await tipOf(t.upstream)).toBe(t.seed);
     expect(await filesAt(t.upstream)).not.toContain('agent.txt');
+  });
+
+  it('WI-10006301: after a working-copy tick the gate has something to promote (staging ahead of the release ref)', async () => {
+    const t = await makeTopology('gate-input');
+    await agentEdit(t.work, 'agent.txt');
+
+    await tick('pim-gate-input', t, { mode: 'review', source: 'set' }, t.fork);
+
+    // The gate judges local staging against local main (green-checkpoint never fetches).
+    // Integrating on main made these equal forever, so the gate reported up-to-date and
+    // never promoted (P-023 pilot, pipeline_events 586805).
+    const staging = await stagingOf(t.work);
+    const main = await git(['rev-parse', 'refs/heads/main'], t.work);
+    expect(staging).not.toBe(main);
+    expect(main).toBe(t.seed);
+    expect(await git(['merge-base', '--is-ancestor', main, staging], t.work)).toBe('');
+  });
+
+  it('WI-10006301: a local staging that diverged from the checkout is never moved — commit-only, nothing pushed', async () => {
+    const t = await makeTopology('diverged');
+    // a stray local staging carrying a commit the checkout does not have
+    await git(['checkout', '-b', 'staging'], t.work);
+    await writeFile(join(t.work, 'stray.txt'), 'stray\n');
+    await git(['add', '-A'], t.work);
+    await git(['commit', '--no-verify', '-m', 'stray'], t.work);
+    const stray = await headOf(t.work);
+    await git(['checkout', 'main'], t.work);
+    await agentEdit(t.work, 'agent.txt');
+
+    const r = await tick('pim-diverged', t, { mode: 'review', source: 'set' }, t.fork);
+
+    expect(r.commitOnly).toBe('working_copy_branch_layout_conflict');
+    expect(r.cfg.push).toBe(false);
+    expect(await stagingOf(t.work)).toBe(stray);
+    expect(await git(['symbolic-ref', '--short', 'HEAD'], t.work)).toBe('main');
+    expect(await tipOf(t.fork)).toBe(t.seed);
+    expect(await tipOf(t.upstream)).toBe(t.seed);
   });
 
   it('direct (default, no setting) pushes the main repository exactly as before, and the fork does not move', async () => {
@@ -196,7 +241,7 @@ describe('pot integration mode — where a real git-sync tick pushes (P-014, SPE
 
     expect(r.status).toBe('synced');
     expect(await git(['remote', 'get-url', POT_FORK_REMOTE_NAME], t.work)).toBe(t.fork);
-    expect(await tipOf(t.fork)).toBe(await headOf(t.work));
+    expect(await stagingOf(t.fork)).toBe(await headOf(t.work));
     expect(await tipOf(staleFork)).toBe(t.seed);
     expect(await tipOf(t.upstream)).toBe(t.seed);
   });
@@ -251,7 +296,7 @@ describe('creation-time answer reaches real git (P-017, SPEC-P-017-create-questi
 
     expect(r.status).toBe('synced');
     const head = await headOf(t.work);
-    expect(await tipOf(t.fork)).toBe(head);
+    expect(await stagingOf(t.fork)).toBe(head);
     expect(await tipOf(t.upstream)).toBe(t.seed);
   });
 
@@ -306,7 +351,7 @@ describe('no write access locks the working copy, and the lock reaches real git 
     const r = await tick('pim-no-write', t, read, t.fork);
 
     expect(r.status).toBe('synced');
-    expect(await tipOf(t.fork)).toBe(await headOf(t.work));
+    expect(await stagingOf(t.fork)).toBe(await headOf(t.work));
     expect(await tipOf(t.upstream)).toBe(t.seed);
   });
 

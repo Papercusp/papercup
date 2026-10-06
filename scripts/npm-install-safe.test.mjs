@@ -622,6 +622,73 @@ test("nested exec-under-lock readers do not reacquire the writer mutex", async (
   }
 });
 
+test("install readers keep reporting a held writer on the configured cadence", async (context) => {
+  const repoRoot = mkdtempSync(join(tmpdir(), "install-safe-reader-notices-"));
+  const previousLockRoot = process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+  const previousTimeout = process.env.PAPERCUSP_FS_MUTEX_TIMEOUT_MS;
+  process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = join(repoRoot, "locks");
+  process.env.PAPERCUSP_FS_MUTEX_TIMEOUT_MS = "180000";
+  const originalError = console.error;
+  let releaseWriter;
+  let writerStarted;
+  const writerReady = new Promise(resolve => { writerStarted = resolve; });
+  const writer = withFsMutex(repoLockName(repoRoot), async () => {
+    writerStarted();
+    await new Promise(resolve => { releaseWriter = resolve; });
+  });
+  let reading;
+  let noticeDeadline;
+  try {
+    await writerReady;
+    let firstNotice;
+    let nextNotice;
+    const first = new Promise(resolve => { firstNotice = resolve; });
+    const next = new Promise(resolve => { nextNotice = resolve; });
+    const notices = [];
+    console.error = message => {
+      if (String(message).startsWith("NPM_INSTALL_SAFE reader waiting")) {
+        notices.push(String(message));
+        if (notices.length === 1) firstNotice();
+        else nextNotice();
+      }
+    };
+    // Advance only the observed clock. Real filesystem operations and the
+    // mutex retry timer continue to run, without waiting 30 seconds in CI.
+    context.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+    let childEntered = false;
+    reading = runCommandUnderInstallMutex({
+      repoRoot,
+      commandArgs: ["reader"],
+      env: {},
+      runCommand: () => { childEntered = true; return { status: 0 }; },
+    });
+    await first;
+    context.mock.timers.tick(30_000);
+    await Promise.race([next, new Promise((_, reject) => {
+      noticeDeadline = setTimeout(() => reject(new Error("reader stopped reporting its held writer")), 1500);
+    })]);
+    assert.match(notices[0], /\(0s so far\)/);
+    assert.match(notices[1], /\(30s so far\)/);
+    assert.equal(childEntered, false);
+    releaseWriter();
+    await writer;
+    assert.equal(await reading, 0);
+    assert.equal(childEntered, true);
+  } finally {
+    clearTimeout(noticeDeadline);
+    releaseWriter?.();
+    await writer.catch(() => {});
+    await reading?.catch(() => {});
+    context.mock.timers.reset();
+    console.error = originalError;
+    if (previousLockRoot === undefined) delete process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+    else process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = previousLockRoot;
+    if (previousTimeout === undefined) delete process.env.PAPERCUSP_FS_MUTEX_TIMEOUT_MS;
+    else process.env.PAPERCUSP_FS_MUTEX_TIMEOUT_MS = previousTimeout;
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
 // WI-10004430: `npm cache verify` ends with `rm -rf <cache>/tmp`, so it must never run
 // while another checkout reifies from the same user-level cache. The repo-keyed install
 // mutex cannot provide that (different checkouts hash to different locks); only the

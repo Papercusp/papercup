@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { createCandidateVersionVerdict, runOptimizationLoop, type LoopConfig, type LoopDeps, type LoopProposalRecord } from '../loop';
 import { decideAccept, type VariantEval } from '../gate-engine';
 import type { CandidateProposal } from '../proposer';
@@ -7,7 +7,7 @@ import type { TurnError } from '../../agent-chat-stream';
 import type { GateResult } from '../gates';
 
 const rateLimited = (resetAt?: number): LlmCallError =>
-  new LlmCallError({ class: 'rate_limited', message: '429', provider: 'anthropic', retryable: true, ...(resetAt !== undefined ? { resetAt } : {}) } as TurnError);
+  Object.assign(new LlmCallError({ class: 'rate_limited', message: '429', provider: 'anthropic', retryable: true, ...(resetAt !== undefined ? { resetAt } : {}) } as TurnError), { costUsd: 0 });
 
 /**
  * Continuous loop driver (P-022): select parent → propose → evaluate → gate →
@@ -405,6 +405,37 @@ describe('runOptimizationLoop', () => {
     expect(res.skipped).toBe(0);
     expect(clock).toBe(5000); // waited out the reset
     expect(res.cycles).toBe(1);
+  });
+
+  it.each([{}, { costUsd: 0.23 }, { costUsd: 0.23, costUsdMeasurementMissing: true }])(
+    'preserves unsafe baseline rate-limit usage rather than replaying the evaluation: %j', async usage => {
+      const failure = Object.assign(new LlmCallError({ class: 'rate_limited', message: '429', retryAfterMs: 1 }), usage);
+      const sleep = vi.fn(async () => {});
+      const evaluate = vi.fn().mockRejectedValueOnce(failure).mockResolvedValue({
+        evalResult: evalOf('baseline', 7), worstTraces: [], costUsd: 0.02,
+      });
+      const { d } = baseDeps({ evaluate, sleep, now: () => 0 });
+      await expect(runOptimizationLoop({ ...config, maxCycles: 1 }, d)).rejects.toBe(failure);
+      expect(evaluate).toHaveBeenCalledTimes(1);
+      expect(sleep).not.toHaveBeenCalled();
+    },
+  );
+
+  it('charges a failed candidate subtotal without replaying previously completed work', async () => {
+    const failure = Object.assign(rateLimited(5000), { costUsd: 0.23 });
+    const sleep = vi.fn(async () => {});
+    let candidateCalls = 0;
+    const { d } = baseDeps({
+      now: () => 0, sleep,
+      async evaluate(variantId) {
+        if (variantId !== 'baseline' && candidateCalls++ === 0) throw failure;
+        return { evalResult: evalOf(variantId, 7.5), worstTraces: [], costUsd: 1 };
+      },
+    });
+    const result = await runOptimizationLoop({ ...config, maxCycles: 1 }, d);
+    expect(candidateCalls).toBe(1);
+    expect(result).toMatchObject({ spentUsd: 1.23, skipped: 1, accepts: 0 });
+    expect(sleep).not.toHaveBeenCalled();
   });
 
   it('skips a cycle on a NON-rate propose error (never crashes)', async () => {

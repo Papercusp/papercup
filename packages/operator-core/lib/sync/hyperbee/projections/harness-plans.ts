@@ -35,6 +35,11 @@ import { deriveIndexFromContent } from '../../../agent-tools/plans/derive-index'
 import { writePlanIndexRows } from '../../../agent-tools/plans/plan-index-rows';
 import { withPlanDependencyAdmissionTransaction } from '../../../agent-tools/plans/plan-dependency-admission-transaction';
 import {
+  FEDERATED_BOOTSTRAP_REVISION_AUTHOR,
+  recordSystemPlanRevisionInTransaction,
+  type PlanRevisionSql,
+} from '../../../agent-tools/plans/revisions';
+import {
   decideContentWriteAuthority,
   resolveContentWriteMode,
   type ContentWriteMode,
@@ -433,7 +438,22 @@ async function writeToPg(
             { workspaceId: opts.workspaceId, harnessSlug: row.harness_slug, planSlug: row.plan_slug },
             deriveIndexFromContent(row.content),
           );
-          if (origin === 'remote') await reseedAcceptanceBarsAfterRemoteApply(tx, opts.workspaceId, row, templateDataForWrite);
+          if (origin === 'remote') {
+            // WI-10006275: a remote bootstrap creates this node's copy of the plan
+            // outside withPlanLock; record its first revision in the same tx so the
+            // live bytes always have a revision row (plans:audit / plans:revisions).
+            await recordSystemPlanRevisionInTransaction(tx as unknown as PlanRevisionSql, {
+              workspaceId: opts.workspaceId,
+              harnessSlug: row.harness_slug,
+              planSlug: row.plan_slug,
+              content: row.content,
+              rationale:
+                `federated whole-blob bootstrap (writer=${provenance?.authorPubkey || 'unknown'}, ` +
+                `fed_ts=${provenance?.ts ?? 'none'})`,
+              authorId: FEDERATED_BOOTSTRAP_REVISION_AUTHOR,
+            });
+            await reseedAcceptanceBarsAfterRemoteApply(tx, opts.workspaceId, row, templateDataForWrite);
+          }
         }
         return;
       }

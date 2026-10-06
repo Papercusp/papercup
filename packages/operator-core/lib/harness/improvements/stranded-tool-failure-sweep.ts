@@ -59,6 +59,8 @@ type Sql = ReturnType<typeof getOrgPg>['sql'];
 
 export const STRANDED_SWEEP_OWNER = 'system:stranded-tool-failure-sweep';
 export const STRANDED_SWEEP_BATCH = 200;
+/** How many enrolment failures a pass reports with their reason. */
+export const ENROL_FAILURE_SAMPLE = 10;
 /** Wall-time budget for one pass; rows past it wait for the next tick. */
 export const STRANDED_SWEEP_BUDGET_MS = 45_000;
 

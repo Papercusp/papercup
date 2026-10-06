@@ -39,6 +39,10 @@ import { PgPlanPartsStore } from '../../../plan-parts/store';
 import { capturePlanParts } from '../../../plan-parts/federation';
 import { splitPlanIntoParts, type FederatedPart } from '@papercusp/plan-parser';
 import { hashPlanContent } from '@papercusp/plan-parser/content-hash';
+import {
+  FEDERATED_BOOTSTRAP_REVISION_AUTHOR,
+  FEDERATED_RECOMPOSE_REVISION_AUTHOR,
+} from '../../../agent-tools/plans/revisions';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(HERE, '../../../../../../libs/papercusp/libs/db/sql');
@@ -155,7 +159,77 @@ async function setupSchema(sql: postgres.Sql): Promise<void> {
       origin        TEXT NOT NULL DEFAULT 'local',
       fed_ts        BIGINT,
       fed_hlc       TEXT,
+      -- Read by the acceptance-bar receiver seed on every remote apply
+      -- (acceptance-bar-seed.ts); live types from information_schema.
+      template_slug                    TEXT,
+      acceptance_bar_epoch             INTEGER,
+      acceptance_bar_cohort            TEXT,
+      acceptance_bar_set_hash          TEXT,
+      acceptance_bar_rubric_slug       TEXT,
+      acceptance_bar_rubric_revision   BIGINT,
+      acceptance_bar_seeded_at         TIMESTAMPTZ,
+      acceptance_bar_seeded_by         TEXT,
+      acceptance_bar_verified_revision BIGINT,
       PRIMARY KEY (workspace_id, harness_slug, plan_slug)
+    );
+  `);
+  // Column-faithful stubs (ei117) for the rows the plan writers append beside
+  // harness_plans in the same transaction: the derived index rows (mig 675,
+  // writePlanIndexRows — their absence red-pinned every test here with
+  // `relation "harness_shared.plan_items" does not exist`) and the revision spine
+  // (baseline + mig 218; WI-10006275 records one revision per changing recompose).
+  // Shapes copied from the live information_schema / pg_constraint. Omitted:
+  // plan_revisions.content_snapshot_hash (mig 1107, GENERATED, never written).
+  await sql.unsafe(`
+    CREATE TABLE harness_shared.plan_items (
+      workspace_id      TEXT NOT NULL,
+      harness_slug      TEXT NOT NULL,
+      plan_slug         TEXT NOT NULL,
+      item_id           TEXT NOT NULL,
+      seq               INTEGER NOT NULL,
+      item_text         TEXT NOT NULL DEFAULT '',
+      status            TEXT NOT NULL DEFAULT 'todo',
+      importance        TEXT,
+      phase             TEXT,
+      blocked_by        TEXT[] NOT NULL DEFAULT '{}',
+      decision_refs     TEXT[] NOT NULL DEFAULT '{}',
+      updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+      owner_gate_marker TEXT,
+      PRIMARY KEY (workspace_id, harness_slug, plan_slug, item_id),
+      FOREIGN KEY (workspace_id, harness_slug, plan_slug)
+        REFERENCES harness_shared.harness_plans (workspace_id, harness_slug, plan_slug) ON DELETE CASCADE
+    );
+    CREATE TABLE harness_shared.plan_decisions (
+      workspace_id  TEXT NOT NULL,
+      harness_slug  TEXT NOT NULL,
+      plan_slug     TEXT NOT NULL,
+      decision_id   TEXT NOT NULL,
+      seq           INTEGER NOT NULL,
+      title         TEXT NOT NULL DEFAULT '',
+      body          TEXT NOT NULL DEFAULT '',
+      decision_date TEXT,
+      item_refs     TEXT[] NOT NULL DEFAULT '{}',
+      updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+      affects       TEXT[] NOT NULL DEFAULT '{}',
+      PRIMARY KEY (workspace_id, harness_slug, plan_slug, decision_id),
+      FOREIGN KEY (workspace_id, harness_slug, plan_slug)
+        REFERENCES harness_shared.harness_plans (workspace_id, harness_slug, plan_slug) ON DELETE CASCADE
+    );
+    CREATE TABLE harness_shared.plan_revisions (
+      id               BIGSERIAL PRIMARY KEY,
+      workspace_id     TEXT NOT NULL DEFAULT 'default',
+      harness_slug     TEXT NOT NULL DEFAULT 'papercup',
+      plan_slug        TEXT NOT NULL,
+      seq              INTEGER NOT NULL,
+      content_hash     TEXT NOT NULL,
+      content_snapshot TEXT NOT NULL,
+      rationale        TEXT,
+      author_kind      TEXT NOT NULL,
+      author_id        TEXT NOT NULL,
+      session_id       TEXT,
+      session_kind     TEXT,
+      created_at       BIGINT NOT NULL,
+      UNIQUE (workspace_id, harness_slug, plan_slug, seq)
     );
   `);
   await sql.unsafe(stripMeta(readFileSync(resolve(SQL_DIR, '125-harness-plans-federation.sql'), 'utf8')));
@@ -194,6 +268,22 @@ function peer(sql: postgres.Sql, flagOn: boolean) {
     const [r] = await sql<Array<{ n: number }>>`SELECT count(*)::int AS n FROM harness_shared.substrate_outbox`;
     return r!.n;
   };
+  // This node's plan_revisions spine for the test plan, oldest first.
+  const revisions = async () =>
+    sql<
+      Array<{
+        seq: number;
+        content_hash: string;
+        content_snapshot: string;
+        rationale: string | null;
+        author_kind: string;
+        author_id: string;
+      }>
+    >`
+      SELECT seq, content_hash, content_snapshot, rationale, author_kind, author_id
+        FROM harness_shared.plan_revisions
+       WHERE workspace_id = ${WS} AND harness_slug = ${H} AND plan_slug = ${SLUG}
+       ORDER BY seq`;
   // Apply a whole-blob op as a remote peer would (origin remote, given wire ts).
   const recvWholeBlob = (content: string, ts: number, status = 'draft') =>
     plans.writeToPg(planRow(content, status), { authorPubkey: 'REMOTE', origin: 'remote', ts });
@@ -221,7 +311,7 @@ function peer(sql: postgres.Sql, flagOn: boolean) {
     }
     throw new Error(`no item part for ${idToken}`);
   };
-  return { sql, store, plans, parts, getPlan, outboxCount, recvWholeBlob, recvPart, recvDelete, partRowFor };
+  return { sql, store, plans, parts, getPlan, outboxCount, revisions, recvWholeBlob, recvPart, recvDelete, partRowFor };
 }
 
 describe('plan-part federation cutover (real PG: flag-ON mutual exclusion, no clobber)', () => {
@@ -241,13 +331,52 @@ describe('plan-part federation cutover (real PG: flag-ON mutual exclusion, no cl
   beforeEach(async () => {
     await db.sql`DELETE FROM harness_shared.harness_plan_parts`;
     await db.sql`DELETE FROM harness_shared.harness_plans`;
+    await db.sql`DELETE FROM harness_shared.plan_revisions`;
     await db.sql`DELETE FROM harness_shared.substrate_outbox`;
+  });
+
+  it('WI-10006275: a recompose that changes the bytes records exactly ONE system revision; a no-op recompose records none', async () => {
+    const c0 = planMarkdown('one', 'two');
+    await p.recvWholeBlob(c0, 100); // bootstrap content
+    await capturePlanParts(p.store, SLUG, c0, 100, 'seed');
+    await db.sql`DELETE FROM harness_shared.substrate_outbox`;
+    const before = await p.revisions();
+
+    // A remote part edit recomposes the plan into new bytes.
+    const p1 = await p.partRowFor(SLUG, 'P-001');
+    await p.recvPart({ ...p1, body: '- **P-001** `todo` one-X' }, 201);
+    const recomposed = (await p.getPlan())!.content;
+    expect(recomposed).toContain('one-X');
+
+    const after = await p.revisions();
+    expect(after).toHaveLength(before.length + 1);
+    const rev = after[after.length - 1]!;
+    // The revision describes exactly the bytes now live, so plans:revisions /
+    // plans:audit can see (and a restore can target) a federated change.
+    expect(rev.content_snapshot).toBe(recomposed);
+    expect(rev.content_hash).toBe(hashPlanContent(recomposed));
+    expect(rev.author_kind).toBe('system');
+    expect(rev.author_id).toBe(FEDERATED_RECOMPOSE_REVISION_AUTHOR);
+    expect(rev.rationale).toContain('federated per-part recompose');
+
+    // The same op again merges to identical bytes: the content_hash guard skips the
+    // UPDATE, so a no-op recompose mints no revision.
+    await p.recvPart({ ...p1, body: '- **P-001** `todo` one-X' }, 201);
+    expect(await p.revisions()).toHaveLength(after.length);
   });
 
   it('1. flag ON: a whole-blob op for a NEW plan BOOTSTRAPS it (INSERT)', async () => {
     const c0 = planMarkdown('one', 'two');
     await p.recvWholeBlob(c0, 100);
     expect((await p.getPlan())!.content).toBe(c0);
+    // WI-10006275: the bootstrap is this node's first write of the plan, so its bytes
+    // get exactly one (system) revision row.
+    const revs = await p.revisions();
+    expect(revs).toHaveLength(1);
+    expect(revs[0]!.content_snapshot).toBe(c0);
+    expect(revs[0]!.content_hash).toBe(hashPlanContent(c0));
+    expect(revs[0]!.author_kind).toBe('system');
+    expect(revs[0]!.author_id).toBe(FEDERATED_BOOTSTRAP_REVISION_AUTHOR);
   });
 
   it('2. flag ON: a stale whole-blob op for an EXISTING plan is IGNORED (DO NOTHING, no clobber)', async () => {
@@ -255,6 +384,7 @@ describe('plan-part federation cutover (real PG: flag-ON mutual exclusion, no cl
     await p.recvWholeBlob(c0, 100); // bootstrap
     await p.recvWholeBlob(planMarkdown('CLOBBER-1', 'CLOBBER-2'), 200); // stale whole-doc
     expect((await p.getPlan())!.content).toBe(c0); // unchanged — gate held
+    expect(await p.revisions()).toHaveLength(1); // the ignored blob mints no revision
   });
 
   it('3. flag ON (HEADLINE): concurrent different-item edits both survive; whole-blob does not clobber', async () => {

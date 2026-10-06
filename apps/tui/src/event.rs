@@ -470,6 +470,16 @@ pub enum Event {
         owner_turn_ids: Vec<String>,
         approvals: Vec<crate::models::PendingApproval>,
     },
+    /// The conversation LIST alone refreshed (P-027 G-12): updates the /resume
+    /// inventory without touching the open conversation, unlike
+    /// `AgentChatLoaded`.
+    AgentChatListLoaded {
+        harness: String,
+        summaries: Vec<crate::agent_chats::AgentChatSummary>,
+    },
+    /// Listing this pot's conversations failed (P-027 G-12). The /resume
+    /// picker says so in plain words instead of loading forever.
+    AgentChatListFailed { harness: String, message: String },
     /// A parked historical HITL request was decided through the resolve POST.
     AgentChatApprovalResolved { call_id: String, approved: bool },
     /// A PUI SU-session create/attach completed through launch-su.  The

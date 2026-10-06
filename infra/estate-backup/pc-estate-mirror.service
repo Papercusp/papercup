@@ -30,10 +30,18 @@ IOSchedulingClass=idle
 MemoryAccounting=yes
 MemoryHigh=2G
 MemoryMax=4G
-# One estate day is ~1.5GB over a home link; 45min is generous, and a run that
-# exceeds it is a fault worth alarming on rather than one to wait out.
+# Budget = up to 30min waiting for an uplink (PC_ESTATE_MIRROR_NET_WAIT_SEC) plus the
+# copy. A steady-state run fetches only the new day (~2 snapshots, a few minutes)
+# because the walk stops at the newest KEEP per host (WI-10006308); a multi-day
+# catch-up after an outage is ~2.5min per snapshot. A run past 90min is a fault
+# worth alarming on rather than one to wait out.
 TimeoutStartSec=90min
-ExecStart=%h/papercupai-workspace/papercusp/infra/estate-backup/pc-estate-mirror.sh mirror
+# Run from a private per-invocation snapshot (EI-22458080342999427): bash reads a
+# script lazily by byte offset, so an edit landing in the shared tree mid-run could
+# otherwise turn the running mirror into a different program. The snapshot holds
+# only *.sh/*.mjs siblings, so the runbook source is pinned to the live tree.
+Environment=PC_ESTATE_MIRROR_TOOLS_SRC=%h/papercupai-workspace/papercusp/infra/estate-backup
+ExecStart=%h/papercupai-workspace/papercusp/apps/operator/scripts/systemd/papercusp-script-snapshot.sh %h/papercupai-workspace/papercusp/infra/estate-backup/pc-estate-mirror.sh mirror
 
 [Install]
 WantedBy=default.target

@@ -2943,6 +2943,10 @@ async fn run<B: Backend>(
                     ));
                     terminal.draw(|f| ui::draw(f, &app))?;
                 }
+                Action::RefreshAgentChatList { harness } => {
+                    tokio::spawn(agent_chat_list_refresh(harness, tx.clone()));
+                    terminal.draw(|f| ui::draw(f, &app))?;
+                }
                 Action::CancelChat => {
                     app.update(Event::ChatError(
                         "chat cancellation is unavailable without an attached SU session".into(),
@@ -6026,6 +6030,48 @@ fn default_operator_chat<'a>(
         .map(|(_, chat)| chat)
 }
 
+/// Keep archived chats in the inventory so an ended SU session remains
+/// selectable for transcript inspection after a restart. The default operator
+/// selection still excludes archived rows.
+fn agent_chat_list_options() -> agent_chats::AgentChatListOptions {
+    agent_chats::AgentChatListOptions {
+        include_archived: true,
+        limit: Some(100),
+        ..Default::default()
+    }
+}
+
+/// Refresh only the /resume conversation list (P-027 G-12). Unlike
+/// `agent_chat_load` this never selects or loads a conversation, so a retry
+/// cannot replace the one the owner is in.
+async fn agent_chat_list_refresh(harness: String, tx: UnboundedSender<Event>) {
+    let listed = async {
+        let client = OperatorClient::from_discovery().await?;
+        let summaries = client
+            .list_agent_chats(&harness, &agent_chat_list_options())
+            .await?;
+        let inventory = probe_su_session_inventory(&client, &harness, &summaries).await;
+        anyhow::Ok((summaries, inventory))
+    }
+    .await;
+    match listed {
+        Ok((summaries, inventory)) => {
+            let _ = tx.send(Event::SuSessionInventory {
+                harness: harness.clone(),
+                selected_chat_id: None,
+                entries: inventory,
+            });
+            let _ = tx.send(Event::AgentChatListLoaded { harness, summaries });
+        }
+        Err(error) => {
+            let _ = tx.send(Event::AgentChatListFailed {
+                harness,
+                message: format!("{error:#}"),
+            });
+        }
+    }
+}
+
 async fn agent_chat_load(
     harness: String,
     selected_chat_id: Option<String>,
@@ -6035,22 +6081,23 @@ async fn agent_chat_load(
     let client = match OperatorClient::from_discovery().await {
         Ok(client) => client,
         Err(error) => {
-            let _ = tx.send(Event::Error(format!("native agent chat: {error}")));
+            let _ = tx.send(Event::AgentChatListFailed {
+                harness,
+                message: format!("{error:#}"),
+            });
             return;
         }
     };
-    let options = agent_chats::AgentChatListOptions {
-        // Keep archived chats in the inventory so an ended SU session remains
-        // selectable for transcript inspection after a restart.  The default
-        // operator selection below still excludes archived rows.
-        include_archived: true,
-        limit: Some(100),
-        ..Default::default()
-    };
+    let options = agent_chat_list_options();
     let summaries = match client.list_agent_chats(&harness, &options).await {
         Ok(chats) => chats,
         Err(error) => {
-            let _ = tx.send(Event::Error(format!("native agent chat: {error}")));
+            // P-027 G-12: a failed list used to surface only as a generic error,
+            // so /resume showed "Loading earlier conversations…" forever.
+            let _ = tx.send(Event::AgentChatListFailed {
+                harness,
+                message: format!("{error:#}"),
+            });
             return;
         }
     };

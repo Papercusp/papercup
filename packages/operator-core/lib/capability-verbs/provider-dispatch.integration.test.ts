@@ -120,12 +120,6 @@ function mailDeps(): MailDeps {
     registry,
     hostFetchImpl: providerHttp,
     probeMailbox: allowAllMailboxProbe,
-    resolveAccessToken: googleCalled,
-    createDraft: googleCalled,
-    updateDraft: googleCalled,
-    sendMessage: googleCalled,
-    sendDraft: googleCalled,
-    readDraftRecipients: googleCalled,
   };
 }
 

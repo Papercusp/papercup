@@ -79,6 +79,13 @@ SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # git-sync sweep can commit mid-probe; with it, the whole alert contract is
 # testable against a copy outside the tree.
 ALERT="${PC_ESTATE_MIRROR_ALERT:-$SELF_DIR/pc-estate-mirror-alert.sh}"
+# Where the restore runbook (tools/) is copied FROM. Defaults to this script's own
+# directory, but the unit runs the script through papercusp-script-snapshot.sh
+# (a private per-run copy, so a mid-run edit in the shared tree cannot rewrite
+# the running program), and that snapshot holds only the *.sh/*.mjs siblings —
+# not RESTORE-RUNBOOK.md. Without this override the copy would silently fall
+# back to the bucket's hand-uploaded, possibly months-stale tools/.
+TOOLS_SRC="${PC_ESTATE_MIRROR_TOOLS_SRC:-$SELF_DIR}"
 
 log() { printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" | tee -a "$LOG" >&2; }
 die() { log "FATAL: $*"; exit 1; }
@@ -502,7 +509,10 @@ PY
     fi
     $sealed && { seal "$dst" || log "WARNING: seal failed for $dst"; }
     mirrored=$((mirrored+1))
-  done <<<"$manifests"
+    held[$host]=$(( ${held[$host]:-0} + 1 ))
+  done <<<"$ordered"
+  [ "$beyond_keep" -gt 0 ] && \
+    log "not fetched: $beyond_keep bucket snapshot(s) older than the newest KEEP=$KEEP per host (retention would prune them)"
 
   # --- the restore PROCEDURE travels with the data --------------------------
   # Data without the runbook is not a recovery, so tools/ is re-synced every
@@ -513,8 +523,8 @@ PY
   # so nobody has to guess how current their emergency runbook is.
   local tnew="$ROOT/.tools.new" tsrc=""
   rm -rf "$tnew"; mkdir -p "$tnew"
-  if [ -f "$SELF_DIR/RESTORE-RUNBOOK.md" ] && cp -a "$SELF_DIR"/. "$tnew/" 2>>"$LOG"; then
-    tsrc="repo:$SELF_DIR"
+  if [ -f "$TOOLS_SRC/RESTORE-RUNBOOK.md" ] && cp -a "$TOOLS_SRC"/. "$tnew/" 2>>"$LOG"; then
+    tsrc="repo:$TOOLS_SRC"
   elif gcloud storage cp -r "$BUCKET/tools/*" "$tnew/" --quiet >>"$LOG" 2>&1; then
     tsrc="bucket:$BUCKET/tools"
   fi

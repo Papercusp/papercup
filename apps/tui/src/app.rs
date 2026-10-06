@@ -367,6 +367,8 @@ pub enum Action {
         chat_id: String,
         load_token: u64,
     },
+    /// Re-fetch only this pot's conversation list for /resume (P-027 G-12).
+    RefreshAgentChatList { harness: String },
     /// Abort the local native-chat stream; the dropped transport propagates
     /// cancellation to the operator and the bubble becomes retryable.
     CancelChat,
@@ -2750,6 +2752,9 @@ pub struct App {
     /// Enter did nothing — for a pot that had them (P-005 review, P-007).
     /// Keyed by harness so a pot switch reads as loading again.
     pub agent_chats_loaded_for: Option<String>,
+    /// Why the last conversation-list fetch for `harness` failed (P-027 G-12),
+    /// shown in /resume instead of an endless "Loading…".
+    pub agent_chats_list_error: Option<String>,
     /// advSessionIds this process has already issued an adopt/reattach for.
     ///
     /// P-010 requires restart reconciliation to "prevent duplicate panes /
@@ -3132,6 +3137,7 @@ impl App {
             su_launch_refusal: None,
             su_session_inventory: Vec::new(),
             agent_chats_loaded_for: None,
+            agent_chats_list_error: None,
             launch_cwd: crate::su_session::launch_cwd(),
             su_adopted_sessions: BTreeSet::new(),
             su_command_counter: 0,
@@ -5009,8 +5015,22 @@ impl App {
             // single-session chat does not have: its Enter ran
             // `zellij action new-pane` and failed "There is no active session!".
             SlashKind::Resume if self.chat_first => {
+                // P-027 G-12: if the list has not arrived (a failed or lost
+                // startup fetch), /resume fetches it again; the picker shows
+                // "Loading…" until it lands or fails.
+                let loaded =
+                    self.agent_chats_loaded_for.as_deref() == Some(self.harness.as_str());
+                if !loaded {
+                    self.agent_chats_list_error = None;
+                }
                 self.open_conversation_picker();
-                Action::Render
+                if loaded {
+                    Action::Render
+                } else {
+                    Action::RefreshAgentChatList {
+                        harness: self.harness.clone(),
+                    }
+                }
             }
             SlashKind::Resume => {
                 self.session_switcher = Some(SessionSwitcher {
@@ -6561,6 +6581,18 @@ impl App {
                     id: "chat:none".into(),
                     label: "No earlier conversations in this directory".into(),
                     hint: self.launch_cwd.clone(),
+                    disabled: true,
+                }
+            } else if let Some(error) = self.agent_chats_list_error.as_deref() {
+                // P-027 G-12: say why, and how to retry, instead of "Loading…"
+                // that never ends.
+                PickerOption {
+                    id: "chat:error".into(),
+                    label: "Could not load earlier conversations".into(),
+                    hint: Some(format!(
+                        "{} · Esc, then /resume to try again",
+                        error.lines().next().unwrap_or(error)
+                    )),
                     disabled: true,
                 }
             } else {
@@ -12512,6 +12544,23 @@ impl App {
                 self.agent_chat_usage = crate::agent_chats::AgentChatUsage::default();
                 Action::Render
             }
+            Event::AgentChatListLoaded { harness, summaries } => {
+                if harness == self.harness {
+                    self.agent_chat_summaries = summaries;
+                    self.agent_chats_loaded_for = Some(harness);
+                    self.agent_chats_list_error = None;
+                    self.refresh_open_conversation_picker();
+                }
+                Action::Render
+            }
+            Event::AgentChatListFailed { harness, message } => {
+                if harness == self.harness {
+                    self.agent_chats_list_error = Some(message.clone());
+                    self.refresh_open_conversation_picker();
+                }
+                self.last_error = Some(format!("native agent chat: {message}"));
+                Action::Render
+            }
             Event::AgentChatLoaded {
                 harness,
                 chat_id,
@@ -12556,6 +12605,7 @@ impl App {
                     self.agent_chat_role = role;
                     self.agent_chat_summaries = summaries;
                     self.agent_chats_loaded_for = Some(harness.clone());
+                    self.agent_chats_list_error = None;
                     self.chat_messages = messages;
                     self.chat_focus = None;
                     self.su_rendered_owner_turns = owner_turn_ids.into_iter().collect();
@@ -27459,6 +27509,52 @@ mod tests {
         assert_eq!(c.update(key('q', KeyModifiers::NONE)), Action::Render);
         assert!(!c.should_quit);
         assert_eq!(c.chat_input, "q");
+    }
+
+    /// P-027 G-12 (parity checklist row 22): the /resume picker sat on
+    /// "Loading earlier conversations…" because the list request failed and
+    /// nothing told the picker. A failure now shows a plain row with the reason,
+    /// /resume retries the list, and a list-only refresh never changes the open
+    /// conversation.
+    #[test]
+    fn resume_shows_a_failed_list_and_retries_without_touching_the_open_chat() {
+        let mut a = App::new();
+        a.chat_first = true;
+        a.agent_chat_id = Some("chat-open".into());
+
+        let action = a.run_slash_command("resume");
+        assert_eq!(
+            action,
+            Action::RefreshAgentChatList { harness: a.harness.clone() },
+            "an unloaded list is fetched again"
+        );
+        let label = |a: &App| a.session_picker.as_ref().unwrap().options[0].label.clone();
+        assert_eq!(label(&a), "Loading earlier conversations…");
+
+        let harness = a.harness.clone();
+        a.update(Event::AgentChatListFailed {
+            harness: harness.clone(),
+            message: "HTTP 500: column \"continued_from_chat_id\" does not exist".into(),
+        });
+        assert_eq!(label(&a), "Could not load earlier conversations");
+        let hint = a.session_picker.as_ref().unwrap().options[0].hint.clone().unwrap();
+        assert!(hint.contains("HTTP 500") && hint.contains("/resume"), "{hint}");
+
+        a.session_picker = None;
+        assert!(matches!(
+            a.run_slash_command("resume"),
+            Action::RefreshAgentChatList { .. }
+        ));
+        assert_eq!(label(&a), "Loading earlier conversations…", "a retry clears the error");
+
+        a.update(Event::AgentChatListLoaded {
+            harness,
+            summaries: Vec::new(),
+        });
+        assert_eq!(label(&a), "No earlier conversations in this directory");
+        assert_eq!(a.agent_chat_id.as_deref(), Some("chat-open"));
+        a.session_picker = None;
+        assert_eq!(a.run_slash_command("resume"), Action::Render, "a loaded list is reused");
     }
 
     /// P-027 G-7 (parity checklist row 16): a 40-line paste filled the whole
