@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 import { createStripeBillingClient, stripeKeyMode, type StripePaymentLineagePin } from './stripe-billing-client';
 
 interface Call { url: string; headers: Record<string, string>; form: URLSearchParams }
@@ -242,6 +243,192 @@ describe('authenticated account cash evidence', () => {
   it('does not return partial evidence when a later page fails', async () => {
     const r = reader([account, page([transaction()], true)]);
     expect(await r.client.readAccountTransactions({ accountId: 'acct_A' })).toMatchObject({ ok: false });
+  });
+});
+
+describe('authenticated complete payment source enumeration', () => {
+  const account = { object: 'account', id: 'acct_A' };
+  const charge = { object: 'charge', id: 'ch_A', customer: 'cus_A', currency: 'usd', amount: 100,
+    amount_captured: 100, amount_refunded: 40, paid: true, captured: true, status: 'succeeded', created: 1,
+    livemode: true, balance_transaction: 'txn_Charge', failure_balance_transaction: null,
+    receipt_email: 'private@example.com', payment_method_details: { card: { last4: '1234' } } };
+  const refund = { object: 'refund', id: 're_A', charge: 'ch_A', currency: 'usd', amount: 40,
+    status: 'pending', created: 2, balance_transaction: null, failure_balance_transaction: null,
+    destination_details: { private: 'refund destination' } };
+  const dispute = { object: 'dispute', id: 'du_A', charge: 'ch_A', currency: 'usd', amount: 100,
+    status: 'needs_response', created: 3, livemode: true, balance_transactions: [],
+    evidence: { private: 'customer private dispute content' } };
+  const page = (data: unknown[], has_more = false) => ({ object: 'list', data, has_more });
+  function reader(overrides: Record<string, unknown[]> = {}, options: { status?: number; requestId?: string | null; mode?: 'live' | 'test' } = {}) {
+    const bodies = { '/v1/account': [account], '/v1/charges': [page([charge])],
+      '/v1/refunds': [page([refund])], '/v1/disputes': [page([dispute])], ...overrides };
+    const fetchImpl = vi.fn(async (url: string | URL, _init?: RequestInit) => {
+      const queue = bodies[new URL(String(url)).pathname as keyof typeof bodies];
+      const body = queue?.shift();
+      return new Response(JSON.stringify(body ?? { error: 'private sk_live_key' }), {
+        status: options.status ?? (body ? 200 : 404),
+        headers: options.requestId === null ? {} : { 'request-id': options.requestId ?? 'req_Source' },
+      });
+    });
+    const composition = { secretKey: `sk_${options.mode ?? 'live'}_key`, fetchImpl: fetchImpl as typeof fetch, liveModeAllowed: true };
+    const built = createStripeBillingClient(composition);
+    if (!built.ok) throw new Error('reader');
+    return { client: built.client, fetchImpl, composition };
+  }
+
+  it('exhausts each endpoint without customer/date/status filters and retains unposted reversals', async () => {
+    const secondCharge = { ...charge, id: 'ch_B', customer: 'cus_B', balance_transaction: 'txn_B', amount_refunded: 0 };
+    const secondRefund = { ...refund, id: 're_B', charge: 'ch_B', status: 'requires_action' };
+    const secondDispute = { ...dispute, id: 'du_B', charge: 'ch_B', status: 'warning_under_review' };
+    const r = reader({ '/v1/charges': [page([charge], true), page([secondCharge])],
+      '/v1/refunds': [page([refund], true), page([secondRefund])],
+      '/v1/disputes': [page([dispute], true), page([secondDispute])] });
+    const result = await r.client.readAccountPaymentSources({ accountId: 'acct_A' });
+    expect(result).toMatchObject({ ok: true, evidence: { accountId: 'acct_A', livemode: true,
+      charges: [{ id: 'ch_A', customerId: 'cus_A', balanceTransactionId: 'txn_Charge' }, { id: 'ch_B', customerId: 'cus_B' }],
+      refunds: [{ id: 're_A', status: 'pending', balanceTransactionId: null }, { id: 're_B', status: 'requires_action' }],
+      disputes: [{ id: 'du_A', balanceTransactionIds: [] }, { id: 'du_B', status: 'warning_under_review' }],
+      requestIds: Array(7).fill('req_Source'), evidenceRef: expect.stringMatching(/^stripe-payment-sources:[a-f0-9]{64}$/) } });
+    expect(r.fetchImpl.mock.calls.map(([url]) => new URL(String(url)).pathname)).toEqual([
+      '/v1/account', '/v1/charges', '/v1/charges', '/v1/refunds', '/v1/refunds', '/v1/disputes', '/v1/disputes',
+    ]);
+    const cursors = [null, 'ch_A', null, 're_A', null, 'du_A'];
+    for (const [i, [url, init]] of r.fetchImpl.mock.calls.slice(1).entries()) {
+      const q = new URL(String(url)).searchParams;
+      expect([...q.keys()].sort()).toEqual(cursors[i] === null ? ['limit'] : ['limit', 'starting_after']);
+      expect(q.get('limit')).toBe('100'); expect(q.get('starting_after')).toBe(cursors[i]);
+      expect(init).toEqual({ method: 'GET', redirect: 'error', headers: { authorization: 'Bearer sk_live_key' } });
+    }
+    if (result.ok) {
+      expect(result.evidence.collectionStartedAtMs).toBeLessThanOrEqual(result.evidence.observedAtMs);
+      expect(Object.isFrozen(result.evidence.charges[0])).toBe(true);
+      expect(Object.isFrozen(result.evidence.disputes[0].balanceTransactionIds)).toBe(true);
+      const { evidenceRef, ...selected } = result.evidence;
+      expect(evidenceRef).toBe(`stripe-payment-sources:${createHash('sha256').update(JSON.stringify(selected)).digest('hex')}`);
+    }
+    expect(JSON.stringify(result)).not.toMatch(/private|last4|receipt_email|payment_method_details|destination_details|sk_live/);
+  });
+
+  it('preserves failed refunds and reinstated disputes instead of converting terminal labels to finality', async () => {
+    const result = await reader({ '/v1/refunds': [page([{ ...refund, status: 'failed', balance_transaction: 'txn_Refund',
+      failure_balance_transaction: 'txn_Failure' }])], '/v1/disputes': [page([{ ...dispute, status: 'won',
+      balance_transactions: [{ id: 'txn_Dispute', amount: 999 }, { id: 'txn_Restored', amount: 999 }] }])] })
+      .client.readAccountPaymentSources({ accountId: 'acct_A' });
+    expect(result).toMatchObject({ ok: true, evidence: {
+      refunds: [{ status: 'failed', balanceTransactionId: 'txn_Refund', failureBalanceTransactionId: 'txn_Failure' }],
+      disputes: [{ status: 'won', balanceTransactionIds: ['txn_Dispute', 'txn_Restored'] }],
+    } });
+    expect(JSON.stringify(result)).not.toMatch(/providerFinal|complete|amount.:999/);
+  });
+
+  it('retains failed/uncaptured/customerless/foreign-currency charges for reconciliation', async () => {
+    const declined = { ...charge, customer: null, currency: 'eur', amount_captured: 0, amount_refunded: 0,
+      status: 'failed', paid: false, captured: false, balance_transaction: null };
+    const result = await reader({ '/v1/charges': [page([declined])], '/v1/refunds': [page([])], '/v1/disputes': [page([])] })
+      .client.readAccountPaymentSources({ accountId: 'acct_A' });
+    expect(result).toMatchObject({ ok: true, evidence: { charges: [{ customerId: null, currency: 'eur', status: 'failed',
+      capturedCents: 0, paid: false, captured: false, balanceTransactionId: null }] } });
+  });
+
+  it('accepts explicitly exhausted empty lists without inventing a paid population', async () => {
+    expect(await reader({ '/v1/charges': [page([])], '/v1/refunds': [page([])], '/v1/disputes': [page([])] })
+      .client.readAccountPaymentSources({ accountId: 'acct_A' }))
+      .toMatchObject({ ok: true, evidence: { charges: [], refunds: [], disputes: [] } });
+  });
+
+  it.each(['/v1/charges', '/v1/refunds', '/v1/disputes'])('refuses an unfinished or repeated %s page and discards earlier endpoints', async path => {
+    const row = path === '/v1/charges' ? charge : path === '/v1/refunds' ? refund : dispute;
+    for (const pages of [[page([], true)], [page([row], true), page([row])], [page([row], true)]]) {
+      const result = await reader({ [path]: pages }).client.readAccountPaymentSources({ accountId: 'acct_A' });
+      expect(result).toMatchObject({ ok: false }); expect(result).not.toHaveProperty('evidence');
+    }
+    expect(await reader({ [path]: [page([row], true)] }).client.readAccountPaymentSources({ accountId: 'acct_A', maxPages: 1 }))
+      .toMatchObject({ ok: false, detail: 'stripe payment source census exceeds page budget' });
+  });
+
+  it.each([
+    { object: 'charge' }, { has_more: 'false' }, { data: null }, { data: [null] },
+    { url: '/v1/customers' }, { data: Array(101).fill(charge) },
+  ])('refuses malformed/misdirected/over-limit pages', async change => {
+    expect(await reader({ '/v1/charges': [{ ...page([charge]), ...change }] })
+      .client.readAccountPaymentSources({ accountId: 'acct_A' })).toMatchObject({ ok: false });
+  });
+
+  it.each([
+    { id: 'ch_bad/path' }, { object: 'refund' }, { livemode: false }, { customer: 'cus_bad/path' }, { customer: { id: null } },
+    { amount: '100' }, { amount: -1 }, { amount_captured: 101 }, { amount_refunded: 101 },
+    { amount_captured: 0.1 }, { paid: 'true' }, { captured: undefined }, { status: 'unknown' },
+    { currency: 'USD' }, { created: -1 }, { created: Number.MAX_SAFE_INTEGER },
+    { balance_transaction: undefined }, { balance_transaction: 'txn_bad/path' }, { failure_balance_transaction: { id: 'bad' } },
+  ])('refuses malformed or wrong-mode charge accounting', async change => {
+    expect(await reader({ '/v1/charges': [page([{ ...charge, ...change }])] })
+      .client.readAccountPaymentSources({ accountId: 'acct_A' })).toMatchObject({ ok: false });
+  });
+
+  it.each([
+    { id: 're_bad/path' }, { object: 'dispute' }, { charge: 'ch_missing' }, { charge: 'ch_bad/path' },
+    { currency: 'eur' }, { amount: 101 }, { amount: 0 }, { created: 0 }, { status: 'unknown' },
+    { balance_transaction: undefined }, { balance_transaction: 'txn_bad/path' },
+    { status: 'succeeded' }, { status: 'failed', balance_transaction: 'txn_Refund' },
+    { failure_balance_transaction: 'txn_Failure' },
+  ])('refuses malformed, unbound or incomplete refund source evidence', async change => {
+    expect(await reader({ '/v1/refunds': [page([{ ...refund, ...change }])] })
+      .client.readAccountPaymentSources({ accountId: 'acct_A' })).toMatchObject({ ok: false });
+  });
+
+  it.each([
+    { object: 'refund' }, { livemode: false }, { charge: 'ch_missing' }, { currency: 'eur' },
+    { amount: 101 }, { created: 0 }, { status: 'unknown' }, { balance_transactions: null },
+    { balance_transactions: [null] }, { balance_transactions: ['txn_bad/path'] },
+    { balance_transactions: ['txn_One', 'txn_Two', 'txn_Three'] },
+  ])('refuses malformed or unbound disputes', async change => {
+    expect(await reader({ '/v1/disputes': [page([{ ...dispute, ...change }])] })
+      .client.readAccountPaymentSources({ accountId: 'acct_A' })).toMatchObject({ ok: false });
+  });
+
+  it.each([
+    { '/v1/charges': [page([charge, { ...charge, id: 'ch_B' }])] },
+    { '/v1/charges': [page([{ ...charge, failure_balance_transaction: 'txn_Charge' }])] },
+    { '/v1/refunds': [page([{ ...refund, balance_transaction: 'txn_Charge' }])] },
+    { '/v1/refunds': [page([{ ...refund, status: 'failed', balance_transaction: 'txn_Refund', failure_balance_transaction: 'txn_Refund' }])] },
+    { '/v1/disputes': [page([{ ...dispute, balance_transactions: ['txn_Charge'] }])] },
+    { '/v1/disputes': [page([{ ...dispute, balance_transactions: ['txn_Dispute', 'txn_Dispute'] }])] },
+    { '/v1/refunds': [page([{ ...refund, balance_transaction: 'txn_Shared' }])],
+      '/v1/disputes': [page([{ ...dispute, balance_transactions: ['txn_Shared'] }])] },
+  ])('rejects aliased movement pins across the complete account population', async overrides => {
+    expect(await reader(overrides).client.readAccountPaymentSources({ accountId: 'acct_A' }))
+      .toMatchObject({ ok: false, detail: 'duplicate stripe payment source movement' });
+  });
+
+  it('fails closed for a different own account, missing provenance or later provider error', async () => {
+    for (const r of [reader({ '/v1/account': [{ ...account, id: 'acct_B' }] }), reader({}, { requestId: null }),
+      reader({ '/v1/disputes': [] }), reader({}, { status: 403 })]) {
+      const result = await r.client.readAccountPaymentSources({ accountId: 'acct_A' });
+      expect(result).toMatchObject({ ok: false }); expect(result).not.toHaveProperty('evidence');
+      expect(JSON.stringify(result)).not.toMatch(/private|sk_live/);
+    }
+  });
+
+  it('binds test-mode refunds through their original test charge', async () => {
+    const result = await reader({ '/v1/charges': [page([{ ...charge, livemode: false }])],
+      '/v1/disputes': [page([{ ...dispute, livemode: false }])] }, { mode: 'test' })
+      .client.readAccountPaymentSources({ accountId: 'acct_A' });
+    expect(result).toMatchObject({ ok: true, evidence: { livemode: false, refunds: [{ id: 're_A' }] } });
+  });
+
+  it.each([{ accountId: 'acct_bad/path' }, { accountId: 'acct_A', maxPages: 0 }, { accountId: 'acct_A', maxPages: 0.1 }])
+    ('refuses malformed scope/page bounds before any provider read', async input => {
+      const r = reader(); expect(await r.client.readAccountPaymentSources(input)).toMatchObject({ ok: false });
+      expect(r.fetchImpl).not.toHaveBeenCalled();
+    });
+
+  it('pins mutable scope, page bound and injected credentials before awaits', async () => {
+    const r = reader({ '/v1/refunds': [page([refund], true), page([])] });
+    const input = { accountId: 'acct_A', maxPages: 2 };
+    const pending = r.client.readAccountPaymentSources(input);
+    input.accountId = 'acct_B'; input.maxPages = 1; r.composition.secretKey = 'sk_live_changed';
+    expect(await pending).toMatchObject({ ok: true, evidence: { accountId: 'acct_A' } });
+    for (const [, init] of r.fetchImpl.mock.calls) expect(init?.headers).toEqual({ authorization: 'Bearer sk_live_key' });
   });
 });
 
