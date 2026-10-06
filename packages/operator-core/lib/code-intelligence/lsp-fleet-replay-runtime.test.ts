@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import ts from 'typescript';
-import { assertReplayOracleRuntimeQualified, assertReplaySemanticGraph, freezeCompilerReplayConfig, freezeReplayRuntimeFiles, materializeReplaySource, replayBoundaryProblems, replayDurableReport, replayEvidenceProblems, replayFileMismatches, replayHash, replayOracleFingerprint,
+import { assertReplayOracleRuntimeQualified, assertReplaySemanticGraph, replaySemanticCompletionContext, freezeCompilerReplayConfig, freezeReplayRuntimeFiles, materializeReplaySource, replayBoundaryProblems, replayDurableReport, replayEvidenceProblems, replayFileMismatches, replayHash, replayOracleFingerprint,
   replayPopulationFingerprint, replayProcessIdentity, replayServerPopulation, replaySourceFingerprint, replayWireOverlap,
   runDaemonReplay, validateDaemonReplayConfig, type DaemonReplayConfig, type ReplayBoundary, type ReplayOracleInput } from './lsp-fleet-replay-runtime';
 import { callLspDaemonRpc, readLspDaemonAdmission } from './lsp-daemon-client';
@@ -12,6 +12,7 @@ import { scopeUnitForTask } from '../task-manager/types';
 import { buildReplayTrace, type ReplayReport } from './lsp-fleet-replay';
 import type { LspDaemonAnswer } from './lsp-daemon-protocol';
 import { runSaturationCli } from './lsp-saturation-bench-cli';
+import { semanticCompletionPlugins } from './lsp-semantic-completion';
 
 vi.mock('./code-intel-bench.ts', () => { throw new Error('legacy benchmark must not load in independent replay mode'); });
 vi.mock('./lsp-daemon-client', () => ({ callLspDaemonRpc: vi.fn(), readLspDaemonAdmission: vi.fn() }));
@@ -146,6 +147,31 @@ describe('independently declared semantic graph', () => {
   });
   it('preserves absent historical declarations as unmeasured', () => {
     expect(() => assertReplaySemanticGraph(config())).toThrow('replay-semantic-graph-unmeasured');
+  });
+  it('binds the independent graph to matching source and runtime plugin bytes', () => {
+    const f = fixture({ noLib: true });
+    const location = join(f.root, 'probe'); const root = join(location, 'node_modules', 'fixture-plugin');
+    mkdirSync(root, { recursive: true });
+    const manifest = join(root, 'package.json'); const entry = join(root, 'index.cjs');
+    writeFileSync(manifest, JSON.stringify({ name: 'fixture-plugin', main: 'index.cjs' }));
+    writeFileSync(entry, 'module.exports = function() {};');
+    const files = Object.fromEntries([manifest, entry].map(file => [file, replayHash(readFileSync(file))]));
+    const plugin = { name: 'fixture-plugin', location, files };
+    const frozen = freezeCompilerReplayConfig({ ...f.input, runtimeFiles: [manifest, entry], semanticCompletionPlugin: plugin });
+    const configured = { ...frozen, runtimeWitness: { directory: location, runId: frozen.runId, bootstraps: {}, files } };
+    const context = replaySemanticCompletionContext(configured);
+    expect(context.population).toEqual(frozen.semanticGraph!.projects.map(project => ({
+      projectName: project.projectName, anchorFile: project.anchorFile, files: project.files })));
+    context.population[0].files.pop();
+    expect(context.population[0].files).not.toEqual(frozen.semanticGraph!.projects[0].files);
+    expect(() => replaySemanticCompletionContext({ ...configured, semanticCompletionPlugin: undefined }))
+      .toThrow('replay-semantic-plugin-unmeasured');
+    expect(() => replaySemanticCompletionContext({ ...configured, runtimeWitness: { ...configured.runtimeWitness, files: {} } }))
+      .toThrow('replay-semantic-plugin-unfrozen');
+    expect(() => replaySemanticCompletionContext({ ...configured, files: { ...configured.files, [entry]: 'wrong' } }))
+      .toThrow('replay-semantic-plugin-unfrozen');
+    writeFileSync(entry, 'changed after declaration');
+    expect(() => replaySemanticCompletionContext(configured)).toThrow('plugin-byte-mismatch');
   });
 });
 describe('oracle runtime acceptance prerequisite', () => {
@@ -340,6 +366,55 @@ describe('independent replay source materialization', () => {
     const options = { enumerateSources: () => ['source.ts', 'tsconfig.json'], snapshotDependencies: dependencies };
     return { input, target, options, parent };
   }
+  function pluginFixture(external: boolean) {
+    const f = fixture();
+    const location = join(external ? f.parent : f.input.rootPath, 'probe');
+    const packageRoot = join(location, 'node_modules', 'fixture-plugin');
+    mkdirSync(packageRoot, { recursive: true });
+    const manifest = join(packageRoot, 'package.json'); const entry = join(packageRoot, 'index.cjs');
+    writeFileSync(manifest, JSON.stringify({ name: 'fixture-plugin', main: 'index.cjs' }));
+    writeFileSync(entry, 'module.exports = function() {};\n');
+    const files = Object.fromEntries([manifest, entry].map(file => [file, replayHash(readFileSync(file))]));
+    return { ...f, manifest, entry, input: { ...f.input, runtimeFiles: [manifest, entry],
+      semanticCompletionPlugin: { name: 'fixture-plugin', location, files } } };
+  }
+  it.each([false, true])('copies the declared plugin package independently (external=%s)', external => {
+    const f = pluginFixture(external);
+    const copied = materializeReplaySource(f.input, f.target, f.options);
+    const plugin = copied.semanticCompletionPlugin!;
+    expect(plugin.location.startsWith(copied.rootPath + '/')).toBe(true);
+    expect(plugin.location).not.toBe(f.input.semanticCompletionPlugin.location);
+    expect(Object.keys(plugin.files).every(file => copied.runtimeFiles.includes(file))).toBe(true);
+    for (const [file, hash] of Object.entries(plugin.files)) {
+      expect(file.startsWith(plugin.location + '/node_modules/fixture-plugin/')).toBe(true);
+      expect(replayHash(readFileSync(file))).toBe(hash);
+      expect(JSON.parse(readFileSync(copied.sourceSnapshot!.manifestPath, 'utf8')).sourceFiles[file.slice(copied.rootPath.length + 1)])
+        .toBe(hash);
+    }
+    const copiedEntry = join(plugin.location, 'node_modules', plugin.name, 'index.cjs');
+    expect(statSync(copiedEntry).ino).not.toBe(statSync(f.entry).ino);
+    writeFileSync(f.entry, 'changed live donor');
+    expect(() => semanticCompletionPlugins(plugin)).not.toThrow();
+    writeFileSync(copiedEntry, 'changed copied input');
+    expect(() => semanticCompletionPlugins(plugin)).toThrow('plugin-byte-mismatch');
+  });
+  it('refuses a plugin package whose captured runtime declaration omits an input', () => {
+    const f = pluginFixture(true);
+    expect(() => materializeReplaySource({ ...f.input, runtimeFiles: [f.manifest] }, f.target, f.options))
+      .toThrow('replay-plugin-input-undeclared');
+    expect(existsSync(f.target)).toBe(false);
+  });
+  it('refuses substituted dependency bytes before publishing a plugin snapshot', () => {
+    const f = pluginFixture(false);
+    expect(() => materializeReplaySource(f.input, f.target, { ...f.options, snapshotDependencies: (donor, out) => {
+      f.options.snapshotDependencies(donor, out);
+      const packageRoot = join(out, 'probe', 'node_modules', 'fixture-plugin');
+      mkdirSync(packageRoot, { recursive: true });
+      writeFileSync(join(packageRoot, 'package.json'), readFileSync(f.manifest));
+      writeFileSync(join(packageRoot, 'index.cjs'), 'substituted dependency output');
+    } })).toThrow('replay-plugin-copy-byte-mismatch');
+    expect(existsSync(join(f.target, '.replay-source-snapshot.json'))).toBe(false);
+  });
   it('uses independent source and external runtime bytes after the donor changes in place', () => {
     const f = fixture();
     const binary = join(f.parent, 'node-fixture');
@@ -507,6 +582,22 @@ describe('daemon replay qualification', () => {
     }
     expect(live.classesOverlap).toBe(true);
     expect(replayWireOverlap(live)).toBe(false);
+  });
+  it('requires exact native reference command identity for overlap and terminal wire proof', () => {
+    const live = report();
+    for (const sample of live.samples) if (sample.request.queryClass === 'hot-references') {
+      const evidence = (sample.answer as LspDaemonAnswer).daemonEvidence!;
+      evidence.wire[0] = { ...evidence.wire[0], method: 'workspace/executeCommand', command: 'papercusp/semanticReferences' };
+    }
+    expect(replayWireOverlap(live)).toBe(true);
+    expect(replayEvidenceProblems(live)).toEqual([]);
+    for (const sample of live.samples) if (sample.request.queryClass === 'hot-references') {
+      const evidence = (sample.answer as LspDaemonAnswer).daemonEvidence!;
+      evidence.wire[0] = { ...evidence.wire[0], command: 'unrelated-command' };
+    }
+    expect(replayWireOverlap(live)).toBe(false);
+    expect(replayEvidenceProblems(live)).toEqual(live.samples.filter(sample => sample.request.queryClass === 'hot-references')
+      .map(sample => `unsettled-wire:${sample.request.id}`));
   });
   it('refuses wrong request IDs, unconfirmed durable receipts and pending wires even on healthy replies', () => {
     const live = report();

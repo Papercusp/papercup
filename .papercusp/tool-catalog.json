@@ -31869,7 +31869,7 @@
           "POST"
         ]
       },
-      "description": "Record an already-executed non-Vitest operational check in harness_shared.test_runs and return its numeric testRunIds for plans:bind-spec-evidence. The evidence must be a committed docs/evidence/*.json artifact with schemaVersion:1, kind:\"operational-test-evidence\", command, timestamps, exitCode, summary, and explicit assertions; expectedSha256 pins the exact bytes. Evidence JSON is capped at 262144 bytes; keep it compact and store bulky payloads as raw artifacts pinned by SHA-256. The verdict is derived from exitCode + assertions, never accepted as a caller boolean. Idempotent by artifact hash.",
+      "description": "Record an already-executed non-Vitest operational check in harness_shared.test_runs and return its numeric testRunIds for plans:bind-spec-evidence. The evidence must be a committed docs/evidence/*.json artifact with schemaVersion:1, kind:\"operational-test-evidence\", command, timestamps, exitCode, summary, and explicit assertions; expectedSha256 pins the exact bytes. Mutation-probe evidence must include exact per-probe records copied from MUTATION_PROBE_EVIDENCE_JSON and cannot cite shared .papercusp/scratch commands. Evidence JSON is capped at 262144 bytes; keep it compact and store bulky payloads as raw artifacts pinned by SHA-256. The verdict is derived from exitCode + assertions, never accepted as a caller boolean. Idempotent by artifact hash.",
       "capabilities": [
         "testing:run"
       ],

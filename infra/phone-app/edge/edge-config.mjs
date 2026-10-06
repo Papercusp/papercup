@@ -94,8 +94,37 @@ export function vmWireguard(c, boxPublicKey) {
   ].join('\n');
 }
 
+/** nftables table that lets co-located services reach the SFU's public candidate locally. */
+export const BOX_LOCAL_TABLE = 'phone_edge_local';
+
+/** LiveKit's TURN relay source ports, pinned in infra/phone-app/livekit-server.yaml.tmpl
+ *  (turn.relay_range_start/end; a test keeps the two equal). Relay -> SFU traffic must keep
+ *  leaving through the edge: the SFU echoes the source it sees back to the browser as the
+ *  STUN mapped address, so a locally DNATed relay flow hands the browser the box's LAN
+ *  address and the TURN path no longer reads as a relay (measured live, WI-10006708). */
+export const TURN_RELAY_RANGE = Object.freeze({ start: 30000, end: 40000 });
+
+/** One-line nft script for the box: locally ORIGINATED packets to the edge's public IP on
+ *  the LiveKit media ports are DNATed to the tunnel address. With the edge configured,
+ *  LiveKit advertises only the public candidate (WI-10006708), so the agent worker and
+ *  livekit-sip on this box would otherwise have to leave through the home router and come
+ *  back through the cloud. The reply leaves LiveKit's 10.77.0.2-bound mux socket, so
+ *  conntrack restores the public source and the ICE response stays symmetric. Output hook
+ *  only: inbound traffic, the WireGuard endpoint port and every other destination are
+ *  untouched, and the box still never holds the public IP. */
+export function boxLocalDnat(c) {
+  const rules = [
+    `udp sport ${TURN_RELAY_RANGE.start}-${TURN_RELAY_RANGE.end} return`,
+    ...forwardedPorts().map((p) => `ip daddr ${c.publicIp} ${p.proto} dport ${p.ports} dnat to ${TUNNEL.box}`),
+  ].join('; ');
+  return `add table ip ${BOX_LOCAL_TABLE}; delete table ip ${BOX_LOCAL_TABLE}; ` +
+    // nft's one-line grammar needs `;` after the chain block before the table's `}`.
+    `table ip ${BOX_LOCAL_TABLE} { chain output { type nat hook output priority dstnat; policy accept; ${rules}; }; }`;
+}
+
 /** wg-quick config for the box. `Table = off` keeps the home default route; only traffic
- *  SOURCED from the tunnel address is policy-routed through the VM. */
+ *  SOURCED from the tunnel address is policy-routed through the VM. The box-local DNAT lives
+ *  and dies with the tunnel. */
 export function boxWireguard(c, vmPublicKey) {
   const rule = `from ${TUNNEL.box} lookup ${TUNNEL.table} priority ${TUNNEL.table}`;
   return [
@@ -107,7 +136,9 @@ export function boxWireguard(c, vmPublicKey) {
     `PostUp = ip rule del ${rule} 2>/dev/null || true`,
     `PostUp = ip rule add ${rule}`,
     `PostUp = ip route replace default dev %i table ${TUNNEL.table}`,
+    `PostUp = nft '${boxLocalDnat(c)}'`,
     `PreDown = ip rule del ${rule} 2>/dev/null || true`,
+    `PreDown = nft delete table ip ${BOX_LOCAL_TABLE} 2>/dev/null || true`,
     '',
     '[Peer]',
     `PublicKey = ${wgKey(vmPublicKey, 'edge public key')}`,
@@ -215,20 +246,27 @@ export function nginxSite(c, { withTls }) {
   return lines.join('\n');
 }
 
-/** LiveKit `interfaces.includes` entry for the box tunnel, spliced into
- *  infra/phone-app/livekit-server.yaml.tmpl as ${PHONE_EDGE_IFACE_INCLUDE}. */
-export function livekitInterfaceInclude(env) {
-  const iface = env.PHONE_EDGE_IFACE;
-  if (!iface) return '      # no public media edge tunnel configured';
-  if (!IFACE.test(iface)) throw new Error('PHONE_EDGE_IFACE must be a short lowercase interface name');
-  return `      - ${iface}`;
+/** LiveKit `interfaces.includes` list, spliced into infra/phone-app/livekit-server.yaml.tmpl
+ *  as ${PHONE_LIVEKIT_INTERFACES}. LiveKit hands the same candidates to every participant,
+ *  so with the public edge ONLY the tunnel is listed: a public client must never receive a
+ *  LAN or loopback address (P-002 R-13, WI-10006708); co-located services use the box-local
+ *  DNAT instead. Without an edge, loopback + LAN keep co-located ICE off the hairpin. */
+export function livekitInterfaces(env) {
+  const edge = env.PHONE_EDGE_IFACE;
+  if (edge) {
+    if (!IFACE.test(edge)) throw new Error('PHONE_EDGE_IFACE must be a short lowercase interface name');
+    return `      - ${edge}`;
+  }
+  const lan = env.PHONE_LAN_IFACE;
+  if (!lan || !IFACE.test(lan)) throw new Error('PHONE_LAN_IFACE must be a short lowercase interface name');
+  return `      - lo\n      - ${lan}`;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
     const action = process.argv[2];
     const arg = process.argv[3];
-    const c = action === 'livekit-interface-include' ? null : edgeCoordinates(process.env);
+    const c = action === 'livekit-interfaces' ? null : edgeCoordinates(process.env);
     let out;
     if (action === 'coordinates') out = JSON.stringify(c);
     else if (action === 'vm-wireguard') out = vmWireguard(c, arg);
@@ -237,7 +275,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     else if (action === 'nginx-stream') out = nginxStream(c);
     else if (action === 'nginx-site-bootstrap') out = nginxSite(c, { withTls: false });
     else if (action === 'nginx-site') out = nginxSite(c, { withTls: true });
-    else if (action === 'livekit-interface-include') out = livekitInterfaceInclude(process.env);
+    else if (action === 'livekit-interfaces') out = livekitInterfaces(process.env);
     else throw new Error(`unknown action: ${action ?? '(none)'}`);
     process.stdout.write(out.endsWith('\n') ? out : out + '\n');
   } catch (error) {

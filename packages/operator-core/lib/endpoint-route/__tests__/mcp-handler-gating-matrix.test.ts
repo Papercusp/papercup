@@ -917,6 +917,30 @@ defineTool({
   },
   handler: async () => ({ data: { checkpoint: FULL_SOURCE_CHECKPOINT } }),
 });
+defineTool({
+  name: 'gatingtest:truncated_source_spill',
+  requirePrincipal: false,
+  capability: 'agent_tools:read',
+  args: z.object({}),
+  agentRoles: ['scoper'],
+  payloadTierCeilingChars: 18_000,
+  shape: {
+    standard: () => ({ checkpoint: 'SHAPED_TRUNCATED_SOURCE_MARKER' }),
+    trimmed: () => ({ checkpoint: 'SHAPED_TRUNCATED_SOURCE_MARKER' }),
+  },
+  handler: async () => ({
+    data: {
+      priorAttempts: {
+        attempts: [{
+          rawRef: 'fixture#completion',
+          textTruncated: true,
+          text: 'completion prefix…[TRUNCATED +1200 chars]',
+        }],
+      },
+      checkpoint: FULL_SOURCE_CHECKPOINT,
+    },
+  }),
+});
 
 afterAll(() => {
   unregisterProjectedToolsForPlugin('gating-matrix-test');
@@ -2201,6 +2225,27 @@ describe('tools:invoke inherits the nested target result-door exemption', () => 
     const spill = readFileSync(spillPath as string, 'utf8');
     expect(spill).toContain(FULL_SOURCE_CHECKPOINT);
     expect(spill).not.toContain('SHAPED_CHECKPOINT_MARKER');
+  });
+
+  it('uses the nested target name for tool-specific truncation recovery guidance', async () => {
+    const res = await callTool(
+      'tools:invoke',
+      {
+        name: 'gatingtest:truncated_source_spill',
+        args: { payloadTier: 'full' },
+      },
+      scoped('ws-test'),
+      { format: 'json' },
+    );
+    expect(res.isError).not.toBe(true);
+    const envelope = JSON.parse(textOf(res));
+    expect(envelope.incomplete).toMatchObject({
+      reason: 'explicit-full-request-overflow',
+      recoverable: false,
+    });
+    expect(envelope.incomplete.note).toContain('gatingtest:truncated_source_spill');
+    expect(envelope.incomplete.note).toContain('documented field-specific recovery handle');
+    expect(envelope.incomplete.note).not.toContain('wider per-field limit');
   });
 
   it('refuses an implicit nested projection miss with its key list, without labeling it explicit full', async () => {

@@ -1183,6 +1183,9 @@ async function runManifestOnlyInstall({
     resolverLockName,
     async () => {
       let input;
+      // Set when the resolution was computed from manifests that changed before it could be
+      // applied; main() then re-resolves against the current manifests (WI-10006714).
+      let stale = null;
       const layout = await withFsMutexRead(lockName, async () => {
         const value = manifestOnlyResolutionLayout(repoRoot);
         if (!value.supported) return value;
@@ -1225,6 +1228,10 @@ async function runManifestOnlyInstall({
               outputPaths: layout.outputPaths,
             });
             if (!applied.applied) {
+              if (applied.reason === "source-changed") {
+                stale = { reason: applied.reason, path: applied.path ?? "unknown" };
+                return 1;
+              }
               console.error(
                 "NPM_INSTALL_SAFE_RESOLUTION_STALE: " + applied.reason +
                   " at " + (applied.path ?? "unknown") +
@@ -1305,7 +1312,9 @@ async function runManifestOnlyInstall({
             waitingNoticeIntervalMs: 30_000,
           },
         );
-        return { supported: true, status };
+        return stale
+          ? { supported: true, status, stale }
+          : { supported: true, status };
       } finally {
         rmSync(input.scratchRoot, { recursive: true, force: true });
       }
@@ -1544,6 +1553,22 @@ prepended, so \`-- --legacy-peer-deps\` means \`npm install --legacy-peer-deps\`
 --help / -h is recognised only as the first argument; use \`install --help\` for npm's own help.
 `;
 
+export const RESOLUTION_STALE_ATTEMPTS_DEFAULT = 3;
+
+/**
+ * How many times a manifest-only install resolves before giving up on manifests that keep
+ * changing underneath it. PAPERCUSP_INSTALL_SAFE_STALE_ATTEMPTS overrides it (a positive
+ * integer; 1 restores the old single-attempt behaviour); anything else uses the default.
+ */
+export function resolutionStaleAttempts(env = process.env) {
+  const raw = env.PAPERCUSP_INSTALL_SAFE_STALE_ATTEMPTS;
+  if (raw === undefined || raw === "") return RESOLUTION_STALE_ATTEMPTS_DEFAULT;
+  const value = Number(raw);
+  return Number.isInteger(value) && value >= 1
+    ? value
+    : RESOLUTION_STALE_ATTEMPTS_DEFAULT;
+}
+
 export async function main(argv = process.argv.slice(2)) {
   const parsed = parseCliArgs(argv);
   if ("help" in parsed) {
@@ -1564,13 +1589,35 @@ export async function main(argv = process.argv.slice(2)) {
   const installPlan = manifestOnlyInstallPlan(npmArgs, npmEnv);
 
   if (installPlan.eligible) {
-    const result = await runManifestOnlyInstall({
-      repoRoot,
-      lockName,
-      npmArgs,
-      npmEnv,
-      plan: installPlan,
-    });
+    // The resolve runs outside the repo mutex, so a peer can change the manifests under it, and
+    // the apply step then refuses the stale resolution. The remedy is always to re-resolve
+    // against the current manifests, which needs no human, so do it here, bounded. Exiting
+    // instead killed an unattended deb build after a 470 s lock wait (WI-10006714).
+    const maxAttempts = resolutionStaleAttempts(process.env);
+    let result;
+    for (let attempt = 1; ; attempt += 1) {
+      result = await runManifestOnlyInstall({
+        repoRoot,
+        lockName,
+        npmArgs,
+        npmEnv,
+        plan: installPlan,
+      });
+      if (!result.supported || !result.stale) break;
+      if (attempt >= maxAttempts) {
+        console.error(
+          "NPM_INSTALL_SAFE_RESOLUTION_STALE: source-changed at " + result.stale.path +
+            " on all " + maxAttempts + " attempt(s); no reify ran. The manifests kept " +
+            "changing while npm resolved; retry once they settle.",
+        );
+        break;
+      }
+      console.error(
+        "NPM_INSTALL_SAFE_RESOLUTION_RETRY: source-changed at " + result.stale.path +
+          " during attempt " + attempt + "/" + maxAttempts +
+          "; no reify ran. Re-resolving against the current manifests.",
+      );
+    }
     if (result.supported) {
       if (result.status !== 0) return result.status;
       return publishDependencyGeneration({ repoRoot });

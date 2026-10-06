@@ -122,7 +122,22 @@ function observedPopulation(session: NativeSemanticSession, declared: SemanticPr
       files: project.getFileNames(false, false).map(file => session.getCanonicalFileName(file)).sort() });
   });
   observed.sort((a, b) => a.projectName.localeCompare(b.projectName));
-  if (JSON.stringify(observed) !== JSON.stringify(declared)) refuse('project-or-file-population-mismatch');
+  if (JSON.stringify(observed) !== JSON.stringify(declared)) {
+    // Diagnose the refusal without learning a replacement declaration from the
+    // subject. Counts remain exact; samples are bounded for large project graphs.
+    const differences = declared.map(expected => {
+      const actual = observed.find(project => project.projectName === expected.projectName);
+      const expectedFiles = new Set(expected.files); const actualFiles = new Set(actual?.files ?? []);
+      const missing = expected.files.filter(file => !actualFiles.has(file));
+      const extra = (actual?.files ?? []).filter(file => !expectedFiles.has(file));
+      return { projectName: expected.projectName.slice(0, 512), missingProject: !actual,
+        missingCount: missing.length, extraCount: extra.length,
+        missingFiles: missing.slice(0, 8).map(file => file.slice(0, 512)),
+        extraFiles: extra.slice(0, 8).map(file => file.slice(0, 512)) };
+    }).filter(project => project.missingProject || project.missingCount || project.extraCount);
+    refuse(`project-or-file-population-mismatch:${JSON.stringify({ projectCount: differences.length,
+      projects: differences.slice(0, 8) })}`);
+  }
   return observed;
 }
 

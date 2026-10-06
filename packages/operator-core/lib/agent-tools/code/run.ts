@@ -19,9 +19,12 @@ import {
 import {
   CODE_RUN_REPLAY_PROOF_META_KEY,
   DEFAULT_SCRIPT_TIMEOUT_MS,
+  type AbortCompletionContext,
+  type AbortCompletionReceipt,
   type FieldMiss,
   type ToolResult,
 } from '@papercusp/tooldef';
+import { completedResultPayload } from '../abort-completion-payload';
 import { PROJECTED_DEPS } from '../../projected-tool-deps';
 import { resolveConcreteHarnessSlug } from '../_harness-scope';
 import {
@@ -130,6 +133,42 @@ export async function withCodeRunResponseBudget<T>(
 export { bindCurrentCallerDispatch as bindInnerDispatch } from '../orchestration/current-caller-dispatch';
 
 /**
+ * A successful code:run response is the complete outcome of this orchestration attempt: it
+ * includes the final script result and the mutation summary (including any partial-effect
+ * warnings). If the dispatch deadline fired just before the handler returned, surface that exact
+ * result instead of an ambiguous timeout that invites replaying already-dispatched writes.
+ */
+export function codeRunAbortCompletionReceipt(
+  _args: unknown,
+  result: ToolResult,
+  context: AbortCompletionContext,
+): AbortCompletionReceipt {
+  const payload = completedResultPayload(result);
+  if (payload?.ok !== true) {
+    return {
+      status: 'recovery-incomplete',
+      reason: 'code:run result did not confirm a completed successful orchestration',
+      failures: ['missing-successful-run-result'],
+    };
+  }
+  if (typeof context.callId !== 'string' || context.callId.trim().length === 0) {
+    return {
+      status: 'recovery-incomplete',
+      reason: 'code:run completion did not include the dispatcher attempt identity',
+      failures: ['missing-attempt-id'],
+    };
+  }
+  return {
+    status: 'recorded',
+    effectRef: `code-run:${context.callId}`,
+    reason:
+      payload.partial === true
+        ? 'code:run completed; returned result includes partial inner-effect details'
+        : 'code:run completed; returning the full result and mutation summary',
+  };
+}
+
+/**
  * `code:run` — execute a multi-step tool-orchestration SCRIPT in one call
  * (code-execution-tool-orchestration B-CX-2A).
  *
@@ -181,6 +220,7 @@ export default defineTool({
   // they already have; every inner call still runs through its own capability/role/envelope gates.
   capability: 'agent_tools:read',
   effect: 'write',
+  abortCompletionReceipt: codeRunAbortCompletionReceipt,
   requirePrincipal: false,
   // EI-20191260319468035: the orchestration handler itself never reads ctx.tx. Holding the
   // host's workspace transaction open around the whole script made a write through an inner

@@ -238,6 +238,22 @@ describe('reconcileLoopRoutines — cold settle ladder (su-cold-auto 2026-07-03)
     note_updated_ts: null,
     ...over,
   });
+  const coldDeliveredRow = (over: Record<string, unknown> = {}) =>
+    coldRow({
+      is_cron: false,
+      fire_state_last_fired_at: null,
+      fire_state_last_withheld_at: null,
+      last_wake_at: pgString(T0 + 120_000),
+      last_wake_created_at: pgString(T0 + 120_000),
+      last_wake_status: 'delivered',
+      last_wake_channel: 'psu-socket-inject',
+      last_loop_turn_at: null,
+      lifecycle_completed_at: null,
+      lifecycle_started_at: pgString(T0 + 121_000),
+      turn_journal_completed_at: null,
+      loop_turn_started_at: pgString(T0 + 125_000),
+      ...over,
+    });
 
   it('releases a never-fired cold loop only after a carry-note newer than the arm settles it', async () => {
     const updates: unknown[][] = [];
@@ -377,6 +393,95 @@ describe('reconcileLoopRoutines — cold settle ladder (su-cold-auto 2026-07-03)
     const res = await reconcile({ sql, nowMs: T0 + 100_000 }); // 70s quiet
     expect(res.rearmed).toBe(1);
     expect(res.loops[0].via).toBe('presence-quiescence');
+  });
+
+  it('holds a cold post-dispatch loop turn through the backstop boundary, even after an early carry-note refresh', async () => {
+    const updates: unknown[][] = [];
+    const recordFire = vi.fn(async () => {});
+    const res = await reconcile({
+      sql: fakeSql(
+        [
+          coldDeliveredRow({
+            // The turn started for this delivery, but its only journal row predates that start.
+            // A carry-note can be written before the long-running turn actually exits.
+            turn_journal_completed_at: pgString(T0 + 124_000),
+            note_updated_ts: String(T0 + 130_000),
+          }),
+        ],
+        updates,
+      ),
+      // Past the fire's 30m stuck threshold, but still inside the delivery's bounded dwell.
+      nowMs: T0 + 30 * 60_000 + 1_000,
+      recordFire,
+      readFireState: NO_PRIOR_ERRORS,
+      checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
+    });
+
+    expect(res.rearmed).toBe(0);
+    expect(res.loops).toEqual([]);
+    expect(updates).toHaveLength(0);
+    expect(recordFire).not.toHaveBeenCalled();
+  });
+
+  it('holds a cold suppressed-redundant delivery until the in-flight turn completes', async () => {
+    const suppressed = coldDeliveredRow({
+      last_wake_channel: 'suppressed-redundant',
+      loop_turn_started_at: null,
+      turn_journal_completed_at: null,
+      note_updated_ts: null,
+    });
+    const waiting = await reconcile({
+      sql: fakeSql([suppressed], []),
+      // Backstop from the fire has elapsed; the matching wake dwell has not.
+      nowMs: T0 + 30 * 60_000 + 1_000,
+      recordFire: vi.fn(async () => {}),
+      readFireState: NO_PRIOR_ERRORS,
+      checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
+    });
+    expect(waiting.rearmed).toBe(0);
+    expect(waiting.loops).toEqual([]);
+
+    const recordFire = vi.fn(async () => {});
+    const completed = await reconcile({
+      sql: fakeSql(
+        [
+          {
+            ...suppressed,
+            turn_journal_completed_at: pgString(T0 + 150_000),
+          },
+        ],
+        [],
+      ),
+      nowMs: T0 + 151_000,
+      recordFire,
+      readFireState: NO_PRIOR_ERRORS,
+      checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
+    });
+    expect(completed.rearmed).toBe(1);
+    expect(completed.loops[0]).toMatchObject({ via: 'turn-journal', completedAt: T0 + 150_000 });
+    expect(recordFire).toHaveBeenCalledWith('papercusp', 'loop-su-test', 'loop-turn-journal', 'ok');
+  });
+
+  it('restores the existing stuck-backstop retry once the cold in-flight dwell expires', async () => {
+    const recordFire = vi.fn(async () => {});
+    const res = await reconcile({
+      sql: fakeSql(
+        [
+          coldDeliveredRow({
+            note_updated_ts: null,
+          }),
+        ],
+        [],
+      ),
+      nowMs: T0 + 32 * 60_000, // 30m after the delivery, past its bounded hold
+      recordFire,
+      readFireState: NO_PRIOR_ERRORS,
+      checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
+    });
+
+    expect(res.rearmed).toBe(1);
+    expect(res.loops[0]).toMatchObject({ via: 'stuck-backstop' });
+    expect(recordFire).toHaveBeenCalledWith('papercusp', 'loop-su-test', 'loop-stuck-backstop', 'error');
   });
 });
 

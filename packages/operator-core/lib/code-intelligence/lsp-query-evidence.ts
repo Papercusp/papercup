@@ -13,6 +13,8 @@ export interface LspQueryEvent {
 }
 export interface LspWireEvidence {
   readonly method: string;
+  /** Distinguish the qualified native command from unrelated executeCommand RPCs. */
+  readonly command?: string;
   readonly taskId: string;
   readonly pid: number | null;
   readonly startedAtMs: number;
@@ -40,7 +42,7 @@ export function newLspQueryEvidence(requestId: string): LspQueryEvidence {
   return { requestId, daemonPid: process.pid, receivedAtMs: lspEvidenceNow(), respondedAtMs: null, events: [], wire: [] };
 }
 export async function recordLspWireRequest<T>(
-  identity: Pick<LspWireEvidence, 'method' | 'taskId' | 'pid'>, task: () => Promise<T>,
+  identity: Pick<LspWireEvidence, 'method' | 'command' | 'taskId' | 'pid'>, task: () => Promise<T>,
 ): Promise<T> {
   const evidence = state.scope.getStore();
   if (!evidence) return task();

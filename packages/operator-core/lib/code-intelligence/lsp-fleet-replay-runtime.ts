@@ -5,7 +5,7 @@ import { appendFileSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, 
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
-import { SEMANTIC_COMPLETION_TYPESCRIPT_VERSION, semanticCompletionPlugins,
+import { SEMANTIC_COMPLETION_COMMAND, SEMANTIC_COMPLETION_TYPESCRIPT_VERSION, semanticCompletionPlugins,
   type SemanticProjectPopulation, type SemanticCompletionContext,
   type SemanticCompletionPluginDeclaration } from './lsp-semantic-completion';
 import type { readLspDaemonAdmission } from './lsp-daemon-client';
@@ -481,6 +481,25 @@ export function materializeReplaySource(input: ReplayOracleInput, destination: s
   const tsconfigPath = relocate(input.tsconfigPath);
   const definition = { ...input.definition, file: relocate(input.definition.file) };
   const references = { ...input.references, file: relocate(input.references.file) };
+  const plugin = input.semanticCompletionPlugin;
+  const pluginPaths = new Map<string, string>();
+  let semanticCompletionPlugin: SemanticCompletionPluginDeclaration | undefined;
+  if (plugin) {
+    semanticCompletionPlugins(plugin);
+    const packageRoot = join(plugin.location, 'node_modules', plugin.name);
+    const location = insideReplayRoot(donor, plugin.location) ? resolve(target, relative(donor, plugin.location)) :
+      join(target, '.replay-runtime', replayHash(plugin.location));
+    const declaredRuntimeFiles = new Set(input.runtimeFiles.map(file => resolve(donor, file)));
+    const files: Record<string, string> = {};
+    for (const [file, hash] of Object.entries(plugin.files)) {
+      if (!isAbsolute(file) || !insideReplayRoot(packageRoot, file)) throw new Error(`escaping-replay-plugin-input:${file}`);
+      if (!declaredRuntimeFiles.has(file)) throw new Error(`replay-plugin-input-undeclared:${file}`);
+      const out = resolve(location, relative(plugin.location, file));
+      pluginPaths.set(file, out);
+      files[out] = hash;
+    }
+    semanticCompletionPlugin = { ...plugin, location, files };
+  }
   // Exclusive creation refuses a previous run; failures leave forensic inputs.
   mkdirSync(target, { mode: 0o700 });
   const hashes: Record<string, string> = {};
@@ -532,11 +551,20 @@ export function materializeReplaySource(input: ReplayOracleInput, destination: s
   options.onProgress?.({ phase: 'dependencies-copied', completed: 1, total: 1 });
   const runtimeFiles = input.runtimeFiles.map(file => {
     const source = resolve(donor, file);
-    const out = insideReplayRoot(donor, source) ? resolve(target, relative(donor, source)) :
-      join(target, '.replay-runtime', replayHash(source), basename(source));
+    const out = pluginPaths.get(source) ?? (insideReplayRoot(donor, source) ? resolve(target, relative(donor, source)) :
+      join(target, '.replay-runtime', replayHash(source), basename(source)));
     if (!existsSync(out)) copy(source, out);
     return out;
   });
+  // A predeclared package keeps its layout and hashes inside the independent
+  // copy. Never retain a live donor probe path or bless replacement bytes.
+  if (semanticCompletionPlugin) {
+    for (const [file, hash] of Object.entries(semanticCompletionPlugin.files)) {
+      if (replayHash(readFileSync(file)) !== hash) throw new Error(`replay-plugin-copy-byte-mismatch:${file}`);
+      hashes[relative(target, file)] = hash;
+    }
+    semanticCompletionPlugins(semanticCompletionPlugin);
+  }
   // Preserved workspace links must resolve into the independent population.
   // A dependency tree may hide an absolute/live donor link several levels down.
   const pending = [target];
@@ -558,6 +586,7 @@ export function materializeReplaySource(input: ReplayOracleInput, destination: s
     loadedRuntime: 'unmeasured' }, null, 2);
   writeFileSync(manifestPath, manifest, { flag: 'wx' });
   return { ...input, rootPath: target, tsconfigPath, definition, references, runtimeFiles: [...runtimeFiles, dependencyStamp, manifestPath],
+    ...(semanticCompletionPlugin ? { semanticCompletionPlugin } : {}),
     sourceSnapshot: { manifestPath, sha256: replayHash(manifest) } };
 }
 
@@ -795,6 +824,11 @@ export function validateDaemonReplayConfig(config: DaemonReplayConfig, options: 
 }
 
 /** Actual wire occupancy, not caller wait overlap. Epoch clocks come from daemon evidence. */
+function isReferenceWire(wire: NonNullable<LspDaemonAnswer['daemonEvidence']>['wire'][number]): boolean {
+  return wire.method === 'textDocument/references' ||
+    (wire.method === 'workspace/executeCommand' && wire.command === SEMANTIC_COMPLETION_COMMAND);
+}
+
 export function replayWireOverlap(report: ReplayReport): boolean {
   const cheap = report.samples.filter(row => row.request.queryClass === 'definition');
   const hot = report.samples.filter(row => row.request.queryClass === 'hot-references');
@@ -803,7 +837,7 @@ export function replayWireOverlap(report: ReplayReport): boolean {
     const end = answer?.daemonEvidence?.respondedAtMs;
     return end !== null && end !== undefined && hot.some(reference =>
       (reference.answer as LspDaemonAnswer | null)?.daemonEvidence?.wire.some(wire =>
-        wire.method === 'textDocument/references' && wire.endedAtMs !== null &&
+        isReferenceWire(wire) && wire.endedAtMs !== null &&
         wire.startedAtMs < end && end < wire.endedAtMs));
   });
 }
@@ -814,8 +848,8 @@ export function replayEvidenceProblems(report: ReplayReport): string[] {
     const answer = sample.answer as LspDaemonAnswer | null;
     const evidence = answer?.daemonEvidence;
     if (!evidence || evidence.requestId !== sample.request.id) { problems.push(`missing-daemon-identity:${sample.request.id}`); continue; }
-    const method = sample.request.queryClass === 'definition' ? 'textDocument/definition' : 'textDocument/references';
-    const wire = evidence.wire.filter(row => row.method === method);
+    const wire = evidence.wire.filter(row => sample.request.queryClass === 'definition'
+      ? row.method === 'textDocument/definition' : isReferenceWire(row));
     if (!wire.length || wire.some(row => !row.taskId || !row.pid || row.endedAtMs === null || row.outcome !== 'response'))
       problems.push(`unsettled-wire:${sample.request.id}`);
     const receipts = evidence.events.filter(event => event.phase === 'durable-enqueued');
@@ -1260,7 +1294,7 @@ export async function runDaemonReplay(config: DaemonReplayConfig, archiveParent:
     args: { ...config.corpus[queryClass].cursor,
       file: resolve(config.rootPath, config.corpus[queryClass].cursor.file), rootPath: config.rootPath }, actorId, archive: true,
     deadlineAtMs: Date.now() + config.requestTimeoutMs,
-    ...(queryClass === 'hot-references' && semanticCompletion ? { semanticCompletion } : {}),
+    ...(semanticCompletion ? { semanticCompletion } : {}),
   }, config.requestTimeoutMs + 5_000, id);
   const boundary = async (label: string) => {
     const health = await callLspDaemonRpc(config.socketPath, { op: 'health', args: {}, archive: true,

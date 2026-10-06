@@ -19,4 +19,7 @@ export declare function boxWireguard(c: EdgeCoordinates, vmPublicKey: string): s
 export declare function vmNftables(c: EdgeCoordinates): string;
 export declare function nginxStream(c: EdgeCoordinates): string;
 export declare function nginxSite(c: EdgeCoordinates, options: { withTls: boolean }): string;
-export declare function livekitInterfaceInclude(env: Record<string, string | undefined>): string;
+export declare const BOX_LOCAL_TABLE: string;
+export declare const TURN_RELAY_RANGE: Readonly<{ start: number; end: number }>;
+export declare function boxLocalDnat(c: EdgeCoordinates): string;
+export declare function livekitInterfaces(env: Record<string, string | undefined>): string;

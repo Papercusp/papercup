@@ -1075,6 +1075,44 @@ function loopTurnCompletionAt(row: LoopRow, lastFiredMs: number): number | null 
   return loopTurnAtMs;
 }
 
+/** A cold delivery can land while its loop turn is already in flight. The cold settle ladder
+ *  intentionally requires a completion receipt (journal/lifecycle or carry-note refresh), but
+ *  a note refresh may arrive before a long turn exits. While a real post-dispatch loop-turn
+ *  start or a suppressed-redundant delivery proves that a turn is active, do not consume an
+ *  early note or the stuck-park backstop until a turn completion is visible. Keep the hold
+ *  bounded by the same dwell so a missing Stop report still reaches the established retry. */
+function coldDeliveredWakeHasUnfinishedTurn(row: LoopRow, lastFiredMs: number, nowMs: number): boolean {
+  if (row.carry !== 'cold' || row.is_cron || !row.parked) return false;
+  if (
+    !Object.prototype.hasOwnProperty.call(row, 'last_wake_status') ||
+    !Object.prototype.hasOwnProperty.call(row, 'last_loop_turn_at') ||
+    row.last_wake_status !== 'delivered'
+  ) {
+    return false;
+  }
+
+  const wakeAtMs = tsMs(row.last_wake_at);
+  if (wakeAtMs == null || wakeAtMs <= lastFiredMs) return false;
+
+  const intervalMs = row.interval_sec * 1000;
+  if (nowMs - wakeAtMs >= stuckParkMs(intervalMs)) return false;
+
+  const loopTurnStartedMs = loopTurnStartedAt(row, wakeAtMs);
+  const suppressedRedundant = row.last_wake_channel === 'suppressed-redundant';
+  if (loopTurnStartedMs == null && !suppressedRedundant) return false;
+
+  // For a direct loop-turn start, wait for that turn's end. For a suppressed delivery, the
+  // loop prompt has not opened a turn yet, so an end newer than the delivery closes the
+  // already-running turn that caused suppression.
+  const completionFloorMs = loopTurnStartedMs ?? wakeAtMs;
+  const completionTimes = [
+    tsMs(row.lifecycle_completed_at),
+    tsMs(row.turn_journal_completed_at),
+    loopTurnCompletionAt(row, lastFiredMs),
+  ];
+  return !completionTimes.some((completedAt) => completedAt != null && completedAt >= completionFloorMs);
+}
+
 /**
  * Resolve the woken turn's completion time for one loop (primary lifecycle marker, else
  * the dropped-report presence fallback). Returns null when the turn is still in flight /
@@ -1706,6 +1744,12 @@ export async function reconcileLoopRoutines(
         presenceLastActiveMs != null &&
         presenceLastActiveMs > lastFiredMs &&
         nowMs - presenceLastActiveMs >= FALLBACK_QUIET_MS;
+      // Cold loops keep a stricter completion ladder than warm loops. A real turn-start marker
+      // or suppressed-redundant delivery proves an iteration is still in flight, so hold even
+      // if an early carry-note refresh would otherwise settle it. The helper expires at the
+      // existing stuck-park dwell, preserving the bounded recovery path for lost end reports.
+      if (coldDeliveredWakeHasUnfinishedTurn(row, lastFiredMs, nowMs)) continue;
+
       const hasDeliveredWakeWithoutLoopTurn =
         row.carry !== 'cold' &&
         !row.is_cron &&

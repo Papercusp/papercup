@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   MAX_OPERATIONAL_EVIDENCE_BYTES,
+  inspectCommittedOperationalEvidence,
   parseOperationalEvidenceArtifact,
   recordOperationalRun,
   type CommittedOperationalEvidence,
@@ -30,6 +36,42 @@ const EVIDENCE: CommittedOperationalEvidence = {
   commit: 'b'.repeat(40),
 };
 
+const MUTATION_PROBE = {
+  schemaVersion: 1 as const,
+  runnerPath: 'scripts/mutation-probe.sh',
+  runnerSha256: 'c'.repeat(64),
+  runnerCommit: 'd'.repeat(40),
+  cwd: '.',
+  argv: [
+    '--file',
+    'packages/operator-core/lib/agent-tools/testing/record-run.ts',
+    '--mutate',
+    's/return result.data/return null/',
+    '--test',
+    'npm run test:file -- packages/operator-core/lib/agent-tools/testing/record-run.test.ts',
+  ],
+  result: {
+    verdict: 'caught' as const,
+    expected: 'caught' as const,
+    target: 'copy-out',
+    baselineExit: 0,
+    guardExit: 1,
+    mutantParse: 'ok',
+    assertionEvidence: 'assertion-failure',
+    relocation: 'overlay',
+  },
+};
+
+function mutationEvidence(command = ['scripts/mutation-probe.sh']) {
+  return {
+    ...ARTIFACT,
+    command,
+    summary: 'Mutation-probe runner rejected the mutation as expected.',
+    assertions: [{ id: 'mutation-caught', passed: true, evidence: 'MUTATION_PROBE_RESULT verdict=caught' }],
+    mutationProbes: [{ ...MUTATION_PROBE, argv: [...MUTATION_PROBE.argv] }],
+  };
+}
+
 function deps(overrides: Partial<RecordOperationalRunDeps> = {}): RecordOperationalRunDeps {
   return {
     inspectEvidence: vi.fn(() => EVIDENCE),
@@ -37,6 +79,12 @@ function deps(overrides: Partial<RecordOperationalRunDeps> = {}): RecordOperatio
     persist: vi.fn(async () => ({ written: 1, ids: [77] })),
     ...overrides,
   };
+}
+
+function git(repo: string, args: string[]): string {
+  const result = spawnSync('git', ['-C', repo, ...args], { encoding: 'utf8' });
+  if (result.status !== 0) throw new Error(`git ${args.join(' ')} failed: ${result.stderr ?? ''}`);
+  return (result.stdout ?? '').trim();
 }
 
 describe('testing:record-run', () => {
@@ -101,6 +149,76 @@ describe('testing:record-run', () => {
         Buffer.from(JSON.stringify({ ...ARTIFACT, finishedAt: '2026-09-08T01:00:00.000Z' })),
       ),
     ).toThrow('evidence_time_order_invalid');
+  });
+
+  it('requires exact per-probe replay metadata for mutation-probe evidence', () => {
+    const { mutationProbes: _mutationProbes, ...withoutReplay } = mutationEvidence();
+    expect(() => parseOperationalEvidenceArtifact(Buffer.from(JSON.stringify(withoutReplay))))
+      .toThrow('evidence_mutation_probe_replay_required');
+    expect(parseOperationalEvidenceArtifact(Buffer.from(JSON.stringify(mutationEvidence()))))
+      .toMatchObject({ mutationProbes: [MUTATION_PROBE] });
+  });
+
+  it('rejects mutable shared scratch command references even when replay argv is present', () => {
+    const artifact = mutationEvidence(['bash .papercusp/scratch/p009-probes.sh']);
+    expect(() => parseOperationalEvidenceArtifact(Buffer.from(JSON.stringify(artifact))))
+      .toThrow('evidence_mutation_probe_scratch_command_invalid');
+  });
+
+  it('rejects replay metadata without the exact file, mutation, and guard inputs', () => {
+    const artifact = mutationEvidence();
+    artifact.mutationProbes[0].argv = ['--file', 'src/file.ts', '--test', 'vitest run'];
+    expect(() => parseOperationalEvidenceArtifact(Buffer.from(JSON.stringify(artifact))))
+      .toThrow('evidence_mutation_probe_replay_incomplete');
+  });
+
+  it('verifies replay records against the pinned runner commit or the artifact commit', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'record-run-replay-'));
+    const runnerPath = 'scripts/mutation-probe.sh';
+    const evidencePath = 'docs/evidence/mutation-run.json';
+    const runnerBytes = Buffer.from('#!/usr/bin/env bash\nprintf runner\\n\n');
+    try {
+      mkdirSync(join(root, 'scripts'), { recursive: true });
+      mkdirSync(join(root, 'docs/evidence'), { recursive: true });
+      writeFileSync(join(root, runnerPath), runnerBytes);
+      git(root, ['init', '-q']);
+      git(root, ['config', 'user.email', 'record-run-test@example.invalid']);
+      git(root, ['config', 'user.name', 'record-run-test']);
+      git(root, ['add', runnerPath]);
+      git(root, ['commit', '-qm', 'runner source']);
+      const runnerCommit = git(root, ['rev-parse', 'HEAD']);
+      const artifactRunnerBytes = Buffer.from('runner source v2');
+      writeFileSync(join(root, runnerPath), artifactRunnerBytes);
+      git(root, ['add', runnerPath]);
+      git(root, ['commit', '-qm', 'updated runner source']);
+      const runnerSha256 = createHash('sha256').update(artifactRunnerBytes).digest('hex');
+      const artifact = {
+        ...mutationEvidence(),
+        mutationProbes: [{ ...MUTATION_PROBE, runnerCommit, runnerSha256 }],
+      };
+
+      const commitArtifact = async (value: unknown) => {
+        const bytes = Buffer.from(JSON.stringify(value));
+        writeFileSync(join(root, evidencePath), bytes);
+        git(root, ['add', evidencePath]);
+        git(root, ['commit', '-qm', 'mutation evidence']);
+        return createHash('sha256').update(bytes).digest('hex');
+      };
+
+      const validSha = await commitArtifact(artifact);
+      await expect(inspectCommittedOperationalEvidence(root, evidencePath, validSha)).resolves.toMatchObject({
+        artifact: { mutationProbes: [{ runnerCommit, runnerSha256 }] },
+      });
+
+      const invalidSha = await commitArtifact({
+        ...artifact,
+        mutationProbes: [{ ...MUTATION_PROBE, runnerCommit, runnerSha256: 'e'.repeat(64) }],
+      });
+      await expect(inspectCommittedOperationalEvidence(root, evidencePath, invalidSha))
+        .rejects.toThrow('evidence_mutation_probe_runner_sha256_mismatch');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('returns the size, byte cap, and raw-artifact remedy for oversized evidence without persisting it', async () => {

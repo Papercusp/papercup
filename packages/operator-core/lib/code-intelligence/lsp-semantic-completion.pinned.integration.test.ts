@@ -10,7 +10,7 @@ import { pathToFileURL } from 'node:url';
 import { transformSync } from 'esbuild';
 import { CancellationTokenSource, createMessageConnection, StreamMessageReader, StreamMessageWriter } from 'vscode-jsonrpc/node';
 
-const storage = vi.hoisted(() => ({ sql: undefined as postgres.Sql | undefined }));
+const storage = vi.hoisted(() => ({ sql: undefined as postgres.Sql | undefined, tasks: [] as string[] }));
 vi.mock('@papercusp/db-org', async importOriginal => ({
   ...await importOriginal<typeof import('@papercusp/db-org')>(),
   getOrgPg: () => {
@@ -18,12 +18,25 @@ vi.mock('@papercusp/db-org', async importOriginal => ({
     return { sql: storage.sql };
   },
 }));
+vi.mock('@papercusp/flags/server', async original => ({
+  ...await original<typeof import('@papercusp/flags/server')>(), getFlag: async () => true,
+}));
+vi.mock('../task-manager/managed-spawn', async original => {
+  const actual = await original<typeof import('../task-manager/managed-spawn')>();
+  return { ...actual, managedSpawn: async (...args: Parameters<typeof actual.managedSpawn>) => {
+    const result = await actual.managedSpawn(args[0], args[1], args[2], { ...args[3], workspaceId });
+    storage.tasks.push(result.taskId);
+    return result;
+  } };
+});
 
 import { managedSpawn } from '../task-manager/managed-spawn';
 import { killTask } from '../task-manager/control';
 import { closeTask } from '../task-manager/store';
 import { taskTerminalEventKey } from '../task-manager/task-terminal-events';
-import { resolveServerBin, resolveTsserverPath, shutdownLspClient, typescriptInitializationOptions } from './lsp-adapter';
+import { resolveServerBin, resolveTsserverPath, shutdownAllLspClients, shutdownLspClient, typescriptInitializationOptions } from './lsp-adapter';
+import { dispatchLspDaemonRequest } from './lsp-daemon-server';
+import { freezeCompilerReplayConfig, replayHash, replaySemanticCompletionContext } from './lsp-fleet-replay-runtime';
 import { requestSemanticCompletion, SEMANTIC_COMPLETION_COMMAND, SEMANTIC_COMPLETION_TYPESCRIPT_VERSION,
   type SemanticCompletionRequest } from './lsp-semantic-completion';
 
@@ -303,6 +316,73 @@ describe('candidate completion through the pinned native plugin package', () => 
         } finally {
           if (task) await finishOwnedTask(task.taskId);
         }
+      } finally { rmSync(root, { recursive: true, force: true }); }
+    }
+  }, 60_000);
+});
+
+describe('independent semantic graph through the production daemon adapter', () => {
+  it.each(['complete', 'missing-consumer'] as const)('checks configured library and inherited-config closure: %s', async control => {
+    const root = mkdtempSync(join(tmpdir(), 'lsp-daemon-semantic-'));
+    const taskStart = storage.tasks.length;
+    try {
+      const target = join(root, 'target.ts'); const consumer = join(root, 'consumer.ts');
+      writeFileSync(target, 'export function semanticTarget() { return 1; }\nsemanticTarget();\n');
+      writeFileSync(consumer, 'import { semanticTarget } from "./target";\nsemanticTarget();\n');
+      writeFileSync(join(root, 'base.json'), JSON.stringify({ compilerOptions: { strict: true, types: [], lib: ['es5'] } }));
+      writeFileSync(join(root, 'tsconfig.json'), JSON.stringify({ extends: './base.json', files: ['target.ts', 'consumer.ts'] }));
+      const location = join(root, 'probe'); const packageRoot = join(location, 'node_modules', pluginName);
+      mkdirSync(packageRoot, { recursive: true });
+      const manifest = join(packageRoot, 'package.json'); const entry = join(packageRoot, 'index.cjs');
+      writeFileSync(manifest, JSON.stringify({ name: pluginName, version: '0.0.0', main: 'index.cjs' }));
+      const source = readFileSync(new URL('./lsp-semantic-completion.ts', import.meta.url), 'utf8');
+      writeFileSync(entry, transformSync(source, { loader: 'ts', format: 'cjs', target: 'node22' }).code + '\nmodule.exports = module.exports.default;\n');
+      const files = Object.fromEntries([manifest, entry].map(file => [file, replayHash(readFileSync(file))]));
+      // Independently freeze compiler population and plugin bytes BEFORE native startup.
+      const frozen = freezeCompilerReplayConfig({ runId: `daemon-semantic-${control}`, rootPath: root,
+        workspaceId, socketPath: join(root, 'unused.sock'), levels: [1], requestTimeoutMs: 30_000,
+        tsconfigPath: 'tsconfig.json', definition: { file: 'target.ts', line1: 2, character: 1 },
+        references: { file: 'target.ts', line1: 2, character: 1 }, runtimeFiles: [manifest, entry],
+        semanticCompletionPlugin: { name: pluginName, location, files }, evidenceRef: 'authored-daemon-semantic-fixture' });
+      const semanticCompletion = replaySemanticCompletionContext({ ...frozen,
+        runtimeWitness: { directory: location, runId: frozen.runId, bootstraps: {}, files } });
+      expect(semanticCompletion.population[0].files).toContain(join(root, 'base.json'));
+      expect(semanticCompletion.population[0].files.some(file => file.endsWith('/lib.es5.d.ts'))).toBe(true);
+      if (control === 'missing-consumer') semanticCompletion.population[0].files =
+        semanticCompletion.population[0].files.filter(file => file !== consumer);
+      const request = { op: 'references' as const, args: { file: target, line1: 2, character: 1, rootPath: root },
+        workspaceId, archive: true, semanticCompletion, deadlineAtMs: Date.now() + 30_000 };
+      // Replay warms cheap queries first. That warmup must carry the plugin
+      // declaration or the shared client refuses the later native reference RPC.
+      const definition = await dispatchLspDaemonRequest({ ...request, op: 'symbol' },
+        `production-semantic-definition-${control}`, new AbortController().signal);
+      expect(definition.error, JSON.stringify(definition)).toBeNull();
+      const answer = await dispatchLspDaemonRequest(request, `production-semantic-${control}`, new AbortController().signal);
+      const diagnostic = JSON.stringify({ control, error: answer.error, health: answer.freshness.health,
+        wire: answer.daemonEvidence?.wire });
+      console.info('WI41095_PRODUCTION_SEMANTIC_DIAGNOSTIC', diagnostic);
+      expect(answer.daemonEvidence?.wire.some(wire => wire.method === 'workspace/executeCommand' &&
+        wire.command === SEMANTIC_COMPLETION_COMMAND &&
+        wire.outcome === (control === 'complete' ? 'response' : 'error')), diagnostic).toBe(true);
+      if (control === 'complete') {
+        expect(answer.error, diagnostic).toBeNull(); expect(answer.freshness.health, diagnostic).toBe('healthy');
+        expect(answer.sites.map(site => [site.path, site.line1]).sort()).toEqual([
+          ['consumer.ts', 1], ['consumer.ts', 2], ['target.ts', 1], ['target.ts', 2],
+        ]);
+        const abort = new AbortController(); abort.abort();
+        const cancelled = await dispatchLspDaemonRequest({ ...request, deadlineAtMs: Date.now() + 30_000 },
+          'production-semantic-cancelled', abort.signal);
+        expect(cancelled.error).toBeTruthy(); expect(cancelled.freshness.health).not.toBe('healthy');
+      } else {
+        expect(answer.error, diagnostic).toMatch(/project-or-file-population-mismatch/);
+        expect(answer.freshness.health).not.toBe('healthy'); expect(answer.sites).toEqual([]);
+      }
+      console.info('WI41095_PRODUCTION_SEMANTIC', JSON.stringify({ control, error: answer.error,
+        health: answer.freshness.health, sites: answer.sites, certification: 'authored-fixture-only' }));
+    } finally {
+      try {
+        await shutdownAllLspClients();
+        for (const taskId of storage.tasks.slice(taskStart)) await finishOwnedTask(taskId);
       } finally { rmSync(root, { recursive: true, force: true }); }
     }
   }, 60_000);

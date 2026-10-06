@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 import semanticCompletionPlugin, { registerNativeSemanticCompletion, requestSemanticCompletion,
+  semanticCompletionPlugins,
   SEMANTIC_COMPLETION_SCHEMA, SEMANTIC_COMPLETION_TYPESCRIPT_VERSION,
   type NativeSemanticSession, type SemanticCompletionRequest } from './lsp-semantic-completion';
 
@@ -45,6 +50,20 @@ describe('candidate semantic completion refusal boundary', () => {
     const f = fixture();
     expect(() => f.invoke({ ...request, population: [...request.population,
       { projectName: '/repo/missing.json', anchorFile: '/repo/missing.ts', files: ['/repo/missing.ts'] }] })).toThrow(/population-mismatch/);
+  });
+  it.each(['omit', 'addFile'] as const)('preserves independently declared versus native %s diagnostics', control => {
+    const f = fixture(); f[control]();
+    const expected = control === 'omit' ? { missingCount: 1, extraCount: 0,
+      missingFiles: ['/repo/consumer.ts'], extraFiles: [] } : { missingCount: 0, extraCount: 1,
+      missingFiles: [], extraFiles: ['/repo/unexpected.ts'] };
+    let diagnostic: unknown;
+    try { f.invoke(); } catch (error) {
+      diagnostic = JSON.parse((error as Error).message.split('project-or-file-population-mismatch:')[1]);
+    }
+    expect(diagnostic).toEqual({ projectCount: 1, projects: [{ projectName: '/repo/tsconfig.json',
+      missingProject: false, ...expected }] });
+    expect(f.session.getReferences).not.toHaveBeenCalled();
+    expect(request.population[0].files).toHaveLength(3);
   });
   it('refuses cancellation before traversal', () => {
     const f = fixture(); f.cancel();
@@ -119,5 +138,33 @@ describe('candidate semantic completion refusal boundary', () => {
       ({ type: 'response', success: true, body }))).resolves.toEqual(body);
     await expect(requestSemanticCompletion(request, { isCancellationRequested: false }, async () =>
       ({ type: 'response', success: true, body: { ...body, population: [{ ...request.population[0], files: ['/repo/target.ts'] }] } }))).rejects.toThrow(/response-population-mismatch/);
+  });
+  it('captures caller population before an asynchronous RPC can mutate it', async () => {
+    const input = structuredClone(request);
+    const result = await requestSemanticCompletion(input, { isCancellationRequested: false }, async (_command, frozen) => {
+      input.population[0].files.pop();
+      expect(frozen.population[0].files).toHaveLength(3);
+      return { type: 'response', success: true, body: { schemaVersion: SEMANTIC_COMPLETION_SCHEMA,
+        typescriptVersion: SEMANTIC_COMPLETION_TYPESCRIPT_VERSION, refs: [], population: frozen.population } };
+    });
+    expect(result.population[0].files).toHaveLength(3);
+  });
+  it.each(['manifest', 'entry'] as const)('requires independently declared matching plugin %s bytes', file => {
+    const location = mkdtempSync(join(tmpdir(), 'lsp-plugin-declaration-'));
+    try {
+      const root = join(location, 'node_modules', 'fixture-plugin'); mkdirSync(root, { recursive: true });
+      const manifest = join(root, 'package.json'); const entry = join(root, 'index.cjs');
+      writeFileSync(manifest, JSON.stringify({ name: 'fixture-plugin', main: 'index.cjs' }));
+      writeFileSync(entry, 'module.exports = function() {};');
+      const files = Object.fromEntries([manifest, entry].map(path => [path,
+        createHash('sha256').update(readFileSync(path)).digest('hex')]));
+      const plugin = { name: 'fixture-plugin', location, files };
+      expect(semanticCompletionPlugins(plugin)).toEqual([{ name: plugin.name, location }]);
+      const changed = file === 'manifest' ? manifest : entry;
+      const missing = { ...files }; delete missing[changed];
+      expect(() => semanticCompletionPlugins({ ...plugin, files: missing })).toThrow('plugin-byte-mismatch');
+      writeFileSync(changed, readFileSync(changed, 'utf8') + '\n');
+      expect(() => semanticCompletionPlugins(plugin)).toThrow('plugin-byte-mismatch');
+    } finally { rmSync(location, { recursive: true, force: true }); }
   });
 });

@@ -28,6 +28,25 @@ import { harnessArg, harnessRequiredResult, resolveConcreteHarnessSlug } from '.
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 export const MAX_OPERATIONAL_EVIDENCE_BYTES = 256 * 1024;
 
+const mutationProbeReplaySchema = z.object({
+  schemaVersion: z.literal(1),
+  runnerPath: z.literal('scripts/mutation-probe.sh'),
+  runnerSha256: sha256Schema,
+  runnerCommit: z.string().regex(/^[a-f0-9]{40}$/),
+  cwd: z.string().trim().min(1).max(400),
+  argv: z.array(z.string().min(1).max(10_000)).min(2).max(50),
+  result: z.object({
+    verdict: z.enum(['caught', 'survived', 'harness-error', 'inconclusive']),
+    expected: z.enum(['caught', 'survived']),
+    target: z.string().trim().min(1).max(100),
+    baselineExit: z.number().int(),
+    guardExit: z.number().int(),
+    mutantParse: z.string().trim().min(1).max(100),
+    assertionEvidence: z.string().trim().min(1).max(300),
+    relocation: z.string().trim().min(1).max(100),
+  }),
+});
+
 const operationalEvidenceArtifactSchema = z
   .object({
     schemaVersion: z.literal(1),
@@ -49,6 +68,7 @@ const operationalEvidenceArtifactSchema = z
       )
       .min(1)
       .max(100),
+    mutationProbes: z.array(mutationProbeReplaySchema).min(1).max(100).optional(),
   })
   .passthrough();
 
@@ -116,10 +136,51 @@ export function parseOperationalEvidenceArtifact(bytes: Buffer): OperationalEvid
     const more = result.error.issues.length > 5 ? ` (+${result.error.issues.length - 5} more)` : '';
     throw new Error(`evidence_schema_invalid: ${issues.join('; ') || 'invalid'}${more}`);
   }
+  const artifact = result.data;
+  const mutationProbeEvidence =
+    artifact.mutationProbes !== undefined ||
+    artifact.command.some((part) => /mutation[-_ ]probe/i.test(part)) ||
+    /mutation[-_ ]probe/i.test(
+      `${artifact.summary}\n${artifact.assertions.map((assertion) => assertion.evidence).join('\n')}`,
+    );
+  if (mutationProbeEvidence) {
+    const referencesSharedScratch = (value: string) =>
+      value.replace(/\\/g, '/').toLowerCase().includes('.papercusp/scratch');
+    if (artifact.command.some(referencesSharedScratch)) {
+      throw new Error('evidence_mutation_probe_scratch_command_invalid');
+    }
+    if (!artifact.mutationProbes?.length) {
+      throw new Error('evidence_mutation_probe_replay_required');
+    }
+    for (const [index, probe] of artifact.mutationProbes.entries()) {
+      if (
+        probe.runnerPath.startsWith('/') ||
+        probe.runnerPath.split('/').includes('..') ||
+        probe.cwd.startsWith('/') ||
+        probe.cwd.split('/').includes('..') ||
+        probe.runnerPath.replace(/\\/g, '/').toLowerCase().includes('.papercusp/scratch') ||
+        probe.argv.some(referencesSharedScratch)
+      ) {
+        throw new Error(`evidence_mutation_probe_replay_not_immutable: mutationProbes.${index}`);
+      }
+      const file = probe.argv.indexOf('--file');
+      const test = probe.argv.indexOf('--test');
+      const hasHistoricalSelector =
+        probe.argv.includes('--against-commit') || probe.argv.includes('--against-last-without');
+      const mutation = probe.argv.indexOf('--mutate');
+      if (
+        file < 0 || !probe.argv[file + 1] ||
+        test < 0 || !probe.argv[test + 1] ||
+        (!hasHistoricalSelector && (mutation < 0 || !probe.argv[mutation + 1]))
+      ) {
+        throw new Error(`evidence_mutation_probe_replay_incomplete: mutationProbes.${index}.argv`);
+      }
+    }
+  }
   const startedAt = Date.parse(result.data.startedAt);
   const finishedAt = Date.parse(result.data.finishedAt);
   if (finishedAt < startedAt) throw new Error('evidence_time_order_invalid');
-  return result.data;
+  return artifact;
 }
 
 /** Validate that the artifact bytes are exactly those stored at the caller tree's HEAD. */
@@ -150,8 +211,34 @@ export async function inspectCommittedOperationalEvidence(
   const commit = (await gitOutput(realRoot, ['rev-parse', 'HEAD'])).toString('utf8').trim();
   if (!/^[a-f0-9]{40}$/i.test(commit)) throw new Error('evidence_commit_unreadable');
 
+  const artifact = parseOperationalEvidenceArtifact(bytes);
+  for (const [index, probe] of (artifact.mutationProbes ?? []).entries()) {
+    let runnerSourceAvailable = false;
+    let runnerSourceFound = false;
+    for (const sourceCommit of [probe.runnerCommit, commit]) {
+      try {
+        const runnerBytes = await gitOutput(realRoot, ['show', `${sourceCommit}:${probe.runnerPath}`]);
+        runnerSourceAvailable = true;
+        if (createHash('sha256').update(runnerBytes).digest('hex') === probe.runnerSha256) {
+          runnerSourceFound = true;
+          break;
+        }
+      } catch {
+        // The runner may have been dirty when it ran and committed with the
+        // evidence artifact; in that case the artifact commit is its first
+        // immutable source.
+      }
+    }
+    if (!runnerSourceAvailable) {
+      throw new Error(`evidence_mutation_probe_runner_unavailable: mutationProbes.${index}`);
+    }
+    if (!runnerSourceFound) {
+      throw new Error(`evidence_mutation_probe_runner_sha256_mismatch: mutationProbes.${index}`);
+    }
+  }
+
   return {
-    artifact: parseOperationalEvidenceArtifact(bytes),
+    artifact,
     filePath: normalized,
     sha256,
     commit,
@@ -245,7 +332,7 @@ export async function recordOperationalRun(
 export default defineTool({
   name: 'testing:record-run',
   description:
-    `Record an already-executed non-Vitest operational check in harness_shared.test_runs and return its numeric testRunIds for plans:bind-spec-evidence. The evidence must be a committed docs/evidence/*.json artifact with schemaVersion:1, kind:"operational-test-evidence", command, timestamps, exitCode, summary, and explicit assertions; expectedSha256 pins the exact bytes. Evidence JSON is capped at ${MAX_OPERATIONAL_EVIDENCE_BYTES} bytes; keep it compact and store bulky payloads as raw artifacts pinned by SHA-256. The verdict is derived from exitCode + assertions, never accepted as a caller boolean. Idempotent by artifact hash.`,
+    `Record an already-executed non-Vitest operational check in harness_shared.test_runs and return its numeric testRunIds for plans:bind-spec-evidence. The evidence must be a committed docs/evidence/*.json artifact with schemaVersion:1, kind:"operational-test-evidence", command, timestamps, exitCode, summary, and explicit assertions; expectedSha256 pins the exact bytes. Mutation-probe evidence must include exact per-probe records copied from MUTATION_PROBE_EVIDENCE_JSON and cannot cite shared .papercusp/scratch commands. Evidence JSON is capped at ${MAX_OPERATIONAL_EVIDENCE_BYTES} bytes; keep it compact and store bulky payloads as raw artifacts pinned by SHA-256. The verdict is derived from exitCode + assertions, never accepted as a caller boolean. Idempotent by artifact hash.`,
   guidance: {
     when: 'A real Playwright, Cargo, node, shell, desktop, or other operational acceptance run already completed and needs an honest numeric execution-ledger anchor.',
     notWhen:
