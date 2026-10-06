@@ -8,6 +8,9 @@
  * a fork (P-015).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const store = vi.hoisted(() => ({
   getHiveSetting: vi.fn(),
@@ -31,6 +34,7 @@ import {
   setPotIntegrationMode,
   choosePotIntegrationMode,
   integrationModeGovernsHarness,
+  repoHasSubmodules,
   type ApplyIntegrationPushDeps,
   type ChoosePotIntegrationModeInput,
   type IntegrationPushConfig,
@@ -452,6 +456,16 @@ describe('setPotIntegrationMode (P-015 guard)', () => {
     });
     expect(store.deleteHiveSetting).toHaveBeenCalledWith('ws', 'pot', 'hiveGit.integration', undefined);
   });
+  it('WI-10006107: refuses working-copy mode for a repo with submodules, even with a suite and a fork', async () => {
+    const r = await setPotIntegrationMode({ ...base, mode: 'review', greenCmd: 'npm test', forkRemote: FORK, hasSubmodules: true });
+    expect(r).toMatchObject({ ok: false, error: 'submodules_unsupported' });
+    expect(store.setHiveSetting).not.toHaveBeenCalled();
+    // Straight in stays available for that repo, and an unknown answer does not block.
+    expect(await setPotIntegrationMode({ ...base, mode: 'direct', greenCmd: null, forkRemote: null, hasSubmodules: true }))
+      .toEqual({ ok: true, mode: 'direct' });
+    expect(await setPotIntegrationMode({ ...base, mode: 'review', greenCmd: 'npm test', forkRemote: FORK, hasSubmodules: false }))
+      .toEqual({ ok: true, mode: 'review' });
+  });
   it('throws on an unknown mode instead of coercing', async () => {
     await expect(
       setPotIntegrationMode({ ...base, mode: 'pr' as never, greenCmd: 'npm test', forkRemote: FORK }),
@@ -489,6 +503,15 @@ describe('choosePotIntegrationMode (P-014: choosing working-copy mode creates th
     expect(d.ensureFork).toHaveBeenCalledWith({ upstreamOwner: 'acme', upstreamRepo: 'widget' });
     expect(d.setForkRemote).toHaveBeenCalledWith('widget', FORK, 'ws');
     expect(d.setMode).toHaveBeenCalledWith(expect.objectContaining({ mode: 'review', forkRemote: FORK }));
+  });
+
+  it('WI-10006107: a repo with submodules is refused BEFORE any fork is created', async () => {
+    const d = deps();
+    const r = await choosePotIntegrationMode(input({ hasSubmodules: true }), d);
+    expect(r).toMatchObject({ ok: false, error: 'submodules_unsupported' });
+    expect(d.ensureFork).not.toHaveBeenCalled();
+    expect(d.setForkRemote).not.toHaveBeenCalled();
+    expect(d.setMode).not.toHaveBeenCalled();
   });
 
   it('a fork already recorded is reused: no fork is created', async () => {
@@ -669,5 +692,20 @@ describe('integrationModeGovernsHarness (WI-10006333)', () => {
 
   it('governs a home that carries its own fork', () => {
     expect(integrationModeGovernsHarness({ ...home, fork_remote: fork }, [home, member])).toBe(true);
+  });
+});
+
+describe('repoHasSubmodules (WI-10006107)', () => {
+  it('reads .gitmodules in the checkout; an unknown path is undefined, not false', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pot-submodules-'));
+    try {
+      expect(repoHasSubmodules(dir)).toBe(false);
+      writeFileSync(join(dir, '.gitmodules'), '[submodule "lib"]\n\tpath = lib\n\turl = https://github.com/acme/lib.git\n');
+      expect(repoHasSubmodules(dir)).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+    expect(repoHasSubmodules(null)).toBeUndefined();
+    expect(repoHasSubmodules(undefined)).toBeUndefined();
   });
 });

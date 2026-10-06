@@ -120,6 +120,7 @@ import {
   formatReleaseConsistencyVerdict,
   judgeConvergence,
   judgeReleaseConsistency,
+  selectConvergenceCandidates,
   type AnnouncedSnapshot,
   type ConvergenceState,
   type ConvergenceVerdict,
@@ -206,7 +207,8 @@ import { Duplex } from 'node:stream';
 // OWNER-authored scope the pot_members projection writes under — reading it directly
 // returns an EMPTY roster. The *ForLocalPot wrapper resolves the federated scope first
 // (a no-op on an owner).
-import { listHiveMembersForLocalPot } from '../../federated-pot-scope';
+import { listHiveMembersForLocalPot, loadRevokedHivePubkeysForLocalPotCached } from '../../federated-pot-scope';
+import { loadRevokedPubkeysCached } from '../../sync/hyperbee/load-revoked-pubkeys';
 import { pickHiveGitActor, type HiveGitActor } from './hive-git-actor';
 import { loadCachedLocalAnnounceIdentity } from '../../sync/hyperbee/local-announce-identity';
 import { signWithDeviceKey } from '../../identity/sign-with-device-key';
@@ -5213,6 +5215,32 @@ type ConvergenceProbeVerdict = ConvergenceVerdict & {
   releaseConsistency: ReleaseConsistencyVerdict;
 };
 
+/**
+ * The revoked device set git-sync's peer candidates are filtered by (WI-10006394): the
+ * same harness-scope ∪ Hive-scope UNION that admission seeds from (boot.ts
+ * `loadRevoked`), read through the same NOTIFY-invalidated caches. Each half fails
+ * toward JUDGING: a revocation read that fails leaves the pre-fix candidate set, so an
+ * outage can never silence a real NOT CONVERGED alarm.
+ */
+async function loadConvergenceRevokedSet(
+  workspaceId: string,
+  harnessSlug: string,
+  potHomeSlug: string,
+): Promise<Set<string>> {
+  const revoked = new Set<string>();
+  try {
+    for (const pk of await loadRevokedPubkeysCached({ workspaceId, harnessSlug })) revoked.add(pk);
+  } catch {
+    // harness-scope read failed: judge as before
+  }
+  try {
+    for (const pk of await loadRevokedHivePubkeysForLocalPotCached(workspaceId, potHomeSlug)) revoked.add(pk);
+  } catch {
+    // Hive-scope read failed: judge as before
+  }
+  return revoked;
+}
+
 async function runConvergenceProbe(input: {
   slug: string;
   workspaceId: string;
@@ -5396,6 +5424,9 @@ async function runConvergenceProbe(input: {
           `A completed fetch is NOT convergence: our mirror has not advanced while the pot announced newer ` +
           `snapshots on the (repoKey-independent) ref-announce plane. Treat any 'COLD JOIN COMPLETE' / ` +
           `bootstrap ok:true for this pot as UNSOUND until this clears. ` +
+          `If a device named here is gone for good (a deleted VM, a wiped machine), revoke it ` +
+          `(substrate:revoke_self_device for your own device, substrate:revoke_contributor for another ` +
+          `member's) and it stops being judged. ` +
           (await describeRefAnnounceReceiveFreshness(slug, workspaceId)),
       );
     }
@@ -5487,8 +5518,18 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
     // wedged G-8 permanently when its one candidate was offline/stale (any
     // dead first candidate starved every later tick; live-caught on the P-303
     // reverse-leg drill 2026-07-17 with a live registered peer sitting unused).
-    const candidateDevicePubkeys = memberDevicePubkeysBase64.filter((d) => d !== selfDevicePubkey);
-    if (candidateDevicePubkeys.length === 0) return; // no member peer other than self yet — nothing to seed from
+    // ...except REVOKED ones (WI-10006394): a revoked device is never judged for
+    // convergence and never dialed as a seed. Read only when there is a non-self
+    // member to filter, so the common single-device case pays nothing.
+    const revokedDevicePubkeys = memberDevicePubkeysBase64.some((d) => d !== selfDevicePubkey)
+      ? await loadConvergenceRevokedSet(workspaceId, slug, potHomeSlug)
+      : new Set<string>();
+    const candidateDevicePubkeys = selectConvergenceCandidates({
+      memberDevicePubkeys: memberDevicePubkeysBase64,
+      selfDevicePubkey,
+      revokedDevicePubkeys,
+    });
+    if (candidateDevicePubkeys.length === 0) return; // no unrevoked member peer other than self yet — nothing to seed from
 
     // WI-6372 (fix D) — CRITICAL PLACEMENT: the convergence probe runs HERE,
     // ABOVE the warm gate, and its position is the whole point of the fix.

@@ -27,6 +27,8 @@
  * to the main repository.
  */
 import { execFile } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { promisify } from 'node:util';
 import type { Sql } from 'postgres';
 import { getHiveSetting, setHiveSetting, deleteHiveSetting } from '../../hive-settings-store';
@@ -473,7 +475,24 @@ export async function applyIntegrationPushTarget(
 
 export type SetPotIntegrationModeResult =
   | { ok: true; mode: PotIntegrationMode | null }
-  | { ok: false; error: 'green_cmd_required' | 'fork_required'; message: string };
+  | { ok: false; error: 'green_cmd_required' | 'fork_required' | 'submodules_unsupported'; message: string };
+
+/**
+ * WI-10006107: does the pot's checkout use git submodules? Working-copy mode cannot
+ * carry them yet: submodule commits are deliberately never pushed to the main
+ * repository's submodules (that would leak unreviewed work), and no per-submodule
+ * fork exists, so the copy's gitlinks would point at commits that exist nowhere
+ * remote. `undefined` when the checkout path is unknown.
+ */
+export function repoHasSubmodules(checkoutPath: string | null | undefined): boolean | undefined {
+  if (!checkoutPath) return undefined;
+  return existsSync(join(checkoutPath, '.gitmodules'));
+}
+
+/** The plain refusal shown when a repo with submodules asks for a working copy (WI-10006107). */
+export const SUBMODULES_UNSUPPORTED_MESSAGE =
+  'working-copy mode does not support repositories with submodules yet: their submodule commits would have ' +
+  'nowhere reviewable to go, so the working copy and its PR could not be checked out. Keep this pot straight in.';
 
 export interface SetPotIntegrationModeInput {
   workspaceId: string;
@@ -484,6 +503,8 @@ export interface SetPotIntegrationModeInput {
   greenCmd: string | null | undefined;
   /** The pot's fork remote URL, if one is configured. */
   forkRemote: string | null | undefined;
+  /** WI-10006107: the pot's checkout has git submodules ({@link repoHasSubmodules}). */
+  hasSubmodules?: boolean;
   sql?: Sql;
 }
 
@@ -505,6 +526,9 @@ export async function setPotIntegrationMode(input: SetPotIntegrationModeInput): 
     );
   }
   if (mode === 'review') {
+    if (input.hasSubmodules === true) {
+      return { ok: false, error: 'submodules_unsupported', message: SUBMODULES_UNSUPPORTED_MESSAGE };
+    }
     if (!input.greenCmd || !input.greenCmd.trim()) {
       return {
         ok: false,
@@ -538,7 +562,8 @@ export type ChoosePotIntegrationModeResult =
         | 'fork_create_failed'
         | 'fork_record_failed'
         | 'standing_pr_open'
-        | 'standing_pr_unknown';
+        | 'standing_pr_unknown'
+        | 'submodules_unsupported';
       message: string;
     };
 
@@ -641,6 +666,10 @@ export async function choosePotIntegrationMode(
   if (input.mode !== 'review' || input.forkRemote) {
     const r = await setMode(input);
     return r.ok ? { ok: true, mode: r.mode, fork: null } : r;
+  }
+  if (input.hasSubmodules === true) {
+    // Refuse before ensureFork, so a refused switch never creates a fork (WI-10006107).
+    return { ok: false, error: 'submodules_unsupported', message: SUBMODULES_UNSUPPORTED_MESSAGE };
   }
   if (!input.greenCmd || !input.greenCmd.trim()) {
     return setMode(input) as Promise<ChoosePotIntegrationModeResult>;
