@@ -1494,9 +1494,34 @@ export interface SupersedeSpecEvidenceOptions {
 }
 
 /**
- * P-019 (review-system-rework-reduction-2026-09-23): withdraw, in ONE statement, every other
- * live row of the same evidence kind at one clause revision, stamped as superseded by the
- * named binding (D-011: stamped, never deleted, still returned by includeRetracted reads).
+ * Why a same-kind live sibling survived a supersession. Each names a claim the sibling makes
+ * that the superseding row does not, so withdrawing it would have destroyed proof nothing
+ * replaced (EI-25220306060165214, EI-24400631485940769).
+ */
+export type SupersessionKeepReason =
+  | 'different-subject'
+  | 'different-target'
+  | 'different-causal-pairs'
+  | 'superseding-binding-not-live';
+
+export interface SupersessionKeptRow {
+  id: number;
+  work_item_id: string;
+  evidence_ref: string;
+  subject: string;
+  keep_reason: SupersessionKeepReason;
+}
+
+export interface SupersessionResult {
+  retracted: RetractedBindingRow[];
+  /** Same-kind live siblings left standing, each with the claim that protected it. */
+  kept: SupersessionKeptRow[];
+}
+
+/**
+ * P-019 (review-system-rework-reduction-2026-09-23): withdraw the live rows at one clause
+ * revision that the named binding REPLACES, stamped as superseded by it (D-011: stamped, never
+ * deleted, still returned by includeRetracted reads).
  *
  * The adequacy evaluator grades every live row at a revision, so one old weak, stale or
  * failing row fails a criterion beside newer sufficient proof — measured on R-11, where a
@@ -1504,27 +1529,74 @@ export interface SupersedeSpecEvidenceOptions {
  * hand. Scoped to the same evidence KIND on purpose: a fresh test row must never withdraw the
  * clause's mutation proof, which is a different obligation. Runs AFTER the superseding bind
  * commits, so a failure here leaves the old rows live and never loses proof.
+ *
+ * Scoped to the same proof SUBJECT as well. A clause's proof often spans several test files
+ * (a unit and an integration layer) or several causal pairs (one per seam). Keyed only on
+ * kind, one fresh run retracted every sibling file's current proof: EI-24400631485940769 wiped
+ * ~15 current rows from five unrelated seams, EI-25220306060165214 a different layer's still-
+ * current unit proof. A sibling is withdrawn only when it proves the same subject — the test
+ * run's file (the same `test_runs.file_path` the evaluator reads as testRunProvenance), else
+ * `details.testRun.filePath`, else the evidence ref — AND claims nothing the superseding row
+ * does not: an `adequacy.targeted` that differs, or `adequacy.causalPairIds` outside the
+ * superseding row's set, is a different proof. Survivors are returned in `kept` with that
+ * reason, so a caller who meant to clear them retracts those ids explicitly.
  */
-export async function supersedeSpecEvidenceAtRevision(options: SupersedeSpecEvidenceOptions) {
+export async function supersedeSpecEvidenceAtRevision(
+  options: SupersedeSpecEvidenceOptions,
+): Promise<SupersessionResult> {
   const scope = await resolvePlanScope({ harnessSlug: options.harnessSlug });
   const actorId = options.actorId.trim();
   const reason = `superseded by binding ${options.supersedingBindingId} (plans:bind-spec-evidence supersedeAtRevision)`;
   const keep = [...new Set([options.supersedingBindingId, ...options.keepBindingIds])];
-  return withWorkspace(scope.workspaceId, async (tx) =>
-    tx<RetractedBindingRow[]>`
+  return withWorkspace(scope.workspaceId, async (tx) => {
+    const siblings = await tx<
+      Array<Omit<SupersessionKeptRow, 'keep_reason'> & { keep_reason: SupersessionKeepReason | null }>
+    >`
+      WITH clause_rows AS (
+        SELECT b.id, b.work_item_id, b.evidence_ref,
+               COALESCE(NULLIF(tr.file_path, ''), NULLIF(b.details->'testRun'->>'filePath', ''), b.evidence_ref)
+                 AS subject,
+               CASE WHEN jsonb_typeof(b.details->'adequacy'->'targeted') = 'string'
+                    THEN b.details->'adequacy'->>'targeted' END AS targeted,
+               CASE WHEN jsonb_typeof(b.details->'adequacy'->'causalPairIds') = 'array'
+                    THEN b.details->'adequacy'->'causalPairIds' ELSE '[]'::jsonb END AS causal_pair_ids
+          FROM harness_shared.spec_evidence_bindings b
+          LEFT JOIN harness_shared.test_runs tr ON tr.id = b.test_run_id
+         WHERE b.workspace_id = ${scope.workspaceId}
+           AND b.harness_slug = ${scope.harnessSlug}
+           AND b.plan_slug = ${options.planSlug}
+           AND b.spec_id = ${options.specId}
+           AND b.spec_revision = ${options.specRevision}
+           AND b.evidence_kind = ${options.evidenceKind}
+           AND b.retracted_at IS NULL
+      ),
+      superseding AS (SELECT * FROM clause_rows WHERE id = ${options.supersedingBindingId})
+      SELECT c.id, c.work_item_id, c.evidence_ref, c.subject,
+             CASE WHEN s.id IS NULL THEN 'superseding-binding-not-live'
+                  WHEN c.subject IS DISTINCT FROM s.subject THEN 'different-subject'
+                  WHEN c.targeted IS NOT NULL AND c.targeted IS DISTINCT FROM s.targeted THEN 'different-target'
+                  WHEN NOT (c.causal_pair_ids <@ s.causal_pair_ids) THEN 'different-causal-pairs'
+             END AS keep_reason
+        FROM clause_rows c
+        LEFT JOIN superseding s ON true
+       WHERE NOT (c.id = ANY(${keep}::bigint[]))
+       ORDER BY c.id`;
+    const retractIds = siblings.filter((row) => row.keep_reason === null).map((row) => Number(row.id));
+    const kept = siblings
+      .filter((row): row is SupersessionKeptRow => row.keep_reason !== null)
+      .map((row) => ({ ...row, id: Number(row.id) }));
+    if (retractIds.length === 0) return { retracted: [], kept };
+    const retracted = await tx<RetractedBindingRow[]>`
       UPDATE harness_shared.spec_evidence_bindings
          SET retracted_at = now(), retracted_by = ${actorId}, retraction_reason = ${reason}
        WHERE workspace_id = ${scope.workspaceId}
          AND harness_slug = ${scope.harnessSlug}
-         AND plan_slug = ${options.planSlug}
-         AND spec_id = ${options.specId}
-         AND spec_revision = ${options.specRevision}
-         AND evidence_kind = ${options.evidenceKind}
+         AND id = ANY(${retractIds}::bigint[])
          AND retracted_at IS NULL
-         AND NOT (id = ANY(${keep}::bigint[]))
       RETURNING id, work_item_id, plan_slug, spec_id, spec_revision,
-                evidence_kind, evidence_ref, retracted_at, retracted_by, retraction_reason`,
-  );
+                evidence_kind, evidence_ref, retracted_at, retracted_by, retraction_reason`;
+    return { retracted, kept };
+  });
 }
 
 export async function listSpecEvidence(options: ListSpecEvidenceOptions) {

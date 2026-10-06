@@ -105,7 +105,7 @@ function clause(over: Partial<SpecClauseWrite> = {}): SpecClauseWrite {
   };
 }
 
-async function seedExternalEvidence() {
+async function seedExternalEvidence(runFilePath: string | null = null) {
   const [surface] = await db.sql<{ id: number }[]>`
     INSERT INTO harness_shared.testing_surfaces (workspace_id, harness_slug)
     VALUES (${WORKSPACE}, ${HARNESS}) RETURNING id`;
@@ -113,8 +113,8 @@ async function seedExternalEvidence() {
     INSERT INTO harness_shared.coverage_evidence (surface_ref)
     VALUES (${surface.id}) RETURNING id`;
   const [run] = await db.sql<{ id: number }[]>`
-    INSERT INTO harness_shared.test_runs (workspace_id, harness_slug)
-    VALUES (${WORKSPACE}, ${HARNESS}) RETURNING id`;
+    INSERT INTO harness_shared.test_runs (workspace_id, harness_slug, file_path)
+    VALUES (${WORKSPACE}, ${HARNESS}, ${runFilePath}) RETURNING id`;
   return { surfaceId: Number(surface.id), coverageEvidenceRef: Number(coverage.id), testRunId: Number(run.id) };
 }
 
@@ -1816,12 +1816,16 @@ describe('supersedeAtRevision withdraws same-kind siblings at the clause revisio
     ).map((row) => Number((row as { id: number }).id));
   }
 
+  const REPLAY_TEST = 'test/reconnect.integration.test.ts';
+  const REPLAY_UNIT_TEST = 'test/reconnect.test.ts';
+
   it('retracts the older same-kind row, keeps the mutation proof, and names the superseding binding', async () => {
     await specs.setSpecClause(clause());
+    // Two attempts of ONE test file: the fresh run replaces the failed one.
     const [oldRun, mutationRun, freshRun] = [
-      await seedExternalEvidence(),
-      await seedExternalEvidence(),
-      await seedExternalEvidence(),
+      await seedExternalEvidence(REPLAY_TEST),
+      await seedExternalEvidence(REPLAY_TEST),
+      await seedExternalEvidence(REPLAY_TEST),
     ];
     const old = await bindViaTool({
       evidenceKind: 'test',
@@ -1858,6 +1862,7 @@ describe('supersedeAtRevision withdraws same-kind siblings at the clause revisio
         clause: 'SPEC-003-01@1',
         evidenceKind: 'test',
         retracted: [{ bindingId: old.id, workItemId: 'WI-101', evidenceRef: 'test-run:old-attempt' }],
+        kept: [],
       },
     ]);
     const live = await liveIds();
@@ -1897,6 +1902,87 @@ describe('supersedeAtRevision withdraws same-kind siblings at the clause revisio
       }),
     ]);
     expect(await liveIds()).toEqual(expect.arrayContaining([old.id, weak.id]));
+  });
+
+  // EI-25220306060165214: a clause proven by a unit AND an integration file lost its current
+  // unit proof when a fresh integration run superseded the stale integration row.
+  it("keeps a different test file's current proof and reports it in kept", async () => {
+    await specs.setSpecClause(clause());
+    const [unitRun, staleRun, freshRun] = [
+      await seedExternalEvidence(REPLAY_UNIT_TEST),
+      await seedExternalEvidence(REPLAY_TEST),
+      await seedExternalEvidence(REPLAY_TEST),
+    ];
+    const unit = await bindViaTool({
+      evidenceKind: 'test',
+      evidenceRef: REPLAY_UNIT_TEST,
+      testRunId: unitRun.testRunId,
+      details: { adequacy: { ...PASSED, testLayer: 'unit' } },
+    });
+    const stale = await bindViaTool({
+      evidenceKind: 'test',
+      evidenceRef: REPLAY_TEST,
+      testRunId: staleRun.testRunId,
+      details: { adequacy: { ...PASSED, outcome: 'failed' } },
+    });
+
+    const fresh = await bindViaTool(
+      { evidenceKind: 'test', evidenceRef: REPLAY_TEST, testRunId: freshRun.testRunId, details: { adequacy: PASSED } },
+      true,
+    );
+
+    expect(fresh.supersession).toEqual([
+      expect.objectContaining({
+        status: 'superseded',
+        retracted: [{ bindingId: stale.id, workItemId: 'WI-101', evidenceRef: REPLAY_TEST }],
+        kept: [{ bindingId: unit.id, workItemId: 'WI-101', evidenceRef: REPLAY_UNIT_TEST, reason: 'different-subject' }],
+      }),
+    ]);
+    const live = await liveIds();
+    expect(live).toEqual(expect.arrayContaining([unit.id, fresh.id]));
+    expect(live).not.toContain(stale.id);
+  });
+
+  // EI-24400631485940769: one fresh run of a multi-seam clause wiped every other seam's
+  // current proof. A row is replaced only when the fresh row claims everything it claimed.
+  it('keeps rows claiming another causal pair or target, and retracts only what the fresh row covers', async () => {
+    await specs.setSpecClause(clause());
+    const runs = await Promise.all([1, 2, 3, 4, 5].map(() => seedExternalEvidence(REPLAY_TEST)));
+    const bindTest = (index: number, adequacy: Record<string, unknown>) =>
+      bindViaTool({
+        evidenceKind: 'test',
+        evidenceRef: `test-run:${index}`,
+        testRunId: runs[index]!.testRunId,
+        details: { adequacy: { ...PASSED, ...adequacy } },
+      });
+    const sameSeamOld = await bindTest(0, { causalPairIds: ['pair-a'], targeted: 'scenario-a' });
+    const untaggedOld = await bindTest(1, {});
+    const otherSeam = await bindTest(2, { causalPairIds: ['pair-b'], targeted: 'scenario-a' });
+    const otherTarget = await bindTest(3, { causalPairIds: ['pair-a'], targeted: 'scenario-b' });
+
+    const fresh = await bindViaTool(
+      {
+        evidenceKind: 'test',
+        evidenceRef: 'test-run:4',
+        testRunId: runs[4]!.testRunId,
+        details: { adequacy: { ...PASSED, causalPairIds: ['pair-a'], targeted: 'scenario-a' } },
+      },
+      true,
+    );
+
+    const [outcome] = fresh.supersession as Array<{
+      retracted: Array<{ bindingId: number }>;
+      kept: Array<{ bindingId: number; reason: string }>;
+    }>;
+    expect(outcome!.retracted.map((row) => row.bindingId).sort()).toEqual([sameSeamOld.id, untaggedOld.id].sort());
+    expect(outcome!.kept).toEqual([
+      expect.objectContaining({ bindingId: otherSeam.id, reason: 'different-causal-pairs' }),
+      expect.objectContaining({ bindingId: otherTarget.id, reason: 'different-target' }),
+    ]);
+    const live = await liveIds();
+    expect(live).toEqual(expect.arrayContaining([otherSeam.id, otherTarget.id, fresh.id]));
+    expect(live).not.toContain(sameSeamOld.id);
+    expect(live).not.toContain(untaggedOld.id);
   });
 });
 

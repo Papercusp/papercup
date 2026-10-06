@@ -16,6 +16,7 @@ import {
   retractSpecEvidence,
   SPEC_EVIDENCE_KINDS,
   supersedeSpecEvidenceAtRevision,
+  type SupersessionKeepReason,
 } from './spec-evidence-store';
 import { isAcceptedMutationTarget, mutationTargetRequirement, supersedeEligibilityGaps } from './spec-test-adequacy';
 import { listSpecClauses, SPEC_PROOF_OBLIGATION_ID_RE } from './spec-clauses-store';
@@ -251,7 +252,7 @@ const argsSchema = refineEvenWithShapeIssues(
       .boolean()
       .optional()
       .describe(
-        'After binding, retract every OTHER live row of the same evidenceKind at the same clause revision, stamped "superseded by binding N". Only a successful ledger-backed executable binding may supersede; a weaker one is bound but supersedes nothing (reported in supersession).',
+        'After binding, retract the OTHER live rows it replaces at the same clause revision: same evidenceKind AND same subject (test file, else evidenceRef), claiming no adequacy.targeted or causalPairIds the new row lacks. Stamped "superseded by binding N". Other-subject siblings stay live and are listed in supersession[].kept with a reason; retract those explicitly. Only a successful ledger-backed executable binding may supersede; a weaker one supersedes nothing (reported in supersession).',
       ),
   }),
   // RSR-P-008-A: both combination rules are reported alongside any shape defect.
@@ -272,6 +273,8 @@ type SupersessionOutcome =
       clause: string;
       evidenceKind: string;
       retracted: Array<{ bindingId: number; workItemId: string; evidenceRef: string }>;
+      /** Same-kind live siblings left standing: they prove a different subject/target/seam. */
+      kept: Array<{ bindingId: number; workItemId: string; evidenceRef: string; reason: SupersessionKeepReason }>;
     }
   | { bindingId: number; status: 'refused'; clause: string; reason: string };
 
@@ -320,7 +323,7 @@ async function supersedeSiblings(input: {
       });
       continue;
     }
-    const retracted = await supersedeSpecEvidenceAtRevision({
+    const { retracted, kept } = await supersedeSpecEvidenceAtRevision({
       harnessSlug: input.harnessSlug,
       planSlug: row.planSlug,
       specId: row.specId,
@@ -339,6 +342,12 @@ async function supersedeSiblings(input: {
         bindingId: Number(r.id),
         workItemId: r.work_item_id,
         evidenceRef: r.evidence_ref,
+      })),
+      kept: kept.map((r) => ({
+        bindingId: r.id,
+        workItemId: r.work_item_id,
+        evidenceRef: r.evidence_ref,
+        reason: r.keep_reason,
       })),
     });
   }

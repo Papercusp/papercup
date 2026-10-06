@@ -462,9 +462,27 @@ const EXECUTABLE_EVIDENCE_KINDS = new Set<SpecEvidenceKind>([
  * weak/stale/failing row keeps a criterion blocked beside newer proof until it is withdrawn.
  */
 export const SUPERSEDE_DRAGGING_SUGGESTION =
-  'The dragging binding ids are listed in draggingBindingIds. If newer bound proof already establishes this clause, ' +
-  're-bind that proof with plans:bind-spec-evidence { supersedeAtRevision:true } (retracts the other live rows of the ' +
-  'same kind at this revision) or retract the named ids with a reason; otherwise re-run the proof.';
+  "The dragging binding ids are listed in this row's draggingBindingIds (beside ratings, keyed by criterion). If newer bound proof already establishes this clause, " +
+  're-bind that proof with plans:bind-spec-evidence { supersedeAtRevision:true } (retracts only same-kind rows of the ' +
+  "same test file that claim no other target or causal pair; other files' and seams' rows stay live and are listed in " +
+  'supersession[].kept) or retract the named ids with a reason; otherwise re-run the proof.';
+// EI-25220306060165214 / review-system-rework-reduction-2026-09-23#D-046: supersession is scoped
+// to the superseding row's proof subject, so this advice can no longer cost a sibling file's proof.
+
+/**
+ * EI-25215634977268694: the freshness repair when current proof sits beside the stale rows but
+ * NONE of it may supersede them. `supersedeAtRevision` retracts only rows of the superseding
+ * binding's own evidenceKind, and only a successful ledger-backed executable binding may
+ * supersede (`supersedeEligibilityGaps`, D-011). Offering it for, e.g., live operational
+ * evidence with no testRunId sends the binder into a call whose `supersession[]` comes back
+ * `refused` while the clause stays blocked — measured on P-011's R-34..R-37, where every
+ * re-bind returned ok and freshness still failed until an explicit retract.
+ */
+export const RETRACT_DRAGGING_SUGGESTION =
+  "The dragging binding ids are listed in this row's draggingBindingIds.freshness (beside ratings). The current proof " +
+  "beside them cannot supersede them: supersedeAtRevision retracts only rows of the superseding binding's own evidenceKind, " +
+  'and only a successful ledger-backed executable binding (testRunId or coverageEvidenceRef) may supersede. Withdraw the ' +
+  'stale ids with plans:bind-spec-evidence { retract:[{ bindingId, reason }] }, or re-run the stale proof with a ledger reference.';
 
 /**
  * P-019: make the ledger requirement discoverable where the refusal lands. falsifiability,
@@ -556,6 +574,29 @@ function disclosedGapList(value: unknown): string[] {
     .filter((entry) => entry.length > 0);
 }
 
+const EXPLICIT_COVERAGE_LIMITATION_PATTERNS = [
+  /\b(?:leg|portion|part|subset|path|scenario)\b[^.;]{0,60}\b(?:only|just)\b/i,
+  /\b(?:only|just|partially)\b[^.;]{0,100}\b(?:cover(?:s|ed|age)?|test(?:s|ed|ing)?|exercise(?:s|d)?|verify|validate|address(?:es|ed)?|include(?:s|d)?|coverage)\b/i,
+  /\b(?:does not|doesn't|did not|didn't|has not|hasn't|is not|isn't|are not|aren't)\b[^.;]{0,60}\b(?:cover|test|exercise|verify|validate|address|include)\b/i,
+  /\b(?:outside|out of)\s+(?:the\s+)?(?:scope|coverage)\b|\bnot\s+(?:covered|tested|exercised|verified|validated|addressed)\b/i,
+  /\b(?:remaining|other|rest|cutover)\b[^.;]{0,100}\b(?:mapped|assigned|tracked|covered|handled|addressed)\b[^.;]{0,60}\b(?:P-\d{3,}|[A-Z][A-Z0-9-]*-\d+)\b/i,
+];
+
+/** Only observations with explicit coverage-boundary language count as disclosures. */
+function explicitCoverageLimitations(value: unknown): string[] {
+  const raw = typeof value === 'string' ? [value] : Array.isArray(value) ? value : [];
+  return [
+    ...new Set(
+      raw
+        .filter((entry): entry is string => typeof entry === 'string')
+        .map((entry) => entry.trim())
+        .filter(
+          (entry) => entry.length > 0 && EXPLICIT_COVERAGE_LIMITATION_PATTERNS.some((pattern) => pattern.test(entry)),
+        ),
+    ),
+  ];
+}
+
 function detailsOf(evidence: SpecEvidenceForAdequacy): AdequacyDetails {
   const nested = evidence.details.adequacy;
   // A disclosure is read from BOTH the nested adequacy block and the top level.
@@ -564,11 +605,13 @@ function detailsOf(evidence: SpecEvidenceForAdequacy): AdequacyDetails {
   // spelling would silently drop exactly the disclosure this criterion exists to
   // catch (EI-22953893504383574 is the same trap for the other adequacy keys).
   const topLevelGap = disclosedGapList((evidence.details as Record<string, unknown>).disclosedGap);
+  const observationGaps = explicitCoverageLimitations((evidence.details as Record<string, unknown>).observations);
   if (!nested || typeof nested !== 'object' || Array.isArray(nested)) {
-    return topLevelGap.length > 0 ? { disclosedGap: topLevelGap } : {};
+    const disclosedGap = [...new Set([...topLevelGap, ...observationGaps])];
+    return disclosedGap.length > 0 ? { disclosedGap } : {};
   }
   const raw = nested as Record<string, unknown>;
-  const disclosedGap = [...new Set([...topLevelGap, ...disclosedGapList(raw.disclosedGap)])];
+  const disclosedGap = [...new Set([...topLevelGap, ...disclosedGapList(raw.disclosedGap), ...observationGaps])];
   const bool = (key: string): boolean | undefined =>
     typeof raw[key] === 'boolean' ? (raw[key] as boolean) : undefined;
   const coverageRaw = raw.coverageRungs;
@@ -885,6 +928,28 @@ export function supersedeEligibilityGaps(binding: {
     ...(details.falsifiable === false ? ['falsifiable=false'] : []),
     ...(details.disclosedGap?.length ? ['an author-disclosed gap is recorded'] : []),
   ];
+}
+
+/**
+ * EI-25215634977268694: the repair to name when stale rows drag freshness. Supersession
+ * clears a stale row only when a CURRENT sibling of the SAME evidenceKind may itself
+ * supersede — the exact rule `plans:bind-spec-evidence` enforces via
+ * `supersedeEligibilityGaps`, reused here so the advice and the verb cannot drift. When any
+ * stale row lacks such a sibling, supersession would be refused for it, so the honest
+ * remedy is an explicit retract (which works for every row).
+ */
+function freshnessDragSuggestion(evidence: SpecEvidenceForAdequacy[]): string {
+  const current = evidence.filter((row) => row.currentness.overall === 'current');
+  if (current.length === 0) {
+    return 'Re-run the stale proof (testing:run with evidence) so the server re-measures it against current source.';
+  }
+  const supersedingKinds = new Set(
+    current.filter((row) => supersedeEligibilityGaps(row).length === 0).map((row) => row.evidenceKind),
+  );
+  const everyStaleRowSupersedable = evidence
+    .filter((row) => row.currentness.overall === 'stale')
+    .every((row) => supersedingKinds.has(row.evidenceKind));
+  return everyStaleRowSupersedable ? SUPERSEDE_DRAGGING_SUGGESTION : RETRACT_DRAGGING_SUGGESTION;
 }
 
 function isSuccessfulRepairedEvidence(row: SpecEvidenceForAdequacy): boolean {
@@ -1484,10 +1549,16 @@ export function evaluateSpecTestAdequacy(input: {
     (row) => row.evidenceKind === 'fixture' || row.fingerprints.fixtureFingerprint !== null,
   );
   const fixtureOutsideCurrent = fixtureBindings.filter((row) => !evidence.includes(row));
+  const probeDeclaresFixtureUse = /\bfixtures?\b/i.test(clause.falsifier?.probeMethod ?? '');
   const fixtureApplicable =
-    clause.requiredEvidence.some((entry) => /fixture/i.test(entry)) || fixtureBindings.length > 0;
+    clause.requiredEvidence.some((entry) => /fixture/i.test(entry)) ||
+    fixtureBindings.length > 0 ||
+    probeDeclaresFixtureUse;
+  const fixtureProofEvidence = evidence.filter(
+    (row) => row.evidenceKind === 'fixture' || row.fingerprints.fixtureFingerprint !== null,
+  );
   const fixtureRating: AdequacyRatingEntry = fixtureApplicable
-    ? booleanRating(evidence, (d) => d.fixtureCalibrated, {
+    ? booleanRating(fixtureProofEvidence, (d) => d.fixtureCalibrated, {
         pass: 'An applicable binding explicitly attests fixtureCalibrated=true.',
         fail: 'Applicable binding metadata explicitly attests fixtureCalibrated=false.',
         unknown: 'A fixture is required or used, but no binding attests fixtureCalibrated=true/false.',
@@ -1979,9 +2050,8 @@ export function evaluateSpecTestAdequacy(input: {
           evidence.filter((row) => row.currentness.overall === 'stale'),
         ),
         // P-019: a stale row drags this criterion even when a current sibling proves the clause.
-        suggestion: evidence.some((row) => row.currentness.overall === 'current')
-          ? SUPERSEDE_DRAGGING_SUGGESTION
-          : 'Re-run the stale proof (testing:run with evidence) so the server re-measures it against current source.',
+        // EI-25215634977268694: name supersession only when it would actually clear the rows.
+        suggestion: freshnessDragSuggestion(evidence),
       }
     : freshnessStates.includes('unknown')
       ? {
