@@ -2846,7 +2846,7 @@ export async function wakeMeter(
 // touch these rows.
 
 /** Register (or refresh) the announcement for a key. One ACTIVE announcement per
- *  key: re-announcing updates note/scope/expiry in place instead of duplicating. */
+ *  key: re-announcing supersedes the old generation with a new, unfired one. */
 export async function registerAnnouncement(input: {
   subscriberId: string;
   eventKey: string;
@@ -2901,16 +2901,14 @@ export async function registerAnnouncement(input: {
        WHERE workspace_id = ${ws} AND policy = 'announce' AND event_key = ${input.eventKey}
     `;
     const generation = Number(generationRows[0]?.next_generation ?? 1);
-    const superseded = await tx`
+    // Renewal replaces declaration custody, not the event's completion proof.
+    // Keep matching work-item blockers active until a real fire or explicit retirement.
+    await tx`
       UPDATE harness_shared.event_awaits
          SET superseded_at = COALESCE(superseded_at, now())
        WHERE workspace_id = ${ws} AND policy = 'announce' AND event_key = ${input.eventKey}
          AND superseded_at IS NULL
-      RETURNING event_key
     `;
-    if (superseded.length > 0) {
-      await reconcileEventExternalBlockers(tx, input.eventKey, input.subscriberId);
-    }
     const rows = await tx`
       INSERT INTO harness_shared.event_awaits
         (workspace_id, subscriber_id, event_key, policy, note, wake_handle, timeout_behavior, expires_ts,
@@ -3040,19 +3038,17 @@ export async function stampAnnouncementsFired(
       RETURNING id
     `;
     // EI-20721448404004954: a gate that FIRES must settle the typed event blockers
-    // waiting on it, exactly as retirement and supersession already do. Without this
-    // the third settlement path was missing, and the asymmetry ran the wrong way: an
-    // item unblocked when its gate was CANCELLED or RE-DECLARED but not when the gate
-    // actually opened — so the SUCCESS case was the one that stranded finished work.
+    // waiting on it, as explicit retirement does. Declaration renewal does not
+    // settle blockers (EI-25231851216237441).
     // (The filing: a deployed a11y fix read as an open major bug for 3 days because
     // the gate fired after its holder's session had ended, and nothing else could
     // clear a blocker bound to that session's await.)
     //
-    // Same transaction and advisory lock as the other two settlement paths, per
+    // Same transaction and advisory lock as explicit retirement, per
     // reconcileEventExternalBlockers' own contract — otherwise the announcement can
     // latch fired while the work item stays parked outside scheduler self-select.
     //
-    // Gated on a real transition, like the supersede path. The reconciler probes
+    // Gated on a real fire transition. The reconciler probes
     // work_items by payload containment, which is a parallel seq scan here (~350ms,
     // measured 2026-09-05: 180k rows, no GIN on payload); announcements fire ~7×/day,
     // so it stays off the ordinary emit path, where stampAnnouncementsFired is called
