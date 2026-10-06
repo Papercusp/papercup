@@ -127,8 +127,8 @@ describe('runGovernedSpendAttempt — complete usage settles, incomplete usage r
     const { deps } = fakeAttemptDeps();
     const reserved = await deps.reserve!(SQL, {} as never);
     if (!reserved.ok) throw new Error('fixture must grant');
-    reserved.reservation.reservedUsd = reservedUsd;
-    reserved.clamped = reservedUsd < 1;
+    Object.assign(reserved.reservation, { reservedUsd });
+    Object.assign(reserved, { clamped: reservedUsd < 1 });
     let seen: unknown;
     const out = await runGovernedSpendAttempt(attempt(async grant => {
       seen = grant;
@@ -145,10 +145,10 @@ describe('runGovernedSpendAttempt — complete usage settles, incomplete usage r
     const { deps } = fakeAttemptDeps();
     const reserved = await deps.reserve!(SQL, {} as never);
     if (!reserved.ok) throw new Error('fixture must grant');
-    reserved.clamped = true;
+    Object.assign(reserved, { clamped: true });
     const out = await runGovernedSpendAttempt(attempt(async grant => {
-      reserved.clamped = false;
-      reserved.reservation.reservedUsd = 99;
+      Object.assign(reserved, { clamped: false });
+      Object.assign(reserved.reservation, { reservedUsd: 99 });
       expect(grant).toEqual({ reservationId: 'res-1', reservedUsd: 1, clamped: true });
       return { costUsd: 0, value: 'completed' };
     }), deps);

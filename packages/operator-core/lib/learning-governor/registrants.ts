@@ -133,6 +133,16 @@ export interface SpendAttemptReport<T> {
   cancelled?: boolean;
 }
 
+/** The immutable reservation snapshot available BEFORE spending starts.
+ * The ID links a dispatch to its durable row; it is not an authentication
+ * token or proof that a provider enforces the reserved monetary amount.
+ */
+export interface SpendAttemptGrant {
+  readonly reservationId: string;
+  readonly reservedUsd: number;
+  readonly clamped: boolean;
+}
+
 export interface GovernedSpendAttemptInput<T> {
   workspaceId: string;
   loopId: string;
@@ -154,7 +164,7 @@ export interface GovernedSpendAttemptInput<T> {
    * `costUsdMeasurementMissing:true`, leaves the reservation OPEN. A known
    * subtotal is retained without settling it as the full charge.
    */
-  run: (grant: { reservedUsd: number; clamped: boolean }) => Promise<SpendAttemptReport<T>>;
+  run: (grant: SpendAttemptGrant) => Promise<SpendAttemptReport<T>>;
 }
 
 export type GovernedSpendAttemptOutcome<T> =
@@ -215,6 +225,9 @@ export async function runGovernedSpendAttempt<T>(
     return { ok: false, reason: 'refused', refusal: reserved.reason, headroomUsd: reserved.headroomUsd };
   }
   const reservationId = reserved.reservation.id;
+  const grant: SpendAttemptGrant = Object.freeze({
+    reservationId, reservedUsd: reserved.reservation.reservedUsd, clamped: reserved.clamped,
+  });
   let settlement: SettleLearningSpendResult | null = null;
   let settlementError: string | undefined;
   const settle = async (
@@ -249,7 +262,7 @@ export async function runGovernedSpendAttempt<T>(
     d.log(`reservation ${reservationId}: ${settlementError}`);
   };
   try {
-    report = await input.run({ reservedUsd: reserved.reservation.reservedUsd, clamped: reserved.clamped });
+    report = await input.run(grant);
   } catch (e) {
     const { costUsd: burned, missing } = costEvidenceOf(e);
     const error = e instanceof Error ? e.message : String(e);
@@ -268,7 +281,7 @@ export async function runGovernedSpendAttempt<T>(
     value: report.value,
     costUsd,
     reservationId,
-    clamped: reserved.clamped,
+    clamped: grant.clamped,
     cancelled,
     settlement,
     ...(settlementError === undefined ? {} : { settlementError }),
