@@ -229,26 +229,33 @@ describe('assemblePresenceSnapshot targeted { owner } lookup (EI-9454)', () => {
   // never booted, closed as 'cleanup') read `parked`/wakeable for as long as its
   // heartbeat stayed warm — while resolveSessionStates (fleet:status,
   // fleet:assignments, send-miss) said `ended` for the same owner.
-  it('a warm, wakeable row whose latest adv_session ENDED reads ended, matching resolveSessionStates', async () => {
+  it('a warm, wakeable row whose latest adv_session ENDED reads ended on the targeted read', async () => {
     const owner = 'su-ended-warm';
     listPresenceMock.mockResolvedValue([{ ...row(owner, false), agentRole: 'su', source: 'omp-hook-session' }]);
     wakeabilityMock.mockResolvedValue(new Map([[owner, { wakeable: true, liveTurn: false }]]));
     endedOwnerIdsMock.mockResolvedValue(new Set([owner]));
 
-    const snap = await assemblePresenceSnapshot(RESOLVED, {});
+    const snap = await assemblePresenceSnapshot(RESOLVED, { owner });
     expect(endedOwnerIdsMock).toHaveBeenCalledWith([owner]);
     expect(snap.active.find((r) => r.ownerId === owner)?.sessionState).toBe('ended');
   });
 
-  it('ended-session evidence does NOT override a live psu host (process-free parking stays parked)', async () => {
-    const owner = 'su-parked-hosted';
-    listPresenceMock.mockResolvedValue([{ ...row(owner, false), agentRole: 'su', source: 'psu' }]);
-    wakeabilityMock.mockResolvedValue(new Map([[owner, { wakeable: true, liveTurn: false }]]));
-    endedOwnerIdsMock.mockResolvedValue(new Set([owner]));
-    findLiveHostMock.mockImplementation((id: string) => (id === owner ? { ownerId: id } : null));
+  it('the default roster drops that ended row like every other ended row (no wakeable corpse)', async () => {
+    const dead = 'su-ended-warm';
+    const alive = 'su-still-parked';
+    listPresenceMock.mockResolvedValue([row(dead, false), row(alive, false)]);
+    wakeabilityMock.mockResolvedValue(
+      new Map([
+        [dead, { wakeable: true, liveTurn: false }],
+        [alive, { wakeable: true, liveTurn: false }],
+      ]),
+    );
+    endedOwnerIdsMock.mockResolvedValue(new Set([dead]));
 
     const snap = await assemblePresenceSnapshot(RESOLVED, {});
-    expect(snap.active.find((r) => r.ownerId === owner)?.sessionState).toBe('parked');
+    expect(endedOwnerIdsMock).toHaveBeenCalledWith([dead, alive]);
+    expect(snap.active.map((r) => r.ownerId)).toEqual([alive]);
+    expect(snap.active[0]?.sessionState).toBe('parked');
   });
 
   it('a failed ended-session read degrades to the prior verdict, never to a death claim', async () => {
