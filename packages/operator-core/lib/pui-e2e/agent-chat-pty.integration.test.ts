@@ -787,11 +787,13 @@ class PuiPane {
   ) {
     this.cols = options.cols ?? 150;
     this.rows = options.rows ?? 44;
-    // Bare `pui` is chat-first (pui-chat-first-ux P-001): one full-screen
-    // conversation with no tab strip or footer. The clauses in this file drive
-    // the full HUD surface (tabs, boards, `o`), which `pui hud` still is — the
-    // workbench's own HUD pane runs exactly that. Tests of the bare default pass
-    // `args: []` explicitly.
+    // The chat surface (pui-chat-first-ux P-001) is `pui --solo`: one
+    // full-screen conversation with no zellij, tab strip or footer. Bare `pui`
+    // wraps that same surface in the chat workbench (P-030: the chat as the
+    // main zellij pane, workbench panes beside it), so chat tests pass
+    // `args: ['--solo']`. The clauses in this file drive the full HUD surface
+    // (tabs, boards, `o`), which `pui hud` still is — the workbenches' own HUD
+    // pane runs exactly that.
     this.pty = ptySpawn(bin, options.args ?? ['hud'], {
       name: 'xterm-256color',
       cols: this.cols,
@@ -2765,7 +2767,7 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-009 recovery (spec clause
   /** A chat-first pui in a fresh directory whose engine has answered once. */
   async function chatWithRunningEngine(tag: string) {
     const launchDir = realpathSync(mkdtempSync(path.join(tmpdir(), `pui-p009-${tag}-`)));
-    const pane = new PuiPane(bin, operatorPort, home, { args: [], cwd: launchDir });
+    const pane = new PuiPane(bin, operatorPort, home, { args: ['--solo'],cwd: launchDir });
     const enginesBefore = scriptedEngine.engines.length;
     scriptedEngine.mode = 'success';
     scriptedEngine.successText = `P9 reply ${tag}`;
@@ -2804,7 +2806,7 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-009 recovery (spec clause
    * anything is typed, and after the pick it must still show it exactly once
    * (not an empty pane until the next send, not a replayed duplicate). */
   async function resumeNewest(chat: RunningChat): Promise<PuiPane> {
-    const pane = new PuiPane(bin, operatorPort, home, { args: [], cwd: chat.launchDir });
+    const pane = new PuiPane(bin, operatorPort, home, { args: ['--solo'],cwd: chat.launchDir });
     await pane.waitFor(`Claude · ${chat.launchDir}`, { timeoutMs: 40_000 });
     await pane.waitFor(chat.reply, { timeoutMs: 30_000 });
     pane.write('/resume');
@@ -3870,7 +3872,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
   test('P-001: bare `pui` opens one full-screen chat in its launch directory, ready to type', async ({ onTestFailed }) => {
     const launchDir = realpathSync(mkdtempSync(path.join(tmpdir(), 'pui-p001-launch-')));
     const prompt = `P1 chat-first ${randomUUID().slice(0, 8)}`;
-    const pane = new PuiPane(bin, operatorPort, home, { args: [], cwd: launchDir });
+    const pane = new PuiPane(bin, operatorPort, home, { args: ['--solo'],cwd: launchDir });
     onTestFailed(() => console.info('PUI_P001_FAILURE', JSON.stringify({
       launchDir, sdkCwds: scriptedEngine.sdkCwds, requests: scriptedEngine.requests, ...pane.failureEvidence(),
     })));
@@ -3977,7 +3979,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
         const prompt = `P16 ${backend} ${tag}`;
         replyText = `P16 ${backend} reply ${tag}`;
         const launches = scriptedEngine.rpcLaunches.length;
-        const pane = new PuiPane(bin, operatorPort, home, { args: [], cwd });
+        const pane = new PuiPane(bin, operatorPort, home, { args: ['--solo'],cwd });
         try {
           await pane.waitFor(`${label} · ${cwd}`, { timeoutMs: 40_000 });
           pane.write(prompt);
@@ -4119,7 +4121,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       replyText = `WI164 auto reply ${tag}`;
       const requestsBefore = launchRequests.length;
       const enginesBefore = scriptedEngine.rpcLaunches.length;
-      const quick = new PuiPane(bin, operatorPort, home, { args: [], cwd });
+      const quick = new PuiPane(bin, operatorPort, home, { args: ['--solo'],cwd });
       try {
         await quick.waitFor(`OMP · ${cwd}`, { timeoutMs: 40_000 });
         quick.write(prompt);
@@ -4203,7 +4205,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
     const launchDir = realpathSync(mkdtempSync(path.join(tmpdir(), 'pui-p004-composer-')));
     writeFileSync(path.join(launchDir, 'parity-notes.md'), '# parity notes\n');
     const tag = randomUUID().slice(0, 8);
-    const pane = new PuiPane(bin, operatorPort, home, { args: [], cwd: launchDir });
+    const pane = new PuiPane(bin, operatorPort, home, { args: ['--solo'],cwd: launchDir });
     let stage = 'ready';
     onTestFailed(() => console.info('PUI_P004_COMPOSER_FAILURE', JSON.stringify({
       stage, launchDir, requests: scriptedEngine.requests, ...pane.failureEvidence(),
@@ -4297,7 +4299,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
   test('P-004: the default chat transcript streams markdown, collapses tool output, shows diffs and prompts inline, and leaves clean scrollback', async ({ onTestFailed }) => {
     const launchDir = realpathSync(mkdtempSync(path.join(tmpdir(), 'pui-p004-transcript-')));
     const tag = randomUUID().slice(0, 8);
-    const pane = new PuiPane(bin, operatorPort, home, { args: [], cwd: launchDir });
+    const pane = new PuiPane(bin, operatorPort, home, { args: ['--solo'],cwd: launchDir });
     let stage = 'ready';
     onTestFailed(() => console.info('PUI_P004_TRANSCRIPT_FAILURE', JSON.stringify({
       stage, launchDir, requests: scriptedEngine.requests, verdicts: scriptedEngine.approvalVerdicts, ...pane.failureEvidence(),
@@ -4407,7 +4409,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
   test('P-013: a tool call renders above the answer it produced', async ({ onTestFailed }) => {
     const launchDir = realpathSync(mkdtempSync(path.join(tmpdir(), 'pui-p013-order-')));
     const tag = randomUUID().slice(0, 8);
-    const pane = new PuiPane(bin, operatorPort, home, { args: [], cwd: launchDir });
+    const pane = new PuiPane(bin, operatorPort, home, { args: ['--solo'],cwd: launchDir });
     onTestFailed(() => console.info('PUI_P013_ORDER_FAILURE', JSON.stringify({
       launchDir, requests: scriptedEngine.requests, ...pane.failureEvidence(),
     })));
@@ -4446,7 +4448,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
   test('P-018: the mouse wheel scrolls the conversation and a drag copies what it covers', async ({ onTestFailed }) => {
     const launchDir = realpathSync(mkdtempSync(path.join(tmpdir(), 'pui-p018-mouse-')));
     const tag = randomUUID().slice(0, 8);
-    const pane = new PuiPane(bin, operatorPort, home, { args: [], cwd: launchDir });
+    const pane = new PuiPane(bin, operatorPort, home, { args: ['--solo'],cwd: launchDir });
     const rowText = (n: number): string => `p18 row ${String(n).padStart(2, '0')} ${tag}`;
     const sgr = (button: number, col: number, row: number, release = false): string =>
       `\x1b[<${button};${col};${row}${release ? 'm' : 'M'}`;
@@ -4526,7 +4528,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
   test('P-011: tool previews, an approval card and the session picker redraw over prior content with no stale characters', async ({ onTestFailed }) => {
     const launchDir = realpathSync(mkdtempSync(path.join(tmpdir(), 'pui-p011-')));
     const tag = randomUUID().slice(0, 8);
-    const pane = new PuiPane(bin, operatorPort, home, { args: [], cwd: launchDir });
+    const pane = new PuiPane(bin, operatorPort, home, { args: ['--solo'],cwd: launchDir });
     let stage = 'ready';
     let incremental = '';
     let clean = '';
@@ -4607,7 +4609,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
     const launchDir = realpathSync(mkdtempSync(path.join(tmpdir(), 'pui-p003-launch-')));
     const prompt = `P3 failed start ${randomUUID().slice(0, 8)}`;
     scriptedEngine.mode = 'startup-exit';
-    const pane = new PuiPane(bin, operatorPort, home, { args: [], cwd: launchDir });
+    const pane = new PuiPane(bin, operatorPort, home, { args: ['--solo'],cwd: launchDir });
     onTestFailed(() => console.info('PUI_P003_FAILURE', JSON.stringify({
       launchDir, requests: scriptedEngine.requests, ...pane.failureEvidence(),
     })));
@@ -4680,7 +4682,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       .filter((entry) => entry.method === 'POST' && entry.path === '/api/adv/sessions/launch-su' && entry.status === 200)
       .reduce((total, entry) => total + Number(entry.count ?? 1), 0);
     // Bare `pui`: the plan's guard is the default launch, chat-first (P-001).
-    const pane = new PuiPane(bin, operatorPort, home, { args: [] });
+    const pane = new PuiPane(bin, operatorPort, home, { args: ['--solo'] });
     onTestFailed(() => console.info('PUI_P002_FAILURE', JSON.stringify({
       stage, nativePid, recoveredAfterMs, requests: scriptedEngine.requests, sdkSessions: scriptedEngine.sdkSessions,
       commandPosts: commandPosts.length, traffic: sessionTraffic, ...pane.failureEvidence(),
@@ -6570,7 +6572,7 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-013 terminal compatibilit
     scriptedEngine.initialization = new Promise<void>((resolve) => { releaseInitialization = resolve; });
     let stage = 'compose';
     const measured: Record<string, unknown> = {};
-    const pane = new PuiPane(bin, operatorPort, home, { args: [], cwd: launchDir });
+    const pane = new PuiPane(bin, operatorPort, home, { args: ['--solo'],cwd: launchDir });
     onTestFailed(() => console.info('PUI_P024_FAILURE', JSON.stringify({
       stage, launchDir, measured, hungSnapshotReads, requests: scriptedEngine.requests, ...pane.failureEvidence(),
     })));
@@ -7594,7 +7596,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       const log: Array<Record<string, unknown>> = [];
       const approvals: string[] = [];
       const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-      let pane = new PuiPane(bin, operatorPort, home, { args: [], cwd: launchDir, cols: 120, rows: 40 });
+      let pane = new PuiPane(bin, operatorPort, home, { args: ['--solo'],cwd: launchDir, cols: 120, rows: 40 });
       onTestFailed(() => {
         try { frame('failure', pane.screen()); } catch { /* pane gone */ }
         console.info('PUI_P005_REVIEW_FAILURE', JSON.stringify({ launchDir, log, approvals, ...pane.failureEvidence() }));
@@ -7716,7 +7718,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         const exitedCleanly = await Promise.race([pane['exit'].then(() => true), sleep(20_000).then(() => false)]);
         log.push({ label: '05a-exit', exitedCleanly, exitMs: Math.round(performance.now() - exitStarted) });
         await pane.stop().catch(() => {});
-        pane = new PuiPane(bin, operatorPort, home, { args: [], cwd: launchDir, cols: 120, rows: 40 });
+        pane = new PuiPane(bin, operatorPort, home, { args: ['--solo'],cwd: launchDir, cols: 120, rows: 40 });
         await pane.waitFor(`Claude · ${launchDir}`, { timeoutMs: 60_000 });
         // WI-10004162: the owner's own turns contain 'calc.js', so waiting for
         // that passed over a pane with every agent reply missing. An agent
@@ -7837,7 +7839,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         const lifecycle: Array<[number, string]> = [];
         const record: Record<string, unknown> = { run, lifecycle };
         current = record;
-        pane = new PuiPane(bin, operatorPort, home, { args: [], cwd: launchDir, cols: 120, rows: 40 });
+        pane = new PuiPane(bin, operatorPort, home, { args: ['--solo'],cwd: launchDir, cols: 120, rows: 40 });
         const enginesBefore = scriptedEngine.engines.length;
         try {
           await pane.waitFor(`Claude · ${launchDir}`, { timeoutMs: 60_000 });
