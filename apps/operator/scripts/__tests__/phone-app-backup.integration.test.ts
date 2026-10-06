@@ -63,6 +63,19 @@ it('backs up Phone rows and restores them in an isolated database without replac
     await expect(run(['backup', '--out', archive])).rejects.toThrow();
     expect(await readFile(archive)).toEqual(original);
 
+    // The daily timer refreshes ONE fixed path (WI-10006587). Without --replace its
+    // second run failed EEXIST forever and the archive aged into backup-stale.
+    await sql.unsafe("INSERT INTO public.phone_calls VALUES ('call-2', 'second-backup')");
+    const replaced = await run(['backup', '--out', archive, '--replace']);
+    expect(JSON.parse(replaced.stdout)).toMatchObject({ ok: true, action: 'backup', archive, replaced: true });
+    expect(await readFile(`${archive}.prev`)).toEqual(original);
+    expect(await readFile(archive)).not.toEqual(original);
+    expect((await stat(archive)).mode & 0o777).toBe(0o600);
+    expect(JSON.parse((await backupStatus()).stdout).ok).toBe(true);
+    const again = await run(['backup', '--out', archive, '--replace']);
+    expect(JSON.parse(again.stdout)).toMatchObject({ ok: true, replaced: true });
+    await expect(run(['backup', '--out', archive, '--bogus'])).rejects.toThrow();
+
     const drill = await run(['restore-drill', '--archive', archive]);
     expect(drill.stdout, `restore drill must emit its verification result; ${drill.stderr}`).not.toBe('');
     expect(JSON.parse(drill.stdout)).toMatchObject({ ok: true, action: 'restore-drill',

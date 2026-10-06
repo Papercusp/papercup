@@ -51,6 +51,10 @@ SIDECAR_DIR="${PHONE_SIDECAR_DIR:-$HOME/.papercusp-workspaces/papercusp-workspac
 # that file is the media credential of record and the portal must never be given
 # it, but the portal DOES need this one.
 PORTAL_ENV_FILE="$CONF_DIR/portal.env"
+# WI-10006587: the ops-alert backup check and the backup unit both read this file.
+OPS_ALERT_ENV_FILE="$CONF_DIR/ops-alert.env"
+PHONE_BACKUP_ARCHIVE="${PHONE_BACKUP_ARCHIVE:-$HOME/.local/state/papercusp-phone/backups/phone-db.dump}"
+PHONE_BACKUP_MAX_AGE_HOURS="${PHONE_BACKUP_MAX_AGE_HOURS:-36}"
 PIN_FILE="$CONF_DIR/artifacts.sha256"
 ROLLBACK_DIR="$CONF_DIR/rollback"
 
@@ -98,16 +102,33 @@ require_livekit_version() {
   say "livekit-server $have"
 }
 
+# Rewrites ONE key's line in an env file (default livekit.env), keeping every
+# other line. A missing file is created private first.
 upsert_env_var() {
-  local key="$1" value="$2" tmp
+  local key="$1" value="$2" file="${3:-$ENV_FILE}" tmp
   [[ "$key" =~ ^[A-Z][A-Z0-9_]*$ ]] || die "invalid env key: $key"
   [[ "$value" != *$'\n'* && "$value" != *$'\r'* ]] || die "$key contains a newline"
-  tmp="$(mktemp "$CONF_DIR/.livekit.env.XXXXXX")"
-  awk -v key="$key" '$0 !~ ("^" key "=") { print }' "$ENV_FILE" > "$tmp"
+  [[ -f "$file" ]] || ( umask 077; : > "$file" )
+  tmp="$(mktemp "$CONF_DIR/.$(basename "$file").XXXXXX")"
+  awk -v key="$key" '$0 !~ ("^" key "=") { print }' "$file" > "$tmp"
   # Persist shell-safe values; cert paths may contain spaces or shell punctuation.
   printf '%s=%q\n' "$key" "$value" >> "$tmp"
   chmod 600 "$tmp"
-  mv "$tmp" "$ENV_FILE"
+  mv "$tmp" "$file"
+}
+
+# WI-10006587: phone-ops-alert raises backup:config-missing on every run unless
+# PHONE_BACKUP_ARCHIVE (absolute) and PHONE_BACKUP_MAX_AGE_HOURS (1..168) are set.
+# The backup unit writes that same archive. Only these two lines are rewritten,
+# so any other ops-alert setting in the file survives a redeploy.
+write_ops_alert_env() {
+  local archive="$1" max_age="$2"
+  [[ "$archive" == /* ]] || die "PHONE_BACKUP_ARCHIVE must be an absolute path (got '$archive')"
+  [[ "$max_age" =~ ^[0-9]+$ ]] && (( max_age >= 1 && max_age <= 168 )) \
+    || die "PHONE_BACKUP_MAX_AGE_HOURS must be 1..168 (got '$max_age')"
+  upsert_env_var PHONE_BACKUP_ARCHIVE "$archive" "$OPS_ALERT_ENV_FILE"
+  upsert_env_var PHONE_BACKUP_MAX_AGE_HOURS "$max_age" "$OPS_ALERT_ENV_FILE"
+  chmod 600 "$OPS_ALERT_ENV_FILE"
 }
 
 # Mint or rotate the LiveKit API key pair by rewriting ONLY its two lines.
@@ -194,7 +215,7 @@ phone_source_revision() {
 artifact_files_paths() {
   ARTIFACT_FILES=(
     "$HERE/deploy.sh" "$HERE/media-config.mjs" "$HERE/verify-media-plane.sh"
-    "$HERE/phone-db-backup.mjs"
+    "$HERE/phone-db-backup.mjs" "$HERE/report-runtime-vintage.mjs"
     "$HERE/livekit-server.yaml.tmpl" "$HERE/livekit-sip.yaml.tmpl"
     "$HERE/systemd/papercusp-phone-livekit.service"
     "$HERE/systemd/papercusp-phone-sip.service"
@@ -202,6 +223,8 @@ artifact_files_paths() {
     "$HERE/phone-ops-alert.mjs"
     "$HERE/systemd/papercusp-phone-ops-alert.service.tmpl"
     "$HERE/systemd/papercusp-phone-ops-alert.timer"
+    "$HERE/systemd/papercusp-phone-backup.service.tmpl"
+    "$HERE/systemd/papercusp-phone-backup.timer"
     "$LK_BIN" "$SIP_BIN" "$NODE_BIN"
   )
 }
@@ -486,6 +509,8 @@ render() {
   content="${content//'${PHONE_SIDECAR_DIR}'/$SIDECAR_DIR}"
   content="${content//'${PHONE_NODE_BIN}'/$NODE_BIN}"
   content="${content//'${PHONE_ALERT_SCRIPT}'/$HERE/phone-ops-alert.mjs}"
+  content="${content//'${PHONE_BACKUP_SCRIPT}'/$HERE/phone-db-backup.mjs}"
+  content="${content//'${PHONE_VINTAGE_SCRIPT}'/$HERE/report-runtime-vintage.mjs}"
   content="${content//'${PHONE_CONFIG_DIR}'/$CONF_DIR}"
   # Only a real placeholder counts: ${UPPER_SNAKE}. Prose that merely mentions a
   # dollar-brace must not trip this, or the guard cries wolf on its own comments.
@@ -515,6 +540,11 @@ for u in "${UNITS[@]}"; do install -m 644 "$HERE/systemd/$u" "$UNIT_DIR/$u"; say
 render "$HERE/systemd/papercusp-phone-ops-alert.service.tmpl" "$UNIT_DIR/papercusp-phone-ops-alert.service"
 chmod 644 "$UNIT_DIR/papercusp-phone-ops-alert.service"
 install -m 644 "$HERE/systemd/papercusp-phone-ops-alert.timer" "$UNIT_DIR/papercusp-phone-ops-alert.timer"
+render "$HERE/systemd/papercusp-phone-backup.service.tmpl" "$UNIT_DIR/papercusp-phone-backup.service"
+chmod 644 "$UNIT_DIR/papercusp-phone-backup.service"
+install -m 644 "$HERE/systemd/papercusp-phone-backup.timer" "$UNIT_DIR/papercusp-phone-backup.timer"
+write_ops_alert_env "$PHONE_BACKUP_ARCHIVE" "$PHONE_BACKUP_MAX_AGE_HOURS"
+say "Phone backups go to $PHONE_BACKUP_ARCHIVE (stale after ${PHONE_BACKUP_MAX_AGE_HOURS}h) via $OPS_ALERT_ENV_FILE"
 
 # The worker unit is RENDERED (machine paths), and only when the worker tree is
 # actually present. Installing a unit whose WorkingDirectory does not exist buys
@@ -550,11 +580,37 @@ fi
 systemctl --user daemon-reload
 
 step "Start"
+restart_marker="$(date +%s)"
 for u in "${UNITS[@]}"; do
   systemctl --user enable "$u" >/dev/null 2>&1 || true
   systemctl --user restart "$u"
   say "restarted $u"
 done
+# Take the first backup BEFORE arming the alert, so its first run checks a real
+# archive. A failed backup does not abort the deploy: the alert reports it.
+systemctl --user enable --now papercusp-phone-backup.timer
+# The backup finds the database through the discovery file the sidecar's embedded
+# Postgres rewrites on every start. Started straight after the restart it ran before
+# that rewrite and failed "Phone database discovery unavailable" (measured 2026-10-06:
+# backup 17:04:30.9Z, discovery file 17:04:33.7Z). Wait, bounded, for THIS start's file.
+if [[ " ${UNITS[*]} " == *" $SIDECAR_UNIT "* ]]; then
+  phone_discovery="${PHONE_HOME:-$HOME/.papercusp-phone}/postgres.json"
+  discovery_wait="${PHONE_DISCOVERY_WAIT_SEC:-60}"
+  discovery_fresh=0
+  for (( waited = 0; waited <= discovery_wait; waited++ )); do
+    if [[ -f "$phone_discovery" ]] && (( $(stat -c %Y "$phone_discovery") >= restart_marker )); then
+      discovery_fresh=1; break
+    fi
+    (( waited < discovery_wait )) && sleep 1
+  done
+  (( discovery_fresh == 1 )) \
+    || say "WARN: no fresh Phone database discovery file at $phone_discovery after ${discovery_wait}s; backing up anyway"
+fi
+if systemctl --user start papercusp-phone-backup.service; then
+  say "took a Phone database backup to $PHONE_BACKUP_ARCHIVE"
+else
+  say "WARN: the Phone database backup failed; the ops-alert backup check will report it (journalctl --user -u papercusp-phone-backup.service)"
+fi
 systemctl --user enable --now papercusp-phone-ops-alert.timer
 say "armed Phone operations alerts; results require owner notification delivery"
 

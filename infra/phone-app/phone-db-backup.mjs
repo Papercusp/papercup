@@ -4,7 +4,7 @@
 import { spawn } from 'node:child_process';
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { chmod, link, mkdir, mkdtemp, readFile, rm, stat, unlink, writeFile } from 'node:fs/promises';
+import { chmod, link, mkdir, mkdtemp, readFile, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
@@ -79,7 +79,7 @@ async function digest(path) {
   return hash.digest('hex');
 }
 
-async function backup(out) {
+async function backup(out, { replace = false } = {}) {
   if (!isAbsolute(out)) throw new Error('backup output must be an absolute path outside the source tree');
   out = resolve(out);
   if (out === repoRoot || out.startsWith(`${repoRoot}${sep}`)) {
@@ -110,14 +110,32 @@ async function backup(out) {
     await run(RESTORE_BIN, ['--list', temp]);
     const sha256 = await digest(temp);
     await writeFile(receiptTemp, `${sha256}\n`, { mode: 0o600, flag: 'wx' });
-    // link() refuses an existing destination. A rerun cannot clobber a prior
-    // recovery point, and a failed receipt publication removes our archive.
-    await link(temp, out);
-    published = true;
-    await link(receiptTemp, `${out}.sha256`);
-    console.log(JSON.stringify({ ok: true, action: 'backup', archive: out, sha256 }));
+    if (replace) {
+      // --replace is the scheduled refresh (papercusp-phone-backup.timer writes one
+      // fixed path every day). Without it the second run failed EEXIST and the archive
+      // aged into a stale-backup alert (measured 2026-10-06, WI-10006587). The dump above
+      // is already verified, so keep the previous pair as .prev and swap each file with
+      // rename(2): a reader sees the old archive or the new one, never none or a partial.
+      await rm(`${out}.prev`, { force: true });
+      await rm(`${out}.sha256.prev`, { force: true });
+      await link(out, `${out}.prev`).catch((error) => { if (error?.code !== 'ENOENT') throw error; });
+      await link(`${out}.sha256`, `${out}.sha256.prev`).catch((error) => { if (error?.code !== 'ENOENT') throw error; });
+      await rename(temp, out);
+      published = true;
+      await rename(receiptTemp, `${out}.sha256`);
+    } else {
+      // link() refuses an existing destination. A rerun cannot clobber a prior
+      // recovery point, and a failed receipt publication removes our archive.
+      await link(temp, out);
+      published = true;
+      await link(receiptTemp, `${out}.sha256`);
+    }
+    console.log(JSON.stringify({ ok: true, action: 'backup', archive: out, sha256, replaced: replace }));
   } catch (error) {
-    if (published) await unlink(out).catch(() => {});
+    if (published && replace) {
+      // The new archive landed but its receipt did not: put the previous pair back.
+      await rename(`${out}.prev`, out).catch(() => unlink(out).catch(() => {}));
+    } else if (published) await unlink(out).catch(() => {});
     throw error;
   } finally {
     await Promise.all([unlink(temp).catch(() => {}), unlink(receiptTemp).catch(() => {})]);
@@ -305,10 +323,12 @@ try {
           (action !== 'backup' && flag !== '--archive') ||
           (action === 'backup-status'
             ? maxAgeFlag !== '--max-age-hours' || !/^[0-9]+$/.test(maxAge ?? '')
-            : maxAgeFlag !== undefined || maxAge !== undefined))) {
-    throw new Error('usage: phone-db-backup.mjs backup --out /absolute/path.dump | restore-drill --archive /absolute/path.dump | backup-status --archive /absolute/path.dump --max-age-hours N | usage-status');
+            : action === 'backup'
+              ? (maxAgeFlag !== undefined && maxAgeFlag !== '--replace') || maxAge !== undefined
+              : maxAgeFlag !== undefined || maxAge !== undefined))) {
+    throw new Error('usage: phone-db-backup.mjs backup --out /absolute/path.dump [--replace] | restore-drill --archive /absolute/path.dump | backup-status --archive /absolute/path.dump --max-age-hours N | usage-status');
   }
-  if (action === 'backup') await backup(path);
+  if (action === 'backup') await backup(path, { replace: maxAgeFlag === '--replace' });
   else if (action === 'restore-drill') await drill(path);
   else if (action === 'backup-status') await backupStatus(path, Number(maxAge));
   else await usageStatus();

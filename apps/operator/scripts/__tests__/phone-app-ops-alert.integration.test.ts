@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -71,7 +71,8 @@ describe('Phone source operations alert delivery', () => {
     expect(verdict.status, verdict.stderr).toBe(0);
   });
 
-  it('installs and enables the alert timer only after a pinned isolated deployment attempt', () => {
+  // Runs the real deploy.sh against fake systemctl/git/livekit binaries and an isolated HOME.
+  function deployFixture(extraEnv: Record<string, string> = {}, before?: (home: string) => void) {
     const f = fixture();
     const home = join(f.dir, 'home');
     const phone = join(f.dir, 'source');
@@ -80,6 +81,7 @@ describe('Phone source operations alert delivery', () => {
     const bins = join(f.dir, 'bin');
     mkdirSync(home); mkdirSync(worker, { recursive: true });
     mkdirSync(sidecar, { recursive: true }); mkdirSync(bins);
+    before?.(home);
     writeFileSync(join(worker, 'entry.js'), 'fixture');
     writeFileSync(join(sidecar, 'entry.js'), 'fixture');
     writeFileSync(join(f.dir, 'livekit.env'),
@@ -95,6 +97,11 @@ esac
 `, { mode: 0o700 });
     writeFileSync(join(bins, 'systemctl'), `#!/bin/sh
 printf '%s\\n' "$*" >> "$PHONE_TEST_SYSTEMCTL_CALLS"
+# Like the real sidecar's embedded Postgres, a sidecar restart rewrites the
+# discovery file the backup reads (WI-10006587: deploy.sh waits for it).
+if [ "$2:$3" = "restart:papercusp-phone-sidecar.service" ] && [ -z "$PHONE_TEST_NO_DISCOVERY" ]; then
+  mkdir -p "$HOME/.papercusp-phone" && printf '{}\\n' > "$HOME/.papercusp-phone/postgres.json"
+fi
 case "$2" in
   is-active) exit 0 ;;
   *) exit 0 ;;
@@ -118,13 +125,21 @@ esac
       // Readiness is not fixture-forced green (below), so never spend the
       // 30×1s retry budget waiting for this host's real services.
       PHONE_READINESS_RETRY_SEC: '0',
+      // Bounds the discovery-file wait so a regression fails fast instead of
+      // hanging past the spawn timeout; the fake sidecar restart satisfies it.
+      PHONE_DISCOVERY_WAIT_SEC: '5',
       PATH: `${bins}:${process.env.PATH ?? ''}` };
     const pin = spawnSync('bash', [join(repoRoot, 'infra/phone-app/deploy.sh'), '--pin-artifacts'],
       { env, encoding: 'utf8', timeout: 15_000 });
     expect(pin.status, pin.stderr).toBe(0);
     expect(() => readFileSync(calls, 'utf8')).toThrow();
     const deploy = spawnSync('bash', [join(repoRoot, 'infra/phone-app/deploy.sh')],
-      { env, encoding: 'utf8', timeout: 25_000 });
+      { env: { ...env, ...extraEnv }, encoding: 'utf8', timeout: 25_000 });
+    return { home, calls, deploy };
+  }
+
+  it('installs and enables the alert timer only after a pinned isolated deployment attempt', () => {
+    const { home, calls, deploy } = deployFixture();
     // Local readiness is deliberately not fixture-forced green; unit installation precedes that check.
     expect(deploy.stdout).toContain('armed Phone operations alerts');
     const units = join(home, '.config/systemd/user');
@@ -133,6 +148,35 @@ esac
     expect(readFileSync(join(units, 'papercusp-phone-ops-alert.service'), 'utf8'))
       .toContain(join(repoRoot, 'infra/phone-app/phone-ops-alert.mjs'));
     expect(readFileSync(calls, 'utf8')).toContain('--user enable --now papercusp-phone-ops-alert.timer');
+    // WI-10006587: the first backup runs only after the sidecar restart has
+    // rewritten the discovery file, and the alert is armed after that backup.
+    expect(deploy.stdout).not.toContain('no fresh Phone database discovery file');
+    const order = readFileSync(calls, 'utf8').split('\n');
+    const sidecarRestart = order.indexOf('--user restart papercusp-phone-sidecar.service');
+    const backup = order.indexOf('--user start papercusp-phone-backup.service');
+    const alert = order.indexOf('--user enable --now papercusp-phone-ops-alert.timer');
+    expect(sidecarRestart).toBeGreaterThanOrEqual(0);
+    expect(backup).toBeGreaterThan(sidecarRestart);
+    expect(alert).toBeGreaterThan(backup);
+  });
+
+  it('backs up anyway, with a warning, when the sidecar never rewrites its discovery file', () => {
+    let discovery = '';
+    const { calls, deploy } = deployFixture(
+      { PHONE_TEST_NO_DISCOVERY: '1', PHONE_DISCOVERY_WAIT_SEC: '1' },
+      (home) => {
+        // A discovery file from BEFORE this restart must not satisfy the wait.
+        mkdirSync(join(home, '.papercusp-phone'), { recursive: true });
+        discovery = join(home, '.papercusp-phone', 'postgres.json');
+        writeFileSync(discovery, '{}\n');
+        const old = new Date(Date.now() - 3600_000);
+        utimesSync(discovery, old, old);
+      });
+    expect(deploy.stdout).toContain(
+      `no fresh Phone database discovery file at ${discovery} after 1s; backing up anyway`);
+    // A missing discovery file degrades to a reported backup failure; it never blocks arming alerts.
+    expect(deploy.stdout).toContain('armed Phone operations alerts');
+    expect(readFileSync(calls, 'utf8')).toContain('--user start papercusp-phone-backup.service');
   });
 
   it('delivers one actionable owner alert, dedupes repeats, reminds next day and stands down once', async () => {
