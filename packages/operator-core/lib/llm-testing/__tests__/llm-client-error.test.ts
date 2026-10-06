@@ -6,6 +6,10 @@
  * died exactly this opaquely, coord-system-e2e-testing-2026-06-10 P-011).
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import type { StatelessRequestAttempt } from '../../agent-chat-stream';
 
 import { isLlmCallError } from '@papercusp/testing-shell/llm';
 
@@ -68,14 +72,87 @@ describe('llmCall backend selection', () => {
     } finally { events.length = 0; }
   });
 
-  it('refuses unsupported Codex stateless authorization before any gateway send', async () => {
+  it('authorizes the exact Codex request and retains the dispatcher after caller mutation', async () => {
     const { llmCall } = await import('../llm-client');
-    const send = vi.fn(); vi.stubGlobal('fetch', send);
+    const attempts: StatelessRequestAttempt[] = [];
+    const request = { model: 'gpt-6.1-sol', messages: [{ role: 'user' as const, content: 'fixture' }],
+      system: 'frozen system', maxTokens: 8, requireOutputTokenLimit: true,
+      authorizeStatelessRequest: async (attempt: StatelessRequestAttempt) => {
+        attempts.push(attempt);
+        request.messages[0]!.content = 'mutated'; request.model = 'changed'; request.maxTokens = 999;
+        return () => {};
+      } };
+    const send = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(input).toBeInstanceOf(Request);
+      const sent = input as Request;
+      expect(await sent.clone().text()).toBe(attempts[0]!.body);
+      expect(sent.redirect).toBe('error');
+      expect((init as RequestInit & { dispatcher?: unknown }).dispatcher).toBeDefined();
+      return new Response(JSON.stringify({ output_text: 'authorized', usage: { input_tokens: 1, output_tokens: 1 } }));
+    });
+    vi.stubGlobal('fetch', send);
     try {
-      await expect(llmCall({ model: 'gpt-6.1-sol', messages: [{ role: 'user', content: 'fixture' }],
-        authorizeStatelessRequest: async () => () => {} })).rejects.toMatchObject({ costUsd: 0 });
-      expect(send).not.toHaveBeenCalled();
+      await expect(llmCall(request)).resolves.toMatchObject({ text: 'authorized' });
+      expect(send).toHaveBeenCalledTimes(1);
+      expect(attempts).toHaveLength(1);
+      expect(Object.isFrozen(attempts[0])).toBe(true);
+      expect(JSON.parse(attempts[0]!.body)).toMatchObject({ model: 'gpt-6.1-sol', input: 'fixture',
+        instructions: 'frozen system', max_output_tokens: 8 });
+      expect(attempts[0]!.bodySha256).toBe(createHash('sha256').update(attempts[0]!.body).digest('hex'));
+      expect(attempts[0]!.credentialSha256).toBe(createHash('sha256').update(JSON.stringify({
+        authorization: 'Bearer papercusp-gateway', apiKey: null,
+      })).digest('hex'));
     } finally { vi.unstubAllGlobals(); }
+  });
+
+  it.each(['missing', 'throw', 'aborted', 'revoked', 'async-validator'] as const)(
+    'refuses %s Codex authorization before any gateway send', async kind => {
+      const { llmCall } = await import('../llm-client');
+      const controller = new AbortController();
+      const send = vi.fn(); vi.stubGlobal('fetch', send);
+      try {
+        await expect(llmCall({ model: 'gpt-6.1-sol', messages: [{ role: 'user', content: 'fixture' }],
+          signal: controller.signal,
+          authorizeStatelessRequest: async () => {
+            if (kind === 'missing') return null;
+            if (kind === 'throw') throw new Error('private controller failure');
+            if (kind === 'aborted') controller.abort();
+            if (kind === 'async-validator') return (async () => {}) as never;
+            return () => { if (kind === 'revoked') throw new Error('private revoked grant'); };
+          } })).rejects.toMatchObject({ message: 'Stateless request authorization refused', costUsd: 0 });
+        expect(send).not.toHaveBeenCalled();
+      } finally { vi.unstubAllGlobals(); }
+    });
+
+  it('sends only authorized bytes to a private Codex HTTP fixture', async () => {
+    const { llmCall } = await import('../llm-client');
+    const received: string[] = [];
+    const server = createServer(async (req, res) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) chunks.push(Buffer.from(chunk));
+      received.push(Buffer.concat(chunks).toString('utf8'));
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ output_text: 'private fixture', usage: { input_tokens: 1, output_tokens: 1 } }));
+    });
+    const savedPort = process.env.PAPERCUSP_GATEWAY_PORT;
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    process.env.PAPERCUSP_GATEWAY_PORT = String((server.address() as AddressInfo).port);
+    let authorizedBody: string | undefined;
+    try {
+      await expect(llmCall({ model: 'gpt-6.1-sol', messages: [{ role: 'user', content: 'isolated fixture' }],
+        maxTokens: 8, requireOutputTokenLimit: true,
+        authorizeStatelessRequest: async attempt => { authorizedBody = attempt.body; return () => {}; },
+      })).resolves.toMatchObject({ text: 'private fixture' });
+      await expect(llmCall({ model: 'gpt-6.1-sol', messages: [{ role: 'user', content: 'refused fixture' }],
+        authorizeStatelessRequest: async () => null,
+      })).rejects.toMatchObject({ costUsd: 0 });
+      expect(received).toEqual([authorizedBody]);
+    } finally {
+      if (savedPort === undefined) delete process.env.PAPERCUSP_GATEWAY_PORT;
+      else process.env.PAPERCUSP_GATEWAY_PORT = savedPort;
+      server.closeAllConnections();
+      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    }
   });
 
   it('threads a required output limit without changing the model or output bound', async () => {
