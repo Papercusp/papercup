@@ -118,6 +118,7 @@ import { measureRepoFilesEvidenceAtRoot } from '../plans/spec-evidence-store';
 import { ADEQUACY_CRITERIA, SPEC_TEST_ADEQUACY_EVALUATOR_REVISION } from '../plans/spec-test-adequacy';
 import { resolveLocalRubric } from '../../cupboard/rubric-store';
 import { emitScorecard, scorecardEmitArgs } from './emit';
+import type { SpecTestAdequacyRerunRecipe } from '../../harness/improvements/observation-types';
 
 const listClauses = vi.mocked(listSpecClauses);
 
@@ -221,7 +222,10 @@ type EvaluatorPayload = {
       rubricRef: string;
       subject: { kind: 'plan'; ref: string };
       ratings: Record<string, { rating: string; evidence: string; suggestion?: string }>;
-      rerunRecipe: { args: Record<string, unknown>; current: { supplied: boolean; fingerprints: unknown[] } };
+      // The REAL recipe contract, not a hand-narrowed copy: a local subset silently fell
+      // behind when assertions on evaluatorRevision/evaluatorBuild/selection were added
+      // (WI-10006618), and vitest never typechecks, so only lint:tsc saw it.
+      rerunRecipe: SpecTestAdequacyRerunRecipe;
     };
   }>;
 };
@@ -262,6 +266,12 @@ beforeEach(async () => {
     // Evaluator revision 4 requires a successful current test binding for the mutation or
     // counterexample's canonical test file on this exact clause revision.
     bindingRow({ id: 3, evidenceKind: 'test', evidenceRef: 'test:reconnect', outcome: 'passed' }, bound),
+    // The clause requires an 'integration fixture'. Only fixture-scoped proof (an
+    // evidenceKind='fixture' binding or a non-null fixture fingerprint) may attest
+    // fixtureCalibrated; the flag on the test row above no longer counts
+    // (guard-rail:spec-fixture-calibration-requires-proof). A fixture-kind binding keeps the
+    // attested fixture fingerprint null, so freshness stays a measured pass.
+    bindingRow({ id: 4, evidenceKind: 'fixture', evidenceRef: 'fixture:reconnect', outcome: 'passed' }, bound),
   ];
   listClauses.mockResolvedValue([activeClause as never]);
 
@@ -356,14 +366,14 @@ describe('spec-test-adequacy evaluator → scorecards:emit round trip', () => {
       specRevision: recipe.selection.specRevision,
       specFingerprint: recipe.selection.specFingerprint,
       replaySnapshot: true,
-      bindingIds: [1, 2, 3],
+      bindingIds: [1, 2, 3, 4],
       current: recipe.current.fingerprints,
     });
     expect(recipe.args.evidenceRefs).toEqual(
       recipe.selection.evidence.map(({ evidenceRef }) => evidenceRef).sort((a, b) => a.localeCompare(b)),
     );
-    expect(row!.scorecardDraft.rerunRecipe.args).toMatchObject({ replaySnapshot: true, bindingIds: [1, 2, 3] });
-    expect(scorecardEmitArgs.parse(row!.scorecardDraft).rerunRecipe?.selection.bindingIds).toEqual([1, 2, 3]);
+    expect(row!.scorecardDraft.rerunRecipe.args).toMatchObject({ replaySnapshot: true, bindingIds: [1, 2, 3, 4] });
+    expect(scorecardEmitArgs.parse(row!.scorecardDraft).rerunRecipe?.selection.bindingIds).toEqual([1, 2, 3, 4]);
 
     const result = await emitDraft(row!.scorecardDraft);
 
