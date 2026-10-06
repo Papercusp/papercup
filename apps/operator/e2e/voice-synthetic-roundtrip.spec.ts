@@ -46,6 +46,7 @@ interface VoiceHook {
   lastSilenced(): { reason: string } | null;
   speak(t: string): void;
   cancel(): void;
+  ttsEngine(): string | null;
 }
 type VoiceWindow = Window & { __pcVoiceTest?: VoiceHook; __voiceEvents?: Array<{ phase: string; message: string }> };
 
@@ -176,6 +177,8 @@ async function transcribeInPage(page: Page, audio: Buffer): Promise<{ status: nu
       await withLocalEnginePrefs(page, async () => {
         const { postedTurns } = await openShell(page);
         await voice(page, (h) => h.setMode('push-to-talk'));
+        // Wait for the prefs sync to deliver the engine to the client before speaking.
+        await expect.poll(() => voice(page, (h) => h.ttsEngine()), { timeout: 30_000 }).toBe(engine);
         const nextReply = await captureNextTtsReply(page);
         await page.evaluate((t) => (window as VoiceWindow).__pcVoiceTest!.speak(t), REPLY);
         const reply = await nextReply();

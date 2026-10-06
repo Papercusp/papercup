@@ -79,6 +79,22 @@ rig's workspace id before Playwright starts. The secret is never printed, and th
 database is deleted on teardown. Run 5 also adds the brain leg: a spoken question is posted
 as a turn, the agent answers, and the spoken answer is captured and transcribed.
 
+### Run 5 (2026-10-06T17:51:30Z, run `20261006T175130Z-1016388`) — found a product defect
+
+The seed worked (`RIG_SEED voice_credentials rc=0 0 rows=1`; rig health `elevenlabs:true`).
+Push-to-talk and the Kokoro reply passed again. The ElevenLabs reply failed: with the user's
+engine set to ElevenLabs, the desktop client still requested `engine=kokoro`.
+
+Root cause (WI-10006826): `voice-mode.ts` cached the TTS engine for 30 seconds, and a boot-time
+prime filled that cache before the prefs sync had delivered the user's choice. A user who chose
+ElevenLabs heard Kokoro for the first 30 seconds after opening the app, and an engine change in
+Settings took up to 30 seconds to apply. Fixed by reading the prefs on every utterance; guarded
+by a unit test in `apps/operator/app/_components/voice/voice-mode.test.ts`. The spec now waits
+until the client reports the expected engine before it speaks.
+
+Log: `.papercusp/scratch/d006-rig-run5.log` (2 passed, 1 failed, 4 not run). Run 6 waits for an
+SPA build that contains the fix.
+
 ## Hosted portal — pending
 
 A signed-in test account is needed; asked Avi (conversation
