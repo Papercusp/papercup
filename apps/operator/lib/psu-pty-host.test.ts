@@ -138,6 +138,7 @@ const {
   submitVerifyQuietMs,
   fireSessionCompactedEvent,
   announceVerifiedCarryRespawn,
+  waitForRespawnBinding,
   SESSION_COMPACTED_EMIT_ENTRY,
   fleetOscFromEnv,
   turnSubmitCrDelayForAgent,
@@ -1666,6 +1667,49 @@ describe('fireSessionCompactedEvent (event-await P-103 — the detached emit bri
 
   it('the default emit-CLI entry is a sibling .ts of the host script', () => {
     expect(SESSION_COMPACTED_EMIT_ENTRY).toMatch(/scripts[/\\]emit-session-compacted\.ts$/);
+  });
+});
+
+describe('carry binding before first-turn work (EI-24961854655864836)', () => {
+  it('waits for a late id and a delayed durable confirmation without reporting twice', async () => {
+    let nativeId: string | null = null;
+    let confirm!: (id?: string) => void;
+    const report = vi.fn((_id: string, options: { onConfirmed: (id?: string) => void }) => {
+      confirm = options.onConfirmed;
+      return false;
+    });
+    const pending = waitForRespawnBinding({ readNativeId: () => nativeId, report, timeoutMs: 500, pollMs: 1 });
+    expect(report).not.toHaveBeenCalled();
+    nativeId = 'exact-successor';
+    await vi.waitFor(() => expect(report).toHaveBeenCalledOnce());
+    confirm('foreign-successor');
+    let settled = false;
+    void pending.then(() => { settled = true; });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(settled).toBe(false);
+    confirm('exact-successor');
+    expect(await pending).toMatchObject({ ok: true, nativeId: 'exact-successor' });
+    expect(report).toHaveBeenCalledOnce();
+  });
+
+  it('cannot release first-turn work after this child is superseded', async () => {
+    let current = true;
+    let confirm!: () => void;
+    const pending = waitForRespawnBinding({
+      nativeId: 'successor', isCurrent: () => current, timeoutMs: 500, pollMs: 1,
+      report: (_id: string, options: { onConfirmed: () => void }) => { confirm = options.onConfirmed; return false; },
+    });
+    await vi.waitFor(() => expect(confirm).toBeTypeOf('function'));
+    current = false;
+    confirm();
+    expect(await pending).toMatchObject({ ok: false, reason: 'superseded' });
+  });
+
+  it('fails closed when no exact startup native id is available', async () => {
+    const report = vi.fn();
+    expect(await waitForRespawnBinding({ report, timeoutMs: 1, pollMs: 1 }))
+      .toMatchObject({ ok: false, reason: 'successor-native-id-missing' });
+    expect(report).not.toHaveBeenCalled();
   });
 });
 
