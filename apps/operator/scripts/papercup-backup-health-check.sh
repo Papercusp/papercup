@@ -183,6 +183,9 @@ BACKUP_DISK_WARN_PCT="${BACKUP_DISK_WARN_PCT:-90}"
 BACKUP_DB_NAME="${BACKUP_DB_NAME:-papercusp}"
 BACKUP_DB_PORT="${BACKUP_DB_PORT:-5432}"
 BACKUP_CONSUMERS_TIMEOUT_S="${BACKUP_CONSUMERS_TIMEOUT_S:-10}"
+# Budget for listing what occupies the backup volume, spent only while its alarm is
+# firing (backup_volume_consumers). The per-entry du runs niced and idle-class.
+BACKUP_VOLUME_CONSUMERS_TIMEOUT_S="${BACKUP_VOLUME_CONSUMERS_TIMEOUT_S:-120}"
 # TOAST-bloat signature. A high-churn large-bytea table ratchets its TOAST relation
 # upward forever because plain VACUUM marks TOAST pages reusable but never returns
 # them to the OS. The discriminator is TOAST BYTES PER CATALOG-ESTIMATED ROW, which
@@ -638,6 +641,40 @@ backup_required_free_gb() {
   printf '%s\n' "$(( PC_BACKUP_MIN_FREE_GB + required_dump_gb ))"
 }
 
+# Name what occupies the backup volume, so a capacity alarm says WHAT to reclaim.
+# EI-25211496463956189: on 2026-10-06 the volume carried large non-backup test
+# artifacts beside the dumps, and only a manual du found them. Lists the largest
+# entries directly under the volume's mount point (<mount>), each tagged as a backup
+# output (it is or holds <dump-dir>) or NOT a backup output. One du per entry under a
+# shared deadline, so a slow tree truncates the list instead of the probe; never fails.
+backup_volume_consumers() ( # <mount> <dump-dir>
+  mount="${1%/}" dump_dir="${2%/}"
+  [ -d "$mount" ] || { echo "  (mount point '$mount' is not a readable directory)"; exit 0; }
+  shopt -s nullglob dotglob
+  deadline=$(( $(date +%s) + BACKUP_VOLUME_CONSUMERS_TIMEOUT_S ))
+  rows="" skipped=0
+  for entry in "$mount"/*; do
+    [ "${entry##*/}" = lost+found ] && continue
+    left=$(( deadline - $(date +%s) ))
+    if [ "$left" -le 0 ]; then skipped=$((skipped + 1)); continue; fi
+    size_kb="$(timeout "$left" nice -n 19 ionice -c3 du -x -s -k -- "$entry" 2>/dev/null | awk 'NR == 1 { print $1; exit }')"
+    if ! [[ "$size_kb" =~ ^[0-9]+$ ]]; then skipped=$((skipped + 1)); continue; fi
+    if [ "$entry" = "$dump_dir" ] || [ "${dump_dir#"$entry"/}" != "$dump_dir" ]; then
+      tag="backup output"
+    else
+      tag="NOT a backup output"
+    fi
+    rows+="${size_kb}"$'\t'"${entry}"$'\t'"${tag}"$'\n'
+  done
+  if [ -z "$rows" ]; then
+    echo "  (no entry sized within ${BACKUP_VOLUME_CONSUMERS_TIMEOUT_S}s)"
+  else
+    printf '%s' "$rows" | sort -t$'\t' -k1,1nr | head -n 8 |
+      awk -F'\t' '{ printf "  %8.1f GiB  %s  [%s]\n", $1 / 1048576, $2, $3 }'
+  fi
+  [ "$skipped" -eq 0 ] || echo "  (${skipped} entr$([ "$skipped" -eq 1 ] && echo y || echo ies) not sized: unreadable or past the ${BACKUP_VOLUME_CONSUMERS_TIMEOUT_S}s budget)"
+)
+
 check_backup_volume_headroom() {
   local df_line="" disk_pct="" total_kb="" avail_kb="" floor_kb="" trend="" red_marker=""
   local largest_dump_gb="" required_free_gb="" required_free_kb=""
@@ -677,8 +714,11 @@ check_backup_volume_headroom() {
 
   red_marker="$STATE_DIR/backup-volume-red-ei-filed"
   if [ "$disk_pct" -ge "$BACKUP_VOLUME_WARN_PCT" ] || [ "$avail_kb" -lt "$required_free_kb" ]; then
-    local host title body
+    local host title body mount consumers
     host="$(hostname 2>/dev/null || echo unknown-host)"
+    mount="$(printf '%s' "$df_line" | awk '{ print $NF }')"
+    consumers="$(backup_volume_consumers "$mount" "$BACKUP_DUMP_DIR")"
+    log "Backup-volume consumers on ${mount} (largest first):"$'\n'"${consumers}"
     # Keep changing measurements out of the title so repeated samples dedupe.
     title="Backup repository volume above capacity warning threshold on ${host}"
     body="WI-39596 durable backup-volume detector: the filesystem containing '$BACKUP_VOLUME_PATH' is ${disk_pct}% used with ${avail_kb} KiB free. The producer-fit threshold is ${required_free_gb} GiB (${largest_dump_gb} GiB largest recent dump x ${PC_BACKUP_SPACE_SAFETY}% + ${PC_BACKUP_MIN_FREE_GB} GiB floor); the coarse percentage backstop is ${BACKUP_VOLUME_WARN_PCT}% used and the admission floor is ${BACKUP_VOLUME_FLOOR_PCT}% free.
@@ -686,6 +726,9 @@ check_backup_volume_headroom() {
 ${trend}
 
 This volume holds the database dump artifacts under '$BACKUP_DUMP_DIR'. The Kopia repository may be on a separate volume and is a separate capacity domain; this alarm follows the volume the producer actually writes.
+
+Largest entries on ${mount} (an entry marked NOT a backup output is a reclaim candidate; confirm what it is before deleting):
+${consumers}
 
 ACTION: read the measured trend first. If it is still shrinking, compare consecutive Kopia upload bytes and full-maintenance receipts; do not attribute growth from mtime or a single du snapshot. A mitigation/reclamation does not close WI-39596 until consecutive post-change dump/snapshot cycles show bounded growth.
 
@@ -1439,6 +1482,17 @@ EOF
   check_backup_volume "backup trend recovering: no countdown" \
         100 no "$(backup_seed 7200 -10485760)" \
         "NOT shrinking" BACKUP_NO_FILE=1
+  # EI-25211496463956189: a firing alarm names what occupies the volume, and tells a
+  # backup output from everything else. A volume of its own keeps the list to two
+  # entries (the du stub sizes every path alike).
+  rm -rf "${t:?}/vol"; mkdir -p "$t/vol/dump/pg/papercusp" "$t/vol/offload"
+  : > "$t/vol/dump/pg/papercusp/toc.dat"
+  check_backup_volume "backup volume red: names a non-backup consumer" \
+        0 yes "" "/vol/offload  \\[NOT a backup output\\]" \
+        BACKUP_ALERT_FORCE=1 BACKUP_VOLUME_PATH="$t/vol" BACKUP_DUMP_DIR="$t/vol/dump"
+  check_backup_volume "backup volume red: tags the dump directory as a backup output" \
+        0 yes "" "/vol/dump  \\[backup output\\]" \
+        BACKUP_ALERT_FORCE=1 BACKUP_VOLUME_PATH="$t/vol" BACKUP_DUMP_DIR="$t/vol/dump"
   printf '  ---- %d passed, %d failed (post backup-volume block)\n' "$p" "$f"
 
   # ── WI-38830 recurrence guard: signal (f), TMPDIR entry count ─────────────
