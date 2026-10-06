@@ -1217,6 +1217,55 @@ propagate_test_run_scope() {
   fi
 }
 
+# ── does the guard's test_runs row actually EXIST? (WI-10006245) ──────────────
+# A caught mutant is only bindable evidence if the ledger holds its FAIL row.
+# The Vitest ledger reporter is fail-soft (D-007): a write that times out or is
+# refused is swallowed. Three concurrent overlay probes (2026-10-06) printed
+# verdict=caught while no mutant row ever landed, and nothing said so until a
+# bind found nothing. So each guard phase names a receipt file
+# (PAPERCUSP_TEST_RUN_RECEIPT_FILE); the reporter appends one JSON line per row
+# it tried to write, and this summary travels on MUTATION_PROBE_RESULT:
+#   none                     no ledger writer ran (a non-Vitest guard, or a
+#                            runner that executes outside this process tree)
+#   test_runs:<id>[,<id>]    every row landed — bind from these ids
+#   missing:<reason>         rows were attempted and NONE landed
+#   partial:<ids>;missing:<n>:<reason>
+# Per file the best outcome wins (inserted > timeout > failed): a flush that
+# timed out can still land and append its own `inserted` line before exit.
+test_run_receipt_file() {
+  printf '%s/test-run-receipts.%s.jsonl' "$SCRATCH" "$1"
+}
+
+summarize_ledger_receipts() {
+  local file="$1"
+  if [ ! -s "$file" ]; then
+    printf 'none'
+    return 0
+  fi
+  node -e '
+    const fs = require("fs");
+    const rank = { inserted: 3, timeout: 2, failed: 1 };
+    const best = new Map();
+    for (const line of fs.readFileSync(process.argv[1], "utf8").split("\n")) {
+      if (!line.trim()) continue;
+      let r;
+      try { r = JSON.parse(line); } catch { continue; }
+      if (!r || typeof r.filePath !== "string" || !rank[r.outcome]) continue;
+      const prev = best.get(r.filePath);
+      if (!prev || rank[r.outcome] > rank[prev.outcome]) best.set(r.filePath, r);
+    }
+    const clean = (s) => String(s).replace(/[^A-Za-z0-9_.:-]+/g, "_").slice(0, 80);
+    const rows = [...best.values()];
+    const ids = rows.filter((r) => r.outcome === "inserted").map((r) => clean(r.id));
+    const lost = rows.filter((r) => r.outcome !== "inserted");
+    const reason = lost.length ? clean(lost[0].outcome + "_" + (lost[0].reason || "unknown")) : "";
+    if (!rows.length) process.stdout.write("none");
+    else if (!lost.length) process.stdout.write("test_runs:" + ids.join(","));
+    else if (!ids.length) process.stdout.write("missing:" + reason);
+    else process.stdout.write("partial:" + ids.join(",") + ";missing:" + lost.length + ":" + reason);
+  ' "$file" 2>/dev/null || printf 'unreadable'
+}
+
 # ── the in-tree DIRTY-WINDOW ceiling (EI-23809205858633494) ──────────────────
 # --in-tree holds the TRACKED file mutated for exactly as long as the guard
 # child runs, so every second inside that child that is NOT measurement is pure
@@ -1268,8 +1317,11 @@ run_guard() {
   local phase="$1" label="$2" cmd="$3" output="$4" rc attempt guard_started guard_elapsed
   for attempt in 1 2; do
     log "running $label: $cmd"
+    # A retried attempt must not inherit the first attempt's receipts.
+    rm -f "$(test_run_receipt_file "$phase")"
     (
       export PAPERCUSP_MUTATION_PHASE="$phase"
+      export PAPERCUSP_TEST_RUN_RECEIPT_FILE="$(test_run_receipt_file "$phase")"
       # A deliberate baseline/mutant result is falsifiability evidence, not a
       # measurement of the repository's health. Keep the marker scoped to the
       # supervised child so it reaches every test process without leaking into
@@ -2228,6 +2280,11 @@ log "mutant applied: ${ORIG_SUM:0:8} -> changed ($TARGET_MODE)"
 CMD="${TEST_CMD//\{\}/$GUARD_SUBJECT}"
 run_guard mutant "mutant guard" "$CMD" "$MUTANT_LOG"
 TEST_RC=$?
+MUTANT_LEDGER="$(summarize_ledger_receipts "$(test_run_receipt_file mutant)")"
+case "$MUTANT_LEDGER" in
+  missing:*|partial:*|unreadable)
+    log "⚠️  mutant ledger: $MUTANT_LEDGER — the guard ran, but its test_runs row did not land (WI-10006245). There is no mutant FAIL row to bind as evidence: re-run the probe, or bind from a row that exists." ;;
+esac
 
 # A guard is falsifiable when it FAILS on the mutant. Report the verdict in
 # those terms rather than leaking the raw exit code, because "the probe
@@ -2342,8 +2399,11 @@ fi
 # as evidence. 'ok' means the mutant was confirmed to still be a loadable
 # program, so a caught verdict is about the assertions; 'unchecked*' means no
 # checker applied to this subject and the caught verdict carries that caveat.
-printf 'MUTATION_PROBE_RESULT verdict=%s expected=%s target=%s baseline_exit=%d guard_exit=%d mutant_parse=%s assertion_evidence=%s relocation=%s\n' \
-  "$VERDICT" "$EXPECT" "$TARGET_MODE" "$BASELINE_RC" "$TEST_RC" "$MUTANT_PARSE" "$MUTANT_ASSERTION_EVIDENCE" "$RELOCATION_USED"
+# mutant_ledger says whether the mutant's test_runs row exists (see
+# summarize_ledger_receipts): a caught verdict with missing:* is a real catch
+# that left nothing to bind.
+printf 'MUTATION_PROBE_RESULT verdict=%s expected=%s target=%s baseline_exit=%d guard_exit=%d mutant_parse=%s assertion_evidence=%s relocation=%s mutant_ledger=%s\n' \
+  "$VERDICT" "$EXPECT" "$TARGET_MODE" "$BASELINE_RC" "$TEST_RC" "$MUTANT_PARSE" "$MUTANT_ASSERTION_EVIDENCE" "$RELOCATION_USED" "$MUTANT_LEDGER"
 
 # One JSON record per probe, copyable into an operational evidence artifact's
 # `mutationProbes` array. argv is the exact vector received by this invocation;
@@ -2361,6 +2421,7 @@ REPLAY_RECORD="$(
   MUTATION_PROBE_MUTANT_PARSE="$MUTANT_PARSE" \
   MUTATION_PROBE_ASSERTION_EVIDENCE="$MUTANT_ASSERTION_EVIDENCE" \
   MUTATION_PROBE_RELOCATION="$RELOCATION_USED" \
+  MUTATION_PROBE_MUTANT_LEDGER="$MUTANT_LEDGER" \
   perl -MJSON::PP -e '
     print encode_json({
       schemaVersion => 1,
@@ -2378,6 +2439,7 @@ REPLAY_RECORD="$(
         mutantParse => $ENV{MUTATION_PROBE_MUTANT_PARSE},
         assertionEvidence => $ENV{MUTATION_PROBE_ASSERTION_EVIDENCE},
         relocation => $ENV{MUTATION_PROBE_RELOCATION},
+        mutantLedger => $ENV{MUTATION_PROBE_MUTANT_LEDGER},
       },
     });
   ' -- "${ORIGINAL_ARGS[@]}"

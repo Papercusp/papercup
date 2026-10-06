@@ -241,6 +241,78 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
     expect(read()).toBe(ORIGINAL);
   });
 
+  describe('mutant_ledger: whether the mutant test_runs row exists (WI-10006245)', () => {
+    /** A guard that plays the ledger reporter: append receipt lines per phase, then judge the subject. */
+    const guardWritingReceipts = (byPhase: Record<string, readonly object[]>) => {
+      const writes = Object.entries(byPhase)
+        .map(([phase, lines]) => {
+          // printf reuses its format for every argument: one JSON line per argument.
+          const args = lines.map((line) => `'${JSON.stringify(line).replace(/'/g, "'\\''")}'`).join(' ');
+          return `if [ "$PAPERCUSP_MUTATION_PHASE" = ${phase} ]; then printf '%s\\n' ${args} >> "$PAPERCUSP_TEST_RUN_RECEIPT_FILE"; fi`;
+        })
+        .join('; ');
+      return `test -n "$PAPERCUSP_TEST_RUN_RECEIPT_FILE" || exit 3; ${writes}${writes ? '; ' : ''}grep -q '^beta$' {}`;
+    };
+    const resultOf = (out: string) => {
+      const line = out.match(/^MUTATION_PROBE_RESULT .+$/m)?.[0] ?? '';
+      const evidence = out.match(/^MUTATION_PROBE_EVIDENCE_JSON=(.+)$/m)?.[1];
+      return { line, ledger: evidence ? JSON.parse(evidence).result.mutantLedger : undefined };
+    };
+
+    it('reports a caught mutant whose row never landed as missing, with the reason', () => {
+      const { code, out } = runProbeIO([
+        '--file', subject, '--mutate', 's/beta/BETA/',
+        '--test', guardWritingReceipts({
+          mutant: [{ filePath: 'a.test.ts', status: 'fail', outcome: 'failed', reason: 'pg_unavailable' }],
+        }),
+      ]);
+      expect(code, out).toBe(0);
+      const { line, ledger } = resultOf(out);
+      expect(line).toMatch(/verdict=caught .* mutant_ledger=missing:failed_pg_unavailable$/);
+      expect(ledger).toBe('missing:failed_pg_unavailable');
+      expect(out).toMatch(/mutant ledger: missing:failed_pg_unavailable/);
+      expect(read()).toBe(ORIGINAL);
+    });
+
+    it('names the landed row id, preferring a late insert over an earlier timeout, and ignores baseline receipts', () => {
+      const { code, out } = runProbeIO([
+        '--file', subject, '--mutate', 's/beta/BETA/',
+        '--test', guardWritingReceipts({
+          baseline: [{ filePath: 'a.test.ts', status: 'pass', outcome: 'failed', reason: 'pg_unavailable' }],
+          mutant: [
+            { filePath: 'a.test.ts', status: 'fail', outcome: 'timeout', reason: 'flush_budget_30000ms' },
+            { filePath: 'a.test.ts', status: 'fail', outcome: 'inserted', id: '4242' },
+          ],
+        }),
+      ]);
+      expect(code, out).toBe(0);
+      expect(resultOf(out).line).toMatch(/ mutant_ledger=test_runs:4242$/);
+      expect(resultOf(out).ledger).toBe('test_runs:4242');
+      expect(out).not.toMatch(/mutant ledger: /);
+    });
+
+    it('reports partial when only some mutant rows landed', () => {
+      const { out } = runProbeIO([
+        '--file', subject, '--mutate', 's/beta/BETA/',
+        '--test', guardWritingReceipts({
+          mutant: [
+            { filePath: 'a.test.ts', status: 'fail', outcome: 'inserted', id: '7' },
+            { filePath: 'b.test.ts', status: 'fail', outcome: 'timeout', reason: 'pg_insert_timeout_15000ms' },
+          ],
+        }),
+      ]);
+      expect(resultOf(out).ledger).toBe('partial:7;missing:1:timeout_pg_insert_timeout_15000ms');
+    });
+
+    it('says none when no ledger writer ran in the guard', () => {
+      const { code, out } = runProbeIO([
+        '--file', subject, '--mutate', 's/beta/BETA/', '--test', guardWritingReceipts({}),
+      ]);
+      expect(code, out).toBe(0);
+      expect(resultOf(out).line).toMatch(/ mutant_ledger=none$/);
+    });
+  });
+
   it('does not invent scope for an explicitly unscoped caller', () => {
     const env = { ...process.env };
     for (const key of [
