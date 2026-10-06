@@ -20,6 +20,7 @@ const bindingSchema = z.object({
   specId: z.string().min(1).max(200), specRevision: z.number().int().positive(),
   testPath: z.string().min(1).max(500),
   sourcePaths: repoFilesEvidenceMeasurementSchema.shape.sourcePaths,
+  sourceGlobs: repoFilesEvidenceMeasurementSchema.shape.sourceGlobs,
   // The ONE recorder taxonomy (EI-24434635346407728); a label the ledger row contradicts
   // is still refused as a layer mismatch below, so widening the vocabulary grants nothing.
   testLayer: z.enum(RECORDED_TEST_LAYERS),
@@ -200,7 +201,9 @@ export async function prepareTestEvidence(request: Request, runId: string, files
     const testPath = relative(scope.root, absolute).replaceAll('\\', '/');
     const measurement = repoFilesEvidenceMeasurementSchema.parse({ schemaVersion: 1, kind: 'repo-files',
       ...(scope.rootHarnessSlug ? { rootHarnessSlug: scope.rootHarnessSlug } : {}),
-      sourcePaths: binding.sourcePaths, testPaths: [testPath] });
+      sourcePaths: binding.sourcePaths,
+      ...(binding.sourceGlobs ? { sourceGlobs: binding.sourceGlobs } : {}),
+      testPaths: [testPath] });
     const fingerprints = await deps.measure(scope.root, measurement);
     const pin = await pinFor(scope.root, measurement, fingerprints, deps);
     const normalized = { ...binding, testPath };
@@ -247,6 +250,40 @@ export async function retractRefusedTestEvidence(prepared: Prepared[], runId: st
   return { status: failures.length === 0 ? 'not-recorded' as const : 'retirement-incomplete' as const,
     reason: refusal, retiredCount: bindingIds.length, bindingIds: bindingIds.slice(0, 20),
     omitted: Math.max(0, bindingIds.length - 20), failures: failures.slice(0, 20) };
+}
+
+function canonicalFilePath(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(path);
+  }
+}
+
+/**
+ * The run's counts for one bound test file, matched by FILE IDENTITY rather than key spelling
+ * (WI-10006596). `byFile` keys are relative to `result.root`, but a checkout reached through a
+ * symlink (e.g. `papercupai-workspace/email` -> `.papercusp-workspaces/.../apps/email`) gets
+ * Vitest's REALPATH back, so the same file is keyed `../../.papercusp-workspaces/.../tests/x.test.ts`
+ * while the binding says `tests/x.test.ts`. An exact-key miss used to settle a passing proof as
+ * outcome:'unknown', executed:false.
+ */
+type TestFilesByFile = Extract<TestFilesCoreResult, { error?: undefined }>['byFile'];
+
+export function byFileCountsFor(
+  result: { byFile?: TestFilesByFile; root?: string },
+  testPath: string,
+): TestFilesByFile[string] | undefined {
+  const byFile = result.byFile;
+  if (!byFile) return undefined;
+  const exact = byFile[testPath];
+  if (exact || !result.root) return exact;
+  const base = result.root;
+  const target = canonicalFilePath(isAbsolute(testPath) ? testPath : resolve(base, testPath));
+  for (const [key, counts] of Object.entries(byFile)) {
+    if (canonicalFilePath(isAbsolute(key) ? key : resolve(base, key)) === target) return counts;
+  }
+  return undefined;
 }
 
 export function testEvidenceOutcome(
@@ -640,6 +677,7 @@ function handBoundTestBinding(
     specRevision: row.specRevision,
     testPath,
     sourcePaths: measurement.sourcePaths,
+    ...(measurement.sourceGlobs ? { sourceGlobs: measurement.sourceGlobs } : {}),
     testLayer: values.testLayer,
     ...(scenarioIds && scenarioIds.length > 0 ? { scenarioIds } : {}),
     ...(causalPairIds && causalPairIds.length === 1 ? { causalPairId: causalPairIds[0] } : {}),
