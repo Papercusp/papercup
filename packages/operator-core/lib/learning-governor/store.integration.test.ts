@@ -106,6 +106,120 @@ describe('per-cycle run reservations', () => {
     workspaceId: WS, loopId, requestedUsd, cycle: { runId, budgetUsd },
   });
 
+  const resourceBudget = { inputTokens: 24, outputTokens: 8, requestsPerArm: 2, armIds: ['judge', 'proposer'] };
+  const registerResources = async (budget = resourceBudget) => {
+    const loopId = await register();
+    await registerLearningLoop(sql, { workspaceId: WS, loopId, meta: { reservationResourceBudget: budget } });
+    return loopId;
+  };
+  const resourceRequest = (loopId: string, runId: string, armId = 'judge') => ({
+    ...request(loopId, runId, 1), cycle: { runId, budgetUsd: 10,
+      resources: { armId, inputTokens: 12, outputTokens: 4 },
+      expectedResourceBudget: { ...resourceBudget, armIds: [...resourceBudget.armIds] } },
+  });
+
+  it('atomically bounds concurrent cycle resources and gives another run independent capacity', async () => {
+    const loopId = await registerResources();
+    const runId = randomUUID();
+    const results = await Promise.all(Array.from({ length: 3 }, () =>
+      reserveLearningSpend(sql, resourceRequest(loopId, runId))));
+    expect(results.filter(r => r.ok)).toHaveLength(2);
+    expect(results.filter(r => !r.ok)).toEqual([expect.objectContaining({ reason: 'resource-cap-exceeded' })]);
+    const rows = await listLearningSpendReservations(sql, { workspaceId: WS, loopId });
+    expect(rows).toHaveLength(2);
+    expect(rows.every(r => r.resources?.armId === 'judge' && r.resources.inputTokens === 12 && r.resources.outputTokens === 4)).toBe(true);
+    expect(await reserveLearningSpend(sql, resourceRequest(loopId, randomUUID()))).toMatchObject({ ok: true });
+  });
+
+  it.each(['used', 'failed', 'cancelled'] as const)('does not refund cycle resource bounds after %s at zero monetary cost', async disposition => {
+    const loopId = await registerResources();
+    const runId = randomUUID();
+    for (let n = 0; n < 2; n++) {
+      const admitted = await reserveLearningSpend(sql, resourceRequest(loopId, runId));
+      if (!admitted.ok) throw new Error('resource attempt must grant');
+      expect(await settleLearningSpend(sql, { workspaceId: WS, reservationId: admitted.reservation.id,
+        disposition, usedUsd: 0, accumulate: false })).toMatchObject({ ok: true });
+    }
+    expect(await reserveLearningSpend(sql, resourceRequest(loopId, runId, 'proposer')))
+      .toMatchObject({ ok: false, reason: 'resource-cap-exceeded' });
+    expect((await getLearningLoop(sql, { workspaceId: WS, loopId }))?.spentUsd).toBe(0);
+  });
+
+  it('enforces per-arm request counts independently of the aggregate token limits', async () => {
+    const budget = { ...resourceBudget, inputTokens: 120, outputTokens: 40 };
+    const loopId = await registerResources(budget);
+    const runId = randomUUID();
+    const input = resourceRequest(loopId, runId);
+    input.cycle.expectedResourceBudget = { ...budget, armIds: [...budget.armIds] };
+    for (let n = 0; n < 2; n++) expect(await reserveLearningSpend(sql, input)).toMatchObject({ ok: true });
+    expect(await reserveLearningSpend(sql, input)).toMatchObject({ ok: false, reason: 'resource-cap-exceeded' });
+    input.cycle.resources.armId = 'proposer';
+    expect(await reserveLearningSpend(sql, input)).toMatchObject({ ok: true });
+  });
+
+  it.each(['missing', 'unregistered', 'stale', 'invented-arm', 'invalid-output', 'lifetime-binding'])(
+    'refuses unsupported cycle resource authority (%s) without inserting', async mismatch => {
+      const loopId = mismatch === 'unregistered' ? await register() : await registerResources();
+      const input = resourceRequest(loopId, randomUUID());
+      const invalidInput = mismatch === 'missing' ? request(loopId, input.cycle.runId, 1) : input;
+      if (mismatch === 'stale') input.cycle.expectedResourceBudget.outputTokens++;
+      if (mismatch === 'invented-arm') input.cycle.resources.armId = 'invented';
+      if (mismatch === 'invalid-output') input.cycle.resources.outputTokens = 0;
+      if (mismatch === 'lifetime-binding') await registerLearningLoop(sql, { workspaceId: WS, loopId,
+        meta: { reservationBinding: 'a'.repeat(64), reservationResourceBudget: resourceBudget } });
+      expect(await reserveLearningSpend(sql, invalidInput)).toMatchObject({ ok: false });
+      expect(await listLearningSpendReservations(sql, { workspaceId: WS, loopId })).toEqual([]);
+    },
+  );
+
+  it('refuses resource admission when prior same-run monetary rows lack resource evidence', async () => {
+    const loopId = await register();
+    const runId = randomUUID();
+    expect(await reserveLearningSpend(sql, request(loopId, runId, 1))).toMatchObject({ ok: true });
+    await registerLearningLoop(sql, { workspaceId: WS, loopId, meta: { reservationResourceBudget: resourceBudget } });
+    expect(await reserveLearningSpend(sql, resourceRequest(loopId, runId)))
+      .toMatchObject({ ok: false, reason: 'resource-accounting-incomplete' });
+    expect(await reserveLearningSpend(sql, resourceRequest(loopId, randomUUID()))).toMatchObject({ ok: true });
+  });
+
+  it('snapshots cycle resources before a transaction wait can mutate their caller', async () => {
+    const loopId = await registerResources();
+    const input = resourceRequest(loopId, randomUUID());
+    let resume!: () => void;
+    const gate = new Promise<void>(resolve => { resume = resolve; });
+    const gatedSql = new Proxy(sql, { get(target, key) {
+      if (key === 'begin') return async (run: (tx: postgres.TransactionSql) => Promise<unknown>) => {
+        await gate; return target.begin(run);
+      };
+      return Reflect.get(target, key);
+    } });
+    const pending = reserveLearningSpend(gatedSql, input);
+    input.cycle.resources.outputTokens = 999;
+    input.cycle.expectedResourceBudget.outputTokens = 999;
+    input.cycle.expectedResourceBudget.armIds.push('invented');
+    resume();
+    expect(await pending).toMatchObject({ ok: true, reservation: {
+      resources: { armId: 'judge', inputTokens: 12, outputTokens: 4 },
+    } });
+  });
+
+  it('cannot renew the same run resource cap by changing the registered policy', async () => {
+    const loopId = await registerResources();
+    const runId = randomUUID();
+    const first = await reserveLearningSpend(sql, resourceRequest(loopId, runId));
+    if (!first.ok) throw new Error('first resource attempt must grant');
+    const largerBudget = { ...resourceBudget, inputTokens: 240, outputTokens: 80, requestsPerArm: 20 };
+    await registerLearningLoop(sql, { workspaceId: WS, loopId, meta: { reservationResourceBudget: largerBudget } });
+    const input = resourceRequest(loopId, runId);
+    input.cycle.expectedResourceBudget = { ...largerBudget, armIds: [...largerBudget.armIds] };
+    expect(await reserveLearningSpend(sql, input)).toMatchObject({ ok: false, reason: 'resource-accounting-incomplete' });
+    input.cycle.runId = randomUUID();
+    expect(await reserveLearningSpend(sql, input)).toMatchObject({ ok: true });
+    // Settlement checks persisted admission, even after the policy changes.
+    expect(await settleLearningSpend(sql, { workspaceId: WS, reservationId: first.reservation.id,
+      disposition: 'used', usedUsd: 0.5, accumulate: false })).toMatchObject({ ok: true });
+  });
+
   it('clamps simultaneous attempts to one run cap and gives another run independent capacity', async () => {
     const loopId = await register();
     const runId = randomUUID();
