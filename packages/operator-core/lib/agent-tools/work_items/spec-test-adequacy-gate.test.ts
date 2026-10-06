@@ -116,10 +116,17 @@ function listedEvidence(over: Partial<ListedEvidence> = {}): ListedEvidence {
     createdBy: 'su-test',
     createdAt: '2026-08-20T00:01:31.000Z',
     ...evidence(),
-    testRunProvenance: null,
+    // Evaluator revision 4 (WI-10006856): a mutation/counterexample target only establishes
+    // falsifiability when its run's canonical test FILE also has a successful current test
+    // binding on the same clause revision, matched by testRunProvenance.filePath. A null
+    // provenance can never link, so the whole suite rated falsifiability `unknown`. Both the
+    // test binding and counterexampleEvidence() (which spreads this) share one file.
+    testRunProvenance: { filePath: RECONNECT_TEST_PATH, commitSha: 'abc123', worktreeDirty: false },
     ...over,
   };
 }
+
+const RECONNECT_TEST_PATH = 'packages/reconnect/reconnect.test.ts';
 
 /**
  * The evaluator requires a successful ledger-backed negative control for falsifiability, TARGETED
@@ -672,7 +679,10 @@ describe('specTestAdequacyCompletionGate', () => {
 
     expect(result).toMatchObject({ ok: false, applicable: true, retryable: true });
     if (!result.ok) {
-      expect(result.reason).toContain('unknown [freshness]');
+      // Freshness must be a NAMED blocker. It is no longer the only one: under evaluator
+      // revision 4 a non-current test binding also cannot corroborate the counterexample's
+      // canonical test file, so falsifiability blocks beside it (WI-10006856).
+      expect(result.reason).toMatch(/unknown \[[^\]]*\bfreshness\b[^\]]*\]/);
       expect(result.reason).toContain('Current fingerprints are missing for: test:reconnect');
       expect(result.reason).toContain('testFingerprint omitted');
     }
@@ -746,7 +756,8 @@ describe('specTestAdequacyCompletionGate', () => {
 
     expect(result).toMatchObject({ ok: false, applicable: true, retryable: true });
     if (!result.ok) {
-      expect(result.reason).toContain('fail [freshness]');
+      // See the omitted-dimension case above: freshness must be named, falsifiability may join it.
+      expect(result.reason).toMatch(/fail \[[^\]]*\bfreshness\b[^\]]*\]/);
       expect(result.reason).toContain('testFingerprint mismatched');
       expect(result.reason).not.toContain('testFingerprint omitted');
     }
