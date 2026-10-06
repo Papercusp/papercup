@@ -1500,6 +1500,16 @@ describe('Kopia managed entrypoint contract', () => {
   // moment the dump is due (above) still stopped every sweep: 12 of 14 preemptions
   // since 2026-09-30 23:50Z were the dump, and the dumps went 18h without an off-host
   // copy. Between two OVERDUE producers the one whose deadline passed first goes first.
+  // The "keeps holding while making progress" cases. The guard stamps progress in
+  // whole seconds and the child forks `sleep` per loop, so on a loaded host (load
+  // ~150 measured 2026-10-06) the gap between two observed counter changes reached
+  // 3s against a 1s limit and a progressing sweep was yielded as stalled. 4s absorbs
+  // that; 160 loops (~8s nominal) keeps the sweep longer than the limit, so a guard
+  // that stopped tracking progress still yields mid-sweep and fails the test.
+  const HOLD_PROGRESS_STALL_SEC = 4;
+  const HOLD_PROGRESS_LOOPS = 160;
+  const HOLD_PROGRESS_TEST_TIMEOUT_MS = 90_000;
+
   function edfScenario(opts: {
     extensionSec: number;
     dumpAgeSec: number;
@@ -1558,7 +1568,7 @@ describe('Kopia managed entrypoint contract', () => {
           DB_LOG: dbLog,
           DB_RAN: dbRan,
         },
-        timeout: 30_000,
+        timeout: 75_000,
       },
     );
     const hotOut = existsSync(hotLog) ? readFileSync(hotLog, 'utf8') : 'missing';
@@ -1631,15 +1641,23 @@ describe('Kopia managed entrypoint contract', () => {
 
   it('keeps holding while the sweep is making I/O progress', () => {
     // The hot child advances the progress counter on every loop, so a stall limit
-    // shorter than its runtime never trips.
-    const r = edfScenario({ extensionSec: 60, dumpAgeSec: 12, hotLoops: 60, progressStallSec: 1, hotWritesProgress: true });
+    // shorter than its runtime never trips. HOLD_PROGRESS_* keeps the sweep ~2x the
+    // limit (a guard that stopped tracking progress would still yield mid-sweep)
+    // while tolerating multi-second scheduling gaps on a loaded host.
+    const r = edfScenario({
+      extensionSec: 60,
+      dumpAgeSec: 12,
+      hotLoops: HOLD_PROGRESS_LOOPS,
+      progressStallSec: HOLD_PROGRESS_STALL_SEC,
+      hotWritesProgress: true,
+    });
 
     expect(r.scenario.stdout, r.evidence).toContain('db_rc=0 hot_rc=0');
     expect(r.hotOut, r.evidence).toContain('reason=holder-earlier-deadline');
     expect(r.hotOut, r.evidence).not.toContain('reason=holder-stalled');
     expect(r.hotOut, r.evidence).not.toContain('result=stopping-during-run');
     expect(r.dbRanAt, r.evidence).toBeGreaterThanOrEqual(r.hotDoneAt);
-  });
+  }, HOLD_PROGRESS_TEST_TIMEOUT_MS);
 
   it('yields a sweep whose I/O has stalled instead of holding a due dump for the whole extension', () => {
     // Same overdue sweep and waiter, but the progress counter never moves: past the
@@ -1662,7 +1680,7 @@ describe('Kopia managed entrypoint contract', () => {
   // waiting, then was killed at its own 900s budget. --deadline-at-arrival gives such a
   // waiter its arrival as its deadline, so the earliest-deadline hold and the progress
   // check apply to it.
-  function arrivalWaiterScenario(opts: { hotLoops: number; hotWritesProgress: boolean }) {
+  function arrivalWaiterScenario(opts: { hotLoops: number; hotWritesProgress: boolean; progressStallSec?: number }) {
     const fx = fixture();
     const { dir } = fx;
     const progressPath = join(dir, 'io.stat');
@@ -1696,7 +1714,7 @@ describe('Kopia managed entrypoint contract', () => {
           KOPIA_BACKUP_MAX_DEFER_SEC: '10',
           KOPIA_BACKUP_PRIORITY_HOLD_EXTENSION_SEC: '60',
           KOPIA_BACKUP_PROGRESS_PATH: progressPath,
-          KOPIA_BACKUP_PROGRESS_STALL_SEC: '1',
+          KOPIA_BACKUP_PROGRESS_STALL_SEC: String(opts.progressStallSec ?? 1),
           HOT_PROGRESS: opts.hotWritesProgress ? progressPath : '',
           HOT_READY: join(dir, 'hot-ready'),
           HOT_DONE: hotDone,
@@ -1705,7 +1723,7 @@ describe('Kopia managed entrypoint contract', () => {
           WAIT_LOG: waitLog,
           WAIT_RAN: waitRan,
         },
-        timeout: 30_000,
+        timeout: 75_000,
       },
     );
     const hotOut = existsSync(hotLog) ? readFileSync(hotLog, 'utf8') : 'missing';
@@ -1720,14 +1738,18 @@ describe('Kopia managed entrypoint contract', () => {
   }
 
   it('lets an overdue sweep that is making progress finish before a --deadline-at-arrival waiter', () => {
-    const r = arrivalWaiterScenario({ hotLoops: 60, hotWritesProgress: true });
+    const r = arrivalWaiterScenario({
+      hotLoops: HOLD_PROGRESS_LOOPS,
+      hotWritesProgress: true,
+      progressStallSec: HOLD_PROGRESS_STALL_SEC,
+    });
 
     expect(r.scenario.stdout, r.evidence).toContain('wait_rc=0 hot_rc=0');
     expect(r.hotOut, r.evidence).toContain('result=staleness-override-armed');
     expect(r.hotOut, r.evidence).toContain('result=holding-against-priority-waiter reason=holder-earlier-deadline');
     expect(r.hotOut, r.evidence).not.toContain('result=stopping-during-run');
     expect(r.waitRanAt, r.evidence).toBeGreaterThanOrEqual(r.hotDoneAt);
-  });
+  }, HOLD_PROGRESS_TEST_TIMEOUT_MS);
 
   it('still yields to a --deadline-at-arrival waiter once the sweep has stalled', () => {
     const r = arrivalWaiterScenario({ hotLoops: 400, hotWritesProgress: false });
