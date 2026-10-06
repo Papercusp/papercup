@@ -1042,6 +1042,13 @@ export interface CreateIssueInput {
   /** Plan provenance carried through the unified work-item create path. */
   sourcePlanSlug?: string | null;
   sourcePlanItemIds?: string[] | null;
+  /**
+   * Owner-directive provenance (P-005 of directive-visibility-and-ownership-2026-09-22):
+   * the `orders` id this item was filed to carry out. Persisted to the base row's
+   * `directive_ref` in the create transaction, which is what `orders:get` / the
+   * turn-start banner read to show the directive as in-flight (WI-10006622).
+   */
+  directiveRef?: number | null;
   scope?: string; // omit → workspace platform Pot; or 'harness:<slug>'. 'operator'/global auto-homes to the platform Pot (createIssue, P-005).
   foundDuring?: string;
   topics?: string[];
@@ -1182,6 +1189,10 @@ export async function createIssue(input: CreateIssueInput): Promise<EngineerIssu
         .filter((itemId): itemId is string => typeof itemId === 'string' && itemId.trim().length > 0)
         .map((itemId) => itemId.trim())
     : null;
+  const directiveRef =
+    typeof input.directiveRef === 'number' && Number.isInteger(input.directiveRef) && input.directiveRef > 0
+      ? input.directiveRef
+      : null;
   const issue = await boundedOrgTxn(async (tx) => {
     const id = input.id ?? (await nextIssueId(tx));
     const rows = await tx<IssueRowDb[]>`
@@ -1208,6 +1219,18 @@ export async function createIssue(input: CreateIssueInput): Promise<EngineerIssu
         UPDATE harness_shared.work_items
            SET source_plan_slug = ${sourcePlanSlug},
                source_plan_item_ids = ${sourcePlanItemIds}::text[]
+         WHERE workspace_id = ${issuesScopeWorkspace()}
+           AND feature_id = ${inserted.id}
+           AND item_kind = ${input.kind ?? 'bug'}`;
+    }
+    // WI-10006622: owner-directive provenance takes the same route, for the same reason —
+    // the view's INSTEAD OF INSERT trigger does not thread `directive_ref` either. It used
+    // to be dropped entirely for issue-family kinds, so a directive carried by a
+    // bug/change/task kept rendering as open-unworked while someone was on it.
+    if (directiveRef !== null) {
+      await tx`
+        UPDATE harness_shared.work_items
+           SET directive_ref = ${directiveRef}
          WHERE workspace_id = ${issuesScopeWorkspace()}
            AND feature_id = ${inserted.id}
            AND item_kind = ${input.kind ?? 'bug'}`;
