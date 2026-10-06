@@ -382,6 +382,45 @@ export interface MutationTargetRefusal {
  * Legacy `sourceValId` bindings and unknown specs fall through to the store, which owns those
  * refusals.
  */
+/**
+ * The commit a derived binding must be measured at: bind-from-test-run stamps
+ * `details.testRun.asCommitted` on a clean run that executed in a disposable clone.
+ * Undefined for every other binding, which keeps the live checkout measurement.
+ */
+export function asCommittedRunOf(details: unknown): AsCommittedRun | undefined {
+  const asCommitted = (details as { testRun?: { asCommitted?: { commitSha?: unknown; repoPrefix?: unknown } } } | null)
+    ?.testRun?.asCommitted;
+  if (typeof asCommitted?.commitSha !== 'string') return undefined;
+  return {
+    commitSha: asCommitted.commitSha,
+    repoPrefix: typeof asCommitted.repoPrefix === 'string' ? asCommitted.repoPrefix : null,
+  };
+}
+
+export type AsCommittedRun = { commitSha: string; repoPrefix: string | null };
+
+/**
+ * D-001 (b): a clean commit-stamped run stores the closure bytes AT the commit that ran,
+ * never the live working tree, so later shared-tree movement neither refuses the bind nor
+ * launders freshness on a re-bind of the same run. Every other binding (no run commit, or a
+ * non-repo-files measurement) is measured as before.
+ */
+export async function measureBindingForStore(
+  workspaceId: string,
+  harnessSlug: string,
+  measurement: z.infer<typeof evidenceMeasurementSchema>,
+  asCommitted: AsCommittedRun | undefined,
+  deps: {
+    atCommit?: typeof measureAndPinRepoFilesEvidenceAtCommitForScope;
+    live?: typeof measureAndPinEvidenceForScope;
+  } = {},
+): Promise<Awaited<ReturnType<typeof measureAndPinEvidenceForScope>>> {
+  if (asCommitted && measurement.kind === 'repo-files') {
+    return (deps.atCommit ?? measureAndPinRepoFilesEvidenceAtCommitForScope)(workspaceId, harnessSlug, measurement, asCommitted);
+  }
+  return (deps.live ?? measureAndPinEvidenceForScope)(workspaceId, harnessSlug, measurement);
+}
+
 export async function mutationTargetingRefusal(
   binding: z.infer<typeof bindingSchema>,
   scope: { planSlug: string; harnessSlug: string | undefined; slugArg?: string; harnessArg?: string },
@@ -527,15 +566,7 @@ export default defineTool({
             message: parsed.error.issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`).join('; '),
           };
         }
-        const testRun = (expansion.binding.details as { testRun?: { asCommitted?: { commitSha?: unknown; repoPrefix?: unknown } } })
-          ?.testRun;
-        const asCommitted =
-          typeof testRun?.asCommitted?.commitSha === 'string'
-            ? {
-                commitSha: testRun.asCommitted.commitSha,
-                repoPrefix: typeof testRun.asCommitted.repoPrefix === 'string' ? testRun.asCommitted.repoPrefix : null,
-              }
-            : undefined;
+        const asCommitted = asCommittedRunOf(expansion.binding.details);
         return {
           ok: true,
           binding: parsed.data,
@@ -582,19 +613,14 @@ export default defineTool({
             ...targetingRefusal,
           };
         }
-        // D-001 (b): a clean commit-stamped run stores the closure bytes AT the commit that ran,
-        // never the live working tree, so later shared-tree movement neither refuses this bind
-        // nor launders freshness on a re-bind of the same run.
         const measured = !binding.measurement
           ? null
-          : entry.asCommitted && binding.measurement.kind === 'repo-files'
-            ? await measureAndPinRepoFilesEvidenceAtCommitForScope(
-                measurementScope!.workspaceId,
-                harnessSlug,
-                binding.measurement,
-                entry.asCommitted,
-              )
-            : await measureAndPinEvidenceForScope(measurementScope!.workspaceId, harnessSlug, binding.measurement);
+          : await measureBindingForStore(
+              measurementScope!.workspaceId,
+              harnessSlug,
+              binding.measurement,
+              entry.asCommitted,
+            );
         const { measurement, ...declared } = binding;
         const result = await bindSpecEvidence({
           ...declared,
