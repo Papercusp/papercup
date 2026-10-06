@@ -1696,13 +1696,16 @@ describe('resyncPlanItemLaneNow — inline lane resync off plans:set-item-blocke
   });
 
   it.each([
-    { label: 'empty provenance', prior: [] as string[] },
+    { label: 'empty provenance', prior: [] as string[] | null },
     { label: 'replaced provenance', prior: ['F-old'] },
+    // WI-10006540: no marker at all (first reconcile) owns NO edges, so it must remove none.
+    // Passing undefined instead of [] would select the full-replace contract and drop WI-source.
+    { label: 'no provenance marker', prior: null },
   ])('EI-252075: preserves mixed-family SUCCESS blockers with $label', async ({ prior }) => {
     const plan = 'p-mixed-success';
     const target = stub({
       id: 'F-target', harness: 'sheets', state: 'todo', family: 'feature',
-      payload: {
+      payload: prior === null ? {} : {
         [PLAN_AUTHORED_BLOCKERS_KEY]: { planSlug: plan, itemId: 'P-003', blockerWorkItemIds: prior },
       },
     });
@@ -1714,7 +1717,7 @@ describe('resyncPlanItemLaneNow — inline lane resync off plans:set-item-blocke
       VALUES (${WS}, 'sheets', 'WI-source', 'bug', 'open', '{}'::jsonb, 0, 0)`;
     await edge({ plan, item: 'P-002', srcKind: 'feature', srcRef: 'sheets#F-new' });
     await edge({ plan, item: 'P-003', srcKind: 'feature', srcRef: 'sheets#F-target' });
-    await syncFeatureBlockEdges('sheets', 'F-target', prior);
+    await syncFeatureBlockEdges('sheets', 'F-target', prior ?? []);
     for (const blocker of [
       { kind: 'issue', ref: 'WI-source' },
       { kind: 'feature', ref: 'sheets#F-manual' },
