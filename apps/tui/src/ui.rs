@@ -3649,6 +3649,8 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
         // one does, the way Claude Code and Codex do.
         if app.chat_ctrl_c_exit_armed() {
             footer_hint = QUIET_CTRL_C_EXIT_HINT;
+        } else if app.chat_esc_clear_armed() && !app.chat_input.is_empty() {
+            footer_hint = QUIET_ESC_CLEAR_HINT;
         }
         ("", format!("> {}", app.chat_input), Theme::selected())
     } else if app.chat_composing {
@@ -3815,6 +3817,8 @@ pub const QUIET_SHORTCUTS_HINT: &str = "? for shortcuts";
 pub const QUIET_SEND_HINT: &str = "Enter sends";
 /// The footer hint while a Ctrl+C has armed the exit (P-027, G-11).
 pub const QUIET_CTRL_C_EXIT_HINT: &str = "Press Ctrl+C again to exit";
+/// The footer hint while a first Esc has armed clearing the draft (P-027, G-3).
+pub const QUIET_ESC_CLEAR_HINT: &str = "Esc again to clear";
 
 /// The keys the chat-first message box answers to, listed by `?` (P-021).
 /// Each one is a real binding of the composing arm in `App::on_key`, or of
@@ -3829,11 +3833,11 @@ const CHAT_SHORTCUTS: &[(&str, &str)] = &[
     ("Wheel", "scroll the conversation"),
     ("Drag", "select and copy"),
     ("Shift+drag", "the terminal's own selection"),
-    ("Esc", "stop a reply, or leave the box"),
+    ("Esc", "stop a reply, twice to clear"),
     ("Ctrl+R", "show tool output"),
     ("Ctrl+O", "details"),
     ("Ctrl+Z", "undo"),
-    ("Ctrl+C", "clear the box, or twice to quit"),
+    ("Ctrl+C", "clear, or twice to quit"),
 ];
 
 /// The shortcut list as rows: two columns when both fit, else one.
@@ -9909,6 +9913,23 @@ mod tests {
         let frame = render(&app, 100, 24);
         assert!(!frame.contains(QUIET_CTRL_C_EXIT_HINT), "{frame}");
         assert!(frame.contains(QUIET_SHORTCUTS_HINT), "{frame}");
+    }
+
+    /// P-027 (G-3): after a first Esc on a draft the footer says a second
+    /// one clears it.
+    #[test]
+    fn an_armed_esc_says_a_second_press_clears_the_draft() {
+        let mut app = chat_first_bound_app();
+        app.chat_input = "fix the bug".into();
+        app.chat_cursor = app.chat_input.len();
+        app.chat_esc_armed = Some(std::time::Instant::now());
+        let frame = render(&app, 100, 24);
+        assert!(frame.contains(QUIET_ESC_CLEAR_HINT), "{frame}");
+        assert!(!frame.contains(QUIET_SEND_HINT), "{frame}");
+        app.chat_esc_armed = None;
+        let frame = render(&app, 100, 24);
+        assert!(!frame.contains(QUIET_ESC_CLEAR_HINT), "{frame}");
+        assert!(frame.contains(QUIET_SEND_HINT), "{frame}");
     }
 
     #[test]
