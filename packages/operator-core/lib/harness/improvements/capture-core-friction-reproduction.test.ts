@@ -41,22 +41,36 @@ describe('frictionReproduction (D-011)', () => {
   });
 });
 
-describe('isStrandedToolFailureReview (EI-25176539351759672)', () => {
-  const awaiting = { status: 'unknown', reason: 'corroborated-tool-failure-awaiting-review' };
+describe('isStrandedToolFailureReview (EI-25176539351759672; P-008 / D-038)', () => {
+  // P-008 / D-038: every writer now stamps the one stage reason, so a row that carries it
+  // with no review record is stranded whatever produced it.
+  const awaiting = { status: 'unknown', reason: 'awaiting-agent-review' };
   it('flags an awaiting-review stamp with no review record', () => {
     expect(isStrandedToolFailureReview({ implementationReadiness: awaiting })).toBe(true);
+    expect(isStrandedToolFailureReview({ implementationReadiness: awaiting, agentReview: null })).toBe(true);
+  });
+  it('still flags the two legacy reasons stamped before the P-008 migration', () => {
+    expect(
+      isStrandedToolFailureReview({
+        implementationReadiness: { ...awaiting, reason: 'corroborated-tool-failure-awaiting-review' },
+      }),
+    ).toBe(true);
+    // P-003 / D-022: a triage place whose deployment screen could not answer.
+    expect(
+      isStrandedToolFailureReview({ implementationReadiness: { ...awaiting, reason: 'deployment-freshness-unknown' } }),
+    ).toBe(true);
   });
   it('does not flag an enrolled, ready, or differently-held row', () => {
     expect(isStrandedToolFailureReview({ implementationReadiness: awaiting, agentReview: { status: 'pending' } })).toBe(false);
     expect(isStrandedToolFailureReview({ implementationReadiness: { ...awaiting, status: 'ready' } })).toBe(false);
-    // P-003 / D-022: a triage place whose deployment screen could not answer is stranded too.
     expect(
-      isStrandedToolFailureReview({ implementationReadiness: { ...awaiting, reason: 'deployment-freshness-unknown' } }),
-    ).toBe(true);
-    expect(
-      isStrandedToolFailureReview({ implementationReadiness: { ...awaiting, reason: 'awaiting-agent-review' } }),
+      isStrandedToolFailureReview({
+        implementationReadiness: { status: 'not-ready', reason: 'agent-review-revision-requested' },
+      }),
     ).toBe(false);
-    expect(isStrandedToolFailureReview({ implementationReadiness: { status: 'unknown', reason: 'awaiting-agent-review' } })).toBe(false);
+    expect(
+      isStrandedToolFailureReview({ implementationReadiness: { ...awaiting, reason: 'no-acceptance-evidence-at-creation' } }),
+    ).toBe(false);
     expect(isStrandedToolFailureReview(null)).toBe(false);
   });
 });

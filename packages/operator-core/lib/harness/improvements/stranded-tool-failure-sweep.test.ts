@@ -337,9 +337,14 @@ describe('sweepStrandedToolFailures (executor)', () => {
     expect(h.merge).toHaveBeenCalledWith('EI-review', {
       strandedToolFailureSweep: expect.objectContaining({ outcome: 'review', reason: 'failure-after-last-change' }),
     });
-    // The candidate query is bounded and reads both stranded reasons.
+    // The candidate query is bounded and reads every stranded reason: the one stage
+    // reason (P-008 / D-038) plus the two legacy reasons stamped before its migration.
     const [, params] = h.sql.unsafe.mock.calls[0] as unknown as [string, unknown[]];
-    expect(params).toEqual(['ws-1', ['corroborated-tool-failure-awaiting-review', 'deployment-freshness-unknown'], 200]);
+    expect(params).toEqual([
+      'ws-1',
+      ['awaiting-agent-review', 'corroborated-tool-failure-awaiting-review', 'deployment-freshness-unknown'],
+      200,
+    ]);
   });
 
   it('dry run classifies without writing', async () => {

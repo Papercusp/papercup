@@ -130,7 +130,7 @@ describe('R7 private PostgreSQL delivery contract', () => {
     expect(promoted).toHaveLength(1);
     expect(promoted[0]).toMatchObject({ id, kind: 'change', payload: {
       toolFailureProbation: { class: 'caller', state: 'promoted', reporters: ['su-a', 'su-b'] },
-      implementationReadiness: { status: 'unknown', reason: 'corroborated-tool-failure-awaiting-review' },
+      implementationReadiness: { status: 'unknown', reason: 'awaiting-agent-review' },
     } });
     expect(promoted[0].payload).not.toHaveProperty('lane', 'observation');
     // A further automatic report appends evidence; it cannot downgrade the

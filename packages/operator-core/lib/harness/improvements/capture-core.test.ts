@@ -738,7 +738,7 @@ describe('captureImprovement — correlated tool-failure probation (P-013)', () 
       invokedAt: '2026-09-08T12:00:00Z', failure: metadataToolFailure }, d))
       .toMatchObject({ reason: 'promoted', issue: { id: 'EI-R7' } });
     expect(prior.payload).toMatchObject({ toolFailureProbation: { state: 'promoted', reporters: ['su-a', 'su-b'] },
-      implementationReadiness: { status: 'unknown', reason: 'corroborated-tool-failure-awaiting-review' } });
+      implementationReadiness: { status: 'unknown', reason: 'awaiting-agent-review' } });
     expect(d.created).toHaveLength(0);
   });
 
@@ -924,7 +924,8 @@ describe('captureImprovement — correlated tool-failure probation (P-013)', () 
         toolFailureProbation: { state: 'promoted', reporters: ['su-a', 'su-b'] },
         implementationReadiness: {
           status: 'unknown',
-          reason: 'corroborated-tool-failure-awaiting-review',
+          // P-008 / D-038: a promotion waits in the one review stage, not a probation hold.
+          reason: 'awaiting-agent-review',
         },
       },
     });
