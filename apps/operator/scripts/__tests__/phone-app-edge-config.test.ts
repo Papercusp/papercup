@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
-  TUNNEL, boxWireguard, edgeCoordinates, forwardedPorts, livekitInterfaceInclude,
+  BOX_LOCAL_TABLE, TUNNEL, boxLocalDnat, boxWireguard, edgeCoordinates, forwardedPorts, livekitInterfaces,
   nginxSite, nginxStream, vmNftables, vmWireguard,
 } from "../../../../infra/phone-app/edge/edge-config.mjs";
 import { NON_PUBLIC_V4_SUBNETS, isPublicAddress } from "../../../../infra/phone-app/media-config.mjs";
@@ -72,6 +72,34 @@ describe("phone public media edge tunnel", () => {
     expect(vmWireguard(c, KEY_B)).toContain(`AllowedIPs = ${TUNNEL.box}/32`);
     expect(() => vmWireguard(c, "not a key")).toThrow(/public key/);
     expect(() => boxWireguard(c, `${KEY_A}\nPostUp = curl evil`)).toThrow(/public key/);
+  });
+
+  // WI-10006708: with the edge, LiveKit advertises only the public candidate, so co-located
+  // services (agent worker, livekit-sip) reach it through a box-local DNAT. It must touch only
+  // locally ORIGINATED media to the public IP: never inbound, never the WireGuard endpoint.
+  it("DNATs only locally originated media to the public IP back to the tunnel address", () => {
+    const box = boxWireguard(c, KEY_A);
+    const script = boxLocalDnat(c);
+    expect(box.split("\n").filter((l) => l.startsWith("PostUp = nft "))).toEqual([`PostUp = nft '${script}'`]);
+    expect(box).toContain(`PreDown = nft delete table ip ${BOX_LOCAL_TABLE} 2>/dev/null || true`);
+    expect(script).toContain("type nat hook output priority dstnat;");
+    expect(script).not.toMatch(/hook (prerouting|input|forward|postrouting)/);
+    const dnats = script.match(/dnat to [0-9.]+/g) ?? [];
+    expect(dnats).toEqual(forwardedPorts().map(() => `dnat to ${TUNNEL.box}`));
+    for (const p of forwardedPorts()) {
+      expect(script).toContain(`ip daddr ${c.publicIp} ${p.proto} dport ${p.ports} dnat to ${TUNNEL.box}`);
+    }
+    expect(script).not.toContain(`dport ${TUNNEL.port}`);
+    expect(script).not.toContain("5070");
+    // Wrapped in single quotes by wg-quick's bash eval: a quote inside would split it.
+    expect(script).not.toContain("'");
+    // Idempotent: re-running PostUp replaces the table instead of duplicating rules.
+    expect(script.startsWith(`add table ip ${BOX_LOCAL_TABLE}; delete table ip ${BOX_LOCAL_TABLE}; `)).toBe(true);
+    // nft's one-line grammar rejects a block closed straight into its parent's `}` ("syntax
+    // error, unexpected '}', expecting newline or semicolon" — measured with `nft -c` on
+    // nftables 1.0.9). Every nested block must be terminated with `;` first.
+    expect(script).not.toMatch(/\}\s*\}/);
+    expect(script.endsWith("; }; }")).toBe(true);
   });
 });
 
@@ -154,12 +182,10 @@ describe("phone public media edge TLS front end", () => {
   });
 });
 
-describe("LiveKit picks up the edge tunnel interface", () => {
+describe("LiveKit advertises only public media candidates once the edge is configured", () => {
   function renderIncludes(envOverride: Record<string, string>) {
-    const include = livekitInterfaceInclude(envOverride);
     const rendered = readFileSync(template, "utf8")
-      .replace("${PHONE_LAN_IFACE}", "wlp183s0")
-      .replace("${PHONE_EDGE_IFACE_INCLUDE}", include);
+      .replace("${PHONE_LIVEKIT_INTERFACES}", livekitInterfaces(envOverride));
     const lines = rendered.split("\n");
     const start = lines.indexOf("    includes:");
     expect(start).toBeGreaterThan(0);
@@ -171,17 +197,25 @@ describe("LiveKit picks up the edge tunnel interface", () => {
     return items;
   }
 
-  it("adds the tunnel to interfaces.includes when configured and nothing otherwise", () => {
-    expect(renderIncludes({ PHONE_EDGE_IFACE: "phedge0" })).toEqual(["lo", "wlp183s0", "phedge0"]);
-    expect(renderIncludes({})).toEqual(["lo", "wlp183s0"]);
-    expect(() => livekitInterfaceInclude({ PHONE_EDGE_IFACE: "x\n  use_external_ip: false" })).toThrow();
+  // WI-10006708 / P-002 R-13: LiveKit hands the same candidates to every participant, so a
+  // LAN or loopback interface listed here is handed to every public browser (measured live:
+  // 192.168.4.34 udp/7892 + tcp/7891 reached public callers while the edge was configured).
+  it("lists only the tunnel with an edge, and loopback + LAN without one", () => {
+    expect(renderIncludes({ PHONE_EDGE_IFACE: "phedge0", PHONE_LAN_IFACE: "wlp183s0" })).toEqual(["phedge0"]);
+    expect(renderIncludes({ PHONE_LAN_IFACE: "wlp183s0" })).toEqual(["lo", "wlp183s0"]);
+    expect(() => livekitInterfaces({ PHONE_EDGE_IFACE: "x\n  use_external_ip: false" })).toThrow();
+    expect(() => livekitInterfaces({ PHONE_LAN_IFACE: "wlp183s0\n      - lo" })).toThrow();
+    expect(() => livekitInterfaces({})).toThrow(/PHONE_LAN_IFACE/);
   });
 
-  it("is rendered and persisted by the existing deployer", () => {
+  it("is rendered and persisted by the existing deployer, with no second interface placeholder", () => {
     const deploy = readFileSync(deployScript, "utf8");
     expect(deploy).toMatch(/MEDIA_KEYS=\([^)]*PHONE_EDGE_IFACE[^)]*\)/);
-    expect(deploy).toContain("content=\"${content//'${PHONE_EDGE_IFACE_INCLUDE}'/$PHONE_EDGE_IFACE_INCLUDE}\"");
-    expect(deploy).toContain("edge/edge-config.mjs\" livekit-interface-include");
+    expect(deploy).toContain("content=\"${content//'${PHONE_LIVEKIT_INTERFACES}'/$PHONE_LIVEKIT_INTERFACES}\"");
+    expect(deploy).toContain("PHONE_LAN_IFACE=\"$LAN_IFACE\" \"$NODE_BIN\" \"$HERE/edge/edge-config.mjs\" livekit-interfaces");
+    const tmpl = readFileSync(template, "utf8");
+    expect(tmpl.match(/\$\{PHONE_[A-Z_]*IFACE[A-Z_]*\}/g)).toBeNull();
+    expect(tmpl.match(/\$\{PHONE_LIVEKIT_INTERFACES\}/g)).toHaveLength(1);
   });
 
   it("keeps the edge driver syntactically valid", () => {
