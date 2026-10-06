@@ -145,6 +145,12 @@ export const ALLOWLIST = new Set([
   // file; the pair of guards must allowlist each other or each reds on the other's
   // detector. Added when the client scan landed (2026-08-09) left this lint red.
   'scripts/check-timer-classification.mjs',
+  // Standalone CLI process: the npm install mutex / exec-under-lock wrapper that
+  // `npm run install:safe` and `test:file` launch as their own node process. Its
+  // child-progress heartbeat timer lives and dies with that short-lived process; the
+  // operator host's registry is not in that process, so managedSetInterval would
+  // register into a registry schedule:inventory never reads (WI-10007008).
+  'scripts/npm-install-safe.mjs',
   // worker_threads BODY — runs on the worker's own event loop, so registering there
   // buys nothing this guard is asking for. MEASURED 2026-08-04: the registry's state
   // is pinned per-isolate, so a managedSetInterval call inside a Worker succeeds but

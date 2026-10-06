@@ -79,16 +79,21 @@ kopia_pid_matches() {
 }
 
 cleanup_kopia_pid() {
-  local pid=""
+  local pid="" rc=0
   [ -s "$PID_FILE" ] || return 0
   pid="$(tr -d '[:space:]' <"$PID_FILE" 2>/dev/null || true)"
 
   if kopia_pid_matches "$pid"; then
-    if "$SUDO_BIN" -n -- "$KILL_BIN" -KILL "$pid" >>"$LOG" 2>&1; then
-      echo "CLEANUP: killed exact Kopia PID $pid" >>"$LOG"
-    else
-      echo "WARN: failed to kill exact Kopia PID $pid" >>"$LOG"
-    fi
+    # SIGTERM first so Kopia flushes a partial snapshot of the home walk, which the
+    # next run resumes from; SIGKILL discarded it (kopia_stop_flushing,
+    # EI-25211496463956189).
+    kopia_stop_flushing "$pid" "${KOPIA_HOME_SNAPSHOT_FLUSH_GRACE_SEC:-15}"
+    rc=$?
+    case "$rc" in
+      0) echo "CLEANUP: Kopia PID $pid exited after SIGTERM; its progress was flushed" >>"$LOG" ;;
+      2) echo "CLEANUP: killed exact Kopia PID $pid after SIGTERM grace" >>"$LOG" ;;
+      *) echo "WARN: failed to kill exact Kopia PID $pid" >>"$LOG" ;;
+    esac
   else
     echo "INFO: stale/non-Kopia PID file $PID_FILE; refusing to kill PID ${pid:-<empty>}" >>"$LOG"
   fi
