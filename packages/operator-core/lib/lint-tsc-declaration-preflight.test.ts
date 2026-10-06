@@ -154,16 +154,20 @@ describe('scoped declaration preflight publication (EI-24783793601501800)', () =
     scope,
     selected = 'selected.mjs',
     config = 'valid',
+    immutable,
+    fresh = false,
   }: {
     scope: 'source' | 'declaration' | 'response' | 'typescript' | 'all';
     selected?: string;
     config?: 'valid' | 'missing' | 'malformed';
+    immutable?: 'clone' | 'admission' | 'checkpoint';
+    fresh?: boolean;
   }) {
     const root = mkdtempSync(join(tmpdir(), 'tsc-scoped-declarations-'));
     try {
       const declaration = selected.replace(/\.mjs$/, '.d.mts');
-      const original = 'export declare function answer(): string;\n';
-      const sibling = '// peer declaration bytes must survive the scoped check\n';
+      let original = 'export declare function answer(): string;\n';
+      let sibling = '// peer declaration bytes must survive the scoped check\n';
       writeFileSync(join(root, selected), 'export function answer() { return 42; }\n');
       writeFileSync(join(root, declaration), original);
       writeFileSync(join(root, 'sibling.mjs'), 'export const sibling = true;\n');
@@ -186,12 +190,24 @@ describe('scoped declaration preflight publication (EI-24783793601501800)', () =
       // defaults to the canonical repo root, so use its existing explicit-root API.
       writeFileSync(join(root, 'generate.mts'),
         `import { createRequire } from 'node:module';\n` +
-        `const { generate } = createRequire(import.meta.url)(${JSON.stringify(generatorPath)});\n` +
+        `const { generate, check } = createRequire(import.meta.url)(${JSON.stringify(generatorPath)});\n` +
         `const selection = process.argv.slice(2).find(arg => arg.startsWith('--files='));\n` +
-        `generate(process.cwd(), 'tsconfig.declarations.json', undefined, selection?.slice(8).split(','));\n`);
+        `if (process.argv.includes('--check')) check(process.cwd());\n` +
+        `else generate(process.cwd(), 'tsconfig.declarations.json', undefined, selection?.slice(8).split(','));\n`);
       writeFileSync(join(root, 'package.json'), JSON.stringify({
-        type: 'module', scripts: { 'gen:declarations': `${quote(process.execPath)} ${quote(tsx)} generate.mts` },
+        type: 'module', scripts: {
+          'gen:declarations': `${quote(process.execPath)} ${quote(tsx)} generate.mts`,
+          'gen:declarations:check': `${quote(process.execPath)} ${quote(tsx)} generate.mts --check`,
+        },
       }));
+      if (fresh) {
+        execFileSync(process.execPath, [tsx, join(root, 'generate.mts')], { cwd: root, stdio: 'pipe' });
+        original = readFileSync(join(root, declaration), 'utf8');
+        sibling = readFileSync(join(root, 'sibling.d.mts'), 'utf8');
+        // The generator's freshness check also reads tracked importer suppressions.
+        execFileSync('git', ['init', '-q'], { cwd: root, stdio: 'pipe' });
+        execFileSync('git', ['add', '--', 'consumer.ts'], { cwd: root, stdio: 'pipe' });
+      }
       const paths = [scope === 'declaration' ? declaration : selected, 'consumer.ts'];
       writeFileSync(join(root, 'scope.json'), JSON.stringify(paths));
       const argv = scope === 'all' ? [] : scope === 'response'
@@ -206,8 +222,17 @@ describe('scoped declaration preflight publication (EI-24783793601501800)', () =
         })});\n`);
       let code = 0;
       let output: string;
+      // A fixture explicitly chooses its runtime; the qualifying test runner's
+      // own candidate markers must not turn the local-development controls into
+      // immutable checks when this suite runs inside the gate.
+      const env = {
+        ...process.env,
+        PAPERCUSP_LINT_AS_COMMITTED_CLONE: immutable === 'clone' ? '1' : undefined,
+        PAPERCUSP_ADMISSION_PRECHECK: immutable === 'admission' ? '1' : undefined,
+        PAPERCUSP_TEST_RUN_COMMIT: immutable === 'checkpoint' ? 'a'.repeat(40) : undefined,
+      };
       try {
-        output = execFileSync(process.execPath, [join(root, 'run.mjs')], { encoding: 'utf8', stdio: 'pipe' });
+        output = execFileSync(process.execPath, [join(root, 'run.mjs')], { encoding: 'utf8', stdio: 'pipe', env });
       } catch (error) {
         const failure = error as { status: number; stdout: string; stderr: string };
         code = failure.status;
@@ -249,6 +274,37 @@ describe('scoped declaration preflight publication (EI-24783793601501800)', () =
     expect(result.code, result.output).toBe(0);
     expect(result.output).toContain('emitted 2 of 2 declaration file(s)');
     expect(result.siblingBytes).toContain('sibling: true');
+  }, 30_000);
+
+  it.each(['clone', 'admission', 'checkpoint'] as const)(
+    'rejects stale committed declarations before tsc without rewriting evidence (%s)', (immutable) => {
+      const result = runFixture({ scope: 'all', immutable });
+      expect(result.code, result.output).toBe(1);
+      expect(result.output).toContain('stale declaration(s)');
+      expect(result.output).toContain('status=preflight-failed');
+      expect(result.output).not.toContain('TSC scoped-declarations:');
+      expect(result.output).not.toContain('emitted 2 of 2 declaration file(s)');
+      expect(result.selectedBytes).toBe(result.original);
+      expect(result.siblingBytes).toBe(result.sibling);
+    }, 30_000,
+  );
+
+  it('checks freshness for an immutable TypeScript-only selection', () => {
+    const result = runFixture({ scope: 'typescript', immutable: 'clone' });
+    expect(result.code, result.output).toBe(1);
+    expect(result.output).toContain('stale declaration(s)');
+    expect(result.output).toContain('status=preflight-failed');
+    expect(result.selectedBytes).toBe(result.original);
+    expect(result.siblingBytes).toBe(result.sibling);
+  }, 30_000);
+
+  it('typechecks fresh committed declarations without publishing any output', () => {
+    const result = runFixture({ scope: 'all', immutable: 'clone', fresh: true });
+    expect(result.code, result.output).toBe(0);
+    expect(result.output).toContain('2 declaration file(s) up to date');
+    expect(result.output).not.toContain('emitted 2 of 2 declaration file(s)');
+    expect(result.selectedBytes).toBe(result.original);
+    expect(result.siblingBytes).toBe(result.sibling);
   }, 30_000);
 
   it.each(['missing', 'malformed'] as const)('fails closed on %s enrollment before publishing or typechecking', (config) => {

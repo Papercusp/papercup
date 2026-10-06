@@ -24,7 +24,24 @@ import { SuSessionStartupTimeoutError, type SuSessionHost, type SuSessionEventIn
 import { SuNativeCards } from './su-session-native-cards';
 import { loadSuOwnerTurnReceipts } from './su-session-commands';
 
-export type ClaudeEngineQuery = AsyncIterable<SDKMessage> & Pick<Query, 'initializationResult' | 'mcpServerStatus' | 'interrupt' | 'close'>;
+export type ClaudeEngineQuery = AsyncIterable<SDKMessage> & Pick<Query, 'initializationResult' | 'mcpServerStatus' | 'interrupt' | 'close'>
+  // P-026: the streaming-input model switch. Optional so a peer without it
+  // still runs; asking that peer to switch refuses the turn instead.
+  & Partial<Pick<Query, 'setModel' | 'applyFlagSettings'>>;
+
+/** P-026: the SDK calls that move a running Claude session onto `spec`
+ * (`model[:effort]`) before the next owner turn. Effort is applied through the
+ * flag-settings layer, which is what `query({ effort })` sets at launch. */
+export async function applyClaudeModelSwitch(sdk: ClaudeEngineQuery, spec: string): Promise<void> {
+  const next = splitModelSpec(spec);
+  if (!next.model) throw new Error(`"${spec}" names no model`);
+  if (!sdk.setModel) throw new Error('This Claude connection cannot change model mid-session');
+  await sdk.setModel(next.model);
+  if (next.effort) {
+    if (!sdk.applyFlagSettings) throw new Error('This Claude connection cannot change effort mid-session');
+    await sdk.applyFlagSettings({ effortLevel: next.effort as NonNullable<Settings['effortLevel']> });
+  }
+}
 /** Who the engine is (plan pui-chat-first-ux-2026-09-28 D-004). `su` is the
  * workspace superuser: the su playbook as a custom prompt, the psu hook set and
  * the papercusp-su tools. `coding-assistant` is Claude Code's own session for a
@@ -208,6 +225,8 @@ export function startClaudeSuEngine(
   let activeTurnSawAssistant = false;
   let finishActiveTurn: (() => void) | undefined;
   const pending = new Map<string, ReturnType<typeof deferred<ClaudeNativeCommandVerdict>>>();
+  // P-026: the spec the session runs on, so a turn naming it again is no switch.
+  let currentModel = options.model ?? null;
   const deliveryTimeoutMs = options.deliveryTimeoutMs ?? 30_000;
   // A turn that never ENDS emits no result frame, and BOTH existing detectors —
   // claude_turn_failed and claude_empty_turn — are nested under one, so neither
@@ -248,8 +267,20 @@ export function startClaudeSuEngine(
     ...options, ready: false, runtimeReady: () => ready && !closed, ownerTurnCorrelation: 'transport', cardSource: 'transport',
     ownerTurnReceipts: (identity) => loadSuOwnerTurnReceipts(identity),
     controls: {
-      async ownerTurn({ content, turnId }) {
+      async ownerTurn({ content, turnId, model: nextModel }) {
         if (!ready || closed) return unavailable('The structured Claude connection is not ready');
+        // P-026: switch BEFORE the turn is written, so a refused switch refuses
+        // this turn instead of running it on a model the owner did not pick.
+        if (nextModel && nextModel !== currentModel) {
+          try {
+            await applyClaudeModelSwitch(sdk, nextModel);
+          } catch (error) {
+            return { ok: false, code: 'model_switch_refused', retryable: false,
+              message: `Could not switch to ${nextModel}: ${error instanceof Error ? error.message : String(error)}` };
+          }
+          currentModel = nextModel;
+          adapter.host.updateModel(nextModel);
+        }
         const uuid = randomUUID();
         const receipt = deferred<ClaudeNativeCommandVerdict>();
         pending.set(uuid, receipt);

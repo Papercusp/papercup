@@ -5,7 +5,7 @@ import { resetGovernorRegistry } from '@papercusp/papercusp-shared/agent';
 
 const HEADER = 'x-papercusp-require-output-token-limit';
 let gateway: ReturnType<typeof createInferenceGateway> | undefined;
-afterEach(async () => { await gateway?.close(); gateway = undefined; resetGovernorRegistry(); });
+afterEach(async () => { await gateway?.close(); gateway = undefined; resetGovernorRegistry(); vi.unstubAllEnvs(); });
 
 async function request(body: Record<string, unknown>, required: string | null = 'true') {
   const port = await gateway!.listen(0);
@@ -39,7 +39,7 @@ it('preserves a required limit on a bearer request and strips the internal heade
   expect(await request({ max_output_tokens: 8 })).toMatchObject({ status: 200, body: { output_text: 'bounded' } });
   expect(fetchImpl).toHaveBeenCalledTimes(1);
   const init = fetchImpl.mock.calls[0]?.[1] as RequestInit;
-  expect(JSON.parse(String(init.body))).toMatchObject({ max_output_tokens: 8, model: 'gpt-6.1-sol' });
+  expect(JSON.parse(Buffer.from(init.body as Uint8Array).toString('utf8'))).toMatchObject({ max_output_tokens: 8, model: 'gpt-6.1-sol' });
   expect(new Headers(init.headers).has(HEADER)).toBe(false);
 });
 
@@ -74,4 +74,17 @@ it('retains ordinary subscription calls with an advisory output limit', async ()
   });
   expect(await request({ max_output_tokens: 8 }, null)).toMatchObject({ status: 200, body: { output_text: 'ordinary' } });
   expect(run).toHaveBeenCalledTimes(1);
+});
+
+it('returns a known-zero refusal through the real LLM HTTP client before any subscription inference', async () => {
+  const run = vi.fn(async () => ({ text: 'UNBOUNDED', inputTokens: 1, outputTokens: 1 }));
+  gateway = createInferenceGateway({ accountId: 'unused', token: async () => 'unused',
+    codexCliAccounts: () => [{ accountId: 'subscription', home: '/unused' }], codexCliRun: run,
+    requestAbsorbMs: 0, selfHeal: { enabled: false },
+  });
+  vi.stubEnv('PAPERCUSP_GATEWAY_PORT', String(await gateway.listen(0)));
+  const { llmCall } = await import('../llm-testing/llm-client');
+  await expect(llmCall({ model: 'gpt-6.1-sol', messages: [{ role: 'user', content: 'fixture' }],
+    maxTokens: 8, requireOutputTokenLimit: true })).rejects.toMatchObject({ costUsd: 0, turn: { retryable: false } });
+  expect(run).not.toHaveBeenCalled();
 });

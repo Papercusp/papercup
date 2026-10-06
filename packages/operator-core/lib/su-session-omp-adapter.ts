@@ -67,7 +67,8 @@ export type OmpNativeCommandVerdict =
   | { ok: false; code: string; message: string; retryable: boolean };
 
 export interface OmpSuSessionControls {
-  ownerTurn(input: { ownerId: string; turnId: string; content: string }): Promise<OmpNativeCommandVerdict>;
+  /** `model` (P-026): a `model[:effort]` spec to apply before this turn; omitted keeps the current one. */
+  ownerTurn(input: { ownerId: string; turnId: string; content: string; model?: string }): Promise<OmpNativeCommandVerdict>;
   interrupt(input: { ownerId: string; reason?: string }): Promise<OmpNativeCommandVerdict>;
   resume(input: {
     ownerId: string;
@@ -602,7 +603,10 @@ export class OmpSuSessionAdapter {
         // Shown live under this id already; a later replay must not take it.
         this.receiptMatcher.markUsed(command.turnId);
         context.transition('running', 'owner turn accepted');
-        verdict = await this.controls.ownerTurn({ ownerId, turnId: command.turnId, content: command.content });
+        verdict = await this.controls.ownerTurn({
+          ownerId, turnId: command.turnId, content: command.content,
+          ...(command.model ? { model: command.model } : {}),
+        });
         if (!verdict.ok) context.transition('waiting-for-owner', verdict.message);
         break;
       case 'interrupt':

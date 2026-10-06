@@ -51,6 +51,16 @@ tools:find` for discovery and `ptool tools:invoke` when the direct invoke
 wrapper is unavailable; `activated:false` means invoke the returned tool
 through `tools:invoke`, not that the tool is missing:
 
+**A direct wrapper returns `stale_tool_contract`?** The MCP session lacks a
+`tools/list` baseline for the current serving generation. Do not retry that
+wrapper or infer the capability is missing. Switch the affected work to the
+`ptool` CLI for this turn: each named `ptool` invocation opens its own MCP
+connection and lists the current catalog before dispatch. `ptool --list` shows
+names only; query `ptool tools:find` for an exact schema, then use
+`ptool tools:invoke` or the exact `ptool <group:verb>` call. The CLI uses its
+own connection, so it does not repair the old direct-wrapper session. Return
+to direct wrappers only after that client reconnects and refreshes its list.
+
 When you call `exec_command` through `functions.exec`, remember that the outer
 program is JavaScript. **Never put a shell command containing `${...}` inside a
 JavaScript template literal**: V8 resolves it before `exec_command` starts, so a

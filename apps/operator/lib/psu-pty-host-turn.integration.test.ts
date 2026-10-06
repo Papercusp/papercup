@@ -1028,7 +1028,7 @@ it('eligible quota recovery recycles once under the same owner and settles the e
     const finalRespawnAtMs = Date.parse(String(respawnEvents[respawnEvents.length - 1]?.ts ?? ''));
     expect(nativeRow.timestamp).toBeTypeOf('string');
     expect(Date.parse(nativeRow.timestamp)).toBeGreaterThanOrEqual(finalRespawnAtMs);
-    expect(leadingTurnOriginMarker(nativePrompt)).toBe(marker);
+    expect(leadingTurnOriginMarker(nativePrompt), `native prompt row: ${JSON.stringify(nativePrompt)}`).toBe(marker);
     expect(findNativeTranscriptMarker({
       agent: 'codex',
       env: hermeticEnv({ CODEX_HOME: codexHome }),

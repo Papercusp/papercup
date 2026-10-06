@@ -69,7 +69,8 @@ export interface CodexSuRuntimeBinding {
 export type CodexNativeCommandVerdict = { ok: true } | { ok: false; code: string; message: string; retryable: boolean };
 
 export interface CodexSuSessionControls {
-  ownerTurn(input: { ownerId: string; turnId: string; content: string }): Promise<CodexNativeCommandVerdict>;
+  /** `model` (P-026): a `model[:effort]` spec to apply before this turn; omitted keeps the current one. */
+  ownerTurn(input: { ownerId: string; turnId: string; content: string; model?: string }): Promise<CodexNativeCommandVerdict>;
   interrupt(input: { ownerId: string; reason?: string }): Promise<CodexNativeCommandVerdict>;
   resume(input: {
     ownerId: string;
@@ -762,6 +763,7 @@ export class CodexSuSessionAdapter {
           ownerId,
           turnId: command.turnId,
           content: command.content,
+          ...(command.model ? { model: command.model } : {}),
         });
         if (!verdict.ok) context.transition('waiting-for-owner', verdict.message);
         break;

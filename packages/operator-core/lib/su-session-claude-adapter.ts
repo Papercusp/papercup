@@ -72,7 +72,8 @@ export type ClaudeNativeCommandVerdict =
   | { ok: false; code: string; message: string; retryable: boolean };
 
 export interface ClaudeSuSessionControls {
-  ownerTurn(input: { ownerId: string; turnId: string; content: string }): Promise<ClaudeNativeCommandVerdict>;
+  /** `model` (P-026): a `model[:effort]` spec to apply before this turn; omitted keeps the current one. */
+  ownerTurn(input: { ownerId: string; turnId: string; content: string; model?: string }): Promise<ClaudeNativeCommandVerdict>;
   interrupt(input: { ownerId: string; reason?: string }): Promise<ClaudeNativeCommandVerdict>;
   resume(input: {
     ownerId: string;
@@ -791,7 +792,10 @@ export class ClaudeSuSessionAdapter {
         if (!this.transportCorrelatesTurns) this.currentTurnId = command.turnId;
         this.receiptMatcher.markUsed(command.turnId);
         context.transition('running', 'owner turn accepted');
-        verdict = await this.controls.ownerTurn({ ownerId, turnId: command.turnId, content: command.content });
+        verdict = await this.controls.ownerTurn({
+          ownerId, turnId: command.turnId, content: command.content,
+          ...(command.model ? { model: command.model } : {}),
+        });
         if (!verdict.ok) context.transition('waiting-for-owner', verdict.message);
         break;
       case 'interrupt':
