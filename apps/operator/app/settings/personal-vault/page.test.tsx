@@ -94,14 +94,14 @@ const status = {
   stats: {
     sources: [
       {
-        source: "gmail",
+        source: "mail",
         source_id: "00000000-0000-4000-8000-000000000101",
         provider_account_id: "owner@example.com",
         documents: 12,
         newest_at: "2026-08-20T12:00:00Z",
       },
       {
-        source: "gmail",
+        source: "mail",
         source_id: "00000000-0000-4000-8000-000000000102",
         provider_account_id: "backup@example.com",
         documents: 4,
@@ -138,7 +138,7 @@ const status = {
   },
   grants: [],
   supportedSources: [
-    "gmail",
+    "mail",
     "calendar",
     "contacts",
     "facebook",
@@ -594,7 +594,7 @@ describe("PersonalVaultSettingsPage", () => {
       );
       expect(purgeCall).toBeTruthy();
       expect(JSON.parse(String((purgeCall?.[1] as RequestInit).body))).toEqual({
-        source: "gmail",
+        source: "mail",
         sourceId: "00000000-0000-4000-8000-000000000101",
         providerAccountId: "owner@example.com",
         confirm: true,
