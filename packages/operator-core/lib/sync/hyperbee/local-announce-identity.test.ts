@@ -419,7 +419,7 @@ describe('resolveLocalAnnounceIdentity', () => {
         }),
         'utf8',
       );
-      const resolveAttestationGistId = vi.fn(async () => 'gist-fresh');
+      const resolveAttestationGistId = vi.fn(async (_args: unknown) => 'gist-fresh');
 
       await resolveLocalAnnounceIdentity({
         logCoreKeyHex: LOG_CORE_KEY,

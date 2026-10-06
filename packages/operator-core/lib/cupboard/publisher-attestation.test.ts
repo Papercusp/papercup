@@ -63,7 +63,7 @@ describe('resolvePublisherAttestation (item 1)', () => {
         throw new Error('cache unreadable');
       },
     ]) {
-      const ensureGist = vi.fn(async () => 'gist123');
+      const ensureGist = vi.fn(async (_input: Parameters<AttestationDeps['ensureGist']>[0]) => 'gist123');
       const r = await resolvePublisherAttestation(deps({ ensureGist, knownGistIdFor }));
       expect(ensureGist.mock.calls[0]?.[0]).not.toHaveProperty('knownGistId');
       expect(r).toEqual({ attestation_gist_id: 'gist123', publisher_device_pubkey: 'PK' });
