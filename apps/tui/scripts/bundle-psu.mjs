@@ -34,6 +34,7 @@ import { homedir, tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
+import { lockedPackageKeyResolver } from './bundle-psu-dependencies.mjs';
 
 const fail = (message) => {
   console.error(`bundle-psu: ERROR: ${message}`);
@@ -148,10 +149,18 @@ const repoRel = (abs) => {
   return posix(rel);
 };
 const readJson = (file) => JSON.parse(readFileSync(file, 'utf8'));
+// Installed npm packages may be linked into an immutable checkout from its
+// shared dependency generation. First-party source still uses strict repoRel.
+const packageKey = lockedPackageKeyResolver(ROOT, LOCK);
 
 /** An installed package must be the version the committed lock pins at that exact install path. */
 function lockedVersion(dir) {
-  const key = repoRel(dir);
+  let key;
+  try {
+    key = packageKey(dir);
+  } catch (error) {
+    fail(error.message);
+  }
   const installed = readJson(path.join(dir, 'package.json'));
   const locked = LOCK[key];
   if (!locked) fail(`${key} (${installed.name}@${installed.version}) is not in package-lock.json at ${SHA}`);
