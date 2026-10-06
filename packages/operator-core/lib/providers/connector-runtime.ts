@@ -44,6 +44,13 @@ import {
 } from '../external-triggers/ingestion';
 import { providerRegistry, type ProviderRegistry, type RegisteredProvider } from '../integrations/provider-registry';
 import { createSourceHostFetch } from '../integrations/source-host-fetch';
+import { resolveProviderServices } from '../integrations/service-credentials';
+import {
+  PROVIDER_SYNC_WAKE_CAPABILITY,
+  type HostFetch as ProviderHostFetch,
+  type ProviderServices,
+  type ProviderWakeResult,
+} from '@papercusp/plugin-sdk';
 import { createPersonalVaultExternalSinkForSource, VAULT_DATATYPES } from '../personal-vault/live-sink';
 import { createDatatypeDestinationSinks } from '../data-sources/datatype-destination-sink';
 import { createAppDeliverySinkIfConfigured } from '../app-data-producer/live-sink';
@@ -118,7 +125,13 @@ export interface ConnectorSyncDeps {
   ingest?: (sql: postgres.Sql, input: IngestExternalTriggerInput) => Promise<IngestExternalTriggerResult>;
   /** Extra sinks for one record of `datatype` from `source`. */
   sinksFor?: (sql: postgres.Sql, source: ConnectorSourceRow, datatype: string) => Promise<ExternalTriggerSink[]>;
+  /** Parameters of the provider's configured service credentials (D-018.1). */
+  servicesFor?: (provider: RegisteredProvider) => Promise<ProviderServices | undefined>;
   leaseOwner?: string;
+}
+
+function defaultServicesFor(provider: RegisteredProvider): Promise<ProviderServices | undefined> {
+  return resolveProviderServices(provider.descriptor.serviceCredentials);
 }
 
 /** A provider-declared sync failure, thrown by host-side code that maps one. */
@@ -175,12 +188,18 @@ function stableJson(value: unknown): string {
  * Version-scoped delivery dedupe key: the same object version replayed dedupes;
  * an edit (new content) or a delete is a new delivery. Datatype-scoped, so one
  * source emitting two datatypes with the same native id never collides.
+ *
+ * A record that carries a provider-declared `version` is keyed on that version
+ * instead of its content, so a provider whose payload legitimately changes
+ * between fetches of the same object (Gmail labels on an immutable message)
+ * does not re-deliver it. A delete is still a distinct delivery.
  */
 export function connectorRecordDedupeKey(sourceId: string, record: ProviderRecord): string {
-  const version = createHash('sha256')
-    .update(stableJson({ payload: record.payload, deleted: record.deleted === true, occurredAt: record.occurredAt ?? null }))
-    .digest('hex')
-    .slice(0, 32);
+  const identity =
+    typeof record.version === 'string'
+      ? { version: record.version, deleted: record.deleted === true }
+      : { payload: record.payload, deleted: record.deleted === true, occurredAt: record.occurredAt ?? null };
+  const version = createHash('sha256').update(stableJson(identity)).digest('hex').slice(0, 32);
   return `connector:${sourceId}:${record.datatype}:${record.nativeId}:${version}`;
 }
 
@@ -281,7 +300,7 @@ async function commitCursor(
 ): Promise<boolean> {
   const rows = await sql<{ id: string }[]>`
     UPDATE harness_shared.data_sources
-       SET cursor = ${sql.json({ ...source.cursor, provider: cursor })},
+       SET cursor = jsonb_set(COALESCE(cursor, '{}'::jsonb), '{provider}', ${sql.json(cursor)}::jsonb),
            backfill_status = ${backfillStatus},
            sync_lease_expires_at = now() + make_interval(secs => ${leaseSeconds}),
            updated_at = now()
@@ -397,6 +416,7 @@ async function syncSource(
     ingest: NonNullable<ConnectorSyncDeps['ingest']>;
     sinksFor: NonNullable<ConnectorSyncDeps['sinksFor']>;
     owner: string;
+    services?: ProviderServices;
   },
 ): Promise<ConnectorSourceOutcome> {
   let mode: 'backfill' | 'incremental' = source.backfillStatus === 'complete' ? 'incremental' : 'backfill';
@@ -424,7 +444,13 @@ async function syncSource(
       let page: ProviderSyncPage;
       try {
         page = await provider.adapter.syncPage(
-          { source: source.id, cursor, mode, ...(source.config ? { config: source.config } : {}) },
+          {
+            source: source.id,
+            cursor,
+            mode,
+            ...(source.config ? { config: source.config } : {}),
+            ...(deps.services ? { services: deps.services } : {}),
+          },
           { fetch: deps.hostFetch },
         );
         assertPage(page, provider);
@@ -549,7 +575,9 @@ export async function runConnectorSync(
   const sinksFor = deps.sinksFor ?? defaultSinksFor;
   const hostFetchFor = deps.hostFetchFor ?? defaultHostFetchFor;
   const sources = await listDueConnectorSources(sql, opts.workspaceId, [...byKind.keys()], opts.sourceIds);
+  const servicesFor = deps.servicesFor ?? defaultServicesFor;
   const fetchers = new Map<string, HostFetch>();
+  const servicesByProvider = new Map<string, ProviderServices | undefined>();
   const outcomes: ConnectorSourceOutcome[] = [];
   for (const source of sources) {
     const provider = byKind.get(source.kind);
@@ -559,9 +587,127 @@ export async function runConnectorSync(
       hostFetch = hostFetchFor(provider, sql, opts);
       fetchers.set(provider.descriptor.id, hostFetch);
     }
-    outcomes.push(await syncSource(sql, provider, source, resolved, { hostFetch, ingest, sinksFor, owner }));
+    if (!servicesByProvider.has(provider.descriptor.id)) {
+      servicesByProvider.set(provider.descriptor.id, await servicesFor(provider));
+    }
+    const services = servicesByProvider.get(provider.descriptor.id);
+    outcomes.push(await syncSource(sql, provider, source, resolved, { hostFetch, ingest, sinksFor, owner, services }));
   }
   return { providers: providers.length, sources: outcomes };
+}
+
+/* ─── Push wake (D-018.2) ─── */
+
+export interface ConnectorWakeOutcome {
+  sourceId: string;
+  providerId: string;
+  outcome: 'woken' | 'quiet' | 'failed';
+  error?: string;
+}
+
+export interface ConnectorWakeResult {
+  sources: ConnectorWakeOutcome[];
+}
+
+export interface ConnectorWakeDeps {
+  registry?: ProviderRegistry;
+  hostFetchFor?: ConnectorSyncDeps['hostFetchFor'];
+  servicesFor?: ConnectorSyncDeps['servicesFor'];
+}
+
+function wakeStateOf(source: ConnectorSourceRow): string | null {
+  const value = source.cursor?.wake;
+  return typeof value === 'string' && value ? value : null;
+}
+
+function asWakeResult(value: unknown): ProviderWakeResult {
+  const candidate = (value ?? {}) as { wake?: unknown; state?: unknown };
+  if (typeof candidate.wake !== 'boolean') throw new Error('sync.wake returned no boolean `wake`');
+  if (candidate.state !== undefined && candidate.state !== null && typeof candidate.state !== 'string') {
+    throw new Error('sync.wake returned a non-string `state`');
+  }
+  return { wake: candidate.wake, state: candidate.state as string | null | undefined };
+}
+
+/**
+ * Ask every provider that declares `sync.wake` whether each of its syncable
+ * sources has remote changes, before the sync pass. Wake is only a doorbell:
+ * a `wake: true` answer calls {@link wakeConnectorSource} and nothing else, and
+ * the provider's opaque wake state is stored at `cursor.wake`. A failure is
+ * reported per source and never fails the sync pass.
+ */
+export async function runConnectorWakes(
+  sql: postgres.Sql,
+  opts: Pick<ConnectorSyncOptions, 'workspaceId' | 'harness' | 'sourceIds'>,
+  deps: ConnectorWakeDeps = {},
+): Promise<ConnectorWakeResult> {
+  const registry = deps.registry ?? providerRegistry();
+  const wakers = registry
+    .list()
+    .filter((provider) => provider.descriptor.capabilities.includes(PROVIDER_SYNC_WAKE_CAPABILITY) && provider.adapter.invoke);
+  if (wakers.length === 0) return { sources: [] };
+  const byKind = new Map(wakers.map((provider) => [provider.descriptor.id, provider]));
+  const hostFetchFor = deps.hostFetchFor ?? defaultHostFetchFor;
+  const servicesFor = deps.servicesFor ?? defaultServicesFor;
+  const sources = await sql<ConnectorSourceRow[]>`
+    SELECT ${SOURCE_COLUMNS(sql)}
+      FROM harness_shared.data_sources
+     WHERE workspace_id = ${opts.workspaceId}
+       AND kind = ANY(${sql.array([...byKind.keys()])}::text[])
+       AND status = ANY(${sql.array([...CONNECTOR_SYNC_STATUSES])}::text[])
+       ${opts.sourceIds ? sql`AND id::text = ANY(${sql.array([...opts.sourceIds])}::text[])` : sql``}
+     ORDER BY id`;
+  const outcomes: ConnectorWakeOutcome[] = [];
+  const perProvider = new Map<string, { fetch: ProviderHostFetch; services: ProviderServices | undefined }>();
+  for (const source of sources) {
+    const provider = byKind.get(source.kind);
+    if (!provider?.adapter.invoke) continue;
+    let bound = perProvider.get(provider.descriptor.id);
+    if (!bound) {
+      bound = { fetch: hostFetchFor(provider, sql, opts as ConnectorSyncOptions), services: await servicesFor(provider) };
+      perProvider.set(provider.descriptor.id, bound);
+    }
+    try {
+      const result = asWakeResult(
+        await provider.adapter.invoke(
+          {
+            source: source.id,
+            capability: PROVIDER_SYNC_WAKE_CAPABILITY,
+            args: { state: wakeStateOf(source) },
+            ...(bound.services ? { services: bound.services } : {}),
+          },
+          { fetch: bound.fetch },
+        ),
+      );
+      if (result.state !== undefined && result.state !== wakeStateOf(source)) {
+        await sql`
+          UPDATE harness_shared.data_sources
+             SET cursor = jsonb_set(COALESCE(cursor, '{}'::jsonb), '{wake}', ${sql.json(result.state ?? null)}::jsonb),
+                 updated_at = now()
+           WHERE workspace_id = ${source.workspaceId}
+             AND id = ${source.id}::uuid`;
+      }
+      if (result.wake) await wakeConnectorSource(sql, { workspaceId: source.workspaceId, sourceId: source.id });
+      outcomes.push({ sourceId: source.id, providerId: provider.descriptor.id, outcome: result.wake ? 'woken' : 'quiet' });
+    } catch (cause) {
+      outcomes.push({
+        sourceId: source.id,
+        providerId: provider.descriptor.id,
+        outcome: 'failed',
+        error: cause instanceof Error ? cause.message : String(cause),
+      });
+    }
+  }
+  return { sources: outcomes };
+}
+
+export function formatConnectorWakeLog(result: ConnectorWakeResult): string {
+  const count = (kind: ConnectorWakeOutcome['outcome']) => result.sources.filter((s) => s.outcome === kind).length;
+  const failures = result.sources
+    .filter((s) => s.outcome === 'failed')
+    .map((s) => `${s.sourceId}: ${s.error}`)
+    .join('; ');
+  return `[connector-wake] sources=${result.sources.length} woken=${count('woken')} quiet=${count('quiet')} failed=${count('failed')}${failures ? ` errors=${failures}` : ''}`;
 }
 
 export function formatConnectorSyncLog(result: ConnectorSyncResult): string {
