@@ -504,8 +504,54 @@ const PROJECT_READY_TIMEOUT_MS = 60_000;
  * rootPath)` registry key inert). A big enough working set will still reach
  * any ceiling; defect A's liveness eviction is what makes that survivable.
  */
-const MAX_TSSERVER_MEMORY_MB: number | null =
-  Number(process.env.PAPERCUSP_LSP_MAX_TSSERVER_MEMORY_MB ?? '') || 6144;
+const MIN_TSSERVER_MEMORY_MB = 6144;
+
+/**
+ * Size the existing workspace-wide server from its configured source population.
+ * FIRE75 reached the 6144MB ceiling loading 196MB of operator-core roots alone.
+ * Closing the previous project already worked; a fixed ceiling still stops a
+ * growing individual program. Keep all configured files, including tests.
+ *
+ * 64 bytes of heap per source byte plus the existing floor is a conservative
+ * starting budget, not a readiness proof. Actual loaded-byte/oracle qualification
+ * must still pass. An explicit operator setting continues to override this model.
+ */
+export function typescriptWorkspaceMemoryMb(rootPath: string, tsserverPath: string): number {
+  const compiler = createRequire(tsserverPath)('./typescript.js') as {
+    sys: { readFile: (path: string) => string | undefined };
+    readConfigFile: (path: string, reader: (path: string) => string | undefined) => {
+      config: unknown; error?: unknown;
+    };
+    parseJsonConfigFileContent: (config: unknown, host: unknown, directory: string) => {
+      fileNames: string[]; errors: Array<{ code: number }>;
+    };
+  };
+  const pending = [rootPath];
+  const files = new Set<string>();
+  const excludedDirectories = new Set(['node_modules', 'dist', 'dist-host', 'target']);
+  while (pending.length) {
+    const directory = pending.pop()!;
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      if (entry.isDirectory() && !entry.name.startsWith('.') && !excludedDirectories.has(entry.name)) {
+        pending.push(join(directory, entry.name));
+      }
+    }
+    const configPath = join(directory, 'tsconfig.json');
+    if (!existsSync(configPath)) continue;
+    const config = compiler.readConfigFile(configPath, compiler.sys.readFile);
+    if (config.error) throw new Error(`Cannot size TypeScript project: ${configPath}`);
+    const project = compiler.parseJsonConfigFileContent(config.config, compiler.sys, directory);
+    // A solution/empty config contributes no roots; other parse errors must not
+    // silently turn a failed census into the old undersized default.
+    if (project.errors.some(error => error.code !== 18003)) {
+      throw new Error(`Cannot size TypeScript project: ${configPath}`);
+    }
+    for (const file of project.fileNames) files.add(file);
+  }
+  let sourceBytes = 0;
+  for (const file of files) sourceBytes += statSync(file).size;
+  return Math.ceil((MIN_TSSERVER_MEMORY_MB + sourceBytes * 64 / (1024 * 1024)) / 256) * 256;
+}
 
 /**
  * A workspace-wide tsserver may retain one foreground configured/inferred
@@ -698,11 +744,16 @@ export function evictIfLanguageServiceDead(
  */
 export function typescriptInitializationOptions(
   tsserverPath: string,
-  maxTsServerMemoryMb: number | null = MAX_TSSERVER_MEMORY_MB,
+  maxTsServerMemoryMb?: number | null,
+  rootPath?: string,
 ): { tsserver: { path: string }; maxTsServerMemory?: number } {
+  const override = Number(process.env.PAPERCUSP_LSP_MAX_TSSERVER_MEMORY_MB ?? '') || undefined;
+  const memoryMb = maxTsServerMemoryMb === undefined
+    ? override ?? (rootPath ? typescriptWorkspaceMemoryMb(rootPath, tsserverPath) : MIN_TSSERVER_MEMORY_MB)
+    : maxTsServerMemoryMb;
   return {
     tsserver: { path: tsserverPath },
-    ...(maxTsServerMemoryMb ? { maxTsServerMemory: maxTsServerMemoryMb } : {}),
+    ...(memoryMb ? { maxTsServerMemory: memoryMb } : {}),
   };
 }
 
@@ -1185,6 +1236,10 @@ export function languageForFile(path: string): LspLanguage | null {
 }
 
 async function startClient(language: LspLanguage, rootPath: string): Promise<LspClient> {
+  // Fail a source/config census before creating a managed child.
+  const initializationOptions = language === 'typescript'
+    ? typescriptInitializationOptions(resolveTsserverPath(), undefined, rootPath)
+    : { cargo: { buildScripts: { enable: false } }, procMacro: { enable: false } };
   const bin = resolveServerBin(language);
   if (!bin) {
     throw new Error(
@@ -1366,11 +1421,6 @@ async function startClient(language: LspLanguage, rootPath: string): Promise<Lsp
     client.lastError = `language server exited (code=${code ?? 'null'} signal=${signal ?? 'null'})`;
     state.clients.delete(clientKey(language, rootPath));
   });
-
-  const initializationOptions =
-    language === 'typescript'
-      ? typescriptInitializationOptions(resolveTsserverPath())
-      : { cargo: { buildScripts: { enable: false } }, procMacro: { enable: false } };
 
   const t0 = Date.now();
   const initialized = await connection.sendRequest('initialize', {
