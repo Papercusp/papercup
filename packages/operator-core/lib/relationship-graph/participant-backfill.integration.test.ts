@@ -221,4 +221,93 @@ describe('interaction participant backfill (P-003, D-017 point 2)', () => {
        WHERE workspace_id = ${WS} AND item_kind = 'person' AND payload->>'dataSourceId' = ${bare.id}`;
     expect(rows.map((r) => r.harness_slug)).toEqual([graphDefaultHarness()]);
   });
+
+  it('a time-boxed sweep resumes from its saved cursor: every document exactly once across ticks, then stamped (WI-10006999, migration 1415)', async () => {
+    // Before WI-10006999 the sweep walked a whole mailbox in one call with its position in memory,
+    // so a large source held the connector-sync tick for many minutes and no sync ran meanwhile.
+    const TOTAL = 7;
+    const big = await connect('gmail', { 'email-message': ['document', 'event'], person: ['record'] });
+    const addresses = Array.from({ length: TOTAL }, (_, i) => `contact-${i}@timeboxed.example`);
+    await upsertPersonalDocuments(sql, WS, userId, addresses.map((address, i) => ({
+      source: 'gmail',
+      sourceId: big.id,
+      providerAccountId: big.account,
+      kind: 'email',
+      externalId: `msg-${i}-${randomUUID()}`,
+      occurredAt: '2026-10-06T10:00:00Z',
+      participants: [address],
+      title: `Message ${i}`,
+      text: 'body never leaves the Vault',
+      metadata: { from: address },
+    })));
+    const state = async () =>
+      (await sql<{ at: Date | null; cursor: { kind: string; afterId: string } | null }[]>`
+        SELECT participant_backfill_at AS at, participant_backfill_cursor AS cursor
+          FROM harness_shared.data_sources WHERE id = ${big.id}::uuid`)[0]!;
+
+    // A clock that moves 1 ms per read: with a 6 ms budget each sweep stops after a few documents.
+    let t = 0;
+    const now = () => t++;
+    const first = await runPendingParticipantBackfills(sql, { workspaceId: WS, batchSize: 3, budgetMs: 6, now });
+    expect(first).toHaveLength(1);
+    expect(first[0]).toMatchObject({ sourceId: big.id, outcome: 'partial' });
+    expect(first[0]!.documents).toBeGreaterThan(0);
+    expect(first[0]!.documents).toBeLessThan(TOTAL);
+    const afterFirst = await state();
+    expect(afterFirst.at).toBeNull();
+    expect(afterFirst.cursor).toMatchObject({ kind: 'email' });
+    expect(afterFirst.cursor!.afterId).toMatch(/^[0-9a-f-]{36}$/);
+
+    const runs = [first[0]!];
+    for (let i = 0; i < 10 && runs.at(-1)!.outcome === 'partial'; i += 1) {
+      const next = await runPendingParticipantBackfills(sql, { workspaceId: WS, batchSize: 3, budgetMs: 6, now });
+      expect(next).toHaveLength(1);
+      runs.push(next[0]!);
+    }
+    expect(runs.length).toBeGreaterThan(2); // it really took several ticks
+    expect(runs.at(-1)!.outcome).toBe('backfilled');
+    expect(runs.slice(0, -1).every((r) => r.outcome === 'partial')).toBe(true);
+    // Resuming, not restarting: the per-tick counts add up to the mailbox exactly.
+    expect(runs.reduce((n, r) => n + r.documents, 0)).toBe(TOTAL);
+    expect(runs.reduce((n, r) => n + r.participants, 0)).toBe(TOTAL);
+    const done = await state();
+    expect(done.at).not.toBeNull();
+    expect(done.cursor).toBeNull();
+    for (const address of addresses) {
+      expect((await searchPeople(sql, WS, { emails: [address] })).map((p) => p.emails)).toEqual([[address]]);
+    }
+    expect(await runPendingParticipantBackfills(sql, { workspaceId: WS, budgetMs: 6, now })).toEqual([]);
+
+    // A re-grant starts over: the trigger clears the cursor together with the marker.
+    await sql`UPDATE harness_shared.data_sources
+                 SET destination_policy = destination_policy - 'person',
+                     participant_backfill_cursor = ${sql.json({ kind: 'email', afterId: afterFirst.cursor!.afterId })}
+               WHERE id = ${big.id}::uuid`;
+    expect((await state()).cursor).not.toBeNull();
+    await sql`UPDATE harness_shared.data_sources SET destination_policy = destination_policy || '{"person":["record"]}'::jsonb WHERE id = ${big.id}::uuid`;
+    expect(await state()).toEqual({ at: null, cursor: null });
+    const regrant = await runPendingParticipantBackfills(sql, { workspaceId: WS });
+    expect(regrant).toEqual([{ sourceId: big.id, outcome: 'backfilled', documents: TOTAL, participants: TOTAL }]);
+  });
+
+  it('an exhausted budget starts no further source in that sweep', async () => {
+    const waiting = await connect('gmail', { 'email-message': ['document', 'event'], person: ['record'] });
+    await upsertPersonalDocuments(sql, WS, userId, [{
+      source: 'gmail',
+      sourceId: waiting.id,
+      providerAccountId: waiting.account,
+      kind: 'email',
+      externalId: `msg-${randomUUID()}`,
+      occurredAt: '2026-10-06T11:00:00Z',
+      participants: ['waiting@timeboxed.example'],
+      title: 'Waiting',
+      text: 'body never leaves the Vault',
+      metadata: { from: 'waiting@timeboxed.example' },
+    }]);
+    // budgetMs 0: the deadline has already passed at the first check.
+    expect(await runPendingParticipantBackfills(sql, { workspaceId: WS, budgetMs: 0 })).toEqual([]);
+    expect(await runPendingParticipantBackfills(sql, { workspaceId: WS })).toEqual([
+      { sourceId: waiting.id, outcome: 'backfilled', documents: 1, participants: 1 },
+    ]);
+  });
 });

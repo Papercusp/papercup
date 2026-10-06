@@ -75,6 +75,36 @@ export function deriveFixFeasibility(vulnerableRange: string, installedVersions:
     vulnerableCopies: string[];
 };
 /**
+ * Advisories the PROD lens dropped although the prod tree still holds a vulnerable copy.
+ *
+ * The two inputs disagree about what "prod" means, and the disagreement fails OPEN.
+ * `npm audit --omit=dev` decides reachability from the lockfile's `dev` flags, while
+ * `npm ls --omit=dev` (the attribution source) follows peer edges. npm flags a package that
+ * reaches a workspace only as that workspace's PEER dependency `dev: true`, so the prod
+ * lens never reports it and the gate never saw it.
+ *
+ * Measured 2026-10-06 (WI-10006989): @papercusp/token-kit declares style-dictionary
+ * '^4 || ^5' as a peerDependency, `npm ls --omit=dev` shows
+ * token-kit > style-dictionary@4.4.0, and package-lock.json flags
+ * node_modules/style-dictionary `dev: true`. The prod lens dropped GHSA-vj5c-m527-mpff,
+ * and the gate reported the accepted entry STALE ("resolved") while 4.4.0 was installed.
+ * The same mechanism hid patch-package, @bundled-es-modules/glob, find-yarn-workspace-root,
+ * and (on the 10-06 frozen candidate) a CRITICAL vitest advisory.
+ *
+ * A full-lens advisory is folded in when the prod ls tree holds a copy INSIDE its vulnerable
+ * range. Fail closed: without semver or a parseable range, any copy counts. A package with
+ * no copy in the prod ls tree is genuinely dev-only and stays out.
+ *
+ * Keep this ABOVE analyze()'s doc block: placed between that block and analyze(), it
+ * captures the block, and the generated .d.mts narrows analyze's 4th parameter to `null`.
+ *
+ * @param {Record<string, any>} prodVulns  `vulnerabilities` of `npm audit --omit=dev --json`
+ * @param {Record<string, any> | null} fullVulns  `vulnerabilities` of `npm audit --json`
+ * @param {any} lsTree  parsed `npm ls --omit=dev --all --json`
+ * @returns {string[]} sorted package names
+ */
+export function findPeerMaskedAdvisories(prodVulns: Record<string, any>, fullVulns: Record<string, any> | null, lsTree: any): string[];
+/**
  * Core analysis. Pure: takes parsed audit + ls JSON, returns the classified population.
  *
  * `fullAuditJson` is the OPTIONAL second lens — `npm audit --json` over the tree as it is
@@ -105,34 +135,7 @@ export function deriveFixFeasibility(vulnerableRange: string, installedVersions:
  *   bare `= null` default makes tsc infer the parameter type AS `null`, which then rejects
  *   every real audit object at the call site.
  */
-/**
- * Advisories the PROD lens dropped although the prod tree still holds a vulnerable copy.
- *
- * The two inputs disagree about what "prod" means, and the disagreement fails OPEN.
- * `npm audit --omit=dev` decides reachability from the lockfile's `dev` flags, while
- * `npm ls --omit=dev` (the attribution source) follows peer edges. npm flags a package that
- * reaches a workspace only as that workspace's PEER dependency `dev: true`, so the prod
- * lens never reports it and the gate never saw it.
- *
- * Measured 2026-10-06 (WI-10006989): @papercusp/token-kit declares style-dictionary
- * '^4 || ^5' as a peerDependency, `npm ls --omit=dev` shows
- * token-kit > style-dictionary@4.4.0, and package-lock.json flags
- * node_modules/style-dictionary `dev: true`. The prod lens dropped GHSA-vj5c-m527-mpff,
- * and the gate reported the accepted entry STALE ("resolved") while 4.4.0 was installed.
- * The same mechanism hid patch-package, @bundled-es-modules/glob, find-yarn-workspace-root,
- * and (on the 10-06 frozen candidate) a CRITICAL vitest advisory.
- *
- * A full-lens advisory is folded in when the prod ls tree holds a copy INSIDE its vulnerable
- * range. Fail closed: without semver or a parseable range, any copy counts. A package with
- * no copy in the prod ls tree is genuinely dev-only and stays out.
- *
- * @param {Record<string, any>} prodVulns  `vulnerabilities` of `npm audit --omit=dev --json`
- * @param {Record<string, any> | null} fullVulns  `vulnerabilities` of `npm audit --json`
- * @param {any} lsTree  parsed `npm ls --omit=dev --all --json`
- * @returns {string[]} sorted package names
- */
-export function findPeerMaskedAdvisories(prodVulns: Record<string, any>, fullVulns: Record<string, any> | null, lsTree: any): string[];
-export function analyze(auditJson: any, lsJson: any, baseline: any, fullAuditJson?: null): {
+export function analyze(auditJson: any, lsJson: any, baseline: any, fullAuditJson?: any): {
     total: number;
     findings: {
         peerMasked?: boolean | undefined;

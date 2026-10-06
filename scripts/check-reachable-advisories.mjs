@@ -320,37 +320,6 @@ const SEVERITY_RANK = { unknown: 0, info: 1, low: 2, moderate: 3, high: 4, criti
 const worseSeverity = (a, b) => ((SEVERITY_RANK[b] ?? 0) > (SEVERITY_RANK[a] ?? 0) ? b : a);
 
 /**
- * Core analysis. Pure: takes parsed audit + ls JSON, returns the classified population.
- *
- * `fullAuditJson` is the OPTIONAL second lens — `npm audit --json` over the tree as it is
- * actually installed (dev deps included). It exists because the two lenses disagree, and
- * the prod-only one is OPTIMISTIC about fixes:
- *
- *   style-dictionary, measured 2026-09-05 — installed 4.4.0, root declares "^4.4.0":
- *     npm audit --omit=dev  ->  fixAvailable: true          ("patch-compatible")
- *     npm audit             ->  fixAvailable: 5.5.2, isSemVerMajor: true
- *
- *   4.4.0 -> 5.5.2 is unambiguously major and "^4.4.0" cannot reach it, so the prod-only
- *   lens is simply WRONG here. It answers "what would fix this if the tree had no dev
- *   deps" — a tree we never install. (Note --omit=dev is not even a subset: it reported
- *   99 advisories against the full tree's 91.)
- *
- * So reachability/shipping is judged on the prod graph (the correct lens for what ships),
- * while FIX FEASIBILITY is judged against the tree we really install, and any disagreement
- * resolves to the PESSIMISTIC reading — the same fail-closed doctrine as unattributed
- * advisories above. A guard that under-reports a major upgrade as "patch-compatible" sends
- * you to attempt a fix that cannot work.
- *
- * @param {any} auditJson  parsed `npm audit --omit=dev --json` (reachability + severity)
- * @param {any} lsJson     parsed `npm ls --omit=dev --all --json` (workspace attribution)
- * @param {any} baseline   the shrink-only accepted-advisory baseline
- * @param {any} [fullAuditJson]  parsed `npm audit --json` over the tree as installed.
- *   Optional: omitted/null degrades to the single-lens reading, which still gates on the
- *   same population but is optimistic about fix feasibility. Typed explicitly because a
- *   bare `= null` default makes tsc infer the parameter type AS `null`, which then rejects
- *   every real audit object at the call site.
- */
-/**
  * Advisories the PROD lens dropped although the prod tree still holds a vulnerable copy.
  *
  * The two inputs disagree about what "prod" means, and the disagreement fails OPEN.
@@ -370,6 +339,9 @@ const worseSeverity = (a, b) => ((SEVERITY_RANK[b] ?? 0) > (SEVERITY_RANK[a] ?? 
  * A full-lens advisory is folded in when the prod ls tree holds a copy INSIDE its vulnerable
  * range. Fail closed: without semver or a parseable range, any copy counts. A package with
  * no copy in the prod ls tree is genuinely dev-only and stays out.
+ *
+ * Keep this ABOVE analyze()'s doc block: placed between that block and analyze(), it
+ * captures the block, and the generated .d.mts narrows analyze's 4th parameter to `null`.
  *
  * @param {Record<string, any>} prodVulns  `vulnerabilities` of `npm audit --omit=dev --json`
  * @param {Record<string, any> | null} fullVulns  `vulnerabilities` of `npm audit --json`
@@ -401,6 +373,37 @@ export function findPeerMaskedAdvisories(prodVulns, fullVulns, lsTree) {
   return masked.sort();
 }
 
+/**
+ * Core analysis. Pure: takes parsed audit + ls JSON, returns the classified population.
+ *
+ * `fullAuditJson` is the OPTIONAL second lens — `npm audit --json` over the tree as it is
+ * actually installed (dev deps included). It exists because the two lenses disagree, and
+ * the prod-only one is OPTIMISTIC about fixes:
+ *
+ *   style-dictionary, measured 2026-09-05 — installed 4.4.0, root declares "^4.4.0":
+ *     npm audit --omit=dev  ->  fixAvailable: true          ("patch-compatible")
+ *     npm audit             ->  fixAvailable: 5.5.2, isSemVerMajor: true
+ *
+ *   4.4.0 -> 5.5.2 is unambiguously major and "^4.4.0" cannot reach it, so the prod-only
+ *   lens is simply WRONG here. It answers "what would fix this if the tree had no dev
+ *   deps" — a tree we never install. (Note --omit=dev is not even a subset: it reported
+ *   99 advisories against the full tree's 91.)
+ *
+ * So reachability/shipping is judged on the prod graph (the correct lens for what ships),
+ * while FIX FEASIBILITY is judged against the tree we really install, and any disagreement
+ * resolves to the PESSIMISTIC reading — the same fail-closed doctrine as unattributed
+ * advisories above. A guard that under-reports a major upgrade as "patch-compatible" sends
+ * you to attempt a fix that cannot work.
+ *
+ * @param {any} auditJson  parsed `npm audit --omit=dev --json` (reachability + severity)
+ * @param {any} lsJson     parsed `npm ls --omit=dev --all --json` (workspace attribution)
+ * @param {any} baseline   the shrink-only accepted-advisory baseline
+ * @param {any} [fullAuditJson]  parsed `npm audit --json` over the tree as installed.
+ *   Optional: omitted/null degrades to the single-lens reading, which still gates on the
+ *   same population but is optimistic about fix feasibility. Typed explicitly because a
+ *   bare `= null` default makes tsc infer the parameter type AS `null`, which then rejects
+ *   every real audit object at the call site.
+ */
 export function analyze(auditJson, lsJson, baseline, fullAuditJson = null) {
   const vulns = auditJson?.vulnerabilities || {};
   const fullVulns = fullAuditJson?.vulnerabilities || null;
