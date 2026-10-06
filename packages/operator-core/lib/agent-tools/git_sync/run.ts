@@ -388,6 +388,8 @@ export default defineTool({
             `git-sync:egressed:${outcome.headSha} or verify the remote ref before claiming publication.`
         : outcome?.status === 'nothing'
           ? 'git-sync completed with status nothing; no repo changes were committed.'
+          : outcome?.status === 'skipped-locked'
+            ? 'git-sync completed with a structured skipped-locked outcome; inspect outcome.skippedPaths and committedCount for the locked paths and any work this fire committed.'
           : outcome?.status === 'skipped'
             ? outcome.reason === 'held_exclusive'
               ? // This is emitted at the actual release boundary, not at refusal

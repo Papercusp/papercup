@@ -608,6 +608,32 @@ describe('git-sync:run', () => {
     expect(result.note).toMatch(/git-sync:lock-retry/);
   });
 
+  it('describes a structured skipped-locked outcome instead of calling it unknown', async () => {
+    const outcome = {
+      status: 'skipped-locked' as const,
+      dirtyPathCount: 2,
+      committedCount: 0,
+      skippedPaths: [
+        { scope: 'superproject', path: 'next-env.d.ts', owner: 'su-loopback' },
+        { scope: 'superproject', path: 'tsconfig.json', owner: 'su-loopback' },
+      ],
+    };
+
+    const result = await mockSkippedFire(outcome);
+
+    expect(result).toMatchObject({
+      ok: true,
+      fired: true,
+      status: 'skipped-locked',
+      success: false,
+      committed: false,
+      outcome,
+    });
+    expect(result.note).toContain('structured skipped-locked outcome');
+    expect(result.note).toContain('outcome.skippedPaths');
+    expect(result.note).not.toContain('no structured outcome');
+  });
+
   // WI-4940: the trailing `git rev-parse HEAD` (headSha, called unconditionally after
   // fireGitSyncNow resolves — the exact spot the reporter's 120s hang landed in, AFTER
   // the commit had already succeeded) must be bounded, not a bare unbounded execFile.
