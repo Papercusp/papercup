@@ -438,8 +438,8 @@ vi.mock('../su-session-claude-engine', async (original) => {
           interrupt: async () => { result(); },
           // P-026: the streaming-input switch the engine makes before a turn.
           setModel: async (model?: string) => { scriptedEngine.modelSwitches.push({ model }); },
-          applyFlagSettings: async (settings: { effortLevel?: string }) => {
-            scriptedEngine.modelSwitches.push({ effort: settings.effortLevel });
+          applyFlagSettings: async (settings: { effortLevel?: string | null }) => {
+            scriptedEngine.modelSwitches.push({ effort: settings.effortLevel ?? undefined });
           },
           close: () => { native?.stdin.end(); output.end(); },
         };

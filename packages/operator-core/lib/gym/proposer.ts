@@ -61,7 +61,10 @@ export interface CandidateProposal {
   unreportedFrames?: number;
 }
 
-/** Native judge/proposer network recovery; injected sleep keeps verification zero-spend. */
+/** Native judge/proposer network recovery. Another dispatch is safe here only
+ * after a complete, explicitly measured zero-cost failure. A network error
+ * alone does not establish that inference never ran; preserve unknown spend
+ * for the caller's reservation/settlement path. */
 export function withGymLlmNetworkRetry<A extends unknown[], R>(
   fn: (...args: A) => Promise<R>,
   deps: { log: (message: string) => void; sleep?: (ms: number) => Promise<void> },
@@ -74,8 +77,13 @@ export function withGymLlmNetworkRetry<A extends unknown[], R>(
       catch (error) {
         lastErr = error;
         const message = error instanceof Error ? error.message : String(error);
-        if (!/fetch failed|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EAI_AGAIN/i.test(message)) throw error;
-        deps.log(`llm call transient network failure (attempt ${attempt + 1}/3): ${message.slice(0, 120)}`);
+        const usage = error as { costUsd?: unknown; costUsdMeasurementMissing?: unknown; unreportedFrames?: unknown } | null;
+        const measuredZero = usage?.costUsd === 0 &&
+          (usage.costUsdMeasurementMissing === undefined || usage.costUsdMeasurementMissing === false) &&
+          (usage.unreportedFrames === undefined || usage.unreportedFrames === 0);
+        if (!/fetch failed|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EAI_AGAIN/i.test(message) ||
+          !measuredZero || attempt === 2) throw error;
+        deps.log(`llm call known-zero network failure (attempt ${attempt + 1}/3): ${message.slice(0, 120)}`);
         await sleep(2_000 * (attempt + 1));
       }
     }

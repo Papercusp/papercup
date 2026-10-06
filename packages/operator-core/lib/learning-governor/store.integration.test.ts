@@ -571,7 +571,7 @@ describe('governed attempt persisted settlement receipts', () => {
     expect(call).toHaveBeenCalledTimes(1);
     expect(sleep).not.toHaveBeenCalled();
     if (out.ok || out.reason !== 'failed') throw new Error('expected the first reserved dispatch to fail');
-    expect(out.error).toBe(failure);
+    expect(out.error).toBe(failure.message);
     if (incomplete) expect(out).toMatchObject({ costUsdMeasurementMissing: true, settlement: null });
     else expect(out.settlement).toMatchObject({ ok: true, reservation: { status: 'failed', usedUsd: costUsd } });
     const fresh = postgres(testDatabaseUri, { max: 1, onnotice: () => {}, prepare: false });

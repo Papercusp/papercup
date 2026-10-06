@@ -447,8 +447,9 @@ export async function runOneAutoloopCycle(
     // ("TypeError: fetch failed" — undici, no HTTP status) killed a whole
     // provisioned cycle 16s in (14:42:49, same window as other outbound flakiness
     // on this box). A provisioned cycle is EXPENSIVE (container + operator boot
-    // ~2.5min) — retry the bare-network failure class (never HTTP-status errors:
-    // the gateway already owns those semantics) 2× with short backoff.
+    // ~2.5min). Retry only bare-network failures with complete measured-zero
+    // spend; unknown/positive failed spend must reach reservation settlement
+    // without being replaced by a later receipt. The gateway owns HTTP retries.
     const rawGymLlm = FAKE ? null : await import('../llm-testing/llm-client');
     const judge: JudgeLlmCall = FAKE
       ? fakeJudge

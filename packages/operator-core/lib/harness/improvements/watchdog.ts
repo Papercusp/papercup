@@ -4384,8 +4384,20 @@ export async function defaultPapercuspCollectors(
         // WI-10004648: the promoted pass folds never-worked promoted legacy rows
         // (bulk_dedup's reviewed gate refuses them by design). Same 200/tick bound.
         const foldNote = `${await foldPass('probation')}; ${await foldPass('promoted')}`;
+        // unified-bug-pipeline P-003 / D-022: promoted tool-failure rows stamped
+        // awaiting-review or freshness-unknown with no reviewer get verified, retired
+        // with evidence, or enrolled in agent review. Bounded by rows and wall time.
+        const { sweepStrandedToolFailures, renderStrandedSweepNote } = await import('./stranded-tool-failure-sweep');
+        const sweepNote = renderStrandedSweepNote(
+          await sweepStrandedToolFailures(workspaceId).catch((error: unknown) => ({
+            error: error instanceof Error ? error.message : String(error),
+          })),
+        );
         const result = await recoverInvocationFriction(workspaceId);
-        return { signals: [], note: `friction delivered=${result.delivered}, locked-pending=${result.pending}, expired=${result.expired}; ${foldNote}` };
+        return {
+          signals: [],
+          note: `friction delivered=${result.delivered}, locked-pending=${result.pending}, expired=${result.expired}; ${foldNote}; ${sweepNote}`,
+        };
       },
     },
     {

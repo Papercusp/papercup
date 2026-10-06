@@ -214,6 +214,26 @@
       "class": "missing-schema",
       "state": "open-unknown",
       "item": "WI-10006170",
+      "latestLocalReceipt": {
+        "id": 20808370,
+        "status": "pass",
+        "passed": 44,
+        "failed": 0,
+        "skipped": 0,
+        "collectionFailed": false,
+        "commitSha": "03f3a2c80990bb218e1be6c1d2d8db4337c8fc07",
+        "worktreeDirty": false,
+        "runGroupId": "ffde4ff9-61f2-4953-aa0c-093d99ad0a6a",
+        "startedAt": "2026-10-06T02:20:19.828Z"
+      },
+      "sourceReconciliation": {
+        "historicalError": "Four saved D006 cases failed because test_runs.started_at was absent from the private fixture.",
+        "existingFixtureCommit": "a1109d57cbe1ec5b3c75685b4b4af2403aa5e945",
+        "existingFixtureChange": "Adds started_at timestamptz NOT NULL DEFAULT now(); no duplicate repair made.",
+        "testSha256BeforeAndAfter": "63436752e1bb199f0da6b9da19d827593929e9c669d5aa2f45b80e31d314ae83",
+        "bindFromTestRunSha256BeforeAndAfter": "aabb18220b923b96d875ccaa1f98dd68ef61b28af31b1ff9a9ad7c081c2b9722",
+        "remaining": "Peer repair-item attribution and complete source/import/environment disposition remain open; this focused receipt does not close the final D006 assurance gap."
+      },
       "lines": [
         14946,
         14947,
