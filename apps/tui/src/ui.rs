@@ -241,19 +241,9 @@ fn draw_overlays(f: &mut Frame, app: &App) {
     // below the modal overlays (it shouldn't fight the help/palette/tutorial).
     // The mute covers notifications only: an acknowledgement of the owner's
     // own key or drag (`toast_is_ack`) is always shown.
-    if let Some(t) = &app.toast {
-        if (app.notify_enabled || app.toast_is_ack)
-            && !app.show_tutorial
-            && !app.show_help
-            && !app.palette_open
-            && !app.show_notifs
-            && !app.pot_picker_open
-            && app.fleet_action_menu.is_none()
-            && app.wake_review.is_none()
-            && app.fleet_launcher.is_none()
-            && app.inbox_answer.is_none()
-            && app.lifecycle.is_none()
-        {
+    if let Some(t) = visible_toast(app) {
+        // P-027 (G-10): the quiet chat shows it inside the message box.
+        if !toast_in_message_box(app) {
             draw_toast(f, t);
         }
     }
@@ -2976,6 +2966,27 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
             .max(1) as usize;
         selection_rows.extend(chat_shortcut_rows(width).into_iter().take(room));
     }
+    // P-027 (G-10): a toast in the quiet chat is up to three wrapped rows in
+    // the same place, so the box grows around it instead of being covered.
+    if quiet && toast_in_message_box(app) {
+        if let Some(toast) = visible_toast(app) {
+            let room = area
+                .height
+                .saturating_sub(card_h + turn_error.len() as u16 + 6)
+                .max(1) as usize;
+            let mut rows = wrap_text(&toast.message, width.saturating_sub(4).max(1));
+            if rows.len() > 3 {
+                rows.truncate(3);
+                if let Some(last) = rows.last_mut() {
+                    last.push('…');
+                }
+            }
+            for (i, row) in rows.into_iter().take(room).enumerate() {
+                let lead = if i == 0 { "  • " } else { "    " };
+                selection_rows.push(trunc(&format!("{lead}{row}"), width));
+            }
+        }
+    }
     // Attachments occupy one row each ABOVE the draft, so the composer has to
     // grow by exactly that many or the draft line is pushed out of its own box.
     // The draft is a real multiline editor now. Reserve one row per logical
@@ -5250,6 +5261,33 @@ fn draw_help(f: &mut Frame, app: &App) {
 
 /// A transient toast for the latest notification, bottom-right above the status
 /// bar (P8).
+/// The toast, when one is due on screen. The mute covers notifications only:
+/// an acknowledgement of the owner's own key or drag (`toast_is_ack`) is
+/// always shown. Modal overlays hide it.
+fn visible_toast(app: &App) -> Option<&Notif> {
+    let toast = app.toast.as_ref()?;
+    ((app.notify_enabled || app.toast_is_ack)
+        && !app.show_tutorial
+        && !app.show_help
+        && !app.palette_open
+        && !app.show_notifs
+        && !app.pot_picker_open
+        && app.fleet_action_menu.is_none()
+        && app.wake_review.is_none()
+        && app.fleet_launcher.is_none()
+        && app.inbox_answer.is_none()
+        && app.lifecycle.is_none())
+    .then_some(toast)
+}
+
+/// pui-chat-first-ux P-027 (G-10): the quiet full-screen chat shows a toast as
+/// rows inside the message box, above the draft, where the `/` menu opens.
+/// The corner popup sat on the box's bottom border and hid it (parity
+/// checklist row 20).
+fn toast_in_message_box(app: &App) -> bool {
+    chat_is_inline(app) && !app.chat_details_visible() && app.chat_composing
+}
+
 fn draw_toast(f: &mut Frame, n: &Notif) {
     let full = f.area();
     let w = 50.min(full.width.saturating_sub(2));
@@ -9930,6 +9968,35 @@ mod tests {
         let frame = render(&app, 100, 24);
         assert!(!frame.contains(QUIET_ESC_CLEAR_HINT), "{frame}");
         assert!(frame.contains(QUIET_SEND_HINT), "{frame}");
+    }
+
+    /// P-027 (G-10): in the quiet chat a toast sits inside the message box,
+    /// above the draft, instead of a corner popup drawn over the box border.
+    #[test]
+    fn a_toast_in_the_quiet_chat_sits_inside_the_box_above_the_draft() {
+        let mut app = chat_first_bound_app();
+        app.toast = Some(ui_notif(
+            "warn",
+            "No command /nope. Type / to see the commands, or start the message with a space to send it as text.",
+            None,
+        ));
+        app.toast_is_ack = true;
+        let (rows, _) = render_rows(&app, 100, 24);
+        let frame = rows.join("\n");
+        let toast = rows
+            .iter()
+            .position(|r| r.contains("No command /nope"))
+            .unwrap_or_else(|| panic!("the toast is on screen:\n{frame}"));
+        let draft = rows
+            .iter()
+            .position(|r| r.starts_with("> "))
+            .unwrap_or_else(|| panic!("the draft row is on screen:\n{frame}"));
+        assert!(toast < draft, "the toast is above the draft:\n{frame}");
+        assert!(!frame.contains("N history"), "no corner popup:\n{frame}");
+        assert!(
+            rows[toast + 1].trim_start().starts_with("text."),
+            "it wraps onto the next row, not clips:\n{frame}"
+        );
     }
 
     #[test]
