@@ -3524,6 +3524,12 @@ export function registerMcpHost(server: McpServer): void {
       // `harness:'all'` on plans:list into a workspace-wide read of the session's
       // own workspace (F-A1) before dispatch — see the clamp block below.
       let args = req.params.arguments ?? {};
+      // Result-door recovery advice needs the target name when tools:invoke returns
+      // a nested result; the outer tool name alone cannot select field-specific guidance.
+      const nestedTargetToolName =
+        toolName === 'tools:invoke' && typeof args.name === 'string'
+          ? args.name.trim().slice(0, 120) || undefined
+          : undefined;
       const progressToken = req.params._meta?.progressToken;
       // Write idempotency / result replay (audit P-046 / EI-68): a caller
       // that passes `_meta.idempotencyKey` gets its result persisted under
@@ -4333,9 +4339,10 @@ export function registerMcpHost(server: McpServer): void {
               // retry fan-out can bypass the one-budget invariant entirely.
               const replayedResult = projected.skipResultDoor
                 ? storedResult
-                : await applyResultDoorAsync(storedResult, {
-                    toolName,
-                    workspaceId: dispatchSpawnCtx.workspaceId,
+              : await applyResultDoorAsync(storedResult, {
+                  toolName,
+                  nestedTargetToolName,
+                  workspaceId: dispatchSpawnCtx.workspaceId,
                     runId: dispatchSpawnCtx.runId ?? null,
                     ownerId: (() => {
                       try {
@@ -4536,6 +4543,7 @@ export function registerMcpHost(server: McpServer): void {
               ? doorInput
               : await applyResultDoorAsync(doorInput, {
                   toolName,
+                  nestedTargetToolName,
                   workspaceId: dispatchSpawnCtx.workspaceId,
                   runId: dispatchSpawnCtx.runId ?? null,
                   // P-023: key the per-session door override on the SAME identity
