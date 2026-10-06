@@ -120,7 +120,7 @@ export async function readSeedInstalledPackages(root: string, trees: readonly st
   const scan = async (nm: string) => {
     for (const name of (await readdir(join(root, nm))).sort()) {
       if (name.startsWith('.')) {
-        const leftover = REIFY_LEFTOVER.exec(name);
+        const leftover = ROOT_TOOLING.has(name) ? null : REIFY_LEFTOVER.exec(name);
         if (!ROOT_TOOLING.has(name) && !leftover) throw new Error(`unknown hidden dependency entry: ${nm}/${name}`);
         await exclude(`${nm}/${name}`, leftover?.[1]); continue;
       }
