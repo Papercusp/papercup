@@ -290,8 +290,11 @@ describe('R-1 pinned app operation contract (D-001)', () => {
   });
 
   it('keeps the request, handle, status, events and cancel shapes D-001 records', () => {
+    // privateInput is the D-014 extension (operation-scoped transient handoff); it stays optional,
+    // so a D-001 request without it is still valid.
     expect(Object.keys(SubmitArgsSchema.shape).sort()).toEqual(
-      ['harness', 'input', 'operationId', 'requestKey', 'summary', 'title']);
+      ['harness', 'input', 'operationId', 'privateInput', 'requestKey', 'summary', 'title']);
+    expect(SubmitArgsSchema.shape.privateInput.isOptional()).toBe(true);
     expect(Object.keys(EventsArgsSchema.shape).sort()).toEqual(['cursor', 'handle', 'limit']);
     expect(Object.keys(CancelArgsSchema.shape).sort()).toEqual(['handle', 'reason', 'requestKey']);
     expect(Object.keys(BlueprintOperationStatusSchema.shape).sort()).toEqual(
