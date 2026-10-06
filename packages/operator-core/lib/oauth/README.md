@@ -52,7 +52,12 @@ operator UI surfaces a "reconnect" button.
 
 ## Provider registration
 
-Platform-owners configure providers in `~/.papercusp/oauth-apps.json`:
+Platform-owners configure providers in `oauth-apps.json` under `papercuspRoot()` —
+on a workspace install that is `~/.papercusp-workspaces/<workspace-id>/.papercusp/oauth-apps.json`
+(`$PAPERCUSP_HOME` overrides it; legacy `~/.papercusp/` is read only when no workspace
+directory exists, so a file left there is silently ignored). Descriptor providers
+(Linear, Asana, …) read their entry by `oauth.clientRegistrationRef`; omit `redirectUri`
+so each host uses its own `/api/oauth/callback` (`:3070` release, `:3170` staging):
 
 ```json
 {

@@ -23,8 +23,8 @@
 import type { IndexManifest } from '../schema-object-drift';
 
 export const INDEX_MANIFEST: IndexManifest = {
-  "generatedAt": "2026-10-06T07:13:48.742Z",
-  "migrationCountAtGeneration": 1179,
+  "generatedAt": "2026-10-06T17:32:33.139Z",
+  "migrationCountAtGeneration": 1197,
   "indexes": [
     {
       "schema": "audit",
@@ -1540,6 +1540,20 @@ export const INDEX_MANIFEST: IndexManifest = {
     },
     {
       "schema": "harness_shared",
+      "name": "blueprint_operation_private_inputs_expires_idx",
+      "table": "blueprint_operation_private_inputs",
+      "definition": "CREATE INDEX blueprint_operation_private_inputs_expires_idx ON harness_shared.blueprint_operation_private_inputs USING btree (expires_at)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "blueprint_operation_private_inputs_pkey",
+      "table": "blueprint_operation_private_inputs",
+      "definition": "CREATE UNIQUE INDEX blueprint_operation_private_inputs_pkey ON harness_shared.blueprint_operation_private_inputs USING btree (workspace_id, harness_slug, caller_id, operation_id, request_key)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
       "name": "blueprint_package_dependents_pkey",
       "table": "blueprint_package_dependents",
       "definition": "CREATE UNIQUE INDEX blueprint_package_dependents_pkey ON harness_shared.blueprint_package_dependents USING btree (workspace_id, dependent_id, resource_key)",
@@ -1788,6 +1802,27 @@ export const INDEX_MANIFEST: IndexManifest = {
       "name": "census_provider_registrations_pkey",
       "table": "census_provider_registrations",
       "definition": "CREATE UNIQUE INDEX census_provider_registrations_pkey ON harness_shared.census_provider_registrations USING btree (workspace_id, harness_slug, provider)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "chat_bug_suggestions_author_idx",
+      "table": "chat_bug_suggestions",
+      "definition": "CREATE INDEX chat_bug_suggestions_author_idx ON harness_shared.chat_bug_suggestions USING btree (workspace_id, data_source_id, channel_id, author_external_id, created_at DESC)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "chat_bug_suggestions_message_uq",
+      "table": "chat_bug_suggestions",
+      "definition": "CREATE UNIQUE INDEX chat_bug_suggestions_message_uq ON harness_shared.chat_bug_suggestions USING btree (workspace_id, data_source_id, channel_id, provider_message_id)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "chat_bug_suggestions_pkey",
+      "table": "chat_bug_suggestions",
+      "definition": "CREATE UNIQUE INDEX chat_bug_suggestions_pkey ON harness_shared.chat_bug_suggestions USING btree (id)",
       "constraintBacked": true
     },
     {
@@ -2166,6 +2201,20 @@ export const INDEX_MANIFEST: IndexManifest = {
       "name": "connected_apps_workspace_idx",
       "table": "connected_apps",
       "definition": "CREATE INDEX connected_apps_workspace_idx ON harness_shared.connected_apps USING btree (workspace_id) WHERE (revoked_at IS NULL)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "connector_push_secrets_pkey",
+      "table": "connector_push_secrets",
+      "definition": "CREATE UNIQUE INDEX connector_push_secrets_pkey ON harness_shared.connector_push_secrets USING btree (id)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "connector_push_secrets_source_idx",
+      "table": "connector_push_secrets",
+      "definition": "CREATE INDEX connector_push_secrets_source_idx ON harness_shared.connector_push_secrets USING btree (workspace_id, source_id, created_at DESC)",
       "constraintBacked": false
     },
     {
@@ -9639,13 +9688,6 @@ export const INDEX_MANIFEST: IndexManifest = {
     },
     {
       "schema": "harness_shared",
-      "name": "session_turns_provenance_version_idx",
-      "table": "session_turns",
-      "definition": "CREATE INDEX session_turns_provenance_version_idx ON harness_shared.session_turns USING btree (turn_origin_classifier_version)",
-      "constraintBacked": false
-    },
-    {
-      "schema": "harness_shared",
       "name": "session_turns_session_idx",
       "table": "session_turns",
       "definition": "CREATE INDEX session_turns_session_idx ON harness_shared.session_turns USING btree (session_id)",
@@ -11883,6 +11925,13 @@ export const INDEX_MANIFEST: IndexManifest = {
       "table": "hosted_subscriptions",
       "definition": "CREATE UNIQUE INDEX hosted_subscriptions_pkey ON papercusp_auth.hosted_subscriptions USING btree (stripe_subscription_id)",
       "constraintBacked": true
+    },
+    {
+      "schema": "papercusp_auth",
+      "name": "hosted_usage_openrouter_budget_binding_uidx",
+      "table": "hosted_usage_receipts",
+      "definition": "CREATE UNIQUE INDEX hosted_usage_openrouter_budget_binding_uidx ON papercusp_auth.hosted_usage_receipts USING btree (control_workspace_id, organization_id, ((openrouter_budget_grant ->> 'reservationId'::text))) WHERE (openrouter_budget_grant IS NOT NULL)",
+      "constraintBacked": false
     },
     {
       "schema": "papercusp_auth",

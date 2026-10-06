@@ -26,10 +26,12 @@
  *                               the real login — copying would risk a
  *                               single-use refresh-token logout).
  *
- * KNOWN GAP (D-002, owner-inbox-single-pane-2026-07-17): codex's hook
- * surface is PreToolUse/PostToolUse ONLY — there is no turn_end/Stop
- * equivalent event today (an upstream `notify` turn-complete channel is
- * reportedly available but UNVERIFIED against our pin). That means the
+ * HISTORICAL GAP (D-002, owner-inbox-single-pane-2026-07-17), now partly
+ * superseded: when this was written codex's hook surface was
+ * PreToolUse/PostToolUse only. Current codex (0.159+) ships a `Stop` event,
+ * which `writeCodexLockHooks` now uses for the identity stop port and the
+ * turn-end journal (WI-10006795). The text below records the original
+ * decision about owner-directed questions; it has not been re-evaluated. That meant the
  * su convention "an owner-directed question must ride a durable channel"
  * (coord:escalate w/ options, or an `<ask>` block at minimum) cannot be
  * enforced or even soft-nudged for a Codex role session the way Claude's
@@ -114,6 +116,9 @@ const CODEX_CONTROL_BYTES_PRE_MATCHER =
 /** Full Write/capability:write inputs carry the complete requested content, so
  * the shared PostToolUse guard can compare exact UTF-8 bytes on disk. */
 const CODEX_WRITE_BYTE_INTEGRITY_MATCHER = '^(?:Write|mcp__.*__capability_write)$';
+/** The shared cc/ turn-end journal hook (WI-10006795). One name, read by both the
+ * writer and the identity repair, so a home missing it is repaired on resume. */
+const CODEX_TURN_JOURNAL_HOOK = 'stop-turn-journal.sh';
 
 /**
  * TOML preamble baked into EVERY per-session codex home (psu-isolation P-004 /
@@ -898,6 +903,29 @@ export function writeCodexLockHooks(
   // (codex's schemas are read in adapters/codex.mjs). The guard renders only a
   // deny for the one pending call, so it can never auto-approve (D-027).
   const stop: CodexHook[] = [];
+
+  // WI-10006795: the per-turn JOURNAL hook. stop-turn-journal.sh was written to
+  // serve Claude AND Codex (it reads codex's Stop payload — `session_id` plus the
+  // nullable `transcript_path` — and keys source_kind off PAPERCUSP_AGENT=codex),
+  // but only Claude's settings.json ever enrolled it. Codex sessions therefore
+  // never reached journal:record-turn (1 call in 7 days against ~13k for Claude),
+  // and a codex GOAL holder emitted no goalPlacementTurnEnd evidence at all.
+  // PAPERCUSP_SID is baked for the same reason as every hook above: codex hands
+  // hook commands a minimal env, and the script exits 0 silently without it. Its
+  // stdout is always empty, so it can never be read as a Stop `decision`.
+  const turnJournal = join(dir, CODEX_TURN_JOURNAL_HOOK);
+  if (opts.activitySid && existsSync(turnJournal)) {
+    stop.push({
+      matcher: '.*',
+      hooks: [
+        {
+          type: 'command',
+          command: `PAPERCUSP_SID=${shellSingleQuote(opts.activitySid)} PAPERCUSP_AGENT=codex ${turnJournal}`,
+        },
+      ],
+    });
+  }
+
   if (opts.injectSid && existsSync(injectDispatcher)) {
     const injectIdentity = `PAPERCUSP_SID=${shellSingleQuote(opts.injectSid)} PAPERCUSP_AGENT=codex`;
     const identityHook = (event: string): CodexHook => ({
@@ -1054,12 +1082,39 @@ export function repairSuCodexHomeIdentity(
       return false;
     }
   })();
+  // WI-10006795: a home written before the turn-journal enrollment carries a Stop
+  // entry with only the identity dispatcher. Without this check the owner-only
+  // comparison above calls it current, so a resumed codex session would keep
+  // emitting no journal:record-turn rows forever. Gated on the script being
+  // installed, exactly like the writer, so a host without it never repair-loops.
+  const turnJournalHookMatches = (() => {
+    if (!hooksExpected) return true;
+    if (!existsSync(join(homedir(), '.papercusp', 'hooks', 'cc', CODEX_TURN_JOURNAL_HOOK))) return true;
+    try {
+      const parsed = JSON.parse(hooksText) as {
+        hooks?: Record<string, Array<{ hooks?: Array<{ command?: string }> }>>;
+      };
+      return (
+        parsed.hooks?.Stop?.some((group) =>
+          group.hooks?.some(
+            (hook) =>
+              hook.command?.includes(CODEX_TURN_JOURNAL_HOOK) &&
+              hook.command.includes(`PAPERCUSP_SID='${sid}'`) &&
+              hook.command.includes('PAPERCUSP_AGENT=codex'),
+          ),
+        ) === true
+      );
+    } catch {
+      return false;
+    }
+  })();
   if (
     hooksMatch &&
     diagnosticsMatch &&
     sentinelMatches &&
     lifecycleHooksMatch &&
-    preCompactHookMatches
+    preCompactHookMatches &&
+    turnJournalHookMatches
   ) {
     return { repaired: false, hooksInstalled: hooksExpected };
   }
