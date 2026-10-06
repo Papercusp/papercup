@@ -660,12 +660,13 @@ defineTool({
 defineTool({
   name: 'gatingtest:replay_structured_write',
   requirePrincipal: false,
-  capability: 'agent_tools:write',
+  capability: 'work_items:write',
+  needsWorkspaceTx: true,
   args: z.object({ large: z.boolean().optional() }),
   result: z.object({
     rows: z.array(z.object({ id: z.string(), state: z.string(), detail: z.string().optional() })),
   }),
-  agentRoles: ['scoper'],
+  agentRoles: ['reviewer'],
   handler: async (args, ctx) => {
     parityCalls.push({ args, ctx });
     return { data: { rows: args.large ? LARGE_PARITY_PAYLOAD.rows : PARITY_ROWS } };
@@ -1782,14 +1783,17 @@ describe('P006 full dispatcher semantics over real HTTP and authenticated UDS', 
   ] as const)(
     '$firstCallMode first call replays a $resultShape result to a schema-aware client',
     async ({ firstCallMode, resultShape, large }) => {
+      parityCalls.length = 0;
       const name = 'gatingtest:replay_structured_write';
       const idempotencyKey = `idem-replay-mode-matrix-${firstCallMode}-${resultShape}`;
       const args = large ? { large: true } : {};
       const expected = large ? LARGE_PARITY_PAYLOAD : { rows: PARITY_ROWS };
-      const extra = extraFor(signedUrl({ tools: name }));
+      const outputGroupId = `output-group-replay-mode-matrix-${firstCallMode}-${resultShape}`;
+      const extra = extraFor(signedUrl({ tools: name, role: 'reviewer' }));
       const firstMeta = {
         idempotencyKey,
         format: 'json',
+        outputGroupId,
         ...(firstCallMode === 'catalog-backed' ? { structured: true } : {}),
       };
       h.replayLookupFromStores = true;
@@ -1800,46 +1804,62 @@ describe('P006 full dispatcher semantics over real HTTP and authenticated UDS', 
           expect(catalog.tools.find(tool => tool.name === name)?.outputSchema)
             .toMatchObject({ type: 'object', required: ['rows'] });
 
+          if (large) {
+            // Exhaust the aggregate cohort so the idempotent call's stored
+            // model content is a result-door envelope. Direct handler calls
+            // avoid the SDK's outputSchema check for these seed results.
+            for (let i = 0; i < 2; i += 1) {
+              const seed = await callTool(name, { large: true }, extra, { format: 'json', outputGroupId });
+              expect(seed.isError).not.toBe(true);
+            }
+          }
+
           const first = await client.callTool({ name, arguments: args, _meta: firstMeta }) as CallResult;
+          expect(first.isError, textOf(first)).not.toBe(true);
+          expect(parityCalls.at(-1)?.ctx).toMatchObject({ requestedFormat: 'json', requestedStructured: true });
           expect(first.structuredContent).toEqual(expected);
           expect(h.replayStores).toHaveLength(1);
           const stored = h.replayStores[0]!.result as CallResult;
           expect(stored.structuredContent).toEqual(expected);
           if (large) {
-            expect(JSON.parse(textOf(stored))).toMatchObject({
-              schemaVersion: 'papercusp.output-envelope/v1',
-              state: 'incomplete',
-            });
+            const modelContent = jsonOf(stored) as { schemaVersion?: unknown; state?: unknown };
+            expect(modelContent.schemaVersion).toBe('papercusp.output-envelope/v1');
+            expect(modelContent.state).toBe('incomplete');
           } else {
-            expect(JSON.parse(textOf(stored))).toEqual(expected);
+            expect(jsonOf(stored)).toEqual(expected);
           }
 
           const replayed = await client.callTool({
             name,
             arguments: args,
-            _meta: { idempotencyKey, format: 'json', structured: true },
+            _meta: { idempotencyKey, format: 'json', structured: true, outputGroupId },
           }) as CallResult;
           expect(replayed.structuredContent).toEqual(expected);
           expect(replayed._meta).toMatchObject({ replayed: true, structured: true });
-          expect(parityCalls).toHaveLength(1);
+          expect(parityCalls).toHaveLength(large ? 3 : 1);
         }, 'http');
         return;
       }
 
       // The first transport call bypasses tools/list and the SDK's outputSchema
       // validator, matching a catalog-bypass client that requests JSON text only.
+      if (large) {
+        for (let i = 0; i < 2; i += 1) {
+          const seed = await callTool(name, { large: true }, extra, { format: 'json', outputGroupId });
+          expect(seed.isError).not.toBe(true);
+        }
+      }
       const first = await callTool(name, args, extra, firstMeta);
       expect(first.structuredContent).toBeUndefined();
       expect(h.replayStores).toHaveLength(1);
       const stored = h.replayStores[0]!.result as CallResult;
       expect(stored.structuredContent).toBeUndefined();
       if (large) {
-        expect(JSON.parse(textOf(stored))).toMatchObject({
-          schemaVersion: 'papercusp.output-envelope/v1',
-          state: 'incomplete',
-        });
+        const modelContent = jsonOf(stored) as { schemaVersion?: unknown; state?: unknown };
+        expect(modelContent.schemaVersion).toBe('papercusp.output-envelope/v1');
+        expect(modelContent.state).toBe('incomplete');
       } else {
-        expect(JSON.parse(textOf(stored))).toEqual(expected);
+        expect(jsonOf(stored)).toEqual(expected);
       }
 
       const handlerCallsBeforeReplay = parityCalls.length;
@@ -1850,12 +1870,23 @@ describe('P006 full dispatcher semantics over real HTTP and authenticated UDS', 
         const replay = client.callTool({
           name,
           arguments: args,
-          _meta: { idempotencyKey, format: 'json', structured: true },
+          _meta: { idempotencyKey, format: 'json', structured: true, outputGroupId },
         });
         if (large) {
-          // Replaying the result-door envelope without the original structured
-          // value reproduces the SDK's -32600 outputSchema contract failure.
-          await expect(replay).rejects.toThrow(/structured content/i);
+          // A stored envelope is not tool data. The handler should return it as
+          // an explicit MCP tool error so the SDK's outputSchema validator does
+          // not replace its recoverable reference with -32600.
+          const replayed = await replay as CallResult;
+          expect(replayed.isError).toBe(true);
+          expect(replayed.structuredContent).toBeUndefined();
+          expect(replayed._meta).toMatchObject({
+            replayed: true,
+            structuredUnavailable: { reason: 'result-door-envelope-is-not-tool-data' },
+          });
+          expect(jsonOf(replayed)).toMatchObject({
+            schemaVersion: 'papercusp.output-envelope/v1',
+            state: 'incomplete',
+          });
         } else {
           const replayed = await replay as CallResult;
           expect(replayed.structuredContent).toEqual(expected);
