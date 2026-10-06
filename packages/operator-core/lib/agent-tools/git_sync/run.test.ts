@@ -219,10 +219,11 @@ describe('git-sync:run', () => {
       });
       expect(refused.note).toMatch(/PAPERCUSP_BACKGROUND_WORKERS=0/);
       expect(refused.note).toContain(
-        'node scripts/mcp-call.mjs git-sync:run --json-file <args.json> --client <your-su-id> --port 3271',
+        'ptool git-sync:run --url=http://127.0.0.1:3271 --json-file <args.json>',
       );
+      expect(refused.note).toMatch(/workspace.*shared.*bearer/i);
       expect(refused.note).toMatch(/background mode.*inspect its log/i);
-      expect(refused.note).not.toContain('--url=');
+      expect(refused.note).not.toContain('node scripts/mcp-call.mjs');
       expect(preview).toMatchObject({
         ok: true,
         fired: false,
