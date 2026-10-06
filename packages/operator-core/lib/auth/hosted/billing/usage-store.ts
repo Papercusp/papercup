@@ -10,7 +10,8 @@ import type { HostedServiceContextRunner } from '../workos-lifecycle-postgres';
 import { shadowMonthBounds } from '../../../cupboard/shadow-metering-reader';
 import { splitMicrosDecimal } from '../../../cupboard/money-journal';
 import { openRouterUsageRecord, type OpenRouterUsageBinding } from './openrouter-usage';
-import type { HostedBudgetExecutionGrant } from './budget-store';
+import type { HostedBudgetExecutionGrant, HostedBudgetRequest, PostgresHostedBudgetStore } from './budget-store';
+import type { OpenRouterRequestCapture, OpenRouterRequestContext } from '../../../agent-loop/provider-router';
 import {
   buildHostedUsageStatement,
   validateHostedUsageRecord,
@@ -37,6 +38,20 @@ export interface HostedUsagePopulation {
   readonly records: readonly HostedUsageRecord[];
   /** Private execution metadata, never included in public usage records. */
   readonly openRouterBindings: readonly OpenRouterGenerationBinding[];
+}
+
+export interface HostedOpenRouterRequestCaptureOptions {
+  readonly budget: Pick<PostgresHostedBudgetStore, 'executeOnce'>;
+  /** Fresh server-authorized request for EACH stream, including compaction.
+   * An opaque providerLimitRef is not proof that a bound is enforced. */
+  readonly request: HostedBudgetRequest;
+  /** Supplied by the router from the actual selected key; never a browser,
+   * catalog, provider metadata or a guessed billing-account identity. */
+  readonly context: Readonly<OpenRouterRequestContext>;
+  readonly credentialRef: string;
+  readonly isByok: boolean;
+  readonly evidenceRef: string;
+  readonly now: () => number;
 }
 const sameTenant = (row: ReceiptRow, scope: HostedUsageScope) => row.control_workspace_id === scope.controlWorkspaceId
   && row.organization_id === scope.organizationId && row.customer_workspace_id === scope.customerWorkspaceId;
@@ -96,6 +111,76 @@ export type HostedUsageAppendResult = 'recorded' | 'duplicate' | 'replay-mismatc
 
 export class PostgresHostedUsageStore {
   constructor(private readonly run: HostedServiceContextRunner = withHostedServiceContext) {}
+
+  /** Compose the existing admission and binding writers at the native paused
+   * observation seam. Inject bounded SQL runners; writes must run outside the
+   * SHARE-only population phase. No production readers/authority are installed.
+   * Unknown ids and all failures retain the immutable original reservation.
+   * The closure, grant and credential digest never enter public observations. */
+  createOpenRouterRequestCapture(options: HostedOpenRouterRequestCaptureOptions): OpenRouterRequestCapture {
+    const { credentialRef, isByok, evidenceRef, now } = options;
+    const context = Object.freeze({ modelId: options.context.modelId, servedAccount: options.context.servedAccount,
+      credentialSha256: options.context.credentialSha256 });
+    const request = Object.freeze({ ...options.request, scope: Object.freeze({ ...options.request.scope }) });
+    if (typeof context.credentialSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(context.credentialSha256)
+        || typeof context.modelId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,255}$/.test(context.modelId)
+        || typeof context.servedAccount !== 'string' || !context.servedAccount
+        || typeof credentialRef !== 'string' || !/^(?:env:[A-Za-z_][A-Za-z0-9_]*|file:\/[A-Za-z0-9._/-]+)$/.test(credentialRef)
+        || typeof isByok !== 'boolean' || typeof now !== 'function'
+        || typeof evidenceRef !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/.test(evidenceRef)) {
+      throw new Error('invalid hosted OpenRouter capture configuration');
+    }
+    const executeOnce = options.budget.executeOnce.bind(options.budget);
+    const bind = this.bindOpenRouterGeneration.bind(this);
+    let grant: HostedBudgetExecutionGrant | undefined;
+    let occurredAtMs: number | undefined;
+    let generationId: string | undefined;
+    let failed = false;
+    let running = false;
+    return async observation => {
+      if (failed || running) { failed = true; throw new Error('OpenRouter capture is not resumable'); }
+      running = true;
+      try {
+        const response = observation.response ? { ...observation.response } : undefined;
+        const uncertain = observation.identityUncertain;
+        if (observation.provider !== 'openrouter' || observation.modelId !== context.modelId) {
+          throw new Error('OpenRouter capture route mismatch');
+        }
+        if (!grant) {
+          if (response || uncertain) throw new Error('OpenRouter dispatch intent is required before identity');
+          const result = await executeOnce(request, async admitted => {
+            grant = snapshotGrant(admitted);
+            occurredAtMs = now();
+            if (!Number.isSafeInteger(occurredAtMs) || occurredAtMs < request.asOfMs) {
+              throw new Error('unverified OpenRouter execution time');
+            }
+          });
+          if (result.execution !== 'dispatched' || !grant || failed) throw new Error('OpenRouter request was not freshly admitted');
+        }
+        if (uncertain || (response?.modelId !== undefined && response.modelId !== context.modelId)) {
+          throw new Error('OpenRouter identity remains uncertain');
+        }
+        const id = response?.id;
+        if (id === undefined) return; // Reservation is durable; missing id is not zero liability.
+        if (!/^gen-[0-9A-Za-z-]{1,124}$/.test(id) || (generationId !== undefined && generationId !== id)) {
+          throw new Error('OpenRouter generation identity conflict');
+        }
+        if (generationId === id) return;
+        generationId = id; // A failed/unknown write is never retried by this closure.
+        const observedAtMs = now();
+        if (!Number.isSafeInteger(observedAtMs) || observedAtMs < occurredAtMs!) {
+          throw new Error('unverified OpenRouter observation time');
+        }
+        const outcome = await bind({ scope: grant.scope, generationId: id, payer: 'consumption', isByok,
+          credentialRef, credentialSha256: context.credentialSha256, budgetGrant: grant,
+          occurredAtMs: occurredAtMs!, observedAtMs, evidenceRef });
+        if (!['recorded', 'duplicate'].includes(outcome) || failed) throw new Error('OpenRouter generation binding refused');
+      } catch (error) {
+        failed = true;
+        throw error;
+      } finally { running = false; }
+    };
+  }
 
   /** Server-only local census through the caller's reservation transaction.
    * Includes ALL stored revisions, providers, tenants and times; neither the
