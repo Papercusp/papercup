@@ -163,6 +163,14 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
         'Nested code:run rejected timeoutSec=60 because the live maximum is 45 seconds; use 45 or less.',
       ),
     ).toBe('caller');
+    expect(
+      classifyToolError(
+        'invalid_input',
+        'invalid-input',
+        'invalid_args: bindings.values: Invalid input: expected record, received undefined; ' +
+          'bindings: Unrecognized key: "issueId" — accepted fields include timeoutSec.',
+      ),
+    ).toBe('caller');
     expect(classifyToolError('handler_error', 'error', 'code:run exceeded timeout after 45 seconds')).toBe('transient');
   });
 
