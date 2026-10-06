@@ -1,11 +1,15 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import http from 'node:http';
 import { describe, expect, it, vi } from 'vitest';
-import { bindNativeGymLlmCalls, snapshotNativeGymGatewayConfig, startNativeGymGateway,
-  type NativeGymGatewayConfig } from '../proposer';
+import { bindNativeGymLlmCalls, createNativeGymGatewayController, snapshotNativeGymGatewayConfig, startNativeGymGateway,
+  type NativeGymGatewayConfig, type NativeGymProviderAuthorization } from '../proposer';
 import { startGatewayService, type GatewayServiceOptions, type RunningGatewayService } from '../../inference-gateway/launch';
-import type { GatewayCarryTrialAttempt } from '../../inference-gateway/gateway';
+import type { GatewayCarryTrialAttempt, GatewayCarryTrialAttemptResult } from '../../inference-gateway/gateway';
 import { processMonotonicClock } from '../../process-monotonic-clock';
+import { cycleReservationRunRef, type LearningSpendReservation, type ReserveLearningSpendInput,
+  type SettleLearningSpendInput } from '../../learning-governor/store';
+import type { GovernorGlueDeps } from '../../learning-governor/registrants';
+import type { Sql } from 'postgres';
 
 vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn(async () => false) }));
 
@@ -24,6 +28,189 @@ const attempt = (cfg: NativeGymGatewayConfig): GatewayCarryTrialAttempt => ({ at
   accountId: 'selected-account', credentialHeader: 'authorization', credentialSha256: digest('Bearer PRIVATE_SELECTED_TOKEN'),
   target: 'https://provider.invalid/v1/messages', body: '{}', bodySha256: digest('{}'),
   clockId: processMonotonicClock.id, signal: new AbortController().signal });
+
+function controllerFixture() {
+  const authority: NativeGymProviderAuthorization = { attemptKind: 'evaluation', requestedUsd: 0.25,
+    inputTokens: 100, outputTokens: 41, validUntilMonotonicMs: processMonotonicClock.now() + 5_000,
+    validateAuthorization: vi.fn(() => {}) };
+  let admitted: LearningSpendReservation;
+  const reserve = vi.fn(async (_sql: Sql, input: ReserveLearningSpendInput) => {
+    const id = randomUUID();
+    return { ok: true as const, clamped: false, headroomUsd: 1,
+      reservation: { id, workspaceId: input.workspaceId, loopId: input.loopId, potSlug: input.potSlug ?? null,
+        attemptKind: input.attemptKind!, requestedUsd: input.requestedUsd, reservedUsd: input.requestedUsd,
+        usedUsd: 0, status: 'open' as const, signalOrigin: 'organic' as const,
+        runRef: cycleReservationRunRef(input.cycle!, id), resources: { ...input.cycle!.resources! },
+        note: input.note ?? null, createdAt: Date.now(), settledAt: null } };
+  });
+  const settle = vi.fn(async (_sql: Sql, input: SettleLearningSpendInput) => ({ ok: true as const,
+    reservation: { ...admitted, usedUsd: input.usedUsd ?? 0,
+      status: input.disposition === 'used' ? 'settled' as const : input.disposition, settledAt: Date.now() },
+    event: null, releasedUsd: admitted.reservedUsd - (input.usedUsd ?? 0), overrunUsd: 0 }));
+  const originalReserve = reserve.getMockImplementation()!;
+  reserve.mockImplementation(async (sql, input) => { const result = await originalReserve(sql, input);
+    admitted = result.reservation; return result; });
+  const governor: GovernorGlueDeps = { enabled: async () => true, getSql: async () => ({} as Sql), reserve,
+    settle, log: () => {} };
+  const input = { workspaceId: 'private-workspace', loopId: 'gym:private', potSlug: 'private-pot', token,
+    manifestSha256: digest('native manifest'), armId: 'native-cycle',
+    cycle: { runId: randomUUID(), budgetUsd: 1,
+      resourceBudget: { inputTokens: 1000, outputTokens: 500, requestsPerArm: 3, armIds: ['native-cycle'] } },
+    authorizeProviderAttempt: vi.fn(async (_attempt: GatewayCarryTrialAttempt) => authority) };
+  const controller = createNativeGymGatewayController(input, governor);
+  const body = JSON.stringify({ model: 'approved-model', max_tokens: 41, messages: [] });
+  const request = { ...attempt(controller.gateway), body, bodySha256: digest(body) };
+  return { ...controller, input, governor, reserve, settle, authority, request };
+}
+
+function attemptResult(request: GatewayCarryTrialAttempt, reservationRef: string,
+  outcome: 'send-refused' | 'fetch-failed' | 'response-headers'): GatewayCarryTrialAttemptResult {
+  const { body: _body, signal: _signal, ...identity } = request;
+  return { ...identity, reservationRef, outcome, responseStatus: outcome === 'response-headers' ? 200 : null,
+    ...(outcome === 'send-refused' ? { costUsd: 0, costUsdMeasurementMissing: false } : { costUsdMeasurementMissing: true }) } as GatewayCarryTrialAttemptResult;
+}
+
+describe('native Gym governor-backed provider controller', () => {
+  it.each(['evaluation', 'proposer'] as const)('reserves the authenticated exact attempt before issuing authority (%s)', async attemptKind => {
+    const f = controllerFixture(); f.authority.attemptKind = attemptKind;
+    const receipt = await f.gateway.carryTrial.authorizeAttempt(f.request);
+    expect(receipt).not.toBeNull();
+    expect(f.input.authorizeProviderAttempt).toHaveBeenCalledWith(f.request);
+    expect(f.reserve).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ attemptKind,
+      workspaceId: 'private-workspace', loopId: 'gym:private', requestedUsd: 0.25,
+      cycle: { runId: f.input.cycle.runId, budgetUsd: 1, resources: { armId: 'native-cycle', inputTokens: 100, outputTokens: 41 },
+        expectedResourceBudget: f.input.cycle.resourceBudget } }));
+    expect(f.settle).not.toHaveBeenCalled(); receipt!.validateAuthorization!();
+    const note = f.reserve.mock.calls[0]![1].note!;
+    expect(JSON.parse(note).nativeGatewayAttempt).toMatchObject({ attemptId: f.request.attemptId,
+      credentialSha256: f.request.credentialSha256, bodySha256: f.request.bodySha256 });
+    expect(note).not.toContain('PRIVATE_SELECTED_TOKEN');
+    expect(JSON.parse(note).nativeGatewayAttempt).not.toHaveProperty('body');
+    expect(JSON.parse(note).nativeGatewayAttempt).not.toHaveProperty('signal');
+    expect(f.authority.validateAuthorization).toHaveBeenCalledTimes(1);
+    await receipt!.observeAttemptResult!(attemptResult(f.request, receipt!.reservationRef, 'response-headers'));
+    expect(f.settle).not.toHaveBeenCalled(); f.revoke();
+  });
+
+  it.each(['send-refused', 'fetch-failed', 'response-headers'] as const)('reconciles only no-fetch zero (%s)', async outcome => {
+    const f = controllerFixture(); const receipt = (await f.gateway.carryTrial.authorizeAttempt(f.request))!;
+    if (outcome !== 'send-refused') receipt.validateAuthorization!();
+    await receipt.observeAttemptResult!(attemptResult(f.request, receipt.reservationRef, outcome));
+    expect(f.settle).toHaveBeenCalledTimes(outcome === 'send-refused' ? 1 : 0);
+    if (outcome === 'send-refused') expect(f.settle).toHaveBeenCalledWith(expect.anything(),
+      expect.objectContaining({ reservationId: receipt.reservationRef, usedUsd: 0, disposition: 'cancelled' }));
+    await expect(receipt.observeAttemptResult!(attemptResult(f.request, receipt.reservationRef, outcome))).rejects.toThrow();
+    expect(f.settle).toHaveBeenCalledTimes(outcome === 'send-refused' ? 1 : 0); f.revoke();
+  });
+
+  it.each(['accountId', 'attemptId', 'bodySha256', 'credentialSha256', 'clockId', 'reservationRef'] as const)(
+    'does not refund mismatched observer identity (%s)', async key => {
+      const f = controllerFixture(); const receipt = (await f.gateway.carryTrial.authorizeAttempt(f.request))!;
+      const result = { ...attemptResult(f.request, receipt.reservationRef, 'send-refused'), [key]: 'foreign' };
+      await expect(receipt.observeAttemptResult!(result)).rejects.toThrow();
+      expect(f.settle).not.toHaveBeenCalled(); f.revoke();
+    });
+
+  it.each([{ requestedUsd: 2 }, { requestedUsd: 0 }, { requestedUsd: NaN }, { inputTokens: 1001 },
+    { outputTokens: 42 }, { outputTokens: 0 }, { validUntilMonotonicMs: -1 },
+    { validateAuthorization: undefined }, { attemptKind: 'unknown' }])('refuses invalid approved bounds before reserve (%j)', async patch => {
+    const f = controllerFixture(); Object.assign(f.authority, patch);
+    expect(await f.gateway.carryTrial.authorizeAttempt(f.request)).toBeNull();
+    expect(f.reserve).not.toHaveBeenCalled(); f.revoke();
+  });
+
+  it('refuses missing registered policy without inventing defaults', () => {
+    const f = controllerFixture(); Object.assign(f.input.cycle, { resourceBudget: undefined });
+    expect(() => createNativeGymGatewayController(f.input, f.governor)).toThrow(/approved policy/); f.revoke();
+  });
+
+  it('refuses ledger rejection or a foreign admitted receipt', async () => {
+    for (const mode of ['refused', 'foreign'] as const) {
+      const f = controllerFixture(); const original = f.reserve.getMockImplementation()!;
+      f.reserve.mockImplementation(async (sql, input) => {
+        if (mode === 'refused') return { ok: false, reason: 'no-headroom', headroomUsd: 0, requestedUsd: input.requestedUsd } as never;
+        const result = await original(sql, input); result.reservation.resources.armId = 'foreign'; return result;
+      });
+      expect(await f.gateway.carryTrial.authorizeAttempt(f.request)).toBeNull();
+      expect(f.settle).not.toHaveBeenCalled(); f.revoke();
+    }
+  });
+
+  it('snapshots actual supplied policy and authority before asynchronous reservation', async () => {
+    const f = controllerFixture(); const original = f.reserve.getMockImplementation()!;
+    f.reserve.mockImplementation(async (sql, input) => {
+      f.input.cycle.budgetUsd = 100; f.input.cycle.resourceBudget.armIds.push('foreign');
+      f.authority.outputTokens = 400; f.authority.validateAuthorization = () => { throw new Error('mutated'); };
+      return original(sql, input);
+    });
+    const receipt = (await f.gateway.carryTrial.authorizeAttempt(f.request))!;
+    expect(f.reserve.mock.calls[0]![1].cycle!.budgetUsd).toBe(1);
+    expect(f.reserve.mock.calls[0]![1].cycle!.expectedResourceBudget!.armIds).toEqual(['native-cycle']);
+    expect(() => receipt.validateAuthorization!()).not.toThrow();
+    await receipt.observeAttemptResult!(attemptResult(f.request, receipt.reservationRef, 'response-headers')); f.revoke();
+  });
+
+  it('revokes issued send authority and preserves unknown reservations', async () => {
+    const f = controllerFixture(); const receipt = (await f.gateway.carryTrial.authorizeAttempt(f.request))!;
+    f.revoke(); expect(() => receipt.validateAuthorization!()).toThrow();
+    expect(await f.gateway.carryTrial.authorizeAttempt({ ...f.request, attemptId: 'next' })).toBeNull();
+    await expect(receipt.observeAttemptResult!(attemptResult(f.request, receipt.reservationRef, 'send-refused'))).rejects.toThrow();
+    expect(f.settle).not.toHaveBeenCalled();
+  });
+
+  it('assigns different reservations to retries and refuses repeated attempt IDs', async () => {
+    const f = controllerFixture(); const a = (await f.gateway.carryTrial.authorizeAttempt(f.request))!;
+    expect(await f.gateway.carryTrial.authorizeAttempt(f.request)).toBeNull();
+    const next = { ...f.request, attemptId: 'retry' }; const b = (await f.gateway.carryTrial.authorizeAttempt(next))!;
+    expect(a.reservationRef).not.toBe(b.reservationRef); expect(f.reserve).toHaveBeenCalledTimes(2);
+    await a.observeAttemptResult!(attemptResult(f.request, a.reservationRef, 'fetch-failed'));
+    await b.observeAttemptResult!(attemptResult(next, b.reservationRef, 'send-refused'));
+    expect(f.settle).toHaveBeenCalledTimes(1);
+    expect(f.settle.mock.calls[0]).toEqual([expect.anything(), expect.objectContaining({ reservationId: b.reservationRef })]); f.revoke();
+  });
+
+  it.each(['async', 'revoked'] as const)('rejects invalid final authority before fetch (%s)', async state => {
+    const f = controllerFixture();
+    f.authority.validateAuthorization = state === 'async' ? async () => {} : () => { throw new Error('PRIVATE_REVOKED'); };
+    const receipt = (await f.gateway.carryTrial.authorizeAttempt(f.request))!;
+    expect(() => receipt.validateAuthorization!()).toThrow();
+    await receipt.observeAttemptResult!(attemptResult(f.request, receipt.reservationRef, 'send-refused'));
+    expect(f.settle).toHaveBeenCalledTimes(1); f.revoke();
+  });
+
+  it.each(['authorized', 'revoked'] as const)(
+    'uses the real private HTTP service with governor admission before send (%s)', async state => {
+      const f = controllerFixture(); let requests = 0;
+      const upstream = http.createServer((_req, res) => { requests++;
+        expect(f.reserve).toHaveBeenCalledTimes(1);
+        res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"ok":true}'); });
+      await new Promise<void>(resolve => upstream.listen(0, '127.0.0.1', resolve));
+      const upstreamBase = `http://127.0.0.1:${(upstream.address() as { port: number }).port}`;
+      f.input.authorizeProviderAttempt.mockImplementation(async actual => {
+        expect(actual.accountId).toBe('selected-account');
+        expect(actual.credentialSha256).toBe(digest('Bearer PRIVATE_SELECTED_TOKEN'));
+        expect(actual.bodySha256).toBe(digest(actual.body));
+        expect(actual.target).toBe(`${upstreamBase}/v1/messages`);
+        return f.authority;
+      });
+      f.authority.validateAuthorization = () => { if (state === 'revoked') throw new Error('PRIVATE_REVOKED'); };
+      let native: Awaited<ReturnType<typeof startNativeGymGateway>> | undefined;
+      try {
+        native = await startNativeGymGateway(f.gateway, f.input.workspaceId, () => {}, options =>
+          startGatewayService({ ...options, upstreamBase,
+            resolveAccount: async () => ({ accountId: 'selected-account', credentialRef: 'token:/dev/null', source: 'env' }),
+            makeResolver: () => ({ kind: 'token', authMode: 'oauth', current: async () => 'PRIVATE_SELECTED_TOKEN', invalidate: () => {} }),
+            observePool: () => () => {}, refreshIntervalMs: 0, poolReloadIntervalMs: 0, localBackendReloadIntervalMs: 0 }));
+        const response = await fetch(`${native.transport.statelessGateway!.baseURL}/v1/messages`, {
+          method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` }, body: f.request.body });
+        expect(response.status).toBe(state === 'authorized' ? 200 : 403);
+        expect(await response.text()).not.toMatch(/PRIVATE_/);
+        expect(f.input.authorizeProviderAttempt).toHaveBeenCalledTimes(1);
+        expect(requests).toBe(state === 'authorized' ? 1 : 0);
+        expect(f.settle).toHaveBeenCalledTimes(state === 'authorized' ? 0 : 1);
+      } finally { f.revoke(); await native?.stop(); await new Promise<void>(resolve => upstream.close(() => resolve())); }
+    });
+});
 
 describe('native Gym scoped gateway lifecycle', () => {
   it.each([undefined, null, {}, { token }, { ...config(), token: 'wrong' },

@@ -14,8 +14,11 @@ import type { GymLlmCall } from './task-generator';
 import type { JudgeLlmCall } from './judge';
 import { createHash } from 'node:crypto';
 import type { RunAgentChatOptions } from '../agent-chat-stream';
-import type { GatewayCarryTrialAttempt, GatewayCarryTrialBinding } from '../inference-gateway/gateway';
+import type { GatewayCarryTrialAttempt, GatewayCarryTrialAttemptResult, GatewayCarryTrialBinding } from '../inference-gateway/gateway';
 import type { GatewayServiceOptions, RunningGatewayService } from '../inference-gateway/launch';
+import { runGovernedSpendAttempt, type GovernorGlueDeps, type SpendAttemptReport } from '../learning-governor/registrants';
+import type { CycleSpendReservationScope, LearningReservationResourceBudget } from '../learning-governor/store';
+import { processMonotonicClock } from '../process-monotonic-clock';
 
 export interface WorstTrace {
   taskId: string;
@@ -112,6 +115,136 @@ type NativeGymTransport = Pick<RunAgentChatOptions, 'statelessGateway' | 'author
 export interface NativeGymGatewayConfig {
   token: string;
   carryTrial: GatewayCarryTrialBinding;
+}
+
+/** Host authentication must identify the final provider credential, model and
+ * body before supplying these approved bounds. A caller token is insufficient.
+ * The check must also remain valid synchronously at the provider send. */
+export interface NativeGymProviderAuthorization {
+  attemptKind: 'evaluation' | 'proposer';
+  requestedUsd: number;
+  inputTokens: number;
+  outputTokens: number;
+  validUntilMonotonicMs: number;
+  validateAuthorization: () => void;
+}
+
+/** Issue authority through the existing cycle ledger and gateway receipt. No
+ * account, model, token budget or monetary policy is inferred here. The host
+ * must supply its registered policy and authenticate each selected provider.
+ * Header/fetch evidence cannot settle usage; only pre-fetch refusal proves zero.
+ */
+export function createNativeGymGatewayController(input: {
+  workspaceId: string;
+  loopId: string;
+  potSlug?: string | null;
+  token: string;
+  manifestSha256: string;
+  armId: string;
+  cycle: { runId: string; budgetUsd: number; resourceBudget: LearningReservationResourceBudget };
+  authorizeProviderAttempt: (attempt: GatewayCarryTrialAttempt) => Promise<NativeGymProviderAuthorization | null>;
+}, governor?: GovernorGlueDeps): { gateway: NativeGymGatewayConfig; revoke: () => void } {
+  const invalid = () => Object.assign(new Error('Native Gym gateway controller requires approved policy'), { costUsd: 0 });
+  const count = (n: unknown): n is number => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0;
+  const usd = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n) && n > 0 &&
+    Number.isSafeInteger(Math.round(n * 1_000_000)) && Math.round(n * 1_000_000) / 1_000_000 === n;
+  const text = (s: unknown): s is string => typeof s === 'string' && s.trim() === s && s.length > 0;
+  if (!input || !input.cycle?.resourceBudget) throw invalid();
+  // Snapshot caller policy and callbacks before any asynchronous authentication.
+  const { workspaceId, loopId, potSlug, token, manifestSha256, armId, authorizeProviderAttempt } = input;
+  const { runId, budgetUsd } = input.cycle;
+  if (!Array.isArray(input.cycle.resourceBudget.armIds)) throw invalid();
+  const resourceBudget = { ...input.cycle.resourceBudget, armIds: [...input.cycle.resourceBudget.armIds] };
+  if (!text(workspaceId) || !text(loopId) || !text(armId) || armId.length > 256 ||
+    !/^[a-f0-9]{64}$/.test(manifestSha256) || !text(token) || token.length < 32 ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(runId) || !usd(budgetUsd) ||
+    !count(resourceBudget.inputTokens) || !count(resourceBudget.outputTokens) || resourceBudget.outputTokens === 0 ||
+    !count(resourceBudget.requestsPerArm) || resourceBudget.requestsPerArm === 0 ||
+    resourceBudget.armIds.length > 1000 || !resourceBudget.armIds.every(text) ||
+    new Set(resourceBudget.armIds).size !== resourceBudget.armIds.length || !resourceBudget.armIds.includes(armId) ||
+    typeof authorizeProviderAttempt !== 'function') throw invalid();
+  Object.freeze(resourceBudget.armIds); Object.freeze(resourceBudget);
+  const deps = governor ? { ...governor } : undefined;
+  let live = true;
+  const seen = new Set<string>();
+  const pending = new Set<() => void>();
+  const gateway = snapshotNativeGymGatewayConfig({ token, carryTrial: {
+    manifestSha256, armId, requestTokenSha256: createHash('sha256').update(token).digest('hex'),
+    protocols: ['anthropic-messages', 'openai-responses'],
+    async authorizeAttempt(value) {
+      const attempt = Object.freeze({ ...value });
+      if (!live || attempt.signal.aborted || attempt.clockId !== processMonotonicClock.id ||
+        !text(attempt.attemptId) || seen.has(attempt.attemptId) || attempt.manifestSha256 !== manifestSha256 ||
+        attempt.armId !== armId || !text(attempt.accountId) || !/^[a-f0-9]{64}$/.test(attempt.credentialSha256) ||
+        attempt.bodySha256 !== createHash('sha256').update(attempt.body).digest('hex')) return null;
+      seen.add(attempt.attemptId);
+      try {
+        const supplied = await authorizeProviderAttempt(attempt);
+        if (!supplied) return null;
+        const authority = Object.freeze({ ...supplied });
+        const body = JSON.parse(attempt.body);
+        const output = attempt.transport === 'anthropic-http' ? body.max_tokens : body.max_output_tokens;
+        if (!live || attempt.signal.aborted || !['evaluation', 'proposer'].includes(authority.attemptKind) ||
+          !usd(authority.requestedUsd) || authority.requestedUsd > budgetUsd ||
+          !count(authority.inputTokens) || authority.inputTokens > resourceBudget.inputTokens ||
+          !count(authority.outputTokens) || authority.outputTokens === 0 || output !== authority.outputTokens ||
+          authority.outputTokens > resourceBudget.outputTokens ||
+          typeof authority.validateAuthorization !== 'function' ||
+          !Number.isFinite(authority.validUntilMonotonicMs) || processMonotonicClock.now() >= authority.validUntilMonotonicMs) return null;
+        const cycle: CycleSpendReservationScope = { runId, budgetUsd,
+          resources: { armId, inputTokens: authority.inputTokens, outputTokens: authority.outputTokens },
+          expectedResourceBudget: { ...resourceBudget, armIds: [...resourceBudget.armIds] } };
+        const { body: _body, signal: _signal, ...identity } = attempt;
+        // The governed helper owns reserve/validate/settle. Its work waits for
+        // this exact gateway observer instead of aggregate caller usage.
+        return await new Promise<Awaited<ReturnType<GatewayCarryTrialBinding['authorizeAttempt']>>>(resolveReceipt => {
+          let finish: ((report: SpendAttemptReport<null>) => void) | undefined;
+          const completion = runGovernedSpendAttempt({ workspaceId, loopId, potSlug,
+            attemptKind: authority.attemptKind, requestedUsd: authority.requestedUsd, cycle,
+            note: JSON.stringify({ nativeGatewayAttempt: identity }),
+            async run(grant) {
+              if (!live || attempt.signal.aborted || grant.clamped || grant.reservedUsd !== authority.requestedUsd) {
+                throw Object.assign(new Error('Native Gym gateway grant revoked'), { costUsd: 0 });
+              }
+              return new Promise<SpendAttemptReport<null>>(resolveReport => {
+                let observed = false;
+                let checked = false;
+                const incomplete = () => { observed = true; resolveReport({ costUsd: 0, value: null, costUsdMeasurementMissing: true }); };
+                pending.add(incomplete);
+                finish = report => { pending.delete(incomplete); resolveReport(report); };
+                resolveReceipt(Object.freeze({ attemptId: attempt.attemptId, reservationRef: grant.reservationId,
+                  clockId: attempt.clockId, validUntilMonotonicMs: authority.validUntilMonotonicMs,
+                  validateAuthorization() {
+                    if (!live || observed || checked || attempt.signal.aborted ||
+                      processMonotonicClock.now() >= authority.validUntilMonotonicMs) throw invalid();
+                    checked = true;
+                    const result: unknown = authority.validateAuthorization();
+                    if (result !== undefined) {
+                      void Promise.resolve(result).catch(() => {});
+                      throw invalid();
+                    }
+                    if (!live || attempt.signal.aborted || processMonotonicClock.now() >= authority.validUntilMonotonicMs) throw invalid();
+                  },
+                  async observeAttemptResult(result: GatewayCarryTrialAttemptResult) {
+                    if (observed || result.reservationRef !== grant.reservationId ||
+                      Object.entries(identity).some(([key, expected]) => result[key as keyof GatewayCarryTrialAttemptResult] !== expected)) {
+                      pending.delete(incomplete); incomplete(); await completion; throw invalid();
+                    }
+                    observed = true;
+                    const zero = result.outcome === 'send-refused' && result.responseStatus === null &&
+                      result.costUsd === 0 && result.costUsdMeasurementMissing === false;
+                    finish!({ costUsd: 0, value: null, ...(zero ? { cancelled: true } : { costUsdMeasurementMissing: true }) });
+                    await completion;
+                  } }));
+              });
+            } }, deps);
+          // A refusal or invalid store receipt never exposes send authority.
+          // Errors before dispatch are sanitized and never guessed as usage.
+          void completion.then(() => resolveReceipt(null), () => resolveReceipt(null));
+        });
+      } catch { return null; }
+    } } });
+  return { gateway, revoke() { live = false; for (const close of pending) close(); pending.clear(); } };
 }
 
 /** Capture before cycle setup. Both protocols are required because the frozen
