@@ -12,12 +12,12 @@ export function mailPersonalAccessRefusal(reason: unknown) {
   return {
     allowed: false,
     refusal: reason,
-    requiredScope: 'personal:gmail',
+    requiredScope: 'personal:mail',
     autoAuthoritySufficient: false,
     draftAvailable: false,
     guidance:
       'Owner-directed AUTO authorizes execution posture but is not a personal-vault grant. ' +
-      'Establish a live principal-bound personal:gmail grant first; both draft and send modes require it.',
+      'Establish a live principal-bound personal:mail grant first; both draft and send modes require it.',
   } as const;
 }
 
@@ -31,7 +31,7 @@ export default defineTool({
   description:
     'Reply to one email the owner already has: its canonical messageId (+ optional sourceId), or the planRunId of a plan run that email triggered. You supply no addressee: the server resolves recipient, thread, subject, reply headers, and the exact connected account from the stored message. Drafts by default; mode:"send" sends.',
   guidance: {
-    when: 'The owner asks you to answer a specific email — locate it with personal:search { scopes:["personal:gmail"] }, pass externalId as messageId and sourceId. Or an email-triggered plan step asks you to answer it — pass payload.plan_run.runId as planRunId.',
+    when: 'The owner asks you to answer a specific email — locate it with personal:search { scopes:["personal:mail"] }, pass externalId as messageId and sourceId. Or an email-triggered plan step asks you to answer it — pass payload.plan_run.runId as planRunId.',
     notWhen:
       'Writing to a NEW recipient or starting a fresh thread — that is mail:send, which checks the addressee. Not for Slack (chat:reply). You cannot choose who this reaches.',
     chaining:
@@ -56,7 +56,7 @@ export default defineTool({
       throw new Error('mail_reply_source_with_plan_run: the run already names its source; omit sourceId');
     }
     const user = await getSessionUserOrDefault();
-    const auth = await authorizePersonalAccess(ctx.tx!, ctx, workspaceId, user.id, ['personal:gmail']);
+    const auth = await authorizePersonalAccess(ctx.tx!, ctx, workspaceId, user.id, ['personal:mail']);
     if (!auth.allowed) {
       return { data: mailPersonalAccessRefusal(auth.reason) };
     }

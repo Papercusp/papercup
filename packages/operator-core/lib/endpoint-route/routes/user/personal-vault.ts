@@ -69,7 +69,7 @@ import {
 } from '../../../personal-vault/import-jobs';
 import type { PersonalPrincipalType } from '../../../personal-vault/types';
 
-const SUPPORTED_SOURCES = ['gmail', 'calendar', 'contacts', 'facebook', 'instagram', 'x'] as const;
+const SUPPORTED_SOURCES = ['mail', 'calendar', 'contacts', 'facebook', 'instagram', 'x'] as const;
 const PRINCIPAL_TYPES: readonly PersonalPrincipalType[] = ['plan-template', 'binding', 'agent-role'];
 
 interface SafeIntegrationSource {
