@@ -46,6 +46,8 @@ import type { HostedConnectorBinding } from '../endpoint-route/hosted-workspace-
 import { configureAgentSpawnTransform } from '@papercusp/papercusp-shared/agent';
 import { installHostedCustomerAgentIdentity } from './hosted-agent-identity';
 import { createHostedDesktopBackend, type HostedDesktopBackendDeps } from './hosted-desktop-backend';
+import { loadOrCreateHostedMachineNoiseKeyPair } from './hosted-machine-noise-key';
+import { findDeviceIdByNoisePublicKey } from '../device-store';
 import {
   HostedWorkspaceHostSessionAdapter,
   type HostedDesktopBackend,
@@ -106,6 +108,14 @@ export interface HostedWorkspaceHostRuntimeOptions {
    * machine (all kinds); a relay-linked local install passes LOCAL_RELAY_CHANNEL_KINDS (D-031 #7).
    */
   allowedChannelKinds?: HostedWorkspaceHostOptions['allowedChannelKinds'];
+  /**
+   * D-013 #6: the machine's static Noise key pair for sealed phone channels (the key the pair
+   * QR advertises). Default: the persisted hosted-machine key. Pass `null` to serve no sealed
+   * channel. Test seam.
+   */
+  loadMachineNoiseKeyPair?: (() => Promise<{ publicKey: Buffer; secretKey: Buffer }>) | null;
+  /** Test seam — resolves a phone's Noise key to its paired device in the bound workspace. */
+  findDeviceIdByNoiseKey?: (workspaceId: string, noisePublicKeyBase64: string) => Promise<string | null>;
 }
 
 export interface HostedWorkspaceHostRuntime {
@@ -228,6 +238,23 @@ export function createHostedWorkspaceHostRuntime(
   // (P-318 J5, D-392). A Papercusp outage must not kill the customer's running processes.
   let parked: HostedHostSessionHandoff[] = [];
 
+  // D-013 #6: the sealed phone channel's machine key. By default it is loaded only where the
+  // pair QR advertises it (a hosted connector bearer is configured, see pair.ts), so the
+  // advertised key and the serving key are always the same file. The load is a local file
+  // read started here; an adapter built before it settles serves no sealed channel
+  // (`sealed_channel_unavailable`), and the phone's retry lands on the next binding.
+  const findDeviceByKey = options.findDeviceIdByNoiseKey ?? findDeviceIdByNoisePublicKey;
+  const loadMachineKey = options.loadMachineNoiseKeyPair !== undefined
+    ? options.loadMachineNoiseKeyPair
+    : process.env.PAPERCUSP_HOSTED_CONNECTOR_BEARER?.trim() ? loadOrCreateHostedMachineNoiseKeyPair : null;
+  let machineNoiseKeyPair: { publicKey: Buffer; secretKey: Buffer } | null = null;
+  if (loadMachineKey) {
+    loadMachineKey().then(
+      (pair) => { machineNoiseKeyPair = pair; },
+      (error: unknown) => warn(`machine Noise key unavailable; sealed phone channels refused: ${String(error)}`),
+    );
+  }
+
   // Terminal (revoked / stopped): access ends, so every PTY dies, held ones included.
   const teardown = (reason: string): void => {
     adapter?.close(reason);
@@ -277,6 +304,16 @@ export function createHostedWorkspaceHostRuntime(
         ...(options.desktop ? { desktop: options.desktop } : {}),
         ...(options.createPty ? { createPty: options.createPty } : {}),
         ...(options.allowedChannelKinds ? { allowedChannelKinds: options.allowedChannelKinds } : {}),
+        ...(machineNoiseKeyPair
+          ? {
+            byocSealedChannel: {
+              localKeyPair: machineNoiseKeyPair,
+              // The phone's relay base URL is /api/workspaces/<id> with this binding's
+              // workspace id (device-base-urls.ts), which is where pairing stored the device.
+              resolveDeviceNoiseKey: (key: string) => findDeviceByKey(next.customerWorkspaceId, key),
+            },
+          }
+          : {}),
       });
       for (const handoff of parked) adapter.adopt(handoff);
       parked = [];
