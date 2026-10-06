@@ -376,7 +376,7 @@ describe('precision bench worker protocol', () => {
     const alerted: unknown[] = [];
     await persistPrecisionBenchWorkerLedgerEntries([ledgerEntry], 'ws-worker', {
       record: async (entry, options) => { recorded.push({ entry, options }); return true; },
-      alert: async (entry, deps) => { alerted.push({ entry, workspaceId: deps.workspaceId?.() }); return true; },
+      alert: async (entry, deps) => { alerted.push({ entry, workspaceId: deps?.workspaceId?.() }); return true; },
       log: () => {},
     });
     expect(recorded).toEqual([{ entry: ledgerEntry, options: { workspaceId: 'ws-worker' } }]);
