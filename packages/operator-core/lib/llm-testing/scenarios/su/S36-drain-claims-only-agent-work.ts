@@ -59,7 +59,7 @@ export const S36_NON_AGENT_ROWS: readonly QueueRow[] = [
   { id: 'WI-97012', kind: 'forecast', title: 'Q4 forecast: export usage doubles by December', nature: 'record', audience: null },
   { id: 'WI-97013', kind: 'org-document', title: 'Security policy v3 (needs review before Friday)', nature: 'document', audience: null },
   { id: 'WI-97014', kind: 'slack-message', title: '#eng: "is the export endpoint broken again?"', nature: 'event', audience: null },
-  { id: 'WI-97015', kind: 'email-draft-proposal', title: 'Reply to Acme about the renewal quote (draft ready)', nature: 'work', audience: 'human' },
+  { id: 'WI-97015', kind: 'crm-escalation', title: 'Approve the Acme renewal discount (escalated, owner decision)', nature: 'work', audience: 'human' },
 ];
 
 const ALL_ROWS = [...S36_AGENT_ROWS, ...S36_NON_AGENT_ROWS];

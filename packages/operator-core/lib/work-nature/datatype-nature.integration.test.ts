@@ -42,6 +42,9 @@ const declare = (await import('../agent-tools/datatypes/declare')).default;
 const MIGRATION_1318 = fileURLToPath(
   new URL('../../../../libs/papercusp/libs/db/sql/1318-datatype-nature.sql', import.meta.url),
 );
+const MIGRATION_1407 = fileURLToPath(
+  new URL('../../../../libs/papercusp/libs/db/sql/1407-email-draft-proposal-agent-audience.sql', import.meta.url),
+);
 const WS = 'ws-nature-it';
 
 type Reply = { ok: boolean; reason?: string; message?: string; datatype?: { id: string } };
@@ -142,5 +145,53 @@ describe('datatype nature — the work/data boundary (real PG, P-008)', () => {
       nature: 'work',
       audience: 'agent',
     });
+  });
+
+  // app-agent-tasks-durable-execution-2026-10-06 D-016: Email's durable draft operations
+  // execute email-draft-proposal items with the agent role email-draft-worker, and a
+  // human-audience row is never agent-claimable, so 1407 reclassifies the kind as agent work.
+  // Items already minted keep their stamp (the open legacy draft held for the owner, D-015).
+  it('migration 1407 reclassifies email-draft-proposal as AGENT work without restamping minted items', async () => {
+    const ws = 'ws-nature-it-1407';
+    await db.adminSql`
+      INSERT INTO harness_shared.datatype_registry (id, workspace_id, title, description, tier, work_item_kind)
+      VALUES ('email-draft-proposal', ${ws}, 'Email draft proposal', 'a drafted reply',
+              'generic-kind', 'email-draft-proposal')`;
+    await db.adminSql.unsafe(readFileSync(MIGRATION_1318, 'utf8')).simple();
+
+    const mint = (id: string) => db.adminSql`
+      INSERT INTO harness_shared.work_items
+        (harness_slug, feature_id, item_kind, title, status, workspace_id, created_ts, updated_ts)
+      VALUES ('email', ${id}, 'email-draft-proposal', ${`draft ${id}`}, 'open', ${ws}, 1, 1)`;
+    const audiences = async () => db.adminSql<{ feature_id: string; audience: string | null }[]>`
+      SELECT feature_id, audience FROM harness_shared.work_items
+       WHERE workspace_id = ${ws} ORDER BY feature_id`;
+
+    await mint('WI-nature-1407-a-before');
+    expect(await audiences()).toEqual([{ feature_id: 'WI-nature-1407-a-before', audience: 'human' }]);
+
+    await db.adminSql.unsafe(readFileSync(MIGRATION_1407, 'utf8')).simple();
+
+    const [registry] = await db.adminSql<{ nature: string; audience: string | null }[]>`
+      SELECT nature, audience FROM harness_shared.datatype_registry
+       WHERE workspace_id = ${ws} AND id = 'email-draft-proposal'`;
+    expect(registry).toEqual({ nature: 'work', audience: 'agent' });
+
+    await mint('WI-nature-1407-b-after');
+    // A status write is not a category change, so the legacy item stays human-audience.
+    await db.adminSql`
+      UPDATE harness_shared.work_items SET status = 'dropped'
+       WHERE workspace_id = ${ws} AND feature_id = 'WI-nature-1407-a-before'`;
+    expect(await audiences()).toEqual([
+      { feature_id: 'WI-nature-1407-a-before', audience: 'human' },
+      { feature_id: 'WI-nature-1407-b-after', audience: 'agent' },
+    ]);
+
+    // Idempotent: re-applying 1407 changes nothing.
+    await db.adminSql.unsafe(readFileSync(MIGRATION_1407, 'utf8')).simple();
+    expect(await audiences()).toEqual([
+      { feature_id: 'WI-nature-1407-a-before', audience: 'human' },
+      { feature_id: 'WI-nature-1407-b-after', audience: 'agent' },
+    ]);
   });
 });
