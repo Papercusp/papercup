@@ -381,6 +381,37 @@ describe('durable SU owner-turn acceptance', () => {
     expect(host.updateApprovals('read-only')).toBeNull();
     expect(eventTypes(host).slice(before)).toEqual(['session']);
   });
+
+  // pui-chat-first-ux P-029 / D-031: usage and plan ride the descriptor.
+  it('D-031: merges usage into the descriptor, keeps unreported fields, and emits only on change', () => {
+    const host = readyHost();
+    const before = eventTypes(host).length;
+    expect(host.updateUsage({ contextTokens: 1200, contextWindow: 200_000 })).not.toBeNull();
+    expect(host.updateUsage({ costUsd: 0.25 })).not.toBeNull();
+    expect(host.descriptor().usage).toEqual({ contextTokens: 1200, contextWindow: 200_000, costUsd: 0.25 });
+    // A repeat of known values, and values that are not measurements, change nothing.
+    expect(host.updateUsage({ contextTokens: 1200 })).toBeNull();
+    expect(host.updateUsage({ contextTokens: -1, costUsd: Number.NaN } as never)).toBeNull();
+    expect(host.descriptor().usage).toEqual({ contextTokens: 1200, contextWindow: 200_000, costUsd: 0.25 });
+    expect(eventTypes(host).slice(before)).toEqual(['session', 'session']);
+  });
+
+  it('D-031: replaces the plan list and emits only when it changed', () => {
+    const host = readyHost();
+    const before = eventTypes(host).length;
+    const plan = [
+      { text: 'Read the file', status: 'completed' as const },
+      { text: 'Write the fix', status: 'in_progress' as const },
+    ];
+    expect(host.updatePlan(plan)).not.toBeNull();
+    expect(host.descriptor().plan).toEqual(plan);
+    expect(host.updatePlan(plan.map((item) => ({ ...item })))).toBeNull();
+    expect(host.updatePlan([{ text: 'Write the fix', status: 'completed' }])).not.toBeNull();
+    expect(host.descriptor().plan).toEqual([{ text: 'Write the fix', status: 'completed' }]);
+    expect(host.updatePlan([])).not.toBeNull();
+    expect(host.descriptor().plan).toEqual([]);
+    expect(eventTypes(host).slice(before)).toEqual(['session', 'session', 'session']);
+  });
 });
 
 afterEach(() => {
