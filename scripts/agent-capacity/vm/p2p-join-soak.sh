@@ -78,9 +78,15 @@ rig() { # heartbeat | release
     log "RIG_HEARTBEAT rc=$rc $(grep -oE '"status": *"[a-z]+"' "$OUT/rig-heartbeat.out" | head -1)"
   fi
 }
-# on_tower <file> / on_joiner <file>: 1 when a commit touching <file> is on that side's HEAD.
+# on_tower <file>: 1 when a commit touching <file> is on the tower's HEAD, i.e. the tower ACCEPTED it
+# (the tower is the authority, so a joiner commit it merely fetched and refused is not a push).
+# on_joiner <file>: 1 when a commit touching <file> is under ANY ref of the joiner's clone, i.e. the
+# bytes ARRIVED. For a revoked device any arrival is the leak; whether the joiner's worktree also
+# integrated it is the worktree bridge's job (D-055) and lags or diverges on its own. Reading only
+# HEAD made c1010r's control read joinerPulled=0 while refs/hive/staging already held the tower's
+# file, and hid that the tower served the revoked device after the revoke (WI-10006827).
 on_tower() { git -C "$HIVE" log --oneline -1 -- "$1" 2>/dev/null | grep -c .; }
-on_joiner() { ssh_vm "sudo -u $JUSER git -C $JCLONE log --oneline -1 -- $1 2>/dev/null | grep -c ." 2>/dev/null | tail -1; }
+on_joiner() { ssh_vm "sudo -u $JUSER git -C $JCLONE log --all --oneline -1 -- $1 2>/dev/null | grep -c ." 2>/dev/null | tail -1; }
 # exchange <tag>: each side writes s8-<side>-<tag>.txt, then poll until both crossed or the wait ends.
 # Sets PUSHED (joiner's file reached the tower) and PULLED (tower's file reached the joiner).
 exchange() {
