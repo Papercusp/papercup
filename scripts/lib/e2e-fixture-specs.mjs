@@ -112,6 +112,9 @@ export function selectFixtureSpecs({ closures, changedPaths }) {
 /**
  * The union of every fixture spec's closure: the `appliesTo` set for the affected-tests guard.
  * Memoized per root: the guard asks once per changed path.
+ *
+ * @param {string} rootDir absolute repository root
+ * @returns {Set<string>} repo-relative POSIX paths
  */
 const unionCache = new Map();
 export function fixtureSpecClosureUnion(rootDir) {

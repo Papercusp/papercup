@@ -73,6 +73,7 @@ import {
   unitExcludedVitestTest,
   writeRelatedFilterList,
 } from "./lib/related-tests.mjs";
+import { fixtureSpecClosureUnion } from "./lib/e2e-fixture-specs.mjs";
 import {
   EXECUTED_MAP_RESULT_ENV,
   EXECUTED_MAP_WORKSPACE_ENV,
@@ -2077,6 +2078,23 @@ const REPO_WIDE_INVARIANT_GUARDS = [
       f.startsWith("apps/operator/scripts/__tests__/phone-app-hosted-config.") ||
       f === "apps/operator/e2e/phone-media-probe.spec.ts" ||
       f === "apps/operator/package.json",
+  },
+  {
+    // WI-10006650 — fixture-driven Playwright specs (a spec that boots its own Vite server on
+    // an apps/operator/e2e/__fixtures__ entry) render real product components. Playwright owns
+    // them, so unit related-selection drops them (RELATED_SELECTION_FOREIGN_RUNNER) and nothing
+    // else ran them. kasmvnc-rfb.ts then broke desktop-render-matrix.spec.ts for 13 days
+    // unnoticed. This attaches exactly when a changed path sits in some fixture spec's static
+    // import closure (spec + fixture literals, `@/` aliases resolved). The runner re-selects
+    // per spec from the forwarded paths and executes only those. No operator server; measured
+    // ~6-35s per spec.
+    workspace: "@papercusp/web",
+    script: "test:e2e:fixture-affected",
+    forwardChangedPaths: true,
+    appliesTo: (f) =>
+      f === "scripts/e2e-fixture-affected.mjs" ||
+      f === "scripts/lib/e2e-fixture-specs.mjs" ||
+      fixtureSpecClosureUnion(ROOT).has(f),
   },
   {
     // EI-24368307678871025 — the host's real esbuild graph must resolve imports
