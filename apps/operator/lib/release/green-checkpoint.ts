@@ -21385,12 +21385,14 @@ function resolveCandidateSha(treeDir: string): string | undefined {
   }
 }
 
-/** P-014 / WI-224710: delete checkpoint-log artifacts older than `days` so the
- *  directory tree doesn't grow unbounded. Workspace-scoped gates publish beneath
- *  per-hive subdirectories, so a top-level-only scan silently misses most logs.
+/** P-014 / WI-224710: bound diagnostic logs by `days`, while retaining create-only
+ *  capture receipts for the gate ledger's 90-day historical evidence window.
+ *  Workspace-scoped gates publish beneath per-hive subdirectories, so recurse.
  *  Best-effort, never follows symlinks, and never throws. */
 function pruneOldLogs(dir: string, days: number): void {
-  const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+  const now = Date.now();
+  const cutoff = now - days * 24 * 60 * 60 * 1000;
+  const captureCutoff = now - Math.max(days, 90) * 24 * 60 * 60 * 1000;
   const pruneDir = (currentDir: string): void => {
     const entries = (() => {
       try {
@@ -21404,8 +21406,9 @@ function pruneOldLogs(dir: string, days: number): void {
       try {
         if (entry.isDirectory()) {
           pruneDir(p);
-        } else if (entry.isFile() && statSync(p).mtimeMs < cutoff) {
-          unlinkSync(p);
+        } else if (entry.isFile()) {
+          const retainedCapture = /^pure-proof-capture-[A-Za-z0-9:_-]+\.json$/.test(entry.name);
+          if (statSync(p).mtimeMs < (retainedCapture ? captureCutoff : cutoff)) unlinkSync(p);
         }
       } catch {
         /* skip a vanished/locked file */

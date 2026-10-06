@@ -48,6 +48,8 @@ function sealedContract(
     reason: 'agent-review-approved (grade 5/5)',
     source,
     acceptedAt: '2026-09-05T00:00:00.000Z',
+    // P-006: a bug's acceptance carries its reproduction receipt (ignored for other kinds).
+    reproduction: { kind: 'failing-test', ref: 'fixture.test.ts', buildSha: 'abcdef1' },
   });
   if (!sealed.ok) throw new Error('fixture contract must seal');
   return sealed.contract;

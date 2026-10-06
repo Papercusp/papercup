@@ -2626,6 +2626,8 @@ describe('work-item admission promoter (real Postgres)', () => {
       proposal: { problem: summary, evidence: ['parser.test.ts failure'], outcome: 'Preserve trailing token', scope: 'Parser only', completionCheck: 'Regression passes' },
       authority: { kind: 'agent-review', reviewer: 'reviewer', submittedBy: 'author', round: 1 },
       reason: 'independent reviewer accepted', acceptedAt: '2026-08-26T11:00:00.000Z',
+      // P-006: a bug's acceptance carries its reproduction receipt.
+      reproduction: { kind: 'failing-test', ref: 'parser.test.ts', buildSha: 'abcdef1' },
     });
     if (!sealed.ok) throw new Error('fixture must seal');
     const ready = createImplementationReadiness({ status: 'ready', source: 'agent-review', reason: 'accepted', updatedAt: '2026-08-26T11:00:00.000Z', evidence: { acceptance: sealed.contract } });

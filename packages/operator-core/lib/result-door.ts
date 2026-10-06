@@ -47,6 +47,7 @@ import { CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from './context-doors';
 import { getDoorConstantsSync } from './context-doors-config';
 import { buildScratchUri, safeScratchFilesystemPath } from './scratch-uri';
 import { buildSpillIndex } from './result-door-index';
+import { COORD_SEND_RECEIPT_RECOVERY, isCoordSendDeliveryDiagnostic } from './agent-tools/coordination/tools/inbox-content-bounds';
 import { classifyProjectionBody, type ProjectionBodyShape } from './result-projection';
 import {
   buildOutputEnvelope,
@@ -298,22 +299,31 @@ function hasStructuredSummaryNoticeTruncation(text: string): boolean {
 }
 
 function innerTruncationRecoveryInstruction(toolName: string, markers: readonly string[]): string {
+  if (toolName === 'coord:send') return COORD_SEND_RECEIPT_RECOVERY;
   if (toolName === 'code:run' && markers.includes('summaryNotice.truncated')) {
     return 'Re-run code:run with a smaller return, splitting the script output into bounded slices.';
   }
   return `Re-call ${toolName} with a wider per-field limit.`;
 }
 
+function upstreamProjectionRecoveryInstruction(toolName: string): string {
+  return toolName === 'coord:send'
+    ? COORD_SEND_RECEIPT_RECOVERY
+    : `Re-call ${toolName} with payloadTier:'full' (or narrower args) for the missing detail.`;
+}
+
 /** Distinct truncation and partial marker names found in text (capped — this
  *  feeds advisory wording, not an audit). Empty when none are present. */
-function detectInnerTruncationMarkers(text: string | readonly string[]): string[] {
+function detectInnerTruncationMarkers(text: string | readonly string[], toolName: string): string[] {
   const textItems = typeof text === 'string' ? [text] : [...text];
   const sourceText = textItems.join('\n\n');
   const found = new Set<string>();
   INNER_TRUNCATION_MARKER_REGEX.lastIndex = 0;
   let m: RegExpExecArray | null;
   while ((m = INNER_TRUNCATION_MARKER_REGEX.exec(sourceText))) {
-    found.add(m[1] ?? m[2]);
+    const marker = m[1] ?? m[2];
+    if (isCoordSendDeliveryDiagnostic(toolName, marker)) continue;
+    found.add(marker);
     if (found.size >= 5) break;
   }
   // Work-item and other custom shapers also put the cutoff directly in the
@@ -788,13 +798,21 @@ function spillRecoveryNote(
     'Nothing was lost: the complete result was written to the reference in `content` — page it to read it. ' +
     referenceReader;
   const innerTruncationMarkers = input.innerTruncationMarkers ?? [];
+  if (input.toolName === 'coord:send') {
+    return (
+      (input.upstreamProjection || innerTruncationMarkers.length > 0
+        ? 'The reference preserves the emitted send receipt; upstream-omitted receipt fields cannot be recovered by paging. ' + referenceReader
+        : recoverable) +
+      COORD_SEND_RECEIPT_RECOVERY
+    );
+  }
   if (input.upstreamProjection) {
     return (
       'The emitted result was written to the reference in `content` — page it to inspect what the tool emitted. ' +
       referenceReader +
       'However, the tool had already applied a lossy upstream projection before this spill; omitted fields were ' +
-      'never serialized and paging this reference cannot recover them. Re-call the tool with payloadTier:\'full\' ' +
-      '(or narrower arguments) for the missing detail.'
+      'never serialized and paging this reference cannot recover them. ' +
+      upstreamProjectionRecoveryInstruction(input.toolName)
     );
   }
   if (innerTruncationMarkers.length > 0) {
@@ -809,8 +827,8 @@ function spillRecoveryNote(
     return (
       'The emitted result was already marked partial before it reached this result door. ' +
       referenceReader +
-      "The reference preserves what the tool emitted for inspection; re-call the tool with payloadTier:'full' " +
-      '(or narrower arguments) for the missing detail.'
+      'The reference preserves what the tool emitted for inspection; ' +
+      upstreamProjectionRecoveryInstruction(input.toolName)
     );
   }
   if (reason === 'aggregate-output-budget-exceeded') {
@@ -879,7 +897,7 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
   )?.payloadProjection;
   const innerTruncationMarkers = upstreamProjection
     ? []
-    : detectInnerTruncationMarkers(input.result.content.filter(isTextItem).map((item) => item.text));
+    : detectInnerTruncationMarkers(input.result.content.filter(isTextItem).map((item) => item.text), input.opts.toolName);
   const sourceWasPartial = Boolean(upstreamProjection?.truncated) || innerTruncationMarkers.length > 0;
   const payload = JSON.stringify({
     content: input.result.content,
@@ -1156,6 +1174,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       // downstream caller cannot infer success from a short body.
       const innerTruncationMarkers = detectInnerTruncationMarkers(
         items.filter(isTextItem).map((item) => item.text),
+        opts.toolName,
       );
       if (!upstreamProjection?.truncated && innerTruncationMarkers.length === 0) return result;
       return spillResultAsReferenceEnvelope({
@@ -1263,7 +1282,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     // priority over a field-level marker.
     const innerTruncationMarkers = upstreamProjection
       ? []
-      : detectInnerTruncationMarkers(textItems.map((item) => item.text));
+      : detectInnerTruncationMarkers(textItems.map((item) => item.text), opts.toolName);
     const header = upstreamProjection
       ? `# result-door spill — an ALREADY-PROJECTED (partial) tool result\n` +
         `# tool: ${opts.toolName}\n# spilled: ${new Date().toISOString()}\n` +
@@ -1272,8 +1291,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
         `forced=${upstreamProjection.forced} originalChars=${upstreamProjection.originalChars} ` +
         `returnedChars=${upstreamProjection.returnedChars} omittedCount=${upstreamProjection.omittedCount}.\n` +
         `# The ${upstreamProjection.omittedCount} omitted field(s)/row(s) were NEVER serialized and are ` +
-        `NOT recoverable from this file — re-call ${opts.toolName} with payloadTier:'full' ` +
-        `(or narrower args) for the missing detail.\n` +
+        `NOT recoverable from this file — ${upstreamProjectionRecoveryInstruction(opts.toolName)}\n` +
         `# What follows is only that already-partial projection, further capped at the ` +
         `per-result door (${doorTokens} tokens) below.\n\n`
       : innerTruncationMarkers.length > 0
@@ -1405,7 +1423,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       ? 'upstream payloadProjection'
       : `the tool marked ${innerTruncationMarkers.join(', ')}`;
     const partialJsonReRead = upstreamJsonProjection
-      ? `Re-call ${opts.toolName} with payloadTier:'full' (or narrower args).`
+      ? upstreamProjectionRecoveryInstruction(opts.toolName)
       : innerTruncationRecoveryInstruction(opts.toolName, innerTruncationMarkers);
     // TWO different byte streams reach a caller here, and ONE offset cannot
     // serve both — EI-21239097430071791 followed this cursor exactly as written
@@ -1509,7 +1527,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
                   ? ` ⚠ This is NOT the tool's full output: it was ALREADY tier-projected upstream ` +
                     `(tier=${upstreamProjection.tier}, forced=${upstreamProjection.forced}, ` +
                     `omittedCount=${upstreamProjection.omittedCount}); paging cannot recover those omitted ` +
-                    `fields. Re-call ${opts.toolName} with payloadTier:'full' for full detail.`
+                    `fields. ${upstreamProjectionRecoveryInstruction(opts.toolName)}`
                   : innerTruncationMarkers.length > 0
                     ? ` ⚠ The TOOL ITSELF already truncated field(s) before this door ` +
                       `(${innerTruncationMarkers.join(', ')}); paging preserves what it emitted but cannot ` +

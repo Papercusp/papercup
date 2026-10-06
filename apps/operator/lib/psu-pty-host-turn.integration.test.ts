@@ -27,7 +27,9 @@ import { execPath } from 'node:process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  findNativeTranscriptMarker,
   hostThroughPty,
+  leadingTurnOriginMarker,
   socketPathFor,
   metaPathFor,
   eventLogPathForOwner,
@@ -1019,6 +1021,21 @@ it('eligible quota recovery recycles once under the same owner and settles the e
       await sleep(25);
     }
     expect(captured()).toContain('RECOVERED-TURN');
+    const transcriptLines = readFileSync(transcript, 'utf8').split(/\r?\n/).filter(Boolean);
+    const nativeRow = JSON.parse(transcriptLines[transcriptLines.length - 1]);
+    const nativePrompt = nativeRow.payload.content.map((part: { text?: string }) => part.text ?? '').join('');
+    const respawnEvents = events.filter((event) => event.kind === 'respawned');
+    const finalRespawnAtMs = Date.parse(String(respawnEvents[respawnEvents.length - 1]?.ts ?? ''));
+    expect(nativeRow.timestamp).toBeTypeOf('string');
+    expect(Date.parse(nativeRow.timestamp)).toBeGreaterThanOrEqual(finalRespawnAtMs);
+    expect(leadingTurnOriginMarker(nativePrompt)).toBe(marker);
+    expect(findNativeTranscriptMarker({
+      agent: 'codex',
+      env: hermeticEnv({ CODEX_HOME: codexHome }),
+      marker,
+      sinceMs: finalRespawnAtMs,
+      home: codexHome,
+    })).toBe(transcript);
     expect(events).toContainEqual(expect.objectContaining({
       kind: 'quota-recovery-ready',
       operationId,

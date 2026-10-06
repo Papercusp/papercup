@@ -234,7 +234,9 @@ describe('workItems.byHarness + workItems.summary real-PG contract', () => {
       problem: 'A measured queue defect', evidence: ['WI-10004573'], outcome: 'Queue explains acceptance',
       scope: 'selected harness', completionCheck: 'Read the selected row',
     }, source, authority: { kind: 'agent-review', reviewer: 'su-reviewer', submittedBy: 'su-filer', round: 1 },
-      reason: 'Reviewed the source evidence', acceptedAt: '2026-10-01T00:00:00.000Z' });
+      reason: 'Reviewed the source evidence', acceptedAt: '2026-10-01T00:00:00.000Z',
+      // P-006: a bug's acceptance carries its reproduction receipt (ignored for other kinds).
+      reproduction: { kind: 'failing-test', ref: 'fixture.test.ts', buildSha: 'abcdef1' } });
     expect(sealed.ok).toBe(true);
     if (!sealed.ok) throw new Error('fixture acceptance must seal');
     const payload = { implementationReadiness: { schemaVersion: 'implementation-readiness-v1',

@@ -1182,6 +1182,8 @@ describe('floor #16 implementation-readiness: view, 12-arg floor labels and the 
       reason: 'agent-review-approved (grade 5/5)',
       source: { kind: 'bug', title, summary: SUMMARY },
       acceptedAt: UPDATED_AT,
+      // P-006: a bug's acceptance carries its reproduction receipt.
+      reproduction: { kind: 'failing-test', ref: 'fixture.test.ts', buildSha: 'abcdef1' },
     });
     if (!sealed.ok) throw new Error('fixture contract must seal');
     return sealed.contract;

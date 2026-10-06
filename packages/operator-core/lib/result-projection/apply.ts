@@ -28,6 +28,7 @@
 import { describeProjection } from './parse';
 import { parseFormatRequest } from '@papercusp/result-encoding';
 import type { ProjectionReport, ProjectionSpec, ProjectionStage } from './types';
+import { COORD_SEND_RECEIPT_RECOVERY, isCoordSendDeliveryDiagnostic } from '../agent-tools/coordination/tools/inbox-content-bounds';
 
 /**
  * Choose the wire format for the intermediate body consumed by a projection.
@@ -321,7 +322,7 @@ function truncationPath(path: string, key: string): string {
 }
 
 function isTruncationKey(key: string): boolean {
-  return key === 'truncated' || key === 'payloadTierForced' || TRUNCATION_KEY_REGEX.test(key) || TRUNCATED_BY_KEY_REGEX.test(key);
+  return key === '_partial' || key === 'truncated' || key === 'payloadTierForced' || TRUNCATION_KEY_REGEX.test(key) || TRUNCATED_BY_KEY_REGEX.test(key);
 }
 
 function hasNonEmptyPartialityValue(value: unknown): boolean {
@@ -347,7 +348,7 @@ function addBodyTruncationMarker(
 }
 
 /** Find the marker-shaped truncation contracts in a parsed result body. */
-function detectBodyTruncationMarkers(...sources: Array<{ value: unknown; text?: string }>): BodyTruncationMarker[] {
+function detectBodyTruncationMarkers(toolName: string | undefined, ...sources: Array<{ value: unknown; text?: string }>): BodyTruncationMarker[] {
   const markers: BodyTruncationMarker[] = [];
   const seen = new WeakSet<object>();
 
@@ -387,7 +388,7 @@ function detectBodyTruncationMarkers(...sources: Array<{ value: unknown; text?: 
       } else if ((key === '_projection' || key === 'projection' || key === 'payloadProjection') && childTruncated) {
         addBodyTruncationMarker(markers, `${childPath}.truncated`, 'truncated=true');
       } else if (
-        isTruncationKey(key) &&
+        isTruncationKey(key) && !isCoordSendDeliveryDiagnostic(toolName, key) &&
         (child === true || (markerObject && key !== 'truncated' && Object.keys(child).length > 0))
       ) {
         addBodyTruncationMarker(markers, childPath, key === 'truncated' ? 'truncated=true' : `${key} marker`);
@@ -936,6 +937,7 @@ export function applyResultProjection<T extends ProjectableResult>(
     const bodyTruncationMarkers = upstream?.truncated
       ? []
       : detectBodyTruncationMarkers(
+          opts.toolName,
           { value: json?.parsed, text: original },
           ...(result.structuredContent !== undefined ? [{ value: result.structuredContent }] : []),
         );
@@ -953,7 +955,9 @@ export function applyResultProjection<T extends ProjectableResult>(
             `or use capability:bash with rg for an exhaustive search before concluding a value is absent.`,
         );
       } else {
-        const recovery = hasSourcePageMarker
+        const recovery = opts.toolName === 'coord:send'
+          ? COORD_SEND_RECEIPT_RECOVERY
+          : hasSourcePageMarker
           ? `payloadTier:'full' changes response shaping but does not widen the source query; check ` +
             `the tool's count/total/truncation fields and use its documented page-widening/pagination argument ` +
             `(or a narrower exact lookup)`
@@ -1154,9 +1158,11 @@ export function applyResultProjection<T extends ProjectableResult>(
       const scope =
         `payload tier=${String(upstream.tier ?? 'unknown')}` +
         (omitted > 0 ? `, ${omitted.toLocaleString()} field(s)/row(s) omitted upstream` : '');
-      const reCall = opts.toolName
-        ? `re-call ${opts.toolName} with payloadTier:'full' (or narrower args)`
-        : `re-call the tool with payloadTier:'full' (or narrower args)`;
+      const reCall = opts.toolName === 'coord:send'
+        ? COORD_SEND_RECEIPT_RECOVERY
+        : opts.toolName
+          ? `re-call ${opts.toolName} with payloadTier:'full' (or narrower args)`
+          : `re-call the tool with payloadTier:'full' (or narrower args)`;
       note(
         linesOut === 0
           ? `ZERO lines survived this projection, and the corpus it searched was ALREADY TRUNCATED ` +

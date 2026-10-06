@@ -112,6 +112,8 @@ let db: FreshPgDb;
 function sealed(authority: ImplementationAcceptanceAuthority, title = TITLE) {
   const result = sealImplementationAcceptance({
     proposal: PROPOSAL, authority, reason: 'fixture acceptance', source: { kind: 'bug', title, summary: SUMMARY }, acceptedAt: AT,
+    // P-006: a bug's acceptance carries its reproduction receipt.
+    reproduction: { kind: 'failing-test', ref: 'fixture.test.ts', buildSha: 'abcdef1' },
   });
   if (!result.ok) throw new Error('fixture contract must seal');
   return result.contract;

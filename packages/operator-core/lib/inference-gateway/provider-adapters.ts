@@ -177,7 +177,6 @@ export function makeGatewayLaneRegistry(opts: {
           streaming: true,
           nonStreaming: true,
           legacyExecutor: 'proxy',
-          enforcesOutputTokenLimit: true,
         },
       ],
       capabilities: {

@@ -56,6 +56,53 @@ afterAll(() => {
 });
 
 describe('llmCall backend selection', () => {
+  it('threads a required output limit without changing the model or output bound', async () => {
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      expect(new Headers(init?.headers).get('x-papercusp-require-output-token-limit')).toBe('true');
+      expect(JSON.parse(String(init?.body))).toMatchObject({ model: 'gpt-6.1-sol', max_output_tokens: 8 });
+      return new Response(JSON.stringify({ output_text: 'bounded', usage: { input_tokens: 1, output_tokens: 1 } }), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const { llmCall } = await import('../llm-client');
+      expect(await llmCall({ model: 'gpt-6.1-sol', messages: [{ role: 'user', content: 'fixture' }],
+        maxTokens: 8, requireOutputTokenLimit: true })).toMatchObject({ text: 'bounded' });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    } finally { vi.unstubAllGlobals(); }
+  });
+
+  it.each([undefined, 0, -1, 1.5, Infinity, NaN])('refuses invalid required maxTokens=%s locally', async maxTokens => {
+    const fetchMock = vi.fn(); vi.stubGlobal('fetch', fetchMock);
+    try {
+      const { llmCall } = await import('../llm-client');
+      await expect(llmCall({ model: 'gpt-6.1-sol', messages: [{ role: 'user', content: 'fixture' }],
+        maxTokens, requireOutputTokenLimit: true })).rejects.toMatchObject({ costUsd: 0 });
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally { vi.unstubAllGlobals(); }
+  });
+
+  it('preserves known-zero spend for a gateway refusal, without fabricating zero on other failures', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ gateway: true,
+      error: { code: 'output_token_limit_unsupported', message: 'Selected transport cannot enforce the required output token limit' } }), { status: 422 }));
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const { llmCall } = await import('../llm-client');
+      const opts = { model: 'gpt-6.1-sol', messages: [{ role: 'user' as const, content: 'fixture' }],
+        maxTokens: 8, requireOutputTokenLimit: true };
+      await expect(llmCall(opts)).rejects.toMatchObject({ costUsd: 0, turn: { retryable: false } });
+      fetchMock.mockImplementationOnce(async () => new Response(JSON.stringify({ error: { message: 'upstream failed after possible spend' } }), { status: 500 }));
+      const error = await llmCall(opts).catch(e => e);
+      expect(error).not.toHaveProperty('costUsd');
+    } finally { vi.unstubAllGlobals(); }
+  });
+
+  it('refuses a required output limit on an unimplemented backend before executing it', async () => {
+    const { llmCall } = await import('../llm-client');
+    lastRunAgentChatOpts = undefined;
+    await expect(llmCall({ model: 'claude-sonnet-5', messages: [{ role: 'user', content: 'fixture' }],
+      maxTokens: 8, requireOutputTokenLimit: true })).rejects.toMatchObject({ costUsd: 0 });
+    expect(lastRunAgentChatOpts).toBeUndefined();
+  });
   it('routes OpenAI-family model ids to Codex even when a stale backend override is set', async () => {
     const { backendForLlmCall, modelForLlmCall } = await import('../llm-client');
 

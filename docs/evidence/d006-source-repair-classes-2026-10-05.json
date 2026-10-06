@@ -5,9 +5,9 @@
   "accountableOwner": "su-a20d4635-81b0-4323-b33e-6e838a21d8fe",
   "population": {
     "failedFiles": 124,
-    "repairedFocused": 6,
+    "repairedFocused": 7,
     "repairedPeerFocused": 10,
-    "openUnknown": 108
+    "openUnknown": 107
   },
   "classes": {
     "assertion": 62,
@@ -65,12 +65,64 @@
     {
       "path": "apps/operator/test/user-protection-gate.integration.test.ts",
       "class": "missing-schema",
-      "state": "open-unknown",
-      "item": "WI-10006170",
+      "state": "repaired-focused",
+      "item": "EI-25190283357755519",
       "lines": [
         17350,
         17351
-      ]
+      ],
+      "registeredRepairItem": "EI-25190283357755519",
+      "repairStage": "exact-dispatch-claimed-shared-schema-repair-verified-focused",
+      "diagnosis": "Private frontier DDL omitted admission. Reused maintained complete work-items schema and its harness_plans relation; retained six composed adversarial controls and added a born-pending control with the same local/auditor-approved rows becoming eligible after admission.",
+      "beforeTestRun": 20801412,
+      "afterTestRun": 20802892,
+      "passed": 7,
+      "skipped": 0,
+      "testSha256": "7b0bfa30b16f8452221a312ebe46ede0f2fe839e641b45680dc34eb6b95f4cf2",
+      "sourceFingerprints": {
+        "frontierQuerySha256": "9ecdfdc1fa29928e552c1862f92677c5a762bcd2bd16dc49fe0c037f226c6970",
+        "sharedSchemaSha256": "15f690ed78840b34f6d0e5f1697cd1e4d8f1b602857c9fbb3d357507702dc2fa",
+        "preconditionRevision": "a87989f0d0b0541bade46daf2e08fe7addfa0eb2",
+        "focusedRevision": "a1109d57cbe1ec5b3c75685b4b4af2403aa5e945"
+      },
+      "currentPrecondition": {
+        "status": "fail",
+        "casesPassed": 4,
+        "casesFailed": 2,
+        "casesSkipped": 0,
+        "testRunId": 20801412,
+        "runGroupId": "e84c3fb4-9a7b-4575-aaa7-05c17ed8bf4f"
+      },
+      "intermediateFocusedAttempt": {
+        "testRunId": 20801479,
+        "runGroupId": "b8db325f-ed13-4673-8e48-2c89731c8abb",
+        "status": "fail",
+        "collectionFailed": true,
+        "casesPassed": 3,
+        "casesFailed": 1,
+        "casesSkipped": 4,
+        "meaning": "Summary omitted the setup error. Source audit found a retained private harness_plans CREATE already covered by the shared fixture; removed it before further verification. Not a passing verdict."
+      },
+      "latestLocalReceipt": {
+        "id": 20802892,
+        "filePath": "apps/operator/test/user-protection-gate.integration.test.ts",
+        "status": "pass",
+        "commitSha": "a1109d57cbe1ec5b3c75685b4b4af2403aa5e945",
+        "worktreeDirty": true,
+        "isScratchConfig": false,
+        "root": "<repo-root>",
+        "startedAt": "2026-10-06T01:24:18.694Z",
+        "runGroupId": "d6e8df5c-cb0a-4d37-9695-d888c8dacb84"
+      },
+      "latestReceiptMeaning": "Focused causal fixture repair verified; committed fixture and unchanged frontier-query/shared-schema hashes checked. Native full-output run also passed seven with zero skips, but its wrapper marked HEAD-movement provenance unknown, so focused committed-source recheck 20802892 is retained. No final D006 sweep or complete import/environment assurance.",
+      "nativePassLog": {
+        "path": "/tmp/wi-10006170-user-protection-after.log",
+        "sha256": "3e76fc14cd0b8d3324942d5db21e888ab2018fc19af791cccaaee550f7b80d55",
+        "testRunId": 20802855,
+        "casesPassed": 7,
+        "casesSkipped": 0,
+        "wrapperProvenance": "unknown-head-moved"
+      }
     },
     {
       "path": "apps/operator/lib/release/deploy.integration.test.ts",

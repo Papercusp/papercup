@@ -17,6 +17,7 @@ import { _resetListenersForTests } from '../workspace-listener';
 import type { AgentIdentity } from '../../coordination/identity';
 import restartTool, { configurePeerInFlightEditsReaderForTests } from '../../dev/restart';
 import { probeSystemdDaemonReloadNeed } from '../../dev/systemd-service-probe';
+import cacheStatsTool from '../../dev/cache_stats';
 
 // Keep the actual handler, domain resolver, cooldown transaction, guard and PG
 // store. Only external preflights and process execution are replaced; an
@@ -81,6 +82,49 @@ describe.skipIf(!isolated)('maintained host-resource domain publication in isola
     await _resetListenersForTests();
     await _resetForTests();
   });
+
+  it.each(['staging-server', 'staging-server-cooldown'])(
+    'delivers the real registry declaration for %s without warming its diagnostic cache', async resource => {
+      const registered = await registerTool.handler({ resource }, {
+        isSuperuser: true, uiClientId: owner,
+      } as never);
+      if (!('content' in registered) || registered.content[0].type !== 'text') {
+        throw new Error('Registration did not return text evidence');
+      }
+      expect(JSON.parse(registered.content[0].text).ok).toBe(true);
+      expect((await readResourceCoordinationDomainKinds(getTxPool())).get(resource)).toBe('host-global');
+
+      // Use the production registry loader, not the unit suite's injected map.
+      // A passive read must leave a genuinely cold cache cold even when the
+      // declaration already exists in this isolated database.
+      __resetResourceDomainKindsForTest();
+      const read = async () => {
+        const result = await cacheStatsTool.handler({ resource }, {} as never);
+        if (!('data' in result)) throw new Error('Cache diagnostic did not return data');
+        return result.data as Record<string, unknown>;
+      };
+      const cold = await read();
+      expect(cold.pid).toBe(process.pid);
+      expect(cold.resourceDomainKinds).toMatchObject({
+        source: 'current-process', loaded: false, loadedAtMs: null, lastError: null,
+        declaration: { resource, kind: null },
+      });
+      expect(declaredResourceDomainKind(resource)).toBeNull();
+
+      await ensureResourceDomainKindsFresh();
+      const loaded = await read();
+      expect(loaded.pid).toBe(cold.pid);
+      expect(loaded.resourceDomainKinds).toMatchObject({
+        source: 'current-process', loaded: true, lastError: null,
+        declaration: { resource, kind: 'host-global' },
+      });
+      expect(loaded.resourceDomainKinds).toMatchObject({ loadedAtMs: expect.any(Number) });
+      expect(resourceLockDomain(resource)).toBe(hostGlobalLockDomain());
+      expect((await read()).resourceDomainKinds).toEqual(loaded.resourceDomainKinds);
+      expect(execFile).not.toHaveBeenCalled();
+      expect(spawn).not.toHaveBeenCalled();
+    },
+  );
 
   it.each(['staging-server', 'staging-server-cooldown'])(
     'publishes %s for an existing row and refreshes a reader without overwriting policy', async resource => {
