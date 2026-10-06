@@ -7,6 +7,7 @@ import {
   TUNNEL, boxWireguard, edgeCoordinates, forwardedPorts, livekitInterfaceInclude,
   nginxSite, nginxStream, vmNftables, vmWireguard,
 } from "../../../../infra/phone-app/edge/edge-config.mjs";
+import { NON_PUBLIC_V4_SUBNETS, isPublicAddress } from "../../../../infra/phone-app/media-config.mjs";
 
 // Plan phone-public-telephone-service-2026-10-01, P-002, D-024/D-025: the public media edge.
 const repoRoot = resolve(import.meta.dirname, "../../../..");
@@ -92,6 +93,38 @@ describe("phone public media edge forwarding", () => {
     const withSip = vmNftables(edgeCoordinates({ ...env, PHONE_EDGE_FORWARD_SIP: "1" }));
     expect(withSip).toContain(`udp dport 40000-40200 dnat to ${TUNNEL.box}`);
     expect(withSip).toContain(`tcp dport 5070 dnat to ${TUNNEL.box}`);
+  });
+
+  // WI-10006686: LiveKit followed a test browser's PRIVATE host candidate (10.138.0.3) out
+  // through the edge into the GCP VPC. Callers choose ICE candidates, so box egress must
+  // never reach a non-public destination, and the drop must come before the egress accept.
+  it("never forwards box traffic into private, VPC or special ranges", () => {
+    const forward = vmNftables(c).split("\n");
+    const dropAt = forward.findIndex((l) => l.includes(`iifname "wg-phone" ip daddr {`) && l.includes(" drop"));
+    const acceptAt = forward.findIndex((l) => l.includes(`ip saddr ${TUNNEL.box} accept`));
+    expect(dropAt).toBeGreaterThan(-1);
+    expect(dropAt).toBeLessThan(acceptAt);
+    const cidrs = forward[dropAt].match(/\{([^}]*)\}/)![1].split(",").map((s) => s.trim());
+    const toInt = (ip: string) => ip.split(".").reduce((n, o) => n * 256 + Number(o), 0);
+    const covered = (ip: string) => cidrs.some((cidr) => {
+      const [net, bits] = cidr.split("/");
+      const size = 2 ** (32 - Number(bits));
+      return Math.floor(toInt(ip) / size) === Math.floor(toInt(net) / size);
+    });
+    const nonPublic = ["10.138.0.3", "10.142.0.3", "10.128.0.14", "192.168.4.34", "172.27.0.1",
+      "100.64.1.1", "169.254.169.254", "127.0.0.1", "0.0.0.1", "224.0.0.251", "198.18.0.1",
+      "192.0.0.8", "192.0.2.5", "203.0.113.9", "240.0.0.1"];
+    const publicAddrs = ["34.168.26.215", "34.23.13.209", "104.148.223.66", "8.8.8.8", "1.1.1.1"];
+    for (const ip of nonPublic) {
+      expect(isPublicAddress(ip), ip).toBe(false);
+      expect(covered(ip), ip).toBe(true);
+    }
+    for (const ip of publicAddrs) {
+      expect(isPublicAddress(ip), ip).toBe(true);
+      expect(covered(ip), ip).toBe(false);
+    }
+    // Every range the shared public-address check rejects is in the drop set.
+    expect(cidrs).toEqual(NON_PUBLIC_V4_SUBNETS.map(([ip, prefix]) => `${ip}/${prefix}`));
   });
 });
 
