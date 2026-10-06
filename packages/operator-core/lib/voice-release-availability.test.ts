@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   RELEASE_UNAVAILABLE_LABEL,
   isFullAgentEngineUnavailable,
+  isHostedTtsEngineUnavailable,
   isTtsEngineUnavailable,
   isWakeEngineUnavailable,
   releaseUnavailableMessage,
@@ -17,8 +18,16 @@ describe('voice release availability (D-005)', () => {
     for (const e of ['off', 'openwakeword']) expect(isWakeEngineUnavailable(e)).toBe(false);
   });
 
+  it('offers ElevenLabs TTS locally once its key works (D-006) but keeps it refused on the hosted portal', () => {
+    expect(isTtsEngineUnavailable('elevenlabs')).toBe(false);
+    expect(isHostedTtsEngineUnavailable('elevenlabs')).toBe(true);
+    // Every engine the shared set refuses is refused on hosted too.
+    for (const e of ['openai', 'cartesia']) expect(isHostedTtsEngineUnavailable(e)).toBe(true);
+    for (const e of ['kokoro', 'browser']) expect(isHostedTtsEngineUnavailable(e)).toBe(false);
+  });
+
   it('marks engines without a working key unavailable', () => {
-    for (const e of ['elevenlabs', 'openai', 'cartesia']) expect(isTtsEngineUnavailable(e)).toBe(true);
+    for (const e of ['openai', 'cartesia']) expect(isTtsEngineUnavailable(e)).toBe(true);
     for (const e of ['openai-realtime', 'gemini-live', 'elevenlabs-conv', 'elevenlabs-conversational']) {
       expect(isFullAgentEngineUnavailable(e)).toBe(true);
     }
@@ -28,6 +37,7 @@ describe('voice release availability (D-005)', () => {
   it('treats non-string and unknown input as not-unavailable (callers validate kind separately)', () => {
     for (const v of [undefined, null, 42, {}, 'not-an-engine']) {
       expect(isTtsEngineUnavailable(v)).toBe(false);
+      expect(isHostedTtsEngineUnavailable(v)).toBe(false);
       expect(isFullAgentEngineUnavailable(v)).toBe(false);
       expect(isWakeEngineUnavailable(v)).toBe(false);
     }
