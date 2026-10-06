@@ -376,7 +376,9 @@ export async function reapDeadExecutorWorkflows(
        WHERE status IN ('PENDING', 'ENQUEUED')
          AND (
            (
-             name = 'routinesTick'
+             -- WI-10000846: the sweeps run in their own scheduled tick; the same
+             -- no-progress rule that used to cover them inside routinesTick applies.
+             name IN ('routinesTick', 'routinesSweepTick')
              AND (
                -- EI-25221129396992808: judge silence by the latest PROGRESS, not
                -- updated_at alone. DBOS bumps workflow_status.updated_at only on a
