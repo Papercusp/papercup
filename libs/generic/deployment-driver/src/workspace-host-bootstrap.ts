@@ -2318,19 +2318,11 @@ function bootcReleaseLines(
   hostId: string,
 ): string[] {
   const bootc = v.bootc as NonNullable<ValidatedBootstrapInput['bootc']>;
-  // A tag separator is a colon AFTER the final slash; a registry port is a colon
-  // BEFORE it. `split(':')[0]` therefore turns
-  // `127.0.0.1:5096/papercusp/workspace-host:tag` into `127.0.0.1` and stages a
-  // different image. SAFE_IMAGE_REF excludes digests here, so the last-colon
-  // comparison is a complete parser for the admitted shape.
-  const finalSlash = bootc.image.lastIndexOf('/');
-  const finalColon = bootc.image.lastIndexOf(':');
-  const imageRepository =
-    finalColon > finalSlash ? bootc.image.slice(0, finalColon) : bootc.image;
+  const imageRepository = workspaceHostBootcImageRepository(bootc.image);
   // Pull BY DIGEST. The tag rides along as provenance only: a tag is mutable, so switching to
   // `image:tag` and then attesting the digest that arrived would attest whatever the registry
   // happened to be serving, which is a description of the outcome rather than a constraint on it.
-  const pinnedImage = `${imageRepository}@${bootc.imageDigest}`;
+  const pinnedImage = workspaceHostBootcPinnedImageRef(bootc);
   return [
     assignment('EXPECTED_IMAGE', bootc.image),
     assignment('EXPECTED_IMAGE_REPO', imageRepository),
@@ -3518,6 +3510,32 @@ export function parseWorkspaceHostBootstrapAttestation(
  * Validate the remote result against the exact requested release, trust root,
  * migration, runtime floor, and loopback service contract.
  */
+/**
+ * The repository of a bootc release image ref: the ref without its tag. A tag separator is a
+ * colon AFTER the final slash; a registry port is a colon BEFORE it, so `split(':')[0]` would
+ * turn `127.0.0.1:5096/papercusp/workspace-host:tag` into `127.0.0.1`. SAFE_IMAGE_REF admits
+ * no digest in `bootc.image`, so the last-colon comparison is a complete parser for that shape.
+ */
+export function workspaceHostBootcImageRepository(image: string): string {
+  const finalSlash = image.lastIndexOf('/');
+  const finalColon = image.lastIndexOf(':');
+  return finalColon > finalSlash ? image.slice(0, finalColon) : image;
+}
+
+/**
+ * The image ref a correct bootc host BOOTS: the release repository pinned to its digest. The
+ * bake renders every cloud from `repo@sha256:…` (bake-cloud-images.sh refuses a tag) and the
+ * bootstrap switches by digest, so `bootc status` reports exactly this ref — never the tag,
+ * which rides along as provenance only. Every check of an attested `release.source` compares
+ * against this, not `bootc.image` (WI-10006339: the tag comparison failed every correct host).
+ */
+export function workspaceHostBootcPinnedImageRef(bootc: {
+  image: string;
+  imageDigest: string;
+}): string {
+  return `${workspaceHostBootcImageRepository(bootc.image)}@${bootc.imageDigest}`;
+}
+
 export function validateWorkspaceHostBootstrapAttestation(
   attestation: unknown,
   expected: WorkspaceHostBootstrapInput,
@@ -3632,7 +3650,8 @@ export function validateWorkspaceHostBootstrapAttestation(
   if (candidate.hostModel === 'bootc-image') {
     addMismatch(
       errors,
-      candidate.release.source === validated.bootc?.image,
+      validated.bootc !== undefined &&
+        candidate.release.source === workspaceHostBootcPinnedImageRef(validated.bootc),
       'attested booted image ref does not match the pinned release image',
     );
     addMismatch(
