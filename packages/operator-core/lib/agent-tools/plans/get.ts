@@ -390,12 +390,18 @@ export function findSection(
  * now.raw ≈ section.body). Three of three heading reads blew the ~1500-token
  * result door and spilled to scratch.
  *
+ * A heading read can also inherit `lifecycle.liveItemsTruncated`. That
+ * unrelated advisory marker makes the outer result door label the whole JSON
+ * result incomplete, so its spill cursor refuses to recover the selected
+ * section body. Drop lifecycle metadata from this narrow read; an oversized
+ * body can then use the existing recoverable result-door cursor.
+ *
  * The perverse part, and the reason this is a real bug rather than a diet: the
  * `heading` form exists to AVOID a big read, so it is reached for exactly when a
  * plan is large — and a large plan has a large `## Now`, so the fixed envelope
  * was heaviest precisely in the case the feature exists to serve.
  */
-const HEADING_DROPPED_FIELDS = new Set(['now', 'promotePolicy']);
+const HEADING_DROPPED_FIELDS = new Set(['now', 'promotePolicy', 'lifecycle']);
 
 /**
  * Build the `heading`-narrowed payload from the meta base. Shared by the legacy
