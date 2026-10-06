@@ -28,8 +28,16 @@ vi.mock('@papercusp/db-org', async (orig) => {
 });
 
 const { emitScorecard, scorecardEmitMutexKey, _closeScorecardEmitMutexForTests } = await import('./emit');
+const {
+  GRADING_AUDIT_RESERVATION_TTL_MS,
+  reservePendingGradingAudit,
+} = await import('../../grading-integrity');
 const { proposeRubric, getRubric } = await import('../../rubrics');
-const { listScorecards, isCurrentSourceAuditResponder } = await import('../../scorecards');
+const {
+  _closeGradingAuditSubjectMutexForTests,
+  listScorecards,
+  isCurrentSourceAuditResponder,
+} = await import('../../scorecards');
 const { createIssue } = await import('../../issues-engineer');
 const { OBSERVATION_TOPIC } = await import('../../harness/improvements/read-items');
 const { createOrgTestDb } = await import('../../../test/_org-test-db');
@@ -111,6 +119,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await _closeScorecardEmitMutexForTests();
+  await _closeGradingAuditSubjectMutexForTests();
   await db?.cleanup();
   _resetHarnessAdminUrlCacheForTests();
   if (SAVED_ADMIN_URL === undefined) delete process.env.HARNESS_ADMIN_DATABASE_URL;
@@ -380,6 +389,22 @@ describe('scorecards:emit final dedup read-to-write mutex, real PG', () => {
     }
     console.info('[grading-audit concurrency fixture] starting second audit emitter');
     const second = emitScorecard(argsFor(failRatings) as never, inputFor('su-audit-concurrency-b'), deps);
+    const competingReservation = reservePendingGradingAudit(
+      subject.id,
+      'grading-audit:competing-reclaim',
+      {
+        workspaceId: activeWorkspaceId(),
+        now: new Date(Date.now() + GRADING_AUDIT_RESERVATION_TTL_MS + 1_000),
+      },
+    );
+    let reservationTimer: ReturnType<typeof setTimeout> | undefined;
+    const competingReservationCompletedBeforeFirstSettled = await Promise.race([
+      competingReservation.then(() => true),
+      new Promise<boolean>((resolve) => {
+        reservationTimer = setTimeout(() => resolve(false), 250);
+      }),
+    ]);
+    if (reservationTimer) clearTimeout(reservationTimer);
 
     let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
     const secondPassedBeforeFirstSettled = await Promise.race([
@@ -393,7 +418,10 @@ describe('scorecards:emit final dedup read-to-write mutex, real PG', () => {
       `[grading-audit concurrency fixture] second preflight before first settled=${secondPassedBeforeFirstSettled}`,
     );
     releaseFirstPreflight();
-    const results = await Promise.all([first, second]);
+    const [results, competingReservationResult] = await Promise.all([
+      Promise.all([first, second]),
+      competingReservation,
+    ]);
     const persistedAudits = await listScorecards({
       rubricRef: 'grading-integrity',
       subjectRef: subject.id,
@@ -402,10 +430,14 @@ describe('scorecards:emit final dedup read-to-write mutex, real PG', () => {
     console.info(`[grading-audit concurrency fixture] persisted audit count=${persistedAudits.length}`);
     expect({
       secondPassedBeforeFirstSettled,
+      competingReservationCompletedBeforeFirstSettled,
+      competingReservationStatus: competingReservationResult.status,
       createdAuditCount: results.filter((result) => result.ok && result.created).length,
       persistedAuditCount: persistedAudits.length,
     }).toEqual({
       secondPassedBeforeFirstSettled: false,
+      competingReservationCompletedBeforeFirstSettled: false,
+      competingReservationStatus: 'not-pending',
       createdAuditCount: 1,
       persistedAuditCount: 1,
     });
