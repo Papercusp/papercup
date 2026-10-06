@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "kind": "operational-test-evidence",
   "name": "R-1 deployed plane: gitnexus-reindex regenerates the graph dependency snapshot and reports it in gitnexus health",
-  "framework": "papercusp-tool-read",
+  "framework": "operational",
   "command": [
     "routines:list { name: 'gitnexus-reindex', installSlug: 'papercusp', limit: 1 }",
     "dev:pipeline_position { path: 'packages/operator-core/lib/harness/routines/gitnexus-reindex-action.ts', testClass: 'background-federation' }"
