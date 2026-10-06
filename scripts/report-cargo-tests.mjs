@@ -58,6 +58,7 @@ import {
   buildCargoExecutionDetails,
   resolveCargoTestRunScope,
   resolveCargoTestRunSource,
+  cargoTestRunReceipt,
   cargoWorktreeProvenance,
 } from './lib/cargo-result.mjs';
 
@@ -68,19 +69,19 @@ import {
  * DEFAULT false, so a row written without it claims a clean tree. An unloadable snapshotter only
  * makes the rows fail-safe dirty — the ledger never fails the test run (D-007).
  */
-async function loadWorktreeSnapshotter() {
+async function loadTestRunReporter() {
   try {
     return await import('../libs/test-config/src/admin-test-runs-reporter.ts');
   } catch (err) {
-    console.error(`[report-cargo-tests] WARNING: worktree snapshot unavailable (${err instanceof Error ? err.message : String(err)}); rows are recorded dirty.`);
+    console.error(`[report-cargo-tests] WARNING: shared test-run reporter helpers unavailable (${err instanceof Error ? err.message : String(err)}); rows are recorded dirty and mutation-probe receipts cannot be written.`);
     return null;
   }
 }
 
-async function snapshotWorktree(snapshotter) {
-  if (!snapshotter) return null;
+async function snapshotWorktree(reporter) {
+  if (!reporter) return null;
   try {
-    return await snapshotter.captureWorktreeSnapshot();
+    return await reporter.captureWorktreeSnapshot();
   } catch {
     return null;
   }
@@ -363,8 +364,19 @@ async function tryGetPg() {
   }
 }
 
-async function insertRows(sql, rows, worktree) {
-  if (!sql) return 0;
+async function insertRows(sql, rows, worktree, testRunReporter) {
+  const appendReceipts = (receipts) =>
+    testRunReporter?.appendTestRunReceipts?.(process.env, receipts);
+  if (!sql) {
+    for (const row of rows) {
+      appendReceipts([cargoTestRunReceipt({
+        filePath: row.filePath,
+        status: row.status,
+        error: 'pg_unavailable',
+      })]);
+    }
+    return 0;
+  }
   let inserted = 0;
   const { loopLagP95Ms, rssMb } = captureReporterSaturationSnapshot();
   // WI-10006828: attribute rows like the vitest reporter does, or they can never be bound as proof.
@@ -373,18 +385,30 @@ async function insertRows(sql, rows, worktree) {
     // WI-10006849: a complete per-row record, or the strict contract parser discards it.
     const executionDetails = buildCargoExecutionDetails({ ...row.execution, root: REPO_ROOT, filePath: row.filePath, harnessSlug, workspaceId, worktree });
     try {
-      await Promise.race([
+      const returned = await Promise.race([
         sql`
           INSERT INTO harness_shared.test_runs
             (file_path, framework, status, duration_ms, started_at, finished_at, output_tail, source, loop_lag_p95_ms, rss_mb, harness_slug, workspace_id, execution_details, commit_sha, worktree_dirty)
           VALUES
             (${row.filePath}, 'cargo', ${row.status}, ${row.durationMs}, ${row.startedAt}, ${row.finishedAt}, ${row.outputTail}, ${row.source}, ${loopLagP95Ms}, ${rssMb}, ${harnessSlug}, ${workspaceId}, ${executionDetails ? sql.json(executionDetails) : null}, ${worktree.commitSha}, ${worktree.worktreeDirty})
+          RETURNING id
         `,
-        new Promise((_, reject) => setTimeout(() => reject(new Error('pg_insert_timeout')), 2000)),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('pg_insert_timeout_2000ms')), 2000)),
       ]);
-      inserted++;
-    } catch {
+      const receipt = cargoTestRunReceipt({
+        filePath: row.filePath,
+        status: row.status,
+        returnedId: returned?.[0]?.id,
+      });
+      appendReceipts([receipt]);
+      if (receipt.outcome === 'inserted') inserted++;
+    } catch (error) {
       /* swallow — D-007: a broken ledger must never fail the test run */
+      appendReceipts([cargoTestRunReceipt({
+        filePath: row.filePath,
+        status: row.status,
+        error,
+      })]);
     }
   }
   return inserted;
@@ -408,14 +432,14 @@ async function main() {
       ? `[report-cargo-tests] running: cargo llvm-cov --manifest-path ${manifestPath} --no-fail-fast --lcov --output-path ${relative(REPO_ROOT, coverage.outputPath).split(sep).join('/')}`
       : `[report-cargo-tests] running: cargo test --manifest-path ${manifestPath} --no-fail-fast`,
   );
-  const snapshotter = await loadWorktreeSnapshotter();
-  const worktreeBefore = await snapshotWorktree(snapshotter);
+  const testRunReporter = await loadTestRunReporter();
+  const worktreeBefore = await snapshotWorktree(testRunReporter);
   const { code, stdout, stderr, startedAt, finishedAt, diskAdmission } = await runCargoTest(manifestAbs, cargoArgs, coverage);
   const worktree = cargoWorktreeProvenance({
     before: worktreeBefore,
-    after: await snapshotWorktree(snapshotter),
-    describeDirt: snapshotter?.describeWorktreeDirt,
-    resolveCommit: snapshotter?.resolveTestRunCommit,
+    after: await snapshotWorktree(testRunReporter),
+    describeDirt: testRunReporter?.describeWorktreeDirt,
+    resolveCommit: testRunReporter?.resolveTestRunCommit,
   });
   const combined = `${stdout}\n${stderr}`;
   process.stdout.write(stdout);
@@ -483,7 +507,7 @@ async function main() {
   console.log(formatCargoResultLine(cargoResult));
 
   const sql = await tryGetPg();
-  const inserted = await insertRows(sql, rows, worktree);
+  const inserted = await insertRows(sql, rows, worktree, testRunReporter);
   if (sql) {
     try { await sql.end({ timeout: 2 }); } catch { /* swallow */ }
   }

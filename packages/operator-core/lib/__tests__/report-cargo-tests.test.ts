@@ -23,6 +23,7 @@ import { spawnSync } from 'node:child_process';
 
 import {
   assessCargoDiskAdmission,
+  cargoTestRunReceipt,
   cargoCoverageOutputPath,
   cargoRunExitCode,
   CARGO_CACHE_TAG,
@@ -152,6 +153,30 @@ describe('cargo test_runs rows are attributed to a harness/workspace (WI-1000682
     expect(resolveCargoMutationPhase({ PAPERCUSP_MUTATION_PROBE: '1' })).toBeNull();
     expect(resolveCargoMutationPhase({ PAPERCUSP_MUTATION_PROBE: '1', PAPERCUSP_MUTATION_PHASE: ' mutant ' }))
       .toBe('mutant');
+  });
+
+  it('writes Cargo mutation-probe receipt lines using the shared receipt helper (WI-10006990)', () => {
+    const receipt = cargoTestRunReceipt({
+      filePath: 'papercusp-desktop/src-tauri::tests::recovery_page',
+      status: 'fail',
+      returnedId: 20865149,
+    });
+    expect(receipt).toEqual({
+      filePath: 'papercusp-desktop/src-tauri::tests::recovery_page',
+      status: 'fail',
+      outcome: 'inserted',
+      id: '20865149',
+    });
+    expect(cargoTestRunReceipt({ filePath: 'c::test', status: 'pass', error: 'pg_insert_timeout_2000ms' }))
+      .toEqual({ filePath: 'c::test', status: 'pass', outcome: 'timeout', reason: 'pg_insert_timeout_2000ms' });
+    expect(cargoTestRunReceipt({ filePath: 'c::test', status: 'fail', error: 'pg_unavailable' }))
+      .toEqual({ filePath: 'c::test', status: 'fail', outcome: 'failed', reason: 'pg_unavailable' });
+    expect(cargoTestRunReceipt({ filePath: 'c::test', status: 'fail' }))
+      .toEqual({ filePath: 'c::test', status: 'fail', outcome: 'failed', reason: 'insert_returned_no_id' });
+
+    expect(REPORTER_SOURCE).toContain('RETURNING id');
+    expect(REPORTER_SOURCE).toMatch(/appendTestRunReceipts\?\.\(process\.env, receipts\)/);
+    expect(REPORTER_SOURCE).toMatch(/returnedId: returned\?\.\[0\]\?\.id/);
   });
 
   // WI-10006849: the contract parser is strict, and the spec evaluator reads failed-case

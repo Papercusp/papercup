@@ -89,6 +89,32 @@ export function resolveCargoTestRunSource(env = process.env) {
 }
 
 /**
+ * WI-10006990: the Cargo writer must report every attempted ledger insert to
+ * the mutation probe. A timeout is distinct because the query may still land;
+ * a completed query without a returned id is never claimed as inserted.
+ * @param {{filePath: string, status: string, returnedId?: unknown, error?: unknown}} input
+ * @returns {{filePath: string, status: string, outcome: 'inserted', id: string}
+ *   | {filePath: string, status: string, outcome: 'timeout' | 'failed', reason: string}}
+ */
+export function cargoTestRunReceipt({ filePath, status, returnedId, error } = {}) {
+  if (returnedId !== undefined && returnedId !== null) {
+    return { filePath, status, outcome: 'inserted', id: String(returnedId) };
+  }
+
+  const reason = error instanceof Error
+    ? error.message
+    : typeof error === 'string'
+      ? error
+      : 'insert_returned_no_id';
+  return {
+    filePath,
+    status,
+    outcome: reason.startsWith('pg_insert_timeout') ? 'timeout' : 'failed',
+    reason: reason.slice(0, 200),
+  };
+}
+
+/**
  * The probe's phase (`baseline`/`mutant`) for a cargo row, mirroring `resolveMutationProbePhase`.
  * Null outside a probe — never an invented phase.
  */
