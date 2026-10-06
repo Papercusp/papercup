@@ -906,10 +906,12 @@ describe('GCP workspace-host provider planning', () => {
     ).request;
     const script = instance.metadata.items.find(({ key }) => key === 'startup-script')?.value ?? '';
 
-    expect(script).toContain('cp -a /home/. "$home_seed"/');
+    // The bind targets the CANONICAL home (WI-10006838: /home is a symlink to var/home on bootc).
+    expect(script).toContain('home_target="$(readlink -f -- /home)"');
+    expect(script).toContain('cp -a "$home_target"/. "$home_seed"/');
     expect(script).toContain('mv -T -- "$home_seed" "$data_mount/home"');
-    expect(script).toContain('grep -q " /home none bind" /etc/fstab');
-    expect(script).toContain(`mountpoint -q '/home' || mount --bind "$data_mount/home" '/home'`);
+    expect(script).toContain('grep -q " ${home_target} none bind" /etc/fstab');
+    expect(script).toContain('mountpoint -q "$home_target" || mount --bind "$data_mount/home" "$home_target"');
 
     const homeBindAt = script.indexOf('mount --bind "$data_mount/home"');
     const bootstrapAt = script.indexOf('# User-supplied bootstrap follows the durable mount.');
@@ -926,8 +928,8 @@ describe('GCP workspace-host provider planning', () => {
     );
     const instance = (plan.steps.find(({ id }) => id === 'create-instance')!.input as unknown as { request: GcpInstanceInsertInput }).request;
     const script = instance.metadata.items.find(({ key }) => key === 'startup-script')!.value;
-    const start = script.indexOf('[[ -d /home');
-    const end = script.indexOf("install -d -m 0755 '/home'");
+    const start = script.indexOf('home_target="$(readlink -f -- /home)"');
+    const end = script.indexOf('install -d -m 0755 "$home_target"');
     expect(start).toBeGreaterThan(-1);
     expect(end).toBeGreaterThan(start);
     const root = mkdtempSync(join(tmpdir(), 'gcp-home-copy-'));

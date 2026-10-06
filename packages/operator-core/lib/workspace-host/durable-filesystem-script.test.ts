@@ -1,4 +1,7 @@
 import { spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { WORKSPACE_HOST_DATA_ROOT } from '@papercusp/deployment-driver';
 import {
@@ -26,8 +29,56 @@ describe('renderDurableFilesystemScript', () => {
     expect(script).toContain('if ! blkid "$data_device" >/dev/null 2>&1; then mkfs.ext4 -F "$data_device"; fi');
     // Survives a reboot without re-running: every mount is in fstab, and the data mount is nofail.
     expect(script).toContain('defaults,nofail,discard');
-    expect(script).toContain(' /home none bind 0 0');
+    expect(script).toContain('none bind 0 0\\n" "$data_mount/home" "$home_target" >> /etc/fstab');
     expect(script).toContain(`${WORKSPACE_HOST_DATA_ROOT} none bind 0 0`);
+  });
+
+  it('binds the canonical home on a bootc image, where /home is a symlink to var/home (WI-10006838)', () => {
+    // Measured 2026-10-06 on AMI A-r62b (CentOS Stream 10 bootc): /home -> var/home. The script
+    // refused that layout outright, so every bootc host failed bootstrap on AWS and GCP. Run the
+    // real rendered home block against a bootc-shaped root and an ordinary one.
+    const script = renderDurableFilesystemScript({ devicePath: AWS_DEVICE, deviceWaitSec: 30 });
+    expect(script).not.toMatch(/-L \/home\b/);
+    const start = script.indexOf('home_target="$(readlink -f -- /home)"');
+    const end = script.indexOf('install -d -m 0755 "$home_target"');
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const block = script.slice(start, end);
+
+    const root = mkdtempSync(join(tmpdir(), 'durable-home-'));
+    const run = (homePath: string) =>
+      spawnSync(
+        'bash',
+        ['-c', ['set -euo pipefail', block.replaceAll('-- /home)', `-- ${homePath})`), 'echo "TARGET=$home_target"'].join('\n')],
+        { encoding: 'utf8', env: { ...process.env, data_mount: join(root, 'data') }, timeout: 5000 },
+      );
+    try {
+      mkdirSync(join(root, 'data'));
+      // bootc: <root>/home -> var/home (relative, exactly as ostree writes it).
+      mkdirSync(join(root, 'var', 'home', 'papercusp-workspace'), { recursive: true });
+      writeFileSync(join(root, 'var', 'home', 'papercusp-workspace', '.auth-fixture'), 'customer-login');
+      symlinkSync('var/home', join(root, 'home'));
+      const bootc = run(join(root, 'home'));
+      expect(bootc.status, bootc.stderr).toBe(0);
+      expect(bootc.stdout).toContain(`TARGET=${realpathSync(join(root, 'var', 'home'))}`);
+      expect(readFileSync(join(root, 'data', 'home', 'papercusp-workspace', '.auth-fixture'), 'utf8')).toBe(
+        'customer-login',
+      );
+
+      // An ordinary image: a real /home resolves to itself.
+      mkdirSync(join(root, 'plain-home'));
+      const plain = run(join(root, 'plain-home'));
+      expect(plain.status, plain.stderr).toBe(0);
+      expect(plain.stdout).toContain(`TARGET=${realpathSync(join(root, 'plain-home'))}`);
+
+      // A /home that resolves to nothing is still refused.
+      symlinkSync('missing', join(root, 'dangling-home'));
+      const dangling = run(join(root, 'dangling-home'));
+      expect(dangling.status).toBe(1);
+      expect(dangling.stderr).toContain('workspace home mount target is not a real directory');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('runs the host bootstrap only after every durable mount, without its shebang', () => {

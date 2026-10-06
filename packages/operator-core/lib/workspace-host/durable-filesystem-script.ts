@@ -63,17 +63,26 @@ export function renderDurableFilesystemScript(input: DurableFilesystemScriptInpu
     // Publish the first copy by same-filesystem rename: a failed/interrupted copy must never be
     // mistaken for a complete home on retry. Existing durable content, even empty, wins forever.
     // This state must be on disk: it is mounted before the bootstrap or database can start.
-    '[[ -d /home && ! -L /home ]] || { echo "workspace home mount target is not a real directory" >&2; exit 1; }',
+    //
+    // ⛔ BIND THE CANONICAL HOME, NOT THE LITERAL `/home` (WI-10006838). On a bootc/ostree image
+    // `/home` is a symlink to `var/home`; refusing a symlinked `/home` failed every bootc host's
+    // bootstrap on both clouds. Resolve it once and use the real directory for the seed copy, the
+    // fstab entry, the bind and the identity check (`stat` without -L on a symlink reports the
+    // link itself, so a check against `/home` could never match the bound directory). On an image
+    // where `/home` is a real directory this resolves to `/home` itself. The DURABLE copy below
+    // must still be a real directory.
+    'home_target="$(readlink -f -- /home)"',
+    '[[ -n "$home_target" && -d "$home_target" && ! -L "$home_target" ]] || { echo "workspace home mount target is not a real directory: /home -> ${home_target:-unresolved}" >&2; exit 1; }',
     'if [[ ! -e "$data_mount/home" && ! -L "$data_mount/home" ]]; then',
     '  home_seed="$(mktemp -d "$data_mount/.home-seed.XXXXXX")"',
-    '  cp -a /home/. "$home_seed"/',
+    '  cp -a "$home_target"/. "$home_seed"/',
     '  mv -T -- "$home_seed" "$data_mount/home"',
     'fi',
     '[[ -d "$data_mount/home" && ! -L "$data_mount/home" ]] || { echo "durable home is not a real directory" >&2; exit 1; }',
-    "install -d -m 0755 '/home'",
-    'grep -q " /home none bind" /etc/fstab || printf "%s /home none bind 0 0\\n" "$data_mount/home" >> /etc/fstab',
-    "mountpoint -q '/home' || mount --bind \"$data_mount/home\" '/home'",
-    '[[ "$(stat -c %d:%i /home)" == "$(stat -c %d:%i "$data_mount/home")" ]] || { echo "workspace home is not backed by the durable directory" >&2; exit 1; }',
+    'install -d -m 0755 "$home_target"',
+    'grep -q " ${home_target} none bind" /etc/fstab || printf "%s %s none bind 0 0\\n" "$data_mount/home" "$home_target" >> /etc/fstab',
+    'mountpoint -q "$home_target" || mount --bind "$data_mount/home" "$home_target"',
+    '[[ "$(stat -c %d:%i "$home_target")" == "$(stat -c %d:%i "$data_mount/home")" ]] || { echo "workspace home is not backed by the durable directory" >&2; exit 1; }',
     // ⛔ CUSTOMER WORKSPACES MUST LAND ON THE DURABLE DISK (WI-2143796, proven on canary-14).
     //
     // WORKSPACE_HOST_DATA_ROOT is `/srv/papercusp/workspaces` — a path on the BOOT disk, which an
