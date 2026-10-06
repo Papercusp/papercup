@@ -229,6 +229,14 @@ describe('accepted dream sink (real PG — P-004)', () => {
       expect(original).toBeDefined();
       await db.adminSql`UPDATE harness_shared.engineer_issues SET state = 'resolved', terminal_owner = 'dream-test',
         terminal_completion_ref = 'terminal identity replay fixture', updated_at = now() WHERE issue_id = ${original!.issue_id}`;
+      // The real local-close trigger adds the completion-event intent before
+      // replay. Preserve that terminal payload exactly, including its token.
+      const [terminal] = await db.adminSql`SELECT payload FROM harness_shared.engineer_issues
+        WHERE issue_id = ${original!.issue_id}`;
+      expect(terminal!.payload).toEqual({
+        ...original!.payload,
+        _completionEventIntentId: expect.stringMatching(/\S/),
+      });
       const replay = await Promise.all([sinkDreamInsight(input, deps), sinkDreamInsight(input, deps)]);
       for (const value of replay)
         expect(value).toMatchObject({ sunk: true, workItemId: original!.issue_id, created: false });
@@ -247,7 +255,7 @@ describe('accepted dream sink (real PG — P-004)', () => {
       const artifacts = await db.adminSql`SELECT payload FROM harness_shared.engineer_issues
         WHERE workspace_id = ${WS} AND payload->>'watchdogKey' = 'dream:DR-CAPABILITY-PG'`;
       expect(artifacts).toHaveLength(1);
-      expect(artifacts[0]!.payload).toEqual(original!.payload);
+      expect(artifacts[0]!.payload).toEqual(terminal!.payload);
       const rows = await readRoutedIdeas({ workspaceId: WS, harnessSlug: HARNESS, origin: 'dream' });
       const routed = rows.filter((r) => r.ideaId === 'dream:DR-CAPABILITY-PG');
       expect(routed).toHaveLength(1);

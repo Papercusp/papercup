@@ -21,7 +21,8 @@
  * Run: npm run test:file -- apps/operator/bin/host-docs.test.ts
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { isLoopbackHost } from '@papercusp/operator-core/lib/endpoint-route/loopback-guard';
@@ -205,5 +206,83 @@ describe('falsifiability control — the pre-fix gate admitted the customer', ()
     expect(preFixGateAdmits(offBox)).toBe(false);
     expect(shippedGateAdmits(offBox)).toBe(false);
     expect(shippedGateAdmits({ ...offBox, vmRelease: true })).toBe(false);
+  });
+});
+
+describe('packaged keyword search over the release-sanitized filesystem', () => {
+  let packageRoot: string;
+  let packagedRoutes: typeof docsRoutes;
+  let docsRoot: string;
+  let sourceRoot: string;
+
+  beforeAll(async () => {
+    packageRoot = mkdtempSync(join(tmpdir(), 'papercusp-packaged-docs-'));
+    docsRoot = join(packageRoot, 'internal-docs');
+    sourceRoot = join(packageRoot, 'apps/operator-docs/src/content/docs');
+    mkdirSync(join(docsRoot, 'pagefind'), { recursive: true });
+    mkdirSync(join(sourceRoot, 'build-system'), { recursive: true });
+    mkdirSync(join(sourceRoot, 'guide'), { recursive: true });
+    writeFileSync(join(sourceRoot, 'guide/shortcuts.mdx'),
+      '---\ntitle: Shortcut settings\n---\nChoose Off to release the global accelerator.');
+    writeFileSync(join(sourceRoot, 'build-system/private.mdx'),
+      '---\ntitle: Forbidden corpus canary\n---\nprivatecorpuscanary');
+    writeFileSync(join(docsRoot, 'pagefind/private.pf_meta'), 'privatecorpuscanary');
+    writeFileSync(join(docsRoot, 'guide.html'), '<html>Shortcut settings</html>');
+    // The package audit, rather than a test-maintained exclusion list, defines
+    // which files survive. Search must keep working after its Pagefind prune.
+    const prune = spawnSync('python3', [
+      join(__dirname, '../../../papercusp-desktop/bin/audit-release-bundle.py'),
+      '--prune-docs', docsRoot, sourceRoot,
+    ], { encoding: 'utf8' });
+    expect(prune.status, prune.stderr || prune.stdout).toBe(0);
+    const savedRoot = process.env.PAPERCUSP_DOCS_ROOT;
+    process.env.PAPERCUSP_DOCS_ROOT = docsRoot;
+    try {
+      vi.resetModules();
+      packagedRoutes = (await import('./host-docs')).docsRoutes;
+    } finally {
+      if (savedRoot === undefined) delete process.env.PAPERCUSP_DOCS_ROOT;
+      else process.env.PAPERCUSP_DOCS_ROOT = savedRoot;
+    }
+  });
+
+  afterAll(() => rmSync(packageRoot, { recursive: true, force: true }));
+
+  const query = (q: string) => packagedRoutes.request(
+    `http://127.0.0.1:16582/internal/docs/search.json?q=${encodeURIComponent(q)}`,
+  );
+
+  it('returns real keyword hits without Pagefind shards or a database', async () => {
+    process.env.PAPERCUSP_INTERNAL_DOCS_BYPASS = '1';
+    expect(existsSync(join(docsRoot, 'pagefind/private.pf_meta'))).toBe(false);
+    const res = await query('accelerator');
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('application/json');
+    expect(await res.json()).toMatchObject({
+      hitCount: 1,
+      hits: [{ title: 'Shortcut settings', url: '/internal/docs/guide/shortcuts',
+        excerpt: expect.stringContaining('release the global accelerator') }],
+    });
+  });
+
+  it('cannot refill the pruned corpus from the ambient engineering store', async () => {
+    process.env.PAPERCUSP_INTERNAL_DOCS_BYPASS = '1';
+    expect(existsSync(join(sourceRoot, 'build-system/private.mdx'))).toBe(false);
+    expect(await (await query('privatecorpuscanary')).json()).toMatchObject({ hitCount: 0, hits: [] });
+    // This doc exists in the monorepo, outside the selected sanitized package.
+    expect(await (await query('derived-truth-ladder')).json()).toMatchObject({ hitCount: 0, hits: [] });
+  });
+
+  it('keeps both access guards on the search route, including the bypass refusal', async () => {
+    expect((await query('accelerator')).status).toBe(403);
+    process.env.PAPERCUSP_INTERNAL_DOCS_BYPASS = '1';
+    process.env.PAPERCUSP_DISTRIBUTION_PROFILE = 'vm-release';
+    expect((await query('accelerator')).status).toBe(403);
+  });
+
+  it('bounds query input and returns an empty result for blank input', async () => {
+    process.env.PAPERCUSP_INTERNAL_DOCS_BYPASS = '1';
+    expect((await query('x'.repeat(201))).status).toBe(400);
+    expect(await (await query(' ')).json()).toMatchObject({ hitCount: 0, hits: [] });
   });
 });

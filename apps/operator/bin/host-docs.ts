@@ -20,6 +20,7 @@
  * `docs:*` MCP adapter.
  */
 import { Hono } from 'hono';
+import { searchDocs, starlightContentAdapter } from '@papercusp/docs-engine';
 import { existsSync, readFileSync } from 'node:fs';
 import { extname, join, resolve } from 'node:path';
 import { isLoopbackHost } from '@papercusp/operator-core/lib/endpoint-route/loopback-guard';
@@ -35,6 +36,16 @@ import { crossOriginIsolationHeaders } from '../../../libs/generic/desktop-ipc/s
 const PUBLIC_DOCS_ROOT = process.env.PAPERCUSP_DOCS_ROOT
   ? resolve(process.env.PAPERCUSP_DOCS_ROOT)
   : resolve(__dirname, '..', 'public', 'internal', 'docs');
+
+// The desktop builder copies and privacy-prunes this sibling of internal-docs.
+// Resolve from the selected package, never cwd/the PG engineering adapter: an
+// ambient repository or database must not refill a sanitized release corpus.
+const searchSource = starlightContentAdapter({
+  name: 'docs-mount',
+  contentRoot: process.env.PAPERCUSP_DOCS_ROOT
+    ? resolve(PUBLIC_DOCS_ROOT, '..', 'apps/operator-docs/src/content/docs')
+    : resolve(__dirname, '..', '..', 'operator-docs', 'src', 'content', 'docs'),
+});
 
 const EXT_CONTENT_TYPE: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -141,6 +152,22 @@ docsRoutes.use('/internal/docs/*', async (c, next) => {
     );
   }
   await next();
+});
+
+// Same access/distribution middleware as the static docs. No Pagefind binaries
+// are needed: those shards are intentionally forbidden in release packages.
+docsRoutes.get('/internal/docs/search.json', async (c) => {
+  const query = (c.req.query('q') ?? '').trim();
+  if (query.length > 200) return c.json({ error: 'Search is limited to 200 characters.' }, 400);
+  try {
+    const result = await searchDocs(searchSource, { query, limit: 20 }, { signal: c.req.raw.signal });
+    return c.json({
+      hitCount: result.hitCount,
+      hits: result.hits.map(({ title, url, excerpt }) => ({ title, url, excerpt })),
+    });
+  } catch {
+    return c.json({ error: 'Docs search is unavailable.' }, 503);
+  }
 });
 
 docsRoutes.get('/internal/docs/*', async (c) => {

@@ -293,7 +293,6 @@ describe('shared verbs dispatch to the provider owning the selected source (R-5)
         text: 'Body',
         provenance: OWNER_INSTRUCTION,
         sourceId: beta,
-        agentOwnerId: null,
       },
       mailDeps(),
     );
