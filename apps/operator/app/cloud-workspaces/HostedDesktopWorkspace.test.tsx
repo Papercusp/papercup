@@ -12,6 +12,9 @@ import {
 import type { HostedDesktopViewerProps } from "./HostedDesktopViewer";
 import {
   HostedDesktopWorkspace,
+  myDesktopEntry,
+  myDesktopErrorMessage,
+  selectionAfterStart,
   type DesktopSelection,
   type HostedDesktopWorkspaceProps,
 } from "./HostedDesktopWorkspace";
@@ -257,4 +260,116 @@ describe("<HostedDesktopWorkspace>", () => {
       expect(screen.queryByRole("button", { name: "Take control" })).toBeNull();
     },
   );
+});
+
+describe("My desktop (personal-cloud-desktop-2026-10-06 P-005)", () => {
+  const mine = { desktopSessionId: "mine", state: "running", scope: "user" as const };
+
+  it("finds the caller's own desktop only by its user scope", () => {
+    expect(myDesktopEntry(roster)).toBeNull();
+    expect(
+      myDesktopEntry([...roster, { desktopSessionId: "agent-d", state: "running", scope: "agent" }]),
+    ).toBeNull();
+    expect(myDesktopEntry([...roster, mine])).toEqual(mine);
+  });
+
+  it("opens a started personal desktop in Take control, even over an open viewer (R-5)", () => {
+    const open: DesktopSelection = { desktopSessionId: "desk-1", mode: "watch" };
+    expect(selectionAfterStart({ ...mine, state: "ready" }, open)).toEqual({
+      desktopSessionId: "mine",
+      mode: "takeover",
+    });
+    expect(selectionAfterStart({ ...mine, state: "ready" }, null)).toEqual({
+      desktopSessionId: "mine",
+      mode: "takeover",
+    });
+    // The automatic workspace start (D-405) keeps its watch-only, open-if-empty rule.
+    const workspaceDesktop = { desktopSessionId: "ws-d", state: "ready", scope: "workspace" as const };
+    expect(selectionAfterStart(workspaceDesktop, null)).toEqual({
+      desktopSessionId: "ws-d",
+      mode: "watch",
+    });
+    expect(selectionAfterStart(workspaceDesktop, open)).toBeNull();
+  });
+
+  it("offers My desktop and hands the click to the connection (R-5)", () => {
+    const onOpenMyDesktop = vi.fn();
+    render(<Workspace onOpenMyDesktop={onOpenMyDesktop} />);
+    const button = screen.getByRole("button", { name: "Open my desktop" });
+    expect(button.textContent).toBe("My desktop");
+    expect(button.getAttribute("data-my-desktop")).toBe("absent");
+    fireEvent.click(button);
+    expect(onOpenMyDesktop).toHaveBeenCalledTimes(1);
+  });
+
+  it("lands a selected personal desktop in Take control, labelled as the person's own", () => {
+    render(
+      <Workspace
+        onOpenMyDesktop={() => {}}
+        roster={[...roster, mine]}
+        selectedDesktop={{ desktopSessionId: "mine", mode: "takeover" }}
+      />,
+    );
+    expect(
+      screen.getByRole("region", { name: "Live mine" }).getAttribute("data-mode"),
+    ).toBe("takeover");
+    expect(screen.getAllByText("My desktop").length).toBeGreaterThan(0);
+  });
+
+  it("marks a running personal desktop so one click reopens it (R-16)", () => {
+    render(<Workspace onOpenMyDesktop={() => {}} roster={[...roster, mine]} />);
+    expect(
+      screen.getByRole("button", { name: "Open my desktop" }).getAttribute("data-my-desktop"),
+    ).toBe("running");
+  });
+
+  it("shows a My desktop start in progress, and disables a second click", () => {
+    render(<Workspace onOpenMyDesktop={() => {}} personalStart startState="loading" />);
+    const button = screen.getByRole("button", { name: "Open my desktop" });
+    expect(button.textContent).toBe("Starting my desktop…");
+    expect((button as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("names a refused My desktop start instead of leaving a spinner (R-15)", () => {
+    render(
+      <Workspace
+        onOpenMyDesktop={() => {}}
+        personalStart
+        startState="error"
+        startError="personal_desktop_unavailable"
+      />,
+    );
+    const alert = screen
+      .getAllByRole("alert")
+      .find((node) => node.getAttribute("data-error-code") === "personal_desktop_unavailable");
+    expect(alert?.textContent).toContain(
+      "My desktop could not be opened (personal_desktop_unavailable).",
+    );
+    expect(alert?.textContent).toContain(myDesktopErrorMessage("personal_desktop_unavailable"));
+    expect(screen.queryByText("Starting my desktop…")).toBeNull();
+    expect(screen.getByRole("button", { name: "Open my desktop" }).textContent).toBe("My desktop");
+  });
+
+  it("never attributes the automatic workspace start to My desktop", () => {
+    const { rerender } = render(
+      <Workspace onOpenMyDesktop={() => {}} roster={[]} startState="loading" />,
+    );
+    expect(screen.getByRole("button", { name: "Open my desktop" }).textContent).toBe("My desktop");
+    rerender(
+      <Workspace
+        onOpenMyDesktop={() => {}}
+        roster={[]}
+        startState="error"
+        startError="desktop_start_failed"
+      />,
+    );
+    expect(document.querySelector("[data-error-code]")).toBeNull();
+    expect(screen.queryByText(/My desktop could not be opened/)).toBeNull();
+  });
+
+  it("gives each refusal code its own explanation", () => {
+    expect(myDesktopErrorMessage("personal_desktop_unavailable")).toMatch(/desktop pack/);
+    expect(myDesktopErrorMessage("controller_required")).toMatch(/Another tab/);
+    expect(myDesktopErrorMessage("desktop_not_owner")).toBe("Your desktop could not be started.");
+  });
 });

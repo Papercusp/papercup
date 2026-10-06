@@ -205,6 +205,54 @@ describe('voice-mode', () => {
       if (origRevoke) g.URL.revokeObjectURL = origRevoke; else delete g.URL.revokeObjectURL;
     }
   });
+
+  it('WI-10006826: a TTS engine chosen after an earlier utterance (prefs hydrate / settings change) applies to the very next reply', async () => {
+    vi.resetModules();
+    const g = globalThis as any;
+    const origFetch = g.fetch;
+    const origAudio = g.Audio;
+    const origCreate = g.URL?.createObjectURL;
+    const origRevoke = g.URL?.revokeObjectURL;
+    try {
+      const fetchSpy = vi.fn(async (..._args: unknown[]) => ({ ok: true, blob: async () => ({}) }) as any);
+      g.fetch = fetchSpy;
+      g.URL.createObjectURL = () => 'blob:x';
+      g.URL.revokeObjectURL = () => {};
+      g.Audio = class {
+        onended: (() => void) | null = null;
+        onerror: (() => void) | null = null;
+        src = '';
+        constructor(u: string) { this.src = u; }
+        play() { this.onended?.(); return Promise.resolve(); }
+        pause() {}
+      };
+      const mod = await import('./voice-mode');
+      const prefs = await import('./voice-prefs-client');
+      mod.initVoiceMode();
+      const ttsBodies = () => fetchSpy.mock.calls
+        .filter((c: any[]) => String(c[0]).includes('operator-tts-preview'))
+        .map((c: any[]) => JSON.parse(String((c[1] as any).body)) as { engine: string; text: string });
+      const settle = async () => { for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0)); };
+      // Before the prefs sync hydrates, the default engine is used.
+      mod.speak('first reply', 'system:operator', 'polite', { force: true });
+      await settle();
+      expect(ttsBodies().map((b) => b.engine)).toEqual(['kokoro']);
+      // The sync bridge (or a Settings change) now delivers the user's choice.
+      prefs.setVoicePrefsClient({ ...prefs.loadVoicePrefsClient(), ttsEngine: 'elevenlabs' });
+      mod.speak('second reply', 'system:operator', 'polite', { force: true });
+      await settle();
+      // Regression: a 30s engine cache kept 'kokoro' here.
+      expect(ttsBodies()).toEqual([
+        expect.objectContaining({ engine: 'kokoro', text: 'first reply' }),
+        expect.objectContaining({ engine: 'elevenlabs', text: 'second reply' }),
+      ]);
+    } finally {
+      g.fetch = origFetch;
+      g.Audio = origAudio;
+      if (origCreate) g.URL.createObjectURL = origCreate; else delete g.URL.createObjectURL;
+      if (origRevoke) g.URL.revokeObjectURL = origRevoke; else delete g.URL.revokeObjectURL;
+    }
+  });
 });
 
 // ── WI-5174 — spoken output never fails silently ──────────────────────────

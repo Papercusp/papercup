@@ -758,6 +758,155 @@ describe("HostedWorkspaceSession", () => {
     );
   });
 
+  describe("My desktop through the real connection (personal-cloud-desktop-2026-10-06 P-005)", () => {
+    const desktopWorkspace: WorkspaceHostControlRow = {
+      kind: "workspace",
+      id: "host-1",
+      name: "research-control",
+      connectionId: "connection-1",
+      target: "workspace-target",
+      scopeLabel: "research-control",
+      region: "us-central1",
+      size: "e2-standard-4",
+      image: "papercusp",
+      diskGiB: 30,
+      network: "default",
+      desiredState: "running",
+      observedState: "running",
+      recoverability: { kind: "none", label: "No backup" },
+      capabilities: {},
+      tunnel: {
+        connector: { routeLabel: "workspace-relay", transport: "websocket" },
+      },
+    };
+    type Sent = { type: string; requestId?: string; personal?: boolean };
+
+    /** Connect, answer the roster with `desktops`, and optionally take the controller role. */
+    async function openConnection(
+      desktops: Array<Record<string, unknown>>,
+      { controller }: { controller: boolean },
+    ) {
+      render(<HostedDesktopConnection workspace={desktopWorkspace} />);
+      const socket = await connected();
+      const sent = () =>
+        socket.send.mock.calls.map((call) => JSON.parse(String(call[0])) as Sent);
+      socket.emit("message", {
+        data: JSON.stringify({ type: "pty.ready", role: "observer", resumed: false }),
+      });
+      await waitFor(() => expect(sent().some((message) => message.type === "desktop.roster")).toBe(true));
+      const rosterRequest = sent().find((message) => message.type === "desktop.roster");
+      await act(async () =>
+        socket.emit("message", {
+          data: JSON.stringify({
+            type: "desktop.roster.result",
+            requestId: rosterRequest?.requestId,
+            desktops,
+          }),
+        }),
+      );
+      if (controller) {
+        await act(async () =>
+          socket.emit("message", {
+            data: JSON.stringify({ type: "session.role", role: "controller" }),
+          }),
+        );
+      }
+      const button = screen.getByRole("button", { name: "Open my desktop" }) as HTMLButtonElement;
+      await waitFor(() => expect(button.disabled).toBe(false));
+      return { socket, sent, button };
+    }
+
+    const desktopSocketFor = (desktopSessionId: string, mode: string) =>
+      M.sockets.find(
+        (socket) =>
+          socket.url.includes("kind=desktop") &&
+          socket.url.includes(`desktopSessionId=${desktopSessionId}`) &&
+          socket.url.includes(`desktopMode=${mode}`),
+      );
+
+    it("asks for the caller's own desktop and opens the result in Take control (R-5)", async () => {
+      const { socket, sent, button } = await openConnection(
+        [{ desktopSessionId: "desk-1", state: "running", scope: "agent", owner: "su-1" }],
+        { controller: true },
+      );
+      fireEvent.click(button);
+      await waitFor(() =>
+        expect(sent().filter((message) => message.type === "desktop.start")).toHaveLength(1),
+      );
+      const start = sent().find((message) => message.type === "desktop.start");
+      expect(start?.personal).toBe(true);
+      await waitFor(() => expect(button.textContent).toBe("Starting my desktop…"));
+
+      await act(async () =>
+        socket.emit("message", {
+          data: JSON.stringify({
+            type: "desktop.start.result",
+            requestId: start?.requestId,
+            desktop: { desktopSessionId: "mine", state: "ready", scope: "user" },
+          }),
+        }),
+      );
+      await waitFor(() => expect(desktopSocketFor("mine", "takeover")).toBeTruthy());
+      expect(desktopSocketFor("mine", "watch")).toBeUndefined();
+      expect(button.getAttribute("data-my-desktop")).toBe("running");
+    });
+
+    it("reopens an already-running personal desktop without starting another (R-16)", async () => {
+      const { sent, button } = await openConnection(
+        [
+          { desktopSessionId: "desk-1", state: "running", scope: "agent", owner: "su-1" },
+          { desktopSessionId: "mine", state: "running", scope: "user" },
+        ],
+        { controller: true },
+      );
+      expect(button.getAttribute("data-my-desktop")).toBe("running");
+      fireEvent.click(button);
+      await waitFor(() => expect(desktopSocketFor("mine", "takeover")).toBeTruthy());
+      expect(sent().some((message) => message.type === "desktop.start")).toBe(false);
+    });
+
+    it("names the host's refusal instead of spinning (R-15)", async () => {
+      const { socket, sent, button } = await openConnection(
+        [{ desktopSessionId: "desk-1", state: "running", scope: "agent", owner: "su-1" }],
+        { controller: true },
+      );
+      fireEvent.click(button);
+      await waitFor(() =>
+        expect(sent().some((message) => message.type === "desktop.start")).toBe(true),
+      );
+      const start = sent().find((message) => message.type === "desktop.start");
+      await act(async () =>
+        socket.emit("message", {
+          data: JSON.stringify({
+            type: "operation.error",
+            requestId: start?.requestId,
+            operation: "desktop.start",
+            code: "personal_desktop_unavailable",
+          }),
+        }),
+      );
+      await waitFor(() =>
+        expect(
+          document.querySelector('[data-error-code="personal_desktop_unavailable"]')?.textContent,
+        ).toContain("My desktop could not be opened (personal_desktop_unavailable)."),
+      );
+      expect(button.textContent).toBe("My desktop");
+      expect(desktopSocketFor("mine", "takeover")).toBeUndefined();
+    });
+
+    it("says another tab holds the controller role instead of sending a start it would refuse", async () => {
+      const { sent, button } = await openConnection(
+        [{ desktopSessionId: "desk-1", state: "running", scope: "agent", owner: "su-1" }],
+        { controller: false },
+      );
+      fireEvent.click(button);
+      await waitFor(() =>
+        expect(document.querySelector('[data-error-code="controller_required"]')).toBeTruthy(),
+      );
+      expect(sent().some((message) => message.type === "desktop.start")).toBe(false);
+    });
+  });
+
   it("reports a start the host never answers instead of waiting forever (runtime older than D-405)", async () => {
     const onDesktopBridgeChange = vi.fn();
     const onDesktopQueryStateChange = vi.fn();
