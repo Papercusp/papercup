@@ -106,6 +106,7 @@ import harnessBlueprintParams from './harness/blueprint-params';
 import harnessWorkItems from './harness/work-items';
 import promptStudio from './prompt-studio';
 import harnessDiscord from './harness/discord';
+import harnessIntegrationMode from './harness/integration-mode';
 import harnessAssertion from './harness/assertion';
 import harnessTextViews from './harness/text-views';
 import harnessRuns from './harness/runs';
@@ -700,6 +701,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(harnessWorkItems as AnyRoute[]),
   ...flatten(promptStudio as AnyRoute[]),
   ...flatten(harnessDiscord as AnyRoute[]),
+  ...flatten(harnessIntegrationMode as AnyRoute[]),
   harnessAssertion as AnyRoute,
   ...flatten(harnessTextViews as AnyRoute[]),
   ...flatten(harnessRuns as AnyRoute[]),
