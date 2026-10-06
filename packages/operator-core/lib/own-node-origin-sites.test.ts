@@ -51,7 +51,7 @@ const BASELINE: Readonly<Record<string, { count: number; reason: string }>> = {
   'plan-acceptance-gate.ts': { count: 1, reason: `${NOT_AUTHORITY} (rubric provenance)` },
   'plan-parts/reconcile.ts': { count: 1, reason: `${NOT_AUTHORITY} (plan parts)` },
   'pot/cup-wake-dossier.ts': { count: 1, reason: `${NOT_AUTHORITY} (wake dossier text)` },
-  'stranded-checkpoint-scan.ts': { count: 1, reason: `${NOT_AUTHORITY} (report label only; own-node mislabel tracked separately)` },
+  'stranded-checkpoint-scan.ts': { count: 1, reason: `${AWARE} (own_node_authored via issueOwnAuthorWhereSql lifts the remote label, WI-10006562)` },
   'work-item-admission-recovery.ts': { count: 2, reason: `${AWARE} (heal before the local-only refusal)` },
   'work-item-topic-tags.ts': { count: 2, reason: `${AWARE} (heal-and-retry once)` },
   'work-items-admission-promoter.ts': { count: 2, reason: `${AWARE} (snapshot ownNode mark)` },
