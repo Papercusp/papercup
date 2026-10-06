@@ -524,6 +524,12 @@ DBS=$(sudo -n -u postgres psql -h /var/run/postgresql -d postgres -tAc \
        "$DB_SELECT_SQL" 2>/dev/null \
        | grep -vE "$EXCLUDE_RE")
 INVALID_SKIPPED=()
+# WI-10006723: databases enumerated above but DROPPED before their turn came. A
+# run dumps sequentially for an hour or more, so a scratch database created and
+# dropped by a test or rehearsal inside that window used to fail its pg_dump
+# ("database ... does not exist") and turn the whole run red. Filled by the dump
+# loop below and listed in STATUS.json's "vanishedSkipped", never in "failed".
+VANISHED_SKIPPED=()
 while IFS= read -r inv; do
   [ -n "$inv" ] || continue
   INVALID_SKIPPED+=("$inv")
@@ -689,6 +695,26 @@ is_tiered() {
   case " $PC_BACKUP_TIER_DBS " in *" $1 "*) return 0 ;; *) return 1 ;; esac
 }
 
+# db_presence <db> — prints "present", "absent", or "unknown" (WI-10006723).
+#
+# Asked only AFTER a dump failed, to tell "the database was dropped while this
+# run was working through the list" apart from a real dump failure. "absent"
+# also covers a database invalidated by an interrupted DROP since enumeration,
+# because that is the same event caught half-way.
+#
+# The answer must never manufacture "absent": a failed or empty catalog read is
+# "unknown", and the caller then counts the dump as FAILED. The query runs while
+# connected to the postgres database, so a successful read always lists at least
+# that one name; an empty list therefore means the read itself went wrong.
+DB_PRESENT_SQL="SELECT datname FROM pg_database WHERE datconnlimit <> -2;"
+db_presence() {
+  local names
+  names=$(sudo -n -u postgres psql -h /var/run/postgresql -d postgres -tAc \
+            "$DB_PRESENT_SQL" 2>/dev/null) || { echo unknown; return 0; }
+  [ -n "$names" ] || { echo unknown; return 0; }
+  if printf '%s\n' "$names" | grep -Fxq -- "$1"; then echo present; else echo absent; fi
+}
+
 for db in $DBS; do
   # RETIRED 2026-09-05 (WI-2146225): the undifferentiated papercusp dump. It was
   # 94G written every hour beside 95G of tiers covering the same rows — the same
@@ -701,7 +727,16 @@ for db in $DBS; do
     log "$db dumped as tiers ($db-state + $db-transcript), not undifferentiated"
     continue
   fi
-  if dump_one "$db" "$db"; then DUMPED+=("$db"); else FAILED+=("$db"); fi
+  if dump_one "$db" "$db"; then
+    DUMPED+=("$db")
+  elif [ "$(db_presence "$db")" = absent ]; then
+    # Dropped after enumeration (WI-10006723): nothing is left to back up, so
+    # this is not a backup failure. Its last good dump, if any, stays on disk.
+    VANISHED_SKIPPED+=("$db")
+    log "$db VANISHED — dropped after enumeration, so there is nothing left to dump; not counted as a failure (listed in STATUS.json vanishedSkipped)"
+  else
+    FAILED+=("$db")
+  fi
 done
 
 # ── tiered dumps (WI-2146225) — AUTHORITATIVE PHASE ─────────────────────────
@@ -1077,6 +1112,9 @@ SYSID=$($PSQL "SELECT system_identifier FROM pg_control_system()" 2>/dev/null | 
   # WI-10003455: invalid (datconnlimit=-2) databases skipped — undumpable by
   # definition, so NOT a failure, but listed so an interrupted-DROP leak stays visible.
   printf '  "invalidSkipped": [%s],\n' "$(json_arr ${INVALID_SKIPPED[@]+"${INVALID_SKIPPED[@]}"})"
+  # WI-10006723: databases dropped between enumeration and their dump. Nothing
+  # was left to back up, so NOT a failure; listed so the skip is never silent.
+  printf '  "vanishedSkipped": [%s],\n' "$(json_arr ${VANISHED_SKIPPED[@]+"${VANISHED_SKIPPED[@]}"})"
   printf '  "systemIdentifier": "%s",\n' "$SYSID"
   # WI-2146225 tiered dumps. These fields are now a NAMED VIEW of the split, not a
   # quarantine: since the 2026-09-05 cutover each tier ALSO appears in dumped[] /
@@ -1114,7 +1152,7 @@ if $OK; then
   # alarm is a bug in the alarm: a marker that never clears trains readers to
   # ignore the single signal meant to catch silent backup rot.
   rm -f "$DUMP/ALERT-BACKUP-FAILING"
-  log "backup OK in ${ELAPSED}s: ${DUMPED[*]}"
+  log "backup OK in ${ELAPSED}s: ${DUMPED[*]}${VANISHED_SKIPPED[*]:+ (vanished after enumeration: ${VANISHED_SKIPPED[*]})}"
   exit 0
 fi
 log "backup FAILED in ${ELAPSED}s: ${FAILED[*]}"
