@@ -28,7 +28,7 @@ function source(id: string, account: string) {
 function document(sourceId: string, account: string, sender: string) {
   return {
     id: sourceId,
-    source: 'gmail',
+    source: 'mail',
     sourceId,
     providerAccountId: account,
     kind: 'message',
