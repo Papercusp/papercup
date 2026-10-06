@@ -465,6 +465,47 @@ describe('daemon replay qualification', () => {
       { path: 'consumer.ts', line1: 2 }, { path: 'source.ts', line1: 1 }, { path: 'source.ts', line1: 2 },
     ]);
   });
+  it.each(['hot', 'hot: alias'])('resolves workspace package exports through Promise.all destructuring (%s)', binding => {
+    const frozen = config();
+    const root = frozen.rootPath;
+    const pkg = join(root, 'workspace-package'); mkdirSync(pkg);
+    mkdirSync(join(root, 'node_modules', '@fixture'), { recursive: true });
+    symlinkSync(pkg, join(root, 'node_modules', '@fixture', 'hot'));
+    writeFileSync(join(pkg, 'package.json'), JSON.stringify({ name: '@fixture/hot', type: 'module',
+      main: './index.ts', types: './index.ts', exports: { '.': './index.ts' } }));
+    writeFileSync(join(pkg, 'index.ts'), "export { hot } from '../source';\n");
+    writeFileSync(join(root, 'decoy.ts'), 'export function hot() {}\n');
+    writeFileSync(join(root, 'consumer.ts'), ["import { hot as imported } from '@fixture/hot';", 'imported();',
+      'export async function consume() {',
+      `  const [{ ${binding} }, { hot: shadow }] = await Promise.all([import('@fixture/hot'), import('./decoy')]);`,
+      `  ${binding === 'hot' ? 'hot' : 'alias'}(); shadow();`, '}'].join('\n'));
+    writeFileSync(join(root, 'tsconfig.json'), JSON.stringify({ compilerOptions: { target: 'ES2022', module: 'ESNext',
+      moduleResolution: 'Bundler', strict: true }, files: ['source.ts', 'consumer.ts', 'decoy.ts'] }));
+    const options = { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext, moduleResolution: ts.ModuleResolutionKind.Bundler };
+    const program = ts.createProgram(['source.ts', 'consumer.ts', 'decoy.ts'].map(file => join(root, file)), options);
+    const checker = program.getTypeChecker();
+    const source = program.getSourceFile(join(root, 'source.ts'))!;
+    const target = checker.getSymbolAtLocation((source.statements[0] as ts.FunctionDeclaration).name!)!;
+    const consumer = program.getSourceFile(join(root, 'consumer.ts'))!;
+    const fn = consumer.statements[2] as ts.FunctionDeclaration;
+    const declaration = (fn.body!.statements[0] as ts.VariableStatement).declarationList.declarations[0];
+    const patterns = (declaration.name as ts.ArrayBindingPattern).elements as ts.NodeArray<ts.BindingElement>;
+    const element = (patterns[0].name as ts.ObjectBindingPattern).elements[0];
+    const exported = checker.getTypeAtLocation(element.parent).getProperty('hot')!;
+    expect(checker.getAliasedSymbol(exported)).toBe(target);
+    // The historical scanner saw only this local symbol in the shorthand case;
+    // package spelling, re-exports and the other tuple member must not blur it.
+    expect(checker.getSymbolAtLocation(element.name)).not.toBe(target);
+    expect(checker.getTypeAtLocation(patterns[1].name).getProperty('hot')).not.toBe(target);
+    const oracle = freezeCompilerReplayConfig({ runId: 'package-dynamic-binding', rootPath: root, socketPath: frozen.socketPath,
+      workspaceId: 'test', levels: [1], requestTimeoutMs: 90_000, tsconfigPath: 'tsconfig.json',
+      definition: { file: 'source.ts', line1: 2, character: 1 }, references: { file: 'source.ts', line1: 2, character: 1 },
+      runtimeFiles: [], evidenceRef: 'authored-workspace-package-binding-fixture' });
+    expect(oracle.corpus['hot-references'].oracle.sites).toEqual([
+      { path: 'consumer.ts', line1: 1 }, { path: 'consumer.ts', line1: 2 }, { path: 'consumer.ts', line1: 4 },
+      { path: 'source.ts', line1: 1 }, { path: 'source.ts', line1: 2 }, { path: 'workspace-package/index.ts', line1: 1 },
+    ]);
+  });
   it('freezes inherited config and declaration dependencies that determine symbol binding', () => {
     const frozen = config();
     const root = frozen.rootPath;
