@@ -3560,9 +3560,10 @@ export async function setIssueState(
     // WI-10006010: physical identity is (workspace_id, harness_slug, feature_id). Pin ONE row
     // and scope every statement below to it; keyed on feature_id alone, a close of one row
     // rewrote every slug twin (3 done/committed twins flipped to dropped on 2026-10-03).
-    const slug = opts.harnessSlug !== undefined
-      ? opts.harnessSlug
-      : await resolveIssuePhysicalSlug(tx, ws, id);
+    // A null/blank harness hint means "use the normal read preference", not "remove the
+    // physical-row predicate". Always resolve one slug so reopen and completion updates
+    // cannot fan out to same-id twins.
+    const slug = await resolveIssuePhysicalSlug(tx, ws, id, opts.harnessSlug);
     const onBaseRow = () => (slug ? tx`AND harness_slug = ${slug}` : tx``);
     const onAliasedRow = () => (slug ? tx`AND wi.harness_slug = ${slug}` : tx``);
     const onViewRow = () => (slug ? tx`AND base_harness_slug = ${slug}` : tx``);
@@ -3956,10 +3957,12 @@ export function planItemSourceFromPayloadPatch(
 export async function mergeIssuePayload(
   id: string,
   patch: Record<string, unknown>,
-  opts: { unset?: readonly string[] } = {},
+  opts: { unset?: readonly string[]; harnessSlug?: string | null } = {},
 ): Promise<EngineerIssue | null> {
   const { sql } = getOrgPg();
   const ws = await resolveIssueWorkspace(id);
+  const physicalSlug = await resolveIssuePhysicalSlug(sql, ws, id, opts.harnessSlug);
+  if (physicalSlug === null) return null;
   // The claim-subject baseline is server-owned identity, not caller payload.
   // Coalescing and other bookkeeping legitimately merge arbitrary top-level
   // keys, but must never forge, replace, or remove the baseline that protects
@@ -4005,6 +4008,7 @@ export async function mergeIssuePayload(
            origin = 'local',
            updated_ts = ${Date.now()}
      WHERE workspace_id = ${ws}
+       AND harness_slug = ${physicalSlug}
        AND feature_id = ${id}
        AND item_kind = ANY (ARRAY['bug', 'change', 'task'])
     RETURNING 1 AS ok`;
@@ -4030,6 +4034,7 @@ export async function mergeIssuePayload(
                source_plan_item_ids
           FROM harness_shared.work_items
          WHERE workspace_id = ${ws}
+           AND harness_slug = ${physicalSlug}
            AND feature_id = ${id}
            AND item_kind = ANY (ARRAY['bug', 'change', 'task'])
          FOR UPDATE`;
@@ -4068,7 +4073,7 @@ export async function mergeIssuePayload(
     rows = await updatePayload(sql as OrgSql);
   }
   if (!rows[0]) return null;
-  return getIssueInWorkspace(ws, id);
+  return getIssueInWorkspace(ws, id, { baseHarnessSlug: physicalSlug });
 }
 
 /** Threadable.addPost — comment on the issue (creates the thread on first post). */

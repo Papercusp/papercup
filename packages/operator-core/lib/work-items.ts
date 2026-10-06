@@ -130,11 +130,11 @@ import {
   agentReviewNormalExclusionSql,
   matchesAgentReviewClaimAdmission,
   readAgentReviewState,
-  readStructuredOwnerAsk,
   verificationTaskConflict,
   verificationTaskConflictSql,
   type AgentReviewClaimAdmission,
 } from './harness/improvements/agent-review-policy';
+import { hasActiveStrictHumanAsk } from './hold-registry';
 import { hasResourceGovernorReceiptPayload, ResourceGovernorReleaseRequiredError } from './resource-governor/queue';
 import { projectWorkItemColumns, type WorkItemReadOptions } from './work-item-read-projection';
 import type { LegacyFleetScopeDowngradeAdmission } from './work-item-fleet-scope-recovery';
@@ -3318,6 +3318,26 @@ export interface TerminalCompletionConflict {
   note: string;
 }
 
+interface WorkItemPhysicalRow {
+  workspaceId: string;
+  harnessSlug: string;
+}
+
+/** Pin a follow-up write to the physical row returned by getWorkItem. */
+async function resolveWorkItemPhysicalRow(
+  wi: WorkItem,
+  preferredHarness?: string | null,
+): Promise<WorkItemPhysicalRow> {
+  const workspaceId = wi.family === 'issue' ? await resolveIssueWorkspace(wi.id) : activeWorkspaceId();
+  const harnessSlug = wi.family === 'issue'
+    ? await resolveIssuePhysicalSlug(getOrgPg().sql, workspaceId, wi.id, preferredHarness ?? wi.harness)
+    : wi.harness;
+  if (harnessSlug === null) {
+    throw new Error(`work_item '${wi.id}' has no harness_slug for a row-scoped write`);
+  }
+  return { workspaceId, harnessSlug };
+}
+
 /**
  * Record a non-authoritative terminal close beside the authoritative one.
  *
@@ -3332,6 +3352,7 @@ async function appendCompletionAttestation(
   id: string,
   priorPayload: unknown,
   entry: CompletionAttestation,
+  physicalRow: WorkItemPhysicalRow,
 ): Promise<void> {
   const existing = (priorPayload as Record<string, unknown> | null)?.[COMPLETION_ATTESTATIONS_KEY];
   const prior = Array.isArray(existing) ? existing : [];
@@ -3342,7 +3363,8 @@ async function appendCompletionAttestation(
        SET payload = COALESCE(payload, '{}'::jsonb) || ${merged}::text::jsonb,
            updated_ts = ${Date.now()}
      WHERE feature_id = ${id}
-       AND workspace_id IN (${issuesScopeWorkspace()}, ${activeWorkspaceId()})`;
+       AND workspace_id = ${physicalRow.workspaceId}
+       AND harness_slug = ${physicalRow.harnessSlug}`;
 }
 
 /**
@@ -3429,6 +3451,7 @@ export async function attachCompletionEvidenceToSettledItem(
   // The caller decides WHEN this applies; this is the backstop that keeps a non-terminal
   // row from being stamped with a terminal record by a path that writes no state.
   if (!isSettledWorkItemState(wi.state)) return { outcome: 'not-terminal', workItem: wi };
+  const physicalRow = await resolveWorkItemPhysicalRow(wi, opts.harness);
 
   const evidencePayloadJson = terminalPayloadMergeJson(opts.completionEvidence, opts.assumptions);
   // Nothing to record ⇒ nothing to write. Without this, a bare call would reassign
@@ -3459,8 +3482,9 @@ export async function attachCompletionEvidenceToSettledItem(
                             ELSE COALESCE(payload, '{}'::jsonb) || ${evidencePayloadJson}::text::jsonb
                        END,
              updated_ts = ${Date.now()}
-       WHERE feature_id = ${id}
-         AND workspace_id IN (${issuesScopeWorkspace()}, ${activeWorkspaceId()})`;
+       WHERE workspace_id = ${physicalRow.workspaceId}
+         AND harness_slug = ${physicalRow.harnessSlug}
+         AND feature_id = ${id}`;
     return (await getWorkItem(id, opts.harness)) ?? wi;
   };
 
@@ -3486,7 +3510,7 @@ export async function attachCompletionEvidenceToSettledItem(
   // same tolerance as the state-write reshape. The order is what matters: if the install
   // failed after a successful archive the loser is merely stored twice, whereas installing
   // first and failing to archive would destroy the record this function exists to keep.
-  await appendCompletionAttestation(id, wi.payload, attestation).catch(() => {});
+  await appendCompletionAttestation(id, wi.payload, attestation, physicalRow).catch(() => {});
   if (!upgrade) {
     opts.onTerminalConflict?.({
       outcome: 'attested',
@@ -3731,12 +3755,15 @@ export async function setWorkItemState(
       opts.outputPayload === undefined ? priorOutput : opts.outputPayload,
     );
   }
-  if (state === 'needs-human' && !readStructuredOwnerAsk(wi.payload)) {
+  // D-029: the ONE needs-human precondition every writer applies — a structured owner ask that is
+  // also answerable (defaultIfUnanswered says what happens if the owner never replies).
+  if (state === 'needs-human' && !hasActiveStrictHumanAsk(wi.payload)) {
     throw new Error(
-      `work_item '${id}' → 'needs-human' rejected — the item carries no structured owner ask. ` +
+      `work_item '${id}' → 'needs-human' rejected — the item carries no answerable owner ask. ` +
         `Record the ask first with work_items:set_blocker { id: '${id}', kind: 'human', ` +
-        `capability: 'credential' | 'physical-device' | 'external-service-action', ref, summary, nextVerb }. ` +
-        `That typed blocker records the question, asker/time, responsible owner capability, and what unblocks the item.`,
+        `capability: 'credential' | 'physical-device' | 'external-service-action', ref, summary, nextVerb, ` +
+        `defaultIfUnanswered }. That typed blocker records the question, asker/time, responsible owner ` +
+        `capability, what unblocks the item, and what happens if the owner never answers.`,
     );
   }
   if (state === 'needs-human') {
@@ -3879,7 +3906,12 @@ export async function setWorkItemState(
     // Best-effort, and deliberately so on the ATTESTED path: failing to file the second
     // record must not turn a harmless duplicate close into a hard error for the caller. The
     // authoritative record is untouched either way, which is the property that matters.
-    await appendCompletionAttestation(id, wi.payload, attestation).catch(() => {});
+    await appendCompletionAttestation(
+      id,
+      wi.payload,
+      attestation,
+      await resolveWorkItemPhysicalRow(wi, opts.harness),
+    ).catch(() => {});
     if (!upgrade) {
       opts.onTerminalConflict?.({
         outcome: 'attested',
@@ -4046,9 +4078,10 @@ export async function setWorkItemState(
     // WI-10006010: pin the ONE physical row (workspace_id, harness_slug, feature_id) this write
     // may touch — the same row `wi` was read from — and scope every origin heal AND the state
     // write to it. Keyed on feature_id alone, closing one slug twin rewrote all of them.
+    const issueWorkspaceId = await resolveIssueWorkspace(id);
     const issueSlug = await resolveIssuePhysicalSlug(
       getOrgPg().sql,
-      await resolveIssueWorkspace(id, activeWorkspaceId()),
+      issueWorkspaceId,
       id,
       opts.harness,
     );
@@ -4110,7 +4143,7 @@ export async function setWorkItemState(
     // rule the claim gate applies (issueOwnAuthorWhereSql). Without this a system-filed row
     // (createdBy="system:*", matching none of the caller-identity hatches above) whose origin
     // flipped could be claimed but never closed. The UPDATE's WHERE clause is the identity check.
-    if (wi.origin === 'remote' && (await selfHealOwnNodeOriginIfStranded(activeWorkspaceId(), id, issueSlug))) {
+    if (wi.origin === 'remote' && (await selfHealOwnNodeOriginIfStranded(issueWorkspaceId, id, issueSlug))) {
       wi.origin = 'local';
     }
     if (wi.origin === 'remote') {
@@ -4701,7 +4734,10 @@ export async function setWorkItemStateWithAliasInfo(
   if (workItem && workItem.family === 'issue') {
     try {
       if (appliedLower === 'needs-human') {
-        await mergeIssuePayload(id, { needsOwnerAction: true }, { unset: ['needsHuman'] });
+        await mergeIssuePayload(id, { needsOwnerAction: true }, {
+          unset: ['needsHuman'],
+          harnessSlug: opts.harness ?? workItem.harness,
+        });
         autoGateNote =
           " Its stored status='needs-human' is reserved for a strict typed owner capability; payload.needsOwnerAction is the admission floor and legacy payload.needsHuman was removed.";
         // WI-5689: mergeIssuePayload durably persists payload.needsHuman, but the
@@ -5178,7 +5214,7 @@ export async function mergeWorkItemOutputPayload(
     const wi = await getWorkItem(id, opts.harness);
     if (!wi) return;
     if (wi.family === 'issue') {
-      await mergeIssuePayload(id, { out: outputPayload });
+      await mergeIssuePayload(id, { out: outputPayload }, { harnessSlug: opts.harness ?? wi.harness });
       return;
     }
     const { sql } = getOrgPg();
@@ -5222,7 +5258,7 @@ export async function mergeWorkItemPayload(
   const clearingPlanItem = unset.includes('plan_item');
   const settingPlanItem = clearingPlanItem ? null : planItemSourceFromPayloadPatch(patchValue);
   if (wi.family === 'issue') {
-    await mergeIssuePayload(id, patchValue, { unset });
+    await mergeIssuePayload(id, patchValue, { unset, harnessSlug: opts.harness ?? wi.harness });
   } else {
     const featureHarness = wi.harness?.trim();
     if (!featureHarness) {
