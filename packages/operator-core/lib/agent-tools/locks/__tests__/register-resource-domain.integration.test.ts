@@ -36,7 +36,8 @@ vi.mock('../../dev/restart-preflight', () => ({
     ok: true, integrationRoot: process.env.HOME, applied: 0, failed: [], note: 'Private fixture',
   })),
 }));
-vi.mock('../../../release/gate-collision-guard', () => ({
+vi.mock('../../../release/gate-collision-guard', async importOriginal => ({
+  ...await importOriginal<typeof import('../../../release/gate-collision-guard')>(),
   checkGateCollision: vi.fn(async () => ({ blocked: false, kind: 'clear', detail: {} })),
   checkGitSyncCollision: vi.fn(async () => ({ blocked: false, kind: 'clear', detail: {} })),
   checkStagingSyncCollision: vi.fn(async () => ({ blocked: false, kind: 'clear', detail: {} })),
