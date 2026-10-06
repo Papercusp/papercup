@@ -38,6 +38,13 @@
 import type postgres from 'postgres';
 import type { CanonicalExternalEvent, ExternalTriggerSink } from '../external-triggers/ingestion';
 import { admitWorkItem, type AdmitDeps, type AdmitResult } from '../work-admission/admit';
+import type { ReportContextInput } from '../harness/improvements/report-context';
+import {
+  putReportAttachment,
+  REPORT_ATTACHMENT_MAX_BYTES,
+  REPORT_ATTACHMENTS_PER_ITEM,
+  type ReportAttachmentKind,
+} from '../harness/improvements/report-attachments';
 import { listAdmissionRules, matchAdmissionRule, type AdmissionRule } from '../work-admission/admission-rules';
 import { CHAT_MESSAGE_SOURCE_KIND, CHAT_THREAD_SOURCE_KIND } from './chat-admission-sources';
 import { suggestChatBug, type ChatSuggestionResult } from './chat-bug-suggestions';
@@ -80,6 +87,89 @@ export interface ChatAdmissionAdapter {
    * the note. Absent when the provider cannot send private notes: nothing is suggested.
    */
   suggest?(notice: { subject: ChatSubject; authorExternalId: string }): Promise<'notified' | 'no-route'>;
+  /**
+   * What only the provider can say about a report (slack-messages-to-bug-reports D-012): the
+   * message's link, its files as provider links, and display names. Called once per event, and
+   * only when an admit rule matched, so ordinary traffic makes no provider calls. Every field is
+   * optional; a fact the provider refuses is simply absent. Absent: the report files without them.
+   */
+  reportFacts?(args: { subject: ChatSubject; reporterExternalId: string | null }): Promise<ChatReportFacts>;
+  /**
+   * The reported message's files as bytes, for a reporter who consented on the report form
+   * (slack D-004; unified D-013, D-048). Called once per event, only after a rule filed the report
+   * and only with consent. Never downloads a file the provider says is over `maxBytes`; returns at
+   * most `limit` files. Absent: the provider cannot fetch files, and links are all a report gets.
+   */
+  consentedFiles?(args: { subject: ChatSubject; maxBytes: number; limit: number }): Promise<ChatConsentedFile[]>;
+}
+
+/** One downloaded file, ready for the shared consented-attachment store (report-attachments.ts). */
+export interface ChatConsentedFile {
+  /** The report door that wrote it, e.g. 'slack'. */
+  door: string;
+  /** The provider's own file id, door-qualified, so a re-delivered event stores it once. */
+  externalId: string;
+  name: string | null;
+  mime: string;
+  bytes: Uint8Array;
+}
+
+/** What storing a report's consented files did (one event, every work item it filed or folded). */
+export interface ChatAttachmentOutcome {
+  stored: number;
+  failed: number;
+  /** The newest failure: the download, or the store's refusal of one file. */
+  error: string | null;
+}
+
+/** The provider's half of a chat report's context block (report-context.ts ReportChatContext). */
+export interface ChatReportFacts {
+  permalink?: string | null;
+  workspace?: { id?: string | null; name?: string | null };
+  channelName?: string | null;
+  reporterDisplayName?: string | null;
+  author?: { externalUserId?: string | null; displayName?: string | null };
+  attachments?: Array<{ name?: string | null; mimetype?: string | null; size?: number | null; url: string }>;
+}
+
+/**
+ * The admitter's half of a chat report's context: the gesture, who reported it, their note and
+ * attachment consent from the event, plus the provider's facts. A failing provider call costs the
+ * facts, never the report.
+ */
+export async function chatEventReportContext(
+  payload: Record<string, unknown>,
+  subject: ChatSubject,
+  threadStart: boolean,
+  adapter: Pick<ChatAdmissionAdapter, 'reportFacts'>,
+): Promise<ReportContextInput> {
+  const reporterRecord = payload.reporter && typeof payload.reporter === 'object' ? (payload.reporter as Record<string, unknown>) : {};
+  const reporterExternalId = str(reporterRecord.externalUserId) || str(payload.sender) || null;
+  const gesture = str(payload.gesture) || (threadStart ? 'new-thread' : null);
+  // The shortcut form's note; an in-thread mention's own words describe the thread it names.
+  const note = str(payload.note) || (gesture === 'mention' && subject.text === null ? str(payload.text) : '') || null;
+  let facts: ChatReportFacts = {};
+  if (adapter.reportFacts) {
+    try {
+      facts = await adapter.reportFacts({ subject, reporterExternalId });
+    } catch {
+      facts = {};
+    }
+  }
+  return {
+    chat: {
+      ...(facts.workspace ? { workspace: facts.workspace } : {}),
+      channel: { id: subject.channelId, name: str(payload.channelName) || facts.channelName || null },
+      gesture,
+      reportedAt: str(payload.occurredAt) || null,
+      reporter: { externalUserId: reporterExternalId, displayName: facts.reporterDisplayName ?? null },
+      ...(facts.author ? { author: facts.author } : {}),
+      note,
+      attachmentConsent: payload.attachmentConsent === true,
+      ...(facts.permalink ? { permalink: facts.permalink } : {}),
+      ...(facts.attachments?.length ? { attachments: facts.attachments } : {}),
+    },
+  };
 }
 
 export interface ChatAdmissionOutcome {
@@ -91,12 +181,74 @@ export interface ChatAdmissionOutcome {
   suggested: Array<{ ruleId: string; sourceKind: string; harness: string }>;
   /** What the private "looks like a bug" suggestion did, when a suggest rule matched (D-010). */
   suggestion: ChatSuggestionResult | null;
+  /** The reporter's consented files, when a rule filed a report that carried consent (P-005). */
+  attachments?: ChatAttachmentOutcome;
 }
 
 export interface ChatAdmissionDeps extends AdmitDeps {
   adapter: ChatAdmissionAdapter;
   /** Rule lookup seam (tests). Defaults to the source's enabled chat rules. */
   listRules?: (workspaceId: string, dataSourceId: string) => Promise<AdmissionRule[]>;
+  /** Consented-attachment store seam (tests). Defaults to report-attachments.ts putReportAttachment. */
+  putAttachment?: typeof putReportAttachment;
+}
+
+/** The store's kind for a file, by its mime type: text is re-redacted there; the rest is kept as bytes. */
+export function chatAttachmentKind(mime: string): ReportAttachmentKind {
+  const type = mime.trim().toLowerCase();
+  if (type.startsWith('text/') || type === 'application/json') return 'text';
+  if (type.startsWith('image/')) return 'screenshot';
+  return 'file';
+}
+
+function consentGiven(context: ReportContextInput | null): boolean {
+  const chat = context?.chat;
+  return !!chat && typeof chat === 'object' && (chat as Record<string, unknown>).attachmentConsent === true;
+}
+
+/**
+ * Downloads the consented files ONCE and stores each against every work item the event filed or
+ * folded. A failed download costs the files, never the report: it is returned, not thrown.
+ */
+async function storeConsentedFiles(
+  workspaceId: string,
+  workItemIds: string[],
+  subject: ChatSubject,
+  adapter: ChatAdmissionAdapter,
+  put: (input: Parameters<typeof putReportAttachment>[0]) => ReturnType<typeof putReportAttachment>,
+): Promise<ChatAttachmentOutcome> {
+  const out: ChatAttachmentOutcome = { stored: 0, failed: 0, error: null };
+  let files: ChatConsentedFile[];
+  try {
+    files = await adapter.consentedFiles!({ subject, maxBytes: REPORT_ATTACHMENT_MAX_BYTES, limit: REPORT_ATTACHMENTS_PER_ITEM });
+  } catch (error) {
+    return { ...out, error: (error instanceof Error ? error.message : String(error)).slice(0, 500) };
+  }
+  for (const workItemId of workItemIds) {
+    for (const file of files) {
+      try {
+        const result = await put({
+          workspaceId,
+          workItemId,
+          door: file.door,
+          kind: chatAttachmentKind(file.mime),
+          mime: file.mime,
+          content: file.bytes,
+          externalId: file.externalId,
+        });
+        if (result.ok) {
+          out.stored += 1;
+          continue;
+        }
+        out.error = `${result.reason}: ${result.detail}`.slice(0, 500);
+      } catch (error) {
+        // The report is already filed; a store failure costs this file, not the event.
+        out.error = (error instanceof Error ? error.message : String(error)).slice(0, 500);
+      }
+      out.failed += 1;
+    }
+  }
+  return out;
 }
 
 /**
@@ -217,12 +369,15 @@ export async function admitChatEvent(
   const thread = threadKey ?? keys.ownThreadKey;
 
   const ordered = CHAT_RULE_SOURCE_KINDS.flatMap((kind) => chatRules.filter((rule) => rule.sourceKind === kind));
+  // Built at the first admit rule that matches, then shared: one set of provider calls per event.
+  let reportContext: ReportContextInput | null = null;
   for (const rule of ordered) {
     if (!matchAdmissionRule(rule.match, facts)) continue;
     if (rule.action === 'suggest') {
       outcome.suggested.push({ ruleId: rule.id, sourceKind: rule.sourceKind, harness: rule.harness });
       continue;
     }
+    reportContext ??= await chatEventReportContext(input.payload, subject, threadStart, deps.adapter);
     const source = rule.sourceKind === CHAT_THREAD_SOURCE_KIND
       ? {
           kind: CHAT_THREAD_SOURCE_KIND,
@@ -245,6 +400,7 @@ export async function admitChatEvent(
         source,
         admitter: { via: 'rule', ruleId: rule.id, dataSourceId: rule.dataSourceId },
         kind: rule.workKind,
+        reportContext,
       },
       { ...deps, sql: deps.sql ?? sql },
     );
@@ -266,6 +422,12 @@ export async function admitChatEvent(
       },
       { adapter: deps.adapter },
     );
+  }
+  // The files a reporter consented to attach (P-005): only once a rule filed or folded the report.
+  const landed = [...new Set(outcome.admitted.flatMap(({ result }) => (result.ok ? [result.workItemId] : [])))];
+  if (landed.length > 0 && consentGiven(reportContext) && deps.adapter.consentedFiles) {
+    const put = deps.putAttachment ?? ((attachment) => putReportAttachment(attachment, { sql: (deps.sql ?? sql) as never }));
+    outcome.attachments = await storeConsentedFiles(input.workspaceId, landed, subject, deps.adapter, put);
   }
   return outcome;
 }

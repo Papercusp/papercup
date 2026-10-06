@@ -22,7 +22,7 @@ vi.mock('@papercusp/db-org', async (orig) => {
 
 const { captureImprovement } = await import('./capture-core');
 const { readIssueClaimability } = await import('../../scheduler/get-next');
-const { STRANDED_SWEEP_OWNER, sweepStrandedToolFailures } = await import('./stranded-tool-failure-sweep');
+const { STRANDED_SWEEP_OWNER, sweepExpiredCandidates, sweepStrandedToolFailures } = await import('./stranded-tool-failure-sweep');
 
 let db: OrgTestDb;
 
@@ -231,5 +231,50 @@ describe('stranded tool-failure sweep (P-003 / D-022)', () => {
     );
     const ours = new Set(Object.values(ids));
     expect((again.plan ?? []).filter((entry) => ours.has(entry.id))).toEqual([]);
+  });
+});
+
+describe('candidate expiry reads no person-reported row (P-011 / D-046 pt 6, slack D-012)', () => {
+  it('skips a chat-stamped candidate and one a chat report corroborated, and still reads an automatic one', async () => {
+    const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const make = async (name: string) => {
+      const filed = await captureImprovement({
+        title: `candidate expiry ${name} ${suffix}`,
+        kind: 'bug',
+        scope: 'harness:papercusp',
+        createdBy: 'su-test',
+      });
+      return filed.issue!.id;
+    };
+    const ids = { automatic: await make('automatic'), chat: await make('chat'), corroborated: await make('corroborated') };
+    const [{ workspace_id: workspaceId }] = await db.adminSql<{ workspace_id: string }[]>`
+      SELECT workspace_id FROM harness_shared.work_items WHERE feature_id = ${ids.automatic}`;
+    // An admission-pending tool-failure candidate, as capture leaves it while in probation.
+    const pending = async (id: string, reporterKind: string, reporterKinds: string[]) => {
+      const patch = {
+        toolFailureProbation: { state: 'probation', class: 'structural', report: { toolName: `expiry:${suffix}`, errorCode: 'handler_error' } },
+        reporter: { kind: reporterKind, id: 'reporter', basis: 'explicit', at: new Date().toISOString() },
+        reporterKinds,
+      };
+      await db.adminSql`
+        UPDATE harness_shared.work_items
+           SET admission = 'pending', taken_by = NULL,
+               payload = (payload - 'candidateExpiry') || ${JSON.stringify(patch)}::jsonb
+         WHERE feature_id = ${id}`;
+    };
+    await pending(ids.automatic, 'agent', ['agent']);
+    await pending(ids.chat, 'chat', ['chat']);
+    await pending(ids.corroborated, 'agent', ['agent', 'chat']);
+
+    const result = await sweepExpiredCandidates(
+      workspaceId,
+      { sql: db.adminSql, currentBuild: () => CURRENT, repoRoot: ROOT, sourceFileFor: () => null, git: gitWith({}) },
+      { dryRun: true, limit: 500 },
+    );
+    const read = new Set((result.plan ?? []).map((entry) => entry.id));
+    // The positive control: the automatic candidate is read, so an empty answer cannot pass vacuously.
+    expect(read.has(ids.automatic)).toBe(true);
+    expect(read.has(ids.chat)).toBe(false);
+    expect(read.has(ids.corroborated)).toBe(false);
   });
 });

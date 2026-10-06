@@ -37,7 +37,14 @@ import { loadPlugins } from '@papercusp/plugin-loader';
 import { stripCommentsOnly } from '../../../../../scripts/lib/strip-comments-and-strings.mjs';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
 import { registerPluginProviders, type ProviderRegistrationFailure } from '../../plugin-host-runtime';
-import { createProviderRegistry, type ProviderRegistry, type RegisteredProvider } from '../../integrations/provider-registry';
+import {
+  createProviderRegistry,
+  providerRegistry,
+  type ProviderRegistry,
+  type RegisteredProvider,
+} from '../../integrations/provider-registry';
+import { descriptorConnectionAdapter, descriptorOAuthPlugin } from '../../integrations/connection-lifecycle';
+import { setTicketSourceConfig } from '../../integrations/ticket-integrations';
 import { ingestExternalTriggerEvent, type IngestExternalTriggerInput } from '../../external-triggers/ingestion';
 import { VAULT_DATATYPES } from '../../personal-vault/live-sink';
 import { DATATYPE_FOR_APP } from '../../app-data-producer/app-rows';
@@ -325,6 +332,73 @@ afterAll(async () => {
 beforeEach(async () => {
   gh = recorded();
   await clean();
+});
+
+/**
+ * WI-10006213: a source made by the generic OAuth connect path, then configured from Settings →
+ * Integrations, syncs tickets with no hand-written SQL. Connect writes the provider's declared
+ * `defaultDestinations`; the page sets the config keys the descriptor's configSchema declares.
+ */
+describe('a freshly connected source syncs tickets without hand-written SQL (WI-10006213)', () => {
+  const policyOf = async (sourceId: string) => {
+    const [row] = await sql<Array<{ policy: Record<string, unknown> }>>`
+      SELECT destination_policy AS policy FROM harness_shared.data_sources WHERE id = ${sourceId}::uuid`;
+    return row!.policy;
+  };
+
+  it('connect writes the default policy, the page sets owner/repo/harness, and the driver syncs', async () => {
+    // The connection lifecycle resolves a credential group from the process registry.
+    const live = providerRegistry();
+    await live.register({ descriptor: provider.descriptor, adapter: provider.adapter, pluginName: provider.pluginName, runtime: provider.runtime });
+    try {
+      expect(provider.descriptor.defaultDestinations).toEqual(DESTINATIONS);
+      const adapter = descriptorConnectionAdapter(descriptorOAuthPlugin(provider.descriptor));
+      expect(adapter).not.toBeNull();
+      const connect = () => adapter!.provision(sql, {
+        owner: { workspaceId: WS, ownerUserId: alice, reconnectProviderAccountId: null },
+        account: { providerAccountId: 'gh-fresh-account', displayName: 'octocat' },
+        field: 'owner',
+        createdBy: 'github-issues-it',
+      });
+      await connect();
+      const [source] = await sql<Array<{ id: string; config: Record<string, unknown> }>>`
+        SELECT id::text, config FROM harness_shared.data_sources
+         WHERE workspace_id = ${WS} AND kind = ${KIND} AND owner_user_id = ${alice}::uuid`;
+      const sourceId = source!.id;
+      expect(source!.config).toEqual({ accountLabel: 'octocat' });
+      expect(await policyOf(sourceId)).toEqual(DESTINATIONS);
+
+      // GitHub's repo keys come from its configSchema; nothing hand-lists them.
+      expect(await setTicketSourceConfig(
+        sql,
+        { workspaceId: WS, ownerUserId: alice, sourceId, patch: { owner: OWNER, repo: REPO, harnessSlug: HARNESS } },
+        { registry },
+      )).toEqual({ config: { accountLabel: 'octocat', owner: OWNER, repo: REPO, harnessSlug: HARNESS }, missingConfig: [] });
+      // The connection owns the account label; the page may not set it.
+      await expect(setTicketSourceConfig(
+        sql, { workspaceId: WS, ownerUserId: alice, sourceId, patch: { accountLabel: 'x' } }, { registry },
+      )).rejects.toThrow(/ticket_source_config_invalid/);
+
+      const outcome = await syncOne(sourceId);
+      expect(outcome).toMatchObject({ sourceId, outcome: 'synced', rejected: 0 });
+      const synced = await rows(sourceId);
+      expect(synced.filter((r) => r.kind === 'ticket').length).toBeGreaterThan(0);
+      expect(synced.every((r) => r.agent_work === false)).toBe(true);
+      expect(Object.keys(await sinkKindsByDatatype(sourceId)).sort()).toEqual([...TICKET_DATATYPES].sort());
+
+      // A reconnect never overwrites a policy the owner edited...
+      const edited = { ticket: ['record'] };
+      await sql`UPDATE harness_shared.data_sources SET destination_policy = ${sql.json(edited)} WHERE id = ${sourceId}::uuid`;
+      await connect();
+      expect(await policyOf(sourceId)).toEqual(edited);
+      // ...but fills a source that still has none.
+      await sql`UPDATE harness_shared.data_sources SET destination_policy = '{}'::jsonb WHERE id = ${sourceId}::uuid`;
+      await connect();
+      expect(await policyOf(sourceId)).toEqual(DESTINATIONS);
+    } finally {
+      live.unregister(KIND);
+    }
+  });
 });
 
 // ── Registration ────────────────────────────────────────────────────────────

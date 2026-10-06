@@ -22,6 +22,7 @@
 
 import { redactSensitiveText } from '../../sensitive-text';
 import { getMemoryBackend } from '../../memory/backend';
+import { PLATFORM_POT_SLUG } from '../../platform-pot-slug';
 import { captureImprovement, type CaptureImprovementInput, type CaptureImprovementResult } from './capture-core';
 import type { ReportContextInput } from './report-context';
 import { END_USER_NOTE_HEADER, quoteEndUserText } from './untrusted-evidence';
@@ -154,7 +155,10 @@ export async function intakeEndUserReport(
     sourceRole: 'human',
     ...(input.reportContext ? { reportContext: input.reportContext } : {}),
     ...(input.reporterId ? { createdBy: input.reporterId } : {}),
-    ...(input.scope ? { scope: input.scope } : {}),
+    // Omitted scope files under the platform Pot. Left unset, captureImprovement
+    // files under the workspace's operator scope instead, so an agent's report of
+    // the same error (filed under the Pot) would never fold onto this one.
+    scope: input.scope ?? `harness:${PLATFORM_POT_SLUG}`,
     ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
     foundDuring: 'end-user report',
     payloadExtra: { endUserIntake: { classification: classification.basis } },

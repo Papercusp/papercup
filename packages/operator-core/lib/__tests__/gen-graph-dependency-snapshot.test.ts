@@ -12,25 +12,33 @@
  */
 import { describe, it, expect, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
   DIRECT_PAGE_SIZE,
+  FIRST_PARTY_BACKEND,
   GraphReadError,
   backendVersionNearBin,
+  deriveFirstPartyEdges,
   directCypherRunner,
+  matchTsconfigPath,
+  nearestTsconfigAliases,
+  nodeModulesPackageResolver,
   parseArgs,
   registryIndexReader,
   runCliToFile,
   parseCypherText,
   produceSnapshotFromEdges,
   produceSnapshotFromGraph,
+  produceSnapshotFromSource,
+  workspacePackagesFrom,
   writeSnapshotAtomic,
 } from '../../../../scripts/gen-graph-dependency-snapshot.mjs';
-import { parseSnapshot } from '../../../../scripts/lib/graph-dependency-suggestions.mjs';
+import { parseSnapshot, sourceCorroborates } from '../../../../scripts/lib/graph-dependency-suggestions.mjs';
+import { tsconfigAliasesFor, tsconfigPathEntriesFor } from '../../../../scripts/lib/related-tests.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
 const CLI = resolve(REPO_ROOT, 'scripts/gen-graph-dependency-snapshot.mjs');
@@ -435,5 +443,227 @@ process.exit(0);`,
     const argvs = readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l) as string[]);
     expect(argvs.length).toBeGreaterThanOrEqual(4); // count, 2 pages, re-count
     for (const a of argvs) expect(a.slice(0, 3)).toEqual(['cypher', '--repo', 'papercusp']);
+  });
+});
+
+/**
+ * FIRST-PARTY producer (WI-10006809; gitnexus-deterministic-integration D-026): import edges
+ * derived from tracked source, no graph backend. Two measured defects are pinned here. (1) A
+ * first-match prefix scan let the EXACT tsconfig key `@papercusp/operator-core` capture
+ * `@papercusp/operator-core/lib/x` ahead of its wildcard, resolving it to `…/lib/index.ts/lib/x`
+ * and dropping 692 apps/operator -> operator-core edges. (2) A package name two tracked dirs
+ * claim (`@papercusp/harness`) was dropped outright, losing 35 more; it now resolves through
+ * Node's own node_modules lookup, onto a claimant only.
+ */
+describe('first-party snapshot producer', () => {
+  const dirs: string[] = [];
+  afterEach(() => {
+    for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  });
+  const tmp = () => {
+    const d = mkdtempSync(join(tmpdir(), 'gen-graph-fp-'));
+    dirs.push(d);
+    return d;
+  };
+  const write = (root: string, files: Record<string, string>) => {
+    for (const [rel, text] of Object.entries(files)) {
+      mkdirSync(dirname(join(root, rel)), { recursive: true });
+      writeFileSync(join(root, rel), text);
+    }
+  };
+  /** The real apps/operator shape: wildcard `@/*`, then an EXACT key, then its wildcard. */
+  const ENTRIES: Array<[string, string, boolean]> = [
+    ['@/', 'apps/web/', true],
+    ['@fx/core', 'packages/core/lib/index.ts', false],
+    ['@fx/core/', 'packages/core/', true],
+  ];
+
+  describe('matchTsconfigPath', () => {
+    it('never lets an EXACT key capture a longer specifier by prefix (the measured 692-edge loss)', () => {
+      expect(matchTsconfigPath(ENTRIES, '@fx/core/lib/util')).toBe('packages/core/lib/util');
+    });
+    it('matches an exact key by equality and resolves to its FILE target', () => {
+      expect(matchTsconfigPath(ENTRIES, '@fx/core')).toBe('packages/core/lib/index.ts');
+    });
+    it('picks the LONGEST wildcard prefix regardless of declaration order', () => {
+      const entries: Array<[string, string, boolean]> = [
+        ['@x/', 'short/', true],
+        ['@x/deep/', 'long/', true],
+      ];
+      expect(matchTsconfigPath(entries, '@x/deep/a')).toBe('long/a');
+      expect(matchTsconfigPath([...entries].reverse(), '@x/deep/a')).toBe('long/a');
+    });
+    it('returns null when no key matches', () => {
+      expect(matchTsconfigPath(ENTRIES, 'react')).toBeNull();
+      expect(matchTsconfigPath(ENTRIES, '@fx/core-extra')).toBeNull();
+    });
+    it('CONTROL: the pre-fix first-match prefix scan FAILS this fixture, so the cases above can fail', () => {
+      const firstMatch = (entries: Array<[string, string, boolean]>, spec: string) => {
+        const e = entries.find(([prefix]) => spec === prefix || spec.startsWith(prefix));
+        return e === undefined ? null : `${e[1]}${spec.slice(e[0].length)}`;
+      };
+      expect(firstMatch(ENTRIES, '@fx/core/lib/util')).toBe('packages/core/lib/index.ts/lib/util');
+      expect(matchTsconfigPath(ENTRIES, '@fx/core/lib/util')).not.toBe(firstMatch(ENTRIES, '@fx/core/lib/util'));
+    });
+  });
+
+  it('tsconfigPathEntriesFor keeps exact-vs-wildcard; tsconfigAliasesFor keeps its prefix shape', () => {
+    const d = tmp();
+    write(d, {
+      'tsconfig.json': `{
+  // comments and trailing commas are tolerated, as before
+  "compilerOptions": { "paths": { "@/*": ["./*"], "@fx/core": ["../core/lib/index.ts"], "@fx/core/*": ["../core/*"], } },
+}`,
+    });
+    expect(tsconfigPathEntriesFor(d)).toEqual([
+      { prefix: '@/', target: `${d}/`, wildcard: true },
+      { prefix: '@fx/core', target: resolve(d, '../core/lib/index.ts'), wildcard: false },
+      { prefix: '@fx/core/', target: `${resolve(d, '../core')}/`, wildcard: true },
+    ]);
+    expect(tsconfigAliasesFor(d)).toEqual({
+      '@/': `${d}/`,
+      '@fx/core': `${resolve(d, '../core/lib/index.ts')}/`,
+      '@fx/core/': `${resolve(d, '../core')}/`,
+    });
+    expect(tsconfigPathEntriesFor(join(d, 'missing'))).toEqual([]);
+    expect(tsconfigAliasesFor(join(d, 'missing'))).toEqual({});
+  });
+
+  it('nearestTsconfigAliases uses the nearest ancestor tsconfig and drops a target escaping the root', () => {
+    const root = '/repo';
+    const entriesFor = (abs: string) =>
+      abs === '/repo/apps/web'
+        ? [
+            { prefix: '@/', target: '/repo/apps/web/', wildcard: true },
+            { prefix: '@fx/core', target: '/repo/packages/core/lib/index.ts', wildcard: false },
+            { prefix: '@out/', target: '/elsewhere/', wildcard: true },
+          ]
+        : [];
+    const aliases = nearestTsconfigAliases({ root, hasTsconfig: (dir: string) => dir === 'apps/web', entriesFor });
+    expect(aliases('apps/web/deep/nested/a.ts')).toEqual([
+      ['@/', 'apps/web/', true],
+      ['@fx/core', 'packages/core/lib/index.ts', false],
+    ]);
+    expect(aliases('libs/x/b.ts')).toEqual([]);
+  });
+
+  describe('deriveFirstPartyEdges', () => {
+    const SOURCES: Record<string, string> = {
+      'packages/core/package.json': JSON.stringify({ name: '@fx/core' }),
+      'packages/core/lib/util.ts': 'export const u = 1;\n',
+      'packages/core/lib/index.ts': "export * from './util';\nexport * from './index';\n",
+      'apps/web/page.ts': "import { u } from '@fx/core/lib/util';\nimport { u as again } from '@fx/core/lib/util';\nimport '@fx/core';\n",
+      'apps/other/x.ts': "import { u } from '@fx/core/lib/util';\nimport React from 'react';\nimport './gone';\n",
+      'apps/other/node_modules/dep/index.ts': "import '../../x';\n",
+    };
+    const files = Object.keys(SOURCES);
+    const readSource = (rel: string) => SOURCES[rel] ?? null;
+    const aliasesForImporter = (importer: string) => (importer.startsWith('apps/web/') ? ENTRIES : []);
+    const workspacePackages = workspacePackagesFrom({ files, readSource });
+
+    it('resolves relative, alias (exact AND wildcard) and workspace-package specifiers; counts the rest', () => {
+      const { edges, stats } = deriveFirstPartyEdges({ files, readSource, aliasesForImporter, workspacePackages });
+      expect(edges).toEqual([
+        { importer: 'packages/core/lib/index.ts', imported: 'packages/core/lib/util.ts' },
+        { importer: 'apps/web/page.ts', imported: 'packages/core/lib/util.ts' },
+        { importer: 'apps/web/page.ts', imported: 'packages/core/lib/index.ts' },
+        { importer: 'apps/other/x.ts', imported: 'packages/core/lib/util.ts' },
+      ]);
+      // self-import skipped, duplicate import deduped, node_modules importer never read
+      expect(stats).toMatchObject({ importers: 4, aliasResolved: 3, packageResolved: 1, bare: 1, relativeUnresolved: 1 });
+    });
+
+    it('drops an AMBIGUOUS package name unless Node lookup lands on one of its claimants', () => {
+      const amb: Record<string, string> = {
+        'libs/real/package.json': JSON.stringify({ name: '@fx/dup' }),
+        'libs/real/lib/a.ts': 'export {};\n',
+        'staged/copy/package.json': JSON.stringify({ name: '@fx/dup' }),
+        'staged/copy/lib/a.ts': 'export {};\n',
+        'apps/use.ts': "import '@fx/dup/lib/a';\n",
+      };
+      const ambFiles = Object.keys(amb);
+      const ambRead = (rel: string) => amb[rel] ?? null;
+      const pkgs = workspacePackagesFrom({ files: ambFiles, readSource: ambRead });
+      expect(pkgs).toEqual([['@fx/dup', ['libs/real', 'staged/copy']]]);
+      const run = (resolvePackageDir?: (name: string, importer: string) => string | null) =>
+        deriveFirstPartyEdges({ files: ambFiles, readSource: ambRead, workspacePackages: pkgs, resolvePackageDir });
+      expect(run().edges).toEqual([]);
+      expect(run().stats.packageAmbiguous).toBe(1);
+      expect(run(() => 'node_modules/.store/dup').stats.packageAmbiguous).toBe(1); // not a claimant
+      expect(run(() => 'libs/real').edges).toEqual([{ importer: 'apps/use.ts', imported: 'libs/real/lib/a.ts' }]);
+    });
+
+    it('emits only edges the selector source corroboration re-derives (the snapshot keeps them)', () => {
+      const { edges } = deriveFirstPartyEdges({ files, readSource, aliasesForImporter, workspacePackages });
+      const kept = edges.filter((e) => sourceCorroborates(readSource(e.importer)!, e.importer, e.imported));
+      // `@fx/core` -> lib/index.ts is a real edge the tail rule cannot verify; the rest survive
+      expect(kept.map((e) => `${e.importer} -> ${e.imported}`)).toEqual([
+        'packages/core/lib/index.ts -> packages/core/lib/util.ts',
+        'apps/web/page.ts -> packages/core/lib/util.ts',
+        'apps/other/x.ts -> packages/core/lib/util.ts',
+      ]);
+      const built = produceSnapshotFromSource({ files, readSource, aliasesForImporter, headCommit: INDEX.lastCommit, now: NOW });
+      expect(built.snapshot.edges.length).toBe(3);
+      expect(built.snapshot.index).toMatchObject({ lastCommit: INDEX.lastCommit, backend: FIRST_PARTY_BACKEND });
+      expect(built.derive.packageResolved).toBe(1);
+    });
+  });
+
+  it('nodeModulesPackageResolver walks up to the NEAREST node_modules, realpaths it, and refuses outside the root', () => {
+    const root = realpathSync(tmp()); // a symlinked TMPDIR would otherwise skew relative()
+    const outside = tmp();
+    write(root, { 'libs/a/package.json': '{}', 'copies/a/package.json': '{}' });
+    mkdirSync(join(root, 'node_modules/@fx'), { recursive: true });
+    symlinkSync(join(root, 'libs/a'), join(root, 'node_modules/@fx/a'));
+    symlinkSync(outside, join(root, 'node_modules/@fx/out'));
+    mkdirSync(join(root, 'apps/near/node_modules/@fx'), { recursive: true });
+    symlinkSync(join(root, 'copies/a'), join(root, 'apps/near/node_modules/@fx/a'));
+    const resolvePkg = nodeModulesPackageResolver({ root });
+    expect(resolvePkg('@fx/a', 'apps/far/deep/x.ts')).toBe('libs/a');
+    expect(resolvePkg('@fx/a', 'apps/near/src/y.ts')).toBe('copies/a');
+    expect(resolvePkg('@fx/out', 'apps/far/x.ts')).toBeNull();
+    expect(resolvePkg('@fx/missing', 'apps/far/x.ts')).toBeNull();
+  });
+
+  it('parseArgs: --first-party excludes --edges-file and --gitnexus-bin', () => {
+    expect(parseArgs(['--first-party']).opts).toMatchObject({ firstParty: true });
+    expect(parseArgs(['--first-party', '--gitnexus-bin', 'g']).error).toMatch(/--first-party excludes/);
+    expect(parseArgs(['--first-party', '--edges-file', 'e.json', '--index-commit', 'abc']).error).toMatch(/--first-party excludes/);
+  });
+
+  it('real CLI --first-party on a git repo: derives from tracked files, binds HEAD, writes only where told', () => {
+    const src = tmp();
+    write(src, {
+      'packages/core/package.json': JSON.stringify({ name: '@fx/core' }),
+      'packages/core/lib/util.ts': 'export const u = 1;\n',
+      'packages/core/lib/index.ts': "export * from './util';\n",
+      'apps/web/tsconfig.json': JSON.stringify({
+        compilerOptions: { paths: { '@/*': ['./*'], '@fx/core': ['../../packages/core/lib/index.ts'], '@fx/core/*': ['../../packages/core/*'] } },
+      }),
+      'apps/web/page.ts': "import { u } from '@fx/core/lib/util';\nimport { h } from '@/lib/helper';\n",
+      'apps/web/lib/helper.ts': 'export const h = 1;\n',
+      'apps/other/x.ts': "import { u } from '@fx/core/lib/util';\n",
+      'untracked/y.ts': "import '../packages/core/lib/util';\n",
+    });
+    const git = (...args: string[]) =>
+      spawnSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', '-c', 'commit.gpgsign=false', ...args], { cwd: src, encoding: 'utf8' });
+    expect(git('init', '-q').status).toBe(0);
+    expect(git('add', 'packages', 'apps').status).toBe(0);
+    expect(git('commit', '-qm', 'fixture').status).toBe(0);
+    const head = git('rev-parse', 'HEAD').stdout.trim();
+    const out = join(tmp(), 'fp.json');
+    const r = spawnSync(process.execPath, [CLI, '--first-party', '--source-root', src, '--out', out], { encoding: 'utf8', cwd: REPO_ROOT, timeout: 60_000 });
+    expect(r.status, r.stderr).toBe(0);
+    // 5 importers: util, index, page, helper (imports nothing) and x; `untracked/y.ts` is not read
+    expect(r.stderr).toMatch(/GRAPH_SNAPSHOT_DERIVE importers=5 .*aliasResolved=2 .*packageResolved=1 .*packageAmbiguous=0 /);
+    expect(r.stderr).toMatch(/GRAPH_SNAPSHOT status=written edges=4 /);
+    const parsed = parseSnapshot(readFileSync(out, 'utf8'));
+    expect(parsed.snapshot?.index).toMatchObject({ lastCommit: head, backend: FIRST_PARTY_BACKEND });
+    expect(parsed.snapshot?.edges.map((e: { importer: string; imported: string }) => `${e.importer} -> ${e.imported}`).sort()).toEqual([
+      'apps/other/x.ts -> packages/core/lib/util.ts',
+      'apps/web/page.ts -> apps/web/lib/helper.ts',
+      'apps/web/page.ts -> packages/core/lib/util.ts',
+      'packages/core/lib/index.ts -> packages/core/lib/util.ts',
+    ]);
   });
 });

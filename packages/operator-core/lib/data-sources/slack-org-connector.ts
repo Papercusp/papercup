@@ -36,7 +36,7 @@ import {
   upsertOwnedExternalTriggerSource,
 } from '../external-triggers/source-store';
 import { upsertChatMessages, type ChatMessageInput } from './chat-retrieval-units';
-import type { ChatAdmissionAdapter } from './chat-admission-sink';
+import type { ChatAdmissionAdapter, ChatConsentedFile, ChatReportFacts } from './chat-admission-sink';
 import { replacePermissionListMembers, upsertPermissionList } from './documents-corpus';
 
 const SLACK_API_ORIGIN = 'https://slack.com';
@@ -282,6 +282,38 @@ interface SlackMessage {
   text?: string;
   subtype?: string;
   edited?: { ts?: string };
+  /** Files shared with the message. `permalink` is the Slack page; `url_private` needs the token. */
+  files?: Array<{
+    id?: string;
+    name?: string;
+    title?: string;
+    mimetype?: string;
+    size?: number;
+    permalink?: string;
+    url_private?: string;
+  }>;
+  /** The author's profile as of the post, on messages a person sent. */
+  user_profile?: SlackProfile;
+}
+
+interface SlackProfile {
+  display_name?: string;
+  real_name?: string;
+}
+
+/** users.info's user: names on the record and in its profile. */
+interface SlackUser extends SlackProfile {
+  name?: string;
+  profile?: SlackProfile;
+}
+
+/** The name a person shows in Slack: display name, else real name, from the first profile that has one. */
+function slackDisplayName(...profiles: Array<SlackProfile | undefined>): string {
+  for (const profile of profiles) {
+    const name = text(profile?.display_name) || text(profile?.real_name);
+    if (name) return name;
+  }
+  return '';
 }
 
 function slackTsDate(ts: string): Date {
@@ -323,6 +355,40 @@ async function fetchReplies(deps: SlackOrgDeps, botToken: string, channelId: str
 }
 
 /**
+ * ONE message by ts: conversations.history pinned to it finds a top-level post, else
+ * conversations.replies finds a reply. Null when Slack no longer has it.
+ */
+async function fetchSlackMessage(deps: SlackOrgDeps, botToken: string, channelId: string, ts: string): Promise<SlackMessage | null> {
+  const top = await slackCall<{ messages?: SlackMessage[] }>(
+    deps, botToken, 'conversations.history',
+    { channel: channelId, latest: ts, oldest: ts, inclusive: 'true', limit: '1' },
+  );
+  return (top.messages ?? []).find((m) => text(m.ts) === ts)
+    ?? (await fetchReplies(deps, botToken, channelId, ts)).find((m) => text(m.ts) === ts)
+    ?? null;
+}
+
+/** A Slack-hosted https file URL, or null. The bot token is never sent to any other host. */
+function slackFileUrl(raw: unknown): URL | null {
+  try {
+    const url = new URL(text(raw));
+    const slackHost = url.hostname === 'slack.com' || url.hostname.endsWith('.slack.com');
+    return url.protocol === 'https:' && slackHost ? url : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Resolves to null instead of throwing: one refused provider call costs one fact (D-012). */
+async function settled<T>(call: () => Promise<T>): Promise<T | null> {
+  try {
+    return await call();
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Slack's chat admission adapter (chat-admission-sink.ts; slack-messages-to-bug-reports D-008,
  * D-009). Slack messages are stored exactly as the backfill stores them (toChatMessage): channel
  * `<team>:<channel>`, provider id = ts, thread key `<team>:<channel>:<thread_ts>`. A subject the
@@ -338,6 +404,19 @@ export function createSlackChatAdmissionAdapter(
   // Resolved per call, not here: the sink is built for every envelope, and a source without a
   // team id must fail only its chat admission (when a rule needs it), never the whole ingest.
   const team = () => teamOf(source);
+  // One adapter serves one envelope, so fetch and reportFacts read the same message from Slack
+  // at most once. A failed read is forgotten, so a retry asks again.
+  const messages = new Map<string, Promise<SlackMessage | null>>();
+  const message = (token: string, channelId: string, ts: string): Promise<SlackMessage | null> => {
+    const key = `${channelId}:${ts}`;
+    let read = messages.get(key);
+    if (!read) {
+      read = fetchSlackMessage(deps, token, channelId, ts);
+      messages.set(key, read);
+      read.catch(() => messages.delete(key));
+    }
+    return read;
+  };
   return {
     keys(subject) {
       const channel = slackOrgChannelRef(team(), subject.channelId);
@@ -361,14 +440,79 @@ export function createSlackChatAdmissionAdapter(
     },
     async fetch(subject) {
       await assertEnabled(deps);
-      const token = await botToken();
-      const top = await slackCall<{ messages?: SlackMessage[] }>(
-        deps, token, 'conversations.history',
-        { channel: subject.channelId, latest: subject.ts, oldest: subject.ts, inclusive: 'true', limit: '1' },
-      );
-      const found = (top.messages ?? []).find((m) => text(m.ts) === subject.ts)
-        ?? (await fetchReplies(deps, token, subject.channelId, subject.ts)).find((m) => text(m.ts) === subject.ts);
+      const found = await message(await botToken(), subject.channelId, subject.ts);
       return found ? toChatMessage(team(), subject.channelId, found) : null;
+    },
+    async reportFacts({ subject, reporterExternalId }) {
+      // Called once per event, only when an admit rule matched (D-012). Reading the message reads
+      // channel history, so it is gated like fetch. chat.getPermalink needs no scope; users.info
+      // needs users:read. Each call that fails leaves only its own fact out.
+      await assertEnabled(deps);
+      const token = await botToken();
+      const [link, posted, channel, reporter] = await Promise.all([
+        settled(() => slackCall<{ permalink?: string }>(
+          deps, token, 'chat.getPermalink', { channel: subject.channelId, message_ts: subject.ts },
+        )),
+        settled(() => message(token, subject.channelId, subject.ts)),
+        settled(() => slackCall<{ channel?: { name?: string } }>(
+          deps, token, 'conversations.info', { channel: subject.channelId },
+        )),
+        reporterExternalId
+          ? settled(() => slackCall<{ user?: SlackUser }>(deps, token, 'users.info', { user: reporterExternalId }))
+          : Promise.resolve(null),
+      ]);
+      const facts: ChatReportFacts = {};
+      const permalink = text(link?.permalink);
+      if (permalink) facts.permalink = permalink;
+      const channelName = text(channel?.channel?.name);
+      if (channelName) facts.channelName = channelName;
+      const reporterName = slackDisplayName(reporter?.user?.profile, reporter?.user);
+      if (reporterName) facts.reporterDisplayName = reporterName;
+      if (posted) {
+        const authorId = text(posted.user);
+        const authorName = slackDisplayName(posted.user_profile);
+        if (authorId || authorName) facts.author = { externalUserId: authorId || null, displayName: authorName || null };
+        // Files go in as Slack's own page links, never url_private: the link works for anyone in
+        // the channel and carries no token. Downloading needs the reporter's consent (P-005).
+        const attachments = (posted.files ?? []).flatMap((file) => {
+          const url = text(file.permalink);
+          if (!url) return [];
+          return [{
+            name: text(file.name) || text(file.title) || null,
+            mimetype: text(file.mimetype) || null,
+            size: typeof file.size === 'number' ? file.size : null,
+            url,
+          }];
+        });
+        if (attachments.length) facts.attachments = attachments;
+      }
+      return facts;
+    },
+    async consentedFiles({ subject, maxBytes, limit }) {
+      // The sink calls this only for a reporter who ticked consent on the report form, after a
+      // rule filed the report (P-005). A file Slack says is too large is never downloaded.
+      await assertEnabled(deps);
+      const token = await botToken();
+      const posted = await message(token, subject.channelId, subject.ts);
+      const out: ChatConsentedFile[] = [];
+      for (const file of (posted?.files ?? []).slice(0, limit)) {
+        const id = text(file.id);
+        const url = slackFileUrl(file.url_private);
+        if (!id || !url) continue;
+        if (typeof file.size === 'number' && file.size > maxBytes) continue;
+        const response = await (deps.fetch ?? fetch)(url, { headers: { authorization: `Bearer ${botTokenOf(token)}` } });
+        if (!response.ok) throw new Error(`slack_file_download_${response.status}:${id}`);
+        const bytes = new Uint8Array(await response.arrayBuffer());
+        if (bytes.byteLength > maxBytes) continue;
+        out.push({
+          door: 'slack',
+          externalId: `slack:${id}`,
+          name: text(file.name) || text(file.title) || null,
+          mime: text(file.mimetype) || 'application/octet-stream',
+          bytes,
+        });
+      }
+      return out;
     },
     async suggest({ subject, authorExternalId }) {
       // Names only the report gestures switched on in this channel (D-010); none, nothing sent.

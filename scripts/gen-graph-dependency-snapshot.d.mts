@@ -153,29 +153,45 @@ export function deriveFirstPartyEdges({ files, readSource, aliasesForImporter, w
     };
 };
 /**
- * Workspace packages as `[name, repoRelativeDir]`, from every tracked `package.json` outside
- * node_modules. A NAME claimed by two directories is AMBIGUOUS and dropped (its specifiers then
- * count as bare) — resolving it to either copy would be a guess, and a guessed edge is exactly
- * what source corroboration exists to refuse.
+ * Workspace packages as `[name, claimantDirs]` (repo-relative, sorted), from every tracked
+ * `package.json` outside node_modules. A name claimed by ONE dir resolves there. A name claimed
+ * by several (measured: `@papercusp/harness` = the real package + a staged sidecar copy) is
+ * AMBIGUOUS: `deriveFirstPartyEdges` resolves it only through `resolvePackageDir` — Node's own
+ * lookup from the importer — and only onto a claimant; with no resolver it is dropped and
+ * counted, because picking either copy would be a guess.
  * @param {{ files: string[], readSource: (rel: string) => string | null }} o
- * @returns {Array<[string, string]>}
+ * @returns {Array<[string, string[]]>}
  */
 export function workspacePackagesFrom({ files, readSource }: {
     files: string[];
     readSource: (rel: string) => string | null;
-}): Array<[string, string]>;
+}): Array<[string, string[]]>;
+/**
+ * Node's package lookup, as `resolvePackageDir` for `deriveFirstPartyEdges`: walk up from the
+ * importer's dir to the first `node_modules/<name>`, realpath it (workspace links are symlinks),
+ * and return it repo-relative — or null when nothing is found or it lands outside the root.
+ * @param {{ root: string, exists?: (abs: string) => boolean, realpath?: (abs: string) => string }} o
+ * @returns {(name: string, importer: string) => string | null}
+ */
+export function nodeModulesPackageResolver({ root, exists, realpath }: {
+    root: string;
+    exists?: (abs: string) => boolean;
+    realpath?: (abs: string) => string;
+}): (name: string, importer: string) => string | null;
 /**
  * First-party producer: derive edges from `files`, then build through the SAME fail-closed
  * `produceSnapshotFromEdges` path (index identity required; an empty corroborated set refuses).
  * The index identity is the source tree's HEAD — each edge is still bound to its importer's
  * content hash, so working-tree drift past HEAD is caught per edge by the selector.
+ * @param {{ files: string[], readSource: (rel: string) => string | null, aliasesForImporter?: (importer: string) => Array<[string, string, boolean]>, resolvePackageDir?: (name: string, importer: string) => string | null, headCommit: string, now: number }} o
  */
-export function produceSnapshotFromSource({ files, readSource, aliasesForImporter, headCommit, now }: {
-    files: any;
-    readSource: any;
-    aliasesForImporter: any;
-    headCommit: any;
-    now: any;
+export function produceSnapshotFromSource({ files, readSource, aliasesForImporter, resolvePackageDir, headCommit, now }: {
+    files: string[];
+    readSource: (rel: string) => string | null;
+    aliasesForImporter?: (importer: string) => Array<[string, string, boolean]>;
+    resolvePackageDir?: (name: string, importer: string) => string | null;
+    headCommit: string;
+    now: number;
 }): {
     derive: {
         importers: number;

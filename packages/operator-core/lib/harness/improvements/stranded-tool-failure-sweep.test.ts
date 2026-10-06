@@ -409,6 +409,9 @@ describe('candidate expiry (P-011 / D-046 pt 6)', () => {
     for (const payload of [
       candidate({ reporter: { kind: 'end-user' }, reporterKinds: ['end-user'] }),
       candidate({ reporter: { kind: 'agent' }, reporterKinds: ['agent', 'end-user'] }),
+      // A Slack report is a person's report (slack-messages-to-bug-reports D-012).
+      candidate({ reporter: { kind: 'chat' }, reporterKinds: ['chat'] }),
+      candidate({ reporter: { kind: 'watchdog' }, reporterKinds: ['watchdog', 'chat'] }),
     ]) {
       expect(isAutomaticReport(payload)).toBe(false);
       expect(classifyExpiryCandidate(payload, { reproduction: null, retirement: retirable })).toEqual({
@@ -488,7 +491,8 @@ describe('candidate expiry (P-011 / D-046 pt 6)', () => {
     const [query, params] = h.sql.unsafe.mock.calls[0] as unknown as [string, unknown[]];
     expect(params).toEqual(['ws-1', CURRENT, 200]);
     expect(query).toContain("admission = 'pending'");
-    expect(query).toContain('["end-user"]');
+    // Every person door is excluded in SQL too: an end user, or a chat report (Slack D-012).
+    expect(query).toContain("?| ARRAY['end-user', 'chat']");
     expect(query).toContain("payload->'candidateExpiry'->>'checkedBuild' IS DISTINCT FROM $2");
   });
 

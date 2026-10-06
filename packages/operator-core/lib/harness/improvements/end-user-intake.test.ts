@@ -60,6 +60,12 @@ describe('intakeEndUserReport', () => {
     });
   });
 
+  it('files a report with no scope under the platform Pot, where agents file the same defect', async () => {
+    const d = deps();
+    await intakeEndUserReport({ text: 'The export button crashes the app' }, d.all);
+    expect(d.capture.mock.calls[0]?.[0]).toMatchObject({ scope: 'harness:papercusp' });
+  });
+
   it('files an idea as a feature candidate', async () => {
     const d = deps();
     await intakeEndUserReport({ text: 'It would be great if the board could show due dates' }, d.all);

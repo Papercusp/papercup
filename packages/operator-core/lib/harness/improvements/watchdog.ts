@@ -4394,10 +4394,14 @@ export async function defaultPapercuspCollectors(
         // P-011 / D-046 pt 6: automatic reports still at candidate admission expire on
         // the same D-012 evidence when a newer build changed the tool and nobody reproduced it.
         const expiryNote = renderCandidateExpiryNote(await sweepExpiredCandidates(workspaceId).catch(asError));
+        // P-014 / D-013 / D-048 pt 4: consented report attachments are deleted 90 days
+        // after their item closes; the report text stays on the item.
+        const { sweepExpiredReportAttachments, renderReportAttachmentSweepNote } = await import('./report-attachments');
+        const attachmentNote = renderReportAttachmentSweepNote(await sweepExpiredReportAttachments(workspaceId).catch(asError));
         const result = await recoverInvocationFriction(workspaceId);
         return {
           signals: [],
-          note: `friction delivered=${result.delivered}, locked-pending=${result.pending}, expired=${result.expired}; ${foldNote}; ${sweepNote}; ${expiryNote}`,
+          note: `friction delivered=${result.delivered}, locked-pending=${result.pending}, expired=${result.expired}; ${foldNote}; ${sweepNote}; ${expiryNote}; ${attachmentNote}`,
         };
       },
     },

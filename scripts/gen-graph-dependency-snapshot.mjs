@@ -22,12 +22,15 @@
 //   node scripts/gen-graph-dependency-snapshot.mjs [--out <path>] [--repo <name>] [--client <id>]
 //        [--page-size <n>] [--retries <n>] [--source-root <dir>]
 //        [--edges-file <json> --index-commit <sha>]     (offline: edges as [{importer,imported}])
+//        [--first-party]   (WI-10006809: no graph backend — edges derived from tracked source with
+//                           the selector's own resolver + tsconfig aliases; default output is the
+//                           SIBLING `dependency-snapshot.first-party.json`, never the selector's file)
 //
 // Exit: 0 written · 2 usage · 3 graph unavailable/inconsistent (nothing written) · 4 write failure.
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { isCliEntry } from "@papercusp/operator-core/lib/util/cli-entry";
@@ -46,7 +49,14 @@ import {
   resolveMcpWorkspace,
   toolResultNotOkReason,
 } from "./mcp-call.mjs";
-import { buildSnapshot, sharedSnapshotPath } from "./lib/graph-dependency-suggestions.mjs";
+import {
+  baseCandidates,
+  buildSnapshot,
+  extractSpecifiers,
+  relativeCandidates,
+  sharedSnapshotPath,
+} from "./lib/graph-dependency-suggestions.mjs";
+import { tsconfigPathEntriesFor } from "./lib/related-tests.mjs";
 
 /** DIRECT-mode page: no response budget applies, ~12 pages for 59k edges (each query ~5s to open). */
 export const DIRECT_PAGE_SIZE = 5000;
@@ -242,6 +252,236 @@ export function produceSnapshotFromEdges({ edges, index, readSource, now }) {
   return { ...built, rows: edges.length, pages: 0 };
 }
 
+/** Index backend name a first-party snapshot records (`snapshot.index.backend`). */
+export const FIRST_PARTY_BACKEND = "first-party-imports";
+/** Default output for `--first-party`: a SIBLING of the shared snapshot, never the file the
+ * selector reads, so producing one cannot displace the gitnexus snapshot until the swap is
+ * decided (WI-10006809: keep gitnexus until first-party is shown at least as good, P-012). */
+export const FIRST_PARTY_SNAPSHOT_NAME = "dependency-snapshot.first-party.json";
+const FIRST_PARTY_SOURCE_RE = /\.(?:c|m)?[jt]sx?$/;
+
+/**
+ * Nearest-ancestor tsconfig `paths` entries for an importer as `[prefix, target, wildcard]`,
+ * target REPO-RELATIVE (a dir with trailing slash for a wildcard key, the file itself for an
+ * exact key), parsed by the selector's own tsconfig reader (`tsconfigPathEntriesFor`, one parser)
+ * so `@/` resolves as related-test selection resolves it. A target escaping the root is dropped.
+ * @param {{ root: string, hasTsconfig: (relDir: string) => boolean, entriesFor?: (absDir: string) => Array<{ prefix: string, target: string, wildcard: boolean }> }} o
+ * @returns {(importer: string) => Array<[string, string, boolean]>}
+ */
+export function nearestTsconfigAliases({ root, hasTsconfig, entriesFor = tsconfigPathEntriesFor }) {
+  const byDir = new Map();
+  const dirAliases = (dir) => {
+    if (byDir.has(dir)) return byDir.get(dir);
+    let found;
+    if (hasTsconfig(dir)) {
+      found = [];
+      for (const { prefix, target, wildcard } of entriesFor(join(root, dir))) {
+        const rel = relative(root, target).split(sep).join("/");
+        if (rel === ".." || rel.startsWith("../") || isAbsolute(rel)) continue;
+        found.push([prefix, wildcard ? (rel === "" ? "" : `${rel}/`) : rel, wildcard]);
+      }
+    } else {
+      found = dir === "." ? [] : dirAliases(posix.dirname(dir));
+    }
+    byDir.set(dir, found);
+    return found;
+  };
+  return (importer) => dirAliases(posix.dirname(importer));
+}
+
+/**
+ * Resolve `spec` against tsconfig `paths` entries the way TypeScript does: an EXACT key matches
+ * by equality only and wins outright; otherwise the LONGEST matching wildcard prefix wins
+ * (independent of declaration order). Returns the repo-relative base path, or null when no key
+ * matches. A first-match prefix scan here is the bug WI-10006809 measured: the exact key
+ * `@papercusp/operator-core` captured `@papercusp/operator-core/lib/x` ahead of its wildcard.
+ * @param {Array<[string, string, boolean]>} entries
+ * @param {string} spec
+ * @returns {string | null}
+ */
+export function matchTsconfigPath(entries, spec) {
+  const exact = entries.find(([prefix, , wildcard]) => !wildcard && spec === prefix);
+  if (exact !== undefined) return exact[1];
+  let best;
+  for (const entry of entries) {
+    if (entry[2] && spec.startsWith(entry[0]) && (best === undefined || entry[0].length > best[0].length)) best = entry;
+  }
+  return best === undefined ? null : posix.normalize(`${best[1]}${spec.slice(best[0].length)}`);
+}
+
+/**
+ * FIRST-PARTY edges (WI-10006809; plan gitnexus-deterministic-integration-2026-10-05, D-026):
+ * import edges derived straight from tracked source — no graph backend, no server, no index on
+ * disk. Each importer's specifiers are read with the selector's OWN extractor and resolved with
+ * its OWN candidate expansion (`relativeCandidates` / `baseCandidates`), so every edge emitted
+ * here is one the selector's source corroboration can re-derive; `buildSnapshot` still verifies
+ * each one. A specifier naming a TRACKED workspace package resolves into that package (these
+ * undeclared cross-workspace edges are what the snapshot exists to add); every other bare
+ * specifier is out of graph by design. An unresolved specifier is COUNTED, never guessed.
+ * @param {{ files: string[], readSource: (rel: string) => string | null, aliasesForImporter?: (importer: string) => Array<[string, string, boolean]>, workspacePackages?: Array<[string, string[]]>, resolvePackageDir?: (name: string, importer: string) => string | null }} o
+ */
+export function deriveFirstPartyEdges({ files, readSource, aliasesForImporter = () => [], workspacePackages = [], resolvePackageDir = () => null }) {
+  const fileSet = new Set(files);
+  const edges = [];
+  const stats = {
+    importers: 0,
+    unreadable: 0,
+    relativeUnresolved: 0,
+    aliasResolved: 0,
+    aliasUnresolved: 0,
+    packageResolved: 0,
+    packageUnresolved: 0,
+    packageAmbiguous: 0,
+    bare: 0,
+  };
+  // Match boundary is `name` or `name/`, so `@scope/a` never captures `@scope/a-b`; longest
+  // first anyway, so the order of `workspacePackages` can never change the answer.
+  const packages = [...workspacePackages].sort((x, y) => y[0].length - x[0].length);
+  for (const importer of files) {
+    if (!FIRST_PARTY_SOURCE_RE.test(importer) || importer.split("/").includes("node_modules")) continue;
+    const source = readSource(importer);
+    if (source === null) {
+      stats.unreadable += 1;
+      continue;
+    }
+    stats.importers += 1;
+    const seen = new Set();
+    for (const spec of extractSpecifiers(source)) {
+      let candidates;
+      /** @type {"relative" | "alias" | "package"} */
+      let kind = "relative";
+      if (spec.startsWith(".")) {
+        candidates = relativeCandidates(importer, spec);
+      } else {
+        // TypeScript precedence: tsconfig `paths` first, then node_modules (= a workspace package here).
+        const aliasBase = matchTsconfigPath(aliasesForImporter(importer), spec);
+        if (aliasBase !== null) {
+          kind = "alias";
+          candidates = baseCandidates(aliasBase);
+        } else {
+          const pkg = packages.find(([name]) => spec === name || spec.startsWith(`${name}/`));
+          if (pkg === undefined) {
+            stats.bare += 1;
+            continue;
+          }
+          let pkgDir = pkg[1][0];
+          if (pkg[1].length > 1) {
+            // A name two tracked dirs claim: take the copy Node's own lookup lands on from THIS
+            // importer, and only if it is one of the claimants — never a guess between them.
+            const landed = resolvePackageDir(pkg[0], importer);
+            if (landed === null || !pkg[1].includes(landed)) {
+              stats.packageAmbiguous += 1;
+              continue;
+            }
+            pkgDir = landed;
+          }
+          kind = "package";
+          const sub = spec.slice(pkg[0].length).replace(/^\//, "");
+          candidates =
+            sub === ""
+              ? new Set([...baseCandidates(`${pkgDir}/index`), ...baseCandidates(`${pkgDir}/src/index`)])
+              : new Set([...baseCandidates(posix.normalize(`${pkgDir}/${sub}`)), ...baseCandidates(posix.normalize(`${pkgDir}/src/${sub}`))]);
+        }
+      }
+      let imported = null;
+      for (const c of candidates) {
+        if (fileSet.has(c)) {
+          imported = c;
+          break;
+        }
+      }
+      if (imported === null) {
+        stats[`${kind}Unresolved`] += 1;
+        continue;
+      }
+      if (kind !== "relative") stats[`${kind}Resolved`] += 1;
+      if (imported === importer || seen.has(imported)) continue;
+      seen.add(imported);
+      edges.push({ importer, imported });
+    }
+  }
+  return { edges, stats };
+}
+
+/**
+ * Workspace packages as `[name, claimantDirs]` (repo-relative, sorted), from every tracked
+ * `package.json` outside node_modules. A name claimed by ONE dir resolves there. A name claimed
+ * by several (measured: `@papercusp/harness` = the real package + a staged sidecar copy) is
+ * AMBIGUOUS: `deriveFirstPartyEdges` resolves it only through `resolvePackageDir` — Node's own
+ * lookup from the importer — and only onto a claimant; with no resolver it is dropped and
+ * counted, because picking either copy would be a guess.
+ * @param {{ files: string[], readSource: (rel: string) => string | null }} o
+ * @returns {Array<[string, string[]]>}
+ */
+export function workspacePackagesFrom({ files, readSource }) {
+  const dirsByName = new Map();
+  for (const f of files) {
+    if (posix.basename(f) !== "package.json" || f.split("/").includes("node_modules")) continue;
+    const dir = posix.dirname(f);
+    if (dir === ".") continue;
+    let name;
+    try {
+      name = JSON.parse(readSource(f) ?? "null")?.name;
+    } catch {
+      continue;
+    }
+    if (typeof name !== "string" || name.length === 0) continue;
+    if (!dirsByName.has(name)) dirsByName.set(name, new Set());
+    dirsByName.get(name).add(dir);
+  }
+  return [...dirsByName].map(([name, dirs]) => [name, [...dirs].sort()]);
+}
+
+/**
+ * Node's package lookup, as `resolvePackageDir` for `deriveFirstPartyEdges`: walk up from the
+ * importer's dir to the first `node_modules/<name>`, realpath it (workspace links are symlinks),
+ * and return it repo-relative — or null when nothing is found or it lands outside the root.
+ * @param {{ root: string, exists?: (abs: string) => boolean, realpath?: (abs: string) => string }} o
+ * @returns {(name: string, importer: string) => string | null}
+ */
+export function nodeModulesPackageResolver({ root, exists = existsSync, realpath = realpathSync }) {
+  const cache = new Map();
+  const lookup = (dir, name) => {
+    const key = `${dir}\0${name}`;
+    if (cache.has(key)) return cache.get(key);
+    let found = null;
+    const abs = join(root, dir, "node_modules", name);
+    if (exists(abs)) {
+      let rel = null;
+      try {
+        rel = relative(root, realpath(abs)).split(sep).join("/");
+      } catch {
+        rel = null;
+      }
+      found = rel !== null && rel !== "" && rel !== ".." && !rel.startsWith("../") && !isAbsolute(rel) ? rel : null;
+    } else if (dir !== ".") {
+      found = lookup(posix.dirname(dir), name);
+    }
+    cache.set(key, found);
+    return found;
+  };
+  return (name, importer) => lookup(posix.dirname(importer), name);
+}
+
+/**
+ * First-party producer: derive edges from `files`, then build through the SAME fail-closed
+ * `produceSnapshotFromEdges` path (index identity required; an empty corroborated set refuses).
+ * The index identity is the source tree's HEAD — each edge is still bound to its importer's
+ * content hash, so working-tree drift past HEAD is caught per edge by the selector.
+ * @param {{ files: string[], readSource: (rel: string) => string | null, aliasesForImporter?: (importer: string) => Array<[string, string, boolean]>, resolvePackageDir?: (name: string, importer: string) => string | null, headCommit: string, now: number }} o
+ */
+export function produceSnapshotFromSource({ files, readSource, aliasesForImporter, resolvePackageDir, headCommit, now }) {
+  const workspacePackages = workspacePackagesFrom({ files, readSource });
+  const { edges, stats } = deriveFirstPartyEdges({ files, readSource, aliasesForImporter, workspacePackages, resolvePackageDir });
+  const result = produceSnapshotFromEdges({
+    edges,
+    index: { lastCommit: headCommit, indexedAt: new Date(now).toISOString(), backend: FIRST_PARTY_BACKEND, backendVersion: null },
+    readSource,
+    now,
+  });
+  return { ...result, derive: stats };
+}
+
 /** Write atomically (tmp in the same dir + rename) so a reader never sees a half-written file. */
 export function writeSnapshotAtomic(outPath, snapshot) {
   const text = `${JSON.stringify(snapshot)}\n`;
@@ -270,6 +510,7 @@ export function parseArgs(argv) {
     indexCommit: null,
     gitnexusBin: null,
     registry: null,
+    firstParty: false,
   };
   const takes = new Set([
     "--out",
@@ -287,6 +528,10 @@ export function parseArgs(argv) {
     const a = argv[i];
     const eq = a.indexOf("=");
     const flag = eq === -1 ? a : a.slice(0, eq);
+    if (a === "--first-party") {
+      opts.firstParty = true;
+      continue;
+    }
     if (!takes.has(flag)) return { error: `unknown argument: ${a}` };
     const value = eq === -1 ? argv[(i += 1)] : a.slice(eq + 1);
     if (value === undefined || value === "") return { error: `${flag} needs a value` };
@@ -309,6 +554,9 @@ export function parseArgs(argv) {
   }
   if (opts.edgesFile && !opts.indexCommit) return { error: "--edges-file requires --index-commit" };
   if (opts.edgesFile && opts.gitnexusBin) return { error: "--edges-file and --gitnexus-bin are exclusive" };
+  if (opts.firstParty && (opts.edgesFile || opts.gitnexusBin)) {
+    return { error: "--first-party excludes --edges-file and --gitnexus-bin (it reads no graph)" };
+  }
   // Direct mode has no response budget to fit under, so it pages in large steps.
   if (opts.gitnexusBin && !opts.pageSizeExplicit) opts.pageSize = DIRECT_PAGE_SIZE;
   return { opts };
@@ -467,7 +715,11 @@ export async function main(argv = process.argv.slice(2)) {
   const { opts } = parsed;
   // Default target is the SHARED path the selector reads first (outside every checkout, so the
   // gate's isolated tree sees it); `--out` keeps any explicit (e.g. legacy per-checkout) target.
-  const out = opts.out ? resolve(ROOT, opts.out) : sharedSnapshotPath(opts.repo);
+  const out = opts.out
+    ? resolve(ROOT, opts.out)
+    : opts.firstParty
+      ? join(dirname(sharedSnapshotPath(opts.repo)), FIRST_PARTY_SNAPSHOT_NAME)
+      : sharedSnapshotPath(opts.repo);
   const sourceRoot = resolve(opts.sourceRoot);
   const readSource = (rel) => {
     try {
@@ -479,7 +731,29 @@ export async function main(argv = process.argv.slice(2)) {
   const now = Date.now();
   let result;
   try {
-    if (opts.edgesFile) {
+    if (opts.firstParty) {
+      const git = (args) => execFileSync("git", args, { cwd: sourceRoot, maxBuffer: 1 << 28 }).toString("utf8");
+      let files;
+      let headCommit;
+      try {
+        files = git(["ls-files", "--recurse-submodules", "-z"]).split("\0").filter(Boolean);
+        headCommit = git(["rev-parse", "HEAD"]).trim();
+      } catch (e) {
+        throw new GraphReadError("backend-unavailable", `git could not list ${sourceRoot}: ${e instanceof Error ? e.message : String(e)}`);
+      }
+      result = produceSnapshotFromSource({
+        files,
+        readSource,
+        aliasesForImporter: nearestTsconfigAliases({ root: sourceRoot, hasTsconfig: (dir) => existsSync(join(sourceRoot, dir, "tsconfig.json")) }),
+        resolvePackageDir: nodeModulesPackageResolver({ root: sourceRoot }),
+        headCommit,
+        now,
+      });
+      const d = result.derive;
+      process.stderr.write(
+        `GRAPH_SNAPSHOT_DERIVE importers=${d.importers} unreadable=${d.unreadable} aliasResolved=${d.aliasResolved} aliasUnresolved=${d.aliasUnresolved} packageResolved=${d.packageResolved} packageUnresolved=${d.packageUnresolved} packageAmbiguous=${d.packageAmbiguous} relativeUnresolved=${d.relativeUnresolved} bare=${d.bare}\n`,
+      );
+    } else if (opts.edgesFile) {
       const edges = JSON.parse(readFileSync(resolve(opts.edgesFile), "utf8"));
       if (!Array.isArray(edges)) throw new GraphReadError("usage", "--edges-file must hold a JSON array");
       result = produceSnapshotFromEdges({ edges, index: { lastCommit: opts.indexCommit, indexedAt: null, backend: "edges-file", backendVersion: null }, readSource, now });

@@ -41,6 +41,8 @@ export interface StarlightContentAdapterOptions {
   baseUrl?: string;
   /** Max scan depth. Defaults to 8 (deep enough for any practical section nesting). */
   maxDepth?: number;
+  /** Published corpus revision. A changed revision drops metadata and rendered answers. */
+  getRevision?: () => string | Promise<string>;
 }
 
 const MAX_FILE_BYTES = 1024 * 1024;
@@ -157,13 +159,37 @@ export function starlightContentAdapter(opts: StarlightContentAdapterOptions): S
   const maxDepth = opts.maxDepth ?? 8;
 
   let pageCache: Map<string, StarlightPage> | null = null;
+  let cachedRevision: string | undefined;
+  let cacheGeneration = 0;
+  let pageBuild: Promise<Map<string, StarlightPage>> | null = null;
 
   function invalidate(): void {
     pageCache = null;
+    pageBuild = null;
+    cacheGeneration += 1;
   }
 
   async function buildPages(): Promise<Map<string, StarlightPage>> {
+    // Sample before a cache hit too. A failed revision read must not serve an
+    // answer whose freshness could not be established.
+    const revision = await opts.getRevision?.();
+    if (revision !== cachedRevision) {
+      invalidate();
+      cachedRevision = revision;
+    }
     if (pageCache) return pageCache;
+    if (pageBuild) return pageBuild;
+    const generation = cacheGeneration;
+    const building = loadPages(generation);
+    pageBuild = building;
+    try {
+      return await building;
+    } finally {
+      if (pageBuild === building) pageBuild = null;
+    }
+  }
+
+  async function loadPages(generation: number): Promise<Map<string, StarlightPage>> {
     const cache = new Map<string, StarlightPage>();
     const files = await walkContent(contentRoot, maxDepth);
     for (const abs of files) {
@@ -196,7 +222,8 @@ export function starlightContentAdapter(opts: StarlightContentAdapterOptions): S
       };
       cache.set(slug, page);
     }
-    pageCache = cache;
+    // An old in-flight scan cannot repopulate a newer revision's cache.
+    if (generation === cacheGeneration) pageCache = cache;
     return cache;
   }
 

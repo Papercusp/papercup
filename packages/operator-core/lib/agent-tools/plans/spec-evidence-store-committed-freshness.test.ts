@@ -72,9 +72,12 @@ vi.mock('./committed-tree-reader', async (importOriginal) => {
   };
 });
 
-const { listSpecEvidence, measureAndPinRepoFilesEvidenceAtRoot, MEASUREMENT_PIN_DETAILS_KEY } = await import(
-  './spec-evidence-store'
-);
+const {
+  listSpecEvidence,
+  measureAndPinRepoFilesEvidenceAtRoot,
+  measureAndPinRepoFilesEvidenceAtCommitForScope,
+  MEASUREMENT_PIN_DETAILS_KEY,
+} = await import('./spec-evidence-store');
 
 const git = (cwd: string, ...args: string[]) =>
   execFileSync('git', ['-C', cwd, '-c', 'user.email=t@example.test', '-c', 'user.name=t', '-c', 'commit.gpgsign=false', ...args], {
@@ -96,10 +99,26 @@ function fileSetFingerprint(base: string, paths: string[]): string {
 
 type Recipe = { schemaVersion: 1; kind: 'repo-files'; sourcePaths: string[] };
 
+/** The same formula over the bytes COMMITTED at `commit` in the repository at `repoDir`. */
+function fileSetFingerprintAtCommit(repoDir: string, commit: string, paths: Array<{ path: string; inRepo: string }>): string {
+  const entries = [...paths]
+    .sort((a, b) => a.path.localeCompare(b.path))
+    .map(({ path, inRepo }) => ({
+      path,
+      sha256: createHash('sha256').update(execFileSync('git', ['-C', repoDir, 'show', `${commit}:${inRepo}`])).digest('hex'),
+    }));
+  return `sha256-file-set-v1:${createHash('sha256').update(JSON.stringify(entries)).digest('hex')}`;
+}
+
 /** A binding stored now, against the CURRENT (clean) bytes, with its P-018 pin. */
-async function storedBinding(id: number, sourcePaths: string[]): Promise<Record<string, unknown>> {
+async function storedBinding(
+  id: number,
+  sourcePaths: string[],
+  measured?: { sourceFingerprint: string; pin: unknown },
+): Promise<Record<string, unknown>> {
   const recipe: Recipe = { schemaVersion: 1, kind: 'repo-files', sourcePaths };
-  const { pin } = await measureAndPinRepoFilesEvidenceAtRoot(root, recipe);
+  const pin = measured?.pin ?? (await measureAndPinRepoFilesEvidenceAtRoot(root, recipe)).pin;
+  const sourceFingerprint = measured?.sourceFingerprint ?? fileSetFingerprint(root, sourcePaths);
   return {
     id,
     work_item_id: `WI-${id}`,
@@ -111,7 +130,7 @@ async function storedBinding(id: number, sourcePaths: string[]): Promise<Record<
     spec_fingerprint: 'sha256:spec-v1',
     evidence_kind: 'test',
     evidence_ref: `vitest:binding-${id}`,
-    source_fingerprint: fileSetFingerprint(root, sourcePaths),
+    source_fingerprint: sourceFingerprint,
     test_fingerprint: null,
     fixture_fingerprint: null,
     rubric_fingerprint: null,
@@ -215,6 +234,67 @@ describe('listSpecEvidence measures repo-files proof at the measurement commit',
     expect(git(root, 'rev-parse', 'HEAD')).not.toBe(before);
     expect(new Set(rows.map((row) => row.serverMeasurement?.measuredAtCommit))).toEqual(new Set([before]));
     expect(rows.map((row) => row.currentness.overall)).toEqual(['current', 'current', 'current']);
+  });
+});
+
+describe('R-3: an as-committed bind measures the closure at the run commit (P-003)', () => {
+  const recipe = (sourcePaths: string[]): Recipe => ({ schemaVersion: 1, kind: 'repo-files', sourcePaths });
+  const atCommit = (sourcePaths: string[], at: { commitSha: string; repoPrefix: string | null }) =>
+    measureAndPinRepoFilesEvidenceAtCommitForScope('workspace-test', 'papercusp', recipe(sourcePaths), at);
+
+  it('stores the bytes the run executed after the tree moved past its commit, and a re-bind stores the same fingerprint', async () => {
+    const ran = git(root, 'rev-parse', 'HEAD');
+    writeFileSync(join(root, 'src/a.ts'), 'export const a = 2;\n');
+    git(root, 'commit', '-q', '-am', 'committed after the run');
+    writeFileSync(join(root, 'src/a.ts'), 'export const a = 3;\n'); // and an uncommitted peer edit on top
+
+    const expected = fileSetFingerprintAtCommit(root, ran, [{ path: 'src/a.ts', inRepo: 'src/a.ts' }]);
+    const first = await atCommit(['src/a.ts'], { commitSha: ran, repoPrefix: '' });
+    expect(first.sourceFingerprint).toBe(expected);
+    expect(first.sourceFingerprint).not.toBe(fileSetFingerprint(root, ['src/a.ts']));
+
+    writeFileSync(join(root, 'src/a.ts'), 'export const a = 4;\n');
+    const rebind = await atCommit(['src/a.ts'], { commitSha: ran, repoPrefix: '' });
+    expect(rebind.sourceFingerprint).toBe(expected);
+  });
+
+  it('a re-bind does not launder freshness: a closure change committed after the run reads stale and names the path', async () => {
+    const ran = git(root, 'rev-parse', 'HEAD');
+    writeFileSync(join(root, 'src/a.ts'), 'export const a = 2;\n');
+    git(root, 'commit', '-q', '-am', 'closure change after the run');
+    // Positive control first: a run whose closure the later commit did not touch reads current.
+    h.rows = [
+      await storedBinding(1, ['src/a.ts'], await atCommit(['src/a.ts'], { commitSha: ran, repoPrefix: '' })),
+      await storedBinding(2, ['src/b.ts'], await atCommit(['src/b.ts'], { commitSha: ran, repoPrefix: '' })),
+    ];
+    const [rebound, untouched] = await list();
+    expect(untouched?.currentness.overall).toBe('current');
+    expect(rebound?.currentness.overall).toBe('stale');
+    expect(rebound?.currentness.staleReasons).toContain('source-stale');
+    expect(rebound?.serverMeasurement?.movedPaths).toEqual([{ path: 'src/a.ts', dimension: 'source', change: 'changed' }]);
+  });
+
+  it('reads a submodule run inside that repository at its own commit, and refuses a path outside it', async () => {
+    const ran = git(sub, 'rev-parse', 'HEAD');
+    writeFileSync(join(sub, 'sql/001.sql'), 'select 2;\n');
+    git(sub, 'commit', '-q', '-am', 'sub change after the run');
+    writeFileSync(join(sub, 'sql/001.sql'), 'select 3;\n');
+
+    const measured = await atCommit(['libs/sub/sql/001.sql'], { commitSha: ran, repoPrefix: 'libs/sub' });
+    expect(measured.sourceFingerprint).toBe(
+      fileSetFingerprintAtCommit(sub, ran, [{ path: 'libs/sub/sql/001.sql', inRepo: 'sql/001.sql' }]),
+    );
+    await expect(atCommit(['src/a.ts'], { commitSha: ran, repoPrefix: 'libs/sub' })).rejects.toThrow(
+      'repo_measurement_outside_run_repository:src/a.ts',
+    );
+  });
+
+  it('refuses a closure path that does not exist at the run commit', async () => {
+    const ran = git(root, 'rev-parse', 'HEAD');
+    writeFileSync(join(root, 'src/added-later.ts'), 'export const later = 1;\n');
+    git(root, 'add', 'src/added-later.ts');
+    git(root, 'commit', '-q', '-m', 'added after the run');
+    await expect(atCommit(['src/added-later.ts'], { commitSha: ran, repoPrefix: '' })).rejects.toThrow();
   });
 });
 

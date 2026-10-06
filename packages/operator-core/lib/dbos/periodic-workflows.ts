@@ -133,7 +133,15 @@ async function scratchGcTick(): Promise<void> {
   await DBOS.runStep(
     async () => {
       const workspaceRegistry = readRegistry().workspaces.map((w) => w.id);
-      await runScratchGc({ workspaceRegistry });
+      const s = await runScratchGc({ workspaceRegistry });
+      // WI-10006512: what the sweep deleted, what it deliberately kept, and how much unowned
+      // top-level scratch exists, so a surprising deletion (or growth) is visible in the log.
+      console.log(
+        `[scratch-gc] deadWorkspaces=${s.deadWorkspaces} (${s.deadWorkspaceBytes}B) ` +
+          `deferred=${s.deadWorkspacesDeferred.map((d) => `${d.workspaceId}:${d.reason}`).join(',') || 'none'} ` +
+          `unprovenEntries=${s.unprovenEntries} markersWritten=${s.markersWritten} ` +
+          `retentionEvictions=${s.retentionEvictions} quotaEvictions=${s.quotaEvictions}`,
+      );
     },
     { name: 'scratch-gc' },
   );

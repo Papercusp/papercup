@@ -2361,7 +2361,7 @@ export default function PersonalVaultSettingsPage() {
         ) : (
           <p role="alert" style={{ color: "var(--bad)" }}>
             This plan declares no Personal Vault scopes. Add{" "}
-            <code>personalScopes: [personal:gmail]</code> to its frontmatter
+            <code>personalScopes: [personal:mail]</code> to its frontmatter
             first.
           </p>
         )}

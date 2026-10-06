@@ -18931,7 +18931,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "The owner asks you to answer a specific email — locate it with personal:search { scopes:[\"personal:gmail\"] }, pass externalId as messageId and sourceId. Or an email-triggered plan step asks you to answer it — pass payload.plan_run.runId as planRunId.",
+        "when": "The owner asks you to answer a specific email — locate it with personal:search { scopes:[\"personal:mail\"] }, pass externalId as messageId and sourceId. Or an email-triggered plan step asks you to answer it — pass payload.plan_run.runId as planRunId.",
         "notWhen": "Writing to a NEW recipient or starting a fresh thread — that is mail:send, which checks the addressee. Not for Slack (chat:reply). You cannot choose who this reaches.",
         "chaining": "personal:search → { externalId, sourceId } → mail:reply. Report the echoed to/subject/threadId back to the owner as evidence of where it actually went. With planRunId a run replies once; a retry returns alreadyCreated:true."
       }
@@ -25080,7 +25080,7 @@
           "POST"
         ]
       },
-      "description": "Change a plan's lifecycle status: draft→ready, ready→draft, →shipped, or →superseded. draft→ready/active requires `plans:audit { phase:'activation' }`; shipped/`done` is post-implementation: author the plan-specific rubric from as-built reality, run `plans:audit { phase:'completion' }`, then get a peer grade. Plan frontmatter, not item status.",
+      "description": "Change a plan's lifecycle status: draft→ready, ready→draft, →shipped, or →superseded. `dropped` maps to the terminal `superseded` status. draft→ready/active requires `plans:audit { phase:'activation' }`; shipped/`done` is post-implementation: author the plan-specific rubric from as-built reality, run `plans:audit { phase:'completion' }`, then get a peer grade. Plan frontmatter, not item status.",
       "capabilities": [
         "plans:write"
       ],
@@ -32269,7 +32269,7 @@
           "POST"
         ]
       },
-      "description": "Register a completed non-Vitest check in harness_shared.test_runs and return testRunIds for plans:bind-spec-evidence. Commit docs/evidence/*.json with schemaVersion:1, kind:\"operational-test-evidence\", command, timestamps, exitCode, summary, and assertions; pass expectedSha256 for those bytes. Mutation probes need exact MUTATION_PROBE_EVIDENCE_JSON records and cannot use shared .papercusp/scratch. Optional archivedMutation:{originalTestRunId,rawLogFile,rawLogSha256} adds failed-case identities from a committed raw log after validating the original scoped receipt; it never changes that receipt or runs a test. Evidence JSON limit: 262144 bytes; pin bulky raw artifacts by SHA-256. Verdict derives from exitCode + assertions, not caller input. Idempotent by artifact hash.",
+      "description": "Register a completed non-Vitest check in harness_shared.test_runs and return testRunIds for plans:bind-spec-evidence. Commit docs/evidence/*.json with schemaVersion:1, kind:\"operational-test-evidence\", command, timestamps, exitCode, summary, and assertions; pass expectedSha256 for those bytes. Mutation probes need exact MUTATION_PROBE_EVIDENCE_JSON records and cannot use shared .papercusp/scratch. Optional archivedMutation:{originalTestRunId,rawLogFile,rawLogSha256,rawLogCommit?} adds failed-case identities from a committed raw log after validating the original scoped receipt; rawLogCommit pins a full Git revision when the published log is redacted. It never changes that receipt or runs a test. Evidence JSON limit: 262144 bytes; pin bulky raw artifacts by SHA-256. Verdict derives from exitCode + assertions, not caller input. Idempotent by artifact hash.",
       "capabilities": [
         "testing:run"
       ],

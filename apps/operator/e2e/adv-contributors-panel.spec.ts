@@ -152,10 +152,8 @@ test.describe('/adv Contributors panel (P-048)', () => {
     const mounted = await dockMounts(page);
     assertMounted(
       mounted,
-      'The /adv shell did not mount the dock. Check that OPERATOR_E2E_BASE_URL points at a ' +
-        'server carrying PAPERCUSP_ENABLE_HMR=1 + PAPERCUSP_FAKE_LLM=1 (the standing ' +
-        'dev:operator systemd service does NOT), and that stubApis() still matches the ' +
-        "app's real request shapes.",
+      'The /adv shell did not mount the dock. Inspect the Playwright trace and Vite output; ' +
+        'this assertion does not establish why mounting failed.',
     );
     await openContributorsPanel(page);
     // Falsifier: the stub must actually be hit, or the row assertions below

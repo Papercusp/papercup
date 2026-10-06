@@ -46,6 +46,8 @@ const {
   revokeDeviceById,
   upsertPushToken,
   pushTargetsForWorkspace,
+  findDeviceIdByNoisePublicKey,
+  getDeviceNoisePublicKey,
 } = await import('./device-store');
 const { createOrgTestDb } = await import('../test/_org-test-db');
 
@@ -201,5 +203,37 @@ describe('device-store (real PG + real RLS)', () => {
     // Revoking device A drops its token from the targets (JOIN ... WHERE revoked_at IS NULL).
     await revokeDevice(idA, wsA);
     expect(await pushTargetsForWorkspace(wsA)).toHaveLength(0);
+  });
+
+  // D-013 #6: a sealed cloud channel identifies the phone by its Noise static key.
+  it('findDeviceIdByNoisePublicKey: resolves one live device, fails closed on unknown, revoked, shared or foreign keys', async () => {
+    const ws = freshWs();
+    const other = freshWs();
+    const key = () => randomBytes(32).toString('base64');
+    const keyA = key();
+    const idA = freshDevice();
+    await insertDevice({ deviceId: idA, userEmail: 'a@example.com', workspaceId: ws, noisePublicKey: keyA });
+    expect(await findDeviceIdByNoisePublicKey(ws, keyA)).toBe(idA);
+    expect(await getDeviceNoisePublicKey(idA, ws)).toBe(keyA);
+
+    expect(await findDeviceIdByNoisePublicKey(ws, key())).toBeNull();
+    expect(await findDeviceIdByNoisePublicKey(ws, '')).toBeNull();
+    // Another workspace never resolves this workspace's phone.
+    expect(await findDeviceIdByNoisePublicKey(other, keyA)).toBeNull();
+
+    // Two live devices sharing one key: ambiguous, so neither authenticates.
+    const shared = key();
+    const idB = freshDevice();
+    const idC = freshDevice();
+    await insertDevice({ deviceId: idB, userEmail: 'b@example.com', workspaceId: ws, noisePublicKey: shared });
+    await insertDevice({ deviceId: idC, userEmail: 'c@example.com', workspaceId: ws, noisePublicKey: shared });
+    expect(await findDeviceIdByNoisePublicKey(ws, shared)).toBeNull();
+    // Revoking one leaves the other as the single live holder.
+    await revokeDevice(idC, ws);
+    expect(await findDeviceIdByNoisePublicKey(ws, shared)).toBe(idB);
+
+    await revokeDevice(idA, ws);
+    expect(await findDeviceIdByNoisePublicKey(ws, keyA)).toBeNull();
+    expect(await getDeviceNoisePublicKey(idA, ws)).toBeNull();
   });
 });

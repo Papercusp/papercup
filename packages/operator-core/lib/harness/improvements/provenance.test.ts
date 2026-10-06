@@ -17,9 +17,14 @@ import { describe, it, expect } from 'vitest';
 import {
   DEFAULT_SIGNAL_ORIGIN,
   ORGANIC_ONLY,
+  PERSON_REPORTER_KINDS,
   SIGNAL_ORIGINS,
+  deriveReporterProvenance,
   effectiveOrigin,
+  isPersonReporterKind,
+  isReporterKind,
   isSignalOrigin,
+  mergeReporterKinds,
   originAllowed,
 } from './provenance';
 import { runDecaySweep, type DecaySweepDeps } from './decay';
@@ -174,5 +179,30 @@ describe('THE PROOF — a drill row never reaches an organic learner (D-002)', (
     // A legacy dup with NO origin reads organic — still matches an organic signal.
     const legacyDup = { watchdogKey: 'red-test:lib/a.test.ts', state: 'open', updatedAt: '2026-06-01T00:00:00Z' };
     expect(partitionSignalsByKnownKeys([organicSignal], [legacyDup]).knownOpen).toEqual([organicSignal]);
+  });
+});
+
+describe("reporter kind 'chat' — a person's report from a chat door (slack-messages-to-bug-reports D-012)", () => {
+  it("is a reporter kind, and a person's kind like 'end-user'; agents and watchdogs are not people", () => {
+    expect(isReporterKind('chat')).toBe(true);
+    expect([...PERSON_REPORTER_KINDS]).toEqual(['end-user', 'chat']);
+    expect(isPersonReporterKind('chat')).toBe(true);
+    expect(isPersonReporterKind('end-user')).toBe(true);
+    for (const kind of ['agent', 'watchdog', 'slack', '', null, undefined]) expect(isPersonReporterKind(kind)).toBe(false);
+  });
+
+  it('an explicit chat stamp is kept as given', () => {
+    expect(deriveReporterProvenance({ explicitKind: 'chat', createdBy: 'system:slack', at: 'T' })).toEqual({
+      kind: 'chat',
+      id: 'system:slack',
+      basis: 'explicit',
+      at: 'T',
+    });
+  });
+
+  it('folds into the corroboration tally in canonical order, de-duplicated', () => {
+    expect(mergeReporterKinds({ reporterKinds: ['end-user', 'agent'] }, 'chat')).toEqual(['agent', 'end-user', 'chat']);
+    expect(mergeReporterKinds({ reporterKinds: ['chat'] }, 'chat')).toEqual(['chat']);
+    expect(mergeReporterKinds({ reporterKinds: ['chat', 'not-a-kind'] }, 'watchdog')).toEqual(['watchdog', 'chat']);
   });
 });

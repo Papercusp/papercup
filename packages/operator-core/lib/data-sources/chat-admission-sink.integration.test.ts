@@ -22,6 +22,7 @@ import {
   admitChatEvent,
   chatRulePreset,
   createChatAdmissionSink,
+  type ChatAdmissionDeps,
 } from './chat-admission-sink';
 import { CHAT_MESSAGE_SOURCE_KIND, CHAT_THREAD_SOURCE_KIND, chatMessageSourceKey, chatThreadSourceKey } from './chat-admission-sources';
 import { upsertChatMessages } from './chat-retrieval-units';
@@ -67,6 +68,8 @@ let created: Array<{ kind: string; title: string; harness: string }>;
 let nextId = 0;
 let slackCalls: Array<{ method: string; params: Record<string, string> }>;
 let slackMessages: Record<string, Record<string, unknown>>;
+/** What the bug intake was handed, per filing (P-005: reporter kind and the context block). */
+let bugInputs: Array<Record<string, unknown>>;
 
 function admitDeps(): AdmitDeps {
   return {
@@ -80,6 +83,7 @@ function admitDeps(): AdmitDeps {
     // D-007). `created` records whichever door minted the item, so these assertions keep meaning
     // "one bug was filed"; admit-bug-intake.integration.test.ts pins the door itself.
     captureBug: async (input) => {
+      bugInputs.push(input as unknown as Record<string, unknown>);
       const harness = typeof input.scope === 'string' && input.scope.startsWith('harness:') ? input.scope.slice('harness:'.length) : '';
       created.push({ kind: String(input.kind), title: String(input.title), harness });
       nextId += 1;
@@ -95,6 +99,12 @@ function admitDeps(): AdmitDeps {
 let ephemeralError: string | null = null;
 const fakeSlackFetch = (async (input: string | URL, init?: RequestInit) => {
   const url = new URL(String(input));
+  // A consented file download (P-005): bytes from Slack's file host; a 'BROKEN' file fails.
+  if (url.hostname === 'files.slack.com') {
+    slackCalls.push({ method: 'download', params: { path: url.pathname } });
+    if (url.pathname.includes('BROKEN')) return new Response('boom', { status: 500 });
+    return new Response(new TextEncoder().encode(`bytes of ${url.pathname.split('/').at(-1)}`), { status: 200 });
+  }
   const method = url.pathname.replace('/api/', '');
   if (method === 'chat.postEphemeral') {
     slackCalls.push({ method, params: JSON.parse(String(init?.body ?? '{}')) as Record<string, string> });
@@ -103,20 +113,35 @@ const fakeSlackFetch = (async (input: string | URL, init?: RequestInit) => {
   }
   const params = Object.fromEntries(url.searchParams.entries());
   slackCalls.push({ method, params });
+  // The report facts (P-005, D-012): a message link, the channel's name, the reporter's name.
+  const facts: Record<string, unknown> = {
+    'chat.getPermalink': { ok: true, permalink: `https://acme.slack.test/archives/${params.channel}/p${String(params.message_ts).replace('.', '')}` },
+    'conversations.info': { ok: true, channel: { id: params.channel, name: 'bugs' } },
+    'users.info': { ok: true, user: { name: params.user, profile: { display_name: `display-${params.user}` } } },
+  };
+  if (facts[method]) return new Response(JSON.stringify(facts[method]), { status: 200, headers: { 'content-type': 'application/json' } });
   const message = slackMessages[params.ts ?? params.latest ?? ''];
   const messages = !message ? [] : method === 'conversations.history' && message.thread_ts && message.thread_ts !== message.ts ? [] : [message];
   return new Response(JSON.stringify({ ok: true, messages }), { status: 200, headers: { 'content-type': 'application/json' } });
 }) as typeof fetch;
 
-function adapter() {
-  return createSlackChatAdmissionAdapter(source, async () => 'xoxb-test', {
+/**
+ * The real Slack adapter over the fake API. Most cases pin admission and message fetching, so by
+ * default the adapter has no reportFacts and makes no report-facts calls; the P-005 case below
+ * turns them on and pins them.
+ */
+function adapter(opts: { reportFacts?: boolean } = {}) {
+  const real = createSlackChatAdmissionAdapter(source, async () => 'xoxb-test', {
     fetch: fakeSlackFetch,
     apiOrigin: 'https://slack.test',
     isEnabled: async () => true,
   });
+  if (opts.reportFacts) return real;
+  const { reportFacts: _withoutFacts, ...rest } = real;
+  return rest;
 }
 
-const deps = () => ({ ...admitDeps(), adapter: adapter() });
+const deps = (opts: { reportFacts?: boolean } = {}) => ({ ...admitDeps(), adapter: adapter(opts) });
 
 async function rule(preset: 'report-bug' | 'new-thread', channel: string, action: 'admit' | 'suggest' = 'admit') {
   const { sourceKind, match } = chatRulePreset(preset, channel);
@@ -179,6 +204,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   created = [];
+  bugInputs = [];
   slackCalls = [];
   slackMessages = {};
   ephemeralError = null;
@@ -536,5 +562,139 @@ describe('looks-like-a-bug suggestions (P-007)', () => {
     expect(normalized).toBeNull();
     expect(ephemerals()).toEqual([]);
     expect(await suggestionRows()).toEqual([]);
+  });
+});
+
+describe("a chat report's context block (P-005, D-012)", () => {
+  const TS = '1777000300.000100';
+  const shortcut = () => ({
+    ...signal('shortcut', 'CBUGS', TS),
+    note: 'Since this morning, every query',
+    attachmentConsent: true,
+    occurredAt: '2026-10-06T21:00:00.000Z',
+  });
+
+  beforeEach(() => {
+    slackMessages[TS] = {
+      ts: TS,
+      user: 'U9',
+      text: 'Search returns nothing',
+      user_profile: { display_name: 'nina' },
+      files: [{
+        name: 'shot.png',
+        mimetype: 'image/png',
+        size: 10,
+        permalink: 'https://acme.slack.test/files/U9/F1/shot.png',
+        url_private: 'https://files.slack.com/files-pri/T-F1/shot.png',
+      }],
+    };
+  });
+
+  it("a shortcut report files as a 'chat' report carrying the gesture, reporter, note, consent and Slack's facts", async () => {
+    await rule('report-bug', 'CBUGS');
+    const sink = createChatAdmissionSink(sql, source, deps({ reportFacts: true }));
+    await sink.deliver({ payload: shortcut() } as never);
+
+    expect(created).toHaveLength(1);
+    const input = bugInputs[0]!;
+    expect(input.reporterKind).toBe('chat');
+    const chat = (input.reportContext as { chat?: Record<string, unknown> }).chat;
+    expect(chat).toMatchObject({
+      gesture: 'shortcut',
+      reportedAt: '2026-10-06T21:00:00.000Z',
+      reporter: { externalUserId: 'U5', displayName: 'display-U5' },
+      author: expect.objectContaining({ displayName: 'nina' }),
+      note: 'Since this morning, every query',
+      attachmentConsent: true,
+      permalink: `https://acme.slack.test/archives/CBUGS/p${TS.replace('.', '')}`,
+      attachments: [expect.objectContaining({ name: 'shot.png', url: 'https://acme.slack.test/files/U9/F1/shot.png' })],
+    });
+    expect(JSON.stringify(input)).not.toContain('files-pri');
+  });
+
+  it('reads Slack once per event: one message read serves the fetch and the facts, one facts call each', async () => {
+    await rule('report-bug', 'CBUGS');
+    const sink = createChatAdmissionSink(sql, source, deps({ reportFacts: true }));
+    await sink.deliver({ payload: shortcut() } as never);
+    const count = (method: string) => slackCalls.filter((c) => c.method === method).length;
+    // The subject was not stored, so the adapter fetched it; reportFacts reused that read.
+    expect(count('conversations.history')).toBe(1);
+    expect([count('chat.getPermalink'), count('conversations.info'), count('users.info')]).toEqual([1, 1, 1]);
+  });
+
+  describe('consented files (unified D-013, D-048)', () => {
+    const withFiles = (...ids: string[]) => {
+      slackMessages[TS] = {
+        ...slackMessages[TS],
+        files: ids.map((id) => ({
+          id, name: `${id}.png`, mimetype: 'image/png', size: 10,
+          permalink: `https://acme.slack.test/files/U9/${id}/${id}.png`,
+          url_private: `https://files.slack.com/files-pri/T-${id}/${id}.png`,
+        })),
+      };
+    };
+    let stored: Array<Record<string, unknown>>;
+    const putAttachment: NonNullable<ChatAdmissionDeps['putAttachment']> = async (attachment) => {
+      stored.push({ ...attachment, content: new TextDecoder().decode(attachment.content as Uint8Array) });
+      return { ok: true, id: `ATT-${stored.length}`, deduplicated: false, redaction: 'not-redactable', byteSize: 10 };
+    };
+    const admit = (payload: Record<string, unknown>) =>
+      admitChatEvent(sql, { workspaceId: WS, dataSourceId: source.id, payload }, { ...deps({ reportFacts: true }), putAttachment });
+
+    beforeEach(() => {
+      stored = [];
+    });
+
+    it('with consent, each file is downloaded once and stored against the filed bug', async () => {
+      await rule('report-bug', 'CBUGS');
+      withFiles('F1', 'F2');
+      const out = await admit(shortcut());
+      expect(created).toHaveLength(1);
+      expect(out.attachments).toEqual({ stored: 2, failed: 0, error: null });
+      const bug = (out.admitted[0]!.result as { workItemId: string }).workItemId;
+      expect(stored).toEqual([
+        expect.objectContaining({ workspaceId: WS, workItemId: bug, door: 'slack', kind: 'screenshot', mime: 'image/png', externalId: 'slack:F1', content: 'bytes of F1.png' }),
+        expect.objectContaining({ workspaceId: WS, workItemId: bug, door: 'slack', kind: 'screenshot', mime: 'image/png', externalId: 'slack:F2', content: 'bytes of F2.png' }),
+      ]);
+      expect(slackCalls.filter((c) => c.method === 'download')).toHaveLength(2);
+    });
+
+    it('without consent nothing is downloaded or stored; the files stay Slack links', async () => {
+      await rule('report-bug', 'CBUGS');
+      withFiles('F1');
+      const out = await admit({ ...shortcut(), attachmentConsent: false });
+      expect(created).toHaveLength(1);
+      expect(out.attachments).toBeUndefined();
+      expect(stored).toEqual([]);
+      expect(slackCalls.filter((c) => c.method === 'download')).toEqual([]);
+      expect((bugInputs[0]!.reportContext as { chat: { attachments: unknown[] } }).chat.attachments).toHaveLength(1);
+    });
+
+    it('a failed download costs the files, never the report', async () => {
+      await rule('report-bug', 'CBUGS');
+      withFiles('BROKEN');
+      const out = await admit(shortcut());
+      expect(created).toHaveLength(1);
+      expect(out.admitted[0]!.result).toMatchObject({ ok: true });
+      expect(out.attachments).toEqual({ stored: 0, failed: 0, error: expect.stringMatching(/^slack_file_download_500:BROKEN/) });
+      expect(stored).toEqual([]);
+    });
+
+    it('nothing is downloaded when no admit rule filed the report', async () => {
+      await rule('report-bug', 'CBUGS', 'suggest');
+      withFiles('F1');
+      const out = await admit(shortcut());
+      expect(created).toEqual([]);
+      expect(out.attachments).toBeUndefined();
+      expect(slackCalls.filter((c) => c.method === 'download')).toEqual([]);
+    });
+  });
+
+  it('ordinary traffic that matches no admit rule makes no report-facts call', async () => {
+    await rule('report-bug', 'CBUGS', 'suggest');
+    const sink = createChatAdmissionSink(sql, source, deps({ reportFacts: true }));
+    await sink.deliver({ payload: shortcut() } as never);
+    expect(created).toEqual([]);
+    expect(slackCalls.filter((c) => ['chat.getPermalink', 'conversations.info', 'users.info'].includes(c.method))).toEqual([]);
   });
 });

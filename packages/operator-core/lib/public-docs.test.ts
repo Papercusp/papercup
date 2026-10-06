@@ -44,6 +44,22 @@ describe('public manual read boundary', () => {
       expect(await head.text()).toBe('');
     }
   });
+  it('revalidates the same FAQ and Pagefind URLs after their published bytes change', async () => {
+    const artifacts = [
+      { path: '/docs/faq', file: 'faq.html', before: 'Old FAQ answer', after: 'Reviewed FAQ answer' },
+      { path: '/docs/pagefind/index.pf_index', file: 'pagefind/index.pf_index', before: 'old index', after: 'revised index' },
+    ];
+    for (const artifact of artifacts) {
+      await writeFile(join(root, artifact.file), artifact.before);
+      const before = await servePublicDocs(request(artifact.path), root);
+      expect(before.headers.get('cache-control')).toBe('public, max-age=0, must-revalidate');
+      expect(await before.text()).toBe(artifact.before);
+      await writeFile(join(root, artifact.file), artifact.after);
+      const after = await servePublicDocs(request(artifact.path), root);
+      expect(after.headers.get('cache-control')).toBe('public, max-age=0, must-revalidate');
+      expect(await after.text()).toBe(artifact.after);
+    }
+  });
   it.each(['pf_meta', 'pf_index', 'pf_fragment', 'pagefind'])('serves Pagefind binary %s without HTML fallback', async (extension) => {
     const path = `/docs/pagefind/test.${extension}`;
     await writeFile(join(root, 'pagefind', `test.${extension}`), new Uint8Array([0, 97, 115, 109]));

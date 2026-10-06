@@ -49,12 +49,28 @@ export const TICKET_DATATYPE = 'ticket';
 export const TICKET_CONTAINERS_CAPABILITY = 'ticket.containers';
 export const INTEGRATIONS_SETTINGS_PATH = '/settings/integrations';
 
-/** The source config keys this page may set. Anything else stays as the connection wrote it. */
+/**
+ * Config keys the page has its own controls and labels for. Not the settable set: what a source
+ * may set comes from its provider's configSchema (settableTicketConfigKeys).
+ */
 export const TICKET_SOURCE_CONFIG_KEYS = ['teamIds', 'workspaceGid', 'projectGids', 'sectionCategories', 'harnessSlug'] as const;
 export type TicketSourceConfigKey = (typeof TICKET_SOURCE_CONFIG_KEYS)[number];
 
-/** Config keys the overview reports back (the page's own keys plus the account label the connect flow wrote). */
-const REPORTED_CONFIG_KEYS = [...TICKET_SOURCE_CONFIG_KEYS, 'accountLabel'] as const;
+/** Config the connection flow owns. It is reported back but never settable from the page. */
+const CONNECTION_OWNED_CONFIG_KEYS = ['accountLabel'] as const;
+
+/**
+ * The config keys a source of this provider may set: the properties its descriptor's configSchema
+ * declares, plus `harnessSlug` (the harness is ours, so no descriptor can declare it). Derived from
+ * the descriptor so a new provider's keys (GitHub's owner/repo) are settable without a hand-kept
+ * list here (WI-10006213).
+ */
+export function settableTicketConfigKeys(schema: Record<string, unknown> | null): string[] {
+  const properties = isPlainObject(schema?.properties) ? Object.keys(schema.properties) : [];
+  const keys = new Set([...properties, 'harnessSlug']);
+  for (const owned of CONNECTION_OWNED_CONFIG_KEYS) keys.delete(owned);
+  return [...keys];
+}
 
 export const TICKET_CONTAINER_KINDS = ['team', 'workspace', 'project'] as const;
 export type TicketContainerKind = (typeof TICKET_CONTAINER_KINDS)[number];
@@ -218,9 +234,12 @@ interface SourceSyncRow {
 const isoOrNull = (v: Date | string | null | undefined): string | null =>
   v === null || v === undefined ? null : v instanceof Date ? v.toISOString() : String(v);
 
-function reportedConfig(config: Record<string, unknown>): Record<string, unknown> {
+/** The settable keys plus the account label the connect flow wrote; never credentials or cursors. */
+function reportedConfig(schema: Record<string, unknown> | null, config: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
-  for (const key of REPORTED_CONFIG_KEYS) if (config[key] !== undefined) out[key] = config[key];
+  for (const key of [...settableTicketConfigKeys(schema), ...CONNECTION_OWNED_CONFIG_KEYS]) {
+    if (config[key] !== undefined) out[key] = config[key];
+  }
   return out;
 }
 
@@ -260,6 +279,7 @@ export async function ticketIntegrationsOverview(
   const sources = owned.map((source): TicketSourceSummary => {
     const s = sync.get(source.id);
     const config = isPlainObject(source.config) ? source.config : {};
+    const schema = configSchemaOf(byKind.get(source.kind)!.descriptor);
     return {
       id: source.id,
       provider: source.kind,
@@ -270,8 +290,8 @@ export async function ticketIntegrationsOverview(
       lastSyncAt: isoOrNull(s?.sync_last_success_at),
       nextAttemptAt: isoOrNull(s?.sync_next_attempt_at),
       failureCount: s?.sync_failure_count ?? 0,
-      config: reportedConfig(config),
-      missingConfig: missingTicketConfig(configSchemaOf(byKind.get(source.kind)!.descriptor), config),
+      config: reportedConfig(schema, config),
+      missingConfig: missingTicketConfig(schema, config),
       mirrored: mirrored.get(source.id) ?? 0,
       admitted: admitted.get(source.id) ?? 0,
       rules: rules.filter((rule) => rule.dataSourceId === source.id),
@@ -389,15 +409,16 @@ export async function setTicketSourceConfig(
 ): Promise<TicketSourceConfigResult> {
   const source = await ownedTicketSource(sql, input, await requestRegistry(deps));
   if (!isPlainObject(input.patch)) throw new TicketIntegrationError('ticket_source_config_invalid', 'patch must be an object');
+  const schema = configSchemaOf(source.provider.descriptor);
+  const settable = settableTicketConfigKeys(schema);
   const merged: Record<string, unknown> = { ...source.config };
   for (const [key, value] of Object.entries(input.patch)) {
-    if (!(TICKET_SOURCE_CONFIG_KEYS as readonly string[]).includes(key)) {
-      throw new TicketIntegrationError('ticket_source_config_invalid', `'${key}' is not settable here (${TICKET_SOURCE_CONFIG_KEYS.join(', ')})`);
+    if (!settable.includes(key)) {
+      throw new TicketIntegrationError('ticket_source_config_invalid', `'${key}' is not settable here (${settable.join(', ')})`);
     }
     if (value === null) delete merged[key];
     else merged[key] = value;
   }
-  const schema = configSchemaOf(source.provider.descriptor);
   const check = checkAgainstJsonSchema(schema ? withoutTopLevelRequired(schema) : null, merged);
   if (!check.ok) throw new TicketIntegrationError('ticket_source_config_invalid', check.errors.join('; '));
   const rows = await sql<Array<{ id: string }>>`
@@ -409,7 +430,7 @@ export async function setTicketSourceConfig(
      WHERE workspace_id = ${input.workspaceId} AND id = ${source.id}::uuid AND owner_user_id = ${input.ownerUserId}::uuid
     RETURNING id::text`;
   if (rows.length !== 1) throw new TicketIntegrationError('ticket_source_not_found', `no source '${source.id}' of yours`, 404);
-  return { config: reportedConfig(merged), missingConfig: missingTicketConfig(schema, merged) };
+  return { config: reportedConfig(schema, merged), missingConfig: missingTicketConfig(schema, merged) };
 }
 
 /**
