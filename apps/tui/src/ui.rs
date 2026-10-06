@@ -4208,6 +4208,15 @@ fn card_lines(app: &App, inner_w: usize, max_rows: usize) -> Vec<Line<'static>> 
             )));
         }
     }
+    // draw_card renders these under `Wrap { trim: false }`, where ratatui 0.29
+    // draws a whitespace-only line as two rows; card_block_height counts one
+    // per line, so a blank-but-spaced line would push the last row out of the
+    // strip (WI-10006466). Make every such line truly empty.
+    for line in &mut lines {
+        if line.spans.iter().all(|s| s.content.trim().is_empty()) && !line.spans.is_empty() {
+            *line = Line::default();
+        }
+    }
     lines
 }
 
@@ -4228,9 +4237,21 @@ fn approval_card_lines(
 ) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
     let text_w = inner_w.saturating_sub(2).max(8);
+    // One space in from the rule. A code line keeps its indentation (a hanging
+    // indent when it wraps, tabs as four spaces), as Claude Code shows it. A
+    // blank line stays truly empty: under `Wrap { trim: false }` ratatui 0.29
+    // draws a whitespace-only line as two rows, which the strip's height math
+    // (one row per line) does not expect (WI-10006466).
     let indented = |text: &str, style: Style, lines: &mut Vec<Line<'static>>| {
-        for wl in wrap_text(text, text_w) {
-            lines.push(Line::from(Span::styled(format!(" {wl}"), style)));
+        let text = text.replace('\t', "    ");
+        let lead = (text.len() - text.trim_start_matches(' ').len()).min(text_w / 2);
+        let pad = " ".repeat(lead);
+        for wl in wrap_text(&text[lead..], text_w - lead) {
+            if wl.trim().is_empty() {
+                lines.push(Line::default());
+            } else {
+                lines.push(Line::from(Span::styled(format!(" {pad}{wl}"), style)));
+            }
         }
     };
     indented(&approval.title, Theme::header(), &mut lines);
@@ -4270,10 +4291,20 @@ fn approval_card_lines(
             "no" => " (esc)",
             _ => "",
         };
-        let row = format!(" {marker} {}. {}{key}", i + 1, opt.label);
+        // A long answer wraps under its own text, inside the strip.
+        let prefix = format!(" {marker} {}. ", i + 1);
+        let prefix_w = prefix.chars().count();
         let style = if selected { Theme::selected() } else { Style::default() };
-        for (li, wl) in wrap_text(&row, inner_w).into_iter().enumerate() {
-            let text = if li == 0 { wl } else { format!("      {wl}") };
+        let label = format!("{}{key}", opt.label);
+        for (li, wl) in wrap_text(&label, inner_w.saturating_sub(prefix_w).max(8))
+            .into_iter()
+            .enumerate()
+        {
+            let text = if li == 0 {
+                format!("{prefix}{wl}")
+            } else {
+                format!("{}{wl}", " ".repeat(prefix_w))
+            };
             tail.push(Line::from(Span::styled(text, style)));
         }
     }
@@ -4419,7 +4450,9 @@ fn draw_card(f: &mut Frame, app: &App, area: Rect) {
             )));
         }
         f.render_widget(Clear, area);
-        f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }).block(block), area);
+        // No re-wrap: approval_card_lines already wrapped every line to the
+        // strip, and card_block_height sized the strip one row per line.
+        f.render_widget(Paragraph::new(lines).block(block), area);
         return;
     }
     let inner_w = area.width.saturating_sub(2).max(1) as usize;
@@ -11909,6 +11942,79 @@ mod tests {
         // A short change is not cut, and gets no cut-short row.
         let short = tool_approval_lines_for(&["- a", "+ b"], 120, 40);
         assert!(short.contains("+ b") && !short.contains(" lines (Ctrl+R"), "{short}");
+    }
+
+    /// pui-chat-first-ux P-028 (WI-10006466): the card from the final Codex
+    /// frame (/tmp/pui-p028j-codex/13-edit-approval.txt) — a four-line title,
+    /// indented Python with two blank lines and a line longer than the strip —
+    /// lost its 'Enter to select' footer at 120×40. Same card, both layouts.
+    #[test]
+    fn approval_card_keeps_its_footer_under_a_multi_line_title() {
+        let long = "    request = urllib.request.Request('http://localhost:3070/api/mcp?superuser=1', \
+                    data=json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/list', 'params': {}}).encode(), \
+                    headers={'Authorization': 'Bearer ' + token_path.read_text().strip(), \
+                    'Content-Type': 'application/json'})";
+        let mut body: Vec<String> = [
+            "$ /bin/bash -lc \"python3 - <<'PY'",
+            "import json",
+            "import pathlib",
+            "import urllib.request",
+            "",
+            "",
+            "token_path = pathlib.Path('~/.papercusp/superuser-token').expanduser()",
+            "if not token_path.is_file():",
+            "    print('Papercusp credentials are unavailable in this environment.')",
+            "else:",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        body.push(long.to_string());
+        for i in 0..8 {
+            body.push(format!("    print(json.dumps(item_{i}, indent=2))"));
+        }
+        body.push("PY\"".to_string());
+        let snap = serde_json::json!({
+            "runId": "run-1",
+            "workspaceId": "ws-1",
+            "version": 1,
+            "snapshot": { "openCards": [{
+                "correlationId": "corr-1",
+                "prompt": "Do you want to run this command?",
+                "approval": {
+                    "title": "Bash(/bin/bash -lc \"python3 - <<'PY'\nimport json\nimport pathlib\n…)",
+                    "question": "Do you want to run this command?", "body": body },
+                "details": "Raw arguments (Bash):\n{\"command\": \"python3 - <<'PY'\"}",
+                "presentation": { "kind": "radio", "options": [
+                    { "id": "yes", "label": "Yes" },
+                    { "id": "always", "label": "Yes, and don't ask again for this command this session" },
+                    { "id": "no", "label": "No, and tell Codex what to do instead" }] },
+                "allowDecline": true,
+                "createdAt": 1.0
+            }]}
+        })
+        .to_string();
+        let docked = {
+            let mut app = App::new();
+            app.tab = Tab::Operator;
+            app
+        };
+        for (layout, mut app) in [("docked", docked), ("chat-first", chat_first_bound_app())] {
+            app.card_state
+                .apply_snapshot(crate::card_view::SnapshotEnvelope::from_json(&snap).unwrap());
+            for (w, h) in [(120, 40), (120, 41), (100, 30), (80, 24)] {
+                let text = render(&app, w, h);
+                let rows: Vec<String> = text
+                    .chars()
+                    .collect::<Vec<_>>()
+                    .chunks(w as usize)
+                    .map(|r| r.iter().collect::<String>().trim_end().to_string())
+                    .collect();
+                let rows = rows.join("\n");
+                assert!(text.contains("3. No, and tell Codex"), "{layout} {w}x{h} last answer:\n{rows}");
+                assert!(text.contains("Enter to select"), "{layout} {w}x{h} footer:\n{rows}");
+            }
+        }
     }
 
     /// Render a D-028 approval card with `body` and return the frame text.

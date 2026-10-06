@@ -9,11 +9,12 @@
  */
 
 import { readFileSync } from 'node:fs';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, truncate, writeFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   acquireLspProjectLease,
@@ -29,6 +30,7 @@ import {
   resolveSymbolSearchScope,
   specForLanguage,
   typescriptInitializationOptions,
+  typescriptWorkspaceMemoryMb,
   resolveServerBin,
   symbolSearchEmptyCaveat,
   type LspReadinessIntent,
@@ -422,6 +424,57 @@ describe('ensureOpen — disk freshness and readiness invalidation', () => {
 
     expect(again).toBe(uri);
     expect(sent).toEqual([]);
+  });
+});
+
+describe('WI-41095 — workspace source sizing', () => {
+  const tsserverPath = createRequire(import.meta.url).resolve('@typescript/old/lib/tsserver.js');
+  let root: string;
+
+  beforeEach(async () => {
+    vi.stubEnv('PAPERCUSP_LSP_MAX_TSSERVER_MEMORY_MB', '');
+    root = await mkdtemp(join(tmpdir(), 'wi41095-heap-policy-'));
+    await writeFile(join(root, 'source.ts'), 'export const value = 1;');
+    await writeFile(join(root, 'tsconfig.json'), '{"include":["*.ts"]}');
+  });
+
+  afterEach(async () => {
+    vi.unstubAllEnvs();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it('increases the launched budget as the same configured project grows', async () => {
+    const small = typescriptInitializationOptions(tsserverPath, undefined, root).maxTsServerMemory!;
+    // Sparse fixtures do not allocate large source buffers in the test worker.
+    await truncate(join(root, 'source.ts'), 80 * 1024 * 1024);
+    const large = typescriptInitializationOptions(tsserverPath, undefined, root).maxTsServerMemory!;
+    await truncate(join(root, 'source.ts'), 160 * 1024 * 1024);
+    const larger = typescriptInitializationOptions(tsserverPath, undefined, root).maxTsServerMemory!;
+    expect(large).toBeGreaterThan(small);
+    expect(larger).toBeGreaterThan(large);
+  });
+
+  it('uses compiler extends/exclude rules without omitting test roots', async () => {
+    await writeFile(join(root, 'base.json'), '{"include":["*.ts"],"exclude":["excluded.ts"]}');
+    await writeFile(join(root, 'tsconfig.json'), '{"extends":"./base.json"}');
+    await writeFile(join(root, 'excluded.ts'), '');
+    await truncate(join(root, 'excluded.ts'), 160 * 1024 * 1024);
+    const before = typescriptWorkspaceMemoryMb(root, tsserverPath);
+    await writeFile(join(root, 'source.test.ts'), '');
+    await truncate(join(root, 'source.test.ts'), 80 * 1024 * 1024);
+    const after = typescriptWorkspaceMemoryMb(root, tsserverPath);
+    expect(after).toBeGreaterThan(before);
+    await rm(join(root, 'excluded.ts'));
+    expect(typescriptWorkspaceMemoryMb(root, tsserverPath)).toBe(after);
+  });
+
+  it('refuses invalid project configuration rather than returning the old ceiling', async () => {
+    await writeFile(join(root, 'tsconfig.json'), '{"compilerOptions":{"target":"invalid"}}');
+    expect(() => typescriptWorkspaceMemoryMb(root, tsserverPath)).toThrow('Cannot size TypeScript project');
+    vi.stubEnv('PAPERCUSP_LSP_MAX_TSSERVER_MEMORY_MB', '9216');
+    expect(typescriptInitializationOptions(tsserverPath, undefined, root).maxTsServerMemory).toBe(9216);
+    expect(typescriptInitializationOptions(tsserverPath, 8192, root).maxTsServerMemory).toBe(8192);
+    expect(typescriptInitializationOptions(tsserverPath, null, root)).not.toHaveProperty('maxTsServerMemory');
   });
 });
 

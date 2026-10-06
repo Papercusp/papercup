@@ -1,8 +1,11 @@
 -- R-5 live measurement for plan work-queue-bulk-cleanup-remediation-2026-10-01 (AUTO-BAR-R-5-P-009 / P-010).
--- Run: sudo -n -u postgres psql -d papercusp -At -F'|' -v ON_ERROR_STOP=1 -f <this file>
+-- Run: sudo -n -u postgres psql -d papercusp -At -F'|' -v ON_ERROR_STOP=1 \
+--        -v prevstart='2026-10-06 07:24:41+00' -v bgstart='2026-10-06 08:26:20+00' -f <this file>
 -- Scope: workspace_id='papercusp-workspace' (harness 'papercusp' where the relation is harness-keyed).
--- Current build: papercusp-bg-host.service started 2026-10-06 07:24:41Z (runtime identity is measured
--- separately via dev:pipeline_position servingRuntimes and recorded in the evidence JSON).
+-- bg-host processes: :prevstart = PID 1690631 start (07:24:41Z), :bgstart = current PID 1479514 start
+-- (08:26:20Z). Both were built from trees whose runner sources are byte-identical (bulk-dedup.ts mtime
+-- 07:06:25Z; promoter/reaper/inbox action committed in 202743ceba). Rows are labelled by process.
+-- Runtime identity is measured separately via dev:pipeline_position servingRuntimes (evidence JSON).
 -- Writers read before comparing (source paths in the evidence JSON):
 --   inbox runs/skip strings: packages/operator-core/lib/harness/routines/inbox-bulk-resolve-action.ts
 --   bulk stage/census/digest: packages/operator-core/lib/work-items-admission-bulk-dedup.ts
@@ -15,7 +18,8 @@ SET TIME ZONE 'UTC';
 -- ───────────── Partition (1): Inbox scheduling ─────────────
 \echo '## P1a inbox-resolve runs created in the last 24h (run|requested_by|phase|created|started|finished|total|auto|rec|skip|fail|onCurrentBuild|error)'
 SELECT run_id, requested_by, phase, created_at, started_at, finished_at, total_items, auto_resolved, recommended, skipped, failed,
-       created_at >= '2026-10-06 07:24:41+00' AS on_current_build, left(coalesce(error,''),100)
+       CASE WHEN created_at >= :'bgstart' THEN 'current-process' WHEN created_at >= :'prevstart' THEN 'prior-process-same-runner-blobs' ELSE 'older' END AS build,
+       left(coalesce(error,''),100)
   FROM harness_shared.attention_bulk_runs
  WHERE workspace_id = 'papercusp-workspace' AND run_kind = 'inbox-resolve'
    AND created_at >= now() - interval '24 hours'
@@ -26,6 +30,7 @@ SELECT run_id, requested_by, phase, created_at, started_at, finished_at, total_i
 -- finished by then while still in an executing phase (pending/running). A predecessor in 'review'
 -- has finished executing; D-001/P-001 says it must not block the next scheduled run.
 SELECT r.run_id, r.created_at,
+       CASE WHEN r.created_at >= :'bgstart' THEN 'current-process' ELSE 'prior-process-same-runner-blobs' END AS build,
        (SELECT count(*) FROM harness_shared.attention_bulk_runs o
          WHERE o.workspace_id = r.workspace_id AND o.run_kind = 'inbox-resolve' AND o.run_id <> r.run_id
            AND o.started_at <= r.created_at AND (o.finished_at IS NULL OR o.finished_at > r.created_at)
@@ -37,7 +42,7 @@ SELECT r.run_id, r.created_at,
      WHERE q.workspace_id = r.workspace_id AND q.run_kind = 'inbox-resolve' AND q.created_at < r.created_at
      ORDER BY q.created_at DESC LIMIT 1) p ON true
  WHERE r.workspace_id = 'papercusp-workspace' AND r.run_kind = 'inbox-resolve'
-   AND r.created_at >= '2026-10-06 07:24:41+00'
+   AND r.created_at >= :'prevstart'
  ORDER BY r.created_at;
 
 \echo '## P1c positive control: inbox-resolve phase census, all time (phase|n)'
@@ -103,7 +108,8 @@ SELECT w.label, count(ar.id),
        count(ar.id) FILTER (WHERE ar.detail->>'status' = 'failed')
   FROM (VALUES ('1-before', '2026-10-01 10:00+00'::timestamptz, '2026-10-01 14:00+00'::timestamptz),
                ('2-after',  '2026-10-01 14:00+00'::timestamptz, '2026-10-06 08:00+00'::timestamptz),
-               ('3-current','2026-10-06 07:24:41+00'::timestamptz, now())) AS w(label, lo, hi)
+               ('3-prior-process-same-runner-blobs', :'prevstart'::timestamptz, :'bgstart'::timestamptz),
+               ('4-current-process', :'bgstart'::timestamptz, now())) AS w(label, lo, hi)
   LEFT JOIN harness_shared.admission_runs ar
     ON ar.workspace_id = 'papercusp-workspace' AND ar.harness_slug = 'papercusp' AND ar.run_kind = 'promoter-tick'
    AND ar.started_at >= w.lo AND ar.started_at < w.hi
@@ -124,19 +130,21 @@ SELECT w.label,
  GROUP BY w.label ORDER BY w.label;
 
 \echo '## P3d current-build prescreen dispositions, samples removed (id|prescreen)'
-SELECT id, (detail->'prescreen') - 'samples'
+SELECT id, CASE WHEN started_at >= :'bgstart' THEN 'current-process' ELSE 'prior-process-same-runner-blobs' END,
+       (detail->'prescreen') - 'samples'
   FROM harness_shared.admission_runs
  WHERE workspace_id = 'papercusp-workspace' AND harness_slug = 'papercusp' AND run_kind = 'promoter-tick'
-   AND started_at >= '2026-10-06 07:24:41+00' AND detail ? 'prescreen'
+   AND started_at >= :'prevstart' AND detail ? 'prescreen'
  ORDER BY started_at;
 
 \echo '## P3b current-build promoter ticks (id|status|started|finished|batch|promoted|merged|held|tokens_in|prescreen|misHomedByScope|reviewDebt|reviewMoot)'
-SELECT id, detail->>'status', started_at, finished_at, batch_size, promoted, merged, held, tokens_in,
+SELECT id, CASE WHEN started_at >= :'bgstart' THEN 'current-process' ELSE 'prior-process-same-runner-blobs' END,
+       detail->>'status', started_at, finished_at, batch_size, promoted, merged, held, tokens_in,
        left(coalesce((detail->'prescreen')::text,''),400), detail->'misHomedByScope',
        left(coalesce((detail->'reviewDebt')::text,''),300), left(coalesce((detail->'reviewMoot')::text,''),200)
   FROM harness_shared.admission_runs
  WHERE workspace_id = 'papercusp-workspace' AND harness_slug = 'papercusp' AND run_kind = 'promoter-tick'
-   AND started_at >= '2026-10-06 07:24:41+00'
+   AND started_at >= :'prevstart'
  ORDER BY started_at;
 
 \echo '## P3c 14-row repair: every copy of the rehomed + dropped original learning-loop ids (feature_id|harness|status|origin|admission|rehomed_from|state_changed)'
@@ -178,7 +186,7 @@ SELECT id, started_at, detail->'reviewDebt'->>'pending', detail->'reviewDebt'->>
    AND detail ? 'reviewDebt'
    AND (started_at BETWEEN '2026-10-01 12:10+00' AND '2026-10-01 14:05+00'
         OR started_at BETWEEN '2026-10-03 09:10+00' AND '2026-10-03 09:20+00'
-        OR started_at >= '2026-10-06 07:24:41+00')
+        OR started_at >= :'prevstart')
  ORDER BY started_at;
 
 \echo '## P4e independent re-count of review debt (same predicate as readWorkItemAdmissionQueueHealth, workspace-wide) (review_pending|review_overdue|population)'

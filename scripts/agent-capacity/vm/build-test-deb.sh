@@ -10,7 +10,11 @@
 #   Blank lines and lines starting with # are ignored.
 # Source-file markers are checked BEFORE the build, so a fix missing from the tree fails in seconds
 # instead of after a 2 h build. @sidecar markers are checked after the sidecar step, because esbuild
-# rewrites quoting and spacing (e.g. ('local', 'document') becomes ("local","document")).
+# rewrites quoting and spacing (e.g. ('local', 'document') becomes ("local","document")). The bundle
+# is whitespace-minified AND comment-stripped, so a source COMMENT is never a usable @sidecar marker
+# (c1006, 2026-10-06: a comment marker read 0 while the fix's code was in the bundle). Match code,
+# keyed by a neighbour unique to the fixed call site, and run CHECK_ONLY=1 against the new bundle to
+# confirm each @sidecar marker reads >= 1 before trusting a miss.
 # Every marker logs "MARKER <name>=<count>"; a miss also logs "MARKER_MISSING <name>".
 #
 # Env: MARKERS_FILE (required) · CHECK_ONLY=1 checks every marker against the files as they are now

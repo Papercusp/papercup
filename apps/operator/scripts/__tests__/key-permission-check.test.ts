@@ -349,6 +349,25 @@ describe('papercup-fedplane-key-permission-check.sh (WI-2143622)', () => {
       expect(out).not.toContain('node_modules.deploy-old.');
     });
 
+    it('prunes generated Android intermediates while still reporting a loose workspace key', () => {
+      const fx = withControl(fixture());
+      const deep = join(fx.root, 'deep');
+      const generated = join(deep, 'app', 'build', 'intermediates', 'merged_res');
+      const loose = join(deep, 'app', 'config');
+      mkdirSync(generated, { recursive: true });
+      mkdirSync(loose, { recursive: true });
+      const generatedFixture = join(generated, 'generated-test-key.pem');
+      const looseFixture = join(loose, 'deploy.pem');
+      for (const path of [generatedFixture, looseFixture]) {
+        writeFileSync(path, KEY_BODIES.opensshPlain);
+        chmodSync(path, 0o664);
+      }
+
+      const out = runProbe(fx, { KEYPERM_DEEP: '1', KEYPERM_DEEP_ROOTS: deep });
+      expect(out).toContain('FILE mode=664 ' + looseFixture + ' (content-matched private key outside .ssh)');
+      expect(out).not.toContain('generated-test-key.pem');
+    });
+
     it('keeps grep process count bounded for large candidate batches', () => {
       const fx = withControl(fixture());
       const deep = join(fx.root, 'deep');

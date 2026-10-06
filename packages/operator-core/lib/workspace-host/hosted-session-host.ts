@@ -242,6 +242,17 @@ export interface HostedDesktopRosterEntry {
   displayNumber?: number;
   geometry?: string;
   lastActiveAt?: string;
+  /** Plan agent-multi-desktops-grid P-006: who the desktop belongs to, so the grid
+   *  can label each tile. `owner` is the agent's ownerId for an agent desktop and
+   *  the pot slug for a pot desktop; the workspace desktop has none. */
+  scope?: 'pot' | 'agent' | 'workspace';
+  owner?: string;
+  /** The agent-chosen name of an agent desktop. */
+  name?: string;
+  /** The work-item the owning agent is on RIGHT NOW (D-009): read from its live
+   *  claim at roster time, never stored on the desktop row. */
+  workItemId?: string;
+  workItemIntent?: string;
 }
 
 export interface HostedDesktopBackend {
