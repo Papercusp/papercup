@@ -19,7 +19,7 @@ import type { CanonicalExternalEvent, ExternalTriggerSink } from '../external-tr
 import { createRelationshipGraphSink } from './graph-sink';
 import { type IdentityKey, type InteractionParticipant, interactionParticipants, PARTICIPANT_FIELDS } from './identity-keys';
 import { PARTICIPANT_DERIVATION } from './merge';
-import { PERSON_DATATYPE, type ResolverDeps } from './resolver';
+import { graphDefaultHarness, PERSON_DATATYPE, type ResolverDeps } from './resolver';
 
 export const INTERACTION_PARTICIPANT_SINK_KIND = 'relationship-graph-participants';
 
@@ -60,6 +60,24 @@ export interface ParticipantSinkDeps {
   createPersonSinks?: typeof createDatatypeDestinationSinks;
   createGraphSink?: typeof createRelationshipGraphSink;
   resolver?: ResolverDeps;
+  /** Reports a participant sink that could not be built; default {@link reportParticipantChainError}. */
+  onChainError?: (cause: unknown, input: { workspaceId: string; sourceId: string; datatype: string }) => void;
+}
+
+/**
+ * The default breadcrumb for a participant sink that could not be built. The interaction itself is
+ * still delivered; only its participants are skipped for this sync. The prefix is the interface
+ * `logs:read { grep }` matches.
+ */
+export function reportParticipantChainError(
+  cause: unknown,
+  input: { workspaceId: string; sourceId: string; datatype: string },
+): void {
+  const reason = cause instanceof Error ? cause.message : String(cause);
+  console.error(
+    `[relationship-graph] PARTICIPANT PROJECTION DECLINED workspace=${input.workspaceId} source=${input.sourceId} ` +
+      `datatype=${input.datatype} — ${reason}. The interaction was still delivered; its participants did not enter the graph.`,
+  );
 }
 
 /**
@@ -72,7 +90,15 @@ export async function createInteractionParticipantSink(
   deps: ParticipantSinkDeps = {},
 ): Promise<ExternalTriggerSink | null> {
   if (!isInteractionDatatype(input.datatype)) return null;
-  const chain = await createParticipantChain(sql, input, deps);
+  let chain: ParticipantChain | null;
+  try {
+    chain = await createParticipantChain(sql, input, deps);
+  } catch (cause) {
+    // WI-10006570: this sink rides along with the interaction's own sinks, so a fault building
+    // it must never abort the interaction delivery (a throw here failed the whole Gmail sync).
+    (deps.onChainError ?? reportParticipantChainError)(cause, input);
+    return null;
+  }
   if (!chain) return null;
   return {
     kind: INTERACTION_PARTICIPANT_SINK_KIND,
@@ -102,7 +128,12 @@ export async function createParticipantChain(
 ): Promise<ParticipantChain | null> {
   const createPersonSinks = deps.createPersonSinks ?? createDatatypeDestinationSinks;
   const createGraphSink = deps.createGraphSink ?? createRelationshipGraphSink;
-  const personSinks = await createPersonSinks(sql, { workspaceId: input.workspaceId, sourceId: input.sourceId, datatype: PERSON_DATATYPE });
+  const personSinks = await createPersonSinks(sql, {
+    workspaceId: input.workspaceId,
+    sourceId: input.sourceId,
+    datatype: PERSON_DATATYPE,
+    defaultHarness: graphDefaultHarness(),
+  });
   if (!personSinks.some((s) => s.kind === 'data-source-record')) return null;
   const graphSink = createGraphSink(sql, { workspaceId: input.workspaceId, sourceId: input.sourceId, datatype: PERSON_DATATYPE }, deps.resolver);
   const chain = [...personSinks, graphSink];
