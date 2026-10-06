@@ -72,7 +72,11 @@ import {
 } from './pool-pressure';
 import { activeWorkspaceId } from '../workspace-registry';
 import { shouldShedSchedulerTickUnderLoopPressure } from './tick-load-shed';
-import { anotherRoutinesTickInFlight, ROUTINE_TICK_OVERLAP_STATEMENT_TIMEOUT_MS } from './routine-tick-overlap-guard';
+import {
+  anotherRoutinesTickInFlight,
+  ROUTINE_TICK_OVERLAP_STATEMENT_TIMEOUT_MS,
+  type OverlapCheckDeps,
+} from './routine-tick-overlap-guard';
 import { CaplessAdaptiveController } from '../resource-governor/controller';
 import { HEALTH_ANALYSIS_SCHEMA_VERSION, type HealthVerdict } from '../resource-governor/health-analysis';
 // Side-effect import: registers every `system:<action>` handler before the first tick.
@@ -84,6 +88,9 @@ import { dbosStarted, withDbosIdleTxGrace } from './bootstrap';
 
 // 6-field crontab (seconds). Default: every 30s, matching the legacy ticker.
 const TICK_CRONTAB = process.env.PAPERCUSP_DBOS_ROUTINES_CRONTAB || '*/30 * * * * *';
+// WI-10000846: the sweep tick has its own schedule, offset 15s from dispatch so the two passes
+// do not open their PG work at the same instant.
+const SWEEP_TICK_CRONTAB = process.env.PAPERCUSP_DBOS_ROUTINES_SWEEP_CRONTAB || '15,45 * * * * *';
 const operatorBase = operatorApiBase;
 const ROUTINE_FIRE_WORKFLOW_NAME = 'routineFire';
 let routineFireDbosClient: Promise<DBOSClient> | null = null;
@@ -948,6 +955,40 @@ async function runLoopRebaseSweep(sql: ReturnType<typeof getOrgPg>['sql']): Prom
 }
 
 /** The scheduled tick: list due routines, claim + enqueue feedback-paced deduped fires. */
+/**
+ * EI-9935 overlap probe for ONE scheduled tick workflow. Keyed by workflow name so the dispatch
+ * tick and the sweep tick (WI-10000846) each shed only on a concurrent pass of THEMSELVES — a slow
+ * sweep pass must never make the dispatch tick skip.
+ */
+function routineTickOverlapProbe(
+  sql: ReturnType<typeof getOrgPg>['sql'],
+  workflowName: 'routinesTick' | 'routinesSweepTick',
+): OverlapCheckDeps {
+  return {
+    queryInFlight: (selfId, cutoffEpochMs) =>
+      sql.begin(async (tx) => {
+        // The overlap probe is a read-only guard, not routine work. Keep its
+        // server-side statement budget below the caller deadline so a
+        // checked-out connection cannot remain occupied after the guard has
+        // already fail-softed.
+        await tx.unsafe(`SET LOCAL statement_timeout = ${ROUTINE_TICK_OVERLAP_STATEMENT_TIMEOUT_MS}`);
+        return tx<{ workflow_uuid: string }[]>`
+          SELECT workflow_uuid FROM dbos.workflow_status
+           WHERE name = ${workflowName}
+             AND status = 'PENDING'
+             AND workflow_uuid <> ${selfId}
+             AND started_at_epoch_ms IS NOT NULL
+             AND started_at_epoch_ms > ${cutoffEpochMs}
+           LIMIT 1`;
+      }),
+  };
+}
+
+/**
+ * The DISPATCH tick: pool probe, overlap guard, then claim + start every admitted due routine.
+ * Nothing else. Periodic sweeps live in routinesSweepTickImpl (WI-10000846) — anything added
+ * after the fire loop here delays every dispatch slot by its own runtime.
+ */
 async function routinesTickImpl(): Promise<void> {
   // WI-3351: routinesTick is the LIGHTWEIGHT scheduler. Heavy periodic jobs
   // shed in tick-load-shed.ts, and routine bodies can self-gate; shedding this
@@ -972,7 +1013,7 @@ async function routinesTickImpl(): Promise<void> {
   // re-armed those incident classes. Instead we set `poolCritical` and fall through to a
   // MINIMAL pass: fire ONLY critical-queue routines (shouldFireUnderPoolShed), then return
   // before the heavy sweeps. Non-critical fires and heavy sweeps remain shed;
-  // the liveness-critical loop-rebase pass below also survives the shed.
+  // the liveness-critical loop-rebase pass (now in routinesSweepTickImpl) also survives the shed.
   const pool = await poolPressure();
   const poolProbeMs = lastPoolProbeMs();
   const poolCritical = pool === 'critical';
@@ -1011,24 +1052,7 @@ async function routinesTickImpl(): Promise<void> {
   // directly. Fail-soft + stale-safe (see routine-tick-overlap-guard.ts).
   if (
     !poolCritical &&
-    (await anotherRoutinesTickInFlight(DBOS.workflowID ?? '', {
-      queryInFlight: (selfId, cutoffEpochMs) =>
-        sql.begin(async (tx) => {
-          // The overlap probe is a read-only guard, not routine work. Keep its
-          // server-side statement budget below the caller deadline so a
-          // checked-out connection cannot remain occupied after the guard has
-          // already fail-softed.
-          await tx.unsafe(`SET LOCAL statement_timeout = ${ROUTINE_TICK_OVERLAP_STATEMENT_TIMEOUT_MS}`);
-          return tx<{ workflow_uuid: string }[]>`
-            SELECT workflow_uuid FROM dbos.workflow_status
-             WHERE name = 'routinesTick'
-               AND status = 'PENDING'
-               AND workflow_uuid <> ${selfId}
-               AND started_at_epoch_ms IS NOT NULL
-               AND started_at_epoch_ms > ${cutoffEpochMs}
-             LIMIT 1`;
-        }),
-    }))
+    (await anotherRoutinesTickInFlight(DBOS.workflowID ?? '', routineTickOverlapProbe(sql, 'routinesTick')))
   ) {
     console.warn(`[routines-tick] SKIPPED — another routinesTick invocation already in flight (EI-9935 overlap guard)`);
     return;
@@ -1137,6 +1161,44 @@ async function routinesTickImpl(): Promise<void> {
       // Already enqueued/active for this routine — collapse (back-pressure).
       if (!/Duplicat/i.test(String(e))) throw e;
     }
+  }
+  // WI-10000846: DISPATCH ENDS HERE. Nothing may follow the fire loop in this tick — periodic
+  // work goes in routinesSweepTickImpl below.
+}
+
+/**
+ * WI-10000846 / WI-10006946: the periodic sweeps, split out of routinesTick into their OWN
+ * scheduled workflow.
+ *
+ * They used to run inline after the fire loop, so a routinesTick pass took as long as every
+ * sweep combined (measured 2026-10-06 20:10-21:10Z: 107 ticks, 40 of them overlap-guard skips;
+ * working passes p50 15s, p90 61s, max 414s, against a 30s crontab). The EI-9935 overlap guard
+ * then discarded the next tick, and a discarded tick dispatches NOTHING — so the fire rate was
+ * capped by the sweeps' runtime instead of by the feedback-epoch admission meant to govern it.
+ * Git-sync on the protected critical lane ran minutes late (the 21:00:00Z slot of one hive
+ * started 21:02:33Z; an 18-minute gap after a bg-host restart).
+ *
+ * This tick keeps the semantics the tail had: the EI-11171 critical-pool floor (loop-rebase
+ * only, then return), loop-rebase first, then the sweeps in their original order. Its overlap
+ * guard is keyed on its OWN workflow name, so a slow sweep pass sheds only the next sweep pass.
+ */
+async function routinesSweepTickImpl(): Promise<void> {
+  if (shouldShedSchedulerTickUnderLoopPressure()) {
+    console.warn(`[routines-sweep-tick] SKIPPED — event loop pressure, shedding sweep tick`);
+    return;
+  }
+  const { sql } = getOrgPg();
+  // Probe only: the dispatch tick owns pool-shed accounting (recordPoolShed and the durable shed
+  // event), so this second probe must not double-count sheds.
+  const poolCritical = (await poolPressure()) === 'critical';
+  if (
+    !poolCritical &&
+    (await anotherRoutinesTickInFlight(DBOS.workflowID ?? '', routineTickOverlapProbe(sql, 'routinesSweepTick')))
+  ) {
+    console.warn(
+      `[routines-sweep-tick] SKIPPED — another routinesSweepTick invocation already in flight (EI-9935 overlap guard)`,
+    );
+    return;
   }
 
   // EI-11171 critical-routine floor (cont.): heavy sweeps stay shed, but loop completion-rebase
@@ -2133,3 +2195,9 @@ const routinesTickWorkflow = idempotentRegisterWorkflow('routinesTick', () =>
 
 // Scheduled fn must also be a registered workflow. Default skip-missed mode.
 DBOS.registerScheduled(routinesTickWorkflow, { name: 'routinesTick', crontab: TICK_CRONTAB });
+
+// WI-10000846: sweeps run on their own schedule so a slow sweep can never cost a dispatch slot.
+const routinesSweepTickWorkflow = idempotentRegisterWorkflow('routinesSweepTick', () =>
+  DBOS.registerWorkflow(routinesSweepTickImpl, { name: 'routinesSweepTick' }),
+);
+DBOS.registerScheduled(routinesSweepTickWorkflow, { name: 'routinesSweepTick', crontab: SWEEP_TICK_CRONTAB });
