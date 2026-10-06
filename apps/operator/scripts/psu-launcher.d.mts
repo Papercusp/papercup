@@ -1233,6 +1233,44 @@ export function detectRespawnModelSpec(args?: string[], { ownerId, agent, home, 
         notBeforeMs?: number | null;
     }) => string | null;
 }): string | null;
+/**
+ * WI-10006049 (owner Avi 2026-10-05 #1369 "if the default is 1m that sounds good", #1371 "make
+ * sure this works for all claude models too not just opus"): keep a model-less Claude session on
+ * the 1M window across its respawns, whatever its `/model` menu saved.
+ *
+ * A session launched WITHOUT `--model` takes its model from the `model` key of its isolated
+ * CLAUDE_CONFIG_DIR/settings.json, and a carry-respawn reuses that dir without re-materializing it
+ * (mintRecycleArgs never ADDS a --model flag — see its WI-2141859 note). So a `/model` menu save
+ * persists for the session's whole life. On Claude Code 2.1.289 the bare menu saves the 200k pick
+ * (`opus`, not `opus[1m]`): su-56e2f83b's dir still read `"model": "opus"` hours after one menu
+ * use, and every respawn came back at 200k with a 158k limit under a ~140k prompt floor.
+ *
+ * This keeps the FAMILY the owner picked and only adds the window marker (`opus` → `opus[1m]`,
+ * `sonnet` → `sonnet[1m]`, `fable` → `fable[1m]`, `opusplan` → `opusplan[1m]`); haiku and pinned 4.x
+ * ids are left exactly as they are. A missing key (the menu's "Default") is restored to what
+ * materialize writes — the global settings model, normalized the same way. Atomic write; every
+ * failure is a no-op. Returns `{ from, to }` when it changed the file, else null.
+ *
+ * @param {string | null | undefined} configDir
+ * @param {{ home?: string }} [opts]
+ * @returns {{ from: string | null, to: string } | null}
+ */
+export function normalizeSessionSettingsModel(configDir: string | null | undefined, { home }?: {
+    home?: string;
+}): {
+    from: string | null;
+    to: string;
+} | null;
+/** The launch-site half of normalizeSessionSettingsModel: only a Claude argv with NO --model reads
+ *  its model from settings (an explicit flag wins and is already normalized at the flag). */
+export function normalizeSessionSettingsModelForLaunch(args: any, { agent, configDir, home }?: {
+    agent?: null | undefined;
+    configDir?: null | undefined;
+    home?: string | undefined;
+}): {
+    from: string | null;
+    to: string;
+} | null;
 /** Map a plan picker value to the bootstrap-su `plan_slug` (NO_PLAN → null). Pure. */
 export function planValue(picked: any): any;
 /**

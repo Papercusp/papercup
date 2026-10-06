@@ -4595,6 +4595,89 @@ export function detectRespawnModelSpec(
   }
 }
 
+/** WI-10006049: the session-settings `model` values that get the 1M marker — the bare Claude Code
+ *  aliases its `/model` menu saves for a 1M-capable family (opus, sonnet, fable, opusplan; each has
+ *  an `[1m]` twin in CC 2.1.289) and generation-5+ API ids of those families. NOT haiku (no 1M
+ *  version) and NOT a pinned 4.x id like `claude-opus-4-1`: forcing the marker there makes the CLI
+ *  send a beta that model rejects. */
+const SESSION_SETTINGS_1M_MODEL_RE =
+  /^(?:opus|sonnet|fable|opusplan|claude-(?:opus|sonnet|fable)-(?:[5-9]|[1-9]\d+)(?:[-.][0-9a-z.-]*)?)$/i;
+
+/**
+ * WI-10006049 (owner Avi 2026-10-05 #1369 "if the default is 1m that sounds good", #1371 "make
+ * sure this works for all claude models too not just opus"): keep a model-less Claude session on
+ * the 1M window across its respawns, whatever its `/model` menu saved.
+ *
+ * A session launched WITHOUT `--model` takes its model from the `model` key of its isolated
+ * CLAUDE_CONFIG_DIR/settings.json, and a carry-respawn reuses that dir without re-materializing it
+ * (mintRecycleArgs never ADDS a --model flag — see its WI-2141859 note). So a `/model` menu save
+ * persists for the session's whole life. On Claude Code 2.1.289 the bare menu saves the 200k pick
+ * (`opus`, not `opus[1m]`): su-56e2f83b's dir still read `"model": "opus"` hours after one menu
+ * use, and every respawn came back at 200k with a 158k limit under a ~140k prompt floor.
+ *
+ * This keeps the FAMILY the owner picked and only adds the window marker (`opus` → `opus[1m]`,
+ * `sonnet` → `sonnet[1m]`, `fable` → `fable[1m]`, `opusplan` → `opusplan[1m]`); haiku and pinned 4.x
+ * ids are left exactly as they are. A missing key (the menu's "Default") is restored to what
+ * materialize writes — the global settings model, normalized the same way. Atomic write; every
+ * failure is a no-op. Returns `{ from, to }` when it changed the file, else null.
+ *
+ * @param {string | null | undefined} configDir
+ * @param {{ home?: string }} [opts]
+ * @returns {{ from: string | null, to: string } | null}
+ */
+export function normalizeSessionSettingsModel(configDir, { home = homedir() } = {}) {
+  if (!configDir) return null;
+  const path = join(configDir, "settings.json");
+  let cfg;
+  try {
+    cfg = JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    return null;
+  }
+  if (!cfg || typeof cfg !== "object" || Array.isArray(cfg)) return null;
+  const upgrade = (spec) =>
+    typeof spec === "string" && SESSION_SETTINGS_1M_MODEL_RE.test(spec.trim())
+      ? normalizeModelSpec(spec.trim())
+      : null;
+  const current =
+    typeof cfg.model === "string" && cfg.model.trim() ? cfg.model.trim() : null;
+  let next = null;
+  if (current) {
+    next = upgrade(current);
+  } else {
+    try {
+      next = upgrade(
+        JSON.parse(readFileSync(join(home, ".claude", "settings.json"), "utf8"))?.model,
+      );
+    } catch {
+      next = null;
+    }
+  }
+  if (!next || next === current) return null;
+  try {
+    const tmp = `${path}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
+    writeFileSync(tmp, `${JSON.stringify({ ...cfg, model: next }, null, 2)}\n`, {
+      mode: 0o600,
+    });
+    renameSync(tmp, path);
+  } catch {
+    return null;
+  }
+  return { from: current, to: next };
+}
+
+/** The launch-site half of normalizeSessionSettingsModel: only a Claude argv with NO --model reads
+ *  its model from settings (an explicit flag wins and is already normalized at the flag). */
+export function normalizeSessionSettingsModelForLaunch(
+  args,
+  { agent = null, configDir = null, home = homedir() } = {},
+) {
+  const normalized = String(agent ?? "").trim().toLowerCase();
+  if (normalized && normalized !== "claude") return null;
+  if (modelSpecFromRecycleArgv(Array.isArray(args) ? args : [])) return null;
+  return normalizeSessionSettingsModel(configDir, { home });
+}
+
 /** Map a plan picker value to the bootstrap-su `plan_slug` (NO_PLAN → null). Pure. */
 export function planValue(picked) {
   return picked === NO_PLAN || picked == null || picked === "" ? null : picked;
@@ -12069,6 +12152,18 @@ export function runWrapper(options) {
   // EI-203876: stamp Codex's diagnostic filter after host-handoff env overlay,
   // so a successor cannot inherit a predecessor's missing/stale RUST_LOG.
   applyCodexDiagnosticEnv(env, env.PAPERCUSP_AGENT);
+  // WI-10006049: a model-less Claude launch (fresh, `psu --resume`, or host adoption) reads its
+  // model from the session settings — upgrade a saved 200k `/model` menu pick to the same family's
+  // 1M twin before the CLI boots. The respawn mints below repeat this per successor.
+  const launchModelFix = normalizeSessionSettingsModelForLaunch(args, {
+    agent: env.PAPERCUSP_AGENT,
+    configDir: env.CLAUDE_CONFIG_DIR || null,
+  });
+  if (launchModelFix) {
+    process.stderr.write(
+      `psu: session model ${launchModelFix.from ?? "(default)"} → ${launchModelFix.to} (1M default, WI-10006049)\n`,
+    );
+  }
   const managedPtyEnabled = Boolean(ownerId && usePtyHost({ env }));
   if (adoptedCarryRespawn) {
     const handoffFirstTurn = hostHandoff?.firstTurnText;
@@ -12117,7 +12212,14 @@ export function runWrapper(options) {
         // to read is the one named by the argv being replaced) and is
         // fail-soft: a null keeps the inherited spec. An explicit `model` from
         // the host still wins, so this can never fight a deliberate caller.
+        // WI-10006049: each respawn of a model-less Claude session first upgrades a `/model`
+        // menu save in its settings to the 1M twin (normalizeSessionSettingsModel); the mint
+        // itself is unchanged.
         mintRecycleArgs: (a, o = {}) =>
+          (normalizeSessionSettingsModelForLaunch(a, {
+            agent: env.PAPERCUSP_AGENT,
+            configDir: env.CLAUDE_CONFIG_DIR || null,
+          }),
           mintRecycleArgs(a, {
             ...o,
             model:
@@ -12131,8 +12233,12 @@ export function runWrapper(options) {
                 modelSource: env.PAPERCUSP_MODEL_SOURCE || null,
                 notBeforeMs: modelObservationNotBeforeMs,
               }),
-          }),
+          })),
         mintCarryRespawnArgs: (a, o = {}) =>
+          (normalizeSessionSettingsModelForLaunch(a, {
+            agent: o.agent ?? env.PAPERCUSP_AGENT,
+            configDir: env.CLAUDE_CONFIG_DIR || null,
+          }),
           mintCarryRespawnArgs(a, {
             ...o,
             model:
@@ -12146,7 +12252,7 @@ export function runWrapper(options) {
                 modelSource: env.PAPERCUSP_MODEL_SOURCE || null,
                 notBeforeMs: modelObservationNotBeforeMs,
               }),
-          }),
+          })),
         ensureCodexHome: () =>
           ensureCodexHomeViaOperator(
             ownerId,

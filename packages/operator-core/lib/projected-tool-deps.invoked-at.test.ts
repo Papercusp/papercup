@@ -150,6 +150,22 @@ describe('telemetry invoked_at stamping (EI-7040)', () => {
     });
   });
 
+  it('persists host-classified native carrier evidence without a raw native session value', async () => {
+    const nativeSession = {
+      carrier: 'header:x-papercusp-native-session' as const,
+      valueFingerprint: 'a'.repeat(64),
+      binding: 'bound' as const,
+      candidateAdvSessionId: 541,
+    };
+    await record('gatingtest:scoped', {
+      transport: 'mcp',
+      requestOrigin: { transport: 'mcp', nativeSession },
+    });
+    await flushPendingTelemetry();
+    const insert = captured.find(c => c.sql.includes('INSERT INTO harness_shared.tool_invocations'))!;
+    expect(JSON.parse(String(insert.params[19]))).toMatchObject({ requestOrigin: { nativeSession } });
+  });
+
   it('rejects unresolved shell scope placeholders before they reach the INSERT (EI-21334973614275969)', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 

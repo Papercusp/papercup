@@ -57,6 +57,20 @@ function finalGoalAdmission(input: GovernedProcessSpawnInput, goalId: string | n
   };
 }
 
+function receiptGoalAdmission(context: AdmissionContext): GoalProcessAdmission | null {
+  const raw = context.metadata?.goalAdmission;
+  if (typeof raw !== 'string') return null;
+  try {
+    const snapshot = JSON.parse(raw) as GoalProcessAdmission | null;
+    return snapshot?.stage === 'final' &&
+      ['admitted', 'refused', 'unknown', 'not-applicable'].includes(snapshot.decision) &&
+      Array.isArray(snapshot.degradedReasons) && snapshot.degradedReasons.every((reason) => typeof reason === 'string')
+      ? snapshot : null;
+  } catch {
+    return null;
+  }
+}
+
 export type GovernedSpawnResult = SpawnConsoleResult & {
   /** Durable context for nested work started by the spawned process. */
   admissionContext?: AdmissionContext;
@@ -158,9 +172,16 @@ export async function spawnGovernedAgentProcess(
       goalAdmission: finalGoalAdmission(input, admitted.resolution.goalId, admitted.resolution, admitted.degradedReason) };
   }
   const execution = admitted.value!;
-  const goalAdmissionDegraded = [
+  // A replay can reuse an earlier receipt. The resolver just revalidated this
+  // attempt, but the returned admission proof belongs to the receipt we leased.
+  if (goalAdmission && goalAdmission.decision !== 'not-applicable') {
+    goalAdmission = receiptGoalAdmission(execution.context) ?? finalGoalAdmission(input,
+      goalAdmission.goalId, null, 'final goal admission snapshot unavailable in durable receipt');
+  }
+  const goalAdmissionDegraded = [...new Set([
+    ...(goalAdmission?.degradedReasons ?? []),
     ...(admitted.resolution?.degradedReasons ?? []), ...(admitted.degradedReason ? [admitted.degradedReason] : []),
-  ];
+  ])];
   const admissionEvidence = goalAdmission?.decision !== 'not-applicable' && goalAdmission
     ? { goalAdmission, admissionContext: execution.context } : {};
 

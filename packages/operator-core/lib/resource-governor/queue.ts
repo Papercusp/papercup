@@ -571,8 +571,9 @@ function storedFromRow(row: QueueDbRow): StoredAdmissionRecord {
   return { receiptId: row.feature_id, record };
 }
 
-function requestDigest(request: NormalizedAdmissionRequest): string {
-  return createHash('sha256').update(admissionRequestFingerprint(request)).digest('hex');
+function requestDigest(request: NormalizedAdmissionRequest,
+  options: { includeGoalAdmissionSnapshot?: boolean } = {}): string {
+  return createHash('sha256').update(admissionRequestFingerprint(request, options)).digest('hex');
 }
 
 function nextDecision(
@@ -789,7 +790,17 @@ export class WorkItemAdmissionQueueDriver implements AdmissionDriver {
       });
     }
     if (stored.record.requestFingerprint !== candidate.requestFingerprint) {
-      throw new AdmissionIdempotencyConflictError(request.idempotencyKey);
+      // Earlier agent receipts fingerprinted the observation too. Reconstruct
+      // that identity using ONLY the stored snapshot; all semantic pins still
+      // come from this request, so changing a target/goal/fleet remains a conflict.
+      const storedSnapshot = stored.record.metadata.goalAdmission;
+      const legacyFingerprint = request.admissionClass === 'agent' && typeof storedSnapshot === 'string'
+        ? requestDigest({ ...request, metadata: { ...request.metadata, goalAdmission: storedSnapshot } },
+          { includeGoalAdmissionSnapshot: true })
+        : null;
+      if (stored.record.requestFingerprint !== legacyFingerprint) {
+        throw new AdmissionIdempotencyConflictError(request.idempotencyKey);
+      }
     }
     return {
       kind: 'queued',

@@ -197,11 +197,143 @@
       ],
       "unboundSourceRowsRemainUnknown": true
     },
-    "substantiveReply": null,
+    "sourceClaimsAfter": {
+      "asOf": "2026-10-06T00:37:23.320Z",
+      "ownerId": "su-0f0a6f2a-3bf0-417d-88fd-22dd7b234197",
+      "fleetSlug": "nonp2p-bug-drain-luna-max-0930",
+      "fleetRole": "member",
+      "claims": [
+        {
+          "type": "work-item",
+          "harnessSlug": "papercusp",
+          "planSlug": null,
+          "id": "EI-24966800800754357",
+          "status": "open",
+          "acquiredTs": "2026-10-05 15:00:17.784958-04",
+          "active": true
+        },
+        {
+          "type": "work-item",
+          "harnessSlug": "papercusp",
+          "planSlug": null,
+          "id": "EI-25162493878921404",
+          "status": "open",
+          "acquiredTs": "2026-10-05 19:29:19.557234-04",
+          "active": true
+        }
+      ]
+    },
+    "settledEndpointSignaturesIdentical": true,
+    "actorSettled": {
+      "start": "2026-10-06T00:17:02.859Z",
+      "end": "2026-10-06T00:37:23.320Z",
+      "verbs": [
+        "work_items:claim",
+        "work_items:release",
+        "work_items:complete",
+        "work_items:set_state",
+        "work_items:create",
+        "plan_items:claim",
+        "plan_items:release",
+        "plan_items:assign",
+        "coord:declare-intent",
+        "coord:orient",
+        "mode:set",
+        "loop:arm",
+        "loop:end",
+        "locks:acquire",
+        "locks:release",
+        "fleet:join",
+        "fleet:take-leadership",
+        "consult:reply"
+      ],
+      "rows": [
+        {
+          "id": 31829272,
+          "tool_name": "locks:release",
+          "status": "ok",
+          "coord_owner_id": "su-0f0a6f2a-3bf0-417d-88fd-22dd7b234197",
+          "invoked_at": "2026-10-06T00:17:52.126Z",
+          "subject_id": null,
+          "subject_row": null,
+          "launch": {
+            "xmin": "786984700",
+            "advSessionId": "34377"
+          }
+        },
+        {
+          "id": 31830254,
+          "tool_name": "coord:declare-intent",
+          "status": "ok",
+          "coord_owner_id": "su-0f0a6f2a-3bf0-417d-88fd-22dd7b234197",
+          "invoked_at": "2026-10-06T00:20:39.760Z",
+          "subject_id": null,
+          "subject_row": null,
+          "launch": {
+            "xmin": "787160674",
+            "advSessionId": "34377"
+          }
+        },
+        {
+          "id": 31830269,
+          "tool_name": "coord:orient",
+          "status": "ok",
+          "coord_owner_id": "su-0f0a6f2a-3bf0-417d-88fd-22dd7b234197",
+          "invoked_at": "2026-10-06T00:20:40.447Z",
+          "subject_id": null,
+          "subject_row": null,
+          "launch": {
+            "xmin": "787160674",
+            "advSessionId": "34377"
+          }
+        },
+        {
+          "id": 31832516,
+          "tool_name": "consult:reply",
+          "status": "invalid-input",
+          "coord_owner_id": "su-be2ecc34-8ab6-4b01-a112-a34a64b09668",
+          "invoked_at": "2026-10-06T00:27:51.742Z",
+          "subject_id": null,
+          "subject_row": null,
+          "launch": {
+            "xmin": "787152691",
+            "selection": "owner-workspace-fallback",
+            "advSessionId": "34535"
+          }
+        },
+        {
+          "id": 31832784,
+          "tool_name": "consult:reply",
+          "status": "ok",
+          "coord_owner_id": "su-be2ecc34-8ab6-4b01-a112-a34a64b09668",
+          "invoked_at": "2026-10-06T00:28:49.012Z",
+          "subject_id": null,
+          "subject_row": null,
+          "launch": {
+            "xmin": "787152691",
+            "selection": "owner-workspace-fallback",
+            "advSessionId": "34535"
+          }
+        }
+      ],
+      "scope": "Exact listed MCP verbs and owner rows only; equal endpoints do not exclude unlogged/system effects or physically attribute unstamped calls."
+    },
+    "substantiveReply": {
+      "postId": 1158421,
+      "authorId": "su-be2ecc34-8ab6-4b01-a112-a34a64b09668",
+      "nativeTranscriptRef": "session_turn:claude:4e6aae21-3989-458c-b8ec-22c974081063:9",
+      "invocationId": 31832784,
+      "createdAt": "2026-10-06T00:28:49.012Z",
+      "classification": "Current source reading; row consistency insufficient for physical actor or immutability proof; archive relevance disclosure preserved.",
+      "requesterReconciliation": {
+        "disposition": "confirmed",
+        "recordedAt": "2026-10-06T00:33:54.288Z"
+      }
+    },
     "limitations": [
-      "First-answer and post-settlement proof pending.",
-      "Three interim source-owned MCP rows lack selection; no actor/ABA or universal immutability verdict.",
-      "First answering startup call31829230 used owner-workspace-fallback.",
+      "Three source-owned MCP rows lack selection; no actor/ABA or universal immutability verdict.",
+      "Typed answering invocation31832784 used owner-workspace-fallback.",
+      "Successful native-session fingerprint gap is self-owned as WI-10006203; scoped tests give no live acceptance credit.",
       "Fixed R6 cohort receives no credit from this post-cut trial."
     ],
     "privateEvidencePaths": [

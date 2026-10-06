@@ -58,7 +58,9 @@ describe('spawnGovernedAgentProcess', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    beginGovernedExecutionMock.mockResolvedValue({ context, finish, cancel });
+    beginGovernedExecutionMock.mockImplementation(async (request) => ({
+      context: request.metadata?.launchedBy ? { ...context, metadata: request.metadata } : context, finish, cancel,
+    }));
     registerGoalLaunchMock.mockImplementation(async (_args, register) => ({
       value: await register('goal-fixture'), resolution: null, degradedReason: null,
     }));
@@ -152,7 +154,8 @@ describe('spawnGovernedAgentProcess', () => {
       ceilings: finalResolution.ceilings, headcount: finalResolution.headcount,
       measurement: finalResolution.headcountMeasurement, degraded: false, degradedReasons: [],
     });
-    expect(result).toMatchObject({ goalAdmission: persisted, admissionContext: context });
+    expect(result).toMatchObject({ goalAdmission: persisted,
+      admissionContext: { ...context, metadata: beginGovernedExecutionMock.mock.calls[0][0].metadata } });
     expect(beginGovernedExecutionMock).toHaveBeenCalledOnce();
     if (status === 'error') expect(cancel).toHaveBeenCalledWith('late boot failure');
   });
@@ -174,6 +177,31 @@ describe('spawnGovernedAgentProcess', () => {
     expect(cancel).toHaveBeenCalledOnce();
   });
 
+  it('returns the original receipt observation when the final resolver measures a retry', async () => {
+    const input = { workspaceId: 'ws', idempotencyKey: 'spawn-1', owner: 'target',
+      metadata: { launchedBy: 'launcher', targetOwnerId: 'target', fleetSlug: 'fleet' } };
+    registerGoalLaunchMock.mockImplementation(async (_args, register) => ({
+      value: await register('goal-final', finalResolution, null), resolution: finalResolution, degradedReason: null,
+    }));
+    let originalMetadata: Record<string, string> | undefined;
+    beginGovernedExecutionMock.mockImplementation(async (request) => {
+      originalMetadata ??= request.metadata;
+      return { context: { ...context, metadata: originalMetadata }, finish, cancel };
+    });
+    const spawn = async () => ({ status: 'ok' as const, pid: 42, terminal: 'headless', child: null,
+      display: null, desktopEnvResolvedVia: null });
+    const first = await spawnGovernedAgentProcess(input, spawn);
+    const retryResolution = { ...finalResolution, headcount: { total: 1, fleet: 0 },
+      headcountMeasurement: { ...finalResolution.headcountMeasurement!, measuredAt: '2026-10-05T18:41:16Z' } };
+    registerGoalLaunchMock.mockImplementation(async (_args, register) => ({
+      value: await register('goal-final', retryResolution, null), resolution: retryResolution, degradedReason: null,
+    }));
+    const retry = await spawnGovernedAgentProcess(input, spawn);
+    expect(retry.goalAdmission).toEqual(first.goalAdmission);
+    expect(retry.goalAdmission).toEqual(JSON.parse(originalMetadata!.goalAdmission));
+    expect(retry.admissionContext?.metadata?.goalAdmission).toBe(originalMetadata!.goalAdmission);
+  });
+
   it('refuses before governor registration and process start when the serialized count has no seat', async () => {
     registerGoalLaunchMock.mockResolvedValue({ value: null,
       resolution: { refusal: { message: 'goal seat already reserved' } }, degradedReason: null });
@@ -185,6 +213,21 @@ describe('spawnGovernedAgentProcess', () => {
       goalAdmission: { decision: 'refused', stage: 'final' } });
     expect(beginGovernedExecutionMock).not.toHaveBeenCalled();
     expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it.each(['missing', 'malformed'])('reports unknown proof for a %s receipt snapshot instead of returning fresh measurement', async (kind) => {
+    registerGoalLaunchMock.mockImplementation(async (_args, register) => ({
+      value: await register('goal-final', finalResolution, null), resolution: finalResolution, degradedReason: null,
+    }));
+    beginGovernedExecutionMock.mockResolvedValue({ context: { ...context,
+      metadata: kind === 'missing' ? {} : { goalAdmission: '{broken' } }, finish, cancel });
+    const result = await spawnGovernedAgentProcess({ workspaceId: 'ws', idempotencyKey: 'spawn-1', owner: 'target',
+      metadata: { launchedBy: 'launcher', targetOwnerId: 'target', fleetSlug: 'fleet' } },
+    async () => ({ status: 'error', error: 'late boot failure', code: 502 }));
+    expect(result).toMatchObject({ goalAdmission: { decision: 'unknown', capacityStatus: 'unknown',
+      measurement: null, headcount: null, degraded: true },
+    goalAdmissionDegraded: ['final goal admission snapshot unavailable in durable receipt'] });
+    expect(cancel).toHaveBeenCalledWith('late boot failure');
   });
 
   it('surfaces a degraded admission read without hiding a successful process result', async () => {
