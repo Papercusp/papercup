@@ -4,6 +4,7 @@ import { mkdtemp, mkdir, realpath, rm, symlink, utimes, writeFile } from 'node:f
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { repoFilesEvidenceMeasurementSchema } from './spec-evidence-store';
 import {
   asCommittedTestPath,
   cargoCanonicalTestPathRefusal,
@@ -253,6 +254,27 @@ describe('deriveBindingFromTestRun', () => {
     expect(
       deriveBindingFromTestRun(input({ sourcePaths: ['pkg/lib/wide/m1.ts'] }), run({ file_path: 'pkg/lib/wide.test.ts' }), root, 'run'),
     ).toMatchObject({ ok: true, binding: { measurement: { sourcePaths: ['pkg/lib/wide/m1.ts'] } } });
+  });
+
+  it('preserves calibration fixtures while deriving recorded test provenance', () => {
+    const parsed = testRunBindingSchema.parse(input({
+      fixturePaths: ['pkg/lib/__fixtures__/seed.ts'],
+      fixtureGlobs: ['pkg/lib/__fixtures__/**/*.ts'],
+      fixtureRootHarnessSlug: 'web',
+      details: { adequacy: { fixtureCalibrated: true } },
+    }));
+    const derived = deriveBindingFromTestRun(parsed, run(), root, 'run');
+    expect(derived.ok).toBe(true);
+    if (!derived.ok) throw new Error(derived.message);
+    expect(repoFilesEvidenceMeasurementSchema.parse(derived.binding.measurement)).toMatchObject({
+      fixturePaths: ['pkg/lib/__fixtures__/seed.ts'],
+      fixtureGlobs: ['pkg/lib/__fixtures__/**/*.ts'],
+      fixtureRootHarnessSlug: 'web',
+      testPaths: [TEST],
+    });
+    expect(derived.binding).toMatchObject({ testRunId: 42,
+      details: { adequacy: { fixtureCalibrated: true }, testRun: { id: 42 } } });
+    expect(() => testRunBindingSchema.parse(input({ fixturePaths: ['../outside.ts'] }))).toThrow();
   });
 });
 

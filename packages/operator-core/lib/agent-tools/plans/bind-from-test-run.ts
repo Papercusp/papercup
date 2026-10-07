@@ -153,6 +153,9 @@ export const testRunBindingSchema = z
       .optional()
       .describe("Override the derived subject files (default: the test file's relative imports)."),
     sourceGlobs: repoFilesEvidenceMeasurementSchema.shape.sourceGlobs,
+    fixturePaths: repoFilesEvidenceMeasurementSchema.shape.fixturePaths,
+    fixtureGlobs: repoFilesEvidenceMeasurementSchema.shape.fixtureGlobs,
+    fixtureRootHarnessSlug: repoFilesEvidenceMeasurementSchema.shape.fixtureRootHarnessSlug,
     canonicalTestPath: repoFilesEvidenceMeasurementSchema.shape.testPaths.unwrap().element
       .optional()
       .describe('Canonical repo-relative test path for a mutation-probe copy-out run whose temporary mirror is no longer a checkout, or the .rs file defining a cargo test.'),
@@ -712,6 +715,9 @@ export function deriveBindingFromTestRun(
       sourcePaths,
       ...(input.sourceGlobs ? { sourceGlobs: input.sourceGlobs } : {}),
       testPaths: [testPath],
+      ...(input.fixturePaths ? { fixturePaths: input.fixturePaths } : {}),
+      ...(input.fixtureGlobs ? { fixtureGlobs: input.fixtureGlobs } : {}),
+      ...(input.fixtureRootHarnessSlug ? { fixtureRootHarnessSlug: input.fixtureRootHarnessSlug } : {}),
       ...(runtimeWitness ? { runtimeUnits: [...runtimeWitness.units] } : {}),
     },
     details: {
