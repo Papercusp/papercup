@@ -158,6 +158,7 @@ const APP_BLUEPRINT = {
   operations: [{
     id: 'draft-reply', version: '1', target: { kind: 'work-item', itemKind: 'feature' },
     execution: { kind: 'agent', role: 'email-drafter' },
+    policy: { identity: { kind: 'identity', ref: 'email-drafter', revision: '1.0.0', contentHash: 'b'.repeat(64) } },
     inputSchema: DRAFT_INPUT_SCHEMA,
     acceptance: { resultSchema: DRAFT_RESULT_SCHEMA },
   }],
