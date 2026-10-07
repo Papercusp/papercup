@@ -1367,6 +1367,7 @@ interface EvidenceRow extends CurrentnessRow {
   test_run_file_path: string | null;
   test_run_commit_sha: string | null;
   test_run_worktree_dirty: boolean | null;
+  test_run_status?: string | null;
   test_run_execution_details?: unknown;
   /** Ledger output tail of a FAILED mutation-probe run bound as mutation evidence; else NULL. */
   mutation_failure_tail: string | null;
@@ -1946,6 +1947,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
            tr.file_path AS test_run_file_path,
            tr.commit_sha AS test_run_commit_sha,
            tr.worktree_dirty AS test_run_worktree_dirty,
+           tr.status AS test_run_status,
            tr.execution_details AS test_run_execution_details,
            -- WI-10006745: unconditional, so no adequacy reader (the ship-gate snapshot included)
            -- can forget to ask for it. Bounded by the ledger's own 4000-char tail.
@@ -2259,10 +2261,14 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
         : {
             testRunExecution: parsedTestRunExecution
               ? {
+                  ...(typeof row.test_run_status === 'string' ? { status: row.test_run_status } : {}),
                   passed: parsedTestRunExecution.passed,
                   failed: parsedTestRunExecution.failed,
                   skipped: parsedTestRunExecution.skipped,
                   collectionFailed: parsedTestRunExecution.collectionFailed,
+                  ...(parsedTestRunExecution.testLayer !== undefined
+                    ? { testLayer: parsedTestRunExecution.testLayer }
+                    : {}),
                 }
               : null,
           }),
