@@ -21,6 +21,7 @@ let client: Client | undefined;
 
 function payload(result: Awaited<ReturnType<Client['callTool']>>, expectedError = false) {
   expect(result.isError === true, JSON.stringify(result)).toBe(expectedError);
+  if (result.structuredContent !== undefined) return result.structuredContent;
   const blocks = Array.isArray(result.content) ? result.content : [];
   const text = blocks.find((block: { type?: string; text?: string }) => block.type === 'text');
   expect(text?.type).toBe('text');
@@ -92,6 +93,30 @@ describe.runIf(Boolean(baseUrl))('canonical manual on the public Papercup HTTP M
       expect(result).toMatchObject({ surface: 'public', legs: { lexical: { status: 'ran' }, semantic: { status: 'not-run' } } });
       expect(result.hits).toEqual(expect.arrayContaining([expect.objectContaining({ slug: 'faq', heading: 'does-closing-the-browser-stop-my-agents' })]));
     }
+  });
+
+  it('validates projected search/get results against the advertised SDK output schemas', async () => {
+    const listed = await client!.listTools();
+    expect(listed.tools.find((tool) => tool.name === 'docs:search')?.outputSchema).toBeDefined();
+    const search = await client!.callTool({
+      name: 'docs:search',
+      arguments: { query: 'closing the browser', limit: 2, projection: { pick: ['surface', 'revision', 'hits[].url', 'hits[].heading'] } },
+      _meta: { outputGroupId: randomUUID() },
+    });
+    expect(search.isError).not.toBe(true);
+    expect(search.structuredContent).toMatchObject({ surface: 'public', revision: expect.stringMatching(/^[a-f0-9]{64}$/) });
+    expect((search.structuredContent as { hits: unknown[] }).hits).toEqual(expect.arrayContaining([
+      expect.objectContaining({ heading: 'does-closing-the-browser-stop-my-agents' }),
+    ]));
+    expect((search.structuredContent as { hits: object[] }).hits.every((hit) => Object.keys(hit).every((key) => ['url', 'heading'].includes(key)))).toBe(true);
+    const page = await client!.callTool({
+      name: 'docs:get',
+      arguments: { slugs: ['faq'], heading: 'Does closing the browser stop my agents?', projection: { pick: ['surface', 'revision', 'results[].found', 'results[].slug'] } },
+      _meta: { outputGroupId: randomUUID() },
+    });
+    expect(page.isError).not.toBe(true);
+    expect(page.structuredContent).toEqual({ surface: 'public', revision: (search.structuredContent as { revision: string }).revision, results: [{ found: true, slug: 'faq' }] });
+    expect(JSON.stringify(page.structuredContent)).not.toContain('Also asked as:');
   });
 
   it('retrieves every published FAQ question and its two paraphrases on the serving public mount', async () => {

@@ -454,7 +454,28 @@ describe('applyResultProjection — safety contracts', () => {
     expect(JSON.parse(bodyText(out))).toEqual([{ id: 'a' }, { id: 'b' }]);
   });
 
-  it('drops structuredContent — and says so in the footer, not only in _meta', () => {
+  it('keeps only the projected JSON object in structuredContent', () => {
+    const source = { surface: 'public', hits: [{ title: 'FAQ', privateNoise: 'withheld' }], unselected: 'withheld' };
+    const out = applyResultProjection(
+      { ...textResult(JSON.stringify(source)), structuredContent: source },
+      spec({ pick: ['surface', 'hits[].title'] }),
+    );
+    expect(out.structuredContent).toEqual({ surface: 'public', hits: [{ title: 'FAQ' }] });
+    expect(out.structuredContent).toEqual(JSON.parse(bodyText(out)));
+    expect(JSON.stringify(out)).not.toContain('withheld');
+  });
+
+  it('wraps a projected array in the serializer\'s object envelope', () => {
+    const source = [{ id: 'a', noise: 'withheld' }, { id: 'b', noise: 'withheld' }];
+    const out = applyResultProjection(
+      { ...textResult(JSON.stringify(source)), structuredContent: { value: source } },
+      spec({ pick: ['[].id'] }),
+    );
+    expect(out.structuredContent).toEqual({ value: [{ id: 'a' }, { id: 'b' }] });
+    expect(JSON.stringify(out)).not.toContain('withheld');
+  });
+
+  it('drops structuredContent for a non-JSON line result and says so in the footer', () => {
     const withStructured = { ...textResult('a\nb\nc'), structuredContent: { everything: true } };
     const out = applyResultProjection(withStructured, spec({ pipe: [{ op: 'head', n: 1 }] }));
     expect(out.structuredContent).toBeUndefined();
@@ -759,13 +780,13 @@ describe('applyResultProjection — degraded results lead with the caveat (P-015
     expect(footer).not.toContain('REMOVED EVERYTHING');
   });
 
-  it('a non-degrading note (structuredContent dropped) stays BELOW the statistic', () => {
+  it('a non-degrading note (structuredContent replaced) stays BELOW the statistic', () => {
     const out = applyResultProjection(
       { content: [{ type: 'text' as const, text: JSON_BODY }], structuredContent: { big: true } },
       spec({ pick: ['results[].id'] }),
     );
     const footer = footerOf(out);
-    const noteAt = footer.indexOf('structuredContent dropped');
+    const noteAt = footer.indexOf('structuredContent replaced');
     const statAt = footer.indexOf('[projection:');
     expect(noteAt).toBeGreaterThan(statAt);
     // It is not a trust warning, so the saving is still a saving.
@@ -780,7 +801,7 @@ describe('applyResultProjection — degraded results lead with the caveat (P-015
     const notes = reportOf(out).notes;
     expect(notes.every((n) => typeof n === 'string')).toBe(true);
     expect(notes.some((n) => n.includes('matched nothing'))).toBe(true);
-    expect(notes.some((n) => n.includes('structuredContent dropped'))).toBe(true);
+    expect(notes.some((n) => n.includes('structuredContent replaced'))).toBe(true);
   });
 });
 

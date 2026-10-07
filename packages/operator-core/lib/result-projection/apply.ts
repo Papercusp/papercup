@@ -1127,7 +1127,21 @@ export function applyResultProjection<T extends ProjectableResult>(
     // Decided BEFORE the footer is rendered: a note appended afterwards would
     // live only in _meta, and the in-band footer is the copy the agent actually
     // reads. (Getting this order wrong is how a "loud" fail-open goes quiet.)
-    const dropStructured = result.structuredContent !== undefined;
+    // SDK clients validate schema-bearing tools before exposing their text.
+    // Replace the full structured body with the same reduced JSON the caller
+    // requested; dropping it makes a valid pick fail the MCP output contract.
+    // Non-JSON line reductions retain the existing text-only behavior.
+    let projectedStructured: Record<string, unknown> | undefined;
+    if (result.structuredContent !== undefined) {
+      try {
+        const reduced: unknown = JSON.parse(projectedText);
+        projectedStructured = isPlainObject(reduced) ? reduced : { value: reduced };
+      } catch { /* The line pipeline no longer has a JSON structured body. */ }
+    }
+    const dropStructured = result.structuredContent !== undefined && projectedStructured === undefined;
+    if (projectedStructured !== undefined) {
+      note('structuredContent replaced with the projected JSON body.', false);
+    }
     if (dropStructured) {
       // Not trust-degrading: dropping it is the point of asking for less, and
       // the text body the caller reads is complete on its own terms.
@@ -1269,10 +1283,9 @@ export function applyResultProjection<T extends ProjectableResult>(
         resultProjection: { ...report, bodyContentIndex },
       },
     } as T;
-    // A full structuredContent alongside a reduced text body defeats the whole
-    // point — it is the larger half of the payload, and the caller asked for
-    // less. Dropped here; the note was recorded above so it reaches the footer.
-    if (dropStructured) delete (out as { structuredContent?: unknown }).structuredContent;
+    // Never retain the unprojected structured payload beside reduced text.
+    if (projectedStructured !== undefined) out.structuredContent = projectedStructured;
+    else if (dropStructured) delete out.structuredContent;
     return out;
   } catch {
     return result; // fail-soft: never let the projection break a good result
