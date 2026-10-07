@@ -26,6 +26,7 @@
  */
 import type { Sql } from 'postgres';
 import { BACKUP_APPLICATION_NAMES } from '@papercusp/backup/application-names';
+import { splitStatements } from './db-tools/sanitize-baseline';
 
 export interface PendingMigrationText {
   file: string;
@@ -76,6 +77,25 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+const SQL_IDENTIFIER = '[a-z_][a-z0-9_$]*(?:\\.[a-z_][a-z0-9_$]*)*';
+const TRIGGER_EVENT = '(?:insert|update|delete|truncate)';
+const STATIC_TRIGGER_ACTION = new RegExp(
+  '^(create\\s+(?:or\\s+replace\\s+)?(?:constraint\\s+)?trigger\\s+' + SQL_IDENTIFIER +
+  '\\s+(?:before|after|instead\\s+of)\\s+' + TRIGGER_EVENT + '(?:\\s+or\\s+' + TRIGGER_EVENT + ')*' +
+  '\\s+on\\s+' + SQL_IDENTIFIER + '(?:\\s+for\\s+(?:each\\s+)?(?:row|statement))?\\s+)' +
+  'execute(\\s+(?:function|procedure)\\s+' + SQL_IDENTIFIER + '\\s*\\(\\s*\\))$',
+);
+
+/** CREATE TRIGGER declares a future action; it does not execute dynamic SQL.
+ * Recognize only the simple static form. Other syntax remains conservative.
+ * Reuse the statement splitter so a DO body or following prepared EXECUTE
+ * cannot acquire this exemption. Relation checks still inspect the full text. */
+function withoutStaticTriggerAction(text: string): string {
+  return splitStatements(text)
+    .map((statement) => statement.replace(STATIC_TRIGGER_ACTION, '$1trigger_action$2'))
+    .join(';\n');
+}
+
 /**
  * Pure verdict: which pending migrations touch a relation the backup holds, or
  * cannot be proven not to. An empty result means every pending file is safe to
@@ -93,8 +113,9 @@ export function findBackupLockConflicts(
   const conflicts: MigrationLockConflict[] = [];
   for (const { file, sqlText } of pending) {
     const text = normalizeMigrationSql(sqlText);
+    const statementText = withoutStaticTriggerAction(text);
     for (const { label, re } of UNPROVABLE_STATEMENTS) {
-      if (re.test(text)) conflicts.push({ file, subject: label, reason: 'unprovable-statement' });
+      if (re.test(statementText)) conflicts.push({ file, subject: label, reason: 'unprovable-statement' });
     }
     for (const { name, re } of matchers) {
       if (re.test(text)) conflicts.push({ file, subject: name, reason: 'names-locked-relation' });

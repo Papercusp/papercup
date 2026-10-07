@@ -757,6 +757,51 @@ describe('native boot migration/backup rendezvous (EI-21443484375613585)', () =>
       await holder.end({ timeout: 5 });
     }
   });
+
+  it('applies a static trigger migration while the backup rendezvous remains held on an unrelated table', async () => {
+    const filename = '960-native-boot-backup-static-trigger.sql';
+    await rootSql.unsafe(`
+      CREATE TABLE harness_shared.boot_static_trigger_target (id int);
+      CREATE TABLE harness_shared.boot_static_trigger_transcript (id int);
+      CREATE FUNCTION harness_shared.boot_static_trigger_action() RETURNS trigger
+        LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$;`);
+    const dir = makeSqlDir({
+      [filename]: `CREATE TRIGGER boot_static_trigger
+        AFTER INSERT ON harness_shared.boot_static_trigger_target
+        FOR EACH ROW EXECUTE FUNCTION harness_shared.boot_static_trigger_action();`,
+    });
+    await seedMigrationReservations([filename]);
+    const holder = postgres(dbUrl, {
+      max: 1, prepare: false, onnotice: () => {},
+      connection: { application_name: 'pcbackup-workspace' },
+    });
+    const dump = await holder.reserve();
+    try {
+      await dump`SELECT pg_advisory_lock(hashtext(${BACKUP_MIGRATION_ADVISORY_LOCK_KEY}))`;
+      await dump`BEGIN`;
+      await dump`LOCK TABLE harness_shared.boot_static_trigger_transcript IN ACCESS SHARE MODE`;
+      const result = await withBoundedTimeout(
+        (signal) => applyPendingMigrationsNow({ sqlDir: dir, broadcast: false, signal }),
+        { fallback: null, timeoutMs: 5_000, label: 'static trigger backup rendezvous regression' },
+      );
+      expect(result.degraded).toBe(false);
+      expect(result.value).toMatchObject({ applied: 1, failed: [] });
+      const observed = await rootSql<{ created: boolean; backupStillHeld: boolean }[]>`
+        SELECT EXISTS (
+          SELECT 1 FROM pg_trigger WHERE tgname = 'boot_static_trigger'
+        ) AS created,
+        EXISTS (
+          SELECT 1 FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid
+          WHERE l.locktype = 'advisory' AND l.granted AND a.application_name = 'pcbackup-workspace'
+        ) AS "backupStillHeld"`;
+      expect(observed).toEqual([{ created: true, backupStillHeld: true }]);
+    } finally {
+      await dump`ROLLBACK`.catch(() => {});
+      await dump`SELECT pg_advisory_unlock(hashtext(${BACKUP_MIGRATION_ADVISORY_LOCK_KEY}))`.catch(() => {});
+      dump.release();
+      await holder.end({ timeout: 5 });
+    }
+  });
 });
 
 describe('native boot pre-destructive snapshot admission (EI-217072)', () => {

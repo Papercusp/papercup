@@ -80,6 +80,16 @@ describe('findBackupLockConflicts', () => {
     expect(findBackupLockConflicts(pending(sql), []).map((c) => c.subject)).toContain('EXECUTE (dynamic SQL)');
   });
 
+  it('does not exempt a DO body containing a trigger declaration before another dynamic statement', () => {
+    const sql = `DO $$ BEGIN ${ticketTriggers()} EXECUTE format('ALTER TABLE %I ADD c int', t); END $$;`;
+    expect(findBackupLockConflicts(pending(sql), []).map((c) => c.subject)).toContain('EXECUTE (dynamic SQL)');
+  });
+
+  it('keeps complex trigger expressions outside the narrow static-action proof', () => {
+    const sql = 'CREATE TRIGGER t AFTER INSERT ON public.a WHEN (public.side_effect()) EXECUTE FUNCTION public.f();';
+    expect(findBackupLockConflicts(pending(sql), []).map((c) => c.subject)).toContain('EXECUTE (dynamic SQL)');
+  });
+
   it('refuses statements whose lock footprint the text cannot prove, even with nothing locked', () => {
     const cases: Array<[string, string]> = [
       ["DO $$ BEGIN EXECUTE format('ALTER TABLE %I ADD c int', t); END $$;", 'EXECUTE (dynamic SQL)'],
