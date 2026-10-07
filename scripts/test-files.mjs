@@ -85,7 +85,8 @@ import {
   TEST_FILE_EXIT_PASSED,
   TEST_FILE_EXIT_TEMPFAIL,
 } from './lib/test-file-exit-codes.mjs';
-import { peekFsMutexSync } from './lib/fs-mutex.mjs';
+import { peekFsMutexSync, withFsMutexRead } from './lib/fs-mutex.mjs';
+import { envWithInstallMutex, installMutexIsHeld } from './lib/install-lock-name.mjs';
 import { formatMutationProbeWindow, readMutationProbeWindow } from './lib/mutation-probe-window.mjs';
 import {
   formatRestrictedHoldRefusal,
@@ -3572,11 +3573,41 @@ export async function main(
   }
 }
 
+/**
+ * Run the direct CLI under the shared install reader mutex. Package scripts
+ * already enter through npm-install-safe; the matching inherited marker is
+ * the proof that this process is inside that same reader boundary, so nesting
+ * another reader would self-deadlock behind an install writer.
+ */
+export async function runTestFilesCli(
+  args = process.argv.slice(2),
+  {
+    env = process.env,
+    acquireReadLease = withFsMutexRead,
+    lockName = repoLockName(REPO_ROOT),
+    run = main,
+  } = {},
+) {
+  if (installMutexIsHeld(lockName, env)) return run(args);
+
+  const previousMarker = env.PAPERCUSP_INSTALL_MUTEX_HELD;
+  const inheritedMarker = envWithInstallMutex(lockName, env).PAPERCUSP_INSTALL_MUTEX_HELD;
+  return acquireReadLease(lockName, async () => {
+    env.PAPERCUSP_INSTALL_MUTEX_HELD = inheritedMarker;
+    try {
+      return await run(args);
+    } finally {
+      if (previousMarker === undefined) delete env.PAPERCUSP_INSTALL_MUTEX_HELD;
+      else env.PAPERCUSP_INSTALL_MUTEX_HELD = previousMarker;
+    }
+  });
+}
+
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   // This module is also imported through TypeScript/tsx entrypoints whose dependency graph is
   // transformed to CommonJS (for example apps/operator/scripts/lint-tests.ts). Keep the async
   // exit-code handoff without top-level await, which esbuild correctly rejects in that format.
-  void main().then(
+  void runTestFilesCli().then(
     (exitCode) => {
       process.exitCode = exitCode;
     },

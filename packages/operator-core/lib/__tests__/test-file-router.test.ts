@@ -32,6 +32,7 @@ import {
   perGroupVitestArgs,
   runCapturedTestProcess,
   runGovernedTestFileProcess,
+  runTestFilesCli,
   runVitestList,
   stopTestScope,
   testScopeRuntimeMaxSec,
@@ -1913,6 +1914,41 @@ describe('warnIfInstallInFlight (EI-19304880034803985 — the HANG-path hint)', 
     rmSync(tmpLockRootDir, { recursive: true, force: true });
     expect(() => warnIfInstallInFlight('cold path')).not.toThrow();
     expect(errorSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('direct test-files CLI install reader lease (EI-24946572521324679)', () => {
+  it('takes the repo reader lease and propagates the marker for an unmarked CLI run', async () => {
+    const lockName = repoLockName();
+    const otherLockName = 'npm-install-aaaaaaaaaaaa';
+    const env = { PAPERCUSP_INSTALL_MUTEX_HELD: otherLockName };
+    const args = ['packages/operator-core/lib/__tests__/test-file-router.test.ts'];
+    const run = vi.fn(async () => {
+      expect(env.PAPERCUSP_INSTALL_MUTEX_HELD).toBe([otherLockName, lockName].join(','));
+      return 7;
+    });
+    const acquireReadLease = vi.fn(async (_name, withLease) => withLease());
+
+    await expect(runTestFilesCli(args, { env, acquireReadLease, run })).resolves.toBe(7);
+
+    expect(acquireReadLease).toHaveBeenCalledOnce();
+    expect(acquireReadLease).toHaveBeenCalledWith(lockName, expect.any(Function));
+    expect(run).toHaveBeenCalledWith(args);
+    expect(env.PAPERCUSP_INSTALL_MUTEX_HELD).toBe(otherLockName);
+  });
+
+  it('bypasses nested acquisition when the matching repo marker is already present', async () => {
+    const lockName = repoLockName();
+    const env = { PAPERCUSP_INSTALL_MUTEX_HELD: ['npm-install-aaaaaaaaaaaa', lockName].join(',') };
+    const args = ['packages/operator-core/lib/__tests__/test-file-router.test.ts'];
+    const run = vi.fn(async () => 0);
+    const acquireReadLease = vi.fn();
+
+    await expect(runTestFilesCli(args, { env, acquireReadLease, run })).resolves.toBe(0);
+
+    expect(run).toHaveBeenCalledWith(args);
+    expect(acquireReadLease).not.toHaveBeenCalled();
+    expect(env.PAPERCUSP_INSTALL_MUTEX_HELD).toBe(['npm-install-aaaaaaaaaaaa', lockName].join(','));
   });
 });
 
