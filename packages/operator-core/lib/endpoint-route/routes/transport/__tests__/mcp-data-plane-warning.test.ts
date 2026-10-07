@@ -63,6 +63,89 @@ describe('withMcpDiagnosticWarnings', () => {
     expect(annotated._meta).toBeUndefined();
   });
 
+  it('does not warn for a populated successful code:run summary wrapper', () => {
+    const body = {
+      ok: true,
+      summary: { results: [{ id: 'EI-25259151188281694' }] },
+      logs: [],
+      dryRun: false,
+      dispatchCount: 1,
+      intermediateBytes: 128,
+      runtimeObservations: {},
+      plannedMutations: [],
+      okFalseMutations: [],
+      childFailures: [],
+      partial: false,
+    };
+    const result: McpCallResult = {
+      content: [{ type: 'text', text: JSON.stringify(body) }],
+    };
+    const annotated = withMcpDiagnosticWarnings(
+      result,
+      context({ dataPlaneDegradedAtMs: Date.parse('2026-10-06T19:18:34.058Z') }),
+    );
+
+    expect(annotated).toBe(result);
+    expect(annotated._meta).toBeUndefined();
+  });
+
+  it('keeps the warning for an empty successful code:run summary wrapper', () => {
+    const result: McpCallResult = {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          ok: true,
+          summary: { results: [] },
+          logs: [],
+          dryRun: false,
+          dispatchCount: 0,
+          intermediateBytes: 0,
+          runtimeObservations: {},
+          plannedMutations: [],
+          okFalseMutations: [],
+          childFailures: [],
+          partial: false,
+        }),
+      }],
+    };
+    const annotated = withMcpDiagnosticWarnings(
+      result,
+      context({ dataPlaneDegradedAtMs: Date.parse('2026-10-06T19:18:34.058Z') }),
+    );
+
+    expect(JSON.parse((annotated.content[0] as { text: string }).text)._dataPlaneMayBeDegraded)
+      .toContain('unexpected empty/not-found');
+  });
+
+  it('does not warn for a populated singular facts:assert fact result', () => {
+    const result: McpCallResult = {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({ ok: true, fact: { key: 'guard-rail:example', body: 'verified result' } }),
+      }],
+    };
+    const annotated = withMcpDiagnosticWarnings(
+      result,
+      context({ dataPlaneDegradedAtMs: Date.parse('2026-10-06T19:18:34.058Z') }),
+    );
+
+    expect(annotated).toBe(result);
+    expect(annotated._meta).toBeUndefined();
+  });
+
+  it('keeps the warning for an empty singular fact result', () => {
+    const result: McpCallResult = {
+      content: [{ type: 'text', text: JSON.stringify({ ok: true, fact: {} }) }],
+    };
+    const annotated = withMcpDiagnosticWarnings(
+      result,
+      context({ dataPlaneDegradedAtMs: Date.parse('2026-10-06T19:18:34.058Z') }),
+    );
+
+    expect(JSON.parse((annotated.content[0] as { text: string }).text)._dataPlaneMayBeDegraded)
+      .toContain('unexpected empty/not-found');
+  });
+
   it('does not warn for a populated dev:pg_query rows result', () => {
     const body = {
       mode: 'query',
