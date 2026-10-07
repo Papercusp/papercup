@@ -7527,22 +7527,33 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
       expect(expired.status).toBe(429);
       const shed = JSON.parse(expired.body) as {
         error: string;
+        retryAfterSec: number;
         forwardingResult: string;
         blockedBy?: { tools: string[]; ageMs: number; traceId: string };
       };
       expect(shed).toMatchObject({
         error: "mcp_proxy_improvements_capture_queue_dwell",
+        retryAfterSec: 2,
         forwardingResult: "not_forwarded",
         blockedBy: {
           tools: ["improvements:capture"],
           traceId: holderTraceIds[0],
         },
       });
+      expect(expired.headers["retry-after"]).toBe(String(shed.retryAfterSec));
       expect(shed.blockedBy?.ageMs).toBeGreaterThanOrEqual(0);
       expect(hits).toEqual(["held-capture"]);
 
       releaseFirst();
       expect((await first).status).toBe(200);
+
+      const retry = await request(
+        port(proxy),
+        body(3, "improvements:capture"),
+        "/api/mcp?client=retry-after-release",
+      );
+      expect(retry.status).toBe(200);
+      expect(hits).toEqual(["held-capture", "retry-after-release"]);
 
       const records = fs
         .readFileSync(logFile, "utf8")
