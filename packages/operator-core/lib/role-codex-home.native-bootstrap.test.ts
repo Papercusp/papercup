@@ -7,10 +7,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { codexGatewayConfigToml, codexManagedFeaturesToml } from '@papercusp/orchestrator/codex-gateway-config';
-import { resolveOnPath } from './backend-bin-resolve.mjs';
+import { resolveOnPath, wellKnownBackendBin } from './backend-bin-resolve.mjs';
 import { isCodexWorkspaceDiscoveryTimeout } from './psu-launch-log.mjs';
 
-const codex = resolveOnPath('codex');
+// Use the maintained per-user install precedence. The test worker's PATH can
+// prefer a broken system wrapper over the Codex PSU actually launches.
+const codex = wellKnownBackendBin('codex') ?? resolveOnPath('codex');
 const require = createRequire(import.meta.url);
 
 /** Exercise the TUI's mandatory account/read path, including terminal probes. */
