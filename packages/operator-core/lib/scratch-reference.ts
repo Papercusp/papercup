@@ -13,6 +13,7 @@ import { dirname } from 'node:path';
 import type { OutputAudience, OutputEvidenceClass } from './output-envelope';
 import {
   reserveScratchSpace,
+  writeWithScratchQuota,
   RETENTION_MS,
   markNewWorkspaceScratchRoot,
   markNewWorkspaceScratchRootSync,
@@ -223,11 +224,10 @@ export function writeScratchReference(input: {
       : {}),
   };
   const header = scratchReferenceHeader(manifest);
-  reserveScratchSpace({ workspaceId: input.workspaceId, bytes: header.length + payload.length });
   const bytes = Buffer.concat([header, payload]);
   if (input.deferredWrites) {
     const filePath = input.filePath;
-    const write = (async () => {
+    const write = writeWithScratchQuota({ workspaceId: input.workspaceId, filePath, bytes: bytes.length }, async () => {
       // WI-10006512: a root this mkdir creates is marked as a workspace scratch root, so the
       // scratch GC can later prove it is ours before deleting it.
       await markNewWorkspaceScratchRoot(
@@ -235,13 +235,14 @@ export function writeScratchReference(input: {
         await mkdir(dirname(filePath), { recursive: true, mode: 0o700 }),
       );
       await writeFile(filePath, bytes, { mode: 0o600 });
-    })();
+    });
     // Mark handled now: the caller awaits it later, and a fast failure must not reach the
     // process-level unhandledRejection handler (which terminates the host) first.
     write.catch(() => {});
     input.deferredWrites.push(write);
     return manifest;
   }
+  reserveScratchSpace({ workspaceId: input.workspaceId, bytes: bytes.length });
   markNewWorkspaceScratchRootSync(
     input.workspaceId,
     mkdirSync(dirname(input.filePath), { recursive: true, mode: 0o700 }),

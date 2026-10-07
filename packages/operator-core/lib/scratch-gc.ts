@@ -178,6 +178,7 @@ function defaultScanOpenPaths(paths: readonly string[]): Promise<OpenWriterScan>
 }
 
 export class ScratchQuotaError extends Error {
+  readonly code = 'SCRATCH_QUOTA_EXCEEDED';
   constructor(message: string) {
     super(message);
     this.name = 'ScratchQuotaError';
@@ -326,25 +327,9 @@ export async function runScratchGc(opts: {
 
   // Step 3: per-workspace quota check + FIFO eviction by mtime.
   for (const workspaceId of opts.workspaceRegistry) {
-    const wsRoot = scratchRootForWorkspace(workspaceId);
-    const used = await sizeOfDirAsync(wsRoot);
-    if (used <= WORKSPACE_QUOTA_BYTES) continue;
-    // Build a list of (runDir, mtimeMs, bytes), sort oldest first,
-    // delete until under quota.
-    const runs: Array<{ dir: string; mtimeMs: number; bytes: number }> = [];
-    for (const run of await runDirsOf(wsRoot)) {
-      runs.push({ ...run, bytes: await sizeOfDirAsync(run.dir) });
-    }
-    runs.sort((a, b) => a.mtimeMs - b.mtimeMs);
-    let usedRunning = used;
-    for (const r of runs) {
-      if (usedRunning <= WORKSPACE_QUOTA_BYTES) break;
-      await rmAsync(r.dir, { recursive: true, force: true });
-      usedRunning -= r.bytes;
-      summary.quotaEvictions += 1;
-      summary.quotaEvictedBytes += r.bytes;
-      evictedBytesTotal += r.bytes;
-    }
+    const reclaimed = await evictWorkspaceQuota(workspaceId, () => WORKSPACE_QUOTA_BYTES);
+    summary.quotaEvictions += reclaimed.evictions;
+    summary.quotaEvictedBytes += reclaimed.bytes;
   }
 
   return summary;
@@ -399,6 +384,9 @@ interface ScratchUsageEntry {
   measuredAt: number;
   /** In-flight background measurement, if any (at most one per workspace). */
   refreshing: Promise<void> | null;
+  /** One shared pressure recovery; subsequent writers await it before touching disk. */
+  recovering: Promise<void> | null;
+  writes: Map<symbol, { filePath: string; bytes: number; reserved: boolean }>;
 }
 
 /** Per-process cached usage per workspace (WI-10004513). Pinned so a split module record can't
@@ -410,10 +398,43 @@ const usageState = pinModuleState('@papercusp/operator-core.scratch-gc.usage', (
 function usageEntry(workspaceId: string): ScratchUsageEntry {
   let entry = usageState.byWorkspace.get(workspaceId);
   if (!entry) {
-    entry = { bytes: 0, measuredAt: 0, refreshing: null };
+    entry = { bytes: 0, measuredAt: 0, refreshing: null, recovering: null, writes: new Map() };
     usageState.byWorkspace.set(workspaceId, entry);
   }
   return entry;
+}
+
+function reservedWriteBytes(entry: ScratchUsageEntry): number {
+  return [...entry.writes.values()].reduce((sum, write) => sum + (write.reserved ? write.bytes : 0), 0);
+}
+
+/** The same FIFO phase serves the daily sweep and request-time async quota recovery. */
+async function evictWorkspaceQuota(workspaceId: string, targetBytes: () => number): Promise<{
+  used: number; evictions: number; bytes: number;
+}> {
+  const wsRoot = scratchRootForWorkspace(workspaceId);
+  const entry = usageEntry(workspaceId);
+  let used = await sizeOfDirAsync(wsRoot);
+  let evictions = 0;
+  let bytes = 0;
+  if (used > targetBytes()) {
+    const runs = await runDirsOf(wsRoot);
+    runs.sort((a, b) => a.mtimeMs - b.mtimeMs);
+    for (const run of runs) {
+      if (used <= targetBytes()) break;
+      const runBytes = await sizeOfDirAsync(run.dir);
+      // Recheck after the walk: a writer may have arrived while it was in flight.
+      if ([...entry.writes.values()].some((write) => write.filePath.startsWith(run.dir + sep))) continue;
+      await rmAsync(run.dir, { recursive: true, force: true });
+      used -= runBytes;
+      evictions += 1;
+      bytes += runBytes;
+      evictedBytesTotal += runBytes;
+    }
+  }
+  entry.bytes = used + reservedWriteBytes(entry);
+  entry.measuredAt = Date.now();
+  return { used, evictions, bytes };
 }
 
 /**
@@ -488,7 +509,8 @@ export function refreshScratchUsage(workspaceId: string, now: () => number = Dat
   const run = (async () => {
     try {
       const measured = await sizeOfDirAsync(scratchRootForWorkspace(workspaceId));
-      entry.bytes = measured;
+      // A measurement can race a deferred write; conservatively retain its reservation.
+      entry.bytes = measured + reservedWriteBytes(entry);
       entry.measuredAt = now();
     } finally {
       entry.refreshing = null;
@@ -556,6 +578,48 @@ export function reserveScratchSpace(opts: {
     );
   }
   entry.bytes = used + opts.bytes;
+}
+
+/**
+ * Deferred reference writes recover quota pressure via the existing asynchronous FIFO phase.
+ * No synchronous tree scan, no quota increase, and no eviction for an impossible single write.
+ * Active/waiting reference paths are protected; concurrent callers share one recovery.
+ */
+export async function writeWithScratchQuota(
+  opts: { workspaceId: string; filePath: string; bytes: number },
+  write: () => Promise<void>,
+): Promise<void> {
+  if (!Number.isSafeInteger(opts.bytes) || opts.bytes < 0 || opts.bytes > WORKSPACE_QUOTA_BYTES) {
+    throw new ScratchQuotaError(`scratch reservation: invalid single write of ${opts.bytes} bytes`);
+  }
+  const entry = usageEntry(opts.workspaceId);
+  const token = Symbol();
+  const pending = { filePath: opts.filePath, bytes: opts.bytes, reserved: false };
+  entry.writes.set(token, pending);
+  let succeeded = false;
+  try {
+    if (entry.recovering) await entry.recovering;
+    try {
+      reserveScratchSpace(opts);
+    } catch (err) {
+      if (!(err instanceof ScratchQuotaError)) throw err;
+      if (!entry.recovering) {
+        entry.recovering = (async () => {
+          if (entry.refreshing) await entry.refreshing;
+          await evictWorkspaceQuota(opts.workspaceId, () => Math.max(0, WORKSPACE_QUOTA_BYTES -
+            [...entry.writes.values()].reduce((sum, request) => sum + request.bytes, 0)));
+        })().finally(() => { entry.recovering = null; });
+      }
+      await entry.recovering;
+      reserveScratchSpace(opts); // still full/protected/unreclaimable ⇒ explicit, bounded refusal
+    }
+    pending.reserved = true;
+    await write();
+    succeeded = true;
+  } finally {
+    entry.writes.delete(token);
+    if (pending.reserved && !succeeded) entry.bytes = Math.max(0, entry.bytes - opts.bytes);
+  }
 }
 
 /** Ensure the scratch directory chain exists for a (workspace, tool, run). */

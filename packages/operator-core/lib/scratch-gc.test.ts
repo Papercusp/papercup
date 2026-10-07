@@ -18,6 +18,10 @@ vi.mock('node:fs', async (importOriginal) => {
     mkdirSync: vi.fn(actual.mkdirSync),
   };
 });
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return { ...actual, readdir: vi.fn(actual.readdir), rm: vi.fn(actual.rm) };
+});
 import {
   mkdtempSync,
   mkdirSync,
@@ -32,7 +36,9 @@ import {
   openSync,
   closeSync,
   realpathSync,
+  truncateSync,
 } from 'node:fs';
+import { readdir as readdirAsync, rm as rmAsync, writeFile } from 'node:fs/promises';
 import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -53,6 +59,7 @@ import {
   SCRATCH_RUN_DIR_MAX_AGE_MS,
   WORKSPACE_SCRATCH_MARKER,
   DEAD_WORKSPACE_QUIET_MS,
+  writeWithScratchQuota,
 } from './scratch-gc';
 import type { OpenWriterScan } from './native-bg-task-ledger';
 import { writeScratchReference } from './scratch-reference';
@@ -71,9 +78,11 @@ beforeEach(() => {
   prevScratchRoot = process.env.PAPERCUSP_SCRATCH_ROOT;
   process.env.PAPERCUSP_SCRATCH_ROOT = join(sandbox, '.papercusp', 'scratch');
   _resetScratchGcCountersForTests();
+  _resetScratchUsageForTests();
 });
 
 afterEach(() => {
+  _resetScratchUsageForTests();
   if (prevScratchRoot === undefined) delete process.env.PAPERCUSP_SCRATCH_ROOT;
   else process.env.PAPERCUSP_SCRATCH_ROOT = prevScratchRoot;
   rmSync(sandbox, { recursive: true, force: true });
@@ -89,6 +98,12 @@ function makeRunDir(workspaceId: string, toolName: string, runId: string, bytes:
     const t = (Date.now() - ageMs) / 1000;
     utimesSync(dir, t, t);
   }
+  return dir;
+}
+
+function makeSparseRun(workspaceId: string, runId: string, bytes: number, ageMs = 0): string {
+  const dir = makeRunDir(workspaceId, 'quota', runId, 0, ageMs);
+  truncateSync(join(dir, 'data.bin'), bytes);
   return dir;
 }
 
@@ -538,34 +553,99 @@ describe('runScratchGc — deletes only provably-dead, quiet workspace roots (WI
 
 describe('runScratchGc — quota eviction', () => {
   it('FIFO-evicts oldest run-dirs when over quota', async () => {
-    // Set up multiple run-dirs in the same workspace and force
-    // quota with a temporary override.
-    // We can't easily mutate WORKSPACE_QUOTA_BYTES (frozen import);
-    // instead exercise by creating a TON of small dirs and trust
-    // the FIFO ordering with mtime stamps.
-    //
-    // Setup: 3 run-dirs with monotonically newer mtimes.
-    // To force quota-eviction we'd need to override the constant.
-    // Instead we test the FIFO ORDERING by hand-running the inner
-    // logic with synthetic numbers.
-    const stamps = [3_000_000_000, 2_000_000_000, 1_000_000_000];
-    for (let i = 0; i < 3; i++) {
-      const dir = ensureScratchRunDir({
-        workspaceId: 'ws-Q',
-        toolName: 'demo:tool',
-        runId: UUID(i + 10),
-      });
-      writeFileSync(join(dir, 'data.bin'), Buffer.alloc(100));
-      const t = stamps[i] / 1000;
-      utimesSync(dir, t, t);
+    const oldest = makeSparseRun('ws-Q', UUID(10), 4 * 1024 ** 3, 10_000);
+    const newest = makeSparseRun('ws-Q', UUID(11), 2 * 1024 ** 3);
+    await refreshScratchUsage('ws-Q');
+    const result = await runScratchGc({ workspaceRegistry: ['ws-Q'] });
+    expect(result.quotaEvictions).toBe(1);
+    expect(result.quotaEvictedBytes).toBe(4 * 1024 ** 3);
+    expect(existsSync(oldest)).toBe(false);
+    expect(existsSync(newest)).toBe(true);
+    expect(scratchEvictionBytes()).toBe(4 * 1024 ** 3);
+    // GC also clears the cached full verdict, so a subsequent reservation can succeed.
+    expect(() => reserveScratchSpace({ workspaceId: 'ws-Q', bytes: 1024 })).not.toThrow();
+  });
+});
+
+describe('deferred scratch quota recovery', () => {
+  it('coalesces pressure recovery while preserving concurrent reservations without synchronous scans', async () => {
+    const old = makeSparseRun('ws-Q', UUID(1), 4 * 1024 ** 3, 10_000);
+    const fresh = makeSparseRun('ws-Q', UUID(2), 1024 ** 3);
+    await refreshScratchUsage('ws-Q');
+    vi.mocked(readdirAsync).mockClear();
+    vi.mocked(rmAsync).mockClear();
+    vi.mocked(readdirSync).mockClear();
+    vi.mocked(statSync).mockClear();
+    await Promise.all(Array.from({ length: 8 }, (_, i) => {
+      const filePath = join(fresh, `write-${i}`);
+      return writeWithScratchQuota({ workspaceId: 'ws-Q', filePath, bytes: 100 },
+        () => writeFile(filePath, Buffer.alloc(100)));
+    }));
+    expect(existsSync(old)).toBe(false);
+    expect(vi.mocked(rmAsync)).toHaveBeenCalledTimes(1);
+    // One size walk plus one run-directory listing for this workspace, shared by all writers.
+    expect(vi.mocked(readdirAsync).mock.calls.filter(([path]) => path === scratchRootForWorkspace('ws-Q'))).toHaveLength(2);
+    expect(vi.mocked(readdirSync)).not.toHaveBeenCalled();
+    expect(vi.mocked(statSync)).not.toHaveBeenCalled();
+    await refreshScratchUsage('ws-Q');
+    expect(scratchUsageBytes('ws-Q')).toBe(1024 ** 3 + markerBytes('ws-Q') + 800);
+  });
+
+  it('protects an in-flight writer even when its run is the oldest FIFO candidate', async () => {
+    const active = makeSparseRun('ws-Q', UUID(1), 4 * 1024 ** 3, 10_000);
+    const other = makeSparseRun('ws-Q', UUID(2), 1024 ** 3);
+    _setScratchUsageForTests('ws-Q', WORKSPACE_QUOTA_BYTES - 1024);
+    let finish!: () => void;
+    let started!: () => void;
+    const began = new Promise<void>((resolve) => { started = resolve; });
+    const held = writeWithScratchQuota({ workspaceId: 'ws-Q', filePath: join(active, 'held'), bytes: 512 }, async () => {
+      started();
+      await new Promise<void>((resolve) => { finish = resolve; });
+    });
+    await began;
+    try {
+      await writeWithScratchQuota({ workspaceId: 'ws-Q', filePath: join(active, 'next'), bytes: 2048 }, async () => {});
+      expect(existsSync(active)).toBe(true);
+      expect(existsSync(other)).toBe(false);
+    } finally {
+      finish();
+      await held;
     }
-    // Sanity: all 3 dirs exist before GC.
-    const wsRoot = join(process.env.PAPERCUSP_SCRATCH_ROOT!, 'ws-Q');
-    expect(readdirSync(join(wsRoot, 'demo:tool')).length).toBe(3);
-    // No quota will fire at 300 bytes total, but the test still
-    // exercises the gather-and-sort path.
-    await runScratchGc({ workspaceRegistry: ['ws-Q'] });
-    expect(scratchEvictionBytes()).toBe(0);
+  });
+
+  it('refuses an impossible request without evicting or invoking the writer', async () => {
+    const old = makeSparseRun('ws-Q', UUID(1), WORKSPACE_QUOTA_BYTES, 10_000);
+    const write = vi.fn(async () => {});
+    vi.mocked(rmAsync).mockClear();
+    await expect(writeWithScratchQuota({ workspaceId: 'ws-Q', filePath: join(old, 'next'),
+      bytes: WORKSPACE_QUOTA_BYTES + 1 }, write)).rejects.toMatchObject({ code: 'SCRATCH_QUOTA_EXCEEDED' });
+    expect(write).not.toHaveBeenCalled();
+    expect(vi.mocked(rmAsync)).not.toHaveBeenCalled();
+    expect(existsSync(old)).toBe(true);
+  });
+
+  it('returns a typed failure when quota is occupied outside reclaimable run directories', async () => {
+    const root = scratchRootForWorkspace('ws-Q');
+    mkdirSync(root, { recursive: true });
+    writeFileSync(join(root, 'unmanaged'), '');
+    truncateSync(join(root, 'unmanaged'), WORKSPACE_QUOTA_BYTES);
+    await refreshScratchUsage('ws-Q');
+    const write = vi.fn(async () => {});
+    await expect(writeWithScratchQuota({ workspaceId: 'ws-Q', filePath: join(root, 'tool', UUID(1), 'next'),
+      bytes: 1024 }, write)).rejects.toMatchObject({ code: 'SCRATCH_QUOTA_EXCEEDED' });
+    expect(write).not.toHaveBeenCalled();
+    expect(existsSync(join(root, 'unmanaged'))).toBe(true);
+  });
+
+  it('releases a failed write reservation and preserves reservations across a concurrent refresh', async () => {
+    _setScratchUsageForTests('ws-Q', 0);
+    const filePath = join(scratchRootForWorkspace('ws-Q'), 'tool', UUID(1), 'next');
+    await expect(writeWithScratchQuota({ workspaceId: 'ws-Q', filePath, bytes: 1024 }, async () => {
+      await refreshScratchUsage('ws-Q');
+      expect(scratchUsageBytes('ws-Q')).toBe(1024);
+      throw new Error('write failed');
+    })).rejects.toThrow('write failed');
+    expect(scratchUsageBytes('ws-Q')).toBe(0);
   });
 });
 
