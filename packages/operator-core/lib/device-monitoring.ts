@@ -51,6 +51,22 @@ export interface ReleaseGateTile {
 
 const BLOCKING_RED = new Set(['red', 'stalled', 'wedged', 'conflict']);
 
+/** A null tile alone cannot establish absence: its reader also fails soft on errors. */
+export async function releaseGateApplicability(
+  slug?: string,
+  deps: {
+    read?: typeof import('./git-pipeline-stats').readPipelineRoutineControl;
+  } = {},
+): Promise<'configured' | 'not-applicable' | 'unknown'> {
+  try {
+    const read = deps.read ?? (await import('./git-pipeline-stats')).readPipelineRoutineControl;
+    const routine = await read(slug, 'green-checkpoint');
+    return routine ? 'configured' : 'not-applicable';
+  } catch {
+    return 'unknown';
+  }
+}
+
 export async function releaseGateTile(
   slug?: string,
   deps: { fetch?: typeof fetchOrientPipeline } = {},

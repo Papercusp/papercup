@@ -415,6 +415,36 @@ remove only owned input, and target only emulator 5584. The suite passes in
 claim successful native operation coverage. Camera scanning, remaining public
 operations and genuine BYOC acceptance remain open.
 
+### Strict release-gate applicability guard — 2026-10-07 16:54Z
+
+The customer VM serial log for the 16:20Z run identifies the failed producer:
+`system_source_unmeasured`, with `gateMeasured:false` and `poolMeasured:true`.
+This establishes the unavailable release-gate measurement, but does not prove
+why it was unavailable. `fetchOrientPipeline` returns null both for an absent
+checkpoint and a failed reader; the snapshot also catches routine query errors.
+Customer service configuration and its strict checkpoint row remain unmeasured.
+
+The current local extension reuses the strict routine-control reader in
+`git-pipeline-stats.ts`. Device attention accepts a null release-gate tile only
+after a successful query proves there is no `green-checkpoint` routine for the
+selected pipeline. A configured routine, a failed configuration query, or an
+unmeasured inference pool still returns `503 attention_unavailable`. The absent
+routine branch emits a fixed diagnostic so a cheap customer-host attention probe
+can identify it without a privileged external database query.
+
+Focused local verification passes 168 assertions with no skips across
+`git-pipeline-stats.test.ts` (75), `device-monitoring.test.ts` (24),
+`routes/device/attention.test.ts` (22), `device-revival-routes.test.ts` (28),
+and `plans/attention.cache.test.ts` (19). The initial monitoring run had one
+missing `vi` import; its corrected run passes. Logs are
+`/tmp/android-p015-strict-routine.log`,
+`/tmp/android-p015-applicability-corrected.log`,
+`/tmp/android-p015-attention-applicability.log`, and
+`/tmp/android-p015-applicability-diagnostic.log`. Their source stamp is
+`4478c77fcc` with dirty named paths; this is local verification, not a committed
+candidate or customer-runtime claim. Customer candidate adoption, the cheap
+attention preflight, and the subsequent native journey remain open.
+
 ## Historical discovery — 2026-10-06
 
 The following sections preserve the initial analysis and agreement context. Their gap states,

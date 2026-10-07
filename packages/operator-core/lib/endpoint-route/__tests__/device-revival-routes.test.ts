@@ -63,6 +63,7 @@ const m = vi.hoisted(() => ({
   readWorkItemsPageFromStore: vi.fn(),
   withWorkspace: vi.fn(async (_workspace: string, fn: (sql: unknown) => unknown) => fn({})),
   releaseGateTile: vi.fn<typeof import('../../device-monitoring').releaseGateTile>(async () => ({ gate: 'green', deploy: 'current', red: false, checkedAtMs: 1 })),
+  releaseGateApplicability: vi.fn<typeof import('../../device-monitoring').releaseGateApplicability>(async () => 'configured'),
   poolTile: vi.fn<typeof import('../../device-monitoring').poolTile>(async () => ({
     exhausted: false, healthyCount: 1, walledCount: 0, totalCount: 1,
     accounts: [{ id: 'test-account', provider: 'openai', available: true, usageWalled: false }],
@@ -121,6 +122,7 @@ vi.mock('../../sync-resolver/work-items-list-query', async (original) => ({
 vi.mock('../../device-monitoring', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../device-monitoring')>()),
   releaseGateTile: m.releaseGateTile,
+  releaseGateApplicability: m.releaseGateApplicability,
   poolTile: m.poolTile,
 }));
 // Side-effect tool-registry import in the routes — no-op for the unit test.

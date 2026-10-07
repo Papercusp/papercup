@@ -6,7 +6,14 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
+const routineSql = vi.hoisted(() => vi.fn());
+vi.mock('@papercusp/db-org', async (original) => ({
+  ...(await original<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: routineSql }),
+}));
 import {
+  readPipelineRoutineControl,
+  readReleaseTriggerControl,
   resolverModel,
   toRoutineInfo,
   pinProvenGateCorrection,
@@ -31,6 +38,31 @@ import {
 import { decideStallNotification } from './release/stall-escalation-ladder';
 import type { PipelineEventRow } from './harness/git-sync/pipeline-events';
 import { buildCandidateSnapshot } from './release/candidate-snapshot';
+
+describe('strict pipeline routine control reads', () => {
+  afterEach(() => routineSql.mockReset());
+
+  it('returns absence only after the exact checkpoint configuration query succeeds', async () => {
+    routineSql.mockResolvedValue([]);
+    expect(await readPipelineRoutineControl('customer', 'green-checkpoint')).toBeNull();
+    const [query, slug, name] = routineSql.mock.calls[0]!;
+    expect(query.join('?')).toContain('FROM harness_shared.routines');
+    expect(query.join('?')).toContain('install_slug = ?');
+    expect(query.join('?')).toContain('name = ?');
+    expect([slug, name]).toEqual(['customer', 'green-checkpoint']);
+  });
+
+  it('does not turn a failed checkpoint configuration read into absence', async () => {
+    routineSql.mockRejectedValue(new Error('routine query failed'));
+    await expect(readPipelineRoutineControl('customer', 'green-checkpoint')).rejects.toThrow('routine query failed');
+  });
+
+  it('retains the release-trigger control reader and inactive routine evidence', async () => {
+    routineSql.mockResolvedValue([{ name: 'release-trigger', active: false }]);
+    expect(await readReleaseTriggerControl('customer')).toMatchObject({ name: 'release-trigger', active: false });
+    expect(routineSql.mock.calls[0]!.slice(1)).toEqual(['customer', 'release-trigger']);
+  });
+});
 
 describe('gitPipelineSnapshot latency topology', () => {
   it('starts every independent snapshot read before consuming the routines result', () => {

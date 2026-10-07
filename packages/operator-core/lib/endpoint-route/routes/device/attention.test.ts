@@ -5,7 +5,7 @@ const source = vi.hoisted(() => ({
   lookup: vi.fn(), dispatch: vi.fn(), readPage: vi.fn(), listHarnesses: vi.fn(),
   sql: {},
   withWorkspace: vi.fn(),
-  releaseGateTile: vi.fn(), poolTile: vi.fn(), systemAlerts: vi.fn(),
+  releaseGateTile: vi.fn(), releaseGateApplicability: vi.fn(), poolTile: vi.fn(), systemAlerts: vi.fn(),
 }));
 vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
@@ -26,6 +26,7 @@ vi.mock('../../../sync-resolver/work-items-list-query', async (importOriginal) =
 }));
 vi.mock('../../../device-monitoring', () => ({
   releaseGateTile: source.releaseGateTile, poolTile: source.poolTile, systemAlerts: source.systemAlerts,
+  releaseGateApplicability: source.releaseGateApplicability,
 }));
 
 import routes from './attention';
@@ -51,6 +52,7 @@ beforeEach(() => {
   source.listHarnesses.mockResolvedValue([{ slug: 'paired-project' }]);
   source.readPage.mockResolvedValue(page());
   source.releaseGateTile.mockResolvedValue({ gate: 'green', red: false, checkedAtMs: 1 });
+  source.releaseGateApplicability.mockResolvedValue('configured');
   source.poolTile.mockResolvedValue({ exhausted: false, accounts: [] });
   source.systemAlerts.mockReturnValue([]);
 });
@@ -122,6 +124,34 @@ describe('device attention read integrity', () => {
   it.each(['releaseGateTile', 'poolTile'] as const)('does not treat unknown %s as healthy', async (tile) => {
     source[tile].mockResolvedValue(null);
     expect((await read()).status).toBe(503);
+  });
+
+  it('loads customer attention after proving the checkpoint routine is absent', async () => {
+    source.releaseGateTile.mockResolvedValue(null);
+    source.releaseGateApplicability.mockResolvedValue('not-applicable');
+    const response = await read();
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ systemAlerts: [] });
+    expect(source.systemAlerts).toHaveBeenCalledWith({ gate: null, pool: { exhausted: false, accounts: [] } });
+  });
+
+  it.each(['configured', 'unknown'])('keeps unavailable %s pipelines fail-closed', async (status) => {
+    source.releaseGateTile.mockResolvedValue(null);
+    source.releaseGateApplicability.mockResolvedValue(status);
+    expect((await read()).status).toBe(503);
+    expect(source.systemAlerts).not.toHaveBeenCalled();
+  });
+
+  it('keeps an unreadable pool fail-closed even when the release gate is inapplicable', async () => {
+    source.releaseGateTile.mockResolvedValue(null);
+    source.releaseGateApplicability.mockResolvedValue('not-applicable');
+    source.poolTile.mockResolvedValue(null);
+    expect((await read()).status).toBe(503);
+  });
+
+  it('uses a measured gate without a redundant applicability read', async () => {
+    expect((await read()).status).toBe(200);
+    expect(source.releaseGateApplicability).not.toHaveBeenCalled();
   });
 
   it('does not hide a system-alert producer failure as a healthy zero', async () => {

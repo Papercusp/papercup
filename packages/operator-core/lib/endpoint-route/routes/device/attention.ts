@@ -37,6 +37,7 @@ import {
 } from '../../../sync-resolver/work-items-list-query';
 import {
   releaseGateTile,
+  releaseGateApplicability,
   poolTile,
   systemAlerts,
   type SystemAlert,
@@ -193,12 +194,19 @@ const attention = defineTool({
     // 3. System-health attention producers (P-007): release red-gate and
     //    inference-pool exhaustion are owner-attention conditions the fleet
     //    escalations / owner-questions above don't cover. Both tiles are
-    //    return null on an unavailable measurement. Only measured healthy
-    //    conditions may produce an empty system-alert section.
+    //    return null on an unavailable measurement. A strict configuration
+    //    read may prove the release gate inapplicable on a customer workspace;
+    //    configured or unreadable gates still require a measured tile.
     let systemAlertsOut: SystemAlert[] = [];
     try {
       const [gate, pool] = await Promise.all([releaseGateTile(), poolTile(principal.workspaceId)]);
-      if (!gate || !pool) return unavailableAttention('system_source_unmeasured', { gateMeasured: !!gate, poolMeasured: !!pool });
+      const gateApplicable = gate ? 'configured' : await releaseGateApplicability();
+      if ((!gate && gateApplicable !== 'not-applicable') || !pool) {
+        return unavailableAttention('system_source_unmeasured', { gateMeasured: !!gate, poolMeasured: !!pool });
+      }
+      if (gateApplicable === 'not-applicable') {
+        console.info('[device/attention] release gate not applicable: strict checkpoint configuration read found no routine');
+      }
       systemAlertsOut = systemAlerts({ gate, pool });
     } catch (e) {
       console.warn('[device/attention] systemAlerts failed:', (e as Error)?.message ?? e);

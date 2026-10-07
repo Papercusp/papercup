@@ -981,12 +981,20 @@ export function toRoutineInfo(r: RoutineRow | undefined): RoutineInfo | null {
  * propagate: an unreadable safety control is UNKNOWN and must fail the ordinary deploy closed.
  */
 export async function readReleaseTriggerControl(slug: string = DEFAULT_SLUG): Promise<RoutineInfo | null> {
+  return readPipelineRoutineControl(slug, 'release-trigger');
+}
+
+/** Strict configuration read: absence is distinct from an unreadable control store. */
+export async function readPipelineRoutineControl(
+  slug: string = DEFAULT_SLUG,
+  name: 'release-trigger' | 'green-checkpoint',
+): Promise<RoutineInfo | null> {
   const { sql } = getOrgPg();
   const rows = await sql<RoutineRow[]>`
     SELECT name, active, trigger_config, metadata, last_fired_at, next_fire_at, group_slug
       FROM harness_shared.routines
      WHERE install_slug = ${slug}
-       AND name = 'release-trigger'
+       AND name = ${name}
      LIMIT 1
   `;
   return toRoutineInfo(rows[0]);
