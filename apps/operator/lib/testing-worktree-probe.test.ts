@@ -11,7 +11,7 @@ vi.mock('@papercusp/test-config/admin-test-runs-reporter', async (importOriginal
   captureWorktreeSnapshot: mocks.probeSnapshot,
 }));
 
-import { captureTestSourceSnapshot, computeWorktreeDirty } from '@papercusp/operator-core/lib/testing-worktree';
+import { captureTestSourceSnapshotAsync as captureTestSourceSnapshot, computeWorktreeDirty } from '@papercusp/operator-core/lib/testing-worktree';
 
 describe('Playwright source snapshots inside a mutation probe', () => {
   beforeEach(() => {
