@@ -26,17 +26,19 @@ export function parseReferenceOutput(raw: string): ReferenceHit[] {
 }
 
 /** Mandatory dual census over the identical non-empty, validated roots. */
-export function callerReferences({ root, name, paths, rgPath = resolveRipgrep() }: {
+export function callerReferences({ root, name, paths, rgPath }: {
   root: string; name: string; paths: readonly string[]; rgPath?: string;
 }) {
   if (!/^[A-Za-z_$][\w$]*$/.test(name)) throw new Error('caller name must be one identifier');
   if (paths.length === 0) throw new Error('explicit search roots required for re-measurement');
+  const binary = rgPath ?? resolveRipgrep();
+  if (binary === null) throw new Error('ripgrep reference binary unavailable');
   const scope = resolveSearchPaths(root, paths);
   if (!scope.ok) throw new Error(scope.error);
   const common = ['-n', '--column', '--with-filename', '--color=never', '-g', FIRST_PARTY_SOURCE_GLOB, '-g', '!**/node_modules/**'];
   const run = (args: string[]) => {
     try {
-      return parseReferenceOutput(execFileSync(rgPath, args, { cwd: root, encoding: 'utf8', timeout: 30_000, maxBuffer: 64 * 1024 * 1024 }));
+      return parseReferenceOutput(execFileSync(binary, args, { cwd: root, encoding: 'utf8', timeout: 30_000, maxBuffer: 64 * 1024 * 1024 }));
     } catch (error) {
       // Only ripgrep's verified no-match status means empty. Exit 2 (even with
       // partial stdout), spawn failures, timeouts and parse failures stay errors.
