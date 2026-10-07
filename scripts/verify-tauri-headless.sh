@@ -1112,6 +1112,9 @@ verify_operator_source_lock_census() {
     return 1
   }
   query_args="$(node -e 'process.stdout.write(JSON.stringify({
+    // This census is consumed by code, not rendered to a person. The default
+    // trimmed tier can omit a held source file once the fleet has many locks.
+    payloadTier: "full",
     coordination_domain: process.argv[1],
     paths: [
       "apps/operator",
