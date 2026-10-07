@@ -163,6 +163,22 @@ export const bindingSchema = z
   })
   .superRefine((binding, ctx) => {
     if (binding.measurement) {
+      const adequacy = binding.details?.adequacy;
+      const fixtureCalibrationExpected =
+        binding.evidenceKind === 'fixture' ||
+        (adequacy !== null && typeof adequacy === 'object' && !Array.isArray(adequacy) &&
+          (adequacy as Record<string, unknown>).fixtureCalibrated === true);
+      if (
+        fixtureCalibrationExpected &&
+        (binding.measurement.kind !== 'repo-files' || binding.measurement.fixturePaths === undefined)
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['measurement', 'fixturePaths'],
+          message:
+            'fixture evidence or adequacy.fixtureCalibrated=true requires repo-files measurement.fixturePaths so calibration inputs stay fresh',
+        });
+      }
       for (const field of ['fixtureFingerprint', 'rubricFingerprint', 'environmentFingerprint'] as const) {
         if (binding[field] == null) continue;
         ctx.addIssue({
@@ -626,6 +642,7 @@ export default defineTool({
           ...declared,
           sourceFingerprint: measured?.sourceFingerprint ?? binding.sourceFingerprint!,
           ...(measured ? { testFingerprint: measured.testFingerprint } : {}),
+          ...(measured?.fixtureFingerprint !== undefined ? { fixtureFingerprint: measured.fixtureFingerprint } : {}),
           ...(measurement
             ? {
                 details: {

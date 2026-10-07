@@ -42,6 +42,30 @@ describe('plans:bind-spec-evidence repo-files measurement contract', () => {
     ).toBe(true);
   });
 
+  it('accepts fixture measurement paths and requires them for repository-measured fixture calibration', () => {
+    const fixtureBinding = {
+      ...measuredBinding,
+      evidenceKind: 'fixture' as const,
+      details: { adequacy: { fixtureCalibrated: true } },
+    };
+    expect(bindingSchema.safeParse({
+      ...fixtureBinding,
+      measurement: { ...measuredBinding.measurement, fixturePaths: ['src/server-envelope.ts'] },
+    }).success).toBe(true);
+
+    const missingFixturePaths = bindingSchema.safeParse(fixtureBinding);
+    expect(missingFixturePaths.success).toBe(false);
+    if (missingFixturePaths.success) return;
+    expect(missingFixturePaths.error.issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          path: ['measurement', 'fixturePaths'],
+          message: expect.stringContaining('requires repo-files measurement.fixturePaths'),
+        }),
+      ]),
+    );
+  });
+
   it.each(['fixtureFingerprint', 'rubricFingerprint', 'environmentFingerprint'] as const)(
     'rejects an unmeasurable non-null %s instead of persisting an unreachable freshness tuple',
     (field) => {
