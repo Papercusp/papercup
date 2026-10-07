@@ -62,8 +62,11 @@ import type { DeliveryRow } from '../../events/await/types';
 import type { SubscriptionRow } from '@papercusp/coordination/capabilities';
 
 const ctx = { workspaceId: 'ws-x' } as unknown as Parameters<typeof status.handler>[1];
-const call = async (args: Record<string, unknown>) => {
-  const res = (await status.handler(args as never, ctx)) as { content: Array<{ text: string }> };
+const call = async (
+  args: Record<string, unknown>,
+  callerCtx = ctx,
+) => {
+  const res = (await status.handler(args as never, callerCtx)) as { content: Array<{ text: string }> };
   return JSON.parse(res.content[0].text);
 };
 
@@ -120,6 +123,46 @@ beforeEach(() => {
 });
 
 describe('events:status projection', () => {
+  it('admits the evidence-only judge role', () => {
+    expect(status.agentRoles).toContain('judge');
+  });
+
+  it('judge default view stays scoped to the caller identity', async () => {
+    const judgeCtx = { ...ctx, role: 'judge' } as typeof ctx;
+    const out = await call({}, judgeCtx);
+
+    expect(listActiveAwaits).toHaveBeenCalledWith('su-status');
+    expect(listRecentDeliveries).toHaveBeenCalledWith('su-status', 10);
+    expect(listMyEventKeySubscriptions).toHaveBeenCalledWith({
+      ownerId: 'su-status',
+      ownerLabel: 's',
+      source: 'static-client',
+      workspaceId: 'ws-x',
+      userId: null,
+    });
+    expect(inspectEventKey).not.toHaveBeenCalled();
+    expect(wakeMeter).not.toHaveBeenCalled();
+    expect(out).not.toHaveProperty('event_inspection');
+    expect(out).not.toHaveProperty('meter');
+  });
+
+  it('judge cannot inspect arbitrary event keys or the fleet wake meter', async () => {
+    const judgeCtx = { ...ctx, role: 'judge' } as typeof ctx;
+
+    await expect(call({ event: 'work-item:claimable' }, judgeCtx)).rejects.toThrow();
+    await expect(call({ meter: true }, judgeCtx)).rejects.toThrow();
+  });
+
+  it('judge await_id reads only the caller-owned delivery row', async () => {
+    const judgeCtx = { ...ctx, role: 'judge' } as typeof ctx;
+
+    const out = await call({ await_id: 11 }, judgeCtx);
+
+    expect(listRecentDeliveries).toHaveBeenCalledWith('su-status', 1, 11);
+    expect(inspectEventKey).not.toHaveBeenCalled();
+    expect(out).not.toHaveProperty('event_inspection');
+  });
+
   it('opts out of the ambient workspace transaction for concurrent projected reads', () => {
     expect(status.skipWorkspaceTx).toBe(true);
   });
