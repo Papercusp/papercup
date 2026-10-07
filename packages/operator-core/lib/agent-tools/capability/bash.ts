@@ -426,7 +426,11 @@ export default defineTool({
     // NOTE for whoever edits this next: `seeAlso` is NOT summed by promptWeight()
     // (tool-guidance-budget.ts — description + when + notWhen + chaining + byRole only),
     // so changing this array cannot move the prompt-weight budget in either direction.
-    seeAlso: ['capability:bash_output (read a backgrounded run)', 'capability:git (git actions, gated as git)'],
+    seeAlso: [
+      'capability:bash_output (read a backgrounded run)',
+      'capability:git (git actions, gated as git)',
+      'logs:read { unit, since, grep, limit } (service logs; filters inside journalctl)',
+    ],
   },
   capability: 'capability:bash',
   effectForCall: classifyCapabilityBashEffect,

@@ -16,6 +16,8 @@ type GuidanceTool = {
   description?: string;
   guidance?: {
     when?: string;
+    notWhen?: string;
+    seeAlso?: string[];
   };
   handler?: (args: unknown, ctx: unknown) => Promise<{ content: Array<{ text: string }>; isError?: boolean }>;
 };
@@ -57,6 +59,14 @@ describe('capability:bash — repository search scope guidance', () => {
     // EI-21603394979563992: the optional jq tip is intentionally kept out of the
     // prompt (see bash.ts) so this guidance stays within the shared soft budget.
     expect(promptWeight(bashTool as Parameters<typeof promptWeight>[0])).toBeLessThanOrEqual(BUDGET);
+  });
+
+  it('routes service-log searches through server-side filtering', () => {
+    const tool = bashTool as unknown as GuidanceTool;
+    const related = tool.guidance?.seeAlso?.join(' ') ?? '';
+
+    expect(related).toContain('logs:read { unit, since, grep, limit }');
+    expect(related).toContain('filters inside journalctl');
   });
 
   it('detects the reported unbounded all-ref pickaxe search but permits bounded or focused forms', () => {
