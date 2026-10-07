@@ -5,14 +5,15 @@
   "accountableOwner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
   "population": {
     "failedFiles": 124,
-    "repairedFocused": 23,
+    "repairedFocused": 24,
     "repairedPeerFocused": 15,
-    "openUnknown": 86
+    "openUnknown": 85
   },
   "classes": {
     "assertion": 55,
     "peer-scale-rekey-fixture": 1,
     "fed-event-await-schema-fixture": 1,
+    "cross-plan-disclosure-fixture": 1,
     "transcript-search-disclosure-fixture": 1,
     "peer-blueprint-inherited-providers": 3,
     "lock-ownership-expectation": 1,
@@ -21,7 +22,7 @@
     "missing-schema": 15,
     "blueprint-fixture": 1,
     "console-guard": 10,
-    "unclassified": 7,
+    "unclassified": 6,
     "plan-pot-fixture": 1,
     "plan-observation-fixture": 1,
     "gym-run-identity-schema": 1,
@@ -450,15 +451,61 @@
     },
     {
       "path": "packages/operator-core/lib/sync/hyperbee/__tests__/cross-plan-federation-seam.integration.test.ts",
-      "class": "unclassified",
-      "state": "open-unknown",
-      "item": "WI-10006170",
+      "class": "cross-plan-disclosure-fixture",
+      "state": "repaired-focused",
+      "item": "WI-10007149",
       "lines": [
         15959,
         15974,
         15989,
         16004
-      ]
+      ],
+      "registeredRepairItem": "WI-10007149",
+      "repairStage": "accepted-specific-source-child-fixture-repair-verified-focused",
+      "diagnosis": "Both minimal peer databases omitted the mandatory personal_disclosures ledger. Real sendMessage therefore refused before persisting or capturing the four original message cases. Reused applyDisclosureLedgerForTest on both peers; a real same-database DROP/restore control proves refusal without message/outbox writes and restored delivery in both directions. Production sealing and the original federation assertions are unchanged.",
+      "beforeTestRun": 20897848,
+      "afterTestRun": 20898052,
+      "passed": 15,
+      "skipped": 0,
+      "testSha256": "9997717d03f01b2851d6c150b549ebaf65ad94fa0f31ac60167c3b99135fb529",
+      "testBlob": "c49f3e6bf3c2894d603a2acd0a4720eb13522983",
+      "sourceFingerprints": {
+        "pgFixtureSha256": "d14d60a445e17811e601944a09c6e8a2e3f852fad10d2b59b13a222b29ff36e3",
+        "sealedContentsSha256": "dfbbf77a9b43c31331a03484129b14ddcf6c4565f45f033dfb50ea26df60e49a",
+        "coordMessagesSha256": "0ef78e175aeb73044067982de38e8e5f1a9c61c65a8f2aed501660436ec61265"
+      },
+      "latestLocalReceipt": {
+        "id": 20898052,
+        "filePath": "packages/operator-core/lib/sync/hyperbee/__tests__/cross-plan-federation-seam.integration.test.ts",
+        "status": "pass",
+        "commitSha": "780e97293b6f9ceea04e18c5458164da91466da3",
+        "worktreeDirty": true,
+        "isScratchConfig": false,
+        "source": "local",
+        "branch": "staging",
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": "papercusp",
+        "runGroupId": null
+      },
+      "nativeLogs": {
+        "before": {
+          "path": "/tmp/wi-10006170-cross-plan-before.log",
+          "sha256": "f85f426ca13382bf8195167b8c907cd09bc65dd121fd9a369df464f27f187a8e",
+          "passed": 10,
+          "failed": 4,
+          "skipped": 0,
+          "exitCode": 1
+        },
+        "after": {
+          "path": "/tmp/wi-10007149-after.log",
+          "sha256": "d5b644b944624c752c0b6b0051a1740353fe32d3ffda9260b52a2426c65e5411",
+          "passed": 15,
+          "failed": 0,
+          "skipped": 0,
+          "exitCode": 0
+        }
+      },
+      "latestReceiptMeaning": "Focused local fixture repair and both-peer fail-closed/restoration control verified. Original archive and current baseline have the same four missing-ledger failures; resolved EI-2640 concerned a distinct older work_items relation. Full import/environment, typing, final D006 and shipment remain unverified."
     },
     {
       "path": "packages/operator-core/lib/search/prose-vector-dims.integration.test.ts",
@@ -2611,6 +2658,17 @@
         20897809
       ],
       "next": "Retain focused local PASS2/0skip evidence. Full import/environment and final D006 remain unverified; no terminal replay or settlement babysitting."
+    },
+    {
+      "class": "cross-plan-disclosure-fixture",
+      "count": 1,
+      "status": "repaired-focused",
+      "item": "WI-10007149",
+      "owner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
+      "scope": "named-cross-plan-federation-seam-fixture-only",
+      "rootCause": "The private two-peer schema omits the mandatory disclosure ledger read by real sendMessage before persistence and federation capture. Reuse the maintained migration helper on both peers. Conventional real-PG missing/restored-ledger controls prove no message/outbox writes on refusal and successful inbox delivery in both directions, alongside the original 14 federation cases.",
+      "testRunIds": [20897848, 20898052],
+      "next": "Retain focused local PASS15/0skip evidence. Full imports/environment, typing, final D006 and shipment remain unverified; no terminal replay or settlement babysitting."
     }
   ],
   "prerequisites": [
