@@ -1416,10 +1416,56 @@ describe('autoArmFleetMemberLoop (kickoff-prompt-absorption-2026-07-17 P-001, re
     expect((await getLoopStatus(OTHER, { sql }))!.goal).toBe(expectedGoal);
   });
 
+  it('keeps an exhausted member monitor inactive without changing its persisted row', async () => {
+    const exhaustedOwner = 'su-fleet-member-exhausted-monitor-test';
+    await materializeLoop({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      ownerId: exhaustedOwner,
+      intervalSec: 1200,
+      kickoff: 'exhausted bounded member monitor',
+      mode: 'monitor',
+      monitor: {
+        predicateKey: 'owned-member-predicate',
+        stopCondition: 'owned operation completes',
+        noDeltaBudget: 100,
+        remainingNoDeltaBudget: 0,
+        authority: { kind: 'work-item', workItem: 'WI-12345' },
+      },
+      active: false,
+      sql,
+    });
+    const before = await rawRow(exhaustedOwner);
+
+    const result = await autoArmFleetMemberLoop({
+      workspaceId: WS,
+      ownerId: exhaustedOwner,
+      harnessSlug: HARNESS,
+      planSlug: PLAN_SLUG,
+      fleetSlug: FLEET_SLUG,
+      fleetRole: 'member',
+      sql,
+    });
+
+    expect(result).toEqual({ armed: false, reason: 'no-delta-budget-exhausted', loopName: loopRoutineName(exhaustedOwner) });
+    expect(await rawRow(exhaustedOwner)).toEqual(before);
+    expect(await getLoopStatus(exhaustedOwner, { sql })).toMatchObject({
+      active: false,
+      monitor: { remainingNoDeltaBudget: 0 },
+    });
+  });
+
   it('EI-21206138277595747: inactive recovery preserves an explicit cadence and lifecycle payload', async () => {
     const OTHER = 'su-fleet-member-inactive-config-test';
     const priorGoal = 'continue the monitor at the widened fallback cadence';
     const priorKickoff = '⏸ BACKOFF PREMISE — re-check the release gate before proceeding';
+    const priorMonitor = {
+      predicateKey: 'owned-member-predicate',
+      stopCondition: 'owned operation completes',
+      noDeltaBudget: 100,
+      remainingNoDeltaBudget: 73,
+      authority: { kind: 'work-item' as const, workItem: 'WI-12345' },
+    };
 
     await materializeLoop({
       workspaceId: WS,
@@ -1432,6 +1478,7 @@ describe('autoArmFleetMemberLoop (kickoff-prompt-absorption-2026-07-17 P-001, re
       carry: 'cold',
       continuation: 'gated',
       mode: 'monitor',
+      monitor: priorMonitor,
       sql,
     });
     await deactivateLoop(OTHER, { sql });
@@ -1443,6 +1490,7 @@ describe('autoArmFleetMemberLoop (kickoff-prompt-absorption-2026-07-17 P-001, re
       continuation: 'gated',
       mode: 'monitor',
       goal: priorGoal,
+      monitor: priorMonitor,
     });
 
     const res = await autoArmFleetMemberLoop({
@@ -1471,6 +1519,7 @@ describe('autoArmFleetMemberLoop (kickoff-prompt-absorption-2026-07-17 P-001, re
       carry: 'cold',
       continuation: 'gated',
       mode: 'monitor',
+      monitor: priorMonitor,
     });
   });
 });

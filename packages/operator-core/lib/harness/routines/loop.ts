@@ -2570,6 +2570,19 @@ export async function autoArmFleetMemberLoop(opts: {
       }
     }
 
+    const mode = existing?.mode ?? priorLoopFacts?.mode ?? 'work';
+    const priorMonitor = priorLoopFacts?.monitor ?? existing?.monitor;
+    if (
+      mode === 'monitor' &&
+      (existing?.monitor?.remainingNoDeltaBudget === 0 ||
+        priorLoopFacts?.monitor?.remainingNoDeltaBudget === 0 ||
+        (!priorMonitor && existing?.monitorStanddown?.code === 'no_delta_budget_exhausted'))
+    ) {
+      // Recovery cannot renew an exhausted monitoring mandate. Keep the row and
+      // its existing push watches untouched; an explicit arm can renew a budget.
+      return { armed: false, reason: 'no-delta-budget-exhausted', loopName: existing?.name };
+    }
+
     const intervalSec = existing?.intervalSec ?? priorLoopFacts?.intervalSec ?? LOOP_INTERVAL_FLOOR_SEC;
     const goal =
       priorLoopFacts?.goal ??
@@ -2577,7 +2590,6 @@ export async function autoArmFleetMemberLoop(opts: {
       derivedGoal;
     const carry = opts.carry ?? existing?.carry ?? priorLoopFacts?.carry ?? 'warm';
     const continuation = existing?.continuation ?? priorLoopFacts?.continuation ?? 'settle';
-    const mode = existing?.mode ?? priorLoopFacts?.mode ?? 'work';
     const kickoff = buildLoopWakePrompt({
       ownerId: opts.ownerId,
       intervalSec,
@@ -2600,6 +2612,7 @@ export async function autoArmFleetMemberLoop(opts: {
       carry,
       continuation,
       mode,
+      ...(mode === 'monitor' && priorMonitor ? { monitor: priorMonitor } : {}),
       // The rescue reconciler can race an explicit member loop:arm. The explicit
       // arm wins; a stale system repair must never overwrite its newer mission or
       // cadence after the initial status read above.

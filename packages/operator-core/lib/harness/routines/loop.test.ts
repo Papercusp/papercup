@@ -1271,6 +1271,103 @@ describe('autoArmFleetMemberLoop (kickoff-prompt-absorption-2026-07-17 P-001)', 
     expect(upsertRoutineSpy).not.toHaveBeenCalled();
     expect(armInboxWakeSpy).not.toHaveBeenCalled();
   });
+
+  function inactiveMonitorSql(
+    statusMonitor: Record<string, unknown> | null,
+    payloadMonitor: Record<string, unknown> | null,
+    standdown = false,
+    activeAtMaterialization = false,
+  ) {
+    const payload = {
+      kickoff: 'preserved member monitor kickoff',
+      goal: 'continue the owned bounded monitor',
+      mode: 'monitor',
+      ...(payloadMonitor ? { monitor: payloadMonitor } : {}),
+    };
+    return transactionalSql((strings) => {
+      const query = strings.join(' ? ');
+      if (/DISTINCT ON/.test(query)) {
+        return [{
+          install_slug: 'papercusp',
+          name: 'loop-su-member-1',
+          active: false,
+          reschedule_interval_sec: 1200,
+          target_owner_id: 'su-member-1',
+          payload_template: { ...payload, monitor: statusMonitor },
+          metadata: standdown
+            ? { monitor_standdown: { code: 'no_delta_budget_exhausted', reason: 'quiet budget exhausted', atMs: 1791335177901 } }
+            : {},
+          fire_count: 100,
+        }];
+      }
+      if (/SELECT r.active/.test(query)) {
+        return [{ active: false, install_slug: 'papercusp', reschedule_interval_sec: 1200, payload_template: payload }];
+      }
+      if (/FOR UPDATE/.test(query) && activeAtMaterialization) {
+        return [{ id: 'explicit-arm', name: 'loop-su-member-1', active: true, target_role: 'su', reschedule_interval_sec: 300 }];
+      }
+      return [];
+    });
+  }
+
+  const memberMonitor = {
+    predicateKey: 'owned-member-predicate',
+    stopCondition: 'owned operation completes',
+    noDeltaBudget: 100,
+    remainingNoDeltaBudget: 0,
+    authority: { kind: 'work-item', workItem: 'WI-12345' },
+  };
+
+  it.each(['status', 'payload', 'standdown'] as const)(
+    'does not revive an exhausted member monitor recorded by %s',
+    async (source) => {
+      const sql = inactiveMonitorSql(
+        source === 'status' ? memberMonitor : null,
+        source === 'payload' ? memberMonitor : null,
+        source === 'standdown',
+      );
+
+      const res = await autoArmFleetMemberLoop({ ...baseOpts, sql: sql as any });
+
+      expect(res).toEqual({ armed: false, reason: 'no-delta-budget-exhausted', loopName: 'loop-su-member-1' });
+      expect(upsertRoutineSpy).not.toHaveBeenCalled();
+      expect(recordLoopTransitionSpy).not.toHaveBeenCalled();
+      expect(armInboxWakeSpy).not.toHaveBeenCalled();
+      expect(memberMonitor.remainingNoDeltaBudget).toBe(0);
+    },
+  );
+
+  it.each(['status', 'payload'] as const)(
+    'preserves a renewed positive member monitor budget from %s despite historical standdown',
+    async (source) => {
+      const renewedMonitor = { ...memberMonitor, remainingNoDeltaBudget: 73 };
+      const sql = inactiveMonitorSql(
+        source === 'status' ? renewedMonitor : null,
+        source === 'payload' ? renewedMonitor : null,
+        true,
+      );
+
+      const res = await autoArmFleetMemberLoop({ ...baseOpts, sql: sql as any });
+
+      expect(res).toMatchObject({ armed: true, reason: 'armed' });
+      expect(upsertRoutineSpy.mock.calls.at(-1)?.[1].payloadTemplate).toMatchObject({
+        mode: 'monitor',
+        monitor: renewedMonitor,
+        kickoff: 'preserved member monitor kickoff',
+      });
+      expect(renewedMonitor.remainingNoDeltaBudget).toBe(73);
+    },
+  );
+
+  it('preserves an explicit active member arm that wins the recovery race', async () => {
+    const renewedMonitor = { ...memberMonitor, remainingNoDeltaBudget: 73 };
+    const sql = inactiveMonitorSql(renewedMonitor, renewedMonitor, false, true);
+
+    await autoArmFleetMemberLoop({ ...baseOpts, sql: sql as any });
+
+    expect(upsertRoutineSpy).not.toHaveBeenCalled();
+    expect(recordLoopTransitionSpy).not.toHaveBeenCalled();
+  });
 });
 
 describe('getLoopStatuses — firesSinceArm (WI-36070: the number maxFires is actually compared against)', () => {
