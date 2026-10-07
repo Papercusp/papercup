@@ -1514,11 +1514,11 @@ dependency_generation_cross_fs_pin_is_retired() {
 # checkout can be an independent COPY too. Its marker otherwise keeps the
 # obsolete store forever even though readers select from the persistent store.
 # Only the legacy sweep uses this extension. Fresh/foreign pins and selector
-# leases retain their existing protection; a hardlink or escaping symlink makes
+# leases retain their existing protection; an external hardlink or escaping symlink makes
 # independence unproven and keeps the generation. Measurement failures retain.
 dependency_generation_independent_legacy_pin_is_retired() {
   local generation_root="$1" checkout="$2" marker="$3"
-  local identity generation store_dev checkout_dev shared links link target checkout_real
+  local identity generation store_dev checkout_dev links link target checkout_real
   local max_age_days="${DEPENDENCY_GENERATION_CROSS_FS_PIN_MAX_AGE_DAYS:-3}"
   [[ "$max_age_days" =~ ^[0-9]+$ ]] || max_age_days=3
   dependency_generation_path_is_old "$marker" $((max_age_days * 86400)) || return 1
@@ -1530,10 +1530,22 @@ dependency_generation_independent_legacy_pin_is_retired() {
   generation="$generation_root/$identity"
   checkout_real="$(cd "$checkout" 2>/dev/null && pwd -P)" || return 1
   case "$checkout_real" in "$generation_root"|"$generation_root"/*) return 1 ;; esac
-  # Any shared regular inode is conservative evidence against independence,
-  # including a link held by a checkout other than the pin being considered.
-  shared="$(find "$generation" -type f -links +1 -print -quit 2>/dev/null)" || return 1
-  [ -z "$shared" ] || return 1
+  [ -d "$generation" ] && [ ! -L "$generation" ] || return 1
+  # Native addons may have multiple links WITHIN one generation. Count its
+  # complete regular-inode population: only links beyond those paths imply an
+  # external reader/copy. An incomplete/unsupported find must retain the pin.
+  (
+    set -o pipefail
+    find "$generation" -type f -printf '%D %i %n\n' 2>/dev/null |
+      LC_ALL=C awk '
+        NF != 3 || $1 !~ /^[0-9]+$/ || $2 !~ /^[0-9]+$/ || $3 !~ /^[1-9][0-9]*$/ { bad=1; exit 1 }
+        { key=$1 ":" $2; count[key]++; links[key]=$3 }
+        END {
+          if (bad) exit 1
+          for (key in count) if (links[key] != count[key]) exit 1
+        }
+      '
+  ) || return 1
   links="$(find "$checkout_real" -name .git -prune -o -type l -print 2>/dev/null)" || return 1
   while IFS= read -r link; do
     [ -n "$link" ] || continue
