@@ -2943,6 +2943,10 @@ export async function updateIssue(
     WHERE workspace_id = ${workspaceId}
       AND issue_id = ${id}
       AND base_harness_slug = ${physicalSlug}
+      -- Imported reports remain authored by their peer. Intake may append
+      -- corroboration through mergeIssuePayload, but a best-effort refresh
+      -- must not rewrite that peer's report or transfer lifecycle ownership.
+      AND origin <> 'remote'
     RETURNING ${sql.unsafe(ISSUE_COLS)}`;
   if (!rows[0]) return null;
   const issue = toIssue(rows[0]);

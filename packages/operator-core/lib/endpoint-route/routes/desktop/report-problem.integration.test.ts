@@ -111,8 +111,8 @@ describe('desktop Report a problem door, end to end', () => {
     expect(op!.row.harness_slug, JSON.stringify({ harness: op!.row.harness_slug, scope: op!.row.scope, storage: op!.row.storage_harness_slug })).toBe('papercusp');
     const projection = buildEngineerIssuesProjection({ workspaceId: upstreamWorkspace, harnessSlug: 'papercusp', sql: upstreamDb.adminSql });
     await projection.writeToPg(op!.row, { ts: Number(op!.ts), origin: 'remote', authorPubkey: 'p015-admitted-install' });
-    const [upstream] = await upstreamDb.adminSql<{ origin: string; payload: Record<string, unknown> }[]>`
-      SELECT origin, payload FROM harness_shared.work_items
+    const [upstream] = await upstreamDb.adminSql<{ origin: string; title: string; summary: string; payload: Record<string, unknown> }[]>`
+      SELECT origin, title, summary, payload FROM harness_shared.work_items
        WHERE workspace_id = ${upstreamWorkspace} AND feature_id = ${id}`;
     expect(upstream?.origin).toBe('remote');
     expect(upstream?.payload.reporter).toMatchObject({ kind: 'end-user' });
@@ -134,9 +134,11 @@ describe('desktop Report a problem door, end to end', () => {
           FROM harness_shared.work_items WHERE feature_id = ${id} OR payload->>'watchdogKey' = ${signature!.key}`;
       expect(agent.created, `source/agent signature preflight passed; upstream identities: ${JSON.stringify(keys)}`).toBe(false);
       expect(agent.issue?.id ?? agent.coalescedOnto?.id).toBe(id);
-      const [folded] = await upstreamDb.adminSql<{ origin: string; payload: Record<string, unknown> }[]>`
-        SELECT origin, payload FROM harness_shared.work_items WHERE workspace_id = ${upstreamWorkspace} AND feature_id = ${id}`;
+      const [folded] = await upstreamDb.adminSql<{ origin: string; title: string; summary: string; payload: Record<string, unknown> }[]>`
+        SELECT origin, title, summary, payload FROM harness_shared.work_items WHERE workspace_id = ${upstreamWorkspace} AND feature_id = ${id}`;
       expect(folded?.origin, 'corroboration must not transfer foreign authorship to this peer').toBe('remote');
+      expect(folded?.title, 'corroboration preserves the reporting peer’s original title').toBe(upstream?.title);
+      expect(folded?.summary, 'corroboration preserves the reporting peer’s original evidence').toBe(upstream?.summary);
       expect(folded?.payload.reporterKinds).toEqual(expect.arrayContaining(['agent', 'end-user']));
 
       // A foreign row is evidence, not something this upstream peer owns.
