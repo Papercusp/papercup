@@ -27,6 +27,11 @@ function fixture() {
 }
 
 describe('Phone producer canonical admission', () => {
+  it.each(['system:phone', 'su-loopback', 'mcp-call-123'])('rejects unattributed executor %s before reserving', async (owner) => {
+    const f = fixture(); f.snapshot.executionOwnerId = owner;
+    await expect(f.read()).rejects.toThrow('attributed_executor_required');
+    expect(f.host.reserveRegistration).not.toHaveBeenCalled(); expect(f.store.create).not.toHaveBeenCalled();
+  });
   it('reserves before canonical create and reads back the rehomed holder/binding', async () => {
     const f = fixture(); const binding = await f.read();
     expect(f.host.reserveRegistration.mock.invocationCallOrder[0]).toBeLessThan(f.store.create.mock.invocationCallOrder[0]);

@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
+import { derivedTerminalCompletionAuthority } from '../completion-audit';
+import { isTransportOnlyIdentity } from '../agent-tools/coordination/identity';
 import { createWorkItem, getWorkItem, nextWorkItemId, type CreateWorkItemInput, type WorkItem } from '../work-items';
 import type { ExternalRuntimeProducerBinding } from './operation-worker-binding';
 
@@ -54,6 +56,10 @@ export async function admitPhoneProducer(host: PhoneProducerAdmissionHost, roomN
   store: PhoneProducerCanonicalStore = canonicalStore): Promise<Readonly<ExternalRuntimeProducerBinding>> {
   const snapshot = Object.freeze(admissionSchema.parse(await host.readAdmission(roomName)));
   if (snapshot.roomName !== roomName || snapshot.contentDeleted) throw new Error('phone_producer_call_unavailable');
+  if (isTransportOnlyIdentity(snapshot.executionOwnerId) ||
+      derivedTerminalCompletionAuthority({ isTerminal: true, by: snapshot.executionOwnerId }) === null) {
+    throw new Error('phone_producer_attributed_executor_required');
+  }
   let registered = await host.readRegistration(roomName);
   if (!registered) {
     if (!snapshot.workerAdmitted || snapshot.sessionEndedAt !== null) throw new Error('phone_producer_not_admitted');
