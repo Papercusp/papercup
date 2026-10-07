@@ -35,9 +35,14 @@
  * instance avoids that entirely.
  */
 import { createRequire } from 'node:module';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { _resetVerifiedSpawns } from '../../spawn-signing';
 import { MCP_REQUEST_TRACE_HEADER } from '../../mcp-request-trace';
+import { _resetScratchUsageForTests, type ScratchWriteTimings } from '../../scratch-gc';
+import { parseScratchReference } from '../../scratch-reference';
 import type { McpCallResult } from '../routes/transport/mcp-diagnostic-warnings';
 
 const h = vi.hoisted(() => {
@@ -61,6 +66,11 @@ const h = vi.hoisted(() => {
     resultDoorDelayMs: 0,
     resultDoorCalls: 0,
     scratchWriteTimings: [] as Array<{ quotaWaitMs: number; refreshWaitMs: number; quotaRecoveryMs: number; writeMs: number; totalMs: number }>,
+    realScratchWriteTimings: [] as ScratchWriteTimings[],
+    captureScratchWriteTimings: false,
+    spillWriteGate: null as Promise<void> | null,
+    spillWriteEntered: null as (() => void) | null,
+    spillPaths: [] as string[],
     handlers: new Map<string, (req: unknown, extra: unknown) => Promise<unknown>>(),
     verifySpawnParams: vi.fn(
       async (_u: unknown): Promise<{ ok: boolean; reason?: string }> => ({ ok: true }),
@@ -77,6 +87,22 @@ const h = vi.hoisted(() => {
     resolveWorkspaceForHarnessSlugIn: vi.fn(
       async (preferredWs: string): Promise<string | null> => preferredWs,
     ),
+  };
+});
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return {
+    ...actual,
+    writeFile: async (...args: Parameters<typeof actual.writeFile>): Promise<void> => {
+      const path = String(args[0]);
+      if (h.spillWriteGate && path.includes('/deadlinetest:spill/')) {
+        h.spillPaths.push(path);
+        h.spillWriteEntered?.();
+        await h.spillWriteGate;
+      }
+      return actual.writeFile(...args);
+    },
   };
 });
 
@@ -148,6 +174,15 @@ vi.mock('../../result-door', async (importOriginal) => {
       }
       const opts = args[1] as { onScratchWriteTiming?: (timings: typeof h.scratchWriteTimings[number]) => void };
       for (const timing of h.scratchWriteTimings) opts.onScratchWriteTiming?.(timing);
+      if (h.captureScratchWriteTimings) {
+        return applyResultDoorAsync(args[0], {
+          ...opts,
+          onScratchWriteTiming: (timings: ScratchWriteTimings) => {
+            h.realScratchWriteTimings.push(timings);
+            opts.onScratchWriteTiming?.(timings);
+          },
+        });
+      }
       return applyResultDoorAsync(...args);
     },
   };
@@ -245,6 +280,19 @@ registerProjectedTool({
   },
 });
 
+const SPILL_CHECKPOINT = 'mcp-real-spill-checkpoint-evidence\n'.repeat(2_000);
+registerProjectedTool({
+  pluginName: 'mcp-deadline-receipt-test',
+  description: 'test-only probe: oversized checkpoint-shaped result for real scratch-write phase attribution',
+  inputSchema: { type: 'object', additionalProperties: true },
+  capabilities: [],
+  agentRoles: ['scoper'],
+  expose: { mcp: { name: 'deadlinetest:spill' } },
+  fn: async () => ({ content: [{ type: 'text' as const, text: JSON.stringify({
+    ok: true, results: [{ id: 'EI-mcp-spill-test', checkpoint: SPILL_CHECKPOINT }],
+  }) }] }),
+});
+
 afterAll(() => {
   unregisterProjectedToolsForPlugin('mcp-deadline-receipt-test');
 });
@@ -309,6 +357,11 @@ beforeEach(() => {
   h.invocations.length = 0;
   h.resultDoorDelayMs = 0;
   h.scratchWriteTimings = [];
+  h.realScratchWriteTimings = [];
+  h.captureScratchWriteTimings = false;
+  h.spillWriteGate = null;
+  h.spillWriteEntered = null;
+  h.spillPaths = [];
   h.resultDoorCalls = 0;
   delete process.env.PAPERCUSP_REQUIRE_SPAWN_SIG;
   _resetVerifiedSpawns();
@@ -409,6 +462,68 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
       expect(Number(settled?.elapsedMs)).toBeGreaterThanOrEqual(TEST_DEADLINE_MS);
     } finally {
       info.mockRestore();
+    }
+  });
+
+  it('traces a real checkpoint spill write after the deadline and preserves its readable payload', async () => {
+    const sandbox = mkdtempSync(join(tmpdir(), 'papercusp-mcp-real-spill-'));
+    const previousRoot = process.env.PAPERCUSP_SCRATCH_ROOT;
+    const previousKillSwitch = process.env.PAPERCUSP_RESULT_DOOR_OFF;
+    process.env.PAPERCUSP_SCRATCH_ROOT = join(sandbox, 'scratch');
+    delete process.env.PAPERCUSP_RESULT_DOOR_OFF;
+    _resetScratchUsageForTests();
+    h.captureScratchWriteTimings = true;
+    let releaseWrite!: () => void;
+    h.spillWriteGate = new Promise<void>((resolve) => { releaseWrite = resolve; });
+    const enteredWrite = new Promise<void>((resolve) => { h.spillWriteEntered = resolve; });
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const traceId = '4429f9ae-11d4-4ea6-95d6-958f4ee77f9e';
+    const receiptKey = 'idem-real-checkpoint-spill';
+    try {
+      const response = callTool('deadlinetest:spill', {},
+        superuserExtra('&workspace=ws-test', { [MCP_REQUEST_TRACE_HEADER]: traceId }),
+        { idempotencyKey: receiptKey });
+      await enteredWrite;
+      const timedOut = await response;
+      expect(timedOut.isError).toBe(true);
+      expect(textOf(timedOut)).toContain('request_timeout');
+      expect(h.realScratchWriteTimings).toEqual([]);
+      expect(traceEvents(info.mock.calls).some((event) =>
+        event.traceId === traceId && event.stage === 'inner_dispatch_settled')).toBe(false);
+
+      releaseWrite();
+      await vi.waitFor(() => expect(h.replayStores.some((store) =>
+        store.idempotencyKey === receiptKey)).toBe(true));
+      expect(h.scratchWriteTimings).toEqual([]); // no synthetic phase injection
+      expect(h.realScratchWriteTimings).toHaveLength(1);
+      const timing = h.realScratchWriteTimings[0];
+      expect(timing).toMatchObject({ quotaWaitMs: 0, refreshWaitMs: 0, quotaRecoveryMs: 0 });
+      expect(timing.writeMs).toBeGreaterThan(0);
+      expect(timing.totalMs).toBeGreaterThanOrEqual(timing.writeMs);
+      const settled = traceEvents(info.mock.calls).find((event) =>
+        event.traceId === traceId && event.stage === 'inner_dispatch_settled');
+      expect(settled).toMatchObject({
+        outcome: 'success', afterDeadline: true,
+        phaseTimingsMs: { scratchWrites: { count: 1, ...timing } },
+      });
+      expect(h.spillPaths).toHaveLength(1);
+      const spill = parseScratchReference(readFileSync(h.spillPaths[0]));
+      expect(spill).not.toBeNull();
+      expect(spill!.payload.toString()).toContain(JSON.stringify(SPILL_CHECKPOINT).slice(1, -1));
+      const receipt = h.replayStores.find((store) => store.idempotencyKey === receiptKey)!.result as CallResult;
+      expect(receipt.isError).not.toBe(true);
+      expect(textOf(receipt)).not.toContain('request_timeout');
+      expect(JSON.stringify(receipt)).toContain(h.spillPaths[0]);
+    } finally {
+      releaseWrite();
+      await sleep(SLOW_TOOL_MS + 100);
+      info.mockRestore();
+      _resetScratchUsageForTests();
+      if (previousRoot === undefined) delete process.env.PAPERCUSP_SCRATCH_ROOT;
+      else process.env.PAPERCUSP_SCRATCH_ROOT = previousRoot;
+      if (previousKillSwitch === undefined) delete process.env.PAPERCUSP_RESULT_DOOR_OFF;
+      else process.env.PAPERCUSP_RESULT_DOOR_OFF = previousKillSwitch;
+      rmSync(sandbox, { recursive: true, force: true });
     }
   });
 
