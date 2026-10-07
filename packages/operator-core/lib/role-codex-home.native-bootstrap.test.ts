@@ -43,7 +43,9 @@ async function readNativeAccount(home: string): Promise<{ result?: unknown; erro
   delete env.OPENAI_API_KEY;
   const child = spawn(codex!, ['app-server', '--listen', 'stdio://'], { env, stdio: ['pipe', 'pipe', 'pipe'] });
   child.stdout.setEncoding('utf8');
-  child.stderr.resume();
+  let stderr = '';
+  child.stderr.setEncoding('utf8');
+  child.stderr.on('data', (chunk: string) => { stderr = (stderr + chunk).slice(-3000); });
   try {
     return await new Promise((resolve, reject) => {
       let carry = '';
@@ -53,7 +55,7 @@ async function readNativeAccount(home: string): Promise<{ result?: unknown; erro
         if (error) reject(error); else resolve(value!);
       };
       child.on('error', (error) => finish(undefined, error));
-      child.on('exit', (code) => finish(undefined, new Error(`native app-server exited ${code} before account/read`)));
+      child.on('exit', (code) => finish(undefined, new Error(`native app-server exited ${code} before account/read: ${stderr}`)));
       child.stdout.on('data', (chunk: string) => {
         carry += chunk;
         let end: number;
@@ -116,7 +118,7 @@ describe('native gateway account bootstrap', () => {
     try {
       writeFileSync(join(home, 'config.toml'), [...root, ...gateway.root, ...features, ...tables].join('\n'));
       const routed = await readNativeTui(home, 20_000);
-      expect(routed.exitedBeforeBudget).toBe(false);
+      expect(routed.exitedBeforeBudget, routed.output).toBe(false);
       expect(isCodexWorkspaceDiscoveryTimeout(routed.output)).toBe(false);
       expect(requests.some(path => path.includes('/v1/models'))).toBe(true);
       expect(requests.some(path => path.includes('/api/codex/accounts/check'))).toBe(false);
