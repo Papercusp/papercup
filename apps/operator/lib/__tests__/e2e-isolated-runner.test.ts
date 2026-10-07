@@ -54,11 +54,19 @@ function fixture(playwrightExit: number) {
       'set -eu',
       'pwd > "$E2E_FIXTURE_VITE_CWD"',
       '[ "$1" = "run" ] && [ "$2" = "dev" ] || exit 73',
-      '[ "${PORT+x}" != "x" ] && [ "${OPERATOR_E2E_PORT+x}" != "x" ] || { echo "vite stub received a stale port env" >&2; exit 77; }',
+      'vite_port=',
+      'expect_port=0',
+      'for arg in "$@"; do',
+      '  if [ "$expect_port" = "1" ]; then vite_port="$arg"; expect_port=0; continue; fi',
+      '  case "$arg" in --port) expect_port=1 ;; --port=*) vite_port="${arg#--port=}" ;; esac',
+      'done',
+      '[ "$expect_port" = "0" ] && [ -n "$vite_port" ] || { echo "vite stub expected a port value" >&2; exit 78; }',
+      'case "$vite_port" in *[!0-9]*|0) echo "vite stub expected a positive numeric port: $vite_port" >&2; exit 79;; esac',
+      'if printenv PORT >/dev/null 2>&1; then echo "vite stub received a stale PORT" >&2; exit 77; fi',
+      '[ "$OPERATOR_E2E_PORT" = "$vite_port" ] || { echo "vite stub CLI/env port mismatch: $vite_port / $OPERATOR_E2E_PORT" >&2; exit 80; }',
       'case " $* " in *" --host 127.0.0.1 "*) ;; *) echo "vite stub expected loopback host: $*" >&2; exit 74;; esac',
-      'case " $* " in *" --port 0 "*) ;; *) echo "vite stub expected port 0: $*" >&2; exit 75;; esac',
       'case " $* " in *" --strictPort "*) ;; *) echo "vite stub expected strictPort: $*" >&2; exit 76;; esac',
-      `exec node -e 'const http=require("node:http");const s=http.createServer((_req,res)=>{res.writeHead(200,{"content-type":"text/plain"});res.end("ready")});s.listen(0,"127.0.0.1",()=>console.log("  Local: http://127.0.0.1:"+s.address().port+"/"))'`,
+      `exec node -e 'const http=require("node:http");const port=Number(process.env.OPERATOR_E2E_PORT);const s=http.createServer((_req,res)=>{res.writeHead(200,{"content-type":"text/plain"});res.end("ready")});s.listen(port,"127.0.0.1",()=>console.log("  Local: http://127.0.0.1:"+s.address().port+"/"))'`,
     ].join('\n'),
   );
   writeFileSync(
@@ -135,9 +143,10 @@ describe('run-operator-e2e-isolated.sh', () => {
     expect(r.recorded.env.api).toBe('http://127.0.0.1:1420');
   });
 
-  it('lets Vite bind port 0 and passes its live port to Playwright reuse mode', () => {
+  it('allocates a positive Vite port and passes it to Playwright reuse mode', () => {
     const r = run(fixture(0), [], { PORT: '39428', OPERATOR_E2E_PORT: '39428' });
     expect(r.status, r.out).toBe(0);
+    expect(Number(r.recorded.env.port)).toBeGreaterThan(0);
     expect(r.recorded.env.port).not.toBe('39428');
     expect(r.out).toContain(`vite-port=${r.recorded.env.port}`);
     expect(r.recorded.env.reuse).toBe('1');

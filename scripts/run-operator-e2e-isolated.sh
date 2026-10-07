@@ -79,14 +79,28 @@ VERIFY_TAURI_ISOLATED_DB=1 "$RIG" -- bash -c '
   set -u
   cd "${OPERATOR_SOURCE_ROOT:-$1}/apps/operator" || exit 97
   shift
+  # Vite 8 treats --port 0 as unset and falls back to its default dev port (5173).
+  # Reserve an OS-assigned positive port, then pass that exact value to Vite and Playwright.
+  requested_port=$(node -e "const net=require(\"node:net\");const server=net.createServer();server.once(\"error\",error=>{console.error(error.message);process.exitCode=1});server.listen(0,\"127.0.0.1\",()=>{const address=server.address();if(!address||typeof address===\"string\"){console.error(\"run-operator-e2e-isolated: could not allocate a Vite port\");server.close();process.exitCode=1;return}const port=address.port;server.close(error=>{if(error){console.error(error.message);process.exitCode=1;return}process.stdout.write(String(port))})})") || exit 98
+  if [ -z "$requested_port" ]; then
+    echo "run-operator-e2e-isolated: OS did not allocate a positive Vite port" >&2
+    exit 98
+  fi
+  case "$requested_port" in
+    *[!0-9]*|0)
+      echo "run-operator-e2e-isolated: OS did not allocate a positive Vite port" >&2
+      exit 98
+      ;;
+  esac
   vite_log=$(mktemp "${TMPDIR:-/tmp}/operator-e2e-vite.XXXXXX") || exit 98
-  env -u PORT -u OPERATOR_E2E_PORT \
+  env -u PORT \
+    OPERATOR_E2E_PORT="$requested_port" \
     PAPERCUSP_BIND_HOST=127.0.0.1 \
     PAPERCUSP_ENABLE_HMR=1 \
     PAPERCUSP_FAKE_LLM=1 \
     PAPERCUSP_DEV_WATCH=0 \
     PAPERCUSP_API_TARGET="${VERIFY_TAURI_DEV_URL:-}" \
-    npm run dev -- -- --host 127.0.0.1 --port 0 --strictPort >"$vite_log" 2>&1 &
+    npm run dev -- -- --host 127.0.0.1 --port "$requested_port" --strictPort >"$vite_log" 2>&1 &
   vite_pid=$!
   cleanup_vite() {
     if kill -0 "$vite_pid" 2>/dev/null; then
@@ -116,6 +130,10 @@ VERIFY_TAURI_ISOLATED_DB=1 "$RIG" -- bash -c '
   if [ -z "$port" ]; then
     cat "$vite_log" >&2
     echo "run-operator-e2e-isolated: Vite did not serve its OS-assigned port" >&2
+    exit 98
+  fi
+  if [ "$port" != "$requested_port" ]; then
+    echo "run-operator-e2e-isolated: Vite served port $port instead of assigned port $requested_port" >&2
     exit 98
   fi
   echo "OPERATOR_E2E_ISOLATED vite-port=$port"
