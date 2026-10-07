@@ -492,7 +492,7 @@ describe('spec-test-adequacy evaluator → scorecards:emit round trip', () => {
 
     const result = await emitDraft(row!.scorecardDraft);
 
-    expect(result).toMatchObject({ ok: true, created: true, issueId: 'EI-ROUND-TRIP' });
+    expect(result, JSON.stringify(result)).toMatchObject({ ok: true, created: true, issueId: 'EI-ROUND-TRIP' });
     // The gate really replayed through the evaluator with the recipe's exact args.
     expect(dispatchTool).toHaveBeenCalledTimes(1);
     expect(dispatchTool).toHaveBeenCalledWith('plans:evaluate-spec-test-adequacy', {
