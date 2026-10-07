@@ -7,6 +7,7 @@ import {
   carriedStaleGradingCardIds,
   classifyAcceptanceGraderStartupStall,
   classifyAcceptanceGraderNoFirstTurnStall,
+  isAcceptanceGraderNoFirstTurnLivenessCandidate,
   classifyAcceptanceGraderParkedWithoutEmit,
   classifyAcceptanceGraderTerminalFailure,
   detectAcceptanceGraderTerminalFailure,
@@ -1759,6 +1760,64 @@ describe('classifyAcceptanceGraderNoFirstTurnStall', () => {
         staleAfterMs,
       }),
     ).toBeNull();
+  });
+
+  it('uses definite ended liveness to corroborate title redraws without a first turn', () => {
+    const recentMtime = nowMs - 30_000;
+    const input = { startedAt, logMtimeMs: recentMtime, nowMs, staleAfterMs };
+    const tail = '\u001b]0;grader startup title update\u0007Claude TUI tool picker still visible';
+
+    expect(isAcceptanceGraderNoFirstTurnLivenessCandidate(tail, input)).toBe(true);
+    expect(classifyAcceptanceGraderNoFirstTurnStall(tail, input, { sessionState: 'ended' })).toMatchObject({
+      code: 'startup_first_turn_stalled',
+      evidence: expect.stringContaining('owner session ended'),
+    });
+  });
+
+  it.each([null, 'live', 'parked', 'recorded', 'suspect'] as const)(
+    'keeps a recent-title-redraw candidate when owner liveness is %s',
+    (sessionState) => {
+      const input = { startedAt, logMtimeMs: nowMs - 30_000, nowMs, staleAfterMs };
+      expect(
+        classifyAcceptanceGraderNoFirstTurnStall('Claude TUI tool picker still visible', input,
+          sessionState === null ? null : { sessionState }),
+      ).toBeNull();
+    },
+  );
+
+  it('does not request liveness for fresh tasks, active turns, empty logs, or invalid clocks', () => {
+    expect(
+      isAcceptanceGraderNoFirstTurnLivenessCandidate('Claude TUI tool picker still visible', {
+        startedAt: new Date(nowMs - staleAfterMs + 1).toISOString(),
+        logMtimeMs: nowMs - 30_000,
+        nowMs,
+        staleAfterMs,
+      }),
+    ).toBe(false);
+    expect(
+      isAcceptanceGraderNoFirstTurnLivenessCandidate('Working (18m)\npapercusp.tools:invoke({})', {
+        startedAt,
+        logMtimeMs: nowMs - 30_000,
+        nowMs,
+        staleAfterMs,
+      }),
+    ).toBe(false);
+    expect(
+      isAcceptanceGraderNoFirstTurnLivenessCandidate('', {
+        startedAt,
+        logMtimeMs: nowMs - 30_000,
+        nowMs,
+        staleAfterMs,
+      }),
+    ).toBe(false);
+    expect(
+      isAcceptanceGraderNoFirstTurnLivenessCandidate('Claude TUI tool picker still visible', {
+        startedAt: 'invalid',
+        logMtimeMs: nowMs - 30_000,
+        nowMs,
+        staleAfterMs,
+      }),
+    ).toBe(false);
   });
 });
 

@@ -1057,6 +1057,84 @@ describe('dispatchPendingGradingAudits', () => {
     }
   });
 
+  it('uses ended owner liveness to recover an old no-first-turn auditor whose terminal title keeps rewriting its log', async () => {
+    const d = deps();
+    const nowMs = Date.parse('2026-09-30T12:00:00.000Z');
+    d.listScorecards.mockResolvedValue([card('EI-title-redraw')]);
+    d.listTasks.mockResolvedValue([{
+      taskId: 'task-title-redraw',
+      state: 'running',
+      startedAt: new Date(nowMs - GRADING_AUDIT_RESERVATION_TTL_MS - 1).toISOString(),
+      detail: { label: 'grading-audit:EI-title-redraw', coordOwnerId: 'su-stalled-grader' },
+      logPath: '/tmp/title-redraw.log',
+    } as unknown as TaskRow]);
+    const killTask = vi.fn(async (taskId: string) => ({ ok: true as const, taskId, action: 'kill' }));
+    const resolveOwnerLiveness = vi.fn<NonNullable<DispatchPendingGradingAuditsDeps['resolveOwnerLiveness']>>()
+      .mockResolvedValue({ sessionState: 'ended' });
+
+    const result = await reconcilePendingGradingAudits(
+      { ctx, harness: 'papercusp' },
+      {
+        ...d,
+        killTask,
+        readLogTail: async () => '\u001b]0;grader startup title update\u0007Claude TUI tool picker still visible',
+        readLogMtimeMs: () => nowMs - 30_000,
+        resolveOwnerLiveness,
+        now: () => nowMs,
+        terminalLogMaxRechecks: 0,
+      },
+    );
+
+    expect(resolveOwnerLiveness).toHaveBeenCalledExactlyOnceWith('su-stalled-grader');
+    expect(killTask).toHaveBeenCalledWith('task-title-redraw', {
+      includeSubtree: true,
+      escalateAfterMs: 5_000,
+    });
+    expect(result.receipts[0]).toMatchObject({
+      state: 'launched',
+      terminalRecovery: {
+        retiredTaskIds: ['task-title-redraw'],
+        codes: ['startup_first_turn_stalled'],
+      },
+    });
+  });
+
+  it.each([null, 'live', 'parked'] as const)(
+    'keeps an old title-redraw task viable when owner liveness is %s',
+    async (sessionState) => {
+      const d = deps();
+      const nowMs = Date.parse('2026-09-30T12:00:00.000Z');
+      d.listScorecards.mockResolvedValue([card('EI-title-redraw-unknown')]);
+      d.listTasks.mockResolvedValue([{
+        taskId: 'task-title-redraw-unknown',
+        state: 'running',
+        startedAt: new Date(nowMs - GRADING_AUDIT_RESERVATION_TTL_MS - 1).toISOString(),
+        detail: { label: 'grading-audit:EI-title-redraw-unknown', coordOwnerId: 'su-uncertain-grader' },
+        logPath: '/tmp/title-redraw-unknown.log',
+      } as unknown as TaskRow]);
+      const killTask = vi.fn(async (taskId: string) => ({ ok: true as const, taskId, action: 'kill' }));
+      const resolveOwnerLiveness = vi.fn<NonNullable<DispatchPendingGradingAuditsDeps['resolveOwnerLiveness']>>()
+        .mockResolvedValue(sessionState === null ? null : { sessionState });
+
+      const result = await reconcilePendingGradingAudits(
+        { ctx, harness: 'papercusp' },
+        {
+          ...d,
+          killTask,
+          readLogTail: async () => 'Claude TUI tool picker still visible',
+          readLogMtimeMs: () => nowMs - 30_000,
+          resolveOwnerLiveness,
+          now: () => nowMs,
+          terminalLogMaxRechecks: 0,
+        },
+      );
+
+      expect(resolveOwnerLiveness).toHaveBeenCalledExactlyOnceWith('su-uncertain-grader');
+      expect(killTask).not.toHaveBeenCalled();
+      expect(result.receipts[0]).toMatchObject({ state: 'deduped', launch: { mode: 'live-task-guard' } });
+    },
+  );
+
   describe('a live auditor that completed its turn and parked without emitting (WI-10005295)', () => {
     // Tail shape of task 0muqeanqadsbkcjglk2 (Codex auditor, 2026-10-02): it finished a
     // turn, emitted nothing, and every repair deduped to it until a human killed it.

@@ -871,12 +871,12 @@ export function classifyAcceptanceGraderStartupStall(rawLog: string): Acceptance
 
 /**
  * A live task can outlast the grading reservation while its CLI is still
- * parked in startup UI. Process liveness is not first-turn progress: retire
- * only when the task itself and its log have both been quiet for the caller's
- * bounded stale window and the log contains no evidence that grading began.
+ * parked in startup UI. The ordinary path requires both task and log to be
+ * quiet; when title redraws keep mtime recent, an old task with no semantic
+ * first-turn evidence needs a definite `ended` owner-liveness verdict.
  *
  * This is candidate-only. Callers must first check explicit terminal receipts,
- * and should keep this opt-in at the stale-live-task recovery seam.
+ * and use the recent-mtime path only at the stale-live-task recovery seam.
  */
 export function classifyAcceptanceGraderNoFirstTurnStall(
   rawLog: string,
@@ -885,25 +885,83 @@ export function classifyAcceptanceGraderNoFirstTurnStall(
     logMtimeMs,
     nowMs,
     staleAfterMs,
-  }: {
-    startedAt: string;
-    logMtimeMs: number | null;
-    nowMs: number;
-    staleAfterMs: number;
-  },
+  }: AcceptanceGraderQuietWindowInput,
+  liveness?: Pick<LivenessVerdict, 'sessionState'> | null,
 ): AcceptanceGraderTerminalFailure | null {
   const quiet = measureAcceptanceGraderQuietWindow({ startedAt, logMtimeMs, nowMs, staleAfterMs });
-  if (!quiet) return null;
-
   const normalized = normalizeAcceptanceGraderLog(rawLog);
   if (!normalized.trim() || hasAcceptanceGraderFirstTurnProgress(normalized)) return null;
+
+  if (quiet) {
+    return {
+      code: 'startup_first_turn_stalled',
+      evidence:
+        `no first-turn progress; task age ${quiet.taskAgeMs}ms and ` +
+        `grading log quiet for ${quiet.quietMs}ms`,
+    };
+  }
+
+  const recent = measureAcceptanceGraderRecentLogWindow({ startedAt, logMtimeMs, nowMs, staleAfterMs });
+  if (!recent || liveness?.sessionState !== 'ended') return null;
 
   return {
     code: 'startup_first_turn_stalled',
     evidence:
-      `no first-turn progress; task age ${quiet.taskAgeMs}ms and ` +
-      `grading log quiet for ${quiet.quietMs}ms`,
+      `no first-turn progress; task age ${recent.taskAgeMs}ms and ` +
+      `log redrawn ${recent.logAgeMs}ms ago; owner session ended`,
   };
+}
+
+/**
+ * A recent log mtime is a liveness-query candidate only when the task itself
+ * is old, the timestamp is sane, and normalized content still has no first-turn
+ * evidence. This filters terminal-title redraws without querying liveness for
+ * healthy turns, fresh tasks, empty logs, or unmeasurable clocks.
+ */
+export function isAcceptanceGraderNoFirstTurnLivenessCandidate(
+  rawLog: string,
+  input: AcceptanceGraderQuietWindowInput,
+): boolean {
+  const normalized = normalizeAcceptanceGraderLog(rawLog);
+  return Boolean(
+    normalized.trim() &&
+      !hasAcceptanceGraderFirstTurnProgress(normalized) &&
+      measureAcceptanceGraderRecentLogWindow(input),
+  );
+}
+
+interface AcceptanceGraderRecentLogWindowInput {
+  startedAt: string;
+  logMtimeMs: number | null;
+  nowMs: number;
+  staleAfterMs: number;
+}
+
+function measureAcceptanceGraderRecentLogWindow({
+  startedAt,
+  logMtimeMs,
+  nowMs,
+  staleAfterMs,
+}: AcceptanceGraderRecentLogWindowInput): { taskAgeMs: number; logAgeMs: number } | null {
+  const startedAtMs = Date.parse(startedAt);
+  const measuredLogMtimeMs =
+    typeof logMtimeMs === 'number' && Number.isFinite(logMtimeMs) ? logMtimeMs : null;
+  if (
+    !Number.isFinite(startedAtMs) ||
+    measuredLogMtimeMs === null ||
+    !Number.isFinite(nowMs) ||
+    !Number.isFinite(staleAfterMs) ||
+    staleAfterMs <= 0 ||
+    startedAtMs > nowMs ||
+    measuredLogMtimeMs < startedAtMs - 5_000 ||
+    measuredLogMtimeMs > nowMs + 5_000
+  ) {
+    return null;
+  }
+  const taskAgeMs = Math.floor(nowMs - startedAtMs);
+  const logAgeMs = Math.max(0, Math.floor(nowMs - measuredLogMtimeMs));
+  if (taskAgeMs < staleAfterMs || logAgeMs >= staleAfterMs) return null;
+  return { taskAgeMs, logAgeMs };
 }
 
 interface AcceptanceGraderQuietWindowInput {

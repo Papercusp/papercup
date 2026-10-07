@@ -17,6 +17,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import launchAgentTool from './agent-tools/capability/launch-agent';
 import {
   classifyAcceptanceGraderNoFirstTurnStall,
+  isAcceptanceGraderNoFirstTurnLivenessCandidate,
   classifyAcceptanceGraderParkedWithoutEmit,
   detectAcceptanceGraderTerminalFailure,
   readAcceptanceGraderLogMtimeMs,
@@ -51,6 +52,7 @@ import type { PgCoordLog } from '@papercusp/coordination/event-log';
 import type { sendMessage } from './agent-tools/coordination/messages';
 import type { wakeRecipients } from './agent-tools/coordination/inbox-wake';
 import type { lineagePartyKeys } from './acceptance-author-identity';
+import type { LivenessVerdict } from './agent-tools/coordination/liveness-oracle';
 
 /** The meta-rubric every grading audit grades against (proposed by P-013). */
 export const GRADING_INTEGRITY_RUBRIC_REF = 'grading-integrity';
@@ -294,6 +296,8 @@ export interface DispatchPendingGradingAuditsDeps {
   readLogTail?: (path: string) => string | Promise<string>;
   /** Read log progress time; null means missing/unreadable and cannot prove a stall. */
   readLogMtimeMs?: (path: string) => number | null;
+  /** Resolve one auditor owner only after an old no-first-turn log candidate needs liveness corroboration. */
+  resolveOwnerLiveness?: (ownerId: string) => Promise<Pick<LivenessVerdict, 'sessionState'> | null>;
   killTask?: typeof killTask;
   sleep?: (ms: number) => Promise<void>;
   terminalLogRecheckDelayMs?: number;
@@ -313,6 +317,14 @@ export interface DispatchPendingGradingAuditsDeps {
   generationAncestry?: GenerationAncestryProbe;
   /** Clock seam for the recorded backoff instant. */
   now?: () => number;
+}
+
+async function resolveGradingAuditorOwnerLiveness(
+  ownerId: string,
+): Promise<Pick<LivenessVerdict, 'sessionState'> | null> {
+  const { resolveSessionStates } = await import('./agent-tools/coordination/liveness-oracle');
+  const verdicts = await resolveSessionStates([{ ownerId }], { hydratePerId: true });
+  return verdicts.get(ownerId) ?? null;
 }
 
 export type GradingAuditReservationStatus =
@@ -1460,6 +1472,21 @@ export async function dispatchPendingGradingAudits(
               terminalFailure =
                 classifyAcceptanceGraderNoFirstTurnStall(logTail, quietWindow) ??
                 classifyAcceptanceGraderParkedWithoutEmit(logTail, quietWindow);
+              if (!terminalFailure && isAcceptanceGraderNoFirstTurnLivenessCandidate(logTail, quietWindow)) {
+                const ownerId = typeof task.detail?.coordOwnerId === 'string' ? task.detail.coordOwnerId.trim() : '';
+                if (ownerId) {
+                  try {
+                    const resolveOwnerLiveness = deps.resolveOwnerLiveness ?? resolveGradingAuditorOwnerLiveness;
+                    terminalFailure = classifyAcceptanceGraderNoFirstTurnStall(
+                      logTail,
+                      quietWindow,
+                      await resolveOwnerLiveness(ownerId),
+                    );
+                  } catch {
+                    // An unavailable liveness oracle is unknown, never permission to kill.
+                  }
+                }
+              }
             } catch {
               // Missing/unreadable evidence is unknown, never permission to kill.
             }
