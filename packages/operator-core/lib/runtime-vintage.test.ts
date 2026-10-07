@@ -146,6 +146,8 @@ describe('runtime-vintage — self-report ledger (P-008)', () => {
     expect(iso).toMatch(/^[a-f0-9]{64}$/);
     expect(fingerprint('2026-10-07 11:41:11.125-04')).toBe(iso);
     expect(fingerprint('2026-10-07T11:41:11.125-04:00')).toBe(iso);
+    // postgres-js may return Date despite the persisted row's string type.
+    expect(fingerprint(new Date('2026-10-07T15:41:11.125Z') as unknown as string)).toBe(iso);
     expect(fingerprint('2026-10-07T15:41:11.126Z')).not.toBe(iso);
     expect(fingerprint('invalid')).toBeNull();
     expect(fingerprint(null)).not.toBe(iso);

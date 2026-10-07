@@ -315,7 +315,9 @@ export function measureRuntimeVintageEnvironment(
     } else if (!codeIdentity || !/^[a-f0-9]{7,64}$/.test(codeIdentity)) return null;
     // Shared and caller-owned PG clients can decode timestamptz as either
     // PostgreSQL text or ISO text. Hash the instant, not the driver's encoding.
-    const buildTimeMs = row.buildTime === null ? null : Date.parse(row.buildTime);
+    // The constructor also copies driver-returned Date objects without their
+    // toString coercion, which would discard the boot's milliseconds.
+    const buildTimeMs = row.buildTime === null ? null : new Date(row.buildTime).getTime();
     if (buildTimeMs !== null && !Number.isFinite(buildTimeMs)) return null;
     const buildTime = buildTimeMs === null ? null : new Date(buildTimeMs).toISOString();
     pins.push([unit, row.host, codeIdentity!, buildTime, row.pid!, pinned]);
