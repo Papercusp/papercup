@@ -1741,6 +1741,61 @@ describe('applyResultDoor', () => {
       content: [{ type: 'text' as const, text: 'm'.repeat(5_000) }],
     });
 
+    it('retains a nested coord:send receipt when the aggregate hard-spill write fails', () => {
+      // Two ordinary results consume 10KB of the 12KB cohort. The third result
+      // must take the hard whole-result spill route; making scratch unavailable
+      // exercises the failure path without an environmental race.
+      const scope = () => beginResultDoorAggregate({ sessionKey: 'owner-receipt-fallback', outputGroupId: 'turn-1' });
+      applyResultDoor(medium(), { toolName: 'tools:invoke', workspaceId: 'ws-1', runId: RUN_ID, aggregateScope: scope() });
+      applyResultDoor(medium(), { toolName: 'tools:invoke', workspaceId: 'ws-1', runId: RUN_ID, aggregateScope: scope() });
+      writeFileSync(join(sandbox, 'scratch'), 'not a directory');
+
+      const receipt = {
+        ok: true,
+        results: [{
+          ok: true,
+          msg_id: 'persisted-message',
+          queued: true,
+          woken: 1,
+          wakeOutcome: 'queued',
+          body: 'x'.repeat(4_800),
+        }],
+        counts: { ok: 1, failed: 0 },
+      };
+      const input: DoorableResult = {
+        content: [{ type: 'text' as const, text: JSON.stringify(receipt) }],
+      };
+      const doored = applyResultDoor(input, {
+        toolName: 'tools:invoke',
+        nestedTargetToolName: 'coord:send',
+        workspaceId: 'ws-1',
+        runId: RUN_ID,
+        aggregateScope: scope(),
+      });
+
+      const output = JSON.parse((doored.content[0] as { text: string }).text) as {
+        results: Array<Record<string, unknown>>;
+        _projection: { kind: string; truncated: boolean; cursor: Record<string, unknown> };
+      };
+      expect(output.results).toMatchObject([{
+        msg_id: 'persisted-message',
+        queued: true,
+        woken: 1,
+        wakeOutcome: 'queued',
+      }]);
+      expect(output._projection).toMatchObject({
+        kind: 'bounded-payload',
+        truncated: true,
+        cursor: { kind: 'unavailable', reason: 'spill-write-failed' },
+      });
+      expect((doored._meta as { resultDoor?: Record<string, unknown> }).resultDoor).toMatchObject({
+        spillFailed: true,
+        spillPath: null,
+        spillUri: null,
+      });
+      expect((doored.content[0] as { text: string }).text.length).toBeLessThan(JSON.stringify(receipt).length);
+    });
+
     it('uses one budget across explicit fan-out and spills the result that crosses it', () => {
       const firstScope = beginResultDoorAggregate({ sessionKey: 'owner-1', outputGroupId: 'turn-7' });
       const secondScope = beginResultDoorAggregate({ sessionKey: 'owner-1', outputGroupId: 'turn-7' });

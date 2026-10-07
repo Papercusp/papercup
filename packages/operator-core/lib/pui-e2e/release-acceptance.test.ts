@@ -1,17 +1,53 @@
 import { describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import * as path from 'node:path';
-import { checkReleaseAcceptance, disqualification, HARNESS_TAG, loadAcceptanceMatrix, loadRequiredMatrix, parseAcceptanceLines, parseHarnessLine, type Candidate, type EvidenceRow } from './release-acceptance';
+import { checkReleaseAcceptance, disqualification, HARNESS_TAG, loadAcceptanceMatrix, loadRequiredMatrix, parseAcceptanceLines, parseHarnessLine, REPO_ROOT, type Candidate, type EvidenceRow } from './release-acceptance';
 import {
   CLOUD_DEVICE_START_ATTEMPTS, cloudDeviceStartBlocksLegs, cloudDeviceStartTransient, DOCKER_START_PROBE_TIMEOUT_MS,
   legsBlocked, measureCloudDeviceStart, measureRunnerTree, probeDockerCreateStart, remeasureCloudDeviceStart, remeasureStockMachines,
   runCloudDeviceStartSmoke, runnerTreeRefusals, runReleaseAcceptance, runStockMachineSmoke, stockMachineRefusal, stockMachinesBlockLegs,
   sweepOrphanedProbeContainers, type CloudDeviceStartResult,
 } from './release-acceptance-run';
+
+describe('release acceptance checkout filesystem preflight', () => {
+  const wrapper = readFileSync(path.join(REPO_ROOT, 'apps/tui/scripts/release-acceptance.sh'), 'utf8');
+  const selector = wrapper.match(/node - "\$ROOT" "\$checkout" <<'NODE'\n([\s\S]*?)\nNODE/)?.[1];
+  const select = (source: string, destination: string) => {
+    expect(selector).toBeDefined();
+    return execFileSync(process.execPath, ['-', source, destination], { input: selector, encoding: 'utf8' });
+  };
+
+  it('uses hardlinks for an absent checkout on the source filesystem and forwards the selection', () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'pui-copy-mode-'));
+    try {
+      expect(select(root, path.join(root, 'missing', 'slot-1'))).toBe('hardlink');
+      expect(wrapper).toContain('--node-modules-copy "$node_modules_copy"');
+      expect(wrapper).not.toContain('--node-modules-copy hardlink');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it.skipIf(!existsSync('/dev/shm') || statSync('/dev/shm').dev === statSync('/tmp').dev)(
+    'copies dependencies when a checkout symlink resolves onto another filesystem', () => {
+      // The fleet's TMPDIR can itself be /dev/shm. Pick a distinct real
+      // filesystem explicitly so this EXDEV regression still runs there.
+      const root = mkdtempSync('/tmp/pui-copy-mode-');
+      const relocated = mkdtempSync('/dev/shm/pui-copy-mode-');
+      try {
+        const slot = path.join(root, 'slot-1');
+        symlinkSync(relocated, slot);
+        expect(select(root, slot)).toBe('copy');
+        expect(select(root, path.join(slot, 'missing', 'checkout'))).toBe('copy');
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+        rmSync(relocated, { recursive: true, force: true });
+      }
+    },
+  );
+});
 
 describe('Docker create/start release preflight', () => {
   it('passes on the first bounded offline stock-container launch that succeeds', () => {

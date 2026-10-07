@@ -13,7 +13,8 @@
 # its omp leg to a mid-edit syntax error in gateway.ts, neither of them PUI code.
 # So this script checks out the archive's own source commit (PROVENANCE.json
 # source.commit) with the release checkout helper, object-sourced and with
-# node_modules hardlinked, and runs the stage from there. Up to three reusable
+# node_modules hardlinked on the same filesystem (copied otherwise), and runs
+# the stage from there. Up to three reusable
 # checkouts live under PUI_ACCEPTANCE_CHECKOUT_ROOT (default
 # ~/.cache/pui-acceptance-checkouts) and are re-pinned on each use.
 # PUI_ACCEPTANCE_ALLOW_LIVE_TREE=1 runs in place instead, for development only:
@@ -71,9 +72,21 @@ done
 [ -n "$checkout" ] || fail "all three acceptance checkouts under $checkouts are held by other runs"
 
 echo "release-acceptance: checking out candidate source $sha at $checkout" >&2
+# Cache roots may be relocated by a symlink onto a different filesystem.
+# Choose the helper's existing portable copy mode BEFORE materialization;
+# hardlink mode correctly refuses EXDEV rather than partially copying a tree.
+node_modules_copy="$(node - "$ROOT" "$checkout" <<'NODE'
+const fs = require('node:fs');
+const path = require('node:path');
+const [source, destination] = process.argv.slice(2);
+let ancestor = destination;
+while (!fs.existsSync(ancestor)) ancestor = path.dirname(ancestor);
+process.stdout.write(fs.statSync(source).dev === fs.statSync(ancestor).dev ? 'hardlink' : 'copy');
+NODE
+)" || fail "could not determine checkout filesystem for $checkout"
 bash "$ROOT/apps/operator/bin/release/setup-release-checkout.sh" \
   --ref "$sha" --integration "$ROOT" --release "$checkout" \
-  --node-modules force --node-modules-copy hardlink --node-modules-generation off \
+  --node-modules force --node-modules-copy "$node_modules_copy" --node-modules-generation off \
   --source-integrity object-sourced >&2 \
   || fail "could not check out $sha at $checkout (setup-release-checkout.sh failed; output above)"
 landed="$(git -C "$checkout" rev-parse HEAD)"
