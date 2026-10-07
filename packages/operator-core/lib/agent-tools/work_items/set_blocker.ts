@@ -234,8 +234,16 @@ async function migrateWorkItemRefRows(input: NormalizedBlockerInput, workItem: W
     };
   }
 
-  const updated = await mergeWorkItemPayload(input.id, { externalBlockers: blockers }, { harness: input.harness });
-  if (!updated) return { ok: false as const, id: input.id, error: 'blocker payload write did not return the work-item', migration };
+  const updated = await mergeWorkItemPayload(input.id, { externalBlockers: blockers }, {
+    harness: input.harness,
+    expectedExternalBlockers: (workItem.payload as { externalBlockers?: unknown } | null)?.externalBlockers,
+  });
+  if (!updated) return {
+    ok: false as const, id: input.id, code: 'blocker_history_conflict',
+    error: 'Blocker history changed or the row became unwritable; the typed hold was not cleared. Dependency edges may already exist. Read work_items:get before retrying.',
+    migration,
+    partialOutcome: { blockerHistoryPersisted: false, dependencyEdgesMayBePersisted: !dependentTerminal },
+  };
   const active = activeExternalBlockers(updated.payload);
   let finalWorkItem = updated;
   let lifecycle: unknown = null;
@@ -695,10 +703,17 @@ export default defineTool({
         const updated = await mergeWorkItemPayload(
           input.id,
           { externalBlockers: history.blockers },
-          { harness: input.harness },
+          {
+            harness: input.harness,
+            expectedExternalBlockers: (workItem.payload as { externalBlockers?: unknown } | null)?.externalBlockers,
+            requireNonTerminal: !input.clear && !history.autoCleared,
+          },
         );
         if (!updated) {
-          return { ok: false as const, id: input.id, error: 'blocker payload write did not return the work-item' };
+          return {
+            ok: false as const, id: input.id, code: 'blocker_history_conflict',
+            error: 'Blocker history or lifecycle changed, or the row became unwritable. This attempt wrote no blocker history or lifecycle. Read work_items:get before retrying.',
+          };
         }
 
         // EI-13301 fix: `finalWorkItem` tracks the POST-transition snapshot so the

@@ -232,6 +232,22 @@ describe('resolveImprovement — needs-human (P-004/WI-5679: leader-triage by de
     expect(d.rec.comments).toEqual([]);
   });
 
+  it('blocker history CAS retains the claim and dispatch when the owner-ask history conflicts', async () => {
+    const d = deps(issue({ id: 'EI-3' }));
+    const merge = vi.fn(async () => null);
+    d.mergeIssuePayload = merge;
+    const r = await resolveImprovement({
+      id: 'EI-3', outcome: 'needs-human', summary: 'Provide the credential', blockerCapability: 'credential',
+      defaultIfUnanswered: 'stays parked; recheck later',
+    }, d);
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain('Blocker history changed');
+    expect(d.rec.states).toEqual([]);
+    expect(d.rec.released).toEqual([]);
+    expect(d.rec.closes).toEqual([]);
+    expect(merge).toHaveBeenCalledWith('EI-3', expect.any(Object), expect.objectContaining({ requireNonTerminal: true, expectedExternalBlockers: undefined }));
+  });
+
   it('a genuine OWNER-gated blockerCapability (credential) → the OWNER ACTION path (payload.needsOwnerAction) AND state moves to needs-human (EI-18210987268765837)', async () => {
     const d = deps(issue({ id: 'EI-3' }));
     const r = await resolveImprovement(

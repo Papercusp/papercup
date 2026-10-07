@@ -25,6 +25,7 @@ vi.mock('../../scheduler/plan-item-lane-guard', () => ({
 }));
 
 import tool from './set_blocker';
+import { activeExternalBlockers } from '../../external-blockers';
 
 const ctx = { uiClientId: 'su-a', isSuperuser: true, workspaceId: 'default' } as never;
 const parse = (value: unknown) => (tool.args as { parse: (v: unknown) => unknown }).parse(value);
@@ -47,6 +48,44 @@ beforeEach(() => {
 });
 
 describe('work_items:set_blocker', () => {
+  it('blocker history CAS refuses a stale clear before any lifecycle change', async () => {
+    const raw = [{ kind: 'event', ref: 'event:first', status: 'active', legacy: { retained: true },
+      summary: 'Wait for first event', createdAt: '2026-10-01T00:00:00Z', updatedAt: '2026-10-01T00:00:00Z', createdBy: 'su-a' }];
+    expect(activeExternalBlockers({ externalBlockers: raw })).toHaveLength(1);
+    getWorkItem.mockResolvedValue({ id: 'WI-1', family: 'issue', state: 'blocked', payload: { externalBlockers: raw } });
+    mergeWorkItemPayload.mockResolvedValue(null);
+    const out = await one({ id: 'WI-1', kind: 'event', ref: 'event:first', clear: true });
+    expect(out).toMatchObject({ ok: false, code: 'blocker_history_conflict' });
+    expect(mergeWorkItemPayload).toHaveBeenCalledWith('WI-1', expect.any(Object), expect.objectContaining({ expectedExternalBlockers: raw, requireNonTerminal: false }));
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    expect(setWorkItemClaimHold).not.toHaveBeenCalled();
+  });
+
+  it('blocker history CAS migration retains the typed hold after a concurrent history conflict', async () => {
+    const raw = [{ kind: 'event', ref: 'work-item:done:WI-99', status: 'active',
+      summary: 'Wait for WI-99', createdAt: '2026-10-01T00:00:00Z', updatedAt: '2026-10-01T00:00:00Z', createdBy: 'su-a' }];
+    expect(activeExternalBlockers({ externalBlockers: raw })).toHaveLength(1);
+    getWorkItem.mockResolvedValue({ id: 'WI-1', family: 'issue', state: 'blocked', payload: { externalBlockers: raw } });
+    linkWorkItemRefDependencies.mockResolvedValue({ ok: true, edges: [{ blocker: 'WI-99' }] });
+    mergeWorkItemPayload.mockResolvedValue(null);
+    const out = await one({ id: 'WI-1', migrateWorkItemRefs: true });
+    expect(out).toMatchObject({ ok: false, code: 'blocker_history_conflict' });
+    expect(mergeWorkItemPayload).toHaveBeenCalledWith('WI-1', expect.any(Object), expect.objectContaining({ expectedExternalBlockers: raw }));
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    expect(setWorkItemClaimHold).not.toHaveBeenCalled();
+  });
+
+  it('persists an explicit re-check date and rejects invalid dates before any write', async () => {
+    const item = { id: 'WI-recheck', family: 'issue', kind: 'bug', state: 'open', harness: 'papercusp', payload: {} };
+    getWorkItem.mockResolvedValue(item);
+    mergeWorkItemPayload.mockImplementation(async (_id, patch) => ({ ...item, payload: patch }));
+    const input = { id: item.id, kind: 'event', ref: 'event:ready', nextVerb: 'events:await', recheckAt: '2026-10-08T00:00:00Z' };
+    expect(() => parse({ ...input, recheckAt: 'tomorrow' })).toThrow();
+    expect(mergeWorkItemPayload).not.toHaveBeenCalled();
+    const out = await one(input);
+    expect(out.activeBlockers[0]).toMatchObject({ ref: 'event:ready', nextVerb: 'events:await', recheckAt: '2026-10-08T00:00:00.000Z' });
+  });
+
   it('opts out of the ambient workspace transaction', () => {
     expect((tool as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
   });
@@ -186,7 +225,7 @@ describe('work_items:set_blocker', () => {
     expect(mergeWorkItemPayload).toHaveBeenCalledWith(
       'WI-1',
       expect.objectContaining({ externalBlockers: expect.any(Array) }),
-      { harness: undefined },
+      { harness: undefined, expectedExternalBlockers: undefined, requireNonTerminal: true },
     );
     expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith(
       'WI-1',

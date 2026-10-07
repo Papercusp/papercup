@@ -643,7 +643,10 @@ async function clearStaleLaneHold(wi: WorkItem, laneRef: string): Promise<void> 
         { kind: PLAN_LANE_BLOCKER_KIND, ref: laneRef, clear: true },
         PLAN_LANE_SYNC_ACTOR,
       );
-      await mergeWorkItemPayload(wi.id, { externalBlockers: blockers }, { harness });
+      const cleared = await mergeWorkItemPayload(wi.id, { externalBlockers: blockers }, {
+        harness, expectedExternalBlockers: (wi.payload as { externalBlockers?: unknown } | null)?.externalBlockers,
+      });
+      if (!cleared) return;
     }
     const heldOpen = readWorkItemHeldOpenBy(wi.payload);
     if (heldOpen?.by === PLAN_LANE_SYNC_ACTOR) {
@@ -977,11 +980,15 @@ async function applyLaneGateToWorkItem(
       // natively post-unify (work-item-status-full-unify P-003) — the issue family ALSO
       // picks up setWorkItemStateWithAliasInfo's auto claim-hold, so the un-park owes a
       // state restore AND a hold release, not just the hold.
-      await mergeWorkItemPayload(
+      const gated = await mergeWorkItemPayload(
         wi.id,
         { externalBlockers: blockers, [PLAN_LANE_PARKED_FROM_KEY]: wi.state },
-        { harness },
+        {
+          harness, expectedExternalBlockers: (wi.payload as { externalBlockers?: unknown } | null)?.externalBlockers,
+          requireNonTerminal: true,
+        },
       );
+      if (!gated) throw new Error('blocker history changed before lane gate write');
       await setWorkItemStateWithAliasInfo(wi.id, 'blocked', { harness, by: PLAN_LANE_SYNC_ACTOR });
       return 'gated';
     }
@@ -1008,11 +1015,16 @@ async function applyLaneGateToWorkItem(
         ).blockers;
       }
       const stillActive = blockers.filter((blocker) => blocker.status === 'active');
-      await mergeWorkItemPayload(
+      const repaired = await mergeWorkItemPayload(
         wi.id,
         { externalBlockers: blockers },
-        { harness, unset: ['needsOwnerAction', 'needsHuman'] },
+        {
+          harness, unset: ['needsOwnerAction', 'needsHuman'],
+          expectedExternalBlockers: (wi.payload as { externalBlockers?: unknown } | null)?.externalBlockers,
+          requireNonTerminal: true,
+        },
       );
+      if (!repaired) throw new Error('blocker history changed before owner-hold repair');
       const restored = stillActive.length > 0 ? 'blocked' : wi.family === 'feature' ? 'todo' : 'open';
       const execution = stillActive.length === 0 ? await agenticExecutionForUngate(wi) : null;
       await setWorkItemStateWithAliasInfo(wi.id, restored, {
@@ -1083,7 +1095,13 @@ async function applyLaneGateToWorkItem(
       }
       // Clear the blocker only after the lifecycle restore succeeds. On the repair
       // path `changed` is false because the history already records our clear.
-      if (changed) await mergeWorkItemPayload(wi.id, { externalBlockers: blockers }, { harness });
+      if (changed) {
+        const cleared = await mergeWorkItemPayload(wi.id, { externalBlockers: blockers }, {
+          harness, expectedExternalBlockers: (wi.payload as { externalBlockers?: unknown } | null)?.externalBlockers,
+          requireNonTerminal: true,
+        });
+        if (!cleared) throw new Error('blocker history changed before lane ungate write');
+      }
       // Drop the stash — it describes a park that no longer exists, and leaving it
       // would let a LATER un-park restore a state from the wrong era.
       await mergeWorkItemPayload(wi.id, { [PLAN_LANE_PARKED_FROM_KEY]: null }, { harness });

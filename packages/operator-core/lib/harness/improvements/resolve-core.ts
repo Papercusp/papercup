@@ -113,7 +113,7 @@ export interface ResolveDeps {
   mergeIssuePayload: (
     id: string,
     patch: Record<string, unknown>,
-    opts?: { unset?: string[] },
+    opts?: Parameters<typeof mergeIssuePayload>[2],
   ) => Promise<EngineerIssue | null>;
   enterAgentReview: typeof enterAgentReview;
   /** Dispatch-ledger back-edge (consume-edges P-010 / B-04): drive the item's
@@ -389,11 +389,19 @@ export async function resolveImprovement(
         },
         by,
       );
-      await deps.mergeIssuePayload(
+      const parked = await deps.mergeIssuePayload(
         input.id,
         { needsOwnerAction: true, humanCapability: input.blockerCapability, externalBlockers: blockers },
-        { unset: ['needsHuman'] },
+        {
+          unset: ['needsHuman'],
+          expectedExternalBlockers: (issue.payload as { externalBlockers?: unknown } | null)?.externalBlockers,
+          requireNonTerminal: true,
+        },
       );
+      if (!parked) return {
+        ok: false, id: input.id,
+        error: 'Blocker history changed or the item became unwritable; the claim and dispatch were retained. Read the current issue before retrying.',
+      };
       // Persist the ask before the lifecycle park. A needs-human state without its
       // question/unblock contract is the write-only queue EI-13766 closes.
       const updated = await deps.setIssueState(input.id, 'needs-human', by);

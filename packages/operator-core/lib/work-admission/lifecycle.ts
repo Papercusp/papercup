@@ -161,7 +161,7 @@ export interface LifecycleDeps {
   /** The source resolver lookup handed to the write-back verbs (tests inject a registry). */
   resolverFor?: WriteBackDeps['resolverFor'];
   setState?: (id: string, state: string, opts: { harness: string; by: string; completionRef?: string }) => Promise<unknown>;
-  mergePayload?: (id: string, patch: Record<string, unknown>, opts: { harness: string }) => Promise<unknown>;
+  mergePayload?: (id: string, patch: Record<string, unknown>, opts: Parameters<typeof defaultMergeWorkItemPayload>[2] & { harness: string }) => Promise<unknown>;
   /** Tells the holder of a claimed item that its source was closed (coord message by default). */
   notifyHolder?: (input: { workspaceId: string; holder: string; workItemId: string; summary: string; body: string }) => Promise<void>;
 }
@@ -335,7 +335,7 @@ export async function applySourceLifecycle(
   const getItem = deps.getWorkItem ?? ((id: string, harness: string) => defaultGetWorkItem(id, harness));
   const setState =
     deps.setState ?? ((id: string, state: string, opts: { harness: string; by: string; completionRef?: string }) => defaultSetWorkItemState(id, state, opts));
-  const mergePayload = deps.mergePayload ?? ((id: string, patch: Record<string, unknown>, opts: { harness: string }) => defaultMergeWorkItemPayload(id, patch, opts));
+  const mergePayload = deps.mergePayload ?? defaultMergeWorkItemPayload;
   const notifyHolder = deps.notifyHolder ?? defaultNotifyHolder;
   const rows = await sql<SourceAdmissionRow[]>`
     SELECT a.id::text AS id, a.work_item_id, a.harness_slug, a.source_category, a.rule_id::text AS rule_id,
@@ -373,7 +373,12 @@ export async function applySourceLifecycle(
           ADMISSION_LIFECYCLE_ACTOR,
           { autoAuthority: false },
         );
-        await mergePayload(item.id, { externalBlockers: update.blockers }, { harness: row.harness_slug });
+        const held = await mergePayload(item.id, { externalBlockers: update.blockers }, {
+          harness: row.harness_slug,
+          expectedExternalBlockers: (item.payload as { externalBlockers?: unknown } | null)?.externalBlockers,
+          requireNonTerminal: true,
+        });
+        if (!held) throw new Error(`blocker history conflict while holding ${item.id}; source category was not acknowledged`);
         await setState(item.id, 'blocked', { harness: row.harness_slug, by: ADMISSION_LIFECYCLE_ACTOR });
         try {
           await notifyHolder({
@@ -391,7 +396,12 @@ export async function applySourceLifecycle(
         const update = applyExternalBlockerUpdate(item.payload, { kind: 'event', ref, clear: true }, ADMISSION_LIFECYCLE_ACTOR, {
           autoAuthority: false,
         });
-        await mergePayload(item.id, { externalBlockers: update.blockers }, { harness: row.harness_slug });
+        const cleared = await mergePayload(item.id, { externalBlockers: update.blockers }, {
+          harness: row.harness_slug,
+          expectedExternalBlockers: (item.payload as { externalBlockers?: unknown } | null)?.externalBlockers,
+          requireNonTerminal: true,
+        });
+        if (!cleared) throw new Error(`blocker history conflict while clearing ${item.id}; source category was not acknowledged`);
         const othersActive = activeExternalBlockers({ externalBlockers: update.blockers }).length > 0;
         if (!othersActive && item.state === 'blocked') {
           await setState(item.id, item.assignee ? 'wip' : 'open', { harness: row.harness_slug, by: ADMISSION_LIFECYCLE_ACTOR });
@@ -412,4 +422,3 @@ export async function applySourceLifecycle(
   }
   return result;
 }
-

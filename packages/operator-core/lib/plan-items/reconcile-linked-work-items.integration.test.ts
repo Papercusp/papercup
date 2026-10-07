@@ -1530,6 +1530,22 @@ describe('resyncPlanItemLaneNow — inline lane resync off plans:set-item-blocke
     expect(h4.setWorkItemClaimHold).not.toHaveBeenCalledWith('WI-still-blocked', false, expect.anything());
   });
 
+  it('blocker history CAS rejects a lane gate conflict before lifecycle mutation', async () => {
+    await edge({ plan: 'pcas', item: 'P-011', srcRef: 'WI-cas' });
+    const row = stub({ id: 'WI-cas', harness: 'sheets', state: 'open', family: 'issue', lastProgressAt: null, payload: {} });
+    h3.getPlanRow.mockResolvedValue({ items: [{ id: 'P-011', status: 'blocked', blockedBy: [] }] });
+    h4.mergeWorkItemPayload.mockResolvedValueOnce(null);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const result = await resyncPlanItemLaneNow('pcas', 'P-011', null);
+      expect(result?.gated).toEqual([]);
+      expect(result?.failures).toEqual([{ stage: 'apply-gate', workItemId: 'WI-cas', message: 'blocker history changed before lane gate write' }]);
+      expect(row.state).toBe('open');
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+      expect(h4.mergeWorkItemPayload).toHaveBeenCalledWith('WI-cas', expect.any(Object), expect.objectContaining({ expectedExternalBlockers: undefined, requireNonTerminal: true }));
+    } finally { warn.mockRestore(); }
+  });
+
   it('keeps the lane blocker active when lifecycle restore fails, so the next sweep can retry', async () => {
     // EI-20268159828040355: clearing blocker history before the state write made a
     // concurrent lifecycle rejection permanent — the row stayed `blocked`, but the

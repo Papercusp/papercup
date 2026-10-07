@@ -5296,11 +5296,22 @@ export async function mergeWorkItemOutputPayload(
  * strictly worse than the wrong stamp it meant to remove. (EI-20578964155166663)
  *
  * Unset is applied AFTER the merge in the same statement, so a key named in both
- * ends up removed, and merge+unset stay atomic (no read-modify-write race). */
+ * ends up removed, and merge+unset stay atomic (no read-modify-write race).
+ *
+ * A history computed from a prior read must supply `expectedExternalBlockers`.
+ * The SQL compares the RAW JSON (including unknown legacy fields); a mismatch
+ * returns null without writing any patch/unset key. Missing history is an empty
+ * array. `requireNonTerminal` fences adding a blocker against a concurrent close,
+ * while clear/migration callers can still retain history on terminal items. */
 export async function mergeWorkItemPayload(
   id: string,
   patchValue: Record<string, unknown>,
-  opts: { harness?: string; unset?: readonly string[] } = {},
+  opts: {
+    harness?: string;
+    unset?: readonly string[];
+    expectedExternalBlockers?: unknown;
+    requireNonTerminal?: boolean;
+  } = {},
 ): Promise<WorkItem | null> {
   const wi = await getWorkItem(id, opts.harness);
   if (!wi) return null;
@@ -5308,7 +5319,10 @@ export async function mergeWorkItemPayload(
   const clearingPlanItem = unset.includes('plan_item');
   const settingPlanItem = clearingPlanItem ? null : planItemSourceFromPayloadPatch(patchValue);
   if (wi.family === 'issue') {
-    await mergeIssuePayload(id, patchValue, { unset, harnessSlug: opts.harness ?? wi.harness });
+    const updated = await mergeIssuePayload(id, patchValue, {
+      ...opts, unset, harnessSlug: opts.harness ?? wi.harness,
+    });
+    if (!updated) return null;
   } else {
     const featureHarness = wi.harness?.trim();
     if (!featureHarness) {
@@ -5317,6 +5331,9 @@ export async function mergeWorkItemPayload(
     const { sql } = getOrgPg();
     const patch = JSON.stringify(patchValue);
     const workspaceId = activeWorkspaceId();
+    const fenceBlockers = Object.hasOwn(opts, 'expectedExternalBlockers');
+    const expectedBlockers = JSON.stringify(opts.expectedExternalBlockers === undefined ? [] : opts.expectedExternalBlockers);
+    let wrote = false;
     const updatePayload = (db: OrgSql) => db<{ ok: number }[]>`
       UPDATE harness_shared.harness_features_consolidated
          SET payload = (COALESCE(payload, '{}'::jsonb) || ${patch}::text::jsonb) - ${unset}::text[],
@@ -5338,6 +5355,8 @@ export async function mergeWorkItemPayload(
        WHERE workspace_id = ${workspaceId}
          AND harness_slug = ${featureHarness}
          AND feature_id = ${id}
+         AND (${!fenceBlockers} OR COALESCE(payload->'externalBlockers', '[]'::jsonb) = ${expectedBlockers}::text::jsonb)
+         AND (${!opts.requireNonTerminal} OR NOT (status = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[])))
       RETURNING 1 AS ok`;
 
     if (clearingPlanItem) {
@@ -5367,6 +5386,7 @@ export async function mergeWorkItemPayload(
 
         const updated = await updatePayload(tx);
         if (!updated[0]) return;
+        wrote = true;
 
         const refs = new Set<string>();
         const before = prior[0];
@@ -5390,8 +5410,9 @@ export async function mergeWorkItemPayload(
         }
       });
     } else {
-      await updatePayload(sql as OrgSql);
+      wrote = (await updatePayload(sql as OrgSql)).length > 0;
     }
+    if (!wrote) return null;
   }
   return getWorkItem(id, opts.harness);
 }

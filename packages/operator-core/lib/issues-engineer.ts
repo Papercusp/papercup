@@ -4063,7 +4063,12 @@ export function planItemSourceFromPayloadPatch(
 export async function mergeIssuePayload(
   id: string,
   patch: Record<string, unknown>,
-  opts: { unset?: readonly string[]; harnessSlug?: string | null } = {},
+  opts: {
+    unset?: readonly string[];
+    harnessSlug?: string | null;
+    expectedExternalBlockers?: unknown;
+    requireNonTerminal?: boolean;
+  } = {},
 ): Promise<EngineerIssue | null> {
   const { sql } = getOrgPg();
   const ws = await resolveIssueWorkspace(id);
@@ -4079,6 +4084,8 @@ export async function mergeIssuePayload(
   const unset = [...new Set((opts.unset ?? []).filter((key) => key !== CLAIM_SUBJECT_BASELINE_KEY))];
   const clearingPlanItem = unset.includes('plan_item');
   const settingPlanItem = clearingPlanItem ? null : planItemSourceFromPayloadPatch(payloadPatch);
+  const fenceBlockers = Object.hasOwn(opts, 'expectedExternalBlockers');
+  const expectedBlockers = JSON.stringify(opts.expectedExternalBlockers === undefined ? [] : opts.expectedExternalBlockers);
   // EI-21215793636294109: write the CANONICAL base table, never the engineer_issues
   // COMPATIBILITY VIEW — a key removal is not expressible through that view. Its
   // INSTEAD OF trigger re-merges the incoming payload into the stored one
@@ -4119,6 +4126,8 @@ export async function mergeIssuePayload(
        AND harness_slug = ${physicalSlug}
        AND feature_id = ${id}
        AND item_kind = ANY (ARRAY['bug', 'change', 'task'])
+       AND (${!fenceBlockers} OR COALESCE(payload->'externalBlockers', '[]'::jsonb) = ${expectedBlockers}::text::jsonb)
+       AND (${!opts.requireNonTerminal} OR NOT (status = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[])))
        -- The federation stamp treats ANY payload change as a local content
        -- write. Corroboration of an imported report belongs in the occurrence
        -- ledger; never rewrite the foreign publisher's payload here.

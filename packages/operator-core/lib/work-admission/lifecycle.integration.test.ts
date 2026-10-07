@@ -353,6 +353,31 @@ describe('admission lifecycle (P-003)', () => {
     expect(resumed.assignee).toBe(HOLDER);
   });
 
+  it('blocker history CAS preserves a concurrent hold and the source watermark after a stale close read', async () => {
+    tickets[TRACKER]!.set('T-CAS', ticket('T-CAS'));
+    const source = await connect(TRACKER);
+    await sync(source);
+    const id = await admitted(source, 'T-CAS');
+    await claimWorkItem(id, HOLDER, { harness: HARNESS });
+    const recordId = dataSourceRecordId(WS, source, 'ticket', 'T-CAS');
+    const original = await item(id);
+    const [before] = await sql`SELECT source_category FROM harness_shared.work_admissions WHERE work_item_id = ${id}`;
+    const concurrent = applyExternalBlockerUpdate({}, { kind: 'event', ref: 'event:concurrent', summary: 'independent condition' }, HOLDER, { autoAuthority: false }).blockers;
+    const setState = vi.fn(async () => null);
+    const notifyHolder = vi.fn(async () => {});
+    await expect(applySourceLifecycle(sql, { workspaceId: WS, recordId, payload: ticket('T-CAS', { statusCategory: 'done', state: 'closed' }) }, {
+      getWorkItem: async () => {
+        await mergeWorkItemPayload(id, { externalBlockers: concurrent }, { harness: HARNESS });
+        return original;
+      }, setState, notifyHolder,
+    })).rejects.toThrow('blocker history conflict');
+    expect(setState).not.toHaveBeenCalled();
+    expect(notifyHolder).not.toHaveBeenCalled();
+    expect((await item(id)).payload).toMatchObject({ externalBlockers: concurrent });
+    const [after] = await sql`SELECT source_category FROM harness_shared.work_admissions WHERE work_item_id = ${id}`;
+    expect(after?.source_category).toBe(before?.source_category);
+  });
+
   it('re-admits a dropped item when its ticket is reopened outside', async () => {
     tickets[TRACKER]!.set('T-6', ticket('T-6'));
     const source = await connect(TRACKER);

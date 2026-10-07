@@ -189,6 +189,76 @@ beforeEach(async () => {
   planItemNeedsHumanContradictionMock.mockReset().mockResolvedValue(null);
 });
 
+describe('blocker history CAS (EI-25362976472267628, real PG)', () => {
+  const history = [{ kind: 'event', ref: 'event:first', status: 'active', legacy: { retain: true },
+    summary: 'Wait for first event', createdAt: '2026-10-01T00:00:00Z', updatedAt: '2026-10-01T00:00:00Z', createdBy: 'agA' }];
+
+  it.each(['task', 'feature'] as const)('%s rejects stale append, clear and unknown-field edits', async (kind) => {
+    const item = await wi.createWorkItem({ kind, title: 'blocker history CAS', harness: 'papercup', createdBy: 'agA' });
+    await wi.mergeWorkItemPayload(item.id, { externalBlockers: history, keep: 'original' }, { harness: 'papercup' });
+    const concurrentHistories = [
+      [...history, { kind: 'event', ref: 'event:concurrent', status: 'active' }],
+      [{ ...history[0], status: 'cleared' }],
+      [{ ...history[0], legacy: { retain: false } }],
+    ];
+    for (const concurrent of concurrentHistories) {
+      await wi.mergeWorkItemPayload(item.id, { externalBlockers: concurrent, keep: 'concurrent' }, { harness: 'papercup' });
+      const result = await wi.mergeWorkItemPayload(item.id, { externalBlockers: [], keep: 'stale' }, {
+        harness: 'papercup', expectedExternalBlockers: history,
+      });
+      expect(result).toBeNull();
+      expect((await wi.getWorkItem(item.id, 'papercup'))?.payload).toMatchObject({ externalBlockers: concurrent, keep: 'concurrent' });
+    }
+  });
+
+  it.each(['task', 'feature'] as const)('%s commits a matching history and preserves unrelated concurrent payload', async (kind) => {
+    const item = await wi.createWorkItem({ kind, title: 'blocker history CAS positive control', harness: 'papercup', createdBy: 'agA' });
+    await wi.mergeWorkItemPayload(item.id, { keep: 'concurrent', remove: true }, { harness: 'papercup' });
+    const result = await wi.mergeWorkItemPayload(item.id, { externalBlockers: history }, {
+      harness: 'papercup', expectedExternalBlockers: [], unset: ['remove'],
+    });
+    expect(result?.payload).toMatchObject({ externalBlockers: history, keep: 'concurrent' });
+    expect(result?.payload).not.toHaveProperty('remove');
+    expect(await wi.mergeWorkItemPayload(item.id, { externalBlockers: [] }, {
+      harness: 'papercup', expectedExternalBlockers: history,
+    })).not.toBeNull();
+  });
+
+  it.each(['task', 'feature'] as const)('%s refuses an active blocker after concurrent terminal settlement but allows a clear', async (kind) => {
+    const item = await wi.createWorkItem({ kind, title: 'blocker history CAS terminal race', harness: 'papercup', createdBy: 'agA' });
+    await db.sql`UPDATE harness_shared.work_items SET status = 'dropped' WHERE feature_id = ${item.id}`;
+    expect(await wi.mergeWorkItemPayload(item.id, { externalBlockers: history }, {
+      harness: 'papercup', expectedExternalBlockers: [], requireNonTerminal: true,
+    })).toBeNull();
+    expect((await wi.getWorkItem(item.id, 'papercup'))?.payload ?? {}).not.toHaveProperty('externalBlockers');
+    expect(await wi.mergeWorkItemPayload(item.id, { externalBlockers: [] }, {
+      harness: 'papercup', expectedExternalBlockers: [],
+    })).not.toBeNull();
+  });
+
+  it('the real setter refuses a stale read without overwriting a concurrent blocker or changing lifecycle', async () => {
+    const item = await wi.createWorkItem({ kind: 'task', title: 'blocker history CAS setter', harness: 'papercup', createdBy: 'agA' });
+    const before = await wi.getWorkItem(item.id, 'papercup');
+    const realGet = wi.getWorkItem;
+    const spy = vi.spyOn(wi, 'getWorkItem').mockImplementationOnce(async (id, harness) => {
+      const stale = await realGet(id, harness);
+      await wi.mergeWorkItemPayload(item.id, { externalBlockers: history }, { harness: 'papercup' });
+      return stale;
+    });
+    try {
+      const { default: setter } = await import('./agent-tools/work_items/set_blocker');
+      const args = setter.args.parse({ id: item.id, harness: 'papercup', kind: 'event', ref: 'event:second', nextVerb: 'events:await' });
+      const out = await setter.handler(args, { uiClientId: 'su-a', isSuperuser: true, workspaceId: 'default' } as never) as { data: { results: Array<{ code?: string; ok?: boolean }> } };
+      expect(out.data.results[0]).toMatchObject({ ok: false, code: 'blocker_history_conflict' });
+      const after = await realGet(item.id, 'papercup');
+      expect(after?.payload).toMatchObject({ externalBlockers: history });
+      expect(after?.state).toBe(before?.state);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+
 describe('born-pending duplicate admission floor (P-002, real PG)', () => {
   it('suppresses born claims and placement advertisement until admitted; attributable auto bypasses stay claimable', async () => {
     const pendingBug = await wi.createWorkItem({
