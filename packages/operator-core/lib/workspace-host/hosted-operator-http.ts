@@ -265,7 +265,17 @@ export interface OperatorHttpChannelOptions {
   requestHeaders?: (input: unknown) => Record<string, string>;
   /** Response headers relayed back. Defaults to the operator-http set. */
   responseHeaders?: ReadonlySet<string>;
+  /**
+   * Body policy, run after the route and size checks and before anything is forwarded. It may
+   * rewrite the body or refuse the request (the refusal is answered as `http.error`). Defaults
+   * to forwarding the body unchanged.
+   */
+  requestBody?: (route: { method: string; path: string }, body: Buffer | undefined) => OperatorHttpBodyDecision;
 }
+
+export type OperatorHttpBodyDecision =
+  | { ok: true; body: Buffer | undefined }
+  | { ok: false; code: string; status: number };
 
 /** One relay channel's in-flight requests (`operator-http`, or `app-http` with its own policy). */
 export class OperatorHttpChannel {
@@ -339,6 +349,14 @@ export class OperatorHttpChannel {
       if (decision.method === 'GET' || typeof payload.body !== 'string') return fail('invalid_body', 400);
       body = Buffer.from(payload.body, 'base64');
       if (body.byteLength > HOSTED_OPERATOR_HTTP_MAX_REQUEST_BODY_BYTES) return fail('request_body_too_large', 413);
+    }
+    if (this.options.requestBody) {
+      const verdict = this.options.requestBody({ method: decision.method, path: decision.path }, body);
+      if (!verdict.ok) {
+        this.options.audit('operator_http_denied', `${decision.method} ${decision.path.split('?')[0]} ${verdict.code}`);
+        return fail(verdict.code, verdict.status);
+      }
+      body = verdict.body;
     }
 
     const controller = new AbortController();
