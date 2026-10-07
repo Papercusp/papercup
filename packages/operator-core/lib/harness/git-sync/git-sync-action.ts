@@ -7865,7 +7865,7 @@ async function recordAndEscalateTick(a: {
     // Reuse the strand alarm: these edits are also stranded, even on a synced tick.
     // Reservation-conflict author notifications cannot reach an unknown author.
     await writeGitSyncStrandEscalation(slug, workspaceId, [], unknownMigrationFences);
-  } else if (outcome.status === 'synced') {
+  } else if (outcome.status === 'synced' || outcome.status === 'nothing') {
     await clearGitSyncEscalation(slug, ['git-sync-migration-attribution'], 'git-sync-migration-attribution');
   }
   if (stranded === null) {
