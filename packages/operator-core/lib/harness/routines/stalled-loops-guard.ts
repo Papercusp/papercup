@@ -1379,60 +1379,32 @@ export async function sweepStalledLoops(
         }
       }
 
-      // WI-36792 — Case 2 of the wake-starved split: NOT repairable (a live session with a
-      // VALID standing await has nothing for `armWake` to fix), but the reason `lastWakeAt`
-      // is frozen is that the fire GATE withheld the most recent fire outright — it never
-      // went out, so nobody was ever asked for a turn. Only reachable when the branch above
-      // did not already `continue` (i.e. `!probed?.awaitRepairable`, or its repair write
-      // failed and fell through — see the `repairedWakeStarved.pop()` path just above).
-      //
-      // `lastWithheldAt >= lastFiredAt` is the discriminator loop.ts documents on the field
-      // itself: the claim stamps `lastFiredAt` and the gate is consulted immediately after,
-      // so a withheld-at at or after it means THIS fire, not a stale one from a prior cycle.
-      //
-      // VETOED, not repaired and not re-armed — the gate's backoff is a deliberate cadence
-      // (reconcileLoopRoutines' `gate-backoff` rebase honours `retryAfterSec`; re-arming here
-      // would fight it, the same "leave it alone" reasoning as `vetoedByProviderWall`).
-      //
-      // ⚠ THE REACHABILITY TERM IS LOAD-BEARING — the withhold stamp ALONE would blunt exactly
-      // the population WI-6639 exists to reap, permanently. A corpse is not merely compatible
-      // with a perpetual withhold, it CONVERGES on one: its wakes find no standing await, so
-      // every fire records `no-session-now`, `consecutive_errors` climbs without bound, and the
-      // circuit denies an ever-growing share of its claims — while `lastWakeAt` stays frozen
-      // (no delivery row is created either way), so `wakeStarved` is permanently true. Sample it
-      // at any sweep and `lastWithheldAt >= lastFiredAt` reads true, forever.
-      //
-      // Reachability separates the two, and — unlike the WI-36685 case above, where it could NOT
-      // be used — it is MEANINGFUL here, for a reason specific to this sub-case: a withheld fire
-      // never reached `wake()`, so it never touched the standing await. Gate 1 of
-      // `deriveWakeReachability` therefore PASSES and the verdict reflects real liveness, instead
-      // of the `false`-by-construction it returns for an owner whose await is missing. A corpse's
-      // await was cancelled at SessionEnd ⇒ Gate 1 fails ⇒ `reachable:false` ⇒ no veto ⇒ it takes
-      // the disarm exactly as it did before this branch existed.
-      //
-      // `!== false` and not `=== true`: `null` is the probe having THROWN, i.e. presence UNKNOWN,
-      // and by this module's own asymmetry (a wrong veto costs one sweep; a wrong disarm is
-      // permanent) an uncertain read must not license the irreversible write — the same direction
-      // as the fire-starved branch's `.catch(() => true)` earlier in this loop.
-      //
-      // SELF-LIMITING even when it does engage, so it cannot silently become a standing
-      // exemption: the veto holds only while the withhold is the most recent event. Once the
-      // backoff clears and a fire actually goes out, a delivery row is created, `lastWakeAt`
-      // advances past `lastFiredAt`, `wakeStarved` goes false, and an agent that still is not
-      // answering takes the ordinary disarm on the very next sweep.
-      if (!probed?.awaitRepairable && lastFireWasWithheld && probed?.reachable !== false) {
-        vetoedByWithheldFire.push(ownerId);
-        console.warn(
-          `[stalled-loops-guard] WITHHELD-FIRE VETO ${ownerId}: fires advanced to ${status.lastFiredAt} ` +
-            `while lastWakeAt stayed at ${status.lastWakeAt ?? 'never'} — but the fire gate WITHHELD that ` +
-            `claim (lastWithheldAt=${status.lastWithheldAt}), so it was never actually sent and no delivery ` +
-            `row exists. The session is ` +
-            `${probed == null ? 'of UNKNOWN reachability (the probe failed — declining an irreversible write on an uncertain read)' : `reachable via ${probed.channel}`} ` +
-            `with its standing await intact, so there is nothing to repair. Refusing to disarm — the agent ` +
-            `was never asked for a turn; the gate's own backoff owns the retry (WI-36792).`,
-        );
-        continue;
-      }
+    }
+
+    // WI-36792 / WI-10007162 — a withheld fire was never dispatched, regardless of the
+    // previous wake's age. Nesting this veto under wakeStarved disarmed live owners whose
+    // last delivery was inside the thirty-minute floor while their gate retry was pending.
+    // The missing-await repair above retains priority and reuses its probe here.
+    if (lastFireWasWithheld && !wakeStarved) {
+      probed = await probeReachability(ownerId).catch(() => null);
+    }
+
+    // Reachability is essential: a dead owner's repeated no-session failures also converge
+    // on gate backoff. A confirmed unreachable owner still disarms; an unavailable probe
+    // must not license that permanent write. Once a newer fire is dispatched, its stamp
+    // passes lastWithheldAt and this veto stops applying. Preserve the gate's retry cadence.
+    if (lastFireWasWithheld && !probed?.awaitRepairable && probed?.reachable !== false) {
+      vetoedByWithheldFire.push(ownerId);
+      console.warn(
+        `[stalled-loops-guard] WITHHELD-FIRE VETO ${ownerId}: fires advanced to ${status.lastFiredAt} ` +
+          `while lastWakeAt stayed at ${status.lastWakeAt ?? 'never'} — but the fire gate WITHHELD that ` +
+          `claim (lastWithheldAt=${status.lastWithheldAt}), so it was never actually sent and no delivery ` +
+          `row exists. The session is ` +
+          `${probed == null ? 'of UNKNOWN reachability (the probe failed — declining an irreversible write on an uncertain read)' : `reachable via ${probed.channel}`} ` +
+          `with its standing await intact, so there is nothing to repair. Refusing to disarm — the agent ` +
+          `was never asked for a turn; the gate's own backoff owns the retry (WI-36792).`,
+      );
+      continue;
     }
 
     // EI-20502003602774122 — COLD DELIVERED RESET, NOT WEDGED. A cold psu-socket-reset
