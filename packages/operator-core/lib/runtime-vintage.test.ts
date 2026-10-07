@@ -143,10 +143,11 @@ describe('runtime-vintage — self-report ledger (P-008)', () => {
     const digest = createHash('sha256').update(readFileSync(`/proc/${process.pid}/exe`)).digest('hex');
     await reportRuntimeVintage({ unit: 'native', pid: process.pid, treeSha: null,
       bundleVersion: `executable-sha256:${digest}`, workspaceId: 'default',
-      extra: { kernelExecutableDigest: 'caller-authored' } });
+      extra: { kernelExecutableDigest: 'caller-authored', kernelExecutableStat: 'caller-authored' } });
     const rows = await listRuntimeVintage('default');
     expect(rows[0].treeSha).toBeNull();
     expect(rows[0].extra.kernelExecutableDigest).toBe(digest);
+    expect(rows[0].extra.kernelExecutableStat).not.toBe('caller-authored');
     expect(measureRuntimeVintageEnvironment(rows, ['native'])).toMatch(/^[a-f0-9]{64}$/);
     await reportRuntimeVintage({ unit: 'wrong', pid: process.pid, treeSha: null,
       bundleVersion: `executable-sha256:${'0'.repeat(64)}`, workspaceId: 'default',
@@ -197,11 +198,12 @@ describe('runtime-vintage — self-report ledger (P-008)', () => {
     const digest = 'b'.repeat(64);
     const row = { ...pinnedRow('native'), treeSha: null,
       bundleVersion: `executable-sha256:${digest}`,
-      extra: { kernelProcessIdentity: 'boot:start', kernelExecutableDigest: digest } };
-    const deps = { host: 'local', identity: () => 'boot:start', executableDigest: () => digest };
+      extra: { kernelProcessIdentity: 'boot:start', kernelExecutableDigest: digest,
+        kernelExecutableStat: 'loaded:inode:metadata' } };
+    const deps = { host: 'local', identity: () => 'boot:start', executableStat: () => 'loaded:inode:metadata' };
     expect(measureRuntimeVintageEnvironment([row], ['native'], deps)).toMatch(/^[a-f0-9]{64}$/);
     expect(measureRuntimeVintageEnvironment([row], ['native'], { ...deps,
-      executableDigest: () => 'c'.repeat(64) })).toBeNull();
+      executableStat: () => 'changed:inode:metadata' })).toBeNull();
     expect(measureRuntimeVintageEnvironment([{ ...row, extra: { kernelProcessIdentity: 'boot:start' } }],
       ['native'], deps)).toBeNull();
     let reads = 0;

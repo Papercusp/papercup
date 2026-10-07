@@ -19,7 +19,7 @@
 
 import { hostname } from 'node:os';
 import { createHash } from 'node:crypto';
-import { readFileSync, readlinkSync, realpathSync, statSync } from 'node:fs';
+import { createReadStream, readFileSync, readlinkSync, realpathSync, statSync } from 'node:fs';
 import { basename, resolve } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from './workspace-registry';
@@ -183,6 +183,7 @@ export async function reportRuntimeVintage(input: RuntimeVintageReport): Promise
   const extra = { ...input.extra };
   delete extra.kernelProcessIdentity;
   delete extra.kernelExecutableDigest;
+  delete extra.kernelExecutableStat;
   delete extra.kernelNodeEntryDigest;
   if ((input.host?.trim() || defaultHost()) === defaultHost() && input.pid != null) {
     const identity = liveProcessIdentity(input.pid);
@@ -193,8 +194,14 @@ export async function reportRuntimeVintage(input: RuntimeVintageReport): Promise
       // Only opt into hashing for explicit digest reports; normal boot reports
       // keep their existing inexpensive source-revision path.
       const expected = executableBundleDigest(input.bundleVersion);
-      if (expected && liveExecutableDigest(input.pid) === expected
-        && liveProcessIdentity(input.pid) === identity) extra.kernelExecutableDigest = expected;
+      if (expected) {
+        const before = liveExecutableStat(input.pid);
+        if (before && await liveExecutableDigest(input.pid) === expected
+          && liveExecutableStat(input.pid) === before && liveProcessIdentity(input.pid) === identity) {
+          extra.kernelExecutableDigest = expected;
+          extra.kernelExecutableStat = before;
+        }
+      }
       const entry = nodeEntryBundleDigest(input.bundleVersion);
       if (entry && liveNodeEntryDigest(input.pid) === entry
         && liveProcessIdentity(input.pid) === identity) extra.kernelNodeEntryDigest = entry;
@@ -238,10 +245,22 @@ function liveNodeEntryDigest(pid: number): string | null {
 }
 
 /** /proc exposes the loaded inode even after its original path is replaced. */
-function liveExecutableDigest(pid: number): string | null {
+async function liveExecutableDigest(pid: number): Promise<string | null> {
   if (process.platform !== 'linux') return null;
-  try { return createHash('sha256').update(readFileSync(`/proc/${pid}/exe`)).digest('hex'); }
+  try {
+    const hash = createHash('sha256');
+    for await (const chunk of createReadStream(`/proc/${pid}/exe`)) hash.update(chunk);
+    return hash.digest('hex');
+  }
   catch { return null; }
+}
+
+function liveExecutableStat(pid: number): string | null {
+  if (process.platform !== 'linux') return null;
+  try {
+    const stat = statSync(`/proc/${pid}/exe`, { bigint: true });
+    return [stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].join(':');
+  } catch { return null; }
 }
 
 function liveProcessIdentity(pid: number): string | null {
@@ -267,8 +286,8 @@ export function measureRuntimeVintageEnvironment(
   rows: readonly RuntimeVintageRow[],
   units: readonly string[],
   deps: { host: string; identity: (pid: number) => string | null;
-    executableDigest?: (pid: number) => string | null } = {
-    host: defaultHost(), identity: liveProcessIdentity, executableDigest: liveExecutableDigest,
+    executableStat?: (pid: number) => string | null } = {
+    host: defaultHost(), identity: liveProcessIdentity, executableStat: liveExecutableStat,
   },
 ): string | null {
   if (units.length === 0 || units.length > 32 || new Set(units).size !== units.length) return null;
@@ -285,7 +304,8 @@ export function measureRuntimeVintageEnvironment(
     const entry = nodeEntryBundleDigest(row.bundleVersion);
     if (executable) {
       if (row.extra.kernelExecutableDigest !== executable
-        || !deps.executableDigest || deps.executableDigest(row.pid!) !== executable
+        || typeof row.extra.kernelExecutableStat !== 'string' || !row.extra.kernelExecutableStat
+        || !deps.executableStat || deps.executableStat(row.pid!) !== row.extra.kernelExecutableStat
         || deps.identity(row.pid!) !== pinned) return null;
       codeIdentity = `executable-sha256:${executable}`;
     } else if (entry) {
