@@ -7578,21 +7578,29 @@ export function selectionsFromArgs(args) {
   };
 }
 
-export function readToken({ home = homedir() } = {}) {
+export function readToken(options = {}) {
+  const home = options.home || homedir();
+  // The operator validates PAPERCUSP_HOME/superuser-token when that scoped
+  // home is configured. Keep the bearer source aligned with that boundary;
+  // falling back to the host user's token would be rejected by that operator.
+  const papercuspHome = options.home
+    ? ""
+    : (process.env.PAPERCUSP_HOME || "").trim();
+  const papercuspDir = papercuspHome || join(home, ".papercusp");
   try {
     return readFileSync(
-      join(home, ".papercusp", "superuser-token"),
+      join(papercuspDir, "superuser-token"),
       "utf8",
     ).trim();
   } catch {
-    /* no superuser-token file → fall back to the desktop operator's token below */
+    /* no superuser-token file → check the same operator home for operator.json */
   }
-  // The desktop operator records its bearer in operator.json (== superuser-token
-  // when both exist). Falling back here keeps psu authenticated even if only the
-  // operator.json discovery file is present in a fresh desktop install.
+  // A desktop operator may record the same bearer in operator.json. When
+  // PAPERCUSP_HOME is set, stay inside it instead of reading a different host
+  // operator's credential.
   try {
     const d = JSON.parse(
-      readFileSync(join(home, ".papercusp", "operator.json"), "utf8"),
+      readFileSync(join(papercuspDir, "operator.json"), "utf8"),
     );
     if (d && typeof d.token === "string" && d.token) return d.token.trim();
   } catch {
@@ -11526,6 +11534,15 @@ export function sanitizeInheritedEnv(env) {
     "CLAUDE_CODE_EXECPATH",
     "CLAUDE_CONFIG_DIR",
   ]) {
+    delete out[key];
+  }
+  // A psu launch is an independent Codex session too. Codex can inherit
+  // CODEX_SESSION_ID from the parent shell; CLI MCP fallbacks then attach that
+  // parent id to the child's PAPERCUSP_SID and the operator correctly rejects
+  // it as superuser_foreign_native_session. Never inherit either identity
+  // selector. A server-bound child id can still be supplied explicitly by the
+  // launch envelope after this sanitizer runs.
+  for (const key of ["CODEX_SESSION_ID", "PAPERCUSP_NATIVE_SESSION_ID"]) {
     delete out[key];
   }
   // P-007 / BAR R-11 (plan personal-data-reader-set-labels-2026-10-01): mail,

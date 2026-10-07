@@ -105,6 +105,17 @@ describe('dependency generation background prebuild', () => {
     expect(unsafe).not.toHaveBeenCalled();
   });
 
+  it('ready publication still schedules its matching checkpoint when terminal event delivery fails', async () => {
+    const emit = vi.fn(async () => { throw new Error('event delivery unavailable'); });
+    const unsafe = vi.fn(async () => []);
+    await expect(emitDependencyPrebuildTerminal(TARGET, ready(), {
+      emit: emit as never, sql: { unsafe } as unknown as Sql,
+    })).rejects.toThrow('event delivery unavailable');
+    expect(emit).toHaveBeenCalledTimes(2);
+    expect(unsafe).toHaveBeenCalledTimes(1);
+    expect(unsafe.mock.calls[0][1]).toEqual([TARGET.installSlug, TARGET.workspaceId, CANDIDATE_A]);
+  });
+
   it('claims candidate+input once, publishes through the existing helper, then persists/emits ready', async () => {
     const calls: string[][] = [];
     let state: DependencyPrebuildState | null = null;

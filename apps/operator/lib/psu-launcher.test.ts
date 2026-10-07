@@ -16124,6 +16124,46 @@ describe("operator endpoint resolution (desktop vs dev box)", () => {
       expect(readToken({ home })).toBe("tok-from-file");
     });
 
+    it("uses PAPERCUSP_HOME's token instead of the host user's token", () => {
+      const scopedHome = join(home, ".papercusp-workspaces", "demo", ".papercusp");
+      mkdirSync(scopedHome, { recursive: true });
+      writeFileSync(join(home, ".papercusp", "superuser-token"), "tok-from-host\n");
+      writeFileSync(join(scopedHome, "superuser-token"), "tok-from-scoped\n");
+
+      const priorHome = process.env.HOME;
+      const priorPapercuspHome = process.env.PAPERCUSP_HOME;
+      try {
+        process.env.HOME = home;
+        process.env.PAPERCUSP_HOME = scopedHome;
+        expect(readToken()).toBe("tok-from-scoped");
+      } finally {
+        if (priorHome === undefined) delete process.env.HOME;
+        else process.env.HOME = priorHome;
+        if (priorPapercuspHome === undefined) delete process.env.PAPERCUSP_HOME;
+        else process.env.PAPERCUSP_HOME = priorPapercuspHome;
+      }
+    });
+
+    it("does not fall back to the host user's token when the scoped token is missing", () => {
+      const scopedHome = join(home, ".papercusp-workspaces", "empty", ".papercusp");
+      mkdirSync(join(home, ".papercusp"), { recursive: true });
+      mkdirSync(scopedHome, { recursive: true });
+      writeFileSync(join(home, ".papercusp", "superuser-token"), "tok-from-host\n");
+
+      const priorHome = process.env.HOME;
+      const priorPapercuspHome = process.env.PAPERCUSP_HOME;
+      try {
+        process.env.HOME = home;
+        process.env.PAPERCUSP_HOME = scopedHome;
+        expect(readToken()).toBe("");
+      } finally {
+        if (priorHome === undefined) delete process.env.HOME;
+        else process.env.HOME = priorHome;
+        if (priorPapercuspHome === undefined) delete process.env.PAPERCUSP_HOME;
+        else process.env.PAPERCUSP_HOME = priorPapercuspHome;
+      }
+    });
+
     it("falls back to operator.json.token when superuser-token is absent (fresh desktop)", () => {
       writeOperatorJson({
         httpUrl: "http://127.0.0.1:24689",
