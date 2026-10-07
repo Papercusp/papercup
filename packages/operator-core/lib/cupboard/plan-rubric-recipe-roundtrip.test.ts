@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { promises as fs } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { generateEd25519KeypairDer, signWithPrivateKeyDer } from '../identity/ed25519';
 import { _resetPapercuspRootForTests } from '../papercusp-root';
 import type { CodeRecipeRow } from '../code-recipes-store';
 import type { RecipeAuthorityDescriptor, RecipeAuthorityRefs } from '../recipe-authority';
@@ -21,10 +22,15 @@ const external = vi.hoisted(() => ({
   parseGithubRemote: vi.fn(),
   fetchGithubRepoMeta: vi.fn(),
   getRubric: vi.fn(),
+  defaultReleaseSigner: vi.fn(),
 }));
 
 vi.mock('./publish-listing', () => ({
   publishListingToCupboard: external.publishListingToCupboard,
+}));
+vi.mock('./blueprint-release-signer', async (orig) => ({
+  ...(await orig<typeof import('./blueprint-release-signer')>()),
+  defaultReleaseSigner: external.defaultReleaseSigner,
 }));
 
 vi.mock('./resolve-repo-coords', () => ({
@@ -223,6 +229,14 @@ beforeEach(async () => {
   });
   external.getRubric.mockReset();
   external.getRubric.mockResolvedValue({ status: 'active', ratifiedBy: 'reviewer@example.com' });
+  const keypair = generateEd25519KeypairDer();
+  external.defaultReleaseSigner.mockReset();
+  external.defaultReleaseSigner.mockResolvedValue({
+    githubUserId: 42,
+    githubLogin: 'fixture-publisher',
+    devicePubkey: keypair.pubkeyBase64,
+    sign: async (bytes: Buffer) => signWithPrivateKeyDer(keypair.privateKeyDer, bytes),
+  });
 });
 
 afterEach(async () => {
@@ -233,6 +247,14 @@ afterEach(async () => {
 });
 
 describe('rubric Cupboard round trip', () => {
+  it('surfaces a signing refusal before publishing the local release', async () => {
+    await writeRubricDir(join(root, 'rubrics'), 'publish-rubric');
+    external.defaultReleaseSigner.mockRejectedValueOnce(new Error('fixture signing identity unavailable'));
+    const result = await publishRubricToCupboard({ ref: 'publish-rubric', github_url: GITHUB_URL });
+    expect(result).toMatchObject({ ok: false, detail: 'fixture signing identity unavailable' });
+    expect(external.publishListingToCupboard).not.toHaveBeenCalled();
+  });
+
   it('publishes a local rubric as a rubric listing', async () => {
     await writeRubricDir(join(root, 'rubrics'), 'publish-rubric');
 

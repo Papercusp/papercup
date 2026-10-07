@@ -11,6 +11,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { promises as fs, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
+import { generateEd25519KeypairDer, signWithPrivateKeyDer } from '../../identity/ed25519';
 
 import {
   installTemplateFromCupboardCore,
@@ -24,9 +25,14 @@ import {
 const h = vi.hoisted(() => ({
   publishListingToCupboard: vi.fn(),
   fetchGithubRepoMeta: vi.fn(),
+  defaultReleaseSigner: vi.fn(),
 }));
 vi.mock('../../cupboard/publish-listing', () => ({
   publishListingToCupboard: h.publishListingToCupboard,
+}));
+vi.mock('../../cupboard/blueprint-release-signer', async (orig) => ({
+  ...(await orig<typeof import('../../cupboard/blueprint-release-signer')>()),
+  defaultReleaseSigner: h.defaultReleaseSigner,
 }));
 vi.mock('../../cupboard/resolve-repo-coords', async (orig) => ({
   ...(await orig<typeof import('../../cupboard/resolve-repo-coords')>()),
@@ -62,6 +68,14 @@ beforeEach(async () => {
   await fs.mkdir(tmpScratch, { recursive: true });
   h.publishListingToCupboard.mockReset();
   h.fetchGithubRepoMeta.mockReset();
+  const keypair = generateEd25519KeypairDer();
+  h.defaultReleaseSigner.mockReset();
+  h.defaultReleaseSigner.mockResolvedValue({
+    githubUserId: 42,
+    githubLogin: 'fixture-publisher',
+    devicePubkey: keypair.pubkeyBase64,
+    sign: async (bytes: Buffer) => signWithPrivateKeyDer(keypair.privateKeyDer, bytes),
+  });
 });
 afterEach(async () => {
   await fs.rm(scratch, { recursive: true, force: true }).catch(() => {});

@@ -100,6 +100,7 @@ describe('hive-git-physical-probe.sh — the tower producer runs a pinned commit
     const harness = [
       'set -euo pipefail',
       `REPO_ROOT='${root}'`,
+      'local_source_out=""',
       'fail() { printf "FAIL: %s\\n" "$*" >&2; exit 1; }',
       pinnedSourceBlock(),
       'printf "PRODUCER=%s\\n" "$PRODUCER"',
