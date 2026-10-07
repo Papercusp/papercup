@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { currentBuildTestRoute } from '../serving-runtimes';
 import {
   assessFrozenLineageLaunchCas,
   type FrozenRepairQueuePreflight,
@@ -619,6 +620,30 @@ describe('frozen lineage carry policy', () => {
   it('allows a descriptive green-pin distance measurement without treating pin as an instruction', () => {
     const text =
       'READING: the green pin lacks my fix ONLY because it IS the frozen lineage, 88 commits behind staging';
+
+    expect(detectUnsafeFrozenCarryInstruction(text)).toBeNull();
+  });
+
+  it('allows structured operator-api runtime qualification metadata in a carry note', () => {
+    const route = currentBuildTestRoute('operator-api');
+    expect(route).not.toBeNull();
+
+    const text = JSON.stringify({
+      runtimeQualification: {
+        currentBuildTestRoute: route,
+        observedRuntime: {
+          runtime: 'staging-operator',
+          port: 3170,
+          buildSha: '2a0b600917',
+          evidence: 'Measured request/response on that build.',
+        },
+        staging: {
+          runtime: 'staging-operator',
+          role: 'owner',
+          buildSha: '2a0b600917',
+        },
+      },
+    });
 
     expect(detectUnsafeFrozenCarryInstruction(text)).toBeNull();
   });
