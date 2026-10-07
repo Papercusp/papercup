@@ -81,7 +81,16 @@ export function readReporterFollowUp(canonicalPayload: unknown, sourcePayload: u
   return out;
 }
 
-export async function readReporterStatus(input: { id: string; harness: string; workspaceId?: string }, sql = getOrgPg().sql) {
+export interface ReporterStatusView {
+  sourceId: string;
+  canonicalId: string | null;
+  status: ReporterStatus;
+  label: string;
+  release: ReporterReleaseReceipt | null;
+  followUp: ReporterFollowUp | null;
+}
+
+export async function readReporterStatus(input: { id: string; harness: string; workspaceId?: string }, sql = getOrgPg().sql): Promise<ReporterStatusView | null> {
   const workspaceId = input.workspaceId ?? activeWorkspaceId();
   const sources = await sql<{ payload: unknown }[]>`
     SELECT payload FROM harness_shared.work_items

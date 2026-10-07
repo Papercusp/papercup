@@ -5,8 +5,14 @@ const h = vi.hoisted(() => ({ data: [] as unknown[], toast: vi.fn(), sync: vi.fn
 vi.mock('@papercusp/sync', async (original) => ({ ...await original<typeof import('@papercusp/sync')>(), useSyncQuery: (args: unknown) => { h.sync(args); return { data: h.data }; } }));
 vi.mock('sonner', () => ({ toast: h.toast }));
 import { ReportProblemUpdate } from './ReportProblemDialog';
-beforeEach(() => { localStorage.clear(); h.toast.mockClear(); h.sync.mockClear(); h.data = []; });
-afterEach(cleanup);
+beforeEach(() => {
+  const values = new Map<string, string>();
+  vi.stubGlobal('localStorage', { getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => values.set(key, value), clear: () => values.clear() });
+  if (typeof localStorage.clear !== 'function') throw new Error('browser storage fixture is unavailable');
+  h.toast.mockClear(); h.sync.mockClear(); h.data = [];
+});
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 describe('reporter notifications subscribe to their saved source receipt', () => {
   it('notifies once for a published fix and opens the same report', () => {
     const onOpen = vi.fn();
