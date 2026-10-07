@@ -22,7 +22,8 @@ Android/cloud release combination.
 | Runtime cut r67 | `0.0.21-p318r67`, source `18e31538f81ba0ac5dca37b92d91e7396da4409c` | The five D-021 committed fingerprints match the table below; clean hosted-suite ledger rows `20889334/20889336/20889337/20889338` pass. The runtime owner's later checkpoint records a failed High Sharp 0.35.4 security verdict, tracked by `WI-10007103`; no publication. | Rejected runtime cut; passing device tests do not override its security verdict. |
 | Runtime cut r68 | `0.0.21-p318r68`, source `9c6725e66689097f45e45b5d5ec962c569759582`; managed task `0muxx77izthce0e188p`, operation `df050847-df15-4f95-807c-135d992454b6`; built bundle SHA-256 `5b225614ae7e7b09baaa116ba78730f95111c19a5702bfcc0bf6f5bf65ee1ca0` | Maintained committed-source proof passes 104 assertions, zero skips; clean ledger rows `20892010/20892012/20892013/20892014`. Receipt/manifest identities agree. Runtime owner records publication PASS, hosted VM adoption, connector readiness and live QR URL/32-byte Noise key checks. The 12:28Z observation below adds public sealed pairing and a scoped request after portal adoption. | Published and adopted on the hosted acceptance VM; hosted transport probe passes. Actual Android and genuine BYOC journeys pending. |
 | Portal / operator source candidate | `fce506df65dfd97fec4704f5c58f87da34306d18`; all five D-021 fingerprints below match its committed blobs. | Maintained isolated as-committed four-suite proof passes 104 assertions with stamped provenance. Exact loaded portal and VM artifacts must still be matched to the final candidate before live acceptance. | Committed source coverage; live acceptance pending. |
-| Android/native source candidate | Mobile HEAD `1930c11b6d913c12b5a7bc632a0d4ede90e2fe4e`; Cargo workspace version `0.1.0` | Android `versionName` comes from `PAPERCUP_RELEASE_VERSION` or default `0.1.0`; it does not identify the APK under test. Native owner reports Noise KAT/interop passing, but consumer integration, chunked uploads and credential-store survival remain open. | No accepted APK/cloud pair established. |
+| Earlier Android/native source candidate | Mobile HEAD `1930c11b6d913c12b5a7bc632a0d4ede90e2fe4e`; Cargo workspace version `0.1.0` | Android `versionName` comes from `PAPERCUP_RELEASE_VERSION` or default `0.1.0`; it does not identify the APK under test. This earlier source observation is superseded by the dated native consumer proof below. | No accepted APK/cloud pair established. |
+| Android JNI interop fixture APK | SHA-256 `ed4534a59ba8eba1b240b2f219ad60a57596ce86628d7d4b44fcf76e5edb0708`; result source base `de09010cec0cd3f84a2bff4624d73019e44190d0`, `sourceDirty:true`, with source fingerprints | Two real JNI/TypeScript Noise responder tests pass, including encrypted restoration, reconnect, 700 KiB upload and UTF-8 streaming. VM fetch is injected; see the 15:14Z observation below. | Local native interop proof; no accepted APK/cloud pair established. |
 | GCP Papercusp-hosted acceptance target | Customer workspace `ws-3daf37098c8096b5d9e0ac72` → host `host-3daf37098c8096b5d9e0ac72` | Runtime owner's canonical provider-delegation read classifies it as `papercusp-hosted`, not BYOC. Evidence: `coord-send-1a18b99e1b09f709e8f8f67cd704c6fe876c59b2eeb8b966e21713bc43994744`. | Hosted acceptance pending; cannot satisfy BYOC acceptance. |
 | GCP BYOC acceptance target | No active genuine BYOC target established in the supplied inventory | Previously verified BYOC customer rows are deleted. Existing project delegation is preparatory authority, not a provisioned workspace or a phone journey. | Pending maintained provisioning and acceptance. |
 | AWS / Azure cloud images | No artifact + Android journey established by this P-015 evidence | Provider renderers existing in source do not prove this mobile contract on those providers. | Not covered by this acceptance record. |
@@ -274,6 +275,34 @@ The delivered fleet-leader reply assigns genuine BYOC setup to the leader and sa
 owner-authenticated setup remains open with no live provisioning lane claimed. This parent
 does not duplicate that setup or infer a provisioned BYOC target. P-015 still requires the
 exact APK/runtime pair and both complete no-LAN phone journeys.
+
+### Real Android JNI sealed interop passes — 2026-10-07 15:14Z
+
+The native producer's full handoff is
+`coord-send-1529e8d31374a712eb0f053152b8ab544132c6aa6d51dba66ec1aed0d1be79fa`.
+This parent read `/tmp/android-noise-ts-native-fixed-57/result.json`: `exitCode:0`,
+`cleanupVerified:true`, the APK/source identities above, and an explicit scope excluding live
+host or portal acceptance. The saved JUnit report has two tests and zero failures, errors or
+skips. `qrPairEncryptedRestoreAndReconnectKeepIdentityAndBearerSealed` exercises real JNI
+QR parsing/pairing, seed and machine-pin retention in encrypted storage, fresh-client restore,
+reconnect and bearer use inside Noise. `restoredNativeClientStreamsUtf8AndChunksLargeSealedUpload`
+exercises a 700 KiB request and UTF-8 SSE against the maintained TypeScript responder.
+The producer also reports three passing credential tests. This parent did not repeat the run.
+
+The source read confirms the interop test accepts only its owned loopback fixture and asserts
+fixture identities. The existing `tools/run-android-checks.sh` `live` mode also requires a
+loopback operator and explicitly excludes signed-candidate/phone acceptance. These routes
+cannot simply be pointed at the public cloud or counted as that journey. Parent acceptance
+must extend the maintained runner/test surfaces for the real hosted QR and opaque HTTPS
+workspace URL, preserving isolated device ownership and cleanup. The native producer is
+preparing the durable artifact and Swift bindings; the parent requested an artifact/runner
+and isolated-emulator handoff in
+`coord-send-74b247100750ce01a7dbd390c8864bc3c2ba124e73fc400e6de4f73ddf88bf1d`.
+The producer's active emulator is not a parent-owned execution resource.
+
+Native integration is still open, and the result's dirty source fingerprints are not an
+as-committed release proof. Exact APK/portal/runtime acceptance, complete hosted and genuine
+BYOC no-LAN journeys, and the remaining operational checks still keep P-015 open.
 
 ## Historical discovery — 2026-10-06
 
