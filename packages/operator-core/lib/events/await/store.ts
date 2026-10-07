@@ -2006,6 +2006,7 @@ export async function fireAwaitsForKey(input: {
              fired_by = ${input.source ?? null}, fired_payload = ${firePayloadJson}::text::jsonb
        WHERE workspace_id = ${ws} AND event_key = ${input.eventKey}
          AND once = true AND fired_at IS NULL AND cancelled_at IS NULL
+         AND (expires_ts IS NULL OR expires_ts > now() OR producer_health IS NOT NULL)
          AND payload_filter IS NULL
          AND policy <> 'announce'
          AND ${!suppressRescueInboxOneShot}
@@ -2016,6 +2017,7 @@ export async function fireAwaitsForKey(input: {
     SELECT 'once_filter'::text AS m_branch, a.* FROM harness_shared.event_awaits a
      WHERE a.workspace_id = ${ws} AND a.event_key = ${input.eventKey}
        AND a.once = true AND a.fired_at IS NULL AND a.cancelled_at IS NULL
+       AND (a.expires_ts IS NULL OR a.expires_ts > now() OR a.producer_health IS NOT NULL)
        AND a.payload_filter IS NOT NULL
        AND a.policy <> 'announce'
        AND ${!suppressRescueInboxOneShot}
@@ -2030,7 +2032,7 @@ export async function fireAwaitsForKey(input: {
      WHERE a.workspace_id = ${ws}
        AND a.event_key LIKE '%*%'
        AND a.fired_at IS NULL AND a.cancelled_at IS NULL
-       AND (a.once = true OR a.expires_ts IS NULL OR a.expires_ts > now())
+       AND (a.expires_ts IS NULL OR a.expires_ts > now() OR a.producer_health IS NOT NULL)
        AND a.policy <> 'announce'
        AND a.id NOT IN (SELECT id FROM claimed_once)
   `;
@@ -2056,6 +2058,7 @@ export async function fireAwaitsForKey(input: {
                  fired_by = ${input.source ?? null}, fired_payload = ${firePayloadJson}::text::jsonb
            WHERE id = ANY(${onceFilterMatchedIds})
              AND fired_at IS NULL AND cancelled_at IS NULL
+             AND (expires_ts IS NULL OR expires_ts > now() OR producer_health IS NOT NULL)
           RETURNING *
         `
       : [];
@@ -2100,6 +2103,7 @@ export async function fireAwaitsForKey(input: {
                  fired_by = ${input.source ?? null}, fired_payload = ${firePayloadJson}::text::jsonb
            WHERE id = ANY(${matchedOnceIds})
              AND fired_at IS NULL AND cancelled_at IS NULL
+             AND (expires_ts IS NULL OR expires_ts > now() OR producer_health IS NOT NULL)
           RETURNING *
         `
       : [];
@@ -2520,6 +2524,34 @@ export async function recoverStuckDeliveries(input: { olderThanMs: number }): Pr
 export async function fireTimedOutAwaits(): Promise<AwaitRow[]> {
   const { sql } = getOrgPg();
   const ws = eventsWs();
+  // A key-level fire from any producer suppresses an unfiltered await's timeout
+  // while its event claim is racing. For filtered awaits, that latch is not enough:
+  // check its latest payload with the same predicate matcher as event claims.
+  const filteredDueRows = await sql`
+    SELECT await.id, await.created_at, await.expires_ts, await.payload_filter,
+           fire.last_fired_at, fire.last_payload
+      FROM harness_shared.event_awaits AS await
+      LEFT JOIN harness_shared.event_key_fires AS fire
+        ON fire.workspace_id = await.workspace_id AND fire.event_key = await.event_key
+     WHERE await.workspace_id = ${ws} AND await.timeout_behavior = 'wake'
+       AND await.once = true
+       AND await.expires_ts IS NOT NULL AND await.expires_ts <= now()
+       AND await.producer_health IS NULL
+       AND await.fired_at IS NULL AND await.cancelled_at IS NULL
+       AND await.payload_filter IS NOT NULL
+  `;
+  const filteredTimeoutIds = filteredDueRows
+    .filter((row: any) => {
+      const firedAt = row.last_fired_at == null ? NaN : new Date(row.last_fired_at).getTime();
+      const createdAt = new Date(row.created_at).getTime();
+      const expiresAt = new Date(row.expires_ts).getTime();
+      const fireWasDuringAwait = Number.isFinite(firedAt) && firedAt >= createdAt && firedAt <= expiresAt;
+      return (
+        !fireWasDuringAwait ||
+        !payloadMatchesFilter(parseJsonb(row.payload_filter), parseJsonb(row.last_payload))
+      );
+    })
+    .map((row: any) => Number(row.id));
   const rows = await sql`
     UPDATE harness_shared.event_awaits AS await
        SET fired_at = now(), fired_reason = 'timeout',
@@ -2529,16 +2561,16 @@ export async function fireTimedOutAwaits(): Promise<AwaitRow[]> {
        AND await.expires_ts IS NOT NULL AND await.expires_ts <= now()
        AND await.producer_health IS NULL
        AND await.fired_at IS NULL AND await.cancelled_at IS NULL
-       -- An emit records its fire latch before claiming waiter rows. If the
-       -- latest fire for this key landed during this await's lifetime, let
-       -- the event claim win this timeout race.
-       AND NOT EXISTS (
-         SELECT 1
-           FROM harness_shared.event_key_fires AS fire
-          WHERE fire.workspace_id = await.workspace_id
-            AND fire.event_key = await.event_key
-            AND fire.last_fired_at >= await.created_at
-            AND fire.last_fired_at <= await.expires_ts
+       AND (
+         (await.payload_filter IS NULL AND NOT EXISTS (
+           SELECT 1
+             FROM harness_shared.event_key_fires AS fire
+            WHERE fire.workspace_id = await.workspace_id
+              AND fire.event_key = await.event_key
+              AND fire.last_fired_at >= await.created_at
+              AND fire.last_fired_at <= await.expires_ts
+         ))
+         OR (await.payload_filter IS NOT NULL AND await.id = ANY(${filteredTimeoutIds}))
        )
     RETURNING *
   `;
