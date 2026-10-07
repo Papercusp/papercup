@@ -5,7 +5,7 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { codexGatewayConfigToml } from '@papercusp/orchestrator/codex-gateway-config';
+import { codexGatewayConfigToml, codexManagedFeaturesToml } from '@papercusp/orchestrator/codex-gateway-config';
 import { resolveOnPath } from './backend-bin-resolve.mjs';
 
 const codex = resolveOnPath('codex');
@@ -77,12 +77,21 @@ describe('native gateway account bootstrap', () => {
       access_token: token, id_token: token, refresh_token: 'fixture-refresh', account_id: 'default-fixture',
     } }));
     const gateway = codexGatewayConfigToml(null, { gatewayOn: true });
-    const config = [`chatgpt_base_url = "http://127.0.0.1:${port}"`, ...gateway.root, ...gateway.tables].join('\n');
+    // The fixture tests mandatory account discovery, not optional plugin catalogs.
+    const config = [`chatgpt_base_url = "http://127.0.0.1:${port}"`, ...gateway.root,
+      ...codexManagedFeaturesToml({ headless: true }), ...gateway.tables].join('\n');
     try {
       writeFileSync(join(home, 'config.toml'), config);
       const routed = await readNativeAccount(home);
       expect(routed.error).toBeUndefined();
       expect(routed.result).toMatchObject({ account: null, requiresOpenaiAuth: false });
+      expect(requests).toEqual([]);
+      // Check legacy omission separately: do not mistake explicit hardening for
+      // proof of the original timeout's root cause on a client that defaults false.
+      writeFileSync(join(home, 'config.toml'), config.replace('requires_openai_auth = false', ''));
+      const legacy = await readNativeAccount(home);
+      expect(legacy.error).toBeUndefined();
+      expect(legacy.result).toMatchObject({ account: null, requiresOpenaiAuth: false });
       expect(requests).toEqual([]);
       // Positive control: making the same provider depend on the ambient login
       // must exercise the deliberately unavailable workspace-discovery endpoint.
