@@ -36,6 +36,9 @@ die() { printf '[phone-edge] ERROR: %s\n' "$*" >&2; exit 1; }
 : "${PHONE_EDGE_CF_TOKEN_FILE:=$HOME/.cloudflared/cf-api-token}"
 : "${PHONE_EDGE_CF_ZONE:=papercusp.com}"
 export PHONE_EDGE_VOICE_HOST PHONE_EDGE_TURN_HOST PHONE_EDGE_IFACE
+# Keep the optional port absent for media-only installations; an empty exported
+# value would fail the renderer's port validation.
+[[ ! ${PHONE_PRODUCER_LISTEN_PORT+x} ]] || export PHONE_PRODUCER_LISTEN_PORT
 GC=(gcloud --quiet --project "$PHONE_EDGE_GCP_PROJECT")
 TURN_TLS_DIR="$CONF_DIR/tls/turn"
 
@@ -53,6 +56,9 @@ PHONE_EDGE_TURN_HOST=$PHONE_EDGE_TURN_HOST
 PHONE_EDGE_IFACE=$PHONE_EDGE_IFACE
 PHONE_EDGE_WG_PUBLIC_KEY=${PHONE_EDGE_WG_PUBLIC_KEY:-}
 EOF
+  if [[ ${PHONE_PRODUCER_LISTEN_PORT+x} ]]; then
+    printf 'PHONE_PRODUCER_LISTEN_PORT=%q\n' "$PHONE_PRODUCER_LISTEN_PORT" >> "$EDGE_ENV"
+  fi
 }
 
 render() { PHONE_EDGE_PUBLIC_IP="$PHONE_EDGE_PUBLIC_IP" "$NODE_BIN" "$HERE/edge-config.mjs" "$@"; }
