@@ -1032,7 +1032,7 @@ export const GATE_OWNERSHIP_CELL: CellSpec = {
       'held-live': {
         meaning: "Held, and the presence oracle positively says the holder's session is alive.",
         safeAction:
-          'Do not take over or duplicate `LIVE_GATE_OPS` — current-verdict reruns, deploy actions, current-red triage, repair-queue mutation, or monitoring. Coordinate with the holder (`coord:send`) if that live lane needs to move. This ownership does not reserve independently registered `GATE_SYSTEM_DEV`; continue cache, instrumentation, selection, retention, alerting, test, doc, or refactor work under its own work-item/plan lane and file locks.',
+          'Compare `gate.ownership.takenBy` with your verified owner identity. If they match, you are the existing gate holder: continue `LIVE_GATE_OPS` on the owning work-item, diagnose stopped or stalled runners, and drive the gate to a verified verdict. Do not stand down because your own claim is held-live. If several native continuations share that identity, verify the elected execution continuation; it continues and the others hand off to it. If a different live owner holds it: Do not take over or duplicate `LIVE_GATE_OPS` — current-verdict reruns, deploy actions, current-red triage, repair-queue mutation, or monitoring. Coordinate with the holder (`coord:send`) if that live lane needs to move. This ownership does not reserve independently registered `GATE_SYSTEM_DEV`; continue cache, instrumentation, selection, retention, alerting, test, doc, or refactor work under its own work-item/plan lane and file locks.',
       },
       'held-stalled': {
         meaning:
