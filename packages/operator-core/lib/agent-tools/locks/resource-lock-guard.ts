@@ -30,6 +30,7 @@ import {
 } from './su-lock-store';
 import { acquireResourceExclusiveWithWait, type StaleHolderReclaimedInfo } from './resource-acquire-wait';
 import { broadcastResourceDrainStart, broadcastResourceBackUp } from './resource-broadcast';
+import { parseHostGlobalResourceExclusionError } from './cross-domain-conflict';
 
 import { DEFAULT_LOCK_TTL_SEC as DEFAULT_TTL_SEC } from './lock-config';
 
@@ -74,9 +75,29 @@ export interface GuardSpec {
   onTick?: (info: { waited_sec: number; holders: ResourceHolder[] }) => void;
 }
 
+export type ResourceGuardHolder = Pick<ResourceHolder, 'owner' | 'owner_label' | 'mode' | 'status'> & {
+  coordination_domain?: string;
+};
+
 export type GuardOutcome<T> =
   | { acquired: true; result: T; lock_id: string }
-  | { acquired: false; reason: string; holders: ResourceHolder[] };
+  | { acquired: false; reason: string; holders: ResourceGuardHolder[] };
+
+function hostGlobalConflictHolder(
+  error: unknown,
+  resource: string,
+  targetDomain: string,
+): ResourceGuardHolder | null {
+  const conflict = parseHostGlobalResourceExclusionError(error, { resource, targetDomain });
+  if (!conflict) return null;
+  return {
+    owner: conflict.owner,
+    owner_label: null,
+    mode: conflict.mode,
+    status: conflict.status,
+    coordination_domain: conflict.coordination_domain,
+  };
+}
 
 /**
  * The fencing handle (D-001) handed to `run()`. `assertCurrent()` re-verifies,
@@ -113,17 +134,24 @@ export async function guardResource<T>(
   let lockId: string;
   let fenceSeq = 0;
   if (mode === 'shared') {
-    const r = await inWorkspaceTxn(cd, ownerId, (tx) =>
-      tryAcquireResource(tx, {
-        coordinationDomain: cd,
-        resource,
-        mode: 'shared',
-        owner: ownerId,
-        ownerLabel,
-        reason,
-        ttlSec,
-      }),
-    );
+    let r: Awaited<ReturnType<typeof tryAcquireResource>>;
+    try {
+      r = await inWorkspaceTxn(cd, ownerId, (tx) =>
+        tryAcquireResource(tx, {
+          coordinationDomain: cd,
+          resource,
+          mode: 'shared',
+          owner: ownerId,
+          ownerLabel,
+          reason,
+          ttlSec,
+        }),
+      );
+    } catch (error) {
+      const holder = hostGlobalConflictHolder(error, resource, cd);
+      if (holder) return { acquired: false, reason: 'held_in_other_domain', holders: [holder] };
+      throw error;
+    }
     if (!r.ok) return { acquired: false, reason: r.reason, holders: r.holders };
     lockId = r.lock_id;
     fenceSeq = r.fence_seq;
@@ -139,21 +167,28 @@ export async function guardResource<T>(
         source: coordIdentity, resource, waiters: released.waiters[resource] ?? [],
       }).catch(() => {});
     };
-    const r = await acquireResourceExclusiveWithWait({
-      coordinationDomain: cd,
-      owner: ownerId,
-      ownerLabel,
-      resource,
-      reason,
-      ttlSec,
-      maxWaitSec: spec.maxDrainSec ?? 0,
-      onDrainStart: (holders) =>
-        broadcastResourceDrainStart({ source: coordIdentity, resource, holders, reason }),
-      hostLocalOwnerPid: spec.hostLocalOwnerPid,
-      deadOwnerOracle: spec.deadOwnerOracle,
-      onStaleHolderReclaimed: spec.onStaleHolderReclaimed,
-      onTick: spec.onTick,
-    });
+    let r: Awaited<ReturnType<typeof acquireResourceExclusiveWithWait>>;
+    try {
+      r = await acquireResourceExclusiveWithWait({
+        coordinationDomain: cd,
+        owner: ownerId,
+        ownerLabel,
+        resource,
+        reason,
+        ttlSec,
+        maxWaitSec: spec.maxDrainSec ?? 0,
+        onDrainStart: (holders) =>
+          broadcastResourceDrainStart({ source: coordIdentity, resource, holders, reason }),
+        hostLocalOwnerPid: spec.hostLocalOwnerPid,
+        deadOwnerOracle: spec.deadOwnerOracle,
+        onStaleHolderReclaimed: spec.onStaleHolderReclaimed,
+        onTick: spec.onTick,
+      });
+    } catch (error) {
+      const holder = hostGlobalConflictHolder(error, resource, cd);
+      if (holder) return { acquired: false, reason: 'held_in_other_domain', holders: [holder] };
+      throw error;
+    }
     if (r.ok) {
       if (r.status !== 'held') {
         // maxDrainSec was 0 and shared holders remain — not effective.
@@ -256,6 +291,7 @@ export function withResourceLock<A, C extends IdentityCtx>(
               owner_label: h.owner_label,
               mode: h.mode,
               status: h.status,
+              ...(h.coordination_domain ? { coordination_domain: h.coordination_domain } : {}),
             })),
           }),
         },
