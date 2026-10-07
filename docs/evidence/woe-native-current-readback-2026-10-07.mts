@@ -47,6 +47,24 @@ const result = await executeOperationalRun({
         && !!criterion && criterion.evidence.length > 0, { criterion, evidenceRead: value.evidenceRead });
     }
     const card = cards[0].scorecard;
+    const materialization = card?.criteria?.find((entry: { key: string }) => entry.key === 'plan-fleet-materialization');
+    // Compare a report with independently fetched canonical fields. The
+    // counterexamples change only the proposed report, never the real card.
+    const matchesMaterializationReport = (report: { rating: string; residueOwner: string }) =>
+      report.rating === materialization?.rating && report.residueOwner === residue?.assignee;
+    const matchesCardReport = (report: { verdict: string; subjectKind: string; auditState: string }) =>
+      report.verdict === card?.rollup?.verdict && report.subjectKind === card?.subject?.kind
+        && report.auditState === card?.gradingAudit?.state;
+    check('materialization-zero-fails-negative', !matchesMaterializationReport({ rating: 'pass', residueOwner: residue?.assignee }),
+      { proposedRating: 'pass', actualRating: materialization?.rating, residueOwner: residue?.assignee });
+    check('materialization-residue-owner-negative', !matchesMaterializationReport({ rating: materialization?.rating, residueOwner: '' }),
+      { proposedOwner: '', actualOwner: residue?.assignee, workItem: 'WI-10004612' });
+    check('materialization-report-exact', matchesMaterializationReport({ rating: 'fail', residueOwner: residue?.assignee }),
+      { rating: materialization?.rating, residueOwner: residue?.assignee, workItem: 'WI-10004612' });
+    check('existing-fail-retained-negative', !matchesCardReport({ verdict: 'pass', subjectKind: 'agent-run', auditState: 'passed' }),
+      { proposedVerdict: 'pass', actualVerdict: card?.rollup?.verdict, cardId });
+    check('existing-fail-report-exact', matchesCardReport({ verdict: 'fail', subjectKind: 'agent-run', auditState: 'passed' }),
+      { verdict: card?.rollup?.verdict, subject: card?.subject, gradingAudit: card?.gradingAudit, cardId });
     check('materialization-zero-fails-exact', card?.criteria?.[0]?.rating === 'fail'
       && card.rollup?.criticalFailures?.includes('plan-fleet-materialization'), card.rollup);
     check('existing-fail-retained-exact', card?.rollup?.verdict === 'fail'
