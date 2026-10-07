@@ -127,6 +127,7 @@ export const PG_BIGINT_AS_NUMBER_TYPES = stub('PG_BIGINT_AS_NUMBER_TYPES');
 export const pgbouncerEnabled = stub('pgbouncerEnabled');
 export const pgDiagnosticIdentity = stub('pgDiagnosticIdentity');
 export const pinOrVerifyStoreIdentity = stub('pinOrVerifyStoreIdentity');
+export const pinnedStoreIdentity = stub('pinnedStoreIdentity');
 export const poolIdleTimeoutSec = stub('poolIdleTimeoutSec');
 export const potsForGoal = stub('potsForGoal');
 export const recordEphemeralFire = stub('recordEphemeralFire');

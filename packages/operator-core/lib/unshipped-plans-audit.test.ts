@@ -290,6 +290,33 @@ describe('manifest and evidence rendering', () => {
     expect(selectAuditPlans(plans)).toEqual(plans);
   });
 
+  it('retains the entire historical census with per-class disclosure and an unknown row for unavailable harness evidence', () => {
+    const allPlans = [
+      plan(), plan({ planSlug: 'archived', archived: true }),
+      plan({ planSlug: 'superseded', status: 'superseded' }),
+      plan({ planSlug: 'rubric', template: 'rubric' }),
+      plan({ planSlug: 'instance', templateSlug: 'scheduled-parent' }),
+      plan({ planSlug: 'unavailable', harnessSlug: 'missing-harness' }),
+    ];
+    const base = {
+      workspaceId: 'ws-test', snapshotStartedAt: 'start', snapshotFinishedAt: 'finish', liveOwnershipMeasuredAt: 'measured', allPlans,
+      registeredHarnesses: new Set(['papercusp']), ownersByPlan: new Map(), workItemsByPlan: new Map(), blockedItems: new Map(), auditsByPlan: new Map(), rubricsByPlan: new Map(), gateVerdictsByPlan: new Map(),
+    };
+    const full = buildUnshippedPlansAuditManifest({ ...base, includeHistorical: true });
+    expect(full.rows.map(row => row.slug).sort()).toEqual(allPlans.map(row => row.planSlug).sort());
+    expect(full.scope.listedAtSnapshot).toBe(6);
+    expect(full.scope.classifiedRows).toBe(6);
+    for (const key of ['archived', 'superseded', 'rubricTemplate', 'scheduledInstance'] as const) {
+      expect(full.scope.census[key]).toEqual({ listed: 1, included: 1, excluded: 0, exclusionReason: null });
+    }
+    expect(full.rows.find(row => row.slug === 'unavailable')).toMatchObject({ status: 'unknown', category: 'catalog-residue' });
+    expect(full.rows.find(row => row.slug === 'archived')).toMatchObject({ archived: true });
+    const legacy = buildUnshippedPlansAuditManifest(base);
+    for (const key of ['archived', 'superseded', 'scheduledInstance'] as const) {
+      expect(legacy.scope.census[key]).toMatchObject({ listed: 1, included: 0, excluded: 1, exclusionReason: expect.stringContaining('Legacy nonterminal') });
+    }
+  });
+
   it('keeps the implementation manual-only and free of direct lifecycle SQL/writer seams', () => {
     const source = readFileSync(new URL('./unshipped-plans-audit.ts', import.meta.url), 'utf8');
 

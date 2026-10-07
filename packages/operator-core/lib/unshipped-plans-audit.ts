@@ -207,6 +207,9 @@ export interface UnshippedPlanAuditRow {
   title: string | null;
   harness: string;
   status: string;
+  archived: boolean;
+  template: string | null;
+  templateSlug: string | null;
   provenance: PlanProvenance;
   category: UnshippedPlanAuditCategory;
   reason: string;
@@ -238,6 +241,8 @@ export interface UnshippedPlansAuditManifest {
     snapshotFinishedAt: string;
     liveOwnershipMeasuredAt: string;
     nonterminalListedAtSnapshot: number;
+    listedAtSnapshot: number;
+    census: Record<'archived' | 'superseded' | 'rubricTemplate' | 'scheduledInstance', { listed: number; included: number; excluded: number; exclusionReason: string | null }>;
     materialized: number;
     catalogFailures: number;
     classifiedRows: number;
@@ -380,6 +385,9 @@ export function classifyUnshippedPlan(input: ClassifierInput): UnshippedPlanAudi
     title: input.plan.title,
     harness: input.plan.harnessSlug,
     status: input.registeredHarness ? (input.plan.status ?? 'draft') : 'unknown',
+    archived: input.plan.archived,
+    template: input.plan.template ?? null,
+    templateSlug: input.plan.templateSlug ?? null,
     provenance: planProvenanceFromBlenderFlag(input.plan.isBlenderOrigin),
     category,
     reason: copy.reason,
@@ -704,6 +712,20 @@ export function buildUnshippedPlansAuditManifest(input: BuildManifestInput): Uns
     currentRegistryAtPublish[status] = (currentRegistryAtPublish[status] ?? 0) + 1;
   }
   const blender = rows.filter((row) => row.provenance === 'blender').length;
+  // Classes can overlap. Each count compares the input census with the exact
+  // selected population; a legacy nonterminal report discloses its exclusions.
+  const predicates = {
+    archived: (plan: PlanIndexRow) => plan.archived,
+    superseded: (plan: PlanIndexRow) => plan.status === 'superseded',
+    rubricTemplate: (plan: PlanIndexRow) => plan.template === 'rubric',
+    scheduledInstance: (plan: PlanIndexRow) => Boolean(plan.templateSlug),
+  };
+  const census = Object.fromEntries(Object.entries(predicates).map(([key, predicate]) => {
+    const listed = input.allPlans.filter(predicate).length;
+    const included = nonterminal.filter(predicate).length;
+    const excluded = listed - included;
+    return [key, { listed, included, excluded, exclusionReason: excluded ? 'Legacy nonterminal scope excludes archived, terminal and scheduled-instance plans.' : null }];
+  })) as UnshippedPlansAuditManifest['scope']['census'];
 
   return {
     schemaVersion: 'unshipped-plans-audit-manifest-v2',
@@ -713,7 +735,9 @@ export function buildUnshippedPlansAuditManifest(input: BuildManifestInput): Uns
       snapshotStartedAt: input.snapshotStartedAt,
       snapshotFinishedAt: input.snapshotFinishedAt,
       liveOwnershipMeasuredAt: input.liveOwnershipMeasuredAt,
-      nonterminalListedAtSnapshot: rows.length,
+      nonterminalListedAtSnapshot: nonterminal.filter(plan => !plan.archived && !plan.templateSlug && !PLAN_TERMINAL_STATUSES.has(plan.status ?? 'draft')).length,
+      listedAtSnapshot: input.allPlans.length,
+      census,
       materialized: rows.filter((row) => row.category !== 'catalog-residue').length,
       catalogFailures: rows.filter((row) => row.category === 'catalog-residue').length,
       classifiedRows: rows.length,

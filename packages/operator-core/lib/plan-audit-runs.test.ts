@@ -31,6 +31,11 @@ describe('read-only audit run lifecycle', () => {
     expect(h.publish).not.toHaveBeenCalled();
     expect(JSON.parse(h.save.mock.calls.at(-1)![2])).toMatchObject({ status: 'failed', error: 'missing selected plan' });
   });
+  it('requests the full workspace census including historical plans for the all-plans action', async () => {
+    h.engine.mockResolvedValue({ manifest: { rows: [{}], generatedAt: 'now' }, artifacts: { json: 'json-path' } });
+    await executePlanAudit({ ...run, scope: 'workspace', planSlugs: undefined });
+    expect(h.engine).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: 'test-workspace', planSlugs: undefined, includeHistorical: true }));
+  });
   it('terminalizes a persisted interrupted run and refuses mismatched workspace identity', async () => {
     h.sql.mockResolvedValueOnce([{ content: JSON.stringify({ ...run, startedAt: '2020-01-01T00:00:00Z' }) }]);
     expect(await getPlanAuditRun(run.id)).toMatchObject({ status: 'failed', error: expect.stringContaining('interrupted') });

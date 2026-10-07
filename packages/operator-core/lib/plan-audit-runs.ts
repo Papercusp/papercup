@@ -100,7 +100,7 @@ export async function executePlanAudit(run: PlanAuditRun): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const result = await Promise.race([
-      runUnshippedPlansAudit({ workspaceId: run.workspace, artifactHarness: run.harness, planSlugs: run.planSlugs, artifactPrefix: PREFIX + run.id }),
+      runUnshippedPlansAudit({ workspaceId: run.workspace, artifactHarness: run.harness, planSlugs: run.planSlugs, includeHistorical: true, artifactPrefix: PREFIX + run.id }),
       new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('Audit generation exceeded five minutes; retry creates a new snapshot.')), PLAN_AUDIT_RUN_TIMEOUT_MS);timer.unref?.(); }),
     ]);
     const report = await publishReport(getOrgPg().sql, {

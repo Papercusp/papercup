@@ -61,4 +61,18 @@ describe('explicit population through the audit pipeline', () => {
     await expect(runUnshippedPlansAudit({ workspaceId: 'audit-workspace', planSlugs: ['foreign-plan'] })).rejects.toThrow('unavailable plans');
     expect(h.save).not.toHaveBeenCalled();
   });
+
+  it('publishes the full workspace census including archived, superseded, rubric and scheduled-instance rows', async () => {
+    const plans = [row('active'), row('archived', { archived: true }), row('superseded', { status: 'superseded' }), row('rubric', { template: 'rubric' }), row('instance', { templateSlug: 'scheduled-parent' }), row('unknown', { harnessSlug: 'unavailable' })];
+    h.plans.mockResolvedValue(plans);
+    const result = await runUnshippedPlansAudit({ workspaceId: 'audit-workspace', artifactHarness: 'audit-harness', includeHistorical: true, artifactPrefix: 'reports/plan-audits/workspace_test' });
+    expect(h.plans).toHaveBeenCalledWith(expect.objectContaining({ includeArchived: true, includeInstances: true }));
+    expect(result.manifest.rows.map(r => r.slug).sort()).toEqual(plans.map(p => p.planSlug).sort());
+    expect(result.manifest.scope.listedAtSnapshot).toBe(plans.length);
+    expect(result.manifest.rows.find(r => r.slug === 'unknown')).toMatchObject({ status: 'unknown' });
+    for (const value of Object.values(result.manifest.scope.census)) expect(value).toEqual({ listed: 1, included: 1, excluded: 0, exclusionReason: null });
+    const saved = JSON.parse(h.save.mock.calls.find(call => call[1].endsWith('/audit.json'))![2]);
+    expect(saved.rows.map((r: { slug: string }) => r.slug).sort()).toEqual(plans.map(p => p.planSlug).sort());
+    expect(saved.scope.census).toEqual(result.manifest.scope.census);
+  });
 });
