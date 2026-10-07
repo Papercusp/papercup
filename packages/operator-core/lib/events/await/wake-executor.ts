@@ -639,7 +639,7 @@ export type EnsureCodexHomeForWakeResult = {
  * Codex resume. `ensureSuCodexHomeConfig` only rewrites managed files in an
  * existing home, so the rollout restored by the archive leg remains intact.
  */
-async function defaultEnsureCodexHomeForWake(
+export async function defaultEnsureCodexHomeForWake(
   input: EnsureCodexHomeForWakeInput,
 ): Promise<EnsureCodexHomeForWakeResult> {
   try {
@@ -649,20 +649,20 @@ async function defaultEnsureCodexHomeForWake(
       { buildLaunchSpec },
       { ensureSuCodexHomeConfig },
       { readSuperuserToken },
+      { parseLaunchCompactionLimitArgv },
     ] = await Promise.all([
       import('../../adv-sessions'),
       import('../../su-persona-render'),
       import('../../role-launch-spec'),
       import('../../role-codex-home'),
       import('../../superuser-token'),
+      import('../../compaction-usage'),
     ]);
     const persistedRecord = parseSuLaunchSpecRecord(await readSuLaunchSpecByOwner(input.owner));
+    const sessionRow = input.sessionRow ?? (await getAdvSession(input.advSessionId).catch(() => null));
     const record =
       persistedRecord ??
-      fallbackCodexLaunchSpecFromAdvSession(
-        input.sessionRow ?? (await getAdvSession(input.advSessionId).catch(() => null)),
-        input.owner,
-      );
+      fallbackCodexLaunchSpecFromAdvSession(sessionRow, input.owner);
     if (!record) return { ok: true, repaired: false, reason: 'no-launch-spec' };
     if (record.agent !== 'codex') return { ok: true, repaired: false, reason: 'unsupported-agent' };
 
@@ -688,6 +688,7 @@ async function defaultEnsureCodexHomeForWake(
         mcpUrl: spec.mcpUrl,
         sid: input.owner,
         model: record.model,
+        compactionLimit: parseLaunchCompactionLimitArgv(sessionRow?.launchArgv),
         token: readSuperuserToken(),
         codexGatewayAccountId: input.codexGatewayAccountId ?? null,
         codexGatewayAuto: input.requireGatewayProvider === true,
