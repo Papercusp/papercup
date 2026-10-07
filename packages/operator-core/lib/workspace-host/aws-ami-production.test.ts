@@ -23,6 +23,9 @@ import {
 import { CANARY_BUDGETS, SSM_CHUNK_CHARS } from '../../bin/aws-ami-canary-measure.mjs';
 
 const KMS = 'arn:aws:kms:us-east-1:111111111111:key/abc';
+const SHARE_ACCOUNT = '497149484242';
+const SHARE_GRANT_NAME = 'papercusp-ami-share-v1-' + SHARE_ACCOUNT;
+const SHARE_GRANT_OPERATIONS = ['CreateGrant', 'Decrypt', 'DescribeKey', 'ReEncryptFrom'];
 const SHA = 'a'.repeat(64);
 const TOOLS = ['amazon-ssm-agent', 'openssh-server'];
 
@@ -74,11 +77,17 @@ function buildInput(overrides: Record<string, unknown> = {}) {
   } as Parameters<SdkAwsAmiReleaseAdapter['buildCandidate']>[0];
 }
 
-function adapterWith(ec2Calls: Call[], runs: unknown[], ec2Responses: Record<string, (input: Record<string, unknown>) => unknown> = {}) {
+function adapterWith(
+  ec2Calls: Call[],
+  runs: unknown[],
+  ec2Responses: Record<string, (input: Record<string, unknown>) => unknown> = {},
+  kmsResponses: Record<string, (input: Record<string, unknown>) => unknown> = {},
+) {
   return new SdkAwsAmiReleaseAdapter(
     {
       ec2: () => fakeSender(ec2Responses, ec2Calls),
       ssm: () => fakeSender({}, ec2Calls),
+      kms: () => fakeSender(kmsResponses, ec2Calls),
       childCredentials: async () => ({ AWS_ACCESS_KEY_ID: 'AKIA', AWS_SECRET_ACCESS_KEY: 'secret' }),
       commands: fakeCommands('Uploaded snapshot snap-0abc123\n', runs),
       sleep: async () => {},
@@ -185,6 +194,7 @@ describe('SdkAwsAmiReleaseAdapter.buildCandidate', () => {
               calls,
             ),
           ssm: () => fakeSender({}, calls),
+          kms: () => fakeSender({}, calls),
           childCredentials: async () => ({ AWS_ACCESS_KEY_ID: 'AKIA', AWS_SECRET_ACCESS_KEY: 'secret' }),
           commands: { run: async (command) => (runs.push(command), results.shift() ?? OK) },
           sleep: async () => {},
@@ -266,10 +276,75 @@ describe('SdkAwsAmiReleaseAdapter.buildCandidate', () => {
 
   it('refuses when a required guest tool version is not pinned', async () => {
     const adapter = new SdkAwsAmiReleaseAdapter(
-      { ec2: () => fakeSender({}, []), ssm: () => fakeSender({}, []), childCredentials: async () => ({}) },
+      { ec2: () => fakeSender({}, []), ssm: () => fakeSender({}, []), kms: () => fakeSender({}, []), childCredentials: async () => ({}) },
       { guestToolVersions: { 'amazon-ssm-agent': '3.3.1' } },
     );
     await expect(adapter.buildCandidate(buildInput())).rejects.toThrow(/not pinned for: openssh-server/);
+  });
+});
+
+describe('SdkAwsAmiReleaseAdapter.publishPermissions', () => {
+  const publishInput = {
+    region: 'us-east-1',
+    imageId: 'ami-0abc123',
+    kmsKeyArn: KMS,
+    kmsGrantAccountIds: [SHARE_ACCOUNT],
+    launchAccountIds: [SHARE_ACCOUNT],
+    snapshotCreateVolumeAccountIds: [SHARE_ACCOUNT],
+  };
+
+  it('creates a deterministic least-privilege key grant before sharing the AMI and snapshots', async () => {
+    const calls: Call[] = [];
+    const adapter = adapterWith(calls, [], {
+      ModifyImageAttributeCommand: () => ({}),
+      DescribeImagesCommand: () => ({ Images: [{ BlockDeviceMappings: [{ Ebs: { SnapshotId: 'snap-0abc123' } }] }] }),
+      ModifySnapshotAttributeCommand: () => ({}),
+    }, {
+      ListGrantsCommand: () => ({ Grants: [], Truncated: false }),
+      CreateGrantCommand: () => ({ GrantId: 'grant-123' }),
+    });
+
+    await adapter.publishPermissions(publishInput);
+
+    expect(calls.filter((call) => call.name === 'CreateGrantCommand').map((call) => call.input)).toEqual([{
+      KeyId: KMS,
+      GranteePrincipal: 'arn:aws:iam::' + SHARE_ACCOUNT + ':root',
+      Operations: SHARE_GRANT_OPERATIONS,
+      Name: SHARE_GRANT_NAME,
+    }]);
+    expect(calls.map((call) => call.name)).toEqual([
+      'ListGrantsCommand',
+      'CreateGrantCommand',
+      'ModifyImageAttributeCommand',
+      'DescribeImagesCommand',
+      'ModifySnapshotAttributeCommand',
+    ]);
+  });
+
+  it('reuses an exact existing grant on retry and refuses a same-name grant with different rights', async () => {
+    const exactGrant = {
+      Name: SHARE_GRANT_NAME,
+      GranteePrincipal: 'arn:aws:iam::' + SHARE_ACCOUNT + ':root',
+      Operations: SHARE_GRANT_OPERATIONS,
+    };
+    const calls: Call[] = [];
+    const existing = adapterWith(calls, [], {
+      ModifyImageAttributeCommand: () => ({}),
+      DescribeImagesCommand: () => ({ Images: [{ BlockDeviceMappings: [] }] }),
+    }, {
+      ListGrantsCommand: () => ({ Grants: [exactGrant], Truncated: false }),
+    });
+    await existing.publishPermissions(publishInput);
+    expect(calls.some((call) => call.name === 'CreateGrantCommand')).toBe(false);
+
+    const mismatchedCalls: Call[] = [];
+    const mismatched = adapterWith(mismatchedCalls, [], {}, {
+      ListGrantsCommand: () => ({ Grants: [{ ...exactGrant, Operations: ['Decrypt'] }], Truncated: false }),
+    });
+    await expect(mismatched.publishPermissions(publishInput)).rejects.toThrow(
+      'does not match the required principal and operations',
+    );
+    expect(mismatchedCalls.some((call) => call.name === 'ModifyImageAttributeCommand')).toBe(false);
   });
 });
 
@@ -278,7 +353,7 @@ describe('SdkAwsAmiReleaseAdapter.scanImage', () => {
     const runs: unknown[] = [];
     const scanInput = { region: 'us-east-1', imageId: 'ami-0bbb', buildManifestIdentity: `sha256:${'c'.repeat(64)}`, releaseSha256: SHA };
     const pinned = new SdkAwsAmiReleaseAdapter(
-      { ec2: () => fakeSender({}, []), ssm: () => fakeSender({}, []), childCredentials: async () => ({}), commands: fakeCommands('{}', runs) },
+      { ec2: () => fakeSender({}, []), ssm: () => fakeSender({}, []), kms: () => fakeSender({}, []), childCredentials: async () => ({}), commands: fakeCommands('{}', runs) },
       { coldsnapExecutable: '/home/u/.papercusp/tools/coldsnap/0.12.0/bin/coldsnap' },
     );
     await pinned.scanImage(scanInput as Parameters<SdkAwsAmiReleaseAdapter['scanImage']>[0]);
@@ -307,6 +382,7 @@ describe('SdkAwsAmiReleaseAdapter.launchCleanAccountCanary failure output', () =
     const adapter = new SdkAwsAmiReleaseAdapter({
       ec2: () => fakeSender({}, []),
       ssm: () => fakeSender({}, []),
+      kms: () => fakeSender({}, []),
       childCredentials: async () => ({}),
       commands: { run: async () => ({ exitCode: 1, stdout: '', stderr: payload }) },
     });
@@ -324,6 +400,7 @@ describe('SdkAwsAmiReleaseAdapter.launchCleanAccountCanary failure output', () =
     const adapter = new SdkAwsAmiReleaseAdapter({
       ec2: () => fakeSender({}, []),
       ssm: () => fakeSender({}, []),
+      kms: () => fakeSender({}, []),
       childCredentials: async () => ({}),
       commands: {
         run: async (command) => {
@@ -375,12 +452,22 @@ describe('SdkAwsAmiReleaseAdapter.inspectImage', () => {
       DescribeImageAttributeCommand: () => ({ LaunchPermissions: [{ UserId: '333333333333' }, { UserId: '222222222222' }] }),
       DescribeSnapshotsCommand: () => ({ Snapshots: [{ Encrypted: true, KmsKeyId: KMS }] }),
       DescribeSnapshotAttributeCommand: () => ({ CreateVolumePermissions: [{ UserId: '222222222222' }] }),
+    }, {
+      ListGrantsCommand: () => ({
+        Grants: [{
+          Name: SHARE_GRANT_NAME,
+          GranteePrincipal: 'arn:aws:iam::' + SHARE_ACCOUNT + ':root',
+          Operations: SHARE_GRANT_OPERATIONS,
+        }],
+        Truncated: false,
+      }),
     });
-    await expect(adapter.inspectImage('us-east-1', 'ami-0bbb')).resolves.toMatchObject({
+    await expect(adapter.inspectImage('us-east-1', 'ami-0bbb', KMS)).resolves.toMatchObject({
       ownerAccountId: '111111111111',
       state: 'available',
       guestTools: [{ name: 'amazon-ssm-agent', version: '3.3.1' }],
       launchAccountIds: ['222222222222', '333333333333'],
+      kmsGrantAccountIds: [SHARE_ACCOUNT],
       snapshots: [{ snapshotId: 'snap-0abc', encrypted: true, kmsKeyArn: KMS, createVolumeAccountIds: ['222222222222'] }],
     });
   });
@@ -414,6 +501,7 @@ describe('SdkAwsAmiReleaseAdapter.publishVersionManifest', () => {
           },
           [],
         ),
+      kms: () => fakeSender({}, []),
       childCredentials: async () => ({}),
     });
   }

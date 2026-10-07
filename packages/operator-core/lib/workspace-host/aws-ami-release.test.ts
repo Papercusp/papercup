@@ -302,8 +302,10 @@ function bootcBakeManifest(): WorkspaceHostBootcBakeManifest {
 class FakeAdapter implements AwsAmiReleaseAdapter {
   readonly calls: string[] = [];
   readonly permissions = new Map<string, readonly string[]>();
+  readonly kmsGrantPermissions = new Map<string, readonly string[]>();
   manifest?: AwsAmiVersionManifest;
   missingTool?: string;
+  missingKmsGrantAccountId?: string;
   badKmsRegion?: string;
   proofResidue: readonly string[] = [];
   /** Lets a test corrupt the canary proof (wrong fixture / bad attestation) after it is built. */
@@ -356,9 +358,15 @@ class FakeAdapter implements AwsAmiReleaseAdapter {
     this.calls.push(`permissions:${input.region}`);
     expect(input.snapshotCreateVolumeAccountIds).toEqual(input.launchAccountIds);
     this.permissions.set(input.region, input.launchAccountIds);
+    expect(input.kmsKeyArn).toBe(request().targets.find((target) => target.region === input.region)?.kmsKeyArn);
+    expect(input.kmsGrantAccountIds).toEqual(input.launchAccountIds);
+    this.kmsGrantPermissions.set(
+      input.region,
+      (input.kmsGrantAccountIds ?? []).filter((accountId) => accountId !== this.missingKmsGrantAccountId),
+    );
   }
 
-  async inspectImage(region: string, imageId: string): Promise<AwsAmiInspection> {
+  async inspectImage(region: string, imageId: string, _kmsKeyArn: string): Promise<AwsAmiInspection> {
     this.calls.push(`inspect:${region}`);
     const requestTarget = request().targets.find((target) => target.region === region)!;
     return {
@@ -379,6 +387,7 @@ class FakeAdapter implements AwsAmiReleaseAdapter {
         version: name === 'amazon-ssm-agent' ? '3.3.3050.0' : '1',
       })),
       launchAccountIds: this.permissions.get(region) ?? [],
+      kmsGrantAccountIds: this.kmsGrantPermissions.get(region) ?? [],
       snapshots: [
         {
           snapshotId: `snap-${region.replaceAll('-', '')}`,
@@ -562,6 +571,16 @@ describe('AWS workspace-host AMI release', () => {
     wrongKms.badKmsRegion = 'us-west-2';
     await expect(executeAwsAmiRelease(request(), wrongKms)).rejects.toThrow('not encrypted with the target KMS key');
     expect(wrongKms.calls).not.toContain('publish-manifest');
+  });
+
+  it('fails closed before publication when a shared account has no matching KMS grant', async () => {
+    const missingGrant = new FakeAdapter();
+    missingGrant.missingKmsGrantAccountId = CLEAN_ACCOUNT;
+    await expect(executeAwsAmiRelease(request(), missingGrant)).rejects.toThrow(
+      'is missing a KMS share grant for an explicitly shared account',
+    );
+    expect(missingGrant.calls).not.toContain('publish-manifest');
+    expect(missingGrant.calls).not.toContain('activate-pins');
   });
 
   it('does not pin or deprecate when clean-account teardown leaves residue', async () => {

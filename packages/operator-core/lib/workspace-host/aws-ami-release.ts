@@ -139,6 +139,8 @@ export interface AwsAmiInspection {
   tags: Readonly<Record<string, string>>;
   guestTools: readonly { name: string; version: string }[];
   launchAccountIds: readonly string[];
+  /** Accounts with the named Papercusp KMS share grant and the exact release operations. */
+  kmsGrantAccountIds: readonly string[];
   snapshots: readonly AwsAmiSnapshotEvidence[];
 }
 
@@ -273,8 +275,11 @@ export interface AwsAmiReleaseAdapter {
     imageId: string;
     launchAccountIds: readonly string[];
     snapshotCreateVolumeAccountIds: readonly string[];
+    /** Omitted only for transient unencrypted clean-room images. */
+    kmsKeyArn?: string;
+    kmsGrantAccountIds?: readonly string[];
   }): Promise<void>;
-  inspectImage(region: string, imageId: string): Promise<AwsAmiInspection>;
+  inspectImage(region: string, imageId: string, kmsKeyArn: string): Promise<AwsAmiInspection>;
   launchCleanAccountCanary(input: {
     accountId: string;
     region: string;
@@ -507,6 +512,9 @@ function validateInspection(
   for (const tool of AWS_AMI_REQUIRED_GUEST_TOOLS) {
     if (!installed.get(tool)?.trim()) fail(`AMI ${target.region}/${expectedImageId} is missing guest tool ${tool}`);
   }
+  if (!target.shareWithAccountIds.every((accountId) => inspection.kmsGrantAccountIds.includes(accountId))) {
+    fail('AMI ' + target.region + '/' + expectedImageId + ' is missing a KMS share grant for an explicitly shared account');
+  }
   if (!sameStrings(inspection.launchAccountIds, target.shareWithAccountIds)) {
     fail(`AMI ${target.region}/${expectedImageId} launch permissions do not match the explicit account allowlist`);
   }
@@ -709,10 +717,12 @@ export async function executeAwsAmiRelease(
       imageId,
       launchAccountIds: target.shareWithAccountIds,
       snapshotCreateVolumeAccountIds: target.shareWithAccountIds,
+      kmsKeyArn: target.kmsKeyArn,
+      kmsGrantAccountIds: target.shareWithAccountIds,
     });
     regions.push(
       validateInspection(
-        await adapter.inspectImage(target.region, imageId),
+        await adapter.inspectImage(target.region, imageId, target.kmsKeyArn),
         artifact,
         target,
         publisherAccountId,

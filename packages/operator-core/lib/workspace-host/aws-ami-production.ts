@@ -52,6 +52,7 @@ import {
   type DescribeSnapshotsResult,
   type RegisterImageResult,
 } from '@aws-sdk/client-ec2';
+import { CreateGrantCommand, KMSClient, ListGrantsCommand } from '@aws-sdk/client-kms';
 import { GetParameterCommand, PutParameterCommand, SSMClient, type GetParameterResult } from '@aws-sdk/client-ssm';
 import { GetCallerIdentityCommand, STSClient, type GetCallerIdentityResponse } from '@aws-sdk/client-sts';
 import { WORKSPACE_HOST_BOOTC_BUILDER_KIND, type WorkspaceHostProviderConnection } from '@papercusp/deployment-driver';
@@ -185,6 +186,8 @@ export interface AwsAmiReleaseCompositionOptions {
 export interface AwsAmiReleaseAdapterDeps {
   ec2: (region: string) => AwsAmiSdkSender;
   ssm: (region: string) => AwsAmiSdkSender;
+  /** Publisher access needs kms:ListGrants for idempotency and kms:CreateGrant on target keys. */
+  kms: (region: string) => AwsAmiSdkSender;
   /** Resolved credentials for child processes (coldsnap / scanner / canary). */
   childCredentials: () => Promise<Readonly<Record<string, string>>>;
   commands?: AwsAmiCommandRunner;
@@ -194,6 +197,54 @@ export interface AwsAmiReleaseAdapterDeps {
 
 function fail(message: string): never {
   throw new AwsAmiReleaseError(message);
+}
+
+const AWS_AMI_SHARE_GRANT_PREFIX = 'papercusp-ami-share-v1';
+const AWS_AMI_SHARE_GRANT_OPERATIONS = ['CreateGrant', 'Decrypt', 'DescribeKey', 'ReEncryptFrom'] as const;
+
+interface AwsAmiKmsGrant {
+  Name?: string;
+  GranteePrincipal?: string;
+  Operations?: readonly string[];
+}
+
+function sameStrings(left: readonly string[], right: readonly string[]): boolean {
+  return [...left].sort().join('\u0000') === [...right].sort().join('\u0000');
+}
+
+function kmsPartition(keyArn: string, region: string): string {
+  const match = /^arn:([^:]+):kms:([^:]+):\d{12}:key\/[^/]+$/.exec(keyArn);
+  if (!match || match[2] !== region) fail('KMS target must be a key ARN in the requested AWS region');
+  return match[1];
+}
+
+async function listKmsGrants(kms: AwsAmiSdkSender, keyArn: string): Promise<AwsAmiKmsGrant[]> {
+  const grants: AwsAmiKmsGrant[] = [];
+  let marker: string | undefined;
+  while (true) {
+    const page = (await kms.send(
+      new ListGrantsCommand({ KeyId: keyArn, Limit: 100, ...(marker ? { Marker: marker } : {}) }),
+    )) as { Grants?: AwsAmiKmsGrant[]; Truncated?: boolean; NextMarker?: string };
+    grants.push(...(page.Grants ?? []));
+    if (!page.Truncated) return grants;
+    if (!page.NextMarker || page.NextMarker === marker) fail('KMS ListGrants returned a truncated page without a new marker');
+    marker = page.NextMarker;
+  }
+}
+
+function papercuspKmsGrantAccountIds(grants: readonly AwsAmiKmsGrant[], keyArn: string, region: string): string[] {
+  const partition = kmsPartition(keyArn, region);
+  const prefix = AWS_AMI_SHARE_GRANT_PREFIX + '-';
+  return [...new Set(grants.flatMap((grant) => {
+    if (!grant.Name?.startsWith(prefix)) return [];
+    const accountId = grant.Name.slice(prefix.length);
+    if (
+      !/^\d{12}$/.test(accountId) ||
+      grant.GranteePrincipal !== 'arn:' + partition + ':iam::' + accountId + ':root' ||
+      !sameStrings(grant.Operations ?? [], AWS_AMI_SHARE_GRANT_OPERATIONS)
+    ) return [];
+    return [accountId];
+  }))].sort();
 }
 
 function tagList(tags: Readonly<Record<string, string>>) {
@@ -597,6 +648,43 @@ export class SdkAwsAmiReleaseAdapter implements AwsAmiReleaseAdapter {
   }
 
   async publishPermissions(input: Parameters<AwsAmiReleaseAdapter['publishPermissions']>[0]): Promise<void> {
+    if (input.kmsKeyArn) {
+      const partition = kmsPartition(input.kmsKeyArn, input.region);
+      const grantAccountIds = input.kmsGrantAccountIds ?? [];
+      if (!sameStrings(grantAccountIds, input.launchAccountIds)) {
+        fail('KMS grant allowlist must match the explicit AMI launch allowlist');
+      }
+      const kms = this.deps.kms(input.region);
+      const grants = await listKmsGrants(kms, input.kmsKeyArn);
+      for (const accountId of [...grantAccountIds].sort()) {
+        if (!/^\d{12}$/.test(accountId)) fail('KMS share grant account IDs must be 12 digits');
+        const name = AWS_AMI_SHARE_GRANT_PREFIX + '-' + accountId;
+        const granteePrincipal = 'arn:' + partition + ':iam::' + accountId + ':root';
+        const existing = grants.find((grant) => grant.Name === name);
+        if (existing) {
+          if (
+            existing.GranteePrincipal !== granteePrincipal ||
+            !sameStrings(existing.Operations ?? [], AWS_AMI_SHARE_GRANT_OPERATIONS)
+          ) {
+            fail('Existing KMS share grant ' + name + ' does not match the required principal and operations');
+          }
+          continue;
+        }
+        await kms.send(new CreateGrantCommand({
+          KeyId: input.kmsKeyArn,
+          GranteePrincipal: granteePrincipal,
+          Operations: [...AWS_AMI_SHARE_GRANT_OPERATIONS],
+          Name: name,
+        }));
+        grants.push({
+          Name: name,
+          GranteePrincipal: granteePrincipal,
+          Operations: AWS_AMI_SHARE_GRANT_OPERATIONS,
+        });
+      }
+    } else if (input.kmsGrantAccountIds?.length) {
+      fail('KMS grant account IDs require a target KMS key ARN');
+    }
     const ec2 = this.deps.ec2(input.region);
     await ec2.send(
       new ModifyImageAttributeCommand({
@@ -616,7 +704,7 @@ export class SdkAwsAmiReleaseAdapter implements AwsAmiReleaseAdapter {
     }
   }
 
-  async inspectImage(region: string, imageId: string): Promise<AwsAmiInspection> {
+  async inspectImage(region: string, imageId: string, kmsKeyArn: string): Promise<AwsAmiInspection> {
     const ec2 = this.deps.ec2(region);
     const described = (await ec2.send(new DescribeImagesCommand({ ImageIds: [imageId] }))) as DescribeImagesResult;
     const image = described.Images?.[0];
@@ -646,6 +734,7 @@ export class SdkAwsAmiReleaseAdapter implements AwsAmiReleaseAdapter {
           .sort(),
       });
     }
+    const kmsGrants = await listKmsGrants(this.deps.kms(region), kmsKeyArn);
     const state = image.State;
     return {
       imageId,
@@ -662,6 +751,7 @@ export class SdkAwsAmiReleaseAdapter implements AwsAmiReleaseAdapter {
         .map((entry) => entry.UserId)
         .filter((id): id is string => Boolean(id))
         .sort(),
+      kmsGrantAccountIds: papercuspKmsGrantAccountIds(kmsGrants, kmsKeyArn, region),
       snapshots,
     };
   }
@@ -766,6 +856,7 @@ export function composeAwsAmiReleaseAdapter(
   const credentials = connectionCredentialProvider(connection, homeRegion, options.resolvers);
   const ec2Clients = new Map<string, EC2Client>();
   const ssmClients = new Map<string, SSMClient>();
+  const kmsClients = new Map<string, KMSClient>();
   const sender = <C extends { send(command: never): Promise<unknown> }>(client: C): AwsAmiSdkSender => ({
     send: (command) => client.send(command as never),
   });
@@ -778,6 +869,10 @@ export function composeAwsAmiReleaseAdapter(
       ssm: (region) => {
         if (!ssmClients.has(region)) ssmClients.set(region, new SSMClient({ region, credentials }));
         return sender(ssmClients.get(region)!);
+      },
+      kms: (region) => {
+        if (!kmsClients.has(region)) kmsClients.set(region, new KMSClient({ region, credentials }));
+        return sender(kmsClients.get(region)!);
       },
       childCredentials: async () => {
         const resolved = await credentials();
