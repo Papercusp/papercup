@@ -1390,11 +1390,12 @@ describe('spec-test-adequacy per-clause evaluator', () => {
   });
 
   // WI-10002724: a clause declaring NO falsifier.requiredScenarios has no scenario id to name, so
-  // a target naming its own specId (lower-cased) is its clause-scoped claim.
+  // a target naming its own specId is its clause-scoped claim.
   describe('clause without declared falsifier scenarios', () => {
     const testPath = 'packages/operator-core/lib/agent-tools/plans/spec-test-adequacy.integration.test.ts';
-    const mutationTargeting = (targeted: boolean | string) =>
+    const mutationTargeting = (targeted: boolean | string, specId = clause().specId) =>
       evidence({
+        specId,
         evidenceKind: 'mutation',
         evidenceRef: `mutation-probe:self-target:${String(targeted)}`,
         testRunProvenance: { filePath: testPath, commitSha: 'abc123', worktreeDirty: false },
@@ -1421,6 +1422,22 @@ describe('spec-test-adequacy per-clause evaluator', () => {
       expect(clause().falsifier).toBeNull();
       expect(result.ratings.falsifiability.rating).toBe('pass');
       expect(result.ratings.falsifiability.evidence).toContain('which declares no structured falsifier.requiredScenarios list');
+    });
+
+    it('accepts the exact uppercase ID of a platform-generated clause as its self-target', () => {
+      const specId = 'AUTO-BAR-R-5-P-004';
+      const generatedClause = clause({ specId });
+      const result = evaluateSpecTestAdequacy({
+        clause: generatedClause,
+        evidence: [
+          evidence({ specId }),
+          { ...successfulTestBinding(testPath), specId },
+          mutationTargeting(specId, specId),
+        ],
+        classRef: 'plan-class-feature-ship',
+      });
+
+      expect(result.ratings.falsifiability.rating).toBe('pass');
     });
 
     it('does not describe a declared falsifier as absent when it has no named scenarios', () => {
@@ -1467,7 +1484,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
 
       expect(result.ratings.falsifiability.rating).toBe('unknown');
       expect(result.ratings.falsifiability.evidence).toContain("do not target this clause's own specId");
-      expect(result.ratings.falsifiability.suggestion).toContain("adequacy.targeted = 'spec-003-01'");
+      expect(result.ratings.falsifiability.suggestion).toContain("adequacy.targeted = 'SPEC-003-01'");
     });
 
     it('does not treat boolean targeted=true as the clause-scoped target', () => {

@@ -4818,7 +4818,7 @@ export async function onToolCall(
     // workspace dir. Parses .git/config directly — no git subprocess on the
     // per-edit hot path. Mirrors the cc hook's _repo_origin_url/_norm_origin
     // (parity contract; keep in sync).
-    const repoOriginUrl = (repoRoot: string): string | null => {
+    const repoGitConfigPath = (repoRoot: string): string | null => {
       try {
         const gitEntry = join(repoRoot, '.git');
         let cfgPath: string;
@@ -4840,6 +4840,15 @@ export async function onToolCall(
         } else {
           cfgPath = join(gitEntry, 'config');
         }
+        return cfgPath;
+      } catch {
+        return null;
+      }
+    };
+    const repoOriginUrl = (repoRoot: string): string | null => {
+      try {
+        const cfgPath = repoGitConfigPath(repoRoot);
+        if (cfgPath === null) return null;
         let inOrigin = false;
         for (const line of readFileSync(cfgPath, 'utf8').split('\n')) {
           const s = line.trim();
@@ -4850,6 +4859,18 @@ export async function onToolCall(
           }
         }
         return null;
+      } catch {
+        return null;
+      }
+    };
+    // Match CC's positive zero-remotes proof. Missing/unreadable config is
+    // unknown, and a remote under any name prevents this exemption.
+    const repoHasZeroRemotes = (repoRoot: string): boolean | null => {
+      try {
+        const cfgPath = repoGitConfigPath(repoRoot);
+        if (cfgPath === null) return null;
+        return !readFileSync(cfgPath, 'utf8').split('\n')
+          .some((line) => /^\[remote\s*"/.test(line.trim()));
       } catch {
         return null;
       }
@@ -4895,12 +4916,13 @@ export async function onToolCall(
         // WI-5031: a sibling is only a stranding hazard when it is a checkout
         // of the SAME project as the canonical tree — git-sync commits only
         // the canonical tree, so work left in same-project siblings dies. An
-        // INDEPENDENT repo with a provably different origin remote is
-        // legitimate to edit and falls through to normal lock coordination.
-        // Unreadable origins keep the old refusal (conservative).
+        // An INDEPENDENT repo with a provably different origin or a readable
+        // config declaring zero remotes falls through to lock coordination.
+        // Linked canonical worktrees were rejected above, before exemption.
         const sibOrigin = normalizeOriginUrl(repoOriginUrl(scopeRoot));
         const canonOrigin = normalizeOriginUrl(repoOriginUrl(canonicalTree));
-        if (sibOrigin !== null && canonOrigin !== null && sibOrigin !== canonOrigin) {
+        if ((sibOrigin !== null && canonOrigin !== null && sibOrigin !== canonOrigin)
+          || repoHasZeroRemotes(scopeRoot) === true) {
           continue;
         }
         return {
@@ -4911,9 +4933,9 @@ export async function onToolCall(
             `staging tree (${canonicalTree}); other worktrees are off-limits ` +
             `because work left in them never reaches the auto-committed tree. ` +
             `cd into the staging tree and make this edit there. (An INDEPENDENT ` +
-            `sibling repo — one whose \`origin\` remote provably differs from ` +
-            `the canonical tree's — is exempt; this tree's origin matches the ` +
-            `canonical project or could not be read.)`,
+            `sibling repo — one whose \`origin\` provably differs, or whose ` +
+            `readable config declares zero remotes — is exempt; independence ` +
+            `could not be established for this tree.)`,
         };
       }
     }

@@ -1,7 +1,12 @@
 /** Per-clause spec-test-adequacy evaluator (P-006 / D-004..D-006, D-009). */
 import { getBuildInfo } from '../../build-info';
 import { repoFilesEvidenceMeasurementSchema, SPEC_EVIDENCE_KINDS } from './spec-evidence-store';
-import { SPEC_PROOF_OBLIGATION_ID_RE, type SpecBehaviorClass, type SpecClauseRevision } from './spec-clauses-store';
+import {
+  SPEC_PROOF_OBLIGATION_ID_RE,
+  SPEC_TARGET_ID_RE,
+  type SpecBehaviorClass,
+  type SpecClauseRevision,
+} from './spec-clauses-store';
 import type {
   EvidenceCurrentInput,
   EvidenceCurrentness,
@@ -687,7 +692,7 @@ function detailsOf(evidence: SpecEvidenceForAdequacy): AdequacyDetails {
   const targeted =
     typeof raw.targeted === 'boolean'
       ? raw.targeted
-      : typeof raw.targeted === 'string' && SPEC_PROOF_OBLIGATION_ID_RE.test(raw.targeted.trim())
+      : typeof raw.targeted === 'string' && SPEC_TARGET_ID_RE.test(raw.targeted.trim())
         ? raw.targeted.trim()
         : undefined;
   if (raw.targeted !== undefined && targeted === undefined) contractMetadataIssues.push('targeted:invalid');
@@ -1498,8 +1503,9 @@ type MutationTargetClause = Pick<SpecClauseRevision, 'specId' | 'falsifier'>;
  * ids. WI-10002724 / D-009: a clause that declares NONE has no scenario id to name, so under the
  * scenario-only rule its falsifiability could never pass (4,026 of 4,136 active clauses on
  * 2026-09-23); the clause itself is the case, so a target naming its own specId qualifies.
- * Obligation ids are lower-case (SPEC_PROOF_OBLIGATION_ID_RE), so the specId is lower-cased. A
- * boolean target, or one naming a sibling spec or scenario, never qualifies.
+ * Keep the clause's exact ID (platform-generated IDs can be uppercase) and accept the historical
+ * lowercase form for compatibility. Scenario targets remain exact and case-sensitive. A boolean
+ * target, or one naming a sibling spec or scenario, never qualifies.
  */
 export function mutationTargetRequirement(clause: MutationTargetClause): {
   acceptedTargets: string[];
@@ -1507,9 +1513,11 @@ export function mutationTargetRequirement(clause: MutationTargetClause): {
   requirement: string;
 } {
   const scenarios = [...new Set(clause.falsifier?.requiredScenarios ?? [])];
-  const selfTarget = scenarios.length === 0 ? clause.specId.toLowerCase() : null;
+  const selfTarget = scenarios.length === 0 ? clause.specId : null;
+  const acceptedSelfTargets =
+    selfTarget === null ? scenarios : [...new Set([selfTarget, selfTarget.toLowerCase()])];
   return {
-    acceptedTargets: selfTarget !== null ? [selfTarget] : scenarios,
+    acceptedTargets: acceptedSelfTargets,
     selfTarget,
     requirement:
       selfTarget !== null

@@ -11,6 +11,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const h = vi.hoisted(() => ({
   value: 'saved-integration-secret-0123456789' as string | undefined,
   read: vi.fn(async () => h.value),
+  readHeldWorkItems: vi.fn(async () => []),
+}));
+
+// The shell fixture has no live claims. Inject the reader while retaining the
+// real authenticated-caller policy and avoiding production Postgres.
+vi.mock('../../carry-brief', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../carry-brief')>()),
+  readHeldWorkItems: h.readHeldWorkItems,
 }));
 
 vi.mock('../../integration-credentials', () => ({
@@ -65,6 +73,7 @@ function makeCtx(over: Record<string, unknown> = {}) {
 beforeEach(() => {
   h.value = 'saved-integration-secret-0123456789';
   h.read.mockClear();
+  h.readHeldWorkItems.mockClear();
   delete process.env[DESTINATION];
 });
 

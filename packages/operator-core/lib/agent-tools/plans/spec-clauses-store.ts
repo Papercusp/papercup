@@ -27,6 +27,8 @@ export function isEnforceableSpecLifecycle(status: SpecLifecycleStatus): boolean
 
 /** Stable ids shared by canonical spec obligations and immutable evidence bindings. */
 export const SPEC_PROOF_OBLIGATION_ID_RE = /^[a-z0-9]+(?:[._:-][a-z0-9]+)*$/;
+/** Spec IDs may be platform-generated in uppercase; targeting checks exact clause identity later. */
+export const SPEC_TARGET_ID_RE = /^[A-Za-z0-9]+(?:[._:-][A-Za-z0-9]+)*$/;
 export const SPEC_CAUSAL_PAIRING_MODES = ['one-to-one'] as const;
 export type SpecCausalPairingMode = (typeof SPEC_CAUSAL_PAIRING_MODES)[number];
 

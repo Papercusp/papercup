@@ -1440,7 +1440,12 @@ export function parseArgs(argv) {
   // Spark before bootstrap/PTY creation.  OMP remains multi-provider, but the
   // retired Spark id is denied globally so an explicit provider prefix cannot
   // bypass the policy through that backend.
-  if (out.agent === "codex") {
+  // A native resume resolves its model from the recorded turn/launch selection
+  // after parsing. Requiring it here rejects unattended resumes before that
+  // inheritance runs. Fresh launches and explicit/default choices still pass
+  // through the same fail-closed model policy below.
+  const resumeInheritsModel = out.resume && !out.model && out.modelSource !== "configured-default";
+  if (out.agent === "codex" && !resumeInheritsModel) {
     // A visible desktop picker has a human in the loop: choosing Codex is the
     // deliberate configured-default decision when no model was supplied. A
     // scripted --no-picker launch is unattended even when it opens a visible

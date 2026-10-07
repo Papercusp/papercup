@@ -171,6 +171,17 @@ describe('plans:bind-spec-evidence adequacy completeness metadata', () => {
     expect(parsed.success).toBe(true);
   });
 
+  it('accepts an uppercase platform-generated clause ID as targeted adequacy metadata', () => {
+    const specId = 'AUTO-BAR-R-5-P-004';
+    const parsed = bindingSchema.safeParse({
+      ...measuredBinding,
+      specId,
+      evidenceKind: 'mutation',
+      details: { adequacy: { targeted: specId } },
+    });
+    expect(parsed.success).toBe(true);
+  });
+
   it.each([
     'fixtureCalibrated',
     'fixtureFree',

@@ -172,6 +172,11 @@ describe('RSR-P-043-A: bind-time targeting agrees with the evaluator', () => {
     { name: 'scenario clause, declared scenario id', clause: scenarioClause, targeted: SCENARIO },
     { name: 'scenario clause, boolean target', clause: scenarioClause, targeted: true },
     { name: 'scenario clause, sibling scenario id', clause: scenarioClause, targeted: 'other-case' },
+    {
+      name: 'scenario clause, uppercase scenario id remains case-sensitive',
+      clause: scenarioClause,
+      targeted: SCENARIO.toUpperCase(),
+    },
     { name: 'scenario clause, own specId (fallback only applies with NO scenarios)', clause: scenarioClause, targeted: 'spec-003-01' },
     { name: 'scenario clause, no target', clause: scenarioClause, targeted: undefined },
     { name: 'no-scenario clause, own specId (D-009 fallback)', clause: () => clause(), targeted: 'spec-003-01' },
@@ -192,6 +197,26 @@ describe('RSR-P-043-A: bind-time targeting agrees with the evaluator', () => {
 
     expect(refusal === null).toBe(evaluatorPasses);
     expect(isAcceptedMutationTarget(c, targeted)).toBe(evaluatorPasses);
+  });
+
+  it('accepts the exact uppercase generated specId as a self-target at bind and evaluation', async () => {
+    const specId = 'AUTO-BAR-R-5-P-004';
+    const c = clause({ specId });
+    const evaluatorPasses =
+      evaluateSpecTestAdequacy({
+        clause: c,
+        evidence: [
+          { ...evidence(), specId },
+          { ...currentClauseTestRow(), specId },
+          { ...counterexampleRow(specId), specId },
+        ],
+        classRef: 'plan-class-feature-ship',
+      }).ratings.falsifiability.rating === 'pass';
+    const refusal = await mutationTargetingRefusal(binding(specId, { specId }), SCOPE, loaderFor(c));
+
+    expect(mutationTargetRequirement(c).acceptedTargets).toContain(specId);
+    expect(evaluatorPasses).toBe(true);
+    expect(refusal).toBeNull();
   });
 
   it('the matrix is not vacuous: it holds both accepted and refused targets', () => {
@@ -247,9 +272,9 @@ describe('RSR-P-043-A: bind-time targeting agrees with the evaluator', () => {
 
   it('names the D-009 own-specId fallback for a clause with no declared scenarios', async () => {
     const refusal = await mutationTargetingRefusal(binding(undefined), SCOPE, loaderFor(clause()));
-    expect(refusal?.acceptedTargets).toEqual(['spec-003-01']);
+    expect(refusal?.acceptedTargets).toEqual(['SPEC-003-01', 'spec-003-01']);
     expect(refusal?.reason).toContain("this clause's own specId");
-    expect(mutationTargetRequirement(clause()).selfTarget).toBe('spec-003-01');
+    expect(mutationTargetRequirement(clause()).selfTarget).toBe('SPEC-003-01');
   });
 
   it('resolves the exact bound revision, and never loads a clause for a non-targeting evidence kind', async () => {

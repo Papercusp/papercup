@@ -21,7 +21,7 @@ import {
   type SupersessionKeepReason,
 } from './spec-evidence-store';
 import { isAcceptedMutationTarget, mutationTargetRequirement, supersedeEligibilityGaps } from './spec-test-adequacy';
-import { listSpecClauses, SPEC_PROOF_OBLIGATION_ID_RE } from './spec-clauses-store';
+import { listSpecClauses, SPEC_PROOF_OBLIGATION_ID_RE, SPEC_TARGET_ID_RE } from './spec-clauses-store';
 import { getAcceptanceRubricVettingStatus } from '../../acceptance-rubric-vetting';
 import { getAcceptanceRubricsForPlan } from '../../rubrics';
 import { listScorecards } from '../../scorecards';
@@ -66,7 +66,7 @@ const adequacyBindingDetailsSchema = z
     executed: z.boolean().optional(),
     outcome: z.string().optional(),
     targeted: z
-      .union([z.boolean(), z.string().trim().min(1).max(200).regex(SPEC_PROOF_OBLIGATION_ID_RE)])
+      .union([z.boolean(), z.string().trim().min(1).max(200).regex(SPEC_TARGET_ID_RE)])
       .optional(),
     coverageRungs: coverageRungsSchema.optional(),
     scenarioIds: proofCoverageIds.optional(),

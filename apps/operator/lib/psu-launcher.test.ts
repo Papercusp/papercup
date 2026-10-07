@@ -7779,6 +7779,31 @@ describe("cross-backend resume target + protocol-v1 launcher contract", () => {
     });
   });
 
+  it.each(["headless", "no-picker"])("round-trips a model-less %s Codex resume into recorded model inheritance", (placement) => {
+    const recorded = {
+      ...source,
+      agent: "codex",
+      launchArgv: ["psu", "--agent=codex", "--model=gpt-6.1-sol:high"],
+    };
+    const command = buildAgentLaunchCommand({
+      mode: "resume",
+      resumeId: String(recorded.id),
+      agent: "codex",
+      targetAgent: "codex",
+      headless: placement === "headless",
+    });
+    const argv = command.split(" ").slice(1);
+    if (placement === "no-picker") argv.push("--no-picker");
+    const parsed = parseArgs(argv);
+    expect(parsed.model).toBeNull();
+    expect(resolveResumeTarget(recorded, parsed)).toMatchObject({
+      operation: "native",
+      modelSpec: "gpt-6.1-sol:high",
+      modelSource: "inherited",
+    });
+    expect(() => resolveResumeTarget({ ...recorded, launchArgv: null }, parsed)).toThrow(/Codex model is required/);
+  });
+
   it("inherits a recorded Codex model for unattended native resume and rejects unresolved history", () => {
     const recorded = {
       ...source,

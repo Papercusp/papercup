@@ -8426,7 +8426,11 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         log.push({ label: '05a-exit', exitedCleanly, exitMs: Math.round(performance.now() - exitStarted) });
         await pane.stop().catch(() => {});
         pane = new PuiPane(bin, operatorPort, home, { args: ['--solo'], cwd: launchDir, cols: 120, rows: 40 });
-        await pane.waitFor(`${backendLabel} · ${launchDir}`, { timeoutMs: 60_000 });
+        // Restoring model/settings replaces the footer's backend label with
+        // the selected model. The composer still names the backend; require
+        // that and the directory independently rather than a pre-model footer.
+        await pane.waitFor(`Message ${backendLabel}`, { timeoutMs: 60_000 });
+        await pane.waitFor(launchDir, { timeoutMs: 60_000 });
         // WI-10004162: the owner's own turns contain 'calc.js', so waiting for
         // that passed over a pane with every agent reply missing. An agent
         // block header is what proves the saved conversation was restored.
@@ -8484,6 +8488,8 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         frame('05c-resumed', pane.screen());
         expect(pane.screen(), 'the resumed chat still shows the agent replies').toMatch(AGENT_BLOCK);
         const recalled = await turn('05-resume-recall', 'What change did we make to calc.js earlier in this conversation? One sentence.');
+        expect(scriptedEngine.engines.at(-1)?.adapter.host.descriptor().identity.backend,
+          'the resumed review must exercise the requested real backend').toBe(scriptedEngine.backend);
         expect(recalled).toMatch(/third|optional|three/i);
         // A history replay landing after the send would be folded into this
         // reply (the P-006 review saw the greeting twice at its start).

@@ -3953,6 +3953,42 @@ describe('onToolCall worktree guard (single-tree discipline)', () => {
     expect(r.block).toBeUndefined(); // guard passes → lock granted → {}
   });
 
+  it.each([
+    { name: 'no-remotes', config: '[core]\nrepositoryformatversion = 0\n', blocked: false },
+    { name: 'other-origin', config: '[remote "origin"]\nurl = https://example.test/independent.git\n', blocked: false },
+    { name: 'same-origin', config: '[remote "origin"]\nurl = https://example.test/canonical.git\n', blocked: true },
+    { name: 'non-origin-remote', config: '[remote "upstream"]\nurl = https://example.test/independent.git\n', blocked: true },
+    { name: 'unreadable-config', config: null, blocked: true },
+  ])('coordinates independent-root edits conservatively: $name', async ({ name, config, blocked }) => {
+    await fs.writeFile(join(fx.repo, '.git', 'config'), '[remote "origin"]\nurl = https://example.test/canonical.git\n');
+    const sibling = join(fx.workspace, name);
+    await fs.mkdir(join(sibling, '.git'), { recursive: true });
+    await fs.writeFile(join(sibling, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+    if (config !== null) await fs.writeFile(join(sibling, '.git', 'config'), config);
+    const r = await onToolCall({
+      type: 'tool_call', toolName: 'write', toolCallId: `root-${name}`,
+      input: { path: join(sibling, 'x.ts'), content: 'x' },
+    });
+    expect(r.block === true).toBe(blocked);
+    if (blocked) expect(r.reason).toContain('worktree guard');
+  });
+
+  it('still refuses a canonical linked worktree when the common repository has no remotes', async () => {
+    await fs.writeFile(join(fx.repo, '.git', 'config'), '[core]\nrepositoryformatversion = 0\n');
+    const sibling = join(fx.workspace, 'linked-no-remotes');
+    const metadata = join(fx.repo, '.git', 'worktrees', 'linked-no-remotes');
+    await fs.mkdir(sibling, { recursive: true });
+    await fs.mkdir(metadata, { recursive: true });
+    await fs.writeFile(join(metadata, 'commondir'), '../..\n');
+    await fs.writeFile(join(sibling, '.git'), `gitdir: ${metadata}\n`);
+    const r = await onToolCall({
+      type: 'tool_call', toolName: 'write', toolCallId: 'linked-no-remotes',
+      input: { path: join(sibling, 'x.ts'), content: 'x' },
+    });
+    expect(r.block).toBe(true);
+    expect(r.reason).toContain('LINKED WORKTREE');
+  });
+
   it('allows an edit in a .papercusp/worktrees isolation tree', async () => {
     // Migration/synthesis isolation worktrees live under
     // <canonical>/.papercusp/worktrees/<name> — a non-workspace-root parent, so
