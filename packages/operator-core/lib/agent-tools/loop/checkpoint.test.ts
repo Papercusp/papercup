@@ -12,6 +12,7 @@ import { z } from 'zod';
 import { defineTool, lookupByMcpName } from '@papercusp/agent-mcp';
 import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
 import { continuityProbeRevision } from '../../continuity-probes';
+import { currentBuildTestRoute } from '../../serving-runtimes';
 import { LIMITS } from '../limits';
 
 const LOOP_CONTINUITY_TEST_TOOL = 'test:loop-continuity-read';
@@ -620,6 +621,44 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
         "release-local.sh:187-204 binds every cut to ONE full superproject sha (EI-20505417131773854) " +
         "and errors 'release source drift' when current HEAD != the passed sourceSha.",
     });
+
+    expect(out.isError).toBeUndefined();
+    expect(body(out)).toMatchObject({ ok: true });
+    expect(setLoopCarryNoteWithPrior).toHaveBeenCalledTimes(1);
+    expect(setLoopCarryNote).toHaveBeenCalledTimes(1);
+  });
+
+  it('allows structured operator-api runtime qualification evidence through the writer guard', async () => {
+    readFrozenRepairMarker.mockReturnValue({
+      candidate: 'c'.repeat(40),
+      repairHead: 'r'.repeat(40),
+      phase: 'repair-in-progress',
+      failingPaths: [],
+      updatedAtMs: 1_788_763_360_000,
+      admittedPaths: [],
+      legs: [],
+    });
+    const route = currentBuildTestRoute('operator-api');
+    expect(route).not.toBeNull();
+
+    const note = JSON.stringify({
+      runtimeQualification: {
+        currentBuildTestRoute: route,
+        observedRuntime: {
+          runtime: 'staging-operator',
+          port: 3170,
+          buildSha: '2a0b600917',
+          evidence: 'Measured request/response on that build.',
+        },
+        staging: {
+          runtime: 'staging-operator',
+          role: 'owner',
+          buildSha: '2a0b600917',
+        },
+      },
+    });
+
+    const out = await call({ note });
 
     expect(out.isError).toBeUndefined();
     expect(body(out)).toMatchObject({ ok: true });
