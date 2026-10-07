@@ -1066,6 +1066,104 @@ describe('immutable dependency generation', () => {
     expect(readdirSync(legacyRoot).filter((entry) => entry.startsWith('v1-'))).toEqual([]);
   }, NATIVE_SHELL_TIMEOUT_MS);
 
+  it.each([
+    ['independent copy', false],
+    ['internal symlink', false],
+    ['fresh pin', true],
+    ['foreign pin', true],
+    ['live lease', true],
+    ['hardlink', true],
+    ['generation symlink', true],
+    ['external symlink', true],
+    ['unreadable inventory', true],
+  ] as const)(
+    'EI-25299577060523251: legacy sweep handles an old same-filesystem %s safely',
+    (protection, retained) => {
+      const integration = makeIntegration();
+      const legacyRoot = join(integration, '.papercusp/dependency-generations');
+      const first = publish(integration, { PAPERCUSP_DEPENDENCY_GENERATION_ROOT: '' }, legacyRoot);
+      expect(first.status, first.stderr).toBe(0);
+      const identity = publishedIdentity(first.stdout);
+      const generation = publishedPath(first.stdout);
+      const checkout = join(dirname(integration), 'old-checkpoint');
+      mkdirSync(join(checkout, 'node_modules/pkg'), { recursive: true });
+      const independentFile = join(checkout, 'node_modules/pkg/index.js');
+      writeFileSync(independentFile, 'independent checkout\n');
+      const marker = join(checkout, 'node_modules/.papercusp-dependency-generation');
+      writeFileSync(marker, `identity=${identity}\nsource=${identity.slice(3)}\n`);
+      const retentionEnv: NodeJS.ProcessEnv = {};
+      expect(statSync(checkout).dev).toBe(statSync(legacyRoot).dev);
+      const aged = new Date(Date.now() - 4 * 86_400_000);
+      if (protection !== 'fresh pin') utimesSync(marker, aged, aged);
+      if (protection === 'foreign pin') {
+        mkdirSync(join(legacyRoot, '.pins'), { recursive: true });
+        writeFileSync(join(legacyRoot, '.pins/foreign'),
+          `host=another-host\nidentity=${identity}\ncheckout=${checkout}\n`);
+      } else if (protection === 'live lease') {
+        mkdirSync(join(legacyRoot, '.leases'), { recursive: true });
+        writeFileSync(join(legacyRoot, '.leases/live'),
+          `host=${execFileSync('hostname', { encoding: 'utf8' }).trim()}\n` +
+          `pid=${process.pid}\nidentity=${identity}\n`);
+      } else if (protection === 'hardlink') {
+        linkSync(join(generation, 'tree/node_modules/pkg/index.js'), join(checkout, 'shared.js'));
+      } else if (protection === 'generation symlink') {
+        symlinkSync(join(generation, 'tree/node_modules/pkg'), join(checkout, 'linked-package'));
+      } else if (protection === 'external symlink') {
+        symlinkSync(integration, join(checkout, 'other-checkout'));
+      } else if (protection === 'internal symlink') {
+        symlinkSync('node_modules/pkg', join(checkout, 'linked-package'));
+        symlinkSync('missing-internal-package', join(checkout, 'broken-internal-link'));
+      } else if (protection === 'unreadable inventory') {
+        const shimBin = join(dirname(integration), 'shim-bin');
+        mkdirSync(shimBin);
+        const realFind = execFileSync('sh', ['-c', 'command -v find'], { encoding: 'utf8' }).trim();
+        writeFileSync(join(shimBin, 'find'),
+          '#!/bin/bash\nfor arg in "$@"; do [ "$arg" != -links ] || exit 1; done\n' +
+          `exec ${JSON.stringify(realFind)} "$@"\n`);
+        chmodSync(join(shimBin, 'find'), 0o755);
+        retentionEnv.PATH = `${shimBin}:${process.env.PATH}`;
+      }
+      // Migrate using the real publisher/retention path, then follow its record
+      // without the service's env. A sibling import must not resurrect the old
+      // independent pin. Its own files remain readable after the store is pruned.
+      const configuredRoot = join(dirname(integration), 'persistent-generations');
+      const moved = publish(integration, { ...retentionEnv, PAPERCUSP_DEPENDENCY_GENERATION_ROOT: configuredRoot });
+      expect(moved.status, moved.stderr).toBe(0);
+      expect(existsSync(generation)).toBe(retained);
+      const followed = spawnSync('bash', [SCRIPT, '--integration', integration, '--prune-only'], {
+        encoding: 'utf8', env: { ...process.env, ...retentionEnv, PAPERCUSP_DEPENDENCY_GENERATION_ROOT: '' },
+      });
+      expect(followed.status, followed.stderr).toBe(0);
+      expect(existsSync(generation)).toBe(retained);
+      expect(readFileSync(independentFile, 'utf8')).toBe('independent checkout\n');
+      if (protection === 'live lease') expect(existsSync(join(legacyRoot, '.leases/live'))).toBe(true);
+      if (protection === 'foreign pin') expect(existsSync(join(legacyRoot, '.pins/foreign'))).toBe(true);
+    },
+    NATIVE_SHELL_TIMEOUT_MS,
+  );
+
+  it('EI-25299577060523251: ordinary retention keeps an old same-filesystem checkout pin', () => {
+    const integration = makeIntegration();
+    const generationRoot = join(dirname(integration), 'persistent-generations');
+    const env = { PAPERCUSP_DEPENDENCY_GENERATION_ROOT: generationRoot, DEPENDENCY_GENERATION_RETAIN_COUNT: '1' };
+    const first = publish(integration, env);
+    expect(first.status, first.stderr).toBe(0);
+    const identity = publishedIdentity(first.stdout);
+    const generation = publishedPath(first.stdout);
+    const checkout = join(dirname(integration), 'old-checkpoint');
+    mkdirSync(join(checkout, 'node_modules'), { recursive: true });
+    const marker = join(checkout, 'node_modules/.papercusp-dependency-generation');
+    writeFileSync(marker, `identity=${identity}\nsource=${identity.slice(3)}\n`);
+    const aged = new Date(Date.now() - 4 * 86_400_000);
+    utimesSync(marker, aged, aged);
+    writeFileSync(join(integration, 'node_modules/pkg/index.js'), 'new persistent generation\n');
+    const next = publish(integration, env);
+    expect(next.status, next.stderr).toBe(0);
+    expect(publishedIdentity(next.stdout)).not.toBe(identity);
+    expect(existsSync(generation)).toBe(true);
+    expect(existsSync(publishedPath(next.stdout))).toBe(true);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
   it('P-004: exposes the cheap immutable candidate/input key without reading mutable live lockfiles', () => {
     const integration = makeIntegration();
     const firstCandidate = commitFixture(integration, 'first dependency inputs');

@@ -1510,8 +1510,44 @@ dependency_generation_cross_fs_pin_is_retired() {
   dependency_generation_path_is_old "$marker" $((max_age_days * 86400))
 }
 
+# EI-25299577060523251: after the store moves, an old same-filesystem
+# checkout can be an independent COPY too. Its marker otherwise keeps the
+# obsolete store forever even though readers select from the persistent store.
+# Only the legacy sweep uses this extension. Fresh/foreign pins and selector
+# leases retain their existing protection; a hardlink or escaping symlink makes
+# independence unproven and keeps the generation. Measurement failures retain.
+dependency_generation_independent_legacy_pin_is_retired() {
+  local generation_root="$1" checkout="$2" marker="$3"
+  local identity generation store_dev checkout_dev shared links link target checkout_real
+  local max_age_days="${DEPENDENCY_GENERATION_CROSS_FS_PIN_MAX_AGE_DAYS:-3}"
+  [[ "$max_age_days" =~ ^[0-9]+$ ]] || max_age_days=3
+  dependency_generation_path_is_old "$marker" $((max_age_days * 86400)) || return 1
+  store_dev="$(dependency_generation_path_dev "$generation_root")" || return 1
+  checkout_dev="$(dependency_generation_path_dev "$checkout")" || return 1
+  [ -n "$store_dev" ] && [ "$store_dev" = "$checkout_dev" ] || return 1
+  identity="$(dependency_generation_read_field "$marker" identity)"
+  [[ "$identity" =~ ^v1-[0-9a-f]{64}$ ]] || return 1
+  generation="$generation_root/$identity"
+  checkout_real="$(cd "$checkout" 2>/dev/null && pwd -P)" || return 1
+  case "$checkout_real" in "$generation_root"|"$generation_root"/*) return 1 ;; esac
+  # Any shared regular inode is conservative evidence against independence,
+  # including a link held by a checkout other than the pin being considered.
+  shared="$(find "$generation" -type f -links +1 -print -quit 2>/dev/null)" || return 1
+  [ -z "$shared" ] || return 1
+  links="$(find "$checkout_real" -name .git -prune -o -type l -print 2>/dev/null)" || return 1
+  while IFS= read -r link; do
+    [ -n "$link" ] || continue
+    # -m follows existing symlink chains and also normalizes a missing terminal
+    # component. A broken INTERNAL package link cannot read the legacy store.
+    # Unsupported realpath or any other failure simply preserves the pin.
+    target="$(realpath -m -- "$link" 2>/dev/null)" || return 1
+    case "$target" in "$checkout_real"|"$checkout_real"/*) ;; *) return 1 ;; esac
+  done <<< "$links"
+  return 0
+}
+
 dependency_generation_refresh_retention_state_locked() {
-  local generation_root="$1" integration_root="$2"
+  local generation_root="$1" integration_root="$2" retire_independent_legacy="${3:-0}"
   local host pin pin_host identity checkout marker lease lease_host lease_pid lease_start current_start parent sibling
   host="$(dependency_generation_host)"
   dependency_generation_ensure_store_root "$generation_root" "$generation_root/.pins" "$generation_root/.leases"
@@ -1543,6 +1579,11 @@ dependency_generation_refresh_retention_state_locked() {
     elif dependency_generation_cross_fs_pin_is_retired "$generation_root" "$checkout" "$marker"; then
       dependency_generation_log \
         "removing retired cross-filesystem checkout pin $(basename "$pin") ($checkout, $identity)"
+      rm -f -- "$pin"
+    elif [ "$retire_independent_legacy" = 1 ] && [ "$checkout" != "$integration_root" ] \
+      && dependency_generation_independent_legacy_pin_is_retired "$generation_root" "$checkout" "$marker"; then
+      dependency_generation_log \
+        "removing retired independent legacy checkout pin $(basename "$pin") ($checkout, $identity)"
       rm -f -- "$pin"
     fi
   done
@@ -1585,6 +1626,10 @@ dependency_generation_refresh_retention_state_locked() {
     # A symlinked sibling resolves to its offload target above; without this
     # check the pin removed in the loop before would be re-written every refresh.
     dependency_generation_cross_fs_pin_is_retired "$generation_root" "$sibling" "$marker" && continue
+    if [ "$retire_independent_legacy" = 1 ] \
+      && dependency_generation_independent_legacy_pin_is_retired "$generation_root" "$sibling" "$marker"; then
+      continue
+    fi
     dependency_generation_write_pin_locked "$generation_root" "$sibling" "$identity" || true
   done
 }
@@ -1786,7 +1831,7 @@ dependency_generation_sweep_legacy_store() {
       dependency_generation_log "WARNING: legacy generation store $legacy_real is locked; sweep deferred"
       return 0
     }
-  dependency_generation_refresh_retention_state_locked "$legacy_real" "$integration_root" || rc=$?
+  dependency_generation_refresh_retention_state_locked "$legacy_real" "$integration_root" 1 || rc=$?
   if [ "$rc" -eq 0 ]; then
     dependency_generation_quarantine_unretained_locked "$legacy_real" 0 || rc=$?
   fi
