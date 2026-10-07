@@ -112,7 +112,7 @@ test('late search initialization preserves focus when the reader already closed 
   await deferSearchInitialization(page);
   await page.goto('/docs/quickstart');
   await expect(page.getByRole('button', { name: 'Search', exact: true })).toBeEnabled();
-  const dialog = page.getByRole('dialog');
+  const dialog = page.locator('site-search dialog');
   await page.keyboard.press('Control+k');
   await expect(dialog).toBeVisible();
   await page.keyboard.press('Escape');
