@@ -24,6 +24,7 @@ export const DEFAULT_PACKAGE_CACHE_MAX_BYTES = 8 * 1024 ** 3;
 export const PRESSURE_PACKAGE_CACHE_MAX_BYTES = 1024 ** 3;
 const DEFAULT_MEASURE_BUDGET_MS = 30_000;
 const DEFAULT_COMMAND_TIMEOUT_MS = 120_000;
+const DEFAULT_MUTEX_TIMEOUT_MS = 300_000;
 const MAX_MEASURED_FILES = 2_000_000;
 const COMMAND_OUTPUT_CHARS = 4_000;
 
@@ -84,6 +85,8 @@ interface PackageCacheRetentionOptions {
   repoRoot?: string;
   /** Lower the cache floor only when this exact filesystem is at its write reserve. */
   pressurePath?: string;
+  /** Bound the shared cache-writer lease wait; defaults to the maintenance budget. */
+  mutexTimeoutMs?: number;
   sampleDisk?: typeof sampleDiskSnapshots;
   sameFilesystem?: (a: string, b: string) => Promise<boolean>;
   measure?: (path: string) => Promise<PackageCacheMeasurement>;
@@ -355,7 +358,7 @@ export async function runPackageCacheRetention(
         return outcomes;
       },
       {
-        timeoutMs: 300_000,
+        timeoutMs: options.mutexTimeoutMs ?? DEFAULT_MUTEX_TIMEOUT_MS,
         staleMs: 10 * 60_000,
         retryMs: 250,
         waitingNoticeIntervalMs: 60_000,

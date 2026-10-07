@@ -9,9 +9,15 @@ import { GIT_FETCH_HEADROOM_REFUSAL } from './git-fetch-headroom-refusal';
 
 type GitResult = { code: number; stdout: string; stderr: string };
 
+/** Cache cleanup is optional fetch preparation; do not let a host-wide cache lease stall Git for minutes. */
+export const GIT_FETCH_CACHE_RECOVERY_MUTEX_TIMEOUT_MS = 5_000;
+
 async function recoverCacheHeadroom(path: string): Promise<void> {
   const { runPackageCacheRetention } = await import('../../storage/package-cache-retention');
-  const outcomes = await runPackageCacheRetention({ pressurePath: path });
+  const outcomes = await runPackageCacheRetention({
+    pressurePath: path,
+    mutexTimeoutMs: GIT_FETCH_CACHE_RECOVERY_MUTEX_TIMEOUT_MS,
+  });
   for (const outcome of outcomes) {
     if (outcome.status !== 'below-threshold') {
       console.warn(`[git-fetch-headroom] ${outcome.manager} cache ${outcome.status}: ` +

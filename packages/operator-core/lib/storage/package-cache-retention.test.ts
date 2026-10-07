@@ -269,4 +269,27 @@ describe('runPackageCacheRetention', () => {
     expect(mutexFailure[0]).toMatchObject({ status: 'mutex-unavailable' });
     expect(mutexFailure[0]?.note).toContain('install still active');
   });
+
+  it('keeps the maintenance wait default but honors a shorter caller budget', async () => {
+    const observedTimeouts: number[] = [];
+    const withMutex = async <T>(
+      _name: string,
+      _run: () => Promise<T>,
+      options?: Record<string, unknown>,
+    ): Promise<T> => {
+      observedTimeouts.push(Number(options?.timeoutMs));
+      throw new Error(`Timed out after ${String(options?.timeoutMs)}ms waiting for test mutex`);
+    };
+    const base = {
+      targets: [targets[0]!],
+      maxBytes: 8,
+      measure: async () => measurement(9),
+      withMutex,
+    };
+
+    expect((await runPackageCacheRetention(base))[0]).toMatchObject({ status: 'mutex-unavailable' });
+    expect((await runPackageCacheRetention({ ...base, mutexTimeoutMs: 5_000 }))[0])
+      .toMatchObject({ status: 'mutex-unavailable', note: expect.stringContaining('5000ms') });
+    expect(observedTimeouts).toEqual([300_000, 5_000]);
+  });
 });

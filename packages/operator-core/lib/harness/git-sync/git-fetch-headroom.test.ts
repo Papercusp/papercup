@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { withGitFetchHeadroom } from './git-fetch-headroom';
+import {
+  GIT_FETCH_CACHE_RECOVERY_MUTEX_TIMEOUT_MS,
+  withGitFetchHeadroom,
+} from './git-fetch-headroom';
 import { DEFAULT_DISK_POLICY, type DiskSnapshot } from '../../storage/disk-space-alarm';
 
 const cacheRetention = vi.hoisted(() => vi.fn(async (_options?: unknown) => []));
@@ -28,7 +31,11 @@ describe('Git fetch disk headroom', () => {
     expect(run.mock.calls[0]).toEqual([
       ['-C', '/worktree', 'rev-parse', '--path-format=absolute', '--git-path', 'objects'], undefined,
     ]);
-    expect(cacheRetention).toHaveBeenCalledExactlyOnceWith({ pressurePath: path });
+    expect(cacheRetention).toHaveBeenCalledExactlyOnceWith({
+      pressurePath: path,
+      mutexTimeoutMs: GIT_FETCH_CACHE_RECOVERY_MUTEX_TIMEOUT_MS,
+    });
+    expect(GIT_FETCH_CACHE_RECOVERY_MUTEX_TIMEOUT_MS).toBe(5_000);
     expect(sample).toHaveBeenCalledTimes(2);
   });
 
