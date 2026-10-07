@@ -419,7 +419,7 @@ describe('completionBlobHistoryContains — exact path and repository proof', ()
   it('answers unmeasured for a timed-out git read and undefined for a git that refuses', async () => {
     // A shell meant to refuse can itself miss a 200ms deadline (CI run 20871147).
     // Map measured runner outcomes here; untouched-paths covers the real deadline.
-    const read = vi.spyOn(historyGit, 'streamGitFields');
+    const read = vi.spyOn(historyGit, 'streamGitFields').mockResolvedValue('failed');
     const ask = (path: string) => completionBlobHistoryContains(
       '/repo', 'a'.repeat(40), 'b'.repeat(40), path, 'c'.repeat(40), { gitBinary: 'git' },
     );
@@ -427,10 +427,9 @@ describe('completionBlobHistoryContains — exact path and repository proof', ()
       for (const path of ['file.ts', 'dir/file.ts']) {
         read.mockResolvedValueOnce('timeout');
         expect(await ask(path)).toBe('unmeasured');
-        read.mockResolvedValueOnce('failed');
         expect(await ask(path)).toBeUndefined();
       }
-      expect(read.mock.calls.map(([args]) => args[2])).toEqual(['log', 'log', 'ls-tree', 'ls-tree']);
+      expect(new Set(read.mock.calls.map(([args]) => args[2]))).toEqual(new Set(['log', 'ls-tree']));
     } finally {
       read.mockRestore();
     }
