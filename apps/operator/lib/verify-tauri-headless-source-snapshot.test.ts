@@ -46,6 +46,34 @@ const operatorSnapshotSource = src.slice(
 );
 
 describe("EI-25270951515189161 — verifier snapshots avoid active source edits", () => {
+  it('passes file-backed inputs intact alongside mandatory tooling, before receipt verification and dependencies', () => {
+    const start = src.indexOf('snapshot_committed_operator_source() {');
+    const end = src.indexOf('snapshot_operator_source || {', start);
+    const fixture = mkdtempSync(resolve(tmpdir(), 'verifier-file-input-contract-'));
+    const inputsFile = resolve(fixture, 'complete inputs.json');
+    writeFileSync(inputsFile, JSON.stringify(['apps/operator/ui.ts', 'path with,comma.ts']));
+    try {
+      const result = spawnSync('bash', ['-c', [
+        'set -euo pipefail',
+        'REPO_DIR=/canonical; WORK="$TEST_ROOT"; OPERATOR_SNAPSHOT_PARENT="$TEST_ROOT"',
+        'VERIFY_TAURI_SOURCE_REF=commit; unset VERIFY_TAURI_SOURCE_INPUTS',
+        'VERIFY_TAURI_SOURCE_INPUTS_FILE="$TEST_INPUTS_FILE"',
+        'write_run_marker() { :; }; reserve_verifier_disk() { :; }; log() { :; }',
+        'node() { printf "%s\\n" "$@" >> "$WORK/order"; }',
+        'cp() { printf \'%s\\n\' \'papercusp_pinned_deps_snapshot_locked() { echo deps >> "$WORK/order"; }\' > "$WORK/pinned-deps.sh"; }',
+        src.slice(start, end),
+        'snapshot_committed_operator_source',
+      ].join('\n')], { encoding: 'utf8', env: { ...process.env, TEST_ROOT: fixture, TEST_INPUTS_FILE: inputsFile } });
+      expect(result.status, result.stderr).toBe(0);
+      const order = readFileSync(resolve(fixture, 'order'), 'utf8');
+      expect(order).toContain(`--inputs-file\n${inputsFile}\n`);
+      expect(order).toContain('scripts/verify-tauri-headless.sh,scripts/source-preview.mjs');
+      expect(order.indexOf('verifier-verify')).toBeGreaterThan(order.indexOf('verifier-prepare'));
+      expect(order.indexOf('\ndeps\n')).toBeGreaterThan(order.indexOf('verifier-verify'));
+      expect(readFileSync(inputsFile, 'utf8')).toBe(JSON.stringify(['apps/operator/ui.ts', 'path with,comma.ts']));
+    } finally { rmSync(fixture, { recursive: true, force: true }); }
+  });
+
   it("keeps committed preparation independent of live census and verifies before donor mutation", () => {
     const start = src.indexOf('snapshot_committed_operator_source() {');
     const end = src.indexOf('snapshot_operator_source || {', start);

@@ -242,6 +242,10 @@
 #                              export with canonical tree as dependency donor
 #   VERIFY_TAURI_SOURCE_INPUTS  comma-separated tested repo-relative acceptance
 #                              inputs; every input must match the selected ref
+#   VERIFY_TAURI_SOURCE_INPUTS_FILE
+#                              path to a non-empty JSON array of acceptance paths;
+#                              merged with SOURCE_INPUTS and mandatory tooling
+#                              inputs without carrying the list through argv/env
 #   VERIFY_TAURI_DISPLAY_NUM    Xvfb display number (default: auto-picked, >=90)
 #   VERIFY_TAURI_WINDOW         window size the desktop BOOTS at, <width>x<height>
 #                                (e.g. 1800x1000). Default unset = the real
@@ -1301,10 +1305,14 @@ snapshot_committed_operator_source() {
   # Only runtime source and desktop execution move to the verified archive.
   local snapshot_root receipt pinned_deps_copy="$WORK/pinned-deps.sh"
   local inputs="package.json,package-lock.json,papercusp-desktop/package.json,papercusp-desktop/package-lock.json,scripts/npm-install-safe.mjs,scripts/verify-tauri-headless.sh,scripts/source-preview.mjs,scripts/lib/committed-source-loader.mjs,scripts/restricted-hold-tree-gate.mjs,scripts/lib/spa-require-built.sh,papercusp-desktop/bin/lib/federation-asserts.sh,papercusp-desktop/bin/lib/disk-preflight.sh,papercusp-desktop/bin/lib/pinned-deps.sh,${VERIFY_TAURI_SOURCE_INPUTS:-}"
-  [ -n "${VERIFY_TAURI_SOURCE_INPUTS:-}" ] || {
-    echo 'FATAL: pinned source requires explicit VERIFY_TAURI_SOURCE_INPUTS tested acceptance paths' >&2
+  [ -n "${VERIFY_TAURI_SOURCE_INPUTS:-}${VERIFY_TAURI_SOURCE_INPUTS_FILE:-}" ] || {
+    echo 'FATAL: pinned source requires explicit VERIFY_TAURI_SOURCE_INPUTS or VERIFY_TAURI_SOURCE_INPUTS_FILE tested acceptance paths' >&2
     return 1
   }
+  local input_args=(--inputs "$inputs")
+  if [ -n "${VERIFY_TAURI_SOURCE_INPUTS_FILE:-}" ]; then
+    input_args+=(--inputs-file "$VERIFY_TAURI_SOURCE_INPUTS_FILE")
+  fi
   OPERATOR_SOURCE_WORK="$(mktemp -d "$OPERATOR_SNAPSHOT_PARENT/verify-tauri-headless.XXXXXX")" || return 1
   snapshot_root="$OPERATOR_SOURCE_WORK/operator-source"
   receipt="$WORK/verifier-source-receipt.json"
@@ -1313,7 +1321,7 @@ snapshot_committed_operator_source() {
   reserve_verifier_disk 0 || return $?
   node "$REPO_DIR/scripts/source-preview.mjs" verifier-prepare \
     --repo "$REPO_DIR" --ref "$VERIFY_TAURI_SOURCE_REF" --out "$snapshot_root" \
-    --inputs "$inputs" --receipt "$receipt" || return 1
+    "${input_args[@]}" --receipt "$receipt" || return 1
   # Caller receipt is outside the archive; verify before loading any exported helper.
   node "$REPO_DIR/scripts/source-preview.mjs" verifier-verify \
     --out "$snapshot_root" --receipt "$receipt" || return 1
