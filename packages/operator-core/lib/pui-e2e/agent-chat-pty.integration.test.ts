@@ -955,6 +955,10 @@ class PuiPane {
 
   failureEvidence(): Record<string, unknown> {
     return {
+      operatorRendezvous: [...this.raw.matchAll(/PUI_OPERATOR_RENDEZVOUS (\{[^\r\n]*\})/g)]
+        .slice(-8).map((match) => {
+          try { return JSON.parse(match[1]); } catch { return { decodeError: true }; }
+        }),
       screen: this.stoppedScreen ?? this.screen(),
       screenFrozenAtStop: this.stoppedScreen !== undefined,
       observerMaxLateMs: this.observerMaxLateMs,

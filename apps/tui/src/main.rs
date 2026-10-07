@@ -1202,8 +1202,20 @@ mod cli_help_tests {
 
 #[cfg(test)]
 mod doctor_tests {
-    use super::{operator_failure_lines, operator_failure_status_line};
+    use super::{operator_failure_diagnostic, operator_failure_lines, operator_failure_status_line};
     use crate::http::IdentityMismatchError;
+
+    #[test]
+    fn rendezvous_diagnostic_preserves_the_probe_budget_and_endpoint() {
+        let error = anyhow::Error::new(crate::http::ProbeTimeout {
+            endpoint: "http://127.0.0.1:46389".into(),
+            budget: std::time::Duration::from_secs(3),
+        });
+        let diagnostic = operator_failure_diagnostic("http://127.0.0.1:46389", &error);
+        assert_eq!(diagnostic["kind"], "unreachable");
+        assert_eq!(diagnostic["endpoint"], "http://127.0.0.1:46389");
+        assert_eq!(diagnostic["detail"], error.to_string());
+    }
 
     /// R1 (UI half): the status line must carry the SAME classification doctor
     /// prints. It previously shipped the raw anyhow chain, which names no kind,
@@ -1421,7 +1433,20 @@ mod doctor_session_tests {
 /// A wide terminal shows the whole thing; a narrow one still shows the part
 /// that says where to look, and `pui doctor` prints it in full.
 fn operator_failure_status_line(endpoint_label: &str, error: &anyhow::Error) -> String {
+    eprintln!(
+        "PUI_OPERATOR_RENDEZVOUS {}",
+        operator_failure_diagnostic(endpoint_label, error)
+    );
     http::RendezvousError::classify(endpoint_label, error).status_line()
+}
+
+fn operator_failure_diagnostic(endpoint_label: &str, error: &anyhow::Error) -> serde_json::Value {
+    let failure = http::RendezvousError::classify(endpoint_label, error);
+    serde_json::json!({
+        "kind": failure.kind.label(),
+        "endpoint": failure.endpoint,
+        "detail": failure.detail,
+    })
 }
 
 async fn run_doctor() -> Result<()> {
