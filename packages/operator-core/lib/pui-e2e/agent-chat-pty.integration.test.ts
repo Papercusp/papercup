@@ -1503,8 +1503,14 @@ async function openComposer(pane: PuiPane, reviewNewSession = true): Promise<voi
     pane.enter();
     await pane.waitFor(`mode ${mode}`);
   }
-  pane.write('i');
   if (reviewNewSession) pane.reviewNextNewSession();
+  pane.write('i');
+  if (reviewNewSession) {
+    // The new-session wizard is driven asynchronously from PTY output. Wait
+    // for the composer itself before callers type, so input cannot land in a
+    // context/runtime selector and disappear during setup.
+    await pane.waitForSendReady({ timeoutMs: 60_000 });
+  }
 }
 
 async function waitForSavedTurn(content: string): Promise<PersistedChat> {
