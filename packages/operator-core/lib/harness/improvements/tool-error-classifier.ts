@@ -216,6 +216,20 @@ export const TOOL_ERROR_RULES: readonly ToolErrorRule[] = [
 export const FINGERPRINTED_TOOL_ERROR_CLASSES: ReadonlySet<ToolErrorClass> =
   new Set<ToolErrorClass>(['structural', 'caller', 'transient']);
 
+/**
+ * Error codes emitted by a shared transport/subsystem rather than by the named
+ * tool handler. Their filing identity is the subsystem plus error code, so a
+ * result-door failure from `facts:list` and `work_items:get` remains one row.
+ */
+const TOOL_FAILURE_SUBSYSTEM_BY_ERROR_CODE: Readonly<Record<string, string>> = {
+  output_spill_failed: 'result-door',
+};
+
+export function toolFailureSubsystemForCode(errorCode: string | null | undefined): string | null {
+  const normalized = errorCode?.trim().toLowerCase();
+  return normalized ? TOOL_FAILURE_SUBSYSTEM_BY_ERROR_CODE[normalized] ?? null : null;
+}
+
 /** Compile every rule's messagePattern as a JS RegExp once. Throws (at module
  *  load) if a pattern is not a valid JS regex — the cheap half of the
  *  dual-engine guarantee (the SQL `~*` half is proven by the integration test). */
@@ -560,6 +574,15 @@ export function toolFailureSignatureKey(
   input: Pick<SuspectedToolFailure, 'toolName' | 'errorCode' | 'fieldPath'>,
   failureFamily: ToolErrorClass,
 ): string {
+  const subsystem = toolFailureSubsystemForCode(input.errorCode);
+  if (subsystem) {
+    const errorCode = correlationSegment(input.errorCode, 'error-code-unknown');
+    // `output_spill_failed` is emitted by the outer result-door, not the named
+    // tool. Keep the legacy key grammar (and parser) while fixing the subject,
+    // family and field segments to constants: the actual identity is subsystem
+    // + error code. Per-tool/build classification remains in the class tally.
+    return `tool-failure-signature:${subsystem}:structural:${errorCode}:field-unknown`;
+  }
   const tool = correlationSegment(input.toolName, 'unknown-tool');
   const errorCode = correlationSegment(input.errorCode, 'error-code-unknown');
   const fieldPath = correlationSegment(input.fieldPath, 'field-unknown');

@@ -31,6 +31,7 @@ import {
   FINGERPRINTED_TOOL_ERROR_CLASSES,
   normalizeSuspectedToolFailure,
   toolFailureSignatureKey,
+  parseToolFailureSignatureKey,
   matchKnownExternalToolFailure,
   KNOWN_EXTERNAL_TOOL_FAILURE_CLASSES,
   type ToolErrorClass,
@@ -124,6 +125,27 @@ describe('P-001 R-7 frozen friction correlation controls', () => {
     expect(toolFailureSignatureKey(metadataToolFailure, 'structural')).not.toBe(signature);
     expect(toolFailureSignatureKey({ toolName: 'ptool' }, 'structural'))
       .toBe('tool-failure-signature:ptool:structural:error-code-unknown:field-unknown');
+  });
+
+  it('keys result-door spill failures by subsystem and code, independent of the named tool', () => {
+    const first = toolFailureSignatureKey({
+      toolName: 'facts:list', errorCode: 'output_spill_failed', fieldPath: 'result',
+    }, 'transient');
+    const second = toolFailureSignatureKey({
+      toolName: 'work_items:get', errorCode: 'output_spill_failed', fieldPath: 'payload',
+    }, 'structural');
+
+    expect(first).toBe('tool-failure-signature:result-door:structural:output_spill_failed:field-unknown');
+    expect(second).toBe(first);
+    expect(parseToolFailureSignatureKey(first)).toEqual({
+      toolName: 'result-door',
+      failureFamily: 'structural',
+      errorCode: 'output_spill_failed',
+      fieldPath: 'field-unknown',
+    });
+    expect(toolFailureSignatureKey({
+      toolName: 'work_items:get', errorCode: 'different_error', fieldPath: 'payload',
+    }, 'structural')).not.toBe(first);
   });
 
   it('a repeated caller rejection does not become direct evidence through legacy booleans', () => {
