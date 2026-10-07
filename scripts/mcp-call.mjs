@@ -580,7 +580,10 @@ export function buildConnectionRetryDiagnostic({ port, attempt, delayMs, remaini
  * Forward the launched role as an admission hint for bounded judge calls;
  * signed principal verification remains the authorization boundary.
  */
-export function buildMcpSessionQuery({ client, workspace, harness, role, origin, allWorkspaces = false, env = process.env }) {
+export function buildMcpSessionQuery({
+  client, workspace, harness, role, origin, allWorkspaces = false,
+  nativeSessionOverride, env = process.env,
+}) {
   const qs = new URLSearchParams({
     superuser: '1',
     client,
@@ -596,16 +599,33 @@ export function buildMcpSessionQuery({ client, workspace, harness, role, origin,
   // rejected as superuser_foreign_native_session. Fall back to the active
   // client's session variable for older or externally launched sessions. A
   // Claude psu session can also inherit a stale CODEX_SESSION_ID from its shell.
-  const nativeSession = String(
-    env.PAPERCUSP_NATIVE_SESSION_ID ||
-    (String(env.PAPERCUSP_AGENT ?? '').trim() === 'claude'
-      ? env.CLAUDE_CODE_SESSION_ID
-      : env.CODEX_SESSION_ID) || '',
-  ).trim();
+  const nativeSession = String(nativeSessionOverride !== undefined
+    ? nativeSessionOverride ?? ''
+    : env.PAPERCUSP_NATIVE_SESSION_ID ||
+      (String(env.PAPERCUSP_AGENT ?? '').trim() === 'claude'
+        ? env.CLAUDE_CODE_SESSION_ID
+        : env.CODEX_SESSION_ID) || '').trim();
   if (nativeSession && client === String(env.PAPERCUSP_SID ?? '').trim()) {
     qs.set('native_session', nativeSession);
   }
   return qs;
+}
+
+/** A foreign native-session refusal is emitted before the tool dispatcher runs. */
+export function isForeignNativeSessionRejection(result) {
+  return result?.isError === true &&
+    Array.isArray(result.content) &&
+    result.content.some((block) =>
+      block?.type === 'text' && block.text === 'request_rejected: superuser_foreign_native_session');
+}
+
+/** Retry only an inherited Codex claim; an explicit launcher binding stays authoritative. */
+export function shouldRetryWithoutNativeSession(result, { client, query, env = process.env } = {}) {
+  return isForeignNativeSessionRejection(result) &&
+    Boolean(String(env.CODEX_SESSION_ID ?? '').trim()) &&
+    !String(env.PAPERCUSP_NATIVE_SESSION_ID ?? '').trim() &&
+    Boolean(client) && client === String(env.PAPERCUSP_SID ?? '').trim() &&
+    query instanceof URLSearchParams && query.has('native_session');
 }
 
 /**
@@ -751,14 +771,15 @@ async function main() {
     console.error(`mcp-call: ${error?.message ?? error}`);
     process.exit(2);
   }
-  const qs = buildMcpSessionQuery({
+  const queryArgs = {
     client,
     workspace,
     harness: flags.harness,
     role: resolveMcpRole(),
     origin: resolveMcpCallOrigin(client),
     allWorkspaces: flags.allWorkspaces,
-  });
+  };
+  const qs = buildMcpSessionQuery(queryArgs);
   // EI-20182275617587040: PAPERCUSP_HONO_PORT can OUTLIVE the process it described
   // (e.g. a per-session operator that has since died), and a bare fetch at a port with
   // no listener dies as an unactionable `fetch failed`. That is worst precisely HERE:
@@ -812,7 +833,7 @@ async function main() {
       responseTokenPath = tokenCandidate.path;
       try {
         stampRequestSent();
-        const candidateRes = await fetchWithConnectionRecovery(
+        let candidateRes = await fetchWithConnectionRecovery(
           'http://localhost:' + port + '/api/mcp?' + qs,
           initForToken(tokenCandidate.token),
           {
@@ -827,13 +848,38 @@ async function main() {
             },
           },
         );
-        const candidateRaw = await candidateRes.text();
+        let candidateRaw = await candidateRes.text();
+        let candidateOut = parseSse(candidateRaw, REQUEST_ID);
+        if (shouldRetryWithoutNativeSession(candidateOut.error, { client, query: qs })) {
+          console.error(
+            'mcp-call: operator rejected the inherited Codex native-session claim before dispatch; ' +
+              'retrying once with the same client identity and no native-session claim.',
+          );
+          const queryWithoutNativeSession = buildMcpSessionQuery({
+            ...queryArgs,
+            nativeSessionOverride: null,
+          });
+          stampRequestSent();
+          candidateRes = await fetchWithConnectionRecovery(
+            'http://localhost:' + port + '/api/mcp?' + queryWithoutNativeSession,
+            initForToken(tokenCandidate.token),
+            {
+              retryWindowMs: pinned ? MCP_CALL_CONNECTION_RETRY_WINDOW_MS : 0,
+              onRetry: ({ attempt, delayMs, remainingMs }) => {
+                if (attempt === 1 || attempt % 10 === 0) {
+                  console.error(buildConnectionRetryDiagnostic({ port, attempt, delayMs, remainingMs }));
+                }
+              },
+            },
+          );
+          candidateRaw = await candidateRes.text();
+          candidateOut = parseSse(candidateRaw, REQUEST_ID);
+        }
         if (hasEndpointFallback && isRecoverableAuthorityDenial(candidateRaw)) {
           authorityFallback = true;
           tryNextEndpoint = true;
           break;
         }
-        const candidateOut = parseSse(candidateRaw, REQUEST_ID);
         if (
           isInvalidSuperuserBearerResult(candidateOut.error) &&
           tokenIndex + 1 < tokenCandidates.length
