@@ -112,14 +112,15 @@ observations.goalAttributedPlans = goalPlans;
     `Arm A idea created_by=${idea?.created_by}; expected goal holder ${expectedHolder} `
     + `(${COUNTEREXAMPLE ? `COUNTEREXAMPLE ${COUNTEREXAMPLE}: Arm B first holder` : `goal ${ARMS.A.goals[0]} agentOwnerId`})`);
   const shippedAt = firstShippedRevision;
+  const shippedAtDate = shippedAt ? new Date(Number(shippedAt.created_at)) : null;
   const checkedAt = idea?.outcome_checked_at ? new Date(Number(idea.outcome_checked_at)) : null;
   assert('r10-arm-a-terminal-outcome-reaches-feedback-surface',
-    p?.status === 'shipped' && idea?.outcome === 'won' && !!checkedAt && !!shippedAt
-      && checkedAt.getTime() >= new Date(shippedAt.created_at).getTime(),
-    `plan status=${p?.status} (first shipped revision seq ${shippedAt?.seq} at ${shippedAt?.created_at}); `
+    p?.status === 'shipped' && idea?.outcome === 'won' && !!checkedAt && !!shippedAtDate
+      && Number.isFinite(shippedAtDate.getTime()) && checkedAt.getTime() >= shippedAtDate.getTime(),
+    `plan status=${p?.status} (first shipped revision seq ${shippedAt?.seq} at ${shippedAtDate?.toISOString()}); `
     + `routed idea outcome=${idea?.outcome} checked ${checkedAt?.toISOString()} (after the ship)`);
-  if (checkedAt && shippedAt) {
-    const lagMin = Math.round((checkedAt.getTime() - new Date(shippedAt.created_at).getTime()) / 60000);
+  if (checkedAt && shippedAtDate) {
+    const lagMin = Math.round((checkedAt.getTime() - shippedAtDate.getTime()) / 60000);
     observations.armAOutcomeLagMinutes = lagMin;
     residualUnknowns.push(
       `Arm A outcome settled ${lagMin} min after the ship, by an on-demand run of the authoritative reconciliation `
