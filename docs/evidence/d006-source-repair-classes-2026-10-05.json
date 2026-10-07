@@ -5,12 +5,13 @@
   "accountableOwner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
   "population": {
     "failedFiles": 124,
-    "repairedFocused": 19,
+    "repairedFocused": 20,
     "repairedPeerFocused": 12,
-    "openUnknown": 93
+    "openUnknown": 92
   },
   "classes": {
-    "assertion": 60,
+    "assertion": 59,
+    "lock-ownership-expectation": 1,
     "work-item-disclosure-fixture": 1,
     "migration-stage": 1,
     "missing-schema": 16,
@@ -328,9 +329,38 @@
     },
     {
       "path": "packages/operator-core/lib/agent-tools/locks/__tests__/su-lock-store.integration.test.ts",
-      "class": "assertion",
-      "state": "open-unknown",
-      "item": "WI-10006170",
+      "class": "lock-ownership-expectation",
+      "state": "repaired-focused",
+      "item": "WI-10007140",
+      "beforeTestRun": 20895733,
+      "afterTestRun": 20895746,
+      "passed": 74,
+      "skipped": 0,
+      "testSha256": "02a74c84f969648c64bfd59b4f893aeadef1ded492780aa36219bdc50a318141",
+      "testBlob": "46602c0cbf5b93f2db66dab8ac3268bbc8b0a612",
+      "productionRepair": {
+        "item": "EI-24828554580039655",
+        "submoduleCommit": "6db9b6571bfa1641dd1b5a2876fb887285ac5516",
+        "sourceSha256": "caa0e47a4903e387fc718582c18336040208cd054b599a47427c8c43978708dd"
+      },
+      "diagnosis": "The integration expectation still treated a FIFO waiter as a live holder after the separate production repair restricted busy to active holder snapshots. Corrected the expectation and added real PostgreSQL queue/no-holder and queue/active-holder controls, including holder lease versus waiter deadline. Production locking behavior was preserved.",
+      "nativeLogs": {
+        "before": "/tmp/wi-10006170-lock-store-before.log",
+        "beforeSha256": "294dca5273facaba2f984b67836578ea27ccda563ee19b95ba984663791d278f",
+        "after": "/tmp/wi-10007140-after.log",
+        "afterSha256": "b962922f890e1051271e536255c6643c100a0c4859395c5575f1b00a9fd5d6c8"
+      },
+      "provenance": {
+        "commitSha": "ed2f8ed33be0b11ab7d78ffc7a652cae6dbe7016",
+        "source": "local",
+        "branch": "staging",
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": "papercusp",
+        "worktreeDirty": true,
+        "isScratchConfig": false,
+        "runGroupId": null
+      },
+      "assuranceLimit": "Focused original-source repair and full named-file verification only. Complete import/environment assurance, final D006, acceptance and shipment remain unverified.",
       "lines": [
         15728
       ]
