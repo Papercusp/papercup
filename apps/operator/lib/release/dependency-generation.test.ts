@@ -3187,6 +3187,28 @@ describe('WI-10004094: one build per dependency identity, with visible copy prog
     expect(result.stdout, result.stderr).toContain('RC=0');
     expect(result.stderr).not.toContain('copy progress');
   }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('reports checksum reads while an independent resume verifies retained bytes without writing', () => {
+    const root = mkdtempSync(join(tmpdir(), 'papercusp-checksum-progress-'));
+    roots.push(root);
+    writeFileSync(join(root, 'payload'), 'x'.repeat(1_048_576));
+    const wrapper = [
+      'set -uo pipefail',
+      'source "$SCRIPT"',
+      // The worker reads using a shell builtin so the kernel counters belong
+      // to the actual monitored PID, just as rsync sender checksum reads do.
+      'rsync() { local chunk; for i in 1 2 3; do IFS= read -r -N 1048576 chunk < "$ROOT/payload"; sleep 1.2; done; }',
+      'rc=0; dependency_generation_copy_with_progress "$ROOT/src" "$ROOT/dest" --rsync-checksum || rc=$?',
+      'printf "RC=%s\\n" "$rc"',
+    ].join('\n');
+    const result = spawnSync('bash', ['-c', wrapper], {
+      encoding: 'utf8', timeout: NATIVE_SHELL_TIMEOUT_MS,
+      env: { ...process.env, SCRIPT, ROOT: root, DEPENDENCY_GENERATION_COPY_PROGRESS_SEC: '1' },
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('RC=0');
+    expect(result.stderr).toMatch(/checksum read progress: .* read=[1-9]\d*MiB/);
+  }, NATIVE_SHELL_TIMEOUT_MS);
 });
 
 describe('WI-10004825: scratch trees stranded by dead runs are reaped', () => {
