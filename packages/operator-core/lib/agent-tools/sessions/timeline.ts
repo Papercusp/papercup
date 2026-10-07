@@ -612,7 +612,7 @@ export default defineTool({
   crossWorkspace: true,
   capability: 'search:read',
   description:
-    "Merged activity timeline for ONE agent: transcript turns + tool calls + coord messages, newest-first. owner:'self' = the caller. Audit filters can select kind/tool/status/goalRef, hide automatic hook traffic (default), group repeats, continue with nextCursor, and report automatic-versus-agent tool-call counts. Tool rows carry the goal and assumptions that were live when each call was made.",
+    "Merged activity timeline for ONE agent: transcript turns + tool calls + coord messages, newest-first. owner:'self' = the caller. Audit filters can select kind/tool/status/goalRef, hide automatic hook traffic (default), group repeats, continue by passing the returned `nextCursor` value in the `cursor` argument, and report automatic-versus-agent tool-call counts. Tool rows carry the goal and assumptions that were live when each call was made.",
   guidance: {
     when: '"What did agent X actually do yesterday" — a postmortem / handoff-archaeology read joining speech + tool calls + coord traffic by owner and time. Also "what did they do while holding goal X, and under which assumptions": pass goalRef.',
     notWhen:
@@ -690,7 +690,7 @@ export default defineTool({
       .max(512)
       .optional()
       .describe(
-        'Opaque nextCursor from a prior sessions:timeline call. It is a POSITION only — re-send the same `owner` and filters with it; `{ cursor }` alone is refused, and different filters page a different result set.',
+        'Opaque nextCursor value from a prior sessions:timeline call. Pass it under this `cursor` argument; `nextCursor` is the response field name, not an accepted argument key. It is a POSITION only — re-send the same `owner` and filters with it; `{ cursor }` alone is refused, and different filters page a different result set.',
       ),
   }),
   result: timelineResultSchema,

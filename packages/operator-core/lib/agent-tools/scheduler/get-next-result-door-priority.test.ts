@@ -5,7 +5,7 @@
  * caller receives one parseable, structurally bounded JSON object that preserves
  * the reconciliation-critical fields regardless of their legacy key order.
  */
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -14,7 +14,7 @@ import { BAKED_DOOR_CONSTANTS, CHARS_PER_TOKEN_ESTIMATE } from '../../context-do
 const { doorConstantsMock } = vi.hoisted(() => ({ doorConstantsMock: vi.fn() }));
 vi.mock('../../context-doors-config', () => ({ getDoorConstantsSync: doorConstantsMock }));
 
-import { applyResultDoor, RESULT_DOOR_TOKENS } from '../../result-door';
+import { applyResultDoor, beginResultDoorAggregate, RESULT_DOOR_TOKENS } from '../../result-door';
 import { assembleSchedulerClaimResult } from './get_next';
 
 const BUDGET_CHARS = RESULT_DOOR_TOKENS * CHARS_PER_TOKEN_ESTIMATE;
@@ -130,5 +130,61 @@ describe('scheduler:get_next claim-time decisions survive the result-door', () =
     const kept = (doored.content[0] as { text: string }).text;
     expect(() => JSON.parse(kept)).not.toThrow();
     expect(kept).toContain(DECISION_MARKER);
+  });
+
+  it.each([
+    { toolName: 'scheduler:get_next', nestedTargetToolName: undefined, failSpill: false },
+    { toolName: 'tools:invoke', nestedTargetToolName: 'scheduler:get_next', failSpill: true },
+  ])('keeps a committed claim receipt visible through aggregate hard spill ($toolName)', ({
+    toolName,
+    nestedTargetToolName,
+    failSpill,
+  }) => {
+    const scope = () => beginResultDoorAggregate({
+      sessionKey: `scheduler-claim-receipt-${toolName}`,
+      outputGroupId: 'turn-1',
+    });
+    const medium = () => ({ content: [{ type: 'text' as const, text: 'x'.repeat(5_000) }] });
+    applyResultDoor(medium(), { toolName: 'tools:invoke', workspaceId: 'ws-1', runId: RUN_ID, aggregateScope: scope() });
+    applyResultDoor(medium(), { toolName: 'tools:invoke', workspaceId: 'ws-1', runId: RUN_ID, aggregateScope: scope() });
+    if (failSpill) writeFileSync(join(sandbox, 'scratch'), 'not a directory');
+
+    const assembled = assembleSchedulerClaimResult({
+      planDecisions: decisions(),
+      planDecisionsNote: AFFECTS_WARNING,
+      retractionWarning: RETRACTION_MARKER,
+      checkpoint: 'plan-local checkpoint prose',
+      workItem: { ...bulkyWorkItem(), harness: 'papercusp' },
+      claimedUnder: { specId: 'nonp2p-bug-drain-luna-max-0811', revision: 1 },
+    });
+    const doored = applyResultDoor(
+      { content: [{ type: 'text' as const, text: JSON.stringify(assembled) }] },
+      {
+        toolName,
+        ...(nestedTargetToolName ? { nestedTargetToolName } : {}),
+        workspaceId: 'ws-1',
+        runId: RUN_ID,
+        aggregateScope: scope(),
+      },
+    );
+    const output = JSON.parse((doored.content[0] as { text: string }).text) as {
+      ok: boolean;
+      claimReceipt: Record<string, unknown>;
+      _projection: { truncated: boolean; cursor: { tool: string; args: Record<string, unknown> }; next: string };
+    };
+
+    expect(output).toMatchObject({
+      ok: true,
+      claimReceipt: { committed: true, workItemId: CLAIM_MARKER },
+      _projection: {
+        truncated: true,
+        cursor: { tool: 'work_items:get', args: { id: CLAIM_MARKER, harness: 'papercusp' } },
+      },
+    });
+    expect(output._projection.next).toContain('Do not retry scheduler:get_next');
+    expect((doored._meta as { resultDoor?: Record<string, unknown> }).resultDoor).toMatchObject({
+      reason: 'aggregate-output-budget-exceeded',
+      spillFailed: failSpill,
+    });
   });
 });

@@ -10,6 +10,7 @@ export interface VintageArgs {
   workspace: string;
   timeoutMs: number;
   executable?: boolean;
+  nodeEntry?: boolean;
 }
 
 export interface VintageReport {
@@ -42,6 +43,7 @@ export declare function buildVintageReport(input: {
   treeSha: string | null;
   dirty: number | null;
   executableDigest?: string;
+  nodeEntryDigest?: string;
   now?: Date;
 }): VintageReport;
 export declare function postVintage(
