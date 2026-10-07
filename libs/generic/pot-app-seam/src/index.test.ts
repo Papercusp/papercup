@@ -6,6 +6,7 @@ import {
   deriveRequestKey,
   operationDraftFromPlanRun,
   scorecardHostFromInvoker,
+  parseScorecardReviewerProof,
   OperationOutputRejectedError,
   type BlueprintOperationHandle,
   type BlueprintOperationStatus,
@@ -119,6 +120,35 @@ describe('canonical app scorecards', () => {
     const h = { ...host(), scorecards: scorecardHostFromInvoker(async () => response) };
     await expect(createPotAppSeam(h).readScorecard('EI-1', () => { parsed = true; })).rejects.toThrow();
     expect(parsed).toBe(false);
+  });
+
+  it('preserves the canonical reviewer receipt and attribution on complete readback', async () => {
+    const handle: BlueprintOperationHandle = {
+      workspaceId: 'workspace-fixture', harnessSlug: 'crm', receiptId: 8,
+      operationId: 'call-review', specificationRevision: 'b'.repeat(64),
+      target: { kind: 'work-item', id: 'WI-43' },
+    };
+    const proof = { ownerId: 'independent-reviewer', completionRef: 'completion:43',
+      outputEvidenceRef: 'operation-output:43', handle };
+    const adapter = scorecardHostFromInvoker(async (name, args) => {
+      if (name === 'scorecards:emit') {
+        expect(args.interactionReviewerHandle).toEqual(handle);
+        expect(args.subject).toEqual(draft.subject);
+        return { ok: true, issueId: 'EI-1', created: true, evidenceFingerprint: 'fingerprint' };
+      }
+      return { ok: true, scorecard: { ...card, observation: { interactionReviewer: proof } },
+        evidenceRead: { complete: true } };
+    });
+    await adapter.emitScorecard({ ...draft, interactionReviewerHandle: handle });
+    const seam = createPotAppSeam({ ...host(), scorecards: adapter });
+    expect(await seam.readScorecard('EI-1', (raw) =>
+      parseScorecardReviewerProof((raw as { observation: { interactionReviewer: unknown } }).observation.interactionReviewer))).toEqual(proof);
+    for (const outputEvidenceRef of [undefined, null, '', ' ']) {
+      expect(() => parseScorecardReviewerProof({ ...proof, outputEvidenceRef })).toThrow();
+    }
+    expect(() => parseScorecardReviewerProof({ ...proof, handle: { ...handle, receiptId: 0 } })).toThrow();
+    expect(() => parseScorecardReviewerProof({ ...proof, handle: { ...handle,
+      target: { kind: 'plan', runId: 1, instanceSlug: 'review' } } })).toThrow();
   });
 
   it('refuses an unconnected grading host and a malformed canonical receipt', async () => {

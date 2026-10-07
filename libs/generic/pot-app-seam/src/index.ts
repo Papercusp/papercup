@@ -377,6 +377,8 @@ export interface AppScorecardDraft {
   readonly criteriaHash: string;
   readonly subject: { readonly kind: 'work-item'; readonly ref: string };
   readonly ratings: JsonObject;
+  /** Canonical completed review operation; the writer resolves its actual worker. */
+  readonly interactionReviewerHandle?: BlueprintOperationHandle;
   readonly sourceHive?: string;
   readonly body?: string;
 }
@@ -385,6 +387,40 @@ export interface AppScorecardReceipt {
   readonly issueId: string;
   readonly created: boolean;
   readonly evidenceFingerprint: string;
+}
+
+/** Canonical reviewer attribution, including the validated output it graded. */
+export interface AppScorecardReviewerProof {
+  readonly ownerId: string;
+  readonly completionRef: string;
+  readonly outputEvidenceRef: string;
+  readonly handle: BlueprintOperationHandle;
+}
+
+/** Parse persisted observation.interactionReviewer before accepting an app grade. */
+export function parseScorecardReviewerProof(raw: unknown): AppScorecardReviewerProof {
+  const proof = requireFields(raw, 'scorecard reviewer proof',
+    ['ownerId', 'completionRef', 'outputEvidenceRef', 'handle']);
+  for (const key of ['ownerId', 'completionRef', 'outputEvidenceRef'] as const) {
+    if (typeof proof[key] !== 'string' || !proof[key].trim()) {
+      throw new Error(`scorecard reviewer proof ${key} must be non-empty`);
+    }
+  }
+  const handle = requireFields(proof.handle, 'scorecard reviewer handle',
+    ['workspaceId', 'harnessSlug', 'receiptId', 'operationId', 'specificationRevision', 'target']);
+  for (const key of ['workspaceId', 'harnessSlug', 'operationId', 'specificationRevision'] as const) {
+    if (typeof handle[key] !== 'string' || !handle[key].trim()) {
+      throw new Error(`scorecard reviewer handle ${key} must be non-empty`);
+    }
+  }
+  if (!Number.isSafeInteger(handle.receiptId) || (handle.receiptId as number) < 1) {
+    throw new Error('scorecard reviewer handle receiptId must be positive');
+  }
+  const target = asRecord(handle.target, 'scorecard reviewer target');
+  if (target.kind !== 'work-item' || typeof target.id !== 'string' || !target.id.trim()) {
+    throw new Error('scorecard reviewer must target a work-item');
+  }
+  return proof as unknown as AppScorecardReviewerProof;
 }
 
 export interface AppScorecardHost {
