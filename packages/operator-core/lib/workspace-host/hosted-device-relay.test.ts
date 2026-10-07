@@ -2,7 +2,7 @@
  * The portal's `device-http` relay plane (android-public-release-2026-10-01 D-013 #2, P-015):
  * a phone's device-API call to a cloud workspace, carried over the workspace's connector.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { PHONE_DEVICE_PATHS, isPhoneDevicePath } from '../device-ingress-paths';
 import {
   AppRelayRateLimiter,
@@ -23,6 +23,7 @@ import {
   type HostedAppRelayAuditEvent,
 } from './hosted-app-relay';
 import { EXTERNAL_INGRESS_MARKER_HEADER } from '../auth/forwarded-request-trust';
+import { HOSTED_OPERATOR_HTTP_BODY_CHUNK_BYTES, HOSTED_OPERATOR_HTTP_MAX_INFLIGHT, OperatorHttpChannel } from './hosted-operator-http';
 
 const JWT = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJkZXYifQ.c2ln';
 const NOW = new Date('2026-10-06T12:00:00Z');
@@ -83,6 +84,72 @@ function harness(opts: {
 
 const call = (path: string, init: RequestInit = {}) =>
   new Request(`https://app.papercusp.com/api/workspaces/ws-1/api/device/${path}`, init);
+
+describe('device-http chunked upload lifecycle', () => {
+  function uploadHarness(limit = 10, timeout = 100) {
+    const frames: Record<string, unknown>[] = [];
+    const fetch = vi.fn(async () => new Response('ok'));
+    const channel = new OperatorHttpChannel({
+      send: (frame) => frames.push(frame), audit: () => {},
+      requestHeaders: deviceHttpRequestHeaders, decideRoute: decideDeviceHttpRoute,
+      fetch, maxChunkedRequestBodyBytes: limit, headerTimeoutMs: timeout,
+    });
+    const start = (requestId = 'upload', extra: Record<string, unknown> = {}) =>
+      channel.accept('http.request', { requestId, method: 'POST', path: '/api/device/voice/turn', bodyChunked: true, ...extra });
+    const chunk = (data: string, requestId = 'upload') =>
+      channel.accept('http.body', { requestId, data });
+    return { channel, frames, fetch, start, chunk };
+  }
+
+  it('refuses oversize or malformed chunks and forgets the partial upload', async () => {
+    const run = uploadHarness();
+    for (const data of [Buffer.alloc(11).toString('base64'), 'not base64', Buffer.alloc(HOSTED_OPERATOR_HTTP_BODY_CHUNK_BYTES + 1).toString('base64')]) {
+      await run.start();
+      await run.chunk(data);
+      expect(run.channel.inflightCount).toBe(0);
+    }
+    expect(run.frames.map((frame) => frame.code)).toEqual(['request_body_too_large', 'invalid_body_chunk', 'invalid_body_chunk']);
+    expect(run.fetch).not.toHaveBeenCalled();
+    run.channel.close();
+  });
+
+  it('counts pending uploads toward the in-flight cap and rejects duplicate IDs', async () => {
+    const run = uploadHarness();
+    await run.start();
+    await run.start();
+    expect(run.frames).toContainEqual(expect.objectContaining({ code: 'request_id_in_use' }));
+    expect(run.channel.inflightCount).toBe(1);
+    for (let index = 1; index < HOSTED_OPERATOR_HTTP_MAX_INFLIGHT; index++) await run.start(`pending-${index}`);
+    await run.start('over-cap');
+    expect(run.channel.inflightCount).toBe(HOSTED_OPERATOR_HTTP_MAX_INFLIGHT);
+    expect(run.frames).toContainEqual(expect.objectContaining({ requestId: 'over-cap', code: 'too_many_requests', status: 429 }));
+    run.channel.close();
+    expect(run.channel.inflightCount).toBe(0);
+  });
+
+  it('aborts and times out unfinished uploads without sending any partial content', async () => {
+    const run = uploadHarness(10, 5);
+    await run.start();
+    await run.chunk(Buffer.from('abc').toString('base64'));
+    await run.channel.accept('http.abort', { requestId: 'upload' });
+    expect(run.channel.inflightCount).toBe(0);
+    await run.start('timeout');
+    await vi.waitFor(() => expect(run.frames).toContainEqual(expect.objectContaining({ requestId: 'timeout', code: 'request_body_timeout', status: 408 })));
+    expect(run.channel.inflightCount).toBe(0);
+    expect(run.fetch).not.toHaveBeenCalled();
+    run.channel.close();
+  });
+
+  it('validates routes before buffering and rejects inline/chunked ambiguity', async () => {
+    const run = uploadHarness();
+    await run.start('denied', { path: '/api/mcp' });
+    await run.start('ambiguous', { body: 'YWJj' });
+    expect(run.frames.map((frame) => frame.code)).toEqual(['route_not_relayed', 'invalid_body']);
+    expect(run.channel.inflightCount).toBe(0);
+    expect(run.fetch).not.toHaveBeenCalled();
+    run.channel.close();
+  });
+});
 
 describe('device-http allowlist (derived from the external-ingress phone list)', () => {
   it('admits every phone device path and nothing desktop-only', () => {
