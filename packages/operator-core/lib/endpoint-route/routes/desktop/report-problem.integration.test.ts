@@ -19,7 +19,7 @@ vi.mock('@papercusp/db-org', async (orig) => {
 });
 
 const { captureImprovement } = await import('../../../harness/improvements/capture-core');
-const { createIssue } = await import('../../../issues-engineer');
+const { createIssue, claimIssue } = await import('../../../issues-engineer');
 const { intakeEndUserReport } = await import('../../../harness/improvements/end-user-intake');
 const { putReportAttachment } = await import('../../../harness/improvements/report-attachments');
 const { buildProblemReport, previewDigest } = await import('../../../harness/improvements/problem-report');
@@ -27,6 +27,8 @@ const { handleReportProblem } = await import('./report-problem');
 const { contributeUpstream } = await import('../../../pot/contribute-upstream');
 const { buildEngineerIssuesProjection } = await import('../../../sync/hyperbee/projections/engineer-issues');
 const { errorSignatureOf } = await import('../../../harness/improvements/error-signature');
+const { currentIntakeSourceRevision, executeIntakeDecision } = await import('../../../attention/intake-promotion');
+const { parseIntakeDecision } = await import('../../../attention/bulk-dispositions');
 type EngineerIssueRow = import('../../../sync/hyperbee/projections/engineer-issues').EngineerIssueRow;
 type ReportProblemDeps = import('./report-problem').ReportProblemDeps;
 
@@ -135,6 +137,36 @@ describe('desktop Report a problem door, end to end', () => {
       const [folded] = await upstreamDb.adminSql<{ payload: Record<string, unknown> }[]>`
         SELECT payload FROM harness_shared.work_items WHERE workspace_id = ${upstreamWorkspace} AND feature_id = ${id}`;
       expect(folded?.payload.reporterKinds).toEqual(expect.arrayContaining(['agent', 'end-user']));
+
+      // A foreign row is evidence, not something this upstream peer owns.
+      // Existing distinct promotion supplies ONE locally executable canonical
+      // item; its source mapping travels back through the same issue CDC.
+      const parsed = parseIntakeDecision({ disposition: 'promote', reason: 'CSV failure reproduced upstream',
+        reproduction: { kind: 'failing-test', ref: 'report-problem.integration.test.ts CSV reproduction', buildSha: 'abc1234def' },
+        acceptance: { problem: 'CSV export crashes', evidence: ['CSV reproduction fails'],
+          outcome: 'CSV export completes', scope: 'CSV export on board', completionCheck: 'CSV reproduction passes' } },
+      { decidedBy: 'su-upstream-verifier', sourceRevision: await currentIntakeSourceRevision(id) });
+      if (!parsed.ok) throw new Error(parsed.error);
+      const promoted = await executeIntakeDecision({ sourceId: id, decision: parsed.decision, runId: 'p015-upstream', itemId: `report-${s}` });
+      expect(promoted, JSON.stringify(promoted)).toMatchObject({ ok: true, mode: 'distinct', created: true });
+      if (!promoted.ok || !promoted.workItemId) throw new Error(JSON.stringify(promoted));
+      expect(await claimIssue(promoted.workItemId, 'su-upstream-fixer')).toMatchObject({ assignee: 'su-upstream-fixer' });
+      const [returnOp] = await upstreamDb.adminSql<{ row: EngineerIssueRow; ts: string | number }[]>`
+        SELECT row, ts FROM harness_shared.substrate_outbox
+         WHERE workspace_id = ${upstreamWorkspace} AND table_name = 'engineer_issues'
+           AND row->>'issue_id' = ${promoted.workItemId} ORDER BY id DESC LIMIT 1`;
+      expect(returnOp).toBeDefined();
+      const installedProjection = buildEngineerIssuesProjection({ workspaceId: WORKSPACE, harnessSlug: 'papercusp', sql: db.adminSql });
+      await installedProjection.writeToPg(returnOp!.row, { ts: Number(returnOp!.ts), origin: 'remote', authorPubkey: 'p015-canonical-upstream' });
+      const [received] = await db.adminSql<{ origin: string; taken_by: string; payload: Record<string, unknown> }[]>`
+        SELECT origin, taken_by, payload FROM harness_shared.work_items
+         WHERE workspace_id = ${WORKSPACE} AND feature_id = ${promoted.workItemId}`;
+      expect(received).toMatchObject({ origin: 'remote', taken_by: 'su-upstream-fixer', payload: {
+        intakeSource: { id }, reporterKinds: expect.arrayContaining(['agent', 'end-user']) } });
+      expect(JSON.stringify(received?.payload.reportContext)).toContain('0.9.4');
+      const [original] = await db.adminSql<{ origin: string }[]>`
+        SELECT origin FROM harness_shared.work_items WHERE workspace_id = ${WORKSPACE} AND feature_id = ${id}`;
+      expect(original?.origin).toBe('local');
     } finally {
       h.sql = db.adminSql;
     }
