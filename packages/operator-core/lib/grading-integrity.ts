@@ -46,6 +46,11 @@ import {
 import { routeSourceGradingAudit } from './grading-audit-routing';
 import { getTask, listTasks } from './task-manager/store';
 import { isTerminalState } from './task-manager/types';
+import type { TaskRow } from './task-manager/types';
+import type { PgCoordLog } from '@papercusp/coordination/event-log';
+import type { sendMessage } from './agent-tools/coordination/messages';
+import type { wakeRecipients } from './agent-tools/coordination/inbox-wake';
+import type { lineagePartyKeys } from './acceptance-author-identity';
 
 /** The meta-rubric every grading audit grades against (proposed by P-013). */
 export const GRADING_INTEGRITY_RUBRIC_REF = 'grading-integrity';
@@ -238,6 +243,7 @@ export interface PendingGradingAuditDispatchReceipt {
   /** Exact retained lease for the existing independent auditor; re-read the
    * target before handing a renewed lease to that same live session. */
   dispatchReservation?: { key: string; reservedAt: string };
+  renewalNotification?: GradingAuditRenewalNotification;
   launch?: unknown;
   conversationId?: string;
   routingFallback?: string;
@@ -284,6 +290,7 @@ export interface DispatchPendingGradingAuditsDeps {
   /** Check for a still-live task from an earlier reservation epoch. */
   listTasks?: typeof listTasks;
   getTask?: typeof getTask;
+  notifyRetainedAuditor?: typeof notifyRetainedGradingAuditor;
   readLogTail?: (path: string) => string | Promise<string>;
   /** Read log progress time; null means missing/unreadable and cannot prove a stall. */
   readLogMtimeMs?: (path: string) => number | null;
@@ -372,12 +379,16 @@ function parsePriorGradingAuditReservation(value: unknown): GradingAuditReservat
 export async function confirmPendingGradingAuditReservation(
   issueId: string,
   reservationKey: string,
-  options: Pick<GradingAuditReservationOptions, 'workspaceId'> & { reservedAt?: string } = {},
+  options: Pick<GradingAuditReservationOptions, 'workspaceId'> & {
+    reservedAt?: string;
+    /** Commit-boundary confirmation on the notification's own transaction. */
+    tx?: OrgSql;
+    expectedCard?: Pick<ScorecardRow, 'evidenceFingerprint' | 'createdBy' | 'rubricRef'>;
+  } = {},
 ): Promise<boolean> {
   const workspaceId = options.workspaceId?.trim() || (await resolveIssueWorkspace(issueId));
   const reservedAt = options.reservedAt ?? null;
-  const current = await withGradingAuditSubjectMutex(workspaceId, issueId, () => boundedOrgTxn(
-    async (tx: OrgSql) =>
+  const read = async (tx: OrgSql) =>
       tx<{ feature_id: string }[]>`
       SELECT scorecard.feature_id
         FROM harness_shared.work_items AS scorecard
@@ -390,6 +401,14 @@ export async function confirmPendingGradingAuditReservation(
            ${reservedAt}::text IS NULL
            OR scorecard.payload->'observation'->'gradingAudit'->'dispatchReservation'->>'reservedAt' = ${reservedAt}
          )
+         AND (
+           ${options.expectedCard != null}::boolean = false
+           OR (
+             scorecard.payload->'observation'->>'evidenceFingerprint' = ${options.expectedCard?.evidenceFingerprint ?? null}
+             AND scorecard.created_by = ${options.expectedCard?.createdBy ?? null}
+             AND scorecard.payload->'observation'->>'rubricRef' = ${options.expectedCard?.rubricRef ?? null}
+           )
+         )
          AND scorecard.payload->'observation'->'retracted' IS NULL
          AND NOT EXISTS (
            SELECT 1
@@ -399,9 +418,123 @@ export async function confirmPendingGradingAuditReservation(
               AND superseder.payload->'observation'->>'rubricRef' = scorecard.payload->'observation'->>'rubricRef'
               AND superseder.payload->'observation'->>'sourceHive' IS NOT DISTINCT FROM scorecard.payload->'observation'->>'sourceHive'
          )
-       FOR UPDATE`,
-  ));
+       FOR UPDATE`;
+  const current = options.tx
+    ? await read(options.tx)
+    : await withGradingAuditSubjectMutex(workspaceId, issueId, () => boundedOrgTxn(read));
   return Boolean(current[0]);
+}
+
+export interface GradingAuditRenewalNotification {
+  state: 'delivered' | 'already-delivered' | 'skipped' | 'failed';
+  ownerId?: string;
+  msgId?: string;
+  reason?: string;
+  queued?: number;
+  /** The coord wake queue is not execution evidence. */
+  pickupConfirmed?: false;
+}
+
+/** Reuse the coord replay transaction: target/task validation and notification
+ * append commit together. No extra worker, notification ledger or routine. */
+export async function notifyRetainedGradingAuditor(
+  input: {
+    card: ScorecardRow;
+    task: TaskRow;
+    reservation: { key: string; reservedAt: string };
+    workspaceId: string;
+    harness?: string;
+  },
+  deps: {
+    append?: PgCoordLog['appendLineIfAbsent'];
+    send?: typeof sendMessage;
+    wake?: typeof wakeRecipients;
+    resolveParties?: typeof lineagePartyKeys;
+    confirmReservation?: typeof confirmPendingGradingAuditReservation;
+    mutex?: typeof withGradingAuditSubjectMutex;
+  } = {},
+): Promise<GradingAuditRenewalNotification> {
+  const { card, task, reservation, workspaceId } = input;
+  const ownerId = typeof task.detail?.coordOwnerId === 'string' ? task.detail.coordOwnerId.trim() : '';
+  const label = typeof task.detail?.label === 'string' ? task.detail.label : '';
+  const key = `grading-audit:${card.issueId}`;
+  if (!workspaceId || workspaceId === '*' || !ownerId || !card.createdBy?.trim() ||
+      !card.evidenceFingerprint?.trim() || reservation.key !== key || !reservation.reservedAt ||
+      task.workspaceId !== workspaceId || task.class !== 'agent-session' ||
+      !['pending', 'running'].includes(task.state) ||
+      (label !== key && !label.startsWith(`${key}:`)) ||
+      (task.workItemId != null && task.workItemId !== card.issueId)) {
+    return { state: 'skipped', reason: 'retained auditor target/owner/fingerprint provenance is missing or mismatched' };
+  }
+  const msgId = `grading-audit-renewal:${createHash('sha256')
+    .update(JSON.stringify([workspaceId, card.issueId, card.evidenceFingerprint, ownerId, reservation]))
+    .digest('hex')}`;
+  // Lazy imports keep the existing dispatcher unit-test graph free of coord stores.
+  const send = deps.send ?? (await import('./agent-tools/coordination/messages')).sendMessage;
+  const wake = deps.wake ?? (await import('./agent-tools/coordination/inbox-wake')).wakeRecipients;
+  const parties = deps.resolveParties ?? (await import('./acceptance-author-identity')).lineagePartyKeys;
+  const append = deps.append ?? (() => {
+    // The existing appendLineIfAbsent owns the replay lock and returns its durable winner.
+    // Scope this instance explicitly; scheduled repair callers have no session partition.
+    return import('@papercusp/coordination/event-log').then(({ PgCoordLog }) => {
+      const log = new PgCoordLog({ getSql: () => getOrgPg().sql, workspaceId, ensureSchema: async () => {} });
+      return log.appendLineIfAbsent.bind(log);
+    });
+  })();
+  let created = false;
+  try {
+    await (deps.mutex ?? withGradingAuditSubjectMutex)(workspaceId, card.issueId, async () => {
+      await send({ ownerId: GRADING_AUDIT_DISPATCH_ACTOR, ownerLabel: 'grading audit dispatch',
+        source: 'principal', workspaceId, userId: null }, {
+        to: [ownerId], msgId, harnessSlug: input.harness,
+        summary: `Renewed grading-audit lease for ${card.issueId}`,
+        body: [
+          `Your existing independent audit task '${task.taskId}' is retained; its missing lease has been reissued.`,
+          `Continue only for exact target '${card.issueId}' and evidence fingerprint '${card.evidenceFingerprint}'. Re-read scorecards:get before auditing; a fingerprint mismatch means stop without grading or emitting.`,
+          gradingAuditBrief(card, reservation.reservedAt),
+        ].join('\n\n'),
+        expectsReply: true,
+        extra: { expects: 'action', sections: [{ text: `Use the renewed lease for ${card.issueId}.`,
+          forYouBecause: { relation: 'owns', ref: task.taskId } }] },
+        persistEnvelope: async (envelope) => {
+          const result = await (await append)('messages', GRADING_AUDIT_DISPATCH_ACTOR, envelope, {
+            prepare: async (rawTx) => {
+              const tx = rawTx as OrgSql;
+              if (!(await (deps.confirmReservation ?? confirmPendingGradingAuditReservation)(card.issueId, key, {
+                workspaceId, reservedAt: reservation.reservedAt, expectedCard: card, tx,
+              }))) throw new Error('renewal target/fingerprint/lease changed before delivery');
+              const tasks = await tx<{ task_id: string }[]>`
+                SELECT task_id FROM harness_shared.task_ledger
+                 WHERE workspace_id = ${workspaceId} AND task_id = ${task.taskId}
+                   AND class = 'agent-session' AND state IN ('pending', 'running')
+                   AND detail->>'coordOwnerId' = ${ownerId} AND detail->>'label' = ${label}
+                   AND (work_item_id IS NULL OR work_item_id = ${card.issueId})
+                 FOR SHARE`;
+              if (!tasks[0]) throw new Error('retained auditor task changed or retired before delivery');
+              const sources = [...new Set([card.createdBy, ...(card.vetting?.critics ?? [])])];
+              const ids = [...new Set([...sources, ownerId])];
+              const identities = await parties(ids, { workspaceId, sql: tx });
+              if (ids.some((id) => !identities.has(id)) ||
+                  sources.some((id) => identities.get(id) === identities.get(ownerId))) {
+                throw new Error('retained auditor independence is not proven');
+              }
+              return envelope;
+            },
+          });
+          created = result.created;
+          return result.envelope;
+        },
+      });
+    });
+    if (!created) return { state: 'already-delivered', ownerId, msgId, pickupConfirmed: false };
+    const outcome = await wake([ownerId], { workspaceId, requiredWake: true,
+      source: GRADING_AUDIT_DISPATCH_ACTOR, summary: `Renewed grading-audit lease for ${card.issueId}`,
+      payload: { msg_id: msgId, issueId: card.issueId, evidenceFingerprint: card.evidenceFingerprint, reservation } });
+    return { state: 'delivered', ownerId, msgId, queued: outcome.queued ?? outcome.woken, pickupConfirmed: false };
+  } catch (error) {
+    return { state: 'failed', ownerId, msgId, reason: error instanceof Error ? error.message : String(error),
+      pickupConfirmed: false };
+  }
 }
 
 interface GradingAuditReservationOptions {
@@ -1071,10 +1204,10 @@ export async function dispatchPendingGradingAudits(
       backoff?: GradingAuditDispatchBackoff,
       restore?: GradingAuditReservationResult['prior'],
     ) => {
-      if (!reservationHeld) return;
+      if (!reservationHeld) return false;
       reservationHeld = false;
       try {
-        await release(issueId, idempotencyKey, {
+        return await release(issueId, idempotencyKey, {
           workspaceId: input.ctx.workspaceId,
           reservedAt: reservationReservedAt,
           ...(backoff ? { backoff } : {}),
@@ -1083,6 +1216,7 @@ export async function dispatchPendingGradingAudits(
       } catch {
         // The reservation TTL is the durable cleanup fallback if this release
         // cannot reach the database after a launcher failure.
+        return false;
       }
     };
     const confirmOwnedPendingReservation = async (): Promise<boolean> => {
@@ -1359,19 +1493,31 @@ export async function dispatchPendingGradingAudits(
         // behaviour) is what made every audit longer than one TTL unable to emit.
         // EI-25287745234355817: older sweeps may already have deleted that
         // lease. Keep the newly claimed one rather than deleting it AGAIN,
-        // and return its exact identity so the caller can explicitly hand it
-        // to the existing independent session (never launch a duplicate).
+        // and deliver it to the existing independent session (never launch a duplicate).
         const retainedReservation = priorReservation ?? {
           key: idempotencyKey,
           reservedAt: reservationReservedAt,
         };
-        await releaseReservation(undefined, retainedReservation);
+        const retained = await releaseReservation(undefined, retainedReservation);
+        // A restored prior epoch is already in the auditor's original brief. Only
+        // a NEW epoch needs a guarded handoff. A failed restore CAS must not send.
+        const renewalNotification = !priorReservation
+          ? !retained
+            ? { state: 'skipped' as const, reason: 'reservation restore CAS lost; renewal not delivered' }
+            : viableLiveTasks.length !== 1
+              ? { state: 'skipped' as const, reason: 'retained auditor task identity is ambiguous' }
+              : await (deps.notifyRetainedAuditor ?? notifyRetainedGradingAuditor)({
+                  card, task: viableLiveTasks[0]!, reservation: retainedReservation,
+                  workspaceId: input.ctx.workspaceId?.trim() ?? '', ...(harnessResolved ? { harness } : {}),
+                })
+          : undefined;
         receipt = {
           issueId,
           rubricRef: card.rubricRef,
           state: 'deduped',
           idempotencyKey,
           dispatchReservation: retainedReservation,
+          ...(renewalNotification ? { renewalNotification } : {}),
           launch: {
             deduped: true,
             opened: 0,
