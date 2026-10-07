@@ -909,6 +909,60 @@ describe('Codex OAuth quota errors inside successful HTTP streams', () => {
     expect(h.written.join('')).toBe(wire);
   });
 
+  it('rejects EOF after Responses preludes before committing a false successful head', async () => {
+    const h = harness(async () => upstream(200, {}, sseBody(frame({ type: 'response.created' }))));
+    await expect(executeGatewayRequestKernel(h.options)).rejects.toMatchObject({
+      code: 'upstream-error', status: 502,
+      message: expect.stringContaining('EOF before a Responses terminal event'),
+    });
+    expect(h.started).toEqual([]);
+  });
+
+  it('rejects incomplete EOF after visible output without replaying that output on another account', async () => {
+    const accounts = [cli('chatgpt-a'), cli('chatgpt-b')];
+    const pool = makePool([{ accountId: 'chatgpt-b' }]);
+    const wire = frame({ type: 'response.output_text.delta', delta: 'already visible' });
+    const h = harness(async () => upstream(200, {}, sseBody(wire)), { accounts, pool });
+    await expect(executeGatewayRequestKernel(h.options)).rejects.toMatchObject({
+      code: 'upstream-error', status: 502,
+    });
+    expect(h.prepared).toHaveLength(1);
+    expect(h.written.join('')).toBe(wire);
+    expect(pool.exhaustedCalls).toEqual([]);
+  });
+
+  it.each(['response.failed', 'response.incomplete', 'error'])('preserves an explicit %s terminal instead of misclassifying it as bare EOF', async (type) => {
+    const wire = frame({ type, error: { code: 'server_error', message: 'original failure' },
+      response: { status: type === 'response.incomplete' ? 'incomplete' : 'failed', error: { code: 'server_error' } } });
+    const h = harness(async () => upstream(200, {}, sseBody(wire)));
+    await executeGatewayRequestKernel(h.options);
+    expect(h.prepared).toHaveLength(1);
+    expect(h.written.join('')).toBe(wire);
+  });
+
+  it('does not accept an unterminated final SSE frame as a Responses completion', async () => {
+    const wire = `data: ${JSON.stringify({ type: 'response.completed', response: { id: 'truncated' } })}`;
+    const h = harness(async () => upstream(200, {}, sseBody(wire)));
+    await expect(executeGatewayRequestKernel(h.options)).rejects.toMatchObject({ code: 'upstream-error', status: 502 });
+  });
+
+  it('preserves an oversized valid terminal frame split across chunks without widening the quota buffer', async () => {
+    const wire = frame({ type: 'response.output_text.delta', delta: 'start' })
+      + frame({ type: 'response.completed', response: { id: 'large', output: ['x'.repeat(100_000)] } });
+    const h = harness(async () => upstream(200, {}, sseBody(wire.slice(0, 75_000), wire.slice(75_000))));
+    await executeGatewayRequestKernel(h.options);
+    expect(h.written.join('')).toBe(wire);
+    expect(h.prepared).toHaveLength(1);
+  });
+
+  it('still detects EOF after an oversized output delta rather than inventing a completion', async () => {
+    const wire = frame({ type: 'response.output_text.delta', delta: 'x'.repeat(100_000) });
+    const h = harness(async () => upstream(200, {}, sseBody(wire.slice(0, 75_000), wire.slice(75_000))));
+    await expect(executeGatewayRequestKernel(h.options)).rejects.toMatchObject({ code: 'upstream-error', status: 502 });
+    expect(h.prepared).toHaveLength(1);
+    expect(h.written.join('')).toBe(wire);
+  });
+
   it('calibrates quota and non-quota fixtures against native Codex response.failed classifications', async () => {
     // Pinned native protocol controls, rather than assuming every error means quota:
     // https://github.com/openai/codex/blob/rust-v0.160.1/codex-rs/codex-api/src/sse/responses.rs
@@ -963,7 +1017,8 @@ describe('Codex OAuth quota errors inside successful HTTP streams', () => {
 
   it('replays a pending read exactly once when the prelude lookahead expires', async () => {
     const prelude = frame({ type: 'response.created' });
-    const output = frame({ type: 'response.output_text.delta', delta: 'slow first token' });
+    const output = frame({ type: 'response.output_text.delta', delta: 'slow first token' })
+      + frame({ type: 'response.completed', response: { id: 'completed' } });
     const body = { async *[Symbol.asyncIterator]() {
       yield Buffer.from(prelude);
       await new Promise((resolve) => setTimeout(resolve, 250));

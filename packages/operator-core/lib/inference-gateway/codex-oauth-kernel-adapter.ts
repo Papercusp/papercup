@@ -312,7 +312,37 @@ function quotaDecoder() {
   const decoder = new StringDecoder('utf8');
   let carry = '';
   let oversized = false;
-  return (chunk: Uint8Array): QuotaFrame[] => {
+  let oversizedPrefix = '';
+  let sawResponseEvent = false;
+  let sawTerminal = false;
+  let opaqueLargeFrame = false;
+  let lastEventType: string | null = null;
+  const noteFrame = (frame: string, bounded: boolean, terminated: boolean): void => {
+    const prefix = frame.slice(0, 2048);
+    let type = /(?:^|\n)event:\s*([^\r\n\s]+)/.exec(prefix)?.[1]
+      ?? /(?:^|\n)data:\s*\{\s*"type"\s*:\s*"([^"]+)"/.exec(prefix)?.[1];
+    if (bounded) {
+      const data = frame.split(/\r?\n/).filter((line) => line.startsWith('data:'))
+        .map((line) => line.slice(5).trimStart()).join('\n').trim();
+      if (data === '[DONE]') sawResponseEvent = true;
+      try {
+        const event = JSON.parse(data);
+        if (event && typeof event.type === 'string') type = event.type;
+      } catch { /* the byte-transparent relay retains the original malformed event */ }
+    } else if (!type && terminated && /(?:^|\n)data:/.test(prefix)) {
+      // Do not turn an unclassifiable, oversized *complete* frame into a false
+      // truncation alarm. Keep quota's existing bound; never buffer the full frame.
+      opaqueLargeFrame = true;
+    }
+    if (type?.startsWith('response.') || type === 'error') {
+      sawResponseEvent = true;
+      lastEventType = type;
+      if (terminated && ['response.completed', 'response.failed', 'response.incomplete', 'error'].includes(type)) {
+        sawTerminal = true;
+      }
+    }
+  };
+  const push = (chunk: Uint8Array): QuotaFrame[] => {
     carry += decoder.write(Buffer.from(chunk));
     const frames: QuotaFrame[] = [];
     const boundary = /\r?\n\r?\n/g;
@@ -320,18 +350,33 @@ function quotaDecoder() {
     let start = 0;
     while ((match = boundary.exec(carry))) {
       const frame = carry.slice(start, match.index);
+      noteFrame(oversized ? oversizedPrefix : frame, !oversized && frame.length <= QUOTA_FRAME_MAX_BYTES, true);
       frames.push(!oversized && frame.length <= QUOTA_FRAME_MAX_BYTES ? quotaFrame(frame) : null);
       oversized = false;
+      oversizedPrefix = '';
       start = boundary.lastIndex;
     }
     carry = carry.slice(start);
     if (carry.length > QUOTA_FRAME_MAX_BYTES) {
       // Preserve only a possible split frame delimiter; relay bytes remain untouched.
+      if (!oversized) oversizedPrefix = carry.slice(0, 2048);
       carry = carry.slice(-3);
       oversized = true;
     }
     return frames;
   };
+  return Object.assign(push, {
+    assertComplete() {
+      if (carry.trim() || oversized) noteFrame(oversized ? oversizedPrefix : carry,
+        !oversized && carry.length <= QUOTA_FRAME_MAX_BYTES, false);
+      if (sawResponseEvent && !sawTerminal && !opaqueLargeFrame) {
+        throw new GatewayRequestKernelError('Codex OAuth stream EOF before a Responses terminal event', {
+          code: 'upstream-error', outcome: 'upstream-error', status: 502, retryable: true,
+          cause: { protocol: 'openai-responses', lastEventType },
+        });
+      }
+    },
+  });
 }
 
 /** Inspect the opening SSE frames before the response is committed. Harmless response
@@ -392,6 +437,7 @@ async function inspectQuotaStream(
         preludeDeadline ||= Date.now() + QUOTA_PRELUDE_PEEK_MS;
       }
     }
+    if (ended) decode.assertComplete();
   } catch (error) {
     await cancel();
     throw error;
@@ -407,6 +453,7 @@ async function inspectQuotaStream(
         for (const quota of decode(next.value)) if (quota && quota !== 'prelude') onLateQuota(quota);
         yield next.value;
       }
+      if (ended && !cancelled) decode.assertComplete();
     },
     cancel,
   } };
