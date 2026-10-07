@@ -119,6 +119,22 @@ const scorecardSubjectRubricCurrentnessSchema = z.object({
   currentCriteriaHash: z.string().nullable(),
 }).passthrough();
 
+const scorecardRubricCurrentnessSchema = z.object({
+  state: z.enum(['current', 'stale', 'unknown']),
+  reason: z.enum([
+    'current',
+    'recorded-identity-missing',
+    'live-identity-missing',
+    'revision-mismatch',
+    'meaning-revision-mismatch',
+    'criteria-hash-mismatch',
+  ]),
+  recordedRevision: z.number().nullable(),
+  currentRevision: z.number().nullable(),
+  recordedCriteriaHash: z.string().nullable(),
+  currentCriteriaHash: z.string().nullable(),
+}).passthrough();
+
 const scorecardEvidenceSchema = z.object({
   issueId: z.string(),
   createdAt: z.string(),
@@ -127,6 +143,7 @@ const scorecardEvidenceSchema = z.object({
   rubricRevision: z.number().optional(),
   rubricMeaningRevision: z.number().optional(),
   criteriaHash: z.string().optional(),
+  rubricCurrentness: scorecardRubricCurrentnessSchema,
   evidenceFingerprint: z.string().optional(),
   sourceHive: z.string().optional(),
   subject: z.object({
@@ -316,7 +333,7 @@ export default defineTool({
     notWhen:
       'You want scorecard history, trend inputs, or multiple rows — scorecards:list. You want a rubric definition — rubrics:get. You are filing a scorecard — scorecards:emit.',
     chaining:
-      'Page evidenceRead.next until the criterion index is complete, then fetch each criterion’s evidence pages in small parallel batches. Resolve result-door envelopes with capability:read before reading them. Concatenate complete pages, rerun probes, then emit the grading-integrity audit.',
+      'Page evidenceRead.next until the criterion index is complete, then fetch each criterion’s evidence pages in small Promise.all groups; read one criterion’s pages sequentially. Resolve papercusp.output-envelope/v1 envelopes with capability:read before reading scorecard.criteria. Concatenate complete pages, rerun probes, then emit the grading-integrity audit.',
     returns:
       'Returns `{ ok, scorecard, evidenceRead }`. The scorecard includes `evidenceFingerprint` when recorded. Full reads contain every exact criterion; an oversized read contains criteria:[] plus a complete or paged criterion index, not absent evidence. Index pages preserve scorecard metadata and report offset/totalCriteria/next; criterion pages retain full-card identity and nKeys/missingKeys and report offset/totalChars/next. Concatenate all index and evidence pages before grading.',
     seeAlso: ['scorecards:list', 'scorecards:emit', 'rubrics:get'],

@@ -82,6 +82,8 @@ import {
   getRubricWithoutSeeding,
   rubricInstrumentContract,
   type Rubric,
+  type RubricEvidenceCurrentness,
+  type RubricEvidenceIdentity,
   type RubricStatus,
 } from './rubrics';
 import type { OrgSql } from './work-items';
@@ -927,6 +929,8 @@ export interface ScorecardRow {
   rubricMeaningRevision?: number;
   /** The graded rubric's substantive criteria/method identity at emit time. */
   criteriaHash?: string;
+  /** Read-time comparison of the graded rubric with the live rubric identity. */
+  rubricCurrentness?: ScorecardRubricCurrentness;
   /** Emit-time identity of a rubric named as the subject, distinct from rubricRef. */
   subjectRubricIdentity?: NonNullable<StructuredObservation['subjectRubricIdentity']>;
   /** Read-time comparison of the graded subject rubric with its live identity. */
@@ -1066,6 +1070,8 @@ export interface ScorecardEvidenceRow {
   rubricRef: string;
   rubricRevision?: number;
   criteriaHash?: string;
+  /** Read-time comparison of the graded rubric with the live rubric identity. */
+  rubricCurrentness?: ScorecardRubricCurrentness;
   /** Stable identity of the exact rated evidence, when recorded at emit time. */
   evidenceFingerprint?: string;
   sourceHive?: string;
@@ -1099,6 +1105,33 @@ export interface ScorecardAuditTargetStatus {
   retracted: boolean;
   /** null when the subject is not a rubric (the check does not apply). */
   subjectRubricCurrentness: ScorecardSubjectRubricCurrentness | null;
+}
+
+export type ScorecardRubricCurrentness = RubricEvidenceCurrentness & {
+  recordedRevision: number | null;
+  currentRevision: number | null;
+  recordedCriteriaHash: string | null;
+  currentCriteriaHash: string | null;
+};
+
+function scorecardRubricCurrentness(
+  recorded: RubricEvidenceIdentity,
+  live: Pick<Rubric, 'revision' | 'criteriaHash'> | null,
+): ScorecardRubricCurrentness {
+  const recordedRevision = recorded.revision == null ? null : Number(recorded.revision);
+  const currentRevision = live?.revision ?? null;
+  const recordedCriteriaHash = recorded.criteriaHash?.trim() || null;
+  const currentCriteriaHash = live?.criteriaHash?.trim() || null;
+  return {
+    ...classifyRubricEvidenceCurrentness(
+      { revision: recorded.revision, criteriaHash: recordedCriteriaHash },
+      live ? { revision: live.revision, criteriaHash: currentCriteriaHash } : {},
+    ),
+    recordedRevision: recordedRevision !== null && Number.isFinite(recordedRevision) ? recordedRevision : null,
+    currentRevision,
+    recordedCriteriaHash,
+    currentCriteriaHash,
+  };
 }
 
 export type ScorecardEvidenceReadResult =
@@ -1198,6 +1231,10 @@ export async function readScorecardEvidence(issueId: string): Promise<ScorecardE
   if (!observation?.rubricRef || !observation.ratings) return { kind: 'not_scorecard' };
 
   const rubric = await getRubricWithoutSeeding(observation.rubricRef);
+  const rubricCurrentness = scorecardRubricCurrentness(
+    { revision: observation.rubricRevision, criteriaHash: observation.criteriaHash },
+    rubric,
+  );
   const criteriaKeys = rubric
     ? rubric.criteria.map((criterion) => criterion.key)
     : builtInCriterionKeysForRubric(observation.rubricRef);
@@ -1258,6 +1295,7 @@ export async function readScorecardEvidence(issueId: string): Promise<ScorecardE
       createdBy: row.created_by,
       rubricRef: observation.rubricRef,
       ...(observation.rubricRevision != null ? { rubricRevision: observation.rubricRevision } : {}),
+      rubricCurrentness,
       ...(observation.rubricMeaningRevision != null
         ? { rubricMeaningRevision: observation.rubricMeaningRevision }
         : {}),
@@ -2594,6 +2632,7 @@ async function listScorecardsAtLimit(filter: ListScorecardsFilter, limit: number
       keys: string[] | null;
       overrides?: Record<string, number>;
       ratingRubric: ScorecardRatingRubric | null;
+      liveIdentity: Pick<Rubric, 'revision' | 'criteriaHash'> | null;
     }
   >();
   const out: ScorecardRow[] = [];
@@ -2634,6 +2673,7 @@ async function listScorecardsAtLimit(filter: ListScorecardsFilter, limit: number
         keys: rubric ? rubric.criteria.map((c) => c.key) : builtInCriterionKeysForRubric(observation.rubricRef),
         overrides: scoreOverridesForScale(rubric?.ratingScale),
         ratingRubric: rubric ? { ratingScale: rubric.ratingScale, criteria: rubric.criteria } : null,
+        liveIdentity: rubric ? { revision: rubric.revision, criteriaHash: rubric.criteriaHash } : null,
       });
     }
     const meta = rubricMeta.get(observation.rubricRef)!;
@@ -2711,6 +2751,10 @@ async function listScorecardsAtLimit(filter: ListScorecardsFilter, limit: number
       ...(observation.rerunRecipe ? { rerunRecipe: observation.rerunRecipe } : {}),
       rubricRef: observation.rubricRef,
       ...(observation.rubricRevision != null ? { rubricRevision: observation.rubricRevision } : {}),
+      rubricCurrentness: scorecardRubricCurrentness(
+        { revision: observation.rubricRevision, criteriaHash: observation.criteriaHash },
+        meta.liveIdentity,
+      ),
       ...(observation.rubricMeaningRevision != null
         ? { rubricMeaningRevision: observation.rubricMeaningRevision }
         : {}),

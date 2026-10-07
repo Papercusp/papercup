@@ -56,6 +56,10 @@ const scorecard = {
   rubricRef: 'spec-test-adequacy',
   rubricRevision: 2,
   criteriaHash: 'criteria-hash-v2',
+  rubricCurrentness: {
+    state: 'current' as const, reason: 'current' as const, recordedRevision: 2, currentRevision: 2,
+    recordedCriteriaHash: 'criteria-hash-v2', currentCriteriaHash: 'criteria-hash-v2',
+  },
   evidenceFingerprint: 'evidence-fingerprint-v2',
   subject: { kind: 'scorecard' as const, ref: 'EI-subject' },
   criteria: Array.from({ length: 8 }, (_, i) => ({
