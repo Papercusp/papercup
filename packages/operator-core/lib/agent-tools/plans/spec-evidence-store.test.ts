@@ -612,6 +612,26 @@ describe('canonical operational recording adapter layer', () => {
       runGroupId: `operational-recovery:20826187:${'a'.repeat(40)}` })).toBe('operational');
   });
 
+  const native = { ...run, filePath: 'packages/operator-core/lib/check.test.ts',
+    runGroupId: 'operational-native:fb504047-776b-4cc9-9207-a259d997d21a',
+    commitSha: 'b'.repeat(40) };
+
+  it('recognizes the trusted native operational adapter without claiming e2e', () => {
+    expect(canonicalOperationalAdapterLayer(native)).toBe('operational');
+    expect(canonicalOperationalAdapterLayer({ ...native, framework: 'playwright' })).toBeUndefined();
+  });
+
+  it.each([
+    { source: 'mutation-probe' }, { worktreeDirty: true }, { worktreeDirty: null },
+    { commitSha: 'abc' }, { commitSha: null },
+    { runGroupId: 'operational-native:caller-label' },
+    { runGroupId: 'operational-native:fb504047-776b-1cc9-9207-a259d997d21a' },
+    { filePath: '/tmp/check.ts' }, { filePath: '../check.ts' },
+    { filePath: 'packages/../check.ts' }, { filePath: 'packages\\check.ts' },
+  ])('rejects untrusted native operational receipt provenance %j', patch => {
+    expect(canonicalOperationalAdapterLayer({ ...native, ...patch })).toBeUndefined();
+  });
+
   it.each([
     { framework: 'vitest' }, { framework: 'node' }, { source: 'mutation-probe' },
     { worktreeDirty: true }, { worktreeDirty: null }, { commitSha: null },

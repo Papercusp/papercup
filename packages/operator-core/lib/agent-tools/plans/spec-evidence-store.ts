@@ -1605,11 +1605,17 @@ export function canonicalOperationalAdapterLayer(run: {
   framework?: string | null; source?: string | null; filePath?: string | null;
   runGroupId?: string | null; commitSha?: string | null; worktreeDirty?: boolean | null;
 }): 'operational' | undefined {
-  return run.framework === 'operational' && run.source === 'local' &&
-    run.worktreeDirty === false && Boolean(run.commitSha) &&
+  if (run.framework !== 'operational' || run.source !== 'local' ||
+    run.worktreeDirty !== false || !run.commitSha) return undefined;
+  // executeOperationalRun owns this receipt namespace and executes the callback;
+  // this classifies the recording adapter, not a Vitest or e2e runtime layer.
+  const native = /^operational-native:[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(run.runGroupId ?? '') &&
+    /^[a-f0-9]{40}$/.test(run.commitSha) &&
+    repoMeasurementPathSchema.safeParse(run.filePath).success;
+  const archived =
     /^docs\/evidence\/[^\n]+\.json$/.test(run.filePath ?? '') &&
-    /^operational(?:-recovery:\d+)?:[a-f0-9]{40}$/.test(run.runGroupId ?? '')
-    ? 'operational' : undefined;
+    /^operational(?:-recovery:\d+)?:[a-f0-9]{40}$/.test(run.runGroupId ?? '');
+  return native || archived ? 'operational' : undefined;
 }
 
 function scorecardIssueIdFromEvidenceRef(evidenceRef: string): string | null {
