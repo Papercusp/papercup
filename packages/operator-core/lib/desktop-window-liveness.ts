@@ -542,7 +542,8 @@ export async function gatherOnDesktopSessions(
           }))).filter((host): host is { ownerId: string; pid: number } => host !== null);
         } else {
           try {
-            hosts = await timeStep('listLiveHosts', () => (opts.deps?.listHosts ?? listLiveHostsAsync)());
+            hosts = await timeStep('listLiveHosts', async () =>
+              (opts.deps?.listHosts ?? listLiveHostsAsync)());
           } catch {
             hosts = [];
           }

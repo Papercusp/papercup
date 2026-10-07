@@ -466,6 +466,28 @@ describe('gatherOnDesktopSessions targeted owner lookup', () => {
 });
 
 describe('gatherOnDesktopSessions full-roster ancestry fanout', () => {
+  it('accepts a synchronous full-host roster provider', async () => {
+    const host = { ownerId: 'su-sync', pid: 200 };
+    const result = await gatherOnDesktopSessions({
+      ttlMs: 0,
+      deps: {
+        listWindows: async () => [{ wid: '0x1', pid: 99, title: 'Terminal' }],
+        listCandidates: async () => [{
+          id: 1,
+          coord_owner_id: host.ownerId,
+          session_id: 'session-sync',
+          window_id: null,
+          pid: null,
+        }],
+        listHosts: () => [host],
+        readStat: async () => '200 (psu-pty-host) S 99 1 0 0 0 0 0',
+      },
+    });
+
+    expect(result.owners).toEqual(new Set([host.ownerId]));
+    expect(result.sessionIds).toEqual(new Set(['session-sync']));
+  });
+
   it('bounds independent host walks and keeps successful matches when one proc read fails', async () => {
     const hosts = Array.from({ length: 12 }, (_, i) => ({ ownerId: `su-${i}`, pid: 1_000 + i }));
     const rows = hosts.map((host, i) => ({
