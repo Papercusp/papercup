@@ -567,33 +567,37 @@ interface TestRunsReference {
   qualifier: string;
 }
 
+const RELATION_ALIAS_KEYWORDS = new Set([
+  'as',
+  'on',
+  'where',
+  'join',
+  'left',
+  'right',
+  'inner',
+  'outer',
+  'full',
+  'cross',
+  'natural',
+  'using',
+  'group',
+  'order',
+  'limit',
+  'offset',
+  'fetch',
+  'union',
+  'intersect',
+  'except',
+  'having',
+]);
+
 function extractTestRunsReferences(strippedSql: string): TestRunsReference[] {
-  const sqlKeywords = new Set([
-    'as',
-    'on',
-    'where',
-    'join',
-    'left',
-    'right',
-    'inner',
-    'outer',
-    'full',
-    'cross',
-    'using',
-    'group',
-    'order',
-    'limit',
-    'offset',
-    'fetch',
-    'union',
-    'having',
-  ]);
   const references: TestRunsReference[] = [];
   const referenceRe =
     /\b(?:from|join)\s+(?:only\s+)?(?:[A-Za-z_][A-Za-z0-9_$]*\s*\.\s*)?test_runs\b(?:\s+(?:as\s+)?([A-Za-z_][A-Za-z0-9_$]*))?/gi;
   for (let match = referenceRe.exec(strippedSql); match; match = referenceRe.exec(strippedSql)) {
     const alias = match[1]?.toLowerCase();
-    references.push({ qualifier: alias && !sqlKeywords.has(alias) ? alias : TEST_RUNS_TABLE });
+    references.push({ qualifier: alias && !RELATION_ALIAS_KEYWORDS.has(alias) ? alias : TEST_RUNS_TABLE });
   }
   return references;
 }
@@ -1384,6 +1388,16 @@ function sqlLiteralAndCommentRanges(sql: string): Array<[number, number]> {
       ranges.push([i, j]);
       i = j;
       continue;
+    }
+    if (ch === '$') {
+      const tag = /^\$([A-Za-z_][A-Za-z0-9_]*)?\$/.exec(sql.slice(i))?.[0];
+      if (tag) {
+        const end = sql.indexOf(tag, i + tag.length);
+        const to = end === -1 ? len : end + tag.length;
+        ranges.push([i, to]);
+        i = to;
+        continue;
+      }
     }
     if (ch === "'") {
       const start = i;
@@ -2397,23 +2411,60 @@ export function buildToolRoutingAdvisory(rawSql: string): string | null {
 const NATIVE_CLIENT_TOOLS = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'Read', 'Bash', 'Glob', 'Grep'];
 
 /**
- * Every `workspace_id = '<literal>'` style predicate in a query, as its literal values.
+ * Literal workspace predicates bound to the relation they actually reference.
  *
  * Matched against RAW sql for the same reason as the claimability advisory: the interesting
  * token IS the string literal, which the stripper erases. Only equality-shaped operators are
  * collected — a `workspace_id <> 'default'` is a deliberate exclusion, not the habit this
  * catches.
  */
-function workspaceIdPredicateValues(rawSql: string): string[] {
+function workspaceIdPredicatesByRelation(rawSql: string): Array<{ table: string; values: string[] }> {
   const masked = sqlLiteralAndCommentRanges(rawSql);
-  const startsInsideComment = (idx: number): boolean =>
-    masked.some(([from, to]) => idx >= from && idx < to && rawSql.slice(from, from + 2) === '--');
-  const re = /\bworkspace_id\b\s*(?:=|\bin\b|=\s*any)\s*\(?\s*(?:array\s*\[\s*)?'([^']*)'/gi;
-  const out: string[] = [];
-  for (let m = re.exec(rawSql); m; m = re.exec(rawSql)) {
-    if (!startsInsideComment(m.index)) out.push(m[1]);
+  const isMasked = (idx: number): boolean => masked.some(([from, to]) => idx >= from && idx < to);
+  // Preserve offsets while hiding literals/comments from relation discovery. The existing
+  // stripper changes offsets, so it cannot be used to compare matches against raw literals.
+  let code = '';
+  let end = 0;
+  for (const [from, to] of masked) {
+    code += rawSql.slice(end, from) + ' '.repeat(to - from);
+    end = to;
   }
-  return out;
+  code += rawSql.slice(end);
+
+  const references: Array<{ table: string; qualifiers: string[]; values: string[] }> = [];
+  const referenceRe = /\b(from|join)\s+(?:only\s+)?([A-Za-z_][A-Za-z0-9_$]*(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_$]*)?)(?:\s+(?:as\s+)?([A-Za-z_][A-Za-z0-9_$]*))?/gi;
+  for (let m = referenceRe.exec(code); m; m = referenceRe.exec(code)) {
+    if (m[1].toLowerCase() === 'from' && fromIsNotAClause(code, m.index)) continue;
+    const table = m[2].replaceAll(/\s/g, '').toLowerCase();
+    const alias = m[3]?.toLowerCase();
+    // An alias hides the original table name in PostgreSQL. Without an alias, both the
+    // bare and schema-qualified table name are legal column qualifiers.
+    const qualifiers = alias && !RELATION_ALIAS_KEYWORDS.has(alias)
+      ? [alias]
+      : [table, bareTableName(table)];
+    references.push({ table, qualifiers, values: [] });
+    // Do not consume JOIN as a rejected alias: it introduces the next relation.
+    if (alias && RELATION_ALIAS_KEYWORDS.has(alias)) referenceRe.lastIndex -= m[3].length;
+  }
+
+  // The lightweight relation extractor does not resolve comma joins. Likewise a bare
+  // column in a multi-relation statement needs schema/query-scope resolution we do not
+  // have here. Stay silent rather than assign that predicate to an arbitrary corpus table.
+  const hasCommaFrom = /\bfrom\b(?:(?!\b(?:where|join|group|order|limit|having)\b)[\s\S])*,/i.test(code);
+  const re = /\b(?:([A-Za-z_][A-Za-z0-9_$]*(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_$]*)?)\s*\.\s*)?workspace_id\b\s*(?:=|\bin\b|=\s*any)\s*\(?\s*(?:array\s*\[\s*)?'((?:''|[^'])*)'/gi;
+  for (let m = re.exec(rawSql); m; m = re.exec(rawSql)) {
+    if (isMasked(m.index)) continue;
+    const clauses = [...code.slice(0, m.index).matchAll(/\b(select|from|join|where|on|having|group|order|limit|union)\b/gi)];
+    const clause = clauses.at(-1)?.[1].toLowerCase();
+    if (clause !== 'where' && clause !== 'on' && clause !== 'having') continue;
+    const qualifier = m[1]?.replaceAll(/\s/g, '').toLowerCase();
+    const candidates = qualifier
+      ? references.filter((r) => r.qualifiers.includes(qualifier))
+      : references.length === 1 && !hasCommaFrom ? references : [];
+    // Reused aliases across nested queries are ambiguous to this analyzer, too.
+    if (candidates.length === 1) candidates[0].values.push(m[2].replaceAll("''", "'"));
+  }
+  return references.filter((r) => r.values.length && CORPUS_NAMESPACED_TABLES.has(bareTableName(r.table)));
 }
 
 /**
@@ -2438,24 +2489,18 @@ function workspaceIdPredicateValues(rawSql: string): string[] {
  * point is to be loud about the wrong answer, never about the right one.
  */
 export function buildCorpusNamespaceAdvisory(rawSql: string): string | null {
-  const tables = extractReferencedTables(rawSql);
-  const corpusHits = tables.filter((t) => CORPUS_NAMESPACED_TABLES.has(bareTableName(t)));
+  const corpusHits = workspaceIdPredicatesByRelation(rawSql);
   if (!corpusHits.length) return null;
 
-  const values = workspaceIdPredicateValues(rawSql);
-  if (!values.length) return null; // unscoped: correct for these tables
-
-  const sessionTurnsOnly =
-    corpusHits.some((t) => bareTableName(t) === 'session_turns') &&
-    corpusHits.every((t) => bareTableName(t) === 'session_turns');
-  if (sessionTurnsOnly) {
+  const parts: string[] = [];
+  for (const { values } of corpusHits.filter((r) => bareTableName(r.table) === 'session_turns')) {
     const tenantValues = [...new Set(values.filter((v) => v !== 'default'))];
     // `default` alone is an intentional host-global slice. A tenant plus
     // `default` is the production reader's full accessible-corpus predicate.
-    if (!tenantValues.length || values.includes('default')) return null;
+    if (!tenantValues.length || values.includes('default')) continue;
     const tenant = tenantValues[0]!;
     const wrong = tenantValues.slice(0, 2).map((v) => "'" + v + "'").join(', ');
-    return (
+    parts.push(
       '⚠ mixed global/tenant transcript scope: session_turns is NOT a corpus constant. ' +
       "File-backed claude/omp/codex transcripts use workspace_id = 'default' (the host-global " +
       'corpus sentinel), while agent_chat transcripts retain their real workspace id because ' +
@@ -2467,11 +2512,13 @@ export function buildCorpusNamespaceAdvisory(rawSql: string): string | null {
     );
   }
 
-  if (values.includes('default')) return null; // caller already knows the namespace
+  const offenders = corpusHits.filter((r) => bareTableName(r.table) !== 'session_turns' && !r.values.includes('default'));
+  if (!offenders.length) return parts.length ? parts.join('\n') : null;
 
-  const named = [...new Set(corpusHits)].slice(0, 3).join(', ');
+  const named = [...new Set(offenders.map((r) => r.table))].slice(0, 3).join(', ');
+  const values = offenders.flatMap((r) => r.values);
   const wrong = [...new Set(values)].slice(0, 2).map((v) => "'" + v + "'").join(', ');
-  return (
+  parts.push(
     '⚠ corpus namespace, not a tenant: ' + named + ' stores every row under the literal ' +
     "workspace_id = 'default' (the session-transcript CORPUS namespace — see " +
     'search/session-ingest.ts, which hardcodes it deliberately). This query filters it by ' +
@@ -2481,6 +2528,7 @@ export function buildCorpusNamespaceAdvisory(rawSql: string): string | null {
     "workspace_id = 'default'. To scope to a tenant here, filter on `owner` (the coord " +
     'ownerId) instead — that is the column that actually identifies an agent.'
   );
+  return parts.join('\n');
 }
 
 /**

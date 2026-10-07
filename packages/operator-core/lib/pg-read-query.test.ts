@@ -2722,6 +2722,75 @@ describe('buildCorpusNamespaceAdvisory — a tenant predicate on a corpus table 
       buildCorpusNamespaceAdvisory(`SELECT * FROM ${PARTS} WHERE workspace_id <> 'papercusp-workspace'`),
     ).toBeNull();
   });
+
+  it('EI-25306698395799848: does not attribute a routine workspace filter to joined wake deliveries', () => {
+    const query = `SELECT r.id, w.id AS delivery_id
+      FROM harness_shared.routines AS r
+      LEFT JOIN harness_shared.event_wake_deliveries AS w
+        ON w.subscriber_id = r.action_config->>'ownerId'
+        AND w.source = 'routine'
+        AND w.created_at >= r.created_at
+      WHERE r.workspace_id = 'papercusp-workspace' AND r.name LIKE 'loop:%'`;
+    expect(buildCorpusNamespaceAdvisory(query)).toBeNull();
+    expect(buildCorpusNamespaceAdvisory(query + " AND w.workspace_id = 'papercusp-workspace'"))
+      .toContain('event_wake_deliveries');
+  });
+
+  it.each([
+    "SELECT * FROM harness_shared.routines r JOIN harness_shared.event_wake_deliveries w ON true WHERE r.workspace_id = 'papercusp-workspace'",
+    "SELECT * FROM harness_shared.event_wake_deliveries w JOIN harness_shared.routines r ON true WHERE r.workspace_id = 'papercusp-workspace'",
+    "SELECT * FROM harness_shared.routines JOIN harness_shared.event_wake_deliveries ON true WHERE routines.workspace_id = 'papercusp-workspace'",
+    "SELECT * FROM harness_shared.routines JOIN harness_shared.event_wake_deliveries ON true WHERE harness_shared.routines.workspace_id = 'papercusp-workspace'",
+    "SELECT * FROM harness_shared.routines r JOIN harness_shared.event_wake_deliveries w ON true WHERE workspace_id = 'papercusp-workspace'",
+  ])('does not invent corpus ownership for an unrelated or ambiguous joined predicate: %s', (query) => {
+    expect(buildCorpusNamespaceAdvisory(query)).toBeNull();
+  });
+
+  it('keeps corpus predicates independent across joined tables', () => {
+    const query = `SELECT * FROM ${PARTS} p JOIN harness_shared.event_wake_deliveries w ON true
+      WHERE p.workspace_id = 'default' AND w.workspace_id = 'papercusp-workspace'`;
+    expect(buildCorpusNamespaceAdvisory(query)).toContain('event_wake_deliveries');
+    expect(buildCorpusNamespaceAdvisory(query)).not.toContain('harness_shared.session_turn_parts');
+  });
+
+  it.each([
+    `SELECT * FROM ${PARTS} WHERE owner = 'workspace_id = ''papercusp-workspace'''`,
+    `SELECT * FROM ${PARTS} /* workspace_id = 'papercusp-workspace' */ WHERE owner = 'agent'`,
+    `SELECT * FROM ${PARTS} WHERE owner = $$workspace_id = 'papercusp-workspace'$$`,
+    `SELECT * FROM ${PARTS} WHERE owner = $example$workspace_id = 'papercusp-workspace'$example$`,
+    `SELECT workspace_id = 'papercusp-workspace' AS belongs_to_workspace FROM ${PARTS}`,
+  ])('ignores predicate-shaped text in literals and block comments: %s', (query) => {
+    expect(buildCorpusNamespaceAdvisory(query)).toBeNull();
+  });
+
+  it.each([
+    "SELECT * FROM harness_shared.routines JOIN harness_shared.event_wake_deliveries ON true WHERE event_wake_deliveries.workspace_id = 'papercusp-workspace'",
+    "SELECT * FROM harness_shared.routines JOIN harness_shared.event_wake_deliveries ON true WHERE harness_shared.event_wake_deliveries.workspace_id = 'papercusp-workspace'",
+    "SELECT * FROM harness_shared.routines r LEFT JOIN harness_shared.event_wake_deliveries w ON w.workspace_id = 'papercusp-workspace' WHERE r.name = 'loop'",
+  ])('warns about the corpus relation with its own explicit predicate: %s', (query) => {
+    expect(buildCorpusNamespaceAdvisory(query)).toContain('event_wake_deliveries');
+  });
+
+  it.each([
+    "SELECT * FROM harness_shared.event_wake_deliveries JOIN harness_shared.routines ON true WHERE workspace_id = 'papercusp-workspace'",
+    "SELECT * FROM harness_shared.event_wake_deliveries, harness_shared.routines WHERE workspace_id = 'papercusp-workspace'",
+    "SELECT * FROM harness_shared.event_wake_deliveries w WHERE EXISTS (SELECT 1 FROM harness_shared.routines w WHERE w.workspace_id = 'papercusp-workspace')",
+  ])('stays silent when relation ownership is ambiguous: %s', (query) => {
+    expect(buildCorpusNamespaceAdvisory(query)).toBeNull();
+  });
+
+  it('does not use a self-joined alias default predicate to silence another alias warning', () => {
+    expect(buildCorpusNamespaceAdvisory(`SELECT * FROM ${PARTS} p JOIN ${PARTS} q ON true
+      WHERE p.workspace_id = 'default' AND q.workspace_id = 'papercusp-workspace'`))
+      .toContain('matches ZERO rows');
+  });
+
+  it('preserves the mixed session_turns warning independently of joined corpus defaults', () => {
+    const advisory = buildCorpusNamespaceAdvisory(`SELECT * FROM ${TURNS} t JOIN ${PARTS} p ON true
+      WHERE t.workspace_id = 'papercusp-workspace' AND p.workspace_id = 'default'`);
+    expect(advisory).toContain('NOT a corpus constant');
+    expect(advisory).not.toContain('matches ZERO rows');
+  });
 });
 
 describe('buildSessionTurnPartsJsonAdvisory — mixed transcript text needs a guarded decode', () => {
