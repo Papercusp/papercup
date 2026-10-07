@@ -39,6 +39,7 @@
  * same lane, selected from the request body BEFORE the kernel is entered
  * (gateway.ts:5451). This adapter is oauth-http only and never substitutes it.
  */
+import { StringDecoder } from 'node:string_decoder';
 import { describeFetchError } from '../loopback-fetch';
 import type { GatewayTransportId } from './provider-adapters';
 import type { AccountPool, ActiveAccount } from './provider-contracts';
@@ -273,6 +274,105 @@ function egressView(account: CodexCliAccount, token: () => Promise<string>): Act
     egress: account.egress,
     egressPool: account.egressPool,
   };
+}
+
+type StreamQuota = { error: Record<string, unknown>; resetAt: number | null };
+const QUOTA_FRAME_MAX_BYTES = 64 * 1024;
+const CODEX_QUOTA_CODES = new Set(['usage_limit_reached', 'usage_limit_exceeded', 'rate_limit_exceeded', 'insufficient_quota']);
+
+/** Inspect protocol error events, never model output containing quota-looking prose. */
+function quotaFrame(frame: string): StreamQuota | null {
+  const data = frame.split(/\r?\n/).filter((line) => line.startsWith('data:'))
+    .map((line) => line.slice(5).trimStart()).join('\n');
+  let event: { type?: string; error?: Record<string, unknown>; response?: { error?: Record<string, unknown> } };
+  try { event = JSON.parse(data); } catch { return null; }
+  if (!event || typeof event !== 'object') return null;
+  const error = event.type === 'error' ? event.error : event.type === 'response.failed' ? event.response?.error : null;
+  if (!error || typeof error !== 'object' || !CODEX_QUOTA_CODES.has(String(error.code ?? error.type))) return null;
+  const reset = error.resets_at;
+  return { error, resetAt: typeof reset === 'number' && Number.isFinite(reset) && reset > 0 ? reset * 1000 : null };
+}
+
+function quotaDecoder() {
+  const decoder = new StringDecoder('utf8');
+  let carry = '';
+  let oversized = false;
+  return (chunk: Uint8Array): Array<StreamQuota | null> => {
+    carry += decoder.write(Buffer.from(chunk));
+    const frames: Array<StreamQuota | null> = [];
+    const boundary = /\r?\n\r?\n/g;
+    let match: RegExpExecArray | null;
+    let start = 0;
+    while ((match = boundary.exec(carry))) {
+      const frame = carry.slice(start, match.index);
+      frames.push(!oversized && frame.length <= QUOTA_FRAME_MAX_BYTES ? quotaFrame(frame) : null);
+      oversized = false;
+      start = boundary.lastIndex;
+    }
+    carry = carry.slice(start);
+    if (carry.length > QUOTA_FRAME_MAX_BYTES) {
+      // Preserve only a possible split frame delimiter; relay bytes remain untouched.
+      carry = carry.slice(-3);
+      oversized = true;
+    }
+    return frames;
+  };
+}
+
+/** Read only the opening SSE frame before the response is committed. Later quota errors
+ * cannot safely replay emitted tool/output events, but must retire the account for the
+ * next request in this same session. This extends the existing kernel retry/park path. */
+async function inspectQuotaStream(
+  body: NonNullable<CodexOAuthFetchResponse['body']>,
+  onLateQuota: (quota: StreamQuota) => void,
+): Promise<{ body: NonNullable<CodexOAuthFetchResponse['body']>; quota: StreamQuota | null }> {
+  const iterator = body[Symbol.asyncIterator]();
+  const decode = quotaDecoder();
+  const prefix: Uint8Array[] = [];
+  const late: StreamQuota[] = [];
+  let size = 0;
+  let ended = false;
+  let cancelled = false;
+  const cancel = async () => {
+    if (cancelled) return;
+    cancelled = true;
+    if (iterator.return) await iterator.return();
+    else await body.cancel?.();
+  };
+  try {
+    while (size < QUOTA_FRAME_MAX_BYTES) {
+      const next = await iterator.next();
+      if (next.done) { ended = true; break; }
+      prefix.push(next.value);
+      size += next.value.length;
+      const frames = decode(next.value);
+      if (frames.length) {
+        if (frames[0]) {
+          await cancel();
+          const bytes = Buffer.from(JSON.stringify({ error: frames[0].error }));
+          return { quota: frames[0], body: { async *[Symbol.asyncIterator]() { yield bytes; }, cancel() {} } };
+        }
+        late.push(...frames.filter((quota): quota is StreamQuota => quota !== null));
+        break;
+      }
+    }
+  } catch (error) {
+    await cancel();
+    throw error;
+  }
+  return { quota: null, body: {
+    async *[Symbol.asyncIterator]() {
+      for (const quota of late) onLateQuota(quota);
+      for (const chunk of prefix) yield chunk;
+      while (!ended && !cancelled) {
+        const next = await iterator.next();
+        if (next.done) { ended = true; break; }
+        for (const quota of decode(next.value)) if (quota) onLateQuota(quota);
+        yield next.value;
+      }
+    },
+    cancel,
+  } };
 }
 
 export function createCodexOAuthKernelAdapter(opts: CodexOAuthAdapterOptions): CodexOAuthKernelAdapter {
@@ -567,12 +667,28 @@ export function createCodexOAuthKernelAdapter(opts: CodexOAuthAdapterOptions): C
       }
 
       const headers = headersToObject(upstream.headers);
+      let status = upstream.status;
       const pinYieldedFrom =
         pinnedAccountId && pinnedAccountId !== account.accountId ? pinnedAccountId : null;
 
       // WI-10003306: classify a public-model 4xx as a MODEL refusal. Only the non-auth,
       // non-rate-limit 4xx range is read (a few hundred bytes); 2xx streams are never touched.
       let body = upstream.body;
+      if (body && status >= 200 && status < 300 && headers['content-type']?.includes('text/event-stream')) {
+        const inspected = await inspectQuotaStream(body, (quota) => {
+          if (!hardPinned) opts.pool?.onExhausted(account.accountId,
+            quota.resetAt && quota.resetAt > now() ? quota.resetAt : now() + opts.failoverBackoffMs);
+        });
+        body = inspected.body;
+        if (inspected.quota) {
+          status = 429;
+          headers['content-type'] = 'application/json';
+          delete headers['content-length'];
+          if (inspected.quota.resetAt && inspected.quota.resetAt > now()) {
+            headers['retry-after'] = String(Math.ceil((inspected.quota.resetAt - now()) / 1000));
+          }
+        }
+      }
       let modelRefusal: string | null = null;
       const model = opts.model?.trim();
       if (
@@ -594,7 +710,7 @@ export function createCodexOAuthKernelAdapter(opts: CodexOAuthAdapterOptions): C
             /* bookkeeping must never break the request */
           }
         }
-      } else if (model && modelMode === 'public' && upstream.status >= 200 && upstream.status < 300) {
+      } else if (model && modelMode === 'public' && status >= 200 && status < 300) {
         try {
           opts.onModelServed?.({ accountId: account.accountId, model });
         } catch {
@@ -604,13 +720,13 @@ export function createCodexOAuthKernelAdapter(opts: CodexOAuthAdapterOptions): C
 
       // WI-10004561: an upstream error body may echo the OAuth token this attempt presented.
       // Wrapped AFTER the refusal read above, so classification still sees the raw text.
-      if (upstream.status >= 400 && body) body = scrubbedErrorBody(body, presentedSecretsFromHeaders(prepared.headers));
+      if (status >= 400 && body) body = scrubbedErrorBody(body, presentedSecretsFromHeaders(prepared.headers));
 
       return {
         // Request-derived, as the live handler's span is: an error response to a
         // streaming request is still a streaming request.
         streaming: opts.streaming,
-        status: upstream.status,
+        status,
         transport: OAUTH_TRANSPORT,
         metadata: { accountId: account.accountId, headers, pinYieldedFrom, egressKey: egress.key, modelRefusal },
         body,
@@ -620,9 +736,9 @@ export function createCodexOAuthKernelAdapter(opts: CodexOAuthAdapterOptions): C
         // accounts that do not expose that tier. Other 4xx responses are
         // forwarded unchanged.
         retryable:
-          upstream.status === 401 ||
-          upstream.status === 429 ||
-          upstream.status >= 500 ||
+          status === 401 ||
+          status === 429 ||
+          status >= 500 ||
           (modelMode === 'reserve' && upstream.status >= 400 && upstream.status < 500) ||
           // WI-10003306: a model refusal is account-specific — another subscription may serve it.
           modelRefusal !== null,
