@@ -55,7 +55,10 @@ async function doSignup(page: import('@playwright/test').Page, username: string)
   expect(signupRes.ok(), `POST /api/auth/signup -> ${signupRes.status()} ${await signupRes.text().catch(() => '')}`).toBe(true);
 
   // Wait for redirect off /login
-  await page.waitForURL((u) => !u.toString().includes('/login'), { timeout: 10_000 });
+  await page.waitForURL((u) => !u.toString().includes('/login'), {
+    timeout: 10_000,
+    waitUntil: 'commit',
+  });
 }
 
 async function skipIfPgUnavailable(request: import('@playwright/test').APIRequestContext): Promise<boolean> {
