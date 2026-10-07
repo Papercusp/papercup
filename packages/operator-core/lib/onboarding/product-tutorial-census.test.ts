@@ -43,7 +43,8 @@ describe('account-first tutorial source census', () => {
     const billing = PRODUCT_TUTORIAL_LESSONS.find(lesson => lesson.id === 'billing')!;
     expect(billing.help).toContain('separate responsibilities');
     expect(billing.help).toContain('cancellation');
-    expect(billing.help).toContain('failed payment');
+    expect(billing.help).toContain('If a payment fails');
+    expect(billing.help).toContain('update the payment method');
     expect(billing.help).not.toMatch(/\$\d+/);
   });
   it('covers every maintained operator mount, including non-rail mounts', () => {
