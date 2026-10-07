@@ -26,6 +26,7 @@ vi.mock('../../../agent-tools/coordination/presence', () => ({
 import {
   normalizeLaunchArgv,
   reconstructPsuLaunchArgv,
+  codexCompactionLimitFromLaunchArgv,
   AUTO_MODE_DIRECTIVE,
 } from './bootstrap-su';
 
@@ -47,6 +48,18 @@ describe('normalizeLaunchArgv (WI-1343)', () => {
     expect(normalizeLaunchArgv([long])![0]!.length).toBe(2000);
     const huge = Array.from({ length: 300 }, (_, i) => `--f${i}`);
     expect(normalizeLaunchArgv(huge)!.length).toBe(128);
+  });
+});
+
+describe('codexCompactionLimitFromLaunchArgv (P-005)', () => {
+  it('reads the per-session soft ceiling from the persisted psu argv', () => {
+    expect(codexCompactionLimitFromLaunchArgv(['psu', '--compaction-limit=250000'])).toBe(250_000);
+    expect(codexCompactionLimitFromLaunchArgv(['psu', '--compaction-limit', '250000'])).toBe(250_000);
+  });
+
+  it('falls through when the launch argv has no valid explicit ceiling', () => {
+    expect(codexCompactionLimitFromLaunchArgv(['psu', '--no-picker'])).toBeNull();
+    expect(codexCompactionLimitFromLaunchArgv(['psu', '--compaction-limit=lots'])).toBeNull();
   });
 });
 

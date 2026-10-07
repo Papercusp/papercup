@@ -102,6 +102,7 @@ import {
 } from '../../../saved-prompts-materialize';
 import { emitCodexSlashToolPrompts } from '../../../slash-tool-prompts-codex';
 import { resolveInstallPaths } from '../../../desktop-install/papercusp-files';
+import { parseLaunchCompactionLimitArgv } from '../../../compaction-usage';
 import { readSuperuserToken } from '../../../superuser-token';
 import { homedir } from 'node:os';
 import {
@@ -1390,6 +1391,11 @@ export function normalizeLaunchArgv(v: unknown): string[] | null {
   if (!Array.isArray(v)) return null;
   const out = v.filter((x): x is string => typeof x === 'string').map((x) => x.slice(0, 2000));
   return out.length ? out.slice(0, 128) : null;
+}
+
+/** Read the requested soft context ceiling from the same psu argv persisted for replay. */
+export function codexCompactionLimitFromLaunchArgv(argv: unknown): number | null {
+  return parseLaunchCompactionLimitArgv(argv);
 }
 
 /**
@@ -3128,6 +3134,9 @@ export const bootstrapSu = defineTool({
           promptText,
           sid,
           model,
+          // Preserve the per-session cap in Codex's native config from the first
+          // turn; repair paths read the identical value back from launch_argv.
+          compactionLimit: codexCompactionLimitFromLaunchArgv(launchArgv),
           token: readSuperuserToken(),
           codexGatewayAccountId: accountPin.provider === 'codex' ? accountPin.accountId : null,
           // WI-3645: explicit-auto → the UNPINNED gateway provider block (header omitted;
