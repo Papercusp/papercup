@@ -293,8 +293,9 @@ async function stopPackagedMcpProxy(): Promise<void> {
  * schema setup, not shared-DB background machinery, and is deliberately
  * repeated per request process so a request-only host cannot silently depend
  * on a background host that may be absent or stale. A null/failed result is
- * rejected by the caller, which refuses to start HTTP rather than serving code
- * against an unresolved schema. On a backgroundWorkers host it polls the
+ * keeps HTTP closed and re-checks in place rather than restarting the process
+ * against an unresolved schema. Each attempt has its own cancellation deadline.
+ * On a backgroundWorkers host it polls the
  * boot-gate flag flipped right after `applyPendingMigrationsAtBoot()` returns
  * (see the substrate-boot IIFE above), and — matching this whole boot path's
  * log-and-continue philosophy — a timeout is logged and swallowed rather than
@@ -314,36 +315,48 @@ export async function waitForBootMigrationGate(timeoutMs = 20_000): Promise<void
       BOOTSTRAP_STATE.requestMigrationGateFlights,
       'request-only-boot-migration',
       async () => {
-        const { applyPendingMigrationsAtBoot } = await import('@papercusp/operator-core/lib/db-boot-migrate');
-        const migrationAttempt = await withBoundedTimeout(
-          (signal) => applyPendingMigrationsAtBoot(signal),
-          {
-            fallback: null,
-            timeoutMs,
-            label: 'request-only boot migration preflight',
-          },
+        const { applyPendingMigrationsNow } = await import(
+          '@papercusp/operator-core/lib/db-boot-migrate'
         );
-        if (migrationAttempt.degraded) {
-          if (migrationAttempt.reason === 'error') {
+        const { awaitBootMigrationGate, raiseBootMigrationGateAlarm, clearBootMigrationGateAlarm } = await import(
+          '@papercusp/operator-core/lib/boot-migration-gate'
+        );
+        const { hostIdentity } = await import('@papercusp/operator-core/lib/serving-host-identity');
+        const gateHost = `request-host:${hostIdentity()}`;
+        const applyBounded = async () => {
+          const migrationAttempt = await withBoundedTimeout(
+            // A later listener can arrive after the HTTP caller's flight has
+            // settled. The once-per-process entry would return null even on
+            // a current schema, so every flight uses a fresh coordinated check.
+            (signal) => applyPendingMigrationsNow({ broadcast: false, signal }),
+            {
+              fallback: null,
+              timeoutMs,
+              label: 'request-only boot migration preflight',
+            },
+          );
+          if (migrationAttempt.degraded && migrationAttempt.reason === 'error') {
             throw migrationAttempt.error instanceof Error
               ? migrationAttempt.error
               : new Error(
                   `[host-bootstrap] request-only migration preflight failed: ${migrationAttempt.errorMessage ?? 'unknown error'}`,
                 );
           }
-          throw new Error(
-            `[host-bootstrap] request-only migration preflight ${migrationAttempt.reason ?? 'degraded'} after ${timeoutMs}ms`,
-          );
-        }
-        const migrationResult = migrationAttempt.value;
-        if (!migrationResult || migrationResult.failed.length > 0) {
-          const failureSummary = migrationResult
-            ? `${migrationResult.failed.length} migration(s) remain pending: ${migrationResult.failed
-                .map((failure) => `${failure.file}: ${failure.error}`)
-                .join('; ')}`
-            : 'migration state could not be determined';
-          throw new Error(`[host-bootstrap] request-only migration preflight failed: ${failureSummary}`);
-        }
+          return migrationAttempt.value;
+        };
+        // A backup or pending migration can outlive one attempt's deadline.
+        // Exiting here used up the desktop supervisor's eight-start budget and
+        // left its window waiting forever even after the database was ready.
+        // Reuse the background gate's paced recovery and alarm, keeping HTTP
+        // closed until a fresh, conclusive migration check succeeds.
+        await awaitBootMigrationGate({
+          plane: 'request',
+          applyAtBoot: applyBounded,
+          applyRetry: applyBounded,
+          onWithheld: () => {},
+          raiseAlarm: (alarm) => raiseBootMigrationGateAlarm(alarm, gateHost, 'request'),
+          clearAlarm: (alarm) => clearBootMigrationGateAlarm(alarm, gateHost, 'request'),
+        });
         const { markMigrationsAppliedForRequestGate } = await import(
           '@papercusp/operator-core/lib/sync/hyperbee/boot-gate'
         );
