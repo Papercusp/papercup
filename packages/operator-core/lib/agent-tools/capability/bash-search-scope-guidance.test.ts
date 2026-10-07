@@ -20,6 +20,7 @@ type GuidanceTool = {
     seeAlso?: string[];
   };
   handler?: (args: unknown, ctx: unknown) => Promise<{ content: Array<{ text: string }>; isError?: boolean }>;
+  args?: { shape?: Record<string, { description?: string }> };
 };
 
 describe('capability:bash — repository search scope guidance', () => {
@@ -67,6 +68,14 @@ describe('capability:bash — repository search scope guidance', () => {
 
     expect(related).toContain('logs:read { unit, since, grep, limit }');
     expect(related).toContain('filters inside journalctl');
+  });
+
+  it('documents when bash jobs need explicit work-item attribution', () => {
+    const description = (bashTool as unknown as GuidanceTool).args?.shape?.work_item_id?.description ?? '';
+
+    expect(description).toContain('Required when you hold multiple work-items');
+    expect(description).toContain('held-item attribution cannot be measured');
+    expect(description).toContain('name one you currently hold');
   });
 
   it('detects the reported unbounded all-ref pickaxe search but permits bounded or focused forms', () => {

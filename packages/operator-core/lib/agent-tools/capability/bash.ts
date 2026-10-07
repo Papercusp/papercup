@@ -520,7 +520,7 @@ export default defineTool({
       .string()
       .optional()
       .describe(
-        'Held work-item this job is for. Overrides your declared goal for task-ledger attribution and the slow-attempt loop gate.',
+        'Held work-item this job is for. Required when you hold multiple work-items or held-item attribution cannot be measured; name one you currently hold. Otherwise optional. Overrides your declared goal for task-ledger attribution and the slow-attempt loop gate.',
       ),
     integration_env: integrationEnvSchema
       .optional()
