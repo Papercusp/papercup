@@ -402,6 +402,7 @@ describe('test execution carries mappings into the real evidence ledger', () => 
       filePath: testPath, commitSha: 'fixture-commit', worktreeDirty: true,
     });
     expect(bound.testRunExecution).toEqual({
+      status: 'pass',
       passed: 1, failed: 0, skipped: 0, collectionFailed: false,
     });
     await db.sql`UPDATE harness_shared.test_runs SET worktree_dirty = false WHERE id = ${run.id}`;
@@ -1846,6 +1847,35 @@ describe('supersedeAtRevision withdraws same-kind siblings at the clause revisio
   const REPLAY_TEST = 'test/reconnect.integration.test.ts';
   const REPLAY_UNIT_TEST = 'test/reconnect.test.ts';
 
+  async function markRunAsPassing(
+    testRunId: number,
+    filePath: string,
+    caseTitle: string,
+    testLayer: 'unit' | 'integration' = 'integration',
+  ) {
+    const executionDetails = {
+      schemaVersion: 1,
+      root: h.repoRoot,
+      filePath,
+      runGroupId: null,
+      workspaceId: WORKSPACE,
+      harnessSlug: HARNESS,
+      testNamePattern: null,
+      passed: 1,
+      failed: 0,
+      skipped: 0,
+      collectionFailed: false,
+      mutationPhase: null,
+      commitSha: 'c0ffee1234567890',
+      worktreeDirty: false,
+      testLayer,
+      passedCaseTitles: [caseTitle],
+    };
+    await db.sql`UPDATE harness_shared.test_runs
+      SET status = 'pass', finished_at = now(), execution_details = ${db.sql.json(executionDetails)}
+      WHERE id = ${testRunId}`;
+  }
+
   it('retracts the older same-kind row, keeps the mutation proof, and names the superseding binding', async () => {
     await specs.setSpecClause(clause());
     // Two attempts of ONE test file: the fresh run replaces the failed one.
@@ -1854,6 +1884,7 @@ describe('supersedeAtRevision withdraws same-kind siblings at the clause revisio
       await seedExternalEvidence(REPLAY_TEST),
       await seedExternalEvidence(REPLAY_TEST),
     ];
+    await markRunAsPassing(freshRun.testRunId, REPLAY_TEST, 'fresh integration attempt');
     const old = await bindViaTool({
       evidenceKind: 'test',
       evidenceRef: 'test-run:old-attempt',
@@ -1940,6 +1971,10 @@ describe('supersedeAtRevision withdraws same-kind siblings at the clause revisio
       await seedExternalEvidence(REPLAY_TEST),
       await seedExternalEvidence(REPLAY_TEST),
     ];
+    await Promise.all([
+      markRunAsPassing(unitRun.testRunId, REPLAY_UNIT_TEST, 'unit proof remains current', 'unit'),
+      markRunAsPassing(freshRun.testRunId, REPLAY_TEST, 'fresh integration attempt'),
+    ]);
     const unit = await bindViaTool({
       evidenceKind: 'test',
       evidenceRef: REPLAY_UNIT_TEST,
@@ -1975,6 +2010,7 @@ describe('supersedeAtRevision withdraws same-kind siblings at the clause revisio
   it('keeps rows claiming another causal pair or target, and retracts only what the fresh row covers', async () => {
     await specs.setSpecClause(clause());
     const runs = await Promise.all([1, 2, 3, 4, 5].map(() => seedExternalEvidence(REPLAY_TEST)));
+    await markRunAsPassing(runs[4]!.testRunId, REPLAY_TEST, 'fresh causal-pair case');
     const bindTest = (index: number, adequacy: Record<string, unknown>) =>
       bindViaTool({
         evidenceKind: 'test',
@@ -2048,16 +2084,24 @@ describe('plans:bind-spec-evidence { fromTestRun } derives the binding from a re
     return Number(row.id);
   }
 
-  async function bindFromRun(fromTestRun: number, workItemId = 'WI-101', details?: Record<string, unknown>) {
+  async function bindFromRun(
+    fromTestRun: number,
+    workItemId = 'WI-101',
+    details?: Record<string, unknown>,
+    supersedeAtRevision = false,
+  ) {
     const out = (await bindTool.handler(
       {
         harness: HARNESS,
         slug: 'reconnect-plan',
+        ...(supersedeAtRevision ? { supersedeAtRevision: true } : {}),
         binding: { workItemId, specId: 'SPEC-003-01', fromTestRun, ...(details ? { details } : {}) },
       } as never,
       CTX,
-    )) as { data: { results: Array<Record<string, unknown>> } };
-    return out.data.results[0];
+    )) as { data: { results: Array<Record<string, unknown>>; supersession?: unknown[] } };
+    return supersedeAtRevision
+      ? { ...out.data.results[0], supersession: out.data.supersession }
+      : out.data.results[0];
   }
 
   it('produces the same stored measurement as the hand-built binding of the same run', async () => {
@@ -2116,6 +2160,95 @@ describe('plans:bind-spec-evidence { fromTestRun } derives the binding from a re
       overall: 'current',
       dimensions: { source: 'current', test: 'current', testRun: 'current' },
     });
+  });
+
+  it('projects canonical passedCaseTitles through the evidence store into the adequacy evaluator', async () => {
+    const exactTitle = 'derive suite > exact integration case';
+    await specs.setSpecClause(clause({ mutationRequired: false }));
+    const [clauseRevision] = await specs.listSpecClauses({
+      harnessSlug: HARNESS,
+      planSlug: 'reconnect-plan',
+      specIds: ['SPEC-003-01'],
+    });
+    expect(clauseRevision).toBeDefined();
+
+    const runId = await recordRun();
+    const executionDetails = {
+      schemaVersion: 1,
+      root: h.repoRoot,
+      filePath: DERIVE_TEST,
+      runGroupId: null,
+      workspaceId: WORKSPACE,
+      harnessSlug: HARNESS,
+      testNamePattern: null,
+      passed: 1,
+      failed: 0,
+      skipped: 0,
+      collectionFailed: false,
+      mutationPhase: null,
+      commitSha: 'c0ffee1234567890',
+      worktreeDirty: false,
+      testLayer: 'integration',
+      passedCaseTitles: [exactTitle],
+    };
+    await db.sql`UPDATE harness_shared.test_runs
+      SET execution_details = ${db.sql.json(executionDetails)}
+      WHERE id = ${runId}`;
+
+    const bound = await bindFromRun(runId, 'WI-101', {
+      adequacy: {
+        collected: true,
+        skipped: false,
+        executed: true,
+        outcome: 'passed',
+        testLayer: 'integration',
+        pathReachable: true,
+        testCases: [exactTitle],
+      },
+    }, true);
+    expect(bound).toMatchObject({
+      ok: true,
+      status: 'created',
+      derivedFromTestRun: { testRunId: runId },
+      supersession: [expect.objectContaining({ status: 'superseded', evidenceKind: 'test' })],
+    });
+
+    const projected = (await evidenceStore.listSpecEvidence({
+      harnessSlug: HARNESS,
+      planSlugs: ['reconnect-plan'],
+      workItemIds: ['WI-101'],
+      evidenceRefs: [DERIVE_TEST],
+    })).find((row) => row.testRunId === runId);
+    expect(projected).toBeDefined();
+    expect(projected!.testRunExecution).toMatchObject({
+      status: 'pass',
+      passed: 1,
+      failed: 0,
+      skipped: 0,
+      collectionFailed: false,
+      testLayer: 'integration',
+      passedCaseTitles: [exactTitle],
+    });
+
+    const { evaluateSpecTestAdequacy } = await import('./spec-test-adequacy');
+    const evaluate = (evidenceRows: typeof projected[]) => evaluateSpecTestAdequacy({
+      clause: clauseRevision!,
+      evidence: evidenceRows,
+      classRef: 'plan-class-feature-ship',
+    });
+    const accepted = evaluate([projected!]);
+    expect(accepted.ratings['correct-layer'].rating).toBe('pass');
+    expect(accepted.ratings['correct-layer'].evidence).toContain(`testRunId=${runId}`);
+
+    const details = projected!.details as Record<string, unknown>;
+    const adequacy = details.adequacy as Record<string, unknown>;
+    const differentTitle = {
+      ...projected!,
+      details: { ...details, adequacy: { ...adequacy, testCases: ['different passing case'] } },
+    };
+    const rejected = evaluate([differentTitle]);
+    expect(rejected.ratings['correct-layer'].rating).toBe('unknown');
+    expect(rejected.ratings['correct-layer'].suggestion).toContain('exact passedCaseTitles');
   });
 
   it('binds a mutation-probe copy-out row using its JSON execution root and canonical test path', async () => {

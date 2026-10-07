@@ -14,6 +14,7 @@ import {
   MEASUREMENT_PIN_DETAILS_KEY,
   measureAndPinEvidenceForScope,
   measureAndPinRepoFilesEvidenceAtCommitForScope,
+  listSpecEvidence,
   retractSpecEvidence,
   SPEC_EVIDENCE_KINDS,
   supersedeSpecEvidenceAtRevision,
@@ -328,17 +329,23 @@ async function supersedeSiblings(input: {
       : null;
   });
   const keepBindingIds = bound.flatMap((row) => (row ? [row.id] : []));
+  const persistedEvidence = keepBindingIds.length > 0
+    ? await listSpecEvidence({
+        harnessSlug: input.harnessSlug,
+        planSlugs: [...new Set(bound.flatMap((row) => (row ? [row.planSlug] : [])))],
+        bindingIds: keepBindingIds,
+      })
+    : [];
+  const persistedById = new Map(persistedEvidence.map((evidence) => [Number(evidence.id), evidence] as const));
   const outcomes: SupersessionOutcome[] = [];
   for (const [index, row] of bound.entries()) {
     const declared = input.bindings[index];
     if (!row || !declared) continue;
     const clause = `${row.specId}@${row.specRevision}`;
-    const gaps = supersedeEligibilityGaps({
-      evidenceKind: declared.evidenceKind,
-      testRunId: declared.testRunId,
-      coverageEvidenceRef: declared.coverageEvidenceRef,
-      details: declared.details,
-    });
+    const persisted = persistedById.get(row.id);
+    const gaps = persisted
+      ? supersedeEligibilityGaps(persisted)
+      : ['canonical evidence row unavailable from the scoped evidence read'];
     if (gaps.length > 0) {
       outcomes.push({
         bindingId: row.id,

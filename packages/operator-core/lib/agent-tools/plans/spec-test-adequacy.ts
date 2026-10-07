@@ -1011,12 +1011,14 @@ export function supersedeEligibilityGaps(binding: {
   evidenceKind: SpecEvidenceKind;
   testRunId?: number | null;
   coverageEvidenceRef?: number | null;
+  testRunExecution?: SpecEvidenceForAdequacy['testRunExecution'];
   details?: Record<string, unknown>;
 }): string[] {
   const row = {
     evidenceKind: binding.evidenceKind,
     testRunId: binding.testRunId ?? null,
     coverageEvidenceRef: binding.coverageEvidenceRef ?? null,
+    ...(binding.testRunExecution !== undefined ? { testRunExecution: binding.testRunExecution } : {}),
     details: binding.details ?? {},
   } as SpecEvidenceForAdequacy;
   const details = detailsOf(row);
@@ -1419,8 +1421,10 @@ function appendRatingRerunProbes(
  *   5 — a mutation's measured failed case must exactly appear in that test binding's adequacy.testCases.
  *   6 — canonical test-run status/counts and exact passed-case identities corroborate positive binder claims;
  *       correct-layer reads the runtime-measured layer and rejects a contradictory binder layer.
+ *   7 — a null fixture fingerprint no longer proves fixture-free evidence; executable bindings must
+ *       explicitly attest fixtureFree=true before fixture calibration is not-applicable.
  */
-export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 6;
+export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 7;
 
 type MutationTargetClause = Pick<SpecClauseRevision, 'specId' | 'falsifier'>;
 
