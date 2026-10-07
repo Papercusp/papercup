@@ -8294,7 +8294,9 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
       const { readAgentConfig, writeAgentConfig } = await import('../agent-config');
       const saved = await readAgentConfig();
-      await writeAgentConfig({ ...saved, backend: scriptedEngine.backend === 'claude' ? 'claude-code' : scriptedEngine.backend });
+      const backend = scriptedEngine.backend === 'codex' || scriptedEngine.backend === 'omp'
+        ? scriptedEngine.backend : 'claude-code';
+      await writeAgentConfig({ ...saved, backend });
       const backendLabel = scriptedEngine.backend === 'codex' ? 'Codex' : scriptedEngine.backend === 'omp' ? 'OMP' : 'Claude';
       let pane = new PuiPane(bin, operatorPort, home, { args: ['--solo'], cwd: launchDir, cols: 120, rows: 40 });
       onTestFailed(() => {
