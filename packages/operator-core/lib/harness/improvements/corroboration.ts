@@ -140,3 +140,17 @@ export async function readCorroboration(
   }
   return out;
 }
+
+/**
+ * The block shown on one item, or null when nothing corroborates it (no ledger rows
+ * and no stored reporter kinds), so an ordinary feature read stays lean. Throws on a
+ * failed read; the caller decides how to fail soft.
+ */
+export async function readCorroborationSummary(
+  input: { workspaceId: string; id: string; harness: string | null | undefined; payload: unknown },
+  sql: OrgSql = getOrgPg().sql as unknown as OrgSql,
+): Promise<CorroborationSummary | null> {
+  const ledger = (await readCorroboration(sql, { workspaceId: input.workspaceId, items: [input] })).get(input.id);
+  const summary = summarizeCorroboration(ledger, input.payload);
+  return ledger || summary.reporterKinds.length > 0 ? summary : null;
+}

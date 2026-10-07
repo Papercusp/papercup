@@ -302,7 +302,7 @@ const SOURCE_ROW_ROOTS = new Set([
   'deploymentPosition', 'citedFacts', 'planItemBlocked', 'planItemClaimCollision',
   'planItemTextDrift', 'threadWindow', 'threadWindowReadFailed', 'threadLimitClamped',
   'lifecycle', 'priorAttempts', 'priorAttemptRefResolution', 'error', 'retryable', 'phase',
-  'budgetMs', 'message', '_stub',
+  'budgetMs', 'message', '_stub', 'corroboration',
 ]);
 
 /** A malformed or unknown pick fails open to the complete historical read. */
@@ -584,6 +584,14 @@ const workItemsGetResultRowSchema = z.object({
   }).passthrough().nullable().optional(),
   availability: z.enum(['available', 'absent', 'unavailable']).optional(),
   workItem: workItemIdentityResultSchema.optional(),
+  // P-012 (D-049): distinct reporters + filings from the occurrence ledger. Orders
+  // verification work; never a verification receipt. Absent when nothing corroborates.
+  corroboration: z.object({
+    reporters: z.number().int().nonnegative(),
+    filings: z.number().int().nonnegative(),
+    reporterKinds: z.array(z.string()),
+    note: z.string(),
+  }).passthrough().optional(),
   checkpointAgeMs: z.number().nullable().optional(),
   checkpointUpdatedAtMs: z.number().nullable().optional(),
   checkpointContentHash: z.string().nullable().optional(),
@@ -1360,6 +1368,19 @@ export default defineTool({
               family: (workItem as { family?: string | null }).family ?? null,
             }).catch(() => null)
           : null;
+        // P-012 (D-049): fail-soft — a ledger read failure omits the block, never the item.
+        const corroboration = sourceSelectionWants(sourceSelection, 'corroboration')
+          ? await import('../../harness/improvements/corroboration')
+              .then((m) =>
+                m.readCorroborationSummary({
+                  workspaceId: activeWorkspaceId(),
+                  id: workItem.id,
+                  harness: (workItem as { harness?: string | null }).harness ?? args.harness ?? null,
+                  payload: (workItem as { payload?: unknown }).payload,
+                }),
+              )
+              .catch(() => null)
+          : null;
         stage.enrichmentMs = Date.now() - enrichmentStartedAt;
         return {
           ok: true as const,
@@ -1367,6 +1388,7 @@ export default defineTool({
           availability: 'available' as const,
           workItem,
           ...(decorated?.holder ? { holder: decorated.holder } : {}),
+          ...(corroboration ? { corroboration } : {}),
           checkpoint,
           checkpointChecks,
           checkpointBody,
