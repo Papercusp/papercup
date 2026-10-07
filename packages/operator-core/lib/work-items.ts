@@ -4716,9 +4716,9 @@ export interface LifecycleAliasInfo {
  *   - needs-human → the stored status itself excludes the row; strict owner capabilities also
  *     carry `payload.needsOwnerAction:true` ({@link needsOwnerActionExclusionSql}) and report as
  *     fully DRAINED in {@link diagnoseClaimNextMiss}.
- *   - blocked → the WI-2797 self-select claim hold ({@link claimHoldExclusionSql} /
- *     {@link setWorkItemClaimHold}), which also carries the `release{claimHold:false}` un-park
- *     affordance. Reports as pending-BUT-gated (drained:false).
+ *   - blocked → stored status and the canonical live blocker floors exclude the row.
+ *     Do not duplicate those floors with a generic claim-hold lease. Historical blocked
+ *     leases are still removed on reopening without disturbing deliberate durable parks.
  * Applied by APPLIED state (not the old alias-to-'open' event, which no longer fires). Still
  * directly claimable BY ID. Best-effort — never fails/blocks the primary lifecycle write.
  */
@@ -4808,12 +4808,6 @@ export async function setWorkItemStateWithAliasInfo(
         // caller's response reflects what was actually persisted.
         const refreshed = await getWorkItem(id, opts.harness);
         if (refreshed) workItem = refreshed;
-      } else if (appliedLower === 'blocked') {
-        const held = await setWorkItemClaimHold(id, true, { harness: opts.harness, by: opts.by, reason: 'blocked' });
-        if (held?.applicable) {
-          autoGateNote =
-            ' It has been auto-parked (claim hold) out of claim_next/scheduler:get_next self-selection until released — see work_items:release{claimHold:false}.';
-        }
       } else if (
         // The blocked auto-gate is a temporary lease, not a durable park. Once the
         // applied state leaves blocked, remove only that lease so an intentional
@@ -4834,14 +4828,10 @@ export async function setWorkItemStateWithAliasInfo(
     } catch {
       /* best-effort — never fail the primary lifecycle write over the auto-gate */
     }
-  } else if (workItem && appliedLower === 'blocked') {
-    // EI-19397599078921465: a FEATURE-family item moving to `blocked` recorded NOTHING — no audit
-    // row, no payload provenance — so 59 of them sat blocked with no trace of who moved them or
-    // when. This is chained as `else if` off the issue branch DELIBERATELY: an issue's blocked
-    // transition already audits via the auto-park above (`work_items:claim_hold:set`
-    // reason='blocked'), and double-writing would make ONE transition read as TWO in the unified
-    // history — worse than the gap it closes. Fire-and-forget, exactly like that auto-park's own
-    // audit write; a lifecycle write must never fail over its own bookkeeping.
+  }
+  if (workItem && appliedLower === 'blocked' && priorWorkItem?.state !== 'blocked') {
+    // P-004: all families retain transition history without creating a second hold.
+    // Reasserting blocked is not another transition and must not double-count it.
     const { sql } = getOrgPg();
     void recordWorkItemBlockedAudit(sql, id, {
       to: appliedState ?? 'blocked',
@@ -7566,7 +7556,7 @@ export async function setWorkItemClaimHold(
   void sql
     .unsafe(
       `INSERT INTO harness_shared.audit_log (id, ts, actor, action, subject, details, workspace_id)
-       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)`,
+       VALUES ($1, $2, $3, $4, $5, $6::text::jsonb, $7)`,
       [
         `wi-claim-hold-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
         Date.now(),
@@ -7656,7 +7646,7 @@ export async function recordWorkItemBlockedAudit(
     if (!ws) return;
     await sql.unsafe(
       `INSERT INTO harness_shared.audit_log (id, ts, actor, action, subject, details, workspace_id)
-       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)`,
+       VALUES ($1, $2, $3, $4, $5, $6::text::jsonb, $7)`,
       [
         `wi-state-blocked-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
         Date.now(),
@@ -7700,7 +7690,7 @@ export async function recordBulkHoldClearAudit(
       sql
         .unsafe(
           `INSERT INTO harness_shared.audit_log (id, ts, actor, action, subject, details, workspace_id)
-           VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)`,
+           VALUES ($1, $2, $3, $4, $5, $6::text::jsonb, $7)`,
           [
             `wi-claim-hold-${opts.sweepName}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
             Date.now(),

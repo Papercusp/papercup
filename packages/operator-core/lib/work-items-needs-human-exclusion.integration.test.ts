@@ -67,6 +67,10 @@ beforeAll(async () => {
   await applyEventSubstrateMigrationsForTest(db.sql, {
     label: 'work-items-needs-human-exclusion.integration.test.ts',
   });
+  await db.sql`CREATE TABLE IF NOT EXISTS harness_shared.audit_log (
+    id text PRIMARY KEY, ts bigint NOT NULL, actor text NOT NULL,
+    action text NOT NULL, subject text, details jsonb, workspace_id text NOT NULL
+  )`;
 }, 180_000);
 afterAll(async () => {
   await db?.cleanup();
@@ -316,10 +320,63 @@ describe('blocked auto-gate lease cleanup (EI-20490353465054928)', () => {
     return rows[0];
   }
 
-  it('clears the temporary blocked hold when no durable park exists', async () => {
-    await seedIssue('EI-blocked-lease-no-park', { kind: 'change', status: 'open' });
+  it('blocks pickup by lifecycle state without creating a duplicate blocked lease', async () => {
+    await seedIssue('EI-live-blocked-no-mirror', { kind: 'change', status: 'open', payload: { marker: 'keep' } });
 
-    await wi.setWorkItemStateWithAliasInfo('EI-blocked-lease-no-park', 'blocked', { harness: H, by: 'tester' });
+    const blocked = await wi.setWorkItemStateWithAliasInfo('EI-live-blocked-no-mirror', 'blocked', {
+      harness: H, by: 'tester',
+    });
+    expect(blocked.appliedState).toBe('blocked');
+    expect(await payloadOf('EI-live-blocked-no-mirror')).toMatchObject({ status: 'blocked', payload: { marker: 'keep' } });
+    expect(blocked.workItem?.payload).not.toHaveProperty('_claimHold');
+    expect(blocked.workItem?.payload).not.toHaveProperty('held_open_reason');
+    expect((await payloadOf('EI-live-blocked-no-mirror'))?.payload).not.toHaveProperty('_claimHold');
+    expect(await wi.claimNextWorkItem({ harness: H, assignee: 'verifier' })).toBeNull();
+
+    await wi.setWorkItemStateWithAliasInfo('EI-live-blocked-no-mirror', 'open', { harness: H, by: 'tester' });
+    expect(await wi.claimNextWorkItem({ harness: H, assignee: 'verifier' })).toMatchObject({ id: 'EI-live-blocked-no-mirror' });
+  });
+
+  it('records one issue blocked transition without using a lease audit as its history', async () => {
+    await seedIssue('EI-blocked-history-no-mirror', { kind: 'change', status: 'open' });
+    await wi.setWorkItemStateWithAliasInfo('EI-blocked-history-no-mirror', 'blocked', { harness: H, by: 'tester' });
+    await wi.setWorkItemStateWithAliasInfo('EI-blocked-history-no-mirror', 'blocked', { harness: H, by: 'tester' });
+
+    await vi.waitFor(async () => {
+      const rows = await db.sql<{ actor: string; action: string; details: Record<string, unknown> }[]>`
+        SELECT actor, action, details FROM harness_shared.audit_log
+         WHERE workspace_id = ${WS} AND subject = 'EI-blocked-history-no-mirror'`;
+      expect(rows).toEqual([{
+        actor: 'tester', action: 'work_items:state:blocked',
+        details: { to: 'blocked', requested: 'blocked', family: 'issue', by: 'tester' },
+      }]);
+    });
+  });
+
+  it('stores claim-hold audit details as JSON objects for park and lease cleanup writers', async () => {
+    await seedIssue('EI-audit-json-park');
+    await wi.setWorkItemClaimHold('EI-audit-json-park', true, {
+      harness: H, parkedBy: 'park-owner', parkedReason: 'Wait for a decision',
+    });
+    await wi.recordBulkHoldClearAudit(db.sql, [{ id: 'EI-audit-json-park', workspaceId: WS, formerHolder: 'park-owner' }], {
+      actor: 'reconciler', sweepName: 'test-sweep',
+    });
+    await vi.waitFor(async () => {
+      const rows = await db.sql<{ action: string; shape: string }[]>`
+        SELECT action, jsonb_typeof(details) AS shape FROM harness_shared.audit_log
+         WHERE workspace_id = ${WS} AND subject = 'EI-audit-json-park' ORDER BY action`;
+      expect(rows).toEqual([
+        { action: 'work_items:claim_hold:clear', shape: 'object' },
+        { action: 'work_items:claim_hold:set', shape: 'object' },
+      ]);
+    });
+  });
+
+  it('clears the temporary blocked hold when no durable park exists', async () => {
+    await seedIssue('EI-blocked-lease-no-park', {
+      kind: 'change', status: 'blocked',
+      payload: { _claimHold: true, held_open_by: 'tester', held_open_reason: 'blocked' },
+    });
     expect(await payloadOf('EI-blocked-lease-no-park')).toMatchObject({
       status: 'blocked',
       payload: { _claimHold: true, held_open_by: 'tester', held_open_reason: 'blocked' },
@@ -340,11 +397,9 @@ describe('blocked auto-gate lease cleanup (EI-20490353465054928)', () => {
   });
 
   it('clears only the temporary lease and preserves a coexisting durable park', async () => {
-    await seedIssue('EI-blocked-lease-durable-park', { kind: 'change', status: 'open' });
-
-    await wi.setWorkItemStateWithAliasInfo('EI-blocked-lease-durable-park', 'blocked', {
-      harness: H,
-      by: 'tester',
+    await seedIssue('EI-blocked-lease-durable-park', {
+      kind: 'change', status: 'blocked',
+      payload: { _claimHold: true, held_open_by: 'tester', held_open_reason: 'blocked' },
     });
     await wi.setWorkItemClaimHold('EI-blocked-lease-durable-park', true, {
       harness: H,
