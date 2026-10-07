@@ -16,7 +16,7 @@ import { fleetSlugFromName, getFleet } from '../../agent-fleets-store';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { resolveSelfRef, markSelfRows } from '../coordination/self-marker';
 import { selectFleetPopulation, withShownCount, withLivenessComposition } from './fleet-population';
-import { COORD_ROLES } from '../coordination/roles';
+import { COORD_READ_ROLES } from '../coordination/roles';
 import {
   fetchWakeability,
   type SessionState,
@@ -989,13 +989,13 @@ export default defineTool({
   // the model-facing reader can follow the payload's truncation hints instead
   // of receiving a JSON prefix plus a prose result-door footer.
   skipResultDoor: 'oversize-by-design',
-  agentRoles: [...COORD_ROLES],
+  agentRoles: [...COORD_READ_ROLES],
   args: z.object({
     agent: z
       .string()
       .max(120)
       .optional()
-      .describe('Filter to one agent (ownerId or adopted agent-name) — "what is X doing".'),
+      .describe('Filter to one agent (ownerId or adopted agent-name) — "what is X doing". Evidence-only judges must pass "self"; unfiltered and named-agent reads are refused.'),
     plan: z.string().max(200).optional().describe('Filter to one plan slug — "who\'s on P".'),
     fleet: z
       .string()
@@ -1047,6 +1047,18 @@ export default defineTool({
     contract: { rows: 'agents', preserve: ['ok', 'summary'] },
   },
   async handler(args, ctx) {
+    // Judge is an evidence-only reader. Unlike broad fleet observers, it can
+    // inspect only its own assignment row; requiring the explicit `self`
+    // selector prevents an omitted filter from widening to the whole fleet.
+    if (ctx.role === 'judge' && args.agent !== 'self') {
+      return {
+        data: {
+          ok: false,
+          error: 'judge_assignment_scope_only',
+          message: "The evidence-only judge may read fleet assignments only with agent:'self'.",
+        },
+      };
+    }
     // A READ — identity is used only to default the optional workspace filter
     // (null = all workspaces). Resolve it SOFTLY so a bare loopback caller (the
     // pui bee-dossier pane, the IPC sys:http bridge) can read the state without

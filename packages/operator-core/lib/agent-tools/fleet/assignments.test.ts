@@ -92,6 +92,24 @@ it('fleet:assignments keeps oversized include_stale JSON intact for structured c
   );
 });
 
+describe('fleet:assignments judge scope', () => {
+  const handler = fleetAssignmentsTool.handler as unknown as (
+    args: Record<string, unknown>,
+    ctx: Record<string, unknown>,
+  ) => Promise<{ data?: Record<string, unknown> }>;
+
+  it.each([
+    ['omitted agent filter', {}],
+    ['a named agent filter', { agent: 'su-other' }],
+  ])('refuses judge access with %s', async (_label, args) => {
+    const result = await handler(args, { role: 'judge' });
+    expect(result.data).toMatchObject({
+      ok: false,
+      error: 'judge_assignment_scope_only',
+    });
+  });
+});
+
 describe('abandoned intent work-item detection (EI-21560781905286213)', () => {
   const item = (
     overrides: Partial<IntentWorkItemSnapshot> = {},
