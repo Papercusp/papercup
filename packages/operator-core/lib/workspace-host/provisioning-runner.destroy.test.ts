@@ -785,8 +785,8 @@ describe('runWorkspaceHostDestroy', () => {
     expect(planned[1]).toEqual(planned[0]);
     expect(planned[1]).toEqual(expect.arrayContaining(['pc-host-vm', 'pc-host-data']));
     // The finished deletions are skipped by checkpoint, never re-applied.
-    expect(apply.mock.calls.filter(([step]) => step.id === vmStep!.id)).toHaveLength(1);
-    expect(apply.mock.calls.filter(([step]) => step.id === diskStep!.id)).toHaveLength(1);
+    expect(apply.mock.calls.filter(([request]) => request.step.id === vmStep!.id)).toHaveLength(1);
+    expect(apply.mock.calls.filter(([request]) => request.step.id === diskStep!.id)).toHaveLength(1);
   });
 
   it('rejects missing disposition, cross-host ownership, and an unverified backup before provider planning', async () => {
