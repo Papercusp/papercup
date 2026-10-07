@@ -131,6 +131,14 @@ import { assertMobileJwtSecretDurableForCluster } from '@papercusp/operator-core
 import { installStdioPeerGuard } from '@papercusp/operator-core/lib/process-supervision/stdio-peer-guard';
 import { notifySystemdReady } from '@papercusp/operator-core/lib/systemd-readiness';
 
+// The headless verifier imports the frozen bundle with this argument before
+// Tauri starts. Static ESM dependencies have evaluated by this point, so a
+// module-init failure exits immediately without starting listeners or workers.
+if (process.argv.includes('--papercusp-import-smoke')) {
+  console.log('PAPERCUSP_HOST_IMPORT_SMOKE_OK');
+  process.exit(0);
+}
+
 // WI-41422: this entrypoint is also launched directly by desktop-dev/background
 // task supervision, bypassing serve.ts (and its stdio guard). If that supervisor
 // disappears, stdout/stderr become peer-gone sockets: an unguarded write emits an
