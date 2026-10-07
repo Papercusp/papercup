@@ -30,6 +30,7 @@ import {
   buildConsoleScopedSpawnCommand,
   normalizeHeadlessAgentEnv,
   normalizeHeadlessAgentTerm,
+  KICKOFF_PROOF_TOKEN_ENV,
   _resetTerminalCacheForTests,
   pickLinuxTerminal,
   resolveTerminalPreference,
@@ -828,6 +829,41 @@ describe('spawnHeadless — no-window managed-pty launch (headless-fleet-launch 
     expect(args[1]).toContain('psu --headless');
     expect(args[1]).toContain('export PAPERCUSP_PSU_HEADLESS_NORMALIZED_LOG=');
     expect(args[1]).toContain((r as { normalizedLogPath: string }).normalizedLogPath);
+  }, 10_000);
+
+  it('passes the kickoff proof token through the child environment without putting it in argv', async () => {
+    const routes = [
+      { label: 'direct-bash', expectedBin: 'bash', spawnCommandProbes: { hasSystemdRun: () => false } },
+      {
+        label: 'systemd-run',
+        expectedBin: 'systemd-run',
+        spawnCommandProbes: { platform: 'linux' as const, hasSystemdRun: () => true },
+      },
+    ];
+    for (const [index, route] of routes.entries()) {
+      spawnMock.mockReset();
+      spawnMock.mockImplementation(() => fakeChild(7781 + index));
+      await spawnHeadless({
+        envelope,
+        label: route.label,
+        kickoffProof: true,
+        kickoffProofProbes: { windowMs: 0, readReceipt: () => '' },
+        bootProbes: { readLog: () => '', sleep: async () => {}, windowMs: 0 },
+        spawnCommandProbes: route.spawnCommandProbes,
+      });
+
+      const [bin, args, options] = spawnMock.mock.calls[0] as [
+        string,
+        string[],
+        { env?: Record<string, string | undefined> },
+      ];
+      const token = options.env?.[KICKOFF_PROOF_TOKEN_ENV];
+      const argv = [bin, ...args].join('\0');
+      expect(bin).toBe(route.expectedBin);
+      expect(typeof token === 'string' && /^[a-f0-9]{48}$/i.test(token)).toBe(true);
+      expect(typeof token === 'string' && argv.includes(token)).toBe(false);
+      expect(argv.includes(KICKOFF_PROOF_TOKEN_ENV)).toBe(false);
+    }
   }, 10_000);
 
   it('stamps a known trimmed coord owner only into the agent-session ledger detail', async () => {

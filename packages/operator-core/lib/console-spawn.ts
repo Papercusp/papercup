@@ -1409,11 +1409,11 @@ export interface KickoffProofResult {
 
 /** Environment keys for the opt-in detached kickoff proof handshake.
  *
- * These intentionally use the existing PAPERCUSP_* propagation contract: the
- * parent creates the receipt path, buildConsoleOneliner exports both values,
- * and psu-launcher preserves them through its runWrapper env merge. Keeping
- * this handshake out of psu-launcher.mjs avoids another launcher-only env
- * allowlist that could silently drop the proof.
+ * The receipt path may be exported in the shell command. The proof token stays
+ * in the inherited process environment so it never becomes visible in argv or
+ * `ps -eo ... args`; psu-launcher preserves it through its runWrapper env merge.
+ * Keeping this handshake out of psu-launcher.mjs avoids another launcher-only
+ * env allowlist that could silently drop the proof.
  */
 export const KICKOFF_PROOF_PATH_ENV = 'PAPERCUSP_KICKOFF_PROOF_PATH';
 export const KICKOFF_PROOF_TOKEN_ENV = 'PAPERCUSP_KICKOFF_PROOF_TOKEN';
@@ -2679,8 +2679,13 @@ async function spawnHeadlessPrepared(opts: SpawnHeadlessOpts): Promise<SpawnCons
   // with no TTY (the OSC escapes just land in the log). Headless sessions have
   // no desktop window or native .mcp.json watcher, so omit the visible-console
   // liveness marker and keep runtime state out of the launch cwd.
+  // `spawn` already passes launchEnv to bash/systemd-run. Keep the bearer token
+  // out of buildConsoleOneliner: it emits env values as `export` statements in
+  // the shell command, which exposes them in every launcher's argv and `ps args`.
+  const commandEnv = { ...launchEnv };
+  delete commandEnv[KICKOFF_PROOF_TOKEN_ENV];
   const oneliner = wrapHeadlessSigtermDiagnostic(
-    buildConsoleOneliner(envelope.cwd, launchEnv, envelope.greetingCmd, {
+    buildConsoleOneliner(envelope.cwd, commandEnv, envelope.greetingCmd, {
       mode: 'console',
       planSlug: null,
       label,
