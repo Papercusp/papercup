@@ -32,6 +32,8 @@ import {
 } from '../work-items';
 import type { CanonicalExternalEvent, ExternalTriggerSink } from '../external-triggers/ingestion';
 import { corpusRouteFor, ensurePermissionList, writeCorpusDocument } from './chat-retrieval-units';
+import { replacePermissionListMembers } from './documents-corpus';
+import { normalizePersonalSource } from '../personal-vault/store';
 import { refreshAdmittedFromSource } from '../work-admission/admit';
 import { applySourceLifecycle } from '../work-admission/lifecycle';
 import { evaluateAdmissionRules, type RuleEvaluation } from '../work-admission/admission-rules';
@@ -339,4 +341,41 @@ export async function createDatatypeDestinationSinks(
   }
 
   return [];
+}
+
+/** What applying a provider's membership snapshot did (D-015.4). */
+export type DataSourceMembershipOutcome =
+  | { applied: true; listId: string; members: number; added: number; removed: number }
+  | { applied: false; reason: 'not_organization_scope' | 'permission_mapping_mismatch' };
+
+/**
+ * Apply a provider's complete membership snapshot to an organization-scope source's permission
+ * list (plan generalized-integrations-google-migration-cupboard-workflows-2026-10-05, D-015.4).
+ *
+ * The list is the one the `document` sink binds this source's organization documents to:
+ * `corpusRouteFor` names it by the normalized source kind and the source id. A full replacement
+ * is idempotent, so the driver's replay of an uncommitted page converges. Personal and pot
+ * sources have no permission list (owner or pot membership governs them), so a snapshot from
+ * one is ignored, never applied.
+ */
+export async function applyDataSourceMembership(
+  sql: Sql,
+  input: {
+    workspaceId: string;
+    sourceId: string;
+    identityProvider: string;
+    members: ReadonlyArray<{ providerUserId: string }>;
+  },
+): Promise<DataSourceMembershipOutcome> {
+  const source = await loadSource(sql, input.workspaceId, input.sourceId);
+  if (source.scope !== 'organization') return { applied: false, reason: 'not_organization_scope' };
+  if (source.permissionMapping?.mode !== 'source-acl') return { applied: false, reason: 'permission_mapping_mismatch' };
+  const list = await ensurePermissionList(sql, source.workspaceId, normalizePersonalSource(source.kind), source.id);
+  const delta = await replacePermissionListMembers(
+    sql,
+    source.workspaceId,
+    list.id,
+    input.members.map(({ providerUserId }) => ({ provider: input.identityProvider, providerUserId })),
+  );
+  return { applied: true, listId: list.id, members: input.members.length, ...delta };
 }
