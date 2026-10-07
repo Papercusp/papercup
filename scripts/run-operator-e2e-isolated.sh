@@ -58,6 +58,13 @@ else
   echo "run-operator-e2e-isolated: WARNING no caller workspace (PAPERCUSP_TEST_RUN_WORKSPACE / PAPERCUSP_WORKSPACE_ID / PAPERCUSP_WORKSPACE); ledger rows will carry the rig's throwaway workspace id" >&2
 fi
 export OPERATOR_E2E_PLAYWRIGHT="${OPERATOR_E2E_PLAYWRIGHT:-npx playwright test}"
+# Open signup for THIS throwaway rig operator only (WI-10006791). The rig always has
+# its auto-signed-in default user, and /api/auth/signup refuses 403 signup_disabled
+# whenever a user exists and papercusp-open-signup is off. That flag is an
+# owner-authority DARK flag (internet-reachable signup), so it must never be flipped
+# globally; the per-process env override reaches only the isolated rig's operator,
+# which is what the ui-flow-login-prefs signup specs need. A caller may pass 0.
+export PAPERCUSP_FLAG_PAPERCUSP_OPEN_SIGNUP="${PAPERCUSP_FLAG_PAPERCUSP_OPEN_SIGNUP:-1}"
 # A caller-level opt-out would make the whole run evidence-free; the runner exists to record.
 unset PAPERCUSP_DISABLE_TEST_RUNS_REPORTER
 RIG="${OPERATOR_E2E_RIG:-$ROOT/scripts/verify-tauri-headless.sh}"
