@@ -20,6 +20,7 @@ import { describe, expect, it } from 'vitest';
 const DOCS_DIR = fileURLToPath(new URL('..', import.meta.url));
 const SOURCE_DIR = join(DOCS_DIR, 'src/content/docs');
 const SERVED_DIR = join(DOCS_DIR, '../operator/public/docs');
+const BUNDLED_SOURCE_DIR = join(DOCS_DIR, '../operator/public/manual-source');
 const REBUILD = 'npm --prefix apps/papercusp-docs run build';
 
 function listSourcePages(dir: string): string[] {
@@ -68,5 +69,17 @@ describe('public manual: served build matches its source (WI-10006957)', () => {
 
   it(`the served copy carries a search index (fix: ${REBUILD})`, () => {
     expect(existsSync(join(SERVED_DIR, 'pagefind/pagefind.js'))).toBe(true);
+  });
+
+  it(`the fresh-install retrieval bundle has exactly the canonical public bytes (fix: ${REBUILD})`, () => {
+    const pages = listSourcePages(SOURCE_DIR);
+    expect(pages).toContain('faq.mdx');
+    expect(existsSync(BUNDLED_SOURCE_DIR), `missing public retrieval bundle; run ${REBUILD}`).toBe(true);
+    const bundled = readdirSync(BUNDLED_SOURCE_DIR).filter((name) => /\.mdx?$/.test(name)).sort();
+    expect(bundled).toEqual(pages);
+    for (const page of pages) {
+      expect(readFileSync(join(BUNDLED_SOURCE_DIR, page), 'utf8'), `stale bundle: ${page}; run ${REBUILD}`)
+        .toBe(readFileSync(join(SOURCE_DIR, page), 'utf8'));
+    }
   });
 });

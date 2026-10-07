@@ -11,6 +11,13 @@ This guide gets you to **one completed, verified task**. You need a browser,
 an account you can sign in to, and a workspace that is connected. Reading the
 public manual does not require an account or subscription.
 
+Before you start, check which account and organization own the workspace you
+intend to use. A **workspace** is the connected environment where work runs;
+the **project** is the body of work you select inside it. If you use the
+desktop app, start in its setup flow; these portal instructions apply to the
+browser. Voice, external integrations and payment are not prerequisites for
+reading the manual. Workspace availability and charges depend on your account.
+
 ## 1. Create an account or sign in
 
 Open the portal and choose **Create account** if you are new, or **Sign in**
@@ -28,8 +35,8 @@ See [Accounts and billing](/docs/accounts-and-billing).
 Open **Workspaces**. Select an existing connected workspace or follow the
 creation flow shown for your account:
 
-- **Papercusp Cloud** uses a Papercusp-managed host.
-- **Your own cloud** requires provider setup and a dedicated, limited identity.
+- **Use Papercusp's cloud** uses a Papercusp-managed host.
+- **Bring your own cloud** requires provider setup and a dedicated, limited identity.
   Follow [Cloud workspaces](/docs/cloud-workspaces) for Google Cloud or AWS.
 - **Local work** runs on a connected computer with Papercusp installed.
   Keep that computer awake while its agents are working.
@@ -38,6 +45,13 @@ Wait for provisioning and connection to finish. A workspace card existing is
 not proof that its host is ready. If it reports an error, preserve the message
 and use [Troubleshooting](/docs/troubleshooting), rather than creating duplicate
 hosts.
+
+Before creating a host, review the displayed subscription and cloud costs.
+Papercusp subscription, model usage and cloud-provider charges are separate.
+Stopping a machine can leave charges for disks, snapshots or networking;
+deleting it is a different action and needs a backup and restore plan first.
+See [Accounts and billing](/docs/accounts-and-billing) and
+[Cloud workspaces](/docs/cloud-workspaces#stop-delete-and-recover-deliberately).
 
 ## 3. Select a project and start a session
 
@@ -76,6 +90,11 @@ asked for publication, open the actual destination and confirm that it
 contains the new result. A working-build screenshot is not production proof.
 See [Plans and work](/docs/plans-and-work).
 
+For the README example, open the project's README, find the revised
+getting-started section and try its instructions. Check the reported link
+results and ask about anything unverified. The expected outcome is an
+inspectable document and its verification evidence.
+
 ## If the first task gets stuck
 
 Ask the agent for its current work-item reference, next concrete action and
@@ -85,3 +104,6 @@ the browser tab alone does not stop remote work.
 
 Before any destructive follow-up, establish a completed backup and a restore
 procedure using [Snapshots and backups](/docs/harness-snapshots).
+
+Next, use [Common questions](/docs/faq) for short explanations or
+[Using the app](/docs/using-the-app) for the everyday controls.

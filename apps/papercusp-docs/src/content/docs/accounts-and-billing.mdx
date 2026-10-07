@@ -11,6 +11,10 @@ You can read this manual without signing in. Acting on a hosted workspace
 requires the correct Papercusp account and organization access. An external
 integration connection and a paid subscription are separate from sign-in.
 
+Use this guide to confirm the identity that has workspace access and understand
+what you may pay for. Before starting checkout, identify the organization you
+intend to pay for and check whether your role can manage its billing.
+
 ## Create an account once
 
 Choose **Create account**, verify the identity offered by the sign-up flow,
@@ -22,6 +26,11 @@ sign-ups will not repair access.
 Use the account and organization that own the intended workspace. Being
 signed in does not grant access to every project or another organization's
 machines.
+
+Open the portal's **Accounts** destination to check the signed-in identity and
+organization information. If the intended workspace is missing, confirm that
+identity and ask the organization's administrator to check your access; signing
+up again or connecting an integration does not grant workspace permission.
 
 ## Connect integrations separately
 
@@ -39,6 +48,14 @@ If your installation offers hosted subscriptions, open **Billing** and read
 the current plans, status and restrictions. Use the plan and price displayed
 there; this guide does not promise a fixed price, allowance or provider quota.
 Local installations may show a different, read-only billing state.
+
+There are three separate cost categories: your Papercusp subscription, model
+usage billed to the applicable model account, and cloud resources billed under
+the selected hosting arrangement. Read the current account and provider terms
+for the amounts and payer. Stopping agents or closing the browser does not
+cancel a subscription or remove cloud resources. See
+[Cloud workspaces](/docs/cloud-workspaces#stop-delete-and-recover-deliberately) before
+stopping or deleting a host.
 
 Choose the displayed subscription action to open checkout.
 After returning, wait for the portal's subscription confirmation.
@@ -60,3 +77,10 @@ active plan does not imply unlimited resources. Check the workspace's status
 and the limits actually shown by your installation.
 See [Cloud workspaces](/docs/cloud-workspaces) and
 [Troubleshooting](/docs/troubleshooting).
+
+## Expected result
+
+You are signed in as the intended identity, can identify the relevant
+organization, and can see a confirmed subscription status if you purchased one.
+Verify workspace access separately. If the status remains pending, preserve
+the non-secret reference and follow the recovery above before retrying payment.
