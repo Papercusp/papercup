@@ -5,9 +5,9 @@
   "accountableOwner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
   "population": {
     "failedFiles": 124,
-    "repairedFocused": 31,
+    "repairedFocused": 33,
     "repairedPeerFocused": 16,
-    "openUnknown": 77
+    "openUnknown": 75
   },
   "classes": {
     "assertion": 55,
@@ -1197,7 +1197,10 @@
           "scope": "Content-bearing source investigation only; no new test execution or historical root-cause verdict.",
           "archiveRunStart": "d2a53e115436fe5b2a72c261abbc66f337642672",
           "archiveSha256": "43cf66489baf7cf665a9746d097375cffc7cdc6262014929c3cc398155b579f4",
-          "assertionLines": [12562, 12653],
+          "assertionLines": [
+            12562,
+            12653
+          ],
           "receiptReader": "packages/operator-core/lib/blueprint/operation-worker-binding.ts#readActiveOperationWorkerClaimBinding",
           "originalAndCurrentReaderBytesEqual": true,
           "readerFunctionSha256": "baefedf70070cf33c7a44662a9e209efad3ec429f65d44a023451be1c2d0aa52",
@@ -1854,12 +1857,18 @@
     {
       "path": "packages/operator-core/lib/fleet/sidecar-exec-lifetime.integration.test.ts",
       "class": "console-guard",
-      "state": "open-unknown",
-      "item": "WI-10006170",
+      "state": "repaired-focused",
+      "item": "WI-10007273",
       "lines": [
         13518,
         13602
-      ]
+      ],
+      "baselineTestRun": 20905440,
+      "focusedTestRun": 20905559,
+      "focusedEvidenceRef": "docs/evidence/d006-sidecar-lifetime-source-scope-2026-10-07.json",
+      "testSha256": "5bacd4d1a89e01f78bd8fa1fc13807ad555fcf3cf098eb66f000b72310307663",
+      "rootCause": "Both intentional IPC-server-death fixtures omitted assertion of the expected diagnostic chain. vitest-fail-on-console correctly failed them; the lifetime/no-replay assertions already passed in the baseline.",
+      "scope": "Historical local dirty canonical staging pass of all4 real cases with zero skips;38 worker original sources stable and post-run equal. Config/main-process/subprocess/environment/full-source/finalD006 assurance remains unknown."
     },
     {
       "path": "packages/operator-core/lib/__tests__/spawn-signing-e2e.integration.test.ts",
@@ -1874,28 +1883,84 @@
     {
       "path": "packages/operator-core/lib/dock-layouts.integration.test.ts",
       "class": "console-guard",
-      "state": "open-unknown",
-      "item": "WI-10006170",
+      "state": "repaired-focused",
+      "item": "WI-10007236",
+      "beforeTestRun": 20903928,
+      "afterTestRun": 20904617,
+      "passed": 9,
+      "skipped": 0,
+      "testSha256": "4e1ca3761ef8f41cad5f3c35126742d32a9a3ef6bbd15db9e45e82ffb1f6684c",
       "focusedDiagnosis": {
         "repairItem": "WI-10007236",
         "rootCause": "The fixture mocked only embedded-pg-discovery. The layout pool used the isolated org database, while notifyDockLayout's real sync-sse sink resolved getOrgPg through the ambient db-org resolver. Baseline20903928 reproduced the WRONG STORE diagnostic with pool:admin; the original run-start test bytes exactly match the baseline test bytes.",
         "repair": "Reuse setupBaselineCoordFixture({dsn:db.adminDsn}) to route both real resolvers and reset their caches. Remove the redundant discovery mock rather than adding private reset stubs. Close the actual layout pool and dispose the maintained fixture before dropping its database. Production identity and notification guards are unchanged.",
         "recurrenceGuard": "Retain all original eight real-PG cases; add actual layout/notification pool identity comparisons against the isolated database and verify a layout write emits its scoped dockLayouts.byName payload through real PG LISTEN/NOTIFY on that database.",
-        "baseline": { "id": 20903928, "failed": 1, "passed": 7, "skipped": 0, "testSha256": "858c0bfed9d77a19ddd8b54c570e80c0229358998a8d4697a5969530051e8a89", "log": "/tmp/d006-dock-baseline.log", "logSha256": "471e4bc8a1979a423211498db551818d66d6c3873fab4a89aeb67d161da0a45f" },
+        "baseline": {
+          "id": 20903928,
+          "failed": 1,
+          "passed": 7,
+          "skipped": 0,
+          "testSha256": "858c0bfed9d77a19ddd8b54c570e80c0229358998a8d4697a5969530051e8a89",
+          "log": "/tmp/d006-dock-baseline.log",
+          "logSha256": "471e4bc8a1979a423211498db551818d66d6c3873fab4a89aeb67d161da0a45f"
+        },
         "harnessAudit": "First repair attempt20904028 failed before execution (nine skips): the original discovery mock lacked the maintained helper's reset export. Audited both distinct failure classes before rerunning; removed the entire mock so future resolver/reset exports stay real.",
         "localVerification": {
-          "runs": [20904047, 20904073], "passedEach": 9, "skippedEach": 0, "exitEach": 0,
+          "runs": [
+            20904047,
+            20904073
+          ],
+          "passedEach": 9,
+          "skippedEach": 0,
+          "exitEach": 0,
           "testSha256": "4e1ca3761ef8f41cad5f3c35126742d32a9a3ef6bbd15db9e45e82ffb1f6684c",
-          "source": "local", "workspace": "papercusp-workspace", "harness": "papercusp", "isScratchConfig": false,
+          "source": "local",
+          "workspace": "papercusp-workspace",
+          "harness": "papercusp",
+          "isScratchConfig": false,
           "logs": [
-            { "path": "/tmp/wi-10007236-dock-verified.log", "sha256": "d4b7a837ba67bfd32ceeea7aa994f587c39fc83dffe1ff89acab48384921fa8e" },
-            { "path": "/tmp/wi-10007236-dock-confirmed.log", "sha256": "9e3d9202c3c36a7375e920f3d7bbad631f2545082589712e54394d2752882079" }
+            {
+              "path": "/tmp/wi-10007236-dock-verified.log",
+              "sha256": "d4b7a837ba67bfd32ceeea7aa994f587c39fc83dffe1ff89acab48384921fa8e"
+            },
+            {
+              "path": "/tmp/wi-10007236-dock-confirmed.log",
+              "sha256": "9e3d9202c3c36a7375e920f3d7bbad631f2545082589712e54394d2752882079"
+            }
           ],
           "namedFileState": "First pass dirty; confirmation named file clean and unchanged across pre/post stamps. Ledger repository worktreeDirty=true for both runs.",
-          "provenance": "UNKNOWN for both wrapper runs: HEAD moved91b5c4caa8→c0da0103e6 and d8274ee5d5→3d78882961. Actual assertions passed, but imported source/change radius was not measured. No settled-HEAD/current-full-source assurance is claimed. Keep census row open-unknown until the remaining verification is addressed."
+          "provenance": "Historical UNKNOWN for both wrapper runs: HEAD moved91b5c4caa8\u2192c0da0103e6 and d8274ee5d5\u21923d78882961. Actual assertions passed, but imported source/change radius was not measured in those runs. Preserve that limitation; the later 20904617 receipt below is separate qualified focused evidence."
         },
-        "typecheck": { "checked": 1, "errors": 0, "exit": 0, "log": "/tmp/wi-10007236-dock-tsc.log", "logSha256": "c858f827f0766193ee3e25c572523cc5d1cc47b1beb55593588f9334e5394754", "scope": "Named test only through the shared typecheck service; not full project/import assurance." },
-        "limits": "Named original fixture equality and current causal diagnosis are measured. Full original/current imports/environment, settled-HEAD verification, final D006/P004 acceptance and shipment remain unverified. Parent remains accountable and all original population/class counts are preserved."
+        "currentVerification": {
+          "run": 20904617,
+          "passed": 9,
+          "skipped": 0,
+          "exit": 0,
+          "sha": "c32be7a49c121330ce425be18836a07d73dfa6eb",
+          "provenance": "stamped; HEAD unchanged, named file clean and unchanged; local/staging/non-scratch; repository worktreeDirty=true",
+          "workerSourceScope": "repository-worker-vite-original-sources",
+          "workerSourceStatus": "stable",
+          "workerSourceCount": 60,
+          "workerSourceReasons": [],
+          "postRunCurrentness": "changed-since-receipt: subsequent db-org connection.ts source edit36e91adb4540\u21923b9eba90c2ff at2026-10-07T19:20:08Z; recorded60-source run-end pass remains historical, current imported-source assurance is invalidated",
+          "sourceEvidence": "docs/evidence/d006-dock-layout-source-scope-2026-10-07.json",
+          "rawSourceMapSha256": "faaab688b7698b7895a9264e1e8eab834aa2010bc8c6934d5e17c2ba1428ef38",
+          "log": "/tmp/wi-10007236-dock-current.log",
+          "logSha256": "70ed53e5b69383338574e26bb545b714a4f698df90c0bdfcc91a880f671751ba",
+          "configDiskScope": "unchanged; one config source",
+          "loadedConfigScope": "unknown: config-node-load-capture-unavailable; config-original-load-unavailable:packages/operator-core/vitest.integration.config.ts",
+          "mainProcessScope": "unknown: main-process-dependencies-unavailable; main-process-loaded-sources-unavailable; main-process-node-load-capture-unavailable",
+          "resourceHold": "Short exclusive git-sync:papercusp lease82a90a48-fdfb-4627-9b2f-c25eeb071286 held for this verdict and released immediately afterward; source capture reused the maintained reporter. No current gate operation."
+        },
+        "typecheck": {
+          "checked": 1,
+          "errors": 0,
+          "exit": 0,
+          "log": "/tmp/wi-10007236-dock-tsc.log",
+          "logSha256": "c858f827f0766193ee3e25c572523cc5d1cc47b1beb55593588f9334e5394754",
+          "scope": "Named test only through the shared typecheck service; not full project/import assurance."
+        },
+        "limits": "Named original fixture equality, fixture causal diagnosis, stable-HEAD focused pass and the run's captured60-source worker-Vite scope are measured. A subsequent db-org connection.ts edit invalidates current imported-source assurance; the pass remains historical for its captured bytes. Actual loaded-config/main-process sources remain UNKNOWN; full original/current imports/environment, final D006/P004 acceptance and shipment remain unverified. Original124-file population and class membership are preserved; one qualified focused disposition advances while the parent retains the remaining76 UNKNOWN."
       },
       "lines": [
         12797
@@ -2614,14 +2679,14 @@
       "count": 4,
       "status": "partially-repaired-focused",
       "stateCounts": {
-        "repaired-focused": 1,
-        "open-unknown": 3
+        "repaired-focused": 3,
+        "open-unknown": 1
       },
       "item": "WI-10006170",
       "owner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
       "scope": "diagnosis-and-placement",
-      "rootCause": "unproved",
-      "next": "Resolve the three remaining open console-guard files against exact source failures and current causal verification. Delegated fixture completion control WI-10007229 passes 9/0skip in 20903888; B has scoped fixture repair WI-10007188. Archived inventory and earlier warning-only conclusions remain historical. Complete imports/environment/finalD006 remain unverified.",
+      "rootCause": "Sidecar lifetime failure is omitted asserted fault-injection diagnostics. The remaining join-hive source/import/environment assurance is unproved; historical repaired rows retain their individual evidence limits.",
+      "next": "Resolve remaining join-hive console-guard row against exact archived failure and cheapest current focused reproduction. Sidecar lifetime WI-10007273 now passes4/0skip in20905559 with strict correlated-warning assertions; dock and delegated historical proof qualifiers are preserved. No final/current full-source assurance.",
       "archivedDiagnosticInventory": {
         "archiveSha256": "43cf66489baf7cf665a9746d097375cffc7cdc6262014929c3cc398155b579f4",
         "scope": "Exact ANSI-stripped error groups from the immutable D006 archive, indexed by the existing FAIL-header line identities. These are historical symptoms, not current test verdicts or proved source causes. Candidate terminal records require completion and source-assurance review.",
@@ -2721,7 +2786,7 @@
               12803
             ],
             "observed": "console.error refuses WRONG STORE: pinned throwaway org database on localhost32769 but observed papercusp on localhost5432",
-            "placement": "WI-10007236 is self-assigned under parent-goal admission. Original test bytes match baseline20903928; split resolver reproduced. Maintained fixture repair and real identity/notification guard passed9/0skip in20904047 and20904073, but both wrapper verdicts have HEAD-moved UNKNOWN import provenance. Parent retains open-unknown custody and unchanged census pending qualified current verification."
+            "placement": "WI-10007236 is self-assigned under parent-goal admission. Original test bytes match baseline20903928; split resolver reproduced. Prior20904047/20904073 HEAD-moved UNKNOWN qualifiers remain. Later20904617 passes9/0skip/exit0 at stableHEADc32be7a49c with60 unchanged captured worker-Vite sources at run end; subsequent connection.ts source movement invalidates currentness. Loaded-config/main-process/environment assurance remains unknown. Row advances only to qualified historical repaired-focused; finalD006 custody is unchanged."
           }
         ]
       },
@@ -2753,7 +2818,7 @@
         "causalVerification": "not-run; no controlled failed/passing fixture-lifecycle execution or source repair in this lane",
         "disposition": "Existing open federation issue includes this warning. Legacy EI-10726 is resolved without committed completion authority and describes hook/store errors, so it is not closure evidence for the pool-rebind warning. One of ten console-guard files investigated; no census state or population count changed."
       },
-      "countCorrection": "Four console-guard file rows remain in the original class inventory: delegated-tasks is repaired-focused and three stay open-unknown. Population now records 31 focused repairs, 16 peer focused repairs and 77 UNKNOWN; this is historical repair disposition, not current full-source readiness."
+      "countCorrection": "Four original console-guard rows are retained: delegated-tasks, dock-layouts and sidecar-exec-lifetime are qualified repaired-focused; join-hive is open-unknown. Population33 focused repairs,16 peer focused repairs,75 UNKNOWN describes historical dispositions, not current full-source readiness."
     },
     {
       "class": "unclassified",
