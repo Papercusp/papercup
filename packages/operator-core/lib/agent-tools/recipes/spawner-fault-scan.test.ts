@@ -1,9 +1,13 @@
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import { describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
+import type { ProjectedTool } from '@papercusp/tooldef';
 import { deriveRecipeAuthority } from '../../recipe-authority-derive';
+import logsReadTool from '../logs/read';
+import { validateRecipeScriptAgainstCatalog } from './recipe-schema-validation';
 
-const script = readFileSync(new URL('./fixtures/scan-spawner-sidecar-fault-tags.js', import.meta.url), 'utf8');
+const script = readFileSync(new URL('./fixtures/scan-spawner-sidecar-fault-tags.recipe.txt', import.meta.url), 'utf8');
 const now = 1_791_350_000;
 const checkpoint = (since = '@1791343281') => ({
   ok: true,
@@ -40,6 +44,17 @@ describe('saved spawner fault scan recipe', () => {
 
   it('remains runnable under the saved recipe authority rules', async () => {
     expect(await deriveRecipeAuthority(script)).toMatchObject({ unresolved: false, bound: false });
+  });
+
+  it('passes saved-recipe preflight against the registered log reader schema', async () => {
+    const reader: ProjectedTool = {
+      pluginName: 'test', description: 'registered log reader', capabilities: [],
+      inputSchema: z.toJSONSchema(logsReadTool.args),
+      outputJsonSchema: z.toJSONSchema(logsReadTool.result as z.ZodType),
+      expose: { mcp: { name: 'logs:read' } },
+      fn: (async () => ({ content: [] })) as never,
+    };
+    expect(await validateRecipeScriptAgainstCatalog(script, [reader])).toMatchObject({ ok: true, issues: [] });
   });
 
   it('rejects a continuation from another work item before scanning', async () => {
