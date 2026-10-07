@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { admitAuthenticatedPhoneProducer, admitPhoneProducer, type PhoneProducerAdmission } from './phone-producer-admission';
+import { admitAuthenticatedPhoneProducer, admitPhoneProducer, createHttpsPhoneProducerAdmissionHost, type PhoneProducerAdmission } from './phone-producer-admission';
 import type { Principal } from '@papercusp/agent-mcp';
 import type { ExternalRuntimeProducerBinding } from './operation-worker-binding';
 import type { AppScopeRow } from '../connected-apps/scope-policy';
@@ -27,6 +27,33 @@ function fixture() {
   return { snapshot, host, store, read: () => admitPhoneProducer(host, 'room-a', store),
     get registration() { return registration; }, get row() { return row; } };
 }
+
+describe('Phone producer HTTPS bridge', () => {
+  it.each(['http://phone.test/admission', 'https://user:secret@phone.test/admission',
+    'https://phone.test/admission?authority=other', 'https://phone.test/admission#other'])
+    ('refuses ambiguous or unauthenticated authority %s', (endpoint) => {
+      expect(() => createHttpsPhoneProducerAdmissionHost({ endpoint, token: 'credential' }))
+        .toThrow('https_authority_required');
+    });
+  it('reads trusted records through the fixed authority without allowing redirects', async () => {
+    const snapshot = fixture().snapshot;
+    const request = vi.fn(async () => Response.json({ ok: true, data: snapshot }));
+    const host = createHttpsPhoneProducerAdmissionHost({ endpoint: 'https://phone.test/admission',
+      token: 'credential', request });
+    expect(await host.readAdmission('room-a')).toEqual(snapshot);
+    expect(request).toHaveBeenCalledWith('https://phone.test/admission', expect.objectContaining({
+      redirect: 'error', headers: expect.objectContaining({ authorization: 'Bearer credential' }),
+      body: JSON.stringify({ action: 'readAdmission', roomName: 'room-a' }),
+    }));
+  });
+  it('refuses successful HTTP responses carrying invalid admission or refused envelopes', async () => {
+    for (const data of [{ ok: false, data: fixture().snapshot }, { ok: true, data: { ownerId: 'forged' } }]) {
+      const host = createHttpsPhoneProducerAdmissionHost({ endpoint: 'https://phone.test/admission',
+        token: 'credential', request: vi.fn(async () => Response.json(data)) });
+      await expect(host.readAdmission('room-a')).rejects.toThrow();
+    }
+  });
+});
 
 describe('Phone producer canonical admission', () => {
   const principal = (): Principal => ({ kind: 'service', trust: 'verified', authMethod: 'bearer-token',

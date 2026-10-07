@@ -31,6 +31,50 @@ export interface PhoneProducerAdmissionHost {
   reserveRegistration(snapshot: PhoneProducerAdmission, proposed: ExternalRuntimeProducerBinding): Promise<ExternalRuntimeProducerBinding>;
 }
 
+/** Host configuration, never public admission arguments. HTTPS authenticates
+ * the configured sidecar authority; the secret authenticates this caller.
+ * Redirects cannot move either credential or trusted record reads elsewhere. */
+export function createHttpsPhoneProducerAdmissionHost(options: {
+  endpoint: string;
+  token: string;
+  request?: typeof fetch;
+}): PhoneProducerAdmissionHost {
+  const endpoint = new URL(options.endpoint);
+  if (endpoint.protocol !== 'https:' || endpoint.username || endpoint.password || endpoint.hash || endpoint.search) {
+    throw new Error('phone_producer_https_authority_required');
+  }
+  const token = options.token.trim();
+  if (!token || /[\r\n]/.test(token)) throw new Error('phone_producer_bridge_credential_required');
+  const request = options.request ?? fetch;
+  const bindingSchema = z.object({
+    kind: z.literal('external-runtime-producer'), workspaceId: text, harnessSlug: text,
+    storageHarnessSlug: text, workItemId: text, executionOwnerId: text, ownerId: text,
+    callKey: text, callId: text, runId: text, jobId: text,
+    configurationSha256: z.string().regex(/^[a-f0-9]{64}$/), registeredAt: text,
+  });
+  async function invoke(action: string, args: Record<string, unknown>): Promise<unknown> {
+    const response = await request(endpoint.href, {
+      method: 'POST', redirect: 'error', signal: AbortSignal.timeout(30_000),
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', accept: 'application/json' },
+      body: JSON.stringify({ action, ...args }),
+    });
+    if (!response.ok) throw new Error(`phone_producer_bridge_failed:${response.status}`);
+    const envelope = z.object({ ok: z.literal(true), data: z.unknown() }).parse(await response.json());
+    return envelope.data;
+  }
+  return {
+    async readAdmission(roomName) {
+      return admissionSchema.parse(await invoke('readAdmission', { roomName }));
+    },
+    async readRegistration(roomName) {
+      return bindingSchema.nullable().parse(await invoke('readRegistration', { roomName }));
+    },
+    async reserveRegistration(snapshot, proposed) {
+      return bindingSchema.parse(await invoke('reserveRegistration', { snapshot, proposed }));
+    },
+  };
+}
+
 type ProducerRow = Pick<WorkItem, 'id' | 'harness' | 'assignee' | 'payload'>;
 export interface PhoneProducerCanonicalStore {
   allocateId(): Promise<string>;
