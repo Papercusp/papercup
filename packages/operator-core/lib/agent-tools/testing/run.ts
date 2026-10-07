@@ -332,6 +332,22 @@ export function testingRunTimeoutClampDisclosure(
 }
 
 /**
+ * `testing:run` does work before and after the child process: provenance/evidence
+ * preparation, ledger readback, and evidence finalization. The shared foreground
+ * ceiling reserves cleanup and response time for the child, but not those handler
+ * phases. Keep 20s for them so a long inline run returns its typed detached-recovery
+ * result before the MCP transport's 55s cap (EI-25215743666136400).
+ */
+export const TESTING_RUN_HANDLER_PHASE_HEADROOM_MS = 20_000;
+
+export function clampTestingRunForegroundTimeoutMs(requestedTimeoutMs: number): number {
+  return Math.min(
+    clampForegroundTimeoutMs(requestedTimeoutMs),
+    FOREGROUND_TIMEOUT_CEILING_MS - TESTING_RUN_HANDLER_PHASE_HEADROOM_MS,
+  );
+}
+
+/**
  * Build the store-backed recovery command for a Papercusp checkout. The
  * foreground run's JSON report lives in a private temporary directory that is
  * removed as soon as the bounded call returns; a detached run therefore gets
@@ -3742,7 +3758,7 @@ export default defineTool({
       .max(MAX_TIMEOUT_MS)
       .optional()
       .describe(
-        `Hard budget for the whole run. Default ${DEFAULT_TIMEOUT_MS}ms, but a FOREGROUND run is clamped to ${FOREGROUND_TIMEOUT_CEILING_MS}ms — below the ~55s MCP transport cap — so a slow suite returns an actionable timeout instead of an opaque transport error. For a longer suite, follow the timeout response's detached recovery; integration files use the npm run test:file router.`,
+        `Hard budget for the whole run. Default ${DEFAULT_TIMEOUT_MS}ms, A FOREGROUND run is capped at ${FOREGROUND_TIMEOUT_CEILING_MS - TESTING_RUN_HANDLER_PHASE_HEADROOM_MS}ms for the child process, reserving ${TESTING_RUN_HANDLER_PHASE_HEADROOM_MS}ms for provenance/evidence preparation, ledger readback, and finalization before the ~55s MCP transport cap. For a longer suite, follow the timeout response's detached recovery; integration files use the npm run test:file router.`,
       ),
     maxFailures: z
       .number()
@@ -3938,7 +3954,7 @@ export default defineTool({
     // race and hand back an actionable next step. The clamp is a TRANSPORT concern, so it lives
     // here and not in runTestFilesCore (whose other callers budget for themselves).
     const requestedTimeoutMs = args.timeoutMs;
-    const timeoutMs = clampForegroundTimeoutMs(requestedTimeoutMs ?? DEFAULT_TIMEOUT_MS);
+    const timeoutMs = clampTestingRunForegroundTimeoutMs(requestedTimeoutMs ?? DEFAULT_TIMEOUT_MS);
     // Operator/superuser sessions commonly carry the '*' harness sentinel. Let
     // the caller name the concrete harness on this call so the child reporter
     // receives the same scope that plans:bind-spec-evidence validates.
