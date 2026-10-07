@@ -13,6 +13,20 @@ let ownerUserId: string;
 
 beforeAll(async () => {
   org = await createOrgTestDb();
+  // Mint-time nature comes from the workspace registry, not an INSERT override.
+  // Materialize the maintained person registration into this isolated fixture workspace.
+  const registered = await org.adminSql`
+    INSERT INTO harness_shared.datatype_registry
+      (id, workspace_id, pot_slug, title, description, tier, work_item_kind,
+       payload_schema, authoritative_writer, self_improvement, status, published,
+       review_status, tags, created_by, nature, audience)
+    SELECT id, ${WORKSPACE_ID}, pot_slug, title, description, tier, work_item_kind,
+           payload_schema, authoritative_writer, self_improvement, status, published,
+           review_status, tags, created_by, nature, audience
+      FROM harness_shared.datatype_registry
+      WHERE workspace_id = 'papercusp-workspace' AND id = 'person'
+    RETURNING nature`;
+  expect(registered).toEqual([{ nature: 'record' }]);
   const [user] = await org.adminSql<{ id: string }[]>`
     INSERT INTO harness_shared.users (username, display_name)
     VALUES (${'voice-context-' + Date.now()}, 'Voice Context Owner')
@@ -56,11 +70,14 @@ describe('voice context projection (real Personal Vault store)', () => {
   it('reads real graph persons with Vault disabled and denies callers and guests', async () => {
     await org.adminSql`
       INSERT INTO harness_shared.work_items
-        (workspace_id, feature_id, title, item_kind, nature, payload)
-      VALUES (${WORKSPACE_ID}, 'PER-voice-context-fixture', 'Cobalt Contact', 'person', 'record',
+        (workspace_id, harness_slug, feature_id, title, item_kind, nature, payload)
+      VALUES (${WORKSPACE_ID}, 'papercusp', 'PER-voice-context-fixture', 'Cobalt Contact', 'person', 'record',
         ${org.adminSql.json({ displayName: 'Cobalt Contact', emails: ['cobalt@example.com'], phones: [], memberRecordIds: [] })})`;
     await setPersonalVaultEnabled(org.adminSql, WORKSPACE_ID, ownerUserId, false, ownerUserId);
     const source = createVoiceContextSources({ sql: org.adminSql, now: () => NOW });
+    expect(await source.resolvePeople!({ workspaceId: WORKSPACE_ID, query: 'Cobalt' })).toMatchObject({
+      available: true, candidates: [{ capability: 'contacts', title: 'Cobalt Contact' }],
+    });
     const resolvePeople = vi.fn(source.resolvePeople!);
     const resolveOwnerVault = vi.fn(source.resolveOwnerVault);
     const sources = { ...source, resolvePeople, resolveOwnerVault };
