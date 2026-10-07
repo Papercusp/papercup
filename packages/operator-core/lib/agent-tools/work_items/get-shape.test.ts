@@ -60,6 +60,30 @@ function envelope(rows: Array<Record<string, unknown>>): Envelope {
   return { ok: true, results: rows, counts: { ok: rows.length, failed: 0 } };
 }
 
+function operationalBrief(subject: string, text: string): Record<string, unknown> {
+  return {
+    schemaVersion: "operational-brief-v1",
+    surface: "work-item",
+    subject,
+    state: { status: "known", value: "open", source: "workItem.state" },
+    owner: { status: "known", value: "su-1", source: "workItem.assignee" },
+    nextAction: { status: "known", value: "Read the focused regression result.", source: "checkpoint.next" },
+    blockers: { status: "known", value: [], source: "workItem.payload external blockers (active)" },
+    lastVerified: { status: "unknown", reason: "no verified completion evidence is recorded" },
+    deadline: { status: "unknown", reason: "work-item reads do not measure a deadline" },
+    facts: {
+      kind: "bug",
+      claim: { status: "known", value: { assignee: "su-1", takenAt: null, lastProgressAt: null, holderGoal: null, holderStale: null }, source: "workItem claim" },
+      checkpoint: { status: "known", value: { status: "available", updatedAt: null, contentHash: null, structured: false }, source: "workItem checkpoint" },
+      successorResidue: { status: "known", value: { left: null, walls: [] }, source: "checkpoint" },
+      holdsUp: { status: "unknown", reason: "outgoing links require detail:true" },
+      blockedByLinks: { status: "unknown", reason: "incoming links are not read by work_items:get" },
+    },
+    unknowns: ["lastVerified", "deadline", "facts.holdsUp", "facts.blockedByLinks"],
+    text,
+  };
+}
+
 describe("shapeWorkItemsGet — the checkpoint is the payload, degraded last", () => {
   it('preserves a standalone bounded attachment byte page through both tiers', () => {
     const evidence = { sourceWorkItemId: 'EI-source', attachments: [], page: {
@@ -885,6 +909,63 @@ describe("shapeWorkItemsGet — bulk reads stay under the transport ceiling", ()
     expect(out._shapeNote?.stubbed?.note).toMatch(/re-read an id alone/);
     expect(out._shapeNote?.dropped.some((d) => d.startsWith("rows("))).toBe(true);
     expect(JSON.stringify(out).length).toBeLessThanOrEqual(RESULT_DOOR_TOKENS * CHARS_PER_TOKEN_ESTIMATE);
+  });
+});
+
+describe("shapeWorkItemsGet — operationalBrief stays bounded across multi-item reads", () => {
+  const DOOR = RESULT_DOOR_TOKENS * CHARS_PER_TOKEN_ESTIMATE;
+
+  function briefRow(id: string, text: string): Record<string, unknown> {
+    return row({
+      id,
+      availability: "available",
+      workItem: { id, kind: "bug", state: "open", title: "brief subject" },
+      operationalBrief: operationalBrief(id, text),
+    });
+  }
+
+  it("retains each requested brief and marks clipped row text", () => {
+    const rows = ["WI-brief-a", "WI-brief-b"].map((id) =>
+      briefRow(id, "A verified next action, blocker, and evidence summary. ".repeat(100)),
+    );
+
+    for (const tier of ["trimmed", "standard"] as const) {
+      const out = shapeWorkItemsGet(envelope(rows), tier) as Envelope;
+      expect(out.results.map((result) => result.id)).toEqual(rows.map((source) => source.id));
+      for (const result of out.results) {
+        expect(result._stub).toBeUndefined();
+        expect(result.operationalBrief).toMatchObject({
+          schemaVersion: "operational-brief-v1",
+          subject: result.id,
+          shapeNote: {
+            clipped: true,
+            paths: expect.arrayContaining(["operationalBrief.text"]),
+          },
+        });
+        expect((result.operationalBrief as Record<string, unknown>).text).toMatch(/TRUNCATED/);
+      }
+      expect(out._shapeNote?.dropped).toContain("operationalBrief(clipped)");
+      expect(JSON.stringify(out).length).toBeLessThanOrEqual(DOOR);
+    }
+  });
+
+  it("does not spend more bulk-row capacity on briefs whose shared share is too small", () => {
+    const rows = Array.from({ length: 100 }, (_, index) =>
+      briefRow(`EI-${String(index).padStart(17, "0")}`, "Large brief text. ".repeat(300)),
+    );
+    const withBriefs = shapeWorkItemsGet(envelope(rows), "trimmed") as Envelope;
+    const withoutBriefs = shapeWorkItemsGet(
+      envelope(rows.map(({ operationalBrief: _brief, ...rest }) => rest)),
+      "trimmed",
+    ) as Envelope;
+
+    expect(withBriefs.results.map((result) => result.id)).toEqual(rows.map((source) => source.id));
+    expect(withBriefs.results.every((result) => result.operationalBrief === undefined)).toBe(true);
+    expect(withBriefs._shapeNote?.dropped).toContain("operationalBrief");
+    expect(withBriefs.results.filter((result) => result._stub).length).toBe(
+      withoutBriefs.results.filter((result) => result._stub).length,
+    );
+    expect(JSON.stringify(withBriefs).length).toBeLessThanOrEqual(DOOR);
   });
 });
 
