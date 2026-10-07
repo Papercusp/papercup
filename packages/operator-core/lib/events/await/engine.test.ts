@@ -1679,30 +1679,36 @@ describe('pumpWakeDeliveries — EI-18673058981655804: redundant-inbox-wake supp
   it.each(['cold', 'warm'] as const)(
     'EI-25300396323844627: delivers a %s loop wake after a newer inbox read',
     async (carry) => {
-      h.lastInboxReadAtBatch.mockResolvedValueOnce(new Map([['su-a', new Date(5000).toISOString()]]));
-      h.store.claimDueDeliveries.mockResolvedValueOnce([
-        workRow({
-          id: 474103,
-          subscriberId: 'su-a',
-          eventKey: 'coord:inbox-wake:su-a',
-          createdAt: new Date(1000).toISOString(),
-          source: 'loop:rt-loop-a',
-          payload: {
-            ...(carry === 'cold' ? { carry } : {}),
-            wakeCount: 3,
-            harness: 'papercusp',
-            routineId: 'rt-loop-a',
-          },
-        }),
-      ]);
+      const previousReadAt = h.lastInboxReadAtBatch.getMockImplementation();
+      h.lastInboxReadAtBatch.mockImplementation(async () => new Map([['su-a', new Date(5000).toISOString()]]));
+      try {
+        h.store.claimDueDeliveries.mockResolvedValueOnce([
+          workRow({
+            id: 474103,
+            subscriberId: 'su-a',
+            eventKey: 'coord:inbox-wake:su-a',
+            createdAt: new Date(1000).toISOString(),
+            source: 'loop:rt-loop-a',
+            payload: {
+              ...(carry === 'cold' ? { carry } : {}),
+              wakeCount: 3,
+              harness: 'papercusp',
+              routineId: 'rt-loop-a',
+            },
+          }),
+        ]);
 
-      const stats = await pumpWakeDeliveries('ws-test');
+        const stats = await pumpWakeDeliveries('ws-test');
 
-      expect(h.executeWake).toHaveBeenCalledTimes(1);
-      expect(h.store.markDeliveryDelivered).toHaveBeenCalledWith(474103, 'resume', 1);
-      expect(h.store.markDeliveryDelivered).not.toHaveBeenCalledWith(474103, 'suppressed-redundant', 1);
-      expect(stats.suppressed).toBe(0);
-      expect(stats.delivered).toBe(1);
+        expect(h.executeWake).toHaveBeenCalledTimes(1);
+        expect(h.store.markDeliveryDelivered).toHaveBeenCalledWith(474103, 'resume', 1);
+        expect(h.store.markDeliveryDelivered).not.toHaveBeenCalledWith(474103, 'suppressed-redundant', 1);
+        expect(stats.suppressed).toBe(0);
+        expect(stats.delivered).toBe(1);
+      } finally {
+        if (previousReadAt) h.lastInboxReadAtBatch.mockImplementation(previousReadAt);
+        else h.lastInboxReadAtBatch.mockReset();
+      }
     },
   );
 

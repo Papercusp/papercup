@@ -67,6 +67,7 @@ import { lastInboxReadAtBatch } from '../../agent-tools/coordination/inbox-read-
 import { repliedMsgIdsBatch } from '../../agent-tools/coordination/messages';
 import { getLineEnvelopeById } from '../../agent-tools/coordination/line-event-by-id';
 import { withBoundedTimeout } from '../../bounded-timeout';
+import { readColdLoopMarker } from '../../su-cold-loop';
 import { classifyInboxWakeGroup } from './inbox-wake-actionability';
 import { wakeChannelInvokesTurn, type AwaitRow, type DeliveryWork, type WakeChannel } from './types';
 import {
@@ -797,6 +798,9 @@ export function isInboxWakeGroupRedundant(
   const hasReadSignal = !Number.isNaN(readMs);
   if (!hasReadSignal && (!repliedMsgIds || repliedMsgIds.size === 0)) return false;
   return group.every((d) => {
+    // Loop fires use the inbox-wake subscription as transport, but an inbox read
+    // cannot execute their iteration or cold recovery. Preserve that delivery.
+    if (readColdLoopMarker(d.payload) !== null) return false;
     if (d.urgent) return false;
     if (!d.eventKey.startsWith(COORD_INBOX_WAKE_PREFIX)) return false;
     if (hasReadSignal) {
@@ -970,7 +974,11 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
           d.lastError?.startsWith('psu-host pending-delivery-id:'),
       );
       const allInboxWakeNoUrgent = group.every(
-        (d) => !hasUnconfirmedPsuHostAcceptance && !d.urgent && d.eventKey.startsWith(COORD_INBOX_WAKE_PREFIX),
+        (d) =>
+          !hasUnconfirmedPsuHostAcceptance &&
+          readColdLoopMarker(d.payload) === null &&
+          !d.urgent &&
+          d.eventKey.startsWith(COORD_INBOX_WAKE_PREFIX),
       );
       if (allInboxWakeNoUrgent) {
         const lastRead = await lastInboxReadAtBatch([subscriberId]);
