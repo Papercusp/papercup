@@ -35,7 +35,10 @@
  * A request body travels whole in `http.request`, bounded by
  * {@link HOSTED_OPERATOR_HTTP_MAX_REQUEST_BODY_BYTES} so the frame stays under the
  * relay's 1 MiB message cap. Chat and launch bodies are a few KiB; a larger body is
- * refused with `request_body_too_large` rather than truncated.
+ * refused with `request_body_too_large` rather than truncated. Device-http may
+ * opt into bounded upload assembly: `http.request {bodyChunked:true}`, ordered
+ * `http.body` chunks, then `http.end`. Each chunk is separately sealed on BYOC;
+ * other planes retain the inline-only policy.
  */
 
 export const HOSTED_OPERATOR_HTTP_MAX_REQUEST_BODY_BYTES = 512 * 1024;

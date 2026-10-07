@@ -13,7 +13,7 @@ import { HostedWorkspaceConnectorClient } from './hosted-connector-client';
 import { HostedWorkspaceHostSessionAdapter } from './hosted-session-host';
 import { attachSealedDeviceSocket, DEVICE_RELAY_INGRESS_MARKER } from './hosted-app-relay';
 import { EXTERNAL_INGRESS_MARKER_HEADER } from '../auth/forwarded-request-trust';
-import { HOSTED_OPERATOR_HTTP_MAX_REQUEST_BODY_BYTES } from './hosted-operator-http';
+import { HOSTED_OPERATOR_HTTP_BODY_CHUNK_BYTES, HOSTED_OPERATOR_HTTP_MAX_REQUEST_BODY_BYTES } from './hosted-operator-http';
 
 class WireSocket extends EventEmitter {
   readonly OPEN = 1;
@@ -204,6 +204,31 @@ describe('assembled sealed device ingress (D-019)', () => {
     });
     expect(denied).toContainEqual(expect.objectContaining({ type: 'http.error', code: 'request_body_too_large', status: 413 }));
     expect(run.fetched).toHaveLength(1);
+  });
+
+  it('reassembles a voice upload larger than the inline cap from separately sealed HTTP body chunks', async () => {
+    const run = await assembled();
+    const body = Buffer.from(JSON.stringify({ audio: 'VOICE_UPLOAD_MARKER'.repeat(32_000) }));
+    expect(body.length).toBeGreaterThan(HOSTED_OPERATOR_HTTP_MAX_REQUEST_BODY_BYTES);
+    await run.phone.send({
+      type: 'http.request', requestId: 'upload', method: 'POST',
+      path: '/api/device/voice/turn', bodyChunked: true,
+      headers: { authorization: `Bearer ${jwt('phone-1')}`, 'content-type': 'application/json' },
+    });
+    for (let offset = 0; offset < body.length; offset += HOSTED_OPERATOR_HTTP_BODY_CHUNK_BYTES) {
+      await run.phone.send({
+        type: 'http.body', requestId: 'upload',
+        data: body.subarray(offset, offset + HOSTED_OPERATOR_HTTP_BODY_CHUNK_BYTES).toString('base64'),
+      });
+    }
+    expect(run.fetched).toEqual([]);
+    await run.phone.send({ type: 'http.end', requestId: 'upload' });
+    await vi.waitFor(() => expect(run.frames.some((frame) => frame.type === 'http.end' && frame.requestId === 'upload')).toBe(true));
+    expect(run.fetched).toHaveLength(1);
+    expect(run.fetched[0].body).toBe(body.toString());
+    expect(run.fetched[0].headers.get('authorization')).toBe(`Bearer ${jwt('phone-1')}`);
+    expect(run.captures.every((wire) => Buffer.byteLength(wire) <= HOSTED_WORKSPACE_MAX_MESSAGE_BYTES)).toBe(true);
+    expect(run.captures.join('\n')).not.toContain('VOICE_UPLOAD_MARKER');
   });
 
   it('closes on plaintext or malformed phone content instead of forwarding it', async () => {
