@@ -224,6 +224,10 @@ export interface ResumeTarget {
    *  in-place resume re-attaches. */
   ownerId: string | null;
   agent: string | null;
+  /** Persona role recorded on the source session; null means the standard SU role. */
+  role: string | null;
+  /** Feature/work item recorded on the source session, when one was bound. */
+  feature: string | null;
   cwd: string | null;
   /** The model spec recorded in the source session's launch argv, when present. */
   model: string | null;
@@ -438,6 +442,8 @@ export async function resolveResumeTarget(ref: {
     resumeId: nativeSessionId ?? String(row.id),
     ownerId: row.coordOwnerId,
     agent: row.agent,
+    role: row.role,
+    feature: row.feature,
     cwd: row.cwd,
     ...launchMetadata,
     endedAt: row.endedAt,

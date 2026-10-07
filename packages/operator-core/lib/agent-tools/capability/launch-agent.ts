@@ -899,6 +899,8 @@ export default defineTool({
     let resumeId: string | null = null;
     let resumeOwnerId: string | null = null;
     let resumeAgent: string | null = null;
+    let resumeRole: string | null = null;
+    let resumeFeature: string | null = null;
     let resumeSourceAdvSessionId: number | null = null;
     let resumeModel: string | null = null;
     let resumeModelSource: CodexModelSource | null = null;
@@ -920,6 +922,8 @@ export default defineTool({
       resumeId = target.resumeId ?? target.sessionId;
       resumeOwnerId = target.ownerId;
       resumeAgent = target.agent;
+      resumeRole = target.role;
+      resumeFeature = target.feature;
       resumeSourceAdvSessionId = target.advSessionId;
       resumeModel = target.model;
       resumeAccount = target.account;
@@ -1537,7 +1541,13 @@ export default defineTool({
       // An explicit flat role is the caller's persona choice and must win over
       // any persisted fleet profile. This mirrors member > fleet precedence:
       // a saved role is only a fallback when the caller omitted the field.
-      role: args.role ?? persistedHeadcountProfile?.config.role,
+      // A fresh successor retains the predecessor's persona by default. The
+      // caller's explicit role still wins; a null source role stays generic SU
+      // instead of inheriting an unrelated saved headcount profile.
+      role: isSuccessor
+        ? (args.role ?? resumeRole ?? undefined)
+        : (args.role ?? persistedHeadcountProfile?.config.role),
+      feature: isSuccessor ? (resumeFeature ?? undefined) : undefined,
       stack: args.stack ?? undefined,
       // A flat carry setting applies to every fresh member unless that member
       // supplies its own override in `members[i].carry`.
