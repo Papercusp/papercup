@@ -732,6 +732,12 @@ function normalizedLayer(value: string): string {
   return value.trim().toLowerCase().replaceAll('_', '-');
 }
 
+/** Older accepted bars used `behavioral`; its only supported measurement is canonical operational evidence. */
+function canonicalRequiredLayer(value: string): string {
+  const layer = normalizedLayer(value);
+  return layer === 'behavioral' ? 'operational' : layer;
+}
+
 function clauseIdentity(clause: SpecClauseRevision): string {
   return `${clause.planSlug}/${clause.specId}@${clause.revision} (${clause.contentHash})`;
 }
@@ -902,17 +908,29 @@ function hasExecutionLedgerReference(row: SpecEvidenceForAdequacy): boolean {
   );
 }
 
-/** A binder's case list is corroborated only by the exact passing test-run row. */
-function hasPassingTestBaselineCase(row: SpecEvidenceForAdequacy, caseTitle: string): boolean {
+/** A binder's case list is corroborated only by an exact case in a passing ledger row. */
+function hasPassingLedgerCase(row: SpecEvidenceForAdequacy, caseTitle: string): boolean {
   const run = row.testRunExecution;
-  return row.evidenceKind === 'test' &&
-    row.testRunId !== null &&
+  return row.testRunId !== null &&
     run != null &&
     run.status?.toLowerCase() === 'pass' &&
     run.passed > 0 &&
     run.failed === 0 &&
     run.collectionFailed === false &&
     run.passedCaseTitles?.includes(caseTitle) === true;
+}
+
+/** Mutation and counterexample baselines must remain test-run evidence. */
+function hasPassingTestBaselineCase(row: SpecEvidenceForAdequacy, caseTitle: string): boolean {
+  return row.evidenceKind === 'test' && hasPassingLedgerCase(row, caseTitle);
+}
+
+/** Operational clauses use the separately measured operational adapter, never a runner layer. */
+function hasPassingRequiredLayerCase(row: SpecEvidenceForAdequacy, caseTitle: string): boolean {
+  return hasPassingTestBaselineCase(row, caseTitle) ||
+    (row.evidenceKind === 'operational' &&
+      row.testRunExecution?.testLayer === 'operational' &&
+      hasPassingLedgerCase(row, caseTitle));
 }
 
 type MeasuredExecutionVerdict = 'pass' | 'fail' | 'unknown';
@@ -1491,8 +1509,9 @@ function appendRatingRerunProbes(
  *       explicitly attest fixtureFree=true before fixture calibration is not-applicable.
  *   8 — pair Cargo case receipts by canonical source and measurement root, preserving exact case checks.
  *   9 — recognize canonical operational adapter layers without extending recorded runner layers.
+ *  10 — map legacy behavioral requirements only to passing canonical operational case evidence.
  */
-export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 9;
+export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 10;
 
 type MutationTargetClause = Pick<SpecClauseRevision, 'specId' | 'falsifier'>;
 
@@ -2014,14 +2033,17 @@ export function evaluateSpecTestAdequacy(input: {
       evidence: `The clause ${clauseIdentity(clause)} declares no required test layer. ${clauseDeclarationProbe(clause, input.harness)}`,
     };
   } else {
-    const required = [...new Set(clause.requiredTestLayers.map(normalizedLayer))];
+    const legacyBehavioralRequired = clause.requiredTestLayers.some((layer) => normalizedLayer(layer) === 'behavioral');
+    const required = [...new Set(clause.requiredTestLayers.map(canonicalRequiredLayer))];
+    const displayLayer = (layer: string) =>
+      legacyBehavioralRequired && layer === 'operational' ? 'behavioral (canonical operational adapter)' : layer;
     const present = new Map<string, boolean | undefined>();
     const contradictoryLayerRows: SpecEvidenceForAdequacy[] = [];
     for (const row of evidence) {
       const details = detailsOf(row);
       const claimedLayer = typeof details.testLayer === 'string' ? normalizedLayer(details.testLayer) : undefined;
       const measuredLayer = row.testRunExecution?.testLayer;
-      const measuredCases = (details.testCases ?? []).filter((caseTitle) => hasPassingTestBaselineCase(row, caseTitle));
+      const measuredCases = (details.testCases ?? []).filter((caseTitle) => hasPassingRequiredLayerCase(row, caseTitle));
       if (
         row.testRunId === null ||
         row.testRunExecution?.status?.toLowerCase() !== 'pass' ||
@@ -2041,10 +2063,16 @@ export function evaluateSpecTestAdequacy(input: {
         continue;
       }
       const layer = normalizedLayer(measuredLayer);
-      if (claimedLayer && claimedLayer !== layer) {
-        if (required.includes(claimedLayer) || required.includes(layer)) {
+      const legacyBehavioralOperationalClaim =
+        legacyBehavioralRequired &&
+        row.evidenceKind === 'operational' &&
+        claimedLayer === 'behavioral' &&
+        layer === 'operational';
+      if (claimedLayer && claimedLayer !== layer && !legacyBehavioralOperationalClaim) {
+        if (required.includes(canonicalRequiredLayer(claimedLayer)) || required.includes(layer)) {
           contradictoryLayerRows.push(row);
-          if (required.includes(claimedLayer)) present.set(claimedLayer, false);
+          const claimedRequirement = canonicalRequiredLayer(claimedLayer);
+          if (required.includes(claimedRequirement)) present.set(claimedRequirement, false);
           if (required.includes(layer)) present.set(layer, false);
         }
         continue;
@@ -2066,23 +2094,23 @@ export function evaluateSpecTestAdequacy(input: {
                   const details = detailsOf(row);
                   return `testLayer-claim-mismatch:${String(details.testLayer)}!=${String(row.testRunExecution?.testLayer)}`;
                 }),
-                ...missing.map((layer) => `${layer}:missing`),
-                ...unreachable.map((layer) => `${layer}:unreachable`),
+                ...missing.map((layer) => `${displayLayer(layer)}:missing`),
+                ...unreachable.map((layer) => `${displayLayer(layer)}:unreachable`),
               ].join(', ')}.`,
               [...new Set([...contradictoryLayerRows, ...evidence])],
             )} ${clauseDeclarationProbe(clause, input.harness)}`,
-            suggestion: 'Bind a passing test run for every requiredTestLayer; its measured layer and exact passing case must match the binding, with path reachability attested.',
+            suggestion: 'Bind passing measured evidence for every requiredTestLayer; its canonical layer and exact passing case must match the binding, with path reachability attested.',
           }
         : unresolved.length
           ? {
               rating: 'unknown',
               evidence: evidenceWithBindings(
-                `Required layer(s) are represented but path reachability is unverified for ${clauseIdentity(clause)}: ${unresolved.join(', ')}.`,
+                `Required layer(s) are represented but path reachability is unverified for ${clauseIdentity(clause)}: ${unresolved.map(displayLayer).join(', ')}.`,
                 evidence.filter((row) => {
                   const details = detailsOf(row);
                   const measuredLayer = row.testRunExecution?.testLayer;
                   return (
-                    (typeof details.testLayer === 'string' && unresolved.includes(normalizedLayer(details.testLayer))) ||
+                    (typeof details.testLayer === 'string' && unresolved.includes(canonicalRequiredLayer(details.testLayer))) ||
                     (isRecordedTestLayer(measuredLayer) && unresolved.includes(normalizedLayer(measuredLayer)))
                   );
                 }),
@@ -2091,28 +2119,35 @@ export function evaluateSpecTestAdequacy(input: {
               // required layer; a pathReachable row on another layer (e.g. an integration mutation
               // row) never satisfies it, and testing:run / re-measure bindings carry no attestation.
               suggestion:
-                `Rebind a passing test run whose server-measured testLayer is one of the required layers (${unresolved.join(', ')}), ` +
+                `Rebind passing measured evidence whose server-measured testLayer is one of the required layers (${unresolved.map(displayLayer).join(', ')}), ` +
                 'whose exact passedCaseTitles corroborate adequacy.testCases, and whose adequacy.testLayer claim matches the measured layer; binder-only layer/path claims remain unknown.',
             }
           : {
               rating: 'pass',
               evidence: evidenceWithBindings(
-                `Every required layer reaches the claimed path for ${clauseIdentity(clause)}: ${required.join(', ')}.`,
+                `Every required layer reaches the claimed path for ${clauseIdentity(clause)}: ${required.map(displayLayer).join(', ')}.`,
                 evidence.filter((row) => {
                   const details = detailsOf(row);
                   const measuredLayer = row.testRunExecution?.testLayer;
+                  const measuredRecordedLayer = isRecordedTestLayer(measuredLayer);
+                  const measuredOperationalLayer =
+                    row.evidenceKind === 'operational' && measuredLayer === 'operational';
+                  const behavioralCompatibilityClaim =
+                    legacyBehavioralRequired &&
+                    measuredOperationalLayer &&
+                    typeof details.testLayer === 'string' &&
+                    normalizedLayer(details.testLayer) === 'behavioral';
                   const claimMatchesMeasurement =
                     details.testLayer === undefined ||
                     (typeof details.testLayer === 'string' &&
-                      isRecordedTestLayer(measuredLayer) &&
-                      normalizedLayer(details.testLayer) === normalizedLayer(measuredLayer));
+                      ((measuredRecordedLayer && normalizedLayer(details.testLayer) === normalizedLayer(measuredLayer)) ||
+                        behavioralCompatibilityClaim));
                   return (
-                    row.evidenceKind === 'test' &&
                     row.testRunId !== null &&
-                    isRecordedTestLayer(measuredLayer) &&
+                    ((row.evidenceKind === 'test' && measuredRecordedLayer) || measuredOperationalLayer) &&
                     required.includes(normalizedLayer(measuredLayer)) &&
                     claimMatchesMeasurement &&
-                    (details.testCases ?? []).some((caseTitle) => hasPassingTestBaselineCase(row, caseTitle)) &&
+                    (details.testCases ?? []).some((caseTitle) => hasPassingRequiredLayerCase(row, caseTitle)) &&
                     details.pathReachable === true
                   );
                 }),

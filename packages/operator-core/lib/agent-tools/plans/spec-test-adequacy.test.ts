@@ -526,7 +526,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     { measured: 'unsupported-adapter', claimed: undefined, expected: 'fail' },
     { measured: 'integration', claimed: 'operational', expected: 'fail' },
   ])('recognizes the canonical operational adapter without accepting caller-only layer claims: $measured/$claimed', ({ measured, claimed, expected }) => {
-    const row = evidence({ evidenceKind: 'test' });
+    const row = evidence({ evidenceKind: measured === 'operational' ? 'operational' : 'test' });
     row.testRunExecution = { ...row.testRunExecution!, testLayer: measured };
     row.details = { adequacy: { ...(row.details.adequacy as Record<string, unknown>), testLayer: claimed } };
     const result = evaluateSpecTestAdequacy({
@@ -534,6 +534,93 @@ describe('spec-test-adequacy per-clause evaluator', () => {
       evidence: [row], classRef: 'plan-class-feature-ship',
     });
     expect(result.ratings['correct-layer'].rating).toBe(expected);
+  });
+
+  it('maps a legacy behavioral requirement only to passing measured operational evidence', () => {
+    const caseTitle = 'goal handoff reaches its member-claim behavior';
+    const legacyClause = clause({ requiredEvidence: [], requiredTestLayers: ['behavioral'] });
+    const operational = evidence({
+      evidenceKind: 'operational',
+      evidenceRef: 'docs/evidence/goal-handoff.json',
+      testRunProvenance: { filePath: 'docs/evidence/goal-handoff.json', commitSha: 'abc123', worktreeDirty: false },
+      testRunExecution: {
+        status: 'pass',
+        passed: 1,
+        failed: 0,
+        skipped: 0,
+        collectionFailed: false,
+        testLayer: 'operational',
+        passedCaseTitles: [caseTitle],
+      },
+      details: {
+        adequacy: {
+          testLayer: 'behavioral',
+          pathReachable: true,
+          collected: true,
+          skipped: false,
+          executed: true,
+          outcome: 'passed',
+          testCases: [caseTitle],
+        },
+      },
+    });
+    const measuredOperational = evaluateSpecTestAdequacy({
+      clause: legacyClause,
+      evidence: [operational],
+      classRef: 'plan-class-feature-ship',
+    });
+    expect(measuredOperational.ratings['correct-layer'].rating).toBe('pass');
+    expect(measuredOperational.ratings['correct-layer'].evidence).toContain(
+      'behavioral (canonical operational adapter)',
+    );
+    expect(measuredOperational.ratings['correct-layer'].evidence).toContain('docs/evidence/goal-handoff.json');
+
+    const callerOnly = successfulTestBinding('test/goal-handoff.integration.test.ts', {
+      layer: 'integration',
+      testCases: [caseTitle],
+    });
+    callerOnly.details = {
+      adequacy: {
+        testLayer: 'behavioral',
+        pathReachable: true,
+        collected: true,
+        skipped: false,
+        executed: true,
+        outcome: 'passed',
+        testCases: [caseTitle],
+      },
+    };
+    const mismatchedTestClaim = evaluateSpecTestAdequacy({
+      clause: legacyClause,
+      evidence: [callerOnly],
+      classRef: 'plan-class-feature-ship',
+    });
+    expect(mismatchedTestClaim.ratings['correct-layer'].rating).toBe('fail');
+    expect(mismatchedTestClaim.wouldBlock).toContain('correct-layer');
+
+    const invented = successfulTestBinding('test/invented-layer.test.ts', {
+      layer: 'integration',
+      testCases: [caseTitle],
+    });
+    invented.testRunExecution = { ...invented.testRunExecution!, testLayer: undefined };
+    invented.details = {
+      adequacy: {
+        testLayer: 'invented-layer',
+        pathReachable: true,
+        collected: true,
+        skipped: false,
+        executed: true,
+        outcome: 'passed',
+        testCases: [caseTitle],
+      },
+    };
+    const unmeasuredInventedLayer = evaluateSpecTestAdequacy({
+      clause: clause({ requiredEvidence: [], requiredTestLayers: ['invented-layer'] }),
+      evidence: [invented],
+      classRef: 'plan-class-feature-ship',
+    });
+    expect(unmeasuredInventedLayer.ratings['correct-layer'].rating).toBe('unknown');
+    expect(unmeasuredInventedLayer.ratings['correct-layer'].rating).not.toBe('pass');
   });
 
   it('produces a complete scorecards:emit draft for a current L3 feature proof', () => {
@@ -2049,7 +2136,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
   });
 
   it('pins the evaluator revision for canonical operational adapter layer recognition', () => {
-    expect(SPEC_TEST_ADEQUACY_EVALUATOR_REVISION).toBe(9);
+    expect(SPEC_TEST_ADEQUACY_EVALUATOR_REVISION).toBe(10);
   });
 
   it('requires an explicit fixture-free attestation for executable proof with a null fixture fingerprint', () => {
