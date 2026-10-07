@@ -18,21 +18,21 @@ const claimControl = process.env.PAPERCUSP_PLACEMENT_CLAIM_CONTROL;
 if (claimControl && !claimScenarios.includes(claimControl as ClaimScenario)) {
   throw new Error(`Unknown permanent placement claim control: ${claimControl}`);
 }
-function compile(source: Record<string, unknown> = {}) {
+function compile(source: Record<string, unknown> = {}, faultyControl = claimControl) {
   const observed = { claims: [lane], fleet, goalHolderOwnerIds: ['su-goal'], ...source };
   // Reuse the lifecycle control protocol below: one faulty claim adapter per
   // acceptance scenario, selected only in an intentional counterexample run.
   // Literal assertions remain unchanged and the unresolved-plan calibration
   // calls the production compiler directly, independently of this adapter.
-  if (claimControl === 'member-claim-and-lease') observed.claims = [];
-  if (claimControl === 'leader-only') {
+  if (faultyControl === 'member-claim-and-lease') observed.claims = [];
+  if (faultyControl === 'leader-only') {
     observed.claims = observed.claims.map((claim) => claim.ownerId === fleet.leaderOwnerId
       ? { ...claim, ownerId: lane.ownerId } : claim);
   }
-  if (claimControl === 'wrong-member-or-filter') {
+  if (faultyControl === 'wrong-member-or-filter') {
     observed.claims = observed.claims.map((claim) => ({ ...claim, fleetSlug: fleet.slug }));
   }
-  if (claimControl === 'expired-lease') {
+  if (faultyControl === 'expired-lease') {
     observed.claims = observed.claims.map((claim) => ({ ...claim, expiresAt: lane.expiresAt }));
   }
   return subject.compileGoalPlanPlacement({ plan: { harness: 'fixture', slug: 'alpha', ambiguousMatches: 1 },
@@ -77,6 +77,13 @@ function lifecyclePlacement(scenario: LifecycleScenario, wrong = false) {
 }
 
 describe('placement lifecycle causal contracts (WI-1074216)', () => {
+  it.each(lifecycleScenarios)('outer control catches placement adapter: %s', (scenario) => {
+    const expectedState = scenario === 'eligible-control' ? 'unplaced'
+      : scenario === 'satisfied-closure' ? 'terminal'
+      : scenario === 'shipped-without-closure' ? 'awaiting-closure' : 'blocked';
+    expect(lifecyclePlacement(scenario, false).state).toBe(expectedState);
+    expect(() => expect(lifecyclePlacement(scenario, true).state).toBe(expectedState)).toThrowError();
+  });
   it('placement calibration: unresolved plan identity never launches', () => {
     expect(subject.compileGoalPlanPlacement({
       plan: { harness: null, slug: 'alpha', ambiguousMatches: 1 },
@@ -108,6 +115,15 @@ describe('placement lifecycle causal contracts (WI-1074216)', () => {
 });
 
 describe('actual delegated plan-member pickup', () => {
+  it.each(claimScenarios)('outer control catches claim adapter: %s', (scenario) => {
+    const source = scenario === 'leader-only' ? { claims: [{ ...lane, ownerId: fleet.leaderOwnerId }] }
+      : scenario === 'wrong-member-or-filter' ? { claims: [{ ...lane, fleetSlug: 'other-fleet' }] }
+      : scenario === 'expired-lease' ? { claims: [{ ...lane, expiresAt: '2026-09-23T10:59:00.000Z' }] } : {};
+    const assertState = (row: ReturnType<typeof compile>) => scenario === 'member-claim-and-lease'
+      ? expect(row.state).toBe('working') : expect(row.state).not.toBe('working');
+    assertState(compile(source, ''));
+    expect(() => assertState(compile(source, scenario))).toThrowError();
+  });
   it('recognizes a live member with matching work-item and TTL plan lease in a positively scoped independent fleet', () => {
     expect(compile()).toMatchObject({ state: 'working', reconciliation: { action: 'none', consistent: true } });
   });

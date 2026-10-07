@@ -3686,13 +3686,13 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
     expect(command).toContain(`--owner-id=${payload.launchTransaction.requestedMemberIds[0]}`);
   });
 
-  it('opens no member and releases its slot when a concurrent transaction wins the initial CAS', async () => {
+  it.each(['repaired', 'outer control'])('opens no member and releases its slot when a concurrent transaction wins the initial CAS: %s', async (mode) => {
     const { releaseFleetLaunchSlot } = await import('../../../agent-fleets-store');
     const releaseSlot = releaseFleetLaunchSlot as ReturnType<typeof vi.fn>;
     releaseSlot.mockClear();
     // Wrong adapter loses the store's CAS rejection; the expected rejection
     // and zero-spawn oracle below remain literal and unchanged.
-    launchTransaction.persist.mockResolvedValueOnce(idempotenceControl === 'initial-cas-loss');
+    launchTransaction.persist.mockResolvedValueOnce(mode === 'outer control' || idempotenceControl === 'initial-cas-loss');
 
     const res = await invokeLaunchHandler(
       { name: 'CAS Loss Fleet', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
@@ -3700,7 +3700,13 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
     );
     const responseText = (res as any).content[0].text as string;
 
-    expect((res as any).isError, 'idempotence-contract:initial-cas-loss').toBe(true);
+    const assertRejected = () => expect((res as any).isError, 'idempotence-contract:initial-cas-loss').toBe(true);
+    if (mode === 'outer control') {
+      expect(() => assertRejected()).toThrowError();
+      expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
+      return;
+    }
+    assertRejected();
     expect(responseText).toContain('changed concurrently');
     expect(launchTransaction.persist).toHaveBeenCalledWith(expect.objectContaining({
       expectedRevision: null,
@@ -4508,7 +4514,7 @@ describe('fleet:launch-on-plan handler — P-005 idempotency guard (a re-fire in
     expect(setClaimSpecMock).not.toHaveBeenCalled();
   });
 
-  it('resumes exact unopened pre-pinned identities when a partial canary becomes live inside the window', async () => {
+  it.each(['repaired', 'outer control'])('resumes exact unopened pre-pinned identities when a partial canary becomes live inside the window: %s', async (mode) => {
     const { liveFleetMemberIds } = await import('../../../fleet/fleet-roster');
     (liveFleetMemberIds as ReturnType<typeof vi.fn>).mockResolvedValue(['su-late-canary']);
     const { claimFleetLaunchSlot, releaseFleetLaunchSlot } = await import('../../../agent-fleets-store');
@@ -4521,7 +4527,7 @@ describe('fleet:launch-on-plan handler — P-005 idempotency guard (a re-fire in
     releaseSlot.mockClear();
     // Wrong adapter corrupts one durable pre-pinned identity. Assertions keep
     // the original identities, so a consistent but wrong retry still fails.
-    const firstRetryOwnerId = idempotenceControl === 'partial-exact-retry' ? 'su-wrong-retry-1' : 'su-retry-1';
+    const firstRetryOwnerId = mode === 'outer control' || idempotenceControl === 'partial-exact-retry' ? 'su-wrong-retry-1' : 'su-retry-1';
     createFleetIfAbsentMock.mockResolvedValueOnce({
       record: {
         leaderOwnerId: 'owner-1',
@@ -4566,8 +4572,15 @@ describe('fleet:launch-on-plan handler — P-005 idempotency guard (a re-fire in
       transaction: { transactionId: string; requestedMemberIds: string[]; openedMemberIds: string[] };
     };
 
-    expect(payload.opened.map((member: { ownerId: string }) => member.ownerId),
+    const assertExactIdentities = () => expect(payload.opened.map((member: { ownerId: string }) => member.ownerId),
       'idempotence-contract:partial-exact-retry').toEqual(['su-retry-1', 'su-retry-2']);
+    if (mode === 'outer control') {
+      expect(() => assertExactIdentities()).toThrowError();
+      expect(payload.opened.map((member: { ownerId: string }) => member.ownerId)).toEqual(['su-wrong-retry-1', 'su-retry-2']);
+      expect(spawnConsoleMock).toHaveBeenCalledTimes(2);
+      return;
+    }
+    assertExactIdentities();
     expect(payload.launchTransaction.transactionId).toBe('partial-tx');
     expect(persisted.transaction.transactionId).toBe('partial-tx');
     expect(persisted.transaction.requestedMemberIds).toEqual(['su-late-canary', 'su-retry-1', 'su-retry-2']);

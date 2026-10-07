@@ -34,13 +34,13 @@ async function writePlan(slug: string, status: string) {
   });
 }
 
-async function portfolio(scenario: Scenario, applyControl = true) {
+async function portfolio(scenario: Scenario, applyControl = true, faultyControl = control) {
   await writePlan(ALPHA, scenario === 'blocked-head-next-eligible' ? 'draft' : 'ready');
   await writePlan(BETA, 'ready');
   let worklist = [`plan:${HARNESS}/${ALPHA}`, `plan:${HARNESS}/${BETA}`];
   // Permanent negative adapters alter the persisted inputs, keeping the
   // literal expected identities unchanged. Calibration bypasses both.
-  if (applyControl && control === scenario) {
+  if (applyControl && faultyControl === scenario) {
     if (scenario === 'blocked-head-next-eligible') await writePlan(BETA, 'draft');
     else worklist = [...worklist].reverse();
   }
@@ -84,6 +84,12 @@ afterAll(async () => {
 });
 
 describe('persisted portfolio ordering causal contracts (WI-1074216)', () => {
+  it.each(scenarios)('outer control catches persisted portfolio order adapter: %s', async (scenario) => {
+    const expected = `plan:${HARNESS}/${scenario === 'blocked-head-next-eligible' ? BETA : ALPHA} is the highest-priority eligible worklist plan`;
+    expect(renderGoalPortfolioBrief(await portfolio(scenario, false))).toContain(expected);
+    const faulty = renderGoalPortfolioBrief(await portfolio(scenario, true, scenario));
+    expect(() => expect(faulty).toContain(expected)).toThrowError();
+  });
   it('PG order calibration: canonical eligible head bypasses faulty input adapters', async () => {
     const brief = await portfolio('eligible-ordered-head', false);
     expect(renderGoalPortfolioBrief(brief)).toContain(`plan:${HARNESS}/${ALPHA} is the highest-priority eligible worklist plan`);

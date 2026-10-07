@@ -25,14 +25,14 @@ function plan(slug: string, ordinal: number, status: string) {
   };
 }
 
-async function portfolio(scenario: Scenario, applyControl = true) {
+async function portfolio(scenario: Scenario, applyControl = true, faultyControl = control) {
   const plans = [
     plan('alpha', 1, scenario === 'blocked-head-next-eligible' ? 'draft' : 'active'),
     plan('beta', 2, 'active'),
   ];
   // Deliberately faulty projection adapters leave the expected plan identities
   // intact. Calibration reads the canonical row, independent of both adapters.
-  if (applyControl && control === scenario) {
+  if (applyControl && faultyControl === scenario) {
     if (scenario === 'blocked-head-next-eligible') plans[1].status = 'draft';
     else plans.reverse(); // Simulate a projection that lost its SQL ORDER BY.
   }
@@ -67,6 +67,12 @@ async function portfolio(scenario: Scenario, applyControl = true) {
 }
 
 describe('portfolio ordering causal contracts (WI-1074216)', () => {
+  it.each(scenarios)('outer control catches portfolio order adapter: %s', async (scenario) => {
+    const expected = `plan:papercusp/${scenario === 'blocked-head-next-eligible' ? 'beta' : 'alpha'} is the highest-priority eligible worklist plan`;
+    expect(renderGoalPortfolioBrief(await portfolio(scenario, false))).toContain(expected);
+    const faulty = renderGoalPortfolioBrief(await portfolio(scenario, true, scenario));
+    expect(() => expect(faulty).toContain(expected)).toThrowError();
+  });
   it('order calibration: canonical eligible head is independent of the faulty adapter', async () => {
     const brief = await portfolio('eligible-ordered-head', false);
     expect(renderGoalPortfolioBrief(brief)).toContain('plan:papercusp/alpha is the highest-priority eligible worklist plan');

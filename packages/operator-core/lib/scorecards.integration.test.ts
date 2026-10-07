@@ -14,6 +14,7 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import type { OrgTestDb } from '../test/_org-test-db';
+import type { OrgSql } from './work-items';
 import { composeCompanionSummary } from '@papercusp/facets';
 import type { StructuredObservation } from './harness/improvements/observation-types';
 
@@ -61,6 +62,7 @@ const { readHumanMarketJob } = await import('./work-items-human-market');
 const { OBSERVATION_TOPIC } = await import('./harness/improvements/read-items');
 const { resolveLocalRubric } = await import('./cupboard/rubric-store');
 const { createOrgTestDb } = await import('../test/_org-test-db');
+const { confirmPendingGradingAuditReservation } = await import('./grading-integrity');
 const {
   buildScorecardHistoryPredicate,
   normalizeScorecardHistoryArgs,
@@ -947,6 +949,62 @@ describe('scorecard history P-009 — real PG large-corpus contract', () => {
     expect(storedObservation?.ratings?.['end-to-end-flow']?.evidence).toBe(
       'concurrent proof must survive the audit CAS',
     );
+  });
+});
+
+describe('grading-audit reservation identity — real PG', () => {
+  let db: OrgTestDb;
+
+  beforeAll(async () => {
+    db = await createOrgTestDb();
+    h.sql = db.adminSql;
+  });
+
+  afterAll(async () => {
+    await db?.cleanup();
+  });
+
+  it('confirms the canonical author while refusing a changed author, fingerprint or lease', async () => {
+    const workspaceId = issuesScopeWorkspace();
+    const issueId = 'EI-reservation-identity';
+    const reservationKey = `grading-audit:${issueId}`;
+    const reservedAt = '2026-10-07T07:22:44.515Z';
+    const expectedCard = {
+      createdBy: 'su-reservation-author',
+      evidenceFingerprint: 'reservation-fingerprint',
+      rubricRef: 'test-reservation-rubric',
+    };
+    const payload = {
+      _ei: { created_by: expectedCard.createdBy },
+      observation: {
+        evidenceFingerprint: expectedCard.evidenceFingerprint,
+        rubricRef: expectedCard.rubricRef,
+        gradingAudit: {
+          state: 'pending',
+          dispatchReservation: { key: reservationKey, reservedAt },
+        },
+      },
+    };
+    await db.adminSql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, item_kind, status, admission, title, summary, payload)
+      VALUES (${workspaceId}, 'papercusp', ${issueId}, 'change', 'done', 'admitted',
+        'Reservation identity fixture', '', ${JSON.stringify(payload)}::text::jsonb)`;
+
+    await db.adminSql.begin(async (tx) => {
+      const confirm = (card = expectedCard, epoch = reservedAt) =>
+        confirmPendingGradingAuditReservation(issueId, reservationKey, {
+          workspaceId,
+          reservedAt: epoch,
+          tx: tx as unknown as OrgSql,
+          expectedCard: card,
+        });
+      await expect(confirm()).resolves.toBe(true);
+      await expect(confirm({ ...expectedCard, createdBy: 'su-other-author' })).resolves.toBe(false);
+      await expect(confirm({ ...expectedCard, evidenceFingerprint: 'changed' })).resolves.toBe(false);
+      await expect(confirm({ ...expectedCard, rubricRef: 'other-rubric' })).resolves.toBe(false);
+      await expect(confirm(expectedCard, 'different-epoch')).resolves.toBe(false);
+    });
   });
 });
 

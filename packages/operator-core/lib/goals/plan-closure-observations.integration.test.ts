@@ -101,6 +101,24 @@ async function read(now = new Date()) {
 }
 
 describe('plan closure observations (D-032)', () => {
+  it.each(['shipped-without-closure', 'satisfied-closure'])('outer control catches persisted closure verdict adapter: %s', async (scenario) => {
+    const satisfied = scenario === 'satisfied-closure';
+    const projected = async (verdictSatisfied: boolean) => {
+      await (await beginPlanClosureObservation(PLAN)).record(HARNESS, { ...VERDICT, satisfied: verdictSatisfied });
+      const observation = await read();
+      expect(observation.status).toBe('fresh');
+      if (observation.status !== 'fresh') throw new Error('expected the persisted gate verdict');
+      return compileGoalPlanPlacement({
+        plan: { harness: HARNESS, slug: PLAN, ambiguousMatches: 1 },
+        status: 'shipped', itemStatuses: ['done'], actionableItemId: null, source: {},
+        closure: resolvePlanClosure({ planSlug: PLAN, status: 'read', gate: observation.gate }),
+      });
+    };
+    const expectedState = satisfied ? 'terminal' : 'awaiting-closure';
+    expect((await projected(satisfied)).state).toBe(expectedState);
+    const faulty = await projected(!satisfied);
+    expect(() => expect(faulty.state).toBe(expectedState)).toThrowError();
+  });
   it('reads absent until the gate records a verdict, then serves it', async () => {
     expect((await read()).status).toBe('absent');
 

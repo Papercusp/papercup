@@ -161,7 +161,10 @@ describe('canonical plan lifecycle blocker receipts', () => {
 });
 
 describe('canonical delegated-member claim receipt', () => {
-  it.each(['drain', 'test'] as const)('does not duplicate a plan fleet for canonical %s activity held by another fleet member', async (activity) => {
+  it.each([
+    { activity: 'drain', mode: 'repaired' }, { activity: 'test', mode: 'repaired' },
+    { activity: 'drain', mode: 'outer control' }, { activity: 'test', mode: 'outer control' },
+  ])('does not duplicate a plan fleet for canonical $activity activity held by another fleet member: $mode', async ({ activity, mode }) => {
     // Both activities can have live leaders, members and a real plan lease.
     // Only the explicit plan allocation distinguishes them from a plan fleet.
     expect((await setMode({ workspaceId: WS, ownerId: LEADER, modeId: activity,
@@ -174,7 +177,14 @@ describe('canonical delegated-member claim receipt', () => {
     }, fx.admin)).ok).toBe(true);
     await claimedWork();
     await lease();
-    if (activityScopeControl === activity) {
+    const assertExcluded = (row: Awaited<ReturnType<typeof placement>>) => expect(row, `plan-activity-exclusion:${activity}`).toMatchObject({
+      state: 'blocked', fleet: null, launchTransaction: null,
+      activeLane: { ownerId: MEMBER, ownerFleet: FLEET, holderLive: true },
+      reconciliation: { consistent: false, action: 'reconcile-plan-lane-holder',
+        reason: expect.stringContaining(FLEET), toolCall: null },
+    });
+    if (mode === 'outer control') assertExcluded(await placement());
+    if (mode === 'outer control' || activityScopeControl === activity) {
       // Wrong adapter: promote goal activity into the reader's actual plan
       // scope inputs. Keep the literal oracle below and all liveness intact.
       await setFleetHeadcountTarget({ workspaceId: WS, fleetSlug: FLEET, target: 1,
@@ -185,12 +195,12 @@ describe('canonical delegated-member claim receipt', () => {
       }, fx.admin)).ok).toBe(true);
     }
     const row = await placement();
-    expect(row, `plan-activity-exclusion:${activity}`).toMatchObject({
-      state: 'blocked', fleet: null, launchTransaction: null,
-      activeLane: { ownerId: MEMBER, ownerFleet: FLEET, holderLive: true },
-      reconciliation: { consistent: false, action: 'reconcile-plan-lane-holder',
-        reason: expect.stringContaining(FLEET), toolCall: null },
-    });
+    if (mode === 'outer control') {
+      expect(() => assertExcluded(row)).toThrowError();
+      expect(row.state).toBe('working');
+      return;
+    }
+    assertExcluded(row);
     expect(row.state).not.toBe('working');
     expect(row.state).not.toBe('independently-led');
   });

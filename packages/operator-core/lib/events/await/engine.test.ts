@@ -1510,6 +1510,28 @@ describe('pumpWakeDeliveries — pacing (D-007)', () => {
 });
 
 describe('isInboxWakeGroupRedundant (EI-18673058981655804: redundant-inbox-wake suppression, pure core)', () => {
+  it.each(['cold', 'warm'] as const)(
+    'EI-25300396323844627: an inbox read never discharges a %s loop marker',
+    (carry) => {
+      expect(
+        isInboxWakeGroupRedundant(
+          [{
+            eventKey: 'coord:inbox-wake:su-a',
+            createdAt: new Date(1000).toISOString(),
+            urgent: false,
+            payload: {
+              ...(carry === 'cold' ? { carry } : {}),
+              wakeCount: 3,
+              harness: 'papercusp',
+              routineId: 'rt-loop-a',
+            },
+          }],
+          new Date(5000).toISOString(),
+        ),
+      ).toBe(false);
+    },
+  );
+
   const inboxKey = 'coord:inbox-wake:su-a';
 
   it('true: a non-urgent inbox-wake delivery created at/before the last read', () => {
@@ -1654,6 +1676,36 @@ describe('isInboxWakeGroupRedundant (EI-18673058981655804: redundant-inbox-wake 
 });
 
 describe('pumpWakeDeliveries — EI-18673058981655804: redundant-inbox-wake suppression', () => {
+  it.each(['cold', 'warm'] as const)(
+    'EI-25300396323844627: delivers a %s loop wake after a newer inbox read',
+    async (carry) => {
+      h.lastInboxReadAtBatch.mockResolvedValueOnce(new Map([['su-a', new Date(5000).toISOString()]]));
+      h.store.claimDueDeliveries.mockResolvedValueOnce([
+        workRow({
+          id: 474103,
+          subscriberId: 'su-a',
+          eventKey: 'coord:inbox-wake:su-a',
+          createdAt: new Date(1000).toISOString(),
+          source: 'loop:rt-loop-a',
+          payload: {
+            ...(carry === 'cold' ? { carry } : {}),
+            wakeCount: 3,
+            harness: 'papercusp',
+            routineId: 'rt-loop-a',
+          },
+        }),
+      ]);
+
+      const stats = await pumpWakeDeliveries('ws-test');
+
+      expect(h.executeWake).toHaveBeenCalledTimes(1);
+      expect(h.store.markDeliveryDelivered).toHaveBeenCalledWith(474103, 'resume', 1);
+      expect(h.store.markDeliveryDelivered).not.toHaveBeenCalledWith(474103, 'suppressed-redundant', 1);
+      expect(stats.suppressed).toBe(0);
+      expect(stats.delivered).toBe(1);
+    },
+  );
+
   it('suppresses a single inbox-wake delivery already covered by the subscriber\'s last read — no turn spent', async () => {
     h.lastInboxReadAtBatch.mockResolvedValueOnce(new Map([['su-a', new Date(5000).toISOString()]]));
     h.store.claimDueDeliveries.mockResolvedValueOnce([

@@ -12,7 +12,7 @@ if (control && !controls.includes(control as typeof controls[number])) {
   throw new Error(`Unknown permanent placement exclusion control: ${control}`);
 }
 
-function placement(scenario: Scenario) {
+function placement(scenario: Scenario, faultyControl = control) {
   const source = {
     goalHolderOwnerIds: ['su-goal'],
     claims: scenario === 'existing-one-fleet' ? [] : [{
@@ -30,7 +30,7 @@ function placement(scenario: Scenario) {
   // Intentional wrong adapters keep the literal oracle intact. They lose one
   // canonical input at a time; calibration bypasses every adapter below.
   const observed: typeof source | Omit<typeof source, 'fleet'> = source;
-  if (control === scenario) {
+  if (faultyControl === scenario) {
     if (scenario === 'holder-not-independent') source.goalHolderOwnerIds = [];
     if (scenario === 'independent-member-positive') source.claims = [];
     if (scenario === 'existing-one-fleet') delete (observed as Partial<typeof source>).fleet;
@@ -42,6 +42,12 @@ function placement(scenario: Scenario) {
 }
 
 describe('placement exclusion causal contracts (WI-1074216)', () => {
+  it.each(scenarios)('outer control catches exclusion adapter: %s', (scenario) => {
+    const expectedState = scenario === 'holder-not-independent' ? 'blocked'
+      : scenario === 'independent-member-positive' ? 'working' : 'admitting';
+    expect(placement(scenario, '').state).toBe(expectedState);
+    expect(() => expect(placement(scenario, scenario).state).toBe(expectedState)).toThrowError();
+  });
   it('exclusion calibration: unresolved identity refuses launch independently of the control', () => {
     expect(compileGoalPlanPlacement({
       plan: { harness: null, slug: 'alpha', ambiguousMatches: 1 },
