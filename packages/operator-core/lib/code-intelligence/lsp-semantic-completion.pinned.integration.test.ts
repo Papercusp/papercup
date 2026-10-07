@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
+import { createTextCollector } from '../child-output';
 import { transformSync } from 'esbuild';
 import { CancellationTokenSource, createMessageConnection, StreamMessageReader, StreamMessageWriter } from 'vscode-jsonrpc/node';
 
@@ -196,13 +197,13 @@ describe('candidate completion through the pinned native plugin package', () => 
     writeFileSync(join(packageRoot, 'index.cjs'), transformSync(candidate, { loader: 'ts', format: 'cjs', target: 'node22' }).code + controlWrapper);
     let task: Awaited<ReturnType<typeof managedSpawn>> | undefined;
     let connection: ReturnType<typeof createMessageConnection> | undefined;
-    let stderr = '';
+    const stderr = createTextCollector(undefined, { maxChars: 8_192 });
     try {
       task = await managedSpawn(bin!, ['--stdio'], { class: 'sidecar',
         title: `lsp-native-completion-${control}`, argv: [bin!, '--stdio'], cwd: root,
         launchedBy: 'test:lsp-native-completion', planSlug: 'lsp-fleet-scale-all-languages-2026-08-21' },
       { workspaceId, spawnOptions: { cwd: root, stdio: ['pipe', 'pipe', 'pipe'] } });
-      task.child.stderr?.on('data', chunk => { stderr = (stderr + String(chunk)).slice(-8192); });
+      stderr.attach(task.child.stderr);
       connection = createMessageConnection(new StreamMessageReader(task.child.stdout!), new StreamMessageWriter(task.child.stdin!));
       connection.onRequest('window/workDoneProgress/create', () => null);
       connection.listen();
@@ -211,7 +212,7 @@ describe('candidate completion through the pinned native plugin package', () => 
         try {
           return await Promise.race([
             token ? connection!.sendRequest<T>(method, args, token.token) : connection!.sendRequest<T>(method, args),
-            new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`${method} deadline; stderr=${stderr}`)), 20_000); }),
+            new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`${method} deadline; stderr=${stderr.peek()}`)), 20_000); }),
           ]);
         } finally { if (timer) clearTimeout(timer); }
       };

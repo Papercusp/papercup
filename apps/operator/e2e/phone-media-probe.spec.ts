@@ -9,6 +9,7 @@ import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { randomBytes } from 'node:crypto';
+import { createTextCollector } from '@papercusp/operator-core/lib/child-output';
 
 // Real process/media evidence on a private loopback candidate. Never connects
 // to the shared LiveKit/operator, provisions a carrier, or claims public audio.
@@ -18,7 +19,7 @@ const serverBin = process.env.PHONE_TEST_LIVEKIT_BIN ?? join(homedir(), '.local/
 const cliBin = process.env.PHONE_TEST_LK_BIN ?? join(homedir(), '.local/bin/lk');
 let root: string, port: number, server: ChildProcess | undefined;
 const key = 'phone-e2e', secret = randomBytes(32).toString('hex');
-let serverOutput = '';
+let serverOutput = createTextCollector(undefined, { maxChars: 4000 });
 
 async function freeTcpPort() {
   const socket = createServer();
@@ -53,14 +54,13 @@ test.beforeAll(async () => {
   const config = join(root, 'livekit.yaml');
   await writeFile(config, `port: ${port}\nbind_addresses: [127.0.0.1]\nkeys:\n  ${key}: ${secret}\nrtc:\n  tcp_port: ${tcp}\n  udp_port: ${udp}\n  node_ip: 127.0.0.1\n  use_external_ip: false\n  enable_loopback_candidate: true\n  stun_servers: []\n`, { mode: 0o600 });
   server = spawn(serverBin, ['--config', config, '--dev'], { stdio: ['ignore', 'pipe', 'pipe'] });
-  for (const output of [server.stdout, server.stderr]) output?.on('data', chunk => {
-    serverOutput = (serverOutput + chunk.toString()).slice(-4000);
-  });
-  server.on('error', e => { serverOutput += e.message; });
+  serverOutput = createTextCollector(undefined, { maxChars: 4000 });
+  for (const output of [server.stdout, server.stderr]) serverOutput.attach(output);
+  server.on('error', e => { serverOutput.append(e.message); });
   try {
     await expect.poll(async () => {
       if (server?.exitCode !== null || server?.signalCode !== null) {
-        throw new Error(`isolated candidate exited: ${serverOutput.replaceAll(secret, '[fixture-secret]')}`);
+        throw new Error(`isolated candidate exited: ${serverOutput.peek().replaceAll(secret, '[fixture-secret]')}`);
       }
       try { return (await fetch(`http://127.0.0.1:${port}/`, { signal: AbortSignal.timeout(500) })).ok; }
       catch { return false; }

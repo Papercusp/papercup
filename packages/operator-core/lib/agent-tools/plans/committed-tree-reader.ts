@@ -26,6 +26,7 @@ import { realpath } from 'node:fs/promises';
 import { posix } from 'node:path';
 import { minimatch } from 'minimatch';
 import { pinModuleState } from '@papercusp/module-singleton';
+import { createTextCollector } from '../../child-output';
 import { defaultGitRunner, gitBlobId, owningRepo, type GitRunner } from './evidence-measurement-pin';
 
 /** One file as committed: the digest inputs plus the git blob id the bytes came from. */
@@ -92,12 +93,9 @@ export const defaultBlobBatchReader: BlobBatchReader = (repoDir, blobIds) =>
   new Promise((resolvePromise, reject) => {
     const child = spawn('git', ['-C', repoDir, 'cat-file', '--batch'], { stdio: ['pipe', 'pipe', 'pipe'] });
     const chunks: Buffer[] = [];
-    let stderr = '';
+    const stderr = createTextCollector(child.stderr);
     const timer = setTimeout(() => child.kill('SIGKILL'), BLOB_BATCH_TIMEOUT_MS);
     child.stdout.on('data', (chunk: Buffer) => chunks.push(chunk));
-    child.stderr.on('data', (chunk: Buffer) => {
-      stderr += chunk.toString('utf8');
-    });
     child.on('error', (error) => {
       clearTimeout(timer);
       reject(error);
@@ -105,7 +103,7 @@ export const defaultBlobBatchReader: BlobBatchReader = (repoDir, blobIds) =>
     child.on('close', (code, signal) => {
       clearTimeout(timer);
       if (code !== 0) {
-        reject(new Error(`Command failed (${signal ?? `exit ${code}`}): git -C ${repoDir} cat-file --batch\n${stderr}`));
+        reject(new Error(`Command failed (${signal ?? `exit ${code}`}): git -C ${repoDir} cat-file --batch\n${stderr.text()}`));
         return;
       }
       try {

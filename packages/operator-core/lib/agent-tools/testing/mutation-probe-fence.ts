@@ -8,6 +8,7 @@ import { terminateSpawnTree } from '@papercusp/backup/hook';
 import { createHash } from 'node:crypto';
 import { env as processEnv, getuid } from 'node:process';
 import { promisify } from 'node:util';
+import { createTextCollector } from '../../child-output';
 import ts from 'typescript';
 import { ensureBootstrap, getTxPool, readQueue } from '../locks/su-lock-store';
 import { acquireWithContentionRetry } from '../locks/contention-retry';
@@ -67,8 +68,7 @@ export async function testImportClosures(root: string, tests: string[],
   const detached = process.platform !== 'win32';
   try { worker = fork(workerPath, [], { serialization: 'advanced', execArgv: [], silent: true, detached }); }
   catch (error) { return { status: 'incomplete', reason: String(error).slice(0, 200) }; }
-  let stderr = '';
-  worker.stderr?.on('data', chunk => { stderr = (stderr + chunk.toString()).slice(0, 1000); });
+  const stderr = createTextCollector(worker.stderr, { maxChars: 1000 });
   worker.stdout?.resume();
   let timer: ReturnType<typeof setTimeout> | undefined;
   const exited = new Promise<void>(resolve => {
@@ -87,8 +87,9 @@ export async function testImportClosures(root: string, tests: string[],
       });
       worker.once('error', error => resolve({ status: 'incomplete', reason: error.message.slice(0, 200) }));
       worker.once('exit', code => {
-        const cause = stderr.split(/\r?\n/).find(line => /^[A-Za-z]*Error(?: \[[^\]]+\])?:/.test(line));
-        resolve({ status: 'incomplete', reason: (cause ?? stderr.trim()).slice(0, 200) || `compiler worker exited before returning a closure (${code})` });
+        const stderrText = stderr.peek();
+        const cause = stderrText.split(/\r?\n/).find(line => /^[A-Za-z]*Error(?: \[[^\]]+\])?:/.test(line));
+        resolve({ status: 'incomplete', reason: (cause ?? stderrText.trim()).slice(0, 200) || `compiler worker exited before returning a closure (${code})` });
       });
       worker.send({ root, tests }, error => { if (error) resolve({ status: 'incomplete', reason: error.message.slice(0, 200) }); });
     });

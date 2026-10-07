@@ -29,7 +29,14 @@ export interface ChunkUnsafeSite {
  * Deliberately NOT matched: `chunks.push(d)` (byte-exact, correct) and
  * `acc += 'a literal'` (not a chunk).
  */
-const ACCUMULATE = /\+=\s*(?:String\(|`\$\{|[A-Za-z_$][\w$]*\??\.toString\()/;
+const ACCUMULATE = /\+=\s*(?:String\(|`\$\{|[A-Za-z_$][\w$]*\??\.toString\(\s*(?:(?:'utf8'|"utf8"|'utf-8'|"utf-8")\s*)?\))/i;
+
+/** The same lossy decode hidden in a bounded reassignment, e.g. `s = (s + String(d)).slice(-n)`. */
+const ASSIGN_ACCUMULATE =
+  /([A-Za-z_$][\w$]*)\s*=\s*\(?\s*\1\s*\+\s*(?:String\(|`\$\{|[A-Za-z_$][\w$]*\??\.toString\(\s*(?:(?:'utf8'|"utf8"|'utf-8'|"utf-8")\s*)?\))/i;
+
+const accumulatesDecodedChunk = (line: string): boolean =>
+  ACCUMULATE.test(line) || ASSIGN_ACCUMULATE.test(line);
 
 /** A bare string accumulation of the handler's chunk parameter is unsafe too. */
 const accumulatesChunkParameter = (line: string, parameter: string | null): boolean =>
@@ -99,7 +106,7 @@ export function scanSource(
 
       if (
         (j === i || insideAtLineStart) &&
-        (ACCUMULATE.test(line) ||
+        (accumulatesDecodedChunk(line) ||
           (options.includeBareChunkParameter === true &&
             accumulatesChunkParameter(line, chunkParameter))) &&
         !seen.has(j)

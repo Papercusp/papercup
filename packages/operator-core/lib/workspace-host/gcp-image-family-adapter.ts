@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
 import { isAbsolute, relative, resolve } from 'node:path';
+import { createTextCollector } from '../child-output';
 
 // Leaf module on purpose: workspace-host-clean-room-executor (where this helper used to live)
 // imports THIS file, so importing it from there would be a cycle.
@@ -826,7 +827,7 @@ export class NodeGcpImageFamilyCommandRunner implements GcpImageFamilyCommandRun
         ? new RegExp(actualOptions.abortOnStderr.source, actualOptions.abortOnStderr.flags.replace(/[gy]/g, ''))
         : undefined;
       let aborted = false;
-      let stderrTail = '';
+      const stderrTail = createTextCollector(child.stderr, { maxChars: 4096 });
       const finish = (result: GcpImageFamilyCommandResult): void => {
         if (settled) return;
         settled = true;
@@ -852,8 +853,7 @@ export class NodeGcpImageFamilyCommandRunner implements GcpImageFamilyCommandRun
         stderr.push(chunk);
         if (!abortPattern || aborted) return;
         // Match against a short tail, so a line split across two chunks is still seen.
-        stderrTail = (stderrTail + chunk.toString('utf8')).slice(-4096);
-        if (!abortPattern.test(stderrTail)) return;
+        if (!abortPattern.test(stderrTail.peek())) return;
         aborted = true;
         child.kill('SIGTERM');
         setTimeout(() => child.kill('SIGKILL'), 10_000).unref?.();

@@ -25,6 +25,7 @@ import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { terminateSpawnTree } from '@papercusp/backup/hook';
+import { createTextCollector } from '../child-output';
 import { failedCallersAnswer, type FirstPartyCallersAnswer } from './first-party-callers';
 import type { FirstPartyCallersJob } from './first-party-callers.worker';
 
@@ -76,10 +77,7 @@ export async function firstPartyCallersOffthread(
   } catch (error) {
     return fail(`could not start the callers worker (${workerPath}): ${error instanceof Error ? error.message : String(error)}`);
   }
-  let stderr = '';
-  child.stderr?.on('data', (chunk: Buffer) => {
-    stderr = (stderr + chunk.toString()).slice(-2000);
-  });
+  const stderr = createTextCollector(child.stderr, { maxChars: 2_000 });
   child.stdout?.resume();
   const exited = new Promise<void>((resolve) => {
     child.once('exit', () => resolve());
@@ -100,11 +98,12 @@ export async function firstPartyCallersOffthread(
       );
       child.once('error', (error) => resolve(fail(`callers worker error: ${error.message}`)));
       child.once('exit', (code, signal) => {
-        const cause = stderr.split(/\r?\n/).find((line) => /(?:Error|FATAL)\b.*:/.test(line))?.trim();
+        const stderrText = stderr.peek();
+        const cause = stderrText.split(/\r?\n/).find((line) => /(?:Error|FATAL)\b.*:/.test(line))?.trim();
         resolve(
           fail(
             `the callers worker exited (${signal ?? code}) before answering` +
-              (cause ? `: ${cause.slice(0, 300)}` : stderr.trim() ? `: ${stderr.trim().slice(-300)}` : ''),
+              (cause ? `: ${cause.slice(0, 300)}` : stderrText.trim() ? `: ${stderrText.trim().slice(-300)}` : ''),
           ),
         );
       });

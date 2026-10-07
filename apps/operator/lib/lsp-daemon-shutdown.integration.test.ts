@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import postgres from 'postgres';
 // eslint-disable-next-line import/no-relative-packages -- maintained owned org DB fixture
 import { createOrgTestDb } from '../../../packages/operator-core/test/_org-test-db';
+import { createTextCollector } from '@papercusp/operator-core/lib/child-output';
 import { killScopeUnit } from '@papercusp/operator-core/lib/task-manager/control';
 
 interface Resources { dbPid: number; taskId: string }
@@ -59,19 +60,17 @@ it.runIf(process.platform === 'linux')('drains default resources before exiting,
   });
   const terminal = once(child, 'exit');
   const stdioClosed = once(child, 'close');
-  let output = '';
-  let errors = '';
-  child.stdout.on('data', chunk => { output += String(chunk); });
-  child.stderr.on('data', chunk => { errors = (errors + String(chunk)).slice(-12_000); });
+  const output = createTextCollector(child.stdout);
+  const errors = createTextCollector(child.stderr, { maxChars: 12_000 });
   let socket: Socket | undefined;
   try {
     await Promise.race([vi.waitFor(() => {
-      expect(child.exitCode, errors).toBeNull();
-      expect(output, errors).toMatch(/^RESOURCES .+$/m);
+      expect(child.exitCode, errors.peek()).toBeNull();
+      expect(output.peek(), errors.peek()).toMatch(/^RESOURCES .+$/m);
     }, { timeout: 60_000 }), terminal.then(([code, signal]) => {
-      throw new Error(`daemon exited before resource readiness (${code}/${signal}): ${errors}`);
+      throw new Error(`daemon exited before resource readiness (${code}/${signal}): ${errors.peek()}`);
     })]);
-    const resources = JSON.parse(output.match(/^RESOURCES (.+)$/m)![1]) as Resources;
+    const resources = JSON.parse(output.peek().match(/^RESOURCES (.+)$/m)![1]) as Resources;
     const [task] = await db.adminSql`SELECT scope_unit, cgroup_path, confined FROM harness_shared.task_ledger WHERE task_id = ${resources.taskId}`;
     expect(task).toMatchObject({ confined: true });
     expect(task.scope_unit).toMatch(/^pc-.+\.scope$/);
@@ -95,11 +94,11 @@ it.runIf(process.platform === 'linux')('drains default resources before exiting,
     const [code, signal] = await terminal;
     await stdioClosed;
     await socketClosed;
-    expect({ code, signal }, errors).toEqual({ code: 0, signal: null });
+    expect({ code, signal }, errors.text()).toEqual({ code: 0, signal: null });
     expect(Date.now() - started).toBeLessThan(8_000);
-    expect(output).toContain('DATABASE_DRAINED');
-    expect(errors).not.toContain('shutdown deadline exceeded');
-    expect(errors).not.toContain('resource shutdown failed');
+    expect(output.text()).toContain('DATABASE_DRAINED');
+    expect(errors.peek()).not.toContain('shutdown deadline exceeded');
+    expect(errors.peek()).not.toContain('resource shutdown failed');
     expect(existsSync(socketPath)).toBe(false);
     await vi.waitFor(() => {
       for (const pid of pids) expect(existsSync(`/proc/${pid}`)).toBe(false);

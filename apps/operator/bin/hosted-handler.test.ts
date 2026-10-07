@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { serve } from "@hono/node-server";
 import { WebSocket } from "ws";
 import { EventEmitter } from "node:events";
+import { createTextCollector } from "@papercusp/operator-core/lib/child-output";
 import { BYOC_SEALED_PROTOCOL } from "@papercusp/operator-core/lib/workspace-host/byoc-sealed-channel";
 import type { AssembledHostedControlPlane } from "@papercusp/operator-core/lib/endpoint-route/hosted-control-plane";
 import { HostedWorkspaceConnectorGateway } from "@papercusp/operator-core/lib/endpoint-route/hosted-workspace-connector";
@@ -89,9 +90,8 @@ describe("hosted handler", () => {
     const websocket = new WebSocket(`ws://127.0.0.1:${address.port}/api/workspaces/missing/api/device/sealed`);
     const refusal = await new Promise<{ status: number; body: string }>((resolve, reject) => {
       websocket.once("unexpected-response", (_request, response) => {
-        let body = "";
-        response.on("data", (data) => { body += data.toString(); });
-        response.on("end", () => { websocket.terminate(); resolve({ status: response.statusCode!, body }); });
+        const body = createTextCollector(response);
+        response.on("end", () => { websocket.terminate(); resolve({ status: response.statusCode!, body: body.text() }); });
       });
       websocket.on("error", () => {});
       websocket.once("open", () => reject(new Error("offline ingress upgraded")));

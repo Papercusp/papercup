@@ -23,6 +23,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { createTextCollector } from '../../child-output';
 import { replaceFileContents } from './replace-file';
 
 let dir: string;
@@ -42,18 +43,17 @@ const EDITED = 'echo STARTED\n#pad123\necho SHIFTED\nsleep 1\necho ORIGINAL\n';
 function runWhileEditing(script: string, edit: () => void): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = spawn('bash', [script], { stdio: ['ignore', 'pipe', 'pipe'] });
-    let out = '';
+    const out = createTextCollector(child.stdout);
     let edited = false;
-    child.stdout.on('data', (b: Buffer) => {
-      out += b.toString('utf8');
+    child.stdout.on('data', () => {
       // STARTED is printed just before `sleep 1`, so the edit lands while bash waits on it.
-      if (!edited && out.includes('STARTED\n')) {
+      if (!edited && out.peek().includes('STARTED\n')) {
         edited = true;
         edit();
       }
     });
     child.on('error', reject);
-    child.on('close', () => resolve(out));
+    child.on('close', () => resolve(out.text()));
   });
 }
 

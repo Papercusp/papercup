@@ -18,6 +18,7 @@
 import { fork } from 'node:child_process';
 import path from 'node:path';
 import { describe, expect, test } from 'vitest';
+import { createTextCollector } from '../child-output';
 
 const ENV_GUARD = 'The PUI operator fixture requires IPC and an explicitly isolated workspace/database';
 const REPO_ROOT = path.resolve(__dirname, '../../../..');
@@ -45,14 +46,10 @@ function loadOperatorFixtureWithoutWorkspace(): Promise<{ code: number | null; s
       },
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
     });
-    let output = '';
-    for (const stream of [child.stdout, child.stderr]) {
-      stream?.on('data', (bytes: Buffer) => {
-        output = (output + bytes.toString()).slice(-16_000);
-      });
-    }
+    const output = createTextCollector(child.stdout, { maxChars: 16_000 });
+    output.attach(child.stderr);
     child.once('error', reject);
-    child.once('exit', (code, signal) => resolve({ code, signal, output }));
+    child.once('close', (code, signal) => resolve({ code, signal, output: output.text() }));
   });
 }
 

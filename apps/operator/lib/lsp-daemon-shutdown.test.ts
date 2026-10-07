@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import { createLspDaemonShutdown } from './lsp-daemon-shutdown';
+import { createTextCollector } from '@papercusp/operator-core/lib/child-output';
 
 const resources = vi.hoisted(() => ({ clients: vi.fn(), database: vi.fn() }));
 vi.mock('@papercusp/operator-core/lib/code-intelligence/lsp-adapter', () => ({ shutdownAllLspClients: resources.clients }));
@@ -95,17 +96,16 @@ describe('LSP daemon resource shutdown', () => {
         remaining.listen(0, '127.0.0.1', () => process.stdout.write('READY\\n'));
       `;
       const child = spawn(process.execPath, ['--require', 'tsx/cjs', '-e', script], { stdio: ['ignore', 'pipe', 'pipe'] });
-      let output = '';
-      let errors = '';
-      child.stdout.on('data', chunk => { output += String(chunk); });
-      child.stderr.on('data', chunk => { errors += String(chunk); });
+      const output = createTextCollector(child.stdout);
+      const errors = createTextCollector(child.stderr);
       const terminal = once(child, 'exit');
       try {
-        await vi.waitFor(() => expect(output, errors).toContain('READY'), { timeout: 10_000 });
+        await vi.waitFor(() => expect(output.peek(), errors.peek()).toContain('READY'), { timeout: 10_000 });
         child.kill('SIGTERM');
         const [code, signal] = await terminal;
-        expect({ code, signal }, errors).toEqual({ code: 0, signal: null });
-        expect(output.includes('DEADLINE')).toBe(hang);
+        const outputText = output.text();
+        expect({ code, signal }, errors.text()).toEqual({ code: 0, signal: null });
+        expect(outputText.includes('DEADLINE')).toBe(hang);
       } finally {
         if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
         await terminal;

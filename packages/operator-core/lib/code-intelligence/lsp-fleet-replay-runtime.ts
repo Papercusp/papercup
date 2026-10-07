@@ -15,6 +15,7 @@ import { classifyReplayAnswer, evaluateReplayLadder, runReplay, scoreReplay, REP
 import type { LspFacadeArgs } from './lsp-facade';
 import type { LspDaemonAnswer } from './lsp-daemon-protocol';
 import { taskIdFromScopeUnit } from '../task-manager/types';
+import { createTextCollector } from '../child-output';
 import { absCgroupDir, parseProcCgroup, walkCgroupTree, type CgroupFs } from '../task-manager/cgroup-read';
 import { linuxPpidFromProcStat, linuxProcessIdentityFromStat, readProcessIdentity } from '../process-identity';
 import { SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS } from '../systemd-scope';
@@ -254,8 +255,7 @@ export async function freezeQualifiedReplayConfig(inputPath: string, outputPath:
   if (drift.length) throw new Error(`replay-oracle-prelaunch-drift:${drift.join(';')}`);
   const child = spawn(process.execPath, launch.args, { env: { ...process.env, NODE_OPTIONS: '' },
     stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
-  let stderr = '';
-  child.stderr!.on('data', chunk => { stderr = (stderr + chunk.toString()).slice(-8192); });
+  const stderr = createTextCollector(child.stderr, { maxChars: 8_192 });
   child.stdout!.on('data', chunk => appendFileSync(join(directory, 'stdout.log'), chunk));
   const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(accept =>
     child.once('close', (code, signal) => accept({ code, signal })));
@@ -266,7 +266,7 @@ export async function freezeQualifiedReplayConfig(inputPath: string, outputPath:
   child.once('error', error => failed?.(error));
   try {
     const candidate = new Promise<{ sha256: string; config: DaemonReplayConfig }>((accept, reject) => {
-      child.once('exit', (code, signal) => reject(new Error(`replay-oracle-child-exited:${code}:${signal}:${stderr}`)));
+      child.once('exit', (code, signal) => reject(new Error(`replay-oracle-child-exited:${code}:${signal}:${stderr.peek()}`)));
       child.once('message', message => {
         try {
           const row = message as { kind?: string; runId?: string; candidatePath?: string; sha256?: string };
@@ -294,8 +294,9 @@ export async function freezeQualifiedReplayConfig(inputPath: string, outputPath:
       throw new Error('replay-oracle-child-ended-before-release');
     child.send({ kind: 'replay-oracle-release', runId: input.runId, sha256: frozen.sha256 });
     const terminal = await Promise.race([closed, failure]);
-    writeFileSync(join(directory, 'terminal.json'), JSON.stringify({ ...terminal, stderr }), { flag: 'wx' });
-    if (terminal.code !== 0 || terminal.signal !== null) throw new Error(`replay-oracle-child-terminal:${terminal.code}:${terminal.signal}:${stderr}`);
+    const stderrText = stderr.text();
+    writeFileSync(join(directory, 'terminal.json'), JSON.stringify({ ...terminal, stderr: stderrText }), { flag: 'wx' });
+    if (terminal.code !== 0 || terminal.signal !== null) throw new Error(`replay-oracle-child-terminal:${terminal.code}:${terminal.signal}:${stderrText}`);
     assertReplayOracleRuntimeQualified(qualified);
     // wx also protects against an output created by a peer during qualification.
     writeFileSync(outputPath, JSON.stringify(qualified, null, 2), { flag: 'wx' });

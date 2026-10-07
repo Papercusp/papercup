@@ -14,6 +14,7 @@ import { spawn, execFile, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { promisify } from 'node:util';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { createTextCollector } from '../child-output';
 import { createDesktopThumbnailer, grabX11Frame } from './desktop-thumbnail';
 
 const run = promisify(execFile);
@@ -30,13 +31,14 @@ function startXvfb(): Promise<number> {
       stdio: ['ignore', 'ignore', 'ignore', 'pipe'],
     });
     xvfb = child;
-    let out = '';
+    const displayFd = child.stdio[3] as NodeJS.ReadableStream;
+    const out = createTextCollector(displayFd);
     const timer = setTimeout(() => reject(new Error('Xvfb did not report a display within 10s')), 10_000);
-    (child.stdio[3] as NodeJS.ReadableStream).on('data', (chunk: Buffer) => {
-      out += chunk.toString();
-      if (out.includes('\n')) {
+    displayFd.on('data', () => {
+      const text = out.peek();
+      if (text.includes('\n')) {
         clearTimeout(timer);
-        resolve(Number(out.trim()));
+        resolve(Number(text.trim()));
       }
     });
     child.on('exit', (code) => {

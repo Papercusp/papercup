@@ -382,6 +382,16 @@ describe('the scanner itself (a blind detector makes the guard green and worthle
     expect(hits[0].symbol).toBe('go');
   });
 
+  it('finds bounded assignment-based concatenation inside a data handler', () => {
+    const src = `function go() {\n  child.stderr.on('data', (chunk) => {\n    errors = (errors + String(chunk)).slice(-12_000);\n  });\n}`;
+    expect(scanSource('x.ts', src)).toMatchObject([{ line: 3, symbol: 'go' }]);
+  });
+
+  it('does not flag byte-preserving latin1 conversion', () => {
+    const src = `function go() {\n  response.on('data', (chunk) => {\n    tail = (tail + chunk.toString("latin1")).slice(-4);\n  });\n}`;
+    expect(scanSource('x.ts', src)).toEqual([]);
+  });
+
   it('finds direct accumulation of a data-handler chunk parameter', () => {
     const src = `function go() {\n  response.on('data', (chunk) => (body += chunk));\n}`;
     const hits = scanSource('x.ts', src, { includeBareChunkParameter: true });
