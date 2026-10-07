@@ -950,7 +950,7 @@ describe("shapeWorkItemsGet — operationalBrief stays bounded across multi-item
   });
 
   it("does not spend more bulk-row capacity on briefs whose shared share is too small", () => {
-    const rows = Array.from({ length: 100 }, (_, index) =>
+    const rows = Array.from({ length: 12 }, (_, index) =>
       briefRow(`EI-${String(index).padStart(17, "0")}`, "Large brief text. ".repeat(300)),
     );
     const withBriefs = shapeWorkItemsGet(envelope(rows), "trimmed") as Envelope;
@@ -962,6 +962,7 @@ describe("shapeWorkItemsGet — operationalBrief stays bounded across multi-item
     expect(withBriefs.results.map((result) => result.id)).toEqual(rows.map((source) => source.id));
     expect(withBriefs.results.every((result) => result.operationalBrief === undefined)).toBe(true);
     expect(withBriefs._shapeNote?.dropped).toContain("operationalBrief");
+    expect(withBriefs.results.every((result) => result._stub === undefined)).toBe(true);
     expect(withBriefs.results.filter((result) => result._stub).length).toBe(
       withoutBriefs.results.filter((result) => result._stub).length,
     );

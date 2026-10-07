@@ -19,6 +19,7 @@
  * fan-out without a ref collision).
  */
 import { getOrgPg } from '@papercusp/db-org';
+import { isDeepStrictEqual } from 'node:util';
 import type { OrgSql } from './work-items';
 import { admittedWhereSql, selfHealOwnNodeOriginIfStranded, type BornAdmission } from './work-items-admission';
 import { assertScopeWellFormed, harnessScope, harnessOfScope } from './work-item-scope';
@@ -3486,6 +3487,8 @@ export async function setIssueState(
     blueprintResult?: { operationId: string; specificationRevision: string; output: unknown; evidenceRef: string };
     /** Internal, receipt-fenced DBOS program-root terminal write. */
     acceptedProgramAttempt?: import('./blueprint/operation-worker-binding').AcceptedProgramRootAttempt;
+    /** Detached receipt verified at the canonical host-adapter boundary. */
+    externalRuntimeCompletion?: import('./blueprint/operation-worker-binding').VerifiedExternalRuntimeCompletion;
     /**
      * P-008 (d) / D-050 / D-079 — the RESOLVED assumption declaration this close
      * rests on, stored under `TERMINAL_ASSUMPTIONS_KEY`. Optional here for the same
@@ -3668,6 +3671,22 @@ export async function setIssueState(
           'defaultIfUnanswered says what happens if the owner never answers.',
       );
     }
+    const runtimePayload = priorRow.payload && typeof priorRow.payload === 'object' && !Array.isArray(priorRow.payload)
+      ? priorRow.payload as Record<string, unknown> : {};
+    const hasExternalRuntimeProducer = Object.prototype.hasOwnProperty.call(runtimePayload, 'externalRuntimeProducer');
+    if (opts.externalRuntimeCompletion || (hasExternalRuntimeProducer && isTerminal)) {
+      const receipt = opts.externalRuntimeCompletion;
+      if (!receipt || opts.skipCompletionGate || opts.force || opts.acceptedProgramAttempt ||
+          opts.completionAuthority !== undefined || !isTerminal ||
+          receipt.binding.workspaceId !== ws || receipt.binding.workItemId !== id ||
+          receipt.binding.executionOwnerId !== by || priorRow.taken_by !== by ||
+          Number(priorRow.updated_ts) !== receipt.updatedTs || ISSUE_TERMINAL_STATUSES.has(priorRow.status) ||
+          !isDeepStrictEqual(runtimePayload.externalRuntimeProducer, receipt.binding) ||
+          Object.prototype.hasOwnProperty.call(runtimePayload, 'reopenHistory') ||
+          Object.prototype.hasOwnProperty.call(runtimePayload, 'blueprintCancellation')) {
+        throw new Error('external runtime producer terminal binding or attempt changed');
+      }
+    }
     if (opts.acceptedProgramAttempt) {
       const payload = priorRow.payload && typeof priorRow.payload === 'object' &&
         !Array.isArray(priorRow.payload) ? priorRow.payload as Record<string, unknown> : {};
@@ -3689,7 +3708,17 @@ export async function setIssueState(
         throw new Error(`blueprint operation effect refused: ${match.allowed ? 'current claim holder changed' : match.reason}`);
       }
     }
-    const currentEffect = operationClaims && opts.acceptedProgramAttempt
+    const externalRuntimeEffect = opts.externalRuntimeCompletion && operationClaims
+      ? tx`EXISTS (
+          SELECT 1 FROM harness_shared.work_items AS wi
+           WHERE wi.workspace_id = ${ws} AND wi.feature_id = ${id} ${onAliasedRow()}
+             AND ${operationClaims.externalRuntimeCompletionEffectWhereSql(tx, opts.externalRuntimeCompletion, {
+               payload: 'wi.payload', id: 'wi.feature_id', harness: 'wi.harness_slug', holder: 'wi.taken_by',
+               status: 'wi.status', updated: 'wi.updated_ts',
+             })}
+        )`
+      : tx`TRUE`;
+    const operationEffect = operationClaims && opts.acceptedProgramAttempt
       ? tx`EXISTS (
           SELECT 1 FROM harness_shared.work_items AS wi
            WHERE wi.workspace_id = ${ws} AND wi.feature_id = ${id} ${onAliasedRow()}
@@ -3707,6 +3736,7 @@ export async function setIssueState(
              })}
         )`
       : tx`TRUE`;
+    const currentEffect = tx`${externalRuntimeEffect} AND ${operationEffect}`;
     if (isTerminal) {
       const priorBlueprintPin = priorRow.payload && typeof priorRow.payload === 'object' &&
         !Array.isArray(priorRow.payload) ? (priorRow.payload as Record<string, unknown>).blueprintOperation : null;

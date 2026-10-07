@@ -1007,7 +1007,7 @@ describe('readQueue', () => {
 });
 
 describe('head-waiter blocks new acquires (anti-starvation)', () => {
-  it('identifies a queued waiter when no file holder remains', async () => {
+  it('blocks behind a queued waiter without reporting it as a file holder', async () => {
     const ws = nextWs();
     const sql = getTxPool();
     await sql`
@@ -1027,7 +1027,15 @@ describe('head-waiter blocks new acquires (anti-starvation)', () => {
     expect(blocked).toMatchObject({
       ok: false,
       reason: 'queued_waiter',
-      busy: [{ path: 'hot.ts', owner: 'queued', intent: 'queued edit' }],
+      busy: [],
+    });
+
+    // A FIFO position blocks acquisition but conveys no ownership or lease.
+    const queue = await readQueue(sql, { coordinationDomain: ws });
+    expect(queue.active_locks).toEqual([]);
+    expect(queue.waiting).toHaveLength(1);
+    expect(queue.waiting[0]).toMatchObject({
+      owner: 'queued', paths: ['hot.ts'], intent: 'queued edit',
     });
 
     const free = await inWorkspaceTxn(ws, 'newcomer', (tx) =>
@@ -1037,6 +1045,49 @@ describe('head-waiter blocks new acquires (anti-starvation)', () => {
       }),
     );
     expect(free.ok).toBe(true);
+  });
+
+  it('reports the active holder lease instead of the queued waiter deadline', async () => {
+    const ws = nextWs();
+    const holder = await inWorkspaceTxn(ws, 'holder', (tx) =>
+      tryAcquire(tx, {
+        coordinationDomain: ws, owner: 'holder', ownerLabel: 'HOLDER',
+        paths: ['hot.ts'], intent: 'held edit', ttlSec: 120,
+      }),
+    );
+    if (!holder.ok) throw new Error('holder acquire should succeed');
+
+    const waiter = await inWorkspaceTxn(ws, 'queued', (tx) =>
+      tryInsertWaiter(tx, {
+        coordinationDomain: ws, owner: 'queued', ownerLabel: 'QUEUED',
+        paths: ['hot.ts'], intent: 'queued edit', ttlSec: 60, maxWaitSec: 30,
+      }),
+    );
+    if (!waiter.ok || 'self_granted' in waiter) throw new Error('waiter should be queued');
+
+    const blocked = await inWorkspaceTxn(ws, 'newcomer', (tx) =>
+      tryAcquire(tx, {
+        coordinationDomain: ws, owner: 'newcomer', ownerLabel: 'NEWCOMER',
+        paths: ['hot.ts'], intent: 'new edit', ttlSec: 60,
+      }),
+    );
+    expect(blocked).toMatchObject({
+      ok: false,
+      reason: 'queued_waiter',
+      busy: [{
+        path: 'hot.ts', owner: 'holder', owner_label: 'HOLDER',
+        intent: 'held edit', expires_ts: holder.expires_ts,
+      }],
+    });
+    if (blocked.ok) throw new Error('queued newcomer must not acquire');
+    expect(blocked.busy).toHaveLength(1);
+
+    const queue = await readQueue(getTxPool(), { coordinationDomain: ws });
+    expect(queue.waiting).toHaveLength(1);
+    expect(queue.waiting[0].ticket_id).toBe(waiter.ticket_id);
+    expect(blocked.busy[0].expires_ts.getTime()).toBeGreaterThan(
+      queue.waiting[0].wait_until.getTime(),
+    );
   });
 
   it('new acquirer cannot jump an older waiter on the same path', async () => {

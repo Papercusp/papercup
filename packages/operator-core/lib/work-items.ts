@@ -3657,6 +3657,8 @@ export async function setWorkItemState(
     /** Trusted DBOS program-root close. The immutable receipt and admission
      * epoch are checked again in the terminal UPDATE; never exposed as a tool arg. */
     acceptedProgramAttempt?: import('./blueprint/operation-worker-binding').AcceptedProgramRootAttempt;
+    /** Trusted non-CLI host adapter. Never a public tool argument. */
+    externalRuntimeAttempt?: import('./blueprint/operation-worker-binding').ExternalRuntimeCompletionAttempt;
     /**
      * P-008 (d) / D-050 / D-079 — the RESOLVED assumption declaration this close
      * rests on, stored under {@link TERMINAL_ASSUMPTIONS_KEY}.
@@ -3719,6 +3721,20 @@ export async function setWorkItemState(
     ? await getFeatureWorkItemOnly(id, opts.harness)
     : await getWorkItem(id, opts.harness);
   if (!wi) return null;
+  const runtimePayload = wi.payload && typeof wi.payload === 'object' && !Array.isArray(wi.payload)
+    ? wi.payload as Record<string, unknown> : {};
+  const hasExternalRuntimeProducer = Object.prototype.hasOwnProperty.call(runtimePayload, 'externalRuntimeProducer');
+  let externalRuntimeCompletion: import('./blueprint/operation-worker-binding').VerifiedExternalRuntimeCompletion | undefined;
+  if (opts.externalRuntimeAttempt || (hasExternalRuntimeProducer && isSettledWorkItemState(state))) {
+    if (!opts.externalRuntimeAttempt || opts.skipCompletionGate || opts.force || opts.acceptedProgramAttempt ||
+        opts.completionAuthority !== undefined || !isSettledWorkItemState(state)) {
+      throw new Error('external runtime producer requires a governed attributed terminal attempt');
+    }
+    const { verifyExternalRuntimeCompletionAttempt } = await import('./blueprint/operation-worker-binding');
+    externalRuntimeCompletion = await verifyExternalRuntimeCompletionAttempt({
+      attempt: opts.externalRuntimeAttempt, workspaceId: activeWorkspaceId(), by: opts.by ?? '', item: wi,
+    });
+  }
   // The feature writer below uses this same receipt inside its UPDATE. Check
   // before any completion attestation or other pre-write side effect as well.
   // Trusted recovery paths with skipCompletionGate keep their existing reaper
@@ -4182,6 +4198,7 @@ export async function setWorkItemState(
       completionEvidence: opts.completionEvidence,
       blueprintResult,
       acceptedProgramAttempt: opts.acceptedProgramAttempt,
+      externalRuntimeCompletion,
       // P-008 (d): forwarded, or the issue family would silently drop every
       // assumption declaration while the feature family persisted it — a
       // half-verification across FAMILIES, the same defect D-050 forbids across
@@ -4353,6 +4370,11 @@ export async function setWorkItemState(
                                  )
                        END
        WHERE harness_slug = ${wi.harness} AND feature_id = ${id}
+         AND ${externalRuntimeCompletion
+           ? (await import('./blueprint/operation-worker-binding')).externalRuntimeCompletionEffectWhereSql(tx, externalRuntimeCompletion, {
+               payload: 'payload', id: 'feature_id', harness: 'harness_slug', holder: 'taken_by',
+               status: 'status', updated: 'updated_ts',
+             }) : tx`TRUE`}
          AND ${opts.acceptedProgramAttempt && operationClaims
            ? operationClaims.programRootEffectWhereSql(tx, opts.acceptedProgramAttempt, {
                payload: 'payload', id: 'feature_id', harness: 'harness_slug',

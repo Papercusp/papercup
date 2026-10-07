@@ -4259,16 +4259,18 @@ export default defineTool({
     // loop wake inject the same stale generation as if it were new. Keep the
     // acknowledgement fail-soft: if its write fails, the pending generation is
     // intentionally retried on the next turn.
+    const recoveryControl = recovery?.control;
     if (
       args.afterCompaction === true &&
       ownerId &&
-      recovery?.control &&
-      Number.isSafeInteger(recovery.control.generation)
+      recoveryControl &&
+      Number.isSafeInteger(recoveryControl.generation)
     ) {
+      const controlGeneration = recoveryControl.generation;
       await phaseTracker.track('handler:acknowledgeControlTransition', async () => {
         try {
           const { acknowledgeControlTransition } = await import('../control-anchor');
-          await acknowledgeControlTransition(ownerId, orientWorkspaceId, recovery.control.generation);
+          await acknowledgeControlTransition(ownerId, orientWorkspaceId, controlGeneration);
         } catch {
           /* preserve the assembled orient; the generation remains pending */
         }

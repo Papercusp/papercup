@@ -393,6 +393,8 @@ export interface ExternalRuntimeProducerBinding {
   kind: 'external-runtime-producer';
   workspaceId: string;
   harnessSlug: string;
+  /** Canonical storage scope after pot-member rehoming. */
+  storageHarnessSlug: string;
   workItemId: string;
   executionOwnerId: string;
   ownerId: string;
@@ -430,7 +432,7 @@ export function assertExternalRuntimeProducerOutcome(input: {
   const { item, stored, by, workspaceId } = input;
   const binding = stored.binding;
   const fields: (keyof ExternalRuntimeProducerBinding)[] = [
-    'workspaceId', 'harnessSlug', 'workItemId', 'executionOwnerId', 'ownerId',
+    'workspaceId', 'harnessSlug', 'storageHarnessSlug', 'workItemId', 'executionOwnerId', 'ownerId',
     'callKey', 'callId', 'runId', 'jobId', 'configurationSha256', 'registeredAt',
   ];
   if (binding.kind !== 'external-runtime-producer' ||
@@ -442,7 +444,7 @@ export function assertExternalRuntimeProducerOutcome(input: {
   const payload = item.payload && typeof item.payload === 'object' && !Array.isArray(item.payload)
     ? item.payload as Record<string, unknown> : {};
   if (binding.workspaceId !== workspaceId || binding.workItemId !== item.id ||
-      binding.harnessSlug !== item.harness || binding.executionOwnerId !== by ||
+      binding.storageHarnessSlug !== item.harness || binding.executionOwnerId !== by ||
       item.assignee !== by || !isDeepStrictEqual(payload.externalRuntimeProducer, binding)) {
     throw new Error('external runtime producer binding or current holder changed');
   }
@@ -456,6 +458,72 @@ export function assertExternalRuntimeProducerOutcome(input: {
     throw new Error('external runtime producer has no verified complete retained transcript');
   }
   return binding;
+}
+
+/** Internal host adapter input, deliberately absent from public tool schemas.
+ * The callback reads retained host records; a worker's report is not that read. */
+export interface ExternalRuntimeCompletionAttempt {
+  binding: ExternalRuntimeProducerBinding;
+  updatedTs: number;
+  readStoredOutcome(): Promise<ExternalRuntimeStoredOutcome>;
+}
+
+export interface VerifiedExternalRuntimeCompletion {
+  readonly binding: Readonly<ExternalRuntimeProducerBinding>;
+  readonly updatedTs: number;
+}
+
+/** Capture the attempt before asynchronous I/O, then compare the trusted read.
+ * Returning a detached frozen receipt prevents later callback/caller mutations
+ * from changing the effect predicate that the canonical writer will execute. */
+export async function verifyExternalRuntimeCompletionAttempt(input: {
+  attempt: ExternalRuntimeCompletionAttempt;
+  workspaceId: string;
+  by: string;
+  item: Pick<WorkItem, 'id' | 'harness' | 'assignee' | 'payload' | 'state' | 'updatedAt'>;
+}): Promise<VerifiedExternalRuntimeCompletion> {
+  const binding = Object.freeze({ ...input.attempt.binding });
+  const updatedTs = input.attempt.updatedTs;
+  if (!Number.isSafeInteger(updatedTs) || updatedTs <= 0 ||
+      Date.parse(input.item.updatedAt) !== updatedTs ||
+      (ANY_FAMILY_TERMINAL_STATES as readonly string[]).includes(input.item.state)) {
+    throw new Error('external runtime completion attempt is stale or terminal');
+  }
+  const payload = input.item.payload && typeof input.item.payload === 'object' && !Array.isArray(input.item.payload)
+    ? input.item.payload as Record<string, unknown> : {};
+  if (Object.prototype.hasOwnProperty.call(payload, 'reopenHistory') ||
+      Object.prototype.hasOwnProperty.call(payload, 'blueprintCancellation')) {
+    throw new Error('external runtime completion attempt was cancelled or reopened');
+  }
+  const stored = await input.attempt.readStoredOutcome();
+  if (!isDeepStrictEqual(binding, stored.binding)) {
+    throw new Error('external runtime completion attempt differs from trusted host registration');
+  }
+  assertExternalRuntimeProducerOutcome({ ...input, stored });
+  return Object.freeze({ binding, updatedTs });
+}
+
+/** Repeat the verified registration, claim and attempt epoch at the write.
+ * Reuses the canonical payload, not a second completion or receipt store. */
+export function externalRuntimeCompletionEffectWhereSql(
+  sql: Sql,
+  receipt: VerifiedExternalRuntimeCompletion,
+  columns: { payload: 'payload' | 'wi.payload'; id: 'feature_id' | 'wi.feature_id';
+    harness: 'harness_slug' | 'wi.harness_slug'; holder: 'taken_by' | 'wi.taken_by';
+    status: 'status' | 'wi.status'; updated: 'updated_ts' | 'wi.updated_ts' },
+) {
+  const { binding, updatedTs } = receipt;
+  const payload = sql.unsafe(columns.payload);
+  return sql`(
+    ${sql.unsafe(columns.id)} = ${binding.workItemId}
+    AND ${sql.unsafe(columns.harness)} IN (${binding.storageHarnessSlug}, ${`harness:${binding.storageHarnessSlug}`})
+    AND ${sql.unsafe(columns.holder)} = ${binding.executionOwnerId}
+    AND ${sql.unsafe(columns.updated)} = ${updatedTs}
+    AND NOT (${sql.unsafe(columns.status)} = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[]))
+    AND NOT (COALESCE(${payload}, '{}'::jsonb) ? 'reopenHistory')
+    AND NOT (COALESCE(${payload}, '{}'::jsonb) ? 'blueprintCancellation')
+    AND ${payload}->'externalRuntimeProducer' = ${JSON.stringify(binding)}::text::jsonb
+  )`;
 }
 
 const RECEIPT_READ_FAULT = 'active operation worker receipt could not be read';

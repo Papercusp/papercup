@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import type { Sql } from 'postgres';
+import type { JSONValue, Sql } from 'postgres';
 import { blueprintHash, compileAgentSpecification, pinPackageInput, type Blueprint } from '@papercusp/orchestrator/blueprint';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { projectBlueprintToPg } from './project-to-pg';
@@ -11,7 +11,8 @@ import {
 } from './operation-service';
 import { seedContentHash } from '../cupboard/rubric-store';
 import { getRubric, provisionPinnedRubric } from '../rubrics';
-import { getWorkItem, setWorkItemState } from '../work-items';
+import { createWorkItem, getWorkItem, setWorkItemState } from '../work-items';
+import type { ExternalRuntimeProducerBinding, ExternalRuntimeStoredOutcome } from './operation-worker-binding';
 import { runWithWorkspace } from '../workspace-als';
 import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
 // Copy-out mutation probes load the program executor from its mirrored path.
@@ -70,6 +71,77 @@ beforeAll(async () => {
 }, 120_000);
 afterAll(async () => db?.cleanup(), 120_000);
 
+describe.each(['feature', 'change'] as const)('external voice canonical %s settlement (D037)', (kind) => {
+  let sequence = 0;
+  async function producer() {
+    const id = `WI-external-voice-${kind}-${++sequence}`;
+    const owner = 'voice-runtime-owner';
+    const binding: ExternalRuntimeProducerBinding = {
+      kind: 'external-runtime-producer', workspaceId, harnessSlug, storageHarnessSlug: harnessSlug,
+      workItemId: id, executionOwnerId: owner, ownerId: 'phone-customer',
+      callKey: `inbound:${id}`, callId: `call:${id}`, runId: `run:${id}`, jobId: `job:${id}`,
+      configurationSha256: 'a'.repeat(64), registeredAt: '2026-10-07T13:00:00Z',
+    };
+    const item = await runWithWorkspace(workspaceId, () => createWorkItem({
+      id, kind, title: `Voice producer ${id}`, harness: harnessSlug, workspaceId,
+      createdBy: owner, assignee: owner, assignedBy: owner, admission: 'auto',
+      payload: { externalRuntimeProducer: binding as unknown as JSONValue },
+    }));
+    const stored: ExternalRuntimeStoredOutcome = {
+      binding, endReason: 'completed', endedAt: '2026-10-07T13:01:00Z',
+      transcriptSegmentCount: 2, retainedSegmentCount: 2,
+      transcriptSha256: 'b'.repeat(64), retainedSha256: 'b'.repeat(64), contentDeleted: false,
+    };
+    const opts = { harness: item.harness!, by: owner, completionRef: `phone:${id}`,
+      completionEvidence: { summary: 'Actual retained call verified', filesChanged: [], filesDeleted: [],
+        verifiedHow: 'trusted-phone-retained-records', testsRun: 'Binding and retained transcript digest checks',
+        testResult: 'Stored completion and independently read transcript agree' },
+      externalRuntimeAttempt: { binding, updatedTs: Date.parse(item.updatedAt),
+        readStoredOutcome: async () => stored } };
+    return { id, owner, item, binding, stored, opts };
+  }
+  it('derives normal committed authority from a verified call and reads back canonical attribution', async () => {
+    const p = await producer();
+    const settled = await runWithWorkspace(workspaceId, () => setWorkItemState(p.id, 'done', p.opts));
+    expect(settled?.state).toBe(kind === 'change' ? 'resolved' : 'done');
+    const read = await runWithWorkspace(workspaceId, () => getWorkItem(p.id, p.item.harness!));
+    expect(read).toMatchObject({ terminalOwner: p.owner, terminalCompletionRef: `phone:${p.id}`,
+      completionAuthority: 'committed', payload: { _completionEvidence: {
+        verifiedHow: 'trusted-phone-retained-records', filesChanged: [], filesDeleted: [],
+      } } });
+    await expect(runWithWorkspace(workspaceId, () => setWorkItemState(p.id, 'done', p.opts)))
+      .rejects.toThrow(/stale|terminal/);
+    const replay = await runWithWorkspace(workspaceId, () => getWorkItem(p.id, p.item.harness!));
+    expect(replay?.terminalCompletionRef).toBe(read?.terminalCompletionRef);
+    expect(replay?.payload).toEqual(read?.payload);
+  }, 90_000);
+  it('refuses completion without trusted host verification or with worker-lost evidence', async () => {
+    const p = await producer();
+    const { externalRuntimeAttempt: _attempt, ...untrusted } = p.opts;
+    await expect(runWithWorkspace(workspaceId, () => setWorkItemState(p.id, 'done', untrusted)))
+      .rejects.toThrow('governed attributed');
+    p.stored.endReason = 'worker-lost';
+    await expect(runWithWorkspace(workspaceId, () => setWorkItemState(p.id, 'done', p.opts)))
+      .rejects.toThrow('no verified complete');
+    expect((await runWithWorkspace(workspaceId, () => getWorkItem(p.id, p.item.harness!)))?.terminalOwner).toBeNull();
+  }, 90_000);
+  it('fences a claim and epoch change between trusted verification and the terminal write', async () => {
+    const p = await producer();
+    p.opts.externalRuntimeAttempt.readStoredOutcome = async () => {
+      await sql`UPDATE harness_shared.work_items SET taken_by = 'replacement-voice-owner', updated_ts = updated_ts + 1
+        WHERE workspace_id = ${workspaceId} AND feature_id = ${p.id}`;
+      return p.stored;
+    };
+    let result;
+    try { result = await runWithWorkspace(workspaceId, () => setWorkItemState(p.id, 'done', p.opts)); }
+    catch (error) { expect(String(error)).toMatch(/binding|attempt|holder|claim/); }
+    expect(result).toBeFalsy();
+    const read = await runWithWorkspace(workspaceId, () => getWorkItem(p.id, p.item.harness!));
+    expect(read?.terminalOwner).toBeNull();
+    expect(read?.assignee).toBe('replacement-voice-owner');
+  }, 90_000);
+});
+
 const definition = (version: string) => compileAgentSpecification({
   source: {
     id: 'program-child-pin', version, workItem: { kind: 'feature' },
@@ -79,6 +151,8 @@ const definition = (version: string) => compileAgentSpecification({
       id: 'leaf', version,
       target: { kind: 'work-item', itemKind: 'feature' },
       execution: { kind: 'agent', role: 'worker' },
+      policy: { identity: { kind: 'identity', ref: 'program-leaf-test-worker',
+        revision: '1.0.0', contentHash: 'c'.repeat(64) } },
       inputSchema: { type: 'object', properties: { value: { type: 'string' } } },
       acceptance: { resultSchema: { type: 'object' } },
     }, {
