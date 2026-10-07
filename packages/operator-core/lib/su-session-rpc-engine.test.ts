@@ -508,7 +508,8 @@ describe.each(['codex', 'omp'] as const)('%s structured SU engine', (backend) =>
       } });
       await f.engine.ready;
       await expect(f.engine.adapter.host.startCommand(turnWithModel(f.engine, 'refused', 'anthropic/nope')).terminal)
-        .resolves.toMatchObject({ status: 'refused', refusal: { code: 'model_switch_refused', retryable: false } });
+        .resolves.toMatchObject({ status: 'refused', refusal: { code: 'model_switch_refused', retryable: false,
+          liftsWhen: expect.stringContaining('supported provider/model') } });
       expect(f.sent.some((frame) => frame.type === 'prompt')).toBe(false);
       expect(f.engine.adapter.host.snapshot()).toMatchObject({ terminal: false, streamReady: true });
       expect(f.engine.adapter.host.descriptor().model).not.toBe('anthropic/nope');
@@ -549,7 +550,8 @@ describe.each(['codex', 'omp'] as const)('%s structured SU engine', (backend) =>
     it('D-026: OMP refuses an approvals switch, sends no prompt and stays usable', async () => {
       const f = fixture(backend); await f.engine.ready;
       await expect(f.engine.adapter.host.startCommand(turnWithApprovals(f.engine, 'ask', 'ask')).terminal)
-        .resolves.toMatchObject({ status: 'refused', refusal: { code: 'approvals_switch_refused', retryable: false } });
+        .resolves.toMatchObject({ status: 'refused', refusal: { code: 'approvals_switch_refused', retryable: false,
+          liftsWhen: expect.stringContaining('OMP has no approvals-switch RPC') } });
       expect(f.sent.some((frame) => frame.type === 'prompt')).toBe(false);
       expect(f.engine.adapter.host.descriptor().approvals).toBeUndefined();
       await expect(f.engine.adapter.host.startCommand(command(f.engine, 'owner_turn', 'after') as never).terminal)

@@ -4,7 +4,7 @@
 import { homedir } from 'node:os';
 import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import type { SuApprovalsMode, SuSessionJsonValue } from '@papercusp/chat-protocol';
+import type { SuApprovalsMode, SuSessionJsonValue, SuSessionRefusal } from '@papercusp/chat-protocol';
 import {
   applyGithubTokenEnv, assertLaunchPersona, modelArgsFor, ompCoreToolNames,
   ompResponsesCompatibilityEnv, recordSessionOwner, resolveOmpInjectHookPath,
@@ -207,15 +207,18 @@ export function startSuRpcEngine(
       const approvalsTo = nextApprovals && nextApprovals !== selectedApprovals ? nextApprovals : null;
       if (approvalsTo && backend !== 'codex') {
         return { ok: false as const, code: 'approvals_switch_refused', retryable: false,
+          liftsWhen: 'Send a new turn without an approvals override, or use a Claude or Codex session to select an approvals mode; OMP has no approvals-switch RPC.',
           message: `/approvals is not available for ${backend === 'omp' ? 'OMP' : backend}` };
       }
       // P-026: Codex takes the switch on this turn's turn/start; OMP takes it as
       // set_model (+ set_thinking_level) before the prompt. A refused OMP switch
       // refuses the turn rather than running it on the old model.
       const switchTo = nextModel && nextModel !== selectedModel ? splitModelSpec(nextModel) : null;
-      if (switchTo && !switchTo.model) return { ok: false as const, code: 'model_switch_refused', retryable: false, message: `"${nextModel}" names no model` };
-      let acknowledged!: (verdict: { ok: true } | ReturnType<typeof unavailable>) => void;
-      const receipt = new Promise<{ ok: true } | ReturnType<typeof unavailable>>((resolve) => { acknowledged = resolve; });
+      if (switchTo && !switchTo.model) return { ok: false as const, code: 'model_switch_refused', retryable: false,
+        liftsWhen: 'Send a new turn with a non-empty model name, or omit the model override.',
+        message: `"${nextModel}" names no model` };
+      let acknowledged!: (verdict: { ok: true } | ({ ok: false } & SuSessionRefusal)) => void;
+      const receipt = new Promise<{ ok: true } | ({ ok: false } & SuSessionRefusal)>((resolve) => { acknowledged = resolve; });
       inputTail = inputTail.then(async () => {
         if (!ready || closed) { acknowledged(unavailable('The engine closed before this saved turn was sent')); return; }
         if (switchTo && backend === 'omp') {
@@ -231,7 +234,9 @@ export function startSuRpcEngine(
             if (switchTo.effort) await peer!.request({ type: 'set_thinking_level', level: switchTo.effort }, options.deliveryTimeoutMs ?? 30_000);
           } catch (error) {
             const reason = error instanceof Error ? error.message : String(error);
-            acknowledged({ ok: false as const, code: 'model_switch_refused', retryable: false, message: `Could not switch to ${nextModel}: ${reason}` });
+            acknowledged({ ok: false as const, code: 'model_switch_refused', retryable: false,
+              liftsWhen: 'Send a new turn with a supported provider/model and effort, omit the model override, or start a new OMP session with the requested model.',
+              message: `Could not switch to ${nextModel}: ${reason}` });
             return;
           }
         }

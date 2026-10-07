@@ -343,7 +343,8 @@ describe('structured Claude SU engine', () => {
       const s = switchable(peer(), 'none');
       const engine = open(s.peer, { model: 'claude-opus-4-1' }); await engine.ready;
       const refused = await engine.adapter.host.startCommand(withModel(engine, 'claude-haiku-4-5')).terminal;
-      expect(refused).toMatchObject({ status: 'refused', refusal: { code: 'model_switch_refused', retryable: false } });
+      expect(refused).toMatchObject({ status: 'refused', refusal: { code: 'model_switch_refused', retryable: false,
+        liftsWhen: expect.stringContaining('omit the model override') } });
       expect(s.peer.prompts).toHaveLength(0);
       expect(engine.adapter.host.descriptor().model).not.toBe('claude-haiku-4-5');
       const next = await engine.adapter.host.startCommand({ ...command(engine), commandId: 'cmd-after', turnId: 'owner-after' }).terminal;
@@ -388,7 +389,8 @@ describe('structured Claude SU engine', () => {
       const s = permissionable(peer(), false);
       const engine = open(s.peer, { toolApproval: 'prompt' }); await engine.ready;
       const refused = await engine.adapter.host.startCommand(withApprovals(engine, 'read-only')).terminal;
-      expect(refused).toMatchObject({ status: 'refused', refusal: { code: 'approvals_switch_refused', retryable: false } });
+      expect(refused).toMatchObject({ status: 'refused', refusal: { code: 'approvals_switch_refused', retryable: false,
+        liftsWhen: expect.stringContaining('start a new Claude session') } });
       expect(s.peer.prompts).toHaveLength(0);
       expect(engine.adapter.host.descriptor().approvals).toBe('ask');
       const next = await engine.adapter.host.startCommand({ ...command(engine), commandId: 'cmd-after', turnId: 'owner-after' }).terminal;
