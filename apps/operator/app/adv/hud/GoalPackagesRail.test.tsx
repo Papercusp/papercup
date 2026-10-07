@@ -37,8 +37,8 @@ import GoalPackagesRail, {
 import type { HudGoalInput } from './hud-entity-board';
 import type { GoalDetailInput } from './goal-detail-model';
 
-const sync = vi.hoisted(() => ({ data: null as GoalDetailInput[] | null }));
-vi.mock('@papercusp/sync', () => ({ useSyncQuery: () => ({ data: sync.data, loading: false, error: null }) }));
+const sync = vi.hoisted(() => ({ data: null as GoalDetailInput[] | null, error: null as Error | null }));
+vi.mock('@papercusp/sync', () => ({ useSyncQuery: () => ({ data: sync.data, loading: false, error: sync.error }) }));
 vi.mock('@/app/harness/useConfirmDialog', () => ({ useConfirmDialog: () => ({ confirm: vi.fn(), element: null }) }));
 
 const fetchMock = vi.fn();
@@ -54,6 +54,7 @@ function reply(body: Record<string, unknown>, init: { ok?: boolean; status?: num
 beforeEach(() => {
   vi.clearAllMocks();
   sync.data = null;
+  sync.error = null;
   fetchMock.mockResolvedValue(reply({ data: { id: 'G-NEW' } }));
   globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
 });
@@ -231,12 +232,39 @@ describe('GoalPackagesRail — spend + budget labels (P-004: each figure under i
 });
 
 describe('GoalPackagesRail — clicks go where they say', () => {
+  it.each([
+    ['active', 'active', 'held', 'Running'],
+    ['active', 'active', 'unknown', 'Status unavailable'],
+    ['active', 'dormant', 'lost', 'Not running'],
+    ['paused', 'paused', 'held', 'Paused'],
+    ['achieved', 'achieved', 'unheld', 'Achieved'],
+    ['killed', 'killed', 'unheld', 'Stopped'],
+  ])('renders canonical %s/%s/%s liveness as %s', (status, effectiveStatus, holderLiveness, label) => {
+    sync.data = [{ goal: goalRow({ status }), effectiveStatus, holderLiveness }];
+    render(<GoalPackagesRail entries={[entry({ activeGoalId: 'G-9', instances: [live] })]}
+      goals={[goalRow()]} workspaceId="workspace-under-test" />);
+    expect(screen.getByTestId('ongoing-status').textContent).toBe(label);
+  });
+
+  it('discloses a detail query error and keeps navigation on the current instance', () => {
+    const onOpenGoal = vi.fn();
+    sync.error = new Error('Detail unavailable for this test');
+    render(<GoalPackagesRail entries={[entry({ activeGoalId: 'G-9', instances: [live] })]}
+      goals={[goalRow()]} workspaceId="workspace-under-test" onOpenGoal={onOpenGoal} />);
+    expect(screen.getByRole('status').textContent).toBe('Ongoing work details unavailable.');
+    expect(screen.getByText('Priorities unavailable')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'View ongoing work' }));
+    expect(onOpenGoal).toHaveBeenCalledWith('G-9');
+  });
+
   it('gives the standing goal a labeled featured region and ongoing identity', () => {
     render(<GoalPackagesRail entries={[entry({ activeGoalId: 'G-9', instances: [live] })]}
       goals={[goalRow()]} />);
     const region = screen.getByRole('region', { name: 'Ongoing work: Work on everything' });
     expect(region.classList.contains('hud-ongoing--featured')).toBe(true);
     expect(region.querySelector('svg.lucide-infinity')).not.toBeNull();
+    expect(region.querySelectorAll('button').length).toBeGreaterThan(0);
+    expect(region.querySelector('button button')).toBeNull();
     expect(screen.getByRole('button', { name: 'View ongoing work' })).toBeTruthy();
   });
 
