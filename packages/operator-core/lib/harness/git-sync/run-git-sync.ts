@@ -1319,6 +1319,8 @@ export type GitSyncSkippedPath =
       blockingMigrations?: string[];
       blockingAgents?: string[];
       blockingWorkItems?: string[];
+      /** Exact migrations with missing edit attribution; reservation owners are not edit authors. */
+      unattributedMigrations?: string[];
     };
 
 /**
@@ -1361,11 +1363,15 @@ export function migrationDependencyFenceSkips(
   const blockedWorkItems = new Set<string>();
   const blockedAgents = new Set<string>();
   const agentsWithoutWorkItem = new Set<string>();
+  const unattributedMigrations: string[] = [];
   let unknownMigration = roster.length === 0;
   for (const migration of refusedMigrations) {
     const attribution = migrationAttribution(migration);
     if (!attribution) {
       unknownMigration = true;
+      unattributedMigrations.push(
+        migration.scope && migration.scope !== 'superproject' ? migration.scope + '/' + migration.path : migration.path,
+      );
       continue;
     }
     blockedAgents.add(attribution.agent);
@@ -1394,6 +1400,7 @@ export function migrationDependencyFenceSkips(
     blockingMigrations,
     blockingAgents: [...blockedAgents],
     blockingWorkItems: [...blockedWorkItems],
+    ...(unattributedMigrations.length > 0 ? { unattributedMigrations: [...new Set(unattributedMigrations)] } : {}),
   });
 
   return [...new Set(dirtySuperprojectPaths)]
