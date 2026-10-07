@@ -91,7 +91,7 @@ export const argsSchema = refineEvenWithShapeIssues(z.object({
   ),
   /** Replay a persisted recipe against its pinned immutable clause revision. */
   replaySnapshot: z.boolean().optional().describe(
-    'When true, grade the pinned immutable clause revision instead of the live one. Requires both specRevision and specFingerprint from the same immutable clause revision. Bindings with a persisted measurement recipe are still re-measured by the server, so a replay reports stale once the proven code moves; caller-supplied current fingerprints alone remain replayed-snapshot evidence, never server-measured evidence.',
+    'When true, grade the pinned immutable clause revision instead of the live one. Requires both specRevision and specFingerprint from the same immutable clause revision. Normal evaluator calls still re-measure bindings with persisted recipes; the grading auditor uses a separate internal historical replay to reproduce the card’s emission-time verdict.',
   ),
   planItemIds: z.array(z.string().regex(/^P-\d{3,}$/)).min(1).max(200).optional(),
   current: z
@@ -106,7 +106,7 @@ export const argsSchema = refineEvenWithShapeIssues(z.object({
     ])
     .optional()
     .describe(
-      'Caller-supplied fingerprints may be the canonical array or the persisted rerunRecipe.current wrapper; wrapper.supplied:false means current was omitted. Matching stored values remain unknown for freshness and cannot produce freshness:pass without an internal server-measured comparison.',
+      'Caller-supplied fingerprints may be the canonical array or the persisted rerunRecipe.current wrapper; wrapper.supplied:false means current was omitted. In normal evaluator calls, matching caller values remain unknown and cannot produce freshness:pass; the internal grading-audit replay uses them only with the card’s historical cutoff to reproduce its original verdict.',
     ),
   includeDraft: z.boolean().optional(),
   now: z.string().datetime({ offset: true }).optional(),
@@ -139,9 +139,9 @@ type HistoricalAuditSelection = {
 };
 
 /**
- * Internal-only replay for an already-issued legacy scorecard whose recipe predates
- * exact bindingIds. The normal tool deliberately stays current-only; this path is
- * called by the grading auditor only after that tool returns selection_empty.
+ * Internal-only replay for grading audits. It reconstructs the evidence cohort and
+ * currentness tuple as of the graded card's creation time; it must not be used as a
+ * current ship-read. The normal evaluator deliberately stays current-only.
  */
 export async function replaySpecTestAdequacyForHistoricalAudit(input: {
   args: z.infer<typeof argsSchema>;
@@ -152,14 +152,26 @@ export async function replaySpecTestAdequacyForHistoricalAudit(input: {
   const { args, selection, workspaceId, auditAsOf } = input;
   const evidenceRefs = [...new Set(selection.evidence.map((entry) => entry.evidenceRef))].sort();
   const recipeEvidenceRefs = [...new Set(args.evidenceRefs ?? [])].sort();
+  const normalizeBindingIds = (ids: number[] | undefined) =>
+    ids === undefined ? undefined : [...new Set(ids)].sort((a, b) => a - b);
+  const argsBindingIds = normalizeBindingIds(args.bindingIds);
+  const selectionBindingIds = normalizeBindingIds(selection.bindingIds);
+  const bindingIds = argsBindingIds ?? selectionBindingIds;
+  const bindingIdsAgree =
+    argsBindingIds === undefined ||
+    selectionBindingIds === undefined ||
+    JSON.stringify(argsBindingIds) === JSON.stringify(selectionBindingIds);
+  const bindingIdsValid = [argsBindingIds, selectionBindingIds]
+    .filter((ids): ids is number[] => ids !== undefined)
+    .every((ids) => ids.every((id) => Number.isSafeInteger(id) && id > 0));
   const selectedEvidence = selection.evidence.map((entry) => JSON.stringify([entry.evidenceKind, entry.evidenceRef]));
   const exactEvidence = new Set(selectedEvidence);
   const validCutoff = Number.isFinite(auditAsOf.getTime());
   if (
     !validCutoff ||
     !workspaceId ||
-    args.bindingIds !== undefined ||
-    selection.bindingIds !== undefined ||
+    !bindingIdsAgree ||
+    !bindingIdsValid ||
     args.replaySnapshot !== true ||
     args.slug !== selection.planSlug ||
     args.specRevision !== selection.specRevision ||
@@ -189,8 +201,9 @@ export async function replaySpecTestAdequacyForHistoricalAudit(input: {
     specRevision: selection.specRevision,
     specFingerprint: selection.specFingerprint,
     replaySnapshot: true,
-    ...(args.current !== undefined ? { currentProvenance: 'replayed-snapshot' as const } : {}),
     evidenceRefs,
+    bindingIds,
+    ...(current !== undefined ? { currentProvenance: 'historical-snapshot' as const } : {}),
     current,
     includeRetracted: true,
     auditAsOf,
@@ -227,16 +240,18 @@ export async function replaySpecTestAdequacyForHistoricalAudit(input: {
     return { ok: false, error: 'historical_clause_snapshot_unavailable' };
   }
 
-  const historicalEvidence = evidence.map((row) => ({
-    ...row,
-    currentness: {
-      ...row.currentness,
-      overall: 'unknown' as const,
-      provenance: 'replayed-snapshot' as const,
-      staleReasons: [],
-      unknownReasons: [...new Set([...row.currentness.unknownReasons, 'historical-audit-only'])],
-    },
-  }));
+  const historicalEvidence = current === undefined
+    ? evidence.map((row) => ({
+        ...row,
+        currentness: {
+          ...row.currentness,
+          overall: 'unknown' as const,
+          provenance: 'replayed-snapshot' as const,
+          staleReasons: [],
+          unknownReasons: [...new Set([...row.currentness.unknownReasons, 'historical-audit-only'])],
+        },
+      }))
+    : evidence;
   const evaluated = evaluateSpecTestAdequacy({
     clause,
     evidence: historicalEvidence,
@@ -246,6 +261,7 @@ export async function replaySpecTestAdequacyForHistoricalAudit(input: {
     rerunSelection: {
       workItemIds: args.workItemIds,
       evidenceRefs,
+      bindingIds,
       planItemIds: args.planItemIds,
     },
     now: auditAsOf,
@@ -266,7 +282,7 @@ export async function replaySpecTestAdequacyForHistoricalAudit(input: {
     historicalAuditOnly: {
       provenance: 'historical-audit-only',
       asOf: auditAsOf.toISOString(),
-      freshness: 'audit-only',
+      freshness: current !== undefined ? 'historical-snapshot' : 'unknown-at-emission',
       bindings: evidence.map((row) => ({
         id: row.id,
         evidenceKind: row.evidenceKind,

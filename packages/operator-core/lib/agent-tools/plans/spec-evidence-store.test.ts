@@ -544,7 +544,7 @@ describe('listSpecEvidence timestamp normalization', () => {
     } });
   });
 
-  it('keeps a fixture-dependent binding without a stored fixture baseline unknown', async () => {
+  it('keeps a kind=fixture binding without a stored fixture baseline unknown', async () => {
     const recipe = {
       schemaVersion: 1 as const,
       kind: 'repo-files' as const,
@@ -572,7 +572,7 @@ describe('listSpecEvidence timestamp normalization', () => {
       coverage_evidence_present: false,
       test_run_id: null,
       test_run_present: false,
-      details: { currentMeasurement: recipe, adequacy: { fixtureCalibrated: true } },
+      details: { currentMeasurement: recipe },
       observed_at: '2026-08-20T21:10:00.000Z',
       binding_fingerprint: 'sha256:fixture-binding',
       created_by: 'su-test',
@@ -1065,6 +1065,99 @@ describe('listSpecEvidence timestamp normalization', () => {
     const currentQuery = h.queries.filter(({ sql }) => sql.includes('FROM harness_shared.spec_evidence_bindings')).at(-1);
     expect(currentQuery?.sql).toContain('b.retracted_at IS NULL');
     expect(currentQuery?.values).toContain(false);
+  });
+
+  it('replays the exact withdrawn binding with its emission-time fingerprints after live source drift', async () => {
+    const auditAsOf = new Date('2026-10-02T00:14:36.135Z');
+    const sourcePath = 'src/historical-replay.ts';
+    const recipe = {
+      schemaVersion: 1 as const,
+      kind: 'repo-files' as const,
+      sourcePaths: [sourcePath],
+      testPaths: ['test/feature.test.ts'],
+    };
+    const sourceFile = join(measurementRoot, sourcePath);
+    await writeFile(sourceFile, 'export const value = 1;\n');
+    try {
+      const emission = await measureRepoFilesEvidenceAtRoot(measurementRoot, recipe);
+      await writeFile(sourceFile, 'export const value = 2;\n');
+      const live = await measureRepoFilesEvidenceAtRoot(measurementRoot, recipe);
+      expect(live.sourceFingerprint).not.toBe(emission.sourceFingerprint);
+
+      h.rows = [{
+        id: 19999,
+        work_item_id: 'WI-3',
+        plan_slug: 'plan-one',
+        spec_id: 'SPEC-001-01',
+        source_val_id: 'VAL-001-01',
+        spec_revision: 1,
+        current_revision: 2,
+        spec_fingerprint: 'sha256:spec-v1',
+        evidence_kind: 'test',
+        evidence_ref: 'vitest:historical-replay',
+        source_fingerprint: emission.sourceFingerprint,
+        test_fingerprint: emission.testFingerprint,
+        fixture_fingerprint: null,
+        rubric_fingerprint: null,
+        environment_fingerprint: null,
+        coverage_evidence_ref: null,
+        coverage_evidence_present: false,
+        test_run_id: null,
+        test_run_present: false,
+        details: { currentMeasurement: recipe },
+        observed_at: '2026-10-01T23:00:00.000Z',
+        binding_fingerprint: 'sha256:binding-19999',
+        created_by: 'su-test',
+        created_at: '2026-10-01T23:00:00.000Z',
+        retracted_at: '2026-10-02T01:00:00.000Z',
+        retracted_by: 'su-reviewer',
+        retraction_reason: 'superseded by binding 21019',
+        spec_is_current: true,
+      }];
+
+      const current = [{
+        planSlug: 'plan-one',
+        specId: 'SPEC-001-01',
+        specRevision: 1,
+        specFingerprint: 'sha256:spec-v1',
+        evidenceKind: 'test' as const,
+        evidenceRef: 'vitest:historical-replay',
+        sourceFingerprint: emission.sourceFingerprint,
+        testFingerprint: emission.testFingerprint,
+      }];
+      const [row] = await listSpecEvidence({
+        harnessSlug: 'papercusp',
+        planSlugs: ['plan-one'],
+        specIds: ['SPEC-001-01'],
+        specRevision: 1,
+        specFingerprint: 'sha256:spec-v1',
+        replaySnapshot: true,
+        evidenceRefs: ['vitest:historical-replay'],
+        bindingIds: [19999],
+        currentProvenance: 'historical-snapshot',
+        current,
+        includeRetracted: true,
+        auditAsOf,
+      });
+
+      expect(row).toMatchObject({
+        id: 19999,
+        withdrawal: { reason: 'superseded by binding 21019' },
+        fingerprints: { sourceFingerprint: emission.sourceFingerprint },
+        currentness: {
+          overall: 'current',
+          provenance: 'historical-snapshot',
+          dimensions: { source: 'current', test: 'current' },
+        },
+      });
+      expect(row).not.toHaveProperty('serverMeasurement');
+      const bindingQuery = h.queries.find(({ sql }) => sql.includes('b.id = ANY('));
+      const auditQuery = h.queries.find(({ sql }) => sql.includes('b.created_at <='));
+      expect(bindingQuery?.values).toContainEqual([19999]);
+      expect(auditQuery?.values).toContain(auditAsOf);
+    } finally {
+      await rm(sourceFile, { force: true });
+    }
   });
 
   it('refuses an audit-as-of cutoff without explicit withdrawn-row visibility', async () => {

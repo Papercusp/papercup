@@ -1439,12 +1439,11 @@ export function classifySpecEvidenceCurrentness(
       : options.provenance === 'server-measured' && attestedDimensions.length > 0
         ? 'partially-server-measured'
         : options.provenance ?? 'attested-current';
-  // A replayed snapshot is NOT an independent measurement: on the replay path the
-  // server skips measuring entirely and the whole `current` tuple arrives from the
-  // caller, so labelling it 'server-measured' would launder a caller assertion into
-  // server proof. Guard it exactly like an attested tuple — the caller can still
-  // reproduce a historical grade, but cannot mint a fresh-freshness verdict from
-  // fingerprints it authored itself.
+  // The public replay path is NOT an independent measurement: the whole `current`
+  // tuple arrives from the caller, so `replayed-snapshot` stays unknown when it matches.
+  // The internal grading-audit path uses `historical-snapshot` only with auditAsOf to
+  // reconstruct the verdict at card creation; its distinct provenance is not a live
+  // freshness attestation or a ship-gate result.
   const attestedCurrentGuard =
     (provenance === 'attested-current' ||
       provenance === 'partially-server-measured' ||
@@ -2611,10 +2610,10 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
       currentness,
     };
   });
-  // An audit-as-of read reconstructs what was bound at a historical instant. It is
-  // never evidence that the same binding is fresh now, even if the saved caller tuple
-  // or a live repository measurement happens to match. Keep that distinction at the
-  // store boundary so an audit caller cannot accidentally promote history to current.
+  // An ordinary audit-as-of read reconstructs what was bound at a historical instant
+  // and is downgraded to unknown freshness. Only the internal historical grading replay
+  // opts out so the auditor can reproduce the card's emission-time verdict from its
+  // saved tuple; the provenance remains historical-snapshot, never live freshness.
   const auditOnly = options.auditAsOf && options.currentProvenance !== 'historical-snapshot'
     ? classified.map((row) => ({
         ...row,

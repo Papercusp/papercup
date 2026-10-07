@@ -102,7 +102,7 @@ beforeEach(() => {
 });
 
 describe('plans:evaluate-spec-test-adequacy handler', () => {
-  it('replays only the legacy supersession cohort as of card creation and labels freshness audit-only', async () => {
+  it('replays only the legacy supersession cohort as of card creation and leaves unavailable freshness unknown', async () => {
     const auditAsOf = new Date('2026-10-02T00:14:36.135Z');
     const historicalBinding: Awaited<ReturnType<typeof listSpecEvidence>>[number] = {
       id: 19999,
@@ -204,7 +204,7 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
       historicalAuditOnly: {
         provenance: 'historical-audit-only',
         asOf: auditAsOf.toISOString(),
-        freshness: 'audit-only',
+        freshness: 'unknown-at-emission',
         bindings: [
           {
             id: 19999,
@@ -215,6 +215,118 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
     });
     expect((result as { rows: Array<{ ratings: Record<string, { rating: string }> }> }).rows[0].ratings.freshness.rating).toBe('unknown');
     expect(laterReplacement.createdAt > auditAsOf.toISOString()).toBe(true);
+  });
+
+  it('replays exact emission-time bindings and freshness after the live source drifts', async () => {
+    const auditAsOf = new Date('2026-10-02T00:14:36.135Z');
+    const current = [{
+      planSlug: 'plan-a',
+      specId: 'SPEC-001',
+      specRevision: 1,
+      specFingerprint: 'sha256:spec-001',
+      evidenceKind: 'test',
+      evidenceRef: 'test-run 20455199',
+      sourceFingerprint: 'sha256:source-at-grade',
+      testFingerprint: 'sha256:test-at-grade',
+    }];
+    const historicalBinding: Awaited<ReturnType<typeof listSpecEvidence>>[number] = {
+      id: 19999,
+      workItemId: 'WI-10005377',
+      planSlug: 'plan-a',
+      specId: 'SPEC-001',
+      sourceValId: null,
+      coverageEvidenceRef: null,
+      testRunProvenance: null,
+      bindingFingerprint: 'sha256:binding-19999',
+      createdBy: 'su-test',
+      specRevision: 1,
+      currentRevision: 2,
+      specFingerprint: 'sha256:spec-001',
+      evidenceKind: 'test',
+      evidenceRef: 'test-run 20455199',
+      fingerprints: {
+        sourceFingerprint: 'sha256:source-at-grade',
+        testFingerprint: 'sha256:test-at-grade',
+        fixtureFingerprint: null,
+        rubricFingerprint: null,
+        environmentFingerprint: null,
+      },
+      details: {},
+      testRunId: null,
+      observedAt: '2026-10-01T23:00:00.000Z',
+      createdAt: '2026-10-01T23:00:00.000Z',
+      withdrawal: {
+        at: '2026-10-02T01:00:00.000Z',
+        by: 'su-reviewer',
+        reason: 'superseded by binding 21019',
+      },
+      currentness: {
+        overall: 'current',
+        provenance: 'historical-snapshot',
+        comparisonSupplied: true,
+        dimensions: {
+          spec: 'current',
+          source: 'current',
+          test: 'current',
+          fixture: 'not-applicable',
+          rubric: 'not-applicable',
+          environment: 'not-applicable',
+          coverageEvidence: 'not-applicable',
+          testRun: 'not-applicable',
+        },
+        staleReasons: [],
+        unknownReasons: [],
+      },
+    };
+    mockResolvedTyped(listEvidence, [historicalBinding]);
+    listClauses.mockResolvedValue([clause('active')]);
+
+    const result = await replaySpecTestAdequacyForHistoricalAudit({
+      args: {
+        harness: 'papercusp',
+        slug: 'plan-a',
+        classRef: 'plan-class-feature-ship',
+        specIds: ['SPEC-001'],
+        specRevision: 1,
+        specFingerprint: 'sha256:spec-001',
+        replaySnapshot: true,
+        evidenceRefs: ['test-run 20455199'],
+        bindingIds: [19999],
+        current,
+        includeDraft: true,
+        limit: 25,
+      },
+      selection: {
+        planSlug: 'plan-a',
+        specId: 'SPEC-001',
+        specRevision: 1,
+        specFingerprint: 'sha256:spec-001',
+        evidence: [{ evidenceKind: 'test', evidenceRef: 'test-run 20455199' }],
+        bindingIds: [19999],
+      },
+      workspaceId: 'workspace-test',
+      auditAsOf,
+    });
+
+    expect('sha256:source-after-drift').not.toBe(current[0]!.sourceFingerprint);
+    expect(listEvidence).toHaveBeenCalledWith(expect.objectContaining({
+      bindingIds: [19999],
+      currentProvenance: 'historical-snapshot',
+      current,
+      includeRetracted: true,
+      auditAsOf,
+    }));
+    expect(result).toMatchObject({
+      ok: true,
+      historicalAuditOnly: {
+        provenance: 'historical-audit-only',
+        asOf: auditAsOf.toISOString(),
+        freshness: 'historical-snapshot',
+        bindings: [{ id: 19999, withdrawal: { reason: 'superseded by binding 21019' } }],
+      },
+    });
+    expect((result as { rows: Array<{ ratings: Record<string, { rating: string }> }> }).rows[0]!.ratings.freshness!.rating)
+      .toBe('pass');
   });
 
   it('preserves every criterion rating through a trimmed MCP dispatch', async () => {
