@@ -32,7 +32,7 @@
  * binary's wall-clock elapsed is recorded as one extra aggregate row
  * (`<crate-dir> (cargo aggregate)`) so the Tests tab still has a duration signal.
  */
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import { resolve, dirname, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mkdirSync, statfsSync } from 'node:fs';
@@ -51,6 +51,7 @@ import {
   formatCargoDiskRefusal,
   formatCargoResultLine,
   parseCargoTestResultLines,
+  parseCargoMeasuredTestResults,
   pruneStaleBuildScriptOutputs,
   reclaimInactiveCargoArtifacts,
   resolveCargoBin,
@@ -88,7 +89,7 @@ async function snapshotWorktree(reporter) {
 }
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = resolve(__dirname, '..');
+let REPO_ROOT = resolve(__dirname, '..');
 let loopLagMonitor = null;
 
 function ensureLoopLagMonitor() {
@@ -331,10 +332,11 @@ function runCargoTest(manifestAbs, extraArgs, coverage = null) {
     const child = spawn(resolveCargoBin(), args, { cwd: REPO_ROOT, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
-    child.stdout.on('data', (d) => { stdout += d.toString(); });
-    child.stderr.on('data', (d) => { stderr += d.toString(); });
+    let combinedOutput = '';
+    child.stdout.on('data', (d) => { stdout += d.toString(); combinedOutput += d.toString(); });
+    child.stderr.on('data', (d) => { stderr += d.toString(); combinedOutput += d.toString(); });
     child.on('close', (code) => {
-      resolvePromise({ code, stdout, stderr, startedAt, finishedAt: new Date(), diskAdmission });
+      resolvePromise({ code, stdout, stderr, combinedOutput, startedAt, finishedAt: new Date(), diskAdmission });
     });
     child.on('error', (err) => {
       resolvePromise({ code: 1, stdout, stderr: `${stderr}\nspawn error: ${err.message}`, startedAt, finishedAt: new Date(), diskAdmission });
@@ -421,6 +423,13 @@ async function main() {
     process.exit(2);
   }
   const manifestAbs = resolve(REPO_ROOT, manifestPath);
+  // Attribute sibling Cargo checkouts to the repository that actually compiled.
+  // No Git checkout means unmeasured provenance, never the script's own HEAD.
+  try {
+    REPO_ROOT = execFileSync('git', ['-C', dirname(manifestAbs), 'rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim();
+  } catch {
+    REPO_ROOT = dirname(manifestAbs);
+  }
   const crateDir = relative(REPO_ROOT, dirname(manifestAbs)).split(sep).join('/');
   const coverage = coverageRequested
     ? { outputPath: coverageOutput ? resolve(REPO_ROOT, coverageOutput) : cargoCoverageOutputPath(manifestAbs) }
@@ -433,8 +442,9 @@ async function main() {
       : `[report-cargo-tests] running: cargo test --manifest-path ${manifestPath} --no-fail-fast`,
   );
   const testRunReporter = await loadTestRunReporter();
+  testRunReporter?.setRunRoot?.(REPO_ROOT);
   const worktreeBefore = await snapshotWorktree(testRunReporter);
-  const { code, stdout, stderr, startedAt, finishedAt, diskAdmission } = await runCargoTest(manifestAbs, cargoArgs, coverage);
+  const { code, stdout, stderr, combinedOutput, startedAt, finishedAt, diskAdmission } = await runCargoTest(manifestAbs, cargoArgs, coverage);
   const worktree = cargoWorktreeProvenance({
     before: worktreeBefore,
     after: await snapshotWorktree(testRunReporter),
@@ -459,7 +469,8 @@ async function main() {
       }
     : classifyCargoRun({ code, output: combined, resultCount: results.length });
 
-  const rows = results.map((r) => ({
+  const measuredResults = parseCargoMeasuredTestResults(combinedOutput ?? combined);
+  const rows = measuredResults.map((r) => ({
     filePath: `${crateDir}::${r.name}`,
     status: r.outcome === 'ok' ? 'pass' : r.outcome === 'ignored' ? 'skip' : 'fail',
     durationMs: null,
@@ -472,6 +483,8 @@ async function main() {
       failed: r.outcome === 'FAILED' ? 1 : 0,
       skipped: r.outcome === 'ignored' ? 1 : 0,
       failedCaseTitles: r.outcome === 'FAILED' ? [r.name] : [],
+      passedCaseTitles: r.outcome === 'ok' ? [r.name] : [],
+      ...(r.testLayer ? { testLayer: r.testLayer } : {}),
     },
   }));
 
@@ -492,6 +505,7 @@ async function main() {
       skipped: results.filter((r) => r.outcome === 'ignored').length,
       collectionFailed: results.length === 0,
       failedCaseTitles: results.filter((r) => r.outcome === 'FAILED').map((r) => r.name),
+      passedCaseTitles: results.filter((r) => r.outcome === 'ok').map((r) => r.name),
     },
   });
 

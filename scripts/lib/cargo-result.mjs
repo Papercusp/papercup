@@ -143,12 +143,16 @@ function isCargoCaseTitle(value) {
  */
 export function buildCargoExecutionDetails({
   root, filePath, passed = 0, failed = 0, skipped = 0, collectionFailed = false,
-  failedCaseTitles = [], harnessSlug = null, workspaceId = null, env = process.env,
+  failedCaseTitles = [], passedCaseTitles = [], testLayer, harnessSlug = null, workspaceId = null, env = process.env,
   worktree = UNMEASURED_CARGO_WORKTREE,
 }) {
   const titles = collectionFailed
     ? []
     : [...new Set(failedCaseTitles.filter(isCargoCaseTitle))].slice(0, Math.min(MAX_CARGO_FAILED_CASES, failed));
+  const passingTitles = collectionFailed
+    ? []
+    : [...new Set(passedCaseTitles.filter(isCargoCaseTitle))]
+      .filter((title) => !titles.includes(title)).slice(0, Math.min(MAX_CARGO_FAILED_CASES, passed));
   return {
     schemaVersion: 1,
     root,
@@ -162,6 +166,8 @@ export function buildCargoExecutionDetails({
     skipped,
     collectionFailed,
     ...(titles.length > 0 ? { failedCaseTitles: titles } : {}),
+    ...(passingTitles.length > 0 ? { passedCaseTitles: passingTitles } : {}),
+    ...(testLayer === 'unit' || testLayer === 'integration' ? { testLayer } : {}),
     mutationPhase: resolveCargoMutationPhase(env),
     commitSha: worktree.commitSha,
     worktreeDirty: worktree.worktreeDirty,
@@ -1086,11 +1092,32 @@ export function stripCargoTerminalControlSequences(output) {
 export function parseCargoTestResultLines(output) {
   /** @type {CargoTestResult[]} */
   const results = [];
-  const re = /^test (\S+) \.\.\. (ok|FAILED|ignored)\s*$/gm;
+  const re = /^test (\S+) \.\.\. (ok|FAILED|ignored)(,[^\r\n]*)?[ \t]*$/gm;
   let match;
   const normalized = stripCargoTerminalControlSequences(output);
   while ((match = re.exec(normalized))) {
+    if (match[3] !== undefined && match[2] !== 'ignored') continue;
     results.push({ name: match[1], outcome: match[2] });
+  }
+  return results;
+}
+
+/** Cargo's target announcement, rather than a caller claim, supplies the layer.
+ * Keep stdout/stderr in arrival order: concatenating them after exit loses the
+ * association between a target and its result lines. Unannounced/doc tests have
+ * no measured layer. The legacy result parser supplies matching counts for callers
+ * that need only counts. */
+export function parseCargoMeasuredTestResults(output) {
+  const results = [];
+  let testLayer;
+  for (const line of stripCargoTerminalControlSequences(output).split('\n')) {
+    if (/^\s*Running unittests\s/.test(line)) testLayer = 'unit';
+    else if (/^\s*Running tests\//.test(line)) testLayer = 'integration';
+    else if (/^\s*(?:Running |Doc-tests |test result:)/.test(line)) testLayer = undefined;
+    const match = /^test (\S+) \.\.\. (ok|FAILED|ignored)(,[^\r\n]*)?[ \t]*$/.exec(line);
+    if (match && (match[3] === undefined || match[2] === 'ignored')) {
+      results.push({ name: match[1], outcome: match[2], ...(testLayer ? { testLayer } : {}) });
+    }
   }
   return results;
 }
