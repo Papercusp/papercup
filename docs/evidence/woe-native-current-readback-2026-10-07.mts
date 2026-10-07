@@ -6,7 +6,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { executeOperationalRun } from '../../packages/operator-core/lib/agent-tools/testing/record-run';
 import { computeWorkOnEverythingRollup } from '../../packages/operator-core/lib/scorecards';
-import { captureWorktreeSnapshot, computeWorktreeDirty } from '../../packages/operator-core/lib/testing-worktree';
+import { captureWorktreeSnapshotAsync, computeWorktreeDirty, type WorktreeGitSnapshot } from '../../packages/operator-core/lib/testing-worktree';
 import { listRuntimeVintage, measureRuntimeVintageEnvironment } from '../../packages/operator-core/lib/runtime-vintage';
 import { persistHarnessTestRunsWithIds } from '../../packages/operator-core/lib/testing-run-store';
 
@@ -14,7 +14,7 @@ const exec = promisify(execFile);
 const cardId = 'EI-24713330305263301';
 const rubricRef = 'work-on-everything-stewardship-health';
 const keys = ['plan-fleet-materialization', 'steering-through-claim-rails', 'frontier-scope-sovereignty'];
-const sourceObservations: ReturnType<typeof captureWorktreeSnapshot>[] = [];
+const sourceObservations: WorktreeGitSnapshot[] = [];
 async function read(tool: string, args: object) {
   const { stdout } = await exec('ptool', ['--url=http://127.0.0.1:3170', tool, '--json', JSON.stringify(args)],
     { timeout: 45_000, maxBuffer: 256 * 1024 });
@@ -71,9 +71,9 @@ const result = await executeOperationalRun({
 }, { workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp', projectDir: process.cwd() }, {
   // Delegate to the SAME real primitives as the executor defaults. Expose the
   // two exact reads rather than infer cleanliness from a later git status.
-  snapshot: root => {
+  snapshot: async root => {
     const started = Date.now();
-    const snapshot = captureWorktreeSnapshot(root);
+    const snapshot = await captureWorktreeSnapshotAsync(root);
     sourceObservations.push(snapshot);
     process.stderr.write(`${JSON.stringify({ sourceSnapshot: sourceObservations.length,
       elapsedMs: Date.now() - started, commit: snapshot.commit,

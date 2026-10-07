@@ -68,3 +68,24 @@ export function captureWorktreeSnapshot(cwd?: string): WorktreeGitSnapshot {
     porcelain: readGit(['status', '--porcelain', '--untracked-files=all']),
   };
 }
+
+/** Native async producers can await the shared sidecar Git runner rather than
+ * block their host on the synchronous reporter's two-second deadline. Keep
+ * unknown reads fail-closed and bracket status to detect source movement.
+ * The lazy import keeps synchronous reporter imports small.
+ */
+export async function captureWorktreeSnapshotAsync(root: string): Promise<WorktreeGitSnapshot> {
+  const { runGit } = await import('./harness/docs/git-runner');
+  try {
+    const head = await runGit(['--no-optional-locks', 'rev-parse', 'HEAD'], root);
+    const status = await runGit(['--no-optional-locks', 'status', '--porcelain', '--untracked-files=all'], root);
+    const after = await runGit(['--no-optional-locks', 'rev-parse', 'HEAD'], root);
+    return {
+      commit: head.code === 0 && after.code === 0 && head.stdout.trim() === after.stdout.trim()
+        ? head.stdout.trim() || null : null,
+      porcelain: status.code === 0 ? status.stdout.trim() : null,
+    };
+  } catch {
+    return { commit: null, porcelain: null };
+  }
+}

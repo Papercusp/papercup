@@ -102,6 +102,31 @@ describe('native operational execution witnesses', () => {
     expect(execution).not.toHaveProperty('runtimeEnvironmentAfter');
   });
 
+  it('awaits both source reads before execution and persistence, retaining unreadable provenance', async () => {
+    const f = fixture();
+    const order: string[] = [];
+    let releaseBefore!: (value: { commit: string; porcelain: string | null }) => void;
+    let releaseAfter!: (value: { commit: string; porcelain: string | null }) => void;
+    const snapshot = vi.fn()
+      .mockImplementationOnce(() => new Promise(resolve => { releaseBefore = resolve; }))
+      .mockImplementationOnce(() => new Promise(resolve => { releaseAfter = resolve; }));
+    f.deps.readRuntime.mockImplementation(async () => { order.push('runtime'); return f.fingerprint; });
+    f.definition.run.mockImplementation(async () => {
+      order.push('execute');
+      return { exitCode: 0, summary: 'Actual check passed.', assertions: [{ id: 'actual-result', passed: true, evidence: 'Observed' }] };
+    });
+    const pending = executeOperationalRun(f.definition, f.ctx, { ...f.deps, snapshot });
+    await vi.waitFor(() => expect(snapshot).toHaveBeenCalledTimes(1));
+    expect(order).toEqual([]);
+    releaseBefore({ commit: 'b'.repeat(40), porcelain: '' });
+    await vi.waitFor(() => expect(snapshot).toHaveBeenCalledTimes(2));
+    expect(order).toEqual(['runtime', 'execute', 'runtime']);
+    expect(f.deps.persist).not.toHaveBeenCalled();
+    releaseAfter({ commit: 'b'.repeat(40), porcelain: null });
+    expect(await pending).toMatchObject({ ok: true, status: 'pass' });
+    expect(f.deps.persist.mock.calls[0][0].worktreeDirty).toBe(true);
+  });
+
   it('retains source/runtime changes rather than laundering them into stable proof', async () => {
     const f = fixture();
     f.deps.snapshot.mockReturnValueOnce({ commit: 'a'.repeat(40), porcelain: '' });

@@ -27,7 +27,7 @@ import {
   stableRecordedRuntimeEnvironment,
 } from '@papercusp/test-config/execution-details';
 import { listRuntimeVintage, measureRuntimeVintageEnvironment } from '../../runtime-vintage';
-import { captureWorktreeSnapshot, computeWorktreeDirty, type WorktreeGitSnapshot } from '../../testing-worktree';
+import { captureWorktreeSnapshotAsync, computeWorktreeDirty, type WorktreeGitSnapshot } from '../../testing-worktree';
 import { runGit } from '../../harness/docs/git-runner';
 import {
   findHarnessTestRunIds,
@@ -467,11 +467,11 @@ export async function executeOperationalRun(
   },
   ctx: RecordContext,
   deps: {
-    snapshot: (root: string) => WorktreeGitSnapshot;
+    snapshot: (root: string) => WorktreeGitSnapshot | Promise<WorktreeGitSnapshot>;
     readRuntime: (units: string[], workspaceId: string) => Promise<string | null>;
     persist: RecordOperationalRunDeps['persist'];
   } = {
-    snapshot: captureWorktreeSnapshot,
+    snapshot: captureWorktreeSnapshotAsync,
     readRuntime: async (units, workspaceId) =>
       measureRuntimeVintageEnvironment(await listRuntimeVintage(workspaceId), units),
     persist: persistHarnessTestRunsWithIds,
@@ -504,7 +504,7 @@ export async function executeOperationalRun(
     } catch { return undefined; }
     finally { if (timer) clearTimeout(timer); }
   };
-  const before = deps.snapshot(root);
+  const before = await deps.snapshot(root);
   const runtimeEnvironmentBefore = await observe();
   const startedAt = new Date();
   let result: Pick<OperationalEvidenceArtifact, 'exitCode' | 'summary' | 'assertions'>;
@@ -517,7 +517,7 @@ export async function executeOperationalRun(
   }
   const finishedAt = new Date();
   const runtimeEnvironmentAfter = await observe();
-  const after = deps.snapshot(root);
+  const after = await deps.snapshot(root);
   // Explicit fields prevent a callback from smuggling timestamps, layer or pins.
   const artifact = operationalEvidenceArtifactSchema.parse({
     schemaVersion: 1, kind: 'operational-test-evidence', name: definition.name,
