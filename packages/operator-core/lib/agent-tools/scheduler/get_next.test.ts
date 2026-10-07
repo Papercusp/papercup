@@ -133,6 +133,7 @@ const planTerminalityInWorkspaceM = vi.hoisted(() =>
   vi.fn(async () => null as { status: string | null; hasOpenItems: boolean } | null),
 );
 const planHarnessesForSlugsM = vi.hoisted(() => vi.fn(async () => new Map<string, string[]>()));
+const gateWorkScopeM = vi.hoisted(() => vi.fn(async () => ({ allowed: true, reason: 'no-policy' })));
 // PARTIAL mock, deliberately: this module also exports PRESENCE_STALE_MS, which
 // presence-wakeability.ts -> fleet-roster.ts imports transitively. A whole-module factory
 // drops it and the mock fails at import time rather than in a test.
@@ -158,7 +159,7 @@ vi.mock('../../goals/holder-authority', async (importOriginal) => ({
 // connection) out of fake-timer tests, so a missing local database cannot become an unrelated
 // console error after the timeout watchdog settles.
 vi.mock('../../work-scope-policy', () => ({
-  gateWorkScope: vi.fn(async () => ({ allowed: true, reason: 'no-policy' })),
+  gateWorkScope: gateWorkScopeM,
   workScopeRefusal: vi.fn(),
 }));
 vi.mock('../../memory/claim-port', () => ({
@@ -1319,6 +1320,13 @@ describe('scheduler:get_next bounds every pre-claim await (EI-20228674494907304)
     getFlagM.mockResolvedValue(true);
     liveLockedPathsM.mockImplementation(() => new Promise(() => {}));
     await expectPreflightTimeout('live-lock-paths');
+  });
+
+  it('bounds the first-use work-scope policy gate before any claim attempt', async () => {
+    gateWorkScopeM.mockImplementationOnce(
+      () => new Promise<{ allowed: boolean; reason: string }>(() => {}),
+    );
+    await expectPreflightTimeout('work-scope-policy');
   });
 });
 

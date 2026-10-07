@@ -1305,19 +1305,6 @@ export default defineTool({
     // alternative (renaming ~15 call sites) would also have caught the unrelated
     // `args.harness` inside buildMissDiagnosis, which has its own `args` param.
     const args = { ...rawArgs, harness: inheritedHarness.slug };
-    // workspace-work-scope-policy-2026-09-04 P-006: a pull from a harness the workspace
-    // policy excludes is refused at the door — the work stays filed, never deleted.
-    {
-      const { gateWorkScope, workScopeRefusal } = await import('../../work-scope-policy');
-      const scope = await gateWorkScope('scheduler:get_next', { harness: args.harness, actor: ident.ownerId });
-      if (!scope.allowed) {
-        return {
-          content: [
-            { type: 'text' as const, text: JSON.stringify(workScopeRefusal(scope, { tool: 'scheduler:get_next' })) },
-          ],
-        };
-      }
-    }
     // P-016: reconcile ALL incompatible pre-existing claims before the next
     // pickup. The sweep is batch-shaped (one pass, one leader alert), so a dead
     // lane cannot drip one stale claim per wake. Only fleet MEMBERS are scoped;
@@ -1329,6 +1316,10 @@ export default defineTool({
     // caller's failure window to 120s. The timeout fallback is deliberately fail-closed: without
     // a resolved fleet scope it is unsafe to continue into the generic claim path.
     type PreflightState =
+      | {
+          kind: 'work-scope-refusal';
+          text: string;
+        }
       | {
           /** WI-5940: caller is at CRITICAL context pressure — serve a compact-first verdict. */
           kind: 'context-critical';
@@ -1371,10 +1362,23 @@ export default defineTool({
           specOn: boolean;
           contendedPaths: string[];
         };
-    let currentPreflightStep = 'context-pressure-flag';
+    let currentPreflightStep = 'work-scope-policy';
     const preflightBudgetMs = remainingBudgetMs();
     const preflight = await withBoundedTimeout<PreflightState | null>(
       async () => {
+        // P-006: keep the harness-scope gate inside the same deadline as every other
+        // pre-claim read. Its first-use policy prime reads operator state and can wait
+        // on PG connection acquisition; outside this budget it could consume the MCP
+        // 300s idle timeout without ever reaching the scheduler's watchdog.
+        currentPreflightStep = 'work-scope-policy';
+        const { gateWorkScope, workScopeRefusal } = await import('../../work-scope-policy');
+        const scope = await gateWorkScope('scheduler:get_next', { harness: args.harness, actor: ident.ownerId });
+        if (!scope.allowed) {
+          return {
+            kind: 'work-scope-refusal',
+            text: JSON.stringify(workScopeRefusal(scope, { tool: 'scheduler:get_next' })) ?? '{}',
+          };
+        }
         // WI-5940: refuse to SERVE a critical-context caller, with a compact-first verdict.
         //
         // FIRST inside the preflight, so it runs before any claim — the acceptance is "and no
@@ -1569,6 +1573,11 @@ export default defineTool({
       };
     }
     const preflightState = preflight.value;
+    if (preflightState.kind === 'work-scope-refusal') {
+      return {
+        content: [{ type: 'text' as const, text: preflightState.text }],
+      };
+    }
     // WI-5940: the compact-first verdict. Returned BEFORE every claim path below, so the
     // filing's "and no item is claimed" holds by construction rather than by inspection.
     if (preflightState.kind === 'context-critical') {
