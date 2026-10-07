@@ -16,7 +16,8 @@ const T2 = '2026-07-13T09:00:00.000Z';
 describe('typed external blocker history', () => {
   it.each(['event', 'gate', 'runtime', 'human'] as const)('gives a %s blocker a named next action and registered re-check date', (kind) => {
     const { blockers } = updateExternalBlockerHistory({}, { kind, ref: 'condition:one' }, 'su-a', T1);
-    expect(blockers[0]?.nextVerb).toContain('condition:one');
+    expect(blockers[0]?.ref).toBe('condition:one');
+    expect(blockers[0]?.nextVerb?.trim()).toBeTruthy();
     expect(blockers[0]?.recheckAt).toBe(kind === 'human' ? '2026-07-14T08:00:00.000Z' : T2);
   });
 
@@ -27,6 +28,7 @@ describe('typed external blocker history', () => {
     const replaced = updateExternalBlockerHistory({ externalBlockers: retained.blockers }, { kind: 'event', ref: 'condition:one', recheckAt: '2026-07-14T08:00:00Z' }, 'su-b', T2);
     expect(replaced.blockers[0]?.recheckAt).toBe('2026-07-14T08:00:00.000Z');
     expect(() => updateExternalBlockerHistory({}, { kind: 'event', ref: 'condition:one', recheckAt: 'tomorrow' }, 'su-a', T1)).toThrow('recheckAt');
+    expect(() => updateExternalBlockerHistory({}, { kind: 'event', ref: ' ' }, 'su-a', T1)).toThrow('ref must name');
     expect(updateExternalBlockerHistory({ externalBlockers: first.blockers }, { kind: 'event', ref: 'condition:one', clear: true }, 'su-b', T2).blockers[0]?.recheckAt).toBe(T2);
   });
 

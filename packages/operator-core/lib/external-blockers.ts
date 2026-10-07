@@ -283,11 +283,12 @@ export function updateExternalBlockerHistory(
     return { blockers, changed: true };
   }
 
+  if (!input.ref.trim()) throw new Error('blocker ref must name a condition');
   const current = index === undefined ? undefined : blockers[index];
   const capability = input.capability ?? current?.capability ?? inferExternalBlockerCapability(input.kind);
   const hold = assertHoldRegistered('blocker', capability);
   const nextVerb = input.nextVerb?.trim() || current?.nextVerb?.trim() ||
-    `${externalBlockerCapabilityPolicy(capability).recommendedAction} Condition: ${input.ref}.`;
+    externalBlockerCapabilityPolicy(capability).recommendedAction;
   const requestedRecheck = input.recheckAt?.trim();
   if (requestedRecheck && !Number.isFinite(Date.parse(requestedRecheck))) {
     throw new Error('recheckAt must be a parseable timestamp');
