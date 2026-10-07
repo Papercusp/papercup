@@ -2241,7 +2241,12 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
     const attestedDimensions: OpaqueFingerprintDimension[] =
       measured?.status === 'measured'
         ? [
-            ...(row.fixture_fingerprint !== null && callerCurrent?.fixtureFingerprint != null
+            // Repo-files measurements include fixturePaths. Do not downgrade a
+            // server-measured fixture fingerprint to caller-attested merely because
+            // the rerun recipe also carries its original current tuple (EI-248065476).
+            ...(row.fixture_fingerprint !== null &&
+            callerCurrent?.fixtureFingerprint != null &&
+            measured.current.fixtureFingerprint == null
               ? (['fixture'] as const)
               : []),
             ...(row.rubric_fingerprint !== null && callerCurrent?.rubricFingerprint != null
