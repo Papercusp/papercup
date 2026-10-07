@@ -6,8 +6,8 @@
   "population": {
     "failedFiles": 124,
     "repairedFocused": 14,
-    "repairedPeerFocused": 10,
-    "openUnknown": 100
+    "repairedPeerFocused": 11,
+    "openUnknown": 99
   },
   "classes": {
     "assertion": 62,
@@ -15,7 +15,8 @@
     "missing-schema": 16,
     "blueprint-fixture": 1,
     "console-guard": 10,
-    "unclassified": 13,
+    "unclassified": 12,
+    "peer-dial-process-isolation": 1,
     "legacy-rubric-replay": 1,
     "goal-budget-fixture": 1,
     "peer-db-schema-notify": 4,
@@ -440,7 +441,7 @@
         14938
       ],
       "registeredRepairItem": "WI-10007122",
-      "repairStage": "verified-focused-content-settlement-pending",
+      "repairStage": "verified-focused-committed-content",
       "rootCause": "Historical1004 replay updates status then builds an index in one batch against migrated1279 deferred status triggers. The fixture now replays under transaction-local immediate constraint checking; production migrations and deferred trigger stay intact, and retired duplicate preservation still passes.",
       "beforeTestRun": 20893427,
       "afterTestRun": 20893439,
@@ -449,7 +450,8 @@
       "testSha256": "313d4745e60f294b28c9c82b0aef5406b3e02657318e6e39bd6871fa48568a84",
       "testedHead": "5363ccca831a67b0aea485f35f70410c2639ff18",
       "worktreeDirty": true,
-      "focusedLimit": "Causal named-file local execution only; no complete import/environment or finalD006 assurance. Content authority settles automatically after exact blobs commit."
+      "focusedLimit": "Causal named-file local execution only; no complete import/environment or finalD006 assurance. Content authority settles automatically after exact blobs commit.",
+      "committedContentRef": "ef934009deecb47896924f1eccc4beb4afaafe6c"
     },
     {
       "path": "packages/operator-core/lib/workspace-host/lifecycle-runner.restore.integration.test.ts",
@@ -558,13 +560,32 @@
     },
     {
       "path": "packages/operator-core/lib/sync/pot-git/peer-dial-registry.integration.test.ts",
-      "class": "unclassified",
-      "state": "open-unknown",
-      "item": "WI-10006170",
+      "class": "peer-dial-process-isolation",
+      "state": "repaired-peer-focused",
+      "item": "WI-10006889",
       "lines": [
         15418,
         15431
-      ]
+      ],
+      "historicalSymptomClass": "unclassified",
+      "diagnosis": "Both archived late-peer-wire and fence-25 timeouts match the committed repair: simulated boxes shared process-global last-wire-wins signer state. The maintained test now gives box B its own module graph and asserts distinct registries plus absence of self-registration.",
+      "completionAuthority": "committed",
+      "afterTestRun": 20854195,
+      "receiptRunGroup": "d062aa6b-bf96-4740-8a5c-c9a9d21a129a",
+      "receiptCommit": "b7e4e4e4180b42f94d1781878808279e674cea23",
+      "worktreeDirty": true,
+      "isScratchConfig": false,
+      "testSha256": "1dcf896980532ed46475540315e3a9d9f4a84f5efa44d54952f8d9040f10595e",
+      "settledCommit": "781edde2d8c6d34695f6750e0cc89debad7d9ed7",
+      "settledTestBlob": "17a493778ce5de5ee78f6dff18b3515b8a24f90e",
+      "testFileAtSettlementMatchesCurrent": true,
+      "recurrenceGuard": "Two module-isolation positive controls and no-self-registration assertions; stored mutation verification removes vi.resetModules and reports 4 failures versus a 12-case passing baseline.",
+      "completeImportGraphCurrentness": "unknown",
+      "currentReproduction": {
+        "runId": "31a00f98-87e1-4abe-b109-57d0bf4e06a4",
+        "status": "running",
+        "scope": "Fresh focused peer-dial and substrate-compaction pair; original foreground attempt reached its 25-second cap and automatically launched this durable recovery. This pending run is not a passing receipt."
+      }
     },
     {
       "path": "packages/operator-core/lib/sync/hyperbee/outbox-drain.integration.test.ts",
@@ -814,7 +835,7 @@
         13725
       ],
       "registeredRepairItem": "WI-10007123",
-      "repairStage": "verified-focused-content-settlement-pending",
+      "repairStage": "verified-focused-committed-content",
       "rootCause": "Fresh isolated fixture had no priced goal-attributed usage, so the real budget resolver correctly refused unmeasured spend before launch. Fixture reuses the maintained interactive priced-sample pattern; a new empty-stream control still refuses with no launch and no sample.",
       "beforeTestRun": 20893438,
       "afterTestRun": 20893449,
@@ -823,7 +844,8 @@
       "testSha256": "ca2362e6cf92e525790da0434c37596fe59ce7040d91a4487350f75955d90526",
       "testedHead": "5363ccca831a67b0aea485f35f70410c2639ff18",
       "worktreeDirty": true,
-      "focusedLimit": "Causal named-file local execution only; no complete import/environment or finalD006 assurance. Content authority settles automatically after exact blobs commit."
+      "focusedLimit": "Causal named-file local execution only; no complete import/environment or finalD006 assurance. Content authority settles automatically after exact blobs commit.",
+      "committedContentRef": "ef934009deecb47896924f1eccc4beb4afaafe6c"
     },
     {
       "path": "packages/operator-core/lib/harness/join-hive-from-repo-incremental-federation.integration.test.ts",
@@ -959,7 +981,7 @@
         15204
       ],
       "registeredRepairItem": "WI-10007121",
-      "repairStage": "verified-focused-content-settlement-pending",
+      "repairStage": "verified-focused-committed-content",
       "rootCause": "Fixture seeded simultaneous wildcard and prior-slug rows for one owner-loop role, forbidden by migration939. Independent cases now prove real GC cleanup at each valid historical location while retaining active-loop and workspace controls.",
       "beforeTestRun": 20893426,
       "afterTestRun": 20893437,
@@ -968,7 +990,8 @@
       "testSha256": "2add4c19359544ba076fb8f72fe3cb5c6665a073e56d0ce700d7a47cc728d7fd",
       "testedHead": "5363ccca831a67b0aea485f35f70410c2639ff18",
       "worktreeDirty": true,
-      "focusedLimit": "Causal named-file local execution only; no complete import/environment or finalD006 assurance. Content authority settles automatically after exact blobs commit."
+      "focusedLimit": "Causal named-file local execution only; no complete import/environment or finalD006 assurance. Content authority settles automatically after exact blobs commit.",
+      "committedContentRef": "ef934009deecb47896924f1eccc4beb4afaafe6c"
     },
     {
       "path": "packages/operator-core/lib/deployment/p2p-perf-tier3/p2p-perf-tier3.integration.test.ts",
@@ -1978,7 +2001,7 @@
     },
     {
       "class": "unclassified",
-      "count": 13,
+      "count": 12,
       "status": "open-unknown",
       "item": "WI-10006170",
       "owner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
@@ -2144,6 +2167,16 @@
       "rootCause": "Stored normal committed closure: required1312 missing and inherited dark behavior precondition; realPG privacy/LWW/OFF guards preserved."
     },
     {
+      "class": "peer-dial-process-isolation",
+      "count": 1,
+      "status": "repaired-peer-focused",
+      "item": "WI-10006889",
+      "rootCause": "Two simulated boxes shared one process-global signer registry. Box B now uses a separate module graph; the stored signer trace and isolation mutation distinguish this cause from frame loss or timing.",
+      "commit": "781edde2d8c6d34695f6750e0cc89debad7d9ed7",
+      "testRunIds": [20854195],
+      "next": "Retain committed focused repair evidence and dirty-receipt limit; consume the separately pending current reproduction. Full import/environment readiness and final D006 remain unverified."
+    },
+    {
       "class": "owner-loop-fixture",
       "count": 1,
       "status": "repaired-focused",
@@ -2155,7 +2188,8 @@
         20893426,
         20893437
       ],
-      "next": "Automatic exact-content settlement; no unchanged completion replay or finalD006/readiness claim."
+      "next": "Retain committed focused repair evidence; no unchanged completion replay or finalD006/readiness claim.",
+      "commit": "ef934009deecb47896924f1eccc4beb4afaafe6c"
     },
     {
       "class": "legacy-rubric-replay",
@@ -2169,7 +2203,8 @@
         20893427,
         20893439
       ],
-      "next": "Automatic exact-content settlement; no unchanged completion replay or finalD006/readiness claim."
+      "next": "Retain committed focused repair evidence; no unchanged completion replay or finalD006/readiness claim.",
+      "commit": "ef934009deecb47896924f1eccc4beb4afaafe6c"
     },
     {
       "class": "goal-budget-fixture",
@@ -2183,7 +2218,8 @@
         20893438,
         20893449
       ],
-      "next": "Automatic exact-content settlement; no unchanged completion replay or finalD006/readiness claim."
+      "next": "Retain committed focused repair evidence; no unchanged completion replay or finalD006/readiness claim.",
+      "commit": "ef934009deecb47896924f1eccc4beb4afaafe6c"
     }
   ],
   "prerequisites": [
