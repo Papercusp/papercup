@@ -464,3 +464,43 @@ describe('gatherOnDesktopSessions targeted owner lookup', () => {
     expect(full.owners).toEqual(new Set(['su-full']));
   });
 });
+
+describe('gatherOnDesktopSessions full-roster ancestry fanout', () => {
+  it('bounds independent host walks and keeps successful matches when one proc read fails', async () => {
+    const hosts = Array.from({ length: 12 }, (_, i) => ({ ownerId: `su-${i}`, pid: 1_000 + i }));
+    const rows = hosts.map((host, i) => ({
+      id: i + 1,
+      coord_owner_id: host.ownerId,
+      session_id: `session-${i}`,
+      window_id: null,
+      pid: null,
+    }));
+    let activeReads = 0;
+    let maxActiveReads = 0;
+    const diagnostics: Array<{ name: string; elapsedMs: number; status: 'ok' | 'error' }> = [];
+
+    const result = await gatherOnDesktopSessions({
+      ttlMs: 0,
+      deps: {
+        listWindows: async () => [{ wid: '0x1', pid: 99, title: 'Terminal' }],
+        listCandidates: async () => rows,
+        listHosts: async () => hosts,
+        readStat: async (pid) => {
+          activeReads++;
+          maxActiveReads = Math.max(maxActiveReads, activeReads);
+          await new Promise<void>((resolve) => setTimeout(resolve, 5));
+          activeReads--;
+          if (pid === 1_005) throw new Error('transient proc read failure');
+          return `${pid} (psu-pty-host) S 99 ${pid} ${pid} 0 -1 0`;
+        },
+      },
+      onDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+    });
+
+    expect(maxActiveReads).toBeGreaterThan(1);
+    expect(maxActiveReads).toBeLessThanOrEqual(8);
+    expect(result.owners).toEqual(new Set(hosts.filter((host) => host.pid !== 1_005).map((host) => host.ownerId)));
+    expect(result.sessionIds).toEqual(new Set(rows.filter((row) => row.id !== 6).map((row) => row.session_id)));
+    expect(diagnostics.find(({ name }) => name === 'pidAncestry')?.status).toBe('ok');
+  });
+});

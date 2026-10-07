@@ -69,6 +69,7 @@ import {
   getOnDesktopWindowsCache,
   type WindowsDesktopWindow,
 } from './windows-desktop-windows';
+import { mapWithConcurrency } from './gym/concurrency';
 
 
 /** One currently-open window (only the fields we match sessions on). */
@@ -324,6 +325,8 @@ export function parsePpidFromStat(stat: string): number | null {
 /** Ancestry depth cap — a real desktop chain is ~3 (host ← shell ← emulator);
  *  32 is a loop/corruption guard, not a tuning knob. */
 const ANCESTRY_MAX_DEPTH = 32;
+/** Bound independent live-host ancestry walks so a large roster does not serialize /proc reads. */
+const DESKTOP_ANCESTRY_CONCURRENCY = 8;
 
 async function defaultReadStat(pid: number): Promise<string | null> {
   try {
@@ -545,16 +548,30 @@ export async function gatherOnDesktopSessions(
           }
         }
         await timeStep('pidAncestry', async () => {
-          for (const h of hosts) {
-            if (!h.ownerId || !h.pid) continue;
-            if (sets.owners.has(h.ownerId)) continue; // already matched by handle
-            if (await pidHasWindowAncestor(h.pid, winPids, opts.deps?.readStat ?? defaultReadStat)) {
-              sets.owners.add(h.ownerId);
-              for (const r of rows) {
-                if (r.coord_owner_id !== h.ownerId) continue;
-                if (r.session_id) sets.sessionIds.add(r.session_id);
-                sets.advSessionIds.add(r.id);
+          const matchedOwners = await mapWithConcurrency(
+            hosts,
+            DESKTOP_ANCESTRY_CONCURRENCY,
+            async (h) => {
+              if (!h.ownerId || !h.pid || sets.owners.has(h.ownerId)) return null;
+              try {
+                return await pidHasWindowAncestor(
+                  h.pid,
+                  winPids,
+                  opts.deps?.readStat ?? defaultReadStat,
+                ) ? h.ownerId : null;
+              } catch {
+                // One host's transient proc-read failure must not erase other matches.
+                return null;
               }
+            },
+          );
+          for (const ownerId of matchedOwners) {
+            if (!ownerId) continue;
+            sets.owners.add(ownerId);
+            for (const r of rows) {
+              if (r.coord_owner_id !== ownerId) continue;
+              if (r.session_id) sets.sessionIds.add(r.session_id);
+              sets.advSessionIds.add(r.id);
             }
           }
         });
