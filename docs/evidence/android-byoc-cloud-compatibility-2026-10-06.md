@@ -300,9 +300,23 @@ and isolated-emulator handoff in
 `coord-send-74b247100750ce01a7dbd390c8864bc3c2ba124e73fc400e6de4f73ddf88bf1d`.
 The producer's active emulator is not a parent-owned execution resource.
 
-Native integration is still open, and the result's dirty source fingerprints are not an
-as-committed release proof. Exact APK/portal/runtime acceptance, complete hosted and genuine
-BYOC no-LAN journeys, and the remaining operational checks still keep P-015 open.
+The subsequent canonical read shows native `WI-10006994` is `done` with completion authority
+`proposed`: its producer reports only the durable evidence JSON is awaiting automatic commit
+settlement, with the other declared source paths proved. This is not a committed-close claim.
+The result's dirty source fingerprints are not an as-committed release proof. Exact
+APK/portal/runtime acceptance, complete hosted and genuine BYOC no-LAN journeys, and the
+remaining operational checks still keep P-015 open.
+
+The producer released emulator `5584` for parent acceptance in
+`coord-send-63e6dd1a18006a71ae4ef674d58d5d09c73e01d0e72997df5be1549d93037889` and
+`coord-send-de843d1edef81497b7811c2bf62b8285ea5ea08004acd2ed7c884d48d52b8f43`.
+Its owned guest is clean/uninstalled, with no producer process or reverse mapping pending.
+Peer emulator `5582` remains outside this handoff; the parent must select `5584` explicitly.
+The producer then corrected the shared debug output in
+`coord-send-367d8f45eb905d46c0d377e8200348f38d819fe7eea542e8b2d63930b60e36b6`:
+its new measured hash is `7ee90600abf3d4f135023c3371ca8ef4c5e7cab1afb01313d36f7b22c2e3460a`.
+The interop hash above remains historical proof. Shared build output can advance again;
+parent acceptance must capture and verify its exact current APK before installation.
 
 ## Historical discovery — 2026-10-06
 
