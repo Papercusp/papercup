@@ -9,10 +9,12 @@
  */
 import { promises as fs } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
+import { acceptanceBarSourceContractProblems, validateAcceptanceBarSource } from '../acceptance-bar-seed';
 import {
   fakeRegistry,
   FOLLOW_SLUG,
@@ -90,6 +92,36 @@ beforeEach(async () => {
 });
 
 describe('trigger-pack materialization (R-8)', () => {
+  it('gives every first-party trigger-pack plan a seedable acceptance BAR source', async () => {
+    const pluginRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../libs/papercusp/plugins');
+    const entries = await fs.readdir(pluginRoot, { withFileTypes: true });
+    const templates: Array<{ name: string; path: string; content: string }> = [];
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const pluginDir = join(pluginRoot, entry.name);
+      let manifest: { name?: string; triggerPack?: { targets?: Array<{ kind?: string; path?: string }> } };
+      try {
+        manifest = JSON.parse(await fs.readFile(join(pluginDir, 'papercusp.json'), 'utf8')) as typeof manifest;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+        throw error;
+      }
+      if (!manifest.name?.startsWith('@papercupai/')) continue;
+      for (const target of manifest.triggerPack?.targets ?? []) {
+        if (target.kind !== 'plan') continue;
+        if (!target.path) throw new Error(`${manifest.name} has a plan target without a path`);
+        templates.push({ name: manifest.name, path: target.path, content: await fs.readFile(join(pluginDir, target.path), 'utf8') });
+      }
+    }
+    expect(templates.length).toBeGreaterThan(0);
+    for (const template of templates) {
+      const label = `${template.name}/${template.path}`;
+      const parsed = validateAcceptanceBarSource(template.content);
+      if (!parsed.ok) throw new Error(`${label}: ${parsed.problems.map(problem => problem.code).join(', ')}`);
+      expect(acceptanceBarSourceContractProblems(parsed.bars, parsed.mappings), label).toEqual([]);
+    }
+  });
+
   it('materializes plans and disarmed bindings bound to installer-local sources and inputs', async () => {
     const outlook = await createExternalTriggerSource(sql, WS, { kind: 'outlook-fixture', status: 'connected' });
 
