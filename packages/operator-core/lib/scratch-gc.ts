@@ -640,8 +640,19 @@ export function reserveScratchSpace(opts: {
  * No synchronous tree scan, no quota increase, and no eviction for an impossible single write.
  * Active/waiting reference paths are protected; concurrent callers share one recovery.
  */
+/** Per-write, disjoint elapsed phases. Recovery work belongs to its initiating writer;
+ * other writers record the time awaiting that shared recovery as quotaWaitMs. */
+export interface ScratchWriteTimings {
+  quotaWaitMs: number;
+  refreshWaitMs: number;
+  quotaRecoveryMs: number;
+  writeMs: number;
+  totalMs: number;
+}
+
 export async function writeWithScratchQuota(
-  opts: { workspaceId: string; filePath: string; bytes: number },
+  opts: { workspaceId: string; filePath: string; bytes: number;
+    onTiming?: (timings: ScratchWriteTimings) => void },
   write: () => Promise<void>,
 ): Promise<void> {
   if (!Number.isSafeInteger(opts.bytes) || opts.bytes < 0 || opts.bytes > WORKSPACE_QUOTA_BYTES) {
@@ -651,31 +662,43 @@ export async function writeWithScratchQuota(
   const token = Symbol();
   const pending = { filePath: opts.filePath, bytes: opts.bytes, reserved: false };
   entry.writes.set(token, pending);
+  const startedAt = performance.now();
+  const timings: ScratchWriteTimings = {
+    quotaWaitMs: 0, refreshWaitMs: 0, quotaRecoveryMs: 0, writeMs: 0, totalMs: 0,
+  };
+  const timed = async (phase: Exclude<keyof ScratchWriteTimings, 'totalMs'>, run: () => Promise<void>) => {
+    const start = performance.now();
+    try { await run(); } finally { timings[phase] += Math.max(0, performance.now() - start); }
+  };
   let succeeded = false;
   try {
-    if (entry.recovering) await entry.recovering;
+    if (entry.recovering) await timed('quotaWaitMs', () => entry.recovering!);
     try {
       reserveScratchSpace(opts);
     } catch (err) {
       if (!(err instanceof ScratchQuotaError)) throw err;
+      const startsRecovery = !entry.recovering;
       if (!entry.recovering) {
         entry.recovering = (async () => {
-          if (entry.refreshing) await entry.refreshing;
+          if (entry.refreshing) await timed('refreshWaitMs', () => entry.refreshing!);
           // Waiters have not touched disk, so they do not invalidate a background walk.
           // Reuse its reconciled total when it already makes room for the queued writes;
           // otherwise every stale-quota spill pays for the same full-tree scan twice.
           const waitingBytes = [...entry.writes.values()].reduce((sum, request) =>
             sum + (request.reserved ? 0 : request.bytes), 0);
           if (entry.bytes + waitingBytes <= WORKSPACE_QUOTA_BYTES) return;
-          await evictWorkspaceQuota(opts.workspaceId, () => Math.max(0, WORKSPACE_QUOTA_BYTES -
-            [...entry.writes.values()].reduce((sum, request) => sum + request.bytes, 0)), true);
+          await timed('quotaRecoveryMs', async () => {
+            await evictWorkspaceQuota(opts.workspaceId, () => Math.max(0, WORKSPACE_QUOTA_BYTES -
+              [...entry.writes.values()].reduce((sum, request) => sum + request.bytes, 0)), true);
+          });
         })().finally(() => { entry.recovering = null; });
       }
-      await entry.recovering;
+      if (startsRecovery) await entry.recovering;
+      else await timed('quotaWaitMs', () => entry.recovering!);
       reserveScratchSpace(opts); // still full/protected/unreclaimable ⇒ explicit, bounded refusal
     }
     pending.reserved = true;
-    await write();
+    await timed('writeMs', write);
     succeeded = true;
   } finally {
     entry.writes.delete(token);
@@ -685,6 +708,9 @@ export async function writeWithScratchQuota(
       pending.reserved = false;
     }
     scheduleDeferredUsageRefresh(opts.workspaceId, entry);
+    timings.totalMs = Math.max(0, performance.now() - startedAt);
+    // Diagnostic observers must never replace a write failure or invalidate a readable cursor.
+    try { opts.onTiming?.(timings); } catch { /* diagnostics only */ }
   }
 }
 

@@ -17,6 +17,7 @@ import {
   RETENTION_MS,
   markNewWorkspaceScratchRoot,
   markNewWorkspaceScratchRootSync,
+  type ScratchWriteTimings,
 } from './scratch-gc';
 
 export const SCRATCH_REFERENCE_SCHEMA_VERSION = 'papercusp.scratch-reference/v1' as const;
@@ -194,6 +195,8 @@ export function writeScratchReference(input: {
    * event-loop sentinel to SIGKILL the operator with every in-flight MCP call.
    */
   deferredWrites?: Promise<void>[];
+  /** Request-local phase observer; no paths, payloads or caller identifiers are reported. */
+  onScratchWriteTiming?: (timings: ScratchWriteTimings) => void;
 }): ScratchReferenceManifest {
   const payload = Buffer.isBuffer(input.payload) ? input.payload : Buffer.from(input.payload, 'utf8');
   const nowMs = input.nowMs ?? Date.now();
@@ -227,7 +230,8 @@ export function writeScratchReference(input: {
   const bytes = Buffer.concat([header, payload]);
   if (input.deferredWrites) {
     const filePath = input.filePath;
-    const write = writeWithScratchQuota({ workspaceId: input.workspaceId, filePath, bytes: bytes.length }, async () => {
+    const write = writeWithScratchQuota({ workspaceId: input.workspaceId, filePath, bytes: bytes.length,
+      onTiming: input.onScratchWriteTiming }, async () => {
       // WI-10006512: a root this mkdir creates is marked as a workspace scratch root, so the
       // scratch GC can later prove it is ours before deleting it.
       await markNewWorkspaceScratchRoot(

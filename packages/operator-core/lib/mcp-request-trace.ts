@@ -1,6 +1,7 @@
 /** Shared, bounded correlation contract for the local MCP proxy → operator hop. */
 import { createHash } from 'node:crypto';
 import { headersFromExtra, urlFromExtra } from '@papercusp/tooldef-mcp';
+import type { ScratchWriteTimings } from './scratch-gc';
 
 export const MCP_REQUEST_TRACE_HEADER = 'x-papercusp-mcp-trace-id';
 export const MAX_MCP_REQUEST_TRACE_ID_CHARS = 36;
@@ -49,6 +50,8 @@ export interface McpRequestTraceEvent {
     resultDoor: number | null;
     advisory: number | null;
     advisoryFlagReads: number;
+    /** Cumulative phases across this request's spill writes; concurrent writes may overlap. */
+    scratchWrites?: ScratchWriteTimings & { count: number };
   };
 }
 

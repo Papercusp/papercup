@@ -46,6 +46,7 @@
 
 import { createHash, randomUUID } from 'node:crypto';
 import { dirname } from 'node:path';
+import type { ScratchWriteTimings } from './scratch-gc';
 import { projectBoundedPayload, type BulkEnvelopeProjectionOpts } from '@papercusp/tooldef';
 import { CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from './context-doors';
 import { getDoorConstantsSync } from './context-doors-config';
@@ -123,6 +124,8 @@ export interface ResultDoorOpts {
    * this by hand — it awaits the writes and never returns a dangling cursor.
    */
   deferredScratchWrites?: Promise<void>[];
+  /** Phase attribution for awaited spill writes, including failed writes. */
+  onScratchWriteTiming?: (timings: ScratchWriteTimings) => void;
   /** Internal replay of a deferred failure: cap honestly without retrying filesystem I/O. */
   scratchWriteFailure?: { error: unknown };
 }
@@ -982,6 +985,7 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
       content: contentMetadata(input.result.content),
       evidence,
       deferredWrites: input.opts.deferredScratchWrites,
+      onScratchWriteTiming: input.opts.onScratchWriteTiming,
       // This spill path stores the JSON MCP content envelope directly as the
       // scratch payload. Declare byte zero as its machine-readable body so the
       // manifest has the same explicit framing contract as shaped text spills.
@@ -1691,6 +1695,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
           content: contentMetadata(items),
           evidence: spillEvidence,
           deferredWrites: opts.deferredScratchWrites,
+          onScratchWriteTiming: opts.onScratchWriteTiming,
           // EI-21949915395361184: put the boundary IN THE FILE, not only in the cursor
           // this call returns. Ten reports across five months all describe the same
           // consumer — one holding the path and nothing else — and every guess that

@@ -4562,6 +4562,8 @@ export function registerMcpHost(server: McpServer): void {
             resultDoor: number | null;
             advisory: number | null;
             advisoryFlagReads: number;
+            scratchWrites?: { count: number; quotaWaitMs: number; refreshWaitMs: number;
+              quotaRecoveryMs: number; writeMs: number; totalMs: number };
           };
         } = {
           toolOutcome: null,
@@ -4579,6 +4581,7 @@ export function registerMcpHost(server: McpServer): void {
             resultDoor: raced.phaseTimingsMs.resultDoor,
             advisory: raced.phaseTimingsMs.advisory,
             advisoryFlagReads: raced.phaseTimingsMs.advisoryFlagReads,
+            ...(raced.phaseTimingsMs.scratchWrites ? { scratchWrites: raced.phaseTimingsMs.scratchWrites } : {}),
           },
         });
         const readAdvisoryFlag = async (flag: Parameters<typeof getFlag>[0]): Promise<boolean> => {
@@ -4736,6 +4739,16 @@ export function registerMcpHost(server: McpServer): void {
                   toolName,
                   nestedTargetToolName,
                   workspaceId: dispatchSpawnCtx.workspaceId,
+                  onScratchWriteTiming: (timings) => {
+                    const total = raced.phaseTimingsMs.scratchWrites ??= {
+                      count: 0, quotaWaitMs: 0, refreshWaitMs: 0,
+                      quotaRecoveryMs: 0, writeMs: 0, totalMs: 0,
+                    };
+                    total.count += 1;
+                    for (const phase of ['quotaWaitMs', 'refreshWaitMs', 'quotaRecoveryMs', 'writeMs', 'totalMs'] as const) {
+                      total[phase] += timings[phase];
+                    }
+                  },
                   runId: dispatchSpawnCtx.runId ?? null,
                   // P-023: key the per-session door override on the SAME identity
                   // config:doors-set-session stamps (resolveAgentIdentity, never runId).
