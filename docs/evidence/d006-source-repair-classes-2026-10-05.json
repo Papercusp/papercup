@@ -1876,6 +1876,27 @@
       "class": "console-guard",
       "state": "open-unknown",
       "item": "WI-10006170",
+      "focusedDiagnosis": {
+        "repairItem": "WI-10007236",
+        "rootCause": "The fixture mocked only embedded-pg-discovery. The layout pool used the isolated org database, while notifyDockLayout's real sync-sse sink resolved getOrgPg through the ambient db-org resolver. Baseline20903928 reproduced the WRONG STORE diagnostic with pool:admin; the original run-start test bytes exactly match the baseline test bytes.",
+        "repair": "Reuse setupBaselineCoordFixture({dsn:db.adminDsn}) to route both real resolvers and reset their caches. Remove the redundant discovery mock rather than adding private reset stubs. Close the actual layout pool and dispose the maintained fixture before dropping its database. Production identity and notification guards are unchanged.",
+        "recurrenceGuard": "Retain all original eight real-PG cases; add actual layout/notification pool identity comparisons against the isolated database and verify a layout write emits its scoped dockLayouts.byName payload through real PG LISTEN/NOTIFY on that database.",
+        "baseline": { "id": 20903928, "failed": 1, "passed": 7, "skipped": 0, "testSha256": "858c0bfed9d77a19ddd8b54c570e80c0229358998a8d4697a5969530051e8a89", "log": "/tmp/d006-dock-baseline.log", "logSha256": "471e4bc8a1979a423211498db551818d66d6c3873fab4a89aeb67d161da0a45f" },
+        "harnessAudit": "First repair attempt20904028 failed before execution (nine skips): the original discovery mock lacked the maintained helper's reset export. Audited both distinct failure classes before rerunning; removed the entire mock so future resolver/reset exports stay real.",
+        "localVerification": {
+          "runs": [20904047, 20904073], "passedEach": 9, "skippedEach": 0, "exitEach": 0,
+          "testSha256": "4e1ca3761ef8f41cad5f3c35126742d32a9a3ef6bbd15db9e45e82ffb1f6684c",
+          "source": "local", "workspace": "papercusp-workspace", "harness": "papercusp", "isScratchConfig": false,
+          "logs": [
+            { "path": "/tmp/wi-10007236-dock-verified.log", "sha256": "d4b7a837ba67bfd32ceeea7aa994f587c39fc83dffe1ff89acab48384921fa8e" },
+            { "path": "/tmp/wi-10007236-dock-confirmed.log", "sha256": "9e3d9202c3c36a7375e920f3d7bbad631f2545082589712e54394d2752882079" }
+          ],
+          "namedFileState": "First pass dirty; confirmation named file clean and unchanged across pre/post stamps. Ledger repository worktreeDirty=true for both runs.",
+          "provenance": "UNKNOWN for both wrapper runs: HEAD moved91b5c4caa8→c0da0103e6 and d8274ee5d5→3d78882961. Actual assertions passed, but imported source/change radius was not measured. No settled-HEAD/current-full-source assurance is claimed. Keep census row open-unknown until the remaining verification is addressed."
+        },
+        "typecheck": { "checked": 1, "errors": 0, "exit": 0, "log": "/tmp/wi-10007236-dock-tsc.log", "logSha256": "c858f827f0766193ee3e25c572523cc5d1cc47b1beb55593588f9334e5394754", "scope": "Named test only through the shared typecheck service; not full project/import assurance." },
+        "limits": "Named original fixture equality and current causal diagnosis are measured. Full original/current imports/environment, settled-HEAD verification, final D006/P004 acceptance and shipment remain unverified. Parent remains accountable and all original population/class counts are preserved."
+      },
       "lines": [
         12797
       ]
@@ -2700,7 +2721,7 @@
               12803
             ],
             "observed": "console.error refuses WRONG STORE: pinned throwaway org database on localhost32769 but observed papercusp on localhost5432",
-            "placement": "No candidate returned by the bounded exact-filename work-item search; this is not evidence of absence. Parent retains diagnosis/placement custody."
+            "placement": "WI-10007236 is self-assigned under parent-goal admission. Original test bytes match baseline20903928; split resolver reproduced. Maintained fixture repair and real identity/notification guard passed9/0skip in20904047 and20904073, but both wrapper verdicts have HEAD-moved UNKNOWN import provenance. Parent retains open-unknown custody and unchanged census pending qualified current verification."
           }
         ]
       },
