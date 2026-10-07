@@ -24,7 +24,8 @@ import type { FullConfig, Reporter, TestCase, TestResult } from '@playwright/tes
 import { resolveGitContext } from '@papercusp/operator-core/lib/testing-branch-resolve';
 import { resolveAgentWorkspaceRoot } from '@papercusp/operator-core/lib/agent-tools/capability/base-dir';
 import {
-  captureWorktreeSnapshot,
+  captureTestSourceSnapshot,
+  resolveReporterSourceRoot,
   computeWorktreeDirty,
   type WorktreeGitSnapshot,
 } from '@papercusp/operator-core/lib/testing-worktree';
@@ -226,9 +227,9 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
   private worktreeBefore: WorktreeGitSnapshot | null = null;
   private runRoot = resolveAgentWorkspaceRoot({});
 
-  onBegin(config?: Pick<FullConfig, 'rootDir'>): void {
-    this.runRoot = resolveAgentWorkspaceRoot(config?.rootDir ? { projectDir: config.rootDir } : {});
-    this.worktreeBefore = captureWorktreeSnapshot(this.runRoot);
+  async onBegin(config?: Pick<FullConfig, 'rootDir'>): Promise<void> {
+    this.runRoot = resolveReporterSourceRoot(config?.rootDir);
+    this.worktreeBefore = await captureTestSourceSnapshot(this.runRoot);
   }
 
   onTestEnd(test: TestCase, result: TestResult): void {
@@ -291,11 +292,11 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
     }
   }
 
-  onEnd(): void {
+  async onEnd(): Promise<void> {
     try {
       let worktreeAfter: WorktreeGitSnapshot = { commit: null, porcelain: null };
       try {
-        worktreeAfter = captureWorktreeSnapshot(this.runRoot);
+        worktreeAfter = await captureTestSourceSnapshot(this.runRoot);
       } catch {
         // D-007: missing proof of stability is dirty, never a false clean.
       }
@@ -303,7 +304,10 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
         this.worktreeBefore ?? { commit: null, porcelain: null },
         worktreeAfter,
       );
-      const dirtReason = describeWorktreeDirt(this.worktreeBefore ?? { commit: null, porcelain: null }, worktreeAfter)?.slice(0, 500);
+      const dirtReason = [
+        describeWorktreeDirt(this.worktreeBefore ?? { commit: null, porcelain: null }, worktreeAfter),
+        this.worktreeBefore?.provenanceError, worktreeAfter.provenanceError,
+      ].filter(Boolean).join('; ').slice(0, 500);
       for (const [file, agg] of this.byFile) {
         try {
           const filePath = toWorkspaceRel(file, this.runRoot);
