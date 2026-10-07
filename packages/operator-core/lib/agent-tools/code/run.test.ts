@@ -220,6 +220,16 @@ describe('code:run registration (B-CX-2A)', () => {
     expect(scriptDescription).toContain('quoted stdin, a heredoc, or an argument');
   });
 
+  it('documents quote-safe inline Python -c commands', () => {
+    const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
+    const scriptDescription =
+      (tool?.inputSchema as { properties?: { script?: { description?: string } } })?.properties?.script?.description ??
+      '';
+    expect(scriptDescription).toContain('For inline Python `-c`');
+    expect(scriptDescription).toContain("String.raw`journalctl -u app.service | python3 -c 'import sys;");
+    expect(scriptDescription).toContain('prevents `compile_error` before bash is dispatched');
+  });
+
   it('documents that scripts are plain JavaScript rather than TypeScript', () => {
     const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
     const scriptDescription =
@@ -255,6 +265,30 @@ describe('code:run registration (B-CX-2A)', () => {
     expect(payload.ok).toBe(false);
     expect(payload.error).toMatch(/^compile_error:/);
     expect(payload.argPreflight).toBeUndefined();
+  });
+
+  it('accepts a quote-safe inline Python -c command as valid JavaScript', async () => {
+    const tool = listAllProjectedTools().find((candidate) => candidate.expose.mcp?.name === 'code:run');
+    if (!tool) throw new Error('code:run not registered');
+    const script =
+      "const command = String.raw`journalctl -u app.service | python3 -c 'import sys; print(\"ts\", sys.stdin.readline().strip())'`;\n" +
+      'return { command };';
+    const res = await tool.fn(
+      { script },
+      {
+        log: () => {},
+        workspaceId: 'ws-test',
+        harnessSlug: 'alpha',
+        role: 'su',
+        isSuperuser: true,
+        uiClientId: 'su-test',
+      } as never,
+    );
+    const payload = JSON.parse(String((res as { content: { text: string }[] }).content[0].text));
+    expect(payload.ok).toBe(true);
+    expect(payload.summary).toEqual({
+      command: `journalctl -u app.service | python3 -c 'import sys; print("ts", sys.stdin.readline().strip())'`,
+    });
   });
 
   it('documents colon-only namespace conversion and preserves underscores within segments', () => {

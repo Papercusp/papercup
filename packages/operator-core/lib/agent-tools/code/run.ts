@@ -271,7 +271,8 @@ export default defineTool({
           'Regex literals containing path slashes are another string layer: an extra backslash before `/` can close the literal early and yield `compile_error: Invalid regular expression flags`; prefer `String.includes(...)` or `new RegExp("...")` when composing scripts through another string layer. ' +
           'Generated data needs the same JS layer: do not interpolate `JSON.stringify(ids)` into a JavaScript double-quoted command literal. ' +
           'Nested tools.capability.bash searches: apostrophe regexes break single-quoted arguments; use rg -F, -e per pattern, or quoted stdin/file. ' +
-          'The JSON quotes can close that outer string and cause `compile_error` before bash is dispatched; keep the serialized value in a script variable and concatenate it into the command at runtime (or pass it through quoted stdin, a heredoc, or an argument).',
+          'The JSON quotes can close that outer string and cause `compile_error` before bash is dispatched; keep the serialized value in a script variable and concatenate it into the command at runtime (or pass it through quoted stdin, a heredoc, or an argument). ' +
+          "For inline Python `-c`, put the shell command in a JavaScript template literal and the Python program in single quotes, e.g. ``const command = String.raw`journalctl -u app.service | python3 -c 'import sys; print(\"ts\", sys.stdin.readline().strip())'`;``. This keeps Python's quotes from closing a JavaScript double-quoted command and prevents `compile_error` before bash is dispatched.",
       ),
     title: z
       .string()
