@@ -209,6 +209,15 @@ describe('fleet:assignments — judge self-only recovery scope', () => {
       data: { ok: false, error: 'judge_assignment_scope_only' },
     });
   });
+
+  it('does not let a judge read the unfiltered assignment population', async () => {
+    const result = await fleetAssignmentsTool.handler({} as never, judgeCtx);
+
+    expect(capturedAgent).toBeUndefined();
+    expect(result).toMatchObject({
+      data: { ok: false, error: 'judge_assignment_scope_only' },
+    });
+  });
 });
 
 /**
