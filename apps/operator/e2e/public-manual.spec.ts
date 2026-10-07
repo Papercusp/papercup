@@ -39,6 +39,44 @@ test('a new guide is present in the actual Pagefind search index', async ({ page
   await expect(page.getByRole('heading', { level: 1, name: 'Agent modes and fleets' })).toBeVisible();
 });
 
+test('the first-task guide supports keyboard entry and search without a pointer', async ({ page }) => {
+  await page.goto('/docs/quickstart');
+  await page.keyboard.press('Tab');
+  const skip = page.getByRole('link', { name: 'Skip to content', exact: true });
+  await expect(skip).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(page).toHaveURL(/#_top$/);
+  await page.keyboard.press('Tab');
+  await expect(page.getByRole('main').locator('a:focus'))
+    .toHaveAttribute('href', '#1-create-an-account-or-sign-in');
+
+  await page.keyboard.press('Control+k');
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toBeVisible();
+  await expect(dialog.locator('input').first()).toBeFocused();
+  await page.keyboard.type('first successful task');
+  const result = dialog.locator('.pagefind-ui__result-link')
+    .filter({ hasText: 'Your first successful task' }).first();
+  await expect(result).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(dialog).not.toBeVisible();
+});
+
+test('the first-task guide remains readable and retains the selected theme after reload', async ({ page }) => {
+  await page.goto('/docs/quickstart');
+  // Starlight has a hidden mobile duplicate; exercise the visible accessible control.
+  const theme = page.getByRole('combobox');
+  for (const value of ['dark', 'light']) {
+    await theme.selectOption(value);
+    await expect(page.locator('html')).toHaveAttribute('data-theme', value);
+    await page.reload();
+    await expect(page.locator('html')).toHaveAttribute('data-theme', value);
+    await expect(theme).toHaveValue(value);
+    await expect(page.getByRole('heading', { level: 1, name: 'Your first successful task' })).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  }
+});
+
 for (const [device, viewport] of [
   ['desktop', { width: 1280, height: 720 }],
   ['mobile', { width: 375, height: 812 }],

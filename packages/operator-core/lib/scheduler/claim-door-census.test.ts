@@ -214,6 +214,17 @@ const CLAIM_DOORS: ReadonlyMap<string, DoorEntry> = new Map([
 
   // ---- name-shaped, but not work-item doors -------------------------------
   [
+    'blueprint/operation-agent-placement.ts#claimAgentOperationPlacements',
+    {
+      klass: 'not-a-work-item-door',
+      note:
+        'Claims accepted blueprint-operation LAUNCH RECEIPTS by updating blueprint_operation_invocations, ' +
+        'not work-item ownership. The operation already pins its target; the applied worker still ' +
+        'claims that exact item through work_items:claim and the canonical operation-binding authority. ' +
+        'The work_items joins check receipt eligibility, which is why the scanner sees this lease.',
+    },
+  ],
+  [
     'adv-sessions.ts#claimAdvSessionResume',
     {
       klass: 'not-a-work-item-door',
@@ -417,6 +428,21 @@ describe('claim doors are an enumerated set (P-009)', () => {
 
 describe('the two structural claims the classification rests on', () => {
   const read = (rel: string) => readFileSync(join(LIB_ROOT, rel), 'utf8');
+
+  it('operation placement leases receipts rather than bypassing the canonical work-item claim', () => {
+    const source = read('blueprint/operation-agent-placement.ts');
+    const start = source.indexOf('export async function claimAgentOperationPlacements(');
+    expect(start).toBeGreaterThanOrEqual(0);
+    const nextExport = source.indexOf('\nexport ', start + 1);
+    const body = withoutComments(source.slice(start, nextExport < 0 ? undefined : nextExport));
+    expect(body.includes('UPDATE harness_shared.blueprint_operation_invocations')).toBe(true);
+    expect(
+      /(?:UPDATE|INSERT\s+INTO|DELETE\s+FROM)\s+harness_shared\.(?:work_items|harness_features_consolidated|engineer_issues)\b/i.test(body),
+      'A work-item ownership writer is a real claim door and must be reclassified, not hidden as a receipt lease.',
+    ).toBe(false);
+    expect(/\b(?:claimWorkItem|claimIssue|claimNextWorkItem|claimNextIssueWorkItem)\s*\(/.test(body)).toBe(false);
+    expect(source.includes('Claim it with work_items:claim')).toBe(true);
+  });
 
   it('getNextWorkItemDefault is a WRAPPER — it adds no floor and can skip none', () => {
     // Its entry is justified by "covered by getNextWorkItem". That is a claim about the code,
