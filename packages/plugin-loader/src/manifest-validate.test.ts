@@ -301,6 +301,7 @@ describe('validateManifest: provider descriptor schema matches the SDK type', ()
     egressHosts: ['api.example.com', 'example.com', 'pubsub.example.com'],
     configSchema: { type: 'object' },
     defaultDestinations: { ticket: ['record'] },
+    membership: { identityProvider: 'example' },
     serviceCredentials: [{ ref: 'example-service', hosts: ['pubsub.example.com'] }],
     push: {
       handshake: { header: 'x-hook-secret' },
@@ -313,6 +314,13 @@ describe('validateManifest: provider descriptor schema matches the SDK type', ()
     const r = validateManifest(manifest(provider));
     expect(r.issues).toEqual([]);
     expect(r.ok).toBe(true);
+  });
+
+  it('refuses a missing, malformed or extra membership declaration field', () => {
+    for (const membership of [{}, { identityProvider: '' }, { identityProvider: 'Git Hub' },
+      { identityProvider: 'example', members: [] }, 'example']) {
+      expect(validateManifest(manifest({ ...provider, membership })).ok).toBe(false);
+    }
   });
 
   it('still refuses an unknown oauth or identity property', () => {

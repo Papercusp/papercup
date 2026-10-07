@@ -59,6 +59,8 @@ import {
   recordWriteBackCapability,
 } from '../../work-admission/record-source';
 import { runConnectorSync, type ConnectorSyncDeps, type ConnectorSourceOutcome } from '../connector-runtime';
+import { mapProviderIdentity, searchOrganizationDocuments, ORGANIZATION_CORPUS_SCOPE } from '../../data-sources/documents-corpus';
+import { createPersonalGrant } from '../../personal-vault/store';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as Sql, ws: 'papercusp-workspace' }));
 vi.mock('@papercusp/db-org', async (orig) => {
@@ -97,6 +99,8 @@ interface Recorded {
   issues: Array<Record<string, unknown>>;
   events: Array<Record<string, unknown>>;
   comments: Array<Record<string, unknown>>;
+  collaborators: Array<Record<string, unknown>>;
+  collaboratorStatus?: number;
   /** Every request URL, in order. */
   calls: string[];
   /** Phase -> Retry-After seconds for the next request to that endpoint (consumed once). */
@@ -109,6 +113,7 @@ function recorded(): Recorded {
   return {
     calls: [],
     rateLimitOnce: new Map(),
+    collaborators: [{ id: 42, login: 'alice-gh' }],
     issues: [
       {
         id: 9001, number: 1, title: 'Orchid deploy fails on cold start', body: 'Steps to reproduce attached.',
@@ -168,6 +173,7 @@ const recordedHostFetch: HostFetch = async ({ request }) => {
     since ? rows.filter((row) => Date.parse(String(row.updated_at)) >= Date.parse(since)) : rows;
   const phase = url.pathname.endsWith('/issues/events') ? 'events'
     : url.pathname.endsWith('/issues/comments') ? 'comments'
+      : url.pathname.endsWith('/collaborators') ? 'collaborators'
       : url.pathname.endsWith('/issues') ? 'issues'
         : 'single';
   const retryAfter = gh.rateLimitOnce.get(phase);
@@ -181,6 +187,11 @@ const recordedHostFetch: HostFetch = async ({ request }) => {
     return issue ? json(200, issue) : json(404, { message: 'Not Found' });
   }
   if (page > 1) return json(200, []);
+  if (phase === 'collaborators') {
+    return gh.collaboratorStatus
+      ? json(gh.collaboratorStatus, { message: 'Not Found' })
+      : json(200, gh.collaborators);
+  }
   if (phase === 'issues') return json(200, fresh(gh.issues));
   if (phase === 'comments') return json(200, fresh(gh.comments));
   return json(200, gh.events);
@@ -517,8 +528,8 @@ describe('GitHub issues syncs through the shared connector driver (R-14)', () =>
   it('backfills tickets, status changes and comments, routed by datatype, skipping pull requests', async () => {
     const sourceId = await createSource('personal');
     const outcome = await syncOne(sourceId);
-    // One pass = issues, events, comments: three pages.
-    expect(outcome).toMatchObject({ providerId: KIND, outcome: 'synced', mode: 'backfill', pages: 3, hasMore: false, rejected: 0 });
+    // One pass = issues, events, comments, collaborators.
+    expect(outcome).toMatchObject({ providerId: KIND, outcome: 'synced', mode: 'backfill', pages: 4, hasMore: false, rejected: 0 });
     // #1, #3 tickets + their two synthetic `opened` changes + the `closed` event on #1 + one comment.
     expect(outcome.admitted).toBe(6);
     expect((await cursorOf(sourceId))).toMatchObject({ backfill: 'complete', status: 'connected' });
@@ -584,7 +595,7 @@ describe('GitHub issues syncs through the shared connector driver (R-14)', () =>
     await due(sourceId);
 
     const incremental = await syncOne(sourceId);
-    expect(incremental).toMatchObject({ outcome: 'synced', mode: 'incremental', pages: 3, rejected: 0 });
+    expect(incremental).toMatchObject({ outcome: 'synced', mode: 'incremental', pages: 4, rejected: 0 });
     // The issues and comments reads carry the previous pass's watermark.
     expect(gh.calls[0]).toContain(`since=${encodeURIComponent('2026-10-01T10:00:00.000Z')}`);
     expect(gh.calls[2]).toContain(`since=${encodeURIComponent('2026-10-01T09:20:00.000Z')}`);
@@ -636,7 +647,7 @@ describe('GitHub issues syncs through the shared connector driver (R-14)', () =>
     await due(sourceId);
     gh.calls.length = 0;
     const resumed = await syncOne(sourceId);
-    expect(resumed).toMatchObject({ outcome: 'synced', pages: 2, hasMore: false });
+    expect(resumed).toMatchObject({ outcome: 'synced', pages: 3, hasMore: false });
     expect(gh.calls.some((url) => new URL(url).pathname.endsWith('/issues'))).toBe(false);
     expect((await cursorOf(sourceId))).toMatchObject({ backfill: 'complete' });
     expect(await rows(sourceId)).toHaveLength(5);
@@ -653,10 +664,35 @@ describe('GitHub issues syncs through the shared connector driver (R-14)', () =>
       dedupe_key: dataSourceDocumentDedupeKey('ticket-comment', sourceId, 'comment:101'),
     });
     expect(comments[0]!.permission_list_id).not.toBeNull();
-    // No provider membership feed exists yet (D-015.4), so nobody is on the list.
     const members = await sql`
-      SELECT 1 FROM harness_shared.document_permission_members WHERE list_id = ${comments[0]!.permission_list_id}::uuid`;
-    expect(members).toHaveLength(0);
+      SELECT provider, provider_user_id FROM harness_shared.document_permission_members
+       WHERE list_id = ${comments[0]!.permission_list_id}::uuid`;
+    expect(members).toEqual([{ provider: 'github', provider_user_id: '42' }]);
+    await createPersonalGrant(sql, {
+      workspaceId: WS, userId: alice, principalType: 'agent-role', principalId: 'meeting-prep',
+      scopes: [ORGANIZATION_CORPUS_SCOPE], grantedBy: 'owner',
+    });
+    await mapProviderIdentity(sql, WS, { provider: 'github', providerUserId: '42', userId: alice, mappedBy: 'owner' });
+    const search = () => searchOrganizationDocuments(sql, { workspaceId: WS, role: 'meeting-prep' }, {
+      workspaceId: WS, principalUserId: alice, agentOwnerId: 'github-issues-it', query: 'orchid repro',
+    });
+    expect(await search()).toMatchObject({ allowed: true, results: [expect.objectContaining({ externalId: 'comment:101' })] });
+    // Replace, not union: the same user loses access on the next complete remote snapshot.
+    gh.collaborators = [{ id: 99, login: 'bob-gh' }];
+    await due(sourceId);
+    await syncOne(sourceId);
+    expect(await search()).toMatchObject({ allowed: true, results: [] });
+  });
+
+  it.each([403, 404])('clears prior membership when collaborator enumeration returns %s', async (status) => {
+    const sourceId = await createSource('organization');
+    await syncOne(sourceId);
+    gh.collaboratorStatus = status;
+    await due(sourceId);
+    expect(await syncOne(sourceId)).toMatchObject({ outcome: 'synced', membership: { applied: true, members: 0, removed: 1 } });
+    const comments = await docs(sourceId);
+    expect(await sql`SELECT 1 FROM harness_shared.document_permission_members
+      WHERE list_id = ${comments[0]!.permission_list_id}::uuid`).toHaveLength(0);
   });
 
   it('writes nothing for a datatype the source does not route to its nature', async () => {

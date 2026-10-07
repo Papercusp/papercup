@@ -159,6 +159,14 @@
           }
         },
         "configSchema": { "type": "object" },
+        "membership": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["identityProvider"],
+          "properties": {
+            "identityProvider": { "type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$" }
+          }
+        },
         "defaultDestinations": {
           "type": "object",
           "description": "Destination policy a newly connected source starts with: datatype -> destinations (record, event, document). Keys must be declared datatypes; the host never overwrites a policy the owner set.",
