@@ -106,7 +106,7 @@
   overflow: hidden;
   /* An opaque surface keeps the placeholder's contrast independent of hover layers. */
   background: var(--bg-raised);
-  color: var(--fg-mute);
+  color: var(--fg-dim);
 }
 
 .thumbnail img {
