@@ -66,7 +66,7 @@ export interface OmpSuRuntimeBinding {
 
 export type OmpNativeCommandVerdict =
   | { ok: true }
-  | { ok: false; code: string; message: string; retryable: boolean };
+  | ({ ok: false } & SuSessionRefusal);
 
 export interface OmpSuSessionControls {
   /** `model` (P-026): a `model[:effort]` spec to apply before this turn; omitted keeps the current one. */
@@ -294,7 +294,8 @@ function firstString(...values: unknown[]): string | null {
 }
 
 function commandRefusal(verdict: Exclude<OmpNativeCommandVerdict, { ok: true }>): SuSessionCommandOutcome {
-  const refusal: SuSessionRefusal = { code: verdict.code, message: verdict.message, retryable: verdict.retryable };
+  const refusal: SuSessionRefusal = { code: verdict.code, message: verdict.message, retryable: verdict.retryable,
+    ...(verdict.liftsWhen ? { liftsWhen: verdict.liftsWhen } : {}) };
   return { status: 'refused', refusal };
 }
 

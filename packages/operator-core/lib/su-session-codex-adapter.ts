@@ -68,7 +68,7 @@ export interface CodexSuRuntimeBinding {
   rolloutPath: string | null;
 }
 
-export type CodexNativeCommandVerdict = { ok: true } | { ok: false; code: string; message: string; retryable: boolean };
+export type CodexNativeCommandVerdict = { ok: true } | ({ ok: false } & SuSessionRefusal);
 
 export interface CodexSuSessionControls {
   /** `model` (P-026): a `model[:effort]` spec to apply before this turn; omitted keeps the current one. */
@@ -393,6 +393,7 @@ function commandRefusal(verdict: Exclude<CodexNativeCommandVerdict, { ok: true }
     code: verdict.code,
     message: verdict.message,
     retryable: verdict.retryable,
+    ...(verdict.liftsWhen ? { liftsWhen: verdict.liftsWhen } : {}),
   };
   return { status: 'refused', refusal };
 }
