@@ -4137,6 +4137,148 @@ describe('clean sync outcome', () => {
       else process.env.PAPERCUSP_GIT_SYNC_ACTION_HARD_TIMEOUT_MS = savedHard;
     }
   });
+
+  it('EI-25303530017814636: bridge progress stays in post-legs and late progress cannot overwrite timeout', async () => {
+    const savedIdle = process.env.PAPERCUSP_GIT_SYNC_ACTION_IDLE_TIMEOUT_MS;
+    const savedHard = process.env.PAPERCUSP_GIT_SYNC_ACTION_HARD_TIMEOUT_MS;
+    process.env.PAPERCUSP_GIT_SYNC_ACTION_IDLE_TIMEOUT_MS = '25';
+    process.env.PAPERCUSP_GIT_SYNC_ACTION_HARD_TIMEOUT_MS = '60000';
+    vi.useFakeTimers();
+    resetScheduledRegistry();
+    const timers: Array<{ cb: () => void; ms: number; stopped: boolean; handle: TimerHandle }> = [];
+    const timerByHandle = new Map<TimerHandle, (typeof timers)[number]>();
+    configureScheduledRegistry({
+      setIntervalImpl: (cb, ms) => {
+        const handle: TimerHandle = { unref: () => undefined };
+        const timer = { cb, ms, stopped: false, handle };
+        timers.push(timer);
+        timerByHandle.set(handle, timer);
+        return handle;
+      },
+      clearIntervalImpl: (handle) => {
+        const timer = timerByHandle.get(handle);
+        if (timer) timer.stopped = true;
+      },
+    });
+
+    const localProject = {
+      slug: 'papercup',
+      path: repoDir,
+      hive_slug: 'papercup',
+      github_remote: 'https://github.com/papercusp/papercusp.git',
+      fork_remote: 'https://github.com/papercusp/papercusp-fork.git',
+    };
+    potGitMode = 'bridged';
+    registryProjects = [localProject];
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const defaultRunGit = defaultRunGitMock.getMockImplementation();
+    expect(defaultRunGit).toBeDefined();
+    let bridgeFetchStarted!: () => void;
+    const bridgeFetchStartedPromise = new Promise<void>((resolve) => {
+      bridgeFetchStarted = resolve;
+    });
+    let bridgeOverrideFinished!: () => void;
+    const bridgeOverrideFinishedPromise = new Promise<void>((resolve) => {
+      bridgeOverrideFinished = resolve;
+    });
+    let releaseBridgeGit: ((result: { code: number; stdout: string; stderr: string }) => void) | null = null;
+    let bridgeProgress = (): void => {};
+    let bridgeSignal: AbortSignal | undefined;
+    defaultRunGitMock.mockImplementation(async (...args: unknown[]) => {
+      const gitArgs = args[0] as string[] | undefined;
+      if (gitArgs?.[0] === 'fetch' && !releaseBridgeGit) {
+        const options = args[2] as { signal?: AbortSignal; onProgress?: () => void } | undefined;
+        bridgeProgress = options?.onProgress ?? (() => {});
+        bridgeSignal = options?.signal;
+        bridgeFetchStarted();
+        return new Promise<{ code: number; stdout: string; stderr: string }>((resolve) => {
+          releaseBridgeGit = resolve;
+        });
+      }
+      return defaultRunGit!(...args);
+    });
+    bridgeTickOverride = async (input) => {
+      try {
+        await input.deps!.runGit!(['fetch', localProject.github_remote], repoDir, { timeoutMs: 240_000 });
+        return {
+          ran: true,
+          egressTarget: 'upstream',
+          ingressed: { updated: 0, upToDate: 0, nonFF: 0, absent: 0 },
+          admissions: [],
+          lastAdmitted: null,
+          egress: null,
+          verdict: { action: 'clear', needsOwner: false, signals: [], detail: '' },
+          errors: [],
+        } as unknown as BridgeTickOutcome;
+      } finally {
+        bridgeOverrideFinished();
+      }
+    };
+    runGitSyncMock.mockResolvedValueOnce(syncedOutcome);
+
+    const settled = action(ctx).then(
+      () => ({ value: undefined as unknown, error: undefined as unknown }),
+      (error) => ({ value: undefined as unknown, error }),
+    );
+    try {
+      await bridgeFetchStartedPromise;
+      bridgeProgress();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(gitSyncActivityPatches().at(-1)).toMatchObject({
+        active: true,
+        phase: 'post-legs',
+        outcome_status: syncedOutcome.status,
+        leg: 'git-sync:github-bridge',
+      });
+
+      await vi.advanceTimersByTimeAsync(30);
+      const result = await settled;
+      expect(result.error).toBeInstanceOf(GitSyncActionTimeoutError);
+      expect(result.error).toMatchObject({
+        phase: 'git-sync:github-bridge',
+        timeoutKind: 'idle',
+        timeoutMs: 25,
+      });
+      expect(bridgeSignal?.aborted).toBe(true);
+      expect(gitSyncActivityPatches().at(-1)).toMatchObject({
+        active: false,
+        phase: 'error',
+        outcome_status: null,
+      });
+
+      // Let the underlying bridge operation settle after its caller has timed out, then
+      // replay a buffered progress callback beyond the heartbeat interval. It
+      // must not restamp local-sync over the terminal error marker.
+      if (releaseBridgeGit) {
+        const release = releaseBridgeGit;
+        releaseBridgeGit = null;
+        release({ code: 0, stdout: '', stderr: '' });
+      }
+      await bridgeOverrideFinishedPromise;
+      for (let i = 0; i < 8; i += 1) await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(30_000);
+      bridgeProgress();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(gitSyncActivityPatches().at(-1)).toMatchObject({
+        active: false,
+        phase: 'error',
+        outcome_status: null,
+      });
+    } finally {
+      if (releaseBridgeGit) {
+        const release = releaseBridgeGit;
+        releaseBridgeGit = null;
+        release({ code: -1, stdout: '', stderr: 'test cleanup' });
+      }
+      resetScheduledRegistry();
+      vi.useRealTimers();
+      warn.mockRestore();
+      if (savedIdle === undefined) delete process.env.PAPERCUSP_GIT_SYNC_ACTION_IDLE_TIMEOUT_MS;
+      else process.env.PAPERCUSP_GIT_SYNC_ACTION_IDLE_TIMEOUT_MS = savedIdle;
+      if (savedHard === undefined) delete process.env.PAPERCUSP_GIT_SYNC_ACTION_HARD_TIMEOUT_MS;
+      else process.env.PAPERCUSP_GIT_SYNC_ACTION_HARD_TIMEOUT_MS = savedHard;
+    }
+  }, 2_000);
 });
 
 describe('P-010/P-012 merge-conflict path', () => {

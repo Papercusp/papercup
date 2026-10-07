@@ -382,6 +382,7 @@ class GitSyncCompletionSettlementBudgetError extends Error {
 
 interface GitSyncActionLivenessGuard {
   readonly signal: AbortSignal;
+  readonly active: boolean;
   readonly timedOut: boolean;
   readonly timeoutError: GitSyncActionTimeoutError | null;
   /** Mark real pipeline progress and re-arm the idle deadline. */
@@ -517,6 +518,9 @@ function createGitSyncActionLivenessGuard(opts: {
 
   return {
     signal: controller.signal,
+    get active() {
+      return !stopped && !timedOut;
+    },
     get timedOut() {
       return timedOut;
     },
@@ -3523,8 +3527,23 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     owner: lockOwner,
     owner_pid: process.pid,
   });
+  let activityWriteTail: Promise<void> | null = null;
+  const enqueueActivityWrite = (write: () => Promise<void>): Promise<void> => {
+    let pending: Promise<void>;
+    try {
+      pending = activityWriteTail ? activityWriteTail.catch(() => {}).then(write) : write();
+    } catch (error) {
+      pending = Promise.reject(error);
+    }
+    let tracked: Promise<void>;
+    tracked = pending.catch(() => {}).then(() => {
+      if (activityWriteTail === tracked) activityWriteTail = null;
+    });
+    activityWriteTail = tracked;
+    return pending;
+  };
   const writeActivity = (activity: GitSyncActivityFields): Promise<void> =>
-    writeGitSyncActivity(slug, workspaceId, withActivityOwner(activity));
+    enqueueActivityWrite(() => writeGitSyncActivity(slug, workspaceId, withActivityOwner(activity)));
   // WI-10006724: a lower bound on every resource's acquisition time, so the lease
   // fence measures age conservatively (each row expires no earlier than this + TTL).
   const lockRequestedAt = Date.now();
@@ -3681,23 +3700,31 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     return lockCleanup;
   };
   let timeoutActivity: Promise<void> | null = null;
+  let activityHeartbeatWrite: Promise<void> = Promise.resolve();
+  let activityTerminal = false;
   const recordTimeoutActivity = (error: GitSyncActionTimeoutError): Promise<void> => {
     if (timeoutActivity) return timeoutActivity;
+    // Fence queued progress writes before recording the terminal timeout marker.
+    // The marker writer shares the same queue, so an already-started heartbeat
+    // lands first and a queued-but-not-started heartbeat sees the terminal fence.
+    activityTerminal = true;
     const failedAt = Date.now();
-    timeoutActivity = patchRoutineMetadata(slug, workspaceId, {
-      last_status: 'error',
-      local_sync_status: 'error',
-      last_error: error.message,
-      last_errors: [`git-sync action timeout (${error.timeoutKind}) during ${error.phase}`],
-      git_sync_activity: withActivityOwner({
-        active: false,
-        phase: 'error',
-        started_at: activityStartedAt,
-        updated_at: failedAt,
-        completed_at: failedAt,
-        outcome_status: null,
+    timeoutActivity = enqueueActivityWrite(() =>
+      patchRoutineMetadata(slug, workspaceId, {
+        last_status: 'error',
+        local_sync_status: 'error',
+        last_error: error.message,
+        last_errors: [`git-sync action timeout (${error.timeoutKind}) during ${error.phase}`],
+        git_sync_activity: withActivityOwner({
+          active: false,
+          phase: 'error',
+          started_at: activityStartedAt,
+          updated_at: failedAt,
+          completed_at: failedAt,
+          outcome_status: null,
+        }),
       }),
-    }).catch((metadataError) => {
+    ).catch((metadataError) => {
       console.warn(
         `[git-sync] ${slug}: could not record action timeout metadata: ${
           metadataError instanceof Error ? metadataError.message : String(metadataError)
@@ -3717,26 +3744,32 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     },
   });
   let lastActivityHeartbeatAt = activityStartedAt - GIT_SYNC_ACTIVITY_HEARTBEAT_INTERVAL_MS;
-  let activityHeartbeatWrite: Promise<void> = Promise.resolve();
-  const enqueueActivityHeartbeat = (): void => {
+  const enqueueActivityHeartbeat = (
+    guard: GitSyncActionLivenessGuard,
+    phase: 'local-sync' | 'post-legs',
+    outcomeStatus: GitSyncOutcome['status'] | null,
+    leg?: string,
+  ): void => {
+    if (activityTerminal || !guard.active) return;
     const updatedAt = Date.now();
     if (updatedAt - lastActivityHeartbeatAt < GIT_SYNC_ACTIVITY_HEARTBEAT_INTERVAL_MS) return;
     lastActivityHeartbeatAt = updatedAt;
     activityHeartbeatWrite = activityHeartbeatWrite
       .catch(() => {})
       .then(async () => {
-        if (liveness.timedOut) return;
+        if (activityTerminal || !guard.active) return;
         await writeActivity({
           active: true,
-          phase: 'local-sync',
+          phase,
           started_at: activityStartedAt,
           updated_at: updatedAt,
           completed_at: null,
-          outcome_status: null,
+          outcome_status: outcomeStatus,
+          ...(leg ? { leg } : {}),
         });
       })
       .catch((error) => {
-        if (!liveness.timedOut) {
+        if (!activityTerminal && guard.active) {
           console.warn(
             `[git-sync] ${slug}: activity heartbeat write failed: ${
               error instanceof Error ? error.message : String(error)
@@ -3929,7 +3962,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
             signal: liveness.signal,
             onProgress: () => {
               liveness.touch();
-              enqueueActivityHeartbeat();
+              enqueueActivityHeartbeat(liveness, 'local-sync', null);
             },
           });
           activeGitExecutions.add(execution);
@@ -3995,7 +4028,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
         step: runCheckpointedStep,
         onProgress: () => {
           liveness.touch();
-          enqueueActivityHeartbeat();
+          enqueueActivityHeartbeat(liveness, 'local-sync', null);
         },
         signal: liveness.signal,
       }),
@@ -4032,6 +4065,8 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
       // the guarded promise rejects before that callback's microtask runs.
       await recordTimeoutActivity(error);
     } else {
+      activityTerminal = true;
+      await activityHeartbeatWrite.catch(() => {});
       await writeActivity({
         active: false,
         phase: 'error',
@@ -4361,7 +4396,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
               signal: postLegsLiveness.signal,
               onProgress: () => {
                 postLegsLiveness.touch();
-                enqueueActivityHeartbeat();
+                enqueueActivityHeartbeat(postLegsLiveness, 'post-legs', outcome.status, 'git-sync:github-bridge');
               },
             }),
           ),
@@ -4502,6 +4537,8 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     if (error instanceof GitSyncActionTimeoutError) {
       await recordTimeoutActivity(error);
     } else {
+      activityTerminal = true;
+      await activityHeartbeatWrite.catch(() => {});
       await writeActivity({
         active: false,
         phase: 'error',
@@ -4577,6 +4614,8 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
       // fire-and-forget promise: that was the production loss window.
       dependencyPrebuildQueued = await enqueueDependencyPrebuild(dependencyPrebuildRequest);
     } catch (error) {
+      activityTerminal = true;
+      await activityHeartbeatWrite.catch(() => {});
       const failedAt = Date.now();
       await writeActivity({
         active: false,
@@ -4590,6 +4629,8 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     }
   }
 
+  activityTerminal = true;
+  await activityHeartbeatWrite.catch(() => {});
   const completedAt = Date.now();
   try {
     await writeActivity({
