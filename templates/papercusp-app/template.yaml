@@ -133,6 +133,9 @@ checks:
       the composed set resolves (composeTemplates ok: pins consistent, one
       root app scope, every selecting decision point satisfied) and the union
       of checks is what CI runs
+  - id: package-test-targets
+    run: checks/package-script-targets.test.ts
+    summary: every explicit test file named by an app test/check script exists
 musts:
   - id: thin-app-template
     rule: "The app template adds glue guidance and decision points, never its own components — capability belongs in aspects"
@@ -143,6 +146,9 @@ musts:
   - id: full-union-green
     rule: "The composed app passes the FULL union of the closure checks — the chassis's boot/contract checks, components-integrated, composition-integrity"
     enforcedBy: prose-only
+  - id: test-script-targets-exist
+    rule: "Every explicit test file path named by a test/check script in the app root package.json exists"
+    enforcedBy: package-test-targets
   - id: dual-target-is-opt-in
     rule: "target: both is chosen deliberately and never by default — it adds the second chassis's boot-e2e check to the union the app must pass on every build (MEASURED P-005: 6 declarations vs 5; the non-chassis four are shared), and that cost is stated in the ship disclosure"
     enforcedBy: prose-only

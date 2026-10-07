@@ -1014,6 +1014,11 @@ export const PAPERCUSP_APP_TEMPLATE: TemplateManifest = {
       summary:
         "the composed set resolves (composeTemplates ok: pins consistent, one root app scope, every selecting decision point satisfied) and the union of checks is what CI runs",
     },
+    {
+      id: "package-test-targets",
+      run: "checks/package-script-targets.test.ts",
+      summary: "every explicit test file named by an app test/check script exists",
+    },
   ],
   musts: [
     {
@@ -1030,6 +1035,11 @@ export const PAPERCUSP_APP_TEMPLATE: TemplateManifest = {
       id: "full-union-green",
       rule: "The composed app passes the FULL union of the closure checks — the chassis's boot/contract checks, components-integrated, composition-integrity",
       enforcedBy: "prose-only",
+    },
+    {
+      id: "test-script-targets-exist",
+      rule: "Every explicit test file path named by a test/check script in the app root package.json exists",
+      enforcedBy: "package-test-targets",
     },
     {
       id: "dual-target-is-opt-in",

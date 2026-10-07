@@ -29,5 +29,8 @@ export default defineVitestConfig({
     // cost pin. A MUST whose enforcing check never runs is prose wearing a
     // mechanism's name. (plan unified-app-template-2026-08-23, P-005.)
     '../../../templates/papercusp-app/checks/composition-integrity.test.ts',
+    // The app-root package script guard is portable and also runs unconfigured
+    // here against this repository's root manifest.
+    '../../../templates/papercusp-app/checks/package-script-targets.test.ts',
   ],
 });

@@ -94,6 +94,9 @@ that shape the composition — above all `target`, which picks the chassis.
    work plane meet at exactly ONE typed seam. That discipline is
    `papercusp-ops-pots`' own Tier B MUST; honor it, do not re-invent it in app
    code.
+8. **`test-script-targets-exist`** — every explicit test file path named by a
+   test or check script in the app root `package.json` exists. Enforced by
+   `checks/package-script-targets.test.ts`.
 
 ## SHOULD
 
