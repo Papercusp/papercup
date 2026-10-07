@@ -8,11 +8,16 @@
  * novice outcomes and exact released-artifact checks remain separate.
  */
 import { randomUUID } from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { promisify } from 'node:util';
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { endPiSession, startPiSession } from '@papercusp/agent-mcp/provisioning';
 import type { ChatSession, TurnResult } from '@papercusp/testing-shell/llm';
 
 import { getOrCreateActiveConversation } from '../../operator-conversations';
+import { ensureWorkspaceEntry, readRegistry, workspaceDir, workspacesRoot, writeRegistry } from '../../workspace-registry';
 import { OperatorTarget } from '../targets/operator';
 
 const baseUrl = process.env.OPERATOR_BASE_URL;
@@ -20,6 +25,27 @@ const enabled = Boolean(baseUrl) && process.env.PAPERCUSP_TEST_PUBLIC_CHAT === '
 let workspaceId: string;
 let principalSessionId: string | undefined;
 let chat: ChatSession | undefined;
+let registeredFixture = false;
+const runPtool = promisify(execFile);
+
+async function mutateFixtureRegistry(mutate: () => void) {
+  // The operator-api route shares the real registry with this test host. Use
+  // the maintained cross-session lock and preserve unrelated/current entries.
+  expect(process.env.PAPERCUSP_SID, 'Run from an attributed Papercusp session').toBeTruthy();
+  const { stdout } = await runPtool('ptool', ['locks:acquire', '--json', JSON.stringify({
+    external_paths: [join(workspacesRoot(), 'registry.json')],
+    intent: 'Public manual chat acceptance: register or remove its private fixture workspace',
+    ttl_sec: 60,
+  })]);
+  const acquired = JSON.parse(stdout);
+  expect(acquired.ok, JSON.stringify(acquired)).toBe(true);
+  expect(acquired.lock_id).toBeTruthy();
+  try { mutate(); }
+  finally {
+    const { stdout: released } = await runPtool('ptool', ['locks:release', '--json', JSON.stringify({ lock_id: acquired.lock_id })]);
+    expect(JSON.parse(released).ok).toBe(true);
+  }
+}
 
 function successful(result: TurnResult) {
   expect(result.finishReason, JSON.stringify({ error: result.error, answer: result.assistantText })).toBe('done');
@@ -35,6 +61,14 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
 
   beforeEach(async () => {
     workspaceId = `public-chat-manual-${randomUUID()}`;
+    await mutateFixtureRegistry(() => {
+      const before = readRegistry();
+      expect(before.workspaces.some((entry) => entry.id === workspaceId)).toBe(false);
+      const registered = ensureWorkspaceEntry(workspaceId, 'Temporary public manual acceptance');
+      registeredFixture = true;
+      expect(registered.current).toBe(before.current);
+      expect(registered.workspaces.some((entry) => entry.id === workspaceId)).toBe(true);
+    });
     principalSessionId = `public-chat-manual-${randomUUID()}`;
     const principal = await startPiSession({
       workspaceId, sessionId: principalSessionId, capabilities: ['docs:read'],
@@ -52,8 +86,21 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
     try { await chat?.close(); }
     finally {
       chat = undefined;
-      if (principalSessionId) await endPiSession(workspaceId, principalSessionId);
-      principalSessionId = undefined;
+      try {
+        if (principalSessionId) await endPiSession(workspaceId, principalSessionId);
+      } finally {
+        principalSessionId = undefined;
+        if (registeredFixture) {
+          await mutateFixtureRegistry(() => {
+            const registry = readRegistry();
+            expect(registry.current, 'Fixture must never become the selected workspace').not.toBe(workspaceId);
+            registry.workspaces = registry.workspaces.filter((entry) => entry.id !== workspaceId);
+            writeRegistry(registry);
+            rmSync(workspaceDir(workspaceId), { recursive: true, force: true });
+            registeredFixture = false;
+          });
+        }
+      }
     }
   });
 

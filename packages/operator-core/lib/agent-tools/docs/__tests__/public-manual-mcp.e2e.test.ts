@@ -28,7 +28,11 @@ function payload(result: Awaited<ReturnType<Client['callTool']>>, expectedError 
 }
 
 async function call(name: string, args: Record<string, unknown>, expectedError = false) {
-  return payload(await client!.callTool({ name, arguments: args }, undefined, { timeout: 15_000 }), expectedError);
+  // Each awaited assertion is a separate logical output group. Legacy clients
+  // without this metadata merge rapid sequential calls into one budget cohort.
+  return payload(await client!.callTool({
+    name, arguments: args, _meta: { outputGroupId: randomUUID() },
+  }, undefined, { timeout: 15_000 }), expectedError);
 }
 
 describe.runIf(Boolean(baseUrl))('canonical manual on the public Papercup HTTP MCP mount', () => {
