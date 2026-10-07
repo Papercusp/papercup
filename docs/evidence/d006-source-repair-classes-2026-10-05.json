@@ -6,8 +6,8 @@
   "population": {
     "failedFiles": 124,
     "repairedFocused": 25,
-    "repairedPeerFocused": 15,
-    "openUnknown": 84
+    "repairedPeerFocused": 16,
+    "openUnknown": 83
   },
   "classes": {
     "assertion": 55,
@@ -19,7 +19,7 @@
     "lock-ownership-expectation": 1,
     "work-item-disclosure-fixture": 1,
     "migration-stage": 1,
-    "missing-schema": 15,
+    "missing-schema": 14,
     "blueprint-fixture": 1,
     "console-guard": 9,
     "unclassified": 6,
@@ -39,7 +39,8 @@
     "peer-work-item-fixture": 2,
     "peer-memory-fixture": 1,
     "peer-edit-attribution-migration": 1,
-    "plan-receiver-schema-fixture": 1
+    "plan-receiver-schema-fixture": 1,
+    "peer-plan-cutover-schema": 1
   },
   "files": [
     {
@@ -653,9 +654,9 @@
     },
     {
       "path": "packages/operator-core/lib/sync/hyperbee/__tests__/plan-part-federation-cutover.integration.test.ts",
-      "class": "missing-schema",
-      "state": "open-unknown",
-      "item": "WI-10006170",
+      "class": "peer-plan-cutover-schema",
+      "state": "repaired-peer-focused",
+      "item": "WI-10006275",
       "lines": [
         16200,
         16201,
@@ -671,7 +672,31 @@
         16211,
         16212,
         16213
-      ]
+      ],
+      "historicalSymptomClass": "missing-schema",
+      "diagnosis": "The fourteen archived failures stop at writePlanIndexRows because setupSchema omitted harness_shared.plan_items. Commit295d38589b4247fdfcef8f483de0eb0edc940d70 already added plan_items, plan_decisions, plan_revisions and receiver BAR columns while repairing the revision spine under committed WI-10006275. Reused that fixture and its maintained real-PG federation cases; no new source repair was needed. Current whole named file, including two-instance convergence, revision/no-op and content-clock controls, passes23/0skip.",
+      "completionAuthority": "committed",
+      "sourceRepairCommit": "295d38589b4247fdfcef8f483de0eb0edc940d70",
+      "relatedCommittedRepair": "WI-10006276",
+      "relatedOlderColumnDefect": "EI-21580606930275848",
+      "afterTestRun": 20901028,
+      "passed": 23,
+      "skipped": 0,
+      "receiptCommit": "7a1a496945edcd9c306563f471bbd35e0a7de3a6",
+      "receiptRunGroup": null,
+      "receiptWorkspace": "papercusp-workspace",
+      "receiptHarness": "papercusp",
+      "receiptSource": "local",
+      "worktreeDirty": true,
+      "isScratchConfig": false,
+      "testSha256": "85a7baa209bc24701aec479b34a8e5e29ae3fc4ab21c448dfecc144d9ab05fd8",
+      "testedTestBlob": "f675327e782f4b373e68c8b85591cccad3098e90",
+      "currentTestBlobMatchesReceipt": true,
+      "focusedLog": "/tmp/wi-10006170-cutover-before.log",
+      "focusedLogSha256": "6e1597abfdd8f3d7b8b19aed71244efed55b9d4b785e8dfd466008de3664f4af",
+      "recurrenceGuard": "The maintained fixture includes all three transaction-side tables and BAR receiver columns; original whole-blob/part-write cases exercise the real writer. Existing WI-10006275 revision/no-op and WI-10006276 content-clock controls remain in the passing23-case population.",
+      "completeImportGraphCurrentness": "unknown",
+      "currentEvidenceScope": "Named test file is byte-identical to the receipt commit and pre/post path stamps are clean; the repository ledger is dirty. Full import graph/environment, final D006 and shipment remain unverified."
     },
     {
       "path": "packages/operator-core/lib/work-items-release-request.integration.test.ts",
@@ -2198,7 +2223,7 @@
     },
     {
       "class": "missing-schema",
-      "count": 15,
+      "count": 14,
       "status": "open-unknown",
       "item": "WI-10006170",
       "owner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
@@ -2777,6 +2802,18 @@
         16055
       ],
       "next": "Retain focused local PASS8/0skip plus typecheck checked1/errors0. Full imports/environment, final D006 and shipment remain unverified; no terminal replay or settlement babysitting."
+    },
+    {
+      "class": "peer-plan-cutover-schema",
+      "count": 1,
+      "status": "repaired-peer-focused",
+      "item": "WI-10006275",
+      "scope": "original-fourteen-cutover-failures-and-current-named-file-only",
+      "rootCause": "Archived setupSchema omitted plan_items required by transactional writePlanIndexRows. Existing committed fixture repair295d38589b added the index/revision spine and BAR columns; no additional source edit was required.",
+      "relatedCommittedRepair": "WI-10006276",
+      "testRunIds": [20901028],
+      "archiveLines": [16200, 16201, 16202, 16203, 16204, 16205, 16206, 16207, 16208, 16209, 16210, 16211, 16212, 16213],
+      "next": "Retain current focused PASS23/0skip with named-byte equality and repository-dirty limits. Preserve finalP004 custody; full import/environment and finalD006 assurance remain unverified."
     }
   ],
   "prerequisites": [
@@ -2785,7 +2822,7 @@
     "P004 alone sequences finalexpensiveD006 after focusedrepairs/preconditionaudits and appropriate current-source/cleancausal evidence; readinessnotestablished."
   ],
   "parserMethod": "ANSI-stripped actual FAIL headers matched by first path token, including suite headers with trailing [ repeated file ]; task-bounded canonical124-file population; symptoms do not prove root cause.",
-  "peerEvidenceScope": "Exact durable PASS rows from successful committed peer closures were read; clean as-committed/non-scratch and current TEST FILE bytes match receipt commit. This is not full dependency/import/environment/finalD006 source assurance.",
+  "peerEvidenceScope": "Reused committed peer repairs with exact focused receipts and named test-byte comparisons. Clean versus dirty scope is recorded per entry: cutover20901028 is repository-dirty with clean named-file stamps. This is not full dependency/import/environment/finalD006 source assurance.",
   "receiptLookupScope": {
     "source": "local",
     "since": "2026-10-05T22:29:37Z",
