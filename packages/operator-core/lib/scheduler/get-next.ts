@@ -1735,7 +1735,7 @@ export async function sampleIssueClaimExclusions(
       });
     } else if (row.axis === 'agent-review') {
       const review = readAgentReviewState(payload);
-      if (review?.status === 'pending') queueControl.agentReview.push({ id: row.feature_id, ...review });
+      if (review?.status === 'pending') queueControl.agentReview.push({ id: row.feature_id, ...review, status: 'pending' });
     }
   }
   const r = rows[0];
