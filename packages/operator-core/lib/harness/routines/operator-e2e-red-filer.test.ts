@@ -169,6 +169,42 @@ describe('fileOperatorE2eReds', () => {
     expect(orphan.items).toEqual([expect.objectContaining({ assignee: null })]);
   });
 
+  it('does not flag an unresolved owner when every red already has an owner or was resolved', async () => {
+    const g = {
+      runGroup: 'operator-e2e-nightly:answered',
+      finishedAt: '2026-10-06T05:00:00Z',
+      rows: [
+        row(SPEC, 'fail', '2026-10-06T05:00:00Z'),
+        row('apps/operator/e2e/other.spec.ts', 'fail', '2026-10-06T05:00:00Z'),
+      ],
+    };
+    const answered = world({ groups: [g], umbrellaAssignee: null });
+    answered.items.push(
+      {
+        id: 'WI-78',
+        status: 'open',
+        assignee: 'su-owner',
+        closedAt: null,
+        title: 'Operator e2e red: apps/operator/e2e/home.spec.ts',
+        summary: null,
+      },
+      {
+        id: 'WI-79',
+        status: 'done',
+        assignee: 'su-owner',
+        closedAt: '2026-10-06T06:00:00Z',
+        title: 'Operator e2e red: apps/operator/e2e/other.spec.ts',
+        summary: null,
+      },
+    );
+
+    const result = await fileOperatorE2eReds({ ...CTX, payloadTemplate: null }, answered.deps);
+
+    expect(result.owner).toBeNull();
+    expect(result.outcomes?.map((outcome) => outcome.outcome).sort()).toEqual(['owned', 'resolved-after-evidence']);
+    expect(result.ownerUnresolved).toBe(false);
+  });
+
   it('refuses a foreign harness', async () => {
     const w = world({ groups: [] });
     expect(await fileOperatorE2eReds({ ...CTX, installSlug: 'portal' }, w.deps)).toMatchObject({ status: 'skipped' });

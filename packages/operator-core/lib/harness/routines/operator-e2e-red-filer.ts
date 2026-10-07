@@ -296,12 +296,16 @@ export async function fileOperatorE2eReds(
       outcomes.push({ specPath: red.specPath, outcome: 'error', detail: error instanceof Error ? error.message : String(error) });
     }
   }
+  // A routine-level owner is only required when this sweep leaves red work unassigned.
+  // Existing assigned items and items resolved after the test evidence need no new owner.
+  const ownerUnresolved =
+    owner == null && outcomes.some((outcome) => outcome.outcome === 'filed' || outcome.outcome === 'unassigned-open');
   return {
     status: 'swept',
     runGroup: group.runGroup,
     reds: reds.length,
     owner,
-    ownerUnresolved: reds.length > 0 && owner == null,
+    ownerUnresolved,
     outcomes,
   };
 }
