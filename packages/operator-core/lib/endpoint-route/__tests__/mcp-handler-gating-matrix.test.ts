@@ -1784,10 +1784,12 @@ describe('P006 full dispatcher semantics over real HTTP and authenticated UDS', 
       const payload = { rows: PARITY_ROWS };
       h.storedReplay = { content: [{ type: 'text', text: JSON.stringify(payload) }], _meta: { format: 'json' } };
       await withSdkHost(
-        extraFor(signedUrl({ tools: 'gatingtest:replay_structured_write' })),
+        extraFor(signedUrl({ tools: 'gatingtest:replay_structured_write', role: 'reviewer' })),
         async client => {
           const catalog = await client.listTools();
-          expect(catalog.tools.find(tool => tool.name === 'gatingtest:replay_structured_write')?.outputSchema)
+          const replayTool = catalog.tools.find(tool => tool.name === 'gatingtest:replay_structured_write');
+          expect(replayTool).toBeDefined();
+          expect(replayTool?.outputSchema)
             .toMatchObject({ type: 'object', required: ['rows'] });
           parityCalls.length = 0;
 
