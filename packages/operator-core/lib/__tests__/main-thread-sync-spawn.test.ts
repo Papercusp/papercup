@@ -68,6 +68,7 @@ export const SCAN_FILES = [
   'lib/git-pipeline-position.ts',
   'lib/git-pipeline-stats.ts',
   'lib/git-trackedness.ts',
+  'lib/plan-audits.ts',
   // This system action runs on the operator host; its Git log must stay off the event loop.
   'lib/harness/routines/frozen-candidate-drift-sweep-action.ts',
 ] as const;
@@ -149,10 +150,15 @@ export function countSyncSpawnReferences(source: string, fileName = 'scan.ts'): 
 }
 
 const SOURCE_RE = /\.(?:ts|tsx|mts|cts|js|mjs|cjs)$/;
+// This documented `npx tsx` entrypoint is a separate process and is not imported by request handlers.
+const STANDALONE_PROCESS_ENTRYPOINTS: ReadonlySet<string> = new Set([
+  'lib/release/staging-fix-proposal-cli.ts',
+]);
 
-/** True for files the scan must skip: tests, fixtures, declarations, worker bodies, retired code. */
+/** True for files the scan must skip: tests, fixtures, declarations, worker bodies and standalone processes. */
 export function isOutOfScope(rel: string): boolean {
   return (
+    STANDALONE_PROCESS_ENTRYPOINTS.has(rel) ||
     !SOURCE_RE.test(rel) ||
     /\.d\.[cm]?ts$/.test(rel) ||
     /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(rel) ||
@@ -270,8 +276,9 @@ describe('operator main thread — synchronous child-process calls (WI-10005242 
     expect(countSyncSpawnReferences('const s = `${execFileSync("git")}`;')).toBe(1);
   });
 
-  it('scopes out worker bodies, tests, fixtures and declarations', () => {
+  it('scopes out worker bodies, standalone CLI entrypoints, tests, fixtures and declarations', () => {
     expect(isOutOfScope('lib/release/admission-jobs.worker.ts')).toBe(true);
+    expect(isOutOfScope('lib/release/staging-fix-proposal-cli.ts')).toBe(true);
     expect(isOutOfScope('lib/agent-tools/release/cut.test.ts')).toBe(true);
     expect(isOutOfScope('lib/agent-tools/x/__tests__/helper.ts')).toBe(true);
     expect(isOutOfScope('lib/agent-tools/x/__fixtures__/f.ts')).toBe(true);

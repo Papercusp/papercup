@@ -18,6 +18,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import {
+  __repoCitationAsyncGitReadsForTests,
   __repoCitationSyncSpawnsForTests,
   __repoCitationTrackingCacheStatsForTests,
   __resetRepoCitationTrackingCacheForTests,
@@ -813,7 +814,7 @@ describe('measureCitationBlobsAtHead — committed measurement commit M (P-019)'
 });
 
 describe('repoCitationDeps — audited commit blob provenance (EI-22457360430270017)', () => {
-  it('reads the cited blob from the pinned commit instead of the moving worktree', () => {
+  it('reads the cited blob from the pinned commit instead of the moving worktree', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'plan-audits-commit-'));
     const citedPath = path.join(root, 'src', 'cited.ts');
     const oldBody = 'export const cited = "old";\n';
@@ -836,15 +837,15 @@ describe('repoCitationDeps — audited commit blob provenance (EI-22457360430270
       const deps = repoCitationDeps(root);
       const citation = code('src/cited.ts');
       expect(citationBlobSha(citation, deps)).toBe(gitBlobSha(newBody));
-      expect(citationBlobShaAt(citation, oldSha, deps)).toBe(gitBlobSha(oldBody));
-      expect(citationBlobShaAt(citation, newSha, deps)).toBe(gitBlobSha(newBody));
-      expect(citationBlobShaAt(citation, 'f'.repeat(40), deps)).toBeNull();
+      expect(await citationBlobShaAt(citation, oldSha, deps)).toBe(gitBlobSha(oldBody));
+      expect(await citationBlobShaAt(citation, newSha, deps)).toBe(gitBlobSha(newBody));
+      expect(await citationBlobShaAt(citation, 'f'.repeat(40), deps)).toBeNull();
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
 
-  it('resolves a cited blob through the superproject gitlink at audited SHA (EI-22580796784944702)', () => {
+  it('resolves a cited blob through the superproject gitlink at audited SHA (EI-22580796784944702)', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'plan-audits-submodule-'));
     const childRoot = path.join(root, 'chat-protocol');
     const superprojectRoot = path.join(root, 'superproject');
@@ -882,7 +883,7 @@ describe('repoCitationDeps — audited commit blob provenance (EI-22457360430270
       const citation = code('libs/generic/chat-protocol/src/index.ts');
       expect(resolveCitation(citation, deps)).toEqual({ ok: true });
       expect(citationBlobSha(citation, deps)).toBe(gitBlobSha(citedBody));
-      expect(citationBlobShaAt(citation, auditedSha, deps)).toBe(gitBlobSha(citedBody));
+      expect(await citationBlobShaAt(citation, auditedSha, deps)).toBe(gitBlobSha(citedBody));
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
@@ -892,7 +893,7 @@ describe('repoCitationDeps — audited commit blob provenance (EI-22457360430270
   // 28% of real main-thread work in the window that stalled the first native plan-popup to
   // this resolver's synchronous `git` children. After the async prewarm, the tracked and
   // gitlink answers come from the warm index snapshots, and commit-addressed lookups are
-  // memoized — so a repeated acceptance evaluation forks nothing on the event loop.
+  // memoized — so a repeated acceptance evaluation launches no additional Git reads.
   it('answers tracked + gitlink checks from an async prewarm and memoizes commit-addressed lookups', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'plan-audits-prewarm-'));
     const childRoot = path.join(root, 'child');
@@ -924,13 +925,16 @@ describe('repoCitationDeps — audited commit blob provenance (EI-22457360430270
       expect(deps.isTracked?.('libs/child/src/index.ts')).toBe(true);
       expect(__repoCitationSyncSpawnsForTests()).toBe(0);
 
-      // First commit-addressed lookup forks (ls-tree + rev-parse); the same lookup from a
-      // NEW resolver context is served from the immutable memo with no further spawn.
-      expect(citationBlobShaAt(citation, auditedSha, deps)).toBe(gitBlobSha(citedBody));
-      const afterFirst = __repoCitationSyncSpawnsForTests();
-      expect(afterFirst).toBe(2);
-      expect(citationBlobShaAt(citation, auditedSha, repoCitationDeps(superprojectRoot))).toBe(gitBlobSha(citedBody));
-      expect(__repoCitationSyncSpawnsForTests()).toBe(afterFirst);
+      // First commit-addressed lookup reads ls-tree + rev-parse asynchronously; the same
+      // lookup from a NEW resolver context is served from the immutable memo.
+      const beforeLookup = __repoCitationAsyncGitReadsForTests();
+      expect(await citationBlobShaAt(citation, auditedSha, deps)).toBe(gitBlobSha(citedBody));
+      const afterFirst = __repoCitationAsyncGitReadsForTests();
+      expect(afterFirst - beforeLookup).toBe(2);
+      expect(__repoCitationSyncSpawnsForTests()).toBe(0);
+      expect(await citationBlobShaAt(citation, auditedSha, repoCitationDeps(superprojectRoot))).toBe(gitBlobSha(citedBody));
+      expect(__repoCitationAsyncGitReadsForTests()).toBe(afterFirst);
+      expect(__repoCitationSyncSpawnsForTests()).toBe(0);
     } finally {
       __resetRepoCitationTrackingCacheForTests();
       fs.rmSync(root, { recursive: true, force: true });

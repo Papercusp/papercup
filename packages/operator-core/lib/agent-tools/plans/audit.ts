@@ -1257,7 +1257,7 @@ export default defineTool({
               storedCitations.push(c);
               continue;
             }
-            const auditedBlobSha = citationBlobShaAt(c, auditedSha, deps);
+            const auditedBlobSha = await citationBlobShaAt(c, auditedSha, deps);
             if (!auditedBlobSha) {
               problems.push({
                 itemId: it.itemId,

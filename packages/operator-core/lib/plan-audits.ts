@@ -40,7 +40,7 @@
  */
 import { getOrgPg, withWorkspace } from '@papercusp/db-org';
 import { createHash } from 'node:crypto';
-import { execFile, execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -574,7 +574,7 @@ export interface CitationDeps {
   blobSha?: (rel: string) => string | null;
   /** Repo-relative → Git-compatible blob hash of the file at an audited commit/ref.
    *  Optional only so small injected resolver tests can remain filesystem-pure. */
-  blobShaAt?: (rel: string, auditedSha: string) => string | null;
+  blobShaAt?: (rel: string, auditedSha: string) => string | null | Promise<string | null>;
   /** Repo-relative → the absolute path the citation resolves to (sibling and registered
    *  roots included). Lets `measureCitationBlobsAtHead` group citations by repository.
    *  Optional: injected deps without it are measured from their working-tree bytes. */
@@ -679,15 +679,15 @@ export function citationBlobSha(citation: AuditCitation, deps: CitationDeps): st
 }
 
 /** Fingerprint a verifying citation at the exact commit/ref recorded by an audit. */
-export function citationBlobShaAt(
+export async function citationBlobShaAt(
   citation: AuditCitation,
   auditedSha: string,
   deps: CitationDeps,
-): string | null {
+): Promise<string | null> {
   if (!isVerifyingCitation(citation)) return null;
   const rel = citation.path?.trim();
   if (!rel) return null;
-  return deps.blobShaAt?.(rel, auditedSha) ?? null;
+  return (await deps.blobShaAt?.(rel, auditedSha)) ?? null;
 }
 
 /**
@@ -901,8 +901,12 @@ interface RepoCitationTrackingCacheState {
    * (bounded) instead of re-forking Git on every acceptance sweep.
    */
   immutable: Map<string, string>;
+  /** In-flight immutable reads, shared when one audit checks citations concurrently. */
+  pendingImmutable?: Map<string, Promise<string | null>>;
   /** Child processes spawned SYNCHRONOUSLY by the citation resolver (test observability). */
   syncSpawns: number;
+  /** Async Git reads issued by the citation resolver (test observability). */
+  asyncGitReads?: number;
 }
 
 // WI-2146577: `repoCitationDeps()` is constructed repeatedly while one acceptance
@@ -930,21 +934,30 @@ const FULL_OBJECT_ID_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
 function memoImmutableGitLookup(
   key: string,
   ref: string,
-  compute: () => string | null,
-): string | null {
+  compute: () => Promise<string | null>,
+): Promise<string | null> {
   if (!FULL_OBJECT_ID_RE.test(ref)) return compute();
   const hit = __repoCitationTrackingCache.immutable.get(key);
-  if (hit !== undefined) return hit;
-  const value = compute();
-  if (value !== null) {
-    const cache = __repoCitationTrackingCache.immutable;
-    cache.set(key, value);
-    if (cache.size > IMMUTABLE_GIT_LOOKUP_MAX) {
-      const oldest = cache.keys().next().value as string | undefined;
-      if (oldest !== undefined) cache.delete(oldest);
+  if (hit !== undefined) return Promise.resolve(hit);
+  const pendingImmutable = (__repoCitationTrackingCache.pendingImmutable ??= new Map());
+  const pending = pendingImmutable.get(key);
+  if (pending) return pending;
+  let lookup: Promise<string | null>;
+  lookup = compute().then((value) => {
+    if (value !== null) {
+      const cache = __repoCitationTrackingCache.immutable;
+      cache.set(key, value);
+      if (cache.size > IMMUTABLE_GIT_LOOKUP_MAX) {
+        const oldest = cache.keys().next().value as string | undefined;
+        if (oldest !== undefined) cache.delete(oldest);
+      }
     }
-  }
-  return value;
+    return value;
+  }).finally(() => {
+    if (pendingImmutable.get(key) === lookup) pendingImmutable.delete(key);
+  });
+  pendingImmutable.set(key, lookup);
+  return lookup;
 }
 
 /** Parse `git ls-files -s -z --full-name`: `<mode> <object> <stage>\t<path>\0`. */
@@ -1001,30 +1014,17 @@ function gitRootForFile(abs: string): { root: string; gitDir: string; rel: strin
  * validated by callers before it reaches Git; the path is after `--` so a citation
  * cannot become an option.
  */
-function gitObjectShaAt(root: string, ref: string, rel: string): string | null {
+function gitObjectShaAt(root: string, ref: string, rel: string): Promise<string | null> {
   return memoImmutableGitLookup(`object\0${root}\0${ref}\0${rel}`, ref, () =>
     gitObjectShaAtUncached(root, ref, rel),
   );
 }
 
-function gitObjectShaAtUncached(root: string, ref: string, rel: string): string | null {
-  __repoCitationTrackingCache.syncSpawns += 1;
-  try {
-    const object = execFileSync(
-      'git',
-      ['rev-parse', '--verify', '--end-of-options', `${ref}:${rel}`],
-      {
-        cwd: root,
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'ignore'],
-        timeout: 5_000,
-        killSignal: 'SIGKILL',
-      },
-    ).trim();
-    return /^[0-9a-f]{40}$/i.test(object) ? object : null;
-  } catch {
-    return null;
-  }
+async function gitObjectShaAtUncached(root: string, ref: string, rel: string): Promise<string | null> {
+  const object = (await readGitOutputAsync(root, [
+    'rev-parse', '--verify', '--end-of-options', `${ref}:${rel}`,
+  ]))?.trim();
+  return object && /^[0-9a-f]{40}$/i.test(object) ? object : null;
 }
 
 /**
@@ -1038,7 +1038,7 @@ function gitlinkCommitAt(
   superprojectRoot: string,
   auditedSha: string,
   gitlinkRel: string,
-): string | null {
+): Promise<string | null> {
   return memoImmutableGitLookup(
     `gitlink\0${superprojectRoot}\0${auditedSha}\0${gitlinkRel}`,
     auditedSha,
@@ -1046,63 +1046,17 @@ function gitlinkCommitAt(
   );
 }
 
-function gitlinkCommitAtUncached(
+async function gitlinkCommitAtUncached(
   superprojectRoot: string,
   auditedSha: string,
   gitlinkRel: string,
-): string | null {
-  __repoCitationTrackingCache.syncSpawns += 1;
-  try {
-    const output = execFileSync(
-      'git',
-      ['ls-tree', '--full-tree', auditedSha, '--', gitlinkRel],
-      {
-        cwd: superprojectRoot,
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'ignore'],
-        timeout: 5_000,
-        killSignal: 'SIGKILL',
-      },
-    ).trim();
-    const line = output.split('\n').find(Boolean);
-    const match = /^160000 commit ([0-9a-f]{40})\t/.exec(line ?? '');
-    return match?.[1] ?? null;
-  } catch {
-    return null;
-  }
-}
-
-function gitlinkParentForRepo(
-  repoRoot: string,
-): { superprojectRoot: string; gitlinkRel: string } | null {
-  // Starting at the child root's parent deliberately skips the child's own `.git`
-  // marker and finds the containing repository, if this checkout is a submodule.
-  const parent = gitRootForFile(repoRoot);
-  if (!parent || parent.root === repoRoot) return null;
-  const gitlinkRel = path.relative(parent.root, repoRoot).split(path.sep).join('/');
-  if (!gitlinkRel || gitlinkRel.startsWith('../') || path.isAbsolute(gitlinkRel)) return null;
-  // P-007: a warm snapshot of the parent index already carries every gitlink, so the
-  // common (prewarmed) path answers without forking Git on the request host.
-  const warm = currentTrackedSnapshot(parent.root, parent.gitDir);
-  if (warm) return warm.gitlinks.has(gitlinkRel) ? { superprojectRoot: parent.root, gitlinkRel } : null;
-  __repoCitationTrackingCache.syncSpawns += 1;
-  try {
-    const indexEntry = execFileSync(
-      'git',
-      ['ls-files', '--stage', '--', gitlinkRel],
-      {
-        cwd: parent.root,
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'ignore'],
-        timeout: 5_000,
-        killSignal: 'SIGKILL',
-      },
-    ).trim();
-    if (!indexEntry.split('\n').some((line) => line.startsWith('160000 '))) return null;
-  } catch {
-    return null;
-  }
-  return { superprojectRoot: parent.root, gitlinkRel };
+): Promise<string | null> {
+  const output = (await readGitOutputAsync(superprojectRoot, [
+    'ls-tree', '--full-tree', auditedSha, '--', gitlinkRel,
+  ]))?.trim();
+  const line = output?.split('\n').find(Boolean);
+  const match = /^160000 commit ([0-9a-f]{40})\t/.exec(line ?? '');
+  return match?.[1] ?? null;
 }
 
 /** `gitlinkParentForRepo` without a synchronous child: a cold or moved parent index is
@@ -1121,15 +1075,14 @@ async function gitlinkParentForRepoAsync(
   return { superprojectRoot: parent.root, gitlinkRel };
 }
 
-function gitCitationBlobShaAt(
+async function gitCitationBlobShaAt(
   fileRepo: { root: string; rel: string },
   auditedSha: string,
-): string | null {
+): Promise<string | null> {
   if (!/^[0-9a-f]{7,64}$/i.test(auditedSha)) return null;
-  const gitlinkParent = gitlinkParentForRepo(fileRepo.root);
+  const gitlinkParent = await gitlinkParentForRepoAsync(fileRepo.root);
   if (!gitlinkParent) return gitObjectShaAt(fileRepo.root, auditedSha, fileRepo.rel);
-
-  const childSha = gitlinkCommitAt(
+  const childSha = await gitlinkCommitAt(
     gitlinkParent.superprojectRoot,
     auditedSha,
     gitlinkParent.gitlinkRel,
@@ -1203,6 +1156,7 @@ const TRACKED_LISTING_ARGS = ['ls-files', '-s', '-z', '--full-name'] as const;
  * otherwise an async local child. Null on any failure — callers keep ownership unknown.
  */
 async function readGitOutputAsync(root: string, args: readonly string[]): Promise<string | null> {
+  __repoCitationTrackingCache.asyncGitReads = (__repoCitationTrackingCache.asyncGitReads ?? 0) + 1;
   const argv = ['-C', root, ...args];
   if (gitSidecarEnabled('PAPERCUSP_PLAN_AUDIT_SPAWN_SIDECAR')) {
     try {
@@ -1320,12 +1274,19 @@ export function __repoCitationSyncSpawnsForTests(): number {
   return __repoCitationTrackingCache.syncSpawns;
 }
 
+/** Test-only observability for asynchronous Git reads in commit-scoped citation lookup. */
+export function __repoCitationAsyncGitReadsForTests(): number {
+  return __repoCitationTrackingCache.asyncGitReads ?? 0;
+}
+
 export function __resetRepoCitationTrackingCacheForTests(): void {
   __repoCitationTrackingCache.snapshots.clear();
   __repoCitationTrackingCache.pathAnswers?.clear();
   __repoCitationTrackingCache.loads = 0;
   __repoCitationTrackingCache.immutable.clear();
+  __repoCitationTrackingCache.pendingImmutable?.clear();
   __repoCitationTrackingCache.syncSpawns = 0;
+  __repoCitationTrackingCache.asyncGitReads = 0;
 }
 
 /**
@@ -1420,11 +1381,11 @@ export function repoCitationDeps(
         return null;
       }
     },
-    blobShaAt: (rel, auditedSha) => {
+    blobShaAt: async (rel, auditedSha) => {
       const abs = within(rel);
       if (!abs) return null;
       const repo = gitRootForFile(abs);
-      return repo ? gitCitationBlobShaAt(repo, auditedSha) : null;
+      return repo ? await gitCitationBlobShaAt(repo, auditedSha) : null;
     },
     locate: (rel) => within(rel),
     isTracked: (rel) => {
