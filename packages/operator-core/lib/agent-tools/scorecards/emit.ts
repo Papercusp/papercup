@@ -73,6 +73,7 @@ import {
 import {
   adequacyCardRevisionDisposition,
   PLAN_CLASS_RUBRIC_REFS,
+  SPEC_TEST_ADEQUACY_EVALUATOR_REVISION,
   SPEC_TEST_ADEQUACY_RUBRIC_REF,
   specTestAdequacySubjectRef,
 } from '../plans/spec-test-adequacy';
@@ -1269,7 +1270,22 @@ function validateSpecTestAdequacyBinding(
       code: 'invalid_spec_test_adequacy_binding',
       error:
         `rubric '${SPEC_TEST_ADEQUACY_RUBRIC_REF}' requires subject:{ kind:'plan', ref:'${expectedRef}' } ` +
-        'matching rerunRecipe.selection (the evaluator-owned clause revision)',
+      'matching rerunRecipe.selection (the evaluator-owned clause revision)',
+    };
+  }
+
+  // A matching build identity only proves that the same evaluator build replayed;
+  // a stale evaluator can reproduce its own outdated rule. Do not persist a new card
+  // unless the rule revision matches the emitter's current evaluator contract. Legacy
+  // recipes without the stamp are revision 1, matching adequacyCardRevisionDisposition.
+  const recordedEvaluatorRevision = parsedRecipe.data.evaluatorRevision ?? 1;
+  if (recordedEvaluatorRevision !== SPEC_TEST_ADEQUACY_EVALUATOR_REVISION) {
+    return {
+      code: 'invalid_spec_test_adequacy_binding',
+      error:
+        `rubric '${SPEC_TEST_ADEQUACY_RUBRIC_REF}' evaluator rule revision ${recordedEvaluatorRevision} ` +
+        `does not match current revision ${SPEC_TEST_ADEQUACY_EVALUATOR_REVISION}; ` +
+        're-run the evaluator and emit its fresh draft; no scorecard was persisted',
     };
   }
 
@@ -3433,7 +3449,7 @@ export default defineTool({
     notWhen:
       'Building the grading skeleton or previewing a delta — scorecards:evaluate. Free-text observations — improvements:capture.',
     returns:
-      'Returns { ok, created, issueId, evidenceFingerprint, canonicalRatings }. A positive releaseGating card also returns and stores `releaseGateBinding`; a failed binding returns code `stale_pass_blocked` with status `stale-pass-blocked`, the gate reason/failing tests, tested vs green/head SHAs, and `commitsBehindHead`, and writes no card. Successful emits surface `gradedGeneration`, `staleHost` and `deployedSha`: these describe the separate Scout bg-host relative to the querying build, not evaluator freshness. Exact spec-test-adequacy replay independently refuses changed evaluator builds, missing identities or contradicted pass claims. A terminal standard-rubric card also carries `gradingAuditPending: true` alongside `gradingAuditNextStep`, which names the NON-AUTHOR grading-integrity emit that settles it — self-audits are refused, and re-emitting the card yourself files a duplicate pending card instead of settling this one. `provisional` marks a working note that a terminal re-emit (terminal:true, supersedes this issueId) finalizes. REFUSALS: when complete independent scorecards already exist for the same rubric revision, emit returns existing_independent_scorecards — inspect its ids and retry with acknowledgeExisting:true when another independent sample is intentional; force:true only bypasses unchanged-evidence deduplication. Stamps the running generation and stores deterministic instrument snapshots.',
+      'Returns { ok, created, issueId, evidenceFingerprint, canonicalRatings }. A positive releaseGating card also returns and stores `releaseGateBinding`; a failed binding returns code `stale_pass_blocked` with status `stale-pass-blocked`, the gate reason/failing tests, tested vs green/head SHAs, and `commitsBehindHead`, and writes no card. Successful emits surface `gradedGeneration`, `staleHost` and `deployedSha`: these describe the separate Scout bg-host relative to the querying build, not evaluator freshness. Exact spec-test-adequacy replay independently refuses changed evaluator builds or rule revisions, missing identities or contradicted pass claims. A terminal standard-rubric card also carries `gradingAuditPending: true` alongside `gradingAuditNextStep`, which names the NON-AUTHOR grading-integrity emit that settles it — self-audits are refused, and re-emitting the card yourself files a duplicate pending card instead of settling this one. `provisional` marks a working note that a terminal re-emit (terminal:true, supersedes this issueId) finalizes. REFUSALS: when complete independent scorecards already exist for the same rubric revision, emit returns existing_independent_scorecards — inspect its ids and retry with acknowledgeExisting:true when another independent sample is intentional; force:true only bypasses unchanged-evidence deduplication. Stamps the running generation and stores deterministic instrument snapshots.',
     chaining:
       'scorecards:evaluate { rubricRef } → grade every returned criterion → scorecards:evaluate { rubricRef, ratings, instrumentSnapshots, testedSha } → scorecards:emit with that same canonical payload → scorecards:list / rubrics:trend. `testedSha` is required when a releaseGating rubric has a pass-like rating. For acceptance rubrics, the non-implementer grading and the author acceptance are separate cards; the author acceptance adopts ratings via acceptanceOf; do not pass supersedes on the author acceptance.',
     seeAlso: ['scorecards:evaluate', 'scorecards:list', 'rubrics:trend'],

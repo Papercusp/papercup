@@ -493,6 +493,35 @@ describe('spec-test-adequacy evaluator → scorecards:emit round trip', () => {
     expect(captureImprovement).toHaveBeenCalledTimes(1);
   });
 
+  it('refuses a card stamped by an older evaluator rule revision even when its build replay matches', async () => {
+    const live = await runEvaluator({
+      harness: 'papercusp',
+      slug: PLAN,
+      classRef: 'plan-class-feature-ship',
+      specIds: [SPEC],
+      detail: 'full',
+    });
+    const draft = {
+      ...live.rows[0]!.scorecardDraft,
+      rerunRecipe: {
+        ...live.rows[0]!.scorecardDraft.rerunRecipe,
+        evaluatorRevision: SPEC_TEST_ADEQUACY_EVALUATOR_REVISION - 1,
+      },
+    };
+
+    const result = await emitDraft(draft);
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'invalid_spec_test_adequacy_binding',
+      error: expect.stringContaining(
+        `evaluator rule revision ${SPEC_TEST_ADEQUACY_EVALUATOR_REVISION - 1} does not match current revision ${SPEC_TEST_ADEQUACY_EVALUATOR_REVISION}`,
+      ),
+    });
+    expect(dispatchTool).not.toHaveBeenCalled();
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
+
   it('refuses the same card once the proven source moves because its current test witness no longer qualifies', async () => {
     const live = await runEvaluator({
       harness: 'papercusp',
