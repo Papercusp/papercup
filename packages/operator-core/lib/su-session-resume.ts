@@ -199,7 +199,9 @@ export async function prepareStructuredSuResume(record: DurableSuSessionRecord,
       model = applyOmpResumeAccountRoute({ session, env, accountRoute, model });
       env.PAPERCUSP_OMP_MODEL_SELECTOR = model ?? '';
     }
-    if (!existsSync(promptFile)) throw new Error('The saved full SU instruction artifact is unavailable');
+    if (identity === 'su' && !existsSync(promptFile)) {
+      throw new Error('The saved full SU instruction artifact is unavailable');
+    }
     const coordExt = join(homedir(), '.papercusp', 'papercusp-coord.ts');
     const boot: BootstrapSuResult = { status: 'ok', sessionId: row.id, nativeSessionId: nativeId,
       agent: record.backend, workspaceId: record.workspaceId, harnessSlug: record.harnessSlug,

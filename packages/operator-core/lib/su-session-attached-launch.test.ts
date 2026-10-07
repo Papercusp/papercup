@@ -217,7 +217,7 @@ describe('attached launch authority', () => {
 
     it('recomputes the identity from the saved directory on resume', async () => {
       mocks.registry.mockResolvedValue({ projects: [{ slug: 'project', path: checkout }] });
-      mocks.read.mockResolvedValue({ backend: 'claude', harnessSlug: 'project', advSessionId: 18, ownerId: 'su-engine' });
+      mocks.read.mockResolvedValue({ backend: 'claude', harnessSlug: 'project', advSessionId: 18, ownerId: 'su-engine', cwd: fresh });
       mocks.rehydrate.mockResolvedValue({ snapshot: () => ({ executorAttached: false, streamReady: false, terminal: true }) });
       mocks.resume.mockResolvedValue({ boot: { ...boot, cwd: fresh }, nativeSession: { backend: 'claude', sessionId: 'saved-native' },
         binding: { operation: 'attached', backend: 'claude', advSessionId: 18, ownerId: 'su-engine', workspaceId: 'workspace', harnessSlug: 'project', planSlug: null },
@@ -225,6 +225,8 @@ describe('attached launch authority', () => {
       await launchAttachedSuSession(request(), { ...input, agent_chat_id: 'identity-resume' });
       expect(mocks.bootstrap).not.toHaveBeenCalled();
       expect(mocks.engine.mock.calls[0][3]).toMatchObject({ resume: true, identity: 'coding-assistant' });
+      expect(mocks.resume).toHaveBeenCalledWith(expect.objectContaining({ cwd: fresh }),
+        { identity: 'coding-assistant' });
     });
   });
 

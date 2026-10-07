@@ -6,9 +6,9 @@ const m = vi.hoisted(() => ({
   live: vi.fn(), holder: vi.fn(), witness: vi.fn(), transcript: vi.fn(), ompPath: vi.fn(), account: vi.fn(),
   codexRoute: vi.fn(), ompRoute: vi.fn(), envelope: vi.fn(), archive: vi.fn(),
   ensureCodex: vi.fn(),
-  codexReadiness: vi.fn(),
+  codexReadiness: vi.fn(), exists: vi.fn(),
 }));
-vi.mock('node:fs', async (original) => ({ ...await original<typeof import('node:fs')>(), existsSync: () => true }));
+vi.mock('node:fs', async (original) => ({ ...await original<typeof import('node:fs')>(), existsSync: m.exists }));
 vi.mock('../../../apps/operator/scripts/psu-launcher.mjs', async (original) => ({
   resolveOmpSessionModel: (await original<typeof import('../../../apps/operator/scripts/psu-launcher.mjs')>()).resolveOmpSessionModel,
   normalizeModelSpecForAgent: (await original<typeof import('../../../apps/operator/scripts/psu-launcher.mjs')>()).normalizeModelSpecForAgent,
@@ -65,6 +65,7 @@ function fixture(backend: 'claude' | 'codex' | 'omp'): DurableSuSessionRecord {
 
 beforeEach(() => {
   vi.resetAllMocks();
+  m.exists.mockReturnValue(true);
   m.live.mockReturnValue(null);
   m.holder.mockReturnValue({ held: false, reason: 'clean-scan' });
   m.witness.mockReturnValue({ version: 1, kind: 'no-live-claude-process' });
@@ -81,6 +82,7 @@ describe('structured exact resume preparation', () => {
   it('resumes a coding-assistant Codex home without restoring or requiring the SU playbook', async () => {
     const saved = fixture('codex');
     m.codexReadiness.mockReturnValue('AGENTS.md is missing');
+    m.exists.mockImplementation((path: string) => !path.endsWith('AGENTS.md'));
     const resume = await prepareStructuredSuResume(saved, { identity: 'coding-assistant' });
     expect(resume.boot.envelopeEnv.CODEX_HOME).toBe('/saved/codex');
     expect(m.ensureCodex).not.toHaveBeenCalled();
@@ -93,6 +95,13 @@ describe('structured exact resume preparation', () => {
     m.codexReadiness.mockReturnValue('AGENTS.md is missing');
     await expect(prepareStructuredSuResume(saved)).rejects.toThrow('AGENTS.md is missing');
     expect(m.ensureCodex).toHaveBeenCalled();
+  });
+
+  it('refuses an SU instruction artifact missing after home readiness succeeds', async () => {
+    const saved = fixture('codex');
+    m.exists.mockImplementation((path: string) => !path.endsWith('AGENTS.md'));
+    await expect(prepareStructuredSuResume(saved)).rejects.toThrow('full SU instruction artifact');
+    expect(m.release).toHaveBeenCalled();
   });
 
   it.each(['claude', 'codex', 'omp'] as const)('preserves %s identity, scope and settings and finalizes only after a child exists', async (backend) => {
