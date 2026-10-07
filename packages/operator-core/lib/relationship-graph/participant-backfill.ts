@@ -128,6 +128,7 @@ export async function backfillInteractionParticipants(
   });
   const measuredDeps: ParticipantSinkDeps = input.timings ? {
     ...deps,
+    resolver: { ...deps.resolver, timings: input.timings },
     createPersonSinks: async (...args) => (await (deps.createPersonSinks ?? createDatatypeDestinationSinks)(...args)).map(measuredSink),
     createGraphSink: (...args) => measuredSink((deps.createGraphSink ?? createRelationshipGraphSink)(...args)),
   } : deps;

@@ -137,6 +137,8 @@ export function isCanonicalEntityId(datatype: GraphEntityDatatype, id: string): 
 }
 
 export interface ResolverDeps {
+  /** Optional aggregate phase timings; preserves the normal resolver path. */
+  timings?: Record<string, { calls: number; ms: number }>;
   createWorkItem?: (input: CreateWorkItemInput) => Promise<unknown>;
   mergeWorkItemPayload?: (
     id: string,
@@ -501,7 +503,15 @@ export async function resolveIdentities(
   input: { workspaceId: string; datatype: GraphEntityDatatype; recordIds?: readonly string[] },
   deps: ResolverDeps = {},
 ): Promise<ResolveResult> {
-  return withResolveLock(sql, input.workspaceId, input.datatype, () => resolveUnlocked(sql, input, deps));
+  const start = performance.now();
+  return withResolveLock(sql, input.workspaceId, input.datatype, () => {
+    if (deps.timings) {
+      const timing = deps.timings['resolver-lock-acquire'] ??= { calls: 0, ms: 0 };
+      timing.calls += 1;
+      timing.ms += performance.now() - start;
+    }
+    return resolveUnlocked(sql, input, deps);
+  });
 }
 
 async function resolveUnlocked(
@@ -511,13 +521,26 @@ async function resolveUnlocked(
 ): Promise<ResolveResult> {
   const { workspaceId, datatype } = input;
   const spec = SPECS[datatype];
-  const create = deps.createWorkItem ?? defaultCreateWorkItem;
-  const merge = deps.mergeWorkItemPayload ?? defaultMergeWorkItemPayload;
+  const measure = async <T>(stage: string, operation: () => Promise<T>): Promise<T> => {
+    const start = performance.now();
+    try { return await operation(); }
+    finally {
+      if (deps.timings) {
+        const timing = deps.timings[stage] ??= { calls: 0, ms: 0 };
+        timing.calls += 1;
+        timing.ms += performance.now() - start;
+      }
+    }
+  };
+  const create: NonNullable<ResolverDeps['createWorkItem']> = (...args) =>
+    measure('resolver-create', () => (deps.createWorkItem ?? defaultCreateWorkItem)(...args));
+  const merge: NonNullable<ResolverDeps['mergeWorkItemPayload']> = (...args) =>
+    measure('resolver-merge', () => (deps.mergeWorkItemPayload ?? defaultMergeWorkItemPayload)(...args));
   const now = (deps.now ?? (() => new Date()))().toISOString();
 
-  const rows = input.recordIds
-    ? await loadComponent(sql, workspaceId, datatype, input.recordIds)
-    : await selectAll(sql, workspaceId, datatype);
+  const rows = await measure('resolver-load-component', () => input.recordIds
+    ? loadComponent(sql, workspaceId, datatype, input.recordIds)
+    : selectAll(sql, workspaceId, datatype));
   const canonicalRows = new Map<string, CanonicalRow>();
   const sources: SourceEntityRecord[] = [];
   for (const row of rows) {

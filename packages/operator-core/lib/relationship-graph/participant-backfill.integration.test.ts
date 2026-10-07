@@ -307,7 +307,7 @@ describe('interaction participant backfill (P-003, D-017 point 2)', () => {
   });
 
   it('repeated participants across multiple pages retain one identity on replay (WI-10007028)', async () => {
-    const total = 24;
+    const total = 240;
     const repeated = await connect('gmail', { 'email-message': ['document', 'event'], person: ['record'] });
     const addresses = ['repeat-a@profile.example', 'repeat-b@profile.example'];
     await upsertPersonalDocuments(sql, WS, userId, Array.from({ length: total }, (_, i) => ({
@@ -328,11 +328,16 @@ describe('interaction participant backfill (P-003, D-017 point 2)', () => {
         phase, documents: total, totalMs: performance.now() - start, stages: timings,
       }));
       expect(result.ok, JSON.stringify(result)).toBe(true);
+      if (!result.ok) throw new Error(result.reason);
       expect(result.documents).toBe(total);
       expect(result.participants).toBe(total * addresses.length);
-      expect(timings['document-page']?.calls).toBeGreaterThanOrEqual(5);
+      expect(timings['document-page']?.calls).toBeGreaterThanOrEqual(Math.ceil(total / 5));
       expect(timings['data-source-record']?.calls).toBe(total * addresses.length);
       expect(timings['relationship-graph-resolve']?.calls).toBe(total * addresses.length);
+      expect(timings['resolver-lock-acquire']?.calls).toBe(total * addresses.length);
+      expect(timings['resolver-load-component']?.calls).toBe(total * addresses.length);
+      expect(timings['resolver-merge']?.calls).toBeGreaterThanOrEqual(total * addresses.length);
+      expect(Object.values(timings).every(({ ms }) => Number.isFinite(ms) && ms >= 0)).toBe(true);
       expect(await personIds()).toHaveLength(idsBefore.length + addresses.length);
       for (const address of addresses) {
         expect((await searchPeople(sql, WS, { emails: [address] })).map((p) => p.emails)).toEqual([[address]]);
