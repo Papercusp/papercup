@@ -233,6 +233,25 @@ describe('resource governor enforcement lint', () => {
     expect(scanInventory([[nativePath, native.replace('71f431c4e9321ec6fbeb158d02ed240459a7dcc98673fa79a4f439ce42efaf10', 'other-graph')]])).toContain(`${nativePath}:resource-start-outside-admission`);
   });
 
+  it('bounds the Reports native verifier disposition to isolated synchronous helpers', () => {
+    const path = 'scripts/tauri-surface-verify-reports.mts';
+    const source = readFileSync(ROOT + path, 'utf8');
+    const finding = `${path}:resource-start-outside-admission`;
+    expect(scanInventory([[path, source]])).not.toContain(finding);
+    expect(P016_DISPOSITION_REGISTRY.get(`${path}::resource-start-outside-admission`)?.reason)
+      .toContain('EI-25357092317407008');
+    for (const unsafe of [
+      source.replace('PAPERCUSP_VERIFY_TAURI_ISOLATED', 'UNVERIFIED_ISOLATION'),
+      source.replace('assert.ok(pid && workspace && process.env.VERIFY_TAURI_POLL', 'assert.ok(true'),
+      source.replace('timeout: 60_000', 'timeout: undefined'),
+      source.replace('timeout: 90_000', 'timeout: undefined'),
+      source.replace('execFileSync(process.env.VERIFY_TAURI_AGENT_TOOLS_BIN', 'spawn(process.env.VERIFY_TAURI_AGENT_TOOLS_BIN'),
+      source + "\nspawn('resident-worker', [], { detached: true });",
+      source + "\nconst launch = spawn; launch('resident-worker', []);",
+      source + "\nnew Worker('resident-worker');",
+    ]) expect(scanInventory([[path, unsafe]])).toContain(finding);
+  });
+
   it('allows physical upstream constraints only when the writer carries explicit evidence', () => {
     // Annotated so `disposition` keeps its literal type: an un-annotated array literal
     // widens it to `string`, which stopped satisfying ResourceGovernorInventoryRow once

@@ -58,7 +58,7 @@ function walk(entry: string): Map<string, string> {
 }
 
 describe('hosted-auth-runtime bundle cone', () => {
-  it('excludes runtime package barrels while allowing type-only imports', () => {
+  it('excludes the agent runtime barrel even for types and runtime tooldef barrels', () => {
     // The relative-only walk missed an agent-mcp barrel import in a tutorial
     // preference leaf: esbuild traversed its side effects into DBOS/telemetry.
     // Inspect runtime imports throughout the same cone, including named imports
@@ -69,6 +69,12 @@ describe('hosted-auth-runtime bundle cone', () => {
       for (const node of source.statements) {
         if (!ts.isImportDeclaration(node) || !ts.isStringLiteral(node.moduleSpecifier)) continue;
         if (!['@papercusp/agent-mcp', '@papercusp/tooldef'].includes(node.moduleSpecifier.text)) continue;
+        // TypeScript follows type-only barrel exports too. Importing RouteContext
+        // from agent-mcp pulls its agent execution graph into the Next program.
+        if (node.moduleSpecifier.text === '@papercusp/agent-mcp') {
+          offenders.push(`${file} imports ${node.moduleSpecifier.text}`);
+          continue;
+        }
         const clause = node.importClause;
         if (clause?.isTypeOnly) continue;
         if (clause && !clause.name && clause.namedBindings && ts.isNamedImports(clause.namedBindings)

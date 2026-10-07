@@ -456,6 +456,25 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
     },
   },
   {
+    path: "scripts/tauri-surface-verify-reports.mts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/tauri-surface-verify-reports.mts (EI-25357092317407008): this is a disposable isolated Tauri Reports Library acceptance driver, not a serving or scheduled runtime. It requires PAPERCUSP_VERIFY_TAURI_ISOLATED=1 and a concrete native PID and polling helper. Its two execFileSync sites invoke the native bridge and DOM poll helper with 60s/90s deadlines; each child is awaited to exit before the next call. The script creates no detached worker or resident queue and exits after the bounded verification phase, so it adds no independently managed application capacity for Governor.admit to meter.",
+    matchesSource: (source) => {
+      const code = stripCommentsAndStrings(source);
+      return resourceStartCallCount(source) === 2 &&
+        [...code.matchAll(/\bexecFileSync\s*\(/g)].length === 2 &&
+        source.includes("assert.equal(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED, '1'") &&
+        source.includes("assert.ok(pid && workspace && process.env.VERIFY_TAURI_POLL") &&
+        source.includes("timeout: 60_000") &&
+        source.includes("timeout: 90_000") &&
+        !/\bdetached\s*:\s*true/.test(code) &&
+        !/\bnew\s+(?:Worker|Piscina)\s*\(/.test(code) &&
+        !hasCalledResourceStartAlias(code);
+    },
+  },
+  {
     path: "scripts/fixmic.mjs",
     code: "resource-start-outside-admission",
     disposition: "bypass",

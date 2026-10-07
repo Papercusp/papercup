@@ -35,6 +35,7 @@ import {
   HOSTED_AUTH_ROUTES,
   createHostedAuthRoutes,
 } from './routes/hosted-auth';
+import { createHostedTutorialProgressRoutes } from './routes/hosted-tutorial-progress-routes';
 
 // The billing runtime rides in this module's portal prebundle (one bundle, one
 // dynamic import). It mounts its own pinned surface; the four auth routes below
@@ -69,6 +70,9 @@ export interface HostedAuthRuntimeDependencies {
 
 export interface HostedAuthRuntime {
   readonly app: Hono;
+  /** Canonical account/workspace guide preferences, with the same session authority. */
+  readonly tutorial: Hono;
+  readonly tutorialMounted: readonly { method: string; path: string }[];
   readonly mounted: readonly { method: string; path: string }[];
   readonly resolvePrincipal: HostedPrincipalResolver;
   readonly components: {
@@ -223,9 +227,23 @@ export async function createHostedAuthRuntime(
     publicOrigin: configuration.publicOrigin,
   });
   const app = createHostedAuthApp(mounted, resolvePrincipal);
+  // Reuse the existing progress leaf and tenant runner, without importing the
+  // full operator runtime or granting the Portal's unscoped passthrough access.
+  const tutorialMounted = createHostedTutorialProgressRoutes({ origin: configuration.publicOrigin,
+    controlPlaneWorkspaceId: configuration.controlPlaneWorkspaceId, runTenant });
+  const tutorial = new Hono().basePath('/api');
+  for (const route of tutorialMounted) {
+    tutorial.on(route.method, route.path, async context => {
+      const resolution = await resolvePrincipal(context.req.raw.headers);
+      if (!resolution.ok) return denial(resolution.reason);
+      return route.handler(context.req.raw, { principal: resolution.principal } as never);
+    });
+  }
 
   return {
     app,
+    tutorial,
+    tutorialMounted,
     mounted,
     resolvePrincipal,
     components: { sessionStore, sessionCookieCodec, membershipAuthority, identityDirectory },

@@ -1,6 +1,6 @@
 /** Shared hosted browser authority checks. Kept free of product workflows so
  * read-only leaves do not import provisioning or agent execution backends. */
-import type { RouteContext } from '@papercusp/agent-mcp';
+import type { RouteContext } from '@papercusp/tooldef';
 import type { VerifiedTenantServerContext } from '@papercusp/db-org';
 import { isHostedPrincipal, type HostedPrincipal } from '../auth/hosted-principal';
 export function jsonError(code: string, status: number, extra: Record<string, unknown> = {}): Response {
