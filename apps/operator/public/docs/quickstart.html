@@ -109,8 +109,14 @@ deleting it is a different action and needs a backup and restore plan first.
 See <a href="/docs/accounts-and-billing">Accounts and billing</a> and
 <a href="/docs/cloud-workspaces#stop-delete-and-recover-deliberately">Cloud workspaces</a>.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="3-select-a-project-and-start-a-session">3. Select a project and start a session</h2><a class="sl-anchor-link" href="#3-select-a-project-and-start-a-session"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “3. Select a project and start a session”</span></a></div>
-<p>Check the workspace <strong>and project</strong> before opening the agent conversation.
-Give the agent a task with a small scope and a result you can inspect:</p>
+<p>In the portal’s assistant conversation, use <strong>Ask Papercup…</strong>. Name the
+connected workspace <strong>and project</strong> that should receive the task, and ask
+Papercup to confirm the target. Read the chat’s access notice first: actions
+in this public chat can run without another confirmation.</p>
+<p>Papercup can explain a topic or hand off implementation. Follow the work-item
+or session reference it returns to review the implementing agent’s work; a
+handoff is not a completed edit. Start with a small scope and an inspectable
+result:</p>
 <blockquote>
 <p>In this project, inspect the README and propose a clearer getting-started
 section. Show me the plan before editing. Preserve installation commands
@@ -120,9 +126,10 @@ unless you verify a replacement. Check the links and report what changed.</p>
 access it, and whether publication is intended. Ask to see the available
 <a href="/docs/harness-templates">app templates</a> before scaffolding.</p>
 <div class="sl-heading-wrapper level-h2"><h2 id="4-approve-the-intended-work">4. Approve the intended work</h2><a class="sl-anchor-link" href="#4-approve-the-intended-work"><span aria-hidden="true" class="sl-anchor-icon"><svg width="16" height="16" viewBox="0 0 24 24"><path fill="currentcolor" d="m12.11 15.39-3.88 3.88a2.52 2.52 0 0 1-3.5 0 2.47 2.47 0 0 1 0-3.5l3.88-3.88a1 1 0 0 0-1.42-1.42l-3.88 3.89a4.48 4.48 0 0 0 6.33 6.33l3.89-3.88a1 1 0 1 0-1.42-1.42Zm8.58-12.08a4.49 4.49 0 0 0-6.33 0l-3.89 3.88a1 1 0 0 0 1.42 1.42l3.88-3.88a2.52 2.52 0 0 1 3.5 0 2.47 2.47 0 0 1 0 3.5l-3.88 3.88a1 1 0 1 0 1.42 1.42l3.88-3.89a4.49 4.49 0 0 0 0-6.33ZM8.83 15.17a1 1 0 0 0 1.1.22 1 1 0 0 0 .32-.22l4.92-4.92a1 1 0 0 0-1.42-1.42l-4.92 4.92a1 1 0 0 0 0 1.42Z"></path></svg></span><span class="sr-only" data-pagefind-ignore>Section titled “4. Approve the intended work”</span></a></div>
-<p>Read the proposed scope, acceptance conditions, dependencies and execution
-route. For a first task, one agent is usually easier to follow than a fleet.
-You can say:</p>
+<p>In the implementing agent’s conversation, read the proposed scope,
+acceptance conditions, dependencies and execution route. For a first task,
+one agent is usually easier to follow than a fleet. Once the target and plan
+are correct, you can say:</p>
 <blockquote>
 <p>Approved. Implement this plan yourself in this session. Do not publish it.
 Stop if you need a credential or an irreversible data change.</p>
