@@ -5,19 +5,20 @@
   "accountableOwner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
   "population": {
     "failedFiles": 124,
-    "repairedFocused": 22,
+    "repairedFocused": 23,
     "repairedPeerFocused": 15,
-    "openUnknown": 87
+    "openUnknown": 86
   },
   "classes": {
     "assertion": 55,
     "peer-scale-rekey-fixture": 1,
+    "fed-event-await-schema-fixture": 1,
     "transcript-search-disclosure-fixture": 1,
     "peer-blueprint-inherited-providers": 3,
     "lock-ownership-expectation": 1,
     "work-item-disclosure-fixture": 1,
     "migration-stage": 1,
-    "missing-schema": 16,
+    "missing-schema": 15,
     "blueprint-fixture": 1,
     "console-guard": 10,
     "unclassified": 7,
@@ -1001,12 +1002,20 @@
     },
     {
       "path": "packages/operator-core/lib/sync/hyperbee/__tests__/cross-peer-fed-event.integration.test.ts",
-      "class": "missing-schema",
-      "state": "open-unknown",
-      "item": "WI-10006170",
+      "class": "fed-event-await-schema-fixture",
+      "state": "repaired-focused",
+      "item": "WI-10007146",
       "lines": [
         15941
-      ]
+      ],
+      "diagnosis": "The manual event_awaits fixture omitted migration 925's cancel_reason column, explicitly updated by exact-key registration before insertion. Real-PG DROP/restoration controls distinguish fixture drift from broken federation and verify superseded pending watches carry AWAIT_SUPERSEDED_BY_REGISTRATION. Existing terminal EI-20433417005374377 addressed a distinct older producer_health omission.",
+      "beforeTestRun": 20897729,
+      "afterTestRun": 20897809,
+      "passed": 2,
+      "skipped": 0,
+      "testSha256": "e43c850c9547f9612ffd8e0128dcd8a535b596a3268cba04f9ca08caaac026d2",
+      "receiptTestBlob": "1b0228fe52091dc6b8913702ee2a957c73ffb4a0",
+      "receiptScope": "Local working-tree staging PASS2/0skip exit0, source local, workspace papercusp-workspace, harness papercusp, runGroupId null, scratch false, dirty true; tested HEAD a99fd6b2d4b73627d7e825e43bcdd80482da8fa1. The original real-wire projection and event-wake test passes with the schema control. Full current import/environment assurance and final D006 remain unverified."
     },
     {
       "path": "packages/operator-core/lib/sync/hyperbee/__tests__/wire-outbox-drain-online.integration.test.ts",
@@ -2080,7 +2089,7 @@
     },
     {
       "class": "missing-schema",
-      "count": 16,
+      "count": 15,
       "status": "open-unknown",
       "item": "WI-10006170",
       "owner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
@@ -2588,6 +2597,20 @@
       "rootCause": "Missing coordination-only rekey fixture setting makes default-ON Hive dependency composition read the uninitialized authority SQL holder before peer setup. Reuse the existing companion suite setting. Conventional real-composition OFF/no-SQL and ON/fail-closed controls pass with the original real five-swarm failover/election/claim cascade; production fail-closed code is unchanged.",
       "testRunIds": [20897261, 20897692],
       "next": "Retain focused local PASS3/0skip evidence. Full import/environment and final D006 remain unverified; no terminal replay or settlement babysitting."
+    },
+    {
+      "class": "fed-event-await-schema-fixture",
+      "count": 1,
+      "status": "repaired-focused",
+      "item": "WI-10007146",
+      "owner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
+      "scope": "named-fed-event-integration-fixture-only",
+      "rootCause": "The minimal event_awaits fixture omits cancel_reason, required by the real exact-one-shot retire-and-insert store. Reuse the existing fixture and shared fresh-PG helper; add the column and conventional missing/restored-column and supersession control. Original real two-peer projection, fired await and wake payload pass. No production source changes.",
+      "testRunIds": [
+        20897729,
+        20897809
+      ],
+      "next": "Retain focused local PASS2/0skip evidence. Full import/environment and final D006 remain unverified; no terminal replay or settlement babysitting."
     }
   ],
   "prerequisites": [

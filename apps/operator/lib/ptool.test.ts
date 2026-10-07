@@ -833,6 +833,19 @@ describe('ptool timeoutForTool — foreground-capable tools outlive the MCP tran
   });
 });
 
+describe('ptool timeoutForTool — rubrics:amend delivers its foreground receipt (EI-24943513849393693)', () => {
+  it.each([
+    ['direct', 'rubrics:amend', {}],
+    ['tools:invoke', 'tools:invoke', { name: 'rubrics:amend' }],
+  ] as const)('%s call outlives the 40s handler budget and MCP transport cap', (_route, toolName, args) => {
+    const timeout = timeoutForTool(toolName, args);
+    expect(timeout).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeout).toBeGreaterThan(40_000);
+    expect(timeout).toBeGreaterThan(MCP_TRANSPORT_CAP_MS);
+    expect(timeout).not.toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
+  });
+});
+
 describe('ptool timeoutForTool — dev:pg_query outlives proxy admission and SQL bounds (EI-22701666730811258)', () => {
   it('uses the long-read client deadline for direct calls instead of the flat 30s cutoff', () => {
     const timeout = timeoutForTool('dev:pg_query', { sql: 'SELECT 1', timeoutMs: 10_000 });

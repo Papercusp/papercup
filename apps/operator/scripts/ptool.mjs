@@ -1626,6 +1626,12 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   ['scorecards:emit', PTOOL_SCORECARD_EMIT_TIMEOUT_MS],
   ['scorecards:repair', PTOOL_SCORECARD_REPAIR_TIMEOUT_MS],
   ['release:checkpoint-run', PTOOL_CHECKPOINT_RUN_TIMEOUT_MS],
+  // EI-24943513849393693: rubrics:amend can spend 40s in its own foreground
+  // budget before returning a durable receipt. The flat 30s ptool deadline
+  // preempts that response and hides the receipt while the tracked dry-run
+  // continues. Keep direct and tools:invoke-wrapped calls beyond the transport
+  // cap so the caller receives the pending/settled result.
+  ['rubrics:amend', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['testing:run', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['build:typecheck', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['capability:bash', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
