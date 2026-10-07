@@ -1246,6 +1246,7 @@ describe('testing:run (integration)', () => {
   }, 180_000);
 
   it('keeps the admin test-run ledger reporter alongside machine-readable JSON output', async () => {
+    const metadata = vi.fn<(data: Record<string, unknown>) => void>();
     const out = await body(
       call(
         { files: [GREEN_TARGET], harness: 'papercusp' },
@@ -1253,6 +1254,7 @@ describe('testing:run (integration)', () => {
           projectDir: REPO_ROOT,
           harnessSlug: '*',
           workspaceId: 'papercusp-workspace',
+          metadata,
         },
       ),
     );
@@ -1270,6 +1272,15 @@ describe('testing:run (integration)', () => {
     });
     const phaseTimings = out.phaseTimingsMs!;
     expect(Object.values(phaseTimings).every((duration) => typeof duration === 'number' && duration >= 0)).toBe(true);
+    expect(metadata).toHaveBeenCalledTimes(1);
+    expect(metadata.mock.calls[0]?.[0]).toMatchObject({
+      testingRun: {
+        schemaVersion: 'testing-run-phase-telemetry-v1',
+        runId: out.runId,
+        outcome: 'passed',
+        phaseTimingsMs: out.phaseTimingsMs,
+      },
+    });
     if (typeof out.runId !== 'string') {
       throw new Error(`testing:run omitted runId: ${JSON.stringify(out)}`);
     }

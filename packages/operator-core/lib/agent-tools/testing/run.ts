@@ -4178,6 +4178,20 @@ export default defineTool({
     setTestingRunPhaseDuration(phaseTimingsMs, 'finalizationMs', finalizationStartedAt);
     setTestingRunPhaseDuration(phaseTimingsMs, 'totalHandlerMs', handlerStartedAt);
     const timedFinalResult = { ...finalResult, phaseTimingsMs: { ...phaseTimingsMs } };
+    // Keep the diagnostic seam durable even when the caller's MCP response budget
+    // expires just before this handler settles. The dispatcher's invocation row
+    // records handler status and wall time; this small metadata record lets a later
+    // reader correlate the generated run with the phase that consumed the budget.
+    ctx.metadata?.({
+      testingRun: {
+        schemaVersion: 'testing-run-phase-telemetry-v1',
+        runId,
+        outcome: result.error ?? (result.ok ? 'passed' : result.status ?? 'failed'),
+        phaseTimingsMs: { ...phaseTimingsMs },
+        ...(result.detachedRunId ? { detachedRunId: result.detachedRunId } : {}),
+        ...(result.taskId ? { taskId: result.taskId } : {}),
+      },
+    });
     if (result.ok === false && result.error === 'timeout') {
       return {
         data: {
