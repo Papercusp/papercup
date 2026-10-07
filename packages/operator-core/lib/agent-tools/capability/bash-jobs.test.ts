@@ -1295,12 +1295,16 @@ describe('PAPERCUSP_OPERATOR_URL inheritance', () => {
     process.env.PAPERCUSP_MCP_PROXY_BASE = 'http://127.0.0.1:9071';
     try {
       const r = await runForeground(
-        { command: 'printf "%s" "$PAPERCUSP_OPERATOR_URL"', cwd: STATE, stateDir: STATE },
+        {
+          command: 'printf "%s|%s" "$PAPERCUSP_OPERATOR_URL" "$PAPERCUSP_MCP_PROXY_BASE"',
+          cwd: STATE,
+          stateDir: STATE,
+        },
         never,
         10_000,
       );
       expect(r.status).toBe('completed');
-      expect(r.output).toContain('http://127.0.0.1:9071/api/mcp');
+      expect(r.output).toContain('http://127.0.0.1:9071/api/mcp|http://127.0.0.1:9071');
     } finally {
       if (prevOperator === undefined) delete process.env.PAPERCUSP_OPERATOR_URL;
       else process.env.PAPERCUSP_OPERATOR_URL = prevOperator;
