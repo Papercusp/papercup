@@ -4142,7 +4142,7 @@ export function whichBin(bin: any, { platform }?: {
  */
 export function wellKnownBackendBin(agent: any, opts?: {}): string | null;
 /** Detect a backend bin: PATH first, then well-known. `{ path, onPath } | null`. */
-export function detectBackendBin(agent: any): {
+export function detectBackendBin(agent: any, opts?: {}): {
     path: string;
     onPath: boolean;
 } | null;
