@@ -66,6 +66,7 @@ import {
   configureFileLockHiveResolver,
 } from '../../authority/file-lock-routing';
 import { wireAuthorityRpcTransport } from '../../authority/transport-wiring';
+import { registerReportAttachmentRpc } from '../../harness/improvements/report-attachment-rpc';
 import { wireAuthorityRpcSwarmTransport } from '../../authority/authority-rpc-swarm-wiring';
 import { wireLockEventStream } from '../../authority/lock-event-wiring';
 import { wirePeerEviction } from '../../authority/eviction-wiring';
@@ -198,6 +199,7 @@ export function wireFileLockAuthority(): void {
   // configurePeerAddressResolver / PAPERCUSP_AUTHORITY_PEER_ADDRESSES). No address →
   // fail-open, exactly the pre-wiring behavior.
   wireAuthorityRpcTransport();
+  registerReportAttachmentRpc();
   // shared-hive-hardening P-001 / D-005 (owner-ratified option c): compose the
   // Hyperswarm-mux RPC transport IN FRONT of the HTTP one so NAT'd desktop peers
   // are reachable over the existing connection. Async (resolves the device signer

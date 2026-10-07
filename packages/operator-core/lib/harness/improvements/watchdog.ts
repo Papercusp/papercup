@@ -4398,10 +4398,14 @@ export async function defaultPapercuspCollectors(
         // after their item closes; the report text stays on the item.
         const { sweepExpiredReportAttachments, renderReportAttachmentSweepNote } = await import('./report-attachments');
         const attachmentNote = renderReportAttachmentSweepNote(await sweepExpiredReportAttachments(workspaceId).catch(asError));
+        const { retryReportAttachmentDelivery } = await import('./report-attachment-rpc');
+        const delivery = await retryReportAttachmentDelivery(workspaceId).catch(asError);
+        const deliveryNote = 'error' in delivery ? `attachments delivery error=${delivery.error}`
+          : `attachments delivery attempted=${delivery.attempted} delivered=${delivery.delivered}`;
         const result = await recoverInvocationFriction(workspaceId);
         return {
           signals: [],
-          note: `friction delivered=${result.delivered}, locked-pending=${result.pending}, expired=${result.expired}; ${foldNote}; ${sweepNote}; ${expiryNote}; ${attachmentNote}`,
+          note: `friction delivered=${result.delivered}, locked-pending=${result.pending}, expired=${result.expired}; ${foldNote}; ${sweepNote}; ${expiryNote}; ${attachmentNote}; ${deliveryNote}`,
         };
       },
     },

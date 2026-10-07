@@ -48,7 +48,7 @@ type SendResult = {
   routed: 'work-item' | 'memory';
   id: string | null;
   delivery?: 'queued-for-federation';
-  attachments?: Array<{ kind: string; ok: boolean; reason?: string; delivery?: 'local-only' }>;
+  attachments?: Array<{ kind: string; ok: boolean; reason?: string; delivery?: 'local-only' | 'upstream-received' }>;
 };
 
 export function ReportProblemReceipt({ sent }: { sent: SendResult }) {
@@ -58,7 +58,9 @@ export function ReportProblemReceipt({ sent }: { sent: SendResult }) {
     {sent.attachments?.map((attachment, index) => (
       <p key={index} role={attachment.ok ? undefined : 'alert'}>
         {attachment.ok
-          ? attachment.delivery === 'local-only' || sent.delivery === 'queued-for-federation'
+          ? attachment.delivery === 'upstream-received'
+            ? 'Log attachment received upstream.'
+            : attachment.delivery === 'local-only' || sent.delivery === 'queued-for-federation'
             ? 'Log attachment saved on this install. It has not been sent upstream.'
             : 'Log attachment saved.'
           : `Log attachment could not be saved: ${attachment.reason ?? 'unknown error'}. Your report remains filed.`}

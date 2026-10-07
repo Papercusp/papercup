@@ -112,12 +112,18 @@ export async function putReportAttachment(
     // One writer per item at a time, so two concurrent writes cannot both pass the count cap.
     await tx.unsafe('SELECT pg_advisory_xact_lock(hashtext($1))', [`report-attachments:${input.workspaceId}:${input.workItemId}`]);
     if (externalId) {
-      const [existing] = await tx.unsafe<Array<{ id: string; redaction: ReportAttachmentRedaction; byte_size: number }>>(
-        `SELECT id, redaction, byte_size FROM harness_shared.report_attachments
+      const [existing] = await tx.unsafe<Array<{ id: string; redaction: ReportAttachmentRedaction; byte_size: number; work_item_id: string; kind: string; mime: string; content: Buffer }>>(
+        `SELECT id, redaction, byte_size, work_item_id, kind, mime, content FROM harness_shared.report_attachments
           WHERE workspace_id = $1 AND door = $2 AND external_id = $3`,
         [input.workspaceId, input.door, externalId],
       );
-      if (existing) return { ok: true, id: existing.id, deduplicated: true, redaction: existing.redaction, byteSize: existing.byte_size };
+      if (existing) {
+        if (existing.work_item_id !== input.workItemId || existing.kind !== input.kind
+          || existing.mime !== input.mime.trim() || !Buffer.from(existing.content).equals(content)) {
+          return { ok: false, reason: 'invalid', detail: 'externalId already binds a different attachment' };
+        }
+        return { ok: true, id: existing.id, deduplicated: true, redaction: existing.redaction, byteSize: existing.byte_size };
+      }
     }
     const [{ n }] = await tx.unsafe<Array<{ n: number }>>(
       `SELECT count(*)::int AS n FROM harness_shared.report_attachments WHERE workspace_id = $1 AND work_item_id = $2`,
@@ -176,6 +182,70 @@ export interface ReportAttachmentSweepResult {
   deleted: number;
   /** True when the batch filled, so more may be due on the next tick. */
   more: boolean;
+}
+
+/** Bounded evidence read for the existing work-item door. Bytes stay in the
+ * mutable store; canonical fixes resolve their original report in this workspace.
+ * Expired evidence is refused even before the background deletion sweep runs. */
+export async function readReportAttachmentEvidence(
+  workspaceId: string, workItemId: string,
+  page: { id?: string; offset?: number; limit?: number } = {},
+  deps: ReportAttachmentDeps & { harness?: string | null } = {},
+) {
+  const sql = deps.sql ?? getOrgPg().sql;
+  const offset = page.offset ?? 0;
+  const limit = page.limit ?? 1024;
+  if (!Number.isInteger(offset) || offset < 0 || !Number.isInteger(limit) || limit < 1 || limit > 2048) {
+    throw new Error('attachment page requires offset >= 0 and limit 1-2048');
+  }
+  const sources = await sql.unsafe<Array<{ id: string }>>(`
+    SELECT COALESCE(s.feature_id, w.feature_id) AS id
+      FROM harness_shared.work_items w
+      LEFT JOIN harness_shared.work_items s
+        ON s.workspace_id = w.workspace_id AND s.harness_slug = w.harness_slug
+       AND w.payload -> 'intakeSource' ->> 'mode' = 'distinct'
+       AND s.feature_id = w.payload -> 'intakeSource' ->> 'id'
+     WHERE w.workspace_id = $1 AND w.feature_id = $2
+       AND ($3::text IS NULL OR w.harness_slug = $3)
+     LIMIT 2`, [workspaceId, workItemId, deps.harness ?? null]);
+  if (sources.length !== 1) return { sourceWorkItemId: null, attachments: [], page: null };
+  const source = sources[0];
+  const rows = await sql.unsafe<Array<{
+    id: string; kind: ReportAttachmentKind; mime: string; byte_size: number;
+    redaction: ReportAttachmentRedaction; content: Buffer | null;
+  }>>(`
+    SELECT a.id, a.kind, a.mime, a.byte_size, a.redaction,
+           CASE WHEN a.id::text = $3 THEN substring(a.content FROM $4 FOR $5) ELSE NULL END AS content
+      FROM harness_shared.report_attachments a
+      JOIN harness_shared.work_items s ON s.workspace_id = a.workspace_id AND s.feature_id = a.work_item_id
+      LEFT JOIN LATERAL (
+        SELECT count(*)::int AS targets, bool_and(c.status = ANY($6::text[])) AS closed,
+               max(c.state_changed_at) AS closed_at
+          FROM harness_shared.work_items c
+         WHERE c.workspace_id = s.workspace_id AND c.harness_slug = s.harness_slug
+           AND c.payload -> 'intakeSource' ->> 'mode' = 'distinct'
+           AND c.payload -> 'intakeSource' ->> 'id' = s.feature_id
+      ) canonical ON true
+     WHERE a.workspace_id = $1 AND a.work_item_id = $2
+       AND NOT (canonical.targets = 1 AND canonical.closed
+                AND canonical.closed_at < now() - interval '90 days')
+       AND NOT (canonical.targets = 0 AND s.status = ANY($6::text[])
+                AND s.state_changed_at < now() - interval '90 days')
+     ORDER BY a.created_at, a.id LIMIT $7`,
+    [workspaceId, source.id, page.id ?? '', offset + 1, limit,
+      [...REPORT_ATTACHMENT_CLOSED_STATUSES], REPORT_ATTACHMENTS_PER_ITEM]);
+  const selected = rows.find(r => r.id === page.id);
+  return {
+    sourceWorkItemId: source.id,
+    attachments: rows.map(r => ({ id: r.id, kind: r.kind, mime: r.mime,
+      byteSize: r.byte_size, redaction: r.redaction })),
+    page: selected && selected.content !== null ? {
+      id: selected.id, encoding: 'base64' as const, offset,
+      data: Buffer.from(selected.content).toString('base64'),
+      byteLength: selected.content.length, totalBytes: selected.byte_size,
+      nextOffset: offset + selected.content.length < selected.byte_size ? offset + selected.content.length : null,
+    } : null,
+  };
 }
 
 const SWEEP_SQL = `
