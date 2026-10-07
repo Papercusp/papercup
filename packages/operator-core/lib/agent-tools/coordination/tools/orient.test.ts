@@ -1017,9 +1017,14 @@ describe('coord:orient args', () => {
         partial: true,
         recovery,
         me: {
-          ok: true,
-          summary: { agents: 1 },
-          agents: [{ agentId: ownerId, isSelf: true, declaredPlanSlug: null, claims: 0 }],
+          // The per-leg assignments budget expires at 8s, before this mocked
+          // dispatch settles at 8.5s. Preserve that degraded core snapshot while
+          // the later governor phase is what exhausts the aggregate budget.
+          ok: false,
+          degraded: true,
+          degradedLeg: 'fleet:assignments',
+          degradedReason: 'fleet:assignments read exceeded 8000ms',
+          agents: [],
         },
       });
       expect(result.data.phaseDiagnostics).toMatchObject({
@@ -1160,7 +1165,9 @@ describe('coord:orient args', () => {
     expect(ownerReportStart).toBeGreaterThan(portfolioStart);
     expect(ownerReportStart).toBeLessThan(composeStart);
     expect(source.slice(ownerReportStart, composeStart)).toContain('readGoalOwnerReportObligation');
-    expect(source).toContain('modes.ownerReport = await goalOwnerReportPromise');
+    expect(source.slice(composeStart)).toContain(
+      "modes.ownerReport = await phaseTracker.track('handler:goalOwnerReport', () => goalOwnerReportPromise)",
+    );
     expect(composeStart).toBeGreaterThan(portfolioStart);
   });
 
