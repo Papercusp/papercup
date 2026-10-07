@@ -108,7 +108,7 @@ vi.mock('../work_items/retraction-advisory', () => ({
   getClaimTimeRetractionAdvisory: vi.fn(async () => null),
 }));
 
-import getNextTool, { schedulerDispositionMetadata } from './get_next';
+import getNextTool, { observeLateSchedulerClaim, schedulerDispositionMetadata } from './get_next';
 
 type ToolDef = {
   handler: (
@@ -297,5 +297,54 @@ describe('scheduler:get_next result envelope (WI-38199)', () => {
     // The whole reason the success arm bypasses the door: the caller must be able
     // to see WHICH item it now holds, from the response alone.
     expect(JSON.stringify(out.data)).toContain('WI-38199');
+  });
+
+  it('records a late claimed result only after the deadline aborts the resolver', async () => {
+    const controller = new AbortController();
+    let resolve!: (value: unknown) => void;
+    const operation = new Promise<unknown>((r) => { resolve = r; });
+    const settlements: unknown[] = [];
+    const observed = observeLateSchedulerClaim(
+      operation,
+      controller.signal,
+      (settlement) => settlements.push(settlement),
+      () => '2026-10-07T16:00:00.000Z',
+    );
+
+    controller.abort();
+    resolve({ workItem: { id: 'EI-late' } });
+    await observed;
+
+    expect(settlements).toEqual([
+      { kind: 'claimed', workItemId: 'EI-late', settledAt: '2026-10-07T16:00:00.000Z' },
+    ]);
+  });
+
+  it('keeps late no-claim distinct from a missing disposition', async () => {
+    const controller = new AbortController();
+    let resolve!: (value: unknown) => void;
+    const operation = new Promise<unknown>((r) => { resolve = r; });
+    const settlements: unknown[] = [];
+    const observed = observeLateSchedulerClaim(operation, controller.signal, (s) => settlements.push(s), () => 'settled');
+
+    controller.abort();
+    resolve(null);
+    await observed;
+
+    expect(settlements).toEqual([{ kind: 'no-claim', settledAt: 'settled' }]);
+  });
+
+  it('records a rejected late resolver as unknown rather than no-claim', async () => {
+    const controller = new AbortController();
+    let reject!: (error: Error) => void;
+    const operation = new Promise<unknown>((_resolve, r) => { reject = r; });
+    const settlements: unknown[] = [];
+    const observed = observeLateSchedulerClaim(operation, controller.signal, (s) => settlements.push(s), () => 'settled');
+
+    controller.abort();
+    reject(new Error('settlement failed'));
+    await observed;
+
+    expect(settlements).toEqual([{ kind: 'rejected-unknown', settledAt: 'settled' }]);
   });
 });

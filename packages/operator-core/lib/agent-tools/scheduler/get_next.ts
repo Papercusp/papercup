@@ -54,6 +54,7 @@ import { planHarnessesForSlugs } from '../plans/source';
 import { loadHarnessRegistry } from '../../harness-registry';
 import { cancelClaimableAwaits } from '../../events/await/store';
 import { withBoundedTimeout } from '../../bounded-timeout';
+import { backfillToolInvocationMetadataByCallId } from '../../projected-tool-deps';
 import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
 import { liveLockedPaths } from '../locks/live-lock-paths';
 
@@ -273,6 +274,49 @@ export function getNextTimeoutResult(
       `retrying. The last entered step identifies the unresolved phase, not its cause; ` +
       `measure that phase before attributing the timeout to database or pool contention.`,
   };
+}
+
+export type SchedulerLateSettlement =
+  | { kind: 'claimed'; workItemId: string; settledAt: string }
+  | { kind: 'no-claim' | 'rejected-unknown'; settledAt: string };
+
+/**
+ * Observe the resolver promise that outlives scheduler:get_next's deadline. A rejection or an
+ * unexpected fulfilled shape remains unknown; only `null` is a terminal no-claim result.
+ */
+export function observeLateSchedulerClaim(
+  operation: Promise<unknown>,
+  signal: AbortSignal,
+  onLateSettlement: (settlement: SchedulerLateSettlement) => void,
+  now: () => string = () => new Date().toISOString(),
+): Promise<void> {
+  const deliver = (settlement: SchedulerLateSettlement): void => {
+    try {
+      onLateSettlement(settlement);
+    } catch (err) {
+      console.warn(`[scheduler:get_next] late settlement callback failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+  return operation.then(
+    (value) => {
+      if (!signal.aborted) return;
+      const settledAt = now();
+      if (value === null) {
+        deliver({ kind: 'no-claim', settledAt });
+        return;
+      }
+      const record = value && typeof value === 'object' ? (value as { workItem?: unknown }) : null;
+      const workItem = record?.workItem && typeof record.workItem === 'object'
+        ? (record.workItem as { id?: unknown })
+        : null;
+      const workItemId = typeof workItem?.id === 'string' ? workItem.id.trim() : '';
+      if (workItemId) deliver({ kind: 'claimed', workItemId, settledAt });
+      else deliver({ kind: 'rejected-unknown', settledAt });
+    },
+    () => {
+      if (signal.aborted) deliver({ kind: 'rejected-unknown', settledAt: now() });
+    },
+  );
 }
 
 /**
@@ -1786,9 +1830,25 @@ export default defineTool({
       lastClaimStepStartedAtMs = event?.startedAtMs ?? performance.now();
       lastClaimStepElapsedMs = undefined;
     };
+    let timeoutMetadataForLateSettlement: {
+      phase: 'claim';
+      lastClaimStep: string;
+      lastClaimStepElapsedMs: number;
+      dispatchCallId?: string;
+    } | null = null;
+    let lateClaimSettlement: SchedulerLateSettlement | null = null;
     const claim = await withBoundedTimeout(
-      (signal) =>
-        getNextForBee({
+      (signal) => {
+        signal.addEventListener('abort', () => {
+          const elapsedMs = lastClaimStepElapsedMs ?? Math.max(0, performance.now() - lastClaimStepStartedAtMs);
+          timeoutMetadataForLateSettlement = {
+            phase: 'claim',
+            lastClaimStep,
+            lastClaimStepElapsedMs: elapsedMs,
+            ...(ctx.dispatchCallId ? { dispatchCallId: ctx.dispatchCallId } : {}),
+          };
+        }, { once: true });
+        const operation = getNextForBee({
           cupId: ident.ownerId,
           onPlanLaneBlocked,
           onClaimStep,
@@ -1813,7 +1873,26 @@ export default defineTool({
           // view is empty" signal a fleet leader wants pushed, so opt in.
           checkIdleDrainOnMiss: true,
           signal,
-        }),
+        });
+        void observeLateSchedulerClaim(operation, signal, (settlement) => {
+          lateClaimSettlement = settlement;
+          const timeoutMetadata = timeoutMetadataForLateSettlement;
+          if (timeoutMetadata) {
+            // The handler metadata writer is last-write-wins, so preserve the timeout
+            // evidence when recording the later terminal observation.
+            ctx.metadata?.({ schedulerTimeout: timeoutMetadata, schedulerLateSettlement: settlement });
+            if (timeoutMetadata.dispatchCallId) {
+              void backfillToolInvocationMetadataByCallId({
+                workspaceId: ident.workspaceId,
+                toolName: 'scheduler:get_next',
+                dispatchCallId: timeoutMetadata.dispatchCallId,
+                metadataJson: { schedulerLateSettlement: settlement },
+              });
+            }
+          }
+        });
+        return operation;
+      },
       // fallback:null is a type-correct member of getNextForBee's return (`... | null`) and is
       // NEVER read — we branch on `claim.degraded` before ever touching `claim.value`.
       { fallback: null, timeoutMs: claimBudgetMs, label: 'scheduler:get_next:claim', signal: ctx.signal },
@@ -1848,12 +1927,15 @@ export default defineTool({
       const timedOutClaimStep = lastClaimStep;
       const timedOutClaimStepElapsedMs =
         lastClaimStepElapsedMs ?? Math.max(0, performance.now() - lastClaimStepStartedAtMs);
+      const schedulerTimeout = timeoutMetadataForLateSettlement ?? {
+        phase: 'claim' as const,
+        lastClaimStep: timedOutClaimStep,
+        lastClaimStepElapsedMs: timedOutClaimStepElapsedMs,
+        ...(ctx.dispatchCallId ? { dispatchCallId: ctx.dispatchCallId } : {}),
+      };
       ctx.metadata?.({
-        schedulerTimeout: {
-          phase: 'claim',
-          lastClaimStep: timedOutClaimStep,
-          lastClaimStepElapsedMs: timedOutClaimStepElapsedMs,
-        },
+        schedulerTimeout,
+        ...(lateClaimSettlement ? { schedulerLateSettlement: lateClaimSettlement } : {}),
       });
       // EI-22737570207805341: withBoundedTimeout is a Promise.race and does not cancel the
       // abandoned claim. The resolver can therefore commit after this watchdog fires. Read the

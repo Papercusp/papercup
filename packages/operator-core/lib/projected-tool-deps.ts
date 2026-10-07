@@ -1391,6 +1391,42 @@ export async function backfillResultDoorOutputRef(input: {
 }
 
 /**
+ * Backfill late handler metadata onto the exact invocation that produced it.
+ * The dispatcher's `dispatchCallId` is copied into schedulerTimeout metadata before the
+ * handler returns; unlike the result-door recency join above, this selector never falls back
+ * to a neighboring call from the same spawn/tool.
+ */
+export async function backfillToolInvocationMetadataByCallId(input: {
+  workspaceId: string | null | undefined;
+  toolName: string;
+  dispatchCallId: string | null | undefined;
+  metadataJson: Record<string, unknown>;
+}): Promise<void> {
+  const workspaceId = input.workspaceId;
+  const dispatchCallId = input.dispatchCallId;
+  if (!workspaceId || !dispatchCallId || Object.keys(input.metadataJson).length === 0) return;
+  try {
+    await flushPendingTelemetry();
+    const { sql } = getOrgPg();
+    await sql.begin(async (tx) => {
+      await tx.unsafe(`SELECT set_config('app.workspace_id', $1, true)`, [workspaceId]);
+      await tx.unsafe(
+        `UPDATE harness_shared.tool_invocations
+            SET metadata_json = COALESCE(metadata_json, '{}'::jsonb) || $1::jsonb
+          WHERE workspace_id = $2
+            AND tool_name = $3
+            AND metadata_json->'schedulerTimeout'->>'dispatchCallId' = $4`,
+        [jsonbSafeStringify(input.metadataJson), workspaceId, input.toolName, dispatchCallId],
+      );
+    });
+  } catch (err) {
+    console.warn(
+      `[projected-tool-deps] backfillToolInvocationMetadataByCallId failed for ${input.toolName}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
+/**
  * True when the dispatch refusal carried a ready-to-send corrected call
  * (`metadata.invalidInput.correctedCall`, written by the projected-tool-registry
  * validator). The caller already holds the fix, so the refusal is not auto-filed

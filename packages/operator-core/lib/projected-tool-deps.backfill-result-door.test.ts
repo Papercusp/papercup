@@ -62,7 +62,11 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
   }),
 }));
 
-import { backfillResultDoorOutputRef, flushPendingTelemetry } from './projected-tool-deps';
+import {
+  backfillResultDoorOutputRef,
+  backfillToolInvocationMetadataByCallId,
+  flushPendingTelemetry,
+} from './projected-tool-deps';
 
 describe('backfillResultDoorOutputRef (EI-19389431406847252)', () => {
   beforeEach(() => {
@@ -174,6 +178,39 @@ describe('backfillResultDoorOutputRef (EI-19389431406847252)', () => {
         spillError: 'scratch reservation exceeds workspace quota',
         spillErrorCode: 'SCRATCH_QUOTA_EXCEEDED',
       }),
+    ]);
+  });
+
+  it('backfills late scheduler settlement by exact dispatchCallId, never by recency', async () => {
+    await backfillToolInvocationMetadataByCallId({
+      workspaceId: 'ws-test',
+      toolName: 'scheduler:get_next',
+      dispatchCallId: 'dispatch-call-42',
+      metadataJson: {
+        schedulerLateSettlement: {
+          kind: 'claimed',
+          workItemId: 'EI-42',
+          settledAt: '2026-10-07T16:00:00.000Z',
+        },
+      },
+    });
+
+    expect(unsafeCalls).toHaveLength(2);
+    expect(unsafeCalls[0].params).toEqual(['ws-test']);
+    expect(unsafeCalls[1].sql).toContain('UPDATE harness_shared.tool_invocations');
+    expect(unsafeCalls[1].sql).toContain("metadata_json->'schedulerTimeout'->>'dispatchCallId' = $4");
+    expect(unsafeCalls[1].sql).not.toContain('invoked_at >= now()');
+    expect(unsafeCalls[1].params).toEqual([
+      JSON.stringify({
+        schedulerLateSettlement: {
+          kind: 'claimed',
+          workItemId: 'EI-42',
+          settledAt: '2026-10-07T16:00:00.000Z',
+        },
+      }),
+      'ws-test',
+      'scheduler:get_next',
+      'dispatch-call-42',
     ]);
   });
 
