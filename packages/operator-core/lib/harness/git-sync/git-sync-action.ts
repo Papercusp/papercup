@@ -4343,7 +4343,15 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     try {
       if (gate.hiveGitMode === 'bridged' && (await getFlag(FLAGS.GITHUB_BRIDGE, slug))) {
         await guardedPostLegs('git-sync:github-bridge', () =>
-          runCheckpointedStep('git-sync:github-bridge', () => runGithubBridgeLeg(slug, workspaceId)),
+          runCheckpointedStep('git-sync:github-bridge', () =>
+            runGithubBridgeLeg(slug, workspaceId, {
+              signal: postLegsLiveness.signal,
+              onProgress: () => {
+                postLegsLiveness.touch();
+                enqueueActivityHeartbeat();
+              },
+            }),
+          ),
         );
       }
     } catch (error) {
@@ -4761,8 +4769,27 @@ export function githubBridgeErrorTransitionLine(
 export async function runGithubBridgeLeg(
   slug: string,
   workspaceId: string,
-  opts: { remote?: string } = {},
+  opts: { remote?: string; signal?: AbortSignal; onProgress?: () => void } = {},
 ): Promise<void> {
+  const runGit: PotGitRunGit = (args, cwd, gitOptions) => {
+    const reportProgress = (): void => {
+      try {
+        opts.onProgress?.();
+      } catch {
+        // Action-liveness accounting is diagnostic-only and must never break Git.
+      }
+      try {
+        gitOptions?.onProgress?.();
+      } catch {
+        // Preserve any lower-level progress observer without affecting Git.
+      }
+    };
+    return defaultRunGit(args, cwd, {
+      ...gitOptions,
+      signal: opts.signal ?? gitOptions?.signal,
+      ...(opts.onProgress || gitOptions?.onProgress ? { onProgress: reportProgress } : {}),
+    });
+  };
   try {
     let entry: ProjectEntry | undefined;
     try {
@@ -4833,9 +4860,9 @@ export async function runGithubBridgeLeg(
       // impossible instead of merely handled — the next tick, post-bootstrap,
       // finds a real store and pins normally.
       if (await pathExists(join(bareRepoPath, 'HEAD'))) {
-        const existing = await defaultRunGit(['rev-parse', '--verify', '--quiet', BRIDGE_CANONICAL_REF], bareRepoPath);
+        const existing = await runGit(['rev-parse', '--verify', '--quiet', BRIDGE_CANONICAL_REF], bareRepoPath);
         if (existing.code !== 0) {
-          const pinned = await defaultRunGit(['update-ref', BRIDGE_CANONICAL_REF, wbSha], bareRepoPath);
+          const pinned = await runGit(['update-ref', BRIDGE_CANONICAL_REF, wbSha], bareRepoPath);
           if (pinned.code !== 0) {
             // Name the PATH: `pinned.stderr` alone produced a message with no
             // path in it, which is why the original report could not tell a
@@ -4858,9 +4885,9 @@ export async function runGithubBridgeLeg(
           // advance loses cleanly instead of being clobbered.
           const existingSha = existing.stdout.trim();
           if (existingSha && existingSha !== wbSha) {
-            const isAncestor = await defaultRunGit(['merge-base', '--is-ancestor', existingSha, wbSha], bareRepoPath);
+            const isAncestor = await runGit(['merge-base', '--is-ancestor', existingSha, wbSha], bareRepoPath);
             if (isAncestor.code === 0) {
-              const pinned = await defaultRunGit(
+              const pinned = await runGit(
                 ['update-ref', BRIDGE_CANONICAL_REF, wbSha, existingSha],
                 bareRepoPath,
               );
@@ -4916,13 +4943,16 @@ export async function runGithubBridgeLeg(
       // and, without one, raised a persistent git-sync FAULT + stall ALARM on a
       // healthy joiner. Keyed on the owning KEY (not `effectAuthority`), so an owner
       // whose serving actor is missing still runs and reports, rather than skipping.
-      deps: { isBridgeWriter: async () => ownerKey !== null },
       // EI-18751829787526583: the same watermark the catch-up pin above just
       // re-derived from — passed through as a BACKSTOP so a case the pin
       // declined to touch (diverged rather than a strict ancestor) or a
       // re-pin that itself failed still surfaces as `egress-canonical-stale`
       // instead of silently reading `divergence: clear`.
       expectedCanonicalSha: wbSha,
+      deps: {
+        runGit,
+        isBridgeWriter: async () => ownerKey !== null,
+      },
     });
 
     // WI-10006470: `github_bridge.errors` below is replaced wholesale every tick, so

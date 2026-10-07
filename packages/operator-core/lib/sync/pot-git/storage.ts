@@ -66,6 +66,8 @@ export interface RunGitOptions {
    * process is still caught quickly.
    */
   timeoutMs?: number;
+  /** Called whenever the Git process produces stdout/stderr activity. */
+  onProgress?: () => void;
   /** Retain the process lifetime until cancellation has actually drained Git and its helpers. */
   signal?: AbortSignal;
   /** Extra environment for the git child. Shared with run-git-sync's RunGit (WI-10006705:
@@ -178,6 +180,15 @@ export const runGitLocal: RunGit = (args, cwd, opts) =>
       env: { ...process.env, ...opts?.env, LC_ALL: 'C', LANG: 'C', GIT_TERMINAL_PROMPT: '0' },
     });
     const out = collectChildOutput(child);
+    const reportOutputActivity = (): void => {
+      try {
+        opts?.onProgress?.();
+      } catch {
+        // Progress accounting is diagnostic-only and must never break Git.
+      }
+    };
+    child.stdout?.on('data', reportOutputActivity);
+    child.stderr?.on('data', reportOutputActivity);
     const lifetime = processGroupLifetime(child, (message) => out.stderr.append(`\n${message}`));
     let settled = false;
     let terminating = false;
@@ -258,7 +269,7 @@ const runGitUnchecked: RunGit = async (args, cwd, opts) => {
         ...opts?.env,
         LC_ALL: 'C',
         LANG: 'C',
-      }, { signal: opts?.signal });
+      }, { signal: opts?.signal, onProgress: opts?.onProgress });
     } catch (e) {
       // Fall through to the local spawn, but COUNT it: falling back means every
       // git call here is paying the full ~165 ms fork stall again, which is the

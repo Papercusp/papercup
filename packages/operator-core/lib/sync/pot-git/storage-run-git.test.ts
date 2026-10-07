@@ -136,6 +136,32 @@ describe('pot-git defaultRunGit', () => {
     expect(r.stdout).toBe('from-sidecar\n');
   });
 
+  it('reports local child output as progress activity', async () => {
+    sidecarEnabledMock = () => false;
+    const onProgress = vi.fn();
+
+    const r = await runGitLocal(['--version'], repo, { onProgress });
+
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain('git version');
+    expect(onProgress).toHaveBeenCalled();
+  });
+
+  it('forwards the progress callback to the sidecar transport', async () => {
+    sidecarEnabledMock = () => true;
+    const onProgress = vi.fn();
+    sidecarRunMock = (...a: unknown[]) => {
+      const opts = a[4] as { onProgress?: () => void } | undefined;
+      opts?.onProgress?.();
+      return Promise.resolve({ code: 0, stdout: 'from-sidecar\n', stderr: '' });
+    };
+
+    const r = await defaultRunGit(['rev-parse', 'HEAD'], repo, { onProgress });
+
+    expect(r.code).toBe(0);
+    expect(onProgress).toHaveBeenCalledOnce();
+  });
+
   it('passes the C locale through to the sidecar so output stays parse-stable', async () => {
     // Every caller parses git's human-readable output; a host LANG leaking
     // through would change that text and break the parsing at the root.
