@@ -475,6 +475,25 @@ describe('summarizeFetchFailure — a failed fetch keeps its reason (WI-10004103
     );
   });
 
+  it('keeps a concrete SSH cause instead of Git’s generic repository-exists footer', () => {
+    const stderr = [
+      'git@github.com: Permission denied (publickey).',
+      'fatal: Could not read from remote repository.',
+      'Please make sure you have the correct access rights',
+      'and the repository exists.',
+    ].join('\n');
+    expect(summarizeFetchFailure(stderr)).toBe('git@github.com: Permission denied (publickey).');
+  });
+
+  it('falls back to Git’s generic fatal line when the footer has no concrete cause', () => {
+    const stderr = [
+      'fatal: Could not read from remote repository.',
+      'Please make sure you have the correct access rights',
+      'and the repository exists.',
+    ].join('\n');
+    expect(summarizeFetchFailure(stderr)).toBe('fatal: Could not read from remote repository.');
+  });
+
   it('is empty for empty stderr and caps a runaway line', () => {
     expect(summarizeFetchFailure('')).toBe('');
     expect(summarizeFetchFailure(undefined)).toBe('');
