@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import { admitPhoneProducer, type PhoneProducerAdmission } from './phone-producer-admission';
+import { admitAuthenticatedPhoneProducer, admitPhoneProducer, type PhoneProducerAdmission } from './phone-producer-admission';
+import type { Principal } from '@papercusp/agent-mcp';
 import type { ExternalRuntimeProducerBinding } from './operation-worker-binding';
 
 function fixture() {
@@ -27,6 +28,40 @@ function fixture() {
 }
 
 describe('Phone producer canonical admission', () => {
+  const principal = (): Principal => ({ kind: 'service', trust: 'verified', authMethod: 'bearer-token',
+    workspaceId: 'workspace', slug: 'voice-run-a', capabilities: new Set<string>() });
+  it('binds authenticated service identity to the canonical producer', async () => {
+    const f = fixture();
+    const result = await admitAuthenticatedPhoneProducer(principal(), f.host, 'room-a', f.store);
+    expect(result.executionOwnerId).toBe('voice-run-a');
+    expect(f.row!.assignee).toBe('voice-run-a');
+  });
+  it.each([null, { kind: 'human' }, { trust: 'unverified' }, { authMethod: 'loopback' },
+    { workspaceId: '' }, { slug: 'su-loopback' }, { slug: 'mcp-call-123' }])(
+    'rejects an unauthenticated service before reading Phone records (%j)', async (override) => {
+      const f = fixture();
+      const caller = override === null ? null : { ...principal(), ...override } as Principal;
+      await expect(admitAuthenticatedPhoneProducer(caller, f.host, 'room-a', f.store))
+        .rejects.toThrow('authenticated_service_required');
+      expect(f.host.readAdmission).not.toHaveBeenCalled();
+      expect(f.store.allocateId).not.toHaveBeenCalled();
+    });
+  it.each(['workspaceId', 'executionOwnerId'] as const)('rejects foreign authenticated %s before reserving', async (field) => {
+    const f = fixture(); f.snapshot[field] = 'foreign';
+    await expect(admitAuthenticatedPhoneProducer(principal(), f.host, 'room-a', f.store))
+      .rejects.toThrow('authenticated_scope_mismatch');
+    expect(f.store.allocateId).not.toHaveBeenCalled();
+    expect(f.host.reserveRegistration).not.toHaveBeenCalled();
+  });
+  it('captures credential identity before asynchronous host I/O', async () => {
+    const f = fixture(); const caller = principal();
+    f.host.readAdmission.mockImplementation(async () => {
+      caller.slug = 'foreign'; caller.workspaceId = 'foreign'; return { ...f.snapshot };
+    });
+    const result = await admitAuthenticatedPhoneProducer(caller, f.host, 'room-a', f.store);
+    expect(result.executionOwnerId).toBe('voice-run-a');
+    expect(result.workspaceId).toBe('workspace');
+  });
   it.each(['system:phone', 'su-loopback', 'mcp-call-123'])('rejects unattributed executor %s before reserving', async (owner) => {
     const f = fixture(); f.snapshot.executionOwnerId = owner;
     await expect(f.read()).rejects.toThrow('attributed_executor_required');

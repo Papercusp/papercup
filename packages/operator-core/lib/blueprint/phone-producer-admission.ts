@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
+import type { Principal } from '@papercusp/agent-mcp';
 import { derivedTerminalCompletionAuthority } from '../completion-audit';
 import { isTransportOnlyIdentity } from '../agent-tools/coordination/identity';
 import { createWorkItem, getWorkItem, nextWorkItemId, type CreateWorkItemInput, type WorkItem } from '../work-items';
@@ -38,6 +39,33 @@ const canonicalStore: PhoneProducerCanonicalStore = {
   read: (id, harness) => getWorkItem(id, harness),
   create: createWorkItem,
 };
+
+/** Authenticated dispatch boundary. The principal must be the transport's
+ * verified credential, and the host must already resolve the permitted harness
+ * from that credential's grant. Neither is a public tool argument. A reported
+ * speaker/UI client id cannot replace the service execution principal. */
+export async function admitAuthenticatedPhoneProducer(principal: Principal | null | undefined,
+  host: PhoneProducerAdmissionHost, roomName: string,
+  store: PhoneProducerCanonicalStore = canonicalStore): Promise<Readonly<ExternalRuntimeProducerBinding>> {
+  if (principal?.kind !== 'service' || principal.trust !== 'verified' ||
+      principal.authMethod !== 'bearer-token' || !principal.workspaceId || !principal.slug ||
+      isTransportOnlyIdentity(principal.slug)) throw new Error('phone_producer_authenticated_service_required');
+  // Capture the credential identity before I/O; a mutable dispatch context must
+  // not change who receives the canonical producer while a read is in flight.
+  const workspaceId = principal.workspaceId;
+  const executionOwnerId = principal.slug;
+  return admitPhoneProducer({
+    readAdmission: async (room) => {
+      const snapshot = await host.readAdmission(room);
+      if (snapshot.workspaceId !== workspaceId || snapshot.executionOwnerId !== executionOwnerId) {
+        throw new Error('phone_producer_authenticated_scope_mismatch');
+      }
+      return snapshot;
+    },
+    readRegistration: (room) => host.readRegistration(room),
+    reserveRegistration: (snapshot, proposed) => host.reserveRegistration(snapshot, proposed),
+  }, roomName, store);
+}
 
 function expectedBinding(snapshot: PhoneProducerAdmission, id: string): ExternalRuntimeProducerBinding {
   return { kind: 'external-runtime-producer', workspaceId: snapshot.workspaceId,
