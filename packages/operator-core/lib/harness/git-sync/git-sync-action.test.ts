@@ -1180,6 +1180,8 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
     bridgeTickOverride = async (input) => {
       order.push('bridge-tick');
       expect(input.githubRemote).toBe(localProject.github_remote);
+      expect(input.deps?.runGit).toBeTypeOf('function');
+      await input.deps!.runGit!(['fetch', localProject.github_remote], repoDir, { timeoutMs: 240_000 });
       // runGithubBridgeLeg has already captured this entry with an empty
       // checkout path, so its best-effort remote-tracking refresh stays local
       // and cannot spawn a real Git process in this orchestration test.
@@ -1239,6 +1241,11 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
         egressSha,
         expect.objectContaining({ scope: expect.any(Object) }),
       );
+      const bridgeFetch = defaultRunGitCallHistory.find((call) =>
+        (call.args[0] as string[] | undefined)?.[0] === 'fetch',
+      );
+      expect(bridgeFetch).toBeDefined();
+      expect(bridgeFetch?.args[2]).toMatchObject({ signal: expect.anything(), onProgress: expect.any(Function) });
       expect(emitGitSyncCommittedEventMock).toHaveBeenCalledWith(
         syncedOutcome.headSha,
         expect.objectContaining({ scope: expect.any(Object) }),
@@ -5366,7 +5373,10 @@ describe('WI-10005972: sidecar Git entrypoint attribution', () => {
   });
 
   it('pins the first sidecar-eligible Git call to the bridged credential-helper lookup', () => {
-    const first = defaultRunGitCallHistory[0];
+    const scenarioCalls = defaultRunGitCallHistory.filter((call) =>
+      call.testName.includes('EI-20232774599730947: bridged mode makes the superproject truly commit-only'),
+    );
+    const first = scenarioCalls[0];
     expect(first).toBeDefined();
     expect(first?.testName).toContain(
       'EI-20232774599730947: bridged mode makes the superproject truly commit-only',
@@ -5375,7 +5385,7 @@ describe('WI-10005972: sidecar Git entrypoint attribution', () => {
       ['config', '--local', '--get-all', 'credential.https://github.com.helper'],
       repoDir,
     ]);
-    expect(defaultRunGitCallHistory.every((call) =>
+    expect(scenarioCalls.every((call) =>
       JSON.stringify(call.args[0]).includes('credential.https://github.com.helper'),
     )).toBe(true);
   });
