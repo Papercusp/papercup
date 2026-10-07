@@ -1350,6 +1350,34 @@ describe('handler — graceful degrade + result shape', () => {
   });
 
   it('preserves nested object-union branch requirements in compact arg schemas', async () => {
+    expect(bindSpecEvidence.name).toBe('plans:bind-spec-evidence');
+    const { schemaByTool } = buildCorpus();
+    const compactSchema = compactSchemaForResult(
+      schemaByTool.get('plans:bind-spec-evidence'),
+      { includeNestedDescriptions: false },
+    ) ?? '';
+    const rawBindSchema = schemaByTool.get('plans:bind-spec-evidence');
+    const bindRoot = rawBindSchema && typeof rawBindSchema === 'object'
+      ? rawBindSchema as Record<string, unknown>
+      : {};
+    const branchKeys = (key: 'anyOf' | 'oneOf' | 'allOf') => Array.isArray(bindRoot[key])
+      ? (bindRoot[key] as unknown[]).map((branch) =>
+        branch && typeof branch === 'object' ? Object.keys(branch) : typeof branch)
+      : undefined;
+    const rootSummary = {
+      keys: Object.keys(bindRoot),
+      type: bindRoot.type,
+      properties: bindRoot.properties && typeof bindRoot.properties === 'object'
+        ? Object.keys(bindRoot.properties)
+        : undefined,
+      anyOf: branchKeys('anyOf'),
+      oneOf: branchKeys('oneOf'),
+      allOf: branchKeys('allOf'),
+    };
+    expect(compactSchema, `schemaByTool root shape: ${JSON.stringify(rootSummary)}`).toContain(
+      'binding?:object(one-of:workItemId&fromTestRun|workItemId&evidenceKind&evidenceRef)',
+    );
+
     const out = await callHandler({ query: 'plans:bind-spec-evidence', limit: 1 });
     const schema = out.hits.find((hit) => hit.tool === 'plans:bind-spec-evidence')?.argSchema ?? '';
 
@@ -1377,26 +1405,45 @@ describe('handler — graceful degrade + result shape', () => {
     );
   });
 
-  it('honors an explicit full payload tier for the complete argument schema', async () => {
-    expect(bindSpecEvidence.name).toBe('plans:bind-spec-evidence');
-    const compact = await callHandler({ query: 'plans:bind-spec-evidence', limit: 1 });
+  it('honors an explicit full payload tier when the complete schema fits the result budget', async () => {
+    expect(docsGet.name).toBe('docs:get');
+    const compact = await callHandler({ query: 'docs:get', limit: 1 });
     const full = await callHandler(
-      { query: 'plans:bind-spec-evidence', limit: 1 },
+      { query: 'docs:get', limit: 1 },
       { payloadTierOverride: 'full' },
     );
     const compactSchema = compact.hits[0]?.argSchema ?? '';
     const fullSchema = full.hits[0]?.argSchema ?? '';
 
-    expect(compact.hits[0]?.tool).toBe('plans:bind-spec-evidence');
-    expect(full.hits[0]?.tool).toBe('plans:bind-spec-evidence');
-    expect(compactSchema).toContain('…+');
+    expect(compact.hits[0]?.tool).toBe('docs:get');
+    expect(full.hits[0]?.tool).toBe('docs:get');
     expect(fullSchema).not.toContain('…+');
     expect(fullSchema).not.toBe(compactSchema);
     expect(() => JSON.parse(fullSchema)).not.toThrow();
-    expect(fullSchema).toContain('"fixtureFingerprint"');
-    expect(fullSchema).toContain('"rubricFingerprint"');
-    expect(fullSchema).toContain('"environmentFingerprint"');
-    expect(fullSchema).toContain('"observedAt"');
+    expect(fullSchema).toContain('"slugs"');
+  });
+
+  it('falls back to a bounded compact schema when one full hit exceeds the result budget', async () => {
+    expect(bindSpecEvidence.name).toBe('plans:bind-spec-evidence');
+    const { schemaByTool } = buildCorpus();
+    const bindSpecSchema = schemaByTool.get('plans:bind-spec-evidence');
+    expect(bindSpecSchema).toBeDefined();
+    expect(Buffer.byteLength(JSON.stringify(bindSpecSchema), 'utf8')).toBeGreaterThan(DISCOVERY_RESULT_MAX_BYTES);
+
+    const out = await callHandler(
+      { query: 'plans:bind-spec-evidence', limit: 1 },
+      { payloadTierOverride: 'full' },
+    );
+    const hit = out.hits.find((candidate) => candidate.tool === 'plans:bind-spec-evidence');
+
+    expect(hit).toBeDefined();
+    expect(hit?.argSchema).not.toBe(JSON.stringify(bindSpecSchema));
+    expect(hit?.argSchema).toContain(
+      'binding?:object(one-of:workItemId&fromTestRun|workItemId&evidenceKind&evidenceRef)',
+    );
+    expect(out).toHaveProperty('truncated', true);
+    expect(out.howToCall).toContain('Full argument schemas exceeded the response budget');
+    expect(Buffer.byteLength(JSON.stringify(out), 'utf8')).toBeLessThanOrEqual(DISCOVERY_RESULT_MAX_BYTES);
   });
 });
 
@@ -1803,6 +1850,59 @@ describe('bounded discovery projection (EI-20235784774977954)', () => {
     expect(bounded.truncated).toBe(true);
     expect(bounded.hits.length).toBeLessThan(hits.length);
   });
+
+  it('does not return a single hit that exceeds the discovery result budget', () => {
+    const base = {
+      query: 'tool:large',
+      semantic: 'on',
+      activated: false,
+      howToCall: 'tools:invoke {name, args}',
+      totalMatches: 1,
+    };
+    const hits = [{
+      tool: 'tool:large',
+      description: 'd'.repeat(320),
+      argSchema: 'field?:object' + 'x'.repeat(DISCOVERY_RESULT_MAX_BYTES),
+      returns: null,
+      via: 'lexical',
+    }];
+
+    const bounded = boundDiscoveryHits(base, hits);
+    const payload = { ...base, count: bounded.hits.length, truncated: bounded.truncated, hits: bounded.hits };
+
+    expect(Buffer.byteLength(JSON.stringify(payload), 'utf8')).toBeLessThanOrEqual(DISCOVERY_RESULT_MAX_BYTES);
+    expect(JSON.parse(JSON.stringify(payload))).toEqual(payload);
+    expect(bounded.hits).toEqual([]);
+    expect(bounded.truncated).toBe(true);
+  });
+
+  it('keeps complete compact-schema clauses when one hit needs byte-budget trimming', () => {
+    const base = {
+      query: 'tool:large',
+      semantic: 'on',
+      activated: false,
+      howToCall: 'tools:invoke {name, args}',
+      totalMatches: 1,
+    };
+    const hits = [{
+      tool: 'tool:large',
+      description: 'optional description',
+      argSchema: `first?:string; binding?:object(one-of:workItemId&evidenceRef|workItemId&testRunId); oversized?:string(${ 'x'.repeat(DISCOVERY_RESULT_MAX_BYTES) })`,
+      returns: 'optional result description',
+      returnsSource: 'authored-tool-guidance' as const,
+      via: 'lexical',
+    }];
+
+    const bounded = boundDiscoveryHits(base, hits);
+    const payload = { ...base, count: bounded.hits.length, truncated: bounded.truncated, hits: bounded.hits };
+    const schema = bounded.hits[0]?.argSchema ?? '';
+
+    expect(Buffer.byteLength(JSON.stringify(payload), 'utf8')).toBeLessThanOrEqual(DISCOVERY_RESULT_MAX_BYTES);
+    expect(schema).toContain('binding?:object(one-of:workItemId&evidenceRef|workItemId&testRunId)');
+    expect(schema).not.toContain('oversized?:string');
+    expect(schema).toMatch(/; …$/);
+    expect(bounded.truncated).toBe(true);
+  });
 });
 
 describe('handler — dynamic activation (dynamic-tool-surface-2026-07-01)', () => {
@@ -1833,7 +1933,7 @@ describe('handler — dynamic activation (dynamic-tool-surface-2026-07-01)', () 
     // list_changed and materialized a same-turn wrapper. Lead with the one path
     // that is immediately callable on every client.
     expect(out.howToCall).toContain('tools:invoke');
-    expect(out.howToCall).toContain('does NOT guarantee');
+    expect(out.howToCall).toContain('tool-list refresh');
     expect(out.howToCall).not.toContain('call the one you want directly');
   });
 
@@ -1843,8 +1943,8 @@ describe('handler — dynamic activation (dynamic-tool-surface-2026-07-01)', () 
 
     for (const out of [activated, inactive]) {
       expect(out.hits.some((hit) => hit.tool === 'tools:invoke')).toBe(true);
-      expect(out.howToCall).toContain('tools:invoke hit is the dispatcher itself');
-      expect(out.howToCall).toContain('do NOT pass name:"tools:invoke" through it');
+      expect(out.howToCall).toContain('Use tools:invoke directly for a different target');
+      expect(out.howToCall).toContain('do not route tools:invoke through itself');
       expect(out.howToCall).not.toContain('name:"<exact tool name from hits>"');
     }
   });
