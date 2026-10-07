@@ -3553,7 +3553,7 @@ describe('captureImprovement — NON-observation coalescing by watchdogKey (WI-3
     d.mergeIssuePayload = merge;
     d.recordIssueOccurrence = record as CaptureDeps['recordIssueOccurrence'];
     const input = {
-      title: 'incoming failure from another class', kind: 'observation' as const,
+      title: 'incoming failure from another class', kind: 'change' as const,
       lane: 'observation' as const, scope: 'harness:papercusp',
       watchdogKey: incoming.watchdogKey, createdBy: 'su-incoming',
       payloadExtra: { toolFailureProbation: { ...incoming, state: 'probation', report, reporters: ['su-incoming'] } },
@@ -3572,7 +3572,7 @@ describe('captureImprovement — NON-observation coalescing by watchdogKey (WI-3
       evidence: expect.objectContaining({ payloadExtra: input.payloadExtra }),
     }));
     expect(merge).not.toHaveBeenCalled();
-    expect((winner.payload?.toolFailureProbation as { classKey: string }).classKey).toBe(prior.classKey);
+    expect(winner).toMatchObject({ payload: { toolFailureProbation: { classKey: prior.classKey } } });
   });
 
   it('does not swallow a different unique violation as a watchdog race', async () => {
