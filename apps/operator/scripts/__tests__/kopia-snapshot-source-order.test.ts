@@ -100,6 +100,13 @@ const INVOCATION_END = '--end-of-invocation--';
 
 /** Run the sweep and return the source arguments of each kopia invocation, in order. */
 function runSweepInvocations(requiredDir: string, procRoot?: string): string[][] {
+  return runSweepRawInvocations(requiredDir, procRoot)
+    .map((inv) => inv.filter((arg) => !arg.startsWith('--')))
+    .filter((inv) => inv.length > 0);
+}
+
+/** Run the sweep and return each kopia invocation's FULL argv, flags included, in order. */
+function runSweepRawInvocations(requiredDir: string, procRoot?: string): string[][] {
   rmSync(join(dir, 'create-argv'), { force: true });
   execFileSync('/usr/bin/env', ['bash', SCRIPT], {
     env: {
@@ -117,7 +124,7 @@ function runSweepInvocations(requiredDir: string, procRoot?: string): string[][]
   const invocations: string[][] = [[]];
   for (const line of readFileSync(join(dir, 'create-argv'), 'utf8').split('\n')) {
     if (line === INVOCATION_END) invocations.push([]);
-    else if (line.length > 0 && line !== '--parallel=1') invocations[invocations.length - 1].push(line);
+    else if (line.length > 0) invocations[invocations.length - 1].push(line);
   }
   return invocations.filter((inv) => inv.length > 0);
 }
@@ -205,6 +212,29 @@ describe('kopia-snapshot-all.sh source ordering', () => {
     expect(runSweepInvocations(join(dir, 'no-such-directory'))).toEqual([
       ['/srv/a-source', '/srv/z-source'],
     ]);
+  });
+
+  // Kopia runs due auto-maintenance at the END of a `snapshot create`. Measured
+  // 2026-10-06 19:41 EDT: the required-only invocation committed db-dumps, then ran
+  // FULL maintenance (GC over 10M contents, 25+ min) while all 14 tail sources
+  // waited. A stop during that window left every tail source unswept. Maintenance
+  // must run once, after the LAST invocation.
+  it('defers auto-maintenance past the required invocation when a tail follows', () => {
+    writeFakes(['/srv/a-source', '/srv/z-source']);
+
+    const [required, tail] = runSweepRawInvocations(join(dir, 'dumps'));
+
+    expect(required).toContain('--no-auto-maintenance');
+    expect(tail).not.toContain('--no-auto-maintenance');
+  });
+
+  it('leaves auto-maintenance on when the required invocation is the only one', () => {
+    writeFakes([]);
+
+    const invocations = runSweepRawInvocations(join(dir, 'dumps'));
+
+    expect(invocations.length).toBe(1);
+    expect(invocations[0]).not.toContain('--no-auto-maintenance');
   });
 });
 
