@@ -500,6 +500,23 @@ describe.each(['codex', 'omp'] as const)('%s structured SU engine', (backend) =>
     expect(start?.model).toBeUndefined();
   });
 
+  it('P-026: a model override with no model refuses before delivery and names how to recover', async () => {
+    const f = fixture(backend); await f.engine.ready;
+    const sentBefore = f.sent.length;
+    const modelBefore = f.engine.adapter.host.descriptor().model;
+    await expect(f.engine.adapter.host.startCommand(turnWithModel(f.engine, 'empty-model', '   ')).terminal)
+      .resolves.toMatchObject({ status: 'refused', refusal: {
+        code: 'model_switch_refused', retryable: false,
+        liftsWhen: expect.stringContaining('non-empty model name'),
+      } });
+    expect(f.sent).toHaveLength(sentBefore);
+    expect(f.engine.adapter.host.descriptor().model).toBe(modelBefore);
+    expect(f.engine.adapter.host.snapshot()).toMatchObject({ terminal: false, streamReady: true });
+    await expect(f.engine.adapter.host.startCommand(command(f.engine, 'owner_turn', 'after-empty-model') as never).terminal)
+      .resolves.toMatchObject({ status: 'completed' });
+    expect(f.sent.filter((frame) => frame.type === 'prompt' || frame.method === 'turn/start')).toHaveLength(1);
+  });
+
   if (backend === 'omp') {
     it('P-026: a refused OMP switch refuses the turn, sends nothing and keeps the session usable', async () => {
       const f = fixture(backend, { request: async (frame) => {
