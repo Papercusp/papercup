@@ -245,7 +245,7 @@ export async function recordTransferOutcome(
      RETURNING *`) as Row[];
   if (rows.length) await recordProducerObservation(sql, { producer: 'transfer', workspaceId: q.workspaceId, sourceId: q.id,
     ...(q.evaluation === undefined ? {} : { evaluation: q.evaluation }),
-    ...(contract ? { contract } : {}) });
+    ...(q.evaluation?.contract ? { contract: q.evaluation.contract } : {}) });
   return rows.length ? mapLesson(rows[0]) : null;
   });
 }
