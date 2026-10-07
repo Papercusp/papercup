@@ -518,14 +518,18 @@ export async function readActiveOperationWorkerClaimBinding(
 }
 
 export async function resolveAcceptedOperationWorkerBinding(input: {
-  sql: Sql;
+  sql?: Sql;
   workspaceId: string;
   harnessSlug: string;
   workItemId: string;
   role: string;
   repoDir: string;
+  /** Return no binding for a different accepted worker role when this caller is
+   * only checking whether a generic launch matches the operation. */
+  roleMismatch?: 'error' | 'ignore';
 }): Promise<AcceptedOperationWorkerBinding | null> {
   return runWithWorkspace(input.workspaceId, async () => {
+    const sql = input.sql ?? getOrgPg().sql;
     // WI-10004367: a pot MEMBER harness's accepted item is stored under the pot home slug.
     const storageHarnessSlug = await workItemStorageSlug(input.harnessSlug, input.workspaceId);
     const item = await getWorkItem(input.workItemId, storageHarnessSlug);
@@ -536,11 +540,12 @@ export async function resolveAcceptedOperationWorkerBinding(input: {
       ? item.payload as Record<string, unknown> : null;
     if (!payload?.blueprintOperation) return null;
 
-    const { pin, operation } = await readAcceptedBlueprintDirectWorkItem(input.sql, input.workspaceId, item);
+    const { pin, operation } = await readAcceptedBlueprintDirectWorkItem(sql, input.workspaceId, item);
     if (pin.harnessSlug !== input.harnessSlug) {
       throw new Error('operation worker launch requires a work item in its harness');
     }
     if (operation.execution?.kind !== 'agent' || operation.execution.role !== input.role) {
+      if (input.roleMismatch === 'ignore') return null;
       throw new Error('accepted blueprint operation does not authorize this worker role');
     }
     const ref = operation.policy.identity;
