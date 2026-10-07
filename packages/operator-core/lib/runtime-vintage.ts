@@ -18,9 +18,12 @@
  */
 
 import { hostname } from 'node:os';
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from './workspace-registry';
 import { coerceJson } from './pg-jsonb';
+import { readProcessIdentity, linuxProcStateFromStat } from './process-identity';
 
 /** The tagged org-PG client, optionally supplied by a caller's read transaction. */
 export type RuntimeVintageSql = ReturnType<typeof getOrgPg>['sql'];
@@ -175,7 +178,54 @@ export function resetRuntimeVintageStore(): void {
 
 /** Upsert this runtime's current build identity. */
 export async function reportRuntimeVintage(input: RuntimeVintageReport): Promise<void> {
-  return store.report(input);
+  // This reserved field is a kernel measurement, never a remote caller's claim.
+  const extra = { ...input.extra };
+  delete extra.kernelProcessIdentity;
+  if ((input.host?.trim() || defaultHost()) === defaultHost() && input.pid != null) {
+    const identity = liveProcessIdentity(input.pid);
+    if (identity) extra.kernelProcessIdentity = identity;
+  }
+  return store.report({ ...input, extra });
+}
+
+function liveProcessIdentity(pid: number): string | null {
+  const identity = readProcessIdentity(pid);
+  if (!identity) return null;
+  if (process.platform === 'linux') {
+    try {
+      const state = linuxProcStateFromStat(readFileSync(`/proc/${pid}/stat`, 'utf8'));
+      if (!state || state === 'Z' || state === 'X' || state === 'x') return null;
+    } catch { return null; }
+  }
+  // Refuse a process replacement between the identity and state reads, too.
+  return readProcessIdentity(pid) === identity ? identity : null;
+}
+
+/**
+ * Re-measure named local runtimes against the boot-time kernel pin. Historical
+ * rows, remote hosts and PID reuse remain unproven; a boot ledger is not liveness.
+ * Capture this value at execution time AND independently at evidence-read time.
+ * It must never be used to restamp a historical run at binding time.
+ */
+export function measureRuntimeVintageEnvironment(
+  rows: readonly RuntimeVintageRow[],
+  units: readonly string[],
+  deps: { host: string; identity: (pid: number) => string | null } = {
+    host: defaultHost(), identity: liveProcessIdentity,
+  },
+): string | null {
+  if (units.length === 0 || units.length > 32 || new Set(units).size !== units.length) return null;
+  const pins: Array<[string, string, string, string | null, number, string]> = [];
+  for (const unit of [...units].sort()) {
+    const matches = rows.filter(row => row.unit === unit && row.host === deps.host);
+    if (matches.length !== 1) return null;
+    const row = matches[0];
+    if (!row.treeSha || !Number.isSafeInteger(row.pid) || row.pid! <= 0) return null;
+    const pinned = row.extra.kernelProcessIdentity;
+    if (typeof pinned !== 'string' || !pinned || deps.identity(row.pid!) !== pinned) return null;
+    pins.push([unit, row.host, row.treeSha, row.buildTime, row.pid!, pinned]);
+  }
+  return createHash('sha256').update(JSON.stringify(pins)).digest('hex');
 }
 
 /** List every reported runtime's current vintage for a workspace. */

@@ -8,12 +8,16 @@
  * not here.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { hostname } from 'node:os';
+import { readProcessIdentity } from './process-identity';
 import {
   InMemoryRuntimeVintageStore,
   configureRuntimeVintageStore,
   resetRuntimeVintageStore,
   reportRuntimeVintage,
   listRuntimeVintage,
+  measureRuntimeVintageEnvironment,
+  type RuntimeVintageRow,
 } from './runtime-vintage';
 
 describe('runtime-vintage — self-report ledger (P-008)', () => {
@@ -79,5 +83,52 @@ describe('runtime-vintage — self-report ledger (P-008)', () => {
     await reportRuntimeVintage({ unit: 'bg-host', host: 'z-host', treeSha: 's3', workspaceId: 'default' });
     const rows = await listRuntimeVintage('default');
     expect(rows.map((r) => `${r.unit}:${r.host}`)).toEqual(['bg-host:a-host', 'bg-host:z-host', 'gateway:b-host']);
+  });
+
+  it('pins its own process from the kernel and strips caller-authored pins', async () => {
+    await reportRuntimeVintage({ unit: 'self', pid: process.pid, treeSha: 'sha', workspaceId: 'default',
+      extra: { kernelProcessIdentity: 'invented' } });
+    const rows = await listRuntimeVintage('default');
+    const identity = readProcessIdentity(process.pid);
+    if (identity) {
+      expect(rows[0].extra.kernelProcessIdentity).toBe(identity);
+      expect(measureRuntimeVintageEnvironment(rows, ['self'])).toMatch(/^[a-f0-9]{64}$/);
+    } else {
+      expect(rows[0].extra).not.toHaveProperty('kernelProcessIdentity');
+      expect(measureRuntimeVintageEnvironment(rows, ['self'])).toBeNull();
+    }
+    await reportRuntimeVintage({ unit: 'remote', host: `${hostname()}-remote`, pid: process.pid,
+      workspaceId: 'default', extra: { kernelProcessIdentity: 'invented' } });
+    expect((await listRuntimeVintage('default')).find(row => row.unit === 'remote')!.extra)
+      .not.toHaveProperty('kernelProcessIdentity');
+  });
+
+  const pinnedRow = (unit = 'bg-host'): RuntimeVintageRow => ({
+    workspaceId: 'default', unit, host: 'local', treeSha: 'sha', buildTime: '2026-10-07T00:00:00Z',
+    bundleVersion: null, pid: 42, extra: { kernelProcessIdentity: 'boot:start' }, reportedAt: 'now',
+  });
+
+  it('refuses missing, dead, reused, remote and legacy runtime identities', () => {
+    const deps = { host: 'local', identity: () => 'boot:start' };
+    const row = pinnedRow();
+    expect(measureRuntimeVintageEnvironment([row], ['bg-host'], deps)).toMatch(/^[a-f0-9]{64}$/);
+    for (const rows of [[], [{ ...row, host: 'remote' }], [{ ...row, extra: {} }],
+      [{ ...row, treeSha: null }], [row, row]]) {
+      expect(measureRuntimeVintageEnvironment(rows, ['bg-host'], deps)).toBeNull();
+    }
+    expect(measureRuntimeVintageEnvironment([row], ['bg-host'], { ...deps, identity: () => null })).toBeNull();
+    expect(measureRuntimeVintageEnvironment([row], ['bg-host'], { ...deps, identity: () => 'boot:reused' })).toBeNull();
+    expect(measureRuntimeVintageEnvironment([row], [], deps)).toBeNull();
+    expect(measureRuntimeVintageEnvironment([row], ['bg-host', 'bg-host'], deps)).toBeNull();
+  });
+
+  it('fingerprints all selected runtime identities independently of row order or heartbeat', () => {
+    const rows = [pinnedRow(), pinnedRow('desktop')];
+    const deps = { host: 'local', identity: () => 'boot:start' };
+    const original = measureRuntimeVintageEnvironment(rows, ['desktop', 'bg-host'], deps);
+    expect(measureRuntimeVintageEnvironment([...rows].reverse().map(row => ({ ...row, reportedAt: 'later' })),
+      ['bg-host', 'desktop'], deps)).toBe(original);
+    expect(measureRuntimeVintageEnvironment([{ ...rows[0], treeSha: 'new' }, rows[1]],
+      ['desktop', 'bg-host'], deps)).not.toBe(original);
   });
 });
