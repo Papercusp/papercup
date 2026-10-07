@@ -201,12 +201,80 @@ const ORIENT_COMPACTION_RECOVERY_TIMEOUT_MS = 15_000;
  */
 export const ORIENT_AGGREGATE_TIMEOUT_MS = FOREGROUND_TIMEOUT_CEILING_MS;
 
-export function withOrientAggregateTimeout<T>(work: Promise<T> | (() => Promise<T>), fallback: T): Promise<T> {
+interface OrientPhaseDuration {
+  phase: string;
+  durationMs: number;
+}
+
+interface OrientPhaseDiagnostics {
+  /** Latest-started phase that is still pending; this is a timing clue, not causal proof. */
+  activePhase: string | null;
+  activePhases: string[];
+  activePhaseElapsedMs: number | null;
+  completedDurationsMs: OrientPhaseDuration[];
+  omittedCompletedCount: number;
+  activePhaseSelection: 'latest-started-pending';
+}
+
+function createOrientPhaseTracker() {
+  let nextId = 0;
+  let omittedCompletedCount = 0;
+  const active = new Map<number, { phase: string; startedAt: number }>();
+  const completed: OrientPhaseDuration[] = [];
+  const historyCap = 32;
+
+  return {
+    async track<T>(phase: string, work: () => T | Promise<T>): Promise<T> {
+      const id = ++nextId;
+      active.set(id, { phase, startedAt: Date.now() });
+      try {
+        return await work();
+      } finally {
+        const started = active.get(id);
+        active.delete(id);
+        if (started) {
+          completed.push({ phase, durationMs: Math.max(0, Date.now() - started.startedAt) });
+          if (completed.length > historyCap) {
+            completed.shift();
+            omittedCompletedCount += 1;
+          }
+        }
+      }
+    },
+    snapshot(): OrientPhaseDiagnostics {
+      const pending = [...active.values()];
+      const current = pending[pending.length - 1];
+      return {
+        activePhase: current?.phase ?? null,
+        activePhases: pending.slice(-historyCap).map(({ phase }) => phase),
+        activePhaseElapsedMs: current ? Math.max(0, Date.now() - current.startedAt) : null,
+        completedDurationsMs: completed.slice(),
+        omittedCompletedCount,
+        activePhaseSelection: 'latest-started-pending',
+      };
+    },
+  };
+}
+
+export function withOrientAggregateTimeout<T>(
+  work: Promise<T> | (() => Promise<T>),
+  fallback: T,
+  onTimeout?: (elapsedMs: number) => void,
+): Promise<T> {
   return withBoundedTimeout(work, {
     fallback,
     timeoutMs: ORIENT_AGGREGATE_TIMEOUT_MS,
     label: 'orient:aggregate',
-  }).then(({ value }) => value);
+  }).then(({ value, reason, elapsedMs }) => {
+    if (reason === 'timeout') {
+      try {
+        onTimeout?.(elapsedMs);
+      } catch {
+        /* diagnostics must never make the aggregate fallback less available */
+      }
+    }
+    return value;
+  });
 }
 
 /**
@@ -3357,6 +3425,7 @@ export default defineTool({
   // prettier-ignore
   async handler(args, ctx) {
     const aggregateFallback = createOrientAggregateFallback();
+    const phaseTracker = createOrientPhaseTracker();
     const aggregate = await withOrientAggregateTimeout(
       async () => {
     // Soft identity resolve — orient is a READ; a bare loopback caller without an
@@ -3469,14 +3538,14 @@ export default defineTool({
           ).then((r) => r.value)
         : Promise.resolve(false);
     const [driveMode, ownerPresent, fleetMembership, monitorDeltaOn, fullDeltaOn, runtimeModeRows] =
-      await Promise.all([
+      await phaseTracker.track('handler:preflight', () => Promise.all([
         driveModePromise,
         ownerPresentPromise,
         fleetMembershipPromise,
         monitorDeltaFlagPromise,
         fullDeltaFlagPromise,
         runtimeModesPromise,
-      ]);
+      ]));
     // P-004 (fleet-deltas-leader-primitives): resolve the monitor fleet-delta seam —
     // an attributable caller in monitor mode, with the flag ON, gets the
     // (owner,'fleet:monitor') server-side cursor closure. Fail-open: a flag-read
@@ -3736,16 +3805,17 @@ export default defineTool({
           })()
         : undefined;
     const orientInnerCallBase = inProcessCall(ctx, { telemetrySurface: 'orient', ignoreSessionPayloadTier: true });
-    const orientInnerCall: InnerCall = async (name, callArgs) => {
-      if (ctx.role === 'judge' && name === 'fleet:assignments') {
-        const requestedHarness = (callArgs as Record<string, unknown>).harness;
-        return orientInnerCallBase(name, {
-          agent: 'self',
-          ...(typeof requestedHarness === 'string' ? { harness: requestedHarness } : {}),
-        });
-      }
-      return orientInnerCallBase(name, callArgs);
-    };
+    const orientInnerCall: InnerCall = async (name, callArgs) =>
+      phaseTracker.track(`inner:${name}`, async () => {
+        if (ctx.role === 'judge' && name === 'fleet:assignments') {
+          const requestedHarness = (callArgs as Record<string, unknown>).harness;
+          return orientInnerCallBase(name, {
+            agent: 'self',
+            ...(typeof requestedHarness === 'string' ? { harness: requestedHarness } : {}),
+          });
+        }
+        return orientInnerCallBase(name, callArgs);
+      });
     const fleetSummariesFold = readLedFleets
       ? async (homeFleetSlug: string, homeBrief: unknown | null | undefined) => {
           const led = await readLedFleets();
@@ -3786,7 +3856,7 @@ export default defineTool({
           );
         }
       : undefined;
-    const result = await composeOrient(
+    const result = await phaseTracker.track('composeOrient', () => composeOrient(
       args,
       // P-001 (orient-recall-quality-2026-07-12): the folded memory:search records
       // its recall telemetry under surface 'orient' (not generic 'search') so
@@ -3855,19 +3925,25 @@ export default defineTool({
       (snapshot) => snapshotOrientAggregate(aggregateFallback, snapshot),
       goalPortfolioPromise ? () => goalPortfolioPromise : undefined,
       goalObligationsPromise ? () => goalObligationsPromise : undefined,
-    );
+    ));
     // Await the already-running recovery only after composeOrient completes;
     // this preserves the existing fold output while keeping the two budgets
     // overlapped rather than serial.
-    const recovery = compactionRecoveryPromise ? await compactionRecoveryPromise : undefined;
-    const continuityProbes = continuityProbesPromise ? await continuityProbesPromise : undefined;
+    const recovery = compactionRecoveryPromise
+      ? await phaseTracker.track('handler:compactionRecovery', () => compactionRecoveryPromise)
+      : undefined;
+    const continuityProbes = continuityProbesPromise
+      ? await phaseTracker.track('handler:continuityProbes', () => continuityProbesPromise)
+      : undefined;
     // capless-adaptive-resource-governor P-011: bounded, best-effort shared state.
     // Read after composition so governor availability cannot delay the core orient legs.
     try {
-      const { readGovernorStateSnapshot, buildGovernorOrientSummary } = await import('../../../resource-governor/state-snapshot');
-      const ws = resolveConcreteWorkspaceId((ctx as { workspaceId?: string | null }).workspaceId);
-      const governor = await readGovernorStateSnapshot(ws);
-      result.governor = governor ? buildGovernorOrientSummary(governor.payload) : null;
+      await phaseTracker.track('handler:governor', async () => {
+        const { readGovernorStateSnapshot, buildGovernorOrientSummary } = await import('../../../resource-governor/state-snapshot');
+        const ws = resolveConcreteWorkspaceId((ctx as { workspaceId?: string | null }).workspaceId);
+        const governor = await readGovernorStateSnapshot(ws);
+        result.governor = governor ? buildGovernorOrientSummary(governor.payload) : null;
+      });
     } catch {
       result.governor = null;
     }
@@ -3902,7 +3978,9 @@ export default defineTool({
     // recording" — which renders as nothing, never as a false clean.
     if (ownerId) {
       const ws = (ctx as { workspaceId?: string | null }).workspaceId ?? 'default';
-      await recordOrientDisclosures(ownerId, ws, collectOrientDisclosures(result));
+      await phaseTracker.track('handler:recordOrientDisclosures', () =>
+        recordOrientDisclosures(ownerId, ws, collectOrientDisclosures(result)),
+      );
     }
     // Fold in the caller's own identity so the orientation states YOUR ownerId
     // explicitly (the roster/assignments it composes are about peers; `self` is
@@ -3930,8 +4008,10 @@ export default defineTool({
     if (runtimeModeRows) {
       runtimeModeIds = runtimeModeRows.map((row) => row.mode);
       if (runtimeModeRows.length) {
-        modes = await composeSelectedOrientModes(runtimeModeRows);
-        if (goalOwnerReportPromise) modes.ownerReport = await goalOwnerReportPromise;
+        modes = await phaseTracker.track('handler:modeContracts', () => composeSelectedOrientModes(runtimeModeRows));
+        if (goalOwnerReportPromise) {
+          modes.ownerReport = await phaseTracker.track('handler:goalOwnerReport', () => goalOwnerReportPromise);
+        }
       }
     }
     // P-022: the structured counterpart of the prose mode contracts. Resolve
@@ -3942,34 +4022,36 @@ export default defineTool({
     // requires a full coord:orient replacement, never a partial merge.
     let instructionPrecedence: unknown;
     if (ownerId && runtimeModeIds) {
-      try {
-        const [{ buildInstructionPrecedenceTrace }, { getSessionBrief }] = await Promise.all([
-          import('../../../instruction-lint'),
-          import('../../../session-brief'),
-        ]);
-        const brief = await getSessionBrief({ ownerId });
-        const ws = resolveConcreteWorkspaceId((ctx as { workspaceId?: string | null }).workspaceId);
-        instructionPrecedence = buildInstructionPrecedenceTrace({
-          source: 'coord:orient',
-          ownerId,
-          modes: runtimeModeIds,
-          route: fleetMembership?.fleetSlug
-            ? {
-                kind: 'fleet',
-                fleet: fleetMembership.fleetSlug,
-                role: fleetMembership.fleetRole,
-              }
-            : { kind: 'self' },
-          scope: {
-            workspace: ws,
-            harness: args.harness ?? brief?.harnessSlug ?? null,
-            plan: args.planSlug ?? brief?.currentPlanSlug ?? null,
-            items: args.planItems ?? [],
-          },
-        });
-      } catch {
-        /* fail-soft */
-      }
+      await phaseTracker.track('handler:instructionPrecedence', async () => {
+        try {
+          const [{ buildInstructionPrecedenceTrace }, { getSessionBrief }] = await Promise.all([
+            import('../../../instruction-lint'),
+            import('../../../session-brief'),
+          ]);
+          const brief = await getSessionBrief({ ownerId });
+          const ws = resolveConcreteWorkspaceId((ctx as { workspaceId?: string | null }).workspaceId);
+          instructionPrecedence = buildInstructionPrecedenceTrace({
+            source: 'coord:orient',
+            ownerId,
+            modes: runtimeModeIds,
+            route: fleetMembership?.fleetSlug
+              ? {
+                  kind: 'fleet',
+                  fleet: fleetMembership.fleetSlug,
+                  role: fleetMembership.fleetRole,
+                }
+              : { kind: 'self' },
+            scope: {
+              workspace: ws,
+              harness: args.harness ?? brief?.harnessSlug ?? null,
+              plan: args.planSlug ?? brief?.currentPlanSlug ?? null,
+              items: args.planItems ?? [],
+            },
+          });
+        } catch {
+          /* fail-soft */
+        }
+      });
     }
     // su-ideate-learning-substrate-2026-07-10 P-011: when the caller's active
     // modes include 'ideate', fold ONE line telling them whether they are OVERDUE
@@ -3978,13 +4060,15 @@ export default defineTool({
     // Same handler-side best-effort IO pattern as the modes fold above.
     let ideate: import('./orient-ideate-hint').IdeateHint | undefined;
     if (ownerId && modes?.active?.some((m) => m.mode === 'ideate')) {
-      try {
-        const { computeIdeateOverdue } = await import('./orient-ideate-hint');
-        const ws = resolveConcreteWorkspaceId((ctx as { workspaceId?: string | null }).workspaceId);
-        ideate = await computeIdeateOverdue({ ownerId, workspaceId: ws });
-      } catch {
-        /* fail-soft */
-      }
+      await phaseTracker.track('handler:ideateHint', async () => {
+        try {
+          const { computeIdeateOverdue } = await import('./orient-ideate-hint');
+          const ws = resolveConcreteWorkspaceId((ctx as { workspaceId?: string | null }).workspaceId);
+          ideate = await computeIdeateOverdue({ ownerId, workspaceId: ws });
+        } catch {
+          /* fail-soft */
+        }
+      });
     }
     // su-ideate-learning-substrate-2026-07-10 P-022(a): the capture-MISS advisory
     // (D-017). A high-signal turn — an error-retry cluster / EI-* reference /
@@ -3995,12 +4079,14 @@ export default defineTool({
     // (a healthy session sees nothing).
     let captureMiss: import('./orient-capture-miss-hint').CaptureMissHint | undefined;
     if (ownerId) {
-      try {
-        const { resolveCaptureMissHint } = await import('./orient-capture-miss-hint');
-        captureMiss = await resolveCaptureMissHint({ ownerId, harness: args.harness });
-      } catch {
-        /* fail-soft */
-      }
+      await phaseTracker.track('handler:captureMissHint', async () => {
+        try {
+          const { resolveCaptureMissHint } = await import('./orient-capture-miss-hint');
+          captureMiss = await resolveCaptureMissHint({ ownerId, harness: args.harness });
+        } catch {
+          /* fail-soft */
+        }
+      });
     }
     // WI-4562: a Claude Code config save (/model, /effort, theme) REWRITES the session's
     // settings.json from its own in-memory keys and drops every psu key — silently
@@ -4015,59 +4101,55 @@ export default defineTool({
     // of file reads and adds no key.
     let configIntegrity: unknown;
     if (ownerId) {
-      try {
-        const { loadSessionConfigState, checkSessionConfigIntegrityForClient, repairSessionConfigOnDisk } =
-          await import('../../../session-config-integrity');
-        const advRow = await (await import('../../../adv-sessions')).latestAdvSessionByCoordOwner(ownerId);
-        const recordedClient = advRow?.agent;
-        // WI-38349: WHERE this session's config dir is is an OBSERVATION, not the
-        // `session-claude/<ownerId>` formula — several launch paths key it by spawn
-        // id instead, and reading the formula's path found nothing for ~80% of
-        // active sessions, which the checker then reported as de-enrollment. The
-        // live process is the ground truth; coord_presence.pid is the anchor that
-        // finds it (it records the psu-launcher, whose child is the claude CLI).
-        const pidHint = await readSessionPidHint(ownerId);
-        const locator = { pidHint, sessionId: advRow?.sessionId ?? null };
-        const state = loadSessionConfigState(ownerId, undefined, locator);
-        const verdict = checkSessionConfigIntegrityForClient(state, recordedClient);
-        if (verdict?.unknown) {
-          // Deliberately NOT a de-enrollment claim: nothing was checked. Reported so
-          // the gap is visible rather than silently swallowed — and worded so it can
-          // never be mistaken for the alarm below.
-          configIntegrity = {
-            status: 'unknown',
-            checked: false,
-            reason: verdict.unknownReason,
-            resolutionTried: state.configDirUnresolvedReason,
-            warning:
-              "CONFIG INTEGRITY NOT CHECKED (WI-38349): this session's real CLAUDE_CONFIG_DIR could not be located, so the WI-4562 de-enrollment check did not run. This says NOTHING about your hooks, edit-locks, inbox or MCP — do not read it as damage. If you want certainty, check that your live process's CLAUDE_CONFIG_DIR holds a settings.json carrying the global hook block.",
-          };
-        } else if (verdict && !verdict.ok) {
-          const repair = repairSessionConfigOnDisk(ownerId, undefined, recordedClient, locator);
-          const repairedCleanly = repair.repaired && repair.stillBroken.length === 0;
-          configIntegrity = {
-            ...verdict,
-            configDir: state.configDir,
-            configDirSource: state.configDirSource,
-            repaired: repair.repaired,
-            fixed: repair.fixed,
-            wrote: repair.wrote,
-            stillBroken: repair.stillBroken,
-            skipped: repair.skipped,
-            residualCaveats: repair.residualCaveats,
-            warning: repairedCleanly
-              ? 'YOUR SESSION WAS DE-ENROLLED (WI-4562) and has just been AUTO-REPAIRED. Claude Code had rewritten this session config and dropped psu-owned keys; orient restored them on disk. Hook registrations are re-read from the file, so delivery (edit-locks, coord inbox, turn-start recall) resumes WITHOUT a relaunch — verified live on su-5d6764f9, where the coord inbox delivered a 40+ message backlog immediately after repair. See residualCaveats for the two things a disk write cannot undo.'
-              : // WI-38349: never point at `stillBroken` when it is EMPTY — the old
-                // wording told the reader to "see stillBroken" and handed them an
-                // empty list. When the repair did not RUN, `skipped` says why.
-                repair.skipped
-                ? `YOUR SESSION IS RUNNING DE-ENROLLED (WI-4562) and auto-repair did NOT run: ${repair.skipped}. The capabilities listed in consequences remain OFF. Relaunch the session, or repair its real config dir (${state.configDir ?? 'unresolved'}) by hand.`
-                : 'YOUR SESSION IS RUNNING DE-ENROLLED (WI-4562) and auto-repair did NOT fully succeed — see stillBroken. Claude Code rewrote this session config and dropped psu-owned keys, so some capabilities above remain OFF. Repair manually via session-config-integrity.repairSessionConfigOnDisk, or relaunch.',
-          };
+      await phaseTracker.track('handler:sessionConfigIntegrity', async () => {
+        try {
+          const { loadSessionConfigState, checkSessionConfigIntegrityForClient, repairSessionConfigOnDisk } =
+            await import('../../../session-config-integrity');
+          const advRow = await (await import('../../../adv-sessions')).latestAdvSessionByCoordOwner(ownerId);
+          const recordedClient = advRow?.agent;
+          // WI-38349: WHERE this session's config dir is is an OBSERVATION, not the
+          // `session-claude/<ownerId>` formula — several launch paths key it by spawn
+          // id instead, and reading the formula's path found nothing for ~80% of
+          // active sessions, which the checker then reported as de-enrollment. The
+          // live process is the ground truth; coord_presence.pid is the anchor that
+          // finds it (it records the psu-launcher, whose child is the claude CLI).
+          const pidHint = await readSessionPidHint(ownerId);
+          const locator = { pidHint, sessionId: advRow?.sessionId ?? null };
+          const state = loadSessionConfigState(ownerId, undefined, locator);
+          const verdict = checkSessionConfigIntegrityForClient(state, recordedClient);
+          if (verdict?.unknown) {
+            configIntegrity = {
+              status: 'unknown',
+              checked: false,
+              reason: verdict.unknownReason,
+              resolutionTried: state.configDirUnresolvedReason,
+              warning:
+                "CONFIG INTEGRITY NOT CHECKED (WI-38349): this session's real CLAUDE_CONFIG_DIR could not be located, so the WI-4562 de-enrollment check did not run. This says NOTHING about your hooks, edit-locks, inbox or MCP — do not read it as damage. If you want certainty, check that your live process's CLAUDE_CONFIG_DIR holds a settings.json carrying the global hook block.",
+            };
+          } else if (verdict && !verdict.ok) {
+            const repair = repairSessionConfigOnDisk(ownerId, undefined, recordedClient, locator);
+            const repairedCleanly = repair.repaired && repair.stillBroken.length === 0;
+            configIntegrity = {
+              ...verdict,
+              configDir: state.configDir,
+              configDirSource: state.configDirSource,
+              repaired: repair.repaired,
+              fixed: repair.fixed,
+              wrote: repair.wrote,
+              stillBroken: repair.stillBroken,
+              skipped: repair.skipped,
+              residualCaveats: repair.residualCaveats,
+              warning: repairedCleanly
+                ? 'YOUR SESSION WAS DE-ENROLLED (WI-4562) and has just been AUTO-REPAIRED. Claude Code had rewritten this session config and dropped psu-owned keys; orient restored them on disk. Hook registrations are re-read from the file, so delivery (edit-locks, coord inbox, turn-start recall) resumes WITHOUT a relaunch — verified live on su-5d6764f9, where the coord inbox delivered a 40+ message backlog immediately after repair. See residualCaveats for the two things a disk write cannot undo.'
+                : repair.skipped
+                  ? `YOUR SESSION IS RUNNING DE-ENROLLED (WI-4562) and auto-repair did NOT run: ${repair.skipped}. The capabilities listed in consequences remain OFF. Relaunch the session, or repair its real config dir (${state.configDir ?? 'unresolved'}) by hand.`
+                  : 'YOUR SESSION IS RUNNING DE-ENROLLED (WI-4562) and auto-repair did NOT fully succeed — see stillBroken. Claude Code rewrote this session config and dropped psu-owned keys, so some capabilities above remain OFF. Repair manually via session-config-integrity.repairSessionConfigOnDisk, or relaunch.',
+            };
+          }
+        } catch {
+          /* fail-soft — never break orientation over a config read/repair */
         }
-      } catch {
-        /* fail-soft — never break orientation over a config read/repair */
-      }
+      });
     }
     // EI-11408 / P-004: Codex's lock policy is a RUNTIME verdict, not a
     // static client assumption. Hooks merely present on disk remain manual
@@ -4076,26 +4158,25 @@ export default defineTool({
     // after-launch authority and carries one effective instruction only.
     let codexLocks: unknown;
     if (ownerId) {
-      try {
-        const session = await (await import('../../../adv-sessions')).latestAdvSessionByCoordOwner(ownerId);
-        if (session?.agent === 'codex') {
-          const [{ readCodexHomeDiagnostics }, { readCodexLockRuntimeVerdictAsync }] = await Promise.all([
-            import('../../../role-codex-home'),
-            import('../../../codex-lock-runtime'),
-          ]);
-          // Async for the same reason as the marker read below (WI-10005188).
-          const home = await readCodexHomeDiagnostics(session.id);
-          const hooksConfigured =
-            home.hooksExists &&
-            home.diagnostics?.lockEnforcement === 'hooks-configured' &&
-            (!home.diagnostics.lockOwnerSid || home.diagnostics.lockOwnerSid === ownerId);
-          // Async: the markers sit in the contended locks-cache directory, and a
-          // sync read there parked the operator main thread for 10s (WI-10004754).
-          codexLocks = await readCodexLockRuntimeVerdictAsync({ ownerId, hooksConfigured });
+      await phaseTracker.track('handler:codexLocks', async () => {
+        try {
+          const session = await (await import('../../../adv-sessions')).latestAdvSessionByCoordOwner(ownerId);
+          if (session?.agent === 'codex') {
+            const [{ readCodexHomeDiagnostics }, { readCodexLockRuntimeVerdictAsync }] = await Promise.all([
+              import('../../../role-codex-home'),
+              import('../../../codex-lock-runtime'),
+            ]);
+            const home = await readCodexHomeDiagnostics(session.id);
+            const hooksConfigured =
+              home.hooksExists &&
+              home.diagnostics?.lockEnforcement === 'hooks-configured' &&
+              (!home.diagnostics.lockOwnerSid || home.diagnostics.lockOwnerSid === ownerId);
+            codexLocks = await readCodexLockRuntimeVerdictAsync({ ownerId, hooksConfigured });
+          }
+        } catch {
+          /* fail-soft: prompt snapshot remains conservative/manual */
         }
-      } catch {
-        /* fail-soft: prompt snapshot remains conservative/manual */
-      }
+      });
     }
     // P-006 / EI-11409: derive the small tool set this task actually needs
     // from the active modes + declared scope + surfaced recipe context, then
@@ -4107,52 +4188,54 @@ export default defineTool({
     // reconstructs the same pack. Fail-soft: orientation remains usable if the
     // registry or client activation seam is unavailable during a rolling deploy.
     let taskToolSchemaPack: OrientResult['taskToolSchemaPack'];
-    try {
-      const { buildTaskToolSchemaPack } = await import('./orient-task-schema-pack');
-      const pack = buildTaskToolSchemaPack({
-        intent: args.intent ?? args.memoryQuery,
-        modes: runtimeModeIds ?? [],
-        harness: args.harness ?? (ctx as { harnessSlug?: string | null }).harnessSlug ?? null,
-        plan: args.planSlug ?? null,
-        planItems: args.planItems ?? [],
-        recipeTitles: Array.isArray(result.recipes)
-          ? result.recipes.flatMap((recipe) => (typeof recipe.title === 'string' ? [recipe.title] : []))
-          : args.intent
-            ? []
-            : undefined,
-      });
-      const activationRequested = shouldActivateOrientToolSurface(
-        (ctx as { callerAgent?: string | null }).callerAgent,
-      );
-      let surfaceChanged: boolean | null = null;
-      if (activationRequested) {
-        try {
-          surfaceChanged = ctx.activateTools?.(pack.toolNames) ?? null;
-        } catch {
-          surfaceChanged = null;
+    await phaseTracker.track('handler:taskToolSchemaPack', async () => {
+      try {
+        const { buildTaskToolSchemaPack } = await import('./orient-task-schema-pack');
+        const pack = buildTaskToolSchemaPack({
+          intent: args.intent ?? args.memoryQuery,
+          modes: runtimeModeIds ?? [],
+          harness: args.harness ?? (ctx as { harnessSlug?: string | null }).harnessSlug ?? null,
+          plan: args.planSlug ?? null,
+          planItems: args.planItems ?? [],
+          recipeTitles: Array.isArray(result.recipes)
+            ? result.recipes.flatMap((recipe) => (typeof recipe.title === 'string' ? [recipe.title] : []))
+            : args.intent
+              ? []
+              : undefined,
+        });
+        const activationRequested = shouldActivateOrientToolSurface(
+          (ctx as { callerAgent?: string | null }).callerAgent,
+        );
+        let surfaceChanged: boolean | null = null;
+        if (activationRequested) {
+          try {
+            surfaceChanged = ctx.activateTools?.(pack.toolNames) ?? null;
+          } catch {
+            surfaceChanged = null;
+          }
         }
+        taskToolSchemaPack = {
+          ...pack,
+          activation: { requested: activationRequested, surfaceChanged },
+        };
+      } catch {
+        /* fail-soft */
       }
-      taskToolSchemaPack = {
-        ...pack,
-        activation: { requested: activationRequested, surfaceChanged },
-      };
-    } catch {
-      /* fail-soft */
-    }
+    });
     // EI-11484: OPEN OWNER DIRECTIVES fold — every orient (full AND monitor;
     // orient is the mandated bootstrap, so this is how a SUCCESSOR session in
     // the workspace inherits an order whose recording session died). Rendered
     // by the shared budgeted renderer; fail-soft, absent when none are open.
     let ownerDirectives: string | undefined;
-    try {
-      const { renderOpenOwnerDirectivesBlock } = await import('../../../owner-directives');
-      const ws = resolveConcreteWorkspaceId((ctx as { workspaceId?: string | null }).workspaceId);
-      // Rendered FOR the orienting session (P-008 / D-008): rows it cleared off
-      // its own agenda drop out here and stay open for every other session.
-      ownerDirectives = (await renderOpenOwnerDirectivesBlock(ws, { viewerOwnerId: ownerId })) ?? undefined;
-    } catch {
-      /* fail-soft */
-    }
+    await phaseTracker.track('handler:ownerDirectives', async () => {
+      try {
+        const { renderOpenOwnerDirectivesBlock } = await import('../../../owner-directives');
+        const ws = resolveConcreteWorkspaceId((ctx as { workspaceId?: string | null }).workspaceId);
+        ownerDirectives = (await renderOpenOwnerDirectivesBlock(ws, { viewerOwnerId: ownerId })) ?? undefined;
+      } catch {
+        /* fail-soft */
+      }
+    });
     const out = assembleOrientOutput({
       self,
       recovery,
@@ -4182,21 +4265,23 @@ export default defineTool({
       recovery?.control &&
       Number.isSafeInteger(recovery.control.generation)
     ) {
-      try {
-        const { acknowledgeControlTransition } = await import('../control-anchor');
-        await acknowledgeControlTransition(ownerId, orientWorkspaceId, recovery.control.generation);
-      } catch {
-        /* preserve the assembled orient; the generation remains pending */
-      }
+      await phaseTracker.track('handler:acknowledgeControlTransition', async () => {
+        try {
+          const { acknowledgeControlTransition } = await import('../control-anchor');
+          await acknowledgeControlTransition(ownerId, orientWorkspaceId, recovery.control.generation);
+        } catch {
+          /* preserve the assembled orient; the generation remains pending */
+        }
+      });
     }
     // EI-9130: stamp the generic delta-served breadcrumb when at least one of orient's
     // bespoke cursor-delta legs actually narrowed/unchanged its response — see
     // orientServedDelta's doc comment + dispatch-stack.ts's recordTelemetry. Never
     // stamped `false`: absence already reads as "no delta mechanism engaged" (flag off,
     // no cursor, or a baseline/first read), same convention as the formal protocol.
-    await bindOrientOutputResult(out, {
+    await phaseTracker.track('handler:bindOutputResult', () => bindOrientOutputResult(out, {
       ownerId: ownerId ?? null, workspaceId: orientWorkspaceId, harness: args.harness ?? null,
-    }, orientServedDelta(result), ctx.metadata, undefined, runtimeModeRows);
+    }, orientServedDelta(result), ctx.metadata, undefined, runtimeModeRows));
     // `{ data }` envelope (tool-data-shape ratchet P-003) so payload-tier
     // shaping + format-aware serialization apply. On the MCP transport this is
     // behavior-equivalent to the prior raw-JSON text (the re-encode path
@@ -4205,6 +4290,12 @@ export default defineTool({
       },
       {
         ...aggregateFallback,
+      },
+      (aggregateElapsedMs) => {
+        aggregateFallback.data.phaseDiagnostics = {
+          aggregateElapsedMs,
+          ...phaseTracker.snapshot(),
+        };
       },
     );
     return aggregate;

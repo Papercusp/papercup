@@ -3583,6 +3583,48 @@ export function argvProbeSessionId(session: any): any;
  * for tests.
  */
 export function codexResumeHome(session: any, home?: string): any;
+/** Hash existing profile and exact transcript identity without repairing either.
+ * @param {string} codexHome
+ * @param {string} sessionId
+ * @returns {string | null}
+ */
+export function codexOriginalRoutingFingerprint(codexHome: string, sessionId: string): string | null;
+/** The saved route is authority; provider repair does not select another account. */
+export function originalCodexRoutingAccount(session: any): string | null;
+/** Fail closed on custody/prerequisite uncertainty; never repair files.
+ * @param {*} session
+ * @param {{ownerId:string, advSessionId:number, sessionId:string, codexHome:string, profileFingerprint:string}} pin
+ * @param {{liveHost?: (owner:string)=>any, writerHolder?: (home:string,id:string)=>any}} [deps]
+ */
+export function assertOriginalCodexRouting(session: any, pin: {
+    ownerId: string;
+    advSessionId: number;
+    sessionId: string;
+    codexHome: string;
+    profileFingerprint: string;
+}, { liveHost, writerHolder, }?: {
+    liveHost?: (owner: string) => any;
+    writerHolder?: (home: string, id: string) => any;
+}): void;
+/** Re-read exact custody AFTER the existing reservation, then patch only the provider.
+ * @param {*} session
+ * @param {{ownerId:string, advSessionId:number, sessionId:string, codexHome:string, profileFingerprint:string}} pin
+ * @param {*} account
+ * @param {{apiImpl?: (...args:any[])=>any, liveHost?: (owner:string)=>any, writerHolder?: (home:string,id:string)=>any}} [deps]
+ */
+export function applyOriginalCodexRouting(session: any, pin: {
+    ownerId: string;
+    advSessionId: number;
+    sessionId: string;
+    codexHome: string;
+    profileFingerprint: string;
+}, account: any, deps?: {
+    apiImpl?: (...args: any[]) => any;
+    liveHost?: (owner: string) => any;
+    writerHolder?: (home: string, id: string) => any;
+}): Promise<void>;
+/** Consume the one-launch contract; it must never reach the resumed child. */
+export function consumeOriginalCodexRouting(env?: NodeJS.ProcessEnv): any;
 /**
  * The conventional per-session CODEX_HOME for an adv-session id. Mirrors
  * `codexHomeForSessionKey` in @papercusp/orchestrator/session-launch-dirs,
@@ -4652,6 +4694,7 @@ export const NO_LIVE_OMP_PROCESS_EVIDENCE: Readonly<{
     version: 1;
     kind: "no-live-omp-process";
 }>;
+export const ORIGINAL_CODEX_ROUTING_ENV: "PAPERCUSP_ORIGINAL_CODEX_ROUTING";
 /**
  * WI-4889 (owner directive 2026-07-14): the resume "choose a different model"
  * path is a MENU, not a free-text `<model>[:<effort>]` prompt. Two selects —

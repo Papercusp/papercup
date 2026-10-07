@@ -5,17 +5,19 @@
   "accountableOwner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
   "population": {
     "failedFiles": 124,
-    "repairedFocused": 16,
+    "repairedFocused": 18,
     "repairedPeerFocused": 12,
-    "openUnknown": 96
+    "openUnknown": 94
   },
   "classes": {
-    "assertion": 62,
+    "assertion": 61,
     "migration-stage": 1,
     "missing-schema": 16,
     "blueprint-fixture": 1,
     "console-guard": 10,
-    "unclassified": 9,
+    "unclassified": 8,
+    "plan-pot-fixture": 1,
+    "plan-observation-fixture": 1,
     "gym-run-identity-schema": 1,
     "local-perf-compaction-census": 1,
     "peer-dial-process-isolation": 1,
@@ -1310,13 +1312,40 @@
     },
     {
       "path": "packages/operator-core/lib/agent-tools/plans/__tests__/set-plan-status-deprecate-learnings.integration.test.ts",
-      "class": "assertion",
-      "state": "open-unknown",
-      "item": "WI-10006170",
+      "class": "plan-observation-fixture",
+      "state": "repaired-focused",
+      "item": "WI-10007137",
       "lines": [
         15757,
         15780
-      ]
+      ],
+      "diagnosis": "Direct handler calls scoped the plan through ctx.workspaceId=default but left observation creation in inherited papercusp-workspace. The explicit sourceHive also named an unregistered Pot. Reuse runWithWorkspace for handler/digest calls and registerHarnessProject for the unique other Pot; production membership enforcement remains intact.",
+      "beforeTestRun": 20894823,
+      "initialTestRun": 20894758,
+      "afterTestRun": 20895423,
+      "passed": 5,
+      "skipped": 0,
+      "testSha256": "1878d27f906d2bb931672621f185c800cf07db000f5baa29cab9db30dbc191a7",
+      "sourceFingerprints": {
+        "workspaceAlsSha256": "d4f705f85a7770e51859f0fa308b97d65968a1b842f83df72b478ab471869fd1",
+        "issuesEngineerSha256": "8c39b38fe9ee80f9c11f59692e0be0997a0e38b55c6a27c2b8027303f5b72dbc",
+        "deprecateLearningsSha256": "e6023fdcf4ed3578b8ff27cf9625115749a247c675ed9695d7e3d9b1ced1000a",
+        "planFixtureSha256": "7f7f77bd955134982f7aeb70847b956a58db4bc9f6186fbf3141839acbfd7bfe",
+        "setPlanStatusSha256": "730028cece7a258f71c7734a514f27f99b5ba4c8758df3208ab3f6773eb4b7e1"
+      },
+      "latestLocalReceipt": {
+        "id": 20895423,
+        "status": "pass",
+        "commitSha": "0e3871919672fae06669bc6b439f6e97eab17304",
+        "worktreeDirty": true,
+        "isScratchConfig": false,
+        "runGroupId": null
+      },
+      "latestReceiptMeaning": "Local fixture repair: real PG missing-Pot rejection, registered-source write in the request workspace and cleanup pass with original digest/attribution/deprecate cases. Complete import/environment, final D006 and shipment remain unverified.",
+      "nativePassLog": {
+        "path": "/tmp/wi-10007137-after.log",
+        "sha256": "c203db750373c237ccacad22efadb7c327e39a7dc56adcdcd4362fb0dc852762"
+      }
     },
     {
       "path": "packages/operator-core/lib/shared-pot-loop/composition-happy-path.integration.test.ts",
@@ -1426,13 +1455,38 @@
     },
     {
       "path": "packages/operator-core/lib/agent-tools/plans/__tests__/set-plan-status-supersede-cascade.integration.test.ts",
-      "class": "unclassified",
-      "state": "open-unknown",
-      "item": "WI-10006170",
+      "class": "plan-pot-fixture",
+      "state": "repaired-focused",
+      "item": "WI-10007130",
       "lines": [
         15802,
         15803
-      ]
+      ],
+      "diagnosis": "OTHER_HARNESS had no seeded plan and therefore no registered Pot; its carrier insert failed the production membership trigger before the cascade ran. Reuse registerHarnessProject and clean both fixture Pot identities.",
+      "beforeTestRun": 20894727,
+      "afterTestRun": 20894730,
+      "passed": 3,
+      "skipped": 0,
+      "testSha256": "b8cb808526283c232d84356a23646883ba9bb41c8d7ef805ac9f0517599796f1",
+      "sourceFingerprints": {
+        "planFixtureSha256": "7f7f77bd955134982f7aeb70847b956a58db4bc9f6186fbf3141839acbfd7bfe",
+        "setPlanStatusSha256": "730028cece7a258f71c7734a514f27f99b5ba4c8758df3208ab3f6773eb4b7e1",
+        "scopeCascadeSha256": "a29a531e8708207b891e558b0731621e460a389bfa5d54a4f2ec5919dab6de22",
+        "membershipMigration651Sha256": "7877f7c1bb7d911909c5748d2d8ab2220a910fb438bcc161af612772c61de72a"
+      },
+      "latestLocalReceipt": {
+        "id": 20894730,
+        "status": "pass",
+        "commitSha": "0e3871919672fae06669bc6b439f6e97eab17304",
+        "worktreeDirty": true,
+        "isScratchConfig": false,
+        "runGroupId": null
+      },
+      "latestReceiptMeaning": "Local causal fixture repair: membership rejection/registration/cleanup control, original cross-harness cascade and idempotence pass. Complete import/environment, final D006 and shipment remain unverified.",
+      "nativePassLog": {
+        "path": "/tmp/wi-10007130-after.log",
+        "sha256": "cec88db297b55f512f62236fa2c5d74510a455a34b6d3a44c5ae4ed31de8bcbb"
+      }
     },
     {
       "path": "packages/operator-core/lib/topics-feed.integration.test.ts",
@@ -1894,7 +1948,7 @@
   "classDisposition": [
     {
       "class": "assertion",
-      "count": 62,
+      "count": 61,
       "status": "open-unknown",
       "item": "WI-10006170",
       "owner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
@@ -2080,13 +2134,35 @@
     },
     {
       "class": "unclassified",
-      "count": 9,
+      "count": 8,
       "status": "open-unknown",
       "item": "WI-10006170",
       "owner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
       "scope": "diagnosis-and-placement",
       "rootCause": "unproved",
       "next": "Inspect exact saved error/source, deduplicate accepted defect and focused guard before source edits."
+    },
+    {
+      "class": "plan-observation-fixture",
+      "count": 1,
+      "status": "repaired-focused",
+      "item": "WI-10007137",
+      "owner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
+      "scope": "canonical-plan-Pg-fixture-and-conventional-integration-guard",
+      "rootCause": "Direct handler tests omitted the ambient request workspace for observation writes and used an unregistered explicit source Pot. The negative/positive real PG control retains production rejection, verifies the registered source write in default and cleans the Pot.",
+      "testRunIds": [20894758, 20894823, 20895423],
+      "next": "Retain the local causal repair and exact test bytes. Do not replay terminal completion or monitor source settlement; full import/environment and final D006 remain unverified."
+    },
+    {
+      "class": "plan-pot-fixture",
+      "count": 1,
+      "status": "repaired-focused",
+      "item": "WI-10007130",
+      "owner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
+      "scope": "canonical-plan-Pg-fixture-and-conventional-integration-guard",
+      "rootCause": "The other-harness carrier lacked a canonical Pot because only the main harness went through seedPlan. Its insert was correctly rejected before cascade behavior could be exercised.",
+      "testRunIds": [20894727, 20894730],
+      "next": "Retain the local causal repair and exact test bytes. Do not replay terminal completion or monitor source settlement; full import/environment and final D006 remain unverified."
     },
     {
       "class": "peer-db-schema-notify",

@@ -72,6 +72,24 @@ describe('accepted blueprint operation worker binding', () => {
     expect(getIdentitySource).toHaveBeenCalledWith('blueprint-operation-worker', { repoDir: '/repo/harness-a' });
   });
 
+  it('can ignore an accepted operation that belongs to a different requested role', async () => {
+    await expect(resolveAcceptedOperationWorkerBinding({
+      ...args,
+      sql: undefined,
+      role: 'independent-auditor',
+      roleMismatch: 'ignore',
+    })).resolves.toBeNull();
+    expect(readAcceptedBlueprintDirectWorkItem).toHaveBeenCalledWith(sqlMock, 'ws-a', item);
+    expect(getIdentitySource).not.toHaveBeenCalled();
+  });
+
+  it('keeps role mismatches strict unless the caller explicitly ignores them', async () => {
+    await expect(resolveAcceptedOperationWorkerBinding({
+      ...args,
+      role: 'independent-auditor',
+    })).rejects.toThrow('accepted blueprint operation does not authorize this worker role');
+  });
+
   it('matches only the exact pinned item for an active worker', () => {
     const binding = {
       workItemId: 'WI-1', harnessSlug: 'harness-a', storageHarnessSlug: 'harness-a',
