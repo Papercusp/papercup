@@ -3,12 +3,14 @@ import { describe, expect, it } from 'vitest';
 import runTool, {
   buildDetachedMixedTestRunRequest,
   buildDetachedTestRunRequest,
+  clampTestingRunForegroundTimeoutMs,
   emptyDistilledRunRefusal,
   nameFilterNoMatchRefusal,
   resolveDetachedHarnessSlug,
   testEvidenceRecoveryRunId,
 } from './run';
 import { REPO_ROOT } from '../docs/_repo-paths';
+import { FOREGROUND_TIMEOUT_CEILING_MS } from '../capability/foreground-transport-cap';
 
 /**
  * `files` became OPTIONAL when `changedPaths` was added, which made `testing:run {}`
@@ -199,6 +201,16 @@ describe('testing:run selector arbitration', () => {
     // measure-nothing hazard wearing a different hat.
     expect(runTool.args.safeParse({ files: [] }).success).toBe(false);
     expect(runTool.args.safeParse({ changedPaths: [] }).success).toBe(false);
+  });
+});
+
+describe('testing:run foreground handler budget', () => {
+  it('reserves handler-phase headroom inside the shared foreground ceiling', () => {
+    const maximum = clampTestingRunForegroundTimeoutMs(Number.MAX_SAFE_INTEGER);
+
+    expect(maximum).toBe(FOREGROUND_TIMEOUT_CEILING_MS - 20_000);
+    expect(maximum).toBe(25_000);
+    expect(clampTestingRunForegroundTimeoutMs(10_000)).toBe(10_000);
   });
 });
 
