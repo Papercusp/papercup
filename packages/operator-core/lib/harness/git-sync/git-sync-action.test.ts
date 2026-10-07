@@ -3558,7 +3558,7 @@ describe('clean sync outcome', () => {
     // deliberately NOT counter-gated, so a MEASURED-clean census clears on every status.
     expect(escalationClears()).toEqual([['git-sync-conflict'], ['git-sync-migration-attribution'], ['git-sync-strand'], ['git-sync-error']]);
     const clears = unsafeCalls.filter((c) => c.text.includes('SET escalation = NULL'));
-    expect(clears.map((c) => c.params[2])).toEqual(['git-sync', 'git-sync-strand', 'git-sync']); // phase
+    expect(clears.map((c) => c.params[2])).toEqual(['git-sync', 'git-sync-migration-attribution', 'git-sync-strand', 'git-sync']); // phase
     expect(escalationUpserts()).toEqual([]);
 
     // no resolver business on a clean tick
@@ -3606,7 +3606,7 @@ describe('clean sync outcome', () => {
     expect(patch).not.toHaveProperty('head_sha');
     expect(patch).not.toHaveProperty('local_sync_head_sha');
     // + the strand clear on its own phase (measured-clean census, not counter-gated).
-    expect(escalationClears()).toEqual([['git-sync-conflict'], ['git-sync-strand'], ['git-sync-error']]);
+    expect(escalationClears()).toEqual([['git-sync-conflict'], ['git-sync-migration-attribution'], ['git-sync-strand'], ['git-sync-error']]);
     expect(enqueueDocSweepMock).not.toHaveBeenCalled();
     expect(appendPipelineEventMock).toHaveBeenCalledWith(
       expect.objectContaining({ kind: 'git_sync', status: 'nothing' }),
@@ -4992,8 +4992,8 @@ describe('EI-20402093158205519 stranded-submodule census (git-sync-strand)', () 
     expect(strandClears()).toHaveLength(0);
   });
 
-  it('clears the migration attribution alarm after a measured clean sync', async () => {
-    runGitSyncMock.mockResolvedValue(syncedOutcome);
+  it.each(['synced', 'nothing'] as const)('clears the migration attribution alarm after a measured %s pass', async (status) => {
+    runGitSyncMock.mockResolvedValue({ ...syncedOutcome, status });
     await action(ctx);
     expect(unsafeCalls.some((row) => row.text.includes('SET escalation = NULL') &&
       row.params[2] === 'git-sync-migration-attribution')).toBe(true);
