@@ -15,6 +15,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readFileSync } from 'node:fs';
 import { applyEventSubstrateMigrationsForTest, createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL, WORK_ITEM_DEPS_DDL } from '../../test/_work-items-schema';
@@ -114,6 +115,7 @@ const {
 const { findConditionObject } = await import('./condition-object');
 const { setWorkItemState } = await import('../work-items');
 const { createOneWorkItem } = await import('../agent-tools/work_items/_create-core');
+const { productionStrandedAppTaskGuardDeps, runStrandedAppTaskGuard } = await import('../stranded-app-tasks');
 
 let db: FreshPgDb;
 let savedWsEnv: string | undefined;
@@ -151,6 +153,8 @@ beforeAll(async () => {
   db = await createFreshPgDb('condition-upsert');
   h.sql = db.sql;
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
+  await db.sql.unsafe('ALTER TABLE harness_shared.work_items ADD COLUMN IF NOT EXISTS first_claimed_at timestamptz');
+  await db.sql.unsafe(readFileSync(resolve(SQL_DIR, '1219-blueprint-operation-invocations.sql'), 'utf8')).simple();
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
   await ensureCoordCapabilityTables(db.sql);
   await db.sql.unsafe(COORD_EVENT_LOG_DDL);
@@ -183,6 +187,48 @@ afterAll(async () => {
   if (savedWsEnv === undefined) delete process.env.PAPERCUSP_WORKSPACE_ID;
   else process.env.PAPERCUSP_WORKSPACE_ID = savedWsEnv;
   await db?.cleanup();
+});
+
+describe('stranded app-task production finding lifecycle', () => {
+  it('files one durable finding past the bound, refreshes it, and drops it with a reason after the task clears without executing it', async () => {
+    const now = new Date('2026-10-07T12:00:00Z');
+    const taskId = 'WI-STRANDED-PRODUCTION';
+    const key = `app-task-no-executor:${WS}/email/email-draft-proposal`;
+    await db.sql`
+      INSERT INTO harness_shared.work_items
+        (feature_id, workspace_id, harness_slug, title, status, item_kind, payload, created_ts)
+      VALUES (${taskId}, ${WS}, 'email', 'stranded production control', 'open',
+              'email-draft-proposal', ${db.sql.json({ triggerRef: 'binding:test' })},
+              ${now.getTime() - 2 * 3_600_000})`;
+    const deps = productionStrandedAppTaskGuardDeps({ workspaceId: WS, flagHarness: H, boundHours: 6 });
+    const sweep = (at: Date) => runStrandedAppTaskGuard({ ...deps,
+      fetchGroups: async () => (await import('../stranded-app-tasks')).fetchStrandedAppTaskGroups({
+        workspaceId: WS, boundHours: 6, now: at,
+      }),
+    }, { boundHours: 6, now: at });
+    expect(await sweep(now)).toMatchObject({ groups: 0, flagged: [], settled: [], errors: [] });
+    expect(await holdersOf(key)).toEqual([]);
+    const later = new Date(now.getTime() + 5 * 3_600_000);
+    const first = await sweep(later);
+    expect(first.errors).toEqual([]);
+    expect(first.flagged).toEqual([expect.objectContaining({ conditionKey: key, created: true, count: 1 })]);
+    const flagId = first.flagged[0].id;
+    const again = await sweep(later);
+    expect(again.errors).toEqual([]);
+    expect(again.flagged).toEqual([expect.objectContaining({ id: flagId, created: false })]);
+    expect(await holdersOf(key)).toEqual([flagId]);
+    expect(await openItemsFor(key)).toEqual([expect.objectContaining({ feature_id: flagId, occurrences: 2 })]);
+    await setWorkItemState(taskId, 'dropped', { harness: 'email', by: 'system:test', completionRef: 'stale draft no longer wanted; do not execute' });
+    expect(await sweep(later)).toMatchObject({ groups: 0, flagged: [], settled: [flagId], errors: [] });
+    const rows = await db.sql`
+      SELECT feature_id, status, taken_by, first_claimed_at, terminal_completion_ref
+        FROM harness_shared.work_items WHERE feature_id IN (${taskId}, ${flagId})`;
+    expect(rows).toHaveLength(2);
+    expect(rows.find((r) => r.feature_id === taskId)).toMatchObject({ status: 'dropped', taken_by: null,
+      first_claimed_at: null, terminal_completion_ref: 'stale draft no longer wanted; do not execute' });
+    expect(rows.find((r) => r.feature_id === flagId)).toMatchObject({ status: 'dropped',
+      terminal_completion_ref: expect.stringContaining('condition cleared:') });
+  });
 });
 
 describe('upsertConditionWorkItem — the WI-39594 acceptance', () => {
