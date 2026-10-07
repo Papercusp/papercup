@@ -18,16 +18,18 @@ Android/cloud release combination.
 |---|---|---|---|
 | Existing workspace runtime r63 | `0.0.21-p318r63`, source `9a3383955506d4f6d6e856527a041e443961236a`; bundle SHA-256 `b9ac9540801fc544a8a117e1d1c5da6813e6877ae3010071e2c504cc3cb9210b` | Local `wh-release-r63/build-result.json` records a built artifact. At that source, the host, HTTP channel and portal handler lack `device-http`, `bodyChunked` and `attachSealedDeviceSocket` respectively. This read does not prove which artifact a VM currently runs. | Not a P-015 compatible runtime. |
 | Runtime cut r65 | `0.0.21-p318r65`, source `256a4151bca0d9ee0e04ffc60bf0058980cba442` | Local `release-cut.json` exists; `build-result.json` is absent. Runtime owner records failed sidecar build. This pin also precedes the sealed-error `relay.close` fix in `hosted-session-host.ts`. | No built or accepted candidate established. |
-| Next runtime r66 | No local `release-cut.json` or `build-result.json` at this observation | Runtime owner must select a new committed source containing both the responder close fix and maintained builder/cache fix, then build and publish it. | Pending; a proposed version is not a release. |
-| Portal / operator source candidate | D-021 working-tree source; key file fingerprints below. No matching committed pin verified. | Current source implements D-017/D-019/D-020/D-021. Exact loaded portal and VM artifacts must still be matched to the final candidate before live acceptance. | Source-level coverage only. |
+| Runtime cut r66 | `0.0.21-p318r66`, source `fce506df65dfd97fec4704f5c58f87da34306d18`; local `release-cut.json` exists, `build-result.json` absent at 07:52Z | `~/.papercusp/wh-release-r66.log` records `sidecar-build: bash exited 1`. The exact server source proof passed, but no successful runtime artifact is established. | No built or accepted candidate established. |
+| Runtime cut r67 | `0.0.21-p318r67`, source `18e31538f81ba0ac5dca37b92d91e7396da4409c` | The five D-021 committed fingerprints match the table below; clean hosted-suite ledger rows `20889334/20889336/20889337/20889338` pass. The runtime owner's later checkpoint records a failed High Sharp 0.35.4 security verdict, tracked by `WI-10007103`; no publication. | Rejected runtime cut; passing device tests do not override its security verdict. |
+| Runtime cut r68 | `0.0.21-p318r68`, source `9c6725e66689097f45e45b5d5ec962c569759582`; managed task `0muxx77izthce0e188p`, operation `df050847-df15-4f95-807c-135d992454b6`; built bundle SHA-256 `5b225614ae7e7b09baaa116ba78730f95111c19a5702bfcc0bf6f5bf65ee1ca0` | Maintained committed-source proof passes 104 assertions, zero skips; clean ledger rows `20892010/20892012/20892013/20892014`. Receipt/manifest identities agree. Runtime owner records publication PASS, hosted VM adoption, connector readiness and live QR URL/32-byte Noise key checks. The 12:28Z observation below adds public sealed pairing and a scoped request after portal adoption. | Published and adopted on the hosted acceptance VM; hosted transport probe passes. Actual Android and genuine BYOC journeys pending. |
+| Portal / operator source candidate | `fce506df65dfd97fec4704f5c58f87da34306d18`; all five D-021 fingerprints below match its committed blobs. | Maintained isolated as-committed four-suite proof passes 104 assertions with stamped provenance. Exact loaded portal and VM artifacts must still be matched to the final candidate before live acceptance. | Committed source coverage; live acceptance pending. |
 | Android/native source candidate | Mobile HEAD `1930c11b6d913c12b5a7bc632a0d4ede90e2fe4e`; Cargo workspace version `0.1.0` | Android `versionName` comes from `PAPERCUP_RELEASE_VERSION` or default `0.1.0`; it does not identify the APK under test. Native owner reports Noise KAT/interop passing, but consumer integration, chunked uploads and credential-store survival remain open. | No accepted APK/cloud pair established. |
 | GCP Papercusp-hosted acceptance target | Customer workspace `ws-3daf37098c8096b5d9e0ac72` → host `host-3daf37098c8096b5d9e0ac72` | Runtime owner's canonical provider-delegation read classifies it as `papercusp-hosted`, not BYOC. Evidence: `coord-send-1a18b99e1b09f709e8f8f67cd704c6fe876c59b2eeb8b966e21713bc43994744`. | Hosted acceptance pending; cannot satisfy BYOC acceptance. |
 | GCP BYOC acceptance target | No active genuine BYOC target established in the supplied inventory | Previously verified BYOC customer rows are deleted. Existing project delegation is preparatory authority, not a provisioned workspace or a phone journey. | Pending maintained provisioning and acceptance. |
 | AWS / Azure cloud images | No artifact + Android journey established by this P-015 evidence | Provider renderers existing in source do not prove this mobile contract on those providers. | Not covered by this acceptance record. |
 
-Artifact source files read: `/home/marsh-office/.papercusp/wh-release-r63/{release-cut,build-result}.json`
-and `/home/marsh-office/.papercusp/wh-release-r65/release-cut.json`. The absence observations for
-r65/r66 are bounded to those local cut directories, not a census of remote publication.
+Artifact source files read: `~/.papercusp/wh-release-r63/{release-cut,build-result}.json`
+and `~/.papercusp/wh-release-r65/release-cut.json`. The absence observations for
+r65/r66/r67 are bounded to those local cut directories, not a census of remote publication.
 
 The supported-release policy for this record is **exact candidate pairs**: record the APK version,
 versionCode, source and hash; the portal loaded source; and the workspace runtime version, source and
@@ -119,6 +121,34 @@ The focused file-lock read found no active locks on these four dirty paths, and 
 content-error list was empty. The routine reports an active local-sync fire with recent progress;
 there is no evidence here that a restart or lock override would be safe or useful.
 
+### Exact committed-source proof — 2026-10-07 07:18Z
+
+This observation supersedes the unresolved pin and dirty-cohort statements above. Independent
+`git show` SHA-256 reads at `fce506df65dfd97fec4704f5c58f87da34306d18` match every entry in the
+five-file fingerprint table. The maintained runner completed with exit 0:
+
+```bash
+npm run lint:as-committed -- test:file --any --ref=fce506df65dfd97fec4704f5c58f87da34306d18 -- apps/operator/bin/hosted-handler.test.ts packages/operator-core/lib/workspace-host/hosted-device-relay.integration.test.ts packages/operator-core/lib/workspace-host/hosted-app-relay.test.ts packages/operator-core/lib/endpoint-route/hosted-workspace-session.test.ts
+```
+
+It materialized the commit and pinned submodules into its disposable checkout, then ran the
+committed command and runtime exports. Log `/tmp/android-d021-fce506df-pinned.log` records
+24 handler, 14 assembled relay, 43 broker and 23 relay-policy assertions passing (104 total),
+zero skips, and `TEST_FILE_RESULT requested=4 executed=4 matched=4 status=passed
+head=fce506df65 uncommittedPaths=0/4 provenance=stamped`. The authoritative `testing:runs`
+read confirms clean, non-scratch, `papercusp` rows `20888566`, `20888572`, `20888574` and
+`20888575`, each at that full commit. All processes completed; the maintained runner cleaned
+its disposable checkout.
+
+The runtime owner received this exact server-ready source pin for the no-publish r66 cut.
+The 07:52Z artifact recheck found the cut record and a failed sidecar-build log, with no
+build-result file. At 08:56Z, r67's cut record exists at source
+`18e31538f81ba0ac5dca37b92d91e7396da4409c`; its five D-021 fingerprints match the table and
+the four clean hosted-suite ledger rows pass at that source, while its build-result remains absent.
+The source proof is not proof of a built/published runtime, loaded portal, accepted APK, or
+hosted/BYOC phone journey. EI-25301141794178113 covers the three hosting gates and their regression
+tests; WI-10006956/P-015 retains the broader native and live acceptance scope.
+
 P-015 also remains open for
 REFUSAL-KEEPS-PAIRING (real native credential store), OPERATE and OUTCOME (real no-LAN journeys).
 The live matrix must exercise QR and manual pairing; token storage, rotation and revocation;
@@ -126,6 +156,106 @@ endpoint discovery and reconnect; workspace/harness scope; sync; streaming chat;
 monitoring; voice including large upload; and push. Repeat the relevant native/security tests when
 their source cohort changes, then bind the exact final APK and runtime evidence. No shipment is
 claimed here.
+
+### Runtime frontier and native prerequisite — 2026-10-07 09:59Z
+
+The runtime owner's latest `WI-10007013` checkpoint supersedes the earlier r67 pending-build
+statement: r67 failed its Sharp security verdict, and r68 is now being built privately from the
+patched source above. Publication, installation and cloud acceptance remain separate steps.
+The immutable r68 candidate has the same five D-021 source/test fingerprints; this comparison
+alone does not measure its imported-source graph or prove a successful runtime artifact.
+
+The subsequent maintained as-committed check completed with exit 0 at 10:03Z, using the same
+four-suite command above with `--ref=9c6725e66689097f45e45b5d5ec962c569759582`.
+Log `/tmp/android-d021-r68-pinned.log` records 24 handler, 14 assembled relay and 66 broker/policy
+assertions passing, zero skips, and `TEST_FILE_RESULT requested=4 executed=4 matched=4
+status=passed head=9c6725e666 uncommittedPaths=0/4 provenance=stamped`. Independent ledger reads
+confirm `20892010`, `20892012`, `20892013` and `20892014` are clean, non-scratch, local
+`papercusp` passes at the full candidate commit. This establishes exact server source proof;
+it does not establish a runtime security verdict, publication, loaded cloud artifact or phone journey.
+
+Native `WI-10006994` still sequences client integration after `WI-10004768` (P-002). The P-002
+owner has published and registered canonical native evidence, repaired Cargo case-identity
+handling, and is now repairing a legacy operational receipt through owned
+`EI-25313647126738805`. These are evidence-pipeline prerequisites, not the outstanding device
+key persistence, pairing request, transport/UniFFI, chunked upload or credential-store acceptance.
+The parent retains those checks and the actual hosted/genuine BYOC phone journeys.
+
+### Private artifact ready — 2026-10-07 11:03Z
+
+The completed local `~/.papercusp/wh-release-r68/build-result.json` supersedes
+the earlier missing-result observation. Its source, version, operation and bundle digest match
+`publication/manifest.json`; the manifest SHA-256 is
+`45fb20b3276b1ebb4c5fdcd3c0ec29f595d3c3b67d363e3ed1fcb5d1ddb8858e`.
+The manifest trust report has `trusted:true` and no failures. The runtime owner independently
+verified all seven receipt-bound file hashes, minisign, final security and privacy at 10:53Z.
+This parent consumed those saved proofs and checked the receipt/manifest identities; it did not
+repeat the producer's full artifact verification or rebuild the bundle.
+
+The cut was private (`--no-publish`), and the owner records `published:false`. The local manifest's
+active lifecycle, publication timestamp and artifact URLs are prepared metadata, not evidence
+of a remote upload or an installed workspace. Publication/adoption remain the existing
+runtime/leader lane. No accepted Android/cloud pair or public support claim follows from this build.
+
+P-002's 10:36Z checkpoint now records passing execution integrity, falsifiability, layer and risk
+checks, with only fixture freshness/calibration unresolved. Native consumer integration remains
+ordered after P-002. That dependency and the real hosted/genuine BYOC phone journeys still block
+P-015 acceptance; the fixture owner and native owner retain their lanes.
+
+### Hosted VM adopted; portal artifact still old — 2026-10-07 12:06Z
+
+This parent consumed runtime `WI-10007013` checkpoint `a3ddc0566158`; its saved producer
+observations supersede the earlier publication/adoption-pending statements. At 11:27Z the
+producer recorded `/tmp/wh-r68-publish.log` with `PUBLISH_VERDICT=PASS`, all 63 multipart
+parts finalized, the same manifest digest, public HEAD 200 and public SBOM bytes passing.
+The maintained upgrade receipt is `/tmp/avi-r68-upgrade-admission.json`, operation prefix
+`avi-test-upgrade-r68-20261007-1`. At 11:59Z initialization, desktop pack and connector all
+succeeded. The producer recorded operator HTTP registry 200 for
+`ws-3daf37098c8096b5d9e0ac72`, QR mint 200 with the expected cloud base URL and a 32-byte
+Noise key, and maintained pair-payload evidence `/tmp/avi-r68-p016-evidence.jsonl`.
+This parent read the saved evidence; it did not repeat publication, submit another upgrade,
+or independently run the producer's live probes.
+
+The same producer measured public and local `:3880` sealed WebSocket upgrades both refusing
+with HTTP 403 `sealed_byoc_required`. Loaded `dist-hosted-control-plane/serve.mjs` contains
+that old BYOC-only branch, while the D-021 source supports both hosting classes and emits
+`sealed_hosting_required`. Portal artifact adoption and the existing sealed probe remain
+in the runtime/portal lane; the producer requested action from the iPhone fleet leader in
+`coord-send-45d490c065de50f1ad364b98e18d8e33c8b9b62db6f5f3c9248cb5fa4783bf59`.
+The hosted VM/QR checks do not establish a successful sealed request, an Android credential
+journey or genuine BYOC support.
+
+Native `WI-10006994` checkpoint `43a655905be3` at 11:39Z still retains consumer integration,
+chunked uploads and credential persistence after P-002. The Android leader reaffirmed D-018's
+ordering at 11:08Z. P-002's saved frontier still needs the fixture producer's readiness and
+calibration; no native consumer implementation or phone acceptance is inferred from these
+runtime checks. P-015 remains open.
+
+### Public hosted sealed transport passes — 2026-10-07 12:28Z
+
+Runtime owner `WI-10007013` reports portal adoption with loaded PID `3589893`, the updated
+`sealed_hosting_required` branch and health 200. Its full producer message is
+`coord-send-60cc2dc17a1a5c69f0360e0c913ea386f18488d018ba9f06a49ed1d22fbc2b24`.
+This supersedes the earlier BYOC-only portal refusal for the hosted acceptance target. It does
+not independently bind the loaded portal bundle to a full source commit or digest.
+
+The producer's fresh QR advertises the public workspace URL and a 32-byte Noise key. Saved
+`/tmp/avi-r68-sealed-pair.log` records `NOISE_HANDSHAKE PASS`, `PAIR_STATUS 200` and the required
+reconnect. `/tmp/avi-r68-sealed-probe.log` records `NOISE_HANDSHAKE PASS`,
+`SEALED_DEVICE_HTTP 200 workspaceMatch true` and `CLEANUP_DELETE_STATUS 200`. The producer
+reports reconnecting with the same registered key before the sealed
+`GET /api/device/workspaces`. This parent read those saved logs and the full message; it did
+not launch another probe. The initial attempt used an unbound pairing channel for a JWT
+request and received 401. The subsequent canonical `WI-10007013` terminal receipt records
+both test devices revoked, including the first orphan through remote-access/revoke HTTP 200.
+The item is `done` with completion authority `committed`; its operational close adds no
+tracked source changes. Saved cleanup evidence is `/tmp/avi-r68-device-cleanup-result.log`.
+
+This establishes a public hosted transport probe using a Node client, not an Android phone
+journey. Native `WI-10006994` checkpoint `08a8b11f5ab4` at 12:28Z still keeps key persistence,
+`noisePublicKey`, QR pinning, transport/UniFFI, D-020 uploads and credential retention after
+P-002. P-015 remains open for the exact APK/runtime pair, real credential-store behavior,
+large native upload, the complete hosted journey and a genuine BYOC no-LAN journey.
 
 ## Historical discovery — 2026-10-06
 
