@@ -820,6 +820,52 @@ describe('EI-10870 — the ORPHAN-AWAIT guard (a key nothing emits can only ever
     expect(out.await_id).toBe(99);
   });
 
+  it('keeps a catalog probe failure distinct from confirmed absence in the pending wait brief', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(readInstalledUnitEvents).mockRejectedValueOnce(new Error('catalog read failed'));
+    vi.mocked(registerAwait).mockResolvedValueOnce({
+      id: 99,
+      workspaceId: 'ws-x',
+      subscriberId: 'su-awaiter',
+      eventKey: 'release:green:papercusp',
+      policy: 'wake',
+      note: null,
+      wakeHandle: { kind: 'adv-session', advSessionId: 1, agent: 'claude', sessionId: 's', ompThreadId: null, cwd: '/r', pid: 1 },
+      timeoutBehavior: 'wake',
+      expiresTs: '2030-01-01T00:00:00.000Z',
+      createdAt: '2026-09-22T00:00:00.000Z',
+      firedAt: null,
+      firedReason: null,
+      cancelledAt: null,
+      cancelReason: null,
+      once: true,
+      minSleepSec: null,
+      urgency: false,
+      payloadFilter: null,
+      scopeKind: null,
+      scopeRef: null,
+    } as AwaitRow);
+
+    const out = await call({ event: 'release:green:papercusp' });
+
+    expect(out.ok).toBe(true);
+    expect(out.await_id).toBe(99);
+    expect(out.unknown_event_key).toBeUndefined();
+    expect(out.unknown_event_key_advice).toBeUndefined();
+    expect(out.operational_brief.owner).toEqual({
+      status: 'unknown',
+      reason: 'events:catalog probe error while this await was registered; emitter presence and owner are unknown',
+    });
+    expect(out.operational_brief.blockers.value).toContain('events:catalog probe error; emitter presence is unverified');
+    expect(out.operational_brief.nextAction.value).toContain(
+      'do not treat this as proof that the key has no emitter',
+    );
+    expect(out.operational_brief.nextAction.value).not.toMatch(/^Nothing is known to fire/);
+    expect(registerAwait).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('events-await:orphanKey'));
+    warn.mockRestore();
+  });
+
   it('stays silent on a PATTERN await (a glob is not a key and has no single emitter)', async () => {
     const out = await call({ event: 'work-item:done:*' });
     expect(out.pattern).toBe(true);

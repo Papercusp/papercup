@@ -648,6 +648,7 @@ export default defineTool({
     let unknownEventKey = false;
     // P-010: the catalogued emitter that owns this key, for the await-wait brief's owner.
     let catalogEmitter: string | null = null;
+    let catalogProbeFailure: 'timeout' | 'aborted' | 'error' | null = null;
     if (!patternAwait && !announcedGate) {
       const harnessRaw = (ctx as { harnessSlug?: unknown }).harnessSlug;
       const probe = await withBoundedTimeout(
@@ -659,8 +660,12 @@ export default defineTool({
         })(),
         { fallback: null, timeoutMs: 1_500, label: 'events-await:orphanKey' },
       );
-      // A null probe (timeout / discovery failure) ⇒ we cannot be sure ⇒ say nothing.
-      if (probe.value) {
+      // A degraded probe is not evidence that the key has no catalogued emitter.
+      // Keep the failure class for the wait brief instead of turning uncertainty
+      // into a confident orphan verdict.
+      if (probe.degraded || probe.value === null) {
+        catalogProbeFailure = probe.reason ?? 'error';
+      } else {
         unknownEventKey = !keyMatchesCatalog(eventKey, probe.value);
         catalogEmitter = probe.value.find((entry) => familyAdmitsKey(entry, eventKey))?.emitter ?? null;
       }
@@ -1543,6 +1548,7 @@ export default defineTool({
           }
         : null,
       catalogEmitter,
+      catalogProbeFailure,
       emitterHint: patternAwait
         ? 'pattern'
         : declaredAnnouncement

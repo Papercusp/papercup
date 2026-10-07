@@ -89,6 +89,8 @@ export interface ProjectAwaitWaitBriefInput {
   announcement?: AwaitWaitAnnouncement | null;
   /** The catalogued emitter for the key's family, when the key matches one. */
   catalogEmitter?: string | null;
+  /** Why the catalog probe was unavailable; absence is only asserted after a successful probe. */
+  catalogProbeFailure?: 'timeout' | 'aborted' | 'error' | null;
   /** Why the emitter is unnameable when it is not an orphan (see AwaitEmitterHint). */
   emitterHint?: AwaitEmitterHint | null;
   /** The registration found no known emitter for the key (it may only ever time out). */
@@ -210,6 +212,11 @@ function awaitOwner(input: ProjectAwaitWaitBriefInput): BriefField<string | null
     default:
       break;
   }
+  if (input.catalogProbeFailure) {
+    return unknown(
+      `events:catalog probe ${input.catalogProbeFailure} while this await was registered; emitter presence and owner are unknown`,
+    );
+  }
   return unknown(
     'no agent declared this key and it matches no catalogued emitter family; nobody is known to fire it',
   );
@@ -222,6 +229,9 @@ function awaitBlockers(input: ProjectAwaitWaitBriefInput): string[] {
   if (a && a.declaredByLiveness === 'ended' && (a.liveSuccessorIds?.length ?? 0) === 0) {
     out.push(`the declarer ${a.announcedBy} has ended and no live successor carries the emit duty`);
   }
+  if (input.catalogProbeFailure) {
+    out.push(`events:catalog probe ${input.catalogProbeFailure}; emitter presence is unverified`);
+  }
   if (input.noKnownEmitter) out.push('no emitter is known to fire this exact key; it may only ever time out');
   return out;
 }
@@ -230,6 +240,15 @@ function awaitNextAction(input: ProjectAwaitWaitBriefInput, owner: BriefField<st
   const row = input.wakeAwait;
   const who = owner.status === 'known' && owner.value ? owner.value : 'its emitter';
   const byDeadline = row.expiresTs ? ` by ${row.expiresTs}` : '';
+  if (input.catalogProbeFailure) {
+    const probeNote =
+      `events:catalog probe ${input.catalogProbeFailure} while this await was registered, so emitter presence is unverified; ` +
+      'do not treat this as proof that the key has no emitter.';
+    if (row.timeoutBehavior === 'expire') {
+      return `${probeNote} If ${row.eventKey} has not fired${byDeadline} this await EXPIRES SILENTLY and nothing wakes you: keep another wake source (loop:arm) or re-register with on_timeout:'wake'.`;
+    }
+    return `${probeNote} Check events:catalog or the producer contract before canceling. END YOUR TURN. You are re-invoked when ${row.eventKey} fires, or with a timeout wake${byDeadline}. On a timeout wake, check that its emitter is progressing before re-arming.`;
+  }
   if (input.noKnownEmitter) {
     return `Nothing is known to fire ${row.eventKey}: confirm with the party that owns this completion that it will emit this EXACT key (events:catalog lists catalogued keys), or events:cancel { await_id: ${row.id} } and await the right key. Otherwise END YOUR TURN.`;
   }

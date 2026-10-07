@@ -226,6 +226,31 @@ describe('projectAwaitWaitOperationalBrief — a pending one-shot wake await', (
     expect(brief!.unknowns).toEqual(['owner']);
   });
 
+  it.each(['timeout', 'aborted', 'error'] as const)(
+    'a catalog probe %s is inconclusive, not a confirmed missing emitter',
+    (catalogProbeFailure) => {
+      const brief = projectAwaitWaitOperationalBrief({ wakeAwait: awaitRow, catalogProbeFailure, nowMs: NOW });
+      expect(brief!.owner).toEqual({
+        status: 'unknown',
+        reason: `events:catalog probe ${catalogProbeFailure} while this await was registered; emitter presence and owner are unknown`,
+      });
+      expect(brief!.blockers).toEqual({
+        status: 'known',
+        value: [
+          'waiting for release:green:papercusp to fire',
+          `events:catalog probe ${catalogProbeFailure}; emitter presence is unverified`,
+        ],
+        source: 'event_awaits',
+      });
+      expect(brief!.nextAction).toMatchObject({
+        status: 'known',
+        value: expect.stringContaining('do not treat this as proof that the key has no emitter'),
+      });
+      expect(brief!.nextAction.value).not.toMatch(/^Nothing is known to fire/);
+      expect(brief!.unknowns).toEqual(['owner']);
+    },
+  );
+
   it('emitter hints keep the owner gap truthful for pattern / uncatalogued / out-of-scope keys', () => {
     expect(projectAwaitWaitOperationalBrief({ wakeAwait: awaitRow, emitterHint: 'pattern', nowMs: NOW })!.owner).toEqual({
       status: 'unknown',
