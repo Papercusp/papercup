@@ -63,7 +63,7 @@ export default defineTool({
   name: 'computer:provision_desktop',
   profile: 'engineer',
   description:
-    'Start a sandboxed GUI desktop (isolated X server + openbox, never host :0) that capability:computer drives. Omit `pot` to start one for YOURSELF — you may run many, each with its own `name`; pass `pot` (Queen/operator) to equip a pot with its shared desktop. Optionally launches GUI apps. Idempotent per name. Tear down with computer:release_desktop.',
+    'Start a sandboxed GUI desktop (isolated X server + openbox, never host :0) that capability:computer drives. Omit `pot` to start one for YOURSELF — you may run many, each with its own `name`; an authorized pot manager may pass `pot` to equip a pot with its shared desktop. Optionally launches GUI apps. Idempotent per name. Tear down with computer:release_desktop.',
   guidance: {
     when: 'You need a GUI to work in — a browser, a desktop app. Start one per parallel task (`name` each, e.g. "checkout-flow"); pass `apps` to pre-launch programs.',
     notWhen:
@@ -113,7 +113,7 @@ export default defineTool({
         return text({ ok: false, error: 'name_with_pot', reason: 'a pot has ONE shared desktop; `name` is for your own desktops (omit `pot`).' }, true);
       }
       if (!caller.mayManagePots) {
-        return text({ ok: false, error: 'pot_desktop_not_permitted', reason: "equipping a pot's shared desktop is a placement act (Queen/operator roles). Omit `pot` to start a desktop for yourself." }, true);
+        return text({ ok: false, error: 'pot_desktop_not_permitted', reason: "equipping a pot's shared desktop requires pot-management authority. Omit `pot` to start a desktop for yourself." }, true);
       }
       const target: DesktopLeaseTarget = { scope: 'pot', pot: args.pot };
       const already = leasedDesktop(target);

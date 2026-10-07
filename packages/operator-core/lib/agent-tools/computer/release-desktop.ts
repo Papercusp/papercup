@@ -43,7 +43,7 @@ export default defineTool({
   name: 'computer:release_desktop',
   profile: 'engineer',
   description:
-    "Tear down a desktop (kill its X server + apps, free the display). Pass `desktop` (an id from computer:list_desktops, or the name of one of YOUR desktops) or `pot` (Queen/operator: a pot's shared desktop). Idempotent — a no-op when nothing is live.",
+    "Tear down a desktop (kill its X server + apps, free the display). Pass `desktop` (an id from computer:list_desktops, or the name of one of YOUR desktops); an authorized pot manager may pass `pot` for a pot's shared desktop. Idempotent — a no-op when nothing is live.",
   guidance: {
     when: 'You are done with a desktop — free it so the machine has room for others. Also good hygiene after a demo.',
     notWhen: 'Tearing down a whole pot — pot:dissolve already releases its desktop.',
@@ -65,7 +65,7 @@ export default defineTool({
         .max(120)
         .optional()
         .describe('The desktop to release: its desktopSessionId, or the name of one of your own desktops.'),
-      pot: entityRef('pot', { soft: true, max: 120, describe: "Release this pot's shared desktop (Queen/operator)." }).optional(),
+      pot: entityRef('pot', { soft: true, max: 120, describe: "Release this pot's shared desktop; requires pot-management authority." }).optional(),
     })
     .strict(),
   async handler(args, ctx) {

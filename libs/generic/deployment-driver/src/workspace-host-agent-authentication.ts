@@ -629,8 +629,10 @@ const PROBE_FAILURE_CLASSIFIERS: readonly {
   // not parse; an expired/foreign access token lands here too). Distinct from quota, which
   // requires an ACCEPTED identity to be reported at all.
   { pattern: /\b401 unauthorized\b/i, reason: "credential-unauthorized" },
-  // Claude's weekly exhaustion names the window instead of saying "usage" (P-318).
-  { pattern: /\bhit your (?:usage|weekly) limit\b/i, reason: "provider-usage-limit" },
+  // Claude's exhaustion names the window instead of saying "usage": weekly (P-318) and the 5-hour
+  // session window, measured 2026-10-07 (WI-10007043) as `You've hit your session limit · resets
+  // 11pm (America/New_York)` on stdout with exit 1, which was reported as a bare non-zero-exit.
+  { pattern: /\bhit your (?:usage|weekly|session) limit\b/i, reason: "provider-usage-limit" },
   { pattern: /\busage limit reached\b/i, reason: "provider-usage-limit" },
   { pattern: /\bquota exceeded\b/i, reason: "provider-usage-limit" },
   { pattern: /\binsufficient_quota\b/i, reason: "provider-usage-limit" },

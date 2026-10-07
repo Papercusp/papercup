@@ -69,6 +69,12 @@ vi.mock('./deployment-position', () => ({
   deploymentPositionForEvidence: (...a: unknown[]) => deploymentPositionForEvidence(...a),
 }));
 
+// P-012 (D-049): the corroboration block's reader. Default: nothing corroborates the item.
+const readCorroborationSummary = vi.fn(async (..._a: unknown[]): Promise<unknown> => null);
+vi.mock('../../harness/improvements/corroboration', () => ({
+  readCorroborationSummary: (...a: unknown[]) => readCorroborationSummary(...a),
+}));
+
 import get, { workItemsGetSourceReadOptions } from './get';
 import { shapeWorkItemsGet } from './get-shape';
 import {
@@ -1031,5 +1037,41 @@ describe('work_items:get — checkpointContentHash (EI-21379898054596220)', () =
     // hash, and its null must stay distinguishable from "never checkpointed" above.
     expect(r.checkpointContentHash).toBeNull();
     expect(r.checkpointReadFailed).toBe(true);
+  });
+});
+
+describe('P-012 the corroboration count is shown on the item (D-049)', () => {
+  const NOTE = 'Orders verification work only. It is never a verification receipt: a bug still needs a recorded reproduction receipt before it is claimable.';
+
+  it('shows distinct reporters, filings and the not-a-receipt note, read for this item in its harness', async () => {
+    getWorkItem.mockResolvedValue({ id: 'WI-corr', harness: 'papercusp', title: 't', payload: { reporterKinds: ['agent'] } });
+    getWorkItemThreadWindow.mockResolvedValue({ total: 0, posts: [], topics: [] });
+    readCorroborationSummary.mockResolvedValueOnce({
+      reporters: 3, filings: 7, firstFiledAt: '2026-10-01T00:00:00.000Z', lastFiledAt: '2026-10-02T00:00:00.000Z',
+      reporterKinds: ['agent'], note: NOTE,
+    });
+    const r = (await one({ id: 'WI-corr' })) as Record<string, unknown>;
+    expect(r.corroboration).toEqual({
+      reporters: 3, filings: 7, firstFiledAt: '2026-10-01T00:00:00.000Z', lastFiledAt: '2026-10-02T00:00:00.000Z',
+      reporterKinds: ['agent'], note: NOTE,
+    });
+    expect(readCorroborationSummary).toHaveBeenLastCalledWith(
+      expect.objectContaining({ id: 'WI-corr', harness: 'papercusp', payload: { reporterKinds: ['agent'] } }),
+    );
+  });
+
+  it('omits the block when nothing corroborates the item, and keeps the item when the ledger read fails', async () => {
+    getWorkItem.mockResolvedValue({ id: 'WI-corr-none', harness: 'papercusp', title: 't' });
+    getWorkItemThreadWindow.mockResolvedValue({ total: 0, posts: [], topics: [] });
+    readCorroborationSummary.mockResolvedValueOnce(null);
+    const quiet = (await one({ id: 'WI-corr-none' })) as Record<string, unknown>;
+    expect(quiet.ok).toBe(true);
+    expect(quiet).not.toHaveProperty('corroboration');
+
+    readCorroborationSummary.mockRejectedValueOnce(new Error('ledger read failed'));
+    const failed = (await one({ id: 'WI-corr-none' })) as Record<string, unknown>;
+    expect(failed.ok).toBe(true);
+    expect((failed.workItem as { id?: string }).id).toBe('WI-corr-none');
+    expect(failed).not.toHaveProperty('corroboration');
   });
 });

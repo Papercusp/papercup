@@ -35,6 +35,7 @@ const {
   aggregateIssueClaimExclusions,
   listIssueClaimableRows,
   readIssueClaimability,
+  sampleIssueClaimExclusions,
   readClaimSpecDelta,
   issueClaimCandidateSubquery,
   compileFilter,
@@ -411,6 +412,40 @@ describe('EI-18802055183255275 — readIssueClaimability (materialized temp-tabl
     const out = await readIssueClaimability(undefined, { harness: H }, { limit: 20, sampleLimit: 5 });
     expect(out.breakdown.excluded).not.toHaveProperty('legacyNeedsHuman');
     expect(out.sample).not.toHaveProperty('legacyNeedsHuman');
+  });
+
+  it('routes only pending peer reviews from the queue-control sample (EI-25275046747164289)', async () => {
+    await seedIssue('WI-QC-REVIEW-PENDING', {
+      agentReview: { status: 'pending', submittedBy: 'su-author', ledgerIdeaId: 'idea-pending', round: 1 },
+    });
+    await seedIssue('WI-QC-REVIEW-REVISION', {
+      agentReview: {
+        status: 'revision-requested',
+        submittedBy: 'su-author',
+        ledgerIdeaId: 'idea-revision',
+        round: 1,
+      },
+    });
+
+    const out = await readIssueClaimability(undefined, { harness: H }, {
+      limit: 20,
+      sampleLimit: 5,
+      breakdownOnly: true,
+    });
+
+    expect(out.breakdown.queueControl).toMatchObject({
+      pendingAgentReview: 1,
+      revisionRequestedAgentReview: 1,
+    });
+    expect(out.sample?.queueControl.agentReview).toEqual([
+      {
+        id: 'WI-QC-REVIEW-PENDING',
+        status: 'pending',
+        submittedBy: 'su-author',
+        ledgerIdeaId: 'idea-pending',
+        round: 1,
+      },
+    ]);
   });
 });
 

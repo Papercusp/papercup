@@ -879,6 +879,8 @@ describe("provider-cause classification (WI-2144034)", () => {
     for (const text of [
       QUOTA_STDERR,
       "You've hit your weekly limit · resets Sep 24, 7am (America/New_York)",
+      // Measured 2026-10-07 (WI-10007043): claude 2.1.289's 5-hour window, on stdout with exit 1.
+      "You've hit your session limit · resets 11pm (America/New_York)",
       "usage limit reached for this account",
       "Quota exceeded for model",
       "error code: insufficient_quota",
@@ -905,6 +907,7 @@ describe("provider-cause classification (WI-2144034)", () => {
       "403 Forbidden: invalid api key",
       "error: connection refused",
       "The weekly limit setting is unavailable",
+      "Session limit settings are unavailable",
       "Logged in using ChatGPT",
       "",
     ]) {

@@ -33,6 +33,7 @@ import type postgres from 'postgres';
 import type {
   HostFetch,
   ProviderRecord,
+  ProviderMembershipSnapshot,
   ProviderSyncError,
   ProviderSyncPage,
 } from '@papercusp/plugin-sdk';
@@ -58,7 +59,11 @@ import {
   type ProviderWakeResult,
 } from '@papercusp/plugin-sdk';
 import { createPersonalVaultExternalSinkForSource, VAULT_DATATYPES } from '../personal-vault/live-sink';
-import { createDatatypeDestinationSinks } from '../data-sources/datatype-destination-sink';
+import {
+  applyDataSourceMembership,
+  createDatatypeDestinationSinks,
+  type DataSourceMembershipOutcome,
+} from '../data-sources/datatype-destination-sink';
 import { createRelationshipGraphSink } from '../relationship-graph/graph-sink';
 import { createInteractionParticipantSink, isInteractionDatatype } from '../relationship-graph/participants';
 import { graphDefaultHarness, isGraphEntityDatatype } from '../relationship-graph/resolver';
@@ -114,6 +119,8 @@ export interface ConnectorSourceOutcome {
   cursorResetReason?: string;
   /** True when this pass adopted the source's pre-provider cursor state (D-020). */
   adopted?: boolean;
+  /** What the last membership snapshot this pass carried did to the source's permission list (D-015.4). */
+  membership?: DataSourceMembershipOutcome;
   hasMore: boolean;
   error?: string;
   /** The afterSourceSynced hook failed (the pass itself succeeded). */
@@ -143,6 +150,12 @@ export interface ConnectorSyncDeps {
   ingest?: (sql: postgres.Sql, input: IngestExternalTriggerInput) => Promise<IngestExternalTriggerResult>;
   /** Extra sinks for one record of `datatype` from `source`. */
   sinksFor?: (sql: postgres.Sql, source: ConnectorSourceRow, datatype: string) => Promise<ExternalTriggerSink[]>;
+  /** Applies a page's membership snapshot (D-015.4). Defaults to the organization permission-list writer. */
+  applyMembership?: (
+    sql: postgres.Sql,
+    source: ConnectorSourceRow,
+    input: { identityProvider: string; members: ReadonlyArray<{ providerUserId: string }> },
+  ) => Promise<DataSourceMembershipOutcome>;
   /** Parameters of the provider's configured service credentials (D-018.1). */
   servicesFor?: (provider: RegisteredProvider) => Promise<ProviderServices | undefined>;
   leaseOwner?: string;
@@ -278,6 +291,14 @@ function asAdoptResult(value: unknown, provider: RegisteredProvider): ProviderAd
   return { cursor: candidate.cursor, backfillComplete: candidate.backfillComplete };
 }
 
+function defaultApplyMembership(
+  sql: postgres.Sql,
+  source: ConnectorSourceRow,
+  input: { identityProvider: string; members: ReadonlyArray<{ providerUserId: string }> },
+): Promise<DataSourceMembershipOutcome> {
+  return applyDataSourceMembership(sql, { workspaceId: source.workspaceId, sourceId: source.id, ...input });
+}
+
 function assertPage(page: unknown, provider: RegisteredProvider): asserts page is ProviderSyncPage {
   const p = page as Partial<ProviderSyncPage> | null;
   if (
@@ -295,6 +316,20 @@ function assertPage(page: unknown, provider: RegisteredProvider): asserts page i
         kind: 'transient',
         message: `provider ${provider.descriptor.id} returned a record with an undeclared datatype or empty native id`,
       });
+    }
+  }
+  if (p.membership !== undefined) {
+    if (!provider.descriptor.membership) {
+      throw new ProviderSyncFailure({
+        kind: 'transient',
+        message: `provider ${provider.descriptor.id} returned a membership snapshot its descriptor does not declare`,
+      });
+    }
+    const members = (p.membership as Partial<ProviderMembershipSnapshot> | null)?.members;
+    const wellFormed = Array.isArray(members) && members.every((member) =>
+      !!member && typeof member.providerUserId === 'string' && member.providerUserId.trim() !== '');
+    if (!wellFormed) {
+      throw new ProviderSyncFailure({ kind: 'transient', message: `provider ${provider.descriptor.id} returned a malformed membership snapshot` });
     }
   }
 }
@@ -547,6 +582,7 @@ async function syncSource(
     hostFetch: HostFetch;
     ingest: NonNullable<ConnectorSyncDeps['ingest']>;
     sinksFor: NonNullable<ConnectorSyncDeps['sinksFor']>;
+    applyMembership: NonNullable<ConnectorSyncDeps['applyMembership']>;
     owner: string;
     services?: ProviderServices;
   },
@@ -658,6 +694,15 @@ async function syncSource(
         else if (result.deliveries.length > 0 && result.deliveries.every((d) => d.deduped)) outcome.deduped += 1;
         else outcome.admitted += 1;
       }
+      // A membership snapshot lands before the cursor that covers it commits; a full replace
+      // is idempotent, so a replayed page converges (D-015.4).
+      const declaredMembership = provider.descriptor.membership;
+      if (page.membership && declaredMembership) {
+        outcome.membership = await deps.applyMembership(sql, working, {
+          identityProvider: declaredMembership.identityProvider,
+          members: page.membership.members,
+        });
+      }
       const backfillStatus = mode === 'backfill' ? (page.hasMore ? 'running' : 'complete') : 'complete';
       if (!(await commitCursor(sql, working, deps.owner, opts.leaseSeconds, page.nextCursor, backfillStatus))) {
         return { ...outcome, outcome: 'leased-elsewhere' };
@@ -739,6 +784,7 @@ export async function runConnectorSync(
   const owner = deps.leaseOwner ?? defaultLeaseOwner();
   const ingest = deps.ingest ?? ((db, input) => ingestExternalTriggerEvent(db, input));
   const sinksFor = deps.sinksFor ?? defaultSinksFor;
+  const applyMembership = deps.applyMembership ?? defaultApplyMembership;
   const hostFetchFor = deps.hostFetchFor ?? defaultHostFetchFor;
   const sources = await listDueConnectorSources(sql, opts.workspaceId, [...byKind.keys()], opts.sourceIds);
   const servicesFor = deps.servicesFor ?? defaultServicesFor;
@@ -758,7 +804,7 @@ export async function runConnectorSync(
       servicesByProvider.set(provider.descriptor.id, await servicesFor(provider));
     }
     const services = servicesByProvider.get(provider.descriptor.id);
-    const outcome = await syncSource(sql, provider, source, resolved, { hostFetch, ingest, sinksFor, owner, services });
+    const outcome = await syncSource(sql, provider, source, resolved, { hostFetch, ingest, sinksFor, applyMembership, owner, services });
     if (outcome.outcome === 'synced') {
       try {
         await afterSourceSynced(sql, source);
