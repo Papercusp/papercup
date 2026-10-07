@@ -783,6 +783,22 @@ describe('the Instructions section [owner 2026-07-27]', () => {
     expect(INSTRUCTIONS_MD).not.toContain('Not ready');
   });
 
+  it('points problem reports at the desktop door, with preview and explicit consent (P-017)', () => {
+    const section = INSTRUCTIONS_MD.split("### Don't like something about Papercusp?")[1].split('### Use several AI accounts')[0];
+    expect(section).toContain('open the command palette and choose **Report a problem**');
+    expect(section).toContain('<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>');
+    expect(section).toContain('<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> on macOS');
+    expect(section).toContain('one sentence');
+    expect(section).toContain('**Review** to see exactly what will be sent');
+    expect(section).toContain('log lines are optional and off by default');
+    expect(section).toContain('nothing is sent until you choose **Send**');
+    expect(section.indexOf('**Report a problem**')).toBeLessThan(section.indexOf('Ask an agent to build it'));
+    expect(page).toContain('<strong>Report a problem</strong>');
+    expect(page).toContain('<strong>Review</strong>');
+    expect(page).toContain('<strong>Send</strong>');
+    expect(page).toContain('click <strong>Release</strong> to go back');
+  });
+
   it('opens external links in a new tab — losing this page means losing the secret URL', () => {
     // The page IS the release: navigate away mid-setup and the only way back is
     // a URL the tester has to go dig out of a message.
