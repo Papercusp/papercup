@@ -1535,7 +1535,7 @@ async function applyScopedSuperuserTransportClamp(
  *               Caller MUST reject (do NOT fall through to bearer).
  */
 type NativeSessionAuthFailureMetadata = {
-  carrier: 'header:x-papercusp-native-session' | 'query:native_session';
+  carrier: NonNullable<RequestOriginMetadata['nativeSession']>['carrier'];
   valueFingerprint: string;
   candidateAdvSessionId: number | null;
 };
@@ -1647,17 +1647,33 @@ export async function tryBuildSpawnContext(
     // The owner SID is inherited by child processes. Keep it as the coordination
     // identity (hooks and MCP calls must share lock ownership), but independently
     // verify the CLI's native incarnation before allowing it to act as that owner.
-    // Claude carries its session id in the URL; Codex supplies it dynamically in
-    // this header. No native id means a legacy/non-CLI caller and retains the
-    // established identity path.
+    // Codex supplies its current thread in each tool request's _meta. Its
+    // env_http_headers read the CLI process environment, which can still carry
+    // the launching parent's CODEX_SESSION_ID even though shell commands get
+    // the child's current id. Prefer the per-call claim, then verify it with
+    // the SAME classifier: metadata itself grants no authority. In particular,
+    // a nested thread must not borrow a matching inherited parent header.
+    // Header/query carriers remain for older clients and non-tool requests.
+    const requestMeta = (extra as { _meta?: Record<string, unknown> } | undefined)?._meta;
+    const hasNativeThread = requestMeta != null && Object.hasOwn(requestMeta, 'threadId');
+    const rawNativeThread = hasNativeThread ? requestMeta!.threadId : undefined;
+    if (hasNativeThread && (
+      typeof rawNativeThread !== 'string' ||
+      !/^[A-Za-z0-9._:-]{1,128}$/.test(rawNativeThread.trim())
+    )) {
+      return { kind: 'failed', reason: 'superuser_native_session_unverified' };
+    }
+    const nativeThread = typeof rawNativeThread === 'string' ? rawNativeThread.trim() : '';
     const nativeSessionHeader = (headers.get('x-papercusp-native-session') ?? '').trim();
     const nativeSessionQuery = (url.searchParams.get('native_session') ?? '').trim();
-    const nativeSessionId = nativeSessionHeader || nativeSessionQuery;
-    const nativeSessionCarrier: NativeSessionAuthFailureMetadata['carrier'] | null = nativeSessionHeader
-      ? 'header:x-papercusp-native-session'
-      : nativeSessionQuery
-        ? 'query:native_session'
-        : null;
+    const nativeSessionId = nativeThread || nativeSessionHeader || nativeSessionQuery;
+    const nativeSessionCarrier: NativeSessionAuthFailureMetadata['carrier'] | null = nativeThread
+      ? 'meta:threadId'
+      : nativeSessionHeader
+        ? 'header:x-papercusp-native-session'
+        : nativeSessionQuery
+          ? 'query:native_session'
+          : null;
     const nativeSessionFailure = (candidateAdvSessionId: number | null): NativeSessionAuthFailureMetadata | undefined => {
       if (!nativeSessionId || !nativeSessionCarrier) return undefined;
       return {
@@ -3259,7 +3275,7 @@ async function identityAdmittedListings(
     const name = nameOf(listing);
     return typeof name === 'string' ? [{ name, capabilities: lookupByMcpName(name)?.capabilities ?? [] }] : [];
   });
-  const surfaceCandidates = [...candidates];
+  const surfaceCandidates: Array<{ name: string; capabilities: readonly string[] }> = [...candidates];
   const acceptedOperationListings = new Map<string, ReturnType<typeof listMcpProjections>[number]>();
   try {
     const surfaceModule = await import('../../../capability-envelope/identity-tool-surface');
@@ -4746,13 +4762,16 @@ export function registerMcpHost(server: McpServer): void {
                   // failed to write the overflow anywhere, so those bytes are simply GONE —
                   // strictly worse than an unread spill, and previously unstamped.
                   spillFailed?: boolean;
+                  spillError?: string | null;
+                  spillErrorCode?: string | null;
                   originalChars?: number;
                   originalBytes?: number;
                   reason?: string;
                   aggregate?: { exceeded?: boolean };
                 }
               | undefined;
-            if (doorMeta?.truncated && (doorMeta.spillUri || isPreferredDoor(toolName))) {
+            if (doorMeta?.truncated &&
+              (doorMeta.spillUri || doorMeta.spillFailed === true || isPreferredDoor(toolName))) {
               const originalBytes = doorMeta.originalBytes ?? doorMeta.originalChars ?? 0;
               void backfillResultDoorOutputRef({
                 workspaceId: dispatchSpawnCtx.workspaceId,
@@ -4765,7 +4784,7 @@ export function registerMcpHost(server: McpServer): void {
                 // orchestrate:run call could spill real bytes and record NO telemetry for them —
                 // the rollout gates then graded a default-on orchestration suite on code:run
                 // traffic alone. Widened to every preferred door via the one shared predicate.
-                ...(isPreferredDoor(toolName)
+                ...(doorMeta.spillFailed === true || isPreferredDoor(toolName)
                   ? {
                       metadataJson: {
                         returnedContextBytes: measureResultContextBytes(result),
@@ -4787,6 +4806,8 @@ export function registerMcpHost(server: McpServer): void {
                         // on the healthy path is indistinguishable from one never measured,
                         // which is how a rollback trigger silently reads as "no breaches".
                         spillFailed: doorMeta.spillFailed === true,
+                        spillError: doorMeta.spillError ?? null,
+                        spillErrorCode: doorMeta.spillErrorCode ?? null,
                         resultDoorReason: doorMeta.reason ?? 'per-result-budget-exceeded',
                         aggregateOutputEscape:
                           doorMeta.reason === 'aggregate-output-budget-exceeded' ||

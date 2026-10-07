@@ -158,12 +158,22 @@ describe('backfillResultDoorOutputRef (EI-19389431406847252)', () => {
         returnedContextBytes: 600,
         spilledBytes: 0,
         aggregateOutputEscape: true,
+        spillFailed: true,
+        spillError: 'scratch reservation exceeds workspace quota',
+        spillErrorCode: 'SCRATCH_QUOTA_EXCEEDED',
       },
     });
     expect(unsafeCalls[1].params.slice(0, 3)).toEqual([
       null,
       null,
-      JSON.stringify({ returnedContextBytes: 600, spilledBytes: 0, aggregateOutputEscape: true }),
+      JSON.stringify({
+        returnedContextBytes: 600,
+        spilledBytes: 0,
+        aggregateOutputEscape: true,
+        spillFailed: true,
+        spillError: 'scratch reservation exceeds workspace quota',
+        spillErrorCode: 'SCRATCH_QUOTA_EXCEEDED',
+      }),
     ]);
   });
 
@@ -242,6 +252,14 @@ describe('WI-40720 gap 3 — the post-door backfill call site is door-general, n
     expect(handlerSource).toContain('spillFailed?: boolean;');
     expect(handlerSource).toContain('spillFailed: doorMeta.spillFailed === true');
     // The negative half of the guard: a conditional stamp is the specific regression.
-    expect(handlerSource).not.toContain('...(doorMeta.spillFailed');
+    expect(handlerSource).not.toContain('...(doorMeta.spillFailed === true ? { spillFailed:');
+  });
+
+  it('backfills failed spills without a URI and preserves their descriptive error metadata', () => {
+    expect(handlerSource).toContain('spillError?: string | null;');
+    expect(handlerSource).toContain('spillErrorCode?: string | null;');
+    expect(handlerSource).toContain('doorMeta.spillFailed === true || isPreferredDoor(toolName)');
+    expect(handlerSource).toContain('spillError: doorMeta.spillError ?? null');
+    expect(handlerSource).toContain('spillErrorCode: doorMeta.spillErrorCode ?? null');
   });
 });
