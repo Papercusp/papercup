@@ -75,6 +75,20 @@ describe('shapeFleetAssignments preserves the scope disclosure', () => {
     expect(out.scope).toMatchObject({ fleet: 'drain-squad', selfScoped: false });
   });
 
+  it('preserves opt-in bounded-read timings through both payload tiers', () => {
+    const readTimings = [
+      { phase: 'assignments', startOffsetMs: 4, elapsedMs: 137, outcome: 'ok' },
+      { phase: 'coverage', startOffsetMs: 5, elapsedMs: 8000, outcome: 'timeout' },
+    ];
+    const payload = { ...selfScopedPayload(), readTimings, handlerElapsedMs: 8042 };
+
+    for (const tier of ['trimmed', 'standard'] as const) {
+      const out = shapeFleetAssignments(payload, tier) as Record<string, unknown>;
+      expect(out.readTimings).toEqual(readTimings);
+      expect(out.handlerElapsedMs).toBe(8042);
+    }
+  });
+
   it('omits scope rather than fabricating one when the source had none', () => {
     // Absence must stay absence: inventing `selfScoped:false` here would assert
     // peer coverage that was never measured — the same error, inverted.

@@ -141,6 +141,13 @@ const FLEET_ASSIGNMENTS_DEGRADED_LEG_ORDER = [
   'dag',
 ] as const;
 
+type FleetAssignmentsReadTiming = {
+  phase: string;
+  startOffsetMs: number;
+  elapsedMs: number;
+  outcome: 'ok' | 'timeout' | 'aborted' | 'error';
+};
+
 /** Bound the extra intent-reference lookup independently of roster size. */
 export const ABANDONED_INTENT_REF_CAP = 40;
 
@@ -1028,6 +1035,12 @@ export default defineTool({
       .describe(
         "Also return the plan's DAG-filter frontier (EI-6949): every item the fleet's dependency DAG selects, with per-item status (ready|blocked|claimed|wip|done|dropped) + blockedBy/unresolvedBlockers/claimedBy/files + counts. Reuses the SAME plan-item DAG state the spawner admits from, so `ready` = what would be placed next. Requires `plan`; off by default (the frontier is fleet-level, kept off the per-agent presence path). Opt-in so the default read stays lean.",
       ),
+    includeTimings: z
+      .boolean()
+      .optional()
+      .describe(
+        'Include end-to-end handler time plus each bounded subread phase duration and outcome. Diagnostic timing covers the helper call (including acquire/queue time); it does not claim to isolate PostgreSQL execution time.',
+      ),
   }),
   // context-trimming-tiers P-022: trimmed/standard sessions get the placement
   // decision core (summary + reclaimables + compact agent rows — see
@@ -1047,6 +1060,7 @@ export default defineTool({
     contract: { rows: 'agents', preserve: ['ok', 'summary'] },
   },
   async handler(args, ctx) {
+    const handlerStartedAt = Date.now();
     // Judge is an evidence-only reader. Unlike broad fleet observers, it can
     // inspect only its own assignment row; requiring the explicit `self`
     // selector prevents an omitted filter from widening to the whole fleet.
@@ -1116,15 +1130,23 @@ export default defineTool({
       fleetFilter = fleet.fleetSlug;
     }
     const degradedLegs = new Set<string>();
+    const readTimings: FleetAssignmentsReadTiming[] = [];
     const boundedRead = async <T>(
       label: string,
       work: () => Promise<T>,
       fallback: T,
     ): Promise<T> => {
+      const startedAt = Date.now();
       const result = await withBoundedTimeout(work, {
         fallback,
         timeoutMs: FLEET_ASSIGNMENTS_SUBREAD_TIMEOUT_MS,
         label: `fleet:assignments:${label}`,
+      });
+      readTimings.push({
+        phase: label,
+        startOffsetMs: startedAt - handlerStartedAt,
+        elapsedMs: result.elapsedMs,
+        outcome: result.degraded ? result.reason ?? 'error' : 'ok',
       });
       if (result.degraded) degradedLegs.add(label);
       return result.value;
@@ -1723,6 +1745,12 @@ export default defineTool({
         // from a genuine empty fleet.
         ...(degradedLegsOut.length > 0
           ? { degraded: true, degradedLegs: degradedLegsOut }
+          : {}),
+        ...(args.includeTimings
+          ? {
+              readTimings,
+              handlerElapsedMs: Date.now() - handlerStartedAt,
+            }
           : {}),
         ...(self ? { self } : {}),
         summary: summaryOut,

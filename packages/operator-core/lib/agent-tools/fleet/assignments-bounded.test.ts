@@ -29,7 +29,7 @@ vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
   defineTool: (definition: unknown) => definition,
   readJsonResult: () => undefined,
 }));
-vi.mock('../coordination/roles', () => ({ COORD_ROLES: ['operator'] }));
+vi.mock('../coordination/roles', () => ({ COORD_READ_ROLES: ['operator'] }));
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({
     ownerId: 'su-test',
@@ -168,6 +168,30 @@ afterEach(() => {
 });
 
 describe('fleet:assignments bounded handler reads', () => {
+  it('reports successful bounded-read phase timing when explicitly requested', async () => {
+    vi.useFakeTimers();
+    mocks.listAssignments.mockImplementation(
+      () => new Promise((resolve) => setTimeout(() => resolve([]), 137)),
+    );
+
+    const pending = fleetAssignmentsTool.handler({ includeTimings: true } as never, ctx) as Promise<{
+      data: {
+        readTimings?: Array<{ phase: string; startOffsetMs: number; elapsedMs: number; outcome: string }>;
+        handlerElapsedMs?: number;
+      };
+    }>;
+    await vi.advanceTimersByTimeAsync(137);
+    const result = await pending;
+
+    expect(result.data.readTimings).toContainEqual({
+      phase: 'assignments',
+      startOffsetMs: expect.any(Number),
+      elapsedMs: 137,
+      outcome: 'ok',
+    });
+    expect(result.data.handlerElapsedMs).toBeGreaterThanOrEqual(137);
+  });
+
   it('returns an explicitly degraded fallback when the assignment query never settles', async () => {
     vi.useFakeTimers();
     const warnings: string[] = [];
@@ -176,11 +200,12 @@ describe('fleet:assignments bounded handler reads', () => {
     });
     mocks.listAssignments.mockImplementation(() => new Promise<never>(() => {}));
 
-    const pending = fleetAssignmentsTool.handler({} as never, ctx) as Promise<{
+    const pending = fleetAssignmentsTool.handler({ includeTimings: true } as never, ctx) as Promise<{
       data: {
         degraded?: boolean;
         degradedLegs?: string[];
         summary: { agents: number };
+        readTimings?: Array<{ phase: string; startOffsetMs: number; elapsedMs: number; outcome: string }>;
       };
     }>;
 
@@ -195,6 +220,12 @@ describe('fleet:assignments bounded handler reads', () => {
       degraded: true,
       degradedLegs: ['assignments'],
       summary: { agents: 0 },
+    });
+    expect(result.data.readTimings).toContainEqual({
+      phase: 'assignments',
+      startOffsetMs: expect.any(Number),
+      elapsedMs: FLEET_ASSIGNMENTS_SUBREAD_TIMEOUT_MS,
+      outcome: 'timeout',
     });
     expect(warnings.join('\n')).toContain(
       `fleet:assignments:assignments exceeded ${FLEET_ASSIGNMENTS_SUBREAD_TIMEOUT_MS}ms`,
@@ -228,5 +259,6 @@ describe('fleet:assignments bounded handler reads', () => {
     const result = (await pending) as { data: { degraded?: boolean; summary: { agents: number } } };
     expect(result.data.summary.agents).toBe(1);
     expect(result.data.degraded).toBeUndefined();
+    expect(result.data).not.toHaveProperty('readTimings');
   });
 });

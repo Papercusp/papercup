@@ -182,6 +182,32 @@ export function shapeFleetAssignments(data: unknown, tier: AssignTier): unknown 
   }
 
   const coverage = Array.isArray(d.coverage) ? d.coverage : [];
+  const readTimings = Array.isArray(d.readTimings)
+    ? d.readTimings.slice(0, 64).flatMap((entry) => {
+        const timing = (entry ?? {}) as Record<string, unknown>;
+        const outcome = timing.outcome;
+        if (
+          typeof timing.phase !== 'string' ||
+          typeof timing.startOffsetMs !== 'number' ||
+          !Number.isFinite(timing.startOffsetMs) ||
+          typeof timing.elapsedMs !== 'number' ||
+          !Number.isFinite(timing.elapsedMs) ||
+          !['ok', 'timeout', 'aborted', 'error'].includes(String(outcome))
+        ) {
+          return [];
+        }
+        return [{
+          phase: timing.phase,
+          startOffsetMs: timing.startOffsetMs,
+          elapsedMs: timing.elapsedMs,
+          outcome,
+        }];
+      })
+    : null;
+  const handlerElapsedMs =
+    typeof d.handlerElapsedMs === 'number' && Number.isFinite(d.handlerElapsedMs)
+      ? d.handlerElapsedMs
+      : null;
   const coverageOut =
     tier === "standard"
       ? {
@@ -228,6 +254,8 @@ export function shapeFleetAssignments(data: unknown, tier: AssignTier): unknown 
     ...(typeof d.degradedLeg === "string" ? { degradedLeg: d.degradedLeg } : {}),
     ...(typeof d.degradedReason === "string" ? { degradedReason: d.degradedReason } : {}),
     ...(typeof d.retryable === "boolean" ? { retryable: d.retryable } : {}),
+    ...(readTimings ? { readTimings } : {}),
+    ...(handlerElapsedMs !== null ? { handlerElapsedMs } : {}),
     ...(d.self !== undefined ? { self: d.self } : {}),
     // EI-18763132241176410: `scope` QUALIFIES the counts contract below — it names the
     // population the query asked about ({ agent, plan, fleet, harness, selfScoped,
