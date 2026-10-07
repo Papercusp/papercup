@@ -64,6 +64,19 @@ function hasPopulatedMcpResult(result: McpCallResult): boolean {
   if (body.notFound === true || body.not_found === true || body.missing === true) return false;
   if (typeof body.status === 'string' && body.status.replace(/[-\s]/g, '_').toLowerCase() === 'not_found') return false;
   if (typeof body.code === 'string' && body.code.replace(/[-\s]/g, '_').toLowerCase() === 'not_found') return false;
+  // code:run wraps the script's returned summary with orchestration metadata instead of a
+  // conventional `results` field. Only recognize this distinctive successful envelope, then
+  // classify the summary itself so an empty script result still keeps the warning.
+  if (
+    body.ok === true &&
+    typeof body.dryRun === 'boolean' &&
+    typeof body.dispatchCount === 'number' && Number.isFinite(body.dispatchCount) && body.dispatchCount >= 0 &&
+    typeof body.intermediateBytes === 'number' && Number.isFinite(body.intermediateBytes) && body.intermediateBytes >= 0 &&
+    Array.isArray(body.logs) &&
+    'summary' in body
+  ) {
+    return hasPopulatedCodeRunSummary(body.summary);
+  }
   const completionReceipt = body.completionReceipt;
   if (
     body.ok === true &&
@@ -127,13 +140,14 @@ function hasPopulatedMcpResult(result: McpCallResult): boolean {
   let sawResultField = false;
   let hasPopulatedField = false;
   // Some successful tools return a single domain object or collection instead of a generic
-  // results/items envelope (for example improvements:capture -> `issue`, locks:acquire -> `held`,
+  // results/items envelope (for example facts:assert -> `fact`, improvements:capture -> `issue`,
+  // locks:acquire -> `held`,
   // loop:status -> `loop`, scheduler:get_claim_spec -> `spec`, scheduler:get_next -> `workItem`,
   // and events:status -> `event_inspection`).
   // Keep these explicit so control metadata alone does not suppress warnings for true empties.
   for (const key of [
     'results', 'items', 'data', 'result', 'value', 'presence', 'facts', 'hits', 'agents',
-    'issue', 'held', 'scorecard', 'scorecards', 'loop', 'spec', 'specs', 'evidence', 'rows',
+    'fact', 'issue', 'held', 'scorecard', 'scorecards', 'loop', 'spec', 'specs', 'evidence', 'rows',
     'workItem', 'event_inspection',
   ]) {
     if (!(key in body)) continue;
@@ -151,6 +165,28 @@ function hasPopulatedMcpResult(result: McpCallResult): boolean {
     hasPopulatedField = true;
   }
   return sawResultField && hasPopulatedField;
+}
+
+function hasPopulatedCodeRunSummary(summary: unknown): boolean {
+  if (typeof summary === 'string') return summary.trim().length > 0;
+  if (Array.isArray(summary)) return summary.length > 0;
+  if (typeof summary === 'number') return Number.isFinite(summary) && summary > 0;
+  if (typeof summary === 'boolean') return summary;
+  if (!summary || typeof summary !== 'object') return false;
+
+  const record = summary as Record<string, unknown>;
+  const resultFields = [
+    'results', 'items', 'data', 'result', 'value', 'presence', 'facts', 'fact', 'hits', 'agents',
+    'issue', 'held', 'scorecard', 'scorecards', 'loop', 'spec', 'specs', 'evidence', 'rows',
+    'workItem', 'event_inspection', 'entries', 'runs',
+  ];
+  if (resultFields.some((key) => key in record)) {
+    return hasPopulatedMcpResult({ content: [{ type: 'text', text: JSON.stringify(record) }] });
+  }
+
+  // A code:run script may return a domain-shaped object unknown to this module. Its nonempty
+  // fields are user-selected summary data; control metadata alone remains empty.
+  return Object.keys(record).some((key) => !['ok', 'count', 'total', 'truncated'].includes(key));
 }
 
 export function withMcpDiagnosticWarnings<T extends McpCallResult>(result: T, spawnCtx: McpDiagnosticContext): T {
