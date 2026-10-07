@@ -2097,12 +2097,35 @@ describe('WI-7124: verify-read — the write must read back via the SAME path a 
     expect(b.error).toMatch(/WI-2148/);
   });
 
-  it('a verify-read that throws is treated as a miss (fails loud, never crashes the tool)', async () => {
+  it('a verify-read that throws is reported as unavailable, not as a missing note', async () => {
     getLoopCarryNoteWithMeta.mockRejectedValueOnce(new Error('pg down'));
     const out = await call({ next: 'x' });
     expect(out.isError).toBe(true);
-    expect(body(out)).toMatchObject({ ok: false });
-    expect(body(out).error).toMatch(/checkpoint_verify_failed/);
+    expect(body(out)).toMatchObject({
+      ok: false,
+      error: 'checkpoint_verify_unavailable',
+      retryable: true,
+      writePersisted: true,
+      verified: null,
+      length: 'stored-note'.length,
+      contentHash: shortCarryHash('stored-note'),
+    });
+  });
+
+  it('a reader-reported store failure is not treated as a confirmed missing note', async () => {
+    getLoopCarryNoteWithMeta.mockResolvedValueOnce({ note: null, updatedAtMs: null, readFailed: true });
+    const out = await call({ next: 'x' });
+    expect(out.isError).toBe(true);
+    expect(body(out)).toMatchObject({
+      ok: false,
+      error: 'checkpoint_verify_unavailable',
+      retryable: true,
+      writePersisted: true,
+      verified: null,
+      length: 'stored-note'.length,
+      contentHash: shortCarryHash('stored-note'),
+    });
+    expect(body(out).message).toContain('Visibility is unknown');
   });
 
   it('a verify mismatch short-circuits BEFORE the advisory continuation-gate reads run', async () => {

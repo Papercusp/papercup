@@ -1715,7 +1715,34 @@ export default defineTool({
       const verifyRead = await getLoopCarryNoteWithMeta({ harness, ownerId, workspaceId }).catch(() => ({
         note: null,
         updatedAtMs: null,
+        readFailed: true,
       }));
+      // A store read failure is not evidence that the cold reader cannot see the
+      // committed note. Keep it distinct from a successful read of a missing or
+      // different row so callers do not retry a write that may already have landed.
+      if (verifyRead.readFailed === true) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                ok: false,
+                error: 'checkpoint_verify_unavailable',
+                retryable: true,
+                writePersisted: true,
+                verified: null,
+                harness,
+                ownerId,
+                length: stored.length,
+                contentHash: shortCarryHash(stored),
+                message:
+                  'The carry-note write committed, but the cold-reader verification query could not read the store. Visibility is unknown; do not repeat the write blindly. Re-read with loop:checkpoint { read: true } and compare contentHash before retrying.',
+              }),
+            },
+          ],
+          isError: true,
+        };
+      }
       if (verifyRead.note !== stored) {
         verifyError =
           `checkpoint_verify_failed — the write did not read back via the reader path a cold wake ` +
