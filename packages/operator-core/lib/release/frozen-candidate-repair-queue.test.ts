@@ -162,6 +162,21 @@ describe('frozen-candidate repair queue', () => {
     expect(malformed?.admissions?.[0]).not.toHaveProperty('patch');
   });
 
+  it('round-trips exact consumed hunk identities without consuming a later row', () => {
+    const admission = {
+      atMs: T0 + 100, actor: 'su-test', source: { ref: C2, sha: C2 },
+      fromRepairHead: C, toRepairHead: C2, paths: ['lib/a.test.ts'], unchanged: [],
+      blobs: { 'lib/a.test.ts': C1 }, mode: 'hunk-exact' as const,
+      hunks: { 'lib/a.test.ts': { applied: 1, agents: ['su-test'] } }, ledgerRowIds: [11],
+    };
+    const queue = markFrozenRepairAdmitted(fresh(), admission);
+    const parsed = parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(queue)));
+    expect(parsed?.admissions?.[0]?.ledgerRowIds).toEqual([11]);
+    expect(parsed?.admissions?.[0]?.ledgerRowIds).not.toContain(12);
+    const legacy = parseFrozenCandidateRepairQueue({ ...queue, admissions: [{ ...admission, ledgerRowIds: undefined }] });
+    expect(legacy?.admissions?.[0]).not.toHaveProperty('ledgerRowIds');
+  });
+
   it('persists the first red as an unassigned serialized queue without moving C', () => {
     const queue = fresh();
     expect(queue).toMatchObject({

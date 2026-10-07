@@ -188,6 +188,7 @@ const hunkExactOf = (paths = ['lib/red.test.ts']) => ({
   ok: true as const,
   sourceCommit: HX_SOURCE,
   tree: 'x'.repeat(40),
+  ledgerRowIds: [41],
   perPath: paths.map((path) => ({
     path,
     applied: 1,
@@ -2347,6 +2348,7 @@ describe('release:repair-queue', () => {
         { wholeBlob: true },
         { sourceCommit: '1'.repeat(40) },
         { includeHunksFrom: [] },
+        { ledgerRowIds: [41] },
       ]) {
         const args = { ...patchArgs, ...extra };
         expect(tool.args.safeParse(args).success).toBe(false);
@@ -2485,10 +2487,33 @@ describe('release:repair-queue', () => {
       const written = mocks.write.mock.calls[0]![1] as Written;
       expect(written.admissions[0]).toMatchObject({
         mode: 'hunk-exact',
+        ledgerRowIds: [41],
         hunks: { 'lib/red.test.ts': { applied: 1, agents: ['su-test'] } },
       });
       const auditDetails = JSON.parse(mocks.audit.mock.calls[0]![1][5]);
-      expect(auditDetails).toMatchObject({ mode: 'hunk-exact', hunks: { 'lib/red.test.ts': { applied: 1 } } });
+      expect(auditDetails).toMatchObject({ mode: 'hunk-exact', ledgerRowIds: [41], hunks: { 'lib/red.test.ts': { applied: 1 } } });
+    });
+
+    it('passes the exact reviewed selection and prior consumed ids independently of publication time', async () => {
+      const selectedQueue = { ...queue, admissions: [{ ...admissionOf(true).entry, ledgerRowIds: [40] }] };
+      mocks.readState.mockResolvedValue({ status: 'value', queue: selectedQueue });
+      mocks.admit.mockReturnValue(admissionOf(false));
+      const args = { op: 'admit', paths: ['lib/red.test.ts'], ledgerRowIds: [41] };
+      expect(tool.args.safeParse(args).success).toBe(true);
+      expect(tool.args.safeParse({ ...args, op: 'converge' }).success).toBe(true);
+      await tool.handler(args as never, ctx);
+      expect(mocks.readState).toHaveBeenCalled();
+      expect(queue).not.toHaveProperty('admissions');
+      expect(mocks.hunkExact.mock.calls[0]![0]).toMatchObject({
+        ledgerRowIds: [41], consumedLedgerRowIds: [40],
+      });
+    });
+
+    it('never widens an explicit hunk selection to a whole blob', async () => {
+      const result = body(await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'],
+        ledgerRowIds: [41], wholeBlob: true, reason: 'reviewed whole blob' } as never, ctx));
+      expect(result).toMatchObject({ ok: false, reason: 'invalid-ledger-selection' });
+      expect(mocks.admit).not.toHaveBeenCalled();
     });
 
     it('includeHunksFrom is forwarded to the builder verbatim (the explicit widening, D-008 3a)', async () => {

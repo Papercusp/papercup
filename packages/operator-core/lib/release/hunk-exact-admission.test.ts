@@ -73,6 +73,52 @@ const row = (agent: string, path: string, hunk: FrozenRepairEditLedgerRow['hunk'
   return { id: seq, candidate: 'c'.repeat(40), agent, path, hunk, atMs, toolUseId: `t${seq}`, editIndex: 0, workItem: null };
 };
 
+describe('exact ledger consumption and reviewed source snapshots', () => {
+  it('excludes a consumed predecessor and retains edits written during a slow precheck', () => {
+    const { root, candidate } = repo();
+    const first = { ...row('me', 'lib/a.ts', { kind: 'edit' as const, old: 'a = 1', new: 'a = 10', replaceAll: false }), candidate };
+    const second = { ...row('me', 'lib/a.ts', { kind: 'edit' as const, old: 'a = 10', new: 'a = 20', replaceAll: false }), candidate };
+    const input = { root, candidate, repairHead: candidate, paths: ['lib/a.ts'], actor: 'me', nowMs: T0 };
+    // Second row exists by publication time, but was not in the reviewed source.
+    const snapshot = buildHunkExactSource({ ...input, ledger: [first, second], ledgerRowIds: [first.id] });
+    if (!snapshot.ok) throw new Error(snapshot.detail);
+    expect(snapshot.ledgerRowIds).toEqual([first.id]);
+    expect(show(root, snapshot.sourceCommit, 'lib/a.ts')).toBe(BASE_A.replace('a = 1', 'a = 10'));
+    const next = buildHunkExactSource({ ...input, repairHead: snapshot.sourceCommit,
+      ledger: [first, second], consumedLedgerRowIds: snapshot.ledgerRowIds });
+    if (!next.ok) throw new Error(next.detail);
+    expect(next.ledgerRowIds).toEqual([second.id]);
+    expect(show(root, next.sourceCommit, 'lib/a.ts')).toBe(BASE_A.replace('a = 1', 'a = 20'));
+    // A pre-upgrade admission has a captured count but no ids. The second row
+    // arrived BEFORE R6 ended, so an admission-time watermark would lose it.
+    const legacy = buildHunkExactSource({ ...input, repairHead: snapshot.sourceCommit,
+      ledger: [first, second], admissions: [{ atMs: T0 + 1000, actor: 'me',
+        source: { ref: snapshot.sourceCommit, sha: snapshot.sourceCommit },
+        fromRepairHead: candidate, toRepairHead: snapshot.sourceCommit,
+        paths: ['lib/a.ts'], unchanged: [], blobs: {}, mode: 'hunk-exact',
+        hunks: { 'lib/a.ts': { applied: 1, agents: ['me'] } } }] });
+    if (!legacy.ok) throw new Error(legacy.detail);
+    expect(legacy.ledgerRowIds).toEqual([second.id]);
+    expect(show(root, legacy.sourceCommit, 'lib/a.ts')).toBe(BASE_A.replace('a = 1', 'a = 20'));
+  });
+
+  it('fails closed on missing, foreign, wrong-candidate, wrong-path, duplicate and consumed selections', () => {
+    const { root, candidate } = repo();
+    const mine = { ...row('me', 'lib/a.ts', { kind: 'edit' as const, old: 'a = 1', new: 'a = 10', replaceAll: false }), candidate };
+    const foreign = { ...mine, id: mine.id + 1, agent: 'peer' };
+    const otherCandidate = { ...mine, id: mine.id + 2, candidate: 'f'.repeat(40) };
+    const otherPath = { ...mine, id: mine.id + 3, path: 'lib/b.ts' };
+    const input = { root, candidate, repairHead: candidate, paths: ['lib/a.ts'], actor: 'me', nowMs: T0,
+      ledger: [mine, foreign, otherCandidate, otherPath] };
+    for (const ids of [[999999], [foreign.id], [otherCandidate.id], [otherPath.id], [mine.id, mine.id], []]) {
+      expect(buildHunkExactSource({ ...input, ledgerRowIds: ids })).toMatchObject({ ok: false, code: 'invalid-ledger-selection' });
+    }
+    expect(buildHunkExactSource({ ...input, ledgerRowIds: [mine.id], consumedLedgerRowIds: [mine.id] }))
+      .toMatchObject({ ok: false, code: 'invalid-ledger-selection' });
+    expect(git(root, ['status', '--porcelain'])).toBe('');
+  });
+});
+
 describe('committed patch recovery without fabricated hook attribution', () => {
   const build = (root: string, repairHead: string, patchCommit: string, paths = ['lib/a.ts']) =>
     buildCommittedPatchSource({ root, repairHead, patchCommit, paths, integrationRef: 'staging', reason: 'reviewed missing-capture repair' });

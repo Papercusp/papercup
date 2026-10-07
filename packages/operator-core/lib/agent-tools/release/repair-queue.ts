@@ -298,6 +298,8 @@ const argsSchema = z.preprocess(
         ...queueIdentityFields,
         /** P-020 (D-008 3a): ALSO replay these agents' ledgered hunks — a genuinely shared fix. Never implied. */
         includeHunksFrom: z.array(z.string().min(1).max(200)).max(20).optional(),
+        /** Exact hunk ledger row ids from a reviewed preview; keeps source stable across R6. */
+        ledgerRowIds: z.array(z.number().int().positive().safe()).min(1).max(10000).optional(),
         /** P-020 (D-008 3b): admit staging's WHOLE blob (may carry foreign work). Requires `reason`; the ledger records every foreign hunk it carries. */
         wholeBlob: z.boolean().optional(),
         /** Pin whole-blob reads to one immutable integration-branch ancestor so a reviewed preview cannot drift with staging. */
@@ -323,6 +325,7 @@ const argsSchema = z.preprocess(
         workItem: z.string().max(120).optional(),
         ...queueIdentityFields,
         includeHunksFrom: z.array(z.string().min(1).max(200)).max(20).optional(),
+        ledgerRowIds: z.array(z.number().int().positive().safe()).min(1).max(10000).optional(),
         wholeBlob: z.boolean().optional(),
         sourceCommit: z.string().regex(FULL_COMMIT_SHA).optional(),
         patchCommit: z
@@ -381,6 +384,7 @@ const argsSchema = z.preprocess(
         (value.wholeBlob === true ||
           value.sourceCommit !== undefined ||
           value.includeHunksFrom !== undefined ||
+          value.ledgerRowIds !== undefined ||
           !value.reason ||
           value.reason.trim().length < 8)
       ) {
@@ -396,6 +400,10 @@ const argsSchema = z.preprocess(
           path: ['sourceCommit'],
           message: 'sourceCommit is only valid with wholeBlob:true',
         });
+      }
+      if (value.ledgerRowIds !== undefined && value.wholeBlob === true) {
+        refinementCtx.addIssue({ code: z.ZodIssueCode.custom, path: ['ledgerRowIds'],
+          message: 'ledgerRowIds is only valid for hunk-exact admission' });
       }
       const fields: Array<keyof QueueIdentityArgs> = ['expectedCandidate', 'expectedRepairHead', 'expectedUpdatedAtMs'];
       const supplied = fields.filter((field) => value[field] !== undefined).length;
@@ -1181,6 +1189,7 @@ export default defineTool({
         (wholeBlob ||
           args.sourceCommit !== undefined ||
           args.includeHunksFrom !== undefined ||
+          args.ledgerRowIds !== undefined ||
           !args.reason ||
           args.reason.trim().length < 8)
       ) {
@@ -1209,6 +1218,11 @@ export default defineTool({
           detail: 'sourceCommit is only valid with wholeBlob:true',
         });
       }
+      if (wholeBlob && args.ledgerRowIds !== undefined) {
+        return json({ ...base, ok: false, admitted: false, refused: true, dryRun,
+          verdict: 'refused', reason: 'invalid-ledger-selection',
+          detail: 'ledgerRowIds is only valid for hunk-exact admission' });
+      }
       let ledgerRows: FrozenRepairEditLedgerRow[] = [];
       let ledgerReadError: string | null = null;
       try {
@@ -1235,6 +1249,7 @@ export default defineTool({
       let effectiveReason = args.reason;
       if (
         mode === 'hunk-exact' &&
+        args.ledgerRowIds === undefined &&
         ledgerReadError === null &&
         paths.every((p) => !ledgerRows.some((r) => r.path === p))
       ) {
@@ -1411,6 +1426,9 @@ export default defineTool({
               ledger: ledgerRows,
               actor: identity.ownerId,
               includeHunksFrom,
+              ledgerRowIds: args.ledgerRowIds,
+              consumedLedgerRowIds: (queue.admissions ?? []).flatMap((entry) => entry.ledgerRowIds ?? []),
+              admissions: queue.admissions,
               nowMs: Date.now(),
             },
           });
@@ -1605,6 +1623,7 @@ export default defineTool({
             repairHead: queue.repairHead,
             builtCommit,
             sourceCommit: outcome.entry.source.sha,
+            ledgerRowIds: hunkExact?.ledgerRowIds,
             builtTree: outcome.tree,
             files: [...population.files],
             actor: identity.ownerId,
@@ -1769,6 +1788,7 @@ export default defineTool({
           ? {
               mode,
               hunks: hunksRecord,
+              ledgerRowIds: hunkExact.ledgerRowIds,
               hunkExact: hunkExact.perPath.map((p) => ({
                 path: p.path,
                 applied: p.applied,
@@ -1834,7 +1854,7 @@ export default defineTool({
         ...(patch
           ? { patch }
           : hunksRecord
-            ? { hunks: hunksRecord }
+            ? { hunks: hunksRecord, ledgerRowIds: hunkExact?.ledgerRowIds }
             : { foreignHunksAccepted: foreign.count, foreignAgents: foreign.agents }),
       };
       const proof = {
@@ -1951,7 +1971,7 @@ export default defineTool({
         ...(patch
           ? { patch }
           : hunksRecord
-            ? { hunks: hunksRecord }
+            ? { hunks: hunksRecord, ledgerRowIds: hunkExact?.ledgerRowIds }
             : { foreignHunksAccepted: foreign.count, foreignAgents: foreign.agents }),
         precheck: precheckEntry,
         ...(dependencyGeneration ? { dependencyGeneration } : {}),

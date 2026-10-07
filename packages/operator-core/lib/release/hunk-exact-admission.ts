@@ -61,6 +61,7 @@ export interface HunkExactPathReport {
 }
 
 export type HunkExactRefusalCode =
+  | 'invalid-ledger-selection'
   | 'invalid-paths'
   | 'repair-head-unresolvable'
   | 'no-ledgered-hunks'
@@ -88,6 +89,8 @@ export interface HunkExactRefusal {
 
 export interface HunkExactSuccess {
   ok: true;
+  /** Exact source-capture identities, never an admission-end timestamp watermark. */
+  ledgerRowIds?: number[];
   /** The synthesised source commit (parent: repairHead). Pass as `source.ref` to the primitive. */
   sourceCommit: string;
   tree: string;
@@ -108,6 +111,12 @@ export interface BuildHunkExactSourceInput {
   actor: string;
   /** D-008 layer 3a: other agents whose hunks are replayed too (a genuinely shared fix). */
   includeHunksFrom?: readonly string[];
+  /** Pin a reviewed source snapshot while a precheck runs. */
+  ledgerRowIds?: readonly number[];
+  /** Identities recorded by prior successful admissions of this candidate. */
+  consumedLedgerRowIds?: readonly number[];
+  /** Legacy hunk admissions recorded exact per-path replay counts before row ids existed. */
+  admissions?: readonly FrozenRepairAdmission[];
   git?: AdmissionGitRunner;
   nowMs: number;
 }
@@ -164,6 +173,32 @@ export function buildHunkExactSource(input: BuildHunkExactSourceInput): HunkExac
   if (!repairHeadTree) return gitFailed('rev-parse repairHead^{tree}', run(['rev-parse', `${repairHead}^{tree}`]));
 
   const accepted = new Set<string>([input.actor.trim(), ...(input.includeHunksFrom ?? []).map((a) => a.trim()).filter(Boolean)]);
+  const consumed = new Set(input.consumedLedgerRowIds ?? []);
+  for (const admission of input.admissions ?? []) {
+    if (admission.ledgerRowIds) {
+      for (const id of admission.ledgerRowIds) consumed.add(id);
+      continue;
+    }
+    if (admission.mode !== 'hunk-exact') continue;
+    for (const [path, captured] of Object.entries(admission.hunks ?? {})) {
+      // The legacy builder replayed the complete ordered actor prefix. Its recorded
+      // count, rather than publication time, distinguishes edits arriving during R6.
+      if (!Number.isSafeInteger(captured.applied) || captured.applied <= 0) continue;
+      const prefix = input.ledger.filter((r) => r.path === path && captured.agents.includes(r.agent))
+        .slice(0, captured.applied);
+      if (prefix.length === captured.applied && prefix.every((r) => r.atMs <= admission.atMs)) {
+        for (const r of prefix) consumed.add(r.id);
+      }
+    }
+  }
+  const selected = input.ledgerRowIds === undefined ? null : new Set(input.ledgerRowIds);
+  if (selected && (selected.size === 0 || selected.size !== input.ledgerRowIds!.length ||
+    [...selected].some((id) => !Number.isSafeInteger(id) || id <= 0 || consumed.has(id) ||
+      !input.ledger.some((r) => r.id === id && r.candidate === input.candidate && paths.includes(r.path) && accepted.has(r.agent))))) {
+    return { ok: false, code: 'invalid-ledger-selection', detail: 'Every selected row must exist for this candidate, named path and accepted actor, and must not already be consumed.', exits: [] };
+  }
+  // Capture once. Later rows, including ones written during R6, remain available.
+  const ledger = input.ledger.filter((r) => !consumed.has(r.id) && (selected === null || selected.has(r.id)));
   const scratch = mkdtempSync(join(tmpdir(), 'papercusp-hunk-exact-'));
   const indexEnv: NodeJS.ProcessEnv = { GIT_INDEX_FILE: join(scratch, 'index') };
   try {
@@ -193,7 +228,7 @@ export function buildHunkExactSource(input: BuildHunkExactSourceInput): HunkExac
           };
         }
       }
-      const rows = input.ledger.filter((r) => r.path === path);
+      const rows = ledger.filter((r) => r.path === path);
       const mine = rows.filter((r) => accepted.has(r.agent));
       const foreign = rows.filter((r) => !accepted.has(r.agent));
       const foreignAgents = [...new Set(foreign.map((r) => r.agent))].sort();
@@ -295,7 +330,8 @@ export function buildHunkExactSource(input: BuildHunkExactSourceInput): HunkExac
     const ct = run(['commit-tree', tree, '-p', repairHead, '-m', message], identityEnv);
     const sourceCommit = ct.stdout.trim();
     if (ct.status !== 0 || !SHA_RE.test(sourceCommit)) return gitFailed('commit-tree', ct);
-    return { ok: true, sourceCommit, tree, perPath, allUnchanged: perPath.every((p) => p.unchanged) };
+    const ledgerRowIds = ledger.filter((r) => paths.includes(r.path) && accepted.has(r.agent)).map((r) => r.id);
+    return { ok: true, sourceCommit, tree, perPath, ledgerRowIds, allUnchanged: perPath.every((p) => p.unchanged) };
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }

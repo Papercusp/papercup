@@ -420,6 +420,8 @@ export interface FrozenRepairAdmissionPrecheck {
   repairHead: string;
   builtCommit: string;
   sourceCommit?: string;
+  /** Reviewed hunk source snapshot; callers may reuse it after the asynchronous precheck. */
+  ledgerRowIds?: number[];
   /** Immutable content identity; unlike builtCommit, it excludes provenance-only message changes. */
   builtTree?: string;
   files: string[];
@@ -668,6 +670,8 @@ export interface FrozenRepairAdmission {
   patch?: { commit: string; parent: string; sha256: string };
   /** hunk-exact: per admitted path, how many ledgered hunks were replayed and by whom. */
   hunks?: Record<string, { applied: number; agents: string[] }>;
+  /** Exact ledger rows captured by this hunk source; later edits are not consumed. */
+  ledgerRowIds?: number[];
   /** whole-blob: the number of ledgered hunks by OTHER agents the admitted blobs may carry. */
   foreignHunksAccepted?: number;
   foreignAgents?: string[];
@@ -857,6 +861,8 @@ function parseAdmissions(raw: unknown): FrozenRepairAdmission[] {
       ...(e.mode === 'hunk-exact' || e.mode === 'whole-blob' || e.mode === 'committed-patch' ? { mode: e.mode } : {}),
       ...(validPatch ? { patch: { commit: patch.commit as string, parent: patch.parent as string, sha256: patch.sha256 as string } } : {}),
       ...(hunksValid ? { hunks } : {}),
+      ...(Array.isArray(e.ledgerRowIds) && e.ledgerRowIds.every((id) => Number.isSafeInteger(id) && id > 0)
+        ? { ledgerRowIds: [...new Set(e.ledgerRowIds as number[])] } : {}),
       ...(typeof e.foreignHunksAccepted === 'number' && Number.isFinite(e.foreignHunksAccepted)
         ? { foreignHunksAccepted: e.foreignHunksAccepted }
         : {}),
@@ -1430,6 +1436,8 @@ function parseAdmissionPrecheck(value: unknown): FrozenRepairAdmissionPrecheck |
     (row.sourceCommit !== undefined &&
       (typeof row.sourceCommit !== 'string' || !/^[0-9a-f]{40,64}$/.test(row.sourceCommit))) ||
     (row.builtTree !== undefined && !nonBlank(row.builtTree)) ||
+    (row.ledgerRowIds !== undefined && (!Array.isArray(row.ledgerRowIds) ||
+      !row.ledgerRowIds.every((id) => Number.isSafeInteger(id) && id > 0))) ||
     !nonBlank(row.actor) ||
     (row.runnerPid !== undefined && (!Number.isInteger(row.runnerPid) || (row.runnerPid as number) <= 0)) ||
     (row.runnerPidIdentity !== undefined && (!nonBlank(row.runnerPidIdentity) || row.runnerPid === undefined)) ||
@@ -1479,6 +1487,7 @@ function parseAdmissionPrecheck(value: unknown): FrozenRepairAdmissionPrecheck |
     repairHead: row.repairHead as string,
     builtCommit: row.builtCommit as string,
     ...(typeof row.sourceCommit === 'string' ? { sourceCommit: row.sourceCommit } : {}),
+    ...(Array.isArray(row.ledgerRowIds) ? { ledgerRowIds: [...row.ledgerRowIds] as number[] } : {}),
     ...(nonBlank(row.builtTree) ? { builtTree: row.builtTree } : {}),
     files: [...(row.files as string[])],
     actor: row.actor as string,
