@@ -8,9 +8,13 @@
  * not here.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { hostname } from 'node:os';
+import { hostname, tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { join } from 'node:path';
 import { readProcessIdentity } from './process-identity';
 import {
   InMemoryRuntimeVintageStore,
@@ -155,6 +159,38 @@ describe('runtime-vintage — self-report ledger (P-008)', () => {
       extra: { kernelExecutableDigest: digest } });
     expect((await listRuntimeVintage('default')).find(row => row.unit === 'remote-native')!.extra)
       .not.toHaveProperty('kernelExecutableDigest');
+  });
+
+  it('pins a real direct Node bundle and refuses a post-start rewrite of its entry', async () => {
+    if (process.platform !== 'linux') return;
+    const dir = await mkdtemp(join(tmpdir(), 'runtime-vintage-entry-'));
+    const entry = join(dir, 'serve.cjs');
+    const source = "process.stdout.write('ready\\n'); setInterval(() => {}, 1000);";
+    await writeFile(entry, source);
+    await new Promise(resolve => setTimeout(resolve, 50));
+    const child = spawn(process.execPath, [entry], { stdio: ['ignore', 'pipe', 'ignore'] });
+    try {
+      await once(child.stdout!, 'data');
+      const digest = createHash('sha256').update(source).digest('hex');
+      await reportRuntimeVintage({ unit: 'node-bundle', pid: child.pid!, treeSha: null,
+        bundleVersion: `node-entry-sha256:${digest}`, workspaceId: 'default',
+        extra: { kernelNodeEntryDigest: 'caller-authored' } });
+      const rows = await listRuntimeVintage('default');
+      expect(rows[0].treeSha).toBeNull();
+      expect(rows[0].extra.kernelNodeEntryDigest).toBe(digest);
+      expect(measureRuntimeVintageEnvironment(rows, ['node-bundle'])).toMatch(/^[a-f0-9]{64}$/);
+      await writeFile(entry, `${source}\n// changed after startup`);
+      expect(measureRuntimeVintageEnvironment(rows, ['node-bundle'])).toBeNull();
+      await reportRuntimeVintage({ unit: 'changed-bundle', pid: child.pid!, treeSha: null,
+        bundleVersion: `node-entry-sha256:${createHash('sha256').update(readFileSync(entry)).digest('hex')}`,
+        workspaceId: 'default', extra: { kernelNodeEntryDigest: digest } });
+      expect((await listRuntimeVintage('default')).find(row => row.unit === 'changed-bundle')!.extra)
+        .not.toHaveProperty('kernelNodeEntryDigest');
+    } finally {
+      child.kill('SIGTERM');
+      await once(child, 'close');
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it('rejects changed executable bytes, missing digest pins and process replacement during measurement', () => {

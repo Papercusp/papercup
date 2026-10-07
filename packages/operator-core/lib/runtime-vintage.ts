@@ -19,11 +19,12 @@
 
 import { hostname } from 'node:os';
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readlinkSync, realpathSync, statSync } from 'node:fs';
+import { basename, resolve } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from './workspace-registry';
 import { coerceJson } from './pg-jsonb';
-import { readProcessIdentity, linuxProcStateFromStat } from './process-identity';
+import { readProcessIdentity, linuxProcStateFromStat, linuxStartTicksFromProcStat } from './process-identity';
 
 /** The tagged org-PG client, optionally supplied by a caller's read transaction. */
 export type RuntimeVintageSql = ReturnType<typeof getOrgPg>['sql'];
@@ -182,6 +183,7 @@ export async function reportRuntimeVintage(input: RuntimeVintageReport): Promise
   const extra = { ...input.extra };
   delete extra.kernelProcessIdentity;
   delete extra.kernelExecutableDigest;
+  delete extra.kernelNodeEntryDigest;
   if ((input.host?.trim() || defaultHost()) === defaultHost() && input.pid != null) {
     const identity = liveProcessIdentity(input.pid);
     if (identity) {
@@ -193,6 +195,9 @@ export async function reportRuntimeVintage(input: RuntimeVintageReport): Promise
       const expected = executableBundleDigest(input.bundleVersion);
       if (expected && liveExecutableDigest(input.pid) === expected
         && liveProcessIdentity(input.pid) === identity) extra.kernelExecutableDigest = expected;
+      const entry = nodeEntryBundleDigest(input.bundleVersion);
+      if (entry && liveNodeEntryDigest(input.pid) === entry
+        && liveProcessIdentity(input.pid) === identity) extra.kernelNodeEntryDigest = entry;
     }
   }
   return store.report({ ...input, extra });
@@ -201,6 +206,35 @@ export async function reportRuntimeVintage(input: RuntimeVintageReport): Promise
 function executableBundleDigest(version: string | null | undefined): string | null {
   return /^executable-sha256:[a-f0-9]{64}$/.test(version ?? '')
     ? version!.slice('executable-sha256:'.length) : null;
+}
+
+function nodeEntryBundleDigest(version: string | null | undefined): string | null {
+  return /^node-entry-sha256:[a-f0-9]{64}$/.test(version ?? '')
+    ? version!.slice('node-entry-sha256:'.length) : null;
+}
+
+/** Only a direct Node bundle entry written before this process started is proven. */
+function liveNodeEntryDigest(pid: number): string | null {
+  if (process.platform !== 'linux') return null;
+  try {
+    if (!/^node(?:js)?$/.test(basename(readlinkSync(`/proc/${pid}/exe`)))) return null;
+    const argv = readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0').filter(Boolean);
+    if (argv.length !== 2 || !/\.(?:c|m)?js$/.test(argv[1])) return null;
+    const entry = realpathSync(resolve(readlinkSync(`/proc/${pid}/cwd`), argv[1]));
+    const before = statSync(entry);
+    const ticks = Number(linuxStartTicksFromProcStat(readFileSync(`/proc/${pid}/stat`, 'utf8')));
+    const uptime = Number(readFileSync('/proc/uptime', 'utf8').split(' ')[0]);
+    // USER_HZ=100 on the Linux targets we ship, also used by the existing
+    // systemd-service-probe and release-checkpoint-launch process readers.
+    const startedAt = Date.now() - uptime * 1000 + ticks * 10;
+    if (!Number.isFinite(ticks) || ticks <= 0 || !Number.isFinite(uptime)
+      || !before.isFile() || before.mtimeMs > startedAt - 25 || before.ctimeMs > startedAt - 25) return null;
+    const digest = createHash('sha256').update(readFileSync(entry)).digest('hex');
+    const after = statSync(entry);
+    return before.dev === after.dev && before.ino === after.ino
+      && before.size === after.size && before.mtimeMs === after.mtimeMs
+      && before.ctimeMs === after.ctimeMs ? digest : null;
+  } catch { return null; }
 }
 
 /** /proc exposes the loaded inode even after its original path is replaced. */
@@ -248,11 +282,16 @@ export function measureRuntimeVintageEnvironment(
     if (typeof pinned !== 'string' || !pinned || deps.identity(row.pid!) !== pinned) return null;
     let codeIdentity = row.treeSha;
     const executable = executableBundleDigest(row.bundleVersion);
+    const entry = nodeEntryBundleDigest(row.bundleVersion);
     if (executable) {
       if (row.extra.kernelExecutableDigest !== executable
         || !deps.executableDigest || deps.executableDigest(row.pid!) !== executable
         || deps.identity(row.pid!) !== pinned) return null;
       codeIdentity = `executable-sha256:${executable}`;
+    } else if (entry) {
+      if (row.extra.kernelNodeEntryDigest !== entry || liveNodeEntryDigest(row.pid!) !== entry
+        || deps.identity(row.pid!) !== pinned) return null;
+      codeIdentity = `node-entry-sha256:${entry}`;
     } else if (!codeIdentity || !/^[a-f0-9]{7,64}$/.test(codeIdentity)) return null;
     pins.push([unit, row.host, codeIdentity!, row.buildTime, row.pid!, pinned]);
   }
