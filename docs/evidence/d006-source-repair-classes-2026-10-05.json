@@ -5,12 +5,13 @@
   "accountableOwner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
   "population": {
     "failedFiles": 124,
-    "repairedFocused": 20,
+    "repairedFocused": 21,
     "repairedPeerFocused": 15,
-    "openUnknown": 89
+    "openUnknown": 88
   },
   "classes": {
-    "assertion": 56,
+    "assertion": 55,
+    "transcript-search-disclosure-fixture": 1,
     "peer-blueprint-inherited-providers": 3,
     "lock-ownership-expectation": 1,
     "work-item-disclosure-fixture": 1,
@@ -966,16 +967,24 @@
     },
     {
       "path": "packages/operator-core/lib/endpoint-route/routes/adv/sessions-search-transcripts.integration.test.ts",
-      "class": "assertion",
-      "state": "open-unknown",
-      "item": "WI-10006170",
+      "class": "transcript-search-disclosure-fixture",
+      "state": "repaired-focused",
+      "item": "WI-10007142",
       "lines": [
         15821,
         15833,
         15845,
         15868,
         15890
-      ]
+      ],
+      "diagnosis": "The manual three-migration fixture omitted personal_disclosures, now required by restrictedTurnSql in both literal retrieval tiers. Missing-ledger/restored-ledger real-PG controls distinguish this fixture gap from index/retrieval failure; active-window controls preserve withholding on exact and fuzzy queries.",
+      "beforeTestRun": 20896905,
+      "afterTestRun": 20897234,
+      "passed": 8,
+      "skipped": 0,
+      "testSha256": "5e03797c7ae942bf9269bee6878908967fbd30df8ac44138624a834030e26b87",
+      "receiptTestBlob": "f1f03e3fc1928856a8754bab117b55664f18b89b",
+      "receiptScope": "Local working-tree staging PASS8/0skip, source local, workspace papercusp-workspace, harness papercusp, runGroupId null, scratch false. Full current import/environment assurance and final D006 remain unverified."
     },
     {
       "path": "packages/operator-core/lib/harness/improvements/watchdog-red-test-infra-enoent.integration.test.ts",
@@ -2044,7 +2053,7 @@
   "classDisposition": [
     {
       "class": "assertion",
-      "count": 61,
+      "count": 55,
       "status": "open-unknown",
       "item": "WI-10006170",
       "owner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
@@ -2528,6 +2537,37 @@
       "rootCause": "Legacy evaluation tuple uniqueness excludes the per-loop run token. Distinct baseline run IDs still collided in the same gym database; additive migration002 removes only the obsolete constraint.",
       "testRunIds": [20894612, 20894624, 20894625],
       "next": "Retain the measured local repair and proposed terminal manifest. Do not replay terminal completion or monitor source settlement; full import/environment and final D006 remain unverified."
+    },
+    {
+      "class": "lock-ownership-expectation",
+      "count": 1,
+      "status": "repaired-focused",
+      "item": "WI-10007140",
+      "scope": "named-lock-store-integration-test-only",
+      "rootCause": "The stale test expected a pending FIFO waiter to be an active holder. The corrected expectation and real-PG queue/no-holder and true-holder lease/deadline controls passed in the previously recorded terminal repair.",
+      "testRunIds": [20895733, 20895746],
+      "next": "Retain existing terminal repair evidence; no unchanged rerun or completion replay. Full imports/environment/final D006 remain unverified."
+    },
+    {
+      "class": "work-item-disclosure-fixture",
+      "count": 1,
+      "status": "repaired-focused",
+      "item": "WI-10007139",
+      "scope": "named-work-item-tools-integration-fixture-only",
+      "rootCause": "The manual fixture omitted the mandatory disclosure ledger. Maintained fixture DDL and missing/restored-ledger controls for both comment families passed in the previously recorded terminal repair.",
+      "testRunIds": [20895450, 20895651],
+      "next": "Retain existing terminal repair evidence; no unchanged rerun or completion replay. Full imports/environment/final D006 remain unverified."
+    },
+    {
+      "class": "transcript-search-disclosure-fixture",
+      "count": 1,
+      "status": "repaired-focused",
+      "item": "WI-10007142",
+      "owner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
+      "scope": "named-route-integration-fixture-only",
+      "rootCause": "The manual transcript fixture omitted the mandatory personal_disclosures relation. Reusing applyDisclosureLedgerForTest restores the migrated ledger without weakening production restrictedTurnSql. Missing/restored-ledger and active-window exact/fuzzy controls pass with all six original route regressions.",
+      "testRunIds": [20896905, 20897234],
+      "next": "Retain focused local PASS8/0skip evidence. Full import/environment and final D006 remain unverified; do not replay terminal completion or monitor source settlement."
     }
   ],
   "prerequisites": [
