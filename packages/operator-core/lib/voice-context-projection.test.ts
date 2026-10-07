@@ -97,6 +97,10 @@ describe('voice context projection', () => {
       callSessionId: 'room-owner',
     }, sources({
       resolveOwnerVault,
+      resolvePeople: vi.fn(async () => ({ available: true as const, candidates: [candidate('contacts', {
+        occurredAt: null, provenance: { system: 'relationship-graph', source: 'person', id: 'PER-test',
+          externalId: null, providerAccountId: null, scope: null },
+      })] })),
       resolveCallerHistory: vi.fn(async () => ({
         available: true as const,
         candidates: [candidate('caller-history')],
