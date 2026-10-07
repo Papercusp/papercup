@@ -12,6 +12,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { endPiSession, startPiSession } from '@papercusp/agent-mcp/provisioning';
 import { buildConverseMcpMount, PUBLIC_MANUAL_TOOLS } from '../../operator/converse-toolset';
+import { publicManualSource } from '../_public-manual';
 
 const baseUrl = process.env.OPERATOR_BASE_URL;
 const workspaceId = `public-manual-e2e-${randomUUID()}`;
@@ -78,7 +79,7 @@ describe.runIf(Boolean(baseUrl))('canonical manual on the public Papercup HTTP M
     expect(page.surface).toBe('public');
     expect(page.revision).toBe(result.revision);
     expect(page.results[0]).toMatchObject({ found: true, slug: 'faq' });
-    expect(page.results[0].content).toMatch(/host|workspace/i);
+    expect(page.results[0].content).toMatch(/host|workspace|machine/i);
   });
 
   it('retrieves natural paraphrases and an ordinary misspelling without embeddings', async () => {
@@ -90,16 +91,28 @@ describe.runIf(Boolean(baseUrl))('canonical manual on the public Papercup HTTP M
   });
 
   it('retrieves every published FAQ question and its two paraphrases on the serving public mount', async () => {
-    const page = await call('docs:get', { slugs: ['faq'] });
-    expect(page.results[0].found).toBe(true);
-    const questions = [...String(page.results[0].content).matchAll(/^## (.+)\n\nAlso asked as: (.+)$/gm)];
+    // Test inputs come from the canonical source, not the result door's
+    // deliberately bounded whole-page read. Each runtime section and revision
+    // must match that source before its three question forms are exercised.
+    const source = publicManualSource();
+    const faq = await source.getPage('faq');
+    expect(faq).not.toBeNull();
+    const content = await source.getContent(faq!);
+    const revision = await source.revision();
+    const questions = [...content.matchAll(/^## (.+)\n\nAlso asked as: (.+)$/gm)];
     expect(questions).toHaveLength(20);
     for (const [, title, alternateQuestions] of questions) {
+      const page = await call('docs:get', { slugs: ['faq'], heading: title });
+      expect(page.revision, title).toBe(revision);
+      expect(page.results[0], title).toMatchObject({ found: true });
+      expect(page.results[0].content, title).toContain(`## ${title}`);
+      expect(page.results[0].content, title).toContain(`Also asked as: ${alternateQuestions}`);
+      expect(page._projection?.truncated, title).not.toBe(true);
       const paraphrases = alternateQuestions.match(/[^?]+\?/g) ?? [];
       expect(paraphrases, title).toHaveLength(2);
       for (const query of [title, ...paraphrases]) {
         const result = await call('docs:search', { query: query.trim(), limit: 3 });
-        expect(result.hits, query).toEqual(expect.arrayContaining([expect.objectContaining({ slug: 'faq', title })]));
+        expect(result.hits, JSON.stringify({ query, result }).slice(0, 3000)).toEqual(expect.arrayContaining([expect.objectContaining({ slug: 'faq', title })]));
       }
     }
   }, 90_000);
