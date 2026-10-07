@@ -24,7 +24,7 @@ import type { FullConfig, Reporter, TestCase, TestResult } from '@playwright/tes
 import { resolveGitContext } from '@papercusp/operator-core/lib/testing-branch-resolve';
 import { resolveAgentWorkspaceRoot } from '@papercusp/operator-core/lib/agent-tools/capability/base-dir';
 import {
-  captureTestSourceSnapshot,
+  captureTestSourceSnapshotAsync as captureTestSourceSnapshot,
   resolveReporterSourceRoot,
   computeWorktreeDirty,
   type WorktreeGitSnapshot,
