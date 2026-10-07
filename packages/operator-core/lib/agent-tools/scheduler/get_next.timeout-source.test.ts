@@ -62,6 +62,23 @@ describe('getNextContentionResult surfaces the cause (EI-21831306274538775)', ()
     expect(out.pgCode).toBe('57014');
     expect(out.message).not.toContain('transient PostgreSQL contention');
     expect(out.message).toContain('PostgreSQL did not time out');
-    expect(out.message).toContain('NOT at PG pool saturation');
+    expect(out.message).toContain('does not identify a phase or prove PG pool saturation');
+  });
+
+  it('identifies setup-acquisition as before the claim ladder without guessing at connect latency', () => {
+    const out = getNextContentionResult(
+      new OrgTxnTimeoutError(
+        '57014',
+        new Error('setup acquisition expired'),
+        'dedicated scheduler-claim setup budget expired',
+        'caller-budget',
+      ),
+      'claim-setup-acquisition',
+    );
+    expect(out.message).toContain('before the claim ladder');
+    expect(out.message).toContain('no claim was attempted');
+    expect(out.message).toContain('does not isolate connection-establishment latency');
+    expect(out.message).toContain('or prove pool saturation');
+    expect(out.message).not.toContain('claim-ladder cost or backlog shape');
   });
 });

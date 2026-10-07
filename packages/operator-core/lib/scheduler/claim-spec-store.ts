@@ -12,7 +12,7 @@
  * and the id the Queen addresses a bee by). The store fns take an optional `sql` (dependency-injected
  * for tests); production passes getOrgPg().sql.
  */
-import { DbCallDeadlineError, getOrgPg } from '@papercusp/db-org';
+import { DbCallDeadlineError, getOrgPg, poolIdleTimeoutSec } from '@papercusp/db-org';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { DEFAULT_CLAIM_SPEC, validateClaimSpec, isIdOnlySelector, type ClaimSpec } from './claim-spec';
 import { buildP2pLaneFence } from './p2p-lane-fence';
@@ -131,13 +131,25 @@ export async function countActiveClaimsForBee(
 export const DEFAULT_MAX_CONCURRENT_CLAIMS = 1;
 
 /**
- * EI-23227815561098131: the scheduler-only pool setup must finish well inside the
- * public get_next watchdog. These reads used to run directly on the max:2 pool, so
- * a queued connection acquisition could survive the outer timeout. This is a
- * confirmed source gap; whether it caused the reported live timeouts still requires
- * phase evidence from a failing request.
+ * EI-23227815561098131 / EI-24854976611251160: keep setup acquisition fast for a
+ * warm scheduler pool. Live phase evidence found setup-acquisition timeouts after
+ * idle gaps beyond the pool's default 30s idle-close threshold, but does not isolate
+ * connection establishment from BEGIN/SET LOCAL or pool queueing. First-use and
+ * post-idle setup get a larger finite acquisition allowance; SQL statement and
+ * lock deadlines remain at the warm 5s limit.
  */
 export const SCHEDULER_CLAIM_SETUP_BUDGET_MS = 5_000;
+export const SCHEDULER_CLAIM_COLD_SETUP_ACQUIRE_BUDGET_MS = 20_000;
+
+const schedulerClaimPoolLastAcquiredAtMs = new WeakMap<object, number>();
+
+function isColdSchedulerClaimPool(sql: OrgSql): boolean {
+  const lastAcquiredAtMs = schedulerClaimPoolLastAcquiredAtMs.get(sql as object);
+  if (lastAcquiredAtMs === undefined) return true;
+
+  const idleTimeoutMs = poolIdleTimeoutSec() * 1_000;
+  return idleTimeoutMs > 0 && Date.now() - lastAcquiredAtMs >= idleTimeoutMs;
+}
 
 /** The verdict {@link evaluateClaimConcurrency} returns — what every surface must report FROM. */
 export type ClaimConcurrencyVerdict = {
@@ -662,15 +674,26 @@ export async function getNextForBee(args: {
   // candidate resolution and post-claim checks.
   let setup: Awaited<ReturnType<typeof readClaimSetup>>;
   if (claimSql) {
+    const coldPool = isColdSchedulerClaimPool(claimSql);
+    const acquireTimeoutMs = coldPool
+      ? SCHEDULER_CLAIM_COLD_SETUP_ACQUIRE_BUDGET_MS
+      : SCHEDULER_CLAIM_SETUP_BUDGET_MS;
+    let setupAcquired = false;
     try {
       claimStep('claim-setup-acquisition');
-      setup = await boundedOrgTxn((tx) => readClaimSetup(tx), {
-        client: claimSql,
-        signal: args.signal,
-        acquireTimeoutMs: SCHEDULER_CLAIM_SETUP_BUDGET_MS,
-        statementTimeoutMs: SCHEDULER_CLAIM_SETUP_BUDGET_MS,
-        lockTimeoutMs: SCHEDULER_CLAIM_SETUP_BUDGET_MS,
-      });
+      setup = await boundedOrgTxn(
+        (tx) => {
+          setupAcquired = true;
+          return readClaimSetup(tx);
+        },
+        {
+          client: claimSql,
+          signal: args.signal,
+          acquireTimeoutMs,
+          statementTimeoutMs: SCHEDULER_CLAIM_SETUP_BUDGET_MS,
+          lockTimeoutMs: SCHEDULER_CLAIM_SETUP_BUDGET_MS,
+        },
+      );
     } catch (error) {
       // Acquisition has no PostgreSQL SQLSTATE, but it is still the scheduler's own
       // bounded setup budget rather than evidence that PostgreSQL timed out. Preserve that
@@ -679,11 +702,16 @@ export async function getNextForBee(args: {
         throw new OrgTxnTimeoutError(
           '57014',
           error,
-          `scheduler:get_next claim setup could not acquire the dedicated scheduler-claim pool within ${SCHEDULER_CLAIM_SETUP_BUDGET_MS}ms; no claim was attempted`,
+          `scheduler:get_next claim setup could not finish acquisition/setup on the dedicated scheduler-claim pool within ${acquireTimeoutMs}ms (${coldPool ? 'first-use/idle' : 'warm'} path); no claim was attempted`,
           'caller-budget',
         );
       }
       throw error;
+    } finally {
+      // Record only after boundedOrgTxn entered its callback, which is after the
+      // connection and transaction setup completed. The shared pool still reaps
+      // idle backends; the timestamp only selects the next call's finite budget.
+      if (setupAcquired) schedulerClaimPoolLastAcquiredAtMs.set(claimSql as object, Date.now());
     }
   } else {
     setup = await readClaimSetup();

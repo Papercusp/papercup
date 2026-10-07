@@ -17,6 +17,7 @@
  * lib/scheduler/get-next-for-bee-plan-lane-guard.test.ts
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { poolIdleTimeoutSec } from '@papercusp/db-org';
 import { createBranchedSqlMock } from '../testing/sql-mock';
 
 const { sqlMock } = vi.hoisted(() => ({
@@ -77,7 +78,11 @@ vi.mock('./claim-spec-match', async (importOriginal) => ({
   matchesWorkItemClaimSpec: (...args: unknown[]) => matchesWorkItemClaimSpecMock(...args),
 }));
 
-import { getNextForBee, SCHEDULER_CLAIM_SETUP_BUDGET_MS } from './claim-spec-store';
+import {
+  getNextForBee,
+  SCHEDULER_CLAIM_COLD_SETUP_ACQUIRE_BUDGET_MS,
+  SCHEDULER_CLAIM_SETUP_BUDGET_MS,
+} from './claim-spec-store';
 import { buildP2pLaneFence } from './p2p-lane-fence';
 
 function claimResult(id: string) {
@@ -102,7 +107,7 @@ describe('getNextForBee — plan-item-lane guard retry loop', () => {
     releaseWorkItemMock.mockReset().mockResolvedValue(null);
     matchesWorkItemClaimSpecMock.mockReset().mockReturnValue(true);
     recordClaimAttemptMock.mockReset().mockResolvedValue(undefined);
-    getLongLivedAdminPoolMock.mockClear();
+    getLongLivedAdminPoolMock.mockReset().mockReturnValue(sqlMock);
     boundedOrgTxnMock
       .mockReset()
       .mockImplementation(async (run: (tx: unknown) => Promise<unknown>, opts: { client?: unknown }) =>
@@ -157,7 +162,7 @@ describe('getNextForBee — plan-item-lane guard retry loop', () => {
     expect(boundedOrgTxnMock).toHaveBeenCalledWith(expect.any(Function), {
       client: sqlMock,
       signal,
-      acquireTimeoutMs: SCHEDULER_CLAIM_SETUP_BUDGET_MS,
+      acquireTimeoutMs: SCHEDULER_CLAIM_COLD_SETUP_ACQUIRE_BUDGET_MS,
       statementTimeoutMs: SCHEDULER_CLAIM_SETUP_BUDGET_MS,
       lockTimeoutMs: SCHEDULER_CLAIM_SETUP_BUDGET_MS,
     });
@@ -168,6 +173,81 @@ describe('getNextForBee — plan-item-lane guard retry loop', () => {
       'claim-concurrency-read',
       'candidate-resolution',
     ]);
+  });
+
+  it('uses a longer bounded acquisition only on first-use and idle-cold pool paths', async () => {
+    const branches = createBranchedSqlMock([
+      {
+        label: 'per-bee claim-spec lookup',
+        match: (q) => q.includes('FROM harness_shared.cup_claim_specs'),
+        respond: () => [],
+      },
+      {
+        label: 'fleet-membership lookup',
+        match: (q) => q.includes('FROM harness_shared.fleet_membership_events'),
+        respond: () => [],
+      },
+      {
+        label: 'active claims lookup',
+        match: (q) => q.includes('taken_by'),
+        respond: () => [],
+      },
+    ]);
+    const poolSqlMock = vi.fn(branches.handler);
+    getLongLivedAdminPoolMock.mockReturnValue(poolSqlMock);
+    getNextWorkItemMock.mockResolvedValue(null);
+
+    const pull = () => getNextForBee({
+      cupId: 'cold-pool-member',
+      harness: 'papercusp',
+      ignoreStoredSpec: true,
+      useDedicatedClaimPool: true,
+    });
+    const expectedSetupTimeouts = {
+      statementTimeoutMs: SCHEDULER_CLAIM_SETUP_BUDGET_MS,
+      lockTimeoutMs: SCHEDULER_CLAIM_SETUP_BUDGET_MS,
+    };
+
+    await pull();
+    expect(boundedOrgTxnMock).toHaveBeenNthCalledWith(
+      1,
+      expect.any(Function),
+      expect.objectContaining({
+        client: poolSqlMock,
+        acquireTimeoutMs: SCHEDULER_CLAIM_COLD_SETUP_ACQUIRE_BUDGET_MS,
+        ...expectedSetupTimeouts,
+      }),
+    );
+
+    await pull();
+    expect(boundedOrgTxnMock).toHaveBeenNthCalledWith(
+      2,
+      expect.any(Function),
+      expect.objectContaining({
+        client: poolSqlMock,
+        acquireTimeoutMs: SCHEDULER_CLAIM_SETUP_BUDGET_MS,
+        ...expectedSetupTimeouts,
+      }),
+    );
+
+    vi.useFakeTimers();
+    try {
+      await vi.advanceTimersByTimeAsync((poolIdleTimeoutSec() + 1) * 1_000);
+      await pull();
+      expect(boundedOrgTxnMock).toHaveBeenNthCalledWith(
+        3,
+        expect.any(Function),
+        expect.objectContaining({
+          client: poolSqlMock,
+          acquireTimeoutMs: SCHEDULER_CLAIM_COLD_SETUP_ACQUIRE_BUDGET_MS,
+          ...expectedSetupTimeouts,
+        }),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+
+    branches.assertAllMatched();
   });
 
   it('passes candidate subphases to the public timeout observer', async () => {

@@ -318,7 +318,7 @@ export function getNextPreflightTimeoutResult(
  * blocker hint, when available) gives the caller the actual contention diagnosis instead of
  * converting it into a generic MCP `handler_error`.
  */
-export function getNextContentionResult(error: OrgTxnTimeoutError): {
+export function getNextContentionResult(error: OrgTxnTimeoutError, lastClaimStep?: string): {
   ok: false;
   error: 'timeout';
   retryable: true;
@@ -334,6 +334,14 @@ export function getNextContentionResult(error: OrgTxnTimeoutError): {
   // at the connection pool for a budget that ran out inside the scheduler. Both remain
   // retryable and keep the same code; they no longer claim the same cause.
   const callerBudget = error.timeoutSource === 'caller-budget';
+  const callerBudgetAdvice =
+    lastClaimStep === 'claim-setup-acquisition'
+      ? 'This happened before the claim ladder while the dedicated pool was acquired and initialized; no claim was attempted. The phase does not isolate connection-establishment latency or prove pool saturation.'
+      : lastClaimStep
+        ? 'The last entered step was "' +
+          lastClaimStep +
+          '". It locates the phase, not the cause; measure that phase before attributing the timeout to claim-ladder cost, backlog shape, or pool contention.'
+        : 'The result does not identify a phase or prove PG pool saturation; inspect lastClaimStep before assigning a cause.';
   return {
     ok: false,
     error: 'timeout',
@@ -342,7 +350,8 @@ export function getNextContentionResult(error: OrgTxnTimeoutError): {
     timeoutSource: error.timeoutSource,
     message: callerBudget
       ? `scheduler:get_next abandoned its claim after exhausting the scheduler's OWN budget (reported as ${error.pgCode}; PostgreSQL did not time out): ${error.message}. ` +
-        'Retry now; no claim was returned. Repeated occurrences point at claim-ladder cost or backlog shape — NOT at PG pool saturation.'
+        'Retry now; no claim was returned. ' +
+        callerBudgetAdvice
       : `scheduler:get_next claim hit transient PostgreSQL contention (${error.pgCode}): ${error.message}. ` +
         'Retry now; the failed transaction was rolled back and no claim was returned.',
   };
@@ -1795,7 +1804,7 @@ export default defineTool({
             {
               type: 'text' as const,
               text: JSON.stringify({
-                ...getNextContentionResult(claim.error),
+                ...getNextContentionResult(claim.error, lastClaimStep),
                 lastClaimStep,
               }),
             },

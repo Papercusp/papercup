@@ -186,6 +186,15 @@ describe('cup_claim_specs store (mig 372)', () => {
     `;
     const dedicated = postgres(db.url, { max: 1, prepare: false });
     h.claimSql = dedicated;
+    // Prime the dedicated pool so the held-connection case below specifically
+    // protects the warm 5s fail-fast path; cold first-use has its own bounded test.
+    expect(
+      await getNextForBee({
+        cupId,
+        harness: 'papercusp',
+        useDedicatedClaimPool: true,
+      }),
+    ).toBeNull();
     const reserved = await dedicated.reserve();
     let released = false;
     const steps: string[] = [];
