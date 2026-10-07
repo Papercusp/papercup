@@ -1088,6 +1088,8 @@ export interface ScorecardEvidenceRow {
   retracted?: ScorecardRetraction;
   /** Read-time: the live subject rubric vs the identity recorded at grading (subject.kind==='rubric' only). */
   subjectRubricCurrentness?: ScorecardSubjectRubricCurrentness;
+  /** Read-time status of exact spec-evidence bindings cited by the stored rerun recipe. */
+  evidenceBindingCurrentness?: ScorecardEvidenceBindingCurrentness;
   /** Read-time: the newer card whose observation.supersedes names this one. */
   supersededBy?: string;
   /**
@@ -1098,13 +1100,23 @@ export interface ScorecardEvidenceRow {
 }
 
 export interface ScorecardAuditTargetStatus {
-  /** true only when not superseded, not retracted, and (for a rubric subject) the subject rubric is current. */
+  /** true only when the card and every applicable read-time currentness relation are current. */
   current: boolean;
   superseded: boolean;
   supersededBy: string | null;
   retracted: boolean;
   /** null when the subject is not a rubric (the check does not apply). */
   subjectRubricCurrentness: ScorecardSubjectRubricCurrentness | null;
+  /** Present when the card's rerun recipe pins spec-evidence binding ids. */
+  evidenceBindingCurrentness?: ScorecardEvidenceBindingCurrentness;
+}
+
+export interface ScorecardEvidenceBindingCurrentness {
+  state: 'current' | 'stale' | 'unknown';
+  reason: 'current' | 'cited-binding-retracted' | 'cited-binding-unavailable' | 'invalid-binding-selector';
+  citedBindingCount: number;
+  retractedBindingIds: string[];
+  unavailableBindingIds: string[];
 }
 
 export type ScorecardRubricCurrentness = RubricEvidenceCurrentness & {
@@ -1158,6 +1170,97 @@ interface ScorecardEvidenceDb {
   retracted: unknown;
   subject_rubric_identity: unknown;
   superseded_by: string | null;
+  cited_binding_ids: unknown;
+  rerun_harness: unknown;
+  cited_binding_rows: unknown;
+}
+
+function classifyScorecardEvidenceBindingCurrentness(
+  rawBindingIds: unknown,
+  rawBindingRows: unknown,
+  rawHarness: unknown,
+): ScorecardEvidenceBindingCurrentness | undefined {
+  // Cards without an exact binding-id selector do not make a claim about a
+  // particular immutable evidence row, so this dimension does not apply.
+  if (rawBindingIds == null) return undefined;
+  if (!Array.isArray(rawBindingIds)) {
+    return {
+      state: 'unknown',
+      reason: 'invalid-binding-selector',
+      citedBindingCount: 0,
+      retractedBindingIds: [],
+      unavailableBindingIds: [],
+    };
+  }
+
+  const ids: string[] = [];
+  for (const value of rawBindingIds) {
+    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) {
+      return {
+        state: 'unknown',
+        reason: 'invalid-binding-selector',
+        citedBindingCount: ids.length,
+        retractedBindingIds: [],
+        unavailableBindingIds: [],
+      };
+    }
+    const id = String(value);
+    if (!ids.includes(id)) ids.push(id);
+  }
+  if (ids.length === 0) {
+    return {
+      state: 'current',
+      reason: 'current',
+      citedBindingCount: 0,
+      retractedBindingIds: [],
+      unavailableBindingIds: [],
+    };
+  }
+  if (!Array.isArray(rawBindingRows)) {
+    return {
+      state: 'unknown',
+      reason: 'cited-binding-unavailable',
+      citedBindingCount: ids.length,
+      retractedBindingIds: [],
+      unavailableBindingIds: ids,
+    };
+  }
+
+  const expectedHarness = typeof rawHarness === 'string' ? rawHarness : null;
+  const rowsById = new Map<string, { found: boolean; harnessSlug: unknown; retractedAt: unknown }>();
+  for (const value of rawBindingRows) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+    const record = value as Record<string, unknown>;
+    if (typeof record.id !== 'string') continue;
+    rowsById.set(record.id, {
+      found: record.found === true,
+      harnessSlug: record.harnessSlug,
+      retractedAt: record.retractedAt,
+    });
+  }
+
+  const unavailableBindingIds = ids.filter((id) => {
+    const binding = rowsById.get(id);
+    return !binding?.found || (expectedHarness !== null && binding.harnessSlug !== expectedHarness);
+  });
+  if (unavailableBindingIds.length > 0) {
+    return {
+      state: 'unknown',
+      reason: 'cited-binding-unavailable',
+      citedBindingCount: ids.length,
+      retractedBindingIds: [],
+      unavailableBindingIds,
+    };
+  }
+
+  const retractedBindingIds = ids.filter((id) => rowsById.get(id)?.retractedAt != null);
+  return {
+    state: retractedBindingIds.length > 0 ? 'stale' : 'current',
+    reason: retractedBindingIds.length > 0 ? 'cited-binding-retracted' : 'current',
+    citedBindingCount: ids.length,
+    retractedBindingIds,
+    unavailableBindingIds: [],
+  };
 }
 
 /**
@@ -1190,6 +1293,32 @@ export async function readScorecardEvidence(issueId: string): Promise<ScorecardE
              scorecard.payload -> 'observation' -> 'provisional' AS provisional,
              scorecard.payload -> 'observation' -> 'retracted' AS retracted,
              scorecard.payload -> 'observation' -> 'subjectRubricIdentity' AS subject_rubric_identity,
+             scorecard.payload -> 'observation' -> 'rerunRecipe' -> 'selection' -> 'bindingIds' AS cited_binding_ids,
+             scorecard.payload -> 'observation' -> 'rerunRecipe' -> 'args' -> 'harness' AS rerun_harness,
+             CASE
+               WHEN jsonb_typeof(scorecard.payload -> 'observation' -> 'rerunRecipe' -> 'selection' -> 'bindingIds') = 'array'
+               THEN (
+                 SELECT COALESCE(jsonb_agg(jsonb_build_object(
+                   'id', cited.binding_id,
+                   'found', binding.id IS NOT NULL,
+                   'harnessSlug', binding.harness_slug,
+                   'retractedAt', binding.retracted_at
+                 ) ORDER BY cited.binding_id), '[]'::jsonb)
+                   FROM jsonb_array_elements_text(
+                     scorecard.payload -> 'observation' -> 'rerunRecipe' -> 'selection' -> 'bindingIds'
+                   ) AS cited(binding_id)
+                   LEFT JOIN harness_shared.spec_evidence_bindings AS binding
+                     ON binding.workspace_id = scorecard.workspace_id
+                    AND binding.id = CASE
+                      -- Evaluator-generated selectors contain positive safe integers.
+                      -- Keep malformed historical values from raising a cast error;
+                      -- the read-side classifier reports them as unavailable instead.
+                      WHEN cited.binding_id ~ '^[1-9][0-9]{0,15}$' THEN cited.binding_id::bigint
+                      ELSE NULL
+                    END
+               )
+               ELSE NULL
+             END AS cited_binding_rows,
              -- Same supersession predicate as listScorecards: supersession is a
              -- READ-TIME relation (a later card names this one in "supersedes"),
              -- never a stamp on this card's own observation (EI-24583166035391772).
@@ -1211,6 +1340,12 @@ export async function readScorecardEvidence(issueId: string): Promise<ScorecardE
   );
   const row = rows[0];
   if (!row) return { kind: 'not_found' };
+
+  const evidenceBindingCurrentness = classifyScorecardEvidenceBindingCurrentness(
+    row.cited_binding_ids,
+    row.cited_binding_rows,
+    row.rerun_harness,
+  );
 
   const observation = asStructuredObservation({
     rubricRef: row.rubric_ref,
@@ -1280,11 +1415,13 @@ export async function readScorecardEvidence(issueId: string): Promise<ScorecardE
     current:
       supersededBy === null &&
       !retracted &&
-      (subjectRubricCurrentness === null || subjectRubricCurrentness.state === 'current'),
+      (subjectRubricCurrentness === null || subjectRubricCurrentness.state === 'current') &&
+      (evidenceBindingCurrentness === undefined || evidenceBindingCurrentness.state === 'current'),
     superseded: supersededBy !== null,
     supersededBy,
     retracted,
     subjectRubricCurrentness,
+    ...(evidenceBindingCurrentness ? { evidenceBindingCurrentness } : {}),
   };
 
   return {
@@ -1314,6 +1451,7 @@ export async function readScorecardEvidence(issueId: string): Promise<ScorecardE
       ...(observation.provisional ? { provisional: observation.provisional } : {}),
       ...(observation.retracted ? { retracted: observation.retracted } : {}),
       ...(subjectRubricCurrentness ? { subjectRubricCurrentness } : {}),
+      ...(evidenceBindingCurrentness ? { evidenceBindingCurrentness } : {}),
       ...(supersededBy ? { supersededBy } : {}),
       auditTarget,
     },
