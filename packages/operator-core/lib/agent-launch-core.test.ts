@@ -901,6 +901,38 @@ describe('resolveResumeTarget', () => {
     expect(r).toMatchObject({ error: 'not_found' });
   });
 
+  it('returns the recorded source role and feature for identity-preserving recovery', async () => {
+    launchCoreSql.mockResolvedValue([{
+      id: 22664,
+      workspace_id: 'ws-test',
+      plan_slug: null,
+      agent: 'claude',
+      role: 'crm-agent',
+      feature: 'WI-10007049',
+      mode: 'console',
+      terminal_bin: null,
+      pid: null,
+      window_id: null,
+      omp_thread_id: null,
+      label: null,
+      cwd: '/repo',
+      coord_owner_id: OWNER,
+      session_id: 'source-session',
+      started_at: '2026-10-07T00:00:00.000Z',
+      binding_started_at: '2026-10-07 00:00:00.000123+00',
+      ended_at: '2026-10-07T00:01:00.000Z',
+      exit_code: 0,
+      ended_by: 'self',
+      launch_argv: ['psu', '--agent=claude'],
+    }] as unknown[]);
+
+    await expect(resolveResumeTarget({ agentId: OWNER })).resolves.toMatchObject({
+      ok: true,
+      role: 'crm-agent',
+      feature: 'WI-10007049',
+    });
+  });
+
   it('uses session_turns only to recover the owner; an exact native UUID never rewinds to the owner row UUID', () => {
     expect(resolvedNativeSessionId('later-rollout-uuid', 'older-root-uuid')).toBe('later-rollout-uuid');
     expect(resolvedNativeSessionId('later-rollout-uuid', null)).toBe('later-rollout-uuid');

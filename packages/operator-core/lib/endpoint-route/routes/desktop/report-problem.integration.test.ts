@@ -20,6 +20,7 @@ vi.mock('@papercusp/db-org', async (orig) => {
 
 const { captureImprovement } = await import('../../../harness/improvements/capture-core');
 const { createIssue, claimIssue } = await import('../../../issues-engineer');
+const { recordIssueOccurrence } = await import('../../../issue-occurrence-ledger');
 const { intakeEndUserReport } = await import('../../../harness/improvements/end-user-intake');
 const { putReportAttachment } = await import('../../../harness/improvements/report-attachments');
 const { buildProblemReport, previewDigest } = await import('../../../harness/improvements/problem-report');
@@ -50,7 +51,11 @@ afterAll(async () => {
 
 // No similarity search: this pins the error-signature fold, which needs no search.
 const capture = (input: Parameters<typeof captureImprovement>[0]) =>
-  captureImprovement(input, { searchIssues: async () => [], createIssue });
+  captureImprovement(input, { searchIssues: async () => [], createIssue,
+    // The occurrence writer's unit-test safeguard requires an explicit SQL
+    // binding. Use the active peer's real database, just like the intake.
+    recordIssueOccurrence: (occurrence) => recordIssueOccurrence(occurrence, h.sql),
+  });
 
 const notes: string[] = [];
 const deps: ReportProblemDeps = {

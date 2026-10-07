@@ -1659,6 +1659,42 @@ describe('resume + fork (D-004/D-007)', () => {
     expect(textOf(res)).toContain("agent's first turn");
   });
 
+  it('preserves a specialized source role and accepted-operation feature when starting a successor', async () => {
+    findLiveHostMock.mockReturnValue(null);
+    resolveResumeTargetMock.mockResolvedValue({
+      ...dead,
+      role: 'crm-agent',
+      feature: 'WI-10007049',
+    });
+    renderCarryBriefTextMock.mockReturnValue('checkpoint: continue the accepted operation');
+    verifyFreshLaunchStartedMock.mockResolvedValue({
+      agentStarted: true,
+      waitedMs: 5,
+      sessions: [{ ownerId: 'su-a1a71', sessionId: 'session-specialized-successor', successfulCalls: 1 }],
+      note: 'specialized successor verified',
+    });
+
+    const res = await launchAgent.handler(
+      {
+        successor: { agentId: 'su-a1a71' },
+        agent: 'claude',
+        model: 'sonnet',
+        headless: true,
+        brief: 'continue the accepted operation',
+      },
+      ctx,
+    );
+
+    expect(isError(res), textOf(res)).toBe(false);
+    expect(spawnHeadlessMock).toHaveBeenCalledTimes(1);
+    expect(spawnedCommand(spawnHeadlessMock)).toContain('--role=crm-agent');
+    expect(spawnedCommand(spawnHeadlessMock)).toContain('--feature=WI-10007049');
+    expect(assembleRolePromptMock).toHaveBeenCalledWith(expect.objectContaining({
+      slug: 'papercusp',
+      role: 'crm-agent',
+    }));
+  });
+
   it('starts an ended Codex cold-loop successor without resuming its critical transcript', async () => {
     findLiveHostMock.mockReturnValue(null);
     resolveResumeTargetMock.mockResolvedValue({ ...dead, agent: 'codex' });

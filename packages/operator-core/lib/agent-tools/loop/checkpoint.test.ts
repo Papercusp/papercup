@@ -286,7 +286,19 @@ beforeEach(() => {
   selfCompactionAvailability.mockReturnValue({ available: false });
   readFleetWindDownLoopEndAuthorization.mockResolvedValue(null);
   withBoundedTimeout.mockImplementation(async (work: unknown, options: unknown) => {
-    if ((options as { label?: string }).label === 'loop:checkpoint decision-ref advisory') {
+    const label = (options as { label?: string }).label;
+    if (label === 'loop:checkpoint armed-routine scope probe' || label === 'loop:checkpoint session-scope read') {
+      try {
+        return {
+          value: await (work as () => Promise<unknown>)(),
+          degraded: false,
+          elapsedMs: 0,
+        };
+      } catch {
+        return { value: null, degraded: true, elapsedMs: 0 };
+      }
+    }
+    if (label === 'loop:checkpoint decision-ref advisory') {
       try {
         return {
           value: await (work as () => Promise<unknown>)(),
@@ -822,9 +834,10 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
       remedy: 'Wake the owner of WI-42; if it does not resume promptly, claim/take over WI-42.',
     } as const;
     listVerifiedWaitTakeoversForSubscribers.mockResolvedValueOnce([alert]);
-    // Positional: the takeover read is the 4th bounded call. One of the three before it
-    // is the P-005 fleet_zero_workers guard, whose absent value reads as allow.
+    // Positional: the takeover read is the 5th bounded call. Before it are the
+    // armed-routine scope probe, the P-005 guard, and the two advisory reads.
     withBoundedTimeout
+      .mockResolvedValueOnce({ value: undefined, degraded: false, elapsedMs: 0 })
       .mockResolvedValueOnce({ value: undefined, degraded: false, elapsedMs: 0 })
       .mockResolvedValueOnce({ value: undefined, degraded: false, elapsedMs: 0 })
       .mockResolvedValueOnce({ value: undefined, degraded: false, elapsedMs: 0 })
@@ -1389,6 +1402,41 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
     warn.mockRestore();
   });
 
+  it('bounds a hanging armed-routine scope probe and writes with an explicit unverified-scope warning', async () => {
+    const neverSettles = new Promise<never>(() => undefined);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    getLoopStatus.mockReturnValueOnce(neverSettles);
+    withBoundedTimeout.mockImplementationOnce(async (work: unknown, options: unknown) => {
+      if (typeof work === 'function') void (work as () => Promise<unknown>)();
+      return {
+        value: (options as { fallback: unknown }).fallback,
+        degraded: true,
+        reason: 'timeout',
+        elapsedMs: 5_000,
+      };
+    });
+
+    const result = await call({ next: 'continue despite a slow armed-routine scope read' });
+    const resultBody = body(result);
+    expect(resultBody).toMatchObject({
+      ok: true,
+      harness: 'papercusp',
+      routineProbeFailed: { wroteTo: 'papercusp' },
+    });
+    expect(setLoopCarryNoteWithPrior).toHaveBeenCalledOnce();
+    const { CONTINUATION_READ_BUDGET_MS } = await import('./checkpoint');
+    expect(withBoundedTimeout).toHaveBeenCalledWith(
+      expect.any(Function),
+      expect.objectContaining({
+        fallback: null,
+        timeoutMs: CONTINUATION_READ_BUDGET_MS,
+        label: 'loop:checkpoint armed-routine scope probe',
+      }),
+    );
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
   it('EI-22166372050218668: a getLoopStatus failure stays silent when an explicit harness argument resolves the write anyway', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     getLoopStatus.mockRejectedValueOnce(new Error('pg down'));
@@ -1457,6 +1505,11 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
   it('EI-21371395040636011: bounds a hanging durable session-scope fallback', async () => {
     const neverSettles = new Promise<never>(() => undefined);
     getSessionBrief.mockReturnValueOnce(neverSettles);
+    withBoundedTimeout.mockImplementationOnce(async (work: unknown) => ({
+      value: await (work as () => Promise<unknown>)(),
+      degraded: false,
+      elapsedMs: 0,
+    }));
     withBoundedTimeout.mockImplementationOnce(async (work: unknown, options: unknown) => {
       // Start the thunk to prove the handler supplies lazy work to the bounded helper,
       // then return its fallback as the real helper would after the deadline.
@@ -2055,9 +2108,10 @@ describe('WI-7124: verify-read — the write must read back via the SAME path a 
   it('a verify mismatch short-circuits BEFORE the advisory continuation-gate reads run', async () => {
     getLoopCarryNoteWithMeta.mockResolvedValueOnce({ note: 'something-else', updatedAtMs: 1 });
     await call({ next: 'x' });
-    // The only bounded call is the PRE-write P-005 fleet_zero_workers guard; no
+    // The armed-routine probe and PRE-write P-005 guard run; no advisory
     // continuation-gate read runs after the mismatch.
     expect(withBoundedTimeout.mock.calls.map((c) => (c[1] as { label?: string } | undefined)?.label)).toEqual([
+      'loop:checkpoint armed-routine scope probe',
       'loop:checkpoint fleet_zero_workers',
     ]);
   });

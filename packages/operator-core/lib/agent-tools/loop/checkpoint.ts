@@ -878,14 +878,20 @@ export default defineTool({
     // well-formed but frozen note. Track whether the probe itself failed (vs. genuinely
     // resolved "no active routine") so the response below can say so out loud.
     let routineProbeFailed = false;
-    const armedRoutine = await getLoopStatus(ownerId).catch((e) => {
+    const routineProbe = await withBoundedTimeout(() => getLoopStatus(ownerId), {
+      fallback: null,
+      timeoutMs: CONTINUATION_READ_BUDGET_MS,
+      label: 'loop:checkpoint armed-routine scope probe',
+    });
+    const armedRoutine = routineProbe.value;
+    if (routineProbe.degraded) {
       routineProbeFailed = true;
+      const reason = routineProbe.errorMessage ?? routineProbe.reason ?? 'unknown bounded-read failure';
       console.warn(
         '[loop:checkpoint] getLoopStatus probe failed while resolving carry-note scope (fail-open, WI-2148):',
-        e as Error,
+        routineProbe.error ?? new Error(reason),
       );
-      return null;
-    });
+    }
     const activeRoutine = armedRoutine?.active === true;
     const activeRoutineHarness = activeRoutine ? armedRoutine.harnessSlug : null;
     // Only meaningful when the probe failure could actually have changed the outcome: a

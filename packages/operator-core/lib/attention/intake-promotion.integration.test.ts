@@ -601,6 +601,25 @@ describe('verification task parties (P-007)', () => {
     // Control: an independent reviewer's decision on the same source goes through.
     expect(await exec(cand.id, await decide(cand.id, INVESTIGATE))).toMatchObject({ ok: true, created: true });
   });
+
+  it('refuses an occurrence-only reporter and carries that party into the investigation claim guard', async () => {
+    const cand = await bugWithReproducer();
+    const reporter = 'su-occurrence-only';
+    await db.adminSql`
+      INSERT INTO harness_shared.work_item_occurrences
+        (workspace_id, canonical_harness_slug, canonical_work_item_id, reporter, source_tool, report_kind, reported_title)
+      SELECT workspace_id, harness_slug, feature_id, ${reporter}, 'improvements:capture', 'coalesced', title
+        FROM harness_shared.work_items WHERE feature_id = ${cand.id}`;
+    const before = await payloadOf(cand.id);
+    expect(await exec(cand.id, await decide(cand.id, INVESTIGATE, reporter))).toMatchObject({ ok: false, refusal: 'acceptance-invalid-authority' });
+    expect(await payloadOf(cand.id)).toEqual(before);
+    const accepted = await exec(cand.id, await decide(cand.id, INVESTIGATE));
+    expect(accepted.ok).toBe(true);
+    if (!accepted.ok || !accepted.workItemId) throw new Error(JSON.stringify(accepted));
+    expect(readVerificationTask(await payloadOf(accepted.workItemId))?.reporters).toContain(reporter);
+    expect(await claimIssue(accepted.workItemId, reporter)).toBeNull();
+    expect(await claimIssue(accepted.workItemId, VERIFIER)).toMatchObject({ assignee: VERIFIER });
+  });
 });
 
 describe('partial failures', () => {

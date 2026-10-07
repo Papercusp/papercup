@@ -1617,6 +1617,7 @@ button.hud__pkgcard:focus-visible {
 /* Ongoing work shares the goal engine and the HUD's semantic palette. */
 .hud-ongoing__package { flex: 1 1 100%; min-width: 0; }
 .hud-ongoing {
+  container-type: inline-size;
   min-width: 0;
   border: 1px solid var(--border);
   border-left: 3px solid var(--accent);
@@ -1643,11 +1644,18 @@ button.hud__pkgcard:focus-visible {
 .hud-ongoing__lanes { padding: 16px; border-top: 1px solid var(--border); }
 .hud-ongoing__lanes ol { margin: 12px 0 0; padding-left: 24px; }
 .hud-ongoing__lanes li { padding: 8px 0; font-size: 12px; }
+.hud-ongoing__plans { margin-top: 12px; }
 .hud-ongoing__error { color: var(--warn); font-size: 12px; }
 .hud-ongoing--detail .hud-ongoing__top { flex-direction: column; }
 .hud-ongoing--detail .hud-ongoing__signals { grid-template-columns: minmax(0, 1fr); }
 .hud-ongoing--detail .hud-ongoing__signals > div + div { border-left: 0; border-top: 1px solid var(--border); }
 @media (max-width: 700px) {
+  .hud-ongoing__top { flex-direction: column; gap: 12px; }
+  .hud-ongoing__signals { grid-template-columns: minmax(0, 1fr); }
+  .hud-ongoing__signals > div + div { border-left: 0; border-top: 1px solid var(--border); }
+  .hud-ongoing__actions { width: 100%; }
+}
+@container (max-width: 600px) {
   .hud-ongoing__top { flex-direction: column; gap: 12px; }
   .hud-ongoing__signals { grid-template-columns: minmax(0, 1fr); }
   .hud-ongoing__signals > div + div { border-left: 0; border-top: 1px solid var(--border); }

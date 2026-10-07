@@ -43,7 +43,7 @@ export function ongoingWorkView(goal: HudGoalInput | null | undefined, detail?: 
     ? `$${recent.toFixed(2)} in the last ${days} days` : null;
   const cents = current?.budgetCents;
   const sec = current?.budgetWindowSec;
-  const window = sec == null ? 'lifetime' : sec % 86400 === 0 ? `${sec / 86400} days`
+  const window = sec === undefined ? 'window unavailable' : sec === null ? 'lifetime' : sec % 86400 === 0 ? `${sec / 86400} days`
     : sec % 3600 === 0 ? `${sec / 3600} hours` : `${sec} seconds`;
   return {
     status: ongoingStatus(current?.status, data?.effectiveStatus ?? goal?.effectiveStatus,

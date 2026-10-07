@@ -1333,7 +1333,10 @@ export default function HudView({
         nowMs={nowMs}
         onClose={() => void setGoalFilter(null)}
         onOpenWorkItem={(id) => void setOpenItemId(id)}
-        onOpenPlan={(harness, slug) => void setDashPlan(encodeScopedRef(harness, slug))}
+        onOpenPlan={(harness, slug) => {
+          void setGoalFilter(null);
+          void setDashPlan(encodeScopedRef(harness, slug));
+        }}
         /* P-018/D-011: the goal popup's ONE conversation affordance. It routes
            into the SAME `hudsession` popup the sessions pane opens rather than
            growing a chat surface of its own — D-005, never fork a second chat

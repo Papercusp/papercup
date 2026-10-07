@@ -829,3 +829,50 @@ describe('codex OAuth kernel adapter — model refusal fails over without parkin
     expect(selectAlternate).not.toHaveBeenCalled();
   });
 });
+
+describe('Codex OAuth quota errors inside successful HTTP streams', () => {
+  const quota = { code: 'usage_limit_reached', message: "You've hit your usage limit", resets_at: 2_000_000_000 };
+  const frame = (value: unknown) => `data: ${JSON.stringify(value)}\n\n`;
+  const failed = (kind: 'error' | 'response.failed') => kind === 'error'
+    ? { type: kind, error: quota }
+    : { type: kind, response: { id: 'failed-a', error: quota } };
+
+  it.each(['error', 'response.failed'] as const)('fails over a %s quota event before committing any failed response', async (kind) => {
+    const accounts = [cli('chatgpt-a'), cli('chatgpt-b')];
+    const pool = makePool([{ accountId: 'chatgpt-b' }]);
+    const wire = frame({ type: 'response.completed', response: { id: 'ok-b', output: [] } });
+    const h = harness(async (_url, init) => init.diagnosticAccountId === 'chatgpt-a'
+      ? upstream(200, { 'content-type': 'text/event-stream' }, sseBody(frame(failed(kind)).slice(0, 17), frame(failed(kind)).slice(17)))
+      : upstream(200, { 'content-type': 'text/event-stream' }, sseBody(wire)), { accounts, pool });
+    await executeGatewayRequestKernel(h.options);
+    expect(h.prepared.map((p) => p.accountId)).toEqual(['chatgpt-a', 'chatgpt-b']);
+    expect(h.started.map((s) => s.metadata.accountId)).toEqual(['chatgpt-b']);
+    expect(h.written.join('')).toBe(wire);
+    expect(pool.exhaustedCalls.map((p) => p.id)).toEqual(['chatgpt-a']);
+  });
+
+  it('does not leave an explicit hard pin when its stream reports quota exhaustion', async () => {
+    const accounts = [cli('chatgpt-a'), cli('chatgpt-b')];
+    const pool = makePool([{ accountId: 'chatgpt-b' }]);
+    const h = harness(async () => upstream(200, { 'content-type': 'text/event-stream' }, sseBody(frame(failed('error')))),
+      { accounts, pool, pin: { accountId: 'chatgpt-a', mode: 'hard' } });
+    await executeGatewayRequestKernel(h.options);
+    expect(h.prepared.map((p) => p.accountId)).toEqual(['chatgpt-a']);
+    expect(h.started[0]!.status).toBe(429);
+    expect(pool.exhaustedCalls).toEqual([]);
+  });
+
+  it('preserves non-quota errors and never replays already-visible output', async () => {
+    const accounts = [cli('chatgpt-a'), cli('chatgpt-b')];
+    const pool = makePool([{ accountId: 'chatgpt-b' }]);
+    const output = frame({ type: 'response.output_text.delta', delta: "You've hit your usage limit" });
+    const wire = output + frame(failed('error'));
+    const h = harness(async () => upstream(200, { 'content-type': 'text/event-stream' }, sseBody(output, frame(failed('error')))),
+      { accounts, pool });
+    await executeGatewayRequestKernel(h.options);
+    expect(h.prepared).toHaveLength(1);
+    expect(h.written.join('')).toBe(wire);
+    // The failed account must yield on the next request in this SAME session, without replaying emitted content.
+    expect(pool.exhaustedCalls.map((p) => p.id)).toEqual(['chatgpt-a']);
+  });
+});

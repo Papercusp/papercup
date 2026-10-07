@@ -42,6 +42,8 @@ describe('ongoing goal presentation', () => {
     expect(view.spend).toBe('$0.00 in the last 3 days');
     expect(view.budget).toBe('$100.00 / 7 days');
     expect(ongoingWorkView({ ...goal, spendRecentUsd: 42 }).spend).toBeNull();
+    expect(ongoingWorkView({ ...goal, budgetCents: 10000 }).budget).toBe('$100.00 / window unavailable');
+    expect(ongoingWorkView({ ...goal, budgetCents: 10000, budgetWindowSec: null }).budget).toBe('$100.00 / lifetime');
   });
   it('suppresses only represented standing instance ids, independent of title', () => {
     const entries = [

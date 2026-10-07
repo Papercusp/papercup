@@ -48,12 +48,15 @@ test('ongoing work stays visible across tabs, keeps ordinary goals, and opens th
   // The represented id has exactly one displayed title; title matching cannot hide ordinary goals.
   await expect(page.getByRole('heading', { name: current.title, exact: true })).toHaveCount(1);
   await page.screenshot({ path: test.info().outputPath('ongoing-featured.png') });
-  for (const tab of ['sessions', 'plans', 'items']) {
-    await page.goto(`/adv?tab=hud&scope=all&hudtab=${tab}&welcome=0`);
+  for (const tab of ['Sessions', 'Plans', 'Work items']) {
+    await page.getByRole('tablist', { name: 'HUD board' }).getByRole('tab', { name: tab, exact: true }).click();
     await expect(rail.getByRole('button', { name: 'View work' })).toBeVisible();
     await expect(rail.getByText('31 needs you')).toBeVisible();
   }
-  await rail.getByRole('button', { name: 'View work' }).click();
+  const openWork = rail.getByRole('button', { name: 'View work' });
+  await openWork.focus();
+  await expect(openWork).toBeFocused();
+  await openWork.press('Enter');
   await expect(page).toHaveURL(/hudgoal=ongoing-current/);
   const overview = page.locator('.hud-ongoing--detail');
   await expect(overview.getByText('Where work is moving')).toBeVisible();
@@ -83,12 +86,22 @@ test('mobile strip preserves truthful status after a refused pause', async ({ pa
   await expect(rail.getByText('Running', { exact: true })).toBeVisible();
   const write = page.waitForResponse('**/api/admin/goals/update');
   await rail.getByRole('button', { name: /Pause/ }).click();
+  await page.getByRole('dialog', { name: 'Pause this goal?' }).getByRole('button', { name: 'Pause goal', exact: true }).click();
   expect((await write).status()).toBe(409);
   await expect(rail.getByText('Running', { exact: true })).toBeVisible();
   await expect(rail.getByRole('button', { name: 'View work' })).toBeInViewport();
   const horizontalOverflow = await rail.evaluate((el) => el.scrollWidth > el.clientWidth);
   expect(horizontalOverflow).toBe(false);
   await page.screenshot({ path: test.info().outputPath('ongoing-mobile.png') });
+  await page.getByRole('tablist', { name: 'HUD board' }).getByRole('tab', { name: 'Goals', exact: true }).click();
+  await expect(rail.getByRole('button', { name: 'View ongoing work' })).toBeInViewport();
+  expect(await rail.evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(false);
+  await page.screenshot({ path: test.info().outputPath('ongoing-mobile-featured.png') });
+  await rail.getByRole('button', { name: 'View ongoing work' }).click();
+  const overview = page.locator('.hud-ongoing--detail');
+  await expect(overview.getByText('Where work is moving')).toBeVisible();
+  expect(await overview.evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(false);
+  await page.screenshot({ path: test.info().outputPath('ongoing-mobile-detail.png') });
   sync.assertServed('goals.list');
   sync.assertServed('goals.detail');
 });
