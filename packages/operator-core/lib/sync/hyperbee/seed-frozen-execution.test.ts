@@ -50,6 +50,23 @@ describe('D178 process module census', () => {
 });
 
 describe('D177 installed dependency census', () => {
+  it('censuses installed packages under a synchronous-only subprocess mock', async () => {
+    const synchronousRunner = vi.fn();
+    vi.resetModules();
+    vi.doMock('node:child_process', () => ({ execFileSync: synchronousRunner }));
+    try {
+      const { readSeedInstalledPackages: census } = await import('./seed-frozen-execution');
+      const root = temp();
+      pkg(root, 'node_modules/a', 'a');
+      const locks = [{ path: 'package-lock.json', packages: { 'node_modules/a': { version: '1.0.0' } } }];
+      expect((await census(root, ['node_modules'], locks)).map(row => row.path)).toEqual(['node_modules/a']);
+      expect(synchronousRunner).not.toHaveBeenCalled();
+    } finally {
+      vi.doUnmock('node:child_process');
+      vi.resetModules();
+    }
+  });
+
   it('excludes hidden tooling names inside scopes and still refuses unlocked installed packages', async () => {
     const root = temp();
     pkg(root, 'node_modules/.a-1234abcd', 'a');

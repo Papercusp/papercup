@@ -8,7 +8,11 @@ import { createRequire } from 'node:module';
 import { dirname, join, relative, resolve, posix } from 'node:path';
 import { promisify } from 'node:util';
 
-const exec = promisify(execFile);
+// Pure census helpers may be imported under a synchronous-only subprocess mock.
+// Reuse git-batch's typed memoized wrapper; promisify only when shell is called.
+let execMemo: typeof execFile.__promisify__ | null = null;
+const exec = ((...args: unknown[]) =>
+  Reflect.apply((execMemo ??= promisify(execFile)), undefined, args)) as typeof execFile.__promisify__;
 const hash = (bytes: string | Buffer) => createHash('sha256').update(bytes).digest('hex');
 const HEX = /^[0-9a-f]{64}$/;
 const SECURITY_NAMES = new Set(['hypercore', 'hyperbee', 'hypercore-crypto',
