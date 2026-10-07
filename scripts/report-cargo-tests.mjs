@@ -21,8 +21,10 @@
  *   - short connect timeout, swallow every PG error, never throw out of the
  *     insert path.
  *
- * Usage: node scripts/report-cargo-tests.mjs --manifest-path <path/to/Cargo.toml> [-- <cargo test args>]
- * Example: node scripts/report-cargo-tests.mjs --manifest-path papercusp-desktop/src-tauri/Cargo.toml
+ * Usage: node scripts/report-cargo-tests.mjs --manifest-path <path/to/Cargo.toml> [-- <libtest args>]
+ * Arguments after -- go to the libtest test binary, not Cargo.
+ * Cargo flags such as --all-targets are not supported.
+ * Example: node scripts/report-cargo-tests.mjs --manifest-path papercusp-desktop/src-tauri/Cargo.toml -- --nocapture
  *
  * Granularity note: stable `cargo test` gives no per-test source-file or duration
  * — only a qualified test path (e.g. `app_role::tests::role_from_env_defaults_to_gui`)
@@ -419,7 +421,8 @@ async function insertRows(sql, rows, worktree, testRunReporter) {
 async function main() {
   const { manifestPath, cargoArgs, coverage: coverageRequested, coverageOutput } = parseArgs(process.argv.slice(2));
   if (!manifestPath) {
-    console.error('usage: report-cargo-tests.mjs --manifest-path <path/to/Cargo.toml> [--coverage [--coverage-output <lcov>]] [-- <cargo test args>]');
+    console.error('usage: report-cargo-tests.mjs --manifest-path <path/to/Cargo.toml> [--coverage [--coverage-output <lcov>]] [-- <libtest args>]');
+    console.error('Arguments after -- go to the libtest test binary (for example, -- --nocapture). Cargo flags such as --all-targets are not supported.');
     process.exit(2);
   }
   const manifestAbs = resolve(REPO_ROOT, manifestPath);
