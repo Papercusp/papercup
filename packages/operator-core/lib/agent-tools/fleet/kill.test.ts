@@ -296,7 +296,7 @@ describe('killOne', () => {
     const kills: Array<{ pid: number; signal: string }> = [];
     const deps: KillDeps = {
       cancelNursery: async () => null,
-      findHost: () => host(300),
+      findHost: () => stubborn.has(300) ? host(300) : null,
       readProc: () => null, // no ancestry → terminal not-found
       kill: (pid, signal) => {
         kills.push({ pid, signal });
