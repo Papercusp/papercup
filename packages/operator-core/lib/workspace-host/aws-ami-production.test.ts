@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -209,7 +209,7 @@ describe('SdkAwsAmiReleaseAdapter.buildCandidate', () => {
       const runs: unknown[] = [];
       const second = { exitCode: 1, stdout: '', stderr: TRANSPORT.replaceAll('snap-0dead1', 'snap-0dead2') };
       const adapter = sequencedAdapter([{ exitCode: 1, stdout: '', stderr: TRANSPORT }, second], calls, runs);
-      await expect(adapter.buildCandidate(buildInput())).rejects.toThrow(/coldsnap upload \(attempt 2\/2\) exited 1: .*dispatch failure/);
+      await expect(adapter.buildCandidate(buildInput())).rejects.toThrow(/coldsnap upload \(attempt 2\/2\) exited 1 .*dispatch failure/);
       expect(runs).toHaveLength(2);
       expect(deletedSnapshots(calls)).toEqual(['snap-0dead1', 'snap-0dead2']);
       expect(calls.some((call) => call.name === 'RegisterImageCommand')).toBe(false);
@@ -220,7 +220,7 @@ describe('SdkAwsAmiReleaseAdapter.buildCandidate', () => {
       const runs: unknown[] = [];
       const denied = { exitCode: 1, stdout: '', stderr: "Failed to start snapshot 'snap-0dead3': AccessDeniedException" };
       const adapter = sequencedAdapter([denied], calls, runs);
-      await expect(adapter.buildCandidate(buildInput())).rejects.toThrow(/coldsnap upload \(attempt 1\/2\) exited 1: .*AccessDenied/);
+      await expect(adapter.buildCandidate(buildInput())).rejects.toThrow(/coldsnap upload \(attempt 1\/2\) exited 1 .*AccessDenied/);
       expect(runs).toHaveLength(1);
       expect(deletedSnapshots(calls)).toEqual(['snap-0dead3']);
     });
@@ -243,8 +243,24 @@ describe('SdkAwsAmiReleaseAdapter.buildCandidate', () => {
       const adapter = sequencedAdapter([{ exitCode: 1, stdout: '', stderr: TRANSPORT }], calls, runs, () => {
         throw Object.assign(new Error('throttled'), { name: 'RequestLimitExceeded' });
       });
-      await expect(adapter.buildCandidate(buildInput())).rejects.toThrow(/partial snapshot NOT deleted: snap-0dead1/);
+      await expect(adapter.buildCandidate(buildInput())).rejects.toThrow(/partial snapshot NOT deleted: snap-0dead1; cleanup errors: snap-0dead1: RequestLimitExceeded/);
       expect(runs).toHaveLength(1);
+    });
+
+    it('preserves both complete streams when the upload error exceeds the report excerpt', async () => {
+      const stdout = 'upload-start diagnostic';
+      const stderr = `original transport cause\n${'x'.repeat(AWS_AMI_COMMAND_ERROR_DETAIL_CHARS)}\nAccessDeniedException`;
+      const adapter = sequencedAdapter([{ exitCode: 1, stdout, stderr }], [], []);
+      const error = await adapter.buildCandidate(buildInput()).catch((failure: Error) => failure);
+      expect(error).toBeInstanceOf(Error);
+      const path = (error as Error).message.match(/\[full output: ([^\]]+)\]/)?.[1];
+      expect(path).toBeTruthy();
+      try {
+        expect(await readFile(path!, 'utf8')).toBe(`--- stdout ---\n${stdout}\n--- stderr ---\n${stderr}`);
+        expect((error as Error).message.indexOf('[full output:')).toBeLessThan(200);
+      } finally {
+        await rm(path!, { force: true });
+      }
     });
   });
 

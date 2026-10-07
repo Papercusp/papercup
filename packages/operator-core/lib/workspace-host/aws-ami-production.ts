@@ -78,6 +78,7 @@ import {
 import type { AwsBootcCleanRoomDiscardInput, AwsBootcCleanRoomStageInput } from './aws-bootc-clean-room-executor';
 import type { WorkspaceHostBootcCloudArtifact } from './bootc-bake-manifest';
 import { AWS_AMI_SCAN_COLDSNAP_ENV } from './coldsnap-pin';
+import { spillDiagnostic } from './diagnostic-excerpt';
 import { resolveSbomGuestToolVersions } from './guest-tool-versions';
 import { CANARY_BUDGETS, SSM_CHUNK_CHARS } from '../../bin/aws-ami-canary-measure.mjs';
 // The argv/shell:false process boundary is cloud-neutral; reuse it rather than fork a second one.
@@ -258,8 +259,9 @@ export const AWS_AMI_COMMAND_ERROR_DETAIL_CHARS = 24_000;
 
 function assertSuccess(result: AwsAmiCommandResult, operation: string): string {
   if (result.exitCode !== 0) {
+    const diagnosticPath = spillDiagnostic(operation, `--- stdout ---\n${result.stdout}\n--- stderr ---\n${result.stderr}`, 'papercusp-aws-ami-');
     const detail = (result.stderr.trim() || result.stdout.trim()).slice(-AWS_AMI_COMMAND_ERROR_DETAIL_CHARS);
-    fail(`${operation} exited ${result.exitCode}${detail ? `: ${detail}` : ''}`);
+    fail(`${operation} exited ${result.exitCode}${diagnosticPath ? ` [full output: ${diagnosticPath}]` : ''}${detail ? `: ${detail}` : ''}`);
   }
   return result.stdout;
 }
@@ -438,12 +440,18 @@ export class SdkAwsAmiReleaseAdapter implements AwsAmiReleaseAdapter {
       }
       const output = `${upload.stdout}\n${upload.stderr}`;
       const residue: string[] = [];
+      const cleanupErrors: string[] = [];
       for (const partial of new Set(output.match(SNAPSHOT_ID_IN_OUTPUT) ?? [])) {
-        await ignoreNotFound(() => ec2.send(new DeleteSnapshotCommand({ SnapshotId: partial }))).catch(() => residue.push(partial));
+        await ignoreNotFound(() => ec2.send(new DeleteSnapshotCommand({ SnapshotId: partial }))).catch((error: unknown) => {
+          residue.push(partial);
+          // Keep the provider code, without credential-bearing request metadata or messages.
+          const code = error && typeof error === 'object' && 'name' in error && typeof error.name === 'string' ? error.name : 'unknown';
+          cleanupErrors.push(`${partial}: ${code}`);
+        });
       }
       if (attempt < UPLOAD_ATTEMPTS && residue.length === 0 && COLDSNAP_TRANSPORT_FAILURE.test(output)) continue;
       const operation = `coldsnap upload (attempt ${attempt}/${UPLOAD_ATTEMPTS})`;
-      assertSuccess(upload, residue.length ? `${operation}, partial snapshot NOT deleted: ${residue.join(', ')};` : operation);
+      assertSuccess(upload, residue.length ? `${operation}, partial snapshot NOT deleted: ${residue.join(', ')}; cleanup errors: ${cleanupErrors.join(', ')};` : operation);
     }
   }
 
