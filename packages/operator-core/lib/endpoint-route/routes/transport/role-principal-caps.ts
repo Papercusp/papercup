@@ -104,6 +104,12 @@ export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = 
     'plans:read',
     'testing:run',
     'capability:fs-read',
+    // EI-25277095047945170: judge gets the narrow structured Git evidence
+    // reader, never capability:git's arbitrary argv/scratchClone surface.
+    'capability:git-evidence:read',
+    // Search is harness-only in the handler; do not grant memory:read (which
+    // also opens list/get and the personal memory pool).
+    'memory:search:read',
     // EI-24903256825782248: a rubric method can mandate a grading-runbook
     // read; docs:get is the only reader (allowlists `judge`). Read-only.
     'docs:read',
@@ -474,6 +480,13 @@ export async function loadRoleCapabilities(
   } catch {
     /* additive grants only — never block capability resolution on a flag/read error */
   }
+  // The judge's role ceiling excludes the broad memory family even if an old
+  // provisioned row or runtime grant still carries memory:read.
+  if (roleName === 'judge') caps.delete('memory:read');
+  // Preserve existing readers' memory:search access while separating that
+  // one read route from the broader memory:read family. Judges receive the
+  // narrow capability explicitly above and therefore do not inherit memory:read.
+  if (caps.has('memory:read')) caps.add('memory:search:read');
   return caps;
 }
 
