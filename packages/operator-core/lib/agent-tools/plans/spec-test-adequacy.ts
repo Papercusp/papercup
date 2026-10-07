@@ -135,6 +135,7 @@ export interface SpecEvidenceForAdequacy {
     failed: number;
     skipped: number;
     collectionFailed: boolean;
+    testLayer?: string;
     passedCaseTitles?: string[];
   } | null;
   details: Record<string, unknown>;
@@ -475,7 +476,6 @@ const HIGH_RISK_BEHAVIOR_CLASSES = new Set<SpecBehaviorClass>([
 // proof, while only the ordinary test outcomes below count as repaired proof.
 const SUCCESS_OUTCOMES = new Set(['pass', 'passed', 'success', 'succeeded', 'killed', 'caught']);
 const REPAIRED_OUTCOMES = new Set(['pass', 'passed', 'success', 'succeeded']);
-const FAILURE_OUTCOMES = new Set(['fail', 'failed', 'error', 'timed-out', 'timeout', 'survived']);
 const EXECUTABLE_EVIDENCE_KINDS = new Set<SpecEvidenceKind>([
   'test',
   'coverage-census',
@@ -897,16 +897,47 @@ function hasExecutionLedgerReference(row: SpecEvidenceForAdequacy): boolean {
   );
 }
 
+/** A binder's case list is corroborated only by the exact passing test-run row. */
+function hasPassingTestBaselineCase(row: SpecEvidenceForAdequacy, caseTitle: string): boolean {
+  const run = row.testRunExecution;
+  return row.evidenceKind === 'test' &&
+    row.testRunId !== null &&
+    run != null &&
+    run.status?.toLowerCase() === 'pass' &&
+    run.passed > 0 &&
+    run.failed === 0 &&
+    run.collectionFailed === false &&
+    run.passedCaseTitles?.includes(caseTitle) === true;
+}
+
+type MeasuredExecutionVerdict = 'pass' | 'fail' | 'unknown';
+
+/** Run-backed proof takes its execution verdict from test_runs, never copied binder booleans. */
+function measuredExecutionVerdict(row: SpecEvidenceForAdequacy): MeasuredExecutionVerdict {
+  if (row.testRunId === null) return 'unknown';
+  const run = row.testRunExecution;
+  const status = run?.status?.toLowerCase();
+  if (!run || !status || status === 'running' || status === 'error') return 'unknown';
+  if (status === 'skipped' || status === 'cancelled' || status === 'canceled') return 'fail';
+
+  if (row.evidenceKind === 'mutation') {
+    if (status === 'pass') return 'fail';
+    if (status !== 'fail' || run.collectionFailed || run.failed < 1 || run.skipped > 0) return 'unknown';
+    // The evidence reader exposes these lines only for a failed mutation-probe row;
+    // the paired test binding must also match this canonical file.
+    return row.testRunProvenance?.mutationFailureLines?.length ? 'pass' : 'unknown';
+  }
+
+  if (status === 'fail') return 'fail';
+  if (status !== 'pass') return 'unknown';
+  return run.collectionFailed || run.skipped > 0 || run.failed > 0 || run.passed < 1 ? 'fail' : 'pass';
+}
+
 function isSuccessfulExecutableEvidence(row: SpecEvidenceForAdequacy): boolean {
-  const details = detailsOf(row);
-  return (
-    EXECUTABLE_EVIDENCE_KINDS.has(row.evidenceKind) &&
-    hasExecutionLedgerReference(row) &&
-    details.collected === true &&
-    details.skipped === false &&
-    details.executed === true &&
-    SUCCESS_OUTCOMES.has(details.outcome?.toLowerCase() ?? '')
-  );
+  if (!EXECUTABLE_EVIDENCE_KINDS.has(row.evidenceKind) || !hasExecutionLedgerReference(row)) return false;
+  // A coverage-evidence reference is useful traceability, but it does not carry the
+  // canonical test_runs status/count verdict. Binder booleans cannot stand in for that row.
+  return row.testRunId !== null && measuredExecutionVerdict(row) === 'pass';
 }
 
 // EI-23756870948948211: when a row FAILS isSuccessfulExecutableEvidence, callers need to know
@@ -1375,8 +1406,10 @@ function appendRatingRerunProbes(
  *   4 — a mutation/counterexample target must be corroborated by successful current test evidence
  *       for its canonical test file on the same clause revision.
  *   5 — a mutation's measured failed case must exactly appear in that test binding's adequacy.testCases.
+ *   6 — canonical test-run status/counts and exact passed-case identities corroborate positive binder claims;
+ *       correct-layer reads the runtime-measured layer and rejects a contradictory binder layer.
  */
-export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 5;
+export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 6;
 
 type MutationTargetClause = Pick<SpecClauseRevision, 'specId' | 'falsifier'>;
 
@@ -1490,7 +1523,9 @@ function clauseBoundMutationTest(
   // declared case. Checking only the first such row let an older binding without testCases
   // shadow a newer one that declares the measured case.
   return clauseBoundCurrentTests(clause, mutation, evidence).find((testBinding) =>
-    (detailsOf(testBinding).testCases ?? []).some((caseTitle) => mutationMeasuredFailedCase(mutation, caseTitle)),
+    (detailsOf(testBinding).testCases ?? []).some((caseTitle) =>
+      mutationMeasuredFailedCase(mutation, caseTitle) && hasPassingTestBaselineCase(testBinding, caseTitle),
+    ),
   ) ?? null;
 }
 
@@ -1874,10 +1909,36 @@ export function evaluateSpecTestAdequacy(input: {
   } else {
     const required = [...new Set(clause.requiredTestLayers.map(normalizedLayer))];
     const present = new Map<string, boolean | undefined>();
+    const contradictoryLayerRows: SpecEvidenceForAdequacy[] = [];
     for (const row of evidence) {
       const details = detailsOf(row);
-      if (typeof details.testLayer !== 'string') continue;
-      const layer = normalizedLayer(details.testLayer);
+      const claimedLayer = typeof details.testLayer === 'string' ? normalizedLayer(details.testLayer) : undefined;
+      const measuredLayer = row.testRunExecution?.testLayer;
+      const measuredCases = (details.testCases ?? []).filter((caseTitle) => hasPassingTestBaselineCase(row, caseTitle));
+      if (
+        row.testRunId === null ||
+        row.testRunExecution?.status?.toLowerCase() !== 'pass' ||
+        row.testRunExecution.failed !== 0 ||
+        row.testRunExecution.collectionFailed !== false ||
+        !isRecordedTestLayer(measuredLayer) ||
+        measuredCases.length === 0
+      ) {
+        // Preserve an author claim as unresolved so an unmeasured positive cannot
+        // be mistaken for either proof or a measured contradiction.
+        if (claimedLayer && required.includes(claimedLayer) && !present.has(claimedLayer)) {
+          present.set(claimedLayer, undefined);
+        }
+        continue;
+      }
+      const layer = normalizedLayer(measuredLayer);
+      if (claimedLayer && claimedLayer !== layer) {
+        if (required.includes(claimedLayer) || required.includes(layer)) {
+          contradictoryLayerRows.push(row);
+          if (required.includes(claimedLayer)) present.set(claimedLayer, false);
+          if (required.includes(layer)) present.set(layer, false);
+        }
+        continue;
+      }
       if (!required.includes(layer)) continue;
       const prior = present.get(layer);
       present.set(layer, prior === true || details.pathReachable === true ? true : details.pathReachable);
@@ -1886,17 +1947,21 @@ export function evaluateSpecTestAdequacy(input: {
     const unreachable = required.filter((layer) => present.get(layer) === false);
     const unresolved = required.filter((layer) => present.get(layer) === undefined);
     layerRating =
-      missing.length || unreachable.length
+      contradictoryLayerRows.length || missing.length || unreachable.length
         ? {
             rating: 'fail',
             evidence: `${evidenceWithBindings(
               `Required layer/path gaps for ${clauseIdentity(clause)}: ${[
+                ...contradictoryLayerRows.map((row) => {
+                  const details = detailsOf(row);
+                  return `testLayer-claim-mismatch:${String(details.testLayer)}!=${String(row.testRunExecution?.testLayer)}`;
+                }),
                 ...missing.map((layer) => `${layer}:missing`),
                 ...unreachable.map((layer) => `${layer}:unreachable`),
               ].join(', ')}.`,
-              evidence,
+              [...new Set([...contradictoryLayerRows, ...evidence])],
             )} ${clauseDeclarationProbe(clause, input.harness)}`,
-            suggestion: 'Bind proof for every requiredTestLayer and attest that it reaches the real path.',
+            suggestion: 'Bind a passing test run for every requiredTestLayer; its measured layer and exact passing case must match the binding, with path reachability attested.',
           }
         : unresolved.length
           ? {
@@ -1905,8 +1970,10 @@ export function evaluateSpecTestAdequacy(input: {
                 `Required layer(s) are represented but path reachability is unverified for ${clauseIdentity(clause)}: ${unresolved.join(', ')}.`,
                 evidence.filter((row) => {
                   const details = detailsOf(row);
+                  const measuredLayer = row.testRunExecution?.testLayer;
                   return (
-                    typeof details.testLayer === 'string' && unresolved.includes(normalizedLayer(details.testLayer))
+                    (typeof details.testLayer === 'string' && unresolved.includes(normalizedLayer(details.testLayer))) ||
+                    (isRecordedTestLayer(measuredLayer) && unresolved.includes(normalizedLayer(measuredLayer)))
                   );
                 }),
               ),
@@ -1914,10 +1981,8 @@ export function evaluateSpecTestAdequacy(input: {
               // required layer; a pathReachable row on another layer (e.g. an integration mutation
               // row) never satisfies it, and testing:run / re-measure bindings carry no attestation.
               suggestion:
-                `Attest reachability on a binding OF the required layer (${unresolved.join(', ')}); a pathReachable ` +
-                'row on another layer does not count. Rebind the same run with plans:bind-spec-evidence ' +
-                '{ fromTestRun: <testRunId>, details: { adequacy: { testLayer, pathReachable: true } } } and ' +
-                'retract the unattested twin.',
+                `Rebind a passing test run whose server-measured testLayer is one of the required layers (${unresolved.join(', ')}), ` +
+                'whose exact passedCaseTitles corroborate adequacy.testCases, and whose adequacy.testLayer claim matches the measured layer; binder-only layer/path claims remain unknown.',
             }
           : {
               rating: 'pass',
@@ -1925,9 +1990,19 @@ export function evaluateSpecTestAdequacy(input: {
                 `Every required layer reaches the claimed path for ${clauseIdentity(clause)}: ${required.join(', ')}.`,
                 evidence.filter((row) => {
                   const details = detailsOf(row);
+                  const measuredLayer = row.testRunExecution?.testLayer;
+                  const claimMatchesMeasurement =
+                    details.testLayer === undefined ||
+                    (typeof details.testLayer === 'string' &&
+                      isRecordedTestLayer(measuredLayer) &&
+                      normalizedLayer(details.testLayer) === normalizedLayer(measuredLayer));
                   return (
-                    typeof details.testLayer === 'string' &&
-                    required.includes(normalizedLayer(details.testLayer)) &&
+                    row.evidenceKind === 'test' &&
+                    row.testRunId !== null &&
+                    isRecordedTestLayer(measuredLayer) &&
+                    required.includes(normalizedLayer(measuredLayer)) &&
+                    claimMatchesMeasurement &&
+                    (details.testCases ?? []).some((caseTitle) => hasPassingTestBaselineCase(row, caseTitle)) &&
                     details.pathReachable === true
                   );
                 }),
@@ -2025,53 +2100,15 @@ export function evaluateSpecTestAdequacy(input: {
   const unmeasuredTestRunExecution = executable.filter(
     (row) => row.testRunId !== null && row.testRunExecution === null,
   );
-  const explicitBadExecutionRows = executable.filter((row) => {
-    const d = detailsOf(row);
-    const ledger = row.testRunId !== null ? row.testRunExecution : undefined;
-    return (
-      d.collected === false ||
-      d.skipped === true ||
-      d.executed === false ||
-      FAILURE_OUTCOMES.has(d.outcome?.toLowerCase() ?? '') ||
-      (ledger != null &&
-        (ledger.collectionFailed || ledger.skipped > 0 || ledger.passed + ledger.failed === 0))
-    );
-  });
+  const explicitBadExecutionRows = executable.filter((row) => measuredExecutionVerdict(row) === 'fail');
   const explicitBadExecution = explicitBadExecutionRows.length > 0;
-  const successfulExecution = executable.some((row) => {
-    const d = detailsOf(row);
-    const ledger = row.testRunId !== null ? row.testRunExecution : undefined;
-    const ledgerExecutionVerified =
-      row.testRunId === null ||
-      ledger === undefined ||
-      (ledger !== null &&
-        !ledger.collectionFailed &&
-        ledger.skipped === 0 &&
-        ledger.passed + ledger.failed > 0);
-    return (
-      hasExecutionLedgerReference(row) &&
-      ledgerExecutionVerified &&
-      d.collected === true &&
-      d.skipped === false &&
-      d.executed === true &&
-      SUCCESS_OUTCOMES.has(d.outcome?.toLowerCase() ?? '')
-    );
-  });
-  const incompleteMeasuredExecution = executable.filter((row) => {
-    if (!row.details.testExecution) return false;
-    const d = detailsOf(row);
-    return (
-      d.collected !== true ||
-      d.skipped !== false ||
-      d.executed !== true ||
-      !SUCCESS_OUTCOMES.has(d.outcome?.toLowerCase() ?? '')
-    );
-  });
+  const successfulExecution = executable.some((row) => measuredExecutionVerdict(row) === 'pass');
+  const incompleteMeasuredExecution = executable.filter((row) => measuredExecutionVerdict(row) === 'unknown');
   const executionRating: AdequacyRatingEntry = explicitBadExecution
     ? {
         rating: 'fail',
         evidence: evidenceWithBindings(
-          `At least one relied-on binding reports an uncollected, skipped, unexecuted, or failing outcome for ${clauseIdentity(clause)}.`,
+          `Canonical test_runs status/counts show at least one relied-on execution was skipped, uncollected, failed, or otherwise invalid for ${clauseIdentity(clause)}.`,
           explicitBadExecutionRows,
         ),
         // P-019: bindings are append-only, so an older failing attempt keeps failing this
@@ -2082,43 +2119,36 @@ export function evaluateSpecTestAdequacy(input: {
       ? {
           rating: 'unknown',
           evidence: evidenceWithBindings(
-            `Executable binding(s) attest execution details but have no testRunId or coverageEvidenceRef in the execution ledger for ${clauseIdentity(clause)}; author-attested booleans cannot establish execution-integrity.`,
+            `Executable binding(s) attest execution details but have no durable ledger reference for ${clauseIdentity(clause)}; author-attested booleans cannot establish execution-integrity.`,
             unbackedExecution,
           ),
           suggestion:
-            'Bind a recorded testRunId or coverageEvidenceRef; details.adequacy booleans alone are insufficient.',
+            'Bind a recorded testRunId with valid test_runs status and execution_details; binding metadata alone is insufficient.',
         }
         : unmeasuredTestRunExecution.length > 0
           ? {
               rating: 'unknown',
               evidence: evidenceWithBindings(
-                `Bound testRunId(s) have absent or invalid execution_details, so collection, skipped, and executed cases cannot be verified for ${clauseIdentity(clause)}.`,
+                `Bound testRunId(s) have absent or invalid execution_details, so canonical status, counts, and case identities cannot be verified for ${clauseIdentity(clause)}.`,
                 unmeasuredTestRunExecution,
               ),
-              suggestion: 'Re-record the test run with a valid test_runs.execution_details contract before relying on it.',
+              suggestion: 'Re-record the test run with valid test_runs status and execution_details before relying on it.',
             }
           : incompleteMeasuredExecution.length > 0
             ? {
                 rating: 'unknown',
                 evidence: evidenceWithBindings(
-                  `Active measured test attempts have incomplete execution proof for ${clauseIdentity(clause)}.`,
+                  `Executable bindings have no complete canonical test_runs status/count verdict for ${clauseIdentity(clause)}.`,
                   incompleteMeasuredExecution,
                 ),
-              }
+                suggestion: 'Attach a testRunId whose canonical status and execution_details establish a passing run (or a measured killed mutation).',
+            }
             : successfulExecution
               ? {
                   rating: 'pass',
                   evidence: evidenceWithBindings(
-                    `Bound proof was collected, not skipped, executed, and produced a successful outcome for ${clauseIdentity(clause)}.`,
-                    executable.filter((row) => {
-                      const d = detailsOf(row);
-                      return (
-                        d.collected === true &&
-                        d.skipped === false &&
-                        d.executed === true &&
-                        SUCCESS_OUTCOMES.has(d.outcome?.toLowerCase() ?? '')
-                      );
-                    }),
+                    `Canonical test_runs status/counts show bound proof was collected, not skipped, executed, and successful for ${clauseIdentity(clause)}.`,
+                    executable.filter((row) => measuredExecutionVerdict(row) === 'pass'),
                   ),
                 }
               : {

@@ -5,7 +5,7 @@
   "description": "Reusable proof-quality columns applied to every current test-requiring spec clause. The clause is the row; these criteria are the columns. Evaluations pin an exact spec revision and evidence bundle rather than grading a plan-wide pile of tests.",
   "methodRef": null,
   "ratingScale": ["pass", "fail", "unknown", "waived", "not-applicable"],
-  "version": "1.0.0",
+  "version": "1.1.0",
   "source": "first-party",
   "criteria": [
     {
@@ -32,8 +32,8 @@
     {
       "key": "correct-layer",
       "title": "Required layers reach the real path",
-      "model": "Every layer named by the clause is represented by bound proof and the exercised path reaches the implementation boundary the clause describes.",
-      "method": "Compare requiredTestLayers with adequacy.testLayer on bindings and require adequacy.pathReachable for each required layer.",
+      "model": "Every layer named by the clause is represented by a passing test run whose server-measured runtime layer and exact passing case match the binding, and whose exercised path reaches the implementation boundary the clause describes.",
+      "method": "Compare requiredTestLayers with test_runs.execution_details.testLayer. Require the same test binding's run status=pass, passed>0, failed=0, collectionFailed=false, exact passedCaseTitles membership for its declared adequacy.testCases, a matching adequacy.testLayer claim when present, and adequacy.pathReachable=true.",
       "driftMarkers": "A unit double offered for an integration contract; the intended handler or transport never reached; one required layer silently absent."
     },
     {
@@ -46,8 +46,8 @@
     {
       "key": "execution-integrity",
       "title": "The proof was collected, executed, and passed",
-      "model": "Applicable tests/checks were collected, were not skipped, executed against the claimed environment, and produced a successful current outcome.",
-      "method": "Require non-skipped collection and execution metadata plus a passing/killed outcome; a testRun reference without a verdict is unknown, never pass.",
+      "model": "Applicable tests/checks were collected, were not skipped, executed against the claimed environment, and produced a successful current outcome proven by canonical test_runs status and execution_details. Binder-authored adequacy booleans cannot produce a pass.",
+      "method": "Require a testRunId with valid test_runs.execution_details. Use its status and counts as the execution verdict: ordinary proof needs status=pass, passed>0, failed=0, skipped=0, collectionFailed=false; mutation proof needs a measured failed mutant run with a structured mutation failure. Missing or unrecognized run evidence is unknown, never pass.",
       "driftMarkers": "Zero collected tests; skipped/quarantined proof; compile-only evidence; a stale ledger row mistaken for a fresh run."
     },
     {

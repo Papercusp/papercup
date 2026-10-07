@@ -439,6 +439,47 @@ describe('listSpecEvidence timestamp normalization', () => {
     );
   });
 
+  it('projects canonical test-run status, counts, passed titles, and runtime layer to the evaluator', async () => {
+    h.rows = [{
+      id: 2, work_item_id: 'WI-2', plan_slug: 'plan-one', spec_id: 'SPEC-2',
+      spec_revision: 1, current_revision: 1, spec_fingerprint: 'spec', spec_is_current: true,
+      evidence_kind: 'test', evidence_ref: 'test-run:44', details: {
+        adequacy: {
+          testLayer: 'integration',
+          testCases: ['suite > exactly passed case'],
+          pathReachable: true,
+        },
+      },
+      source_fingerprint: null, test_fingerprint: null, fixture_fingerprint: null,
+      rubric_fingerprint: null, environment_fingerprint: null, coverage_evidence_ref: null,
+      test_run_id: 44, test_run_present: true, test_run_file_path: 'test/a.test.ts',
+      test_run_commit_sha: 'abc123', test_run_worktree_dirty: false, test_run_status: 'pass',
+      test_run_execution_details: {
+        schemaVersion: 1, root: '/repo', filePath: 'test/a.test.ts', runGroupId: null,
+        workspaceId: 'workspace-test', harnessSlug: 'papercusp', testNamePattern: null,
+        passed: 2, failed: 0, skipped: 0, collectionFailed: false, mutationPhase: null,
+        commitSha: 'abc123', worktreeDirty: false, testLayer: 'integration',
+        passedCaseTitles: ['suite > exactly passed case', 'suite > another passed case'],
+      },
+      mutation_failure_tail: null, mutation_execution_details: null,
+      observed_at: '2026-10-06T16:35:00.000Z', created_at: '2026-10-06T16:36:00.000Z',
+    }];
+
+    const [row] = await listSpecEvidence({ harnessSlug: 'papercusp', planSlugs: ['plan-one'] });
+    expect(row.testRunExecution).toMatchObject({
+      status: 'pass',
+      passed: 2,
+      failed: 0,
+      skipped: 0,
+      collectionFailed: false,
+      testLayer: 'integration',
+      passedCaseTitles: ['suite > exactly passed case', 'suite > another passed case'],
+    });
+    const query = h.queries.find(entry => entry.sql.includes('SELECT b.id'))?.sql ?? '';
+    expect(query).toContain('tr.status AS test_run_status');
+    expect(query).toContain('tr.execution_details AS test_run_execution_details');
+  });
+
   it('accepts PostgreSQL timestamp strings instead of assuming Date instances', async () => {
     h.rows = [
       {
