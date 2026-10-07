@@ -63,7 +63,7 @@ describe('sessions:read role access', () => {
     expect(readModule.default.agentRoles).toContain('judge');
     expect(readModule.default.capability).toBe('sessions:read');
     expect(readModule.default.description).toContain(
-      'The evidence-only judge may use only that selector; named sessions and turn refs are refused for that role.',
+      "The evidence-only judge may use only `session:'self'`; named sessions and turn refs are refused for that role.",
     );
   });
 
@@ -130,6 +130,7 @@ describe('sessions:read EI-20236684982538421 — structured large-window respons
   });
 
   it('documents Judge self scope and the multi-session self-window contract', () => {
+    expect(projected.description).toContain("`session:'self'` spans YOUR OWN respawn chain");
     expect(projected.description).toContain(
       "The evidence-only judge may use only `session:'self'`; named sessions and turn refs are refused for that role.",
     );
