@@ -76,11 +76,52 @@ VERIFY_TAURI_ISOLATED_DB=1 "$RIG" -- bash -c '
   set -u
   cd "$1/apps/operator" || exit 97
   shift
-  port=$(node -e "const s=require(\"net\").createServer();s.listen(0,\"127.0.0.1\",()=>{console.log(s.address().port);s.close()})")
-  [ -n "$port" ] || { echo "run-operator-e2e-isolated: no free port" >&2; exit 98; }
+  vite_log=$(mktemp "${TMPDIR:-/tmp}/operator-e2e-vite.XXXXXX") || exit 98
+  env -u PORT -u OPERATOR_E2E_PORT \
+    PAPERCUSP_BIND_HOST=127.0.0.1 \
+    PAPERCUSP_ENABLE_HMR=1 \
+    PAPERCUSP_FAKE_LLM=1 \
+    PAPERCUSP_DEV_WATCH=0 \
+    PAPERCUSP_API_TARGET="${VERIFY_TAURI_DEV_URL:-}" \
+    npm run dev -- -- --host 127.0.0.1 --port 0 --strictPort >"$vite_log" 2>&1 &
+  vite_pid=$!
+  cleanup_vite() {
+    if kill -0 "$vite_pid" 2>/dev/null; then
+      kill "$vite_pid" 2>/dev/null || true
+      wait "$vite_pid" 2>/dev/null || true
+    fi
+    rm -f "$vite_log"
+  }
+  trap cleanup_vite EXIT
+
+  port=
+  attempt=0
+  while [ "$attempt" -lt 240 ]; do
+    if ! kill -0 "$vite_pid" 2>/dev/null; then
+      cat "$vite_log" >&2
+      echo "run-operator-e2e-isolated: Vite exited before startup" >&2
+      exit 98
+    fi
+    port=$(node -e "const fs=require(\"node:fs\");const lines=fs.readFileSync(process.argv[1],\"utf8\").split(String.fromCharCode(10));const line=lines.find(x=>x.trim().startsWith(\"Local:\"));if(line){const url=line.trim().split(\" \").filter(Boolean).pop();if(url)process.stdout.write(new URL(url).port)}" "$vite_log")
+    if [ -n "$port" ] && node -e "fetch(\"http://127.0.0.1:$port/\").then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))" >/dev/null 2>&1; then
+      break
+    fi
+    port=
+    attempt=$((attempt + 1))
+    sleep 0.5
+  done
+  if [ -z "$port" ]; then
+    cat "$vite_log" >&2
+    echo "run-operator-e2e-isolated: Vite did not serve its OS-assigned port" >&2
+    exit 98
+  fi
   echo "OPERATOR_E2E_ISOLATED vite-port=$port"
   # $OPERATOR_E2E_PLAYWRIGHT is a command line; word-splitting it is intended.
-  OPERATOR_E2E_PORT="$port" PAPERCUSP_API_TARGET="${VERIFY_TAURI_DEV_URL:-}" $OPERATOR_E2E_PLAYWRIGHT "$@"
+  OPERATOR_E2E_PORT="$port" \
+    OPERATOR_E2E_BASE_URL="http://127.0.0.1:$port" \
+    OPERATOR_E2E_REUSE_SERVER=1 \
+    PAPERCUSP_API_TARGET="${VERIFY_TAURI_DEV_URL:-}" \
+    $OPERATOR_E2E_PLAYWRIGHT "$@"
 ' operator-e2e-isolated "$ROOT" "$@"
 rc=$?
 echo "OPERATOR_E2E_ISOLATED exit=$rc group=$PAPERCUSP_TEST_RUN_GROUP"

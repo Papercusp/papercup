@@ -44,17 +44,33 @@ function fixture(playwrightExit: number) {
     ].join('\n'),
   );
   const pw = join(dir, 'playwright.sh');
+  const npm = join(dir, 'npm');
+  writeFileSync(
+    npm,
+    [
+      '#!/usr/bin/env bash',
+      'set -eu',
+      '[ "$1" = "run" ] && [ "$2" = "dev" ] || exit 73',
+      '[ "${PORT+x}" != "x" ] && [ "${OPERATOR_E2E_PORT+x}" != "x" ] || { echo "vite stub received a stale port env" >&2; exit 77; }',
+      'case " $* " in *" --host 127.0.0.1 "*) ;; *) echo "vite stub expected loopback host: $*" >&2; exit 74;; esac',
+      'case " $* " in *" --port 0 "*) ;; *) echo "vite stub expected port 0: $*" >&2; exit 75;; esac',
+      'case " $* " in *" --strictPort "*) ;; *) echo "vite stub expected strictPort: $*" >&2; exit 76;; esac',
+      `exec node -e 'const http=require("node:http");const s=http.createServer((_req,res)=>{res.writeHead(200,{"content-type":"text/plain"});res.end("ready")});s.listen(0,"127.0.0.1",()=>console.log("  Local: http://127.0.0.1:"+s.address().port+"/"))'`,
+    ].join('\n'),
+  );
   writeFileSync(
     pw,
     [
       '#!/usr/bin/env bash',
-      `node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({argv: process.argv.slice(2), cwd: process.cwd(), env: {ledger: process.env.PAPERCUSP_TEST_RUNS_DB_URL, admin: process.env.HARNESS_ADMIN_DATABASE_URL, group: process.env.PAPERCUSP_TEST_RUN_GROUP, port: process.env.OPERATOR_E2E_PORT, api: process.env.PAPERCUSP_API_TARGET, disabled: process.env.PAPERCUSP_DISABLE_TEST_RUNS_REPORTER ?? null, ledgerWorkspace: process.env.PAPERCUSP_TEST_RUN_WORKSPACE ?? null, ledgerHarness: process.env.PAPERCUSP_TEST_RUN_HARNESS ?? null, appWorkspace: process.env.PAPERCUSP_WORKSPACE_ID ?? null}}))' '${record}' "$@"`,
+      'set -e',
+      `node -e '(async()=>{const port=process.env.OPERATOR_E2E_PORT;const result={argv:process.argv.slice(2),cwd:process.cwd(),env:{ledger:process.env.PAPERCUSP_TEST_RUNS_DB_URL,admin:process.env.HARNESS_ADMIN_DATABASE_URL,group:process.env.PAPERCUSP_TEST_RUN_GROUP,port,api:process.env.PAPERCUSP_API_TARGET,disabled:process.env.PAPERCUSP_DISABLE_TEST_RUNS_REPORTER??null,ledgerWorkspace:process.env.PAPERCUSP_TEST_RUN_WORKSPACE??null,ledgerHarness:process.env.PAPERCUSP_TEST_RUN_HARNESS??null,appWorkspace:process.env.PAPERCUSP_WORKSPACE_ID??null,reuse:process.env.OPERATOR_E2E_REUSE_SERVER??null,baseUrl:process.env.OPERATOR_E2E_BASE_URL??null},viteStatus:null};if(port)result.viteStatus=(await fetch("http://127.0.0.1:"+port+"/")).status;require("node:fs").writeFileSync(process.argv[1],JSON.stringify(result))})().catch(error=>{console.error(error);process.exitCode=1})' '${record}' "$@"`,
       `exit ${playwrightExit}`,
     ].join('\n'),
   );
   chmodSync(rig, 0o755);
+  chmodSync(npm, 0o755);
   chmodSync(pw, 0o755);
-  return { rig, pw, record };
+  return { dir, rig, pw, npm, record };
 }
 
 function run(f: ReturnType<typeof fixture>, args: string[], env: Record<string, string> = {}) {
@@ -75,6 +91,7 @@ function run(f: ReturnType<typeof fixture>, args: string[], env: Record<string, 
       HARNESS_ADMIN_DATABASE_URL: SHARED,
       OPERATOR_E2E_RIG: f.rig,
       OPERATOR_E2E_PLAYWRIGHT: f.pw,
+      PATH: `${f.dir}:${base.PATH ?? ''}`,
       ...env,
     },
     encoding: 'utf8',
@@ -105,7 +122,20 @@ describe('run-operator-e2e-isolated.sh', () => {
     expect(r.recorded.env.admin).toBe(ISOLATED);
     expect(r.recorded.cwd).toBe(join(REPO_ROOT, 'apps/operator'));
     expect(r.recorded.env.port).toMatch(/^\d+$/);
+    expect(r.recorded.env.port).not.toBe('0');
+    expect(r.recorded.env.reuse).toBe('1');
+    expect(r.recorded.env.baseUrl).toBe(`http://127.0.0.1:${r.recorded.env.port}`);
+    expect(r.recorded.viteStatus).toBe(200);
     expect(r.recorded.env.api).toBe('http://127.0.0.1:1420');
+  });
+
+  it('lets Vite bind port 0 and passes its live port to Playwright reuse mode', () => {
+    const r = run(fixture(0), [], { PORT: '39428', OPERATOR_E2E_PORT: '39428' });
+    expect(r.status, r.out).toBe(0);
+    expect(r.recorded.env.port).not.toBe('39428');
+    expect(r.out).toContain(`vite-port=${r.recorded.env.port}`);
+    expect(r.recorded.env.reuse).toBe('1');
+    expect(r.recorded.viteStatus).toBe(200);
   });
 
   it('stamps one run group on the whole invocation and honours a caller-supplied one', () => {
