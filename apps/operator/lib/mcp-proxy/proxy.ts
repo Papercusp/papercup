@@ -1077,7 +1077,7 @@ export function forwardingResultForUpstreamFailure(
 }
 
 /**
- * WI-10006908 — the upstream (:3070) died AFTER sending response headers. For an SSE response
+ * WI-10006908 — the upstream (:3070) connection closed AFTER sending response headers. For an SSE response
  * the MCP client's request is resolved only by a JSON-RPC response carrying its id: a stream that
  * merely ends or errors raises a transport error but leaves the request pending until the
  * client's own request timeout (measured: a live tools/call hung to Claude's 300s limit). So the
@@ -1112,8 +1112,8 @@ export function upstreamDeathSseErrorEvents(
       error: {
         code: UPSTREAM_DIED_MID_STREAM_RPC_CODE,
         message:
-          `Papercusp MCP proxy: the operator process serving this ${method} died before ` +
-          "it finished (upstream connection lost mid-response). The call was dispatched, so " +
+          `Papercusp MCP proxy: the upstream connection for this ${method} closed before ` +
+          "the response completed. The call was dispatched, so " +
           "its effects are UNKNOWN: check state before retrying a write.",
         data: {
           kind: "upstream_died_mid_stream",
@@ -5161,7 +5161,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                   ...rpcTrace,
                 });
                 log(
-                  `upstream died mid-stream after ${Date.now() - started}ms (trace ${traceId}); ` +
+                  `upstream response closed mid-stream after ${Date.now() - started}ms (trace ${traceId}); ` +
                     (errorEvents
                       ? "answered the pending request id(s) with a JSON-RPC error"
                       : "destroyed the client response"),
