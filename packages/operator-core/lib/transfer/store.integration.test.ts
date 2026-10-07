@@ -238,6 +238,22 @@ describe('common decision promotion boundary', () => {
     expect(receipts.find((r) => r.sourceRef === `transfer:${admitted.lesson.id}`)).toMatchObject({ promotionAllowed: false, sourceCurrent: false });
   });
 
+  it('does not publish an accepted contract receipt when the producer cost gate rejects promotion', async () => {
+    const admitted = await admitTransferLesson(sql, { workspaceId: WS, signature: 'common-cost-denied',
+      lessonText: 'Cost denial must stay non-promotable', sourceRef: '/controlled/transcript', potSlug: 'test-pot' });
+    if (!admitted.admitted) throw new Error('fixture admission failed');
+    const proof = evaluated(admitted.lesson);
+    proof.costMeasured = false;
+    expect(await recordTransferOutcome(sql, proposal(admitted.lesson, proof))).toMatchObject({
+      tier: 'probationary', status: 'error', testCount: 1, passCount: 0, failCount: 0 });
+    const receipt = (await readProducerObservations(sql, { producer: 'transfer', workspaceId: WS, limit: 100 }))
+      .find((row) => row.sourceRef === `transfer:${admitted.lesson.id}`);
+    expect(receipt).toMatchObject({ contract: null, promotionAllowed: false, sourceCurrent: true,
+      source: { tier: 'probationary', status: 'error' },
+      lifecycle: { decision: { status: 'partial', value: { verdict: 'inconclusive' } } },
+      evaluation: { costMeasured: false, contract: { decision: { verdict: 'accepted' } } } });
+  });
+
   it.each(['absent', 'artifact', 'workspace', 'pot', 'pin', 'open', 'unknown-cost', 'cap', 'cells', 'spend', 'rejected', 'references', 'missing-gate'] as const)(
     'retains the attempt without promoting when %s evidence is invalid', async (kind) => {
       const admitted = await admitTransferLesson(sql, { workspaceId: WS, signature: `guard-${++sequence}`,
@@ -269,6 +285,10 @@ describe('common decision promotion boundary', () => {
     const q = proposal(admitted.lesson, evaluated(admitted.lesson));
     expect(await recordTransferOutcome(sql, q)).toMatchObject({ passCount: 1, status: 'passed' });
     expect(await recordTransferOutcome(sql, q)).toMatchObject({ passCount: 1, status: 'error' });
+    const receipt = (await readProducerObservations(sql, { producer: 'transfer', workspaceId: WS, limit: 100 }))
+      .find((row) => row.sourceRef === `transfer:${admitted.lesson.id}`);
+    expect(receipt).toMatchObject({ contract: null, promotionAllowed: false, sourceCurrent: true });
+    expect(receipt?.decisions?.map((decision) => decision.contract)).toEqual([q.evaluation?.contract]);
   });
 });
 
