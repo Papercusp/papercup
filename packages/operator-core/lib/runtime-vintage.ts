@@ -181,11 +181,33 @@ export async function reportRuntimeVintage(input: RuntimeVintageReport): Promise
   // This reserved field is a kernel measurement, never a remote caller's claim.
   const extra = { ...input.extra };
   delete extra.kernelProcessIdentity;
+  delete extra.kernelExecutableDigest;
   if ((input.host?.trim() || defaultHost()) === defaultHost() && input.pid != null) {
     const identity = liveProcessIdentity(input.pid);
-    if (identity) extra.kernelProcessIdentity = identity;
+    if (identity) {
+      extra.kernelProcessIdentity = identity;
+      // A native binary may have no baked Git revision. Its loaded executable,
+      // rather than today's checkout, can still supply an exact artifact identity.
+      // Only opt into hashing for explicit digest reports; normal boot reports
+      // keep their existing inexpensive source-revision path.
+      const expected = executableBundleDigest(input.bundleVersion);
+      if (expected && liveExecutableDigest(input.pid) === expected
+        && liveProcessIdentity(input.pid) === identity) extra.kernelExecutableDigest = expected;
+    }
   }
   return store.report({ ...input, extra });
+}
+
+function executableBundleDigest(version: string | null | undefined): string | null {
+  return /^executable-sha256:[a-f0-9]{64}$/.test(version ?? '')
+    ? version!.slice('executable-sha256:'.length) : null;
+}
+
+/** /proc exposes the loaded inode even after its original path is replaced. */
+function liveExecutableDigest(pid: number): string | null {
+  if (process.platform !== 'linux') return null;
+  try { return createHash('sha256').update(readFileSync(`/proc/${pid}/exe`)).digest('hex'); }
+  catch { return null; }
 }
 
 function liveProcessIdentity(pid: number): string | null {
@@ -210,8 +232,9 @@ function liveProcessIdentity(pid: number): string | null {
 export function measureRuntimeVintageEnvironment(
   rows: readonly RuntimeVintageRow[],
   units: readonly string[],
-  deps: { host: string; identity: (pid: number) => string | null } = {
-    host: defaultHost(), identity: liveProcessIdentity,
+  deps: { host: string; identity: (pid: number) => string | null;
+    executableDigest?: (pid: number) => string | null } = {
+    host: defaultHost(), identity: liveProcessIdentity, executableDigest: liveExecutableDigest,
   },
 ): string | null {
   if (units.length === 0 || units.length > 32 || new Set(units).size !== units.length) return null;
@@ -220,11 +243,18 @@ export function measureRuntimeVintageEnvironment(
     const matches = rows.filter(row => row.unit === unit && row.host === deps.host);
     if (matches.length !== 1) return null;
     const row = matches[0];
-    if (!row.treeSha || !/^[a-f0-9]{7,64}$/.test(row.treeSha)
-      || !Number.isSafeInteger(row.pid) || row.pid! <= 0) return null;
+    if (!Number.isSafeInteger(row.pid) || row.pid! <= 0) return null;
     const pinned = row.extra.kernelProcessIdentity;
     if (typeof pinned !== 'string' || !pinned || deps.identity(row.pid!) !== pinned) return null;
-    pins.push([unit, row.host, row.treeSha, row.buildTime, row.pid!, pinned]);
+    let codeIdentity = row.treeSha;
+    const executable = executableBundleDigest(row.bundleVersion);
+    if (executable) {
+      if (row.extra.kernelExecutableDigest !== executable
+        || !deps.executableDigest || deps.executableDigest(row.pid!) !== executable
+        || deps.identity(row.pid!) !== pinned) return null;
+      codeIdentity = `executable-sha256:${executable}`;
+    } else if (!codeIdentity || !/^[a-f0-9]{7,64}$/.test(codeIdentity)) return null;
+    pins.push([unit, row.host, codeIdentity!, row.buildTime, row.pid!, pinned]);
   }
   return createHash('sha256').update(JSON.stringify(pins)).digest('hex');
 }

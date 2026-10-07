@@ -9,6 +9,8 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { hostname } from 'node:os';
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { readProcessIdentity } from './process-identity';
 import {
   InMemoryRuntimeVintageStore,
@@ -130,5 +132,46 @@ describe('runtime-vintage — self-report ledger (P-008)', () => {
       ['bg-host', 'desktop'], deps)).toBe(original);
     expect(measureRuntimeVintageEnvironment([{ ...rows[0], treeSha: 'b'.repeat(40) }, rows[1]],
       ['desktop', 'bg-host'], deps)).not.toBe(original);
+  });
+
+  it('independently pins the loaded executable without inventing a Git revision', async () => {
+    if (process.platform !== 'linux') return;
+    const digest = createHash('sha256').update(readFileSync(`/proc/${process.pid}/exe`)).digest('hex');
+    await reportRuntimeVintage({ unit: 'native', pid: process.pid, treeSha: null,
+      bundleVersion: `executable-sha256:${digest}`, workspaceId: 'default',
+      extra: { kernelExecutableDigest: 'caller-authored' } });
+    const rows = await listRuntimeVintage('default');
+    expect(rows[0].treeSha).toBeNull();
+    expect(rows[0].extra.kernelExecutableDigest).toBe(digest);
+    expect(measureRuntimeVintageEnvironment(rows, ['native'])).toMatch(/^[a-f0-9]{64}$/);
+    await reportRuntimeVintage({ unit: 'wrong', pid: process.pid, treeSha: null,
+      bundleVersion: `executable-sha256:${'0'.repeat(64)}`, workspaceId: 'default',
+      extra: { kernelExecutableDigest: '0'.repeat(64) } });
+    const wrong = (await listRuntimeVintage('default')).filter(row => row.unit === 'wrong');
+    expect(wrong[0].extra).not.toHaveProperty('kernelExecutableDigest');
+    expect(measureRuntimeVintageEnvironment(wrong, ['wrong'])).toBeNull();
+    await reportRuntimeVintage({ unit: 'remote-native', host: `${hostname()}-remote`, pid: process.pid,
+      treeSha: null, bundleVersion: `executable-sha256:${digest}`, workspaceId: 'default',
+      extra: { kernelExecutableDigest: digest } });
+    expect((await listRuntimeVintage('default')).find(row => row.unit === 'remote-native')!.extra)
+      .not.toHaveProperty('kernelExecutableDigest');
+  });
+
+  it('rejects changed executable bytes, missing digest pins and process replacement during measurement', () => {
+    const digest = 'b'.repeat(64);
+    const row = { ...pinnedRow('native'), treeSha: null,
+      bundleVersion: `executable-sha256:${digest}`,
+      extra: { kernelProcessIdentity: 'boot:start', kernelExecutableDigest: digest } };
+    const deps = { host: 'local', identity: () => 'boot:start', executableDigest: () => digest };
+    expect(measureRuntimeVintageEnvironment([row], ['native'], deps)).toMatch(/^[a-f0-9]{64}$/);
+    expect(measureRuntimeVintageEnvironment([row], ['native'], { ...deps,
+      executableDigest: () => 'c'.repeat(64) })).toBeNull();
+    expect(measureRuntimeVintageEnvironment([{ ...row, extra: { kernelProcessIdentity: 'boot:start' } }],
+      ['native'], deps)).toBeNull();
+    let reads = 0;
+    expect(measureRuntimeVintageEnvironment([row], ['native'], { ...deps,
+      identity: () => ++reads === 1 ? 'boot:start' : 'boot:replacement' })).toBeNull();
+    expect(measureRuntimeVintageEnvironment([row], ['native'], {
+      host: 'local', identity: deps.identity })).toBeNull();
   });
 });
