@@ -24,7 +24,10 @@ import { SESSION_TURN_TEXT_CAP } from '../../search/session-ingest';
 import { DisclosureRefused, disclosureRefusalData } from '../../personal-vault/disclosure-ledger';
 import { emptyTally, withheldReceipt, withholdRestrictedTurns } from '../../personal-vault/transcript-exclusion';
 
-const ALL_ROLES = [...SU_ROLES, 'papercup', 'kettle'] as const;
+// The evidence-only acceptance judge reads its predecessor transcript during
+// successor recovery. Keep that access on this read surface; the judge remains
+// outside the broader coordination role set.
+const ALL_ROLES = [...SU_ROLES, 'papercup', 'kettle', 'judge'] as const;
 const SESSION_TURN_TEXT_CHUNK_CAP = 1_500;
 const SESSION_TURN_TEXT_CHUNK_MAX = 4_000;
 const SESSION_SELECTOR_CONSTRAINT = 'pass exactly one of `ref` or `session`';

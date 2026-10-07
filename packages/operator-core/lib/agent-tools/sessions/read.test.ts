@@ -58,6 +58,12 @@ const readArgsSchema = readModule.default.args as {
 const { dispatchProjectedTool, lookupByMcpName } = await import('@papercusp/agent-mcp');
 const projected = lookupByMcpName('sessions:read')!;
 
+describe('sessions:read role access', () => {
+  it('admits the evidence-only judge to predecessor transcript reads', () => {
+    expect(readModule.default.agentRoles).toContain('judge');
+  });
+});
+
 /** Every awaited transcript query answers `rows`; the D-006 ledger reads answer "no disclosures". */
 function makeTx(rows: unknown[]) {
   return vi.fn((...args: unknown[]) => deferredSqlAnswer(args, () => rows));
