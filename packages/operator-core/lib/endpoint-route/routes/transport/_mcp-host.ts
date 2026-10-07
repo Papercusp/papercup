@@ -395,6 +395,7 @@ function buildMcpRequestOrigin(extra: unknown): RequestOriginMetadata | undefine
   const url = urlFromExtra(extra);
   if (!url) return undefined;
   const headers = headersFromExtra(extra);
+  const mcpRequestTraceId = mcpTraceIdFromExtra(extra);
   const query: Record<string, string> = {};
   for (const [key, value] of url.searchParams.entries()) {
     if (REQUEST_ORIGIN_QUERY_KEYS.has(key)) query[key] = value;
@@ -407,6 +408,7 @@ function buildMcpRequestOrigin(extra: unknown): RequestOriginMetadata | undefine
   return {
     transport: 'mcp',
     connection: 'http',
+    ...(mcpRequestTraceId ? { mcpRequestTraceId } : {}),
     path: url.pathname,
     ...(Object.keys(query).length > 0 ? { query } : {}),
     ...(Object.keys(headerMeta).length > 0 ? { headers: headerMeta } : {}),
