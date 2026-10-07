@@ -189,6 +189,7 @@ describe('migrationDependencyFenceSkips (EI-24940157290396415)', () => {
         blockingMigrations: ['libs/sub/libs/db/sql/999-unreserved-migration.sql'],
         blockingAgents: [],
         blockingWorkItems: [],
+        unattributedMigrations: ['libs/sub/libs/db/sql/999-unreserved-migration.sql'],
       },
       {
         scope: 'superproject',
@@ -199,6 +200,7 @@ describe('migrationDependencyFenceSkips (EI-24940157290396415)', () => {
         blockingMigrations: ['libs/sub/libs/db/sql/999-unreserved-migration.sql'],
         blockingAgents: [],
         blockingWorkItems: [],
+        unattributedMigrations: ['libs/sub/libs/db/sql/999-unreserved-migration.sql'],
       },
     ]);
   });
