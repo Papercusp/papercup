@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 954,
+  "count": 955,
   "tools": [
     {
       "name": "ablation:report",
@@ -3298,6 +3298,27 @@
         "when": "Inspect/stage git state, or make an ephemeral local checkout. For scratch work use scratchClone: it pins a detached ref, borrows packs, skips untracked node_modules, materialises only resolvable local submodules, and removes origins.",
         "notWhen": "Pushing (refused — git-sync owns push). Remote/network clones or persistent product checkouts. Arbitrary shell — use capability:bash.",
         "chaining": "Read form: capability:git { args: [\"status\",\"--porcelain\"] }. Scratch form: capability:git { scratchClone: { ref: \"HEAD\" } } → use returned path; OS temp cleanup remains the lifecycle owner."
+      }
+    },
+    {
+      "name": "capability:git-evidence",
+      "http": {
+        "path": "/api/agent-tools/capability/git-evidence",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Judge-only read-only Git evidence: check ancestry between full commit SHAs or read one bounded file pinned to a full commit SHA in the active harness repository.",
+      "capabilities": [
+        "capability:git-evidence:read"
+      ],
+      "agentRoles": [
+        "judge"
+      ],
+      "guidance": {
+        "when": "A grading method requires proof about commit ancestry or the exact contents of a file at a pinned commit.",
+        "notWhen": "For general Git commands, worktree state, mutation, refs, or scratch clones, use the separately authorized engineering tools.",
+        "chaining": "Use op:\"isAncestor\" with two full SHAs, or op:\"readFileAtCommit\" with a full SHA and repository-relative path."
       }
     },
     {
@@ -19102,7 +19123,7 @@
       },
       "description": "Search the user's persistent memories by semantic similarity. Returns matched facts ranked by relevance.",
       "capabilities": [
-        "memory:read"
+        "memory:search:read"
       ],
       "guidance": {
         "when": "When the user references specific context from past sessions (\"what did I tell you about pricing?\"). Default recall returns only facts CURRENT now. For \"what did we believe then?\", pass `as_of:<ISO timestamp>`; for a lifecycle audit, pass `include_superseded:true` to include closed rows and inspect `metadata.validity` / `superseded_by`. Pre-turn auto-injection covers most current-fact lookups; call this for targeted or historical recall.",

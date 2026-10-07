@@ -84,6 +84,7 @@ import {
   type PlanActivityFeedRow,
 } from './plan-dashboard-derive';
 import PlanCleanupEntryButton from './PlanCleanupEntryButton';
+import { PlanAuditButton } from './PlanAuditPane';
 import {
   PLAN_CLEANUP_RUN_PARAM,
   usePlanCleanupRun,
@@ -517,6 +518,7 @@ export default function PlanDashboard({
                 onRunStarted={(runId) => void setCleanupRunId(runId)}
               />
             ) : null}
+            <PlanAuditButton planSlug={planSlug} />
           </div>
         </div>
 

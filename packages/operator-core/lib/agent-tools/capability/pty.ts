@@ -599,6 +599,7 @@ export const ptyReadScreenTool = defineTool({
     seeAlso: ['capability:pty_write_stdin', 'capability:pty_resize', 'capability:pty_kill'],
   },
   ...commonTool,
+  effect: 'read',
   args: z.object({
     task_id: z.string().min(1).describe('Durable task id returned by capability:pty_open.'),
   }),

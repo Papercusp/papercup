@@ -123,6 +123,8 @@ export const APP_KEY_MINT_CLIENT_TYPES: ReadonlySet<string> = new Set(['mint.req
  * the message cap — `hosted-operator-http.ts`), so there is no client body frame.
  */
 export const OPERATOR_HTTP_CLIENT_TYPES: ReadonlySet<string> = new Set(['http.request', 'http.abort']);
+/** Device upload bodies larger than an inline frame use the existing HTTP chunk labels. */
+export const DEVICE_HTTP_CLIENT_TYPES: ReadonlySet<string> = new Set([...OPERATOR_HTTP_CLIENT_TYPES, 'http.body', 'http.end']);
 
 /** True for any frame of the operator-http family (either direction). */
 function isOperatorHttpType(type: string): boolean {
@@ -471,7 +473,8 @@ export class HostedWorkspaceSessionBroker implements AppRelayPort {
   ): AppRelayChannel | null {
     // Each kind carries only its own client frames: an app call's http.* pair, or the one
     // mint.request (P-325) / token.request (P-016) of the key channel. The machine fences both too.
-    const clientTypes = kind === 'app-key-mint' ? APP_KEY_MINT_CLIENT_TYPES : OPERATOR_HTTP_CLIENT_TYPES;
+    const clientTypes = kind === 'app-key-mint' ? APP_KEY_MINT_CLIENT_TYPES :
+      kind === 'device-http' ? DEVICE_HTTP_CLIENT_TYPES : OPERATOR_HTTP_CLIENT_TYPES;
     const key = connectorKey(connector.binding);
     const connectorSocket = this.connectors.get(key);
     const state = this.connectorState.get(key);

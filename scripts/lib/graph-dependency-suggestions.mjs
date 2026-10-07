@@ -297,6 +297,7 @@ export function suggestFromSnapshot({ changed, snapshot, now, maxAgeMs, readSour
   const rejected = [];
   const seen = new Set();
   const queue = [];
+  const packageNameAt = packageNameReader(readSource);
   let truncated = false;
   for (const file of changed) {
     if (seen.has(file)) continue;
@@ -312,7 +313,7 @@ export function suggestFromSnapshot({ changed, snapshot, now, maxAgeMs, readSour
     const file = queue[queueIndex++];
     for (const edge of importedBy.get(file) ?? []) {
       if (acceptedImporters.has(edge.importer)) continue;
-      const verdict = verifyEdge(edge, { readSource });
+      const verdict = verifyEdge(edge, { readSource, packageNameAt });
       if (!verdict.ok) {
         rejected.push({ importer: edge.importer, imported: edge.imported, reason: verdict.reason });
         continue;
@@ -478,6 +479,7 @@ export function buildSnapshot({ edges, index, readSource, now }) {
     if (!cache.has(p)) cache.set(p, readSource(p));
     return cache.get(p);
   };
+  const packageNameAt = packageNameReader(source);
   for (const e of edges) {
     stats.input += 1;
     if (!isRepoRelativePosix(e.importer) || !isRepoRelativePosix(e.imported)) {
@@ -495,7 +497,7 @@ export function buildSnapshot({ edges, index, readSource, now }) {
       stats.skippedMissing += 1;
       continue;
     }
-    if (!sourceCorroborates(text, e.importer, e.imported)) {
+    if (!sourceCorroborates(text, e.importer, e.imported, packageNameAt)) {
       stats.skippedUncorroborated += 1;
       continue;
     }

@@ -259,6 +259,8 @@ export interface OperatorHttpChannelOptions {
   origin?: string;
   fetch?: OperatorHttpFetch;
   headerTimeoutMs?: number;
+  /** Opt-in upload assembly for device-http; other planes keep inline-only bodies. */
+  maxChunkedRequestBodyBytes?: number;
   /** Route policy. Defaults to the operator-http allowlist. */
   decideRoute?: (method: unknown, path: unknown) => OperatorHttpRouteDecision;
   /** Header policy. Defaults to the operator-http allowlist plus the principal stamp. */
@@ -280,6 +282,12 @@ export type OperatorHttpBodyDecision =
 /** One relay channel's in-flight requests (`operator-http`, or `app-http` with its own policy). */
 export class OperatorHttpChannel {
   private readonly inflight = new Map<string, AbortController>();
+  private readonly uploads = new Map<string, {
+    payload: Record<string, unknown>;
+    chunks: Buffer[];
+    bytes: number;
+    timer: ReturnType<typeof setTimeout>;
+  }>();
   private readonly origin: string;
   private readonly fetchImpl: OperatorHttpFetch;
   private readonly headerTimeoutMs: number;
@@ -302,7 +310,7 @@ export class OperatorHttpChannel {
   }
 
   get inflightCount(): number {
-    return this.inflight.size;
+    return this.inflight.size + this.uploads.size;
   }
 
   /** Handle one client frame. Resolves when a request's response has fully streamed. */
@@ -311,6 +319,7 @@ export class OperatorHttpChannel {
     const requestId = typeof payload.requestId === 'string' && payload.requestId.length <= 128 ? payload.requestId : null;
     if (!requestId) return;
     if (type === 'http.abort') {
+      this.dropUpload(requestId);
       // Forget it BEFORE aborting: the request's catch reads absence as "the
       // client asked", which needs no reply — versus a header timeout, which does.
       const controller = this.inflight.get(requestId);
@@ -318,8 +327,56 @@ export class OperatorHttpChannel {
       controller?.abort();
       return;
     }
+    if (this.options.maxChunkedRequestBodyBytes && (type === 'http.body' || type === 'http.end')) {
+      const upload = this.uploads.get(requestId);
+      if (!upload) {
+        this.options.send({ type: 'http.error', requestId, code: 'upload_not_started', status: 400 });
+        return;
+      }
+      if (type === 'http.end') {
+        this.dropUpload(requestId);
+        await this.request(requestId, upload.payload, Buffer.concat(upload.chunks, upload.bytes));
+        return;
+      }
+      const data = payload.data;
+      const chunk = typeof data === 'string' ? Buffer.from(data, 'base64') : null;
+      if (!chunk || chunk.length === 0 || chunk.toString('base64') !== data ||
+          chunk.length > HOSTED_OPERATOR_HTTP_BODY_CHUNK_BYTES) {
+        this.dropUpload(requestId);
+        this.options.send({ type: 'http.error', requestId, code: 'invalid_body_chunk', status: 400 });
+        return;
+      }
+      if (upload.bytes + chunk.length > this.options.maxChunkedRequestBodyBytes) {
+        this.dropUpload(requestId);
+        this.options.send({ type: 'http.error', requestId, code: 'request_body_too_large', status: 413 });
+        return;
+      }
+      upload.chunks.push(chunk);
+      upload.bytes += chunk.length;
+      return;
+    }
     if (type !== 'http.request') {
       this.options.send({ type: 'http.error', requestId, code: 'unsupported_frame' });
+      return;
+    }
+    if (this.uploads.has(requestId)) {
+      this.options.send({ type: 'http.error', requestId, code: 'request_id_in_use' });
+      return;
+    }
+    if (payload.bodyChunked === true) {
+      const fail = (code: string, status: number) => this.options.send({ type: 'http.error', requestId, code, status });
+      if (!this.options.maxChunkedRequestBodyBytes) return fail('unsupported_frame', 400);
+      if (this.inflight.has(requestId)) return fail('request_id_in_use', 400);
+      if (this.inflightCount >= HOSTED_OPERATOR_HTTP_MAX_INFLIGHT) return fail('too_many_requests', 429);
+      const route = this.decideRoute(payload.method, payload.path);
+      if (!route.ok) return fail(route.code, route.code === 'route_not_relayed' ? 403 : 400);
+      if (route.method === 'GET' || payload.body !== undefined) return fail('invalid_body', 400);
+      const timer = setTimeout(() => {
+        this.dropUpload(requestId);
+        fail('request_body_timeout', 408);
+      }, this.headerTimeoutMs);
+      timer.unref?.();
+      this.uploads.set(requestId, { payload, chunks: [], bytes: 0, timer });
       return;
     }
     await this.request(requestId, payload);
@@ -327,16 +384,23 @@ export class OperatorHttpChannel {
 
   close(): void {
     this.closed = true;
+    for (const requestId of this.uploads.keys()) this.dropUpload(requestId);
     for (const controller of this.inflight.values()) controller.abort();
     this.inflight.clear();
   }
 
-  private async request(requestId: string, payload: Record<string, unknown>): Promise<void> {
+  private dropUpload(requestId: string): void {
+    const upload = this.uploads.get(requestId);
+    if (upload) clearTimeout(upload.timer);
+    this.uploads.delete(requestId);
+  }
+
+  private async request(requestId: string, payload: Record<string, unknown>, uploadedBody?: Buffer): Promise<void> {
     const fail = (code: string, status?: number) => {
       this.options.send({ type: 'http.error', requestId, code, ...(status ? { status } : {}) });
     };
     if (this.inflight.has(requestId)) return fail('request_id_in_use');
-    if (this.inflight.size >= HOSTED_OPERATOR_HTTP_MAX_INFLIGHT) return fail('too_many_requests', 429);
+    if (this.inflightCount >= HOSTED_OPERATOR_HTTP_MAX_INFLIGHT) return fail('too_many_requests', 429);
 
     const decision = this.decideRoute(payload.method, payload.path);
     if (!decision.ok) {
@@ -344,8 +408,8 @@ export class OperatorHttpChannel {
       return fail(decision.code, decision.code === 'route_not_relayed' ? 403 : 400);
     }
 
-    let body: Buffer | undefined;
-    if (payload.body !== undefined) {
+    let body: Buffer | undefined = uploadedBody;
+    if (uploadedBody === undefined && payload.body !== undefined) {
       if (decision.method === 'GET' || typeof payload.body !== 'string') return fail('invalid_body', 400);
       body = Buffer.from(payload.body, 'base64');
       if (body.byteLength > HOSTED_OPERATOR_HTTP_MAX_REQUEST_BODY_BYTES) return fail('request_body_too_large', 413);

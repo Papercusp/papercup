@@ -30,6 +30,7 @@ import {
   formatSnapshotAge,
   formatSuggestionLine,
   parseSnapshot,
+  packageNameReader,
   relativeCandidates,
   resolveSnapshotPath,
   sha256Hex,
@@ -167,6 +168,75 @@ describe('graph-dependency-suggestions — pure module', () => {
     const noImport = 'export const y = 1;\n';
     expect(verifyEdge({ ...goodEdge, importerSha256: sha256Hex(noImport) }, { readSource: () => noImport })).toEqual({ ok: false, reason: 'uncorroborated' });
     expect(verifyEdge(goodEdge, { readSource: () => IMPORTER_SRC })).toEqual({ ok: true });
+  });
+
+  it('corroborates directory index aliases but refuses a different directory or a basename-only guess', () => {
+    const src = `import x from '@/lib/widgets';`;
+    expect(sourceCorroborates(src, IMPORTER, 'packages/ui/lib/widgets/index.ts')).toBe(true);
+    expect(sourceCorroborates(src, IMPORTER, 'packages/ui/lib/other/index.ts')).toBe(false);
+    expect(sourceCorroborates(`import x from 'widgets';`, IMPORTER, 'packages/ui/lib/widgets/index.ts')).toBe(false);
+  });
+
+  it('re-resolves package root and src subpaths from the target manifest, not its directory name', () => {
+    const names = packageNameReader((p: string) => p === 'libs/core/package.json' ? '{"name":"@scope/api"}' : null);
+    for (const [specifier, target] of [
+      ['@scope/api', 'libs/core/src/index.ts'],
+      ['@scope/api', 'libs/core/index.ts'],
+      ['@scope/api/client', 'libs/core/src/client.ts'],
+      ['@scope/api/widgets', 'libs/core/src/widgets/index.ts'],
+      ['@scope/api/client.js', 'libs/core/src/client.ts'],
+    ]) {
+      expect(sourceCorroborates(`import x from '${specifier}';`, IMPORTER, target, names)).toBe(true);
+    }
+    for (const [specifier, target] of [
+      ['@scope/api-other', 'libs/core/src/index.ts'],
+      ['@scope/api/other', 'libs/core/src/client.ts'],
+      ['@scope/api', 'libs/core/src/client.ts'],
+      ['@scope/api', 'libs/unrelated/src/index.ts'],
+    ]) {
+      expect(sourceCorroborates(`import x from '${specifier}';`, IMPORTER, target, names)).toBe(false);
+    }
+    expect(sourceCorroborates(`import x from '@scope/api';`, IMPORTER, 'libs/core/src/index.ts')).toBe(false);
+    expect(sourceCorroborates(`import x from '@scope/api';`, IMPORTER, 'libs/core/src/index.ts', packageNameReader(() => '{broken'))).toBe(false);
+  });
+
+  it('producer and consumer both use manifest corroboration, preserving hashes and the baseline superset', () => {
+    const source = `import x from '@scope/api';`;
+    const target = 'libs/core/src/index.ts';
+    const sources: Record<string, string> = {
+      [IMPORTER]: source,
+      'libs/core/package.json': '{"name":"@scope/api"}',
+    };
+    const readSource = (p: string) => sources[p] ?? null;
+    const built = buildSnapshot({
+      edges: [{ importer: IMPORTER, imported: target }, { importer: IMPORTER, imported: 'libs/other/src/index.ts' }],
+      index: INDEX, readSource, now: NOW,
+    });
+    expect(built.stats).toMatchObject({ kept: 1, skippedUncorroborated: 1 });
+    const walk = () => suggestFromSnapshot({ changed: [target], snapshot: built.snapshot, now: NOW, readSource });
+    expect(walk().suggestedFiles).toEqual([IMPORTER]);
+    expect(unionSuperset(['baseline'], walk().suggestedFiles).names).toEqual(['baseline', IMPORTER]);
+    sources['libs/core/package.json'] = '{"name":"@scope/renamed"}';
+    expect(walk().rejected).toEqual([{ importer: IMPORTER, imported: target, reason: 'uncorroborated' }]);
+    sources['libs/core/package.json'] = '{"name":"@scope/api"}';
+    sources[IMPORTER] += '// changed';
+    expect(walk().rejected[0].reason).toBe('stale-importer');
+  });
+
+  it('memoizes manifest reads during a snapshot build', () => {
+    const sources: Record<string, string> = {
+      'apps/a.ts': `import x from '@scope/api/client';`,
+      'apps/b.ts': `export * from '@scope/api/client';`,
+      'libs/core/package.json': '{"name":"@scope/api"}',
+    };
+    const reads: string[] = [];
+    const built = buildSnapshot({
+      edges: ['apps/a.ts', 'apps/b.ts'].map((importer) => ({ importer, imported: 'libs/core/src/client.ts' })),
+      index: INDEX, now: NOW,
+      readSource: (p: string) => { reads.push(p); return sources[p] ?? null; },
+    });
+    expect(built.stats.kept).toBe(2);
+    expect(reads.filter((p) => p === 'libs/core/package.json')).toHaveLength(1);
   });
 
   it('walks verified importers transitively and records every rejection', () => {

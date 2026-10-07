@@ -94,6 +94,7 @@ import PlanProvenanceBadge, {
 } from "./PlanProvenanceBadge";
 import { LazyPlanDashboard, PLAN_DASHBOARD_PARAM } from "./PlanDashboardHost";
 import PlanCleanupEntryButton from "./PlanCleanupEntryButton";
+import { PlanAuditActions, PlanAuditButton } from "./PlanAuditPane";
 import PlansCleanupStrip from "./PlansCleanupStrip";
 import {
   PLAN_CLEANUP_RUN_PARAM,
@@ -612,6 +613,8 @@ export default function PlansPane({
         </span>
       </header>
 
+      <PlanAuditActions planSlugs={rows.map(row => row.plan.slug)} />
+
       {cleanupEnabled ? (
         <PlansCleanupStrip
           planSlugs={cleanupPlanSlugs}
@@ -1012,6 +1015,7 @@ export default function PlansPane({
                       onRunStarted={(runId) => void setCleanupRunId(runId)}
                     />
                   ) : null}
+                  <PlanAuditButton planSlug={plan.slug} />
                   {/* P-008 / EI-15304: one-click archive for a STALE row — the
                     sprawl sweep. A SIBLING of the row button, never nested
                     (a <button> inside a <button> is invalid HTML — the trap

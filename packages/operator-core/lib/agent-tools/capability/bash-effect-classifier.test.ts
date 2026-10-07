@@ -13,6 +13,7 @@ import { lookupByMcpName } from '@papercusp/agent-mcp';
 import { runToolOrchestration } from '@papercusp/tooldef';
 import type { ProjectedTool, UnifiedToolContext } from '@papercusp/tooldef';
 import bashTool, { classifyCapabilityBashEffect } from './bash';
+import './bash_output';
 import { sedIsObservational } from './bash-effect';
 import { normalizeExpectedSigpipeResult, runForeground } from './bash-jobs';
 
@@ -43,6 +44,35 @@ describe('capability:bash per-call effect classifier (EI-22647418629976526)', ()
     const registered = lookupByMcpName('capability:bash');
     expect(registered?.effect).toBe('write');
     expect(registered?.effectForCall?.({ command: 'ss -ltnp' })).toBe('read');
+  });
+
+  it('does not count a non-consuming bash_output peek failure as a write', async () => {
+    const registered = lookupByMcpName('capability:bash_output');
+    expect(registered).toBeDefined();
+    expect(registered?.effect).toBe('write'); // consuming polls advance the output cursor
+    expect(registered?.effectForCall?.({ task_id: 'missing', peek: true })).toBe('read');
+    expect(registered?.effectForCall?.({ task_id: 'missing' })).toBe('write');
+
+    const child = {
+      ...registered!,
+      fn: vi.fn(async () => json({ ok: false, reason: 'unknown_task_id' })),
+    } as ProjectedTool;
+    const result = await runToolOrchestration(
+      `const poll = await tools.capability.bash_output({ task_id: 'missing', peek: true });
+       return { ok: poll.ok, reason: poll.reason };`,
+      { ctx: context(), deps: {}, tools: [child] },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.partial).toBe(true);
+    expect(result.plannedMutations).toEqual([]);
+    expect(result.okFalseMutations).toEqual([]);
+    expect(result.childFailures).toEqual([
+      expect.objectContaining({ tool: 'capability:bash_output', kind: 'semantic' }),
+    ]);
+    expect(result.callRecords).toEqual([
+      expect.objectContaining({ tool: 'capability:bash_output', effect: 'read', disposition: 'semantic_rejected' }),
+    ]);
   });
 
   it('classifies the df/findmnt filesystem diagnostic as read-only', async () => {

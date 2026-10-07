@@ -52,6 +52,11 @@ import {
   type OperatorHttpSend,
 } from './hosted-operator-http';
 import { canonicalNoisePublicKey } from './hosted-machine-noise-key';
+import { isByocSealedPacket } from './byoc-sealed-channel';
+import {
+  HOSTED_WORKSPACE_MAX_MESSAGE_BYTES,
+  type HostedWorkspaceRelaySocket,
+} from '../endpoint-route/hosted-workspace-session';
 
 // ─── Machine side ───────────────────────────────────────────────────────────
 
@@ -308,6 +313,9 @@ export function createDeviceHttpChannel(options: DeviceHttpChannelOptions): Oper
     ...(options.fetch ? { fetch: options.fetch } : {}),
     headerTimeoutMs: options.headerTimeoutMs ?? APP_HTTP_HEADER_TIMEOUT_MS,
     decideRoute: decideDeviceHttpRoute,
+    // Inline frames remain capped at 512 KiB. Chunked voice JSON can carry the
+    // existing 15 MiB audio limit (base64 + JSON overhead) without an oversized frame.
+    maxChunkedRequestBodyBytes: 64 * HOSTED_OPERATOR_HTTP_MAX_REQUEST_BODY_BYTES,
     requestHeaders: binding ? (input) => boundDeviceHttpRequestHeaders(input, binding) : deviceHttpRequestHeaders,
     responseHeaders: DEVICE_HTTP_RESPONSE_HEADERS,
     ...(binding ? { requestBody: (route, body) => bindPairBodyToProvenKey(route, body, binding) } : {}),
@@ -636,6 +644,69 @@ export interface AppRelayOpenOptions {
   relayUsage?: RelayUsageReport;
   /** The outside app owns the peer key and exchanges only Noise packets. */
   sealed?: boolean;
+}
+
+/**
+ * D-019: the portal is only an opaque transport for a phone's Noise channel.
+ * No portal ticket authorizes device content: the machine authenticates the
+ * static peer key and device JWT after decryption. Plaintext is terminal.
+ *
+ * The upgrade caller checks reachability before accepting HTTP; repeat it here
+ * because the connector can disappear between that check and handleUpgrade.
+ */
+export function attachSealedDeviceSocket(
+  port: AppRelayPort,
+  customerWorkspaceId: string,
+  socket: HostedWorkspaceRelaySocket,
+  now: Date = new Date(),
+): boolean {
+  const connector = port.appConnector(customerWorkspaceId);
+  if (!connector || connector.binding.hosting !== 'byoc' ||
+      !isHostedConnectorLive({ state: 'active', transport: 'websocket', heartbeatAt: connector.lastSeenAt }, now)) {
+    socket.close(1013, 'workspace_offline');
+    return false;
+  }
+  let closed = false;
+  let channel: AppRelayChannel | null = null;
+  const close = (code: number, reason: string) => {
+    if (closed) return;
+    closed = true;
+    channel?.close(reason);
+    socket.close(code, reason);
+  };
+  channel = port.openAppChannel(connector, {
+    onFrame: (payload) => {
+      if (closed) return;
+      if (!isByocSealedPacket(payload)) return close(4403, 'sealed_packet_required');
+      if (socket.readyState !== (socket.OPEN ?? 1)) return close(1001, 'device_disconnected');
+      try { socket.send(JSON.stringify(payload)); } catch { close(1011, 'device_transport_failed'); }
+    },
+    onClose: () => close(1013, 'workspace_offline'),
+  }, 'device-http', { sealed: true });
+  if (!channel) {
+    close(1013, 'workspace_offline');
+    return false;
+  }
+  if (closed) {
+    channel.close('device_disconnected');
+    return false;
+  }
+  socket.on('message', (data) => {
+    if (closed) return;
+    const raw = typeof data === 'string' ? Buffer.from(data) :
+      Buffer.isBuffer(data) ? data :
+      data instanceof ArrayBuffer ? Buffer.from(data) :
+      Array.isArray(data) && data.every(Buffer.isBuffer) ? Buffer.concat(data) : null;
+    if (!raw) return close(4403, 'sealed_packet_required');
+    if (raw.length > HOSTED_WORKSPACE_MAX_MESSAGE_BYTES) return close(1009, 'frame_too_large');
+    let payload: unknown;
+    try { payload = JSON.parse(raw.toString('utf8')); } catch { return close(4403, 'sealed_packet_required'); }
+    if (!isByocSealedPacket(payload)) return close(4403, 'sealed_packet_required');
+    if (!channel?.send(payload as unknown as Record<string, unknown>)) close(4403, 'sealed_packet_refused');
+  });
+  socket.on('close', () => close(1001, 'device_disconnected'));
+  socket.on('error', () => close(1011, 'device_transport_failed'));
+  return true;
 }
 
 export interface HostedAppRelayAuditEvent {
