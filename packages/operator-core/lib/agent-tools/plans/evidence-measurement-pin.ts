@@ -36,7 +36,7 @@ export const MEASUREMENT_PIN_DETAILS_KEY = 'measurementPin';
 /** One measured file, hashed from the exact bytes the fingerprint was computed over. */
 export interface MeasuredRepoFile {
   path: string;
-  dimension: 'source' | 'test';
+  dimension: 'source' | 'test' | 'fixture';
   sha256: string;
   /** Git blob id of the working-tree bytes (`git hash-object`), sha1 object format. */
   gitBlob: string;
@@ -44,7 +44,7 @@ export interface MeasuredRepoFile {
 
 const pinnedFileSchema = z.object({
   path: z.string(),
-  dimension: z.enum(['source', 'test']),
+  dimension: z.enum(['source', 'test', 'fixture']),
   sha256: z.string(),
   /** Repo-relative location of the owning repository; `.` is the measurement root. */
   repo: z.string(),
@@ -223,7 +223,7 @@ export function readMeasurementPin(details: Record<string, unknown> | null | und
 
 export interface MovedPath {
   path: string;
-  dimension: 'source' | 'test';
+  dimension: 'source' | 'test' | 'fixture';
   /** `changed` = bytes differ; `added` = measured now but absent from the pin; `removed` = pinned but no longer measured. */
   change: 'changed' | 'added' | 'removed';
 }

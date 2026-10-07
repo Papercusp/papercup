@@ -85,6 +85,8 @@ export const repoFilesEvidenceMeasurementSchema = z
     sourceGlobs: z.array(repoMeasurementGlobSchema).min(1).max(MAX_REPO_MEASUREMENT_SOURCE_GLOBS)
       .refine((patterns) => new Set(patterns).size === patterns.length, 'measurement globs must be unique').optional(),
     testPaths: z.array(repoMeasurementPathSchema).min(1).max(32).optional(),
+    /** Files a fixture was calibrated against; tracked independently from the test and product source. */
+    fixturePaths: z.array(repoMeasurementPathSchema).min(1).max(32).optional(),
   })
   .strict();
 
@@ -140,6 +142,7 @@ export type EvidenceMeasurement = z.infer<typeof evidenceMeasurementSchema>;
 export interface MeasuredRepoEvidenceFingerprints {
   sourceFingerprint: string;
   testFingerprint: string | null;
+  fixtureFingerprint?: string | null;
 }
 
 const MAX_REPO_MEASUREMENT_BYTES = 8 * 1024 * 1024;
@@ -423,22 +426,29 @@ export async function measureRepoFilesEvidenceDetailedAtCommit(
     )
   ).map(fromRepo);
   const sourcePaths = [...new Set([...parsed.sourcePaths, ...globPaths])].sort();
-  const [source, test] = await Promise.all([
+  const [source, test, fixture] = await Promise.all([
     fileSetAt(sourcePaths),
     parsed.testPaths ? fileSetAt(parsed.testPaths) : Promise.resolve(null),
+    parsed.fixturePaths ? fileSetAt(parsed.fixturePaths) : Promise.resolve(null),
   ]);
   return {
     sourceFingerprint: source.fingerprint,
     testFingerprint: test?.fingerprint ?? null,
+    ...(fixture ? { fixtureFingerprint: fixture.fingerprint } : {}),
     files: [
       ...source.files.map((file) => ({ ...file, dimension: 'source' as const })),
       ...(test?.files ?? []).map((file) => ({ ...file, dimension: 'test' as const })),
+      ...(fixture?.files ?? []).map((file) => ({ ...file, dimension: 'fixture' as const })),
     ],
   };
 }
 
 async function repoFilesMeasuredPathsAtRoot(root: string, parsed: RepoFilesEvidenceMeasurement): Promise<string[]> {
-  return [...(await expandedRepoSourcePathsAtRoot(root, parsed)), ...(parsed.testPaths ?? [])];
+  return [
+    ...(await expandedRepoSourcePathsAtRoot(root, parsed)),
+    ...(parsed.testPaths ?? []),
+    ...(parsed.fixturePaths ?? []),
+  ];
 }
 
 /** The UNFENCED read. Callers own the mutation-probe fence on both sides of it. */
@@ -448,16 +458,19 @@ async function fingerprintRepoFilesMeasurement(
   expandedSourcePaths?: readonly string[],
 ): Promise<DetailedRepoEvidenceMeasurement> {
   const sourcePaths = expandedSourcePaths ?? (await expandedRepoSourcePathsAtRoot(root, parsed));
-  const [source, test] = await Promise.all([
+  const [source, test, fixture] = await Promise.all([
     fingerprintRepoFileSet(root, sourcePaths),
     parsed.testPaths ? fingerprintRepoFileSet(root, parsed.testPaths) : Promise.resolve(null),
+    parsed.fixturePaths ? fingerprintRepoFileSet(root, parsed.fixturePaths) : Promise.resolve(null),
   ]);
   return {
     sourceFingerprint: source.fingerprint,
     testFingerprint: test?.fingerprint ?? null,
+    ...(fixture ? { fixtureFingerprint: fixture.fingerprint } : {}),
     files: [
       ...source.files.map((file) => ({ ...file, dimension: 'source' as const })),
       ...(test?.files ?? []).map((file) => ({ ...file, dimension: 'test' as const })),
+      ...(fixture?.files ?? []).map((file) => ({ ...file, dimension: 'fixture' as const })),
     ],
   };
 }
@@ -467,8 +480,13 @@ export async function measureRepoFilesEvidenceAtRoot(
   repoRoot: string,
   measurement: RepoFilesEvidenceMeasurement,
 ): Promise<MeasuredRepoEvidenceFingerprints> {
-  const { sourceFingerprint, testFingerprint } = await measureRepoFilesEvidenceDetailedAtRoot(repoRoot, measurement);
-  return { sourceFingerprint, testFingerprint };
+  const { sourceFingerprint, testFingerprint, fixtureFingerprint } =
+    await measureRepoFilesEvidenceDetailedAtRoot(repoRoot, measurement);
+  return {
+    sourceFingerprint,
+    testFingerprint,
+    ...(fixtureFingerprint !== undefined ? { fixtureFingerprint } : {}),
+  };
 }
 
 /**
@@ -484,7 +502,12 @@ export async function measureAndPinRepoFilesEvidenceAtRoot(
 ): Promise<MeasuredRepoEvidenceFingerprints & { pin: MeasurementPin }> {
   const detailed = await measureRepoFilesEvidenceDetailedAtRoot(repoRoot, measurement);
   const pin = await buildMeasurementPin(await realpath(repoRoot), detailed.files, options);
-  return { sourceFingerprint: detailed.sourceFingerprint, testFingerprint: detailed.testFingerprint, pin };
+  return {
+    sourceFingerprint: detailed.sourceFingerprint,
+    testFingerprint: detailed.testFingerprint,
+    ...(detailed.fixtureFingerprint !== undefined ? { fixtureFingerprint: detailed.fixtureFingerprint } : {}),
+    pin,
+  };
 }
 
 /**
@@ -507,7 +530,12 @@ export async function measureAndPinRepoFilesEvidenceAtCommitForScope(
     ...(options.git ? { deps: { git: options.git } } : {}),
   });
   const pin = await buildMeasurementPin(root, detailed.files, options);
-  return { sourceFingerprint: detailed.sourceFingerprint, testFingerprint: detailed.testFingerprint, pin };
+  return {
+    sourceFingerprint: detailed.sourceFingerprint,
+    testFingerprint: detailed.testFingerprint,
+    ...(detailed.fixtureFingerprint !== undefined ? { fixtureFingerprint: detailed.fixtureFingerprint } : {}),
+    pin,
+  };
 }
 
 async function resolveMeasurementRoot(
@@ -1218,6 +1246,8 @@ interface CurrentnessRow {
   test_run_id: number | null;
   test_run_present: boolean;
   test_run_worktree_dirty?: boolean | null;
+  evidence_kind?: SpecEvidenceKind;
+  details?: Record<string, unknown>;
 }
 
 function compareFingerprint(stored: string | null, current: string | null | undefined): FingerprintState {
@@ -1232,11 +1262,19 @@ export function classifySpecEvidenceCurrentness(
   current?: EvidenceCurrentInput,
   options: CurrentnessClassificationOptions = {},
 ): EvidenceCurrentness {
+  const adequacy = row.details?.adequacy;
+  const fixtureCalibrationAttested =
+    adequacy !== null && typeof adequacy === 'object' && !Array.isArray(adequacy) &&
+    (adequacy as Record<string, unknown>).fixtureCalibrated === true;
+  const fixtureExpected = row.evidence_kind === 'fixture' || fixtureCalibrationAttested;
   const dimensions: EvidenceCurrentness['dimensions'] = {
     spec: row.spec_is_current ? 'current' : 'stale',
     source: compareFingerprint(row.source_fingerprint, current?.sourceFingerprint) as 'current' | 'stale' | 'unknown',
     test: compareFingerprint(row.test_fingerprint, current?.testFingerprint),
-    fixture: compareFingerprint(row.fixture_fingerprint, current?.fixtureFingerprint),
+    fixture:
+      fixtureExpected && row.fixture_fingerprint === null
+        ? 'unknown'
+        : compareFingerprint(row.fixture_fingerprint, current?.fixtureFingerprint),
     rubric: compareFingerprint(row.rubric_fingerprint, current?.rubricFingerprint),
     environment: compareFingerprint(row.environment_fingerprint, current?.environmentFingerprint),
     coverageEvidence:
@@ -2121,14 +2159,18 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
             detailed = await measureRepoFilesEvidenceDetailedAtCommit(measurementRoot, recipe, measuredAtCommit);
           } else if (snapshot) {
             const sourcePaths = await expandedRepoSourcePathsAtRoot(measurementRoot, recipe);
-            const measuredPaths = [...sourcePaths, ...(recipe.testPaths ?? [])];
+            const measuredPaths = [...sourcePaths, ...(recipe.testPaths ?? []), ...(recipe.fixturePaths ?? [])];
             const refusal = mutationProbeRefusal(snapshot.resolved, snapshot.probes, measuredPaths);
             if (refusal) throw new Error(refusal);
             detailed = await fingerprintRepoFilesMeasurement(measurementRoot, recipe, sourcePaths);
           } else {
             detailed = await measureRepoFilesEvidenceDetailedAtRoot(measurementRoot, recipe);
           }
-          measured = { sourceFingerprint: detailed.sourceFingerprint, testFingerprint: detailed.testFingerprint };
+          measured = {
+            sourceFingerprint: detailed.sourceFingerprint,
+            testFingerprint: detailed.testFingerprint,
+            ...(detailed.fixtureFingerprint !== undefined ? { fixtureFingerprint: detailed.fixtureFingerprint } : {}),
+          };
           files = detailed.files;
         }
         return {
@@ -2228,10 +2270,12 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
     if (measured?.status === 'unavailable' && currentness.overall === 'unknown') {
       currentness.unknownReasons = [...currentness.unknownReasons, `server-measurement-unavailable:${measured.reason}`];
     }
-    // P-018: a source/test-stale verdict now names WHICH measured files moved. Only for a
+    // P-018: a repository-file-stale verdict now names WHICH measured files moved. Only for a
     // row that is stale on those dimensions — a current row has nothing to name, and a
     // row that predates the pin reports `pinned:false` rather than an empty (false) list.
-    const fileStale = currentness.staleReasons.some((reason) => reason === 'source-stale' || reason === 'test-stale');
+    const fileStale = currentness.staleReasons.some(
+      (reason) => reason === 'source-stale' || reason === 'test-stale' || reason === 'fixture-stale',
+    );
     const movement =
       fileStale && measured?.status === 'measured' && measured.files
         ? diffMeasuredFiles(readMeasurementPin(row.details), measured.files)
@@ -2311,6 +2355,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
                     measuredDimensions: [
                       'source',
                       ...(measured.current.testFingerprint === null ? [] : ['test']),
+                      ...(measured.current.fixtureFingerprint == null ? [] : ['fixture']),
                     ],
                     ...(attestedDimensions.length > 0 ? { attestedDimensions } : {}),
                     // D-001: the commit whose objects were measured; absent for a

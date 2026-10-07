@@ -56,6 +56,7 @@ import {
   classifySpecEvidenceCurrentness,
   evidenceMeasurementSchema,
   listSpecEvidence,
+  measureAndPinRepoFilesEvidenceAtRoot,
   measureRepoFilesEvidenceDetailedAtRoot,
   measureRepoFilesEvidenceAtRoot,
   measureWorkItemsEvidenceForScope,
@@ -97,6 +98,31 @@ describe('repo-backed server measurement', () => {
     await writeFile(join(measurementRoot, 'src', 'feature.ts'), 'export const value = 2;\n');
     const changed = await measureRepoFilesEvidenceAtRoot(measurementRoot, recipe);
     expect(changed.sourceFingerprint).not.toBe(first.sourceFingerprint);
+    expect(changed.testFingerprint).toBe(first.testFingerprint);
+  });
+
+  it('measures fixture calibration files as an independent fingerprint and pin dimension', async () => {
+    const fixturePath = 'fixture/server-envelope.ts';
+    await mkdir(join(measurementRoot, 'fixture'), { recursive: true });
+    await writeFile(join(measurementRoot, fixturePath), 'export const voicePort: number | null = 8080;\n');
+    const recipe = {
+      schemaVersion: 1 as const,
+      kind: 'repo-files' as const,
+      sourcePaths: ['src/feature.ts'],
+      testPaths: ['test/feature.test.ts'],
+      fixturePaths: [fixturePath],
+    };
+
+    const first = await measureAndPinRepoFilesEvidenceAtRoot(measurementRoot, recipe);
+    expect(first.fixtureFingerprint).toMatch(/^sha256-file-set-v1:[0-9a-f]{64}$/);
+    expect(first.pin.files).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: fixturePath, dimension: 'fixture' }),
+    ]));
+
+    await writeFile(join(measurementRoot, fixturePath), 'export const voicePort: number | null = null;\n');
+    const changed = await measureRepoFilesEvidenceDetailedAtRoot(measurementRoot, recipe);
+    expect(changed.fixtureFingerprint).not.toBe(first.fixtureFingerprint);
+    expect(changed.sourceFingerprint).toBe(first.sourceFingerprint);
     expect(changed.testFingerprint).toBe(first.testFingerprint);
   });
 
@@ -475,6 +501,109 @@ describe('listSpecEvidence timestamp normalization', () => {
       at: '2026-08-20T21:12:00.000Z', by: 'su-reviewer',
       reason: 'Withdrawn pending attempt without a result.',
     } });
+  });
+
+  it('keeps a fixture-dependent binding without a stored fixture baseline unknown', async () => {
+    const recipe = {
+      schemaVersion: 1 as const,
+      kind: 'repo-files' as const,
+      sourcePaths: ['src/feature.ts'],
+      testPaths: ['test/feature.test.ts'],
+    };
+    const measured = await measureRepoFilesEvidenceAtRoot(measurementRoot, recipe);
+    h.rows = [{
+      id: 55,
+      work_item_id: 'WI-fixture',
+      plan_slug: 'plan-one',
+      spec_id: 'SPEC-fixture',
+      source_val_id: null,
+      spec_revision: 1,
+      current_revision: 1,
+      spec_fingerprint: 'sha256:spec-fixture',
+      evidence_kind: 'fixture',
+      evidence_ref: 'fixture:legacy-wiremock',
+      source_fingerprint: measured.sourceFingerprint,
+      test_fingerprint: measured.testFingerprint,
+      fixture_fingerprint: null,
+      rubric_fingerprint: null,
+      environment_fingerprint: null,
+      coverage_evidence_ref: null,
+      coverage_evidence_present: false,
+      test_run_id: null,
+      test_run_present: false,
+      details: { currentMeasurement: recipe, adequacy: { fixtureCalibrated: true } },
+      observed_at: '2026-08-20T21:10:00.000Z',
+      binding_fingerprint: 'sha256:fixture-binding',
+      created_by: 'su-test',
+      created_at: '2026-08-20T21:10:01.000Z',
+      spec_is_current: true,
+    }];
+
+    const [row] = await listSpecEvidence({ harnessSlug: 'papercusp', planSlugs: ['plan-one'] });
+
+    expect(row.currentness).toMatchObject({
+      overall: 'unknown',
+      dimensions: { source: 'current', test: 'current', fixture: 'unknown' },
+      unknownReasons: ['fixture-current-fingerprint-not-supplied'],
+    });
+  });
+
+  it('marks fixture calibration stale when a measured server fixture source changes', async () => {
+    const fixturePath = 'fixture/runtime-envelope.ts';
+    await mkdir(join(measurementRoot, 'fixture'), { recursive: true });
+    await writeFile(join(measurementRoot, fixturePath), 'export const voicePort: number | null = 8080;\n');
+    const recipe = {
+      schemaVersion: 1 as const,
+      kind: 'repo-files' as const,
+      sourcePaths: ['src/feature.ts'],
+      testPaths: ['test/feature.test.ts'],
+      fixturePaths: [fixturePath],
+    };
+    const pinned = await measureAndPinRepoFilesEvidenceAtRoot(measurementRoot, recipe);
+    h.rows = [{
+      id: 56,
+      work_item_id: 'WI-fixture-current',
+      plan_slug: 'plan-one',
+      spec_id: 'SPEC-fixture-current',
+      source_val_id: null,
+      spec_revision: 1,
+      current_revision: 1,
+      spec_fingerprint: 'sha256:spec-fixture-current',
+      evidence_kind: 'fixture',
+      evidence_ref: 'fixture:wiremock',
+      source_fingerprint: pinned.sourceFingerprint,
+      test_fingerprint: pinned.testFingerprint,
+      fixture_fingerprint: pinned.fixtureFingerprint,
+      rubric_fingerprint: null,
+      environment_fingerprint: null,
+      coverage_evidence_ref: null,
+      coverage_evidence_present: false,
+      test_run_id: null,
+      test_run_present: false,
+      details: { currentMeasurement: recipe, measurementPin: pinned.pin },
+      observed_at: '2026-08-20T21:10:00.000Z',
+      binding_fingerprint: 'sha256:fixture-current-binding',
+      created_by: 'su-test',
+      created_at: '2026-08-20T21:10:01.000Z',
+      spec_is_current: true,
+    }];
+
+    const [current] = await listSpecEvidence({ harnessSlug: 'papercusp', planSlugs: ['plan-one'] });
+    expect(current.currentness).toMatchObject({
+      overall: 'current',
+      dimensions: { fixture: 'current' },
+    });
+
+    await writeFile(join(measurementRoot, fixturePath), 'export const voicePort: number | null = null;\n');
+    const [stale] = await listSpecEvidence({ harnessSlug: 'papercusp', planSlugs: ['plan-one'] });
+    expect(stale.currentness).toMatchObject({
+      overall: 'stale',
+      dimensions: { fixture: 'stale' },
+      staleReasons: ['fixture-stale'],
+    });
+    expect(stale).toHaveProperty('serverMeasurement.movedPaths', expect.arrayContaining([
+      expect.objectContaining({ path: fixturePath, dimension: 'fixture', change: 'changed' }),
+    ]));
   });
 
   it('matches scoped currentness by clause identity when two specs share one artifact reference', async () => {
