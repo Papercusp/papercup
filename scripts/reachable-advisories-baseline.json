@@ -119,7 +119,6 @@
     "nanoid",
     "patch-package",
     "sass",
-    "sharp",
     "style-dictionary"
   ],
   "entries": {
@@ -233,12 +232,6 @@
       "disposition": "deferred-semver-major",
       "reason": "ADDED 2026-10-06 (WI-10006055 gate repair; tracked on WI-10006989). Hidden since 2026-10-02 by the npm-ls fail-closed. Installed 1.51.0, range 1.6.0 - 1.78.0. npm routes the fix through @excalidraw/excalidraw@0.17.6, semver-major. Check on WI-10006989 whether the direct copy can move within ^1.",
       "owners": ["@papercup/marketplace-public-ui"]
-    },
-    "sharp": {
-      "severity": "high",
-      "disposition": "deferred-semver-major",
-      "reason": "ADDED 2026-10-06 (WI-10006055 gate repair; tracked on WI-10006989). Hidden since 2026-10-02 by the npm-ls fail-closed. Installed 0.35.4, range <0.35.5. npm routes the fix through astro@7.3.6, semver-major. Check on WI-10006989 whether sharp alone can move to 0.35.5.",
-      "owners": ["@papercup/marketplace-public-ui", "@papercupai/operator-docs", "@papercupai/papercusp-docs", "@papercusp/operator-core"]
     }
   }
 }
