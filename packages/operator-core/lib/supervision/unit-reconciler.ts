@@ -1619,7 +1619,7 @@ export async function reconcileTick(deps: ReconcilerDeps): Promise<ReconcileTick
   await reconcilePauses(deps, pausedThisTick, observedThisTick, now);
 
   if (!deps.failedUnitCensus) return { checked: registry.length, actions, degraded: false };
-  const unregisteredFailed = await censusUnregisteredFailedUnits(deps, registry, log);
+  const unregisteredFailed = await censusUnregisteredFailedUnits(deps, registry, log, now);
   return { checked: registry.length, actions, degraded: false, unregisteredFailed };
 }
 
@@ -1649,10 +1649,15 @@ export async function reconcileTick(deps: ReconcilerDeps): Promise<ReconcileTick
 
 /** Units the census announced for their CURRENT failure episode. */
 const announcedUnregisteredFailures = new Set<string>();
+const unregisteredCrashLoopStateByUnit = new Map<
+  string,
+  { nRestartsObs: { at: number; n: number }[]; silentLoopEscalated: boolean }
+>();
 
 /** Test-only reset for the census episode memory. */
 export function _resetFailedUnitCensusForTests(): void {
   announcedUnregisteredFailures.clear();
+  unregisteredCrashLoopStateByUnit.clear();
 }
 
 const normalizeServiceUnit = (unit: string): string => unit.replace(/\.service$/, '');
@@ -1686,41 +1691,46 @@ export async function censusUnregisteredFailedUnits(
   deps: Pick<ReconcilerDeps, 'execUser' | 'notify'>,
   registry: readonly { unit?: string }[],
   log: (msg: string) => void,
+  now = Date.now(),
 ): Promise<string[]> {
-  let failed: SystemctlUnitStatus[];
+  let units: SystemctlUnitStatus[];
   try {
-    failed = parseSystemctlListUnits(
-      await deps.execUser(['list-units', '--state=failed', '--no-legend', '--plain']),
-    ).filter((u) => u.active === 'failed');
+    units = parseSystemctlListUnits(
+      await deps.execUser(['list-units', '--all', '--no-legend', '--plain']),
+    );
   } catch (err) {
-    log(`failed-unit census skipped: ${err instanceof Error ? err.message : String(err)}`);
+    log(`unregistered-unit census skipped: ${err instanceof Error ? err.message : String(err)}`);
     return [];
   }
 
   const registered = new Set(registry.filter((e) => e.unit).map((e) => normalizeServiceUnit(e.unit as string)));
-  const candidates = failed.filter((u) => !registered.has(normalizeServiceUnit(u.unit)));
+  const candidates = units.filter((u) => !registered.has(normalizeServiceUnit(u.unit)));
   let selected: SystemctlUnitStatus[] = [];
+  let transientById = new Map<string, string>();
+  let showById = new Map<string, Record<string, string>>();
   if (candidates.length > 0) {
-    let transientById: Map<string, string>;
     try {
-      const records = parseSystemctlShowRecords(
-        await deps.execUser(['show', '-p', 'Id', '-p', 'LoadState', '-p', 'Transient', ...candidates.map((u) => u.unit)]),
+      showById = parseSystemctlShowRecords(
+        await deps.execUser([
+          'show', '-p', 'Id', '-p', 'LoadState', '-p', 'Transient', '-p', 'NRestarts',
+          ...candidates.map((u) => u.unit),
+        ]),
       );
       // A unit that is no longer LOADED vanished between `list-units` and `show` — typically a
       // failed transient unit garbage-collected by `reset-failed`. systemd answers `Transient=no`
       // for a not-found unit, so trusting that value would announce a run-scoped unit as a host
       // service (WI-10006477). A vanished unit is not a residue: map it to an unknown transience.
       transientById = new Map(
-        [...records].map(([id, props]) => [
+        [...showById].map(([id, props]) => [
           id,
           (props.LoadState ?? '').trim() === 'loaded' ? (props.Transient ?? '').trim() : '',
         ]),
       );
     } catch (err) {
-      log(`failed-unit census could not read Transient (${err instanceof Error ? err.message : String(err)}) — reporting nothing this tick`);
+      log(`unregistered-unit census could not read Transient/NRestarts (${err instanceof Error ? err.message : String(err)}) — reporting nothing this tick`);
       return [];
     }
-    selected = selectUnregisteredFailedUnits(candidates, registry, transientById);
+    selected = selectUnregisteredFailedUnits(units.filter((u) => u.active === 'failed'), registry, transientById);
   }
 
   const failedNow = new Set(selected.map((u) => u.unit));
@@ -1741,6 +1751,46 @@ export async function censusUnregisteredFailedUnits(
       })
       .catch(() => {});
     for (const u of fresh) announcedUnregisteredFailures.add(u.unit);
+  }
+
+  const trackedCrashLoops = units.filter(
+    (u) =>
+      u.active !== 'failed' &&
+      u.unit.endsWith('.service') &&
+      !registered.has(normalizeServiceUnit(u.unit)) &&
+      transientById.get(u.unit) === 'no',
+  );
+  const trackedCrashLoopUnits = new Set(trackedCrashLoops.map((u) => u.unit));
+  for (const unit of [...unregisteredCrashLoopStateByUnit.keys()]) {
+    if (!trackedCrashLoopUnits.has(unit)) unregisteredCrashLoopStateByUnit.delete(unit);
+  }
+
+  for (const unit of trackedCrashLoops) {
+    const show = showById.get(unit.unit);
+    const rawRestarts = show?.NRestarts;
+    const nRestarts = rawRestarts === undefined || rawRestarts.trim() === ''
+      ? undefined
+      : Number.parseInt(rawRestarts, 10);
+    const prior = unregisteredCrashLoopStateByUnit.get(unit.unit) ?? {
+      nRestartsObs: [],
+      silentLoopEscalated: false,
+    };
+    const loop = checkSilentCrashLoop(nRestarts, prior.nRestartsObs, prior.silentLoopEscalated, now);
+    unregisteredCrashLoopStateByUnit.set(unit.unit, {
+      nRestartsObs: loop.nextObs,
+      silentLoopEscalated: loop.nextEscalated,
+    });
+    if (loop.escalate) {
+      await deps
+        .notify({
+          summary:
+            `🚨 supervision: \`${unit.unit}\` is SILENTLY crash-looping — systemd restarted this ` +
+            `unregistered service ${loop.restartsInWindow}× in <5min. Papercusp is report-only here; ` +
+            `systemd remains the restart authority. Inspect \`systemctl --user status ${unit.unit}\` and its journal.`,
+          kind: 'escalation',
+        })
+        .catch(() => {});
+    }
   }
   return selected.map((u) => u.unit);
 }
