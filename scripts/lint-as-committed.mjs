@@ -329,10 +329,21 @@ export function sweepStaleWorkRoots({ root = tmpdir(), nowMs = Date.now(), cwds 
  * scripts, and quietly passing it to both is how a run tests something nobody asked
  * for and reports green for it.
  */
+/** Select a pinned manifest; npm validates declared workspace membership at execution. */
+export function workspaceManifestPath(workspace) {
+  if (workspace === undefined || workspace === null) return 'package.json';
+  if (typeof workspace !== 'string' || !workspace ||
+      !workspace.split('/').every((part) => /^[A-Za-z0-9_.-]+$/.test(part) && part !== '.' && part !== '..')) {
+    throw new Error('workspace must be a repository-relative directory, for example apps/sidecar');
+  }
+  return workspace + '/package.json';
+}
+
 export function parseArgs(argv) {
   const scripts = [];
   const forward = [];
   let ref = 'HEAD';
+  let workspace;
   let keep = false;
   let any = false;
   let sawSeparator = false;
@@ -347,6 +358,7 @@ export function parseArgs(argv) {
     else if (arg === '--keep') keep = true;
     else if (arg === '--any') any = true;
     else if (arg.startsWith('--ref=')) ref = arg.slice('--ref='.length);
+    else if (arg.startsWith('--workspace=')) workspace = arg.slice('--workspace='.length);
     else if (arg === '--help' || arg === '-h')
       return { help: true, scripts: [], forward: [], ref, keep, any, unknown, sawSeparator };
     else if (arg.startsWith('-')) unknown.push(arg);
@@ -365,7 +377,8 @@ export function parseArgs(argv) {
   // of guessing is silent: both scripts run, one of them against operands meant for the
   // other, and the summary reports on whatever came back. Refuse instead.
   const forwardAmbiguous = forward.length > 0 && scripts.length > 1;
-  return { help: false, scripts, forward, ref, keep, any, unknown, nonLint, selfRecursive, forwardAmbiguous, sawSeparator };
+  return { help: false, scripts, forward, ref, keep, any, unknown, nonLint, selfRecursive, forwardAmbiguous, sawSeparator,
+    ...(workspace !== undefined ? { workspace } : {}) };
 }
 
 /**
@@ -1130,7 +1143,7 @@ function main() {
     // ── read the COMMITTED package.json: the script DEFINITION is versioned too ──
     let refScripts = {};
     try {
-      refScripts = JSON.parse(readFileSync(join(workRoot, 'package.json'), 'utf8')).scripts ?? {};
+      refScripts = JSON.parse(readFileSync(join(workRoot, workspaceManifestPath(args.workspace)), 'utf8')).scripts ?? {};
     } catch (err) {
       console.error(`lint-as-committed: cannot read package.json at ${short}: ${err.message}`);
       bail(2);
@@ -1163,7 +1176,8 @@ function main() {
       // for `test:file` the operand IS the code under test, so its drift is the whole
       // answer to "did my green come from the commit or from someone's dirty edit?".
       const forwardedPaths = args.forward.filter((a) => !a.startsWith('-') && /\.[cm]?[jt]sx?$/.test(a));
-      for (const p of [...detectorPathsFromCommand(command), ...forwardedPaths]) {
+      const scopedPath = (p) => args.workspace ? join(args.workspace, p) : p;
+      for (const p of [...detectorPathsFromCommand(command), ...forwardedPaths].map(scopedPath)) {
         const atRef = showAtRef(repoRoot, sha, p);
         const local = existsSync(join(repoRoot, p)) ? readFileSync(join(repoRoot, p), 'utf8') : null;
         if (atRef === null) console.log(`  detector ${p}: absent at ${short} (untracked locally?)`);
@@ -1175,7 +1189,7 @@ function main() {
       // handed to the script anyway. Running it would answer a question about a
       // DIFFERENT program than the one requested, and the tool's whole contract is that
       // a result names the program it came from. Fail-closed, same as MISSING@REF.
-      const absentOperands = forwardedPaths.filter((p) => showAtRef(repoRoot, sha, p) === null);
+      const absentOperands = forwardedPaths.map(scopedPath).filter((p) => showAtRef(repoRoot, sha, p) === null);
       if (absentOperands.length > 0) {
         console.log(`  MISSING at ${short}: forwarded file(s) not present at this ref: ${absentOperands.join(', ')}`);
         console.log(`  Refusing to run — the result would describe a different program than you asked about.`);
@@ -1183,7 +1197,8 @@ function main() {
         continue;
       }
 
-      const run = spawnSync('npm', ['run', script, ...(args.forward.length > 0 ? ['--', ...args.forward] : [])], {
+      const run = spawnSync('npm', [...(args.workspace ? ['--workspace', args.workspace] : []), 'run', script,
+        ...(args.forward.length > 0 ? ['--', ...args.forward] : [])], {
         cwd: workRoot,
         encoding: 'utf8',
         stdio: 'inherit',
