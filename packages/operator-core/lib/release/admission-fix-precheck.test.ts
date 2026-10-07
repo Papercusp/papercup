@@ -194,6 +194,8 @@ describe('createCheckpointTreeFixPrecheckRunner', () => {
     let setupFinished = false;
     let setupOutput = '';
     let filesMeasured = 0;
+    let sawOutput!: () => void;
+    const firstOutput = new Promise<void>((resolve) => { sawOutput = resolve; });
     const exec = async (argv: readonly string[], opts: ExecOptions): Promise<ExecResult> => {
       if (!argv.includes('--exec-under-lock')) {
         filesMeasured += 1;
@@ -205,7 +207,10 @@ describe('createCheckpointTreeFixPrecheckRunner', () => {
           "console.error('setup stderr progress'); " +
           "const timer = setInterval(() => { if (fs.existsSync(process.argv[1])) { clearInterval(timer); } }, 10);",
         releaseFile,
-      ], { ...opts, cwd: process.cwd(), timeoutMs: 5_000 });
+      ], { ...opts, cwd: process.cwd(), timeoutMs: 5_000, onOutput: () => {
+        opts.onOutput?.();
+        sawOutput();
+      } });
       setupFinished = true;
       setupOutput = result.output;
       return result;
@@ -217,6 +222,12 @@ describe('createCheckpointTreeFixPrecheckRunner', () => {
     const startedAt = Date.now();
     const pending = runner({ commit: C, files: ['lib/red.test.ts'], onProgress: (p) => { snapshots.push(p); } });
     try {
+      // Observe the real child output before asserting its heartbeat. Its existing
+      // process deadline bounds startup; a separate 2s startup race proved nothing
+      // about whether output was forwarded while setup remained running.
+      await Promise.race([firstOutput, pending.then(() => {
+        throw new Error(`setup ended before producing output: ${setupOutput}`);
+      })]);
       await vi.waitFor(() => {
         expect(snapshots.some((p) => p.heartbeatAtMs > startedAt)).toBe(true);
       }, { timeout: 2_000 });
