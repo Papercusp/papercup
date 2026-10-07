@@ -7,13 +7,18 @@ import type { OrgTestDb } from '../../test/_org-test-db';
 import { createOrgTestDb } from '../../test/_org-test-db';
 import { readProducerObservations, recordProducerObservation } from './producer-lifecycle-store';
 
-const h = vi.hoisted(() => ({ sql: null as unknown }));
+const h = vi.hoisted(() => ({ sql: null as unknown, commitAndReproject: vi.fn() }));
 vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: h.sql }) }));
 vi.mock('../sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }));
 vi.mock('../change-ledger/change-ledger', () => ({ recordBehaviorChange: vi.fn(async () => {}) }));
+vi.mock('../blueprint/commit-reproject', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../blueprint/commit-reproject')>()),
+  commitAndReproject: h.commitAndReproject,
+}));
 
 const { recordRoutedIdea, gradeRoutedIdea, propagateWorkItemOutcome, propagatePlanOutcome, refreshScoutOutcomes } = await import('../scout/routed-ledger');
 const { recordProposal, decideProposal } = await import('../gym/control-plane');
+const { acceptProposalViaCommit } = await import('../blueprint/commit-reproject-real');
 const { insertPrediction, resolvePrediction, voidPrediction } = await import('../calibration/store');
 const { admitTransferLesson, recordTransferOutcome, markTransferError, setLessonMemoryId, setLessonPackCandidate } = await import('../transfer/store');
 const { applyTransferVerdict } = await import('../transfer/gate');
@@ -88,6 +93,34 @@ describe('six actual producer boundaries', () => {
     await recordProposal(db.adminSql, { workspaceId: WS, harnessSlug: 'papercusp', id, cycle: 2, role: 'worker', proposedMd: 'must not resurrect' });
     expect((await observation('gym')).source.proposed_md).toBe('candidate prompt');
     expect((await decideProposal(db.adminSql, { workspaceId: WS, harnessSlug: 'papercusp', id, decision: 'rejected' })).ok).toBe(false);
+  });
+
+  it('records the blueprint commit/reproject acceptance in the same real producer receipt store', async () => {
+    const workspaceId = 'ws-gym-commit-reproject';
+    const id = await recordProposal(db.adminSql, { workspaceId, harnessSlug: 'papercusp', cycle: 1,
+      id: 'gym-commit-reproject', role: 'worker', proposedMd: 'accepted prompt',
+      candidateVersion: passingCandidateVerdict('gym-commit-reproject') });
+    h.commitAndReproject.mockResolvedValue({
+      ok: true, committed: true, commit: 'commit-1', contentHash: 'hash-1',
+      editedPath: '.papercusp/prompts/worker.md', blueprintPath: '.papercusp/blueprint.yaml',
+    });
+
+    const accepted = await acceptProposalViaCommit(db.adminSql, {
+      workspaceId, harnessSlug: 'papercusp', harnessDir: '/test/harness',
+      proposalId: id, role: 'worker', proposedMd: 'accepted prompt', now: 1,
+    });
+    const replay = await acceptProposalViaCommit(db.adminSql, {
+      workspaceId, harnessSlug: 'papercusp', harnessDir: '/test/harness',
+      proposalId: id, role: 'worker', proposedMd: 'accepted prompt', now: 2,
+    });
+
+    expect(accepted).toMatchObject({ ok: true, proposalMarked: true });
+    expect(replay).toMatchObject({ ok: true, proposalMarked: false });
+    const [receipt] = await readProducerObservations(db.adminSql, { producer: 'gym', workspaceId });
+    expect(receipt).toMatchObject({ producer: 'gym', sourceRef: `gym:${id}`, sourceCurrent: true,
+      contract: null, promotionAllowed: false,
+      lifecycle: { stage: 'activation', decision: { status: 'partial', value: { verdict: 'accepted', authority: null } },
+        activation: { status: 'partial' } } });
   });
 
   it('captures evaluation before the source read yields and retains it through a later native write', async () => {
