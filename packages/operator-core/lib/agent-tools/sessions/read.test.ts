@@ -63,7 +63,7 @@ describe('sessions:read role access', () => {
     expect(readModule.default.agentRoles).toContain('judge');
     expect(readModule.default.capability).toBe('sessions:read');
     expect(readModule.default.description).toContain(
-      "The evidence-only judge may use only `session:'self'`; named sessions and turn refs are refused for that role.",
+      'evidence-only judges may read only self.',
     );
   });
 
@@ -125,20 +125,16 @@ describe('sessions:read EI-20236684982538421 — structured large-window respons
 
   it('keeps the tail exclusivity rule in the compact discovery prefix', () => {
     expect(projected.description.slice(0, 320)).toContain(
-      "`tail:N` already means `order:'desc', limit:N`; do not combine `tail` with `order` or `limit`.",
+      "`tail:N` means `order:'desc', limit:N`; do not combine it with either.",
     );
   });
 
   it('documents Judge self scope and the multi-session self-window contract', () => {
-    expect(projected.description).toContain("`session:'self'` spans YOUR OWN respawn chain");
-    expect(projected.description).toContain(
-      "The evidence-only judge may use only `session:'self'`; named sessions and turn refs are refused for that role.",
-    );
-    expect(projected.description).toContain(
-      'If that window includes multiple native sessions, `session_id` is null',
-    );
-    expect(projected.description).toContain('`session_ids` lists them');
-    expect(projected.description).toContain("each turn's `ref` identifies its source");
+    expect(projected.description).toContain("`session:'self'` spans your respawn chain");
+    expect(projected.description).toContain('evidence-only judges may read only self.');
+    expect(projected.description).toContain('A multi-session self window has `session_id` null');
+    expect(readModule.default.guidance.returns).toContain('session_ids? (sessions represented in a self window)');
+    expect(readModule.default.guidance.returns).toContain('each turn ref identifies its source session');
   });
 
   it('advertises an object result and preserves all rows in structuredContent', async () => {
