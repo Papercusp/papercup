@@ -287,12 +287,15 @@ describe('reserveScratchSpace — no synchronous walk on the hot path (WI-100045
     expect(scratchUsageBytes('ws-A')).toBe(10); // the reservation itself is counted immediately
   });
 
-  it('a stale reservation triggers ONE background re-measure that replaces the cached total', async () => {
+  it('coalesces stale refreshes and retains reservations made during the first walk', async () => {
     makeRunDir('ws-A', 'tool-a', UUID(1), 1000);
     makeRunDir('ws-A', 'tool-b', UUID(2), 2000);
     reserveScratchSpace({ workspaceId: 'ws-A', bytes: 10 });
     reserveScratchSpace({ workspaceId: 'ws-A', bytes: 10 });
     await refreshScratchUsage('ws-A'); // joins the in-flight measure started by the first reservation
+    // The second reservation invalidated that snapshot: do not erase its reserved bytes.
+    expect(scratchUsageBytes('ws-A')).toBe(20);
+    await refreshScratchUsage('ws-A'); // the clean follow-up may replace the conservative total
     // The workspace-root marker (WI-10006512) is real bytes on disk and is counted too.
     expect(scratchUsageBytes('ws-A')).toBe(3000 + markerBytes('ws-A'));
   });
@@ -568,6 +571,55 @@ describe('runScratchGc — quota eviction', () => {
 });
 
 describe('deferred scratch quota recovery', () => {
+  it('reuses an in-flight usage measurement when quota waiters have not written yet', async () => {
+    const runDir = makeRunDir('ws-Q', 'quota', UUID(1), 100);
+    const wsRoot = scratchRootForWorkspace('ws-Q');
+    _setScratchUsageForTests('ws-Q', WORKSPACE_QUOTA_BYTES + 1);
+    const readdirMock = vi.mocked(readdirAsync);
+    const originalRead = readdirMock.getMockImplementation();
+    if (!originalRead) throw new Error('readdir mock has no original implementation');
+    const read = originalRead as unknown as (path: unknown, options?: unknown) => Promise<unknown>;
+    let releaseRead!: () => void;
+    let reachedRoot!: () => void;
+    const readGate = new Promise<void>((resolve) => { releaseRead = resolve; });
+    const atRoot = new Promise<void>((resolve) => { reachedRoot = resolve; });
+    let rootReads = 0;
+    readdirMock.mockImplementation((async (path: unknown, options: unknown) => {
+      const entries = await read(path, options);
+      if (String(path) === wsRoot && ++rootReads === 1) {
+        reachedRoot();
+        await readGate;
+      }
+      return entries as never;
+    }) as typeof readdirAsync);
+    const measurement = refreshScratchUsage('ws-Q');
+    const scansAtWrite: number[] = [];
+    let writers: Promise<void>[] = [];
+    try {
+      await atRoot;
+      writers = Array.from({ length: 3 }, (_, i) => {
+        const filePath = join(runDir, `write-${i}`);
+        return writeWithScratchQuota({ workspaceId: 'ws-Q', filePath, bytes: 512 }, async () => {
+          scansAtWrite.push(rootReads);
+          await writeFile(filePath, Buffer.alloc(512));
+        });
+      });
+      // A waiting writer has neither reserved bytes nor changed the measured filesystem.
+      expect(scansAtWrite).toEqual([]);
+      releaseRead();
+      await measurement;
+      await Promise.all(writers);
+      expect(scansAtWrite).toEqual([1, 1, 1]);
+      expect(scratchUsageBytes('ws-Q')).toBe(100 + markerBytes('ws-Q') + 3 * 512);
+    } finally {
+      releaseRead();
+      await Promise.allSettled([measurement, ...writers]);
+      // Drain any follow-up refresh before restoring the test's scratch root.
+      await refreshScratchUsage('ws-Q');
+      readdirMock.mockImplementation(originalRead);
+    }
+  });
+
   it.each([false, true])('replaces stale over-quota usage with an active reservation (already written: %s)', async (alreadyWritten) => {
     const runDir = makeRunDir('ws-Q', 'quota', UUID(1), 100);
     _setScratchUsageForTests('ws-Q', 0);
@@ -626,8 +678,8 @@ describe('deferred scratch quota recovery', () => {
     }));
     expect(existsSync(old)).toBe(false);
     expect(vi.mocked(rmAsync)).toHaveBeenCalledTimes(1);
-    // Recovery is shared by all writers, then one clean measurement runs after they settle.
-    expect(vi.mocked(readdirAsync).mock.calls.filter(([path]) => path === scratchRootForWorkspace('ws-Q'))).toHaveLength(3);
+    // One shared usage walk plus FIFO discovery. Waiting callers do not trigger another walk.
+    expect(vi.mocked(readdirAsync).mock.calls.filter(([path]) => path === scratchRootForWorkspace('ws-Q'))).toHaveLength(2);
     expect(vi.mocked(readdirSync)).not.toHaveBeenCalled();
     expect(vi.mocked(statSync)).not.toHaveBeenCalled();
     await refreshScratchUsage('ws-Q');
@@ -703,7 +755,7 @@ describe('deferred scratch quota recovery', () => {
     expect(scratchUsageBytes('ws-Q')).toBe(1024);
   });
 
-  it('does not lose a write that completes while a usage refresh is walking the tree', async () => {
+  it.each(['deferred', 'synchronous'])('does not lose a %s write that completes while a usage refresh is walking the tree', async (mode) => {
     _setScratchUsageForTests('ws-Q', 0);
     const runDir = join(scratchRootForWorkspace('ws-Q'), 'tool', UUID(2));
     mkdirSync(runDir, { recursive: true });
@@ -728,15 +780,21 @@ describe('deferred scratch quota recovery', () => {
     const measurement = refreshScratchUsage('ws-Q');
     try {
       await atRunDir;
-      await writeWithScratchQuota({ workspaceId: 'ws-Q', filePath, bytes: 1024 }, async () => {
-        await writeFile(filePath, Buffer.alloc(1024));
-      });
+      if (mode === 'synchronous') {
+        reserveScratchSpace({ workspaceId: 'ws-Q', bytes: 1024 });
+        writeFileSync(filePath, Buffer.alloc(1024));
+      } else {
+        await writeWithScratchQuota({ workspaceId: 'ws-Q', filePath, bytes: 1024 }, async () => {
+          await writeFile(filePath, Buffer.alloc(1024));
+        });
+      }
     } finally {
       releaseRead();
       readdirMock.mockImplementation(originalRead);
     }
     await measurement;
     expect(scratchUsageBytes('ws-Q')).toBe(1024);
+    await refreshScratchUsage('ws-Q');
   });
 });
 

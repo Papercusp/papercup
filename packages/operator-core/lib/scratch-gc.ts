@@ -387,7 +387,7 @@ interface ScratchUsageEntry {
   /** One shared pressure recovery; subsequent writers await it before touching disk. */
   recovering: Promise<void> | null;
   writes: Map<symbol, { filePath: string; bytes: number; reserved: boolean }>;
-  /** Changes on every deferred write start/finish so a tree walk can reject mixed snapshots. */
+  /** Changes on reservations and deferred write settlement so walks reject mixed snapshots. */
   writeGeneration: number;
   /** A mixed write/measurement snapshot needs one clean re-measurement after writers settle. */
   refreshDeferred: boolean;
@@ -555,7 +555,7 @@ export function refreshScratchUsage(workspaceId: string, now: () => number = Dat
   const run = (async () => {
     try {
       const measured = await sizeOfDirAsync(scratchRootForWorkspace(workspaceId));
-      if (entry.writeGeneration !== writeGeneration || entry.writes.size > 0) {
+      if (entry.writeGeneration !== writeGeneration || [...entry.writes.values()].some((write) => write.reserved)) {
         // The walk is not a consistent snapshot if a deferred write overlapped it. Keep the
         // reservation-based count and take one clean measurement after the writers settle.
         entry.refreshDeferred = true;
@@ -620,17 +620,19 @@ export function reserveScratchSpace(opts: {
     );
   }
   const entry = usageEntry(opts.workspaceId);
-  if (!entry.refreshing && !entry.refreshDeferred && Date.now() - entry.measuredAt >= USAGE_REFRESH_MS) {
-    // Fire-and-forget: the caller never waits on the disk. A failed measure keeps the old total.
-    void refreshScratchUsage(opts.workspaceId).catch(() => {});
-  }
+  const refreshDue = !entry.refreshing && !entry.refreshDeferred && Date.now() - entry.measuredAt >= USAGE_REFRESH_MS;
   const used = entry.bytes;
   if (used + opts.bytes > WORKSPACE_QUOTA_BYTES) {
+    if (refreshDue) void refreshScratchUsage(opts.workspaceId).catch(() => {});
     throw new ScratchQuotaError(
       `scratch reservation: workspace ${opts.workspaceId} used ${used} + ${opts.bytes} > quota ${WORKSPACE_QUOTA_BYTES}`,
     );
   }
   entry.bytes = used + opts.bytes;
+  entry.writeGeneration += 1;
+  // Start after this reservation: only later reservations can invalidate the new walk.
+  // Fire-and-forget keeps both accepted and rejected reservations free of filesystem waits.
+  if (refreshDue) void refreshScratchUsage(opts.workspaceId).catch(() => {});
 }
 
 /**
@@ -649,7 +651,6 @@ export async function writeWithScratchQuota(
   const token = Symbol();
   const pending = { filePath: opts.filePath, bytes: opts.bytes, reserved: false };
   entry.writes.set(token, pending);
-  entry.writeGeneration += 1;
   let succeeded = false;
   try {
     if (entry.recovering) await entry.recovering;
@@ -660,6 +661,12 @@ export async function writeWithScratchQuota(
       if (!entry.recovering) {
         entry.recovering = (async () => {
           if (entry.refreshing) await entry.refreshing;
+          // Waiters have not touched disk, so they do not invalidate a background walk.
+          // Reuse its reconciled total when it already makes room for the queued writes;
+          // otherwise every stale-quota spill pays for the same full-tree scan twice.
+          const waitingBytes = [...entry.writes.values()].reduce((sum, request) =>
+            sum + (request.reserved ? 0 : request.bytes), 0);
+          if (entry.bytes + waitingBytes <= WORKSPACE_QUOTA_BYTES) return;
           await evictWorkspaceQuota(opts.workspaceId, () => Math.max(0, WORKSPACE_QUOTA_BYTES -
             [...entry.writes.values()].reduce((sum, request) => sum + request.bytes, 0)), true);
         })().finally(() => { entry.recovering = null; });
@@ -672,7 +679,7 @@ export async function writeWithScratchQuota(
     succeeded = true;
   } finally {
     entry.writes.delete(token);
-    entry.writeGeneration += 1;
+    if (pending.reserved) entry.writeGeneration += 1;
     if (pending.reserved && !succeeded) {
       entry.bytes = Math.max(0, entry.bytes - opts.bytes);
       pending.reserved = false;
