@@ -5,9 +5,9 @@
   "accountableOwner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
   "population": {
     "failedFiles": 124,
-    "repairedFocused": 27,
+    "repairedFocused": 28,
     "repairedPeerFocused": 16,
-    "openUnknown": 81
+    "openUnknown": 80
   },
   "classes": {
     "assertion": 55,
@@ -21,7 +21,8 @@
     "migration-stage": 1,
     "missing-schema": 14,
     "blueprint-fixture": 1,
-    "console-guard": 7,
+    "console-guard": 6,
+    "sidecar-pool-and-hlc-sequence-fixture": 1,
     "unclassified": 6,
     "plan-pot-fixture": 1,
     "plan-observation-fixture": 1,
@@ -458,14 +459,38 @@
     },
     {
       "path": "packages/operator-core/lib/sync/hyperbee/__tests__/federation-concurrent-writes-sidecar.repro.integration.test.ts",
-      "class": "console-guard",
-      "state": "open-unknown",
-      "item": "WI-10006170",
+      "class": "sidecar-pool-and-hlc-sequence-fixture",
+      "state": "repaired-focused",
+      "item": "WI-10007171",
       "lines": [
         16091,
         16092,
         16130
-      ]
+      ],
+      "historicalSymptomClasses": ["console-guard", "assertion"],
+      "relatedOpenInventory": "EI-24099631804056975",
+      "diagnosis": "Per-case DB isolation leaves the long-lived merge-cursor pool registry bound to the preceding fixture, producing the correct production rebind warning. Separately, the forced-tie test updates legacy hlc_clock.last_ms/last_count although migration813/840 moved the causal frontier into hlc_packed_seq. Reused existing registry/store-identity resets and the prior real-PG rotation control; added a real legacy-row versus sequence-clock control and sequence readback prerequisite. Original capture, different-key, same-key and forced-tie convergence assertions remain active.",
+      "beforeTestRun": 20902325,
+      "afterTestRun": 20902553,
+      "passed": 6,
+      "skipped": 0,
+      "receiptCommit": "03ae5b922e5b0d35367d22613af37317ff31e624",
+      "receiptWorkspace": "papercusp-workspace",
+      "receiptHarness": "papercusp",
+      "receiptSource": "local",
+      "receiptRunGroup": null,
+      "worktreeDirty": true,
+      "isScratchConfig": false,
+      "testSha256": "e5e61bbb2a7dc79ce0a4cc520be0e98f70f73a1e9de6faf77bb656c197a69c29",
+      "testedTestBlob": "e8a578ef71666059304491cba776c61efb617ad6",
+      "beforeLog": "/tmp/wi-10006170-concurrent-before.log",
+      "beforeLogSha256": "92c7a502637f361b06d7287ce514fdbdab91551fcb331dad1f3aff0c0f963989",
+      "focusedLog": "/tmp/wi-10007171-verified.log",
+      "focusedLogSha256": "a65801fe4d3e8a3270401ad2e1d48570781ca0718afed986674c0f7e2572add5",
+      "scopedTypecheck": { "checkedFiles": 1, "errors": 0, "exitCode": 0, "engine": "tsc-service" },
+      "recurrenceGuard": "Real-PG controls distinguish retained-registry rotation/exact warning from reset/no warning, and legacy-row pin/no causal effect from actual sequence pin/exact next HLC. Both peer sequence frontiers are read back before original forced-tie authorship; the original strict-console and end-to-end convergence population passes.",
+      "completeImportGraphCurrentness": "unknown",
+      "currentEvidenceScope": "Whole named file PASS6/0skip/exit0, local repository-dirty staging receipt and scoped typecheck. Exact named bytes and logs retained; full imports/environment, final D006 and shipment remain unverified."
     },
     {
       "path": "packages/operator-core/lib/scheduler/get-next-exclusion-breakdown.integration.test.ts",
@@ -2903,6 +2928,18 @@
       "testRunIds": [20901570, 20902079, 20902157, 20902187, 20902210],
       "archiveLines": [16231, 16232, 16233, 16234, 16239, 16095, 16101, 16108],
       "next": "Retain fresh-joiner PASS5/0skip and security-DROP PASS6/0skip, each with scoped typecheck1/errors0. Related multi-file EI-24099631804056975 remains open; other console fixtures, complete imports/environment, final D006 and shipment remain unverified."
+    },
+    {
+      "class": "sidecar-pool-and-hlc-sequence-fixture",
+      "count": 1,
+      "status": "repaired-focused",
+      "item": "WI-10007171",
+      "owner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
+      "scope": "named-concurrent-writes-sidecar-fixture-only",
+      "rootCause": "Cursor-pool registry survives per-case DSN rotation; forced HLC tie pins an obsolete row frontier instead of the sequence introduced in migration813. Detector failure: the tie rig assumed the historical clock storage, with no current-source frontier readback prerequisite. Added real sequence readback and row-versus-sequence causal control, alongside retained-pool versus clean-reset PG control with awaited identity probes.",
+      "testRunIds": [20902325, 20902553],
+      "archiveLines": [16091, 16092, 16130],
+      "next": "Retain whole-file PASS6/0skip and scoped typecheck1/errors0. Related multi-file inventory stays open; complete imports/environment, final D006 and shipment remain unverified."
     }
   ],
   "prerequisites": [

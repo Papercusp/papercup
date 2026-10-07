@@ -16,6 +16,7 @@
  *     the first turn is delivered through the psu pty-host discovery socket.
  */
 import { z } from 'zod';
+import { FRESH_VERIFY_TIMEOUT_MS } from './agent-kickoff/launch-budgets.mjs';
 import { getOrgPg } from '@papercusp/db-org';
 import { getAdvSession, mapAdvSessionRow, type AdvSessionRow, type AdvSessionEndedBy, type AdvSessionExpectedBinding } from './adv-sessions';
 import { getSessionPort } from './session-port/store';
@@ -1506,7 +1507,7 @@ export async function injectKickoffAfterResume(
 export const LAUNCH_STATUSLINE_TOOLS: readonly string[] = ['activity:report', 'coord:glance'];
 
 /** How long to watch a fresh launch before returning a verdict. */
-export const FRESH_VERIFY_TIMEOUT_MS = 25_000;
+export { FRESH_VERIFY_TIMEOUT_MS };
 /**
  * A session whose LAST signal of any kind is older than this, at the end of the
  * window, has gone silent. Measured basis: across 24h, a session that never made a

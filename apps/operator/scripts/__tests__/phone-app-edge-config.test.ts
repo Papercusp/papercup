@@ -173,6 +173,24 @@ describe("phone public media edge forwarding", () => {
 describe("phone public media edge TLS front end", () => {
   const c = edgeCoordinates(env);
 
+  it("routes only the configured admission path and restricts its backend to the edge peer", () => {
+    const configured = edgeCoordinates({ ...env, PHONE_PRODUCER_LISTEN_PORT: "7905" });
+    const site = nginxSite(configured, { withTls: true });
+    expect(site).toContain("location = /platform/producer-admission {");
+    expect(site).toContain(`proxy_pass http://${TUNNEL.box}:7905;`);
+    expect(site).toContain("proxy_set_header Authorization $http_authorization;");
+    expect(nginxSite(c, { withTls: true })).not.toContain("/platform/producer-admission");
+    expect(nginxSite(configured, { withTls: false })).not.toContain("/platform/producer-admission");
+    const box = boxWireguard(configured, KEY_A);
+    expect(box).toContain(`ip daddr ${TUNNEL.box} tcp dport 7905 iifname "phedge0" ip saddr ${TUNNEL.edge} accept; tcp dport 7905 drop;`);
+    expect(box).toContain("PreDown = nft delete table inet phone_admission");
+    expect(boxWireguard(c, KEY_A)).not.toContain("phone_admission");
+  });
+
+  it.each(["", "0", "7890", "7894", "51820", "65536", "7905;evil", "1.5"])("rejects invalid admission port %j", (port) => {
+    expect(() => edgeCoordinates({ ...env, PHONE_PRODUCER_LISTEN_PORT: port })).toThrow(/admission backend port/);
+  });
+
   it("passes TURN/TLS through to LiveKit by SNI and terminates WSS locally", () => {
     const stream = nginxStream(c);
     expect(stream).toContain("ssl_preread on;");
@@ -235,6 +253,29 @@ describe("LiveKit advertises only public media candidates once the edge is confi
   it("keeps the edge driver syntactically valid", () => {
     const result = spawnSync("bash", ["-n", edgeScript], { encoding: "utf8" });
     expect(result.status, result.stderr).toBe(0);
+  });
+
+  it.each([undefined, "7895"])("round-trips the optional admission port %j through edge.env into the renderer", (port) => {
+    const dir = mkdtempSync(join(tmpdir(), "phone-edge-env-"));
+    try {
+      const source = readFileSync(edgeScript, "utf8").split('case "${1:-}" in')[0];
+      const testEnv = { ...process.env, ...env, PHONE_CONFIG_DIR: dir };
+      delete testEnv.PHONE_PRODUCER_LISTEN_PORT;
+      writeFileSync(join(dir, "edge.env"), port === undefined ? "" : `PHONE_PRODUCER_LISTEN_PORT=${port}\n`);
+      const result = spawnSync("bash", ["-c", `${source}\nHERE="$EDGE_SOURCE_DIR"\npersist\nrender nginx-site`], {
+        encoding: "utf8", env: { ...testEnv, EDGE_SOURCE_DIR: dirname(edgeScript) },
+      });
+      expect(result.status, result.stderr).toBe(0);
+      const saved = readFileSync(join(dir, "edge.env"), "utf8");
+      if (port === undefined) {
+        expect(saved).not.toContain("PHONE_PRODUCER_LISTEN_PORT");
+        expect(result.stdout).not.toContain("/platform/producer-admission");
+      } else {
+        expect(saved).toContain(`PHONE_PRODUCER_LISTEN_PORT=${port}\n`);
+        expect(result.stdout).toContain(`10.77.0.2:${port}`);
+        expect(result.stdout).toContain("/platform/producer-admission");
+      }
+    } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });
 

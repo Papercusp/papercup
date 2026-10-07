@@ -6,6 +6,7 @@ export interface EdgeCoordinates {
   boxIface: string;
   wanIface: string;
   turnPort: number;
+  admissionPort?: number;
   sip: boolean;
 }
 export interface ForwardedPort { proto: 'udp' | 'tcp'; ports: string; what: string }

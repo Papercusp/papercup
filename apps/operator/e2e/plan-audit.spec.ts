@@ -59,6 +59,9 @@ test('sidebar audit opens report, navigates evidence, and reopens history', asyn
   await page.getByRole('button', { name: 'Saved audits' }).click();
   await page.getByRole('button', { name: /single audit.*complete/ }).click();
   await expect(frame.getByRole('heading', { name: 'Audit fixture' })).toBeVisible();
+  await page.reload();
+  await expect(page).toHaveURL(new RegExp('paudit=' + run.id));
+  await expect(frame.getByRole('heading', { name: 'Audit fixture' })).toBeVisible();
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(page.getByRole('button', { name: '← Back to plans' })).toBeVisible();
   await expect(frame.getByRole('searchbox')).toBeVisible();
@@ -75,6 +78,17 @@ test('sidebar audit opens report, navigates evidence, and reopens history', asyn
   await expect(page).toHaveURL(new RegExp('paudit=' + run.id));
   expect(submissions).toEqual([{ scope: 'workspace' }]);
   await expect(frame.getByRole('heading', { name: 'Audit fixture' })).toBeVisible();
+  await page.getByRole('button', { name: '← Back to plans' }).click();
+  await page.getByRole('button', { name: 'Audit visible plans', exact: true }).click();
+  await expect(frame.getByRole('heading', { name: 'Audit fixture' })).toBeVisible();
+  await page.getByRole('button', { name: '← Back to plans' }).click();
+  await page.getByRole('button', { name: 'Audit plan audit-fixture', exact: true }).click();
+  await expect(frame.getByRole('heading', { name: 'Audit fixture' })).toBeVisible();
+  expect(submissions).toEqual([
+    { scope: 'workspace' },
+    { scope: 'visible', planSlugs: ['audit-fixture'] },
+    { scope: 'single', planSlugs: ['audit-fixture'] },
+  ]);
   sync.assertServed('plans.list');
   expect(requests.some(url => url.includes('runId=history&format=html'))).toBe(false);
 });

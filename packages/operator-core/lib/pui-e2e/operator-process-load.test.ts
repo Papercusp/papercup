@@ -19,6 +19,7 @@ import { fork } from 'node:child_process';
 import path from 'node:path';
 import { describe, expect, test } from 'vitest';
 import { createTextCollector } from '../child-output';
+import { observeAttachResponse } from './attach-observation';
 
 const ENV_GUARD = 'The PUI operator fixture requires IPC and an explicitly isolated workspace/database';
 const REPO_ROOT = path.resolve(__dirname, '../../../..');
@@ -54,6 +55,25 @@ function loadOperatorFixtureWithoutWorkspace(): Promise<{ code: number | null; s
 }
 
 describe('PUI operator fixture child', () => {
+  test('observes a streamed terminal refusal while preserving the client response', async () => {
+    const wire = 'event: progress\ndata: {"stage":"resume"}\n\n'
+      + 'event: launch-result\ndata: {"httpStatus":503,"body":{"status":"error","code":"attached_engine_start_failed"}}\n\n';
+    const response = new Response(wire, { headers: { 'content-type': 'text/event-stream' } });
+    const results: unknown[] = [];
+    await observeAttachResponse(response, (body, status) => results.push({ body, status }));
+    expect(results).toEqual([{ status: 503, body: { status: 'error', code: 'attached_engine_start_failed' } }]);
+    expect(await response.text()).toBe(wire);
+  });
+
+  test('preserves exact resume evidence in a JSON attach response', async () => {
+    const body = { status: 'ok', resumed: true, ready: false, advSessionId: 7 };
+    const response = Response.json(body);
+    const results: unknown[] = [];
+    await observeAttachResponse(response, (value, status) => results.push({ body: value, status }));
+    expect(results).toEqual([{ body, status: 200 }]);
+    expect(await response.json()).toEqual(body);
+  });
+
   test('asInertText keeps the text but stops it parsing as a stack frame', () => {
     const frame = '    at Object.<anonymous> (/repo/lib/work-items-events.ts:211:55)';
     const v8Frame = /^\s*at .*(?:\S:\d+|\(native\))/m;

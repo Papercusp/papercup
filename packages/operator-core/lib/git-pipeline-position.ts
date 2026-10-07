@@ -1447,6 +1447,8 @@ export interface PipelinePosition {
       /** EI-210996: systemd-owned abnormal-terminal evidence for that finished run. */
       terminalEvidence?: {
         source: 'systemd-exec-stop-post';
+        /** Manual log vintage, distinct from this snapshot's observation time. */
+        observedAtMs?: number | null;
         candidate: string | null;
         serviceResult: string;
         exitCode: string;

@@ -1599,6 +1599,49 @@ describe('sweepStalledLoops — WAKE-STARVED: fires that reached nobody (WI-3668
       expect(notify).not.toHaveBeenCalled();
     });
 
+    it.each([
+      { label: 'live owner', reachable: true, paused: 0 },
+      { label: 'dead owner', reachable: false, paused: 1 },
+      { label: 'unavailable reachability', reachable: null, paused: 0 },
+    ])('honours a withheld fire after a recent delivered wake: $label (WI-10007162)', async ({ reachable, paused }) => {
+      const now = Date.now();
+      const iso = (offsetMs: number) => new Date(now + offsetMs).toISOString();
+      const ownerId = 'su-withheld-recent';
+      const sql = fakeSql([{ id: 'rt_withheld_recent', target_owner_id: ownerId }]);
+      const getStatuses = vi.fn(async () => new Map([[ownerId, status({
+        ownerId,
+        turnsStalled: true,
+        lastFiredAt: iso(-60_000),
+        lastWithheldAt: iso(-59_000),
+        lastWithheldReason: 'fire-gate',
+        nextFireAt: iso(5 * 60_000),
+        // The October 6 incident: the previous wake was delivered four minutes before
+        // this withheld fire, so it is inside the thirty-minute wake-starvation floor.
+        lastWakeAt: iso(-5 * 60_000),
+        lastTurnAt: iso(-35 * 60_000),
+        lastRealTurnAt: iso(-35 * 60_000),
+      })]]));
+      const autoPause = vi.fn<AutoPauseFn>(async () => {});
+      const rearm = vi.fn<RearmFn>(async () => {});
+      const armWake = vi.fn<ArmWakeFn>(async () => ({}));
+      const probeReachability = reachable === null
+        ? vi.fn(async () => { throw new Error('reachability unavailable'); })
+        : reach(reachable);
+      const res = await sweepStalledLoops(
+        { sql, workspaceId: 'ws' },
+        { getStatuses, autoPause, rearm, armWake, probeReachability,
+          readOwnerToolActivity: async () => new Map(),
+          broadcast: vi.fn<BroadcastFn>(async () => true), notify: vi.fn<NotifyFn>(async () => {}) },
+      );
+
+      expect(res.paused).toBe(paused);
+      expect(res.vetoedByWithheldFire).toEqual(paused ? [] : [ownerId]);
+      expect(autoPause).toHaveBeenCalledTimes(paused);
+      // Preserve the gate's retry time, and never repair a healthy standing await.
+      expect(rearm).not.toHaveBeenCalled();
+      expect(armWake).not.toHaveBeenCalled();
+    });
+
     it('CONTROL — a WITHHELD fire on an owner the probe says is GONE is still disarmed (the veto must not blunt WI-6639)', async () => {
       // The control that decides the shape of this branch, and the reason it is not keyed on the
       // withhold stamp alone. A corpse does not merely TOLERATE a perpetual withhold, it

@@ -788,6 +788,7 @@ describe('mapActiveRun (overview-tab-expansion P-001)', () => {
         terminal_marker: false,
         terminal_evidence: {
           source: 'systemd-exec-stop-post',
+          observed_at_ms: 12345,
           candidate: '1f64eb2d',
           service_result: 'oom-kill',
           exit_code: 'killed',
@@ -800,6 +801,7 @@ describe('mapActiveRun (overview-tab-expansion P-001)', () => {
       terminalMarker: false,
       terminalEvidence: {
         candidate: '1f64eb2d',
+        observedAtMs: 12345,
         serviceResult: 'oom-kill',
         exitCode: 'killed',
         exitStatus: 'KILL',

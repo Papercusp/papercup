@@ -199,6 +199,10 @@ apps/operator/docs/plans/**/*.md
 # The env-named generation store recorded for env-less callers (WI-10005159).
 **/.papercusp/dependency-generation-root
 
+# The maintained dependency snapshotter writes this inert donor/copy receipt.
+# Keep it out of source provenance while retaining arbitrary untracked source.
+/.papercusp-pinned-deps
+
 # git-sync-embedded-repo-strand fix (2026-06-30, joint w/ 2b1a8 / WI-1354): transient test-scratch
 # dirs that get a nested .git (an embedded repo). When ANY has NO commit checked out, `git add -A`
 # FATALs (exit 128) → stages nothing → the whole tree strands uncommitted silently. Ignore ALL the

@@ -56,6 +56,7 @@ import type { ColorScheme } from './console-color-schemes';
 // cannot import TypeScript) imports the SAME definitions, so detection and
 // injection can never drift apart. See backend-bin-resolve.mjs's header.
 import { SPAWN_PATH_DIRS_ENV, decodeSpawnPathDirs } from './backend-bin-resolve.mjs';
+import { EARLY_EXIT_PROBE_MS, HEADLESS_BOOT_RECEIPT_MS, KICKOFF_PROOF_WINDOW_MS } from './agent-kickoff/launch-budgets.mjs';
 import { isWindowsDesktopHost } from './windows-desktop-windows';
 import { requestDesktopConsoleLaunch } from './console-launch-bridge';
 // task-manager P-009 follow-up: the HEADLESS path enrols (see
@@ -767,7 +768,7 @@ export function keepWindowOpenOnFailure(
 /** How long to watch a just-spawned terminal for an early death. A real
  *  interactive window outlives this comfortably; a display-less client dies
  *  well inside it. */
-export const EARLY_EXIT_PROBE_MS = 1200;
+export { EARLY_EXIT_PROBE_MS };
 
 export interface DesktopEnvResolution {
   /** Extra env to inject into the terminal spawn ({} when the operator's own
@@ -1426,7 +1427,7 @@ export const KICKOFF_PROOF_TOKEN_ENV = 'PAPERCUSP_KICKOFF_PROOF_TOKEN';
  * host's later refusal had nowhere to land — an unreaped idle judge
  * (WI-10006598). psu-pty-host.test.ts pins this above that worst case. The
  * wait only runs this long on a slow or failing launch; a proof returns early. */
-export const KICKOFF_PROOF_WINDOW_MS = 120_000;
+export { KICKOFF_PROOF_WINDOW_MS };
 
 /** Injectable seams for the detached kickoff-proof receipt poll. */
 export interface KickoffProofProbes {
@@ -2029,7 +2030,7 @@ export const MAC_COMMAND_RECEIPT_MS = 2500;
  * EARLY_EXIT_PROBE_MS. 6s leaves margin without stalling honor unduly — the
  * spawns run under Promise.all, so it costs once, not once per member.
  */
-export const HEADLESS_BOOT_RECEIPT_MS = 6000;
+export { HEADLESS_BOOT_RECEIPT_MS };
 
 /**
  * How long an opted-in visible launch waits for the interactive tab shell to

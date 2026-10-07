@@ -580,6 +580,9 @@ describe('native boot migration/backup rendezvous (EI-21443484375613585)', () =>
 
       const timeout = await attempt;
       expect(timeout).toMatchObject({ value: null, degraded: true, reason: 'timeout' });
+      expect(warnLog.mock.calls.some(([line]) =>
+        String(line).includes('preflight cancelled during backup rendezvous'),
+      )).toBe(true);
 
       const closeDeadline = Date.now() + 5_000;
       let backendClosed = false;

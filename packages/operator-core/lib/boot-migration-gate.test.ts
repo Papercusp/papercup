@@ -145,6 +145,20 @@ describe('awaitBootMigrationGate', () => {
     expect(calls.cleared).toEqual([]);
   });
 
+  it('keeps request startup withheld past eight failed checks, then recovers and clears its alarm in place', async () => {
+    const { deps, calls } = harness({ atBoot: null, retry: (n) => n >= 12 ? CLEAN : PENDING });
+    deps.plane = 'request';
+    const out = await awaitBootMigrationGate(deps);
+    expect(out).toMatchObject({ result: CLEAN, retries: 12, recoveredInPlace: true, alarmed: true });
+    expect(calls.applyAtBoot).toBe(1);
+    expect(calls.applyRetry).toBe(12);
+    expect(calls.errors[0]).toMatch(/REQUEST STARTUP WITHHELD.*HTTP stays closed/);
+    expect(calls.errors.join('\n')).not.toContain('request plane may still start');
+    expect(calls.logs.join('\n')).toContain('starting the request plane in place');
+    expect(calls.raised).toHaveLength(1);
+    expect(calls.cleared).toHaveLength(1);
+  });
+
   it('treats an undetermined (null) result as failed and keeps retrying through applyRetry', async () => {
     // A null at boot is what the once-per-process guard returns on a second call;
     // if the retry re-used that entry the gate could never pass. It must not.
@@ -216,6 +230,20 @@ describe('production alarm legs', () => {
     expect(broadcastSevereEventResolved.mock.calls[0]).toEqual([
       expect.objectContaining({ conditionKey: 'boot-migration-gate-withheld:bg-host:port-3271' }),
     ]);
+  });
+
+  it('request-only alarms name the closed HTTP plane and resolve the same condition', async () => {
+    await raiseBootMigrationGateAlarm(alarm, 'request-host:port-3270', 'request');
+    expect(notifyAttention.mock.calls[0][0]).toMatchObject({
+      title: expect.stringContaining('Request plane withheld'),
+      body: expect.stringContaining('request plane (HTTP)'),
+    });
+    expect(notifyAttention.mock.calls[0][0].body).not.toContain('replicating through this host is dark');
+    await clearBootMigrationGateAlarm(alarm, 'request-host:port-3270', 'request');
+    expect(broadcastSevereEventResolved.mock.calls[0][0]).toMatchObject({
+      conditionKey: 'boot-migration-gate-withheld:request-host:port-3270',
+      summary: expect.stringContaining('request plane (HTTP)'),
+    });
   });
 
   it('never throws when a paging channel fails — a broken alarm must not wedge the retry loop', async () => {

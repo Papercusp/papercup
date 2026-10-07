@@ -22,6 +22,9 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { runInNewContext } from 'node:vm';
 import ts from 'typescript';
+import { withBoundedTimeout } from '@papercusp/operator-core/lib/bounded-timeout';
+import { dedupeInFlight } from '@papercusp/operator-core/lib/dedupe-in-flight';
+import { awaitBootMigrationGate } from '@papercusp/operator-core/lib/boot-migration-gate';
 
 const bootSrc = readFileSync(join(__dirname, 'host-bootstrap.ts'), 'utf8');
 const dbosWorkItemsContractSrc = readFileSync(
@@ -143,7 +146,7 @@ describe('host-bootstrap fails the background plane closed on migration failure'
     // returns (which left the substrate down until a manual restart). It awaits
     // awaitBootMigrationGate, which only resolves on a clean result and retries in
     // place while failed — so the ordering below is still the fail-closed contract.
-    const gate = bootSrc.indexOf('await awaitBootMigrationGate({');
+    const gate = bootSrc.indexOf('await awaitBootMigrationGate({', bootSrc.indexOf('const gateHost = `${utilityHost'));
     const routingFailure = bootSrc.indexOf('markSubstrateBootRoutingFailed', gate);
     const requestGate = bootSrc.indexOf('markMigrationsAppliedForRequestGate()', gate);
     const backgroundStartup = bootSrc.indexOf('provisionSystemPrincipals', requestGate);
@@ -257,7 +260,7 @@ describe('request-only hosts apply migrations before opening HTTP', () => {
     const dedupe = bootSrc.indexOf('return dedupeInFlight(', requestOnly);
     const store = bootSrc.indexOf('BOOTSTRAP_STATE.requestMigrationGateFlights', dedupe);
     const timeout = bootSrc.indexOf('const migrationAttempt = await withBoundedTimeout(', store);
-    const apply = bootSrc.indexOf('(signal) => applyPendingMigrationsAtBoot(signal)', timeout);
+    const apply = bootSrc.indexOf('(signal) => applyPendingMigrationsNow({ broadcast: false, signal })', timeout);
 
     expect(requestOnly).toBeGreaterThan(-1);
     expect(dedupe).toBeGreaterThan(requestOnly);
@@ -266,7 +269,7 @@ describe('request-only hosts apply migrations before opening HTTP', () => {
     expect(apply).toBeGreaterThan(timeout);
     expect(bootSrc).toContain('requestMigrationGateFlights: Map<string, Promise<void>>');
     expect(bootSrc).toContain('requestMigrationGateFlights: new Map()');
-    expect(bootSrc.match(/\(signal\) => applyPendingMigrationsAtBoot\(signal\)/g))
+    expect(bootSrc.match(/\(signal\) => applyPendingMigrationsNow\(\{ broadcast: false, signal \}\)/g))
       .toHaveLength(1); // the request-only single-flight body; the background owner goes through awaitBootMigrationGate
     expect(bootSrc.match(/applyAtBoot: applyPendingMigrationsAtBoot,/g)).toHaveLength(1);
   });
@@ -275,32 +278,29 @@ describe('request-only hosts apply migrations before opening HTTP', () => {
     const requestOnly = bootSrc.indexOf(
       'if (!backgroundWorkersEnabled()) {\n    // runBootstrap',
     );
-    const apply = bootSrc.indexOf('(signal) => applyPendingMigrationsAtBoot(signal)', requestOnly);
-    const result = bootSrc.indexOf('const migrationResult = migrationAttempt.value;', apply);
-    const failure = bootSrc.indexOf(
-      'if (!migrationResult || migrationResult.failed.length > 0)',
-      result,
-    );
+    const apply = bootSrc.indexOf('(signal) => applyPendingMigrationsNow({ broadcast: false, signal })', requestOnly);
+    const result = bootSrc.indexOf('return migrationAttempt.value;', apply);
+    const gate = bootSrc.indexOf('await awaitBootMigrationGate({', result);
     const requestGate = bootSrc.indexOf('markMigrationsAppliedForRequestGate()', apply);
 
     expect(requestOnly).toBeGreaterThan(-1);
     expect(apply).toBeGreaterThan(requestOnly);
     expect(result).toBeGreaterThan(apply);
-    expect(failure).toBeGreaterThan(result);
-    expect(requestGate).toBeGreaterThan(failure);
-    expect(bootSrc.slice(requestOnly, requestGate)).toMatch(
-      /if\s*\(!migrationResult\s*\|\|\s*migrationResult\.failed\.length\s*>\s*0\)[\s\S]*?throw new Error\(/,
-    );
+    expect(gate).toBeGreaterThan(result);
+    expect(requestGate).toBeGreaterThan(gate);
+    expect(bootSrc.slice(gate, requestGate)).toContain("plane: 'request'");
+    expect(bootSrc.slice(gate, requestGate)).toContain('applyRetry: applyBounded');
+    expect(bootSrc.slice(requestOnly, requestGate)).toContain('applyPendingMigrationsNow({ broadcast: false, signal })');
   });
 
-  it('bounds the request-only preflight and fails before listener startup when it stalls', () => {
+  it('bounds each request-only preflight and keeps listener startup behind in-place recovery', () => {
     const requestOnly = bootSrc.indexOf(
       'if (!backgroundWorkersEnabled()) {\n    // runBootstrap',
     );
     const timeout = bootSrc.indexOf('const migrationAttempt = await withBoundedTimeout(', requestOnly);
     const budget = bootSrc.indexOf('timeoutMs,', timeout);
-    const degraded = bootSrc.indexOf('if (migrationAttempt.degraded) {', timeout);
-    const timeoutFailure = bootSrc.indexOf('request-only migration preflight ${migrationAttempt.reason', degraded);
+    const degraded = bootSrc.indexOf("if (migrationAttempt.degraded && migrationAttempt.reason === 'error')", timeout);
+    const recovery = bootSrc.indexOf('await awaitBootMigrationGate({', degraded);
     const requestGate = bootSrc.indexOf('markMigrationsAppliedForRequestGate()', timeout);
 
     expect(bootSrc).toContain(
@@ -309,8 +309,83 @@ describe('request-only hosts apply migrations before opening HTTP', () => {
     expect(timeout).toBeGreaterThan(requestOnly);
     expect(budget).toBeGreaterThan(timeout);
     expect(degraded).toBeGreaterThan(budget);
-    expect(timeoutFailure).toBeGreaterThan(degraded);
-    expect(requestGate).toBeGreaterThan(timeoutFailure);
+    expect(recovery).toBeGreaterThan(degraded);
+    expect(requestGate).toBeGreaterThan(recovery);
+  });
+
+  it('cancels a timed-out attempt, single-flights both boot callers, and opens only after a fresh retry succeeds', async () => {
+    // Execute the production function's AST, with its actual timeout, single-
+    // flight and recovery helpers. Importing the entire host would boot shared
+    // services; only its lazy migration dependencies are replaced here.
+    const sourceFile = ts.createSourceFile('host-bootstrap.ts', bootSrc, ts.ScriptTarget.Latest, true);
+    const fn = sourceFile.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === 'waitForBootMigrationGate');
+    expect(fn).toBeDefined();
+    const compiled = ts.transpileModule(fn!.getText(sourceFile), {
+      compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+    }).outputText;
+    const aborted = vi.fn();
+    const atBoot = vi.fn(() => { throw new Error('request hosts must not use the once-per-process entry'); });
+    let attempts = 0;
+    const retry = vi.fn(async (options: { broadcast: boolean; signal: AbortSignal }) => {
+      attempts += 1;
+      if (attempts === 1) return new Promise<null>((resolve) => {
+        options.signal.addEventListener('abort', () => { aborted(); resolve(null); }, { once: true });
+      });
+      return attempts >= 10
+        ? { applied: 0, failed: [] }
+        : { applied: 0, failed: [{ file: 'pending.sql', error: 'backup still running' }] };
+    });
+    const mark = vi.fn();
+    const exported: { waitForBootMigrationGate?: (timeoutMs: number) => Promise<void> } = {};
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      runInNewContext(compiled, {
+        exports: exported,
+        backgroundWorkersEnabled: () => false,
+        BOOTSTRAP_STATE: { requestMigrationGateFlights: new Map() },
+        dedupeInFlight,
+        withBoundedTimeout,
+        require: (module: string) => {
+          if (module.endsWith('/db-boot-migrate')) return { applyPendingMigrationsAtBoot: atBoot, applyPendingMigrationsNow: retry };
+          if (module.endsWith('/boot-migration-gate')) return {
+            awaitBootMigrationGate,
+            raiseBootMigrationGateAlarm: vi.fn(),
+            clearBootMigrationGateAlarm: vi.fn(),
+          };
+          if (module.endsWith('/serving-host-identity')) return { hostIdentity: () => 'port-3270' };
+          if (module.endsWith('/sync/hyperbee/boot-gate')) return { markMigrationsAppliedForRequestGate: mark };
+          throw new Error(`Unexpected boot dependency: ${module}`);
+        },
+      });
+      const first = exported.waitForBootMigrationGate!(20_000);
+      const second = exported.waitForBootMigrationGate!(20_000);
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(atBoot).not.toHaveBeenCalled();
+      expect(retry).toHaveBeenCalledTimes(1);
+      expect(aborted).toHaveBeenCalledTimes(1);
+      expect(mark).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(8 * 60_000);
+      expect(retry).toHaveBeenCalledTimes(9);
+      expect(mark).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(60_000);
+      await Promise.all([first, second]);
+      expect(retry).toHaveBeenCalledTimes(10);
+      expect(retry.mock.calls.every(([options]) => options.broadcast === false && options.signal instanceof AbortSignal)).toBe(true);
+      expect(mark).toHaveBeenCalledTimes(1);
+      // A genuinely later native listener must get a fresh, immediate proof,
+      // not the once-per-process null sentinel or a cached success.
+      await exported.waitForBootMigrationGate!(20_000);
+      expect(retry).toHaveBeenCalledTimes(11);
+      expect(mark).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+      warn.mockRestore();
+      error.mockRestore();
+      log.mockRestore();
+    }
   });
 
   it('fails closed when the request migration preflight rejects instead of serving anyway', () => {

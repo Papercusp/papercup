@@ -529,6 +529,7 @@ export interface GitPipelineSnapshot {
     /** EI-210996: systemd-owned terminal tuple, available even after SIGKILL/OOM. */
     terminalEvidence?: {
       source: 'systemd-exec-stop-post';
+      observedAtMs?: number | null;
       candidate: string | null;
       serviceResult: string;
       exitCode: string;
@@ -1154,6 +1155,7 @@ export interface GitPipelineSnapshotOpts {
     terminal_marker?: boolean;
     terminal_evidence?: {
       source: 'systemd-exec-stop-post';
+      observed_at_ms?: number | null;
       candidate: string | null;
       service_result: string;
       exit_code: string;
@@ -1185,6 +1187,7 @@ export function mapActiveRun(r: {
   terminal_marker?: boolean;
   terminal_evidence?: {
     source: 'systemd-exec-stop-post';
+    observed_at_ms?: number | null;
     candidate: string | null;
     service_result: string;
     exit_code: string;
@@ -1227,6 +1230,7 @@ export function mapActiveRun(r: {
       ? {
           terminalEvidence: {
             source: r.terminal_evidence.source,
+            ...(r.terminal_evidence.observed_at_ms === undefined ? {} : { observedAtMs: r.terminal_evidence.observed_at_ms }),
             candidate: r.terminal_evidence.candidate,
             serviceResult: r.terminal_evidence.service_result,
             exitCode: r.terminal_evidence.exit_code,

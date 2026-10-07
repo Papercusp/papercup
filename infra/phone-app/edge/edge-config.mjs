@@ -70,7 +70,13 @@ export function edgeCoordinates(env) {
       [7890, 7891, 7892, 7893, 5070].includes(turnPort)) {
     throw new Error('TURN TLS backend port must be an unprivileged port distinct from existing media ports');
   }
-  return { publicIp, voiceHost, turnHost, boxIface, wanIface, turnPort, sip: env.PHONE_EDGE_FORWARD_SIP === '1' };
+  const admissionPort = env.PHONE_PRODUCER_LISTEN_PORT === undefined ? undefined : Number(env.PHONE_PRODUCER_LISTEN_PORT);
+  if (admissionPort !== undefined && (!Number.isInteger(admissionPort) || admissionPort < 1024 || admissionPort > 65535 ||
+      [turnPort, 7890, 7891, 7892, 7893, 5070, TUNNEL.port].includes(admissionPort))) {
+    throw new Error('Phone admission backend port must be an unprivileged port distinct from media and tunnel ports');
+  }
+  return { publicIp, voiceHost, turnHost, boxIface, wanIface, turnPort, sip: env.PHONE_EDGE_FORWARD_SIP === '1',
+    ...(admissionPort === undefined ? {} : { admissionPort }) };
 }
 
 function wgKey(value, label) {
@@ -137,6 +143,10 @@ export function boxWireguard(c, vmPublicKey) {
     `PostUp = ip rule add ${rule}`,
     `PostUp = ip route replace default dev %i table ${TUNNEL.table}`,
     `PostUp = nft '${boxLocalDnat(c)}'`,
+    ...(c.admissionPort === undefined ? [] : [
+      `PostUp = nft 'add table inet phone_admission; delete table inet phone_admission; table inet phone_admission { chain input { type filter hook input priority -10; policy accept; ip daddr ${TUNNEL.box} tcp dport ${c.admissionPort} iifname "${c.boxIface}" ip saddr ${TUNNEL.edge} accept; tcp dport ${c.admissionPort} drop; }; }'`,
+      'PreDown = nft delete table inet phone_admission 2>/dev/null || true',
+    ]),
     `PreDown = ip rule del ${rule} 2>/dev/null || true`,
     `PreDown = nft delete table ip ${BOX_LOCAL_TABLE} 2>/dev/null || true`,
     '',
@@ -230,6 +240,16 @@ export function nginxSite(c, { withTls }) {
       `  ssl_certificate ${live}/fullchain.pem;`,
       `  ssl_certificate_key ${live}/privkey.pem;`,
       '  ssl_protocols TLSv1.2 TLSv1.3;',
+      ...(c.admissionPort === undefined ? [] : [
+        '  location = /platform/producer-admission {',
+        `    proxy_pass http://${TUNNEL.box}:${c.admissionPort};`,
+        '    proxy_set_header Host $host;',
+        '    proxy_set_header Authorization $http_authorization;',
+        '    proxy_connect_timeout 5s;',
+        '    proxy_read_timeout 30s;',
+        '    client_max_body_size 64k;',
+        '  }',
+      ]),
       '  location / {',
       `    proxy_pass http://${TUNNEL.box}:7890;`,
       '    proxy_http_version 1.1;',

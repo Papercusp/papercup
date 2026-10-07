@@ -249,6 +249,31 @@ describe('EI-21832562420831737 — a pinned cut owns its dependencies', () => {
       expect(stamp).toMatch(/^takenAtUtc=\d{4}-\d{2}-\d{2}T/m);
     });
 
+    it('keeps snapshot metadata clean without hiding untracked source from the real provenance producer', () => {
+      const t = fixture();
+      const snapshot = join(t, 'snap');
+      write(join(t, 'donor', 'node_modules', 'p', 'i.js'), 'dependency');
+      expect(runLib(['snapshot', join(t, 'donor'), snapshot, 'copy']).code).toBe(0);
+      const initialized = spawnSync('git', ['init', '-q', snapshot], {
+        encoding: 'utf8', timeout: 10_000,
+      });
+      expect(initialized.status).toBe(0);
+      // Use the product's actual ignore policy without committing fixture source.
+      write(join(snapshot, '.git', 'info', 'exclude'), readFileSync(join(ROOT, '.gitignore'), 'utf8'));
+      const capture = () => {
+        const result = spawnSync('bash', [
+          join(ROOT, 'papercusp-desktop', 'bin', 'emit-build-provenance.sh'),
+          '--capture-source', snapshot,
+        ], { encoding: 'utf8', timeout: 10_000 });
+        expect(result.status, String(result.stderr)).toBe(0);
+        return String(result.stdout).trim().split('\n').at(-1);
+      };
+      expect(existsSync(join(snapshot, '.papercusp-pinned-deps'))).toBe(true);
+      expect(capture()).toBe('false');
+      write(join(snapshot, 'untracked-source.ts'), 'export const pending = true;');
+      expect(capture()).toBe('true');
+    });
+
     it('REFUSES to snapshot THROUGH a symlinked tree — cp -al would reproduce the link', () => {
       const t = fixture();
       mkdirSync(join(t, 'donor', 'apps', 'web'), { recursive: true });

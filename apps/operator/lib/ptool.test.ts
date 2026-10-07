@@ -9,6 +9,8 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { describe, it, expect, vi } from 'vitest';
 import { MCP_PROXY_RETRY_WINDOW_MS } from '../lib/mcp-proxy/budgets.mjs';
+import { HEADLESS_BOOT_RECEIPT_MS, KICKOFF_PROOF_WINDOW_MS } from '@papercusp/operator-core/lib/console-spawn';
+import { AGENT_LAUNCH_HANDLER_TIMEOUT_SEC } from '@papercusp/operator-core/lib/agent-kickoff/launch-budgets.mjs';
 import { createMcpProxy } from './mcp-proxy/proxy';
 import {
   MCP_TRANSPORT_CAP_MS,
@@ -879,14 +881,19 @@ describe('ptool timeoutForTool — dev:pipeline_position outlives the flat clien
 });
 
 describe('ptool timeoutForTool — capability:launch-agent resumes outlive the default client deadline (EI-21314560074357302)', () => {
+  it('outlives the current boot, kickoff-proof and resume-verification windows', () => {
+    expect(PTOOL_AGENT_LAUNCH_TIMEOUT_MS).toBeGreaterThan(
+      HEADLESS_BOOT_RECEIPT_MS + KICKOFF_PROOF_WINDOW_MS + 30_000 + 5_000,
+    );
+  });
   it('gives exact launch-agent resumes a client deadline beyond the MCP transport cap', () => {
     const timeout = timeoutForTool('capability:launch-agent', {
       resume: { agentId: 'su-example' },
       headless: true,
     });
     expect(timeout).toBe(PTOOL_AGENT_LAUNCH_TIMEOUT_MS);
-    // launch-agent's 90s handler + MCP settlement buffer (5s), with delivery margin.
-    expect(timeout).toBeGreaterThan(95_000);
+    // The client's deadline must outlive the declared handler plus settlement.
+    expect(timeout).toBeGreaterThan((AGENT_LAUNCH_HANDLER_TIMEOUT_SEC + 5) * 1000);
     expect(timeout).not.toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
   });
 

@@ -991,6 +991,18 @@ describe('checkActiveCheckpointRun (WI-1562 refuse-when-active detection)', () =
     expect(r).not.toHaveProperty('terminal_evidence');
   });
 
+  it('binds an idle manual terminal to its own log vintage rather than probe time', () => {
+    const oldLogAt = Date.parse('2026-10-06T06:21:06Z');
+    const r = checkActiveCheckpointRun(
+      '/tree', fakeSystemctlShow({ ActiveState: 'inactive' }), () => null,
+      undefined, undefined, undefined,
+      () => '[green-checkpoint] checkpointing candidate abc12345\n' +
+        `${GREEN_CHECKPOINT_SYSTEMD_TERMINAL_MARKER} service_result=exit-code exit_code=exited exit_status=137`,
+      undefined, () => oldLogAt,
+    );
+    expect(r.terminal_evidence).toMatchObject({ candidate: 'abc12345', observed_at_ms: oldLogAt, exit_status: '137' });
+  });
+
   it('reports active:true with started_at, a bounded eta_sec, and the parsed candidate when the unit is active', () => {
     const startedAt = new Date(Date.now() - 5 * 60_000).toISOString(); // started 5 min ago
     const execFn = vi.fn((cmd: string, args: string[]) => {

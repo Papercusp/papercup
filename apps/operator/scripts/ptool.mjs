@@ -69,6 +69,7 @@ import { homedir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { PSU_REQUEST_TIMEOUT_MS } from '../lib/mcp-proxy/budgets.mjs';
+import { AGENT_LAUNCH_CLIENT_TIMEOUT_MS } from '../../../packages/operator-core/lib/agent-kickoff/launch-budgets.mjs';
 import { discoverOperatorUrl, rebaseUrl, resolveOperatorBase } from './operator-discovery.mjs';
 
 /** @typedef {Record<string, string | undefined>} EnvironmentMap */
@@ -1516,13 +1517,9 @@ export const PTOOL_WORK_ITEMS_CREATE_TIMEOUT_MS = PTOOL_FOREGROUND_TOOL_TIMEOUT_
 // outcome while the mutation is still settling (EI-21831468700319864).
 export const PTOOL_FLEET_WIND_DOWN_TIMEOUT_MS = PTOOL_FOREGROUND_TOOL_TIMEOUT_MS;
 
-// EI-22780156976598155 (building on WI-2944 / EI-21637077415806005):
-// capability:launch-agent declares a 90s handler budget because a fresh
-// headless launch may spend time in boot checks, kickoff-proof polling, and
-// fresh-launch verification. The MCP transport adds a 5s settlement buffer,
-// so keep ptool beyond that 95s response window; otherwise it can report an
-// unknown outcome while the server is still persisting the launch receipt.
-export const PTOOL_AGENT_LAUNCH_TIMEOUT_MS = 100_000;
+// Share the spawner/handler timing contract: an inner proof-window change
+// must also move this client deadline, including through tools:invoke.
+export const PTOOL_AGENT_LAUNCH_TIMEOUT_MS = AGENT_LAUNCH_CLIENT_TIMEOUT_MS;
 
 // EI-21305071238818431: coord:orient declares a 120s server-side dispatch budget.
 // Its handler-local 50s aggregate fence does not cover time spent before/after the

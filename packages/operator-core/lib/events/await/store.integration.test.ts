@@ -495,6 +495,79 @@ describe('await-event store (PG)', () => {
     expect(await rootSql`SELECT id FROM harness_shared.event_wake_deliveries WHERE await_id = ${expire.id}`).toHaveLength(0);
   });
 
+  it('matches filtered timeout suppression against the latched key-fire payload', async () => {
+    const mismatched = await registerAwait({
+      subscriberId: 'filtered-timeout-mismatch',
+      eventKey: 'timeout:filtered:mismatch',
+      timeoutSec: 60,
+      timeoutBehavior: 'wake',
+      payloadFilter: { installId: 'papercusp' },
+    });
+    const matching = await registerAwait({
+      subscriberId: 'filtered-timeout-match',
+      eventKey: 'timeout:filtered:match',
+      timeoutSec: 60,
+      timeoutBehavior: 'wake',
+      payloadFilter: { installId: 'papercusp' },
+    });
+    await rootSql`
+      UPDATE harness_shared.event_awaits
+         SET created_at = now() - interval '2 minutes',
+             expires_ts = now() - interval '1 minute'
+       WHERE id IN (${mismatched.id}, ${matching.id})
+    `;
+
+    await Promise.all([
+      recordKeyFire({ eventKey: mismatched.eventKey, payload: { installId: 'restart' } }),
+      recordKeyFire({ eventKey: matching.eventKey, payload: { installId: 'papercusp' } }),
+    ]);
+    await rootSql`
+      UPDATE harness_shared.event_key_fires
+         SET last_fired_at = now() - interval '90 seconds'
+       WHERE event_key IN (${mismatched.eventKey}, ${matching.eventKey})
+    `;
+
+    const timedOut = await fireTimedOutAwaits();
+    const timedOutIds = timedOut.map((row) => row.id);
+    expect(timedOutIds).toContain(mismatched.id);
+    expect(timedOutIds).not.toContain(matching.id);
+  });
+
+  it('does not claim exact or pattern one-shot awaits after their deadline', async () => {
+    const exact = await registerAwait({
+      subscriberId: 'expired-exact',
+      eventKey: 'expired:exact',
+      timeoutSec: 60,
+    });
+    const filteredExact = await registerAwait({
+      subscriberId: 'expired-filtered-exact',
+      eventKey: 'expired:filtered-exact',
+      timeoutSec: 60,
+      payloadFilter: { ready: true },
+    });
+    const pattern = await registerAwait({
+      subscriberId: 'expired-pattern',
+      eventKey: 'expired:pattern:*',
+      timeoutSec: 60,
+      payloadFilter: { ready: true },
+    });
+    await rootSql`
+      UPDATE harness_shared.event_awaits
+         SET expires_ts = now() - interval '1 second'
+       WHERE id IN (${exact.id}, ${filteredExact.id}, ${pattern.id})
+    `;
+
+    expect(await fireAwaitsForKey({ eventKey: exact.eventKey, payload: { ready: true } })).toEqual([]);
+    expect(await fireAwaitsForKey({ eventKey: filteredExact.eventKey, payload: { ready: true } })).toEqual([]);
+    expect(await fireAwaitsForKey({ eventKey: 'expired:pattern:one', payload: { ready: true } })).toEqual([]);
+    const rows = await rootSql<{ id: number; fired_at: Date | null }[]>`
+      SELECT id, fired_at FROM harness_shared.event_awaits
+       WHERE id IN (${exact.id}, ${filteredExact.id}, ${pattern.id})
+       ORDER BY id
+    `;
+    expect(rows.map((row) => row.fired_at)).toEqual([null, null, null]);
+  });
+
   it('serializes a recovery sweep against the original one-shot delivery writer', async () => {
     const pending = await registerAwait({ subscriberId: 'race-waiter', eventKey: 'work-item:done:WI-race' });
     const [fired] = await fireAwaitsForKey({ eventKey: pending.eventKey, payload: { result: 'settled' } });

@@ -451,6 +451,11 @@ export async function applyPendingMigrationsAtBoot(signal?: AbortSignal): Promis
 export async function applyPendingMigrationsNow(
   options: ApplyPendingMigrationsNowOptions = {},
 ): Promise<BootMigrateResult | null> {
+  const preflightStartedAt = Date.now();
+  let preflightPhase = 'start';
+  const tracePreflight = (phase: string): void => {
+    preflightPhase = phase;
+  };
   const signal = options.signal;
   if (signal?.aborted) return null;
   const sqlDir = options.sqlDir ?? resolveSqlDir();
@@ -534,6 +539,9 @@ export async function applyPendingMigrationsNow(
     return clientEndPromise;
   };
   const closeClientOnAbort = (): void => {
+    console.warn(
+      `[boot-migrate] preflight cancelled during ${preflightPhase} after ${Date.now() - preflightStartedAt}ms`,
+    );
     void closeClient(0);
   };
   signal?.addEventListener('abort', closeClientOnAbort, { once: true });
@@ -553,6 +561,7 @@ export async function applyPendingMigrationsNow(
   // above MIGRATION_FAILURE_COOLDOWN_MS for the full rationale.
   const cooldownPath = resolveMigrationCooldownFilePath();
   const cooldownMs = resolveMigrationFailureCooldownMs();
+  tracePreflight('read cooldown');
   const cooldownState = await readMigrationCooldownState(cooldownPath);
   const cooldownNow = Date.now();
   // A host may deliberately pin a different immutable migration tree via
@@ -588,6 +597,7 @@ export async function applyPendingMigrationsNow(
     coolingDown.has(f) ||
     (noPendingUnlockedSnapshot !== null && !noPendingUnlockedSnapshot.has(f));
   try {
+    tracePreflight('backup rendezvous');
     // WI-1194246 — this rendezvous must be UNBOUNDED IN BOTH DIMENSIONS.
     //
     // `lock_timeout = 0` alone is not enough. `statement_timeout` also cancels a
@@ -671,6 +681,7 @@ export async function applyPendingMigrationsNow(
     let failed: { file: string; error: string }[] = [];
     for (let attempt = 1; attempt <= CONTENTION_RETRY_MAX_ATTEMPTS; attempt++) {
       throwIfAborted(signal);
+      tracePreflight('apply pending migrations');
       const pass = await applyPendingMigrations({
         client,
         sqlDir,
@@ -756,6 +767,7 @@ export async function applyPendingMigrationsNow(
       // set, the DB-only diagnostics remain the safer signal.
       console.warn(`[boot-migrate] active migration filename read skipped: ${(e as Error)?.message ?? String(e)}`);
     }
+    tracePreflight('reconcile reservations');
     await reconcileMigrationReservations(client, undefined, activeFilenames);
     if (failed.length > 0) {
       const files = failed.map((f) => f.file).join(', ');
@@ -788,6 +800,7 @@ export async function applyPendingMigrationsNow(
     // log + ambient coord broadcast; the operator still boots (the stale tree
     // may serve read paths fine and a refusal would take the whole box down).
     try {
+      tracePreflight('schema drift diagnostics');
       const drift = await checkMigrationDrift();
       if (drift.schemaAhead.length > 0) {
         const head = drift.schemaAhead.slice(0, 5).join(', ');
@@ -806,6 +819,7 @@ export async function applyPendingMigrationsNow(
     } catch {
       /* detection is best-effort — never blocks boot */
     }
+    tracePreflight('complete');
     return { applied: appliedCount, failed };
   } catch (err) {
     if (!signal?.aborted) {

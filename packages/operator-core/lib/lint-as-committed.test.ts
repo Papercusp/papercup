@@ -1200,8 +1200,9 @@ console.log('PINNED_NATIVE_OK');
     } finally { rmSync(f.root, { recursive: true, force: true }); }
   }, 40_000);
 
-  it.each([true, false])('reuses only bytes accepted by the committed runtime model pin (valid=%s)', (valid) => {
+  it.each(['valid-cache', 'corrupt-cache', 'corrupt-installed'])('reuses only bytes accepted by the committed runtime model pin (%s)', (variant) => {
     const f = fixture('node build.cjs');
+    const valid = variant === 'valid-cache';
     const model = 'independent pinned model fixture\n';
     const digest = createHash('sha256').update(model).digest('hex');
     try {
@@ -1216,11 +1217,15 @@ console.log('PINNED_NATIVE_OK');
         '.gitignore': 'node_modules/\nlibs/runtime/dist/\nlibs/runtime/public/\n',
         'libs/runtime/package.json': JSON.stringify(manifest),
         'libs/runtime/scripts/setup-porcupine-runtime.sh': setup,
+        ...(variant === 'corrupt-installed' ? {
+          'libs/runtime/build.cjs': readFileSync(join(f.root, 'libs/runtime/build.cjs'), 'utf8') +
+            "fs.mkdirSync('public/porcupine', { recursive: true }); fs.writeFileSync('public/porcupine/porcupine_params.pv', 'corrupt installed model');\n",
+        } : {}),
         'probe.cjs': readFileSync(join(f.root, 'probe.cjs'), 'utf8') + `\nassert.equal(readFileSync('libs/runtime/public/porcupine/porcupine_params.pv', 'utf8'), ${JSON.stringify(model)});\nconsole.log('PINNED_MODEL_OK');\n`,
       }, f.head);
       mkdirSync(join(f.root, 'libs/runtime/public/porcupine'), { recursive: true });
       const source = join(f.root, 'libs/runtime/public/porcupine/porcupine_params.pv');
-      writeFileSync(source, valid ? model : 'corrupt model');
+      if (variant !== 'corrupt-installed') writeFileSync(source, valid ? model : 'corrupt model');
       const result = run(f.root, true);
       expect(result.status, result.stdout + result.stderr).toBe(valid ? 0 : 2);
       if (valid) {
@@ -1228,9 +1233,10 @@ console.log('PINNED_NATIVE_OK');
         expect(result.stdout).toContain('PINNED_MODEL_OK');
       } else {
         expect(result.stdout).not.toContain('PINNED_MODEL_OK');
-        expect(result.stderr).toContain('committed runtime seed failed');
+        expect(result.stderr).toContain(variant === 'corrupt-installed' ? 'committed postinstall failed' : 'committed runtime seed failed');
       }
-      expect(readFileSync(source, 'utf8')).toBe(valid ? model : 'corrupt model');
+      if (variant === 'corrupt-installed') expect(existsSync(source)).toBe(false);
+      else expect(readFileSync(source, 'utf8')).toBe(valid ? model : 'corrupt model');
     } finally { rmSync(f.root, { recursive: true, force: true }); }
   }, 40_000);
 

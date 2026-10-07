@@ -726,6 +726,8 @@ export const GREEN_CHECKPOINT_SYSTEMD_TERMINAL_MARKER = '__GREEN_CHECKPOINT_SYST
 
 export interface CheckpointSystemdTerminalEvidence {
   source: 'systemd-exec-stop-post';
+  /** Last write to this manual invocation's immutable log; unknown for legacy readers. */
+  observed_at_ms?: number | null;
   candidate: string | null;
   service_result: string;
   exit_code: string;
@@ -760,7 +762,7 @@ export function parseCheckpointSystemdTerminalEvidence(
   log: string | null,
 ): CheckpointSystemdTerminalEvidence | undefined {
   if (!log) return undefined;
-  let tuple: Omit<CheckpointSystemdTerminalEvidence, 'source' | 'candidate' | 'abnormal'> | undefined;
+  let tuple: Omit<CheckpointSystemdTerminalEvidence, 'source' | 'candidate' | 'abnormal' | 'observed_at_ms'> | undefined;
   for (const line of log.split(/\r?\n/)) {
     const trimmed = line.trim();
     if (!trimmed.startsWith(`${GREEN_CHECKPOINT_SYSTEMD_TERMINAL_MARKER} `)) continue;
@@ -787,13 +789,15 @@ export function parseCheckpointSystemdTerminalEvidence(
 function readTerminalState(
   unit: string,
   readLogTail: (logPath: string) => string | null,
+  readLogMtime: (logPath: string) => number | null,
 ): { terminalMarker?: boolean; terminalEvidence?: CheckpointSystemdTerminalEvidence } {
-  const log = readLogTail(checkpointLatestLogPath(unit));
+  const logPath = checkpointLatestLogPath(unit);
+  const log = readLogTail(logPath);
   if (log == null) return {};
   const terminalEvidence = parseCheckpointSystemdTerminalEvidence(log);
   return {
     terminalMarker: hasCheckpointResultMarker(log),
-    ...(terminalEvidence ? { terminalEvidence } : {}),
+    ...(terminalEvidence ? { terminalEvidence: { ...terminalEvidence, observed_at_ms: readLogMtime(logPath) } } : {}),
   };
 }
 
@@ -1707,7 +1711,7 @@ export function checkActiveCheckpointRun(
         held_externally: true,
       };
     }
-    const terminal = readTerminalState(unit, readLogTail);
+    const terminal = readTerminalState(unit, readLogTail, readLogMtime);
     return {
       active: false,
       unit,
@@ -1721,7 +1725,7 @@ export function checkActiveCheckpointRun(
   // `kill(pid, 0)` proves is gone means systemd's ActiveState is stale — don't trust it.
   const mainPid = Number(props.MainPID ?? '0');
   if (Number.isFinite(mainPid) && mainPid > 0 && !pidAlive(mainPid)) {
-    const terminal = readTerminalState(unit, readLogTail);
+    const terminal = readTerminalState(unit, readLogTail, readLogMtime);
     return {
       active: false,
       unit,
