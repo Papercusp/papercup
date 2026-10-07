@@ -1014,6 +1014,75 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
         preview: `${evidenceClass} evidence`,
       }))
     : [];
+  const schedulerClaimResult =
+    input.opts.toolName === 'scheduler:get_next' ||
+    (input.opts.toolName === 'tools:invoke' && input.opts.nestedTargetToolName === 'scheduler:get_next')
+      ? [input.result.structuredContent, ...input.result.content.filter(isTextItem).map((item) => {
+          try {
+            return JSON.parse(item.text) as unknown;
+          } catch {
+            return null;
+          }
+        })].find((value): value is Record<string, unknown> => {
+          if (!isJsonObject(value) || !isJsonObject(value.claimReceipt)) return false;
+          return value.claimReceipt.committed === true && typeof value.claimReceipt.workItemId === 'string';
+        })
+      : undefined;
+  const schedulerClaimReceipt = schedulerClaimResult?.claimReceipt as Record<string, unknown> | undefined;
+  const schedulerClaimId =
+    typeof schedulerClaimReceipt?.workItemId === 'string' ? schedulerClaimReceipt.workItemId : undefined;
+  const schedulerClaimWorkItem =
+    schedulerClaimResult && isJsonObject(schedulerClaimResult.workItem) ? schedulerClaimResult.workItem : undefined;
+  const schedulerClaimHarness =
+    typeof schedulerClaimWorkItem?.harness === 'string' ? schedulerClaimWorkItem.harness : undefined;
+  const schedulerClaimReadArgs = schedulerClaimId
+    ? { id: schedulerClaimId, ...(schedulerClaimHarness ? { harness: schedulerClaimHarness } : {}) }
+    : undefined;
+  const boundedSchedulerClaim = schedulerClaimResult && schedulerClaimId && schedulerClaimReadArgs
+    ? projectBoundedPayload(schedulerClaimResult, {
+        toolName: 'scheduler:get_next',
+        tier: 'trimmed',
+        forced: true,
+        originalChars: input.sourceBytes,
+        targetChars: Math.min(input.doorTokens * CHARS_PER_TOKEN_ESTIMATE, 1_200),
+        preservePaths: ['ok', 'claimReceipt', 'claimReceipt.committed', 'claimReceipt.workItemId'],
+        preserveTopLevelKeys: ['ok', 'claimReceipt'],
+        recovery: {
+          cursor: { kind: 'committed-claim', tool: 'work_items:get', args: schedulerClaimReadArgs },
+          next:
+            `The scheduler claim for ${schedulerClaimId} is committed. Do not retry scheduler:get_next. ` +
+            `Read work_items:get { id: '${schedulerClaimId}'${schedulerClaimHarness ? `, harness: '${schedulerClaimHarness}'` : ''} } ` +
+            'for the current item details, then check its governing plan decisions before acting.',
+        },
+      })
+    : undefined;
+  if (boundedSchedulerClaim) {
+    return {
+      ...input.result,
+      content: [{ type: 'text' as const, text: JSON.stringify(boundedSchedulerClaim) }],
+      _meta: {
+        ...(input.result._meta ?? {}),
+        resultDoor: {
+          truncated: true,
+          structural: true,
+          spillPath,
+          spillUri,
+          spillFailed: spillPath == null,
+          spillError,
+          spillErrorCode,
+          originalChars: input.sourceBytes,
+          originalBytes: input.sourceBytes,
+          nonTextChars: input.nonTextBytes,
+          nonTextBytes: input.nonTextBytes,
+          doorTokens: input.doorTokens,
+          reason: input.reason,
+          upstreamProjected: Boolean(upstreamProjection?.truncated),
+          innerTruncationMarkers,
+          ...(input.aggregate ? { aggregate: input.aggregate } : {}),
+        },
+      },
+    } as T;
+  }
   const coordSendReceipt = !reference &&
     (input.opts.toolName === 'coord:send' ||
       (input.opts.toolName === 'tools:invoke' && input.opts.nestedTargetToolName === 'coord:send'))
