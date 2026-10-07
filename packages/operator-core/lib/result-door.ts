@@ -515,7 +515,15 @@ const PIPELINE_POSITION_TOOL = 'dev:pipeline_position';
  * render exactly like a failed one (EI-23481355842555588).
  */
 const COORD_SEND_DELIVERY_PRESERVE_PATHS = [
+  'ok',
+  'partial',
+  'counts.ok',
+  'counts.failed',
+  'deliveryFailureWarning',
   'results[].msg_id',
+  'results[].ok',
+  'results[].error',
+  'results[].to',
   'results[].queued',
   'results[].woken',
   'results[].wakeOutcome',
@@ -834,7 +842,8 @@ function spillRecoveryNote(
     'Nothing was lost: the complete result was written to the reference in `content` — page it to read it. ' +
     referenceReader;
   const innerTruncationMarkers = input.innerTruncationMarkers ?? [];
-  if (input.toolName === 'coord:send') {
+  if (input.toolName === 'coord:send' ||
+    (input.toolName === 'tools:invoke' && input.nestedTargetToolName === 'coord:send')) {
     return (
       (input.upstreamProjection || innerTruncationMarkers.length > 0
         ? 'The reference preserves the emitted send receipt; upstream-omitted receipt fields cannot be recovered by paging. ' + referenceReader
@@ -1005,6 +1014,68 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
         preview: `${evidenceClass} evidence`,
       }))
     : [];
+  const coordSendReceipt = !reference &&
+    (input.opts.toolName === 'coord:send' ||
+      (input.opts.toolName === 'tools:invoke' && input.opts.nestedTargetToolName === 'coord:send'))
+    ? [input.result.structuredContent, ...input.result.content.filter(isTextItem).map((item) => {
+        try {
+          return JSON.parse(item.text) as unknown;
+        } catch {
+          return null;
+        }
+      })].find((value): value is Record<string, unknown> =>
+        isJsonObject(value) && Array.isArray(value.results))
+    : undefined;
+  const boundedCoordSendReceipt = coordSendReceipt
+    ? projectBoundedPayload(coordSendReceipt, {
+        toolName: 'coord:send',
+        tier: 'trimmed',
+        forced: true,
+        originalChars: input.sourceBytes,
+        targetChars: input.doorTokens * CHARS_PER_TOKEN_ESTIMATE,
+        preservePaths: COORD_SEND_DELIVERY_PRESERVE_PATHS,
+        preserveTopLevelKeys: ['ok', 'partial', 'counts', 'deliveryFailureWarning'],
+        recovery: {
+          cursor: {
+            kind: 'unavailable',
+            tool: 'coord:send',
+            args: {},
+            reason: 'spill-write-failed',
+            ...(spillErrorCode && spillErrorCode !== 'unknown error' ? { errorCode: spillErrorCode } : {}),
+          },
+          next:
+            'The coord:send delivery receipt is preserved here, but oversized message details could not be saved. ' +
+            COORD_SEND_RECEIPT_RECOVERY,
+        },
+      })
+    : undefined;
+  if (boundedCoordSendReceipt) {
+    return {
+      ...input.result,
+      content: [{ type: 'text' as const, text: JSON.stringify(boundedCoordSendReceipt) }],
+      _meta: {
+        ...(input.result._meta ?? {}),
+        resultDoor: {
+          truncated: true,
+          structural: true,
+          spillPath: null,
+          spillUri: null,
+          spillFailed: true,
+          spillError,
+          spillErrorCode,
+          originalChars: input.sourceBytes,
+          originalBytes: input.sourceBytes,
+          nonTextChars: input.nonTextBytes,
+          nonTextBytes: input.nonTextBytes,
+          doorTokens: input.doorTokens,
+          reason: input.reason,
+          upstreamProjected: Boolean(upstreamProjection?.truncated),
+          innerTruncationMarkers,
+          ...(input.aggregate ? { aggregate: input.aggregate } : {}),
+        },
+      },
+    } as T;
+  }
   const envelope = reference
     ? buildOutputEnvelope(
         {
@@ -1026,14 +1097,22 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
         },
         { summaryBudgetChars: 0 },
       )
-    : buildOutputEnvelope(
+      : buildOutputEnvelope(
         {
           summary: '',
           state: 'error',
           error: {
             code: 'output_spill_failed',
-            message: `Output exceeded its hard budget and the spill write failed (${spillErrorCode ?? 'unknown error'}).`,
-            retryable: true,
+            message:
+              input.opts.toolName === 'coord:send' ||
+              (input.opts.toolName === 'tools:invoke' && input.opts.nestedTargetToolName === 'coord:send')
+                ? `Output exceeded its hard budget and the spill write failed (${spillErrorCode ?? 'unknown error'}). ` +
+                  'The coord:send delivery outcome is unknown; do not repeat the send until you check coordination state.'
+                : `Output exceeded its hard budget and the spill write failed (${spillErrorCode ?? 'unknown error'}).`,
+            retryable: !(
+              input.opts.toolName === 'coord:send' ||
+              (input.opts.toolName === 'tools:invoke' && input.opts.nestedTargetToolName === 'coord:send')
+            ),
           },
         },
         { summaryBudgetChars: 0 },
@@ -1766,7 +1845,10 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
         : []),
       ...(opts.toolName === 'plans:get' ? ['results[].shipReadiness', 'results[].items[].text'] : []),
       ...(opts.toolName === PIPELINE_POSITION_TOOL ? PIPELINE_POSITION_PRESERVE_PATHS : []),
-      ...(opts.toolName === 'coord:send' ? COORD_SEND_DELIVERY_PRESERVE_PATHS : []),
+      ...(opts.toolName === 'coord:send' ||
+        (opts.toolName === 'tools:invoke' && opts.nestedTargetToolName === 'coord:send')
+        ? COORD_SEND_DELIVERY_PRESERVE_PATHS
+        : []),
       // Exact events:status snapshots carry the only in-band identity for the
       // requested key. Preserving the event_inspection root alone kept that
       // snapshot from disappearing, but an oversized history could still be
