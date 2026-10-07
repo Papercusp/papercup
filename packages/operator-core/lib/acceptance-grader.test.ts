@@ -1840,6 +1840,34 @@ describe('classifyAcceptanceGraderParkedWithoutEmit (WI-10005295)', () => {
   const claudeParked =
     '● papercusp.tools:invoke(scorecards:get)\n● I stopped: the target card did not match the brief.\n\n' +
     '✻ Crunched for 4m 12s · done\n\n❯ ';
+  // WI-10007246: task 0muygjfo21yekog81lv ended on this screen without a Worked footer.
+  const codexTransportError =
+    '\u001b[31m■ unexpected status 502 Bad Gateway: inference-gateway: codex OAuth upstream\r\n' +
+    'failed: fetch failed (UND_ERR_CONNECT_TIMEOUT: Connect Timeout Error (attempted\r\n' +
+    'address: chatgpt.com:443, timeout: 10000ms)), url:\r\n' +
+    'http://127.0.0.1:8788/v1/responses\u001b[0m  › Ask Codex to do anything   Ready · GPT-5.6-Sol high';
+
+  it('recognizes a quiet Codex transport-error ending without a Worked footer', () => {
+    expect(classifyAcceptanceGraderParkedWithoutEmit(codexTransportError, stale)).toMatchObject({
+      code: 'parked_without_emit',
+      evidence: expect.stringContaining('■unexpectedstatus502BadGateway'),
+    });
+  });
+
+  it('keeps quoted transport errors, reconnecting turns, resumed turns and recently active tasks', () => {
+    const errorWithoutPrompt = codexTransportError.slice(0, codexTransportError.indexOf('  ›'));
+    for (const log of [
+      `• Evidence quotes: ${errorWithoutPrompt}`,
+      `${errorWithoutPrompt}\n• Reconnecting... 3/5 (esc to interrupt)\nWorking · GPT-5.6-Sol high`,
+      `${codexTransportError}\nWorking · GPT-5.6-Sol high`,
+      `${errorWithoutPrompt}\nWorking · GPT-5.6-Sol high\nReady · GPT-5.6-Sol high`,
+    ]) {
+      expect(classifyAcceptanceGraderParkedWithoutEmit(log, stale)).toBeNull();
+    }
+    expect(classifyAcceptanceGraderParkedWithoutEmit(codexTransportError, {
+      ...stale, logMtimeMs: nowMs - 60_000,
+    })).toBeNull();
+  });
 
   it('classifies a Codex or Claude judge parked at its prompt past the TTL', () => {
     expect(classifyAcceptanceGraderParkedWithoutEmit(codexParked, stale)).toMatchObject({

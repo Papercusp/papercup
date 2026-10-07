@@ -1017,6 +1017,10 @@ function measureAcceptanceGraderQuietWindow({
 const COMPLETED_TURN_MARKERS: readonly RegExp[] = [
   /✻[^●✻❯]{1,160}·done/gu,
   /Workedfor\d+[hms][^●✻❯]{0,120}?Ready·/gu,
+  // WI-10007246: Codex omits Worked-for on a terminal upstream transport error.
+  // Require its error glyph, exact gateway failure and subsequent idle status.
+  // A reconnecting/working screen between the error and Ready is not terminal.
+  /■unexpectedstatus502BadGateway:inference-gateway:codexOAuthupstreamfailed:fetchfailed\((?:(?!Working·|Working\(|Thinking·|Thinking\(|esctointerrupt)[^■●✻❯]){1,1200}?Ready·/giu,
 ];
 
 /** Turn activity that, AFTER the last completed-turn marker, means the judge resumed. */

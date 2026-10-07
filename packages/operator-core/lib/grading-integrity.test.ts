@@ -1142,7 +1142,7 @@ describe('dispatchPendingGradingAudits', () => {
       '• Audit not emitted. Current target state:\n' +
       '  • gradingAudit.state: pending  › Ask Codex to do anything   Working · GPT-5.6-Sol high\n' +
       '  Worked for 20m 18s • 11:40 PMReady ·GPT-5.6-Sol high ·Context 86% left';
-    const run = async (logQuietMs: number) => {
+    const run = async (logQuietMs: number, log = parkedLog) => {
       const d = deps();
       const nowMs = Date.parse('2026-10-02T04:01:00.000Z');
       d.listScorecards.mockResolvedValue([card('EI-parked-auditor')]);
@@ -1159,7 +1159,7 @@ describe('dispatchPendingGradingAudits', () => {
         {
           ...d,
           killTask,
-          readLogTail: vi.fn(async () => parkedLog),
+          readLogTail: vi.fn(async () => log),
           now: () => nowMs,
           readLogMtimeMs: () => nowMs - logQuietMs,
           terminalLogMaxRechecks: 0,
@@ -1187,6 +1187,22 @@ describe('dispatchPendingGradingAudits', () => {
       const { killTask, receipt } = await run(GRADING_AUDIT_RESERVATION_TTL_MS - 60_000);
       expect(killTask).not.toHaveBeenCalled();
       expect(receipt).toMatchObject({ state: 'deduped', launch: { mode: 'live-task-guard' } });
+    });
+
+    it('retires a quiet Codex transport-error ending and relaunches through the independent dispatcher', async () => {
+      const log = '• Calling papercusp.tools:invoke(scorecards:get) Working · GPT-5.6-Sol high\n' +
+        '■ unexpected status 502 Bad Gateway: inference-gateway: codex OAuth upstream\n' +
+        'failed: fetch failed (UND_ERR_CONNECT_TIMEOUT: Connect Timeout Error)\n' +
+        '› Ask Codex to do anything Ready · GPT-5.6-Sol high';
+      const { killTask, receipt } = await run(GRADING_AUDIT_RESERVATION_TTL_MS + 1, log);
+      expect(killTask).toHaveBeenCalledWith('task-parked-auditor', {
+        includeSubtree: true,
+        escalateAfterMs: 5_000,
+      });
+      expect(receipt).toMatchObject({
+        state: 'launched',
+        terminalRecovery: { retiredTaskIds: ['task-parked-auditor'], codes: ['parked_without_emit'] },
+      });
     });
   });
 
