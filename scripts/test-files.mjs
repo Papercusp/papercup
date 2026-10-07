@@ -348,6 +348,12 @@ function isVitestPackageDir(dir) {
 // never discover a config under libs/generic/template-kit for a path under templates/.
 const NON_WORKSPACE_VITEST_ROUTES = [
   {
+    prefix: 'templates/papercusp-ops-pots/',
+    pathPattern: /\/checks\/operation-first-triggers\.test\.[cm]?[jt]sx?$/,
+    cwd: 'libs/generic/template-kit',
+    config: 'vitest.config.ts',
+  },
+  {
     prefix: 'templates/',
     pathPattern: /\/checks\/[^/]+\.fixture\.test\.[cm]?[jt]sx?$/,
     cwd: 'libs/generic/template-kit',

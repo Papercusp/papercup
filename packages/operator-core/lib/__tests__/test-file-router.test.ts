@@ -472,6 +472,13 @@ describe('test-files router', () => {
     );
   });
 
+  it('routes the operation-first reference guard to template-kit instead of root mirror discovery', () => {
+    const route = discoverVitestRoute('templates/papercusp-ops-pots/checks/operation-first-triggers.test.ts');
+    expect(route.cwd).toBe(resolve(REPO_ROOT, 'libs/generic/template-kit'));
+    expect(route.config).toBe('vitest.config.ts');
+    expect(route.requested).toBe('../../../templates/papercusp-ops-pots/checks/operation-first-triggers.test.ts');
+  });
+
   it('routes papercusp-app composition checks to template-kit instead of root discovery', () => {
     const route = discoverVitestRoute('templates/papercusp-app/checks/composition-integrity.test.ts');
     expect(route.cwd).toBe(resolve(REPO_ROOT, 'libs/generic/template-kit'));
