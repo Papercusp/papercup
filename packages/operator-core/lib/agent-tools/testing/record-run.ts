@@ -183,12 +183,20 @@ export function parseOperationalEvidenceArtifact(bytes: Buffer): OperationalEvid
   if (artifact.archivedMutation && !artifact.mutationProbes?.length) {
     throw new Error('evidence_archived_mutation_probe_required');
   }
+  // Classify by the RUNNER's own signatures, not the phrase "mutation probe" (EI-25254538716868224):
+  // an artifact is scripts/mutation-probe.sh evidence when its command invokes that script, or its
+  // summary/assertions quote what that script emits — a `MUTATION_PROBE_<FIELD>` record (e.g.
+  // MUTATION_PROBE_RESULT, MUTATION_PROBE_EVIDENCE_JSON) or the script path. A bare substring match
+  // also caught a git branch named `mutation-probe/<x>` and a CI job's own `MUTATION_PROBE unit=…`
+  // label, demanding a mutation-probe.sh replay record that a mutant built and run elsewhere (e.g. a
+  // macOS-CI Swift mutant) cannot have.
+  const invokesRunner = (value: string) => /(?:^|[\s/'"=])mutation-probe\.sh\b/i.test(value);
+  const runnerOutput = `${artifact.summary}\n${artifact.assertions.map((assertion) => assertion.evidence).join('\n')}`;
   const mutationProbeEvidence =
     artifact.mutationProbes !== undefined ||
-    artifact.command.some((part) => /mutation[-_ ]probe/i.test(part)) ||
-    /mutation[-_ ]probe/i.test(
-      `${artifact.summary}\n${artifact.assertions.map((assertion) => assertion.evidence).join('\n')}`,
-    );
+    artifact.command.some(invokesRunner) ||
+    invokesRunner(runnerOutput) ||
+    /\bMUTATION_PROBE_[A-Z]/.test(runnerOutput);
   if (mutationProbeEvidence) {
     const referencesSharedScratch = (value: string) =>
       value.replace(/\\/g, '/').toLowerCase().includes('.papercusp/scratch');

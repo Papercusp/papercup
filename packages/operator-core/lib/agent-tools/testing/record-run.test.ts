@@ -389,6 +389,36 @@ describe('testing:record-run', () => {
       .toMatchObject({ mutationProbes: [MUTATION_PROBE] });
   });
 
+  // EI-25254538716868224: classify by the runner's signatures, never by the phrase "mutation probe".
+  it('requires replay metadata whenever the artifact carries scripts/mutation-probe.sh signatures', () => {
+    const { mutationProbes: _replay, ...base } = mutationEvidence();
+    const quiet = { ...base, summary: 'Guard rejected the mutant.', assertions: [{ id: 'm', passed: true, evidence: 'guard failed' }] };
+    const variants = [
+      { ...quiet, command: ['bash', 'scripts/mutation-probe.sh', '--file', 'a.ts'] },
+      { ...quiet, command: ['./mutation-probe.sh'] },
+      { ...quiet, command: ['node', 'x.mjs'], assertions: [{ id: 'm', passed: true, evidence: 'MUTATION_PROBE_RESULT verdict=caught' }] },
+      { ...quiet, command: ['node', 'x.mjs'], summary: 'MUTATION_PROBE_EVIDENCE_JSON={"verdict":"caught"}' },
+      { ...quiet, command: ['node', 'x.mjs'], summary: 'Ran scripts/mutation-probe.sh in copy-out mode.' },
+    ];
+    for (const variant of variants) {
+      expect(() => parseOperationalEvidenceArtifact(Buffer.from(JSON.stringify(variant))))
+        .toThrow('evidence_mutation_probe_replay_required');
+    }
+  });
+
+  it('does not demand a mutation-probe.sh replay for evidence that merely names a branch or CI label', () => {
+    const ciMutant = {
+      ...ARTIFACT,
+      framework: 'operational' as const,
+      command: ['gh', 'workflow', 'run', 'ci.yml', '--ref', 'mutation-probe/p015-offline-message'],
+      summary: 'macOS CI mutation probe: the Swift mutant on branch mutation-probe/p015-offline-message was caught.',
+      assertions: [{ id: 'caught', passed: true, evidence: "job concluded failure with 'MUTATION_PROBE unit=failure ui=failure'" }],
+    };
+    const parsed = parseOperationalEvidenceArtifact(Buffer.from(JSON.stringify(ciMutant)));
+    expect(parsed.mutationProbes).toBeUndefined();
+    expect(parsed.command).toContain('mutation-probe/p015-offline-message');
+  });
+
   it('rejects mutable shared scratch command references even when replay argv is present', () => {
     const artifact = mutationEvidence(['bash .papercusp/scratch/p009-probes.sh']);
     expect(() => parseOperationalEvidenceArtifact(Buffer.from(JSON.stringify(artifact))))
