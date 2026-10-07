@@ -1022,7 +1022,7 @@ describe('hive-loop invariant monitors (hive-loop-e2e-testing-2026-06-10 P-010)'
     expect(stalledClaimSignalsFromRows([])).toEqual([]);
   });
 
-  it('EI-14763: a live, actively-working holder (holder_active) is NOT counted stalled', () => {
+  it('EI-14763 regression: owner-wide activity is not item-scoped progress', () => {
     // WI-5215<-su-2ab13fe2 (heartbeating, mid-task) + WI-5137<-su-4d3eb54c (running
     // bash this minute) both had recent tool/coord activity → not a stall. Only a
     // heartbeating-but-idle holder (holder_active !== true) remains a genuine signal.
@@ -1030,16 +1030,18 @@ describe('hive-loop invariant monitors (hive-loop-e2e-testing-2026-06-10 P-010)'
     const alsoActive = { work_item_id: 'WI-5137', agent_id: 'su-4d3eb54c', harness_slug: 'papercusp', detail: 'diagnostic', stalled_minutes: 55, holder_active: true };
     const genuine = { work_item_id: 'WI-9', agent_id: 'bee-idle', harness_slug: 'alpha', detail: 'wedged', stalled_minutes: 42, holder_active: false };
 
-    // All holders active → no signal at all (the 73h standing false-positive is gone).
-    expect(stalledClaimSignalsFromRows([active, alsoActive], { minMinutes: 30 })).toEqual([]);
+    // Even the legacy owner-activity annotation cannot hide stale item progress.
+    const activeSignals = stalledClaimSignalsFromRows([active, alsoActive], { minMinutes: 30 });
+    expect(activeSignals).toHaveLength(1);
+    expect(activeSignals[0].body).toContain('2 work-item claim(s)');
 
-    // Mixed → only the genuinely-idle holder counts, and is the sole sample.
+    // Mixed → owner-wide activity does not remove either stale item from the signal.
     const signals = stalledClaimSignalsFromRows([active, alsoActive, genuine], { minMinutes: 30 });
     expect(signals).toHaveLength(1);
-    expect(signals[0].body).toContain('1 work-item claim(s)');
+    expect(signals[0].body).toContain('3 work-item claim(s)');
+    expect(signals[0].body).toContain('WI-5215<-su-2ab13fe2');
+    expect(signals[0].body).toContain('WI-5137<-su-4d3eb54c');
     expect(signals[0].body).toContain('WI-9<-bee-idle');
-    expect(signals[0].body).not.toContain('su-2ab13fe2');
-    expect(signals[0].body).not.toContain('su-4d3eb54c');
   });
 
   it('EI-18633753937712900 (WI-3669 recurrence): a deliberately PARKED claim (blocked / _claimHold) is NOT counted stalled', () => {

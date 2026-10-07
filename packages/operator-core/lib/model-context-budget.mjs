@@ -448,10 +448,10 @@ export function listCodexInstalledModels({ home, codexHome } = {}) {
  * byte-identical and this can never talk an unknown model down.
  *
  * @param {string | null | undefined} model  a psu model spec, alias, or native id
- * @param {{ home?: string, codexHome?: string }} [opts]
+ * @param {{ home?: string, codexHome?: string, compactionLimit?: number | null }} [opts]
  * @returns {{ model: string, window: number, autoCompactLimit: number, source: string } | null}
  */
-export function codexContextWindowConfig(model, { home, codexHome } = {}) {
+export function codexContextWindowConfig(model, { home, codexHome, compactionLimit } = {}) {
   const spec = model || codexDefaultModel(home, codexHome);
   const id = bareModelId(normalizeCodexCliModel(String(spec ?? '')));
   if (!id) return null;
@@ -483,10 +483,17 @@ export function codexContextWindowConfig(model, { home, codexHome } = {}) {
 
   window = Math.min(window, CODEX_MAX_CONFIGURED_WINDOW);
   if (window <= (declaredDefault ?? DEFAULT_CONTEXT_WINDOWS.codex)) return null;
+  const nativeAutoCompactLimit = Math.floor(window * CODEX_AUTO_COMPACT_FRACTION);
+  const activeCompactionLimit = POSITIVE(compactionLimit);
   return {
     model: id,
     window,
-    autoCompactLimit: Math.floor(window * CODEX_AUTO_COMPACT_FRACTION),
+    // D-008 fixes the declared context window at its exact upstream value.
+    // A managed session's own soft budget may lower Codex's native compaction
+    // trigger, but it never raises the model-derived default or changes window.
+    autoCompactLimit: activeCompactionLimit == null
+      ? nativeAutoCompactLimit
+      : Math.min(nativeAutoCompactLimit, activeCompactionLimit),
     source,
   };
 }
@@ -501,8 +508,8 @@ export function codexContextWindowConfig(model, { home, codexHome } = {}) {
  * The per-session home ALSO bakes the same keys (P-004) because a bare
  * `psu --resume` names no model and therefore emits no `-c` at all.
  */
-export function codexContextConfigArgs(model, { home, codexHome } = {}) {
-  const cfg = codexContextWindowConfig(model, { home, codexHome });
+export function codexContextConfigArgs(model, { home, codexHome, compactionLimit } = {}) {
+  const cfg = codexContextWindowConfig(model, { home, codexHome, compactionLimit });
   if (!cfg) return [];
   return [
     '-c',
@@ -517,8 +524,8 @@ export function codexContextConfigArgs(model, { home, codexHome } = {}) {
  * (P-004). `''` when the model has no extended window, so a caller can
  * concatenate unconditionally.
  */
-export function codexContextConfigToml(model, { home, codexHome } = {}) {
-  const cfg = codexContextWindowConfig(model, { home, codexHome });
+export function codexContextConfigToml(model, { home, codexHome, compactionLimit } = {}) {
+  const cfg = codexContextWindowConfig(model, { home, codexHome, compactionLimit });
   if (!cfg) return '';
   return (
     `model_context_window = ${cfg.window}\n` +

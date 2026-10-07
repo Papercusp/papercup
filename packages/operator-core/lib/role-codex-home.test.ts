@@ -1854,6 +1854,32 @@ describe('makeCodingAssistantCodexHome (pui-chat-first-ux P-016)', () => {
     expect(existsSync(out.agentsPath)).toBe(false);
   });
 
+  it('does not reintroduce the installer-managed SU playbook through personal instructions', async () => {
+    const { makeCodingAssistantCodexHome } = await import('./role-codex-home');
+    const out = await suHome();
+    mkdirSync(join(fakeHome, '.codex'), { recursive: true });
+    const managed = [
+      '<!-- BEGIN papercusp-su playbook (managed by install-standalone-mcp.sh) -->',
+      'Before editing any file, claim it with Papercusp locks:acquire.',
+      '<!-- END papercusp-su playbook -->',
+      '',
+    ].join('\n');
+    const personal = 'Use concise explanations.\n';
+    const source = join(fakeHome, '.codex', 'AGENTS.md');
+    writeFileSync(source, managed + personal);
+
+    makeCodingAssistantCodexHome(out.codexHome, fakeHome);
+
+    expect(readFileSync(out.agentsPath, 'utf8')).toBe(personal);
+    expect(readFileSync(source, 'utf8')).toBe(managed + personal);
+    expect(readFileSync(out.configPath, 'utf8')).not.toContain('papercusp-su');
+    expect(existsSync(join(out.codexHome, 'hooks.json'))).toBe(false);
+
+    writeFileSync(source, managed);
+    makeCodingAssistantCodexHome(out.codexHome, fakeHome);
+    expect(existsSync(out.agentsPath)).toBe(false);
+  });
+
   it('removes quoted and nested papercusp-su tables but no other server', async () => {
     const { codingAssistantCodexConfigToml } = await import('./role-codex-home');
     const toml = [

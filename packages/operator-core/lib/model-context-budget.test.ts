@@ -299,6 +299,32 @@ describe('codex extended-window launch config', () => {
     });
   });
 
+  it('clamps only the native auto-compaction threshold to the active per-session limit', () => {
+    const home = codexHome([SOL], 'session-limit');
+    expect(codexContextWindowConfig('gpt-5.6-sol', { home, compactionLimit: 250_000 })).toEqual({
+      model: 'gpt-5.6-sol',
+      window: 1_000_000,
+      autoCompactLimit: 250_000,
+      source: 'codex-official-1m-policy',
+    });
+    expect(codexContextConfigArgs('gpt-5.6-sol', { home, compactionLimit: 250_000 })).toEqual([
+      '-c',
+      'model_context_window=1000000',
+      '-c',
+      'model_auto_compact_token_limit=250000',
+    ]);
+    expect(codexContextConfigToml('gpt-5.6-sol', { home, compactionLimit: 250_000 })).toBe(
+      'model_context_window = 1000000\nmodel_auto_compact_token_limit = 250000\n',
+    );
+  });
+
+  it('does not let a session limit raise the model-derived native threshold', () => {
+    expect(codexContextWindowConfig('gpt-5.6-sol', { compactionLimit: 950_000 })).toMatchObject({
+      window: 1_000_000,
+      autoCompactLimit: 900_000,
+    });
+  });
+
   it('resolves a psu alias + effort suffix to the same config as the native id', () => {
     const home = codexHome([SOL], 'alias');
     expect(codexContextWindowConfig('sol:high', { home })).toEqual(

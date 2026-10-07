@@ -1722,6 +1722,16 @@ export function makeCodingAssistantCodexHome(codexHome: string, home: string = h
   const agentsPath = join(codexHome, 'AGENTS.md');
   rmSync(agentsPath, { force: true });
   const userAgents = join(home, '.codex', 'AGENTS.md');
-  if (existsSync(userAgents)) writeFileSync(agentsPath, readFileSync(userAgents), { mode: 0o600 });
+  if (existsSync(userAgents)) {
+    // Older standalone installers put the SU playbook in the user's global
+    // instructions. It is generated SU context, not a personal instruction:
+    // copying it back would undo the identity isolation above (EI-25332697642301259).
+    // Use the installer's exact paired markers; leave unmarked user rules alone.
+    const personal = readFileSync(userAgents, 'utf8').replace(
+      /<!-- BEGIN papercusp-su playbook \(managed by install-standalone-mcp\.sh\) -->[\s\S]*?<!-- END papercusp-su playbook -->\r?\n?/g,
+      '',
+    );
+    if (personal.trim()) writeFileSync(agentsPath, personal, { mode: 0o600 });
+  }
   rmSync(join(codexHome, 'hooks.json'), { force: true });
 }

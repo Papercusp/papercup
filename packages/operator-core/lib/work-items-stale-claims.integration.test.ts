@@ -48,13 +48,15 @@ const AGENT_ACTIVITY_DDL = `
     summary text,
     created_at timestamptz NOT NULL DEFAULT now()
   )`;
-// WI-6015: a deliberately minimal projection of the real tool_invocations table
-// (see projected-tool-deps.ts's TELEMETRY_INSERT_SQL for the full column list) —
-// the STALLED-leg activity guard under test reads only coord_owner_id/invoked_at.
+// A deliberately minimal projection of the real tool_invocations table (see
+// projected-tool-deps.ts's TELEMETRY_INSERT_SQL for the full column list). The
+// stalled regression records an unrelated owner-state goal_ref to show that
+// call activity cannot stand in for progress on the held item.
 const TOOL_INVOCATIONS_DDL = `
   CREATE TABLE IF NOT EXISTS harness_shared.tool_invocations (
     id BIGSERIAL PRIMARY KEY,
     coord_owner_id text,
+    goal_ref text,
     invoked_at timestamptz NOT NULL DEFAULT now()
   )`;
 // EI-21431501901242395: the durable continuation leg read by
@@ -615,29 +617,27 @@ describe('reclaimStaleWorkItemClaims', () => {
     expect(r.released[0]).toMatchObject({ feature_id: 'F-ST6', reason: 'stalled' });
   });
 
-  // WI-6015 (EI-18691099450966094 trap c): last_progress_at is only bumped by an
-  // explicit work_items:checkpoint call, so a holder doing real work WITHOUT
-  // checkpointing reads as "no progress" forever on last_progress_at/taken_at
-  // alone — this must never be enough, by itself, to reclaim a genuinely-active
-  // holder's claim. Mirrors the watchdog's EI-14763 holder_active guard.
-  it('stalled: flag ON — a holder with RECENT tool_invocations is KEPT despite stale last_progress_at/taken_at', async () => {
+  // Owner activity is not item progress. tool_invocations.goal_ref is a
+  // snapshot of the owner's declared goal at call time, not call-local item
+  // attribution, and cannot override this item's stale progress timestamp.
+  it('stalled: flag ON — a recent tool invocation for another goal does not mask stale item progress', async () => {
     await seedItem('F-ST7', 'su-tool-active', 30, 'in_progress', 0, 30); // claimed + "progressed" 30 min ago
     await sql`INSERT INTO harness_shared.coord_presence VALUES ('su-tool-active', now())`; // alive
-    // The exact incident shape: 138 tool_invocations in the prior 8 minutes.
-    await sql`INSERT INTO harness_shared.tool_invocations (coord_owner_id, invoked_at)
-              SELECT 'su-tool-active', now() - make_interval(mins => g) FROM generate_series(0, 7) AS g`;
+    await sql`INSERT INTO harness_shared.tool_invocations (coord_owner_id, goal_ref, invoked_at)
+              VALUES ('su-tool-active', 'WI-OTHER', now() - interval '2 minutes')`;
     const r = await reclaimStaleWorkItemClaims(sql, { includeStalled: true });
-    expect(r.released).toHaveLength(0);
-    expect((await statusOf('F-ST7')).taken_by).toBe('su-tool-active');
+    expect(r.released[0]).toMatchObject({ feature_id: 'F-ST7', reason: 'stalled', new_status: 'open' });
+    expect((await statusOf('F-ST7')).taken_by).toBeNull();
   });
 
-  it('stalled: flag ON — a holder with RECENT agent_activity is KEPT despite stale last_progress_at/taken_at', async () => {
+  it('stalled: flag ON — recent owner agent_activity does not mask stale item progress', async () => {
     await seedItem('F-ST8', 'su-turn-active', 30, 'in_progress', 0, 30);
     await sql`INSERT INTO harness_shared.coord_presence VALUES ('su-turn-active', now())`;
     await sql`INSERT INTO harness_shared.agent_activity (owner_id, kind, summary, created_at)
               VALUES ('su-turn-active', 'lifecycle', 'turn', now() - make_interval(mins => 2))`;
     const r = await reclaimStaleWorkItemClaims(sql, { includeStalled: true });
-    expect(r.released).toHaveLength(0);
+    expect(r.released[0]).toMatchObject({ feature_id: 'F-ST8', reason: 'stalled', new_status: 'open' });
+    expect((await statusOf('F-ST8')).taken_by).toBeNull();
   });
 
   it('stalled: flag ON — a holder with NO recent activity of any kind IS still freed (guard does not mask genuine stalls)', async () => {
@@ -860,7 +860,9 @@ describe('WI-1999 remote-holder guard', () => {
     await seedItem('F-RH6', 'su-remote-closer', 30, 'in_progress');
     await sql`UPDATE harness_shared.work_items SET updated_ts = ${Date.now() - 30 * 60_000}, fed_ts = ${Date.now() - 30 * 60_000} WHERE feature_id = 'F-RH6'`;
     await seedItem('F-RH6b', null, 0, 'done');
-    await sql`UPDATE harness_shared.work_items SET terminal_owner = 'su-remote-closer', updated_ts = ${Date.now() - 60_000} WHERE feature_id = 'F-RH6b'`;
+    await sql`UPDATE harness_shared.work_items
+                 SET terminal_owner = 'su-remote-closer', updated_ts = ${Date.now() - 60_000}, fed_ts = ${Date.now() - 60_000}
+               WHERE feature_id = 'F-RH6b'`;
     const r = await reclaimStaleWorkItemClaims(sql, { unknownHolderFallbackMs: 15 * 60_000 });
     expect(r.released.map((x) => x.feature_id)).not.toContain('F-RH6');
     // Control: once that close ages past the window too, the long-held claim frees.
@@ -955,6 +957,26 @@ describe('WI-1999 remote-holder guard', () => {
 
     const r = await reclaimStaleWorkItemClaims(sql, { unknownHolderFallbackMs: 15 * 60_000 });
     expect(r.released.map((x) => x.feature_id)).toContain('F-RH10');
+  });
+
+  it('WI-10005935: issue reaper ignores a sibling bookkeeping touch without fed_ts', async () => {
+    const idle = Date.now() - 30 * 60_000;
+    const holder = 'su-remote-bookkept-null-fed-ts-issue';
+    await seedIssue('EI-RH10', 'bug', holder, 30);
+    await sql`UPDATE harness_shared.work_items
+                 SET updated_ts = ${idle}, fed_ts = ${idle}
+               WHERE feature_id = 'EI-RH10'`;
+
+    await seedTaskItem('WI-RH10B-ISSUE', holder, 30, 'wip');
+    await sql`UPDATE harness_shared.work_items
+                 SET updated_ts = ${idle}, fed_ts = ${idle}
+               WHERE feature_id = 'WI-RH10B-ISSUE'`;
+    await sql`UPDATE harness_shared.work_items
+                 SET updated_ts = ${Date.now()}, fed_ts = NULL
+               WHERE feature_id = 'WI-RH10B-ISSUE'`;
+
+    const r = await reclaimStaleIssueClaims(sql, { unknownHolderFallbackMs: 15 * 60_000 });
+    expect(r.released.map((x) => x.issue_id)).toContain('EI-RH10');
   });
 
   it('a never-seen holder with NULL taken_at anchors the fallback on fed_ts (EI-2534 must not re-strand)', async () => {
