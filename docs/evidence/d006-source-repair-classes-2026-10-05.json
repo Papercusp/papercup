@@ -6,8 +6,8 @@
   "population": {
     "failedFiles": 124,
     "repairedFocused": 15,
-    "repairedPeerFocused": 11,
-    "openUnknown": 98
+    "repairedPeerFocused": 12,
+    "openUnknown": 97
   },
   "classes": {
     "assertion": 62,
@@ -15,7 +15,7 @@
     "missing-schema": 16,
     "blueprint-fixture": 1,
     "console-guard": 10,
-    "unclassified": 11,
+    "unclassified": 10,
     "local-perf-compaction-census": 1,
     "peer-dial-process-isolation": 1,
     "legacy-rubric-replay": 1,
@@ -27,7 +27,8 @@
     "hook-mutex-cleanup": 4,
     "profile-replay": 3,
     "peer-work-item-fixture": 2,
-    "peer-memory-fixture": 1
+    "peer-memory-fixture": 1,
+    "peer-edit-attribution-migration": 1
   },
   "files": [
     {
@@ -1174,12 +1175,34 @@
     },
     {
       "path": "packages/operator-core/lib/personal-vault/git-sync-hold.integration.test.ts",
-      "class": "unclassified",
-      "state": "open-unknown",
-      "item": "WI-10006170",
+      "class": "peer-edit-attribution-migration",
+      "state": "repaired-peer-focused",
+      "item": "EI-25188923278410322",
       "lines": [
         13805
-      ]
+      ],
+      "historicalSymptomClass": "unclassified",
+      "diagnosis": "The archived strict-writer error names edit_attribution_ledger.dispatch_call_id. Existing committed repair WI-10006206 added migration1367; EI-25188923278410322 independently verified the fixture applies it before the real strict writer and census assertions. No new source repair or terminal replay is needed.",
+      "relatedSourceRepair": "WI-10006206",
+      "completionAuthority": "committed",
+      "historicalRedTestRunIds": [20747074, 20766512, 20797756],
+      "afterTestRun": 20798411,
+      "receiptCommit": "88fed5c47a6431df8de1c24ef9c630dbd59482fe",
+      "receiptRoot": "/tmp/papercusp-lint-as-committed-88fed5c47a-VP3Pt1",
+      "worktreeDirty": false,
+      "isScratchConfig": false,
+      "laterLocalTestRun": 20812758,
+      "laterLocalWorktreeDirty": true,
+      "testSha256": "56d32aa50e5cdcce5436424963ec944926352b410231edc98e1aec6c41922ab1",
+      "testBlob": "4c9abca097badd868ae3571022490e710669b31d",
+      "testFileAtReceiptMatchesCurrent": true,
+      "testFileAtTerminalTreeStampMatchesCurrent": true,
+      "terminalTreeStampHead": "b0b8a9eedbff36542bae2ead0088eda2fd4f295b",
+      "migrationSha256": "f3bb73ee2408dfcac0cd60cb777da2ca9593e43916e24ad122d87f44f2b0cb67",
+      "recurrenceGuard": "Ten conventional real-Postgres cases exercise strict restricted-edit writes, active/released disclosure boundaries, census union and fail-closed ledger refusal; dispatch replay controls retain distinct calls and legacy NULL captures.",
+      "completeImportGraphCurrentness": "unknown",
+      "currentEnvironmentAssurance": "unknown",
+      "scope": "Historical failure placement and existing committed focused repair only. Stored proofs reused; no fresh test execution, complete current-source assurance, final D006 or shipment claim."
     },
     {
       "path": "packages/operator-core/lib/red-queen/red-queen.integration.test.ts",
@@ -2027,7 +2050,7 @@
     },
     {
       "class": "unclassified",
-      "count": 11,
+      "count": 10,
       "status": "open-unknown",
       "item": "WI-10006170",
       "owner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
@@ -2201,6 +2224,17 @@
       "commit": "781edde2d8c6d34695f6750e0cc89debad7d9ed7",
       "testRunIds": [20854195],
       "next": "Retain committed focused repair evidence and recovered local pass20893504. Full import/environment readiness and final D006 remain unverified."
+    },
+    {
+      "class": "peer-edit-attribution-migration",
+      "count": 1,
+      "status": "repaired-peer-focused",
+      "item": "EI-25188923278410322",
+      "relatedSourceRepair": "WI-10006206",
+      "rootCause": "The fresh test fixture omitted migration1367 while the real strict writer already inserted dispatch_call_id. Applying the registered migration before production-wiring assertions repaired the same missing-column error seen in the archive.",
+      "commit": "88fed5c47a6431df8de1c24ef9c630dbd59482fe",
+      "testRunIds": [20798411, 20812758],
+      "next": "Retain existing committed causal evidence and exact current test-byte equality. Full import/environment assurance and final D006 remain unverified; do not replay the terminal repair."
     },
     {
       "class": "local-perf-compaction-census",
