@@ -12,6 +12,7 @@ import { installDbDiagnosticCorrelationWiring } from '../../db-diagnostic-correl
 const mocks = vi.hoisted(() => ({
   resolvePresenceScope: vi.fn(),
   assemblePresenceSnapshot: vi.fn(),
+  readPeerRelations: vi.fn(),
 }));
 
 vi.mock('../presence-snapshot', async (importOriginal) => ({
@@ -20,8 +21,17 @@ vi.mock('../presence-snapshot', async (importOriginal) => ({
   assemblePresenceSnapshot: mocks.assemblePresenceSnapshot,
 }));
 
+vi.mock('../coupling-divergence-stamp', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../coupling-divergence-stamp')>()),
+  readPeerRelations: mocks.readPeerRelations,
+}));
+
 vi.mock('../../locks/identity', () => ({
-  readIdentity: vi.fn(() => ({ coordinationDomain: '/tmp/papercusp-test' })),
+  readIdentity: vi.fn(() => ({
+    ownerId: 'su-caller',
+    ownerLabel: 'su caller',
+    coordinationDomain: '/tmp/papercusp-test',
+  })),
 }));
 
 vi.mock('../self-marker', () => ({
@@ -51,6 +61,7 @@ describe('coord:presence ownerId compatibility alias', () => {
       summary: { active: 0, wakeable: 0, byState: {} },
       active: [],
     });
+    mocks.readPeerRelations.mockReset().mockResolvedValue(new Map());
   });
 
   it('normalizes ownerId to the canonical owner selector before scope and snapshot reads', async () => {
@@ -68,6 +79,44 @@ describe('coord:presence ownerId compatibility alias', () => {
       expect.objectContaining({ owner: 'su-target' }),
     );
     expect(mocks.assemblePresenceSnapshot.mock.calls[0]?.[1]).not.toHaveProperty('ownerId');
+  });
+
+  it('restricts the private coupling-reader probe to superusers', async () => {
+    await expect(presenceTool.handler({ probe_coupling_reader: true } as never,
+      { isSuperuser: false } as never)).rejects.toThrow(/requires a superuser session/i);
+    expect(mocks.readPeerRelations).not.toHaveBeenCalled();
+    expect(mocks.resolvePresenceScope).not.toHaveBeenCalled();
+  });
+
+  it('runs only the reader and keeps its timings out of the public result', async () => {
+    mocks.readPeerRelations.mockImplementation(async (_ownerId, opts) => {
+      opts.onStageTiming({ name: 'assemble-presence-snapshot', elapsedMs: 18, status: 'ok' });
+      return new Map([['private-peer-id', ['coord-exchange']]]);
+    });
+    const metadata = vi.fn();
+    const result = await presenceTool.handler(
+      { probe_coupling_reader: true, include_coupling: true } as never,
+      { workspaceId: 'test-workspace', harnessSlug: 'papercusp', isSuperuser: true, metadata } as never,
+    );
+
+    expect(mocks.readPeerRelations).toHaveBeenCalledTimes(1);
+    expect(mocks.readPeerRelations).toHaveBeenCalledWith('su-caller', expect.objectContaining({
+      workspaceId: 'test-workspace',
+      harnessSlug: 'papercusp',
+      onStageTiming: expect.any(Function),
+    }));
+    expect(mocks.resolvePresenceScope).not.toHaveBeenCalled();
+    expect(mocks.assemblePresenceSnapshot).not.toHaveBeenCalled();
+    expect(result).toEqual({ data: { couplingReadProbe: { complete: true } } });
+    expect(JSON.stringify(result)).not.toContain('private-peer-id');
+    expect(metadata.mock.calls.at(-1)?.[0]?.presenceCouplingProbe).toMatchObject({
+      schemaVersion: 'presence-coupling-probe-v1',
+      unit: 'ms',
+      timing: 'wall-time-sequential-reader-stages',
+      status: 'ok',
+      elapsedMs: expect.any(Number),
+      stages: [{ name: 'assemble-presence-snapshot', elapsedMs: 18, status: 'ok' }],
+    });
   });
 
   it('links a snapshot query to the measured phase without changing the roster', async () => {

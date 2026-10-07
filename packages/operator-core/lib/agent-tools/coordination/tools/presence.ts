@@ -13,7 +13,7 @@
  */
 
 import { z } from 'zod';
-import { defineTool, readJsonResult, type SeeAlsoEntry } from '@papercusp/agent-mcp';
+import { defineTool, readJsonResult, UnauthorizedToolError, type SeeAlsoEntry } from '@papercusp/agent-mcp';
 import { pgResultDiagnosticSnapshot, type PgResultDiagnostic } from '@papercusp/db-org';
 import {
   resolvePresenceScope,
@@ -34,6 +34,8 @@ import { overlayPresenceCursors } from '../presence-cursor-overlay';
 import { listCouplingsFor, resolveCoupledPeers } from '../../../coord/couplings';
 import { buildCoupledExpansion } from '../../../coord/coupled-expansion';
 import { deriveCouplings } from '../../../coord/coupling-derivation';
+import { readPeerRelations } from '../coupling-divergence-stamp';
+import type { PeerRelationsReadStageTiming } from '../coupling-divergence-stamp';
 import { censusObserverFor } from '../../../coord/derived-signal-census';
 import { couplingSourcesFor, presenceNeedsCoordinationDomain } from '../coupling-sources';
 import { buildDispatchHandle, type DispatchCandidate } from '../dispatch-handle';
@@ -192,6 +194,12 @@ export default defineTool({
       .optional()
       .describe(
         'BOUNDED TARGETED lookup: return the union of rows matching these agent ids/labels, including ended rows. Use for an explicit dependency/holder set so response-budget truncation cannot omit a requested owner. Mutually exclusive with owner.',
+      ),
+    probe_coupling_reader: z
+      .boolean()
+      .optional()
+      .describe(
+        'Diagnostic-only, SUPERUSER-only probe: runs the relation reader without the normal roster/expansion path and stores per-stage timings in private invocation metadata. Returns no peer data.',
       ),
     ownerIds: z
       .array(z.string().min(1))
@@ -407,7 +415,45 @@ export default defineTool({
     // (hive default → caller's home Hive; SU/unmapped → workspace fallback), then
     // assemble the byte-stable snapshot (P-009). Both steps are the SAME functions
     // the coord:inbox re-bootstrap uses, so the roster never diverges.
-    const c = (ctx ?? {}) as { workspaceId?: string | null; harnessSlug?: string | null; isSuperuser?: boolean };
+    const c = (ctx ?? {}) as {
+      workspaceId?: string | null;
+      harnessSlug?: string | null;
+      isSuperuser?: boolean;
+      metadata?: (value: Record<string, unknown>) => void;
+    };
+    if (args.probe_coupling_reader) {
+      if (!c.isSuperuser) {
+        throw new UnauthorizedToolError('probe_coupling_reader requires a superuser session.');
+      }
+      const probeStartedAt = performance.now();
+      const stageTimings: PeerRelationsReadStageTiming[] = [];
+      let status: 'ok' | 'error' = 'error';
+      try {
+        const identity = readIdentity(ctx);
+        await readPeerRelations(identity.ownerId, {
+          workspaceId: c.workspaceId,
+          harnessSlug: c.harnessSlug,
+          onStageTiming: (timing) => stageTimings.push(timing),
+        });
+        status = 'ok';
+        return { data: { couplingReadProbe: { complete: true } } };
+      } finally {
+        try {
+          c.metadata?.({
+            presenceCouplingProbe: {
+              schemaVersion: 'presence-coupling-probe-v1',
+              unit: 'ms',
+              timing: 'wall-time-sequential-reader-stages',
+              status,
+              elapsedMs: Math.max(0, performance.now() - probeStartedAt),
+              stages: [...stageTimings],
+            },
+          });
+        } catch {
+          /* Private diagnostics must not change the probe's result. */
+        }
+      }
+    }
     // Keep the public compatibility alias at the boundary: all downstream snapshot
     // and scope code consumes the canonical `owner`/`owners` selectors only.
     const owner = args.owner ?? args.ownerId;
