@@ -187,9 +187,16 @@
   "acceptance": {
     "status": "not-established",
     "primaryLiveBindingCreated": false,
-    "independentReportReview": "pending",
+    "independentReportReview": "approved-as-descriptive-inconclusive",
+    "review": {
+      "reviewer": "su-32d1b8df-01dd-442a-8711-7ff4e8d9cc92",
+      "ref": "thread-post:1162729",
+      "workItem": "WI-10004612",
+      "reviewedReportSha256": "1aaf72f2055c1824b2d0d20332eef4334756e4ee6f7f272ee1e9fe28bc414b4e",
+      "scope": "Read report, D-065, metric writers and source hashes. Did not independently recensus the database or reread the original launch invocation.",
+      "verdict": "Approved as an inconclusive descriptive record; P-028/P-004 and primary live binding remain uncleared."
+    },
     "remaining": [
-      "Independent review of this comparison and its limitations.",
       "Verified instruction-generation/exposure receipts and matched model/resource/workload opportunities before any claimed causal effect.",
       "The missing required comparison dimensions, or an owner-approved acceptance rescope through the existing amendment mechanism."
     ]
