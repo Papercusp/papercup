@@ -5,6 +5,7 @@ import {
   createPotAppSeam,
   deriveRequestKey,
   operationDraftFromPlanRun,
+  scorecardHostFromInvoker,
   OperationOutputRejectedError,
   type BlueprintOperationHandle,
   type BlueprintOperationStatus,
@@ -83,6 +84,72 @@ const draft = (requestKey: string, input: Record<string, string> = { candidateId
   harnessSlug: 'shop', operationId: 'review-candidate', requestKey, input,
 });
 
+describe('canonical app scorecards', () => {
+  const card = { issueId: 'EI-1', rubricRef: 'quality', rubricRevision: 4,
+    criteriaHash: 'a'.repeat(64), evidenceFingerprint: 'fingerprint',
+    criteria: [{ key: 'claims', rating: 'pass', evidence: 'Source reviewed.' }] };
+  const draft = { rubricRef: card.rubricRef, rubricRevision: card.rubricRevision,
+    criteriaHash: card.criteriaHash, subject: { kind: 'work-item' as const, ref: 'WI-42' },
+    ratings: { claims: { rating: 'pass', evidence: 'Source reviewed.' } } };
+
+  it('uses canonical replay receipts and passes complete readback through the app parser', async () => {
+    const calls: { name: string; args: Record<string, unknown> }[] = [];
+    let emitted = false;
+    const h = { ...host(), scorecards: scorecardHostFromInvoker(async (name, args) => {
+      calls.push({ name, args });
+      if (name === 'scorecards:get') return { ok: true, scorecard: card, evidenceRead: { complete: true } };
+      const created = !emitted;
+      emitted = true;
+      return { ok: true, issueId: 'EI-1', created, evidenceFingerprint: 'fingerprint' };
+    }) };
+    const seam = createPotAppSeam(h);
+    expect(await seam.emitScorecard(draft)).toMatchObject({ issueId: 'EI-1', created: true });
+    expect(await seam.emitScorecard(draft)).toMatchObject({ issueId: 'EI-1', created: false });
+    expect(calls[0]).toEqual({ name: 'scorecards:emit', args: { ...draft, terminal: true } });
+    expect(await seam.readScorecard('EI-1', (raw) => (raw as typeof card).criteria[0]?.rating)).toBe('pass');
+    await expect(seam.readScorecard('EI-1', () => { throw new Error('app gate refused'); })).rejects.toThrow('app gate refused');
+  });
+
+  it.each([
+    { ok: false, error: 'refused' },
+    { ok: true, scorecard: card, evidenceRead: { complete: false } },
+    { ok: true, scorecard: { ...card, issueId: 'EI-other' }, evidenceRead: { complete: true } },
+  ])('rejects refused, partial or mismatched readback %j before parsing', async (response) => {
+    let parsed = false;
+    const h = { ...host(), scorecards: scorecardHostFromInvoker(async () => response) };
+    await expect(createPotAppSeam(h).readScorecard('EI-1', () => { parsed = true; })).rejects.toThrow();
+    expect(parsed).toBe(false);
+  });
+
+  it('refuses an unconnected grading host and a malformed canonical receipt', async () => {
+    await expect(createPotAppSeam(host()).emitScorecard(draft)).rejects.toThrow('not connected');
+    await expect(scorecardHostFromInvoker(async () => ({ ok: false, error: 'producer lineage' })).emitScorecard(draft)).rejects.toThrow();
+    await expect(scorecardHostFromInvoker(async () => ({ ok: true, issueId: null, created: true,
+      evidenceFingerprint: 'fp' })).emitScorecard(draft)).rejects.toThrow('canonical receipt');
+  });
+
+  it.each([false, true])('assembles index and exact evidence pages; rejects identity drift=%s', async (drift) => {
+    const calls: Record<string, unknown>[] = [];
+    const adapter = scorecardHostFromInvoker(async (_name, args) => {
+      calls.push(args);
+      if (args.criterionKey === undefined) return { ok: true, scorecard: { ...card, criteria: [] }, evidenceRead: {
+        complete: false, scope: 'criterion-index', offset: 0, totalCriteria: 1,
+        criteria: [{ key: 'claims', rating: 'pass', evidenceChars: 15 }],
+      } };
+      const offset = args.evidenceOffset as number;
+      return { ok: true, scorecard: { ...card,
+        evidenceFingerprint: drift && offset > 0 ? 'changed' : card.evidenceFingerprint,
+        criteria: [{ key: 'claims', rating: 'pass', evidence: offset === 0 ? 'Source ' : 'reviewed' }],
+      }, evidenceRead: { scope: 'selected-criterion', offset, totalChars: 15, complete: offset > 0,
+        ...(offset === 0 ? { next: { tool: 'scorecards:get', args: { issueId: 'EI-1', criterionKey: 'claims', evidenceOffset: 7 } } } : {}),
+      } };
+    });
+    if (drift) await expect(adapter.readScorecard('EI-1')).rejects.toThrow('identity changed');
+    else expect(await adapter.readScorecard('EI-1')).toMatchObject({ criteria: [{ key: 'claims', evidence: 'Source reviewed' }] });
+    expect(calls).toHaveLength(3);
+  });
+});
+
 describe('createPotAppSeam', () => {
   it('bootstraps pots once per stable fingerprint marker', async () => {
     const h = host();
@@ -99,11 +166,11 @@ describe('createPotAppSeam', () => {
     expect(h.pots).toEqual(['shop', 'shop-ops']);
   });
 
-  it('exposes only the operation lifecycle — no direct plan-run or work-item enqueue path', () => {
+  it('exposes the operation and grade lifecycles without direct plan-run or work-item enqueue', () => {
     const seam = createPotAppSeam(host());
     expect(Object.keys(seam).sort()).toEqual([
-      'bootstrapPots', 'cancelOperation', 'operationEvents', 'operationResult', 'operationStatus',
-      'startIngestLoop', 'submitOperations',
+      'bootstrapPots', 'cancelOperation', 'emitScorecard', 'operationEvents', 'operationResult', 'operationStatus',
+      'readScorecard', 'startIngestLoop', 'submitOperations',
     ]);
   });
 
