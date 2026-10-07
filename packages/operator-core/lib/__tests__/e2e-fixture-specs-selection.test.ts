@@ -38,7 +38,12 @@ describe('staticImportClosure alias edges', () => {
   };
 
   it('follows a configured alias prefix to the aliased file', () => {
-    const r = staticImportClosure({ rootDir: '/r', entryFiles: ['/r/app/entry.ts'], aliases: { '@/': '/r/app/' }, fs });
+    const r = staticImportClosure({
+      rootDir: '/r',
+      entryFiles: ['/r/app/entry.ts'],
+      aliases: [{ prefix: '@/', target: '/r/app/', wildcard: true }],
+      fs,
+    });
     expect(r.files).toContain('/r/app/lib/b.ts');
     expect(r.files).toContain('/r/app/x.ts');
   });
