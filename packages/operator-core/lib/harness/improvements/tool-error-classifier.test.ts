@@ -131,6 +131,15 @@ describe('P-001 R-7 frozen friction correlation controls', () => {
       ...metadataToolFailure, reproduced: true, clearServerMismatch: true, hardInternal: true,
     })).toMatchObject({ class: 'caller', direct: false });
   });
+
+  it('classifies scratch-reference size refusals from the reported error code', () => {
+    expect(normalizeSuspectedToolFailure({
+      toolName: 'capability:read',
+      errorCode: 'scratch_line_window_too_large',
+      status: 'handler_error',
+      message: 'A tail:45 read of the consult result scratch spill was refused because the selected line window exceeded the response-size limit; the tool advised smaller line windows or byte paging.',
+    }).class).toBe('caller');
+  });
 });
 
 describe('classifyToolError — real-corpus regression (P-011)', () => {
@@ -244,6 +253,22 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
     )).toBe('structural');
   });
 
+  it('classifies fail-closed kernel authority-read failures as transient infrastructure', () => {
+    const unavailable = [
+      'Kernel preflight denied tool "locks:queue": current session authority could not be read; no effect authorized',
+      'Kernel preflight denied tool "coord:whoami": session authority reader unavailable; no effect authorized',
+      'Kernel preflight denied tool "coord:glance": identity policy evaluation unavailable; no effect authorized',
+    ];
+
+    for (const message of unavailable) {
+      expect(classifyToolError('authorization_denied', 'error', message)).toBe('transient');
+    }
+    expect(classifyToolError(
+      'authorization_denied', 'error',
+      'Kernel preflight denied tool "tools:invoke": Identity capability (unresolved): policy-unavailable (tools:invoke)',
+    )).toBe('structural');
+  });
+
   it('classifies a nested tools:invoke invalid_input wrapper as caller, not structural', () => {
     // tools:invoke re-throws target refusals; the wrapper adds `invalid_input:`
     // while outer telemetry can record `handler_error`, so match this exact shape.
@@ -252,6 +277,17 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
     ).toBe('caller');
     // Keep the prefix rule narrow: unrelated invalid_input messages remain structural.
     expect(classifyToolError('handler_error', 'error', 'invalid_input: database constraint failed')).toBe('structural');
+  });
+
+  it('classifies a nested tools:invoke role denial as caller, not a structural tool defect', () => {
+    // The direct target error_code is role_not_allowed, but tools:invoke telemetry
+    // records handler_error and preserves the target's message prefix.
+    const refusal =
+      'role_not_allowed: Role "judge" cannot call tool "sessions:search" (allowed roles: operator)';
+    expect(classifyToolError('handler_error', 'error', refusal)).toBe('caller');
+    expect(classifyToolError('role_not_allowed', 'error', 'judge is not on the target allowlist')).toBe('caller');
+    // Keep the message match narrow: similar prose without the refusal code is not enough.
+    expect(classifyToolError('handler_error', 'error', 'Role "judge" cannot call tool "sessions:search"')).toBe('structural');
   });
 
   it('classifies the code:run dynamic-import sandbox refusal as caller even when reproduced', () => {

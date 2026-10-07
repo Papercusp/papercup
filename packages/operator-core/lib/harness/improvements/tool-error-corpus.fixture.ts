@@ -231,6 +231,12 @@ export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
     note: 'intentional capability:read scratch-reference size refusal nested through tools:invoke; retain the actionable paging guidance and keep it out of the structural bug lane (EI-25217974819289093)',
   },
   {
+    n: 1, errorCode: 'scratch_line_window_too_large', status: 'handler_error',
+    message: 'A tail:45 read of the consult result scratch spill was refused because the selected line window exceeded the response-size limit; the tool advised smaller line windows or byte paging.',
+    expectedClass: 'caller',
+    note: 'toolFailure reports can store this refusal code separately from the message; keep that captured shape out of the structural bug lane (EI-25280060314357525)',
+  },
+  {
     n: 1, errorCode: 'handler_error', status: 'error',
     message: '{"ok":false,"reason":"evidence_class_not_found","message":"scratch reference has no work-item evidence."}',
     expectedClass: 'caller',
@@ -283,6 +289,12 @@ export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
     message: 'Kernel preflight denied tool "tools:invoke": Identity capability (unresolved): stale-artifact (tools:invoke)',
     expectedClass: 'caller',
     note: 'the caller launch record cannot prove the desired identity revision; this is a fail-closed identity-state refusal, not a defect in tools:invoke',
+  },
+  {
+    n: 1, errorCode: 'authorization_denied', status: 'error',
+    message: 'Kernel preflight denied tool "locks:queue": current session authority could not be read; no effect authorized',
+    expectedClass: 'transient',
+    note: 'EI-24153500352569256: the kernel correctly failed closed when the authority read failed; classify the infrastructure condition as transient instead of promoting it as a structural locks:queue defect',
   },
   {
     n: 3, errorCode: 'handler_error', status: 'error',

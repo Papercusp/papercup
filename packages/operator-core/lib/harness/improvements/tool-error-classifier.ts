@@ -97,7 +97,7 @@ export const TIMEOUT_MESSAGE_PATTERN =
  *  workspace-scoping gap is treated as `structural` (a wiring gap worth catching
  *  at the low bar), and the fingerprint separates it from anything it used to mask. */
 export const CALLER_MESSAGE_PATTERN =
-  '^missing_capability:|^invalid_input: *invalid_args:|^invalid_args:|^reviewer_model_not_allowed:|scratch_line_window_too_large|"reason":"(evidence_class_not_found|tenant_scope_required|positive_control_tenant_scope_required)"|checkpoint_replace_would_drop_rows|"error":"flush-required"|No harness specified|not registered in (any workspace|harness_shared)|resolvePlanScope:.*is not a Hive home|no sandbox desktop is leased|acceptance BAR contract is not ready for vetting|predicate_shape_mismatch:|structured_result_shape.*typed root';
+  '^missing_capability:|^invalid_input: *invalid_args:|^invalid_args:|^role_not_allowed:|^reviewer_model_not_allowed:|scratch_line_window_too_large|"reason":"(evidence_class_not_found|tenant_scope_required|positive_control_tenant_scope_required)"|checkpoint_replace_would_drop_rows|"error":"flush-required"|No harness specified|not registered in (any workspace|harness_shared)|resolvePlanScope:.*is not a Hive home|no sandbox desktop is leased|acceptance BAR contract is not ready for vetting|predicate_shape_mismatch:|structured_result_shape.*typed root';
 
 /** An EXTERNAL provider rate-limit / quota (OpenAI embedding TPM 429,
  *  "Rate limit reached", surfaced as `openai_embed_failed_429`). CAPACITY, not a
@@ -128,7 +128,7 @@ export const OPERATOR_ADMISSION_TRANSIENT_MESSAGE_PATTERN =
  *  the retry helper so a transient reset that slips past the retry stops being
  *  mis-filed as a structural tool bug (EI-11010). */
 export const INFRA_TRANSIENT_MESSAGE_PATTERN =
-  'too many clients already|remaining connection slots are reserved|too many connections|the database system is (starting up|shutting down|in recovery|not yet accepting)|server( is)? shutting down|terminating connection due to|ECONNREFUSED|ECONNRESET|CONNECTION_CLOSED|CONNECT_TIMEOUT|connection terminated|could not connect to server';
+  'too many clients already|remaining connection slots are reserved|too many connections|the database system is (starting up|shutting down|in recovery|not yet accepting)|server( is)? shutting down|terminating connection due to|ECONNREFUSED|ECONNRESET|CONNECTION_CLOSED|CONNECT_TIMEOUT|connection terminated|could not connect to server|current session authority could not be read|session authority reader unavailable|identity policy evaluation unavailable';
 
 /**
  * The ordered classification table. ORDER IS SIGNIFICANT — earlier rules win.
@@ -157,6 +157,7 @@ export const TOOL_ERROR_RULES: readonly ToolErrorRule[] = [
       'flush-required', 'rubric-not-found', 'reviewer_model_not_allowed',
       'dynamic_import_unsupported', 'mcp_auth_failed', 'evidence_class_not_found',
       'tenant_scope_required', 'positive_control_tenant_scope_required',
+      'scratch_line_window_too_large',
     ],
     statuses: ['role-not-allowed'],
     messagePattern: CALLER_MESSAGE_PATTERN,
