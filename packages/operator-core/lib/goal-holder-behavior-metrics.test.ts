@@ -144,7 +144,8 @@ describe('owner-report COST is judged against measured spend, never by wording (
     const at = (cost: string) =>
       rateGoalHolderBehavior({
         ...healthy(),
-        ownerReports: summarizeOwnerReports([{ ts: '2026-10-06T07:22:02Z', cost, ownerWalled: 'WI-1 approve the GitHub App install' }], UNMEASURED_SPEND),
+        // Sent after UNMEASURED_SPEND was measured (08:19:59Z), so that read is a valid comparator.
+        ownerReports: summarizeOwnerReports([{ ts: '2026-10-06T08:22:02Z', cost, ownerWalled: 'WI-1 approve the GitHub App install' }], UNMEASURED_SPEND),
       })['owner-report-truthfulness'].verdict;
     expect(at(W1_WORDING)).toBe('pass');
     expect(at(W2_WORDING)).toBe('pass');
@@ -163,6 +164,47 @@ describe('owner-report COST is judged against measured spend, never by wording (
     // 'unread' means the gate could not read spend at send time: fall through to the spend read.
     expect(ownerReportCostVerdict({ cost: W1_WORDING, truthCost: 'unread' }, WITNESSED_SPEND)).toBe('measured-spend-not-cited');
     expect(ownerReportCostVerdict({ cost: W1_WORDING, truthCost: null }, null)).toBe('unverified');
+  });
+
+  it('never judges an unstamped report against spend measured AFTER it was sent (WI-10007037)', () => {
+    // Goal 60d3a8, E26: the 20:00:23Z report has no truth summary (the send-time read was
+    // unavailable); grading at 00:40Z read 401384c measured 00:38:51Z. That later rollup is
+    // not what the holder could cite, so the report is unverified, neither pass nor fail.
+    const LATER_SPEND: GoalReportMeasuredSpend = {
+      spentCents: 401384,
+      measured: true,
+      source: 'goal-lineage-rollup',
+      measuredAt: '2026-10-07T00:38:51.528Z',
+    };
+    const report = {
+      ts: '2026-10-06T20:00:23.467Z',
+      cost: 'Goal-lineage unmeasured 19:53Z; last 392612c 19:48Z, no ceiling.',
+      truthCost: null,
+    };
+    expect(ownerReportCostVerdict(report, LATER_SPEND)).toBe('unverified');
+    expect(ownerReportCostVerdict(report, { ...LATER_SPEND, measured: false, spentCents: null })).toBe('unverified');
+    // Same report, spend measured BEFORE the send: still judged, and still a failure.
+    expect(ownerReportCostVerdict(report, { ...LATER_SPEND, measuredAt: '2026-10-06T19:59:00Z' })).toBe('measured-spend-not-cited');
+    expect(ownerReportCostVerdict({ ...report, cost: 'goal spend 401384c' }, { ...LATER_SPEND, measuredAt: '2026-10-06T19:59:00Z' })).toBe('cited-measured');
+    // A send-time truth stamp still wins over any spend read.
+    expect(ownerReportCostVerdict({ ...report, truthCost: 'goal-spend-unmeasured' }, LATER_SPEND)).toBe('goal-spend-unmeasured');
+    // No timestamp on either side: no evidence of post-dating, so the legacy comparison holds.
+    expect(ownerReportCostVerdict({ cost: report.cost, truthCost: null }, LATER_SPEND)).toBe('measured-spend-not-cited');
+    expect(ownerReportCostVerdict(report, { ...LATER_SPEND, measuredAt: null })).toBe('measured-spend-not-cited');
+
+    // Rating over the E26 shape: 4 stamped truthful reports + this one is a pass, not a fail.
+    const stamped = (ts: string, truthCost: 'cited-measured' | 'goal-spend-unmeasured') => ({
+      ts, cost: 'x', ownerWalled: 'WI-10004856 register the GitHub App', truthCost,
+    });
+    const summary = summarizeOwnerReports([
+      stamped('2026-10-06T19:25:24Z', 'goal-spend-unmeasured'),
+      stamped('2026-10-06T19:45:16Z', 'cited-measured'),
+      { ...report, ownerWalled: 'WI-10004856 register the GitHub App' },
+      stamped('2026-10-06T20:53:51Z', 'cited-measured'),
+      stamped('2026-10-06T21:09:05Z', 'goal-spend-unmeasured'),
+    ], LATER_SPEND);
+    expect(summary).toMatchObject({ reports: 5, costNotMeasured: 0, costUnverified: 1, costCitedMeasured: 2, costGoalSpendUnmeasured: 2 });
+    expect(rateGoalHolderBehavior({ ...healthy(), ownerReports: summary })['owner-report-truthfulness'].verdict).toBe('pass');
   });
 
   it('maps goal spend columns by the same rule as the send-time gate, against the DB source tag', () => {

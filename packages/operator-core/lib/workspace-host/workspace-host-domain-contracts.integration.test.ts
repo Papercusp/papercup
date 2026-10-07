@@ -841,6 +841,48 @@ describe('workspace-host domain contracts (real PG + real RLS)', () => {
     });
   });
 
+  // WI-10007034: a destroy whose step DBOS re-ran after a bg-host restart re-planned from the
+  // population its own deletions had already shrunk, and its changed request was refused.
+  it('reads the destroy population as of an operation start, ignoring that operation\'s own deletions', async () => {
+    const workspaceId = freshWorkspace();
+    const connectionId = await seedConnection(workspaceId);
+    const hostId = 'host-destroy-resume';
+    const authority = { controllerId: 'controller-a', fence: 1 };
+    await upsertWorkspaceHost({ ...hostInput(workspaceId, connectionId, hostId), controllerAuthority: authority });
+    await beginWorkspaceHostOperation({
+      workspaceId, hostId, operationId: 'operation-provision', action: 'provision',
+      desiredRevision: 1, controllerAuthority: authority,
+    });
+    const vm = { target: 'gcp' as const, kind: 'vm' as const, providerId: 'vm-1', zone: 'us-central1-a' };
+    const disk = { target: 'gcp' as const, kind: 'disk' as const, providerId: 'disk-1', zone: 'us-central1-a' };
+    for (const [logicalKey, providerResource] of [['create-vm', vm], ['create-disk', disk]] as const) {
+      await upsertWorkspaceHostResourceCheckpoint({
+        workspaceId, hostId, operationId: 'operation-provision',
+        checkpoint: { logicalKey, state: 'applied', attempts: 1, providerResource },
+        controllerAuthority: authority,
+      });
+    }
+    await beginWorkspaceHostOperation({
+      workspaceId, hostId, operationId: 'operation-destroy', action: 'destroy', controllerAuthority: authority,
+    });
+    await upsertWorkspaceHostResourceCheckpoint({
+      workspaceId, hostId, operationId: 'operation-destroy',
+      checkpoint: { logicalKey: 'delete-vm-0', state: 'absent', attempts: 1, providerResource: vm },
+      controllerAuthority: authority,
+    });
+
+    const ids = async (options?: { asOfOperationStart?: string }) =>
+      (await readWorkspaceHostDestroyTarget(workspaceId, hostId, undefined, options))?.resources
+        .map((entry) => entry.resource.providerId)
+        .sort();
+    // Unscoped, the operation's own confirmed deletion unregisters the vm (WI-10005971 semantics).
+    await expect(ids()).resolves.toEqual(['disk-1']);
+    // As of the destroy's start, the population is what its first turn planned against.
+    await expect(ids({ asOfOperationStart: 'operation-destroy' })).resolves.toEqual(['disk-1', 'vm-1']);
+    // A LATER operation still sees the earlier destroy's confirmed deletion.
+    await expect(ids({ asOfOperationStart: 'operation-later' })).resolves.toEqual(['disk-1']);
+  });
+
   it('round-trips a fenced snapshot recovery point after the host becomes absent', async () => {
     const workspaceId = freshWorkspace();
     const connectionId = await seedConnection(workspaceId);

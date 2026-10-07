@@ -56,7 +56,7 @@ import {
   relativeCandidates,
   sharedSnapshotPath,
 } from "./lib/graph-dependency-suggestions.mjs";
-import { tsconfigPathEntriesFor } from "./lib/related-tests.mjs";
+import { matchTsconfigPath, tsconfigPathEntriesFor } from "./lib/related-tests.mjs";
 
 /** DIRECT-mode page: no response budget applies, ~12 pages for 59k edges (each query ~5s to open). */
 export const DIRECT_PAGE_SIZE = 5000;
@@ -287,26 +287,6 @@ export function nearestTsconfigAliases({ root, hasTsconfig, entriesFor = tsconfi
     return found;
   };
   return (importer) => dirAliases(posix.dirname(importer));
-}
-
-/**
- * Resolve `spec` against tsconfig `paths` entries the way TypeScript does: an EXACT key matches
- * by equality only and wins outright; otherwise the LONGEST matching wildcard prefix wins
- * (independent of declaration order). Returns the repo-relative base path, or null when no key
- * matches. A first-match prefix scan here is the bug WI-10006809 measured: the exact key
- * `@papercusp/operator-core` captured `@papercusp/operator-core/lib/x` ahead of its wildcard.
- * @param {Array<[string, string, boolean]>} entries
- * @param {string} spec
- * @returns {string | null}
- */
-export function matchTsconfigPath(entries, spec) {
-  const exact = entries.find(([prefix, , wildcard]) => !wildcard && spec === prefix);
-  if (exact !== undefined) return exact[1];
-  let best;
-  for (const entry of entries) {
-    if (entry[2] && spec.startsWith(entry[0]) && (best === undefined || entry[0].length > best[0].length)) best = entry;
-  }
-  return best === undefined ? null : posix.normalize(`${best[1]}${spec.slice(best[0].length)}`);
 }
 
 /**

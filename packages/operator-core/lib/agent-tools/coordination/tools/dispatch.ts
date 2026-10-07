@@ -781,12 +781,17 @@ export default defineTool({
       const { resolveStableAgentTarget } = await import('../actionable-work-item-dispatch');
       try {
         if (!identity.workspaceId) throw new AdmissionRecoveryRefused('recovery requires a concrete caller workspace');
-        const target = await resolveStableAgentTarget({
-          targetAgent: dispatchArgs.to, workspaceId: identity.workspaceId, harness: dispatchArgs.harness,
-        });
+        // A canonical owner ID is already exact. requestAdmissionRecovery performs
+        // fresh presence, workspace, and work-item authorization checks for it;
+        // resolve only stable handles here so this path does not read the roster twice.
+        const targetOwnerId = CANONICAL_OWNER_ID_RE.test(dispatchArgs.to)
+          ? dispatchArgs.to
+          : (await resolveStableAgentTarget({
+            targetAgent: dispatchArgs.to, workspaceId: identity.workspaceId, harness: dispatchArgs.harness,
+          })).ownerId;
         const result = await requestAdmissionRecovery({
           workspaceId: identity.workspaceId, harnessSlug: dispatchArgs.harness!,
-          workItemId: dispatchArgs.workItemIds![0]!, caller: identity.ownerId, target: target.ownerId,
+          workItemId: dispatchArgs.workItemIds![0]!, caller: identity.ownerId, target: targetOwnerId,
           authority: bindAdmissionAuthority(ctx),
           note: dispatchArgs.note, ...(dispatchArgs.body !== undefined ? { body: dispatchArgs.body } : {}),
         });

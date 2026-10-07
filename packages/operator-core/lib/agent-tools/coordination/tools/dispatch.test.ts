@@ -90,6 +90,21 @@ describe('public original-item recovery door (handler wiring, mocked recovery I/
     expect(result.request).toEqual({ state: 'queued', pickupConfirmed: false });
   });
 
+  it('passes an exact canonical owner ID directly to recovery authorization', async () => {
+    const ownerId = 'su-12345678-abcd-4000-8000-1234567890ab';
+    const result = await call({ ...base, to: ownerId });
+
+    expect(recoveryIO.target).not.toHaveBeenCalled();
+    expect(recoveryIO.request).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId: 'ws-recovery',
+      harnessSlug: 'papercusp',
+      workItemId: 'WI-original',
+      caller: 'su-requester',
+      target: ownerId,
+    }));
+    expect(result.request).toEqual({ state: 'queued', pickupConfirmed: false });
+  });
+
   it('returns an original-item remedy, not replacement or pickup, on authority refusal', async () => {
     recoveryIO.request.mockRejectedValue(new AdmissionRecoveryRefused('member override denied original item'));
     const result = await call();

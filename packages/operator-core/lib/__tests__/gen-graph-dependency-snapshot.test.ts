@@ -24,7 +24,6 @@ import {
   backendVersionNearBin,
   deriveFirstPartyEdges,
   directCypherRunner,
-  matchTsconfigPath,
   nearestTsconfigAliases,
   nodeModulesPackageResolver,
   parseArgs,
@@ -38,7 +37,8 @@ import {
   writeSnapshotAtomic,
 } from '../../../../scripts/gen-graph-dependency-snapshot.mjs';
 import { parseSnapshot, sourceCorroborates } from '../../../../scripts/lib/graph-dependency-suggestions.mjs';
-import { tsconfigAliasesFor, tsconfigPathEntriesFor } from '../../../../scripts/lib/related-tests.mjs';
+import * as relatedTests from '../../../../scripts/lib/related-tests.mjs';
+import { matchTsconfigPath, tsconfigPathEntriesFor } from '../../../../scripts/lib/related-tests.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
 const CLI = resolve(REPO_ROOT, 'scripts/gen-graph-dependency-snapshot.mjs');
@@ -507,7 +507,7 @@ describe('first-party snapshot producer', () => {
     });
   });
 
-  it('tsconfigPathEntriesFor keeps exact-vs-wildcard; tsconfigAliasesFor keeps its prefix shape', () => {
+  it('tsconfigPathEntriesFor keeps exact-vs-wildcard; the flattened prefix view is gone (WI-10007002)', () => {
     const d = tmp();
     write(d, {
       'tsconfig.json': `{
@@ -520,13 +520,15 @@ describe('first-party snapshot producer', () => {
       { prefix: '@fx/core', target: resolve(d, '../core/lib/index.ts'), wildcard: false },
       { prefix: '@fx/core/', target: `${resolve(d, '../core')}/`, wildcard: true },
     ]);
-    expect(tsconfigAliasesFor(d)).toEqual({
-      '@/': `${d}/`,
-      '@fx/core': `${resolve(d, '../core/lib/index.ts')}/`,
-      '@fx/core/': `${resolve(d, '../core')}/`,
-    });
     expect(tsconfigPathEntriesFor(join(d, 'missing'))).toEqual([]);
-    expect(tsconfigAliasesFor(join(d, 'missing'))).toEqual({});
+    // The flattening view gave the exact key a trailing slash; nothing may reintroduce it.
+    expect('tsconfigAliasesFor' in relatedTests).toBe(false);
+  });
+
+  it('the snapshot producer keeps no private matcher copy: it resolves through the shared one', async () => {
+    const snapshotScript = await import('../../../../scripts/gen-graph-dependency-snapshot.mjs');
+    expect('matchTsconfigPath' in snapshotScript).toBe(false);
+    expect(typeof matchTsconfigPath).toBe('function');
   });
 
   it('nearestTsconfigAliases uses the nearest ancestor tsconfig and drops a target escaping the root', () => {

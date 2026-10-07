@@ -15,6 +15,7 @@ import {
   pruneWithExecutedMap,
   resolveRelatedWidenThreshold,
   selectRelatedTests,
+  staticImportClosure,
   transitiveDeps,
   writeRelatedFilterList,
 } from '../../../../scripts/lib/related-tests.mjs';
@@ -127,7 +128,7 @@ describe('selectRelatedTests — narrowing', () => {
     const r = selectRelatedTests({
       rootDir: ROOT,
       changedPaths: [`${ROOT}/app/target.ts`],
-      aliases: { '@/': `${ROOT}/` },
+      aliases: [{ prefix: '@/', target: `${ROOT}/`, wildcard: true }],
       fs,
     });
 
@@ -349,6 +350,95 @@ describe('buildIndex', () => {
     const r = selectRelatedTests({ rootDir: ROOT, changedPaths: [`${ROOT}/b.ts`], fs });
     expect(r.mode).toBe('related');
     expect(r.selected).toEqual([`${ROOT}/a.test.ts`]);
+  });
+});
+
+/**
+ * WI-10007002: tsconfig `paths` resolve the way TypeScript resolves them — an EXACT key by
+ * equality only, otherwise the LONGEST wildcard prefix — independent of declaration order. The
+ * retired resolver flattened every key into a prefix map and took the FIRST prefix that matched,
+ * so an exact key could capture a longer specifier and a short wildcard could shadow a longer
+ * one, depending purely on the order the tsconfig happened to declare them.
+ */
+describe('tsconfig paths resolution — exact key first, then the longest wildcard (WI-10007002)', () => {
+  const FILES = {
+    [`${ROOT}/cfg/index.ts`]: 'export const cfg = 1;', // exact `#cfg`
+    [`${ROOT}/cfg/util.ts`]: 'export const util = 1;', // wildcard `#cfg/*`
+    [`${ROOT}/env.real.ts`]: 'export const env = 1;', // exact `@/env`
+    [`${ROOT}/env.ts`]: 'export const decoy = 1;', // what `@/*` alone would give `@/env`
+    [`${ROOT}/other/deep/a.ts`]: 'export const a = 1;', // longest wildcard `@/deep/*`
+    [`${ROOT}/deep/a.ts`]: 'export const decoy = 1;', // what `@/*` alone would give `@/deep/a`
+    [`${ROOT}/importer.ts`]: `import '#cfg/util'; import '#cfg'; import '@/env'; import '@/deep/a';`,
+  };
+  const ENTRIES = [
+    { prefix: '#cfg', target: `${ROOT}/cfg/index.ts`, wildcard: false },
+    { prefix: '#cfg/', target: `${ROOT}/cfg/`, wildcard: true },
+    { prefix: '@/', target: `${ROOT}/`, wildcard: true },
+    { prefix: '@/env', target: `${ROOT}/env.real.ts`, wildcard: false },
+    { prefix: '@/deep/', target: `${ROOT}/other/deep/`, wildcard: true },
+  ];
+  const ORDERS = [
+    ['declared order', ENTRIES],
+    ['reversed order', [...ENTRIES].reverse()],
+  ] as const;
+  const EXPECTED = [`${ROOT}/cfg/index.ts`, `${ROOT}/cfg/util.ts`, `${ROOT}/env.real.ts`, `${ROOT}/other/deep/a.ts`];
+
+  for (const [label, aliases] of ORDERS) {
+    it(`buildIndex resolves every key to its TypeScript target (${label})`, () => {
+      const index = buildIndex({ rootDir: ROOT, aliases: [...aliases], fs: vfs(FILES) });
+      expect([...(index.deps.get(`${ROOT}/importer.ts`) ?? [])].sort()).toEqual(EXPECTED);
+      expect(index.unresolved.has(`${ROOT}/importer.ts`)).toBe(false);
+    });
+
+    it(`staticImportClosure reaches exactly the TypeScript targets (${label})`, () => {
+      const r = staticImportClosure({
+        rootDir: ROOT,
+        entryFiles: [`${ROOT}/importer.ts`],
+        aliases: [...aliases],
+        fs: vfs(FILES),
+      });
+      expect(r.unresolved).toEqual([]);
+      expect(r.ok).toBe(true);
+      expect(r.files).toEqual([...EXPECTED, `${ROOT}/importer.ts`].sort());
+    });
+
+    it(`selectRelatedTests selects the test importing an exact key's target (${label})`, () => {
+      const fs = vfs({
+        ...FILES,
+        [`${ROOT}/env.test.ts`]: `import '@/env';`,
+        [`${ROOT}/decoy.test.ts`]: `import './env';`,
+      });
+      const r = selectRelatedTests({
+        rootDir: ROOT,
+        changedPaths: [`${ROOT}/env.real.ts`],
+        aliases: [...aliases],
+        fs,
+      });
+      expect(r.mode).toBe('related');
+      expect(r.selected).toEqual([`${ROOT}/env.test.ts`]);
+    });
+  }
+
+  it('CONTROL: the retired flattened first-match resolver misresolves this fixture, so the cases above can fail', () => {
+    // A faithful copy of the pre-fix resolver: every key flattened to `prefix → dir/`, first match wins.
+    const flattened = Object.fromEntries(
+      ENTRIES.map(({ prefix, target }) => [prefix, target.endsWith('/') ? target : `${target}/`]),
+    );
+    const firstMatch = (spec: string) => {
+      const p = Object.keys(flattened).find((k) => spec === k || spec.startsWith(k));
+      return p === undefined ? null : join(flattened[p], spec.slice(p.length));
+    };
+    expect(firstMatch('#cfg/util')).toBe(`${ROOT}/cfg/index.ts/util`); // exact key captured by prefix
+    expect(firstMatch('@/env')).toBe(`${ROOT}/env`); // short wildcard shadows the exact key → env.ts decoy
+    expect(firstMatch('@/deep/a')).toBe(`${ROOT}/deep/a`); // short wildcard shadows the longer one → decoy
+  });
+
+  it('refuses the retired prefix-map shape loudly instead of resolving nothing', () => {
+    const legacy = { '@/': `${ROOT}/` } as unknown as never;
+    expect(() => buildIndex({ rootDir: ROOT, aliases: legacy, fs: vfs(FILES) })).toThrow(TypeError);
+    expect(() =>
+      staticImportClosure({ rootDir: ROOT, entryFiles: [`${ROOT}/importer.ts`], aliases: legacy, fs: vfs(FILES) }),
+    ).toThrow(/tsconfigPathEntriesFor/);
   });
 });
 
