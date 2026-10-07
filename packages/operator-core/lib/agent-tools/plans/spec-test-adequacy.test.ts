@@ -4,6 +4,7 @@ import type { SpecClauseRevision } from './spec-clauses-store';
 import type { SpecEvidenceForAdequacy } from './spec-test-adequacy';
 import {
   ADEQUACY_CRITERIA,
+  SPEC_TEST_ADEQUACY_EVALUATOR_REVISION,
   activeSpecEvidence,
   classifySpecEvidenceLineage,
   crossGenerationAuditProbeArgs,
@@ -1856,6 +1857,10 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(result.ratings.freshness.rating).toBe('unknown');
     expect(result.ratings.freshness.evidence).toContain('surface:omitted');
     expect(result.verdict).toBe('unknown');
+  });
+
+  it('pins the evaluator revision for explicit fixture-free attestations', () => {
+    expect(SPEC_TEST_ADEQUACY_EVALUATOR_REVISION).toBe(7);
   });
 
   it('requires an explicit fixture-free attestation for executable proof with a null fixture fingerprint', () => {
