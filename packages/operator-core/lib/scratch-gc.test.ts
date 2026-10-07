@@ -62,7 +62,8 @@ import {
   writeWithScratchQuota,
 } from './scratch-gc';
 import type { OpenWriterScan } from './native-bg-task-ledger';
-import { writeScratchReference } from './scratch-reference';
+import { parseScratchReference, writeScratchReference } from './scratch-reference';
+import { applyResultDoorAsync, RESULT_DOOR_TOKENS } from './result-door';
 import { scratchRootForWorkspace } from './scratch-uri';
 import { spawn } from 'node:child_process';
 
@@ -595,6 +596,7 @@ describe('deferred scratch quota recovery', () => {
     const measurement = refreshScratchUsage('ws-Q');
     const scansAtWrite: number[] = [];
     let writers: Promise<void>[] = [];
+    let door: ReturnType<typeof applyResultDoorAsync> | undefined;
     try {
       await atRoot;
       writers = Array.from({ length: 3 }, (_, i) => {
@@ -604,16 +606,27 @@ describe('deferred scratch quota recovery', () => {
           await writeFile(filePath, Buffer.alloc(512));
         });
       });
+      const checkpoint = 'late checkpoint content '.repeat(RESULT_DOOR_TOKENS);
+      door = applyResultDoorAsync({ content: [{ type: 'text', text: checkpoint }] }, {
+        toolName: 'work_items:get', workspaceId: 'ws-Q', runId: UUID(2),
+      });
       // A waiting writer has neither reserved bytes nor changed the measured filesystem.
       expect(scansAtWrite).toEqual([]);
       releaseRead();
       await measurement;
       await Promise.all(writers);
+      const result = await door;
+      const spillPath = (result._meta?.resultDoor as { spillPath?: string } | undefined)?.spillPath;
+      expect(spillPath).toBeTypeOf('string');
+      const spill = readFileSync(spillPath!);
+      expect(parseScratchReference(spill)?.payload.toString()).toContain(checkpoint);
+      expect(JSON.stringify(result.content)).toContain(spillPath);
       expect(scansAtWrite).toEqual([1, 1, 1]);
-      expect(scratchUsageBytes('ws-Q')).toBe(100 + markerBytes('ws-Q') + 3 * 512);
+      expect(rootReads).toBe(1);
+      expect(scratchUsageBytes('ws-Q')).toBe(100 + markerBytes('ws-Q') + 3 * 512 + spill.length);
     } finally {
       releaseRead();
-      await Promise.allSettled([measurement, ...writers]);
+      await Promise.allSettled([measurement, ...writers, ...(door ? [door] : [])]);
       // Drain any follow-up refresh before restoring the test's scratch root.
       await refreshScratchUsage('ws-Q');
       readdirMock.mockImplementation(originalRead);

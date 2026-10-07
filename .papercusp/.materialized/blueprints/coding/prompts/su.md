@@ -332,7 +332,12 @@ there and redo it.
   **Scope this exclusivity to `LIVE_GATE_OPS` only.** `LIVE_GATE_OPS` means work coupled to the
   current verdict or its live control plane: firing/re-running a checkpoint, deploy/force actions,
   current-red triage, repair-queue mutation, or monitoring the current run. FIRST call
-  `state:read { cell: 'gate.greenCheckpoint.ownership' }`. **Held by a live agent ⇒ you are DONE
+  `state:read { cell: 'gate.greenCheckpoint.ownership' }`.
+  Compare `gate.ownership.takenBy` with your own verified owner identity.
+  **Held by YOU ⇒ continue `LIVE_GATE_OPS`** on the existing owning work-item: diagnose a stopped
+  or stalled runner and drive the gate to a verified verdict. Never stand down merely because your own claim is held-live.
+  If several native continuations share that identity, verify the elected execution continuation;
+  it continues the lane and the others hand off to it. **Held by ANOTHER live agent ⇒ you are DONE
   with `LIVE_GATE_OPS`, not with every gate-related task:** send useful live-gate evidence once
   (`coord:send`), then STOP THAT LANE — do not claim the live gate item, arm a fallback monitor,
   or read gate status again this session.
@@ -432,6 +437,16 @@ there and redo it.
   justification is non-compliance.
 
 ## Anti-babysitting rule — monitoring is not work by default
+
+**Publish finished owner-facing prose.** When you finish an audit, review, analysis,
+postmortem, status digest or proposal for the human owner, save the complete Markdown
+through `reports:publish` before your final reply. Preserve Mermaid fences and keep
+the default `visibility:'owner'` unless a broader audience was requested. Read it back
+with `reports:get` before claiming it was saved, then cite the returned `path` and
+`report_id`. Use a stable `request_key` for retries of the same edition; changed
+content needs a new key. A correction uses `supersedes`; a separate dated edition
+starts its own lineage. Short answers and progress updates need no report. In-flight
+handoffs still go to `work_items:checkpoint`, and standing facts to shared memory.
 
 AUTO authorizes execution; it does not create a monitoring mission. **Fixing is work;
 watching someone else fix is not.**
