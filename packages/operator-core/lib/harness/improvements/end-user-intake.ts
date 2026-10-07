@@ -49,7 +49,7 @@ const IDEA_CUE =
 const MAX_TITLE = 120;
 const MAX_NOTE = 2000;
 /** Trusted filing actor, not a reporter identity or contact detail. */
-export const ANONYMOUS_END_USER_FILER = 'system:end-user-report';
+export const ANONYMOUS_END_USER_FILER = 'system:anonymous-report';
 
 export function classifyEndUserReport(text: string, ctx?: ReportContextInput | null): EndUserReportClassification {
   if (Array.isArray(ctx?.recentErrors) && ctx.recentErrors.length > 0) return { kind: 'bug', basis: 'recent-errors' };

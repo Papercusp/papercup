@@ -4066,7 +4066,9 @@ export async function mergeIssuePayload(
              WHEN ${settingPlanItem !== null} THEN ${settingPlanItem ? [settingPlanItem.itemId] : null}::text[]
              ELSE source_plan_item_ids
            END,
-           origin = 'local',
+           -- Payload enrichment is not an ownership transfer. Preserve the
+           -- authoring peer so corroborating a foreign report cannot bypass
+           -- the lifecycle guard or make it silently editable on this node.
            updated_ts = ${Date.now()}
      WHERE workspace_id = ${ws}
        AND harness_slug = ${physicalSlug}

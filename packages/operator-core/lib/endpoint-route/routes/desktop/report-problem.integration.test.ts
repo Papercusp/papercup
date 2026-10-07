@@ -134,8 +134,9 @@ describe('desktop Report a problem door, end to end', () => {
           FROM harness_shared.work_items WHERE feature_id = ${id} OR payload->>'watchdogKey' = ${signature!.key}`;
       expect(agent.created, `source/agent signature preflight passed; upstream identities: ${JSON.stringify(keys)}`).toBe(false);
       expect(agent.issue?.id ?? agent.coalescedOnto?.id).toBe(id);
-      const [folded] = await upstreamDb.adminSql<{ payload: Record<string, unknown> }[]>`
-        SELECT payload FROM harness_shared.work_items WHERE workspace_id = ${upstreamWorkspace} AND feature_id = ${id}`;
+      const [folded] = await upstreamDb.adminSql<{ origin: string; payload: Record<string, unknown> }[]>`
+        SELECT origin, payload FROM harness_shared.work_items WHERE workspace_id = ${upstreamWorkspace} AND feature_id = ${id}`;
+      expect(folded?.origin, 'corroboration must not transfer foreign authorship to this peer').toBe('remote');
       expect(folded?.payload.reporterKinds).toEqual(expect.arrayContaining(['agent', 'end-user']));
 
       // A foreign row is evidence, not something this upstream peer owns.
