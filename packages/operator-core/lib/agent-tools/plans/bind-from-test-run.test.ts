@@ -158,6 +158,26 @@ describe('deriveBindingFromTestRun', () => {
     });
     const failedVerdict = deriveBindingFromTestRun(input({ evidenceKind: 'mutation' }), verdict('fail'), root, 'run');
     expect(failedVerdict.ok && failedVerdict.binding.details.adequacy).toMatchObject({ outcome: 'fail' });
+    const plainCounterexample = deriveBindingFromTestRun(
+      input({ evidenceKind: 'counterexample' }),
+      verdict('pass'),
+      root,
+      'run',
+    );
+    expect(plainCounterexample).toMatchObject({
+      ok: true,
+      binding: { evidenceKind: 'counterexample', details: { adequacy: { outcome: 'passed' } } },
+    });
+    const mutantCounterexample = deriveBindingFromTestRun(
+      input({ evidenceKind: 'counterexample' }),
+      mutant('pass'),
+      root,
+      'run',
+    );
+    expect(mutantCounterexample).toMatchObject({
+      ok: true,
+      binding: { evidenceKind: 'counterexample', details: { adequacy: { outcome: 'survived' } } },
+    });
     // The BASELINE half of a probe is ordinary passing test evidence.
     const baseline = run({ source: 'mutation-probe', execution_details: { mutationPhase: 'baseline' } });
     expect(deriveBindingFromTestRun(input(), baseline, root, 'run')).toMatchObject({

@@ -567,8 +567,11 @@ function runFacts(row: TestRunEvidenceRow, kind: DerivedTestRunBinding['evidence
   const collectionFailed = executionDetails(row.execution_details).collectionFailed === true;
   const executed = status === 'pass' || status === 'fail';
   const outcome =
-    kind === 'test'
-      ? ({ pass: 'passed', fail: 'failed', skip: 'skipped' } as Record<string, string>)[status] ?? status
+    kind === 'test' || (kind === 'counterexample' && deriveKind(row) !== 'mutation')
+      ? // A caller-declared counterexample over an ordinary test run is still a test execution.
+        // Its green status does not mean a mutant survived; only a canonical mutant row carries
+        // the caught/survived polarity below.
+        ({ pass: 'passed', fail: 'failed', skip: 'skipped' } as Record<string, string>)[status] ?? status
       : kind === 'mutation' && deriveKind(row) !== 'mutation'
         ? // A caller-declared mutation binding over a row that is NOT a raw mutant run (e.g. a
           // testing:record-run operational record of a whole mutation-probe invocation) carries
