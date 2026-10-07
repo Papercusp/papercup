@@ -153,6 +153,7 @@ export const TOOL_ERROR_RULES: readonly ToolErrorRule[] = [
     class: 'caller',
     errorCodes: [
       'invalid_args', 'invalid_input', 'role_not_allowed', 'missing_capability',
+      'compile_error',
       'quota_exceeded', 'harness_required', 'checkpoint_replace_would_drop_rows',
       'flush-required', 'rubric-not-found', 'reviewer_model_not_allowed',
       'dynamic_import_unsupported', 'mcp_auth_failed', 'evidence_class_not_found',
@@ -161,7 +162,7 @@ export const TOOL_ERROR_RULES: readonly ToolErrorRule[] = [
     ],
     statuses: ['role-not-allowed'],
     messagePattern: CALLER_MESSAGE_PATTERN,
-    why: 'the caller sent bad input, chose a reviewer outside the expert allowlist, attempted an import in the import-free code:run sandbox, lacked a role, was rejected at the MCP auth gate, named no (or an unregistered) harness, hit an explicit flush or scratch-reference window-size precondition, or read code:run typed output as an MCP content envelope despite its structured_result_shape typed-root diagnostic — not a tool bug',
+    why: 'the caller sent bad input (including code:run JavaScript that fails to parse before dispatch), chose a reviewer outside the expert allowlist, attempted an import in the import-free code:run sandbox, lacked a role, was rejected at the MCP auth gate, named no (or an unregistered) harness, hit an explicit flush or scratch-reference window-size precondition, or read code:run typed output as an MCP content envelope despite its structured_result_shape typed-root diagnostic — not a tool bug',
   },
   {
     class: 'caller',
