@@ -603,6 +603,11 @@ describe('coord:orient args', () => {
         },
         claimable: [],
       });
+      expect(result.data.phaseDiagnostics).toMatchObject({
+        aggregateElapsedMs: ORIENT_AGGREGATE_TIMEOUT_MS,
+        activePhase: 'handler:recordOrientDisclosures',
+        activePhaseSelection: 'latest-started-pending',
+      });
       expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('orient:aggregate'));
     } finally {
       recordOrientDisclosuresMock.mockReset();
@@ -944,11 +949,13 @@ describe('coord:orient args', () => {
 
     inProcessCallMock.mockReturnValue(async (name: string) => {
       if (name === 'fleet:assignments') {
-        return {
+        // This call's own 8s bound expires first; the dispatch settles at 8.5s,
+        // so the aggregate fallback must name the later governor wait as active.
+        return new Promise((resolve) => setTimeout(() => resolve({
           ok: true,
           summary: { agents: 1 },
           agents: [{ agentId: ownerId, isSelf: true, declaredPlanSlug: null, claims: 0 }],
-        };
+        }), 8_500));
       }
       if (name === 'coord:whoami') return { fleetSlug: null };
       throw new Error(`unexpected sub-call: ${name}`);
@@ -992,11 +999,14 @@ describe('coord:orient args', () => {
     );
 
     try {
+      await vi.advanceTimersByTimeAsync(8_000);
       await governorStarted;
       // Let the recovery promise's early aggregate-fallback observer run before
       // the later enrichment stalls the handler.
       await Promise.resolve();
-      await vi.advanceTimersByTimeAsync(ORIENT_AGGREGATE_TIMEOUT_MS);
+      await vi.advanceTimersByTimeAsync(500);
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(ORIENT_AGGREGATE_TIMEOUT_MS - 8_500);
       const result = (await resultPromise) as { data: Record<string, unknown> };
 
       expect(result.data).toMatchObject({
@@ -1011,6 +1021,14 @@ describe('coord:orient args', () => {
           summary: { agents: 1 },
           agents: [{ agentId: ownerId, isSelf: true, declaredPlanSlug: null, claims: 0 }],
         },
+      });
+      expect(result.data.phaseDiagnostics).toMatchObject({
+        aggregateElapsedMs: ORIENT_AGGREGATE_TIMEOUT_MS,
+        activePhase: 'handler:governor',
+        activePhaseSelection: 'latest-started-pending',
+        completedDurationsMs: expect.arrayContaining([
+          { phase: 'inner:fleet:assignments', durationMs: 8_500 },
+        ]),
       });
       expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('orient:aggregate'));
     } finally {
@@ -1089,7 +1107,7 @@ describe('coord:orient args', () => {
   it('starts bounded post-compaction recovery before composeOrient so the budgets overlap', () => {
     const source = readFileSync(new URL('./orient.ts', import.meta.url), 'utf8');
     const recoveryStart = source.indexOf('const compactionRecoveryPromise =');
-    const composeStart = source.indexOf('const result = await composeOrient(');
+    const composeStart = source.indexOf("const result = await phaseTracker.track('composeOrient', () => composeOrient(");
     const recoveryAwait = source.indexOf('const recovery = compactionRecoveryPromise');
 
     expect(recoveryStart).toBeGreaterThanOrEqual(0);
@@ -1101,7 +1119,7 @@ describe('coord:orient args', () => {
   it('derives the recovered fleet scope before composeOrient and awaits it before assignments', () => {
     const source = readFileSync(new URL('./orient.ts', import.meta.url), 'utf8');
     const recoveredScopePromiseStart = source.indexOf('const recoveredFleetScopePromise =');
-    const composeCallStart = source.indexOf('const result = await composeOrient(');
+    const composeCallStart = source.indexOf("const result = await phaseTracker.track('composeOrient', () => composeOrient(");
     const composeDefinitionStart = source.indexOf('export async function composeOrient(');
     const recoveredScopeAwait = source.indexOf(
       'const recovered = await recoveredFleetScopeFold();',
@@ -1120,7 +1138,7 @@ describe('coord:orient args', () => {
     const modesStart = source.indexOf('const runtimeModesPromise =');
     const portfolioStart = source.indexOf('const goalPortfolioStagedPromise =');
     const obligationsStart = source.indexOf('const goalObligationsPromise =');
-    const composeStart = source.indexOf('const result = await composeOrient(');
+    const composeStart = source.indexOf("const result = await phaseTracker.track('composeOrient', () => composeOrient(");
 
     expect(modesStart).toBeGreaterThanOrEqual(0);
     expect(portfolioStart).toBeGreaterThan(modesStart);

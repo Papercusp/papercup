@@ -3250,6 +3250,28 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-009 recovery (spec clause
 });
 
 describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary, real PTY/operator/PG)', () => {
+  test('operator process preflight rejects an answering host with the wrong identity', async () => {
+    let identity = {
+      schemaVersion: 1, workspaceId: WORKSPACE,
+      agentChat: { scope: `workspace:${WORKSPACE}` },
+    };
+    const requests: string[] = [];
+    const server = createServer((request, response) => {
+      requests.push(request.url ?? '');
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify(identity));
+    });
+    const port = await listen(server);
+    try {
+      await verifyOperatorProcessIdentity(port);
+      identity = { ...identity, agentChat: { scope: 'workspace:wrong' } };
+      await expect(verifyOperatorProcessIdentity(port)).rejects.toThrow();
+      expect(requests).toEqual(['/api/tui/identity', '/api/tui/identity']);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
+  });
+
   test('cleanup reports its own failure without replacing an earlier semantic failure', async () => {
     const primary = new Error('same-native identity mismatch');
     const paneCleanup = new Error('pane cleanup failed');
@@ -5404,6 +5426,19 @@ function nativeQuestionToolStart(events: SuSessionEvent[], turnId: string, direc
   });
 }
 
+async function verifyOperatorProcessIdentity(port: number) {
+  const response = await fetch(`http://127.0.0.1:${port}/api/tui/identity`, {
+    signal: AbortSignal.timeout(3_000),
+  });
+  const identity = await response.json();
+  expect(response.status, JSON.stringify({ port, identity })).toBe(200);
+  expect(identity).toMatchObject({
+    schemaVersion: 1,
+    workspaceId: WORKSPACE,
+    agentChat: { scope: `workspace:${WORKSPACE}` },
+  });
+}
+
 async function startOperatorProcess(port = 0) {
   const events: SuSessionEvent[] = [];
   const readiness: Array<Record<string, unknown>> = [];
@@ -5451,7 +5486,8 @@ async function startOperatorProcess(port = 0) {
     if (message.type === 'ready') ready = { pid: message.pid, instanceId: message.instanceId, port: message.port };
     if (['ready', 'shutdown-stage', 'stopped'].includes(message.type)) {
       console.info('PUI_OPERATOR_PROCESS_STAGE', JSON.stringify({ type: message.type, stage: message.stage,
-        pid: message.pid, instanceId: message.instanceId, workers: message.workers, at: new Date().toISOString() }));
+        pid: message.pid, instanceId: message.instanceId, port: message.port,
+        workers: message.workers, at: new Date().toISOString() }));
       if (message.stage) shutdownStages.push(message.stage);
     }
     if (message.descriptor) descriptors.set(message.descriptor.identity.agentChatId, message.descriptor);
@@ -5500,6 +5536,9 @@ async function startOperatorProcess(port = 0) {
       }
       expect(ready, inertOutput()).toBeDefined();
     }, { timeout: 120_000, interval: 100 });
+    // The IPC announcement proves listen() completed; exercise the exact
+    // bounded identity route the client needs before spending a PTY deadline.
+    await verifyOperatorProcessIdentity(ready!.port);
   } catch (error) { await stop().catch(() => {}); throw error; }
   return { ...ready!, events, descriptors, diagnostics, responses, readiness, shutdownStages, stop, output: () => output };
 }

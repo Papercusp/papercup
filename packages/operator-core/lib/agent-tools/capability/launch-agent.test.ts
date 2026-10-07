@@ -71,7 +71,10 @@ const codexThreadWriterHolderMock = vi.hoisted(() =>
     reason: 'no-lock-file',
   })),
 );
+const originalRoutingGuardMock = vi.hoisted(() => vi.fn());
 vi.mock('../../../../../apps/operator/scripts/psu-launcher.mjs', () => ({
+  ORIGINAL_CODEX_ROUTING_ENV: 'PAPERCUSP_ORIGINAL_CODEX_ROUTING',
+  assertOriginalCodexRouting: (...args: unknown[]) => originalRoutingGuardMock(...args),
   codexThreadWriterHolder: (...args: [string, string | null]) => codexThreadWriterHolderMock(...args),
 }));
 
@@ -108,6 +111,11 @@ vi.mock('../../modes/store', async (orig) => ({
 const gateWorkScopeMock = vi.hoisted(() => vi.fn());
 vi.mock('../../work-scope-policy', () => ({
   gateWorkScope: (...args: unknown[]) => gateWorkScopeMock(...args),
+}));
+const resolveAcceptedOperationWorkerBindingMock = vi.hoisted(() => vi.fn());
+vi.mock('../../blueprint/operation-worker-binding', () => ({
+  resolveAcceptedOperationWorkerBinding: (...args: unknown[]) =>
+    resolveAcceptedOperationWorkerBindingMock(...args),
 }));
 
 const listFactsMock = vi.hoisted(() => vi.fn());
@@ -329,6 +337,7 @@ const spawnedEnv = (mock = spawnConsoleMock): Record<string, string> =>
   (mock.mock.calls[0][0] as unknown as { envelope: { env: Record<string, string> } }).envelope.env;
 
 beforeEach(() => {
+  originalRoutingGuardMock.mockReset();
   vi.clearAllMocks();
   goalLaunchResolveMock.mockReset();
   declareCouplingMock.mockReset().mockResolvedValue({ agentA: 'su-caller', agentB: 'su-verifier' });
@@ -387,6 +396,7 @@ beforeEach(() => {
   waitForPtyHostGoneMock.mockResolvedValue(true);
   getModesMock.mockResolvedValue([]);
   gateWorkScopeMock.mockResolvedValue({ allowed: true, reason: 'no-policy' });
+  resolveAcceptedOperationWorkerBindingMock.mockResolvedValue(null);
   listFactsMock.mockResolvedValue([]);
   getLoopStatusMock.mockResolvedValue(null);
   getFleetHeadcountTargetMock.mockResolvedValue(null);
@@ -799,6 +809,67 @@ describe('ad-hoc launch (a brief, no plan, no fleet — D-002/D-003)', () => {
       harness: 'portal',
       plan: null,
       workItem: 'EI-audit-1',
+    });
+  });
+
+  describe('accepted operation worker feature binding', () => {
+    const workItem = 'WI-10007113';
+    const matchingBinding = { workItemId: workItem };
+
+    it.each([undefined, 'WI-another-item'])(
+      'refuses a matching accepted-operation worker role when feature is %s before spawning',
+      async (feature) => {
+        resolveAcceptedOperationWorkerBindingMock.mockResolvedValue(matchingBinding);
+        const res = await launchAgent.handler({
+          brief: 'complete the accepted operation',
+          harness: 'papercusp',
+          role: 'su',
+          workItem,
+          ...(feature ? { feature } : {}),
+        }, ctx);
+
+        expect(isError(res)).toBe(true);
+        expect(textOf(res)).toContain('requires feature to exactly match workItem');
+        expect(spawnConsoleMock).not.toHaveBeenCalled();
+        expect(spawnHeadlessMock).not.toHaveBeenCalled();
+        expect(resolveAcceptedOperationWorkerBindingMock).toHaveBeenCalledWith(expect.objectContaining({
+          workspaceId: 'ws-test',
+          harnessSlug: 'papercusp',
+          workItemId: workItem,
+          role: 'su',
+          roleMismatch: 'ignore',
+          repoDir: '/tmp/papercusp-ws',
+        }));
+      },
+    );
+
+    it('forwards the accepted operation work item as an explicit feature binding', async () => {
+      resolveAcceptedOperationWorkerBindingMock.mockResolvedValue(matchingBinding);
+      const res = await launchAgent.handler({
+        brief: 'complete the accepted operation',
+        harness: 'papercusp',
+        role: 'su',
+        workItem,
+        feature: workItem,
+      }, ctx);
+
+      expect(isError(res), textOf(res)).toBe(false);
+      expect(spawnConsoleMock).toHaveBeenCalledOnce();
+      expect(spawnedCommand()).toContain('--feature=' + workItem);
+    });
+
+    it('keeps an unrelated work-item audit launch on the generic path', async () => {
+      resolveAcceptedOperationWorkerBindingMock.mockResolvedValue(null);
+      const res = await launchAgent.handler({
+        brief: 'audit the accepted operation independently',
+        harness: 'papercusp',
+        role: 'su',
+        workItem: 'EI-audit-1',
+      }, ctx);
+
+      expect(isError(res), textOf(res)).toBe(false);
+      expect(spawnConsoleMock).toHaveBeenCalledOnce();
+      expect(spawnedCommand()).not.toContain('--feature=');
     });
   });
 
@@ -1512,6 +1583,65 @@ describe('resume + fork (D-004/D-007)', () => {
       startedAt: '2026-07-11 09:00:00.123456+00',
     },
   };
+
+  describe('originalRouting custody contract', () => {
+    const uuid = '0123abcd-1234-5678-9abc-def012345678';
+    const source = { ...dead, agent: 'codex', sessionId: uuid, account: 'auto',
+      model: null, binding: { ...dead.binding, sessionId: uuid } };
+    const pin = { ownerId: source.ownerId, advSessionId: source.advSessionId, sessionId: uuid,
+      codexHome: '/isolated/session-11', profileFingerprint: 'a'.repeat(64) };
+    const request = { resume: { sessionId: uuid }, originalRouting: pin, brief: 'continue original work' };
+
+    it('passes the custody pin through the governed exact resume without forking or changing account', async () => {
+      resolveResumeTargetMock.mockResolvedValue(source);
+      const result = await launchAgent.handler(request, ctx);
+      expect(isError(result)).toBe(false);
+      expect(spawnedCommand()).toContain(`--resume=${uuid}`);
+      expect(spawnedCommand()).toContain('--account=auto');
+      expect(spawnedCommand()).not.toContain('--fork');
+      expect(spawnedCommand()).not.toContain('--model=');
+      expect(dataOf(result)?.launch).toMatchObject({ mode: 'resume', resumedOwnerId: source.ownerId });
+      expect(spawnConsoleMock.mock.calls[0]?.[0]).toMatchObject({
+        envelope: { env: { PAPERCUSP_ORIGINAL_CODEX_ROUTING: JSON.stringify(pin) } },
+      });
+      expect(originalRoutingGuardMock).toHaveBeenCalledTimes(3);
+      expect(shutdownViaPtyMock).not.toHaveBeenCalled();
+    });
+
+    it.each([{ fork: true }, { successor: { agentId: 'su-other' } }, { agent: 'claude' },
+      { model: 'gpt-6' }, { account: 'default' }, { extraArgs: ['--force'] }])(
+      'refuses request overrides before opening a process: %j', async (override) => {
+        const result = await launchAgent.handler({ ...request, ...override } as Parameters<typeof launchAgent.handler>[0], ctx);
+        expect(isError(result)).toBe(true);
+        expect(spawnConsoleMock).not.toHaveBeenCalled();
+      });
+
+    it('refuses a live original instead of automatically forking it', async () => {
+      resolveResumeTargetMock.mockResolvedValue({ ...source, live: true });
+      const result = await launchAgent.handler(request, ctx);
+      expect(isError(result)).toBe(true);
+      expect(spawnConsoleMock).not.toHaveBeenCalled();
+      expect(shutdownViaPtyMock).not.toHaveBeenCalled();
+    });
+
+    it('rechecks original custody before governed admission', async () => {
+      resolveResumeTargetMock.mockResolvedValueOnce(source).mockResolvedValue({ ...source, ownerId: 'su-other' });
+      const result = await launchAgent.handler(request, ctx);
+      expect(isError(result)).toBe(true);
+      expect(spawnGovernedAgentProcessMock).not.toHaveBeenCalled();
+      expect(spawnConsoleMock).not.toHaveBeenCalled();
+    });
+
+    it('rechecks the local profile after governed admission and before spawn', async () => {
+      resolveResumeTargetMock.mockResolvedValue(source);
+      originalRoutingGuardMock.mockImplementationOnce(() => {}).mockImplementationOnce(() => {})
+        .mockImplementationOnce(() => { throw new Error('profile changed'); });
+      const result = await launchAgent.handler(request, ctx);
+      expect(isError(result)).toBe(true);
+      expect(spawnGovernedAgentProcessMock).toHaveBeenCalled();
+      expect(spawnConsoleMock).not.toHaveBeenCalled();
+    });
+  });
 
   it('uses distinct governed admission keys for concurrent exact resumes', async () => {
     const secondDead = {

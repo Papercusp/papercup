@@ -51,7 +51,14 @@ function argKeys(tool: ToolLike): string[] {
   for (let hop = 0; hop < 8 && node; hop += 1) {
     const shape = (node as { shape?: Record<string, unknown> }).shape;
     if (shape && typeof shape === 'object') return Object.keys(shape).sort();
-    const def = (node as { _def?: { schema?: unknown; innerType?: unknown } })._def;
+    const def = (node as { _def?: { schema?: unknown; innerType?: unknown; options?: unknown[] } })._def;
+    if (Array.isArray(def?.options)) {
+      const unionKeys = def.options.flatMap((option) => {
+        const shape = (option as { shape?: Record<string, unknown> }).shape;
+        return shape ? Object.keys(shape) : [];
+      });
+      if (unionKeys.length > 0) return [...new Set(unionKeys)].sort();
+    }
     node = def?.schema ?? def?.innerType;
   }
   throw new Error(`could not read an object shape from ${tool.name}'s args schema`);

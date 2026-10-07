@@ -11433,6 +11433,7 @@ export async function reportSessionPortLaunchFailure(
  * only the credential source selected for this child. */
 export function sanitizeInheritedEnv(env) {
   const out = stripRecoveryMarkers(env);
+  delete out.PAPERCUSP_ORIGINAL_CODEX_ROUTING;
   for (const key of Object.keys(out)) {
     if (
       key === "INIT_CWD" ||
@@ -13120,6 +13121,97 @@ export function codexResumeHome(session, home = homedir()) {
   return null;
 }
 
+export const ORIGINAL_CODEX_ROUTING_ENV = "PAPERCUSP_ORIGINAL_CODEX_ROUTING";
+
+/** Hash existing profile and exact transcript identity without repairing either.
+ * @param {string} codexHome
+ * @param {string} sessionId
+ * @returns {string | null}
+ */
+export function codexOriginalRoutingFingerprint(codexHome, sessionId) {
+  try {
+    if (realpathSync(codexHome) !== codexHome) return null;
+    const home = statSync(codexHome);
+    if (!home.isDirectory()) return null;
+    const rollout = findCodexRollout(join(codexHome, "sessions"), sessionId);
+    if (!rollout) return null;
+    const transcript = statSync(rollout);
+    const files = ["config.toml", "AGENTS.md", "papercusp-diagnostics.json", "hooks.json", ".papercusp-carry-base-AGENTS.md"]
+      .map((file) => [file, existsSync(join(codexHome, file)) ? readFileSync(join(codexHome, file), "utf8") : null]);
+    return createHash("sha256").update(JSON.stringify({
+      codexHome, home: [home.dev, home.ino], sessionId, rollout,
+      transcript: [transcript.dev, transcript.ino, transcript.size, transcript.mtimeMs], files,
+    })).digest("hex");
+  } catch { return null; }
+}
+
+/** The saved route is authority; provider repair does not select another account. */
+export function originalCodexRoutingAccount(session) {
+  const account = session.account ?? session.launchArgv?.find((arg) => String(arg).startsWith("--account="))?.slice(10);
+  return typeof account === "string" && accountRoutingMode(account) !== "default" ? account : null;
+}
+
+/** Fail closed on custody/prerequisite uncertainty; never repair files.
+ * @param {*} session
+ * @param {{ownerId:string, advSessionId:number, sessionId:string, codexHome:string, profileFingerprint:string}} pin
+ * @param {{liveHost?: (owner:string)=>any, writerHolder?: (home:string,id:string)=>any}} [deps]
+ */
+export function assertOriginalCodexRouting(session, pin, {
+  liveHost = findLiveHostFor, writerHolder = codexThreadWriterHolder,
+} = {}) {
+  const refuse = (reason) => { throw new Error(`original Codex routing refused: ${reason}`); };
+  if (!pin || session.agent !== "codex" || session.id !== pin.advSessionId ||
+      session.coordOwnerId !== pin.ownerId || session.sessionId !== pin.sessionId || !session.endedAt)
+    refuse("original ended row, actor or native UUID changed");
+  if (!originalCodexRoutingAccount(session)) refuse("saved gateway account is missing");
+  if (codexResumeHome(session) !== pin.codexHome) refuse("isolated home changed");
+  if (liveHost(pin.ownerId)) refuse("original host is live");
+  const writer = writerHolder(pin.codexHome, pin.sessionId);
+  if (writer.held || !["free", "no-lock-file"].includes(writer.reason)) refuse("writer is live or unknown");
+  const readiness = codexHomeLaunchReadiness(pin.codexHome, pin.ownerId);
+  if (readiness) refuse(readiness);
+  const fingerprint = codexOriginalRoutingFingerprint(pin.codexHome, pin.sessionId);
+  if (!fingerprint || fingerprint !== pin.profileFingerprint) refuse("profile or transcript changed or missing");
+}
+
+/** Re-read exact custody AFTER the existing reservation, then patch only the provider.
+ * @param {*} session
+ * @param {{ownerId:string, advSessionId:number, sessionId:string, codexHome:string, profileFingerprint:string}} pin
+ * @param {*} account
+ * @param {{apiImpl?: (...args:any[])=>any, liveHost?: (owner:string)=>any, writerHolder?: (home:string,id:string)=>any}} [deps]
+ */
+export async function applyOriginalCodexRouting(session, pin, account, deps = {}) {
+  const read = await (deps.apiImpl ?? api)(`/api/adv/sessions/resumable?id=${pin.advSessionId}`);
+  const current = read?.sessions?.find((row) => row.id === pin.advSessionId);
+  if (!current || JSON.stringify(current.launchArgv) !== JSON.stringify(session.launchArgv) ||
+      current.cwd !== session.cwd || current.role !== session.role || current.feature !== session.feature ||
+      current.workspaceId !== session.workspaceId || current.planSlug !== session.planSlug ||
+      current.startedAt !== session.startedAt || current.codexHome !== session.codexHome)
+    throw new Error("original Codex routing refused: saved session binding or settings changed");
+  assertOriginalCodexRouting(current, pin, deps);
+  const saved = originalCodexRoutingAccount(current);
+  if ((saved === "auto" && account?.mode !== "auto") ||
+      (saved !== "auto" && (account?.mode !== "pin" || account.id !== saved)))
+    throw new Error("original Codex routing refused: saved account route changed");
+  applyCodexGatewayRoute(pin.codexHome, { mode: account.mode, id: account.id ?? null,
+    ownerId: pin.ownerId, priority: current.role || "su" });
+}
+
+/** Consume the one-launch contract; it must never reach the resumed child. */
+export function consumeOriginalCodexRouting(env = process.env) {
+  const raw = env[ORIGINAL_CODEX_ROUTING_ENV];
+  delete env[ORIGINAL_CODEX_ROUTING_ENV];
+  if (raw === undefined) return null;
+  const pin = JSON.parse(raw);
+  if (!pin || typeof pin.ownerId !== "string" || !pin.ownerId ||
+      !Number.isSafeInteger(pin.advSessionId) || pin.advSessionId <= 0 ||
+      typeof pin.sessionId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(pin.sessionId) ||
+      typeof pin.codexHome !== "string" || !pin.codexHome.startsWith("/") ||
+      typeof pin.profileFingerprint !== "string" || !/^[0-9a-f]{64}$/.test(pin.profileFingerprint))
+    throw new Error("original Codex routing refused: invalid custody pin");
+  return pin;
+}
+
 /**
  * The conventional per-session CODEX_HOME for an adv-session id. Mirrors
  * `codexHomeForSessionKey` in @papercusp/orchestrator/session-launch-dirs,
@@ -13204,8 +13296,14 @@ async function launchResume(
     kickoff = null,
     launchMode = null,
     ownerId = null,
+    originalRouting = null,
   } = {},
 ) {
+  if (originalRouting) {
+    if (fork || brain || launchMode || passthrough.length || addDir.length || allowSubagents !== undefined || ownerId)
+      throw new Error("original Codex routing refused: resume settings overrides");
+    assertOriginalCodexRouting(session, originalRouting);
+  }
   // --fork is native for claude/codex — refuse early with a clear message rather than letting
   // resumeArgsFor throw a terse error (or, worse, appending to the original, which
   // is the clobber --fork exists to avoid).
@@ -13566,6 +13664,11 @@ async function launchResume(
             "psu: recovered the newest isolated Codex login as the persistent default system login.",
           );
       }
+      if (originalRouting) {
+        if (resumeClaimLegacyReactivation || !resumeClaimed)
+          throw new Error("original Codex routing refused: typed resume reservation required");
+        await applyOriginalCodexRouting(session, originalRouting, accountEnv);
+      } else {
       await ensureCodexHomeViaOperator(
         session.coordOwnerId ?? null,
         env.CODEX_HOME,
@@ -13595,6 +13698,7 @@ async function launchResume(
       // A resume that names no model resolves it from the home itself, which is
       // what stops a resumed session falling back to codex's 272k default (P-004).
       applyCodexContextWindow(env.CODEX_HOME, resumeModel);
+      }
     }
 
     // EI-24628537598753105: give the resumed claude process its base persona in
@@ -15600,6 +15704,28 @@ async function launchResolvedResume(source, args, { tracked }) {
 // none match, fall back to an unmatched session by the agent's native store id.
 // Either way, cd to the recorded cwd and run the agent there.
 async function resumeFlow(args = {}) {
+  const originalRouting = consumeOriginalCodexRouting();
+  if (originalRouting) {
+    if (String(args.resumeId) !== originalRouting.sessionId || args.fork || args.agent || args.model ||
+        args.ownerId || args.passthrough?.length || args.addDir?.length || args.allowSubagents !== undefined ||
+        launchModeFromArgs(args))
+      throw new Error("original Codex routing refused: exact resume without settings overrides required");
+    const read = await api(`/api/adv/sessions/resumable?id=${originalRouting.advSessionId}`);
+    const source = read?.sessions?.find((row) => row.id === originalRouting.advSessionId);
+    if (!source) throw new Error("original Codex routing refused: original row missing");
+    assertOriginalCodexRouting(source, originalRouting);
+    const saved = originalCodexRoutingAccount(source);
+    if (args.account !== saved) throw new Error("original Codex routing refused: saved account required");
+    const model = lastActiveModelFor(source);
+    const account = await chooseResumeAccount(source, { ...args, picker: false, account: saved, model });
+    if (!(await preflightCodexAutoPool({ agent: "codex", model, account }))) {
+      process.exitCode = WALLED_POOL_REFUSAL_EXIT;
+      return;
+    }
+    await launchResume(source, { headless: args.headless === true, accountEnv: account, model,
+      kickoff: resumeKickoffText(args), originalRouting });
+    return;
+  }
   const data = await api("/api/adv/sessions/resumable");
   const sessions = (data.sessions || []).filter((s) => s.agent && s.cwd);
 

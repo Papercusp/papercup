@@ -18,6 +18,7 @@ import { z } from 'zod';
 import { addresseeArg } from '../_addressee-arg';
 import { defineTool } from '@papercusp/agent-mcp';
 import launchAgent from '../capability/launch-agent';
+import activityToolLog from '../activity/tool-log';
 import releaseTrace from '../release/trace';
 import plansNew from '../plans/new';
 import plansAudit from '../plans/audit';
@@ -511,6 +512,22 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     expect(entry?.argSchema).toContain('path?:string');
     expect(entry?.argSchema).toContain('sha?:string');
     expect(schemaByTool.get('release:trace')).toMatchObject({ anyOf: expect.any(Array) });
+  });
+
+  it('publishes activity:tool-log scope as a required owner/session one-of', () => {
+    expect(activityToolLog.name).toBe('activity:tool-log');
+    const { corpus, schemaByTool } = buildCorpus();
+    const entry = corpus.find((candidate) => candidate.tool === 'activity:tool-log');
+    const schema = schemaByTool.get('activity:tool-log') as {
+      anyOf?: Array<{ required?: string[] }>;
+    } | undefined;
+
+    expect(entry?.argSchema).toContain('one-of:owner|session_id');
+    expect(schema?.anyOf?.some((branch) => branch.required?.includes('owner'))).toBe(true);
+    expect(schema?.anyOf?.some((branch) => branch.required?.includes('session_id'))).toBe(true);
+    expect(activityToolLog.args.safeParse({}).success).toBe(false);
+    expect(activityToolLog.args.safeParse({ owner: 'self' }).success).toBe(true);
+    expect(activityToolLog.args.safeParse({ session_id: 'session-123' }).success).toBe(true);
   });
 
   it('publishes the bash recovery handle requirement in full and compact discovery', () => {

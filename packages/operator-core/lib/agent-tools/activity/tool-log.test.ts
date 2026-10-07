@@ -42,6 +42,21 @@ type HandlerResult = {
   content?: Array<{ text?: string }>;
 };
 
+type JsonSchemaProperty = {
+  type?: string;
+  minimum?: number;
+  maximum?: number;
+  description?: string;
+};
+
+function schemaProperty(name: string): JsonSchemaProperty | undefined {
+  const schema = z.toJSONSchema(argsSchema as never) as {
+    properties?: Record<string, JsonSchemaProperty>;
+    anyOf?: Array<{ properties?: Record<string, JsonSchemaProperty> }>;
+  };
+  return schema.properties?.[name] ?? schema.anyOf?.map((branch) => branch.properties?.[name]).find(Boolean);
+}
+
 function errorBody(result: unknown) {
   const text = (result as HandlerResult).content?.[0]?.text;
   if (!text) throw new Error('expected an error body');
@@ -55,11 +70,7 @@ beforeEach(() => {
 
 describe('activity:tool-log timestamp boundaries', () => {
   it('advertises and enforces max_lines as an integer in the range 5..200', () => {
-    const schema = z.toJSONSchema(argsSchema as never) as {
-      properties?: Record<string, { type?: string; minimum?: number; maximum?: number }>;
-    };
-
-    expect(schema.properties?.max_lines).toMatchObject({ type: 'integer', minimum: 5, maximum: 200 });
+    expect(schemaProperty('max_lines')).toMatchObject({ type: 'integer', minimum: 5, maximum: 200 });
     expect(argsSchema.safeParse({ owner: 'self', max_lines: 5 }).success).toBe(true);
     expect(argsSchema.safeParse({ owner: 'self', max_lines: 200 }).success).toBe(true);
     expect(argsSchema.safeParse({ owner: 'self', max_lines: 4 }).success).toBe(false);
@@ -67,13 +78,9 @@ describe('activity:tool-log timestamp boundaries', () => {
   });
 
   it('advertises and enforces top_k as an integer in the range 1..25', () => {
-    const schema = z.toJSONSchema(argsSchema as never) as {
-      properties?: Record<string, { type?: string; minimum?: number; maximum?: number; description?: string }>;
-    };
-
-    expect(schema.properties?.top_k).toMatchObject({ type: 'integer', minimum: 1, maximum: 25 });
-    expect(schema.properties?.top_k?.description).toContain('default 8');
-    expect(schema.properties?.top_k?.description).toContain('maximum 25');
+    expect(schemaProperty('top_k')).toMatchObject({ type: 'integer', minimum: 1, maximum: 25 });
+    expect(schemaProperty('top_k')?.description).toContain('default 8');
+    expect(schemaProperty('top_k')?.description).toContain('maximum 25');
     expect(guidance?.argRedirects?.limit).toContain('integer 1-25');
     expect(argsSchema.safeParse({ owner: 'self', top_k: 25 }).success).toBe(true);
     expect(argsSchema.safeParse({ owner: 'self', top_k: 26 }).success).toBe(false);

@@ -29,6 +29,11 @@ import {
 } from "../../../packages/operator-core/lib/model-context-budget.mjs";
 import {
   parseArgs,
+  codexOriginalRoutingFingerprint,
+  assertOriginalCodexRouting,
+  applyOriginalCodexRouting,
+  consumeOriginalCodexRouting,
+  ORIGINAL_CODEX_ROUTING_ENV,
   resolveNativeMcpAssets,
   nativeOmpExtensionArgs,
   pickRole,
@@ -6080,7 +6085,12 @@ describe("psu-launcher arg parsing", () => {
     const fresh = section("async function launchFreshSu(", null);
     expect(fresh).toContain("await preflightCodexAutoPool(");
 
-    expect(source.match(/await preflightCodexAutoPool\(/g) ?? []).toHaveLength(3);
+    const originalResume = section("async function resumeFlow(", null);
+    const guardedOriginal = originalResume.slice(0, originalResume.indexOf('const data = await api("/api/adv/sessions/resumable")'));
+    expect(guardedOriginal).toContain("await preflightCodexAutoPool(");
+    expect(guardedOriginal.indexOf("await launchResume(")).toBeGreaterThan(guardedOriginal.indexOf("await preflightCodexAutoPool("));
+    expect(guardedOriginal).not.toContain("tryRematerializeFromArchive");
+    expect(source.match(/await preflightCodexAutoPool\(/g) ?? []).toHaveLength(4);
 
     // Every call site must ACT on the verdict. A preflight that computes futility and
     // launches regardless IS the bug this guard exists for: measured 2026-09-11, the
@@ -6088,12 +6098,12 @@ describe("psu-launcher arg parsing", () => {
     // that emitted zero cards (EI-22976924584016603). Negating the call is what turns
     // the measurement into an abort, so assert the negation, not merely the call.
     expect(source.match(/!\(await preflightCodexAutoPool\(/g) ?? []).toHaveLength(
-      3,
+      4,
     );
-    // …and each abort carries the distinguishable exit code (const + 3 call sites).
+    // …and each abort carries the distinguishable exit code (const + 4 call sites).
     expect(
       (source.match(/WALLED_POOL_REFUSAL_EXIT/g) ?? []).length,
-    ).toBeGreaterThanOrEqual(4);
+    ).toBeGreaterThanOrEqual(5);
   });
 
   it("gatewayAutoEnv: claude routes through the gateway with NO account pin header (let it auto-select)", () => {
@@ -11532,6 +11542,97 @@ describe("sessionIsResumable — picker keeps on-disk OR DB-archived sessions (W
         { home },
       ),
     ).toBe(true);
+  });
+});
+
+describe("original Codex routing — existing profile only", () => {
+  const uuid = "0123abcd-1234-5678-9abc-def012345678";
+  let home: string;
+  let source: any;
+  let pin: any;
+  const deps = { liveHost: () => null, writerHolder: () => ({ held: false, reason: "free" }) };
+  const config = () => readFileSync(join(home, "config.toml"), "utf8");
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "psu-original-route-"));
+    mkdirSync(join(home, "sessions"));
+    writeFileSync(join(home, "sessions", `rollout-${uuid}.jsonl`), JSON.stringify({ type: "session_meta", payload: { id: uuid, model_provider: "openai" } }) + "\n");
+    writeFileSync(join(home, "AGENTS.md"), "Original session instructions\n");
+    writeFileSync(join(home, "config.toml"), 'model = "gpt-6"\nmodel_reasoning_effort = "high"\n[mcp_servers.papercusp-su]\nurl = "http://localhost/api/mcp?client=su-original"\n[tui]\nterminal_title = []\nalternate_screen = "never"\n');
+    writeFileSync(join(home, "papercusp-diagnostics.json"), JSON.stringify({ lockOwnerSid: "su-original" }));
+    const hook = { hooks: [{ command: "PAPERCUSP_SID='su-original' lifecycle-report.sh" }] };
+    writeFileSync(join(home, "hooks.json"), JSON.stringify({ hooks: { SessionStart: [hook], SessionEnd: [hook] } }));
+    source = { id: 42, agent: "codex", coordOwnerId: "su-original", sessionId: uuid,
+      endedAt: "2026-10-07T00:00:00Z", startedAt: "2026-10-06T00:00:00Z", codexHome: home,
+      cwd: "/original", role: "su", feature: "WI-original", workspaceId: "workspace-original",
+      planSlug: "original-plan", launchArgv: ["psu", "--account=auto", "--carry=cold"] };
+    pin = { ownerId: source.coordOwnerId, advSessionId: source.id, sessionId: uuid,
+      codexHome: home, profileFingerprint: codexOriginalRoutingFingerprint(home, uuid) };
+  });
+  afterEach(() => rmSync(home, { recursive: true, force: true }));
+
+  it.each(["auto", "codex-pinned-account"])("patches only the provider for the original saved %s route", async (saved) => {
+    source.launchArgv[1] = `--account=${saved}`;
+    const before = { agents: readFileSync(join(home, "AGENTS.md")), hooks: readFileSync(join(home, "hooks.json")),
+      transcript: readFileSync(join(home, "sessions", `rollout-${uuid}.jsonl`)), session: JSON.stringify(source) };
+    const apiImpl = vi.fn(async () => ({ sessions: [{ ...source }] }));
+    await applyOriginalCodexRouting(source, pin, { mode: saved === "auto" ? "auto" : "pin", id: saved === "auto" ? null : saved }, { ...deps, apiImpl });
+    expect(apiImpl).toHaveBeenCalledWith("/api/adv/sessions/resumable?id=42");
+    expect(config()).toContain('model_provider = "papercusp-codex-gateway"');
+    expect(config()).toContain('model_reasoning_effort = "high"');
+    expect(config()).toContain('model = "gpt-6"');
+    expect(readFileSync(join(home, "AGENTS.md"))).toEqual(before.agents);
+    expect(readFileSync(join(home, "hooks.json"))).toEqual(before.hooks);
+    expect(readFileSync(join(home, "sessions", `rollout-${uuid}.jsonl`))).toEqual(before.transcript);
+    expect(JSON.stringify(source)).toBe(before.session);
+  });
+
+  it.each([{ coordOwnerId: "su-other" }, { id: 43 }, { sessionId: "another-thread" },
+    { agent: "claude" }, { endedAt: null }, { launchArgv: ["--account=default"] }])(
+    "refuses wrong custody/prerequisites before provider writes: %j", async (change) => {
+      const before = config();
+      await expect(applyOriginalCodexRouting(source, pin, { mode: "auto" },
+        { ...deps, apiImpl: async () => ({ sessions: [{ ...source, ...change }] }) })).rejects.toThrow("refused");
+      expect(config()).toBe(before);
+    });
+
+  it.each(["held", "no-proc-locks", "stat-error"])("refuses a live or unknown writer (%s) without changing config", (reason) => {
+    const before = config();
+    expect(() => assertOriginalCodexRouting(source, pin, { ...deps,
+      writerHolder: () => ({ held: reason === "held", reason }) })).toThrow("writer");
+    expect(config()).toBe(before);
+  });
+
+  it("refuses a live host even when the writer probe is free", () => {
+    expect(() => assertOriginalCodexRouting(source, pin, { ...deps, liveHost: () => ({ pid: 42 }) })).toThrow("host");
+  });
+
+  it.each(["AGENTS.md", "config.toml", "hooks.json", "sessions"])("refuses missing %s instead of repairing/restoring it", (file) => {
+    rmSync(join(home, file), { recursive: true });
+    expect(() => assertOriginalCodexRouting(source, pin, deps)).toThrow("refused");
+    expect(existsSync(join(home, file))).toBe(false);
+  });
+
+  it("refuses a profile race during the post-reservation exact-row read", async () => {
+    const before = config();
+    await expect(applyOriginalCodexRouting(source, pin, { mode: "auto" }, { ...deps, apiImpl: async () => {
+      writeFileSync(join(home, "AGENTS.md"), "changed while reserved");
+      return { sessions: [source] };
+    } })).rejects.toThrow("profile");
+    expect(config()).toBe(before);
+  });
+
+  it("refuses a saved account mismatch before provider writes", async () => {
+    const before = config();
+    await expect(applyOriginalCodexRouting(source, pin, { mode: "pin", id: "other-account" },
+      { ...deps, apiImpl: async () => ({ sessions: [source] }) })).rejects.toThrow("account");
+    expect(config()).toBe(before);
+  });
+
+  it("consumes the launch-only guard and strips it from inherited child env", () => {
+    const env = { [ORIGINAL_CODEX_ROUTING_ENV]: JSON.stringify(pin) };
+    expect(consumeOriginalCodexRouting(env)).toEqual(pin);
+    expect(env).toEqual({});
+    expect(sanitizeInheritedEnv({ [ORIGINAL_CODEX_ROUTING_ENV]: JSON.stringify(pin) })).not.toHaveProperty(ORIGINAL_CODEX_ROUTING_ENV);
   });
 });
 

@@ -105,7 +105,7 @@ import {
   PSU_LAUNCH_LOG_TAIL_CHARS,
   readPsuLaunchLogTail,
 } from '../../psu-launch-log.mjs';
-import { codexThreadWriterHolder } from '../../../../../apps/operator/scripts/psu-launcher.mjs';
+import { assertOriginalCodexRouting, codexThreadWriterHolder, ORIGINAL_CODEX_ROUTING_ENV } from '../../../../../apps/operator/scripts/psu-launcher.mjs';
 import { resolveCodexModelSelection } from '../../model-context-budget.mjs';
 import { isSuTierRole } from '../../su-role-addendum';
 import { spawnGovernedAgentProcess } from '../../resource-governor/spawn-execution';
@@ -513,6 +513,15 @@ export default defineTool({
         .describe(
           'Exact work-item id that authorizes this launch under a work-scope exception (for example, the scorecard being independently audited).',
         ),
+      feature: z
+        .string()
+        .trim()
+        .min(1)
+        .max(200)
+        .optional()
+        .describe(
+          'Work-item/feature id passed as psu --feature on a fresh launch. For an accepted-operation worker, it must equal workItem; resume and fork retain their source binding.',
+        ),
       resume: z
         .object({
           agentId: z
@@ -547,6 +556,15 @@ export default defineTool({
         .describe(
           'Fresh context for an ENDED predecessor, preserving owner identity, claims and seeded recovery brief. Allows explicit fresh-context `account`, `model`, or `carry` settings. Visible by default when `headless` is omitted or `false`; headless:true hides the window. Cannot combine with restoreVisible. Live sources are refused; resume auto-forks them for a parallel branch.',
         ),
+      originalRouting: z.object({
+        ownerId: z.string().min(1).max(120),
+        advSessionId: z.number().int().positive(),
+        sessionId: z.string().uuid(),
+        codexHome: z.string().min(1).max(500),
+        profileFingerprint: z.string().regex(/^[0-9a-f]{64}$/),
+      }).strict().optional().describe(
+        'Repair the provider route of an exact quiescent Codex thread using its saved gateway account. Pin its original owner, adv row, UUID, isolated home and codexOriginalRoutingFingerprint. Requires an existing healthy profile/transcript; live or changed custody refuses, without fork, successor, shutdown or profile repair. Omit all runtime/settings overrides.',
+      ),
       fork: z
         .boolean()
         .optional()
@@ -746,6 +764,16 @@ export default defineTool({
     let isResume = !!(args.resume?.agentId || args.resume?.sessionId);
     let isSuccessor = !!(args.successor?.agentId || args.successor?.sessionId);
     const sourceAction = isResume || isSuccessor;
+    if (args.originalRouting && (!isResume || !args.resume?.sessionId || args.resume.agentId ||
+        args.resume.sessionId !== args.originalRouting.sessionId ||
+        ['successor', 'fork', 'restoreVisible', 'agent', 'account', 'model', 'carry', 'fleet', 'extraArgs',
+          'members', 'plan', 'cwd', 'role', 'headless', 'independent', 'goalVerifier', 'feature']
+          .some((key) => (args as Record<string, unknown>)[key] !== undefined))) {
+      return err('originalRouting requires an exact resume with no fork, successor or settings overrides.');
+    }
+    if (sourceAction && !isSuccessor && args.feature?.trim()) {
+      return err('feature cannot override a resumed or forked session binding; omit it to keep the source session binding.');
+    }
     if (args.successor && !isSuccessor) {
       return err('`successor` needs `agentId` or `sessionId` — pass the ended predecessor reference to recover.');
     }
@@ -907,6 +935,7 @@ export default defineTool({
     let resumeAccount: string | null = null;
     let successorBrief: string | null = null;
     const successorPreparation: { reconcile?: () => Promise<string | null> } = {};
+    let reconcileOriginalRouting: (() => Promise<void>) | null = null;
     let fork = !!args.fork;
     const notes: string[] = [];
     if (sourceAction) {
@@ -927,6 +956,30 @@ export default defineTool({
       resumeSourceAdvSessionId = target.advSessionId;
       resumeModel = target.model;
       resumeAccount = target.account;
+      if (args.originalRouting) {
+        const pin = args.originalRouting;
+        const snapshot = JSON.stringify(target);
+        const validate = (current: typeof target) => {
+          if (current.live || current.binding?.sessionId !== pin.sessionId ||
+              current.binding?.coordOwnerId !== pin.ownerId)
+            throw new Error('originalRouting refused: original binding is live or changed.');
+          const native = nativeSessionHandleForAdvSession({
+            id: current.advSessionId, agent: current.agent, coordOwnerId: current.ownerId,
+            sessionId: current.sessionId,
+          } as Parameters<typeof nativeSessionHandleForAdvSession>[0], { findCodexRolloutId: () => null });
+          assertOriginalCodexRouting({ id: current.advSessionId, agent: current.agent,
+            coordOwnerId: current.ownerId, sessionId: current.sessionId, endedAt: current.endedAt,
+            account: current.account, codexHome: native?.backend === 'codex' ? native.codexHome : null,
+          }, pin);
+        };
+        try { validate(target); } catch (error) { return err((error as Error).message); }
+        reconcileOriginalRouting = async () => {
+          const current = await resolveResumeTarget({ sessionId: pin.sessionId });
+          if (!current.ok || JSON.stringify(current) !== snapshot)
+            throw new Error('originalRouting refused: original custody or saved settings changed before spawn.');
+          validate(current);
+        };
+      }
       // A legacy Codex launch may have recorded a model without the newer
       // provenance flag, or no model at all. Preserve the recorded model as an
       // inherited choice; when it is absent, make the configured-default
@@ -979,6 +1032,9 @@ export default defineTool({
         : null;
       {
         const writer = readSourceCodexWriter();
+        if (args.originalRouting && (!writer || writer.held || !['free', 'no-lock-file'].includes(writer.reason))) {
+          return err('originalRouting refused: original writer is live or unknown; no fork was created.');
+        }
         if (writer) {
           codexWriterHeld = writer.held;
           if (writer.held) {
@@ -1478,6 +1534,14 @@ export default defineTool({
     }
 
     const cwd = args.cwd ? (isAbsolute(args.cwd) ? args.cwd : resolvePath(base.cwd, args.cwd)) : base.cwd;
+    if (args.originalRouting) {
+      if (args.account && args.account !== resumeAccount)
+        return err('originalRouting refused: saved fleet account differs from original account.');
+      if (args.model && args.model !== resumeModel)
+        return err('originalRouting refused: saved fleet model differs from original model.');
+      // Codex reads the original transcript model/effort, not an explicit saved-fleet override.
+      args.model = undefined;
+    }
 
     // ── Per-member launch composition (P-002) ──────────────────────────────────
     // A FRESH multi-launch folds `members[i]` over the flat top-level args, so agent i
@@ -1547,7 +1611,9 @@ export default defineTool({
       role: isSuccessor
         ? (args.role ?? resumeRole ?? undefined)
         : (args.role ?? persistedHeadcountProfile?.config.role),
-      feature: isSuccessor ? (resumeFeature ?? undefined) : undefined,
+      feature: isSuccessor
+        ? (args.feature ?? resumeFeature ?? undefined)
+        : (sourceAction ? undefined : args.feature ?? undefined),
       stack: args.stack ?? undefined,
       // A flat carry setting applies to every fresh member unless that member
       // supplies its own override in `members[i].carry`.
@@ -1584,6 +1650,48 @@ export default defineTool({
       });
       return { ...folded, model: selection.model, modelSource: selection.source };
     });
+    // A workItem grants launch scope but does not bind a worker identity. When
+    // the requested role is the accepted operation's worker role, require the
+    // same target as --feature before any terminal is opened. Generic audit
+    // launches against ordinary work items, and accepted items for other roles,
+    // continue through the generic launch path.
+    if ((!isResume || isSuccessor) && args.workItem?.trim() && slug) {
+      const roles = [...new Set(
+        foldedConfigs.map((config) => config.role?.trim()).filter((role): role is string => !!role),
+      )];
+      if (roles.length) {
+        try {
+          const { resolveAcceptedOperationWorkerBinding } =
+            await import('../../blueprint/operation-worker-binding');
+          for (const role of roles) {
+            const binding = await resolveAcceptedOperationWorkerBinding({
+              workspaceId,
+              harnessSlug: slug,
+              workItemId: args.workItem.trim(),
+              role,
+              roleMismatch: 'ignore',
+              repoDir: args.cwd?.trim() || papercuspPathForWorkspace(workspaceId),
+            });
+            if (!binding) continue;
+            const unboundConfig = foldedConfigs.find((config) =>
+              config.role?.trim() === role && config.feature?.trim() !== binding.workItemId);
+            if (unboundConfig) {
+              return err(
+                'Accepted blueprint operation worker role "' + role + '" for ' + binding.workItemId +
+                  ' requires feature to exactly match workItem. Pass feature: "' +
+                  binding.workItemId + '". No process was spawned.',
+              );
+            }
+          }
+        } catch (error) {
+          const detail = error instanceof Error ? error.message : String(error);
+          return err(
+            'Could not verify accepted operation worker binding before launch: ' +
+              detail + '. No process was spawned.',
+          );
+        }
+      }
+    }
     // The psu bootstrap rejects malformed stack refs, but that is too late:
     // admission and a child process have already been consumed by then. Check
     // every effective member (including overrides) before claiming the launch.
@@ -1707,7 +1815,7 @@ export default defineTool({
               modelSource: args.model ? 'explicit' : (resumeAgent === 'codex' ? null : resumeModelSource),
               headless: !!args.headless,
               carry: savedLaunchCarry ?? null,
-              launchMode,
+              launchMode: args.originalRouting ? null : launchMode,
               extraArgs: args.extraArgs ?? null,
             })
           : buildAgentLaunchCommand({
@@ -1895,7 +2003,11 @@ export default defineTool({
     const results = await Promise.all(
       memberCommands.map(async (cmd, i) => {
         const memberBrief = memberBriefs[i];
-        const env = memberBrief ? { ...base.env, PAPERCUSP_KICKOFF_PROMPT: memberBrief } : base.env;
+        const env = {
+          ...base.env,
+          ...(memberBrief ? { PAPERCUSP_KICKOFF_PROMPT: memberBrief } : {}),
+          ...(args.originalRouting ? { [ORIGINAL_CODEX_ROUTING_ENV]: JSON.stringify(args.originalRouting) } : {}),
+        };
         const memberLabel = memberLabels[i];
         const targetOwnerId = memberOwnerIds[i];
         // Any scripted brief is a real first-turn obligation. Ask the headless
@@ -1905,6 +2017,7 @@ export default defineTool({
         // than being mistaken for a clean launch.
         const requireKickoffProof = kickoffProofRequired[i];
         try {
+          if (reconcileOriginalRouting) await reconcileOriginalRouting();
           return await spawnGovernedAgentProcess(
           {
             workspaceId,
@@ -1920,6 +2033,7 @@ export default defineTool({
             },
           },
           async (admissionContext) => {
+            if (reconcileOriginalRouting) await reconcileOriginalRouting();
             const governedEnv = {
               ...env,
               PAPERCUSP_ADMISSION_CONTEXT: JSON.stringify(admissionContext),

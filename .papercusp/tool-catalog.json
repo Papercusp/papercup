@@ -969,7 +969,7 @@
           "POST"
         ]
       },
-      "description": "Compact deterministic tool-call log for a session or owner: one short line per call (tool + primary target + ✓/✗), consecutive same-tool runs collapsed ×N, over-budget history decayed to per-tool counts + top-K touched files/commands (error lines survive longest). Rendered from the same ledger activity:recent reads, at a fraction of the tokens — the post-compaction / peer-catch-up view of what a session actually did.",
+      "description": "Compact deterministic tool-call log for one session or owner: one short line per call (tool + primary target + ✓/✗), consecutive same-tool runs collapsed ×N, over-budget history decayed to per-tool counts + top-K touched files/commands (error lines survive longest). Pass at least one of `owner` or `session_id`; since/until narrow that scope and cannot replace it. Rendered from the same ledger activity:recent reads, at a fraction of the tokens — the post-compaction / peer-catch-up view of what a session actually did.",
       "capabilities": [
         "activity:read"
       ],
@@ -1031,7 +1031,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "You want the cheap chronological picture of what a session DID (yours pre-compaction, or a peer's) — not the full row stream. Pass owner:'self' for your own trail; use absolute ISO 8601 timestamps for since/until to window it (relative durations such as '-15 min' are not supported).",
+        "when": "You want the cheap chronological picture of what a session DID (yours pre-compaction, or a peer's) — not the full row stream. Pass `owner:'self'` for your own trail or `session_id` for a native session; at least one is required. Use absolute ISO 8601 timestamps for since/until to narrow that scope (relative durations such as '-15 min' are not supported).",
         "notWhen": "For raw rows with detail payloads use `activity:recent`; for the agent-authored turn notes use `journal:recent`."
       }
     },
