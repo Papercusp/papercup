@@ -190,8 +190,14 @@ export interface CodexOAuthAdapterOptions {
   rateReset(headers: Record<string, string>): { resetAt: number | null; retryAfterMs: number | null; transient?: boolean };
   /** Per-account upstream ATTEMPT tally (the denominator for egress fail rate). */
   onEgressAttempt?(accountId: string): void;
-  /** Per-account transport-FAILURE tally. */
-  onEgressFailure?(accountId: string): void;
+  /** Per-account transport-FAILURE tally. `error` is the fetch rejection (WI-10007199: reachability). */
+  onEgressFailure?(accountId: string, error?: unknown): void;
+  /**
+   * An HTTP response of ANY status arrived from the upstream (WI-10007199). It proves the network
+   * path works, which is what separates "this machine cannot reach the upstream" from "the accounts
+   * are walled" when every account reads unserviceable.
+   */
+  onUpstreamResponse?(accountId: string, status: number): void;
   /**
    * The request's public model id (WI-10003306). When set, a definitive model refusal
    * (`400 "The '<model>' model is not supported when using Codex with a ChatGPT account."`) is
@@ -694,7 +700,7 @@ export function createCodexOAuthKernelAdapter(opts: CodexOAuthAdapterOptions): C
         // Local terminal admission decisions must not penalize the egress or
         // turn into a retryable upstream failure.
         if (error instanceof GatewayRequestKernelError && !error.retryable) throw error;
-        opts.onEgressFailure?.(account.accountId);
+        opts.onEgressFailure?.(account.accountId, error);
         opts.coolIp(egress.key, opts.transportCooldownMs);
         throw new GatewayRequestKernelError(
           `inference-gateway: codex OAuth upstream failed: ${describeFetchError(error)}`,
@@ -702,6 +708,7 @@ export function createCodexOAuthKernelAdapter(opts: CodexOAuthAdapterOptions): C
         );
       }
 
+      opts.onUpstreamResponse?.(account.accountId, upstream.status);
       const headers = headersToObject(upstream.headers);
       let status = upstream.status;
       let quotaExhausted = status === 429 && opts.rateReset(headers).transient === false;
