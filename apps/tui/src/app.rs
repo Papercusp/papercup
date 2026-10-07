@@ -72,6 +72,20 @@ pub const CUPBOARD_KINDS: [&str; 5] = ["all", "harness", "blueprint", "pack", "p
 /// appends one line per event (its sequence, the cursor and replay head it met,
 /// and the event itself, clipped). A replay/dedupe fault is otherwise invisible:
 /// the screen shows only the merged result (WI-10004184). Off by default.
+fn su_event_trace_body(event: &crate::su_session::SuSessionEvent) -> String {
+    let mut body = match event {
+        crate::su_session::SuSessionEvent::Transcript { phase, turn_id, role, channel, content, .. } =>
+            format!("Transcript phase={phase:?} role={role:?} turn={turn_id:?} channel={channel:?} content={content:?}"),
+        _ => format!("{event:?}"),
+    };
+    if body.len() > 600 {
+        let mut cut = 600;
+        while !body.is_char_boundary(cut) { cut -= 1; }
+        body.truncate(cut);
+    }
+    body
+}
+
 fn trace_su_event(
     event: &crate::su_session::SuSessionEvent,
     sequence: u64,
@@ -85,14 +99,7 @@ fn trace_su_event(
     else {
         return;
     };
-    let mut body = format!("{event:?}");
-    if body.len() > 600 {
-        let mut cut = 600;
-        while !body.is_char_boundary(cut) {
-            cut -= 1;
-        }
-        body.truncate(cut);
-    }
+    let body = su_event_trace_body(event);
     let line = format!("seq={sequence} last={last_sequence} head={replay_head} {body}\n");
     if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
         use std::io::Write;
@@ -21258,6 +21265,21 @@ mod tests {
     /// record, then the engine replays the conversation. Each replayed reply
     /// must land under its own question, not after every saved question, and a
     /// saved turn the replay never reaches still shows, last.
+    #[test]
+    fn su_event_trace_keeps_owner_phase_and_turn_before_truncating_content() {
+        let mut event = su_event_base("transcript", 1);
+        event["phase"] = json!("completed");
+        event["turnId"] = json!("owner-turn-1");
+        event["role"] = json!("owner");
+        event["channel"] = json!("text");
+        event["content"] = json!("界".repeat(800));
+        let trace = su_event_trace_body(&su_event(event));
+        assert!(trace.contains("phase=\"completed\""));
+        assert!(trace.contains("role=\"owner\""));
+        assert!(trace.contains("turn=\"owner-turn-1\""));
+        assert!(trace.len() <= 600);
+    }
+
     #[test]
     fn su_replay_puts_each_reply_under_its_restored_owner_turn() {
         let mut app = App::new();
