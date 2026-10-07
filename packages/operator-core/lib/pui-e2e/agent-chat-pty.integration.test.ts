@@ -1680,6 +1680,7 @@ beforeAll(async () => {
     'PAPERCUSP_SESSION_CLAUDE_DIR',
     'PAPERCUSP_SESSION_MCP_DIR',
     'PAPERCUSP_EMBED_DEVICE',
+    'PAPERCUSP_MEMORY_EMBEDDER',
   ];
   previousEnv = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
   Object.assign(process.env, {
@@ -1702,7 +1703,11 @@ beforeAll(async () => {
     // availability. Keep incidental CUDA allocation failures from turning a
     // correctly recovered embedding fallback into a console-warning failure.
     PAPERCUSP_EMBED_DEVICE: 'cpu',
+    // The UI journeys do not test model provisioning. Prevent an inherited
+    // workspace preference from loading local model files absent in this fixture.
+    PAPERCUSP_MEMORY_EMBEDDER: 'disabled',
   });
+  expect(process.env.PAPERCUSP_MEMORY_EMBEDDER).toBe('disabled');
   // The org fixture reuses numeric ids. Resolve the actual writers' roots
   // before any bootstrap so they cannot replace a real user's native home.
   const { codexHomeForSessionKey, sessionClaudeConfigDir } = await import('@papercusp/orchestrator/session-launch-dirs');
@@ -2717,10 +2722,10 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-008 sessions and context 
     await putViewState('Sessions');
 
     stage = 'open-sessions';
-    // The server-backed search below reaches the embedding leg, whose HNSW
-    // capability probe warns deterministically against this fixture's Postgres
-    // (measured: run 218aa430, alone). Allowed, never required — the same
-    // contract as work-items-urgent.test.ts — and any OTHER warning fails.
+    // This server-backed identity search runs with embedding disabled by the
+    // fixture, so it checks lexical matching without requiring model assets.
+    // Keep the existing allowance for this Postgres' HNSW capability warning
+    // if that probe runs (measured: run 218aa430, alone); any OTHER warning fails.
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     pane = new PuiPane(bin, operatorPort, home);
     try {
