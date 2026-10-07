@@ -6,6 +6,10 @@
 export const FLAGS_CHANGED_EVENT = "flags.changed";
 
 export const FLAGS = {
+  // reports-library-2026-09-15 P-004: owner-facing publishing, browsing and reading.
+  // Default ON (derived FLAG_DEFAULTS, not DARK_FLAGS); OFF is the shared
+  // tools/UI kill-switch, not a hidden rollout of otherwise finished work.
+  REPORTS_LIBRARY: "papercusp-reports-library",
   // SNAPSHOTS retired (retire-snapshots-instance-spec-2026-06-09): the harness-
   // snapshot system + the Cupboard `kind=snapshot` path are gone; the reproducible
   // clone is now the lightweight InstanceSpec (capture/boot/vary, ungated). The
