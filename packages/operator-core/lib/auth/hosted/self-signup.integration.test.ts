@@ -20,6 +20,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomBytes } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import type { Sql } from 'postgres';
 import type { OrgTestDb } from '../../../test/_org-test-db';
 import {
@@ -162,6 +163,9 @@ describe('hosted self-signup admission (real Postgres, real roles)', () => {
 
   beforeAll(async () => {
     db = await createOrgTestDb();
+    // Exercise a reserved .DRAFT in the isolated fixture before it is armed.
+    const probe = process.env.ACCOUNT_TUTORIAL_SIGNUP_MIGRATION_PROBE;
+    if (probe) await db.adminSql.unsafe(readFileSync(probe, 'utf8'));
   }, 180_000);
 
   afterAll(async () => {
@@ -190,6 +194,16 @@ describe('hosted self-signup admission (real Postgres, real roles)', () => {
     });
     expect(await attemptStatuses(email)).toEqual(['completed']);
 
+    const [preference] = await db.adminSql<Array<{ tutorial: unknown }>>`
+      SELECT profile #> '{productTutorial,3}' AS tutorial FROM papercusp_auth.hosted_user_preferences
+      WHERE organization_id = ${result.binding.organizationId}::uuid AND user_id = ${result.binding.userId}::uuid`;
+    expect(preference.tutorial).toEqual({
+      scope: { tenantId: result.binding.organizationId, userId: result.binding.userId },
+      version: 3, revision: 0, mutationId: null, disposition: 'active', currentLessonId: 'welcome', reviewedLessonIds: [],
+    });
+    // The bootstrap may enroll, but the caller cannot inspect unrelated profiles.
+    await expect(runService(sql => sql`SELECT profile FROM papercusp_auth.hosted_user_preferences`)).rejects.toMatchObject({ code: '42501' });
+
     // The minted binding must agree with the request-time authority, or the
     // first request on the new session is rejected as permission-stale.
     const denials: string[] = [];
@@ -206,12 +220,20 @@ describe('hosted self-signup admission (real Postgres, real roles)', () => {
     const input = signupInput(email);
     const first = await admission().complete(input);
     expect(first.ok).toBe(true);
+    if (!first.ok) throw new Error('signup must succeed');
+    await db.adminSql`UPDATE papercusp_auth.hosted_user_preferences
+      SET profile = jsonb_set(profile, '{productTutorial,3,disposition}', '"paused"'::jsonb)
+      WHERE organization_id = ${first.binding.organizationId}::uuid AND user_id = ${first.binding.userId}::uuid`;
     const before = await census(email);
 
     const replay = await admission().complete(input);
     expect(replay).toEqual(first);
     expect(await census(email)).toEqual(before);
     expect(await attemptStatuses(email)).toEqual(['completed']);
+    const [preference] = await db.adminSql<Array<{ disposition: string }>>`
+      SELECT profile #>> '{productTutorial,3,disposition}' AS disposition FROM papercusp_auth.hosted_user_preferences
+      WHERE organization_id = ${first.binding.organizationId}::uuid AND user_id = ${first.binding.userId}::uuid`;
+    expect(preference.disposition).toBe('paused');
   });
 
   it('admits a lifecycle-projected active identity only through explicit signup, reusing its user', async () => {

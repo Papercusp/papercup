@@ -5,44 +5,45 @@
   "accountableOwner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
   "population": {
     "failedFiles": 124,
-    "repairedFocused": 28,
+    "repairedFocused": 30,
     "repairedPeerFocused": 16,
-    "openUnknown": 80
+    "openUnknown": 78
   },
   "classes": {
     "assertion": 55,
-    "peer-scale-rekey-fixture": 1,
-    "fed-event-await-schema-fixture": 1,
-    "cross-plan-disclosure-fixture": 1,
-    "transcript-search-disclosure-fixture": 1,
-    "peer-blueprint-inherited-providers": 3,
-    "lock-ownership-expectation": 1,
-    "work-item-disclosure-fixture": 1,
     "migration-stage": 1,
     "missing-schema": 14,
     "blueprint-fixture": 1,
-    "console-guard": 6,
+    "lock-ownership-expectation": 1,
+    "work-item-disclosure-fixture": 1,
+    "sidecar-pool-lifecycle-fixture": 3,
     "sidecar-pool-and-hlc-sequence-fixture": 1,
-    "unclassified": 6,
-    "plan-pot-fixture": 1,
-    "plan-observation-fixture": 1,
-    "gym-run-identity-schema": 1,
-    "local-perf-compaction-census": 1,
-    "peer-dial-process-isolation": 1,
+    "cross-plan-disclosure-fixture": 1,
     "legacy-rubric-replay": 1,
+    "peer-plan-cutover-schema": 1,
+    "peer-dial-process-isolation": 1,
+    "embedding-provider-fixture": 1,
+    "unclassified": 6,
+    "console-guard": 4,
     "goal-budget-fixture": 1,
+    "plan-receiver-schema-fixture": 1,
+    "transcript-search-disclosure-fixture": 1,
+    "fed-event-await-schema-fixture": 1,
+    "peer-blueprint-inherited-providers": 3,
     "peer-db-schema-notify": 4,
     "owner-loop-fixture": 1,
+    "gym-run-identity-schema": 1,
+    "local-perf-compaction-census": 1,
+    "peer-edit-attribution-migration": 1,
+    "plan-observation-fixture": 1,
+    "plan-pot-fixture": 1,
     "compat-view-insert": 1,
+    "peer-scale-rekey-fixture": 1,
     "peer-feed-fixture": 3,
     "hook-mutex-cleanup": 4,
     "profile-replay": 3,
     "peer-work-item-fixture": 2,
-    "peer-memory-fixture": 1,
-    "peer-edit-attribution-migration": 1,
-    "plan-receiver-schema-fixture": 1,
-    "peer-plan-cutover-schema": 1,
-    "sidecar-pool-lifecycle-fixture": 2
+    "peer-memory-fixture": 1
   },
   "files": [
     {
@@ -467,7 +468,10 @@
         16092,
         16130
       ],
-      "historicalSymptomClasses": ["console-guard", "assertion"],
+      "historicalSymptomClasses": [
+        "console-guard",
+        "assertion"
+      ],
       "relatedOpenInventory": "EI-24099631804056975",
       "diagnosis": "Per-case DB isolation leaves the long-lived merge-cursor pool registry bound to the preceding fixture, producing the correct production rebind warning. Separately, the forced-tie test updates legacy hlc_clock.last_ms/last_count although migration813/840 moved the causal frontier into hlc_packed_seq. Reused existing registry/store-identity resets and the prior real-PG rotation control; added a real legacy-row versus sequence-clock control and sequence readback prerequisite. Original capture, different-key, same-key and forced-tie convergence assertions remain active.",
       "beforeTestRun": 20902325,
@@ -487,7 +491,12 @@
       "beforeLogSha256": "92c7a502637f361b06d7287ce514fdbdab91551fcb331dad1f3aff0c0f963989",
       "focusedLog": "/tmp/wi-10007171-verified.log",
       "focusedLogSha256": "a65801fe4d3e8a3270401ad2e1d48570781ca0718afed986674c0f7e2572add5",
-      "scopedTypecheck": { "checkedFiles": 1, "errors": 0, "exitCode": 0, "engine": "tsc-service" },
+      "scopedTypecheck": {
+        "checkedFiles": 1,
+        "errors": 0,
+        "exitCode": 0,
+        "engine": "tsc-service"
+      },
       "recurrenceGuard": "Real-PG controls distinguish retained-registry rotation/exact warning from reset/no warning, and legacy-row pin/no causal effect from actual sequence pin/exact next HLC. Both peer sequence frontiers are read back before original forced-tie authorship; the original strict-console and end-to-end convergence population passes.",
       "completeImportGraphCurrentness": "unknown",
       "currentEvidenceScope": "Whole named file PASS6/0skip/exit0, local repository-dirty staging receipt and scoped typecheck. Exact named bytes and logs retained; full imports/environment, final D006 and shipment remain unverified."
@@ -710,20 +719,58 @@
       "beforeLogSha256": "53b4fd639f5a287bff9bcd2c7f8dd761a0e97a76ba1ea0ad21b16241e73dc5b7",
       "focusedLog": "/tmp/wi-10007161-verified.log",
       "focusedLogSha256": "63159bc42e417c9a9f1824c695c3a5f040e5763bef280c8e5ee718e5bde6f4fa",
-      "scopedTypecheck": { "checkedFiles": 1, "errors": 0, "exitCode": 0, "engine": "tsc-service" },
+      "scopedTypecheck": {
+        "checkedFiles": 1,
+        "errors": 0,
+        "exitCode": 0,
+        "engine": "tsc-service"
+      },
       "recurrenceGuard": "Conventional real-PG lifecycle control distinguishes retained-registry rotation from fresh-fixture startup; exact rebind warning remains asserted, and the original strict-console four-scenario sidecar population passes.",
       "completeImportGraphCurrentness": "unknown",
       "currentEvidenceScope": "Whole named file PASS5/0skip/exit0, local repository-dirty staging receipt. Exact named bytes and logs retained; full import/environment, final D006 and shipment remain unverified."
     },
     {
       "path": "packages/operator-core/lib/sync/hyperbee/__tests__/federation-multimember-sidecar.repro.integration.test.ts",
-      "class": "console-guard",
-      "state": "open-unknown",
-      "item": "WI-10006170",
+      "class": "sidecar-pool-lifecycle-fixture",
+      "state": "repaired-focused",
+      "item": "WI-10007177",
       "lines": [
         16093,
         16094
-      ]
+      ],
+      "historicalSymptomClass": "console-guard",
+      "relatedOpenInventory": "EI-24099631804056975",
+      "diagnosis": "Fixture resolver/db-org resets omit the independent long-lived cursor registry and identity pin. Reused existing reset helpers and real-PG rotation control, with awaited actual identity SQL readbacks before pin assertions. Original three real swarm/PG topology cases, production warning and strict console guard remain active.",
+      "beforeTestRun": 20903249,
+      "afterTestRun": 20903282,
+      "intermediateTestRun": 20903264,
+      "controlOnlyTestRun": 20903275,
+      "passed": 4,
+      "skipped": 0,
+      "receiptCommit": "06f5bdac7a306a56e46e5d900b86b3ea29df661d",
+      "receiptWorkspace": "papercusp-workspace",
+      "receiptHarness": "papercusp",
+      "receiptSource": "local",
+      "receiptRunGroup": null,
+      "worktreeDirty": true,
+      "isScratchConfig": false,
+      "testSha256": "7f7f7a15d4f958d18ab6a116d8ff3978de41cebf037a5dd2dc58484dd44b4e41",
+      "testedTestBlob": "5be8191ce34dbc6ce88c3d9e54beb558e923a134",
+      "focusedLog": "/tmp/wi-10007177-final.log",
+      "focusedLogSha256": "6017e10009895aa4995b776646e30b905653234bb3d53c6a4cb52abcb1e98027",
+      "intermediateLog": "/tmp/wi-10007177-verified.log",
+      "intermediateLogSha256": "1ed9f88da6588c784b6c1571b3ac8479fc4647246ecb3f1b04adc2e0c5a5f819",
+      "controlLog": "/tmp/wi-10007177-control.log",
+      "controlLogSha256": "a149d58b2cc3aa47bce10aa4d66f238409d2dc356d81da69915dbe93b3410377",
+      "scopedTypecheck": {
+        "checkedFiles": 1,
+        "errors": 0,
+        "exitCode": 0,
+        "engine": "tsc-service"
+      },
+      "recurrenceGuard": "Real retained-registry rotation: stale bound URL then exact warning once/correct second DB. Registry reset: URL null then correct first DB/no warning. Actual identity SQL database readback and asynchronous pin awaited at each stage. Original three federation cases pass under strict console guard.",
+      "completeImportGraphCurrentness": "unknown",
+      "currentEvidenceScope": "Whole named file PASS4/0skip/exit0. Ledger local/repository-dirty staging/non-scratch/workspace+harness bound; router named-path clean and stamped pre/post-run. Intermediate20903264 FAIL1/PASS3 and control-only20903275 PASS1/3unexecuted remain qualified. Full imports/environment/finalD006/shipment unverified."
     },
     {
       "path": "packages/operator-core/lib/plan-items/convert.integration.test.ts",
@@ -857,12 +904,49 @@
     },
     {
       "path": "packages/operator-core/lib/blueprint/operation-performance-b.integration.test.ts",
-      "class": "console-guard",
-      "state": "open-unknown",
-      "item": "WI-10006170",
+      "class": "embedding-provider-fixture",
+      "state": "repaired-focused",
+      "item": "WI-10007188",
       "lines": [
         13149
-      ]
+      ],
+      "historicalSymptomClass": "console-guard",
+      "diagnosis": "The default no-matrix admission smoke did not install the existing deterministic embedding provider, allowing its workload to enter real model/device construction. The archived warning is CUDA construction failure with CPU fallback. The current unguarded smoke passed, so no current CUDA failure is claimed. A guard-only control fails because the default fixture is undefined; installing the existing helper by default for no-matrix smoke passes both real-PG arms with eight embeds and no local-model evidence. Explicit matrix provider selection is preserved; the parent embed-call assertion applies only to no-matrix runs because cold-only matrices embed in children.",
+      "baselineTestRun": 20903359,
+      "beforeTestRun": 20903376,
+      "intermediateTestRun": 20903386,
+      "afterTestRun": 20903394,
+      "passed": 1,
+      "skipped": 0,
+      "receiptCommit": "4478c77fcc34e3ff86cb4e54774d5c3a0e923466",
+      "receiptWorkspace": "papercusp-workspace",
+      "receiptHarness": "papercusp",
+      "receiptSource": "local",
+      "receiptRunGroup": null,
+      "worktreeDirty": true,
+      "isScratchConfig": false,
+      "testSha256": "93420e109f0f5864ea51cbf5e064cab48b4ff89de3070ab2d0b5408b03b0fd54",
+      "testedTestBlob": "7ded6d2ea82dd9019c2d477bdffbcff380fd21d4",
+      "namedFileProvenance": "Router stamped pre/post named-file fingerprints with no drift; full post-run SHA256/blob recorded. testing:runs does not expose exact execution source hashes. This is named-file stability, not complete import/environment assurance.",
+      "baselineLog": "/tmp/wi-10006170-operation-b-before.log",
+      "baselineLogSha256": "f049dc58e819adf08a8cd663129ead2342d395ebc6a27ea0616b9020755ad2c3",
+      "beforeLog": "/tmp/wi-10007188-guard-before.log",
+      "beforeLogSha256": "013aee03c6b031a0322e4e5338931f34896f1d2a75a7c5372c2c7dbdf2c1132f",
+      "intermediateLog": "/tmp/wi-10007188-final.log",
+      "intermediateLogSha256": "c881199040d61d2341525fe413da0b9466f4984dd2efa1c23cd752fc179724c3",
+      "focusedLog": "/tmp/wi-10007188-verified.log",
+      "focusedLogSha256": "573bb34a5649df69b32b6ec78b93bb15193d4122d43ba80ea659cf11da4c1640",
+      "scopedTypecheck": {
+        "checkedFiles": 1,
+        "errors": 0,
+        "exitCode": 0,
+        "engine": "tsc-service",
+        "log": "/tmp/wi-10007188-tsc.log",
+        "logSha256": "3adbde9111a67e0054d72689abd0d89a94e0fb34ad27d5fe903a5712bf781604"
+      },
+      "recurrenceGuard": "Default fixture-presence assertion, actual embed-call counter and shared real local-model guard; original two real-PG fork/join workload arms and strict console guard remain.",
+      "completeImportGraphCurrentness": "unknown",
+      "currentEvidenceScope": "Focused default admission smoke repair PASS1/0skip on local dirty staging only. Full matrix, complete imports/environment, final D006/P004, acceptance and shipment unverified."
     },
     {
       "path": "packages/operator-core/lib/work-items-claim-issue-scope-reread.integration.test.ts",
@@ -2343,13 +2427,13 @@
     },
     {
       "class": "console-guard",
-      "count": 7,
+      "count": 4,
       "status": "open-unknown",
       "item": "WI-10006170",
       "owner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
       "scope": "diagnosis-and-placement",
       "rootCause": "unproved",
-      "next": "Resolve the seven remaining console-guard files against scoped repairs and current causal verification; preserve their open-unknown state. The original nine-entry diagnostic inventory remains historical; its fresh-joiner and security-DROP entries are now accounted for by WI-10007161 and WI-10007165.",
+      "next": "Resolve the four remaining console-guard files against exact source failures and current causal verification. Archived inventory is historical; B now has scoped fixture repair WI-10007188. Complete imports/environment/finalD006 remain unverified.",
       "archivedDiagnosticInventory": {
         "archiveSha256": "43cf66489baf7cf665a9746d097375cffc7cdc6262014929c3cc398155b579f4",
         "scope": "Exact ANSI-stripped error groups from the immutable D006 archive, indexed by the existing FAIL-header line identities. These are historical symptoms, not current test verdicts or proved source causes. Candidate terminal records require completion and source-assurance review.",
@@ -2400,7 +2484,9 @@
             ],
             "observed": "console.warn rejects embed-device CUDA construction failure and CPU fallback; ONNX allocator reports a failed 12582912-byte buffer allocation",
             "candidateRepair": "EI-24688584300743328",
-            "candidateEvidence": "Committed completion covers the deterministic embedder override and P013 A smoke with P013_FIXTURE_EMBEDDER=1. Current B fixture installs the override only when that flag is 1; this is not closure evidence for the archived B console failure or its default route."
+            "candidateEvidence": "Committed completion covers the deterministic embedder override and P013 A smoke with P013_FIXTURE_EMBEDDER=1. Current B fixture installs the override only when that flag is 1; this is not closure evidence for the archived B console failure or its default route.",
+            "focusedRepair": "WI-10007188",
+            "focusedEvidence": "Guard-only20903376 FAIL1 due undefined default fixture; default helper plus actual8embeds/no-model guard PASS1/0skip20903394. Current baseline20903359 passed. No actual GPU-pressure counterfactual or full matrix/finalD006 claim."
           },
           {
             "path": "packages/operator-core/lib/delegated-tasks.integration.test.ts",
@@ -2477,7 +2563,8 @@
         "hypothesis": "Fixture DSN rotation resets db-org pools but retains the separate long-lived-admin-pool registry; its next cursor access rebinds and emits the diagnostic warning.",
         "causalVerification": "not-run; no controlled failed/passing fixture-lifecycle execution or source repair in this lane",
         "disposition": "Existing open federation issue includes this warning. Legacy EI-10726 is resolved without committed completion authority and describes hook/store errors, so it is not closure evidence for the pool-rebind warning. One of ten console-guard files investigated; no census state or population count changed."
-      }
+      },
+      "countCorrection": "Class count recomputed from canonical file rows after B fixture reclassification: four remaining console-guard entries."
     },
     {
       "class": "unclassified",
@@ -2913,21 +3000,63 @@
       "scope": "original-fourteen-cutover-failures-and-current-named-file-only",
       "rootCause": "Archived setupSchema omitted plan_items required by transactional writePlanIndexRows. Existing committed fixture repair295d38589b added the index/revision spine and BAR columns; no additional source edit was required.",
       "relatedCommittedRepair": "WI-10006276",
-      "testRunIds": [20901028],
-      "archiveLines": [16200, 16201, 16202, 16203, 16204, 16205, 16206, 16207, 16208, 16209, 16210, 16211, 16212, 16213],
+      "testRunIds": [
+        20901028
+      ],
+      "archiveLines": [
+        16200,
+        16201,
+        16202,
+        16203,
+        16204,
+        16205,
+        16206,
+        16207,
+        16208,
+        16209,
+        16210,
+        16211,
+        16212,
+        16213
+      ],
       "next": "Retain current focused PASS23/0skip with named-byte equality and repository-dirty limits. Preserve finalP004 custody; full import/environment and finalD006 assurance remain unverified."
     },
     {
       "class": "sidecar-pool-lifecycle-fixture",
-      "count": 2,
+      "count": 3,
       "status": "repaired-focused",
-      "items": ["WI-10007161", "WI-10007165"],
+      "items": [
+        "WI-10007161",
+        "WI-10007165",
+        "WI-10007177"
+      ],
       "owner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
-      "scope": "named-fresh-sidecar-joiner-and-security-drop-fixtures-only",
-      "rootCause": "Per-case DSN isolation leaves the separate long-lived pool registry bound to the previous fixture. Reset registry and process identity at teardown, retaining production rebinding. The real PG control must also await each fire-and-forget identity probe before its next reset/rotation; the failed intermediate control20902079 identified that harness precondition and is not a passing receipt.",
-      "testRunIds": [20901570, 20902079, 20902157, 20902187, 20902210],
-      "archiveLines": [16231, 16232, 16233, 16234, 16239, 16095, 16101, 16108],
-      "next": "Retain fresh-joiner PASS5/0skip and security-DROP PASS6/0skip, each with scoped typecheck1/errors0. Related multi-file EI-24099631804056975 remains open; other console fixtures, complete imports/environment, final D006 and shipment remain unverified."
+      "scope": "named-fresh-sidecar-joiner-security-drop-and-multi-member-fixtures-only",
+      "rootCause": "Per-case DSN isolation leaves the separate long-lived pool registry bound to the previous fixture. Reset registry and process identity at teardown, retaining production rebinding. The real PG control must also await each fire-and-forget identity probe before its next reset/rotation; the failed intermediate control20902079 identified that harness precondition and is not a passing receipt. Multi-member control awaits actual identity SQL readbacks before asynchronous pin assertions; intermediate20903264 passed originalthree but failed control readiness.",
+      "testRunIds": [
+        20901570,
+        20902079,
+        20902157,
+        20902187,
+        20902210,
+        20903249,
+        20903264,
+        20903275,
+        20903282
+      ],
+      "archiveLines": [
+        16231,
+        16232,
+        16233,
+        16234,
+        16239,
+        16095,
+        16101,
+        16108,
+        16093,
+        16094
+      ],
+      "next": "Retain fresh-joiner PASS5/0skip, security-DROP PASS6/0skip and multi-member PASS4/0skip with each scoped typecheck1/errors0. Related multi-file inventory/remaining console fixtures stay open; full imports/environment/finalD006/shipment unverified."
     },
     {
       "class": "sidecar-pool-and-hlc-sequence-fixture",
@@ -2937,9 +3066,26 @@
       "owner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
       "scope": "named-concurrent-writes-sidecar-fixture-only",
       "rootCause": "Cursor-pool registry survives per-case DSN rotation; forced HLC tie pins an obsolete row frontier instead of the sequence introduced in migration813. Detector failure: the tie rig assumed the historical clock storage, with no current-source frontier readback prerequisite. Added real sequence readback and row-versus-sequence causal control, alongside retained-pool versus clean-reset PG control with awaited identity probes.",
-      "testRunIds": [20902325, 20902553],
-      "archiveLines": [16091, 16092, 16130],
+      "testRunIds": [
+        20902325,
+        20902553
+      ],
+      "archiveLines": [
+        16091,
+        16092,
+        16130
+      ],
       "next": "Retain whole-file PASS6/0skip and scoped typecheck1/errors0. Related multi-file inventory stays open; complete imports/environment, final D006 and shipment remain unverified."
+    },
+    {
+      "class": "embedding-provider-fixture",
+      "count": 1,
+      "status": "repaired-focused",
+      "item": "WI-10007188",
+      "owner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
+      "scope": "default-smoke-fixture-only",
+      "rootCause": "The default no-matrix admission smoke did not install the existing deterministic embedding provider, allowing its workload to enter real model/device construction. The archived warning is CUDA construction failure with CPU fallback. The current unguarded smoke passed, so no current CUDA failure is claimed. A guard-only control fails because the default fixture is undefined; installing the existing helper by default for no-matrix smoke passes both real-PG arms with eight embeds and no local-model evidence. Explicit matrix provider selection is preserved; the parent embed-call assertion applies only to no-matrix runs because cold-only matrices embed in children.",
+      "next": "Historical focused repair only; final D006/P004 and complete imported source/environment assurance retain independent custody."
     }
   ],
   "prerequisites": [

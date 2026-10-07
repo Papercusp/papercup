@@ -3,6 +3,9 @@ import { admitAuthenticatedPhoneProducer, admitPhoneProducer, createHttpsPhonePr
 import type { Principal } from '@papercusp/agent-mcp';
 import type { ExternalRuntimeProducerBinding } from './operation-worker-binding';
 import type { AppScopeRow } from '../connected-apps/scope-policy';
+import { resolveWorkItemPot } from '../pot-membership';
+
+vi.mock('../pot-membership', () => ({ resolveWorkItemPot: vi.fn(async () => 'home') }));
 
 function fixture() {
   const snapshot: PhoneProducerAdmission = { workspaceId: 'workspace', harnessSlug: 'phone-app', storageHarnessSlug: 'home',
@@ -29,6 +32,33 @@ function fixture() {
 }
 
 describe('Phone producer HTTPS bridge', () => {
+  it('uses the same authenticated authority for owner-scoped retained registration and export', async () => {
+    const f = fixture();
+    const binding = await f.read();
+    const retained = { binding, roomName: 'room-a', contentDeleted: false };
+    const exported = { ok: true, content: { segments: [] } };
+    const request = vi.fn().mockResolvedValueOnce(Response.json({ ok: true, data: retained }))
+      .mockResolvedValueOnce(Response.json({ ok: true, data: exported }));
+    const host = createHttpsPhoneProducerAdmissionHost({ endpoint: 'https://phone.test/admission',
+      token: 'credential', request }).retainedOutcomeHost;
+    expect(await host.readRegistration('owner-a', 'inbound:room-a')).toEqual(retained);
+    expect(await host.readExport('owner-a', 'room-a')).toEqual(exported);
+    expect(request.mock.calls.map(([, options]) => JSON.parse(options.body))).toEqual([
+      { action: 'readRetainedRegistration', ownerId: 'owner-a', callKey: 'inbound:room-a' },
+      { action: 'readExport', ownerId: 'owner-a', roomName: 'room-a' },
+    ]);
+    for (const [url, options] of request.mock.calls) {
+      expect(url).toBe('https://phone.test/admission');
+      expect(options.redirect).toBe('error');
+      expect(options.headers.authorization).toBe('Bearer credential');
+    }
+  });
+  it.each([null, { binding: {}, roomName: 'room-a', contentDeleted: false },
+    { binding: {}, roomName: 'room-a' }])('rejects incomplete retained registration %j', async (data) => {
+    const host = createHttpsPhoneProducerAdmissionHost({ endpoint: 'https://phone.test/admission',
+      token: 'credential', request: vi.fn(async () => Response.json({ ok: true, data })) });
+    await expect(host.retainedOutcomeHost.readRegistration('owner-a', 'call-key')).rejects.toThrow();
+  });
   it.each(['http://phone.test/admission', 'https://user:secret@phone.test/admission',
     'https://phone.test/admission?authority=other', 'https://phone.test/admission#other'])
     ('refuses ambiguous or unauthenticated authority %s', (endpoint) => {
@@ -63,6 +93,30 @@ describe('Phone producer canonical admission', () => {
     const result = await admitAuthenticatedPhoneProducer(principal(), f.host, 'room-a', f.store);
     expect(result.executionOwnerId).toBe('voice-run-a');
     expect(f.row!.assignee).toBe('voice-run-a');
+    expect(resolveWorkItemPot).toHaveBeenCalledWith({ rawSlug: 'phone-app', workspaceId: 'workspace' });
+  });
+  it('refuses a sidecar-selected ledger partition before allocating a producer', async () => {
+    const f = fixture(); f.snapshot.storageHarnessSlug = 'foreign';
+    await expect(admitAuthenticatedPhoneProducer(principal(), f.host, 'room-a', f.store))
+      .rejects.toThrow('storage_scope_mismatch');
+    expect(f.store.allocateId).not.toHaveBeenCalled();
+    expect(f.host.reserveRegistration).not.toHaveBeenCalled();
+    expect(f.store.create).not.toHaveBeenCalled();
+  });
+  it('refuses unresolved canonical storage instead of accepting the sidecar value', async () => {
+    const f = fixture();
+    await expect(admitAuthenticatedPhoneProducer(principal(), f.host, 'room-a', f.store, undefined,
+      async () => null)).rejects.toThrow('storage_scope_mismatch');
+    expect(f.store.allocateId).not.toHaveBeenCalled();
+  });
+  it('rechecks canonical storage after allocation before sidecar reservation', async () => {
+    const f = fixture();
+    const resolve = vi.fn().mockResolvedValueOnce('home').mockResolvedValue('other-home');
+    await expect(admitAuthenticatedPhoneProducer(principal(), f.host, 'room-a', f.store, undefined,
+      resolve)).rejects.toThrow('storage_scope_mismatch');
+    expect(f.store.allocateId).toHaveBeenCalledOnce();
+    expect(f.host.reserveRegistration).not.toHaveBeenCalled();
+    expect(f.store.create).not.toHaveBeenCalled();
   });
   function appFixture() {
     const f = fixture();

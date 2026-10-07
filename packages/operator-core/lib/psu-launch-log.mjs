@@ -89,6 +89,9 @@ const CLAUDE_WEEKLY_LIMIT_RE = /you(?:'|’)?ve hit your weekly limit(?:\s*[\u00
 const CODEX_CHATGPT_MODEL_RE =
   /the\s+['‘’"]([^'‘’"\r\n]+)['‘’"]\s+model is not supported when using codex with a chatgpt account/i;
 
+const CODEX_WORKSPACE_DISCOVERY_TIMEOUT_RE =
+  /Error:\s*account\/read failed during TUI bootstrap:\s*account\/read failed:\s*workspace routing discovery timed out\s*\(code -32603\)/;
+
 /**
  * Remove terminal paint instructions while preserving visible text. This is
  * deliberately local rather than an app-layer import: this .mjs is shared by
@@ -104,6 +107,11 @@ function stripTerminalControls(value) {
     // reset hint from swallowing the next painted row.
     .replace(/\r/g, '\n')
     .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '');
+}
+
+/** Native account bootstrap failed before model inference, not a pool quota verdict. */
+export function isCodexWorkspaceDiscoveryTimeout(logText) {
+  return typeof logText === 'string' && CODEX_WORKSPACE_DISCOVERY_TIMEOUT_RE.test(stripTerminalControls(logText));
 }
 
 /**
@@ -168,6 +176,10 @@ async function readFileTailBytesAsync(file, bytes) {
  */
 export function detectPsuHeadlessLaunchBlockHint(logText) {
   if (typeof logText !== 'string' || logText.length === 0) return null;
+  if (isCodexWorkspaceDiscoveryTimeout(logText)) {
+    return 'Codex timed out discovering its ChatGPT account workspace before model requests. ' +
+      'Retry after connectivity recovers, or use --account=auto to route through the inference gateway.';
+  }
   const visible = stripTerminalControls(logText);
   const weeklyLimit = CLAUDE_WEEKLY_LIMIT_RE.exec(visible);
   if (weeklyLimit) {

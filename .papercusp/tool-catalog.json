@@ -30010,7 +30010,7 @@
           "POST"
         ]
       },
-      "description": "History of scheduler:get_next calls: who pulled what, when, under which spec, and why a pull came up empty. Reads the existing tool_invocations ledger get_next already writes — no new table.",
+      "description": "History of scheduler:get_next calls: who pulled what, when, under which spec, why a pull came up empty, and any exact-key late claim settlement observed after a timeout. Reads the existing tool_invocations ledger — no new table.",
       "capabilities": [
         "work_items:read"
       ],

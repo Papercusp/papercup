@@ -23,6 +23,7 @@ import {
   prunePsuLaunchLogs,
   readPsuLaunchLogTail,
   detectPsuHeadlessLaunchBlockHint,
+  isCodexWorkspaceDiscoveryTimeout,
   readPsuHeadlessLaunchBlockHintAsync,
   readPsuLaunchLogTailAsync,
   ensurePsuLaunchLogPath,
@@ -170,6 +171,22 @@ describe('headless pre-turn launch blockage', () => {
   it('does not turn ordinary boot chatter or a generic reset word into a diagnosis', () => {
     expect(detectPsuHeadlessLaunchBlockHint('Claude Code booting\nMCP connected')).toBeNull();
     expect(detectPsuHeadlessLaunchBlockHint('settings reset at 7am')).toBeNull();
+  });
+
+  it('identifies the measured native workspace-discovery timeout through TUI paint', () => {
+    const raw = '\x1b[?25h\x1b[0 qError: account/read failed during TUI bootstrap: ' +
+      'account/read failed: workspace routing discovery timed out (code -32603)\r\n';
+    expect(isCodexWorkspaceDiscoveryTimeout(raw)).toBe(true);
+    expect(detectPsuHeadlessLaunchBlockHint(raw)).toBe(
+      'Codex timed out discovering its ChatGPT account workspace before model requests. ' +
+      'Retry after connectivity recovers, or use --account=auto to route through the inference gateway.',
+    );
+    for (const unrelated of ['workspace routing discovery timed out',
+      'Error: account/read failed during TUI bootstrap: invalid token',
+      'Error: model request failed: quota exceeded', null]) {
+      expect(isCodexWorkspaceDiscoveryTimeout(unrelated)).toBe(false);
+      expect(detectPsuHeadlessLaunchBlockHint(unrelated)).toBeNull();
+    }
   });
 
   it('reads only the bounded tail of the persisted headless receipt', async () => {

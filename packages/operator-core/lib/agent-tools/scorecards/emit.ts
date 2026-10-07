@@ -964,6 +964,17 @@ type GradingAuditReplayConsistencyError = {
   error: string;
 };
 
+function gradingAuditEvidenceReferenceKeys(evidenceRef: string, evidenceKind?: string): Set<string> {
+  const ref = evidenceRef.trim();
+  const keys = new Set([ref]);
+  const testRunRef = /(?:^|\b)test-run(?:\s+|:)(\d+)(?=$|\b)/i.exec(ref);
+  if (testRunRef) keys.add(`test-run:${testRunRef[1]}`);
+  if (evidenceKind?.trim().toLowerCase() === 'test-run' && /^\d+$/.test(ref)) {
+    keys.add(`test-run:${ref}`);
+  }
+  return keys;
+}
+
 /**
  * A grading-integrity audit can call the target card's exact evaluator recipe
  * "re-runnable" while separately claiming its uniform distribution is false.
@@ -1200,16 +1211,25 @@ export async function validateGradingAuditReplayConsistency(
   // disagreement or a citation back to the same selection still fails closed.
   const auditFinding = auditRatings?.['degenerate-distribution'];
   const independentEvidenceRef = auditFinding?.evidenceRef?.trim();
-  const replayEvidenceRefs = new Set([
-    ...selection.evidence.map(({ evidenceRef }) => evidenceRef),
-    ...(parsedRecipe.data.args.evidenceRefs ?? []),
-    ...(parsedRecipe.data.args.bindingIds ?? []).flatMap((id) => [String(id), `binding:${id}`]),
-  ]);
+  const replayEvidenceRefs = new Set<string>();
+  for (const { evidenceKind, evidenceRef } of selection.evidence) {
+    for (const key of gradingAuditEvidenceReferenceKeys(evidenceRef, evidenceKind)) replayEvidenceRefs.add(key);
+  }
+  for (const evidenceRef of parsedRecipe.data.args.evidenceRefs ?? []) {
+    for (const key of gradingAuditEvidenceReferenceKeys(evidenceRef)) replayEvidenceRefs.add(key);
+  }
+  for (const id of parsedRecipe.data.args.bindingIds ?? []) {
+    replayEvidenceRefs.add(String(id));
+    replayEvidenceRefs.add(`binding:${id}`);
+  }
+  const auditEvidenceRefs = independentEvidenceRef
+    ? gradingAuditEvidenceReferenceKeys(independentEvidenceRef, auditFinding?.evidenceKind)
+    : new Set<string>();
   const citesIndependentEvidence =
     typeof auditFinding?.evidenceKind === 'string' &&
     auditFinding.evidenceKind.trim().length > 0 &&
     !!independentEvidenceRef &&
-    !replayEvidenceRefs.has(independentEvidenceRef);
+    ![...auditEvidenceRefs].some((evidenceRef) => replayEvidenceRefs.has(evidenceRef));
   if (mismatches.length > 0 || citesIndependentEvidence) return undefined;
 
   return {

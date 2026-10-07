@@ -1,5 +1,6 @@
 /** Offline native account/read contract: no real credentials or model calls. */
 import { spawn } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -7,8 +8,35 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { codexGatewayConfigToml, codexManagedFeaturesToml } from '@papercusp/orchestrator/codex-gateway-config';
 import { resolveOnPath } from './backend-bin-resolve.mjs';
+import { isCodexWorkspaceDiscoveryTimeout } from './psu-launch-log.mjs';
 
 const codex = resolveOnPath('codex');
+const require = createRequire(import.meta.url);
+
+/** Exercise the TUI's mandatory account/read path, including terminal probes. */
+async function readNativeTui(home: string, budgetMs: number): Promise<{ output: string; exitedBeforeBudget: boolean; exitCode: number }> {
+  const env: NodeJS.ProcessEnv = { ...process.env, CODEX_HOME: home, TERM: 'xterm-256color' };
+  delete env.OPENAI_API_KEY;
+  const child = require('@lydell/node-pty').spawn(codex!, [
+    '--no-alt-screen', '--dangerously-bypass-approvals-and-sandbox',
+    '--dangerously-bypass-hook-trust', '-C', home,
+  ], { env, cwd: home, cols: 120, rows: 30 });
+  return new Promise((resolve, reject) => {
+    let output = '', probeTail = '', budgetExpired = false;
+    const timer = setTimeout(() => { budgetExpired = true; child.kill('SIGTERM'); }, budgetMs);
+    const cleanupTimer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('native TUI failed to terminate')); }, budgetMs + 2000);
+    const data = child.onData((chunk: string) => {
+      output = (output + chunk).slice(-65536);
+      const probes = probeTail + chunk;
+      probeTail = probes.slice(-3);
+      if (probes.includes('\x1b[6n')) child.write('\x1b[1;1R');
+    });
+    child.onExit(({ exitCode }: { exitCode: number }) => {
+      clearTimeout(timer); clearTimeout(cleanupTimer); data.dispose();
+      resolve({ output, exitedBeforeBudget: !budgetExpired, exitCode });
+    });
+  });
+}
 
 async function readNativeAccount(home: string): Promise<{ result?: unknown; error?: { message?: string } }> {
   const env: NodeJS.ProcessEnv = { ...process.env, CODEX_HOME: home };
@@ -58,6 +86,54 @@ async function readNativeAccount(home: string): Promise<{ result?: unknown; erro
 }
 
 describe('native gateway account bootstrap', () => {
+  it.runIf(Boolean(codex) && process.platform === 'linux')('boots the native TUI without the workspace endpoint that reproduces the exact default-auth timeout', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'codex-native-tui-account-'));
+    const requests: string[] = [];
+    const server = createServer((req, res) => {
+      requests.push(req.url ?? '');
+      if (req.url?.includes('/models')) {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end('{"models":[]}');
+      }
+      // Account discovery deliberately receives no response. This reproduces
+      // the native 15-second timeout, rather than only a generic HTTP failure.
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const url = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+    const b64 = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
+    const token = `${b64({ alg: 'none' })}.${b64({ exp: Math.floor(Date.now() / 1000) + 3600,
+      email: 'fixture@example.invalid', 'https://api.openai.com/auth': {
+        chatgpt_account_id: 'default-fixture', chatgpt_plan_type: 'pro',
+      } })}.fixture`;
+    writeFileSync(join(home, 'auth.json'), JSON.stringify({ auth_mode: 'chatgpt', tokens: {
+      access_token: token, id_token: token, refresh_token: 'fixture-refresh', account_id: 'default-fixture',
+    } }));
+    const gateway = codexGatewayConfigToml(null, { gatewayOn: true });
+    const root = [`chatgpt_base_url = "${url}"`, 'model = "gpt-6.1-sol"'];
+    const features = codexManagedFeaturesToml({ headless: true });
+    const tables = gateway.tables.map(line => line.startsWith('base_url =') ? `base_url = "${url}/v1"`
+      : line.startsWith('model_catalog_url =') ? `model_catalog_url = "${url}/v1/models"` : line);
+    try {
+      writeFileSync(join(home, 'config.toml'), [...root, ...gateway.root, ...features, ...tables].join('\n'));
+      const routed = await readNativeTui(home, 20_000);
+      expect(routed.exitedBeforeBudget).toBe(false);
+      expect(isCodexWorkspaceDiscoveryTimeout(routed.output)).toBe(false);
+      expect(requests.some(path => path.includes('/v1/models'))).toBe(true);
+      expect(requests.some(path => path.includes('/api/codex/accounts/check'))).toBe(false);
+      requests.length = 0;
+      writeFileSync(join(home, 'config.toml'), [...root, ...features].join('\n'));
+      const direct = await readNativeTui(home, 22_000);
+      expect(direct).toMatchObject({ exitedBeforeBudget: true, exitCode: 1 });
+      expect(isCodexWorkspaceDiscoveryTimeout(direct.output)).toBe(true);
+      expect(requests.some(path => path.includes('/api/codex/accounts/check'))).toBe(true);
+      expect(requests.some(path => path.includes('/v1/responses'))).toBe(false);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      rmSync(home, { recursive: true, force: true });
+    }
+  }, 60_000);
+
   it.runIf(Boolean(codex))('does not consult the default ChatGPT workspace when the gateway owns auth', async () => {
     const home = mkdtempSync(join(tmpdir(), 'codex-native-account-'));
     const requests: string[] = [];

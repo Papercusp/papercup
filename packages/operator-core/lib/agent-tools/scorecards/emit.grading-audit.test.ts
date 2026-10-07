@@ -1171,6 +1171,65 @@ describe('scorecards:emit grading audit path (P-013)', () => {
     expect(recordGradingAudit).toHaveBeenCalledWith('EI-CARD', expect.objectContaining({ verdict: 'failed' }));
   });
 
+  it.each(['test-run:20852939', '20852939'])(
+    'refuses a test-run citation alias for a run already in the graded selection (%s)',
+    async (evidenceRef) => {
+      const card = exactReplayConsistencyGradedCard();
+      const observation = card.payload.observation;
+      const recipe = observation.rerunRecipe;
+      const selectedMutationRef =
+        'test-run 20852939 mutation-probe mutant fail papercusp-desktop/src-tauri/src/main.rs @bbc63f74e66e';
+      const selectedSourceRef = 'papercusp-desktop/src-tauri/src/main.rs';
+      getRubric.mockResolvedValue(replayConsistencyAuditRubric());
+      getIssue.mockResolvedValue({
+        ...card,
+        payload: {
+          observation: {
+            ...observation,
+            rerunRecipe: {
+              ...recipe,
+              args: {
+                ...recipe.args,
+                evidenceRefs: [selectedSourceRef, selectedMutationRef],
+                bindingIds: [27284, 27285],
+              },
+              selection: {
+                ...recipe.selection,
+                evidence: [
+                  { evidenceKind: 'mutation', evidenceRef: selectedMutationRef },
+                  { evidenceKind: 'test', evidenceRef: selectedSourceRef },
+                ],
+                bindingIds: [27284, 27285],
+              },
+            },
+          },
+        },
+      });
+      const dispatchTool = vi.fn().mockResolvedValue(targetReplay('pass'));
+
+      const res = await emitScorecard(
+        {
+          ...auditArgs,
+          ratings: {
+            ...REPLAY_SPLIT_RATINGS,
+            'degenerate-distribution': {
+              ...REPLAY_SPLIT_RATINGS['degenerate-distribution'],
+              evidenceKind: 'test-run',
+              evidenceRef,
+            },
+          },
+        },
+        { createdBy: 'su-auditor', ctxHarness: 'papercusp' },
+        { dispatchTool },
+      );
+
+      expect(res).toMatchObject({ ok: false, code: 'grading_audit_replay_consistent' });
+      expect(dispatchTool).not.toHaveBeenCalled();
+      expect(captureImprovement).not.toHaveBeenCalled();
+      expect(recordGradingAudit).not.toHaveBeenCalled();
+    },
+  );
+
   it('allows the same audit split when the historical replay contradicts a target rating', async () => {
     getRubric.mockResolvedValue(replayConsistencyAuditRubric());
     getIssue.mockResolvedValue(replayConsistencyGradedCard());

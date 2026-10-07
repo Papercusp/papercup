@@ -437,14 +437,27 @@ export async function prepareVerifierSource({ repo, ref, dest, inputs = [], inpu
 
 /** File/link identity before dependency materialization; never follow archive symlinks.
  * @param {string} root
+ * @param {{ runtimeArtifacts?: boolean, recordedPaths?: string[] }} [options]
  */
-async function verifierSourceFiles(root) {
+async function verifierSourceFiles(root, { runtimeArtifacts = false, recordedPaths = [] } = {}) {
   const rows = [];
   async function walk(dir) {
     for (const entry of (await fs.readdir(dir, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name))) {
       const path = join(dir, entry.name);
       const rel = relative(root, path).split(sep).join('/');
       if (rel === '.verifier-source.json') continue;
+      // Source-only runtime verdict: the rig materializes dependencies under its
+      // install mutex and builds the host separately. Never exempt a committed
+      // path, nor a symlink posing as an independent dependency/output directory.
+      const runtimeDirectory = entry.name === 'node_modules' || [
+        'apps/operator/dist-verify', 'apps/operator/test-results',
+        'apps/operator/playwright-report', 'papercusp-desktop/src-tauri/target',
+      ].includes(rel);
+      if (runtimeArtifacts && runtimeDirectory
+        && !recordedPaths.some((p) => p === rel || p.startsWith(`${rel}/`))) {
+        if (!entry.isDirectory()) throw new PreviewError(`runtime artifact is not an independent directory: ${rel}`, 2);
+        continue;
+      }
       if (entry.isDirectory()) await walk(path);
       else {
         const stat = await fs.lstat(path);
@@ -468,14 +481,19 @@ async function verifierSourceFiles(root) {
 /** Fail closed on absent/changed provenance or any modified/extra/missing source byte.
  * @param {string} dest
  * @param {Awaited<ReturnType<typeof prepareVerifierSource>>} expected
+ * @param {{ runtimeArtifacts?: boolean }} [options] Source-only runtime mode permits
+ * named untracked build outputs and materialized dependency directories, not source edits.
  */
-export async function verifyVerifierSource(dest, expected) {
+export async function verifyVerifierSource(dest, expected, options = {}) {
   if (expected?.schemaVersion !== 'verifier-source-v1' || !expected.testedInputs?.length) {
     throw new PreviewError('missing verification source provenance', 2);
   }
   const recorded = JSON.parse(await fs.readFile(join(dest, '.verifier-source.json'), 'utf8'));
   if (JSON.stringify(recorded) !== JSON.stringify(expected)) throw new PreviewError('tampered verification source provenance', 2);
-  if (JSON.stringify(await verifierSourceFiles(dest)) !== JSON.stringify(expected.files)) {
+  if (!/^[0-9a-f]{40}$/.test(expected.sourceCommit) || !Array.isArray(expected.files) || !expected.files.length) {
+    throw new PreviewError('invalid verification source provenance', 2);
+  }
+  if (JSON.stringify(await verifierSourceFiles(dest, { ...options, recordedPaths: expected.files.map((file) => file.path) })) !== JSON.stringify(expected.files)) {
     throw new PreviewError('tampered verification source archive', 2);
   }
   return expected;

@@ -6,10 +6,17 @@
  * A cached resolveGitContext() commit is display metadata, not provenance.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { prepareVerifierSource } from '../../../scripts/source-preview.mjs';
+import { makeSuperproject, write } from '../../../packages/operator-core/lib/source-preview.fixture';
 
 const mocks = vi.hoisted(() => ({
   captureWorktreeSnapshot: vi.fn(),
   computeWorktreeDirty: vi.fn(),
+  captureTestSourceSnapshot: vi.fn(),
+  resolveReporterSourceRoot: vi.fn(),
   resolveAgentWorkspaceRoot: vi.fn(() => '/repo'),
   resolveGitContext: vi.fn(async () => ({ branch: 'staging', commit: 'stale-cached-sha' })),
   resolveTestRunSource: vi.fn(() => 'admin-ui'),
@@ -19,6 +26,8 @@ const mocks = vi.hoisted(() => ({
 vi.mock('@papercusp/operator-core/lib/testing-worktree', () => ({
   captureWorktreeSnapshot: mocks.captureWorktreeSnapshot,
   computeWorktreeDirty: mocks.computeWorktreeDirty,
+  captureTestSourceSnapshot: mocks.captureTestSourceSnapshot,
+  resolveReporterSourceRoot: mocks.resolveReporterSourceRoot,
 }));
 vi.mock('@papercusp/operator-core/lib/agent-tools/capability/base-dir', () => ({
   resolveAgentWorkspaceRoot: mocks.resolveAgentWorkspaceRoot,
@@ -41,6 +50,8 @@ describe('AdminTestRunsPlaywrightReporter worktree provenance', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.resolveAgentWorkspaceRoot.mockImplementation(() => '/repo');
+    mocks.resolveReporterSourceRoot.mockImplementation((root?: string) => mocks.resolveAgentWorkspaceRoot(root ? { projectDir: root } : {}));
+    mocks.captureTestSourceSnapshot.mockImplementation((root: string) => mocks.captureWorktreeSnapshot(root));
     delete process.env.PAPERCUSP_DISABLE_TEST_RUNS_REPORTER;
     delete process.env.PAPERCUSP_TEST_RUN_GROUP;
     delete process.env.PAPERCUSP_TEST_RUN_HARNESS;
@@ -55,12 +66,12 @@ describe('AdminTestRunsPlaywrightReporter worktree provenance', () => {
 
     const reporter = new AdminTestRunsPlaywrightReporter();
     const startedAt = new Date('2026-08-21T00:00:00.000Z');
-    reporter.onBegin();
+    await reporter.onBegin();
     reporter.onTestEnd(
       { location: { file: '/repo/specs/example.spec.ts' } } as never,
       { startTime: startedAt, duration: 17, status: 'passed', errors: [] } as never,
     );
-    reporter.onEnd();
+    await reporter.onEnd();
     await reporter.onExit();
 
     expect(mocks.captureWorktreeSnapshot).toHaveBeenCalledTimes(2);
@@ -100,12 +111,12 @@ describe('AdminTestRunsPlaywrightReporter worktree provenance', () => {
     mocks.captureWorktreeSnapshot.mockReturnValue(snapshot);
     mocks.computeWorktreeDirty.mockReturnValue(false);
     const reporter = new AdminTestRunsPlaywrightReporter();
-    reporter.onBegin({ rootDir: '/proof/apps/operator/e2e' });
+    await reporter.onBegin({ rootDir: '/proof/apps/operator/e2e' });
     reporter.onTestEnd(
       { location: { file: '/proof/apps/operator/e2e/tutorial.spec.ts' } } as never,
       { startTime: new Date(0), duration: 17, status: 'passed', errors: [] } as never,
     );
-    reporter.onEnd();
+    await reporter.onEnd();
     await reporter.onExit();
     expect(mocks.captureWorktreeSnapshot.mock.calls).toEqual([['/proof'], ['/proof']]);
     const values = mocks.sql.mock.calls[0]!.slice(1);
@@ -125,10 +136,10 @@ describe('AdminTestRunsPlaywrightReporter worktree provenance', () => {
     mocks.captureWorktreeSnapshot.mockReturnValueOnce(before).mockReturnValueOnce(after);
     mocks.computeWorktreeDirty.mockReturnValue(true);
     const reporter = new AdminTestRunsPlaywrightReporter();
-    reporter.onBegin();
+    await reporter.onBegin();
     reporter.onTestEnd({ location: { file: '/repo/e2e/example.spec.ts' } } as never,
       { startTime: new Date(0), duration: 1, status: 'failed', errors: [{ message: 'original assertion failure' }] } as never);
-    reporter.onEnd();
+    await reporter.onEnd();
     await reporter.onExit();
     const values = mocks.sql.mock.calls[0]!.slice(1);
     expect(values[5]).toContain('original assertion failure');
@@ -144,10 +155,10 @@ describe('AdminTestRunsPlaywrightReporter worktree provenance', () => {
     mocks.captureWorktreeSnapshot.mockReturnValue({ commit: 'sha', porcelain: '' });
     mocks.computeWorktreeDirty.mockReturnValue(false);
     const reporter = new AdminTestRunsPlaywrightReporter();
-    reporter.onBegin();
+    await reporter.onBegin();
     reporter.onTestEnd({ location: { file: '/repo/e2e/example.spec.ts' } } as never,
       { startTime: new Date(0), duration: 1, status: 'passed', errors: [] } as never);
-    reporter.onEnd();
+    await reporter.onEnd();
     await reporter.onExit();
     expect(mocks.sql.mock.calls[0]!.slice(1)[5]).toBeNull();
   });
@@ -157,7 +168,7 @@ describe('AdminTestRunsPlaywrightReporter worktree provenance', () => {
     mocks.captureWorktreeSnapshot.mockReturnValue({ commit: 'sha', porcelain: '' });
     mocks.computeWorktreeDirty.mockReturnValue(false);
     const reporter = new AdminTestRunsPlaywrightReporter();
-    reporter.onBegin();
+    await reporter.onBegin();
     const file = '/repo/e2e/example.spec.ts';
     const kase = (title: string, describe = 'panel') => ({
       location: { file },
@@ -168,7 +179,7 @@ describe('AdminTestRunsPlaywrightReporter worktree provenance', () => {
     reporter.onTestEnd(kase('closes') as never, { startTime: new Date(0), duration: 1, status: 'failed', errors: [{ message: 'boom' }] } as never);
     // A retry of the same case is ONE identity, not two.
     reporter.onTestEnd(kase('closes') as never, { startTime: new Date(0), duration: 1, status: 'timedOut', errors: [] } as never);
-    reporter.onEnd();
+    await reporter.onEnd();
     await reporter.onExit();
     const stored = mocks.sql.mock.calls[0]!.slice(1).at(-1);
     const parsed = parseTestRunExecutionDetails(stored);
@@ -179,12 +190,86 @@ describe('AdminTestRunsPlaywrightReporter worktree provenance', () => {
     mocks.captureWorktreeSnapshot.mockReturnValue({ commit: 'sha', porcelain: '' });
     mocks.computeWorktreeDirty.mockReturnValue(false);
     const reporter = new AdminTestRunsPlaywrightReporter();
-    reporter.onBegin();
+    await reporter.onBegin();
     const kase = { location: { file: '/repo/e2e/example.spec.ts' }, title: 'opens audit', titlePath: () => ['', 'chromium', 'example.spec.ts', 'plans', 'opens audit'] };
     for (let n = 0; n < 2; n++) reporter.onTestEnd(kase as never, { startTime: new Date(0), duration: 1, status: 'passed', errors: [] } as never);
-    reporter.onEnd();await reporter.onExit();
+    await reporter.onEnd();await reporter.onExit();
     const stored = mocks.sql.mock.calls[0]!.slice(1).at(-1);
     expect(parseTestRunExecutionDetails(stored)).toMatchObject({ passed: 2, failed: 0, testLayer: 'e2e', passedCaseTitles: ['plans > opens audit'] });
+  });
+});
+
+describe('WI-10007182 committed archive reporter provenance', () => {
+  let temp: string;
+  let root: string;
+  let receiptPath: string;
+  let commit: string;
+  const input = 'apps/operator/src/index.ts';
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    temp = mkdtempSync(join(tmpdir(), 'playwright-archive-'));
+    const fixture = makeSuperproject(join(temp, 'fixture'));
+    root = join(temp, 'archive');
+    const receipt = await prepareVerifierSource({ repo: fixture.repo, ref: fixture.commit, dest: root, inputs: [input] });
+    commit = fixture.commit;
+    receiptPath = join(temp, 'receipt.json');
+    writeFileSync(receiptPath, JSON.stringify(receipt));
+    vi.stubEnv('VERIFY_TAURI_SOURCE_RECEIPT', receiptPath);
+    const actual = await vi.importActual<typeof import('../../../packages/operator-core/lib/testing-worktree')>('@papercusp/operator-core/lib/testing-worktree');
+    const base = await vi.importActual<typeof import('../../../packages/operator-core/lib/agent-tools/capability/base-dir')>('@papercusp/operator-core/lib/agent-tools/capability/base-dir');
+    mocks.resolveAgentWorkspaceRoot.mockImplementation(base.resolveAgentWorkspaceRoot);
+    mocks.captureWorktreeSnapshot.mockImplementation(actual.captureWorktreeSnapshot);
+    mocks.computeWorktreeDirty.mockImplementation(actual.computeWorktreeDirty);
+    mocks.resolveReporterSourceRoot.mockImplementation(actual.resolveReporterSourceRoot);
+    mocks.captureTestSourceSnapshot.mockImplementation(actual.captureTestSourceSnapshot);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    rmSync(temp, { recursive: true, force: true });
+  });
+
+  async function record(mutate?: () => void) {
+    const reporter = new AdminTestRunsPlaywrightReporter();
+    await reporter.onBegin({ rootDir: join(root, 'apps/operator/e2e') });
+    mutate?.();
+    reporter.onTestEnd({ location: { file: join(root, input) } } as never,
+      { startTime: new Date(0), duration: 1, status: 'passed', errors: [] } as never);
+    await reporter.onEnd();
+    await reporter.onExit();
+    return mocks.sql.mock.calls[0]!.slice(1);
+  }
+
+  it('records the archive repository root and verified commit without Git', async () => {
+    const values = await record();
+    expect(values[0]).toBe(input);
+    expect(values[9]).toBe(commit);
+    expect(values.at(-1)).toMatchObject({ root, filePath: input, commitSha: commit, worktreeDirty: false });
+  });
+
+  it('keeps materialized dependencies and named runtime output outside the source verdict', async () => {
+    // Equivalent to Git-ignored runtime data; this verdict does not attest dependency bytes.
+    write(root, 'apps/operator-vite/node_modules/example/index.js', 'frozen dependency');
+    write(root, 'apps/operator/dist-verify/hono-host.mjs', 'built host');
+    write(root, 'apps/operator/test-results/result.json', '{}');
+    expect((await record()).at(-1)).toMatchObject({ root, commitSha: commit, worktreeDirty: false });
+  });
+
+  it.each(['source', 'extra', 'manifest', 'receipt', 'missing-receipt'])('fails closed when %s changes during execution', async (kind) => {
+    const values = await record(() => {
+      if (kind === 'source') writeFileSync(join(root, input), 'changed source');
+      if (kind === 'extra') write(root, 'apps/operator/new-source.ts', 'extra source');
+      if (kind === 'manifest') writeFileSync(join(root, '.verifier-source.json'), '{}');
+      if (kind === 'receipt') {
+        const receipt = JSON.parse(readFileSync(receiptPath, 'utf8'));
+        receipt.sourceCommit = 'a'.repeat(40);
+        writeFileSync(receiptPath, JSON.stringify(receipt));
+      }
+      if (kind === 'missing-receipt') rmSync(receiptPath);
+    });
+    expect(values.at(-2)).toBe(true);
+    expect(values[5]).toContain('[worktree provenance]');
   });
 });
 

@@ -7,6 +7,9 @@
  */
 
 import { execFileSync } from 'node:child_process';
+import { existsSync, realpathSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import { resolveAgentWorkspaceRoot } from './agent-tools/capability/base-dir';
 
 export interface WorktreeGitSnapshot {
@@ -16,6 +19,52 @@ export interface WorktreeGitSnapshot {
    *  Empty string means clean; non-empty means the shared worktree carries
    *  uncommitted changes at this snapshot. */
   porcelain: string | null;
+  /** Archive verification failures remain visible in the reporter's diagnostics. */
+  provenanceError?: string;
+}
+
+/** Playwright's rootDir is the e2e directory. A committed verifier archive has
+ * no Git marker; its existing manifest identifies the source root, even when
+ * its content is invalid (capture must fail closed rather than use ambient Git).
+ */
+export function resolveReporterSourceRoot(projectDir?: string): string {
+  if (projectDir) {
+    let dir = resolve(projectDir);
+    while (true) {
+      if (existsSync(join(dir, '.verifier-source.json'))) return dir;
+      const parent = dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+  }
+  return resolveAgentWorkspaceRoot(projectDir ? { projectDir } : {});
+}
+
+/** Source stability only, equivalent to Git's ignored dependency/build data.
+ * The independent receipt is retained outside the archive by the verifier.
+ * Verify the entire archived source population at both boundaries; a supplied
+ * SHA alone never attests clean source. Runtime/dependency acceptance is separate.
+ */
+export async function captureTestSourceSnapshot(root: string): Promise<WorktreeGitSnapshot> {
+  if (!existsSync(join(root, '.verifier-source.json')) && !process.env.VERIFY_TAURI_SOURCE_RECEIPT) {
+    return captureWorktreeSnapshot(root);
+  }
+  try {
+    const receiptPath = process.env.VERIFY_TAURI_SOURCE_RECEIPT;
+    if (!receiptPath) throw new Error('missing independent verifier source receipt');
+    const canonicalRoot = realpathSync(root);
+    const receiptRel = relative(canonicalRoot, realpathSync(receiptPath));
+    if (receiptRel !== '..' && !receiptRel.startsWith(`..${sep}`)) {
+      throw new Error('verifier source receipt must be outside the archive');
+    }
+    const receipt = JSON.parse(await readFile(receiptPath, 'utf8'));
+    const { verifyVerifierSource } = await import('../../../scripts/source-preview.mjs');
+    await verifyVerifierSource(canonicalRoot, receipt, { runtimeArtifacts: true });
+    return { commit: receipt.sourceCommit, porcelain: '' };
+  } catch (error) {
+    return { commit: null, porcelain: null,
+      provenanceError: `verifier source: ${error instanceof Error ? error.message : String(error)}` };
+  }
 }
 
 export function computeWorktreeDirty(before: WorktreeGitSnapshot, after: WorktreeGitSnapshot): boolean {

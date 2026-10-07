@@ -39,7 +39,7 @@ describe('hosted tutorial progress through real Postgres and composed browser ro
     return await db.adminSql.begin(async tx => {
       await tx.unsafe('SET LOCAL ROLE hosted_app');
       await tx`SELECT set_config('app.organization_id', ${selected.organizationId}, true),
-        set_config('app.user_id', ${selected.userId}, true), set_config('app.workspace_id', ${selected.workspaceId!}, true)`;
+        set_config('app.user_id', ${selected.userId}, true), set_config('app.workspace_id', ${selected.workspaceId ?? ''}, true)`;
       return fn(tx as unknown as Sql);
     }) as T;
   }
@@ -103,6 +103,30 @@ describe('hosted tutorial progress through real Postgres and composed browser ro
     return createHostedTutorialProgressRoutes({ origin: ORIGIN, controlPlaneWorkspaceId: 'control', runTenant })
       .find(route => route.method === method)!.handler;
   }
+  it('account entry reads and saves without a workspace, retaining CAS, principal scope and origin checks', async () => {
+    const account = { tenantId: tenantA, userId: randomUUID() };
+    await withAccount(account, tx => enrollAccountTutorial(tx, account));
+    const p = principal({ userId: account.userId, selectedWorkspaceId: undefined, permissions: [] });
+    const url = `${ORIGIN}/api${HOSTED_BROWSER_TUTORIAL_PROGRESS_PATH}?scope=account&version=3`;
+    const read = await handler('GET')(new Request(url), context(p));
+    expect(read.status).toBe(200);
+    await expect(read.json()).resolves.toMatchObject({ record: { scope: account, revision: 0, currentLessonId: 'welcome' } });
+    const patch: AccountTutorialProgressUpdate = { expectedScope: account, expectedRevision: 0, mutationId: randomUUID(),
+      version: 3, disposition: 'paused', currentLessonId: 'billing', reviewedLessonIds: ['welcome'] };
+    const request = (body: unknown, origin = ORIGIN) => new Request(url, { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    const post = handler('POST');
+    expect((await post(request(patch), context(p))).status).toBe(200);
+    expect((await post(request(patch), context(p))).status).toBe(200);
+    expect((await post(request({ ...patch, mutationId: randomUUID() }), context(p))).status).toBe(409);
+    expect((await post(request(patch, 'https://foreign.test'), context(p))).status).toBe(403);
+    expect((await post(request({ ...patch, expectedScope: { ...account, tenantId: tenantB } }), context(p))).status).toBe(403);
+    expect((await post(request({ ...patch, completed: ['task'] }), context(p))).status).toBe(400);
+    expect((await handler('GET')(new Request(url.replace('version=3', 'version=4')), context(p))).status).toBe(400);
+    expect((await handler('GET')(new Request(url), { ...context(p), principal: undefined })).status).toBe(401);
+    // A preassigned workspace cannot change the account record or make it Cloud scoped.
+    const selected = principal({ userId: account.userId, selectedWorkspaceId: 'assigned-workspace' });
+    await expect((await handler('GET')(new Request(url), context(selected))).json()).resolves.toMatchObject({ record: { scope: account, revision: 1 } });
+  });
   it('isolates beginner v2 receipts and CAS from the retained advanced v1 record', async () => {
     const s = { ...scope, workspaceId: randomUUID() };
     const legacy = await withScope(s, tx => updateTutorialProgress(tx, s, change({}, s)));

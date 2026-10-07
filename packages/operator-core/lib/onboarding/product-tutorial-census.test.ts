@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
+import { PRODUCT_TUTORIAL_LESSONS, PRODUCT_TUTORIAL_TARGETS, productTutorialTargetAvailability } from './product-tutorial-lesson';
 
 interface CensusEntry { id: string; operatorKind?: string; module: string; route: string; teaches: string; policy: string }
 interface SourceCensus {
@@ -29,6 +30,22 @@ function registeredSurfaceKinds(source: string): string[] {
 }
 
 describe('account-first tutorial source census', () => {
+  it('implements the source census in maintained lessons and permission-aware destinations', () => {
+    const ids = PRODUCT_TUTORIAL_TARGETS.map(target => target.id).sort();
+    expect(ids).toEqual([...census.rail, ...census.nonRail].map(entry => entry.id).sort());
+    for (const target of PRODUCT_TUTORIAL_TARGETS) {
+      expect(PRODUCT_TUTORIAL_LESSONS.find(lesson => lesson.id === target.module), target.id).toBeDefined();
+      if (target.policy === 'workspace') {
+        expect(productTutorialTargetAvailability(target, null), target.id).toContain('authorized workspace');
+        expect(productTutorialTargetAvailability(target, 'authorized-workspace'), target.id).toBeNull();
+      }
+    }
+    const billing = PRODUCT_TUTORIAL_LESSONS.find(lesson => lesson.id === 'billing')!;
+    expect(billing.help).toContain('separate responsibilities');
+    expect(billing.help).toContain('cancellation');
+    expect(billing.help).toContain('failed payment');
+    expect(billing.help).not.toMatch(/\$\d+/);
+  });
   it('covers every maintained operator mount, including non-rail mounts', () => {
     const source = readFileSync(new URL('../../../operator-ui/src/surfaces/index.tsx', import.meta.url), 'utf8');
     const covered = [...census.rail, ...census.nonRail].flatMap(entry => entry.operatorKind ? [entry.operatorKind] : []);

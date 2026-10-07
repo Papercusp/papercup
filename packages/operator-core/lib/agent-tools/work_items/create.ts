@@ -377,15 +377,35 @@ export default defineTool({
       assign_all_to_self: z.boolean().optional().describe('Claim every created item for YOU (your ownerId) — unless an item carries its own assign_to.'),
       // batch-level routing default for all items
       workspace: z.string().max(120).optional().describe('target workspace id — defaults to the request workspace (MCP ?workspace=). EI-728 routing for the inline create / every item.'),
+      phone_producer: z.object({ roomName: z.string().trim().min(1).max(200).regex(/^[^\u0000-\u001f\u007f]+$/) }).strict()
+        .optional().describe('Admit a Phone voice producer from the configured authenticated host. Room selector only; host records supply identity and canonical binding. Exclusive with ordinary create metadata.'),
     })
     // WI-4492: strict so an unknown field name (e.g. a stripped `body`) is a LOUD error.
     .strict()
-    .refine((a) => (a.items?.length ?? 0) > 0 || (Boolean(a.kind) && Boolean(a.title)), {
+    .refine((a) => Boolean(a.phone_producer) || (a.items?.length ?? 0) > 0 || (Boolean(a.kind) && Boolean(a.title)), {
       message: 'pass { kind, title } for one, or items:[{ kind, title }] for many',
     })
     .superRefine(rejectBodySummaryConflict)
+    .superRefine((args, ctx) => {
+      if (args.phone_producer && Object.keys(args).some((key) => !['phone_producer', 'harness', 'workspace'].includes(key))) {
+        ctx.addIssue({ code: 'custom', message: 'phone_producer is exclusive with ordinary create metadata' });
+      }
+      if ([args, ...(args.items ?? [])].some((item) => item.payload &&
+          Object.prototype.hasOwnProperty.call(item.payload, 'externalRuntimeProducer'))) {
+        ctx.addIssue({ code: 'custom', message: 'externalRuntimeProducer is host-authored; use phone_producer admission' });
+      }
+    })
     .superRefine(rejectMissingScheduleCadence),
   async handler(args, ctx) {
+    if (args.phone_producer) {
+      const { admitConfiguredPhoneProducer } = await import('../../blueprint/phone-producer-admission');
+      const binding = await admitConfiguredPhoneProducer(ctx.principal, args.phone_producer.roomName, {
+        harness: args.harness ?? ctx.harnessSlug,
+        workspace: args.workspace ?? ctx.workspaceId,
+      });
+      return { content: [{ type: 'text' as const, text: JSON.stringify(binding) }],
+        data: { ok: true, results: [{ ok: true, id: binding.workItemId, producerBinding: binding }], counts: { ok: 1, failed: 0 } } };
+    }
     const ident = resolveAgentIdentity(ctx);
     const createCtx = {
       ownerId: ident.ownerId,

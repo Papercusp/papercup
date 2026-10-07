@@ -1,6 +1,8 @@
 import type { Sql } from 'postgres';
 import { z } from 'zod';
 import { CLOUD_TUTORIAL_ID, CLOUD_TUTORIAL_VERSION, sameTutorialScope, type SavedTutorialProgress, type TutorialScope, type TutorialVersion } from './cloud-tutorial-lesson';
+import { PRODUCT_TUTORIAL_VERSION, productTutorialLessonIds } from './product-tutorial-lesson';
+export { PRODUCT_TUTORIAL_VERSION } from './product-tutorial-lesson';
 
 const receipt = z.object({ sessionId: z.string().min(1).max(160), taskId: z.string().min(1).max(160), resultId: z.string().min(1).max(160) }).strict();
 export const tutorialProgressUpdateSchema = z.object({
@@ -94,10 +96,9 @@ export async function updateTutorialProgress(tx: Sql, scope: TutorialScope, inpu
 
 /** Orientation is account/organization scoped. It reuses the preference row
  * and its lock; Cloud task receipts keep their existing workspace scope. */
-export const PRODUCT_TUTORIAL_VERSION = 3;
 export interface AccountTutorialScope { tenantId: string; userId: string }
 const accountScopeSchema = z.object({ tenantId: z.string().min(1).max(256), userId: z.string().min(1).max(256) }).strict();
-const lessonKey = z.string().min(1).max(120).regex(/^[a-z0-9-]+$/);
+const lessonKey = z.string().min(1).max(120).regex(/^[a-z0-9-]+$/).refine(id => productTutorialLessonIds.has(id));
 export const accountTutorialProgressUpdateSchema = z.object({
   expectedScope: accountScopeSchema,
   expectedRevision: z.number().int().nonnegative().safe(),

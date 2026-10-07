@@ -116,8 +116,12 @@ export function prepareVerifierSource({ repo, ref, dest, inputs, inputsFile }: {
 /** Fail closed on absent/changed provenance or any modified/extra/missing source byte.
  * @param {string} dest
  * @param {Awaited<ReturnType<typeof prepareVerifierSource>>} expected
+ * @param {{ runtimeArtifacts?: boolean }} [options] Source-only runtime mode permits
+ * named untracked build outputs and materialized dependency directories, not source edits.
  */
-export function verifyVerifierSource(dest: string, expected: Awaited<ReturnType<typeof prepareVerifierSource>>): Promise<{
+export function verifyVerifierSource(dest: string, expected: Awaited<ReturnType<typeof prepareVerifierSource>>, options?: {
+    runtimeArtifacts?: boolean;
+}): Promise<{
     schemaVersion: string;
     sourceCommit: string;
     submodules: {

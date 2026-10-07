@@ -35,6 +35,8 @@ vi.mock('../coordination/identity', () => ({
   resolveSelfLiteral: (value: string | undefined, callerOwnerId: string) => (value === 'self' ? callerOwnerId : value),
 }));
 vi.mock('./_create-core', () => ({ createOneWorkItem: vi.fn() }));
+const phoneAdmission = vi.hoisted(() => ({ admit: vi.fn() }));
+vi.mock('../../blueprint/phone-producer-admission', () => ({ admitConfiguredPhoneProducer: phoneAdmission.admit }));
 vi.mock('../../modes/store', () => ({ getModes: vi.fn(async () => modeState.rows) }));
 vi.mock('./drain-flow', () => ({ withDrainBugAdmission: drainAdmission.gate }));
 vi.mock('../../scheduler/fleet-scope-admission', () => ({
@@ -142,6 +144,31 @@ beforeEach(() => {
   fleetAdmission.decision = { allowed: true, scoped: false };
   workScope.decision = { allowed: true, reason: 'no-policy' };
   createM.mockImplementation(async (spec) => okCore(spec.title));
+});
+
+describe('Phone producer admission', () => {
+  it('routes a room selector with the transport principal, without ordinary create', async () => {
+    const principal = { kind: 'service', slug: 'voice-service' };
+    phoneAdmission.admit.mockResolvedValue({ workItemId: 'WI-voice' });
+    const args = parse({ phone_producer: { roomName: 'room-a' }, harness: 'phone-app' });
+    const result = await tool.handler(args as never, { principal, workspaceId: 'workspace' } as never) as Out;
+    expect(phoneAdmission.admit).toHaveBeenCalledWith(principal, 'room-a', { harness: 'phone-app', workspace: 'workspace' });
+    expect(result.data.results[0].id).toBe('WI-voice');
+    expect(createM).not.toHaveBeenCalled();
+  });
+  it.each(['payload', 'items', 'assign_to', 'force', 'title', 'kind', 'state'])('rejects caller %s alongside Phone admission', (key) => {
+    const ordinary: Record<string, unknown> = { payload: {}, items: [{ kind: 'task', title: 'x' }], assign_to: 'self',
+      force: true, title: 'x', kind: 'task', state: 'wip' };
+    expect(() => parse({ phone_producer: { roomName: 'room-a' }, [key]: ordinary[key] })).toThrow();
+  });
+  it('rejects owner metadata inside the room selector', () => {
+    expect(() => parse({ phone_producer: { roomName: 'room-a', ownerId: 'forged' } })).toThrow();
+  });
+  it('rejects a caller-authored runtime binding in single and bulk creates', () => {
+    const item = { kind: 'task', title: 'forged', payload: { externalRuntimeProducer: {} } };
+    expect(() => parse(item)).toThrow('host-authored');
+    expect(() => parse({ items: [item] })).toThrow('host-authored');
+  });
 });
 
 describe('bounded bulk persistence (EI-22457131413761799)', () => {

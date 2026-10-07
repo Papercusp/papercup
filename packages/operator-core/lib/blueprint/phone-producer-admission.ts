@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import type { Principal } from '@papercusp/agent-mcp';
@@ -9,6 +10,9 @@ import type { ExternalRuntimeProducerBinding } from './operation-worker-binding'
 import { appPrincipalRefOfSlug } from '../connected-apps/enforce';
 import { evaluateAppScope, type AppScopeRow } from '../connected-apps/scope-policy';
 import { loadAppScopeRow, loadAccessTokenScopeRow } from '../connected-apps/store';
+import { resolveWorkItemPot } from '../pot-membership';
+import { gateWorkScope } from '../work-scope-policy';
+import type { PhoneRetainedOutcomeHost } from './phone-retained-outcome';
 
 const text = z.string().min(1).refine((value) => value.trim() === value && !/[\u0000-\u001f\u007f]/.test(value));
 const admissionSchema = z.object({
@@ -21,6 +25,8 @@ const admissionSchema = z.object({
 
 /** All identity fields come from host records, not an MCP request body. */
 export type PhoneProducerAdmission = z.infer<typeof admissionSchema>;
+type PhoneProducerPrincipal = Pick<Principal, 'slug' | 'workspaceId'> &
+  Partial<Pick<Principal, 'kind' | 'trust' | 'authMethod'>>;
 export interface PhoneProducerAdmissionHost {
   readAdmission(roomName: string): Promise<PhoneProducerAdmission>;
   readRegistration(roomName: string): Promise<ExternalRuntimeProducerBinding | null>;
@@ -38,7 +44,7 @@ export function createHttpsPhoneProducerAdmissionHost(options: {
   endpoint: string;
   token: string;
   request?: typeof fetch;
-}): PhoneProducerAdmissionHost {
+}): PhoneProducerAdmissionHost & { retainedOutcomeHost: PhoneRetainedOutcomeHost } {
   const endpoint = new URL(options.endpoint);
   if (endpoint.protocol !== 'https:' || endpoint.username || endpoint.password || endpoint.hash || endpoint.search) {
     throw new Error('phone_producer_https_authority_required');
@@ -69,10 +75,48 @@ export function createHttpsPhoneProducerAdmissionHost(options: {
     async readRegistration(roomName) {
       return bindingSchema.nullable().parse(await invoke('readRegistration', { roomName }));
     },
+    retainedOutcomeHost: {
+      async readRegistration(ownerId, callKey) {
+        return z.object({ binding: bindingSchema, roomName: text, contentDeleted: z.boolean() })
+          .parse(await invoke('readRetainedRegistration', { ownerId, callKey }));
+      },
+      async readExport(ownerId, roomName) {
+        return invoke('readExport', { ownerId, roomName });
+      },
+    },
     async reserveRegistration(snapshot, proposed) {
       return bindingSchema.parse(await invoke('reserveRegistration', { snapshot, proposed }));
     },
   };
+}
+
+/** Production entry from work_items:create. Configuration is injected by the
+ * operator host, never selected by a tool caller. No credential fallback. */
+export async function admitConfiguredPhoneProducer(principal: PhoneProducerPrincipal | null | undefined,
+  roomName: string, requested: { harness?: string; workspace?: string },
+  env: NodeJS.ProcessEnv = process.env) {
+  if (principal?.kind !== 'service' || principal.trust !== 'verified' ||
+      principal.authMethod !== 'bearer-token' || !principal.workspaceId || !principal.slug ||
+      isTransportOnlyIdentity(principal.slug)) throw new Error('phone_producer_authenticated_service_required');
+  if (requested.workspace && requested.workspace !== principal.workspaceId) {
+    throw new Error('phone_producer_authenticated_scope_mismatch');
+  }
+  const endpoint = env.PHONE_PRODUCER_ADMISSION_ENDPOINT?.trim();
+  const tokenFile = env.PHONE_PRODUCER_TOKEN_FILE?.trim();
+  if (!endpoint || !tokenFile) throw new Error('phone_producer_bridge_not_configured');
+  const host = createHttpsPhoneProducerAdmissionHost({ endpoint, token: await readFile(tokenFile, 'utf8') });
+  return admitAuthenticatedPhoneProducer(principal, {
+    ...host,
+    readAdmission: async (room) => {
+      const snapshot = await host.readAdmission(room);
+      if (requested.harness && requested.harness !== snapshot.harnessSlug) {
+        throw new Error('phone_producer_authenticated_scope_mismatch');
+      }
+      const scope = await gateWorkScope('work_items:create', { harness: snapshot.harnessSlug, actor: principal.slug });
+      if (!scope.allowed) throw new Error('phone_producer_work_scope_refused');
+      return snapshot;
+    },
+  }, roomName);
 }
 
 type ProducerRow = Pick<WorkItem, 'id' | 'harness' | 'assignee' | 'payload'>;
@@ -118,10 +162,11 @@ async function checkProducerGrant(slug: string, snapshot: PhoneProducerAdmission
  * verified credential, and the host must already resolve the permitted harness
  * from that credential's grant. Neither is a public tool argument. A reported
  * speaker/UI client id cannot replace the service execution principal. */
-export async function admitAuthenticatedPhoneProducer(principal: Principal | null | undefined,
+export async function admitAuthenticatedPhoneProducer(principal: PhoneProducerPrincipal | null | undefined,
   host: PhoneProducerAdmissionHost, roomName: string,
   store: PhoneProducerCanonicalStore = canonicalStore,
-  grants: PhoneProducerGrantStore = grantStore): Promise<Readonly<ExternalRuntimeProducerBinding>> {
+  grants: PhoneProducerGrantStore = grantStore,
+  resolveStorage: typeof resolveWorkItemPot = resolveWorkItemPot): Promise<Readonly<ExternalRuntimeProducerBinding>> {
   if (principal?.kind !== 'service' || principal.trust !== 'verified' ||
       principal.authMethod !== 'bearer-token' || !principal.workspaceId || !principal.slug ||
       isTransportOnlyIdentity(principal.slug)) throw new Error('phone_producer_authenticated_service_required');
@@ -129,12 +174,21 @@ export async function admitAuthenticatedPhoneProducer(principal: Principal | nul
   // not change who receives the canonical producer while a read is in flight.
   const workspaceId = principal.workspaceId;
   const executionOwnerId = principal.slug;
+  const checkStorage = async (snapshot: PhoneProducerAdmission) => {
+    const storageHarness = await resolveStorage({ rawSlug: snapshot.harnessSlug, workspaceId });
+    if (!storageHarness || storageHarness !== snapshot.storageHarnessSlug) {
+      throw new Error('phone_producer_storage_scope_mismatch');
+    }
+  };
   const readAdmission = async (room: string) => {
     const snapshot = await host.readAdmission(room);
     if (snapshot.workspaceId !== workspaceId || snapshot.executionOwnerId !== executionOwnerId) {
       throw new Error('phone_producer_authenticated_scope_mismatch');
     }
     await checkProducerGrant(executionOwnerId, snapshot, grants);
+    // The TLS-authenticated sidecar identifies the call, but cannot select the
+    // canonical ledger partition. Use the same maintained resolver as create.
+    await checkStorage(snapshot);
     return snapshot;
   };
   return admitPhoneProducer({
@@ -142,6 +196,7 @@ export async function admitAuthenticatedPhoneProducer(principal: Principal | nul
     readRegistration: (room) => host.readRegistration(room),
     reserveRegistration: async (snapshot, proposed) => {
       await checkProducerGrant(executionOwnerId, snapshot, grants);
+      await checkStorage(snapshot);
       return host.reserveRegistration(snapshot, proposed);
     },
   }, roomName, {

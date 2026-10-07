@@ -47,6 +47,7 @@ import { spawn } from 'node:child_process';
 // Keep the interactive bootstrap independent of operator packages while using
 // the same dependency-free signature as the governed turn taxonomy.
 import { makeModelCapacityDetector } from '../../../libs/papercusp-shared/src/agent/model-capacity.mjs';
+import { isCodexWorkspaceDiscoveryTimeout } from '../../../packages/operator-core/lib/psu-launch-log.mjs';
 import {
   AGENT_IDENTITY_SPEC_ENV,
   stageAgentIdentityTty,
@@ -12451,6 +12452,7 @@ export function hostThroughPty(o) {
     // WI-41386: one guard per child — it carries partial-escape state, so a
     // respawn must not inherit the dead child's tail.
     const scrollbackGuard = makeScrollbackGuard();
+    let bootstrapFailureRecorded = false;
     modelCapacityDetector?.reset();
     if (headlessClaudeOnboardingExpiryTimer) {
       clearTimeout(headlessClaudeOnboardingExpiryTimer);
@@ -12532,6 +12534,19 @@ export function hostThroughPty(o) {
       childBracketedPasteTail = `${childBracketedPasteTail}${raw}`.slice(-BRACKETED_PASTE_TAIL_CHARS);
       childStartupOutput += raw;
       if (childStartupOutput.length > 65_536) childStartupOutput = childStartupOutput.slice(-32_768);
+      // Persist only a classified pre-frame failure, never arbitrary terminal
+      // text or a later turn quoting an earlier error. Accumulation handles
+      // native diagnostics split across PTY chunks; the guard resets per child.
+      if (!bootstrapFailureRecorded && !childBackendFirstFrameAt &&
+          env.PAPERCUSP_AGENT === 'codex' && isCodexWorkspaceDiscoveryTimeout(childStartupOutput)) {
+        bootstrapFailureRecorded = true;
+        appendHostEvent(ownerId, 'backend-bootstrap-failed', {
+          agent: 'codex', stage: 'account/read', reason: 'workspace-routing-discovery-timeout',
+          gatewayRequested: env.PAPERCUSP_CODEX_GATEWAY === '1' || Boolean(env.PAPERCUSP_ACCOUNT_ID),
+          accountPinPresent: Boolean(env.PAPERCUSP_ACCOUNT_ID),
+          msAfterFirstOutput: Date.now() - childStartupFirstOutputAt,
+        });
+      }
       if (
         !childBackendTuiStartedAt &&
         String(env.PAPERCUSP_AGENT ?? '').trim().toLowerCase() === 'codex' &&

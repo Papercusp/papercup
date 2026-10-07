@@ -5,7 +5,7 @@ import type { WorktreeGitSnapshot } from '../../lib/testing-worktree';
 const { sql } = vi.hoisted(() => ({ sql: Object.assign(vi.fn(), { json: vi.fn((value: unknown) => value) }) }));
 const rootMocks = vi.hoisted(() => ({
   resolveAgentWorkspaceRoot: vi.fn(() => '/repo'),
-  captureWorktreeSnapshot: vi.fn<() => WorktreeGitSnapshot>(() => ({ commit: null, porcelain: null })),
+  captureWorktreeSnapshot: vi.fn<(root?: string) => WorktreeGitSnapshot>(() => ({ commit: null, porcelain: null })),
 }));
 vi.mock('postgres', () => ({ default: () => sql }));
 vi.mock('@papercusp/operator-core/lib/testing-branch-resolve', () => ({
@@ -17,6 +17,7 @@ vi.mock('@papercusp/operator-core/lib/agent-tools/capability/base-dir', () => ({
 vi.mock('@papercusp/operator-core/lib/testing-worktree', async importOriginal => ({
   ...(await importOriginal<typeof import('@papercusp/operator-core/lib/testing-worktree')>()),
   captureWorktreeSnapshot: rootMocks.captureWorktreeSnapshot,
+  captureTestSourceSnapshot: (root: string) => rootMocks.captureWorktreeSnapshot(root),
 }));
 
 import Reporter from './admin-test-runs-reporter-playwright';
@@ -31,7 +32,7 @@ async function record(status: TestResult['status'] = 'passed') {
   const reporter = new Reporter();
   reporter.onTestEnd({ location: { file: '/repo/e2e/reader.spec.ts' } } as TestCase,
     { status, startTime: new Date('2026-10-01T19:00:00Z'), duration: 25, errors: [] } as unknown as TestResult);
-  reporter.onEnd();
+  await reporter.onEnd();
   await reporter.onExit();
 }
 
@@ -66,10 +67,10 @@ describe('Playwright execution ledger attribution', () => {
     rootMocks.resolveAgentWorkspaceRoot.mockImplementation((ctx?: { projectDir?: string }) => ctx?.projectDir ? '/proof' : '/repo');
     rootMocks.captureWorktreeSnapshot.mockReturnValue({ commit: 'proof-sha', porcelain: '' });
     const reporter = new Reporter();
-    reporter.onBegin({ rootDir: '/proof/packages/operator-core/e2e' });
+    await reporter.onBegin({ rootDir: '/proof/packages/operator-core/e2e' });
     reporter.onTestEnd({ location: { file: '/proof/packages/operator-core/e2e/reader.spec.ts' } } as TestCase,
       { status: 'passed', startTime: new Date(0), duration: 25, errors: [] } as unknown as TestResult);
-    reporter.onEnd();
+    await reporter.onEnd();
     await reporter.onExit();
     expect(rootMocks.captureWorktreeSnapshot.mock.calls).toEqual([['/proof'], ['/proof']]);
     expect(sql.mock.calls[0]!.slice(1)[0]).toBe('packages/operator-core/e2e/reader.spec.ts');
@@ -85,10 +86,10 @@ describe('Playwright execution ledger attribution', () => {
   ] as const)('retains dirty snapshot cause alongside the original error (%s)', async (before, after, reason) => {
     rootMocks.captureWorktreeSnapshot.mockReturnValueOnce(before).mockReturnValueOnce(after);
     const reporter = new Reporter();
-    reporter.onBegin({ rootDir: '/repo/e2e' });
+    await reporter.onBegin({ rootDir: '/repo/e2e' });
     reporter.onTestEnd({ location: { file: '/repo/e2e/reader.spec.ts' } } as TestCase,
       { status: 'failed', startTime: new Date(0), duration: 1, errors: [{ message: 'original assertion failure' }] } as unknown as TestResult);
-    reporter.onEnd();
+    await reporter.onEnd();
     await reporter.onExit();
     const output = sql.mock.calls[0]!.slice(1)[5];
     expect(output).toContain('original assertion failure');
@@ -101,10 +102,10 @@ describe('Playwright execution ledger attribution', () => {
   it('leaves a clean pass output empty', async () => {
     rootMocks.captureWorktreeSnapshot.mockReturnValue({ commit: 'sha', porcelain: '' });
     const reporter = new Reporter();
-    reporter.onBegin({ rootDir: '/repo/e2e' });
+    await reporter.onBegin({ rootDir: '/repo/e2e' });
     reporter.onTestEnd({ location: { file: '/repo/e2e/reader.spec.ts' } } as TestCase,
       { status: 'passed', startTime: new Date(0), duration: 1, errors: [] } as unknown as TestResult);
-    reporter.onEnd();
+    await reporter.onEnd();
     await reporter.onExit();
     expect(sql.mock.calls[0]!.slice(1)[5]).toBeNull();
   });

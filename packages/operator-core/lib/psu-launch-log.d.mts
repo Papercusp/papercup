@@ -54,7 +54,10 @@ export function readPsuLaunchLogTailAsync(
   opts?: { home?: string; chars?: number },
 ): Promise<string | null>;
 
-/** Recognize the pre-turn Claude weekly-limit dialog in terminal output. */
+/** Recognize the exact native Codex account/read workspace-discovery timeout. */
+export function isCodexWorkspaceDiscoveryTimeout(logText: string | null | undefined): boolean;
+
+/** Recognize supported pre-turn provider failures in terminal output. */
 export function detectPsuHeadlessLaunchBlockHint(logText: string | null | undefined): string | null;
 
 /**
