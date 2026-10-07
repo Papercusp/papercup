@@ -110,6 +110,9 @@ export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = 
     // Search is harness-only in the handler; do not grant memory:read (which
     // also opens list/get and the personal memory pool).
     'memory:search:read',
+    // EI-25286431862833439: transcript navigation is a separate capability from
+    // generic search, and sessions:read narrows this role to session:'self'.
+    'sessions:read',
     // EI-24903256825782248: a rubric method can mandate a grading-runbook
     // read; docs:get is the only reader (allowlists `judge`). Read-only.
     'docs:read',
@@ -482,7 +485,15 @@ export async function loadRoleCapabilities(
   }
   // The judge's role ceiling excludes the broad memory family even if an old
   // provisioned row or runtime grant still carries memory:read.
-  if (roleName === 'judge') caps.delete('memory:read');
+  if (roleName === 'judge') {
+    caps.delete('memory:read');
+    // Keep a stale or runtime-added broad search grant from unlocking generic
+    // corpus/session search for the evidence-only judge.
+    caps.delete('search:read');
+  }
+  // Preserve sessions:read for existing transcript readers while separating it
+  // from the other tools that share the broader search:read capability.
+  if (caps.has('search:read')) caps.add('sessions:read');
   // Preserve existing readers' memory:search access while separating that
   // one read route from the broader memory:read family. Judges receive the
   // narrow capability explicitly above and therefore do not inherit memory:read.
