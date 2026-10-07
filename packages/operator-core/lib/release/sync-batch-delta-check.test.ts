@@ -12,6 +12,7 @@ import { formatFailingFilesLine } from '../../../../scripts/lib/vitest-summary.m
 import { parseConfirmOutput } from './sync-batch-delta-check-deps';
 import {
   conditionKeyForRed,
+  evaluateRadius,
   parseFailingFilesLine,
   parseSyncBatches,
   runSyncBatchDeltaCheck,
@@ -104,6 +105,25 @@ describe('unionBatchPaths', () => {
   });
 });
 
+describe('evaluateRadius — production workspace bound', () => {
+  it('accepts the observed 10-workspace ceiling and still refuses wider batches', () => {
+    const union = unionBatchPaths([makeBatch()], 80);
+    const accepted = evaluateRadius({
+      probe: { workspaces: Array.from({ length: 10 }, (_, i) => `ws-${i}`), guards: [] },
+      union,
+      batchCount: 1,
+    });
+    expect(accepted).toEqual({ run: true, workspaces: Array.from({ length: 10 }, (_, i) => `ws-${i}`) });
+
+    const refused = evaluateRadius({
+      probe: { workspaces: Array.from({ length: 11 }, (_, i) => `ws-${i}`), guards: [] },
+      union,
+      batchCount: 1,
+    });
+    expect(refused).toMatchObject({ run: false, reason: 'radius-too-wide' });
+  });
+});
+
 describe('runSyncBatchDeltaCheck — cursor discipline', () => {
   it('bootstraps the cursor at tip on first run (never scans history backwards)', async () => {
     const { deps, state } = makeDeps();
@@ -161,7 +181,12 @@ describe('runSyncBatchDeltaCheck — cursor discipline', () => {
 
   it('a too-wide radius is refused but the cursor ADVANCES (a parked cursor would re-refuse forever)', async () => {
     const { deps, state } = makeDeps(
-      { probeRadius: async () => ({ workspaces: ['a', 'b', 'c', 'd'], guards: [] }) },
+      {
+        probeRadius: async () => ({
+          workspaces: Array.from({ length: 11 }, (_, i) => `ws-${i}`),
+          guards: [],
+        }),
+      },
       { sha: SHA_A, updatedAtMs: 1 },
     );
     const res = await runSyncBatchDeltaCheck(deps);

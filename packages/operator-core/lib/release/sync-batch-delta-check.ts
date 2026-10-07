@@ -140,7 +140,11 @@ export interface RadiusCaps {
   maxCommits: number;
 }
 
-export const DEFAULT_RADIUS_CAPS: RadiusCaps = { maxWorkspaces: 3, maxPaths: 80, maxCommits: 40 };
+// Production coverage measured 2026-10-06 showed 15 of 17 radius refusals
+// affected 7–10 workspaces. Keep the bound below the observed 20-workspace
+// outlier while admitting those normal batches; the 80-path and 40-commit
+// ceilings still bound the other dimensions independently.
+export const DEFAULT_RADIUS_CAPS: RadiusCaps = { maxWorkspaces: 10, maxPaths: 80, maxCommits: 40 };
 
 /** Single-file re-runs spent CONFIRMING a red before anything is filed. Root
  *  CLAUDE.md: a multi-file vitest invocation can abort during collection, so a
