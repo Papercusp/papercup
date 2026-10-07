@@ -1881,7 +1881,7 @@ export async function runWorkspaceHostDestroy(
   }
   if (target.resources.length === 0 && input.canary) {
     throw new WorkspaceHostProvisioningRequestError([
-      'canary destroy requires a non-empty registered resource population for completion evidence',
+      'canary destroy requires a non-empty registered resource population for completion evidence; to recover an empty host, submit a discard destroy without the canary block and with a fresh operation id to run a census-only teardown',
     ]);
   }
   // A destroy is only as safe as its terminal census, so it is offered exactly for the providers that

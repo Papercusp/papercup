@@ -389,6 +389,20 @@ describe('runWorkspaceHostDestroy', () => {
     expect(updateHostState).toHaveBeenLastCalledWith(expect.objectContaining({ state: 'absent' }));
   });
 
+  it('explains census-only recovery when a canary destroy has no registered resources', async () => {
+    const { provider, plan, apply } = providerHarness();
+    const { store, updateHostState } = storeHarness(desiredWithManagedNetwork, undefined, []);
+
+    await expect(runWorkspaceHostDestroy(runInput(provider, store))).rejects.toMatchObject({
+      problems: [
+        'canary destroy requires a non-empty registered resource population for completion evidence; to recover an empty host, submit a discard destroy without the canary block and with a fresh operation id to run a census-only teardown',
+      ],
+    });
+    expect(plan).not.toHaveBeenCalled();
+    expect(apply).not.toHaveBeenCalled();
+    expect(updateHostState).not.toHaveBeenCalled();
+  });
+
   it('retires an empty ordinary GCP host only after a complete clean provider census', async () => {
     const { provider, plan, apply, inventoryManagedResources } = providerHarness();
     const { store, updateHostState } = storeHarness(desiredWithManagedNetwork, undefined, []);
