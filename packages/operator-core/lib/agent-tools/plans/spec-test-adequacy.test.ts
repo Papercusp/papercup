@@ -2031,8 +2031,8 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(result.verdict).toBe('unknown');
   });
 
-  it('pins the evaluator revision for canonical Cargo source-case pairing', () => {
-    expect(SPEC_TEST_ADEQUACY_EVALUATOR_REVISION).toBe(8);
+  it('pins the evaluator revision for canonical operational adapter layer recognition', () => {
+    expect(SPEC_TEST_ADEQUACY_EVALUATOR_REVISION).toBe(9);
   });
 
   it('requires an explicit fixture-free attestation for executable proof with a null fixture fingerprint', () => {
