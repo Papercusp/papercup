@@ -60,6 +60,10 @@ describe('runtime selection', () => {
       runtime: 'staging-operator',
       readiness: 'ready',
     });
+    // Maintained sync resolves the committed local integration branch, which may
+    // differ from origin/staging; the route must describe that source accurately.
+    expect(currentBuildTestRoute('operator-api')?.source).toMatch(/committed local/i);
+    expect(currentBuildTestRoute('operator-api')?.source).not.toContain('origin/staging');
     expect(currentBuildRoutesForRuntime('bg-host')).toMatchObject([
       { id: 'background-federation', readiness: 'requires-prerequisites' },
     ]);
