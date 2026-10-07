@@ -3177,6 +3177,11 @@ describe('makeQuotaBlockDetector (WI-1386682 (1)/(2) — quota-wall ring-buffer 
 // that is what makes this a regression test rather than a restatement of the
 // patterns.
 describe('quota-wall banner patterns are scoped per agent (WI-2140984)', () => {
+  // Verbatim task_complete.error.message from the native cohort audit in
+  // WI-10007162#comment:1162714. U+2019 is part of the provider's wall copy.
+  const CAPTURED_CODEX_WALL =
+    'You’ve hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Oct 9th, 2026 5:13 PM.';
+
   // Ordinary, non-wall codex UI chrome. The first is a slash-command
   // DESCRIPTION from the command palette.
   const CODEX_CHROME = [
@@ -3190,6 +3195,7 @@ describe('quota-wall banner patterns are scoped per agent (WI-2140984)', () => {
 
   // Codex's REAL wall copy — these must still block.
   const CODEX_WALL = [
+    CAPTURED_CODEX_WALL,
     "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits",
     "You've hit your usage limit. Upgrade to Plus to continue using Codex (https://chatgpt.com/explore/plus),",
     'Usage limit reached',
@@ -3207,6 +3213,46 @@ describe('quota-wall banner patterns are scoped per agent (WI-2140984)', () => {
     for (const wall of CODEX_WALL) {
       expect(quotaLimitBannerVisible(wall, 'codex')).toBe(true);
     }
+  });
+
+  it.each([CAPTURED_CODEX_WALL, CAPTURED_CODEX_WALL.replace('’', "'")])(
+    'aborts a submitted Codex wake when its fresh quota wall appears: %s',
+    async (wall) => {
+      const detector = makeQuotaBlockDetector({ agent: 'codex', deferUntilSubmit: true });
+      detector.observeInput('\r');
+      const submitted = vi.fn(() => true);
+      const writeCr = vi.fn();
+      const verifier = makeSubmitVerifier({
+        isQuotaBlocked: detector.isBlocked,
+        isSubmitted: submitted,
+        writeCr,
+        sleep: async () => { detector.observe(wall); },
+        polls: 1,
+      });
+
+      const result = await verifier.verify();
+      expect(result).toMatchObject({ aborted: 'quota-blocked', exhausted: false, resubmits: 0 });
+      expect(result).not.toHaveProperty('confirmed');
+      expect(submitted).not.toHaveBeenCalled();
+      expect(writeCr).not.toHaveBeenCalled();
+    },
+  );
+
+  it('does not block a healthy native submission on quota copy replayed before resume submit', async () => {
+    const detector = makeQuotaBlockDetector({ agent: 'codex', deferUntilSubmit: true });
+    detector.observe(CAPTURED_CODEX_WALL);
+    detector.observeInput('\r');
+    const writeCr = vi.fn();
+    const verifier = makeSubmitVerifier({
+      isQuotaBlocked: detector.isBlocked,
+      isSubmitted: () => true,
+      writeCr,
+      sleep: async () => {},
+      polls: 1,
+    });
+
+    expect(await verifier.verify()).toMatchObject({ aborted: null, confirmed: 'native' });
+    expect(writeCr).not.toHaveBeenCalled();
   });
 
   // The calibration case: these SAME chrome strings DO match the claude set.

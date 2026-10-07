@@ -9,6 +9,21 @@ const record = (patch: Record<string, unknown> = {}) => ({ scope: { tenantId: ac
 const response = (value: unknown, status = 200) => Response.json({ record: value }, { status });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 describe('account product guide entry', () => {
+  it('focuses the committed resume control after pause even when an animation frame precedes React commit', async () => {
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { callback(0); return 1; });
+    const fetcher = vi.fn().mockResolvedValueOnce(response(record()))
+      .mockResolvedValueOnce(response(record({ revision: 1, disposition: 'paused' })))
+      .mockResolvedValueOnce(response(record({ revision: 2, disposition: 'active' })));
+    vi.stubGlobal('fetch', fetcher);
+    render(<AccountProductTutorial account={account}><p>Destination</p></AccountProductTutorial>);
+    await screen.findByRole('heading', { name: 'Welcome to Papercusp' });
+    fireEvent.click(screen.getByRole('button', { name: 'Pause guide' }));
+    const resume = await screen.findByRole('button', { name: 'Resume product guide' });
+    await waitFor(() => expect(document.activeElement).toBe(resume));
+    fireEvent.click(resume);
+    const heading = await screen.findByRole('heading', { name: 'Welcome to Papercusp' });
+    await waitFor(() => expect(document.activeElement).toBe(heading));
+  });
   it('preserves shell panel/search targets through the explicit pre-workspace entry seam', async () => {
     const fetcher = vi.fn().mockResolvedValue(response(record({ currentLessonId: 'navigation' })));
     vi.stubGlobal('fetch', fetcher);

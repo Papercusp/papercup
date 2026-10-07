@@ -16,14 +16,9 @@
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
-import { publishReport } from '../../report-library';
-import { emitAwaitedEvent } from '../../events/await/engine';
-import { trackDetached } from '../../detached-imports';
+import { publishReportWithEffects } from '../../report-publication';
 import {
-  invalidateReportsSync,
-  reportUiPath,
   reportsLibraryDisabled,
-  resolveOwnerId,
   resolveWorkspaceId,
   stampOrigin,
   toRefusal,
@@ -83,6 +78,7 @@ export default defineTool({
   // Any agent session may publish — the library is the fleet's shared output surface.
   agentRoles: [...AGENT_ROLES],
   args: z.object({
+    request_key: z.string().trim().min(1).max(200).optional().describe('Retry key within your workspace and author identity. Identical retries return the original report; changed content is request_key_conflict.'),
     title: z.string().min(1).max(500).describe('one line; this is what the library list shows'),
     summary: z.string().max(4000).optional().describe('a short abstract shown under the title'),
     body_md: z.string().optional().describe('the report itself, markdown; mermaid fences allowed; ≤512KB'),
@@ -105,12 +101,13 @@ export default defineTool({
     const sql = getOrgPg().sql;
     const workspaceId = resolveWorkspaceId(ctx);
 
-    let report;
+    let publication;
     try {
-      report = await publishReport(
+      publication = await publishReportWithEffects(
         sql,
         {
           workspaceId,
+          requestKey: args.request_key,
           title: args.title,
           summary: args.summary,
           bodyMd: args.body_md,
@@ -123,6 +120,7 @@ export default defineTool({
         },
         // Axis 1, server-side. Never from `args` — see stampOrigin.
         stampOrigin(ctx),
+        message => ctx.log(message),
       );
     } catch (err) {
       // A refusal rides the same `{ data }` envelope as a success: the handler
@@ -131,37 +129,7 @@ export default defineTool({
       return { data: toRefusal(err) };
     }
 
-    // The row is committed from here on. Both side effects are therefore
-    // best-effort and REPORTED rather than thrown: failing the call now would tell
-    // the caller the publish failed when it did not, and a retry would duplicate it.
-    let eventEmitted = true;
-    try {
-      await emitAwaitedEvent({
-        key: `report:published:${report.reportId}`,
-        payload: {
-          report_id: report.reportId,
-          lineage_id: report.lineageId,
-          supersedes_report_id: report.supersedesReportId,
-          kind: report.kind,
-          visibility: report.visibility,
-          subject: report.subject,
-          origin: report.origin,
-          path: reportUiPath(report.reportId),
-        },
-        summary: `report published: ${report.title}`,
-        source: resolveOwnerId(ctx) ?? 'reports:publish',
-        workspaceId,
-      });
-    } catch (e) {
-      eventEmitted = false;
-      ctx.log(`report:published emit failed for ${report.reportId}: ${e instanceof Error ? e.message : e}`);
-    }
-    invalidateReportsSync((m) => ctx.log(m));
-    trackDetached(import('../../search/report-index')
-      .then(({ indexReport }) => indexReport(sql, report))
-      .catch(error => ctx.log(`Report ${report.reportId} indexing pending sweep recovery: ${String(error)}`)));
-
     // One shared wire projection, so publish and list name every field identically.
-    return { data: { ok: true as const, ...toReportWire(report), event_emitted: eventEmitted } };
+    return { data: { ok: true as const, ...toReportWire(publication.report), event_emitted: publication.eventEmitted } };
   },
 });

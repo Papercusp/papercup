@@ -21,7 +21,7 @@
  *      everything anyway. Hence an explicit per-verb assertion.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { ReportBodyTooLargeError, REPORT_BODY_MAX_BYTES } from '../../report-library';
+import { ReportBodyTooLargeError, ReportRequestConflictError, REPORT_BODY_MAX_BYTES } from '../../report-library';
 import { goalOwnerReportFixture } from '../../../test/fixtures/goal-owner-report';
 import { serializeGoalOwnerReportSnapshot } from '@papercusp/chat-protocol';
 import { FLAGS } from '@papercusp/flags';
@@ -185,6 +185,16 @@ describe('reports:publish — origin is server-stamped (R-2)', () => {
 
 // ── R-1: validation + the body cap ───────────────────────────────────────────
 describe('reports:publish — validation (R-1)', () => {
+  it('passes a retry key separately from server-stamped origin and reports content conflicts', async () => {
+    await publishTool.handler({ title: 'Edition', request_key: 'daily-2026-10-07' } as never, CTX as never);
+    expect(publishReportM.mock.calls[0][1].requestKey).toBe('daily-2026-10-07');
+    publishReportM.mockRejectedValue(new ReportRequestConflictError('daily-2026-10-07'));
+    const result = body(await publishTool.handler({ title: 'Changed', request_key: 'daily-2026-10-07' } as never, CTX as never) as Out);
+    expect(result).toMatchObject({ ok: false, error: 'request_key_conflict' });
+    const schema = publishTool.args as { safeParse: (v: unknown) => { success: boolean } };
+    expect(schema.safeParse({ title: 'A', request_key: ' ' }).success).toBe(false);
+    expect(schema.safeParse({ title: 'A', request_key: 'x'.repeat(201) }).success).toBe(false);
+  });
   it('passes the typed snapshot through the existing publish/get wire with exact body identity', async () => {
     const snapshot = goalOwnerReportFixture('ws1');
     const bodyMd = serializeGoalOwnerReportSnapshot(snapshot);

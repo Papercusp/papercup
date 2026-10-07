@@ -24,6 +24,11 @@ function fakeTx(rows: Array<{ capabilities: unknown }>): Sql {
 }
 
 describe('loadRoleCapabilities', () => {
+  test.each(['papercup', 'papercup-deep'])('%s can read the public manual without receiving a docs write grant', async (role) => {
+    const caps = await loadRoleCapabilities(fakeTx([]), 'ws', role);
+    expect(caps.has('docs:read')).toBe(true);
+    expect(caps.has('docs:write')).toBe(false);
+  });
   test('transcript readers get sessions:read without granting generic search to judge', async () => {
     const reader = await loadRoleCapabilities(fakeTx([{ capabilities: ['search:read'] }]), 'ws', 'transcript-reader');
     expect(reader.has('search:read')).toBe(true);

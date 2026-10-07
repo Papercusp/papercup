@@ -19,7 +19,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { runHybridSearch, isVectorOnly, type SearchSource, type Listing, type PgHandle } from '@papercusp/search';
 import { loadHarnessRegistry, resolveHarnessContentPath } from '../../harness-registry';
 import { engineeringAdapter } from './_engineering-adapter';
-import { searchPublicManual } from './_public-manual';
+import { searchPublicManual, isPublicManualRole } from './_public-manual';
 import { assessDocsCoverage, docsCoverageNote } from './semantic-coverage';
 import {
   HARNESS_REQUIRED_DETAIL,
@@ -348,7 +348,7 @@ export default defineTool({
     })
     .passthrough(),
   async handler(args, ctx) {
-    if (args.scope === 'public' || (ctx as { role?: string }).role === 'papercup') {
+    if (args.scope === 'public' || isPublicManualRole(ctx.role)) {
       if (args.harness) return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'public_scope_conflict', surface: 'public' }) }], isError: true };
       const result = await searchPublicManual({ query: args.query, limit: args.limit });
       return { content: [{ type: 'text' as const, text: JSON.stringify(result) }], ...('error' in result ? { isError: true } : {}) };

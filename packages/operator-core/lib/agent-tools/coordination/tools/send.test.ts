@@ -11,6 +11,8 @@
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/coordination/tools/send.test.ts
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+const reportCapture = vi.hoisted(() => ({ coord: vi.fn().mockResolvedValue('rpt_fixture') }));
+vi.mock('../../../report-capture', () => ({ captureCoordReport: reportCapture.coord }));
 import { z } from 'zod';
 import { lookupByMcpName } from '@papercusp/tooldef';
 import { parseGoalOwnerReportSnapshot, serializeGoalOwnerReportSnapshot } from '@papercusp/chat-protocol';
@@ -2770,6 +2772,16 @@ describe('report card payload (agent-report-cards-2026-07-17 P-001)', () => {
         },
       ],
     });
+  });
+
+  it('captures a delivered owner ReportBlock through the real coord handler', async () => {
+    const report = { title: 'Audit status', plans: [{ title: 'Plan', summary: 'Measured verdict' }] };
+    const result = await body({ to: ['human'], summary: 'Audit status', report });
+    expect(result.results[0].ok).toBe(true);
+    await vi.waitFor(() => expect(reportCapture.coord).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId: 'ws1', ownerId: 'me', summary: 'Audit status',
+      report: expect.objectContaining({ title: 'Audit status' }),
+    })));
   });
 
   it('an invalid report (no valid plan survives) is a LOUD report_invalid refusal — nothing sent', async () => {

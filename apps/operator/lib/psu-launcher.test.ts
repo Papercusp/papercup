@@ -5888,6 +5888,32 @@ describe("psu-launcher arg parsing", () => {
       expect(codexAutoPoolVerdict({ ...input, now }).kind).toBe("proceed");
   });
 
+  it("codexAutoPoolVerdict: distinguishes a live upstream outage from an account usage wall", () => {
+    const now = Date.UTC(2026, 8, 5, 20, 0, 0);
+    const verdict = codexAutoPoolVerdict({
+      agent: "codex",
+      model: "gpt-5.6-sol",
+      account: "auto",
+      stats: {
+        codexHealthyAccounts: 0,
+        codexTotalAccounts: 8,
+        // This is an account park horizon and must not be presented as network recovery.
+        codexEarliestRecoveryAt: now + 60_000,
+        codexUnserviceableCause: "upstream-unreachable",
+      },
+      now,
+    });
+    expect(verdict.kind).toBe("refuse");
+    expect(verdict.recoveryAt).toBeNull();
+    expect(verdict.message).toContain("Codex upstream is unreachable");
+    expect(verdict.message).toContain("fresh transport failures across accounts");
+    expect(verdict.message).toContain("network/connectivity problem");
+    expect(verdict.message).toContain("not a usage or credit wall");
+    expect(verdict.message).toContain("Check this machine's network");
+    expect(verdict.message).not.toContain("429");
+    expect(verdict.message).not.toContain("earliest known recovery");
+  });
+
   it("codexAutoPoolVerdict: an UNKNOWN horizon still refuses; a horizon already PAST only warns", () => {
     const now = Date.UTC(2026, 8, 5, 20, 0, 0);
     // OMP routed through the Codex pool, walled with no known recovery: still futile.
@@ -5956,6 +5982,30 @@ describe("psu-launcher arg parsing", () => {
     );
     expect(log).toHaveBeenCalledOnce();
     expect(String(log.mock.calls[0]?.[0])).toContain("REFUSING TO LAUNCH");
+
+    const networkLog = vi.fn();
+    await expect(
+      preflightCodexAutoPool({
+        agent: "codex",
+        model: "gpt-5.6-sol",
+        account: "auto",
+        fetchImpl: vi.fn(async () => ({
+          ok: true,
+          json: async () => ({
+            codexHealthyAccounts: 0,
+            codexTotalAccounts: 8,
+            codexEarliestRecoveryAt: Date.now() + 60_000,
+            codexUnserviceableCause: "upstream-unreachable",
+          }),
+        })) as unknown as typeof fetch,
+        log: networkLog,
+        env: {},
+      }),
+    ).resolves.toBe(false);
+    expect(String(networkLog.mock.calls[0]?.[0])).toContain(
+      "Check this machine's network",
+    );
+    expect(String(networkLog.mock.calls[0]?.[0])).not.toContain("429");
 
     // EVERY uncertain reading proceeds silently. A down, legacy or half-described
     // gateway must never block psu — only an affirmative, complete, self-consistent

@@ -18,7 +18,7 @@ import {
   type HarnessScope,
 } from '../_harness-scope';
 import { coerceDocsGetSlugs, normalizeDocsGetRef, normalizeEngineeringDocsGetRef } from './get-coerce';
-import { getPublicManual } from './_public-manual';
+import { getPublicManual, isPublicManualRole } from './_public-manual';
 
 /**
  * Prefix every rendered body with the agent-readable `# title` + `URL:` header.
@@ -234,7 +234,7 @@ export default defineTool({
   },
   args: argsSchema,
   async handler(args, ctx) {
-    if (args.scope === 'public' || (ctx as { role?: string }).role === 'papercup') {
+    if (args.scope === 'public' || isPublicManualRole(ctx.role)) {
       if (args.harness) return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'public_scope_conflict', surface: 'public' }) }], isError: true };
       const result = await getPublicManual(args);
       return { content: [{ type: 'text' as const, text: JSON.stringify(result) }], ...('error' in result ? { isError: true } : {}) };

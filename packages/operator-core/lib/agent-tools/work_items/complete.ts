@@ -28,6 +28,7 @@
  */
 
 import { z } from 'zod';
+import { trackDetached } from '../../detached-imports';
 import { existsSync, readdirSync, readFileSync, type Dirent } from 'node:fs';
 import * as nodePath from 'node:path';
 import { detectPapercupRoot } from '../../harness/register-papercusp';
@@ -5049,6 +5050,14 @@ async function completeOne(
         : effectiveState
           ? `recorded a completion for ${it.id} but it is NOT closed — still '${workItem?.state ?? existing.state}', ${nonTerminalHint}. Your state '${requestedState ?? effectiveState}' WAS received and applied as '${appliedState ?? workItem?.state ?? existing.state}', which is NOT terminal${aliasNote ? ` (${aliasNote})` : ''}. Do NOT re-send the same value — choose a terminal state by intent ${terminalVocab}.`
           : `recorded a completion for ${it.id} but it is NOT closed — still '${workItem?.state ?? existing.state}', ${nonTerminalHint}. No top-level \`state\` was passed. Pass top-level \`state\` ${terminalVocab} to close it.`);
+
+  if (!stateError && finalState && TERMINAL_WORK_ITEM_STATES.has(finalState) && ctx.workspaceId) {
+    void trackDetached(import('../../report-capture').then(({ captureAuditCompletion }) => captureAuditCompletion({
+      workspaceId: ctx.workspaceId!, ownerId: ident.ownerId, harnessSlug: ctx.harnessSlug,
+      sessionRef: ctx.runId, itemId: it.id, completionRef: workItem?.terminalCompletionRef,
+      title: existing.title, completion: it.completion,
+    })).catch(error => ctx.log(`Reports audit capture failed for ${it.id}: ${String(error)}`)));
+  }
 
   // flush-to-proceed-stretch-discipline-2026-07-04 P-006: verification linting. A settled
   // unit is either VERIFIED (`tests`) or CONSCIOUSLY DEFERRED (`deferred`) — never silent. A

@@ -79,6 +79,21 @@ beforeEach(() => {
 });
 
 describe('structured exact resume preparation', () => {
+  it('identifies the pending resume operation before it settles or refuses', async () => {
+    const saved = fixture('codex');
+    let refuse!: (error: Error) => void;
+    m.account.mockReturnValue(new Promise((_, reject) => { refuse = reject; }));
+    const stage = vi.fn();
+    const pending = prepareStructuredSuResume(saved, { stage });
+    const rejected = expect(pending).rejects.toThrow('route unavailable');
+    await vi.waitFor(() => expect(stage).toHaveBeenLastCalledWith('resume-account-route'));
+    expect(stage).not.toHaveBeenCalledWith('resume-console-envelope');
+    expect(m.envelope).not.toHaveBeenCalled();
+    refuse(new Error('route unavailable'));
+    await rejected;
+    expect(m.release).toHaveBeenCalled();
+  });
+
   it('resumes a coding-assistant Codex home without restoring or requiring the SU playbook', async () => {
     const saved = fixture('codex');
     m.codexReadiness.mockReturnValue('AGENTS.md is missing');

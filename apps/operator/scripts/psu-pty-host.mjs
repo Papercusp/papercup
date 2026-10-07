@@ -4935,9 +4935,11 @@ const CLAUDE_QUOTA_LIMIT_BANNER_PATTERNS = [
  *  WI-2140984. Widen only against captured raw text from a REAL codex wall,
  *  and re-check the new pattern against `codex`'s own strings first. */
 const CODEX_QUOTA_LIMIT_BANNER_PATTERNS = [
-  /you'?ve hit your usage limit/i,
+  // EI-25341697637763590: native quota errors use U+2019 in “You’ve”.
+  // Keep the whole-sentence match while accepting either apostrophe.
+  /you['’]?ve hit your usage limit/i,
   /usage limit reached/i,
-  /you'?ve reached your workspace credit limit/i,
+  /you['’]?ve reached your workspace credit limit/i,
   /your workspace is out of credits/i,
 ];
 
@@ -10239,6 +10241,12 @@ export function hostThroughPty(o) {
       const injectLaunchKickoff = () => {
         launchKickoffAttemptStartedAtMs = Date.now();
         launchKickoffAttemptBudgetMs = kickoffBudgetMs;
+        // WI-10007230: owner input can cancel carry before its prewrite hook.
+        // Bind the already-spawned child independently, then share this exact
+        // report with the submission gate rather than superseding its retry.
+        const carryBinding = adoptedCarryRespawn && (adoptedCarryRespawn.nativeId || resolveRespawnNativeId)
+          ? prepareCarryBinding(adoptedCarryRespawn.nativeId, Date.now() + kickoffBudgetMs)
+          : null;
         return injectTurnAtPrompt({
           text: launchKickoff,
           label,
@@ -10260,7 +10268,7 @@ export function hostThroughPty(o) {
           }),
           prepareBeforeWrite: async ({ deadline }) => {
             if (adoptedCarryRespawn && (adoptedCarryRespawn.nativeId || resolveRespawnNativeId)) {
-              const binding = await prepareCarryBinding(adoptedCarryRespawn.nativeId, deadline);
+              const binding = await carryBinding;
               if (!binding.ok) return binding;
               adoptedCarryRespawn.nativeId = binding.nativeId;
             }
@@ -13754,6 +13762,12 @@ export function hostThroughPty(o) {
       // WI-10004943: a launch fresh child has no carry. Report the spawn; the
       // launch closure delivers its kickoff and publishes the proof receipt.
       if (freshChildOnly) return { delivered: false, reason: 'fresh-child-spawned', spawned: true };
+      // Native ownership follows the live child even when its carry is absent
+      // or cancelled by owner input. Keep the existing exact-child resolver
+      // and trusted report as the only authority (WI-10007230).
+      const carryBinding = respawnMode === 'carry-respawn' && (nativeId || resolveRespawnNativeId)
+        ? prepareCarryBinding(nativeId, Date.now() + recycleCarryInjectBudgetMs, respawnReported)
+        : null;
       if (!carryText) {
         if (drillId) {
           const dropExtra = {
@@ -13815,7 +13829,7 @@ export function hostThroughPty(o) {
         // until the closed-loop reconnect check proves papercusp-su ready.
         prepareBeforeWrite: async ({ deadline }) => {
           if (respawnMode === 'carry-respawn' && (nativeId || resolveRespawnNativeId)) {
-            const binding = await prepareCarryBinding(nativeId, deadline, respawnReported);
+            const binding = await carryBinding;
             if (!binding.ok) return binding;
             nativeId = binding.nativeId;
             respawnReported = true;

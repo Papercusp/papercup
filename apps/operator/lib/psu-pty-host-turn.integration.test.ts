@@ -585,6 +585,93 @@ it(
   15_000,
 );
 
+describe('owner input cannot cancel a late Codex native binding (WI-10007230)', () => {
+  it.each(['adopted', 'in-place'] as const)(
+    'reattaches the %s successor even when owner input drops its carry',
+    async (route) => {
+      const root = mkdtempSync(join(tmpdir(), 'codex-owner-input-binding-'));
+      const ownerId = uniqueOwner(`OWNER-INPUT-BINDING-${route}`);
+      const nativeId = '12345678-1234-4234-8234-123456789abc';
+      const marker = '⟦turn-origin:self-compaction nonce:fedcba9876543210⟧';
+      const carry = marker + '\nContinue the saved task';
+      const { captured, io, type } = bridgedIo();
+      let resolvedNativeId: string | null = null;
+      const reportedIds: string[] = [];
+      const emitted: string[] = [];
+      const freshCode = [
+        "process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');",
+        "process.stdout.write('FRESH-BOOT\\n');",
+        "setTimeout(()=>process.stdout.write('100% context left\\n'),800);",
+        "process.stdin.on('data',data=>{if(data.includes('\\u0004'))process.exit(0);process.stdout.write('INPUT:'+data+'\\n');});",
+        'setTimeout(()=>process.exit(0),5000);',
+      ].join('');
+      const done = hostThroughPty({
+        command: execPath,
+        args: ['-e', route === 'adopted' ? freshCode : "process.stdout.write('OLD-READY\\n');setTimeout(()=>process.exit(0),5000);"],
+        cwd: root,
+        env: hermeticEnv({
+          PAPERCUSP_AGENT: 'codex',
+          CODEX_HOME: root,
+          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '60',
+          PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '150',
+          PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '1500',
+        }),
+        ownerId,
+        io,
+        bridgeTty: true,
+        kickoff: route === 'adopted' ? carry : null,
+        adoptedCarryRespawn: route === 'adopted' ? { nativeId: null } : null,
+        resolveRespawnNativeId: () => resolvedNativeId,
+        mintCarryRespawnArgs: () => ({ args: ['-e', freshCode], nativeId: null }),
+        onRespawn: async (id: string) => { reportedIds.push(id); return true; },
+        emitCompacted: (_owner: string, _focus: string, options: { nativeId?: string | null } = {}) => {
+          emitted.push(options.nativeId ?? 'missing');
+          return null;
+        },
+        onExit: () => {},
+      });
+      try {
+        if (route === 'in-place') {
+          expect(await waitForOutput(captured, 'OLD-READY')).toBe(true);
+          await injectIntoHost(socketPathFor(ownerId), {
+            mode: 'carry-respawn', data: carry, systemPromptAddendum: 'saved task', ownerId,
+          });
+        }
+        expect(await waitForOutput(captured, 'FRESH-BOOT')).toBe(true);
+        type('owner draft');
+        // The native writer lock becomes readable after input has already
+        // cancelled carry delivery. It still belongs to this live child.
+        resolvedNativeId = nativeId;
+        const deadline = Date.now() + 2000;
+        let events: Array<Record<string, unknown>> = [];
+        while (Date.now() < deadline) {
+          if (existsSync(eventLogPathForOwner(ownerId))) {
+            events = readFileSync(eventLogPathForOwner(ownerId), 'utf8')
+              .trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+          }
+          // Callback entry precedes the persisted confirmation receipt. Wait
+          // for the actual two outcomes instead of racing the report's return.
+          if (events.some((event) => event.kind === 'respawn-binding-confirmed' && event.nativeId === nativeId) &&
+              events.some((event) => event.reason === 'fresh-child-owner-input')) break;
+          await sleep(20);
+        }
+        expect(events).toContainEqual(expect.objectContaining({ reason: 'fresh-child-owner-input' }));
+        expect(reportedIds).toEqual([nativeId]);
+        expect(events).toContainEqual(expect.objectContaining({ kind: 'respawn-binding-confirmed', nativeId }));
+        expect(captured()).toContain('INPUT:owner draft');
+        expect(captured()).not.toContain(marker);
+        expect(emitted).toEqual([]);
+      } finally {
+        await injectIntoHost(socketPathFor(ownerId), { mode: 'raw', data: '\x04', ownerId }).catch(() => false);
+        await done;
+        rmSync(root, { recursive: true, force: true });
+        rmSync(eventLogPathForOwner(ownerId), { force: true });
+      }
+    },
+    15_000,
+  );
+});
+
 describe('host-code-adopted carry with a late Codex native id (EI-24961854655864836)', () => {
   it.each([['adopted', true], ['adopted', false], ['in-place', true], ['in-place', false]] as const)(
     'gates %s carry before submission, then proves delivery (confirmation %s)',

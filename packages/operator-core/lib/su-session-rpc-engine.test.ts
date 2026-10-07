@@ -62,6 +62,7 @@ function fixture(backend: 'codex' | 'omp', overrides: {
   beforeReady?: () => Promise<void>;
   toolApproval?: 'prompt';
   identity?: 'su' | 'coding-assistant';
+  stage?: (name: string) => void;
   env?: Record<string, string>;
 } = {}) {
   let nativePath = `/configured/${backend}/session.jsonl`;
@@ -118,6 +119,7 @@ function fixture(backend: 'codex' | 'omp', overrides: {
     beforeReady: overrides.beforeReady,
     toolApproval: overrides.toolApproval,
     identity: overrides.identity,
+    stage: overrides.stage,
     accountRoute: 'default', carry: 'warm', modes: ['auto'], register: false,
     ...(overrides.resume ? { nativeSession } : {}),
     peerFactory: async (options) => { transport = options; return { request, send: (frame) => sent.push(frame), done, close, pid: () => 7171 }; },
@@ -133,6 +135,23 @@ function command(engine: SuRpcEngine, type: 'owner_turn' | 'interrupt', id: stri
 }
 
 describe.each(['codex', 'omp'] as const)('%s structured SU engine', (backend) => {
+  it('names the pending native initialization operation without advertising readiness', async () => {
+    const stages: string[] = [];
+    let release!: () => void;
+    let entered!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    const observed = new Promise<void>((resolve) => { entered = resolve; });
+    const f = fixture(backend, { stage: (name) => stages.push(name), request: async (frame) => {
+      if (frame.method === 'initialize' || frame.type === 'get_state') { entered(); await pending; }
+      return undefined;
+    } });
+    await observed;
+    if (backend === 'codex') expect(stages.at(-1)).toBe('rpc-initialize');
+    expect(f.engine.adapter.host.snapshot().streamReady).toBe(false);
+    release();
+    await f.engine.ready;
+    expect(stages.at(-1)).toBe('rpc-ready');
+  });
   it.each([
     { toolApproval: undefined, codexApproval: 'never', codexSandbox: 'danger-full-access', ompApproval: 'yolo' },
     { toolApproval: 'prompt' as const, codexApproval: 'on-request', codexSandbox: 'workspace-write', ompApproval: 'always-ask' },

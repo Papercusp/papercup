@@ -529,6 +529,17 @@ export const SU_CATALOG: ReadonlyArray<SuCatalogEntry> = [
     input: obj({ asRole: { type: 'string' } }),
   },
   {
+    name: 'reports:publish',
+    description: 'Publish a complete owner-facing Markdown deliverable into the Reports library. Origin is server-stamped; visibility defaults owner; corrections supersede.',
+    input: obj({ title: { type: 'string' }, body_md: { type: 'string' }, summary: { type: 'string' },
+      kind: { type: 'string' }, visibility: { type: 'string', enum: ['owner', 'pot', 'workspace'] },
+      request_key: { type: 'string' }, supersedes: { type: 'string' }, tags: { type: 'array', items: { type: 'string' } } }, ['title']),
+  },
+  {
+    name: 'reports:get', description: 'Read one saved report in full by id, including its complete Markdown body.',
+    input: obj({ id: { type: 'string' }, ids: { type: 'array', items: { type: 'string' } }, lineage: { type: 'boolean' } }),
+  },
+  {
     name: 'tools:find',
     description:
       'Search the full live MCP catalog for a capability before offering an execution route. Take a hit\'s ' +

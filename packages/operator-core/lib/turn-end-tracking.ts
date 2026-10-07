@@ -30,6 +30,16 @@ import { createHash } from 'node:crypto';
 /** A held checkpoint older than this (or absent) is STALE at turn end. */
 export const STALE_CHECKPOINT_MS = 45 * 60 * 1000;
 
+/** Conservative advisory signal; quoted/code examples and progress notes do not qualify. */
+export function isUnpublishedReportTurn(assistantText: string, publicationSeen: boolean): boolean {
+  if (publicationSeen) return false;
+  const text = assistantText.slice(0, 128_000).replace(/```[\s\S]*?```/g, '')
+    .split('\n').filter(line => !/^\s*>/.test(line)).join('\n');
+  if (text.trim().length < 500) return false;
+  const headings = Array.from(text.matchAll(/^#{1,3}\s+([^\n]+)$/gm), match => match[1]);
+  return headings.filter(heading => /\b(findings|verdict|recommendations|assessment|conclusions|postmortem|analysis)\b/i.test(heading)).length >= 2;
+}
+
 /** Marker opening a mechanical (system-written) checkpoint block. The ⟦…⟧
  *  bracket family is already the machine-text convention (⟦journal⟧,
  *  ⟦turn-origin⟧) — unmistakable, never typed by hand. */

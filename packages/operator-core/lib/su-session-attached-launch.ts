@@ -354,8 +354,12 @@ export async function launchAttachedSuSession(
           harnessSlug: input.harness_slug, agentChatId: input.agent_chat_id });
         if (!restored) throw new Error('Reconnect requires the saved session descriptor');
         const startResumedEngine = async (record: typeof previous) => {
+          trace?.stage('resume-resolve-identity');
           const identity = await engineIdentityForLaunch(workspaceId, record.cwd);
-          const resume = await prepareStructuredSuResume(record, { identity });
+          const resume = await prepareStructuredSuResume(record, {
+            identity, stage: (name) => trace?.stage(name),
+          });
+          trace?.stage('resume-start-engine');
           let active: ClaudeSuEngine | SuRpcEngine | undefined;
           try {
             const options = { ...resume.options, host: restored, beforeReady: resume.beforeReady,
@@ -367,11 +371,13 @@ export async function launchAttachedSuSession(
                   identity })
               : startSuRpcEngine(resume.boot, resume.binding as PuiSuSessionBinding & { backend: 'codex' | 'omp' },
                 { ...options, nativeSession: resume.nativeSession as Extract<NativeSessionHandle, { backend: 'codex' | 'omp' }>,
-                  identity });
+                  identity, stage: (name) => trace?.stage(name) });
             state.engines.set(key, active);
             observeReadiness(active);
             // WI-10003879: sibling workers route this session's requests here.
+            trace?.stage('resume-record-host-owner');
             await recordSuSessionHostOwner(record.advSessionId, localSuSessionHostOwner(), workspaceId);
+            trace?.stage('resume-persist-host-descriptor');
             await persistSuSessionDescriptor(record.advSessionId, active.adapter.host.descriptor());
           } catch (error) { await active?.close(); await resume.release(); throw error; }
           return { engine: active, resume };

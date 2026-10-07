@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtemp, mkdir, writeFile, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { createPublicManualSource, getPublicManual, searchPublicManual } from './_public-manual';
+import { createPublicManualSource, getPublicManual, searchPublicManual, resolvePublicManualRoot } from './_public-manual';
 
 describe('canonical public manual retrieval', () => {
   let root: string;
@@ -44,6 +44,9 @@ describe('canonical public manual retrieval', () => {
     const before = await getPublicManual({ slugs: ['faq'] }, source);
     await writeFile(join(root, 'faq.mdx'), faq.replace('Remote work can continue', 'Updated answer: remote work continues'));
     const after = await getPublicManual({ slugs: ['faq'] }, source);
+    expect('revision' in before).toBe(true);
+    expect('revision' in after).toBe(true);
+    if (!('revision' in before) || !('revision' in after)) throw new Error('public read failed');
     expect(after.revision).not.toBe(before.revision);
     expect(JSON.stringify(after)).toContain('Updated answer');
     expect(JSON.stringify(await searchPublicManual({ query: 'Updated answer' }, source))).toContain('Updated answer');
@@ -69,5 +72,28 @@ describe('canonical public manual retrieval', () => {
     const result = await searchPublicManual({ query: 'Does stopping a workspace make it free?' }, source);
     expect(result.hits).toEqual(expect.arrayContaining([expect.objectContaining({ slug: 'faq' })]));
     expect(JSON.stringify(await getPublicManual({ slugs: ['faq'], heading: 'Does stopping a workspace make it free?' }, source))).toContain('charge');
+  });
+
+  it('retrieves ordinary misspellings without inventing a match for an unrelated query', async () => {
+    const source = createPublicManualSource(root);
+    for (const query of ['browesr', 'broswer', 'browsr']) {
+      const result = await searchPublicManual({ query }, source);
+      expect(result).toMatchObject({ query, correctedQuery: 'browser' });
+      expect(result.hits).toEqual(expect.arrayContaining([expect.objectContaining({ slug: 'faq' })]));
+    }
+    expect(await searchPublicManual({ query: 'quantumxyz' }, source)).toMatchObject({ hits: [], hitCount: 0 });
+  });
+
+  it('resolves and reads a standalone bundle without a monorepo source tree', async () => {
+    const installed = join(root, 'installed');
+    const bundle = join(installed, 'public/manual-source');
+    await mkdir(bundle, { recursive: true });
+    await writeFile(join(bundle, 'faq.mdx'), faq);
+    const cwd = join(installed, 'server');
+    await mkdir(cwd);
+    expect(resolvePublicManualRoot(cwd, installed)).toBe(bundle);
+    const source = createPublicManualSource(resolvePublicManualRoot(cwd, installed));
+    expect(JSON.stringify(await getPublicManual({ slugs: ['faq'] }, source))).toContain('Remote work can continue');
+    expect((await searchPublicManual({ query: 'browser' }, source)).hits.length).toBeGreaterThan(0);
   });
 });

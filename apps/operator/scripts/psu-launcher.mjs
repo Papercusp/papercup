@@ -7101,7 +7101,7 @@ export const WALLED_POOL_REFUSAL_EXIT = 78;
  *   agent?: string | null,
  *   model?: string | null,
  *   account?: string | null | { mode?: string, provider?: string },
- *   stats?: { codexHealthyAccounts?: number, codexTotalAccounts?: number, codexEarliestRecoveryAt?: number | null } | null,
+ *   stats?: { codexHealthyAccounts?: number, codexTotalAccounts?: number, codexEarliestRecoveryAt?: number | null, codexUnserviceableCause?: 'upstream-unreachable' | 'accounts-unserviceable' | null } | null,
  *   now?: number
  * }} input
  * @returns {{ kind: 'proceed' | 'warn' | 'refuse', message: string | null, recoveryAt: number | null }}
@@ -7139,6 +7139,21 @@ export function codexAutoPoolVerdict({
       (typeof rawRecovery !== "number" || !Number.isFinite(rawRecovery)))
   )
     return proceed;
+  // The pool horizon is an account-reset/park horizon, not a network recovery
+  // estimate. When the gateway has fresh transport failures across accounts and
+  // no HTTP response since, report the actual blocker and leave recovery time unknown.
+  if (stats.codexUnserviceableCause === "upstream-unreachable") {
+    return {
+      kind: "refuse",
+      recoveryAt: null,
+      message:
+        "psu: REFUSING TO LAUNCH — Codex upstream is unreachable: the gateway reports fresh transport failures across accounts and no HTTP response. " +
+        "This is a network/connectivity problem, not a usage or credit wall. Check this machine's network and retry when the gateway can reach OpenAI again. " +
+        "Override with " +
+        ALLOW_WALLED_LAUNCH_ENV +
+        "=1 if you know this snapshot is wrong.",
+    };
+  }
   const count = `0 of ${total}`;
   const recovery =
     typeof rawRecovery === "number" && Number.isFinite(rawRecovery)

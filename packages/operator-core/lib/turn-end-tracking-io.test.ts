@@ -28,6 +28,10 @@ const listActiveAwaits = vi.fn();
 const recentTurnJournal = vi.fn();
 const wakeRecipients = vi.fn();
 const sql = vi.fn();
+const reportDisabled = vi.fn();
+const captureObservation = vi.fn();
+vi.mock('./agent-tools/reports/_shared', () => ({ reportsLibraryDisabled: (...a: unknown[]) => reportDisabled(...a) }));
+vi.mock('./harness/improvements/capture-core', () => ({ captureImprovement: (...a: unknown[]) => captureObservation(...a) }));
 
 vi.mock('./work-item-checkpoint', () => ({
   getWorkItemCheckpointWithMeta: (...a: unknown[]) => getWorkItemCheckpointWithMeta(...a),
@@ -61,12 +65,33 @@ vi.mock('./agent-tools/coordination/inbox-wake', () => ({
   wakeRecipients: (...a: unknown[]) => wakeRecipients(...a),
 }));
 
-const { checkpointOnRelease, sweepOpenTaskReminder, wakeOpenTaskReminder } = await import('./turn-end-tracking-io');
+const { checkpointOnRelease, sweepOpenTaskReminder, wakeOpenTaskReminder, observeUnpublishedReportTurn } = await import('./turn-end-tracking-io');
 
 const REF = { releasingOwnerId: 'su-holder-1', workspaceId: 'ws-1', harness: 'papercusp', workItemId: 'WI-1' };
 
 afterEach(() => {
   vi.clearAllMocks();
+});
+
+describe('Reports turn-end observation IO', () => {
+  const input = { workspaceId: 'ws-1', ownerId: 'writer', sessionId: 'session-1', sinceIso: '2026-10-07T00:00:00Z',
+    turnRef: 'session-1:turn-4', assistantText: '## Findings\n' + 'Measured finding. '.repeat(35) + '\n## Verdict\nThe audit is complete.' };
+  it('files an observation with a stable source key for an unpublished fixture', async () => {
+    reportDisabled.mockResolvedValue(null); sql.mockResolvedValue([]); captureObservation.mockResolvedValue({ created: true });
+    expect(await observeUnpublishedReportTurn(input)).toBe(true);
+    expect(captureObservation.mock.calls[0][0]).toMatchObject({ lane: 'observation', initialState: 'done', createdBy: 'writer' });
+    expect(captureObservation.mock.calls[0][0].body).toContain(input.turnRef);
+    await observeUnpublishedReportTurn(input);
+    expect(captureObservation.mock.calls[1][0].watchdogKey).toBe(captureObservation.mock.calls[0][0].watchdogKey);
+  });
+  it('does not file when the author published, the flag is off or the turn is ordinary progress', async () => {
+    reportDisabled.mockResolvedValue(null); sql.mockResolvedValue([{ report_id: 'rpt_saved' }]);
+    expect(await observeUnpublishedReportTurn(input)).toBe(false);
+    reportDisabled.mockResolvedValue({ ok: false });
+    expect(await observeUnpublishedReportTurn(input)).toBe(false);
+    expect(await observeUnpublishedReportTurn({ ...input, assistantText: 'Still verifying.' })).toBe(false);
+    expect(captureObservation).not.toHaveBeenCalled();
+  });
 });
 
 describe('checkpointOnRelease (EI-18734870651452334)', () => {

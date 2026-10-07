@@ -504,7 +504,10 @@ vi.mock('../su-session-rpc-engine', async (original) => {
     scriptedEngine.rpcLaunches.push({ backend: args[1].backend, identity: args[2].identity ?? 'su',
       promptFile: args[0].promptFile, cwd: args[0].cwd, accountRoute: args[2].accountRoute ?? null });
     const engine = actual.startSuRpcEngine(args[0], args[1], args[2]);
-    scriptedEngine.engines.push(engine);
+    const index = scriptedEngine.engines.push(engine) - 1;
+    // Exact resume reuses its host, including its replay buffer. Observe that
+    // host once, just as the Claude fixture does (WI-10004198).
+    if (scriptedEngine.engines.slice(0, index).some((other) => other.adapter.host === engine.adapter.host)) return engine;
     void (async () => {
       for await (const { event } of engine.adapter.host.subscribe()) scriptedEngine.events.push(event);
     })();

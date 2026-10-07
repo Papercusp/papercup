@@ -2,6 +2,7 @@
  *  auto-checkpoint composition/merge + unregistered-artifact detection. */
 import { describe, expect, it } from 'vitest';
 import {
+  isUnpublishedReportTurn,
   MECHANICAL_CHECKPOINT_MARKER,
   STALE_CHECKPOINT_MS,
   UNGUARDED_HALT_NOTE,
@@ -23,6 +24,20 @@ import {
   settledMessagesCursor,
   unregisteredArtifactTripwire,
 } from './turn-end-tracking';
+
+describe('Reports unpublished-turn signal', () => {
+  const report = '# Architecture audit\n\n## Findings\n' + 'Measured architecture evidence. '.repeat(16)
+    + '\n## Recommendations\nPreserve these conclusions in the library.';
+  it('signals a report-shaped fixture only before publication', () => {
+    expect(isUnpublishedReportTurn(report, false)).toBe(true);
+    expect(isUnpublishedReportTurn(report, true)).toBe(false);
+  });
+  it('ignores progress notes, quoted reports and report examples inside code', () => {
+    expect(isUnpublishedReportTurn('The audit tests passed; capture verification remains open.', false)).toBe(false);
+    expect(isUnpublishedReportTurn(report.split('\n').map(line => `> ${line}`).join('\n'), false)).toBe(false);
+    expect(isUnpublishedReportTurn('```markdown\n' + report + '\n```', false)).toBe(false);
+  });
+});
 
 const NOW = 1_784_000_000_000;
 

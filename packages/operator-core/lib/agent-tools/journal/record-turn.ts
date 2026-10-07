@@ -175,6 +175,7 @@ export default defineTool({
     // P-013 tool-call log tail. Marked ⟦auto-checkpoint mechanical⟧, never
     // overwrites agent-authored prose. Bounded + fail-soft; plan D-003.
     let autoCheckpointed: Array<{ id: string; mechanical: true }> = [];
+    let unpublishedReportObserved = false;
     if (ownerId && !deduped) {
       const { boundedAutoCheckpoint } = await import('../../turn-end-tracking-io');
       autoCheckpointed = await boundedAutoCheckpoint({
@@ -183,6 +184,12 @@ export default defineTool({
         sessionId: args.session_id,
         sinceIso,
         journalNote: extracted.note,
+      });
+      const { boundedUnpublishedReportTurn } = await import('../../turn-end-tracking-io');
+      unpublishedReportObserved = await boundedUnpublishedReportTurn({
+        ownerId, workspaceId: journalWorkspaceId, sessionId: args.session_id, sinceIso,
+        assistantText: turn.text, turnRef: `${args.session_id}:${turn.ts?.toISOString() ?? id}`,
+        harnessSlug: ctx.harnessSlug,
       });
     }
 
@@ -292,6 +299,7 @@ export default defineTool({
         turn_ts: turn.ts ? turn.ts.toISOString() : null,
         goalPlacementTurnEnd,
         ...(autoCheckpointed.length ? { autoCheckpointed } : {}),
+        ...(unpublishedReportObserved ? { unpublishedReportObserved } : {}),
         ...(unguardedHaltTripwire ? { unguardedHalt: unguardedHaltTripwire } : {}),
         ...(openTaskReminder
           ? {

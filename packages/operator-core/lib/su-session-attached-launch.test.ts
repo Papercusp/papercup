@@ -226,7 +226,7 @@ describe('attached launch authority', () => {
       expect(mocks.bootstrap).not.toHaveBeenCalled();
       expect(mocks.engine.mock.calls[0][3]).toMatchObject({ resume: true, identity: 'coding-assistant' });
       expect(mocks.resume).toHaveBeenCalledWith(expect.objectContaining({ cwd: fresh }),
-        { identity: 'coding-assistant' });
+        expect.objectContaining({ identity: 'coding-assistant', stage: expect.any(Function) }));
     });
   });
 

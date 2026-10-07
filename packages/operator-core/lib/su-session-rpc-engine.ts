@@ -33,6 +33,8 @@ import { readSuperuserToken } from './superuser-token';
 type Backend = 'codex' | 'omp';
 type NativeHandle = CodexNativeSessionHandle | OmpNativeSessionHandle;
 export interface SuRpcEngineOptions {
+  /** Launch diagnostics; names the operation currently holding readiness. */
+  stage?: (name: string) => void;
   agentChatId: string;
   model?: string | null;
   accountRoute?: string | null;
@@ -180,7 +182,9 @@ export function startSuRpcEngine(
     }
     if (native.backend === 'omp' && native.ompThreadId) args.push('--resume', native.ompThreadId);
   }
+  options.stage?.('rpc-github-token');
   if (!options.peerFactory) applyGithubTokenEnv(env);
+  options.stage?.('rpc-create-adapter');
   let peer: SuStdioPeer | undefined;
   let ready = false;
   let closed = false;
@@ -482,6 +486,7 @@ export function startSuRpcEngine(
   }
   starting = (async () => {
     if (options.nativeSession) {
+      options.stage?.('rpc-restore-visible-history');
       // WI-10004162: show the saved conversation before the native peer starts
       // (seconds, or never when startup fails). Best-effort: the replay once the
       // peer is up stays authoritative and adds only what it wrote since.
@@ -491,7 +496,9 @@ export function startSuRpcEngine(
       ).catch(() => undefined);
       if (closed) throw new Error('Structured connection closed during startup');
     }
+    options.stage?.('rpc-spawn-peer');
     peer = await (options.peerFactory ?? startSuStdioPeer)({
+      stage: options.stage,
       binary: backend, args, cwd: boot.cwd, env, ownerId: binding.ownerId!, workspaceId: boot.workspaceId, onMessage,
       spec: { class: 'agent-session', title: `PUI ${backend} structured engine`, launchedBy: 'pui-su-session',
         argv: [backend, ...args],
@@ -510,12 +517,14 @@ export function startSuRpcEngine(
     void done.catch(() => undefined);
     let actualModel: string;
     if (backend === 'codex') {
+      options.stage?.('rpc-initialize');
       await peer.request({ method: 'initialize', params: { clientInfo: { name: 'papercusp_pui', title: 'Papercusp PUI', version: '1' } } });
       peer.send({ method: 'initialized', params: {} });
       const params = { cwd: boot.cwd,
         approvalPolicy: options.toolApproval === 'prompt' ? 'on-request' : 'never',
         sandbox: options.toolApproval === 'prompt' ? 'workspace-write' : 'danger-full-access',
         ...(nativeId() ? { threadId: nativeId() } : {}) };
+      options.stage?.('rpc-native-thread');
       const result = await peer.request({ method: nativeId() ? 'thread/resume' : 'thread/start', params });
       const thread = object(result.thread), id = string(thread.id);
       if (!id || nativeId() && id !== nativeId()) throw new Error('Codex did not return the requested native identity');
@@ -526,6 +535,7 @@ export function startSuRpcEngine(
       for (const frame of initializingFrames.splice(0)) onMessage(frame);
       initializingFrameBytes = 0;
       if (su) {
+        options.stage?.('rpc-su-tools');
         const servers = await peer.request({ method: 'mcpServerStatus/list', params: {} });
         const suServer = (Array.isArray(servers.data) ? servers.data : []).map(object).find((server) => server.name === 'papercusp-su');
         if (!suServer || !Object.keys(object(suServer.tools)).length) throw new Error('Codex SU tools are not connected');
@@ -595,8 +605,11 @@ export function startSuRpcEngine(
         'interactive-cards': { state: 'supported', implementation: 'native' },
       } },
     } } as SuSessionEventInput<Backend>);
+    options.stage?.('rpc-record-session-owner');
     if (!options.peerFactory) recordSessionOwner(nativeId(), binding.ownerId, { advSessionId: binding.advSessionId });
+    options.stage?.('rpc-refresh-resume-evidence');
     await refreshResumeEvidence();
+    options.stage?.('rpc-persist-native-descriptor');
     if (!await persistSuSessionDescriptor(binding.advSessionId, host.descriptor(), boot.workspaceId)) {
       throw new Error('Could not persist the native session identity and resume descriptor');
     }
@@ -605,13 +618,16 @@ export function startSuRpcEngine(
       // the owner's visible history before this connection accepts new input.
       // Historical turn completion must not advertise current readiness.
       host.transition('resuming', 'Restoring saved conversation before attaching the executor');
+      options.stage?.('rpc-replay-history');
       if (backend === 'codex') await (adapter as CodexSuSessionAdapter).consumeRolloutSnapshot({ preserveLifecycle: true });
       else await (adapter as OmpSuSessionAdapter).consumeTranscriptSnapshot({ preserveLifecycle: true });
     }
     if (closed) throw new Error('Structured connection closed during startup');
+    options.stage?.('rpc-finalize-resume');
     await options.beforeReady?.(peer.pid());
     if (closed) throw new Error(`${backend} closed while finalizing resume`);
     ready = true;
+    options.stage?.('rpc-ready');
     host.transition('ready', `${backend} structured stream, SU tools and command executor attached`);
     // WI-10006652: /model lists the models Codex reports it can run. Not
     // awaited: the catalog only enriches the picker, so a slow or refused

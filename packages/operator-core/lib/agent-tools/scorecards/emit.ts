@@ -3487,6 +3487,14 @@ export async function emitScorecard(
         cardSummary: gradingCardDigestExcerpt(ratings),
       });
     }
+    if (rubric.kind === 'acceptance' && result.issue?.id && input.workspaceId) {
+      void trackDetached(import('../../report-capture').then(({ captureAcceptanceVerdict }) => captureAcceptanceVerdict({
+        workspaceId: input.workspaceId!, ownerId: input.createdBy, harnessSlug: input.ctxHarness,
+        sessionRef: input.createdBy, issueId: result.issue!.id, rubricRef: args.rubricRef,
+        title: args.title ?? `Acceptance: ${rubric.title}`, planSlug: rubric.subjectPlan,
+        body: args.body, ratings, acceptance: acceptanceRecord,
+      })).catch(error => console.warn(`Reports acceptance capture failed: ${String(error)}`)));
+    }
     return {
       ok: true as const,
       created: result.created,

@@ -31,7 +31,9 @@ import { checkInteractiveSafetyFloor } from './interactive-safety-floor';
 import type { DurableSuSessionRecord } from './su-session-persistence';
 
 export async function prepareStructuredSuResume(record: DurableSuSessionRecord,
-  { identity = 'su' }: { identity?: 'su' | 'coding-assistant' } = {}) {
+  { identity = 'su', stage }: {
+    identity?: 'su' | 'coding-assistant'; stage?: (name: string) => void;
+  } = {}) {
   const saved = record.descriptor;
   if (!saved?.identity.nativeSessionId || !record.ownerId || !record.backend) {
     throw new Error('Reconnect requires a saved native session and SU identity');
@@ -39,6 +41,7 @@ export async function prepareStructuredSuResume(record: DurableSuSessionRecord,
   // Legacy descriptors can say default although a copied model used the
   // gateway. Do not turn that into a different, unauthenticated provider.
   if (record.backend === 'omp' && saved.model) resolveOmpSessionModel(saved.model, saved.accountRoute);
+  stage?.('resume-read-session');
   const row = await getAdvSession(record.advSessionId);
   if (!row || row.coordOwnerId !== record.ownerId || row.workspaceId !== record.workspaceId
     || row.agent !== record.backend || saved.identity.advSessionId !== row.id
@@ -48,6 +51,7 @@ export async function prepareStructuredSuResume(record: DurableSuSessionRecord,
     || saved.identity.agentChatId !== record.agentChatId || saved.identity.harnessSlug !== record.harnessSlug) {
     throw new Error('Saved session identity does not match the resume target');
   }
+  stage?.('resume-read-launch-spec');
   const spec = parseSuLaunchSpecRecord(await readSuLaunchSpecByOwner(record.ownerId));
   if (!spec || spec.agent !== record.backend || spec.workspaceId !== record.workspaceId
     || spec.harnessSlug !== record.harnessSlug || !row.cwd) {
@@ -67,6 +71,7 @@ export async function prepareStructuredSuResume(record: DurableSuSessionRecord,
   const session = { ...row, sessionId: nativeId, ompThreadId: nativeId,
     configDir: native.backend === 'claude' ? native.configDir : undefined,
     codexHome: native.backend === 'codex' ? native.codexHome : undefined };
+  stage?.('resume-local-liveness');
   let liveHost = findLiveHost(record.ownerId);
   if (liveHost) throw new Error('This session still has a live host; reconnect to that process');
   if (row.pid) {
@@ -110,15 +115,18 @@ export async function prepareStructuredSuResume(record: DurableSuSessionRecord,
       + `(backend=${native.backend}, probe=${reason}${errno}, held=${holder?.held === true}, pid=${pid}, `
       + `force=${process.env.PSU_FORCE_RESUME === '1'})`);
   }
+  stage?.('resume-safety-floor');
   const floor = await checkInteractiveSafetyFloor();
   if (!floor.ok) throw new Error(floor.reason);
   const key = `pui-resume:${randomUUID()}`;
+  stage?.('resume-acquire-lease');
   const lease = await acquireAdvSessionResume(row.id, key, 300, undefined, evidence);
   if (!lease.acquired) throw new Error(`The saved session cannot be resumed (${lease.status})`);
   let finalized = false;
   const release = async () => { if (!finalized) await releaseAdvSessionResume(row.id, key); };
   try {
     const operatorUrl = resolveSpawnHostOperatorBaseUrl();
+    stage?.('resume-transcript');
     const restored = await ensureResumeTranscriptPresent(session, {
       rematerialize: (id, backend) => tryRematerializeFromArchive(id, backend, { operatorUrl }),
     });
@@ -131,6 +139,7 @@ export async function prepareStructuredSuResume(record: DurableSuSessionRecord,
     if (!exact && (restored !== false || record.backend !== 'claude')) {
       throw new Error('The native transcript is unavailable or still being restored');
     }
+    stage?.('resume-account-route');
     const { resolveAccountPin } = await import('./endpoint-route/routes/agent-mcp/bootstrap-su');
     const account = saved.accountRoute ?? 'default';
     let model = spec.model ?? saved.model;
@@ -147,6 +156,7 @@ export async function prepareStructuredSuResume(record: DurableSuSessionRecord,
     const accountRoute = { mode: accountPin.gatewayAuto || account === 'auto' || account === 'gateway' ? 'auto'
       : accountPin.accountId ? 'pin' : 'default', id: accountPin.accountId,
       provider: accountPin.provider, env: accountPin.env };
+    stage?.('resume-console-envelope');
     const envelope = await buildConsoleEnvelope({ workspaceId: record.workspaceId,
       slug: record.harnessSlug, operatorBaseUrl: operatorUrl });
     const env = Object.fromEntries(Object.entries({ ...envelope.env, ...buildResumeEnv(session, { accountEnv: accountRoute }),
@@ -156,6 +166,7 @@ export async function prepareStructuredSuResume(record: DurableSuSessionRecord,
     }).filter((entry): entry is [string, string] => typeof entry[1] === 'string'));
     if (spec.fleet?.slug) env.PAPERCUSP_FLEET_SLUG = spec.fleet.slug;
     if (spec.fleet?.role) env.PAPERCUSP_FLEET_ROLE = spec.fleet.role;
+    stage?.('resume-native-config');
     let promptFile = launchContextPathFor(row.id);
     if (native.backend === 'claude') {
       if (!native.configDir) throw new Error('The saved Claude configuration directory is unavailable');
@@ -202,6 +213,7 @@ export async function prepareStructuredSuResume(record: DurableSuSessionRecord,
     if (identity === 'su' && !existsSync(promptFile)) {
       throw new Error('The saved full SU instruction artifact is unavailable');
     }
+    stage?.('resume-prepared');
     const coordExt = join(homedir(), '.papercusp', 'papercusp-coord.ts');
     const boot: BootstrapSuResult = { status: 'ok', sessionId: row.id, nativeSessionId: nativeId,
       agent: record.backend, workspaceId: record.workspaceId, harnessSlug: record.harnessSlug,

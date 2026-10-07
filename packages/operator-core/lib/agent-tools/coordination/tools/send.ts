@@ -19,6 +19,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import { trackDetached } from '../../../detached-imports';
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { parseReportBlock, type ReportBlock } from '@papercusp/chat-protocol';
@@ -1837,6 +1838,13 @@ async function sendOne(
     throw error;
   } finally {
     phaseTimer.persistFinishedAt = performance.now();
+  }
+
+  if (reportBlock && identity.workspaceId && env.to.includes('human')) {
+    void trackDetached(import('../../../report-capture').then(({ captureCoordReport }) => captureCoordReport({
+      workspaceId: identity.workspaceId!, ownerId: identity.ownerId, harnessSlug,
+      sessionRef: identity.ownerId, msgId: env.msg_id, summary: msg.summary, report: reportBlock!,
+    })).catch(error => console.warn(`Reports card capture failed for ${env.msg_id}: ${String(error)}`)));
   }
 
   // EI-6874 (zero-recipient audience send is a refusal-class event, not a silent

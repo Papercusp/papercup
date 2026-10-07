@@ -18395,7 +18395,7 @@
           "POST"
         ]
       },
-      "description": "A host service's log lines, filtered SERVER-SIDE and distilled — `journalctl --user -u <unit> --since <w> | grep <pat> | tail -n` on Linux, or the equivalent macOS `log show` unified-log query — as { backend, entries:[{ts,unit,level,message,repeat}], matched, collapsed, truncated }. `grep` is pushed into the host logger's predicate so only matching lines are read, and consecutive identical lines collapse to one row + a count. Reads logs only — it does not follow (`-f`) and does not restart anything.",
+      "description": "A host service's log lines, filtered SERVER-SIDE and distilled — `journalctl --user -u <unit> --since <w> | grep <pat> | tail -n` on Linux, or the equivalent macOS `log show` unified-log query — as { backend, entries:[{ts,unit,level,message,repeat,lastTs?}], matched, collapsed, truncated }. `lastTs` is present only on a collapsed row (`repeat > 1`) and is its final timestamp. `grep` is pushed into the host logger's predicate so only matching lines are read, and consecutive identical lines collapse to one row + a count. Reads logs only — it does not follow (`-f`) and does not restart anything.",
       "capabilities": [
         "intel:read"
       ],

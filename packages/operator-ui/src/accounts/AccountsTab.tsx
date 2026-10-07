@@ -188,7 +188,8 @@ export default function AccountsTab({ active }: { active: boolean }) {
   // evaluated first.
   const { Link } = operatorUi();
   const now = useNow(active);
-  const { data: accounts, loading } = useSyncQuery<PoolAccount>({ queryName: 'accounts.pool', enabled: active });
+  const { data: accounts, loading, error, failureReason, invalidate } = useSyncQuery<PoolAccount>({ queryName: 'accounts.pool', enabled: active });
+  const readError = error ?? failureReason;
   const {
     overrideBusy,
     forced,
@@ -245,12 +246,16 @@ export default function AccountsTab({ active }: { active: boolean }) {
           </div>
         </div>
         <div className="pclsb-acct__summary" aria-label="Account pool summary">
+          {accounts.length === 0 && (loading || readError) ? (
+            <span>{readError ? 'Account pool unavailable' : 'Loading accounts…'}</span>
+          ) : (<>
           <span><b>{poolSummary.available}/{poolSummary.total}</b> avail</span>
           <span><b>{poolSummary.claude}</b> Claude</span>
           <span><b>{poolSummary.codex}</b> Codex</span>
           <span><b>{poolSummary.paused}</b> paused</span>
           <span><b>{poolSummary.limited}</b> limited</span>
           <span><b>{poolSummary.forced || poolSummary.excluded ? `${poolSummary.forced}/${poolSummary.excluded}` : 'off'}</b> steer</span>
+          </>)}
         </div>
       </header>
 
@@ -296,7 +301,13 @@ export default function AccountsTab({ active }: { active: boolean }) {
         </div>
       )}
 
-      {loading && accounts.length === 0 ? (
+      {readError && (
+        <div className="pclsb-panel__empty" role="alert">
+          Could not load accounts. {accounts.length > 0 ? 'Showing previously loaded accounts. ' : ''}
+          <button type="button" onClick={invalidate}>Retry</button>
+        </div>
+      )}
+      {readError && accounts.length === 0 ? null : loading && accounts.length === 0 ? (
         <div className="pclsb-panel__empty">Loading accounts…</div>
       ) : accounts.length === 0 ? (
         <div className="pclsb-panel__empty">No accounts in the pool yet.</div>
