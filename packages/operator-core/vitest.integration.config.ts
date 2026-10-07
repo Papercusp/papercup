@@ -8,6 +8,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // read. Ordinary isolated integration suites do not open the live-host graph.
 const liveRuntime = process.env.PAPERCUSP_WOE_SERVED_AUDIT === '1'
   ? await tsImport('./lib/runtime-vintage.ts', import.meta.url) : null;
+const liveRuntimeDb = liveRuntime ? await tsImport('@papercusp/db-org', import.meta.url) : null;
 
 // The SP1 C4 carve moved the plans/cross_harness integration tests here; they
 // inject('baselineSchemaDsn') via _pg-tool-fixture, so this package needs the
@@ -21,10 +22,15 @@ export default defineVitestConfig({
   ...(liveRuntime ? {
     readRuntimeEnvironment: async () => {
       const units = ['hono-host:3170'];
-      const fingerprint = liveRuntime.measureRuntimeVintageEnvironment(
-        await liveRuntime.listRuntimeVintage('papercusp-workspace'), units,
-      );
-      return fingerprint ? { schemaVersion: 1 as const, units, fingerprint, observedAt: new Date().toISOString() } : null;
+      const { sql } = liveRuntimeDb!.createDedicatedOrgPg('woe-integration-runtime', { max: 1 });
+      try {
+        const fingerprint = liveRuntime.measureRuntimeVintageEnvironment(
+          await liveRuntime.listRuntimeVintage('papercusp-workspace', sql), units,
+        );
+        return fingerprint ? { schemaVersion: 1 as const, units, fingerprint, observedAt: new Date().toISOString() } : null;
+      } finally {
+        await sql.end({ timeout: 1 });
+      }
     },
   } : {}),
   globalSetup: [BASELINE_SCHEMA_GLOBAL_SETUP_PATH, resolve(__dirname, 'test/_org-template.globalSetup.ts')],
