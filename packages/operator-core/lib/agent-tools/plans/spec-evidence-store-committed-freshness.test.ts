@@ -179,6 +179,36 @@ beforeEach(async () => {
 afterEach(() => rmSync(root, { recursive: true, force: true }));
 
 describe('listSpecEvidence measures repo-files proof at the measurement commit', () => {
+  it('pins fixture SQL membership at the commit and names committed changes, additions, and removals', async () => {
+    const recipe = { schemaVersion: 1 as const, kind: 'repo-files' as const,
+      sourcePaths: ['src/a.ts'], fixtureGlobs: ['libs/sub/sql/*.sql'] };
+    const measured = await measureAndPinRepoFilesEvidenceAtRoot(root, recipe);
+    h.rows = [{ ...h.rows[0], source_fingerprint: measured.sourceFingerprint,
+      fixture_fingerprint: measured.fixtureFingerprint,
+      details: { currentMeasurement: recipe, [MEASUREMENT_PIN_DETAILS_KEY]: measured.pin } }];
+    expect((await list())[0]?.currentness.overall).toBe('current');
+    writeFileSync(join(sub, 'sql/001.sql'), 'select 2;\n');
+    writeFileSync(join(sub, 'sql/002.sql'), 'select 3;\n');
+    // Uncommitted input changes cannot contaminate a committed snapshot.
+    expect((await list())[0]?.currentness.overall).toBe('current');
+    git(sub, 'add', 'sql');
+    git(sub, 'commit', '-q', '-m', 'change fixture corpus');
+    git(root, 'add', 'libs/sub');
+    git(root, 'commit', '-q', '-m', 'pin changed fixture corpus');
+    const changed = (await list())[0]!;
+    expect(changed.currentness.overall).toBe('stale');
+    expect(changed.serverMeasurement?.movedPaths).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: 'libs/sub/sql/001.sql', dimension: 'fixture', change: 'changed' }),
+      expect.objectContaining({ path: 'libs/sub/sql/002.sql', dimension: 'fixture', change: 'added' }),
+    ]));
+    git(sub, 'rm', 'sql/001.sql');
+    git(sub, 'commit', '-q', '-m', 'remove fixture input');
+    git(root, 'add', 'libs/sub');
+    git(root, 'commit', '-q', '-m', 'pin removed fixture input');
+    expect((await list())[0]?.serverMeasurement?.movedPaths).toContainEqual(
+      expect.objectContaining({ path: 'libs/sub/sql/001.sql', dimension: 'fixture', change: 'removed' }));
+  });
+
   it('reads a binding stored before this change, against unchanged bytes, as current at HEAD', async () => {
     const rows = await list();
     const head = git(root, 'rev-parse', 'HEAD');

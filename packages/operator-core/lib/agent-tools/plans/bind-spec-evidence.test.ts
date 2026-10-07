@@ -52,6 +52,10 @@ describe('plans:bind-spec-evidence repo-files measurement contract', () => {
       ...fixtureBinding,
       measurement: { ...measuredBinding.measurement, fixturePaths: ['src/server-envelope.ts'] },
     }).success).toBe(true);
+    expect(bindingSchema.safeParse({
+      ...fixtureBinding,
+      measurement: { ...measuredBinding.measurement, fixtureGlobs: ['libs/db/sql/*.sql'], fixtureRootHarnessSlug: 'fixtures' },
+    }).success).toBe(true);
 
     const missingFixturePaths = bindingSchema.safeParse(fixtureBinding);
     expect(missingFixturePaths.success).toBe(false);

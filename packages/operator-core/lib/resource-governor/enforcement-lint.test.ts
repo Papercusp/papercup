@@ -405,6 +405,58 @@ describe('resource governor enforcement lint', () => {
     ).toEqual(['packages/operator-core/lib/p2p/new-unreviewed.ts:resource-start-outside-admission']);
   }, 60_000);
 
+  it('pins newly reviewed P-016 and bypass entries to the current source shape', () => {
+    const startPins: Array<[string, string, boolean]> = [
+      ['packages/operator-core/lib/harness/routines/operator-e2e-isolated-action.ts', 'resource-start-outside-admission', true],
+      ['packages/operator-core/lib/release/staging-fix-proposal-cli.ts', 'resource-start-outside-admission', true],
+      ['packages/operator-core/lib/sync/hyperbee/seed-frozen-execution.ts', 'resource-start-outside-admission', true],
+      ['packages/operator-core/lib/system-health/claude-update-canary.ts', 'resource-start-outside-admission', true],
+      ['scripts/e2e-fixture-affected.mjs', 'resource-start-outside-admission', true],
+      ['scripts/gen-asana-openapi-subset.mjs', 'resource-start-outside-admission', true],
+      ['scripts/gen-graph-dependency-snapshot.mjs', 'resource-start-outside-admission', true],
+      ['scripts/remeasure-callers.ts', 'resource-start-outside-admission', true],
+      ['scripts/review-cloud-tutorial-native.mjs', 'resource-start-outside-admission', true],
+      ['scripts/reviewer-operator-assert.mjs', 'resource-start-outside-admission', true],
+      ['scripts/tauri-surface-verify-reporter-status.mts', 'resource-start-outside-admission', true],
+      ['packages/operator-core/lib/agent-tools/plans/committed-tree-reader.ts', 'resource-start-outside-admission', false],
+      ['packages/operator-core/lib/memory/bench/measurement-dossier.fixture.ts', 'resource-start-outside-admission', false],
+      ['packages/operator-core/lib/memory/bench/measurement-dossier.ts', 'resource-start-outside-admission', false],
+      ['packages/operator-core/lib/memory/bench/tracked-evidence.ts', 'resource-start-outside-admission', false],
+    ];
+    for (const [path, code, p016] of startPins) {
+      const source = readFileSync(ROOT + path, 'utf8');
+      const entry = BYPASS_REGISTRY.get(`${path}::${code}`);
+      expect(entry?.matchesSource, path).toBeTypeOf('function');
+      expect(entry?.matchesSource?.(source), path).toBe(true);
+      const addedStart = `${source}\nspawn('unreviewed-worker', []);`;
+      expect(entry?.matchesSource?.(addedStart), path).toBe(false);
+      expect(scanInventory([[path, addedStart]], p016 ? { migrations: ['P-016'] } : {})).toContain(`${path}:${code}`);
+    }
+
+    const queuePins: Array<[string, string, string, string, boolean]> = [
+      ['packages/operator-core/lib/agent-tools/plans/committed-tree-reader.ts', 'unbounded-resident-queue',
+        'if (commits.has(repo) || pending.has(repo)) return;', 'if (commits.has(repo)) return;', false],
+      ['scripts/gen-asana-openapi-subset.mjs', 'unbounded-resident-queue',
+        'if (seen.has(name)) continue;', 'if (name.length < 0) continue;', true],
+      ['scripts/npm-install-safe.mjs', 'unbounded-resident-queue',
+        'if (!inputPaths.has(targetRelative)) {', 'if (targetRelative) {', true],
+    ];
+    for (const [path, code, before, after, p016] of queuePins) {
+      const source = readFileSync(ROOT + path, 'utf8');
+      const entry = BYPASS_REGISTRY.get(`${path}::${code}`);
+      expect(entry?.matchesSource, path).toBeTypeOf('function');
+      expect(entry?.matchesSource?.(source), path).toBe(true);
+      const mutant = source.replace(before, after);
+      expect(mutant).not.toBe(source);
+      expect(entry?.matchesSource?.(mutant), path).toBe(false);
+      expect(scanInventory([[path, mutant]], p016 ? { migrations: ['P-016'] } : {})).toContain(`${path}:${code}`);
+    }
+
+    const vintage = 'packages/operator-core/lib/agent-tools/deploys/vintage.ts';
+    expect(BYPASS_REGISTRY.has(`${vintage}::resource-start-outside-admission`)).toBe(false);
+    expect(inspectGovernorSource(readFileSync(ROOT + vintage, 'utf8'))).not.toContain('resource-start-outside-admission');
+  });
+
   it('keeps the hand-written .d.mts declaration aligned with the P-016 runtime exports', () => {
     const declaration = readFileSync(ROOT + 'scripts/check-resource-governor-enforcement.d.mts', 'utf8');
     for (const symbol of [
@@ -418,9 +470,21 @@ describe('resource governor enforcement lint', () => {
     expect(declaration).toContain('sites: readonly');
   });
 
-  it('keeps graph-snapshot MCP calls in process and the bounded traversal disposition path-specific', () => {
-    const generator = readFileSync(ROOT + 'scripts/gen-graph-dependency-snapshot.mjs', 'utf8');
-    expect(inspectGovernorSource(generator)).not.toContain('resource-start-outside-admission');
+  it('keeps the graph snapshot CLI child timeout-bounded and the traversal disposition path-specific', () => {
+    const path = 'scripts/gen-graph-dependency-snapshot.mjs';
+    const generator = readFileSync(ROOT + path, 'utf8');
+    expect(inspectGovernorSource(generator)).toContain('resource-start-outside-admission');
+    const generatorKey = `${path}::resource-start-outside-admission`;
+    expect(P016_DISPOSITION_REGISTRY.get(generatorKey)?.disposition).toBe('bypass');
+    expect(P016_DISPOSITION_REGISTRY.get(generatorKey)?.reason).toContain('runCliToFile');
+    expect(P016_DISPOSITION_REGISTRY.get(generatorKey)?.matchesSource?.(generator)).toBe(true);
+    const noTimeout = generator.replace(
+      'const timer = setTimeout(() => child.kill("SIGKILL"), timeoutMs);',
+      'const timer = undefined;',
+    );
+    expect(scanInventory([[path, noTimeout]], { migrations: ['P-016'] })).toContain(
+      `${path}:resource-start-outside-admission`,
+    );
     const key = 'scripts/lib/graph-dependency-suggestions.mjs::unbounded-resident-queue';
     expect(P016_DISPOSITION_REGISTRY.get(key)?.disposition).toBe('semantic');
     expect(P016_DISPOSITION_REGISTRY.get(key)?.reason).toContain('MAX_VISITED_FILES');

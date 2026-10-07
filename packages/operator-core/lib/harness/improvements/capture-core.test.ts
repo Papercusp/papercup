@@ -4623,6 +4623,33 @@ describe('captureToolInvocationFriction — one row per signature (review-system
     expect(new Set(store.rows.map((row) => store.payloadOf(row).watchdogKey)).size).toBe(4);
   });
 
+  it('coalesces result-door output-spill failures across tool names without complete class metadata', async () => {
+    const store = signatureStore();
+    const failure = (toolName: string, message: string) => ({
+      toolName,
+      errorCode: 'output_spill_failed',
+      status: undefined,
+      schemaRevision: undefined,
+      fieldPath: undefined,
+      runtimeVersion: undefined,
+      message,
+    });
+
+    await store.capture('su-a', 'build-1', failure('facts:list', 'result spill write failed'));
+    const second = await store.capture('su-b', 'build-2', failure('work_items:get', 'result spill write failed'));
+
+    expect(second).toMatchObject({ created: false, reason: 'coalesced', issue: { id: 'EI-S1' } });
+    expect(store.rows).toHaveLength(1);
+    const payload = store.payloadOf(store.rows[0]);
+    expect(payload.watchdogKey).toBe(
+      'tool-failure-signature:result-door:structural:output_spill_failed:field-unknown',
+    );
+    expect(payload.repeatCount).toBe(2);
+    expect(Object.values(payload.toolFailureSignature.classes).map((entry: any) => entry.count).sort())
+      .toEqual([1, 1]);
+    expect(new Set(store.occurrences.map((occurrence) => occurrence.canonicalId))).toEqual(new Set(['EI-S1']));
+  });
+
   it('uses the exact message key when any class dimension is missing', async () => {
     const store = signatureStore();
     const firstMessage = 'invalid_args: first body value was rejected';

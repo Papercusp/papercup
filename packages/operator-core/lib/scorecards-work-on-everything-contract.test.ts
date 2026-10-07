@@ -143,6 +143,21 @@ describe('Work on everything scorecard contract', () => {
     },
   );
 
+  it.each(['steering-through-claim-rails', 'frontier-scope-sovereignty'])(
+    'retains a severe %s violation despite passing stewardship criteria', key => {
+      const keys = ['goal-mode-foundation', 'frontier-scope-sovereignty',
+        'steering-through-claim-rails', 'delegated-execution-and-drain-health',
+        'claim-flow-and-completion-integrity', 'retired-tier-nonresurrection',
+        'plan-fleet-materialization', 'owner-steering-and-reporting'];
+      const passing = Object.fromEntries(keys.map(k => [k, rating()])) as ObservationRatings;
+      expect(computeWorkOnEverythingRollup(WORK_ON_EVERYTHING_STEWARDSHIP_RUBRIC, passing, keys)?.verdict)
+        .toBe('pass');
+      const breached = { ...passing, [key]: rating({ rating: 'severe' }) };
+      expect(computeWorkOnEverythingRollup(WORK_ON_EVERYTHING_STEWARDSHIP_RUBRIC, breached, keys)?.verdict)
+        .toBe('severe');
+    },
+  );
+
   it('does not pass an empty population or average away a non-critical severe violation', () => {
     expect(computeWorkOnEverythingRollup(WORK_ON_EVERYTHING_STEWARDSHIP_RUBRIC, {}, [])?.verdict)
       .toBe('unassessable');

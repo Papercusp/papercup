@@ -50,6 +50,7 @@ import { FLAGS } from '@papercusp/flags';
 import {
   normalizeSuspectedToolFailure,
   toolFailureSignatureKey,
+  toolFailureSubsystemForCode,
   type SuspectedToolFailure,
 } from './tool-error-classifier';
 import { getFlag } from '@papercusp/flags/server';
@@ -1988,6 +1989,11 @@ export interface ToolInvocationFriction {
   ownerId: string;
   invokedAt: string;
   failure: Pick<SuspectedToolFailure, 'toolName' | 'errorCode' | 'status' | 'message' | 'schemaRevision' | 'fieldPath' | 'runtimeVersion'>;
+  /** Optional caller-rendered text and resolved scope for the shared capture door. */
+  title?: string;
+  body?: string;
+  scope?: string;
+  severity?: IssueSeverity;
   /** The `harness_shared.tool_invocations` row this report was read from (D-011). */
   invocationId?: string;
   /** That row's `serving_build_sha`: the build the failing call actually ran on. */
@@ -2026,7 +2032,9 @@ export async function captureToolInvocationFriction(
   deps: CaptureDeps = defaultDeps,
 ): Promise<CaptureImprovementResult | null> {
   const { failure, ownerId, workspaceId, harnessSlug, invokedAt } = invocation;
-  if (!ownerId || !workspaceId || !['error', 'invalid-input', 'timeout'].includes(failure.status ?? '') ||
+  const hasSubsystemErrorCode = toolFailureSubsystemForCode(failure.errorCode) !== null;
+  if (!ownerId || !workspaceId ||
+      (!['error', 'invalid-input', 'timeout'].includes(failure.status ?? '') && !hasSubsystemErrorCode) ||
       /^(improvements:|system:improvement-)/.test(failure.toolName)) return null;
   // Copy only measured fields; a telemetry object can never smuggle direct-
   // evidence flags into an admission decision.
@@ -2037,12 +2045,14 @@ export async function captureToolInvocationFriction(
   };
   const normalized = normalizeSuspectedToolFailure(report);
   const kind = normalized.class === 'caller' || normalized.class === 'rate-limit' ? 'change' : 'bug';
-  // D-010 (review-system-rework-reduction-2026-09-23): use the build-independent
-  // signature as row identity only when all class dimensions were measured.
-  // Unknown sentinels cannot merge unrelated reports, so incomplete metadata
-  // falls back to the exact message-shaped watchdog key.
+  // D-010: use the build-independent signature as row identity when class
+  // dimensions were measured. Known subsystem codes are complete identities on
+  // their own, even if the caller omitted status/schema/runtime metadata;
+  // unrelated unknown reports still fall back to the exact watchdog key.
   const signatureKey = toolFailureSignatureKey(report, normalized.class);
-  const rowKey = hasCompleteToolFailureClassReport(report) ? signatureKey : normalized.watchdogKey;
+  const rowKey = hasCompleteToolFailureClassReport(report) || hasSubsystemErrorCode
+    ? signatureKey
+    : normalized.watchdogKey;
   // WI-10003605: a workspace-spanning invocation records its harness as the wildcard
   // '*'. The work-item scope guard (work-item-scope.ts) refuses `harness:*`, so every
   // such friction report threw and console.warned once per invocation (failing every
@@ -2067,6 +2077,7 @@ export async function captureToolInvocationFriction(
   const scope = resolvedPotScope
     ? `harness:${resolvedPotScope}`
     : sourceIsWorkspaceScope ? 'operator' : `harness:${concreteHarness}`;
+  const captureScope = invocation.scope ?? scope;
   const toolInvocation = { workspaceId, harnessSlug, ownerId, invokedAt };
   const reproduction = await frictionReproduction(invocation, kind);
   const incomingProbation = {
@@ -2074,9 +2085,9 @@ export async function captureToolInvocationFriction(
     reporters: [ownerId], firstSeenAt: invokedAt, lastSeenAt: invokedAt, report,
   };
   const base: CaptureImprovementInput = {
-    title: `${failure.toolName} tool-call failure (${failure.errorCode ?? failure.status})`,
-    body: `Invocation telemetry observed ${failure.toolName} at ${invokedAt}.\n\n${failure.message}`,
-    kind, severity: 'nit', lane: 'observation', scope,
+    title: invocation.title ?? `${failure.toolName} tool-call failure (${failure.errorCode ?? failure.status})`,
+    body: invocation.body ?? `Invocation telemetry observed ${failure.toolName} at ${invokedAt}.\n\n${failure.message}`,
+    kind, severity: invocation.severity ?? 'nit', lane: 'observation', scope: captureScope,
     workspaceId, createdBy: ownerId, evidenceAt: invokedAt,
     watchdogKey: rowKey,
     // Do not set sourceRole:'system': an automated report is still this
@@ -2093,7 +2104,7 @@ export async function captureToolInvocationFriction(
     (issue.payload as Record<string, unknown> | null)?.watchdogKey === rowKey &&
     isWatchdogNonTerminal(issue) &&
     effectiveOrigin(issue.signalOrigin) === DEFAULT_SIGNAL_ORIGIN &&
-    issueScopeMatchesCapture(issue, scope));
+    issueScopeMatchesCapture(issue, captureScope));
   const priorPayload = (signatureRow?.payload as Record<string, unknown> | null) ?? {};
   const rowProbation = toolFailureProbationOf(priorPayload);
   const occurrence: ToolFailureClassOccurrence = {

@@ -376,6 +376,11 @@ export const RESOURCE_GOVERNOR_INVENTORY = Object.freeze([
  */
 export const RESOURCE_GOVERNOR_SCANNER_PATH =
   "scripts/check-resource-governor-enforcement.mjs";
+function resourceStartCallCount(source) {
+  const code = stripCommentsAndStrings(source);
+  return [...code.matchAll(/\b(?:spawn|spawnSync|fork|execFile|execFileSync)\s*\(/g)].length;
+}
+
 export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
   {
     path: "scripts/workspace-host/reconcile-hosted-gcp-roles.ts",
@@ -1921,6 +1926,164 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
     reason:
       "P-016 reviewed semantic disposition for scripts/lib/graph-dependency-suggestions.mjs: this is a call-local traversal frontier, not queued background work. Both initial changed-path seeds and discovered importers are deduplicated in `seen` and limited by the existing MAX_VISITED_FILES bound; excess seeds set `truncated` and are omitted from suggestions, while the baseline selection remains untouched. The cursor-index walk retains at most that same bound and is discarded when the suggestion call returns.",
   },
+  {
+    path: "packages/operator-core/lib/harness/routines/operator-e2e-isolated-action.ts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for operator-e2e-isolated-action.ts: the routine starts exactly one isolated E2E task through managedSpawn, classed as test-run with the existing memory and runtime limits, a task-ledger identity, and a single-flight check. This is already admitted and accounted at the task manager boundary; the local spawn alias is only the injected managedSpawn seam.",
+    matchesSource: (source) => resourceStartCallCount(source) === 1 &&
+      source.includes("const spawn = opts.spawnFn ?? managedSpawn;") &&
+      source.includes("class: 'test-run'") &&
+      source.includes("memoryMaxBytes: OPERATOR_E2E_MEMORY_MAX_BYTES") &&
+      source.includes("runtimeMaxSec: OPERATOR_E2E_RUNTIME_MAX_SEC") &&
+      source.includes("if (inFlight.length > 0)"),
+  },
+  {
+    path: "packages/operator-core/lib/release/staging-fix-proposal-cli.ts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for staging-fix-proposal-cli.ts: its sole direct process start reads one local Git integration ref before constructing an operator-invoked proposal. The multi-minute precheck is delegated to createCheckpointTreeFixPrecheckRunner in its own precheck tree; this read itself creates no resident job or retry queue.",
+    matchesSource: (source) => resourceStartCallCount(source) === 1 &&
+      source.includes("execFileSync('git', ['rev-parse', '--verify'") &&
+      source.includes("createCheckpointTreeFixPrecheckRunner({") &&
+      source.includes("precheckRoot,"),
+  },
+  {
+    path: "packages/operator-core/lib/sync/hyperbee/seed-frozen-execution.ts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for seed-frozen-execution.ts: each committed security-package row gets one awaited Python stdlib tar inspection after the HTTPS response is timeout-bounded and its lockfile sha512 is verified. The child emits only the file-digest map under a 16 MiB output bound; it is finite snapshot construction, not serving or resident work.",
+    matchesSource: (source) => resourceStartCallCount(source) === 1 &&
+      source.includes("const archive = JSON.parse(execFileSync('python3'") &&
+      source.includes("AbortSignal.timeout(120000)") &&
+      source.includes("maxBuffer: 16 * 1024 * 1024") &&
+      source.includes("createHash('sha512').update(bytes)"),
+  },
+  {
+    path: "packages/operator-core/lib/system-health/claude-update-canary.ts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for claude-update-canary.ts: one ephemeral CLI probe per configured canary variant is routed through the inference gateway with an isolated owner header, a 150-second timeout, a 4 MiB output ceiling, and unconditional temporary-directory cleanup. It leaves no resident child or queue.",
+    matchesSource: (source) => resourceStartCallCount(source) === 1 &&
+      source.includes("const PROBE_TIMEOUT_MS = 150_000") &&
+      source.includes("execFile(input.binary, args, { cwd, env, timeout: PROBE_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024") &&
+      source.includes("ANTHROPIC_BASE_URL: `http://127.0.0.1:${gatewayPort()}`") &&
+      source.includes("finally {\n    if (dir) await fs.rm(dir, { recursive: true, force: true }).catch(() => {});"),
+  },
+  {
+    path: "scripts/e2e-fixture-affected.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for e2e-fixture-affected.mjs: this operator-invoked test runner first ensures the Playwright browser and then runs only the selected fixture specs with one worker; --print exits before either child. It creates no service process or resident queue.",
+    matchesSource: (source) => resourceStartCallCount(source) === 2 &&
+      source.includes("scripts/ensure-playwright-browsers.mjs") &&
+      source.includes('["--no-install", "playwright", "test", ...specArgs, "--workers=1"]') &&
+      source.includes("if (args.print || selection.selected.length === 0) return 0;"),
+  },
+  {
+    path: "scripts/gen-asana-openapi-subset.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for gen-asana-openapi-subset.mjs: this manually invoked generator reads the immutable Asana OpenAPI commit with a 64 MiB output ceiling, then runs the pinned openapi-typescript version to produce checked-in artifacts. Both children exit before the generator returns; no runtime service or resident process is created.",
+    matchesSource: (source) => resourceStartCallCount(source) === 2 &&
+      source.includes("const ASANA_OAS_COMMIT = '1b1c15108d490fc5b780bb83e070293b5815d522';") &&
+      source.includes("execFileSync('curl', ['-fsSL', SOURCE_URL], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })") &&
+      source.includes("execFileSync('npx', ['-y', OPENAPI_TYPESCRIPT, typegenInput, '-o', tmpDts]"),
+  },
+  {
+    path: "scripts/gen-asana-openapi-subset.mjs",
+    code: "unbounded-resident-queue",
+    disposition: "semantic",
+    reason:
+      "P-016 reviewed semantic disposition for gen-asana-openapi-subset.mjs: queue is a call-local schema-reference traversal over the pinned OpenAPI document. The `seen` set consumes each schema name once, references are read only from `all`, and the frontier is discarded when this one-shot generator returns; it is not queued runtime work.",
+    matchesSource: (source) => source.includes("const seen = new Set();") &&
+      source.includes("const queue = [...ROOT_SCHEMAS];") &&
+      source.includes("queue.push(...bodyRefs);") &&
+      source.includes("while (queue.length > 0)") &&
+      source.includes("if (seen.has(name)) continue;") &&
+      source.includes("seen.add(name);") &&
+      source.includes("collectRefs(all[name], refs);") &&
+      source.includes("queue.push(...refs);"),
+  },
+  {
+    path: "scripts/gen-graph-dependency-snapshot.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for gen-graph-dependency-snapshot.mjs: direct Cypher intentionally starts the gitnexus CLI once per bounded page and sends its large stdout to a temporary file; runCliToFile kills the child at the supplied timeout and removes the file in finally. First-party source enumeration is a one-shot local Git read with a 256 MiB output ceiling. This is an attended snapshot generator, not an MCP request path.",
+    matchesSource: (source) => resourceStartCallCount(source) === 2 &&
+      source.includes("runToFile = runCliToFile") &&
+      source.includes("const timer = setTimeout(() => child.kill(\"SIGKILL\"), timeoutMs);") &&
+      source.includes("rmSync(dir, { recursive: true, force: true });") &&
+      source.includes("maxBuffer: 1 << 28") &&
+      source.includes("const MAX_PAGES = 20000;"),
+  },
+  {
+    path: "scripts/npm-install-safe.mjs",
+    code: "unbounded-resident-queue",
+    disposition: "semantic",
+    reason:
+      "P-016 reviewed semantic disposition for npm-install-safe.mjs: pending is a call-local manifest-closure traversal. It is seeded from the repository's workspace manifests, deduplicated by `inspected`/`inputPaths`, and accepts file dependencies only when their target stays strictly inside the repository; it holds no install work after the layout probe returns.",
+    matchesSource: (source) => source.includes('const pending = ["package.json", ...workspaceManifestPaths];') &&
+      source.includes("const inspected = new Set();") &&
+      source.includes("while (pending.length > 0)") &&
+      source.includes("if (inspected.has(manifestPath)) continue;") &&
+      source.includes("if (!isStrictlyWithin(repoRoot, targetPath))") &&
+      source.includes("if (!inputPaths.has(targetRelative)) {\n          inputPaths.add(targetRelative);\n          pending.push(targetRelative);"),
+  },
+  {
+    path: "scripts/remeasure-callers.ts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for remeasure-callers.ts: the only child is one local `git rev-parse HEAD` read for provenance in this explicitly operator-run CLI. Caller analysis then runs in-process and returns one row per finite fixture sample; it starts no resident worker or background queue.",
+    matchesSource: (source) => resourceStartCallCount(source) === 1 &&
+      source.includes("execFileSync('git', ['rev-parse', 'HEAD']") &&
+      source.includes("const root = process.cwd();") &&
+      source.includes("if (isCliEntry(import.meta.url))"),
+  },
+  {
+    path: "scripts/review-cloud-tutorial-native.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for review-cloud-tutorial-native.mjs: the native tutorial review runs under pc-heavy, uses one headed Playwright worker, tracks its window-manager/accessibility/test children together, and sends termination to every child in the finally path. It is an attended isolated verification journey, not a serving workload.",
+    matchesSource: (source) => resourceStartCallCount(source) === 3 &&
+      source.includes("scripts/pc-heavy.sh") &&
+      source.includes("--workers=1") &&
+      source.includes("const stop = () => { for (const c of children)") &&
+      source.includes("} finally { stop(); }"),
+  },
+  {
+    path: "scripts/reviewer-operator-assert.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for reviewer-operator-assert.mjs: ptool and gh calls use explicit 60-second/65-minute deadlines and 2 MiB output bounds; the only resident child is a loopback socat relay on the verifier's reserved port, readiness is limited to five seconds, and finally terminates the relay. Its launcher runs the assertion inside the disposable Tauri verifier.",
+    matchesSource: (source) => resourceStartCallCount(source) === 3 &&
+      source.includes("timeout: 60_000, maxBuffer: 2_000_000") &&
+      source.includes("65 * 60_000 : 60_000") &&
+      source.includes("TCP-LISTEN:${relayPort},bind=127.0.0.1,fork,reuseaddr") &&
+      source.includes("const deadline = Date.now() + 5000;") &&
+      source.includes("} finally { stop(); }"),
+  },
+  {
+    path: "scripts/tauri-surface-verify-reporter-status.mts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for tauri-surface-verify-reporter-status.mts: its one native Tauri-driver start is inside the scheduled isolated reporter-status phase and every command has a 60-second timeout. The phase requires the isolated verifier DB and a concrete target PID; it leaves no process or queue behind.",
+    matchesSource: (source) => resourceStartCallCount(source) === 1 &&
+      source.includes("execFileSync(tool, [...args, '--pid', pid], { encoding: 'utf8', timeout: 60_000 })") &&
+      source.includes("assert.equal(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED, '1'") &&
+      source.includes("runPhase(ctx)"),
+  },
 ]);
 export const P016_DISPOSITION_REGISTRY = new Map(
   P016_REVIEWED_DISPOSITIONS.map(({ path, code, disposition, reason, matchesSource }) => [
@@ -1931,6 +2094,69 @@ export const P016_DISPOSITION_REGISTRY = new Map(
 
 export const BYPASS_REGISTRY = new Map([
   ...P016_DISPOSITION_REGISTRY,
+  [
+    "packages/operator-core/lib/agent-tools/plans/committed-tree-reader.ts::resource-start-outside-admission",
+    {
+      disposition: "bypass",
+      reason:
+        "Reviewed bypass disposition for committed-tree-reader.ts: the sole child is a local `git cat-file --batch` reader with a per-batch timeout, awaited child close, and bounded blob batching. It reads immutable commit objects for the requested path closure; no detached process or resident work is retained.",
+      matchesSource: (source) => resourceStartCallCount(source) === 1 &&
+        source.includes("spawn('git', ['-C', repoDir, 'cat-file', '--batch']") &&
+        source.includes("BLOB_BATCH_TIMEOUT_MS") &&
+        source.includes("const timer = setTimeout(() => child.kill('SIGKILL'), BLOB_BATCH_TIMEOUT_MS)") &&
+        source.includes("child.on('close'"),
+    },
+  ],
+  [
+    "packages/operator-core/lib/agent-tools/plans/committed-tree-reader.ts::unbounded-resident-queue",
+    {
+      disposition: "semantic",
+      reason:
+        "Reviewed semantic disposition for committed-tree-reader.ts: queue is a per-call Git repository/submodule traversal frontier. Commits and pending repositories deduplicate work, listed records cache completed tree prefixes, and only gitlinks intersecting the requested base paths are enqueued; the local frontier is discarded when the read returns.",
+      matchesSource: (source) => source.includes("const pending = new Set<string>();") &&
+        source.includes("if (commits.has(repo) || pending.has(repo)) return;") &&
+        source.includes("const queue: Array<{ repo: string; commit: string; prefixes: string[] }> = [];") &&
+        source.includes("const listed = new Set<string>();") &&
+        source.includes("if (entry.mode === '160000')") &&
+        source.includes("if (covered.length)"),
+    },
+  ],
+  [
+    "packages/operator-core/lib/memory/bench/measurement-dossier.fixture.ts::resource-start-outside-admission",
+    {
+      disposition: "bypass",
+      reason:
+        "Reviewed bypass disposition for measurement-dossier.fixture.ts: its single execFileSync site is a test-fixture helper that runs finite git init/add/commit commands in a newly created temporary repository; cleanup removes that repository. It is not imported by a serving path.",
+      matchesSource: (source) => resourceStartCallCount(source) === 1 &&
+        source.includes("execFileSync('git'") &&
+        source.includes("mkdtempSync(path.join(os.tmpdir(), 'measurement-dossier-'))") &&
+        source.includes("cleanup: () => fs.rmSync(root, { recursive: true, force: true })"),
+    },
+  ],
+  [
+    "packages/operator-core/lib/memory/bench/measurement-dossier.ts::resource-start-outside-admission",
+    {
+      disposition: "bypass",
+      reason:
+        "Reviewed bypass disposition for measurement-dossier.ts: repoRootOf performs one synchronous local `git rev-parse --show-toplevel` metadata read to identify which repository owns an operator-supplied dossier; failures return null and no child survives the read.",
+      matchesSource: (source) => resourceStartCallCount(source) === 1 &&
+        source.includes("execFileSync('git', ['-C', path.dirname(path.resolve(file)), 'rev-parse', '--show-toplevel']") &&
+        source.includes("Object.entries(process.env).filter(([k]) => !k.startsWith('GIT_'))") &&
+        source.includes("catch {\n    return null;\n  }"),
+    },
+  ],
+  [
+    "packages/operator-core/lib/memory/bench/tracked-evidence.ts::resource-start-outside-admission",
+    {
+      disposition: "bypass",
+      reason:
+        "Reviewed bypass disposition for tracked-evidence.ts: its shared git helper performs awaited, read-only rev-parse and ls-files metadata queries for the finite evidence paths in an operator-provided dossier. Missing files and non-tracked manifests return null; it creates no resident process or queue.",
+      matchesSource: (source) => resourceStartCallCount(source) === 1 &&
+        source.includes("return execFileSync('git', ['-C', cwd, ...args]") &&
+        source.includes("git(repoRoot, ['ls-files', '--error-unmatch', '--', repoRelative])") &&
+        source.includes("if (!repoRelative || repoRelative.startsWith('../')) return null;"),
+    },
+  ],
   [
     "packages/operator-core/lib/memory/bench/fixtures/native-ort-teardown-control.mjs::resource-start-outside-admission",
     {
@@ -2369,14 +2595,6 @@ export const BYPASS_REGISTRY = new Map([
       disposition: "bypass",
       reason:
         "scopeExecFile is promisify(execFile) used for bounded systemd/cgroup liveness metadata; it probes an already-recorded task and starts no resident work.",
-    },
-  ],
-  [
-    "packages/operator-core/lib/agent-tools/deploys/vintage.ts::resource-start-outside-admission",
-    {
-      disposition: "bypass",
-      reason:
-        "pexec is promisify(execFile) used for bounded git ref/vintage reads; the command is awaited and creates no resident queue.",
     },
   ],
   [

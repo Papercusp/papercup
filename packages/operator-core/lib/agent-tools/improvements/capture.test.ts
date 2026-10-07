@@ -4,6 +4,7 @@ import captureTool, { defaultScorecardConditionKey, deriveToolFailureCaptureText
 import { coerceCaptureArgs, coerceCaptureKind, coerceIdeateProvenance } from './capture-coerce';
 import {
   captureImprovement,
+  captureToolInvocationFriction,
   recordCaptureReviewFailure,
   setCaptureReviewState,
 } from '../../harness/improvements/capture-core';
@@ -95,6 +96,7 @@ vi.mock('../../scout/generation-watermark', () => ({
 }));
 
 const mockCapture = vi.mocked(captureImprovement);
+const mockCaptureToolInvocationFriction = vi.mocked(captureToolInvocationFriction);
 const mockRecordCaptureReviewFailure = vi.mocked(recordCaptureReviewFailure);
 const mockSetCaptureReviewState = vi.mocked(setCaptureReviewState);
 const mockEnterAgentReview = vi.mocked(enterAgentReview);
@@ -355,6 +357,7 @@ describe('improvements:capture tool envelope', () => {
     mockCapture.mockResolvedValue({ ok: true, id: 'EI-1', created: true } as unknown as Awaited<
       ReturnType<typeof captureImprovement>
     >);
+    mockCaptureToolInvocationFriction.mockResolvedValue(null);
   });
 
   it('opts out of the ambient workspace transaction while awaiting capture work (EI-20223628286146305)', () => {
@@ -667,6 +670,51 @@ describe('improvements:capture tool envelope', () => {
         },
       }),
     );
+  });
+
+  it('routes output-spill failures through the signature-aware subsystem writer (EI-25309649835141283)', async () => {
+    mockIdentity.mockReturnValue(identity('omp-hook-session', 'su-spill-filer'));
+    mockCaptureToolInvocationFriction
+      .mockResolvedValueOnce({
+        ok: true,
+        created: true,
+        issue: { id: 'EI-result-door', title: 'result-door failure' },
+      } as unknown as Awaited<ReturnType<typeof captureToolInvocationFriction>>)
+      .mockResolvedValueOnce({
+        ok: true,
+        created: false,
+        reason: 'coalesced',
+        issue: { id: 'EI-result-door', title: 'result-door failure' },
+      } as unknown as Awaited<ReturnType<typeof captureToolInvocationFriction>>);
+
+    const ctx = { workspaceId: 'ws-1', harnessSlug: 'papercusp' };
+    await callTool({
+      toolFailure: {
+        toolName: 'facts:list',
+        errorCode: 'output_spill_failed',
+        message: 'the result-door could not persist its spill',
+      },
+    }, ctx);
+    await callTool({
+      toolFailure: {
+        toolName: 'work_items:get',
+        errorCode: 'output_spill_failed',
+        message: 'the result-door could not persist its spill',
+      },
+    }, ctx);
+
+    expect(mockCaptureToolInvocationFriction).toHaveBeenCalledTimes(2);
+    expect(mockCaptureToolInvocationFriction.mock.calls.map(([input]) => input.failure.toolName)).toEqual([
+      'facts:list',
+      'work_items:get',
+    ]);
+    expect(mockCaptureToolInvocationFriction.mock.calls[0]?.[0]).toMatchObject({
+      workspaceId: 'ws-1',
+      harnessSlug: 'papercusp',
+      ownerId: 'su-spill-filer',
+      failure: { errorCode: 'output_spill_failed' },
+    });
+    expect(mockCapture).not.toHaveBeenCalled();
   });
 
   it('preserves an explicit conditionKey when toolFailure wording changes (EI-22722288208033107)', async () => {

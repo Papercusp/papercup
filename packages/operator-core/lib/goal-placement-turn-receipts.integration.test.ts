@@ -446,7 +446,7 @@ describe('goal delivery receipt canonical persistence', () => {
       ownerId: OWNER, workspaceId: WS, confirmedDeliveryToken: null,
       deps: orientationDeps(() => brief), progressReceiptDeps: f.deps,
       cursorStage: async (_ownerId, _surface, _next, options) => {
-        attemptedToken = options.deliveryToken ?? null;
+        attemptedToken = options?.deliveryToken ?? null;
         throw new Error('cursor store unavailable');
       },
     }));

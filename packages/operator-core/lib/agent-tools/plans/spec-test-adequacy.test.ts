@@ -1544,6 +1544,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
           outcome: 'pass',
           targeted: scenarioId,
           scenarioIds: [scenarioId],
+          testCases: [DEFAULT_MUTATION_TEST_CASE],
         },
       },
     });
@@ -1558,6 +1559,49 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(result.ratings['plan-class-risk-floor']).toMatchObject({ rating: 'pass' });
     expect(result.ratings['plan-class-risk-floor'].evidence).toContain('counterexample:reject-future-window');
     expect(result.verdict).toBe('pass');
+  });
+
+  it('does not treat an ordinary passing run rebound as a counterexample as proof of falsifiability', () => {
+    const testPath = 'packages/operator-core/lib/agent-tools/plans/plain-pass-counterexample.integration.test.ts';
+    const caseTitle = 'rejects a malformed request';
+    const counterexample = evidence({
+      evidenceKind: 'counterexample',
+      evidenceRef: 'counterexample:plain-pass',
+      testRunProvenance: { filePath: testPath, commitSha: 'abc123', worktreeDirty: false },
+      testRunExecution: {
+        status: 'pass',
+        passed: 1,
+        failed: 0,
+        skipped: 0,
+        collectionFailed: false,
+        testLayer: 'integration',
+        passedCaseTitles: [caseTitle],
+      },
+      details: {
+        testRun: { id: 43, source: 'local', status: 'pass', mutationPhase: null },
+        adequacy: {
+          falsifiable: true,
+          testLayer: 'integration',
+          pathReachable: true,
+          collected: true,
+          skipped: false,
+          executed: true,
+          outcome: 'survived',
+          targeted: 'spec-003-01',
+          testCases: [caseTitle],
+        },
+      },
+    });
+
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [successfulTestBinding(testPath, { testCases: [caseTitle] }), counterexample],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings.falsifiability.rating).toBe('unknown');
+    expect(result.ratings.falsifiability.evidence).toContain('Binder-attested falsifiable=true');
+    expect(result.verdict).not.toBe('pass');
   });
 
   it('fails stale proof and reports unknown metadata without converting it to pass', () => {

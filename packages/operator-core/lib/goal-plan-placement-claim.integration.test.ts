@@ -175,8 +175,22 @@ describe('canonical delegated-member claim receipt', () => {
       spec: { ...DEFAULT_CLAIM_SPEC, specId: `fixture-${activity}`,
         view: { filter: { field: 'goal', op: '=', value: GOAL } } },
     }, fx.admin)).ok).toBe(true);
-    await claimedWork();
+    const work = await claimedWork();
     await lease();
+    // Read persisted inputs directly, independently of the portfolio adapter.
+    // A passing receipt cannot hide a fixture writer that stored the wrong scope.
+    const assertPersistedScope = async (plan: string, field: string, value: string) => {
+      const fleets = await fx.admin`SELECT headcount_config FROM harness_shared.agent_fleets
+        WHERE workspace_id = ${WS} AND fleet_slug = ${FLEET}`;
+      expect(fleets).toMatchObject([{ headcount_config: { plan, harness: HARNESS, role: activity } }]);
+      const specs = await fx.admin`SELECT spec FROM harness_shared.cup_claim_specs
+        WHERE workspace_id = ${WS} AND bee_id = ${`fleet:${FLEET}`}`;
+      expect(specs).toMatchObject([{ spec: { view: { filter: { field, op: '=', value } } } }]);
+      const claims = await fx.admin`SELECT taken_by, source_plan_slug, source_plan_item_ids
+        FROM harness_shared.work_items WHERE harness_slug = ${HARNESS} AND feature_id = ${work.id}`;
+      expect(claims).toMatchObject([{ taken_by: MEMBER, source_plan_slug: PLAN, source_plan_item_ids: ['P-001'] }]);
+    };
+    await assertPersistedScope(`${PLAN}-${activity}`, 'goal', GOAL);
     const assertExcluded = (row: Awaited<ReturnType<typeof placement>>) => expect(row, `plan-activity-exclusion:${activity}`).toMatchObject({
       state: 'blocked', fleet: null, launchTransaction: null,
       activeLane: { ownerId: MEMBER, ownerFleet: FLEET, holderLive: true },
@@ -193,6 +207,7 @@ describe('canonical delegated-member claim receipt', () => {
         spec: { ...DEFAULT_CLAIM_SPEC, specId: `fixture-${activity}-wrong-plan-scope`,
           view: { filter: { field: 'plan', op: '=', value: PLAN } } },
       }, fx.admin)).ok).toBe(true);
+      await assertPersistedScope(PLAN, 'plan', PLAN);
     }
     const row = await placement();
     if (mode === 'outer control') {

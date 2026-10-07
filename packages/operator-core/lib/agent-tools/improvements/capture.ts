@@ -22,6 +22,7 @@ import { unresolvedRefsInBody, unresolvedRefsWarning } from '../work_items/unres
 import { issueRef, linkIssue, type IssueSeverity } from '../../issues-engineer';
 import {
   captureImprovement,
+  captureToolInvocationFriction,
   recordCaptureReviewFailure,
   setCaptureReviewState,
   type AgentReviewFailure,
@@ -49,6 +50,7 @@ import { resolveCaptureScope } from './capture-scope';
 import { coerceCaptureArgs } from './capture-coerce';
 import {
   normalizeSuspectedToolFailure,
+  toolFailureSubsystemForCode,
   TOOL_FAILURE_DIRECT_EVIDENCE_KINDS,
   type SuspectedToolFailure,
 } from '../../harness/improvements/tool-error-classifier';
@@ -1329,8 +1331,33 @@ export default defineTool({
     if (reproductionStamp && !reproductionStamp.ok) throw new ObservationEvidenceError(reproductionStamp.error);
     const storedReproduction = reproductionStamp?.ok ? reproductionStamp.stored : undefined;
     try {
-      const persist = () =>
-        captureImprovement({
+      const persist = async () => {
+        const onlyStructuredCaptureFields =
+          !args.checkDuplicatesOnly && !args.conditionKey && !args.force &&
+          !args.observation && !args.ideation && !args.reportContext && !args.reproduction &&
+          !args.observedRuntime && !args.paths?.length && !args.subTopic && !args.foundDuring &&
+          args.assign_to === undefined && captureOrigin === undefined;
+        if (
+          normalizedToolFailure && args.toolFailure &&
+          toolFailureSubsystemForCode(args.toolFailure.errorCode) &&
+          !normalizedToolFailure.direct && onlyStructuredCaptureFields
+        ) {
+          const friction = await captureToolInvocationFriction({
+            workspaceId: resolveConcreteWorkspaceId(id.workspaceId ?? ctxWorkspace, ctxWorkspace),
+            harnessSlug: ctxHarness ?? (captureScope?.startsWith('harness:')
+              ? captureScope.slice('harness:'.length)
+              : '*'),
+            ownerId: id.ownerId,
+            invokedAt: new Date().toISOString(),
+            failure: args.toolFailure,
+            title: captureText.title,
+            body: bodyWithStaleness,
+            scope: captureScope ?? undefined,
+            severity: args.severity as IssueSeverity | undefined,
+          });
+          if (friction) return friction;
+        }
+        return captureImprovement({
           title: captureText.title,
           kind: effectiveKind,
           // Agent-facing door: poor scorecard ratings must carry a disposition
@@ -1403,6 +1430,7 @@ export default defineTool({
           filedByRole,
           source,
         });
+      };
       const drainHarness = captureScope?.startsWith('harness:') ? captureScope.slice('harness:'.length) : ctxHarness;
       if (drainMode && !args.checkDuplicatesOnly && !drainHarness) {
         return {

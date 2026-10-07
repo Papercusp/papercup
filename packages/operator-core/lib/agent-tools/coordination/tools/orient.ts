@@ -196,8 +196,8 @@ const ORIENT_COMPACTION_RECOVERY_TIMEOUT_MS = 15_000;
  * sequential sum of composeOrient plus the handler-owned enrichment folds. The aggregate
  * fence must beat the MCP transport cap, not merely the server's 120s dispatch budget;
  * otherwise a direct coord:orient caller gets an opaque -32001 before this honest unknown
- * fallback can be serialized. Reuse the shared 50s foreground ceiling, which carries the
- * transport's required response-serialization headroom.
+ * fallback can be serialized. Reuse the shared foreground ceiling, which leaves the
+ * transport's required cleanup and response-serialization headroom.
  */
 export const ORIENT_AGGREGATE_TIMEOUT_MS = FOREGROUND_TIMEOUT_CEILING_MS;
 
