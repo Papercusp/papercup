@@ -6,11 +6,12 @@
   "population": {
     "failedFiles": 124,
     "repairedFocused": 20,
-    "repairedPeerFocused": 12,
-    "openUnknown": 92
+    "repairedPeerFocused": 15,
+    "openUnknown": 89
   },
   "classes": {
-    "assertion": 59,
+    "assertion": 56,
+    "peer-blueprint-inherited-providers": 3,
     "lock-ownership-expectation": 1,
     "work-item-disclosure-fixture": 1,
     "migration-stage": 1,
@@ -1008,9 +1009,9 @@
     },
     {
       "path": "packages/operator-core/lib/agent-tools/harness/__tests__/create-dep-gate.integration.test.ts",
-      "class": "assertion",
-      "state": "open-unknown",
-      "item": "WI-10006170",
+      "class": "peer-blueprint-inherited-providers",
+      "state": "repaired-peer-focused",
+      "item": "WI-10006514",
       "lines": [
         15519,
         15538,
@@ -1020,7 +1021,16 @@
         15614,
         15633,
         15652
-      ]
+      ],
+      "diagnosis": "Original archive reports blueprint tool dependencies unmet before installed/installable/plugin/destination assertions. Existing WI-10006514 supplies inherited coding providers through the real assembler and tests inherited validation exactly once, preserving unknown-child and Cupboard controls.",
+      "afterTestRun": 20831099,
+      "passed": 9,
+      "skipped": 0,
+      "testSha256": "decc84d953225189cef1a77d37d60bed5f019cd45a500fe31e042bd1f6bed009",
+      "receiptCommit": "202743ceba73f6107991c915144d47787a2e95f5",
+      "receiptTestBlob": "c755bc3824396dfc937d371fd557eca9d95982e5",
+      "currentTestBlob": "c755bc3824396dfc937d371fd557eca9d95982e5",
+      "receiptScope": "Stored clean as-committed local PASS, non-scratch, runGroupId null; exact current test bytes match. Full current imports/environment and final D006 remain unverified. No terminal repair rerun."
     },
     {
       "path": "packages/operator-core/lib/sync-resolver/__tests__/cache-tag-trigger-coverage.integration.test.ts",
@@ -1512,14 +1522,23 @@
     },
     {
       "path": "packages/operator-core/lib/agent-tools/harness/__tests__/create-git-sync-seed.integration.test.ts",
-      "class": "assertion",
-      "state": "open-unknown",
-      "item": "WI-10006170",
+      "class": "peer-blueprint-inherited-providers",
+      "state": "repaired-peer-focused",
+      "item": "WI-10006514",
       "lines": [
         15671,
         15690,
         15709
-      ]
+      ],
+      "diagnosis": "Existing committed WI-10006514 repairs the isolated inherited-provider omission and preserves all three seeder behaviors. Original D006 only reports ok=false here; matching its symptom to the recorded fixture cause is an inference from the source diff and sibling diagnostics, not a recorded original error payload.",
+      "afterTestRun": 20831097,
+      "passed": 3,
+      "skipped": 0,
+      "testSha256": "ba46ed08a8b31300aae23aa54628370cde634df85833e00c31d8dcd077f595b1",
+      "receiptCommit": "202743ceba73f6107991c915144d47787a2e95f5",
+      "receiptTestBlob": "497c410652d5754684be56a66a8c110e1294385b",
+      "currentTestBlob": "497c410652d5754684be56a66a8c110e1294385b",
+      "receiptScope": "Stored clean as-committed local PASS, non-scratch, runGroupId null; exact current test bytes match. Full current imports/environment and final D006 remain unverified. No terminal repair rerun."
     },
     {
       "path": "packages/operator-core/lib/agent-tools/plans/__tests__/set-plan-status-supersede-cascade.integration.test.ts",
@@ -1683,13 +1702,22 @@
     },
     {
       "path": "packages/operator-core/lib/agent-tools/harness/__tests__/create-auto-install-deps.integration.test.ts",
-      "class": "assertion",
-      "state": "open-unknown",
-      "item": "WI-10006170",
+      "class": "peer-blueprint-inherited-providers",
+      "state": "repaired-peer-focused",
+      "item": "WI-10006514",
       "lines": [
         15481,
         15500
-      ]
+      ],
+      "diagnosis": "Original archive explicitly reports blueprint tool dependencies unmet before install/destination assertions. Existing committed WI-10006514 supplies inherited coding providers through the real catalog assembler; production dependency validation stays active.",
+      "afterTestRun": 20831096,
+      "passed": 2,
+      "skipped": 0,
+      "testSha256": "5b3513804d3402a9195f12c1f3f761cfede35dfbad67766081b343e11115a0f3",
+      "receiptCommit": "202743ceba73f6107991c915144d47787a2e95f5",
+      "receiptTestBlob": "c83f7e2eb7decdae098dc49e94ced232bca408c7",
+      "currentTestBlob": "c83f7e2eb7decdae098dc49e94ced232bca408c7",
+      "receiptScope": "Stored clean as-committed local PASS, non-scratch, runGroupId null; exact current test bytes match. Full current imports/environment and final D006 remain unverified. No terminal repair rerun."
     },
     {
       "path": "packages/operator-core/lib/agent-tools/fleet/fleet-campaign.integration.test.ts",
@@ -2388,6 +2416,30 @@
       "status": "repaired-peer-focused",
       "item": "WI-10006187",
       "rootCause": "Stored normal committed closure: required1312 missing and inherited dark behavior precondition; realPG privacy/LWW/OFF guards preserved."
+    },
+    {
+      "class": "peer-blueprint-inherited-providers",
+      "count": 3,
+      "status": "repaired-peer-focused",
+      "item": "WI-10006514",
+      "rootCause": "Isolated catalog fixtures omitted resolved coding-parent providers and assumed empty child dependency arrays erase inherited declarations. Existing repair extends the maintained catalog assembler seam, retains the real resolver/validator and covers unknown-child, inherited-once, plugin/Cupboard/install and seeder controls.",
+      "commit": "202743ceba73f6107991c915144d47787a2e95f5",
+      "completionAuthority": "committed",
+      "terminalOwner": "su-7a94555d-4fbb-42b8-a39d-ff28fade9e0f",
+      "settlementManifestEvidenceHash": "f5699437c0a168f4d4b7d4c0aedaaa42d4e7e5dc0b2a34f831407ca1302b93d3",
+      "testRunIds": [20831099, 20831096, 20831097],
+      "passed": 14,
+      "skipped": 0,
+      "nativePassLog": {
+        "path": "/tmp/cloud-tutorial-wi6502-6514-clean-202743ce.log",
+        "sha256": "05809e1b801ff1056270d825a611dfbb63b55af11018c99b7c582cf16f4f804b",
+        "scope": "The three named suites contribute 9+2+3 passes to the stored four-suite 18-pass run."
+      },
+      "workingPassLog": {
+        "path": "/tmp/cloud-tutorial-wi6514-working-v1.log",
+        "sha256": "3b46a1ef51e6223069b5f4cf05d2093322dbd2bb4b557d40a6bbda01e7f17f96"
+      },
+      "next": "Retain committed repair and exact current test-byte equality. Original seeder cause attribution is explicitly inferred; full current imports/environment, final D006 readiness and shipment remain unverified. Do not replay terminal repair or supervise its settlement."
     },
     {
       "class": "peer-dial-process-isolation",
