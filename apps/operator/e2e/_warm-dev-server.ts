@@ -36,7 +36,13 @@ function isLocalUrl(raw: string): boolean {
   }
 }
 
-export default async function warmDevServer(config: FullConfig): Promise<void> {
+export type WarmDevServerOptions = {
+  paths?: readonly string[];
+  readySelector?: string;
+  strict?: boolean;
+};
+
+export default async function warmDevServer(config: FullConfig, options: WarmDevServerOptions = {}): Promise<void> {
   if (process.env.OPERATOR_E2E_SKIP_WARMUP === '1') return;
   const baseURL = config.projects[0]?.use?.baseURL;
   if (!baseURL) return;
@@ -50,23 +56,31 @@ export default async function warmDevServer(config: FullConfig): Promise<void> {
     await page.route('**/*', (route) =>
       isLocalUrl(route.request().url()) ? route.continue() : route.abort(),
     );
-    for (const path of WARMUP_PATHS) {
+    for (const path of options.paths ?? WARMUP_PATHS) {
       const url = new URL(path, baseURL).toString();
       try {
         await page.goto(url, { waitUntil: 'load', timeout: WARMUP_NAV_TIMEOUT_MS });
-        // The SPA has mounted once #root has children; a dependency
-        // re-optimization reloads the page, which this wait rides out.
-        await page.waitForFunction(
-          () => (document.getElementById('root')?.childElementCount ?? 0) > 0,
-          null,
-          { timeout: WARMUP_MOUNT_TIMEOUT_MS },
-        );
+        if (options.readySelector) {
+          // A profile's lazy view must mount before its test worker starts.
+          // Shell children alone also appear while Suspense is still loading.
+          await page.locator(options.readySelector).waitFor({
+            state: 'visible', timeout: WARMUP_MOUNT_TIMEOUT_MS,
+          });
+        } else {
+          await page.waitForFunction(
+            () => (document.getElementById('root')?.childElementCount ?? 0) > 0,
+            null,
+            { timeout: WARMUP_MOUNT_TIMEOUT_MS },
+          );
+        }
         await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => undefined);
       } catch (err) {
+        if (options.strict) throw err;
         console.warn(`[e2e warm-up] ${path} did not settle: ${(err as Error).message.split('\n')[0]}`);
       }
     }
   } catch (err) {
+    if (options.strict) throw err;
     console.warn(`[e2e warm-up] skipped after error: ${(err as Error).message.split('\n')[0]}`);
   } finally {
     await browser.close();
