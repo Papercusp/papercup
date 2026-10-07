@@ -74,7 +74,9 @@ const server = createAdaptorServer({
       request.method === 'POST' && pathname === '/api/agent-mcp/run-tool'
         ? ((await request.clone().json().catch(() => null)) as { name?: string } | null)
         : null;
-    const configStep = pathname === '/api/agent-config'
+    const configStep = pathname === '/api/tui/identity'
+      ? 'operator-identity'
+      : pathname === '/api/agent-config'
       ? 'agent-config'
       : pathname === '/api/agent-tools/operator/credentials_status'
         ? 'credentials-status'
