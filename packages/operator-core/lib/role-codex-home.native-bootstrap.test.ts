@@ -11,7 +11,7 @@ import { resolveOnPath } from './backend-bin-resolve.mjs';
 const codex = resolveOnPath('codex');
 
 async function readNativeAccount(home: string): Promise<{ result?: unknown; error?: { message?: string } }> {
-  const env = { ...process.env, CODEX_HOME: home };
+  const env: NodeJS.ProcessEnv = { ...process.env, CODEX_HOME: home };
   delete env.OPENAI_API_KEY;
   const child = spawn(codex!, ['app-server', '--listen', 'stdio://'], { env, stdio: ['pipe', 'pipe', 'pipe'] });
   child.stdout.setEncoding('utf8');
