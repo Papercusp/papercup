@@ -58,8 +58,52 @@ function macrotaskHop(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
-export function renderMdxToMarkdown(rawMdx: string, absolutePath: string): Promise<string> {
-  const run = renderQueueTail.then(macrotaskHop).then(() => renderMdxToMarkdownUnqueued(rawMdx, absolutePath));
+export function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new Error('cancelled');
+}
+
+/** Race a caller's wait against cancellation without cancelling shared work. */
+export function raceWithAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(new Error('cancelled'));
+
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const cleanup = () => signal.removeEventListener('abort', onAbort);
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(new Error('cancelled'));
+    };
+
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve(value);
+      },
+      (error) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(error);
+      },
+    );
+  });
+}
+
+/**
+ * Queued renders honor abort before parsing starts. A render already in progress
+ * is allowed to finish; callers can stop waiting via `raceWithAbort`.
+ */
+export function renderMdxToMarkdown(rawMdx: string, absolutePath: string, signal?: AbortSignal): Promise<string> {
+  const run = renderQueueTail.then(macrotaskHop).then(() => {
+    throwIfAborted(signal);
+    return renderMdxToMarkdownUnqueued(rawMdx, absolutePath);
+  });
   renderQueueTail = run.catch(() => undefined);
   return run;
 }

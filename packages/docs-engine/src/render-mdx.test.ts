@@ -5,7 +5,7 @@
  * Run with: npx vitest run packages/docs-engine/src/render-mdx.test.ts
  */
 import { describe, expect, it } from 'vitest';
-import { renderMdxToMarkdown, renderMdxToMarkdownUnqueued, withPreamble } from './render-mdx';
+import { raceWithAbort, renderMdxToMarkdown, renderMdxToMarkdownUnqueued, withPreamble } from './render-mdx';
 
 const render = (mdx: string) => renderMdxToMarkdown(mdx, '/docs/test.mdx');
 
@@ -58,6 +58,30 @@ describe('renderMdxToMarkdown — WI-10004766 a corpus batch must not starve the
     expect(out[0]!.trim()).toBe('# one');
     expect(out[1]).toContain('placeholder');
     expect(out[2]!.trim()).toBe('# three');
+  });
+
+  it('does not start an MDX parse that was still queued when its signal aborted', async () => {
+    const active = renderMdxToMarkdown('# active', '/docs/active.mdx');
+    const controller = new AbortController();
+    const queued = renderMdxToMarkdown('# queued', '/docs/queued.mdx', controller.signal);
+    controller.abort();
+
+    await expect(active).resolves.toContain('# active');
+    await expect(queued).rejects.toThrow('cancelled');
+  });
+
+  it('lets one caller stop waiting without cancelling shared work for other readers', async () => {
+    let complete!: (value: string) => void;
+    const shared = new Promise<string>((resolve) => {
+      complete = resolve;
+    });
+    const controller = new AbortController();
+    const caller = raceWithAbort(shared, controller.signal);
+
+    controller.abort();
+    await expect(caller).rejects.toThrow('cancelled');
+    complete('shared result');
+    await expect(shared).resolves.toBe('shared result');
   });
 });
 
