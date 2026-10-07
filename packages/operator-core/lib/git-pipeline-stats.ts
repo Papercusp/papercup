@@ -48,6 +48,8 @@ import {
 import { parseInFlightRetriage, type StoredInFlightRetriage } from './release/in-flight-retriage';
 import { parseTestPassReuseHealth, type TestPassReuseHealth } from './release/test-pass-reuse-report';
 import { parseGateRoundPhases, type GateRoundPhases } from './release/gate-round-phases';
+import { reconstructGateFireDays, type GateFireDay } from './release/gate-fire-ledger';
+import { resolveWorkspaceForHarness } from './harness/workspace-for-harness';
 import { parseInFlightCandidate, type StoredInFlightCandidate } from './release/in-flight-candidate';
 import { parseRepairTickLegs, type StoredRepairTickLegs } from './release/repair-tick-legs-snapshot';
 import { readFreezeAndConverge, type FreezeAndConvergeGateHealth } from './release/freeze-disposition';
@@ -68,6 +70,25 @@ export type FrozenRepairQueueReadProjection =
 
 /** The operator's own integration harness (its git-sync/release routines). */
 const DEFAULT_SLUG = process.env.RELEASE_ROUTINE_SLUG ?? operatorHomeHarnessSlug();
+
+export interface GateFireHistory {
+  windowHours: 24;
+  fires: number;
+  verdictRecords: number;
+  noVerdictAborts: number;
+  skippedStarts: number;
+}
+
+/** Preserve the ledger's distinctions: a fire/skip/abort is not a completed test verdict. */
+export function summarizeGateFireHistory(days: GateFireDay[]): GateFireHistory {
+  return days.reduce<GateFireHistory>((sum, day) => ({
+    windowHours: 24,
+    fires: sum.fires + day.fires,
+    verdictRecords: sum.verdictRecords + day.verdictsGreen + day.verdictsRed,
+    noVerdictAborts: sum.noVerdictAborts + day.noVerdicts,
+    skippedStarts: sum.skippedStarts + day.skips,
+  }), { windowHours: 24, fires: 0, verdictRecords: 0, noVerdictAborts: 0, skippedStarts: 0 });
+}
 
 export interface RoutineInfo {
   name: string;
@@ -196,6 +217,8 @@ export interface GitPipelineSnapshot {
      * refire in flight), and this is what tells the two apart.
      */
     consecutiveNoVerdict: number;
+    /** Exact 24h ledger window; null means this read could not be measured. */
+    fireHistory?: GateFireHistory | null;
     lastGreenAtMs: number | null;
     /**
      * EI-20706962612084953: the last verdict's OWN green-ness, as STATED by the writer
@@ -1380,6 +1403,10 @@ export async function gitPipelineSnapshot(
   const weekPromise = summarizePipelineWindow(slug, 7 * 24 * 60 * 60);
   const recentPromise = recentPipelineEvents(slug, 25);
   const deployPromise = devDeployState({ useSpawnerSidecar: opts.useSpawnerSidecar });
+  const fireHistoryPromise = resolveWorkspaceForHarness(slug)
+    .then((workspaceId) => reconstructGateFireDays(sql, { workspaceId, installSlug: slug }, { sinceDays: 1 }))
+    .then(summarizeGateFireHistory)
+    .catch(() => null);
 
   // The three pipeline routines + git-sync's latest metadata, in one read.
   const routineRows = await routineRowsPromise;
@@ -1462,11 +1489,12 @@ export async function gitPipelineSnapshot(
   }
 
   // EI-19399662484764592: derived from `recent` BELOW — no extra query. See pickRetriageVerdict.
-  const [day, week, recent, deploy] = await Promise.all([
+  const [day, week, recent, deploy, fireHistory] = await Promise.all([
     dayPromise,
     weekPromise,
     recentPromise,
     deployPromise,
+    fireHistoryPromise,
   ]);
 
   // WI-4489: is the recorded RED still trustworthy? The green pin is the ground truth (it only
@@ -1759,6 +1787,7 @@ export async function gitPipelineSnapshot(
       // evidence about the CODE, never evidence that this gate's runs started producing verdicts.
       // Zeroing this on that basis would hide a wedged writer behind someone else's green.
       consecutiveNoVerdict: num(gateHealth.consecutiveNoVerdict) ?? 0,
+      fireHistory,
       // A stalled-streak alert can't survive proof the streak it was raised on has already ended.
       stalled: gateStalled,
       lastFiredAtMs: gcLastFiredMs,

@@ -15,6 +15,7 @@ import {
   readPipelineRoutineControl,
   readReleaseTriggerControl,
   resolverModel,
+  summarizeGateFireHistory,
   toRoutineInfo,
   pinProvenGateCorrection,
   mapActiveRun,
@@ -80,10 +81,26 @@ describe('gitPipelineSnapshot latency topology', () => {
       'const weekPromise =',
       'const recentPromise =',
       'const deployPromise =',
+      'const fireHistoryPromise =',
     ]) {
       expect(body.indexOf(declaration)).toBeGreaterThan(0);
       expect(body.indexOf(declaration)).toBeLessThan(firstConsumption);
     }
+  });
+});
+
+describe('checkpoint fire history', () => {
+  it('keeps fires, verdict records, no-verdict aborts and skipped starts distinct across UTC day boundaries', () => {
+    const days = [
+      { fires: 30, verdictsGreen: 0, verdictsRed: 0, noVerdicts: 2, skips: 20 },
+      { fires: 44, verdictsGreen: 0, verdictsRed: 0, noVerdicts: 5, skips: 26 },
+    ] as Parameters<typeof summarizeGateFireHistory>[0];
+    expect(summarizeGateFireHistory(days)).toEqual({
+      windowHours: 24, fires: 74, verdictRecords: 0, noVerdictAborts: 7, skippedStarts: 46,
+    });
+    expect(summarizeGateFireHistory([])).toEqual({
+      windowHours: 24, fires: 0, verdictRecords: 0, noVerdictAborts: 0, skippedStarts: 0,
+    });
   });
 });
 
