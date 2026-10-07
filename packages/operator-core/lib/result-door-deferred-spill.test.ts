@@ -19,6 +19,7 @@ import { CHARS_PER_TOKEN_ESTIMATE } from './context-doors';
 import {
   applyResultDoor,
   applyResultDoorAsync,
+  beginResultDoorAggregate,
   resetResultDoorAggregatesForTests,
   RESULT_DOOR_TOKENS,
 } from './result-door';
@@ -160,9 +161,10 @@ describe('result-door deferred spill (WI-10004533)', () => {
     truncateSync(join(root, 'unmanaged'), WORKSPACE_QUOTA_BYTES);
     await refreshScratchUsage('ws-1');
     const out = await applyResultDoorAsync(oversized(), OPTS);
-    const meta = (out as { _meta?: { resultDoor?: { spillFailed?: boolean; spillErrorCode?: string; spillPath?: string } } })._meta?.resultDoor;
+    const meta = (out as { _meta?: { resultDoor?: { spillFailed?: boolean; spillErrorCode?: string; spillError?: string; spillPath?: string } } })._meta?.resultDoor;
     expect(meta?.spillFailed).toBe(true);
     expect(meta?.spillErrorCode).toBe('SCRATCH_QUOTA_EXCEEDED');
+    expect(meta?.spillError).toMatch(/^scratch reservation: workspace ws-1 used \d+ \+ \d+ > quota 5368709120$/);
     expect(meta?.spillPath ?? null).toBeNull();
     expect(JSON.stringify(out.content)).toContain('SCRATCH_QUOTA_EXCEEDED');
     expect(spillFiles()).toHaveLength(0);
@@ -191,5 +193,83 @@ describe('result-door deferred spill (WI-10004533)', () => {
     const ref = parseScratchReference(readFileSync(filePath));
     expect(ref!.payload.toString('utf8')).toBe('hello deferred');
     expect(ref!.manifest.sha256).toBe(manifest.sha256);
+  });
+
+  describe('read-surface spill failures', () => {
+    function breakScratchRoot(): void {
+      const blocker = join(sandbox, 'scratch-is-a-file');
+      writeFileSync(blocker, 'x');
+      process.env.PAPERCUSP_SCRATCH_ROOT = join(blocker, 'scratch');
+    }
+
+    it.each(['coord:feed', 'work_items:list', 'work_items:get'] as const)(
+      '%s returns a bounded result without a dangling cursor when the shared writer fails',
+      async (toolName) => {
+        breakScratchRoot();
+        const rows = Array.from({ length: 12 }, (_, index) => ({
+          id: `WI-${index}`,
+          summary: 's'.repeat(900),
+        }));
+        const body = toolName === 'work_items:list'
+          ? rows
+          : toolName === 'coord:feed'
+            ? { messages: rows }
+            : {
+                ok: true,
+                results: rows.map((row) => ({ id: row.id, ok: true, workItem: row })),
+                counts: { ok: rows.length, failed: 0 },
+              };
+        const original = JSON.stringify(body);
+        expect(original.length).toBeGreaterThan(BUDGET_CHARS);
+
+        const out = await applyResultDoorAsync(
+          { content: [{ type: 'text' as const, text: original }] },
+          { ...OPTS, toolName },
+        );
+        const resultText = (out.content.find((item) => item.type === 'text') as { text: string }).text;
+        const meta = (out as {
+          _meta?: {
+            resultDoor?: {
+              recoveryCursor?: Record<string, unknown>;
+              [key: string]: unknown;
+            };
+          };
+        })._meta?.resultDoor;
+
+        expect(resultText.length).toBeLessThan(original.length);
+        expect(meta?.recoveryCursor).toMatchObject({ kind: 'unavailable', reason: 'spill-write-failed' });
+        expect(resultText).not.toContain('papercusp://scratch');
+        expect(meta).toMatchObject({ spillFailed: true, spillPath: null, spillUri: null, spillErrorCode: 'ENOTDIR' });
+      },
+    );
+
+    it('coord:feed reports the failed hard-overflow envelope with accounting when aggregate spill cannot persist', async () => {
+      breakScratchRoot();
+      const aggregateScope = beginResultDoorAggregate({ sessionKey: 'read-surface-test', outputGroupId: 'turn-1' });
+      const fill = { content: [{ type: 'text' as const, text: 'f'.repeat(BUDGET_CHARS) }] };
+      await applyResultDoorAsync(fill, { ...OPTS, toolName: 'coord:feed', aggregateScope });
+      await applyResultDoorAsync(fill, { ...OPTS, toolName: 'coord:feed', aggregateScope });
+
+      const original = JSON.stringify({ messages: 'm'.repeat(BUDGET_CHARS) });
+      const out = await applyResultDoorAsync(
+        { content: [{ type: 'text' as const, text: original }] },
+        { ...OPTS, toolName: 'coord:feed', aggregateScope },
+      );
+      const envelope = JSON.parse((out.content[0] as { text: string }).text) as {
+        state?: string;
+        error?: { code?: string; retryable?: boolean };
+      };
+      const meta = (out as { _meta?: { resultDoor?: Record<string, unknown> } })._meta?.resultDoor;
+
+      expect(envelope).toMatchObject({ state: 'error', error: { code: 'output_spill_failed', retryable: true } });
+      expect(meta).toMatchObject({
+        spillFailed: true,
+        spillPath: null,
+        spillUri: null,
+        spillErrorCode: 'ENOTDIR',
+        originalBytes: Buffer.byteLength(original),
+      });
+      expect(JSON.stringify(out.content)).not.toContain('papercusp://scratch');
+    });
   });
 });
