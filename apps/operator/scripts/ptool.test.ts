@@ -9,10 +9,13 @@ import {
   refreshToolCallAfterStaleContract,
   canDispatchWithoutCatalog,
   buildMcpUrl,
+  isForeignNativeSessionRejection,
+  shouldRetryWithoutNativeSession,
   connectWithLocalRetry,
   connectWithOperatorCandidates,
   connectWithTokenFallback,
   listToolsWithTokenFallback,
+  listToolsWithNativeSessionFallback,
   codeRunRequestHash,
   listToolsWithLocalRetry,
   escapeJsonStringControls,
@@ -88,6 +91,10 @@ import {
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore -- plain .mjs launcher script, no type declarations.
 } from './ptool.mjs';
+import {
+  AGENT_LAUNCH_CLIENT_TIMEOUT_MS,
+  AGENT_LAUNCH_HANDLER_TIMEOUT_SEC,
+} from '../../../packages/operator-core/lib/agent-kickoff/launch-budgets.mjs';
 
 describe('ptool bootstrap dependencies', () => {
   it('keeps the repository ptool source directly executable (EI-22055633156739019)', () => {
@@ -219,6 +226,51 @@ describe('ptool MCP identity binding', () => {
         expect(url.searchParams.get('native_session')).toBe(nativeSession);
       }
     }
+  });
+
+  it('prefers the launcher-bound native session over a stale Codex environment id', () => {
+    const client = 'su-retained-owner';
+    const url = buildMcpUrl('http://127.0.0.1:3170', {
+      client,
+      env: {
+        PAPERCUSP_SID: client,
+        PAPERCUSP_NATIVE_SESSION_ID: 'native-bound-successor',
+        CODEX_SESSION_ID: 'native-stale-predecessor',
+      },
+    });
+
+    expect(url.searchParams.get('native_session')).toBe('native-bound-successor');
+  });
+
+  it('retries only a foreign inherited Codex claim without changing the owner', () => {
+    const client = 'su-cold-codex';
+    const env = { PAPERCUSP_SID: client, CODEX_SESSION_ID: 'inherited-native-id' };
+    const url = buildMcpUrl('http://127.0.0.1:3170', { client, env });
+    const refusal = {
+      isError: true,
+      content: [{ type: 'text', text: 'request_rejected: superuser_foreign_native_session' }],
+    };
+
+    expect(url.searchParams.get('native_session')).toBe('inherited-native-id');
+    expect(isForeignNativeSessionRejection(refusal)).toBe(true);
+    expect(shouldRetryWithoutNativeSession(refusal, { client, env })).toBe(true);
+    expect(shouldRetryWithoutNativeSession({
+      isError: true,
+      content: [{ type: 'text', text: 'request_rejected: authorization_denied' }],
+    }, { client, env })).toBe(false);
+    expect(shouldRetryWithoutNativeSession(refusal, {
+      client,
+      explicitNativeSession: false,
+      env: { ...env, PAPERCUSP_NATIVE_SESSION_ID: 'launcher-bound-id' },
+    })).toBe(false);
+    expect(shouldRetryWithoutNativeSession(refusal, {
+      client,
+      explicitNativeSession: true,
+      env,
+    })).toBe(false);
+    expect(buildMcpUrl('http://127.0.0.1:3170', {
+      client, env, nativeSessionOverride: null,
+    }).searchParams.has('native_session')).toBe(false);
   });
 
   it('preserves an explicitly selected native session and avoids binding another owner', () => {
@@ -501,6 +553,70 @@ describe('ptool bearer-token resolution', () => {
     expect(listTools.mock.calls).toEqual([[firstClient], [secondClient]]);
   });
 
+  it('retries tools/list once without an inherited foreign native-session claim', async () => {
+    const client = 'su-cold-codex';
+    const env = { PAPERCUSP_SID: client, CODEX_SESSION_ID: 'inherited-native-id' };
+    const firstClient = { close: vi.fn() };
+    const retryClient = { close: vi.fn() };
+    const catalog = [{ name: 'coord:whoami' }];
+    const refusal = new Error('MCP error -32603: mcp_auth_failed: superuser_foreign_native_session');
+    const discoverTools = vi.fn()
+      .mockResolvedValueOnce({ client: firstClient, tools: null, error: refusal })
+      .mockResolvedValueOnce({ client: retryClient, tools: catalog, error: null });
+    const reconnectWithoutNativeSession = vi.fn().mockResolvedValue(retryClient);
+    const closeClient = vi.fn().mockResolvedValue(undefined);
+
+    const result = await listToolsWithNativeSessionFallback(firstClient, {
+      discoverTools,
+      reconnectWithoutNativeSession,
+      client,
+      env,
+      closeClient,
+    });
+
+    expect(result).toEqual({
+      client: retryClient,
+      tools: catalog,
+      error: null,
+      nativeSessionRetried: true,
+    });
+    expect(discoverTools.mock.calls).toEqual([[firstClient], [retryClient]]);
+    expect(reconnectWithoutNativeSession).toHaveBeenCalledOnce();
+    expect(closeClient).toHaveBeenCalledWith(firstClient);
+    expect(isForeignNativeSessionRejection(refusal)).toBe(true);
+  });
+
+  it('keeps launcher-bound identities and unrelated catalog failures terminal', async () => {
+    const client = 'su-cold-codex';
+    const firstClient = { close: vi.fn() };
+    const refusal = new Error('MCP error -32603: mcp_auth_failed: superuser_foreign_native_session');
+    const reconnectWithoutNativeSession = vi.fn();
+
+    const boundResult = await listToolsWithNativeSessionFallback(firstClient, {
+      discoverTools: vi.fn().mockResolvedValue({ client: firstClient, tools: null, error: refusal }),
+      reconnectWithoutNativeSession,
+      client,
+      env: {
+        PAPERCUSP_SID: client,
+        PAPERCUSP_NATIVE_SESSION_ID: 'launcher-bound-id',
+        CODEX_SESSION_ID: 'inherited-native-id',
+      },
+    });
+    expect(boundResult.error).toBe(refusal);
+    expect(boundResult.nativeSessionRetried).toBe(false);
+
+    const unrelatedError = new Error('MCP error: mcp_auth_failed: superuser_invalid_bearer');
+    const unrelatedResult = await listToolsWithNativeSessionFallback(firstClient, {
+      discoverTools: vi.fn().mockResolvedValue({ client: firstClient, tools: null, error: unrelatedError }),
+      reconnectWithoutNativeSession,
+      client,
+      env: { PAPERCUSP_SID: client, CODEX_SESSION_ID: 'inherited-native-id' },
+    });
+    expect(unrelatedResult.error).toBe(unrelatedError);
+    expect(unrelatedResult.nativeSessionRetried).toBe(false);
+    expect(reconnectWithoutNativeSession).not.toHaveBeenCalled();
+  });
+
   it('keeps explicit token pins and non-bearer catalog errors terminal', async () => {
     const explicitError = new Error('MCP error: mcp_auth_failed: superuser_invalid_bearer');
     const explicitReconnect = vi.fn();
@@ -597,11 +713,12 @@ describe('ptool call deadlines', () => {
     expect(timeoutForTool('templates:new-app')).toBe(PTOOL_TEMPLATES_NEW_APP_TIMEOUT_MS);
     expect(timeoutForTool('scorecards:emit')).toBe(PTOOL_SCORECARD_EMIT_TIMEOUT_MS);
     // EI-22780156976598155: headless boot/kickoff/fresh-launch verification
-    // can use the tool's 90s handler budget. Keep direct and deferred routes
-    // outside the handler + 5s MCP settlement window.
+    // follows the shared launch budget. Keep direct and deferred routes outside
+    // its handler timeout plus the 5s MCP settlement window.
     expect(timeoutForTool('capability:launch-agent')).toBe(PTOOL_AGENT_LAUNCH_TIMEOUT_MS);
-    expect(PTOOL_AGENT_LAUNCH_TIMEOUT_MS).toBe(100_000);
-    expect(PTOOL_AGENT_LAUNCH_TIMEOUT_MS).toBeGreaterThan(95_000);
+    expect(PTOOL_AGENT_LAUNCH_TIMEOUT_MS).toBe(AGENT_LAUNCH_CLIENT_TIMEOUT_MS);
+    expect(PTOOL_AGENT_LAUNCH_TIMEOUT_MS)
+      .toBeGreaterThan((AGENT_LAUNCH_HANDLER_TIMEOUT_SEC * 1000) + 5000);
     expect(timeoutForTool('tools:invoke', {
       name: 'capability:launch-agent',
       args: { agent: 'claude', headless: false },

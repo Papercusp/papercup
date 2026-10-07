@@ -2963,6 +2963,7 @@ export function buildMcpUrl(operatorUrl, {
   harness,
   client,
   contextTier = 'trimmed',
+  nativeSessionOverride,
   env = process.env,
 } = {}) {
   const url = new URL(operatorUrl);
@@ -2976,18 +2977,79 @@ export function buildMcpUrl(operatorUrl, {
   if (workspace) url.searchParams.set('workspace', workspace);
   if (harness) url.searchParams.set('harness', harness);
   if (client) url.searchParams.set('client', client);
-  // A retained owner can have several native incarnations. Carry the current
-  // Codex session through this fallback just as the native MCP config does;
-  // the server verifies that binding before selecting its launch record.
-  // An explicit endpoint binding wins, and another client's identity must
-  // never inherit this process's native session.
-  const nativeSession = String(env.CODEX_SESSION_ID ?? '').trim();
+  // A retained owner can have several native incarnations. Prefer the native
+  // session explicitly bound by the launcher; CODEX_SESSION_ID can be stale
+  // in a retained shell and the server correctly rejects that foreign id.
+  // Fall back to Codex's current id for older launch environments. An explicit
+  // endpoint binding wins, and another client's identity must never inherit
+  // this process's native session.
+  const nativeSession = String(nativeSessionOverride !== undefined
+    ? nativeSessionOverride ?? ''
+    : env.PAPERCUSP_NATIVE_SESSION_ID ||
+      (String(env.PAPERCUSP_AGENT ?? '').trim() === 'claude'
+        ? env.CLAUDE_CODE_SESSION_ID
+        : env.CODEX_SESSION_ID) || '').trim();
   if (!url.searchParams.has('native_session') && nativeSession &&
       client && client === String(env.PAPERCUSP_SID ?? '').trim()) {
     url.searchParams.set('native_session', nativeSession);
   }
   if (contextTier) url.searchParams.set('ctx_tier', contextTier);
   return url;
+}
+
+/** A foreign native-session refusal is emitted before the tool dispatcher runs. */
+export function isForeignNativeSessionRejection(result) {
+  return (result?.isError === true &&
+    Array.isArray(result.content) &&
+    result.content.some((block) =>
+      block?.type === 'text' && block.text === 'request_rejected: superuser_foreign_native_session')) ||
+    /\bmcp_auth_failed:\s*superuser_foreign_native_session\b/.test(errorDetail(result));
+}
+
+/** Retry only an inherited Codex claim; an explicit launcher binding stays authoritative. */
+export function shouldRetryWithoutNativeSession(result, {
+  client, explicitNativeSession = false, env = process.env,
+} = {}) {
+  return isForeignNativeSessionRejection(result) &&
+    Boolean(String(env.CODEX_SESSION_ID ?? '').trim()) &&
+    !String(env.PAPERCUSP_NATIVE_SESSION_ID ?? '').trim() &&
+    Boolean(client) && client === String(env.PAPERCUSP_SID ?? '').trim() &&
+    !explicitNativeSession;
+}
+
+/** Retry read-only catalog discovery when an inherited native-session claim is foreign. */
+export async function listToolsWithNativeSessionFallback(
+  initialClient,
+  {
+    discoverTools,
+    reconnectWithoutNativeSession,
+    client,
+    explicitNativeSession = false,
+    env = process.env,
+    closeClient = closeClientQuietly,
+  } = {},
+) {
+  const first = await discoverTools(initialClient);
+  if (
+    typeof reconnectWithoutNativeSession !== 'function' ||
+    !shouldRetryWithoutNativeSession(first.error, { client, explicitNativeSession, env })
+  ) {
+    return { ...first, nativeSessionRetried: false };
+  }
+
+  let retryClient;
+  try {
+    retryClient = await reconnectWithoutNativeSession();
+  } catch (error) {
+    return { ...first, error, nativeSessionRetried: true };
+  }
+  await closeClient(first.client);
+
+  try {
+    return { ...(await discoverTools(retryClient)), nativeSessionRetried: true };
+  } catch (error) {
+    return { client: retryClient, tools: null, error, nativeSessionRetried: true };
+  }
 }
 
 const SDK_IMPORT_MUTEX_TIMEOUT_MS = 10 * 60_000;
@@ -3103,7 +3165,7 @@ export async function preparePtoolConnectionModules(
  *  (mergeConvenienceArgs) for tools that take `workspace` as a genuine filter. */
 async function connect(
   operatorUrl,
-  { workspace, harness, tokenFile, transport: requestedTransport } = {},
+  { workspace, harness, tokenFile, transport: requestedTransport, nativeSessionOverride } = {},
   { timeoutMs } = {},
   preparedConnection,
 ) {
@@ -3120,6 +3182,7 @@ async function connect(
     harness,
     client: process.env.PAPERCUSP_SID,
     contextTier: resolveContextTier(),
+    nativeSessionOverride,
   });
   const mode = requestedTransport || process.env.PAPERCUSP_MCP_TRANSPORT || 'http';
   if (!['http', 'uds', 'auto'].includes(mode)) throw new Error('Invalid MCP transport; expected http, uds or auto');
@@ -3590,14 +3653,19 @@ async function main() {
   let activeTokenFile = null;
   const retryOptions = ptoolConnectionRetryOptions(args, process.env);
   const rediscover = !args.tool && Object.keys(retryOptions).length === 0 ? discoverOperatorUrl : null;
-  const connectOperator = async ({ preferredIndex = 0, tokenFile = activeTokenFile } = {}) => {
+  const connectOperator = async ({
+    preferredIndex = 0, tokenFile = activeTokenFile, nativeSessionOverride,
+  } = {}) => {
     const candidates = preferredIndex > 0
       ? [
         ...operatorCandidates.slice(preferredIndex),
         ...operatorCandidates.slice(0, preferredIndex),
       ]
       : operatorCandidates;
-    const connectionScope = tokenFile ? { ...scope, tokenFile } : scope;
+    const connectionScope = {
+      ...(tokenFile ? { ...scope, tokenFile } : scope),
+      ...(nativeSessionOverride !== undefined ? { nativeSessionOverride } : {}),
+    };
     const connected = await connectWithOperatorCandidates(connect, candidates, connectionScope, {
       ...retryOptions,
       prepareConnection: preparePtoolConnectionModules,
@@ -3642,14 +3710,28 @@ async function main() {
 
     let tools;
     try {
-      const discovery = await listToolsWithTokenFallback(
-        client,
-        tokenPaths,
-        ptoolTokenPathByClient.get(client),
-        (tokenFile) => connectOperator({ tokenFile }),
-        (targetClient) => listAllTools(targetClient, { retryLocalErrors: isLocalOperatorUrl(operatorUrl) }),
-      );
+      const discovery = await listToolsWithNativeSessionFallback(client, {
+        client: process.env.PAPERCUSP_SID,
+        explicitNativeSession: (() => {
+          try { return new URL(args.url || operatorUrl).searchParams.has('native_session'); }
+          catch { return false; }
+        })(),
+        discoverTools: (targetClient) => listToolsWithTokenFallback(
+          targetClient,
+          tokenPaths,
+          ptoolTokenPathByClient.get(targetClient),
+          (tokenFile) => connectOperator({ tokenFile }),
+          (listedClient) => listAllTools(listedClient, { retryLocalErrors: isLocalOperatorUrl(operatorUrl) }),
+        ),
+        reconnectWithoutNativeSession: () => connectOperator({ nativeSessionOverride: null }),
+      });
       client = discovery.client;
+      if (discovery.nativeSessionRetried) {
+        console.error(
+          'ptool: operator rejected the inherited Codex native-session claim during tools/list; ' +
+            'retrying once with the same client identity and no native-session claim.',
+        );
+      }
       if (discovery.error) throw discovery.error;
       tools = discovery.tools;
     } catch (error) {
@@ -3792,6 +3874,28 @@ async function main() {
         await closeClientQuietly(recovered.client);
         recovered = await callToolWithReplayRecovery(
           await connectOperator({ preferredIndex: 1 }),
+          currentCallParams(),
+          {
+            timeoutMs: timeoutForTool(toolName, callArgs),
+            reconnect: () => connectOperator(),
+            onStaleToolContract,
+          },
+        );
+      }
+      if (shouldRetryWithoutNativeSession(recovered.result, {
+        client: process.env.PAPERCUSP_SID,
+        explicitNativeSession: (() => {
+          try { return new URL(args.url || operatorUrl).searchParams.has('native_session'); }
+          catch { return false; }
+        })(),
+      })) {
+        console.error(
+          'ptool: operator rejected the inherited Codex native-session claim before dispatch; ' +
+            'retrying once with the same client identity and no native-session claim.',
+        );
+        await closeClientQuietly(recovered.client);
+        recovered = await callToolWithReplayRecovery(
+          await connectOperator({ nativeSessionOverride: null }),
           currentCallParams(),
           {
             timeoutMs: timeoutForTool(toolName, callArgs),

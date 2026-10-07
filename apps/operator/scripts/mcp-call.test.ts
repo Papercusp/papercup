@@ -15,6 +15,8 @@ import {
   toolResultNotOkReason,
   buildMcpCallParams,
   buildMcpSessionQuery,
+  isForeignNativeSessionRejection,
+  shouldRetryWithoutNativeSession,
   isInvokedDirectly,
   parseSse,
   parseArgs,
@@ -539,6 +541,31 @@ describe('mcp-call result-format contract', () => {
     expect(query.get('native_session')).toBe('bound-at-launch');
   });
 
+  it('retries only the exact foreign-session pre-dispatch refusal for an inherited Codex id', () => {
+    const client = 'su-cold-codex';
+    const env = { PAPERCUSP_SID: client, CODEX_SESSION_ID: 'inherited-native-id' };
+    const query = buildMcpSessionQuery({ client, workspace: 'papercusp-workspace', env });
+    const refusal = {
+      isError: true,
+      content: [{ type: 'text', text: 'request_rejected: superuser_foreign_native_session' }],
+    };
+
+    expect(isForeignNativeSessionRejection(refusal)).toBe(true);
+    expect(shouldRetryWithoutNativeSession(refusal, { client, query, env })).toBe(true);
+    expect(shouldRetryWithoutNativeSession({
+      isError: true,
+      content: [{ type: 'text', text: 'request_rejected: authorization_denied' }],
+    }, { client, query, env })).toBe(false);
+    expect(shouldRetryWithoutNativeSession(refusal, {
+      client,
+      query,
+      env: { ...env, PAPERCUSP_NATIVE_SESSION_ID: 'launcher-bound-id' },
+    })).toBe(false);
+    expect(buildMcpSessionQuery({
+      client, workspace: 'papercusp-workspace', env, nativeSessionOverride: null,
+    }).has('native_session')).toBe(false);
+  });
+
   it('does not attach the current native session to another or legacy client', () => {
     expect(buildMcpSessionQuery({
       client: 'su-other', workspace: 'papercusp-workspace',
@@ -681,6 +708,8 @@ async function withMcpCallFetchFixture<T>(run: (fixture: McpCallFetchFixture) =>
     "    result = { isError: true, content: [{ type: 'text', text: 'request_rejected: superuser_invalid_bearer' }] };",
     "  } else if (mode === 'generic-auth') {",
     "    result = { isError: true, content: [{ type: 'text', text: 'request_rejected: authorization_denied' }] };",
+    "  } else if (mode === 'foreign-native' && new URL(request.url).searchParams.has('native_session')) {",
+    "    result = { isError: true, content: [{ type: 'text', text: 'request_rejected: superuser_foreign_native_session' }] };",
     '  } else {',
     "    result = { content: [{ type: 'text', text: JSON.stringify({ ok: true }) }] };",
     '  }',
@@ -794,6 +823,38 @@ function runMcpCall(port: number, home: string, extraArgs: string[] = []): Promi
 }
 
 describe('mcp-call actual CLI token and endpoint recovery', () => {
+  it('retries an inherited foreign Codex session without changing the client or call', async () => {
+    await withMcpCallFetchFixture(async (fixture) => {
+      await writeFile(join(fixture.isolatedHome, 'superuser-token'), 'test-token\n');
+      const run = await runMcpCallWithFetchFixture(fixture, [
+        '--port',
+        '3170',
+        '--idempotency-key',
+        'native-session-fallback-1',
+      ], {
+        MCP_CALL_FETCH_MODE: 'foreign-native',
+        PAPERCUSP_SID: 'mcp-call-fetch-fixture',
+        PAPERCUSP_NATIVE_SESSION_ID: undefined,
+        CODEX_SESSION_ID: 'inherited-foreign-session',
+      });
+      const requests = await readMcpCallFetchLog(fixture.logPath);
+      expect(run.code, run.stderr).toBe(0);
+      expect(JSON.parse(run.stdout)).toEqual({ ok: true });
+      expect(requests).toHaveLength(2);
+      const firstUrl = new URL(requests[0].url);
+      const secondUrl = new URL(requests[1].url);
+
+      expect(firstUrl.searchParams.get('client')).toBe('mcp-call-fetch-fixture');
+      expect(firstUrl.searchParams.get('native_session')).toBe('inherited-foreign-session');
+      expect(secondUrl.searchParams.get('client')).toBe('mcp-call-fetch-fixture');
+      expect(secondUrl.searchParams.has('native_session')).toBe(false);
+      expect(requests[0].body.params).toEqual(requests[1].body.params);
+      expect((requests[1].body.params as { _meta: { idempotencyKey: string } })._meta.idempotencyKey)
+        .toBe('native-session-fallback-1');
+      expect(run.stderr).toContain('retrying once with the same client identity');
+    });
+  });
+
   it('retries the same request with the shared token only after exact bearer refusal', async () => {
     await withMcpCallFetchFixture(async (fixture) => {
       await writeFile(join(fixture.isolatedHome, 'superuser-token'), 'isolated-invalid\n');
