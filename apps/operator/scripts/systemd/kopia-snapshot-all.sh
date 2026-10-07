@@ -176,16 +176,28 @@ record_sweep_progress() {
   ' >"$tmp" 2>/dev/null && mv -f -- "$tmp" "$SWEEP_STATE" || rm -f -- "$tmp"
 }
 
+# True while <pid> is still a sweep, i.e. its output may still be written. Pids
+# wrap about daily on this host, so a live pid alone proves nothing: on 2026-10-06
+# three stopped sweeps' outputs sat un-ingested because firefox, typesense-server
+# and codex held their pids. A live pid whose cmdline cannot be read is treated as
+# a sweep: deleting a live sweep's output is worse than keeping a dead one's.
+sweep_pid_alive() {
+  local cmdline
+  [ -d "$PROC_ROOT/$1" ] || return 1
+  cmdline="$(tr '\0' ' ' <"$PROC_ROOT/$1/cmdline" 2>/dev/null || true)"
+  [ -z "$cmdline" ] || [[ "$cmdline" == *snapshot-all.sh* ]]
+}
+
 # A stopped sweep is killed before run_kopia_snapshot can record its output, which
 # is why ~/.cache/kopia held 105 leftover output files on 2026-10-06. Fold in every
-# leftover from a process that is gone, oldest first, then delete it.
+# leftover from a sweep that is gone, oldest first, then delete it.
 ingest_stopped_sweep_outputs() {
   local f pid
   while IFS= read -r f; do
     pid=${f##*.}
     [[ "$pid" =~ ^[0-9]+$ ]] || continue
     [ "$pid" != "$$" ] || continue
-    [ ! -d "$PROC_ROOT/$pid" ] || continue
+    ! sweep_pid_alive "$pid" || continue
     record_sweep_progress "$f"
     rm -f -- "$f"
   done < <(ls -1tr -- "$LOG_DIR"/snapshot-all-output.* 2>/dev/null)

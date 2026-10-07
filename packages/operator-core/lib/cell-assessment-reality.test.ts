@@ -536,10 +536,36 @@ const RETRIAGE = (over: Partial<RetriageRunReading> | null) =>
 const CONTROLS: Record<string, readonly Control[]> = {
   'gate.greenCheckpoint.convergence': [
     { label: 'no readable convergence record', expect: CONV(null) },
-    { label: 'a cycle is open but no fixer has ever run', expect: CONV({ attempts: 0 }) },
+    {
+      label: 'no automated fixer has run and only the baseline round is recorded',
+      expect: CONV({
+        attempts: 0,
+        admissionRounds: 1,
+        failingFirst: 5,
+        failingNow: 5,
+        shrinkTotal: 0,
+        shrinkPerRound: [{ round: 1, failingCount: 5, delta: null }],
+        converging: null,
+      }),
+    },
+    {
+      label: 'manual repair rounds establish a shrinking trend before automated dispatch',
+      expect: CONV({ attempts: 0, converging: true }),
+    },
+    {
+      label: 'manual repair rounds establish a non-shrinking trend before automated dispatch',
+      expect: CONV({ attempts: 0, converging: false }),
+    },
     {
       label: 'one round only — no trend is knowable yet',
-      expect: CONV({ converging: null, admissionRounds: 1 }),
+      expect: CONV({
+        admissionRounds: 1,
+        failingFirst: 5,
+        failingNow: 5,
+        shrinkTotal: 0,
+        shrinkPerRound: [{ round: 1, failingCount: 5, delta: null }],
+        converging: null,
+      }),
     },
     { label: 'the failing set is shrinking round over round', expect: CONV({ converging: true }) },
     { label: 'rounds recorded but the set is not shrinking', expect: CONV({ converging: false }) },
@@ -1149,12 +1175,14 @@ const CONTROLS: Record<string, readonly Control[]> = {
  * to CONTROLS; the partition test below proves the alignment rather than assuming it.
  */
 const EXPECTED: Record<string, readonly (string | null)[]> = {
-  // P-004 truth table. `no-attempts` precedes the trend codes deliberately: a trend computed
-  // over zero fixer runs describes nothing that happened (measured 2026-09-03, candidate
-  // 79c50b5b7b78 sat at attempts 0 for 2h+ while consecutiveReds climbed to 103).
+  // P-004 truth table. Zero automated attempts is a dispatch fact, not proof that no manual
+  // measurement happened. `no-attempts` applies only while the recorded rounds have no trend;
+  // once a manual lineage establishes one, the convergence result takes precedence.
   'gate.greenCheckpoint.convergence': [
     'no-cycle-recorded',
     'no-attempts',
+    'converging',
+    'not-converging',
     'not-yet-knowable',
     'converging',
     'not-converging',

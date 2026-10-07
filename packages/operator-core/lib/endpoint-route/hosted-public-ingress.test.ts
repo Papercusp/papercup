@@ -14,6 +14,8 @@ import {
 } from './hosted-public-ingress';
 import { HOSTED_RUNTIME_MOUNTED_ROUTE_KEYS } from './hosted-runtime';
 import { PORTAL_MCP_OAUTH_ROUTES, matchPortalMcpOAuthRoute } from '../connected-apps/portal-mcp-oauth';
+import { PHONE_DEVICE_PATHS } from '../device-ingress-paths';
+import { parseDeviceRelayPath } from '../workspace-host/hosted-app-relay';
 
 const HOST = 'app.papercusp.com';
 const PLANE = 'http://localhost:3880';
@@ -33,6 +35,7 @@ const PLANE_RULES: Record<string, string> = {
     '^/api/workspaces/[A-Za-z0-9][A-Za-z0-9_-]{0,127}/(mcp|agent-tools/.+|hooks/[^/]+|oauth/(register|authorize|consent|token)|\\.well-known/oauth-authorization-server)$',
   'WI-10004436 well-known': '^/\\.well-known/oauth-(protected-resource|authorization-server)/api/workspaces/',
   'WI-10005066 workos webhook': '^/api/auth/workos/webhook$',
+  'WI-10007014 device relay': '^/api/workspaces/[A-Za-z0-9][A-Za-z0-9_-]{0,127}/api/device/',
 };
 
 function configYaml(without: ReadonlyArray<string> = [], extra: ReadonlyArray<string> = []): string {
@@ -85,6 +88,14 @@ describe('hosted ingress route families', () => {
     const samples = hostedIngressSamples();
     expect(oauthRoutesNotSampledOnce(samples)).toEqual([]);
     expect(samples.filter((sample) => sample.family === 'mcp-oauth')).toHaveLength(PORTAL_MCP_OAUTH_ROUTES.length);
+  });
+
+  it('samples every phone device path once, so a device route added later is probed too (WI-10007014)', () => {
+    const device = hostedIngressSamples('ws-ingress-probe').filter((sample) => sample.family === 'device-relay');
+    expect(device.map((sample) => sample.source)).toEqual([...PHONE_DEVICE_PATHS]);
+    for (const sample of device) {
+      expect(parseDeviceRelayPath(sample.path)).toEqual({ customerWorkspaceId: 'ws-ingress-probe', machinePath: sample.source });
+    }
   });
 
   it('control: a hand-listed sample set that misses a route is caught', () => {
@@ -153,6 +164,7 @@ describe('auditHostedIngressRules', () => {
     ['WI-10004436 app relay + oauth', ['app-relay', 'mcp-oauth']],
     ['WI-10004436 well-known', ['mcp-oauth']],
     ['WI-10005066 workos webhook', ['workos-webhook']],
+    ['WI-10007014 device relay', ['device-relay']],
   ])('flags the %s incident when its rule is missing', (rule, families) => {
     const findings = audit(configYaml([rule])).findings;
     expect(findings.length).toBeGreaterThan(0);

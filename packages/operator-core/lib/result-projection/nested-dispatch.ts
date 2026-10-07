@@ -68,7 +68,25 @@ export function applyNestedProjection<T>(
     spec,
     opts,
   );
-  return unwrapToolResult(projected as ToolResult) as T;
+  const projectedResult = projected as unknown as ToolResult;
+  const bodyContentIndex = (
+    projectedResult._meta?.resultProjection as { bodyContentIndex?: unknown } | undefined
+  )?.bodyContentIndex;
+  if (typeof bodyContentIndex === 'number' && Number.isInteger(bodyContentIndex)) {
+    const bodyItem = projectedResult.content?.[bodyContentIndex];
+    if (bodyItem?.type === 'text' && typeof bodyItem.text === 'string') {
+      // applyResultProjection leads with degrading diagnostics so transport
+      // truncation cannot hide them. A code-mode caller needs the projected
+      // body as its typed root; unwrap that explicit body item while retaining
+      // resultProjection in _meta for object results.
+      return unwrapToolResult({
+        ...projectedResult,
+        content: [bodyItem],
+        structuredContent: undefined,
+      }) as T;
+    }
+  }
+  return unwrapToolResult(projectedResult) as T;
 }
 
 /**

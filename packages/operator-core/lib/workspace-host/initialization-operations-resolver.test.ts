@@ -17,10 +17,13 @@ import { promisify } from 'node:util';
 import { describe, expect, it, vi } from 'vitest';
 import {
   DEFAULT_WORKSPACE_HOST_WORKSPACE_USER,
+  WORKSPACE_HOST_BOOTSTRAP_CONTRACT_VERSION,
   WORKSPACE_HOST_CREDENTIAL_DELIVERY_CONDUIT,
   WORKSPACE_HOST_BOOTSTRAP_STATUS_CONSOLE_MARKER,
   WORKSPACE_HOST_REMOTE_INITIALIZER_CONDUIT,
   assertWorkspaceHostSecretIsolation,
+  buildWorkspaceHostBootstrap,
+  deriveWorkspaceHostCanonicalArtifactUrls,
   type WorkspaceHostDesiredSpec,
 } from '@papercusp/deployment-driver';
 import {
@@ -1342,6 +1345,66 @@ describe('parseEc2ConsoleHostKeys', () => {
     expect(() =>
       parseEc2ConsoleHostKeys(consoleKeyBlock('first', ['ssh-ed25519 not-base64 root@ip-10-0-0-5'])),
     ).toThrow(WorkspaceHostInitializationHostKeyError);
+  });
+});
+
+// WI-10007009: the bootc AMI has no cloud-init, so the bootstrap prints the block itself. Run the
+// RENDERED `publish_host_keys` over real generated host keys and feed its console output to this
+// parser, so the emitter and the parser are checked against each other, never a hand-written copy.
+describe('bootstrap-published console host keys (WI-10007009)', () => {
+  it('pins every supported key the ec2-console-output bootstrap publishes', async () => {
+    const digest = 'a'.repeat(64);
+    const artifacts = deriveWorkspaceHostCanonicalArtifactUrls(digest);
+    const script = buildWorkspaceHostBootstrap({
+      contractVersion: WORKSPACE_HOST_BOOTSTRAP_CONTRACT_VERSION,
+      action: 'install',
+      hostId: 'host-1',
+      release: {
+        version: '2026.8.22-1',
+        bundleUrl: artifacts.bundleUrl,
+        bundleSha256: digest,
+        signatureUrl: artifacts.signatureUrl,
+        signingPublicKey: 'untrusted comment: Papercusp release key\nRWQpublickey',
+        signingKeySha256: 'b'.repeat(64),
+      },
+      migrationId: 'schema-1042',
+      minimumNodeMajor: 22,
+      service: { name: 'papercusp-workspace', port: 3070 },
+      workspaceAuthorizedKeys: [publicKey('ssh-ed25519', 'controller')],
+      publicMetadata: { channel: 'canary' },
+      statusChannel: 'ec2-console-output',
+    }).split('\n');
+    const start = script.indexOf('publish_host_keys() {');
+    const publish = script.slice(start, script.indexOf('}', start) + 1);
+    expect(publish.filter((line) => line.includes('/etc/ssh/') || line.includes('> /dev/console'))).toHaveLength(2);
+
+    const root = await mkdtemp(join(tmpdir(), 'papercusp-console-keys-'));
+    try {
+      const sshDir = join(root, 'ssh');
+      const consoleFile = join(root, 'console');
+      await mkdir(sshDir);
+      await writeFile(join(sshDir, 'ssh_host_dsa_key.pub'), 'ssh-dss AAAAB3NzaC1kc3MAAACB root@ip-10-0-0-5\n');
+      for (const [file, algorithm] of [
+        ['ssh_host_ecdsa_key.pub', 'ecdsa-sha2-nistp256'],
+        ['ssh_host_ed25519_key.pub', 'ssh-ed25519'],
+        ['ssh_host_rsa_key.pub', 'ssh-rsa'],
+      ] as const) {
+        await writeFile(join(sshDir, file), `${publicKey(algorithm, 'bootstrap')} root@ip-10-0-0-5\n`);
+      }
+      const body = publish.map((line) =>
+        line.split('/etc/ssh/').join(`${sshDir}/`).split('> /dev/console').join(`>> ${consoleFile}`),
+      );
+      await execFileAsync('bash', ['-c', ['set -Eeuo pipefail', ...body, 'publish_host_keys'].join('\n')]);
+      const consoleText = `[   41.2] google_guest_compat_manager: metadata error\n${await readFile(consoleFile, 'utf8')}`;
+
+      const keys = parseEc2ConsoleHostKeys(consoleText)!;
+      expect([...keys.keys()].sort()).toEqual(['ecdsa-sha2-nistp256', 'ssh-ed25519', 'ssh-rsa']);
+      for (const algorithm of ['ecdsa-sha2-nistp256', 'ssh-ed25519', 'ssh-rsa'] as const) {
+        expect(keys.get(algorithm)).toBe(publicKeyBlob(algorithm, 'bootstrap'));
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });
 

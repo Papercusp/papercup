@@ -146,6 +146,31 @@ describe('wake-executor C4 liveness × handle/socket matrix (real socket seam)',
     expect(out.kind).toBe('park');
   });
 
+  it('EI-25270078901082313: deliberate registered managed reattachment releases only a post-shutdown wake over the real socket', async () => {
+    const s = tb.session('reattached');
+    const shutdown = { at: '2026-10-06T22:07:55.842Z', by: s.ownerId };
+    const wake = makeDelivery({
+      id: 460480, subscriberId: s.ownerId, wakeHandle: null,
+      createdAt: '2026-10-06T22:08:07.000Z',
+    });
+    let detachedResumes = 0;
+    const d = baseDeps({
+      getSessionLifecycle: async () => ({ shutdown }),
+      resolveWakeModeFn: async () => 'auto',
+      spawnDetached: () => { detachedResumes++; return 4242; },
+    });
+    expect(await executeWake(wake, d)).toMatchObject({ kind: 'park' });
+    const host = await tb.spawnSocketHost(s.ownerId, { advSessionId: s.advSessionId });
+    expect(tb.findPsuHostDep()(s.ownerId)).toMatchObject({ ownerId: s.ownerId, sock: host.sock });
+    expect(await executeWake(wake, d)).toEqual<WakeOutcome>({ kind: 'delivered', channel: 'psu-socket-inject' });
+    expect(host.received).toHaveLength(1);
+    expect(host.received[0]).toMatchObject({ v: 1, mode: 'turn', deliveryId: '460480', ownerId: s.ownerId });
+    // A registered successor does not erase the durable old-delivery cutoff.
+    expect(await executeWake({ ...wake, id: 460479, createdAt: '2026-10-06T22:07:15.733Z' }, d)).toMatchObject({ kind: 'drop' });
+    expect(host.received).toHaveLength(1);
+    expect(detachedResumes).toBe(0);
+  });
+
   it('no handle + no socket + presence STALE → DEGRADES to a coord inbox notification (P-001), not a drop', async () => {
     const s = tb.session('A');
     const d = makeDelivery({ subscriberId: s.ownerId, wakeHandle: null });

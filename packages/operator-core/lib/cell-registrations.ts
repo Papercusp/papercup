@@ -2435,9 +2435,9 @@ export const GATE_CONVERGENCE_CELL: CellSpec = {
       },
       'no-attempts': {
         meaning:
-          'A cycle is open but NO fixer has ever run on it (attempts 0), so nothing has been measured to converge. The reds beside this describe the last tick that actually ran, not the current candidate.',
+          'No automated fixer has been dispatched (attempts 0), and the stored rounds do not establish a trend yet. Manual repair rounds that do establish a trend are reported as converging or not-converging even when automated attempts remain zero.',
         safeAction:
-          'Read this as a DISPATCH problem, not a code problem — do not go hunting for the commit that broke it. Check freezeDisposition.reason for what withheld dispatch (a provider wall, a reservation held by another checkpoint). Do NOT fire release:checkpoint-run: it cuts a fresh candidate at tip and restarts the treadmill.',
+          'Read this as a DISPATCH problem only while no trend is knowable — do not go hunting for the commit that broke it. Check freezeDisposition.reason for what withheld dispatch (a provider wall, a reservation held by another checkpoint). Do NOT fire release:checkpoint-run: it cuts a fresh candidate at tip and restarts the treadmill.',
       },
       'not-yet-knowable': {
         meaning:

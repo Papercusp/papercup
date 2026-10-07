@@ -1235,12 +1235,13 @@ export function applyResultProjection<T extends ProjectableResult>(
       (tailNotes.length ? `\n⚠ ${tailNotes.join('\n⚠ ')}` : '') +
       ']';
 
+    const projectedBodyItem = { type: 'text' as const, text: projectedText };
     const rebuilt: Array<{ type: 'text'; text: string } | Record<string, unknown>> = [];
     let placedText = false;
     for (const it of items) {
       if (isTextItem(it)) {
         if (placedText) continue; // every text item was folded into `original`
-        rebuilt.push({ type: 'text', text: projectedText });
+        rebuilt.push(projectedBodyItem);
         placedText = true;
         continue;
       }
@@ -1258,11 +1259,15 @@ export function applyResultProjection<T extends ProjectableResult>(
     // and pays nothing.
     if (degraded) rebuilt.unshift({ type: 'text', text: footerCore });
     else rebuilt.push({ type: 'text', text: `\n${footerCore}` });
+    const bodyContentIndex = rebuilt.indexOf(projectedBodyItem);
 
     const out = {
       ...result,
       content: rebuilt,
-      _meta: { ...(result._meta ?? {}), resultProjection: report },
+      _meta: {
+        ...(result._meta ?? {}),
+        resultProjection: { ...report, bodyContentIndex },
+      },
     } as T;
     // A full structuredContent alongside a reduced text body defeats the whole
     // point — it is the larger half of the payload, and the caller asked for
