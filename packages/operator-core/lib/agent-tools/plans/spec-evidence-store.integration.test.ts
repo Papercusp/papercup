@@ -2231,7 +2231,7 @@ describe('plans:bind-spec-evidence { fromTestRun } derives the binding from a re
     });
 
     const { evaluateSpecTestAdequacy } = await import('./spec-test-adequacy');
-    const evaluate = (evidenceRows: typeof projected[]) => evaluateSpecTestAdequacy({
+    const evaluate = (evidenceRows: NonNullable<typeof projected>[]) => evaluateSpecTestAdequacy({
       clause: clauseRevision!,
       evidence: evidenceRows,
       classRef: 'plan-class-feature-ship',

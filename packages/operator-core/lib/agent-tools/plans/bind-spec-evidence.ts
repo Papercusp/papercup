@@ -171,13 +171,14 @@ export const bindingSchema = z
           (adequacy as Record<string, unknown>).fixtureCalibrated === true);
       if (
         fixtureCalibrationExpected &&
-        (binding.measurement.kind !== 'repo-files' || binding.measurement.fixturePaths === undefined)
+        (binding.measurement.kind !== 'repo-files' ||
+          (binding.measurement.fixturePaths === undefined && binding.measurement.fixtureGlobs === undefined))
       ) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ['measurement', 'fixturePaths'],
           message:
-            'fixture evidence or adequacy.fixtureCalibrated=true requires repo-files measurement.fixturePaths so calibration inputs stay fresh',
+            'fixture evidence or adequacy.fixtureCalibrated=true requires repo-files measurement.fixturePaths or fixtureGlobs so calibration inputs stay fresh',
         });
       }
       for (const field of ['fixtureFingerprint', 'rubricFingerprint', 'environmentFingerprint'] as const) {

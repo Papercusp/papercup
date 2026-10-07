@@ -912,6 +912,36 @@ function hasPassingTestBaselineCase(row: SpecEvidenceForAdequacy, caseTitle: str
 
 type MeasuredExecutionVerdict = 'pass' | 'fail' | 'unknown';
 
+/** A passing counterexample needs a measured case identity, not just a second label on a green run. */
+function hasCounterexampleCaseProvenance(row: SpecEvidenceForAdequacy): boolean {
+  const details = detailsOf(row);
+  const hasStructuredCaseId = (details.scenarioIds?.length ?? 0) > 0 || (details.causalPairIds?.length ?? 0) > 0;
+  const declaredCases = details.testCases ?? [];
+  const measuredCases = new Set(row.testRunExecution?.passedCaseTitles ?? []);
+  if (
+    hasStructuredCaseId &&
+    declaredCases.length > 0 &&
+    declaredCases.every((caseTitle) => measuredCases.has(caseTitle))
+  ) {
+    return true;
+  }
+
+  // Prepared test attempts can pin one counterexample case by test name and expected message.
+  // Require the persisted attempt reference too; a free-form details object is not provenance.
+  const asRecord = (value: unknown): Record<string, unknown> | null =>
+    value !== null && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+  const execution = asRecord(row.details.testExecution);
+  const binding = asRecord(execution?.binding);
+  const counterexample = asRecord(binding?.counterexample);
+  return (
+    hasTestAttemptReference(row) &&
+    typeof counterexample?.test === 'string' &&
+    counterexample.test.trim().length > 0 &&
+    typeof counterexample.messageIncludes === 'string' &&
+    counterexample.messageIncludes.trim().length > 0
+  );
+}
+
 /** Run-backed proof takes its execution verdict from test_runs, never copied binder booleans. */
 function measuredExecutionVerdict(row: SpecEvidenceForAdequacy): MeasuredExecutionVerdict {
   if (row.testRunId === null) return 'unknown';
@@ -926,6 +956,25 @@ function measuredExecutionVerdict(row: SpecEvidenceForAdequacy): MeasuredExecuti
     // The evidence reader exposes these lines only for a failed mutation-probe row;
     // the paired test binding must also match this canonical file.
     return row.testRunProvenance?.mutationFailureLines?.length ? 'pass' : 'unknown';
+  }
+
+  if (row.evidenceKind === 'counterexample') {
+    const testRun = row.details.testRun;
+    const testRunRecord =
+      testRun !== null && typeof testRun === 'object' && !Array.isArray(testRun)
+        ? (testRun as Record<string, unknown>)
+        : null;
+    const rawMutant = testRunRecord?.source === 'mutation-probe' && testRunRecord.mutationPhase === 'mutant';
+    if (rawMutant) {
+      if (status === 'pass') return 'fail';
+      if (status !== 'fail' || run.collectionFailed || run.failed < 1 || run.skipped > 0) return 'unknown';
+      return row.testRunProvenance?.mutationFailureLines?.length || row.testRunProvenance?.mutationFailedCaseTitles?.length
+        ? 'pass'
+        : 'unknown';
+    }
+    if (status === 'pass') return hasCounterexampleCaseProvenance(row) ? 'pass' : 'unknown';
+    if (status !== 'fail') return 'unknown';
+    return 'fail';
   }
 
   if (status === 'fail') return 'fail';
