@@ -202,6 +202,9 @@ apps/operator/docs/plans/**/*.md
 # The maintained dependency snapshotter writes this inert donor/copy receipt.
 # Keep it out of source provenance while retaining arbitrary untracked source.
 /.papercusp-pinned-deps
+# Retained staging/rollback trees are inert snapshot output, never source input.
+node_modules.pinned-deps-tmp*/
+node_modules.pinned-deps-old.*/
 
 # git-sync-embedded-repo-strand fix (2026-06-30, joint w/ 2b1a8 / WI-1354): transient test-scratch
 # dirs that get a nested .git (an embedded repo). When ANY has NO commit checked out, `git add -A`
