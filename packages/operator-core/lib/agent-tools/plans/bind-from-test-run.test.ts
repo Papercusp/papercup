@@ -330,6 +330,23 @@ describe('expandTestRunBinding: harness attribution', () => {
       });
     });
 
+    it('binds corrected exact target-source receipts and refuses a different file defining the same case', async () => {
+      const recorded = `${RS}::tests::tracker_measures_the_stretch`;
+      const { d } = deps(cargoRun({ file_path: recorded }));
+      expect(await expandTestRunBinding(bindInput(), SCOPE, d)).toMatchObject({
+        ok: true,
+        binding: { evidenceKind: 'test', evidenceRef: RS, measurement: { testPaths: [RS] } },
+      });
+      const other = `${CRATE}/src/same-case.rs`;
+      await writeFile(path.join(root, other), 'fn tracker_measures_the_stretch() {}\n');
+      expect(await expandTestRunBinding(bindInput({ canonicalTestPath: other }), SCOPE, d)).toMatchObject({
+        ok: false, error: 'test_run_canonical_path_mismatch',
+      });
+      expect(await expandTestRunBinding(bindInput(), SCOPE, deps(cargoRun({
+        file_path: `${RS}::tests::absent_case`,
+      })).d)).toMatchObject({ ok: false, error: 'test_run_canonical_path_mismatch' });
+    });
+
     it('binds an in-tree cargo mutation-probe mutant row as mutation evidence', async () => {
       const { d } = deps(
         cargoRun({ status: 'fail', source: 'mutation-probe', execution_details: { mutationPhase: 'mutant' } }),

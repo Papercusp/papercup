@@ -194,19 +194,20 @@ export interface TestRunEvidenceRow {
 export type HarnessAttribution = 'run' | 'adopted-caller-harness';
 
 /**
- * WI-10006836: report-cargo-tests.mjs records each cargo test as `<crate-dir>::<test path>` and
- * the binary as `<crate-dir> (cargo aggregate)`. Neither is a file, so the generic mapping would
- * hand `realpath` a path that cannot exist. Returns the crate directory and the test's module
- * path for a per-test row, or null for the aggregate row and anything else.
+ * Cargo receipts name a case: `<target-source.rs>::<test path>` (current reporter) or
+ * `<crate-dir>::<test path>` (legacy). Neither is a file. Keep exact source identities when
+ * present; legacy rows still need an explicit defining source. Aggregates are not test cases.
  */
-export function cargoTestRef(filePath: string | null): { crateDir: string; testName: string } | null {
+export function cargoTestRef(filePath: string | null): { crateDir: string; testName: string; sourcePath?: string } | null {
   if (!filePath) return null;
   const at = filePath.indexOf('::');
   if (at <= 0) return null;
   const crateDir = filePath.slice(0, at);
   const testName = filePath.slice(at + 2);
   if (!testName || /[\s()]/.test(testName)) return null;
-  return { crateDir, testName };
+  return crateDir.endsWith('.rs')
+    ? { crateDir: crateDir.slice(0, crateDir.lastIndexOf('/')), testName, sourcePath: crateDir }
+    : { crateDir, testName };
 }
 
 /**
@@ -216,11 +217,14 @@ export function cargoTestRef(filePath: string | null): { crateDir: string; testN
  */
 export function cargoCanonicalTestPathRefusal(
   root: string,
-  ref: { crateDir: string; testName: string },
+  ref: { crateDir: string; testName: string; sourcePath?: string },
   canonicalTestPath: string,
 ): string | null {
   const fnName = ref.testName.split('::').pop() ?? '';
-  if (!canonicalTestPath.endsWith('.rs') || !canonicalTestPath.startsWith(`${ref.crateDir}/`)) {
+  if (ref.sourcePath && canonicalTestPath !== ref.sourcePath) {
+    return `canonicalTestPath ${JSON.stringify(canonicalTestPath)} differs from the recorded target source ${JSON.stringify(ref.sourcePath)}.`;
+  }
+  if (!canonicalTestPath.endsWith('.rs') || (!ref.sourcePath && !canonicalTestPath.startsWith(`${ref.crateDir}/`))) {
     return `canonicalTestPath ${JSON.stringify(canonicalTestPath)} is not a .rs file inside the recorded crate ${JSON.stringify(ref.crateDir)}.`;
   }
   if (repoRelativeTestPath(root, resolve(root, canonicalTestPath)) !== canonicalTestPath) {
@@ -967,7 +971,7 @@ export async function expandTestRunBinding(
         testRunId,
         message:
           `test-run ${testRunId} (${JSON.stringify(row.file_path)}) is a cargo binary aggregate, not one test; ` +
-          "bind one of the run's per-test rows ('<crate-dir>::<test>').",
+          "bind one of the run's per-test rows ('<target-source.rs>::<test>' or legacy '<crate-dir>::<test>').",
       };
     }
     if (!input.canonicalTestPath) {
@@ -976,8 +980,9 @@ export async function expandTestRunBinding(
         error: 'test_run_cargo_test_path_required',
         testRunId,
         message:
-          `cargo recorded test-run ${testRunId} as test ${JSON.stringify(cargo.testName)} of crate ${JSON.stringify(cargo.crateDir)}, ` +
-          `not as a file; pass canonicalTestPath: the .rs file under ${cargo.crateDir}/ that defines it.`,
+          `cargo recorded test-run ${testRunId} as case ${JSON.stringify(cargo.testName)}; pass canonicalTestPath: ` +
+          (cargo.sourcePath ? `the recorded .rs source ${JSON.stringify(cargo.sourcePath)}.`
+            : `the .rs file under ${cargo.crateDir}/ that defines it.`),
       };
     }
     const refusal = cargoCanonicalTestPathRefusal(root, cargo, input.canonicalTestPath);
