@@ -534,11 +534,13 @@ export interface DeployHealth {
   gitSyncMaxMissedIntervals?: number | null;
   /** The install that holds `gitSyncMaxMissedIntervals`. */
   gitSyncMissedIntervalsInstallSlug?: string | null;
-  /** WI-10006786: EVERY non-failing active install with missed_intervals > 0, worst first. The
-   *  liveness alarm raises one signal PER install from this list. Keying a single signal on the max
-   *  alone let a long-dead install (every fire `skipped` for weeks) hold the max and one open
-   *  escalation forever, so a fresh starvation on any other install deduped onto that row unnamed.
-   *  Optional: absent = a snapshot written before this field existed (the alarm falls back to the max). */
+   /** WI-10006786: alarm candidates with missed_intervals > 0, worst first. Installs whose stale
+   *  completion clock is explained by a progressing in-flight fire are excluded: their scheduler
+   *  is waiting behind active work, not starved. The liveness alarm raises one signal PER install
+   *  from this list. Keying a single signal on the max alone let a long-dead install (every fire
+   *  `skipped` for weeks) hold the max and one open escalation forever, so a fresh starvation on any
+   *  other install deduped onto it unnamed. Optional: absent = a snapshot written before this field
+   *  existed (the alarm falls back to the max). */
   gitSyncMissedIntervalsByInstall?: Array<{ installSlug: string; missedIntervals: number }>;
   /** WI-10006867: active installs whose checkout has VANISHED — the last fire skipped with
    *  `no_path` (registry entry gone, or its path no longer exists). These are EXCLUDED from

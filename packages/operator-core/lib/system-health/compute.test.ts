@@ -1038,6 +1038,51 @@ describe('collectDeploy — EI-218 git-sync freshness wiring', () => {
     });
   });
 
+  it('excludes a progressing in-flight fire from the scheduler-starvation alarm candidates', async () => {
+    sqlMock.mockResolvedValue([
+      {
+        ...routine({
+          last_status: 'synced',
+          last_synced_at: now - 24 * 60_000,
+          git_sync_activity: {
+            active: true,
+            phase: 'local-sync',
+            started_at: now - 8 * 60_000,
+            last_progress_at: now - 60_000,
+          },
+        }),
+        install_slug: 'progressing-install',
+      },
+      {
+        ...routine({
+          last_status: 'synced',
+          last_synced_at: now - 18 * 60_000,
+          git_sync_activity: {
+            active: true,
+            phase: 'local-sync',
+            started_at: now - 20 * 60_000,
+            last_progress_at: now - 12 * 60_000,
+          },
+        }),
+        install_slug: 'stuck-install',
+      },
+      {
+        ...routine({ last_status: 'skipped', last_skip_reason: 'locked-path', last_synced_at: now - 15 * 60_000 }),
+        install_slug: 'starved-install',
+      },
+    ]);
+
+    const panel = await collectDeploy(ctx());
+    const data = panel.data as DeployHealth;
+    expect(data.gitSyncMissedIntervalsByInstall?.map((entry) => entry.installSlug)).toEqual([
+      'stuck-install',
+      'starved-install',
+    ]);
+    expect(data.gitSyncMissedIntervalsByInstall?.map((entry) => entry.missedIntervals)).toEqual([6, 5]);
+    // Keep the raw diagnostic max even when it came from the progressing install.
+    expect(data.gitSyncMaxMissedIntervals).toBe(8);
+  });
+
   it('keeps the deploy panel fail-soft when the routine metadata read fails', async () => {
     sqlMock.mockRejectedValue(new Error('routine metadata unavailable'));
 

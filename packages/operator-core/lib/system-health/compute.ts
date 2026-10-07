@@ -1787,6 +1787,10 @@ export async function collectDeploy(ctx: HealthCtx): Promise<HealthPanel<DeployH
         // the push-failure escalation already owns it; this measure is for 'not firing at all'.
         const missed = typeof derived.freshness.missed_intervals === 'number' ? derived.freshness.missed_intervals : null;
         const lastStatus = typeof md.last_status === 'string' ? md.last_status : null;
+        const schedulerLeg = derived.freshness.scheduler as { stalled_behind_in_flight_fire?: unknown } | undefined;
+        const executionLeg = derived.freshness.execution as { status?: unknown } | undefined;
+        const progressingFireExplainsMissedIntervals =
+          schedulerLeg?.stalled_behind_in_flight_fire === true && executionLeg?.status === 'in-flight';
         // WI-10006867: a vanished checkout skips every fire with `no_path` while last_synced_at
         // stays frozen, so its missed-interval count grows forever without the scheduler being
         // at fault. Report it under its real cause and keep it OUT of the starvation measure.
@@ -1803,7 +1807,12 @@ export async function collectDeploy(ctx: HealthCtx): Promise<HealthPanel<DeployH
         if (missed !== null && lastStatus !== 'error' && lastStatus !== 'conflict') {
           // WI-10006786: keep every install's reading, not only the max — the alarm keys one
           // signal per install, so a long-dead install cannot mask another install's starvation.
-          if (missed > 0) gitSyncMissedIntervalsByInstall.push({ installSlug: r.install_slug, missedIntervals: missed });
+          // A stale completion clock explained by a progressing fire is long-running execution,
+          // not scheduler starvation. Keep the raw maximum for diagnosis, but do not send this
+          // install to the starvation alarm.
+          if (missed > 0 && !progressingFireExplainsMissedIntervals) {
+            gitSyncMissedIntervalsByInstall.push({ installSlug: r.install_slug, missedIntervals: missed });
+          }
           if (gitSyncMaxMissedIntervals === null || missed > gitSyncMaxMissedIntervals) {
             gitSyncMaxMissedIntervals = missed;
             gitSyncMissedIntervalsInstallSlug = r.install_slug;
