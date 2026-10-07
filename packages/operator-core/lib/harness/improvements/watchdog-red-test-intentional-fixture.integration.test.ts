@@ -26,6 +26,8 @@ const INTENTIONAL_RED_FIXTURE =
   'packages/operator-core/lib/agent-tools/testing/__tests__/run-failure-fixture.test.ts';
 const CONTROLLED_PLACEMENT_FIXTURE =
   'packages/operator-core/lib/goal-plan-placement-exclusion-proof.test.ts';
+const CONTROLLED_PLACEMENT_CLAIM_FIXTURE =
+  'packages/operator-core/lib/goal-plan-placement-claim-proof.test.ts';
 const CONTROLLED_GOAL_RESPAWN_FIXTURE =
   'packages/operator-core/lib/system-health/goal-liveness-watchdog.test.ts';
 const CONTROLLED_FIXTURE_ONLY = 'packages/operator-core/lib/controlled-fixture-only.test.ts';
@@ -33,6 +35,14 @@ const REAL_REGRESSION = 'packages/operator-core/lib/real-regression.test.ts';
 const controlledGoalRespawnSource = resolveTestRunSource(
   { PAPERCUSP_GOAL_RESPAWN_CONTROL: 'elected-loss-recovery' },
   CONTROLLED_GOAL_RESPAWN_FIXTURE,
+);
+const controlledPlacementClaimSource = resolveTestRunSource(
+  { PAPERCUSP_PLACEMENT_CLAIM_CONTROL: 'member-claim-and-lease' },
+  CONTROLLED_PLACEMENT_CLAIM_FIXTURE,
+);
+const controlledPlacementLifecycleSource = resolveTestRunSource(
+  { PAPERCUSP_PLACEMENT_LIFECYCLE_CONTROL: 'satisfied-closure' },
+  CONTROLLED_PLACEMENT_CLAIM_FIXTURE,
 );
 
 beforeAll(async () => {
@@ -75,6 +85,10 @@ beforeAll(async () => {
     { filePath: CONTROLLED_GOAL_RESPAWN_FIXTURE, status: 'fail', startedAt: at(30), source: controlledGoalRespawnSource },
     { filePath: CONTROLLED_GOAL_RESPAWN_FIXTURE, status: 'fail', startedAt: at(20), source: controlledGoalRespawnSource },
     { filePath: CONTROLLED_GOAL_RESPAWN_FIXTURE, status: 'fail', startedAt: at(5), source: controlledGoalRespawnSource },
+    { filePath: CONTROLLED_PLACEMENT_CLAIM_FIXTURE, status: 'pass', startedAt: at(50), source: 'local' },
+    { filePath: CONTROLLED_PLACEMENT_CLAIM_FIXTURE, status: 'fail', startedAt: at(30), source: controlledPlacementClaimSource },
+    { filePath: CONTROLLED_PLACEMENT_CLAIM_FIXTURE, status: 'fail', startedAt: at(20), source: controlledPlacementClaimSource },
+    { filePath: CONTROLLED_PLACEMENT_CLAIM_FIXTURE, status: 'fail', startedAt: at(5), source: controlledPlacementLifecycleSource },
     { filePath: CONTROLLED_FIXTURE_ONLY, status: 'fail', startedAt: at(25), source: 'mutation-probe' },
     { filePath: CONTROLLED_FIXTURE_ONLY, status: 'fail', startedAt: at(15), source: 'mutation-probe' },
     { filePath: CONTROLLED_FIXTURE_ONLY, status: 'fail', startedAt: at(5), source: 'mutation-probe' },
@@ -126,6 +140,7 @@ describe('fetchRedTestRows excludes intentionally red assertion fixtures', () =>
 
     const paths = rows.map((row) => row.file_path);
     expect(paths).not.toContain(CONTROLLED_PLACEMENT_FIXTURE);
+    expect(paths).not.toContain(CONTROLLED_PLACEMENT_CLAIM_FIXTURE);
     expect(paths).not.toContain(CONTROLLED_GOAL_RESPAWN_FIXTURE);
     expect(paths).not.toContain(CONTROLLED_FIXTURE_ONLY);
   });
