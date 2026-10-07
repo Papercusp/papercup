@@ -37,7 +37,11 @@ import { createLspQueryArm, createNoThirdPartyArm, loadVendoredTypescript } from
 import { acquireArmRunLock } from './fair-comparison-lock';
 import { runArm, scoreRuns, type ArmRun, type PendingSites } from './fair-comparison-run';
 
-const run = promisify(execFile);
+// Importing CLI helpers must not require execFile from a caller's narrow mock.
+// Reuse the lazy, typed wrapper pattern from git-batch; initialize on first run.
+let runMemo: typeof execFile.__promisify__ | null = null;
+const run = ((...args: unknown[]) =>
+  Reflect.apply((runMemo ??= promisify(execFile)), undefined, args)) as typeof execFile.__promisify__;
 const BENCH = process.env.P017_BENCH ?? join(homedir(), '.papercusp', 'bench', 'fair-comparison-2026-10');
 const SNAPSHOT = join(BENCH, `snapshot-${FAIR_CORPUS_COMMIT.slice(0, 12)}`);
 const VENDOR_LSP = join(homedir(), '.papercusp', 'vendor', 'lsp');
