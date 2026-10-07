@@ -969,7 +969,7 @@ type GradingAuditReplayConsistencyError = {
 export async function validateGradingAuditReplayConsistency(
   gradedObservation: NonNullable<ReturnType<typeof asStructuredObservation>>,
   auditRatings: z.infer<typeof scorecardEmitArgs>['ratings'],
-  dispatchTool: ((name: string, args: Record<string, unknown>) => Promise<unknown>) | undefined,
+  _dispatchTool: ((name: string, args: Record<string, unknown>) => Promise<unknown>) | undefined,
   historicalContext?: { gradedCardCreatedAt?: string; workspaceId?: string },
 ): Promise<GradingAuditReplayConsistencyError | undefined> {
   if (
@@ -982,7 +982,7 @@ export async function validateGradingAuditReplayConsistency(
   }
 
   const parsedRecipe = specTestAdequacyRerunRecipeSchema.safeParse(gradedObservation.rerunRecipe);
-  if (!parsedRecipe.success || !dispatchTool) {
+  if (!parsedRecipe.success) {
     return {
       code: 'grading_audit_replay_uncorroborated',
       error:
@@ -999,23 +999,49 @@ export async function validateGradingAuditReplayConsistency(
       ? { evaluatorBuild: recordedEvaluatorBuild }
       : {}),
   };
+  const selection = parsedRecipe.data.selection;
+  const selectedEvidenceRefs = [...new Set(selection.evidence.map(({ evidenceRef }) => evidenceRef))].sort();
+  const historicalArgs = {
+    ...replayArgs,
+    ...(replayArgs.slug === undefined ? { slug: selection.planSlug } : {}),
+    ...(replayArgs.specIds === undefined ? { specIds: [selection.specId] } : {}),
+    ...(replayArgs.evidenceRefs === undefined ? { evidenceRefs: selectedEvidenceRefs } : {}),
+    ...(replayArgs.bindingIds === undefined && selection.bindingIds !== undefined
+      ? { bindingIds: selection.bindingIds }
+      : {}),
+    ...(replayArgs.specRevision === undefined ? { specRevision: selection.specRevision } : {}),
+    ...(replayArgs.specFingerprint === undefined ? { specFingerprint: selection.specFingerprint } : {}),
+    ...(replayArgs.replaySnapshot !== true ? { replaySnapshot: true } : {}),
+    ...(replayArgs.current === undefined && parsedRecipe.data.current.supplied
+      ? { current: parsedRecipe.data.current.fingerprints }
+      : {}),
+  };
 
+  const createdAt = historicalContext?.gradedCardCreatedAt;
+  const auditAsOf = createdAt ? new Date(createdAt) : null;
+  if (!auditAsOf || !Number.isFinite(auditAsOf.getTime()) || !historicalContext?.workspaceId) {
+    return {
+      code: 'grading_audit_replay_uncorroborated',
+      error:
+        'grading-integrity cannot reconstruct the graded card snapshot because its creation time or workspace scope is unavailable; no audit card was persisted',
+    };
+  }
   let replay: unknown;
   try {
-    replay = unwrapSpecTestAdequacyReplay(
-      await dispatchTool('plans:evaluate-spec-test-adequacy', compactSpecTestAdequacyReplayArgs(replayArgs)),
-    );
+    replay = await replaySpecTestAdequacyForHistoricalAudit({
+      args: historicalArgs as z.infer<typeof evaluatorArgsSchema>,
+      selection,
+      workspaceId: historicalContext.workspaceId,
+      auditAsOf,
+    });
   } catch (error) {
     return {
       code: 'grading_audit_replay_uncorroborated',
       error:
-        `grading-integrity cannot accept degenerate-distribution='fail' alongside ` +
-        `re-runnable-evidence='pass': the server-side evaluator replay failed ` +
-        `(${error instanceof Error ? error.message : String(error)}); no audit card was persisted`,
+        `grading-integrity cannot replay the graded card's historical evidence (${error instanceof Error ? error.message : String(error)}); no audit card was persisted`,
     };
   }
-
-  let payload =
+  const payload =
     replay && typeof replay === 'object' && !Array.isArray(replay)
       ? (replay as {
           ok?: unknown;
@@ -1026,68 +1052,23 @@ export async function validateGradingAuditReplayConsistency(
           historicalAuditOnly?: unknown;
         })
       : null;
+  const historicalMarker = payload?.historicalAuditOnly;
   if (
-    payload?.ok === false &&
-    payload.error === 'selection_empty' &&
-    parsedRecipe.data.args.bindingIds === undefined &&
-    parsedRecipe.data.selection.bindingIds === undefined &&
-    (parsedRecipe.data.args.evidenceRefs?.length ?? 0) > 0
+    payload?.ok === true &&
+    (!historicalMarker ||
+      typeof historicalMarker !== 'object' ||
+      Array.isArray(historicalMarker) ||
+      (historicalMarker as { provenance?: unknown }).provenance !== 'historical-audit-only' ||
+      (historicalMarker as { asOf?: unknown }).asOf !== auditAsOf.toISOString() ||
+      !['historical-snapshot', 'unknown-at-emission'].includes(
+        String((historicalMarker as { freshness?: unknown }).freshness),
+      ))
   ) {
-    const createdAt = historicalContext?.gradedCardCreatedAt;
-    const auditAsOf = createdAt ? new Date(createdAt) : null;
-    if (!auditAsOf || !Number.isFinite(auditAsOf.getTime()) || !historicalContext?.workspaceId) {
-      return {
-        code: 'grading_audit_replay_uncorroborated',
-        error:
-          'grading-integrity cannot use the legacy historical replay because the graded card creation time or workspace scope is unavailable; no audit card was persisted',
-      };
-    }
-    try {
-      replay = await replaySpecTestAdequacyForHistoricalAudit({
-        args: {
-          ...parsedRecipe.data.args,
-          ...(recordedEvaluatorBuild && !parsedRecipe.data.args.evaluatorBuild
-            ? { evaluatorBuild: recordedEvaluatorBuild }
-            : {}),
-        },
-        selection: parsedRecipe.data.selection,
-        workspaceId: historicalContext.workspaceId,
-        auditAsOf,
-      });
-    } catch (error) {
-      return {
-        code: 'grading_audit_replay_uncorroborated',
-        error:
-          `grading-integrity cannot replay the legacy card's historical evidence (${error instanceof Error ? error.message : String(error)}); no audit card was persisted`,
-      };
-    }
-    payload =
-      replay && typeof replay === 'object' && !Array.isArray(replay)
-        ? (replay as {
-            ok?: unknown;
-            rows?: unknown;
-            error?: unknown;
-            evaluatorBuild?: unknown;
-            evaluatorBuildDrift?: unknown;
-            historicalAuditOnly?: unknown;
-          })
-        : null;
-    const historicalMarker = payload?.historicalAuditOnly;
-    if (
-      payload?.ok === true &&
-      (!historicalMarker ||
-        typeof historicalMarker !== 'object' ||
-        Array.isArray(historicalMarker) ||
-        (historicalMarker as { provenance?: unknown }).provenance !== 'historical-audit-only' ||
-        (historicalMarker as { asOf?: unknown }).asOf !== auditAsOf.toISOString() ||
-        (historicalMarker as { freshness?: unknown }).freshness !== 'audit-only')
-    ) {
-      return {
-        code: 'grading_audit_replay_uncorroborated',
-        error:
-          'grading-integrity refused a legacy replay without matching historical audit-only provenance; no audit card was persisted',
-      };
-    }
+    return {
+      code: 'grading_audit_replay_uncorroborated',
+      error:
+        'grading-integrity refused a replay without matching historical audit-only provenance; no audit card was persisted',
+    };
   }
   if (payload?.ok === false) {
     return {
@@ -1135,7 +1116,6 @@ export async function validateGradingAuditReplayConsistency(
     }
   }
 
-  const selection = parsedRecipe.data.selection;
   const rows = Array.isArray(payload?.rows) ? (payload.rows as SpecTestAdequacyReplayRow[]) : [];
   const row = rows.find(
     (candidate) =>
@@ -2090,6 +2070,7 @@ export async function emitScorecard(
     // guards in proposeRubric).
     let vetting: ScorecardVetting | undefined;
     let vettingSeatSuccession: AcceptanceSeatSuccession | undefined;
+    let vettingConsultCritique: Awaited<ReturnType<typeof readVettingConsultCritique>> | undefined;
     let vettedSubjectPlan: string | null = null;
     // WI-41477: two alternate recording channels, one predicate. The consult channel
     // is the router-assigned get_feedback flow; the work-item channel is where a
@@ -2180,7 +2161,22 @@ export async function emitScorecard(
       const vettingAuthorIdentity = await sameVettedRubricAuthor(vettedRubricAuthor, input.createdBy, {
         workspaceId: vettingWorkspace,
       });
-      if (!vettingAuthorIdentity) {
+      // An outside-lineage reviewer selected by the rubric-vetting policy can
+      // author the scorecard that records their own judgment, but only when the
+      // persisted answering identity matches this caller AND that caller wrote
+      // a non-decline critique post. The source responder_id is not sufficient:
+      // a consult fork answers under its separately stamped answeringOwnerId.
+      if (!vettingAuthorIdentity && args.vettingConsult) {
+        vettingConsultCritique = await readVettingConsultCritique(
+          getOrgPg().sql,
+          activeWorkspaceId(),
+          args.vettingConsult,
+          input.createdBy,
+          [subjectRef, vettedSubjectPlan].filter((ref): ref is string => typeof ref === 'string' && ref.length > 0),
+        );
+      }
+      const isRoutedVettingCritic = vettingConsultCritique?.routedVettingCritic === input.createdBy;
+      if (!vettingAuthorIdentity && !isRoutedVettingCritic) {
         const resolveAuthorSessionState = deps.resolveAuthorSessionState ?? defaultResolveAuthorSessionState;
         const resolveSeat = deps.resolveAcceptanceSeatSuccession ?? resolveAcceptanceSeatSuccession;
         const seat = await resolveSeat({
@@ -2251,13 +2247,15 @@ export async function emitScorecard(
     }
     if (args.vettingConsult) {
       const subjectRef = args.subject!.ref;
-      const critique = await readVettingConsultCritique(
-        getOrgPg().sql,
-        activeWorkspaceId(),
-        args.vettingConsult,
-        input.createdBy,
-        [subjectRef, vettedSubjectPlan].filter((ref): ref is string => typeof ref === 'string' && ref.length > 0),
-      );
+      const critique =
+        vettingConsultCritique ??
+        (await readVettingConsultCritique(
+          getOrgPg().sql,
+          activeWorkspaceId(),
+          args.vettingConsult,
+          input.createdBy,
+          [subjectRef, vettedSubjectPlan].filter((ref): ref is string => typeof ref === 'string' && ref.length > 0),
+        ));
       if (!critique.exists) {
         return {
           ok: false as const,
