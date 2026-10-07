@@ -387,7 +387,19 @@ export function evaluatePlanSpecQuality(input: {
     }
     return { clause, diagnostic };
   });
-  const atomicityClauseDiagnostics = atomicityEvaluation.map(({ diagnostic }) => diagnostic);
+  const draftSourceBarProjections = draftClauses.filter((clause) => isProjectedBar(clause));
+  const draftProjectionDiagnostics: SpecQualityAtomicityClauseDiagnostic[] = draftSourceBarProjections.map((clause) => ({
+    specId: clause.specId,
+    planItemId: clause.planItemId,
+    behavior: clause.behavior,
+    disposition: 'excluded',
+    rating: 'not-applicable',
+    reason: 'draft sourceBar-pinned BAR projection is not an active item behavior clause.',
+  }));
+  const atomicityClauseDiagnostics = [
+    ...atomicityEvaluation.map(({ diagnostic }) => diagnostic),
+    ...draftProjectionDiagnostics,
+  ];
   const atomicityFailures = atomicityEvaluation.flatMap(({ clause, diagnostic }) => {
     if (diagnostic.disposition !== 'evaluated' || diagnostic.rating !== 'fail') return [];
     return [{ clause, reason: diagnostic.reason }];
@@ -395,19 +407,26 @@ export function evaluatePlanSpecQuality(input: {
   // State the evaluated population on the rating itself (WI-10006862): a grader reading
   // only the evidence must be able to tell which share of the active behavioral clauses the
   // verdict covers, and that sourceBar projections were excluded rather than judged atomic.
-  const atomicityEvaluatedCount = atomicityClauseDiagnostics.filter((d) => d.disposition === 'evaluated').length;
-  const atomicityExcludedCount = atomicityClauseDiagnostics.length - atomicityEvaluatedCount;
+  const atomicityEvaluatedCount = atomicityEvaluation.filter(({ diagnostic }) => diagnostic.disposition === 'evaluated').length;
+  const activeSourceBarExcludedCount = behavioral.filter((clause) => isProjectedBar(clause)).length;
+  const draftSourceBarExcludedCount = draftSourceBarProjections.length;
   const atomicityCoverage =
-    ` Coverage: ${atomicityEvaluatedCount} of ${behavioral.length} behavioral clause(s) evaluated` +
-    (atomicityExcludedCount
-      ? `; ${atomicityExcludedCount} sourceBar-pinned BAR projection(s) excluded (new or meaning-changed canonical BAR projections are checked on rubric writes; unchanged legacy BARs are not re-certified here)`
+    ` Coverage: ${atomicityEvaluatedCount} of ${behavioral.length} active behavioral clause(s) evaluated` +
+    (activeSourceBarExcludedCount
+      ? `; ${activeSourceBarExcludedCount} active sourceBar-pinned BAR projection(s) excluded (new or meaning-changed canonical BAR projections are checked on rubric writes; unchanged legacy BARs are not re-certified here)`
+      : '') +
+    (draftSourceBarExcludedCount
+      ? `; ${draftSourceBarExcludedCount} draft sourceBar-pinned projection(s) excluded from the active population`
       : '') +
     '; per-clause dispositions are in details.atomicityClauseDiagnostics.';
   ratings['atomic-observable-behavior'] =
     behavioral.length === 0
-      ? notApplicable('0 behavioral clause(s) are available for structural atomicity evaluation.')
+      ? notApplicable(
+          `0 active behavioral clause(s) are available for structural atomicity evaluation.${draftSourceBarExcludedCount ? ` ${draftSourceBarExcludedCount} draft sourceBar-pinned projection(s) are excluded from the active population.` : ''}` +
+            (draftSourceBarExcludedCount ? ' Per-clause dispositions are in details.atomicityClauseDiagnostics.' : ''),
+        )
       : itemBehavioral.length === 0
-        ? notApplicable('Only AUTO-BAR projections are present; they are not independent item contracts.')
+        ? notApplicable(`Only sourceBar-pinned projections are present; they are not independent item contracts.${atomicityCoverage}`)
       : atomicityFailures.length
         ? fail(
             atomicityFailures.map(({ clause, reason }) => `${clause.specId}:${reason}`).join('; ') + '.' + atomicityCoverage,

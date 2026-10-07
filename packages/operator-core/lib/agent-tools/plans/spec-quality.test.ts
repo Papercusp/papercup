@@ -428,6 +428,68 @@ describe('evaluatePlanSpecQuality', () => {
     );
   });
 
+  it('fails atomicity when one observable verb joins two independently testable objects', () => {
+    const behavior = 'Each daily task receives the approved source watchlist and a ten-item brief limit.';
+    expect(specBehaviorNonAtomicReason(behavior)).toBe('behavior joins multiple independently observable outcomes');
+
+    const result = evaluatePlanSpecQuality({
+      planSlug: 'quality-plan',
+      harnessSlug: 'papercusp',
+      planItemIds: ['P-001'],
+      clauses: [clause({ behavior })],
+      classRef: 'plan-class-feature-ship',
+    });
+    expect(result.ratings['atomic-observable-behavior'].rating).toBe('fail');
+    expect(result.details.atomicityClauseDiagnostics).toContainEqual(
+      expect.objectContaining({
+        specId: 'SPEC-001-01',
+        disposition: 'evaluated',
+        rating: 'fail',
+        reason: 'behavior joins multiple independently observable outcomes',
+      }),
+    );
+  });
+
+  it('reports draft sourceBar projections as excluded from the active atomicity population', () => {
+    const result = evaluatePlanSpecQuality({
+      planSlug: 'quality-plan',
+      harnessSlug: 'papercusp',
+      planItemIds: ['P-001'],
+      clauses: [
+        clause(),
+        clause({
+          specId: 'AUTO-BAR-R-1-P-001',
+          sourceValId: null,
+          lifecycleStatus: 'draft',
+          acceptedBy: null,
+          acceptedAt: null,
+          acceptanceRef: null,
+          sourceBar: {
+            barKey: 'R-1',
+            barHash: 'a'.repeat(64),
+            barSetHash: 'b'.repeat(64),
+            rubricSlug: 'quality-plan-acceptance',
+            rubricRevision: 4,
+            evidencePlane: 'tree',
+          },
+        }),
+      ],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    const atomicity = result.ratings['atomic-observable-behavior'];
+    expect(atomicity.evidence).toContain('Coverage: 1 of 1 active behavioral clause(s) evaluated');
+    expect(atomicity.evidence).toContain('1 draft sourceBar-pinned projection(s) excluded from the active population');
+    expect(result.details.atomicityClauseDiagnostics).toContainEqual(
+      expect.objectContaining({
+        specId: 'AUTO-BAR-R-1-P-001',
+        disposition: 'excluded',
+        rating: 'not-applicable',
+        reason: 'draft sourceBar-pinned BAR projection is not an active item behavior clause.',
+      }),
+    );
+  });
+
   it('keeps a single outcome with a while-condition atomic', () => {
     const result = evaluatePlanSpecQuality({
       planSlug: 'quality-plan',

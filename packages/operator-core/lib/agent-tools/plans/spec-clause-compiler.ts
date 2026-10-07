@@ -125,6 +125,19 @@ const MULTI_EXTENDED_WHILE_RE = new RegExp(
   '\\b' + EXTENDED_OBSERVABLE_VERB + '\\b[^.;\\n]*\\bwhile\\b[^.;\\n]*\\b' + EXTENDED_OBSERVABLE_VERB + '\\b',
   'i',
 );
+// A shared predicate can still bundle separately testable output objects:
+// "receives the source watchlist and a brief limit" has one observable verb,
+// but either object can be missing independently. Require a determiner-led
+// object on each side so ordinary verb phrases such as "accepts and streams"
+// stay on the existing multi-verb path and conjunctions in modifiers do not
+// become object bundles by themselves.
+const OBJECT_DETERMINER = '(?:a|an|the|each|every|one|two|both|another|separate|distinct|this|that|these|those|its|their)';
+const MULTI_OBJECT_CONJUNCTION_RE = new RegExp(
+  '\\b' + EXTENDED_OBSERVABLE_VERB + '\\b[^.;\\n]{0,120}\\b' + OBJECT_DETERMINER +
+    '\\s+[A-Za-z0-9][A-Za-z0-9-]*(?:\\s+[A-Za-z0-9][A-Za-z0-9-]*){0,4}\\s+\\b(?:and|or)\\b\\s+' +
+    OBJECT_DETERMINER + '\\s+[A-Za-z0-9][A-Za-z0-9-]*',
+  'i',
+);
 const INDEPENDENT_CLAUSE_SUBJECT_RE =
   /^(?:a|an|the|both|each|every|this|that|these|those|class-[a-z0-9-]+)\b/i;
 const IMPLEMENTATION_PRESENCE_RE =
@@ -216,6 +229,7 @@ export function specBehaviorNonAtomicReason(rawBehavior: string): string | null 
     MULTI_OBSERVABLE_CONJUNCTION_RE.test(behavior) ||
     MULTI_EXTENDED_CONJUNCTION_RE.test(behavior) ||
     MULTI_EXTENDED_WHILE_RE.test(behavior) ||
+    MULTI_OBJECT_CONJUNCTION_RE.test(behavior) ||
     hasIndependentCommaClauseSeries(behavior)
   ) {
     return 'behavior joins multiple independently observable outcomes';
