@@ -831,6 +831,22 @@ describe('codex OAuth kernel adapter — model refusal fails over without parkin
 });
 
 describe('Codex OAuth quota errors inside successful HTTP streams', () => {
+  it('rotates an account-wide usage wall before spending the retry budget on sibling IPs', async () => {
+    const accounts = [cli('chatgpt-a'), cli('chatgpt-b')];
+    const pool = makePool([{ accountId: 'chatgpt-b' }]);
+    const h = harness(async (_url, init) => init.diagnosticAccountId === 'chatgpt-a'
+      ? upstream(429, {}, sseBody('usage exhausted'))
+      : upstream(200, {}, sseBody('healthy-account-success')), {
+      accounts, pool, siblingEgressAvailable: () => true,
+      rateReset: () => ({ resetAt: Date.now() + 3600_000, retryAfterMs: null, transient: false }),
+    });
+    await executeGatewayRequestKernel(h.options);
+    expect(h.prepared.map((p) => p.accountId)).toEqual(['chatgpt-a', 'chatgpt-b']);
+    expect(h.started[0]!.status).toBe(200);
+    expect(h.written.join('')).toBe('healthy-account-success');
+    expect(h.cooled).toEqual([]);
+  });
+
   const quota = { code: 'usage_limit_reached', message: "You've hit your usage limit", resets_at: 2_000_000_000 };
   const frame = (value: unknown) => `data: ${JSON.stringify(value)}\n\n`;
   const failed = (kind: 'error' | 'response.failed') => kind === 'error'
