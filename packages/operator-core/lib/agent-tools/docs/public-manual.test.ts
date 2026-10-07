@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtemp, mkdir, writeFile, rm, symlink } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createPublicManualSource, getPublicManual, searchPublicManual, resolvePublicManualRoot } from './_public-manual';
@@ -21,7 +21,7 @@ describe('canonical public manual retrieval', () => {
     for (const query of ['closing the browser', 'Can work continue after I close the tab?', 'Do I need to keep the browser open?']) {
       const result = await searchPublicManual({ query }, source);
       expect(result).toMatchObject({ surface: 'public', legs: { lexical: { status: 'ran' }, semantic: { status: 'not-run' } } });
-      expect(result.hits).toEqual(expect.arrayContaining([expect.objectContaining({ slug: 'faq', url: '/docs/faq' })]));
+      expect(result.hits).toEqual(expect.arrayContaining([expect.objectContaining({ slug: 'faq', url: '/docs/faq#does-closing-the-browser-stop-my-agents' })]));
       expect(JSON.stringify(result)).not.toContain('PRIVATE_CANARY');
     }
     const result = await getPublicManual({ slugs: ['faq'], heading: 'Does closing the browser stop my agents?' }, source);
@@ -72,6 +72,34 @@ describe('canonical public manual retrieval', () => {
     const result = await searchPublicManual({ query: 'Does stopping a workspace make it free?' }, source);
     expect(result.hits).toEqual(expect.arrayContaining([expect.objectContaining({ slug: 'faq' })]));
     expect(JSON.stringify(await getPublicManual({ slugs: ['faq'], heading: 'Does stopping a workspace make it free?' }, source))).toContain('charge');
+  });
+
+  it('ranks the relevant FAQ question in the top three against the full maintained corpus', async () => {
+    const source = createPublicManualSource(resolve(import.meta.dirname, '../../../../../apps/papercusp-docs/src/content/docs'));
+    for (const query of ['closing the browser', 'Can work continue after I close the tab?', 'Do I need to keep the browser open?', 'Can I close this tab?', 'Will remote work stop when I disconnect?', 'browesr']) {
+      const result = await searchPublicManual({ query, limit: 3 }, source);
+      expect(result.hits, query).toEqual(expect.arrayContaining([expect.objectContaining({
+        slug: 'faq',
+        title: 'Does closing the browser stop my agents?',
+        url: '/docs/faq#does-closing-the-browser-stop-my-agents',
+      })]));
+    }
+    expect(await searchPublicManual({ query: 'quantumxyz', limit: 3 }, source)).toMatchObject({ hits: [], hitCount: 0 });
+  });
+
+  it('retrieves all twenty canonical FAQ questions and their two published paraphrases', async () => {
+    const contentRoot = resolve(import.meta.dirname, '../../../../../apps/papercusp-docs/src/content/docs');
+    const source = createPublicManualSource(contentRoot);
+    const questions = [...(await readFile(join(contentRoot, 'faq.mdx'), 'utf8')).matchAll(/^## (.+)\n\nAlso asked as: (.+)$/gm)];
+    expect(questions).toHaveLength(20);
+    for (const [, title, alternateQuestions] of questions) {
+      const paraphrases = alternateQuestions.match(/[^?]+\?/g) ?? [];
+      expect(paraphrases, title).toHaveLength(2);
+      for (const query of [title, ...paraphrases]) {
+        const result = await searchPublicManual({ query: query.trim(), limit: 3 }, source);
+        expect(result.hits, query).toEqual(expect.arrayContaining([expect.objectContaining({ slug: 'faq', title })]));
+      }
+    }
   });
 
   it('retrieves ordinary misspellings without inventing a match for an unrelated query', async () => {

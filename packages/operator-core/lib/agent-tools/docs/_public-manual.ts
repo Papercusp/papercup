@@ -2,7 +2,7 @@
 import { createHash } from 'node:crypto';
 import { promises as fs, existsSync } from 'node:fs';
 import * as path from 'node:path';
-import { getDocs, searchDocs, starlightContentAdapter, tokenize, levenshtein, type DocSource } from '@papercusp/docs-engine';
+import { getDocs, searchDocs, sliceByHeading, starlightContentAdapter, tokenize, levenshtein, type DocPage, type DocSource } from '@papercusp/docs-engine';
 import { REPO_ROOT } from './_repo-paths';
 
 export function isPublicManualRole(role: unknown): boolean {
@@ -66,9 +66,10 @@ export async function searchPublicManual(args: { query: string; limit?: number }
     // Reuse the docs engine's tokenizer and edit distance. Correct only an
     // unknown long word with a unique nearest public-corpus word; keep exact
     // terms and ambiguous inputs intact. Never consult a private vocabulary.
+    const rendered = await Promise.all((await source.listPages()).map(async (page) => ({ page, body: await source.getContent(page) })));
     const vocabulary = new Set<string>();
-    for (const page of await source.listPages()) {
-      for (const word of tokenize(`${page.title} ${await source.getContent(page)}`)) {
+    for (const { page, body } of rendered) {
+      for (const word of tokenize(`${page.title} ${body}`)) {
         if (/^[a-z]{5,}$/.test(word)) vocabulary.add(word);
       }
     }
@@ -87,7 +88,36 @@ export async function searchPublicManual(args: { query: string; limit?: number }
       return distance <= maxDistance && !tied ? nearest : word;
     }).join(' ');
     const changed = corrected !== tokenize(args.query).join(' ');
-    const result = await searchDocs(source, { ...args, query: changed ? corrected : args.query });
+    // A FAQ contains many unrelated answers. Project its canonical headings as
+    // search documents so the existing engine scores the relevant question and
+    // answer, rather than the whole page's generic title and mixed vocabulary.
+    // This is a search view only; docs:get still reads the single canonical page.
+    const sections = new Map<string, { slug: string; heading: string; body: string }>();
+    const searchPages: DocPage[] = rendered.flatMap(({ page, body }) => {
+      if (page.slug !== 'faq') return [page];
+      const toc = page.toc.map((heading) => ({ title: heading.text, url: `#${heading.id}`, depth: heading.depth }));
+      const questions = page.toc.filter((heading) => heading.depth === 2).flatMap((heading) => {
+        const section = sliceByHeading(body, heading.id, toc);
+        if (!section) return [];
+        const slug = `${page.slug}/${heading.id}`;
+        sections.set(slug, { slug: page.slug, heading: heading.id, body: section });
+        const description = section.match(/^Also asked as: (.+)$/m)?.[1];
+        return [{ ...page, slug, slugs: [...page.slugs, heading.id], title: heading.text, description, url: `${page.url}#${heading.id}` }];
+      });
+      return questions.length ? questions : [page];
+    });
+    const bodies = new Map(rendered.map(({ page, body }) => [page.slug, body]));
+    const searchSource: DocSource = {
+      name: source.name,
+      listPages: async () => searchPages,
+      getPage: (slug) => source.getPage(slug),
+      getContent: async (page) => sections.get(page.slug)?.body ?? bodies.get(page.slug) ?? '',
+    };
+    const searched = await searchDocs(searchSource, { ...args, query: changed ? corrected : args.query });
+    const result = { ...searched, hits: searched.hits.map((hit) => {
+      const section = sections.get(hit.slug);
+      return section ? { ...hit, slug: section.slug, heading: section.heading } : hit;
+    }) };
     return { ...result, query: args.query, ...(changed ? { correctedQuery: corrected } : {}), surface: 'public', revision, legs: { lexical: { status: 'ran' }, semantic: { status: 'not-run', reason: 'public-manual lexical fallback' } } };
   } catch {
     return { error: 'public_docs_unavailable', surface: 'public', hits: [], hitCount: 0, recoverable: true, fallbackUrl: '/docs/faq' };
