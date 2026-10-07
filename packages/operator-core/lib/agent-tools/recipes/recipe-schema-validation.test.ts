@@ -214,6 +214,80 @@ describe('validateRecipeScriptAgainstCatalog', () => {
     });
   });
 
+  it('accepts an optional array result read in the positive Array.isArray branch', async () => {
+    const result = await validateRecipeScriptAgainstCatalog(
+      'const logs = await tools.logs.read({});\n' +
+        'const entries = Array.isArray(logs?.entries) ? logs.entries : [];\n' +
+        'return entries.length;',
+      [tool('logs:read', {
+        type: 'object',
+        properties: {},
+        additionalProperties: false,
+      }, {
+        type: 'object',
+        properties: { entries: { type: 'array', items: { type: 'object' } } },
+        required: [],
+      })],
+    );
+
+    expect(result).toEqual({ ok: true, issues: [], staticToolNames: ['logs:read'] });
+  });
+
+  it('does not treat the negative Array.isArray branch as proof an optional array exists', async () => {
+    const result = await validateRecipeScriptAgainstCatalog(
+      'const logs = await tools.logs.read({});\n' +
+        'const entries = !Array.isArray(logs?.entries) ? logs.entries : [];\n' +
+        'return entries.length;',
+      [tool('logs:read', {
+        type: 'object',
+        properties: {},
+        additionalProperties: false,
+      }, {
+        type: 'object',
+        properties: { entries: { type: 'array', items: { type: 'object' } } },
+        required: [],
+      })],
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        tool: 'logs:read',
+        path: 'result.entries',
+        kind: 'output-field',
+        message: expect.stringContaining('optional in the current output schema'),
+      }),
+    ]));
+  });
+
+  it('does not trust Array.isArray when the script shadows the global Array binding', async () => {
+    const result = await validateRecipeScriptAgainstCatalog(
+      'const Array = { isArray: () => true };\n' +
+        'const logs = await tools.logs.read({});\n' +
+        'const entries = Array.isArray(logs?.entries) ? logs.entries : [];\n' +
+        'return entries.length;',
+      [tool('logs:read', {
+        type: 'object',
+        properties: {},
+        additionalProperties: false,
+      }, {
+        type: 'object',
+        properties: { entries: { type: 'array', items: { type: 'object' } } },
+        required: [],
+      })],
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        tool: 'logs:read',
+        path: 'result.entries',
+        kind: 'output-field',
+        message: expect.stringContaining('optional in the current output schema'),
+      }),
+    ]));
+  });
+
   it('accepts an optional result field read in a typeof-guarded ternary branch', async () => {
     const result = await validateRecipeScriptAgainstCatalog(
       'const r = await tools.capability.read({ file_path: "ledger.jsonl", tail: 20, raw: true });\n' +
