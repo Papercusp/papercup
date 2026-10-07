@@ -6,11 +6,15 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { executeOperationalRun } from '../../packages/operator-core/lib/agent-tools/testing/record-run';
 import { computeWorkOnEverythingRollup } from '../../packages/operator-core/lib/scorecards';
+import { captureWorktreeSnapshot, computeWorktreeDirty } from '../../packages/operator-core/lib/testing-worktree';
+import { listRuntimeVintage, measureRuntimeVintageEnvironment } from '../../packages/operator-core/lib/runtime-vintage';
+import { persistHarnessTestRunsWithIds } from '../../packages/operator-core/lib/testing-run-store';
 
 const exec = promisify(execFile);
 const cardId = 'EI-24713330305263301';
 const rubricRef = 'work-on-everything-stewardship-health';
 const keys = ['plan-fleet-materialization', 'steering-through-claim-rails', 'frontier-scope-sovereignty'];
+const sourceObservations: ReturnType<typeof captureWorktreeSnapshot>[] = [];
 async function read(tool: string, args: object) {
   const { stdout } = await exec('ptool', ['--url=http://127.0.0.1:3170', tool, '--json', JSON.stringify(args)],
     { timeout: 45_000, maxBuffer: 256 * 1024 });
@@ -64,8 +68,25 @@ const result = await executeOperationalRun({
     return { exitCode: assertions.every(assertion => assertion.passed) ? 0 : 1,
       summary: 'Fresh existing-holder readback and server severe-rollup controls; historical FAIL retained. No new holder card, fixture goal, desktop journey, or shipment claim.', assertions };
   },
-}, { workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp', projectDir: process.cwd() });
+}, { workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp', projectDir: process.cwd() }, {
+  // Delegate to the SAME real primitives as the executor defaults. Expose the
+  // two exact reads rather than infer cleanliness from a later git status.
+  snapshot: root => {
+    const started = Date.now();
+    const snapshot = captureWorktreeSnapshot(root);
+    sourceObservations.push(snapshot);
+    process.stderr.write(`${JSON.stringify({ sourceSnapshot: sourceObservations.length,
+      elapsedMs: Date.now() - started, commit: snapshot.commit,
+      porcelain: snapshot.porcelain === null ? null : snapshot.porcelain.slice(0, 2000) })}\n`);
+    return snapshot;
+  },
+  readRuntime: async (units, workspaceId) =>
+    measureRuntimeVintageEnvironment(await listRuntimeVintage(workspaceId), units),
+  persist: persistHarnessTestRunsWithIds,
+});
 // The shared recorder retains its PG pool; this standalone producer finishes
 // only after the durable receipt has returned and stdout has drained.
-const exitCode = result.ok && result.status === 'pass' && result.runtimeEnvironmentMeasured ? 0 : 1;
-process.stdout.write(`${JSON.stringify(result)}\n`, () => process.exit(exitCode));
+const sourceClean = sourceObservations.length === 2
+  && !computeWorktreeDirty(sourceObservations[0], sourceObservations[1]);
+const exitCode = result.ok && result.status === 'pass' && result.runtimeEnvironmentMeasured && sourceClean ? 0 : 1;
+process.stdout.write(`${JSON.stringify({ ...result, sourceClean })}\n`, () => process.exit(exitCode));
