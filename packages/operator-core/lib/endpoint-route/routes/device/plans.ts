@@ -145,11 +145,19 @@ const planGet = defineTool({
   auth: DEVICE_AUTH,
   cors: true,
   async handler(req, ctx) {
-    const harness = new URL(req.url).searchParams.get('harness') ?? undefined;
-    // No workspaceId override — resolvePlanScope resolves the harness to the
-    // workspace its plans live in (papercup → default), matching plans:get.
-    // (Auth is the DEVICE_AUTH gate; no principal field is needed here.)
-    const found = await readPlanBySlug(ctx.params.slug, { harnessSlug: harness });
+    const principal = devicePrincipal(ctx);
+    const requestedHarness = new URL(req.url).searchParams.get('harness');
+    const harness = requestedHarness && requestedHarness !== 'all' && requestedHarness !== '*'
+      ? requestedHarness : undefined;
+    if (harness && !(await harnessExistsInWorkspace(principal.workspaceId, harness))) {
+      return Response.json({ error: 'harness_not_in_workspace' }, { status: 404 });
+    }
+    // Authentication identifies the phone, but source scope must also be pinned:
+    // an unpinned harness resolves across the registry, outside this pairing.
+    const found = await readPlanBySlug(ctx.params.slug, {
+      workspaceId: principal.workspaceId,
+      harnessSlug: harness,
+    });
     if (!found) return Response.json({ error: 'plan_not_found' }, { status: 404 });
     const { parsed, archived, row } = found;
     // Items carry the EFFECTIVE status plans:get returns (dependency resolver, then
