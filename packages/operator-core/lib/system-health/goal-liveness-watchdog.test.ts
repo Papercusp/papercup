@@ -923,6 +923,21 @@ describe('goal respawn causal contracts (WI-1074216)', () => {
       expectedLease: live ? null : { ownerId: 'elected', epoch: 2 },
     });
   });
+
+  it.each(respawnContractScenarios)('detects permanent wrong-seam control: %s', async (scenario) => {
+    const live = scenario === 'live-holder-no-double-spawn';
+    const takeover = scenario === 'concurrent-takeover-refusal';
+    const expected = {
+      launches: live ? 0 : 1,
+      respawned: live || takeover ? 0 : 1,
+      attachFailed: takeover ? 1 : 0,
+      neutralized: takeover ? 1 : 0,
+      expectedLease: live ? null : { ownerId: 'elected', epoch: 2 },
+    };
+    // Calibrate the same fixture before observing the deliberate wrong seam.
+    expect(await observeRespawnContract(scenario)).toEqual(expected);
+    expect(await observeRespawnContract(scenario, true)).not.toEqual(expected);
+  });
 });
 
 describe('goal holder respawn eligibility (P-009)', () => {
