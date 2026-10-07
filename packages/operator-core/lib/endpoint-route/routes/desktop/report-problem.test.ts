@@ -81,6 +81,15 @@ describe('handleReportProblem', () => {
     expect(d.putAttachment).not.toHaveBeenCalled();
   });
 
+  it('does not claim a locally stored log was queued with the report text', async () => {
+    const { d, putCalls } = deps();
+    const result: EndUserReportResult = { routed: 'work-item', classification: { kind: 'bug', basis: 'defect-cue' }, capture: { issue: { id: 'EI-upstream' } } as never };
+    d.contribute = vi.fn(async () => ({ ok: true as const, kind: 'report' as const, queued: true as const, result, summary: 'queued' }));
+    const out = await handleReportProblem(await send(payload({ attachLog: true, logLines: ['export failed'] })), d);
+    expect(out).toMatchObject({ status: 200, body: { delivery: 'queued-for-federation', attachments: [{ ok: true, delivery: 'local-only' }] } });
+    expect(putCalls).toHaveLength(1);
+  });
+
   it('rejects a changed preview before calling contribution', async () => {
     const { d } = deps();
     d.contribute = vi.fn();

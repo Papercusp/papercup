@@ -113,7 +113,7 @@ export function defaultReportProblemDeps(): ReportProblemDeps {
 }
 
 export type ReportProblemAttachmentOutcome =
-  | { kind: 'log'; ok: true; id: string; deduplicated: boolean }
+  | { kind: 'log'; ok: true; id: string; deduplicated: boolean; delivery?: 'local-only' }
   | { kind: 'log'; ok: false; reason: string };
 
 export type ReportProblemOutcome =
@@ -209,7 +209,7 @@ export async function handleReportProblem(
       }));
     attachments.push(
       stored.ok
-        ? { kind: attachment.kind, ok: true, id: stored.id, deduplicated: stored.deduplicated }
+        ? { kind: attachment.kind, ok: true, id: stored.id, deduplicated: stored.deduplicated, ...(delivery ? { delivery: 'local-only' as const } : {}) }
         : { kind: attachment.kind, ok: false, reason: `${stored.reason}: ${stored.detail}` },
     );
   }

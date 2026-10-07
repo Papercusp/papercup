@@ -38,7 +38,28 @@ interface Captured {
   logLines: string[];
 }
 
-type SendResult = { routed: 'work-item' | 'memory'; id: string | null; delivery?: 'queued-for-federation' };
+type SendResult = {
+  routed: 'work-item' | 'memory';
+  id: string | null;
+  delivery?: 'queued-for-federation';
+  attachments?: Array<{ kind: string; ok: boolean; reason?: string; delivery?: 'local-only' }>;
+};
+
+export function ReportProblemReceipt({ sent }: { sent: SendResult }) {
+  return <>
+    <p>Thanks — {sent.routed === 'memory' ? 'your note was saved' : 'your report was filed'}{sent.id ? ` as ${sent.id}` : ''}.</p>
+    {sent.delivery === 'queued-for-federation' && <p>Queued for upstream delivery. Upstream receipt has not yet been confirmed.</p>}
+    {sent.attachments?.map((attachment, index) => (
+      <p key={index} role={attachment.ok ? undefined : 'alert'}>
+        {attachment.ok
+          ? attachment.delivery === 'local-only' || sent.delivery === 'queued-for-federation'
+            ? 'Log attachment saved on this install. It has not been sent upstream.'
+            : 'Log attachment saved.'
+          : `Log attachment could not be saved: ${attachment.reason ?? 'unknown error'}. Your report remains filed.`}
+      </p>
+    ))}
+  </>;
+}
 
 export default function ReportProblemDialog() {
   const [open, setOpen] = useQueryState('report', parseAsBoolean.withDefault(false));
@@ -106,7 +127,7 @@ export default function ReportProblemDialog() {
       });
       const body = await res.json().catch(() => null);
       if (!res.ok) throw new Error(body?.error ? `${body.error} (HTTP ${res.status})` : `HTTP ${res.status}`);
-      setSent({ routed: body.routed, id: body.id ?? null, delivery: body.delivery });
+      setSent({ routed: body.routed, id: body.id ?? null, delivery: body.delivery, attachments: body.attachments });
     } catch (e) {
       setError(String((e as Error)?.message ?? e));
     } finally {
@@ -136,8 +157,7 @@ export default function ReportProblemDialog() {
 
           {sent ? (
             <div data-testid="report-problem-sent">
-              <p>Thanks — {sent.routed === 'memory' ? 'your note was saved' : 'your report was filed'}{sent.id ? ` as ${sent.id}` : ''}.</p>
-              {sent.delivery === 'queued-for-federation' && <p>Queued for upstream delivery. Upstream receipt has not yet been confirmed.</p>}
+              <ReportProblemReceipt sent={sent} />
               <button type="button" onClick={() => void setOpen(false)}>Close</button>
             </div>
           ) : !captured ? (
