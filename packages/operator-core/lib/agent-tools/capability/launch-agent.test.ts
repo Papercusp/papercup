@@ -439,7 +439,7 @@ describe('launch-tool routing guidance', () => {
   });
 
   it('declares enough server budget for bounded headless launch verification (EI-22780156976598155)', () => {
-    expect((launchAgent as { timeoutSec?: number }).timeoutSec).toBe(90);
+    expect((launchAgent as { timeoutSec?: number }).timeoutSec).toBe(AGENT_LAUNCH_HANDLER_TIMEOUT_SEC);
     expect((launchAgent as { timeoutSec?: number }).timeoutSec).toBeGreaterThan(55);
   });
 });
