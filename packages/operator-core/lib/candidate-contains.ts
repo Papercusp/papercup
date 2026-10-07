@@ -533,8 +533,9 @@ export async function classifyPathsAgainstCandidate(
       path,
       inCandidate: null,
       reason: null,
-      // A sha WAS supplied and this repo could not resolve it — a fetch, or a
-      // read against the right checkout, may still answer. Not `not-applicable`.
+      // A sha WAS supplied, but this read did not return a commit. The sha may be
+      // absent or Git may have failed/refused the read; containment is still retryable,
+      // so this is not `not-applicable`.
       unknownReason: cellUnknown(
         'resolver-failed',
         `Could not verify candidate commit '${candidateSha.slice(0, 12)}' in this repo — containment is UNKNOWN, not missing.`,
