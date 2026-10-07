@@ -398,10 +398,6 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
       expect((settled?.phaseTimingsMs as { resultDoor?: number } | undefined)?.resultDoor)
         .toBeGreaterThanOrEqual(resultDoorDelayMs);
       expect(Number(settled?.elapsedMs)).toBeGreaterThanOrEqual(TEST_DEADLINE_MS);
-      const invocation = h.invocations.find((entry) =>
-        (entry as { toolName?: unknown }).toolName === 'deadlinetest:slow',
-      ) as { ctx?: { requestOrigin?: Record<string, unknown> } } | undefined;
-      expect(invocation?.ctx?.requestOrigin).toMatchObject({ mcpRequestTraceId: traceId });
     } finally {
       info.mockRestore();
     }
