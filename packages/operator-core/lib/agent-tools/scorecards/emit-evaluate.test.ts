@@ -24,6 +24,7 @@ import {
 import { PAYLOAD_TIER_HARD_CEILING_CHARS, PAYLOAD_TIER_RATCHET_CHARS } from '@papercusp/tooldef';
 import type { Rubric } from '../../rubrics';
 import { scorecardEvidenceFingerprint, type ScorecardRow } from '../../scorecards';
+import { SPEC_TEST_ADEQUACY_EVALUATOR_REVISION } from '../plans/spec-test-adequacy';
 import {
   areAcceptanceLineageRelated,
   isAcceptanceAuthorIdentity,
@@ -224,6 +225,7 @@ const vettingCard = (critics: string[]) =>
 const RERUN_RECIPE = {
   schemaVersion: 1 as const,
   evaluator: 'plans:evaluate-spec-test-adequacy' as const,
+  evaluatorRevision: SPEC_TEST_ADEQUACY_EVALUATOR_REVISION,
   classRef: 'plan-class-feature-ship' as const,
   args: {
     slug: 'reconnect-plan',
@@ -632,6 +634,28 @@ describe('emitScorecard', () => {
       ok: false,
       code: 'invalid_spec_test_adequacy_binding',
       error: expect.stringContaining("kind:'plan'"),
+    });
+    expect(getRubricPlanRevisionM).not.toHaveBeenCalled();
+    expect(captureM).not.toHaveBeenCalled();
+  });
+
+  it('refuses an obsolete evaluator revision before persisting an otherwise valid recipe', async () => {
+    getRubricM.mockResolvedValue({ ...RUBRIC, rubricId: 'spec-test-adequacy' } as Rubric);
+
+    const r = await emitScorecard(
+      {
+        rubricRef: 'spec-test-adequacy',
+        ratings: RATINGS,
+        rerunRecipe: { ...RERUN_RECIPE, evaluatorRevision: SPEC_TEST_ADEQUACY_EVALUATOR_REVISION - 1 },
+        subject: { kind: 'plan', ref: 'reconnect-plan#SPEC-003-01@1' },
+      },
+      { createdBy: 'su-1' },
+    );
+
+    expect(r).toMatchObject({
+      ok: false,
+      code: 'invalid_spec_test_adequacy_binding',
+      error: expect.stringContaining('evaluator rule revision'),
     });
     expect(getRubricPlanRevisionM).not.toHaveBeenCalled();
     expect(captureM).not.toHaveBeenCalled();
