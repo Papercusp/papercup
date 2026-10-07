@@ -1555,9 +1555,10 @@ export interface IssueQueueControlSample {
     unparkCondition: { status: UnparkConditionStatus; text: string | null };
     releaseLiveness: DurableParkReleaseLiveness;
   }>;
+  /** Only immediately claimable reviewer candidates. Revision-requested rows are owned by their submitter. */
   agentReview: Array<{
     id: string;
-    status: 'pending' | 'revision-requested' | 'approved';
+    status: 'pending';
     submittedBy: string;
     ledgerIdeaId: string;
     round: number;
@@ -1682,7 +1683,7 @@ export async function sampleIssueClaimExclusions(
       UNION ALL
       (SELECT 'agent-review'::text AS axis, feature_id, taken_by, taken_at, payload
          FROM ${candidateFromSource(sql, sub, opts.precomputedTable)} c
-        WHERE spec_match AND payload -> 'agentReview' ->> 'status' IN ('pending', 'revision-requested')
+        WHERE spec_match AND payload -> 'agentReview' ->> 'status' = 'pending'
         ORDER BY updated_ts DESC NULLS LAST LIMIT ${sampleLimit})
     ) queue_control
   `) as Array<{
@@ -1734,7 +1735,7 @@ export async function sampleIssueClaimExclusions(
       });
     } else if (row.axis === 'agent-review') {
       const review = readAgentReviewState(payload);
-      if (review) queueControl.agentReview.push({ id: row.feature_id, ...review });
+      if (review?.status === 'pending') queueControl.agentReview.push({ id: row.feature_id, ...review });
     }
   }
   const r = rows[0];
