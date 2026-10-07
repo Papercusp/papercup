@@ -99,7 +99,7 @@ exit 0
 const INVOCATION_END = '--end-of-invocation--';
 
 /** Run the sweep and return the source arguments of each kopia invocation, in order. */
-function runSweepInvocations(requiredDir: string): string[][] {
+function runSweepInvocations(requiredDir: string, procRoot?: string): string[][] {
   rmSync(join(dir, 'create-argv'), { force: true });
   execFileSync('/usr/bin/env', ['bash', SCRIPT], {
     env: {
@@ -110,6 +110,7 @@ function runSweepInvocations(requiredDir: string): string[][] {
       KOPIA_SNAPSHOT_SUDO: join(dir, 'sudo'),
       KOPIA_SNAPSHOT_BIN: join(dir, 'kopia'),
       PAPERCUSP_HOST_PG_DUMP_DIR: requiredDir,
+      ...(procRoot ? { KOPIA_SNAPSHOT_PROC_ROOT: procRoot } : {}),
     },
     timeout: 60_000,
   });
@@ -122,8 +123,8 @@ function runSweepInvocations(requiredDir: string): string[][] {
 }
 
 /** Run the sweep and return the source arguments, in the order kopia saw them. */
-function runSweep(requiredDir: string): string[] {
-  return runSweepInvocations(requiredDir).flat();
+function runSweep(requiredDir: string, procRoot?: string): string[] {
+  return runSweepInvocations(requiredDir, procRoot).flat();
 }
 
 beforeEach(() => {
@@ -360,17 +361,47 @@ describe('kopia-snapshot-all.sh sweep rotation', () => {
     ]);
   });
 
+  /** A fake /proc in which `pid` is alive and running `cmdline`. */
+  function procWith(pid: number, cmdline: string[]): string {
+    const procRoot = join(dir, 'proc');
+    mkdirSync(join(procRoot, String(pid)), { recursive: true });
+    writeFileSync(join(procRoot, String(pid), 'cmdline'), `${cmdline.join('\0')}\0`);
+    return procRoot;
+  }
+
   it('never ingests the output of a sweep that is still running', () => {
     writeFakes(SOURCES);
-    // process.pid is alive for the whole test: this is a live sweep's output.
+    // DEAD_PID is alive in this /proc AND is a sweep: its output is still being written.
+    const procRoot = procWith(DEAD_PID, ['bash', '/home/u/.config/kopia/snapshot-all.sh']);
     const live = leaveStoppedOutput(
-      process.pid,
+      DEAD_PID,
       SOURCES.slice(0, 3).flatMap((s) => [started(s), created]),
       Math.floor(Date.now() / 1000) - 60,
     );
 
-    expect(runSweep(join(dir, 'dumps'))).toEqual([join(dir, 'dumps'), ...SOURCES]);
+    expect(runSweep(join(dir, 'dumps'), procRoot)).toEqual([join(dir, 'dumps'), ...SOURCES]);
     expect(existsSync(live)).toBe(true);
+  });
+
+  // Pids wrap about daily on this host. On 2026-10-06 three stopped sweeps' outputs
+  // sat un-ingested because firefox, typesense-server and codex now held their pids.
+  it('ingests a stopped sweep whose pid an unrelated process has since reused', () => {
+    writeFakes(SOURCES);
+    const procRoot = procWith(DEAD_PID, ['/opt/typesense-server']);
+    const leftover = leaveStoppedOutput(
+      DEAD_PID,
+      [started('/srv/a'), created, started('/srv/b'), created],
+      Math.floor(Date.now() / 1000) - 600,
+    );
+
+    expect(runSweep(join(dir, 'dumps'), procRoot)).toEqual([
+      join(dir, 'dumps'),
+      '/srv/c',
+      '/srv/d',
+      '/srv/a',
+      '/srv/b',
+    ]);
+    expect(existsSync(leftover)).toBe(false);
   });
 
   it('records the progress of a sweep that ran to the end, for the next sweep to read', () => {
