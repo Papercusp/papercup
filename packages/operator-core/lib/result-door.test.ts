@@ -2151,6 +2151,30 @@ describe('applyResultDoor', () => {
       expect(readSpill('ws-1', 'coord:orient', RUN_ID)).toContain('small already-projected result');
     });
 
+    it('uses the nested target in recovery advice for an under-budget tools:invoke result', () => {
+      const result = {
+        content: [{ type: 'text' as const, text: 'small nested partial result' }],
+        _meta: { payloadProjection },
+      };
+      const doored = applyResultDoor(result, {
+        toolName: 'tools:invoke',
+        nestedTargetToolName: 'work_items:get',
+        workspaceId: 'ws-1',
+        runId: RUN_ID,
+      });
+      const envelope = JSON.parse((doored.content[0] as { text: string }).text);
+
+      expect(envelope.incomplete).toMatchObject({
+        reason: 'under-budget-partial-result',
+        recoverable: false,
+      });
+      expect(envelope.incomplete.note).toContain("Re-call work_items:get with payloadTier:'full'");
+      expect(envelope.incomplete.note).toContain(
+        "tools:invoke { name:'work_items:get', args:{ …original args, payloadTier:'full' } }",
+      );
+      expect(envelope.incomplete.note).not.toContain("name:'tools:invoke'");
+    });
+
     it('shows a schema-compatible dispatch path for framework-reserved payloadTier', () => {
       const result = {
         content: [{ type: 'text' as const, text: 'small partial list result' }],
