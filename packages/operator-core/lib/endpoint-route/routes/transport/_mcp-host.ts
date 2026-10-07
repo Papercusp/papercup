@@ -3195,14 +3195,19 @@ async function resolveVisibleToolListings(extra: unknown): Promise<
 
 /**
  * The identity-kernel view of a transport session: the fields the kernel's
- * state read and grant gate resolve identity and workspace from, set exactly as
- * `buildMcpToolContext` sets them for a real call.
+ * state read and grant gate resolve identity and workspace from. Its principal
+ * uses the same capability-enrichment path as tools/call; the lightweight
+ * transport principal has no role capabilities, which hides app-worker grants
+ * while tools/list evaluates the governed surface.
  */
-function identitySurfaceContext(spawn: BuiltSpawnContext): UnifiedToolContext {
+async function identitySurfaceContext(spawn: BuiltSpawnContext): Promise<UnifiedToolContext> {
+  const principal = spawn.authenticatedPrincipal || spawn.isSuperuser || !dispatchNeedsTx(spawn)
+    ? synthesizeTransportPrincipal(spawn)
+    : await withWorkspace(spawn.workspaceId, (tx) => synthesizeDispatchPrincipal(tx, spawn));
   return {
     workspaceId: spawn.workspaceId,
     harnessSlug: spawn.harnessSlug,
-    principal: synthesizeTransportPrincipal(spawn),
+    principal,
     role: spawn.role,
     advSessionId: spawn.advSessionId,
     uiClientId: spawn.uiClientId,
@@ -3258,7 +3263,7 @@ async function identityAdmittedListings(
   const acceptedOperationListings = new Map<string, ReturnType<typeof listMcpProjections>[number]>();
   try {
     const surfaceModule = await import('../../../capability-envelope/identity-tool-surface');
-    const ctx = identitySurfaceContext(spawn);
+    const ctx = await identitySurfaceContext(spawn);
     const surface = await surfaceModule.resolveIdentityToolSurface(ctx, candidates, undefined, (record) => {
       if (!operationOptions || !record || typeof record !== 'object' || Array.isArray(record)) return [];
       const acceptedOperation = (record as Record<string, unknown>).acceptedOperation;
