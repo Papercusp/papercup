@@ -76,6 +76,7 @@ function readSpill(ws: string, tool: string, runId: string): string {
 
 function boundedBody(result: DoorableResult): {
   text?: string;
+  review?: unknown;
   _projection: {
     cursor: Record<string, unknown>;
     next: string;
@@ -89,6 +90,7 @@ function boundedBody(result: DoorableResult): {
   expect(textItems).toHaveLength(1);
   return JSON.parse(textItems[0].text) as {
     text?: string;
+    review?: unknown;
     _projection: {
       cursor: Record<string, unknown>;
       next: string;

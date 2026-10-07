@@ -119,6 +119,8 @@ export interface ResultDoorOpts {
    * this by hand — it awaits the writes and never returns a dangling cursor.
    */
   deferredScratchWrites?: Promise<void>[];
+  /** Internal replay of a deferred failure: cap honestly without retrying filesystem I/O. */
+  scratchWriteFailure?: { error: unknown };
 }
 
 export interface ResultDoorAggregateScope {
@@ -945,6 +947,7 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
   let manifest: ScratchReferenceManifest | null = null;
   const evidence = detectResultEvidence(input.result.content);
   try {
+    if (input.opts.scratchWriteFailure) throw input.opts.scratchWriteFailure.error;
     const parts = scratchParts(input.opts);
     // EI-21282689413153947: NOT `.json` — every spill is a self-describing
     // scratch reference (magic + manifest + payload), so a `.json` name lies
@@ -1067,9 +1070,9 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
  * applyResultDoor for request handlers: identical output, but any spill file is written
  * with fs.promises instead of blocking the event loop, and awaited before this resolves —
  * so a returned cursor always names a file that exists (WI-10004533). If a deferred write
- * fails, the result is re-doored synchronously so it carries the honest spill-failure
- * shape (WI-36047) rather than a reference to a file that was never written. That rare
- * retry reserves the aggregate cohort a second time; it can only tighten the budget.
+ * fails, the result is re-doored with the original error and no filesystem retry so it
+ * carries the honest spill-failure shape (WI-36047). The replay reserves the aggregate
+ * cohort a second time; it can only tighten the budget.
  */
 export async function applyResultDoorAsync<T extends DoorableResult>(
   result: T,
@@ -1079,8 +1082,10 @@ export async function applyResultDoorAsync<T extends DoorableResult>(
   const doored = applyResultDoor(result, { ...opts, deferredScratchWrites: deferred });
   if (deferred.length === 0) return doored;
   const settled = await Promise.allSettled(deferred);
-  if (settled.every((s) => s.status === 'fulfilled')) return doored;
-  return applyResultDoor(result, { ...opts, deferredScratchWrites: undefined });
+  const failure = settled.find((s) => s.status === 'rejected');
+  if (!failure || failure.status !== 'rejected') return doored;
+  return applyResultDoor(result, { ...opts, deferredScratchWrites: undefined,
+    scratchWriteFailure: { error: failure.reason } });
 }
 
 function isScorecardsGetResult(opts: ResultDoorOpts): boolean {
@@ -1494,6 +1499,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     const spillPrefix = header + spillBodyRecipe + spillAdvisoryPrefix + (spillIndex ? `${spillIndex}\n` : '');
     if (fsPath != null) {
       try {
+        if (opts.scratchWriteFailure) throw opts.scratchWriteFailure.error;
         const parts = scratchParts(opts);
         spillManifest = writeScratchReference({
           filePath: fsPath,
