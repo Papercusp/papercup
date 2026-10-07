@@ -129,7 +129,7 @@ describe('managed R6 admission pre-check runner (WI-10006003)', () => {
     });
   });
 
-  it('a successor can adopt the same operationId and observe persisted progress and verdict', async () => {
+  it.each(['papercusp', 'oddsmith'])('a successor preserves %s harness scope, progress and verdict', async (harness) => {
     let persisted = queue();
     const progress = { currentFile: 'lib/red.test.ts', completedCount: 0, totalCount: 1, heartbeatAtMs: 20 };
     const runner = vi.fn(async (run: {
@@ -140,15 +140,21 @@ describe('managed R6 admission pre-check runner (WI-10006003)', () => {
       await run.onProgress?.(progress);
       return { ran: true as const, commit: run.commit, results: run.files.map((path) => ({ path, status: 'pass' as const })) };
     });
-    const outcome = await runAdmissionPrecheckWorker(input, {
+    const createRunner = vi.fn(() => runner);
+    const outcome = await runAdmissionPrecheckWorker({ ...input, queueTarget: { ...input.queueTarget, installSlug: harness } }, {
       getTask: async () => ({ state: 'running', confined: true }),
       readQueue: async () => ({ status: 'value', queue: persisted }),
       transition: async (_target, update) => { persisted = update(persisted); },
-      createRunner: () => runner,
+      createRunner,
       now: () => 30,
     });
 
     expect(outcome.status).toBe('settled');
+    expect(createRunner).toHaveBeenCalledWith({
+      integrationRoot: input.integrationRoot,
+      checkpointRoot: input.checkpointRoot,
+      testRunHarness: harness,
+    });
     expect(runner).toHaveBeenCalledWith(expect.objectContaining({
       commit: 'c'.repeat(40),
       files: ['lib/red.test.ts'],

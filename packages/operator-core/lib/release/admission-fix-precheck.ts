@@ -292,6 +292,8 @@ export interface CheckpointTreeRunnerOptions {
   integrationRoot: string;
   /** The gate's isolated checkout — setup-release-checkout materializes `commit` here. */
   checkpointRoot: string;
+  /** Registered harness for test-ledger attribution; never inferred from a checkout path. */
+  testRunHarness?: string;
   /** Per-file wall-clock budget (default 10 min). */
   perFileTimeoutMs?: number;
   /** Setup budget (default 20 min — dependency materialization can take minutes). */
@@ -869,7 +871,11 @@ export function createCheckpointTreeFixPrecheckRunner(opts: CheckpointTreeRunner
       const r = await execWithProgress(['node', 'scripts/test-files.mjs', file], {
         cwd: precheckRoot,
         timeoutMs: perFileTimeoutMs,
-        env: { PAPERCUSP_ADMISSION_PRECHECK: '1', PAPERCUSP_TEST_RUN_GROUP: `admission-precheck:${commit.slice(0, 12)}` },
+        env: {
+          PAPERCUSP_ADMISSION_PRECHECK: '1',
+          PAPERCUSP_TEST_RUN_GROUP: `admission-precheck:${commit.slice(0, 12)}`,
+          ...(opts.testRunHarness ? { PAPERCUSP_TEST_RUN_HARNESS: opts.testRunHarness } : {}),
+        },
         logFile,
       }, { currentFile: file, completedCount: index, totalCount: files.length });
       const c = classifyTestFileRun(r);

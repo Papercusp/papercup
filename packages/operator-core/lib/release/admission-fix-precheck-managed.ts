@@ -175,7 +175,7 @@ export interface AdmissionPrecheckWorkerDeps {
     target: AdmissionPrecheckQueueTarget,
     update: (fresh: FrozenCandidateRepairQueue) => FrozenCandidateRepairQueue,
   ) => Promise<unknown>;
-  createRunner: (options: { integrationRoot: string; checkpointRoot: string }) => (
+  createRunner: (options: { integrationRoot: string; checkpointRoot: string; testRunHarness: string }) => (
     input: {
       commit: string;
       files: readonly string[];
@@ -223,6 +223,7 @@ export async function runAdmissionPrecheckWorker(
   const runner = deps.createRunner({
     integrationRoot: input.integrationRoot,
     checkpointRoot: input.checkpointRoot,
+    testRunHarness: input.queueTarget.installSlug,
   });
   let run: FixPrecheckRunResult;
   try {

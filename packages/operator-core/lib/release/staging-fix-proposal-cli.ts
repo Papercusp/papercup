@@ -59,6 +59,7 @@ async function main(argv: string[]): Promise<number> {
     precheck: createCheckpointTreeFixPrecheckRunner({
       integrationRoot: root,
       checkpointRoot: checkpointRootMirror(root),
+      testRunHarness: operatorHomeHarnessSlug(),
       precheckRoot,
       log: (line) => console.error(line),
     }),

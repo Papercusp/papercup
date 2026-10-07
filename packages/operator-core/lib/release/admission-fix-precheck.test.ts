@@ -376,6 +376,40 @@ describe('createCheckpointTreeFixPrecheckRunner', () => {
     expect(testEnvs[0]?.DEPENDENCY_GENERATION_ALLOW_HARDLINK).toBeUndefined();
   });
 
+  it('attributes a real test child to its explicit harness rather than an inherited harness', async () => {
+    const logDir = mkdtempSync(join(tmpdir(), 'admission-harness-'));
+    const inherited = process.env.PAPERCUSP_TEST_RUN_HARNESS;
+    process.env.PAPERCUSP_TEST_RUN_HARNESS = 'foreign-harness';
+    let childOutput = '';
+    const exec = async (argv: readonly string[], opts: ExecOptions): Promise<ExecResult> => {
+      if (argv.includes('--exec-under-lock')) {
+        return { exitCode: 0, signal: null, timedOut: false, output: '', durationMs: 1 };
+      }
+      const result = await defaultExec([
+        process.execPath, '-e',
+        'console.log(JSON.stringify({harness:process.env.PAPERCUSP_TEST_RUN_HARNESS,group:process.env.PAPERCUSP_TEST_RUN_GROUP}))',
+      ], { ...opts, cwd: process.cwd(), timeoutMs: 5_000 });
+      childOutput = result.output;
+      return result;
+    };
+    try {
+      const runner = createCheckpointTreeFixPrecheckRunner({
+        ...base, exec, logDir, testRunHarness: 'oddsmith',
+        runLockHeld: () => ({ held: false, elapsedSec: null }),
+      });
+      expect(await runner({ commit: C, files: ['lib/red.test.ts'] })).toMatchObject({
+        ran: true, results: [{ status: 'pass' }],
+      });
+      expect(JSON.parse(childOutput.trim())).toEqual({
+        harness: 'oddsmith', group: `admission-precheck:${C.slice(0, 12)}`,
+      });
+    } finally {
+      if (inherited === undefined) delete process.env.PAPERCUSP_TEST_RUN_HARNESS;
+      else process.env.PAPERCUSP_TEST_RUN_HARNESS = inherited;
+      rmSync(logDir, { recursive: true, force: true });
+    }
+  });
+
   it('cannot measure a gate-repinned checkout as an admission failure', async () => {
     let gateCheckoutHead = 'old-gate-head';
     const measuredRoots: string[] = [];
