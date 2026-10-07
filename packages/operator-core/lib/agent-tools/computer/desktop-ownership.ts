@@ -83,7 +83,7 @@ export function desktopAccess(
   if (action === 'release') {
     return caller.mayManagePots
       ? { ok: true }
-      : { ok: false, code: 'desktop_not_owned', reason: "releasing a pot's shared desktop is a placement act (Queen/operator roles)" };
+      : { ok: false, code: 'desktop_not_owned', reason: "releasing a pot's shared desktop requires pot-management authority" };
   }
   return caller.harnessSlug !== null && desktop.scopeRef === caller.harnessSlug
     ? { ok: true }
