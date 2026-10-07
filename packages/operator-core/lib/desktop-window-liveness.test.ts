@@ -425,12 +425,14 @@ describe('gatherOnDesktopSessions targeted owner lookup', () => {
     const listHosts = vi.fn(async () => [{ ownerId: 'su-full', pid: 300 }]);
     const readStat = async () => '200 (psu-pty-host) S 100 1 0 0 0 0 0';
     const listWindows = async () => windows;
+    const diagnostics: Array<{ name: string; elapsedMs: number; status: 'ok' | 'error' }> = [];
 
     const targeted = await gatherOnDesktopSessions({
       ownerIds: ['su-target'],
       nowMs: 1_000,
       ttlMs: 5_000,
       deps: { listWindows, listCandidates, findHost, listHosts, readStat },
+      onDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
     });
 
     expect(listCandidates).toHaveBeenCalledWith(43_200, ['su-target']);
@@ -439,6 +441,13 @@ describe('gatherOnDesktopSessions targeted owner lookup', () => {
     expect(targeted.owners).toEqual(new Set(['su-target']));
     expect(targeted.sessionIds).toEqual(new Set(['session-target']));
     expect(targeted.advSessionIds).toEqual(new Set([7]));
+    expect(diagnostics.map(({ name, status }) => ({ name, status }))).toEqual([
+      { name: 'listOpenWindows', status: 'ok' },
+      { name: 'listCandidates', status: 'ok' },
+      { name: 'findLiveHost', status: 'ok' },
+      { name: 'pidAncestry', status: 'ok' },
+    ]);
+    expect(diagnostics.every(({ elapsedMs }) => Number.isFinite(elapsedMs) && elapsedMs >= 0)).toBe(true);
 
     const full = await gatherOnDesktopSessions({
       nowMs: 1_001,

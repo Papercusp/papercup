@@ -175,7 +175,7 @@ describe('assemblePresenceSnapshot targeted { owner } lookup (EI-9454)', () => {
       workspaceId: 'test-ws',
       ownerIds: ['su-bbb'],
     });
-    expect(desktopSessionsMock).toHaveBeenCalledWith({ ownerIds: ['su-bbb'] });
+    expect(desktopSessionsMock).toHaveBeenCalledWith(expect.objectContaining({ ownerIds: ['su-bbb'] }));
   });
 
   it('enriches ONLY the matched id — the batch joins never see the rest of the roster', async () => {
@@ -252,6 +252,28 @@ describe('assemblePresenceSnapshot targeted { owner } lookup (EI-9454)', () => {
     expect(derivation?.details?.hostLookupCalls).toBeGreaterThan(0);
     expect(derivation?.details?.hostLookupTotalMs).toEqual(expect.any(Number));
     expect(derivation?.details?.hostLookupMaxMs).toEqual(expect.any(Number));
+  });
+
+  it('surfaces on-desktop awaited substep timings in the presence diagnostics', async () => {
+    desktopSessionsMock.mockImplementation(async (opts: {
+      onDiagnostic?: (diagnostic: { name: string; elapsedMs: number; status: 'ok' | 'error' }) => void;
+    }) => {
+      opts.onDiagnostic?.({ name: 'findLiveHost', elapsedMs: 12, status: 'error' });
+      return { owners: new Set<string>() };
+    });
+    const diagnostics: PresenceSnapshotDiagnostic[] = [];
+
+    await assemblePresenceSnapshot(RESOLVED, {
+      owner: 'su-bbb',
+      onDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+    });
+
+    expect(diagnostics).toContainEqual({
+      phase: 'enrichment',
+      name: 'gatherOnDesktopSessions.findLiveHost',
+      elapsedMs: 12,
+      status: 'error',
+    });
   });
 
   // WI-10006738: coord:presence used to omit the oracle's positive ended-session

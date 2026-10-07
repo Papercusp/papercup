@@ -457,6 +457,8 @@ export async function gatherOnDesktopSessions(
     ttlMs?: number;
     ownerIds?: readonly string[];
     deps?: GatherOnDesktopDeps;
+    /** Optional per-await timing seam. Best-effort and intentionally excludes owner ids. */
+    onDiagnostic?: (diagnostic: { name: string; elapsedMs: number; status: 'ok' | 'error' }) => void;
   } = {},
 ): Promise<OnDesktopSets> {
   const ttl = opts.ttlMs ?? ON_DESKTOP_TTL_MS;
@@ -478,14 +480,34 @@ export async function gatherOnDesktopSessions(
   const windowSignalUnknown =
     (opts.deps?.isWindowsHost ?? isWindowsDesktopHost)() &&
     (opts.deps?.readWindowsCache ?? getOnDesktopWindowsCache)() === null;
+  const timeStep = async <T>(name: string, action: () => Promise<T>): Promise<T> => {
+    if (!opts.onDiagnostic) return action();
+    const startedAt = performance.now();
+    const report = (status: 'ok' | 'error') => {
+      try {
+        opts.onDiagnostic?.({ name, elapsedMs: Math.max(0, performance.now() - startedAt), status });
+      } catch {
+        /* A diagnostic observer must never change the best-effort presence result. */
+      }
+    };
+    try {
+      const value = await action();
+      report('ok');
+      return value;
+    } catch (error) {
+      report('error');
+      throw error;
+    }
+  };
   try {
-    const windows = await (opts.deps?.listWindows ?? listOpenWindows)();
+    const windows = await timeStep('listOpenWindows', () => (opts.deps?.listWindows ?? listOpenWindows)());
     // No open windows (headless box / no DISPLAY) → nobody is on the desktop.
     if (windows.length > 0 && targetedOwnerIds?.length !== 0) {
       const maxAgeSec = Math.max(1, Math.round((opts.maxAgeMs ?? DESKTOP_CANDIDATE_MAX_AGE_MS) / 1000));
       // Recent rows with ANY join key — a launch handle (leg 1) OR a coord owner
       // (leg 2's join back from the live-host ownerId to sessionIds/advIds).
-      const rows = await (opts.deps?.listCandidates ?? listRecentDesktopCandidateRows)(maxAgeSec, targetedOwnerIds);
+      const rows = await timeStep('listCandidates', () =>
+        (opts.deps?.listCandidates ?? listRecentDesktopCandidateRows)(maxAgeSec, targetedOwnerIds));
       sets = selectOnDesktopSessions(
         rows.map((r) => ({
           advSessionId: r.id,
@@ -510,30 +532,32 @@ export async function gatherOnDesktopSessions(
           const findHost = opts.deps?.findHost ?? findLiveHostAsync;
           hosts = (await Promise.all(ownersToResolve.map(async (ownerId) => {
             try {
-              return await findHost(ownerId);
+              return await timeStep('findLiveHost', () => findHost(ownerId));
             } catch {
               return null;
             }
           }))).filter((host): host is { ownerId: string; pid: number } => host !== null);
         } else {
           try {
-            hosts = await (opts.deps?.listHosts ?? listLiveHostsAsync)();
+            hosts = await timeStep('listLiveHosts', () => (opts.deps?.listHosts ?? listLiveHostsAsync)());
           } catch {
             hosts = [];
           }
         }
-        for (const h of hosts) {
-          if (!h.ownerId || !h.pid) continue;
-          if (sets.owners.has(h.ownerId)) continue; // already matched by handle
-          if (await pidHasWindowAncestor(h.pid, winPids, opts.deps?.readStat ?? defaultReadStat)) {
-            sets.owners.add(h.ownerId);
-            for (const r of rows) {
-              if (r.coord_owner_id !== h.ownerId) continue;
-              if (r.session_id) sets.sessionIds.add(r.session_id);
-              sets.advSessionIds.add(r.id);
+        await timeStep('pidAncestry', async () => {
+          for (const h of hosts) {
+            if (!h.ownerId || !h.pid) continue;
+            if (sets.owners.has(h.ownerId)) continue; // already matched by handle
+            if (await pidHasWindowAncestor(h.pid, winPids, opts.deps?.readStat ?? defaultReadStat)) {
+              sets.owners.add(h.ownerId);
+              for (const r of rows) {
+                if (r.coord_owner_id !== h.ownerId) continue;
+                if (r.session_id) sets.sessionIds.add(r.session_id);
+                sets.advSessionIds.add(r.id);
+              }
             }
           }
-        }
+        });
       }
     }
   } catch (e) {

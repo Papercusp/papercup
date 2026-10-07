@@ -689,7 +689,15 @@ export async function assemblePresenceSnapshot(
     // headless box). Independent of the other joins so a wmctrl hiccup never
     // affects wakeability/tier-1, and vice-versa.
     timeAsync('enrichment', 'gatherOnDesktopSessions', () =>
-      targeted ? gatherOnDesktopSessions({ ownerIds: localAllIds }) : gatherOnDesktopSessions())
+      gatherOnDesktopSessions({
+        ...(targeted ? { ownerIds: localAllIds } : {}),
+        onDiagnostic: (diagnostic) => reportDiagnostic({
+          phase: 'enrichment',
+          name: `gatherOnDesktopSessions.${diagnostic.name}`,
+          elapsedMs: diagnostic.elapsedMs,
+          status: diagnostic.status,
+        }),
+      }))
       .then((s) => {
         onDesktopOwners = s.owners;
       })
