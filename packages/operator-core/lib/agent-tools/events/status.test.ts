@@ -151,6 +151,8 @@ describe('events:status projection', () => {
 
     await expect(call({ event: 'work-item:claimable' }, judgeCtx)).rejects.toThrow();
     await expect(call({ meter: true }, judgeCtx)).rejects.toThrow();
+    expect(inspectEventKey).not.toHaveBeenCalled();
+    expect(wakeMeter).not.toHaveBeenCalled();
   });
 
   it('judge await_id reads only the caller-owned delivery row', async () => {

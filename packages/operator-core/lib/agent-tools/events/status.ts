@@ -158,7 +158,7 @@ export async function resolveAnnouncementOwnership(
 export default defineTool({
   name: 'events:status',
   description:
-    `Inspect the await-event surface: your active wake awaits, standing event-key inject subscriptions, trees, and recent wakes, or pass an exact event key for its declaration generations, expected condition, waiter registrations, wake outcomes, and a deterministic watermark/resync verdict. Optionally include the fleet-wide wake meter. ${EVENTS_SCOPE_NOTE}`,
+    `Inspect the await-event surface: your active wake awaits, standing event-key inject subscriptions, trees, and recent wakes, or pass an exact event key for its declaration generations, expected condition, waiter registrations, wake outcomes, and a deterministic watermark/resync verdict. Optionally include the fleet-wide wake meter. Evidence-only judges may inspect only their own awaits and recent wakes; exact-key inspection and the fleet-wide meter are unavailable. ${EVENTS_SCOPE_NOTE}`,
   guidance: {
     when: 'Checking what will reach or wake you (active wake awaits plus standing event-key inject subscriptions), whether a wake fired and via which channel, or whether the fleet is wake-storming (meter: true).',
     notWhen: `Reading your message stream — that is coord:inbox. Following an area — topics:feed. ${EVENTS_SCOPE_NOTE}`,
@@ -172,7 +172,7 @@ export default defineTool({
   capability: 'coord:read',
   requirePrincipal: false,
   skipWorkspaceTx: true,
-  agentRoles: [...SU_ROLES],
+  agentRoles: [...SU_ROLES, 'judge'],
   args: z.object({
     meter: z.boolean().optional().describe('Include the wake meter (per-agent counts by status/channel, 24h; events:await is single-workspace by design, so this is fleet-wide, not scoped to your workspace).'),
     await_id: z.number().int().positive().optional().describe('Filter active awaits and recent wake deliveries to the id returned by events:await. A targeted recent delivery includes its payload (capped at 2000 characters). Mutually exclusive with `event`.'),
@@ -180,6 +180,12 @@ export default defineTool({
     after_generation: z.number().int().nonnegative().optional().describe('Your cached declaration generation for `event`. The response says whether it is stale and how to resync.'),
   }),
   async handler(args, ctx) {
+    // The judge's evidence lane is caller-scoped: its default view and await_id
+    // path read only rows keyed by identity.ownerId. Exact event-key inspection
+    // and the meter cross that boundary, so reject them before any store reads.
+    if (ctx.role === 'judge' && (args.event != null || args.meter === true)) {
+      throw new Error('events:status — the evidence-only judge may inspect its own awaits only; exact-key inspection and fleet-meter access are unavailable.');
+    }
     if (args.await_id != null && args.event != null) {
       throw new Error('events:status — await_id and event are mutually exclusive; use await_id to inspect one registration or event to inspect one key.');
     }
