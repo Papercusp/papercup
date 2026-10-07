@@ -16,7 +16,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { delimiter, dirname, join, resolve } from 'node:path';
+import { basename, delimiter, dirname, join, relative, resolve, sep } from 'node:path';
 
 const GIB = 1024 ** 3;
 const AFFECTED_CARGO_WORKSPACE = '@papercusp/desktop';
@@ -1090,16 +1090,7 @@ export function stripCargoTerminalControlSequences(output) {
  * @returns {CargoTestResult[]}
  */
 export function parseCargoTestResultLines(output) {
-  /** @type {CargoTestResult[]} */
-  const results = [];
-  const re = /^test (\S+) \.\.\. (ok|FAILED|ignored)(,[^\r\n]*)?[ \t]*$/gm;
-  let match;
-  const normalized = stripCargoTerminalControlSequences(output);
-  while ((match = re.exec(normalized))) {
-    if (match[3] !== undefined && match[2] !== 'ignored') continue;
-    results.push({ name: match[1], outcome: match[2] });
-  }
-  return results;
+  return parseCargoMeasuredTestResults(output).map(({ name, outcome }) => ({ name, outcome }));
 }
 
 /** Cargo's target announcement, rather than a caller claim, supplies the layer.
@@ -1107,18 +1098,79 @@ export function parseCargoTestResultLines(output) {
  * association between a target and its result lines. Unannounced/doc tests have
  * no measured layer. The legacy result parser supplies matching counts for callers
  * that need only counts. */
-export function parseCargoMeasuredTestResults(output) {
+export function parseCargoMeasuredTestResults(output, { root, targets = [] } = {}) {
   const results = [];
-  let testLayer;
-  for (const line of stripCargoTerminalControlSequences(output).split('\n')) {
-    if (/^\s*Running unittests\s/.test(line)) testLayer = 'unit';
-    else if (/^\s*Running tests\//.test(line)) testLayer = 'integration';
-    else if (/^\s*(?:Running |Doc-tests |test result:)/.test(line)) testLayer = undefined;
+  const lines = stripCargoTerminalControlSequences(output).split('\n');
+  // Stable Cargo build messages bind each executable to its actual source.
+  // Hash-suffixed binary names alone cannot distinguish identical target names
+  // in different workspace packages. Never choose the first ambiguous match.
+  const artifacts = new Map();
+  for (const line of lines) {
+    if (!line.startsWith('{')) continue;
+    try {
+      const message = JSON.parse(line);
+      if (message.reason === 'compiler-artifact' && typeof message.executable === 'string' &&
+          typeof message.target?.src_path === 'string') {
+        artifacts.set(resolve(message.executable), message.target.src_path);
+      }
+    } catch { /* ordinary libtest output is not a build message */ }
+  }
+  let target = {};
+  let inFailureOutput = false;
+  const frames = [];
+  const flushOuter = () => {
+    if (frames.length) results.push(...frames[0].results);
+    frames.length = 0;
+  };
+  for (const line of lines) {
+    const announcement = /^\s*Running (.+) \((.+)\)\s*$/.exec(line);
+    if (announcement || /^\s*Doc-tests\s/.test(line)) {
+      flushOuter();
+      inFailureOutput = false;
+      target = {};
+      if (announcement) {
+        const label = announcement[1];
+        const executable = announcement[2];
+        const testLayer = label.startsWith('unittests ') ? 'unit'
+          : label.startsWith('tests/') ? 'integration' : undefined;
+        if (testLayer) target.testLayer = testLayer;
+        const sourceLabel = label.replace(/^unittests /, '');
+        const binaryName = basename(executable).replace(/-[a-f0-9]+(?:\.exe)?$/, '');
+        const candidates = targets.filter(t => typeof t.name === 'string' &&
+          t.name.replace(/-/g, '_') === binaryName && typeof t.src_path === 'string' &&
+          t.src_path.split(sep).join('/').endsWith('/' + sourceLabel));
+        const sourcePath = artifacts.get(resolve(executable)) ??
+          (candidates.length === 1 ? candidates[0].src_path : undefined);
+        if (root && sourcePath) {
+          const path = relative(root, sourcePath).split(sep).join('/');
+          if (path && path !== '..' && !path.startsWith('../')) target.testFilePath = path;
+        }
+      }
+      continue;
+    }
+    if (/^---- .+ stdout ----$/.test(line)) inFailureOutput = true;
+    if (/^test result:/.test(line)) {
+      // Child libtest harnesses inherit stdout. Their closing summary pops only
+      // the child frame; the parent's target/layer remains in force.
+      const frame = frames.pop();
+      if (frame && frames.length === 0) results.push(...frame.results);
+      if (frames.length === 0) target = {};
+      inFailureOutput = false;
+      continue;
+    }
+    if (inFailureOutput) continue;
+    if (/^running \d+ tests?\s*$/.test(line)) {
+      frames.push({ target: { ...target }, results: [] });
+      continue;
+    }
     const match = /^test (\S+) \.\.\. (ok|FAILED|ignored)(,[^\r\n]*)?[ \t]*$/.exec(line);
     if (match && (match[3] === undefined || match[2] === 'ignored')) {
-      results.push({ name: match[1], outcome: match[2], ...(testLayer ? { testLayer } : {}) });
+      const frame = frames.at(-1);
+      (frame?.results ?? results).push({ name: match[1], outcome: match[2], ...(frame?.target ?? target) });
     }
   }
+  // Preserve completed case lines if the outer binary crashes before its summary.
+  flushOuter();
   return results;
 }
 
