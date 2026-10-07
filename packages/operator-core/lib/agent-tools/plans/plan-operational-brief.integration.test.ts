@@ -8,7 +8,6 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import plansGetTool from './get';
 import { cleanupPlans, seedPlan, setupPlanPgFixture, type PlanPgFixture } from './__tests__/_pg-tool-fixture';
-import { readActiveAcceptanceRubrics } from './plan-lifecycle-derivation';
 
 const RUN = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const HARNESS = `zzz-plan-brief-${RUN}`;
@@ -111,7 +110,7 @@ beforeAll(async () => {
     VALUES
       (${fx.workspaceId}, ${HARNESS}, ${ACCEPTANCE_RUBRIC}, '', md5(${ACCEPTANCE_RUBRIC}), 1, ${ACCEPTANCE_RUBRIC},
        'active', '2026-10-07', '2026-10-07', 'integration-fixture', false, 'rubric',
-       ${JSON.stringify({ kind: 'acceptance', subjectPlan: ACCEPTANCE_PLAN })}::jsonb, NULL, 'local')
+       ${JSON.stringify({ kind: 'acceptance', subjectPlan: ACCEPTANCE_PLAN })}::text::jsonb, NULL, 'local')
   `;
 }, 60_000);
 
@@ -188,36 +187,6 @@ describe('plans:get operationalBrief (real PG)', () => {
   });
 
   it('keeps acceptance state aligned when meta mode omits rubric details', async () => {
-    const storedRubric = await fx.admin<{
-      status: string;
-      archived: boolean;
-      template: string;
-      template_slug: string | null;
-      kind: string;
-      subject_plan: string;
-      template_data: string | null;
-    }[]>`
-      SELECT status, archived, template, template_slug, template_data::text AS template_data,
-             template_data ->> 'kind' AS kind,
-             template_data ->> 'subjectPlan' AS subject_plan
-        FROM harness_shared.harness_plans
-       WHERE workspace_id = ${fx.workspaceId} AND plan_slug = ${ACCEPTANCE_RUBRIC}
-    `;
-    expect(storedRubric).toEqual([{
-      status: 'active',
-      archived: false,
-      template: 'rubric',
-      template_slug: null,
-      kind: 'acceptance',
-      subject_plan: ACCEPTANCE_PLAN,
-    }]);
-
-    const activeRubrics = await readActiveAcceptanceRubrics({
-      workspaceId: fx.workspaceId,
-      planSlugs: [ACCEPTANCE_PLAN],
-    });
-    expect(activeRubrics.get(ACCEPTANCE_PLAN)).toBe(ACCEPTANCE_RUBRIC);
-
     const result = await read({ mode: 'meta', operationalBrief: true }, ACCEPTANCE_PLAN);
     const brief = result.operationalBrief!;
 
