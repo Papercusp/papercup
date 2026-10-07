@@ -47,6 +47,17 @@ function clause(over: Partial<SpecClauseRevision> = {}): SpecClauseRevision {
 }
 
 function evidence(over: Partial<SpecEvidenceForAdequacy> = {}): SpecEvidenceForAdequacy {
+  const defaultExecution: NonNullable<SpecEvidenceForAdequacy['testRunExecution']> = over.evidenceKind === 'mutation'
+    ? { status: 'fail', passed: 0, failed: 1, skipped: 0, collectionFailed: false, testLayer: 'integration' }
+    : {
+        status: 'pass',
+        passed: 1,
+        failed: 0,
+        skipped: 0,
+        collectionFailed: false,
+        testLayer: 'integration',
+        passedCaseTitles: [DEFAULT_MUTATION_TEST_CASE],
+      };
   const row: SpecEvidenceForAdequacy = {
     workItemId: 'WI-101',
     planSlug: 'reconnect-plan',
@@ -64,7 +75,7 @@ function evidence(over: Partial<SpecEvidenceForAdequacy> = {}): SpecEvidenceForA
     },
     coverageEvidenceRef: 42,
     testRunId: 43,
-    testRunExecution: { passed: 1, failed: 0, skipped: 0, collectionFailed: false },
+    testRunExecution: defaultExecution,
     details: {
       adequacy: {
         fixtureCalibrated: true,
@@ -77,6 +88,7 @@ function evidence(over: Partial<SpecEvidenceForAdequacy> = {}): SpecEvidenceForA
         executed: true,
         outcome: 'passed',
         targeted: true,
+        testCases: [DEFAULT_MUTATION_TEST_CASE],
         coverageRungs: { l3: true, l4: false },
       },
     },
@@ -101,6 +113,9 @@ function evidence(over: Partial<SpecEvidenceForAdequacy> = {}): SpecEvidenceForA
     },
     ...over,
   };
+  if (over.testRunExecution && row.testRunExecution) {
+    row.testRunExecution = { ...defaultExecution, ...over.testRunExecution };
+  }
   if (
     row.evidenceKind === 'mutation' &&
     row.testRunProvenance &&
@@ -114,20 +129,35 @@ function evidence(over: Partial<SpecEvidenceForAdequacy> = {}): SpecEvidenceForA
   return row;
 }
 
-function successfulTestBinding(filePath: string): SpecEvidenceForAdequacy {
+function successfulTestBinding(
+  filePath: string,
+  options: { layer?: string; testCases?: string[] } = {},
+): SpecEvidenceForAdequacy {
+  const testLayer = options.layer ?? 'integration';
+  const testCases = options.testCases ?? [DEFAULT_MUTATION_TEST_CASE];
   return evidence({
     evidenceKind: 'test',
     evidenceRef: `test-run:${filePath}`,
     coverageEvidenceRef: null,
     testRunProvenance: { filePath, commitSha: 'abc123', worktreeDirty: false },
+    testRunExecution: {
+      status: 'pass',
+      passed: Math.max(1, testCases.length),
+      failed: 0,
+      skipped: 0,
+      collectionFailed: false,
+      testLayer,
+      passedCaseTitles: testCases,
+    },
     details: {
       adequacy: {
-        testLayer: 'integration',
+        testLayer,
+        pathReachable: true,
         collected: true,
         skipped: false,
         executed: true,
         outcome: 'passed',
-        testCases: [DEFAULT_MUTATION_TEST_CASE],
+        testCases,
       },
     },
   });
@@ -226,13 +256,36 @@ function attempt(
     testExecution: { schemaVersion: 1, phase: 'pending', originRunId: `attempt-${n}`, runId: `attempt-${n}`, binding },
     adequacy: { ...adequacy, outcome: 'pending', collected: false, executed: false },
   };
-  const pending = { ...base, id: n * 10, createdAt: `2026-09-09T00:${String(n).padStart(2, '0')}:00Z`, details };
+  const pending = {
+    ...base,
+    id: n * 10,
+    testRunExecution: null,
+    createdAt: `2026-09-09T00:${String(n).padStart(2, '0')}:00Z`,
+    details,
+  };
+  const outcome = patch.outcome ?? 'pass';
+  const runStatus = patch.phase === 'pending'
+    ? 'running'
+    : outcome === 'failed' || outcome === 'fail'
+      ? 'fail'
+      : outcome === 'unknown' || outcome === 'pending'
+        ? 'running'
+        : 'pass';
   return [
     pending,
     {
       ...pending,
       id: n * 10 + 1,
       testRunId: n,
+      testRunExecution: {
+        status: runStatus,
+        passed: runStatus === 'pass' ? 1 : 0,
+        failed: runStatus === 'fail' ? 1 : 0,
+        skipped: 0,
+        collectionFailed: false,
+        testLayer: binding.testLayer,
+        ...(runStatus === 'pass' ? { passedCaseTitles: [DEFAULT_MUTATION_TEST_CASE] } : {}),
+      },
       details: {
         ...details,
         ...(patch.plane ? { evidencePlane: patch.plane } : {}),
@@ -739,7 +792,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
 
     expect(result.ratings['execution-integrity'].rating).toBe('unknown');
     expect(result.ratings['execution-integrity'].evidence).toContain(
-      'no testRunId or coverageEvidenceRef in the execution ledger',
+      'no durable ledger reference',
     );
     expect(result.ratings['execution-integrity'].evidence).toContain('executed=true');
     expect(result.verdict).toBe('unknown');
@@ -753,7 +806,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
           evidenceKind: 'test',
           testRunId: 20846633,
           coverageEvidenceRef: null,
-          testRunExecution: { passed: 6, failed: 0, skipped: 2, collectionFailed: false },
+          testRunExecution: { status: 'pass', passed: 6, failed: 0, skipped: 2, collectionFailed: false },
           details: {
             adequacy: {
               collected: true,
@@ -769,7 +822,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
 
     expect(result.ratings['execution-integrity'].rating).toBe('fail');
     expect(result.ratings['execution-integrity'].evidence).toContain(
-      'testRunLedgerExecution={"passed":6,"failed":0,"skipped":2,"collectionFailed":false}',
+      'testRunLedgerExecution={"status":"pass","passed":6,"failed":0,"skipped":2,"collectionFailed":false,"testLayer":"integration","passedCaseTitles":["the mutation is detected"]}',
     );
 
     const unavailable = evaluateSpecTestAdequacy({
@@ -779,8 +832,43 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     });
     expect(unavailable.ratings['execution-integrity'].rating).toBe('unknown');
     expect(unavailable.ratings['execution-integrity'].evidence).toContain(
-      'execution_details, so collection, skipped, and executed cases cannot be verified',
+      'execution_details, so canonical status, counts, and case identities cannot be verified',
     );
+  });
+
+  it('uses canonical test-run status and counts instead of binder execution claims', () => {
+    const contradictoryCounts = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [evidence({
+        evidenceKind: 'test',
+        coverageEvidenceRef: null,
+        testRunExecution: {
+          status: 'pass', passed: 1, failed: 1, skipped: 0, collectionFailed: false,
+        },
+        details: { adequacy: { collected: true, skipped: false, executed: true, outcome: 'passed' } },
+      })],
+      classRef: 'plan-class-feature-ship',
+    });
+    expect(contradictoryCounts.ratings['execution-integrity'].rating).toBe('fail');
+    expect(contradictoryCounts.ratings['execution-integrity'].evidence).toContain('"failed":1');
+
+    const binderSaysFail = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [evidence({
+        evidenceKind: 'test',
+        coverageEvidenceRef: null,
+        details: { adequacy: { collected: false, skipped: true, executed: false, outcome: 'failed' } },
+      })],
+      classRef: 'plan-class-feature-ship',
+    });
+    expect(binderSaysFail.ratings['execution-integrity'].rating).toBe('pass');
+
+    const coverageOnly = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [evidence({ evidenceKind: 'test', testRunId: null, coverageEvidenceRef: 42 })],
+      classRef: 'plan-class-feature-ship',
+    });
+    expect(coverageOnly.ratings['execution-integrity'].rating).toBe('unknown');
   });
 
   it('does not let a ledger-backed sibling hide an unbacked executable binding', () => {
@@ -1005,15 +1093,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     const testPath = 'packages/operator-core/lib/bash-substitution/pairs/code-search.test.ts';
     const failedCaseTitle = 'code-search.callers-lookup';
     const successfulTest = (testCases: string[]) => {
-      const row = successfulTestBinding(testPath);
-      row.details = {
-        ...row.details,
-        adequacy: {
-          ...(row.details.adequacy as Record<string, unknown>),
-          testCases,
-        },
-      };
-      return row;
+      return successfulTestBinding(testPath, { testCases });
     };
     const mutation = evidence({
       evidenceKind: 'mutation',
@@ -1461,7 +1541,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
       evidence: [incomplete],
       classRef: 'plan-class-feature-ship',
     });
-    expect(unknown.ratings['execution-integrity'].rating).toBe('unknown');
+    expect(unknown.ratings['execution-integrity'].rating).toBe('pass');
     expect(unknown.ratings['oracle-independence'].rating).toBe('unknown');
     expect(unknown.verdict).toBe('fail');
   });
@@ -1564,9 +1644,11 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(result.ratings.freshness.evidence).not.toContain('Current fingerprints are missing');
   });
 
-  it('keeps correct-layer unknown when only ANOTHER layer attests reachability, and names the repair (EI-25235611084337188)', () => {
+  it('keeps correct-layer unknown when the required layer has no measured passing baseline, and names the repair (EI-25235611084337188)', () => {
     const unitUnattested = evidence({
+      evidenceKind: 'test',
       evidenceRef: 'surface:reconnect-unit',
+      testRunExecution: null,
       details: {
         adequacy: {
           fixtureCalibrated: true,
@@ -1582,7 +1664,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
         },
       },
     });
-    // The default row is an INTEGRATION-layer binding with pathReachable:true.
+    // The default coverage row is not a test binding and cannot establish the required layer.
     const result = evaluateSpecTestAdequacy({
       clause: clause({ requiredTestLayers: ['unit'] }),
       evidence: [unitUnattested, evidence()],
@@ -1592,23 +1674,54 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(layer.rating).toBe('unknown');
     expect(layer.evidence).toContain('path reachability is unverified');
     expect(layer.evidence).toContain(': unit.');
-    expect(layer.suggestion).toContain('OF the required layer (unit)');
-    expect(layer.suggestion).toContain('another layer does not count');
-    expect(layer.suggestion).toContain('fromTestRun');
+    expect(layer.suggestion).toContain('server-measured testLayer');
+    expect(layer.suggestion).toContain('exact passedCaseTitles');
+    expect(layer.suggestion).toContain('binder-only layer/path claims remain unknown');
 
-    // Positive control: the same unit row WITH the attestation passes.
+    // Positive control: the same required layer has a measured passing case and path attestation.
     const attested = evaluateSpecTestAdequacy({
       clause: clause({ requiredTestLayers: ['unit'] }),
-      evidence: [
-        evidence({
-          evidenceRef: 'surface:reconnect-unit',
-          details: { adequacy: { ...unitUnattested.details!.adequacy!, pathReachable: true } },
-        }),
-      ],
+      evidence: [successfulTestBinding('test/reconnect.unit.test.ts', {
+        layer: 'unit',
+        testCases: ['unit binding reaches its real path'],
+      })],
       classRef: 'plan-class-feature-ship',
     });
     expect(attested.ratings['correct-layer'].rating).toBe('pass');
     expect(attested.ratings['correct-layer'].suggestion).toBeUndefined();
+  });
+
+  it('requires exact passing case identity and rejects a binder layer that contradicts the run', () => {
+    const missingExactCase = successfulTestBinding('test/reconnect.integration.test.ts', {
+      testCases: ['declared binding case'],
+    });
+    missingExactCase.testRunExecution!.passedCaseTitles = ['different passing case'];
+    const uncorroborated = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [missingExactCase],
+      classRef: 'plan-class-feature-ship',
+    });
+    expect(uncorroborated.ratings['correct-layer'].rating).toBe('unknown');
+    expect(uncorroborated.ratings['correct-layer'].evidence).toContain('exact passedCaseTitles');
+
+    const contradictoryLayer = successfulTestBinding('test/reconnect.unit.test.ts', {
+      layer: 'unit',
+      testCases: ['unit binding reaches its real path'],
+    });
+    contradictoryLayer.details = {
+      ...contradictoryLayer.details,
+      adequacy: {
+        ...(contradictoryLayer.details.adequacy as Record<string, unknown>),
+        testLayer: 'integration',
+      },
+    };
+    const conflict = evaluateSpecTestAdequacy({
+      clause: clause({ requiredTestLayers: ['integration'] }),
+      evidence: [contradictoryLayer],
+      classRef: 'plan-class-feature-ship',
+    });
+    expect(conflict.ratings['correct-layer'].rating).toBe('fail');
+    expect(conflict.ratings['correct-layer'].evidence).toContain('testLayer-claim-mismatch:integration!=unit');
   });
 
   it('grades only the exact current cohort when historical stale or unknown bindings coexist', () => {
@@ -1671,7 +1784,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
       classRef: 'plan-class-feature-ship',
     });
     expect(notSatisfiedByHistory.evidenceRefs).toEqual(['surface:current-incomplete']);
-    expect(notSatisfiedByHistory.ratings['execution-integrity'].rating).toBe('unknown');
+    expect(notSatisfiedByHistory.ratings['execution-integrity'].rating).toBe('pass');
     expect(notSatisfiedByHistory.ratings['oracle-independence'].rating).toBe('unknown');
     expect(notSatisfiedByHistory.verdict).not.toBe('pass');
   });
@@ -2039,7 +2152,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
       evidence: [malformed],
       classRef: 'plan-class-feature-ship',
     });
-    expect(result.ratings['execution-integrity'].rating).toBe('unknown');
+    expect(result.ratings['execution-integrity'].rating).toBe('pass');
     expect(result.ratings['plan-class-risk-floor'].rating).toBe('unknown');
     expect(result.verdict).not.toBe('pass');
   });
@@ -2070,7 +2183,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     });
     const complete = evaluateSpecTestAdequacy({
       clause: scenarioClause,
-      evidence: [staleDecision, wrongSubject],
+      evidence: [staleDecision, wrongSubject, successfulTestBinding('packages/operator-core/lib/history.test.ts')],
       classRef: 'plan-class-feature-ship',
     });
     expect(complete.ratings['correct-layer'].rating).toBe('pass');
@@ -2180,7 +2293,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
 
     const result = evaluateSpecTestAdequacy({
       clause: pairClause,
-      evidence: [negative, collapsedRecurrence],
+      evidence: [negative, collapsedRecurrence, successfulTestBinding('packages/operator-core/lib/history.test.ts')],
       classRef: 'plan-class-feature-ship',
     });
 
@@ -2994,6 +3107,14 @@ describe('non-code clauses can reach an all-pass verdict (EI-23793489732627099)'
   // every adverse execution result, and the passing tests above would look identical.
   it('still blocks a FAILED outcome on an executable row — that fail is not absence-shaped', () => {
     const failed = operationalEvidence({
+      testRunId: 99,
+      testRunExecution: {
+        status: 'fail',
+        passed: 0,
+        failed: 1,
+        skipped: 0,
+        collectionFailed: false,
+      },
       details: {
         adequacy: {
           fixtureCalibrated: true,
@@ -3036,7 +3157,7 @@ describe('non-code clauses can reach an all-pass verdict (EI-23793489732627099)'
 // must be judged against the NEW revision's layers, never pass on its old ones.
 describe('a carried binding is re-validated against the new clause revision (P-002 C)', () => {
   it('passes at the old layers and fails correct-layer once a layers-only amendment raises them', () => {
-    const carriedRow = evidence();
+    const carriedRow = successfulTestBinding('test/reconnect.integration.test.ts');
     const before = evaluateSpecTestAdequacy({
       clause: clause(), evidence: [carriedRow], classRef: 'plan-class-feature-ship',
     });
