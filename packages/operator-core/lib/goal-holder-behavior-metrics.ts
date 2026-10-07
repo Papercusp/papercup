@@ -259,16 +259,30 @@ export function summarizeGoalReviews(rows: readonly GoalReviewRow[]): Omit<
  * "spend remains unknown ... unmeasured" as a failure for the same unmeasured goal spend).
  * The stamp's truth summary wins (it was measured at send time); a stamp without one is
  * judged against `spend`, the goal's spend read at grading time; no spend read leaves the
- * report unverified.
+ * report unverified. So does a spend read MEASURED AFTER the report was sent (WI-10007037):
+ * it is not evidence about what the sender could cite, so judging against it would make the
+ * verdict depend on when grading ran (a 20:00Z report failed against a 00:38Z rollup).
  */
 export function ownerReportCostVerdict(
-  row: Pick<OwnerReportRow, 'cost' | 'truthCost'>,
+  row: Pick<OwnerReportRow, 'cost' | 'truthCost'> & { ts?: string | null },
   spend: GoalReportMeasuredSpend | null | undefined,
 ): OwnerReportCostVerdict {
   if (row.truthCost === 'cited-measured' || row.truthCost === 'goal-spend-unmeasured') return row.truthCost;
   if (!spend) return 'unverified';
+  if (spendPostdatesReport(row.ts, spend.measuredAt)) return 'unverified';
   if (!spend.measured || spend.spentCents == null) return 'goal-spend-unmeasured';
   return costCitesMeasuredSpend(row.cost ?? '', spend.spentCents) ? 'cited-measured' : 'measured-spend-not-cited';
+}
+
+/**
+ * True when the spend read was measured strictly after the report was sent. Either side
+ * missing or unparseable keeps the legacy comparison (no evidence of post-dating).
+ */
+function spendPostdatesReport(reportTs: string | null | undefined, measuredAt: string | null | undefined): boolean {
+  if (!reportTs || !measuredAt) return false;
+  const sent = Date.parse(reportTs);
+  const measured = Date.parse(measuredAt);
+  return Number.isFinite(sent) && Number.isFinite(measured) && measured > sent;
 }
 
 export function summarizeOwnerReports(
@@ -443,7 +457,9 @@ export function rateGoalHolderBehavior(
     if (reports.costUnverified === reports.reports) {
       return {
         verdict: 'unknown',
-        reason: `COST truth unverifiable: none of ${reports.reports} report(s) carries a send-time truth summary and no goal spend was read.`,
+        reason:
+          `COST truth unverifiable: none of ${reports.reports} report(s) carries a send-time truth summary, and no goal ` +
+          'spend was read or the spend read was measured after the report(s) were sent.',
       };
     }
     const costParts = [
