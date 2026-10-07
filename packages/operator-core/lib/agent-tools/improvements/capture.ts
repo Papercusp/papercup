@@ -97,7 +97,7 @@ const observationRatingsSchema = z.record(
         "the explicit alternative to `remediation` on a POOR rating: a reasoned, owned decision NOT to act (≥10 chars). Silence is rejected; 'n/a' is not a decision.",
       ),
   }),
-);
+).meta({ id: 'observation-ratings-v1' });
 
 const observedRuntimeSchema = z
   .object({

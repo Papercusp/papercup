@@ -96,7 +96,7 @@ function addRefusalSummary<T extends { ok: boolean; results: Array<{ ok: boolean
 const decisionSpec = z.object({
   riskTier: z.enum(['trivial', 'low', 'moderate', 'high', 'critical']).optional(),
   authority: z.enum(['system', 'owner']).optional(),
-});
+}).meta({ id: 'work-items-state-decision-v1' });
 
 /**
  * P-005 / D-006: the terminal-state evidence requirement is STRUCTURAL, not described.

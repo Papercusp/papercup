@@ -16,6 +16,8 @@ describe('owner audit endpoint', () => {
     h.get.mockResolvedValue({ id: 'run', status: 'complete' });h.artifact.mockResolvedValue('<html>audit</html>');
     const response = await planAuditHandler(new Request('http://localhost/api/admin/plan-audit?runId=run&format=html'), ctx);
     expect(response.headers.get('Content-Security-Policy')).toContain('sandbox allow-scripts');
+    expect(response.headers.get('Cross-Origin-Embedder-Policy')).toBe('require-corp');
+    expect(response.headers.get('Cross-Origin-Resource-Policy')).toBe('cross-origin');
     expect(response.headers.get('Cache-Control')).toBe('no-store');
     expect(await response.text()).toContain('audit');
     h.get.mockResolvedValue({ status: 'failed', error: 'failed generation' });

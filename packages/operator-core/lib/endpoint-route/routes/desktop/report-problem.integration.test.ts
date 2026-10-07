@@ -24,6 +24,9 @@ const { intakeEndUserReport } = await import('../../../harness/improvements/end-
 const { putReportAttachment } = await import('../../../harness/improvements/report-attachments');
 const { buildProblemReport, previewDigest } = await import('../../../harness/improvements/problem-report');
 const { handleReportProblem } = await import('./report-problem');
+const { contributeUpstream } = await import('../../../pot/contribute-upstream');
+const { buildEngineerIssuesProjection } = await import('../../../sync/hyperbee/projections/engineer-issues');
+type EngineerIssueRow = import('../../../sync/hyperbee/projections/engineer-issues').EngineerIssueRow;
 type ReportProblemDeps = import('./report-problem').ReportProblemDeps;
 
 const WORKSPACE = 'papercusp-workspace';
@@ -61,6 +64,44 @@ async function rowsMentioning(marker: string) {
 }
 
 describe('desktop Report a problem door, end to end', () => {
+  it('P-015: contribution captures once and the existing issue CDC projects report context upstream', async () => {
+    const s = suffix();
+    const upstreamWorkspace = `p015-upstream-${s}`;
+    const intake = vi.fn(deps.intake);
+    const localFallback = vi.fn(deps.intake);
+    const payload = buildProblemReport({ text: `Export crashes p015-${s}`, appVersion: '0.9.4',
+      route: '/harness/papercusp/board', search: '?view=kanban',
+      recentErrors: [{ source: 'window.error', message: `TypeError: p015${s} is undefined` }] });
+    const out = await handleReportProblem({ payload, previewDigest: await previewDigest(payload) }, {
+      ...deps, intake: localFallback,
+      contribute: (input) => contributeUpstream({ kind: 'report', confirm: true, workspaceId: WORKSPACE,
+        report: { text: input.text, reportContext: input.reportContext },
+        hasCanonicalReportMembership: async () => true, intakeReport: intake }),
+    });
+    expect(out.status).toBe(200);
+    if (out.status !== 200) throw new Error(JSON.stringify(out));
+    expect(out.body.delivery).toBe('queued-for-federation');
+    expect(intake).toHaveBeenCalledOnce();
+    expect(localFallback).not.toHaveBeenCalled();
+    const id = out.body.id!;
+    // Real capture trigger / outbox row, not a hand-authored substitute payload.
+    const [op] = await db.adminSql<{ row: EngineerIssueRow; ts: string | number }[]>`
+      SELECT row, ts FROM harness_shared.substrate_outbox
+       WHERE workspace_id = ${WORKSPACE} AND table_name = 'engineer_issues'
+         AND row->>'issue_id' = ${id} ORDER BY id DESC LIMIT 1`;
+    expect(op, 'installed report must enter the existing issue federation outbox').toBeDefined();
+    const projection = buildEngineerIssuesProjection({ workspaceId: upstreamWorkspace, harnessSlug: 'papercusp', sql: db.adminSql });
+    await projection.writeToPg(op!.row, { ts: Number(op!.ts), origin: 'remote', authorPubkey: 'p015-admitted-install' });
+    const [upstream] = await db.adminSql<{ origin: string; payload: Record<string, unknown> }[]>`
+      SELECT origin, payload FROM harness_shared.work_items
+       WHERE workspace_id = ${upstreamWorkspace} AND feature_id = ${id}`;
+    expect(upstream?.origin).toBe('remote');
+    expect(upstream?.payload.reporter).toMatchObject({ kind: 'end-user' });
+    expect(JSON.stringify(upstream?.payload.reportContext)).toContain('0.9.4');
+    expect(JSON.stringify(upstream?.payload.reportContext)).toContain('kanban');
+    // Scope: real PG CDC -> real PG projection. No live swarm delivery claim.
+  });
+
   it("folds the desktop report and an agent's report of the same error into one bug", async () => {
     const s = suffix();
     const payload = buildProblemReport({

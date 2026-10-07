@@ -693,6 +693,10 @@ describe('dispatchPendingGradingAudits', () => {
         rubricRef: 'standard-rubric',
         state: 'deduped',
         idempotencyKey: 'grading-audit:EI-live-auditor',
+        dispatchReservation: {
+          key: 'grading-audit:EI-live-auditor',
+          reservedAt: '2026-09-08T00:00:00.000Z',
+        },
         launch: {
           deduped: true,
           opened: 0,
@@ -721,6 +725,10 @@ describe('dispatchPendingGradingAudits', () => {
     expect(d.release).toHaveBeenCalledWith('EI-live-auditor', 'grading-audit:EI-live-auditor', {
       workspaceId: 'ws-test',
       reservedAt: '2026-09-08T00:00:00.000Z',
+      restore: {
+        key: 'grading-audit:EI-live-auditor',
+        reservedAt: '2026-09-08T00:00:00.000Z',
+      },
     });
   });
 
@@ -748,6 +756,7 @@ describe('dispatchPendingGradingAudits', () => {
     const result = await dispatchPendingGradingAudits({ targetIds: ['EI-long-audit'], ctx }, d);
 
     expect(result.receipts[0]).toMatchObject({ state: 'deduped', idempotencyKey: 'grading-audit:EI-long-audit' });
+    expect(result.receipts[0]).toHaveProperty('dispatchReservation', auditorLease);
     expect(d.launch).not.toHaveBeenCalled();
     expect(d.release).toHaveBeenCalledTimes(1);
     expect(d.release).toHaveBeenCalledWith('EI-long-audit', 'grading-audit:EI-long-audit', {

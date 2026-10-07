@@ -303,15 +303,14 @@ describe('P-013 workload A fixture', () => {
           });
           coldStarts++;
           const overlappingChildren = childrenInFlight++;
-          let stderr = '';
+          const stderr = createTextCollector(child.stderr, { maxChars: 4_000 });
           let stage = 'spawned';
           // stdio[2] is 'pipe', so stderr exists; fail loudly rather than lose diagnostics.
           if (!child.stderr) throw new Error('P-013 cold child spawned without a stderr pipe');
-          child.stderr.on('data', (chunk) => { stderr = (stderr + String(chunk)).slice(-4_000); });
           let sample: P013Sample | undefined;
           const exit = new Promise<void>((resolve, reject) => {
             child.once('error', (error) => reject(new Error(
-              `P-013 cold child ${stage}: ${error.message}; stderr: ${stderr}`)));
+              `P-013 cold child ${stage}: ${error.message}; stderr: ${stderr.peek()}`)));
             // The child SIGKILLs itself after flushing to skip native env
             // teardown (EI-10702); that exit is clean only once a sample arrived.
             // 'close', not 'exit': under load 'exit' can fire before the already-sent
@@ -320,7 +319,7 @@ describe('P-013 workload A fixture', () => {
             child.once('close', (code, signal) => code === 0 || (signal === 'SIGKILL' && sample)
               ? resolve()
               : reject(new Error(`P-013 cold child ${stage} exited ${code}/${signal} ` +
-                `(${sample ? 'sample received' : 'no sample'}): ${stderr}`)));
+                `(${sample ? 'sample received' : 'no sample'}): ${stderr.peek()}`)));
           });
           let childLocalModel: LocalModelLoadEvidence | null = null;
           child.on('message', (message: {
@@ -357,7 +356,7 @@ describe('P-013 workload A fixture', () => {
                 // is unproven (a recall skipped by an expired memory deadline is
                 // one candidate), so the failure carries the child's stderr.
                 expect(embedderCalls, `P-013 A ${arm} child ${childSequence} made no fixture embed call; ` +
-                  `child stderr tail: ${stderr.slice(-2000)}`).toBeGreaterThan(0);
+                  `child stderr tail: ${stderr.peek().slice(-2000)}`).toBeGreaterThan(0);
                 // Negative control (EI-24688584300743328): neither the child
                 // nor this parent may have loaded a real local model while the
                 // fixture is installed.

@@ -21,6 +21,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { PLATFORM_POT_SLUG } from '../../../platform-pot-slug';
+import { contributeUpstream, type ContributeUpstreamResult } from '../../../pot/contribute-upstream';
 import {
   intakeEndUserReport,
   type EndUserReportInput,
@@ -93,6 +94,8 @@ export const reportProblemBodySchema = z
 
 export interface ReportProblemDeps {
   intake: (input: EndUserReportInput) => Promise<EndUserReportResult>;
+  /** P-015: production uses the existing contribution core, not a second capture. */
+  contribute?: (input: EndUserReportInput) => Promise<ContributeUpstreamResult>;
   putAttachment: (input: PutReportAttachmentInput) => Promise<PutReportAttachmentResult>;
   workspaceId: () => string;
 }
@@ -100,6 +103,10 @@ export interface ReportProblemDeps {
 export function defaultReportProblemDeps(): ReportProblemDeps {
   return {
     intake: (input) => intakeEndUserReport(input),
+    contribute: (input) => contributeUpstream({
+      kind: 'report', confirm: true, workspaceId: input.workspaceId,
+      report: { text: input.text, title: input.title, reportContext: input.reportContext },
+    }),
     putAttachment: (input) => putReportAttachment(input),
     workspaceId: activeWorkspaceId,
   };
@@ -112,9 +119,9 @@ export type ReportProblemAttachmentOutcome =
 export type ReportProblemOutcome =
   | {
       status: 200;
-      body: { routed: 'work-item' | 'memory'; id: string | null; attachments: ReportProblemAttachmentOutcome[] };
+      body: { routed: 'work-item' | 'memory'; id: string | null; attachments: ReportProblemAttachmentOutcome[]; delivery?: 'queued-for-federation' };
     }
-  | { status: 400 | 409 | 422; body: { error: string; detail?: unknown } };
+  | { status: 400 | 409 | 422 | 503; body: { error: string; detail?: unknown } };
 
 function workItemIdOf(result: Extract<EndUserReportResult, { routed: 'work-item' }>): string | null {
   return result.capture.issue?.id ?? result.capture.coalescedOnto?.id ?? null;
@@ -143,7 +150,7 @@ export async function handleReportProblem(
 
   const workspaceId = deps.workspaceId();
   const { context } = payload;
-  const result = await deps.intake({
+  const input: EndUserReportInput = {
     text: payload.text,
     workspaceId,
     // A note about the app is kept in the platform Pot's pool, where its bugs go too.
@@ -154,7 +161,24 @@ export async function handleReportProblem(
       screen: context.screen ? { url: null, route: context.screen.route, state: context.screen.state } : null,
       recentErrors: context.recentErrors,
     },
-  });
+  };
+  let result: EndUserReportResult;
+  let delivery: 'queued-for-federation' | undefined;
+  if (deps.contribute) {
+    // Reached only after strict parsing, exact preview digest and normalization:
+    // this Send is the explicit consent consumed by the contribution core.
+    const submission = await deps.contribute(input);
+    if (!submission.ok || !('queued' in submission || 'localOnly' in submission)) {
+      return { status: 503, body: {
+        error: 'report-not-submitted',
+        detail: !submission.ok ? submission.error : 'needs' in submission ? submission.needs : 'missing local receipt',
+      } };
+    }
+    result = submission.result;
+    if ('queued' in submission) delivery = 'queued-for-federation';
+  } else {
+    result = await deps.intake(input);
+  }
 
   if (result.routed === 'memory') {
     return { status: 200, body: { routed: 'memory', id: result.memoryIds[0] ?? null, attachments: [] } };
@@ -189,7 +213,7 @@ export async function handleReportProblem(
         : { kind: attachment.kind, ok: false, reason: `${stored.reason}: ${stored.detail}` },
     );
   }
-  return { status: 200, body: { routed: 'work-item', id, attachments } };
+  return { status: 200, body: { routed: 'work-item', id, attachments, ...(delivery ? { delivery } : {}) } };
 }
 
 const post = defineTool({

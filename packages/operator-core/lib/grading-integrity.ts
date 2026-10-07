@@ -235,6 +235,9 @@ export interface PendingGradingAuditDispatchReceipt {
   rubricRef?: string;
   state: PendingGradingAuditDispatchState;
   idempotencyKey?: string;
+  /** Exact retained lease for the existing independent auditor; re-read the
+   * target before handing a renewed lease to that same live session. */
+  dispatchReservation?: { key: string; reservedAt: string };
   launch?: unknown;
   conversationId?: string;
   routingFallback?: string;
@@ -1354,12 +1357,21 @@ export async function dispatchPendingGradingAudits(
       if (viableLiveTasks.length > 0) {
         // WI-10005273: hand the row back to the live auditor's own lease. Deleting it (the old
         // behaviour) is what made every audit longer than one TTL unable to emit.
-        await releaseReservation(undefined, priorReservation);
+        // EI-25287745234355817: older sweeps may already have deleted that
+        // lease. Keep the newly claimed one rather than deleting it AGAIN,
+        // and return its exact identity so the caller can explicitly hand it
+        // to the existing independent session (never launch a duplicate).
+        const retainedReservation = priorReservation ?? {
+          key: idempotencyKey,
+          reservedAt: reservationReservedAt,
+        };
+        await releaseReservation(undefined, retainedReservation);
         receipt = {
           issueId,
           rubricRef: card.rubricRef,
           state: 'deduped',
           idempotencyKey,
+          dispatchReservation: retainedReservation,
           launch: {
             deduped: true,
             opened: 0,

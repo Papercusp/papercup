@@ -1,6 +1,4 @@
 import { readFileSync } from 'node:fs';
-import { JSDOM } from 'jsdom';
-import { renderPlanAuditReport } from './plan-audit-report';
 import { describe, expect, it } from 'vitest';
 import type { PlanIndexRow } from './agent-tools/plans/source';
 import {
@@ -283,22 +281,6 @@ describe('manifest and evidence rendering', () => {
     expect(html).toContain('Outside Blender');
   });
 
-  it('preserves plan identities and composes source, search, and harness filters in the shared viewer', () => {
-    const rows = [
-      { slug: 'blender-alpha', title: 'Alpha Blender', status: 'active', category: 'protected', provenance: 'blender', harness: 'papercusp' },
-      { slug: 'outside-alpha', title: 'Alpha Outside', status: 'active', category: 'protected', provenance: 'outside-blender', harness: 'papercusp' },
-      { slug: 'blender-beta', title: 'Beta Blender', status: 'active', category: 'protected', provenance: 'blender', harness: 'other' },
-      { slug: 'outside-beta', title: 'Beta Outside', status: 'active', category: 'protected', provenance: 'outside-blender', harness: 'other' },
-    ];
-    const dom = new JSDOM(renderPlanAuditReport({ rows }), { runScripts: 'dangerously', url: 'http://localhost/' });
-    const doc = dom.window.document;
-    const set = (id: string, value: string) => { (doc.getElementById(id) as HTMLInputElement).value = value;doc.getElementById(id)!.dispatchEvent(new dom.window.Event(id === 'search' ? 'input' : 'change')); };
-    expect(doc.getElementById('shown')!.textContent).toBe('4 of 4 records');
-    set('provenance', 'outside-blender');expect(doc.getElementById('shown')!.textContent).toBe('2 of 4 records');
-    set('search', 'alpha');expect(doc.getElementById('shown')!.textContent).toBe('1 of 4 records');
-    set('harness', 'other');expect(doc.getElementById('shown')!.textContent).toBe('0 of 4 records');
-    set('search', '');expect(doc.getElementById('shown')!.textContent).toBe('1 of 4 records');
-  });
 
   it('validates explicit audit population instead of silently dropping unavailable selections', () => {
     const plans = [plan({ planSlug: 'a' }), plan({ planSlug: 'b', status: 'shipped', archived: true })];

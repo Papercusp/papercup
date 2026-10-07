@@ -584,6 +584,8 @@ export function evaluateContinuationGate(inputs: ContinuationGateInputs): Contin
     ) &&
     rewakeGuaranteed === true &&
     nextWakeFresh === false &&
+    contextPct != null &&
+    contextPct >= ceilingPct &&
     selfCompactionAvailable !== true
   ) {
     // A cold retune is only a fresh-context remedy when a live, usable psu-pty
@@ -607,7 +609,9 @@ export function evaluateContinuationGate(inputs: ContinuationGateInputs): Contin
       fleetWindDownLoopEndAuthorized === true
     ) &&
     rewakeGuaranteed === true &&
-    nextWakeFresh === false
+    nextWakeFresh === false &&
+    contextPct != null &&
+    contextPct >= ceilingPct
   ) {
     // A WARM loop guarantees another turn but does not shed context. Only a
     // confirmed host-backed session can safely retune it to cold: a hostless

@@ -109,7 +109,8 @@ export const continuityPredicateSchema = z
         message: 'invalid predicate path; use $, dotted object keys, and numeric [index] segments only',
       });
     }
-  });
+  })
+  .meta({ id: 'continuity-predicate-v1' });
 
 const toolProbeShape = z
   .object({

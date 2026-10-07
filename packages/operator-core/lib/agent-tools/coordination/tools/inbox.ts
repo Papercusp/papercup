@@ -79,7 +79,7 @@ import { selfCompactionAvailability } from "../../../events/await/psu-pty-discov
 import { listActiveClaimFreshnessForOwner } from "../../../work-item-claims";
 import { activeWorkspaceId } from "../../../workspace-registry";
 import { cachedRead, type CachedReadCtx } from "../../../cache";
-import { fetchUnansweredDirected } from "../unanswered-directed";
+import { fetchUnansweredDirected, type UnansweredDirectedEntry } from "../unanswered-directed";
 import { authoredFieldsMarker } from "../message-fields";
 import { annotateMessageAge } from "../message-age";
 import {
@@ -642,6 +642,15 @@ export function filterInboxByUnanswered<T extends { msg_id?: unknown }>(
   return entries.filter(
     (e) => typeof e.msg_id === "string" && unansweredMsgIds.has(e.msg_id),
   );
+}
+
+/** Only messages whose sender is not positively ended still need a reply. */
+export function replyOwedMessageIds(
+  entries: readonly Pick<UnansweredDirectedEntry, "msgId" | "senderState">[],
+): ReadonlySet<string> {
+  // newest spans both liveness populations for display. Unknown or unmeasured
+  // liveness stays actionable; only positive ended evidence demotes a message.
+  return new Set(entries.filter((entry) => entry.senderState !== "ended").map((entry) => entry.msgId));
 }
 
 /**
@@ -1277,9 +1286,7 @@ export default defineTool({
             perRecipientCap: UNANSWERED_FILTER_CAP,
           }),
         );
-        unansweredMsgIds = new Set(
-          (unansweredMap.get(identity.ownerId)?.newest ?? []).map((e) => e.msgId),
-        );
+        unansweredMsgIds = replyOwedMessageIds(unansweredMap.get(identity.ownerId)?.newest ?? []);
       } catch {
         unansweredMsgIds = new Set();
         unansweredLookupFailed = true;

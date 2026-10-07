@@ -144,16 +144,17 @@ describe('EI-13965 — aggregateIssueClaimExclusions counts each floor bucket fo
 
     const out = await aggregateIssueClaimExclusions(undefined, { harness: H });
 
-    // matchedByFilter = every row in the claimable-status scope for this harness/workspace,
-    // REGARDLESS of floor — WI-9410 (resolved) is the only one excluded from this count.
-    // 9401..9409 plus 9411 = 10 rows (9408 is itself its own row too, though it's the BLOCKER not the
-    // blocked one under test — it is untaken/unfloored so it is simultaneously admissible).
-    expect(out.matchedByFilter).toBe(10);
+    // The canonical agent-work predicate scopes the population before claim floors:
+    // WI-9406 (observation) and WI-9411 (owner action) are outside it, as is the
+    // resolved WI-9410. The other eight rows remain, including the compatibility
+    // WI-9405 and the unfloored blocker WI-9408.
+    expect(out.matchedByFilter).toBe(8);
+    expect(out.claimable).toBe(3); // WI-9401, WI-9405, WI-9408
     expect(out.excluded).toMatchObject({
       taken: 1, // WI-9403
       claimHold: 1, // WI-9402
-      needsOwnerAction: 1, // WI-9411
-      observationLane: 1, // WI-9406
+      needsOwnerAction: 0, // WI-9411 is outside the agent-work population
+      observationLane: 0, // WI-9406 is outside the agent-work population
       externalBlocker: 1, // WI-9407
       planLaneReserved: 1, // WI-9404
       blockedDep: 1, // WI-9409 (blocked by open WI-9408)
@@ -213,9 +214,17 @@ describe('EI-13965 — aggregateIssueClaimExclusions counts each floor bucket fo
   });
 
   it('an item taken by someone else counts ONLY under `taken`, never double-counted under another floor', async () => {
-    // Taken AND would otherwise also read claim-held / owner-action — but `taken` short-
-    // circuits every other bucket (each later floor is scoped to the UNTAKEN subset).
-    await seedIssue('WI-9701', { _claimHold: true, needsOwnerAction: true }, { takenBy: 'su-outside' });
+    // Eligible agent work that is taken AND would otherwise be claim-held /
+    // externally blocked. Owner-action rows cannot exercise this short-circuit:
+    // the canonical work predicate excludes them before any bucket is counted.
+    await seedIssue(
+      'WI-9701',
+      {
+        _claimHold: true,
+        externalBlockers: [{ kind: 'event', ref: 'deploy:green', status: 'active', createdAt: '', updatedAt: '' }],
+      },
+      { takenBy: 'su-outside' },
+    );
 
     const out = await aggregateIssueClaimExclusions(undefined, { harness: H });
     expect(out.matchedByFilter).toBe(1);
@@ -223,6 +232,7 @@ describe('EI-13965 — aggregateIssueClaimExclusions counts each floor bucket fo
       taken: 1,
       claimHold: 0,
       needsOwnerAction: 0,
+      externalBlocker: 0,
     });
   });
 });

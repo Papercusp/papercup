@@ -24,7 +24,14 @@ export async function planAuditHandler(req: Request, _ctx: RouteContext): Promis
       return new Response(artifact, { headers: {
         'Content-Type': format === 'html' ? 'text/html; charset=utf-8' : 'application/json; charset=utf-8',
         'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff',
-        ...(format === 'html' ? { 'Content-Security-Policy': "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; sandbox allow-scripts allow-downloads" } : {}),
+        ...(format === 'html' ? {
+          'Content-Security-Policy': "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; sandbox allow-scripts allow-downloads",
+          // The app uses COEP; opaque sandbox frames must return an explicitly
+          // compatible document. CORP is NOT CORS or an auth bypass: the route
+          // remains authenticated, and the sandbox never grants same-origin.
+          'Cross-Origin-Embedder-Policy': 'require-corp',
+          'Cross-Origin-Resource-Policy': 'cross-origin',
+        } : {}),
       } });
     }
     return Response.json({ ok: true, run }, { headers: { 'Cache-Control': 'no-store' } });

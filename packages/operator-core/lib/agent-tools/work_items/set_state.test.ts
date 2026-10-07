@@ -6,6 +6,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
+import { standardValidate } from '@papercusp/tooldef';
 
 vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: () => ({ ownerId: 'me' }) }));
 // readNonAgentWorkCategory backs the D-035 agent-work door gate (work-nature/agent-work-door-gate);
@@ -33,6 +34,22 @@ const tool = (await import('./set_state')).default;
 
 type Out = { data: any };
 const body = async (args: unknown) => (((await tool.handler(args as never, {} as never)) as Out).data);
+
+describe('work_items:set_state dispatch validation (EI-25280526101674032)', () => {
+  it('accepts a forced reopen through the Standard Schema validator used by MCP dispatch', async () => {
+    const parsed = await standardValidate(tool.args, {
+      id: 'WI-test',
+      harness: 'papercusp',
+      state: 'open',
+      force: true,
+    });
+
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) {
+      expect(parsed.value).toMatchObject({ id: 'WI-test', state: 'open', force: true });
+    }
+  });
+});
 
 /** Default mock: no alias — the item lands exactly on the requested state. */
 function noAlias(id: string, state: string) {

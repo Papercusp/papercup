@@ -213,6 +213,47 @@ describe('re-wake guarantee escalation (kills the "the next wake re-opens the ga
     expect(v.guidance).not.toMatch(/the next wake re-opens the gate/);
   });
 
+  it.each([
+    { unreadInbox: 1, selfCompactionAvailable: true },
+    { unreadInbox: 1, selfCompactionAvailable: false },
+    { unreadInbox: 1, selfCompactionAvailable: null },
+    { unreadInbox: null, selfCompactionAvailable: true },
+    { unreadInbox: null, selfCompactionAvailable: false },
+    { unreadInbox: null, selfCompactionAvailable: null },
+  ])('preserves warm carry when only the inbox closes the gate ($unreadInbox, host $selfCompactionAvailable)', (inputs) => {
+    const v = evaluateContinuationGate({
+      contextPct: 44,
+      ...inputs,
+      rewakeGuaranteed: true,
+      nextWakeFresh: false,
+      activeLoopIntervalSec: 300,
+      activeLoopGoal: 'drain the lane',
+    });
+
+    expect(v.shouldContinue).toBe(false);
+    expect(v.contextHeadroom).toBe(true);
+    expect(v.reasons).toHaveLength(1);
+    expect(v.guidance).toContain('coord:inbox');
+    expect(v.guidance).not.toContain('over-ceiling');
+    expect(v.guidance).not.toContain("carry: 'cold'");
+    expect(v.guidance).not.toMatch(/cold wake|retune.*loop|session:request-compaction/);
+  });
+
+  it('does not label unknown context as over-ceiling or prescribe a cold retune', () => {
+    const v = evaluateContinuationGate({
+      contextPct: null,
+      unreadInbox: 0,
+      rewakeGuaranteed: true,
+      nextWakeFresh: false,
+      selfCompactionAvailable: true,
+    });
+
+    expect(v.shouldContinue).toBe(false);
+    expect(v.reasons.join(' ')).toContain('context usage unknown');
+    expect(v.guidance).not.toContain('over-ceiling');
+    expect(v.guidance).not.toContain("carry: 'cold'");
+  });
+
   it('a hostless warm wake is not retuned to a cold path that may park', () => {
     const v = evaluateContinuationGate({
       contextPct: 75,

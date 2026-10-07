@@ -7,7 +7,13 @@ import { renderPlanAuditReport } from './plan-audit-report';
 const document = { generatedAt: '2026-10-07T00:00:00Z', rows: Array.from({ length: 95 }, (_, n) => ({ slug: 'plan-' + n, title: 'Plan ' + String(n).padStart(2, '0'), category: n % 2 ? 'Finish' : 'History', status: 'active', implementation: 'Built ' + n, citations: [{ path: 'src/' + n + '.ts' }] })) };
 let browser: Browser;
 let url: string;
-const server = createServer((_req, res) => { res.setHeader('Content-Type', 'text/html; charset=utf-8');res.end(renderPlanAuditReport(document)); });
+const server = createServer((req, res) => {
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  // Exercise the product's actual isolation boundary, not merely a plain iframe.
+  res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
+  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+  res.end(req.url === '/embed' ? '<iframe title="Audit" sandbox="allow-scripts allow-downloads" src="/report"></iframe>' : renderPlanAuditReport(document));
+});
 beforeAll(async () => {
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();if (!address || typeof address === 'string') throw new Error('Missing browser fixture address');
@@ -16,6 +22,19 @@ beforeAll(async () => {
 }, 30000);
 afterAll(async () => { await browser?.close();await new Promise<void>(resolve => server.close(() => resolve())); });
 describe('audit report browser navigation', () => {
+  it('renders and navigates when embedded in the product sandbox', async () => {
+    const page = await browser.newPage();const errors: string[] = [];
+    page.on('pageerror', error => errors.push(error.message));
+    try {
+      await page.goto(url + '/embed');
+      const frame = page.frameLocator('iframe');
+      await frame.locator('#detail h2').waitFor();
+      expect(await frame.locator('#detail').textContent()).toContain('Built 0');
+      await frame.getByRole('searchbox').fill('Plan 05');
+      expect(await frame.locator('#detail').textContent()).toContain('Built 5');
+      expect(errors).toEqual([]);
+    } finally { await page.close(); }
+  });
   it('retains complete evidence across pagination, filters, deep-link reload and mobile viewport', async () => {
     const page = await browser.newPage();
     try {
@@ -28,7 +47,7 @@ describe('audit report browser navigation', () => {
       expect(await page.locator('#detail').textContent()).toContain('Built 5');
       await page.reload();expect(await page.locator('#detail').textContent()).toContain('Built 5');
       await page.setViewportSize({ width: 390, height: 844 });
-      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+      expect(await page.evaluate(() => window.document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
       await page.getByRole('searchbox').fill('missing');
       expect(await page.locator('#detail').textContent()).toContain('No matching plans');
       await page.getByRole('button', { name: 'Evidence & limits' }).click();

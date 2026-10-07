@@ -118,6 +118,7 @@ describe('the FULL collectToolErrorSignals query embeds the generated fragments 
       { tool: 'plans:new', status: 'error', code: null, msg: 'invalid_args: note: Too big: expected string to have <=400 characters', n: 11 },
       { tool: 'plans:new', status: 'error', code: 'handler_error', msg: 'invalid_args: status: Invalid option: expected one of "draft"|"ready"', n: 11 },
       { tool: 'tools:invoke', status: 'error', code: 'handler_error', msg: 'invalid_input: invalid_args: Unrecognized key: "workspace"', n: 11 },
+      { tool: 'tools:invoke', status: 'error', code: 'handler_error', msg: 'role_not_allowed: Role "judge" cannot call tool "sessions:search" (allowed roles: operator)', n: 11 },
       { tool: 'plans:list', status: 'timeout', code: null, msg: 'tool "plans:list" exceeded timeout of 60s (handler returned but signal had aborted)', n: 16 },
     ];
     for (const s of seed) {
@@ -136,6 +137,7 @@ describe('the FULL collectToolErrorSignals query embeds the generated fragments 
     expect(keys).toContain('plans:new:caller:invalid-args-note-too-big-expected');
     expect(keys).toContain('plans:new:caller:invalid-args-status-invalid-option-expected');
     expect(keys).toContain('tools:invoke:caller:invalid-input-invalid-args-unrecognized-key');
+    expect(keys).toContain('tools:invoke:caller:role-not-allowed-role-judge-cannot');
     // …and the timeout is a fingerprinted transient key.
     expect(keys.some((k) => k.startsWith('plans:list:transient:'))).toBe(true);
   });

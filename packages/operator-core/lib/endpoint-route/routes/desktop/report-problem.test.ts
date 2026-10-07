@@ -48,6 +48,41 @@ async function send(p: ProblemReportPayload, extra: Record<string, unknown> = {}
 }
 
 describe('handleReportProblem', () => {
+  it('uses contribution once after preview validation and exposes only queued delivery (P-015)', async () => {
+    const { d } = deps();
+    const result: EndUserReportResult = { routed: 'work-item', classification: { kind: 'bug', basis: 'defect-cue' }, capture: { issue: { id: 'EI-upstream' } } as never };
+    d.contribute = vi.fn(async () => ({ ok: true as const, kind: 'report' as const, queued: true as const, result, summary: 'queued' }));
+    const out = await handleReportProblem(await send(payload()), d);
+    expect(out).toMatchObject({ status: 200, body: { id: 'EI-upstream', delivery: 'queued-for-federation' } });
+    expect(d.contribute).toHaveBeenCalledOnce();
+    expect(d.intake).not.toHaveBeenCalled();
+  });
+
+  it('does not fall back to local capture when canonical contribution prerequisites are missing', async () => {
+    const { d } = deps();
+    d.contribute = vi.fn(async () => ({ ok: true as const, kind: 'report' as const, prepared: true as const, needs: ['canonical-Pot membership'], plan: {}, summary: 'not submitted' }));
+    expect(await handleReportProblem(await send(payload()), d)).toMatchObject({ status: 503, body: { error: 'report-not-submitted' } });
+    expect(d.intake).not.toHaveBeenCalled();
+    expect(d.putAttachment).not.toHaveBeenCalled();
+  });
+
+  it('rejects a changed preview before calling contribution', async () => {
+    const { d } = deps();
+    d.contribute = vi.fn();
+    const body = await send(payload());
+    expect((await handleReportProblem({ ...body, payload: { ...body.payload, text: 'Changed' } }, d)).status).toBe(409);
+    expect(d.contribute).not.toHaveBeenCalled();
+  });
+
+  it('reports a saved note as local memory, not an upstream bug receipt', async () => {
+    const { d } = deps();
+    d.contribute = vi.fn(async () => ({ ok: true as const, kind: 'report' as const, localOnly: true as const,
+      result: { routed: 'memory' as const, classification: { kind: 'note' as const, basis: 'explicit-note' as const }, memoryIds: ['mem-local'], scope: 'harness:papercusp' }, summary: 'saved locally' }));
+    const out = await handleReportProblem(await send(payload({ text: 'FYI: a note', recentErrors: [] })), d);
+    expect(out).toEqual({ status: 200, body: { routed: 'memory', id: 'mem-local', attachments: [] } });
+    expect(d.intake).not.toHaveBeenCalled();
+  });
+
   it('files the previewed payload through the one intake with the captured context', async () => {
     const { d, intakeCalls, putCalls } = deps();
     const out = await handleReportProblem(await send(payload()), d);

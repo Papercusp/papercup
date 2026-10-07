@@ -9,7 +9,7 @@
  * this filter deliberately reuses rather than re-deriving.
  */
 import { describe, it, expect } from 'vitest';
-import { filterInboxByUnanswered } from './inbox';
+import { filterInboxByUnanswered, replyOwedMessageIds } from './inbox';
 import inboxTool from './inbox';
 
 type E = { msg_id: string; from?: unknown };
@@ -22,6 +22,28 @@ const rows: E[] = [
 ];
 
 describe('filterInboxByUnanswered (EI-13159)', () => {
+  it('does not mark messages from positively ended senders as reply-owed', () => {
+    const unanswered = replyOwedMessageIds([
+      { msgId: 'live-msg', senderState: 'live' },
+      { msgId: 'ended-msg', senderState: 'ended' },
+      { msgId: 'unknown-msg', senderState: 'unknown' },
+      { msgId: 'unmeasured-msg' },
+    ]);
+    const inboxRows = [
+      { msg_id: 'live-msg' },
+      { msg_id: 'ended-msg' },
+      { msg_id: 'unknown-msg' },
+      { msg_id: 'unmeasured-msg' },
+    ];
+
+    expect([...unanswered]).toEqual(['live-msg', 'unknown-msg', 'unmeasured-msg']);
+    expect(filterInboxByUnanswered(inboxRows, unanswered).map((row) => row.msg_id)).toEqual([
+      'live-msg',
+      'unknown-msg',
+      'unmeasured-msg',
+    ]);
+  });
+
   it('keeps only entries whose msg_id is in the unanswered set', () => {
     const unanswered = new Set(['a', 'd']);
     expect(filterInboxByUnanswered(rows, unanswered).map((r) => r.msg_id)).toEqual(['a', 'd']);
