@@ -47,6 +47,19 @@ export interface BaselineCoordFixture {
   dispose: () => Promise<void>;
 }
 
+/** Cleanup hooks also run when beforeAll failed before returning a fixture. */
+export async function disposeBaselineCoordFixture(
+  fixture: BaselineCoordFixture | undefined,
+  cleanup?: (admin: postgres.Sql) => Promise<void>,
+): Promise<void> {
+  if (!fixture) return;
+  try {
+    await cleanup?.(fixture.admin);
+  } finally {
+    await fixture.dispose();
+  }
+}
+
 function withUser(dsn: string, user: string, password: string): string {
   const u = new URL(dsn);
   u.username = user;

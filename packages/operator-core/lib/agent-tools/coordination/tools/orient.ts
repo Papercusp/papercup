@@ -840,11 +840,11 @@ export type OrientObligationsFold = () => Promise<
  * Overlay the effective membership onto the caller's own fleet-assignment row.
  *
  * `fleet:assignments` is a separate projection from the registry-backed
- * leadership check. During the projection lag that caused EI-20201050911711528,
- * the same orient could therefore say `fleetRole:'member'` in `me` while omitting
- * `leaderBrief` because the registry already knew the caller was the leader. Keep
- * this narrow: only the row belonging to `ownerId` is changed, and an absent or
- * malformed assignments payload is passed through unchanged.
+ * membership check. During projection lag, orient can know the caller's fleet
+ * and role while the assignment roster is unavailable. In that explicitly
+ * degraded case, preserve only the authoritative self-membership fields; never
+ * synthesize claims, activity, or a roster count. Malformed payloads and
+ * non-degraded successful results without a self row pass through unchanged.
  */
 function overlaySelfFleetMembership(
   me: unknown,
@@ -853,18 +853,29 @@ function overlaySelfFleetMembership(
 ): unknown {
   if (!ownerId || !membership?.fleetSlug || !membership.fleetRole) return me;
   if (!me || typeof me !== 'object' || Array.isArray(me)) return me;
-  const record = me as { agents?: unknown[] };
+  const record = me as { agents?: unknown[]; degraded?: unknown };
   if (!Array.isArray(record.agents)) return me;
   let changed = false;
+  let foundSelf = false;
   const agents = record.agents.map((agent) => {
     if (!agent || typeof agent !== 'object' || Array.isArray(agent)) return agent;
     const row = agent as Record<string, unknown>;
     const rowOwnerId = row.agentId ?? row.ownerId;
     if (rowOwnerId !== ownerId) return agent;
+    foundSelf = true;
     if (row.fleetSlug === membership.fleetSlug && row.fleetRole === membership.fleetRole) return agent;
     changed = true;
     return { ...row, fleetSlug: membership.fleetSlug, fleetRole: membership.fleetRole };
   });
+  if (!foundSelf && record.degraded === true) {
+    agents.push({
+      agentId: ownerId,
+      isSelf: true,
+      fleetSlug: membership.fleetSlug,
+      fleetRole: membership.fleetRole,
+    });
+    changed = true;
+  }
   return changed ? { ...record, agents } : me;
 }
 
@@ -1185,9 +1196,10 @@ export async function composeOrient(
       label: 'orient:fleet:assignments',
     },
   ).then((meResult) => {
-    const me = annotateDegradedFleetAssignments(
-      overlaySelfFleetMembership(meResult.value, ownerId, effectiveFleetMembership),
-      meResult,
+    const me = overlaySelfFleetMembership(
+      annotateDegradedFleetAssignments(meResult.value, meResult),
+      ownerId,
+      effectiveFleetMembership,
     );
     // EI-21589715378243224: retain useful reconciliation in the aggregate
     // fallback even when a slower backlog/inbox/fold exhausts its budget.

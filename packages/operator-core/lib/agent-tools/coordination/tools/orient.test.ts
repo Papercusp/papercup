@@ -4361,6 +4361,61 @@ describe('P-005 full-mode delta (plan-events + fleet catch-up, server-side curso
       warnSpy.mockRestore();
     });
 
+    it('preserves recovered self membership when the fleet assignment roster exceeds orient budget', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const ownerId = 'su-recovered-membership-timeout-test';
+      const { call, calls } = fakeCall({
+        ...CORE,
+        'fleet:assignments': () => new Promise(() => {}),
+      });
+      const recoveredScope = async () => ({ fleetSlug: 'orch-unify', fleetRole: 'member' });
+      try {
+        const resultPromise = composeOrient(
+          { mode: 'monitor', afterCompaction: true },
+          call,
+          ownerId,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          { fleetSlug: null, fleetRole: null },
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          recoveredScope,
+        );
+
+        await vi.advanceTimersByTimeAsync(8_000);
+        const result = await resultPromise;
+        const assignmentCall = calls.find((entry) => entry.name === 'fleet:assignments');
+
+        expect(assignmentCall?.args).toEqual({ fleet: 'orch-unify' });
+        expect(result.me).toMatchObject({
+          ok: false,
+          degraded: true,
+          degradedLeg: 'fleet:assignments',
+          degradedReason: 'fleet:assignments read exceeded 8000ms',
+          retryable: true,
+          agents: [
+            {
+              agentId: ownerId,
+              isSelf: true,
+              fleetSlug: 'orch-unify',
+              fleetRole: 'member',
+            },
+          ],
+        });
+        expect(warnSpy).toHaveBeenCalled();
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
     it('annotates an unsuccessful fleet:assignments envelope even when it resolves without timing out', async () => {
       const { call } = fakeCall({
         ...CORE,

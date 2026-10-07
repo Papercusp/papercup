@@ -17,12 +17,12 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type postgres from 'postgres';
-import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../../_baseline-coord-fixture';
+import { disposeBaselineCoordFixture, setupBaselineCoordFixture, type BaselineCoordFixture } from '../../_baseline-coord-fixture';
 import { sweepStalePresence, listPresence } from './presence';
 import { fetchWakeability, LIVE_TURN_WINDOW_MS, WAKE_PICKUP_GRACE_MS } from './presence-wakeability';
 import { COORD_INBOX_WAKE_PREFIX } from './inbox-wake';
 
-let fx: BaselineCoordFixture;
+let fx: BaselineCoordFixture | undefined;
 let admin: postgres.Sql;
 
 /** Seed a presence row with an explicit heartbeat age (seconds in the past). */
@@ -40,14 +40,26 @@ async function ownerIds(): Promise<string[]> {
   return rows.map((r) => r.owner_id);
 }
 
+async function cleanWakeabilityRows(sql: postgres.Sql): Promise<void> {
+  const prefix = 'wkt-%';
+  await sql`DELETE FROM harness_shared.event_awaits WHERE subscriber_id LIKE ${prefix}`;
+  await sql`DELETE FROM harness_shared.event_wake_deliveries WHERE subscriber_id LIKE ${prefix}`;
+  await sql`DELETE FROM harness_shared.event_wake_attempts WHERE subscriber_id LIKE ${prefix}`;
+  await sql`DELETE FROM harness_shared.tool_invocations WHERE coord_owner_id LIKE ${prefix}`;
+  await sql`DELETE FROM harness_shared.agent_activity WHERE owner_id LIKE ${prefix}`;
+}
+
 beforeAll(async () => {
   fx = await setupBaselineCoordFixture();
   admin = fx.admin;
 });
-afterAll(async () => {
-  await admin`TRUNCATE harness_shared.coord_presence`.catch(() => {});
-  await fx.dispose();
-});
+afterAll(() => disposeBaselineCoordFixture(fx, async (sql) => {
+  try {
+    await sql`TRUNCATE harness_shared.coord_presence`;
+  } finally {
+    await cleanWakeabilityRows(sql);
+  }
+}));
 beforeEach(async () => {
   await admin`TRUNCATE harness_shared.coord_presence`;
 });
@@ -124,15 +136,7 @@ describe('fetchWakeability (real PG)', () => {
   const P = 'wkt-';
   const own = (id: string) => `${P}${id}`;
 
-  async function clean(): Promise<void> {
-    await admin`DELETE FROM harness_shared.event_awaits WHERE subscriber_id LIKE ${`${P}%`}`;
-    await admin`DELETE FROM harness_shared.event_wake_deliveries WHERE subscriber_id LIKE ${`${P}%`}`;
-    await admin`DELETE FROM harness_shared.event_wake_attempts WHERE subscriber_id LIKE ${`${P}%`}`;
-    await admin`DELETE FROM harness_shared.tool_invocations WHERE coord_owner_id LIKE ${`${P}%`}`;
-    await admin`DELETE FROM harness_shared.agent_activity WHERE owner_id LIKE ${`${P}%`}`;
-  }
-  beforeEach(clean);
-  afterAll(clean);
+  beforeEach(() => cleanWakeabilityRows(admin));
 
   /** Seed one standing inbox-wake await (the `wakeable` signal). Defaults to a
    *  LIVE await (unfired, uncancelled, unexpired, correctly-keyed). */

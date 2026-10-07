@@ -5,9 +5,9 @@
   "accountableOwner": "su-a20d4635-81b0-4323-b33e-6e838a21d8fe",
   "population": {
     "failedFiles": 124,
-    "repairedFocused": 10,
+    "repairedFocused": 11,
     "repairedPeerFocused": 10,
-    "openUnknown": 104
+    "openUnknown": 103
   },
   "classes": {
     "assertion": 62,
@@ -1294,8 +1294,17 @@
     {
       "path": "packages/operator-core/lib/topics-feed.integration.test.ts",
       "class": "compat-view-insert",
-      "state": "open-unknown",
-      "item": "WI-10006170",
+      "state": "repaired-focused",
+      "item": "WI-10006718",
+      "commit": "1729db25623631fe2e6708c34f213e7f3711a16a",
+      "verification": {
+        "redTestRunId": 20843640,
+        "firstGreenTestRunId": 20843701,
+        "currentGreenTestRunId": 20892004,
+        "currentCommit": "ee1d5dd613aa5e56eb99b56af64da62084b3625b",
+        "result": "9 passed, 0 failed, 0 skipped; conventional real-PG storage/view and feed controls",
+        "scope": "Exact topic-feed fixture and tests only; not full source/import/environment readiness or final D006."
+      },
       "lines": [
         12896,
         12914
@@ -1784,7 +1793,99 @@
       "owner": "su-a20d4635-81b0-4323-b33e-6e838a21d8fe",
       "scope": "diagnosis-and-placement",
       "rootCause": "unproved",
-      "next": "Inspect exact saved error/source, deduplicate accepted defect and focused guard before source edits."
+      "next": "Resolve the ten archived diagnostic entries below against scoped repairs and current causal verification; preserve open-unknown until each file's complete failure population is accounted for.",
+      "archivedDiagnosticInventory": {
+        "archiveSha256": "43cf66489baf7cf665a9746d097375cffc7cdc6262014929c3cc398155b579f4",
+        "scope": "Exact ANSI-stripped error groups from the immutable D006 archive, indexed by the existing FAIL-header line identities. These are historical symptoms, not current test verdicts or proved source causes. Candidate terminal records require completion and source-assurance review.",
+        "accountablePlacementItem": "WI-10006170",
+        "entries": [
+          {
+            "path": "packages/operator-core/lib/sync/hyperbee/__tests__/federation-security-drops-sidecar.repro.integration.test.ts",
+            "diagnosticLines": [16096, 16101],
+            "observed": "console.warn rejects pg-merge-cursor-store pool rebound",
+            "relatedRepair": "EI-24099631804056975"
+          },
+          {
+            "path": "packages/operator-core/lib/sync/hyperbee/__tests__/federation-concurrent-writes-sidecar.repro.integration.test.ts",
+            "diagnosticLines": [16096, 16101, 16131],
+            "observed": "pool-rebind console.warn and an independent forced-HLC-tie assertion: (ms,count) prefixes differ",
+            "relatedRepair": "EI-24099631804056975"
+          },
+          {
+            "path": "packages/operator-core/lib/sync/hyperbee/__tests__/sidecar-joiner-owner-bootstrap-admit.repro.integration.test.ts",
+            "diagnosticLines": [16234, 16239],
+            "observed": "console.warn rejects pg-merge-cursor-store pool rebound",
+            "relatedRepair": "EI-24099631804056975"
+          },
+          {
+            "path": "packages/operator-core/lib/sync/hyperbee/__tests__/federation-multimember-sidecar.repro.integration.test.ts",
+            "diagnosticLines": [16096, 16101],
+            "observed": "console.warn rejects pg-merge-cursor-store pool rebound",
+            "relatedRepair": "EI-24099631804056975"
+          },
+          {
+            "path": "packages/operator-core/lib/blueprint/operation-performance-b.integration.test.ts",
+            "diagnosticLines": [13150, 13155],
+            "observed": "console.warn rejects embed-device CUDA construction failure and CPU fallback; ONNX allocator reports a failed 12582912-byte buffer allocation",
+            "candidateRepair": "EI-24688584300743328"
+          },
+          {
+            "path": "packages/operator-core/lib/delegated-tasks.integration.test.ts",
+            "diagnosticLines": [12447, 12452, 12562, 12653, 12770, 12775],
+            "observed": "console.warn from missing harness_shared.event_awaits and adv_sessions.ended_by; separate assertions return an extra delegated task and a non-null resolved task",
+            "candidateRepair": "EI-11558"
+          },
+          {
+            "path": "packages/operator-core/lib/harness/join-hive-from-repo-incremental-federation.integration.test.ts",
+            "diagnosticLines": [13741, 13760, 13765],
+            "observed": "res.ok=false and degraded-join console.error because hive_pubkey exists while owner_device_pubkey is missing",
+            "candidateRepair": "EI-24329108585573844",
+            "candidateEvidence": "Committed completion reports a typed synthetic owner identity fixture and clean focused receipt20795770 at d152edfe0371ce04abb94d19eee265c7d6829809. This pointer alone does not establish current import/environment assurance or alter the historical census."
+          },
+          {
+            "path": "packages/operator-core/lib/sync/hyperbee/__tests__/ei117-replay-revert-guard.integration.test.ts",
+            "diagnosticLines": [16020, 16025, 16056, 16061],
+            "observed": "acceptance-bar receiver reseed console.warn: acceptance_bar_epoch column does not exist",
+            "candidateRepair": "EI-20433418865457805"
+          },
+          {
+            "path": "packages/operator-core/lib/fleet/sidecar-exec-lifetime.integration.test.ts",
+            "diagnosticLines": [13519, 13524, 13560, 13603, 13608, 13644],
+            "observed": "console.warn rejects spawner-ipc-client-fault peer-eof diagnostics in both separate-IPC-server-death cases",
+            "candidateRepair": "WI-10004743"
+          },
+          {
+            "path": "packages/operator-core/lib/dock-layouts.integration.test.ts",
+            "diagnosticLines": [12798, 12803],
+            "observed": "console.error refuses WRONG STORE: pinned throwaway org database on localhost32769 but observed papercusp on localhost5432",
+            "placement": "No candidate returned by the bounded exact-filename work-item search; this is not evidence of absence. Parent retains diagnosis/placement custody."
+          }
+        ]
+      },
+      "focusedEvidence": {
+        "investigator": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
+        "path": "packages/operator-core/lib/sync/hyperbee/__tests__/federation-security-drops-sidecar.repro.integration.test.ts",
+        "archiveVerifiedSha256": "43cf66489baf7cf665a9746d097375cffc7cdc6262014929c3cc398155b579f4",
+        "archiveRunStartHead": "d2a53e115436fe5b2a72c261abbc66f337642672",
+        "archiveLines": [16095, 16098, 16108],
+        "observedFailure": "vitest-fail-on-console rejects console.warn from connection.endStalePool for pg-merge-cursor-store; stack continues through getLongLivedAdminPool, cursor load, read-merge seed and mergeOnePass.",
+        "testRunId": 20815767,
+        "testRunStatus": "fail",
+        "testRunCommitSha": "81c7be521adb885de5ec230c8511424ec63804d3",
+        "worktreeDirty": false,
+        "isScratchConfig": false,
+        "relatedOpenItem": "EI-24099631804056975",
+        "relatedLegacyItem": "EI-10726",
+        "sourceBlobs": {
+          "packages/operator-core/lib/sync/hyperbee/__tests__/federation-security-drops-sidecar.repro.integration.test.ts": "e29ccb6a0f0b7f6132d5dbcf267299150660a1ac",
+          "packages/operator-core/lib/long-lived-admin-pool.ts": "039af12cd1b22dbe5e3109dea5a1be5917bc8287",
+          "libs/papercusp/libs/db/src/connection.ts": "4a84e420fee9bd584b5bf651a3b78256402855f2"
+        },
+        "sourceEqualityScope": "The three named working-file blobs match both the archived run-start commit and receipt20815767 commit. connection.ts was compared through each superproject commit's libs/papercusp gitlink. This does not establish full import/environment equality or a current execution verdict.",
+        "hypothesis": "Fixture DSN rotation resets db-org pools but retains the separate long-lived-admin-pool registry; its next cursor access rebinds and emits the diagnostic warning.",
+        "causalVerification": "not-run; no controlled failed/passing fixture-lifecycle execution or source repair in this lane",
+        "disposition": "Existing open federation issue includes this warning. Legacy EI-10726 is resolved without committed completion authority and describes hook/store errors, so it is not closure evidence for the pool-rebind warning. One of ten console-guard files investigated; no census state or population count changed."
+      }
     },
     {
       "class": "unclassified",
@@ -1806,12 +1907,14 @@
     {
       "class": "compat-view-insert",
       "count": 1,
-      "status": "open-unknown",
-      "item": "WI-10006170",
-      "owner": "su-a20d4635-81b0-4323-b33e-6e838a21d8fe",
-      "scope": "diagnosis-and-placement",
-      "rootCause": "unproved",
-      "next": "Inspect exact saved error/source, deduplicate accepted defect and focused guard before source edits."
+      "status": "repaired-focused",
+      "item": "WI-10006718",
+      "owner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
+      "scope": "topic-feed-fixture-only",
+      "rootCause": "Legacy operator-scope fixture inserted through the issue compatibility view; pot membership rehomed the stored row while view711 readback retained operator:default. Canonical fixture insertion resolves workspace_platform_pot before writing, matching the production writer's scope normalization.",
+      "commit": "1729db25623631fe2e6708c34f213e7f3711a16a",
+      "testRunIds": [20843640, 20843701, 20892004],
+      "next": "Retain historical failure and independent final D006 custody; this focused repair does not establish parent readiness."
     },
     {
       "class": "peer-feed-fixture",
@@ -1828,7 +1931,65 @@
       "owner": "su-a20d4635-81b0-4323-b33e-6e838a21d8fe",
       "scope": "diagnosis-and-placement",
       "rootCause": "unproved",
-      "next": "Inspect pinned exact error/source and accept specific repair before edits."
+      "next": "Admit specific presence cleanup repair WI-10007112; retain all four historical mutex/setup dispositions as UNKNOWN until causal repair evidence is established.",
+      "focusedEvidence": {
+        "investigator": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
+        "archiveVerifiedSha256": "43cf66489baf7cf665a9746d097375cffc7cdc6262014929c3cc398155b579f4",
+        "archiveRunStartHead": "d2a53e115436fe5b2a72c261abbc66f337642672",
+        "archiveLines": [12067, 12090, 12292, 12305, 12317, 12330],
+        "scope": "Exact local PASS ledger rows and current named test-file byte equality only; no full current dependency/import/environment or concurrent final-sweep assurance.",
+        "candidates": [
+          {
+            "path": "packages/operator-core/lib/adv-sessions-reanchor.integration.test.ts",
+            "testRunId": 20843669,
+            "status": "pass",
+            "commitSha": "9548d219d7768be89980368e3ca1f47b3c7ba26d",
+            "worktreeDirty": true,
+            "isScratchConfig": false,
+            "currentTestFileMatchesCommit": true,
+            "testSha256": "77fceae98cc7f290c3ad8fe1c9d2bdf3c2ddcb36f68032be257078214dd76665",
+            "limit": "Shared-tree receipt. EI-24206098169835104 committed closure addresses authentication diagnostics, not the archived hook timeout."
+          },
+          {
+            "path": "packages/operator-core/lib/goal-review-obligation-verdict.integration.test.ts",
+            "testRunId": 20882605,
+            "status": "pass",
+            "commitSha": "7bc7a6d94ef7e1b74cbafa1e0714b4f7dee6051f",
+            "worktreeDirty": false,
+            "isScratchConfig": false,
+            "currentTestFileMatchesCommit": true,
+            "testSha256": "cf2a8c49382cb0e0fc00433779fb955e72b55bba2c1842aa850c367b0d41e969",
+            "limit": "Clean committed-source focused execution does not prove the archived shared mutex timeout cause repaired."
+          },
+          {
+            "path": "packages/operator-core/lib/fleet/assignments.integration.test.ts",
+            "testRunId": 20815766,
+            "status": "pass",
+            "commitSha": "81c7be521adb885de5ec230c8511424ec63804d3",
+            "worktreeDirty": false,
+            "isScratchConfig": false,
+            "currentTestFileMatchesCommit": true,
+            "testSha256": "244cdfe71af2d3078e74d383b0406edadd58fb7af12bfb1b88aff5723cfe97a9",
+            "relatedCommittedRepair": "WI-10006188",
+            "repairTestRunIds": [20790203, 20790204],
+            "repairCommitSha": "1e663ddad7e090b035622afa52c46c75b56a6713",
+            "limit": "WI-10006188 verifies fixture isolation for extra default/global claim assertions and explicitly makes no historical-timeout claim."
+          },
+          {
+            "path": "packages/operator-core/lib/agent-tools/coordination/presence.integration.test.ts",
+            "testRunId": 20815884,
+            "status": "pass",
+            "commitSha": "81c7be521adb885de5ec230c8511424ec63804d3",
+            "worktreeDirty": false,
+            "isScratchConfig": false,
+            "currentTestFileMatchesCommit": true,
+            "testSha256": "dd539c3725a4a0c6ad983a59fab0ca7f02e6fd0d8720bfc787a090619b70062e",
+            "ownedSecondaryRepair": "WI-10007112",
+            "limit": "Current test blob af5def25f5facd239fcc91feead921bc9cf5492e equals run-start blob. Unguarded afterAll still calls uninitialized admin after failed setup; normal-path PASS does not exercise it."
+          }
+        ],
+        "disposition": "No census state or population count changed. Historical mutex/setup root cause remains unproved; the measured secondary presence cleanup defect has a separate self-owned repair."
+      }
     },
     {
       "class": "profile-replay",
