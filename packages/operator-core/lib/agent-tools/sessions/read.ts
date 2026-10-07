@@ -120,7 +120,7 @@ export default defineTool({
   crossWorkspace: true,
   capability: 'sessions:read',
   description:
-    "Read indexed session turns. `session:'self'` spans your respawn chain, including predecessor turns; evidence-only judges may read only self. Other readers pass a `session_turn:…` ref, coordinates, a from/to range, or tail. A multi-session self window has `session_id` null and each `ref` identifies its source. `tail:N` means `order:'desc', limit:N`; do not combine it with either. `query` and `mode` belong to `sessions:search`. " +
+    "Read indexed session turns. `tail:N` means `order:'desc', limit:N`; do not combine it with either. `session:'self'` spans your respawn chain, including predecessor turns; evidence-only judges may read only self. Other readers pass a `session_turn:…` ref, coordinates, a from/to range, or tail. A multi-session self window has `session_id` null and each `ref` identifies its source. `query` and `mode` belong to `sessions:search`. " +
     `Text is returned in ${SESSION_TURN_TEXT_CHUNK_CAP}-character chunks; clipped turns carry \`readMore\`, and index-capped turns report \`source_completeness\` (see returns). ` +
     "`turn_count` is this response's window size (default limit 40), not the session total; use `sessions:list` for the total. Full recovery guide: /internal/docs/agent-insights/session-search-and-compaction-recovery.",
   guidance: {
