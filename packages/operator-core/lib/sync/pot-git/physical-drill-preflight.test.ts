@@ -464,6 +464,21 @@ describe('probe wiring', () => {
     expect(code.slice(code.lastIndexOf('\n', preflight), preflight)).toContain('PCUSP_VM_SSH="$VM"');
   });
 
+  it('reuses the candidate snapshot for local legs before schema checks without retargeting the physical repo', () => {
+    const probe = readFileSync(probePath, 'utf8');
+    const offline = probe.indexOf("printf 'local candidate source ready:");
+    expect(offline).toBeGreaterThan(probe.indexOf('run_source_overlay_js | node'));
+    expect(offline).toBeLessThan(probe.indexOf('phase-e-preflight >/dev/null'));
+    expect(probe.slice(offline, probe.indexOf('phase-e-preflight >/dev/null'))).toContain('exit 0');
+    const drill = readFileSync(fileURLToPath(new URL('../../../../../papercusp-desktop/bin/hive-git-drill.sh', import.meta.url)), 'utf8');
+    const local = drill.indexOf('--local-source-out "$WORK/local-source"');
+    const sql = drill.indexOf('REPO_SQL_DIR="$REPO_DIR/');
+    expect(local).toBeGreaterThan(-1);
+    expect(local).toBeLessThan(sql);
+    expect(drill.slice(local, sql)).toContain('REPO_DIR="$WORK/local-source"');
+    expect(drill).toContain('PAPERCUSP_REPO_DIR="$LIVE_REPO_DIR" HIVE_GIT_PHYSICAL_PLAN=');
+  });
+
   it('exports the D-086 pin (pinned sha + tower snapshot) before the rig-preflight call', () => {
     const code = readFileSync(probePath, 'utf8')
       .split('\n')
