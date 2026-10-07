@@ -178,7 +178,8 @@ export function extractReferencedTables(rawSql: string): string[] {
   // so pg-mutate-query's tenant gate sees the table being written, not just
   // FROM/JOIN sources. A `SELECT … FOR UPDATE OF t` capture lands on a keyword
   // (`of`/`nowait`/`skip`) — filtered below rather than mis-read as a table.
-  const re = /\b(from|join|update|into)\s+(?:only\s+)?([A-Za-z_][A-Za-z0-9_$]*(?:\.[A-Za-z_][A-Za-z0-9_$]*)?)/gi;
+  const re =
+    /\b(from|join|update|into)\s+(?:only\s+)?(?:lateral\s+)?([A-Za-z_][A-Za-z0-9_$]*(?:\.[A-Za-z_][A-Za-z0-9_$]*)?)/gi;
   const notATable = new Set(['of', 'nowait', 'skip', 'set', 'select']);
   for (let m = re.exec(stripped); m && out.length < GUARD_MAX_TABLES; m = re.exec(stripped)) {
     // WI-10002041: `FROM` is not always a clause. `IS [NOT] DISTINCT FROM col`
@@ -188,6 +189,17 @@ export function extractReferencedTables(rawSql: string): string[] {
     // and callers that take tables[0] as the relation (planPredicatePartition)
     // then render `FROM <column-name>`, i.e. SQL that cannot run.
     if (m[1].toLowerCase() === 'from' && fromIsNotAClause(stripped, m.index)) continue;
+    // A table-valued function contributes rows but is not a physical relation.
+    // Counting a call such as `FROM jsonb_object_keys(row.jsonb)` as another
+    // table makes table-count-based tenant exceptions reject an exact-key read
+    // whose scalar projection only expands a value from that already-scoped row.
+    // The function's arguments remain part of the query; only a FROM/JOIN
+    // function name is excluded. Do not apply this to INTO: `INSERT INTO t (c)`
+    // has a column list immediately after its physical write target.
+    if (
+      (m[1].toLowerCase() === 'from' || m[1].toLowerCase() === 'join') &&
+      /^\s*\(/.test(stripped.slice(m.index + m[0].length))
+    ) continue;
     const name = m[2].toLowerCase();
     if (notATable.has(name)) continue;
     if (seen.has(name)) continue;

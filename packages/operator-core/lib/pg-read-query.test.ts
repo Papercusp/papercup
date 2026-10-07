@@ -561,6 +561,20 @@ describe('extractReferencedTables (P-005)', () => {
     expect(extractReferencedTables(sql)).toEqual(['a', 'b', 'c', 'd']);
   });
 
+  it('does not treat a table-valued function in a scalar subquery as a physical relation', () => {
+    const sql =
+      'SELECT tr.id, (SELECT array_agg(k) FROM jsonb_object_keys(tr.execution_details) k) AS keys ' +
+      'FROM harness_shared.test_runs tr WHERE tr.id = 20852828';
+    expect(extractReferencedTables(sql)).toEqual(['harness_shared.test_runs']);
+  });
+
+  it('does not treat a LATERAL table-valued function as a physical relation', () => {
+    const sql =
+      'SELECT tr.id FROM harness_shared.test_runs tr ' +
+      'JOIN LATERAL jsonb_object_keys(tr.execution_details) k ON true WHERE tr.id = 20852828';
+    expect(extractReferencedTables(sql)).toEqual(['harness_shared.test_runs']);
+  });
+
   it('returns [] when nothing matches', () => {
     expect(extractReferencedTables('SELECT 1')).toEqual([]);
   });
@@ -1243,6 +1257,27 @@ describe('buildTenantScopeAdvisory — test_runs CI-row null trap (EI-1932463348
     );
     expect(advisory).toBeNull();
     expect(calls).toHaveLength(0);
+  });
+
+  it('allows an exact primary-key read with a set-returning function subquery in the projection', async () => {
+    const { sql, calls } = stubClient([]);
+    const advisory = await buildTenantScopeAdvisory(
+      'SELECT id, (SELECT array_agg(k) FROM jsonb_object_keys(execution_details) k) AS keys ' +
+        'FROM harness_shared.test_runs WHERE id = 20852828',
+      { client: sql },
+    );
+    expect(advisory).toBeNull();
+    expect(calls).toHaveLength(0);
+  });
+
+  it('keeps the CI-null warning when an exact id read also references another physical relation', async () => {
+    const { sql } = stubClient([]);
+    const advisory = await buildTenantScopeAdvisory(
+      'SELECT tr.id, (SELECT max(w.id) FROM harness_shared.work_items w) AS item_id ' +
+        'FROM harness_shared.test_runs tr WHERE tr.id = 20852828',
+      { client: sql },
+    );
+    expect(advisory).toContain('NULL-by-design');
   });
 
   it('keeps the CI-null warning when an exact id is only one branch of a broader OR', async () => {
