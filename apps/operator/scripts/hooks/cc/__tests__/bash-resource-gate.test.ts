@@ -3053,6 +3053,21 @@ describe('FIFO-read hang guard (EI-24862273512503301)', () => {
     expect(statSync(join(dir, 'regular')).isFIFO()).toBe(false);
   });
 
+  it.skipIf(process.platform !== 'linux' || !existsSync('/dev/shm'))('judges user FIFOs under /dev/shm while allowing regular files there', () => {
+    const sharedDir = mkdtempSync(join('/dev/shm', 'fifo-guard-'));
+    const sharedFifo = join(sharedDir, 'pipe');
+    const sharedRegular = join(sharedDir, 'regular');
+    try {
+      execFileSync('mkfifo', [sharedFifo]);
+      writeFileSync(sharedRegular, 'x\n');
+      expectFifoDeny(runGate(at(`cat ${sharedFifo}`)));
+      expectFifoDeny(runGate(at(`sudo -n cat ${sharedFifo}`)));
+      expectAllow(runGate(at(`cat ${sharedRegular}`)));
+    } finally {
+      rmSync(sharedDir, { recursive: true, force: true });
+    }
+  });
+
   it.each([
     ['absolute operand', () => `cat ${fifo}`],
     ['relative operand resolved against the stated cwd', () => 'cat pipe'],

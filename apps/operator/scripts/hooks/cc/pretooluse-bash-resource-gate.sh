@@ -3785,9 +3785,10 @@ except Exception:
 # the moment of the call. Not judged:
 #   * redirect targets (`< fifo`): the SHELL opens those, not the reader, and
 #     the client re-open was only measured for named operands;
-#   * /dev, /proc, /sys: they resolve against THIS hook process — whose stdin
+#   * device and process paths in /dev, /proc, /sys: they resolve against THIS hook process — whose stdin
 #     IS a pipe — not against the command's shell, so judging them here would
-#     deny `cat /dev/stdin` for the hook's own reasons;
+#     deny `cat /dev/stdin` for the hook's own reasons. /dev/shm is a shared
+#     user-file filesystem, so its named FIFOs are judged like /tmp files;
 #   * anything the hook cannot resolve ($VAR, globs, `~user`, a relative path
 #     with no stated cwd) — fail open, never guess;
 #   * Codex shells: the re-open is a Claude Code behaviour.
@@ -3820,6 +3821,8 @@ _FF_HOOK_RELATIVE = ('/dev', '/proc', '/sys')
 
 
 def _ff_under_hook_relative(path):
+    if path == '/dev/shm' or path.startswith('/dev/shm/'):
+        return False
     return any(path == r or path.startswith(r + '/') for r in _FF_HOOK_RELATIVE)
 
 
