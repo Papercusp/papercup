@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createImplementationReadiness, sealImplementationAcceptance } from './agent-review-policy';
-import { deriveReporterStatus, readReporterFollowUp, type ReporterReleaseReceipt } from './reporter-status';
+import { deriveReporterStatus, readReporterFollowUp, readReporterStatus, type ReporterReleaseReceipt } from './reporter-status';
 
 const source = { kind: 'bug', title: 'Parser loses the trailing token', summary: 'The last token disappears on every bounded line.' };
 const accepted = sealImplementationAcceptance({
@@ -18,6 +18,31 @@ const published: ReporterReleaseReceipt = {
   schemaVersion: 'reporter-release-v1', version: '0.0.25', channel: 'alpha', publishedAt: '2026-10-07T04:00:00Z',
   artifactCommit: 'a'.repeat(40), completionRef: 'close-1', contentIdentity: [{ path: 'src/parser.ts', blobSha: 'b'.repeat(40) }],
 };
+
+describe('the shared source reader admits human chat reporters', () => {
+  function reader(kind: string) {
+    const calls: unknown[][] = [];
+    const sql = async (_strings: TemplateStringsArray, ...values: unknown[]) => {
+      calls.push(values);
+      if (calls.length === 1) return [{ payload: { reporter: { kind } } }];
+      if (calls.length === 2) return [{ feature_id: 'WI-SOURCE', item_kind: 'bug', status: 'open', payload: {}, title: source.title, summary: source.summary, taken_by: null, authority: null, terminal_completion_ref: null, admission: null }];
+      return [{ active: false }];
+    };
+    return { sql, calls };
+  }
+  it.each(['chat', 'end-user'])('reads %s source status with workspace and harness constraints on every query', async (kind) => {
+    const { sql, calls } = reader(kind);
+    expect(await readReporterStatus({ id: 'WI-SOURCE', harness: 'report-harness', workspaceId: 'report-workspace' }, sql as never))
+      .toMatchObject({ sourceId: 'WI-SOURCE', canonicalId: 'WI-SOURCE', status: 'received' });
+    expect(calls).toHaveLength(3);
+    for (const values of calls) expect(values.slice(0, 2)).toEqual(['report-workspace', 'report-harness']);
+  });
+  it.each(['agent', 'watchdog', 'unknown'])('rejects %s before canonical status is read', async (kind) => {
+    const { sql, calls } = reader(kind);
+    expect(await readReporterStatus({ id: 'WI-SOURCE', harness: 'report-harness', workspaceId: 'report-workspace' }, sql as never)).toBeNull();
+    expect(calls).toHaveLength(1);
+  });
+});
 
 describe('P016 reporter status is backed by verified work and a published fix', () => {
   it('distinguishes receipt, active verification, queued fixing and active fixing', () => {

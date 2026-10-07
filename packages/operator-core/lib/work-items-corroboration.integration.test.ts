@@ -290,9 +290,9 @@ describe('P-012 the count is distinct reporters in the occurrence ledger', () =>
 });
 
 describe('P016 installed reporter status follows the distinct canonical fix', () => {
-  it('reads canonical status and question while keeping the answer on the source; another workspace cannot read it', async () => {
-    await seed('WI-REPORT-SOURCE', { payload: { reporter: { kind: 'end-user' }, reporterAnswer: { questionId: 'q1', text: 'CSV export', answeredAt: AT } } });
-    await seed('WI-REPORT-FIX', { payload: { ...verified(), reporter: { kind: 'end-user' }, intakeSource: { id: 'WI-REPORT-SOURCE', mode: 'distinct' },
+  it.each(['end-user', 'chat'])('reads %s canonical status and question while keeping the answer on the scoped source', async (kind) => {
+    await seed('WI-REPORT-SOURCE', { payload: { reporter: { kind }, reporterAnswer: { questionId: 'q1', text: 'CSV export', answeredAt: AT } } });
+    await seed('WI-REPORT-FIX', { payload: { ...verified(), reporter: { kind }, intakeSource: { id: 'WI-REPORT-SOURCE', mode: 'distinct' },
       reporterQuestion: { id: 'q1', text: 'Which export?', askedBy: 'su-fixer', askedAt: AT } } });
     await db.sql`UPDATE harness_shared.work_items SET taken_by = 'su-fixer' WHERE feature_id = 'WI-REPORT-FIX'`;
     expect(await readReporterStatus({ id: 'WI-REPORT-SOURCE', harness: H, workspaceId: WS }, db.sql as never)).toMatchObject({
