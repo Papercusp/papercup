@@ -825,6 +825,7 @@ describe('setup-release-checkout.sh pinned submodule node_modules survive the re
  */
 describe('setup-release-checkout.sh sync_one_node_modules() — atomic node_modules swap', () => {
   interface SyncOneOptions {
+    stubIndependentFailure?: boolean;
     /** Sets PINNED_DEPENDENCY_GENERATION_ID → the pinned sub-branch of `copy` mode. */
     generationId?: string;
     /** Replace the materializer with a no-op, so it "succeeds" leaving no tree. */
@@ -845,6 +846,7 @@ describe('setup-release-checkout.sh sync_one_node_modules() — atomic node_modu
       'source "$GENERATION_SCRIPT"',
       'source <(sed -n "/^pinned_generation_tree_current()/,/^}/p; /^node_modules_tree_fingerprint()/,/^}/p; /^sync_one_node_modules()/,/^}/p" "$SETUP_SCRIPT")',
       ...(opts.stubMaterializeToNoop ? ['dependency_generation_materialize_tree() { return 0; }'] : []),
+      ...(opts.stubIndependentFailure ? ['dependency_generation_copy_independent() { mkdir -p "$2"; touch "$2/partial"; return 1; }'] : []),
       'sync_one_node_modules "$SRC" "$DEST"',
     ].join('\n');
     const r = spawnSync('bash', ['-c', wrapper], {
@@ -875,6 +877,33 @@ describe('setup-release-checkout.sh sync_one_node_modules() — atomic node_modu
   });
   afterEach(() => {
     rmSync(work, { recursive: true, force: true });
+  });
+
+  it('refuses an independent snapshot before copying when capacity is insufficient', () => {
+    const src = join(work, 'src');
+    const dest = join(work, 'dest');
+    mkdirSync(src);
+    mkdirSync(dest);
+    writeFileSync(join(src, 'new'), 'new');
+    writeFileSync(join(dest, 'old'), 'old');
+    const result = runSyncOne(src, dest, 'copy', { env: {
+      DEPENDENCY_GENERATION_HEADROOM_MARGIN_BYTES: '999999999999999',
+    } });
+    expect(result.status, result.stderr).toBe(77);
+    expect(readFileSync(join(dest, 'old'), 'utf8')).toBe('old');
+    expect(readdirSync(work).filter((name) => name.includes('deploy-tmp'))).toEqual([]);
+  });
+
+  it('removes a failed independent snapshot without replacing the existing destination', () => {
+    const src = join(work, 'src');
+    const dest = join(work, 'dest');
+    mkdirSync(src);
+    mkdirSync(dest);
+    writeFileSync(join(src, 'new'), 'new');
+    writeFileSync(join(dest, 'old'), 'old');
+    expect(runSyncOne(src, dest, 'copy', { stubIndependentFailure: true }).status).toBe(1);
+    expect(readFileSync(join(dest, 'old'), 'utf8')).toBe('old');
+    expect(readdirSync(work).filter((name) => name.includes('deploy-tmp'))).toEqual([]);
   });
 
   it('first-time (no dest): creates dest as a hardlink copy of src', () => {

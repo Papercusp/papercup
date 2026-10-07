@@ -1187,7 +1187,14 @@ sync_one_node_modules() {
         cp -al "$dest" "$tmp"
       else
         log "isolated node_modules snapshot missing or drifted; performing full independent copy"
-        cp -a "$src" "$tmp"
+        # Use the same serialized capacity admission as generation copies.
+        # A failed copy must not strand a partial tree on the shared disk.
+        local copy_rc=0
+        dependency_generation_copy_independent "$src" "$tmp" || copy_rc=$?
+        if [ "$copy_rc" -ne 0 ]; then
+          rm -rf -- "$tmp"
+          return "$copy_rc"
+        fi
       fi
 
       # Do not publish a mixed snapshot if npm/test tooling rewrote the source
