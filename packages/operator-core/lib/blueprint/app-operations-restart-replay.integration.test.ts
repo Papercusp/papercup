@@ -111,6 +111,9 @@ const WORKSPACE = 'default';
 const HARNESS = 'papercup';
 const OPERATION = 'draft-reply';
 const TERMINAL_STATES = new Set(['done', 'passed', 'failed', 'dropped', 'closed', 'resolved', 'cancelled']);
+const WORKER_IDENTITY = {
+  kind: 'identity' as const, ref: 'worker', revision: '1.0.0', contentHash: 'b'.repeat(64),
+};
 
 /** App-shaped operation: an agent drafts a reply for one thread (cf. the Email app). */
 const FIXTURE_SOURCE = {
@@ -119,6 +122,7 @@ const FIXTURE_SOURCE = {
   operations: [{
     id: OPERATION, version: 'A', target: { kind: 'work-item', itemKind: 'feature' },
     execution: { kind: 'agent', role: 'worker' },
+    policy: { identity: WORKER_IDENTITY },
     inputSchema: {
       type: 'object', required: ['threadId'],
       properties: { threadId: { type: 'string' } }, additionalProperties: false,
@@ -235,7 +239,10 @@ async function applyWorkerSession(
         acceptedOperation: {
           kind: 'blueprint-operation-worker', workItemId: itemId, operationId: OPERATION,
           specificationRevision: handle.specificationRevision, pin,
-          identity: { ref: 'worker', revision: '1.0.0', contentHash: 'b'.repeat(64) },
+          identity: {
+            ref: WORKER_IDENTITY.ref, revision: WORKER_IDENTITY.revision,
+            contentHash: WORKER_IDENTITY.contentHash,
+          },
           requiredTools: ['work_items:complete'],
         },
       } as JSONValue)})`;
@@ -323,6 +330,15 @@ afterAll(async () => {
 }, 30_000);
 
 describe('R-10 — an operator restart mid-operation resumes to one terminal result, no duplicate side effect', () => {
+  it('uses a compilable pinned worker fixture and rejects removing its identity pin', () => {
+    expect(() => compileAgentSpecification({ source: FIXTURE_SOURCE })).not.toThrow();
+    const unpinned = {
+      ...FIXTURE_SOURCE,
+      operations: FIXTURE_SOURCE.operations.map(({ policy: _policy, ...operation }) => operation),
+    };
+    expect(() => compileAgentSpecification({ source: unpinned })).toThrow('operation-unpinned-agent');
+  });
+
   it('restart while the applied worker holds the item: replay keeps one receipt and one item, completion lands once', async () => {
     const callerId = 'email-app';
     const requestKey = 'thread-4711:draft';
