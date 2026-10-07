@@ -1069,6 +1069,7 @@ describe('immutable dependency generation', () => {
   it.each([
     ['independent copy', false],
     ['internal symlink', false],
+    ['internal hardlink', false],
     ['fresh pin', true],
     ['foreign pin', true],
     ['live lease', true],
@@ -1106,6 +1107,8 @@ describe('immutable dependency generation', () => {
           `pid=${process.pid}\nidentity=${identity}\n`);
       } else if (protection === 'hardlink') {
         linkSync(join(generation, 'tree/node_modules/pkg/index.js'), join(checkout, 'shared.js'));
+      } else if (protection === 'internal hardlink') {
+        linkSync(join(generation, 'tree/node_modules/pkg/index.js'), join(generation, 'internal-alias.js'));
       } else if (protection === 'generation symlink') {
         symlinkSync(join(generation, 'tree/node_modules/pkg'), join(checkout, 'linked-package'));
       } else if (protection === 'external symlink') {
@@ -1118,10 +1121,11 @@ describe('immutable dependency generation', () => {
         mkdirSync(shimBin);
         const realFind = execFileSync('sh', ['-c', 'command -v find'], { encoding: 'utf8' }).trim();
         writeFileSync(join(shimBin, 'find'),
-          '#!/bin/bash\nfor arg in "$@"; do [ "$arg" != -links ] || exit 1; done\n' +
+          '#!/bin/bash\n[ "$1" != "$RETENTION_TEST_UNREADABLE_GENERATION" ] || exit 1\n' +
           `exec ${JSON.stringify(realFind)} "$@"\n`);
         chmodSync(join(shimBin, 'find'), 0o755);
         retentionEnv.PATH = `${shimBin}:${process.env.PATH}`;
+        retentionEnv.RETENTION_TEST_UNREADABLE_GENERATION = generation;
       }
       // Migrate using the real publisher/retention path, then follow its record
       // without the service's env. A sibling import must not resurrect the old
