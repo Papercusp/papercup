@@ -11,9 +11,9 @@ const person = { id: 'PER-phone-test', displayName: 'Avi', emails: ['avi@example
 const graphCandidate = personToVoiceContextCandidate(person);
 const input = { workspaceId: 'ws-people', principal: owner, capabilities, query: 'Avi' };
 function sources(): VoiceContextSources {
-  return { resolvePeople: vi.fn(async () => ({ available: true, candidates: [graphCandidate] })),
-    resolveOwnerVault: vi.fn(async () => ({ available: false, reason: 'vault-disabled' })),
-    resolveCallerHistory: vi.fn(async () => ({ available: true, candidates: [] })) };
+  return { resolvePeople: vi.fn(async () => ({ available: true as const, candidates: [graphCandidate] })),
+    resolveOwnerVault: vi.fn(async () => ({ available: false as const, reason: 'vault-disabled' as const })),
+    resolveCallerHistory: vi.fn(async () => ({ available: true as const, candidates: [] })) };
 }
 
 describe('Phone graph people context (CRM P-003 D-033)', () => {
@@ -42,8 +42,8 @@ describe('Phone graph people context (CRM P-003 D-033)', () => {
 
   it('rejects a Vault contact returned by the graph source rather than dual-reading', async () => {
     const source = sources();
-    source.resolvePeople = vi.fn(async () => ({ available: true, candidates: [{ ...graphCandidate,
-      provenance: { ...graphCandidate.provenance, system: 'personal-vault' },
+    source.resolvePeople = vi.fn(async () => ({ available: true as const, candidates: [{ ...graphCandidate,
+      provenance: { ...graphCandidate.provenance, system: 'personal-vault' as const },
     }] }));
     const projection = await resolveVoiceContextProjection(input, source);
     expect(projection.sources.find(x => x.capability === 'contacts')).toMatchObject({ items: [], droppedInvalid: 1 });
