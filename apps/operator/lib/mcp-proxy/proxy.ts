@@ -1077,8 +1077,8 @@ export function forwardingResultForUpstreamFailure(
 }
 
 /**
- * WI-10006908 — the upstream (:3070) connection closed AFTER sending response headers. For an SSE response
- * the MCP client's request is resolved only by a JSON-RPC response carrying its id: a stream that
+ * WI-10006908 — the upstream (:3070) connection closed AFTER sending response headers. For an
+ * SSE response the MCP client's request is resolved only by a JSON-RPC response carrying its id: a stream that
  * merely ends or errors raises a transport error but leaves the request pending until the
  * client's own request timeout (measured: a live tools/call hung to Claude's 300s limit). So the
  * proxy answers each forwarded REQUEST id itself with a JSON-RPC error, then ends the stream.

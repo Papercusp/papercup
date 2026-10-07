@@ -3673,7 +3673,7 @@ describe("WI-35737: a departed client stops the retry loop", () => {
  * own result and record no upstream death, so "the client got an error event" cannot pass by
  * the proxy erroring every SSE response.
  */
-describe("WI-10006908: an upstream that dies after SSE headers ends the client response", () => {
+describe("WI-10006908: an upstream SSE closure after headers ends the client response", () => {
   type UpstreamMode = "complete" | "die-at-boundary" | "die-mid-event";
   const TOOL_CALL = JSON.stringify({
     jsonrpc: "2.0",
@@ -3805,7 +3805,7 @@ describe("WI-10006908: an upstream that dies after SSE headers ends the client r
     });
   }, 10_000);
 
-  it("SUBJECT: death at an SSE event boundary answers the pending id with a JSON-RPC error and ends promptly", async () => {
+  it("SUBJECT: upstream SSE closure at an event boundary answers the pending id with a JSON-RPC error and ends promptly", async () => {
     await withLedger(async (readRecords) => {
       const proxy = await proxyFor(sseUpstream("die-at-boundary"));
       // Before the fix this stayed open for the whole budget.
@@ -3816,6 +3816,10 @@ describe("WI-10006908: an upstream that dies after SSE headers ends the client r
         .filter((l) => l.startsWith("data: "))
         .map((l) => JSON.parse(l.slice("data: ".length)));
       expect(events).toHaveLength(1);
+      expect(events[0].error.message).toContain(
+        "upstream connection for this tools/call closed before the response completed",
+      );
+      expect(events[0].error.message).not.toContain("operator process");
       expect(events[0]).toMatchObject({
         jsonrpc: "2.0",
         id: 7,
@@ -3837,7 +3841,7 @@ describe("WI-10006908: an upstream that dies after SSE headers ends the client r
     });
   }, 10_000);
 
-  it("SUBJECT: death mid-event cannot append a parseable event, so the client response is destroyed promptly", async () => {
+  it("SUBJECT: upstream SSE closure mid-event cannot append a parseable event, so the client response is destroyed promptly", async () => {
     await withLedger(async (readRecords) => {
       const proxy = await proxyFor(sseUpstream("die-mid-event"));
       const r = await callTool(port(proxy), 1_500);
