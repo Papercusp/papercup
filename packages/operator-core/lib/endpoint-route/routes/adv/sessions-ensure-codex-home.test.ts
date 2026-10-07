@@ -100,6 +100,23 @@ describe('ensure-codex-home pinned-source recovery', () => {
     }));
   });
 
+  it.each([
+    { name: 'equals form', launchArgv: ['psu', '--compaction-limit=250000'] },
+    { name: 'space form', launchArgv: ['psu', '--compaction-limit', '250000'] },
+  ])('restores the $name soft compaction ceiling from the ADV launch argv', async ({ launchArgv }) => {
+    mocks.sessionRow.mockResolvedValue({ coordOwnerId: OWNER, agent: 'codex', launchArgv });
+    mocks.rebuild.mockResolvedValue({
+      spec: { mcpUrl: 'http://localhost:3170/api/mcp?superuser=1' },
+      promptText: 'PINNED V1 INSTRUCTIONS',
+      artifact: { stack: savedRecord.stack, specificationRevision: REVISION },
+    });
+
+    const response = await call();
+
+    expect(response.status).toBe(200);
+    expect(mocks.ensureHome).toHaveBeenCalledWith(expect.objectContaining({ compactionLimit: 250_000 }));
+  });
+
   it('restores the legacy bound gateway provider when the launch argv is unavailable', async () => {
     mocks.rebuild.mockResolvedValue({
       spec: { mcpUrl: 'http://localhost:3170/api/mcp?superuser=1' },

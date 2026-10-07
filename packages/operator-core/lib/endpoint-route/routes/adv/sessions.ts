@@ -1519,7 +1519,7 @@ const ensureCodexHome = defineTool({
         headers: JSON_HEADERS,
       });
     }
-    const [{ readSuLaunchSpecByOwner, recordSuLaunchSpec }, { parseSuLaunchSpecRecord, pinnedSuRecoveryPrompt, rebuildSuLaunchArtifact }, { composeModePromptSection }, { ensureSuCodexHomeConfig }, { readSuperuserToken }, { requestSessionIdentityActivation }, { CODEX_DEFAULT_MODEL, resolveCodexModel }, { buildLaunchSpec }, { wakeAccountRouteFromArgv }, { codexWakeGatewayInputs }] =
+    const [{ readSuLaunchSpecByOwner, recordSuLaunchSpec }, { parseSuLaunchSpecRecord, pinnedSuRecoveryPrompt, rebuildSuLaunchArtifact }, { composeModePromptSection, codexCompactionLimitFromLaunchArgv }, { ensureSuCodexHomeConfig }, { readSuperuserToken }, { requestSessionIdentityActivation }, { CODEX_DEFAULT_MODEL, resolveCodexModel }, { buildLaunchSpec }, { wakeAccountRouteFromArgv }, { codexWakeGatewayInputs }] =
       await Promise.all([
         import('../../../adv-sessions'),
         import('../../../su-persona-render'),
@@ -1593,6 +1593,7 @@ const ensureCodexHome = defineTool({
       codexGatewayAuto: repairGatewayAuto,
       codexGatewayPriority: repairGatewayAuto || gatewayInputs.codexGatewayAccountId ? 'su' : null,
       headless: repairHeadless,
+      compactionLimit: codexCompactionLimitFromLaunchArgv(sessionRow?.launchArgv),
       trustDir: null, // the home's inherited trust tables already cover the cwd
       projectDir: sessionRow?.cwd,
       promptText,
