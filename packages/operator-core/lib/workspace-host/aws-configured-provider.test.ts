@@ -132,7 +132,7 @@ function ctx(): WorkspaceHostProviderContext {
   };
 }
 
-/** Just enough EC2 for a create-data-volume step: CreateVolume + DescribeVolumes. */
+/** AMI root-device discovery followed by a create-data-volume step. */
 function fakeEc2() {
   const sent: string[] = [];
   const volumes = new Map<string, { token: string; tags: unknown[] }>();
@@ -145,6 +145,10 @@ function fakeEc2() {
         // The SDK client proves it is in the connection's account before any mutation.
         if (name === 'sts:GetCallerIdentityCommand') {
           return { ...meta, Account: ACCOUNT, Arn: `arn:aws:sts::${ACCOUNT}:assumed-role/PapercuspByoc/s`, UserId: 'AROA:s' };
+        }
+        if (name === 'ec2:DescribeImagesCommand') {
+          expect(command.input.ImageIds).toEqual(['ami-0abc']);
+          return { ...meta, Images: [{ ImageId: 'ami-0abc', RootDeviceName: '/dev/xvda' }] };
         }
         if (name === 'ec2:CreateVolumeCommand') {
           const id = `vol-${volumes.size + 1}`;
@@ -338,6 +342,11 @@ describe('registerWorkspaceHostProviderFactories — the operator startup compos
       { action: 'provision', operationId: 'op-startup', idempotencyKey: 'idem-startup', desired: desired() },
       ctx(),
     );
+    expect(ec2.sent).toContain('ec2:DescribeImagesCommand');
+    expect(plan.steps.find((step) => step.id === 'run-instance')?.input).toMatchObject({
+      op: 'run-instance',
+      request: { BlockDeviceMappings: [{ DeviceName: '/dev/xvda' }] },
+    });
     const result = await provider.apply(
       { planId: plan.planId, operationId: plan.operationId, step: plan.steps[0]!, knownResources: [] },
       ctx(),

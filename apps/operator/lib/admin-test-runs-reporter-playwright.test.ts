@@ -28,6 +28,7 @@ vi.mock('@papercusp/operator-core/lib/testing-worktree', () => ({
   captureWorktreeSnapshot: mocks.captureWorktreeSnapshot,
   computeWorktreeDirty: mocks.computeWorktreeDirty,
   captureTestSourceSnapshot: mocks.captureTestSourceSnapshot,
+  captureTestSourceSnapshotAsync: mocks.captureTestSourceSnapshot,
   resolveReporterSourceRoot: mocks.resolveReporterSourceRoot,
 }));
 vi.mock('@papercusp/operator-core/lib/agent-tools/capability/base-dir', () => ({
@@ -291,9 +292,12 @@ describe('WI-10007182 committed archive reporter provenance', () => {
     const repo = resolve(import.meta.dirname, '../../..');
     const child = spawnSync(process.execPath, ['-e', `
       const { dirname, join } = require('node:path');
-      const transform = require(join(dirname(require.resolve('playwright/package.json')), 'lib/transform/transform.js'));
-      transform.setSingleTSConfig(join(process.argv[1], 'apps/operator/tsconfig.json'));
+      const playwrightRoot = dirname(require.resolve('playwright/package.json'));
+      const transform = require(join(playwrightRoot, 'lib/transform/transform.js'));
+      const { loadConfig } = require(join(playwrightRoot, 'lib/common/configLoader.js'));
       (async () => {
+        // Initialize both native CJS and ESM transforms, as the runner does.
+        await loadConfig({ configDir: process.argv[1] }, { tsconfig: join(process.argv[1], 'apps/operator/tsconfig.json') });
         const { default: Reporter } = await transform.requireOrImport(join(process.argv[1], process.argv[3], 'test/reporters/admin-test-runs-reporter-playwright.ts'));
         const reporter = new Reporter();
         const returned = reporter.onBegin({ rootDir: join(process.argv[2], 'apps/operator/e2e') });

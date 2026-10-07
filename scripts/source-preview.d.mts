@@ -111,7 +111,7 @@ export function prepareVerifierSource({ repo, ref, dest, inputs, inputsFile }: {
         path: string;
         sha256: string;
     }[];
-    files: any[];
+    files: import("@papercusp/operator-core/lib/verifier-source").VerifierSourceFile[];
 }>;
 /** Fail closed on absent/changed provenance or any modified/extra/missing source byte.
  * @param {string} dest
@@ -132,7 +132,7 @@ export function verifyVerifierSource(dest: string, expected: Awaited<ReturnType<
         path: string;
         sha256: string;
     }[];
-    files: any[];
+    files: import("@papercusp/operator-core/lib/verifier-source").VerifierSourceFile[];
 }>;
 /** Synchronous boundary for hooks such as Playwright onBegin, whose return
  * value is not awaited. Uses the same source population and receipt checks.
@@ -153,7 +153,7 @@ export function verifyVerifierSourceSync(dest: string, expected: Awaited<ReturnT
         path: string;
         sha256: string;
     }[];
-    files: any[];
+    files: import("@papercusp/operator-core/lib/verifier-source").VerifierSourceFile[];
 };
 export function noticeText(manifest: any): string;
 /**

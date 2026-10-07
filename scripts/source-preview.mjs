@@ -45,13 +45,14 @@
 // Exit: 0 ok / in sync · 1 finding / drift / refused · 2 usage or cannot check.
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { promises as fs, existsSync, readdirSync, readFileSync, realpathSync, lstatSync, readlinkSync } from 'node:fs';
+import { promises as fs, existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseEnv } from 'node:util';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
+import { verifierSourceFiles, verifyVerifierSourceSync as verifyArchivedSourceSync, VerifierSourceError } from '@papercusp/operator-core/lib/verifier-source';
 import { NOTICES_FILE, collectThirdPartyNotices } from './check-licenses.mjs';
 
 export const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -426,56 +427,14 @@ export async function prepareVerifierSource({ repo, ref, dest, inputs = [], inpu
       testedInputs.push({ path, sha256: digest });
     }
     const manifest = { schemaVersion: 'verifier-source-v1', sourceCommit: sha, submodules,
-      testedInputs, files: await verifierSourceFiles(dest) };
+      testedInputs, files: verifierSourceFiles(dest) };
     await fs.writeFile(join(dest, '.verifier-source.json'), `${JSON.stringify(manifest)}\n`, { flag: 'wx' });
     return manifest;
   } catch (error) {
     await fs.rm(dest, { recursive: true, force: true });
+    if (error instanceof VerifierSourceError) throw new PreviewError(error.message, 2);
     throw error;
   }
-}
-
-/** File/link identity before dependency materialization; never follow archive symlinks.
- * @param {string} root
- * @param {{ runtimeArtifacts?: boolean, recordedPaths?: string[] }} [options]
- */
-function verifierSourceFiles(root, { runtimeArtifacts = false, recordedPaths = [] } = {}) {
-  const rows = [];
-  function walk(dir) {
-    for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
-      const path = join(dir, entry.name);
-      const rel = relative(root, path).split(sep).join('/');
-      if (rel === '.verifier-source.json') continue;
-      // Source-only runtime verdict: the rig materializes dependencies under its
-      // install mutex and builds the host separately. Never exempt a committed
-      // path, nor a symlink posing as an independent dependency/output directory.
-      const runtimeDirectory = entry.name === 'node_modules' || [
-        'apps/operator/dist-verify', 'apps/operator/test-results',
-        'apps/operator/playwright-report', 'papercusp-desktop/src-tauri/target',
-      ].includes(rel);
-      if (runtimeArtifacts && runtimeDirectory
-        && !recordedPaths.some((p) => p === rel || p.startsWith(`${rel}/`))) {
-        if (!entry.isDirectory()) throw new PreviewError(`runtime artifact is not an independent directory: ${rel}`, 2);
-        continue;
-      }
-      if (entry.isDirectory()) walk(path);
-      else {
-        const stat = lstatSync(path);
-        if (!stat.isFile() && !stat.isSymbolicLink()) throw new PreviewError(`unsupported archive entry: ${rel}`, 2);
-        const bytes = stat.isSymbolicLink() ? readlinkSync(path) : readFileSync(path);
-        if (stat.isSymbolicLink()) {
-          const target = resolve(dirname(path), String(bytes));
-          if (isAbsolute(String(bytes)) || target !== root && !target.startsWith(`${resolve(root)}${sep}`)) {
-            throw new PreviewError(`archive symlink escapes source root: ${rel}`, 2);
-          }
-        }
-        rows.push({ path: rel, kind: stat.isSymbolicLink() ? 'symlink' : 'file',
-          executable: Boolean(stat.mode & 0o111), sha256: createHash('sha256').update(bytes).digest('hex') });
-      }
-    }
-  }
-  walk(root);
-  return rows;
 }
 
 /** Fail closed on absent/changed provenance or any modified/extra/missing source byte.
@@ -495,18 +454,12 @@ export async function verifyVerifierSource(dest, expected, options = {}) {
  * @param {{ runtimeArtifacts?: boolean }} [options]
  */
 export function verifyVerifierSourceSync(dest, expected, options = {}) {
-  if (expected?.schemaVersion !== 'verifier-source-v1' || !expected.testedInputs?.length) {
-    throw new PreviewError('missing verification source provenance', 2);
+  try {
+    return verifyArchivedSourceSync(dest, expected, options);
+  } catch (error) {
+    if (error instanceof VerifierSourceError) throw new PreviewError(error.message, 2);
+    throw error;
   }
-  const recorded = JSON.parse(readFileSync(join(dest, '.verifier-source.json'), 'utf8'));
-  if (JSON.stringify(recorded) !== JSON.stringify(expected)) throw new PreviewError('tampered verification source provenance', 2);
-  if (!/^[0-9a-f]{40}$/.test(expected.sourceCommit) || !Array.isArray(expected.files) || !expected.files.length) {
-    throw new PreviewError('invalid verification source provenance', 2);
-  }
-  if (JSON.stringify(verifierSourceFiles(dest, { ...options, recordedPaths: expected.files.map((file) => file.path) })) !== JSON.stringify(expected.files)) {
-    throw new PreviewError('tampered verification source archive', 2);
-  }
-  return expected;
 }
 
 async function listFiles(dir) {

@@ -6,7 +6,10 @@ import {
   workspaceHostConnectionId,
   type WorkspaceHostConnectionRouteDependencies,
 } from './connection';
-import type { AwsWorkspaceHostPreflightClient } from '../../../workspace-host/aws-connection';
+import {
+  AWS_WORKSPACE_HOST_IMAGE_KEY_ACTIONS,
+  type AwsWorkspaceHostPreflightClient,
+} from '../../../workspace-host/aws-connection';
 import type { StoredWorkspaceHostConnection } from '../../../workspace-host/observability-store';
 import {
   inspectAwsWorkspaceHostConnection,
@@ -432,8 +435,8 @@ function awsPreflightClient(overrides: Partial<AwsWorkspaceHostPreflightClient> 
       symmetric: true,
       evidenceRef: 'aws://kms',
     }),
-    evaluatePermissions: async ({ actions }) =>
-      actions.map((action) => ({ action, allowed: true, evidenceRef: `aws://iam/${action}` })),
+    evaluatePermissions: async ({ actions, imageKeyActions }) =>
+      [...actions, ...imageKeyActions].map((action) => ({ action, allowed: true, evidenceRef: `aws://iam/${action}` })),
     getServiceQuota: async (requirement) => ({ ...requirement, value: 64, evidenceRef: 'aws://quota' }),
     ...overrides,
   };
@@ -537,8 +540,8 @@ describe('POST /workspace-hosts/connection — AWS target', () => {
     // with the preflight's own diagnosis, and the caller gets the typed 422 recovery.
     const denied = awsHarness(
       awsPreflightClient({
-        evaluatePermissions: async ({ actions }) =>
-          actions.map((action) => ({
+        evaluatePermissions: async ({ actions, imageKeyActions }) =>
+          [...actions, ...imageKeyActions].map((action) => ({
             action,
             allowed: action !== 'ec2:RunInstances',
             evidenceRef: `aws://iam/${action}`,
@@ -585,6 +588,22 @@ describe('POST /workspace-hosts/connection — AWS target', () => {
       expect(inspectConnection).not.toHaveBeenCalled();
       expect(upsertConnection).not.toHaveBeenCalled();
     }
+  });
+
+  it('refuses an AWS connection when AMI image-key permissions were not evaluated', async () => {
+    const h = awsHarness(
+      awsPreflightClient({
+        evaluatePermissions: async ({ actions }) =>
+          actions.map((action) => ({ action, allowed: true, evidenceRef: `aws://iam/${action}` })),
+      }),
+    );
+    const response = await post(h.dependencies, awsBody());
+    expect(response.status).toBe(422);
+    const body = (await response.json()) as { problems: string[] };
+    for (const action of AWS_WORKSPACE_HOST_IMAGE_KEY_ACTIONS) {
+      expect(body.problems.join(' ')).toContain(`Permission '${action}' was not evaluated.`);
+    }
+    expect(h.upsertConnection).toHaveBeenCalledWith(expect.objectContaining({ status: 'invalid' }));
   });
 
   it('refuses a role in a different account from the connection before any provider call', async () => {

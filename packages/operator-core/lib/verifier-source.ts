@@ -1,0 +1,81 @@
+/** Shared archive identity checks for the source exporter and native reporters.
+ * Keep this dependency graph limited to Node built-ins: Playwright loads callers
+ * through both CommonJS and ESM transforms.
+ */
+import { createHash } from 'node:crypto';
+import { lstatSync, readdirSync, readFileSync, readlinkSync } from 'node:fs';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+
+export interface VerifierSourceFile {
+  path: string;
+  kind: 'file' | 'symlink';
+  executable: boolean;
+  sha256: string;
+}
+
+export interface VerifierSourceReceipt {
+  schemaVersion: string;
+  sourceCommit: string;
+  testedInputs: { path: string; sha256: string }[];
+  files: VerifierSourceFile[];
+}
+
+export class VerifierSourceError extends Error {}
+
+/** Never follow archive symlinks or exclude a recorded source path. */
+export function verifierSourceFiles(root: string, {
+  runtimeArtifacts = false, recordedPaths = [],
+}: { runtimeArtifacts?: boolean; recordedPaths?: string[] } = {}): VerifierSourceFile[] {
+  const rows: VerifierSourceFile[] = [];
+  function walk(dir: string): void {
+    for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      const path = join(dir, entry.name);
+      const rel = relative(root, path).split(sep).join('/');
+      if (rel === '.verifier-source.json') continue;
+      // Dependencies and build outputs are separately materialized and verified.
+      // This option attests source only, with the full recorded population intact.
+      const runtimeDirectory = entry.name === 'node_modules' || [
+        'apps/operator/dist-verify', 'apps/operator/test-results',
+        'apps/operator/playwright-report', 'papercusp-desktop/src-tauri/target',
+      ].includes(rel);
+      if (runtimeArtifacts && runtimeDirectory
+        && !recordedPaths.some(p => p === rel || p.startsWith(`${rel}/`))) {
+        if (!entry.isDirectory()) throw new VerifierSourceError(`runtime artifact is not an independent directory: ${rel}`);
+        continue;
+      }
+      if (entry.isDirectory()) walk(path);
+      else {
+        const stat = lstatSync(path);
+        if (!stat.isFile() && !stat.isSymbolicLink()) throw new VerifierSourceError(`unsupported archive entry: ${rel}`);
+        const bytes = stat.isSymbolicLink() ? readlinkSync(path) : readFileSync(path);
+        if (stat.isSymbolicLink()) {
+          const target = resolve(dirname(path), String(bytes));
+          if (isAbsolute(String(bytes)) || target !== root && !target.startsWith(`${resolve(root)}${sep}`)) {
+            throw new VerifierSourceError(`archive symlink escapes source root: ${rel}`);
+          }
+        }
+        rows.push({ path: rel, kind: stat.isSymbolicLink() ? 'symlink' : 'file',
+          executable: Boolean(stat.mode & 0o111), sha256: createHash('sha256').update(bytes).digest('hex') });
+      }
+    }
+  }
+  walk(root);
+  return rows;
+}
+
+/** Synchronous for Playwright's unawaited onBegin hook; unknown source fails closed. */
+export function verifyVerifierSourceSync<T extends VerifierSourceReceipt>(dest: string, expected: T,
+  options: { runtimeArtifacts?: boolean } = {}): T {
+  if (expected?.schemaVersion !== 'verifier-source-v1' || !expected.testedInputs?.length) {
+    throw new VerifierSourceError('missing verification source provenance');
+  }
+  const recorded = JSON.parse(readFileSync(join(dest, '.verifier-source.json'), 'utf8'));
+  if (JSON.stringify(recorded) !== JSON.stringify(expected)) throw new VerifierSourceError('tampered verification source provenance');
+  if (!/^[0-9a-f]{40}$/.test(expected.sourceCommit) || !Array.isArray(expected.files) || !expected.files.length) {
+    throw new VerifierSourceError('invalid verification source provenance');
+  }
+  if (JSON.stringify(verifierSourceFiles(dest, { ...options, recordedPaths: expected.files.map(file => file.path) })) !== JSON.stringify(expected.files)) {
+    throw new VerifierSourceError('tampered verification source archive');
+  }
+  return expected;
+}

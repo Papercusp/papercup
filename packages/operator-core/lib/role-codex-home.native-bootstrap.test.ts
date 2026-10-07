@@ -1,5 +1,5 @@
 /** Offline native account/read contract: no real credentials or model calls. */
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
@@ -92,6 +92,8 @@ async function readNativeAccount(home: string): Promise<{ result?: unknown; erro
 describe('native gateway account bootstrap', () => {
   it.runIf(Boolean(codex) && process.platform === 'linux')('boots the native TUI without the workspace endpoint that reproduces the exact default-auth timeout', async () => {
     const home = mkdtempSync(join(tmpdir(), 'codex-native-tui-account-'));
+    const controlHome = mkdtempSync(join(tmpdir(), 'codex-native-tui-control-'));
+    const version = execFileSync(codex!, ['--version'], { encoding: 'utf8', timeout: 5000 }).trim();
     const requests: string[] = [];
     const server = createServer((req, res) => {
       requests.push(req.url ?? '');
@@ -109,9 +111,11 @@ describe('native gateway account bootstrap', () => {
       email: 'fixture@example.invalid', 'https://api.openai.com/auth': {
         chatgpt_account_id: 'default-fixture', chatgpt_plan_type: 'pro',
       } })}.fixture`;
-    writeFileSync(join(home, 'auth.json'), JSON.stringify({ auth_mode: 'chatgpt', tokens: {
+    const auth = JSON.stringify({ auth_mode: 'chatgpt', tokens: {
       access_token: token, id_token: token, refresh_token: 'fixture-refresh', account_id: 'default-fixture',
-    } }));
+    } });
+    writeFileSync(join(home, 'auth.json'), auth);
+    writeFileSync(join(controlHome, 'auth.json'), auth);
     const gateway = codexGatewayConfigToml(null, { gatewayOn: true });
     const root = [`chatgpt_base_url = "${url}"`, 'model = "gpt-6.1-sol"'];
     const features = codexManagedFeaturesToml({ headless: true });
@@ -125,9 +129,10 @@ describe('native gateway account bootstrap', () => {
       expect(requests.some(path => path.includes('/v1/models'))).toBe(true);
       expect(requests.some(path => path.includes('/api/codex/accounts/check'))).toBe(false);
       requests.length = 0;
-      writeFileSync(join(home, 'config.toml'), [...root, ...features].join('\n'));
-      const direct = await readNativeTui(home, 22_000);
-      expect(direct).toMatchObject({ exitedBeforeBudget: true, exitCode: 1 });
+      writeFileSync(join(controlHome, 'config.toml'), [...root, ...features].join('\n'));
+      const direct = await readNativeTui(controlHome, 22_000);
+      const trace = JSON.stringify({ codex, version, requests, output: direct.output.slice(-3000) });
+      expect(direct, trace).toMatchObject({ exitedBeforeBudget: true, exitCode: 1 });
       expect(isCodexWorkspaceDiscoveryTimeout(direct.output)).toBe(true);
       expect(requests.some(path => path.includes('/api/codex/accounts/check'))).toBe(true);
       expect(requests.some(path => path.includes('/v1/responses'))).toBe(false);
@@ -135,6 +140,7 @@ describe('native gateway account bootstrap', () => {
       server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));
       rmSync(home, { recursive: true, force: true });
+      rmSync(controlHome, { recursive: true, force: true });
     }
   }, 60_000);
 

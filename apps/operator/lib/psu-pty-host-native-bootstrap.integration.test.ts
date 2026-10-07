@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { it, expect } from 'vitest';
 import { EventEmitter } from 'node:events';
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { hermeticEnv } from '../vitest-shims/psu-pty-temp-dir';
 import { hostThroughPty, eventLogPathForOwner } from '../scripts/psu-pty-host.mjs';
 
@@ -28,7 +28,8 @@ it.each(['codex', 'claude'])('records a split pre-frame native discovery failure
     io: { stdin, stdout }, bridgeTty: false, onExit: () => {},
   });
   expect(output).toContain(failure);
-  const events = readFileSync(eventLogPathForOwner(ownerId), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  const log = eventLogPathForOwner(ownerId);
+  const events = existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line)) : [];
   const failures = events.filter(row => row.kind === 'backend-bootstrap-failed');
   expect(failures).toHaveLength(agent === 'codex' ? 1 : 0);
   if (agent === 'codex') {

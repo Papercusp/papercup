@@ -10,7 +10,11 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, realpathSync, readFileSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { resolveAgentWorkspaceRoot } from './agent-tools/capability/base-dir';
-import { verifyVerifierSourceSync } from '../../../scripts/source-preview.mjs';
+import {
+  captureWorktreeSnapshot as captureProbeWorktreeSnapshot,
+  isMutationProbeRun,
+} from '@papercusp/test-config/admin-test-runs-reporter';
+import { verifyVerifierSourceSync } from './verifier-source';
 
 export interface WorktreeGitSnapshot {
   /** `git rev-parse HEAD`, or null if it couldn't be read. */
@@ -64,6 +68,16 @@ export function captureTestSourceSnapshot(root: string): WorktreeGitSnapshot {
     return { commit: null, porcelain: null,
       provenanceError: `verifier source: ${error instanceof Error ? error.message : String(error)}` };
   }
+}
+
+/** Awaited reporters share the maintained probe origin/subject exemptions.
+ * Synchronous archive consumers retain captureTestSourceSnapshot's contract.
+ */
+export async function captureTestSourceSnapshotAsync(root: string): Promise<WorktreeGitSnapshot> {
+  if (!existsSync(join(root, '.verifier-source.json')) && !process.env.VERIFY_TAURI_SOURCE_RECEIPT && isMutationProbeRun()) {
+    return captureProbeWorktreeSnapshot();
+  }
+  return captureTestSourceSnapshot(root);
 }
 
 export function computeWorktreeDirty(before: WorktreeGitSnapshot, after: WorktreeGitSnapshot): boolean {
