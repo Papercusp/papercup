@@ -1158,9 +1158,7 @@ export async function composeOrient(
           note:
             `RECOVERED FLEET SCOPE: the post-compaction control anchor named fleet ` +
             `'${recovered.fleetSlug}' (role '${recovered.fleetRole ?? 'unknown'}'). ` +
-            `Used fleet-scoped assignments for THIS call because the presence-derived ` +
-            `self scope may be stale; corroborate with fleet:assignments { fleet } / ` +
-            `fleet:status before acting on peer liveness.`,
+            "Assignment visibility follows the caller's role-specific scope; self-only readers remain self-scoped.",
         };
       }
     } catch {
@@ -3725,7 +3723,17 @@ export default defineTool({
             }
           })()
         : undefined;
-    const orientInnerCall = inProcessCall(ctx, { telemetrySurface: 'orient', ignoreSessionPayloadTier: true });
+    const orientInnerCallBase = inProcessCall(ctx, { telemetrySurface: 'orient', ignoreSessionPayloadTier: true });
+    const orientInnerCall: InnerCall = async (name, callArgs) => {
+      if (ctx.role === 'judge' && name === 'fleet:assignments') {
+        const requestedHarness = (callArgs as Record<string, unknown>).harness;
+        return orientInnerCallBase(name, {
+          agent: 'self',
+          ...(typeof requestedHarness === 'string' ? { harness: requestedHarness } : {}),
+        });
+      }
+      return orientInnerCallBase(name, callArgs);
+    };
     const fleetSummariesFold = readLedFleets
       ? async (homeFleetSlug: string, homeBrief: unknown | null | undefined) => {
           const led = await readLedFleets();
