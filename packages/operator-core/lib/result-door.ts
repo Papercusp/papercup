@@ -1960,6 +1960,15 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
             'results[].id',
             'results[].ok',
             'results[].availability',
+            // A spill-write failure removes the recovery path for the omitted
+            // bytes. Keep the checkpoint itself ahead of diagnostic bulk so a
+            // continuation read still carries useful state inline; the normal
+            // field clip remains marked and the full-note hash stays available.
+            'results[].checkpoint',
+            'results[].checkpointContentHash',
+            'results[].checkpointUpdatedAtMs',
+            'results[].checkpointBody',
+            'results[].checkpointReadFailed',
             'results[]._stub',
             'read.requested',
             'read.available',
@@ -2011,7 +2020,12 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       evaluatorCompactBody ?? (parsedJsonBody ? bodyShape.json!.parsed : { text: fullText }),
       {
       toolName: opts.toolName,
-      tier: 'trimmed',
+      // `work_items:get` is the continuity read. If its spill cannot be
+      // written, a trimmed 800-character string ceiling can leave too little
+      // of the checkpoint to resume safely. The same transport target still
+      // caps the whole response; the standard string ceiling only reallocates
+      // that bounded space to the explicitly preserved checkpoint path.
+      tier: opts.toolName === 'work_items:get' ? 'standard' : 'trimmed',
       forced: true,
       originalChars: totalChars,
       targetChars: structuralTargetChars,

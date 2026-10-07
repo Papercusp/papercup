@@ -2081,6 +2081,63 @@ describe('applyResultDoor', () => {
       expect(footer).not.toContain(sandbox);
     });
 
+    it('keeps useful checkpoint text and its stored identity when a work_items:get spill cannot be written', () => {
+      breakScratchRoot();
+      const checkpoint =
+        'RETAINED-CHECKPOINT-BEGIN\n' +
+        'Resume by checking the saved acceptance evidence and continue from the next action. '.repeat(180) +
+        '\nRETAINED-CHECKPOINT-END';
+      const original = JSON.stringify({
+        ok: true,
+        results: [{
+          ok: true,
+          id: 'WI-checkpoint-spill-failure',
+          availability: 'available',
+          workItem: {
+            id: 'WI-checkpoint-spill-failure',
+            kind: 'bug',
+            state: 'open',
+            title: 'continuation checkpoint',
+            summary: 'S'.repeat(1_200),
+            payload: { diagnostics: 'P'.repeat(2_000) },
+          },
+          checkpoint,
+          checkpointContentHash: 'checkpoint-hash-123456',
+          checkpointUpdatedAtMs: 123,
+          checkpointBody: { chars: checkpoint.length, cap: 32_000, remaining: 32_000 - checkpoint.length },
+        }],
+        counts: { ok: 1, failed: 0 },
+      });
+      expect(original.length).toBeGreaterThan(BUDGET_CHARS);
+
+      const doored = applyResultDoor(
+        { content: [{ type: 'text' as const, text: original }] },
+        { toolName: 'work_items:get', workspaceId: 'ws-1', runId: RUN_ID },
+      );
+      const bounded = boundedBody(doored) as unknown as {
+        results: Array<{
+          checkpoint?: string;
+          checkpointContentHash?: string;
+          checkpointUpdatedAtMs?: number;
+          checkpointBody?: unknown;
+        }>;
+        _projection: { cursor: Record<string, unknown> };
+      };
+
+      expect(bounded._projection.cursor).toMatchObject({ kind: 'unavailable', reason: 'spill-write-failed' });
+      expect(bounded.results[0].checkpoint).toContain('RETAINED-CHECKPOINT-BEGIN');
+      expect(bounded.results[0].checkpoint!.length).toBeGreaterThan(800);
+      expect(bounded.results[0].checkpoint).toContain('TRUNCATED');
+      expect(bounded.results[0].checkpointContentHash).toBe('checkpoint-hash-123456');
+      expect(bounded.results[0].checkpointUpdatedAtMs).toBe(123);
+      expect(bounded.results[0].checkpointBody).toEqual({
+        chars: checkpoint.length,
+        cap: 32_000,
+        remaining: 32_000 - checkpoint.length,
+      });
+      expect(JSON.stringify(bounded).length).toBeLessThanOrEqual(BUDGET_CHARS);
+    });
+
     it('stamps the failure structurally so a machine reader is not left parsing prose', () => {
       breakScratchRoot();
       // Typed as DoorableResult, not left to inference: `applyResultDoor` returns
