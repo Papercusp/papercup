@@ -105,6 +105,16 @@ describe('once-only package wiring', () => {
     expect(PACKAGE_JSON.scripts?.['test:file']).not.toContain('PAPERCUSP_TEST_RUN_HARNESS=');
   });
 
+  it('holds every test entry point under the shared dependency install reader mutex', () => {
+    // Safe installs serialize writers. Test processes must hold the matching read
+    // lease for their full run so npm reification cannot hollow node_modules while
+    // Vitest or a workspace runtime is resolving packages.
+    for (const name of ['test', 'test:file', 'test:affected', 'test:related', 'test:affected:integration', 'test:all', 'test:all:integration', 'test:integration-only']) {
+      expect(PACKAGE_JSON.scripts?.[name], `${name} can observe a package-manager reify in progress`)
+        .toContain('scripts/npm-install-safe.mjs --exec-under-lock --');
+    }
+  });
+
   it('creates one proof group outside the fresh-attempt retry loop', () => {
     const proofGroup = PC_HEAVY_SRC.indexOf('export AFFECTED_TASK_VERDICT_PROOF_GROUP="$_resume_proof_group"');
     const retryLoop = PC_HEAVY_SRC.indexOf('while [ "$_retry_attempt" -le "$_retry_limit" ]; do');
