@@ -171,7 +171,7 @@ export default defineTool({
       .enum(['hive', 'workspace', 'all'])
       .optional()
       .describe(
-        'hive (DEFAULT) = your Hive\'s agents + federated peers; workspace = the whole workspace; all = every workspace — SUPERUSER only, and a non-superuser asking for it is silently narrowed to workspace rather than refused. Caller with no Hive (SU/operator) falls back to workspace.',
+        'hive (DEFAULT for browse reads) = your Hive\'s agents + federated peers; workspace = the whole workspace; all = every workspace — SUPERUSER only, and a non-superuser asking for it is silently narrowed to workspace rather than refused. A targeted owner lookup defaults to workspace unless you explicitly pass scope or pot; pass scope:"hive" to narrow it. Caller with no Hive (SU/operator) falls back to workspace.',
       ),
     pot: z
       .string()
@@ -244,7 +244,7 @@ export default defineTool({
     .passthrough(),
   async handler(args, ctx) {
     const view = args.view ?? 'live';
-    const scope = args.scope ?? 'hive';
+    const scope = args.scope;
 
     // `plan` is a claims-lens filter.  The shared argument schema keeps the
     // field available for every view so callers can discover one stable

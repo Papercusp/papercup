@@ -26,7 +26,7 @@ vi.mock('../presence-snapshot', async (importOriginal) => ({
   // pure row transforms, better exercised than stubbed.
   ...(await importOriginal<typeof import('../presence-snapshot')>()),
   resolvePresenceScope: vi.fn(async (ctx, args) => ({
-    scope: args.scope ?? 'hive',
+    scope: args.hive ? 'hive' : (args.scope ?? (args.targetedOwner ? 'workspace' : 'hive')),
     wsId: 'test-ws',
     potId: args.hive ?? 'test-hive',
   })),
@@ -246,6 +246,13 @@ describe('coord:roster', () => {
       const active = output.active as Array<{ ownerId: string }>;
       expect(active).toHaveLength(1);
       expect(active[0]!.ownerId).toBe('agent-1');
+      expect(output.scope).toBe('workspace');
+
+      const narrowed = await call(
+        { view: 'live', owner: 'agent-1', scope: 'hive' },
+        { workspaceId: 'test-ws' },
+      );
+      expect(narrowed.output.scope).toBe('hive');
     });
 
     it('should report plan as unsupported instead of silently returning an unfiltered roster', async () => {
