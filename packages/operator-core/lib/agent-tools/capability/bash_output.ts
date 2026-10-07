@@ -1033,6 +1033,9 @@ export default defineTool({
   },
   result: bashOutputResultSchema,
   capability: 'capability:bash',
+  // A peek leaves the per-job output cursor untouched; a normal poll consumes output and
+  // advances it. Preserve write gating for consuming polls while treating peeks as reads.
+  effectForCall: (args) => (args.peek === true ? 'read' : 'write'),
   requirePrincipal: false,
   // EI-20190459016345227: output polling does not read ctx.tx and can await
   // the durable task-ledger fallback while a live seed cut is running. Do not
