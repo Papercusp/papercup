@@ -156,6 +156,8 @@ export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = 
   // un-allowlisted (capability-only) so curation:read alone resolves them.
   // pot-rename SLICE-2 CONTRACT: `papercup` is the canonical id (was `sentinel`).
   papercup: [
+    // docs:get/search default these roles to the isolated public manual.
+    'docs:read',
     'coord:read',
     'coord:write',
     'work_items:read',
@@ -172,6 +174,7 @@ export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = 
     'memory:read',
     'intel:read',
   ],
+  'papercup-deep': ['docs:read'],
   // The OVERWATCH — the autonomous system-health SUPERVISOR (overwatch-role-2026-06-15
   // C-2 / B-01; a sibling to the Queen, the sense→decide→act actuator the watchdog lacks).
   // READ-EVERYTHING + NUDGE/OBSERVE/ESCALATE ONLY. Like the sentinel its only world-writes
