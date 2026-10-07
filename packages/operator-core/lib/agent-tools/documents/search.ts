@@ -11,7 +11,7 @@
  */
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
-import type { Sql } from 'postgres';
+import type { Sql, TransactionSql } from 'postgres';
 import { getSessionUserOrDefault } from '../../auth';
 import { boundedOrgTxn } from '../../pg-bounded-txn';
 import { searchOrganizationDocuments, searchPotDocuments } from '../../data-sources/documents-corpus';
@@ -54,7 +54,9 @@ async function runBoundedSearchLeg<T>(
 ): Promise<SearchLegResult<T>> {
   const startedAt = Date.now();
   try {
-    const value = await tx.savepoint((legTx) => work(legTx as unknown as Sql));
+    const transaction = tx as Sql & Partial<Pick<TransactionSql, 'savepoint'>>;
+    if (typeof transaction.savepoint !== 'function') throw new Error('documents_search_savepoint_unavailable');
+    const value = (await transaction.savepoint((legTx) => work(legTx as unknown as Sql))) as T;
     return { ok: true, value };
   } catch (error) {
     const errorCode = databaseErrorCode(error);

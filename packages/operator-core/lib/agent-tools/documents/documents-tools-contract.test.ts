@@ -49,7 +49,8 @@ vi.mock('../../data-sources/granted-sources-injection', () => ({
 import searchTool from './search';
 import subscriptionsTool from './subscriptions';
 
-const CTX = { workspaceId: 'ws-1', tx: {} } as never;
+const CTX_TX = {};
+const CTX = { workspaceId: 'ws-1', tx: CTX_TX } as never;
 
 // handler() returns ToolResponse | ToolResult; both tools return the { data } shape.
 type Data = { data: Record<string, any> };
@@ -122,7 +123,7 @@ describe('documents:search', () => {
     const result = await search({ query: 'release', legs: ['live'], sources: ['slack'], limit: 5 }, CTX);
     expect(mocks.searchLive).toHaveBeenCalledTimes(1);
     expect(mocks.searchLive).toHaveBeenCalledWith(mocks.tx, expect.objectContaining({
-      ...CTX, tx: mocks.tx, signal: expect.any(AbortSignal),
+      workspaceId: 'ws-1', tx: mocks.tx, signal: expect.any(AbortSignal),
     }), {
       workspaceId: 'ws-1', principalUserId: 'user-1', agentOwnerId: 'su-agent', query: 'release', sources: ['slack'], limit: 5,
     });
@@ -167,7 +168,7 @@ describe('documents:search', () => {
   it('forwards organization source filters and the server-resolved principal', async () => {
     await searchTool.handler({ query: 'release', legs: ['organization'], sources: ['slack'], limit: 5 }, CTX);
     expect(mocks.searchOrganization).toHaveBeenCalledWith(mocks.tx, expect.objectContaining({
-      ...CTX, tx: mocks.tx, signal: expect.any(AbortSignal),
+      workspaceId: 'ws-1', tx: mocks.tx, signal: expect.any(AbortSignal),
     }), {
       workspaceId: 'ws-1', principalUserId: 'user-1', agentOwnerId: 'su-agent',
       query: 'release', sources: ['slack'], limit: 5,
@@ -219,7 +220,7 @@ describe('documents:search', () => {
     expect(mocks.searchPot).toHaveBeenCalledTimes(1);
     expect(mocks.boundedOrgTxn).toHaveBeenCalledWith(
       expect.any(Function),
-      expect.objectContaining({ client: CTX.tx, signal: expect.any(AbortSignal) }),
+      expect.objectContaining({ client: CTX_TX, signal: expect.any(AbortSignal) }),
     );
   });
 
