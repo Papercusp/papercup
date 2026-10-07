@@ -28,7 +28,6 @@ import { operatorApiBase } from '../../operator-api-base';
 const ORACLE_PROMPT_TABLE = 'harness_shared.operator_oracle_prompt';
 const ORACLE_MEMORY_TABLE = 'harness_shared.operator_oracle_memory';
 
-const DEFAULT_PROMPT = loadRolePersona('oracle');
 const DEFAULT_MEMORY = `# Oracle memory
 
 Add notes here you want the Oracle to keep in mind across conversations.
@@ -106,13 +105,16 @@ const TUTORIAL_STEPS: TutorialStep[] = [
 ];
 
 async function ensureDefaults() {
-  for (const [table, content] of [
-    ['operator_oracle_prompt', DEFAULT_PROMPT],
-    ['operator_oracle_memory', DEFAULT_MEMORY],
+  // Runtime-only images intentionally omit cupboard prompt assets. Importing the
+  // tool registry must not read them; only an unconfigured Oracle needs its
+  // default persona. Existing persisted configuration remains usable without it.
+  for (const [table, defaultContent] of [
+    ['operator_oracle_prompt', () => loadRolePersona('oracle')],
+    ['operator_oracle_memory', () => DEFAULT_MEMORY],
   ] as const) {
     const existing = await readOperatorState<{ content?: string }>(table);
     if (existing && typeof existing.content === 'string') continue;
-    await writeOperatorState(table, { content });
+    await writeOperatorState(table, { content: defaultContent() });
   }
 }
 

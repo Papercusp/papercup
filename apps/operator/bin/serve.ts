@@ -1310,6 +1310,7 @@ Start the headless Papercusp operator.
 Options:
   --ensure     Reuse a healthy operator from the same build when one is running.
   --ui         Serve the packaged UI as well as the operator API.
+  --verify-boot-imports  Qualify packaged tool imports without starting runtime services.
   -h, --help   Show this help and exit without starting runtime services.
 `;
 
@@ -1340,6 +1341,15 @@ async function main(): Promise<void> {
   if (isServeHelpRequest(argv)) {
     process.stdout.write(SERVE_HELP_TEXT);
     return;
+  }
+  // Packaged-image qualification: evaluate the same tool registry boot imports
+  // before acquiring singleton locks or creating a database. Runtime-only images
+  // deliberately lack cupboard assets; eager persona reads must fail this probe,
+  // not a multi-minute initdb/drill. No tool is invoked and no bootstrap is run.
+  if (argv[0] === "--verify-boot-imports") {
+    await import("@papercusp/operator-core/lib/agent-tools/index");
+    process.stdout.write("PAPERCUSP_BOOT_IMPORTS_OK\n");
+    process.exit(0);
   }
 
   // R6 admission pre-check workers are managed tasks whose lifetime is independent of this

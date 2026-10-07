@@ -35,6 +35,18 @@ const operatorJson = () => join(pcDir(), "operator.json");
 const tokenFile = () => join(pcDir(), "superuser-token");
 const lockFile = () => join(pcDir(), "operator.lock");
 const serveSrc = readFileSync(join(__dirname, "serve.ts"), "utf8");
+
+it('qualifies packaged tool imports before any singleton or Postgres boot', () => {
+  const main = serveSrc.slice(serveSrc.indexOf('async function main():'));
+  const probe = main.indexOf('argv[0] === "--verify-boot-imports"');
+  expect(probe).toBeGreaterThan(-1);
+  const branch = main.slice(probe, main.indexOf('\n  }', probe));
+  expect(branch).toContain('await import("@papercusp/operator-core/lib/agent-tools/index")');
+  expect(branch).toContain('PAPERCUSP_BOOT_IMPORTS_OK');
+  expect(branch).toContain('process.exit(0)');
+  expect(main.indexOf('pg = await ensurePostgres()')).toBeGreaterThan(probe);
+  expect(main.indexOf('if (!acquireColdStartLock())')).toBeGreaterThan(probe);
+});
 const repoRoot = join(__dirname, "../../..");
 const tsx = join(repoRoot, "node_modules/.bin/tsx");
 
@@ -60,7 +72,7 @@ beforeAll(async () => {
 describe("vm-release boot ordering (D-043 / P-050)", () => {
   it("installs the runtime flag store before any other import graph can read a flag", () => {
     const flagStore = serveSrc.indexOf('import "./boot-flag-store";');
-    const firstHostImport = serveSrc.indexOf('import { fileURLToPath, pathToFileURL }');
+    const firstHostImport = serveSrc.search(/import\s*\{[^}]*fileURLToPath[^}]*\}\s*from\s*["']node:url["']/);
     expect(flagStore).toBeGreaterThan(-1);
     expect(firstHostImport).toBeGreaterThan(flagStore);
   });
