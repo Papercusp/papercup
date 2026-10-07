@@ -1423,8 +1423,9 @@ function appendRatingRerunProbes(
  *       correct-layer reads the runtime-measured layer and rejects a contradictory binder layer.
  *   7 — a null fixture fingerprint no longer proves fixture-free evidence; executable bindings must
  *       explicitly attest fixtureFree=true before fixture calibration is not-applicable.
+ *   8 — pair Cargo case receipts by canonical source and measurement root, preserving exact case checks.
  */
-export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 7;
+export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 8;
 
 type MutationTargetClause = Pick<SpecClauseRevision, 'specId' | 'falsifier'>;
 
@@ -1473,13 +1474,34 @@ function clauseBoundCurrentTest(
   return clauseBoundCurrentTests(clause, mutation, evidence)[0] ?? null;
 }
 
+/** Cargo's case identity is not a file. Legacy crate receipts resolve only through the
+ * persisted, server-measured single test source inside that crate. Include the checkout root
+ * so equal relative paths in independently registered checkouts cannot corroborate each other. */
+function canonicalTestSourceKey(row: SpecEvidenceForAdequacy): string | null {
+  const recorded = row.testRunProvenance?.filePath;
+  if (!recorded?.trim()) return null;
+  const measurement = repoFilesEvidenceMeasurementSchema.safeParse(row.details.currentMeasurement);
+  const root = measurement.success ? measurement.data.rootHarnessSlug ?? null : null;
+  const at = recorded.indexOf('::');
+  let filePath = recorded;
+  if (at > 0) {
+    const prefix = recorded.slice(0, at);
+    if (prefix.endsWith('.rs')) filePath = prefix;
+    else if (measurement.success && measurement.data.testPaths?.length === 1) {
+      const source = measurement.data.testPaths[0];
+      if (source.endsWith('.rs') && source.startsWith(`${prefix}/`)) filePath = source;
+    }
+  }
+  return JSON.stringify([root, filePath]);
+}
+
 function clauseBoundCurrentTests(
   clause: SpecClauseRevision,
   mutation: SpecEvidenceForAdequacy,
   evidence: readonly SpecEvidenceForAdequacy[],
 ): SpecEvidenceForAdequacy[] {
-  const filePath = mutation.testRunProvenance?.filePath;
-  if (!filePath || filePath.trim().length === 0) return [];
+  const sourceKey = canonicalTestSourceKey(mutation);
+  if (!sourceKey) return [];
   return evidence.filter(
     (row) =>
       row.evidenceKind === 'test' &&
@@ -1487,7 +1509,7 @@ function clauseBoundCurrentTests(
       row.specId === clause.specId &&
       row.specRevision === clause.revision &&
       row.specFingerprint === clause.contentHash &&
-      row.testRunProvenance?.filePath === filePath &&
+      canonicalTestSourceKey(row) === sourceKey &&
       row.currentness.overall === 'current' &&
       isSuccessfulRepairedEvidence(row),
   );
