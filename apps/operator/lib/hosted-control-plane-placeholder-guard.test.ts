@@ -31,6 +31,17 @@ import { resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 
+describe('hosted control plane bundled boot', () => {
+  it('prebuilds the exact named entry and starts that bundle with stale fallback', () => {
+    const unit = readFileSync(resolve(__dirname, '../scripts/systemd/papercusp-hosted-control-plane.service.in'), 'utf8');
+    expect(unit).toContain('Environment=BUNDLE_HOST_OPERATOR_DIR=@OPERATOR_ROOT@');
+    expect(unit).toContain('Environment=PAPERCUSP_BUNDLE_ALLOW_STALE_START=1');
+    expect(unit).toMatch(/^ExecStartPre=.*papercusp-script-snapshot.sh .*bundle-host.sh bin\/serve.ts dist-hosted-control-plane\/serve.mjs$/m);
+    expect(unit).toMatch(/^ExecStart=.*exec node dist-hosted-control-plane\/serve.mjs/m);
+    expect(unit).not.toContain('exec npx tsx bin/serve.ts');
+  });
+});
+
 // PROBE_SCRIPT lets scripts/mutation-probe.sh point this suite at a MUTATED
 // COPY outside the tree, so falsifiability can be proven without mutating the
 // shared checkout (where git-sync would commit the mutant mid-probe).

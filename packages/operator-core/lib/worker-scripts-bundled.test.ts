@@ -38,6 +38,7 @@ import { tmpdir } from 'node:os';
 import { Worker } from 'node:worker_threads';
 import { join, relative, resolve } from 'node:path';
 import { testImportClosures } from './agent-tools/testing/mutation-probe-fence';
+import { localEsbuildNpxPath } from './test-fixtures/local-esbuild-npx';
 
 const REPO_ROOT = resolve(__dirname, '../../..');
 
@@ -209,21 +210,20 @@ function siblingExecutable(file: string): string {
 describe('shared worker recipe executes in the bundled plain-node runtime', () => {
   let output: string;
   let gateMeta: string;
+  let compilerPath: string;
   const recipe = join(REPO_ROOT, 'apps/operator/bin/bundle-host-common.sh');
   const build = (extraEnv: NodeJS.ProcessEnv = {}, subject = recipe, destination = output) => spawnSync('bash', [
     '-c', 'set -euo pipefail; source "$1"; bundle_host_workers "$2" "$3" "${PAPERCUSP_EMBED_WORKER_SCRIPT:-}"', 'worker-recipe-test', subject, REPO_ROOT, destination,
   ], {
     cwd: REPO_ROOT,
-    env: { ...process.env, PAPERCUSP_EMBED_WORKER_SCRIPT: '', BUNDLE_HOST_GATE_META_DIR: gateMeta, ...extraEnv },
+    env: { ...process.env, PATH: compilerPath, PAPERCUSP_EMBED_WORKER_SCRIPT: '', BUNDLE_HOST_GATE_META_DIR: gateMeta, ...extraEnv },
     encoding: 'utf8',
-    // WI-10006392: precision-bench-worker.ts bundles the full operator cone
-    // (~100 MB, ~12s alone on a loaded host), so the five-worker build no
-    // longer fits 30s. A timeout here reads as status=null, not a resolve error.
-    timeout: 150_000,
+    timeout: 30_000,
   });
 
   beforeAll(() => {
     output = mkdtempSync(join(tmpdir(), 'bundled-workers-'));
+    compilerPath = localEsbuildNpxPath(join(output, 'local-compiler'), REPO_ROOT);
     // EI-24917607035361603: the real staging caller set this path without
     // creating it. Exercise that boundary in the same real worker build.
     gateMeta = join(output, 'missing-gate-meta');
@@ -231,7 +231,7 @@ describe('shared worker recipe executes in the bundled plain-node runtime', () =
     symlinkSync(join(REPO_ROOT, 'node_modules'), join(output, 'node_modules'), 'dir');
     const result = build();
     expect(result.status, result.stdout + result.stderr).toBe(0);
-  }, 170_000);
+  }, 50_000);
 
   afterAll(() => {
     if (output) rmSync(output, { recursive: true, force: true });

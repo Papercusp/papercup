@@ -35,6 +35,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mutationProbeAdmissionDir } from '../../../scripts/lib/mutation-probe-window.mjs';
+import { localEsbuildNpxPath } from './test-fixtures/local-esbuild-npx';
 
 const REPO_ROOT = resolve(__dirname, '../../..');
 // PROBE_SCRIPT makes the subject path overridable, which is what makes a TIER-2
@@ -51,6 +52,7 @@ const GOOD_BUNDLE = 'console.log("last known good");\n';
 let dir: string;
 let outfile: string;
 let marker: string;
+let compilerPath: string;
 
 /** Run bundle-host.sh, returning its exit code and combined output. */
 function runBundler(entry: string, extraEnv?: Record<string, string>): { code: number; output: string } {
@@ -74,6 +76,7 @@ function runBundler(entry: string, extraEnv?: Record<string, string>): { code: n
         PAPERCUSP_BUNDLE_ALLOW_STALE_START: '0',
         PAPERCUSP_MUTATION_PROBE_TMPDIR: dir,
         PAPERCUSP_RESTRICTED_HOLD_CENSUS_FILE: census,
+        PATH: compilerPath,
         ...extraEnv,
       },
     });
@@ -96,6 +99,7 @@ beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'bundle-host-fallback-'));
   outfile = join(dir, 'dist-host', 'hono-host.mjs');
   marker = join(dir, 'dist-host', '.bundle-stale.json');
+  compilerPath = localEsbuildNpxPath(join(dir, 'local-compiler'), REPO_ROOT);
 });
 
 afterEach(() => {
@@ -128,7 +132,7 @@ describe('bundle-host.sh standalone spawner fallback', () => {
       '',
     ].join('\n'), { mode: 0o755 });
     const { code, output } = runBundler(entry, {
-      PATH: `${shimDir}:${process.env.PATH ?? ''}`,
+      PATH: `${shimDir}:${compilerPath}`,
       PAPERCUSP_BUNDLE_ALLOW_STALE_START: allowStale,
     });
     expect(code, output).toBe(expectedCode);
@@ -273,7 +277,7 @@ describe('bundle-host.sh last-known-good fallback', () => {
       );
 
       const { code, output } = runBundler(entry, {
-        PATH: `${shimDir}:${process.env.PATH ?? ''}`,
+        PATH: `${shimDir}:${compilerPath}`,
         BUNDLE_TEST_KILL_ENTRY: entry,
       });
 

@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { localEsbuildNpxPath } from './test-fixtures/local-esbuild-npx';
 
 const root = resolve(__dirname, '../../..');
 const composer = join(root, 'papercusp-desktop/bin/vm-rig/compose-rig-sidecar-current.sh');
@@ -17,10 +18,11 @@ const workers = [
 describe('current-build local rig payload (not a two-machine acceptance result)', () => {
   it('emits a hash-bound payload with every required plain-Node worker without touching the remote rig', () => {
     const out = mkdtempSync(join(tmpdir(), 'current-build-rig-e2e-'));
+    const compilerDir = mkdtempSync(join(tmpdir(), 'current-build-rig-compiler-'));
     try {
       const build = spawnSync('bash', [composer, '--no-push'], {
         cwd: root,
-        env: { ...process.env, PCUSP_RIG_COMPOSE_OUT: out },
+        env: { ...process.env, PATH: localEsbuildNpxPath(compilerDir, root), PCUSP_RIG_COMPOSE_OUT: out },
         encoding: 'utf8',
         timeout: 180_000,
       });
@@ -39,6 +41,7 @@ describe('current-build local rig payload (not a two-machine acceptance result)'
       expect(check.status, check.stderr).toBe(0);
     } finally {
       rmSync(out, { recursive: true, force: true });
+      rmSync(compilerDir, { recursive: true, force: true });
     }
   }, 200_000);
 });

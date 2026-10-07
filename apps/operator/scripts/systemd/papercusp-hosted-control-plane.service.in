@@ -25,6 +25,9 @@ StartLimitBurst=5
 Type=simple
 WorkingDirectory=@OPERATOR_ROOT@
 Environment=NODE_ENV=production
+Environment=BUNDLE_HOST_OPERATOR_DIR=@OPERATOR_ROOT@
+Environment=PAPERCUSP_BUNDLE_ALLOW_STALE_START=1
+ExecStartPre=/usr/bin/bash @OPERATOR_ROOT@/scripts/systemd/papercusp-script-snapshot.sh @OPERATOR_ROOT@/bin/bundle-host.sh bin/serve.ts dist-hosted-control-plane/serve.mjs
 Environment=PAPERCUSP_INTEGRATION_ROOT=@REPO_ROOT@
 Environment=PATH=@NODE_DIR@:%h/.local/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin
 # Source order matters: the operator's .env.local (database URLs) first, then the
@@ -43,7 +46,7 @@ Environment=PATH=@NODE_DIR@:%h/.local/bin:/home/linuxbrew/.linuxbrew/bin:/usr/lo
 # so it is derived at exec time instead of copying a DB credential into a second
 # file (`$$` is systemd escaping — bash receives a literal `$`). The app-role URL
 # resolves from that pin (libs/papercusp/libs/db/src/connection.ts, WI-7424).
-ExecStart=/usr/bin/bash -c 'set -a; [ -f .env.local ] && . ./.env.local; [ -f "@HOSTED_ENV_FILE@" ] && . "@HOSTED_ENV_FILE@"; set +a; export HARNESS_ADMIN_DATABASE_URL="$${HARNESS_ADMIN_DATABASE_URL:-$$DATABASE_URL}" PAPERCUSP_DISTRIBUTION_PROFILE=hosted-control-plane PAPERCUSP_ENV_OPERATOR_ID=hosted-control-plane PAPERCUSP_USE_EMBEDDED_PG=0 PAPERCUSP_HONO_PORT=@PORT@ PAPERCUSP_BIND_HOST=127.0.0.1 PAPERCUSP_BACKGROUND_WORKERS=0; exec npx tsx bin/serve.ts'
+ExecStart=/usr/bin/bash -c 'set -a; [ -f .env.local ] && . ./.env.local; [ -f "@HOSTED_ENV_FILE@" ] && . "@HOSTED_ENV_FILE@"; set +a; export HARNESS_ADMIN_DATABASE_URL="$${HARNESS_ADMIN_DATABASE_URL:-$$DATABASE_URL}" PAPERCUSP_DISTRIBUTION_PROFILE=hosted-control-plane PAPERCUSP_ENV_OPERATOR_ID=hosted-control-plane PAPERCUSP_USE_EMBEDDED_PG=0 PAPERCUSP_HONO_PORT=@PORT@ PAPERCUSP_BIND_HOST=127.0.0.1 PAPERCUSP_BACKGROUND_WORKERS=0; exec node dist-hosted-control-plane/serve.mjs'
 Restart=on-failure
 RestartSec=3s
 TimeoutStartSec=180s

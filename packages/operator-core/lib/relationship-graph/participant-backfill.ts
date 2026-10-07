@@ -149,7 +149,7 @@ export async function backfillInteractionParticipants(
         SELECT id::text AS id, external_id FROM harness_shared.personal_documents
          WHERE workspace_id = ${input.workspaceId} AND user_id = ${input.userId}::uuid
            AND source_id::text = ${group.source_id} AND kind = ${group.kind} AND id > ${afterId}::uuid
-         ORDER BY id LIMIT ${batchSize}`;
+         ORDER BY personal_documents.id LIMIT ${batchSize}`;
       if (!page.length) break;
       const read = await readTeamInteractions(sql, {
         ctx: input.ctx,
@@ -248,7 +248,7 @@ export async function runPendingParticipantBackfills(
        AND participant_backfill_at IS NULL
        AND coalesce(destination_policy -> 'person', '[]'::jsonb) @> '["record"]'::jsonb
        AND destination_policy ?| ${sql.array([...INTERACTION_DATATYPES])}::text[]
-     ORDER BY created_at, id
+     ORDER BY created_at, data_sources.id
      LIMIT ${Math.max(1, Math.min(input.maxSources ?? 4, 50))}`;
   const out: PendingParticipantBackfill[] = [];
   // Progress is written only while the source is still pending under a held grant, the same guard

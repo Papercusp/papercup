@@ -257,6 +257,8 @@ describe('ORDER BY never sorts an integer or timestamp column through its text a
     it('does not flag the fixed forms', () => {
       expect(h('SELECT id::text AS id FROM t WHERE id > ${} ORDER BY id::bigint ASC LIMIT ${}')).toEqual([]);
       expect(h('SELECT u.id::text AS id FROM t u ORDER BY u.id')).toEqual([]);
+      expect(h('SELECT id::text AS id FROM personal_documents ORDER BY personal_documents.id')).toEqual([]);
+      expect(h('SELECT id::text AS id FROM data_sources ORDER BY data_sources.id')).toEqual([]);
       expect(h('SELECT id::text AS ref FROM t ORDER BY id')).toEqual([]);
     });
 
