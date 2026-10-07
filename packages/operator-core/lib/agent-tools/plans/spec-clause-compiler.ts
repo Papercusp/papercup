@@ -114,7 +114,7 @@ const MULTI_OBSERVABLE_CONJUNCTION_RE = new RegExp(
 const MULTI_SUBJECT_SHARED_PREDICATE_RE =
   /\b(?:[^,.;]+,\s*){2,}(?:and|or)\s+[^,.;]+\s+(?:is|are|was|were|has|have|accepts?|allows?|becomes?|creates?|deletes?|denies|emits?|fails?|includes?|omits?|records?|rejects?|remains?|returns?|shows?|starts?|stops?|updates?|writes?)\b/i;
 const ADDITIONAL_OBSERVABLE_VERB =
-  '(?:dismiss(?:es)?|exists?|keeps?|promotes?|proven|reaches?|refuses?|renders?|stays?|turns?|carr(?:y|ies|ied|ying)|preserv(?:e|es|ed|ing)|mak(?:e|es|ing)|made)';
+  '(?:dismiss(?:es)?|exists?|keeps?|promotes?|proven|reaches?|receiv(?:e|es|ed|ing)|refuses?|renders?|stays?|turns?|carr(?:y|ies|ied|ying)|preserv(?:e|es|ed|ing)|mak(?:e|es|ing)|made)';
 const EXTENDED_OBSERVABLE_VERB = '(?:' + OBSERVABLE_VERB + '|' + ADDITIONAL_OBSERVABLE_VERB + ')';
 const EXTENDED_OBSERVABLE_PREDICATE_RE = new RegExp('\\b' + EXTENDED_OBSERVABLE_VERB + '\\b', 'i');
 const MULTI_EXTENDED_CONJUNCTION_RE = new RegExp(
