@@ -811,6 +811,16 @@ export function createCheckpointTreeFixPrecheckRunner(opts: CheckpointTreeRunner
     log(`[admission-precheck] materializing ${commit.slice(0, 12)} into ${precheckRoot}`);
     const setup = await execWithProgress(
       [
+        // The publisher brackets its snapshot with fingerprints, but those only
+        // detect a concurrent install after the expensive copy. Use the same
+        // repo-keyed reader lease as checkpoint prewarming so guarded installers
+        // cannot reify the source dependencies during admission setup.
+        process.execPath,
+        path.join(opts.integrationRoot, 'scripts/npm-install-safe.mjs'),
+        '--repo-root',
+        opts.integrationRoot,
+        '--exec-under-lock',
+        '--',
         'bash',
         setupScript,
         '--ref',

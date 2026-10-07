@@ -195,7 +195,7 @@ describe('createCheckpointTreeFixPrecheckRunner', () => {
     let setupOutput = '';
     let filesMeasured = 0;
     const exec = async (argv: readonly string[], opts: ExecOptions): Promise<ExecResult> => {
-      if (argv[0] !== 'bash') {
+      if (!argv.includes('--exec-under-lock')) {
         filesMeasured += 1;
         return { exitCode: 0, signal: null, timedOut: false, output: '', durationMs: 1 };
       }
@@ -244,7 +244,7 @@ describe('createCheckpointTreeFixPrecheckRunner', () => {
     let activeWrites = 0;
     let maxActiveWrites = 0;
     const exec = async (argv: readonly string[], opts: ExecOptions): Promise<ExecResult> => {
-      if (argv[0] === 'bash') {
+      if (argv.includes('--exec-under-lock')) {
         opts.onOutput?.();
         for (let i = 0; i < 100; i += 1) {
           now += 1;
@@ -311,7 +311,7 @@ describe('createCheckpointTreeFixPrecheckRunner', () => {
     expect(exec).not.toHaveBeenCalled();
   });
 
-  it('materializes the commit with setup-release-checkout then runs each file in a dedicated admission checkout', async () => {
+  it('holds the source install reader during snapshot setup, then runs tests outside that lease in the dedicated checkout', async () => {
     const calls: Array<{ argv: readonly string[]; cwd: string }> = [];
     const events: string[] = [];
     const progress: Array<{
@@ -322,7 +322,7 @@ describe('createCheckpointTreeFixPrecheckRunner', () => {
     }> = [];
     const exec = vi.fn(async (argv: readonly string[], opts: { cwd: string }) => {
       calls.push({ argv, cwd: opts.cwd });
-      if (argv[0] === 'bash') {
+      if (argv[1] === '/repo/scripts/npm-install-safe.mjs') {
         events.push('setup');
         return { exitCode: 0, signal: null, timedOut: false, output: 'ok', durationMs: 5 } as ExecResult;
       }
@@ -351,7 +351,10 @@ describe('createCheckpointTreeFixPrecheckRunner', () => {
       'progress:lib/new.test.ts',
       'test:lib/new.test.ts',
     ]);
-    expect(calls[0].argv.slice(0, 2)).toEqual(['bash', '/repo/apps/operator/bin/release/setup-release-checkout.sh']);
+    expect(calls[0].argv.slice(0, 8)).toEqual([
+      process.execPath, '/repo/scripts/npm-install-safe.mjs', '--repo-root', '/repo',
+      '--exec-under-lock', '--', 'bash', '/repo/apps/operator/bin/release/setup-release-checkout.sh',
+    ]);
     expect(calls[0].argv).toEqual(expect.arrayContaining(['--ref', C, '--integration', '/repo', '--release', '/ckpt-admission-precheck']));
     expect(calls[0].cwd).toBe('/repo');
     expect(calls[1]).toEqual({ argv: ['node', 'scripts/test-files.mjs', 'lib/red.test.ts'], cwd: '/ckpt-admission-precheck' });
@@ -362,7 +365,7 @@ describe('createCheckpointTreeFixPrecheckRunner', () => {
     const setupEnvs: Array<NodeJS.ProcessEnv | undefined> = [];
     const testEnvs: Array<NodeJS.ProcessEnv | undefined> = [];
     const exec = vi.fn(async (argv: readonly string[], opts: { cwd: string; env?: NodeJS.ProcessEnv }) => {
-      (argv[0] === 'bash' ? setupEnvs : testEnvs).push(opts.env);
+      (argv[1] === '/repo/scripts/npm-install-safe.mjs' ? setupEnvs : testEnvs).push(opts.env);
       return { exitCode: 0, signal: null, timedOut: false, output: '', durationMs: 1 } as ExecResult;
     });
     const runner = createCheckpointTreeFixPrecheckRunner({ ...base, exec, runLockHeld: () => ({ held: false, elapsedSec: null }) });
@@ -377,7 +380,7 @@ describe('createCheckpointTreeFixPrecheckRunner', () => {
     let gateCheckoutHead = 'old-gate-head';
     const measuredRoots: string[] = [];
     const exec = vi.fn(async (argv: readonly string[], opts: { cwd: string }) => {
-      if (argv[0] === 'bash') {
+      if (argv[1] === '/repo/scripts/npm-install-safe.mjs') {
         expect(argv).toEqual(expect.arrayContaining(['--release', '/ckpt-admission-precheck']));
       } else {
         const racedOntoOldGateTree = gateCheckoutHead === 'new-gate-head' && opts.cwd === base.checkpointRoot;
@@ -425,7 +428,8 @@ describe('createCheckpointTreeFixPrecheckRunner', () => {
     const logs: string[] = [];
     const exec = vi.fn(async (argv: readonly string[], opts: ExecOptions): Promise<ExecResult> => {
       calls.push({ argv, cwd: opts.cwd });
-      return { exitCode: argv[0] === 'bash' ? 0 : 1, signal: null, output: argv[0] === 'bash' ? 'ok' : ' FAIL  lib/red.test.ts > x\nTests 1 failed (1)', timedOut: false, durationMs: 1 };
+      const setup = argv[1] === '/repo/scripts/npm-install-safe.mjs';
+      return { exitCode: setup ? 0 : 1, signal: null, output: setup ? 'ok' : ' FAIL  lib/red.test.ts > x\nTests 1 failed (1)', timedOut: false, durationMs: 1 };
     });
     const runner = createCheckpointTreeFixPrecheckRunner({
       ...base, exec, precheckRoot: '/fast/papercusp-precheck', log: (line) => logs.push(line),
@@ -440,7 +444,7 @@ describe('createCheckpointTreeFixPrecheckRunner', () => {
   it('isolates progress persistence failures from the measured file verdict', async () => {
     const logs: string[] = [];
     const exec = vi.fn(async (argv: readonly string[]) =>
-      ({ exitCode: 0, signal: null, timedOut: false, output: argv[0] === 'bash' ? 'ok' : '', durationMs: 5 }) as ExecResult,
+      ({ exitCode: 0, signal: null, timedOut: false, output: argv[1] === '/repo/scripts/npm-install-safe.mjs' ? 'ok' : '', durationMs: 5 }) as ExecResult,
     );
     const runner = createCheckpointTreeFixPrecheckRunner({
       ...base,
