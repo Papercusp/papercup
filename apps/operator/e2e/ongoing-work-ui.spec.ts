@@ -45,6 +45,14 @@ test('ongoing work stays visible across tabs, keeps ordinary goals, and opens th
   await expect(rail.getByText('31 waiting on you')).toBeVisible();
   await expect(page.getByText('Work on everything', { exact: true })).toBeVisible();
   await expect(page.getByText('Previous workspace steward', { exact: true })).toBeVisible();
+  const featured = page.getByRole('region', { name: `Ongoing work: ${current.title}` });
+  await expect(featured).toBeVisible();
+  await expect(featured.locator('svg.lucide-infinity')).toHaveCount(1);
+  const featuredBox = await featured.boundingBox();
+  const ordinaryBox = await page.getByText('Previous workspace steward', { exact: true }).boundingBox();
+  expect(featuredBox).not.toBeNull();
+  expect(ordinaryBox).not.toBeNull();
+  expect(featuredBox!.y + featuredBox!.height).toBeLessThanOrEqual(ordinaryBox!.y);
   // The represented id has exactly one displayed title; title matching cannot hide ordinary goals.
   await expect(page.getByRole('heading', { name: current.title, exact: true })).toHaveCount(1);
   await page.screenshot({ path: test.info().outputPath('ongoing-featured.png') });
@@ -61,6 +69,11 @@ test('ongoing work stays visible across tabs, keeps ordinary goals, and opens th
   const overview = page.locator('.hud-ongoing--detail');
   await expect(overview.getByText('Where work is moving')).toBeVisible();
   await expect(overview.getByRole('button', { name: 'Search plan' })).toBeVisible();
+  const overviewBeforeEnds = await overview.evaluate((node) => {
+    const ends = document.querySelector('[data-testid="goal-ends-section"]');
+    return !!ends && !!(node.compareDocumentPosition(ends) & Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+  expect(overviewBeforeEnds).toBe(true);
   await page.screenshot({ path: test.info().outputPath('ongoing-detail.png') });
   await overview.getByRole('button', { name: 'Search repair verified' }).click();
   await expect(page).toHaveURL(/hudwi=WI-outcome/);

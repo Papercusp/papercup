@@ -114,6 +114,8 @@ const server = createAdaptorServer({
             mode?: string;
             carry?: string;
             plan_slug?: string;
+            attach_adv_session_id?: number;
+            attached_engine?: boolean;
           })
         : null;
     const mcpRequest = pathname === '/api/mcp' && request.method === 'POST'
@@ -162,6 +164,29 @@ const server = createAdaptorServer({
       });
     }
     if (launch) observe(launch.agent_chat_id, launch.harness_slug);
+    if (launch) {
+      // HTTP 200 alone cannot distinguish exact resume from the legacy
+      // attach-only fallback. Never consume a streamed bootstrap response.
+      const result = response.headers.get('content-type')?.includes('application/json')
+        ? await response.clone().json().catch(() => undefined) as Record<string, unknown> | undefined
+        : undefined;
+      send({ type: 'diagnostic', level: 'info', args: ['PUI_OPERATOR_ATTACH_RESULT', {
+        requestedAdvSessionId: launch.attach_adv_session_id,
+        attachedEngine: launch.attached_engine,
+        httpStatus: response.status,
+        contentType: response.headers.get('content-type'),
+        status: result?.status,
+        attached: result?.attached,
+        resumed: result?.resumed,
+        ready: result?.ready,
+        transport: result?.transport,
+        advSessionId: result?.advSessionId,
+        workspaceId: result?.workspaceId,
+        harnessSlug: result?.harnessSlug,
+        code: result?.code,
+        error: result?.error,
+      }] });
+    }
     if (tracksReadiness) {
       // Rehydration may itself occur while handling the snapshot request.
       observeSuSessionPath(pathname);

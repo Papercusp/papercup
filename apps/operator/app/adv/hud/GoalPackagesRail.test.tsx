@@ -231,13 +231,25 @@ describe('GoalPackagesRail — spend + budget labels (P-004: each figure under i
 });
 
 describe('GoalPackagesRail — clicks go where they say', () => {
+  it('gives the standing goal a labeled featured region and ongoing identity', () => {
+    render(<GoalPackagesRail entries={[entry({ activeGoalId: 'G-9', instances: [live] })]}
+      goals={[goalRow()]} />);
+    const region = screen.getByRole('region', { name: 'Ongoing work: Work on everything' });
+    expect(region.classList.contains('hud-ongoing--featured')).toBe(true);
+    expect(region.querySelector('svg.lucide-infinity')).not.toBeNull();
+    expect(screen.getByRole('button', { name: 'View ongoing work' })).toBeTruthy();
+  });
+
   it('keeps ongoing work in the compact strip and leaves ordinary packages for Goals', () => {
+    const onOpenGoal = vi.fn();
     render(<GoalPackagesRail entries={[entry({ activeGoalId: 'G-9', instances: [live] }),
       entry({ ref: 'ordinary', standing: false })]} goals={[goalRow()]}
-      variant="compact" />);
+      variant="compact" onOpenGoal={onOpenGoal} />);
     expect(screen.getByRole('button', { name: 'View work' })).toBeTruthy();
     expect(screen.getByRole('button', { name: /Pause/ })).toBeTruthy();
     expect(screen.queryByTestId('pkg-card-ordinary')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'View work' }));
+    expect(onOpenGoal).toHaveBeenCalledWith('G-9');
   });
 
   it('shows the real detail focus/outcome and unbounded attention count', () => {

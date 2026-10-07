@@ -244,6 +244,9 @@ describe('GoalDetailPanel', () => {
       plans: [{ planSlug: 'release', harnessSlug: 'alpha', title: 'Release plan', openItems: 3, stamped: true }],
       waitingOnYouTotal: 31 }, { onOpenWorkItem, onOpenPlan });
     const overview = screen.getByTestId('ongoing-work-overview');
+    const ends = screen.getByTestId('goal-ends-section');
+    expect(overview.compareDocumentPosition(ends) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(overview).getByRole('heading', { name: 'Where work is moving' })).toBeTruthy();
     expect(overview.textContent).toContain('Where work is moving');
     expect(overview.textContent).toContain('Reconcile the release plan');
     expect(overview.textContent).toContain('31 waiting on you');

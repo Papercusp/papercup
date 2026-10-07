@@ -141,7 +141,7 @@ describe('device plans list', () => {
 
 describe('device plan detail', () => {
   const get = routes[1] as unknown as {
-    handler: (req: Request, ctx: { params: { slug: string } }) => Promise<Response>;
+    handler: (req: Request, ctx: typeof context & { params: { slug: string } }) => Promise<Response>;
   };
   const item = (id: string, storedStatus: string, blockedBy: string[] = []) => ({
     id, text: `item ${id}`, storedStatus, importance: 'normal', blockedBy,
@@ -160,7 +160,7 @@ describe('device plan detail', () => {
     blocks.overlayIssueBlocksForPlan.mockImplementation(async (slug: string, items: { id: string; effectiveStatus: string }[]) =>
       applyPlanItemBlocks(items, (id) => (planItemRef(slug, id) === planItemRef('release', 'P-003') ? ['EI-9'] : undefined)));
 
-    const response = await get.handler(new Request('http://localhost/api/device/plans/release'), { params: { slug: 'release' } });
+    const response = await get.handler(new Request('http://localhost/api/device/plans/release'), { ...context, params: { slug: 'release' } });
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(blocks.overlayIssueBlocksForPlan).toHaveBeenCalledWith('release', expect.any(Array));
@@ -177,8 +177,32 @@ describe('device plan detail', () => {
 
   it('404s an unknown plan without reading issue blocks', async () => {
     source.readPlanBySlug.mockResolvedValue(null);
-    const response = await get.handler(new Request('http://localhost/api/device/plans/missing'), { params: { slug: 'missing' } });
+    const response = await get.handler(new Request('http://localhost/api/device/plans/missing'), { ...context, params: { slug: 'missing' } });
     expect(response.status).toBe(404);
+    expect(blocks.overlayIssueBlocksForPlan).not.toHaveBeenCalled();
+  });
+
+  it.each(['', '?harness=all', '?harness=*', '?harness=member-pot'])('pins detail reads to the paired workspace %s', async (query) => {
+    source.readPlanBySlug.mockResolvedValue(null);
+    const response = await get.handler(new Request(`http://localhost/api/device/plans/missing${query}`), {
+      ...context, params: { slug: 'missing' },
+    });
+    expect(response.status).toBe(404);
+    expect(source.readPlanBySlug).toHaveBeenCalledExactlyOnceWith('missing', {
+      workspaceId: 'paired-workspace',
+      harnessSlug: query.includes('member-pot') ? 'member-pot' : undefined,
+    });
+  });
+
+  it('rejects a foreign detail harness before reading or overlaying its plan', async () => {
+    source.harnessExistsInWorkspace.mockResolvedValue(false);
+    const response = await get.handler(new Request('http://localhost/api/device/plans/release?harness=foreign-pot'), {
+      ...context, params: { slug: 'release' },
+    });
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: 'harness_not_in_workspace' });
+    expect(source.harnessExistsInWorkspace).toHaveBeenCalledExactlyOnceWith('paired-workspace', 'foreign-pot');
+    expect(source.readPlanBySlug).not.toHaveBeenCalled();
     expect(blocks.overlayIssueBlocksForPlan).not.toHaveBeenCalled();
   });
 });

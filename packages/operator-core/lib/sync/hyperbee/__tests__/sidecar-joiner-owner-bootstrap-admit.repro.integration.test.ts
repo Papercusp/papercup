@@ -72,6 +72,7 @@ import {
 import {
   _resetForTests as resetDbOrgPools,
   _resetStoreIdentityForTests,
+  pinnedStoreIdentity,
 } from '@papercusp/db-org';
 // eslint-disable-next-line import/no-relative-packages -- clears the env-URL cache the pool resolver memoizes
 import { _resetUrlCacheForTests } from '../../../../../../libs/papercusp/libs/db/src/connection';
@@ -600,6 +601,9 @@ describe('SIDECAR fixture pool lifecycle', () => {
     const firstPool = getLongLivedAdminPool(label);
     cleanups.push(() => firstPool.end({ timeout: 1 }));
     expect((await firstPool`SELECT current_database() AS name`)[0].name).toBe(first.dbName);
+    // The identity query is fire-and-forget and independent of the content query.
+    // Settle its pin before resetting global state for the next intentional DB.
+    await vi.waitFor(() => expect(pinnedStoreIdentity()?.database).toBe(first.dbName));
     expect(boundAdminPoolUrl(label)).toBe(first.adminDsn);
 
     routeTo(second);
@@ -610,6 +614,7 @@ describe('SIDECAR fixture pool lifecycle', () => {
       const secondPool = getLongLivedAdminPool(label);
       cleanups.push(() => secondPool.end({ timeout: 1 }));
       expect((await secondPool`SELECT current_database() AS name`)[0].name).toBe(second.dbName);
+      await vi.waitFor(() => expect(pinnedStoreIdentity()?.database).toBe(second.dbName));
       expect(boundAdminPoolUrl(label)).toBe(second.adminDsn);
       expect(warn).toHaveBeenCalledExactlyOnceWith(
         '[db] pg-merge-cursor-store pool rebound: target changed since it was built — rebuilding',
@@ -622,6 +627,7 @@ describe('SIDECAR fixture pool lifecycle', () => {
       const freshPool = getLongLivedAdminPool(label);
       cleanups.push(() => freshPool.end({ timeout: 1 }));
       expect((await freshPool`SELECT current_database() AS name`)[0].name).toBe(first.dbName);
+      await vi.waitFor(() => expect(pinnedStoreIdentity()?.database).toBe(first.dbName));
       expect(boundAdminPoolUrl(label)).toBe(first.adminDsn);
       expect(warn).not.toHaveBeenCalled();
     } finally {
