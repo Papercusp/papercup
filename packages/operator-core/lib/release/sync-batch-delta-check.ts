@@ -636,6 +636,8 @@ export interface CoverageTick {
   /** true = the scheduled opportunity judged its window (or confirmed nothing to judge). */
   evaluated: boolean;
   status: CoverageTickStatus;
+  /** Bounded reason/outcome for a non-evaluated tick. */
+  reason?: string;
 }
 
 export interface SyncDeltaCoverage {
@@ -765,7 +767,10 @@ export function buildCoverageAlarm(verdict: CoverageVerdict, coverage: SyncDelta
   const pct = verdict.ratio === null ? 'n/a' : `${Math.round(verdict.ratio * 100)}%`;
   const reasons = new Map<string, number>();
   for (const t of coverage.ticks.slice(-verdict.total)) {
-    if (!t.evaluated) reasons.set(t.status, (reasons.get(t.status) ?? 0) + 1);
+    if (!t.evaluated) {
+      const label = t.reason ? `${t.status} (${t.reason})` : t.status;
+      reasons.set(label, (reasons.get(label) ?? 0) + 1);
+    }
   }
   const breakdown = [...reasons.entries()].map(([s, n]) => `${s} x${n}`).join(', ') || '(none)';
   return {
@@ -777,8 +782,8 @@ export function buildCoverageAlarm(verdict: CoverageVerdict, coverage: SyncDelta
       'is NOT being caught at commit time; it will surface at the hourly gate instead.',
       '',
       `Non-evaluated opportunities by status: ${breakdown}.`,
-      'Read the routine row: routines:list { name: "sync-batch-delta-check" } -> metadata.sync_delta',
-      '(lastSkipReason, coverage.ticks). A run of `skipped` with a hard-ceiling reason means the box is',
+      'Read metadata.sync_delta with a workspace-scoped dev:pg_query; routines:list does not return it.',
+      '(lastSkipReason and coverage.ticks[].reason carry bounded skip diagnostics). A run of `skipped` with a hard-ceiling reason means the box is',
       'saturated; `radius-too-wide` means batches exceed the radius caps.',
       '`missed-opportunity` means a five-minute schedule slot passed without a completed check.',
       '',
@@ -1017,6 +1022,12 @@ export function buildRedFinding(input: {
  *  `false`, because "undetermined" must never be filed as a red. */
 export type ConfirmVerdict = boolean | null;
 
+export interface SubprocessDiagnostic {
+  outcome: 'completed' | 'timeout' | 'output-buffer-limit' | 'spawn-error' | 'nonzero-exit';
+  durationMs: number | null;
+  exitCode: number | null;
+}
+
 export interface SyncBatchDeltaDeps {
   /** Read the durable cursor, or null when this check has never run here. */
   readCursor(): Promise<SyncDeltaCursor | null>;
@@ -1040,9 +1051,17 @@ export interface SyncBatchDeltaDeps {
   probeRadius(paths: readonly string[]): Promise<RadiusProbe | null>;
   /** `affected-tests.mjs --changed-paths <paths>` — the actual run. `failing: null`
    *  on a red means the run named no files, i.e. UNDETERMINED. */
-  runAffected(paths: readonly string[]): Promise<{ ok: boolean; failing: FailingFile[] | null }>;
+  runAffected(paths: readonly string[]): Promise<{
+    ok: boolean;
+    failing: FailingFile[] | null;
+    diagnostic?: SubprocessDiagnostic;
+  }>;
   /** `lint-tsc.mjs --files=<files>`. */
-  runTsc(files: readonly string[]): Promise<{ ok: boolean; failing: string[] }>;
+  runTsc(files: readonly string[]): Promise<{
+    ok: boolean;
+    failing: string[];
+    diagnostic?: SubprocessDiagnostic;
+  }>;
   /** One file, in its OWN invocation (root CLAUDE.md's gate-triage rule).
    *  `true` = passed, `false` = failed, `null` = not measured. */
   confirmOne(file: string): Promise<ConfirmVerdict>;
@@ -1096,6 +1115,8 @@ export interface SyncBatchDeltaResult {
   status: SyncBatchDeltaStatus;
   /** Why, when the status alone does not say it. */
   reason?: string;
+  /** Bounded subprocess outcome details when a verdict could not be measured. */
+  diagnostic?: string;
   /** Commits consumed by this bounded prefix, including an explicit single-commit refusal. */
   batchCount: number;
   /** Unioned changed paths this run judged. */
@@ -1166,9 +1187,18 @@ async function recordCoverage(
   const cursor = await deps.readCursor();
   if (!cursor?.sha) return; // nothing to annotate before the first bootstrap
   const now = deps.now();
+  const tickReason = [result.reason, result.diagnostic]
+    .filter((part): part is string => Boolean(part))
+    .join('; ')
+    .slice(0, 500);
   let coverage = recordCoverageOpportunities(
     prior,
-    { atMs: startedAtMs, evaluated: isEvaluatedStatus(result.status), status: result.status },
+    {
+      atMs: startedAtMs,
+      evaluated: isEvaluatedStatus(result.status),
+      status: result.status,
+      ...(!isEvaluatedStatus(result.status) && tickReason ? { reason: tickReason } : {}),
+    },
     now,
   );
   const verdict = evaluateCoverage(coverage, now);
@@ -1180,7 +1210,12 @@ async function recordCoverage(
     const { alarmOpenSinceMs: _cleared, ...rest } = coverage;
     coverage = rest;
   }
-  await deps.writeCursor({ ...cursor, coverage });
+  const nextCursor = { ...cursor, coverage };
+  if (result.status === 'skipped' && tickReason) {
+    nextCursor.lastSkipReason = tickReason;
+    nextCursor.lastSkipMs = now;
+  }
+  await deps.writeCursor(nextCursor);
 }
 
 interface OldestPrefixSelection {
@@ -1449,12 +1484,17 @@ async function runSyncBatchDeltaTick(
 
   const candidates: Array<{ failing: FailingFile; leg: 'affected-tests' | 'lint-tsc' }> = [];
   if (!affected.ok) {
-    if (affected.failing === null) {
-      // Red with no terminal break-set line ⇒ the run never reached its verdict.
-      // NOT MEASURED: do not advance, do not file. The next tick re-judges the window.
-      deps.log('[sync-batch-delta] affected run red but named no files — undetermined, cursor held');
+    if (affected.failing === null || affected.failing.length === 0) {
+      // Missing or explicitly empty terminal break-set ⇒ no measured file-level verdict.
+      // NOT MEASURED: do not advance or call this green; the next tick re-judges the window.
+      const breakSet = affected.failing === null ? 'missing-terminal-break-set' : 'empty-terminal-break-set';
+      const diagnostic = affected.diagnostic
+        ? `outcome=${affected.diagnostic.outcome} durationMs=${affected.diagnostic.durationMs ?? 'unknown'} exitCode=${affected.diagnostic.exitCode ?? 'unknown'}`
+        : 'execution diagnostics unavailable';
+      deps.log(`[sync-batch-delta] affected run undetermined (${breakSet}); ${diagnostic}; cursor held`);
       return {
-        ...emptyResult('skipped', 'affected-run-undetermined'),
+        ...emptyResult('skipped', `affected-run-${breakSet}`),
+        diagnostic,
         batchCount: selectedBatches.length,
         pathCount: union.paths.length,
         workspaces: probe.workspaces,
@@ -1462,6 +1502,20 @@ async function runSyncBatchDeltaTick(
       };
     }
     for (const f of affected.failing) candidates.push({ failing: f, leg: 'affected-tests' });
+  }
+  if (!tsc.ok && tsc.failing.length === 0) {
+    const diagnostic = tsc.diagnostic
+      ? `outcome=${tsc.diagnostic.outcome} durationMs=${tsc.diagnostic.durationMs ?? 'unknown'} exitCode=${tsc.diagnostic.exitCode ?? 'unknown'}`
+      : 'execution diagnostics unavailable';
+    deps.log(`[sync-batch-delta] tsc run undetermined; ${diagnostic}; cursor held`);
+    return {
+      ...emptyResult('skipped', 'tsc-undetermined'),
+      diagnostic,
+      batchCount: selectedBatches.length,
+      pathCount: union.paths.length,
+      workspaces: probe.workspaces,
+      filed,
+    };
   }
   for (const f of tsc.failing) candidates.push({ failing: { file: f, workspace: null }, leg: 'lint-tsc' });
 
