@@ -5195,6 +5195,72 @@ describe('su identity precedence (EI-7066: explicit SID before Mcp-Session-Id)',
     expect(seen[0].ctx.uiClientId).toBe('su-header-sid');
   });
 
+  it('binds Codex per-call thread metadata instead of an inherited process header', async () => {
+    const native = '01a1154e-07f6-7450-a631-8b89b496cfa7';
+    const inherited = '01a1152c-db72-7be2-8a02-57c018d99469';
+    h.nativeSessionRows = new Map([['su-owner', [{ id: 36488, session_id: native, active: true }]]]);
+    const meta = { threadId: native, sessionId: native };
+    const extra = {
+      // As in the existing successful-native audit, keep the positive fixture
+      // unscoped: the PG-free harness has no persisted workspace launch row.
+      ...(superuserExtra('&client=su-owner&native_session=stale-query', {
+        'x-papercusp-native-session': inherited,
+      }) as Record<string, unknown>),
+      // The SDK copies request.params._meta to RequestHandlerExtra._meta.
+      _meta: meta,
+    };
+    const res = await callTool('gatingtest:scoped', {}, extra, meta);
+    expect(res.isError, textOf(res)).toBeUndefined();
+    expect(h.nativeSessionCalls).toEqual([{ ownerId: 'su-owner', sessionId: native }]);
+    expect(seen[0].ctx).toMatchObject({ uiClientId: 'su-owner', advSessionId: 36488 });
+    expect(h.invocations[0]?.ctx.requestOrigin).toMatchObject({ nativeSession: {
+      carrier: 'meta:threadId',
+      valueFingerprint: createHash('sha256').update(native).digest('hex'),
+      binding: 'bound',
+      candidateAdvSessionId: 36488,
+    } });
+    expect(JSON.stringify(h.invocations[0]?.ctx.requestOrigin)).not.toContain(native);
+    expect(JSON.stringify(h.invocations[0]?.ctx.requestOrigin)).not.toContain(inherited);
+  });
+
+  it('rejects a foreign per-call thread even when its inherited header matches the owner', async () => {
+    h.nativeSessionRows = new Map([['su-owner', [{ id: 541, session_id: 'native-owner', active: true }]]]);
+    const meta = { threadId: 'native-nested', sessionId: 'native-owner' };
+    const extra = {
+      ...(superuserExtra('&workspace=ws-test&client=su-owner', {
+        'x-papercusp-native-session': 'native-owner',
+      }) as Record<string, unknown>),
+      _meta: meta,
+    };
+    const res = await callTool('gatingtest:scoped', {}, extra, meta);
+    expect(res.isError).toBe(true);
+    expect(h.nativeSessionCalls).toEqual([{ ownerId: 'su-owner', sessionId: 'native-nested' }]);
+    expect(seen).toHaveLength(0);
+    expect(h.invocations[0]).toMatchObject({ errorCode: 'mcp_auth_failed', metadataJson: {
+      mcpAuthFailure: { reason: 'superuser_foreign_native_session', nativeSession: {
+        carrier: 'meta:threadId',
+        valueFingerprint: createHash('sha256').update('native-nested').digest('hex'),
+        candidateAdvSessionId: 541,
+      } },
+    } });
+  });
+
+  it.each([null, 42, '', '   ', ['native-owner']].map((threadId) => ({ threadId })))('fails closed on malformed per-call thread metadata $threadId', async ({ threadId }) => {
+    h.nativeSessionRows = new Map([['su-owner', [{ id: 541, session_id: 'native-owner', active: true }]]]);
+    const meta = { threadId };
+    const extra = {
+      ...(superuserExtra('&workspace=ws-test&client=su-owner', {
+        'x-papercusp-native-session': 'native-owner',
+      }) as Record<string, unknown>),
+      _meta: meta,
+    };
+    const res = await callTool('gatingtest:scoped', {}, extra, meta);
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('superuser_native_session_unverified');
+    expect(h.nativeSessionCalls).toHaveLength(0);
+    expect(seen).toHaveLength(0);
+  });
+
   it('rejects an inherited owner SID when the native CLI session is bound elsewhere', async () => {
     h.nativeSessionBinding = 'foreign';
     const res = await callTool(
