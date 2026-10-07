@@ -131,7 +131,7 @@ const itemSchema = z.object({
     'implemented (you READ the code that implements it — REQUIRES a resolving `code`/`test` citation; a `doc` citation cannot support this verdict) | not-code (a decision/doc/investigation — REQUIRES `note`, and is counted, because it exempts the item from code verification) | partial | missing | dropped (intentionally departed from — REQUIRES `note`). Per plan D-002 no verdict refuses a ship on its own; they RECORD. The ship-blocking question is the item\'s own status.',
   ),
   citations: z.array(citationSchema).max(20).optional(),
-  note: z.string().min(1).max(2000).optional().describe('Free note. REQUIRED when verdict is `dropped` — the intentional-departure reason (D-002): going against the plan is fine, going against it silently is not. Also REQUIRED when verdict is `not-code`: what the deliverable actually is, and why no code implements it.'),
+  note: z.string().min(1).max(2000).optional().describe('REQUIRED for `dropped`: explain the intentional departure (D-002). REQUIRED for `not-code`: name the deliverable and why it has no code implementation.'),
 });
 
 const findingSchema = z.object({
