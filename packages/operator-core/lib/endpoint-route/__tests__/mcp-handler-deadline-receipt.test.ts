@@ -359,7 +359,12 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
       const beforeSettlement = traceEvents(info.mock.calls);
       expect(beforeSettlement).toEqual(
         expect.arrayContaining([
-          expect.objectContaining({ traceId, toolName: 'deadlinetest:slow', stage: 'request_started' }),
+          expect.objectContaining({
+            traceId,
+            toolName: 'deadlinetest:slow',
+            stage: 'request_started',
+            elapsedMs: expect.any(Number),
+          }),
           expect.objectContaining({ traceId, toolName: 'deadlinetest:slow', stage: 'inner_dispatch_started' }),
           expect.objectContaining({
             traceId,
@@ -379,6 +384,7 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
           traceId,
           toolName: 'deadlinetest:slow',
           outcome: 'success',
+          elapsedMs: expect.any(Number),
           afterDeadline: true,
           phaseTimingsMs: expect.objectContaining({
             postDispatchToSettlement: expect.any(Number),
@@ -391,6 +397,11 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
       expect(h.resultDoorCalls).toBeGreaterThan(0);
       expect((settled?.phaseTimingsMs as { resultDoor?: number } | undefined)?.resultDoor)
         .toBeGreaterThanOrEqual(resultDoorDelayMs);
+      expect(Number(settled?.elapsedMs)).toBeGreaterThanOrEqual(TEST_DEADLINE_MS);
+      const invocation = h.invocations.find((entry) =>
+        (entry as { toolName?: unknown }).toolName === 'deadlinetest:slow',
+      ) as { ctx?: { requestOrigin?: Record<string, unknown> } } | undefined;
+      expect(invocation?.ctx?.requestOrigin).toMatchObject({ mcpRequestTraceId: traceId });
     } finally {
       info.mockRestore();
     }

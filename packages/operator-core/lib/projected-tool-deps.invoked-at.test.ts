@@ -113,11 +113,13 @@ describe('telemetry invoked_at stamping (EI-7040)', () => {
   });
 
   it.each(['http', 'uds'] as const)('persists protocol and %s connection metadata alongside reaction metadata', async connection => {
+    const mcpRequestTraceId = 'e57ef6b3-46ef-4cc5-8214-fec83f2a463e';
     await record('pot:set-steering', {
       transport: 'mcp',
       requestOrigin: {
         transport: 'mcp',
         connection,
+        mcpRequestTraceId,
         path: '/api/mcp',
         query: { superuser: '1', workspace: 'ws-test', client: 'su-test' },
         headers: { 'x-papercusp-client': 'su-test', 'user-agent': 'codex-cli-test' },
@@ -137,6 +139,7 @@ describe('telemetry invoked_at stamping (EI-7040)', () => {
       requestOrigin: {
         transport: 'mcp',
         connection,
+        mcpRequestTraceId,
         path: '/api/mcp',
         query: { superuser: '1', workspace: 'ws-test', client: 'su-test' },
         headers: { 'x-papercusp-client': 'su-test', 'user-agent': 'codex-cli-test' },
