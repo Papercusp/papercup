@@ -24,12 +24,15 @@ const { recordIssueOccurrence } = await import('../../../issue-occurrence-ledger
 const { intakeEndUserReport } = await import('../../../harness/improvements/end-user-intake');
 const { putReportAttachment } = await import('../../../harness/improvements/report-attachments');
 const { buildProblemReport, previewDigest } = await import('../../../harness/improvements/problem-report');
-const { handleReportProblem } = await import('./report-problem');
+const { handleReportProblem, answerReportFollowUp } = await import('./report-problem');
+const { askReporterQuestion, readReporterStatus } = await import('../../../harness/improvements/reporter-status');
+const { runWithWorkspace } = await import('../../../workspace-als');
 const { contributeUpstream } = await import('../../../pot/contribute-upstream');
 const { buildEngineerIssuesProjection } = await import('../../../sync/hyperbee/projections/engineer-issues');
 const { errorSignatureOf } = await import('../../../harness/improvements/error-signature');
 const { currentIntakeSourceRevision, executeIntakeDecision } = await import('../../../attention/intake-promotion');
 const { parseIntakeDecision } = await import('../../../attention/bulk-dispositions');
+const { publishReporterRelease, defaultReporterReleaseDeps } = await import('../../../../../../apps/operator/lib/release/reporter-release');
 type EngineerIssueRow = import('../../../sync/hyperbee/projections/engineer-issues').EngineerIssueRow;
 type ReportProblemDeps = import('./report-problem').ReportProblemDeps;
 
@@ -163,6 +166,10 @@ describe('desktop Report a problem door, end to end', () => {
       expect(promoted, JSON.stringify(promoted)).toMatchObject({ ok: true, mode: 'distinct', created: true });
       if (!promoted.ok || !promoted.workItemId) throw new Error(JSON.stringify(promoted));
       expect(await claimIssue(promoted.workItemId, 'su-upstream-fixer')).toMatchObject({ assignee: 'su-upstream-fixer' });
+      expect(await askReporterQuestion({ id: promoted.workItemId, harness: 'papercusp', actor: 'su-other', text: 'Which file?' })).toMatchObject({ ok: false });
+      const question = await askReporterQuestion({ id: promoted.workItemId, harness: 'papercusp', actor: 'su-upstream-fixer', text: 'Which CSV file triggers it?' });
+      expect(question).toMatchObject({ ok: true });
+      expect(await askReporterQuestion({ id: promoted.workItemId, harness: 'papercusp', actor: 'su-upstream-fixer', text: 'A second question?' })).toMatchObject({ ok: false, error: 'report-already-has-follow-up-question' });
       const [returnOp] = await upstreamDb.adminSql<{ row: EngineerIssueRow; ts: string | number }[]>`
         SELECT row, ts FROM harness_shared.substrate_outbox
          WHERE workspace_id = ${upstreamWorkspace} AND table_name = 'engineer_issues'
@@ -179,6 +186,57 @@ describe('desktop Report a problem door, end to end', () => {
       const [original] = await db.adminSql<{ origin: string }[]>`
         SELECT origin FROM harness_shared.work_items WHERE workspace_id = ${WORKSPACE} AND feature_id = ${id}`;
       expect(original?.origin).toBe('local');
+      const status = await readReporterStatus({ id, harness: 'papercusp', workspaceId: WORKSPACE }, db.adminSql);
+      expect(status).toMatchObject({ canonicalId: promoted.workItemId, status: 'being-fixed', followUp: { question: { text: 'Which CSV file triggers it?' } } });
+      const questionId = status!.followUp!.question.id;
+      h.sql = db.adminSql;
+      const reply = { operation: 'answer-follow-up', id, harness: 'papercusp', questionId, text: 'The UTF-8 sample from the export panel.' };
+      expect(await runWithWorkspace(WORKSPACE, () => answerReportFollowUp(reply))).toMatchObject({ status: 200 });
+      expect(await runWithWorkspace(WORKSPACE, () => answerReportFollowUp(reply))).toMatchObject({ status: 409, body: { error: 'question-already-answered' } });
+      expect(await runWithWorkspace(WORKSPACE, () => answerReportFollowUp({ ...reply, id: promoted.workItemId }))).toMatchObject({ status: 404 });
+      const [answerOp] = await db.adminSql<{ row: EngineerIssueRow; ts: string | number }[]>`
+        SELECT row, ts FROM harness_shared.substrate_outbox WHERE workspace_id = ${WORKSPACE}
+          AND table_name = 'engineer_issues' AND row->>'issue_id' = ${id} ORDER BY id DESC LIMIT 1`;
+      expect(answerOp?.row.payload).toMatchObject({ reporterAnswer: { questionId, text: reply.text } });
+      await projection.writeToPg(answerOp!.row, { ts: Number(answerOp!.ts), origin: 'remote', authorPubkey: 'p015-admitted-install' });
+      const [returnedAnswer] = await upstreamDb.adminSql<{ origin: string; answer: unknown }[]>`
+        SELECT origin, payload->'reporterAnswer' AS answer FROM harness_shared.work_items WHERE feature_id = ${id}`;
+      expect(returnedAnswer).toMatchObject({ origin: 'remote', answer: { questionId, text: reply.text } });
+
+      // P016 publication contract: the real canonical writer emits a receipt
+      // through issue CDC, and the installed source reads the canonical version.
+      // Fixture completion is explicit; this is not a release/deploy operation.
+      h.sql = upstreamDb.adminSql;
+      const fixBlob = 'b'.repeat(40);
+      await upstreamDb.adminSql`UPDATE harness_shared.work_items
+        SET status = 'done', authority = 'committed', terminal_completion_ref = 'p016-publication-fixture',
+            payload = payload || ${JSON.stringify({ _completionEvidence: { settlementManifest: {
+              repositoryRoot: '/p016-fixture', contentIdentity: [{ path: 'src/export.ts', headBlobSha: fixBlob, workingTreeBlobSha: fixBlob }],
+            } } })}::jsonb
+        WHERE workspace_id = ${WORKSPACE} AND feature_id = ${promoted.workItemId}`;
+      const release = { version: '0.9.5', channel: 'alpha', cutAt: new Date(), publishedAt: null as Date | null,
+        changelogMd: null, workItemIds: [promoted.workItemId], planSlugs: [], artifacts: [],
+        gitSha: 'a'.repeat(40), cutBy: null, notes: null };
+      const publicationDeps = { ...defaultReporterReleaseDeps(upstreamDb.adminSql, WORKSPACE, release),
+        repositoryRoot: '/p016-fixture',
+        readBlobs: async () => new Map([['src/export.ts', { status: 'resolved', sha: fixBlob }]]),
+      };
+      expect(await publishReporterRelease(release, publicationDeps)).toEqual({ notified: [], unconfirmed: [] });
+      release.publishedAt = new Date();
+      expect(await publishReporterRelease(release, { ...publicationDeps,
+        readBlobs: async () => new Map([['src/export.ts', { status: 'resolved', sha: 'c'.repeat(40) }]]),
+      })).toEqual({ notified: [], unconfirmed: [promoted.workItemId] });
+      expect(await publishReporterRelease(release, publicationDeps)).toEqual({ notified: [promoted.workItemId], unconfirmed: [] });
+      expect(await publishReporterRelease(release, publicationDeps)).toEqual({ notified: [], unconfirmed: [] });
+      const [releaseOp] = await upstreamDb.adminSql<{ row: EngineerIssueRow; ts: string | number }[]>`
+        SELECT row, ts FROM harness_shared.substrate_outbox WHERE workspace_id = ${WORKSPACE}
+          AND table_name = 'engineer_issues' AND row->>'issue_id' = ${promoted.workItemId} ORDER BY id DESC LIMIT 1`;
+      expect(releaseOp?.row.payload).toMatchObject({ reporterRelease: { version: '0.9.5', completionRef: 'p016-publication-fixture' } });
+      await installedProjection.writeToPg(releaseOp!.row, { ts: Number(releaseOp!.ts), origin: 'remote', authorPubkey: 'p015-canonical-upstream' });
+      expect(await readReporterStatus({ id, harness: 'papercusp', workspaceId: WORKSPACE }, db.adminSql))
+        .toMatchObject({ canonicalId: promoted.workItemId, status: 'fixed', label: 'Fixed in v0.9.5' });
+      const [stillLocal] = await db.adminSql<{ origin: string }[]>`SELECT origin FROM harness_shared.work_items WHERE feature_id = ${id}`;
+      expect(stillLocal?.origin).toBe('local');
     } finally {
       h.sql = db.adminSql;
     }

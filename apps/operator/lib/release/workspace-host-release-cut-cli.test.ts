@@ -37,6 +37,7 @@ import {
   runWorkspaceHostReleaseCutCli,
   sha256OfFile,
   workspaceHostCutStageContext,
+  workspaceHostModelCache,
   type WorkspaceHostBuildResult,
   type WorkspaceHostReleaseCutDeps,
 } from './workspace-host-release-cut-cli';
@@ -46,6 +47,24 @@ const DESKTOP_PIN = '2'.repeat(40);
 const GITLINKS = { 'papercusp-desktop': DESKTOP_PIN, 'libs/papercusp': '3'.repeat(40) };
 const VERSION = '0.0.21-p318r40';
 const BUNDLE = '4'.repeat(64);
+
+describe('workspace host model source preflight', () => {
+  it('honors an explicit maintained pack outside the repository cache', () => {
+    const cache = join(workDir, 'models');
+    for (const model of ['harrier-oss-v1-0.6b-ONNX', 'embeddinggemma-300m-ONNX']) {
+      const dir = join(cache, 'onnx-community', model, 'onnx');
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'model.onnx'), 'fixture');
+    }
+    expect(workspaceHostModelCache(workDir, { PAPERCUSP_TRANSFORMERS_MODEL_CACHE: cache })).toBe(cache);
+    expect(() => workspaceHostModelCache(workDir, {})).toThrow('set PAPERCUSP_TRANSFORMERS_MODEL_CACHE');
+  });
+
+  it('refuses an incomplete explicitly configured pack', () => {
+    expect(() => workspaceHostModelCache(workDir, { PAPERCUSP_TRANSFORMERS_MODEL_CACHE: workDir }))
+      .toThrow('model source');
+  });
+});
 
 let workDir: string;
 beforeEach(() => {

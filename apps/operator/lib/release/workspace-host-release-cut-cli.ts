@@ -552,6 +552,18 @@ async function writeJsonAtomic(path: string, value: unknown): Promise<void> {
  * Materialize, build, pack, sign, verify and audit one bundle. Each leg either passes or throws a
  * `WorkspaceHostCutStepError`; `build-result.json` is written last, so its presence means all passed.
  */
+export function workspaceHostModelCache(repoRoot: string, env: NodeJS.ProcessEnv = process.env): string {
+  const cache = env.PAPERCUSP_TRANSFORMERS_MODEL_CACHE ?? join(repoRoot, 'node_modules/@huggingface/transformers/.cache');
+  const root = existsSync(join(cache, 'onnx-community')) ? join(cache, 'onnx-community') : cache;
+  for (const model of ['harrier-oss-v1-0.6b-ONNX', 'embeddinggemma-300m-ONNX']) {
+    if (!existsSync(join(root, model, 'onnx/model.onnx'))) {
+      throw new WorkspaceHostCutStepError('model-preflight', false,
+        `model source ${cache} lacks ${model}/onnx/model.onnx; set PAPERCUSP_TRANSFORMERS_MODEL_CACHE to the maintained model pack before building`);
+    }
+  }
+  return cache;
+}
+
 export async function buildWorkspaceHostBundle(plan: WorkspaceHostBuildPlan): Promise<WorkspaceHostBuildResult> {
   const paths = workspaceHostCutPaths(plan.workDir);
   const { sourceSha } = plan.identity;
@@ -592,6 +604,7 @@ export async function buildWorkspaceHostBundle(plan: WorkspaceHostBuildPlan): Pr
   //    ran with (recorded in tool_invocations 2026-09-20 02:04Z); it is now code instead of a paste.
   const sidecarReady = await readJsonIfPresent(paths.sidecarReady);
   if (!(isRecord(sidecarReady) && sidecarReady.sourceSha === sourceSha && sidecarReady.desktopVersion === plan.desktopVersion)) {
+    const modelCache = workspaceHostModelCache(plan.repoRoot);
     await rm(paths.sidecarTrust, { recursive: true, force: true });
     const env: NodeJS.ProcessEnv = {
       ...process.env,
@@ -605,7 +618,7 @@ export async function buildWorkspaceHostBundle(plan: WorkspaceHostBuildPlan): Pr
       PAPERCUSP_SKIP_DEP_GENERATION: '1',
       PAPERCUSP_VM_RELEASE_TRUST_OUTPUT_DIR: paths.sidecarTrust,
       VITE_BUILD_LOCK: join(plan.workDir, 'vite-build.lock'),
-      PAPERCUSP_TRANSFORMERS_MODEL_CACHE: join(plan.repoRoot, 'node_modules/@huggingface/transformers/.cache'),
+      PAPERCUSP_TRANSFORMERS_MODEL_CACHE: modelCache,
     };
     // Provenance must describe the pinned tree, never a value inherited from the calling shell.
     delete env.PROVENANCE_SOURCE_GIT_HEAD;

@@ -9,6 +9,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { encode } from '@papercusp/result-encoding';
+import { SPEC_TEST_ADEQUACY_EVALUATOR_REVISION } from '../plans/spec-test-adequacy';
 
 const getRubric = vi.fn();
 const getRubricPlanRevision = vi.fn();
@@ -63,6 +64,7 @@ const RUBRIC = {
 const RERUN_RECIPE = {
   schemaVersion: 1 as const,
   evaluator: 'plans:evaluate-spec-test-adequacy' as const,
+  evaluatorRevision: SPEC_TEST_ADEQUACY_EVALUATOR_REVISION,
   classRef: 'plan-class-feature-ship' as const,
   args: {
     slug: 'reconnect-plan',
