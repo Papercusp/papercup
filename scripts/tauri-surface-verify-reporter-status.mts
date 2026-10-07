@@ -7,6 +7,8 @@ import { createRequire } from 'node:module';
 import postgres from 'postgres';
 import { defaultEvidenceRoot, parseSelectionArgs, runHarness } from '@papercusp/verification-harness';
 import { sealImplementationAcceptance, createImplementationReadiness } from '../packages/operator-core/lib/harness/improvements/agent-review-policy.ts';
+import { bakedCanonicalHiveInvite } from '../packages/operator-core/lib/harness/papercusp-hive-join.ts';
+import { insertHiveIfAbsent, getHiveByPubkey } from '../packages/operator-core/lib/hive-store.ts';
 // apps/operator is a CommonJS package under tsx, unlike this .mts entry.
 const { defaultReporterReleaseDeps, publishReporterRelease } = createRequire(import.meta.url)(
   '../apps/operator/lib/release/reporter-release.ts',
@@ -18,6 +20,8 @@ if (process.argv.includes('--check-imports')) {
   assert.equal(typeof publishReporterRelease, 'function');
   assert.equal(typeof defaultReporterReleaseDeps, 'function');
   assert.equal(typeof sealImplementationAcceptance, 'function');
+  assert.equal(typeof insertHiveIfAbsent, 'function');
+  assert.ok(bakedCanonicalHiveInvite(), 'canonical membership fixture needs the baked public invite');
   console.log('REPORTER_STATUS_IMPORTS_OK');
   process.exit(0);
 }
@@ -43,6 +47,16 @@ const result = await runHarness({
       native('screenshot', '--output', join(ctx.evidenceDir, `${name}.png`));
     };
     try {
+      // The maintained ready seed provisions onboarding/principals, not joined
+      // Pots. Background bootstrap is deliberately disabled in the isolated
+      // host. Seed the existing membership store and read it back, rather than
+      // weakening the production contribution membership gate.
+      ctx.markStep('canonical-membership-fixture');
+      const invite = bakedCanonicalHiveInvite();
+      assert.ok(invite, 'missing baked canonical invite');
+      await insertHiveIfAbsent({ workspaceId: ws, homeSlug: 'papercusp',
+        pubkeyBase64: invite.pubkeyBase64, keychainId: 'remote:reporter-status-fixture', title: 'Canonical report fixture' }, sql);
+      assert.equal((await getHiveByPubkey(ws, invite.pubkeyBase64, sql))?.pubkeyBase64, invite.pubkeyBase64);
       ctx.markStep('submit-previewed-report');
       native('navigate', '/inbox?report=true', '--json');
       wait("!!document.querySelector('[data-testid=report-problem-dialog] textarea')");
@@ -64,10 +78,15 @@ const result = await runHarness({
       assert.equal(acceptance.ok, true);
       if (!acceptance.ok) throw Error('acceptance fixture refused');
       const question = { id: 'native-question', text: 'Which export file causes the crash?', askedBy: 'su-native-fixer', askedAt: new Date().toISOString() };
-      await sql`UPDATE harness_shared.work_items SET taken_by = 'su-native-fixer', payload = payload || ${JSON.stringify({
+      await sql`UPDATE harness_shared.work_items SET taken_by = 'su-native-fixer', payload = payload || ${sql.json(JSON.parse(JSON.stringify({
         implementationReadiness: createImplementationReadiness({ status: 'ready', source: 'agent-review', reason: 'fixture accepted', updatedAt: new Date().toISOString(), evidence: { acceptance: acceptance.contract } }),
         reporterQuestion: question,
-      })}::jsonb WHERE workspace_id = ${ws} AND feature_id = ${source.feature_id}`;
+      })))}::jsonb WHERE workspace_id = ${ws} AND feature_id = ${source.feature_id}`;
+      const [questionFixture] = await sql`SELECT jsonb_typeof(payload) AS payload_type,
+        payload->'reporterQuestion'->>'id' AS question_id FROM harness_shared.work_items
+        WHERE workspace_id = ${ws} AND feature_id = ${source.feature_id}`;
+      assert.equal(questionFixture?.payload_type, 'object', 'fixture payload must remain a JSON object');
+      assert.equal(questionFixture?.question_id, question.id, 'question fixture did not persist');
       ctx.markStep('push-question-and-previewed-reply');
       wait("[...document.querySelectorAll('[data-sonner-toast]')].some(e=>e.innerText.includes('Which export file causes the crash?'))");
       clickText('View report');
@@ -87,9 +106,14 @@ const result = await runHarness({
       ctx.markStep('published-exact-fix-notification');
       const blob = 'b'.repeat(40);
       await sql`UPDATE harness_shared.work_items SET status = 'done', authority = 'committed', terminal_completion_ref = 'native-completion',
-        payload = payload || ${JSON.stringify({ _completionEvidence: { settlementManifest: { repositoryRoot: '/native-fixture',
+        payload = payload || ${sql.json({ _completionEvidence: { settlementManifest: { repositoryRoot: '/native-fixture',
           contentIdentity: [{ path: 'src/export.ts', headBlobSha: blob, workingTreeBlobSha: blob }] } } })}::jsonb
         WHERE workspace_id = ${ws} AND feature_id = ${source.feature_id}`;
+      const [completionFixture] = await sql`SELECT jsonb_typeof(payload) AS payload_type,
+        payload->'_completionEvidence'->'settlementManifest'->>'repositoryRoot' AS repository_root
+        FROM harness_shared.work_items WHERE workspace_id = ${ws} AND feature_id = ${source.feature_id}`;
+      assert.equal(completionFixture?.payload_type, 'object', 'completion fixture payload must remain a JSON object');
+      assert.equal(completionFixture?.repository_root, '/native-fixture', 'completion fixture did not persist');
       wait("document.querySelector('[aria-label=\"Your report\"]')?.innerText.includes('Fix verified; awaiting release')");
       assert.equal(ev("String(document.body.innerText.includes('Fixed in v0.9.5'))").trim().replace(/^"|"$/g, ''), 'false');
       const release = { version: '0.9.5', channel: 'alpha', cutAt: new Date(), publishedAt: new Date(), changelogMd: null,
