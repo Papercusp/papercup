@@ -139,7 +139,11 @@ describe('desktop Report a problem door, end to end', () => {
       expect(folded?.origin, 'corroboration must not transfer foreign authorship to this peer').toBe('remote');
       expect(folded?.title, 'corroboration preserves the reporting peer’s original title').toBe(upstream?.title);
       expect(folded?.summary, 'corroboration preserves the reporting peer’s original evidence').toBe(upstream?.summary);
-      expect(folded?.payload.reporterKinds).toEqual(expect.arrayContaining(['agent', 'end-user']));
+      expect(folded?.payload.reporterKinds).toEqual(upstream?.payload.reporterKinds);
+      const occurrences = await upstreamDb.adminSql<{ reporter: string }[]>`
+        SELECT reporter FROM harness_shared.work_item_occurrences
+         WHERE workspace_id = ${upstreamWorkspace} AND canonical_work_item_id = ${id}`;
+      expect(occurrences.map((row) => row.reporter)).toContain('su-upstream-reviewer');
 
       // A foreign row is evidence, not something this upstream peer owns.
       // Existing distinct promotion supplies ONE locally executable canonical
@@ -165,7 +169,7 @@ describe('desktop Report a problem door, end to end', () => {
         SELECT origin, taken_by, payload FROM harness_shared.work_items
          WHERE workspace_id = ${WORKSPACE} AND feature_id = ${promoted.workItemId}`;
       expect(received).toMatchObject({ origin: 'remote', taken_by: 'su-upstream-fixer', payload: {
-        intakeSource: { id }, reporterKinds: expect.arrayContaining(['agent', 'end-user']) } });
+        intakeSource: { id }, reporterKinds: expect.arrayContaining(['end-user']) } });
       expect(JSON.stringify(received?.payload.reportContext)).toContain('0.9.4');
       const [original] = await db.adminSql<{ origin: string }[]>`
         SELECT origin FROM harness_shared.work_items WHERE workspace_id = ${WORKSPACE} AND feature_id = ${id}`;

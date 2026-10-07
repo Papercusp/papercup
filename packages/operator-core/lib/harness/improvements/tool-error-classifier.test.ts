@@ -544,6 +544,29 @@ describe('normalizeSuspectedToolFailure — correlated probation identity (P-013
     expect(normalized.class).toBe('caller');
     expect(normalized.direct).toBe(true);
   });
+
+  it('routes code:run compile_error to caller while retaining explicit defect evidence override', () => {
+    const compileFailure = {
+      toolName: 'code:run',
+      errorCode: 'compile_error',
+      status: 'compile_error',
+      message: 'compile_error: Invalid regular expression flags while compiling the submitted script',
+    };
+    const callerReport = normalizeSuspectedToolFailure(compileFailure);
+    expect(callerReport.class).toBe('caller');
+    expect(callerReport.direct).toBe(false);
+
+    const verifiedMismatch = normalizeSuspectedToolFailure({
+      ...compileFailure,
+      directEvidence: {
+        kind: 'valid-input-reproduction',
+        expected: 'valid JavaScript parses and reaches execution',
+        actual: 'the unchanged valid script fails compilation before dispatch',
+      },
+    });
+    expect(verifiedMismatch.class).toBe('caller');
+    expect(verifiedMismatch.direct).toBe(true);
+  });
 });
 
 describe('SQL generators are driven by the table (structural check; real-PG parity in the integration test)', () => {

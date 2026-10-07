@@ -332,6 +332,12 @@ export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
     expectedClass: 'caller',
     note: 'code:run typed-root output was read as an MCP content envelope; structured_result_shape is a caller read-shape diagnostic (EI-25223020018710222)',
   },
+  {
+    n: 1, errorCode: 'compile_error', status: 'compile_error',
+    message: 'compile_error: Invalid regular expression flags while compiling the submitted code:run script',
+    expectedClass: 'caller',
+    note: 'the compiler correctly rejected malformed caller JavaScript before dispatch; the reporter confirmed the regex was over-escaped and did not reproduce with valid input (EI-24101166314859289)',
+  },
 
   // ── structural: genuine bugs/misconfig (the low-bar auto-implement lane) ────
   {

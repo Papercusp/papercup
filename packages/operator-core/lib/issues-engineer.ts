@@ -4078,6 +4078,10 @@ export async function mergeIssuePayload(
        AND harness_slug = ${physicalSlug}
        AND feature_id = ${id}
        AND item_kind = ANY (ARRAY['bug', 'change', 'task'])
+       -- The federation stamp treats ANY payload change as a local content
+       -- write. Corroboration of an imported report belongs in the occurrence
+       -- ledger; never rewrite the foreign publisher's payload here.
+       AND origin <> 'remote'
     RETURNING 1 AS ok`;
 
   let rows: { ok: number }[];

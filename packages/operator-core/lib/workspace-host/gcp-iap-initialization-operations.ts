@@ -917,6 +917,11 @@ export class GcpIapWorkspaceHostInitializationOperations implements WorkspaceHos
       probes += 1;
       lastExitCode = result.exitCode;
       lastStderr = result.stderr;
+      // This error originates on the controller before any remote probe runs. Guest
+      // bootstrap cannot install a missing controller dependency (WI-10007077).
+      if (result.exitCode !== PROBE_EXIT_READY && /SessionManagerPlugin is not found/i.test(result.stderr ?? '')) {
+        throw new Error('Workspace host transport requires the AWS Session Manager plugin on the controller; install session-manager-plugin before retrying initialization.');
+      }
       if (result.exitCode === PROBE_EXIT_READY) {
         return {
           waitedMs: this.now() - startedAt,

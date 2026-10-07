@@ -98,6 +98,7 @@ import SubGoalsSection from './SubGoalsSection';
 // section above — it owns a WRITE (goals:update) and the form model behind it.
 import GoalSettingsSection from './GoalSettingsSection';
 import GoalEndsSection from './GoalEndsSection';
+import OngoingWorkOverview from './OngoingWorkOverview';
 import GoalModeStateSection from './GoalModeStateSection';
 /* D-011: the goal popup hosts the SAME conversation the sessions popup does —
    the same renderer, fed by the same extracted wiring. Not a second chat. */
@@ -470,6 +471,7 @@ export default function GoalDetailPanel({
   nowMs,
   onClose,
   onOpenWorkItem,
+  onOpenPlan,
   onOpenAgent,
   onOpenGoal,
 }: {
@@ -482,6 +484,7 @@ export default function GoalDetailPanel({
   /** Opens a work item in the HUD's existing popup, so the waiting-on-you and
    *  activity rows are destinations rather than dead text. */
   onOpenWorkItem?: (id: string) => void;
+  onOpenPlan?: (harnessSlug: string, planSlug: string) => void;
   /** P-018/D-011: opens the conversation of the agent RUNNING this goal, via
    *  the HUD's existing `hudsession` route. Optional — a host that cannot
    *  re-target the session popup passes nothing and the control is not
@@ -1098,6 +1101,9 @@ export default function GoalDetailPanel({
 
         {goal ? (
           <>
+            {goal.standing ? <OngoingWorkOverview goal={goal} detail={data} title={goal.title}
+              description={goal.body ?? undefined} variant="detail" nowMs={nowMs}
+              onOpenWorkItem={onOpenWorkItem} onOpenPlan={onOpenPlan} /> : null}
             {/* ── 1. THIS GOAL ENDS WHEN ──────────────────────────────────
                 First, and first for a reason: it is the only section that says
                 when the goal STOPS. Everything below it describes activity,

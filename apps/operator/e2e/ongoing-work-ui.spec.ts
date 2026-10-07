@@ -1,0 +1,94 @@
+import { test, expect, type Page } from './_egress';
+import { stubSyncQueries } from './_sync-stub';
+
+const current = {
+  id: 'ongoing-current', title: 'Renamed workspace steward', status: 'active', standing: true,
+  effectiveStatus: 'active', holderLiveness: 'held', needsHuman: 31,
+  spendRecentUsd: 12.34, spendRecentWindowDays: 3, budgetCents: 10000, budgetWindowSec: 604800,
+};
+const packageRow = {
+  ref: 'work-on-everything', title: current.title, description: 'Advances priority work across the workspace.',
+  layer: 'bundled', version: '1.0.0', standing: true, featured: true,
+  budgetCents: 10000, budgetWindowSec: 604800, activeGoalId: current.id,
+  instances: [{ goalId: current.id, status: 'active', adoptableStub: false }],
+};
+
+async function scopeFixture(page: Page) {
+  const projects = [{ slug: 'papercusp', name: 'papercusp', path: '/tmp/ongoing-ui-fixture',
+    hasState: true, hasSpec: true, parent_slug: null, harness_kind: 'project', is_shared: false }];
+  await page.route('**/api/harness/projects/lite', (route) => route.fulfill({ status: 200,
+    contentType: 'application/json', body: JSON.stringify({ projects }) }));
+  return projects;
+}
+
+test('ongoing work stays visible across tabs, keeps ordinary goals, and opens the same detail', async ({ page }) => {
+  const projects = await scopeFixture(page);
+  const sync = await stubSyncQueries(page, (name) => {
+    if (name === 'harnessProjects.lite') return projects;
+    if (name === 'advRoster.list') return [{ active: [], pending: [] }];
+    if (name === 'goals.list') return [{ goals: [current,
+      { id: 'ordinary', title: 'Work on everything', status: 'active', standing: false },
+      { id: 'previous-instance', title: 'Previous workspace steward', status: 'killed', standing: true }],
+      totalGoals: 3, goalPackages: [packageRow] }];
+    if (name === 'goals.detail') return [{ goal: current, holderLiveness: 'held', effectiveStatus: 'active',
+      goalModeState: { portfolio: { priorities: ['Reconcile priority placement', 'Triage blocked work'] } },
+      waitingOnYouTotal: 31, waitingOnYou: [{ id: 'WI-approval', title: 'Choose release scope' }],
+      activity: [{ id: 'WI-outcome', title: 'Search repair verified', status: 'done', closedAt: '2026-10-06T12:00:00Z' }],
+      plans: [{ planSlug: 'search', harnessSlug: 'papercusp', title: 'Search plan', stamped: true, openItems: 2 }] }];
+    return undefined;
+  });
+  await page.goto('/adv?tab=hud&scope=all&hudtab=goals&welcome=0');
+  await sync.waitForServed(['goals.list', 'goals.detail']);
+  const rail = page.getByTestId('goal-packages-rail');
+  await expect(rail.getByRole('button', { name: 'View ongoing work' })).toBeVisible();
+  await expect(rail.getByText('Reconcile priority placement')).toBeVisible();
+  await expect(rail.getByText('31 waiting on you')).toBeVisible();
+  await expect(page.getByText('Work on everything', { exact: true })).toBeVisible();
+  await expect(page.getByText('Previous workspace steward', { exact: true })).toBeVisible();
+  // The represented id has exactly one displayed title; title matching cannot hide ordinary goals.
+  await expect(page.getByRole('heading', { name: current.title, exact: true })).toHaveCount(1);
+  await page.screenshot({ path: test.info().outputPath('ongoing-featured.png') });
+  for (const tab of ['sessions', 'plans', 'items']) {
+    await page.goto(`/adv?tab=hud&scope=all&hudtab=${tab}&welcome=0`);
+    await expect(rail.getByRole('button', { name: 'View work' })).toBeVisible();
+    await expect(rail.getByText('31 needs you')).toBeVisible();
+  }
+  await rail.getByRole('button', { name: 'View work' }).click();
+  await expect(page).toHaveURL(/hudgoal=ongoing-current/);
+  const overview = page.locator('.hud-ongoing--detail');
+  await expect(overview.getByText('Where work is moving')).toBeVisible();
+  await expect(overview.getByRole('button', { name: 'Search plan' })).toBeVisible();
+  await page.screenshot({ path: test.info().outputPath('ongoing-detail.png') });
+  await overview.getByRole('button', { name: 'Search repair verified' }).click();
+  await expect(page).toHaveURL(/hudwi=WI-outcome/);
+  sync.assertServed('goals.list');
+  sync.assertServed('goals.detail');
+});
+
+test('mobile strip preserves truthful status after a refused pause', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const projects = await scopeFixture(page);
+  const sync = await stubSyncQueries(page, (name) => {
+    if (name === 'harnessProjects.lite') return projects;
+    if (name === 'advRoster.list') return [{ active: [], pending: [] }];
+    if (name === 'goals.list') return [{ goals: [current], totalGoals: 1, goalPackages: [packageRow] }];
+    if (name === 'goals.detail') return [{ goal: current, holderLiveness: 'held', effectiveStatus: 'active' }];
+    return undefined;
+  });
+  await page.route('**/api/admin/goals/update', (route) => route.fulfill({ status: 409,
+    contentType: 'application/json', body: JSON.stringify({ error: { message: 'Pause refused for test' } }) }));
+  await page.goto('/adv?tab=hud&scope=all&hudtab=sessions&welcome=0');
+  await sync.waitForServed(['goals.list', 'goals.detail']);
+  const rail = page.getByTestId('goal-packages-rail');
+  await expect(rail.getByText('Running', { exact: true })).toBeVisible();
+  const write = page.waitForResponse('**/api/admin/goals/update');
+  await rail.getByRole('button', { name: /Pause/ }).click();
+  expect((await write).status()).toBe(409);
+  await expect(rail.getByText('Running', { exact: true })).toBeVisible();
+  await expect(rail.getByRole('button', { name: 'View work' })).toBeInViewport();
+  const horizontalOverflow = await rail.evaluate((el) => el.scrollWidth > el.clientWidth);
+  expect(horizontalOverflow).toBe(false);
+  await page.screenshot({ path: test.info().outputPath('ongoing-mobile.png') });
+  sync.assertServed('goals.list');
+  sync.assertServed('goals.detail');
+});

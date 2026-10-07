@@ -231,7 +231,7 @@ describe('testing:runs runGroupId compatibility alias', () => {
 });
 
 describe('testing:runs evidence identity', () => {
-  it('returns each durable receipt and its stored scope, including an unscoped receipt', async () => {
+  it('preserves receipt roots with measured passing cases, including an unscoped receipt', async () => {
     let selectedSql = '';
     const row = {
       execution_details: {
@@ -246,6 +246,7 @@ describe('testing:runs evidence identity', () => {
         failed: 0,
         skipped: 0,
         collectionFailed: false,
+        passedCaseTitles: ['suite > passed case'],
         mutationPhase: null,
         commitSha: null,
         worktreeDirty: false,
@@ -309,7 +310,7 @@ describe('testing:runs evidence identity', () => {
     expect(selectedSql).toContain('p.execution_details');
   });
 
-  it('normalizes a JSONB string before parsing and projects its validated root', async () => {
+  it('projects the validated root from a JSONB string with measured passing cases', async () => {
     sqlMock.mockImplementation((strings: TemplateStringsArray, ...values: unknown[]) => {
       const call = { strings: Array.from(strings), values };
       if (!call.strings.some((part) => part.includes('WITH filtered'))) return call;
@@ -327,6 +328,7 @@ describe('testing:runs evidence identity', () => {
           failed: 0,
           skipped: 0,
           collectionFailed: false,
+          passedCaseTitles: ['suite > passed case'],
           mutationPhase: null,
           commitSha: null,
           worktreeDirty: false,

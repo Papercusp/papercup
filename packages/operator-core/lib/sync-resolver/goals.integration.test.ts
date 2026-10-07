@@ -256,6 +256,18 @@ async function usage(slug: string, tsMs: number, costUsd: number, goalId: string
 }
 
 describe('goals.* resolvers against real SQL', () => {
+  it('exposes stored standing identity in list and detail even after a goal is renamed', async () => {
+    await goal();
+    await sql`UPDATE harness_shared.goals SET standing = true, title = 'Renamed steward' WHERE id = ${GOAL}`;
+    const { resolveGoalsList, resolveGoalDetail } = await import('./goals');
+    const list = await resolveGoalsList({ workspaceId: WS });
+    const detail = await resolveGoalDetail({ workspaceId: WS, goalId: GOAL });
+    expect(list.goals.find((g) => g.id === GOAL)?.standing).toBe(true);
+    expect(detail.goal?.standing).toBe(true);
+    await sql`UPDATE harness_shared.goals SET standing = false WHERE id = ${GOAL}`;
+    const ordinary = await resolveGoalDetail({ workspaceId: WS, goalId: GOAL });
+    expect(ordinary.goal?.standing).toBe(false);
+  });
   it('resolveGoalsList RUNS — the assertion the whole file exists for', async () => {
     // Before the fix this threw `column wi.closed_at does not exist`. Every
     // mocked test on this path was green at the same moment.

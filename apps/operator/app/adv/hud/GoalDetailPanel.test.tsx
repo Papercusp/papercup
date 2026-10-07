@@ -234,6 +234,30 @@ function openPanelsMenu() {
 }
 
 describe('GoalDetailPanel', () => {
+  it('shows the ongoing work overview first for standing goals and opens actual completed work', () => {
+    const base = detail();
+    const onOpenWorkItem = vi.fn();
+    const onOpenPlan = vi.fn();
+    renderPanel({ ...base, goal: { ...base.goal!, standing: true },
+      activity: [{ id: 'WI-outcome', title: 'Verified release repair', status: 'done', closedAt: '2026-08-10T12:00:00Z' }],
+      goalModeState: { portfolio: { priorities: ['Reconcile the release plan', 'Place the next item'] } },
+      plans: [{ planSlug: 'release', harnessSlug: 'alpha', title: 'Release plan', openItems: 3, stamped: true }],
+      waitingOnYouTotal: 31 }, { onOpenWorkItem, onOpenPlan });
+    const overview = screen.getByTestId('ongoing-work-overview');
+    expect(overview.textContent).toContain('Where work is moving');
+    expect(overview.textContent).toContain('Reconcile the release plan');
+    expect(overview.textContent).toContain('31 waiting on you');
+    fireEvent.click(within(overview).getByRole('button', { name: 'Verified release repair' }));
+    expect(onOpenWorkItem).toHaveBeenCalledWith('WI-outcome');
+    fireEvent.click(within(overview).getByRole('button', { name: 'Release plan' }));
+    expect(onOpenPlan).toHaveBeenCalledWith('alpha', 'release');
+  });
+
+  it('keeps ordinary goals on their existing detail without an ongoing overview', () => {
+    renderPanel(detail());
+    expect(screen.queryByTestId('ongoing-work-overview')).toBeNull();
+    expect(screen.getByText('This goal ends when')).toBeTruthy();
+  });
   it('renders nothing and fires no query while closed', () => {
     render(<GoalDetailPanel goalId={null} workspaceId="ws-real" nowMs={NOW} onClose={() => {}} />);
     expect(document.body.textContent).not.toContain('This goal ends when');

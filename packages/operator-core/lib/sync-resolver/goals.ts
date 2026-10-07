@@ -110,6 +110,8 @@ export interface GoalSummaryRow {
    * showing what was DECLARED, not what is true now.
    */
   effectiveStatus: string | null;
+  /** Existing goal identity: ongoing presentation must never match by title. */
+  standing: boolean;
   /** True when `effectiveStatus` differs from `status` for the P-004 reason. */
   deactivated: boolean;
   killCriterion: string | null;
@@ -304,6 +306,7 @@ interface RawGoal {
   title: string;
   body: string | null;
   status: string;
+  standing: boolean;
   parent_id: string | null;
   /** json_agg output from the agents subselect — `unknown` because it arrives
    *  as parsed JSON from pg and is narrowed in toSummary, not trusted here. */
@@ -379,6 +382,7 @@ function toSummary(
     title: r.title,
     body: r.body,
     status: r.status,
+    standing: r.standing === true,
     parentId: r.parent_id,
     // Already a json array from the subselect's COALESCE (never SQL NULL), but
     // narrowed defensively: a legacy/cached payload predating P-006 has no such
@@ -538,7 +542,7 @@ export async function resolveGoalsList(args: {
   const rows = await sql.begin(async (tx) => {
     await tx.unsafe(`SELECT set_config('app.workspace_id', $1, true)`, [workspaceId]);
     const goalRows = (await tx`
-      SELECT g.id, g.title, g.body, g.status, g.parent_id, g.kill_criterion, g.tripwires,
+      SELECT g.id, g.title, g.body, g.status, g.standing, g.parent_id, g.kill_criterion, g.tripwires,
              g.budget_cents, g.budget_window_sec, g.metadata, g.launch_settings, g.created_at, g.updated_at,
              (SELECT COUNT(*) FROM harness_shared.goal_pots gp
                WHERE gp.workspace_id = g.workspace_id AND gp.goal_id = g.id
@@ -828,7 +832,7 @@ export async function resolveGoalDetail(args: {
     await tx.unsafe(`SELECT set_config('app.workspace_id', $1, true)`, [workspaceId]);
 
     const [goalRow] = (await tx`
-      SELECT g.id, g.title, g.body, g.status, g.parent_id, g.kill_criterion, g.tripwires,
+      SELECT g.id, g.title, g.body, g.status, g.standing, g.parent_id, g.kill_criterion, g.tripwires,
              g.budget_cents, g.budget_window_sec, g.metadata, g.launch_settings, g.created_at, g.updated_at,
              0 AS pot_count, '[]'::json AS pots, 0 AS open_work_items, 0 AS needs_human,
              -- The goal-attributed stream, identical to the list query's, so the

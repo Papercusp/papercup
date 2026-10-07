@@ -35,6 +35,11 @@ import GoalPackagesRail, {
   type GoalPackageRailInstance,
 } from './GoalPackagesRail';
 import type { HudGoalInput } from './hud-entity-board';
+import type { GoalDetailInput } from './goal-detail-model';
+
+const sync = vi.hoisted(() => ({ data: null as GoalDetailInput[] | null }));
+vi.mock('@papercusp/sync', () => ({ useSyncQuery: () => ({ data: sync.data, loading: false, error: null }) }));
+vi.mock('@/app/harness/useConfirmDialog', () => ({ useConfirmDialog: () => ({ confirm: vi.fn(), element: null }) }));
 
 const fetchMock = vi.fn();
 
@@ -48,6 +53,7 @@ function reply(body: Record<string, unknown>, init: { ok?: boolean; status?: num
 
 beforeEach(() => {
   vi.clearAllMocks();
+  sync.data = null;
   fetchMock.mockResolvedValue(reply({ data: { id: 'G-NEW' } }));
   globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
 });
@@ -75,7 +81,7 @@ const stub: GoalPackageRailInstance = { goalId: 'G-1', status: 'paused', adoptab
 const live: GoalPackageRailInstance = { goalId: 'G-9', status: 'active', adoptableStub: false };
 
 function goalRow(over: Partial<HudGoalInput> = {}): HudGoalInput {
-  return { id: 'G-9', title: 'Work on everything', status: 'active', ...over };
+  return { id: 'G-9', title: 'Work on everything', status: 'active', holderLiveness: 'held', ...over };
 }
 
 describe('GoalPackagesRail — when Start is offered', () => {
@@ -100,7 +106,7 @@ describe('GoalPackagesRail — when Start is offered', () => {
       />,
     );
     expect(screen.queryByTestId('pkg-start-woe')).toBeNull();
-    expect(screen.getByTestId('pkg-status-woe').textContent).toBe('active');
+    expect(screen.getByTestId('ongoing-status').textContent).toBe('Running');
   });
 
   it('renders nothing at all with no packages — an older payload keeps the plain board', () => {
@@ -192,14 +198,14 @@ describe('GoalPackagesRail — spend + budget labels (P-004: each figure under i
         entries={[
           entry({ instances: [live], activeGoalId: 'G-9', budgetCents: 10_000, budgetWindowSec: 604_800 }),
         ]}
-        goals={[goalRow({ spendRecentUsd: 12.34, spendRecentWindowDays: 14 })]}
+        goals={[goalRow({ spendRecentUsd: 12.34, spendRecentWindowDays: 14, budgetCents: 10_000, budgetWindowSec: 604_800 })]}
       />,
     );
     // 14, straight off the payload — a hardcoded "7" here would be the drift
     // the resolver put the window on the wire to prevent.
-    expect(screen.getByTestId('pkg-spend-woe').textContent).toBe('$12.34 last 14d');
+    expect(screen.getByText(/Spend: \$12.34 in the last 14 days/)).toBeTruthy();
     // The budget keeps the PACKAGE's own declared 7d window beside it.
-    expect(screen.getByTestId('pkg-budget-woe').textContent).toBe('budget $100.00 / 7d');
+    expect(screen.getByText(/Budget: \$100.00 \/ 7 days/)).toBeTruthy();
   });
 
   it('renders NO spend line without a reading — never $0', () => {
@@ -209,7 +215,7 @@ describe('GoalPackagesRail — spend + budget labels (P-004: each figure under i
         goals={[goalRow()]}
       />,
     );
-    expect(screen.queryByTestId('pkg-spend-woe')).toBeNull();
+    expect(screen.getByText(/Spend unavailable/)).toBeTruthy();
     // (The CONTROL that a reading DOES render is the labeled test above.)
   });
 
@@ -225,6 +231,32 @@ describe('GoalPackagesRail — spend + budget labels (P-004: each figure under i
 });
 
 describe('GoalPackagesRail — clicks go where they say', () => {
+  it('keeps ongoing work in the compact strip and leaves ordinary packages for Goals', () => {
+    render(<GoalPackagesRail entries={[entry({ activeGoalId: 'G-9', instances: [live] }),
+      entry({ ref: 'ordinary', standing: false })]} goals={[goalRow()]}
+      variant="compact" />);
+    expect(screen.getByRole('button', { name: 'View work' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Pause/ })).toBeTruthy();
+    expect(screen.queryByTestId('pkg-card-ordinary')).toBeNull();
+  });
+
+  it('shows the real detail focus/outcome and unbounded attention count', () => {
+    sync.data = [{ goal: goalRow(), holderLiveness: 'held', effectiveStatus: 'active',
+      goalModeState: { portfolio: { priorities: ['Reconcile the search plan'] } },
+      activity: [{ id: 'WI-10', title: 'Search repair verified', status: 'done', closedAt: '2026-10-06T12:00:00Z' }],
+      waitingOnYou: [{ id: 'WI-11', title: 'Choose release scope' }], waitingOnYouTotal: 31 }];
+    render(<GoalPackagesRail entries={[entry({ activeGoalId: 'G-9', instances: [live] })]}
+      goals={[goalRow()]} workspaceId="workspace-under-test" nowMs={Date.parse('2026-10-06T12:08:00Z')} />);
+    expect(screen.getByText('Reconcile the search plan')).toBeTruthy();
+    expect(screen.getByText('Search repair verified')).toBeTruthy();
+    expect(screen.getByText('31 waiting on you')).toBeTruthy();
+  });
+
+  it('an ordinary package keeps its original start card', () => {
+    render(<GoalPackagesRail entries={[entry({ ref: 'ordinary', standing: false })]} goals={[]} />);
+    expect(screen.getByTestId('pkg-start-ordinary')).toBeTruthy();
+    expect(screen.queryByTestId('ongoing-work-overview')).toBeNull();
+  });
   it('Start does not bubble into the surrounding surface', async () => {
     const surfaceClick = vi.fn();
     render(
