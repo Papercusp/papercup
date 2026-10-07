@@ -2,16 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   git: vi.fn(),
-  probeSnapshot: vi.fn(),
 }));
 
 vi.mock('node:child_process', () => ({ execFileSync: mocks.git }));
-vi.mock('@papercusp/test-config/admin-test-runs-reporter', async (importOriginal) => ({
-  ...await importOriginal<typeof import('@papercusp/test-config/admin-test-runs-reporter')>(),
-  captureWorktreeSnapshot: mocks.probeSnapshot,
-}));
-
-import { captureTestSourceSnapshotAsync as captureTestSourceSnapshot, computeWorktreeDirty } from '@papercusp/operator-core/lib/testing-worktree';
+import { captureTestSourceSnapshot, computeWorktreeDirty } from '@papercusp/operator-core/lib/testing-worktree';
 
 describe('Playwright source snapshots inside a mutation probe', () => {
   beforeEach(() => {
@@ -19,17 +13,17 @@ describe('Playwright source snapshots inside a mutation probe', () => {
     vi.stubEnv('PAPERCUSP_MUTATION_PROBE', '1');
     vi.stubEnv('PAPERCUSP_MUTATION_PROBE_ORIGIN_ROOT', '/committed-proof');
     vi.stubEnv('PAPERCUSP_MUTATION_PROBE_SUBJECT', '/committed-proof/src/subject.ts');
-    mocks.git.mockImplementation((_bin, args) => args[0] === 'rev-parse' ? 'snapshot-sha' : ' M src/subject.ts');
+    mocks.git.mockImplementation((_bin, args) => args[1] === '--show-toplevel' ? '/committed-proof'
+      : args[0] === 'rev-parse' ? 'snapshot-sha' : ' M src/subject.ts');
   });
 
   afterEach(() => vi.unstubAllEnvs());
 
-  it('uses the maintained probe snapshot rather than counting the intentional overlay as dirt', async () => {
-    mocks.probeSnapshot.mockResolvedValue({ commit: 'snapshot-sha', porcelain: '' });
-    const before = await captureTestSourceSnapshot('/committed-proof');
-    const after = await captureTestSourceSnapshot('/committed-proof');
-    expect(mocks.probeSnapshot).toHaveBeenCalledTimes(2);
-    expect(mocks.git).not.toHaveBeenCalled();
+  it('synchronously exempts the declared overlay subject before the native hook can start tests', () => {
+    const before = captureTestSourceSnapshot('/committed-proof');
+    const after = captureTestSourceSnapshot('/committed-proof');
+    expect(before).not.toBeInstanceOf(Promise);
+    expect(before).toEqual({ commit: 'snapshot-sha', porcelain: '' });
     expect(computeWorktreeDirty(before, after)).toBe(false);
   });
 
@@ -37,18 +31,21 @@ describe('Playwright source snapshots inside a mutation probe', () => {
     { commit: 'snapshot-sha', porcelain: ' M src/unrelated.ts' },
     { commit: 'snapshot-sha', porcelain: null },
     { commit: null, porcelain: '' },
-  ])('keeps unrelated edits or unavailable probe provenance dirty: %j', async (after) => {
-    mocks.probeSnapshot.mockResolvedValueOnce({ commit: 'snapshot-sha', porcelain: '' }).mockResolvedValueOnce(after);
-    const before = await captureTestSourceSnapshot('/committed-proof');
-    const observed = await captureTestSourceSnapshot('/committed-proof');
-    expect(observed).toEqual(after);
+  ])('keeps unrelated edits or unavailable probe provenance dirty: %j', (after) => {
+    const before = captureTestSourceSnapshot('/committed-proof');
+    mocks.git.mockImplementation((_bin, args) => {
+      if (args[1] === '--show-toplevel') return '/committed-proof';
+      const value = args[0] === 'rev-parse' ? after.commit : after.porcelain;
+      if (value === null) throw new Error('Git snapshot unavailable');
+      return value;
+    });
+    const observed = captureTestSourceSnapshot('/committed-proof');
     expect(computeWorktreeDirty(before, observed)).toBe(true);
   });
 
-  it('does not trust an origin or subject environment variable outside a marked probe', async () => {
+  it('does not trust an origin or subject environment variable outside a marked probe', () => {
     vi.stubEnv('PAPERCUSP_MUTATION_PROBE', '0');
-    const observed = await captureTestSourceSnapshot('/committed-proof');
-    expect(mocks.probeSnapshot).not.toHaveBeenCalled();
+    const observed = captureTestSourceSnapshot('/committed-proof');
     expect(observed.porcelain).toBe('M src/subject.ts');
     expect(mocks.git).toHaveBeenCalledWith('git', expect.any(Array), expect.objectContaining({ cwd: '/committed-proof' }));
   });
