@@ -1103,6 +1103,30 @@ describe('readScorecardEvidence audit-target status (EI-24583166035391772) — r
       ratings,
       rerunRecipe: { args: { harness: 'papercusp' }, selection: { bindingIds: [bindingId] } },
     }, '2026-06-21T10:05:00Z');
+    await insert('EI-audit-target-binding-legacy', {
+      ratings,
+      // Legacy evaluator recipes retained the exact structured evidence tuple
+      // but predated selection.bindingIds. The reader must still resolve that
+      // tuple to the immutable row and fail closed after its retraction.
+      rerunRecipe: {
+        args: {
+          harness: 'papercusp',
+          current: [{
+            planSlug: bindingPlanSlug,
+            specId: bindingSpecId,
+            specRevision: 1,
+            specFingerprint: bindingSpecFingerprint,
+            evidenceKind: 'mutation',
+            evidenceRef: 'test-run:scorecard-binding',
+            sourceFingerprint: 'source-fingerprint',
+            testFingerprint: null,
+            fixtureFingerprint: null,
+            rubricFingerprint: null,
+            environmentFingerprint: null,
+          }],
+        },
+      },
+    }, '2026-06-21T10:05:30Z');
 
     const read = async (id: string) => {
       const result = await readScorecardEvidence(id);
@@ -1146,12 +1170,26 @@ describe('readScorecardEvidence audit-target status (EI-24583166035391772) — r
         retractedBindingIds: [], unavailableBindingIds: [],
       },
     });
+    expect((await read('EI-audit-target-binding-legacy')).auditTarget).toMatchObject({
+      current: true,
+      evidenceBindingCurrentness: {
+        state: 'current', reason: 'current', citedBindingCount: 1,
+        retractedBindingIds: [], unavailableBindingIds: [],
+      },
+    });
     await db.adminSql`
       UPDATE harness_shared.spec_evidence_bindings
          SET retracted_at = now(), retracted_by = 'su-test', retraction_reason = 'fixture withdrawal'
        WHERE workspace_id = ${issuesScopeWorkspace()} AND id = ${bindingId}`;
     const bindingRetractedCard = await read('EI-audit-target-binding');
     expect(bindingRetractedCard.auditTarget).toMatchObject({
+      current: false,
+      evidenceBindingCurrentness: {
+        state: 'stale', reason: 'cited-binding-retracted', citedBindingCount: 1,
+        retractedBindingIds: [String(bindingId)], unavailableBindingIds: [],
+      },
+    });
+    expect((await read('EI-audit-target-binding-legacy')).auditTarget).toMatchObject({
       current: false,
       evidenceBindingCurrentness: {
         state: 'stale', reason: 'cited-binding-retracted', citedBindingCount: 1,

@@ -1117,6 +1117,8 @@ export interface ScorecardEvidenceBindingCurrentness {
   citedBindingCount: number;
   retractedBindingIds: string[];
   unavailableBindingIds: string[];
+  /** Structured legacy rerun recipes may identify proof by its immutable tuple without storing row ids. */
+  unavailableEvidenceRefs?: string[];
 }
 
 export type ScorecardRubricCurrentness = RubricEvidenceCurrentness & {
@@ -1173,16 +1175,107 @@ interface ScorecardEvidenceDb {
   cited_binding_ids: unknown;
   rerun_harness: unknown;
   cited_binding_rows: unknown;
+  cited_binding_snapshots: unknown;
+  cited_snapshot_rows: unknown;
 }
 
 function classifyScorecardEvidenceBindingCurrentness(
   rawBindingIds: unknown,
   rawBindingRows: unknown,
   rawHarness: unknown,
+  rawBindingSnapshots: unknown,
+  rawSnapshotRows: unknown,
 ): ScorecardEvidenceBindingCurrentness | undefined {
   // Cards without an exact binding-id selector do not make a claim about a
   // particular immutable evidence row, so this dimension does not apply.
-  if (rawBindingIds == null) return undefined;
+  if (rawBindingIds == null) {
+    // Older spec-test-adequacy cards stored the evaluator's `args.current`
+    // evidence snapshots but did not yet persist `selection.bindingIds`.
+    // Resolve each snapshot by its full immutable tuple; never treat a missing
+    // ID selector as proof that there are no cited bindings.
+    if (rawBindingSnapshots == null) return undefined;
+    if (!Array.isArray(rawBindingSnapshots)) {
+      return {
+        state: 'unknown',
+        reason: 'invalid-binding-selector',
+        citedBindingCount: 0,
+        retractedBindingIds: [],
+        unavailableBindingIds: [],
+      };
+    }
+    if (rawBindingSnapshots.length === 0) {
+      return {
+        state: 'current',
+        reason: 'current',
+        citedBindingCount: 0,
+        retractedBindingIds: [],
+        unavailableBindingIds: [],
+      };
+    }
+    if (!Array.isArray(rawSnapshotRows)) {
+      return {
+        state: 'unknown',
+        reason: 'cited-binding-unavailable',
+        citedBindingCount: rawBindingSnapshots.length,
+        retractedBindingIds: [],
+        unavailableBindingIds: [],
+        unavailableEvidenceRefs: rawBindingSnapshots.flatMap((value) => {
+          if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+          const ref = (value as Record<string, unknown>).evidenceRef;
+          return typeof ref === 'string' ? [ref] : [];
+        }),
+      };
+    }
+
+    const rowsByIndex = new Map<number, Array<{ id: string; retractedAt: unknown }>>();
+    for (const value of rawSnapshotRows) {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+      const record = value as Record<string, unknown>;
+      if (!Number.isSafeInteger(record.index) || !Array.isArray(record.matches)) continue;
+      const matches = record.matches.flatMap((match) => {
+        if (!match || typeof match !== 'object' || Array.isArray(match)) return [];
+        const row = match as Record<string, unknown>;
+        return typeof row.id === 'string' ? [{ id: row.id, retractedAt: row.retractedAt }] : [];
+      });
+      rowsByIndex.set(Number(record.index), matches);
+    }
+
+    const ambiguousOrUnavailableRefs: string[] = [];
+    const matchedRows: Array<{ id: string; retractedAt: unknown }> = [];
+    rawBindingSnapshots.forEach((value, index) => {
+      const snapshot = value && typeof value === 'object' && !Array.isArray(value)
+        ? value as Record<string, unknown>
+        : null;
+      const evidenceRef = typeof snapshot?.evidenceRef === 'string' ? snapshot.evidenceRef : null;
+      const matches = rowsByIndex.get(index) ?? [];
+      if (matches.length !== 1) {
+        if (evidenceRef) ambiguousOrUnavailableRefs.push(evidenceRef);
+        return;
+      }
+      matchedRows.push(matches[0]!);
+    });
+
+    const retractedBindingIds = matchedRows
+      .filter((binding) => binding.retractedAt != null)
+      .map((binding) => binding.id);
+    if (ambiguousOrUnavailableRefs.length > 0 || matchedRows.length !== rawBindingSnapshots.length) {
+      return {
+        state: 'unknown',
+        reason: 'cited-binding-unavailable',
+        citedBindingCount: rawBindingSnapshots.length,
+        retractedBindingIds,
+        unavailableBindingIds: [],
+        ...(ambiguousOrUnavailableRefs.length > 0 ? { unavailableEvidenceRefs: ambiguousOrUnavailableRefs } : {}),
+      };
+    }
+    return {
+      state: retractedBindingIds.length > 0 ? 'stale' : 'current',
+      reason: retractedBindingIds.length > 0 ? 'cited-binding-retracted' : 'current',
+      citedBindingCount: rawBindingSnapshots.length,
+      retractedBindingIds,
+      unavailableBindingIds: [],
+    };
+  }
   if (!Array.isArray(rawBindingIds)) {
     return {
       state: 'unknown',
@@ -1295,6 +1388,7 @@ export async function readScorecardEvidence(issueId: string): Promise<ScorecardE
              scorecard.payload -> 'observation' -> 'subjectRubricIdentity' AS subject_rubric_identity,
              scorecard.payload -> 'observation' -> 'rerunRecipe' -> 'selection' -> 'bindingIds' AS cited_binding_ids,
              scorecard.payload -> 'observation' -> 'rerunRecipe' -> 'args' -> 'harness' AS rerun_harness,
+             scorecard.payload -> 'observation' -> 'rerunRecipe' -> 'args' -> 'current' AS cited_binding_snapshots,
              CASE
                WHEN jsonb_typeof(scorecard.payload -> 'observation' -> 'rerunRecipe' -> 'selection' -> 'bindingIds') = 'array'
                THEN (
@@ -1319,6 +1413,42 @@ export async function readScorecardEvidence(issueId: string): Promise<ScorecardE
                )
                ELSE NULL
              END AS cited_binding_rows,
+             CASE
+               WHEN jsonb_typeof(scorecard.payload -> 'observation' -> 'rerunRecipe' -> 'args' -> 'current') = 'array'
+               THEN (
+                 SELECT COALESCE(jsonb_agg(jsonb_build_object(
+                   'index', cited.ordinality - 1,
+                   'matches', COALESCE((
+                     SELECT jsonb_agg(jsonb_build_object(
+                       'id', binding.id::text,
+                       'retractedAt', binding.retracted_at
+                     ) ORDER BY binding.id)
+                       FROM harness_shared.spec_evidence_bindings AS binding
+                      WHERE binding.workspace_id = scorecard.workspace_id
+                        AND binding.harness_slug = scorecard.payload -> 'observation' -> 'rerunRecipe' -> 'args' ->> 'harness'
+                        AND binding.plan_slug = cited.value ->> 'planSlug'
+                        AND binding.spec_id = cited.value ->> 'specId'
+                        AND binding.spec_revision = CASE
+                          WHEN cited.value ->> 'specRevision' ~ '^[0-9]{1,9}$'
+                          THEN (cited.value ->> 'specRevision')::integer
+                          ELSE NULL
+                        END
+                        AND binding.spec_fingerprint IS NOT DISTINCT FROM NULLIF(cited.value ->> 'specFingerprint', '')
+                        AND binding.evidence_kind = cited.value ->> 'evidenceKind'
+                        AND binding.evidence_ref = cited.value ->> 'evidenceRef'
+                        AND binding.source_fingerprint IS NOT DISTINCT FROM NULLIF(cited.value ->> 'sourceFingerprint', '')
+                        AND binding.test_fingerprint IS NOT DISTINCT FROM NULLIF(cited.value ->> 'testFingerprint', '')
+                        AND binding.fixture_fingerprint IS NOT DISTINCT FROM NULLIF(cited.value ->> 'fixtureFingerprint', '')
+                        AND binding.rubric_fingerprint IS NOT DISTINCT FROM NULLIF(cited.value ->> 'rubricFingerprint', '')
+                        AND binding.environment_fingerprint IS NOT DISTINCT FROM NULLIF(cited.value ->> 'environmentFingerprint', '')
+                   ), '[]'::jsonb)
+                 ) ORDER BY cited.ordinality), '[]'::jsonb)
+                   FROM jsonb_array_elements(
+                     scorecard.payload -> 'observation' -> 'rerunRecipe' -> 'args' -> 'current'
+                   ) WITH ORDINALITY AS cited(value, ordinality)
+               )
+               ELSE NULL
+             END AS cited_snapshot_rows,
              -- Same supersession predicate as listScorecards: supersession is a
              -- READ-TIME relation (a later card names this one in "supersedes"),
              -- never a stamp on this card's own observation (EI-24583166035391772).
@@ -1345,6 +1475,8 @@ export async function readScorecardEvidence(issueId: string): Promise<ScorecardE
     row.cited_binding_ids,
     row.cited_binding_rows,
     row.rerun_harness,
+    row.cited_binding_snapshots,
+    row.cited_snapshot_rows,
   );
 
   const observation = asStructuredObservation({
