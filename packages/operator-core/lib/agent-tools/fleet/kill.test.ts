@@ -315,6 +315,99 @@ describe('killOne', () => {
     );
   });
 
+  it('waits for a SIGKILLed managed host to disappear before marking its session ended', async () => {
+    let hostVisible = true;
+    let killRequested = false;
+    let postKillPolls = 0;
+    let presenceCleared = false;
+    const kills: Array<{ pid: number; signal: string }> = [];
+    const ended: Array<{ id: string; signal: string }> = [];
+    const deps: KillDeps = {
+      cancelNursery: async () => null,
+      findHost: () => hostVisible ? trackedHost(300, '15153') : null,
+      readProc: () => null,
+      kill: (pid, signal) => {
+        kills.push({ pid, signal });
+        if (pid === 300 && signal === 'SIGKILL') killRequested = true;
+        return true;
+      },
+      alive: (pid) => pid === 300 && hostVisible,
+      sleep: async () => {
+        if (!killRequested) return;
+        postKillPolls++;
+        if (postKillPolls >= 2) hostVisible = false;
+      },
+      markSessionEnded: async (id, signal) => {
+        expect(hostVisible).toBe(false);
+        ended.push({ id, signal });
+      },
+      deactivateLoop: async () => {
+        expect(hostVisible).toBe(false);
+        return true;
+      },
+      clearPresence: async () => {
+        expect(hostVisible).toBe(false);
+        presenceCleared = true;
+      },
+      presenceExists: async () => false,
+    };
+
+    const result = await killOne(
+      { actor: 'su-me', target: 'su-target', closeTerminal: false, reason: 'successor handoff' },
+      deps,
+    );
+
+    expect(result).toMatchObject({ ok: true, signal: 'SIGKILL', terminal: 'left-open' });
+    expect(postKillPolls).toBeGreaterThanOrEqual(2);
+    expect(ended).toEqual([{ id: '15153', signal: 'SIGKILL' }]);
+    expect(presenceCleared).toBe(true);
+    expect(kills.filter((kill) => kill.pid === 300).map((kill) => kill.signal)).toEqual(['SIGTERM', 'SIGKILL']);
+  });
+
+  it('withholds terminal and presence cleanup if the SIGKILLed host remains discoverable', async () => {
+    const ended: Array<{ id: string; signal: string }> = [];
+    const cleanup: string[] = [];
+    const audits: string[] = [];
+    const deps: KillDeps = {
+      cancelNursery: async () => null,
+      findHost: () => trackedHost(300, '15153'),
+      readProc: () => null,
+      kill: () => true,
+      alive: () => true,
+      sleep: noSleep,
+      waitForHostGone: async () => false,
+      markSessionEnded: async (id, signal) => {
+        ended.push({ id, signal });
+      },
+      deactivateLoop: async () => {
+        cleanup.push('deactivate-loop');
+        return true;
+      },
+      clearPresence: async () => {
+        cleanup.push('clear-presence');
+      },
+      audit: async (action) => {
+        audits.push(action);
+      },
+    };
+
+    const result = await killOne(
+      { actor: 'su-me', target: 'su-target', closeTerminal: false, reason: 'successor handoff' },
+      deps,
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      killed: false,
+      signal: 'SIGKILL',
+      terminal: 'left-open',
+      code: 'cleanup_failed',
+    });
+    expect(ended).toEqual([]);
+    expect(cleanup).toEqual([]);
+    expect(audits).toEqual(['fleet.kill_cleanup_failed']);
+  });
+
   it('lets a host finish a graceful SIGTERM teardown that outlasts 1.5 s (WI-10006628)', async () => {
     // A resumed CLI flushing its transcript on SIGHUP kept the host alive ~2.4 s after
     // SIGTERM; the old 6 × 250 ms grace SIGKILLed it and turned an owner's `/exit` into

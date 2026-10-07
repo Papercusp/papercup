@@ -56,6 +56,7 @@ import { clearPresence, getPresence, PRESENCE_STALE_MS } from '../coordination/p
 import { mergeIds, runBulk, bulkContent } from '@papercusp/agent-mcp/_bulk';
 import { softText, clampText } from '../limits';
 import { readProcessIdentity } from '../../process-identity';
+import { waitForPtyHostGone } from '../../agent-launch-core';
 import {
   hasAdvSessionTerminalEvidence,
   latestAdvSessionByCoordOwner,
@@ -132,6 +133,8 @@ export interface KillDeps {
   audit?: (action: string, subject: string, details: Record<string, unknown>) => Promise<void>;
   /** Atomically stamp the terminal tuple after this endpoint confirms the host died. */
   markSessionEnded?: (id: string, signal: 'SIGTERM' | 'SIGKILL') => Promise<void>;
+  /** Test seam for the shared managed-host disappearance postcondition. */
+  waitForHostGone?: (ownerId: string) => Promise<boolean>;
   /** Repair an observer-written terminal marker before unmanaged liveness is read. */
   repairStaleAdvSessionTerminalMarkers?: (ownerId: string) => Promise<number>;
   sleep?: (ms: number) => Promise<void>;
@@ -446,6 +449,40 @@ export async function killOne(input: KillOneInput, deps: KillDeps): Promise<Kill
   const signal = (await stopPid(host.pid, prims)) ?? 'SIGTERM';
   if (host.ptyPid && host.ptyPid !== host.pid && prims.alive(host.ptyPid)) {
     prims.kill(host.ptyPid, 'SIGTERM');
+  }
+
+  // A successful SIGKILL call only means the signal was delivered. The OS may
+  // still be tearing the old host down, so do not stamp its session ended or
+  // clear its presence until the same discovery predicate used by exact-resume
+  // confirms the host is gone.
+  if (signal === 'SIGKILL') {
+    const hostGone = deps.waitForHostGone
+      ? await deps.waitForHostGone(input.target)
+      : await waitForPtyHostGone(input.target, {
+          findHost: deps.findHost ?? findLiveHost,
+          sleep: prims.sleep,
+        });
+    if (!hostGone) {
+      const error =
+        'the managed psu-pty host remained discoverable after SIGKILL; session-end and presence cleanup were withheld';
+      await audit('fleet.kill_cleanup_failed', input.target, {
+        reason: input.reason,
+        stage: 'post-sigkill-host-gone',
+        host_pid: host.pid,
+        signal,
+        error,
+      });
+      return {
+        ok: false,
+        target: input.target,
+        kind,
+        killed: false,
+        signal,
+        terminal: headless ? 'none' : 'left-open',
+        code: 'cleanup_failed',
+        error,
+      };
+    }
   }
 
   // The launcher normally reports its own exit, but killing its host can sever that
