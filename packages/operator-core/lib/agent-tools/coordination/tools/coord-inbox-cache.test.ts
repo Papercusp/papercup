@@ -111,11 +111,13 @@ const ctx = (
   ownerId: string,
   workspaceId = "ws-inbox",
   metadata: ReturnType<typeof vi.fn> = vi.fn(),
+  indirectDispatch = false,
 ): never =>
   ({
     ownerId,
     workspaceId,
     metadata,
+    indirectDispatch,
     log: vi.fn(),
     progress: vi.fn(),
   }) as never;
@@ -124,7 +126,8 @@ const inbox = (
   owner: string,
   args: Record<string, unknown> = {},
   metadata: ReturnType<typeof vi.fn> = vi.fn(),
-): Promise<unknown> => tool.handler(args as never, ctx(owner, "ws-inbox", metadata));
+  indirectDispatch = false,
+): Promise<unknown> => tool.handler(args as never, ctx(owner, "ws-inbox", metadata, indirectDispatch));
 
 beforeEach(async () => {
   resetOperatorCacheForTests();
@@ -167,6 +170,33 @@ describe("coord:inbox — cache the derive, keep side effects", () => {
       expect(settled?.phases.map(({ name }) => name)).toEqual(expect.arrayContaining([
         "resolve-actor-identity",
         "drain-user-mailbox",
+      ]));
+      expect(settled?.phases.every(({ status }) => status !== "running")).toBe(true);
+    } finally {
+      if (previousTraceFlag === undefined) delete process.env.PAPERCUSP_COORD_INBOX_TRACE_PHASES;
+      else process.env.PAPERCUSP_COORD_INBOX_TRACE_PHASES = previousTraceFlag;
+    }
+  });
+
+  it("records default-read phases on indirect dispatch without the diagnostic env flag", async () => {
+    const previousTraceFlag = process.env.PAPERCUSP_COORD_INBOX_TRACE_PHASES;
+    delete process.env.PAPERCUSP_COORD_INBOX_TRACE_PHASES;
+    try {
+      const metadata = vi.fn();
+      await inbox("owner-a", {}, metadata, true);
+
+      const traces = metadata.mock.calls
+        .map(([value]) => (value as { coordInboxRead?: {
+          request: { hasFrom: boolean; directed: boolean; unansweredOnly: boolean };
+          phases: Array<{ name: string; status: string; elapsedMs: number | null }>;
+        } }).coordInboxRead)
+        .filter((trace): trace is NonNullable<typeof trace> => trace !== undefined);
+      const settled = traces.at(-1);
+      expect(settled?.request).toEqual({ hasFrom: false, directed: false, unansweredOnly: false });
+      expect(settled?.phases.map(({ name }) => name)).toEqual(expect.arrayContaining([
+        "resolve-actor-identity",
+        "drain-user-mailbox",
+        "readInbox-derive",
       ]));
       expect(settled?.phases.every(({ status }) => status !== "running")).toBe(true);
     } finally {

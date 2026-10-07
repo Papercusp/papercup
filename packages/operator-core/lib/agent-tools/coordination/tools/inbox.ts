@@ -975,6 +975,7 @@ export default defineTool({
     const inboxContext = ctx as {
       contextTier?: keyof typeof INBOX_TIER_DEFAULTS;
       payloadTierOverride?: keyof typeof INBOX_TIER_DEFAULTS;
+      indirectDispatch?: boolean;
     };
     const sessionTier = inboxContext.contextTier;
     const explicitFullRequest = inboxContext.payloadTierOverride === "full";
@@ -1000,6 +1001,10 @@ export default defineTool({
     // Opt-in full tracing lets the isolated background-runtime probe inspect a
     // natural default read without adding metadata work to ordinary inbox calls.
     const traceAllInboxPhases = process.env.PAPERCUSP_COORD_INBOX_TRACE_PHASES === "1";
+    // EI-25299318738413287: a nested coord:inbox can outlive the tools:invoke
+    // transport deadline. Keep phase evidence on delegated reads even when they
+    // use the default arguments, so a repeated slow call identifies its await.
+    const traceIndirectDispatch = inboxContext.indirectDispatch === true;
     // Selective inbox reads have produced request_timeout failures, but the
     // existing cache telemetry measures only the readInbox factory. Preserve a
     // cumulative phase trace in invocation metadata for these less-common paths.
@@ -1012,7 +1017,7 @@ export default defineTool({
     const traceSelectivePhases = Boolean(args.from || directedOnly || unansweredOnly);
     let tracePresenceRebootstrap = false;
     const shouldTraceInboxPhase = (name?: string): boolean =>
-      traceAllInboxPhases || traceSelectivePhases || (
+      traceAllInboxPhases || traceSelectivePhases || traceIndirectDispatch || (
         tracePresenceRebootstrap && (
           name === undefined ||
           name === "consume-presence-rebootstrap" ||
