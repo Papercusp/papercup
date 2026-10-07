@@ -326,6 +326,19 @@ describe('chunk-split UTF-8 corruption guard (WI-6728)', () => {
     expect(regressed, `A converted site regressed to raw accumulation:\n${regressed.join('\n')}`).toEqual([]);
   });
 
+  it('the proxy test response readers do not concatenate raw data chunks', () => {
+    const file = 'apps/operator/lib/mcp-proxy/proxy.test.ts';
+    const src = readFileSync(join(REPO_ROOT, file), 'utf8');
+    const regressed = scanSource(file, src, { includeBareChunkParameter: true }).map(
+      (h) => `${h.line} (in ${h.symbol ?? '<top level>'}) ${h.text}`,
+    );
+    expect(src).toContain('createTextCollector');
+    expect(
+      regressed,
+      `Proxy response readers must use the UTF-8-safe collector:\n${regressed.join('\n')}`,
+    ).toEqual([]);
+  });
+
   it('the converted sites actually IMPORT the safe helper', () => {
     // Distinct from the assertion above: a file can reach zero raw
     // accumulators by losing its output capture entirely, which would pass
@@ -367,6 +380,12 @@ describe('the scanner itself (a blind detector makes the guard green and worthle
     expect(hits.length).toBe(1);
     expect(hits[0].line).toBe(3);
     expect(hits[0].symbol).toBe('go');
+  });
+
+  it('finds direct accumulation of a data-handler chunk parameter', () => {
+    const src = `function go() {\n  response.on('data', (chunk) => (body += chunk));\n}`;
+    const hits = scanSource('x.ts', src, { includeBareChunkParameter: true });
+    expect(hits).toMatchObject([{ line: 2, symbol: 'go' }]);
   });
 
   it('finds the template-literal form', () => {

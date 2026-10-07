@@ -31,6 +31,10 @@ export interface ChunkUnsafeSite {
  */
 const ACCUMULATE = /\+=\s*(?:String\(|`\$\{|[A-Za-z_$][\w$]*\??\.toString\()/;
 
+/** A bare string accumulation of the handler's chunk parameter is unsafe too. */
+const accumulatesChunkParameter = (line: string, parameter: string | null): boolean =>
+  parameter !== null && new RegExp(`\\+=\\s*${parameter}(?![\\w$.])`).test(line);
+
 /** Opens a `data` subscription: `.on('data',` / `.addListener("data",` */
 const DATA_HANDLER = /\.(?:on|addListener|once)\(\s*['"]data['"]\s*,/;
 
@@ -60,7 +64,13 @@ export function enclosingTopLevelSymbol(lines: string[], lineIdx: number): strin
  * { stderr += String(e) })` — an Error, not a chunk, and correct) is not
  * mistaken for one inside the data handler.
  */
-export function scanSource(file: string, src: string): ChunkUnsafeSite[] {
+export function scanSource(
+  file: string,
+  src: string,
+  // Direct parameter accumulation is opt-in for known Buffer-backed streams;
+  // streams with setEncoding() legitimately emit strings.
+  options: { includeBareChunkParameter?: boolean } = {},
+): ChunkUnsafeSite[] {
   const lines = src.split('\n');
   const hits: ChunkUnsafeSite[] = [];
   const seen = new Set<number>();
@@ -68,6 +78,11 @@ export function scanSource(file: string, src: string): ChunkUnsafeSite[] {
   for (let i = 0; i < lines.length; i++) {
     const open = DATA_HANDLER.exec(lines[i]);
     if (open === null) continue;
+    const callback =
+      /,\s*(?:async\s*)?(?:\(\s*([A-Za-z_$][\w$]*)\b|([A-Za-z_$][\w$]*)\s*=>|function\s*\(\s*([A-Za-z_$][\w$]*))/.exec(
+        lines[i],
+      );
+    const chunkParameter = callback?.[1] ?? callback?.[2] ?? callback?.[3] ?? null;
 
     // Walk from `.on(` to its matching close paren, tracking paren depth.
     //
@@ -82,7 +97,13 @@ export function scanSource(file: string, src: string): ChunkUnsafeSite[] {
       const line = lines[j];
       const insideAtLineStart = started && depth > 0;
 
-      if ((j === i || insideAtLineStart) && ACCUMULATE.test(line) && !seen.has(j)) {
+      if (
+        (j === i || insideAtLineStart) &&
+        (ACCUMULATE.test(line) ||
+          (options.includeBareChunkParameter === true &&
+            accumulatesChunkParameter(line, chunkParameter))) &&
+        !seen.has(j)
+      ) {
         seen.add(j);
         hits.push({
           file,
