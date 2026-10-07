@@ -1749,6 +1749,8 @@ export type {
   ProviderSyncRequest,
   ProviderRecord,
   ProviderSyncPage,
+  ProviderMembershipDescriptor,
+  ProviderMembershipSnapshot,
   ProviderSyncError,
   ProviderInvokeRequest,
   ProviderServiceCredential,
