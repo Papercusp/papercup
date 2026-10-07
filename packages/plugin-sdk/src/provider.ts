@@ -108,6 +108,33 @@ export interface ProviderDescriptor {
    * verified delivery only wakes the source's next sync; it is never a data path.
    */
   push?: ProviderPushDescriptor;
+  /**
+   * Declares that this provider's sync pages may carry a {@link ProviderMembershipSnapshot}: who
+   * may read the source's remote resource there (a repository's collaborators, a channel's
+   * members). The host replaces an organization-scope source's permission list with it, so
+   * organization documents stay readable by exactly those people. A page carrying `membership`
+   * from a provider that did not declare it is refused.
+   */
+  membership?: ProviderMembershipDescriptor;
+}
+
+/** A provider's membership feed (plan generalized-integrations-google-migration-cupboard-workflows-2026-10-05, D-015.4). */
+export interface ProviderMembershipDescriptor {
+  /**
+   * Identity namespace the member ids belong to: the `provider` key of the workspace's
+   * provider-identity mappings (e.g. `github`), which resolve a member id to a workspace user.
+   */
+  identityProvider: string;
+}
+
+/**
+ * The COMPLETE current membership of the source's remote resource. A provider emits it only once
+ * it has enumerated everyone; the host treats it as a full replacement, so a member missing from
+ * it loses access. A provider that cannot enumerate members (access denied) emits an empty list:
+ * unverifiable readership fails closed.
+ */
+export interface ProviderMembershipSnapshot {
+  members: Array<{ providerUserId: string }>;
 }
 
 /**
@@ -229,6 +256,12 @@ export interface ProviderSyncPage {
   nextCursor: string | null;
   /** True when more pages are immediately available. */
   hasMore: boolean;
+  /**
+   * The source's complete current membership, when this page finished enumerating it. Only a
+   * provider whose descriptor declares `membership` may set it. The host applies it before it
+   * commits `nextCursor`; a full replacement is idempotent, so a replayed page converges.
+   */
+  membership?: ProviderMembershipSnapshot;
 }
 
 /** Signals the host interprets; a provider throws or returns these instead of retrying itself. */
@@ -478,6 +511,15 @@ export function validateProviderDescriptor(descriptor: unknown): string[] {
     }
   }
   if (d.push !== undefined) issues.push(...pushDescriptorIssues(d.push, capabilities.filter(isNonEmptyString)));
+  if (d.membership !== undefined) {
+    const membership = d.membership as unknown;
+    const identityProvider = membership && typeof membership === 'object' && !Array.isArray(membership)
+      ? (membership as { identityProvider?: unknown }).identityProvider
+      : undefined;
+    if (!isNonEmptyString(identityProvider) || !PROVIDER_ID_PATTERN.test(identityProvider)) {
+      issues.push(`provider.membership.identityProvider must match ${PROVIDER_ID_PATTERN}`);
+    }
+  }
   return issues;
 }
 

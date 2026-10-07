@@ -48,6 +48,21 @@ describe('validateProviderDescriptor: defaultDestinations', () => {
   });
 });
 
+describe('validateProviderDescriptor: membership', () => {
+  const base = descriptor({ url: 'https://api.example.com/user', idField: 'id' });
+
+  it('accepts a membership feed that names its identity namespace', () => {
+    expect(validateProviderDescriptor({ ...base, membership: { identityProvider: 'github' } })).toEqual([]);
+  });
+
+  it('refuses a missing, empty or malformed identity namespace', () => {
+    const refusal = `provider.membership.identityProvider must match /^[a-z][a-z0-9-]{1,62}$/`;
+    for (const membership of [{}, { identityProvider: '' }, { identityProvider: 'Git Hub' }, 'github', ['github']]) {
+      expect(validateProviderDescriptor({ ...base, membership } as unknown as ProviderDescriptor)).toEqual([refusal]);
+    }
+  });
+});
+
 describe('validateProviderDescriptor: oauth.scopeSeparator', () => {
   it('accepts a space or a comma and refuses anything else', () => {
     const base = descriptor({ url: 'https://api.example.com/user', idField: 'id' });
