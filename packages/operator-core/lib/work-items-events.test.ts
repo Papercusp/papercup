@@ -1073,6 +1073,43 @@ describe('emitWorkItemClaimableEvent (composable-event-awaits P-007)', () => {
     expect((dispatchActionable as any).mock.invocationCallOrder[0]).toBeLessThan(emit.mock.invocationCallOrder[0]!);
   });
 
+  it('restores a stored blocked dependent before announcing it as unblocked and claimable', async () => {
+    const emit = typedEmit();
+    const dependent = wi({ id: 'WI-DEP-BLOCKED', state: 'blocked', assignee: null });
+    const restored = { ...dependent, state: 'open' };
+    const restoreBlockedDependent = vi.fn(async () => restored);
+    await emitUnblockedOnEdgeRemoved({ kind: 'issue', ref: dependent.id }, 'WI-ROOT', {
+      emit, getItem: vi.fn(async () => dependent), listIn: vi.fn(async () => []), restoreBlockedDependent,
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(restoreBlockedDependent).toHaveBeenCalledWith(dependent, 'WI-ROOT');
+    expect(emit.mock.calls.map(([event]) => event.key)).toEqual([
+      `work-item:unblocked:${dependent.id}`, 'work-item:claimable',
+    ]);
+    expect(restoreBlockedDependent.mock.invocationCallOrder[0]).toBeLessThan(emit.mock.invocationCallOrder[0]!);
+  });
+
+  it('does not announce unblocked when restoration retains an independent hold', async () => {
+    const emit = typedEmit();
+    const dependent = wi({ id: 'WI-DEP-HELD', state: 'blocked', assignee: null });
+    await emitUnblockedOnEdgeRemoved({ kind: 'issue', ref: dependent.id }, 'WI-ROOT', {
+      emit, getItem: vi.fn(async () => dependent), listIn: vi.fn(async () => []),
+      restoreBlockedDependent: vi.fn(async () => dependent),
+    });
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  it('does not emit unblocked for an open dependent with an unsatisfied success-only prerequisite', async () => {
+    const emit = typedEmit();
+    const dependent = wi({ id: 'WI-SUCCESS-ONLY', state: 'open', assignee: null });
+    const unresolvedDependencyCheck = vi.fn(async () => true);
+    await emitUnblockedOnEdgeRemoved({ kind: 'issue', ref: dependent.id }, 'WI-DROPPED', {
+      emit, getItem: vi.fn(async () => dependent), listIn: vi.fn(async () => []), unresolvedDependencyCheck,
+    });
+    expect(unresolvedDependencyCheck).toHaveBeenCalledWith(dependent);
+    expect(emit).not.toHaveBeenCalled();
+  });
+
   it('CO-FIRES from emitWorkItemCreatedEvent for an unclaimed-claimable create (one hook at the call site)', async () => {
     const emit = typedEmit();
     const { emitWorkItemCreatedEvent } = await import('./work-items-events');

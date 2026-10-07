@@ -1440,6 +1440,15 @@ describe('code:run → timeoutSec foreground contract (EI-21636457492876715)', (
     expect(codeRunTool.args.safeParse({ script: 'return 42;', timeoutSec: maxTimeoutSec + 1 }).success).toBe(false);
     expect(codeRunTool.args.safeParse({ script: 'return 42;', timeoutSec: 120 }).success).toBe(false);
   });
+
+  it('publishes the same foreground ceiling in the exposed argument schema', () => {
+    const tool = listAllProjectedTools().find((candidate) => candidate.expose.mcp?.name === 'code:run');
+    const timeoutSec = (tool?.inputSchema as {
+      properties?: { timeoutSec?: { maximum?: number } };
+    })?.properties?.timeoutSec;
+
+    expect(timeoutSec?.maximum).toBe(FOREGROUND_TIMEOUT_CEILING_MS / 1000);
+  });
 });
 
 describe('code:run → response-safe postprocessing budget', () => {

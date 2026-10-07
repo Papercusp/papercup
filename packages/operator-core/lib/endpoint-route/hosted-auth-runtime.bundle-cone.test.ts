@@ -13,6 +13,7 @@
 import { readFileSync, existsSync, statSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import ts from 'typescript';
 
 const ROOT = resolve(__dirname, '..');
 const ENTRY = resolve(__dirname, 'hosted-auth-runtime.ts');
@@ -57,6 +58,27 @@ function walk(entry: string): Map<string, string> {
 }
 
 describe('hosted-auth-runtime bundle cone', () => {
+  it('excludes runtime package barrels while allowing type-only imports', () => {
+    // The relative-only walk missed an agent-mcp barrel import in a tutorial
+    // preference leaf: esbuild traversed its side effects into DBOS/telemetry.
+    // Inspect runtime imports throughout the same cone, including named imports
+    // with inline type modifiers. Narrow package subpaths remain available.
+    const offenders: string[] = [];
+    for (const file of walk(ENTRY).keys()) {
+      const source = ts.createSourceFile(file, readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true);
+      for (const node of source.statements) {
+        if (!ts.isImportDeclaration(node) || !ts.isStringLiteral(node.moduleSpecifier)) continue;
+        if (!['@papercusp/agent-mcp', '@papercusp/tooldef'].includes(node.moduleSpecifier.text)) continue;
+        const clause = node.importClause;
+        if (clause?.isTypeOnly) continue;
+        if (clause && !clause.name && clause.namedBindings && ts.isNamedImports(clause.namedBindings)
+          && clause.namedBindings.elements.length > 0 && clause.namedBindings.elements.every(item => item.isTypeOnly)) continue;
+        offenders.push(`${file} imports ${node.moduleSpecifier.text}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
   it('never reaches the operator substrate (operator-state-pg / integration store / sync engine / route registry)', () => {
     const cone = walk(ENTRY);
     const offenders = FORBIDDEN.map((suffix) => {

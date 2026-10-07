@@ -47,15 +47,28 @@ function withMcpDiagnosticWarning<T extends McpCallResult>(
 }
 
 function hasPopulatedMcpResult(result: McpCallResult): boolean {
-  const first = Array.isArray(result.content) ? result.content[0] : undefined;
-  if (!first || !('type' in first) || first.type !== 'text' || typeof first.text !== 'string') return false;
-
-  let parsed: unknown;
-  try {
-    parsed = parseMcpToolText(first.text);
-  } catch {
-    return false;
+  // Output-schema tools can carry their populated result only in structuredContent.
+  // The text projection may be absent, truncated, or use a separate content block;
+  // none of those should make a successful read look empty during a proxy warning.
+  if (result.structuredContent !== undefined && hasPopulatedMcpResultValue(result.structuredContent)) {
+    return true;
   }
+
+  const content = Array.isArray(result.content) ? result.content : [];
+  for (const block of content) {
+    if (!('type' in block) || block.type !== 'text' || typeof block.text !== 'string') continue;
+    let parsed: unknown;
+    try {
+      parsed = parseMcpToolText(block.text);
+    } catch {
+      continue;
+    }
+    if (hasPopulatedMcpResultValue(parsed)) return true;
+  }
+  return false;
+}
+
+function hasPopulatedMcpResultValue(parsed: unknown): boolean {
   if (Array.isArray(parsed)) return parsed.length > 0;
   if (!parsed || typeof parsed !== 'object') return false;
 

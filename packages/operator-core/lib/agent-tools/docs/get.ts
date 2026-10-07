@@ -237,7 +237,7 @@ export default defineTool({
     if (args.scope === 'public' || isPublicManualRole(ctx.role)) {
       if (args.harness) return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'public_scope_conflict', surface: 'public' }) }], isError: true };
       const result = await getPublicManual(args);
-      return { content: [{ type: 'text' as const, text: JSON.stringify(result) }], ...('error' in result ? { isError: true } : {}) };
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result) }], structuredContent: result, ...('error' in result ? { isError: true } : {}) };
     }
     const ctxAny = ctx as {
       harnessSlug?: string;

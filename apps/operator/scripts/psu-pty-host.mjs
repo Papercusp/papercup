@@ -10189,10 +10189,13 @@ export function hostThroughPty(o) {
   // instead of output silence. Resume/fork may already be running a turn.
   let launchKickoffSettled = !launchKickoff;
   let carryBindingChild = null;
+  let carryBindingNativeId = null;
   let confirmedCarryChild = null;
   let confirmedCarryNativeId = null;
   const prepareCarryBinding = async (nativeId, deadline, alreadyConfirmed = false) => {
     const target = child;
+    if (carryBindingChild !== target) carryBindingNativeId = nativeId;
+    else if (nativeId) carryBindingNativeId = nativeId;
     carryBindingChild = target;
     const result = await waitForRespawnBinding({
       nativeId,
@@ -10205,6 +10208,7 @@ export function hostThroughPty(o) {
     appendHostEvent(ownerId, result.ok ? 'respawn-binding-confirmed' : 'respawn-binding-unconfirmed', {
       nativeId: result.nativeId, reason: result.reason,
     });
+    if (child === target && result.nativeId) carryBindingNativeId = result.nativeId;
     if (result.ok) {
       confirmedCarryChild = target;
       confirmedCarryNativeId = result.nativeId;
@@ -10216,7 +10220,7 @@ export function hostThroughPty(o) {
   // later work must retry that exact-child lookup before writing any input.
   const prepareCurrentCarryBinding = (deadline) =>
     carryBindingChild === child && confirmedCarryChild !== child
-      ? prepareCarryBinding(null, deadline)
+      ? prepareCarryBinding(carryBindingNativeId, deadline)
       : Promise.resolve({ ok: true });
   if (launchKickoff) {
     const requireRoleMcp = headlessRoleKickoffRequiresMcp({

@@ -2119,9 +2119,7 @@ export function selectionsFromArgs(args: any): {
     harness: any;
     plan: any;
 };
-export function readToken({ home }?: {
-    home?: string | undefined;
-}): any;
+export function readToken(options?: {}): any;
 /**
  * Path to the persisted default-account Claude OAuth token (from `claude
  * setup-token`). 0600. Overridable via env for tests / non-default homes.

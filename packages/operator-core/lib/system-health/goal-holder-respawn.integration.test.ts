@@ -48,6 +48,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import type postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
+import { getOrgPg } from '@papercusp/db-org';
+import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../_baseline-coord-fixture';
 
 import {
   GOAL_HOLDER_RESPAWN_RATE_LIMIT,
@@ -81,6 +83,7 @@ const INITIAL_HOLDER = 'su-initial-holder';
 
 let db: OrgTestDb;
 let rootSql: postgres.Sql;
+let coordination: BaselineCoordFixture | undefined;
 
 /* ── the presence-signal fixture: what each session's substrate looks like ── */
 
@@ -284,6 +287,9 @@ beforeAll(async () => {
   // does instead of in the opposite direction (EI-18698602043482898).
   db = await createOrgTestDb();
   rootSql = db.adminSql;
+  // setMode's notification and control-anchor paths resolve their own pool.
+  // Route those real paths to the SAME isolated DB as the injected writer.
+  coordination = await setupBaselineCoordFixture({ dsn: db.adminDsn });
 }, 300_000);
 
 // Explicit timeout: dropping a throwaway database has to terminate other backends
@@ -291,7 +297,11 @@ beforeAll(async () => {
 // timeout and failed suites whose assertions all passed (EI-23128538923529753,
 // EI-22778982473804010).
 afterAll(async () => {
-  await db?.cleanup();
+  try {
+    await coordination?.dispose();
+  } finally {
+    await db?.cleanup();
+  }
 }, 120_000);
 
 beforeEach(async () => {
@@ -304,6 +314,13 @@ beforeEach(async () => {
 });
 
 describe('respawn-on-loss for a started package goal (P-010, end-to-end)', () => {
+  it('routes default notification and control pools to the holder writer database', async () => {
+    const [writer] = await rootSql<{ name: string }[]>`SELECT current_database() AS name`;
+    const [defaultPool] = await getOrgPg().sql<{ name: string }[]>`SELECT current_database() AS name`;
+    expect(writer.name).toBe(db.dbName);
+    expect(defaultPool.name).toBe(writer.name);
+  });
+
   it('persists a pruned trailing-hour launch ledger and closes the seventh reservation', async () => {
     const goalId = 'goal-durable-respawn-cap';
     const nowMs = Date.now();

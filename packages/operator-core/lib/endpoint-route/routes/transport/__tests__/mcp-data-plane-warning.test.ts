@@ -63,6 +63,24 @@ describe('withMcpDiagnosticWarnings', () => {
     expect(annotated._meta).toBeUndefined();
   });
 
+  it('does not warn for populated structuredContent when the MCP result has no text block', () => {
+    const result: McpCallResult = {
+      content: [],
+      structuredContent: {
+        ok: true,
+        results: [{ ok: true, id: 'WI-10000979', workItem: { id: 'WI-10000979' } }],
+        counts: { ok: 1, failed: 0 },
+      },
+    };
+    const annotated = withMcpDiagnosticWarnings(
+      result,
+      context({ dataPlaneDegradedAtMs: Date.parse('2026-10-07T19:21:35.306Z') }),
+    );
+
+    expect(annotated).toBe(result);
+    expect(annotated._meta).toBeUndefined();
+  });
+
   it('does not warn for a populated successful code:run summary wrapper', () => {
     const body = {
       ok: true,

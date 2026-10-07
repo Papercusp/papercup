@@ -4120,6 +4120,33 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     // + socket present) — so inject the wake turn in place; on any miss fall
     // through to the normal channels.
     const liveAccountRoute = wakeAccountRouteFromArgv(fresh?.launchArgv, d.subscriberId);
+    // A live quota host takes Channel 1b, never the Channel 2 home-repair leg.
+    // Reusing its native argv with a stripped provider would recycle straight
+    // back into the default account's wall. Restore the persisted auto route
+    // before either warm injection or cold/recycle startup. This does not
+    // relax the independent agent-launch provenance/operation fences.
+    if (handle.agent === 'codex' && liveAccountRoute?.mode === 'auto') {
+      const quotaHost = findPsuHost(d.subscriberId);
+      if (quotaHost?.ownerId === d.subscriberId && quotaHost.bridgeTty === false && quotaHost.quotaBlocked === true) {
+        const repair = await ensureCodexHomeForWake({
+          advSessionId: handle.advSessionId,
+          owner: d.subscriberId,
+          codexHome: codexHomeForAdvSession(handle.advSessionId),
+          headless: true,
+          sessionRow: fresh,
+          ...codexWakeGatewayInputs(liveAccountRoute),
+        }).catch((error: unknown) => ({
+          ok: false,
+          reason: error instanceof Error ? error.message : String(error),
+        }));
+        if (!repair.ok || repair.reason === 'no-launch-spec' || repair.reason === 'unsupported-agent') {
+          return {
+            kind: 'park',
+            reason: `Codex quota gateway repair could not restore the persisted auto route (${repair.reason ?? 'unknown'}); parked before native recovery`,
+          };
+        }
+      }
+    }
     const outcome = await injectPsuHostWakeWithReverify(
       sessionDelivery,
       text,

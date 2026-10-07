@@ -721,19 +721,30 @@ describe('Codex native id discovered after carry binding deadline (EI-2534455650
       }));
       expect(reportedIds).toEqual([]);
       resolvedNativeId = nativeId;
-      const delivered = await injectIntoHost(socketPathFor(ownerId), {
+      const accepted = await injectIntoHost(socketPathFor(ownerId), {
         mode: 'turn', data: 'later wake', ownerId,
       });
+      // Socket acceptance precedes the gated pipeline's terminal outcome.
+      expect(accepted).toBe(true);
+      const settledDeadline = Date.now() + 2000;
+      let confirmation: Array<Record<string, unknown>> = [];
+      while (Date.now() < settledDeadline) {
+        confirmation = readFileSync(eventLogPathForOwner(ownerId), 'utf8')
+          .trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
+        if (confirmation.some(event => event.nativeId === nativeId &&
+          event.kind === (mappingConfirmed ? 'respawn-binding-confirmed' : 'respawn-binding-unconfirmed'))) break;
+        await sleep(20);
+      }
       expect(reportedIds).toEqual([nativeId]);
-      expect(delivered).toBe(mappingConfirmed);
       if (mappingConfirmed) {
         expect(await waitForOutput(captured, 'INPUT:later wake')).toBe(true);
-        const confirmation = readFileSync(eventLogPathForOwner(ownerId), 'utf8')
-          .trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
         expect(confirmation).toContainEqual(expect.objectContaining({
           kind: 'respawn-binding-confirmed', nativeId,
         }));
       } else {
+        expect(confirmation).toContainEqual(expect.objectContaining({
+          kind: 'respawn-binding-unconfirmed', nativeId, reason: 'successor-reanchor-unconfirmed',
+        }));
         expect(captured()).not.toContain('later wake');
       }
     } finally {

@@ -105,6 +105,7 @@ export default defineConfig({
       title: 'Papercusp Docs',
       description: 'Public documentation for the Papercusp platform.',
       pagefind: true,
+      components: { Search: './src/components/Search.astro' },
       customCss: ['./src/styles/blue-frost.css'],
       // The canonical repo lives under the `Papercusp` GitHub Organization —
       // `papercupai` is the maintainer's personal GitHub User login, not an

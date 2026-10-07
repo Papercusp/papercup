@@ -32,9 +32,13 @@ describe('public docs handler routing and isolation', () => {
     const ctx = { role, harnessSlug: 'private-project' } as never;
     expect(search.agentRoles).toContain(role);
     expect(get.agentRoles).toContain(role);
-    const found = payload(await search.handler({ query: 'browser' } as never, ctx));
+    const searchResult = await search.handler({ query: 'browser' } as never, ctx);
+    const found = payload(searchResult);
+    expect('structuredContent' in searchResult ? searchResult.structuredContent : undefined).toEqual(found);
     expect(found).toMatchObject({ surface: 'public', hits: [expect.objectContaining({ slug: 'faq' })] });
-    const page = payload(await get.handler({ slugs: ['faq'] } as never, ctx));
+    const getResult = await get.handler({ slugs: ['faq'] } as never, ctx);
+    const page = payload(getResult);
+    expect('structuredContent' in getResult ? getResult.structuredContent : undefined).toEqual(page);
     expect(JSON.stringify(page)).toContain('Remote browser work continues');
     for (const harness of ['private-project', 'engineering', 'all']) {
       expect(payload(await search.handler({ query: 'browser', harness } as never, ctx))).toMatchObject({ error: 'public_scope_conflict' });

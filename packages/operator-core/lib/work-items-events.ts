@@ -35,6 +35,7 @@ import {
   blockingEdgeReader,
   ISSUE_TERMINAL_STATUSES,
   readSettleEdges,
+  reconcileClearedDependencyBlockedState,
   type BlockingEdgeReader,
   type SettleEdges,
 } from './work-item-blocking';
@@ -66,6 +67,7 @@ import type { InjectEvent } from './agent-tools/coordination/fanout-delivery';
 import type { BatchResolveItem } from './agent-tools/coordination/escalations';
 import { parseAgenticPlanExecutionTarget, type AgenticPlanExecutionTarget } from './agentic-plan-execution-target';
 import { trackDetached } from './detached-imports';
+import { activeExternalBlockers } from './external-blockers';
 import type { assignAndWakeActionableWorkItems } from './agent-tools/coordination/actionable-work-item-dispatch';
 
 /**
@@ -639,6 +641,12 @@ export interface SettledEventsDeps {
   reconcileCriticalWorkItemAlert?: (wi: WorkItem) => Promise<void>;
   /** Stable-agent successor dispatch; production resolves the shared composite lazily. */
   dispatchActionable?: typeof assignAndWakeActionableWorkItems;
+  restoreBlockedDependent?: (item: WorkItem, clearedById: string) => Promise<WorkItem | null>;
+}
+
+async function defaultRestoreBlockedDependent(item: WorkItem, clearedById: string): Promise<WorkItem | null> {
+  const outcome = await reconcileClearedDependencyBlockedState(item, clearedById);
+  return outcome === 'cleared' ? getWorkItem(item.id, item.harness ?? undefined) : item;
 }
 
 /** The terminal work-item row carries this token until its matching done fire
@@ -798,6 +806,8 @@ async function emitUnblockedForClearedEdges(
   listInMany: BlockingEdgeReader['listInMany'],
   dispatchActionable: typeof assignAndWakeActionableWorkItems,
   duplicateAdmissionCheck?: DuplicateAdmissionCheck,
+  restoreBlockedDependent = defaultRestoreBlockedDependent,
+  unresolvedDependencyCheck = defaultUnresolvedDependencyCheck,
 ): Promise<void> {
   // Dedup dsts — a duplicate src→dst edge must not double-emit for one dependent.
   const dsts = [...new Map(dstRefs.map((r) => [refKey(r), r])).values()];
@@ -836,7 +846,7 @@ async function emitUnblockedForClearedEdges(
   };
 
   for (const dstRef of dsts) {
-    const dependent = itemFor(dstRef);
+    let dependent = itemFor(dstRef);
     if (!dependent || isSettledWorkItem(dependent)) continue;
 
     const stillBlocked = (edgesByDst.get(refKey(dstRef)) ?? []).some((be) => {
@@ -846,6 +856,15 @@ async function emitUnblockedForClearedEdges(
       return Boolean(blocker && !isSettledWorkItem(blocker)); // still genuinely blocked
     });
     if (stillBlocked) continue;
+
+    if (dependent.state === 'blocked') {
+      dependent = await restoreBlockedDependent(dependent, clearedById);
+      if (!dependent || dependent.state === 'blocked' || isSettledWorkItem(dependent)) continue;
+    }
+    if (activeExternalBlockers(dependent.payload).length > 0) continue;
+    // The edge snapshot above is only a fast precheck. The canonical floor also
+    // distinguishes successful completion from abandonment on success-only edges.
+    if (await unresolvedDependencyCheck(dependent)) continue;
 
     const execution = dependent.assignee ? null : planRunExecutionTarget(dependent.payload);
     let dispatchFailure: unknown = null;
@@ -1041,7 +1060,7 @@ export async function emitUnblockedOnEdgeRemoved(
   clearedById: string,
   deps: Pick<
     SettledEventsDeps,
-    'emit' | 'getItem' | 'listIn' | 'listInMany' | 'dispatchActionable' | 'duplicateAdmissionCheck'
+    'emit' | 'getItem' | 'listIn' | 'listInMany' | 'dispatchActionable' | 'duplicateAdmissionCheck' | 'restoreBlockedDependent' | 'unresolvedDependencyCheck'
   > = {},
 ): Promise<void> {
   const emit = deps.emit ?? emitAwaitedEvent;
@@ -1055,6 +1074,8 @@ export async function emitUnblockedOnEdgeRemoved(
       resolveListInMany(deps),
       deps.dispatchActionable ?? defaultDispatchActionable,
       deps.duplicateAdmissionCheck,
+      deps.restoreBlockedDependent,
+      deps.unresolvedDependencyCheck,
     );
   } catch (e) {
     failSoft(`unlink-unblocked-event for ${clearedById}`, e);
@@ -1283,6 +1304,8 @@ export async function emitWorkItemSettledEvents(wi: WorkItem, deps: SettledEvent
       listInMany,
       deps.dispatchActionable ?? defaultDispatchActionable,
       deps.duplicateAdmissionCheck,
+      deps.restoreBlockedDependent,
+      deps.unresolvedDependencyCheck,
     );
   } catch (e) {
     failSoft(`settled unblocked-loop for ${wi.id}`, e);
