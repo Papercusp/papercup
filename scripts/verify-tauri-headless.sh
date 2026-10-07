@@ -1092,11 +1092,122 @@ reserve_verifier_disk() {
   fi
 }
 
+verify_operator_source_lock_census() {
+  local phase="${1:-snapshot}"
+  local workspace="${PAPERCUSP_WORKSPACE_ID:-${PAPERCUSP_WORKSPACE:-}}"
+  local coordination_domain query_args lock_json blocking_rows census_status=0
+  local projection='{"pick":["active_locks[].path","active_locks[].owner","active_locks[].intent","active_locks[].lock_id"]}'
+  local -a ptool_scope=()
+
+  [ -n "$workspace" ] || {
+    echo "FATAL: cannot verify verifier source locks without PAPERCUSP_WORKSPACE_ID or PAPERCUSP_WORKSPACE" >&2
+    return 1
+  }
+  command -v ptool >/dev/null 2>&1 || {
+    echo "FATAL: ptool is required for the verifier source lock census" >&2
+    return 1
+  }
+  coordination_domain="$(cd "$REPO_DIR" && pwd -P)" || {
+    echo "FATAL: could not resolve the verifier source lock domain: $REPO_DIR" >&2
+    return 1
+  }
+  query_args="$(node -e 'process.stdout.write(JSON.stringify({
+    coordination_domain: process.argv[1],
+    paths: [
+      "apps/operator",
+      "packages",
+      "libs",
+      "scripts",
+      "package.json",
+      "package-lock.json",
+      "pnpm-lock.yaml",
+      "pnpm-workspace.yaml",
+      "tsconfig.json",
+    ],
+  }))' "$coordination_domain")" || {
+    echo "FATAL: could not build the verifier source lock query" >&2
+    return 1
+  }
+  ptool_scope=(--workspace="$workspace")
+  lock_json="$(printf '%s' "$query_args" | ptool "${ptool_scope[@]}" locks:queue --json - --projection "$projection")" || {
+    echo "FATAL: could not read the live verifier source lock census with locks:queue ($phase)" >&2
+    return 1
+  }
+  if blocking_rows="$(printf '%s' "$lock_json" | node -e '
+    let raw = "";
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (chunk) => { raw += chunk; });
+    process.stdin.on("end", () => {
+      let payload;
+      try {
+        payload = JSON.parse(raw);
+      } catch {
+        console.error("locks:queue returned invalid JSON");
+        process.exit(2);
+        return;
+      }
+      if (
+        !payload ||
+        payload.ok === false ||
+        payload._partial === true ||
+        payload._projection?.truncated === true ||
+        !Array.isArray(payload.active_locks)
+      ) {
+        console.error("locks:queue returned an incomplete or unrecognized census");
+        process.exit(2);
+        return;
+      }
+      const relevant = payload.active_locks.filter((row) => {
+        if (!row || typeof row.path !== "string" || !row.path.trim()) return true;
+        const file = row.path.replaceAll("\\", "/");
+        const inSourceRoot =
+          /^(?:apps\/operator|packages|libs|scripts)\//.test(file) ||
+          /^(?:package\.json|package-lock\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|tsconfig\.json)$/.test(file);
+        const sourceFile = /\.(?:[cm]?[jt]sx?|jsonc?|ya?ml|sh)$/i.test(file);
+        const testOnly =
+          /(?:^|\/)(?:__tests__|tests?|fixtures?)(?:\/|$)/i.test(file) ||
+          /\.(?:test|spec)\.[cm]?[jt]sx?$/i.test(file);
+        const generated = /(?:^|\/)(?:node_modules|dist|build|coverage|\.papercusp)(?:\/|$)/i.test(file);
+        return inSourceRoot && sourceFile && !testOnly && !generated;
+      });
+      if (relevant.length > 0) {
+        for (const row of relevant) {
+          const parts = [
+            row.path,
+            "owner=" + (row.owner || "unknown"),
+            "lock_id=" + (row.lock_id || "unknown"),
+            "intent=" + (row.intent || "unspecified"),
+          ];
+          process.stdout.write(parts.join(" ") + "\n");
+        }
+        process.exitCode = 1;
+      }
+    });
+  ' 2>&1)"; then
+    census_status=0
+  else
+    census_status=$?
+  fi
+  if [ "$census_status" -eq 2 ]; then
+    echo "FATAL: locks:queue did not provide a complete verifier source lock census ($phase)" >&2
+    [ -z "$blocking_rows" ] || printf '%s\n' "$blocking_rows" >&2
+    return 1
+  fi
+  if [ "$census_status" -ne 0 ]; then
+    echo "FATAL: verifier source snapshot overlaps active source-file locks ($phase):" >&2
+    printf '%s\n' "$blocking_rows" | sed 's/^/  /' >&2
+    echo "Let those edits finish, then rerun the verifier." >&2
+    return 1
+  fi
+  log "verified no active source-file locks in the verifier inputs ($phase)"
+}
+
 snapshot_operator_source() {
   local snapshot_root
   local source_bytes
   local pinned_deps_lib="$DESKTOP_DIR/bin/lib/pinned-deps.sh"
   local pinned_deps_copy="$WORK/pinned-deps.sh"
+  verify_operator_source_lock_census "before copy" || return 1
   command -v rsync >/dev/null 2>&1 || {
     echo "FATAL: rsync is required to snapshot the isolated verifier operator source" >&2
     return 1
@@ -1143,6 +1254,7 @@ snapshot_operator_source() {
     echo "FATAL: could not copy an independent verifier operator source snapshot (rsync exit $snapshot_rc)" >&2
     return 1
   fi
+  verify_operator_source_lock_census "after copy" || return 1
   cp -- "$pinned_deps_lib" "$pinned_deps_copy" || return 1
   # shellcheck source=/dev/null
   . "$pinned_deps_copy" || return 1
@@ -1202,7 +1314,39 @@ build_verifier_operator_host() {
   }
   log "frozen plain-node operator host ready at $OPERATOR_HOST_BUNDLE"
 }
+
+smoke_verifier_operator_host() {
+  local timeout_sec="${1:-15}"
+  local smoke_output="" smoke_rc=0
+  case "$timeout_sec" in
+    ''|*[!0-9]*)
+      echo "FATAL: verifier host import smoke timeout must be a positive integer" >&2
+      return 1
+      ;;
+  esac
+  [ "$timeout_sec" -gt 0 ] || {
+    echo "FATAL: verifier host import smoke timeout must be a positive integer" >&2
+    return 1
+  }
+  smoke_output="$(timeout --signal=TERM --kill-after=1s "${timeout_sec}s" \
+    node "$OPERATOR_HOST_BUNDLE" --papercusp-import-smoke 2>&1)" || smoke_rc=$?
+  if [ "$smoke_rc" -ne 0 ]; then
+    echo "FATAL: frozen verifier operator host import smoke failed before Tauri startup (exit $smoke_rc)" >&2
+    [ -z "$smoke_output" ] || printf '%s\n' "$smoke_output" >&2
+    return 1
+  fi
+  case "$smoke_output" in
+    *PAPERCUSP_HOST_IMPORT_SMOKE_OK*) ;;
+    *)
+      echo "FATAL: frozen verifier operator host import smoke returned without its success marker" >&2
+      [ -z "$smoke_output" ] || printf '%s\n' "$smoke_output" >&2
+      return 1
+      ;;
+  esac
+  log "frozen plain-node operator host import smoke passed"
+}
 build_verifier_operator_host || { cleanup_operator_source_snapshot; exit 1; }
+smoke_verifier_operator_host || { cleanup_operator_source_snapshot; exit 1; }
 
 ASSERTION_INPUT_MANIFEST=""
 ASSERTION_INPUT_COUNT=0
