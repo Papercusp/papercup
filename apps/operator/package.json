@@ -83,7 +83,7 @@
     "@google/genai": "^1.52.0",
     "@hono/node-server": "^2.0.3",
     "@hookform/resolvers": "^5.2.2",
-    "@huggingface/transformers": "^4.2.0",
+    "@huggingface/transformers": "4.2.0",
     "@inquirer/core": "^11.1.9",
     "@inquirer/prompts": "^8.4.2",
     "@jitsi/rnnoise-wasm": "^0.2.1",
