@@ -5,12 +5,13 @@
   "accountableOwner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
   "population": {
     "failedFiles": 124,
-    "repairedFocused": 21,
+    "repairedFocused": 22,
     "repairedPeerFocused": 15,
-    "openUnknown": 88
+    "openUnknown": 87
   },
   "classes": {
     "assertion": 55,
+    "peer-scale-rekey-fixture": 1,
     "transcript-search-disclosure-fixture": 1,
     "peer-blueprint-inherited-providers": 3,
     "lock-ownership-expectation": 1,
@@ -19,7 +20,7 @@
     "missing-schema": 16,
     "blueprint-fixture": 1,
     "console-guard": 10,
-    "unclassified": 8,
+    "unclassified": 7,
     "plan-pot-fixture": 1,
     "plan-observation-fixture": 1,
     "gym-run-identity-schema": 1,
@@ -1673,12 +1674,20 @@
     },
     {
       "path": "packages/operator-core/lib/sync/hyperbee/__tests__/cross-peer-coordination-scale.integration.test.ts",
-      "class": "unclassified",
-      "state": "open-unknown",
-      "item": "WI-10006170",
+      "class": "peer-scale-rekey-fixture",
+      "state": "repaired-focused",
+      "item": "WI-10007145",
       "lines": [
         15911
-      ]
+      ],
+      "diagnosis": "The scale fixture leaves orgSqlHolder.sql undefined until after peer boot, but default-ON rekey composition reads the Hive registry during boot. The companion coordination suite already explicitly selects the rekey OFF fixture path. Reusing that setting restores the original five-peer cascade; real composition controls prove OFF avoids SQL and ON still fails closed with missing SQL.",
+      "beforeTestRun": 20897261,
+      "afterTestRun": 20897692,
+      "passed": 3,
+      "skipped": 0,
+      "testSha256": "043fb16485530bb0762e57bc2476364ae091722ae2a887d6666ace10e935b5de",
+      "receiptTestBlob": "895739473552963be5c80fb3dd22c6a762e813c1",
+      "receiptScope": "Local working-tree staging PASS3/0skip, source local, workspace papercusp-workspace, harness papercusp, runGroupId null, scratch false, tested HEAD e49f87c2ba56eb4ee82b257b3c8362918969ac69. Baseline reproduced original failure but its runner observed HEAD movement; complete import/environment assurance and final D006 remain unverified."
     },
     {
       "path": "packages/operator-core/lib/harness/routines/plan-run-cost.integration.test.ts",
@@ -2568,6 +2577,17 @@
       "rootCause": "The manual transcript fixture omitted the mandatory personal_disclosures relation. Reusing applyDisclosureLedgerForTest restores the migrated ledger without weakening production restrictedTurnSql. Missing/restored-ledger and active-window exact/fuzzy controls pass with all six original route regressions.",
       "testRunIds": [20896905, 20897234],
       "next": "Retain focused local PASS8/0skip evidence. Full import/environment and final D006 remain unverified; do not replay terminal completion or monitor source settlement."
+    },
+    {
+      "class": "peer-scale-rekey-fixture",
+      "count": 1,
+      "status": "repaired-focused",
+      "item": "WI-10007145",
+      "owner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
+      "scope": "named-five-peer-scale-integration-fixture-only",
+      "rootCause": "Missing coordination-only rekey fixture setting makes default-ON Hive dependency composition read the uninitialized authority SQL holder before peer setup. Reuse the existing companion suite setting. Conventional real-composition OFF/no-SQL and ON/fail-closed controls pass with the original real five-swarm failover/election/claim cascade; production fail-closed code is unchanged.",
+      "testRunIds": [20897261, 20897692],
+      "next": "Retain focused local PASS3/0skip evidence. Full import/environment and final D006 remain unverified; no terminal replay or settlement babysitting."
     }
   ],
   "prerequisites": [

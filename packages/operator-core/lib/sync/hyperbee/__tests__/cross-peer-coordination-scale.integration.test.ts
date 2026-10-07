@@ -9,8 +9,10 @@
  * process). Own file = fresh vitest worker = clean process state. Rig + proof
  * boundary: _cross-peer-rig.ts.
  */
-import { afterEach, describe, it, expect, vi } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import {
+  WORKSPACE_ID,
+  HARNESS_SLUG,
   HIVE_SLUG,
   WORK_ITEM_CLAIMS_DDL,
   cleanups,
@@ -29,6 +31,9 @@ import { setPeerRpcTransport, __resetPeerRpcTransportForTests } from '../../../a
 import { HttpPeerRpcTransport } from '../../../authority/http-peer-rpc-transport';
 import { __resetAuthorityOpsForTests } from '../../../authority/authority-op-registry';
 import { registerWorkItemClaimAuthorityOps } from '../../../work-item-claim-authority-ops';
+import { buildHiveRekeyBootDeps } from '../hive-epoch-boot-deps';
+
+const rekeyFixture = vi.hoisted(() => ({ enabled: false }));
 
 // getOrgPg → the CURRENT epoch's authority store, via the rig's holder.
 vi.mock('@papercusp/db-org', async (orig) => {
@@ -37,7 +42,39 @@ vi.mock('@papercusp/db-org', async (orig) => {
   return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: orgSqlHolder.sql }) };
 });
 
+// Match the companion coordination suite: this rig exercises presence, election
+// and claims without the Hive registry/keychain needed for rekey composition.
+// Keep other flag reads real and production's enabled-rekey fail-closed path intact.
+vi.mock('@papercusp/flags/server', async () => {
+  const actual = await vi.importActual<typeof import('@papercusp/flags/server')>('@papercusp/flags/server');
+  return {
+    ...actual,
+    getFlag: async (key: unknown, scope?: unknown) =>
+      key === 'papercusp-hive-rekey'
+        ? rekeyFixture.enabled
+        : (actual.getFlag as (k: unknown, s?: unknown) => Promise<boolean>)(key, scope),
+  };
+});
+
+beforeEach(() => {
+  rekeyFixture.enabled = false;
+  orgSqlHolder.sql = undefined as unknown as typeof orgSqlHolder.sql;
+});
 afterEach(rigAfterEach);
+
+describe('cross-peer scale boot fixture boundary', () => {
+  it('boots the coordination-only off-path before the authority SQL holder exists', async () => {
+    expect(orgSqlHolder.sql).toBeUndefined();
+    await expect(buildHiveRekeyBootDeps({ workspaceId: WORKSPACE_ID, harnessSlug: HARNESS_SLUG })).resolves.toBeNull();
+  });
+
+  it('still fails closed when rekey is enabled without its SQL dependency', async () => {
+    rekeyFixture.enabled = true;
+    await expect(buildHiveRekeyBootDeps({ workspaceId: WORKSPACE_ID, harnessSlug: HARNESS_SLUG })).rejects.toThrow(
+      /failed closed \(compose confirmed Hive dependencies\): sql is not a function/,
+    );
+  });
+});
 
 describe('cross-peer coordination on a shared Hive — FIVE-Swarm cascading failover (scale)', () => {
   it(
@@ -139,4 +176,3 @@ describe('cross-peer coordination on a shared Hive — FIVE-Swarm cascading fail
     150_000,
   );
 });
-
