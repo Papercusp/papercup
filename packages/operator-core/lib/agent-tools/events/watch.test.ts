@@ -89,6 +89,17 @@ vi.mock('../../events/await/predicate-watch', () => ({
   registerPredicateWatch: vi.fn(async (i: Record<string, unknown>) => ({ ...i, intervalSec: i.intervalSec ?? 60, lastEval: null, active: true })),
   startPredicateWatchPoller: vi.fn(),
   evalPredicateWatch: vi.fn(async () => ({ fired: false, matched: false, deactivated: false })),
+  resolvePredicateToolEffect: (projected: { effect?: unknown; effectForCall?: (args: unknown) => unknown }, args: unknown) => {
+    if (projected.effectForCall) {
+      try {
+        const effect = projected.effectForCall(args);
+        return effect === 'read' || effect === 'write' ? effect : 'unknown';
+      } catch {
+        return 'unknown';
+      }
+    }
+    return projected.effect === 'read' || projected.effect === 'write' ? projected.effect : 'unknown';
+  },
   // P-004 dedup: default no match — the individual dedup tests below override this.
   findMatchingActivePredicateWatch: vi.fn(async () => null),
 }));
@@ -373,6 +384,37 @@ describe('P-008 predicate watch routing', () => {
   it('a non-read tool is refused before anything registers', async () => {
     vi.mocked(lookupByMcpName).mockReturnValue({ effect: 'write' } as never);
     await expect(call({ pattern: 'backlog', wake: true, predicate })).rejects.toThrow(/read-only/);
+    expect(registerAwait).not.toHaveBeenCalled();
+    expect(registerPredicateWatch).not.toHaveBeenCalled();
+  });
+
+  it('allows an argument-classified read call on a tool whose default effect is write', async () => {
+    const effectForCall = vi.fn((args: unknown) => (args as { op?: string }).op === 'get' ? 'read' : 'write');
+    vi.mocked(lookupByMcpName).mockReturnValue({ effect: 'write', effectForCall } as never);
+    const readArgs = { op: 'get' };
+    const predicate = {
+      tool: 'release:repair-queue',
+      args: readArgs,
+      path: 'repairQueue.admissionPrecheck.status',
+      op: 'ne',
+      value: 'running',
+    };
+
+    await call({ pattern: 'repair queue precheck', wake: true, predicate });
+
+    expect(effectForCall).toHaveBeenCalledWith(readArgs);
+    expect(registerPredicateWatch).toHaveBeenCalledWith(expect.objectContaining({ tool: 'release:repair-queue', args: readArgs }));
+  });
+
+  it('still refuses an argument-classified write call before anything registers', async () => {
+    const effectForCall = vi.fn((args: unknown) => (args as { confirm?: boolean }).confirm ? 'write' : 'read');
+    vi.mocked(lookupByMcpName).mockReturnValue({ effect: 'write', effectForCall } as never);
+    const writeArgs = { op: 'admit', confirm: true };
+    const writePredicate = { ...predicate, tool: 'release:repair-queue', args: writeArgs };
+
+    await expect(call({ pattern: 'repair queue admission', wake: true, predicate: writePredicate })).rejects.toThrow(/effect=write/);
+
+    expect(effectForCall).toHaveBeenCalledWith(writeArgs);
     expect(registerAwait).not.toHaveBeenCalled();
     expect(registerPredicateWatch).not.toHaveBeenCalled();
   });

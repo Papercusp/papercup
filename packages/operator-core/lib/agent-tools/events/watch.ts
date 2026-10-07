@@ -37,6 +37,7 @@ import {
   startPredicateWatchPoller,
   evalPredicateWatch,
   findMatchingActivePredicateWatch,
+  resolvePredicateToolEffect,
 } from '../../events/await/predicate-watch';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { resolvePotHomeSlug } from '../../pot/wake';
@@ -489,9 +490,10 @@ export default defineTool({
       if (!projected) {
         throw new Error(`watch:create — predicate.tool "${p.tool}" is not a known tool (use the mcp name, e.g. "work_items:list").`);
       }
-      if (projected.effect !== 'read') {
+      const effect = resolvePredicateToolEffect(projected, p.args ?? {});
+      if (effect !== 'read') {
         throw new Error(
-          `watch:create — predicate.tool "${p.tool}" is not read-only (effect=${projected.effect ?? 'unset'}); a predicate poll may only observe, never mutate.`,
+          `watch:create — predicate.tool "${p.tool}" is not read-only (effect=${effect}); a predicate poll may only observe, never mutate.`,
         );
       }
       startPredicateWatchPoller();

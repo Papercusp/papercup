@@ -31,7 +31,7 @@
 import { getOrgPg, withWorkspace } from '@papercusp/db-org';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
-import { lookupByMcpName, dispatchProjectedTool, type UnifiedToolContext } from '@papercusp/agent-mcp';
+import { lookupByMcpName, dispatchProjectedTool, type ProjectedTool, type UnifiedToolContext } from '@papercusp/agent-mcp';
 import { PROJECTED_DEPS } from '../../projected-tool-deps';
 import { emitAwaitedEvent } from './engine';
 import { listCellsUnchecked, canReadCell } from '../../cell-registry';
@@ -724,6 +724,25 @@ export interface ReadOnlyDispatchEnv {
   callerContext?: UnifiedToolContext;
 }
 
+/** Resolve the effect of a predicate call without weakening the read-only boundary.
+ * Argument-sensitive tools may advertise a broad write effect while exposing a
+ * read-only operation for specific args. If their classifier is missing, invalid,
+ * or throws, fail closed rather than trusting the static effect. */
+export function resolvePredicateToolEffect(
+  projected: Pick<ProjectedTool, 'effect' | 'effectForCall'>,
+  args: Record<string, unknown>,
+): 'read' | 'write' | 'unknown' {
+  if (projected.effectForCall) {
+    try {
+      const effect = projected.effectForCall(args);
+      return effect === 'read' || effect === 'write' ? effect : 'unknown';
+    } catch {
+      return 'unknown';
+    }
+  }
+  return projected.effect === 'read' || projected.effect === 'write' ? projected.effect : 'unknown';
+}
+
 /**
  * ONE dispatch of a READ-ONLY projected tool under a caller's role envelope.
  *
@@ -757,10 +776,11 @@ export async function dispatchReadOnlyTool(
 ): Promise<unknown> {
   const projected = lookupByMcpName(tool);
   if (!projected) throw new ReadOnlyDispatchError('unknown_tool', `unknown tool "${tool}"`);
-  if (projected.effect !== 'read') {
+  const effect = resolvePredicateToolEffect(projected, args);
+  if (effect !== 'read') {
     throw new ReadOnlyDispatchError(
       'not_read_only',
-      `tool "${tool}" is not read-only (effect=${projected.effect ?? 'unset'})`,
+      `tool "${tool}" is not read-only (effect=${effect})`,
     );
   }
   const caller = env.callerContext;
