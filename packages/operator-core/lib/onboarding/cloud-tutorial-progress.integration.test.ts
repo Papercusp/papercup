@@ -12,7 +12,9 @@ import { HOSTED_BROWSER_TUTORIAL_PROGRESS_PATH, createHostedTutorialProgressRout
 import { tenantContext } from '../endpoint-route/hosted-browser-context';
 import { saveHostedUserPreferences } from '../auth/hosted/governance';
 import { createTutorialState, confirmedTutorialSteps } from './cloud-tutorial-lesson';
-import { readTutorialProgress, updateTutorialProgress, TutorialProgressConflict, type TutorialProgressUpdate } from './cloud-tutorial-progress';
+import { readTutorialProgress, updateTutorialProgress, TutorialProgressConflict, type TutorialProgressUpdate,
+  enrollAccountTutorial, readAccountTutorialProgress, updateAccountTutorialProgress,
+  AccountTutorialProgressConflict, type AccountTutorialProgressUpdate } from './cloud-tutorial-progress';
 
 const ORIGIN = 'https://app.papercusp.com';
 const tenantA = randomUUID(), tenantB = randomUUID(), userA = randomUUID(), userB = randomUUID();
@@ -45,6 +47,55 @@ describe('hosted tutorial progress through real Postgres and composed browser ro
     const p = principal({ userId: selected.userId, activeOrganizationId: selected.tenantId, selectedWorkspaceId: selected.workspaceId });
     return runTenant(tenantContext(p), fn);
   }
+  async function withAccount<T>(selected: { tenantId: string; userId: string }, fn: (tx: Sql) => Promise<T>): Promise<T> {
+    return await db.adminSql.begin(async tx => {
+      await tx.unsafe('SET LOCAL ROLE hosted_app');
+      await tx`SELECT set_config('app.organization_id', ${selected.tenantId}, true),
+        set_config('app.user_id', ${selected.userId}, true), set_config('app.workspace_id', '', true)`;
+      return fn(tx as unknown as Sql);
+    }) as T;
+  }
+  it('enrolls account orientation without a workspace and keeps replay from resetting completed progress', async () => {
+    const account = { tenantId: tenantA, userId: randomUUID() };
+    expect(await withAccount(account, tx => readAccountTutorialProgress(tx, account))).toBeNull();
+    await withAccount(account, tx => enrollAccountTutorial(tx, account));
+    const patch: AccountTutorialProgressUpdate = { expectedScope: account, expectedRevision: 0, mutationId: randomUUID(),
+      version: 3, disposition: 'closed', currentLessonId: 'billing', reviewedLessonIds: ['welcome', 'billing'] };
+    const saved = await withAccount(account, tx => updateAccountTutorialProgress(tx, account, patch));
+    await withAccount(account, tx => enrollAccountTutorial(tx, account));
+    expect(await withAccount(account, tx => readAccountTutorialProgress(tx, account))).toEqual(saved);
+    expect(await withAccount(account, tx => updateAccountTutorialProgress(tx, account, patch))).toEqual(saved);
+    await expect(withAccount(account, tx => updateAccountTutorialProgress(tx, account, { ...patch, disposition: 'active' }))).rejects.toThrow('tutorial_mutation_reused');
+    await withAccount(account, tx => saveHostedUserPreferences({ organizationId: account.tenantId, userId: account.userId, locale: 'en-US', timeZone: 'UTC', profile: { displayName: 'Updated' } }, tx));
+    expect(await withAccount(account, tx => readAccountTutorialProgress(tx, account))).toEqual(saved);
+  });
+  it('isolates account orientation and rejects forged scope or client enrollment', async () => {
+    const account = { tenantId: tenantA, userId: randomUUID() };
+    const patch: AccountTutorialProgressUpdate = { expectedScope: account, expectedRevision: 0, mutationId: randomUUID(),
+      version: 3, disposition: 'active', currentLessonId: 'welcome', reviewedLessonIds: [] };
+    await expect(withAccount(account, tx => updateAccountTutorialProgress(tx, account, patch))).rejects.toThrow('tutorial_not_enrolled');
+    await withAccount(account, tx => enrollAccountTutorial(tx, account));
+    for (const other of [{ ...account, tenantId: tenantB }, { ...account, userId: randomUUID() }]) {
+      expect(await withAccount(other, tx => readAccountTutorialProgress(tx, other))).toBeNull();
+      await expect(withAccount(account, tx => readAccountTutorialProgress(tx, other))).rejects.toThrow('tutorial_scope_mismatch');
+      await expect(withAccount(account, tx => updateAccountTutorialProgress(tx, account, { ...patch, expectedScope: other }))).rejects.toThrow('tutorial_scope_changed');
+    }
+  });
+  it('serializes account tabs without changing workspace-scoped Cloud receipts', async () => {
+    const account = { tenantId: tenantA, userId: randomUUID() };
+    await withAccount(account, tx => enrollAccountTutorial(tx, account));
+    const patch: AccountTutorialProgressUpdate = { expectedScope: account, expectedRevision: 0, mutationId: randomUUID(),
+      version: 3, disposition: 'paused', currentLessonId: 'navigation', reviewedLessonIds: ['welcome'] };
+    const cloudScope = { ...account, workspaceId: 'account-cloud-workspace' };
+    const cloud = await withScope(cloudScope, tx => updateTutorialProgress(tx, cloudScope, change({}, cloudScope)));
+    const results = await Promise.allSettled([
+      withAccount(account, tx => updateAccountTutorialProgress(tx, account, patch)),
+      withAccount(account, tx => updateAccountTutorialProgress(tx, account, { ...patch, mutationId: randomUUID(), disposition: 'skipped' })),
+    ]);
+    expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1);
+    expect((results.find(result => result.status === 'rejected') as PromiseRejectedResult).reason).toBeInstanceOf(AccountTutorialProgressConflict);
+    expect(await withScope(cloudScope, tx => readTutorialProgress(tx, cloudScope))).toEqual(cloud);
+  });
   function context(p: HostedPrincipal | undefined = principal()): RouteContext {
     return { principal: p, input: undefined, params: {}, log: () => {}, signal: new AbortController().signal };
   }

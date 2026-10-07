@@ -91,3 +91,95 @@ export async function updateTutorialProgress(tx: Sql, scope: TutorialScope, inpu
     WHERE organization_id = ${scope.tenantId}::uuid AND user_id = ${scope.userId}::uuid`;
   return next;
 }
+
+/** Orientation is account/organization scoped. It reuses the preference row
+ * and its lock; Cloud task receipts keep their existing workspace scope. */
+export const PRODUCT_TUTORIAL_VERSION = 3;
+export interface AccountTutorialScope { tenantId: string; userId: string }
+const accountScopeSchema = z.object({ tenantId: z.string().min(1).max(256), userId: z.string().min(1).max(256) }).strict();
+const lessonKey = z.string().min(1).max(120).regex(/^[a-z0-9-]+$/);
+export const accountTutorialProgressUpdateSchema = z.object({
+  expectedScope: accountScopeSchema,
+  expectedRevision: z.number().int().nonnegative().safe(),
+  mutationId: z.string().min(1).max(120).regex(/^[a-zA-Z0-9._:-]+$/),
+  version: z.literal(PRODUCT_TUTORIAL_VERSION),
+  disposition: tutorialProgressUpdateSchema.shape.disposition,
+  currentLessonId: lessonKey,
+  // These are explanations reviewed, never domain work completed.
+  reviewedLessonIds: z.array(lessonKey).max(100).refine(ids => new Set(ids).size === ids.length),
+}).strict();
+export type AccountTutorialProgressUpdate = z.infer<typeof accountTutorialProgressUpdateSchema>;
+export interface AccountTutorialProgressRecord {
+  scope: AccountTutorialScope; version: typeof PRODUCT_TUTORIAL_VERSION;
+  revision: number; mutationId: string | null;
+  disposition: AccountTutorialProgressUpdate['disposition'];
+  currentLessonId: string; reviewedLessonIds: string[];
+}
+export class AccountTutorialProgressConflict extends Error {
+  constructor(readonly current: AccountTutorialProgressRecord) { super('tutorial_progress_conflict'); }
+}
+function decodeAccountProgress(scope: AccountTutorialScope, value: unknown): AccountTutorialProgressRecord | null {
+  if (value == null) return null; // A returning account is not a new signup.
+  const parsed = z.object({
+    scope: z.object({ tenantId: z.literal(scope.tenantId), userId: z.literal(scope.userId) }).strict(),
+    version: z.literal(PRODUCT_TUTORIAL_VERSION), revision: z.number().int().nonnegative().safe(),
+    mutationId: accountTutorialProgressUpdateSchema.shape.mutationId.nullable(),
+    disposition: accountTutorialProgressUpdateSchema.shape.disposition,
+    currentLessonId: lessonKey, reviewedLessonIds: accountTutorialProgressUpdateSchema.shape.reviewedLessonIds,
+  }).strict().safeParse(value);
+  if (!parsed.success) throw new Error('tutorial_progress_invalid');
+  return parsed.data;
+}
+async function assertAccountTransactionScope(tx: Sql, scope: AccountTutorialScope): Promise<void> {
+  const [binding] = await tx<{ organization: string; user: string }[]>`
+    SELECT current_setting('app.organization_id', true) AS organization,
+           current_setting('app.user_id', true) AS "user"`;
+  if (!binding || binding.organization !== scope.tenantId || binding.user !== scope.userId) throw new Error('tutorial_scope_mismatch');
+}
+/** Admission calls this inside the same transaction that creates membership
+ * and session. Replays never overwrite a user's paused/completed orientation. */
+export async function enrollAccountTutorial(tx: Sql, scope: AccountTutorialScope): Promise<void> {
+  accountScopeSchema.parse(scope);
+  const record: AccountTutorialProgressRecord = { scope, version: PRODUCT_TUTORIAL_VERSION,
+    revision: 0, mutationId: null, disposition: 'active', currentLessonId: 'welcome', reviewedLessonIds: [] };
+  const blob = JSON.stringify({ [PRODUCT_TUTORIAL_VERSION]: record });
+  await tx`INSERT INTO papercusp_auth.hosted_user_preferences (organization_id, user_id, profile)
+    VALUES (${scope.tenantId}::uuid, ${scope.userId}::uuid, jsonb_build_object('productTutorial', ${blob}::jsonb))
+    ON CONFLICT (organization_id, user_id) DO UPDATE
+      SET profile = jsonb_set(papercusp_auth.hosted_user_preferences.profile, '{productTutorial}',
+        COALESCE(papercusp_auth.hosted_user_preferences.profile->'productTutorial', '{}'::jsonb) || ${blob}::jsonb), updated_at = now()
+      WHERE papercusp_auth.hosted_user_preferences.profile #> ARRAY['productTutorial', ${String(PRODUCT_TUTORIAL_VERSION)}]::text[] IS NULL`;
+}
+export async function readAccountTutorialProgress(tx: Sql, scope: AccountTutorialScope): Promise<AccountTutorialProgressRecord | null> {
+  await assertAccountTransactionScope(tx, scope);
+  const [row] = await tx<{ record: unknown }[]>`
+    SELECT profile #> ARRAY['productTutorial', ${String(PRODUCT_TUTORIAL_VERSION)}]::text[] AS record
+    FROM papercusp_auth.hosted_user_preferences
+    WHERE organization_id = ${scope.tenantId}::uuid AND user_id = ${scope.userId}::uuid`;
+  return decodeAccountProgress(scope, row?.record);
+}
+export async function updateAccountTutorialProgress(tx: Sql, scope: AccountTutorialScope, input: AccountTutorialProgressUpdate): Promise<AccountTutorialProgressRecord> {
+  const patch = accountTutorialProgressUpdateSchema.parse(input);
+  if (scope.tenantId !== patch.expectedScope.tenantId || scope.userId !== patch.expectedScope.userId) throw new Error('tutorial_scope_changed');
+  await assertAccountTransactionScope(tx, scope);
+  const [row] = await tx<{ record: unknown }[]>`
+    SELECT profile #> ARRAY['productTutorial', ${String(PRODUCT_TUTORIAL_VERSION)}]::text[] AS record
+    FROM papercusp_auth.hosted_user_preferences
+    WHERE organization_id = ${scope.tenantId}::uuid AND user_id = ${scope.userId}::uuid FOR UPDATE`;
+  const current = decodeAccountProgress(scope, row?.record);
+  if (!current) throw new Error('tutorial_not_enrolled');
+  if (current.mutationId === patch.mutationId) {
+    if (current.disposition !== patch.disposition || current.currentLessonId !== patch.currentLessonId ||
+      JSON.stringify(current.reviewedLessonIds) !== JSON.stringify(patch.reviewedLessonIds)) throw new Error('tutorial_mutation_reused');
+    return current;
+  }
+  if (current.revision !== patch.expectedRevision) throw new AccountTutorialProgressConflict(current);
+  if (current.revision >= Number.MAX_SAFE_INTEGER) throw new Error('tutorial_revision_exhausted');
+  const next: AccountTutorialProgressRecord = { scope, version: PRODUCT_TUTORIAL_VERSION,
+    revision: current.revision + 1, mutationId: patch.mutationId, disposition: patch.disposition,
+    currentLessonId: patch.currentLessonId, reviewedLessonIds: patch.reviewedLessonIds };
+  await tx`UPDATE papercusp_auth.hosted_user_preferences
+    SET profile = jsonb_set(profile, ARRAY['productTutorial', ${String(PRODUCT_TUTORIAL_VERSION)}]::text[], ${JSON.stringify(next)}::jsonb), updated_at = now()
+    WHERE organization_id = ${scope.tenantId}::uuid AND user_id = ${scope.userId}::uuid`;
+  return next;
+}
