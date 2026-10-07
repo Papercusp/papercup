@@ -38,6 +38,7 @@ import { posix, relative } from 'node:path';
 import {
   isRecordedCaseTitle,
   MAX_RECORDED_FAILED_CASES,
+  MAX_RECORDED_PASSED_CASES,
   TEST_RUN_EXECUTION_DETAILS_SCHEMA_VERSION,
   type TestRunExecutionDetails,
 } from '@papercusp/test-config/execution-details';
@@ -55,6 +56,7 @@ interface TestRunRow {
   skipped: number;
   /** Exact failing case identities (WI-10006806): what a filed red names as "the failing tests". */
   failedCaseTitles?: string[];
+  passedCaseTitles?: string[];
 }
 
 /**
@@ -104,6 +106,9 @@ export function playwrightExecutionDetails(
     worktreeDirty: row.worktreeDirty,
     ...(row.failedCaseTitles && row.failedCaseTitles.length > 0
       ? { failedCaseTitles: row.failedCaseTitles.slice(0, Math.min(MAX_RECORDED_FAILED_CASES, row.failed)) }
+      : {}),
+    ...(row.passedCaseTitles && row.passedCaseTitles.length > 0
+      ? { passedCaseTitles: row.passedCaseTitles.slice(0, Math.min(MAX_RECORDED_PASSED_CASES, row.passed)) }
       : {}),
   };
 }
@@ -210,6 +215,7 @@ interface PerFile {
   failed: number;
   skipped: number;
   failedTitles: Set<string>;
+  passedTitles: Set<string>;
 }
 
 export default class AdminTestRunsPlaywrightReporter implements Reporter {
@@ -241,6 +247,7 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
         failed: 0,
         skipped: 0,
         failedTitles: new Set<string>(),
+        passedTitles: new Set<string>(),
       };
 
       const endMs = (result.startTime?.getTime() ?? Date.now()) + result.duration;
@@ -252,6 +259,10 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
           existing.passed += 1;
           existing.anyPass = true;
           existing.allSkipped = false;
+          {
+            const title = playwrightCaseTitle(test);
+            if (title && existing.passedTitles.size < MAX_RECORDED_PASSED_CASES) existing.passedTitles.add(title);
+          }
           break;
         case 'failed':
         case 'timedOut':
@@ -318,6 +329,7 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
               failed: agg.failed,
               skipped: agg.skipped,
               failedCaseTitles: [...agg.failedTitles],
+              passedCaseTitles: [...agg.passedTitles],
             }, worktreeAfter, this.runRoot),
           );
         } catch {

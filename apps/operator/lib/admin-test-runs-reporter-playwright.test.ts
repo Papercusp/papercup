@@ -153,7 +153,7 @@ describe('AdminTestRunsPlaywrightReporter worktree provenance', () => {
   });
 
   // WI-10006806: a filed red names its failing tests, so the row must carry the case identities.
-  it('records the failing case identities (not the passing ones) in execution_details', async () => {
+  it('keeps passing and failing case identities separate in execution_details', async () => {
     mocks.captureWorktreeSnapshot.mockReturnValue({ commit: 'sha', porcelain: '' });
     mocks.computeWorktreeDirty.mockReturnValue(false);
     const reporter = new AdminTestRunsPlaywrightReporter();
@@ -173,7 +173,18 @@ describe('AdminTestRunsPlaywrightReporter worktree provenance', () => {
     const stored = mocks.sql.mock.calls[0]!.slice(1).at(-1);
     const parsed = parseTestRunExecutionDetails(stored);
     expect(parsed).toBeDefined();
-    expect(parsed).toMatchObject({ failed: 2, passed: 1, failedCaseTitles: ['panel > closes'] });
+    expect(parsed).toMatchObject({ failed: 2, passed: 1, failedCaseTitles: ['panel > closes'], passedCaseTitles: ['panel > opens'] });
+  });
+  it('persists the normalized successful case once across retries for acceptance checks', async () => {
+    mocks.captureWorktreeSnapshot.mockReturnValue({ commit: 'sha', porcelain: '' });
+    mocks.computeWorktreeDirty.mockReturnValue(false);
+    const reporter = new AdminTestRunsPlaywrightReporter();
+    reporter.onBegin();
+    const kase = { location: { file: '/repo/e2e/example.spec.ts' }, title: 'opens audit', titlePath: () => ['', 'chromium', 'example.spec.ts', 'plans', 'opens audit'] };
+    for (let n = 0; n < 2; n++) reporter.onTestEnd(kase as never, { startTime: new Date(0), duration: 1, status: 'passed', errors: [] } as never);
+    reporter.onEnd();await reporter.onExit();
+    const stored = mocks.sql.mock.calls[0]!.slice(1).at(-1);
+    expect(parseTestRunExecutionDetails(stored)).toMatchObject({ passed: 2, failed: 0, testLayer: 'e2e', passedCaseTitles: ['plans > opens audit'] });
   });
 });
 
