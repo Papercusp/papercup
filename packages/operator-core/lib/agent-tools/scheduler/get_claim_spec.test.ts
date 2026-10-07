@@ -6,6 +6,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { ZodTypeAny } from 'zod';
 import getClaimSpecTool from './get_claim_spec';
+import { fleetSpecBeeKey } from '../../scheduler/claim-spec-store';
 
 const getClaimSpecRecord = vi.hoisted(() => vi.fn());
 
@@ -62,6 +63,35 @@ describe('scheduler:get_claim_spec — args', () => {
 
   it('accepts fleet alone', () => {
     expect(args.safeParse({ fleet: 'my-fleet' }).success).toBe(true);
+  });
+
+  it('executes a fleet selector without trimming an absent cupId', async () => {
+    getClaimSpecRecord.mockReset();
+    getClaimSpecRecord.mockResolvedValue({
+      source: 'fleet',
+      spec: { specId: 'fleet-lane' },
+      revision: 12,
+      updatedBy: 'fleet-leader',
+      updatedAt: '2026-10-07T00:00:00.000Z',
+      harnessSlug: 'papercusp',
+      fleetSlug: 'my-fleet',
+    });
+    const ctx = { uiClientId: 'su-caller', isSuperuser: true, workspaceId: 'ws-1' };
+    const tool = getClaimSpecTool as unknown as {
+      handler: (input: unknown, context: unknown) => Promise<{ data: Record<string, unknown> }>;
+    };
+
+    const result = await tool.handler({ fleet: 'my-fleet' }, ctx);
+
+    expect(getClaimSpecRecord).toHaveBeenCalledWith({
+      cupId: fleetSpecBeeKey('my-fleet'),
+      workspaceId: 'ws-1',
+    });
+    expect(result.data).toMatchObject({
+      source: 'fleet',
+      revision: 12,
+      subject: { kind: 'fleet-sentinel', fleetSlug: 'my-fleet' },
+    });
   });
 
   it('rejects neither cupId nor fleet', () => {
