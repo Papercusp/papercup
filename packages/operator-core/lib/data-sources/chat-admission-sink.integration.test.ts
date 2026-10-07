@@ -622,6 +622,39 @@ describe("a chat report's context block (P-005, D-012)", () => {
     expect([count('chat.getPermalink'), count('conversations.info'), count('users.info')]).toEqual([1, 1, 1]);
   });
 
+  it('a facts call that throws still files the report, and keeps and logs the error (EI-25270704981198981)', async () => {
+    await rule('report-bug', 'CBUGS');
+    const base = deps({ reportFacts: true });
+    // A provider refusal arrives as an absent fact, so a throw is an adapter defect, like the
+    // shadowed-const bug that once hid every fact behind a catch-to-null.
+    const broken = {
+      ...base,
+      adapter: { ...base.adapter, reportFacts: async () => { throw new TypeError('memo is not a function'); } },
+    };
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const out = await admitChatEvent(sql, { workspaceId: WS, dataSourceId: source.id, payload: shortcut() }, broken);
+
+      expect(out.admitted.map(({ result }) => result.ok)).toEqual([true]);
+      expect(created).toHaveLength(1);
+      const chat = (bugInputs[0]!.reportContext as { chat?: Record<string, unknown> }).chat;
+      expect(chat).toMatchObject({ gesture: 'shortcut', note: 'Since this morning, every query' });
+      expect(chat).not.toHaveProperty('permalink');
+      expect(out.reportFactsError).toBe('memo is not a function');
+      expect(logged).toHaveBeenCalledTimes(1);
+      expect(String(logged.mock.calls[0]![0])).toContain('[chat-admission] report facts failed');
+    } finally {
+      logged.mockRestore();
+    }
+  });
+
+  it('facts that arrive leave no facts error behind', async () => {
+    await rule('report-bug', 'CBUGS');
+    const out = await admitChatEvent(sql, { workspaceId: WS, dataSourceId: source.id, payload: shortcut() }, deps({ reportFacts: true }));
+    expect(out.admitted.map(({ result }) => result.ok)).toEqual([true]);
+    expect(out.reportFactsError).toBeUndefined();
+  });
+
   describe('consented files (unified D-013, D-048)', () => {
     const withFiles = (...ids: string[]) => {
       slackMessages[TS] = {

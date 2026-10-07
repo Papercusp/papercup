@@ -142,6 +142,7 @@ export async function chatEventReportContext(
   subject: ChatSubject,
   threadStart: boolean,
   adapter: Pick<ChatAdmissionAdapter, 'reportFacts'>,
+  onFactsError?: (error: unknown) => void,
 ): Promise<ReportContextInput> {
   const reporterRecord = payload.reporter && typeof payload.reporter === 'object' ? (payload.reporter as Record<string, unknown>) : {};
   const reporterExternalId = str(reporterRecord.externalUserId) || str(payload.sender) || null;
@@ -152,8 +153,12 @@ export async function chatEventReportContext(
   if (adapter.reportFacts) {
     try {
       facts = await adapter.reportFacts({ subject, reporterExternalId });
-    } catch {
+    } catch (error) {
+      // The report still files without the facts. A provider's own refusals already arrive as
+      // absent facts, so a throw here is a defect in the adapter: hand it to the caller to keep
+      // and log instead of swallowing it (EI-25270704981198981).
       facts = {};
+      onFactsError?.(error);
     }
   }
   return {
@@ -183,6 +188,12 @@ export interface ChatAdmissionOutcome {
   suggestion: ChatSuggestionResult | null;
   /** The reporter's consented files, when a rule filed a report that carried consent (P-005). */
   attachments?: ChatAttachmentOutcome;
+  /**
+   * Why the provider's report facts are missing, when its facts call threw. The report filed
+   * without them; the error is kept here and logged so an adapter defect is not silent
+   * (EI-25270704981198981).
+   */
+  reportFactsError?: string;
 }
 
 export interface ChatAdmissionDeps extends AdmitDeps {
@@ -377,7 +388,10 @@ export async function admitChatEvent(
       outcome.suggested.push({ ruleId: rule.id, sourceKind: rule.sourceKind, harness: rule.harness });
       continue;
     }
-    reportContext ??= await chatEventReportContext(input.payload, subject, threadStart, deps.adapter);
+    reportContext ??= await chatEventReportContext(input.payload, subject, threadStart, deps.adapter, (error) => {
+      outcome.reportFactsError = error instanceof Error ? error.message : String(error);
+      console.error(`[chat-admission] report facts failed; filed without them: ${outcome.reportFactsError}`, error);
+    });
     const source = rule.sourceKind === CHAT_THREAD_SOURCE_KIND
       ? {
           kind: CHAT_THREAD_SOURCE_KIND,
