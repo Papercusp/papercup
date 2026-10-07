@@ -24,7 +24,7 @@ afterEach(() => {
   while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true });
 });
 
-function fixture(playwrightExit: number) {
+function fixture(playwrightExit: number, viteLogStyle: 'bare' | 'arrow' | 'color' = 'bare') {
   const dir = mkdtempSync(join(tmpdir(), 'e2e-isolated-runner-'));
   dirs.push(dir);
   const record = join(dir, 'record.json');
@@ -66,7 +66,9 @@ function fixture(playwrightExit: number) {
       '[ "$OPERATOR_E2E_PORT" = "$vite_port" ] || { echo "vite stub CLI/env port mismatch: $vite_port / $OPERATOR_E2E_PORT" >&2; exit 80; }',
       'case " $* " in *" --host 127.0.0.1 "*) ;; *) echo "vite stub expected loopback host: $*" >&2; exit 74;; esac',
       'case " $* " in *" --strictPort "*) ;; *) echo "vite stub expected strictPort: $*" >&2; exit 76;; esac',
-      `exec node -e 'const http=require("node:http");const port=Number(process.env.OPERATOR_E2E_PORT);const s=http.createServer((_req,res)=>{res.writeHead(200,{"content-type":"text/plain"});res.end("ready")});s.listen(port,"127.0.0.1",()=>console.log("  Local: http://127.0.0.1:"+s.address().port+"/"))'`,
+      // A formatted log that the runner never recognizes must fail promptly rather than
+      // leave a server behind when spawnSync reaches its outer deadline.
+      `exec node -e 'const http=require("node:http");const port=Number(process.env.OPERATOR_E2E_PORT);const style="${viteLogStyle}";const deadline=style==="bare"?null:setTimeout(()=>process.exit(81),5000);const s=http.createServer((_req,res)=>{clearTimeout(deadline);res.writeHead(200,{"content-type":"text/plain"});res.end("ready")});s.listen(port,"127.0.0.1",()=>{const url="http://127.0.0.1:"+s.address().port+"/";const esc=String.fromCharCode(27);console.log(style==="color"?"  "+esc+"[32m➜"+esc+"[39m  "+esc+"[1mLocal:"+esc+"[22m   "+esc+"[36m"+url+esc+"[39m":style==="arrow"?"  ➜  Local:   "+url:"  Local: "+url)})'`,
     ].join('\n'),
   );
   writeFileSync(
@@ -151,6 +153,15 @@ describe('run-operator-e2e-isolated.sh', () => {
     expect(r.out).toContain(`vite-port=${r.recorded.env.port}`);
     expect(r.recorded.env.reuse).toBe('1');
     expect(r.recorded.viteStatus).toBe(200);
+  });
+
+  it.each(['arrow', 'color'] as const)('recognizes the %s Vite readiness line and reaches Playwright', (style) => {
+    const r = run(fixture(0, style), []);
+    expect(r.status, r.out).toBe(0);
+    expect(r.recorded, r.out).not.toBeNull();
+    expect(r.recorded.viteStatus).toBe(200);
+    expect(r.recorded.env.port).toMatch(/^[1-9]\d*$/);
+    expect(r.out).toContain(`vite-port=${r.recorded.env.port}`);
   });
 
   it('runs Vite and Playwright from the verifier snapshot rather than the shared checkout', () => {
