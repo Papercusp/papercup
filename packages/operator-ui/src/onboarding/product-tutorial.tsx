@@ -6,6 +6,14 @@ import type { AccountTutorialProgressRecord } from '@papercusp/operator-core/lib
 
 const endpoint = '/api/hosted/browser/onboarding/tutorial-progress?scope=account&version=3';
 export interface ProductTutorialAccount { tenantId: string; userId: string; sessionId: string; workspaceId: string | null }
+/** Explicit guide navigation may enter the existing shell before workspace
+ * selection. Panel/search URLs otherwise return to the first-workspace card. */
+export function productTutorialDestination(route: string, workspaceId: string | null): string {
+  if (workspaceId || !route.startsWith('/?')) return route;
+  const params = new URLSearchParams(route.slice(2));
+  params.set('firstRun', 'deferred');
+  return `/?${params.toString()}`;
+}
 export function validProductTutorialRecord(value: unknown, account: ProductTutorialAccount): value is AccountTutorialProgressRecord {
   if (!value || typeof value !== 'object') return false;
   const row = value as AccountTutorialProgressRecord;
@@ -31,6 +39,7 @@ export function AccountProductTutorial({ account, sessionSignal = 'valid', child
   const mounted = useRef(false);
   const pending = useRef<{ body: string; patch: Pick<AccountTutorialProgressRecord, 'disposition' | 'currentLessonId' | 'reviewedLessonIds'>; href?: string } | null>(null);
   const identity = `${account.tenantId}:${account.userId}:${account.sessionId}`;
+  const currentLesson = record ? PRODUCT_TUTORIAL_LESSONS.find(lesson => lesson.id === record.currentLessonId) : null;
 
   useEffect(() => {
     mounted.current = true;
@@ -84,6 +93,7 @@ export function AccountProductTutorial({ account, sessionSignal = 'valid', child
     <button onClick={() => setReload(value => value + 1)}>Try again</button>{' '}<button onClick={() => setContinueUnavailable(true)}>Continue to Papercusp</button>{' '}<a href="/docs">Public Docs</a></main>;
   if (!record || record.disposition !== 'active') return <>{record && <aside className="product-guide-return" aria-label="Product guide">
     <button ref={resume} disabled={busy} onClick={() => save({ ...record, disposition: 'active' })}>{record.disposition === 'closed' ? 'Review product guide' : 'Resume product guide'}</button>
+    {currentLesson && <details><summary>Help with {currentLesson.title}</summary><p>{currentLesson.help}</p><a href="/docs">Read public Docs</a></details>}
     {error && <p role="alert">{error}</p>}</aside>}{children}</>;
   const position = PRODUCT_TUTORIAL_LESSONS.findIndex(lesson => lesson.id === record.currentLessonId);
   const lesson = PRODUCT_TUTORIAL_LESSONS[position];
@@ -102,8 +112,9 @@ export function AccountProductTutorial({ account, sessionSignal = 'valid', child
     <section aria-label="Try these destinations"><h2>Find it in Papercusp</h2>
       {targets.length ? <ul>{targets.map(target => {
         const unavailable = productTutorialTargetAvailability(target, account.workspaceId);
+        const href = productTutorialDestination(target.route, account.workspaceId);
         return <li key={target.id}><strong>{target.id}</strong><p>{target.teaches}</p>{unavailable ? <p>{unavailable}</p> :
-          <a href={target.route} onClick={event => { event.preventDefault(); if (!busy) void save({ ...record, disposition: 'paused' }, target.route); }}>Open {target.id}</a>}</li>;
+          <a href={href} onClick={event => { event.preventDefault(); if (!busy) void save({ ...record, disposition: 'paused' }, href); }}>Open {target.id}</a>}</li>;
       })}</ul> : <p>You can read this lesson before selecting a workspace. The navigation lesson shows where the product controls live.</p>}
     </section>
     <details><summary>Help with this lesson</summary><p>{lesson.help}</p><a href="/docs">Read public Docs</a>{' · '}<a href="/?app=support" onClick={event => { event.preventDefault(); if (!busy) void save({ ...record, disposition: 'paused' }, '/?app=support'); }}>Open Support</a></details>
