@@ -90,6 +90,7 @@ function row(
   over: Partial<SpecEvidenceForAdequacy> & { adequacy?: Record<string, unknown> } = {},
 ): SpecEvidenceForAdequacy {
   const { adequacy, ...rest } = over;
+  const executionFailed = ['fail', 'failed'].includes(String(adequacy?.outcome ?? 'passed').toLowerCase());
   return {
     id,
     workItemId: 'WI-019',
@@ -108,12 +109,22 @@ function row(
     },
     coverageEvidenceRef: null,
     testRunId: 1000 + id,
+    testRunExecution: {
+      status: executionFailed ? 'fail' : 'pass',
+      passed: executionFailed ? 0 : 1,
+      failed: executionFailed ? 1 : 0,
+      skipped: 0,
+      collectionFailed: false,
+    },
     details: {
       adequacy: {
         falsifiable: true,
         testLayer: 'unit',
         pathReachable: true,
         oracleIndependent: true,
+        // These focused rows do not use fixtures; a null fingerprint alone is intentionally
+        // insufficient to let the evaluator infer fixture-free proof.
+        fixtureFree: true,
         collected: true,
         skipped: false,
         executed: true,
@@ -257,7 +268,18 @@ describe('supersedeEligibilityGaps: only proof sufficient on its own may superse
   const adequacy = { collected: true, skipped: false, executed: true, outcome: 'passed' };
 
   it('accepts a successful ledger-backed executable binding', () => {
-    expect(supersedeEligibilityGaps({ evidenceKind: 'test', testRunId: 5, details: { adequacy } })).toEqual([]);
+    expect(supersedeEligibilityGaps({
+      evidenceKind: 'test',
+      testRunId: 5,
+      testRunExecution: { status: 'pass', passed: 1, failed: 0, skipped: 0, collectionFailed: false },
+      details: { adequacy },
+    })).toEqual([]);
+  });
+
+  it('does not treat binder pass metadata as the canonical test-run verdict', () => {
+    expect(supersedeEligibilityGaps({ evidenceKind: 'test', testRunId: 5, details: { adequacy } })).toContain(
+      'canonical test-run execution details unavailable',
+    );
   });
 
   it.each([
