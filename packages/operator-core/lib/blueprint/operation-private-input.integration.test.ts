@@ -35,7 +35,7 @@ import {
 } from '../../test/_work-items-schema';
 import { projectBlueprintToPg } from './project-to-pg';
 import { BLUEPRINT_OPERATION_TOOLS } from './operation-contract';
-import { pruneOperationPrivateInputs } from './operation-private-input';
+import { pruneOperationPrivateInputs, storeOperationPrivateInput } from './operation-private-input';
 import type { BlueprintOperationHandle } from './operation-service';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -145,12 +145,14 @@ const APP_BLUEPRINT = {
       id: 'call-wrap-up', version: '1', target: { kind: 'work-item', itemKind: 'feature' },
       execution: { kind: 'agent', role: 'phone-agent' },
       inputSchema: WRAP_UP_INPUT_SCHEMA, privateInputSchema: SEGMENTS_SCHEMA,
+      policy: { identity: { kind: 'identity', ref: 'phone-agent', revision: '1.0.0', contentHash: 'b'.repeat(64) } },
       acceptance: { resultSchema: RESULT_SCHEMA },
     },
     {
       id: 'call-brief', version: '1', target: { kind: 'work-item', itemKind: 'feature' },
       execution: { kind: 'agent', role: 'phone-agent' },
       inputSchema: { type: 'object', required: ['callKey'], properties: { callKey: { type: 'string' } } },
+      policy: { identity: { kind: 'identity', ref: 'phone-agent', revision: '1.0.0', contentHash: 'b'.repeat(64) } },
       acceptance: { resultSchema: RESULT_SCHEMA },
     },
   ],
@@ -271,6 +273,31 @@ beforeEach(async () => {
 });
 
 describe('operation private input (D-014)', () => {
+  it('preserves a reserved packet across recovery before acceptance and rejects a concurrent changed packet', async () => {
+    const key = {
+      workspaceId: WORKSPACE, harnessSlug: APP_HARNESS, callerId: APP_PRINCIPAL.slug,
+      operationId: 'call-wrap-up', requestKey: 'wrap-up:reserved',
+    };
+    const altered: Segment[] = [[1, 'agent', 'A different frozen packet.']];
+    const reserve = (value: unknown) => storeOperationPrivateInput(db.sql, key, {
+      schema: SEGMENTS_SCHEMA, value, alreadyAccepted: false,
+    });
+    const attempts = await Promise.allSettled([reserve(SEGMENTS), reserve(altered)]);
+    expect(attempts.filter((attempt) => attempt.status === 'fulfilled')).toHaveLength(1);
+    const rejected = attempts.find((attempt) => attempt.status === 'rejected');
+    expect(rejected?.status === 'rejected' && String(rejected.reason)).toContain('private_input_conflict');
+    const [reserved] = await privateRows();
+    const winner = JSON.parse(reserved!.content_text) as Segment[];
+    const [{ n }] = await db.sql<Array<{ n: number }>>`SELECT count(*)::int AS n FROM harness_shared.work_items`;
+    expect(n).toBe(0);
+    // Simulate restarting after storage but before an acceptance receipt exists.
+    const handle = await submit(wrapUp('reserved', winner));
+    expect(await submit(wrapUp('reserved', winner))).toEqual(handle);
+    expect(await privateRows()).toEqual([reserved]);
+    await setItem(itemId(handle), { holder: HOLDER });
+    expect((await readPrivate(HOLDER, itemId(handle))).content).toEqual(winner);
+  });
+
   it('stores privateInput outside the work item, keyed by the invocation, hashed over JSON.stringify', async () => {
     const handle = await submit(wrapUp('call-1', SEGMENTS));
     const rows = await privateRows();
