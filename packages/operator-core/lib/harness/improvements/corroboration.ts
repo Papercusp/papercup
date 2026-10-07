@@ -97,7 +97,13 @@ export function corroborationReportersSql(sql: OrgSql, idColumn: IdColumn = 'wi.
       FROM harness_shared.work_item_occurrences o
      WHERE o.workspace_id = wi.workspace_id
        AND o.canonical_harness_slug = wi.harness_slug
-       AND o.canonical_work_item_id = ${sql.unsafe(idColumn)}
+       AND (o.canonical_work_item_id = ${sql.unsafe(idColumn)} OR o.canonical_work_item_id IN (
+         SELECT source.payload -> 'intakeSource' ->> 'id'
+           FROM harness_shared.work_items source
+          WHERE source.workspace_id = wi.workspace_id AND source.harness_slug = wi.harness_slug
+            AND source.feature_id = ${sql.unsafe(idColumn)}
+            AND source.payload -> 'intakeSource' ->> 'mode' = 'distinct'
+       ))
        AND btrim(COALESCE(o.reporter, '')) <> ''
   )`;
 }
@@ -118,16 +124,21 @@ export async function readCorroboration(
   const rows = await sql<
     { id: string; reporters: string | number; filings: string | number; first_at: Date | string | null; last_at: Date | string | null }[]
   >`
-    SELECT o.canonical_work_item_id AS id,
+    SELECT k.id AS id,
            count(DISTINCT btrim(o.reporter)) FILTER (WHERE btrim(COALESCE(o.reporter, '')) <> '') AS reporters,
            count(*) FILTER (WHERE o.report_kind = ANY(${[...CORROBORATION_FILING_KINDS]}::text[])) AS filings,
            min(o.occurred_at) AS first_at,
            max(o.occurred_at) AS last_at
       FROM harness_shared.work_item_occurrences o
       JOIN unnest(${ids}::text[], ${harnesses}::text[]) AS k(id, harness)
-        ON o.canonical_work_item_id = k.id AND o.canonical_harness_slug = k.harness
+        ON o.canonical_harness_slug = k.harness
+      LEFT JOIN harness_shared.work_items target
+        ON target.workspace_id = ${input.workspaceId} AND target.harness_slug = k.harness AND target.feature_id = k.id
      WHERE o.workspace_id = ${input.workspaceId}
-     GROUP BY o.canonical_work_item_id`;
+       AND (o.canonical_work_item_id = k.id OR (
+         target.payload -> 'intakeSource' ->> 'mode' = 'distinct'
+         AND o.canonical_work_item_id = target.payload -> 'intakeSource' ->> 'id'))
+     GROUP BY k.id`;
   const iso = (v: Date | string | null): string | null =>
     v == null ? null : v instanceof Date ? v.toISOString() : new Date(v).toISOString();
   for (const r of rows) {
@@ -139,6 +150,22 @@ export async function readCorroboration(
     });
   }
   return out;
+}
+
+/** Reporter identities are evidence for independence, never an admission receipt. */
+export async function readOccurrenceReporters(sql: OrgSql, input: { workspaceId: string; id: string; harness: string }): Promise<string[]> {
+  const rows = await sql<{ reporter: string }[]>`
+    SELECT DISTINCT btrim(o.reporter) AS reporter
+      FROM harness_shared.work_item_occurrences o
+      LEFT JOIN harness_shared.work_items target
+        ON target.workspace_id = ${input.workspaceId} AND target.harness_slug = ${input.harness} AND target.feature_id = ${input.id}
+     WHERE o.workspace_id = ${input.workspaceId} AND o.canonical_harness_slug = ${input.harness}
+       AND (o.canonical_work_item_id = ${input.id} OR (
+         target.payload -> 'intakeSource' ->> 'mode' = 'distinct'
+         AND o.canonical_work_item_id = target.payload -> 'intakeSource' ->> 'id'))
+       AND btrim(COALESCE(o.reporter, '')) <> ''
+     ORDER BY reporter`;
+  return rows.map((row) => row.reporter);
 }
 
 /**
