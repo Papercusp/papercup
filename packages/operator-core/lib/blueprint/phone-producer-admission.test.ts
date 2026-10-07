@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { admitAuthenticatedPhoneProducer, admitPhoneProducer, type PhoneProducerAdmission } from './phone-producer-admission';
 import type { Principal } from '@papercusp/agent-mcp';
 import type { ExternalRuntimeProducerBinding } from './operation-worker-binding';
+import type { AppScopeRow } from '../connected-apps/scope-policy';
 
 function fixture() {
   const snapshot: PhoneProducerAdmission = { workspaceId: 'workspace', harnessSlug: 'phone-app', storageHarnessSlug: 'home',
@@ -35,6 +36,52 @@ describe('Phone producer canonical admission', () => {
     const result = await admitAuthenticatedPhoneProducer(principal(), f.host, 'room-a', f.store);
     expect(result.executionOwnerId).toBe('voice-run-a');
     expect(f.row!.assignee).toBe('voice-run-a');
+  });
+  function appFixture() {
+    const f = fixture();
+    f.snapshot.executionOwnerId = 'app:key-a/token-a';
+    const row = (): AppScopeRow => ({ id: 'key-a', workspace_id: 'workspace',
+      revoked_at: null, paused_at: null, expires_at: null,
+      scopes: { tools: ['work_items:create'], harnesses: ['phone-app'] } });
+    const parent = row(); const token = row();
+    const grants = { loadRow: vi.fn(async () => parent), loadTokenRow: vi.fn(async () => token) };
+    const read = () => admitAuthenticatedPhoneProducer({ ...principal(), slug: f.snapshot.executionOwnerId },
+      f.host, 'room-a', f.store, grants);
+    return { ...f, parent, token, grants, read };
+  }
+  it('checks both the parent and narrower access-token grant', async () => {
+    const f = appFixture();
+    expect((await f.read()).executionOwnerId).toBe('app:key-a/token-a');
+    expect(f.grants.loadRow).toHaveBeenCalledWith('key-a');
+    expect(f.grants.loadTokenRow).toHaveBeenCalledWith('token-a', 'key-a');
+  });
+  it.each(['parent', 'token'] as const)('refuses a foreign harness in the %s grant before allocation', async (which) => {
+    const f = appFixture(); f[which].scopes = { tools: ['work_items:create'], harnesses: ['other'] };
+    await expect(f.read()).rejects.toThrow('grant_harness_not_in_scope');
+    expect(f.store.allocateId).not.toHaveBeenCalled();
+  });
+  it.each(['revoked', 'paused', 'expired', 'tools', 'workspace'] as const)('refuses a %s access-token grant', async (kind) => {
+    const f = appFixture();
+    if (kind === 'revoked') f.token.revoked_at = new Date();
+    if (kind === 'paused') f.token.paused_at = new Date();
+    if (kind === 'expired') f.token.expires_at = new Date(0);
+    if (kind === 'tools') f.token.scopes = { tools: ['blueprint:submit'] };
+    if (kind === 'workspace') f.token.workspace_id = 'foreign';
+    await expect(f.read()).rejects.toThrow('phone_producer_grant_');
+    expect(f.store.allocateId).not.toHaveBeenCalled();
+  });
+  it('refuses a missing token row rather than inheriting the parent grant', async () => {
+    const f = appFixture(); f.grants.loadTokenRow.mockResolvedValue(null as unknown as AppScopeRow);
+    await expect(f.read()).rejects.toThrow('grant_unavailable');
+    expect(f.store.allocateId).not.toHaveBeenCalled();
+  });
+  it('rechecks revocation after reservation before canonical create', async () => {
+    const f = appFixture(); const reserve = f.host.reserveRegistration.getMockImplementation()!;
+    f.host.reserveRegistration.mockImplementation(async (snapshot, proposed) => {
+      const binding = await reserve(snapshot, proposed); f.parent.revoked_at = new Date(); return binding;
+    });
+    await expect(f.read()).rejects.toThrow('grant_key_revoked');
+    expect(f.store.create).not.toHaveBeenCalled();
   });
   it.each([null, { kind: 'human' }, { trust: 'unverified' }, { authMethod: 'loopback' },
     { workspaceId: '' }, { slug: 'su-loopback' }, { slug: 'mcp-call-123' }])(

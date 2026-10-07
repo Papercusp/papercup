@@ -6,6 +6,9 @@ import { derivedTerminalCompletionAuthority } from '../completion-audit';
 import { isTransportOnlyIdentity } from '../agent-tools/coordination/identity';
 import { createWorkItem, getWorkItem, nextWorkItemId, type CreateWorkItemInput, type WorkItem } from '../work-items';
 import type { ExternalRuntimeProducerBinding } from './operation-worker-binding';
+import { appPrincipalRefOfSlug } from '../connected-apps/enforce';
+import { evaluateAppScope, type AppScopeRow } from '../connected-apps/scope-policy';
+import { loadAppScopeRow, loadAccessTokenScopeRow } from '../connected-apps/store';
 
 const text = z.string().min(1).refine((value) => value.trim() === value && !/[\u0000-\u001f\u007f]/.test(value));
 const admissionSchema = z.object({
@@ -40,13 +43,41 @@ const canonicalStore: PhoneProducerCanonicalStore = {
   create: createWorkItem,
 };
 
+export interface PhoneProducerGrantStore {
+  loadRow(id: string): Promise<AppScopeRow | null>;
+  loadTokenRow(tokenId: string, appId: string): Promise<AppScopeRow | null>;
+}
+const grantStore: PhoneProducerGrantStore = {
+  loadRow: loadAppScopeRow, loadTokenRow: loadAccessTokenScopeRow,
+};
+
+/** Connected-app credentials must authorize the canonical create, including
+ * the host-resolved harness. Reuse the maintained parent/token scope policy;
+ * a capability set alone cannot establish a current grant or token expiry. */
+async function checkProducerGrant(slug: string, snapshot: PhoneProducerAdmission,
+  grants: PhoneProducerGrantStore): Promise<void> {
+  const ref = appPrincipalRefOfSlug(slug);
+  if (!ref) return; // Other verified service credentials use their trusted host scope resolver.
+  const parent = await grants.loadRow(ref.appId);
+  const token = ref.tokenId ? await grants.loadTokenRow(ref.tokenId, ref.appId) : null;
+  if (!parent || (ref.tokenId && !token)) throw new Error('phone_producer_grant_unavailable');
+  for (const row of token ? [parent, token] : [parent]) {
+    const verdict = evaluateAppScope({
+      tool: { name: 'work_items:create', capabilities: ['work_items:write'], acceptsHarness: true },
+      args: { harness: snapshot.harnessSlug }, workspaceId: snapshot.workspaceId,
+    }, row);
+    if (!verdict.allow) throw new Error(`phone_producer_grant_${verdict.code}`);
+  }
+}
+
 /** Authenticated dispatch boundary. The principal must be the transport's
  * verified credential, and the host must already resolve the permitted harness
  * from that credential's grant. Neither is a public tool argument. A reported
  * speaker/UI client id cannot replace the service execution principal. */
 export async function admitAuthenticatedPhoneProducer(principal: Principal | null | undefined,
   host: PhoneProducerAdmissionHost, roomName: string,
-  store: PhoneProducerCanonicalStore = canonicalStore): Promise<Readonly<ExternalRuntimeProducerBinding>> {
+  store: PhoneProducerCanonicalStore = canonicalStore,
+  grants: PhoneProducerGrantStore = grantStore): Promise<Readonly<ExternalRuntimeProducerBinding>> {
   if (principal?.kind !== 'service' || principal.trust !== 'verified' ||
       principal.authMethod !== 'bearer-token' || !principal.workspaceId || !principal.slug ||
       isTransportOnlyIdentity(principal.slug)) throw new Error('phone_producer_authenticated_service_required');
@@ -54,17 +85,30 @@ export async function admitAuthenticatedPhoneProducer(principal: Principal | nul
   // not change who receives the canonical producer while a read is in flight.
   const workspaceId = principal.workspaceId;
   const executionOwnerId = principal.slug;
+  const readAdmission = async (room: string) => {
+    const snapshot = await host.readAdmission(room);
+    if (snapshot.workspaceId !== workspaceId || snapshot.executionOwnerId !== executionOwnerId) {
+      throw new Error('phone_producer_authenticated_scope_mismatch');
+    }
+    await checkProducerGrant(executionOwnerId, snapshot, grants);
+    return snapshot;
+  };
   return admitPhoneProducer({
-    readAdmission: async (room) => {
-      const snapshot = await host.readAdmission(room);
-      if (snapshot.workspaceId !== workspaceId || snapshot.executionOwnerId !== executionOwnerId) {
-        throw new Error('phone_producer_authenticated_scope_mismatch');
-      }
-      return snapshot;
-    },
+    readAdmission,
     readRegistration: (room) => host.readRegistration(room),
-    reserveRegistration: (snapshot, proposed) => host.reserveRegistration(snapshot, proposed),
-  }, roomName, store);
+    reserveRegistration: async (snapshot, proposed) => {
+      await checkProducerGrant(executionOwnerId, snapshot, grants);
+      return host.reserveRegistration(snapshot, proposed);
+    },
+  }, roomName, {
+    ...store,
+    create: async (input) => {
+      // Allocation/reservation can await storage. Re-read the grant immediately
+      // before creating the ledger row instead of trusting the earlier check.
+      await readAdmission(roomName);
+      return store.create(input);
+    },
+  });
 }
 
 function expectedBinding(snapshot: PhoneProducerAdmission, id: string): ExternalRuntimeProducerBinding {
