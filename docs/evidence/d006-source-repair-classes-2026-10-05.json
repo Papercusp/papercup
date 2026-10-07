@@ -5,9 +5,9 @@
   "accountableOwner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
   "population": {
     "failedFiles": 124,
-    "repairedFocused": 24,
+    "repairedFocused": 25,
     "repairedPeerFocused": 15,
-    "openUnknown": 85
+    "openUnknown": 84
   },
   "classes": {
     "assertion": 55,
@@ -21,7 +21,7 @@
     "migration-stage": 1,
     "missing-schema": 15,
     "blueprint-fixture": 1,
-    "console-guard": 10,
+    "console-guard": 9,
     "unclassified": 6,
     "plan-pot-fixture": 1,
     "plan-observation-fixture": 1,
@@ -38,7 +38,8 @@
     "profile-replay": 3,
     "peer-work-item-fixture": 2,
     "peer-memory-fixture": 1,
-    "peer-edit-attribution-migration": 1
+    "peer-edit-attribution-migration": 1,
+    "plan-receiver-schema-fixture": 1
   },
   "files": [
     {
@@ -1006,13 +1007,70 @@
     },
     {
       "path": "packages/operator-core/lib/sync/hyperbee/__tests__/ei117-replay-revert-guard.integration.test.ts",
-      "class": "console-guard",
-      "state": "open-unknown",
-      "item": "WI-10006170",
+      "class": "plan-receiver-schema-fixture",
+      "state": "repaired-focused",
+      "item": "WI-10007152",
       "lines": [
         16019,
         16055
-      ]
+      ],
+      "registeredRepairItem": "WI-10007152",
+      "repairStage": "accepted-specific-source-child-fixture-repair-verified-focused",
+      "diagnosis": "Minimal EI117 fixture omitted receiver BAR metadata/template_slug (original archive) and the plan revision spine now required by the whole-blob writer (current baseline). Reused real migrations851/1111 and218/1107 with the existing private PG schema. Real missing/restored revision-store controls prove transaction rollback and subsequent persisted remote bytes; independent missing/restored epoch and template_slug controls distinguish failed receiver schema from a legitimate no-rubric skip. Original six replay/stamp/echo assertions remain intact.",
+      "beforeTestRun": 20898071,
+      "afterTestRun": 20898082,
+      "passed": 8,
+      "skipped": 0,
+      "testSha256": "255cdd24eac0b6edb3351787e3a2b6277bf8209f31936809956442c9d8b5153a",
+      "testBlob": "7f37b9cf97ac4f98ebac254ed865ea97692cd945",
+      "sourceFingerprints": {
+        "packages/operator-core/lib/sync/hyperbee/projections/harness-plans.ts": "bd8369ca5fa6715716b3f7919c0b1fd48c2fe8d4289ad80100f382ef2e5f262b",
+        "packages/operator-core/lib/acceptance-bar-receiver-seed.ts": "ecb24a3cac3219c26a2dc1fc18c06429cb564d596f0d65f8ad50413280bdc7fb",
+        "packages/operator-core/lib/agent-tools/plans/revisions.ts": "ce2924cd8c7a0f666eadf5703a6248a1a53c1b0321fc9e494161891bcf7302e5",
+        "libs/papercusp/libs/db/sql/851-first-class-plan-spec-clauses.sql": "ba1e7f0502f9e6672936093de7029e88a68a864eac4e3215fa80e0e3c61017b8",
+        "libs/papercusp/libs/db/sql/1111-acceptance-bar-contract-seed.sql": "d273edc0e6487d26d150aeb59cda2de6f719b338f5ca9115b3b15dda776a5722",
+        "libs/papercusp/libs/db/sql/218-plan-revisions-workspace-scope.sql": "bc668c1a04668e51ca2f609f49b363fc88b1a60b7cb8558edd5857769c1d51ed",
+        "libs/papercusp/libs/db/sql/1107-plan-revisions-content-snapshot-hash.sql": "6b9be07cc08f45263a9639dd32c78a9af1b53e5a300017f588695248a4f8050e"
+      },
+      "latestLocalReceipt": {
+        "id": 20898082,
+        "filePath": "packages/operator-core/lib/sync/hyperbee/__tests__/ei117-replay-revert-guard.integration.test.ts",
+        "status": "pass",
+        "commitSha": "48a5108e02d5e8ea73f408c8fda80731b00a8522",
+        "worktreeDirty": true,
+        "isScratchConfig": false,
+        "source": "local",
+        "branch": "staging",
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": "papercusp",
+        "runGroupId": null
+      },
+      "nativeLogs": {
+        "before": {
+          "path": "/tmp/wi-10006170-ei117-before.log",
+          "sha256": "9cb70ffa5c0da1420ff53157e579a3b0298a8d39c2474b7ebfd0946d055725d3",
+          "passed": 4,
+          "failed": 2,
+          "skipped": 0,
+          "exitCode": 1
+        },
+        "after": {
+          "path": "/tmp/wi-10007152-after.log",
+          "sha256": "d309849683d4bfb485769489bd3af06d971e62ce0701e1ae70b7193f14684e4a",
+          "passed": 8,
+          "failed": 0,
+          "skipped": 0,
+          "exitCode": 0
+        },
+        "typecheck": {
+          "path": "/tmp/wi-10007152-tsc.log",
+          "sha256": "dc6f251d1a00e8c074ffde5c0557eb53b7ea77f6accf1d07790dd1c1c50b7458",
+          "checkedFiles": 1,
+          "errors": 0,
+          "exitCode": 0
+        }
+      },
+      "latestReceiptMeaning": "Focused local PASS8/0skip and named-file typecheck errors0. Archive acceptance_bar_epoch warning and current baseline missing plan_revisions are distinct measured fixture dependencies; older EI-20433418865457805 addressed separate INSERT columns. Full imports/environment, final D006 and shipment remain unverified."
     },
     {
       "path": "packages/operator-core/lib/endpoint-route/routes/adv/sessions-search-transcripts.integration.test.ts",
@@ -1361,7 +1419,11 @@
       "diagnosis": "The archived strict-writer error names edit_attribution_ledger.dispatch_call_id. Existing committed repair WI-10006206 added migration1367; EI-25188923278410322 independently verified the fixture applies it before the real strict writer and census assertions. No new source repair or terminal replay is needed.",
       "relatedSourceRepair": "WI-10006206",
       "completionAuthority": "committed",
-      "historicalRedTestRunIds": [20747074, 20766512, 20797756],
+      "historicalRedTestRunIds": [
+        20747074,
+        20766512,
+        20797756
+      ],
       "afterTestRun": 20798411,
       "receiptCommit": "88fed5c47a6431df8de1c24ef9c630dbd59482fe",
       "receiptRoot": "/tmp/papercusp-lint-as-committed-88fed5c47a-VP3Pt1",
@@ -2154,13 +2216,13 @@
     },
     {
       "class": "console-guard",
-      "count": 10,
+      "count": 9,
       "status": "open-unknown",
       "item": "WI-10006170",
       "owner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
       "scope": "diagnosis-and-placement",
       "rootCause": "unproved",
-      "next": "Resolve the ten archived diagnostic entries below against scoped repairs and current causal verification; preserve open-unknown until each file's complete failure population is accounted for.",
+      "next": "Resolve the nine archived diagnostic entries below against scoped repairs and current causal verification; preserve open-unknown until each file's complete failure population is accounted for.",
       "archivedDiagnosticInventory": {
         "archiveSha256": "43cf66489baf7cf665a9746d097375cffc7cdc6262014929c3cc398155b579f4",
         "scope": "Exact ANSI-stripped error groups from the immutable D006 archive, indexed by the existing FAIL-header line identities. These are historical symptoms, not current test verdicts or proved source causes. Candidate terminal records require completion and source-assurance review.",
@@ -2238,18 +2300,6 @@
             "candidateEvidence": "Committed completion reports a typed synthetic owner identity fixture and clean focused receipt20795770 at d152edfe0371ce04abb94d19eee265c7d6829809. This pointer alone does not establish current import/environment assurance or alter the historical census."
           },
           {
-            "path": "packages/operator-core/lib/sync/hyperbee/__tests__/ei117-replay-revert-guard.integration.test.ts",
-            "diagnosticLines": [
-              16020,
-              16025,
-              16056,
-              16061
-            ],
-            "observed": "acceptance-bar receiver reseed console.warn: acceptance_bar_epoch column does not exist",
-            "candidateRepair": "EI-20433418865457805",
-            "candidateEvidence": "Committed completion repaired input_schema, output_schema, property_schema, properties and forced_past in the inline stub. Its passing6-case receipt addressed missing input_schema, whereas this archive reports missing acceptance_bar_epoch; closure of this distinct column symptom remains unproved."
-          },
-          {
             "path": "packages/operator-core/lib/fleet/sidecar-exec-lifetime.integration.test.ts",
             "diagnosticLines": [
               13519,
@@ -2304,7 +2354,7 @@
     },
     {
       "class": "unclassified",
-      "count": 8,
+      "count": 6,
       "status": "open-unknown",
       "item": "WI-10006170",
       "owner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
@@ -2320,7 +2370,11 @@
       "owner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
       "scope": "canonical-plan-Pg-fixture-and-conventional-integration-guard",
       "rootCause": "Direct handler tests omitted the ambient request workspace for observation writes and used an unregistered explicit source Pot. The negative/positive real PG control retains production rejection, verifies the registered source write in default and cleans the Pot.",
-      "testRunIds": [20894758, 20894823, 20895423],
+      "testRunIds": [
+        20894758,
+        20894823,
+        20895423
+      ],
       "next": "Retain the local causal repair and exact test bytes. Do not replay terminal completion or monitor source settlement; full import/environment and final D006 remain unverified."
     },
     {
@@ -2331,7 +2385,10 @@
       "owner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
       "scope": "canonical-plan-Pg-fixture-and-conventional-integration-guard",
       "rootCause": "The other-harness carrier lacked a canonical Pot because only the main harness went through seedPlan. Its insert was correctly rejected before cascade behavior could be exercised.",
-      "testRunIds": [20894727, 20894730],
+      "testRunIds": [
+        20894727,
+        20894730
+      ],
       "next": "Retain the local causal repair and exact test bytes. Do not replay terminal completion or monitor source settlement; full import/environment and final D006 remain unverified."
     },
     {
@@ -2501,7 +2558,11 @@
       "completionAuthority": "committed",
       "terminalOwner": "su-7a94555d-4fbb-42b8-a39d-ff28fade9e0f",
       "settlementManifestEvidenceHash": "f5699437c0a168f4d4b7d4c0aedaaa42d4e7e5dc0b2a34f831407ca1302b93d3",
-      "testRunIds": [20831099, 20831096, 20831097],
+      "testRunIds": [
+        20831099,
+        20831096,
+        20831097
+      ],
       "passed": 14,
       "skipped": 0,
       "nativePassLog": {
@@ -2522,7 +2583,9 @@
       "item": "WI-10006889",
       "rootCause": "Two simulated boxes shared one process-global signer registry. Box B now uses a separate module graph; the stored signer trace and isolation mutation distinguish this cause from frame loss or timing.",
       "commit": "781edde2d8c6d34695f6750e0cc89debad7d9ed7",
-      "testRunIds": [20854195],
+      "testRunIds": [
+        20854195
+      ],
       "next": "Retain committed focused repair evidence and recovered local pass20893504. Full import/environment readiness and final D006 remain unverified."
     },
     {
@@ -2533,7 +2596,10 @@
       "relatedSourceRepair": "WI-10006206",
       "rootCause": "The fresh test fixture omitted migration1367 while the real strict writer already inserted dispatch_call_id. Applying the registered migration before production-wiring assertions repaired the same missing-column error seen in the archive.",
       "commit": "88fed5c47a6431df8de1c24ef9c630dbd59482fe",
-      "testRunIds": [20798411, 20812758],
+      "testRunIds": [
+        20798411,
+        20812758
+      ],
       "next": "Retain existing committed causal evidence and exact current test-byte equality. Full import/environment assurance and final D006 remain unverified; do not replay the terminal repair."
     },
     {
@@ -2544,7 +2610,12 @@
       "owner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
       "scope": "local-perf-fixture-and-diagnostics",
       "rootCause": "Local no-PG fixture omitted the new governor-receipt census override. Exact guard failure reached getOrgPg; adding only the empty local-corpus census changed it to pass with the actual worker intact.",
-      "testRunIds": [20893505, 20893584, 20893585, 20893591],
+      "testRunIds": [
+        20893505,
+        20893584,
+        20893585,
+        20893591
+      ],
       "next": "Retain focused local evidence and explicit credential skip; content settlement and full import/environment/final D006 assurance remain unverified."
     },
     {
@@ -2600,7 +2671,11 @@
       "owner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
       "scope": "gym-owned-schema-and-real-store-integration",
       "rootCause": "Legacy evaluation tuple uniqueness excludes the per-loop run token. Distinct baseline run IDs still collided in the same gym database; additive migration002 removes only the obsolete constraint.",
-      "testRunIds": [20894612, 20894624, 20894625],
+      "testRunIds": [
+        20894612,
+        20894624,
+        20894625
+      ],
       "next": "Retain the measured local repair and proposed terminal manifest. Do not replay terminal completion or monitor source settlement; full import/environment and final D006 remain unverified."
     },
     {
@@ -2610,7 +2685,10 @@
       "item": "WI-10007140",
       "scope": "named-lock-store-integration-test-only",
       "rootCause": "The stale test expected a pending FIFO waiter to be an active holder. The corrected expectation and real-PG queue/no-holder and true-holder lease/deadline controls passed in the previously recorded terminal repair.",
-      "testRunIds": [20895733, 20895746],
+      "testRunIds": [
+        20895733,
+        20895746
+      ],
       "next": "Retain existing terminal repair evidence; no unchanged rerun or completion replay. Full imports/environment/final D006 remain unverified."
     },
     {
@@ -2620,7 +2698,10 @@
       "item": "WI-10007139",
       "scope": "named-work-item-tools-integration-fixture-only",
       "rootCause": "The manual fixture omitted the mandatory disclosure ledger. Maintained fixture DDL and missing/restored-ledger controls for both comment families passed in the previously recorded terminal repair.",
-      "testRunIds": [20895450, 20895651],
+      "testRunIds": [
+        20895450,
+        20895651
+      ],
       "next": "Retain existing terminal repair evidence; no unchanged rerun or completion replay. Full imports/environment/final D006 remain unverified."
     },
     {
@@ -2631,7 +2712,10 @@
       "owner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
       "scope": "named-route-integration-fixture-only",
       "rootCause": "The manual transcript fixture omitted the mandatory personal_disclosures relation. Reusing applyDisclosureLedgerForTest restores the migrated ledger without weakening production restrictedTurnSql. Missing/restored-ledger and active-window exact/fuzzy controls pass with all six original route regressions.",
-      "testRunIds": [20896905, 20897234],
+      "testRunIds": [
+        20896905,
+        20897234
+      ],
       "next": "Retain focused local PASS8/0skip evidence. Full import/environment and final D006 remain unverified; do not replay terminal completion or monitor source settlement."
     },
     {
@@ -2642,7 +2726,10 @@
       "owner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
       "scope": "named-five-peer-scale-integration-fixture-only",
       "rootCause": "Missing coordination-only rekey fixture setting makes default-ON Hive dependency composition read the uninitialized authority SQL holder before peer setup. Reuse the existing companion suite setting. Conventional real-composition OFF/no-SQL and ON/fail-closed controls pass with the original real five-swarm failover/election/claim cascade; production fail-closed code is unchanged.",
-      "testRunIds": [20897261, 20897692],
+      "testRunIds": [
+        20897261,
+        20897692
+      ],
       "next": "Retain focused local PASS3/0skip evidence. Full import/environment and final D006 remain unverified; no terminal replay or settlement babysitting."
     },
     {
@@ -2667,8 +2754,29 @@
       "owner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
       "scope": "named-cross-plan-federation-seam-fixture-only",
       "rootCause": "The private two-peer schema omits the mandatory disclosure ledger read by real sendMessage before persistence and federation capture. Reuse the maintained migration helper on both peers. Conventional real-PG missing/restored-ledger controls prove no message/outbox writes on refusal and successful inbox delivery in both directions, alongside the original 14 federation cases.",
-      "testRunIds": [20897848, 20898052],
+      "testRunIds": [
+        20897848,
+        20898052
+      ],
       "next": "Retain focused local PASS15/0skip evidence. Full imports/environment, typing, final D006 and shipment remain unverified; no terminal replay or settlement babysitting."
+    },
+    {
+      "class": "plan-receiver-schema-fixture",
+      "count": 1,
+      "status": "repaired-focused",
+      "item": "WI-10007152",
+      "owner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
+      "scope": "named-ei117-private-pg-fixture-only",
+      "rootCause": "Minimal EI117 fixture omitted receiver BAR metadata/template_slug (original archive) and the plan revision spine now required by the whole-blob writer (current baseline). Reused real migrations851/1111 and218/1107 with the existing private PG schema. Real missing/restored revision-store controls prove transaction rollback and subsequent persisted remote bytes; independent missing/restored epoch and template_slug controls distinguish failed receiver schema from a legitimate no-rubric skip. Original six replay/stamp/echo assertions remain intact.",
+      "testRunIds": [
+        20898071,
+        20898082
+      ],
+      "archiveLines": [
+        16019,
+        16055
+      ],
+      "next": "Retain focused local PASS8/0skip plus typecheck checked1/errors0. Full imports/environment, final D006 and shipment remain unverified; no terminal replay or settlement babysitting."
     }
   ],
   "prerequisites": [
