@@ -570,6 +570,67 @@ const staleClaimSweepCheck: PeriodicCheck = {
           `${Object.entries(byAction).map(([a, n]) => `${a}:${n}`).join(', ')}): ` +
           r.released.map((c) => `${c.harness_slug}/${c.feature_id}<-${c.former_taken_by} [${c.former_status}->${c.new_status} ${c.reason}]`).join(', '),
       );
+      // EI-25188923369514003: retain per-release source identity in the existing
+      // append-only audit path. Keep notifications below as-is; the helper's
+      // notify:false mode adds diagnosis without changing their current semantics.
+      try {
+        const { recordInvoluntaryClaimReleases } = await import('../claim-release-notice');
+        const auditGroups = new Map<
+          string,
+          {
+            workspaceId: string;
+            harness: string;
+            reason: string;
+            released: { workItemId: string; takenBy: string; reason: string }[];
+          }
+        >();
+        for (const c of r.released) {
+          const key = JSON.stringify([c.workspace_id, c.harness_slug, c.reason]);
+          let group = auditGroups.get(key);
+          if (!group) {
+            group = {
+              workspaceId: c.workspace_id,
+              harness: c.harness_slug,
+              reason: c.reason,
+              released: [],
+            };
+            auditGroups.set(key, group);
+          }
+          group.released.push({
+            workItemId: c.feature_id,
+            takenBy: c.former_taken_by,
+            reason: c.reason,
+          });
+        }
+        for (const group of auditGroups.values()) {
+          const audit = await recordInvoluntaryClaimReleases(sql, {
+            workspaceId: group.workspaceId,
+            harness: group.harness,
+            // Match the marker the reclaim SQL stores in work_items.last_released_by.
+            actor: 'reaper:' + group.reason,
+            reason: group.reason,
+            released: group.released,
+            notify: false,
+          });
+          if (audit.audited !== group.released.length) {
+            console.warn(
+              '[stale-claims] audit_log provenance wrote ' +
+                audit.audited +
+                ' of ' +
+                group.released.length +
+                ' release row(s) for ' +
+                group.harness +
+                '; claim release and holder notifications continue',
+            );
+          }
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn(
+          '[stale-claims] claim-release provenance audit unavailable (non-fatal; claim release and holder notifications continue): ' +
+            message,
+        );
+      }
       // Broadcast ONLY dead-letters: poison items that exhausted the requeue cap and
       // parked in `blocked`, which DO need human/Queen attention (D-006).
       const deadLettered = r.released.filter((c) => c.action === 'dead-lettered');
