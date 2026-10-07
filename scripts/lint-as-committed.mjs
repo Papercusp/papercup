@@ -744,6 +744,8 @@ lint-as-committed — run a lint as the release gate runs it (committed detector
   npm run lint:as-committed -- <script> --any -- <args forwarded to the script>
 
   --ref=<git-ref>   which commit to test (default HEAD). e.g. --ref=origin/staging
+  --workspace=<dir> select a committed npm workspace, e.g. apps/sidecar;
+                    script definitions and forwarded file paths use that directory
   --keep            do not delete the extracted tree (path is printed)
   --any             allow a non-'lint:' npm script (blast-radius opt-in)
   --                everything after this is forwarded verbatim to the npm script
