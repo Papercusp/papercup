@@ -5,7 +5,7 @@ import { join } from 'node:path';
 
 import { WORKSPACE_HOST_BOOTC_BUILDER_KIND, type WorkspaceHostProviderConnection } from '@papercusp/deployment-driver';
 import { canonicalize } from '@papercusp/publish-auth/jcs';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   awsAmiReleaseDescription,
@@ -16,10 +16,12 @@ import {
 import {
   AWS_AMI_COMMAND_ERROR_DETAIL_CHARS,
   SdkAwsAmiReleaseAdapter,
+  composeAwsAmiReleaseAdapter,
   executeConfiguredAwsAmiRelease,
   probeAwsAmiCredential,
   type AwsAmiCommandRunner,
 } from './aws-ami-production';
+import { NodeGcpImageFamilyCommandRunner } from './gcp-image-family-adapter';
 import { CANARY_BUDGETS, SSM_CHUNK_CHARS } from '../../bin/aws-ami-canary-measure.mjs';
 
 const KMS = 'arn:aws:kms:us-east-1:111111111111:key/abc';
@@ -223,6 +225,27 @@ describe('SdkAwsAmiReleaseAdapter.buildCandidate', () => {
       expect(runs).toHaveLength(2);
       expect(deletedSnapshots(calls)).toEqual(['snap-0dead1', 'snap-0dead2']);
       expect(calls.some((call) => call.name === 'RegisterImageCommand')).toBe(false);
+    });
+
+    it('retains the first failed attempt as well as the final failure, with separate references', async () => {
+      const first = { exitCode: 1, stdout: 'first upload started', stderr: `${TRANSPORT}\n${'x'.repeat(AWS_AMI_COMMAND_ERROR_DETAIL_CHARS)}` };
+      const second = { exitCode: 1, stdout: 'second upload started', stderr: TRANSPORT.replaceAll('snap-0dead1', 'snap-0dead2') };
+      const adapter = sequencedAdapter([first, second], [], []);
+      const error = await adapter.buildCandidate(buildInput()).catch((failure: Error) => failure);
+      expect(error).toBeInstanceOf(Error);
+      const message = (error as Error).message;
+      const priorPath = message.match(/\[prior attempt output: ([^\]]+)\]/)?.[1];
+      const finalPath = message.match(/\[full output: ([^\]]+)\]/)?.[1];
+      expect(priorPath).toBeTruthy();
+      expect(finalPath).toBeTruthy();
+      try {
+        expect(priorPath).not.toBe(finalPath);
+        expect(await readFile(priorPath!, 'utf8')).toBe(`--- stdout ---\n${first.stdout}\n--- stderr ---\n${first.stderr}`);
+        expect(await readFile(finalPath!, 'utf8')).toBe(`--- stdout ---\n${second.stdout}\n--- stderr ---\n${second.stderr}`);
+        expect(message.indexOf('[prior attempt output:')).toBeLessThan(200);
+      } finally {
+        await Promise.all([priorPath, finalPath].filter(Boolean).map((path) => rm(path!, { force: true })));
+      }
     });
 
     it('does not retry a non-transport failure, but still deletes its partial snapshot', async () => {
@@ -527,6 +550,47 @@ describe('connection binding', () => {
     scope: { kind: 'account', id: '111111111111' },
     provider: { region: 'us-east-1' },
   } as unknown as WorkspaceHostProviderConnection;
+
+  it('passes a renewable shared profile to the real child boundary, removing ambient static credentials', async () => {
+    const profileConnection = {
+      ...connection,
+      provider: { region: 'us-east-1', credentialSource: { environment: 'local', method: 'shared-profile', profile: 'publisher-profile' } },
+    } as unknown as WorkspaceHostProviderConnection;
+    for (const key of ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN', 'AWS_SECURITY_TOKEN', 'ACCESS_KEY_ID', 'SECRET_ACCESS_KEY']) {
+      vi.stubEnv(key, 'unrelated-ambient-credential');
+    }
+    const runs: unknown[] = [];
+    const realRunner = new NodeGcpImageFamilyCommandRunner();
+    const adapter = composeAwsAmiReleaseAdapter(profileConnection, {
+      guestToolVersions: { 'amazon-ssm-agent': '3.3.1', 'openssh-server': '9.6' },
+    }, {
+      ec2: () => fakeSender({
+        RegisterImageCommand: () => ({ ImageId: 'ami-0aaa' }),
+        DescribeImagesCommand: () => ({ Images: [{ State: 'available' }] }),
+        CopyImageCommand: () => ({ ImageId: 'ami-0bbb' }),
+        DeregisterImageCommand: () => ({}),
+        DeleteSnapshotCommand: () => ({}),
+      }, []),
+      commands: { run: async (command) => {
+        runs.push(command);
+        const child = await realRunner.run({
+          command: process.execPath,
+          args: ['-e', 'console.log(JSON.stringify({profile:process.env.AWS_PROFILE,staticKeys:Object.keys(process.env).filter(k=>["AWS_ACCESS_KEY_ID","AWS_SECRET_ACCESS_KEY","AWS_SESSION_TOKEN","AWS_SECURITY_TOKEN","ACCESS_KEY_ID","SECRET_ACCESS_KEY"].includes(k))}))'],
+          env: command.env,
+        });
+        expect(child.exitCode).toBe(0);
+        expect(JSON.parse(child.stdout)).toEqual({ profile: 'publisher-profile', staticKeys: [] });
+        return { exitCode: 0, stdout: 'Uploaded snapshot snap-0abc123', stderr: '' };
+      } },
+      sleep: async () => {},
+    });
+    try {
+      await expect(adapter.buildCandidate(buildInput())).resolves.toEqual({ imageId: 'ami-0bbb' });
+      expect(runs).toHaveLength(1);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
 
   it('refuses a release whose publisher account is not the connection account', async () => {
     await expect(

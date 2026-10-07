@@ -188,8 +188,8 @@ export interface AwsAmiReleaseAdapterDeps {
   ssm: (region: string) => AwsAmiSdkSender;
   /** Publisher access needs kms:ListGrants for idempotency and kms:CreateGrant on target keys. */
   kms: (region: string) => AwsAmiSdkSender;
-  /** Resolved credentials for child processes (coldsnap / scanner / canary). */
-  childCredentials: () => Promise<Readonly<Record<string, string>>>;
+  /** Child credential source; undefined explicitly removes inherited static credentials. */
+  childCredentials: () => Promise<Readonly<Record<string, string | undefined>>>;
   commands?: AwsAmiCommandRunner;
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
@@ -308,11 +308,15 @@ export async function verifyBootcAmiArtifact(
  */
 export const AWS_AMI_COMMAND_ERROR_DETAIL_CHARS = 24_000;
 
-function assertSuccess(result: AwsAmiCommandResult, operation: string): string {
+function spillCommandDiagnostic(result: AwsAmiCommandResult, operation: string): string | null {
+  return spillDiagnostic(operation, `--- stdout ---\n${result.stdout}\n--- stderr ---\n${result.stderr}`, 'papercusp-aws-ami-');
+}
+
+function assertSuccess(result: AwsAmiCommandResult, operation: string, priorDiagnostics: readonly string[] = []): string {
   if (result.exitCode !== 0) {
-    const diagnosticPath = spillDiagnostic(operation, `--- stdout ---\n${result.stdout}\n--- stderr ---\n${result.stderr}`, 'papercusp-aws-ami-');
+    const diagnosticPath = spillCommandDiagnostic(result, operation);
     const detail = (result.stderr.trim() || result.stdout.trim()).slice(-AWS_AMI_COMMAND_ERROR_DETAIL_CHARS);
-    fail(`${operation} exited ${result.exitCode}${diagnosticPath ? ` [full output: ${diagnosticPath}]` : ''}${detail ? `: ${detail}` : ''}`);
+    fail(`${operation} exited ${result.exitCode}${priorDiagnostics.length ? ` [prior attempt output: ${priorDiagnostics.join(', ')}]` : ''}${diagnosticPath ? ` [full output: ${diagnosticPath}]` : ''}${detail ? `: ${detail}` : ''}`);
   }
   return result.stdout;
 }
@@ -382,7 +386,7 @@ export class SdkAwsAmiReleaseAdapter implements AwsAmiReleaseAdapter {
     return out;
   }
 
-  private async childEnv(region: string): Promise<Record<string, string>> {
+  private async childEnv(region: string): Promise<Record<string, string | undefined>> {
     return { ...(await this.deps.childCredentials()), AWS_REGION: region, AWS_DEFAULT_REGION: region };
   }
 
@@ -476,6 +480,7 @@ export class SdkAwsAmiReleaseAdapter implements AwsAmiReleaseAdapter {
     for (const tag of tagList(tags)) args.push('--tag', `Key=${tag.Key},Value=${tag.Value}`);
     args.push(diskPath);
     const ec2 = this.deps.ec2(region);
+    const priorDiagnostics: string[] = [];
     for (let attempt = 1; ; attempt += 1) {
       const upload = await this.commands.run({
         command: this.executables.coldsnap,
@@ -500,9 +505,13 @@ export class SdkAwsAmiReleaseAdapter implements AwsAmiReleaseAdapter {
           cleanupErrors.push(`${partial}: ${code}`);
         });
       }
-      if (attempt < UPLOAD_ATTEMPTS && residue.length === 0 && COLDSNAP_TRANSPORT_FAILURE.test(output)) continue;
+      if (attempt < UPLOAD_ATTEMPTS && residue.length === 0 && COLDSNAP_TRANSPORT_FAILURE.test(output)) {
+        const diagnosticPath = spillCommandDiagnostic(upload, `coldsnap upload (attempt ${attempt}/${UPLOAD_ATTEMPTS})`);
+        if (diagnosticPath) priorDiagnostics.push(diagnosticPath);
+        continue;
+      }
       const operation = `coldsnap upload (attempt ${attempt}/${UPLOAD_ATTEMPTS})`;
-      assertSuccess(upload, residue.length ? `${operation}, partial snapshot NOT deleted: ${residue.join(', ')}; cleanup errors: ${cleanupErrors.join(', ')};` : operation);
+      assertSuccess(upload, residue.length ? `${operation}, partial snapshot NOT deleted: ${residue.join(', ')}; cleanup errors: ${cleanupErrors.join(', ')};` : operation, priorDiagnostics);
     }
   }
 
@@ -854,6 +863,7 @@ export function composeAwsAmiReleaseAdapter(
 ): SdkAwsAmiReleaseAdapter {
   const homeRegion = connectionRegion(connection);
   const credentials = connectionCredentialProvider(connection, homeRegion, options.resolvers);
+  const source = connection.provider!.credentialSource as unknown as AwsWorkspaceHostCredentialSource;
   const ec2Clients = new Map<string, EC2Client>();
   const ssmClients = new Map<string, SSMClient>();
   const kmsClients = new Map<string, KMSClient>();
@@ -875,6 +885,21 @@ export function composeAwsAmiReleaseAdapter(
         return sender(kmsClients.get(region)!);
       },
       childCredentials: async () => {
+        if (source.environment === 'local' && source.method === 'shared-profile') {
+          // Preserve the maintained SDK's renewable profile chain. Exporting one assumed-role
+          // session freezes a one-hour credential into a child whose upload budget is two hours.
+          // Explicit undefined values also prevent unrelated ambient credentials winning over it.
+          return {
+            AWS_PROFILE: source.profile,
+            AWS_SDK_LOAD_CONFIG: '1',
+            AWS_ACCESS_KEY_ID: undefined,
+            AWS_SECRET_ACCESS_KEY: undefined,
+            AWS_SESSION_TOKEN: undefined,
+            AWS_SECURITY_TOKEN: undefined,
+            ACCESS_KEY_ID: undefined,
+            SECRET_ACCESS_KEY: undefined,
+          };
+        }
         const resolved = await credentials();
         return {
           AWS_ACCESS_KEY_ID: resolved.accessKeyId,
