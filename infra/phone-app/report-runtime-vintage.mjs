@@ -30,7 +30,7 @@
 // Env:   PHONE_VINTAGE_ORIGINS (comma list, default http://127.0.0.1:3070,http://127.0.0.1:3170)
 //        PAPERCUSP_WORKSPACE_ID (default papercusp-workspace)
 import { execFileSync } from 'node:child_process';
-import { realpathSync, readFileSync, readlinkSync } from 'node:fs';
+import { realpathSync, readFileSync, readlinkSync, createReadStream } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -147,8 +147,12 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   }
   // Native artifacts without baked source metadata must never inherit the
   // reporting checkout's current HEAD. Read the process's loaded inode instead.
-  const executableDigest = args.executable
-    ? createHash('sha256').update(readFileSync(`/proc/${args.pid}/exe`)).digest('hex') : undefined;
+  let executableDigest;
+  if (args.executable) {
+    const hash = createHash('sha256');
+    for await (const chunk of createReadStream(`/proc/${args.pid}/exe`)) hash.update(chunk);
+    executableDigest = hash.digest('hex');
+  }
   let nodeEntryDigest;
   if (args.nodeEntry) {
     const argv = readFileSync(`/proc/${args.pid}/cmdline`, 'utf8').split('\0').filter(Boolean);
