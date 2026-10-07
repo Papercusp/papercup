@@ -22,7 +22,7 @@ vi.mock('../pot-membership', async (importOriginal) => ({
   workItemStorageSlug: async (slug: string) => slug,
 }));
 
-import { assertExternalRuntimeProducerOutcome, verifyExternalRuntimeCompletionAttempt, describeOperationReceiptReadFault, matchOperationWorkerClaim, readActiveOperationModelPolicy, resolveAcceptedOperationWorkerBinding, selectAcceptedOperationWorkerModel, type ExternalRuntimeProducerBinding, type ExternalRuntimeStoredOutcome } from './operation-worker-binding';
+import { assertExternalRuntimeProducerOutcome, assertVerifiedExternalRuntimeCompletion, verifyExternalRuntimeCompletionAttempt, describeOperationReceiptReadFault, matchOperationWorkerClaim, readActiveOperationModelPolicy, resolveAcceptedOperationWorkerBinding, selectAcceptedOperationWorkerModel, type ExternalRuntimeProducerBinding, type ExternalRuntimeStoredOutcome } from './operation-worker-binding';
 
 const HASH = 'a'.repeat(64);
 const REVISION = 'b'.repeat(64);
@@ -87,6 +87,8 @@ describe('external voice producer retained outcome validation (D037)', () => {
   it('reads the trusted host and freezes the independently verified receipt', async () => {
     const input = attemptFixture();
     const receipt = await verifyExternalRuntimeCompletionAttempt(input);
+    expect(() => assertVerifiedExternalRuntimeCompletion(receipt)).not.toThrow();
+    expect(() => assertVerifiedExternalRuntimeCompletion({ ...receipt })).toThrow('not minted');
     expect(input.attempt.readStoredOutcome).toHaveBeenCalledOnce();
     input.attempt.binding.runId = 'mutated';
     input.stored.binding.runId = 'also-mutated';

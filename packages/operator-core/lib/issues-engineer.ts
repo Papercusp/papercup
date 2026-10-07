@@ -3571,6 +3571,13 @@ export async function setIssueState(
   const ws = await resolveIssueWorkspace(id);
   const operationClaims = !opts.skipCompletionGate
     ? await import('./blueprint/operation-worker-binding') : null;
+  if (opts.externalRuntimeCompletion) {
+    if (!operationClaims) throw new Error('external runtime producer cannot skip the completion gate');
+    operationClaims.assertVerifiedExternalRuntimeCompletion(opts.externalRuntimeCompletion);
+    opts = { ...opts, completionEvidence: { ...opts.completionEvidence,
+      externalRuntimeVerification: { binding: opts.externalRuntimeCompletion.binding,
+        transcript: opts.externalRuntimeCompletion.transcript } } };
+  }
   const operationEffectRead = operationClaims
     ? opts.acceptedProgramAttempt ? null : by
       ? await operationClaims.readActiveOperationWorkerClaimBinding(ws, by)

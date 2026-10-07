@@ -3734,6 +3734,9 @@ export async function setWorkItemState(
     externalRuntimeCompletion = await verifyExternalRuntimeCompletionAttempt({
       attempt: opts.externalRuntimeAttempt, workspaceId: activeWorkspaceId(), by: opts.by ?? '', item: wi,
     });
+    opts = { ...opts, completionEvidence: { ...opts.completionEvidence,
+      externalRuntimeVerification: { binding: externalRuntimeCompletion.binding,
+        transcript: externalRuntimeCompletion.transcript } } };
   }
   // The feature writer below uses this same receipt inside its UPDATE. Check
   // before any completion attestation or other pre-write side effect as well.

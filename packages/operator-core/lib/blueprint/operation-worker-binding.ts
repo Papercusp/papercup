@@ -471,6 +471,16 @@ export interface ExternalRuntimeCompletionAttempt {
 export interface VerifiedExternalRuntimeCompletion {
   readonly binding: Readonly<ExternalRuntimeProducerBinding>;
   readonly updatedTs: number;
+  readonly transcript: Readonly<{ endedAt: string; segmentCount: number; sha256: string }>;
+}
+
+// A structurally matching object is not a trusted read. Only receipts minted by
+// the verifier in this process may reach a canonical writer; recovery re-verifies.
+const verifiedExternalRuntimeCompletions = new WeakSet<object>();
+export function assertVerifiedExternalRuntimeCompletion(receipt: VerifiedExternalRuntimeCompletion): void {
+  if (!verifiedExternalRuntimeCompletions.has(receipt)) {
+    throw new Error('external runtime completion receipt was not minted by the trusted verifier');
+  }
 }
 
 /** Capture the attempt before asynchronous I/O, then compare the trusted read.
@@ -500,7 +510,11 @@ export async function verifyExternalRuntimeCompletionAttempt(input: {
     throw new Error('external runtime completion attempt differs from trusted host registration');
   }
   assertExternalRuntimeProducerOutcome({ ...input, stored });
-  return Object.freeze({ binding, updatedTs });
+  const transcript = Object.freeze({ endedAt: stored.endedAt!,
+    segmentCount: stored.transcriptSegmentCount, sha256: stored.transcriptSha256 });
+  const receipt = Object.freeze({ binding, updatedTs, transcript });
+  verifiedExternalRuntimeCompletions.add(receipt);
+  return receipt;
 }
 
 /** Repeat the verified registration, claim and attempt epoch at the write.
@@ -512,6 +526,7 @@ export function externalRuntimeCompletionEffectWhereSql(
     harness: 'harness_slug' | 'wi.harness_slug'; holder: 'taken_by' | 'wi.taken_by';
     status: 'status' | 'wi.status'; updated: 'updated_ts' | 'wi.updated_ts' },
 ) {
+  assertVerifiedExternalRuntimeCompletion(receipt);
   const { binding, updatedTs } = receipt;
   const payload = sql.unsafe(columns.payload);
   return sql`(

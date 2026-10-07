@@ -13,6 +13,7 @@ import { seedContentHash } from '../cupboard/rubric-store';
 import { getRubric, provisionPinnedRubric } from '../rubrics';
 import { createWorkItem, getWorkItem, setWorkItemState } from '../work-items';
 import type { ExternalRuntimeProducerBinding, ExternalRuntimeStoredOutcome } from './operation-worker-binding';
+import { CompletionVerificationEvidenceSchema } from '../coord-lifecycle/records';
 import { runWithWorkspace } from '../workspace-als';
 import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
 // Copy-out mutation probes load the program executor from its mirrored path.
@@ -56,6 +57,9 @@ let db: OrgTestDb;
 let sql: Sql;
 
 beforeAll(async () => {
+  // Compile fixture contracts before cloning PG: stale operation identity pins
+  // should fail once at preflight, not cascade into every program scenario.
+  definition('fixture-preflight');
   db = await createOrgTestDb();
   sql = db.adminSql;
   connection.sql = sql;
@@ -74,6 +78,11 @@ afterAll(async () => db?.cleanup(), 120_000);
 describe.each(['feature', 'change'] as const)('external voice canonical %s settlement (D037)', (kind) => {
   let sequence = 0;
   async function producer() {
+    const completionEvidence = CompletionVerificationEvidenceSchema.parse({
+      filesChanged: [], filesDeleted: [], verifiedHow: 'trusted-phone-retained-records',
+      testsRun: 'Binding and retained transcript digest checks',
+      testResult: 'Stored completion and independently read transcript agree',
+    });
     const id = `WI-external-voice-${kind}-${++sequence}`;
     const owner = 'voice-runtime-owner';
     const binding: ExternalRuntimeProducerBinding = {
@@ -93,9 +102,7 @@ describe.each(['feature', 'change'] as const)('external voice canonical %s settl
       transcriptSha256: 'b'.repeat(64), retainedSha256: 'b'.repeat(64), contentDeleted: false,
     };
     const opts = { harness: item.harness!, by: owner, completionRef: `phone:${id}`,
-      completionEvidence: { summary: 'Actual retained call verified', filesChanged: [], filesDeleted: [],
-        verifiedHow: 'trusted-phone-retained-records', testsRun: 'Binding and retained transcript digest checks',
-        testResult: 'Stored completion and independently read transcript agree' },
+      completionEvidence: { ...completionEvidence, summary: 'Actual retained call verified' },
       externalRuntimeAttempt: { binding, updatedTs: Date.parse(item.updatedAt),
         readStoredOutcome: async () => stored } };
     return { id, owner, item, binding, stored, opts };
@@ -103,11 +110,14 @@ describe.each(['feature', 'change'] as const)('external voice canonical %s settl
   it('derives normal committed authority from a verified call and reads back canonical attribution', async () => {
     const p = await producer();
     const settled = await runWithWorkspace(workspaceId, () => setWorkItemState(p.id, 'done', p.opts));
-    expect(settled?.state).toBe(kind === 'change' ? 'resolved' : 'done');
+    // Unified WorkItem maps the issue family's physical resolved state to done.
+    expect(settled?.state).toBe('done');
     const read = await runWithWorkspace(workspaceId, () => getWorkItem(p.id, p.item.harness!));
     expect(read).toMatchObject({ terminalOwner: p.owner, terminalCompletionRef: `phone:${p.id}`,
       completionAuthority: 'committed', payload: { _completionEvidence: {
         verifiedHow: 'trusted-phone-retained-records', filesChanged: [], filesDeleted: [],
+        externalRuntimeVerification: { binding: p.binding,
+          transcript: { endedAt: p.stored.endedAt, segmentCount: 2, sha256: 'b'.repeat(64) } },
       } } });
     await expect(runWithWorkspace(workspaceId, () => setWorkItemState(p.id, 'done', p.opts)))
       .rejects.toThrow(/stale|terminal/);
@@ -125,10 +135,14 @@ describe.each(['feature', 'change'] as const)('external voice canonical %s settl
       .rejects.toThrow('no verified complete');
     expect((await runWithWorkspace(workspaceId, () => getWorkItem(p.id, p.item.harness!)))?.terminalOwner).toBeNull();
   }, 90_000);
-  it('fences a claim and epoch change between trusted verification and the terminal write', async () => {
+  it.each(['holder', 'epoch', 'binding', 'cancelled'] as const)('fences a %s change between trusted verification and the terminal write', async (change) => {
     const p = await producer();
     p.opts.externalRuntimeAttempt.readStoredOutcome = async () => {
-      await sql`UPDATE harness_shared.work_items SET taken_by = 'replacement-voice-owner', updated_ts = updated_ts + 1
+      await sql`UPDATE harness_shared.work_items SET
+        taken_by = CASE WHEN ${change === 'holder'} THEN 'replacement-voice-owner' ELSE taken_by END,
+        updated_ts = CASE WHEN ${change === 'epoch'} THEN updated_ts + 1 ELSE updated_ts END,
+        payload = CASE WHEN ${change === 'binding'} THEN jsonb_set(payload, '{externalRuntimeProducer,runId}', '"replacement-run"'::jsonb)
+                       WHEN ${change === 'cancelled'} THEN payload || '{"blueprintCancellation":{}}'::jsonb ELSE payload END
         WHERE workspace_id = ${workspaceId} AND feature_id = ${p.id}`;
       return p.stored;
     };
@@ -138,7 +152,7 @@ describe.each(['feature', 'change'] as const)('external voice canonical %s settl
     expect(result).toBeFalsy();
     const read = await runWithWorkspace(workspaceId, () => getWorkItem(p.id, p.item.harness!));
     expect(read?.terminalOwner).toBeNull();
-    expect(read?.assignee).toBe('replacement-voice-owner');
+    expect(read?.assignee).toBe(change === 'holder' ? 'replacement-voice-owner' : p.owner);
   }, 90_000);
 });
 

@@ -834,6 +834,12 @@ export const CHECKPOINT_PROSE_SNAPSHOT_MAX_CHARS = 8_000;
  * They never participate in completion-authority calculation.
  */
 export type PersistedCompletionEvidence = CompletionVerificationEvidence & {
+  /** Host-verified non-CLI producer outcome. Canonical writers replace caller
+   * assertions with the minted receipt; this field alone grants no authority. */
+  externalRuntimeVerification?: {
+    binding: Readonly<import('../blueprint/operation-worker-binding').ExternalRuntimeProducerBinding>;
+    transcript: Readonly<{ endedAt: string; segmentCount: number; sha256: string }>;
+  };
   /** Contrastive causal record required for successful bug/capability-gap closes. */
   rootCauseVerification?: RootCauseVerification;
   whatLanded?: string[];
