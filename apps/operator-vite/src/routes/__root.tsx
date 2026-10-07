@@ -61,6 +61,7 @@ import LeftSidebar from '../components/left-sidebar/LeftSidebar';
 import ChatRefPopupHost from '@/app/_components/chat/ChatRefPopupHost';
 import RoutedPlanDashboardHost from '../components/RoutedPlanDashboardHost';
 import PlanCleanupReportHost from '@/app/_components/plans/PlanCleanupReportHost';
+import PlanAuditPane from '@/app/_components/plans/PlanAuditPane';
 import InboxBulkReportHost from '@/app/_components/inbox/InboxBulkReportHost';
 import { usePathname, useSearchParams } from '@/lib/router-compat/navigation';
 import { isChromelessPath, isPortalEmbedLocation, routeHasSteeringSidebar } from '@papercusp/operator-core/lib/chromeless-routes';
@@ -342,6 +343,7 @@ function RootComponent() {
                             remains a strip deep link while the resolver runs,
                             then becomes the grouped report takeover at review. */}
                         <PlanCleanupReportHost />
+                        <PlanAuditPane />
                         {/* cleanup-report-flows-2026-08-24 P-008: `?opcbr=`
                             remains the Inbox strip's run deep link while the
                             resolver works, then becomes the grouped app-pane
