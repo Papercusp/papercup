@@ -47,7 +47,7 @@ import "./boot-malloc-arena";
 // silently serves dark defaults even after flags:set wrote a runtime override.
 import "./boot-flag-store";
 
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 import {
   connect as netConnect,
@@ -59,7 +59,6 @@ import {
   writeFileSync,
   unlinkSync,
   mkdirSync,
-  realpathSync,
 } from "node:fs";
 import {
   mkdir,
@@ -72,6 +71,7 @@ import {
 import { execFileSync } from "node:child_process";
 import { isRequestOnlyIdentityProcess } from "@papercusp/operator-core/lib/identity/keychain";
 import { ensureToolPathEnv } from "@papercusp/operator-core/lib/tool-path";
+import { isBundledEntry, isCliEntry } from "@papercusp/operator-core/lib/util/cli-entry";
 import { resolveBindHost } from "@papercusp/operator-core/lib/resolve-bind-host";
 import { assertRemoteAuthReady } from "@papercusp/operator-core/lib/remote-auth-policy";
 import { runShutdownWithDeadline } from "../lib/shutdown-deadline";
@@ -1732,21 +1732,9 @@ async function main(): Promise<void> {
   }
 }
 
-// Only auto-run when executed directly (so tests / other modules can import
-// the helpers without booting a server). Symlink-robust (WI-1443): node
-// realpaths import.meta.url while argv[1] keeps the invoked path (papercup ->
-// papercusp), so also compare the realpath'd form.
-const invokedDirectly = ((): boolean => {
-  const argv1 = process.argv[1];
-  if (!argv1) return false;
-  if (import.meta.url === pathToFileURL(argv1).href) return true;
-  try {
-    return import.meta.url === pathToFileURL(realpathSync(argv1)).href;
-  } catch {
-    return false;
-  }
-})();
-if (invokedDirectly) {
+// Library imports never boot a server. The explicit bundle name is shared by
+// desktop, rig, witness and hosted-control-plane builders.
+if (isCliEntry(import.meta.url) || isBundledEntry("serve.mjs")) {
   main().catch((e) => {
     // EI-7099: a raw `console.error('[serve] fatal:', e)` printed a bare
     // "undefined" during a real restart-race failure (embedded-PG rejecting
