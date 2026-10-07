@@ -118,15 +118,25 @@ function evidence(over: Partial<SpecEvidenceForAdequacy> = {}): SpecEvidenceForA
 /** A successful, ledger-backed negative control carrying `targeted` (or none when undefined). */
 function counterexampleRow(targeted: unknown): SpecEvidenceForAdequacy {
   const base = evidence();
+  const originRunId = 'targeting-fixture';
   const adequacy: Record<string, unknown> = { ...(base.details.adequacy as Record<string, unknown>), outcome: 'killed' };
   if (targeted !== undefined) adequacy.targeted = targeted;
   return evidence({
     evidenceKind: 'counterexample',
-    evidenceRef: 'counterexample:reconnect',
+    evidenceRef: `test-run-group:${originRunId}:counterexample`,
     coverageEvidenceRef: null,
     testRunId: 45,
     testRunProvenance: { filePath: TARGETING_TEST_FILE, commitSha: null, worktreeDirty: null },
-    details: { adequacy },
+    details: {
+      adequacy,
+      testExecution: {
+        schemaVersion: 1,
+        originRunId,
+        binding: {
+          counterexample: { test: 'reconnect is not replayed', messageIncludes: 'not replayed' },
+        },
+      },
+    },
   });
 }
 
