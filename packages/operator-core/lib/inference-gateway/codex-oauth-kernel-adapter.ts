@@ -103,6 +103,8 @@ export interface CodexOAuthResponseMetadata {
   /** Set when this attempt was the backend refusing the request MODEL for this account
    *  (WI-10003306) — the backend's `detail` text. Drives a model-aware failover. */
   modelRefusal?: string | null;
+  /** An account-wide quota wall cannot be recovered by changing egress IP. */
+  quotaExhausted?: boolean;
 }
 
 export interface CodexOAuthPreparedAttempt {
@@ -185,7 +187,7 @@ export interface CodexOAuthAdapterOptions {
   dispatcherFor(account: ActiveAccount, entry: unknown): unknown | Promise<unknown>;
   fetch(url: string, init: CodexOAuthFetchInit): Promise<CodexOAuthFetchResponse>;
   /** Parses `x-ratelimit-reset*` / `retry-after` into an epoch-ms instant + delay. */
-  rateReset(headers: Record<string, string>): { resetAt: number | null; retryAfterMs: number | null };
+  rateReset(headers: Record<string, string>): { resetAt: number | null; retryAfterMs: number | null; transient?: boolean };
   /** Per-account upstream ATTEMPT tally (the denominator for egress fail rate). */
   onEgressAttempt?(accountId: string): void;
   /** Per-account transport-FAILURE tally. */
@@ -487,6 +489,11 @@ export function createCodexOAuthKernelAdapter(opts: CodexOAuthAdapterOptions): C
         return routeFor(account, 'reserve-fallback', 'public');
       }
 
+      // A real usage wall follows the credential across EVERY sibling IP. Do
+      // not spend the entire attempt budget on that account while an eligible
+      // account is waiting. Bare/IP throttles keep their existing sibling retry.
+      if (status === 429 && context.lastResponse?.metadata.quotaExhausted) return null;
+
       // Transport failure (no response) / 429 / retryable 5xx → try a sibling
       // egress IP on the SAME account before parking it, matching the live
       // `siblingEgressAvailable(...) || rotate(...)` order.
@@ -668,6 +675,7 @@ export function createCodexOAuthKernelAdapter(opts: CodexOAuthAdapterOptions): C
 
       const headers = headersToObject(upstream.headers);
       let status = upstream.status;
+      let quotaExhausted = status === 429 && opts.rateReset(headers).transient === false;
       const pinYieldedFrom =
         pinnedAccountId && pinnedAccountId !== account.accountId ? pinnedAccountId : null;
 
@@ -682,6 +690,7 @@ export function createCodexOAuthKernelAdapter(opts: CodexOAuthAdapterOptions): C
         body = inspected.body;
         if (inspected.quota) {
           status = 429;
+          quotaExhausted = true;
           headers['content-type'] = 'application/json';
           delete headers['content-length'];
           if (inspected.quota.resetAt && inspected.quota.resetAt > now()) {
@@ -728,7 +737,7 @@ export function createCodexOAuthKernelAdapter(opts: CodexOAuthAdapterOptions): C
         streaming: opts.streaming,
         status,
         transport: OAUTH_TRANSPORT,
-        metadata: { accountId: account.accountId, headers, pinYieldedFrom, egressKey: egress.key, modelRefusal },
+        metadata: { accountId: account.accountId, headers, pinYieldedFrom, egressKey: egress.key, modelRefusal, quotaExhausted },
         body,
         // 401 is retryable via REFRESH; 429 and 5xx via a sibling IP or account
         // rotation. A definitive 4xx from the hidden reserve model is also
