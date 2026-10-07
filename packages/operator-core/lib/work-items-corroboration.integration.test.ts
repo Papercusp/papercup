@@ -75,6 +75,7 @@ const { claimNextVerificationTask } = await import('./harness/improvements/agent
 const { readCorroboration, readCorroborationSummary, corroborationReportersSql, readOccurrenceReporters } = await import(
   './harness/improvements/corroboration'
 );
+const { readReporterStatus } = await import('./harness/improvements/reporter-status');
 
 const H = 'papercup';
 const WS = 'default';
@@ -285,6 +286,22 @@ describe('P-012 the count is distinct reporters in the occurrence ledger', () =>
     await seed('WI-CO-NONE');
     expect(await reportersScalar('WI-CO-NONE')).toBe(0);
     expect(await readCorroborationSummary({ workspaceId: WS, id: 'WI-CO-NONE', harness: H, payload: null }, db.sql as never)).toBeNull();
+  });
+});
+
+describe('P016 installed reporter status follows the distinct canonical fix', () => {
+  it('reads canonical status and question while keeping the answer on the source; another workspace cannot read it', async () => {
+    await seed('WI-REPORT-SOURCE', { payload: { reporter: { kind: 'end-user' }, reporterAnswer: { questionId: 'q1', text: 'CSV export', answeredAt: AT } } });
+    await seed('WI-REPORT-FIX', { payload: { ...verified(), reporter: { kind: 'end-user' }, intakeSource: { id: 'WI-REPORT-SOURCE', mode: 'distinct' },
+      reporterQuestion: { id: 'q1', text: 'Which export?', askedBy: 'su-fixer', askedAt: AT } } });
+    await db.sql`UPDATE harness_shared.work_items SET taken_by = 'su-fixer' WHERE feature_id = 'WI-REPORT-FIX'`;
+    expect(await readReporterStatus({ id: 'WI-REPORT-SOURCE', harness: H, workspaceId: WS }, db.sql as never)).toMatchObject({
+      sourceId: 'WI-REPORT-SOURCE', canonicalId: 'WI-REPORT-FIX', status: 'being-fixed', followUp: { question: { text: 'Which export?' }, answer: { text: 'CSV export' } },
+    });
+    expect(await readReporterStatus({ id: 'WI-REPORT-FIX', harness: H, workspaceId: WS }, db.sql as never)).toBeNull();
+    expect(await readReporterStatus({ id: 'WI-REPORT-SOURCE', harness: H, workspaceId: 'other' }, db.sql as never)).toBeNull();
+    expect(await readReporterStatus({ id: 'WI-REPORT-SOURCE', harness: 'other', workspaceId: WS }, db.sql as never)).toBeNull();
+    expect((await db.sql`SELECT payload -> 'reporterAnswer' AS answer FROM harness_shared.work_items WHERE feature_id = 'WI-REPORT-FIX'`)[0].answer).toBeNull();
   });
 });
 
