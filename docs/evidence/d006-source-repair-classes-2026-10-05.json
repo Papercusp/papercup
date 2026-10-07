@@ -5,9 +5,9 @@
   "accountableOwner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
   "population": {
     "failedFiles": 124,
-    "repairedFocused": 26,
+    "repairedFocused": 27,
     "repairedPeerFocused": 16,
-    "openUnknown": 82
+    "openUnknown": 81
   },
   "classes": {
     "assertion": 55,
@@ -21,7 +21,7 @@
     "migration-stage": 1,
     "missing-schema": 14,
     "blueprint-fixture": 1,
-    "console-guard": 8,
+    "console-guard": 7,
     "unclassified": 6,
     "plan-pot-fixture": 1,
     "plan-observation-fixture": 1,
@@ -41,7 +41,7 @@
     "peer-edit-attribution-migration": 1,
     "plan-receiver-schema-fixture": 1,
     "peer-plan-cutover-schema": 1,
-    "sidecar-pool-lifecycle-fixture": 1
+    "sidecar-pool-lifecycle-fixture": 2
   },
   "files": [
     {
@@ -275,6 +275,12 @@
     },
     {
       "path": "packages/operator-core/lib/work-items.integration.test.ts",
+      "namedByteCurrentness": {
+        "status": "changed-since-receipt",
+        "measuredAt": "2026-10-07T15:58:28Z",
+        "currentTestSha256": "aacf4de0dd08588f44f960682753fde3390506e798a9014a7dca967ceab44d75",
+        "scope": "Historical focused receipt preserved; current named bytes differ. No unchanged terminal replay or new current-import/environment/final assurance."
+      },
       "class": "missing-schema",
       "state": "repaired-focused",
       "item": "WI-10006278",
@@ -414,12 +420,41 @@
     },
     {
       "path": "packages/operator-core/lib/sync/hyperbee/__tests__/federation-security-drops-sidecar.repro.integration.test.ts",
-      "class": "console-guard",
-      "state": "open-unknown",
-      "item": "WI-10006170",
+      "class": "sidecar-pool-lifecycle-fixture",
+      "state": "repaired-focused",
+      "item": "WI-10007165",
       "lines": [
         16095
-      ]
+      ],
+      "historicalSymptomClass": "console-guard",
+      "relatedOpenInventory": "EI-24099631804056975",
+      "diagnosis": "The DROP2 receiver uses a new isolated OrgTestDb after DROP1, while db-org and URL-cache cleanup leaves the independent merge-cursor pool registry bound to DROP1. The production accessor correctly rebinds and warns. Reused existing long-lived-pool and store-identity reset helpers at per-case teardown, plus the prior sidecar repair's real-PG control pattern. The control proves retained old URL, correct second-database access with exact warning, and fresh first-database access without warning after fixture reset. Each build awaits its asynchronous identity pin before the next rotation. Original five bad-signature, nonmember and revoked-member cases and legitimate-path positive controls remain intact.",
+      "beforeTestRun": 20902187,
+      "afterTestRun": 20902210,
+      "passed": 6,
+      "skipped": 0,
+      "receiptCommit": "7f880aeffb571758d0688df009ece5d48808aa83",
+      "receiptWorkspace": "papercusp-workspace",
+      "receiptHarness": "papercusp",
+      "receiptSource": "local",
+      "receiptRunGroup": null,
+      "worktreeDirty": true,
+      "isScratchConfig": false,
+      "testSha256": "515407a69e9776a3f855c2db547d4d21581aea0f0b8db5f0becb1a18cda7779c",
+      "testedTestBlob": "c95e8686c4e2071d07b820245de32eeca174984f",
+      "beforeLog": "/tmp/wi-10006170-security-before.log",
+      "beforeLogSha256": "c84c5e79f7691e5277d7a562ecb280a21b6611d5ef017f809a72378e8e72afe3",
+      "focusedLog": "/tmp/wi-10007165-verified.log",
+      "focusedLogSha256": "1e7d0e988bc705d03ef898cd15d5d421472d349ae18c38bca0aec6ff72a2feb3",
+      "scopedTypecheck": {
+        "checkedFiles": 1,
+        "errors": 0,
+        "exitCode": 0,
+        "engine": "tsc-service"
+      },
+      "recurrenceGuard": "Conventional real-PG lifecycle control distinguishes retained-registry rotation from clean fixture startup; exact production rebind warning remains asserted, and the original strict-console security DROP and positive-control population passes.",
+      "completeImportGraphCurrentness": "unknown",
+      "currentEvidenceScope": "Whole named file PASS6/0skip/exit0, local repository-dirty staging receipt. Exact named bytes and logs retained; full imports/environment, final D006 and shipment remain unverified."
     },
     {
       "path": "packages/operator-core/lib/sync/hyperbee/__tests__/federation-concurrent-writes-sidecar.repro.integration.test.ts",
@@ -1209,6 +1244,12 @@
     },
     {
       "path": "packages/operator-core/lib/sync-resolver/__tests__/cache-tag-trigger-coverage.integration.test.ts",
+      "namedByteCurrentness": {
+        "status": "changed-since-receipt",
+        "measuredAt": "2026-10-07T15:58:28Z",
+        "currentTestSha256": "88230f94284aa905cdc314bf96aa1c8d36e78c6b69cccc78f413dbd2971ba42f",
+        "scope": "Historical focused receipt preserved; current named bytes differ. No unchanged terminal replay or new current-import/environment/final assurance."
+      },
       "class": "peer-db-schema-notify",
       "state": "repaired-peer-focused",
       "item": "WI-10006171",
@@ -2148,6 +2189,12 @@
     },
     {
       "path": "libs/papercusp/libs/db/src/legacy-human-parks-migration.integration.test.ts",
+      "namedByteCurrentness": {
+        "status": "changed-since-receipt",
+        "measuredAt": "2026-10-07T15:58:28Z",
+        "currentTestSha256": "555772bc9b14b0072587ef3b9f9d5b24a420d2f2315ff4467b781d479e8ea398",
+        "scope": "Historical focused receipt preserved; current named bytes differ. No unchanged terminal replay or new current-import/environment/final assurance."
+      },
       "class": "peer-db-schema-notify",
       "state": "repaired-peer-focused",
       "item": "WI-10006171",
@@ -2225,7 +2272,7 @@
   "historicalVerdict": "failed",
   "finalSweepReadiness": "not-established",
   "remainingClasses": "Observed symptoms only; causes unproved. Parent owner accountable for diagnosis and placement; new source edits require accepted specific repair item.",
-  "focusedLimits": "Local ledger rows dirty=true,scratch=false; no complete current-source/import/environment or finalD006 assurance.",
+  "focusedLimits": "Focused repair counts classify historical receipts, not current-source assurance. Local ledger rows dirty=true,scratch=false; no complete current-source/import/environment or finalD006 assurance. The 2026-10-07 named-byte audit records three changed-since-receipt test files explicitly; their historical receipts remain preserved.",
   "acceptanceClaim": false,
   "shipmentClaim": false,
   "classDisposition": [
@@ -2250,12 +2297,16 @@
     {
       "class": "missing-schema",
       "count": 14,
-      "status": "open-unknown",
+      "status": "partially-repaired-focused",
+      "stateCounts": {
+        "repaired-focused": 5,
+        "open-unknown": 9
+      },
       "item": "WI-10006170",
       "owner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
       "scope": "diagnosis-and-placement",
-      "rootCause": "unproved",
-      "next": "Inspect exact saved error/source, deduplicate accepted defect and focused guard before source edits."
+      "rootCause": "Nine remaining entries unproved; preserve the five existing file-level focused repairs and their evidence limits.",
+      "next": "Inspect exact saved error/source for the nine open-unknown files, deduplicate accepted defect and focused guard before source edits. The five existing repaired-focused files retain their stored individual repair/receipt references; this class summary grants no additional current-source or final assurance."
     },
     {
       "class": "blueprint-fixture",
@@ -2267,13 +2318,13 @@
     },
     {
       "class": "console-guard",
-      "count": 8,
+      "count": 7,
       "status": "open-unknown",
       "item": "WI-10006170",
       "owner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
       "scope": "diagnosis-and-placement",
       "rootCause": "unproved",
-      "next": "Resolve the eight remaining console-guard files against scoped repairs and current causal verification; preserve their open-unknown state. The original nine-entry diagnostic inventory remains historical; its fresh-joiner entry is now accounted for by WI-10007161.",
+      "next": "Resolve the seven remaining console-guard files against scoped repairs and current causal verification; preserve their open-unknown state. The original nine-entry diagnostic inventory remains historical; its fresh-joiner and security-DROP entries are now accounted for by WI-10007161 and WI-10007165.",
       "archivedDiagnosticInventory": {
         "archiveSha256": "43cf66489baf7cf665a9746d097375cffc7cdc6262014929c3cc398155b579f4",
         "scope": "Exact ANSI-stripped error groups from the immutable D006 archive, indexed by the existing FAIL-header line identities. These are historical symptoms, not current test verdicts or proved source causes. Candidate terminal records require completion and source-assurance review.",
@@ -2843,15 +2894,15 @@
     },
     {
       "class": "sidecar-pool-lifecycle-fixture",
-      "count": 1,
+      "count": 2,
       "status": "repaired-focused",
-      "item": "WI-10007161",
+      "items": ["WI-10007161", "WI-10007165"],
       "owner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
-      "scope": "named-fresh-sidecar-joiner-fixture-only",
+      "scope": "named-fresh-sidecar-joiner-and-security-drop-fixtures-only",
       "rootCause": "Per-case DSN isolation leaves the separate long-lived pool registry bound to the previous fixture. Reset registry and process identity at teardown, retaining production rebinding. The real PG control must also await each fire-and-forget identity probe before its next reset/rotation; the failed intermediate control20902079 identified that harness precondition and is not a passing receipt.",
-      "testRunIds": [20901570, 20902079, 20902157],
-      "archiveLines": [16231, 16232, 16233, 16234, 16239],
-      "next": "Retain focused PASS5/0skip and scoped typecheck1/errors0. Related multi-file EI-24099631804056975 remains open; other console fixtures, complete imports/environment, final D006 and shipment remain unverified."
+      "testRunIds": [20901570, 20902079, 20902157, 20902187, 20902210],
+      "archiveLines": [16231, 16232, 16233, 16234, 16239, 16095, 16101, 16108],
+      "next": "Retain fresh-joiner PASS5/0skip and security-DROP PASS6/0skip, each with scoped typecheck1/errors0. Related multi-file EI-24099631804056975 remains open; other console fixtures, complete imports/environment, final D006 and shipment remain unverified."
     }
   ],
   "prerequisites": [
