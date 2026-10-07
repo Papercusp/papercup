@@ -310,6 +310,7 @@ export function startClaudeSuEngine(
               await applyClaudeModelSwitch(sdk, nextModel);
             } catch (error) {
               receipt.resolve({ ok: false, code: 'model_switch_refused', retryable: false,
+                liftsWhen: 'Send a new turn with a model and effort supported by this connection, omit the model override, or start a new session with the requested model.',
                 message: `Could not switch to ${nextModel}: ${error instanceof Error ? error.message : String(error)}` });
               return;
             }
@@ -323,6 +324,7 @@ export function startClaudeSuEngine(
               await sdk.setPermissionMode(claudePermissionMode(nextApprovals));
             } catch (error) {
               receipt.resolve({ ok: false, code: 'approvals_switch_refused', retryable: false,
+                liftsWhen: 'Send a new turn without an approvals override, or start a new Claude session with the requested approvals mode.',
                 message: `Could not switch approvals to ${nextApprovals}: ${error instanceof Error ? error.message : String(error)}` });
               return;
             }
