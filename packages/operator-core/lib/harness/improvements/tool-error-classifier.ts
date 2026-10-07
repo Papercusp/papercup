@@ -87,6 +87,7 @@ export const TIMEOUT_MESSAGE_PATTERN =
  *  for absent scratch evidence and missing tenant-scope controls,
  *  the checkpoint replacement safety refusal that requires explicit retirement
  *  of carried safety rows,
+ *  a missing / unregistered browser UI client for a CLI caller,
  *  an explicit compaction flush-gate refusal that requires a checkpoint,
  *  an explicit claim-spec selector refusal for the literal `self` sentinel,
  *  an explicit reviewer-model allowlist refusal,
