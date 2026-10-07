@@ -652,9 +652,9 @@ describe('proxyOpenAi — happy path + header discipline', () => {
     expect(res.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('cdx-2');
   });
 
-  it('overlays the selected CLI account native model cache while retaining fallback reasoning levels', async () => {
+  it('awaits the selected CLI account native model cache while retaining fallback reasoning levels', async () => {
     let nativeOnlySlug = 'gpt-future';
-    const readNativeCache = vi.fn((home: string) => ({
+    const readNativeCache = vi.fn(async (home: string) => ({
       models: [
         {
           slug: 'gpt-6-astra',
