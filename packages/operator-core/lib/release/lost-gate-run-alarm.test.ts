@@ -50,6 +50,7 @@ function fakeRoutineRow(initialMarker: StoredInFlightCandidate | null, qualifica
     workspaceId: 'papercusp-workspace',
     marker: initialMarker as StoredInFlightCandidate | null,
     alarmKey: null as string | null,
+    progressAlarmKey: null as string | null,
     qualification,
     retries: 0,
   };
@@ -58,7 +59,7 @@ function fakeRoutineRow(initialMarker: StoredInFlightCandidate | null, qualifica
     if (/^\s*SELECT install_slug/.test(text)) {
       return Promise.resolve(
         row.marker || row.qualification
-          ? [{ install_slug: row.installSlug, workspace_id: row.workspaceId, marker: row.marker, alarmed_key: row.alarmKey, qualification: row.qualification }]
+          ? [{ install_slug: row.installSlug, workspace_id: row.workspaceId, marker: row.marker, alarmed_key: row.alarmKey, progress_alarmed_key: row.progressAlarmKey, qualification: row.qualification }]
           : [],
       );
     }
@@ -67,14 +68,16 @@ function fakeRoutineRow(initialMarker: StoredInFlightCandidate | null, qualifica
       return Promise.resolve({ count: 1 });
     }
     if (text.includes('IS DISTINCT FROM')) {
-      const key = values[0] as string;
-      if (row.alarmKey === key) return Promise.resolve({ count: 0 });
-      row.alarmKey = key;
+      const field = values[0] === 'qualificationProgressAlarm' ? 'progressAlarmKey' : 'alarmKey';
+      const key = values[1] as string;
+      if (row[field] === key) return Promise.resolve({ count: 0 });
+      row[field] = key;
       return Promise.resolve({ count: 1 });
     }
-    if (text.includes("- 'lostRunAlarm'")) {
-      const key = values[2] as string;
-      if (row.alarmKey === key) row.alarmKey = null;
+    if (text.includes("(metadata->'gate_health') -")) {
+      const field = values[0] === 'qualificationProgressAlarm' ? 'progressAlarmKey' : 'alarmKey';
+      const key = values[4] as string;
+      if (row[field] === key) row[field] = null;
       return Promise.resolve({ count: 1 });
     }
     if (/coord_presence/.test(text)) return Promise.resolve([]);
@@ -252,6 +255,36 @@ describe('qualification progress in the existing lost-run sweep', () => {
     return Object.assign(deps(), { probeQualificationRunner: vi.fn(() => liveness) });
   }
 
+  it.each(['live', 'unknown', 'dead'] as const)('an alarmed old marker cannot hide a newer %s qualification runner', async (liveness) => {
+    const oldMarker = marker();
+    const { sql, row } = fakeRoutineRow(oldMarker);
+    await sweepLostGateRuns(sql, deps());
+    expect(row.alarmKey).toBe(lostRunAlarmKey(oldMarker));
+
+    const tx = qualification();
+    tx.currentPhysicalRunner = { ...tx.currentPhysicalRunner!, id: 'successor-runner', pid: DEAD_PID + 1 };
+    row.qualification = tx;
+    const d = progressDeps(liveness);
+    const expectedRetries = liveness === 'dead' ? 1 : 0;
+    await expect(sweepLostGateRuns(sql, d)).resolves.toEqual({ alarmed: ['papercusp'], deduped: [], failed: [] });
+    expect(d.broadcast).toHaveBeenCalledTimes(1);
+    expect(d.broadcast.mock.calls[0][0].body).toContain('successor-runner');
+    expect(row.retries).toBe(expectedRetries);
+    expect(row.qualification).toEqual(tx);
+
+    // Keeping the old marker must not alternate its alarm with the new runner's alarm.
+    const repeated = progressDeps(liveness);
+    await expect(sweepLostGateRuns(sql, repeated)).resolves.toEqual({ alarmed: [], deduped: ['papercusp'], failed: [] });
+    expect(repeated.broadcast).not.toHaveBeenCalled();
+    expect(row.retries).toBe(expectedRetries);
+    expect(row.alarmKey).toBe(lostRunAlarmKey(oldMarker));
+
+    row.qualification = { ...tx, phase: 'terminal', outcome: { kind: 'green', reason: 'advanced' } };
+    const recovered = progressDeps('live');
+    await sweepLostGateRuns(sql, recovered);
+    expect(recovered.broadcast).not.toHaveBeenCalled();
+  });
+
   it.each(['live', 'unknown'] as const)('pages once for stale progress with %s liveness and never starts another runner', async (liveness) => {
     const { sql, row } = fakeRoutineRow(null, qualification());
     const d = progressDeps(liveness);
@@ -265,7 +298,7 @@ describe('qualification progress in the existing lost-run sweep', () => {
     expect(d.broadcast.mock.calls[0][0].body).toContain('preserve single flight');
     await sweepLostGateRuns(sql, progressDeps(liveness));
     expect(row.retries).toBe(0);
-    expect(row.alarmKey).not.toBeNull();
+    expect(row.progressAlarmKey).not.toBeNull();
     expect(d.broadcast).toHaveBeenCalledTimes(1);
   });
 
@@ -295,7 +328,7 @@ describe('qualification progress in the existing lost-run sweep', () => {
     const { sql, row } = fakeRoutineRow(null, qualification());
     const d = Object.assign(progressDeps('unknown'), { broadcast: vi.fn(async () => false) });
     await expect(sweepLostGateRuns(sql, d)).resolves.toMatchObject({ failed: ['papercusp'] });
-    expect(row.alarmKey).toBeNull();
+    expect(row.progressAlarmKey).toBeNull();
     const retry = progressDeps('unknown');
     await sweepLostGateRuns(sql, retry);
     expect(retry.broadcast).toHaveBeenCalledTimes(1);
