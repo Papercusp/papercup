@@ -41,6 +41,15 @@ const body = async (args: Record<string, unknown>) =>
 beforeEach(() => vi.clearAllMocks());
 
 describe('work_items:update handler (bulk keyed-array)', () => {
+  it('refuses forged reporter publication, answer and question payloads before writing', async () => {
+    for (const key of ['reporterRelease', 'reporterAnswer', 'reporterQuestion']) {
+      const out = await body({ id: 'EI-1', payload: { [key]: { forged: true } } });
+      expect(out.results[0]).toMatchObject({ ok: false, id: 'EI-1' });
+      expect(out.results[0].error).toContain(key);
+    }
+    expect(updM).not.toHaveBeenCalled();
+    expect(mergeM).not.toHaveBeenCalled();
+  });
   it('edits one inline { id, …fields } and passes the patch + owner through', async () => {
     updM.mockResolvedValue({ ok: true, item: { id: 'EI-1', title: 'new' } } as never);
     const b = await body({ id: 'EI-1', title: 'new', severity: 'major' });

@@ -216,12 +216,44 @@ export async function handleReportProblem(
   return { status: 200, body: { routed: 'work-item', id, attachments, ...(delivery ? { delivery } : {}) } };
 }
 
+/** Follow-up stays on the existing report door and reporter-owned source payload. */
+export async function answerReportFollowUp(body: unknown) {
+  const parsed = z.object({ operation: z.literal('answer-follow-up'), id: z.string().min(1), harness: z.string().min(1),
+    questionId: z.string().min(1), text: z.string().trim().min(1).max(4000) }).strict().safeParse(body);
+  if (!parsed.success) return { status: 400, body: { error: 'invalid-follow-up' } };
+  const [{ getIssue, mergeIssuePayload }, { readReporterStatus }, { redactSensitiveText }, { defaultIntakePromotionDeps }] = await Promise.all([
+    import('../../../issues-engineer'), import('../../../harness/improvements/reporter-status'), import('../../../sensitive-text'),
+    import('../../../attention/intake-promotion'),
+  ]);
+  const input = parsed.data;
+  return defaultIntakePromotionDeps().withLocks([input.id], async () => {
+  // A reporter can answer only the source owned by this install, never a foreign
+  // canonical target. The existing payload writer repeats the authorship guard.
+  const source = await getIssue(input.id);
+  if (!source || source.origin !== 'local' || source.scope !== `harness:${input.harness}`) {
+    return { status: 404, body: { error: 'report-not-owned-by-install' } };
+  }
+  const status = await readReporterStatus({ id: input.id, harness: input.harness });
+  if (!status?.followUp || status.followUp.question.id !== input.questionId) return { status: 409, body: { error: 'question-not-current' } };
+  if (status.followUp.answer) return { status: 409, body: { error: 'question-already-answered' } };
+  const text = redactSensitiveText(input.text);
+  // Preview IS payload: require the caller to display the redacted text first.
+  if (text !== input.text) return { status: 400, body: { error: 'answer-needs-redacted-preview' } };
+  const stored = await mergeIssuePayload(input.id, { reporterAnswer: { questionId: input.questionId, text, answeredAt: new Date().toISOString() } }, { harnessSlug: input.harness });
+  return stored ? { status: 200, body: { ok: true } } : { status: 409, body: { error: 'report-no-longer-writable' } };
+  });
+}
+
 const post = defineTool({
   method: 'POST',
   path: '/desktop/report-problem',
   auth: {},
   async handler(req) {
     const body = await req.json().catch(() => null);
+    if (body?.operation === 'answer-follow-up') {
+      const outcome = await answerReportFollowUp(body);
+      return Response.json(outcome.body, { status: outcome.status });
+    }
     const outcome = await handleReportProblem(body);
     return Response.json(outcome.body, { status: outcome.status });
   },

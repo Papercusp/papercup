@@ -200,7 +200,7 @@ describe.skipIf(process.platform !== 'linux')('pc-heavy per-job peak ledger (WI-
         perSlotGib: 10, source: 'derived:q100-of-9300MiB', jobClass: 'typecheck', ...reserves,
       });
       // A script handed to `sh -c` is split into words, so a wrapped compile still classifies.
-      expect(admit(SPAN, ['bash', '-c', 'npx tsgo --noEmit -p x; true'])).toMatchObject({ jobClass: 'typecheck' });
+      expect(admit(SPAN, ['bash', '-c', 'npx() { return 0; }; npx tsgo --noEmit -p x'])).toMatchObject({ jobClass: 'typecheck' });
     }, 30_000);
 
     it('an explicit class= field outranks the label; older rows fall back to the label words', () => {

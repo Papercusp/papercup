@@ -27,6 +27,7 @@ import { refuseExternalOwnedPatch } from '../../work-admission/admit';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { rejectBodySummaryConflict, resolveBodyAlias } from './_body-alias';
 import { unresolvedRefsInBody, unresolvedRefsWarning } from './unresolved-refs';
+import { askReporterQuestion } from '../../harness/improvements/reporter-status';
 
 /**
  * EI-18707466248332421: the family-AGNOSTIC subset of this tool's fields — the ones that are
@@ -59,6 +60,9 @@ const PAYLOAD_FLAG_KEYS = {
  * ships. A prefix cannot drift the way a hand-maintained list does.
  */
 const PAYLOAD_MERGE_RESERVED_KEYS: ReadonlySet<string> = new Set([
+  'reporterRelease',
+  'reporterAnswer',
+  'reporterQuestion',
   'plan_item',
   'needs_2_machine_rig',
   'needsOwnerAction',
@@ -209,6 +213,7 @@ const FIELDS = {
     .enum(['bug', 'change'])
     .optional()
     .describe('correct a mislabeled work-item kind — bug = broken (auto-implement-eligible), change = desired improvement (human-gated)'),
+  reporterQuestion: z.string().min(1).max(4000).optional().describe('Ask the end-user reporter one follow-up question. Only the current fixer may ask; actor/id/time are server-stamped, text is redacted, and retry is idempotent. Use alone, without other edits. The reporter replies from their install.'),
   // EI-10943 (same trap as improvements:capture): a provenance LABEL must never bounce
   // the whole update on length. Soft-capped — truncated handler-side by `clampText`,
   // never rejected. (Handler-side, not a zod .transform(): a transform crashes
@@ -392,6 +397,7 @@ export default defineTool({
           // ok:true. Wire it exactly like the sibling needsTwoMachineRig flag.
           needsHuman: it.needsHuman !== undefined ? it.needsHuman : args.needsHuman,
           payload: it.payload ?? args.payload,
+          reporterQuestion: it.reporterQuestion ?? args.reporterQuestion,
           harness: it.harness ?? args.harness,
         }))
       : [
@@ -410,6 +416,7 @@ export default defineTool({
             needsTwoMachineRig: args.needsTwoMachineRig,
             needsHuman: args.needsHuman, // WI-5689
             payload: args.payload, // WI-41509
+            reporterQuestion: args.reporterQuestion,
             harness: args.harness,
           },
         ];
@@ -433,6 +440,11 @@ export default defineTool({
               `the dedicated args instead: plan_item, needsTwoMachineRig, needsHuman. Keys prefixed ` +
               `"_" are system-written bookkeeping and are never caller-writable.`,
           };
+        }
+        if (it.reporterQuestion !== undefined) {
+          const otherEdits = Object.entries(it).some(([key, value]) => !['id', 'harness', 'reporterQuestion'].includes(key) && value !== undefined);
+          if (otherEdits) return { ok: false as const, id: it.id, error: 'reporterQuestion-must-be-used-without-other-edits' };
+          return askReporterQuestion({ id: it.id, harness: it.harness, actor: ident.ownerId, text: it.reporterQuestion });
         }
         // P-020 / D-004: an admitted item's title and description are owned by its source.
         // Refuse before any write so the edit is never half-applied.

@@ -61,6 +61,27 @@ const projected = lookupByMcpName('sessions:read')!;
 describe('sessions:read role access', () => {
   it('admits the evidence-only judge to predecessor transcript reads', () => {
     expect(readModule.default.agentRoles).toContain('judge');
+    expect(readModule.default.capability).toBe('sessions:read');
+    expect(readModule.default.description).toContain(
+      'The evidence-only judge may use only that selector; named sessions and turn refs are refused for that role.',
+    );
+  });
+
+  it.each([
+    { session: 'another-session' },
+    { ref: 'session_turn:codex:another-session:0' },
+  ])('refuses judge transcript selector $session $ref', async (selector) => {
+    const handler = readModule.default.handler as unknown as (
+      args: Record<string, unknown>,
+      ctx: Record<string, unknown>,
+    ) => Promise<{ isError?: boolean; content: Array<{ text: string }> }>;
+
+    const result = await handler(selector, { role: 'judge' });
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0]!.text)).toMatchObject({
+      ok: false,
+      error: 'judge_session_scope_only',
+    });
   });
 });
 
@@ -108,8 +129,10 @@ describe('sessions:read EI-20236684982538421 — structured large-window respons
     );
   });
 
-  it('documents the multi-session self-window contract', () => {
-    expect(projected.description).toContain("`session:'self'` spans YOUR OWN respawn chain");
+  it('documents Judge self scope and the multi-session self-window contract', () => {
+    expect(projected.description).toContain(
+      "The evidence-only judge may use only `session:'self'`; named sessions and turn refs are refused for that role.",
+    );
     expect(projected.description).toContain(
       'If that window includes multiple native sessions, `session_id` is null',
     );
@@ -482,7 +505,7 @@ describe('sessions:read EI-20236684982538421 — structured large-window respons
     expect(tx.mock.calls.filter((call) => isDisclosureLedgerSql(call))).toHaveLength(1);
   });
 
-  it("reads session:'self' across the caller's predecessor and successor sessions", async () => {
+  it("lets the evidence-only judge read session:'self' across predecessor and successor sessions", async () => {
     resolveSearchFilters.mockResolvedValueOnce({
       filters: { owners: ['su-self', 'su-predecessor'] },
       selfSession: {
@@ -516,7 +539,7 @@ describe('sessions:read EI-20236684982538421 — structured large-window respons
       { session: 'self', limit: 2, order: 'asc' },
       {
         log: vi.fn(), signal: new AbortController().signal, progress: vi.fn(), emit: vi.fn(),
-        workspaceId: 'default', runId: 'read-self-chain-test', role: 'operator',
+        workspaceId: 'default', runId: 'read-self-chain-test', role: 'judge',
         gateBypass: { role: true, capability: true, quota: true },
         transport: 'mcp', requestedFormat: 'json', requestedStructured: true, tx,
       },

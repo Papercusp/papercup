@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { parseAsString, useQueryState } from 'nuqs';
 import { toast } from 'sonner';
+import { redactSensitiveText } from '@papercusp/operator-core/lib/sensitive-text';
 import { ArrowUpRight, MessageCircle } from 'lucide-react';
 import { useSyncQuery } from '@papercusp/sync';
 import { useLexicon } from '@/lib/useLexicon';
@@ -582,6 +583,7 @@ export function WorkItemDetail({
             </div>
           ) : null}
         </div>
+        {workItem.reporterStatus ? <ReporterStatusSection slug={slug} workItem={workItem} /> : null}
         {workItem.presentation && (workItem.presentation.evidenceRefs.length > 0 || workItem.presentation.completionRef) ? (
           <div className="pc-adv-detail__section" aria-label="Acceptance evidence">
             <h3>Acceptance evidence and completion</h3>
@@ -632,6 +634,44 @@ export function WorkItemDetail({
       <DetailStyles />
     </div>
   );
+}
+
+export function ReporterStatusSection({ slug, workItem }: { slug: string; workItem: WorkItemRow }) {
+  const [answer, setAnswer] = useState('');
+  const [preview, setPreview] = useState<string | null>(null);
+  const [sending, setSending] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const status = workItem.reporterStatus;
+  useEffect(() => { setAnswer(''); setPreview(null); setSaved(false); setError(null); }, [workItem.id, status?.followUp?.question.id]);
+  if (!status) return null;
+  const reply = async () => {
+    if (!preview || !status.followUp) return;
+    setSending(true); setError(null);
+    try {
+      const response = await fetch('/api/desktop/report-problem', { method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ operation: 'answer-follow-up', id: status.sourceId, harness: slug, questionId: status.followUp.question.id, text: preview }) });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? `HTTP ${response.status}`);
+      setSaved(true);
+    } catch (err) { setError(err instanceof Error ? err.message : String(err)); }
+    finally { setSending(false); }
+  };
+  return <section className="pc-adv-detail__section" aria-label="Your report">
+    <h3>Your report</h3>
+    <p role="status">{status.label}</p>
+    {status.followUp ? <>
+      <p>{status.followUp.question.text}</p>
+      {status.followUp.answer ? <p>Your reply: {status.followUp.answer.text}</p>
+        : saved ? <p>Your reply was saved and queued for delivery.</p>
+          : workItem.origin === 'local' ? <>
+            <label>Your reply<textarea value={answer} maxLength={4000} onChange={(event) => { setAnswer(event.target.value); setPreview(null); }} /></label>
+            <button type="button" disabled={!answer.trim() || sending} onClick={() => setPreview(redactSensitiveText(answer.trim()))}>Review reply</button>
+            {preview ? <><pre>{preview}</pre><button type="button" disabled={sending} onClick={() => void reply()}>{sending ? 'Sending…' : 'Send reply'}</button></> : null}
+          </> : null}
+    </> : null}
+    {error ? <p role="alert">{error}</p> : null}
+  </section>;
 }
 
 function WorkItemDiscussionSection({

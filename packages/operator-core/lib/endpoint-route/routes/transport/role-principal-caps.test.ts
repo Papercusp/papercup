@@ -24,6 +24,16 @@ function fakeTx(rows: Array<{ capabilities: unknown }>): Sql {
 }
 
 describe('loadRoleCapabilities', () => {
+  test('transcript readers get sessions:read without granting generic search to judge', async () => {
+    const reader = await loadRoleCapabilities(fakeTx([{ capabilities: ['search:read'] }]), 'ws', 'transcript-reader');
+    expect(reader.has('search:read')).toBe(true);
+    expect(reader.has('sessions:read')).toBe(true);
+
+    const judge = await loadRoleCapabilities(fakeTx([{ capabilities: ['search:read'] }]), 'ws', 'judge');
+    expect(judge.has('search:read')).toBe(false);
+    expect(judge.has('sessions:read')).toBe(true);
+  });
+
   test('memory:read preserves search access through a narrow derived capability', async () => {
     const reader = await loadRoleCapabilities(fakeTx([{ capabilities: ['memory:read'] }]), 'ws', 'memory-reader');
     expect(reader.has('memory:read')).toBe(true);
@@ -348,6 +358,8 @@ describe('loadRoleCapabilities', () => {
       expect(caps.has('capability:git')).toBe(false);
       expect(caps.has('memory:search:read')).toBe(true);
       expect(caps.has('memory:read')).toBe(false);
+      expect(caps.has('sessions:read')).toBe(true);
+      expect(caps.has('search:read')).toBe(false);
       expect(caps.has('capability:fs-write')).toBe(false);
       expect(caps.has('capability:bash')).toBe(false);
 

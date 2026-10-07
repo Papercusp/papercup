@@ -14,7 +14,13 @@
 import { useEffect, useMemo, useState } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
 import './shortcuts-cheat-sheet.css';
-import { parseAsBoolean, useQueryState } from 'nuqs';
+import { parseAsBoolean, parseAsString, useQueryState } from 'nuqs';
+import { useSyncQuery } from '@papercusp/sync';
+import { toast } from 'sonner';
+import { useWorkspaceId } from '@/lib/use-workspace-id';
+import type { WorkItemRow } from '../adv/harnesses/WorkItemsPanel';
+import { CHAT_WORK_ITEM_POPUP_PARAM, encodeScopedRef } from './chat/chat-ref-popup-params';
+import { PLATFORM_POT_SLUG } from '@papercusp/operator-core/lib/platform-pot-slug';
 import { useShortcutAction } from '../../lib/hotkeys';
 import {
   PROBLEM_REPORT_LIMITS,
@@ -62,6 +68,16 @@ export function ReportProblemReceipt({ sent }: { sent: SendResult }) {
 }
 
 export default function ReportProblemDialog() {
+  const workspaceId = useWorkspaceId();
+  const receiptsKey = `papercusp.report-receipts.${workspaceId}`;
+  const [receiptIds, setReceiptIds] = useState<string[]>([]);
+  const [, setWorkItemPopup] = useQueryState(CHAT_WORK_ITEM_POPUP_PARAM, parseAsString);
+  useEffect(() => {
+    try {
+      const stored: unknown = JSON.parse(localStorage.getItem(receiptsKey) ?? '[]');
+      setReceiptIds(Array.isArray(stored) ? stored.filter((id): id is string => typeof id === 'string') : []);
+    } catch { setReceiptIds([]); }
+  }, [receiptsKey]);
   const [open, setOpen] = useQueryState('report', parseAsBoolean.withDefault(false));
   const [text, setText] = useState('');
   const [attachLog, setAttachLog] = useState(false);
@@ -128,6 +144,13 @@ export default function ReportProblemDialog() {
       const body = await res.json().catch(() => null);
       if (!res.ok) throw new Error(body?.error ? `${body.error} (HTTP ${res.status})` : `HTTP ${res.status}`);
       setSent({ routed: body.routed, id: body.id ?? null, delivery: body.delivery, attachments: body.attachments });
+      if (body.routed === 'work-item' && typeof body.id === 'string') {
+        setReceiptIds((previous) => {
+          const ids = [...new Set([...previous, body.id as string])];
+          try { localStorage.setItem(receiptsKey, JSON.stringify(ids)); } catch { /* status still works for this live session */ }
+          return ids;
+        });
+      }
     } catch (e) {
       setError(String((e as Error)?.message ?? e));
     } finally {
@@ -136,6 +159,8 @@ export default function ReportProblemDialog() {
   };
 
   return (
+    <>
+    {receiptIds.map((id) => <ReportProblemUpdate key={`${workspaceId}:${id}`} id={id} workspaceId={workspaceId} onOpen={() => void setWorkItemPopup(encodeScopedRef(PLATFORM_POT_SLUG, id))} />)}
     <Dialog.Root open={open} onOpenChange={(o) => { if (!o) void setOpen(false); }}>
       <Dialog.Portal>
         <Dialog.Overlay className="kbd-cheat-overlay" />
@@ -157,6 +182,7 @@ export default function ReportProblemDialog() {
 
           {sent ? (
             <div data-testid="report-problem-sent">
+              {sent.id && sent.routed === 'work-item' ? <button type="button" onClick={() => { void setOpen(false); void setWorkItemPopup(encodeScopedRef(PLATFORM_POT_SLUG, sent.id!)); }}>View report status</button> : null}
               <ReportProblemReceipt sent={sent} />
               <button type="button" onClick={() => void setOpen(false)}>Close</button>
             </div>
@@ -208,5 +234,26 @@ export default function ReportProblemDialog() {
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>
+    </>
   );
+}
+
+/** Existing sync invalidation is the subscription; no polling or contact address. */
+export function ReportProblemUpdate({ id, workspaceId, onOpen }: { id: string; workspaceId: string; onOpen: () => void }) {
+  const { data } = useSyncQuery<WorkItemRow>({ queryName: 'workItems.detail', args: { harnessSlug: PLATFORM_POT_SLUG, id } });
+  const report = data?.[0]?.reporterStatus;
+  const event = report?.status === 'fixed' && report.release
+    ? { key: `release:${report.release.completionRef}:${report.release.artifactCommit}`, text: report.label }
+    : report?.followUp && !report.followUp.answer
+      ? { key: `question:${report.followUp.question.id}`, text: report.followUp.question.text } : null;
+  const eventKey = event?.key;
+  const eventText = event?.text;
+  useEffect(() => {
+    if (!eventKey || !eventText) return;
+    const key = `papercusp.report-notification.${workspaceId}.${id}.${eventKey}`;
+    try { if (localStorage.getItem(key)) return; } catch { /* retain live notification */ }
+    toast(eventText, { id: key, description: `Update on your report ${id}`, action: { label: 'View report', onClick: onOpen }, duration: Infinity });
+    try { localStorage.setItem(key, 'shown'); } catch { /* toast id deduplicates within this session */ }
+  }, [eventKey, eventText, id, workspaceId, onOpen]);
+  return null;
 }
