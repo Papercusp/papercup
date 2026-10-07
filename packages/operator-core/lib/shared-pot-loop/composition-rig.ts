@@ -829,11 +829,11 @@ export class CompositionRig {
     const max = opts.maxPasses ?? 12;
     const driven = (opts.cells ?? ['a', 'b']).map((n) => this.cells[n]);
     for (let pass = 1; pass <= max; pass++) {
-      await Promise.all(driven.map((c) => c.handle.mergeNow()));
+      await Promise.all(driven.map((c) => this.runAsCell(c, () => c.handle.mergeNow())));
       const drains = await Promise.all(driven.map((c) => drainOutboxOnce(c.handle, c.sql)));
       if (drains.every((d) => d === 0)) {
         // Confirm the fixed point HOLDS across one more full cycle.
-        await Promise.all(driven.map((c) => c.handle.mergeNow()));
+        await Promise.all(driven.map((c) => this.runAsCell(c, () => c.handle.mergeNow())));
         const again = await Promise.all(driven.map((c) => drainOutboxOnce(c.handle, c.sql)));
         if (again.every((d) => d === 0)) return { passes: pass, fixedPoint: true };
       }

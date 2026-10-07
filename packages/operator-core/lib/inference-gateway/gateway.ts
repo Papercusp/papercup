@@ -69,6 +69,12 @@ import {
 } from './anthropic-billing';
 import { classifyCredential401Streak, DEFAULT_CREDENTIAL_401_DEAD_THRESHOLD } from './credential-health';
 import { createCodexModelRefusalRegistry, type CodexModelRefusalEntry } from './codex-model-refusals';
+import {
+  classifyTransportFailure,
+  createUpstreamReachabilityTracker,
+  type UpstreamReachabilitySnapshot,
+} from './upstream-reachability';
+import { describeFetchError } from '../loopback-fetch';
 import { dbHealthSnapshot, type DbHealthSnapshot } from './db-health';
 import { evaluateSelfHeal, pickReclaimTarget, classifySlotReconcile } from './gateway-self-heal';
 import { probeEgress } from './egress-probe';
@@ -1928,6 +1934,16 @@ export interface GatewayStats {
    * when every account is out but one has a known return, or null when no return is known.
    */
   codexEarliestRecoveryAt?: number | null;
+  /**
+   * WI-10007199: WHY no Codex account can serve, when none can (null while one can).
+   * `upstream-unreachable` = fresh transport failures (DNS / connect / timeout) across accounts and no
+   * HTTP response since — a network outage, which no other account, credit or reset can fix.
+   * `accounts-unserviceable` = the upstream answers, but every account is parked (usage walls, auth
+   * quarantine, failover backoff). Consumers must not word the first as a usage wall.
+   */
+  codexUnserviceableCause?: 'upstream-unreachable' | 'accounts-unserviceable' | null;
+  /** WI-10007199: Codex upstream reachability, independent of account capacity. */
+  codexReachability?: UpstreamReachabilitySnapshot;
   /** Bee-FACING final 503s (2026-06-22 audit) — what the bee receives after the gateway exhausts internal
    *  retries. Makes egress-proxy leakage visible (it isn't a rate shed, so shedAllThrottled never counted it). */
   beeFacing503: { egressExhausted: number; tokenStall: number };
@@ -3057,6 +3073,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
    *  around them per model; entries lapse on a TTL and clear on the next 2xx, so an account marked
    *  here is never removed from the pool and never needs a manual flip to come back. */
   const codexModelRefusals = createCodexModelRefusalRegistry();
+  /** WI-10007199: can the gateway reach the Codex upstream AT ALL? Kept apart from account capacity
+   *  so a host network outage is reported as one, not as every account being usage-walled. */
+  const codexReachability = createUpstreamReachabilityTracker();
   const orgDisallowedStreak = new Map<string, number>();
   // ── Per-account egress IP POOL rotation (gateway-per-account-egress-ip-pool-2026-06-30) ──────────────
   // An account can carry a POOL of egress IPs (ActiveAccount.egressPool). The gateway round-robins an
@@ -4629,6 +4648,13 @@ export function createInferenceGateway(deps: GatewayDeps) {
       );
     const codexEarliestRecoveryAt =
       codexHealthyAccounts > 0 ? 0 : codexRecoveryHorizons.length > 0 ? Math.min(...codexRecoveryHorizons) : Infinity;
+    const codexReach = codexReachability.snapshot(now);
+    const codexUnserviceableCause: GatewayStats['codexUnserviceableCause'] =
+      codexHealthyAccounts > 0 || codexAccountCount() === 0
+        ? null
+        : codexReach.unreachable
+          ? 'upstream-unreachable'
+          : 'accounts-unserviceable';
     const paceEntry = (st: typeof snap) => ({
       smoothRpm: st.smoothRpm === true,
       rpm: st.limits.rpm ?? null,
@@ -4763,6 +4789,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
        *  the model for that account. In the pool, not parked; each lapses or clears on a 2xx. */
       codexModelRefusals: codexModelRefusals.snapshot(),
       codexEarliestRecoveryAt: Number.isFinite(codexEarliestRecoveryAt) ? codexEarliestRecoveryAt : null,
+      codexUnserviceableCause,
+      codexReachability: codexReach,
       beeFacing503: { egressExhausted: beeEgressExhausted, tokenStall: beeTokenStall },
       // EI-535 (gateway-healthz-stale-latch fix): `snap.unified` freezes at its last-observed value once
       // traffic goes idle — no new upstream response means recordHeaders never runs again to update it.
@@ -8629,7 +8657,27 @@ export function createInferenceGateway(deps: GatewayDeps) {
           return { resetAt: parsed.resetAt, retryAfterMs: parsed.retryAfterMs, transient: parsed.transient };
         },
         onEgressAttempt: (id) => egressAttemptsByAccount.set(id, (egressAttemptsByAccount.get(id) ?? 0) + 1),
-        onEgressFailure: (id) => egressFailsByAccount.set(id, (egressFailsByAccount.get(id) ?? 0) + 1),
+        onEgressFailure: (id, error) => {
+          egressFailsByAccount.set(id, (egressFailsByAccount.get(id) ?? 0) + 1);
+          const description = describeFetchError(error);
+          const edge = codexReachability.noteTransportFailure(id, description, classifyTransportFailure(error), Date.now());
+          if (edge === 'became-unreachable') {
+            const r = codexReachability.snapshot(Date.now());
+            log(
+              'error',
+              `inference-gateway: Codex upstream UNREACHABLE — ${r.transportFailuresSinceResponse} network failures across ` +
+                `${r.accountsFailingSinceResponse} account(s) with no HTTP response since ` +
+                `${r.lastResponseAt ? new Date(r.lastResponseAt).toISOString() : 'start'} (latest ${r.lastTransportFailureKind}: ${description}). ` +
+                `This is the network (this machine's connection/DNS, or the upstream itself), not account usage — ` +
+                `the "exhausted"/"UNSERVICEABLE" lines around it are accounts parked by these failures, not usage walls.`,
+            );
+          }
+        },
+        onUpstreamResponse: (id) => {
+          if (codexReachability.noteResponse(id, Date.now()) === 'became-reachable') {
+            log('warn', `inference-gateway: Codex upstream reachable again ('${id}' got an HTTP response)`);
+          }
+        },
         fetch: async (target, init) => {
           const fetchInit: FetchInit = { method: init.method, headers: init.headers, signal: init.signal };
           if (init.body) fetchInit.body = init.body as unknown as BodyInit;
@@ -10626,6 +10674,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
         aimd: s.aimd,
         codexAimd: s.codexAimd,
         codexHealthyAccounts: s.codexHealthyAccounts,
+        codexUnserviceableCause: s.codexUnserviceableCause,
+        codexReachability: s.codexReachability,
         codexModelRefusals: s.codexModelRefusals,
         // THE CONTRADICTION THIS ENDPOINT USED TO WITHHOLD. `admission.maxConcurrent` and `aimd.effective`
         // were both forwarded while `clamp` — the only field that explains a gap between them — was not, so

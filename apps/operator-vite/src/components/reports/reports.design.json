@@ -1,0 +1,310 @@
+{
+  "irVersion": "0.1",
+  "surface": "reports",
+  "ecosystem": "react-tailwind",
+  "a11y": {
+    "landmark": "main",
+    "headingLevel": 1
+  },
+  "layout": {
+    "kind": "stack",
+    "direction": "vertical",
+    "children": [
+      {
+        "kind": "heading",
+        "copy": {
+          "default": "Reports",
+          "key": "reports.0.copy"
+        }
+      },
+      {
+        "kind": "stack",
+        "direction": "horizontal",
+        "children": [
+          {
+            "kind": "component",
+            "label": {
+              "default": "Search reports",
+              "key": "reports.1.0.label"
+            },
+            "interactions": [
+              "URL:q"
+            ],
+            "a11y": {
+              "ariaLabel": {
+                "key": "reports.1.0.a11y",
+                "default": "Search reports"
+              }
+            },
+            "ref": "search"
+          },
+          {
+            "kind": "component",
+            "label": {
+              "default": "Report kind",
+              "key": "reports.1.1.label"
+            },
+            "interactions": [
+              "URL:kind"
+            ],
+            "a11y": {
+              "ariaLabel": {
+                "key": "reports.1.1.a11y",
+                "default": "Report kind"
+              }
+            },
+            "ref": "kind"
+          },
+          {
+            "kind": "component",
+            "label": {
+              "default": "Visibility",
+              "key": "reports.1.2.label"
+            },
+            "interactions": [
+              "URL:vis"
+            ],
+            "a11y": {
+              "ariaLabel": {
+                "key": "reports.1.2.a11y",
+                "default": "Visibility"
+              }
+            },
+            "ref": "visibility"
+          },
+          {
+            "kind": "input",
+            "label": {
+              "key": "reports.subject",
+              "default": "subject"
+            },
+            "a11y": {
+              "ariaLabel": {
+                "key": "reports.subject.label",
+                "default": "Filter by subject"
+              }
+            },
+            "interactions": [
+              "URL:subject"
+            ]
+          },
+          {
+            "kind": "input",
+            "label": {
+              "key": "reports.pot",
+              "default": "pot"
+            },
+            "a11y": {
+              "ariaLabel": {
+                "key": "reports.pot.label",
+                "default": "Filter by pot"
+              }
+            },
+            "interactions": [
+              "URL:pot"
+            ]
+          },
+          {
+            "kind": "input",
+            "label": {
+              "key": "reports.tag",
+              "default": "tag"
+            },
+            "a11y": {
+              "ariaLabel": {
+                "key": "reports.tag.label",
+                "default": "Filter by tag"
+              }
+            },
+            "interactions": [
+              "URL:tag"
+            ]
+          },
+          {
+            "kind": "input",
+            "label": {
+              "key": "reports.since",
+              "default": "since"
+            },
+            "a11y": {
+              "ariaLabel": {
+                "key": "reports.since.label",
+                "default": "Filter by since"
+              }
+            },
+            "interactions": [
+              "URL:since"
+            ]
+          }
+        ]
+      },
+      {
+        "kind": "grid",
+        "children": [
+          {
+            "kind": "list",
+            "a11y": {
+              "ariaLabel": {
+                "default": "Reports library",
+                "key": "reports.list"
+              }
+            },
+            "item": {
+              "kind": "button",
+              "copy": {
+                "default": "Report title and summary",
+                "key": "reports.2.0.item.copy"
+              },
+              "interactions": [
+                "URL:sel"
+              ],
+              "a11y": {
+                "ariaLabel": {
+                  "key": "reports.2.0.item.a11y",
+                  "default": "Report title and summary"
+                }
+              }
+            },
+            "emptyState": {
+              "kind": "empty-state",
+              "copy": {
+                "default": "No reports match these filters.",
+                "key": "reports.2.0.empty.copy"
+              }
+            }
+          },
+          {
+            "kind": "stack",
+            "direction": "vertical",
+            "children": [
+              {
+                "kind": "heading",
+                "copy": {
+                  "default": "Selected report",
+                  "key": "reports.2.1.0.copy"
+                }
+              },
+              {
+                "kind": "text",
+                "copy": {
+                  "default": "Author, pot, subject, visibility and publication date",
+                  "key": "reports.2.1.1.copy"
+                }
+              },
+              {
+                "kind": "text",
+                "copy": {
+                  "default": "Existing MarkdownPreview renders the full report and Mermaid diagrams",
+                  "key": "reports.2.1.2.copy"
+                }
+              },
+              {
+                "kind": "component",
+                "copy": {
+                  "default": "Copy as Markdown",
+                  "key": "reports.2.1.3.copy"
+                },
+                "interactions": [
+                  "clipboard:markdown"
+                ],
+                "a11y": {
+                  "ariaLabel": {
+                    "key": "reports.2.1.3.a11y",
+                    "default": "Copy as Markdown"
+                  }
+                },
+                "ref": "copy"
+              },
+              {
+                "kind": "component",
+                "copy": {
+                  "default": "Version history",
+                  "key": "reports.2.1.4.copy"
+                },
+                "interactions": [
+                  "URL:hist"
+                ],
+                "a11y": {
+                  "ariaLabel": {
+                    "key": "reports.2.1.4.a11y",
+                    "default": "Version history"
+                  }
+                },
+                "ref": "history"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "states": {
+    "loading": {
+      "kind": "text",
+      "copy": {
+        "default": "Loading reports…",
+        "key": "reports.loading.copy"
+      },
+      "a11y": {
+        "ariaLive": "polite"
+      }
+    },
+    "error": {
+      "kind": "banner",
+      "copy": {
+        "default": "Reports could not be loaded.",
+        "key": "reports.error.copy"
+      },
+      "interactions": [
+        "sync:retry"
+      ],
+      "children": [
+        {
+          "kind": "button",
+          "copy": {
+            "key": "reports.retry",
+            "default": "Retry"
+          },
+          "interactions": [
+            "sync:retry"
+          ],
+          "a11y": {
+            "ariaLabel": {
+              "key": "reports.retry.label",
+              "default": "Retry loading reports"
+            }
+          }
+        }
+      ]
+    },
+    "disabled": {
+      "kind": "banner",
+      "copy": {
+        "default": "Reports library is disabled.",
+        "key": "reports.disabled.copy"
+      }
+    }
+  },
+  "components": [
+    {
+      "id": "search",
+      "registry": "control.text"
+    },
+    {
+      "id": "kind",
+      "registry": "control.select"
+    },
+    {
+      "id": "visibility",
+      "registry": "control.select"
+    },
+    {
+      "id": "copy",
+      "registry": "action.secondary"
+    },
+    {
+      "id": "history",
+      "registry": "action.secondary"
+    }
+  ]
+}

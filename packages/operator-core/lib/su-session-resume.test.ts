@@ -6,6 +6,7 @@ const m = vi.hoisted(() => ({
   live: vi.fn(), holder: vi.fn(), witness: vi.fn(), transcript: vi.fn(), ompPath: vi.fn(), account: vi.fn(),
   codexRoute: vi.fn(), ompRoute: vi.fn(), envelope: vi.fn(), archive: vi.fn(),
   ensureCodex: vi.fn(),
+  codexReadiness: vi.fn(),
 }));
 vi.mock('node:fs', async (original) => ({ ...await original<typeof import('node:fs')>(), existsSync: () => true }));
 vi.mock('../../../apps/operator/scripts/psu-launcher.mjs', async (original) => ({
@@ -20,7 +21,7 @@ vi.mock('../../../apps/operator/scripts/psu-launcher.mjs', async (original) => (
   ensureResumeTranscriptPresent: m.transcript,
   tryRematerializeFromArchive: m.archive,
   ensureCodexHomeViaOperator: m.ensureCodex, ensureInteractiveConfigViaOperator: vi.fn(),
-  isClaudeConfigDirLaunchReady: () => true, isCodexHomeLaunchReady: () => true, codexHomeLaunchReadiness: () => null,
+  isClaudeConfigDirLaunchReady: () => true, isCodexHomeLaunchReady: () => true, codexHomeLaunchReadiness: m.codexReadiness,
   rehealResumeCredentials: vi.fn(), rehealResumeCodexAuth: vi.fn(),
   applyCodexGatewayRoute: m.codexRoute, applyOmpResumeAccountRoute: m.ompRoute,
   ompTrackedResumeEnv: () => ({ PI_CODING_AGENT_DIR: '/saved/omp', PI_CONFIG_DIR: '.saved/omp' }),
@@ -77,6 +78,23 @@ beforeEach(() => {
 });
 
 describe('structured exact resume preparation', () => {
+  it('resumes a coding-assistant Codex home without restoring or requiring the SU playbook', async () => {
+    const saved = fixture('codex');
+    m.codexReadiness.mockReturnValue('AGENTS.md is missing');
+    const resume = await prepareStructuredSuResume(saved, { identity: 'coding-assistant' });
+    expect(resume.boot.envelopeEnv.CODEX_HOME).toBe('/saved/codex');
+    expect(m.ensureCodex).not.toHaveBeenCalled();
+    expect(m.codexReadiness).not.toHaveBeenCalled();
+    await resume.release();
+  });
+
+  it('still refuses a registered-project Codex home without its SU playbook', async () => {
+    const saved = fixture('codex');
+    m.codexReadiness.mockReturnValue('AGENTS.md is missing');
+    await expect(prepareStructuredSuResume(saved)).rejects.toThrow('AGENTS.md is missing');
+    expect(m.ensureCodex).toHaveBeenCalled();
+  });
+
   it.each(['claude', 'codex', 'omp'] as const)('preserves %s identity, scope and settings and finalizes only after a child exists', async (backend) => {
     const saved = fixture(backend);
     const resume = await prepareStructuredSuResume(saved);

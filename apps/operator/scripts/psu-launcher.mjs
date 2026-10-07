@@ -139,6 +139,7 @@ import {
   buildContextBudget,
   codexContextConfigArgs,
   codexContextConfigToml,
+  parseLaunchCompactionLimitArgv,
   codexModelConfigToml,
   listCodexInstalledModels,
   normalizeCodexCliModel,
@@ -1685,7 +1686,11 @@ export function claudeInheritedEffortArgs(model, claudeSettings) {
 // No default on claudeSettings: a defaulted destructured property becomes the
 // ONLY member of the inferred options type, so every other key a caller passes
 // turns into an excess-property error in the TS tests (WI-10005900).
-export function modelArgsFor(agent, model, { claudeSettings } = {}) {
+/** @param {string} agent
+ * @param {string | null | undefined} model
+ * @param {{ claudeSettings?: ClaudeLaunchSettings | null, compactionLimit?: number | null }} [options]
+ */
+export function modelArgsFor(agent, model, { claudeSettings, compactionLimit } = {}) {
   // Low-level argv construction is never itself authorization to choose a
   // model. Fresh visible launchers resolve configured-default explicitly;
   // unattended resume/fleet paths must supply an explicit or inherited model.
@@ -1711,7 +1716,9 @@ export function modelArgsFor(agent, model, { claudeSettings } = {}) {
     // papercusp's 400k su/leader carry cut is ever reached, so the soft limit
     // in D-001 never gets to run. `[]` for a model with no extended window, so
     // those launches stay byte-identical to before.
-    const windowArgs = codexContextConfigArgs(m ? m[1] : effectiveModel);
+    const windowArgs = codexContextConfigArgs(m ? m[1] : effectiveModel, {
+      compactionLimit,
+    });
     if (m) {
       return [
         "-m",
@@ -1731,6 +1738,10 @@ export function modelArgsFor(agent, model, { claudeSettings } = {}) {
       ...claudeInheritedEffortArgs(effectiveModel, claudeSettings),
     ];
   return ["--model", effectiveModel];
+}
+
+function compactionLimitForResumeSession(session) {
+  return parseLaunchCompactionLimitArgv(session?.launchArgv);
 }
 
 /**
@@ -2800,6 +2811,7 @@ export function resumeArgsFor(
     return { bin: "omp", args };
   }
   if (session.agent === "codex") {
+    const compactionLimit = compactionLimitForResumeSession(session);
     // Bypass flags + model + any --add-dir BEFORE the `resume` subcommand (all
     // top-level codex options — `-m`/`-c` AFTER the subcommand would be parsed as
     // resume's own args and fail; WI-3758). CODEX_HOME (the session's home) is set
@@ -2815,7 +2827,7 @@ export function resumeArgsFor(
         "--dangerously-bypass-hook-trust",
         "--dangerously-bypass-approvals-and-sandbox",
         "--no-alt-screen",
-        ...modelArgsFor("codex", model),
+        ...modelArgsFor("codex", model, { compactionLimit }),
         ...addDirArgs("codex", addDir),
         ...target,
       ],
@@ -7404,9 +7416,14 @@ const CODEX_CONTEXT_WINDOW_END = "# END PAPERCUSP_CODEX_CONTEXT_WINDOW";
  *
  * @param {string} configText  existing config.toml text ('' when absent)
  * @param {string | null} model  the model whose window to declare
+ * @param {{ compactionLimit?: number | null }} [options]
  * @returns {string}
  */
-export function codexContextWindowConfigPatch(configText, model) {
+export function codexContextWindowConfigPatch(
+  configText,
+  model,
+  { compactionLimit } = {},
+) {
   const withoutManagedBlock = String(configText || "").replace(
     new RegExp(
       `${CODEX_CONTEXT_WINDOW_BEGIN}\\n[\\s\\S]*?${CODEX_CONTEXT_WINDOW_END}\\n?`,
@@ -7433,7 +7450,9 @@ export function codexContextWindowConfigPatch(configText, model) {
   // '' for a model with no extended window — the strip above still runs, so a
   // home that MOVED to such a model loses a stale block rather than keeping a
   // window its new model does not have.
-  const body = model ? codexContextConfigToml(model) : "";
+  const body = model
+    ? codexContextConfigToml(model, { compactionLimit })
+    : "";
   if (!body) return stripped;
   return `${CODEX_CONTEXT_WINDOW_BEGIN}\n${body}${CODEX_CONTEXT_WINDOW_END}\n${stripped}`;
 }
@@ -7444,14 +7463,16 @@ export function codexContextWindowConfigPatch(configText, model) {
  * (per-session homes carry it) — so a bare resume still refreshes correctly.
  * Returns the model it resolved, or null when it could not act.
  */
-function applyCodexContextWindow(codexHome, model = null) {
+function applyCodexContextWindow(codexHome, model = null, compactionLimit = null) {
   try {
     const configPath = join(codexHome, "config.toml");
     if (!existsSync(configPath)) return null;
     const current = readFileSync(configPath, "utf8");
     const effective =
       model || current.match(/^model\s*=\s*["']([^"']+)["']/m)?.[1] || null;
-    const next = codexContextWindowConfigPatch(current, effective);
+    const next = codexContextWindowConfigPatch(current, effective, {
+      compactionLimit,
+    });
     if (next !== current) writeFileSync(configPath, next, { mode: 0o600 });
     return effective;
   } catch {
@@ -13618,6 +13639,8 @@ async function launchResume(
     const resumeCodexHome = codexResumeHome(session);
     if (resumeCodexHome) env.CODEX_HOME = resumeCodexHome;
     let resumeModel = model;
+    const resumeCompactionLimit =
+      session.agent === "codex" ? compactionLimitForResumeSession(session) : null;
     if (session.agent === "omp") {
       const selectedResumeModel =
         resumeModel || lastActiveModelFor(session) || ompDefaultModel();
@@ -13702,7 +13725,11 @@ async function launchResume(
       // see codexContextWindowConfigPatch for why these root keys must land first.
       // A resume that names no model resolves it from the home itself, which is
       // what stops a resumed session falling back to codex's 272k default (P-004).
-      applyCodexContextWindow(env.CODEX_HOME, resumeModel);
+      applyCodexContextWindow(
+        env.CODEX_HOME,
+        resumeModel,
+        resumeCompactionLimit,
+      );
       }
     }
 

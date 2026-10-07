@@ -104,12 +104,14 @@ import {
   classifyQualificationVerdict,
   classifyScheduledQualificationJoin,
   describeQualificationSettleConflict,
+  projectCheckpointQualificationState,
   probeRunnerLiveness,
   readStoredQualification,
   recordStoredQualificationScheduledFire,
   recordStoredQualificationScheduledTerminalRecovery,
   recordStoredQualificationVerdict,
   reserveStoredQualificationRunner,
+  type CheckpointQualificationTransaction,
 } from '../../release/checkpoint-qualification-transaction';
 import { readLiveReleaseCertification, type LiveReleaseCertification } from '../../release/live-release-certification';
 import { createTextCollector } from '../../child-output';
@@ -2738,11 +2740,39 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
     },
     { reconcileTerminalRepairQueueForSuccessor: true },
   );
+  const conflictDetail = (
+    stage: 'begin' | 'scheduled-fire' | 'reserve-runner',
+    result: { status: string; transaction?: Parameters<typeof projectCheckpointQualificationState>[0] },
+    requestedAttemptId: string,
+    requestedRunnerId?: string,
+  ): Record<string, unknown> => {
+    const state = projectCheckpointQualificationState(result.transaction);
+    const current = result.transaction as CheckpointQualificationTransaction | null | undefined;
+    const incumbent = current?.currentPhysicalRunner;
+    return {
+      reason: result.status,
+      stage,
+      requestedAttemptId,
+      requestedRunnerId: requestedRunnerId ?? null,
+      observedAttemptId: current?.attemptId ?? null,
+      candidate: current?.candidate ?? null,
+      repairHead: current?.repairHead ?? null,
+      phase: current?.phase ?? null,
+      runId: current?.runId ?? null,
+      observedRunnerId: incumbent?.id ?? null,
+      runnerLeaseExpiresAtMs: incumbent?.leaseExpiresAtMs ?? null,
+      runnerHeartbeatAtMs: incumbent?.heartbeatAtMs ?? null,
+      safeNextAction: state.safeNextAction,
+      // No exact process probe was made for a conflict: do not turn a held slot into a
+      // guessed diagnosis of a dead runner or permission to replace it.
+      runnerLiveness: 'unknown',
+    };
+  };
   if (qualificationBegin.status !== 'updated' && qualificationBegin.status !== 'idempotent') {
     await appendPipelineEvent({
       workspaceId: ctx.workspaceId, installSlug: ctx.installSlug, kind: 'green_checkpoint',
       status: 'skipped-qualification-conflict',
-      detail: withGateFireId({ reason: qualificationBegin.status }),
+      detail: withGateFireId(conflictDetail('begin', qualificationBegin, activeAttempt?.attemptId ?? gateFireId)),
     });
     return;
   }
@@ -2751,7 +2781,7 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
     await appendPipelineEvent({
       workspaceId: ctx.workspaceId, installSlug: ctx.installSlug, kind: 'green_checkpoint',
       status: 'skipped-qualification-conflict',
-      detail: withGateFireId({ reason: scheduled.status, attemptId: qualificationBegin.transaction.attemptId }),
+      detail: withGateFireId({ ...conflictDetail('scheduled-fire', scheduled, qualificationBegin.transaction.attemptId), attemptId: qualificationBegin.transaction.attemptId }),
     });
     return;
   }
@@ -2788,7 +2818,7 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
     await appendPipelineEvent({
       workspaceId: ctx.workspaceId, installSlug: ctx.installSlug, kind: 'green_checkpoint',
       status: 'skipped-qualification-conflict',
-      detail: withGateFireId({ reason: reserved.status, attemptId: qualificationAttemptId }),
+      detail: withGateFireId({ ...conflictDetail('reserve-runner', reserved, qualificationAttemptId, gateFireId), attemptId: qualificationAttemptId }),
     });
     return;
   }

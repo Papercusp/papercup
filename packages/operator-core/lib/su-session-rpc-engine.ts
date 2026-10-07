@@ -245,6 +245,11 @@ export function startSuRpcEngine(
         const finished = new Promise<void>((resolve) => { turnFinished = resolve; });
         turnCompletion = finished;
         try {
+          // The command is durably accepted before native delivery. Persist its
+          // visible prompt before RPC can stream a reply; restored sessions use
+          // these owner events to place each reply under its original prompt.
+          emit({ type: 'transcript', phase: 'completed', turnId, role: 'owner',
+            channel: 'text', content });
           if (backend === 'codex') {
             nativeStart = peer!.request({ method: 'turn/start', params: {
               threadId: nativeId(), input: [{ type: 'text', text: content }],

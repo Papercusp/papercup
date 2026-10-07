@@ -242,6 +242,20 @@ export const CONSULT_QUESTIONS_CHUNK_SURFACE: PapercuspChunkSurface = {
   },
 };
 
+/** Reports are immutable editions; index the whole bounded body, including short reports. */
+export const REPORTS_CHUNK_SURFACE: PapercuspChunkSurface = {
+  surface: 'report',
+  searchSource: 'report',
+  parent: { table: 'harness_shared.report_library', key: ['workspace_id', 'report_id'] },
+  textSql: "concat_ws(E'\\n', p.title, nullif(p.summary, ''), p.body_md)",
+  headerSql: 'left(p.title, 400)',
+  eligibleSql: 'p.retired_at IS NULL',
+  versionSql: 'p.updated_at',
+  minChars: 0,
+  splitter: { kind: 'window', size: 1500, overlap: 250 },
+  maxChunks: 512,
+};
+
 export const CHUNK_SURFACES: readonly PapercuspChunkSurface[] = [
   // Session turns (P-007): the dedicated store above, not the shared table.
   SESSION_TURN_CHUNK_SURFACE,
@@ -249,6 +263,7 @@ export const CHUNK_SURFACES: readonly PapercuspChunkSurface[] = [
   OPERATOR_TURNS_CHUNK_SURFACE,
   WORK_ITEMS_CHUNK_SURFACE,
   CONSULT_QUESTIONS_CHUNK_SURFACE,
+  REPORTS_CHUNK_SURFACE,
 ];
 
 /** Bare table name (the storage-growth-alarm's key form). */

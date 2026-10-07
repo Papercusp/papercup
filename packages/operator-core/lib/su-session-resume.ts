@@ -30,7 +30,8 @@ import { parseSuLaunchSpecRecord } from './su-persona-render';
 import { checkInteractiveSafetyFloor } from './interactive-safety-floor';
 import type { DurableSuSessionRecord } from './su-session-persistence';
 
-export async function prepareStructuredSuResume(record: DurableSuSessionRecord) {
+export async function prepareStructuredSuResume(record: DurableSuSessionRecord,
+  { identity = 'su' }: { identity?: 'su' | 'coding-assistant' } = {}) {
   const saved = record.descriptor;
   if (!saved?.identity.nativeSessionId || !record.ownerId || !record.backend) {
     throw new Error('Reconnect requires a saved native session and SU identity');
@@ -164,14 +165,19 @@ export async function prepareStructuredSuResume(record: DurableSuSessionRecord) 
       env.CLAUDE_CONFIG_DIR = native.configDir;
     } else if (native.backend === 'codex') {
       if (!native.codexHome) throw new Error('The saved Codex home is unavailable');
-      await ensureCodexHomeViaOperator(record.ownerId, native.codexHome, row.id, {
+      if (identity === 'su') await ensureCodexHomeViaOperator(record.ownerId, native.codexHome, row.id, {
         operatorUrl,
         requireGatewayProvider: accountRoute.mode !== 'default',
         headless: spec.headless ?? row.launchArgv?.includes('--headless') === true,
       });
       // Name the failing check: a bare "not ready" was undiagnosable once the
       // home was gone (WI-10006770).
-      const codexNotReady = codexHomeLaunchReadiness(native.codexHome, record.ownerId);
+      // Outside-project chats deliberately have no SU playbook/MCP/hooks.
+      // Their engine validates native thread identity and connection readiness;
+      // requiring the SU configuration here prevents that engine from starting.
+      const codexNotReady = identity === 'su'
+        ? codexHomeLaunchReadiness(native.codexHome, record.ownerId)
+        : existsSync(join(native.codexHome, 'config.toml')) ? null : 'config.toml is missing';
       if (codexNotReady) throw new Error(`The saved Codex SU configuration is not ready: ${codexNotReady}`);
       if (accountRoute.mode === 'default') rehealResumeCodexAuth(native.codexHome);
       applyCodexGatewayRoute(native.codexHome, { ...accountRoute, ownerId: record.ownerId,

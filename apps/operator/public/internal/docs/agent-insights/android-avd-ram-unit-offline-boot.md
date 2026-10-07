@@ -15,6 +15,8 @@ Preserve the AVD and failed evidence. Stop only the owned emulator service. Repl
 
 The existing sibling `papercup-rust-mobile/tools/run-android-checks.sh` preflight accepts `verify-emulator EVIDENCE_DIR PORT AVD_CONFIG`. Its optional owned-config check rejects suffixes, missing/duplicate RAM fields and allocations below the tested 1536 MiB baseline, retaining `emulator-memory.json`. The CI emulator invocation uses explicit `-memory 1536`; the maintained runner and workflow contract suites reject the original defect. RAM uses integer MiB, whereas the existing `disk-size` surface accepts suffixes.
 
+Before creating an owned AVD or provisioning its userdata partition, run `bash tools/run-android-checks.sh verify-avd-space <DISK_SIZE> <attempt-dir>` in the mobile checkout. The helper measures free space on `ANDROID_AVD_HOME` (or `$HOME/.android/avd`), uses the effective partition floor `max(requested, 6 GiB)`, and requires 20% overhead plus 1 GiB for APKs, test output and emulator writes. It records `avd-space.txt` and exits nonzero when capacity is insufficient. Proceed only when the recorded result has `sufficient: true`. For an 8192M request, the Android allocation error's reported minimum was 9830.40 MB; this helper also reserves the additional 1 GiB working set. Run this check before AVD/userdata creation. It verifies allocation capacity only; it does not establish a general host-contention cause for later boot behavior.
+
 Run `make test-android-runner test-android-ci` in the mobile checkout for the regression controls. A positive fixture check is not native application acceptance. Require the existing `verify-emulator-boot` result before any native app replay.
 
 ## Evidence

@@ -22442,7 +22442,7 @@
           "POST"
         ]
       },
-      "description": "Bind tests, fixtures, coverage-census rows, mutations/counterexamples, checks, manual proof, or operational evidence to an exact immutable spec revision and work item. For { fromTestRun }, omit canonicalTestPath for ordinary local/Playwright rows (the recorded test path is used); provide it only for a cargo test's defining .rs file or a mutation-probe copy-out run whose temporary mirror is unavailable. Repository-backed evidence may pass measurement so the server hashes and later re-measures bounded source/test file sets; opaque evidence passes sourceFingerprint and remains caller-attested. Legacy coversVALs are accepted as sourceValId aliases. Exact replays are idempotent; changed fingerprints append history. The retract op withdraws a bound row by id with a required reason — stamped, never deleted, and excluded from default reads.",
+      "description": "For { fromTestRun }, omit canonicalTestPath for local/Playwright rows (the recorded path is used); provide it only for a cargo test's defining .rs file or a mutation-probe copy-out run whose temporary mirror is unavailable. Bind tests, fixtures, coverage-census rows, mutations/counterexamples, checks, manual proof, or operational evidence to an exact immutable spec revision and work item. Repository-backed evidence may pass measurement so the server hashes and later re-measures bounded source/test file sets; opaque evidence passes sourceFingerprint and remains caller-attested. Legacy coversVALs are accepted as sourceValId aliases. Exact replays are idempotent; changed fingerprints append history. The retract op withdraws a bound row by id with a required reason — stamped, never deleted, and excluded from default reads.",
       "capabilities": [
         "plans:write"
       ],
@@ -31515,7 +31515,7 @@
           "POST"
         ]
       },
-      "description": "Live storage usage by category (PG tables grouped by federation class + on-disk stores), each with total size, an age distribution, and whether it is safe to trim. Read-only.",
+      "description": "Live storage usage by category (PG tables grouped by federation class + on-disk stores), each with total size, an age distribution, and whether it is safe to trim. A size or aggregate is null when the bounded read could not measure every included category. Read-only.",
       "capabilities": [
         "storage:read"
       ],

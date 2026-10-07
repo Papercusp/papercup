@@ -25,6 +25,7 @@ import { pinModuleState } from '@papercusp/module-singleton';
 import { createTextCollector } from '../child-output';
 import { emitAwaitedEvent } from '../events/await/engine';
 import { createNotifyBus } from '../pg-notify-bus';
+import { CHECKPOINT_QUALIFICATION_METADATA_KEY } from './checkpoint-qualification-transaction';
 
 export const DEPENDENCY_PREBUILD_NOTIFY_CHANNEL = 'papercusp_dependency_prebuild_changed';
 export const DEPENDENCY_PREBUILD_EVENT_PREFIX = 'dependency-generation:prebuild';
@@ -616,7 +617,9 @@ export async function settleDependencyPrebuildState(
 export async function emitDependencyPrebuildTerminal(
   target: DependencyPrebuildTarget,
   state: DependencyPrebuildReadyState | DependencyPrebuildFailedState,
+  deps: { emit?: typeof emitAwaitedEvent; sql?: Sql } = {},
 ): Promise<void> {
+  const emit = deps.emit ?? emitAwaitedEvent;
   const payload = {
     workspaceId: target.workspaceId,
     installSlug: target.installSlug,
@@ -630,14 +633,14 @@ export async function emitDependencyPrebuildTerminal(
       ? `dependency generation ${state.identity} ready for ${state.candidate.slice(0, 12)}`
       : `dependency generation prebuild failed for ${state.candidate.slice(0, 12)}: ${state.error.slice(0, 240)}`;
   await Promise.all([
-    emitAwaitedEvent({
+    emit({
       key: `${DEPENDENCY_PREBUILD_EVENT_PREFIX}:${state.status}`,
       workspaceId: target.workspaceId,
       summary,
       payload,
       source: 'git-sync:dependency-prebuild',
     }),
-    emitAwaitedEvent({
+    emit({
       key: `${DEPENDENCY_PREBUILD_EVENT_PREFIX}:${state.status}:${state.candidate}:${state.inputFingerprint}`,
       workspaceId: target.workspaceId,
       summary,
@@ -645,6 +648,23 @@ export async function emitDependencyPrebuildTerminal(
       source: 'git-sync:dependency-prebuild',
     }),
   ]).then(() => undefined);
+  if (state.status === 'ready') {
+    // Reuse the existing routine, not another readiness poll. A late publication for an old
+    // candidate must not wake a successor, and a live runner or an intentional pause stays put.
+    await (deps.sql ?? getOrgPg().sql).unsafe(
+      `UPDATE harness_shared.routines
+          SET next_fire_at = now() + interval '1 minute', updated_at = now()
+        WHERE install_slug = $1 AND workspace_id = $2
+          AND target_role = 'system:green-checkpoint' AND active = true
+          AND metadata->'pause' IS NULL
+          AND metadata->'${CHECKPOINT_QUALIFICATION_METADATA_KEY}'->>'phase' IN ('waiting', 'ready')
+          AND COALESCE(jsonb_typeof(metadata->'${CHECKPOINT_QUALIFICATION_METADATA_KEY}'->'currentPhysicalRunner'), 'null') = 'null'
+          AND (metadata->'${CHECKPOINT_QUALIFICATION_METADATA_KEY}'->>'candidate' = $3
+            OR metadata->'repair_queue'->>'repairHead' = $3)
+          AND (next_fire_at IS NULL OR next_fire_at > now() + interval '1 minute')`,
+      [target.installSlug, target.workspaceId, state.candidate],
+    );
+  }
 }
 
 function terminateProcessGroup(pid: number, signal: NodeJS.Signals): void {

@@ -143,6 +143,14 @@ export function listCodexInstalledModels({ home, codexHome }?: {
     maxContextWindow: number | null;
 }>;
 /**
+ * Read the requested soft context ceiling from the persisted psu launch argv.
+ * Kept with the Codex budget policy so local resume and server-side repair use
+ * one tolerant parser without importing the compaction watchdog's heavier module.
+ * @param {unknown} argv
+ * @returns {number | null}
+ */
+export function parseLaunchCompactionLimitArgv(argv: unknown): number | null;
+/**
  * The context window papercusp DECLARES to the Codex CLI for `model`, or null
  * when that model has no extended window to ask for (plan
  * codex-1m-context-window-2026-08-17 D-008).

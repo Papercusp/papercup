@@ -333,7 +333,14 @@ export function inheritFreshCodexConfiguredModel(agent: string, args: any, { hom
  * @returns {string[]}
  */
 export function claudeInheritedEffortArgs(model: string | null | undefined, claudeSettings: ClaudeLaunchSettings | undefined): string[];
-export function modelArgsFor(agent: any, model: any, { claudeSettings }?: {}): any[];
+/** @param {string} agent
+ * @param {string | null | undefined} model
+ * @param {{ claudeSettings?: ClaudeLaunchSettings | null, compactionLimit?: number | null }} [options]
+ */
+export function modelArgsFor(agent: string, model: string | null | undefined, { claudeSettings, compactionLimit }?: {
+    claudeSettings?: ClaudeLaunchSettings | null;
+    compactionLimit?: number | null;
+}): any[];
 /**
  * Extra args to pass THROUGH a `*-su` wrapper to the underlying CLI (the
  * wrappers all end with `"$@"`). Maps a model fuzzy-match + a resume-by-id
@@ -2064,9 +2071,12 @@ export function codexResumeRouteNotice(boundProvider: string | null, accountRout
  *
  * @param {string} configText  existing config.toml text ('' when absent)
  * @param {string | null} model  the model whose window to declare
+ * @param {{ compactionLimit?: number | null }} [options]
  * @returns {string}
  */
-export function codexContextWindowConfigPatch(configText: string, model: string | null): string;
+export function codexContextWindowConfigPatch(configText: string, model: string | null, { compactionLimit }?: {
+    compactionLimit?: number | null;
+}): string;
 /** @param {string} codexHome
  * @param {{mode?: string, id?: string | null, ownerId?: string | null, priority?: string | null, keepProviderTableWhenUnrouted?: boolean}} [options] */
 export function applyCodexGatewayRoute(codexHome: string, { mode, id, ownerId, priority, keepProviderTableWhenUnrouted, }?: {

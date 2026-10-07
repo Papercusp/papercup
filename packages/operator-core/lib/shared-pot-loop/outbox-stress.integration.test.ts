@@ -15,12 +15,15 @@
  *     the 102GB failure shape);
  *   - CONVERGENCE UNDER LOAD: swarm B's PG ends with every stormed row, the
  *     last-wave content included, and the fixed point HOLDS;
+ *   - OWN-LOG COMPACTION completes and publishes a snapshot covering the storm;
  *   - the convergence LAG is measured and reported (storm-end → B fixpoint),
  *     asserted only against a generous ceiling — the number is the artifact,
  *     the P-013 probe productionizes it.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { bootCompositionRig, type CompositionRig } from './composition-rig';
+import { listBootHistory } from '../sync/hyperbee/boot-history';
+import { findLatestCompleteSnapshot } from '../sync/hyperbee/read-merge';
 
 vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
@@ -133,6 +136,22 @@ describe('P-006 — outbox stress: write storm drains bounded, no amplification,
          WHERE harness_slug = ${HARNESS} AND origin = 'remote'`;
       expect(Number(onB[0].n)).toBe(STORM_INSERTS);
       expect(Number(onB[0].in_progress)).toBe(STORM_UPDATES); // the update wave arrived too
+
+      // Compaction runs off the merge gate. A held fixed point can therefore
+      // precede its outcome, and a swallowed scope failure must fail this test.
+      const compactionOutcomes = () => listBootHistory({
+        workspaceId,
+        harnessSlug: HARNESS,
+        kinds: ['own_log_compaction'],
+      }).map((entry) => entry.message ?? '').filter((message) =>
+        /^own log compaction: |^log compaction failed/.test(message),
+      );
+      await expect.poll(compactionOutcomes, { timeout: 60_000 }).not.toHaveLength(0);
+      const outcomes = compactionOutcomes();
+      expect(outcomes.filter((message) => message.startsWith('log compaction failed')), outcomes.join('\n')).toEqual([]);
+      const snapshot = await findLatestCompleteSnapshot(a.handle.ownLog);
+      expect(snapshot, 'compaction did not publish a complete snapshot').not.toBeNull();
+      expect(snapshot!.coversUpTo).toBeGreaterThanOrEqual(TOTAL_WRITES);
 
       // The lag is the artifact (the P-013 probe productionizes it); the
       // assertion is only a generous ceiling so a real regression still trips.

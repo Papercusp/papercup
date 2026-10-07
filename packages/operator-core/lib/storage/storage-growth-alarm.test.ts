@@ -74,6 +74,11 @@ describe('detectBreaches', () => {
     const huge = pgRow('scratch', 999, { kind: 'disk' });
     expect(detectBreaches([huge])).toEqual([]);
   });
+
+  it('does not treat an unavailable PG size as a measured zero or breach', () => {
+    const unavailable = pgRow('decision-ledger', 0, { totalBytes: null });
+    expect(detectBreaches([unavailable])).toEqual([]);
+  });
 });
 
 describe('formatBreachToast', () => {

@@ -354,7 +354,8 @@ export async function launchAttachedSuSession(
           harnessSlug: input.harness_slug, agentChatId: input.agent_chat_id });
         if (!restored) throw new Error('Reconnect requires the saved session descriptor');
         const startResumedEngine = async (record: typeof previous) => {
-          const resume = await prepareStructuredSuResume(record);
+          const identity = await engineIdentityForLaunch(workspaceId, record.cwd);
+          const resume = await prepareStructuredSuResume(record, { identity });
           let active: ClaudeSuEngine | SuRpcEngine | undefined;
           try {
             const options = { ...resume.options, host: restored, beforeReady: resume.beforeReady,
@@ -363,10 +364,10 @@ export async function launchAttachedSuSession(
               ? startClaudeSuEngine(resume.boot, resume.binding as PuiSuSessionBinding & { backend: 'claude' },
                 { nativeSession: resume.nativeSession as ClaudeSuRuntimeBinding['nativeSession'], transcriptPath: null },
                 { ...options, host: restored as SuSessionHost<'claude'>, resume: resume.exact,
-                  identity: await engineIdentityForLaunch(workspaceId, resume.boot.cwd) })
+                  identity })
               : startSuRpcEngine(resume.boot, resume.binding as PuiSuSessionBinding & { backend: 'codex' | 'omp' },
                 { ...options, nativeSession: resume.nativeSession as Extract<NativeSessionHandle, { backend: 'codex' | 'omp' }>,
-                  identity: await engineIdentityForLaunch(workspaceId, resume.boot.cwd) });
+                  identity });
             state.engines.set(key, active);
             observeReadiness(active);
             // WI-10003879: sibling workers route this session's requests here.

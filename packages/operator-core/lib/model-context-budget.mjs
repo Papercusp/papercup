@@ -432,6 +432,28 @@ export function listCodexInstalledModels({ home, codexHome } = {}) {
 }
 
 /**
+ * Read the requested soft context ceiling from the persisted psu launch argv.
+ * Kept with the Codex budget policy so local resume and server-side repair use
+ * one tolerant parser without importing the compaction watchdog's heavier module.
+ * @param {unknown} argv
+ * @returns {number | null}
+ */
+export function parseLaunchCompactionLimitArgv(argv) {
+  if (!Array.isArray(argv)) return null;
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (typeof a !== 'string') continue;
+    let raw = null;
+    if (a.startsWith('--compaction-limit=')) raw = a.slice('--compaction-limit='.length).trim();
+    else if (a === '--compaction-limit' && typeof argv[i + 1] === 'string') raw = argv[i + 1].trim();
+    if (!raw) continue;
+    const n = Number(raw);
+    if (Number.isFinite(n) && n > 0) return Math.floor(n);
+  }
+  return null;
+}
+
+/**
  * The context window papercusp DECLARES to the Codex CLI for `model`, or null
  * when that model has no extended window to ask for (plan
  * codex-1m-context-window-2026-08-17 D-008).

@@ -7713,6 +7713,19 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       expect(second.pid).not.toBe(first.pid);
       expect(second.instanceId).not.toBe(first.instanceId);
       await openAgentChat(resumedPane);
+      // The streaming HTTP 200 precedes the actual attach result. Start the
+      // screen-label oracle only after that result, under the existing native
+      // readiness budget, and report a terminal refusal rather than timing out
+      // on a label that cannot exist until the engine attaches.
+      const { attachOutcomeForSession } = await import('./attach-observation');
+      let attachOutcome: Record<string, unknown> | undefined;
+      await vi.waitFor(() => {
+        attachOutcome = attachOutcomeForSession(second.diagnostics, saved!.identity.advSessionId);
+        expect(attachOutcome, 'the restarted operator must publish its terminal attach outcome').toBeDefined();
+      }, { timeout: 120_000, interval: 100 });
+      expect(attachOutcome, 'the restarted operator must accept the saved engine attachment').toMatchObject({
+        status: 'ok', httpStatus: 200,
+      });
       try {
         await resumedPane.waitFor(`chat ${chatId!.slice(0, 12)}`);
       } catch (error) {

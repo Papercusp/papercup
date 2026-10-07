@@ -8,6 +8,7 @@ import {
   dependencyPrebuildKey,
   dependencyPrebuildRequestFromQueuedState,
   enqueueDependencyPrebuild,
+  emitDependencyPrebuildTerminal,
   parseDependencyPrebuildState,
   recoverQueuedDependencyPrebuild,
   resolveDependencyGenerationRoot,
@@ -78,6 +79,32 @@ function fingerprintResult(candidate: string) {
 }
 
 describe('dependency generation background prebuild', () => {
+  it('ready publication promptly schedules only its matching idle qualification and preserves admission guards', async () => {
+    const emit = vi.fn(async () => ({}));
+    const unsafe = vi.fn(async () => []);
+    await emitDependencyPrebuildTerminal(TARGET, ready(), { emit: emit as never, sql: { unsafe } as unknown as Sql });
+    expect(emit).toHaveBeenCalledTimes(2);
+    expect(unsafe).toHaveBeenCalledTimes(1);
+    const [query, params] = unsafe.mock.calls[0] as unknown as [string, unknown[]];
+    expect(params).toEqual([TARGET.installSlug, TARGET.workspaceId, CANDIDATE_A]);
+    expect(query).toContain("phase' IN ('waiting', 'ready')");
+    expect(query).toContain("'currentPhysicalRunner'), 'null') = 'null'");
+    expect(query).toContain("metadata->'pause' IS NULL");
+    expect(query).toContain('active = true');
+    expect(query).toContain("candidate' = $3");
+    expect(query).toContain("next_fire_at > now() + interval '1 minute'");
+  });
+
+  it('failed preparation emits its outcome without scheduling a checkpoint', async () => {
+    const emit = vi.fn(async () => ({}));
+    const unsafe = vi.fn(async () => []);
+    await emitDependencyPrebuildTerminal(TARGET, {
+      ...building(), status: 'failed', completedAtMs: 120, updatedAtMs: 120, error: 'publisher failed',
+    }, { emit: emit as never, sql: { unsafe } as unknown as Sql });
+    expect(emit).toHaveBeenCalledTimes(2);
+    expect(unsafe).not.toHaveBeenCalled();
+  });
+
   it('claims candidate+input once, publishes through the existing helper, then persists/emits ready', async () => {
     const calls: string[][] = [];
     let state: DependencyPrebuildState | null = null;

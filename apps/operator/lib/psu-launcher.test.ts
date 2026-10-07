@@ -12040,6 +12040,17 @@ describe("WI-3758 — psu --resume model select + last-active model", () => {
       'model_reasoning_effort="high"',
       ...codexContextConfigArgs("gpt-5.6-sol"),
     ]);
+    expect(
+      modelArgsFor("codex", "sol:high", { compactionLimit: 250_000 }),
+    ).toEqual([
+      "-m",
+      "gpt-5.6-sol",
+      "-c",
+      'model_reasoning_effort="high"',
+      ...codexContextConfigArgs("gpt-5.6-sol", {
+        compactionLimit: 250_000,
+      }),
+    ]);
     // omp understands the suffixed spec natively.
     expect(modelArgsFor("omp", "opus:high")).toEqual(["--model", "opus:high"]);
     expect(modelArgsFor("claude", null)).toEqual([]);
@@ -18102,6 +18113,29 @@ describe("launch-time mode: the tokens launch-su emits are the tokens psu parses
  * path: it emits nothing when no model is named.
  */
 describe("codexContextWindowConfigPatch (resume inherits the window)", () => {
+  it("keeps the native auto-compaction trigger at the recorded session cap", () => {
+    const out = codexContextWindowConfigPatch(
+      'model = "gpt-5.6-sol"\n',
+      "gpt-5.6-sol",
+      { compactionLimit: 250_000 },
+    );
+    expect(out).toContain("model_context_window = 1000000");
+    expect(out).toContain("model_auto_compact_token_limit = 250000");
+  });
+
+  it("passes the recorded cap from both launch argv spellings into Codex resume args", () => {
+    for (const launchArgv of [
+      ["psu", "--compaction-limit=250000"],
+      ["psu", "--compaction-limit", "250000"],
+    ]) {
+      const resumed = resumeArgsFor(
+        { agent: "codex", sessionId: "rollout", launchArgv },
+        { model: "gpt-5.6-sol" },
+      );
+      expect(resumed.args).toContain("model_auto_compact_token_limit=250000");
+    }
+  });
+
   it("prepends the window keys as ROOT keys, above any table", () => {
     const out = codexContextWindowConfigPatch(
       '[mcp_servers.papercusp-su]\nurl = "x"\n',

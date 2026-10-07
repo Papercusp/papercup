@@ -23,6 +23,8 @@ import {
   analyzeClaudeResumeTranscript,
   CLAUDE_TOOL_REFERENCE_RECOVERY_TURNS,
 } from './claude-resume-tool-references.mjs';
+import { parseLaunchCompactionLimitArgv } from './model-context-budget.mjs';
+export { parseLaunchCompactionLimitArgv };
 
 // P-016 fallback resolver — RELOCATED to claude-sessions.ts (2026-07-04, WI-2680) so
 // the agents-roster live-thinking pane + stream share the SAME resume-rotation
@@ -1726,32 +1728,6 @@ export async function resolveLaunchCompactionLimitForOwner(ownerId: string): Pro
   } catch {
     return null;
   }
-}
-
-/**
- * The pure argv scan behind {@link resolveLaunchCompactionLimitForOwner} — split
- * out so the parsing contract is unit-testable without a database.
- *
- * Accepts both wire forms (mirroring the `--model` scan below): psu emits
- * `--compaction-limit=N`, but a hand-composed argv may use the space form. A
- * malformed value is DROPPED rather than coerced — psu rejects bad input at parse
- * time, so anything unparseable here came from a hand-edited argv, and falling
- * through to the model-derived default is the safe read. Returns null when the
- * launch named no limit.
- */
-export function parseLaunchCompactionLimitArgv(argv: unknown): number | null {
-  if (!Array.isArray(argv)) return null;
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (typeof a !== 'string') continue;
-    let raw: string | null = null;
-    if (a.startsWith('--compaction-limit=')) raw = a.slice('--compaction-limit='.length).trim();
-    else if (a === '--compaction-limit' && typeof argv[i + 1] === 'string') raw = (argv[i + 1] as string).trim();
-    if (!raw) continue;
-    const n = Number(raw);
-    if (Number.isFinite(n) && n > 0) return Math.floor(n);
-  }
-  return null;
 }
 
 /**

@@ -383,7 +383,7 @@ function fmtGb(bytes: number): string {
 export function detectBreaches(rows: StorageUsageRow[]): StorageBreach[] {
   const breaches: StorageBreach[] = [];
   for (const r of rows) {
-    if (r.kind !== 'pg') continue;
+    if (r.kind !== 'pg' || r.totalBytes === null) continue;
     const ceilingBytes = categoryCeilingBytes(r.id);
     if (r.totalBytes > ceilingBytes) {
       breaches.push({ id: r.id, label: r.label, bytes: r.totalBytes, ceilingBytes, trimmable: r.trimmable });

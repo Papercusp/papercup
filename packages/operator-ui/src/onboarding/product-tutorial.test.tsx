@@ -62,6 +62,26 @@ describe('account product guide entry', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Continue to Papercusp' }));
     await screen.findByText('Home');
   });
+  it('teaches billing and payment recovery without starting checkout or billing management', async () => {
+    const fetcher = vi.fn().mockResolvedValue(response(record({ currentLessonId: 'billing' })));
+    vi.stubGlobal('fetch', fetcher);
+    render(<AccountProductTutorial account={account}><p>Home</p></AccountProductTutorial>);
+    await screen.findByRole('heading', { name: 'Understand the bills' });
+    expect(screen.getByText(/review the price, currency and payment terms in Stripe/i)).toBeTruthy();
+    expect(screen.getByText(/Test mode — no real charges/)).toBeTruthy();
+    fireEvent.click(screen.getByText('Help with this lesson'));
+    const help = screen.getByText(/Papercusp subscription, model\/provider usage/).textContent!;
+    expect(help).toContain('bring your own cloud (BYOC)');
+    expect(help).toContain('Only organization owners and billing admins');
+    expect(help).toContain('Manage billing');
+    expect(help).toContain('invoices');
+    expect(help).toContain('per-payment receipts');
+    expect(help).toContain('If a payment fails');
+    expect(help).toContain('awaiting confirmation');
+    expect(help).toContain('unavailable is not free');
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(fetcher.mock.calls[0][0]).toContain('tutorial-progress');
+  });
   it('refuses foreign progress and cancels a pending save when the session expires', async () => {
     expect(validProductTutorialRecord(record({ scope: { tenantId: 'foreign', userId: 'user' } }), account)).toBe(false);
     expect(validProductTutorialRecord(record({ currentLessonId: 'unknown' }), account)).toBe(false);

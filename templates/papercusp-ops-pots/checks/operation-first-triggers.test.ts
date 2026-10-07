@@ -23,11 +23,11 @@
  * itself once copied into the app's `checks/` directory. Built-in controls prove
  * the detector is not vacuous.
  */
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { homedir } from "node:os";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { parse } from "yaml";
 
 // ── config preamble (identical across the portable checks) ──────────────────
@@ -82,6 +82,15 @@ function* walk(dir: string): Generator<string> {
     if (stat.isDirectory()) yield* walk(full);
     else if (SCANNED_EXTENSIONS.test(name) && stat.size < 2_000_000) yield full;
   }
+}
+
+/** The directory scanner used by both configured app checks and fixture controls. */
+export function findAppDirectCreateTriggers(root: string): string[] {
+  const findings: string[] = [];
+  for (const file of walk(root)) {
+    findings.push(...findDirectCreateTriggers(readFileSync(file, "utf8"), relative(root, file)));
+  }
+  return findings;
 }
 
 /** Returns one `operationId -> role` finding per agent-execution operation whose role is not declared in `doc.roles`. */
@@ -146,12 +155,44 @@ describe("operation-first-triggers detector controls", () => {
   });
 });
 
+describe.skipIf(!existsSync(REFERENCE_ROOT_BLUEPRINT))("operation-first-triggers materialized fixture controls", () => {
+  let root: string;
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "operation-first-app-fixture-"));
+    mkdirSync(join(root, ".papercusp"));
+    mkdirSync(join(root, "src"));
+    // Materialize the maintained reference exactly where its GUIDE tells apps
+    // to put it, substituting fixture values for the builder's placeholders.
+    writeFileSync(join(root, ".papercusp", "blueprint.yaml"),
+      fillPlaceholders(readFileSync(REFERENCE_ROOT_BLUEPRINT, "utf8")));
+  });
+  afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+  it("passes the materialized reference default with a declared operation", () => {
+    const doc = parse(readFileSync(join(root, ".papercusp", "blueprint.yaml"), "utf8"));
+    expect(doc.operations.length).toBeGreaterThan(0);
+    expect(findUndeclaredAgentRoles(doc)).toEqual([]);
+    expect(findAppDirectCreateTriggers(root)).toEqual([]);
+  });
+
+  it("passes a materialized app whose source trigger targets an operation", () => {
+    writeFileSync(join(root, "src", "triggers.ts"),
+      'export const binding = { action: { type: "blueprint-operation", operationHarnessSlug: "fixture", operationId: "x" } };');
+    expect(findAppDirectCreateTriggers(root)).toEqual([]);
+  });
+
+  it("fails the app check when a materialized source trigger directly creates work", () => {
+    writeFileSync(join(root, "src", "triggers.ts"),
+      `export const binding = { action: { tool: "${DIRECT_CREATE_TOOL}" } };`);
+    const findings = findAppDirectCreateTriggers(root);
+    expect(findings).toEqual([`src/triggers.ts:1 trigger target ${DIRECT_CREATE_TOOL}`]);
+    expect(() => expect(findings).toEqual([])).toThrow();
+  });
+});
+
 describe.skipIf(!section)("operation-first-triggers", () => {
   it("no trigger in the app's source creates agent work directly", () => {
-    const findings: string[] = [];
-    for (const file of walk(appRoot!)) {
-      findings.push(...findDirectCreateTriggers(readFileSync(file, "utf8"), relative(appRoot!, file)));
-    }
+    const findings = findAppDirectCreateTriggers(appRoot!);
     expect(
       findings,
       "agent tasks must be blueprint operations submitted through the seam client " +

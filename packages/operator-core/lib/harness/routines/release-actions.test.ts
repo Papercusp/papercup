@@ -2691,6 +2691,45 @@ describe('green-checkpoint scope isolation (2026-07-01 bg-host OOM blast-radius)
     }));
   });
 
+  it('records exact begin-conflict identities and a safe next action without spawning a suite', async () => {
+    beginStoredQualification.mockResolvedValueOnce({
+      status: 'conflict', transaction: {
+        attemptId: 'incumbent-attempt', phase: 'running', candidate: 'incumbent-candidate',
+        repairHead: 'incumbent-repair', runId: 'incumbent-run',
+        currentPhysicalRunner: { id: 'incumbent-runner', leaseExpiresAtMs: 1234, heartbeatAtMs: 1200 },
+      },
+    });
+    await getSystemAction('green-checkpoint')!(ctx);
+    const event = appendPipelineEvent.mock.calls.map((c) => c[0] as { status: string; detail: unknown })
+      .find((e) => e.status === 'skipped-qualification-conflict');
+    expect(event?.detail).toMatchObject({
+      reason: 'conflict', stage: 'begin',
+      requestedAttemptId: beginStoredQualification.mock.calls[0][1].attemptId,
+      observedAttemptId: 'incumbent-attempt', observedRunnerId: 'incumbent-runner',
+      candidate: 'incumbent-candidate', repairHead: 'incumbent-repair', runId: 'incumbent-run',
+      runnerLiveness: 'unknown', safeNextAction: { code: 'read-release-control' },
+    });
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it('records the requested runner separately from the incumbent when reservation conflicts', async () => {
+    reserveStoredQualificationRunner.mockResolvedValueOnce({
+      status: 'conflict', transaction: {
+        attemptId: 'scheduled-attempt', phase: 'running', candidate: 'candidate',
+        currentPhysicalRunner: { id: 'other-runner', leaseExpiresAtMs: 1234 },
+      },
+    });
+    await getSystemAction('green-checkpoint')!(ctx);
+    const event = appendPipelineEvent.mock.calls.map((c) => c[0] as { status: string; detail: unknown })
+      .find((e) => e.status === 'skipped-qualification-conflict');
+    expect(event?.detail).toMatchObject({
+      stage: 'reserve-runner', requestedAttemptId: 'scheduled-attempt',
+      requestedRunnerId: reserveStoredQualificationRunner.mock.calls[0][1].runnerId,
+      observedRunnerId: 'other-runner', runnerLiveness: 'unknown',
+    });
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
   it('WI-4310: checkpoint child receives a bounded dedicated DB pool override', async () => {
     delete process.env.PAPERCUSP_CHECKPOINT_DB_POOL_MAX;
     spawnMock.mockImplementationOnce(() => fakeSpawn(okStdout, 0));
