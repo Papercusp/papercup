@@ -124,18 +124,52 @@ async function waitForOutput(read: () => string, text: string, timeoutMs = 10_00
   }
 }
 
-// A transparent contender-side flock witness. The blocking call follows the
-// guard's lock_wait_started timestamp, so its acknowledgement establishes both
-// actual contention and the start of the long-wait measurement below.
+async function waitForKernelFlockBlock(pidPath: string, timeoutMs = 10_000): Promise<void> {
+  await waitForPath(pidPath, timeoutMs);
+  const pid = Number(readFileSync(pidPath, 'utf8').trim());
+  if (!Number.isSafeInteger(pid) || pid <= 0) {
+    throw new Error('flock witness wrote an invalid pid: ' + readFileSync(pidPath, 'utf8'));
+  }
+
+  const procPath = '/proc/' + pid;
+  const wchanPath = procPath + '/wchan';
+  const deadline = Date.now() + timeoutMs;
+  let lastWchan = 'unreadable';
+  while (Date.now() < deadline) {
+    if (!existsSync(procPath)) {
+      throw new Error('flock process ' + pid + ' exited before entering the kernel lock wait');
+    }
+    try {
+      lastWchan = readFileSync(wchanPath, 'utf8').trim();
+    } catch {
+      lastWchan = 'unreadable';
+    }
+    if (lastWchan === 'locks_lock_inode_wait') return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(
+    'timed out waiting for flock process ' + pid +
+      ' to block in /proc wchan; last value was ' + JSON.stringify(lastWchan),
+  );
+}
+
+// The guard logs its waiting result before it calls flock. The wrapper records
+// the exec'd PID; waitForKernelFlockBlock verifies that the kernel has actually
+// blocked it before a test releases the holder or starts measuring a long wait.
 function witnessBlockingFlock(dir: string) {
   const bin = join(dir, 'bin');
   mkdirSync(bin);
-  const blocked = join(dir, 'contender-blocked');
-  writeFileSync(join(bin, 'flock'), `#!/bin/bash
-if [ "$#" = 1 ] && [ "$1" = 9 ]; then touch "$CONTENDER_BLOCKED"; fi
-exec /usr/bin/flock "$@"
-`, { mode: 0o755 });
-  return { blocked, env: { PATH: `${bin}:${process.env.PATH}`, CONTENDER_BLOCKED: blocked } };
+  const pidPath = join(dir, 'contender-flock.pid');
+  writeFileSync(join(bin, 'flock'), [
+    '#!/bin/bash',
+    'if [ "$#" = 1 ] && [ "$1" = 9 ]; then echo "$$" >"$CONTENDER_FLOCK_PID"; fi',
+    'exec /usr/bin/flock "$@"',
+    '',
+  ].join('\n'), { mode: 0o755 });
+  return {
+    pidPath,
+    env: { PATH: `${bin}:${process.env.PATH}`, CONTENDER_FLOCK_PID: pidPath },
+  };
 }
 
 async function stopFixtureGroup(child: ReturnType<typeof spawn>, closed: Promise<number | null>) {
@@ -167,7 +201,7 @@ async function contendWithFixtureHolder(fx: ReturnType<typeof fixture>, args: st
     child.stdout!.setEncoding('utf8').on('data', (chunk: string) => { output += chunk; });
     child.stderr!.setEncoding('utf8').on('data', (chunk: string) => { output += chunk; });
     if (waitReason) {
-      await waitForPath(witness.blocked);
+      await waitForKernelFlockBlock(witness.pidPath);
       await waitForOutput(() => output, `result=waiting reason=${waitReason}`);
       expect(existsSync(marker), output).toBe(false);
       expect(child.exitCode, output).toBeNull();
@@ -2114,7 +2148,7 @@ describe('Kopia managed entrypoint contract', () => {
       closed = new Promise<number | null>((resolve) => child!.once('close', resolve));
       child.stdout!.setEncoding('utf8').on('data', (chunk: string) => { dbOut += chunk; });
       child.stderr!.setEncoding('utf8').on('data', (chunk: string) => { dbOut += chunk; });
-      await waitForPath(witness.blocked);
+      await waitForKernelFlockBlock(witness.pidPath);
       await waitForOutput(() => dbOut, 'result=waiting reason=priority-on-contention');
       // This duration starts AFTER the guard entered its blocking flock call,
       // rather than after holder startup. It must exceed the 6s freshness window.
