@@ -1515,7 +1515,11 @@ export default defineTool({
       const { projectPlanOperationalBrief, renderOperationalBrief } = await import('../../operational-brief');
       for (const result of env.results as Array<Record<string, unknown>>) {
         if (result.ok !== true) continue;
-        const brief = projectPlanOperationalBrief(result, { itemsComplete: !requestedItemIds });
+        const brief = projectPlanOperationalBrief(result, {
+          itemsComplete: !requestedItemIds,
+          acceptanceIncluded: includeEnrichments && !requestedDecisionIds && !args.heading,
+          auditIncluded: includeEnrichments && !requestedDecisionIds && !args.heading && mode !== 'meta',
+        });
         result.operationalBrief = { ...brief, text: renderOperationalBrief(brief) };
       }
     }
