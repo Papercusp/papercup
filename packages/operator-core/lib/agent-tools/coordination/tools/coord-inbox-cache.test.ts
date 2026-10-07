@@ -336,6 +336,30 @@ async function read(args: Record<string, unknown>, owner = "owner-a", workspace 
 }
 
 describe("coord:inbox — share only equivalent full derives (P-011)", () => {
+  it("directed=true keeps mixed delivery only when it names the current reader", async () => {
+    M.readInbox.mockImplementation(async () => [
+      { msg_id: "for-owner", kind: "message", from: "peer-a", to: ["*", "owner-a"],
+        ts: "2026-10-01T00:00:00Z", summary: "directed to this reader" },
+      { msg_id: "wildcard-only", kind: "message", from: "peer-a", to: ["*"],
+        ts: "2026-10-01T00:00:01Z", summary: "broadcast" },
+      { msg_id: "human-and-wildcard", kind: "message", from: "peer-a", to: ["human", "*"],
+        ts: "2026-10-01T00:00:02Z", summary: "broadcast to human and everyone" },
+      { msg_id: "other-and-wildcard", kind: "message", from: "peer-a", to: ["owner-b", "*"],
+        ts: "2026-10-01T00:00:03Z", summary: "broadcast to another owner and everyone" },
+    ]);
+
+    const result = await read({
+      directed: true,
+      limit: 10,
+      include_ambient: true,
+      include_intents: true,
+    });
+
+    expect(result.entries.map((entry) => entry.msg_id)).toEqual(["for-owner"]);
+    expect(result.summary.total).toBe(1);
+    expect(result.summary.returned).toBe(1);
+  });
+
   it("shares a nonempty full derive across sender, directed and unanswered filters without losing content", async () => {
     const decoded: unknown[][] = [];
     M.readInbox.mockImplementation(async () => {

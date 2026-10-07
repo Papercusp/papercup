@@ -1294,10 +1294,10 @@ export default defineTool({
     // arg descriptions promise and the summary counts below see the final set.
     const directedInput = bySender as unknown as Array<Record<string, unknown>>;
     const broadcastExcluded = directedOnly
-      ? directedInput.filter((e) => !isDirectedDelivery(e)).length
+      ? directedInput.filter((e) => !isDirectedDelivery(e, identity.ownerId)).length
       : 0;
     const byDelivery = directedOnly
-      ? (directedInput.filter((e) => isDirectedDelivery(e)) as unknown as typeof bySender)
+      ? (directedInput.filter((e) => isDirectedDelivery(e, identity.ownerId)) as unknown as typeof bySender)
       : bySender;
 
     // EI-13159: unanswered_only — narrow to exactly the msg_ids fleet:assignments'

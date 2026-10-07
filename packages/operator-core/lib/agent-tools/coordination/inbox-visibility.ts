@@ -100,26 +100,22 @@ export function isAmbientBroadcast(e: Record<string, unknown>): boolean {
 }
 
 /**
- * Is this entry addressed to a SPECIFIC reader rather than broadcast to everyone?
+ * Is this entry addressed to this specific reader rather than broadcast to everyone?
  *
- * P-001 (tool-contract-repair-2026-09-05): `coord:inbox { directed: true }` is the
- * "messages actually addressed to me" filter — the question the tool exists to
- * answer, and until now the one narrowing it could not express. The ambient filter
- * suppresses only CATEGORIZED system broadcasts, so an ordinary peer `to:['*']`
- * broadcast still lands in the default window; `unanswered_only` is stricter in the
- * other direction (it also requires an expected, still-missing reply).
+ * P-001: coord:inbox's directed filter answers "who wrote to ME." Its base read
+ * includes entries for this reader and broadcasts, so a mixed recipient list is
+ * directed only when it actually names ownerId. For example, ['*', ownerId] is
+ * directed to this reader, while ['*', otherOwner] is still only a broadcast here.
+ * isAmbientBroadcast answers a different question: whether a categorized system
+ * broadcast should be hidden by default.
  *
- * The delivery predicate is deliberately the SAME one `isAmbientBroadcast` applies
- * above — all-'*' is broadcast, and mixed `['*', owner]` counts as directed — so the
- * two filters cannot drift into disagreeing about what "directed" means. An entry
- * with no usable `to` array is treated as directed: it reached this reader's inbox
- * somehow, and silently hiding it would make the filter lossy in the one direction
- * an inbox filter must never be.
+ * Keep the fail-open for a missing or malformed recipient list: such an entry has
+ * already reached this reader's inbox, and silently hiding it would be lossy.
  */
-export function isDirectedDelivery(e: Record<string, unknown>): boolean {
+export function isDirectedDelivery(e: Record<string, unknown>, ownerId: string): boolean {
   const recipients = e["to"];
   if (!Array.isArray(recipients) || recipients.length === 0) return true;
-  return !recipients.every((recipient) => recipient === "*");
+  return ownerId.length > 0 && recipients.includes(ownerId);
 }
 
 /** EI-6144 ambient/broadcast coalescing: collapse REPEATED categorized system
