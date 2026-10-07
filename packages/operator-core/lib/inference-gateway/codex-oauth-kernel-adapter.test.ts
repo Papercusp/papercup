@@ -885,6 +885,30 @@ describe('Codex OAuth quota errors inside successful HTTP streams', () => {
     ? { type: kind, error: quota }
     : { type: kind, response: { id: 'failed-a', error: quota } };
 
+  it.each([undefined, ''])('inspects streaming quota frames when upstream Content-Type is %s', async (contentType) => {
+    // WI-10007298: real OAuth SSE can arrive without a Content-Type header.
+    // Header absence must not bypass the existing pre-commit quota failover.
+    const accounts = [cli('chatgpt-a'), cli('chatgpt-b')];
+    const pool = makePool([{ accountId: 'chatgpt-b' }]);
+    const success = frame({ type: 'response.completed', response: { id: 'healthy', status: 'completed' } });
+    const h = harness(async (_url, init) => init.diagnosticAccountId === 'chatgpt-a'
+      ? upstream(200, contentType === undefined ? {} : { 'content-type': contentType }, sseBody(frame(failed('response.failed'))))
+      : upstream(200, { 'content-type': 'text/event-stream' }, sseBody(success)), { accounts, pool });
+    await executeGatewayRequestKernel(h.options);
+    expect(h.prepared.map((p) => p.accountId)).toEqual(['chatgpt-a', 'chatgpt-b']);
+    expect(h.written.join('')).toBe(success);
+    expect(pool.exhaustedCalls.map((p) => p.id)).toEqual(['chatgpt-a']);
+  });
+
+  it('preserves a healthy headerless SSE stream without interpreting quota-looking model text', async () => {
+    const wire = frame({ type: 'response.output_text.delta', delta: "You've hit your usage limit" })
+      + frame({ type: 'response.completed', response: { id: 'healthy', status: 'completed' } });
+    const h = harness(async () => upstream(200, {}, sseBody(wire)));
+    await executeGatewayRequestKernel(h.options);
+    expect(h.prepared).toHaveLength(1);
+    expect(h.written.join('')).toBe(wire);
+  });
+
   it('calibrates quota and non-quota fixtures against native Codex response.failed classifications', async () => {
     // Pinned native protocol controls, rather than assuming every error means quota:
     // https://github.com/openai/codex/blob/rust-v0.160.1/codex-rs/codex-api/src/sse/responses.rs

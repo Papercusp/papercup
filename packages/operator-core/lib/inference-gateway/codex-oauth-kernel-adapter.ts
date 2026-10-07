@@ -718,7 +718,13 @@ export function createCodexOAuthKernelAdapter(opts: CodexOAuthAdapterOptions): C
       // WI-10003306: classify a public-model 4xx as a MODEL refusal. Only the non-auth,
       // non-rate-limit 4xx range is read (a few hundred bytes); 2xx streams are never touched.
       let body = upstream.body;
-      if (body && status >= 200 && status < 300 && headers['content-type']?.toLowerCase().includes('text/event-stream')) {
+      const contentType = headers['content-type']?.trim().toLowerCase();
+      // WI-10007298: OAuth streaming responses can contain valid SSE without
+      // Content-Type. Do not let a missing header bypass protocol quota inspection
+      // and pin the client's retries to an exhausted account. Explicit non-SSE
+      // media types retain their existing byte-transparent behavior.
+      if (body && status >= 200 && status < 300 &&
+          (contentType?.includes('text/event-stream') || (!contentType && opts.streaming))) {
         const inspected = await inspectQuotaStream(body, (quota) => {
           const reset = opts.rateReset(headers);
           if (quota.accountWide || reset.transient === false) {
