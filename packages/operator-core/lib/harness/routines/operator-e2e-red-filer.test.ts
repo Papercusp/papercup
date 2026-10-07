@@ -3,7 +3,7 @@
  * standing operator e2e run gets exactly one owned work-item. The deps seam is injected, so these
  * tests exercise the real decision logic without a database.
  */
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../task-manager/store', () => ({ listTasks: vi.fn(async () => []) }));
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: vi.fn() }));
@@ -17,20 +17,64 @@ vi.mock('./system-actions', () => ({ registerSystemAction: vi.fn() }));
 
 import {
   classifyOwnership,
+  classifyTaskFailureOwnership,
+  defaultRedFilerDeps,
   fileOperatorE2eReds,
   namesSpec,
   redSpecsFromGroupRows,
   renderRedItem,
+  renderTaskFailureItem,
   specStem,
   type GroupSpecRow,
   type OwnershipCandidate,
   type RedFilerDeps,
+  type TerminalTaskFailure,
 } from './operator-e2e-red-filer';
+import { listTasks } from '../../task-manager/store';
+import type { TaskRow } from '../../task-manager/types';
 
 const SPEC = 'apps/operator/e2e/home.spec.ts';
 
+beforeEach(() => {
+  vi.mocked(listTasks).mockReset();
+  vi.mocked(listTasks).mockResolvedValue([]);
+});
+
 function row(filePath: string, status: string, finishedAt: string, extra: Partial<GroupSpecRow> = {}): GroupSpecRow {
   return { filePath, status, finishedAt, outputTail: 'boom', failedCaseTitles: [], ...extra };
+}
+
+function taskRow(overrides: Partial<TaskRow> = {}): TaskRow {
+  const timestamp = new Date().toISOString();
+  return {
+    taskId: 'task-e2e-1',
+    workspaceId: 'ws',
+    rootTaskId: 'task-e2e-1',
+    class: 'test-run',
+    title: 'operator e2e isolated run',
+    argv: [],
+    launchedBy: 'system:operator-e2e-isolated',
+    confined: true,
+    state: 'exited',
+    startedAt: timestamp,
+    lastSeenAt: timestamp,
+    endedAt: timestamp,
+    detail: { runGroup: 'operator-e2e-nightly:task-e2e-1' },
+    ...overrides,
+  };
+}
+
+function taskFailure(overrides: Partial<TerminalTaskFailure> = {}): TerminalTaskFailure {
+  return {
+    taskId: 'task-e2e-1',
+    runGroup: 'operator-e2e-nightly:task-e2e-1',
+    state: 'exited',
+    exitCode: 1,
+    exitReason: 'process exited with status 1',
+    finishedAt: new Date().toISOString(),
+    logPath: '/tmp/operator-e2e-task.log',
+    ...overrides,
+  };
 }
 
 describe('spec identity', () => {
@@ -100,16 +144,109 @@ describe('renderRedItem', () => {
   });
 });
 
+describe('terminalTaskFailures', () => {
+  it('reads a bounded isolated-task window and keeps only recent non-passing nightly tasks', async () => {
+    const now = Date.now();
+    const failedAt = new Date(now - 60_000).toISOString();
+    const oldAt = new Date(now - 8 * 24 * 60 * 60 * 1_000).toISOString();
+    const failed = taskRow({ taskId: 'failed-task', detail: { runGroup: 'operator-e2e-nightly:failed-task' }, endedAt: failedAt, exitCode: 1, exitReason: 'prepare failed' });
+    const unknown = taskRow({
+      taskId: 'unknown-task',
+      detail: { runGroup: 'operator-e2e-nightly:unknown-task' },
+      state: 'ended_unobserved',
+      endedAt: failedAt,
+      exitCode: null,
+      exitReason: null,
+    });
+    const clean = taskRow({ taskId: 'clean-task', detail: { runGroup: 'operator-e2e-nightly:clean-task' }, endedAt: failedAt, exitCode: 0 });
+    const killed = taskRow({ taskId: 'killed-task', detail: { runGroup: 'operator-e2e-nightly:killed-task' }, state: 'killed', endedAt: failedAt });
+    const old = taskRow({ taskId: 'old-task', detail: { runGroup: 'operator-e2e-nightly:old-task' }, endedAt: oldAt, exitCode: 1 });
+    const unrelated = taskRow({ taskId: 'other-task', detail: { runGroup: 'manual-run:other-task' }, endedAt: failedAt, exitCode: 1 });
+    vi.mocked(listTasks).mockResolvedValue([failed, unknown, clean, killed, old, unrelated]);
+
+    const failures = await defaultRedFilerDeps().terminalTaskFailures('ws');
+
+    expect(listTasks).toHaveBeenCalledWith({
+      workspaceId: 'ws',
+      launchedBy: 'system:operator-e2e-isolated',
+      classes: ['test-run'],
+      states: ['exited', 'timed_out', 'stranded', 'ended_unobserved'],
+      includeEnded: true,
+      limit: 2_000,
+    });
+    expect(failures).toEqual([
+      {
+        taskId: 'failed-task',
+        runGroup: 'operator-e2e-nightly:failed-task',
+        state: 'exited',
+        exitCode: 1,
+        exitReason: 'prepare failed',
+        finishedAt: failedAt,
+        logPath: null,
+      },
+      {
+        taskId: 'unknown-task',
+        runGroup: 'operator-e2e-nightly:unknown-task',
+        state: 'ended_unobserved',
+        exitCode: null,
+        exitReason: null,
+        finishedAt: failedAt,
+        logPath: null,
+      },
+    ]);
+  });
+
+  it('renders a run-level item without claiming a failing spec', () => {
+    const rendered = renderTaskFailureItem(taskFailure());
+    expect(rendered.title).toContain('operator-e2e-nightly:task-e2e-1');
+    expect(rendered.summary).toContain('task-e2e-1');
+    expect(rendered.summary).toContain('no test_runs rows exist');
+    expect(rendered.summary).toContain('does not identify a failing spec');
+  });
+
+  it('uses the same owner and evidence-time ownership rules as spec reds', () => {
+    const finishedAt = '2026-10-06T05:00:00Z';
+    const candidate = (overrides: Partial<OwnershipCandidate>): OwnershipCandidate => ({
+      id: 'WI-90',
+      status: 'open',
+      assignee: null,
+      closedAt: null,
+      title: 'Operator e2e run has no reporter result',
+      summary: 'task-e2e-1 ended without reporter rows',
+      ...overrides,
+    });
+    expect(classifyTaskFailureOwnership([candidate({ assignee: 'su-owner' })], finishedAt)).toEqual({
+      kind: 'owned',
+      id: 'WI-90',
+      assignee: 'su-owner',
+    });
+    expect(classifyTaskFailureOwnership([candidate({ status: 'done', closedAt: '2026-10-06T06:00:00Z' })], finishedAt)).toEqual({
+      kind: 'resolved-after-evidence',
+      id: 'WI-90',
+    });
+    expect(classifyTaskFailureOwnership([candidate({})], finishedAt)).toEqual({ kind: 'unassigned-open', id: 'WI-90' });
+  });
+});
+
 /** An in-memory ledger + work queue: the create/assign deps write into `items`. */
-function world(opts: { groups: Array<{ runGroup: string; finishedAt: string; rows: GroupSpecRow[] }>; inFlight?: string[]; umbrellaAssignee?: string | null }) {
+function world(opts: {
+  groups: Array<{ runGroup: string; finishedAt: string; rows: GroupSpecRow[] }>;
+  inFlight?: string[];
+  umbrellaAssignee?: string | null;
+  terminalTaskFailures?: TerminalTaskFailure[];
+}) {
   const items: OwnershipCandidate[] = [];
   let next = 1;
   const deps: RedFilerDeps = {
     listGroups: async () =>
       [...opts.groups].sort((a, b) => b.finishedAt.localeCompare(a.finishedAt)).map(({ runGroup, finishedAt }) => ({ runGroup, finishedAt })),
     inFlightGroups: async () => opts.inFlight ?? [],
+    terminalTaskFailures: async () => opts.terminalTaskFailures ?? [],
+    groupsWithRows: async (_workspaceId, runGroups) =>
+      [...new Set(runGroups.filter((runGroup) => opts.groups.some((g) => g.runGroup === runGroup)))],
     groupRows: async (g) => opts.groups.find((x) => x.runGroup === g)?.rows ?? [],
     ownershipCandidates: async (_ws, _h, spec) => items.filter((i) => namesSpec(i.title, spec) || namesSpec(i.summary, spec)),
+    taskFailureOwnershipCandidates: async (_ws, _h, taskId) => items.filter((i) => i.summary?.includes(taskId)),
     assigneeOf: async () => opts.umbrellaAssignee ?? null,
     create: vi.fn(async (args) => {
       const id = `WI-${next++}`;
@@ -203,6 +340,39 @@ describe('fileOperatorE2eReds', () => {
     expect(result.owner).toBeNull();
     expect(result.outcomes?.map((outcome) => outcome.outcome).sort()).toEqual(['owned', 'resolved-after-evidence']);
     expect(result.ownerUnresolved).toBe(false);
+  });
+
+  it('files a failed no-row terminal task once and keeps the existing owner policy', async () => {
+    const failure = taskFailure();
+    const w = world({ groups: [], terminalTaskFailures: [failure] });
+
+    const first = await fileOperatorE2eReds(CTX, w.deps);
+    const repeated = await fileOperatorE2eReds(CTX, w.deps);
+
+    expect(first).toMatchObject({
+      status: 'swept',
+      taskFailures: 1,
+      owner: 'su-owner',
+      ownerUnresolved: false,
+      taskFailureOutcomes: [{ taskId: failure.taskId, runGroup: failure.runGroup, outcome: 'filed', id: 'WI-1' }],
+    });
+    expect(repeated.taskFailureOutcomes).toEqual([
+      { taskId: failure.taskId, runGroup: failure.runGroup, outcome: 'owned', id: 'WI-1' },
+    ]);
+    expect(w.items).toHaveLength(1);
+    expect(w.items[0]).toMatchObject({ assignee: 'su-owner', title: expect.stringContaining(failure.runGroup) });
+  });
+
+  it('does not create a run-level item when that run group already has reporter rows', async () => {
+    const failure = taskFailure();
+    const group = { runGroup: failure.runGroup, finishedAt: failure.finishedAt, rows: [row(SPEC, 'fail', failure.finishedAt)] };
+    const w = world({ groups: [group], terminalTaskFailures: [failure] });
+
+    const result = await fileOperatorE2eReds(CTX, w.deps);
+
+    expect(result.taskFailures).toBe(0);
+    expect(result.taskFailureOutcomes).toEqual([]);
+    expect(w.items.map((item) => item.title)).toEqual([`Operator e2e red: ${SPEC}`]);
   });
 
   it('refuses a foreign harness', async () => {

@@ -53,6 +53,8 @@ export const OPERATOR_E2E_RED_FILER_OWNER_ID = `system:${OPERATOR_E2E_RED_FILER_
 export const OPERATOR_E2E_UMBRELLA_ITEM = 'WI-10006736';
 /** How far back to look for nightly groups. A week covers a missed run or two. */
 export const OPERATOR_E2E_GROUP_LOOKBACK_DAYS = 7;
+/** Bound the ledger read; one scheduled run per hour fits comfortably inside this window. */
+const OPERATOR_E2E_TASK_FAILURE_SCAN_LIMIT = 2_000;
 /** Output kept on a filed item: enough for the failing assertion, bounded for the item body. */
 export const OPERATOR_E2E_RED_TAIL_CHARS = 1_500;
 
@@ -74,6 +76,16 @@ export interface RedSpec {
   failedCaseTitles: string[];
 }
 
+export interface TerminalTaskFailure {
+  taskId: string;
+  runGroup: string;
+  state: string;
+  exitCode: number | null;
+  exitReason: string | null;
+  finishedAt: string;
+  logPath: string | null;
+}
+
 export interface OwnershipCandidate {
   id: string;
   status: string;
@@ -88,6 +100,14 @@ export type Ownership =
   | { kind: 'resolved-after-evidence'; id: string }
   | { kind: 'unassigned-open'; id: string }
   | { kind: 'none' };
+
+export interface TaskFailureFilingOutcome {
+  taskId: string;
+  runGroup: string;
+  outcome: 'filed' | 'assigned' | 'owned' | 'resolved-after-evidence' | 'unassigned-open' | 'error';
+  id?: string;
+  detail?: string;
+}
 
 /** PURE: `apps/operator/e2e/home.spec.ts` -> `home`. */
 export function specStem(specPath: string): string {
@@ -143,16 +163,29 @@ export function classifyOwnership(
   groupFinishedAt: string,
 ): Ownership {
   const naming = candidates.filter((c) => namesSpec(c.title, specPath) || namesSpec(c.summary, specPath));
-  const open = naming.filter((c) => !isTerminalStateInput(c.status));
+  return classifyEvidenceOwnership(naming, groupFinishedAt);
+}
+
+/** Pure matching of already-scoped candidates against the evidence timestamp. */
+function classifyEvidenceOwnership(candidates: readonly OwnershipCandidate[], evidenceAt: string): Ownership {
+  const open = candidates.filter((c) => !isTerminalStateInput(c.status));
   const owned = open.find((c) => c.assignee != null && c.assignee.trim() !== '');
   if (owned) return { kind: 'owned', id: owned.id, assignee: owned.assignee as string };
-  const evidenceMs = Date.parse(groupFinishedAt);
-  const answered = naming.find(
+  const evidenceMs = Date.parse(evidenceAt);
+  const answered = candidates.find(
     (c) => isTerminalStateInput(c.status) && c.closedAt != null && Date.parse(c.closedAt) >= evidenceMs,
   );
   if (answered) return { kind: 'resolved-after-evidence', id: answered.id };
   if (open[0]) return { kind: 'unassigned-open', id: open[0].id };
   return { kind: 'none' };
+}
+
+/** Candidates are already matched by the exact managed task id in their payload. */
+export function classifyTaskFailureOwnership(
+  candidates: readonly OwnershipCandidate[],
+  taskFinishedAt: string,
+): Ownership {
+  return classifyEvidenceOwnership(candidates, taskFinishedAt);
 }
 
 /** PURE: the filed item's title and summary. */
@@ -175,6 +208,22 @@ export function renderRedItem(red: RedSpec, runGroup: string): { title: string; 
   };
 }
 
+/** The failed child had no reporter rows, so this is a run-level item rather than a spec red. */
+export function renderTaskFailureItem(failure: TerminalTaskFailure): { title: string; summary: string } {
+  const exitCode = failure.exitCode == null ? 'unknown' : String(failure.exitCode);
+  const reason = failure.exitReason?.slice(-500) || '(none recorded)';
+  const logPath = failure.logPath ?? '(none recorded)';
+  return {
+    title: `Operator e2e run has no reporter result: ${failure.runGroup}`,
+    summary:
+      `The managed operator e2e task ${failure.taskId} ended in state ${failure.state} ` +
+      `(exit code ${exitCode}) at ${failure.finishedAt}, and no test_runs rows exist for run group ${failure.runGroup}. ` +
+      `This is a run-level failure or unknown result; it does not identify a failing spec.\n\n` +
+      `Task exit reason: ${reason}\nTask log: ${logPath}\n\n` +
+      `Inspect the isolated-run preparation/reporter path, then rerun the standing isolated suite if needed.`,
+  };
+}
+
 export interface LatestGroup {
   runGroup: string;
   finishedAt: string;
@@ -185,8 +234,17 @@ export interface RedFilerDeps {
   listGroups(workspaceId: string): Promise<LatestGroup[]>;
   /** Run groups of runs that are still in flight. */
   inFlightGroups(workspaceId: string): Promise<string[]>;
+  /** Recent terminal isolated-e2e tasks that did not prove a clean exit. */
+  terminalTaskFailures(workspaceId: string): Promise<TerminalTaskFailure[]>;
+  /** Exact reporter groups present for the supplied run-group ids. */
+  groupsWithRows(workspaceId: string, runGroups: string[]): Promise<string[]>;
   groupRows(runGroup: string): Promise<GroupSpecRow[]>;
   ownershipCandidates(workspaceId: string, harnessSlug: string, specPath: string): Promise<OwnershipCandidate[]>;
+  taskFailureOwnershipCandidates(
+    workspaceId: string,
+    harnessSlug: string,
+    taskId: string,
+  ): Promise<OwnershipCandidate[]>;
   /** The assignee of `id`, or null when unassigned or missing. */
   assigneeOf(id: string, harnessSlug: string): Promise<string | null>;
   create(args: Parameters<typeof createOneWorkItem>[0], ctx: Parameters<typeof createOneWorkItem>[1]): Promise<{ id: string | null; error?: string }>;
@@ -205,9 +263,12 @@ export interface RedFilerResult {
   reason?: string;
   runGroup?: string;
   reds?: number;
+  taskFailures?: number;
   owner?: string | null;
   ownerUnresolved?: boolean;
   outcomes?: RedFilingOutcome[];
+  taskFailureOutcomes?: TaskFailureFilingOutcome[];
+  taskFailureScanError?: string;
 }
 
 export async function resolveRedOwner(
@@ -237,14 +298,84 @@ export async function fileOperatorE2eReds(
   const [groups, inFlight] = await Promise.all([deps.listGroups(ctx.workspaceId), deps.inFlightGroups(ctx.workspaceId)]);
   const busy = new Set(inFlight);
   const group = groups.find((g) => !busy.has(g.runGroup));
-  if (!group) {
+  const reds = group ? redSpecsFromGroupRows(await deps.groupRows(group.runGroup)) : [];
+  let taskFailures: TerminalTaskFailure[] = [];
+  let taskFailureScanError: string | undefined;
+  try {
+    const taskCandidates = (await deps.terminalTaskFailures(ctx.workspaceId)).filter((task) => !busy.has(task.runGroup));
+    const reporterGroups = new Set(
+      await deps.groupsWithRows(ctx.workspaceId, [...new Set(taskCandidates.map((task) => task.runGroup))]),
+    );
+    taskFailures = taskCandidates.filter((task) => !reporterGroups.has(task.runGroup));
+  } catch (error) {
+    taskFailureScanError = (error instanceof Error ? error.message : String(error)).slice(0, 500);
+  }
+  if (!group && taskFailures.length === 0) {
     return {
       status: 'skipped',
       reason: groups.length === 0 ? 'no nightly run group in the lookback' : 'the only recent group is still running',
+      ...(taskFailureScanError ? { taskFailureScanError } : {}),
     };
   }
-  const reds = redSpecsFromGroupRows(await deps.groupRows(group.runGroup));
-  const owner = reds.length > 0 ? await resolveRedOwner(ctx, harnessSlug, deps) : null;
+  const owner = reds.length > 0 || taskFailures.length > 0 ? await resolveRedOwner(ctx, harnessSlug, deps) : null;
+  const taskFailureOutcomes: TaskFailureFilingOutcome[] = [];
+  for (const failure of taskFailures) {
+    try {
+      const ownership = classifyTaskFailureOwnership(
+        await deps.taskFailureOwnershipCandidates(ctx.workspaceId, harnessSlug, failure.taskId),
+        failure.finishedAt,
+      );
+      if (ownership.kind === 'owned' || ownership.kind === 'resolved-after-evidence') {
+        taskFailureOutcomes.push({ taskId: failure.taskId, runGroup: failure.runGroup, outcome: ownership.kind, id: ownership.id });
+        continue;
+      }
+      if (ownership.kind === 'unassigned-open') {
+        const assigned = owner ? await deps.assign(ownership.id, owner, harnessSlug) : false;
+        taskFailureOutcomes.push({
+          taskId: failure.taskId,
+          runGroup: failure.runGroup,
+          outcome: assigned ? 'assigned' : 'unassigned-open',
+          id: ownership.id,
+          ...(owner ? {} : { detail: 'no owner resolved' }),
+        });
+        continue;
+      }
+      const { title, summary } = renderTaskFailureItem(failure);
+      const created = await deps.create(
+        {
+          kind: 'bug',
+          title,
+          summary,
+          harness: harnessSlug,
+          severity: 'major',
+          ...(owner ? { assign_to: owner } : {}),
+          payload: {
+            source: OPERATOR_E2E_RED_FILER_ACTION,
+            operatorE2eTaskId: failure.taskId,
+            runGroup: failure.runGroup,
+            taskState: failure.state,
+            exitCode: failure.exitCode,
+            exitReason: failure.exitReason,
+            plan: 'operator-e2e-standing-isolated-run-2026-10-06',
+            umbrella: OPERATOR_E2E_UMBRELLA_ITEM,
+          },
+        },
+        { ownerId: OPERATOR_E2E_RED_FILER_OWNER_ID, workspaceId: ctx.workspaceId, harnessSlug },
+      );
+      taskFailureOutcomes.push(
+        created.id
+          ? { taskId: failure.taskId, runGroup: failure.runGroup, outcome: 'filed', id: created.id }
+          : { taskId: failure.taskId, runGroup: failure.runGroup, outcome: 'error', detail: created.error ?? 'create_failed' },
+      );
+    } catch (error) {
+      taskFailureOutcomes.push({
+        taskId: failure.taskId,
+        runGroup: failure.runGroup,
+        outcome: 'error',
+        detail: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
   const outcomes: RedFilingOutcome[] = [];
   for (const red of reds) {
     try {
@@ -299,14 +430,20 @@ export async function fileOperatorE2eReds(
   // A routine-level owner is only required when this sweep leaves red work unassigned.
   // Existing assigned items and items resolved after the test evidence need no new owner.
   const ownerUnresolved =
-    owner == null && outcomes.some((outcome) => outcome.outcome === 'filed' || outcome.outcome === 'unassigned-open');
+    owner == null &&
+    [...outcomes, ...taskFailureOutcomes].some(
+      (outcome) => outcome.outcome === 'filed' || outcome.outcome === 'unassigned-open',
+    );
   return {
     status: 'swept',
-    runGroup: group.runGroup,
+    ...(group ? { runGroup: group.runGroup } : {}),
     reds: reds.length,
+    taskFailures: taskFailures.length,
     owner,
     ownerUnresolved,
     outcomes,
+    taskFailureOutcomes,
+    ...(taskFailureScanError ? { taskFailureScanError } : {}),
   };
 }
 
@@ -337,6 +474,55 @@ export function defaultRedFilerDeps(): RedFilerDeps {
       return rows
         .map((row) => (row.detail as { runGroup?: unknown } | null | undefined)?.runGroup)
         .filter((group): group is string => typeof group === 'string');
+    },
+    async terminalTaskFailures(workspaceId) {
+      const cutoff = Date.now() - OPERATOR_E2E_GROUP_LOOKBACK_DAYS * 24 * 60 * 60 * 1_000;
+      const rows = await listTasks({
+        workspaceId,
+        launchedBy: `system:${OPERATOR_E2E_ISOLATED_ACTION}`,
+        classes: ['test-run'],
+        states: ['exited', 'timed_out', 'stranded', 'ended_unobserved'],
+        includeEnded: true,
+        limit: OPERATOR_E2E_TASK_FAILURE_SCAN_LIMIT,
+      });
+      return rows.flatMap((row) => {
+        const runGroup = row.detail?.runGroup;
+        const finishedAt = row.endedAt;
+        const finishedMs = finishedAt ? Date.parse(finishedAt) : NaN;
+        const hasNoPass = row.state === 'exited'
+          ? row.exitCode !== 0
+          : row.state === 'timed_out' || row.state === 'stranded' || row.state === 'ended_unobserved';
+        if (
+          !hasNoPass ||
+          typeof runGroup !== 'string' ||
+          !runGroup.startsWith(`${OPERATOR_E2E_RUN_GROUP_PREFIX}:`) ||
+          !finishedAt ||
+          !Number.isFinite(finishedMs) ||
+          finishedMs < cutoff
+        ) {
+          return [];
+        }
+        return [{
+          taskId: row.taskId,
+          runGroup,
+          state: row.state,
+          exitCode: row.exitCode ?? null,
+          exitReason: row.exitReason ?? null,
+          finishedAt,
+          logPath: row.logPath ?? null,
+        }];
+      });
+    },
+    async groupsWithRows(workspaceId, runGroups) {
+      const unique = [...new Set(runGroups)];
+      if (unique.length === 0) return [];
+      const { sql } = getOrgPg();
+      const rows = await sql<{ run_group_id: string }[]>`
+        SELECT DISTINCT run_group_id
+          FROM harness_shared.test_runs
+         WHERE workspace_id = ${workspaceId}
+           AND run_group_id = ANY(${sql.array(unique)})`;
+      return rows.map((row) => row.run_group_id);
     },
     async groupRows(runGroup) {
       const { sql } = getOrgPg();
@@ -375,6 +561,27 @@ export function defaultRedFilerDeps(): RedFilerDeps {
         summary: r.summary,
       }));
     },
+    async taskFailureOwnershipCandidates(workspaceId, harnessSlug, taskId) {
+      const { sql } = getOrgPg();
+      const rows = await sql<{ feature_id: string; status: string; taken_by: string | null; closed_ts: Date | string | null; title: string; summary: string | null }[]>`
+        SELECT feature_id, status, taken_by, closed_ts, title, summary
+          FROM harness_shared.work_items
+         WHERE workspace_id = ${workspaceId}
+           AND harness_slug = ${harnessSlug}
+           AND lane IS DISTINCT FROM 'observation'
+           AND payload->>'source' = ${OPERATOR_E2E_RED_FILER_ACTION}
+           AND payload->>'operatorE2eTaskId' = ${taskId}
+         ORDER BY updated_ts DESC
+         LIMIT 25`;
+      return rows.map((r) => ({
+        id: r.feature_id,
+        status: r.status,
+        assignee: r.taken_by,
+        closedAt: r.closed_ts == null ? null : new Date(r.closed_ts).toISOString(),
+        title: r.title,
+        summary: r.summary,
+      }));
+    },
     async assigneeOf(id, harnessSlug) {
       const { sql } = getOrgPg();
       const rows = await sql<{ taken_by: string | null; status: string }[]>`
@@ -399,15 +606,19 @@ registerSystemAction(
   OPERATOR_E2E_RED_FILER_ACTION,
   async (ctx: SystemActionCtx): Promise<SystemActionResult> => {
     const result = await fileOperatorE2eReds(ctx);
-    const errors = (result.outcomes ?? []).filter((o) => o.outcome === 'error');
+    const specErrors = (result.outcomes ?? []).filter((o) => o.outcome === 'error');
+    const taskErrors = (result.taskFailureOutcomes ?? []).filter((o) => o.outcome === 'error');
     if (result.status === 'skipped') console.log(`[${OPERATOR_E2E_RED_FILER_ACTION}] skip: ${result.reason}`);
+    const softErrors = [
+      ...(specErrors.length || taskErrors.length
+        ? [`${specErrors.length} red spec(s) and ${taskErrors.length} terminal task failure(s) could not be filed`]
+        : []),
+      ...(result.taskFailureScanError ? [`terminal task scan failed: ${result.taskFailureScanError}`] : []),
+      ...(result.ownerUnresolved ? ['operator e2e failures were filed without an owner: set payload_template.redOwner or assign the umbrella item'] : []),
+    ];
     return {
       diagnostics: { ...result },
-      ...(errors.length > 0
-        ? { softError: `${errors.length} red spec(s) could not be filed: ${errors.map((e) => `${e.specPath} (${e.detail})`).join('; ').slice(0, 500)}` }
-        : result.ownerUnresolved
-          ? { softError: 'reds were filed without an owner: set payload_template.redOwner or assign the umbrella item' }
-          : {}),
+      ...(softErrors.length > 0 ? { softError: softErrors.join('; ').slice(0, 500) } : {}),
     };
   },
   { routineTimeoutMs: 120_000 },
