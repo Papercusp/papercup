@@ -35,6 +35,7 @@ export function AccountProductTutorial({ account, sessionSignal = 'valid', child
   const [continueUnavailable, setContinueUnavailable] = useState(false);
   const heading = useRef<HTMLHeadingElement>(null);
   const resume = useRef<HTMLButtonElement>(null);
+  const requestedFocus = useRef<'heading' | 'resume' | null>(null);
   const operation = useRef<AbortController | null>(null);
   const mounted = useRef(false);
   const pending = useRef<{ body: string; patch: Pick<AccountTutorialProgressRecord, 'disposition' | 'currentLessonId' | 'reviewedLessonIds'>; href?: string } | null>(null);
@@ -46,6 +47,7 @@ export function AccountProductTutorial({ account, sessionSignal = 'valid', child
     const abort = new AbortController();
     operation.current?.abort(); operation.current = abort;
     pending.current = null;
+    requestedFocus.current = null;
     setLoading(true); setRecord(null); setError(null); setContinueUnavailable(false); setBusy(false);
     fetch(endpoint, { credentials: 'same-origin', cache: 'no-store', signal: abort.signal })
       .then(async response => {
@@ -59,6 +61,13 @@ export function AccountProductTutorial({ account, sessionSignal = 'valid', child
     return () => { mounted.current = false; operation.current?.abort(); abort.abort(); };
   }, [identity, reload]);
   useEffect(() => { if (sessionSignal !== 'valid') { operation.current?.abort(); pending.current = null; setBusy(false); } }, [sessionSignal]);
+  // A frame scheduled by save can precede a concurrent React commit. Wait for
+  // the committed, enabled control so the requested focus cannot be lost.
+  useEffect(() => {
+    if (busy || loading || sessionSignal !== 'valid' || !requestedFocus.current) return;
+    const target = requestedFocus.current === 'heading' ? heading.current : resume.current;
+    if (target) { target.focus(); requestedFocus.current = null; }
+  }, [record, busy, loading, sessionSignal]);
 
   async function save(patch: Pick<AccountTutorialProgressRecord, 'disposition' | 'currentLessonId' | 'reviewedLessonIds'>, href?: string) {
     if (!record || busy || sessionSignal !== 'valid') return;
@@ -81,9 +90,9 @@ export function AccountProductTutorial({ account, sessionSignal = 'valid', child
       }
       if (!response.ok) throw new Error('unavailable');
       pending.current = null;
+      if (!mutation.href) requestedFocus.current = mutation.patch.disposition === 'active' ? 'heading' : 'resume';
       setRecord(body.record);
       if (mutation.href) { window.location.assign(mutation.href); return; }
-      requestAnimationFrame(() => { if (mounted.current) (mutation.patch.disposition === 'active' ? heading.current : resume.current)?.focus(); });
     } catch { if (!abort.signal.aborted && mounted.current) setError('Your choice was not saved. Check your connection and try again.'); }
     finally { if (!abort.signal.aborted && mounted.current) setBusy(false); }
   }
