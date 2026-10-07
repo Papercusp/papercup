@@ -1141,12 +1141,11 @@ function request(
     const r = http.request(
       { host: "127.0.0.1", port: p, method: "POST", path, headers },
       (res) => {
-        let b = "";
-        res.on("data", (d) => (b += d));
+        const b = createTextCollector(res);
         res.on("end", () =>
           resolve({
             status: res.statusCode ?? 0,
-            body: b,
+            body: b.text(),
             headers: res.headers,
           }),
         );
@@ -1165,9 +1164,8 @@ function get(
     const r = http.request(
       { host: "127.0.0.1", port: p, method: "GET", path },
       (res) => {
-        let b = "";
-        res.on("data", (d) => (b += d));
-        res.on("end", () => resolve({ status: res.statusCode ?? 0, body: b }));
+        const b = createTextCollector(res);
+        res.on("end", () => resolve({ status: res.statusCode ?? 0, body: b.text() }));
       },
     );
     r.on("error", reject);
@@ -1872,10 +1870,9 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
             path: "/__mcp_proxy_health",
           },
           (res) => {
-            let b = "";
-            res.on("data", (d) => (b += d));
+            const b = createTextCollector(res);
             res.on("end", () =>
-              resolve({ status: res.statusCode ?? 0, body: b }),
+              resolve({ status: res.statusCode ?? 0, body: b.text() }),
             );
           },
         );
@@ -3655,7 +3652,10 @@ describe("WI-10006908: an upstream that dies after SSE headers ends the client r
           },
         },
         (res) => {
-          res.on("data", (c) => (body += c));
+          const responseBody = createTextCollector(res);
+          res.on("data", () => {
+            body = responseBody.peek();
+          });
           res.on("end", () => settle("end"));
           res.on("aborted", () => settle("aborted"));
           res.on("error", () => settle("error"));
