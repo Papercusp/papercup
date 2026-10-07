@@ -405,7 +405,10 @@ export function runProbeCommand(bin: string, args: readonly string[], timeoutMs:
       if (timer) clearTimeout(timer);
       resolve(r);
     };
-    const child = spawnProbe(bin, [...args], { stdio: ['ignore', 'ignore', 'pipe'] });
+    // Keep the production process start visible to the governor's audited bypass scanner.
+    const child = spawnProbe === spawn
+      ? spawn(bin, [...args], { stdio: ['ignore', 'ignore', 'pipe'] })
+      : spawnProbe(bin, [...args], { stdio: ['ignore', 'ignore', 'pipe'] });
     child.stderr?.setEncoding('utf8').on('data', (d: string) => {
       if (stderr.length < 4096) stderr += d;
     });

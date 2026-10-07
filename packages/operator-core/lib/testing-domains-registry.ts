@@ -1608,6 +1608,7 @@ defineTestDomain({
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/rig-bank-logs.selftest.sh'], label: 'rig bank-logs' },
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/local-matrix-bank.selftest.sh'], label: 'local-matrix teardown evidence banking (EI-18660101091813036)' },
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/vm-run-env.selftest.sh'], label: 'vm_run guest-env delivery (WI-6176)' },
+        { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/vm-boot-extra-drives.selftest.sh'], label: 'VM boot data disk and read-only share argv (WI-10006429)' },
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/seat-offer-diag.selftest.sh'], label: 'seat-offer b→a failure discriminator (WI-6179)' },
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/b9-attestation-precondition.selftest.sh'], label: 'LEG4 attestation precondition + both-frames restore (WI-5064)' },
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/b3-revocation-kcut.selftest.sh'], label: 'revocation K-cut: the device-scoped absence assert resolves a KEY-BEARING device (never the synthetic att2dev one), and delivery is not classified as disclosure (EI-18712383368117845)' },

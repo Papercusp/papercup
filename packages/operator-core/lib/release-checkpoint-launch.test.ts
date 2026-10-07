@@ -1652,27 +1652,39 @@ describe('checkActiveCheckpointRun run-lock fallback (WI-5685: the cron-holds-th
     });
 
     it('returns UNKNOWN when one procfs read exceeds its per-read deadline', async () => {
-      const startedAt = Date.now();
-      const reading = await probe({
-        readEnvironment: () => new Promise<string>(() => {}),
-        totalTimeoutMs: 100,
-        perReadTimeoutMs: 5,
-      });
-      expect(reading.active).toBe(false);
-      expect(reading.probeFailed).toBe(true);
-      expect(Date.now() - startedAt).toBeLessThan(80);
+      vi.useFakeTimers();
+      try {
+        let settled = false;
+        const reading = probe({
+          readEnvironment: () => new Promise<string>(() => {}),
+          totalTimeoutMs: 100,
+          perReadTimeoutMs: 5,
+        }).then((result) => { settled = true; return result; });
+        await vi.advanceTimersByTimeAsync(4);
+        expect(settled).toBe(false);
+        await vi.advanceTimersByTimeAsync(1);
+        await expect(reading).resolves.toMatchObject({ active: false, probeFailed: true });
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('returns UNKNOWN when the total census budget is exhausted', async () => {
-      const startedAt = Date.now();
-      const reading = await probe({
-        readEnvironment: () => new Promise<string>((resolve) => setTimeout(() => resolve(env()), 50)),
-        totalTimeoutMs: 5,
-        perReadTimeoutMs: 100,
-      });
-      expect(reading.active).toBe(false);
-      expect(reading.probeFailed).toBe(true);
-      expect(Date.now() - startedAt).toBeLessThan(80);
+      vi.useFakeTimers();
+      try {
+        let settled = false;
+        const reading = probe({
+          readEnvironment: () => new Promise<string>(() => {}),
+          totalTimeoutMs: 5,
+          perReadTimeoutMs: 100,
+        }).then((result) => { settled = true; return result; });
+        await vi.advanceTimersByTimeAsync(4);
+        expect(settled).toBe(false);
+        await vi.advanceTimersByTimeAsync(1);
+        await expect(reading).resolves.toMatchObject({ active: false, probeFailed: true });
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('returns UNKNOWN when an async procfs dependency rejects', async () => {
