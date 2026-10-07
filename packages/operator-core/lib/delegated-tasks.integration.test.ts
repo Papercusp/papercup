@@ -177,6 +177,71 @@ describe('createDelegatedTask — a delegated task IS a work_item (D-001)', () =
   });
 });
 
+describe('delegated-task fixture — real schema failure controls', () => {
+  it('isolates missing event-await warnings from archive/resolve state and restores lifecycle retirement', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await db.sql`ALTER TABLE harness_shared.event_awaits RENAME TO event_awaits_unavailable`;
+    try {
+      const archived = await dt.createDelegatedTask({ title: 'missing archive', agentSessionId: 'missing-archive', origin: 'voice', backend: 'omp' });
+      const resolved = await dt.createDelegatedTask({ title: 'missing resolve', agentSessionId: 'missing-resolve', origin: 'voice', backend: 'omp' });
+      await vi.waitFor(() => expect(warn.mock.calls.some((args) => args.join(' ').includes('event_awaits'))).toBe(true));
+      expect(warn.mock.calls.every((args) => args.join(' ').includes('event_awaits'))).toBe(true);
+
+      // These adapters swallow lifecycle errors. Measure their actual state,
+      // rather than assuming the warning explains the historical open rows.
+      await dt.archiveDelegatedSession(archived.id);
+      await dt.resolveDelegatedTask(resolved.id, 'missing-resolve');
+      expect((await wi.getWorkItem(archived.id))?.state).toBe('dropped');
+      expect(await dt.findOpenDelegatedTask('missing-resolve')).toBeNull();
+    } finally {
+      await db.sql`ALTER TABLE harness_shared.event_awaits_unavailable RENAME TO event_awaits`;
+      warn.mockRestore();
+    }
+
+    const restored = await dt.createDelegatedTask({ title: 'restored lifecycle', agentSessionId: 'restored-lifecycle', origin: 'voice', backend: 'omp' });
+    const binding = { kind: 'work-item-claim', ref: restored.id };
+    // A direct jsonb parameter invokes postgres.js's JSON serializer on the
+    // already serialized string. Pin this failure mode before using the same
+    // text intermediary as the maintained event store.
+    const [misencoded] = await db.sql<{ id: number; bound_to: unknown }[]>`
+      INSERT INTO harness_shared.event_awaits (workspace_id, subscriber_id, event_key, bound_to)
+      VALUES ('default', 'fixture-subscriber', 'fixture:misencoded', ${JSON.stringify(binding)}::jsonb)
+      RETURNING id, bound_to`;
+    expect(misencoded?.bound_to).toBe(JSON.stringify(binding));
+    await db.sql`DELETE FROM harness_shared.event_awaits WHERE id = ${misencoded!.id}`;
+    const [watch] = await db.sql<{ id: number; bound_to: unknown }[]>`
+      INSERT INTO harness_shared.event_awaits (workspace_id, subscriber_id, event_key, bound_to)
+      VALUES ('default', 'fixture-subscriber', 'fixture:lifecycle', ${JSON.stringify(binding)}::text::jsonb)
+      RETURNING id, bound_to`;
+    expect(watch?.bound_to).toEqual(binding);
+    await dt.resolveDelegatedTask(restored.id, 'restored-lifecycle');
+    expect(await dt.findOpenDelegatedTask('restored-lifecycle')).toBeNull();
+    const [retired] = await db.sql<{ cancelled_at: Date | null; cancel_reason: string | null }[]>`
+      SELECT cancelled_at, cancel_reason FROM harness_shared.event_awaits WHERE id = ${watch!.id}`;
+    expect(retired?.cancelled_at).not.toBeNull();
+    expect(retired?.cancel_reason).toBe('lifecycle-binding-retired');
+  }, 60_000);
+
+  it('reproduces the missing session-column warning and retrieves the real roster after restoration', async () => {
+    const adv = await import('./adv-sessions');
+    await db.sql`
+      INSERT INTO harness_shared.adv_sessions (workspace_id, coord_owner_id, session_id, agent)
+      VALUES ('default', 'fixture-roster-owner', 'fixture-roster-session', 'su')`;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await db.sql`ALTER TABLE harness_shared.adv_sessions RENAME COLUMN ended_by TO ended_by_unavailable`;
+    try {
+      expect(await adv.listRecordedLiveSessions({ workspaceId: 'default', ownerIds: ['fixture-roster-owner'] })).toEqual([]);
+      expect(warn).toHaveBeenCalledWith('[adv-sessions] listRecordedLiveSessions failed:', expect.stringContaining('ended_by'));
+      expect(warn.mock.calls).toHaveLength(1);
+    } finally {
+      await db.sql`ALTER TABLE harness_shared.adv_sessions RENAME COLUMN ended_by_unavailable TO ended_by`;
+      warn.mockRestore();
+    }
+    const roster = await adv.listRecordedLiveSessions({ workspaceId: 'default', ownerIds: ['fixture-roster-owner'] });
+    expect(roster).toEqual([expect.objectContaining({ coordOwnerId: 'fixture-roster-owner', sessionId: 'fixture-roster-session', endedBy: null })]);
+  }, 60_000);
+});
+
 describe('subscribe→inject — a recorded turn pushes the completion to the operator (D-003)', () => {
   it('the operator subscriber receives the turn fan-out (authored as the delegate)', async () => {
     const task = await dt.createDelegatedTask({

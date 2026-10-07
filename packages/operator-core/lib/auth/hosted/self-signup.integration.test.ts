@@ -172,6 +172,72 @@ describe('hosted self-signup admission (real Postgres, real roles)', () => {
     await db?.cleanup();
   });
 
+  it('enrolls a newly admitted invitation account before workspace selection and preserves completed progress on replay', async () => {
+    const owner = await admission().complete(signupInput(`${unique('inviter')}@example.test`));
+    expect(owner.ok).toBe(true);
+    if (!owner.ok) throw new Error('owner admission failed');
+    const email = `${unique('invited')}@example.test`;
+    const [user] = await db.adminSql<Array<{ id: string }>>`
+      INSERT INTO papercusp_auth.hosted_users (primary_email) VALUES (${email}) RETURNING id`;
+    const [invitation] = await db.adminSql<Array<{ id: string }>>`
+      INSERT INTO papercusp_auth.organization_invitation_refs
+        (organization_id, identity_provider, external_invitation_id, invitee_email)
+      VALUES (${owner.binding.organizationId}::uuid, 'workos', ${unique('invite')}, ${email}) RETURNING id`;
+    await db.adminSql`
+      INSERT INTO papercusp_auth.organization_memberships
+        (organization_id, user_id, role, created_via, invitation_ref_id)
+      VALUES (${owner.binding.organizationId}::uuid, ${user.id}::uuid, 'member',
+        'invitation_acceptance', ${invitation.id}::uuid)`;
+    const read = () => db.adminSql<Array<{ tutorial: { disposition: string; scope: unknown } }>>`
+      SELECT profile #> '{productTutorial,3}' AS tutorial FROM papercusp_auth.hosted_user_preferences
+      WHERE organization_id = ${owner.binding.organizationId}::uuid AND user_id = ${user.id}::uuid`;
+    expect((await read())[0].tutorial).toMatchObject({
+      scope: { tenantId: owner.binding.organizationId, userId: user.id },
+      disposition: 'active', currentLessonId: 'welcome', revision: 0,
+    });
+    await db.adminSql`UPDATE papercusp_auth.hosted_user_preferences
+      SET profile = jsonb_set(profile, '{productTutorial,3,disposition}', '"closed"'::jsonb)
+      WHERE organization_id = ${owner.binding.organizationId}::uuid AND user_id = ${user.id}::uuid`;
+    await db.adminSql`
+      INSERT INTO papercusp_auth.organization_memberships
+        (organization_id, user_id, role, created_via, invitation_ref_id)
+      VALUES (${owner.binding.organizationId}::uuid, ${user.id}::uuid, 'member',
+        'invitation_acceptance', ${invitation.id}::uuid) ON CONFLICT DO NOTHING`;
+    expect((await read())[0].tutorial.disposition).toBe('closed');
+    await expect(runService(sql => sql`SELECT profile FROM papercusp_auth.hosted_user_preferences`))
+      .rejects.toMatchObject({ code: '42501' });
+  });
+
+  it('does not enroll inactive/restored memberships and rolls enrollment back with admission', async () => {
+    const owner = await admission().complete(signupInput(`${unique('membership')}@example.test`));
+    expect(owner.ok).toBe(true);
+    if (!owner.ok) throw new Error('owner admission failed');
+    const [legacy] = await db.adminSql<Array<{ id: string }>>`
+      INSERT INTO papercusp_auth.hosted_users (primary_email) VALUES (${`${unique('legacy')}@example.test`}) RETURNING id`;
+    await db.adminSql`
+      INSERT INTO papercusp_auth.organization_memberships
+        (organization_id, user_id, role, status, suspended_at, created_via)
+      VALUES (${owner.binding.organizationId}::uuid, ${legacy.id}::uuid, 'member', 'suspended', now(), 'member_management')`;
+    await db.adminSql`UPDATE papercusp_auth.organization_memberships SET status = 'active'
+      WHERE organization_id = ${owner.binding.organizationId}::uuid AND user_id = ${legacy.id}::uuid`;
+    expect(await db.adminSql`SELECT 1 FROM papercusp_auth.hosted_user_preferences
+      WHERE organization_id = ${owner.binding.organizationId}::uuid AND user_id = ${legacy.id}::uuid`).toHaveLength(0);
+    const [cancelled] = await db.adminSql<Array<{ id: string }>>`
+      INSERT INTO papercusp_auth.hosted_users (primary_email) VALUES (${`${unique('cancelled')}@example.test`}) RETURNING id`;
+    await expect(db.adminSql.begin(async tx => {
+      await tx`INSERT INTO papercusp_auth.organization_memberships
+        (organization_id, user_id, role, created_via)
+        VALUES (${owner.binding.organizationId}::uuid, ${cancelled.id}::uuid, 'member', 'member_management')`;
+      expect(await tx`SELECT 1 FROM papercusp_auth.hosted_user_preferences
+        WHERE organization_id = ${owner.binding.organizationId}::uuid AND user_id = ${cancelled.id}::uuid`).toHaveLength(1);
+      throw new Error('admission rolled back');
+    })).rejects.toThrow('admission rolled back');
+    expect(await db.adminSql`SELECT 1 FROM papercusp_auth.hosted_user_preferences
+      WHERE organization_id = ${owner.binding.organizationId}::uuid AND user_id = ${cancelled.id}::uuid`).toHaveLength(0);
+    expect(await db.adminSql`SELECT 1 FROM papercusp_auth.organization_memberships
+      WHERE organization_id = ${owner.binding.organizationId}::uuid AND user_id = ${cancelled.id}::uuid`).toHaveLength(0);
+  });
+
   it('SIGNUP-OWNER: a valid signup creates exactly one organization with one active owner membership and a usable session', async () => {
     const email = `${unique('owner')}@example.test`;
     const input = signupInput(email);

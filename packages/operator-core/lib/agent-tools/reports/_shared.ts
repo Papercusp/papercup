@@ -17,6 +17,8 @@ import { resolveConcreteHarnessSlug } from '../_harness-scope';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { resolvePotHomeSlug } from '../../pot/wake';
 import { trackDetached } from '../../detached-imports';
+import { FLAGS } from '@papercusp/flags';
+import { getFlag } from '@papercusp/flags/server';
 import {
   REPORT_KINDS,
   REPORT_SUBJECT_KINDS,
@@ -30,6 +32,17 @@ import {
 
 /** The sync query the Reports tab reads; invalidated after every write. */
 export const REPORTS_SYNC_QUERY = 'reports.library';
+
+/** One runtime kill-switch for all report-tool entry points; checked before I/O. */
+export async function reportsLibraryDisabled() {
+  if (await getFlag(FLAGS.REPORTS_LIBRARY, 'system')) return null;
+  return {
+    ok: false as const,
+    error: 'flag_disabled' as const,
+    flag: FLAGS.REPORTS_LIBRARY,
+    message: 'Reports library is disabled. Existing reports are preserved.',
+  };
+}
 
 /**
  * Enum vocabularies DERIVED from the store's own exported constants, never
@@ -316,6 +329,8 @@ export function invalidateReportsSync(log?: (m: string) => void): void {
   void trackDetached(import('../../sync-sse'))
     .then(({ notifySyncInvalidate }) => Promise.all([
       notifySyncInvalidate(REPORTS_SYNC_QUERY, {}),
+      notifySyncInvalidate('reports.list', {}),
+      notifySyncInvalidate('reports.lineage', {}),
       // The report store emits through this producer helper, rather than a PG
       // table trigger. Retirement changes metadata read by an exact report pin.
       notifySyncInvalidate('reports.get', {}),

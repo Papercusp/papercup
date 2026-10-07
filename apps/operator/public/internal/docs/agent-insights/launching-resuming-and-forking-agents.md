@@ -227,6 +227,18 @@ Instead `fleet:status` hands the leader the **facts**, per ended member:
 
 The leader then composes the revival *per member* — resume, fork, or fresh.
 
+## Bounded recovery caller and lifecycle preflight
+
+For a recovery cohort, keep the saved census and process one exact owner/session at a time. A census is historical evidence; re-resolve the source immediately before launch. A source that became live is a changed precondition, not permission to start a second retained identity or kill it. Use the existing fleet respawn route for a saved fleet-profile mismatch, and preserve specialized source role and accepted-operation feature bindings.
+
+Use quoted JSON stdin (`ptool <verb> --json -` with a quoted heredoc) or a JSON file. Decode JSON as data, for example `json.loads`, rather than embedding JSON booleans as language source. Keep the common brief once and per-target metadata compact; repeated briefs in shell arguments can exceed the operating-system argv/environment limit. The maintained large-kickoff transport uses a private prompt file when necessary.
+
+Keep in-place resume and fresh successor settings separate: omit carry on resume/fork, preserve the saved profile, and allow recorded native model/effort inheritance unless an intentional compatible override is required. A no-hive operator scope must remain no-hive for an installed routine hop; adding a concrete harness can correctly turn a cross-hive operation into a refusal. Do not widen work-scope policy, roles or account routing to hide a caller mismatch.
+
+Preserve every asynchronous command envelope. A session\_id with no exit\_code means the command is still running; drain that exact handle. For a timed-out mutation, read authoritative state and the original receipt before deciding whether a retry is safe. Preserve both transport idempotency and launch idempotency keys. A matching live host proves runtime registration, while kickoff/native transcript evidence proves the requested first turn. Never convert missing proof or an unknown transport outcome into success, no-process, or permission for a second launch.
+
+The maintained launch timing contract now keeps the server and CLI outside the child boot, kickoff-proof and verifier windows. Canonical guards cover model-less unattended resume, exact UUID verification, unknown proof, live-source refusal, role/profile preservation and client/server deadline alignment. The original bulk-recovery observations are recorded on EI-25283925724708239; no bulk migration was replayed to verify these lessons.
+
 ## Odds and ends
 
 * **Idempotency.** Pass `idempotencyKey` and a retry/duplicate call returns

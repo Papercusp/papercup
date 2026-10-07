@@ -274,7 +274,7 @@ it.each(['cancelled', 'ttfb-timeout'] as const)(
       expect(failed).not.toHaveBeenCalled();
     } else {
       expect(cooled).toEqual([{ key: 'chatgpt-a:default', ms: 30_000 }]);
-      expect(failed).toHaveBeenCalledExactlyOnceWith('chatgpt-a');
+      expect(failed).toHaveBeenCalledExactlyOnceWith('chatgpt-a', expect.anything());
     }
   },
 );
@@ -571,6 +571,38 @@ describe('codex OAuth kernel adapter — sibling-egress re-attempt precedes rota
     expect(result).toMatchObject({ status: 200, failovers: 1 });
     expect(started[0]?.metadata.accountId).toBe('chatgpt-b');
     expect(pool.exhaustedCalls[0]?.id).toBe('chatgpt-a');
+  });
+
+  it('WI-10007199: reports the transport error and every HTTP response, so reachability is separable from capacity', async () => {
+    const pool = makePool([{ accountId: 'chatgpt-b' }]);
+    const dnsFailure = Object.assign(new TypeError('fetch failed'), {
+      cause: { code: 'ENOTFOUND', message: 'getaddrinfo ENOTFOUND chatgpt.com' },
+    });
+    const failed = vi.fn();
+    const responded = vi.fn();
+    let calls = 0;
+    const { options } = harness(
+      async () => {
+        calls += 1;
+        if (calls === 1) throw dnsFailure;
+        return upstream(429, {}, sseBody('walled'));
+      },
+      {
+        accounts: [cli('chatgpt-a'), cli('chatgpt-b')],
+        pool,
+        siblingEgressAvailable: () => false,
+        extra: { onEgressFailure: failed, onUpstreamResponse: responded },
+      },
+    );
+    options.policy = { ...options.policy, maxAttempts: 2 };
+
+    await executeGatewayRequestKernel(options).catch(() => undefined);
+
+    // The failure carries the fetch rejection itself (the gateway classifies it: DNS here).
+    expect(failed).toHaveBeenCalledWith('chatgpt-a', dnsFailure);
+    // A 429 is still an HTTP response: the network path works, whatever the account's capacity.
+    expect(responded).toHaveBeenCalledWith('chatgpt-b', 429);
+    expect(responded).not.toHaveBeenCalledWith('chatgpt-a', expect.anything());
   });
 
   it('cools the throttled IP from the rate-reset header on a 429 before re-attempting', async () => {

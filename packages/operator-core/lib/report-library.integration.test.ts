@@ -80,6 +80,28 @@ const AGENT_1: ReportOrigin = {
 };
 
 describe('report_library store (real PG)', () => {
+  it('P006 cursor stays after lineage collapse and filters visibility/date without bypassing the viewer', async () => {
+    const workspaceId = nextWs();
+    const original = await publishReport(db.adminSql, { workspaceId, title: 'Old edition', visibility: 'workspace' }, AGENT_1);
+    const replacement = await publishReport(db.adminSql, { workspaceId, title: 'Correction', supersedes: original.reportId, visibility: 'workspace' }, AGENT_1);
+    const privateReport = await publishReport(db.adminSql, { workspaceId, title: 'Private edition', visibility: 'owner' }, AGENT_1);
+    const dates = ['2026-10-01T00:00:00Z', '2026-10-03T00:00:00Z', '2026-10-02T00:00:00Z'];
+    for (const [i, report] of [original, replacement, privateReport].entries()) {
+      await db.adminSql`UPDATE harness_shared.report_library SET published_at = ${dates[i]}::timestamptz
+        WHERE workspace_id = ${workspaceId} AND report_id = ${report.reportId}`;
+    }
+    const page1 = await listReports(db.adminSql, { workspaceId, viewer: { isOwner: true }, limit: 1 });
+    expect(page1.map(r => r.reportId)).toEqual([replacement.reportId]);
+    const page2 = await listReports(db.adminSql, { workspaceId, viewer: { isOwner: true },
+      cursor: { publishedAt: page1[0].publishedAt, reportId: page1[0].reportId } });
+    expect(page2.map(r => r.reportId)).toEqual([privateReport.reportId]);
+    expect(page2.map(r => r.reportId)).not.toContain(original.reportId);
+    expect((await listReports(db.adminSql, { workspaceId, viewer: { isOwner: true }, visibility: 'owner' }))
+      .map(r => r.reportId)).toEqual([privateReport.reportId]);
+    expect(await listReports(db.adminSql, { workspaceId, viewer: { ownerId: 'unrelated-agent' }, visibility: 'owner' })).toEqual([]);
+    expect((await listReports(db.adminSql, { workspaceId, viewer: { isOwner: true }, since: '2026-10-03T00:00:00Z' }))
+      .map(r => r.reportId)).toEqual([replacement.reportId]);
+  });
   let db: OrgTestDb;
   let oracleConnection: ReservedSql;
 

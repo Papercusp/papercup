@@ -226,3 +226,15 @@ Run your fake service API as a stub `fetch` behind the host: the daemon then rea
 * Pack materialization and lifecycle: `packages/operator-core/lib/cupboard/trigger-pack-materialize.ts`, `trigger-pack-lifecycle.ts`.
 * First-party providers on the same contract: `libs/papercusp/plugins/gmail/`, `libs/papercusp/plugins/google-calendar/`.
 * Design and decisions: plan `generalized-integrations-google-migration-cupboard-workflows-2026-10-05` (D-006 daemon protocol, D-013 materialization, D-016 pack lifecycle, D-017 delivery identity, D-026 this journey).
+
+## Ticket-provider examples: Linear and Asana
+
+The maintained ticket-provider examples are `libs/papercusp/plugins/linear` and `libs/papercusp/plugins/asana`. Both declare contractVersion 1, datatypes `ticket`, `ticket-status-change`, and `ticket-comment`, and capabilities `ticket.read`, `ticket.comment`, `ticket.transition`, and `ticket.containers`. Tickets default to record destinations; status changes to events; comments to documents. An admission rule or manual promotion makes a ticket into work.
+
+Linear uses GraphQL through host.fetch and its OAuth descriptor requests an app actor with read, write, app:assignable and app:mentionable scopes. Its source config requires teamIds. Canonical ticket selfRoles are derived from authenticated assignee/delegate identities. Workflow types map to the shared ticket status vocabulary. Linear does not currently declare push capabilities.
+
+Asana uses REST through host.fetch, requires projectGids, and supports workspaceGid and sectionCategories mapping. The driver starts with project crawls and continues with per-project Events API tokens; a stale token requires a new crawl. Multi-homed tasks retain one canonical task identity.
+
+Asana additionally declares push.subscribe and push.unsubscribe plus a data-only push descriptor: x-hook-secret handshake and hex HMAC-SHA256 x-hook-signature. The host owns signature verification and encrypted handshake-secret storage. Subscribe reconciles one webhook per configured project; a delivery only wakes reconciliation, never supplies authoritative ticket data. Polling remains the fallback.
+
+Regression examples: packages/operator-core/lib/providers/linear/linear-provider.test.ts and linear-provider.integration.test.ts; providers/asana/asana-provider.test.ts and asana-provider.integration.test.ts; providers/connector-push.integration.test.ts. The current real-workspace acceptance remains pending under linear-asana-task-sync-2026-10-05; these examples describe implementation, not a shipment receipt.

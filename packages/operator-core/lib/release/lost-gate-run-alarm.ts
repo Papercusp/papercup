@@ -27,6 +27,13 @@
 import type { Sql } from 'postgres';
 import type { SevereEventRoute } from '../severe-event-broadcast';
 import {
+  CHECKPOINT_QUALIFICATION_METADATA_KEY,
+  parseCheckpointQualificationTransaction,
+  probeRunnerLiveness,
+  projectCheckpointQualificationState,
+  type CheckpointQualificationTransaction,
+} from './checkpoint-qualification-transaction';
+import {
   describeAbandonedInFlightCandidate,
   isPidAlive,
   judgeAbandonedInFlightCandidate,
@@ -183,6 +190,7 @@ export interface LostRunSweepDeps {
   nowMs?: number;
   selfPid?: number;
   pidAlive?: (pid: number) => boolean | null;
+  probeQualificationRunner?: typeof probeRunnerLiveness;
   hostFleetSlug?: string | null;
   claim?: typeof claimLostRunAlarm;
   readHolder?: (installSlug: string) => Promise<string | null>;
@@ -200,19 +208,38 @@ export interface LostRunSweepResult {
   failed: string[];
 }
 
-/** Scan every green-checkpoint row and page once for each run whose pid is gone. Never throws. */
+/** Reuse the routine's forward-only retry; exact runner identity prevents a stale scan moving a successor. */
+async function requeueDeadQualification(
+  sql: Sql,
+  target: { installSlug: string; workspaceId: string },
+  transaction: CheckpointQualificationTransaction,
+): Promise<void> {
+  await sql`
+    UPDATE harness_shared.routines
+       SET next_fire_at = now() + interval '1 minute', updated_at = now()
+     WHERE install_slug = ${target.installSlug} AND workspace_id = ${target.workspaceId}
+       AND target_role = 'system:green-checkpoint' AND active = true
+       AND metadata->'pause' IS NULL
+       AND metadata->${CHECKPOINT_QUALIFICATION_METADATA_KEY}->>'attemptId' = ${transaction.attemptId}
+       AND metadata->${CHECKPOINT_QUALIFICATION_METADATA_KEY}->'currentPhysicalRunner'->>'id' = ${transaction.currentPhysicalRunner!.id}
+       AND (next_fire_at IS NULL OR next_fire_at > now() + interval '1 minute')`;
+}
+
+/** The existing two-minute sweep also investigates missing qualification heartbeats. */
 export async function sweepLostGateRuns(sql: Sql, deps: LostRunSweepDeps = {}): Promise<LostRunSweepResult> {
   const out: LostRunSweepResult = { alarmed: [], deduped: [], failed: [] };
   const nowMs = deps.nowMs ?? Date.now();
-  let rows: { install_slug: string; workspace_id: string; marker: unknown; alarmed_key: string | null }[];
+  let rows: { install_slug: string; workspace_id: string; marker: unknown; alarmed_key: string | null; qualification?: unknown }[];
   try {
     rows = await sql<typeof rows>`
       SELECT install_slug, workspace_id,
              metadata->'gate_health'->'inFlightCandidate' AS marker,
-             metadata->'gate_health'->'lostRunAlarm'->>'key' AS alarmed_key
+             metadata->'gate_health'->'lostRunAlarm'->>'key' AS alarmed_key,
+             metadata->${CHECKPOINT_QUALIFICATION_METADATA_KEY} AS qualification
         FROM harness_shared.routines
        WHERE target_role = 'system:green-checkpoint'
-         AND jsonb_typeof(metadata->'gate_health'->'inFlightCandidate') = 'object'`;
+         AND (jsonb_typeof(metadata->'gate_health'->'inFlightCandidate') = 'object'
+           OR jsonb_typeof(metadata->${CHECKPOINT_QUALIFICATION_METADATA_KEY}->'currentPhysicalRunner') = 'object')`;
   } catch (e) {
     console.warn(`[lost-gate-run-alarm] row scan failed (will retry): ${e instanceof Error ? e.message : String(e)}`);
     return out;
@@ -226,13 +253,32 @@ export async function sweepLostGateRuns(sql: Sql, deps: LostRunSweepDeps = {}): 
       pidAlive: deps.pidAlive ?? isPidAlive,
       nowMs,
     });
+    // A live process does not prove its qualification heartbeat is advancing. Keep the existing
+    // death alarm authoritative, and use the canonical progress projection for the other case.
+    const transaction = decision.action === 'silent' && decision.reason !== 'already-alarmed'
+      ? parseCheckpointQualificationTransaction(row.qualification)
+      : null;
+    const runner = transaction?.currentPhysicalRunner;
+    const liveness = runner ? (deps.probeQualificationRunner ?? probeRunnerLiveness)(runner, nowMs) : 'unknown';
+    const qualification = transaction && transaction.phase !== 'terminal' && runner
+      ? projectCheckpointQualificationState(transaction, nowMs, liveness)
+      : null;
+    const inspect = qualification?.runnerHealth.state === 'stalled' || qualification?.runnerHealth.state === 'dead';
+    const progressKey = inspect && transaction && runner
+      ? `qualification:${transaction.attemptId}:${runner.id}:${liveness === 'dead' ? 'dead' : runner.heartbeatAtMs ?? transaction.lastProgressAtMs ?? runner.reservedAtMs}`
+      : null;
     if (decision.action === 'silent') {
       if (decision.reason === 'already-alarmed') out.deduped.push(row.install_slug);
-      continue;
+      if (!progressKey) continue;
     }
     const target = { installSlug: row.install_slug, workspaceId: row.workspace_id };
+    const key = decision.action === 'alarm' ? decision.key : progressKey!;
+    if (row.alarmed_key === key) {
+      out.deduped.push(row.install_slug);
+      continue;
+    }
     try {
-      const won = await (deps.claim ?? claimLostRunAlarm)(sql, target, decision.key, nowMs);
+      const won = await (deps.claim ?? claimLostRunAlarm)(sql, target, key, nowMs);
       if (!won) {
         out.deduped.push(row.install_slug);
         continue;
@@ -241,6 +287,19 @@ export async function sweepLostGateRuns(sql: Sql, deps: LostRunSweepDeps = {}): 
       console.warn(`[lost-gate-run-alarm] dedup claim failed for ${row.install_slug} (will retry): ${e instanceof Error ? e.message : String(e)}`);
       out.failed.push(row.install_slug);
       continue;
+    }
+
+    if (progressKey && liveness === 'dead' && transaction) {
+      // This requests an ordinary scheduled attempt, which still passes all existing admission
+      // and single-flight guards. It never stops a process or creates a code verdict.
+      try {
+        await requeueDeadQualification(sql, target, transaction);
+      } catch (e) {
+        await releaseLostRunAlarmClaim(sql, target, key);
+        console.warn(`[lost-gate-run-alarm] dead qualification retry failed: ${e instanceof Error ? e.message : String(e)}`);
+        out.failed.push(row.install_slug);
+        continue;
+      }
     }
 
     // Routing is best-effort: an unreadable holder or fleet must never suppress the alarm itself.
@@ -254,17 +313,21 @@ export async function sweepLostGateRuns(sql: Sql, deps: LostRunSweepDeps = {}): 
       holderFleetSlug,
       hostFleetSlug: deps.hostFleetSlug !== undefined ? deps.hostFleetSlug : (process.env.PAPERCUSP_FLEET_SLUG ?? null),
     });
-    const { summary, body } = lostRunAlarmBody({
-      installSlug: row.install_slug,
-      decision,
-      paged: routes.map((r) => r.ownerSelector),
-    });
+    const { summary, body } = decision.action === 'alarm'
+      ? lostRunAlarmBody({ installSlug: row.install_slug, decision, paged: routes.map((r) => r.ownerSelector) })
+      : {
+          summary: `green-checkpoint qualification ${liveness === 'dead' ? 'LOST' : 'progress STALE'} on ${row.install_slug}`,
+          body: `Qualification ${transaction!.attemptId}, runner ${runner!.id}, candidate ${transaction!.candidate ?? 'unknown'}: ` +
+            (liveness === 'dead'
+              ? 'the exact runner was proved dead without a terminal verdict; an ordinary guarded retry was requested.'
+              : `progress heartbeat is ${Math.round((qualification!.runnerHealth.progressAgeMs ?? 0) / 1_000)}s old, process liveness is ${liveness}. Inspect the exact runner and preserve single flight; heartbeat silence alone never authorizes stopping or replacing a live or unknown runner.`),
+        };
     const broadcast = deps.broadcast ?? (await import('../severe-event-broadcast')).broadcastSevereEvent;
     const delivered = await broadcast({
       summary,
       body,
       category: 'severe-event',
-      conditionKey: `green-checkpoint-lost-run:${row.install_slug}`,
+      conditionKey: `${decision.action === 'alarm' ? 'green-checkpoint-lost-run' : 'green-checkpoint-run-progress'}:${row.install_slug}`,
       oneShot: true,
       ...(routes[0] ? { route: routes[0] } : {}),
       ...(routes.length > 1 ? { extraRoutes: routes.slice(1) } : {}),
@@ -275,7 +338,9 @@ export async function sweepLostGateRuns(sql: Sql, deps: LostRunSweepDeps = {}): 
         workspaceId: row.workspace_id,
         title: summary,
         body,
-        data: { installSlug: row.install_slug, candidate: decision.candidate.slice(0, 12), pid: decision.pid },
+        data: decision.action === 'alarm'
+          ? { installSlug: row.install_slug, candidate: decision.candidate.slice(0, 12), pid: decision.pid }
+          : { installSlug: row.install_slug, attemptId: transaction!.attemptId, runnerId: runner!.id, liveness },
       }).catch((e) => {
         console.warn(`[lost-gate-run-alarm] owner notify failed: ${e instanceof Error ? e.message : String(e)}`);
       });
@@ -284,7 +349,7 @@ export async function sweepLostGateRuns(sql: Sql, deps: LostRunSweepDeps = {}): 
       out.alarmed.push(row.install_slug);
     } else {
       // The stamp is already claimed, so release it: the next pass must retry an undelivered page.
-      await releaseLostRunAlarmClaim(sql, target, decision.key).catch(() => {});
+      await releaseLostRunAlarmClaim(sql, target, key).catch(() => {});
       out.failed.push(row.install_slug);
     }
   }

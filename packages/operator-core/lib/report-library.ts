@@ -388,6 +388,10 @@ export interface ListReportsOptions {
   /** Rows must carry ALL of these tags. */
   tags?: string[];
   /** Include soft-retired rows (default false). */
+  visibility?: ReportVisibility;
+  since?: string;
+  /** Keyset cursor, applied AFTER lineage collapse so older revisions never reappear. */
+  cursor?: { publishedAt: string; reportId: string };
   includeRetired?: boolean;
   /** Show only the newest row per lineage (default true). */
   collapseLineage?: boolean;
@@ -409,7 +413,12 @@ export async function listReports(
     ${opts.subject?.kind ? sql`AND subject_kind = ${opts.subject.kind}` : sql``}
     ${opts.subject?.ref ? sql`AND subject_ref = ${opts.subject.ref}` : sql``}
     ${opts.originHarnessSlug ? sql`AND origin_harness_slug = ${opts.originHarnessSlug}` : sql``}
-    ${opts.tags?.length ? sql`AND tags @> ${opts.tags}::text[]` : sql``}`;
+    ${opts.tags?.length ? sql`AND tags @> ${opts.tags}::text[]` : sql``}
+    ${opts.visibility ? sql`AND visibility = ${opts.visibility}` : sql``}
+    ${opts.since ? sql`AND published_at >= ${opts.since}::timestamptz` : sql``}`;
+  const cursor = opts.cursor
+    ? sql`AND (published_at, report_id) < (${opts.cursor.publishedAt}::timestamptz, ${opts.cursor.reportId})`
+    : sql``;
 
   // DISTINCT ON needs its own ORDER BY (lineage first), so the caller-facing
   // recency order is applied by the outer select.
@@ -418,7 +427,7 @@ export async function listReports(
       ? await sql<DbRow[]>`
           SELECT ${sql.unsafe(SELECT_COLS)}
             FROM harness_shared.report_library
-           WHERE workspace_id = ${opts.workspaceId} AND ${gate} ${filters}
+           WHERE workspace_id = ${opts.workspaceId} AND ${gate} ${filters} ${cursor}
            ORDER BY published_at DESC, report_id DESC
            LIMIT ${clampLimit(opts.limit)}`
       : await sql<DbRow[]>`
@@ -427,7 +436,7 @@ export async function listReports(
               FROM harness_shared.report_library
              WHERE workspace_id = ${opts.workspaceId} AND ${gate} ${filters}
              ORDER BY lineage_id, published_at DESC, report_id DESC
-          ) latest
+          ) latest WHERE TRUE ${cursor}
            ORDER BY published_at DESC, report_id DESC
            LIMIT ${clampLimit(opts.limit)}`;
   return rows.map(mapRow);

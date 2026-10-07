@@ -9,6 +9,7 @@ import type { Sql } from 'postgres';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { StoredInFlightCandidate } from './in-flight-candidate';
+import { beginQualificationTransaction, type CheckpointQualificationTransaction } from './checkpoint-qualification-transaction';
 import {
   LOST_RUN_SWEEP_INTERVAL_MS,
   claimLostRunAlarm,
@@ -43,21 +44,27 @@ const marker = (over: Partial<StoredInFlightCandidate> = {}): StoredInFlightCand
  * (claim only when the stored key IS DISTINCT FROM the new key; release only on an equal key), so
  * dedup is exercised across passes and simulated restarts rather than asserted on a mock count.
  */
-function fakeRoutineRow(initialMarker: StoredInFlightCandidate | null) {
+function fakeRoutineRow(initialMarker: StoredInFlightCandidate | null, qualification: unknown = null) {
   const row = {
     installSlug: 'papercusp',
     workspaceId: 'papercusp-workspace',
     marker: initialMarker as StoredInFlightCandidate | null,
     alarmKey: null as string | null,
+    qualification,
+    retries: 0,
   };
   const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
     const text = strings.join('?');
     if (/^\s*SELECT install_slug/.test(text)) {
       return Promise.resolve(
-        row.marker
-          ? [{ install_slug: row.installSlug, workspace_id: row.workspaceId, marker: row.marker, alarmed_key: row.alarmKey }]
+        row.marker || row.qualification
+          ? [{ install_slug: row.installSlug, workspace_id: row.workspaceId, marker: row.marker, alarmed_key: row.alarmKey, qualification: row.qualification }]
           : [],
       );
+    }
+    if (text.includes('next_fire_at')) {
+      row.retries += 1;
+      return Promise.resolve({ count: 1 });
     }
     if (text.includes('IS DISTINCT FROM')) {
       const key = values[0] as string;
@@ -223,6 +230,83 @@ describe('sweepLostGateRuns (P-005 / R-5)', () => {
     const retry = deps();
     await expect(sweepLostGateRuns(sql, retry)).resolves.toMatchObject({ alarmed: ['papercusp'] });
     expect(retry.broadcast).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('qualification progress in the existing lost-run sweep', () => {
+  function qualification(heartbeatAtMs = NOW - 4 * 60_000): CheckpointQualificationTransaction {
+    const ready = beginQualificationTransaction(null, {
+      attemptId: 'attempt-1', candidate: 'candidate-1', nowMs: NOW - 5 * 60_000,
+    }).transaction;
+    return {
+      ...ready, phase: 'running', lastProgressAtMs: heartbeatAtMs,
+      currentPhysicalRunner: {
+        id: 'runner-1', candidate: 'candidate-1', reservedAtMs: NOW - 5 * 60_000,
+        heartbeatAtMs, leaseExpiresAtMs: NOW + 60 * 60_000,
+        pid: DEAD_PID, pidIdentity: 'test-boot:test-start', phase: 'suite', evidenceRefs: [],
+      },
+    };
+  }
+
+  function progressDeps(liveness: 'live' | 'dead' | 'unknown') {
+    return Object.assign(deps(), { probeQualificationRunner: vi.fn(() => liveness) });
+  }
+
+  it.each(['live', 'unknown'] as const)('pages once for stale progress with %s liveness and never starts another runner', async (liveness) => {
+    const { sql, row } = fakeRoutineRow(null, qualification());
+    const d = progressDeps(liveness);
+    await sweepLostGateRuns(sql, d);
+    expect(d.broadcast).toHaveBeenCalledTimes(1);
+    expect(d.broadcast.mock.calls[0][0]).toMatchObject({
+      conditionKey: 'green-checkpoint-run-progress:papercusp',
+      route: { ownerSelector: 'su-holder' },
+    });
+    expect(d.broadcast.mock.calls[0][0].body).toContain('attempt-1');
+    expect(d.broadcast.mock.calls[0][0].body).toContain('preserve single flight');
+    await sweepLostGateRuns(sql, progressDeps(liveness));
+    expect(row.retries).toBe(0);
+    expect(row.alarmKey).not.toBeNull();
+    expect(d.broadcast).toHaveBeenCalledTimes(1);
+  });
+
+  it('stays silent for a recently progressing runner and for a terminal attempt', async () => {
+    const { sql, row } = fakeRoutineRow(null, qualification(NOW - 60_000));
+    const d = progressDeps('live');
+    await sweepLostGateRuns(sql, d);
+    expect(d.broadcast).not.toHaveBeenCalled();
+    row.qualification = { ...qualification(), phase: 'terminal', outcome: { kind: 'green', reason: 'advanced' } };
+    await sweepLostGateRuns(sql, d);
+    expect(d.broadcast).not.toHaveBeenCalled();
+    expect(row.retries).toBe(0);
+  });
+
+  it('promptly retries a confirmed-dead runner before its unexpired lease, without manufacturing a verdict', async () => {
+    const tx = qualification(NOW - 60_000);
+    const { sql, row } = fakeRoutineRow(null, tx);
+    const d = progressDeps('dead');
+    await sweepLostGateRuns(sql, d);
+    expect(d.broadcast).toHaveBeenCalledTimes(1);
+    expect(row.retries).toBe(1);
+    expect(row.qualification).toEqual(tx);
+    expect(d.broadcast.mock.calls[0][0].body).toContain('proved dead');
+  });
+
+  it('releases an undelivered stale-progress alarm for the next pass to retry', async () => {
+    const { sql, row } = fakeRoutineRow(null, qualification());
+    const d = Object.assign(progressDeps('unknown'), { broadcast: vi.fn(async () => false) });
+    await expect(sweepLostGateRuns(sql, d)).resolves.toMatchObject({ failed: ['papercusp'] });
+    expect(row.alarmKey).toBeNull();
+    const retry = progressDeps('unknown');
+    await sweepLostGateRuns(sql, retry);
+    expect(retry.broadcast).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails closed for malformed qualification metadata', async () => {
+    const { sql } = fakeRoutineRow(null, { currentPhysicalRunner: { id: 'unproven' } });
+    const d = progressDeps('dead');
+    await sweepLostGateRuns(sql, d);
+    expect(d.broadcast).not.toHaveBeenCalled();
+    expect(d.probeQualificationRunner).not.toHaveBeenCalled();
   });
 });
 

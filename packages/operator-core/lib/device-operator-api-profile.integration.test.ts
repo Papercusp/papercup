@@ -33,6 +33,13 @@ describe('disposable operator-api monitoring sources', () => {
       cwd: root, encoding: 'utf8', timeout: 180_000, maxBuffer: 4 * 1024 * 1024,
     });
     expect(result.status, (result.stderr ?? '').slice(-3000)).toBe(0);
+    // Progress messages must never be mistaken for the final ready identity.
+    // These retained stages also identify import/registry/DB/sidecar stalls.
+    for (const stage of ['imports:harness-registry', 'imports:embed-sidecar',
+      'imports:db-org', 'imports:device-monitoring', 'private-registry',
+      'paused-routine', 'measure-private-gate', 'sidecar-listen']) {
+      expect(result.stdout).toContain('operator-api stage ' + stage + ' +');
+    }
     const line = result.stdout.split('\n').find(row => row.startsWith('PRIVATE_GATE_PROOF='));
     expect(line, 'Private gate proof must execute').toBeDefined();
     const proof = JSON.parse(line!.slice('PRIVATE_GATE_PROOF='.length));

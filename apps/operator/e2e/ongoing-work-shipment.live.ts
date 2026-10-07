@@ -1,10 +1,20 @@
 import { test, expect } from './_egress';
+import { resolveTestRunWorkspaceId } from '@papercusp/test-config/admin-test-runs-reporter';
 
 type Goal = { id: string; title: string; standing?: boolean };
 type Package = { ref: string; title: string; standing: boolean; activeGoalId: string | null };
 type Goals = { goals: Goal[]; goalPackages: Package[] };
 
 test('real ongoing goal data reaches featured, compact and standing detail on the identified artifact', async ({ page, request }, info) => {
+  const workspaceId = resolveTestRunWorkspaceId();
+  expect(workspaceId, 'The real workspace must be explicit before reading goal data').toBeTruthy();
+  const diagnostics: string[] = [];
+  page.on('pageerror', (error) => diagnostics.push(`pageerror: ${error.message.slice(0, 500)}`));
+  page.on('response', (response) => {
+    const url = new URL(response.url());
+    if (url.pathname.includes('rest-query')) diagnostics.push(`${url.searchParams.get('name')}: ${response.status()}`);
+  });
+  try {
   const expectedSha = process.env.PAPERCUSP_ONGOING_ACCEPTANCE_SHA?.trim();
   expect(expectedSha, 'Supply the independently resolved runtime SHA; a missing identity cannot certify shipment').toMatch(/^[a-f0-9]{10,40}$/);
   const healthResponse = await request.get('/api/health');
@@ -13,13 +23,11 @@ test('real ongoing goal data reaches featured, compact and standing detail on th
   expect(health.bundleStale, 'A fallback bundle cannot establish the current artifact').toBeUndefined();
   expect(health.sha).toBe(expectedSha);
 
-  // Observe the normal wire response. This profile never intercepts or seeds goal data.
-  const listResponse = page.waitForResponse((response) => {
-    const url = new URL(response.url());
-    return url.pathname === '/api/zero-harness/rest-query' && url.searchParams.get('name') === 'goals.list';
+  // The maintained REST query reads real data independently of whether the UI's
+  // initial delivery came through REST, SSE or its synchronized cache.
+  const response = await request.get('/api/zero-harness/rest-query', {
+    params: { name: 'goals.list', args: JSON.stringify({ workspaceId }) },
   });
-  await page.goto('/adv?tab=hud&scope=all&hudtab=goals&welcome=0');
-  const response = await listResponse;
   expect(response.ok()).toBe(true);
   const payload = (await response.json()).rows[0] as Goals;
   const entry = payload.goalPackages.find((item) => item.ref === 'work-on-everything');
@@ -29,6 +37,9 @@ test('real ongoing goal data reaches featured, compact and standing detail on th
   const goal = payload.goals.find((item) => item.id === entry!.activeGoalId);
   expect(goal, 'The projected package must resolve to an actual goal row').toBeDefined();
   expect(goal!.standing, 'The introduced standing read-model projection must be present').toBe(true);
+
+  await page.goto(`/adv?tab=hud&scope=all&hudtab=goals&welcome=0&ws=${encodeURIComponent(workspaceId!)}`);
+  await expect(page.getByRole('tablist', { name: 'HUD board' }), 'The real HUD must mount before judging goal rendering').toBeVisible();
 
   const featured = page.locator('.hud-ongoing--featured').filter({ has: page.getByRole('heading', { name: entry!.title, exact: true }) });
   await expect(featured).toBeVisible();
@@ -60,8 +71,14 @@ test('real ongoing goal data reaches featured, compact and standing detail on th
   expect(healthAfter.sha, 'The runtime must not move during the acceptance journey').toBe(expectedSha);
   expect(healthAfter.bundleStale).toBeUndefined();
   await info.attach('ongoing-real-data-receipt', {
-    body: JSON.stringify({ expectedSha, actualSha: health.sha, goalId: goal!.id, packageRef: entry!.ref,
+    body: JSON.stringify({ expectedSha, actualSha: health.sha, workspaceId, goalId: goal!.id, packageRef: entry!.ref,
       views: ['featured', 'compact', 'standing-detail'], navigationGoalId: new URL(page.url()).searchParams.get('hudgoal') }),
     contentType: 'application/json',
   });
+  } finally {
+    await info.attach('ongoing-real-data-diagnostics', {
+      body: JSON.stringify({ workspaceId, url: page.url(), observations: diagnostics.slice(-40) }),
+      contentType: 'application/json',
+    });
+  }
 });

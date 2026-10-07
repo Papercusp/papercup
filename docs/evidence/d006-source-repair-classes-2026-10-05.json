@@ -1153,7 +1153,82 @@
           "wrapperProvenance": "unknown",
           "limit": "Named test paths stayed clean and unchanged, but HEAD moved during the run. The runner explicitly marks provenance UNKNOWN because imported source/change radius was not measured. No clean current-source assurance or final D006 claim."
         },
-        "next": "Measure real-PG missing/restored lifecycle-schema and session-column controls against the inherited fixture; isolate archive/resolve assertions from warning failures before deciding whether a new source repair is needed. Preserve P004/D006 final custody."
+        "next": "Add a separately registered real-PG missing/restored adv_sessions.ended_by completion-boundary control: inspect the receipt read, direct writer refusal, delegated adapter state and restored archive/resolve effects. This source trace is a hypothesis until that control distinguishes it from the already-measured event-warning path. Preserve P004/D006 custody and do not replay terminal WI-10007207.",
+        "assertionSourceTrace": {
+          "scope": "Content-bearing source investigation only; no new test execution or historical root-cause verdict.",
+          "archiveRunStart": "d2a53e115436fe5b2a72c261abbc66f337642672",
+          "archiveSha256": "43cf66489baf7cf665a9746d097375cffc7cdc6262014929c3cc398155b579f4",
+          "assertionLines": [12562, 12653],
+          "receiptReader": "packages/operator-core/lib/blueprint/operation-worker-binding.ts#readActiveOperationWorkerClaimBinding",
+          "originalAndCurrentReaderBytesEqual": true,
+          "readerFunctionSha256": "baefedf70070cf33c7a44662a9e209efad3ec429f65d44a023451be1c2d0aa52",
+          "observed": "Both original and current receipt readers SELECT adv_sessions with ended_by IS NULL and return status unavailable on a missing-column error. Original and current setIssueState call that read before their terminal UPDATE; matchOperationWorkerClaim refuses unavailable reads. Both delegated archive/resolve adapters catch the state writer rejection. The original fixture's adv_sessions DDL omits ended_by; the inherited maintained claim helper provisions it.",
+          "hypothesis": "The omitted ended_by column blocks the pre-write operation receipt guard, and the delegated adapter hides the refusal, leaving the task open. This is separate from the missing event_awaits warnings.",
+          "alternativeHypothesis": "The historical open state originates in another completion precondition or source/environment difference; the receipt column warning alone does not reproduce it.",
+          "requiredControl": "Rename the real ended_by column on the maintained fixture; require an unavailable receipt naming ended_by/42703, a direct canonical writer rejection, and unchanged open states after both delegated adapters. Restore the column; require an ordinary unbound receipt and actual dropped/done states. Keep event_awaits present and preserve existing eight cases.",
+          "limit": "One unchanged function and inspected call sites do not prove full import/environment equality or execution causality. File remains console-guard/open-unknown, and all census/class counts remain unchanged."
+        },
+        "causalControls": {
+          "item": "WI-10007207",
+          "scope": "Two conventional real-PG controls added to the inherited fixture; original six behavioral cases retained. No production source edit.",
+          "eventSchema": "Renaming the real event_awaits relation reproduces the exact missing-relation warning during task creation. On current source, archive still reaches dropped and resolve leaves the open set despite lifecycle errors. After restoration, a real claim-bound watch is canceled with lifecycle-binding-retired. The warning alone does not reproduce the archived open-state assertion failures.",
+          "sessionColumn": "Renaming real adv_sessions.ended_by reproduces the exact listRecordedLiveSessions warning and empty roster. Restoring the column retrieves the seeded owner/session with endedBy=null without suppressing restored warnings.",
+          "seedPrecondition": "Real PostgreSQL negative control confirms JSON.stringify(binding)::jsonb stores a JSON string; the maintained ::text::jsonb pattern stores the actual object. Both stored shapes are asserted before lifecycle cancellation, guarding the fixture against a false product failure.",
+          "testRunId": 20903699,
+          "status": "pass",
+          "casesPassed": 8,
+          "casesSkipped": 0,
+          "exitCode": 0,
+          "commitSha": "a746153128d2361351d7f2ec22ea1c2b6154ebcd",
+          "source": "local",
+          "branch": "staging",
+          "workspace": "papercusp-workspace",
+          "harness": "papercusp",
+          "worktreeDirty": true,
+          "isScratchConfig": false,
+          "runGroupId": null,
+          "testSha256": "d406849be08ec8c0a2609fed3e0d970808fc2b9ab65552574064fa8ae473654f",
+          "testBlob": "1b136966e63087f7120cbdd51a3f5c37596b2504",
+          "log": "/tmp/wi-10007207-final.log",
+          "logSha256": "9959f17fba6075094119043d081041230380132f8bb8ecebdf4e99815bd82c77",
+          "wrapperProvenance": "stamped; named test fingerprints unchanged pre/post; full import graph unmeasured",
+          "typecheck": {
+            "command": "npm run lint:tsc -- --files=packages/operator-core/lib/delegated-tasks.integration.test.ts",
+            "checkedFiles": 1,
+            "errors": 0,
+            "exitCode": 0,
+            "log": "/tmp/wi-10007207-final-tsc.log",
+            "logSha256": "a60a65b295352252fe589117cb0213dd0f2c81f477092fd2aed97b2be84b40dd"
+          },
+          "attempts": [
+            {
+              "testRunId": 20903620,
+              "status": "fail",
+              "casesPassed": 7,
+              "casesFailed": 1,
+              "cause": "New guard incorrectly expected archived task done; measured canonical closed alias is dropped.",
+              "log": "/tmp/wi-10007207-controls.log",
+              "logSha256": "e44f6df6131e0ceadaa7c6a186eee66f0d0ab9d9c2cfd396006b2efa11043a07"
+            },
+            {
+              "testRunId": 20903629,
+              "status": "fail",
+              "casesPassed": 7,
+              "casesFailed": 1,
+              "cause": "New lifecycle seed was a JSON string, so bound_to equality did not match; negative/positive stored-shape controls distinguish it from a broken lifecycle writer.",
+              "log": "/tmp/wi-10007207-verified.log",
+              "logSha256": "7388580fa92c5578a067521d127677069ccb6a7596d64d0f461f7ce07abe4ce2"
+            }
+          ],
+          "unchangedNamedDependencies": {
+            "packages/operator-core/lib/delegated-tasks.ts": "55b8b1b485b9272a09ba94deed3cbfeb55efda7ffe5a347218d9cd277fe68e8c",
+            "packages/operator-core/lib/adv-sessions.ts": "80564596e1bf64651898a9031e913eb37846a44c5dbfb7e2dbd4896cb86694fa",
+            "packages/operator-core/test/_work-items-schema.ts": "2397f587d996678f122314bfdc0ac36bf28f0aa93dd55687999320b872c1acf3",
+            "packages/operator-core/test/_pg-helpers.ts": "d14d60a445e17811e601944a09c6e8a2e3f852fad10d2b59b13a222b29ff36e3",
+            "packages/operator-core/lib/events/await/store.ts": "538d02805a974a358654b4956d87b10d37fd6eb77b341a8f8e7fc4f94b1340f7"
+          },
+          "limit": "Focused warning/fixture controls only. Historical archive/resolve assertion root cause, complete imports/environment, final D006/P004 acceptance and shipment remain unverified. File remains open-unknown; population counts and class are unchanged."
+        }
       },
       "lines": [
         12445,
@@ -2549,7 +2624,7 @@
             ],
             "observed": "console.warn from missing harness_shared.event_awaits and adv_sessions.ended_by; separate assertions return an extra delegated task and a non-null resolved task",
             "candidateRepair": "EI-11558",
-            "candidateEvidence": "EI-11558#comment:51812 is watchdog absent-signal auto-resolution with no dispatched fix and no completion authority. Existing fixture commit c6aa3f7585 has clean focused receipt20828727 and exact current named-test bytes, while its two schema helpers differ from current. Current whole file20903519 PASS6/0skip/exit0 has explicit HEAD-moved UNKNOWN import provenance. Causal controls remain unrun; file stays open-unknown under parent WI-10006170."
+            "candidateEvidence": "EI-11558#comment:51812 is watchdog absent-signal auto-resolution with no dispatched fix and no completion authority. Existing fixture c6aa3f7585 has inherited focused receipt20828727; baseline20903519 PASS6 has HEAD-moved UNKNOWN import provenance. Guard child WI-10007207 now adds actual missing/restored event relation and session-column controls, plus stored-JSON-shape controls; whole file20903699 PASS8/0skip/exit0 on local dirty staging. Current archive/resolve terminal despite missing event table, so original open assertions remain an independent unproved cause. File stays open-unknown under parent WI-10006170; no final D006 or complete import/environment claim."
           },
           {
             "path": "packages/operator-core/lib/harness/join-hive-from-repo-incremental-federation.integration.test.ts",

@@ -16,7 +16,7 @@ import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { searchReports } from '../../report-library';
-import { resolveViewer, resolveWorkspaceId, toReportSummary, zReportKind, zReportWire } from './_shared';
+import { reportsLibraryDisabled, resolveViewer, resolveWorkspaceId, toReportSummary, zReportKind, zReportWire } from './_shared';
 
 export default defineTool({
   name: 'reports:search',
@@ -66,6 +66,8 @@ export default defineTool({
     limit: z.number().int().min(1).max(200).optional().describe('default 50, max 200'),
   }),
   async handler(args, ctx) {
+    const disabled = await reportsLibraryDisabled();
+    if (disabled) return { data: disabled };
     const sql = getOrgPg().sql;
     const hits = await searchReports(sql, {
       workspaceId: resolveWorkspaceId(ctx),

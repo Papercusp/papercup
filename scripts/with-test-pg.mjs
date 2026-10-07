@@ -205,12 +205,18 @@ if (operatorApi) {
   while ([port, Number(runtimeEnv.PAPERCUSP_HONO_PORT), Number(runtimeEnv.OPERATOR_DEV_PTY_PORT)].includes(ingressPort));
   runtimeEnv.PAPERCUSP_EXTERNAL_INGRESS_PORT = String(ingressPort);
   const profileSource = `
+    const stage = (name) => process.send({ stage: name });
+    stage('imports:harness-registry');
     import { mkdir } from 'node:fs/promises';
     import { join } from 'node:path';
-    import { saveHarnessRegistry, loadHarnessRegistry } from './packages/operator-core/lib/harness-registry.ts';
-    import { createEmbedSidecarServer } from './packages/operator-core/lib/memory/embed-sidecar-server.ts';
-    import { getOrgPg, upsertRoutine } from '@papercusp/db-org';
-    import { releaseGateTile } from './packages/operator-core/lib/device-monitoring.ts';
+    const { saveHarnessRegistry, loadHarnessRegistry } = await import('./packages/operator-core/lib/harness-registry.ts');
+    stage('imports:embed-sidecar');
+    const { createEmbedSidecarServer } = await import('./packages/operator-core/lib/memory/embed-sidecar-server.ts');
+    stage('imports:db-org');
+    const { getOrgPg, upsertRoutine } = await import('@papercusp/db-org');
+    stage('imports:device-monitoring');
+    const { releaseGateTile } = await import('./packages/operator-core/lib/device-monitoring.ts');
+    stage('private-registry');
     const id = process.env.PAPERCUSP_WORKSPACE_ID;
     const home = join(process.env.PAPERCUSP_WORKSPACES_ROOT, id, 'operator-home');
     await mkdir(home, { recursive: true });
@@ -221,6 +227,7 @@ if (operatorApi) {
     // has no pipeline at all, so register an explicitly PAUSED fixture through
     // the maintained routine store. Never manufacture a green verdict or arm
     // a release action against the developer's checkout.
+    stage('paused-routine');
     const { sql } = getOrgPg();
     await upsertRoutine(sql, { workspaceId: id, installSlug: id,
       name: 'green-checkpoint', triggerKind: 'api', triggerConfig: {},
@@ -229,10 +236,12 @@ if (operatorApi) {
       pausedBy: id, pausedAtMs: Date.now() };
     await sql\`UPDATE harness_shared.routines SET metadata = \${sql.json({ pause })}
       WHERE workspace_id = \${id} AND install_slug = \${id} AND name = 'green-checkpoint'\`;
+    stage('measure-private-gate');
     const gate = await releaseGateTile(id);
     if (!gate || gate.gate !== 'wedged' || !gate.red) {
       throw new Error('private paused pipeline was not measured; refusing request journey');
     }
+    stage('sidecar-listen');
     const sidecar = createEmbedSidecarServer({ port: 0, warmAtBoot: false });
     const port = await sidecar.listening;
     process.on('SIGTERM', async () => { await sidecar.close(); process.exit(0); });
@@ -248,11 +257,21 @@ if (operatorApi) {
       stream.on('data', (chunk) => { errors = (errors + chunk.toString()).slice(-6000); });
     }
     const ready = await new Promise((res, rej) => {
-      const timer = setTimeout(() => rej(new Error('operator-api profile preflight timed out: ' + errors)), 45000);
+      let lastStage = 'process-start';
+      const started = Date.now();
+      const timer = setTimeout(() => rej(new Error('operator-api profile preflight timed out at ' + lastStage + ': ' + errors)), 45000);
       const failed = (error) => { clearTimeout(timer); rej(error); };
       profileProcess.once('error', failed);
       profileProcess.once('exit', (code, signal) => failed(new Error('operator-api profile exited ' + code + '/' + signal + ': ' + errors)));
-      profileProcess.once('message', (message) => { clearTimeout(timer); res(message); });
+      profileProcess.on('message', (message) => {
+        if (typeof message?.stage === 'string') {
+          lastStage = message.stage;
+          console.log('[with-test-pg] operator-api stage ' + lastStage + ' +' + (Date.now() - started) + 'ms');
+          return;
+        }
+        clearTimeout(timer);
+        res(message);
+      });
     });
     if (!ready?.ready || ready.homeHarness !== runtimeId || !/^http:\/\/127\.0\.0\.1:\d+$/.test(ready.url)) {
       throw new Error('operator-api profile returned an invalid private identity');

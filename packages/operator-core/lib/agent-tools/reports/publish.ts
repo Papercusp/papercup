@@ -21,6 +21,7 @@ import { emitAwaitedEvent } from '../../events/await/engine';
 import {
   invalidateReportsSync,
   reportUiPath,
+  reportsLibraryDisabled,
   resolveOwnerId,
   resolveWorkspaceId,
   stampOrigin,
@@ -98,6 +99,8 @@ export default defineTool({
     tags: z.array(z.string().min(1).max(60)).max(20).optional(),
   }),
   async handler(args, ctx) {
+    const disabled = await reportsLibraryDisabled();
+    if (disabled) return { data: disabled };
     const sql = getOrgPg().sql;
     const workspaceId = resolveWorkspaceId(ctx);
 

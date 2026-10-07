@@ -9,4 +9,5 @@ export default defineConfig({
   fullyParallel: false,
   workers: 1,
   timeout: 90_000,
+  use: { ...base.use, trace: 'retain-on-failure' },
 });

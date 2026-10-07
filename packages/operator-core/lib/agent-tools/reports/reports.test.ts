@@ -24,6 +24,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ReportBodyTooLargeError, REPORT_BODY_MAX_BYTES } from '../../report-library';
 import { goalOwnerReportFixture } from '../../../test/fixtures/goal-owner-report';
 import { serializeGoalOwnerReportSnapshot } from '@papercusp/chat-protocol';
+import { FLAGS } from '@papercusp/flags';
 
 // ── Mocks ────────────────────────────────────────────────────────────────────
 const {
@@ -35,6 +36,7 @@ const {
   listReportLineageM,
   emitAwaitedEventM,
   notifySyncInvalidateM,
+  getFlagM,
 } = vi.hoisted(() => ({
   publishReportM: vi.fn(),
   getReportM: vi.fn(),
@@ -44,6 +46,7 @@ const {
   listReportLineageM: vi.fn(),
   emitAwaitedEventM: vi.fn(),
   notifySyncInvalidateM: vi.fn(),
+  getFlagM: vi.fn(),
 }));
 
 // Partial mock: the real enums + the real error CLASS are kept, because the tool
@@ -71,6 +74,7 @@ vi.mock('../../events/await/engine', () => ({ emitAwaitedEvent: emitAwaitedEvent
 vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: notifySyncInvalidateM }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-fallback' }));
 vi.mock('../../detached-imports', () => ({ trackDetached: (p: unknown) => p }));
+vi.mock('@papercusp/flags/server', () => ({ getFlag: getFlagM }));
 
 const publishTool = (await import('./publish')).default;
 const getTool = (await import('./get')).default;
@@ -111,6 +115,7 @@ const record = (over: Record<string, unknown> = {}) => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
+  getFlagM.mockResolvedValue(true);
   publishReportM.mockResolvedValue(record());
   getReportM.mockResolvedValue(record());
   listReportsM.mockResolvedValue([record()]);
@@ -121,6 +126,26 @@ beforeEach(() => {
 });
 
 // ── R-2: origin is stamped, never accepted ───────────────────────────────────
+describe('reportsLibrary kill-switch (P-004)', () => {
+  it.each([
+    ['publish', publishTool, { title: 'A' }],
+    ['get', getTool, { id: 'rpt_1' }],
+    ['list', listTool, {}],
+    ['search', searchTool, { query: 'A' }],
+    ['retire', retireTool, { id: 'rpt_1' }],
+  ] as const)('refuses %s before any store read/write or notification when disabled', async (_, tool, args) => {
+    getFlagM.mockResolvedValue(false);
+    const result = body(await tool.handler(args as never, CTX as never) as Out);
+    expect(result).toMatchObject({ ok: false, error: 'flag_disabled', flag: FLAGS.REPORTS_LIBRARY });
+    expect(getFlagM).toHaveBeenCalledWith(FLAGS.REPORTS_LIBRARY, 'system');
+    for (const store of [publishReportM, getReportM, listReportsM, searchReportsM, retireReportM, listReportLineageM]) {
+      expect(store).not.toHaveBeenCalled();
+    }
+    expect(emitAwaitedEventM).not.toHaveBeenCalled();
+    expect(notifySyncInvalidateM).not.toHaveBeenCalled();
+  });
+});
+
 describe('reports:publish — origin is server-stamped (R-2)', () => {
   it('SPEC-P-003-origin-ctx-stamped: origin comes from ctx, as publishReport\'s separate 3rd argument', async () => {
     await publishTool.handler({ title: 'A' } as never, CTX as never);
