@@ -957,6 +957,7 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
   let spillUri: string | null = null;
   let spillError: string | null = null;
   let spillErrorCode: string | null = null;
+  let spillErrorSummary: string | null = null;
   let manifest: ScratchReferenceManifest | null = null;
   const evidence = detectResultEvidence(input.result.content);
   try {
@@ -989,6 +990,19 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
   } catch (err) {
     spillError = err instanceof Error ? err.message : String(err);
     spillErrorCode = (err as NodeJS.ErrnoException | undefined)?.code ?? 'unknown error';
+    if (err instanceof Error) {
+      let message = err.message.replace(/[\r\n\t]+/g, ' ').trim();
+      const scratchPaths = [
+        ...(spillPath ? [spillPath, dirname(spillPath)] : []),
+        process.env.PAPERCUSP_SCRATCH_ROOT,
+      ].filter((path): path is string => Boolean(path));
+      for (const path of scratchPaths.sort((a, b) => b.length - a.length)) {
+        if (path) message = message.replaceAll(path, '<scratch path>');
+      }
+      spillErrorSummary = `${err.name || 'Error'}${message ? `: ${message}` : ''}`.slice(0, 240);
+    } else {
+      spillErrorSummary = err == null ? 'empty rejection' : `${typeof err} rejection`;
+    }
     spillPath = null;
     spillUri = null;
   }
@@ -1148,6 +1162,7 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
       },
     } as T;
   }
+  const spillDiagnostic = [spillErrorCode, spillErrorSummary].filter(Boolean).join('; ') || 'unknown error';
   const envelope = reference
     ? buildOutputEnvelope(
         {
@@ -1178,9 +1193,9 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
             message:
               input.opts.toolName === 'coord:send' ||
               (input.opts.toolName === 'tools:invoke' && input.opts.nestedTargetToolName === 'coord:send')
-                ? `Output exceeded its hard budget and the spill write failed (${spillErrorCode ?? 'unknown error'}). ` +
+                ? `Output exceeded its hard budget and the spill write failed (${spillDiagnostic}). ` +
                   'The coord:send delivery outcome is unknown; do not repeat the send until you check coordination state.'
-                : `Output exceeded its hard budget and the spill write failed (${spillErrorCode ?? 'unknown error'}).`,
+                : `Output exceeded its hard budget and the spill write failed (${spillDiagnostic}).`,
             retryable: !(
               input.opts.toolName === 'coord:send' ||
               (input.opts.toolName === 'tools:invoke' && input.opts.nestedTargetToolName === 'coord:send')

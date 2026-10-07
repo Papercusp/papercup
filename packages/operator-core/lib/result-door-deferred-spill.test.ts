@@ -308,11 +308,15 @@ describe('result-door deferred spill (WI-10004533)', () => {
       );
       const envelope = JSON.parse((out.content[0] as { text: string }).text) as {
         state?: string;
-        error?: { code?: string; retryable?: boolean };
+        error?: { code?: string; message?: string; retryable?: boolean };
       };
       const meta = (out as { _meta?: { resultDoor?: Record<string, unknown> } })._meta?.resultDoor;
 
       expect(envelope).toMatchObject({ state: 'error', error: { code: 'output_spill_failed', retryable: true } });
+      expect(envelope.error?.message).toContain('ENOTDIR');
+      expect(envelope.error?.message).toContain('not a directory');
+      expect(envelope.error?.message).toContain('<scratch path>');
+      expect(envelope.error?.message).not.toContain(sandbox);
       expect(meta).toMatchObject({
         spillFailed: true,
         spillPath: null,
