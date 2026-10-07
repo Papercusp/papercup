@@ -1,0 +1,107 @@
+/** P016 reporter journey, registered in the scheduled Tauri surface suite. */
+import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { createRequire } from 'node:module';
+import postgres from 'postgres';
+import { defaultEvidenceRoot, parseSelectionArgs, runHarness } from '@papercusp/verification-harness';
+import { sealImplementationAcceptance, createImplementationReadiness } from '../packages/operator-core/lib/harness/improvements/agent-review-policy.ts';
+// apps/operator is a CommonJS package under tsx, unlike this .mts entry.
+const { defaultReporterReleaseDeps, publishReporterRelease } = createRequire(import.meta.url)(
+  '../apps/operator/lib/release/reporter-release.ts',
+) as typeof import('../apps/operator/lib/release/reporter-release.ts');
+
+// Cheap runtime preflight before the expensive desktop boot; catches package
+// export/loader mismatches that a TypeScript-only check cannot exercise.
+if (process.argv.includes('--check-imports')) {
+  assert.equal(typeof publishReporterRelease, 'function');
+  assert.equal(typeof defaultReporterReleaseDeps, 'function');
+  assert.equal(typeof sealImplementationAcceptance, 'function');
+  console.log('REPORTER_STATUS_IMPORTS_OK');
+  process.exit(0);
+}
+
+const selection = parseSelectionArgs(process.argv.slice(2));
+const result = await runHarness({
+  contract: { name: 'reporter-status-tauri', phases: [{ id: 'native', description: 'Preview, receipt subscription, fixer question, consented reply and published fix notification' }] },
+  evidenceRoot: defaultEvidenceRoot('reporter-status-tauri'), selection, reuseFrom: selection.reuse,
+  async runPhase(ctx) {
+    assert.equal(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED, '1', 'Requires isolated verifier DB');
+    assert.ok(process.env.HARNESS_ADMIN_DATABASE_URL && process.env.VERIFY_TAURI_PID);
+    const sql = postgres(process.env.HARNESS_ADMIN_DATABASE_URL!, { max: 1, onnotice: () => {} });
+    const ws = process.env.PAPERCUSP_WORKSPACE_ID ?? process.env.PAPERCUSP_WORKSPACE!;
+    const pid = process.env.VERIFY_TAURI_PID!;
+    const tool = process.env.VERIFY_TAURI_AGENT_TOOLS_BIN ?? 'tauri-agent-tools';
+    const native = (...args: string[]) => execFileSync(tool, [...args, '--pid', pid], { encoding: 'utf8', timeout: 60_000 });
+    const ev = (script: string) => native('eval', script);
+    const wait = (script: string) => native('wait', '--eval', script, '--timeout', '60000', '--interval', '500');
+    const clickText = (text: string) => ev(`(()=>{const b=[...document.querySelectorAll('button')].find(b=>b.textContent.trim()===${JSON.stringify(text)});if(!b)throw Error('missing button');b.click();return true})()`);
+    const type = (selector: string, text: string) => ev(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});if(!e)throw Error('missing textarea');Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(e,${JSON.stringify(text)});e.dispatchEvent(new Event('input',{bubbles:true}));return true})()`);
+    const capture = (name: string) => {
+      writeFileSync(join(ctx.evidenceDir, `${name}.json`), ev('JSON.stringify({url:location.href,body:document.body.innerText})'));
+      native('screenshot', '--output', join(ctx.evidenceDir, `${name}.png`));
+    };
+    try {
+      ctx.markStep('submit-previewed-report');
+      native('navigate', '/inbox?report=true', '--json');
+      wait("!!document.querySelector('[data-testid=report-problem-dialog] textarea')");
+      const marker = `P016 export crashes ${Date.now()}`;
+      type('[data-testid=report-problem-dialog] textarea', marker);
+      clickText('Review');
+      wait("!!document.querySelector('[data-testid=report-problem-dialog] pre')");
+      capture('preview');
+      clickText('Send');
+      wait("document.querySelector('[data-testid=report-problem-dialog]')?.innerText.includes('your report was filed')");
+      const [source] = await sql<{ feature_id: string; title: string; summary: string; payload: Record<string, unknown> }[]>`
+        SELECT feature_id, title, summary, payload FROM harness_shared.work_items WHERE workspace_id = ${ws} AND title LIKE ${`%${marker}%`}`;
+      assert.ok(source, 'real report missing');
+      clickText('Close');
+      const acceptance = sealImplementationAcceptance({ source: { kind: 'bug', title: source.title, summary: source.summary },
+        proposal: { problem: source.summary, evidence: ['isolated export failure'], outcome: 'Export works', scope: 'Export only', completionCheck: 'Export reproduction passes' },
+        authority: { kind: 'agent-review', reviewer: 'su-native-reviewer', submittedBy: 'su-native-filer', round: 1 }, reason: 'fixture reproduced', acceptedAt: new Date().toISOString(),
+        reproduction: { kind: 'failing-test', ref: 'reporter-status-tauri fixture', buildSha: 'abcdef1' } });
+      assert.equal(acceptance.ok, true);
+      if (!acceptance.ok) throw Error('acceptance fixture refused');
+      const question = { id: 'native-question', text: 'Which export file causes the crash?', askedBy: 'su-native-fixer', askedAt: new Date().toISOString() };
+      await sql`UPDATE harness_shared.work_items SET taken_by = 'su-native-fixer', payload = payload || ${JSON.stringify({
+        implementationReadiness: createImplementationReadiness({ status: 'ready', source: 'agent-review', reason: 'fixture accepted', updatedAt: new Date().toISOString(), evidence: { acceptance: acceptance.contract } }),
+        reporterQuestion: question,
+      })}::jsonb WHERE workspace_id = ${ws} AND feature_id = ${source.feature_id}`;
+      ctx.markStep('push-question-and-previewed-reply');
+      wait("[...document.querySelectorAll('[data-sonner-toast]')].some(e=>e.innerText.includes('Which export file causes the crash?'))");
+      clickText('View report');
+      wait("!!document.querySelector('[aria-label=\"Your report\"] textarea')");
+      type('[aria-label="Your report"] textarea', 'sample.csv; OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwxyz123456');
+      clickText('Review reply');
+      wait("document.querySelector('[aria-label=\"Your report\"] pre')?.textContent.includes('sample.csv')");
+      assert.equal(ev("String(document.querySelector('[aria-label=\"Your report\"] pre').textContent.includes('sk-abcdefghijklmnopqrstuvwxyz123456'))").trim().replace(/^"|"$/g, ''), 'false');
+      const [before] = await sql`SELECT payload->'reporterAnswer' AS answer FROM harness_shared.work_items WHERE feature_id = ${source.feature_id}`;
+      assert.equal(before!.answer, null, 'reply sent before consent');
+      capture('reply-preview');
+      clickText('Send reply');
+      wait("document.querySelector('[aria-label=\"Your report\"]')?.innerText.includes('Your reply')");
+      const [after] = await sql`SELECT payload->'reporterAnswer' AS answer FROM harness_shared.work_items WHERE feature_id = ${source.feature_id}`;
+      assert.equal(after!.answer.questionId, question.id);
+      assert.ok(!after!.answer.text.includes('sk-abcdefghijklmnopqrstuvwxyz123456'));
+      ctx.markStep('published-exact-fix-notification');
+      const blob = 'b'.repeat(40);
+      await sql`UPDATE harness_shared.work_items SET status = 'done', authority = 'committed', terminal_completion_ref = 'native-completion',
+        payload = payload || ${JSON.stringify({ _completionEvidence: { settlementManifest: { repositoryRoot: '/native-fixture',
+          contentIdentity: [{ path: 'src/export.ts', headBlobSha: blob, workingTreeBlobSha: blob }] } } })}::jsonb
+        WHERE workspace_id = ${ws} AND feature_id = ${source.feature_id}`;
+      wait("document.querySelector('[aria-label=\"Your report\"]')?.innerText.includes('Fix verified; awaiting release')");
+      assert.equal(ev("String(document.body.innerText.includes('Fixed in v0.9.5'))").trim().replace(/^"|"$/g, ''), 'false');
+      const release = { version: '0.9.5', channel: 'alpha', cutAt: new Date(), publishedAt: new Date(), changelogMd: null,
+        workItemIds: [source.feature_id], planSlugs: [], artifacts: [], gitSha: 'a'.repeat(40), cutBy: null, notes: null };
+      assert.deepEqual(await publishReporterRelease(release, { ...defaultReporterReleaseDeps(sql, ws, release), repositoryRoot: '/native-fixture',
+        readBlobs: async () => new Map([['src/export.ts', { status: 'resolved', sha: blob }]]) }), { notified: [source.feature_id], unconfirmed: [] });
+      wait("document.querySelector('[aria-label=\"Your report\"]')?.innerText.includes('Fixed in v0.9.5') && [...document.querySelectorAll('[data-sonner-toast]')].some(e=>e.innerText.includes('Fixed in v0.9.5'))");
+      capture('published-notification');
+      return { ok: true };
+    } catch (error) { capture('failure'); throw error; }
+    finally { await sql.end(); }
+  },
+});
+console.log(`P016_TAURI_SURFACE_VERIFY_${result.verdict === 'pass' ? 'OK' : 'FAIL'} leg=reporter-status output=${result.evidenceDir}`);
+process.exitCode = result.verdict === 'pass' ? 0 : 1;
