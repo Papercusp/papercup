@@ -405,7 +405,7 @@ export async function confirmPendingGradingAuditReservation(
            ${options.expectedCard != null}::boolean = false
            OR (
              scorecard.payload->'observation'->>'evidenceFingerprint' = ${options.expectedCard?.evidenceFingerprint ?? null}
-             AND scorecard.created_by = ${options.expectedCard?.createdBy ?? null}
+             AND scorecard.payload->'_ei'->>'created_by' = ${options.expectedCard?.createdBy ?? null}
              AND scorecard.payload->'observation'->>'rubricRef' = ${options.expectedCard?.rubricRef ?? null}
            )
          )

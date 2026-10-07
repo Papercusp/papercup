@@ -298,7 +298,7 @@ describe('retained grading auditor lease delivery (EI-25289706163098558)', () =>
     expect(current).toBe(false);
     const [query, ...bindings] = tx.mock.calls[0] as unknown as [TemplateStringsArray, ...unknown[]];
     for (const clause of ["'state' = 'pending'", "'reservedAt' = ?", "'evidenceFingerprint' = ?",
-      'scorecard.created_by = ?', "'rubricRef' = ?", "'retracted' IS NULL", 'NOT EXISTS', 'FOR UPDATE']) {
+      "scorecard.payload->'_ei'->>'created_by' = ?", "'rubricRef' = ?", "'retracted' IS NULL", 'NOT EXISTS', 'FOR UPDATE']) {
       expect(query.join('?')).toContain(clause);
     }
     expect(bindings).toEqual(expect.arrayContaining(['EI-renew', 'grading-audit:EI-renew', 'renewed-at', 'exact-fingerprint', 'su-author', 'standard-rubric']));
