@@ -183,7 +183,7 @@ export function resolveViewer(ctx: ReportsCtx): ReportViewer {
 
 /** The owner-facing deep link for a report. Single definition, reused by the UI item. */
 export function reportUiPath(reportId: string): string {
-  return `/reports/${encodeURIComponent(reportId)}`;
+  return `/reports?sel=${encodeURIComponent(reportId)}`;
 }
 
 /**

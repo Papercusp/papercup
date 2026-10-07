@@ -117,12 +117,18 @@ export const PAPERCUSP_OPS_HIVES_TEMPLATE: TemplateManifest = {
       run: "checks/gym-signals.test.ts",
       summary: "the stable app agent's guardrail gym signals are present and wired",
     },
+    {
+      id: "operation-first-triggers",
+      run: "checks/operation-first-triggers.test.ts",
+      summary:
+        "no app trigger creates agent work directly (direct-create binding kind or work-item create tool target); every agent-execution operation's worker role is declared in the app's root .papercusp/blueprint.yaml",
+    },
   ],
   musts: [
     {
       id: "canonical-plan-work-plane",
-      rule: "Every reusable external or scheduled agentic run invokes a declared blueprint operation that targets an app-owned plan template and canonical plan-item promotion; never raw work-item inserts, direct work_items:create, a copied DAG, or a parallel scheduler",
-      enforcedBy: "prose-only",
+      rule: "Every reusable external or scheduled agentic run invokes a declared blueprint operation (declared in the app's ROOT .papercusp/blueprint.yaml) that targets an app-owned plan template and canonical plan-item promotion; never raw work-item inserts, direct work_items:create, a copied DAG, or a parallel scheduler",
+      enforcedBy: "operation-first-triggers",
     },
     {
       id: "operation-first-task-binding",
@@ -1008,6 +1014,11 @@ export const PAPERCUSP_APP_TEMPLATE: TemplateManifest = {
       summary:
         "the composed set resolves (composeTemplates ok: pins consistent, one root app scope, every selecting decision point satisfied) and the union of checks is what CI runs",
     },
+    {
+      id: "package-test-targets",
+      run: "checks/package-script-targets.test.ts",
+      summary: "every explicit test file named by an app test/check script exists",
+    },
   ],
   musts: [
     {
@@ -1024,6 +1035,11 @@ export const PAPERCUSP_APP_TEMPLATE: TemplateManifest = {
       id: "full-union-green",
       rule: "The composed app passes the FULL union of the closure checks — the chassis's boot/contract checks, components-integrated, composition-integrity",
       enforcedBy: "prose-only",
+    },
+    {
+      id: "test-script-targets-exist",
+      rule: "Every explicit test file path named by a test/check script in the app root package.json exists",
+      enforcedBy: "package-test-targets",
     },
     {
       id: "dual-target-is-opt-in",

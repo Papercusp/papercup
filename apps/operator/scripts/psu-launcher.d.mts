@@ -1926,7 +1926,7 @@ export function gatewayAutoEnv(provider?: string, ownerId?: string): {};
  *   agent?: string | null,
  *   model?: string | null,
  *   account?: string | null | { mode?: string, provider?: string },
- *   stats?: { codexHealthyAccounts?: number, codexTotalAccounts?: number, codexEarliestRecoveryAt?: number | null } | null,
+ *   stats?: { codexHealthyAccounts?: number, codexTotalAccounts?: number, codexEarliestRecoveryAt?: number | null, codexUnserviceableCause?: 'upstream-unreachable' | 'accounts-unserviceable' | null } | null,
  *   now?: number
  * }} input
  * @returns {{ kind: 'proceed' | 'warn' | 'refuse', message: string | null, recoveryAt: number | null }}
@@ -1942,6 +1942,7 @@ export function codexAutoPoolVerdict({ agent, model, account, stats, now, }?: {
         codexHealthyAccounts?: number;
         codexTotalAccounts?: number;
         codexEarliestRecoveryAt?: number | null;
+        codexUnserviceableCause?: "upstream-unreachable" | "accounts-unserviceable" | null;
     } | null;
     now?: number;
 }): {

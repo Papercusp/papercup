@@ -26,7 +26,7 @@ async function codexHome(accountId: string): Promise<string> {
   return home;
 }
 
-describe('proxyOpenAi — same-session streamed quota failover', () => {
+describe('proxyOpenAi — Codex OAuth reachability and quota failover', () => {
   it('moves a live auto session to a credited account and keeps the new affinity without restarting', async () => {
     const accounts = [
       { accountId: 'chatgpt-a', home: await codexHome('chatgpt-a') },
@@ -65,5 +65,70 @@ describe('proxyOpenAi — same-session streamed quota failover', () => {
     }
     expect(routed).toEqual(['chatgpt-a', 'chatgpt-b', 'chatgpt-b']);
     expect(gateway.stats().codex.failovers).toBe(1);
+  });
+
+  it('reports an all-account DNS outage separately from a usage wall in /stats', async () => {
+    const accountIds = ['chatgpt-a', 'chatgpt-b', 'chatgpt-c'];
+    const accounts = await Promise.all(
+      accountIds.map(async (accountId) => ({
+        accountId,
+        home: await codexHome(accountId),
+      })),
+    );
+    const routed: string[] = [];
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      const account = new Headers(init?.headers).get('chatgpt-account-id') ?? '';
+      routed.push(account);
+      throw new TypeError('fetch failed', {
+        cause: Object.assign(new Error('getaddrinfo ENOTFOUND chatgpt.com'), {
+          code: 'ENOTFOUND',
+        }),
+      });
+    }) as unknown as typeof fetch;
+    gateway = createInferenceGateway({
+      accountId: 'claude-acct',
+      token: async () => 'claude-tok',
+      codexCliAccounts: () => accounts,
+      codexCliPool: createFailoverPool(
+        accounts.map((account) => ({
+          accountId: account.accountId,
+          token: async () => '',
+        })),
+      ),
+      codexOAuthProxy: true,
+      fetchImpl,
+      selfHeal: { enabled: false },
+      internalRetryDeadlineMs: 500,
+    });
+    const port = await gateway.listen(0);
+    const response = await fetch(
+      "http://127.0.0.1:" + port + "/v1/responses",
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', [OWNER_HEADER]: 'dns-outage-session' },
+        body: JSON.stringify({ model: 'gpt-6.1-sol', input: 'network check', stream: true }),
+      },
+    );
+    await response.text();
+
+    expect(new Set(routed)).toEqual(new Set(accountIds));
+    const statsResponse = await fetch("http://127.0.0.1:" + port + "/stats");
+    expect(statsResponse.status).toBe(200);
+    const stats = await statsResponse.json() as {
+      codex: { upstream429: number };
+      codexReachability: {
+        unreachable: boolean;
+        accountsFailingSinceResponse: number;
+        lastTransportFailureKind: string | null;
+      };
+      codexUnserviceableCause: string | null;
+    };
+    expect(stats.codex.upstream429).toBe(0);
+    expect(stats.codexUnserviceableCause).toBe('upstream-unreachable');
+    expect(stats.codexReachability).toMatchObject({
+      unreachable: true,
+      accountsFailingSinceResponse: 3,
+      lastTransportFailureKind: 'dns',
+    });
   });
 });

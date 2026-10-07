@@ -37,6 +37,7 @@ const {
   emitAwaitedEventM,
   notifySyncInvalidateM,
   getFlagM,
+  indexReportM,
 } = vi.hoisted(() => ({
   publishReportM: vi.fn(),
   getReportM: vi.fn(),
@@ -47,6 +48,7 @@ const {
   emitAwaitedEventM: vi.fn(),
   notifySyncInvalidateM: vi.fn(),
   getFlagM: vi.fn(),
+  indexReportM: vi.fn(),
 }));
 
 // Partial mock: the real enums + the real error CLASS are kept, because the tool
@@ -74,6 +76,7 @@ vi.mock('../../events/await/engine', () => ({ emitAwaitedEvent: emitAwaitedEvent
 vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: notifySyncInvalidateM }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-fallback' }));
 vi.mock('../../detached-imports', () => ({ trackDetached: (p: unknown) => p }));
+vi.mock('../../search/report-index', () => ({ indexReport: indexReportM }));
 vi.mock('@papercusp/flags/server', () => ({ getFlag: getFlagM }));
 
 const publishTool = (await import('./publish')).default;
@@ -116,6 +119,7 @@ const record = (over: Record<string, unknown> = {}) => ({
 beforeEach(() => {
   vi.clearAllMocks();
   getFlagM.mockResolvedValue(true);
+  indexReportM.mockResolvedValue({ chunks: 1, embedded: 1 });
   publishReportM.mockResolvedValue(record());
   getReportM.mockResolvedValue(record());
   listReportsM.mockResolvedValue([record()]);
@@ -231,18 +235,41 @@ describe('reports:publish — validation (R-1)', () => {
 
   it('returns a stable id AND its UI path (R-1)', async () => {
     const out: any = body(await publishTool.handler({ title: 'A' } as never, CTX as never) as Out);
-    expect(out).toMatchObject({ ok: true, report_id: 'rpt_1', path: '/reports/rpt_1', lineage_id: 'rpt_1' });
+    expect(out).toMatchObject({ ok: true, report_id: 'rpt_1', path: '/reports?sel=rpt_1', lineage_id: 'rpt_1' });
+    const link = new URL(out.path, 'http://localhost');
+    expect(link.pathname).toBe('/reports');
+    expect(link.searchParams.get('sel')).toBe(out.report_id);
   });
 });
 
 // ── The published row must survive a failing side effect ─────────────────────
 describe('reports:publish — side effects are reported, never fatal', () => {
+  it.each([
+    ['original', record(), { title: 'A' }],
+    ['correction', record({ reportId: 'rpt_2', supersedesReportId: 'rpt_1' }), { title: 'A corrected', supersedes: 'rpt_1' }],
+  ])('indexes the committed %s with its exact workspace and body', async (_, committed, args) => {
+    publishReportM.mockResolvedValue(committed);
+    const out = body(await publishTool.handler(args as never, CTX as never) as Out);
+    expect(out.ok).toBe(true);
+    await vi.waitFor(() => expect(indexReportM).toHaveBeenCalledExactlyOnceWith({}, committed));
+  });
+
+  it('keeps a committed report readable when indexing needs sweep recovery', async () => {
+    indexReportM.mockRejectedValue(new Error('embedder unavailable'));
+    const out = body(await publishTool.handler({ title: 'A' } as never, CTX as never) as Out);
+    expect(out).toMatchObject({ ok: true, report_id: 'rpt_1' });
+    await vi.waitFor(() => expect(CTX.log).toHaveBeenCalledWith(
+      'Report rpt_1 indexing pending sweep recovery: Error: embedder unavailable',
+    ));
+    expect(body(await getTool.handler({ id: 'rpt_1' } as never, CTX as never) as Out).results[0].report.report_id).toBe('rpt_1');
+  });
+
   it('emits report:published:<id> carrying the id, lineage and path', async () => {
     await publishTool.handler({ title: 'A' } as never, CTX as never);
     expect(emitAwaitedEventM).toHaveBeenCalledTimes(1);
     const [opts] = emitAwaitedEventM.mock.calls[0];
     expect(opts.key).toBe('report:published:rpt_1');
-    expect(opts.payload).toMatchObject({ report_id: 'rpt_1', lineage_id: 'rpt_1', path: '/reports/rpt_1' });
+    expect(opts.payload).toMatchObject({ report_id: 'rpt_1', lineage_id: 'rpt_1', path: '/reports?sel=rpt_1' });
   });
 
   it('a failing emit still reports the publish as ok, flagged event_emitted:false', async () => {
@@ -269,6 +296,7 @@ describe('reports:publish — side effects are reported, never fatal', () => {
     await publishTool.handler({ title: 'A' } as never, CTX as never);
     expect(emitAwaitedEventM).not.toHaveBeenCalled();
     expect(notifySyncInvalidateM).not.toHaveBeenCalled();
+    expect(indexReportM).not.toHaveBeenCalled();
   });
 });
 
@@ -352,7 +380,7 @@ describe('reports:list / reports:search — projections', () => {
     const out: any = body(await listTool.handler({} as never, CTX as never) as Out);
     expect(out.reports[0]).not.toHaveProperty('bodyMd');
     expect(out.reports[0]).not.toHaveProperty('body_md');
-    expect(out.reports[0]).toMatchObject({ report_id: 'rpt_1', path: '/reports/rpt_1', body_bytes: 4 });
+    expect(out.reports[0]).toMatchObject({ report_id: 'rpt_1', path: '/reports?sel=rpt_1', body_bytes: 4 });
   });
 
   it('every verb names the id identically — publish and list cannot disagree', async () => {
