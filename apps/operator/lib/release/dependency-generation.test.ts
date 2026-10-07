@@ -1075,6 +1075,7 @@ describe('immutable dependency generation', () => {
     ['live lease', true],
     ['hardlink', true],
     ['generation symlink', true],
+    ['newline symlink', true],
     ['external symlink', true],
     ['unreadable inventory', true],
   ] as const)(
@@ -1111,6 +1112,8 @@ describe('immutable dependency generation', () => {
         linkSync(join(generation, 'tree/node_modules/pkg/index.js'), join(generation, 'internal-alias.js'));
       } else if (protection === 'generation symlink') {
         symlinkSync(join(generation, 'tree/node_modules/pkg'), join(checkout, 'linked-package'));
+      } else if (protection === 'newline symlink') {
+        symlinkSync(join(generation, 'tree/node_modules/pkg'), join(checkout, 'linked\npackage'));
       } else if (protection === 'external symlink') {
         symlinkSync(integration, join(checkout, 'other-checkout'));
       } else if (protection === 'internal symlink') {

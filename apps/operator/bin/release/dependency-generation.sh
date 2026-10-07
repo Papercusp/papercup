@@ -1518,7 +1518,7 @@ dependency_generation_cross_fs_pin_is_retired() {
 # independence unproven and keeps the generation. Measurement failures retain.
 dependency_generation_independent_legacy_pin_is_retired() {
   local generation_root="$1" checkout="$2" marker="$3"
-  local identity generation store_dev checkout_dev links link target checkout_real
+  local identity generation store_dev checkout_dev checkout_real
   local max_age_days="${DEPENDENCY_GENERATION_CROSS_FS_PIN_MAX_AGE_DAYS:-3}"
   [[ "$max_age_days" =~ ^[0-9]+$ ]] || max_age_days=3
   dependency_generation_path_is_old "$marker" $((max_age_days * 86400)) || return 1
@@ -1546,15 +1546,19 @@ dependency_generation_independent_legacy_pin_is_retired() {
         }
       '
   ) || return 1
-  links="$(find "$checkout_real" -name .git -prune -o -type l -print 2>/dev/null)" || return 1
-  while IFS= read -r link; do
-    [ -n "$link" ] || continue
-    # -m follows existing symlink chains and also normalizes a missing terminal
-    # component. A broken INTERNAL package link cannot read the legacy store.
-    # Unsupported realpath or any other failure simply preserves the pin.
-    target="$(realpath -m -- "$link" 2>/dev/null)" || return 1
-    case "$target" in "$checkout_real"|"$checkout_real"/*) ;; *) return 1 ;; esac
-  done <<< "$links"
+  # Resolve symlinks in batches, preserving NUL delimiters throughout instead
+  # of starting one realpath process per package link. Newline-delimited paths
+  # could hide an escaping symlink.
+  # -m normalizes a missing terminal component without rejecting a broken
+  # INTERNAL package link. Unsupported tools or any read failure retain.
+  (
+    set -o pipefail
+    find "$checkout_real" -name .git -prune -o -type l -print0 2>/dev/null |
+      xargs -0 -r realpath -z -m -- 2>/dev/null |
+      while IFS= read -r -d '' target; do
+        case "$target" in "$checkout_real"|"$checkout_real"/*) ;; *) exit 1 ;; esac
+      done
+  ) || return 1
   return 0
 }
 
