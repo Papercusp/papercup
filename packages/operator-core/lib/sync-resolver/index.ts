@@ -3071,6 +3071,9 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // table bridge as byHarness.
   'workItems.detail': {
     argsSchema: z.object({ harnessSlug: z.string(), id: z.string().min(1) }),
+    // Report status follows a distinct canonical row: a target write must also
+    // invalidate the reporter's source subscription, not only the target id.
+    backingTables: ['harness_shared.work_items'],
     resolve: async (args) => {
       const { harnessSlug, id } = args as { harnessSlug: string; id: string };
       const { getEnrichedWorkItem } = await import('../endpoint-route/routes/harness/work-items');
