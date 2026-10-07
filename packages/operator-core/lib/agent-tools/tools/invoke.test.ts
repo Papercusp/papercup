@@ -223,7 +223,13 @@ describe('tools:invoke handler', () => {
     const nested = {
       isError: true,
       content: [{ type: 'text' as const, text: refusalText }],
-      _meta: { abortCompletionReceipt: { status: 'recorded', msg_id: 'm-late' } },
+      _meta: {
+        abortCompletionReceipt: {
+          status: 'recorded',
+          msg_id: 'm-late',
+          diagnostics: { coordSendPhaseTimingsMs: [{ itemIndex: 0, prePersistMs: 8, persistMs: 12, postPersistMs: 5 }] },
+        },
+      },
     };
     const ctx = {
       metadata,

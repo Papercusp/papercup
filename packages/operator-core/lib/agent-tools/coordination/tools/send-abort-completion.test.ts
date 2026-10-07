@@ -14,12 +14,20 @@ describe('coord:send abort-completion receipt', () => {
       ok: false,
       partial: true,
       results: [
-        { ok: true, to: ['peer-1'], msg_id: 'm-landed' },
+        {
+          ok: true,
+          to: ['peer-1'],
+          msg_id: 'm-landed',
+          phaseTimingsMs: { prePersistMs: 8, persistMs: 12, postPersistMs: 5 },
+        },
         { ok: false, to: ['missing-peer'], error: 'unknown_recipient' },
       ],
     }), attempt)).toEqual({
       status: 'recorded',
       effectRef: 'coord:send:m-landed',
+      diagnostics: {
+        coordSendPhaseTimingsMs: [{ itemIndex: 0, prePersistMs: 8, persistMs: 12, postPersistMs: 5 }],
+      },
       reason: 'coord:send appended 1 of 2 message(s); see the completed result for pre-persist refusals',
     });
   });
@@ -31,6 +39,19 @@ describe('coord:send abort-completion receipt', () => {
     }), attempt)).toEqual({
       status: 'not-recorded',
       reason: 'every coord:send result row is an explicit pre-persist refusal',
+    });
+  });
+
+  it('confirms known scope and relay refusals happened before persistence', () => {
+    expect(coordSendAbortCompletionReceipt({}, result({
+      ok: false,
+      results: [
+        { ok: false, error: 'unknown_hive' },
+        { ok: false, error: 'ambiguous_hive_scope' },
+        { ok: false, error: 'relay_origin_not_found' },
+      ],
+    }), attempt)).toMatchObject({
+      status: 'not-recorded',
     });
   });
 

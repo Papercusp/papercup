@@ -10,6 +10,7 @@ import { asRecord, completedResultPayload } from '../../abort-completion-payload
 // failures are deliberately not treated as proof: an exception can race a
 // write, and a future post-persist path may report an error without an id.
 const PRE_PERSIST_REFUSALS = new Set([
+  'ambiguous_hive_scope',
   'body_exceeds_inbox_cap',
   'fleet_scoped_cue_allhive_contradiction',
   'goal-owner-report-incomplete',
@@ -20,12 +21,39 @@ const PRE_PERSIST_REFUSALS = new Set([
   'related_msg_not_found',
   'report_invalid',
   'report_reference_unavailable',
+  'relay_origin_not_found',
   'request_aborted',
+  'unknown_hive',
   'unknown_recipient',
 ]);
 
-function incomplete(reason: string, failures: readonly string[]): AbortCompletionReceipt {
-  return { status: 'recovery-incomplete', reason, failures };
+function incomplete(
+  reason: string,
+  failures: readonly string[],
+  diagnostics?: Record<string, unknown>,
+): AbortCompletionReceipt {
+  return {
+    status: 'recovery-incomplete',
+    reason,
+    failures,
+    ...(diagnostics ? { diagnostics } : {}),
+  };
+}
+
+function phaseTimingDiagnostics(rows: readonly unknown[]): Record<string, unknown> | undefined {
+  const phaseTimings = rows.flatMap((value, itemIndex) => {
+    const row = asRecord(value);
+    const timing = asRecord(row?.phaseTimingsMs);
+    if (!timing) return [];
+    const readMs = (value: unknown): number | null =>
+      typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.round(value) : null;
+    const prePersistMs = readMs(timing.prePersistMs);
+    const persistMs = readMs(timing.persistMs);
+    const postPersistMs = readMs(timing.postPersistMs);
+    if (prePersistMs === null && persistMs === null && postPersistMs === null) return [];
+    return [{ itemIndex, prePersistMs, persistMs, postPersistMs }];
+  });
+  return phaseTimings.length > 0 ? { coordSendPhaseTimingsMs: phaseTimings } : undefined;
 }
 
 export function coordSendAbortCompletionReceipt(
@@ -45,6 +73,7 @@ export function coordSendAbortCompletionReceipt(
   const recordedIds: string[] = [];
   const unresolvedRows: number[] = [];
   const rows = payload.results as unknown[];
+  const diagnostics = phaseTimingDiagnostics(rows);
   rows.forEach((value, index) => {
     const row = asRecord(value);
     if (!row) {
@@ -67,6 +96,7 @@ export function coordSendAbortCompletionReceipt(
       ...incomplete(
         `coord:send returned ${effects.length} persisted message id(s), but rows ${unresolvedRows.join(', ')} do not prove whether they were appended`,
         ['unresolved-message-outcomes'],
+        diagnostics,
       ),
       ...(effectRef ? { effectRef } : {}),
     };
@@ -75,6 +105,7 @@ export function coordSendAbortCompletionReceipt(
     return {
       status: 'recorded',
       effectRef,
+      ...(diagnostics ? { diagnostics } : {}),
       ...(effects.length < rows.length
         ? { reason: `coord:send appended ${effects.length} of ${rows.length} message(s); see the completed result for pre-persist refusals` }
         : {}),
@@ -83,5 +114,6 @@ export function coordSendAbortCompletionReceipt(
   return {
     status: 'not-recorded',
     reason: 'every coord:send result row is an explicit pre-persist refusal',
+    ...(diagnostics ? { diagnostics } : {}),
   };
 }
