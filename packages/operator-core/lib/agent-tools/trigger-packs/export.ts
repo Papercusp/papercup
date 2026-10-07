@@ -13,6 +13,7 @@ export default defineTool({
     notWhen: 'Exporting a single plan: cupboard:publish-plan.',
   },
   capability: 'plans:read',
+  effect: 'write',
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],
   args: z.object({
