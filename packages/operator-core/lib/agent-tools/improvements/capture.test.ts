@@ -320,7 +320,10 @@ describe('improvements:capture — duplicate verdicts are annotations, not inacc
     expect(returns).not.toContain('May DECLINE your capture');
     expect(returns).toContain('semantic:"partial"');
     expect(returns).toContain('index coverage is unknown/unmeasured');
-    expect(captureTool.guidance?.seeAlso?.[0]).toContain('checkDuplicatesOnly:true');
+    const seeAlso = captureTool.guidance?.seeAlso;
+    expect(Array.isArray(seeAlso)).toBe(true);
+    if (!Array.isArray(seeAlso)) throw new Error('capture guidance must provide static see-also entries');
+    expect(seeAlso[0]).toContain('checkDuplicatesOnly:true');
   });
 });
 

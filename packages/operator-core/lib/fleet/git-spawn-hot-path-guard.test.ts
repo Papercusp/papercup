@@ -56,6 +56,10 @@ const HOT_GIT_MODULES: { file: string; why: string }[] = [
     file: 'git-pipeline-hives.ts',
     why: 'revListCount runs per hive row inside the pipeline snapshot (0.62% of the main thread)',
   },
+  {
+    file: 'agent-tools/plans/committed-tree-reader.ts',
+    why: 'uncached committed-blob reads fork git on operator handlers; the 2026-10-07 stall profile attributed 96.4% of samples to defaultBlobBatchReader',
+  },
 ];
 
 describe('hot-path git seams route through the spawner sidecar', () => {
@@ -142,6 +146,7 @@ const HOT_GIT_SCAN_FILES: string[] = [
   'harness/docs/git-runner.ts',
   'dev-deploy-state.ts',
   'git-pipeline-hives.ts',
+  'agent-tools/plans/committed-tree-reader.ts',
   'harness/git-sync/run-git-sync.ts',
   // DELEGATE to a shared seam and must therefore contain NO raw git spawn at
   // all. These are the three that silently kept private copies (WI-6404), plus
@@ -189,6 +194,11 @@ const ALLOWED_RAW_GIT: { file: string; symbol: string; why: string }[] = [
       'Exempt ONLY because it is memoised to once per process AND its signature is synchronous (callers ' +
       'take a string, so it cannot ride an async RPC without rippling). The memoisation is what makes this ' +
       'safe, so it is asserted separately below rather than trusted.',
+  },
+  {
+    file: 'agent-tools/plans/committed-tree-reader.ts',
+    symbol: 'defaultBlobBatchReader',
+    why: 'local binary cat-file fallback behind runGitStdinViaSpawnerSidecar; a sidecar fault may degrade performance but must not change blob contents',
   },
   {
     file: 'git-pipeline-hives.ts',

@@ -319,6 +319,57 @@ describe('tracked Claude source acquisition', () => {
   });
 });
 
+describe.each(['claude', 'codex', 'omp'] as const)('ended %s source acquisition', (backend) => {
+  const ended = { ...row, agent: backend, endedAt: '2026-10-03T00:00:00.000Z' };
+  const stable = source('exact retained incarnation');
+  const acquire = (readArchive: () => Promise<StableSource>, findLive = vi.fn(async () => '/tracked/exact.jsonl')) => {
+    const readLive = vi.fn(async () => stable);
+    const deps = { readArchive, findLive, readLive, archiveStore: () => ({} as never),
+      rootForSource: () => '/tracked/sessions', configDirForOwner: () => '/tracked' };
+    return { result: backend === 'claude' ? acquireTrackedClaudeSource(ended, deps)
+      : acquireTrackedSessionSource(ended, deps), findLive, readLive };
+  };
+
+  it('prefers the immutable archive when it exists', async () => {
+    const archived = { ...stable, source: 'archive-manifest' as const };
+    const { result, findLive, readLive } = acquire(async () => archived);
+    await expect(result).resolves.toBe(archived);
+    expect(findLive).not.toHaveBeenCalled();
+    expect(readLive).not.toHaveBeenCalled();
+  });
+
+  it('reads the exact retained incarnation when only its archive is absent', async () => {
+    const { result, findLive, readLive } = acquire(async () => {
+      throw new Error(`canonical ${backend === 'claude' ? 'Claude' : backend} archive not found`);
+    });
+    await expect(result).resolves.toBe(stable);
+    expect(findLive).toHaveBeenCalledWith(...(backend === 'claude'
+      ? ['/tracked', ended.sessionId] : ['/tracked/sessions', backend, ended.sessionId]));
+    expect(readLive).toHaveBeenCalledWith('/tracked/exact.jsonl');
+  });
+
+  it.each(['archive sha mismatch', 'archive is ambiguous', 'archive manifest/file metadata mismatch'])(
+    'refuses %s without using a retained transcript', async (message) => {
+      const error = new Error(message);
+      const { result, findLive, readLive } = acquire(async () => { throw error; });
+      await expect(result).rejects.toBe(error);
+      expect(findLive).not.toHaveBeenCalled();
+      expect(readLive).not.toHaveBeenCalled();
+    },
+  );
+
+  it('preserves both missing-archive and unsafe-local evidence when neither source is usable', async () => {
+    const archiveError = new Error(`canonical ${backend === 'claude' ? 'Claude' : backend} archive not found`);
+    const liveError = new Error('canonical exact local source is ambiguous');
+    const { result, readLive } = acquire(async () => { throw archiveError; },
+      vi.fn(async () => { throw liveError; }));
+    const failure = await result.catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect((failure as AggregateError).errors).toEqual([archiveError, liveError]);
+    expect(readLive).not.toHaveBeenCalled();
+  });
+});
+
 describe('session-port preparation service', () => {
   it.each((['codex', 'omp'] as const).flatMap((backend) =>
     (['claude', 'codex', 'omp'] as const).map((targetBackend) => ({ backend, targetBackend }))))(

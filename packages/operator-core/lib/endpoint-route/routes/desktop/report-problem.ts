@@ -22,6 +22,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { PLATFORM_POT_SLUG } from '../../../platform-pot-slug';
 import { contributeUpstream, type ContributeUpstreamResult } from '../../../pot/contribute-upstream';
+import { forwardReportAttachment } from '../../../harness/improvements/report-attachment-rpc';
 import {
   intakeEndUserReport,
   type EndUserReportInput,
@@ -97,6 +98,7 @@ export interface ReportProblemDeps {
   /** P-015: production uses the existing contribution core, not a second capture. */
   contribute?: (input: EndUserReportInput) => Promise<ContributeUpstreamResult>;
   putAttachment: (input: PutReportAttachmentInput) => Promise<PutReportAttachmentResult>;
+  forwardAttachment?: typeof forwardReportAttachment;
   workspaceId: () => string;
 }
 
@@ -108,12 +110,13 @@ export function defaultReportProblemDeps(): ReportProblemDeps {
       report: { text: input.text, title: input.title, reportContext: input.reportContext },
     }),
     putAttachment: (input) => putReportAttachment(input),
+    forwardAttachment: (workspaceId, id) => forwardReportAttachment(workspaceId, id),
     workspaceId: activeWorkspaceId,
   };
 }
 
 export type ReportProblemAttachmentOutcome =
-  | { kind: 'log'; ok: true; id: string; deduplicated: boolean; delivery?: 'local-only' }
+  | { kind: 'log'; ok: true; id: string; deduplicated: boolean; delivery?: 'local-only' | 'upstream-received' }
   | { kind: 'log'; ok: false; reason: string };
 
 export type ReportProblemOutcome =
@@ -207,9 +210,12 @@ export async function handleReportProblem(
         reason: 'invalid',
         detail: err instanceof Error ? err.message : String(err),
       }));
+    const forwarded = stored.ok && delivery && deps.forwardAttachment
+      ? await deps.forwardAttachment(workspaceId, stored.id).catch(() => ({ delivered: false })) : null;
     attachments.push(
       stored.ok
-        ? { kind: attachment.kind, ok: true, id: stored.id, deduplicated: stored.deduplicated, ...(delivery ? { delivery: 'local-only' as const } : {}) }
+        ? { kind: attachment.kind, ok: true, id: stored.id, deduplicated: stored.deduplicated,
+          ...(delivery ? { delivery: forwarded?.delivered ? 'upstream-received' as const : 'local-only' as const } : {}) }
         : { kind: attachment.kind, ok: false, reason: `${stored.reason}: ${stored.detail}` },
     );
   }

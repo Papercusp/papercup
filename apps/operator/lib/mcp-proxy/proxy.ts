@@ -2842,6 +2842,25 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
         };
   };
 
+  const improvementsCaptureBlocker = (
+    now = Date.now(),
+  ): { tools: string[]; ageMs: number; traceId: string } | null => {
+    let oldest: ContinuationRequestDetails | null = null;
+    for (const details of improvementsCaptureRequests.values()) {
+      if (oldest == null || details.startedAtMs < oldest.startedAtMs)
+        oldest = details;
+    }
+    return oldest == null
+      ? null
+      : {
+          tools: oldest.tools
+            .slice(0, 4)
+            .map((tool) => tool.slice(0, MAX_MCP_PROXY_SUCCESS_TOOL_NAME_CHARS)),
+          ageMs: Math.max(0, now - oldest.startedAtMs),
+          traceId: oldest.traceId.slice(0, MAX_MCP_PROXY_TRACE_ID_CHARS),
+        };
+  };
+
   const recordForwardCompletion = (completedAtMs: number): void => {
     completedForwardAtMs.push(completedAtMs);
     const cutoffMs = completedAtMs - SHED_DRAIN_RATE_WINDOW_MS;
@@ -3740,6 +3759,10 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           if (
             maxImprovementsCaptureQueue <= improvementsCaptureQueueLength()
           ) {
+            const blocker = improvementsCaptureBlocker();
+            const blockedByDetail = blocker
+              ? ` — blocked by ${blocker.tools.join(",") || "an unnamed capture"} in flight ${blocker.ageMs}ms (trace ${blocker.traceId})`
+              : " — no capture request was in flight";
             const retryAfterSec = retryAfterSecForDrainRate(
               improvementsCaptureInFlight,
               1,
@@ -3756,9 +3779,10 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                 error: "mcp_proxy_improvements_capture_queue_full",
                 retryable: true,
                 forwardingResult: "not_forwarded" satisfies McpProxyForwardingResult,
-                detail: `proxy improvements:capture FIFO already has ${improvementsCaptureQueueLength()} waiter(s) (queue max ${maxImprovementsCaptureQueue})`,
+                detail: `proxy improvements:capture FIFO already has ${improvementsCaptureQueueLength()} waiter(s) (queue max ${maxImprovementsCaptureQueue})${blockedByDetail}`,
                 retryAfterSec,
                 traceId: requestTraceId,
+                ...(blocker ? { blockedBy: blocker } : {}),
               }),
             );
             log(
@@ -3774,6 +3798,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               improvementsCaptureInFlight,
               queueLength: improvementsCaptureQueueLength(),
               maxImprovementsCaptureQueue,
+              blockedBy: blocker,
               retryAfterSec,
               forwardingResult: "not_forwarded",
             });
@@ -3855,6 +3880,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                   maxImprovementsCaptureQueue,
                   maxImprovementsCaptureQueueWaitMs:
                     queuedImprovementsCapture.maxWaitMs,
+                  blockedBy: improvementsCaptureBlocker(),
                 });
                 armImprovementsCaptureWaitWatch();
               }, nextDelayMs);
@@ -3876,6 +3902,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               maxImprovementsCaptureQueue,
               maxImprovementsCaptureQueueWaitMs:
                 improvementsCaptureQueueWaitMs,
+              blockedBy: improvementsCaptureBlocker(enqueuedAtMs),
               forwardingResult: "queued",
             });
           });
@@ -3891,6 +3918,10 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             } else if (queuedImprovementsCapture.expired && !clientGone) {
               const waitedMs =
                 Date.now() - queuedImprovementsCapture.enqueuedAtMs;
+              const blocker = improvementsCaptureBlocker();
+              const blockedByDetail = blocker
+                ? ` — blocked by ${blocker.tools.join(",") || "an unnamed capture"} in flight ${blocker.ageMs}ms (trace ${blocker.traceId})`
+                : " — no capture request was in flight; the slot was released before the retry";
               res.writeHead(429, {
                 "content-type": "application/json",
                 "retry-after": "2",
@@ -3901,9 +3932,10 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                   error: "mcp_proxy_improvements_capture_queue_dwell",
                   retryable: true,
                   forwardingResult: "not_forwarded" satisfies McpProxyForwardingResult,
-                  detail: `improvements:capture waited ${waitedMs}ms in the dedicated FIFO (max ${queuedImprovementsCapture.maxWaitMs}ms) — shed; retry`,
+                  detail: `improvements:capture waited ${waitedMs}ms in the dedicated FIFO (max ${queuedImprovementsCapture.maxWaitMs}ms) — shed; retry${blockedByDetail}`,
                   retryAfterSec: 2,
                   traceId: requestTraceId,
+                  ...(blocker ? { blockedBy: blocker } : {}),
                 }),
               );
               record({
@@ -3917,6 +3949,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                 queueLength: improvementsCaptureQueueLength(),
                 maxImprovementsCaptureQueueWaitMs:
                   queuedImprovementsCapture.maxWaitMs,
+                blockedBy: blocker,
                 forwardingResult: "not_forwarded",
               });
             }

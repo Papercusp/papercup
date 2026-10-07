@@ -88,6 +88,7 @@ export const TIMEOUT_MESSAGE_PATTERN =
  *  the checkpoint replacement safety refusal that requires explicit retirement
  *  of carried safety rows,
  *  an explicit compaction flush-gate refusal that requires a checkpoint,
+ *  an explicit claim-spec selector refusal for the literal `self` sentinel,
  *  an explicit reviewer-model allowlist refusal,
  *  a missing / unregistered harness, a registered standalone harness passed
  *  to the Hive-scoped plan store, a desktop-only capability called before its
@@ -97,7 +98,7 @@ export const TIMEOUT_MESSAGE_PATTERN =
  *  workspace-scoping gap is treated as `structural` (a wiring gap worth catching
  *  at the low bar), and the fingerprint separates it from anything it used to mask. */
 export const CALLER_MESSAGE_PATTERN =
-  '^missing_capability:|^invalid_input: *invalid_args:|^invalid_args:|^role_not_allowed:|^reviewer_model_not_allowed:|scratch_line_window_too_large|"reason":"(evidence_class_not_found|tenant_scope_required|positive_control_tenant_scope_required)"|checkpoint_replace_would_drop_rows|"error":"flush-required"|No harness specified|not registered in (any workspace|harness_shared)|resolvePlanScope:.*is not a Hive home|no sandbox desktop is leased|acceptance BAR contract is not ready for vetting|predicate_shape_mismatch:|structured_result_shape.*typed root';
+  '^missing_capability:|^invalid_input: *invalid_args:|^invalid_args:|^role_not_allowed:|^reviewer_model_not_allowed:|scratch_line_window_too_large|"reason":"(evidence_class_not_found|tenant_scope_required|positive_control_tenant_scope_required)"|checkpoint_replace_would_drop_rows|"error":"flush-required"|No harness specified|not registered in (any workspace|harness_shared)|resolvePlanScope:.*is not a Hive home|no sandbox desktop is leased|acceptance BAR contract is not ready for vetting|predicate_shape_mismatch:|structured_result_shape.*typed root|^cupId must be a concrete session/owner ID, not the literal "self"';
 
 /** An EXTERNAL provider rate-limit / quota (OpenAI embedding TPM 429,
  *  "Rate limit reached", surfaced as `openai_embed_failed_429`). CAPACITY, not a

@@ -134,6 +134,18 @@ describe('runAnswerUsefulness', () => {
     // A receipt whose request no longer matches is refused, never reused or re-called.
     const answerDir = path.join(receipts, 'answers');
     const first = path.join(answerDir, fs.readdirSync(answerDir)[0]!);
+    // Partial resume counts newly generated and saved requests separately; their
+    // sum, not new calls alone, is the complete unique receipt population.
+    fs.unlinkSync(first);
+    const partialCalls: Call[] = [];
+    const partial = await runAnswerUsefulness({ ...fx, receipts, out: path.join(dir, 'out-partial.json'),
+      llm: fakeLlm(partialCalls), baseline: 'mdenseon', bootstrapIters: 500 });
+    expect(partial.cost).toMatchObject({ answerCalls: 1, answerReplays: 4, judgeCalls: 0, judgeReplays: 10 });
+    expect(partial.cost.answerCalls + partial.cost.answerReplays).toBe(5);
+    expect(partial.cost.judgeCalls + partial.cost.judgeReplays).toBe(10);
+    expect(partial.cost.uniqueTotalUsd).toBeCloseTo(0.001);
+    expect(partial.summary).toEqual(report.summary);
+    expect(partial.paired).toEqual(report.paired);
     const saved = JSON.parse(fs.readFileSync(first, 'utf8'));
     saved.request.system = 'tampered';
     fs.writeFileSync(first, JSON.stringify(saved));

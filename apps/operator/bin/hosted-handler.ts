@@ -317,9 +317,12 @@ export function createHostedHandler(
         const live = connector && isHostedConnectorLive({
           state: 'active', transport: 'websocket', heartbeatAt: connector.lastSeenAt,
         }, new Date());
-        if (!live || connector.binding.hosting !== 'byoc') {
+        // Both cloud hosting classes advertise a machine Noise key to phones.
+        // The VM authenticates the sealed peer; hosting only fences unknown bindings.
+        const knownHosting = connector?.binding.hosting === 'byoc' || connector?.binding.hosting === 'papercusp';
+        if (!live || !knownHosting) {
           const status = !live ? "503 Service Unavailable" : "403 Forbidden";
-          const body = JSON.stringify({ ok: false, error: !live ? "workspace_offline" : "sealed_byoc_required" });
+          const body = JSON.stringify({ ok: false, error: !live ? "workspace_offline" : "sealed_hosting_required" });
           socket.end(`HTTP/1.1 ${status}\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`);
           return true;
         }

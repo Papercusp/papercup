@@ -223,6 +223,14 @@ describe('EI-21572355077403526 — an affirmative ESRCH disqualifies the `record
     expect(v.sessionState, 'pid-loss-contract:real-pid-loss').toBe('ended');
   });
 
+  it('detects permanent wrong-seam control: real-pid-loss', async () => {
+    expect((await verdictFor(() => false)).sessionState).toBe('ended');
+    // The deliberately wrong live-pid observation revives the recorded rescue.
+    const wrong = await verdictFor(() => true);
+    expect(wrong.sessionState).toBe('recorded');
+    expect(wrong.sessionState).not.toBe('ended');
+  });
+
   it('a probe reporting the process ALIVE leaves `recorded` intact', async () => {
     // Guards the disqualifier against being written as a mere truthiness check:
     // only `=== false` may disqualify, never `true`.

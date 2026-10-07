@@ -254,7 +254,7 @@ describe('reproductionFact', () => {
 
 describe('sweepStrandedToolFailures (executor)', () => {
   const rows = [
-    { id: 'EI-verify', harness_slug: 'papercusp', payload: strandedPayload({
+    { id: 'EI-verify', harness_slug: 'papercusp', createdBy: null, payload: strandedPayload({
       reproduction: {
         schemaVersion: 'bug-reproduction-v1',
         receipt: { kind: 'encounter', ref: 'tool_invocations:42', buildSha: REPORT },
@@ -264,8 +264,9 @@ describe('sweepStrandedToolFailures (executor)', () => {
       // Unchanged tool: only the receipt can clear this row.
       toolFailureProbation: { class: 'structural', report: { toolName: 'tool:stable', errorCode: 'handler_error' } },
     }) },
-    { id: 'EI-retire', harness_slug: 'papercusp', payload: strandedPayload() },
-    { id: 'EI-review', harness_slug: 'papercusp', payload: strandedPayload({
+    { id: 'EI-retire', harness_slug: 'papercusp', createdBy: null, payload: strandedPayload() },
+    { id: 'EI-review', harness_slug: 'papercusp', createdBy: 'su-original', payload: strandedPayload({
+      _ei: { created_by: 'su-original' },
       implementationReadiness: {
         schemaVersion: 'implementation-readiness-v1',
         status: 'unknown',
@@ -301,8 +302,10 @@ describe('sweepStrandedToolFailures (executor)', () => {
       },
       mergeIssuePayload: merge,
       resolveRetired: resolve,
-      getIssue: async (id: string) =>
-        ({ id, scope: 'harness:papercusp', payload: rows.find((row) => row.id === id)!.payload }) as never,
+      getIssue: async (id: string) => {
+        const row = rows.find((candidate) => candidate.id === id)!;
+        return ({ id, scope: 'harness:papercusp', createdBy: row.createdBy, payload: row.payload }) as never;
+      },
       captureDeps: { enterAgentReview, mergeIssuePayload: captureMerge } as never,
       now: () => Date.parse(T0),
     };
@@ -334,7 +337,7 @@ describe('sweepStrandedToolFailures (executor)', () => {
     expect(h.resolve).toHaveBeenCalledWith('EI-retire');
     expect(h.enterAgentReview).toHaveBeenCalledWith(expect.objectContaining({
       id: 'EI-review',
-      submittedBy: STRANDED_SWEEP_OWNER,
+      submittedBy: 'su-original',
       harnessSlug: 'papercusp',
       workspaceId: 'ws-1',
     }));

@@ -1495,6 +1495,36 @@ Prerequisites the units assume: the app checkouts at
 `tree`), the injected `~/.papercusp/app-producer.env`, and `npx` on the
 user-manager PATH.
 
+## Platform connection (WI-10006978)
+
+Connecting these apps is a separate deployment step. Their tracked units select
+dedicated token files, `~/.papercusp/email-platform-token` and
+`~/.papercusp/calendar-platform-token`, instead of the app runtime's implicit
+superuser credential. Issue an approved scoped app/service key through
+`access:create`, then install its private output into the corresponding token
+file with owner-only permissions. Never copy a token into either repository.
+An unattended service key needs an approved spending cap; a zero cap permits
+non-LLM reads and refuses new LLM work.
+
+After the grant is approved and the token file exists, set the existing injected
+`app-producer.env` variables for each app (`EMAIL_` or `CALENDAR_` prefix):
+`PLATFORM_INVOKE_URL=http://127.0.0.1:3070/api/mcp`,
+`PLATFORM_WORKSPACE=papercusp-workspace`, and `PLATFORM_HARNESS=email` or
+`calendar`. The final app connection targets the green operator on `:3070`;
+current-build acceptance uses a separately configured isolated instance pointed
+at `:3170`. A connected-app key URL must omit `superuser`, `role`, and `harness`
+query parameters: the verified key determines authority, while the app sends
+its workspace/harness metadata through the existing invoker.
+
+Keep `PLATFORM_TOKEN` unset and do not override `PLATFORM_TOKEN_FILE` in the
+injected environment. systemd's EnvironmentFile overrides Environment defaults,
+so inspect the effective configuration without printing credential values before
+activation. With no invoke URL the apps stay disconnected; with a configured URL
+and a missing explicit token file they fail startup rather than fall back to a
+superuser token. Reload and restart only after provisioning, then verify through
+the real authenticated app people search. Final shipment evidence must come from
+the deployed green operator, separately from current-build checks.
+
 ## Verify
 
 ```bash

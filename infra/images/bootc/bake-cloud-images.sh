@@ -158,6 +158,19 @@ esac
 TAG="${TAG:-papercusp-workspace-host-$(date -u +%Y%m%d)}"
 REPO="$REGISTRY/workspace-host"
 
+# EI-25301484626869456: timestamped outputs identify attempts, not releases.
+# Hold admission through process exit, including every child bake step.
+if [ "$DRY_RUN" -eq 0 ] && [ -n "$RELEASE_VERSION" ]; then
+  command -v flock >/dev/null 2>&1 || die "'flock' not found; cannot guard concurrent release bakes"
+  BAKE_LOCK_DIR="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}/papercusp-bake-$UID}/papercusp-release-bakes"
+  mkdir -p "$BAKE_LOCK_DIR" || die "cannot create release bake lock directory"
+  exec {BAKE_RELEASE_LOCK}>"$BAKE_LOCK_DIR/$RELEASE_VERSION.lock" \
+    || die "cannot open release bake lock"
+  flock -n "$BAKE_RELEASE_LOCK" \
+    || die "release bake already active: $RELEASE_VERSION (refusing duplicate)"
+fi
+# End release bake admission.
+
 PODMAN=(podman)
 if [ "$(id -u)" -ne 0 ]; then PODMAN=(sudo -n podman); fi
 TLS=(); [ "$INSECURE" -eq 1 ] && TLS=(--tls-verify=false)

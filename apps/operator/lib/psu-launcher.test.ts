@@ -8161,6 +8161,7 @@ describe("cross-backend resume target + protocol-v1 launcher contract", () => {
       inspection: {
         source: {
           advSessionId: 42,
+          backend: "claude",
           snapshotKind: "live-jsonl",
           completeBytes: 100,
           sha256: "a".repeat(64),
@@ -8181,6 +8182,7 @@ describe("cross-backend resume target + protocol-v1 launcher contract", () => {
           sidechainRecords: 4,
         },
         disclosure: {
+          authorityCarried: true,
           targetEgress: "openai/default",
           summarizerEgress: "papercusp inference gateway",
         },
@@ -8190,6 +8192,58 @@ describe("cross-backend resume target + protocol-v1 launcher contract", () => {
     expect(lines.join("\n")).toMatch(/summary \+ recent tail/);
     expect(lines.join("\n")).toMatch(/preserving the source coordination identity/);
     expect(lines.join("\n")).toMatch(/one malformed record/);
+  });
+
+  describe("session-port inspection backend and authority disclosure", () => {
+    it.each([
+      ["claude", "Claude"],
+      ["codex", "Codex"],
+      ["omp", "OMP"],
+    ])("labels the actual %s source backend", (backend, label) => {
+      const lines = formatSessionPortInspection({
+        inspection: {
+          source: { backend, advSessionId: 42 },
+          target: { backend: "codex", model: "sol" },
+          disclosure: { authorityCarried: true },
+        },
+      });
+      expect(lines[0]).toBe(
+        `psu: cross-backend port preview — ${label} session #42 → codex/sol`,
+      );
+      expect(lines.join("\n")).toMatch(/preserving the source coordination identity/);
+    });
+
+    it.each(["claude", "codex", "omp"])(
+      "discloses a distinct answering owner for a %s source",
+      (backend) => {
+        const lines = formatSessionPortInspection({
+          inspection: {
+            source: { backend, advSessionId: 42 },
+            target: { backend: "codex", ownerId: "su-isolated-answer" },
+            disclosure: { authorityCarried: false },
+          },
+        });
+        const authority = lines.find((line) => line.startsWith("psu: isolation"));
+        expect(authority).toContain("su-isolated-answer");
+        expect(authority).toContain("source authority (fleet/loop/claims/modes/awaits/locks) is not carried to the target");
+        expect(lines.join("\n")).not.toMatch(/preserving the source coordination identity|continue on the target/);
+      },
+    );
+
+    it("keeps missing backend and authority declarations explicit", () => {
+      const lines = formatSessionPortInspection({
+        inspection: { source: { advSessionId: 42 }, target: { backend: "codex" } },
+      });
+      expect(lines[0]).toContain("unknown session #42");
+      expect(lines.join("\n")).toContain("coordination identity continuity is unknown");
+      expect(lines.join("\n")).not.toContain("preserving the source coordination identity");
+    });
+
+    it("reports absent inspection", () => {
+      expect(formatSessionPortInspection({})).toEqual([
+        "psu: session-port inspection unavailable",
+      ]);
+    });
   });
 
   it("reconciles a lost delivery response against the durable status route", async () => {

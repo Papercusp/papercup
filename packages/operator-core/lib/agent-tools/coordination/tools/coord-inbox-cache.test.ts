@@ -12,10 +12,27 @@ const M = vi.hoisted(() => ({
   readInbox: vi.fn(async (..._args: unknown[]) => [] as unknown[]),
   heartbeatPresence: vi.fn(async () => {}),
   drain: vi.fn(async () => {}),
-  readWatermark: vi.fn(async () => ({ messages_shown_ts: "9999-01-01T00:00:00Z" })),
+  readWatermark: vi.fn(async () => ({
+    messages_shown_ts: "9999-01-01T00:00:00Z",
+    snapshot_rebootstrap_pending: false,
+  })),
   unanswered: vi.fn(async () => new Map([
     ["owner-a", { newest: [{ msgId: "ask" }] }],
   ])),
+  assemblePresenceSnapshot: vi.fn(async (
+    _resolved: unknown,
+    _opts?: { onDiagnostic?: (diagnostic: {
+      phase: string;
+      name: string;
+      elapsedMs: number;
+      status: "ok" | "error";
+    }) => void },
+  ) => ({})),
+  consumePresenceRebootstrap: vi.fn(async (
+    _ownerId: unknown,
+    wm: { snapshot_rebootstrap_pending?: boolean },
+    build: () => Promise<string>,
+  ) => wm.snapshot_rebootstrap_pending ? build() : null),
 }));
 
 vi.mock("../identity", async (importOriginal) => ({
@@ -74,9 +91,9 @@ vi.mock("@papercusp/coordination/core", async (importOriginal) => ({
 }));
 vi.mock("../presence-snapshot", () => ({
   resolvePresenceScope: async () => ({}),
-  assemblePresenceSnapshot: async () => ({}),
+  assemblePresenceSnapshot: M.assemblePresenceSnapshot,
   renderPresenceRebootstrapBlock: () => "",
-  consumePresenceRebootstrap: async () => null,
+  consumePresenceRebootstrap: M.consumePresenceRebootstrap,
 }));
 vi.mock("../../../coord-schema", () => ({ renderInjection: () => "" }));
 
@@ -131,6 +148,39 @@ afterEach(async () => {
 });
 
 describe("coord:inbox — cache the derive, keep side effects", () => {
+  it("records inner presence snapshot timings on a pending rebootstrap, even for a full inbox read", async () => {
+    M.readWatermark.mockImplementationOnce(async () => ({
+      messages_shown_ts: "9999-01-01T00:00:00Z",
+      snapshot_rebootstrap_pending: true,
+    }));
+    M.assemblePresenceSnapshot.mockImplementationOnce(async (_resolved, opts) => {
+      opts?.onDiagnostic?.({
+        phase: "source",
+        name: "listPresence",
+        elapsedMs: 392_058,
+        status: "ok",
+      });
+      return {};
+    });
+
+    const metadata = vi.fn();
+    await inbox("owner-a", { kinds: ["message"], limit: 50 }, metadata);
+
+    const traces = metadata.mock.calls
+      .map(([value]) => (value as { coordInboxRead?: {
+        request: { unansweredOnly: boolean };
+        phases: Array<{ name: string; status: string; elapsedMs: number | null }>;
+      } }).coordInboxRead)
+      .filter((trace): trace is NonNullable<typeof trace> => trace !== undefined);
+    const settled = traces.at(-1);
+    expect(settled?.request.unansweredOnly).toBe(false);
+    expect(settled?.phases).toContainEqual(expect.objectContaining({
+      name: "rebootstrap-presence-snapshot:source:listPresence",
+      status: "fulfilled",
+      elapsedMs: 392_058,
+    }));
+  });
+
   it("retains the active selective await phase in overwrite-only invocation metadata", async () => {
     let releaseRead!: () => void;
     let markReadStarted!: () => void;

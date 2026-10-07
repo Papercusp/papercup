@@ -58,11 +58,14 @@
  *    deliberately NOT stubbed, because it is the subject;
  *  - the REAL `setMode` attach, and the REAL `resolveGoalEffectiveActivity`.
  *
- * Only `deps.launch` is stubbed — opening a real process is the launch door's
+ * `deps.launch` is stubbed — opening a real process is the launch door's
  * own tested seam (goal-holder-launch-action.test.ts), the same seam both
  * sibling integration suites stub. `readReadiness` is stubbed actionable: this
  * goal declares no blockers and the real edge read is pinned by goal-deps'
  * own tests + start-goal-by-id.test.ts.
+ * The unrelated control-anchor publication uses its existing dependency seam:
+ * this isolated fixture checks the attached identity and SQL handle without
+ * invoking the workspace's external projection refresh.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
@@ -221,6 +224,12 @@ function startDeps(capture: { launched: string[] }): StartGoalByIdDeps {
     },
     neutralize: async () => {},
     notifyHandoff: async () => {},
+    refreshControlAnchor: async (input) => {
+      expect(input.ownerId).toBe(REPLACEMENT);
+      expect(input.workspaceId).toBe(WS);
+      expect(input.sql).toBe(admin);
+      return null;
+    },
     stampAgentOwner: async (sql, { workspaceId, goalId, ownerId }) => {
       await sql`
         UPDATE harness_shared.goals

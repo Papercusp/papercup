@@ -122,9 +122,9 @@ export const GRADING_AUDIT_RESERVATION_TTL_MS = 15 * 60 * 1000;
 const GRADING_AUDIT_TERMINAL_TASK_REAP_GRACE_MS = 60 * 1000;
 const GRADING_AUDIT_TASK_LABEL_PREFIX = 'grading-audit:';
 /**
- * A route/launch failure that has no provider reset still needs a bounded retry
- * window. Releasing the reservation without one lets every sweep reserve the
- * same card again while producing neither a consult nor a task.
+ * A terminal auditor, route, or launch failure without a provider reset still
+ * needs a bounded retry window. Releasing the reservation without one lets the
+ * next repair sweep reserve the same card and pay for another doomed boot.
  */
 export const GRADING_AUDIT_FAILURE_BACKOFF_MS = GRADING_AUDIT_RESERVATION_TTL_MS;
 /**
@@ -469,6 +469,11 @@ export async function notifyRetainedGradingAuditor(
   const msgId = `grading-audit-renewal:${createHash('sha256')
     .update(JSON.stringify([workspaceId, card.issueId, card.evidenceFingerprint, ownerId, reservation]))
     .digest('hex')}`;
+  const body = [
+    `Renewed lease: key '${key}', reservedAt '${reservation.reservedAt}'. Your existing independent audit task '${task.taskId}' is retained.`,
+    `Continue only for exact target '${card.issueId}' and evidence fingerprint '${card.evidenceFingerprint}'. Re-read scorecards:get and require pending state plus this exact key/reservedAt and fingerprint before auditing; otherwise stop without grading or emitting.`,
+    gradingAuditBrief(card, reservation.reservedAt),
+  ].join('\n\n');
   // Lazy imports keep the existing dispatcher unit-test graph free of coord stores.
   const send = deps.send ?? (await import('./agent-tools/coordination/messages')).sendMessage;
   const wake = deps.wake ?? (await import('./agent-tools/coordination/inbox-wake')).wakeRecipients;
@@ -488,13 +493,9 @@ export async function notifyRetainedGradingAuditor(
         source: 'principal', workspaceId, userId: null }, {
         to: [ownerId], msgId, harnessSlug: input.harness,
         summary: `Renewed grading-audit lease for ${card.issueId}`,
-        body: [
-          `Your existing independent audit task '${task.taskId}' is retained; its missing lease has been reissued.`,
-          `Continue only for exact target '${card.issueId}' and evidence fingerprint '${card.evidenceFingerprint}'. Re-read scorecards:get before auditing; a fingerprint mismatch means stop without grading or emitting.`,
-          gradingAuditBrief(card, reservation.reservedAt),
-        ].join('\n\n'),
+        body,
         expectsReply: true,
-        extra: { expects: 'action', sections: [{ text: `Use the renewed lease for ${card.issueId}.`,
+        extra: { expects: 'action', sections: [{ text: body,
           forYouBecause: { relation: 'owns', ref: task.taskId } }] },
         persistEnvelope: async (envelope) => {
           const result = await (await append)('messages', GRADING_AUDIT_DISPATCH_ACTOR, envelope, {
@@ -511,7 +512,9 @@ export async function notifyRetainedGradingAuditor(
                    AND (work_item_id IS NULL OR work_item_id = ${card.issueId})
                  FOR SHARE`;
               if (!tasks[0]) throw new Error('retained auditor task changed or retired before delivery');
-              const sources = [...new Set([card.createdBy, ...(card.vetting?.critics ?? [])])];
+              const sources = [...new Set([card.createdBy, ...(card.vetting?.critics ?? [])]
+                .filter((id): id is string => typeof id === 'string' && Boolean(id.trim()))
+                .map((id) => id.trim()))];
               const ids = [...new Set([...sources, ownerId])];
               const identities = await parties(ids, { workspaceId, sql: tx });
               if (ids.some((id) => !identities.has(id)) ||
@@ -532,6 +535,11 @@ export async function notifyRetainedGradingAuditor(
       payload: { msg_id: msgId, issueId: card.issueId, evidenceFingerprint: card.evidenceFingerprint, reservation } });
     return { state: 'delivered', ownerId, msgId, queued: outcome.queued ?? outcome.woken, pickupConfirmed: false };
   } catch (error) {
+    // An appended inbox directive remains delivered even if its best-effort
+    // wake fails. Never delete its lease or append a duplicate on that outcome.
+    if (created) return { state: 'delivered', ownerId, msgId,
+      reason: `notification persisted; wake request failed: ${error instanceof Error ? error.message : String(error)}`,
+      pickupConfirmed: false };
     return { state: 'failed', ownerId, msgId, reason: error instanceof Error ? error.message : String(error),
       pickupConfirmed: false };
   }
@@ -1295,9 +1303,7 @@ export async function dispatchPendingGradingAudits(
      * EI-22978598482930667: a terminal QUOTA failure is futile to retry until
      * capacity returns, and the recovery instant is knowable — from the account
      * ledger's reset terms, or from the horizon the launcher itself printed in
-     * this very log. Record it so the reservation release ALSO suppresses the
-     * next sweep tick. Only `model_quota_exhausted` earns a suppression: a
-     * gateway 5xx or a startup stall is a transient this must not sit out.
+     * this very log. Record its reset-aware suppression atomically with release.
      */
     const quotaBackoffFor = async (
       failure: { code: GradingAuditRecoveryCode; evidence: string },
@@ -1319,6 +1325,18 @@ export async function dispatchPendingGradingAudits(
         logTail,
         ...(deps.now ? { nowMs: deps.now() } : {}),
         ...(deps.readProviderResets ? { readProviderResets: deps.readProviderResets } : {}),
+      });
+    };
+    const terminalFailureBackoffFor = async (
+      failure: { code: GradingAuditRecoveryCode; evidence: string },
+      failedLogPath: string | null,
+    ): Promise<GradingAuditDispatchBackoff> => {
+      const quotaBackoff = await quotaBackoffFor(failure, failedLogPath);
+      if (quotaBackoff) return quotaBackoff;
+      return resolveGradingAuditFailureBackoff({
+        code: failure.code,
+        reason: `terminal ${failure.code}; suppressing re-dispatch for a bounded retry window`,
+        ...(deps.now ? { nowMs: deps.now() } : {}),
       });
     };
     const recoveryKeyFor = (taskId: string, failureCode: GradingAuditRecoveryCode): string => {
@@ -1458,7 +1476,7 @@ export async function dispatchPendingGradingAudits(
           killed.error !== 'task_not_found' &&
           killed.error !== 'already_gone'
         ) {
-          await releaseReservation(await quotaBackoffFor(terminalFailure, taskLogPath));
+          await releaseReservation(await terminalFailureBackoffFor(terminalFailure, taskLogPath));
           receipt = {
             issueId,
             rubricRef: card.rubricRef,
@@ -1499,18 +1517,26 @@ export async function dispatchPendingGradingAudits(
           reservedAt: reservationReservedAt,
         };
         const retained = await releaseReservation(undefined, retainedReservation);
+        if (!retained) {
+          return { issueId, rubricRef: card.rubricRef, state: 'skipped', idempotencyKey,
+            reason: 'reservation restore CAS lost; renewal handoff abandoned', ...recoveryFields() };
+        }
         // A restored prior epoch is already in the auditor's original brief. Only
         // a NEW epoch needs a guarded handoff. A failed restore CAS must not send.
         const renewalNotification = !priorReservation
-          ? !retained
-            ? { state: 'skipped' as const, reason: 'reservation restore CAS lost; renewal not delivered' }
-            : viableLiveTasks.length !== 1
+          ? viableLiveTasks.length !== 1
               ? { state: 'skipped' as const, reason: 'retained auditor task identity is ambiguous' }
               : await (deps.notifyRetainedAuditor ?? notifyRetainedGradingAuditor)({
                   card, task: viableLiveTasks[0]!, reservation: retainedReservation,
                   workspaceId: input.ctx.workspaceId?.trim() ?? '', ...(harnessResolved ? { harness } : {}),
                 })
           : undefined;
+        if (renewalNotification?.state === 'failed') {
+          // A pre-append failure delivered nothing. Clear only this exact epoch
+          // so the next scheduled repair can reissue and retry the handoff.
+          // A settlement/new lease winning this CAS remains untouched.
+          await release(issueId, idempotencyKey, { workspaceId: input.ctx.workspaceId, reservedAt: reservationReservedAt });
+        }
         receipt = {
           issueId,
           rubricRef: card.rubricRef,
@@ -1723,7 +1749,7 @@ export async function dispatchPendingGradingAudits(
 
         if (terminalFailure) {
           if (!taskId) {
-            await releaseReservation(await quotaBackoffFor(terminalFailure, logPath));
+            await releaseReservation(await terminalFailureBackoffFor(terminalFailure, logPath));
             receipt = {
               issueId,
               rubricRef: card.rubricRef,
@@ -1744,7 +1770,7 @@ export async function dispatchPendingGradingAudits(
             killed.error !== 'task_not_found' &&
             killed.error !== 'already_gone'
           ) {
-            await releaseReservation(await quotaBackoffFor(terminalFailure, logPath));
+            await releaseReservation(await terminalFailureBackoffFor(terminalFailure, logPath));
             receipt = {
               issueId,
               rubricRef: card.rubricRef,
@@ -1761,10 +1787,11 @@ export async function dispatchPendingGradingAudits(
           retiredTaskIds.push(taskId);
           terminalCodes.push(terminalFailure.code);
           if (terminalFallbacks >= GRADING_AUDIT_MAX_TERMINAL_FALLBACKS) {
-            // The dominant path: BOTH legs are terminally quota-blocked. Before
-            // EI-22978598482930667 this released the reservation with no backoff,
-            // so the next ~55s sweep tick re-launched the same doomed pair.
-            const backoff = await quotaBackoffFor(terminalFailure, logPath);
+            // One bounded primary/fallback pair is the retry ceiling for this
+            // dispatch. Keep every terminal pair behind either its reset-aware
+            // quota horizon or the general retry window; otherwise a non-quota
+            // API error releases an unbacked card into the next repair sweep.
+            const backoff = await terminalFailureBackoffFor(terminalFailure, logPath);
             await releaseReservation(backoff);
             receipt = {
               issueId,

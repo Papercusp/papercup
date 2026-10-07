@@ -1007,6 +1007,15 @@ export default defineTool({
       metadata?: (value: Record<string, unknown>) => void;
     } | undefined)?.metadata;
     const traceSelectivePhases = Boolean(args.from || directedOnly || unansweredOnly);
+    let tracePresenceRebootstrap = false;
+    const shouldTraceInboxPhase = (name?: string): boolean =>
+      traceSelectivePhases || (
+        tracePresenceRebootstrap && (
+          name === undefined ||
+          name === "consume-presence-rebootstrap" ||
+          name.startsWith("rebootstrap-")
+        )
+      );
     const phaseTraceStartedAt = performance.now();
     type InboxPhaseStatus = "running" | "fulfilled" | "rejected";
     type InboxPhase = {
@@ -1019,7 +1028,7 @@ export default defineTool({
     const activeInboxPhases = new Map<number, string>();
     let nextInboxPhaseId = 0;
     const publishInboxPhases = (): void => {
-      if (!traceSelectivePhases || !phaseMetadata) return;
+      if (!shouldTraceInboxPhase() || !phaseMetadata) return;
       try {
         phaseMetadata({
           coordInboxRead: {
@@ -1044,7 +1053,7 @@ export default defineTool({
       name: string,
       action: () => Promise<T>,
     ): Promise<T> => {
-      if (!traceSelectivePhases || !phaseMetadata) return action();
+      if (!shouldTraceInboxPhase(name) || !phaseMetadata) return action();
       const phaseId = ++nextInboxPhaseId;
       const phase: InboxPhase = {
         name,
@@ -1210,6 +1219,7 @@ export default defineTool({
         readWatermark(identity.ownerId).catch(() => emptyWatermark()),
       ),
     ]);
+    tracePresenceRebootstrap = wm.snapshot_rebootstrap_pending === true;
     // WI-10005678: a verified spawn session (an acceptance judge) reads as
     // `system:<role>/<id>`, but peers, its inbox-wake and the ship recruiter all
     // address the bare `<id>`. Fold in what was sent to that bare id. Directed rows
@@ -1589,7 +1599,17 @@ export default defineTool({
             );
             const snap = await measureInboxPhase(
               "rebootstrap-presence-snapshot",
-              () => assemblePresenceSnapshot(resolved),
+              () => assemblePresenceSnapshot(resolved, {
+                onDiagnostic: (diagnostic) => {
+                  inboxPhases.push({
+                    name: `rebootstrap-presence-snapshot:${diagnostic.phase}:${diagnostic.name}`,
+                    status: diagnostic.status === "ok" ? "fulfilled" : "rejected",
+                    startedAt: new Date(Date.now() - diagnostic.elapsedMs).toISOString(),
+                    elapsedMs: Math.max(0, Math.round(diagnostic.elapsedMs)),
+                  });
+                  publishInboxPhases();
+                },
+              }),
             );
             return renderPresenceRebootstrapBlock(snap);
           },

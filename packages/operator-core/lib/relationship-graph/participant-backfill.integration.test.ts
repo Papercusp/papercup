@@ -306,6 +306,42 @@ describe('interaction participant backfill (P-003, D-017 point 2)', () => {
     expect(regrant).toEqual([{ sourceId: big.id, outcome: 'backfilled', documents: TOTAL, participants: TOTAL }]);
   });
 
+  it('repeated participants across multiple pages retain one identity on replay (WI-10007028)', async () => {
+    const total = 24;
+    const repeated = await connect('gmail', { 'email-message': ['document', 'event'], person: ['record'] });
+    const addresses = ['repeat-a@profile.example', 'repeat-b@profile.example'];
+    await upsertPersonalDocuments(sql, WS, userId, Array.from({ length: total }, (_, i) => ({
+      source: 'gmail', sourceId: repeated.id, providerAccountId: repeated.account,
+      kind: 'email', externalId: `profile-${i}-${randomUUID()}`,
+      occurredAt: '2026-10-06T12:00:00Z', participants: addresses,
+      title: `Fixture ${i}`, text: 'fixture body stays in the Vault',
+      metadata: { from: addresses[0], to: [addresses[1]] },
+    })));
+    const idsBefore = await personIds();
+    for (const phase of ['first', 'replay']) {
+      const timings: Record<string, { calls: number; ms: number }> = {};
+      const start = performance.now();
+      const result = await backfillInteractionParticipants(sql, {
+        workspaceId: WS, userId, ctx: CTX, sourceIds: [repeated.id], batchSize: 5, timings,
+      });
+      console.info('PARTICIPANT_BACKFILL_REPEATED_TIMINGS', JSON.stringify({
+        phase, documents: total, totalMs: performance.now() - start, stages: timings,
+      }));
+      expect(result.ok, JSON.stringify(result)).toBe(true);
+      expect(result.documents).toBe(total);
+      expect(result.participants).toBe(total * addresses.length);
+      expect(timings['document-page']?.calls).toBeGreaterThanOrEqual(5);
+      expect(timings['data-source-record']?.calls).toBe(total * addresses.length);
+      expect(timings['relationship-graph-resolve']?.calls).toBe(total * addresses.length);
+      expect(await personIds()).toHaveLength(idsBefore.length + addresses.length);
+      for (const address of addresses) {
+        expect((await searchPeople(sql, WS, { emails: [address] })).map((p) => p.emails)).toEqual([[address]]);
+      }
+    }
+    // Keep the sweep cases below independent of this direct-call fixture.
+    await sql`UPDATE harness_shared.data_sources SET participant_backfill_at = now() WHERE id = ${repeated.id}::uuid`;
+  }, 120_000);
+
   it('an exhausted budget starts no further source in that sweep', async () => {
     const waiting = await connect('gmail', { 'email-message': ['document', 'event'], person: ['record'] });
     await upsertPersonalDocuments(sql, WS, userId, [{

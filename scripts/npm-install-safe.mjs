@@ -1435,13 +1435,15 @@ export function parseCliArgs(
     offlineSafe = true;
     npmArgv = npmArgv.slice(1);
   }
-  if (npmArgv[0] === EXEC_UNDER_LOCK_FLAG) {
+  if (npmArgv[0] === EXEC_UNDER_LOCK_FLAG || npmArgv[0] === "--exec-under-cache-lock") {
+    const cacheRead = npmArgv[0] === "--exec-under-cache-lock";
     const commandArgs = npmArgv.slice(npmArgv[1] === "--" ? 2 : 1);
     if (commandArgs.length === 0)
-      throw new Error(`${EXEC_UNDER_LOCK_FLAG} requires a command`);
+      throw new Error(`${npmArgv[0]} requires a command`);
     return {
       repoRoot,
       commandArgs,
+      ...(cacheRead ? { cacheRead: true } : {}),
       ...(offlineSafe ? { offlineSafe: true } : {}),
     };
   }
@@ -1491,6 +1493,7 @@ export function installLockWaitReporter({ lock, describe, log, budgetMs }) {
  *     cwd: string, stdio: 'inherit', env: NodeJS.ProcessEnv,
  *   }) => { status?: number | null, error?: Error },
  *   env?: NodeJS.ProcessEnv,
+ *   cacheRead?: boolean — guard the shared package cache instead of repo dependencies,
  * }} [options]
  */
 export function runCommandUnderInstallMutex({
@@ -1498,6 +1501,7 @@ export function runCommandUnderInstallMutex({
   commandArgs,
   runCommand = spawnSync,
   env = process.env,
+  cacheRead = false,
 } = {}) {
   if (!Array.isArray(commandArgs) || commandArgs.length === 0) {
     throw new Error(`${EXEC_UNDER_LOCK_FLAG} requires a command`);
@@ -1505,13 +1509,13 @@ export function runCommandUnderInstallMutex({
   const [command, ...args] = commandArgs;
   const lockName = repoLockName(repoRoot);
   const mutexAlreadyHeld = installMutexIsHeld(lockName, env);
-  const childEnv = envWithInstallMutex(lockName, env);
+  const childEnv = cacheRead ? env : envWithInstallMutex(lockName, env);
 
   const executeReader = async () => {
     // Reader diagnostics belong on stderr: callers such as ptool expose the
     // child command's stdout as a machine-readable JSON stream.
     console.error(
-      `${mutexAlreadyHeld ? "NPM_INSTALL_SAFE mutex already held; running nested reader directly" : "NPM_INSTALL_SAFE guarding reader"}: ${commandArgs.join(" ")} (root=${repoRoot}, lock=${lockName})`,
+      `${cacheRead ? "NPM_INSTALL_SAFE guarding package-cache reader" : mutexAlreadyHeld ? "NPM_INSTALL_SAFE mutex already held; running nested reader directly" : "NPM_INSTALL_SAFE guarding reader"}: ${commandArgs.join(" ")} (root=${repoRoot}, lock=${cacheRead ? PACKAGE_CACHE_MUTEX_NAME : lockName})`,
     );
     const result = runCommand(command, args, {
       cwd: repoRoot,
@@ -1526,6 +1530,9 @@ export function runCommandUnderInstallMutex({
   // nested reader for THIS repository is already inside the install boundary and must not install
   // another reader marker beneath the writer it is waiting on: that is a
   // self-deadlock when the outer command still owns the writer lock.
+  // Package runners share the host cache even when their repository is isolated.
+  // A repo reader marker is not proof that the cache lease is held.
+  if (cacheRead) return withPackageCacheReadLease(executeReader);
   if (mutexAlreadyHeld) return executeReader();
 
   return withFsMutexRead(lockName, executeReader, {
@@ -1546,6 +1553,7 @@ export function runCommandUnderInstallMutex({
 export const USAGE = `Usage: npm run install:safe [-- <npm args>]   (defaults to plain \`npm install\`)
        node scripts/npm-install-safe.mjs [--repo-root <path>] [--offline-safe] [--] [<npm args>]
        node scripts/npm-install-safe.mjs [--repo-root <path>] --exec-under-lock [--] <command> [args...]
+       node scripts/npm-install-safe.mjs [--repo-root <path>] --exec-under-cache-lock [--] <command> [args...]
 
 Serializes npm installs in a shared checkout behind a repo-keyed mutex, then verifies every
 declared dependency landed on disk. Arguments that start with "-" get an implicit \`install\`

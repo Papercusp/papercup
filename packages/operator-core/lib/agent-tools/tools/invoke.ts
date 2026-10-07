@@ -151,6 +151,7 @@ function nestedRefusal(result: NestedToolResult): NestedRefusal {
  */
 export class NestedToolRefusalError extends Error {
   override readonly name = 'NestedToolRefusalError';
+  readonly dispatchMetadata: Record<string, unknown> | undefined;
 
   constructor(
     readonly toolName: string,
@@ -160,6 +161,8 @@ export class NestedToolRefusalError extends Error {
     message: string,
   ) {
     super(message);
+    const receipt = nestedResult._meta?.abortCompletionReceipt;
+    this.dispatchMetadata = receipt === undefined ? undefined : { abortCompletionReceipt: receipt };
   }
 }
 

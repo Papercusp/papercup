@@ -7,10 +7,15 @@
  *  - a ticked log excerpt lands in the consented-attachment store (door 'desktop');
  *  - a payload changed after the preview is refused and files nothing.
  */
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
+import type { TableProjection } from '../../../sync/hyperbee/projection';
+import { outboxRowToLocalWriteOp, type OutboxRow } from '../../../sync/hyperbee/feature-issue-op-keys';
+import { createServer } from 'node:http';
+import { generateKeyPairSync, sign } from 'node:crypto';
 import { teardownTestPg } from '@papercusp/test-config/pg';
 import { createOrgTestDb, type OrgTestDb } from '../../../../test/_org-test-db';
+import { bootPresencePeer, makeIdentity, makeTestnet, pollUntil, rigAfterEach } from '../../../sync/hyperbee/__tests__/_cross-peer-rig';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 vi.mock('@papercusp/db-org', async (orig) => {
@@ -33,6 +38,14 @@ const { errorSignatureOf } = await import('../../../harness/improvements/error-s
 const { currentIntakeSourceRevision, executeIntakeDecision } = await import('../../../attention/intake-promotion');
 const { parseIntakeDecision } = await import('../../../attention/bulk-dispositions');
 const { publishReporterRelease, defaultReporterReleaseDeps } = await import('../../../../../../apps/operator/lib/release/reporter-release');
+const { forwardReportAttachment, defaultReportAttachmentRpcDeps, buildReportAttachmentRpcHandler, REPORT_ATTACHMENT_RPC_KIND } = await import('../../../harness/improvements/report-attachment-rpc');
+const { HttpPeerRpcTransport } = await import('../../../authority/http-peer-rpc-transport');
+const { handleAuthorityRpc } = await import('../../../authority/authority-op-registry');
+const { upsertHiveMember, addRevokedHivePubkeys } = await import('../../../hive-membership-store');
+const { unsafeFederatedPotScope } = await import('../../../federated-pot-scope');
+const { insertHiveIfAbsent, getHiveBySlug } = await import('../../../hive-store');
+const attachmentKeys = generateKeyPairSync('ed25519');
+const attachmentPubkey = (attachmentKeys.publicKey.export({ type: 'spki', format: 'der' }) as Buffer).subarray(-32).toString('base64');
 type EngineerIssueRow = import('../../../sync/hyperbee/projections/engineer-issues').EngineerIssueRow;
 type ReportProblemDeps = import('./report-problem').ReportProblemDeps;
 
@@ -51,6 +64,7 @@ afterAll(async () => {
   await upstreamDb?.cleanup();
   if (!process.env.KEEP_TEST_PG) await teardownTestPg();
 });
+afterEach(rigAfterEach);
 
 // No similarity search: this pins the error-signature fold, which needs no search.
 const capture = (input: Parameters<typeof captureImprovement>[0]) =>
@@ -78,6 +92,67 @@ async function rowsMentioning(marker: string) {
 }
 
 describe('desktop Report a problem door, end to end', () => {
+  it('P-015: the captured report crosses real Hyperswarm into a separate upstream database', async () => {
+    h.sql = db.adminSql;
+    const marker = `swarm-report-${suffix()}`;
+    const payload = buildProblemReport({ text: `CSV export crashes ${marker}`, appVersion: '0.9.4', route: '/settings' });
+    const receipt = await handleReportProblem({ payload, previewDigest: await previewDigest(payload) }, {
+      ...deps,
+      contribute: (input) => contributeUpstream({ kind: 'report', confirm: true, workspaceId: WORKSPACE,
+        report: { text: input.text, reportContext: input.reportContext },
+        hasCanonicalReportMembership: async () => true, intakeReport: deps.intake }),
+    });
+    expect(receipt.status).toBe(200);
+    if (receipt.status !== 200) throw new Error(JSON.stringify(receipt));
+    const id = receipt.body.id!;
+    const [op] = await db.adminSql<OutboxRow[]>`
+      SELECT table_name, op, key, row, ts, op_hlc FROM harness_shared.substrate_outbox
+       WHERE workspace_id = ${WORKSPACE} AND table_name = 'engineer_issues'
+         AND row->>'issue_id' = ${id} ORDER BY id DESC LIMIT 1`;
+    expect(op).toBeDefined();
+    const wire = outboxRowToLocalWriteOp(op!);
+    const [absent] = await upstreamDb.adminSql`SELECT feature_id FROM harness_shared.work_items WHERE feature_id = ${id}`;
+    expect(absent, 'positive control: target must not already contain the report').toBeUndefined();
+    const net = await makeTestnet();
+    const sender = makeIdentity('report-install', 41001, 'report-install');
+    const receiver = makeIdentity('report-upstream', 41002, 'report-upstream');
+    const upstreamProjection = buildEngineerIssuesProjection({ workspaceId: WORKSPACE, harnessSlug: 'papercusp', sql: upstreamDb.adminSql });
+    const upstreamDecode = vi.fn(upstreamProjection.decodeValue);
+    const upstreamWrite = vi.fn(upstreamProjection.writeToPg);
+    upstreamProjection.decodeValue = upstreamDecode;
+    upstreamProjection.writeToPg = upstreamWrite;
+    expect(Number.isFinite(Number(op!.ts)), 'outbox timestamp must be a wire number').toBe(true);
+    expect(upstreamProjection.decodeValue(wire.value), 'mapped wire row must pass the production decoder').not.toBeNull();
+    upstreamDecode.mockClear();
+    // Reuse the established signed-announce/Noise/Corestore rig. Admission is
+    // the rig's offline user-id seam; production membership/revocation is
+    // independently exercised by the signed HTTP attachment test below.
+    const peerB = await bootPresencePeer({ testnetBootstrap: net.bootstrap, rootPrefix: 'report-upstream-',
+      identity: receiver, sql: upstreamDb.adminSql, verify: (uid) => uid === sender.userId ? 'verified' : 'fail',
+      extraProjections: [upstreamProjection as TableProjection<unknown>] });
+    const peerA = await bootPresencePeer({ testnetBootstrap: net.bootstrap, rootPrefix: 'report-install-',
+      identity: sender, sql: db.adminSql, verify: (uid) => uid === receiver.userId ? 'verified' : 'fail',
+      extraProjections: [buildEngineerIssuesProjection({ workspaceId: WORKSPACE, harnessSlug: 'papercusp', sql: db.adminSql }) as TableProjection<unknown>] });
+    await peerA.handle.append({ ...wire, writerPubkey: sender.devicePubkey });
+    const upstream = await pollUntil(async () => {
+      await peerA.handle.mergeNow();
+      await peerB.handle.mergeNow();
+      const [row] = await upstreamDb.adminSql<{ origin: string; author_pubkey: string; title: string; summary: string; payload: Record<string, unknown> }[]>`
+        SELECT origin, author_pubkey, title, summary, payload FROM harness_shared.work_items
+         WHERE workspace_id = ${WORKSPACE} AND feature_id = ${id}`;
+      return row;
+    }, { timeoutMs: 30_000, intervalMs: 250 });
+    expect(upstream, `real swarm report never reached upstream; admitted A=${peerA.handle.admitted.size} B=${peerB.handle.admitted.size}; own log length=${peerA.handle.ownLog.length}; decoded=${upstreamDecode.mock.calls.length} written=${upstreamWrite.mock.calls.length}; wire key=${wire.hbKey}`).toBeDefined();
+    expect(upstream!.origin).toBe('remote');
+    expect(upstream!.author_pubkey).toBe(peerA.handle.ownLog.keyHex);
+    expect(upstream!.payload.reporter).toMatchObject({ kind: 'end-user' });
+    expect(upstream!.title).toContain(marker);
+    expect(upstream!.summary).toContain(marker);
+    expect(upstream!.payload.reportContext).toMatchObject({ appVersion: '0.9.4', screen: { route: '/settings' } });
+    const [local] = await db.adminSql`SELECT origin FROM harness_shared.work_items WHERE feature_id = ${id}`;
+    expect(local!.origin).toBe('local');
+  }, 90_000);
+
   it('P-015: contribution captures once and the existing issue CDC projects report context upstream', async () => {
     const s = suffix();
     // A peer is a separate database, not a second workspace in the SAME DB:
@@ -118,7 +193,7 @@ describe('desktop Report a problem door, end to end', () => {
     expect(op, 'installed report must enter the existing issue federation outbox').toBeDefined();
     expect(op!.row.harness_slug, JSON.stringify({ harness: op!.row.harness_slug, scope: op!.row.scope, storage: op!.row.storage_harness_slug })).toBe('papercusp');
     const projection = buildEngineerIssuesProjection({ workspaceId: upstreamWorkspace, harnessSlug: 'papercusp', sql: upstreamDb.adminSql });
-    await projection.writeToPg(op!.row, { ts: Number(op!.ts), origin: 'remote', authorPubkey: 'p015-admitted-install' });
+    await projection.writeToPg(op!.row, { ts: Number(op!.ts), origin: 'remote', authorPubkey: attachmentPubkey });
     const [upstream] = await upstreamDb.adminSql<{ origin: string; title: string; summary: string; payload: Record<string, unknown> }[]>`
       SELECT origin, title, summary, payload FROM harness_shared.work_items
        WHERE workspace_id = ${upstreamWorkspace} AND feature_id = ${id}`;
@@ -130,6 +205,63 @@ describe('desktop Report a problem door, end to end', () => {
     const [source] = await db.adminSql<{ origin: string }[]>`
       SELECT origin FROM harness_shared.work_items WHERE workspace_id = ${WORKSPACE} AND feature_id = ${id}`;
     expect(source?.origin).toBe('local');
+    // Actual signed HTTP peer RPC -> the separate upstream database. The
+    // Use the production uncached membership and revocation readers as well as
+    // report authorship, retention, byte storage and signature verification.
+    const attachment = await putReportAttachment({ workspaceId: WORKSPACE, workItemId: id, door: 'desktop',
+      kind: 'log', mime: 'text/plain', content: 'Consented export failure log', externalId: `p015:${s}` }, { sql: db.adminSql });
+    expect(attachment.ok).toBe(true);
+    if (!attachment.ok) throw Error('attachment fixture refused');
+    const attachmentHandler = buildReportAttachmentRpcHandler(defaultReportAttachmentRpcDeps(WORKSPACE, upstreamDb.adminSql));
+    const server = createServer(async (req, res) => {
+      try {
+        const chunks: Buffer[] = [];
+        for await (const chunk of req) chunks.push(Buffer.from(chunk));
+        const env = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        const result = await handleAuthorityRpc(env, { handlers: { [REPORT_ATTACHMENT_RPC_KIND]: attachmentHandler },
+          authorityExemptKinds: new Set([REPORT_ATTACHMENT_RPC_KIND]), verifyIsAuthority: () => false });
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify(result));
+      } catch { res.statusCode = 500; res.end(); }
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    try {
+      const addr = server.address();
+      if (!addr || typeof addr === 'string') throw Error('missing RPC port');
+      const transport = new HttpPeerRpcTransport({ resolveAddress: () => `http://127.0.0.1:${addr.port}`,
+        envelopeSigner: { devicePubkey: attachmentPubkey, sign: async bytes => sign(null, bytes, attachmentKeys.privateKey) } });
+      const peer = { devicePubkey: 'canonical-fixture', githubUserId: 1, machineLabel: 'upstream' };
+      const forwardDeps = { sql: db.adminSql, transport, canonicalPeer: async () => peer };
+      expect(await forwardReportAttachment(WORKSPACE, attachment.id, forwardDeps)).toEqual({
+        delivered: false, reason: 'upstream-receipt-unconfirmed',
+      });
+      const membershipScope = unsafeFederatedPotScope('papercusp', 'isolated canonical-owner fixture uses its owner-authored slug');
+      await insertHiveIfAbsent({ workspaceId: WORKSPACE, homeSlug: 'papercusp',
+        pubkeyBase64: attachmentPubkey, keychainId: 'remote:p015-membership-fixture',
+        title: 'P015 canonical membership fixture' }, upstreamDb.adminSql);
+      expect((await getHiveBySlug(WORKSPACE, 'papercusp', upstreamDb.adminSql))?.homeSlug).toBe('papercusp');
+      await upsertHiveMember({ workspaceId: WORKSPACE, potHomeSlug: membershipScope,
+        githubUserId: 9015, githubUsername: 'p015-reporter', bindingStatus: 'verified',
+        deviceAttestations: [{ device_pubkey: attachmentPubkey, gist_id: 'fixture', gist_url: 'fixture',
+          device_label: 'reporter', created_at: 1, signature_by_device: 'fixture' }],
+      }, upstreamDb.adminSql);
+      expect(await forwardReportAttachment(WORKSPACE, attachment.id, forwardDeps)).toEqual({ delivered: true });
+      expect(await forwardReportAttachment(WORKSPACE, attachment.id, forwardDeps)).toEqual({ delivered: true });
+      await addRevokedHivePubkeys(WORKSPACE, membershipScope, 9015, [attachmentPubkey], upstreamDb.adminSql);
+      expect(await forwardReportAttachment(WORKSPACE, attachment.id, forwardDeps)).toEqual({
+        delivered: false, reason: 'upstream-receipt-unconfirmed',
+      });
+      const blobs = await upstreamDb.adminSql<{ content: Buffer; redaction: string }[]>`
+        SELECT content, redaction FROM harness_shared.report_attachments WHERE work_item_id = ${id}`;
+      expect(blobs).toHaveLength(1);
+      expect(blobs[0]!.content.toString()).toBe('Consented export failure log');
+      expect(blobs[0]!.redaction).toBe('redacted');
+      const [receipt] = await db.adminSql`SELECT payload -> '_reportAttachmentReceipts' AS receipts FROM harness_shared.work_items WHERE feature_id = ${id}`;
+      expect(receipt!.receipts[attachment.id]).toMatchObject({ sha256: expect.stringMatching(/^[a-f0-9]{64}$/) });
+      const [immutable] = await db.adminSql`SELECT bool_or(row::text LIKE '%Consented export failure log%') AS leaked
+        FROM harness_shared.substrate_outbox WHERE table_name = 'engineer_issues' AND row ->> 'issue_id' = ${id}`;
+      expect(immutable!.leaked).toBe(false);
+    } finally { await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); }
     // The upstream agent uses the SAME capture intake; no second report type.
     h.sql = upstreamDb.adminSql;
     try {
@@ -198,7 +330,7 @@ describe('desktop Report a problem door, end to end', () => {
         SELECT row, ts FROM harness_shared.substrate_outbox WHERE workspace_id = ${WORKSPACE}
           AND table_name = 'engineer_issues' AND row->>'issue_id' = ${id} ORDER BY id DESC LIMIT 1`;
       expect(answerOp?.row.payload).toMatchObject({ reporterAnswer: { questionId, text: reply.text } });
-      await projection.writeToPg(answerOp!.row, { ts: Number(answerOp!.ts), origin: 'remote', authorPubkey: 'p015-admitted-install' });
+      await projection.writeToPg(answerOp!.row, { ts: Number(answerOp!.ts), origin: 'remote', authorPubkey: attachmentPubkey });
       const [returnedAnswer] = await upstreamDb.adminSql<{ origin: string; answer: unknown }[]>`
         SELECT origin, payload->'reporterAnswer' AS answer FROM harness_shared.work_items WHERE feature_id = ${id}`;
       expect(returnedAnswer).toMatchObject({ origin: 'remote', answer: { questionId, text: reply.text } });

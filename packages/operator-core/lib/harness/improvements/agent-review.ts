@@ -67,6 +67,7 @@ import {
   readImplementationReadiness,
   type AgentReviewState,
   type ImplementationReadinessState,
+  STRANDED_SWEEP_OWNER,
   verificationConflict,
   verificationConflictSql,
   verificationParties,
@@ -85,6 +86,7 @@ import { readBornVerifiedReproduction } from '../../attention/bug-reproduction';
 // guard must fail CLOSED (nobody asserted anything — the code is inferring the death).
 import { REBIND_BLOCKING_SESSION_STATES } from '../../agent-tools/coordination/rebind-identity';
 import type { SessionState } from '../../agent-tools/coordination/presence-wakeability';
+import { effectiveReporter, storedReporter } from './provenance';
 
 export const AGENT_REVIEW_MAX_REVISION_GRADE = 3;
 
@@ -595,6 +597,9 @@ export async function resubmitAgentReview(
   if (!workItem) return { resubmitted: false, reason: 'not-found' };
   const current = readAgentReviewState(workItem.payload);
   if (!current) return { resubmitted: false, reason: 'not-agent-review' };
+  const legacySweepSubmitter = readLegacySweepSubmitter(workItem, current);
+  const effectiveSubmitter = legacySweepSubmitter ?? current.submittedBy;
+  const isLegacySweepRepair = legacySweepSubmitter !== null;
   const isLegacyRebind = current.submittedBy === LEGACY_AGENT_REVIEW_SUBMITTER;
   if (isLegacyRebind && workItem.assignee !== input.submittedBy) {
     return { resubmitted: false, state: current, reason: 'legacy-revision-not-claimant' };
@@ -609,14 +614,14 @@ export async function resubmitAgentReview(
   // So: when the original submitter is PROVABLY gone, another agent may adopt the row.
   // "Provably" is doing real work in that sentence — see the two guards below.
   let isOrphanRebind = false;
-  if (!isLegacyRebind && current.submittedBy !== input.submittedBy) {
+  if (!isLegacyRebind && effectiveSubmitter !== input.submittedBy) {
     // A row that is not resubmittable anyway refuses on identity exactly as before,
     // rather than spending an oracle read to reach the same answer by a new name.
     if (current.status !== 'revision-requested') {
       return { resubmitted: false, state: current, reason: 'not-submitter' };
     }
-    const verdict = await deps.resolveSubmitterLiveness(current.submittedBy, {
-      claimsHeld: workItem.assignee === current.submittedBy,
+    const verdict = await deps.resolveSubmitterLiveness(effectiveSubmitter, {
+      claimsHeld: workItem.assignee === effectiveSubmitter,
     });
     // FAIL CLOSED on an unmeasured verdict. `null` means the oracle had no signal, not
     // that the submitter is absent, and collapsing the two would quietly turn this into
@@ -634,12 +639,23 @@ export async function resubmitAgentReview(
     // submitter, or held by the caller are all adoptable; anything else is not ours to take.
     if (
       workItem.assignee != null &&
-      workItem.assignee !== current.submittedBy &&
+      workItem.assignee !== effectiveSubmitter &&
       workItem.assignee !== input.submittedBy
     ) {
       return { resubmitted: false, state: current, reason: 'orphan-revision-held-by-other' };
     }
     isOrphanRebind = true;
+  }
+  // A provenance-checked legacy sweep row can be repaired by its real reporter without
+  // going through the orphan branch above. Keep the same holder fence here, before the
+  // payload write, so a reporter cannot rebind a synthetic row held by a third party.
+  if (
+    isLegacySweepRepair &&
+    workItem.assignee != null &&
+    workItem.assignee !== effectiveSubmitter &&
+    workItem.assignee !== input.submittedBy
+  ) {
+    return { resubmitted: false, state: current, reason: 'orphan-revision-held-by-other' };
   }
   if (current.status !== 'revision-requested') {
     return { resubmitted: false, state: current, reason: `not-revision-requested:${current.status}` };
@@ -647,7 +663,7 @@ export async function resubmitAgentReview(
   const next: AgentReviewState = {
     ...current,
     status: 'pending',
-    submittedBy: isLegacyRebind || isOrphanRebind ? input.submittedBy : current.submittedBy,
+    submittedBy: isLegacyRebind || isOrphanRebind || isLegacySweepRepair ? input.submittedBy : current.submittedBy,
     round: current.round + 1,
   };
   const merged = await deps.mergeWorkItemPayload(
@@ -681,6 +697,38 @@ export async function resubmitAgentReview(
     if (!released) throw new Error(`resubmitAgentReview: '${workItem.id}' is held by another agent`);
   }
   return { resubmitted: true, state: next };
+}
+
+function record(value: unknown): Record<string, unknown> {
+  return value != null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+/**
+ * Recover the real submitter on a legacy sweep-enrolled row. The exact synthetic state
+ * is accepted only with the sweep's own review marker and a reporter stamp that agrees
+ * with the work-item creation identity (or the legacy `_ei.created_by` copy). No other
+ * `system:*` submitter receives this path.
+ */
+function readLegacySweepSubmitter(workItem: WorkItem, current: AgentReviewState): string | null {
+  if (current.submittedBy !== STRANDED_SWEEP_OWNER) return null;
+  const payload = record(workItem.payload);
+  const marker = record(payload.strandedToolFailureSweep);
+  if (
+    marker.owner !== STRANDED_SWEEP_OWNER ||
+    marker.outcome !== 'review' ||
+    typeof marker.at !== 'string' ||
+    !Number.isFinite(Date.parse(marker.at))
+  ) return null;
+
+  const createdBy = workItem.createdBy;
+  if (!createdBy || record(payload._ei).created_by !== createdBy) return null;
+  const stamped = storedReporter(payload);
+  if (payload.reporter != null && !stamped) return null;
+  const reporter = stamped ?? effectiveReporter(workItem);
+  if (reporter.kind !== 'agent' || reporter.id !== createdBy) return null;
+  return createdBy;
 }
 
 export interface AgentReviewGradePreflight {

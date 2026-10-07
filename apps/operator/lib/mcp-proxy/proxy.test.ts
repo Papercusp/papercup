@@ -7361,82 +7361,140 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
   });
 
   it("WI-950869: expires the dedicated improvements:capture queue at its configured finite dwell", async () => {
+    const os = await import("node:os");
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const logFile = path.join(
+      os.tmpdir(),
+      `mcp-proxy-capture-queue-${Date.now()}-${Math.random().toString(36).slice(2)}.jsonl`,
+    );
+    const previousLogFile = process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG;
+    process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG = logFile;
     let releaseFirst: () => void = () => {};
-    const firstGate = new Promise<void>((resolve) => {
-      releaseFirst = resolve;
-    });
-    let noteFirstStarted: () => void = () => {};
-    const firstStarted = new Promise<void>((resolve) => {
-      noteFirstStarted = resolve;
-    });
-    const hits: string[] = [];
-    const logs: string[] = [];
-    const upstream = track(
-      http.createServer((req, res) => {
-        const client =
-          new URL(req.url ?? "/", "http://127.0.0.1").searchParams.get(
-            "client",
-          ) ?? "";
-        hits.push(client);
-        if (client === "held-capture") {
-          noteFirstStarted();
-          void firstGate.then(() => res.end('{"result":{"held":true}}'));
-          return;
-        }
-        res.end('{"result":{"captured":true}}');
-      }),
-    );
-    await listen(upstream);
-    const proxy = track(
-      createMcpProxy({
-        listenPort: 0,
-        targetHost: "127.0.0.1",
-        targetPort: port(upstream),
-        retryWindowMs: 1_000,
-        maxInFlight: 10,
-        controlPlaneReserve: 1,
-        maxCriticalContinuationQueue: 1,
-        maxImprovementsCaptureQueue: 1,
-        improvementsCaptureQueueWaitMs: 25,
-        criticalContinuationQueueWaitLogMs: 10,
-        log: (line) => logs.push(line),
-      }),
-    );
-    await listen(proxy);
-
-    const body = (id: number, name: string) =>
-      JSON.stringify({
-        jsonrpc: "2.0",
-        id,
-        method: "tools/call",
-        params: { name, arguments: {} },
+    let first: ReturnType<typeof request> | null = null;
+    try {
+      const firstGate = new Promise<void>((resolve) => {
+        releaseFirst = resolve;
       });
-    const first = request(
-      port(proxy),
-      body(1, "improvements:capture"),
-      "/api/mcp?client=held-capture",
-    );
-    await firstStarted;
+      let noteFirstStarted: () => void = () => {};
+      const firstStarted = new Promise<void>((resolve) => {
+        noteFirstStarted = resolve;
+      });
+      const hits: string[] = [];
+      const logs: string[] = [];
+      const holderTraceIds: string[] = [];
+      const upstream = track(
+        http.createServer((req, res) => {
+          const client =
+            new URL(req.url ?? "/", "http://127.0.0.1").searchParams.get(
+              "client",
+            ) ?? "";
+          hits.push(client);
+          if (client === "held-capture") {
+            holderTraceIds.push(
+              String(req.headers[MCP_PROXY_TRACE_HEADER] ?? ""),
+            );
+            noteFirstStarted();
+            void firstGate.then(() => res.end('{"result":{"held":true}}'));
+            return;
+          }
+          res.end('{"result":{"captured":true}}');
+        }),
+      );
+      await listen(upstream);
+      const proxy = track(
+        createMcpProxy({
+          listenPort: 0,
+          targetHost: "127.0.0.1",
+          targetPort: port(upstream),
+          retryWindowMs: 1_000,
+          maxInFlight: 10,
+          controlPlaneReserve: 1,
+          maxCriticalContinuationQueue: 1,
+          maxImprovementsCaptureQueue: 1,
+          improvementsCaptureQueueWaitMs: 100,
+          criticalContinuationQueueWaitLogMs: 10,
+          log: (line) => logs.push(line),
+        }),
+      );
+      await listen(proxy);
 
-    const capture = request(
-      port(proxy),
-      body(2, "improvements:capture"),
-      "/api/mcp?client=short-capture",
-    );
-    await waitFor(() =>
-      logs.some((line) => line.includes("queued improvements:capture request")),
-    );
+      const body = (id: number, name: string) =>
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id,
+          method: "tools/call",
+          params: { name, arguments: {} },
+        });
+      first = request(
+        port(proxy),
+        body(1, "improvements:capture"),
+        "/api/mcp?client=held-capture",
+      );
+      await firstStarted;
 
-    const expired = await capture;
-    expect(expired.status).toBe(429);
-    expect(JSON.parse(expired.body)).toMatchObject({
-      error: "mcp_proxy_improvements_capture_queue_dwell",
-      forwardingResult: "not_forwarded",
-    });
-    expect(hits).toEqual(["held-capture"]);
+      const capture = request(
+        port(proxy),
+        body(2, "improvements:capture"),
+        "/api/mcp?client=short-capture",
+      );
+      await waitFor(() => logs.some((line) => line.includes("still queued")));
 
-    releaseFirst();
-    expect((await first).status).toBe(200);
+      const expired = await capture;
+      expect(expired.status).toBe(429);
+      const shed = JSON.parse(expired.body) as {
+        error: string;
+        forwardingResult: string;
+        blockedBy?: { tools: string[]; ageMs: number; traceId: string };
+      };
+      expect(shed).toMatchObject({
+        error: "mcp_proxy_improvements_capture_queue_dwell",
+        forwardingResult: "not_forwarded",
+        blockedBy: {
+          tools: ["improvements:capture"],
+          traceId: holderTraceIds[0],
+        },
+      });
+      expect(shed.blockedBy?.ageMs).toBeGreaterThanOrEqual(0);
+      expect(hits).toEqual(["held-capture"]);
+
+      releaseFirst();
+      expect((await first).status).toBe(200);
+
+      const records = fs
+        .readFileSync(logFile, "utf8")
+        .trim()
+        .split("\n")
+        .filter(Boolean)
+        .map(
+          (line) =>
+            JSON.parse(line) as {
+              kind?: string;
+              blockedBy?: { tools: string[]; ageMs: number; traceId: string };
+            },
+        );
+      const waitRecord = records.find(
+        (record) => record.kind === "improvements_capture_queue_wait",
+      );
+      const shedRecord = records.find(
+        (record) => record.kind === "shed_improvements_capture_queue_dwell",
+      );
+      const expectedBlocker = {
+        tools: ["improvements:capture"],
+        traceId: holderTraceIds[0],
+      };
+      expect(waitRecord?.blockedBy).toMatchObject(expectedBlocker);
+      expect(waitRecord?.blockedBy?.ageMs).toBeGreaterThanOrEqual(0);
+      expect(shedRecord?.blockedBy).toMatchObject(expectedBlocker);
+      expect(shedRecord?.blockedBy?.ageMs).toBeGreaterThanOrEqual(0);
+    } finally {
+      releaseFirst();
+      if (first) await first.catch(() => undefined);
+      fs.rmSync(logFile, { force: true });
+      if (previousLogFile === undefined)
+        delete process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG;
+      else process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG = previousLogFile;
+    }
   });
 
   it("EI-22090638969690024: names the holder that head-of-line blocks a critical dwell shed", async () => {

@@ -254,6 +254,7 @@ export function parseCliArgs(argv?: string[], { cwd }?: {
     help: boolean;
 } | {
     offlineSafe?: boolean | undefined;
+    cacheRead?: boolean | undefined;
     repoRoot: string;
     commandArgs: string[];
     help?: undefined;
@@ -299,9 +300,10 @@ export function installLockWaitReporter({ lock, describe, log, budgetMs }: {
  *     cwd: string, stdio: 'inherit', env: NodeJS.ProcessEnv,
  *   }) => { status?: number | null, error?: Error },
  *   env?: NodeJS.ProcessEnv,
+ *   cacheRead?: boolean — guard the shared package cache instead of repo dependencies,
  * }} [options]
  */
-export function runCommandUnderInstallMutex({ repoRoot, commandArgs, runCommand, env, }?: {
+export function runCommandUnderInstallMutex({ repoRoot, commandArgs, runCommand, env, cacheRead, }?: {
     repoRoot?: string;
     commandArgs?: string[];
     runCommand?: (command: string, args: string[], options: {
@@ -313,7 +315,8 @@ export function runCommandUnderInstallMutex({ repoRoot, commandArgs, runCommand,
         error?: Error;
     };
     env?: NodeJS.ProcessEnv;
-}): Promise<number>;
+    cacheRead?: boolean;
+}): Promise<any>;
 /**
  * How many times a manifest-only install resolves before giving up on manifests that keep
  * changing underneath it. PAPERCUSP_INSTALL_SAFE_STALE_ATTEMPTS overrides it (a positive
@@ -325,7 +328,7 @@ export { installMutexIsHeld } from "./lib/install-lock-name.mjs";
 /** Default wait for EXCLUSIVE use of the shared package cache before verify is skipped. */
 export const NPM_CACHE_VERIFY_WAIT_MS_DEFAULT: 30000;
 /** Printed for `--help` / `-h`; never takes the install mutex. */
-export const USAGE: "Usage: npm run install:safe [-- <npm args>]   (defaults to plain `npm install`)\n       node scripts/npm-install-safe.mjs [--repo-root <path>] [--offline-safe] [--] [<npm args>]\n       node scripts/npm-install-safe.mjs [--repo-root <path>] --exec-under-lock [--] <command> [args...]\n\nSerializes npm installs in a shared checkout behind a repo-keyed mutex, then verifies every\ndeclared dependency landed on disk. Arguments that start with \"-\" get an implicit `install`\nprepended, so `-- --legacy-peer-deps` means `npm install --legacy-peer-deps`.\n--help / -h is recognised only as the first argument; use `install --help` for npm's own help.\n";
+export const USAGE: "Usage: npm run install:safe [-- <npm args>]   (defaults to plain `npm install`)\n       node scripts/npm-install-safe.mjs [--repo-root <path>] [--offline-safe] [--] [<npm args>]\n       node scripts/npm-install-safe.mjs [--repo-root <path>] --exec-under-lock [--] <command> [args...]\n       node scripts/npm-install-safe.mjs [--repo-root <path>] --exec-under-cache-lock [--] <command> [args...]\n\nSerializes npm installs in a shared checkout behind a repo-keyed mutex, then verifies every\ndeclared dependency landed on disk. Arguments that start with \"-\" get an implicit `install`\nprepended, so `-- --legacy-peer-deps` means `npm install --legacy-peer-deps`.\n--help / -h is recognised only as the first argument; use `install --help` for npm's own help.\n";
 export const RESOLUTION_STALE_ATTEMPTS_DEFAULT: 3;
 import { spawnSync } from "node:child_process";
 import { withFsMutex } from "./lib/fs-mutex.mjs";

@@ -41,6 +41,13 @@ export type AgentReviewStatus = (typeof AGENT_REVIEW_STATUSES)[number];
  */
 export const LEGACY_AGENT_REVIEW_SUBMITTER = 'system:legacy-agent-review' as const;
 
+/**
+ * Exact synthetic submitter historically written by the stranded tool-failure sweep.
+ * Resubmit may recover it only when the row also carries that sweep's review marker and
+ * matching original reporter provenance; this identity alone grants no adoption rights.
+ */
+export const STRANDED_SWEEP_OWNER = 'system:stranded-tool-failure-sweep' as const;
+
 export interface AgentReviewState {
   status: AgentReviewStatus;
   submittedBy: string;

@@ -575,6 +575,25 @@ function runImageBuildProbeStorageFixture(
 }
 
 describe('bake-cloud-images.sh startup snapshot (EI-22355025813361885)', () => {
+  it('refuses duplicate release admission and permits retry after process exit', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bake-admission-'));
+    const start = SOURCE.indexOf('# EI-25301484626869456:');
+    const end = SOURCE.indexOf('# End release bake admission.', start);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const guard = SOURCE.slice(start, end);
+    const script = `set -eu\nDRY_RUN=0\nRELEASE_VERSION=0.0.21-test\ndie() { echo "$*"; exit 2; }\n${guard}\n`;
+    try {
+      const result = spawnSync('bash', ['-c', script + 'bash -c "$CHILD_GUARD" > "$XDG_RUNTIME_DIR/child-output" 2>&1 && exit 9\ntest "$?" -eq 2\ncat "$XDG_RUNTIME_DIR/child-output"\n'], { env: { ...process.env, XDG_RUNTIME_DIR: dir, CHILD_GUARD: script }, encoding: 'utf8' });
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain('release bake already active: 0.0.21-test');
+      const retry = spawnSync('bash', ['-c', script], { env: { ...process.env, XDG_RUNTIME_DIR: dir }, encoding: 'utf8' });
+      expect(retry.status).toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('keeps a live bake on the startup bytes after the source is rewritten', () => {
     const result = runFixture(SOURCE);
 

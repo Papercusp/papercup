@@ -308,12 +308,24 @@ export async function acquireTrackedSessionSource(source: AdvSessionRow, deps: T
   const sessionId = backend === 'omp' ? source.ompThreadId ?? source.sessionId : source.sessionId;
   if (!sessionId) throw new Error('source is missing exact native session identity');
   const readArchive = () => (deps.readArchive ?? readCanonicalNativeArchive)({ backend, sessionId }, (deps.archiveStore ?? pgSessionArchiveStore)());
-  if (source.endedAt) return readArchive();
-  const root = deps.rootForSource?.(source) ?? join(backend === 'codex'
-    ? codexHomeForSessionKey(source.id) : ompAgentHomeForSessionKey(source.id), 'sessions');
-  try {
+  const readLive = async () => {
+    const root = deps.rootForSource?.(source) ?? join(backend === 'codex'
+      ? codexHomeForSessionKey(source.id) : ompAgentHomeForSessionKey(source.id), 'sessions');
     const path = await (deps.findLive ?? findCanonicalNativeLiveJsonl)(root, backend, sessionId);
     return await (deps.readLive ?? readStableLiveJsonl)(path);
+  };
+  if (source.endedAt) {
+    try { return await readArchive(); }
+    catch (archiveError) {
+      // A row's death does not prove that every older carry incarnation was
+      // archived. Retained bytes still go through the exact tracked-home reader.
+      if (!(archiveError instanceof Error) || archiveError.message !== `canonical ${backend} archive not found`) throw archiveError;
+      try { return await readLive(); }
+      catch (liveError) { throw new AggregateError([archiveError, liveError], 'canonical native archive is missing and retained exact source is unavailable'); }
+    }
+  }
+  try {
+    return await readLive();
   } catch (error) {
     const missing = error instanceof Error && error.message === `canonical live ${backend} JSONL is missing`;
     const disappeared = typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT';
@@ -333,19 +345,28 @@ export async function acquireTrackedClaudeSource(
 ): Promise<StableSource> {
   if (source.agent !== 'claude' || source.role != null) throw new Error('V1 ports require a tracked plain Claude SU source');
   if (!source.sessionId || !source.coordOwnerId || !source.cwd) throw new Error('source is missing tracked Claude identity/cwd');
+  const { sessionId, coordOwnerId } = source;
   const readArchive = () => (deps.readArchive ?? readCanonicalClaudeArchive)(
-    { sessionId: source.sessionId! },
+    { sessionId },
     (deps.archiveStore ?? pgSessionArchiveStore)(),
   );
-  if (source.endedAt) {
-    return readArchive();
-  }
-  try {
+  const readLive = async () => {
     const path = await (deps.findLive ?? findCanonicalClaudeLiveJsonl)(
-      (deps.configDirForOwner ?? sessionClaudeConfigDir)(source.coordOwnerId),
-      source.sessionId,
+      (deps.configDirForOwner ?? sessionClaudeConfigDir)(coordOwnerId),
+      sessionId,
     );
     return await (deps.readLive ?? readStableLiveJsonl)(path);
+  };
+  if (source.endedAt) {
+    try { return await readArchive(); }
+    catch (archiveError) {
+      if (!(archiveError instanceof Error) || archiveError.message !== 'canonical Claude archive not found') throw archiveError;
+      try { return await readLive(); }
+      catch (liveError) { throw new AggregateError([archiveError, liveError], 'canonical Claude archive is missing and retained exact source is unavailable'); }
+    }
+  }
+  try {
+    return await readLive();
   } catch (liveError) {
     // Inspect and prepare deliberately reacquire the source around a
     // human-paced confirmation. Archive-at-death can remove the inspected

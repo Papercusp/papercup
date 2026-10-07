@@ -1398,7 +1398,12 @@ export class HostedWorkspaceHostSessionAdapter {
       ...remoteKeyPolicy,
       sendPacket: (packet) => this.options.send({ type: 'relay', channelId, payload: packet }),
       onFrame: (frame) => { void this.acceptPayload(channelId, frame); },
-      onError: () => this.detach(channelId, 'sealed_channel_failed'),
+      onError: () => {
+        // This failure originates on the host. Unlike a peer-requested detach,
+        // it must notify the broker so its caller cannot keep a dead channel open.
+        this.options.send({ type: 'relay.close', channelId, reason: 'sealed_channel_failed' });
+        this.detach(channelId, 'sealed_channel_failed');
+      },
     });
     this.sealedChannels.set(channelId, channel);
     return true;

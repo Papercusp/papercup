@@ -661,7 +661,7 @@ export function attachSealedDeviceSocket(
   now: Date = new Date(),
 ): boolean {
   const connector = port.appConnector(customerWorkspaceId);
-  if (!connector || connector.binding.hosting !== 'byoc' ||
+  if (!connector || (connector.binding.hosting !== 'byoc' && connector.binding.hosting !== 'papercusp') ||
       !isHostedConnectorLive({ state: 'active', transport: 'websocket', heartbeatAt: connector.lastSeenAt }, now)) {
     socket.close(1013, 'workspace_offline');
     return false;

@@ -120,9 +120,9 @@ export default defineTool({
   crossWorkspace: true,
   capability: 'sessions:read',
   description:
-    "Read indexed session turns. `session:'self'` spans YOUR OWN respawn chain, including predecessor turns. The evidence-only judge may use only `session:'self'`; named sessions and turn refs are refused for that role. `tail:N` already means `order:'desc', limit:N`; do not combine `tail` with `order` or `limit`. If that window includes multiple native sessions, `session_id` is null, `session_ids` lists them, and each turn's `ref` identifies its source. Pass a `session_turn:…` ref, coordinates, from/to range, or tail for other allowed readers. `query` and `mode` belong to sessions:search. " +
-    `Turn text is returned in ${SESSION_TURN_TEXT_CHUNK_CAP}-character chunks by default; clipped turns carry text_truncated, text_full_chars, and a readMore continuation (text_offset/text_limit). A turn at the index cap also reports source_completeness (see returns). ` +
-    "NOTE ON `turn_count` (EI-9970): this is the number of rows in THIS response's window (bounded by `limit`, default 40) — NOT the session's total turn count. It is a DIFFERENT quantity from sessions:list's `turns` field (that session's full indexed-text-turn total) despite the similar name; do not compare them. For the session total, use sessions:list.",
+    "Read indexed session turns. `session:'self'` spans your respawn chain, including predecessor turns; evidence-only judges may read only self. Other readers pass a `session_turn:…` ref, coordinates, a from/to range, or tail. A multi-session self window has `session_id` null and each `ref` identifies its source. `tail:N` means `order:'desc', limit:N`; do not combine it with either. `query` and `mode` belong to `sessions:search`. " +
+    `Text is returned in ${SESSION_TURN_TEXT_CHUNK_CAP}-character chunks; clipped turns carry \`readMore\`, and index-capped turns report \`source_completeness\` (see returns). ` +
+    "`turn_count` is this response's window size (default limit 40), not the session total; use `sessions:list` for the total. Full recovery guide: /internal/docs/agent-insights/session-search-and-compaction-recovery.",
   guidance: {
     when:
       "Following a sessions:search hit: pass its `ref` directly (plus optional `context`). To read where a session left off, use `tail:N` (or explicit order:'desc' + limit); use order:'asc' for the opening turns.",

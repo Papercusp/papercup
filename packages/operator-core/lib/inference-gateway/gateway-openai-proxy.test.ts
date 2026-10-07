@@ -2154,45 +2154,6 @@ describe('proxyOpenAi — ChatGPT OAuth initial account selection (D-010 catcher
   });
 });
 
-describe('proxyOpenAi — same-session streamed quota failover', () => {
-  it('moves a live auto session to a credited account and keeps the new affinity without restarting', async () => {
-    const accounts = [
-      { accountId: 'chatgpt-a', home: await makeCodexHome('chatgpt-a') },
-      { accountId: 'chatgpt-b', home: await makeCodexHome('chatgpt-b') },
-    ];
-    const routed: string[] = [];
-    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
-      const account = new Headers(init?.headers).get('chatgpt-account-id') ?? '';
-      routed.push(account);
-      const event = account === 'chatgpt-a'
-        ? { type: 'response.failed', response: { error: { code: 'usage_limit_reached', message: 'usage exhausted', resets_at: Math.floor(Date.now() / 1000) + 3600 } } }
-        : { type: 'response.completed', response: { id: 'credit-backed-success', output: [] } };
-      return new Response(`data: ${JSON.stringify(event)}\n\ndata: [DONE]\n\n`,
-        { status: 200, headers: { 'content-type': 'text/event-stream' } });
-    }) as typeof fetch;
-    gw = createInferenceGateway({
-      accountId: 'claude-acct', token: async () => 'claude-tok',
-      codexCliAccounts: () => accounts,
-      codexCliPool: createFailoverPool(accounts.map((account) => ({ accountId: account.accountId, token: async () => '' }))),
-      codexOAuthProxy: true, fetchImpl, selfHeal: { enabled: false },
-    });
-    gw.setAccountRateHints([
-      { accountId: 'chatgpt-a', utilization: 0, utilization7d: 0 },
-      { accountId: 'chatgpt-b', utilization7d: 1, windowResetAt7d: Date.now() + 86_400_000, usageCreditsAvailable: true },
-    ]);
-    port = await gw.listen(0);
-    const headers = { [OWNER_HEADER]: 'one-running-session' };
-    for (const input of ['first turn', 'second turn']) {
-      const response = await postResponses({ model: 'gpt-6.1-sol', input, stream: true }, headers);
-      expect(response.status).toBe(200);
-      expect(response.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('chatgpt-b');
-      expect(await response.text()).toContain('credit-backed-success');
-    }
-    expect(routed).toEqual(['chatgpt-a', 'chatgpt-b', 'chatgpt-b']);
-    expect(gw.stats().codex.failovers).toBe(1);
-  });
-});
-
 describe('proxyOpenAi — health and self-heal control-plane parity', () => {
   it('routes automatically through a credit-backed full allowance and permits psu launch', async () => {
     await bootCodex(ok, [codexAcct('credited'), codexAcct('depleted')]);

@@ -813,6 +813,7 @@ function projectRow(
   dropped: Set<string>,
 ): Row {
   if (r.ok === false) return r; // an error row is already tiny and self-describing
+  if (r.reportAttachments !== undefined) return r; // producer bounds one metadata list + a <=2048-byte page
 
   const checkpoint = r.checkpoint;
   if (typeof checkpoint === "string" && checkpoint.length > checkpointChars) {

@@ -223,6 +223,7 @@ describe('tools:invoke handler', () => {
     const nested = {
       isError: true,
       content: [{ type: 'text' as const, text: refusalText }],
+      _meta: { abortCompletionReceipt: { status: 'recorded', msg_id: 'm-late' } },
     };
     const ctx = {
       metadata,
@@ -235,6 +236,7 @@ describe('tools:invoke handler', () => {
       code: 'invalid_input',
       details: { field: 'harness' },
       nestedResult: nested,
+      dispatchMetadata: nested._meta,
       message: refusalText,
     });
     expect(metadata).toHaveBeenCalledWith({

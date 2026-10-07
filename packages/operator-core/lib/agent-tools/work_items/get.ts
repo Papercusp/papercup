@@ -54,6 +54,7 @@ import {
 import { completionFreshnessForEvidence } from './completion-freshness';
 import { deploymentPositionForEvidence } from './deployment-position';
 import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
+import { readReportAttachmentEvidence } from '../../harness/improvements/report-attachments';
 import type {
   WorkItemPayloadProjection,
   WorkItemReadOptions,
@@ -672,6 +673,11 @@ export default defineTool({
   args: z
     .object({
       id: z.string().min(1).optional().describe('a single work-item id (n=1 shorthand for ids:[id])'),
+      attachments: z.object({
+        id: z.string().uuid().optional(),
+        offset: z.number().int().min(0).optional(),
+        limit: z.number().int().min(1).max(2048).optional(),
+      }).optional().describe('Standalone one-item consented attachment read: {} lists metadata; id returns a base64 byte page (default 1024 bytes, max 2048). Canonical fixes resolve original report evidence. Expired evidence is unavailable.'),
       ids: z.array(z.string().min(1)).max(100).optional().describe('work-item ids to fetch (1–100)'),
       harness: z
         .string()
@@ -741,6 +747,9 @@ export default defineTool({
     })
     .refine((a) => Boolean(a.id) || (a.ids?.length ?? 0) > 0, {
       message: 'pass `id` (one) or `ids` (many)',
+    })
+    .refine((a) => !a.attachments || (mergeIds(a.id, a.ids).length === 1 && !a.resume && !a.checksOnly && !a.operationalBrief && !a.detail && a.threadLimit === undefined && a.priorAttemptRefs === undefined), {
+      message: 'attachments is a standalone one-item read; omit other enrichment switches',
     })
     .refine((a) => !a.resume || (mergeIds(a.id, a.ids).length === 1 && !a.checksOnly && !a.detail && a.threadLimit === undefined && a.priorAttemptRefs === undefined && !a.operationalBrief), {
       message: RESUME_ARGUMENT_CONSTRAINT,
@@ -824,6 +833,7 @@ export default defineTool({
       ids.length > 1 &&
       sourceSelection !== null &&
       !args.resume &&
+      !args.attachments &&
       !checksOnly &&
       !readDetail &&
       !boundedThread &&
@@ -963,6 +973,10 @@ export default defineTool({
         stage.baseReadMs = Date.now() - baseReadStartedAt;
         if (workItemRead === WORK_ITEMS_GET_TIMEOUT) return WORK_ITEMS_GET_TIMEOUT;
         const workItem = workItemRead;
+        if (workItem && args.attachments) {
+          return { ok: true as const, id, availability: 'available' as const,
+            reportAttachments: await readReportAttachmentEvidence(activeWorkspaceId(), workItem.id, args.attachments, { harness: workItem.harness }) };
+        }
         if (!workItem) {
           return { ok: false as const, id, availability: 'absent' as const, error: `work_item '${id}' not found` };
         }

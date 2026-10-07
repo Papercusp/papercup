@@ -20,6 +20,8 @@ import {
   _resetReconcilerState,
   checkRestartPolicyDrift,
   checkSilentCrashLoop,
+  censusUnregisteredFailedUnits,
+  _resetFailedUnitCensusForTests,
   BACKOFF_SEQUENCE_SEC,
   confirmFlapRestart,
   GIVE_UP_THRESHOLD,
@@ -1117,6 +1119,69 @@ describe('checkSilentCrashLoop (EI-10750 silent-crash-loop guard)', () => {
     // Only the {n:40} obs is still in-window; delta = 41 - 40 = 1, below threshold.
     expect(r.restartsInWindow).toBe(1);
     expect(r.escalate).toBe(false);
+  });
+});
+
+describe('censusUnregisteredFailedUnits (unregistered crash-loop reporting)', () => {
+  beforeEach(() => _resetFailedUnitCensusForTests());
+
+  function makeDeps(
+    units: Array<{ unit: string; active: string; transient: string }>,
+    getRestarts: () => number,
+  ) {
+    const execUser = vi.fn(async (args: string[]) => {
+      if (args[0] === 'list-units') {
+        return units.map(({ unit, active }) => `${unit} loaded ${active} ${active === 'failed' ? 'failed' : 'running'} ${unit}`).join('\n');
+      }
+      return units.map(({ unit, transient }) =>
+        `Id=${unit}\nLoadState=loaded\nTransient=${transient}\nNRestarts=${getRestarts()}`,
+      ).join('\n\n');
+    });
+    return { execUser, notify: vi.fn(async () => {}) };
+  }
+
+  it('pages once when an unregistered service NRestarts rises by three within five minutes, then re-arms after the episode settles', async () => {
+    let nRestarts = 0;
+    const deps = makeDeps([{ unit: 'third-party.service', active: 'active', transient: 'no' }], () => nRestarts);
+    for (let i = 0; i <= 3; i++) {
+      nRestarts = i;
+      await censusUnregisteredFailedUnits(deps, [], () => {}, i * 60_000);
+    }
+    expect(deps.notify).toHaveBeenCalledTimes(1);
+    expect(deps.notify.mock.calls[0]?.[0].summary).toContain('third-party.service');
+    expect(deps.notify.mock.calls[0]?.[0].summary).toContain('systemd remains the restart authority');
+
+    nRestarts = 4;
+    await censusUnregisteredFailedUnits(deps, [], () => {}, 240_000);
+    expect(deps.notify).toHaveBeenCalledTimes(1);
+
+    await censusUnregisteredFailedUnits(deps, [], () => {}, 600_001);
+    for (let i = 5; i <= 7; i++) {
+      nRestarts = i;
+      await censusUnregisteredFailedUnits(deps, [], () => {}, 600_001 + (i - 4) * 60_000);
+    }
+    expect(deps.notify).toHaveBeenCalledTimes(2);
+  });
+
+  it('excludes transient and registered services from restart-rate alerts', async () => {
+    let nRestarts = 0;
+    const deps = makeDeps([
+      { unit: 'run-scoped.service', active: 'active', transient: 'yes' },
+      { unit: 'registered.service', active: 'active', transient: 'no' },
+    ], () => nRestarts);
+    for (let i = 0; i <= 3; i++) {
+      nRestarts = i;
+      await censusUnregisteredFailedUnits(deps, [{ unit: 'registered.service' }], () => {}, i * 60_000);
+    }
+    expect(deps.notify).not.toHaveBeenCalled();
+  });
+
+  it('preserves the failed-unit alert and latches it once per failure episode', async () => {
+    const deps = makeDeps([{ unit: 'retired.service', active: 'failed', transient: 'no' }], () => 7);
+    expect(await censusUnregisteredFailedUnits(deps, [], () => {}, 0)).toEqual(['retired.service']);
+    expect(await censusUnregisteredFailedUnits(deps, [], () => {}, 60_000)).toEqual(['retired.service']);
+    expect(deps.notify).toHaveBeenCalledTimes(1);
+    expect(deps.notify.mock.calls[0]?.[0].summary).toContain('FAILED on this host');
   });
 });
 

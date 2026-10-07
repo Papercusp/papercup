@@ -164,6 +164,20 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
     expect(classifyToolError(null, 'error', 'invalid_args: note: Too big')).toBe('caller');
   });
 
+  it('classifies the claim-spec self-sentinel refusal as caller misuse, not a structural tool defect', () => {
+    const message =
+      'cupId must be a concrete session/owner ID, not the literal "self". To read your own claim spec, use { cupId: \'su-owner-id\' } for this session.';
+    expect(classifyToolError('handler_error', 'error', message)).toBe('caller');
+    expect(normalizeSuspectedToolFailure({
+      toolName: 'scheduler:get_claim_spec',
+      errorCode: 'handler_error',
+      status: 'error',
+      message,
+    }).class).toBe('caller');
+    // Keep genuine implementation failures on the structural lane.
+    expect(classifyToolError('handler_error', 'error', 'Cannot read properties of undefined')).toBe('structural');
+  });
+
   it('does not mistake the timeoutSec argument name for a runtime timeout', () => {
     expect(
       classifyToolError(

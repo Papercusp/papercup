@@ -86,6 +86,10 @@ export function sidecarUnitViolations(src: string, sc: Sidecar): string[] {
   if (one('EnvironmentFile') !== '%h/.papercusp/app-producer.env') {
     v.push(`EnvironmentFile must be the injected %h/.papercusp/app-producer.env, got: ${one('EnvironmentFile')}`);
   }
+  const tokenFileVar = `${sc.app.toUpperCase()}_PLATFORM_TOKEN_FILE`;
+  if (!(svc.Environment ?? []).includes(`${tokenFileVar}=%h/.papercusp/${sc.app}-platform-token`)) {
+    v.push(`${tokenFileVar} must name the dedicated injected app credential (WI-10006978)`);
+  }
   for (const env of svc.Environment ?? []) {
     if (env.startsWith(`${sc.localModeVar}=`)) {
       v.push(`${sc.localModeVar} must not be set in the unit (bypasses jwtVerify)`);
@@ -220,6 +224,18 @@ describe('tracked app-sidecar systemd units (EI-23439593071892927)', () => {
       const mutant = good.replace(/^EnvironmentFile=.*$/m, '');
       expect(mutant).not.toBe(good);
       expect(sidecarUnitViolations(mutant, email).join('\n')).toMatch(/EnvironmentFile must be/);
+    });
+
+    it('dropping the dedicated platform credential is caught', () => {
+      const mutant = good.replace(/^Environment=EMAIL_PLATFORM_TOKEN_FILE=.*$/m, '');
+      expect(mutant).not.toBe(good);
+      expect(sidecarUnitViolations(mutant, email).join('\n')).toMatch(/EMAIL_PLATFORM_TOKEN_FILE must name/);
+    });
+
+    it('using the superuser credential as the app default is caught', () => {
+      const mutant = good.replace('/email-platform-token', '/superuser-token');
+      expect(mutant).not.toBe(good);
+      expect(sidecarUnitViolations(mutant, email).join('\n')).toMatch(/EMAIL_PLATFORM_TOKEN_FILE must name/);
     });
   });
 });

@@ -854,6 +854,52 @@ test("publishDependencyGeneration preserves an explicit emergency skip", async (
   assert.equal(called, false);
 });
 
+test("cache-only package runner waits for maintenance even with an inherited repo reader marker", async () => {
+  const root = mkdtempSync(join(tmpdir(), "install-safe-cache-command-"));
+  const previousLockRoot = process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+  process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = join(root, "locks");
+  let releaseWriter;
+  let writerReady;
+  const ready = new Promise(resolve => { writerReady = resolve; });
+  const writer = withFsMutex(PACKAGE_CACHE_MUTEX_NAME, async () => {
+    writerReady();
+    await new Promise(resolve => { releaseWriter = resolve; });
+  });
+  let runner;
+  try {
+    await ready;
+    let entered = false;
+    const parsed = parseCliArgs(["--repo-root", root, "--exec-under-cache-lock", "--", "npx", "--yes", "esbuild@0.25.0", "input with spaces.ts"]);
+    assert.equal(parsed.cacheRead, true);
+    runner = runCommandUnderInstallMutex({
+      ...parsed,
+      env: { PAPERCUSP_INSTALL_MUTEX_HELD: repoLockName(root) },
+      runCommand: (command, args, options) => {
+        entered = true;
+        assert.equal(command, "npx");
+        assert.deepEqual(args, ["--yes", "esbuild@0.25.0", "input with spaces.ts"]);
+        assert.equal(options.cwd, root);
+        assert.equal(options.env.PAPERCUSP_INSTALL_MUTEX_HELD, repoLockName(root));
+        assert.ok(existsSync(join(root, "locks", "package-manager-cache.readers")));
+        return { status: 17 };
+      },
+    });
+    await new Promise(resolve => setTimeout(resolve, 30));
+    assert.equal(entered, false, "repo marker must not bypass cache maintenance");
+    releaseWriter();
+    await writer;
+    assert.equal(await runner, 17);
+    assert.equal(entered, true);
+  } finally {
+    releaseWriter?.();
+    await writer;
+    if (runner) await runner.catch(() => {});
+    if (previousLockRoot === undefined) delete process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+    else process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = previousLockRoot;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("package-cache cleanup waits for every safe-install cache reader across repo locks", async () => {
   const root = mkdtempSync(
     join(tmpdir(), "install-safe-package-cache-reader-"),

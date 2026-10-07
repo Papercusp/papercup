@@ -8,6 +8,7 @@ import {
   createVerificationTask,
   deriveWorkItemIntakeStage,
   LEGACY_AGENT_REVIEW_SUBMITTER,
+  STRANDED_SWEEP_OWNER,
 } from './agent-review-policy';
 import {
   approvalAcceptance,
@@ -947,6 +948,34 @@ describe('resubmitAgentReview adopts a row whose submitter is provably gone (WI-
     });
   }
 
+  function legacySweepRow(opts: {
+    createdBy?: string;
+    eiCreatedBy?: string;
+    markerOwner?: string;
+    submittedBy?: string;
+    assignee?: string | null;
+  } = {}): WorkItem {
+    const createdBy = opts.createdBy ?? 'su-gone';
+    return issue({
+      assignee: opts.assignee ?? null,
+      createdBy,
+      payload: {
+        _ei: { created_by: opts.eiCreatedBy ?? createdBy },
+        strandedToolFailureSweep: {
+          owner: opts.markerOwner ?? STRANDED_SWEEP_OWNER,
+          at: '2026-10-01T10:00:00.000Z',
+          outcome: 'review',
+        },
+        agentReview: {
+          status: 'revision-requested',
+          submittedBy: opts.submittedBy ?? STRANDED_SWEEP_OWNER,
+          ledgerIdeaId: 'WI-7',
+          round: 1,
+        },
+      },
+    });
+  }
+
   it('refuses while the original submitter can still act', async () => {
     const h = harness(orphanRow());
     h.state.submitterLiveness = { sessionState: 'live' };
@@ -1105,5 +1134,79 @@ describe('resubmitAgentReview adopts a row whose submitter is provably gone (WI-
       reason: 'not-submitter',
     });
     expect(h.resolveSubmitterLiveness).not.toHaveBeenCalled();
+  });
+
+  it('repairs the exact legacy sweep row for its verified original reporter', async () => {
+    const h = harness(legacySweepRow({ createdBy: 'su-original' }));
+
+    await expect(resubmitAgentReview({ id: 'WI-7', submittedBy: 'su-original' }, h.deps)).resolves.toEqual({
+      resubmitted: true,
+      state: { status: 'pending', submittedBy: 'su-original', ledgerIdeaId: 'WI-7', round: 2 },
+    });
+    expect(h.resolveSubmitterLiveness).not.toHaveBeenCalled();
+    expect(h.state.issue.payload).toMatchObject({
+      agentReview: { status: 'pending', submittedBy: 'su-original', ledgerIdeaId: 'WI-7', round: 2 },
+    });
+  });
+
+  it.each([
+    ['live', { sessionState: 'live' } as const, 'not-submitter'],
+    ['unknown', null, 'not-submitter:liveness-unknown'],
+  ])('keeps legacy sweep adoption fail-closed when its reporter is %s', async (_label, verdict, reason) => {
+    const h = harness(legacySweepRow({ createdBy: 'su-original' }));
+    h.state.submitterLiveness = verdict;
+
+    await expect(resubmitAgentReview({ id: 'WI-7', submittedBy: 'su-newcomer' }, h.deps)).resolves.toMatchObject({
+      resubmitted: false,
+      reason,
+    });
+    expect(h.resolveSubmitterLiveness).toHaveBeenCalledWith('su-original', { claimsHeld: false });
+    expect(h.state.issue.payload).toMatchObject({
+      agentReview: { status: 'revision-requested', submittedBy: STRANDED_SWEEP_OWNER, round: 1 },
+    });
+  });
+
+  it('adopts a legacy sweep row only after the original reporter is gone and releases by CAS holder', async () => {
+    const h = harness(legacySweepRow({ createdBy: 'su-gone', assignee: 'su-gone' }));
+    h.state.submitterLiveness = { sessionState: 'ended' };
+
+    await expect(resubmitAgentReview({ id: 'WI-7', submittedBy: 'su-newcomer' }, h.deps)).resolves.toEqual({
+      resubmitted: true,
+      state: { status: 'pending', submittedBy: 'su-newcomer', ledgerIdeaId: 'WI-7', round: 2 },
+    });
+    expect(h.resolveSubmitterLiveness).toHaveBeenCalledWith('su-gone', { claimsHeld: true });
+    expect(h.releaseWorkItem).toHaveBeenCalledWith('WI-7', {
+      harness: 'papercusp',
+      expectedAssignee: 'su-gone',
+    });
+  });
+
+  it('does not rebind a verified legacy sweep row under a third-party claim', async () => {
+    const h = harness(legacySweepRow({ createdBy: 'su-gone', assignee: 'su-other' }));
+    h.state.submitterLiveness = { sessionState: 'ended' };
+
+    await expect(resubmitAgentReview({ id: 'WI-7', submittedBy: 'su-newcomer' }, h.deps)).resolves.toMatchObject({
+      resubmitted: false,
+      reason: 'orphan-revision-held-by-other',
+    });
+    expect(h.state.issue.payload).toMatchObject({
+      agentReview: { status: 'revision-requested', submittedBy: STRANDED_SWEEP_OWNER, round: 1 },
+    });
+    expect(h.releaseWorkItem).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['wrong sweep marker', { markerOwner: 'system:other' }, STRANDED_SWEEP_OWNER],
+    ['creator mismatch', { eiCreatedBy: 'su-not-the-creator' }, STRANDED_SWEEP_OWNER],
+    ['other system identity', { submittedBy: 'system:other' }, 'system:other'],
+  ])('does not grant synthetic adoption for %s', async (_label, overrides, expectedSubmitter) => {
+    const h = harness(legacySweepRow(overrides));
+    h.state.submitterLiveness = null;
+
+    await expect(resubmitAgentReview({ id: 'WI-7', submittedBy: 'su-newcomer' }, h.deps)).resolves.toMatchObject({
+      resubmitted: false,
+      reason: 'not-submitter:liveness-unknown',
+    });
+    expect(h.resolveSubmitterLiveness).toHaveBeenCalledWith(expectedSubmitter, { claimsHeld: false });
   });
 });

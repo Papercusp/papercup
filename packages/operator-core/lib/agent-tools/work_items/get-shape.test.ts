@@ -61,6 +61,16 @@ function envelope(rows: Array<Record<string, unknown>>): Envelope {
 }
 
 describe("shapeWorkItemsGet — the checkpoint is the payload, degraded last", () => {
+  it('preserves a standalone bounded attachment byte page through both tiers', () => {
+    const evidence = { sourceWorkItemId: 'EI-source', attachments: [], page: {
+      id: 'attachment', encoding: 'base64', data: Buffer.alloc(2048, 1).toString('base64'),
+      offset: 0, byteLength: 2048, totalBytes: 4096, nextOffset: 2048,
+    } };
+    for (const tier of ['standard', 'trimmed'] as const) {
+      const result = shapeWorkItemsGet(envelope([{ ok: true, id: 'WI-1', reportAttachments: evidence }]), tier) as Envelope;
+      expect(result.results[0].reportAttachments).toEqual(evidence);
+    }
+  });
   it('preserves the top-level read/count qualifiers and plan-item text drift', () => {
     const read = {
       schemaVersion: 'work-items-get-read-v1',

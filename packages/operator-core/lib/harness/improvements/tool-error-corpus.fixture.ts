@@ -18,6 +18,8 @@
  * (n=33/16) to keep expected no-grant identities out of the structural lane.
  * The operator admission-shed row was added 2026-10-02 from the retryable
  * `loop_pressure_critical` response captured in EI-24856174754316507.
+ * The claim-spec self-selector row was added 2026-10-07 from EI-25300889812728741;
+ * it is an expected caller refusal and must not enter the structural bug lane.
  *
  * This fixture is the corpus for BOTH:
  *   - tool-error-classifier.test.ts (pure: classifyToolError must agree per row), and
@@ -129,6 +131,12 @@ export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
     message: 'tool "coord:declare-intent" was aborted by its parent signal after the handler returned',
     expectedClass: 'caller',
     note: 'dispatch-stack reports parent-signal cancellation as `aborted`; a completed handler plus parent cancellation is not a structural defect in the named tool (EI-25269217047946890)',
+  },
+  {
+    n: 1, errorCode: 'handler_error', status: 'error',
+    message: 'cupId must be a concrete session/owner ID, not the literal "self". To read your own claim spec, use { cupId: \'su-owner-id\' } for this session.',
+    expectedClass: 'caller',
+    note: 'scheduler:get_claim_spec intentionally rejects the `self` alias and tells the caller to use a concrete owner id; do not file this expected selector refusal as a structural tool bug (EI-25300889812728741)',
   },
   {
     n: 1, errorCode: 'invalid_args', status: 'invalid_input',

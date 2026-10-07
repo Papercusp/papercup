@@ -482,7 +482,9 @@ export class HostedWorkspaceSessionBroker implements AppRelayPort {
     // The portal has no customer-held content key. A BYOC app channel is admitted
     // only when the outside app itself owns a pinned peer and hands us opaque
     // packets; the ordinary portal relay remains refused.
-    const sealed = state.binding.hosting === 'byoc' && openOptions.sealed === true;
+    // Key-advertising phones use this same sealed transport on either hosting
+    // class; retain the existing hosting policy for every other app channel.
+    const sealed = openOptions.sealed === true && (state.binding.hosting === 'byoc' || kind === 'device-http');
     if (state.binding.hosting === 'byoc' && !sealed) return null;
     const channelId = this.randomId();
     let closed = false;

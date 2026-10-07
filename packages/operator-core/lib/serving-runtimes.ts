@@ -192,7 +192,7 @@ export const CURRENT_BUILD_TEST_CLASSES = [
   },
   {
     id: 'operator-api',
-    source: 'origin/staging mirror, not the uncommitted edit tree',
+    source: 'Committed local integration branch (staging by default), loaded by maintained staging sync',
     runtime: 'staging-operator',
     route: 'http://127.0.0.1:3170 after dev:pipeline_position containment check',
     routeFile: 'apps/operator/scripts/systemd/papercup-staging-api.service.d/50-staging-checkout.conf',

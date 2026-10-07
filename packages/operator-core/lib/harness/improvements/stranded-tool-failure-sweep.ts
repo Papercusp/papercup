@@ -47,18 +47,19 @@ import {
   type ReproductionLedgerDeps,
   type ReproductionVerification,
 } from '../../attention/bug-reproduction';
-import { createImplementationReadiness } from './agent-review-policy';
+import { createImplementationReadiness, STRANDED_SWEEP_OWNER } from './agent-review-policy';
 import {
   STRANDED_REVIEW_REASONS,
   enrolPromotedToolFailureReview,
   type CaptureDeps,
 } from './capture-core';
 import { structuredToolFailureSubject } from './deployment-staleness-screen';
-import { isPersonReporterKind, PERSON_REPORTER_KINDS } from './provenance';
+import { effectiveReporter, isPersonReporterKind, PERSON_REPORTER_KINDS } from './provenance';
+
+export { STRANDED_SWEEP_OWNER };
 
 type Sql = ReturnType<typeof getOrgPg>['sql'];
 
-export const STRANDED_SWEEP_OWNER = 'system:stranded-tool-failure-sweep';
 export const STRANDED_SWEEP_BATCH = 200;
 /** How many enrolment failures a pass reports with their reason. */
 export const ENROL_FAILURE_SAMPLE = 10;
@@ -485,10 +486,11 @@ export async function sweepStrandedToolFailures(
         result.failed++;
         continue;
       }
+      const reporterId = effectiveReporter(issue).id;
       const enrolment = await enrolPromotedToolFailureReview(
         issue,
         {
-          submittedBy: STRANDED_SWEEP_OWNER,
+          submittedBy: reporterId?.trim() ? reporterId : STRANDED_SWEEP_OWNER,
           workspaceId,
           ...(row.harness_slug ? { fallbackScope: `harness:${row.harness_slug}` } : {}),
         },

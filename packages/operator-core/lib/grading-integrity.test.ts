@@ -3,8 +3,12 @@ import { poolVerdictByProvider, type AccountStatusRow } from './deployment/accou
 import type { Rubric } from './rubrics';
 import type { ScorecardRow } from './scorecards';
 import type { TaskRow } from './task-manager/types';
+import type { CoordEnvelope } from '@papercusp/coordination';
+import type { OrgSql } from './work-items';
 import {
   dispatchPendingGradingAudits,
+  confirmPendingGradingAuditReservation,
+  notifyRetainedGradingAuditor,
   GRADING_AUDIT_BACKLOG_SCAN_LIMIT,
   GRADING_AUDIT_DISPATCH_CONCURRENCY,
   GRADING_AUDIT_DISPATCH_LIMIT,
@@ -127,6 +131,8 @@ function deps() {
   const confirmReservation = vi.fn<ConfirmReservation>().mockResolvedValue(true);
   const listTasks = vi.fn<ListTasks>().mockResolvedValue([]);
   const getTask = vi.fn<GetTask>().mockResolvedValue({ state: 'running' } as Awaited<ReturnType<GetTask>>);
+  const notifyRetainedAuditor = vi.fn<typeof notifyRetainedGradingAuditor>()
+    .mockResolvedValue({ state: 'delivered', ownerId: 'su-independent', msgId: 'renewal-1', queued: 1, pickupConfirmed: false });
   const readCurrentGeneration = vi.fn<ReadCurrentGeneration>().mockResolvedValue({
     deployedSha: '2222222',
     hostStartedAt: null,
@@ -146,11 +152,158 @@ function deps() {
     release,
     listTasks,
     getTask,
+    notifyRetainedAuditor,
     readCurrentGeneration,
     generationAncestry,
     listWorkspaceWideLoopStanddownOwners,
   };
 }
+
+describe('retained grading auditor lease delivery (EI-25289706163098558)', () => {
+  type RenewalDeps = NonNullable<Parameters<typeof notifyRetainedGradingAuditor>[1]>;
+  function fixture() {
+    const target = card('EI-renew', { createdBy: 'su-author', evidenceFingerprint: 'exact-fingerprint' });
+    const task = { taskId: 'task-retained', workspaceId: 'ws-test', class: 'agent-session', state: 'running',
+      workItemId: target.issueId, detail: { label: 'grading-audit:EI-renew:relay-route', coordOwnerId: 'su-independent' },
+      // The launcher is deliberately NOT the task owner.
+      launchedBy: 'su-author',
+    } as unknown as TaskRow;
+    const input = { card: target, task, workspaceId: 'ws-test', harness: 'papercusp',
+      reservation: { key: 'grading-audit:EI-renew', reservedAt: '2026-10-07T04:00:51.909Z' } };
+    const tx = vi.fn(async () => [{ task_id: task.taskId }]);
+    const db = tx as unknown as OrgSql;
+    const stored = new Map<string, CoordEnvelope>();
+    // Model the EXISTING append seam's replay serialization, with preparation
+    // skipped on a replay and failed preparation leaving no persisted line.
+    let tail = Promise.resolve();
+    const append = vi.fn<NonNullable<RenewalDeps['append']>>(async (_surface, _writer, envelope, hooks) => {
+      const previous = tail;
+      let unlock!: () => void;
+      tail = new Promise<void>((resolve) => { unlock = resolve; });
+      await previous;
+      try {
+        const existing = stored.get(envelope.msg_id);
+        if (existing) return { created: false, sequence: 1, envelope: existing };
+        const prepared = hooks?.prepare ? await hooks.prepare(db) : envelope;
+        stored.set(envelope.msg_id, prepared);
+        return { created: true, sequence: 1, envelope: prepared };
+      } finally { unlock(); }
+    });
+    const send = vi.fn<NonNullable<RenewalDeps['send']>>(async (identity, options) => {
+      const envelope = { msg_id: options.msgId!, from: identity.ownerId, to: options.to, kind: 'message',
+        ts: '2026-10-07T05:00:00.000Z', summary: options.summary, body: options.body } as CoordEnvelope;
+      return options.persistEnvelope!(envelope);
+    });
+    const wake = vi.fn<NonNullable<RenewalDeps['wake']>>().mockResolvedValue({ targets: ['su-independent'],
+      keys: [], woken: 1, queued: 1, pickupConfirmed: false } as unknown as Awaited<ReturnType<NonNullable<RenewalDeps['wake']>>>);
+    const confirmReservation = vi.fn<ConfirmReservation>().mockResolvedValue(true);
+    const resolveParties = vi.fn<NonNullable<RenewalDeps['resolveParties']>>(async (ids) =>
+      new Map(ids.map((id) => [id!, id!])));
+    const mutex: NonNullable<RenewalDeps['mutex']> = async (_workspace, _issue, fn) => fn();
+    return { input, stored, tx, db, d: { append, send, wake, confirmReservation, resolveParties, mutex } };
+  }
+
+  it('delivers the exact renewed lease to the authoritative independent task owner and queues one wake', async () => {
+    const f = fixture();
+    const result = await notifyRetainedGradingAuditor(f.input, f.d);
+    expect(result).toMatchObject({ state: 'delivered', ownerId: 'su-independent', queued: 1, pickupConfirmed: false });
+    const [identity, sent] = f.d.send.mock.calls[0]!;
+    expect(identity.ownerId).toBe(GRADING_AUDIT_DISPATCH_ACTOR);
+    expect(sent.to).toEqual(['su-independent']);
+    expect(sent.body).toContain("exact target 'EI-renew' and evidence fingerprint 'exact-fingerprint'");
+    expect(sent.body).toContain("reservedAt '2026-10-07T04:00:51.909Z'");
+    expect(sent.body).toContain("gradingAudit.state is 'pending'");
+    expect(sent.body).toContain("subjectRubricCurrentness");
+    expect(f.d.confirmReservation).toHaveBeenCalledWith('EI-renew', 'grading-audit:EI-renew', {
+      workspaceId: 'ws-test', reservedAt: f.input.reservation.reservedAt, expectedCard: f.input.card, tx: f.db,
+    });
+    const [query, ...bindings] = f.tx.mock.calls[0] as unknown as [TemplateStringsArray, ...unknown[]];
+    expect(query.join('?')).toContain("detail->>'coordOwnerId' = ? AND detail->>'label' = ?");
+    expect(query.join('?')).toContain("state IN ('pending', 'running')");
+    expect(query.join('?')).toContain('FOR SHARE');
+    expect(bindings).toEqual(['ws-test', 'task-retained', 'su-independent', 'grading-audit:EI-renew:relay-route', 'EI-renew']);
+    expect(f.d.wake).toHaveBeenCalledTimes(1);
+    expect(f.stored.size).toBe(1);
+  });
+
+  it('deduplicates concurrent renewal notifications and their wake for the same lease', async () => {
+    const f = fixture();
+    const results = await Promise.all(Array.from({ length: 4 }, () => notifyRetainedGradingAuditor(f.input, f.d)));
+    expect(results.map((r) => r.state).sort()).toEqual(['already-delivered', 'already-delivered', 'already-delivered', 'delivered']);
+    expect(new Set(results.map((r) => r.msgId)).size).toBe(1);
+    expect(f.stored.size).toBe(1);
+    expect(f.d.confirmReservation).toHaveBeenCalledTimes(1);
+    expect(f.d.wake).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['owner', 'target', 'label-boundary', 'task-state', 'workspace', 'fingerprint', 'lease-key', 'task-class'])
+  ('refuses mismatched or missing %s provenance without notifying another actor', async (field) => {
+    const f = fixture();
+    if (field === 'owner') delete f.input.task.detail.coordOwnerId;
+    if (field === 'target') f.input.task.workItemId = 'EI-other';
+    if (field === 'label-boundary') f.input.task.detail.label = 'grading-audit:EI-renew-other';
+    if (field === 'task-state') f.input.task.state = 'exited';
+    if (field === 'workspace') f.input.task.workspaceId = 'other';
+    if (field === 'fingerprint') f.input.card.evidenceFingerprint = undefined;
+    if (field === 'lease-key') f.input.reservation.key = 'grading-audit:EI-other';
+    if (field === 'task-class') f.input.task.class = 'bash-job';
+    expect(await notifyRetainedGradingAuditor(f.input, f.d)).toMatchObject({ state: 'skipped' });
+    expect(f.d.send).not.toHaveBeenCalled();
+    expect(f.d.wake).not.toHaveBeenCalled();
+  });
+
+  it('refuses a retired or rebound task discovered at commit time', async () => {
+    const f = fixture();
+    f.tx.mockResolvedValue([]);
+    expect(await notifyRetainedGradingAuditor(f.input, f.d)).toMatchObject({ state: 'failed', reason: expect.stringContaining('changed or retired') });
+    expect(f.stored.size).toBe(0);
+    expect(f.d.wake).not.toHaveBeenCalled();
+  });
+
+  it.each(['same-party', 'unknown-party'])('fails closed on %s independence at the transaction boundary', async (kind) => {
+    const f = fixture();
+    f.d.resolveParties.mockResolvedValue(kind === 'same-party'
+      ? new Map([['su-author', 'same'], ['su-independent', 'same']]) : new Map([['su-author', 'author']]));
+    expect(await notifyRetainedGradingAuditor(f.input, f.d)).toMatchObject({ state: 'failed', reason: 'retained auditor independence is not proven' });
+    expect(f.stored.size).toBe(0);
+    expect(f.d.wake).not.toHaveBeenCalled();
+  });
+
+  it('abandons delivery if the target settles, fingerprint changes or another lease wins before append', async () => {
+    const f = fixture();
+    f.d.confirmReservation.mockResolvedValue(false);
+    expect(await notifyRetainedGradingAuditor(f.input, f.d)).toMatchObject({ state: 'failed', reason: expect.stringContaining('target/fingerprint/lease changed') });
+    expect(f.stored.size).toBe(0);
+    expect(f.tx).not.toHaveBeenCalled();
+    expect(f.d.wake).not.toHaveBeenCalled();
+  });
+
+  it('preserves a delivered directive on wake failure without duplicating its notification', async () => {
+    const f = fixture();
+    f.d.wake.mockRejectedValue(new Error('wake unavailable'));
+    expect(await notifyRetainedGradingAuditor(f.input, f.d)).toMatchObject({
+      state: 'delivered', reason: expect.stringContaining('notification persisted'), pickupConfirmed: false,
+    });
+    expect(await notifyRetainedGradingAuditor(f.input, f.d)).toMatchObject({ state: 'already-delivered' });
+    expect(f.stored.size).toBe(1);
+    expect(f.d.wake).toHaveBeenCalledTimes(1);
+  });
+
+  it('confirms fingerprint, author, rubric and lease on the same supplied transaction', async () => {
+    const tx = vi.fn(async () => []);
+    const current = await confirmPendingGradingAuditReservation('EI-renew', 'grading-audit:EI-renew', {
+      workspaceId: 'ws-test', reservedAt: 'renewed-at', tx: tx as unknown as OrgSql,
+      expectedCard: card('EI-renew', { createdBy: 'su-author', evidenceFingerprint: 'exact-fingerprint' }),
+    });
+    expect(current).toBe(false);
+    const [query, ...bindings] = tx.mock.calls[0] as unknown as [TemplateStringsArray, ...unknown[]];
+    for (const clause of ["'state' = 'pending'", "'reservedAt' = ?", "'evidenceFingerprint' = ?",
+      'scorecard.created_by = ?', "'rubricRef' = ?", "'retracted' IS NULL", 'NOT EXISTS', 'FOR UPDATE']) {
+      expect(query.join('?')).toContain(clause);
+    }
+    expect(bindings).toEqual(expect.arrayContaining(['EI-renew', 'grading-audit:EI-renew', 'renewed-at', 'exact-fingerprint', 'su-author', 'standard-rubric']));
+  });
+});
 
 describe('dispatchPendingGradingAudits', () => {
   it('does not dispatch an audit for a stale or unbound rubric-subject attestation', async () => {
@@ -697,6 +850,7 @@ describe('dispatchPendingGradingAudits', () => {
           key: 'grading-audit:EI-live-auditor',
           reservedAt: '2026-09-08T00:00:00.000Z',
         },
+        renewalNotification: { state: 'delivered', ownerId: 'su-independent', msgId: 'renewal-1', queued: 1, pickupConfirmed: false },
         launch: {
           deduped: true,
           opened: 0,
@@ -722,6 +876,11 @@ describe('dispatchPendingGradingAudits', () => {
     });
     expect(d.route).not.toHaveBeenCalled();
     expect(d.launch).not.toHaveBeenCalled();
+    expect(d.notifyRetainedAuditor).toHaveBeenCalledWith(expect.objectContaining({
+      card: expect.objectContaining({ issueId: 'EI-live-auditor' }),
+      task: expect.objectContaining({ taskId: 'task-old-auditor' }),
+      reservation: { key: 'grading-audit:EI-live-auditor', reservedAt: '2026-09-08T00:00:00.000Z' },
+    }));
     expect(d.release).toHaveBeenCalledWith('EI-live-auditor', 'grading-audit:EI-live-auditor', {
       workspaceId: 'ws-test',
       reservedAt: '2026-09-08T00:00:00.000Z',
@@ -757,12 +916,50 @@ describe('dispatchPendingGradingAudits', () => {
 
     expect(result.receipts[0]).toMatchObject({ state: 'deduped', idempotencyKey: 'grading-audit:EI-long-audit' });
     expect(result.receipts[0]).toHaveProperty('dispatchReservation', auditorLease);
+    expect(d.notifyRetainedAuditor).not.toHaveBeenCalled();
     expect(d.launch).not.toHaveBeenCalled();
     expect(d.release).toHaveBeenCalledTimes(1);
     expect(d.release).toHaveBeenCalledWith('EI-long-audit', 'grading-audit:EI-long-audit', {
       workspaceId: 'ws-test',
       reservedAt: '2026-09-08T00:00:00.000Z',
       restore: auditorLease,
+    });
+  });
+
+  it('does not hand off a renewed lease after losing the restore CAS', async () => {
+    const d = deps();
+    d.listScorecards.mockResolvedValue([card('EI-renew')]);
+    d.listTasks.mockResolvedValue([{ taskId: 'retained', state: 'running', detail: { label: 'grading-audit:EI-renew' } } as unknown as TaskRow]);
+    d.release.mockResolvedValue(false);
+    const result = await dispatchPendingGradingAudits({ targetIds: ['EI-renew'], ctx }, d);
+    expect(result.receipts[0]).toMatchObject({ state: 'skipped', reason: expect.stringContaining('CAS lost') });
+    expect(result.receipts[0]).not.toHaveProperty('dispatchReservation');
+    expect(d.notifyRetainedAuditor).not.toHaveBeenCalled();
+    expect(d.route).not.toHaveBeenCalled();
+    expect(d.launch).not.toHaveBeenCalled();
+  });
+
+  it('does not guess an auditor when multiple live tasks claim the target', async () => {
+    const d = deps();
+    d.listScorecards.mockResolvedValue([card('EI-renew')]);
+    d.listTasks.mockResolvedValue(['first', 'second'].map((taskId) => ({ taskId, state: 'running',
+      detail: { label: 'grading-audit:EI-renew' } } as unknown as TaskRow)));
+    const result = await dispatchPendingGradingAudits({ targetIds: ['EI-renew'], ctx }, d);
+    expect(result.receipts[0]).toMatchObject({ state: 'deduped', renewalNotification: { state: 'skipped', reason: expect.stringContaining('ambiguous') } });
+    expect(d.notifyRetainedAuditor).not.toHaveBeenCalled();
+    expect(d.launch).not.toHaveBeenCalled();
+  });
+
+  it('clears only the undelivered renewal epoch so a scheduled repair can retry', async () => {
+    const d = deps();
+    d.listScorecards.mockResolvedValue([card('EI-renew')]);
+    d.listTasks.mockResolvedValue([{ taskId: 'retained', state: 'running', detail: { label: 'grading-audit:EI-renew' } } as unknown as TaskRow]);
+    d.notifyRetainedAuditor.mockResolvedValue({ state: 'failed', reason: 'delivery unavailable' });
+    const result = await dispatchPendingGradingAudits({ targetIds: ['EI-renew'], ctx }, d);
+    expect(result.receipts[0]).toMatchObject({ renewalNotification: { state: 'failed' } });
+    expect(d.release).toHaveBeenCalledTimes(2);
+    expect(d.release).toHaveBeenLastCalledWith('EI-renew', 'grading-audit:EI-renew', {
+      workspaceId: 'ws-test', reservedAt: '2026-09-08T00:00:00.000Z',
     });
   });
 
@@ -2368,7 +2565,7 @@ describe('resolveGradingAuditQuotaBackoff', () => {
   });
 });
 
-describe('terminal grading-audit failures record a backoff only for a quota wall', () => {
+describe('terminal grading-audit failures record a reset-aware or generic backoff', () => {
   const NOW = Date.parse('2026-09-11T16:00:00.000Z');
   // Verbatim shape of the launcher refusal, taken from the real fleet logs.
   const WALLED_POOL_REFUSAL =
@@ -2425,7 +2622,7 @@ describe('terminal grading-audit failures record a backoff only for a quota wall
     });
   });
 
-  it('does NOT suppress a non-quota terminal failure, even with a recoverable reset on the ledger', async () => {
+  it('uses the generic retry window for a non-quota terminal failure despite an unrelated account reset', async () => {
     const d = deps();
     d.listScorecards.mockResolvedValue([card('EI-dead-receipt-twice')]);
     d.launch.mockResolvedValue(
@@ -2451,10 +2648,8 @@ describe('terminal grading-audit failures record a backoff only for a quota wall
         sleep: async () => undefined,
         terminalLogMaxRechecks: 0,
         now: () => NOW,
-        // A live, recoverable reset IS available. If the gate on
-        // `model_quota_exhausted` were ever dropped, this arm would start
-        // producing a backoff and the assertions below would fail — which is
-        // the point of supplying it rather than an empty ledger.
+        // A live, recoverable reset is available, but this failure is not a
+        // quota error; it must use the generic retry window, not that reset.
         readProviderResets: async () => [NOW + 40 * 60_000],
       },
     );
@@ -2465,12 +2660,72 @@ describe('terminal grading-audit failures record a backoff only for a quota wall
         codes: ['task_receipt_not_live', 'task_receipt_not_live'],
       }),
     });
-    // Exact third argument: no `backoff` key at all, so the next sweep retries.
     expect(d.release).toHaveBeenCalledWith('EI-dead-receipt-twice', 'grading-audit:EI-dead-receipt-twice', {
       workspaceId: 'ws-test',
       reservedAt: '2026-09-08T00:00:00.000Z',
+      backoff: {
+        until: new Date(NOW + GRADING_AUDIT_FAILURE_BACKOFF_MS).toISOString(),
+        source: 'retry-window',
+        code: 'task_receipt_not_live',
+        recordedAt: new Date(NOW).toISOString(),
+        reason: 'terminal task_receipt_not_live; suppressing re-dispatch for a bounded retry window',
+      },
     });
-    expect(result.receipts[0]?.reason).not.toContain('suppressed');
+    expect(result.receipts[0]?.reason).toContain('re-dispatch suppressed until');
+  });
+
+  it('records a generic retry window after both auditor legs terminate on gateway errors', async () => {
+    const d = deps();
+    d.listScorecards.mockResolvedValue([card('EI-double-gateway-error')]);
+    d.launch
+      .mockResolvedValueOnce(launchResult({
+        deduped: false,
+        launch: { tasks: [{ taskId: 'task-gateway-primary', logPath: '/tmp/gateway-primary.log' }] },
+      }))
+      .mockResolvedValueOnce(launchResult({
+        deduped: false,
+        launch: { tasks: [{ taskId: 'task-gateway-fallback', logPath: '/tmp/gateway-fallback.log' }] },
+      }));
+    const killTask = vi.fn(async (taskId: string) => ({ ok: true as const, taskId, action: 'kill' }));
+    const gatewayError =
+      'API Error: Request rejected (429) · inference-gateway: all accounts throttled; retry after 60s\n' +
+      '✻ Worked for 13m 45s · done 9:09 AM\n❯';
+
+    const result = await dispatchPendingGradingAudits(
+      { targetIds: ['EI-double-gateway-error'], ctx },
+      {
+        ...d,
+        killTask,
+        readLogTail: () => gatewayError,
+        sleep: async () => undefined,
+        terminalLogRecheckDelayMs: 0,
+        terminalLogMaxRechecks: 0,
+        now: () => NOW,
+        // The available account reset must not be mistaken for a quota-classified
+        // failure; this is an inference_gateway_error and uses retry-window.
+        readProviderResets: async () => [NOW + 40 * 60_000],
+      },
+    );
+
+    expect(result.receipts[0]).toMatchObject({
+      state: 'failed',
+      terminalRecovery: {
+        attempts: 2,
+        codes: ['inference_gateway_error', 'inference_gateway_error'],
+      },
+      reason: expect.stringContaining('re-dispatch suppressed until'),
+    });
+    expect(d.release).toHaveBeenCalledWith('EI-double-gateway-error', 'grading-audit:EI-double-gateway-error', {
+      workspaceId: 'ws-test',
+      reservedAt: '2026-09-08T00:00:00.000Z',
+      backoff: {
+        until: new Date(NOW + GRADING_AUDIT_FAILURE_BACKOFF_MS).toISOString(),
+        source: 'retry-window',
+        code: 'inference_gateway_error',
+        recordedAt: new Date(NOW).toISOString(),
+        reason: 'terminal inference_gateway_error; suppressing re-dispatch for a bounded retry window',
+      },
+    });
   });
 });
 

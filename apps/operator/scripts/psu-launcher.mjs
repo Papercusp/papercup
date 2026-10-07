@@ -14699,13 +14699,25 @@ export function formatSessionPortInspection(result) {
   const i = result?.inspection;
   if (!i) return ["psu: session-port inspection unavailable"];
   const s = i.stats ?? {};
+  const sourceBackend =
+    { claude: "Claude", codex: "Codex", omp: "OMP" }[i.source?.backend] ??
+    "unknown";
+  // The inspector computes this from the prepared target owner. A port can
+  // continue the source identity or launch an isolated answering identity.
+  const authority = i.disclosure?.authorityCarried;
+  const authorityLine =
+    authority === true
+      ? "psu: continuity — creates a NEW native target session while preserving the source coordination identity; fleet/loop/claims/modes/awaits/locks continue on the target."
+      : authority === false
+        ? `psu: isolation — creates a NEW native target session with distinct coordination identity ${i.target?.ownerId ?? "unknown"}; source authority (fleet/loop/claims/modes/awaits/locks) is not carried to the target.`
+        : "psu: authority — creates a NEW native target session; coordination identity continuity is unknown (inspection did not declare authorityCarried).";
   return [
-    `psu: cross-backend port preview — Claude session #${i.source?.advSessionId} → ${i.target?.backend}/${i.target?.model ?? "default"}`,
+    `psu: cross-backend port preview — ${sourceBackend} session #${i.source?.advSessionId} → ${i.target?.backend}/${i.target?.model ?? "default"}`,
     `psu: source snapshot — ${i.source?.snapshotKind}, ${i.source?.completeBytes ?? "?"} bytes, sha256 ${String(i.source?.sha256 ?? "").slice(0, 12)}…`,
     `psu: fidelity — ${i.requiresSummary ? "summary + recent tail (target budget requires summarization)" : "full active-path history"}; complete payload upper bound ${i.fullPayloadEstimatedTokens ?? i.fullHistoryEstimatedTokens ?? "?"} tokens / ${i.target?.availableInputTokens ?? "?"} available (${i.tokenEstimator ?? "unspecified estimator"})`,
     `psu: sanitization — ${s.redactions ?? 0} secret redaction(s), ${s.omittedThinkingBlocks ?? 0} thinking block(s) omitted, ${s.omittedSignatureBlocks ?? 0} signature block(s) omitted, ${s.omittedAttachments ?? 0} binary attachment omission(s), ${s.textAttachments ?? 0} text attachment(s) preserved, ${s.truncatedAttachments ?? 0} attachment truncation(s), ${s.unsupportedBlocks ?? 0} unsupported block(s), ${s.sidechainRecords ?? 0} sidechain record(s) excluded`,
     `psu: egress — target ${i.disclosure?.targetEgress ?? "unknown"}${i.disclosure?.summarizerEgress ? `; summarizer ${i.disclosure.summarizerEgress}` : "; no summarizer egress"}`,
-    "psu: continuity — creates a NEW native target session while preserving the source coordination identity; fleet/loop/claims/modes/awaits/locks continue on the target.",
+    authorityLine,
     ...(Array.isArray(i.warnings)
       ? i.warnings.map((w) => `psu: source warning — ${w}`)
       : []),

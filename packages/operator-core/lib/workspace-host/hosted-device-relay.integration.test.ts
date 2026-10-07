@@ -1,19 +1,21 @@
 /** D-019: real broker → outbound connector → workspace host, with opaque phone ingress. */
 import { EventEmitter } from 'node:events';
+import { createHmac } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import SecretStream from '@hyperswarm/secret-stream';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   HostedWorkspaceSessionBroker,
   HOSTED_WORKSPACE_MAX_MESSAGE_BYTES,
 } from '../endpoint-route/hosted-workspace-session';
 import type { HostedConnectorBinding } from '../endpoint-route/hosted-workspace-connector';
-import { ByocSealedChannel, isByocSealedPacket } from './byoc-sealed-channel';
+import { BYOC_SEALED_PROTOCOL, ByocSealedChannel, isByocSealedPacket } from './byoc-sealed-channel';
 import { HostedWorkspaceConnectorClient } from './hosted-connector-client';
 import { HostedWorkspaceHostSessionAdapter } from './hosted-session-host';
 import { attachSealedDeviceSocket, DEVICE_RELAY_INGRESS_MARKER } from './hosted-app-relay';
 import { EXTERNAL_INGRESS_MARKER_HEADER } from '../auth/forwarded-request-trust';
 import { HOSTED_OPERATOR_HTTP_BODY_CHUNK_BYTES, HOSTED_OPERATOR_HTTP_MAX_REQUEST_BODY_BYTES } from './hosted-operator-http';
+import { __resetDeviceJwtForTest, verifyDeviceToken } from '../device-jwt';
 
 class WireSocket extends EventEmitter {
   readonly OPEN = 1;
@@ -50,11 +52,31 @@ const binding: HostedConnectorBinding = {
   customerWorkspaceId: 'byoc-1', hostId: 'host-1', routeLabel: 'byoc',
   generation: 1, transport: 'websocket', state: 'active', hosting: 'byoc',
 };
-const jwt = (sub: string) => `eyJhbGciOiJIUzI1NiJ9.${Buffer.from(JSON.stringify({ sub })).toString('base64url')}.c2ln`;
+// Independent token producer: the relay/VM verifier must check signatures,
+// expiry and device kind, rather than agree with a mocked authorization answer.
+const jwtSecret = 'sealed-device-integration-secret-padding';
+let fixtureExpiresAt: number;
+const jwt = (sub: string, exp = fixtureExpiresAt) => {
+  const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
+  const payload = Buffer.from(JSON.stringify({ sub, workspace_id: 'byoc-1', device_kind: 'mobile', exp })).toString('base64url');
+  const signature = createHmac('sha256', jwtSecret).update(`${header}.${payload}`).digest('base64url');
+  return `${header}.${payload}.${signature}`;
+};
 const cleanup: Array<() => void> = [];
-afterEach(() => { for (const close of cleanup.splice(0)) close(); });
+beforeEach(() => {
+  // One expiry per test keeps independently produced tokens byte-identical
+  // when a transport round trip crosses a wall-clock second.
+  fixtureExpiresAt = Math.floor(Date.now() / 1000) + 3600;
+  vi.stubEnv('MOBILE_JWT_SECRET', jwtSecret);
+  __resetDeviceJwtForTest();
+});
+afterEach(() => {
+  for (const close of cleanup.splice(0)) close();
+  vi.unstubAllEnvs();
+  __resetDeviceJwtForTest();
+});
 
-async function assembled(options: { registered?: boolean; responseBody?: string; status?: number } = {}) {
+async function assembled(options: { registered?: boolean; responseBody?: string; status?: number; hosting?: 'byoc' | 'papercusp' } = {}) {
   const captures: string[] = [];
   const phoneKey = SecretStream.keyPair(Buffer.alloc(32, 51));
   const hostKey = SecretStream.keyPair(Buffer.alloc(32, 52));
@@ -78,10 +100,12 @@ async function assembled(options: { registered?: boolean; responseBody?: string;
           fetch: async (url, init) => {
             const headers = new Headers(init.headers);
             fetched.push({ url, headers, body: init.body ? Buffer.from(init.body as Uint8Array).toString() : '' });
-            // The VM owns JWT verification. This HTTP peer models its refusal,
-            // while the real host adapter enforces the proven-key/sub binding.
+            // The HTTP peer uses the production VM JWT verifier. Device storage
+            // and route handlers remain controlled here; this is not live VM acceptance.
             const paired = url.endsWith('/api/device/pair');
-            const status = paired || headers.get('authorization') === `Bearer ${jwt('phone-1')}` ? options.status ?? 200 : 401;
+            const token = headers.get('authorization')?.replace(/^Bearer /, '') ?? '';
+            const claims = verifyDeviceToken(token);
+            const status = paired || (claims?.sub === 'phone-1' && claims.workspace_id === 'byoc-1') ? options.status ?? 200 : 401;
             return new Response(options.responseBody ?? '{"secret":"DEVICE_CONTENT_MARKER"}', {
               status, headers: { 'content-type': 'application/json' },
             });
@@ -103,7 +127,7 @@ async function assembled(options: { registered?: boolean; responseBody?: string;
     connectorWire.control.close();
   });
   client.start();
-  broker.attachConnector(binding, connectorWire.control);
+  broker.attachConnector({ ...binding, hosting: options.hosting ?? binding.hosting }, connectorWire.control);
   await vi.waitFor(() => expect(adapter).toBeDefined());
   expect(attachSealedDeviceSocket(broker, binding.customerWorkspaceId, phoneWire.control)).toBe(true);
   phoneWire.peer.on('message', (data: Buffer) => {
@@ -131,8 +155,20 @@ async function assembled(options: { registered?: boolean; responseBody?: string;
 }
 
 describe('assembled sealed device ingress (D-019)', () => {
-  it('operates without a portal session ticket and keeps device content encrypted on both relay wires', async () => {
-    const run = await assembled();
+  it('keeps the fixture bearer stable across wall-clock seconds while preserving expiry verification', () => {
+    const token = jwt('phone-1');
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 1000);
+    try {
+      expect(jwt('phone-1')).toBe(token);
+      expect(verifyDeviceToken(token)?.sub).toBe('phone-1');
+      expect(verifyDeviceToken(jwt('phone-1', Math.floor(Date.now() / 1000) - 60))).toBeNull();
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it.each(['byoc', 'papercusp'] as const)('operates against %s without a portal session ticket and keeps device content encrypted on both relay wires', async (hosting) => {
+    const run = await assembled({ hosting });
     const response = await run.request('chat-1', '/api/device/operator/converse', {
       body: Buffer.from('PHONE_CONTENT_MARKER').toString('base64'),
     });
@@ -171,6 +207,23 @@ describe('assembled sealed device ingress (D-019)', () => {
     });
     expect(run.fetched[0].headers.get('authorization')).toBeNull();
     expect(response.find((frame) => frame.type === 'http.response')?.status).toBe(401);
+  });
+
+  it('refuses missing, forged and expired device bearers through the assembled sealed relay', async () => {
+    const run = await assembled();
+    const valid = jwt('phone-1');
+    const forged = `${valid.slice(0, valid.lastIndexOf('.') + 1)}${Buffer.alloc(32).toString('base64url')}`;
+    for (const [index, authorization] of [undefined, 'Bearer pcapp_not-a-device', `Bearer ${forged}`, `Bearer ${jwt('phone-1', 1)}`].entries()) {
+      const response = await run.request(`invalid-bearer-${index}`, '/api/device/heartbeat', {
+        headers: authorization ? { authorization } : {},
+      });
+      expect(response.find((frame) => frame.type === 'http.response')?.status).toBe(401);
+    }
+    const accepted = await run.request('valid-bearer', '/api/device/heartbeat', {
+      headers: { authorization: `Bearer ${valid}` },
+    });
+    expect(accepted.find((frame) => frame.type === 'http.response')?.status).toBe(200);
+    expect(run.phoneWire.control.readyState).toBe(1);
   });
 
   it('denies desktop mint, tools and MCP even inside valid sealed packets', async () => {
@@ -238,6 +291,31 @@ describe('assembled sealed device ingress (D-019)', () => {
       await vi.waitFor(() => expect(run.phoneWire.control.closeCode).toBe(4403));
       expect(run.fetched).toEqual([]);
     }
+  });
+
+  it('refuses plaintext disguised as a sealed packet even after a valid Noise handshake', async () => {
+    const run = await assembled();
+    const plaintext = Buffer.from(JSON.stringify({
+      type: 'http.request', requestId: 'fake-sealed', method: 'POST', path: '/api/device/heartbeat',
+      headers: { authorization: `Bearer ${jwt('phone-1')}` },
+    }));
+    // SecretStream's transport has a three-byte little-endian length prefix.
+    // Supply a complete record so the test reaches ciphertext authentication,
+    // rather than leaving an arbitrary byte prefix waiting for more data.
+    const record = Buffer.alloc(3 + plaintext.length);
+    record.writeUIntLE(plaintext.length, 0, 3);
+    plaintext.copy(record, 3);
+    // An envelope and base64 are not encryption. The real responder must
+    // authenticate the ciphertext before delivering any application content.
+    run.phoneWire.peer.send(JSON.stringify({
+      type: 'sealed.packet', protocol: BYOC_SEALED_PROTOCOL, contentType: 'http.request',
+      packet: record.toString('base64'),
+    }));
+    await vi.waitFor(() => expect(
+      run.phoneWire.control.readyState !== 1 || run.frames.some((frame) => frame.requestId === 'fake-sealed'),
+    ).toBe(true));
+    expect(run.fetched).toEqual([]);
+    expect(run.phoneWire.control.readyState).not.toBe(1);
   });
 
   it('refuses offline or wrong-workspace ingress without opening a channel', () => {

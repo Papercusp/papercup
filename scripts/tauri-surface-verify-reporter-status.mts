@@ -41,7 +41,7 @@ const result = await runHarness({
     const ev = (script: string) => native('eval', script);
     const wait = (script: string) => native('wait', '--eval', script, '--timeout', '60000', '--interval', '500');
     const clickText = (text: string) => ev(`(()=>{const b=[...document.querySelectorAll('button')].find(b=>b.textContent.trim()===${JSON.stringify(text)});if(!b)throw Error('missing button');b.click();return true})()`);
-    const type = (selector: string, text: string) => ev(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});if(!e)throw Error('missing textarea');Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(e,${JSON.stringify(text)});e.dispatchEvent(new Event('input',{bubbles:true}));return true})()`);
+    const type = (selector: string, text: string) => ev(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});if(!e)throw Error('missing report field');const prototype=e instanceof HTMLInputElement?HTMLInputElement.prototype:HTMLTextAreaElement.prototype;Object.getOwnPropertyDescriptor(prototype,'value').set.call(e,${JSON.stringify(text)});e.dispatchEvent(new Event('input',{bubbles:true}));return true})()`);
     const capture = (name: string) => {
       writeFileSync(join(ctx.evidenceDir, `${name}.json`), ev('JSON.stringify({url:location.href,body:document.body.innerText})'));
       native('screenshot', '--output', join(ctx.evidenceDir, `${name}.png`));
@@ -59,9 +59,9 @@ const result = await runHarness({
       assert.equal((await getHiveByPubkey(ws, invite.pubkeyBase64, sql))?.pubkeyBase64, invite.pubkeyBase64);
       ctx.markStep('submit-previewed-report');
       native('navigate', '/inbox?report=true', '--json');
-      wait("!!document.querySelector('[data-testid=report-problem-dialog] textarea')");
+      wait("!!document.querySelector('[data-testid=report-problem-text]')");
       const marker = `P016 export crashes ${Date.now()}`;
-      type('[data-testid=report-problem-dialog] textarea', marker);
+      type('[data-testid=report-problem-text]', marker);
       clickText('Review');
       wait("!!document.querySelector('[data-testid=report-problem-dialog] pre')");
       capture('preview');

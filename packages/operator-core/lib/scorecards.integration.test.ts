@@ -996,6 +996,56 @@ describe('readScorecardEvidence audit-target status (EI-24583166035391772) — r
       subject: { kind: 'rubric', ref: 'no-such-rubric-for-audit-target' },
     }, '2026-06-21T10:04:00Z');
 
+    const bindingWorkItemId = 'WI-audit-target-binding';
+    const bindingPlanSlug = 'test-audit-target-binding';
+    const bindingSpecId = 'SPEC-1';
+    const bindingSpecFingerprint = 'a'.repeat(64);
+    await db.adminSql`
+      INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug)
+      VALUES (${issuesScopeWorkspace()}, 'papercusp', ${bindingPlanSlug})`;
+    await db.adminSql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, item_kind, status, admission, title, summary, payload)
+      VALUES (${issuesScopeWorkspace()}, 'papercusp', ${bindingWorkItemId}, 'bug', 'open', 'admitted',
+        'Audit target binding fixture', '', '{}'::jsonb)`;
+    const bindingId = await db.adminSql.begin(async (tx) => {
+      // The identity → immutable revision → pointer update is one transaction
+      // because the current-revision FK is deferred until commit.
+      await tx`
+        INSERT INTO harness_shared.plan_spec_clauses
+          (workspace_id, harness_slug, plan_slug, spec_id, current_revision, created_by)
+        VALUES (${issuesScopeWorkspace()}, 'papercusp', ${bindingPlanSlug}, ${bindingSpecId}, 0, 'su-test')`;
+      await tx`
+        INSERT INTO harness_shared.plan_spec_clause_revisions
+          (workspace_id, harness_slug, plan_slug, spec_id, revision, plan_item_id, behavior,
+           behavior_class, lifecycle_status, content_hash, created_by)
+        VALUES (${issuesScopeWorkspace()}, 'papercusp', ${bindingPlanSlug}, ${bindingSpecId}, 1,
+          'P-001', 'A cited binding becomes stale after retraction.', 'lifecycle', 'draft',
+          ${bindingSpecFingerprint}, 'su-test')`;
+      await tx`
+        UPDATE harness_shared.plan_spec_clauses SET current_revision = 1
+         WHERE workspace_id = ${issuesScopeWorkspace()} AND harness_slug = 'papercusp'
+           AND plan_slug = ${bindingPlanSlug} AND spec_id = ${bindingSpecId}`;
+      await tx`
+        INSERT INTO harness_shared.work_item_spec_revision_edges
+          (workspace_id, harness_slug, work_item_id, plan_slug, spec_id, spec_revision, spec_fingerprint, created_by)
+        VALUES (${issuesScopeWorkspace()}, 'papercusp', ${bindingWorkItemId}, ${bindingPlanSlug},
+          ${bindingSpecId}, 1, ${bindingSpecFingerprint}, 'su-test')`;
+      const [row] = await tx<Array<{ id: number }>>`
+        INSERT INTO harness_shared.spec_evidence_bindings
+          (workspace_id, harness_slug, work_item_id, plan_slug, spec_id, spec_revision, spec_fingerprint,
+           evidence_kind, evidence_ref, source_fingerprint, binding_fingerprint, created_by)
+        VALUES (${issuesScopeWorkspace()}, 'papercusp', ${bindingWorkItemId}, ${bindingPlanSlug},
+          ${bindingSpecId}, 1, ${bindingSpecFingerprint}, 'mutation', 'test-run:scorecard-binding',
+          'source-fingerprint', ${'b'.repeat(64)}, 'su-test')
+        RETURNING id`;
+      return Number(row.id);
+    });
+    await insert('EI-audit-target-binding', {
+      ratings,
+      rerunRecipe: { args: { harness: 'papercusp' }, selection: { bindingIds: [bindingId] } },
+    }, '2026-06-21T10:05:00Z');
+
     const read = async (id: string) => {
       const result = await readScorecardEvidence(id);
       if (result.kind !== 'found') throw new Error(`${id}: ${result.kind}`);
@@ -1025,6 +1075,30 @@ describe('readScorecardEvidence audit-target status (EI-24583166035391772) — r
     expect(rubricSubject.auditTarget).toMatchObject({
       current: false,
       subjectRubricCurrentness: expect.objectContaining({ state: 'unknown' }),
+    });
+
+    // An exact rerun recipe is only current while every cited immutable proof row
+    // remains active. Retraction removes the row from evaluator reads, so the
+    // audit-target reader must invalidate the original pass at read time.
+    const bindingCard = await read('EI-audit-target-binding');
+    expect(bindingCard.auditTarget).toMatchObject({
+      current: true,
+      evidenceBindingCurrentness: {
+        state: 'current', reason: 'current', citedBindingCount: 1,
+        retractedBindingIds: [], unavailableBindingIds: [],
+      },
+    });
+    await db.adminSql`
+      UPDATE harness_shared.spec_evidence_bindings
+         SET retracted_at = now(), retracted_by = 'su-test', retraction_reason = 'fixture withdrawal'
+       WHERE workspace_id = ${issuesScopeWorkspace()} AND id = ${bindingId}`;
+    const bindingRetractedCard = await read('EI-audit-target-binding');
+    expect(bindingRetractedCard.auditTarget).toMatchObject({
+      current: false,
+      evidenceBindingCurrentness: {
+        state: 'stale', reason: 'cited-binding-retracted', citedBindingCount: 1,
+        retractedBindingIds: [String(bindingId)], unavailableBindingIds: [],
+      },
     });
   });
 });

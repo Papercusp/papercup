@@ -101,7 +101,7 @@ describe("hosted handler", () => {
     hosted.relay.dispose();
   });
 
-  it("upgrades the sealed phone route without a portal ticket and refuses plaintext on the native transport", async () => {
+  it.each(['byoc', 'papercusp'] as const)("upgrades the %s sealed phone route without a portal ticket and refuses plaintext on the native transport", async (hosting) => {
     const hosted = fixture(); // No connector gateway: phone auth is on the VM.
     const connector = Object.assign(new EventEmitter(), {
       OPEN: 1, readyState: 1, frames: [] as Record<string, unknown>[],
@@ -110,8 +110,8 @@ describe("hosted handler", () => {
     });
     const binding = {
       controlPlaneWorkspaceId: "control", organizationId: "org-1",
-      customerWorkspaceId: "workspace-1", hostId: "host-1", routeLabel: "byoc",
-      generation: 1, transport: "websocket" as const, state: "active" as const, hosting: "byoc" as const,
+      customerWorkspaceId: "workspace-1", hostId: "host-1", routeLabel: hosting,
+      generation: 1, transport: "websocket" as const, state: "active" as const, hosting,
     };
     hosted.relay.attachConnector(binding, connector);
     const server = serve({ fetch: hosted.handler, port: 0, hostname: "127.0.0.1" });

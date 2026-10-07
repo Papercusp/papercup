@@ -92,6 +92,10 @@ describe('reservePendingGradingAudit', () => {
       'grading-audit:reserved',
       '2026-09-08T00:00:00.000Z',
       '2026-09-08T00:00:00.000Z',
+      false,
+      null,
+      null,
+      null,
     ]);
     expect(confirmation?.text).toContain("gradingAudit'->>'state' = 'pending'");
     expect(confirmation?.text).toContain("gradingAudit'->'dispatchReservation'->>'key' = ?");
