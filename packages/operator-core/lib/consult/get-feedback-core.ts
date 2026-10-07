@@ -78,7 +78,7 @@ export const MAX_CONSULT_DEPTH = 2;
  * Imported AND re-exported: a bare `export … from` would satisfy downstream
  * importers while leaving no local binding for the selection site below. */
 import { selectionPolicy } from '@papercusp/ranked-selection';
-import { DEFAULT_MIN_RESPONDERS, DEFAULT_MAX_RESPONDERS } from './selection-policies';
+import { DEFAULT_MIN_RESPONDERS, DEFAULT_MAX_RESPONDERS, RUBRIC_VETTING_POLICY } from './selection-policies';
 export { DEFAULT_MIN_RESPONDERS, DEFAULT_MAX_RESPONDERS };
 
 /** The latched park/reply key for a consult conversation — the ONE format every
@@ -370,6 +370,9 @@ interface ConsultArchiveRow {
  * A question without named refs remains compatible only with another question
  * without named refs, so a specific archived answer cannot silently answer a
  * generic request (or vice versa).
+ * Version-stamped slugs are also refs when callers omit the kind word, as in
+ * "vet acceptance-example-2026-08-30". Without this fallback, both that
+ * specific request and an unrelated dated rubric can look subjectless here.
  */
 export function consultSubjectKeys(question: string): string[] {
   const keys = new Set<string>();
@@ -377,6 +380,10 @@ export function consultSubjectKeys(question: string): string[] {
   for (const match of question.matchAll(namedSubject)) {
     const kind = match[1].toLowerCase().replace(/[\s-]+/g, '-');
     keys.add(`${kind}:${match[2].toLowerCase()}`);
+  }
+  const untypedDatedSlug = /\b([a-z0-9][a-z0-9._/]*(?:-[a-z0-9][a-z0-9._/]*){1,}-\d{4}-\d{2}-\d{2})\b/gi;
+  for (const match of question.matchAll(untypedDatedSlug)) {
+    keys.add(`slug:${match[1].toLowerCase()}`);
   }
   const explicitIds = /\b((?:WI|EI|F|D)-\d{1,12})\b/gi;
   for (const match of question.matchAll(explicitIds)) keys.add(`id:${match[1].toUpperCase()}`);
@@ -667,6 +674,8 @@ export interface VettingConsultCritique {
   declinePosts: number;
   /** Distinct authors of the critique posts, so the stamp can name the critics. */
   critics: string[];
+  /** Present only when the emitter is the persisted rubric-vetting answerer and authored a non-decline critique post. */
+  routedVettingCritic?: string;
   /**
    * Present when the caller supplied rubric/plan refs to bind the consult to a
    * specific vetting subject. A match must occur in the durable opening
@@ -697,6 +706,34 @@ function vettingConsultRelevance(
     }
   }
   return { matched: matchedRefs.size > 0, matchedRefs: [...matchedRefs], via: [...via] };
+}
+
+/** A consult's source responder and the session that actually answered can
+ * differ. Only the router's durable rubric-vetting policy + answeringOwnerId
+ * stamp can let that answerer count their own critique as evidence for the
+ * scorecard they authored. */
+function isRoutedRubricVettingAnswerer(routing: unknown, emitterId: string): boolean {
+  let snapshot = routing;
+  if (typeof snapshot === 'string') {
+    try {
+      snapshot = JSON.parse(snapshot) as unknown;
+    } catch {
+      return false;
+    }
+  }
+  if (snapshot === null || typeof snapshot !== 'object' || Array.isArray(snapshot)) return false;
+  const root = snapshot as Record<string, unknown>;
+  if (root.policy !== RUBRIC_VETTING_POLICY) return false;
+  const selection = root.selection;
+  if (selection === null || typeof selection !== 'object' || Array.isArray(selection)) return false;
+  const selected = (selection as Record<string, unknown>).selected;
+  return (
+    Array.isArray(selected) &&
+    selected.some((entry) => {
+      if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) return false;
+      return (entry as Record<string, unknown>).answeringOwnerId === emitterId;
+    })
+  );
 }
 
 /**
@@ -732,7 +769,7 @@ export async function readVettingConsultCritique(
   relevanceRefs: readonly string[] = [],
 ): Promise<VettingConsultCritique> {
   const stateRows = (await sql`
-    SELECT state, requester_id, responder_id, question, outcome
+    SELECT state, requester_id, responder_id, question, outcome, routing
       FROM harness_shared.consult_state
      WHERE workspace_id = ${workspaceId} AND conversation_id = ${conversationId}
      LIMIT 1
@@ -742,6 +779,7 @@ export async function readVettingConsultCritique(
     responder_id: string | null;
     question: string;
     outcome: unknown;
+    routing: unknown;
   }>;
   const stateRow = stateRows[0];
   if (!stateRow) {
@@ -784,26 +822,30 @@ export async function readVettingConsultCritique(
     };
   }
 
+  const emitterIsRoutedVettingAnswerer =
+    emitterId !== stateRow.requester_id && isRoutedRubricVettingAnswerer(stateRow.routing, emitterId);
   const postRows = (await sql`
     SELECT kind, author_id
       FROM harness_shared.consult_post_meta pm
      WHERE pm.workspace_id = ${workspaceId}
        AND pm.conversation_id = ${conversationId}
        AND pm.author_id IS NOT NULL
-       AND pm.author_id <> ${emitterId}
        AND pm.author_id <> ${stateRow.requester_id}
   `) as unknown as { kind: string; author_id: string }[];
 
   const critics = new Set<string>();
   let critiquePosts = 0;
   let declinePosts = 0;
+  let routedVettingCritic: string | undefined;
   for (const post of postRows) {
+    if (post.author_id === emitterId && !emitterIsRoutedVettingAnswerer) continue;
     if (post.kind === 'decline') {
       declinePosts += 1;
       continue;
     }
     critiquePosts += 1;
     critics.add(post.author_id);
+    if (post.author_id === emitterId && emitterIsRoutedVettingAnswerer) routedVettingCritic = emitterId;
   }
   return {
     exists: true,
@@ -811,6 +853,7 @@ export async function readVettingConsultCritique(
     critiquePosts,
     declinePosts,
     critics: [...critics].sort(),
+    ...(routedVettingCritic ? { routedVettingCritic } : {}),
     ...(relevanceRefs.length > 0
       ? { relevance: vettingConsultRelevance(relevanceRefs, [{ via: 'question', text: stateRow.question }])! }
       : {}),
