@@ -1,5 +1,6 @@
 import { execFileSync, spawn } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { WORKSPACE_HOST_OMP_LOCAL_MODEL } from '@papercusp/deployment-driver';
@@ -23,10 +24,67 @@ import {
   type HostCommandResult,
   type OutageDrillConfig,
   type OutageDrillDeps,
+  type OutageDrillEvidence,
 } from './outage-drill';
 
 const PAPERCUSP = ['104.21.73.140', '172.67.145.145'];
 const MODEL = ['160.79.104.10'];
+
+// This is calibration of the verifier against an immutable historical live
+// measurement, NOT a fresh cloud drill or a replacement for live acceptance.
+function preservedGcpOutageReceipt() {
+  const bytes = readFileSync(new URL('../../../../docs/evidence/j5-outage-drill-2026-10-02.json', import.meta.url));
+  expect(createHash('sha256').update(bytes).digest('hex')).toBe(
+    'b3f5e13aea609c496687170abce984464b6859759977bbdbe588e700f7ac7481',
+  );
+  return JSON.parse(bytes.toString('utf8')) as {
+    config: { secret: string };
+    evidence: OutageDrillEvidence;
+  };
+}
+
+describe('AUTO-BAR-R-12-P-017 preserved live GCP receipt calibration', () => {
+  it('accepts the original measured outage and independently checks its task digest', () => {
+    const { config: recordedConfig, evidence } = preservedGcpOutageReceipt();
+    const independentDigest = createHash('sha256').update(recordedConfig.secret).digest('hex');
+    expect(evidence.agent.expected).toBe(independentDigest);
+    expect(evidence.agent.output).toBe(independentDigest);
+    expect(evidence.agent.exitCode).toBe(0);
+    expect(evidence.during.papercuspReachable).toBe(false);
+    expect(evidence.after.connectorLastSeenAt! > evidence.liftedAt!).toBe(true);
+    expect(evaluateOutageDrill(evidence)).toEqual({ passed: true, failures: [] });
+  });
+
+  it('rejects a wrong task digest in the otherwise valid preserved receipt', () => {
+    const { evidence } = preservedGcpOutageReceipt();
+    const verdict = evaluateOutageDrill({
+      ...evidence,
+      agent: { ...evidence.agent, output: '0'.repeat(64) },
+    });
+    expect(verdict.passed).toBe(false);
+    expect(verdict.failures).toContain('the agent output is missing or not the expected digest');
+  });
+
+  it('rejects an ineffective egress block in the otherwise valid preserved receipt', () => {
+    const { evidence } = preservedGcpOutageReceipt();
+    const verdict = evaluateOutageDrill({
+      ...evidence,
+      during: { ...evidence.during, papercuspReachable: true },
+    });
+    expect(verdict.passed).toBe(false);
+    expect(verdict.failures).toContain('Papercusp was still reachable from the host during the block');
+  });
+
+  it('rejects a heartbeat that never resumes after the recorded block lifts', () => {
+    const { evidence } = preservedGcpOutageReceipt();
+    const verdict = evaluateOutageDrill({
+      ...evidence,
+      after: { ...evidence.after, connectorLastSeenAt: evidence.liftedAt },
+    });
+    expect(verdict.passed).toBe(false);
+    expect(verdict.failures).toContain("the control plane did not hear from the host's connector after the block was lifted");
+  });
+});
 
 const config: OutageDrillConfig = {
   target: { cloud: 'gcp', project: 'pc-canary', network: 'pc-host-net', ruleName: 'pc-j5-outage-drill-n1' },
