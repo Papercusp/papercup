@@ -358,6 +358,7 @@ apps/operator/public/internal/docs/llms-small.txt
 
 # WI-3336: esbuild-bundled host entry (bundle-host.sh) — built per bg-host restart
 apps/operator/dist-host/
+apps/operator/dist-hosted-control-plane/
 # Sibling of dist-host: the esbuild-bundled DESKTOP SIDECAR (embed-sidecar.mjs, ~51MB) + the
 # blueprint copies the embed build stages beside it. Generated output, never source — it was
 # swept into git by accident (2026-07-11) and every tree-scanning guard (no-raw-harness-sentinel,
