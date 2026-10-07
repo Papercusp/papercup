@@ -111,7 +111,11 @@ function hasPopulatedMcpResult(result: McpCallResult): boolean {
   ) {
     return true;
   }
-  if (body.ok !== true) return false;
+  // Some successful tools return their domain result without the generic `ok`
+  // envelope. Explicit not-found and negative-status checks above stay
+  // authoritative; recognized result fields below decide whether these bodies
+  // are populated.
+  if (body.ok !== true && body.ok !== undefined) return false;
   if (body.ended === true || body.verified === true) return true;
   if (
     (typeof body.await_id === 'number' && Number.isSafeInteger(body.await_id) && body.await_id > 0) ||
