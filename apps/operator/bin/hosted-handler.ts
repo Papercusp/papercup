@@ -18,6 +18,7 @@ import { authenticateHostedConnectorSocket } from "@papercusp/operator-core/lib/
 import type { HostedConnectorBinding } from "@papercusp/operator-core/lib/endpoint-route/hosted-workspace-connector";
 import {
   HostedWorkspaceSessionBroker,
+  HOSTED_WORKSPACE_MAX_MESSAGE_BYTES,
   type HostedWorkspaceAttachRequest,
   type HostedWorkspaceSessionBrokerOptions,
 } from "@papercusp/operator-core/lib/endpoint-route/hosted-workspace-session";
@@ -33,6 +34,8 @@ import {
   PostgresHostedAppRelayUsageStore,
   handleHostedAppRelay,
   handleHostedDeviceRelay,
+  attachSealedDeviceSocket,
+  parseDeviceRelayPath,
   type AppRelayLimits,
   type HostedAppRelayDependencies,
   type HostedAppRelayUsageStore,
@@ -46,6 +49,7 @@ import {
   type PortalOAuthStore,
 } from "@papercusp/operator-core/lib/connected-apps/portal-mcp-oauth";
 import { createHostedPrincipalResolver } from "@papercusp/operator-core/lib/auth/hosted-principal-resolver";
+import { isHostedConnectorLive } from "@papercusp/operator-core/lib/endpoint-route/hosted-workspace-connector";
 
 /** Local server-rendered namespaces that must never become SPA-looking 200s. */
 export const HOSTED_FORBIDDEN_HOST_PATH_PREFIXES = [
@@ -299,7 +303,7 @@ export function createHostedHandler(
   // imported into this module.
   app.route("/", spa);
 
-  const websocketServer = new WebSocketServer({ noServer: true });
+  const websocketServer = new WebSocketServer({ noServer: true, maxPayload: HOSTED_WORKSPACE_MAX_MESSAGE_BYTES });
 
   return {
     plane,
@@ -307,6 +311,24 @@ export function createHostedHandler(
     relay: sessionBroker,
     handler: async (request) => app.fetch(request),
     async upgrade(request, socket, head) {
+      const deviceTarget = parseDeviceRelayPath(request.url?.split("?")[0] ?? "");
+      if (deviceTarget?.machinePath === "/api/device/sealed") {
+        const connector = sessionBroker.appConnector(deviceTarget.customerWorkspaceId);
+        const live = connector && isHostedConnectorLive({
+          state: 'active', transport: 'websocket', heartbeatAt: connector.lastSeenAt,
+        }, new Date());
+        if (!live || connector.binding.hosting !== 'byoc') {
+          const status = !live ? "503 Service Unavailable" : "403 Forbidden";
+          const body = JSON.stringify({ ok: false, error: !live ? "workspace_offline" : "sealed_byoc_required" });
+          socket.end(`HTTP/1.1 ${status}\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`);
+          return true;
+        }
+        websocketServer.handleUpgrade(request, socket, head, (websocket) => {
+          attachSealedDeviceSocket(sessionBroker, deviceTarget.customerWorkspaceId, websocket);
+          websocketServer.emit("connection", websocket, request);
+        });
+        return true;
+      }
       if (!gateway || request.url?.split("?")[0] !== "/api/hosted/connectors/socket") return false;
       const host = request.headers.host ?? "app.papercusp.com";
       const headers = new Headers();
