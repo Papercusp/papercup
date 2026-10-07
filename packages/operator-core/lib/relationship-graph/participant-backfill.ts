@@ -17,6 +17,9 @@ import { isCodingAgentRole } from '../personal-vault/coding-roles';
 import { readTeamInteractions } from '../personal-vault/team-disclosure';
 import type { PersonalToolContext } from '../personal-vault/types';
 import type { CanonicalExternalEvent } from '../external-triggers/ingestion';
+import type { ExternalTriggerSink } from '../external-triggers/ingestion';
+import { createDatatypeDestinationSinks } from '../data-sources/datatype-destination-sink';
+import { createRelationshipGraphSink } from './graph-sink';
 import { participantOf, type IdentityKey, type InteractionParticipant } from './identity-keys';
 import { createParticipantChain, INTERACTION_DATATYPES, isInteractionDatatype, type ParticipantSinkDeps } from './participants';
 
@@ -30,6 +33,8 @@ export interface ParticipantBackfillCursor {
 }
 
 export interface ParticipantBackfillInput {
+  /** Aggregate durations only: never document content or participant identities. */
+  timings?: Record<string, { calls: number; ms: number }>;
   workspaceId: string;
   /** The Vault owner whose stored interactions are read. */
   userId: string;
@@ -106,6 +111,27 @@ export async function backfillInteractionParticipants(
   const batchSize = Math.max(1, Math.min(input.batchSize ?? 500, 2000));
   const now = input.now ?? Date.now;
   const resume = input.resumeFrom ?? null;
+  const measure = async <T>(stage: string, operation: () => Promise<T>): Promise<T> => {
+    const start = performance.now();
+    try { return await operation(); }
+    finally {
+      if (input.timings) {
+        const timing = input.timings[stage] ??= { calls: 0, ms: 0 };
+        timing.calls += 1;
+        timing.ms += performance.now() - start;
+      }
+    }
+  };
+  const measuredSink = (sink: ExternalTriggerSink): ExternalTriggerSink => ({
+    ...sink,
+    deliver: (...args) => measure(sink.kind, () => sink.deliver(...args)),
+  });
+  const measuredDeps: ParticipantSinkDeps = input.timings ? {
+    ...deps,
+    createPersonSinks: async (...args) => (await (deps.createPersonSinks ?? createDatatypeDestinationSinks)(...args)).map(measuredSink),
+    createGraphSink: (...args) => measuredSink((deps.createGraphSink ?? createRelationshipGraphSink)(...args)),
+  } : deps;
+  const groupsStart = performance.now();
   const groups = await sql<Array<{ source_id: string; kind: string; source: string; policy: Record<string, unknown> | null }>>`
     SELECT d.source_id::text AS source_id, d.kind, min(d.source) AS source, s.destination_policy AS policy
       FROM harness_shared.personal_documents d
@@ -114,6 +140,7 @@ export async function backfillInteractionParticipants(
        ${input.sourceIds?.length ? sql`AND d.source_id::text = ANY(${sql.array([...input.sourceIds])}::text[])` : sql``}
      GROUP BY d.source_id, d.kind, s.destination_policy
      ORDER BY d.source_id, d.kind COLLATE "C"`;
+  if (input.timings) input.timings['source-groups'] = { calls: 1, ms: performance.now() - groupsStart };
   const sources: ParticipantBackfillSourceResult[] = [];
   const bySource = new Map<string, ParticipantBackfillSourceResult>();
   let documents = 0;
@@ -136,7 +163,7 @@ export async function backfillInteractionParticipants(
       bySource.set(group.source_id, result);
       sources.push(result);
     }
-    const chain = await createParticipantChain(sql, { workspaceId: input.workspaceId, sourceId: group.source_id, datatype }, deps);
+    const chain = await measure('chain-build', () => createParticipantChain(sql, { workspaceId: input.workspaceId, sourceId: group.source_id, datatype }, measuredDeps));
     if (!chain) continue;
     result.granted = true;
     // Kinds finished before the cursor's kind are skipped; the cursor's kind resumes after afterId.
@@ -145,19 +172,19 @@ export async function backfillInteractionParticipants(
     let afterId = resume && group.kind === resume.kind ? resume.afterId : '00000000-0000-0000-0000-000000000000';
     for (;;) {
       if (input.deadlineMs !== undefined && now() >= input.deadlineMs) return stoppedAt(group.source_id, group.kind, afterId);
-      const page = await sql<Array<{ id: string; external_id: string | null }>>`
+      const page = await measure('document-page', () => sql<Array<{ id: string; external_id: string | null }>>`
         SELECT id::text AS id, external_id FROM harness_shared.personal_documents
          WHERE workspace_id = ${input.workspaceId} AND user_id = ${input.userId}::uuid
            AND source_id::text = ${group.source_id} AND kind = ${group.kind} AND id > ${afterId}::uuid
-         ORDER BY personal_documents.id LIMIT ${batchSize}`;
+         ORDER BY personal_documents.id LIMIT ${batchSize}`);
       if (!page.length) break;
-      const read = await readTeamInteractions(sql, {
+      const read = await measure('team-metadata', () => readTeamInteractions(sql, {
         ctx: input.ctx,
         workspaceId: input.workspaceId,
         userId: input.userId,
         documentIds: page.map((row) => row.id),
         agentOwnerId: null,
-      });
+      }));
       if (!read.allowed) return { ok: false, reason: read.reason, sources };
       const views = new Map(read.interactions.map((view) => [view.metadata.documentId, view]));
       // Walk the page in id order so the cursor is exact: everything at or before it is done.
@@ -264,6 +291,8 @@ export async function runPendingParticipantBackfills(
   for (const source of pending) {
     // The budget is per sweep, not per source: once spent, the rest wait for the next tick.
     if (now() >= deadlineMs) break;
+    const timings: Record<string, { calls: number; ms: number }> = {};
+    const start = performance.now();
     try {
       const result = await backfillInteractionParticipants(
         sql,
@@ -277,6 +306,7 @@ export async function runPendingParticipantBackfills(
           deadlineMs,
           now,
           onProgress: saveCursor,
+          timings,
         },
         deps,
       );
@@ -301,6 +331,8 @@ export async function runPendingParticipantBackfills(
       out.push({ sourceId: source.id, outcome: 'backfilled', documents: result.documents, participants: result.participants });
     } catch (cause) {
       out.push({ sourceId: source.id, outcome: 'failed', documents: 0, participants: 0, error: cause instanceof Error ? cause.message : String(cause) });
+    } finally {
+      console.info('PARTICIPANT_BACKFILL_STAGE_TIMINGS', JSON.stringify({ sourceId: source.id, totalMs: performance.now() - start, stages: timings }));
     }
   }
   return out;
