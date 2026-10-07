@@ -9,6 +9,7 @@
  */
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, truncateSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('node:fs', async (importOriginal) => {
@@ -23,7 +24,7 @@ import {
   resetResultDoorAggregatesForTests,
   RESULT_DOOR_TOKENS,
 } from './result-door';
-import { _resetScratchUsageForTests, refreshScratchUsage, WORKSPACE_QUOTA_BYTES } from './scratch-gc';
+import { _resetScratchUsageForTests, _setScratchUsageForTests, refreshScratchUsage, WORKSPACE_QUOTA_BYTES, writeWithScratchQuota } from './scratch-gc';
 import { parseScratchReference, writeScratchReference } from './scratch-reference';
 
 const BUDGET_CHARS = RESULT_DOOR_TOKENS * CHARS_PER_TOKEN_ESTIMATE;
@@ -173,6 +174,35 @@ describe('result-door deferred spill (WI-10004533)', () => {
     expect(files).toHaveLength(1);
     expect(JSON.stringify(out)).toContain(files[0]);
     expect(parseScratchReference(readFileSync(join(spillDir(), files[0])))!.payload.toString()).toContain('line 0');
+  });
+
+  it('returns a readable spill after stale-cache recovery overlaps an active reservation', async () => {
+    const writerDir = join(process.env.PAPERCUSP_SCRATCH_ROOT!, 'ws-1', 'writers', RUN_ID);
+    mkdirSync(writerDir, { recursive: true });
+    _setScratchUsageForTests('ws-1', 0);
+    let finish!: () => void;
+    let started!: () => void;
+    const began = new Promise<void>((resolve) => { started = resolve; });
+    const heldPath = join(writerDir, 'held');
+    const held = writeWithScratchQuota({ workspaceId: 'ws-1', filePath: heldPath, bytes: 512 }, async () => {
+      started();
+      await new Promise<void>((resolve) => { finish = resolve; });
+      await writeFile(heldPath, Buffer.alloc(512));
+    });
+    await began;
+    _setScratchUsageForTests('ws-1', 5_400_804_525);
+    try {
+      const out = await applyResultDoorAsync(oversized(), OPTS);
+      const files = spillFiles();
+      expect(files).toHaveLength(1);
+      expect(JSON.stringify(out)).toContain(files[0]);
+      expect(JSON.stringify(out)).not.toContain('SCRATCH_QUOTA_EXCEEDED');
+      expect(parseScratchReference(readFileSync(join(spillDir(), files[0])))!.payload.toString()).toContain('line 0');
+    } finally {
+      finish();
+      await held;
+    }
+    await refreshScratchUsage('ws-1');
   });
 
   it('reports the quota cause without a dangling cursor when no FIFO run can be reclaimed', async () => {

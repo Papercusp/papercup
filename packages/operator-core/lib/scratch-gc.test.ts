@@ -568,6 +568,49 @@ describe('runScratchGc — quota eviction', () => {
 });
 
 describe('deferred scratch quota recovery', () => {
+  it.each([false, true])('replaces stale over-quota usage with an active reservation (already written: %s)', async (alreadyWritten) => {
+    const runDir = makeRunDir('ws-Q', 'quota', UUID(1), 100);
+    _setScratchUsageForTests('ws-Q', 0);
+    let finish!: () => void;
+    let started!: () => void;
+    const began = new Promise<void>((resolve) => { started = resolve; });
+    const heldPath = join(runDir, 'held');
+    const held = writeWithScratchQuota({ workspaceId: 'ws-Q', filePath: heldPath, bytes: 512 }, async () => {
+      if (alreadyWritten) await writeFile(heldPath, Buffer.alloc(512));
+      started();
+      await new Promise<void>((resolve) => { finish = resolve; });
+      if (!alreadyWritten) await writeFile(heldPath, Buffer.alloc(512));
+    });
+    await began;
+    // Another process can reclaim old runs while this process retains their cached size.
+    _setScratchUsageForTests('ws-Q', 5_400_804_525);
+    const nextPath = join(runDir, 'next');
+    try {
+      await expect(writeWithScratchQuota({ workspaceId: 'ws-Q', filePath: nextPath, bytes: 6709 },
+        () => writeFile(nextPath, Buffer.alloc(6709)))).resolves.toBeUndefined();
+      expect(scratchUsageBytes('ws-Q')).toBe(100 + markerBytes('ws-Q') + 512 + 6709);
+    } finally {
+      finish();
+      await held;
+    }
+    await refreshScratchUsage('ws-Q');
+    expect(scratchUsageBytes('ws-Q')).toBe(100 + markerBytes('ws-Q') + 512 + 6709);
+  });
+
+  it('replaces stale over-quota usage when multiple waiters join the recovery walk', async () => {
+    const runDir = makeRunDir('ws-Q', 'quota', UUID(1), 100);
+    _setScratchUsageForTests('ws-Q', 5_400_804_525);
+    vi.mocked(rmAsync).mockClear();
+    await Promise.all(Array.from({ length: 8 }, (_, i) => {
+      const filePath = join(runDir, `write-${i}`);
+      return writeWithScratchQuota({ workspaceId: 'ws-Q', filePath, bytes: 6709 },
+        () => writeFile(filePath, Buffer.alloc(6709)));
+    }));
+    await refreshScratchUsage('ws-Q');
+    expect(scratchUsageBytes('ws-Q')).toBe(100 + markerBytes('ws-Q') + 8 * 6709);
+    expect(vi.mocked(rmAsync)).not.toHaveBeenCalled();
+  });
+
   it('coalesces pressure recovery while preserving concurrent reservations without synchronous scans', async () => {
     const old = makeSparseRun('ws-Q', UUID(1), 4 * 1024 ** 3, 10_000);
     const fresh = makeSparseRun('ws-Q', UUID(2), 1024 ** 3);
