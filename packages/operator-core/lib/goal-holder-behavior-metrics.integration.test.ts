@@ -17,6 +17,8 @@ import {
   readHolderPlanToolCounts,
   ROUTED_PLAN_CLOCK_SLACK_MS,
 } from './goal-holder-behavior-metrics';
+import { readUnplannedGoalClusters } from './goals/unplanned-clusters';
+import { toolFailureSignatureKey } from './harness/improvements/tool-error-classifier';
 
 const { createOrgTestDb } = await import('../test/_org-test-db');
 
@@ -164,5 +166,68 @@ describe('goal-holder plan authorship (real PG)', () => {
       { sql: db.adminSql },
     );
     expect(other.plansNew).toBe(1);
+  });
+
+  it('does not backdate probation promotions into a historical cluster window', async () => {
+    const boundary = at('2026-10-06T21:13:28.490Z').getTime();
+    const promotedAtGlance = '2026-10-07T02:17:01.818Z';
+    const promotedAtFlags = '2026-10-07T02:17:01.139Z';
+    const promotedAt = Math.max(at(promotedAtGlance).getTime(), at(promotedAtFlags).getTime());
+    const signature = (toolName: string) =>
+      toolFailureSignatureKey({ toolName, errorCode: 'authorization_denied' }, 'structural');
+    const rows = [
+      {
+        id: 'EI-cluster-anchor',
+        title: 'Residual authorization_denied after the prior fix',
+        createdAt: '2026-09-20T09:30:53.555Z',
+        signatureKey: signature('coord:orient'),
+        promotionAt: null,
+      },
+      {
+        id: 'EI-cluster-glance',
+        title: 'coord:glance tool-call failure (authorization_denied)',
+        createdAt: '2026-10-05T17:41:42.571Z',
+        signatureKey: signature('coord:glance'),
+        promotionAt: promotedAtGlance,
+      },
+      {
+        id: 'EI-cluster-flags',
+        title: 'flags:get tool-call failure (authorization_denied)',
+        createdAt: '2026-10-05T17:46:12.538Z',
+        signatureKey: signature('flags:get'),
+        promotionAt: promotedAtFlags,
+      },
+    ];
+
+    for (const row of rows) {
+      const payload = {
+        toolFailureSignature: { signatureKey: row.signatureKey },
+        ...(row.promotionAt
+          ? { toolFailureProbation: { state: 'promoted', promotedAt: row.promotionAt } }
+          : {}),
+      };
+      await db.adminSql`
+        INSERT INTO harness_shared.work_items
+          (workspace_id, harness_slug, feature_id, item_kind, title, status, created_ts, payload, goal_id)
+        VALUES (${WS}, ${HARNESS}, ${row.id}, 'bug', ${row.title}, 'open',
+                ${at(row.createdAt).getTime()}, ${db.adminSql.json(payload as never)}, ${GOAL})`;
+    }
+
+    const beforePromotion = await readUnplannedGoalClusters(
+      db.adminSql,
+      { workspaceId: WS, goalId: GOAL, asOfMs: boundary },
+    );
+    expect(beforePromotion.itemCount).toBe(1);
+    expect(beforePromotion.clusters).toEqual([]);
+
+    const afterPromotion = await readUnplannedGoalClusters(
+      db.adminSql,
+      { workspaceId: WS, goalId: GOAL, asOfMs: promotedAt + 1 },
+    );
+    expect(afterPromotion.itemCount).toBe(3);
+    expect(afterPromotion.clusters).toHaveLength(1);
+    expect(afterPromotion.clusters[0].memberIds.slice().sort()).toEqual(rows.map((row) => row.id).sort());
+    expect(afterPromotion.clusters[0].reasons).toEqual(['failure:structural:authorization_denied']);
+    expect(afterPromotion.clusters[0].formedAtMs).toBe(promotedAt);
   });
 });

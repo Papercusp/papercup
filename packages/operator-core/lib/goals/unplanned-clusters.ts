@@ -89,6 +89,7 @@ export interface ClusterCandidateItem {
   id: string;
   title: string;
   summary?: string | null;
+  /** First time this row became eligible for clustering (creation or probation promotion). */
   createdAtMs: number;
   harness?: string | null;
   /** Topic tags (coord_links rel='tagged', dst_kind='topic'). */
@@ -110,7 +111,7 @@ export interface UnplannedCluster {
   key: string;
   anchorId: string;
   memberIds: string[];
-  /** When the cluster reached `minSize` members (the minSize-th earliest createdAt). */
+  /** When the cluster reached `minSize` eligible members (the minSize-th earliest eligible time). */
   formedAtMs: number;
   /** Why these items are one cluster, e.g. `link:caused-by`, `topic:gate`,
    *  `path:packages/x.ts`, `prefix:[truthful reports]`. Sorted, deduped. */
@@ -265,8 +266,8 @@ export async function readUnplannedGoalClusters(
     goalId: string;
     limit?: number;
     /**
-     * Read the items that were open at this instant (created_ts <= asOfMs and not closed
-     * by then) instead of the items open now. Used to grade a past window
+     * Read the items that were open and eligible at this instant instead of the items open
+     * now. Creation/closure and tool-failure probation promotion are time-filtered. Used to grade a past window
      * (goal-holder-behavior-metrics). Plan membership (source_plan_slug, plan links) is
      * still read as of now, so an item planned after `asOfMs` is excluded: an as-of read
      * can under-count a cluster the holder planned later, never over-count one.
@@ -278,7 +279,13 @@ export async function readUnplannedGoalClusters(
   const openAt =
     args.asOfMs == null
       ? sql`w.status <> ALL(${[...TERMINAL_WORK_ITEM_STATES]}::text[])`
-      : sql`w.created_ts <= ${args.asOfMs} AND (w.closed_ts IS NULL OR w.closed_ts > ${args.asOfMs})`;
+      : sql`w.created_ts <= ${args.asOfMs}
+          AND (w.closed_ts IS NULL OR w.closed_ts > ${args.asOfMs})
+          AND (
+            NULLIF(w.payload->'toolFailureProbation'->>'promotedAt', '') IS NULL
+            OR NULLIF(w.payload->'toolFailureProbation'->>'promotedAt', '')::timestamptz
+                 <= to_timestamp(${args.asOfMs} / 1000.0)
+          )`;
   const rows = await sql<
     Array<{
       feature_id: string;
@@ -286,10 +293,12 @@ export async function readUnplannedGoalClusters(
       title: string | null;
       summary: string | null;
       created_ts: string | number;
+      promoted_at: string | null;
       failure_signature_key: string | null;
     }>
   >`
     SELECT w.feature_id, w.harness_slug, w.title, w.summary, w.created_ts,
+           NULLIF(w.payload->'toolFailureProbation'->>'promotedAt', '') AS promoted_at,
            w.payload->'toolFailureSignature'->>'signatureKey' AS failure_signature_key
       FROM harness_shared.work_items w
      WHERE w.workspace_id = ${args.workspaceId}
@@ -330,7 +339,12 @@ export async function readUnplannedGoalClusters(
     id: r.feature_id,
     title: r.title ?? '',
     summary: r.summary,
-    createdAtMs: Number(r.created_ts),
+    createdAtMs: Math.max(
+      Number(r.created_ts),
+      r.promoted_at == null || !Number.isFinite(Date.parse(r.promoted_at))
+        ? Number.NEGATIVE_INFINITY
+        : Date.parse(r.promoted_at),
+    ),
     harness: r.harness_slug,
     topics: topics.get(r.feature_id) ?? [],
     failureSignatureKey: r.failure_signature_key,
