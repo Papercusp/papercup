@@ -1096,7 +1096,6 @@ verify_operator_source_lock_census() {
   local phase="${1:-snapshot}"
   local workspace="${PAPERCUSP_WORKSPACE_ID:-${PAPERCUSP_WORKSPACE:-}}"
   local coordination_domain query_args lock_json blocking_rows census_status=0
-  local projection='{"pick":["active_locks[].path","active_locks[].owner","active_locks[].intent","active_locks[].lock_id"]}'
   local -a ptool_scope=()
 
   [ -n "$workspace" ] || {
@@ -1132,7 +1131,10 @@ verify_operator_source_lock_census() {
     return 1
   }
   ptool_scope=(--workspace="$workspace")
-  lock_json="$(printf '%s' "$query_args" | ptool "${ptool_scope[@]}" locks:queue --json - --projection "$projection")" || {
+  # locks:queue opts out of result-door truncation for machine callers. An
+  # explicit ptool projection re-enables that door, which can truncate this
+  # census even at payloadTier=full; keep the raw JSON inside this process.
+  lock_json="$(printf '%s' "$query_args" | ptool "${ptool_scope[@]}" locks:queue --json -)" || {
     echo "FATAL: could not read the live verifier source lock census with locks:queue ($phase)" >&2
     return 1
   }

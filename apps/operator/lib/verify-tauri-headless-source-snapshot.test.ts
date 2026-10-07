@@ -46,7 +46,12 @@ const operatorSnapshotSource = src.slice(
 );
 
 describe("EI-25270951515189161 — verifier snapshots avoid active source edits", () => {
-  function queryLocks(response: string, failPtool = false, trimByDefault = false) {
+  function queryLocks(
+    response: string,
+    failPtool = false,
+    trimByDefault = false,
+    projectedResponse = "",
+  ) {
     const fixture = mkdtempSync(resolve(tmpdir(), "verifier-source-lock-census-"));
     const repo = resolve(fixture, "repo");
     const queryPath = resolve(fixture, "query.json");
@@ -63,6 +68,10 @@ describe("EI-25270951515189161 — verifier snapshots avoid active source edits"
             '  printf "%s\\n" "$*" > "$TEST_PTOOL_ARGS_PATH"',
             '  cat > "$TEST_PTOOL_QUERY_PATH"',
             '  [ "$TEST_PTOOL_FAIL" != 1 ] || return 7',
+            '  if [ "$TEST_PTOOL_PROJECTED_TRUNCATION" = 1 ] && [[ "$*" == *--projection* ]]; then',
+            '    printf "%s" "$TEST_PTOOL_PROJECTED_RESPONSE"',
+            '    return 0',
+            '  fi',
             '  if [ "$TEST_PTOOL_TRIM_DEFAULT" = 1 ] && ! node -e \'const fs = require("node:fs"); const q = JSON.parse(fs.readFileSync(process.env.TEST_PTOOL_QUERY_PATH, "utf8")); process.exit(q.payloadTier === "full" ? 0 : 1)\'; then',
             '    printf \'%s\' \'{"active_locks":[],"_projection":{"truncated":true}}\'',
             '    return 0',
@@ -84,6 +93,8 @@ describe("EI-25270951515189161 — verifier snapshots avoid active source edits"
             TEST_PTOOL_RESPONSE: response,
             TEST_PTOOL_FAIL: failPtool ? "1" : "0",
             TEST_PTOOL_TRIM_DEFAULT: trimByDefault ? "1" : "0",
+            TEST_PTOOL_PROJECTED_TRUNCATION: projectedResponse ? "1" : "0",
+            TEST_PTOOL_PROJECTED_RESPONSE: projectedResponse,
             TEST_PTOOL_QUERY_PATH: queryPath,
             TEST_PTOOL_ARGS_PATH: argsPath,
           },
@@ -130,7 +141,7 @@ describe("EI-25270951515189161 — verifier snapshots avoid active source edits"
     expect(result.stderr).toContain("lock_id=lock-fixture");
   });
 
-  it("requests an untrimmed machine census and still refuses a lock beyond the default window", () => {
+  it("avoids projection truncation and still refuses a lock beyond the result-door window", () => {
     const active_locks = Array.from({ length: 13 }, (_, i) => ({
       path: `packages/operator-core/lib/fixture-${i}.test.ts`,
       owner: "su-peer",
@@ -141,11 +152,20 @@ describe("EI-25270951515189161 — verifier snapshots avoid active source edits"
       owner: "su-runtime-holder",
       lock_id: "runtime-lock",
     });
-    const result = queryLocks(JSON.stringify({ active_locks }), false, true);
+    const result = queryLocks(
+      JSON.stringify({ active_locks }),
+      false,
+      true,
+      JSON.stringify({
+        active_locks: active_locks.slice(0, 12),
+        _projection: { truncated: true },
+      }),
+    );
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("active source-file locks");
     expect(result.stderr).toContain("owner=su-runtime-holder");
     expect(result.stderr).not.toContain("incomplete or unrecognized census");
+    expect(result.ptoolArgs).not.toContain("--projection");
   });
 
   it("continues to fail closed if a full-tier census is nevertheless partial", () => {
