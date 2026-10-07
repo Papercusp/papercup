@@ -26,7 +26,7 @@ beforeAll(async () => {
   db = await createFreshPgDb('report-attachments');
   await db.sql.unsafe(`DO $$ BEGIN CREATE ROLE harness_app; EXCEPTION WHEN duplicate_object THEN NULL; END $$`);
   await db.sql.unsafe(`CREATE TABLE IF NOT EXISTS harness_shared.work_items (
-    workspace_id text, feature_id text PRIMARY KEY, status text, state_changed_at timestamptz)`);
+    workspace_id text, feature_id text PRIMARY KEY, status text, state_changed_at timestamptz, payload jsonb)`);
   await db.sql.unsafe(await migration());
 }, 120_000);
 afterAll(async () => { await db?.cleanup(); });
@@ -126,5 +126,31 @@ describe('sweepExpiredReportAttachments (D-013: deleted 90 days after the item c
     expect(r.ok).toBe(true);
     expect(await sweepExpiredReportAttachments(WS, deps())).toEqual({ deleted: 0, more: false });
     expect(await listReportAttachments('ws-other', 'EI-x', deps())).toHaveLength(1);
+  });
+
+  it('uses the distinct canonical fix closure without rewriting the foreign source; reopened and ambiguous mappings retain bytes', async () => {
+    for (const id of ['source-old', 'source-new', 'source-reopened', 'source-ambiguous']) {
+      await db.sql.unsafe(`INSERT INTO harness_shared.work_items (workspace_id, feature_id, status, state_changed_at)
+        VALUES ($1, $2, 'open', now() - interval '400 days')`, [WS, id]);
+      expect((await put(id)).ok).toBe(true);
+    }
+    for (const [id, source, status, days] of [
+      ['fix-old', 'source-old', 'done', 91], ['fix-new', 'source-new', 'done', 89],
+      ['fix-reopened', 'source-reopened', 'open', 200],
+      ['fix-a', 'source-ambiguous', 'done', 200], ['fix-b', 'source-ambiguous', 'open', 200],
+    ] as const) {
+      await db.sql`INSERT INTO harness_shared.work_items (workspace_id, feature_id, status, state_changed_at, payload)
+        VALUES (${WS}, ${id}, ${status}, now() - make_interval(days => ${days}::int),
+          ${db.sql.json({ intakeSource: { mode: 'distinct', id: source } })})`;
+    }
+    const shape = await db.sql`SELECT jsonb_typeof(payload) AS type FROM harness_shared.work_items WHERE feature_id = 'fix-old'`;
+    expect(shape[0].type, 'fixture must store a JSON object, not double-encoded text').toBe('object');
+    const candidates = await db.sql.unsafe(`SELECT feature_id, status, state_changed_at, payload,
+      state_changed_at < now() - interval '90 days' AS expired FROM harness_shared.work_items`);
+    expect(await sweepExpiredReportAttachments(WS, deps()), JSON.stringify(candidates)).toEqual({ deleted: 1, more: false });
+    expect(await listReportAttachments(WS, 'source-old', deps())).toHaveLength(0);
+    for (const id of ['source-new', 'source-reopened', 'source-ambiguous']) expect(await listReportAttachments(WS, id, deps())).toHaveLength(1);
+    const [source] = await db.sql.unsafe(`SELECT status FROM harness_shared.work_items WHERE feature_id = 'source-old'`);
+    expect(source.status).toBe('open');
   });
 });

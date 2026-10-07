@@ -185,10 +185,23 @@ const SWEEP_SQL = `
        FROM harness_shared.report_attachments a
        LEFT JOIN harness_shared.work_items w
          ON w.workspace_id = a.workspace_id AND w.feature_id = a.work_item_id
+       LEFT JOIN LATERAL (
+         SELECT count(*)::int AS targets,
+                bool_and(c.status = ANY($3::text[])) AS closed,
+                max(c.state_changed_at) AS closed_at
+           FROM harness_shared.work_items c
+          WHERE c.workspace_id = a.workspace_id
+            AND c.payload -> 'intakeSource' ->> 'mode' = 'distinct'
+            AND c.payload -> 'intakeSource' ->> 'id' = a.work_item_id
+       ) canonical ON true
       WHERE a.workspace_id = $1
         AND (
-          (w.feature_id IS NULL AND a.created_at < now() - make_interval(days => $2::int))
-          OR (w.status = ANY($3::text[]) AND w.state_changed_at < now() - make_interval(days => $2::int))
+          (canonical.targets = 0 AND w.feature_id IS NULL
+              AND a.created_at < now() - make_interval(days => $2::int))
+          OR (canonical.targets = 1 AND canonical.closed
+              AND canonical.closed_at < now() - make_interval(days => $2::int))
+          OR (canonical.targets = 0 AND w.status = ANY($3::text[])
+              AND w.state_changed_at < now() - make_interval(days => $2::int))
         )
       LIMIT $4
    )
