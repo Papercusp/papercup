@@ -119,7 +119,7 @@ VERIFY_TAURI_ISOLATED_DB=1 "$RIG" -- bash -c '
       echo "run-operator-e2e-isolated: Vite exited before startup" >&2
       exit 98
     fi
-    port=$(node -e "const fs=require(\"node:fs\");const lines=fs.readFileSync(process.argv[1],\"utf8\").split(String.fromCharCode(10));const line=lines.find(x=>x.trim().startsWith(\"Local:\"));if(line){const url=line.trim().split(\" \").filter(Boolean).pop();if(url)process.stdout.write(new URL(url).port)}" "$vite_log")
+    port=$(node -e "const fs=require(\"node:fs\");const text=require(\"node:util\").stripVTControlCharacters(fs.readFileSync(process.argv[1],\"utf8\"));const match=text.match(/\bLocal:\s+(https?:\/\/\S+)/);if(match)process.stdout.write(new URL(match[1]).port)" "$vite_log")
     if [ -n "$port" ] && node -e "fetch(\"http://127.0.0.1:$port/\").then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))" >/dev/null 2>&1; then
       break
     fi
