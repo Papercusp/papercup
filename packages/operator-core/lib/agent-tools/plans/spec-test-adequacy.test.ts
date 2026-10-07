@@ -1891,6 +1891,36 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(result.ratings['fixture-calibration'].evidence).toContain('fixtureCalibrated=true');
   });
 
+  it('keeps fixture calibration unknown when an executable binding has no fixture classification', () => {
+    const base = evidence();
+    const row = evidence({
+      evidenceKind: 'test',
+      evidenceRef: 'test:unclassified-fixture-use',
+      fingerprints: { ...base.fingerprints, fixtureFingerprint: null },
+      details: {
+        adequacy: {
+          ...((base.details.adequacy ?? {}) as Record<string, unknown>),
+          fixtureCalibrated: undefined,
+        },
+      },
+    });
+
+    const result = evaluateSpecTestAdequacy({
+      clause: clause({
+        behaviorClass: 'observability',
+        requiredEvidence: ['tree'],
+        requiredTestLayers: ['integration', 'unit'],
+      }),
+      evidence: [row],
+      classRef: 'plan-class-bugfix',
+    });
+
+    expect(result.ratings['fixture-calibration'].rating).toBe('unknown');
+    expect(result.ratings['fixture-calibration'].evidence).toContain(
+      'no fixture-free classification',
+    );
+  });
+
   it('accepts fixture-free proof only when the exact executable binding attests fixtureFree=true', () => {
     const base = evidence();
     const row = evidence({
