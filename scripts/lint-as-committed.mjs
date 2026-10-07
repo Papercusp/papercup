@@ -638,7 +638,7 @@ export function linkNodeModulesShadow(sharedNm, cloneNm, repoRoot, workRoot, wor
 }
 
 /** Runtime prerequisites belong to the pinned package, never the shared dist/assets. */
-export function prepareWorkspaceExports(workRoot, workspacePaths, { prepareAssets = false } = {}) {
+export function prepareWorkspaceExports(workRoot, workspacePaths, { prepareAssets = false, sourceRoot } = {}) {
   for (const packageRoot of workspacePaths) {
     const manifest = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8'));
     const targets = new Set();
@@ -671,6 +671,18 @@ export function prepareWorkspaceExports(workRoot, workspacePaths, { prepareAsset
     const needsBuild = missing().length > 0;
     const assetLifecycle = prepareAssets && /\bsetup-[a-z0-9-]+-runtime\b/.test(manifest.scripts?.postinstall ?? '');
     if (!needsBuild && !assetLifecycle) continue;
+    if (assetLifecycle && sourceRoot) {
+      const setup = join(packageRoot, 'scripts/setup-porcupine-runtime.sh');
+      const cachedModel = join(sourceRoot, relative(workRoot, packageRoot), 'public/porcupine/porcupine_params.pv');
+      if (existsSync(setup) && existsSync(cachedModel)) {
+        const seed = spawnSync('bash', [setup, '--source', cachedModel], {
+          cwd: packageRoot, stdio: 'inherit', env: process.env,
+        });
+        if (seed.error || seed.status !== 0) {
+          throw new Error(`${manifest.name}: committed runtime seed failed (${seed.error?.message ?? `exit ${seed.status}`})`);
+        }
+      }
+    }
     if (needsBuild && !manifest.scripts?.build) {
       throw new Error(`${manifest.name}: missing runtime export(s) ${missing().join(', ')} and no committed build script`);
     }
@@ -1108,7 +1120,7 @@ function main() {
         (shadow.fallback ? `, ${shadow.fallback} fell back to the SHARED tree (package absent here)` : ''),
     );
     try {
-      prepareWorkspaceExports(workRoot, workspacePaths, { prepareAssets: args.any });
+      prepareWorkspaceExports(workRoot, workspacePaths, { prepareAssets: args.any, sourceRoot: repoRoot });
     } catch (err) {
       console.error(`lint-as-committed: workspace runtime prerequisites failed: ${err.message}`);
       process.exitCode = 2;

@@ -28,6 +28,7 @@
  * works and say nothing about whether the tree it feeds actually gets materialised.
  */
 import { execFileSync, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
   existsSync,
   lstatSync,
@@ -1196,6 +1197,40 @@ console.log('PINNED_NATIVE_OK');
       expect(result.stdout).toContain('PINNED_NATIVE_OK');
       expect(existsSync(join(f.root, 'libs/runtime/dist/native-client.cjs'))).toBe(false);
       expect(readFileSync(join(f.root, 'libs/runtime/build-native.cjs'), 'utf8')).toContain('shared dirty builder');
+    } finally { rmSync(f.root, { recursive: true, force: true }); }
+  }, 40_000);
+
+  it.each([true, false])('reuses only bytes accepted by the committed runtime model pin (valid=%s)', (valid) => {
+    const f = fixture('node build.cjs');
+    const model = 'independent pinned model fixture\n';
+    const digest = createHash('sha256').update(model).digest('hex');
+    try {
+      const manifest = JSON.parse(readFileSync(join(f.root, 'libs/runtime/package.json'), 'utf8'));
+      manifest.scripts.postinstall = 'bash scripts/setup-porcupine-runtime.sh';
+      // Use known fixture bytes with the real setup algorithm, and a closed
+      // loopback endpoint so a corrupt seed cannot be rescued by the network.
+      const setup = readFileSync(resolve(repoRoot, 'apps/operator/scripts/setup-porcupine-runtime.sh'), 'utf8')
+        .replace(/PORCUPINE_SHA256="[a-f0-9]{64}"/, `PORCUPINE_SHA256="${digest}"`)
+        .replace(/^URL=.*$/m, 'URL="http://127.0.0.1:9/unavailable-model"');
+      snapshot(f.root, {
+        '.gitignore': 'node_modules/\nlibs/runtime/dist/\nlibs/runtime/public/\n',
+        'libs/runtime/package.json': JSON.stringify(manifest),
+        'libs/runtime/scripts/setup-porcupine-runtime.sh': setup,
+        'probe.cjs': readFileSync(join(f.root, 'probe.cjs'), 'utf8') + `\nassert.equal(readFileSync('libs/runtime/public/porcupine/porcupine_params.pv', 'utf8'), ${JSON.stringify(model)});\nconsole.log('PINNED_MODEL_OK');\n`,
+      }, f.head);
+      mkdirSync(join(f.root, 'libs/runtime/public/porcupine'), { recursive: true });
+      const source = join(f.root, 'libs/runtime/public/porcupine/porcupine_params.pv');
+      writeFileSync(source, valid ? model : 'corrupt model');
+      const result = run(f.root, true);
+      expect(result.status, result.stdout + result.stderr).toBe(valid ? 0 : 2);
+      if (valid) {
+        expect(result.stdout).toContain('reused cached model (sha256 verified)');
+        expect(result.stdout).toContain('PINNED_MODEL_OK');
+      } else {
+        expect(result.stdout).not.toContain('PINNED_MODEL_OK');
+        expect(result.stderr).toContain('committed runtime seed failed');
+      }
+      expect(readFileSync(source, 'utf8')).toBe(valid ? model : 'corrupt model');
     } finally { rmSync(f.root, { recursive: true, force: true }); }
   }, 40_000);
 
