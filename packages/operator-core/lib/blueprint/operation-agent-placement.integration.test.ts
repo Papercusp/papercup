@@ -163,6 +163,30 @@ describe('accepted agent operation placement (WI-10006859)', () => {
     expect(again.filter((p) => p.receiptId === leaf.receiptId)).toHaveLength(0);
   }, 90_000);
 
+  it('never launches a human-audience target, while an eligible agent target is placed', async () => {
+    const ws = await workspace('placement-human');
+    const human = await accept(ws, 'leaf', 'human');
+    // Audience is registry-derived; hand-setting it is deliberately restamped.
+    await sql`INSERT INTO harness_shared.datatype_registry
+      (id, workspace_id, title, description, tier, work_item_kind, authoritative_writer,
+       status, published, review_status, tags, created_by, nature, audience, updated_at)
+      VALUES ('placement-human-kind', ${ws}, 'Human placement control', 'Human-only work',
+        'first-class', 'placement-human-kind', 'papercusp', 'active', FALSE, 'none',
+        ARRAY['test'], 'system:test', 'work', 'human', now())`;
+    await sql`UPDATE harness_shared.work_items SET item_kind = 'placement-human-kind'
+      WHERE workspace_id = ${ws} AND feature_id = ${human.workItemId}`;
+    const [persisted] = await sql`SELECT audience FROM harness_shared.work_items
+      WHERE workspace_id = ${ws} AND feature_id = ${human.workItemId}`;
+    expect(persisted.audience).toBe('human');
+    const agent = await accept(ws, 'leaf', 'agent');
+    const launched: AgentOperationPlacement[] = [];
+    await placeAcceptedAgentOperations(sql, { launch: async (p) => {
+      launched.push(p); return { ok: true };
+    } });
+    expect(launched.filter((p) => p.workspaceId === ws).map((p) => p.workItemId)).toEqual([agent.workItemId]);
+    expect((await receipt(human.receiptId)).agent_launch_attempts).toBe(0);
+  }, 90_000);
+
   it('never places a program operation and retires its receipt from the scan', async () => {
     const ws = await workspace('placement-program');
     const root = await accept(ws, 'root', 'program');
