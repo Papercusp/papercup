@@ -4,6 +4,7 @@ import {
   BLUEPRINT_PROGRAM_COMPLETION_OWNER,
   blueprintProgramCompletionRef,
   projectBlueprintOperationStatus,
+  terminalOperationWorkerProof,
   type BlueprintOperationHandle,
 } from './operation-service';
 import { selectOperationSpecificationRevision } from './operation-admission';
@@ -18,6 +19,19 @@ const plan: BlueprintOperationHandle = {
   ...direct, receiptId: 13,
   target: { kind: 'plan', runId: 25, instanceSlug: 'template@run-25' },
 };
+
+describe('terminalOperationWorkerProof', () => {
+  const worker = { terminalOwner: 'reviewer', terminalCompletionRef: 'completion:12',
+    completionAuthority: 'validated', payload: { blueprintOperation: { input: { reviewContext: { gradedWorkItemRef: 'WI-42' } } } } } as WorkItem;
+  it('attributes the completed worker and preserves the accepted input', () => {
+    expect(terminalOperationWorkerProof(worker)).toEqual({ ownerId: 'reviewer', completionRef: 'completion:12',
+      input: { reviewContext: { gradedWorkItemRef: 'WI-42' } } });
+  });
+  it.each([{ terminalOwner: null }, { terminalCompletionRef: null }, { completionAuthority: null }, { payload: null }])
+    ('refuses incomplete worker proof %j', (patch) => {
+      expect(() => terminalOperationWorkerProof({ ...worker, ...patch } as WorkItem)).toThrow();
+    });
+});
 
 function item(id: string, state: string, assignee: string | null = null): WorkItem {
   return { id, state, assignee, family: 'feature', kind: 'feature',

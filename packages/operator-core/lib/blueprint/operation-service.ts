@@ -405,6 +405,30 @@ export function getBlueprintOperationStatus(sql: Sql, handle: BlueprintOperation
   return runWithWorkspace(handle.workspaceId, async () => (await readValidatedCanonicalOperation(sql, handle, callerId)).status);
 }
 
+/** Receipt-bound worker attribution, distinct from the app that submitted it.
+ * Uses the same receipt/payload checks as the lifecycle readers. */
+export function getBlueprintOperationTerminalWorker(sql: Sql, handle: BlueprintOperationHandle, callerId: string) {
+  return runWithWorkspace(handle.workspaceId, async () => {
+    const { status, items, result } = await readValidatedCanonicalOperation(sql, handle, callerId);
+    const { operation } = await declaredOperationWithSpecification(sql, handle);
+    if (handle.target.kind !== 'work-item' || operation.execution?.kind !== 'agent' ||
+        status.phase !== 'terminal' || status.outcome !== 'succeeded' || !items?.[0] || !result) {
+      throw new Error('review operation must be a successful terminal agent work item');
+    }
+    return { ...terminalOperationWorkerProof(items[0]), output: result.output, evidenceRef: result.evidenceRef };
+  });
+}
+
+/** Pure projection after canonical receipt validation; never caller-supplied identity. */
+export function terminalOperationWorkerProof(item: WorkItem) {
+  const pin = (item.payload as { blueprintOperation?: AcceptedOperationPin } | null)?.blueprintOperation;
+  if (!item.terminalOwner || !item.terminalCompletionRef ||
+      !['committed', 'validated'].includes(item.completionAuthority ?? '') || !pin?.input) {
+    throw new Error('review operation has no accountable terminal worker evidence');
+  }
+  return { ownerId: item.terminalOwner, completionRef: item.terminalCompletionRef, input: pin.input };
+}
+
 /** Issue-family kinds, exactly the `engineer_issues` view predicate. */
 const ISSUE_FAMILY_KINDS: ReadonlySet<string> = new Set(['bug', 'change', 'task']);
 
@@ -1196,6 +1220,8 @@ export async function prepareDirectOperationCompletion(
 
 interface ValidatedCanonicalOperation {
   status: BlueprintOperationStatus;
+  /** Available only after the canonical result passes validation. */
+  items?: WorkItem[];
   result?: { output: unknown; evidenceRef: string; acceptanceEvidenceRef?: string };
   invalidReason?: string;
 }
@@ -1281,7 +1307,7 @@ async function readValidatedCanonicalOperation(
       acceptance.ok ? 'canonical result has no acceptance scorecard' : acceptance.reason);
     acceptanceEvidenceRef = acceptance.evidenceRef;
   }
-  return { status, result: { output, evidenceRef,
+  return { status, items, result: { output, evidenceRef,
     ...(acceptanceEvidenceRef ? { acceptanceEvidenceRef } : {}) } };
 }
 

@@ -27,6 +27,7 @@ import { getAcceptanceRubricVettingStatus } from '../../acceptance-rubric-vettin
 import { getIssue } from '../../issues-engineer';
 import { captureImprovement } from '../../harness/improvements/capture-core';
 import { activeWorkspaceId } from '../../workspace-registry';
+import { OperationHandleSchema, getBlueprintOperationTerminalWorker } from '../../blueprint/operation-service';
 import { readVettingConsultCritique } from '../../consult/get-feedback-core';
 import { getWorkItem, readVettingWorkItemCritique, type WorkItem } from '../../work-items';
 import { runWithWorkspaceIfConcrete } from '../../workspace-als';
@@ -570,6 +571,8 @@ const specTestAdequacyRerunRecipeSchema = z
 
 const scorecardEmitBaseShape = {
     rubricRef: z.string().min(1).max(120),
+    interactionReviewerHandle: OperationHandleSchema.optional()
+      .describe('CRM review operation receipt. Resolves the actual terminal reviewer independently of the submitting app caller.'),
     rubricRevision: z.number().int().positive().optional()
       .describe('Expected reviewed rubric revision; refuse if the instrument changed before filing.'),
     criteriaHash: z.string().regex(/^[a-f0-9]{64}$/).optional()
@@ -1461,6 +1464,8 @@ export async function emitScorecard(
     /** Canonical producing-task read for CRM interaction reviewer independence. */
     readInteractionProducer?: (workspaceId: string, id: string, opts: { includeBody: false }) =>
       Promise<Pick<WorkItem, 'state' | 'terminalOwner' | 'terminalCompletionRef'> | null>;
+    readInteractionReviewer?: (handle: z.infer<typeof OperationHandleSchema>, callerId: string) =>
+      ReturnType<typeof getBlueprintOperationTerminalWorker>;
   } = {},
 ) {
   // WI-10005715: a field that ENDS in the MCP result door's clip marker is a clipped
@@ -1487,6 +1492,7 @@ export async function emitScorecard(
   // CRM grades the task that PRODUCED the call/email, never its reviewer task.
   // Enforce this at the canonical writer too: an app-side parse gate alone can
   // be bypassed by a producer calling scorecards:emit directly.
+  let interactionReviewer: { ownerId: string; completionRef: string; outputEvidenceRef: string; handle: z.infer<typeof OperationHandleSchema> } | undefined;
   if (rubric.rubricId === 'crm-interaction-quality') {
     if (rubric.status !== 'active') {
       return { ok: false as const, code: 'interaction_rubric_not_active',
@@ -1512,11 +1518,48 @@ export async function emitScorecard(
       return { ok: false as const, code: 'interaction_producer_unresolved',
         error: 'The producing task must have a terminal owner and completion evidence before independent grading.' };
     }
+    const handle = args.interactionReviewerHandle;
+    if (!handle || handle.workspaceId !== input.workspaceId || handle.operationId !== 'call-review' ||
+        handle.target.kind !== 'work-item' || handle.target.id === args.subject.ref ||
+        handle.harnessSlug !== (args.sourceHive ?? input.ctxHarness)) {
+      return { ok: false as const, code: 'interaction_reviewer_required',
+        error: 'CRM grading requires the distinct call-review operation handle in the caller workspace and harness.' };
+    }
     try {
-      if (await (deps.lineageRelated ?? areAcceptanceLineageRelated)(producer.terminalOwner, input.createdBy)) {
+      const reviewer = deps.readInteractionReviewer
+        ? await deps.readInteractionReviewer(handle, input.createdBy)
+        : await getBlueprintOperationTerminalWorker(getOrgPg().sql, handle, input.createdBy);
+      const context = reviewer.input.reviewContext as Record<string, unknown> | undefined;
+      if (!reviewer.ownerId || !reviewer.completionRef || context?.gradedWorkItemRef !== args.subject.ref ||
+          context.rubricRef !== args.rubricRef || context.rubricRevision !== args.rubricRevision ||
+          context.criteriaHash !== args.criteriaHash) {
+        return { ok: false as const, code: 'interaction_reviewer_mismatch',
+          error: 'The canonical review operation does not cover this producing task and reviewed instrument.' };
+      }
+      const related = deps.lineageRelated ?? areAcceptanceLineageRelated;
+      if (await related(producer.terminalOwner, input.createdBy) || await related(producer.terminalOwner, reviewer.ownerId)) {
         return { ok: false as const, code: 'interaction_grader_in_producer_lineage',
           error: 'The producing agent and its lineage cannot grade their own CRM interaction.' };
       }
+      // Bind the app's submitted ratings to the validated reviewer output, rather
+      // than treating possession of a review handle as permission to invent them.
+      const grade = z.object({
+        gradedWorkItemRef: z.string(), rubricRef: z.string(), rubricRevision: z.number(), criteriaHash: z.string(),
+        ratings: z.array(z.object({ key: z.string(), rating: z.string(), evidence: z.string(), evidenceRef: z.string() })),
+      }).safeParse((reviewer.output as { interactionGrade?: unknown } | null)?.interactionGrade);
+      const submitted = args.ratings;
+      if (!grade.success || !submitted || !reviewer.evidenceRef ||
+          grade.data.gradedWorkItemRef !== args.subject.ref || grade.data.rubricRef !== args.rubricRef ||
+          grade.data.rubricRevision !== args.rubricRevision || grade.data.criteriaHash !== args.criteriaHash ||
+          new Set(grade.data.ratings.map(entry => entry.key)).size !== grade.data.ratings.length ||
+          Object.keys(submitted).length !== grade.data.ratings.length ||
+          grade.data.ratings.some(entry => submitted[entry.key]?.rating !== entry.rating ||
+            submitted[entry.key]?.evidence !== entry.evidence || submitted[entry.key]?.evidenceRef !== entry.evidenceRef)) {
+        return { ok: false as const, code: 'interaction_reviewer_output_mismatch',
+          error: 'Submitted CRM ratings must match the validated call-review output and its instrument pins.' };
+      }
+      interactionReviewer = { ownerId: reviewer.ownerId, completionRef: reviewer.completionRef,
+        outputEvidenceRef: reviewer.evidenceRef, handle };
     } catch {
       return { ok: false as const, code: 'interaction_producer_unreadable',
         error: 'Could not verify reviewer independence; no interaction scorecard was filed.' };
@@ -3284,6 +3327,7 @@ export async function emitScorecard(
           ...(provisional ? { provisional } : {}),
           ...(gradingAudit ? { gradingAudit } : {}),
           ...(args.subject ? { subject: args.subject } : {}),
+          ...(interactionReviewer ? { interactionReviewer } : {}),
           ...(evidenceRecord ? { evidenceRecord } : {}),
           ...(subjectRubricIdentity ? { subjectRubricIdentity } : {}),
           ...(rollup ? { rollup } : {}),

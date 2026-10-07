@@ -367,11 +367,20 @@ beforeEach(() => {
 });
 
 describe('CRM canonical producer independence (P-012)', () => {
-  const args = { rubricRef: 'crm-interaction-quality', rubricRevision: 1, criteriaHash: 'a'.repeat(64), ratings: RATINGS,
-    subject: { kind: 'work-item' as const, ref: 'WI-42' }, terminal: true };
+  const args = { rubricRef: 'crm-interaction-quality', rubricRevision: 1, criteriaHash: 'a'.repeat(64),
+    ratings: { c1: { ...RATINGS.c1, evidenceRef: 'source:42' } },
+    subject: { kind: 'work-item' as const, ref: 'WI-42' }, terminal: true,
+    interactionReviewerHandle: { workspaceId: 'ws', harnessSlug: 'crm', receiptId: 43,
+      operationId: 'call-review', specificationRevision: 'b'.repeat(64), target: { kind: 'work-item' as const, id: 'WI-43' } } };
   const input = { createdBy: 'su-reviewer', workspaceId: 'ws', ctxHarness: 'crm' };
   const producer = { state: 'done', terminalOwner: 'su-producer', terminalCompletionRef: 'completion:42' };
   const reader = (value: unknown = producer) => vi.fn(async () => value) as never;
+  const reviewer = (ownerId = 'su-reviewer') => vi.fn(async () => ({ ownerId, completionRef: 'completion:43',
+    output: { interactionGrade: { gradedWorkItemRef: 'WI-42', rubricRef: args.rubricRef,
+      rubricRevision: args.rubricRevision, criteriaHash: args.criteriaHash,
+      ratings: [{ key: 'c1', ...args.ratings.c1 }] } }, evidenceRef: 'operation-output:43',
+    input: { reviewContext: { gradedWorkItemRef: 'WI-42', rubricRef: args.rubricRef,
+      rubricRevision: args.rubricRevision, criteriaHash: args.criteriaHash } } }));
 
   beforeEach(() => getRubric.mockResolvedValue({ ...mkRubric('crm-interaction-quality', 'standard'), criteriaHash: 'a'.repeat(64) }));
 
@@ -389,7 +398,7 @@ describe('CRM canonical producer independence (P-012)', () => {
     for (const identity of [{ revision: 2, criteriaHash: 'a'.repeat(64), meaningRevision: null },
       { revision: null, criteriaHash: null, meaningRevision: null }]) {
       getRubricEvidenceIdentity.mockResolvedValueOnce(identity);
-      expect(await emitScorecard(args, input, { readInteractionProducer: reader(), lineageRelated: async () => false }))
+      expect(await emitScorecard(args, input, { readInteractionProducer: reader(), readInteractionReviewer: reviewer(), lineageRelated: async () => false }))
         .toMatchObject({ ok: false, code: 'scorecard_rubric_identity_mismatch' });
     }
     expect(captureImprovement).not.toHaveBeenCalled();
@@ -398,7 +407,7 @@ describe('CRM canonical producer independence (P-012)', () => {
   it.each(['su-producer', 'su-child'])('refuses producer or producer lineage %s before a ledger write', async (createdBy) => {
     const related = vi.fn(async () => true);
     const result = await emitScorecard(args, { ...input, createdBy }, {
-      readInteractionProducer: reader(), lineageRelated: related,
+      readInteractionProducer: reader(), readInteractionReviewer: reviewer(), lineageRelated: related,
     });
     expect(result).toMatchObject({ ok: false, code: 'interaction_grader_in_producer_lineage' });
     expect(related).toHaveBeenCalledWith('su-producer', createdBy);
@@ -408,10 +417,75 @@ describe('CRM canonical producer independence (P-012)', () => {
   it('permits an unrelated reviewer through the canonical writer', async () => {
     const read = reader();
     const result = await emitScorecard(args, input, { readInteractionProducer: read,
-      lineageRelated: async () => false });
+      readInteractionReviewer: reviewer(), lineageRelated: async () => false });
     expect(result.ok).toBe(true);
     expect(read).toHaveBeenCalledWith('ws', 'WI-42', { includeBody: false });
     expect(captureImprovement).toHaveBeenCalledOnce();
+    expect(captureImprovement.mock.calls[0][0].payloadExtra.observation.interactionReviewer)
+      .toEqual({ ownerId: 'su-reviewer', completionRef: 'completion:43', outputEvidenceRef: 'operation-output:43', handle: args.interactionReviewerHandle });
+  });
+
+  it.each([{ rating: 'fail' }, { evidence: 'invented evidence' }, { evidenceRef: 'different-source' }])
+    ('refuses ratings changed by the transport caller %j', async (patch) => {
+      expect(await emitScorecard({ ...args, ratings: { c1: { ...args.ratings.c1, ...patch } } }, input,
+        { readInteractionProducer: reader(), readInteractionReviewer: reviewer(), lineageRelated: async () => false }))
+        .toMatchObject({ ok: false, code: 'interaction_reviewer_output_mismatch' });
+      expect(captureImprovement).not.toHaveBeenCalled();
+    });
+
+  it.each([null, {}, { interactionGrade: { ratings: [] } }])
+    ('refuses missing or incomplete canonical reviewer output %j', async (output) => {
+      const readReview = async () => ({ ...await reviewer()(), output });
+      expect(await emitScorecard(args, input,
+        { readInteractionProducer: reader(), readInteractionReviewer: readReview, lineageRelated: async () => false }))
+        .toMatchObject({ ok: false, code: 'interaction_reviewer_output_mismatch' });
+      expect(captureImprovement).not.toHaveBeenCalled();
+    });
+
+  it.each(['su-producer', 'su-child'])('refuses actual reviewer %s behind an unrelated app caller', async (ownerId) => {
+    const related = vi.fn(async (_producer: string | null | undefined, candidate: string | null | undefined) => candidate === ownerId);
+    expect(await emitScorecard(args, { ...input, createdBy: 'app:crm' }, {
+      readInteractionProducer: reader(), readInteractionReviewer: reviewer(ownerId), lineageRelated: related,
+    })).toMatchObject({ code: 'interaction_grader_in_producer_lineage' });
+    expect(related).toHaveBeenCalledWith('su-producer', ownerId);
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
+
+  it('refuses a missing reviewer receipt and failed canonical receipt read', async () => {
+    expect(await emitScorecard({ ...args, interactionReviewerHandle: undefined }, input,
+      { readInteractionProducer: reader() })).toMatchObject({ code: 'interaction_reviewer_required' });
+    expect(await emitScorecard(args, input, { readInteractionProducer: reader(),
+      readInteractionReviewer: vi.fn().mockRejectedValue(new Error('handle_mismatch')) }))
+      .toMatchObject({ code: 'interaction_producer_unreadable' });
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
+
+  it('permits a distinct terminal reviewer through an unrelated app transport', async () => {
+    const readReview = reviewer('su-independent');
+    expect((await emitScorecard(args, { ...input, createdBy: 'app:crm' }, {
+      readInteractionProducer: reader(), readInteractionReviewer: readReview, lineageRelated: async () => false,
+    })).ok).toBe(true);
+    expect(readReview).toHaveBeenCalledWith(args.interactionReviewerHandle, 'app:crm');
+    expect(captureImprovement.mock.calls[0][0].payloadExtra.observation.interactionReviewer.ownerId).toBe('su-independent');
+  });
+
+  it.each([{ workspaceId: 'other' }, { harnessSlug: 'other' }, { operationId: 'send-email' },
+    { target: { kind: 'work-item' as const, id: 'WI-42' } }])('refuses an out-of-scope reviewer handle %j', async (patch) => {
+    const readReview = reviewer();
+    expect(await emitScorecard({ ...args, interactionReviewerHandle: { ...args.interactionReviewerHandle, ...patch } }, input,
+      { readInteractionProducer: reader(), readInteractionReviewer: readReview }))
+      .toMatchObject({ code: 'interaction_reviewer_required' });
+    expect(readReview).not.toHaveBeenCalled();
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
+
+  it('refuses a review of a different producing task', async () => {
+    expect(await emitScorecard(args, input, { readInteractionProducer: reader(),
+      readInteractionReviewer: async () => ({ ownerId: 'reviewer', completionRef: 'completion:43',
+        output: null, evidenceRef: 'operation-output:43',
+        input: { reviewContext: { gradedWorkItemRef: 'WI-99' } } }) }))
+      .toMatchObject({ code: 'interaction_reviewer_mismatch' });
+    expect(captureImprovement).not.toHaveBeenCalled();
   });
 
   it.each([null, { ...producer, state: 'open' }, { ...producer, terminalOwner: null },
@@ -426,7 +500,7 @@ describe('CRM canonical producer independence (P-012)', () => {
     expect(await emitScorecard({ ...args, subject: undefined }, input)).toMatchObject({ code: 'interaction_producer_required' });
     expect(await emitScorecard(args, input, { readInteractionProducer: vi.fn().mockRejectedValue(new Error('read failed')) }))
       .toMatchObject({ code: 'interaction_producer_unreadable' });
-    expect(await emitScorecard(args, input, { readInteractionProducer: reader(), lineageRelated: async () => { throw new Error('identity failed'); } }))
+    expect(await emitScorecard(args, input, { readInteractionProducer: reader(), readInteractionReviewer: reviewer(), lineageRelated: async () => { throw new Error('identity failed'); } }))
       .toMatchObject({ code: 'interaction_producer_unreadable' });
     expect(captureImprovement).not.toHaveBeenCalled();
   });
