@@ -123,6 +123,16 @@ describe('capability:bash — result shape for a code:run script (EI-20066912585
     expect(guidance?.when).toContain('`&&` starts another command');
   });
 
+  it('documents that truncated shell output is a preview and points to the full log', () => {
+    const fields = (bashTool as unknown as {
+      result?: { shape?: Record<string, { description?: string }> };
+    }).result?.shape;
+    expect(fields?.truncated?.description).toContain('bounded head/tail preview');
+    expect(fields?.truncated?.description).toContain('do not parse it');
+    expect(fields?.truncated?.description).toContain('read log_path');
+    expect(fields?.log_path?.description).toContain('complete command output');
+  });
+
   it('gives a code-mode caller an OBJECT whose output field carries the real output', async () => {
     const r = await bash.handler({ command: 'echo HELLO-SHAPE-PROBE' }, makeCtx({ codeMode: true }));
 

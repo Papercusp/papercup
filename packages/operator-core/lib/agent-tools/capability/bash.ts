@@ -372,9 +372,11 @@ const bashResultSchema = z
     duration_ms: z.number().nonnegative().optional(),
     cwd: z.string().optional(),
     output: z.string().optional(),
-    truncated: z.boolean().optional(),
+    truncated: z.boolean().optional().describe(
+      'When true, output is a bounded head/tail preview, not complete data; do not parse it. Narrow the command or read log_path.',
+    ),
     total_bytes: z.number().int().nonnegative().optional(),
-    log_path: z.string().optional(),
+    log_path: z.string().optional().describe('Path containing the complete command output when output is truncated.'),
     response_window_ms: z.number().int().nonnegative().optional(),
     timeout_ms: z.number().int().nonnegative().optional(),
     deadline: z.string().optional(),
