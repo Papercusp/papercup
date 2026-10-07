@@ -253,6 +253,54 @@ function run(files: Fixture, args: string[], extraEnv: NodeJS.ProcessEnv = {}) {
   });
 }
 
+function artifactProcessTree(files: Fixture, hosted: boolean, branching: boolean, stale = false) {
+  const current = join(files.runtimeRoot, "releases", "build-one");
+  const old = join(files.runtimeRoot, "releases", "build-old");
+  mkdirSync(old, { recursive: true });
+  for (const pid of ["4350", "4400", "4500"]) {
+    mkdirSync(join(files.procRoot, pid, "task", pid), { recursive: true });
+    writeFileSync(join(files.procRoot, pid, "cmdline"), Buffer.from("node\0helper\0"));
+    symlinkSync(files.portalRoot, join(files.procRoot, pid, "cwd"), "dir");
+  }
+  const startWeb = Buffer.from(`node\0${files.portalRoot}/scripts/start-web.mjs\0`);
+  writeFileSync(join(files.procRoot, "4242", "cmdline"), hosted
+    ? Buffer.from(`node\0${files.binDir}/papercusp-cloud-portal-launcher.ts\0`)
+    : startWeb);
+  if (hosted) writeFileSync(join(files.procRoot, "4350", "cmdline"), startWeb);
+  writeFileSync(join(files.procRoot, "4242", "task", "4242", "children"),
+    `${branching ? "4400 " : ""}${hosted ? "4350" : "4343"}`);
+  if (hosted) writeFileSync(join(files.procRoot, "4350", "task", "4350", "children"),
+    `${branching ? "4500 " : ""}4343`);
+  if (stale) {
+    rmSync(join(files.procRoot, "4343", "cwd"));
+    symlinkSync(old, join(files.procRoot, "4343", "cwd"), "dir");
+    // A current cwd on a sibling of start-web cannot prove its serving lineage.
+    rmSync(join(files.procRoot, "4400", "cwd"));
+    symlinkSync(current, join(files.procRoot, "4400", "cwd"), "dir");
+  }
+}
+
+function artifactTestSystemctl(files: Fixture, refreshOnRestart = false): string {
+  const systemctl = join(files.binDir, "systemctl-artifact");
+  writeFileSync(systemctl, `#!/usr/bin/env bash
+set -eu
+printf '%s\\n' "$*" >> "$SYSTEMCTL_LOG"
+shift
+case "$1" in
+  daemon-reload|enable|stop|reset-failed|start) exit 0 ;;
+  restart)
+    ${refreshOnRestart ? `rm '${files.procRoot}/4343/cwd'
+    ln -s '${files.runtimeRoot}/releases/build-one' '${files.procRoot}/4343/cwd'` : ":"}
+    exit 0 ;;
+  is-active) exit 0 ;;
+  show) printf '4242\\n'; exit 0 ;;
+  *) exit 1 ;;
+esac
+`);
+  chmodSync(systemctl, 0o755);
+  return systemctl;
+}
+
 describe("Cloud Portal systemd deployment contract", () => {
   it("ships the documented handoff entrypoint as a directly executable script", () => {
     const result = spawnSync(SCRIPT, ["--help"], { encoding: "utf8" });
@@ -437,6 +485,54 @@ esac
     expect(script).not.toMatch(/systemctl_user\s+stop[^\n]*3081/);
     expect(script.indexOf("validate_legacy_listener")).toBeLessThan(script.indexOf("stop_legacy_listener"));
     expect(script.indexOf("restore_legacy_listener")).toBeGreaterThan(script.indexOf("start_managed"));
+  });
+
+  it.each([
+    ["hosted launcher", true, false],
+    ["direct launcher with branching children", false, true],
+    ["hosted launcher with branching children", true, true],
+  ] as const)("keeps a current artifact idempotent through a %s", (_name, hosted, branching) => {
+    const files = fixture();
+    artifactProcessTree(files, hosted, branching);
+    const systemctl = artifactTestSystemctl(files);
+    try {
+      const result = run(files, ["--handoff"], {
+        PAPERCUSP_CLOUD_PORTAL_SYSTEMCTL: systemctl,
+        PAPERCUSP_CLOUD_PORTAL_CURL: "/bin/true",
+        SYSTEMCTL_LOG: files.logPath,
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain("already active and healthy; legacy handoff not needed");
+      expect(readFileSync(files.logPath, "utf8")).not.toContain("--user restart papercusp-cloud-portal.service");
+    } finally {
+      rmSync(files.dir, { recursive: true, force: true });
+    }
+  });
+
+  it.each([true, false])("verifies the hosted serving lineage after restart (refresh=%s)", (refresh) => {
+    const files = fixture();
+    artifactProcessTree(files, true, true, true);
+    const systemctl = artifactTestSystemctl(files, refresh);
+    try {
+      const result = run(files, ["--handoff"], {
+        PAPERCUSP_CLOUD_PORTAL_SYSTEMCTL: systemctl,
+        PAPERCUSP_CLOUD_PORTAL_CURL: "/bin/true",
+        SYSTEMCTL_LOG: files.logPath,
+      });
+      const calls = readFileSync(files.logPath, "utf8");
+      expect(calls).toContain("--user restart papercusp-cloud-portal.service");
+      expect(result.status, result.stderr).toBe(refresh ? 0 : 1);
+      if (refresh) {
+        expect(result.stdout).toContain("runs the standalone production artifact and passed health check");
+        expect(calls).not.toContain("--user stop papercusp-cloud-portal.service");
+      } else {
+        expect(result.stdout).not.toContain("handoff complete");
+        expect(result.stderr).toContain("managed portal restart/health failed");
+        expect(calls).toContain("--user stop papercusp-cloud-portal.service");
+      }
+    } finally {
+      rmSync(files.dir, { recursive: true, force: true });
+    }
   });
 
   it("restarts an active managed stale generation instead of misreporting it as current", () => {
