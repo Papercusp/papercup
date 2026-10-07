@@ -5,9 +5,9 @@
   "accountableOwner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
   "population": {
     "failedFiles": 124,
-    "repairedFocused": 30,
+    "repairedFocused": 31,
     "repairedPeerFocused": 16,
-    "openUnknown": 78
+    "openUnknown": 77
   },
   "classes": {
     "assertion": 55,
@@ -1104,12 +1104,12 @@
     {
       "path": "packages/operator-core/lib/delegated-tasks.integration.test.ts",
       "class": "console-guard",
-      "state": "open-unknown",
-      "item": "WI-10006170",
+      "state": "repaired-focused",
+      "item": "WI-10007229",
       "focusedDiagnosis": {
-        "scope": "Historical warning inventory and inherited fixture repair identified; causal controls and complete current import/environment assurance remain unverified. No class reclassification or final readiness claim.",
+        "scope": "Inherited maintained-schema fixture repair now has real-PG warning and completion-boundary controls. Historical attribution is supported by the omitted original column and unchanged receipt reader, while full historical/current imports and environment remain unverified. Focused repair only; no final readiness claim.",
         "archiveSha256": "43cf66489baf7cf665a9746d097375cffc7cdc6262014929c3cc398155b579f4",
-        "observed": "Archived warnings name missing event_awaits and adv_sessions.ended_by. Archive/resolve assertions also leave delegated tasks open; whether they share the schema cause has not been measured.",
+        "observed": "Archived warnings name missing event_awaits and adv_sessions.ended_by, with archive/resolve assertions leaving tasks open. Current real-PG controls distinguish the paths: missing event_awaits alone allows terminal writes, while missing ended_by blocks the completion receipt and both adapters leave rows open; column restoration permits both writes. Historical full import/environment equality remains unverified.",
         "legacyCandidate": {
           "item": "EI-11558",
           "state": "resolved",
@@ -1153,7 +1153,46 @@
           "wrapperProvenance": "unknown",
           "limit": "Named test paths stayed clean and unchanged, but HEAD moved during the run. The runner explicitly marks provenance UNKNOWN because imported source/change radius was not measured. No clean current-source assurance or final D006 claim."
         },
-        "next": "Add a separately registered real-PG missing/restored adv_sessions.ended_by completion-boundary control: inspect the receipt read, direct writer refusal, delegated adapter state and restored archive/resolve effects. This source trace is a hypothesis until that control distinguishes it from the already-measured event-warning path. Preserve P004/D006 custody and do not replay terminal WI-10007207.",
+        "next": "Continue the other parent-owned source classifications; preserve P004/D006 final sweep custody. The completion-column control is verified in WI-10007229; do not replay terminal WI-10007207 or reinterpret focused proof as full import/environment assurance.",
+        "completionBoundaryControl": {
+          "item": "WI-10007229",
+          "rootCause": "The fixture omitted adv_sessions.ended_by. The pre-write operation receipt reader queries that column, returns unavailable on SQLSTATE 42703, and the canonical state writer refuses the unavailable receipt. Both delegated adapters swallow the refusal, leaving rows open. This is independent of the event_awaits warning path.",
+          "repair": "Existing c6aa3f758519329d5f54f52ec79035cbb26e967f applies the maintained claim schema, which supplies ended_by. This child adds its conventional recurrence control; no production edit or security bypass.",
+          "procedure": "Keep real event_awaits present. Rename only real adv_sessions.ended_by; inspect the unavailable receipt and raw PostgreSQL error, assert both canonical terminal writes reject, then invoke both adapters and assert both rows stay open. Restore the same column; inspect none receipts and assert archive dropped, resolve done and no open resolved task.",
+          "actualObservation": "Unavailable receipt reason names ended_by and SQLSTATE 42703; throwOnError retains code 42703. Both direct writes reject; both adapters return with rows open. Restoration produces status none for both actors and the expected dropped/done rows.",
+          "testRunId": 20903888,
+          "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/delegated-tasks.integration.test.ts",
+          "status": "pass",
+          "casesPassed": 9,
+          "casesSkipped": 0,
+          "exitCode": 0,
+          "commitSha": "1bdcb40be72fb65efe27a17353caf3ff60c85afc",
+          "source": "local",
+          "branch": "staging",
+          "workspace": "papercusp-workspace",
+          "harness": "papercusp",
+          "worktreeDirty": true,
+          "isScratchConfig": false,
+          "runGroupId": null,
+          "testSha256": "33427dd87d150df8021570b51c24e584fa8c42c10f85d474f93618f27b994952",
+          "log": "/tmp/wi-10007229-completion-control.log",
+          "logSha256": "7e2b9585b6ffe1e90e413b41dbad0d9f4bda7fc91afa33c2176664f993c4cb92",
+          "wrapperProvenance": "stamped; HEAD and named test fingerprints unchanged pre/post; named file dirty; full imported graph unmeasured",
+          "typecheck": {
+            "command": "npm run lint:tsc -- --files=packages/operator-core/lib/delegated-tasks.integration.test.ts",
+            "checkedFiles": 1,
+            "errors": 0,
+            "exitCode": 0,
+            "log": "/tmp/wi-10007229-completion-control-tsc.log",
+            "logSha256": "8c23d8656dcba4a612086d5b170c6a2241b2c06611e4c36c8d8b3c45aa1ccf85"
+          },
+          "namedSourceFingerprintsAtRecord": {
+            "packages/operator-core/lib/blueprint/operation-worker-binding.ts": "b869b4d026591d1d81790e6534d237f53360ac7d24c7ad75f20978112be1028e",
+            "packages/operator-core/lib/issues-engineer.ts": "694dd45894f6e9b9d913ab783c08976bca6fa6e635c1a648ef6e51f4d98e916f",
+            "packages/operator-core/lib/work-items.ts": "05b668d6d6b4fd94af74a6da0f5787e61313fc85465bf226e847c7b3d09202a2"
+          },
+          "limit": "Real PG current fixture cause is measured. Historical assertion attribution additionally rests on stored original fixture/source trace; the original imported graph and environment were not replayed. Original 124 failed/298 skipped census, other source mismatch qualifications, independent final D006/P004 and shipment remain separate. Prior causalControls receipts are historical and name the earlier eight-case test bytes."
+        },
         "assertionSourceTrace": {
           "scope": "Content-bearing source investigation only; no new test execution or historical root-cause verdict.",
           "archiveRunStart": "d2a53e115436fe5b2a72c261abbc66f337642672",
@@ -2552,12 +2591,16 @@
     {
       "class": "console-guard",
       "count": 4,
-      "status": "open-unknown",
+      "status": "partially-repaired-focused",
+      "stateCounts": {
+        "repaired-focused": 1,
+        "open-unknown": 3
+      },
       "item": "WI-10006170",
       "owner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
       "scope": "diagnosis-and-placement",
       "rootCause": "unproved",
-      "next": "Resolve the four remaining console-guard files against exact source failures and current causal verification. Archived inventory is historical; B now has scoped fixture repair WI-10007188. Complete imports/environment/finalD006 remain unverified.",
+      "next": "Resolve the three remaining open console-guard files against exact source failures and current causal verification. Delegated fixture completion control WI-10007229 passes 9/0skip in 20903888; B has scoped fixture repair WI-10007188. Archived inventory and earlier warning-only conclusions remain historical. Complete imports/environment/finalD006 remain unverified.",
       "archivedDiagnosticInventory": {
         "archiveSha256": "43cf66489baf7cf665a9746d097375cffc7cdc6262014929c3cc398155b579f4",
         "scope": "Exact ANSI-stripped error groups from the immutable D006 archive, indexed by the existing FAIL-header line identities. These are historical symptoms, not current test verdicts or proved source causes. Candidate terminal records require completion and source-assurance review.",
@@ -2689,7 +2732,7 @@
         "causalVerification": "not-run; no controlled failed/passing fixture-lifecycle execution or source repair in this lane",
         "disposition": "Existing open federation issue includes this warning. Legacy EI-10726 is resolved without committed completion authority and describes hook/store errors, so it is not closure evidence for the pool-rebind warning. One of ten console-guard files investigated; no census state or population count changed."
       },
-      "countCorrection": "Class count recomputed from canonical file rows after B fixture reclassification: four remaining console-guard entries."
+      "countCorrection": "Four console-guard file rows remain in the original class inventory: delegated-tasks is repaired-focused and three stay open-unknown. Population now records 31 focused repairs, 16 peer focused repairs and 77 UNKNOWN; this is historical repair disposition, not current full-source readiness."
     },
     {
       "class": "unclassified",
