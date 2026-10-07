@@ -85,6 +85,8 @@ function deps(overrides: Partial<RecordOperationalRunDeps> = {}): RecordOperatio
     inspectEvidence: vi.fn(() => EVIDENCE),
     findIds: vi.fn(async () => []),
     persist: vi.fn(async () => ({ written: 1, ids: [77] })),
+    readArchivedRun: vi.fn(async () => null),
+    verifyOriginalEvidence: vi.fn(async () => true),
     ...overrides,
   };
 }
@@ -343,7 +345,14 @@ describe('testing:record-run', () => {
 
   it('is idempotent when the artifact hash already has a scoped row', async () => {
     const persist = vi.fn(async () => ({ written: 1, ids: [99] }));
-    const d = deps({ findIds: vi.fn(async () => [41]), persist });
+    const d = deps({ findIds: vi.fn(async () => [41]), persist,
+      readArchivedRun: vi.fn(async () => operationalReceipt({ execution_details: {
+        schemaVersion: 1, root: '/immutable', filePath: EVIDENCE.filePath,
+        runGroupId: `operational:${EVIDENCE.sha256.slice(0, 40)}`,
+        workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp', testNamePattern: null,
+        mutationPhase: null, commitSha: EVIDENCE.commit, worktreeDirty: false,
+        ...operationalExecution(ARTIFACT),
+      } })) });
     const result = await recordOperationalRun(
       { evidenceFile: EVIDENCE.filePath, expectedSha256: EVIDENCE.sha256, harness: 'papercusp' },
       { workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp', projectDir: process.cwd() },
@@ -352,6 +361,73 @@ describe('testing:record-run', () => {
 
     expect(result).toMatchObject({ ok: true, alreadyRecorded: true, testRunIds: [41] });
     expect(persist).not.toHaveBeenCalled();
+  });
+
+  function operationalReceipt(overrides: Partial<ArchivedMutationRun> = {}): ArchivedMutationRun {
+    return { id: 41, file_path: EVIDENCE.filePath, status: 'pass', source: 'local',
+      framework: ARTIFACT.framework, workspace_id: 'papercusp-workspace', harness_slug: 'papercusp',
+      commit_sha: EVIDENCE.commit, worktree_dirty: false, started_at: ARTIFACT.startedAt,
+      finished_at: ARTIFACT.finishedAt, execution_details: null, ...overrides };
+  }
+
+  it('recovers a legacy NULL receipt from the same committed artifact without rewriting or rerunning it', async () => {
+    const original = operationalReceipt();
+    const d = deps({ findIds: vi.fn().mockResolvedValueOnce([41]).mockResolvedValueOnce([]),
+      readArchivedRun: vi.fn(async () => original) });
+    const result = await recordOperationalRun(
+      { evidenceFile: EVIDENCE.filePath, expectedSha256: EVIDENCE.sha256, harness: 'papercusp' },
+      { workspaceId: 'papercusp-workspace', projectDir: process.cwd() }, d,
+    );
+    expect(result).toMatchObject({ ok: true, alreadyRecorded: false, recoveredFromTestRunId: 41,
+      testRunIds: [77], status: 'pass' });
+    expect(d.verifyOriginalEvidence).toHaveBeenCalledWith(original, EVIDENCE, expect.any(String));
+    expect(d.persist).toHaveBeenCalledWith(expect.objectContaining({
+      runGroupId: `operational-recovery:41:${EVIDENCE.sha256.slice(0, 40)}`,
+      commit: EVIDENCE.commit, rows: [expect.objectContaining({
+        outputTail: expect.stringContaining('RECOVERED OPERATIONAL: original_test_run_id=41'),
+        execution: expect.objectContaining({ passed: 2, failed: 0, passedCaseTitles: ['desktop', 'portal'] }),
+        startedAt: new Date(ARTIFACT.startedAt), finishedAt: new Date(ARTIFACT.finishedAt),
+      })],
+    }));
+    expect(original.execution_details).toBeNull();
+  });
+
+  it('reuses the recovered receipt on repeat calls', async () => {
+    const d = deps({ findIds: vi.fn().mockResolvedValueOnce([41]).mockResolvedValueOnce([77]),
+      readArchivedRun: vi.fn(async () => operationalReceipt()) });
+    const result = await recordOperationalRun(
+      { evidenceFile: EVIDENCE.filePath, expectedSha256: EVIDENCE.sha256, harness: 'papercusp' },
+      { workspaceId: 'papercusp-workspace', projectDir: process.cwd() }, d,
+    );
+    expect(result).toMatchObject({ ok: true, alreadyRecorded: true, recoveredFromTestRunId: 41, testRunIds: [77] });
+    expect(d.persist).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { status: 'fail' }, { framework: 'node' }, { source: 'mutation-probe' },
+    { workspace_id: 'other' }, { harness_slug: 'other' }, { file_path: 'other.json' },
+    { started_at: '2026-09-08T02:02:00Z' }, { finished_at: null },
+    { worktree_dirty: true }, { commit_sha: null }, { execution_details: {} },
+  ])('refuses recovery when the original receipt contradicts the artifact: %j', async (overrides) => {
+    const d = deps({ findIds: vi.fn(async () => [41]),
+      readArchivedRun: vi.fn(async () => operationalReceipt(overrides)) });
+    const result = await recordOperationalRun(
+      { evidenceFile: EVIDENCE.filePath, expectedSha256: EVIDENCE.sha256, harness: 'papercusp' },
+      { workspaceId: 'papercusp-workspace', projectDir: process.cwd() }, d,
+    );
+    expect(result).toMatchObject({ ok: false });
+    expect(d.persist).not.toHaveBeenCalled();
+  });
+
+  it('refuses recovery when the original commit does not contain the verified artifact bytes', async () => {
+    const d = deps({ findIds: vi.fn(async () => [41]),
+      readArchivedRun: vi.fn(async () => operationalReceipt()), verifyOriginalEvidence: vi.fn(async () => false) });
+    const result = await recordOperationalRun(
+      { evidenceFile: EVIDENCE.filePath, expectedSha256: EVIDENCE.sha256, harness: 'papercusp' },
+      { workspaceId: 'papercusp-workspace', projectDir: process.cwd() }, d,
+    );
+    expect(result).toMatchObject({ ok: false });
+    expect(d.persist).not.toHaveBeenCalled();
   });
 
   it('derives a failure from either a non-zero exit or a failed assertion', async () => {

@@ -8,6 +8,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const getRubric = vi.fn();
+const getRubricEvidenceIdentity = vi.fn();
 const listScorecards = vi.fn();
 const captureImprovement = vi.fn();
 const getIssue = vi.fn();
@@ -34,6 +35,7 @@ vi.mock('../../rubrics', async (importOriginal) => {
   return {
     ...real,
     getRubric: (...a: unknown[]) => getRubric(...a),
+    getRubricEvidenceIdentity: (...a: unknown[]) => getRubricEvidenceIdentity(...a),
     // EI-21828643965337454 put the acceptance path behind a FAIL-CLOSED revision
     // read. Unstubbed, it reached the real PG-backed read, returned `ok:false`, and
     // the acceptance-kind case below refused with `..._revision_unreadable` — which
@@ -344,6 +346,10 @@ const exactReplayConsistencyGradedCard = () => {
 beforeEach(() => {
   closeSourceAuditConsults.mockReset().mockResolvedValue(undefined);
   getRubric.mockReset().mockResolvedValue(mkRubric('goal-mode-e2e', 'standard'));
+  getRubricEvidenceIdentity.mockReset().mockImplementation(async (id: string) => {
+    const rubric = await getRubric(id);
+    return { revision: rubric?.revision ?? null, criteriaHash: rubric?.criteriaHash ?? null, meaningRevision: null };
+  });
   listScorecards.mockReset().mockResolvedValue([]);
   captureImprovement.mockReset().mockResolvedValue({ created: true, issue: { id: 'EI-AUDIT-1' } });
   getIssue.mockReset().mockResolvedValue(null);
@@ -358,6 +364,79 @@ beforeEach(() => {
   dispatchPendingGradingAudits.mockReset().mockResolvedValue({ requestedTargetIds: [], receipts: [] });
   readRunningGeneration.mockReset().mockResolvedValue(null);
   replaySpecTestAdequacyForHistoricalAudit.mockReset().mockResolvedValue(historicalTargetReplay('pass'));
+});
+
+describe('CRM canonical producer independence (P-012)', () => {
+  const args = { rubricRef: 'crm-interaction-quality', rubricRevision: 1, criteriaHash: 'a'.repeat(64), ratings: RATINGS,
+    subject: { kind: 'work-item' as const, ref: 'WI-42' }, terminal: true };
+  const input = { createdBy: 'su-reviewer', workspaceId: 'ws', ctxHarness: 'crm' };
+  const producer = { state: 'done', terminalOwner: 'su-producer', terminalCompletionRef: 'completion:42' };
+  const reader = (value: unknown = producer) => vi.fn(async () => value) as never;
+
+  beforeEach(() => getRubric.mockResolvedValue({ ...mkRubric('crm-interaction-quality', 'standard'), criteriaHash: 'a'.repeat(64) }));
+
+  it('refuses a changed review instrument before reading the producer or writing', async () => {
+    const read = reader();
+    for (const pin of [{ rubricRevision: 2 }, { criteriaHash: 'b'.repeat(64) }]) {
+      expect(await emitScorecard({ ...args, ...pin }, input, { readInteractionProducer: read }))
+        .toMatchObject({ ok: false, code: 'scorecard_rubric_identity_mismatch' });
+    }
+    expect(read).not.toHaveBeenCalled();
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
+
+  it('refuses instrument drift or failed identity reads after the independence check', async () => {
+    for (const identity of [{ revision: 2, criteriaHash: 'a'.repeat(64), meaningRevision: null },
+      { revision: null, criteriaHash: null, meaningRevision: null }]) {
+      getRubricEvidenceIdentity.mockResolvedValueOnce(identity);
+      expect(await emitScorecard(args, input, { readInteractionProducer: reader(), lineageRelated: async () => false }))
+        .toMatchObject({ ok: false, code: 'scorecard_rubric_identity_mismatch' });
+    }
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
+
+  it.each(['su-producer', 'su-child'])('refuses producer or producer lineage %s before a ledger write', async (createdBy) => {
+    const related = vi.fn(async () => true);
+    const result = await emitScorecard(args, { ...input, createdBy }, {
+      readInteractionProducer: reader(), lineageRelated: related,
+    });
+    expect(result).toMatchObject({ ok: false, code: 'interaction_grader_in_producer_lineage' });
+    expect(related).toHaveBeenCalledWith('su-producer', createdBy);
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
+
+  it('permits an unrelated reviewer through the canonical writer', async () => {
+    const read = reader();
+    const result = await emitScorecard(args, input, { readInteractionProducer: read,
+      lineageRelated: async () => false });
+    expect(result.ok).toBe(true);
+    expect(read).toHaveBeenCalledWith('ws', 'WI-42', { includeBody: false });
+    expect(captureImprovement).toHaveBeenCalledOnce();
+  });
+
+  it.each([null, { ...producer, state: 'open' }, { ...producer, terminalOwner: null },
+    { ...producer, terminalCompletionRef: null }])('fails closed on unresolved producer %j', async (row) => {
+    const result = await emitScorecard(args, input, { readInteractionProducer: reader(row) });
+    expect(result).toMatchObject({ ok: false, code: 'interaction_producer_unresolved' });
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
+
+  it('refuses missing subject and failed identity reads', async () => {
+    expect(await emitScorecard({ ...args, rubricRevision: undefined }, input)).toMatchObject({ code: 'interaction_producer_required' });
+    expect(await emitScorecard({ ...args, subject: undefined }, input)).toMatchObject({ code: 'interaction_producer_required' });
+    expect(await emitScorecard(args, input, { readInteractionProducer: vi.fn().mockRejectedValue(new Error('read failed')) }))
+      .toMatchObject({ code: 'interaction_producer_unreadable' });
+    expect(await emitScorecard(args, input, { readInteractionProducer: reader(), lineageRelated: async () => { throw new Error('identity failed'); } }))
+      .toMatchObject({ code: 'interaction_producer_unreadable' });
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
+
+  it('refuses the proposed instrument before grading', async () => {
+    getRubric.mockResolvedValue({ ...mkRubric('crm-interaction-quality', 'standard'),
+      status: 'proposed', criteriaHash: 'a'.repeat(64) });
+    expect(await emitScorecard(args, input)).toMatchObject({ ok: false, code: 'interaction_rubric_not_active' });
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
 });
 
 describe('scorecards:emit audit-pending stamp (P-013)', () => {

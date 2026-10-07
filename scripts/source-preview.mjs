@@ -387,10 +387,24 @@ export function materializeCommit({ repo, sha, dest, allow, prefix = '' }) {
 
 /** Internal verification export: no public selection, scrub, publish or working-tree overlay.
  * The caller retains this receipt outside the export, then verifies it before execution.
- * @param {{repo: string, ref: string, dest: string, inputs: string[]}} options
+ * @param {{repo: string, ref: string, dest: string, inputs?: string[], inputsFile?: string}} options
  */
-export async function prepareVerifierSource({ repo, ref, dest, inputs }) {
+export async function prepareVerifierSource({ repo, ref, dest, inputs = [], inputsFile }) {
+  if (inputsFile !== undefined) {
+    const listed = JSON.parse(await fs.readFile(inputsFile, 'utf8'));
+    if (!Array.isArray(listed) || !listed.length || listed.some((path) => typeof path !== 'string')) {
+      throw new PreviewError('verification inputs file must contain a non-empty JSON array of paths', 2);
+    }
+    inputs = [...inputs, ...listed];
+  }
   if (!inputs.length) throw new PreviewError('verification export needs explicit tested inputs', 2);
+  const paths = [...new Set(inputs)].sort();
+  for (const path of paths) {
+    if (typeof path !== 'string' || !path || isAbsolute(path) || path.includes('\0')
+      || path.split('/').some((p) => p === '..' || p === '.' || !p)) {
+      throw new PreviewError(`invalid tested input: ${path}`, 2);
+    }
+  }
   if (existsSync(dest)) throw new PreviewError('verification export destination already exists', 2);
   const sha = resolveCommit(repo, ref);
   await fs.mkdir(dest, { recursive: true });
@@ -399,10 +413,7 @@ export async function prepareVerifierSource({ repo, ref, dest, inputs }) {
     const allow = new Set(git(repo, ['ls-tree', '--name-only', sha]).trim().split('\n'));
     const submodules = materializeCommit({ repo, sha, dest, allow });
     const testedInputs = [];
-    for (const path of [...new Set(inputs)].sort()) {
-      if (!path || isAbsolute(path) || path.split('/').some((p) => p === '..' || p === '.' || !p)) {
-        throw new PreviewError(`invalid tested input: ${path}`, 2);
-      }
+    for (const path of paths) {
       const archived = join(dest, path);
       const live = join(repo, path);
       if (!(await fs.lstat(archived)).isFile() || !(await fs.lstat(live)).isFile()) {
@@ -1345,6 +1356,11 @@ function parseArgs(argv) {
     const a = rest[i];
     if (a === '--confirm') opts.confirm = true;
     else if (a === '--co-author') opts.coAuthors.push(rest[++i]);
+    else if (a === '--inputs-file') {
+      const path = rest[++i];
+      if (!path || path.startsWith('--')) throw new PreviewError('missing value for --inputs-file', 2);
+      opts['inputs-file'] = path;
+    }
     else if (['--ref', '--out', '--remote', '--json', '--target', '--repo', '--inputs', '--receipt'].includes(a)) opts[a.slice(2)] = rest[++i];
     else if (a.startsWith('--')) throw new PreviewError(`unknown flag ${a}`, 2);
     else opts._.push(a);
@@ -1365,9 +1381,11 @@ async function main(argv) {
   if (cmd === 'verifier-prepare' || cmd === 'verifier-verify') {
     if (!opts.out || !opts.receipt) throw new PreviewError('verifier source requires --out and --receipt', 2);
     if (cmd === 'verifier-prepare') {
-      if (!opts.repo || !opts.ref || !opts.inputs) throw new PreviewError('verifier preparation requires explicit --repo, --ref and --inputs', 2);
+      if (!opts.repo || !opts.ref || !(opts.inputs || opts['inputs-file'])) {
+        throw new PreviewError('verifier preparation requires explicit --repo, --ref and --inputs or --inputs-file', 2);
+      }
       const receipt = await prepareVerifierSource({ repo: opts.repo, ref: opts.ref, dest: opts.out,
-        inputs: opts.inputs.split(',').filter(Boolean) });
+        inputs: opts.inputs?.split(',').filter(Boolean) ?? [], inputsFile: opts['inputs-file'] });
       await fs.writeFile(opts.receipt, `${JSON.stringify(receipt)}\n`, { flag: 'wx', mode: 0o600 });
     }
     await verifyVerifierSource(opts.out, JSON.parse(await fs.readFile(opts.receipt, 'utf8')));

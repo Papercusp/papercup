@@ -218,6 +218,21 @@ for p in minisign nftables dnf-automatic zstd acl sudo openssh-server jq curl \
     fail "MISSING: $p"
   fi
 done
+oslogin_scriptlet="$(in_image 'rpm -q --scripts google-compute-engine-oslogin')"
+for effect in \
+  'systemctl enable google-oslogin-cache.timer' \
+  '/sbin/ldconfig' \
+  'semodule -i /usr/share/selinux/packages/oslogin.pp' \
+  'restorecon -r /var/google-sudoers.d' \
+  'restorecon -r /var/google-users.d' \
+  'restorecon /etc/oslogin_passwd.cache.bin' \
+  'restorecon /etc/oslogin_group.cache'; do
+  if [[ "$oslogin_scriptlet" == *"$effect"* ]]; then
+    pass "OS Login RPM scriptlet retains: $effect"
+  else
+    fail "OS Login RPM scriptlet lost required side effect: $effect"
+  fi
+done
 for p in alsa-lib libatomic libgcc libstdc++ openssl-libs lz4-libs zlib libzstd; do
   if [[ -n "$(in_image "rpm -q --qf '%{NAME}' $p 2>/dev/null | grep -Fx $p")" ]]; then
     pass "SONAME provider installed: $p"
@@ -232,6 +247,7 @@ for f in /etc/containers/policy.json \
          /etc/yum.repos.d/google-cloud.repo \
          /etc/nftables/papercusp-workspace-host.nft \
          /usr/lib/tmpfiles.d/papercusp-google-oslogin.conf \
+         /usr/share/selinux/packages/oslogin.pp \
          /usr/bin/google_authorized_keys \
          /usr/lib64/security/pam_oslogin_login.so \
          /usr/lib/sysusers.d/papercusp.conf \
@@ -339,8 +355,8 @@ if [[ "$(in_image "stat -c '%u:%g:%a:%F' /etc/sysconfig/nftables.conf")" == '0:0
 else
   fail "committed nftables config metadata drifted"
 fi
-if [[ -n "$(in_image "grep -Fx 'Requires=local-fs.target nftables.service' /usr/lib/systemd/system/papercusp-host-prepare.service")" \
-   && -n "$(in_image "grep -Fx 'After=local-fs.target nftables.service' /usr/lib/systemd/system/papercusp-host-prepare.service")" ]]; then
+if [[ -n "$(in_image "grep -Fx 'Requires=local-fs.target systemd-tmpfiles-setup.service nftables.service' /usr/lib/systemd/system/papercusp-host-prepare.service")" \
+   && -n "$(in_image "grep -Fx 'After=local-fs.target systemd-tmpfiles-setup.service nftables.service' /usr/lib/systemd/system/papercusp-host-prepare.service")" ]]; then
   pass "host-prepare requires and follows nftables"
 else
   fail "host-prepare lacks the required nftables dependency/order"

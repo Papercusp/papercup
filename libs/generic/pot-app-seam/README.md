@@ -20,6 +20,12 @@ The package provides these app-facing operations:
   `OperationOutputRejectedError` and none of it reaches the caller.
 - `startIngestLoop()` parses judged pot output events and stores accepted
   results through an injected storage port.
+- `emitScorecard()` files reviewed grades through the canonical observation
+  ledger, with the reviewed rubric revision and criterion hash pinned. Hosts
+  inject `scorecards: scorecardHostFromInvoker(invoke)`. Canonical replay
+  receipts retain the existing card id. `readScorecard(id, parse)` accepts
+  complete evidence only and applies the app parser before returning it;
+  partial or mismatched readback is refused. Older apps can omit this adapter.
 
 It imports no Papercusp operator internals. A host app supplies adapters for
 pot creation, marker storage, blueprint operations, and ingest storage.

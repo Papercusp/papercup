@@ -130,6 +130,7 @@ export interface RecordOperationalRunDeps {
   findIds: typeof findHarnessTestRunIds;
   persist: (params: PersistHarnessTestRunsParams) => Promise<PersistHarnessTestRunsResult>;
   readArchivedRun?: (id: number, scope: { workspaceId: string; harnessSlug: string }) => Promise<ArchivedMutationRun | null>;
+  verifyOriginalEvidence?: (original: ArchivedMutationRun, evidence: CommittedOperationalEvidence, root: string) => Promise<boolean>;
 }
 
 const DEFAULT_DEPS: RecordOperationalRunDeps = {
@@ -144,6 +145,15 @@ const DEFAULT_DEPS: RecordOperationalRunDeps = {
         FROM harness_shared.test_runs
        WHERE id = ${id} AND workspace_id = ${scope.workspaceId} AND harness_slug = ${scope.harnessSlug}`;
     return (rows[0] as unknown as ArchivedMutationRun | undefined) ?? null;
+  },
+  async verifyOriginalEvidence(original, evidence, root) {
+    if (!original.commit_sha || !/^[a-f0-9]{40}$/.test(original.commit_sha)) return false;
+    try {
+      const bytes = await gitOutput(root, ['show', `${original.commit_sha}:${evidence.filePath}`]);
+      return createHash('sha256').update(bytes).digest('hex') === evidence.sha256;
+    } catch {
+      return false;
+    }
   },
 };
 
@@ -494,18 +504,41 @@ export async function recordOperationalRun(
     }
   }
 
-  const runGroupId = `operational:${evidence.sha256.slice(0, 40)}`;
+  let runGroupId = `operational:${evidence.sha256.slice(0, 40)}`;
   const identity = { workspaceId, harnessSlug, runGroupId, filePath: evidence.filePath };
   const existing = await deps.findIds(identity);
+  let recoveredFromTestRunId: number | undefined;
+  let recordedCommit = evidence.commit;
   if (existing.length > 0) {
-    return {
-      ok: true,
-      alreadyRecorded: true,
-      runGroupId,
-      testRunIds: existing,
-      evidence: { filePath: evidence.filePath, sha256: evidence.sha256, commit: evidence.commit },
-      status: derivedVerdict(evidence.artifact),
-    };
+    // WI-10007016 repaired new recordings. Older receipts must not keep returning
+    // NULL execution forever. Append a labelled recovery from the same committed
+    // artifact, preserving the original receipt, timestamps, verdict and commit.
+    if (existing.length !== 1) return { ok: false, error: 'evidence_operational_receipt_ambiguous' as const };
+    const original = await deps.readArchivedRun?.(existing[0]!, { workspaceId, harnessSlug });
+    if (!original) return { ok: false, error: 'evidence_operational_receipt_unavailable' as const };
+    if (parseTestRunExecutionDetails(original.execution_details)) {
+      return { ok: true, alreadyRecorded: true, runGroupId, testRunIds: existing,
+        evidence: { filePath: evidence.filePath, sha256: evidence.sha256, commit: evidence.commit },
+        status: derivedVerdict(evidence.artifact) };
+    }
+    if (original.execution_details !== null || Number(original.id) !== existing[0]
+      || original.workspace_id !== workspaceId || original.harness_slug !== harnessSlug
+      || original.file_path !== evidence.filePath || original.source !== 'local'
+      || original.framework !== evidence.artifact.framework || original.worktree_dirty
+      || original.status !== derivedVerdict(evidence.artifact) || !original.commit_sha
+      || new Date(original.started_at).getTime() !== Date.parse(evidence.artifact.startedAt)
+      || original.finished_at === null
+      || new Date(original.finished_at).getTime() !== Date.parse(evidence.artifact.finishedAt)
+      || !await deps.verifyOriginalEvidence?.(original, evidence, resolveAgentWorkspaceRoot(ctx))) {
+      return { ok: false, error: 'evidence_operational_receipt_mismatch' as const };
+    }
+    recoveredFromTestRunId = existing[0]!;
+    recordedCommit = original.commit_sha;
+    runGroupId = `operational-recovery:${recoveredFromTestRunId}:${evidence.sha256.slice(0, 40)}`;
+    const recovered = await deps.findIds({ ...identity, runGroupId });
+    if (recovered.length > 0) return { ok: true, alreadyRecorded: true, runGroupId, testRunIds: recovered,
+      recoveredFromTestRunId, evidence: { filePath: evidence.filePath, sha256: evidence.sha256, commit: recordedCommit },
+      status: derivedVerdict(evidence.artifact) };
   }
 
   const startedAt = new Date(evidence.artifact.startedAt);
@@ -517,7 +550,8 @@ export async function recordOperationalRun(
     durationMs: Math.max(0, finishedAt.getTime() - startedAt.getTime()),
     startedAt,
     finishedAt,
-    outputTail: outputTail(evidence),
+    outputTail: recoveredFromTestRunId === undefined ? outputTail(evidence)
+      : `RECOVERED OPERATIONAL: original_test_run_id=${recoveredFromTestRunId}; no new test execution.\n${outputTail(evidence)}`,
     // WI-10007016: without `execution` (and `root` below) the shared writer stores NULL
     // execution_details, so spec-test-adequacy can never verify an operational run.
     execution: operationalExecution(evidence.artifact),
@@ -529,7 +563,7 @@ export async function recordOperationalRun(
     runGroupId,
     root: resolveAgentWorkspaceRoot(ctx),
     source: 'local',
-    commit: evidence.commit,
+    commit: recordedCommit,
     // The exact evidence bytes were compared with HEAD above. Unrelated dirty
     // files in the shared tree do not make this committed artifact ambiguous.
     worktreeDirty: false,
@@ -542,15 +576,16 @@ export async function recordOperationalRun(
     alreadyRecorded: false,
     runGroupId,
     testRunIds: persisted.ids,
+    ...(recoveredFromTestRunId === undefined ? {} : { recoveredFromTestRunId }),
     status: row.status,
-    evidence: { filePath: evidence.filePath, sha256: evidence.sha256, commit: evidence.commit },
+    evidence: { filePath: evidence.filePath, sha256: evidence.sha256, commit: recordedCommit },
   };
 }
 
 export default defineTool({
   name: 'testing:record-run',
   description:
-    `Register a completed non-Vitest check in harness_shared.test_runs and return testRunIds for plans:bind-spec-evidence. Commit docs/evidence/*.json with schemaVersion:1, kind:"operational-test-evidence", command, timestamps, exitCode, summary, and assertions; pass expectedSha256 for those bytes. Mutation probes need exact MUTATION_PROBE_EVIDENCE_JSON records and cannot use shared .papercusp/scratch. Optional archivedMutation:{originalTestRunId,rawLogFile,rawLogSha256,rawLogCommit?} adds failed-case identities from a committed raw log after validating the original scoped receipt; rawLogCommit pins a full Git revision when the published log is redacted. It never changes that receipt or runs a test. Evidence JSON limit: ${MAX_OPERATIONAL_EVIDENCE_BYTES} bytes; pin bulky raw artifacts by SHA-256. Verdict derives from exitCode + assertions, not caller input. Idempotent by artifact hash.`,
+    `Register a completed non-Vitest check in harness_shared.test_runs and return testRunIds for plans:bind-spec-evidence. Commit docs/evidence/*.json with schemaVersion:1, kind:"operational-test-evidence", command, timestamps, exitCode, summary, and assertions; pass expectedSha256 for those bytes. Mutation probes need exact MUTATION_PROBE_EVIDENCE_JSON records and cannot use shared .papercusp/scratch. Optional archivedMutation:{originalTestRunId,rawLogFile,rawLogSha256,rawLogCommit?} adds failed-case identities from a committed raw log after validating the original scoped receipt; rawLogCommit pins a full Git revision when the published log is redacted. It never changes that receipt or runs a test. A legacy operational receipt with NULL execution is recovered by appending a labelled row only when its scope, outcome, timestamps and original committed artifact bytes agree. Evidence JSON limit: ${MAX_OPERATIONAL_EVIDENCE_BYTES} bytes; pin bulky raw artifacts by SHA-256. Verdict derives from exitCode + assertions, not caller input. Idempotent by artifact hash.`,
   guidance: {
     when: 'A completed Playwright, Cargo, node, shell, desktop, or other operational acceptance run needs a numeric ledger record; or historical mutation case identities need recovery.',
     notWhen:

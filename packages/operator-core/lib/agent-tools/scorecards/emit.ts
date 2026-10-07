@@ -28,7 +28,8 @@ import { getIssue } from '../../issues-engineer';
 import { captureImprovement } from '../../harness/improvements/capture-core';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { readVettingConsultCritique } from '../../consult/get-feedback-core';
-import { readVettingWorkItemCritique } from '../../work-items';
+import { getWorkItem, readVettingWorkItemCritique, type WorkItem } from '../../work-items';
+import { runWithWorkspaceIfConcrete } from '../../workspace-als';
 import {
   normalizeScorecardRatings,
   validateObservationRatings,
@@ -569,6 +570,10 @@ const specTestAdequacyRerunRecipeSchema = z
 
 const scorecardEmitBaseShape = {
     rubricRef: z.string().min(1).max(120),
+    rubricRevision: z.number().int().positive().optional()
+      .describe('Expected reviewed rubric revision; refuse if the instrument changed before filing.'),
+    criteriaHash: z.string().regex(/^[a-f0-9]{64}$/).optional()
+      .describe('Expected reviewed criterion fingerprint; refuse if it changed before filing.'),
     sourceHive: z
       .string()
       .min(1)
@@ -1453,6 +1458,9 @@ export async function emitScorecard(
     closeSourceAuditConsults?: typeof closeSourceAuditConsults;
     /** Tri-state git ancestry seam for replay-based grading-integrity audits. */
     generationAncestry?: GenerationAncestryProbe;
+    /** Canonical producing-task read for CRM interaction reviewer independence. */
+    readInteractionProducer?: (workspaceId: string, id: string, opts: { includeBody: false }) =>
+      Promise<Pick<WorkItem, 'state' | 'terminalOwner' | 'terminalCompletionRef'> | null>;
   } = {},
 ) {
   // WI-10005715: a field that ENDS in the MCP result door's clip marker is a clipped
@@ -1471,6 +1479,49 @@ export async function emitScorecard(
   }
   const rubric = await getRubric(args.rubricRef);
   if (!rubric) return { ok: false as const, error: `rubric '${args.rubricRef}' not found` };
+  if ((args.rubricRevision !== undefined && args.rubricRevision !== rubric.revision) ||
+      (args.criteriaHash !== undefined && args.criteriaHash !== rubric.criteriaHash)) {
+    return { ok: false as const, code: 'scorecard_rubric_identity_mismatch',
+      error: 'The reviewed rubric revision or criterion fingerprint changed; re-review before filing.' };
+  }
+  // CRM grades the task that PRODUCED the call/email, never its reviewer task.
+  // Enforce this at the canonical writer too: an app-side parse gate alone can
+  // be bypassed by a producer calling scorecards:emit directly.
+  if (rubric.rubricId === 'crm-interaction-quality') {
+    if (rubric.status !== 'active') {
+      return { ok: false as const, code: 'interaction_rubric_not_active',
+        error: 'CRM interaction grading requires an independently ratified active rubric.' };
+    }
+    if (args.subject?.kind !== 'work-item' || !/^WI-\d+$/.test(args.subject.ref) || !input.workspaceId ||
+        args.rubricRevision === undefined || args.criteriaHash === undefined) {
+      return { ok: false as const, code: 'interaction_producer_required',
+        error: 'CRM interaction grading requires a producing work-item subject, concrete workspace, and reviewed rubric revision/hash.' };
+    }
+    let producer;
+    try {
+      producer = deps.readInteractionProducer
+        ? await deps.readInteractionProducer(input.workspaceId, args.subject.ref, { includeBody: false })
+        : await runWithWorkspaceIfConcrete(input.workspaceId, () =>
+          getWorkItem(args.subject!.ref, args.targetHive ?? args.sourceHive ?? 'crm', { includeBody: false }));
+    } catch {
+      return { ok: false as const, code: 'interaction_producer_unreadable',
+        error: 'Could not resolve the producing task; no interaction scorecard was filed.' };
+    }
+    if (!producer?.terminalOwner || !producer.terminalCompletionRef ||
+        !['done', 'passed', 'resolved', 'closed'].includes(producer.state)) {
+      return { ok: false as const, code: 'interaction_producer_unresolved',
+        error: 'The producing task must have a terminal owner and completion evidence before independent grading.' };
+    }
+    try {
+      if (await (deps.lineageRelated ?? areAcceptanceLineageRelated)(producer.terminalOwner, input.createdBy)) {
+        return { ok: false as const, code: 'interaction_grader_in_producer_lineage',
+          error: 'The producing agent and its lineage cannot grade their own CRM interaction.' };
+      }
+    } catch {
+      return { ok: false as const, code: 'interaction_producer_unreadable',
+        error: 'Could not verify reviewer independence; no interaction scorecard was filed.' };
+    }
+  }
   // P-004: the meta-rubric is an attestation surface, not a free-standing
   // observation. Without a subject the scorecard cannot say WHICH acceptance
   // rubric it vetted, so it can never satisfy the ship gate and only creates a
@@ -1564,6 +1615,11 @@ export async function emitScorecard(
     // bump (which fires on ANY propose, typo included, and says nothing about
     // WHAT changed). Same fail-open/unrecorded-on-failure contract as rubricRevision.
     const criteriaHash = rubricEvidenceIdentity.criteriaHash;
+    if ((args.rubricRevision !== undefined && args.rubricRevision !== rubricRevision) ||
+        (args.criteriaHash !== undefined && args.criteriaHash !== criteriaHash)) {
+      return { ok: false as const, code: 'scorecard_rubric_identity_mismatch',
+        error: 'The rubric identity could not be pinned to the reviewed instrument; no scorecard was filed.' };
+    }
     const rubricMeaningRevision = rubricEvidenceIdentity.meaningRevision;
     // A rubric named as the SUBJECT is distinct from the meta-rubric used to
     // score it. Pin both identities so later subject edits can invalidate this

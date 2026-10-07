@@ -2890,6 +2890,14 @@ describe('RECYCLE / backend-aware RESET — kill + respawn the child in the same
       }, { timeout: 8000 });
       const pid2 = bootsAfter[1];
       expect(pid2).not.toBe(pid1); // a genuinely new process
+      const stopEvents = readFileSync(eventLogPathForOwner(ownerId), 'utf8')
+        .trim().split('\n').map((line) => JSON.parse(line));
+      // Backend-aware reset enters the existing recycle path.
+      expect(stopEvents.find((event) => event.kind === 'respawn-predecessor-stop-started'))
+        .toMatchObject({ mode: 'recycle', predecessorPid: pid1 });
+      expect(stopEvents.find((event) => event.kind === 'respawn-predecessor-stop-finished'))
+        .toMatchObject({ mode: 'recycle', predecessorPid: pid1, forceKillRequested: false, exitObserved: true });
+      expect(stopEvents.some((event) => event.kind === 'respawn-predecessor-force-kill')).toBe(false);
       // The carry-note was injected as the opening turn of the fresh context.
       expect(captured()).toContain('ECHO:CARRIED');
 
@@ -2982,6 +2990,24 @@ describe('RECYCLE / backend-aware RESET — kill + respawn the child in the same
         await sleep(25);
       }
       expect(predecessorAlive).toBe(false);
+
+      const stopEvents = readFileSync(eventLogPathForOwner(ownerId), 'utf8')
+        .trim().split('\n').map((line) => JSON.parse(line));
+      const started = stopEvents.findIndex((event) => event.kind === 'respawn-predecessor-stop-started');
+      const forced = stopEvents.findIndex((event) => event.kind === 'respawn-predecessor-force-kill');
+      const finished = stopEvents.findIndex((event) => event.kind === 'respawn-predecessor-stop-finished');
+      const respawned = stopEvents.findIndex((event) => event.kind === 'respawned');
+      expect(started).toBeGreaterThanOrEqual(0);
+      expect(forced).toBeGreaterThan(started);
+      expect(finished).toBeGreaterThan(forced);
+      expect(respawned).toBeGreaterThan(finished);
+      expect(stopEvents[forced]).toMatchObject({
+        mode: 'recycle', predecessorPid: firstBoot, signal: 'SIGKILL',
+      });
+      expect(stopEvents[finished]).toMatchObject({
+        mode: 'recycle', predecessorPid: firstBoot, forceKillRequested: true, exitObserved: true,
+        signal: 'SIGKILL',
+      });
 
       await rawInject(sock, 'QUIT\n');
       await done;

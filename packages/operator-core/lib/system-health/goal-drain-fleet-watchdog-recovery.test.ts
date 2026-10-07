@@ -98,6 +98,7 @@ describe('P-014 delegated drain recovery', () => {
     expect(registerMock).toHaveBeenCalledWith(expect.objectContaining({
       holderOwnerId: 'su-holder', leaderOwnerId: 'su-new-leader',
       expectedLeaderOwnerId: 'su-leader', declaredBy: 'goal-drain-fleet-watchdog',
+      identity: expect.objectContaining({ ownerId: 'goal-drain-fleet-watchdog' }),
     }));
     expect(launchMock).toHaveBeenCalledTimes(1);
     expect(launchMock).toHaveBeenCalledWith(expect.objectContaining({

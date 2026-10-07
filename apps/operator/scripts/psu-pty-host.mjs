@@ -13433,9 +13433,24 @@ export function hostThroughPty(o) {
       const priorDisableCompact = env.DISABLE_COMPACT;
       try {
         stopStartupTrace('recycle');
+        const predecessorPid = child.pid;
+        const predecessorStopStartedAt = Date.now();
+        let predecessorExitObserved = false;
+        let predecessorExitCode = null;
+        let predecessorExitSignal = null;
+        appendHostEvent(ownerId, 'respawn-predecessor-stop-started', {
+          mode: respawnMode,
+          predecessorPid,
+          gracefulWaitMs: RECYCLE_KILL_TIMEOUT_MS,
+        });
         const dead = new Promise((res) => {
           try {
-            child.onExit(() => res());
+            child.onExit((event) => {
+              predecessorExitObserved = true;
+              predecessorExitCode = Number.isInteger(event?.exitCode) ? event.exitCode : null;
+              predecessorExitSignal = signalNameFromCode(event?.signal);
+              res();
+            });
           } catch {
             res();
           }
@@ -13456,12 +13471,27 @@ export function hostThroughPty(o) {
           // owner/SID — the cold-respawn duplicate-continuation failure. The
           // process group is this host's pty scope, so SIGKILL is the smallest
           // durable predecessor fence and also catches ordinary descendants.
+          appendHostEvent(ownerId, 'respawn-predecessor-force-kill', {
+            mode: respawnMode,
+            predecessorPid,
+            signal: 'SIGKILL',
+            elapsedMs: Date.now() - predecessorStopStartedAt,
+          });
           killPtyProcessTree(child, 'SIGKILL');
           await Promise.race([
             dead,
             new Promise((resolve) => setTimeout(resolve, RECYCLE_FORCE_KILL_WAIT_MS)),
           ]);
         }
+        appendHostEvent(ownerId, 'respawn-predecessor-stop-finished', {
+          mode: respawnMode,
+          predecessorPid,
+          forceKillRequested: !exitedGracefully,
+          exitObserved: predecessorExitObserved,
+          exitCode: predecessorExitCode,
+          signal: predecessorExitSignal,
+          elapsedMs: Date.now() - predecessorStopStartedAt,
+        });
         // Finish any visible text and discard a dangling escape sequence before
         // the successor child starts writing to the same companion artifact.
         if (normalizedLog) normalizedLog.flush();

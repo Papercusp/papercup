@@ -1808,6 +1808,8 @@ export async function defaultRelaunchDrainFleet(
       holderOwnerId, leaderOwnerId: opened.ownerId,
       declaredBy: WATCHDOG_IDENTITY.ownerId,
       expectedLeaderOwnerId: leaderOwnerId,
+      identity: WATCHDOG_IDENTITY,
+      harnessSlug: installSlug,
     });
     if (!installed.registered) throw new Error(`leader opened but registry CAS lost: ${installed.warning}`);
     leaderOwnerId = opened.ownerId;

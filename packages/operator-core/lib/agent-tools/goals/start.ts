@@ -736,12 +736,13 @@ export default defineTool({
       if (!propCheck.ok) return err(`propertySchema refused: ${propCheck.issues.join('; ')}`);
     }
 
-    let callerOwnerId: string | null = null;
+    let callerIdentity: ReturnType<typeof resolveAgentIdentity> | null = null;
     try {
-      callerOwnerId = resolveAgentIdentity(ctx).ownerId;
+      callerIdentity = resolveAgentIdentity(ctx);
     } catch {
-      callerOwnerId = null;
+      callerIdentity = null;
     }
+    const callerOwnerId = callerIdentity?.ownerId ?? null;
 
     const requestKey = args.requestKey?.trim();
     const idempotencyKey = requestKey ? `goals:start:${requestKey}` : null;
@@ -1270,6 +1271,7 @@ export default defineTool({
         const registered = await registerGoalDrainFleetLeader({
           workspaceId, goalId: id, fleetSlug: drainFleet.slug, holderOwnerId: ownerId,
           leaderOwnerId, declaredBy: callerOwnerId ?? 'operator-ui', expectedLeaderOwnerId: null,
+          identity: callerIdentity ?? undefined, harnessSlug: installSlug,
         });
         if (!registered.registered) throw new Error(`opened leader could not be registered: ${registered.warning}`);
         drainLeader = { ownerId: leaderOwnerId, pid: leader.pid ?? null, coupled: registered.coupled };

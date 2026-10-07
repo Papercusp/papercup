@@ -222,6 +222,30 @@ describe('bootc Google guest repo matches the base and its signing key (WI-10005
   });
 });
 
+describe('bootc OS Login RPM scriptlet contract (WI-10005926)', () => {
+  const containerfile = readFileSync(CONTAINERFILE, 'utf8');
+  const executable = containerfile.replace(/`#[^`]*`/g, '');
+
+  it('keeps OS Login scriptlets enabled while suppressing only google-compute-engine %post', () => {
+    const googleRepo = executable.indexOf('--enablerepo=google-compute-engine');
+    const installStart = executable.lastIndexOf('dnf -y install', googleRepo);
+    const installEnd = executable.indexOf('&& dnf -y install', installStart);
+    expect(googleRepo).toBeGreaterThan(-1);
+    expect(installStart).toBeGreaterThan(-1);
+    expect(installEnd).toBeGreaterThan(installStart);
+
+    const scriptletEnabledInstall = executable.slice(installStart, installEnd);
+    expect(scriptletEnabledInstall).toContain('google-compute-engine-oslogin');
+    expect(scriptletEnabledInstall).not.toContain('tsflags=noscripts');
+
+    const scriptletSuppressedInstall = executable.slice(installEnd, executable.indexOf('&& curl', installEnd));
+    expect(scriptletSuppressedInstall).toContain('--setopt=tsflags=noscripts');
+    expect(scriptletSuppressedInstall).toContain('google-compute-engine');
+    expect(scriptletSuppressedInstall).not.toContain('google-compute-engine-oslogin');
+    expect(containerfile).toContain('systemctl enable google-guest-agent.service google-oslogin-cache.timer');
+  });
+});
+
 describe('bootc base package freshness (WI-10005681)', () => {
   const containerfile = readFileSync(CONTAINERFILE, 'utf8');
   // Drop the inline `# ...` backtick comments so a comment that merely MENTIONS the command

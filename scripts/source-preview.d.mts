@@ -92,13 +92,14 @@ export function materializeCommit({ repo, sha, dest, allow, prefix }: {
 }[];
 /** Internal verification export: no public selection, scrub, publish or working-tree overlay.
  * The caller retains this receipt outside the export, then verifies it before execution.
- * @param {{repo: string, ref: string, dest: string, inputs: string[]}} options
+ * @param {{repo: string, ref: string, dest: string, inputs?: string[], inputsFile?: string}} options
  */
-export function prepareVerifierSource({ repo, ref, dest, inputs }: {
+export function prepareVerifierSource({ repo, ref, dest, inputs, inputsFile }: {
     repo: string;
     ref: string;
     dest: string;
-    inputs: string[];
+    inputs?: string[];
+    inputsFile?: string;
 }): Promise<{
     schemaVersion: string;
     sourceCommit: string;

@@ -75,6 +75,11 @@ function evidence(over: Partial<SpecEvidenceForAdequacy> = {}): SpecEvidenceForA
     },
     coverageEvidenceRef: 42,
     testRunId: 43,
+    // Revision 6 corroborates positive execution claims against parsed ledger counters.
+    testRunExecution: {
+      status: 'pass', passed: 1, failed: 0, skipped: 0, collectionFailed: false,
+      testLayer: 'integration',
+    },
     details: {
       adequacy: {
         fixtureCalibrated: true,

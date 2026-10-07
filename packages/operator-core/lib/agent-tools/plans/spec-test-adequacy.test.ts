@@ -1165,6 +1165,42 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(shadowedByOlderBinding.ratings.falsifiability.rating).toBe('pass');
   });
 
+  it('pairs exact Cargo source-case receipts with measured legacy mutation files without crediting siblings', () => {
+    const testPath = 'crates/core/tests/client_test.rs';
+    const caseTitle = 'plans_list_tolerates_null_status';
+    const measured = (path: string, rootHarnessSlug?: string) => ({
+      schemaVersion: 1, kind: 'repo-files', sourcePaths: ['crates/core/src/client.rs'],
+      testPaths: [path], ...(rootHarnessSlug ? { rootHarnessSlug } : {}),
+    });
+    const mutation = evidence({
+      evidenceKind: 'mutation',
+      testRunProvenance: {
+        filePath: `crates/core::${caseTitle}`, commitSha: 'abc123', worktreeDirty: false,
+        mutationFailedCaseTitles: [caseTitle],
+      },
+      details: {
+        currentMeasurement: measured(testPath),
+        adequacy: { collected: true, executed: true, skipped: false, outcome: 'killed',
+          targeted: 'spec-003-01', testCases: [caseTitle] },
+      },
+    });
+    const baseline = successfulTestBinding(`${testPath}::${caseTitle}`, { testCases: [caseTitle] });
+    const evaluate = (test = baseline, mutant = mutation) => evaluateSpecTestAdequacy({
+      clause: clause(), evidence: [test, mutant], classRef: 'plan-class-feature-ship',
+    }).ratings.falsifiability.rating;
+    expect(evaluate()).toBe('pass');
+    expect(evaluate(baseline, { ...mutation, testRunProvenance: {
+      ...mutation.testRunProvenance!, filePath: testPath,
+    } })).toBe('pass');
+    expect(evaluate(baseline, { ...mutation, testRunProvenance: {
+      ...mutation.testRunProvenance!, filePath: `${testPath}::${caseTitle}`,
+    } })).toBe('pass');
+    expect(evaluate(successfulTestBinding(`crates/core/tests/sibling.rs::${caseTitle}`, { testCases: [caseTitle] }))).toBe('unknown');
+    expect(evaluate(successfulTestBinding(`${testPath}::another_case`, { testCases: ['another_case'] }))).toBe('unknown');
+    expect(evaluate({ ...baseline, details: { ...baseline.details, currentMeasurement: measured(testPath, 'other-root') } })).toBe('unknown');
+    expect(evaluate(baseline, { ...mutation, details: { ...mutation.details, currentMeasurement: measured('crates/other/tests/client_test.rs') } })).toBe('unknown');
+  });
+
   it.each([
     ['missing', undefined],
     ['empty', ''],
@@ -1859,8 +1895,8 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(result.verdict).toBe('unknown');
   });
 
-  it('pins the evaluator revision for explicit fixture-free attestations', () => {
-    expect(SPEC_TEST_ADEQUACY_EVALUATOR_REVISION).toBe(7);
+  it('pins the evaluator revision for canonical Cargo source-case pairing', () => {
+    expect(SPEC_TEST_ADEQUACY_EVALUATOR_REVISION).toBe(8);
   });
 
   it('requires an explicit fixture-free attestation for executable proof with a null fixture fingerprint', () => {

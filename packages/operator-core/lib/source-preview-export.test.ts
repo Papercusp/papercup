@@ -12,6 +12,7 @@
  * shared checkout.
  */
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative, sep } from 'node:path';
@@ -108,6 +109,74 @@ describe('source-preview export — R-1 selection parity with the installer cut'
 });
 
 describe('EI-25303741091409100 — pinned verifier source identity', () => {
+  it('transports a complete list beyond the argv/env limit and retains merged hashes and gitlinks', () => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-large-list-fixture'));
+    const paths = Array.from({ length: 2000 }, (_, i) =>
+      `apps/operator/acceptance/${String(i).padStart(4, '0')}-${'x'.repeat(70)}.ts`);
+    paths.push('apps/operator/acceptance/space and,comma.ts');
+    for (const path of paths) write(fixture.repo, path, `// ${path}\n`);
+    git(fixture.repo, ['add', 'apps/operator/acceptance']);
+    git(fixture.repo, ['commit', '-qm', 'large complete verifier list']);
+    const sha = git(fixture.repo, ['rev-parse', 'HEAD']).trim();
+    const inputsFile = join(tmp, 'verifier-large-inputs.json');
+    const serialized = JSON.stringify(paths);
+    expect(Buffer.byteLength(serialized)).toBeGreaterThan(128 * 1024);
+    writeFileSync(inputsFile, serialized);
+    const dest = join(tmp, 'verifier-large-export');
+    const receiptFile = join(tmp, 'verifier-large-receipt.json');
+    const tooling = SHIPPED.find((p) => p.startsWith('apps/'))!;
+    const result = spawnSync(process.execPath, [join(__dirname, '../../../scripts/source-preview.mjs'),
+      'verifier-prepare', '--repo', fixture.repo, '--ref', sha, '--out', dest,
+      '--inputs', tooling, '--inputs-file', inputsFile, '--receipt', receiptFile],
+    { encoding: 'utf8', env: childEnv(), timeout: 60_000 });
+    expect(result.status, result.stderr).toBe(0);
+    const receipt = JSON.parse(readFileSync(receiptFile, 'utf8'));
+    expect(receipt.sourceCommit).toBe(sha);
+    expect(receipt.submodules.length).toBeGreaterThan(0);
+    expect(receipt.testedInputs).toEqual([...paths, tooling].sort().map((path) => ({ path,
+      sha256: createHash('sha256').update(readFileSync(join(fixture.repo, path))).digest('hex') })));
+    expect(statSync(receiptFile).mode & 0o777).toBe(0o600);
+  }, 120_000);
+
+  it.each(['', '{bad', '{}', '[]', '[null]', '["../outside"]', '[""]'])
+    ('refuses malformed or empty input files before exporting (%s)', async (body) => {
+      const inputsFile = join(tmp, 'verifier-invalid-inputs.json');
+      const dest = join(tmp, 'verifier-invalid-export');
+      writeFileSync(inputsFile, body);
+      await expect(prepareVerifierSource({ repo: fx.repo, ref: fx.commit, dest,
+        inputs: [SHIPPED[0]], inputsFile })).rejects.toThrow();
+      expect(existsSync(dest)).toBe(false);
+    });
+
+  it('refuses an absent input file rather than using only the mandatory inputs', async () => {
+    const dest = join(tmp, 'verifier-absent-input-file-export');
+    await expect(prepareVerifierSource({ repo: fx.repo, ref: fx.commit, dest,
+      inputs: [SHIPPED[0]], inputsFile: join(tmp, 'does-not-exist.json') })).rejects.toThrow(/ENOENT/);
+    expect(existsSync(dest)).toBe(false);
+  });
+
+  it.each([{ tail: [] }, { tail: ['--receipt', 'receipt.json'] }])
+    ('refuses a missing --inputs-file value despite valid CSV inputs ($tail)', async ({ tail }) => {
+    const dest = join(tmp, 'verifier-missing-input-argument-export');
+    await expect(runCli(['verifier-prepare', '--repo', fx.repo, '--ref', fx.commit,
+      '--out', dest, '--inputs', SHIPPED[0], '--inputs-file', ...tail]))
+      .rejects.toThrow('missing value for --inputs-file');
+    expect(existsSync(dest)).toBe(false);
+  });
+
+  it.each(['dirty', 'missing'])('refuses a %s file-listed input and removes the incomplete export', async (kind) => {
+    const fixture = makeSuperproject(join(tmp, `verifier-file-${kind}-fixture`));
+    const dest = join(tmp, `verifier-file-${kind}-export`);
+    const inputsFile = join(tmp, `verifier-file-${kind}-inputs.json`);
+    const input = SHIPPED.find((p) => p.startsWith('apps/'))!;
+    if (kind === 'dirty') writeFileSync(join(fixture.repo, input), 'uncommitted acceptance change');
+    writeFileSync(inputsFile, JSON.stringify([kind === 'dirty' ? input : 'apps/operator/missing.ts']));
+    await expect(prepareVerifierSource({ repo: fixture.repo, ref: fixture.commit, dest,
+      inputs: [SHIPPED.find((p) => p !== input)!], inputsFile }))
+      .rejects.toThrow(kind === 'dirty' ? /dirty tested-input mismatch/ : /ENOENT/);
+    expect(existsSync(dest)).toBe(false);
+  });
+
   it('round-trips the verifier CLI with an external caller receipt and refuses tampering', async () => {
     const fixture = makeSuperproject(join(tmp, 'verifier-cli-fixture'));
     const dest = join(tmp, 'verifier-cli-export');
