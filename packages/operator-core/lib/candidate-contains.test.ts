@@ -319,16 +319,24 @@ describe('classifyPathsAgainstCandidate', () => {
    * bogus value is a real input — and this false alarm fires on EVERY path at once, which
    * is exactly how a detector teaches people to ignore it.
    */
-  it('a candidate sha that does not RESOLVE is UNKNOWN — never a blanket "absent"', async () => {
-    const git = fakeGit({ tree: { 'a.ts': SAME }, resolvesCommit: false });
-    const rs = await classifyPathsAgainstCandidate(git, 'deadbeefdeadbeef', ['a.ts', 'b.ts']);
-    expect(rs.map((r) => r.inCandidate)).toEqual([null, null]);
-    expect(rs[0].reason).toBeNull();
-    // A sha WAS given and did not resolve — fetching the right checkout may yet
-    // answer, so this must NOT read as `not-applicable`.
-    expect(rs[0].unknownReason?.code).toBe('resolver-failed');
-    expect(rs[0].unknownReason?.detail).toMatch(/does not resolve in this repo/);
-  });
+  it.each([
+    ['verification read failed', { allFail: true }],
+    ['no commit was resolved', { resolvesCommit: false }],
+  ] as const)(
+    'a candidate SHA that cannot be verified is UNKNOWN — never a blanket "absent" (%s)',
+    async (_caseName, failure) => {
+      const git = fakeGit({ tree: { 'a.ts': SAME }, ...failure });
+      const rs = await classifyPathsAgainstCandidate(git, 'deadbeefdeadbeef', ['a.ts', 'b.ts']);
+      expect(rs.map((r) => r.inCandidate)).toEqual([null, null]);
+      expect(rs[0].reason).toBeNull();
+      // GitRead collapses command failure and an unresolved SHA to null, so the
+      // detail must not claim which happened. Fetching the right checkout may yet
+      // answer; keep this retry-shaped, not `not-applicable`.
+      expect(rs[0].unknownReason?.code).toBe('resolver-failed');
+      expect(rs[0].unknownReason?.detail).toMatch(/Could not verify candidate commit/);
+      expect(rs[0].unknownReason?.detail).not.toMatch(/does not resolve in this repo/);
+    },
+  );
 
   it('…but a RESOLVING candidate that truly lacks the path is still a definitive miss', async () => {
     // The guard above must not swallow the genuine new-file case it sits in front of.

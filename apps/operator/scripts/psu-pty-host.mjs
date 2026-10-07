@@ -10188,10 +10188,12 @@ export function hostThroughPty(o) {
   // prompts stay out of argv. Only a fresh Codex thread can use startup proof
   // instead of output silence. Resume/fork may already be running a turn.
   let launchKickoffSettled = !launchKickoff;
+  let carryBindingChild = null;
   let confirmedCarryChild = null;
   let confirmedCarryNativeId = null;
   const prepareCarryBinding = async (nativeId, deadline, alreadyConfirmed = false) => {
     const target = child;
+    carryBindingChild = target;
     const result = await waitForRespawnBinding({
       nativeId,
       readNativeId: () => resolveRespawnNativeId?.(target.pid) ?? null,
@@ -10209,6 +10211,13 @@ export function hostThroughPty(o) {
     }
     return result;
   };
+  // EI-25344556501316035: an initial discovery deadline can expire before
+  // Codex assigns its id. The same child still owes its authoritative binding;
+  // later work must retry that exact-child lookup before writing any input.
+  const prepareCurrentCarryBinding = (deadline) =>
+    carryBindingChild === child && confirmedCarryChild !== child
+      ? prepareCarryBinding(null, deadline)
+      : Promise.resolve({ ok: true });
   if (launchKickoff) {
     const requireRoleMcp = headlessRoleKickoffRequiresMcp({
       agent: env.PAPERCUSP_AGENT,
@@ -10809,14 +10818,14 @@ export function hostThroughPty(o) {
           promptAlreadyVerified: true,
           terminateOnSubmitVerifyExhaustion: false,
           submitVerificationRequired: true,
-          prepareBeforeWrite: async () => {
+          prepareBeforeWrite: async ({ deadline }) => {
             if (shouldDeferWakeForPendingRespawn(mode, carryRearm.pendingCount('carry-respawn'))) {
               appendHostEvent(ownerId, 'wake-turn-deferred-for-pending-respawn', {
                 reason: 'carry-respawn-pending', phase: 'pre-write', rearmed: true,
               });
               return { ok: false, reason: 'carry-respawn-pending' };
             }
-            return { ok: true };
+            return prepareCurrentCarryBinding(deadline);
           },
         });
       }
@@ -12193,6 +12202,13 @@ export function hostThroughPty(o) {
             reason: 'carry-respawn-pending', phase: 'pre-write',
           });
           return { ok: false, reason: 'deferred-carry-respawn-pending' };
+        }
+        if (msg.mode === 'turn' || msg.mode === 'reset') {
+          const binding = await prepareCurrentCarryBinding(Date.now() + recycleCarryInjectBudgetMs);
+          if (!binding.ok) {
+            claimCoalesced();
+            return { ok: false, reason: binding.reason };
+          }
         }
         if (machineTurn) {
           machineTurnActive = true;

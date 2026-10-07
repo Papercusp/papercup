@@ -672,6 +672,81 @@ describe('owner input cannot cancel a late Codex native binding (WI-10007230)', 
   );
 });
 
+describe('Codex native id discovered after carry binding deadline (EI-25344556501316035)', () => {
+  it.each([true, false])('gates a later wake on successor reanchor (confirmed %s)', async (mappingConfirmed) => {
+    const root = mkdtempSync(join(tmpdir(), 'codex-binding-deadline-'));
+    const ownerId = uniqueOwner('BINDING-DEADLINE');
+    const nativeId = '12345678-1234-4234-8234-123456789abc';
+    const { captured, io } = fakeIo();
+    let resolvedNativeId: string | null = null;
+    const reportedIds: string[] = [];
+    const childCode = [
+      "process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');process.stdout.write('READY\\n');",
+      "process.stdin.on('data',data=>{if(data.includes('\\u0004'))process.exit(0);process.stdout.write('INPUT:'+data+'\\n');});",
+      'setTimeout(()=>process.exit(0),8000);',
+    ].join('');
+    const done = hostThroughPty({
+      command: execPath, args: ['-e', childCode], cwd: root,
+      env: hermeticEnv({
+        PAPERCUSP_AGENT: 'codex', CODEX_HOME: root,
+        PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '50',
+        PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '50',
+        PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '200',
+        PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '10',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '20',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '1',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_MAX_CR: '1',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '50',
+      }),
+      ownerId, io, bridgeTty: false,
+      kickoff: 'saved carry', adoptedCarryRespawn: { nativeId: null },
+      resolveRespawnNativeId: () => resolvedNativeId,
+      onRespawn: async (id: string) => { reportedIds.push(id); return mappingConfirmed; },
+      emitCompacted: () => null, onExit: () => {},
+    });
+    try {
+      expect(await waitForOutput(captured, 'READY', CHILD_START_OUTPUT_TIMEOUT_MS)).toBe(true);
+      const deadline = Date.now() + 2000;
+      let events: Array<Record<string, unknown>> = [];
+      while (Date.now() < deadline) {
+        if (existsSync(eventLogPathForOwner(ownerId))) {
+          events = readFileSync(eventLogPathForOwner(ownerId), 'utf8')
+            .trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
+        }
+        if (events.some(event => event.kind === 'respawn-binding-unconfirmed')) break;
+        await sleep(20);
+      }
+      expect(events).toContainEqual(expect.objectContaining({
+        kind: 'respawn-binding-unconfirmed', reason: 'successor-native-id-missing',
+      }));
+      expect(reportedIds).toEqual([]);
+      resolvedNativeId = nativeId;
+      const delivered = await injectIntoHost(socketPathFor(ownerId), {
+        mode: 'turn', data: 'later wake', ownerId,
+      });
+      expect(reportedIds).toEqual([nativeId]);
+      expect(delivered).toBe(mappingConfirmed);
+      if (mappingConfirmed) {
+        expect(await waitForOutput(captured, 'INPUT:later wake')).toBe(true);
+        const confirmation = readFileSync(eventLogPathForOwner(ownerId), 'utf8')
+          .trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
+        expect(confirmation).toContainEqual(expect.objectContaining({
+          kind: 'respawn-binding-confirmed', nativeId,
+        }));
+      } else {
+        expect(captured()).not.toContain('later wake');
+      }
+    } finally {
+      await injectIntoHost(socketPathFor(ownerId), { mode: 'raw', data: '\x04', ownerId }).catch(() => false);
+      await done;
+      for (const file of [eventLogPathForOwner(ownerId), metaPathFor(ownerId), socketPathFor(ownerId)]) {
+        rmSync(file, { force: true });
+      }
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('host-code-adopted carry with a late Codex native id (EI-24961854655864836)', () => {
   it.each([['adopted', true], ['adopted', false], ['in-place', true], ['in-place', false]] as const)(
     'gates %s carry before submission, then proves delivery (confirmation %s)',

@@ -537,7 +537,7 @@ export async function classifyPathsAgainstCandidate(
       // read against the right checkout, may still answer. Not `not-applicable`.
       unknownReason: cellUnknown(
         'resolver-failed',
-        `Candidate commit '${candidateSha.slice(0, 12)}' does not resolve in this repo — containment is UNKNOWN, not missing.`,
+        `Could not verify candidate commit '${candidateSha.slice(0, 12)}' in this repo — containment is UNKNOWN, not missing.`,
       ),
     }));
   }
