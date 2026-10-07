@@ -5,8 +5,10 @@
  */
 import { beforeEach, describe, it, expect, vi } from 'vitest';
 import {
+  createDispatchPhaseInstrumentation,
   composeDispatch,
   finalizePilotDispatchReceipt,
+  runInstrumentedDispatch,
   type DispatchArgs,
   type DispatchResult,
 } from './dispatch';
@@ -256,6 +258,96 @@ function expectQueuedWake(result: { queued?: number; woken: number; pickupConfir
   expect(result.woken).toBe(0);
   expect(result.pickupConfirmed).toBe(false);
 }
+
+describe('coord:dispatch phase instrumentation', () => {
+  it('keeps cumulative phase evidence and the nested coord:send timings in metadata', async () => {
+    const metadata = vi.fn();
+    const trace = createDispatchPhaseInstrumentation(metadata);
+    const sent = sendEnv('su-7a2aFULL', { mode: 'required', targets: ['su-7a2aFULL'], woken: 1 });
+    const { call } = mockCall({
+      'coord:presence': presence([{ ownerId: 'su-7a2aFULL', sessionState: 'parked', wakeable: true }]),
+      'plan_items:status': { items: [] },
+      'plan_items:assign': { ok: true, results: [{ ok: true }, { ok: true }] },
+      'coord:send': {
+        ...sent,
+        results: sent.results.map((result) => ({
+          ...result,
+          phaseTimingsMs: { prePersistMs: 3, persistMs: 5, postPersistMs: 8 },
+        })),
+      },
+    });
+
+    const result = await runInstrumentedDispatch(
+      baseArgs,
+      call,
+      {},
+      'su-dispatcher',
+      { workspaceId: 'ws-dispatch', harnessSlug: 'papercusp' },
+      trace,
+    );
+
+    expect(result.delivered).toBe('m-1');
+    const dispatchTrace = metadata.mock.calls.at(-1)?.[0]?.coordDispatch;
+    expect(dispatchTrace).toMatchObject({
+      schemaVersion: 'coord-dispatch-phase-v1',
+      status: 'completed',
+      elapsedMs: expect.any(Number),
+      phases: [
+        { phase: 'target_resolution', status: 'completed', elapsedMs: expect.any(Number) },
+        { phase: 'assignment_preflight', status: 'completed', elapsedMs: expect.any(Number) },
+        { phase: 'assignment', status: 'completed', elapsedMs: expect.any(Number) },
+        { phase: 'hydration', status: 'completed', elapsedMs: expect.any(Number) },
+        { phase: 'required_delivery', status: 'completed', elapsedMs: expect.any(Number) },
+        { phase: 'finalization', status: 'completed', elapsedMs: expect.any(Number) },
+      ],
+      coordSendPhaseTimingsMs: { prePersistMs: 3, persistMs: 5, postPersistMs: 8 },
+    });
+    expect(JSON.stringify(dispatchTrace)).not.toContain(baseArgs.note);
+    expect(JSON.stringify(dispatchTrace)).not.toContain('su-7a2a');
+  });
+
+  it('records an abort while required delivery is still pending', async () => {
+    const metadata = vi.fn();
+    const controller = new AbortController();
+    const trace = createDispatchPhaseInstrumentation(metadata, controller.signal);
+    let beginDelivery!: () => void;
+    let settleDelivery!: (value: unknown) => void;
+    const deliveryStarted = new Promise<void>((resolve) => { beginDelivery = resolve; });
+    const pendingDelivery = new Promise<unknown>((resolve) => { settleDelivery = resolve; });
+    const { call } = mockCall({
+      'coord:presence': presence([{ ownerId: 'su-abort-target', sessionState: 'parked', wakeable: true }]),
+      'coord:send': () => {
+        beginDelivery();
+        return pendingDelivery;
+      },
+    });
+    const running = runInstrumentedDispatch(
+      { to: 'su-abort-target', note: 'private abort regression' },
+      call,
+      {},
+      'su-dispatcher',
+      { workspaceId: 'ws-dispatch', harnessSlug: 'papercusp' },
+      trace,
+    );
+
+    await deliveryStarted;
+    controller.abort();
+
+    const abortedTrace = metadata.mock.calls.at(-1)?.[0]?.coordDispatch;
+    expect(abortedTrace).toMatchObject({
+      status: 'aborted',
+      currentPhase: 'required_delivery',
+      phases: expect.arrayContaining([
+        expect.objectContaining({ phase: 'target_resolution', status: 'completed' }),
+        expect.objectContaining({ phase: 'required_delivery', status: 'aborted', elapsedMs: expect.any(Number) }),
+      ]),
+    });
+
+    settleDelivery(sendEnv('su-abort-target', { mode: 'required', targets: ['su-abort-target'], woken: 1 }));
+    await expect(running).resolves.toMatchObject({ delivered: 'm-1' });
+    expect(metadata.mock.calls.at(-1)?.[0]?.coordDispatch.status).toBe('aborted');
+  });
+});
 
 describe('composeDispatch', () => {
   it('caps the required note and optional body at coord:send\'s inbox limit', () => {

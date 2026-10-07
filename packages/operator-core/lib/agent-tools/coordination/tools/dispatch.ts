@@ -220,6 +220,152 @@ export interface ComposeDispatchDeps {
   hydrateRefs?: typeof hydrateRefs;
   /** Injectable lower-level stable-agent assignment seam. */
   assignWorkItems?: typeof assignActionableWorkItems;
+  /** Invocation-scoped observer; omitted by pure composition callers. */
+  runPhase?: <T>(phase: DispatchPhaseName, operation: () => Promise<T>) => Promise<T>;
+}
+
+export type DispatchPhaseName =
+  | 'target_resolution'
+  | 'assignment_preflight'
+  | 'assignment'
+  | 'hydration'
+  | 'required_delivery'
+  | 'finalization'
+  | 'admission_recovery';
+
+export type DispatchTraceStatus = 'running' | 'completed' | 'failed' | 'aborted';
+export type DispatchPhaseStatus = 'running' | 'completed' | 'failed' | 'aborted';
+
+interface DispatchPhaseRecord {
+  phase: DispatchPhaseName;
+  status: DispatchPhaseStatus;
+  elapsedMs: number;
+}
+
+export interface DispatchPhaseInstrumentation {
+  run<T>(phase: DispatchPhaseName, operation: () => Promise<T>): Promise<T>;
+  finish(status?: Exclude<DispatchTraceStatus, 'running'>): void;
+}
+
+const MAX_DISPATCH_TRACE_PHASES = 8;
+const MAX_DISPATCH_TRACE_ELAPSED_MS = 3_600_000;
+const COORD_SEND_TIMING_FIELDS = ['prePersistMs', 'persistMs', 'postPersistMs'] as const;
+
+function boundedDispatchElapsedMs(startedAt: number): number {
+  return Math.min(MAX_DISPATCH_TRACE_ELAPSED_MS, Math.max(0, Math.round(performance.now() - startedAt)));
+}
+
+function readCoordSendPhaseTimings(value: unknown): Record<string, number | null> | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const envelope = value as {
+    results?: Array<{ phaseTimingsMs?: unknown }>;
+    phaseTimingsMs?: unknown;
+  };
+  const candidate = envelope.results?.[0]?.phaseTimingsMs ?? envelope.phaseTimingsMs;
+  if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return undefined;
+
+  const source = candidate as Record<string, unknown>;
+  const timings: Record<string, number | null> = {};
+  for (const field of COORD_SEND_TIMING_FIELDS) {
+    const value = source[field];
+    if (value === null) timings[field] = null;
+    else if (typeof value === 'number' && Number.isFinite(value)) {
+      timings[field] = Math.min(MAX_DISPATCH_TRACE_ELAPSED_MS, Math.max(0, Math.round(value)));
+    }
+  }
+  return Object.keys(timings).length > 0 ? timings : undefined;
+}
+
+/**
+ * Cumulative, bounded metadata for one coord:dispatch invocation. `ctx.metadata`
+ * is last-write-wins, so each update carries the full small phase list. The abort
+ * listener records an in-flight phase before the outer tool deadline settles;
+ * no recipient, note, work-item id, or thrown error text is copied into telemetry.
+ */
+export function createDispatchPhaseInstrumentation(
+  metadata?: (value: Record<string, unknown>) => void,
+  signal?: AbortSignal,
+): DispatchPhaseInstrumentation {
+  const startedAt = performance.now();
+  const phases: DispatchPhaseRecord[] = [];
+  let activePhase: { record: DispatchPhaseRecord; startedAt: number } | null = null;
+  let status: DispatchTraceStatus = 'running';
+  let abortObserved = false;
+  let coordSendPhaseTimingsMs: Record<string, number | null> | undefined;
+
+  const emit = () => {
+    const trace = {
+      schemaVersion: 'coord-dispatch-phase-v1',
+      status: signal?.aborted || abortObserved ? 'aborted' : status,
+      elapsedMs: boundedDispatchElapsedMs(startedAt),
+      ...(activePhase ? { currentPhase: activePhase.record.phase } : {}),
+      phases: phases.map((phase) => ({ ...phase })),
+      ...(coordSendPhaseTimingsMs ? { coordSendPhaseTimingsMs: { ...coordSendPhaseTimingsMs } } : {}),
+    };
+    try {
+      metadata?.({ coordDispatch: trace });
+    } catch {
+      // Instrumentation is diagnostic: a sink failure must not change dispatch.
+    }
+  };
+
+  const onAbort = () => {
+    abortObserved = true;
+    status = 'aborted';
+    if (activePhase) {
+      activePhase.record.status = 'aborted';
+      activePhase.record.elapsedMs = boundedDispatchElapsedMs(activePhase.startedAt);
+    }
+    emit();
+  };
+
+  if (signal?.aborted) onAbort();
+  else signal?.addEventListener('abort', onAbort, { once: true });
+
+  const run = async <T>(phase: DispatchPhaseName, operation: () => Promise<T>): Promise<T> => {
+    const record: DispatchPhaseRecord = { phase, status: 'running', elapsedMs: 0 };
+    if (phases.length === MAX_DISPATCH_TRACE_PHASES) phases.shift();
+    phases.push(record);
+    const active = { record, startedAt: performance.now() };
+    activePhase = active;
+    emit();
+
+    try {
+      const value = await operation();
+      record.elapsedMs = boundedDispatchElapsedMs(active.startedAt);
+      if (record.status !== 'aborted') {
+        record.status = signal?.aborted || abortObserved ? 'aborted' : 'completed';
+      }
+      if (phase === 'required_delivery') {
+        coordSendPhaseTimingsMs = readCoordSendPhaseTimings(value) ?? coordSendPhaseTimingsMs;
+      }
+      if (activePhase === active) activePhase = null;
+      emit();
+      return value;
+    } catch (error) {
+      record.elapsedMs = boundedDispatchElapsedMs(active.startedAt);
+      record.status = signal?.aborted || abortObserved ? 'aborted' : 'failed';
+      if (record.status === 'aborted') {
+        abortObserved = true;
+        status = 'aborted';
+      }
+      if (activePhase === active) activePhase = null;
+      emit();
+      throw error;
+    } finally {
+      if (activePhase === active) activePhase = null;
+    }
+  };
+
+  return {
+    run,
+    finish(resultStatus = 'completed') {
+      activePhase = null;
+      status = signal?.aborted || abortObserved ? 'aborted' : resultStatus;
+      signal?.removeEventListener('abort', onAbort);
+      emit();
+    },
+  };
 }
 
 export async function composeDispatch(
@@ -229,14 +375,17 @@ export async function composeDispatch(
   caller?: string,
 ): Promise<DispatchResult> {
   const hydrate = deps.hydrateRefs ?? hydrateRefs;
+  const runPhase = <T>(phase: DispatchPhaseName, operation: () => Promise<T>) =>
+    deps.runPhase ? deps.runPhase(phase, operation) : operation();
   // 1. Pre-state: the target's wakeability (P-001). Best-effort — a presence read
   //    hiccup degrades sessionState/wakeable to null but never blocks the dispatch.
   let sessionState: string | null = null;
   let wakeable: boolean | null = null;
   const exactOwnerId = CANONICAL_OWNER_ID_RE.test(args.to);
   let presenceOwnerId: string | null = exactOwnerId ? args.to : null;
-  if (!exactOwnerId) {
-    try {
+  try {
+    await runPhase('target_resolution', async () => {
+      if (exactOwnerId) return;
       // Resolve handles and add liveness hints when the input is ambiguous. A
       // canonical owner id is already sufficient for assignment and coord:send;
       // skip this optional read there so a slow roster lookup cannot consume the
@@ -248,9 +397,9 @@ export async function composeDispatch(
         wakeable = row.wakeable;
         presenceOwnerId = row.ownerId || null;
       }
-    } catch {
-      /* degrade: sessionState/wakeable stay null */
-    }
+    });
+  } catch {
+    /* degrade: sessionState/wakeable stay null */
   }
 
   // 1.25. Stable-agent work-item assignment. This is the concrete execution
@@ -260,18 +409,21 @@ export async function composeDispatch(
   //       BEFORE coord:send's required wake; blocked descendants are neither
   //       claimed nor included in the wake payload/body.
   let workItems: ActionableWorkItemAssignment | null = null;
-  if (args.workItemIds && args.workItemIds.length > 0) {
+  const requestedWorkItemIds = args.workItemIds;
+  if (requestedWorkItemIds && requestedWorkItemIds.length > 0) {
     const assign = deps.assignWorkItems ?? assignActionableWorkItems;
     const targetAgent = presenceOwnerId || args.to;
     try {
-      workItems = await assign({
-        workItemIds: args.workItemIds,
-        targetAgent,
-        ...(caller ? { actor: caller } : {}),
-        ...(args.harness ? { harness: args.harness } : {}),
-      });
+      workItems = await runPhase('assignment', () =>
+        assign({
+          workItemIds: requestedWorkItemIds,
+          targetAgent,
+          ...(caller ? { actor: caller } : {}),
+          ...(args.harness ? { harness: args.harness } : {}),
+        }),
+      );
     } catch (error) {
-      const requested = [...new Set(args.workItemIds)];
+      const requested = [...new Set(requestedWorkItemIds)];
       workItems = {
         ok: false,
         targetAgent,
@@ -304,10 +456,10 @@ export async function composeDispatch(
   let itemsToAssign = args.items;
   if (args.planSlug && args.items && args.items.length > 0) {
     try {
-      const statusEnv = (await call('plan_items:status', {
+      const statusEnv = (await runPhase('assignment_preflight', () => call('plan_items:status', {
         plan: args.planSlug,
         ...(args.harness ? { harness: args.harness } : {}),
-      })) as
+      }))) as
         | {
             items?: Array<{
               itemId: string;
@@ -378,12 +530,12 @@ export async function composeDispatch(
   let assigned: DispatchAssigned | null = null;
   if (args.planSlug && itemsToAssign && itemsToAssign.length > 0) {
     try {
-      const env = (await call('plan_items:assign', {
+      const env = (await runPhase('assignment', () => call('plan_items:assign', {
         plan: args.planSlug,
         itemIds: itemsToAssign,
         assignee: args.to,
         ...(args.harness ? { harness: args.harness } : {}),
-      })) as
+      }))) as
         | {
             ok?: boolean;
             results?: unknown[];
@@ -449,9 +601,9 @@ export async function composeDispatch(
         slug: args.planSlug as string,
         item,
       }));
-      const hydrated = await hydrate(refs, {
+      const hydrated = await runPhase('hydration', () => hydrate(refs, {
         resolvers: { 'plan-item': makePlanItemResolver(args.harness) },
-      });
+      }));
       itemsHydrated = hydrated.filter((h) => h.ok).length;
       const block = renderHydratedRefs(hydrated);
       if (block) {
@@ -505,7 +657,7 @@ export async function composeDispatch(
   //    This is the critical leg: it persists the inbox row (durable) AND fires the
   //    target's own coord:inbox-wake key, returning the authoritative queued-delivery
   //    signal (queued / recipient_absent / recipient_dead). It does not confirm a turn.
-  const sendEnv = (await call('coord:send', {
+  const sendEnv = (await runPhase('required_delivery', () => call('coord:send', {
     to: [args.to],
     summary: args.note,
     // The structured-body gate refuses a plain string, and expects:'action' below makes a
@@ -529,7 +681,7 @@ export async function composeDispatch(
     // asking it to confirm receipt; pickup must be verified separately) and never
     // 'none' (a dispatch nobody is obliged to act on is not a dispatch).
     expects: 'action',
-  })) as { results?: Array<Record<string, unknown>> } | undefined;
+  }))) as { results?: Array<Record<string, unknown>> } | undefined;
 
   const r0 = (sendEnv?.results?.[0] ?? {}) as {
     ok?: boolean;
@@ -691,6 +843,26 @@ export async function composeDispatch(
   return result;
 }
 
+/** Run the normal dispatch composition with an invocation-scoped phase trace. */
+export async function runInstrumentedDispatch(
+  args: DispatchArgs,
+  call: InnerCall,
+  deps: ComposeDispatchDeps,
+  caller: string | undefined,
+  scope: { workspaceId: string | null; harnessSlug: string | null },
+  trace: DispatchPhaseInstrumentation,
+): Promise<DispatchResult> {
+  try {
+    const result = await composeDispatch(args, call, { ...deps, runPhase: trace.run }, caller);
+    const finalized = await trace.run('finalization', () => finalizePilotDispatchReceipt(args, result, scope));
+    trace.finish('completed');
+    return finalized;
+  } catch (error) {
+    trace.finish('failed');
+    throw error;
+  }
+}
+
 export default defineTool({
   name: 'coord:dispatch',
   description:
@@ -774,6 +946,11 @@ export default defineTool({
     }),
   async handler(args, ctx) {
     const dispatchArgs = args as DispatchArgs;
+    const ctxTrace = ctx as unknown as {
+      metadata?: (value: Record<string, unknown>) => void;
+      signal?: AbortSignal;
+    };
+    const trace = createDispatchPhaseInstrumentation(ctxTrace.metadata, ctxTrace.signal);
     if (dispatchArgs.resumeAdmission) {
       const identity = resolveAgentIdentity(ctx);
       const { requestAdmissionRecovery, AdmissionRecoveryRefused } = await import('../../../work-item-admission-recovery');
@@ -784,20 +961,31 @@ export default defineTool({
         // A canonical owner ID is already exact. requestAdmissionRecovery performs
         // fresh presence, workspace, and work-item authorization checks for it;
         // resolve only stable handles here so this path does not read the roster twice.
-        const targetOwnerId = CANONICAL_OWNER_ID_RE.test(dispatchArgs.to)
-          ? dispatchArgs.to
-          : (await resolveStableAgentTarget({
-            targetAgent: dispatchArgs.to, workspaceId: identity.workspaceId, harness: dispatchArgs.harness,
-          })).ownerId;
-        const result = await requestAdmissionRecovery({
-          workspaceId: identity.workspaceId, harnessSlug: dispatchArgs.harness!,
+        const targetOwnerId = await trace.run('target_resolution', async () =>
+          CANONICAL_OWNER_ID_RE.test(dispatchArgs.to)
+            ? dispatchArgs.to
+            : (
+                await resolveStableAgentTarget({
+                  targetAgent: dispatchArgs.to,
+                  workspaceId: identity.workspaceId!,
+                  harness: dispatchArgs.harness,
+                })
+              ).ownerId,
+        );
+        const result = await trace.run('admission_recovery', () => requestAdmissionRecovery({
+          workspaceId: identity.workspaceId!, harnessSlug: dispatchArgs.harness!,
           workItemId: dispatchArgs.workItemIds![0]!, caller: identity.ownerId, target: targetOwnerId,
           authority: bindAdmissionAuthority(ctx),
           note: dispatchArgs.note, ...(dispatchArgs.body !== undefined ? { body: dispatchArgs.body } : {}),
-        });
+        }));
+        trace.finish('completed');
         return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
       } catch (error) {
-        if (!(error instanceof AdmissionRecoveryRefused) && !(error instanceof AdmissionAuthorityRefused)) throw error;
+        if (!(error instanceof AdmissionRecoveryRefused) && !(error instanceof AdmissionAuthorityRefused)) {
+          trace.finish('failed');
+          throw error;
+        }
+        trace.finish('completed');
         return { content: [{ type: 'text' as const, text: JSON.stringify({
           ok: false, error: 'admission_recovery_refused', reason: error.message,
           workItemId: dispatchArgs.workItemIds![0], responsibleActor: identity.ownerId,
@@ -807,11 +995,17 @@ export default defineTool({
       }
     }
     const identity = resolveAgentIdentity(ctx);
-    const result = await composeDispatch(dispatchArgs, inProcessCall(ctx), {}, identity.ownerId);
-    const finalized = await finalizePilotDispatchReceipt(dispatchArgs, result, {
-      workspaceId: identity.workspaceId,
-      harnessSlug: dispatchArgs.harness ?? ((ctx as unknown as { harnessSlug?: string }).harnessSlug ?? null),
-    });
+    const finalized = await runInstrumentedDispatch(
+      dispatchArgs,
+      inProcessCall(ctx),
+      {},
+      identity.ownerId,
+      {
+        workspaceId: identity.workspaceId,
+        harnessSlug: dispatchArgs.harness ?? ((ctx as unknown as { harnessSlug?: string }).harnessSlug ?? null),
+      },
+      trace,
+    );
     return { content: [{ type: 'text' as const, text: JSON.stringify(finalized) }] };
   },
 });
