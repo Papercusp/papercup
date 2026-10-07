@@ -447,6 +447,102 @@ describe('injectIntoHostWithConfirmation — WHY a true happened (WI-6862)', () 
   });
 });
 
+describe('failed wake confirmation audit retention', () => {
+  let auditPath: string;
+  let previousAuditPath: string | undefined;
+
+  beforeEach(() => {
+    previousAuditPath = process.env.PAPERCUSP_PSU_PTY_INJECT_AUDIT_PATH;
+    auditPath = join(tmpDir(), 'sender-audit.jsonl');
+    process.env.PAPERCUSP_PSU_PTY_INJECT_AUDIT_PATH = auditPath;
+  });
+
+  afterEach(() => {
+    if (previousAuditPath === undefined) delete process.env.PAPERCUSP_PSU_PTY_INJECT_AUDIT_PATH;
+    else process.env.PAPERCUSP_PSU_PTY_INJECT_AUDIT_PATH = previousAuditPath;
+  });
+
+  const failures = (): Array<Record<string, unknown>> =>
+    existsSync(auditPath)
+      ? readFileSync(auditPath, 'utf8').trim().split('\n')
+          .map((line) => JSON.parse(line) as Record<string, unknown>)
+          .filter((row) => row.kind === 'inject-host-failed')
+      : [];
+
+  it('retains the host refusal after the same delivery succeeds on retry', async () => {
+    const ownerId = `su-wake-audit-${process.pid}`;
+    const msg = { mode: 'turn' as const, ownerId, deliveryId: 'test-wake-retained', data: 'private wake body' };
+    const failed = startAckingSocket(tmpDir(), ownerId, { ok: false, reason: 'deferred-busy-gate' });
+    expect(await injectIntoHostWithConfirmation(failed.sock, msg)).toEqual({
+      ok: false, confirmation: 'acked', reason: 'deferred-busy-gate',
+    });
+
+    const recovered = startAckingSocket(tmpDir(), ownerId, { ok: true, reason: 'delivered' });
+    expect(await injectIntoHostWithConfirmation(recovered.sock, msg)).toEqual({
+      ok: true, confirmation: 'acked', reason: 'delivered',
+    });
+    expect(failures()).toEqual([expect.objectContaining({
+      ownerId, deliveryId: msg.deliveryId, mode: 'turn',
+      confirmation: 'acked', reason: 'deferred-busy-gate', transportErrorCode: null,
+    })]);
+    expect(readFileSync(auditPath, 'utf8')).not.toContain(msg.data);
+  });
+
+  it('distinguishes a socket error from a host refusal without losing delivery identity', async () => {
+    const ownerId = `su-wake-error-${process.pid}`;
+    const msg = { mode: 'turn' as const, ownerId, deliveryId: 'test-wake-socket-error', data: 'private wake body' };
+    const result = await injectIntoHostWithConfirmation(join(tmpDir(), `${ownerId}.sock`), msg, 500);
+    expect(result).toEqual({ ok: false, confirmation: 'error' });
+    expect(failures()).toEqual([expect.objectContaining({
+      ownerId, deliveryId: msg.deliveryId, confirmation: 'error',
+      reason: null, transportErrorCode: 'ENOENT',
+    })]);
+  });
+
+  it('preserves the transport verdict when its diagnostic file cannot be written', async () => {
+    process.env.PAPERCUSP_PSU_PTY_INJECT_AUDIT_PATH = tmpDir();
+    const ownerId = `su-wake-audit-fail-${process.pid}`;
+    const result = await injectIntoHostWithConfirmation(join(tmpDir(), `${ownerId}.sock`), {
+      mode: 'turn', ownerId, deliveryId: 'test-wake-unwritable-audit', data: 'x',
+    }, 500);
+    expect(result).toEqual({ ok: false, confirmation: 'error' });
+  });
+
+  it('retains a timeout when the socket accepts but the host never acknowledges', async () => {
+    const ownerId = `su-wake-timeout-${process.pid}`;
+    const sock = join(tmpDir(), `${ownerId}.sock`);
+    const connections: net.Socket[] = [];
+    const server = net.createServer({ allowHalfOpen: true }, (conn) => {
+      connections.push(conn);
+      conn.on('data', () => {});
+    });
+    cleanups.push(() => {
+      for (const conn of connections) conn.destroy();
+      server.close();
+    });
+    await new Promise<void>((resolve) => server.listen(sock, resolve));
+    const result = await injectIntoHostWithConfirmation(sock, {
+      mode: 'turn', ownerId, deliveryId: 'test-wake-timeout', data: 'x',
+    }, 100);
+    expect(result).toEqual({ ok: false, confirmation: 'timeout' });
+    expect(failures()).toEqual([expect.objectContaining({
+      ownerId, deliveryId: 'test-wake-timeout', confirmation: 'timeout',
+    })]);
+  });
+
+  it('retains an oversized wake rejection before attempting to connect', async () => {
+    const ownerId = `su-wake-oversize-${process.pid}`;
+    const result = await injectIntoHostWithConfirmation(join(tmpDir(), `${ownerId}.sock`), {
+      mode: 'turn', ownerId, deliveryId: 'test-wake-oversize',
+      data: 'x'.repeat(MAX_CONTROL_PAYLOAD_BYTES),
+    });
+    expect(result).toEqual({ ok: false, confirmation: 'oversize' });
+    expect(failures()).toEqual([expect.objectContaining({
+      ownerId, deliveryId: 'test-wake-oversize', confirmation: 'oversize',
+    })]);
+  });
+});
+
 describe('recolorViaPty (fleet-color-schemes live recolor)', () => {
   // recolorViaPty reads the REAL PSU_PTY_DIR (no dir param), so set up a live host
   // there under a unique throwaway ownerId, then clean it up — mirrors interruptViaPty.

@@ -1322,12 +1322,6 @@ export function injectIntoHostWithConfirmation(
   if (msg.deliveryId !== undefined) envelope.deliveryId = msg.deliveryId;
   if (msg.quotaRecovery !== undefined) envelope.quotaRecovery = msg.quotaRecovery;
   const payload = JSON.stringify(envelope);
-  if (Buffer.byteLength(payload, 'utf8') > MAX_CONTROL_PAYLOAD_BYTES)
-    return Promise.resolve({ ok: false, confirmation: 'oversize' as const });
-
-  // WI-2140968: cross-check the caller's asserted ownerId against the socket path's
-  // own witness. Detector only — never blocks the write (see auditInjectOwnerBinding).
-  auditInjectOwnerBinding(sock, msg);
 
   return new Promise<InjectHostResult>((resolve) => {
     let settled = false;
@@ -1339,13 +1333,41 @@ export function injectIntoHostWithConfirmation(
     // authoritative and settles this promise on its own `ok` value.
     let ackReceived = false;
     let ackBuf = '';
-    const finish = (ok: boolean, confirmation: InjectConfirmation, reason?: string) => {
+    const finish = (
+      ok: boolean,
+      confirmation: InjectConfirmation,
+      reason?: string,
+      transportErrorCode?: string,
+    ) => {
       if (settled) return;
       settled = true;
+      // EI-25257321199641888: a later successful retry clears the delivery
+      // row's last_error. Retain the first transport/host verdict in the
+      // existing bounded audit so a reachable socket cannot erase a failed
+      // wake's evidence. Correlate by identity, never persist the wake body.
+      if (!ok && msg.ownerId && msg.deliveryId && TURN_CLASS_MODES.has(msg.mode)) {
+        appendInjectAudit({
+          kind: 'inject-host-failed',
+          ownerId: msg.ownerId,
+          deliveryId: msg.deliveryId,
+          mode: msg.mode,
+          confirmation,
+          reason: reason?.slice(0, 300) ?? null,
+          transportErrorCode: transportErrorCode ?? null,
+          pid: process.pid,
+        });
+      }
       // Omit `reason` entirely when the host sent none, so this stays shape-compatible
       // with every existing exact-equality assertion on InjectHostResult.
       resolve(reason === undefined ? { ok, confirmation } : { ok, confirmation, reason });
     };
+    if (Buffer.byteLength(payload, 'utf8') > MAX_CONTROL_PAYLOAD_BYTES) {
+      finish(false, 'oversize');
+      return;
+    }
+    // WI-2140968: cross-check the caller's asserted ownerId against the socket path's
+    // own witness. Detector only — never blocks the write (see auditInjectOwnerBinding).
+    auditInjectOwnerBinding(sock, msg);
     const c = net.connect(sock, () => {
       // `focus` rides the envelope only for mode:'compact' (WI-1804) — the host uses it
       // as the `/compact <focus>` argument, keeping `data` for the carry-note continuation.
@@ -1381,7 +1403,7 @@ export function injectIntoHostWithConfirmation(
         /* malformed ack line — ignore, the close/timeout fallback still applies */
       }
     });
-    c.on('error', () => finish(false, 'error'));
+    c.on('error', (error: NodeJS.ErrnoException) => finish(false, 'error', undefined, error.code));
     c.on('close', () => {
       // No ack ever arrived — either an old host (pre-WI-5872, never sends
       // one: preserve today's optimistic behavior so this client-side change
