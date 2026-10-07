@@ -347,6 +347,39 @@ The leader explicitly did not mint a fresh payload or measure the current portal
 bundle; both remain parent acceptance work. Previous runtime/QR observations
 remain dated evidence. No APK/cloud support pair is accepted by this preparation.
 
+### Public native failure isolated — 2026-10-07 16:07Z
+
+The public native run retained in `/tmp/android-p015-public-hosted-native-20261007-1553`
+failed before saving credentials. Stage-only logs show `PairException.Decode` immediately
+after request start; the test's 45-second wait hid this failure. Local absence of credentials
+does not establish absence of a server device. Parent `WI-10006956` asked the fleet leader
+to inspect the possible record through the existing host administration route after the
+maintained owner relay refused desktop device enumeration (`route_not_relayed`).
+
+Owned bug `EI-25336668159113928` isolates the protocol cause: the actual public sealed
+channel emits encrypted `http.ready` without a request ID. The Rust client skipped only
+`hello` before enforcing the response request ID. The maintained TS interop fixture had
+omitted this readiness frame. Adding it reproduces the exact
+`Decode("sealed device HTTP: response requestId mismatch")` failure in the canonical
+Rust pairing test (`/tmp/android-p015-http-ready-before.log`, exit 101). Recognizing the
+channel control frame fixes the failure; all six sealed HTTP interop tests pass with zero
+skips (`/tmp/android-p015-http-ready-after.log`, exit 0), including wrong-pin and mismatched
+response-ID refusal, bounded uploads/SSE, error mapping and reconnect coverage.
+
+Harness fallout `EI-25336728975892198` is now admitted and assigned to the parent lane.
+The native smoke test fails promptly on a visible pairing error and writes safe stage/class
+evidence before teardown. The runner retains only allowlisted native stages and class names.
+The canonical cloud runner guards verify private-text exclusion, fresh directory creation,
+exclusive input preservation, and the existing unsafe-candidate refusal controls
+(`/tmp/android-p015-cloud-diagnostic-guards-final.log`). This audits both prior failure classes
+before a third full native run. The debug APK rebuild and native test-package assembly pass
+(`/tmp/android-p015-ready-fix-prebuild2.log`, `/tmp/android-p015-ready-fix-testapk.log`),
+including four-ABI packaging and 16 KB alignment checks. The measured shared APK digest is
+`4e2b7522a1c3e89cab8bde002221038facb0041bd6b7a2dad96b22a8d5a292d0`; a later run must
+capture and recheck its own candidate because shared output can advance. Actual public
+native verification remains pending; these protocol and harness checks do not close public
+hosted or genuine BYOC Android acceptance.
+
 ## Historical discovery — 2026-10-06
 
 The following sections preserve the initial analysis and agreement context. Their gap states,
