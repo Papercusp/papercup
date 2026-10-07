@@ -31,7 +31,7 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z.object({
-    verbatim: z.string().min(4).max(OWNER_DIRECTIVE_VERBATIM_MAX),
+    verbatim: z.string().min(1).max(OWNER_DIRECTIVE_VERBATIM_MAX),
     sourceTurnRef: z.string().min(1).max(300),
     sessionRef: z.string().max(300).optional(),
     ownerName: z.string().max(120).optional(),

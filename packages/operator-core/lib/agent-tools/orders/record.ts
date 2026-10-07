@@ -53,7 +53,7 @@ export default defineTool({
   args: z.object({
     verbatim: z
       .string()
-      .min(4)
+      .min(1)
       .max(OWNER_DIRECTIVE_VERBATIM_MAX)
       .describe("The owner's directive VERBATIM — their literal words, never your paraphrase."),
     sourceTurnRef: z
