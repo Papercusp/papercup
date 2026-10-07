@@ -31,8 +31,15 @@ function lifecycleActionInvalidatesHealth(action: WorkspaceHostLifecycleAction):
 }
 
 export class WorkspaceHostControllerFenceError extends Error {
-  constructor(readonly hostId: string) {
-    super(`workspace-host controller authority or host generation is stale for '${hostId}'`);
+  /**
+   * `detail` names what actually differed when it is known. WI-10007034: a resumed operation whose
+   * request no longer matched its own row was reported only as "controller authority or host
+   * generation is stale" while controller and fence were identical, which sent diagnosis the wrong way.
+   */
+  constructor(readonly hostId: string, readonly detail?: string) {
+    super(
+      `workspace-host controller authority or host generation is stale for '${hostId}'${detail ? `: ${detail}` : ''}`,
+    );
     this.name = 'WorkspaceHostControllerFenceError';
   }
 }
@@ -678,11 +685,25 @@ export interface StoredWorkspaceHostDestroyTarget extends Pick<
  * provider resource and deduplicates lifecycle observations of the same resource. A destroy caller
  * must never reconstruct provider ids from the desired spec or from naming conventions.
  */
+export interface WorkspaceHostDestroyTargetReadOptions {
+  /**
+   * WI-10007034: read the registered population as it stood when this operation BEGAN, by ignoring
+   * every resource row the operation itself wrote. A resumed destroy turn (a DBOS step re-run after
+   * a host restart, or a later turn after `in-progress`) must plan against the same population as
+   * its first turn: its own confirmed-absent rows would otherwise unregister the resources it has
+   * already deleted, the provider would return a smaller plan, and beginOperation would refuse the
+   * changed request. The durable checkpoints, not the population, are what skip finished steps.
+   */
+  asOfOperationStart?: string;
+}
+
 export async function readWorkspaceHostDestroyTarget(
   workspaceId: string,
   hostId: string,
   tx?: Sql,
+  options: WorkspaceHostDestroyTargetReadOptions = {},
 ): Promise<StoredWorkspaceHostDestroyTarget | null> {
+  const asOfOperationStart = options.asOfOperationStart ?? null;
   return inWorkspace(workspaceId, tx, async (query) => {
     const hosts = (await query`
       SELECT id, name, connection_id, target, observed_state, desired_spec,
@@ -729,6 +750,7 @@ export async function readWorkspaceHostDestroyTarget(
         AND target IS NOT NULL
         AND kind IS NOT NULL
         AND provider_id IS NOT NULL
+        AND (${asOfOperationStart}::text IS NULL OR operation_id <> ${asOfOperationStart})
       ORDER BY updated_at DESC, logical_key
     `) as Array<{
       target: WorkspaceHostResourceRef['target'];
@@ -979,15 +1001,21 @@ async function beginFencedWorkspaceHostOperation(input: WorkspaceHostOperationIn
         LIMIT 1
       `;
       if (existing[0]) {
-        if (
-          existing[0].host_id !== input.hostId ||
-          existing[0].action !== input.action ||
-          existing[0].controller_id !== input.controllerAuthority.controllerId ||
-          existing[0].controller_fence !== input.controllerAuthority.fence ||
-          (input.desiredRevision !== undefined && existing[0].desired_revision !== input.desiredRevision) ||
-          !existing[0].request_matches
-        ) {
-          throw new WorkspaceHostControllerFenceError(input.hostId);
+        const differs = [
+          existing[0].host_id !== input.hostId ? 'host' : null,
+          existing[0].action !== input.action ? 'action' : null,
+          existing[0].controller_id !== input.controllerAuthority.controllerId ? 'controller' : null,
+          existing[0].controller_fence !== input.controllerAuthority.fence ? 'fence' : null,
+          input.desiredRevision !== undefined && existing[0].desired_revision !== input.desiredRevision
+            ? 'desired revision'
+            : null,
+          !existing[0].request_matches ? 'request' : null,
+        ].filter((field): field is string => field !== null);
+        if (differs.length > 0) {
+          throw new WorkspaceHostControllerFenceError(
+            input.hostId,
+            `operation '${input.operationId}' already exists with a different ${differs.join(', ')}`,
+          );
         }
         // A refused row records an earlier attempt of THIS request that never began. A retry
         // (DBOS re-runs a failed step with the same input) runs the fence again below, and an

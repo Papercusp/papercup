@@ -1857,7 +1857,10 @@ export async function runWorkspaceHostDestroy(
     throw new WorkspaceHostProvisioningRequestError(['canary destroy requires disposition=discard']);
   }
 
-  const target = await baseStore.readTarget(workspaceId, hostId);
+  // WI-10007034: plan against the population as it stood when THIS operation began. A resumed turn
+  // (DBOS re-runs the step after a bg-host restart) otherwise sees its own confirmed deletions as
+  // unregistered, re-plans fewer steps, and beginOperation refuses the changed request.
+  const target = await baseStore.readTarget(workspaceId, hostId, undefined, { asOfOperationStart: operationId });
   if (!target) throw new WorkspaceHostProvisioningRequestError([`workspace host '${hostId}' was not found`]);
   if (target.id !== hostId || target.desired.hostId !== hostId) {
     throw new WorkspaceHostProvisioningRequestError(['stored workspace-host identity does not match destroy hostId']);

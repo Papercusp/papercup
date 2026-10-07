@@ -17,6 +17,7 @@ import {
 } from '../endpoint-route/routes/workspace-hosts/provision';
 import type { GcpWorkspaceHostInventoryRequest, GcpWorkspaceHostInventorySnapshot } from './gcp-provider';
 import { GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS, type GcpManagedWorkspaceHostResourceObservation } from './gcp-safety';
+import { WorkspaceHostControllerFenceError } from './observability-store';
 import {
   runWorkspaceHostDestroy,
   type RunWorkspaceHostDestroyInput,
@@ -721,6 +722,71 @@ describe('runWorkspaceHostDestroy', () => {
     expect(begin.mock.calls.map(([input]) => input.desiredRevision)).toEqual([2, 2]);
     const planIds = begin.mock.calls.map(([input]) => (input.request as { plan: { planId: string } }).plan.planId);
     expect(planIds[1]).toBe(planIds[0]);
+  });
+
+  it('a resumed turn plans against the population as its operation began, not after its own deletions (WI-10007034)', async () => {
+    const { provider, apply } = providerHarness();
+    const reconcile = vi.mocked(provider.reconcile);
+    const harness = storeHarness({ ...desired, labels: undefined });
+    const { store } = harness;
+    // What the real store does: a resource is registered iff its LATEST row says it exists, so the
+    // operation's own confirmed-absent checkpoints unregister what it already deleted, unless the
+    // read asks for the population as of the operation's start.
+    const readTarget = store.readTarget;
+    store.readTarget = vi.fn(async (workspaceId, hostId, tx, options) => {
+      const target = await readTarget(workspaceId, hostId, tx, options);
+      if (!target || options?.asOfOperationStart === 'op-destroy-1') return target;
+      const deleted = new Set(
+        harness
+          .checkpoints()
+          .filter((entry) => entry.state === 'absent' && entry.providerResource)
+          .map((entry) => entry.providerResource!.providerId),
+      );
+      return { ...target, resources: target.resources.filter((entry) => !deleted.has(entry.resource.providerId)) };
+    });
+    // What the real store does on a re-begin of an existing operation: a different request is refused.
+    let firstRequest: string | null = null;
+    store.beginOperation = vi.fn<WorkspaceHostDestroyStore['beginOperation']>(async (input) => {
+      const request = JSON.stringify(input.request);
+      firstRequest ??= request;
+      if (request !== firstRequest) {
+        throw new WorkspaceHostControllerFenceError('host-1', `operation '${input.operationId}' already exists with a different request`);
+      }
+    });
+    const [vmStep, diskStep, firewallStep] = steps();
+    const destroyed = (stepId: string, providerResourceId: string) => ({
+      operationId: 'op-destroy-1',
+      stepId,
+      state: 'destroyed' as const,
+      observedAt: LATER,
+      confirmation: { hostId: 'host-1', providerResourceId, confirmedAbsentAt: LATER, source: 'provider-read' as const },
+    });
+    apply
+      .mockResolvedValueOnce(destroyed(vmStep!.id, 'pc-host-vm'))
+      .mockResolvedValueOnce(destroyed(diskStep!.id, 'pc-host-data'))
+      .mockRejectedValueOnce(new Error('bg-host restarted mid firewall delete'));
+    reconcile.mockResolvedValue(destroyed(firewallStep!.id, 'pc-host-iap'));
+
+    const partial = await runWorkspaceHostDestroy(ordinaryInput(provider, store));
+    expect(partial.status).toBe('in-progress');
+    expect(harness.checkpoints().filter((entry) => entry.state === 'absent').map((entry) => entry.providerResource?.providerId))
+      .toEqual(expect.arrayContaining(['pc-host-vm', 'pc-host-data']));
+
+    const recovered = await runWorkspaceHostDestroy(ordinaryInput(provider, store));
+
+    expect(recovered.status).toBe('succeeded');
+    expect(vi.mocked(store.readTarget).mock.calls.map(([, , , options]) => options)).toEqual([
+      { asOfOperationStart: 'op-destroy-1' },
+      { asOfOperationStart: 'op-destroy-1' },
+    ]);
+    const planned = vi.mocked(provider.plan).mock.calls.map(([request]) =>
+      'host' in request ? request.host.resources.map((resource) => resource.providerId) : [],
+    );
+    expect(planned[1]).toEqual(planned[0]);
+    expect(planned[1]).toEqual(expect.arrayContaining(['pc-host-vm', 'pc-host-data']));
+    // The finished deletions are skipped by checkpoint, never re-applied.
+    expect(apply.mock.calls.filter(([step]) => step.id === vmStep!.id)).toHaveLength(1);
+    expect(apply.mock.calls.filter(([step]) => step.id === diskStep!.id)).toHaveLength(1);
   });
 
   it('rejects missing disposition, cross-host ownership, and an unverified backup before provider planning', async () => {
