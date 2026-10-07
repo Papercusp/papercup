@@ -156,6 +156,23 @@ describe('withMcpDiagnosticWarnings', () => {
   });
 
   it.each([
+    ['plans:get-spec-evidence', { evidence: [{ details: { adequacy: { outcome: 'caught' } } }] }],
+    ['scorecards:get', { scorecard: { gradingAudit: { state: 'pending' }, auditTarget: { id: 'EI-1' }, evidenceFingerprint: 'abc123' } }],
+  ])('does not warn for a populated %s result without an ok field', (_tool, body) => {
+    const result: McpCallResult = {
+      content: [{ type: 'text', text: JSON.stringify(body) }],
+    };
+    const annotated = withMcpDiagnosticWarnings(
+      result,
+      context({ dataPlaneDegradedAtMs: Date.parse('2026-10-06T12:09:48.129Z') }),
+    );
+
+    expect(annotated).toBe(result);
+    expect(annotated._meta).toBeUndefined();
+    expect(JSON.parse((annotated.content[0] as { text: string }).text)).toEqual(body);
+  });
+
+  it.each([
     ['scorecards:list', { ok: true, count: 0, scorecards: [] }],
     ['plans:get-specs', { ok: true, count: 0, specs: [] }],
     ['plans:get-spec-evidence', { ok: true, count: 0, evidence: [] }],
