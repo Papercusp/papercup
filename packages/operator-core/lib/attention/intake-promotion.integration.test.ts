@@ -131,6 +131,35 @@ async function promotedFrom(sourceId: string): Promise<string[]> {
   return rows.map((r) => r.feature_id);
 }
 
+describe('remote member report promotion (unified pipeline D-051)', () => {
+  it('authors one local executable target, preserving the foreign source and reporter context on retry', async () => {
+    const source = await file({ payload: {
+      reporter: { kind: 'end-user' }, reporterKinds: ['end-user'],
+      reportContext: { appVersion: '0.9.4', screen: { route: '/board' } },
+    } });
+    // Fixture represents the row the existing member projection writes upstream.
+    await db.adminSql`UPDATE harness_shared.work_items SET origin = 'remote', author_pubkey = 'foreign-installed-member'
+      WHERE feature_id = ${source.id}`;
+    const before = await payloadOf(source.id);
+    const decision = await decide(source.id, { disposition: 'promote', reason: 'reproduced upstream', acceptance: FULL_ACCEPTANCE });
+    const first = await exec(source.id, decision);
+    expect(first).toMatchObject({ ok: true, mode: 'distinct', created: true });
+    if (!first.ok || !first.workItemId) throw new Error(JSON.stringify(first));
+    expect(first.workItemId).not.toBe(source.id);
+    const target = await getIssue(first.workItemId);
+    expect(target?.origin).toBe('local');
+    expect(target?.payload).toMatchObject({ intakeSource: { id: source.id, mode: 'distinct' },
+      reporter: { kind: 'end-user' }, reporterKinds: ['end-user'], reportContext: { appVersion: '0.9.4' } });
+    expect(await payloadOf(source.id)).toEqual(before);
+    expect((await getIssue(source.id))?.origin).toBe('remote');
+    const retry = await exec(source.id, decision);
+    expect(retry).toMatchObject({ ok: true, workItemId: first.workItemId, created: false, converged: true });
+    expect(await promotedFrom(source.id)).toEqual([first.workItemId]);
+    expect(await payloadOf(source.id)).toEqual(before);
+    expect(await claimIssue(first.workItemId, 'su-upstream-fixer')).toMatchObject({ assignee: 'su-upstream-fixer' });
+  });
+});
+
 async function outLinks(id: string): Promise<string[]> {
   const links = (await issuesOutLinksMany([id])).get(id) ?? [];
   return links.map((l) => `${l.rel}:${l.dst.ref}`);

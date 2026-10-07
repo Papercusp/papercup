@@ -101,6 +101,8 @@ export interface IntakeWorkItem {
   scope: string;
   severity?: string | null;
   createdBy: string | null;
+  /** Foreign member rows are evidence; executable work must be authored locally. */
+  origin?: string | null;
   /** Who closed the row, when it was closed: an implementer of it (P-007). */
   terminalOwner?: string | null;
   payload: unknown;
@@ -453,7 +455,7 @@ async function executePromotion(input: IntakeExecutionInput, deps: IntakePromoti
     const sourceRevision = intakeSourceRevision(source);
     const key = intakePromotionKey(source.id, sourceRevision);
     const targetKind = intakeTargetKind(decision, source);
-    const inPlace = !isObservation(source) && source.kind === targetKind;
+    const inPlace = source.origin !== 'remote' && !isObservation(source) && source.kind === targetKind;
 
     // ── convergence: this source revision was already promoted (one row per key) ──
     const existing = await deps.findByPromotionKey(key);
@@ -621,6 +623,7 @@ async function executePromotion(input: IntakeExecutionInput, deps: IntakePromoti
         severity: source.severity ?? null,
         createdBy: decision.decidedBy,
         payload: {
+          ...reporterEvidenceOf(source.payload),
           implementationReadiness: readyReadiness(undefined, sealed.contract, authority, now),
           intakeSource: {
             id: source.id,
@@ -742,6 +745,10 @@ async function completeDistinctPromotion(
   const by = input.decision.decidedBy;
   await deps.link(promoted.id, source.id, INTAKE_LINK_RELS.promotedFrom, by);
   await deps.link(source.id, promoted.id, INTAKE_LINK_RELS.promotedTo, by);
+  // The target's intakeSource/intakePromotion already records the mapping.
+  // Never write a local pointer into a foreign author's source document: its
+  // next federation snapshot would overwrite it, and we do not own that row.
+  if (source.origin === 'remote') return;
   const pointer = {
     schemaVersion: INTAKE_EXECUTION_SCHEMA_VERSION,
     disposition: input.decision.disposition,
@@ -906,6 +913,16 @@ async function executeDisposition(
 
 // ── default (Postgres) dependencies ───────────────────────────────────────────
 
+/** Carry report evidence without copying dedup identities or lifecycle authority. */
+function reporterEvidenceOf(payload: unknown): Record<string, unknown> {
+  const source = record(payload);
+  const evidence: Record<string, unknown> = {};
+  for (const key of ['reporter', 'reporterKinds', 'reportContext']) {
+    if (Object.prototype.hasOwnProperty.call(source, key)) evidence[key] = source[key];
+  }
+  return evidence;
+}
+
 function toIntakeWorkItem(issue: {
   id: string;
   kind: string;
@@ -915,6 +932,7 @@ function toIntakeWorkItem(issue: {
   scope: string;
   severity?: string | null;
   createdBy: string | null;
+  origin?: string | null;
   terminalOwner?: string | null;
   payload: unknown;
 }): IntakeWorkItem {
@@ -927,6 +945,7 @@ function toIntakeWorkItem(issue: {
     scope: issue.scope,
     severity: issue.severity ?? null,
     createdBy: issue.createdBy,
+    origin: issue.origin,
     terminalOwner: issue.terminalOwner ?? null,
     payload: issue.payload,
   };

@@ -14,8 +14,14 @@ test('sidebar audit opens report, navigates evidence, and reopens history', asyn
   // UI contracts use a controlled HTTP seam; a separate real-PG integration
   // suite proves persistence and workspace isolation (not a mocked database).
   const run = { id: '11111111-1111-4111-8111-111111111111', scope: 'single', planSlugs: ['audit-fixture'], status: 'complete', startedAt: '2026-10-07T00:00:00Z', rowCount: 1 };
+  const submissions: unknown[] = [];
   await page.route('**/api/admin/plan-audit**', async route => {
     const url = new URL(route.request().url());
+    if (route.request().method() === 'POST') {
+      submissions.push(route.request().postDataJSON());
+      await route.fulfill({ status: 202, json: { run } });
+      return;
+    }
     if (url.searchParams.get('format') === 'html') {
       // Load the production shared renderer, never a lookalike report fixture.
       await route.fulfill({ contentType: 'text/html', headers: { 'Cross-Origin-Embedder-Policy': 'require-corp', 'Cross-Origin-Resource-Policy': 'cross-origin' }, body: renderPlanAuditReport({ rows: [{ slug: 'audit-fixture', title: 'Audit fixture', status: 'active', category: 'Finish', implementation: 'Verified implementation', recommendation: 'Review evidence', citations: [{ path: 'src/real.ts' }] }] }) });
@@ -51,4 +57,13 @@ test('sidebar audit opens report, navigates evidence, and reopens history', asyn
   await expect(frame.getByRole('searchbox')).toBeVisible();
   await page.getByRole('button', { name: '← Back to plans' }).click();
   await expect(page.getByTestId('plan-audit-pane')).toHaveCount(0);
+  // Submit through the actual mounted Plans surface, rather than proving only
+  // that a hand-authored report URL can open the viewer.
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.goto('/plans');
+  await page.getByRole('button', { name: 'Audit workspace', exact: true }).click();
+  await expect(page.getByTestId('plan-audit-pane')).toBeVisible();
+  await expect(page).toHaveURL(new RegExp('paudit=' + run.id));
+  expect(submissions).toEqual([{ scope: 'workspace' }]);
+  await expect(frame.getByRole('heading', { name: 'Audit fixture' })).toBeVisible();
 });
