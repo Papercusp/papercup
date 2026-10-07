@@ -3556,7 +3556,7 @@ describe('clean sync outcome', () => {
     // gated on a PRIOR content quarantine — none here — so it does not fire this tick.)
     // The strand clear (EI-20402093158205519) rides between them on its OWN phase: it is
     // deliberately NOT counter-gated, so a MEASURED-clean census clears on every status.
-    expect(escalationClears()).toEqual([['git-sync-conflict'], ['git-sync-strand'], ['git-sync-error']]);
+    expect(escalationClears()).toEqual([['git-sync-conflict'], ['git-sync-migration-attribution'], ['git-sync-strand'], ['git-sync-error']]);
     const clears = unsafeCalls.filter((c) => c.text.includes('SET escalation = NULL'));
     expect(clears.map((c) => c.params[2])).toEqual(['git-sync', 'git-sync-strand', 'git-sync']); // phase
     expect(escalationUpserts()).toEqual([]);
@@ -4966,6 +4966,44 @@ describe('EI-20402093158205519 stranded-submodule census (git-sync-strand)', () 
 
   beforeEach(() => {
     counterRows = [{ et: 0, lo: [], ct: 0 }];
+  });
+
+  it('alarms on unattributed migration fences even when the visible tree synced and submodules were not measured', async () => {
+    runGitSyncMock.mockResolvedValue({
+      ...syncedOutcome,
+      strandedSubmodules: null,
+      skippedPaths: [{
+        scope: 'superproject', path: 'schema-consumer.ts', reason: 'migration-dependency-fence',
+        detail: 'unattributed migration',
+        blockingMigrations: ['libs/sub/libs/db/sql/999-migration.sql'],
+        unattributedMigrations: ['libs/sub/libs/db/sql/999-migration.sql'],
+      }],
+    });
+    await action(ctx);
+    const alarms = escalationUpserts().filter((row) => row.params[1] === 'git-sync-migration-attribution');
+    expect(alarms).toHaveLength(1);
+    expect(alarms[0].body).toMatchObject({
+      kind: 'git-sync-migration-attribution',
+      unattributed_migrations: ['libs/sub/libs/db/sql/999-migration.sql'],
+      migration_deferred_sources: ['schema-consumer.ts'],
+    });
+    expect(String(alarms[0].body.detail)).toContain('do not use the conflicting reservation owner');
+    expect(strandUpserts()).toHaveLength(0);
+    expect(strandClears()).toHaveLength(0);
+  });
+
+  it('clears the migration attribution alarm after a measured clean sync', async () => {
+    runGitSyncMock.mockResolvedValue(syncedOutcome);
+    await action(ctx);
+    expect(unsafeCalls.some((row) => row.text.includes('SET escalation = NULL') &&
+      row.params[2] === 'git-sync-migration-attribution')).toBe(true);
+  });
+
+  it('does not retire the migration attribution alarm on an error without a skipped-path census', async () => {
+    runGitSyncMock.mockResolvedValue({ ...syncedOutcome, status: 'error', skippedPaths: undefined });
+    await action(ctx);
+    expect(unsafeCalls.some((row) => row.text.includes('SET escalation = NULL') &&
+      row.params[2] === 'git-sync-migration-attribution')).toBe(false);
   });
 
   it('a strand tick writes the escalation on its OWN phase, naming the files and the fix', async () => {

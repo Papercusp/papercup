@@ -1656,33 +1656,46 @@ async function writeGitSyncStrandEscalation(
   slug: string,
   workspaceId: string,
   stranded: StrandedSubmodule[],
+  migrationFences: Extract<GitSyncSkippedPath, { reason: 'migration-dependency-fence' }>[] = [],
 ): Promise<void> {
   const { sql } = getOrgPg();
   const totalFiles = stranded.reduce((n, s) => n + s.trackedFiles, 0);
   const list = stranded.map((s) => `${s.path} (${s.trackedFiles} tracked file(s))`).join(', ');
+  const unattributedMigrations = [...new Set(migrationFences.flatMap((row) => row.unattributedMigrations ?? []))];
+  const deferredSources = [...new Set(migrationFences.map((row) => row.path))];
+  // Separate rows preserve an existing submodule warning when its census did not run.
+  const phase = migrationFences.length > 0 ? 'git-sync-migration-attribution' : STRAND_ESCALATION_PHASE;
+  const kind = migrationFences.length > 0 ? 'git-sync-migration-attribution' : STRAND_KIND;
   const body = JSON.stringify({
-    kind: STRAND_KIND,
+    kind,
     harness_slug: slug,
     submodules: stranded.map((s) => ({ path: s.path, tracked_files: s.trackedFiles, files: s.files })),
     stranded_submodule_count: stranded.length,
     stranded_file_count: totalFiles,
+    unattributed_migrations: unattributedMigrations,
+    migration_deferred_sources: deferredSources,
     emitted_at: Date.now(),
     detail:
-      `git-sync CANNOT COMMIT ${totalFiles} tracked file(s) in ${stranded.length} POPULATED but UNREGISTERED ` +
+      (stranded.length > 0 ? `git-sync CANNOT COMMIT ${totalFiles} tracked file(s) in ${stranded.length} POPULATED but UNREGISTERED ` +
       `submodule(s): ${list}. They are absent from .git/config (no submodule.<name>.url), so ` +
       `'git submodule status' marks them '-' and discovery skips them entirely — the edits are NOT committed, ` +
       `NOT on origin, and a clean clone of this branch does not have them, even though they are on disk and the ` +
       `local build passes. Fix with: git submodule init <path> (idempotent; copies the .gitmodules URL into ` +
       `.git/config), then re-check the pin before the next tick. git-sync deliberately does NOT auto-resolve ` +
       `this — these worktrees are often parked on deliberate detached pins, and registering one here would ` +
-      `fetch/merge/push it and UNPIN it.`,
+      `fetch/merge/push it and UNPIN it.` : '') +
+      (unattributedMigrations.length > 0
+        ? ` Migration attribution is missing for: ${unattributedMigrations.join(', ')}. ` +
+          `The dependency fence holds ${deferredSources.length} superproject source path(s): ${deferredSources.slice(0, 20).join(', ')}. ` +
+          'Recover the migration edit author/work-item attribution and repair the reservation conflict; do not use the conflicting reservation owner as the edit author or bypass the fence.'
+        : ''),
   });
   await sql.unsafe(
     `INSERT INTO harness_shared.harness_escalations (harness_slug, phase, escalation, mtime_ms, workspace_id)
      VALUES ($1, $2, $3, $4, $5)
      ON CONFLICT (harness_slug, phase)
      DO UPDATE SET escalation = EXCLUDED.escalation, mtime_ms = EXCLUDED.mtime_ms`,
-    [slug, STRAND_ESCALATION_PHASE, body, Date.now(), workspaceId],
+    [slug, phase, body, Date.now(), workspaceId],
   );
 }
 
@@ -7844,6 +7857,17 @@ async function recordAndEscalateTick(a: {
   // unmeasured tick leaves any existing row untouched, and only a MEASURED clean tick
   // clears it.
   const stranded = outcome.strandedSubmodules;
+  const unknownMigrationFences = (outcome.skippedPaths ?? []).filter(
+    (row): row is Extract<GitSyncSkippedPath, { reason: 'migration-dependency-fence' }> =>
+      'reason' in row && row.reason === 'migration-dependency-fence' && (row.unattributedMigrations?.length ?? 0) > 0,
+  );
+  if (unknownMigrationFences.length > 0) {
+    // Reuse the strand alarm: these edits are also stranded, even on a synced tick.
+    // Reservation-conflict author notifications cannot reach an unknown author.
+    await writeGitSyncStrandEscalation(slug, workspaceId, [], unknownMigrationFences);
+  } else if (outcome.status === 'synced') {
+    await clearGitSyncEscalation(slug, ['git-sync-migration-attribution'], 'git-sync-migration-attribution');
+  }
   if (stranded === null) {
     // Not measured this pass — say nothing, retire nothing.
   } else if (stranded.length > 0) {
