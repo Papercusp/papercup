@@ -67,7 +67,7 @@ type VoiceWindow = Window & {
 async function openShell(
   page: Page,
   opts: { denyMic?: boolean } = {},
-): Promise<{ postedTurns: string[]; postedBodies: string[] }> {
+): Promise<{ postedTurns: string[]; postedBodies: string[]; postedOutcomes: string[] }> {
   await page.addInitScript((denyMic) => {
     const w = window as VoiceWindow & { __PAPERCUSP_DEV_WRAPPER__?: boolean };
     w.__PAPERCUSP_DEV_WRAPPER__ = true;
@@ -91,16 +91,32 @@ async function openShell(
   }, opts.denyMic ?? false);
   const postedTurns: string[] = [];
   const postedBodies: string[] = [];
+  // Each POST's outcome (`<status> <role>` or `failed <reason> <role>`), in
+  // completion order. A duplicated body is either two sends or a client retry
+  // after a failed attempt; only the outcomes tell those apart (WI-10006911).
+  const postedOutcomes: string[] = [];
+  const isTurnPost = (r: { method(): string; url(): string }) =>
+    r.method() === 'POST' && /\/api\/operator\/conversations\/[^/]+\/turns/.test(r.url());
+  const roleOf = (body: string | null) => {
+    try { return String((JSON.parse(body ?? '') as { role?: unknown }).role ?? '?'); } catch { return '?'; }
+  };
   page.on('request', (r) => {
-    if (r.method() === 'POST' && /\/api\/operator\/conversations\/[^/]+\/turns/.test(r.url())) {
+    if (isTurnPost(r)) {
       postedTurns.push(r.url());
       postedBodies.push(r.postData() ?? '');
     }
   });
+  page.on('response', (res) => {
+    const r = res.request();
+    if (isTurnPost(r)) postedOutcomes.push(`${res.status()} ${roleOf(r.postData())}`);
+  });
+  page.on('requestfailed', (r) => {
+    if (isTurnPost(r)) postedOutcomes.push(`failed ${r.failure()?.errorText ?? '?'} ${roleOf(r.postData())}`);
+  });
   await page.goto('/harness');
   await expect(page.getByRole('button', { name: 'Voice mode' })).toBeVisible({ timeout: 60_000 });
   await page.waitForFunction(() => !!(window as VoiceWindow).__pcVoiceTest, undefined, { timeout: 30_000 });
-  return { postedTurns, postedBodies };
+  return { postedTurns, postedBodies, postedOutcomes };
 }
 
 /** Microphone tracks the page obtained that are still capturing. */
@@ -310,7 +326,7 @@ async function transcribeInPage(page: Page, audio: Buffer): Promise<{ status: nu
       'writes a real conversation turn: isolated-DB desktop rig only');
     test.setTimeout(330_000);
     await withLocalEnginePrefs(page, async () => {
-      const { postedTurns, postedBodies } = await openShell(page);
+      const { postedTurns, postedBodies, postedOutcomes } = await openShell(page);
       await voice(page, (h) => h.setMode('push-to-talk'));
       const nextReply = await captureNextTtsReply(page, 240_000);
       await holdToTalk(page);
@@ -331,7 +347,7 @@ async function transcribeInPage(page: Page, audio: Buffer): Promise<{ status: nu
       // IS the transcript the user was shown — not a re-recognition or a stale one.
       const transcript = (await voice(page, (h) => h.getState())).lastTranscript;
       expect(norm(transcript)).toContain('quick brown fox');
-      expect(userTexts(), `one hold posts exactly one user turn; all posted turn bodies: ${JSON.stringify(postedBodies)}`)
+      expect(userTexts(), `one hold posts exactly one user turn; all posted turn bodies: ${JSON.stringify(postedBodies)}; outcomes: ${JSON.stringify(postedOutcomes)}`)
         .toHaveLength(1);
       expect(norm(userTexts()[0] ?? ''), `posted user turn text: ${JSON.stringify(userTexts()[0])}`).toBe(norm(transcript));
       const reply = await nextReply();
@@ -346,7 +362,7 @@ async function transcribeInPage(page: Page, audio: Buffer): Promise<{ status: nu
       expect(matched.length, `reply sent to TTS: ${JSON.stringify(reply.text)}; whisper heard: ${JSON.stringify(heard.text)}`)
         .toBeGreaterThanOrEqual(Math.min(2, sentWords.size));
       expect((await events(page)).filter((e) => e.phase === 'playback')).toEqual([]);
-      expect(userTexts(), `the spoken reply did not post a second user turn; all posted turn bodies: ${JSON.stringify(postedBodies)}`)
+      expect(userTexts(), `the spoken reply did not post a second user turn; all posted turn bodies: ${JSON.stringify(postedBodies)}; outcomes: ${JSON.stringify(postedOutcomes)}`)
         .toHaveLength(1);
       expect(postedTurns.length, 'every posted turn is either the one user turn or an assistant reply')
         .toBe(postedBodies.length);
