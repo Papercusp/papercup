@@ -1541,20 +1541,42 @@ export function getRun(runId: string): RunSnapshot | null {
 const UNVERIFIED_VITEST_PASS_NOTE =
   '\n[coverage-gate] Vitest PASS withheld: the latest per-file ledger rows do not prove that every requested file passed.\n';
 
+function isWithheldUnverifiedVitestPass(snapshot: RunSnapshot): boolean {
+  return snapshot.kind === 'vitest'
+    && snapshot.status === 'error'
+    && snapshot.exitCode === 0
+    && snapshot.output.includes(UNVERIFIED_VITEST_PASS_NOTE);
+}
+
 async function withholdUnverifiedVitestPass(
   snapshot: RunSnapshot,
   sqlOverride?: SqlLike,
 ): Promise<RunSnapshot> {
-  if (snapshot.kind !== 'vitest' || snapshot.status !== 'pass') return snapshot;
+  const withheldPass = isWithheldUnverifiedVitestPass(snapshot);
+  if (snapshot.kind !== 'vitest' || (snapshot.status !== 'pass' && !withheldPass)) return snapshot;
 
   const requestedFiles = requestedFilesFromValue(snapshot.requestedFiles);
   const sql = await snapshotSql(sqlOverride);
   if (requestedFiles && sql) {
     const rows = await readPersistedTestRunLedgerRows(snapshot.runId, sql);
     const recovery = rows ? deriveDetachedRunLedgerRecovery(snapshot.runId, rows) : null;
-    if (recovery?.status === 'pass' && hasExactPassedFileCoverage(requestedFiles, recovery.files)) return snapshot;
+    if (recovery?.status === 'pass' && hasExactPassedFileCoverage(requestedFiles, recovery.files)) {
+      if (!withheldPass) return snapshot;
+      const restored: RunSnapshot = {
+        ...snapshot,
+        status: 'pass',
+        exitCode: recovery.exitCode,
+        finishedAt: recovery.finishedAt,
+        output: snapshot.output.replace(
+          UNVERIFIED_VITEST_PASS_NOTE,
+          '\n[detached-recovery] recovered pass from exact requested-file ledger rows.\n',
+        ),
+      };
+      return persistReconciledSnapshot(snapshot, restored, sql);
+    }
   }
 
+  if (withheldPass) return snapshot;
   const unverified: RunSnapshot = { ...snapshot, status: 'error' };
   appendSnapshotOutput(unverified, UNVERIFIED_VITEST_PASS_NOTE);
   if (sql) await persistReconciledSnapshot(snapshot, unverified, sql);
@@ -1572,7 +1594,10 @@ export async function getRunAsync(runId: string, sqlOverride?: SqlLike, recovery
   if (local) {
     if (local.snapshot.finishedAt !== null && local.finalization) await local.finalization;
     const snapshot = await withholdUnverifiedVitestPass({ ...local.snapshot }, sqlOverride);
-    if (local.snapshot.status === 'pass' && snapshot.status !== 'pass') Object.assign(local.snapshot, snapshot);
+    if ((local.snapshot.status === 'pass' && snapshot.status !== 'pass')
+      || (isWithheldUnverifiedVitestPass(local.snapshot) && snapshot.status === 'pass')) {
+      Object.assign(local.snapshot, snapshot);
+    }
     return snapshot;
   }
   const persisted = await readPersistedRunSnapshotWithRetry(runId, sqlOverride, recoveryScope);

@@ -1488,6 +1488,70 @@ describe('durable detached snapshot lifecycle', () => {
     expect(updates[0]?.[0]).toBe('error');
   });
 
+  it('rechecks a withheld Vitest PASS when exact requested-file ledger rows arrive later', async () => {
+    const runId = 'terminal-pass-ledger-late';
+    const requestedFiles = ['lib/first.test.ts', 'lib/second.test.ts'];
+    let ledgerRows = [
+      { file_path: requestedFiles[0], status: 'pass', finished_at: new Date(1_700_000_001_000), output_tail: null },
+    ];
+    const durableRow: Record<string, unknown> = {
+      run_id: runId,
+      task_id: 'task-terminal-pass-ledger-late',
+      kind: 'vitest',
+      label: 'detached Vitest run',
+      file_path: null,
+      command: ['node', 'scripts/test-files.mjs'],
+      status: 'pass',
+      exit_code: 0,
+      started_at: new Date(1_700_000_000_000),
+      finished_at: new Date(1_700_000_010_000),
+      output: '',
+      truncated: false,
+    };
+    const updates: unknown[][] = [];
+    const sql = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const statement = strings.join(' ');
+      if (statement.includes('FROM harness_shared.testing_run_snapshots AS snapshot')) {
+        return [{
+          ...durableRow,
+          task_state: 'exited',
+          task_exit_code: 0,
+          task_ended_at: new Date(1_700_000_010_000),
+          task_detail: { requestedFiles },
+        }];
+      }
+      if (statement.includes('FROM harness_shared.test_runs')) return ledgerRows;
+      if (statement.includes('UPDATE harness_shared.testing_run_snapshots')) {
+        updates.push(values);
+        Object.assign(durableRow, {
+          status: values[0],
+          exit_code: values[1],
+          finished_at: values[2],
+          output: values[3],
+          truncated: values[4],
+        });
+        return [{ run_id: runId }];
+      }
+      return [];
+    }) as unknown as Sql;
+
+    const withheld = await store.getRunAsync(runId, sql);
+    expect(withheld).toMatchObject({ runId, status: 'error', exitCode: 0 });
+    expect(withheld?.output).toContain('do not prove that every requested file passed');
+
+    ledgerRows = requestedFiles.map((file_path, index) => ({
+      file_path,
+      status: 'pass',
+      finished_at: new Date(1_700_000_011_000 + index * 1_000),
+      output_tail: null,
+    }));
+    const recovered = await store.getRunAsync(runId, sql);
+
+    expect(recovered).toMatchObject({ runId, status: 'pass', exitCode: 0 });
+    expect(recovered?.output).not.toContain('[coverage-gate]');
+    expect(updates.map(([status]) => status)).toEqual(['error', 'pass']);
+  });
+
   it('waits for local terminal finalization before returning testing:run status', async () => {
     type Sql = Parameters<Store['persistRunSnapshot']>[1];
     const previousPersistOptIn = process.env.PAPERCUSP_TEST_RUNS_PERSIST;
