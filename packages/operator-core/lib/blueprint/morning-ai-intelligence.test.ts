@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { loadBlueprintFromFile } from '@papercusp/orchestrator/blueprint';
 import { checkAgainstJsonSchema } from '../json-schema-validation';
 import { selectAcceptedOperationWorkerModel } from './operation-worker-binding';
+import { computeNextFire } from '../harness/routines/schedule-next';
 
 // Exercise the schemas through the same validator used at operation submission
 // and completion, with the actual inherited blueprint rather than a copy.
@@ -23,6 +24,17 @@ const output = {
 };
 
 describe('morning AI operation admission and completion contracts', () => {
+  it.each([
+    ['2026-10-07T19:00:00Z', '2026-10-08T13:00:00.000Z'],
+    ['2026-10-31T19:00:00Z', '2026-11-01T14:00:00.000Z'],
+    ['2027-03-13T19:00:00Z', '2027-03-14T13:00:00.000Z'],
+  ])('keeps the daily09:00New York occurrence after %s', (from, next) => {
+    expect(computeNextFire({
+      kind: 'rrule', rrule: 'FREQ=DAILY;BYHOUR=9;BYMINUTE=0;BYSECOND=0',
+      dtstart: '2026-10-08T09:00:00.000Z', tzid: 'America/New_York',
+    }, new Date(from))?.toISOString()).toBe(next);
+  });
+
   it('selects the pinned Codex model and refuses an incompatible backend', () => {
     const binding = { modelPolicy: operation.policy.model };
     expect(selectAcceptedOperationWorkerModel(binding, null, 'codex')).toMatchObject({
