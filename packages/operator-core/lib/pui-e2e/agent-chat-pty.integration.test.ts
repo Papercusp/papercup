@@ -20,7 +20,7 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { createServer, request as httpRequest } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { PassThrough } from 'node:stream';
 import { promisify } from 'node:util';
@@ -4440,7 +4440,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
         expect(own.launch).toMatchObject({ backend, identity: 'coding-assistant', cwd: outside });
         expect(own.native.args).not.toContain(own.launch.promptFile);
         expect(own.native.args).not.toContain('--system-prompt');
-        const sealed = readFileSync(own.launch.promptFile, 'utf8');
+        const sealed = read(own.launch.promptFile);
         if (backend === 'codex') {
           expect(own.native.codexConfig ?? '').not.toMatch(/mcp_servers\.["']?papercusp-su/);
           expect(own.native.codexConfig ?? '').not.toMatch(/project_doc_max_bytes\s*=\s*0/);
@@ -4463,7 +4463,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
           // The outside chat's AGENTS.md is not the SU playbook render.
           expect(own.native.codexAgents).not.toBe(su.native.codexAgents);
           expect(su.native.codexConfig).toMatch(/mcp_servers\.["']?papercusp-su/);
-          expect(su.native.codexAgents).toBe(readFileSync(su.launch.promptFile, 'utf8'));
+          expect(su.native.codexAgents).toBe(read(su.launch.promptFile));
         } else {
           expect(su.native.args).toEqual(expect.arrayContaining(['--system-prompt', su.launch.promptFile]));
           expect(su.native.ompServers).toContain('papercusp-su');
@@ -8291,6 +8291,47 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
     }
   }, 600_000);
 
+  /**
+   * P-005 agents inherit Papercusp's file-lock instructions. A tmpdir under
+   * /dev/shm is outside every supported lock domain, so a real Codex run asks
+   * to bypass the lock instead of editing. Use a disposable managed suite-app
+   * checkout and commit its seed files so edits have a meaningful Git diff.
+   */
+  function createP005ReviewWorkspace(files: { calc: string; test: string; packageJson: string }): string {
+    const workspacesRoot = path.resolve(
+      process.env.PAPERCUSP_WORKSPACES_ROOT?.trim() || path.join(homedir(), '.papercusp-workspaces'),
+    );
+    const appsRoot = path.join(workspacesRoot, 'pui-p005-review', '.papercusp', 'apps');
+    mkdirSync(appsRoot, { recursive: true });
+    const launchDir = realpathSync(mkdtempSync(path.join(appsRoot, 'review-')));
+    const git = (...args: string[]): string => {
+      const result = spawnSync('git', args, { cwd: launchDir, encoding: 'utf8' });
+      if (result.status !== 0) {
+        throw new Error(`P-005 review workspace Git ${args[0] ?? '(empty args)'} failed: ${result.stderr || result.error?.message || result.status}`);
+      }
+      return result.stdout.trim();
+    };
+    try {
+      git('init', '--quiet', '--initial-branch=staging');
+      writeFileSync(path.join(launchDir, 'calc.js'), files.calc);
+      writeFileSync(path.join(launchDir, 'calc.test.js'), files.test);
+      writeFileSync(path.join(launchDir, 'package.json'), files.packageJson);
+      git('add', 'calc.js', 'calc.test.js', 'package.json');
+      git('-c', 'core.hooksPath=/dev/null', '-c', 'user.name=PUI acceptance fixture',
+        '-c', 'user.email=pui-acceptance@papercusp.invalid', 'commit', '--quiet', '-m', 'Seed P-005 review workspace');
+      const repoRoot = realpathSync(git('rev-parse', '--show-toplevel'));
+      if (repoRoot !== launchDir) throw new Error(`P-005 review Git root ${repoRoot} does not match ${launchDir}`);
+      const managedPath = path.relative(realpathSync(workspacesRoot), repoRoot).split(path.sep);
+      if (managedPath.length !== 4 || managedPath[1] !== '.papercusp' || managedPath[2] !== 'apps') {
+        throw new Error(`P-005 review workspace is outside the managed suite-app lock domain: ${repoRoot}`);
+      }
+      return launchDir;
+    } catch (error) {
+      rmSync(launchDir, { recursive: true, force: true });
+      throw error;
+    }
+  }
+
   // pui-chat-first-ux-2026-09-28 P-005: the side-by-side review against Claude
   // Code and Codex CLI. These are the five tasks the review driver
   // (.papercusp/scratch/p005-side-by-side.mts) gives stock `claude` and `codex`,
@@ -8303,11 +8344,12 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
     async ({ onTestFailed }) => {
       const out = process.env.PUI_REVIEW_FRAMES_DIR!;
       mkdirSync(out, { recursive: true });
-      const launchDir = realpathSync(mkdtempSync(path.join(tmpdir(), 'pui-p005-review-')));
       const calc = 'function add(a, b) {\n  return a + b;\n}\n\nfunction mul(a, b) {\n  return a * b;\n}\n\nmodule.exports = { add, mul };\n';
-      writeFileSync(path.join(launchDir, 'calc.js'), calc);
-      writeFileSync(path.join(launchDir, 'calc.test.js'), "const test = require('node:test');\nconst assert = require('node:assert');\nconst { add, mul } = require('./calc');\n\ntest('add', () => assert.strictEqual(add(2, 3), 5));\ntest('mul', () => assert.strictEqual(mul(2, 3), 6));\n");
-      writeFileSync(path.join(launchDir, 'package.json'), JSON.stringify({ name: 'p005-proj', version: '1.0.0', scripts: { test: 'node --test' } }, null, 2) + '\n');
+      const launchDir = createP005ReviewWorkspace({
+        calc,
+        test: "const test = require('node:test');\nconst assert = require('node:assert');\nconst { add, mul } = require('./calc');\n\ntest('add', () => assert.strictEqual(add(2, 3), 5));\ntest('mul', () => assert.strictEqual(mul(2, 3), 6));\n",
+        packageJson: JSON.stringify({ name: 'p005-proj', version: '1.0.0', scripts: { test: 'node --test' } }, null, 2) + '\n',
+      });
       const frame = (label: string, screen: string) => writeFileSync(path.join(out, `${label}.txt`), screen);
       const log: Array<Record<string, unknown>> = [];
       const approvals: string[] = [];
