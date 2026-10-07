@@ -28,7 +28,8 @@
 import { parse as parseYaml } from 'yaml';
 import { PORTAL_MCP_OAUTH_ROUTES, isPortalMcpOAuthPath, portalMcpOAuthRoutePath } from '../connected-apps/portal-mcp-oauth';
 import type { CloudflaredIngressRule } from '../own-tunnel/config';
-import { parseAppRelayPath } from '../workspace-host/hosted-app-relay';
+import { PHONE_DEVICE_PATHS } from '../device-ingress-paths';
+import { parseAppRelayPath, parseDeviceRelayPath } from '../workspace-host/hosted-app-relay';
 import { HOSTED_RUNTIME_MOUNTED_ROUTE_KEYS } from './hosted-runtime';
 
 /** `apps/operator/bin/hosted-handler.ts` mounts the hosted plane at `/api/*`. */
@@ -113,6 +114,11 @@ export const HOSTED_INGRESS_FAMILIES: ReadonlyArray<HostedIngressFamily> = [
     why: 'Apps authenticate with an app key or OAuth bearer, never a portal session (EAA P-007/P-016, WI-10004436).',
   },
   {
+    id: 'device-relay',
+    expect: 'control-plane',
+    why: 'A phone paired to a cloud workspace calls <portal>/api/workspaces/<id>/api/device/<route> with its device bearer, never a portal session (android D-013 #1/#2, iphone D-014, WI-10007014).',
+  },
+  {
     id: 'mcp-oauth',
     expect: 'control-plane',
     why: 'MCP clients discover and run OAuth before they hold any session (P-325, WI-10004436).',
@@ -180,6 +186,11 @@ export function hostedIngressSamples(workspaceId: string = HOSTED_INGRESS_SAMPLE
   ] as const) {
     samples.push({ family: relay.id, expect: relay.expect, method, path, source: 'parseAppRelayPath' });
   }
+  // Derived from the phone device API itself, so a device route added later is probed too.
+  const device = familyById('device-relay');
+  for (const devicePath of PHONE_DEVICE_PATHS) {
+    samples.push({ family: device.id, expect: device.expect, method: 'GET', path: `${workspaceBase}${devicePath}`, source: devicePath });
+  }
   const oauth = familyById('mcp-oauth');
   for (const route of PORTAL_MCP_OAUTH_ROUTES) {
     samples.push({
@@ -196,6 +207,7 @@ export function hostedIngressSamples(workspaceId: string = HOSTED_INGRESS_SAMPLE
 /** True when the control plane's own router accepts this sample's path for its family. */
 export function sampleMatchesPlanePredicate(sample: HostedIngressSample): boolean {
   if (sample.family === 'app-relay') return parseAppRelayPath(sample.path) !== null;
+  if (sample.family === 'device-relay') return parseDeviceRelayPath(sample.path) !== null;
   if (sample.family === 'mcp-oauth') return isPortalMcpOAuthPath(sample.path);
   return sample.path.startsWith(`${HOSTED_PLANE_PUBLIC_PREFIX}/`);
 }
