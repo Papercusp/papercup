@@ -163,6 +163,10 @@ export class ByocSealedChannel {
       return push(chunk);
     };
     this.noise.on('data', (data: Buffer) => this.acceptPlaintext(data));
+    // Completing Noise proves possession of a key, not that this key belongs to
+    // a paired device. Hold plaintext in the stream until the asynchronous
+    // authorization check succeeds; keep the per-buffer relay labels above.
+    this.noise.pause();
     this.noise.on('error', (error: Error) => this.fail(error));
     this.raw.on('error', (error: Error) => this.fail(error));
     this.opened = this.noise.opened.then(async (ok) => {
@@ -172,6 +176,12 @@ export class ByocSealedChannel {
         ? timingSafeEqual(remote, this.expectedRemotePublicKey)
         : await verify!(remote).catch(() => false);
       if (!accepted) throw new Error('BYOC sealed channel remote key mismatch');
+      if (this.closed) throw new Error('BYOC sealed channel is closed');
+      this.noise.resume();
+    }).catch((error: unknown) => {
+      const failure = error instanceof Error ? error : new Error(String(error));
+      this.fail(failure);
+      throw failure;
     });
   }
 

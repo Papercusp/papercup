@@ -120,6 +120,53 @@ describe('BYOC sealed relay channel', () => {
     p.host.close();
   });
 
+  for (const verdict of ['accept', 'refuse', 'throw'] as const) {
+    it(`holds application frames until asynchronous peer verification resolves: ${verdict}`, async () => {
+      let finishVerification!: (value: boolean) => void;
+      let failVerification!: (error: Error) => void;
+      const verification = new Promise<boolean>((resolve, reject) => {
+        finishVerification = resolve;
+        failVerification = reject;
+      });
+      const p = await pair({ hostVerify: () => verification });
+      // Observe rejection immediately, so the negative cases never create an
+      // unhandled rejection before the assertion below attaches.
+      const hostOutcome = p.host.opened.then(() => null, (error: Error) => error);
+      try {
+        await p.client.opened;
+        await p.client.send({ type: 'http.request', id: 'before-verification' });
+        await settle();
+        expect(p.hostFrames).toEqual([]);
+        if (verdict === 'throw') failVerification(new Error('verifier unavailable'));
+        else finishVerification(verdict === 'accept');
+        const error = await hostOutcome;
+        await settle();
+        if (verdict === 'accept') {
+          expect(error).toBeNull();
+          expect(p.errors).toEqual([]);
+          expect(p.hostFrames).toEqual([{ type: 'http.request', id: 'before-verification' }]);
+        } else {
+          expect(error?.message).toMatch(/remote key mismatch/);
+          expect(p.errors).toHaveLength(1);
+          expect(p.errors[0].message).toMatch(/remote key mismatch/);
+          expect(p.hostFrames).toEqual([]);
+          const packetCount = p.hostPackets.length;
+          // A rejected authorization is terminal, including later relay input.
+          for (const packet of p.clientPackets) p.host.receive(packet);
+          await expect(p.host.send({ type: 'http.response', id: 'after-rejection' })).rejects.toThrow();
+          await settle();
+          expect(p.hostPackets).toHaveLength(packetCount);
+          expect(p.hostFrames).toEqual([]);
+          expect(p.errors).toHaveLength(1);
+        }
+      } finally {
+        finishVerification(false);
+        p.client.close();
+        p.host.close();
+      }
+    });
+  }
+
   it('refuses ambiguous key configuration and an initiator-side verifier', () => {
     const k = SecretStream.keyPair(Buffer.alloc(32, 44));
     const base = { localKeyPair: k, sendPacket: () => {}, onFrame: () => {} };
