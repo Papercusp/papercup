@@ -397,6 +397,13 @@ const LAUNCH_REFUSAL_GUIDANCE = {
 
 export function planPlacementObligation(input: PlanPlacementProviderInput): AgentObligation {
   const scope = { workspaceId: input.workspaceId, ownerId: input.ownerId, goalId: input.goalId };
+  const changeSignal =
+    input.read.status === 'unknown' && input.read.failure.code === 'canonical-obligation-scope-read-failed'
+      ? undefined
+      : {
+          event: goalPlanPlacementChangedKey(input.goalId),
+          cancellationRef: `goal:${input.goalId}`,
+        };
   const common = {
     ruleId: 'goal-plan-placement',
     ruleRevision: PLAN_PLACEMENT_OBLIGATION_REVISION,
@@ -422,10 +429,7 @@ export function planPlacementObligation(input: PlanPlacementProviderInput): Agen
       sourceRef:
         'GoalPortfolioBrief.worklist[].placement+resolvePlanClosure+resolveGoalLaunch+classifyGoalPlanFleetCoverage',
     },
-    changeSignal: {
-      event: goalPlanPlacementChangedKey(input.goalId),
-      cancellationRef: `goal:${input.goalId}`,
-    },
+    ...(changeSignal ? { changeSignal } : {}),
     boundary: {
       boundary: 'fleet:launch-on-plan',
       refusalCode: 'goal-plan-placement-prerequisite',

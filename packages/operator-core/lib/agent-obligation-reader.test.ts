@@ -427,6 +427,37 @@ describe('shared agent obligation reader', () => {
       expect(read.degradedSources.length).toBeGreaterThan(0);
       expect(read.agenda.primary).toEqual(expect.arrayContaining([expect.objectContaining({ status: 'unknown' })]));
       expect(projectAgentTurnStartObligationBrief(read.agenda).projection.text).toContain('UNKNOWN');
+      const placement = read.agenda.evaluations.find((row) => row.ruleId === 'goal-plan-placement');
+      expect(placement).toMatchObject({
+        status: 'unknown',
+        measurementFailure: { code: 'canonical-obligation-scope-read-failed' },
+      });
+      expect(placement?.changeSignal).toBeUndefined();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('keeps the placement event for a known goal when the placement source is unreadable', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const read = await readAgentObligationAgenda({
+        workspaceId: 'ws',
+        ownerId: 'su-goal',
+        now: NOW,
+        deps: deps({
+          goalPortfolio: vi.fn(async () => { throw new Error('portfolio unavailable'); }),
+        }),
+      });
+      const placement = read.agenda.evaluations.find((row) => row.ruleId === 'goal-plan-placement');
+      expect(placement).toMatchObject({
+        status: 'unknown',
+        measurementFailure: { code: 'canonical-plan-placement-read-failed' },
+        changeSignal: {
+          event: 'goal:plan-placement:goal-1',
+          cancellationRef: 'goal:goal-1',
+        },
+      });
     } finally {
       warn.mockRestore();
     }
