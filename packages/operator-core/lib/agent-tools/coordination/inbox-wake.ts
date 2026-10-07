@@ -618,6 +618,8 @@ export interface IdleRecipientReport {
   dormantScheduled: DormantScheduledInfo[];
   /** Recipients not in the local roster (federated/remote) — advisory, NEVER
    *  reported as idle (invariant c). */
+  /** Not in the local roster is advisory and stays unknown even if the
+   *  separate liveness oracle positively reports a terminal session. */
   unknown: string[];
   /** True when a roster / await-store read failed and we degraded to report
    *  NOTHING (the send still succeeded — invariant c). `idle` is empty here. */
@@ -644,6 +646,8 @@ export interface IdleRecipientReport {
    * `sessionState: 'ended'` verdict. This is narrower than `idle`: callers
    * making routing decisions must use this positive classification only.
    */
+  /** A roster-unknown target is included only with a measured selfWake: none;
+   *  roster absence alone never establishes death. */
   confirmedDead?: string[];
 }
 
@@ -826,6 +830,42 @@ export async function reportIdleRecipients(
     } catch (e) {
       console.warn(
         `[inbox-wake] idle-probe liveness-oracle cross-check failed, treating candidates as plain idle: ${e instanceof Error ? e.message : e}`,
+      );
+    }
+  }
+
+  // A concrete recipient missing from the local roster stays unknown: roster
+  // absence alone cannot distinguish a federated target from a reaped session.
+  // Still consult the shared oracle in one batch so positive recorded-ended
+  // evidence can safely unblock consult recovery. Require a measured lack of
+  // self-wake too, because an active loop or standing event may resume the
+  // session even after its last recorded turn ended.
+  if (unknown.length > 0) {
+    try {
+      const { resolveSessionStates } = await import('./liveness-oracle');
+      const verdicts = await resolveSessionStates(
+        unknown.map((ownerId) => ({ ownerId })),
+        {
+          hydrateBatch: true,
+          psuHostPositiveAuthority: true,
+          selfWake: true,
+        },
+      );
+      for (const ownerId of unknown) {
+        const v = verdicts.get(ownerId);
+        if (
+          v?.sessionState === 'ended' &&
+          v.signalMissing !== true &&
+          v.confirmLiveness === false &&
+          v.selfWake === 'none'
+        ) {
+          confirmedDead.push(ownerId);
+        }
+      }
+    } catch (e) {
+      console.warn(
+        '[inbox-wake] unrostered liveness-oracle cross-check failed, retaining unknown status: ' +
+          (e instanceof Error ? e.message : e),
       );
     }
   }
