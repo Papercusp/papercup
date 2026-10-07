@@ -1,8 +1,20 @@
+import { spawn } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { afterAll, describe, expect, it } from 'vitest';
-import { FAIR_ARM_IDS, workspaceDirs } from './fair-comparison-cli';
+import { afterAll, describe, expect, it, vi } from 'vitest';
+import { buildArm, FAIR_ARM_IDS, workspaceDirs } from './fair-comparison-cli';
+
+// Transitive users can mock only their own subprocess seam. Importing the CLI's
+// helpers must not read/promisify the absent execFile before an actual CLI run.
+vi.mock('node:child_process', () => ({ spawn: vi.fn() }));
+// The engines have their own conformance suites. Isolate their subprocess graph
+// so a different engine's eager wrapper cannot hide this CLI import regression.
+vi.mock('./fair-comparison-arms', () => ({
+  createRgFairArm: vi.fn(() => ({ capabilities: { armId: 'rg' } })),
+}));
+vi.mock('./fair-comparison-engines', () => ({}));
+vi.mock('./fair-comparison-first-party', () => ({}));
 
 // P-017 (D-011..D-016): each arm's tree gets node_modules/<name> links built from the
 // root `workspaces`. workspaceDirs is the expansion; a pattern it cannot expand would
@@ -52,5 +64,12 @@ describe('workspaceDirs', () => {
 describe('FAIR_ARM_IDS', () => {
   it('names the eight arms the preregistration froze', () => {
     expect([...FAIR_ARM_IDS].sort()).toEqual(['codebase-memory', 'codegraph', 'codegraphcontext', 'gitnexus', 'lsp-query', 'no-third-party', 'rg', 'trace-mcp']);
+  });
+});
+
+describe('CLI import without execFile', () => {
+  it('constructs an arm without starting a subprocess under a narrow mock', async () => {
+    expect((await buildArm('rg')).capabilities.armId).toBe('rg');
+    expect(spawn).not.toHaveBeenCalled();
   });
 });
