@@ -14,8 +14,11 @@ import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BundleStaleness } from '../../bundle-staleness';
 import { EventEmitter } from 'node:events';
 import { readFileSync, readdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
+
+const foreignCoordinationDomain = join(tmpdir(), 'papercusp-release');
 
 vi.mock('../locks/identity', () => ({
   readIdentity: vi.fn(() => ({ ownerId: 'me', ownerLabel: 'Me', coordinationDomain: 'dom' })),
@@ -1442,6 +1445,9 @@ describe('dev:restart git-sync operation collision guard (WI-222053)', () => {
 
     // It got PAST the preflight — the refusal now comes from the barrier, not the proxy.
     expect(b.reason).not.toBe('git_sync_collision_operation_in_flight');
+    expect(b).toMatchObject({ ok: false, restarted: false, drained: false });
+    expect(b.note).toContain('git-sync barrier did not clear within the requested 45s wait');
+    expect(b.note).not.toContain('saturated');
     expect(gitSyncBarrierM).toHaveBeenCalled();
     expect(gitSyncBarrierM).toHaveBeenCalledWith(
       expect.anything(),
@@ -2921,6 +2927,40 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:dev (un
     expect(b.verifyWith).toMatch(/ownerVisible:true/);
     expect(b.verifyWith).toMatch(/different from 4242/);
     expect(b.verifyWith).not.toMatch(/systemctl --user show/);
+  });
+
+  it('returns a host-global cross-domain lease as a structured refusal with the holder domain', async () => {
+    guardM.mockResolvedValue({
+      acquired: false,
+      reason: 'held_in_other_domain',
+      holders: [
+        {
+          owner: 'legacy-holder',
+          owner_label: null,
+          mode: 'exclusive',
+          status: 'held',
+          coordination_domain: foreignCoordinationDomain,
+        },
+      ],
+    } as never);
+
+    const b = body(await call({ target: 'dev', confirm: true, authorize: true, reason: 'reload operator' }));
+
+    expect(b).toMatchObject({
+      ok: false,
+      target: 'dev',
+      reason: 'resource_held_in_other_domain',
+      resource: 'dev-server',
+      holders: [
+        {
+          owner: 'legacy-holder',
+          mode: 'exclusive',
+          status: 'held',
+          coordination_domain: foreignCoordinationDomain,
+        },
+      ],
+    });
+    expect(spawnM).not.toHaveBeenCalled();
   });
 
   it('never touches the cooldown machinery for dev', async () => {
