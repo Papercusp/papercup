@@ -3164,6 +3164,7 @@ describe('request-origin telemetry context', () => {
       superuserExtra('&workspace=ws-test&client=su-test&agent=codex&model=gpt-5&sig=secret-sig&exp=999', {
         authorization: 'Bearer test-su-bearer',
         'x-papercusp-client': 'su-header',
+        'x-papercusp-mcp-trace-id': 'e57ef6b3-46ef-4cc5-8214-fec83f2a463e',
         'user-agent': 'codex-cli-test',
         referer: 'http://127.0.0.1:3055/admin',
       }),
@@ -3173,6 +3174,7 @@ describe('request-origin telemetry context', () => {
     expect(origin).toMatchObject({
       transport: 'mcp',
       path: '/api/mcp',
+      mcpRequestTraceId: 'e57ef6b3-46ef-4cc5-8214-fec83f2a463e',
       query: {
         superuser: '1',
         workspace: 'ws-test',

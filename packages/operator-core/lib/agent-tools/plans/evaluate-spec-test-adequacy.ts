@@ -4,6 +4,7 @@ import { refineEvenWithShapeIssues } from '../_refine-with-shape-issues';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { resolveEffectiveHarnessSlug } from './_ctx-opts';
+import { getAcceptanceRubricsForPlan, getRetiredAcceptanceRubricsForPlan } from '../../rubrics';
 import { listSpecClauses } from './spec-clauses-store';
 import {
   evidenceCurrentInputKey,
@@ -12,7 +13,13 @@ import {
   evidenceCurrentInputSchema,
   type EvidenceCurrentInput,
 } from './spec-evidence-store';
-import { evaluateSpecTestAdequacy, latestLogicalEvidence, PLAN_CLASS_RUBRIC_REFS } from './spec-test-adequacy';
+import { resolvePersistedClassRef } from './plan-spec-quality-gate';
+import {
+  evaluateSpecTestAdequacy,
+  latestLogicalEvidence,
+  PLAN_CLASS_RUBRIC_REFS,
+  type PlanClassRubricRef,
+} from './spec-test-adequacy';
 import { getBuildInfo, type BuildInfo } from '../../build-info';
 import { fullBodyRef, isFullDetail, reviewReadDetailArg } from '../_review-read-detail';
 
@@ -62,6 +69,74 @@ function evaluatorBuildDiff(recorded: BuildInfo, live: BuildInfo): boolean {
   return recorded.sha !== live.sha || recorded.version !== live.version;
 }
 
+type EvaluatorClassResolution =
+  | {
+      ok: true;
+      classRef: PlanClassRubricRef;
+      source: 'active-acceptance-rubric' | 'retired-acceptance-rubric';
+    }
+  | { ok: false; code: string; message: string; wouldBlock: string[] };
+
+async function resolveEvaluatorClassRef(planSlug: string, harnessSlug: string): Promise<EvaluatorClassResolution> {
+  let rubrics: Awaited<ReturnType<typeof getAcceptanceRubricsForPlan>>;
+  try {
+    rubrics = await getAcceptanceRubricsForPlan(planSlug, { harnessSlug, strict: true });
+  } catch (error) {
+    return {
+      ok: false,
+      code: 'plan_class_read_unavailable',
+      wouldBlock: ['plan-class-read-unavailable'],
+      message:
+        "The acceptance-rubric class for plan '" + planSlug + "' could not be read (" +
+        (error instanceof Error ? error.message : String(error)) +
+        '). Refusing to grade until the authoritative class can be read.',
+    };
+  }
+
+  let source: EvaluatorClassResolution extends { ok: true; source: infer S } ? S : never =
+    'active-acceptance-rubric';
+  if (rubrics.length === 0) {
+    source = 'retired-acceptance-rubric';
+    try {
+      // On a shipped plan the acceptance contract retires with the plan. The rubric
+      // reader returns newest first; its first row is the class used for the ship.
+      rubrics = (await getRetiredAcceptanceRubricsForPlan(planSlug, { harnessSlug })).slice(0, 1);
+    } catch (error) {
+      return {
+        ok: false,
+        code: 'plan_class_read_unavailable',
+        wouldBlock: ['plan-class-read-unavailable'],
+        message:
+          "The retired acceptance-rubric class for plan '" + planSlug + "' could not be read (" +
+          (error instanceof Error ? error.message : String(error)) +
+          '). Refusing to grade until the authoritative class can be read.',
+      };
+    }
+  }
+
+  if (rubrics.length === 0) {
+    return {
+      ok: false,
+      code: 'plan_class_unresolved',
+      wouldBlock: ['plan-class-unresolved'],
+      message:
+        "No active or retired acceptance class could be resolved for plan '" + planSlug +
+        "'. A caller-supplied classRef cannot establish the plan's authoritative class.",
+    };
+  }
+
+  const resolution = resolvePersistedClassRef(planSlug, rubrics);
+  if (!resolution.ok) {
+    return {
+      ok: false,
+      code: resolution.code,
+      message: resolution.message,
+      wouldBlock: resolution.wouldBlock,
+    };
+  }
+  return { ok: true, classRef: resolution.classRef, source };
+}
+
 /**
  * Exported so a scorecard's `rerunRecipe.args` can be validated against the REAL
  * schema rather than a hand-copied list of field names. A recipe that its own
@@ -74,7 +149,7 @@ export const argsSchema = refineEvenWithShapeIssues(z.object({
   slug: z.string().min(1),
   classRef: z
     .enum(PLAN_CLASS_RUBRIC_REFS)
-    .describe('Existing plan-class standard rubric referenced by the plan acceptance rubric.'),
+    .describe('Plan-class standard rubric referenced by the plan acceptance rubric; must match the persisted plan class.'),
   /** Build identity recorded by a rerun recipe; used to surface evaluator drift. */
   evaluatorBuild: evaluatorBuildSchema.optional(),
   workItemIds: z.array(z.string().min(1)).min(1).max(500).optional(),
@@ -300,7 +375,7 @@ export default defineTool({
     'Grade each affected current spec revision as one row against the reusable spec-test-adequacy rubric. Resolves exact P-005 evidence bindings and returns a per-clause verdict table with every would-block reason; detail:"full" adds criterion evidence and scorecards:emit-compatible drafts. Read-only; it never files a verdict. evidenceRefs selects immutable evidence references; bindingIds pins a replay to the exact persisted binding rows, including when references repeat. When replaySnapshot is true, include both specRevision and specFingerprint from the same immutable clause revision. Always check ok and rows.length before indexing rows[0].',
   guidance: {
     returns:
-      'On success { ok, rows, count, verdicts, wouldBlock, includeDraft, excludedDraftCount, excludedDraftSpecIds, excludedClauses } with ok:true. Every successful result reports the lifecycle-filtered clauses and an explicit draft-exclusion count, including zero, so row counts do not imply that excluded drafts were evaluated. No call succeeds vacuously: when the plan has clauses but none is eligible — selector or not — the reply is ok:false with error:"selection_empty" rather than ok:true with zero rows. On evidence_selection_hit_limit the reply is ok:false with error, count, limit and remedy and NO rows field at all. The default detail:"summary" rows carry specId, specRevision, specFingerprint, verdict, wouldBlock and ratings[criterion].rating, plus a top-level fullBody ref (the exact re-call with detail:"full"); rows[].scorecardDraft and criterion evidence text exist only under detail:"full".',
+      'A caller classRef that disagrees with the plan acceptance class is refused with ok:false, no rows, and callerClassRef/declaredClassRef/classRefSource. On success { ok, rows, count, verdicts, wouldBlock, includeDraft, excludedDraftCount, excludedDraftSpecIds, excludedClauses } has ok:true; every successful result reports the resolved classRef and its source. Every successful result reports the lifecycle-filtered clauses and an explicit draft-exclusion count, including zero, so row counts do not imply that excluded drafts were evaluated. No call succeeds vacuously: when the plan has clauses but none is eligible — selector or not — the reply is ok:false with error:"selection_empty" rather than ok:true with zero rows. On evidence_selection_hit_limit the reply is ok:false with error, count, limit and remedy and NO rows field at all. The default detail:"summary" rows carry specId, specRevision, specFingerprint, verdict, wouldBlock and ratings[criterion].rating, plus a top-level fullBody ref (the exact re-call with detail:"full"); rows[].scorecardDraft and criterion evidence text exist only under detail:"full".',
     when: 'During implementation feedback or immediately before attempting work-item completion for spec-covered behavior.',
     notWhen: 'Authoring clauses — plans:set-specs. Binding proof — plans:bind-spec-evidence. Filing a returned draft — scorecards:emit. Indexing rows[0] without checking ok/rows.length first — an empty or error-shaped reply has no rows[0] to read.',
     chaining:
@@ -345,6 +420,43 @@ export default defineTool({
       recordedEvaluatorBuild && evaluatorBuildDiff(recordedEvaluatorBuild, liveEvaluatorBuild)
         ? { recorded: recordedEvaluatorBuild, live: liveEvaluatorBuild }
         : undefined;
+    const classResolution = await resolveEvaluatorClassRef(args.slug, harnessSlug);
+    if (!classResolution.ok) {
+      return {
+        data: {
+          ok: false,
+          error: classResolution.code,
+          evaluatorBuild: liveEvaluatorBuild,
+          ...(evaluatorBuildDrift ? { evaluatorBuildDrift } : {}),
+          slug: args.slug,
+          harnessSlug,
+          callerClassRef: args.classRef,
+          count: 0,
+          wouldBlock: classResolution.wouldBlock.map((code) => ({ code })),
+          remedy: classResolution.message,
+        },
+      };
+    }
+    const classRef = classResolution.classRef;
+    if (args.classRef !== classRef) {
+      return {
+        data: {
+          ok: false,
+          error: 'plan_class_mismatch',
+          evaluatorBuild: liveEvaluatorBuild,
+          ...(evaluatorBuildDrift ? { evaluatorBuildDrift } : {}),
+          slug: args.slug,
+          harnessSlug,
+          classRef,
+          declaredClassRef: classRef,
+          classRefSource: classResolution.source,
+          callerClassRef: args.classRef,
+          count: 0,
+          wouldBlock: [{ code: 'plan_class_mismatch', declaredClassRef: classRef, callerClassRef: args.classRef }],
+          remedy: 'Re-read the plan acceptance rubric and rerun with its persisted classRef. The caller value cannot override the plan class.',
+        },
+      };
+    }
     const current =
       args.current === undefined
         ? undefined
@@ -383,6 +495,9 @@ export default defineTool({
           error: 'evidence_selection_hit_limit',
           evaluatorBuild: liveEvaluatorBuild,
           ...(evaluatorBuildDrift ? { evaluatorBuildDrift } : {}),
+          classRef,
+          declaredClassRef: classRef,
+          classRefSource: classResolution.source,
           count: allEvidence.length,
           limit: evidenceLimit,
           remedy: 'Narrow workItemIds/specIds/evidenceRefs/bindingIds or raise limit; a capped evidence set cannot produce an adequacy verdict.',
@@ -434,7 +549,9 @@ export default defineTool({
           ...(evaluatorBuildDrift ? { evaluatorBuildDrift } : {}),
           slug: args.slug,
           harnessSlug,
-          classRef: args.classRef,
+          classRef,
+          declaredClassRef: classRef,
+          classRefSource: classResolution.source,
           count: 0,
           selectedEvidenceCount: 0,
           matchedClauseCount: 0,
@@ -495,7 +612,9 @@ export default defineTool({
           ...(evaluatorBuildDrift ? { evaluatorBuildDrift } : {}),
           slug: args.slug,
           harnessSlug,
-          classRef: args.classRef,
+          classRef,
+          declaredClassRef: classRef,
+          classRefSource: classResolution.source,
           count: 0,
           selectedEvidenceCount: allEvidence.length,
           matchedClauseCount: clauses.length,
@@ -520,7 +639,7 @@ export default defineTool({
       evaluateSpecTestAdequacy({
         clause,
         evidence: evaluationEvidence,
-        classRef: args.classRef,
+        classRef,
         harness: harnessSlug,
         current: (() => {
           const merged = new Map<string, EvidenceCurrentInput>();
@@ -599,7 +718,9 @@ export default defineTool({
         ...(evaluatorBuildDrift ? { evaluatorBuildDrift } : {}),
         slug: args.slug,
         harnessSlug,
-        classRef: args.classRef,
+        classRef,
+        declaredClassRef: classRef,
+        classRefSource: classResolution.source,
         rubricRef: 'spec-test-adequacy',
         governing,
         includeDraft: args.includeDraft === true,

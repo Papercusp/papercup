@@ -44,6 +44,7 @@ import type { OrgTestDb } from '../test/_org-test-db';
 import {
   REPORT_BODY_MAX_BYTES,
   ReportBodyTooLargeError,
+  ReportRequestConflictError,
   getReport,
   listReportLineage,
   listReports,
@@ -59,6 +60,7 @@ const reportMigration = join(
   here, '..', '..', '..', 'libs', 'papercusp', 'libs', 'db', 'sql', '1166-report-library.sql',
 );
 const snapshotMigration = join(dirname(reportMigration), '1353-report-library-goal-snapshot.sql');
+const requestKeyMigration = join(dirname(reportMigration), '1419-report-library-request-key.sql');
 
 // Keep the actual presence store, election and liveness oracle. Only route its
 // connection to this suite's disposable migrated database, like the store reads.
@@ -126,12 +128,51 @@ describe('report_library store (real PG)', () => {
     await db.adminSql.unsafe(readFileSync(reportMigration, 'utf8')).simple();
     // Exercise the draft before arming, and the armed production file afterward.
     await db.adminSql.unsafe(readFileSync(existsSync(snapshotMigration) ? snapshotMigration : `${snapshotMigration}.DRAFT`, 'utf8')).simple();
+    await db.adminSql.unsafe(readFileSync(existsSync(requestKeyMigration) ? requestKeyMigration : `${requestKeyMigration}.DRAFT`, 'utf8')).simple();
   }, 180_000);
 
   afterAll(async () => {
     oracleConnection?.release();
     await db?.cleanup();
     oracleDb.sql = null;
+  });
+
+  it('reuses one private report for concurrent retries and keeps original session provenance', async () => {
+    const workspaceId = nextWs();
+    const input = { workspaceId, title: 'Daily edition', bodyMd: 'exact findings', requestKey: 'run-2026-10-07' };
+    const results = await Promise.all(Array.from({ length: 4 }, (_, i) =>
+      publishReport(db.adminSql, input, { ...AGENT_1, authorSessionRef: `retry-${i}` })));
+    expect(new Set(results.map(r => r.reportId)).size).toBe(1);
+    expect(new Set(results.map(r => r.origin.authorSessionRef)).size).toBe(1);
+    expect(results[0].visibility).toBe('owner');
+    expect(results[0].requestKey).toBe(input.requestKey);
+    expect(await getReport(db.adminSql, workspaceId, results[0].reportId, { ownerId: 'unrelated-agent' })).toBeNull();
+  });
+
+  it('refuses changed content under one key without losing the saved edition', async () => {
+    const workspaceId = nextWs();
+    const input = { workspaceId, title: 'Audit', bodyMd: 'original', requestKey: 'run-1' };
+    const original = await publishReport(db.adminSql, input, AGENT_1);
+    for (const change of [{ bodyMd: 'changed' }, { visibility: 'workspace' as const }, { title: 'Changed title' }]) {
+      await expect(publishReport(db.adminSql, { ...input, ...change }, AGENT_1)).rejects.toBeInstanceOf(ReportRequestConflictError);
+    }
+    expect((await getReport(db.adminSql, workspaceId, original.reportId))?.bodyMd).toBe('original');
+    expect(await listReportLineage(db.adminSql, workspaceId, original.lineageId)).toHaveLength(1);
+  });
+
+  it('scopes retry keys to author and workspace and keeps dated editions out of correction lineage', async () => {
+    const workspaceId = nextWs();
+    const input = { workspaceId, title: 'Daily edition', requestKey: 'daily', tags: ['series:daily'] };
+    const first = await publishReport(db.adminSql, input, AGENT_1);
+    const peer = await publishReport(db.adminSql, input, { ...AGENT_1, authorOwnerId: 'peer' });
+    const otherWorkspace = await publishReport(db.adminSql, { ...input, workspaceId: nextWs() }, AGENT_1);
+    const nextEdition = await publishReport(db.adminSql, { ...input, requestKey: 'daily-next' }, AGENT_1);
+    expect(new Set([first, peer, otherWorkspace, nextEdition].map(r => r.reportId)).size).toBe(4);
+    expect(nextEdition.lineageId).toBe(nextEdition.reportId);
+    const correction = await publishReport(db.adminSql, { ...input, requestKey: 'daily-correction', supersedes: first.reportId }, AGENT_1);
+    const retry = await publishReport(db.adminSql, { ...input, requestKey: 'daily-correction', supersedes: first.reportId }, AGENT_1);
+    expect(retry.reportId).toBe(correction.reportId);
+    expect(correction.lineageId).toBe(first.lineageId);
   });
 
   async function deliveryFixture() {

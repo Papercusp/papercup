@@ -19,6 +19,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { runHybridSearch, isVectorOnly, type SearchSource, type Listing, type PgHandle } from '@papercusp/search';
 import { loadHarnessRegistry, resolveHarnessContentPath } from '../../harness-registry';
 import { engineeringAdapter } from './_engineering-adapter';
+import { searchPublicManual } from './_public-manual';
 import { assessDocsCoverage, docsCoverageNote } from './semantic-coverage';
 import {
   HARNESS_REQUIRED_DETAIL,
@@ -277,6 +278,7 @@ export function normalizeDocsSearchArgs(raw: unknown): unknown {
 const argsSchema = z.preprocess(
   normalizeDocsSearchArgs,
   z.object({
+    scope: z.literal('public').optional().describe('Read only the canonical public user manual and FAQ. Never accesses project or engineering docs; cannot combine with harness.'),
     query: z
       .string()
       .min(2)
@@ -326,7 +328,7 @@ export default defineTool({
   // ambient workspace transaction across that work pins org-app pool slots and lets a
   // search burst starve unrelated workspace calls at the 45s acquisition deadline.
   skipWorkspaceTx: true,
-  agentRoles: [...SU_ROLES, 'papercup-deep'],
+  agentRoles: [...SU_ROLES, 'papercup', 'papercup-deep'],
   modality: ['text'],
   rolesQuota: {
     worker: { perChunk: 8 },
@@ -346,6 +348,11 @@ export default defineTool({
     })
     .passthrough(),
   async handler(args, ctx) {
+    if (args.scope === 'public' || (ctx as { role?: string }).role === 'papercup') {
+      if (args.harness) return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'public_scope_conflict', surface: 'public' }) }], isError: true };
+      const result = await searchPublicManual({ query: args.query, limit: args.limit });
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result) }], ...('error' in result ? { isError: true } : {}) };
+    }
     const ctxAny = ctx as {
       harnessSlug?: string;
       isSuperuser?: boolean;

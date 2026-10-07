@@ -11,7 +11,7 @@ vi.mock('../../../operator-mcp-tools', () => ({
   INTERACTIVE_CHAT_TOOLS: ['mcp__agentmcp__chat:ask_choice'],
 }));
 
-import { buildConverseMcpMount, DELEGATE_DEEP_TOOL, selectConverseTools } from '../converse-toolset';
+import { buildConverseMcpMount, DELEGATE_DEEP_TOOL, PUBLIC_MANUAL_TOOLS, selectConverseTools } from '../converse-toolset';
 
 const doors = () => ['capability:read', 'capability:fetch', 'tasks:ops'];
 
@@ -28,6 +28,7 @@ describe('selectConverseTools', () => {
       'mcp__agentmcp__harness:status',
       'mcp__agentmcp__chat:ask_choice',
       DELEGATE_DEEP_TOOL,
+      ...PUBLIC_MANUAL_TOOLS,
     ]);
   });
 
@@ -39,6 +40,7 @@ describe('selectConverseTools', () => {
       'mcp__agentmcp__tasks:ops',
       'mcp__agentmcp__chat:ask_choice',
       DELEGATE_DEEP_TOOL,
+      ...PUBLIC_MANUAL_TOOLS,
     ]);
     expect(pub).not.toContain('mcp__agentmcp__harness:status');
     // The door list is only consulted on public trust.
@@ -59,6 +61,7 @@ describe('selectConverseTools', () => {
       'mcp__agentmcp__tasks:ops',
       'mcp__agentmcp__chat:ask_choice',
       DELEGATE_DEEP_TOOL,
+      ...PUBLIC_MANUAL_TOOLS,
     ]);
   });
 });

@@ -4,11 +4,11 @@
 # Edit the doc with docs:author { overwrite: true } — a hand-edit here is REFUSED by
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
-title: "Cloud first-agent lesson and troubleshooting runbook"
-description: "Prerequisites, costs, Help/replay, scoped resume, advisory voice/AI privacy and recovery for the hosted six-step first-agent lesson."
+title: "Product guide and Cloud first-agent lesson runbook"
+description: "Account-first full-product learning, source-backed billing, contextual Help, resume and Cloud first-agent practice and troubleshooting."
 type: Insight
 discovered: 2026-10-01
-tags: ["cloud", "onboarding", "runbook"]
+tags: ["cloud", "onboarding", "billing", "runbook"]
 status: active
 documents:
   - "packages/operator-core/lib/onboarding/cloud-tutorial-lesson.ts"
@@ -20,10 +20,37 @@ documents:
   - "apps/operator/lib/onboarding/use-cloud-tutorial-progress.ts"
   - "apps/operator/lib/onboarding/cloud-tutorial-assistance.tsx"
   - "apps/operator/lib/onboarding/cloud-tutorial-analytics.ts"
+  - "packages/operator-ui/src/onboarding/product-tutorial.tsx"
+  - "packages/operator-core/lib/onboarding/product-tutorial-lesson.ts"
+  - "packages/operator-core/lib/endpoint-route/routes/hosted-tutorial-progress.ts"
+  - "packages/operator-core/lib/auth/hosted/self-signup.ts"
 plans:
   - "cloud-app-live-tutorial-2026-10-01"
   - "cloud-portal-novice-independence-2026-10-03"
 ---
+
+## Account-first product guide (version 3)
+
+Newly admitted organization memberships start with **Welcome to Papercusp**, before Home or the first-workspace card. The guide can be read before choosing a workspace, without payment, provider credentials, AI or microphone access. Returning accounts retain their own enrollment and progress; signing in again does not restart completed lessons.
+
+The lessons cover navigation, workspaces, planning and approvals, agents and results, project knowledge, communications, operations, account preferences, billing, Cloud first-agent practice and contextual Help. **Find it in Papercusp** opens the maintained destination after saving a pause. Destinations that require a workspace explain that requirement. Other product permissions and integration availability still apply when a destination opens. Panel/search links use the existing explicit first-run deferral so an account without a workspace can reach the requested shell control.
+
+**Reviewed — next lesson** records that you read an explanation. It never completes a product task, sends a message, starts an agent, connects an integration, provisions compute or purchases a subscription. **Pause guide**, **Skip guide** and **Finish reading the guide** retain account-and-organization progress. **Resume product guide** or **Review product guide** reopens it. The paused guide keeps the current lesson's Help beside the product destination. Public Docs remain available as a fallback. If saving fails, **Retry saving choice** preserves the same mutation; if another tab changes the guide, review its current lesson before retrying. An expired session pauses changes and offers sign-in.
+
+### Billing and payment recovery
+
+Open **Understand the bills** in the guide or its contextual Help. Billing lists configured Papercusp offers and your organization's subscription status and renewal or cancellation date. Review the price, currency and terms in Stripe before confirming a purchase; the guide does not invent numeric prices or allowances. Visible **Test mode — no real charges** means sandbox subscriptions, which do not provision cloud resources.
+
+Papercusp subscriptions, model/provider usage and cloud resources are separate billing responsibilities. For bring your own cloud, the cloud provider bills your resources. Retained disks can keep charging after sessions end. Review provider billing for usage and spend; the Papercusp subscription status is not a cross-provider spend total. Selecting an account/model does not establish who pays its provider bill.
+
+Organization owners and billing admins use **Manage billing** to review payment methods, plan changes, invoices or cancellation in Stripe, and Billing supplies available per-payment receipts. Check the effective renewal/cancellation date before confirming. A failed payment directs you to update the payment method; an awaiting-confirmation checkout requires a subscription-status check before trying again. Unavailable billing or receipts have visible recovery guidance and Support; unavailable does not mean free. Reading this guide never starts checkout, cancellation or a charge.
+
+### Help and optional spoken questions
+
+Text Help describes the current lesson and remains usable without AI, speech or microphone access. The Cloud exercises below retain their own workspace-scoped Help and product observations. Tutorial spoken questions have separate explicit microphone consent and Stop/Cancel controls; chat voice settings never authorize guide capture. Keep secrets and private workspace content out of lesson questions. The hosted voice integration and exact served-artifact acceptance remain separate release checks; reading this document is not proof they shipped.
+
+The account guide's version 3 progress is scoped to organization and user, before workspace selection. Cloud lesson versions 1 and 2 keep their existing organization/user/workspace namespace and correlated completion evidence.
+
 
 The Cloud lesson is **Get your first agent running**, version 1 (`first-cloud-agent`). Open the hosted app's Cloud view. **Help → Get your first agent running** starts or replays it. The guide stays beside the real controls; **Show me** navigates to and focuses the current control. You explicitly connect, provision, launch and send the sample task.
 

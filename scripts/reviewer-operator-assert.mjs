@@ -7,6 +7,15 @@ import { fileURLToPath } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
 import { createConnection } from 'node:net';
 
+/** @typedef {Record<string, string | undefined>} ReviewerEnvironment */
+/**
+ * @typedef {{ qrPayload: { workspaceId: string, server: string, pairToken: string }, expiresAt: string }} PairingPayload
+ * @typedef {(url: string, options: RequestInit) => Promise<Response>} ReviewerFetch
+ * @typedef {(args: string[], input?: string) => string} NativeRunner
+ * @typedef {{ passedTests?: unknown, failedTests?: unknown, skippedTests?: unknown }} PairedSummary
+ */
+
+/** @param {ReviewerEnvironment} env */
 export function reviewerContext(env) {
   const workspaceId = env.PAPERCUSP_WORKSPACE_ID;
   if (env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1' ||
@@ -27,6 +36,10 @@ export function reviewerContext(env) {
     mintBody: JSON.stringify({ workspaceId }) };
 }
 
+/**
+ * @param {{ env: ReviewerEnvironment, fetchImpl?: ReviewerFetch, log?: (message: string) => void, now?: number }} options
+ * @returns {Promise<PairingPayload>}
+ */
 export async function runPairingControls({ env, fetchImpl = fetch, log = console.log, now = Date.now() }) {
   const ctx = reviewerContext(env);
   const request = async (label, origin, path, expected, body) => {
@@ -65,6 +78,7 @@ export async function runPairingControls({ env, fetchImpl = fetch, log = console
   return payload;
 }
 
+/** @param {{ env: ReviewerEnvironment, invoke: (name: string, args: Record<string, unknown>) => Promise<unknown> }} options */
 export async function seedReviewer({ env, invoke }) {
   reviewerContext(env); // Refuse ALL writes before constructing a tool call.
   const content = 'Sanitized demonstration content. No customer data or cloud-availability claim.';
@@ -82,6 +96,7 @@ export async function seedReviewer({ env, invoke }) {
   for (const [name, args] of calls) await invoke(name, args);
 }
 
+/** @param {{ env: ReviewerEnvironment, fetchImpl?: ReviewerFetch, log?: (message: string) => void }} options */
 export async function verifyReviewerReadback({ env, fetchImpl = fetch, log = console.log }) {
   const ctx = reviewerContext(env);
   const request = async (label, origin, path, options = {}) => {
@@ -162,6 +177,7 @@ function ghChecked(args, input) {
   return child.stdout;
 }
 
+/** @param {ReviewerEnvironment} env @param {NativeRunner} [run] */
 export function nativeCapturePreflight(env, run = ghChecked) {
   if (!env.REVIEWER_MOBILE_REF || !/^[a-f0-9]{40}$/.test(env.REVIEWER_MOBILE_SHA ?? '')) {
     throw new Error('Native capture requires an explicit mobile ref and exact candidate SHA');
@@ -176,6 +192,7 @@ export function nativeCapturePreflight(env, run = ghChecked) {
   return sha;
 }
 
+/** @param {PairedSummary | null | undefined} summary */
 export function validatePairedSummary(summary) {
   if (summary?.passedTests !== 1 || summary?.failedTests !== 0 || summary?.skippedTests !== 0) {
     throw new Error('Paired native evidence requires one pass, zero failures and zero skips');
@@ -196,6 +213,9 @@ function readPairedSummary(root) {
   return JSON.parse(readFileSync(found[0], 'utf8'));
 }
 
+/**
+ * @param {{ env: ReviewerEnvironment, payload: PairingPayload, run?: NativeRunner, readSummary?: (root: string) => PairedSummary, now?: () => number, delay?: (ms: number) => Promise<unknown> }} options
+ */
 export async function captureNative({ env, payload, run = ghChecked, readSummary = readPairedSummary,
   now = () => Date.now(), delay = ms => new Promise(ok => setTimeout(ok, ms)) }) {
   const ctx = reviewerContext(env);

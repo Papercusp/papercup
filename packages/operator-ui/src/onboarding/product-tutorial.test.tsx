@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom */
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { AccountProductTutorial, validProductTutorialRecord, type ProductTutorialAccount } from './product-tutorial';
+import { AccountProductTutorial, productTutorialDestination, validProductTutorialRecord, type ProductTutorialAccount } from './product-tutorial';
 
 const account: ProductTutorialAccount = { tenantId: 'org', userId: 'user', sessionId: 'session', workspaceId: null };
 const record = (patch: Record<string, unknown> = {}) => ({ scope: { tenantId: account.tenantId, userId: account.userId }, version: 3,
@@ -9,6 +9,29 @@ const record = (patch: Record<string, unknown> = {}) => ({ scope: { tenantId: ac
 const response = (value: unknown, status = 200) => Response.json({ record: value }, { status });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 describe('account product guide entry', () => {
+  it('preserves shell panel/search targets through the explicit pre-workspace entry seam', async () => {
+    const fetcher = vi.fn().mockResolvedValue(response(record({ currentLessonId: 'navigation' })));
+    vi.stubGlobal('fetch', fetcher);
+    render(<AccountProductTutorial account={account}><p>Home</p></AccountProductTutorial>);
+    const launcher = await screen.findByRole('link', { name: 'Open launcher' });
+    const params = new URL(launcher.getAttribute('href')!, 'https://portal.example').searchParams;
+    expect(params.get('panel')).toBe('launcher');
+    expect(params.get('firstRun')).toBe('deferred');
+    expect(new URL(productTutorialDestination('/?q=plans', null), 'https://portal.example').searchParams.get('q')).toBe('plans');
+    expect(productTutorialDestination('/billing', null)).toBe('/billing');
+    expect(productTutorialDestination('/?panel=account', 'selected')).toBe('/?panel=account');
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+  it('keeps the paused lesson Help available beside the real product destination without a mutation', async () => {
+    const fetcher = vi.fn().mockResolvedValue(response(record({ currentLessonId: 'billing', disposition: 'paused' })));
+    vi.stubGlobal('fetch', fetcher);
+    render(<AccountProductTutorial account={account}><p>Billing destination</p></AccountProductTutorial>);
+    await screen.findByText('Billing destination');
+    fireEvent.click(screen.getByText('Help with Understand the bills'));
+    expect(screen.getByText(/Papercusp subscription, model\/provider usage/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Resume product guide' })).toBeTruthy();
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
   it.each([null, 'preassigned'])('shows the enrolled guide before workspace first-run/Home with workspace=%s', async workspaceId => {
     const fetcher = vi.fn().mockResolvedValue(response(record())); vi.stubGlobal('fetch', fetcher);
     let mountedDestination = false;

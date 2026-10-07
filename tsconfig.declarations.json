@@ -416,6 +416,8 @@
     "scripts/workspace-test.mjs",
     // WI-10005888: apps/operator/lib/public-docs-readiness.test.ts imports the public
     // manual's source contract.
-    "apps/papercusp-docs/scripts/source-contract.mjs"
+    "apps/papercusp-docs/scripts/source-contract.mjs",
+    // WI-10007180: imported by the isolated reviewer fixture's TypeScript tests.
+    "scripts/reviewer-operator-assert.mjs"
   ]
 }

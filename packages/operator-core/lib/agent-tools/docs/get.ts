@@ -18,6 +18,7 @@ import {
   type HarnessScope,
 } from '../_harness-scope';
 import { coerceDocsGetSlugs, normalizeDocsGetRef, normalizeEngineeringDocsGetRef } from './get-coerce';
+import { getPublicManual } from './_public-manual';
 
 /**
  * Prefix every rendered body with the agent-readable `# title` + `URL:` header.
@@ -134,6 +135,7 @@ const argsSchema = z.preprocess(
   coerceDocsGetSlugs,
   z
     .object({
+      scope: z.literal('public').optional().describe('Read only the canonical public user manual and FAQ, using slugs returned by public docs:search. Cannot combine with harness or canonical source reads.'),
       slugs: z
         .array(z.string().min(1))
         .min(1)
@@ -224,7 +226,7 @@ export default defineTool({
   // grading runbook). Without it a judge must rate unknown, and the ship gate
   // then refuses for want of a pass-equivalent independent rating. Read-only;
   // paired with the judge's `docs:read` principal cap.
-  agentRoles: [...SU_ROLES, 'papercup-deep', 'release-fixer', 'judge'],
+  agentRoles: [...SU_ROLES, 'papercup', 'papercup-deep', 'release-fixer', 'judge'],
   modality: ['text'],
   rolesQuota: {
     worker: { perChunk: 10 },
@@ -232,6 +234,11 @@ export default defineTool({
   },
   args: argsSchema,
   async handler(args, ctx) {
+    if (args.scope === 'public' || (ctx as { role?: string }).role === 'papercup') {
+      if (args.harness) return { content: [{ type: 'text' as const, text: JSON.stringify({ error: 'public_scope_conflict', surface: 'public' }) }], isError: true };
+      const result = await getPublicManual(args);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(result) }], ...('error' in result ? { isError: true } : {}) };
+    }
     const ctxAny = ctx as {
       harnessSlug?: string;
       isSuperuser?: boolean;

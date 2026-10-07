@@ -11,6 +11,10 @@ import {
 } from '@papercusp/agent-mcp';
 
 const harnessRoot = vi.hoisted(() => ({ path: '' }));
+const acceptanceRubricMocks = vi.hoisted(() => ({
+  active: vi.fn(),
+  retired: vi.fn(),
+}));
 
 vi.mock('../../harness-registry', () => ({
   loadHarnessRegistry: async () => ({
@@ -35,6 +39,11 @@ vi.mock('./spec-evidence-store', async (original) => ({
   ...(await original<typeof import('./spec-evidence-store')>()),
   listSpecEvidence: vi.fn(),
 }));
+vi.mock('../../rubrics', async (original) => ({
+  ...(await original<typeof import('../../rubrics')>()),
+  getAcceptanceRubricsForPlan: acceptanceRubricMocks.active,
+  getRetiredAcceptanceRubricsForPlan: acceptanceRubricMocks.retired,
+}));
 vi.mock('../../build-info', () => ({
   getBuildInfo: vi.fn(() => ({ sha: 'live-evaluator-sha', version: '1.2.3' })),
 }));
@@ -43,9 +52,12 @@ import tool from './evaluate-spec-test-adequacy';
 import { replaySpecTestAdequacyForHistoricalAudit } from './evaluate-spec-test-adequacy';
 import { listSpecClauses } from './spec-clauses-store';
 import { listSpecEvidence } from './spec-evidence-store';
+import { getAcceptanceRubricsForPlan, getRetiredAcceptanceRubricsForPlan } from '../../rubrics';
 
 const listClauses = vi.mocked(listSpecClauses);
 const listEvidence = vi.mocked(listSpecEvidence);
+const listAcceptanceRubrics = vi.mocked(getAcceptanceRubricsForPlan);
+const listRetiredAcceptanceRubrics = vi.mocked(getRetiredAcceptanceRubricsForPlan);
 
 type ToolOutput = { data: Record<string, any> };
 
@@ -99,9 +111,105 @@ beforeEach(() => {
   vi.clearAllMocks();
   listEvidence.mockResolvedValue([{ specId: 'SPEC-001' } as never]);
   listClauses.mockResolvedValue([clause()]);
+  listAcceptanceRubrics.mockResolvedValue([
+    { rubricId: 'plan-a-acceptance', classRef: 'plan-class-feature-ship' } as never,
+  ]);
+  listRetiredAcceptanceRubrics.mockResolvedValue([]);
 });
 
 describe('plans:evaluate-spec-test-adequacy handler', () => {
+  it('refuses a caller class that disagrees with the active acceptance rubric before grading', async () => {
+    listAcceptanceRubrics.mockResolvedValue([
+      { rubricId: 'plan-a-acceptance', classRef: 'plan-class-bugfix' } as never,
+    ]);
+
+    const result = await call({
+      harness: 'papercusp',
+      slug: 'plan-a',
+      classRef: 'plan-class-investigation',
+      specIds: ['SPEC-001'],
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: 'plan_class_mismatch',
+      classRef: 'plan-class-bugfix',
+      declaredClassRef: 'plan-class-bugfix',
+      callerClassRef: 'plan-class-investigation',
+      classRefSource: 'active-acceptance-rubric',
+      count: 0,
+      wouldBlock: [{ code: 'plan_class_mismatch' }],
+    });
+    expect(listEvidence).not.toHaveBeenCalled();
+    expect(listClauses).not.toHaveBeenCalled();
+  });
+
+  it('uses the latest retired acceptance class for a shipped plan', async () => {
+    listAcceptanceRubrics.mockResolvedValue([]);
+    listRetiredAcceptanceRubrics.mockResolvedValue([
+      { rubricId: 'latest-acceptance', classRef: 'plan-class-bugfix' } as never,
+      { rubricId: 'older-acceptance', classRef: 'plan-class-feature-ship' } as never,
+    ]);
+
+    const result = await call({
+      harness: 'papercusp',
+      slug: 'plan-a',
+      classRef: 'plan-class-bugfix',
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: 'selection_empty',
+      classRef: 'plan-class-bugfix',
+      declaredClassRef: 'plan-class-bugfix',
+      classRefSource: 'retired-acceptance-rubric',
+    });
+    expect(listRetiredAcceptanceRubrics).toHaveBeenCalledWith('plan-a', { harnessSlug: 'papercusp' });
+  });
+
+  it('fails closed when no active or retired acceptance class can be resolved', async () => {
+    listAcceptanceRubrics.mockResolvedValue([]);
+    listRetiredAcceptanceRubrics.mockResolvedValue([]);
+
+    const result = await call({
+      harness: 'papercusp',
+      slug: 'plan-a',
+      classRef: 'plan-class-feature-ship',
+      specIds: ['SPEC-001'],
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: 'plan_class_unresolved',
+      callerClassRef: 'plan-class-feature-ship',
+      count: 0,
+      wouldBlock: [{ code: 'plan-class-unresolved' }],
+    });
+    expect(listEvidence).not.toHaveBeenCalled();
+    expect(listClauses).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the active acceptance class read is unavailable', async () => {
+    listAcceptanceRubrics.mockRejectedValue(new Error('rubric store unavailable'));
+
+    const result = await call({
+      harness: 'papercusp',
+      slug: 'plan-a',
+      classRef: 'plan-class-feature-ship',
+      specIds: ['SPEC-001'],
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: 'plan_class_read_unavailable',
+      callerClassRef: 'plan-class-feature-ship',
+      count: 0,
+      wouldBlock: [{ code: 'plan-class-read-unavailable' }],
+    });
+    expect(listRetiredAcceptanceRubrics).not.toHaveBeenCalled();
+    expect(listEvidence).not.toHaveBeenCalled();
+  });
+
   it('replays only the legacy supersession cohort as of card creation and leaves unavailable freshness unknown', async () => {
     const auditAsOf = new Date('2026-10-02T00:14:36.135Z');
     const historicalBinding: Awaited<ReturnType<typeof listSpecEvidence>>[number] = {

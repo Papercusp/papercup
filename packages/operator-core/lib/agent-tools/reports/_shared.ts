@@ -24,6 +24,7 @@ import {
   REPORT_SUBJECT_KINDS,
   REPORT_VISIBILITIES,
   ReportBodyTooLargeError,
+  ReportRequestConflictError,
   reportBodySha256,
   type ReportOrigin,
   type ReportRecord,
@@ -215,6 +216,7 @@ export function reportUiPath(reportId: string): string {
  */
 export const zReportWire = z.object({
   report_id: z.string(),
+  request_key: z.string().nullable(),
   workspace_id: z.string(),
   title: z.string(),
   summary: z.string(),
@@ -246,6 +248,7 @@ export const zReportWire = z.object({
 export function toReportWire(report: ReportRecord): z.infer<typeof zReportWire> {
   return {
     report_id: report.reportId,
+    request_key: report.requestKey ?? null,
     workspace_id: report.workspaceId,
     title: report.title,
     summary: report.summary,
@@ -299,6 +302,7 @@ export interface ReportRefusal {
  * knows how much to cut, instead of being silently truncated.
  */
 export function toRefusal(err: unknown): ReportRefusal {
+  if (err instanceof ReportRequestConflictError) return { ok: false, error: 'request_key_conflict', message: err.message };
   if (err instanceof ReportBodyTooLargeError) {
     return {
       ok: false,

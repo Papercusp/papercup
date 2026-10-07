@@ -96,6 +96,8 @@ export interface ReportOrigin {
 
 export interface PublishReportInput {
   workspaceId: string;
+  /** Retry identity scoped to workspace and server-stamped author. */
+  requestKey?: string;
   title: string;
   summary?: string;
   bodyMd?: string;
@@ -113,6 +115,7 @@ export interface PublishReportInput {
 
 export interface ReportRecord {
   workspaceId: string;
+  requestKey?: string | null;
   reportId: string;
   title: string;
   summary: string;
@@ -161,8 +164,16 @@ export class ReportBodyTooLargeError extends Error {
   }
 }
 
+export class ReportRequestConflictError extends Error {
+  constructor(readonly requestKey: string) {
+    super(`report request_key ${JSON.stringify(requestKey)} already names different content; use a new key for a new edition`);
+    this.name = 'ReportRequestConflictError';
+  }
+}
+
 interface DbRow {
   workspace_id: string;
+  request_key: string | null;
   report_id: string;
   title: string;
   summary: string;
@@ -191,6 +202,7 @@ const toIso = (value: Date | string): string =>
 function mapRow(row: DbRow): ReportRecord {
   return {
     workspaceId: row.workspace_id,
+    requestKey: row.request_key ?? null,
     reportId: row.report_id,
     title: row.title,
     summary: row.summary ?? '',
@@ -225,7 +237,7 @@ const SELECT_COLS = `
   subject_kind, subject_ref, subject_label,
   origin_harness_slug, author_owner_id, author_session_ref,
   visibility, supersedes_report_id, lineage_id, source, tags,
-  published_at, updated_at, retired_at, goal_owner_report`;
+  published_at, updated_at, retired_at, goal_owner_report, request_key`;
 
 /** SHA-256 of the exact persisted UTF-8 body; no trimming or normalization. */
 export const reportBodySha256 = (bodyMd: string): string =>
@@ -321,40 +333,63 @@ export async function publishReport(
   const visibility = requireOneOf(input.visibility, REPORT_VISIBILITIES, 'owner', 'visibility');
   const subject = normalizeSubject(snapshot ? { ...input.subject, kind: 'goal', ref: snapshot.goalId } : input.subject);
 
-  const reportId = `rpt_${randomUUID()}`;
-  let lineageId = reportId;
-  let supersedes: string | null = null;
-
   const supersedesId = input.supersedes?.trim() || null;
-  if (supersedesId) {
-    const [prev] = await sql<{ report_id: string; lineage_id: string }[]>`
-      SELECT report_id, lineage_id
-        FROM harness_shared.report_library
-       WHERE workspace_id = ${input.workspaceId} AND report_id = ${supersedesId}`;
-    if (!prev) {
-      throw new Error(
-        `cannot supersede ${JSON.stringify(supersedesId)}: no such report in workspace ${input.workspaceId}`,
-      );
-    }
-    lineageId = prev.lineage_id;
-    supersedes = prev.report_id;
+  const requestKey = input.requestKey === undefined ? null : input.requestKey.trim();
+  if (requestKey !== null && (!requestKey || requestKey.length > 200)) {
+    throw new Error('invalid report request_key: expected 1–200 characters');
   }
-
-  const [row] = await sql<DbRow[]>`
-    INSERT INTO harness_shared.report_library (
-      workspace_id, report_id, title, summary, body_md, kind,
-      subject_kind, subject_ref, subject_label,
-      origin_harness_slug, author_owner_id, author_session_ref,
-      visibility, supersedes_report_id, lineage_id, source, tags, goal_owner_report
-    ) VALUES (
-      ${input.workspaceId}, ${reportId}, ${title}, ${input.summary?.trim() ?? ''}, ${bodyMd}, ${kind},
-      ${subject.kind}, ${subject.ref}, ${subject.label},
-      ${origin.harnessSlug ?? null}, ${origin.authorOwnerId ?? null}, ${origin.authorSessionRef ?? null},
-      ${visibility}, ${supersedes}, ${lineageId}, ${input.source ?? 'agent'}, ${input.tags ?? []}::text[],
-      ${snapshot === null ? null : sql.json(snapshot as unknown as postgres.JSONValue)}
-    )
-    RETURNING ${sql.unsafe(SELECT_COLS)}`;
-  return mapRow(row);
+  const contentIdentity = (r: ReportRecord) => JSON.stringify([
+    r.title, r.summary, r.bodyMd, r.kind, r.visibility, r.subject,
+    r.supersedesReportId, r.source, [...r.tags].sort(), r.goalOwnerReport,
+    r.origin.harnessSlug,
+  ]);
+  async function write(connection: postgres.Sql): Promise<ReportRecord> {
+    if (requestKey !== null) {
+      // Serialize check+insert before inspecting the key. The unique index also
+      // guards writers outside this function; a retry never becomes a new row.
+      const namespace = JSON.stringify([input.workspaceId, origin.authorOwnerId ?? '', requestKey]);
+      await connection`SELECT pg_advisory_xact_lock(hashtextextended(${namespace}, 0))`;
+      const [existing] = await connection<DbRow[]>`
+        SELECT ${connection.unsafe(SELECT_COLS)} FROM harness_shared.report_library
+        WHERE workspace_id = ${input.workspaceId}
+          AND COALESCE(author_owner_id, '') = ${origin.authorOwnerId ?? ''}
+          AND request_key = ${requestKey}`;
+      if (existing) {
+        const saved = mapRow(existing);
+        const expected = { ...saved, title, summary: input.summary?.trim() ?? '', bodyMd, kind, visibility,
+          subject, supersedesReportId: supersedesId, source: input.source ?? 'agent', tags: input.tags ?? [],
+          goalOwnerReport: snapshot, origin: { ...saved.origin, harnessSlug: origin.harnessSlug ?? null } };
+        if (contentIdentity(saved) !== contentIdentity(expected)) throw new ReportRequestConflictError(requestKey);
+        return saved;
+      }
+    }
+    const reportId = `rpt_${randomUUID()}`;
+    let lineageId = reportId;
+    if (supersedesId) {
+      const [prev] = await connection<{ report_id: string; lineage_id: string }[]>`
+        SELECT report_id, lineage_id FROM harness_shared.report_library
+        WHERE workspace_id = ${input.workspaceId} AND report_id = ${supersedesId}`;
+      if (!prev) throw new Error(`cannot supersede ${JSON.stringify(supersedesId)}: no such report in workspace ${input.workspaceId}`);
+      lineageId = prev.lineage_id;
+    }
+    const [row] = await connection<DbRow[]>`
+      INSERT INTO harness_shared.report_library (
+        workspace_id, report_id, title, summary, body_md, kind,
+        subject_kind, subject_ref, subject_label,
+        origin_harness_slug, author_owner_id, author_session_ref,
+        visibility, supersedes_report_id, lineage_id, source, tags, goal_owner_report, request_key
+      ) VALUES (
+        ${input.workspaceId}, ${reportId}, ${title}, ${input.summary?.trim() ?? ''}, ${bodyMd}, ${kind},
+        ${subject.kind}, ${subject.ref}, ${subject.label},
+        ${origin.harnessSlug ?? null}, ${origin.authorOwnerId ?? null}, ${origin.authorSessionRef ?? null},
+        ${visibility}, ${supersedesId}, ${lineageId}, ${input.source ?? 'agent'}, ${input.tags ?? []}::text[],
+        ${snapshot === null ? null : connection.json(snapshot as unknown as postgres.JSONValue)}, ${requestKey}
+      ) RETURNING ${connection.unsafe(SELECT_COLS)}`;
+    return mapRow(row);
+  }
+  // Unkeyed publication keeps its existing contract: each call is a new edition.
+  if (requestKey === null) return write(sql);
+  return await sql.begin(tx => write(tx as unknown as postgres.Sql)) as unknown as ReportRecord;
 }
 
 /**

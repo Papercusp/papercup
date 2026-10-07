@@ -35,6 +35,8 @@ export const AGENT_MCP_TOOL_PREFIX = 'mcp__agentmcp__';
 
 /** The deep-delegation lane as the brain's allowed-tools name. */
 export const DELEGATE_DEEP_TOOL = `${AGENT_MCP_TOOL_PREFIX}voice:delegate_deep`;
+/** Both Papercup brains use the same read-only public-manual scope on docs tools. */
+export const PUBLIC_MANUAL_TOOLS = ['docs:search', 'docs:get'].map((name) => `${AGENT_MCP_TOOL_PREFIX}${name}`);
 
 /** Roles whose toolset carries the deep-delegation tool. */
 const DEEP_DELEGATING_ROLES: ReadonlySet<string> = new Set(['papercup']);
@@ -64,11 +66,12 @@ function dedupe(names: readonly string[]): readonly string[] {
  */
 export function selectConverseTools(input: SelectConverseToolsInput): readonly string[] {
   const deep = DEEP_DELEGATING_ROLES.has(input.role) ? [DELEGATE_DEEP_TOOL] : [];
+  const manual = input.role === 'papercup' || input.role === 'papercup-deep' ? PUBLIC_MANUAL_TOOLS : [];
   if (input.hostTrust === 'owner' && !input.agentRunsAsCustomer) {
-    return dedupe([...ALL_AGENT_MCP_TOOLS, ...deep]);
+    return dedupe([...ALL_AGENT_MCP_TOOLS, ...deep, ...manual]);
   }
   const doors = input.publicDoorNames().map(toAllowedToolName);
-  return dedupe([...doors, ...INTERACTIVE_CHAT_TOOLS, ...deep]);
+  return dedupe([...doors, ...INTERACTIVE_CHAT_TOOLS, ...deep, ...manual]);
 }
 
 export interface ConverseMcpMountInput {
