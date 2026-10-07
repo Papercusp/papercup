@@ -27,7 +27,7 @@ async function json(url: string, body?: unknown) {
 async function nativeBody(url: string, expected: string) {
   const config = { tauriPID: profile.tauriPID };
   const navigation = await bridgeEval(config, `location.assign(${JSON.stringify(url)}); true`);
-  expect(navigation.ok).toBe(true);
+  expect(navigation.ok, navigation.ok ? undefined : `${navigation.code}: ${navigation.error}`).toBe(true);
   await expect.poll(async () => {
     const observed = await bridgeEval<string>(config, 'JSON.stringify({href:location.href,text:document.body.innerText})');
     if (!observed.ok) return false;
@@ -37,7 +37,7 @@ async function nativeBody(url: string, expected: string) {
 }
 
 describe.skipIf(!profilePath)('accepted app operations on an explicitly selected live host', () => {
-  beforeAll(() => {
+  beforeAll(async () => {
     // test:file executes from this package; profile coordinates are repo-relative.
     profile = JSON.parse(readFileSync(new URL(profilePath!, new URL('../../../../', import.meta.url)), 'utf8'));
     expect(profile.tauriPID).toBeGreaterThan(0);
@@ -48,6 +48,10 @@ describe.skipIf(!profilePath)('accepted app operations on an explicitly selected
     }
     expect(profile.phone.booking.requestKey).toMatch(/^p010-restart-/);
     expect(profile.calendar.eventId).toMatch(/^p010-restart-/);
+    // A live native process is insufficient: its authenticated bridge must
+    // be discoverable before replaying any of the owned app requests.
+    const bridge = await bridgeEval({ tauriPID: profile.tauriPID }, 'true');
+    expect(bridge.ok, bridge.ok ? undefined : `${bridge.code}: ${bridge.error}`).toBe(true);
   });
 
   it('Email preserves its accepted task on replay and shows the actual ready proposal in Tauri', async () => {
