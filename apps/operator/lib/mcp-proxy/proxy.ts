@@ -1586,6 +1586,117 @@ export function retryAfterMs(
   return Math.max(0, Math.min(ms, maxMs));
 }
 
+const MCP_ADMISSION_REASON_ALLOWLIST = new Set([
+  "loop_pressure_critical",
+  "operator_admission_capacity",
+]);
+export const MAX_MCP_ADMISSION_REASON_BODY_BYTES = 4 * 1024;
+const MCP_ADMISSION_REASON_READ_BUDGET_MS = 50;
+
+function parseMcpAdmissionReason(body: Buffer): string | undefined {
+  if (body.byteLength > MAX_MCP_ADMISSION_REASON_BODY_BYTES) return undefined;
+  try {
+    const parsed = JSON.parse(body.toString("utf8")) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+      return undefined;
+    const error = (parsed as { error?: unknown }).error;
+    if (!error || typeof error !== "object" || Array.isArray(error))
+      return undefined;
+    const data = (error as { data?: unknown }).data;
+    if (!data || typeof data !== "object" || Array.isArray(data))
+      return undefined;
+    const reason = (data as { reason?: unknown }).reason;
+    return typeof reason === "string" && MCP_ADMISSION_REASON_ALLOWLIST.has(reason)
+      ? reason
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Read only the small JSON-RPC admission envelope; always drain the rest without retaining it. */
+function readMcpAdmissionReason(
+  response: http.IncomingMessage,
+): Promise<string | undefined> {
+  const contentLength = response.headers["content-length"];
+  const declaredBytes = Number(
+    Array.isArray(contentLength) ? contentLength[0] : contentLength,
+  );
+  if (
+    Number.isFinite(declaredBytes) &&
+    declaredBytes > MAX_MCP_ADMISSION_REASON_BODY_BYTES
+  ) {
+    response.resume();
+    return Promise.resolve(undefined);
+  }
+
+  return new Promise((resolve) => {
+    const chunks: Buffer[] = [];
+    let bytes = 0;
+    let settled = false;
+    let cleaned = false;
+    let timer: NodeJS.Timeout | undefined;
+    const finish = (reason?: string): void => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      resolve(reason);
+    };
+    const cleanup = (): void => {
+      if (cleaned) return;
+      cleaned = true;
+      if (timer) clearTimeout(timer);
+      response.off("data", onData);
+      response.off("end", onEnd);
+      response.off("aborted", onAborted);
+      response.off("error", onError);
+      response.off("close", onClose);
+    };
+    const stopBufferingAndDrain = (): void => {
+      chunks.length = 0;
+      response.off("data", onData);
+      response.resume();
+    };
+    const onData = (chunk: Buffer): void => {
+      if (settled) return;
+      const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      if (bytes + data.byteLength > MAX_MCP_ADMISSION_REASON_BODY_BYTES) {
+        finish();
+        stopBufferingAndDrain();
+        return;
+      }
+      chunks.push(data);
+      bytes += data.byteLength;
+    };
+    const onEnd = (): void => {
+      if (!settled) finish(parseMcpAdmissionReason(Buffer.concat(chunks, bytes)));
+      cleanup();
+    };
+    const onAborted = (): void => {
+      finish();
+      cleanup();
+    };
+    const onError = (): void => {
+      finish();
+      cleanup();
+    };
+    const onClose = (): void => {
+      finish();
+      cleanup();
+    };
+
+    response.on("data", onData);
+    response.once("end", onEnd);
+    response.once("aborted", onAborted);
+    response.once("error", onError);
+    response.once("close", onClose);
+    timer = setTimeout(() => {
+      finish();
+      stopBufferingAndDrain();
+    }, MCP_ADMISSION_REASON_READ_BUDGET_MS);
+  });
+}
+
 /**
  * Estimate a bounded Retry-After hint from the proxy's observed forward completion cadence.
  * `currentInFlight - admissionCeiling + 1` is the number of completions needed before a new
@@ -4894,11 +5005,14 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                   backoff,
                   MAX_BACKPRESSURE_WAIT_MS,
                 );
-                ures.resume(); // discard the shed/boot-window body so the (keepAlive:false) socket is released
+                const absorbed429 = isBackpressureStatus(status);
+                const admissionReason = absorbed429
+                  ? await readMcpAdmissionReason(ures)
+                  : undefined;
+                if (!absorbed429)
+                  ures.resume(); // discard the boot-window body so its socket is released
                 record({
-                  kind: isBackpressureStatus(status)
-                    ? "absorb_429"
-                    : "absorb_boot_status",
+                  kind: absorbed429 ? "absorb_429" : "absorb_boot_status",
                   method: req.method,
                   path: req.url,
                   status,
@@ -4906,6 +5020,12 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                   backpressureRetries,
                   waitMs,
                   elapsedMs: elapsed,
+                  ...(absorbed429
+                    ? {
+                        traceId,
+                        ...(admissionReason ? { reason: admissionReason } : {}),
+                      }
+                    : {}),
                 });
                 await new Promise((r) => setTimeout(r, waitMs));
                 continue;

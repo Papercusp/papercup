@@ -59,6 +59,7 @@ import {
   stripClientConnectionHeader,
   MCP_PROXY_TRACE_HEADER,
   MAX_MCP_PROXY_TRACE_ID_CHARS,
+  MAX_MCP_ADMISSION_REASON_BODY_BYTES,
   MCP_PROXY_DATA_PLANE_DEGRADED_AT_HEADER,
   DEFAULT_DATA_PLANE_WARNING_WINDOW_MS,
   withDataPlaneDegradedHeader,
@@ -1462,57 +1463,139 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
   });
 
   it("P-010: ABSORBS an upstream 429 (admission shed) and returns the eventual 200 — saturation invisible", async () => {
+    const fs = await import("node:fs");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const logFile = path.join(
+      os.tmpdir(),
+      `mcp-proxy-absorb-429-${Date.now()}-${Math.random().toString(36).slice(2)}.jsonl`,
+    );
+    const previousLogFile = process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG;
     let calls = 0;
     const degradedHeaders: Array<string | undefined> = [];
-    const upstream = track(
-      http.createServer((req, res) => {
-        calls++;
-        degradedHeaders.push(
-          req.headers[MCP_PROXY_DATA_PLANE_DEGRADED_AT_HEADER] as
-            | string
-            | undefined,
-        );
-        if (calls <= 2) {
-          // First two forwards: operator sheds (event loop critical). retry-after:0 → retry fast.
-          res.writeHead(429, {
-            "content-type": "application/json",
-            "retry-after": "0",
-          });
-          res.end(
-            '{"error":"shed","data":{"reason":"loop_pressure_critical"}}',
+    const upstreamTraceIds: string[] = [];
+    const admissionBodies = [
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        error: {
+          code: -32000,
+          message: "operator MCP admission is saturated",
+          data: { retryable: true, reason: "loop_pressure_critical" },
+        },
+      }),
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 2,
+        error: {
+          code: -32000,
+          message: "operator MCP admission is saturated",
+          data: { retryable: true, reason: "operator_admission_capacity" },
+        },
+      }),
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 3,
+        error: {
+          code: -32000,
+          message: "operator MCP admission is saturated",
+          data: { retryable: true, reason: "untrusted-admission-secret" },
+        },
+      }),
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 4,
+        error: {
+          code: -32000,
+          message: "operator MCP admission is saturated",
+          data: { retryable: true, reason: "loop_pressure_critical" },
+        },
+        padding: "x".repeat(MAX_MCP_ADMISSION_REASON_BODY_BYTES + 1),
+      }),
+    ];
+    try {
+      process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG = logFile;
+      const upstream = track(
+        http.createServer((req, res) => {
+          calls++;
+          upstreamTraceIds.push(
+            String(req.headers[MCP_PROXY_TRACE_HEADER] ?? ""),
           );
-          return;
-        }
-        res.writeHead(200, { "content-type": "application/json" });
-        res.end('{"result":"admitted"}');
-      }),
-    );
-    await listen(upstream);
-    const proxy = track(
-      createMcpProxy({
-        listenPort: 0,
-        targetHost: "127.0.0.1",
-        targetPort: port(upstream),
-        retryWindowMs: 5_000,
-        retryBackoffMs: 20,
-        log: () => {},
-      }),
-    );
-    await listen(proxy);
+          degradedHeaders.push(
+            req.headers[MCP_PROXY_DATA_PLANE_DEGRADED_AT_HEADER] as
+              | string
+              | undefined,
+          );
+          if (calls <= admissionBodies.length) {
+            // Admission reasons stay private to the allowlist; oversized envelopes are not parsed.
+            res.writeHead(429, {
+              "content-type": "application/json",
+              "retry-after": "0",
+            });
+            res.end(admissionBodies[calls - 1]);
+            return;
+          }
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end('{"result":"admitted"}');
+        }),
+      );
+      await listen(upstream);
+      const proxy = track(
+        createMcpProxy({
+          listenPort: 0,
+          targetHost: "127.0.0.1",
+          targetPort: port(upstream),
+          retryWindowMs: 5_000,
+          retryBackoffMs: 20,
+          log: () => {},
+        }),
+      );
+      await listen(proxy);
 
-    const r = await request(port(proxy));
-    expect(r.status).toBe(200);
-    expect(r.body).toBe('{"result":"admitted"}');
-    expect(calls).toBe(3); // two 429s absorbed, third admitted — the agent never saw a 429
-    expect(degradedHeaders[0]).toBeUndefined();
-    expect(degradedHeaders[1]).toMatch(/^\d+$/);
-    expect(Number(degradedHeaders[2])).toBeGreaterThanOrEqual(
-      Number(degradedHeaders[1]),
-    );
+      const r = await request(port(proxy));
+      expect(r.status).toBe(200);
+      expect(r.body).toBe('{"result":"admitted"}');
+      expect(calls).toBe(5); // four 429s absorbed, fifth admitted — the agent never saw a 429
+      expect(degradedHeaders[0]).toBeUndefined();
+      expect(degradedHeaders[1]).toMatch(/^\d+$/);
+      expect(Number(degradedHeaders[2])).toBeGreaterThanOrEqual(
+        Number(degradedHeaders[1]),
+      );
+      expect(Number(degradedHeaders[3])).toBeGreaterThanOrEqual(
+        Number(degradedHeaders[2]),
+      );
+      expect(Number(degradedHeaders[4])).toBeGreaterThanOrEqual(
+        Number(degradedHeaders[3]),
+      );
 
-    const followup = await request(port(proxy));
-    expect(followup.status).toBe(200);
-    expect(degradedHeaders[3]).toBe(degradedHeaders[2]);
+      const logText = fs.readFileSync(logFile, "utf8");
+      const absorbed = logText
+        .trim()
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line))
+        .filter((entry) => entry.kind === "absorb_429");
+      expect(absorbed).toHaveLength(4);
+      expect(absorbed.map((entry) => entry.traceId)).toEqual(
+        upstreamTraceIds.slice(0, 4),
+      );
+      expect(absorbed.map((entry) => entry.reason ?? null)).toEqual([
+        "loop_pressure_critical",
+        "operator_admission_capacity",
+        null,
+        null,
+      ]);
+      expect(logText).not.toContain("untrusted-admission-secret");
+
+      const followup = await request(port(proxy));
+      expect(followup.status).toBe(200);
+      expect(degradedHeaders[5]).toBe(degradedHeaders[4]);
+    } finally {
+      fs.rmSync(logFile, { force: true });
+      if (previousLogFile === undefined)
+        delete process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG;
+      else process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG = previousLogFile;
+    }
   });
 
   it("EI-16883: ABSORBS a boot-window 405 (route table not yet mounted) and returns the eventual 200", async () => {
