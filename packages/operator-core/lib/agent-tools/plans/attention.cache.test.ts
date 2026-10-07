@@ -101,6 +101,7 @@ vi.mock("../../attention/triage-store", () => ({
 
 import tool from "./attention";
 import { callPlansReadRaw } from './read-dispatch';
+import { dispatchProjectedTool, lookupByMcpName, type UnifiedToolContext } from '@papercusp/agent-mcp';
 import { runWithWorkspace } from '../../workspace-als';
 import { deriveAttentionRefs } from '../../sync-resolver/attention-counts';
 import {
@@ -167,6 +168,29 @@ afterEach(async () => {
 });
 
 describe("plans:attention — cache wiring", () => {
+  it('supports the device attention route through the real in-process dispatcher', async () => {
+    const projected = lookupByMcpName('plans:attention');
+    expect(projected).toBeDefined();
+    const deviceContext: UnifiedToolContext = {
+      workspaceId: 'ws-device-attention', harnessSlug: 'operator-home', role: 'operator',
+      runId: 'device-attention-run', spawnId: 'device-attention-spawn',
+      transport: 'in_process', uiClientId: null,
+      signal: new AbortController().signal, log: () => {}, progress: () => {}, emit: () => {},
+    };
+    const result = await dispatchProjectedTool(projected!, 'plans:attention', {
+      limit: 100, offset: 0, payloadTier: 'full',
+    }, deviceContext, {});
+    expect(result.ok, JSON.stringify(result.error)).toBe(true);
+    expect(result.result?.isError).not.toBe(true);
+    const text = result.result?.content.find((entry) => entry.type === 'text');
+    expect(text?.type).toBe('text');
+    const data = JSON.parse((text as { text: string }).text);
+    expect(Array.isArray(data.groups)).toBe(true);
+    expect(data.groups.every((group: { items?: unknown }) => Array.isArray(group.items))).toBe(true);
+    expect(M.seenInboxWs).toContain('ws-device-attention');
+    expect(data._projection?.truncated).not.toBe(true);
+  });
+
   const reportMessage = {
     msg_id: 'goal-report-exact-pin', from: 'goal-report-fixture', to: ['human'],
     kind: 'message', ts: '2026-10-05T18:00:00Z', summary: 'Canonical GOAL fixture',
