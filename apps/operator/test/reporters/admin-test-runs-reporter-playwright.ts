@@ -31,6 +31,7 @@ import {
 import { resolveTestRunSource } from '@papercusp/operator-core/lib/testing-run-source';
 import {
   describeWorktreeDirt,
+  resolveMutationProbePhase,
   resolveTestRunHarnessSlug,
   resolveTestRunWorkspaceId,
 } from '@papercusp/test-config/admin-test-runs-reporter';
@@ -101,7 +102,7 @@ export function playwrightExecutionDetails(
     failed: row.failed,
     skipped: row.skipped,
     collectionFailed: false,
-    mutationPhase: null,
+    mutationPhase: resolveMutationProbePhase(),
     commitSha: run.commitSha,
     worktreeDirty: row.worktreeDirty,
     ...(row.failedCaseTitles && row.failedCaseTitles.length > 0

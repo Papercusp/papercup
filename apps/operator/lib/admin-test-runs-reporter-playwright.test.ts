@@ -5,7 +5,7 @@
  * mark it dirty whenever the shared worktree changed while the run was live.
  * A cached resolveGitContext() commit is display metadata, not provenance.
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   captureWorktreeSnapshot: vi.fn(),
@@ -201,6 +201,33 @@ describe('playwrightCaseTitle', () => {
 });
 
 describe('playwrightExecutionDetails', () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  const failedBrowserRow = {
+    filePath: 'apps/operator/e2e/width.spec.ts', status: 'fail' as const,
+    durationMs: 5, startedAt: new Date(0), finishedAt: new Date(5),
+    outputTail: null, worktreeDirty: false, passed: 0, failed: 1, skipped: 0,
+    failedCaseTitles: ['mobile layout > rejects horizontal overflow'],
+  };
+  const browserRun = { root: '/repo', runGroupId: 'width-proof',
+    workspaceId: 'w1', harnessSlug: 'papercusp', commitSha: 'abc' };
+
+  it.each(['baseline', 'unmutated-copy', 'mutant'])('preserves the runtime %s mutation phase with the e2e case identity', (phase) => {
+    vi.stubEnv('PAPERCUSP_MUTATION_PROBE', '1');
+    vi.stubEnv('PAPERCUSP_MUTATION_PHASE', ` ${phase} `);
+    const details = playwrightExecutionDetails(failedBrowserRow, browserRun);
+    expect(parseTestRunExecutionDetails(details)).toMatchObject({
+      testLayer: 'e2e', mutationPhase: phase, failed: 1, skipped: 0,
+      failedCaseTitles: ['mobile layout > rejects horizontal overflow'],
+    });
+  });
+
+  it('keeps an ordinary browser failure outside the mutation cohort even with a stale phase variable', () => {
+    vi.stubEnv('PAPERCUSP_MUTATION_PROBE', '');
+    vi.stubEnv('PAPERCUSP_MUTATION_PHASE', 'mutant');
+    expect(playwrightExecutionDetails(failedBrowserRow, browserRun).mutationPhase).toBeNull();
+  });
+
   it('stamps the e2e runtime layer with counts that the shared parser accepts', () => {
     const details = playwrightExecutionDetails(
       {
