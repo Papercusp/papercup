@@ -52,6 +52,7 @@ import { activeWorkspaceId } from '../../workspace-registry';
 import { selfHealOwnNodeOriginIfStranded } from '../../work-items-admission';
 import { recordRoutedIdea } from '../../scout/routed-ledger';
 import { boundedOrgTxn } from '../../pg-bounded-txn';
+import { corroborationReportersSql, VERIFICATION_SUBJECT_ID_SQL } from './corroboration';
 import {
   agentReviewEligibility,
   agentReviewPendingSelectorSql,
@@ -1060,7 +1061,9 @@ export async function claimNextAgentReview(
        AND COALESCE(payload, '{}'::jsonb) -> 'agentReview' ->> 'submittedBy' IS DISTINCT FROM ${input.reviewer}
        AND NOT ${verificationConflictSql(sql, input.reviewer, { payload: 'wi.payload', terminalOwner: 'wi.terminal_owner' })}
        AND ${input.harnessSlug ? sql`harness_slug = ${input.harnessSlug}` : sql`TRUE`}
-     ORDER BY feature_order ASC NULLS LAST, created_ts ASC
+     -- P-012 (D-049): an authored order stays first; within it, more independent
+     -- reporters are reviewed sooner. Ordering only: claimWorkItem still admits.
+     ORDER BY feature_order ASC NULLS LAST, ${corroborationReportersSql(sql)} DESC, created_ts ASC
      LIMIT 25`;
   for (const row of rows) {
     const found = await deps.getWorkItem(row.feature_id, input.harnessSlug);
@@ -1141,7 +1144,8 @@ export async function claimNextVerificationTask(
        ${input.harnessSlug ? sql`AND harness_slug = ${input.harnessSlug}` : sql``}
        AND ${depsBlockedExclusionSql(sql)}
        AND NOT ${verificationTaskConflictSql(sql, verifier, 'wi.payload')}
-     ORDER BY created_ts ASC, feature_id ASC
+     -- P-012 (D-049): the subject with more independent reporters is verified first.
+     ORDER BY ${corroborationReportersSql(sql, VERIFICATION_SUBJECT_ID_SQL)} DESC, created_ts ASC, feature_id ASC
      LIMIT 20`;
   for (const row of rows) {
     const claimed = await deps.claimWorkItem(row.feature_id, verifier, row.harness_slug ? { harness: row.harness_slug } : {});

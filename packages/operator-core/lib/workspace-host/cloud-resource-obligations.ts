@@ -375,7 +375,11 @@ export async function closeCloudResourceObligation(
   requireNonEmpty(input.reason, 'reason');
   const incarnationId = input.incarnationId?.trim() ?? '';
   const confirmedAbsentAt = input.confirmedAbsentAt?.trim() ?? '';
-  if (!incarnationId && confirmedAbsentAt && Number.isFinite(Date.parse(confirmedAbsentAt))) {
+  if (!incarnationId && confirmedAbsentAt) {
+    // An absence timestamp is the only identity we have for this close. If it is invalid or
+    // matches no row, do not fall through to the generic empty-incarnation update below: that
+    // predicate could close a newer same-name resource created after the provider read.
+    if (!Number.isFinite(Date.parse(confirmedAbsentAt))) return { closed: false };
     const absentRows = await sql<{ id: number }[]>`
       UPDATE harness_shared.cloud_resource_obligations
          SET closed_at = now(), closed_reason = ${input.reason}, teardown_owed = false, updated_at = now()
@@ -388,6 +392,7 @@ export async function closeCloudResourceObligation(
        RETURNING id
     `;
     if (absentRows.length > 0) return { closed: true };
+    return { closed: false };
   }
   const rows = await sql<{ id: number }[]>`
     UPDATE harness_shared.cloud_resource_obligations

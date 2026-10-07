@@ -783,10 +783,17 @@ describe('measureCitationBlobsAtHead — committed measurement commit M (P-019)'
       fs.writeFileSync(path.join(sub, 'src', 'index.ts'), 'export const pinned = false;\n');
       git(sub, 'commit', '-qam', 'unpinned child commit');
 
+      // COLD cache, deliberately: on the live shared tree the parent index moves between
+      // the prewarm and the gate read, so the warm-snapshot shortcut misses. A synchronous
+      // gitlink climb then forked one `git ls-files` per citation (P-005 real-plan probe:
+      // 66 sync spawns for 66 citations). The climb must stay off the request thread.
+      __resetRepoCitationTrackingCacheForTests();
       const citation = code('libs/child/src/index.ts');
-      await prewarmRepoCitationTracking([superprojectRoot], [citation]);
       const spawnsBefore = __repoCitationSyncSpawnsForTests();
-      const measured = await measureCitationBlobsAtHead([citation], repoCitationDeps(superprojectRoot));
+      const measured = await measureCitationBlobsAtHead(
+        [citation, code('libs/child/src/index.ts'), code('.gitmodules')],
+        repoCitationDeps(superprojectRoot),
+      );
       expect(measured.blobs.get('libs/child/src/index.ts')).toBe(gitBlobSha(pinned));
       expect(measured.commits.get('libs/child/src/index.ts')).toBe(head);
       expect(__repoCitationSyncSpawnsForTests()).toBe(spawnsBefore);

@@ -3,14 +3,15 @@
  *
  * raceDeadline backs the MCP tool-call deadline: a tool exceeding the deadline
  * returns a clean error to the client instead of hanging to maxDuration / a silent
- * tunnel drop, while the tool keeps running server-side (so an idempotent retry can
- * replay it). Pins: fast path passes through, slow path times out, 0 disables, and a
+ * tunnel drop, while the tool keeps running server-side (keyed writes can replay;
+ * retries of read-only calls execute a fresh read). Pins: fast path passes through, slow path times out, 0 disables, and a
  * post-timeout rejection of the orphaned run never surfaces as unhandled.
  */
 import { describe, it, expect, vi } from 'vitest';
 import {
   raceDeadline,
   effectiveMcpDeadlineMs,
+  formatMcpReadOnlyDeadlineMessage,
   dispatchLegacyWithDeadline,
   dispatchNestedWithMcpDeadline,
 } from '../_mcp-host';
@@ -69,6 +70,19 @@ describe('effectiveMcpDeadlineMs (EI-17177)', () => {
   it('a base deadline <= 0 (P2-5 disabled) stays disabled regardless of timeoutSec', () => {
     expect(effectiveMcpDeadlineMs(600, 0)).toBe(0);
     expect(effectiveMcpDeadlineMs(600, -1)).toBe(-1);
+  });
+});
+
+describe('read-only MCP deadline guidance (EI-25270415606873353)', () => {
+  it('explains that retries execute a fresh read instead of replaying the timed-out result', () => {
+    const message = formatMcpReadOnlyDeadlineMessage('coord:presence', 55_000);
+
+    expect(message).toContain('request_timeout');
+    expect(message).toContain('read-only tool "coord:presence"');
+    expect(message).toContain('results are not stored for idempotent replay');
+    expect(message).toContain('retrying will execute a fresh read');
+    expect(message).not.toContain('same _meta.idempotencyKey');
+    expect(message).not.toContain('commit status is UNKNOWN');
   });
 });
 
