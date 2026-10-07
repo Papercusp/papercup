@@ -956,6 +956,17 @@ function executableEvidenceGaps(row: SpecEvidenceForAdequacy): string[] {
   if (!hasExecutionLedgerReference(row)) {
     gaps.push('no testRunId/coverageEvidenceRef ledger reference');
   }
+  if (row.testRunId === null) {
+    gaps.push('no canonical test-run execution verdict');
+  } else if (measuredExecutionVerdict(row) !== 'pass') {
+    const run = row.testRunExecution;
+    gaps.push(
+      run
+        ? `canonical execution=${measuredExecutionVerdict(row)} for ${row.evidenceKind}: status=${run.status ?? 'unset'}, passed=${run.passed}, failed=${run.failed}, skipped=${run.skipped}, collectionFailed=${run.collectionFailed}` +
+          (row.evidenceKind === 'mutation' ? `, measuredMutationFailure=${Boolean(row.testRunProvenance?.mutationFailureLines?.length)}` : '')
+        : 'canonical test-run execution details unavailable',
+    );
+  }
   if (details.collected !== true) {
     gaps.push(`collected=${show(details.collected)}`);
   }
