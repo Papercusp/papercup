@@ -1,4 +1,4 @@
-import { expect, test } from './_egress';
+import { expect, test, type Page } from './_egress';
 
 // Uses the owning Playwright profile. For exact production proof, set
 // OPERATOR_E2E_BASE_URL and OPERATOR_E2E_REUSE_SERVER=1; do not silently
@@ -75,6 +75,55 @@ test('the first-task guide remains readable and retains the selected theme after
     await expect(page.getByRole('heading', { level: 1, name: 'Your first successful task' })).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   }
+});
+
+async function deferSearchInitialization(page: Page) {
+  await page.addInitScript(() => {
+    // Starlight mounts Pagefind during idle time. Control that real lifecycle
+    // rather than hoping machine timing happens to open the dialog first.
+    const callbacks: IdleRequestCallback[] = [];
+    window.requestIdleCallback = (callback) => callbacks.push(callback);
+    window.addEventListener('manual-test-release-idle', () => {
+      for (const callback of callbacks.splice(0)) {
+        callback({ didTimeout: false, timeRemaining: () => 50 });
+      }
+    });
+  });
+}
+
+test('search focuses its input when opened before Pagefind initializes', async ({ page }) => {
+  await deferSearchInitialization(page);
+  await page.goto('/docs/quickstart');
+  await expect(page.getByRole('button', { name: 'Search', exact: true })).toBeEnabled();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.locator('input')).toHaveCount(0);
+  await page.keyboard.press('Control+k');
+  await expect(dialog).toBeVisible();
+  await page.evaluate(() => window.dispatchEvent(new Event('manual-test-release-idle')));
+  const input = dialog.locator('input').first();
+  await expect(input).toBeVisible();
+  await expect(input).toBeFocused();
+  await page.keyboard.type('first successful task');
+  await expect(dialog.locator('.pagefind-ui__result-link')
+    .filter({ hasText: 'Your first successful task' }).first()).toBeVisible();
+});
+
+test('late search initialization preserves focus when the reader already closed search', async ({ page }) => {
+  await deferSearchInitialization(page);
+  await page.goto('/docs/quickstart');
+  await expect(page.getByRole('button', { name: 'Search', exact: true })).toBeEnabled();
+  const dialog = page.getByRole('dialog');
+  await page.keyboard.press('Control+k');
+  await expect(dialog).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(dialog).not.toBeVisible();
+  const taskLink = page.getByRole('main').locator('a[href="#1-create-an-account-or-sign-in"]').first();
+  await taskLink.focus();
+  await page.evaluate(() => window.dispatchEvent(new Event('manual-test-release-idle')));
+  await expect(dialog.locator('input')).toHaveCount(1);
+  await expect(taskLink).toBeFocused();
+  await page.keyboard.press('Control+k');
+  await expect(dialog.locator('input').first()).toBeFocused();
 });
 
 for (const [device, viewport] of [
