@@ -251,7 +251,10 @@ export default defineTool({
           'On script timeout, `timeoutSettledReadRecovery.calls` returns settled read-only child results, capped at 24 KiB/20 calls; ' +
           'check `omittedReadCount`, and never assume a slow Promise.all sibling returned to the script. Write results are never included in timeout recovery. ' +
           'No ambient `exec`/shell helper exists -- `tools` exposes ONLY `tools.ns.verb(args)` calls; ' +
-          'to run a shell command, call `tools.capability.bash({ command })` like any other tool. ' +
+          'To run a shell command, call `tools.capability.bash({ command })` like any other tool. ' +
+          'If you hold multiple work-items, pass `work_item_id` naming a work-item you currently hold: ' +
+          '`await tools.capability.bash({ command, work_item_id: "WI-1234" })`. ' +
+          'Omission returns `work_item_id_required` before dispatch; a single held claim can remain implicit. ' +
           'Nested tool calls return their typed result root, not an MCP `content`/`text` envelope: for example, ' +
           'read `result.output`, `result.exit_code`, and `result.status` from capability:bash; do not read `result.content[0].text`. ' +
           'To emit final media, return exactly `{ summary, media: [{ type: "image"|"audio", data: "<base64>", mimeType }] }`; ' +

@@ -125,6 +125,18 @@ describe('code:run registration (B-CX-2A)', () => {
     }
   });
 
+  it('documents explicit held-item attribution before multi-claim shell dispatch', () => {
+    const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
+    const scriptDescription =
+      (tool?.inputSchema as { properties?: { script?: { description?: string } } })?.properties?.script?.description ??
+      '';
+    expect(scriptDescription).toContain('If you hold multiple work-items');
+    expect(scriptDescription).toContain('work-item you currently hold');
+    expect(scriptDescription).toContain('tools.capability.bash({ command, work_item_id: "WI-1234" })');
+    expect(scriptDescription).toContain('`work_item_id_required` before dispatch');
+    expect(scriptDescription).toContain('a single held claim can remain implicit');
+  });
+
   it('documents JavaScript escaping for shell backslash-zero commands', () => {
     const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
     const scriptDescription =
