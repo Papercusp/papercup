@@ -213,6 +213,17 @@ describe('canonical delegated-member claim receipt', () => {
     if (mode === 'outer control') {
       expect(() => assertExcluded(row)).toThrowError();
       expect(row.state).toBe('working');
+      // Distinguish the fixture oracle from the production receipt: role is
+      // persisted fixture provenance, while admission reads plan/harness scope.
+      // A broken fixture writer must be caught even when admission stays green.
+      await setFleetHeadcountTarget({ workspaceId: WS, fleetSlug: FLEET, target: 1,
+        config: { plan: PLAN, harness: HARNESS, agent: 'codex', role: 'wrong-fixture-role' }, sql: fx.admin });
+      expect((await placement()).state).toBe('working');
+      await expect(assertPersistedScope(PLAN, 'plan', PLAN)).rejects.toThrow();
+      await setFleetHeadcountTarget({ workspaceId: WS, fleetSlug: FLEET, target: 1,
+        config: { plan: PLAN, harness: HARNESS, agent: 'codex', role: activity }, sql: fx.admin });
+      await assertPersistedScope(PLAN, 'plan', PLAN);
+      expect((await placement()).state).toBe('working');
       return;
     }
     assertExcluded(row);
