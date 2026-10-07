@@ -17,7 +17,7 @@ const input = Object.fromEntries(Object.entries(inputSchema.properties).map(([ke
   return [key, property.const ?? property.default];
 }));
 const output = {
-  reportId: 'rpt_fixture', reportPath: '/reports/rpt_fixture', editionDate: '2026-10-07',
+  reportId: 'rpt_fixture', reportPath: '/reports?sel=rpt_fixture', editionDate: '2026-10-07',
   itemCount: 3, sourceCount: 20, unavailableSources: [], status: 'published',
 };
 
@@ -65,6 +65,7 @@ describe('morning AI operation admission and completion contracts', () => {
     ['missing report reference', { reportId: undefined }],
     ['invalid report reference', { reportId: 'other' }],
     ['external viewer path', { reportPath: 'https://example.test' }],
+    ['unrouted viewer path', { reportPath: '/reports/rpt_fixture' }],
     ['missing edition', { editionDate: undefined }],
     ['missing source coverage', { unavailableSources: undefined }],
     ['excess report items', { itemCount: 11 }],
