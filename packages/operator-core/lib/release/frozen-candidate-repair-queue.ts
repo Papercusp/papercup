@@ -3120,7 +3120,10 @@ export type FrozenRepairConvergenceCode =
    * this cell is carried separately, by the `unmeasured` hoist.
    */
   | 'no-cycle-recorded'
-  /** A cycle is open but no fixer has ever run — nothing has been MEASURED to converge. */
+  /**
+   * No automated fixer was dispatched and no trend is knowable yet. Recorded manual
+   * measurements take precedence, even when the automated dispatch count is still zero.
+   */
   | 'no-attempts'
   /** Fewer than two recorded rounds: there is no trend yet. Not a verdict of failure. */
   | 'not-yet-knowable'
@@ -3132,16 +3135,16 @@ export type FrozenRepairConvergenceCode =
 /**
  * PURE: what should a reader conclude about this repair cycle?
  *
- * Order matters and is deliberate: an unmeasured record outranks everything, then the
- * dispatch fact (`no-attempts`) outranks the trend, because a trend computed over zero
- * fixer runs describes nothing that happened.
+ * Order matters and is deliberate: an unreadable record outranks everything. A dispatch
+ * fact (`no-attempts`) applies only when there is not yet a trend to report; manual
+ * admissions and red measurements can append convergence rounds without dispatching an
+ * automated fixer, so a known trend outranks the dispatch count.
  */
 export function assessFrozenRepairConvergence(
   record: StoredFrozenRepairConvergence | null,
 ): FrozenRepairConvergenceCode {
   if (!record) return 'no-cycle-recorded';
-  if (record.attempts === 0) return 'no-attempts';
-  if (record.converging === null) return 'not-yet-knowable';
+  if (record.converging === null) return record.attempts === 0 ? 'no-attempts' : 'not-yet-knowable';
   return record.converging ? 'converging' : 'not-converging';
 }
 

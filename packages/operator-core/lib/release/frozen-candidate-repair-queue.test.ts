@@ -2134,6 +2134,38 @@ describe('WI-10000741 / D-014 — a red measured behind a mid-suite admission is
     expect(next.updatedAtMs).toBe(T0 + 1_000);
   });
 
+  it('reports a manual-lineage trend when no automated fixer was dispatched', () => {
+    const manualAdmission = markFrozenRepairAdmitted(
+      { ...fresh(), phase: 'ready-to-verify', attempts: 0, fixerSpawnId: null },
+      {
+        atMs: T0 + 500,
+        actor: 'su-manual',
+        source: { ref: 'staging', sha: C1 },
+        fromRepairHead: C,
+        toRepairHead: C1,
+        paths: ['lib/a.ts'],
+        unchanged: [],
+        blobs: {},
+      },
+    );
+    const recorded = recordFrozenRepairSupersededRed(manualAdmission, {
+      measuredHead: C,
+      failingTests: ['lib/a.test.ts', 'lib/b.test.ts'],
+      nowMs: T0 + 1_000,
+    });
+    const cell = projectFrozenRepairConvergenceCell(
+      buildFrozenRepairConvergenceGateHealth(recorded, T0 + 2_000),
+    );
+
+    expect(recorded.attempts).toBe(0);
+    expect(cell).toMatchObject({
+      unmeasured: false,
+      admissionRounds: 2,
+      converging: false,
+      code: 'not-converging',
+    });
+  });
+
   it("leaves everything the admission owns untouched: phase, repairHead, admissions, fixer fields, attempts", () => {
     const queue = admittedDuringSuite();
     const next = recordFrozenRepairSupersededRed(queue, {
