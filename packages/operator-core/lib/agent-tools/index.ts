@@ -694,6 +694,7 @@ import './capability/edit';
 import './capability/patch';
 import './capability/notebook';
 import './capability/git';
+import './capability/git-evidence';
 import './capability/fetch';
 // Read-only verification exec (EI-524 / P-035): typecheck/test via fixed commands,
 // the sanctioned inspect path for confined bees (capability:bash is envelope-gated).
