@@ -24,6 +24,16 @@ function fakeTx(rows: Array<{ capabilities: unknown }>): Sql {
 }
 
 describe('loadRoleCapabilities', () => {
+  test('memory:read preserves search access through a narrow derived capability', async () => {
+    const reader = await loadRoleCapabilities(fakeTx([{ capabilities: ['memory:read'] }]), 'ws', 'memory-reader');
+    expect(reader.has('memory:read')).toBe(true);
+    expect(reader.has('memory:search:read')).toBe(true);
+
+    const judge = await loadRoleCapabilities(fakeTx([{ capabilities: ['memory:read'] }]), 'ws', 'judge');
+    expect(judge.has('memory:search:read')).toBe(true);
+    expect(judge.has('memory:read')).toBe(false);
+  });
+
   describe('native-tool cutover replacement grants', () => {
     test('principal grant roles stay in lockstep with orchestrator FLEET_CAPABILITY_ROLES', () => {
       expect(new Set(CAPABILITY_REPLACEMENT_PRINCIPAL_ROLES)).toEqual(new Set(FLEET_CAPABILITY_ROLES));
@@ -250,7 +260,7 @@ describe('loadRoleCapabilities', () => {
         import('../../../agent-tools/work_items/get.js'),
         import('../../../agent-tools/work_items/create.js'),
         import('../../../agent-tools/improvements/capture.js'),
-        import('../../../agent-tools/features/get.js'),
+        import('../../../../../agent-mcp/src/tools/features/get.js'),
         import('../../../agent-tools/coordination/tools/presence.js'),
         import('../../../agent-tools/coordination/tools/ask.js'),
         import('../../../agent-tools/coordination/tools/send.js'),
@@ -265,15 +275,19 @@ describe('loadRoleCapabilities', () => {
         ['work_items:get', workItemGet],
         ['work_items:create', workItemCreate],
         ['improvements:capture', capture],
-        ['features:get', featureGet],
         ['coord:presence', presence],
-        ['coord:ask', ask],
         ['coord:send', send],
         ['coord:await-inbox', awaitInbox],
         ['coord:escalate', escalate],
       ] as const) {
         expect(tool.agentRoles, `${name} must admit merge-resolver`).toContain('merge-resolver');
       }
+      // coord:ask is deliberately owner-UI-only; agents use coord:send instead.
+      expect(ask.agentRoles).toEqual([]);
+      // features:get is a package-side tool with no per-role agentRoles field;
+      // its declared capability is the dispatch gate for this role.
+      expect(featureGet.capability).toBe('features:read');
+      expect(caps.has(featureGet.capability)).toBe(true);
     },
   );
 
@@ -330,6 +344,10 @@ describe('loadRoleCapabilities', () => {
       expect(caps.has('operator:write')).toBe(false);
       expect(caps.has('work_items:write')).toBe(true);
       expect(caps.has('capability:fs-read')).toBe(true);
+      expect(caps.has('capability:git-evidence:read')).toBe(true);
+      expect(caps.has('capability:git')).toBe(false);
+      expect(caps.has('memory:search:read')).toBe(true);
+      expect(caps.has('memory:read')).toBe(false);
       expect(caps.has('capability:fs-write')).toBe(false);
       expect(caps.has('capability:bash')).toBe(false);
 

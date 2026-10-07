@@ -933,11 +933,14 @@ const json = (payload: unknown) => ({
   content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
 });
 
-const holderJson = (h: ResourceHolder) => ({
+const holderJson = (
+  h: Pick<ResourceHolder, 'owner' | 'owner_label' | 'mode' | 'status'> & { coordination_domain?: string },
+) => ({
   owner: h.owner,
   owner_label: h.owner_label,
   mode: h.mode,
   status: h.status,
+  ...(h.coordination_domain ? { coordination_domain: h.coordination_domain } : {}),
 });
 
 export type GatewayRestartReadiness = {
