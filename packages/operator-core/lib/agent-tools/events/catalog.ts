@@ -31,8 +31,9 @@ import {
   listFiredAnnouncements,
 } from '../../events/await/store';
 import { announcementVisibleTo } from '../../events/await/announce-key';
-import { resolveAgentIdentity } from '../coordination/identity';
+import { deriveFleetMembership, resolveAgentIdentity } from '../coordination/identity';
 import { getPresence } from '../coordination/presence';
+import { resolvePresenceFleet } from '../coordination/presence-fleet';
 import { resolveAnnouncementOwnership, type AnnouncementOwnership } from './status';
 
 const MAX_CATALOG_LIMIT = 200;
@@ -315,12 +316,13 @@ export default defineTool({
           try {
             const identity = resolveAgentIdentity(ctx);
             workspaceId = identity.workspaceId ?? null;
-            const p = (await getPresence(identity.ownerId)) as
-              | { fleetSlug?: string | null; currentPlanSlug?: string | null }
-              | null;
+            const [p, fleet] = await Promise.all([
+              getPresence(identity.ownerId),
+              resolvePresenceFleet(identity.ownerId, deriveFleetMembership()),
+            ]);
             const ctxHarnessRaw = (ctx as { harnessSlug?: unknown }).harnessSlug;
             reader = {
-              fleetSlug: p?.fleetSlug ?? null,
+              fleetSlug: fleet.fleetSlug,
               planSlug: p?.currentPlanSlug ?? null,
               harnessSlug: typeof ctxHarnessRaw === 'string' && ctxHarnessRaw !== '*' ? ctxHarnessRaw : null,
             };

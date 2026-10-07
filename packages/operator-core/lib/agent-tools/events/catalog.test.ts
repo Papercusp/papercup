@@ -16,6 +16,7 @@ const countMock = vi.fn();
 const listAnnouncementsMock = vi.fn();
 const listFiredAnnouncementsMock = vi.fn();
 const prefixCountMock = vi.fn();
+const presenceFleetMock = vi.fn();
 vi.mock('../../events/await/store', () => ({
   countActiveAwaitsByKeyShapes: (...args: unknown[]) => countMock(...args),
   countActiveAwaitsByPrefixes: (...args: unknown[]) => prefixCountMock(...args),
@@ -28,9 +29,13 @@ vi.mock('../../events/await/store', () => ({
 const presenceMock = vi.fn();
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({ ownerId: 'su-test-reader', workspaceId: 'ws-test' }),
+  deriveFleetMembership: () => ({ fleetSlug: null, fleetRole: null }),
 }));
 vi.mock('../coordination/presence', () => ({
   getPresence: (...args: unknown[]) => presenceMock(...args),
+}));
+vi.mock('../coordination/presence-fleet', () => ({
+  resolvePresenceFleet: (...args: unknown[]) => presenceFleetMock(...args),
 }));
 
 // EI-21840718595021627: resolveAnnouncementOwnership (imported by catalog.ts from
@@ -86,6 +91,7 @@ beforeEach(() => {
   listAnnouncementsMock.mockResolvedValue([]);
   listFiredAnnouncementsMock.mockResolvedValue([]);
   presenceMock.mockResolvedValue({ fleetSlug: null, currentPlanSlug: null });
+  presenceFleetMock.mockResolvedValue({ fleetSlug: null, fleetRole: null });
 });
 
 // EI-21907772459508454 — an announced gate that EXISTS but is out of the reader's scope
@@ -123,6 +129,26 @@ describe('events:catalog — announced gates: withheld must not read as absent',
     expect(out.announced[0]).toMatchObject({ event: 'plan:some-plan:p002-green', scope: 'plan:some-plan' });
     expect(out.announced_visibility).toMatchObject({ hidden_by_scope: 0, returned: 1 });
     expect(out.announced_visibility.note).toBeUndefined();
+  });
+
+  it('uses canonical live fleet membership when exposing fleet-scoped announcements', async () => {
+    listAnnouncementsMock.mockResolvedValue([
+      ann({ eventKey: 'fleet:live-fleet:p002-green', scopeKind: 'fleet', scopeRef: 'live-fleet' }),
+    ]);
+    // getPresence intentionally omits fleet membership; it is read through
+    // resolvePresenceFleet from the append-only membership projection.
+    presenceMock.mockResolvedValue({ fleetSlug: null, currentPlanSlug: null });
+    presenceFleetMock.mockResolvedValue({ fleetSlug: 'live-fleet', fleetRole: 'member' });
+
+    const out = await call({ announced: true, installed: false, liveAwaiters: false });
+
+    expect(presenceFleetMock).toHaveBeenCalledWith('su-test-reader', { fleetSlug: null, fleetRole: null });
+    expect(out.announced).toHaveLength(1);
+    expect(out.announced_visibility).toMatchObject({
+      reader_scope: { fleet: 'live-fleet' },
+      hidden_by_scope: 0,
+      returned: 1,
+    });
   });
 
   it('flags an UNRESOLVED reader rather than passing global-only off as the whole truth', async () => {
@@ -184,6 +210,7 @@ describe('events:catalog — announced gates: withheld must not read as absent',
       },
     ]);
     presenceMock.mockResolvedValue({ fleetSlug: 'fleet-a', currentPlanSlug: null });
+    presenceFleetMock.mockResolvedValue({ fleetSlug: 'fleet-a', fleetRole: 'member' });
 
     const out = await call({ announced: true, installed: false, liveAwaiters: false });
 
@@ -219,6 +246,7 @@ describe('events:catalog — announced gates: withheld must not read as absent',
       },
     ]);
     presenceMock.mockResolvedValue({ fleetSlug: 'fleet-b', currentPlanSlug: null });
+    presenceFleetMock.mockResolvedValue({ fleetSlug: 'fleet-b', fleetRole: 'member' });
 
     const out = await call({ announced: true, installed: false, liveAwaiters: false });
 
@@ -241,6 +269,7 @@ describe('events:catalog — announced gates: withheld must not read as absent',
       },
     ]);
     presenceMock.mockResolvedValue({ fleetSlug: 'fleet-a', currentPlanSlug: null });
+    presenceFleetMock.mockResolvedValue({ fleetSlug: 'fleet-a', fleetRole: 'member' });
 
     const out = await call({ announced: true, installed: false, liveAwaiters: false });
 
