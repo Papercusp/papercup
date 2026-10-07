@@ -31,6 +31,7 @@ import {
   parseTestRunExecutionDetails,
   isRecordedCaseTitle,
   MAX_RECORDED_FAILED_CASES,
+  MAX_RECORDED_PASSED_CASES,
   type TestRunExecutionDetails,
 } from '@papercusp/test-config/execution-details';
 import { resolveGitContext } from './testing-branch-resolve';
@@ -1657,7 +1658,7 @@ export interface HarnessTestFileRow {
   finishedAt: Date;
   outputTail: string | null;
   /** Exact completed assertion counts when the source report exposed them. */
-  execution?: Pick<TestRunExecutionDetails, 'passed' | 'failed' | 'skipped' | 'collectionFailed' | 'failedCaseTitles'>;
+  execution?: Pick<TestRunExecutionDetails, 'passed' | 'failed' | 'skipped' | 'collectionFailed' | 'failedCaseTitles' | 'passedCaseTitles'>;
 }
 
 /** Minimal shape of the jest-compatible vitest `--reporter=json` output. */
@@ -1682,10 +1683,16 @@ function countVitestAssertions(assertions: VitestJsonAssertion[]): HarnessTestFi
   let failed = 0;
   let skipped = 0;
   const failedCaseTitles = new Set<string>();
+  const passedCaseTitles = new Set<string>();
   for (const assertion of assertions) {
     if (!assertion || typeof assertion !== 'object') return undefined;
     switch (assertion.status) {
-      case 'passed': passed += 1; break;
+      case 'passed':
+        passed += 1;
+        if (isRecordedCaseTitle(assertion.fullName) && passedCaseTitles.size < MAX_RECORDED_PASSED_CASES) {
+          passedCaseTitles.add(assertion.fullName);
+        }
+        break;
       case 'failed':
         failed += 1;
         if (isRecordedCaseTitle(assertion.fullName) && failedCaseTitles.size < MAX_RECORDED_FAILED_CASES) {
@@ -1708,6 +1715,7 @@ function countVitestAssertions(assertions: VitestJsonAssertion[]): HarnessTestFi
     skipped,
     collectionFailed: false,
     ...(failedCaseTitles.size > 0 ? { failedCaseTitles: [...failedCaseTitles] } : {}),
+    ...(passedCaseTitles.size > 0 ? { passedCaseTitles: [...passedCaseTitles] } : {}),
   };
 }
 

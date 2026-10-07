@@ -22,6 +22,7 @@ import {
   parseTestRunExecutionDetails,
   isRecordedCaseTitle,
   MAX_RECORDED_FAILED_CASES,
+  MAX_RECORDED_PASSED_CASES,
 } from '@papercusp/test-config/execution-details';
 import { runGit } from '../../harness/docs/git-runner';
 import {
@@ -411,6 +412,10 @@ export function operationalExecution(artifact: OperationalEvidenceArtifact) {
     ...failing.map((assertion) => assertion.id),
     ...(unexplainedExit ? [`nonzero-exit-${artifact.exitCode}`] : []),
   ])].filter((title) => isRecordedCaseTitle(title)).slice(0, MAX_RECORDED_FAILED_CASES);
+  const failedTitles = new Set(titles);
+  const passedTitles = [...new Set(
+    artifact.assertions.filter((assertion) => assertion.passed).map((assertion) => assertion.id),
+  )].filter((title) => isRecordedCaseTitle(title) && !failedTitles.has(title)).slice(0, MAX_RECORDED_PASSED_CASES);
   return {
     passed: artifact.assertions.length - failing.length,
     failed: failing.length + (unexplainedExit ? 1 : 0),
@@ -418,6 +423,7 @@ export function operationalExecution(artifact: OperationalEvidenceArtifact) {
     collectionFailed: false,
     runStartedAt: artifact.startedAt,
     ...(titles.length > 0 ? { failedCaseTitles: titles } : {}),
+    ...(passedTitles.length > 0 ? { passedCaseTitles: passedTitles } : {}),
   };
 }
 
