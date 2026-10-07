@@ -1,6 +1,6 @@
 /** Native transcript -> exact PG cursor ACK -> existing agent_activity writer.
  * This proves receipt persistence, NOT eligibility, a worker claim or a grade. */
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -17,9 +17,25 @@ import { drainDetached } from './detached-imports';
 import { recordVerifiedGoalPlacementEffects, readGoalPlacementProgress } from './goal-placement-progress-store';
 import { compileGoalPlanPlacement, type GoalPortfolioBrief } from './goal-launch-settings';
 import { DEFAULT_CLAIM_SPEC } from './scheduler/claim-spec';
+import { evaluateTurnStartPackageSink } from './agent-identities/turn-start-package-sink';
 import { confirmGoalPlacementDelivery, prepareGoalPlacementDelivery, GOAL_PLACEMENT_DELIVERY_KEY,
   settleGoalPlacementTurn, reconcileConfirmedGoalPlacementTurns, readGoalPlacementAdmissionAttempts,
   type GoalPlacementAdmissionObservation, type GoalPlacementTurnReceiptDeps } from './goal-placement-turn-receipts';
+
+// The endpoint's package sink is a separate integration boundary. Keep its
+// unrelated identity providers and hook-turn database out of the receipt fixture;
+// the native transcript, cursor ACK and goal-placement persistence remain real.
+vi.mock('./agent-identities/turn-start-package-sink', () => ({
+  evaluateTurnStartPackageSink: vi.fn(async () => ({ classes: [], result: null })),
+  packageSinkReceipt: () => null,
+}));
+vi.mock('./agent-identities/sync-hook-rules', async (importOriginal) => ({
+  ...await importOriginal<typeof import('./agent-identities/sync-hook-rules')>(),
+  pgHookTurnStore: () => ({
+    begin: async () => ({ turnId: 'receipt-fixture-package-turn' }),
+    charge: async () => undefined,
+  }),
+}));
 
 const OWNER_PREFIX = 'su-goal-receipt-';
 const OWNER = `${OWNER_PREFIX}${Date.now()}`;
@@ -361,6 +377,9 @@ describe('goal delivery receipt canonical persistence', () => {
     })));
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ ok: true });
+    expect(evaluateTurnStartPackageSink).toHaveBeenCalledWith(expect.objectContaining({
+      ownerId: OWNER, workspaceId: WS,
+    }));
     await drainDetached();
 
     const outcomeRows = (await records()).filter((record) =>
