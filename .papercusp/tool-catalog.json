@@ -5375,7 +5375,7 @@
           "POST"
         ]
       },
-      "description": "Start a sandboxed GUI desktop (isolated X server + openbox, never host :0) that capability:computer drives. Omit `pot` to start one for YOURSELF — you may run many, each with its own `name`; pass `pot` (Queen/operator) to equip a pot with its shared desktop. Optionally launches GUI apps. Idempotent per name. Tear down with computer:release_desktop.",
+      "description": "Start a sandboxed GUI desktop (isolated X server + openbox, never host :0) that capability:computer drives. Omit `pot` to start one for YOURSELF — you may run many, each with its own `name`; an authorized pot manager may pass `pot` to equip a pot with its shared desktop. Optionally launches GUI apps. Idempotent per name. Tear down with computer:release_desktop.",
       "capabilities": [
         "harness:write"
       ],
@@ -5486,7 +5486,7 @@
           "POST"
         ]
       },
-      "description": "Tear down a desktop (kill its X server + apps, free the display). Pass `desktop` (an id from computer:list_desktops, or the name of one of YOUR desktops) or `pot` (Queen/operator: a pot's shared desktop). Idempotent — a no-op when nothing is live.",
+      "description": "Tear down a desktop (kill its X server + apps, free the display). Pass `desktop` (an id from computer:list_desktops, or the name of one of YOUR desktops); an authorized pot manager may pass `pot` for a pot's shared desktop. Idempotent — a no-op when nothing is live.",
       "capabilities": [
         "harness:write"
       ],
