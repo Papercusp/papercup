@@ -8292,6 +8292,10 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       const log: Array<Record<string, unknown>> = [];
       const approvals: string[] = [];
       const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+      const { readAgentConfig, writeAgentConfig } = await import('../agent-config');
+      const saved = await readAgentConfig();
+      await writeAgentConfig({ ...saved, backend: scriptedEngine.backend === 'claude' ? 'claude-code' : scriptedEngine.backend });
+      const backendLabel = scriptedEngine.backend === 'codex' ? 'Codex' : scriptedEngine.backend === 'omp' ? 'OMP' : 'Claude';
       let pane = new PuiPane(bin, operatorPort, home, { args: ['--solo'], cwd: launchDir, cols: 120, rows: 40 });
       onTestFailed(() => {
         try { frame('failure', pane.screen()); } catch { /* pane gone */ }
@@ -8394,9 +8398,11 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         }
       };
       try {
-        await pane.waitFor(`Claude · ${launchDir}`, { timeoutMs: 60_000 });
+        await pane.waitFor(`${backendLabel} · ${launchDir}`, { timeoutMs: 60_000 });
         frame('00-ready', pane.screen());
         const greeting = await turn('01-greeting', 'hi');
+        expect(scriptedEngine.engines.at(-1)?.adapter.host.descriptor().identity.backend,
+          'the review must exercise the requested real backend').toBe(scriptedEngine.backend);
         const explained = await turn('02-read-explain', 'Read calc.js and explain what it does in two sentences.');
         expect(explained).toMatch(/add/i);
         await turn('03-edit', 'Edit calc.js so that add() accepts an optional third number and adds it too.');
@@ -8414,7 +8420,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         log.push({ label: '05a-exit', exitedCleanly, exitMs: Math.round(performance.now() - exitStarted) });
         await pane.stop().catch(() => {});
         pane = new PuiPane(bin, operatorPort, home, { args: ['--solo'], cwd: launchDir, cols: 120, rows: 40 });
-        await pane.waitFor(`Claude · ${launchDir}`, { timeoutMs: 60_000 });
+        await pane.waitFor(`${backendLabel} · ${launchDir}`, { timeoutMs: 60_000 });
         // WI-10004162: the owner's own turns contain 'calc.js', so waiting for
         // that passed over a pane with every agent reply missing. An agent
         // block header is what proves the saved conversation was restored.
