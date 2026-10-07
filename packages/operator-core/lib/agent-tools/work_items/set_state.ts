@@ -187,9 +187,31 @@ function nonTerminalAliasSchemaError(input: unknown): string | undefined {
   return undefined;
 }
 
+function nonTerminalCompletionFieldError(input: unknown): string | undefined {
+  const root = typeof input === 'object' && input !== null ? (input as Record<string, unknown>) : undefined;
+  const candidates = Array.isArray(root?.items) ? root.items : [input];
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'object' || candidate === null) continue;
+    const row = candidate as Record<string, unknown>;
+    if (typeof row.state !== 'string' || isTerminalStateInput(row.state) || foldsToBlocked(row.state)) continue;
+
+    const terminalOnlyFields = ['completionRef', 'assumptions'].filter((key) => key in row);
+    if (terminalOnlyFields.length === 0) continue;
+    const fields = terminalOnlyFields.map((key) => `\`${key}\``).join(' and ');
+    const verb = terminalOnlyFields.length === 1 ? 'is a terminal-only field' : 'are terminal-only fields';
+    return (
+      `${fields} ${verb} and cannot be sent with non-terminal state \"${row.state}\". ` +
+      'For a non-terminal transition note, use `reason` or `note`; terminal writes require `completionRef` and `assumptions`.'
+    );
+  }
+  return undefined;
+}
+
 const aliasAwareUnionError = (issue: { input?: unknown; errors?: unknown }): string | undefined => {
   const aliasError = nonTerminalAliasSchemaError(issue.input);
   if (aliasError) return aliasError;
+  const terminalFieldError = nonTerminalCompletionFieldError(issue.input);
+  if (terminalFieldError) return terminalFieldError;
 
   const root = typeof issue.input === 'object' && issue.input !== null
     ? (issue.input as Record<string, unknown>)

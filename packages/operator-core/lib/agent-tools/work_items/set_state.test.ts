@@ -49,6 +49,24 @@ describe('work_items:set_state dispatch validation (EI-25280526101674032)', () =
       expect(parsed.value).toMatchObject({ id: 'WI-test', state: 'open', force: true });
     }
   });
+
+  it('explains that terminal evidence fields are invalid on an open transition', async () => {
+    const parsed = await standardValidate(tool.args, {
+      id: 'WI-test',
+      harness: 'papercusp',
+      state: 'open',
+      force: true,
+      completionRef: 'reopen note',
+    });
+
+    expect(parsed.ok).toBe(false);
+    if (!parsed.ok) {
+      const message = parsed.issues[0]?.message ?? '';
+      expect(message).toContain('`completionRef` is a terminal-only field');
+      expect(message).toContain('use `reason` or `note`');
+      expect(message).not.toContain('Invalid option: expected one of');
+    }
+  });
 });
 
 /** Default mock: no alias — the item lands exactly on the requested state. */
