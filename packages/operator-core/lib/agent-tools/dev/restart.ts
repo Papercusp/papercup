@@ -2195,7 +2195,7 @@ export default defineTool({
           // refusal here is exactly what made this remediation look unreachable.
           (gitSyncDrainSec === 0
             ? ` git-sync fires hold this barrier only ~5-10s, so pass git_sync_drain_sec (up to ${GIT_SYNC_RESTART_BARRIER_DRAIN_SEC}) to WAIT for it instead of retrying by hand — that is the supported way through on a merely busy host, not override_git_sync_collision.`
-            : ` Already waited ${gitSyncDrainSec}s for a drain and it did not clear; the sweep is unusually saturated, so retry shortly rather than forcing.`),
+            : ` The git-sync barrier did not clear within the requested ${gitSyncDrainSec}s wait; check the live barrier before retrying.`),
       });
     }
 
