@@ -490,6 +490,18 @@ describe('spec-test-adequacy evaluator → scorecards:emit round trip', () => {
     expect(row!.scorecardDraft.rerunRecipe.args).toMatchObject({ replaySnapshot: true, bindingIds: [1, 2, 3, 4] });
     expect(scorecardEmitArgs.parse(row!.scorecardDraft).rerunRecipe?.selection.bindingIds).toEqual([1, 2, 3, 4]);
 
+    const exactReplay = await runEvaluator({
+      ...row!.scorecardDraft.rerunRecipe.args,
+      detail: 'summary',
+      payloadTier: 'full',
+    });
+    const ratingValues = (ratings: Record<string, { rating: string }>) =>
+      Object.fromEntries(Object.entries(ratings).map(([key, value]) => [key, value.rating]));
+    expect({
+      ratings: ratingValues(exactReplay.rows[0]!.ratings),
+      wouldBlock: exactReplay.rows[0]!.wouldBlock,
+    }).toEqual({ ratings: ratingValues(row!.ratings), wouldBlock: row!.wouldBlock });
+
     const result = await emitDraft(row!.scorecardDraft);
 
     expect(result, JSON.stringify(result)).toMatchObject({ ok: true, created: true, issueId: 'EI-ROUND-TRIP' });
