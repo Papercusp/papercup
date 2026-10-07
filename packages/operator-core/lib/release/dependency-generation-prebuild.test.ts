@@ -113,7 +113,8 @@ describe('dependency generation background prebuild', () => {
     })).rejects.toThrow('event delivery unavailable');
     expect(emit).toHaveBeenCalledTimes(2);
     expect(unsafe).toHaveBeenCalledTimes(1);
-    expect(unsafe.mock.calls[0][1]).toEqual([TARGET.installSlug, TARGET.workspaceId, CANDIDATE_A]);
+    const [, params] = unsafe.mock.calls[0] as unknown as [string, unknown[]];
+    expect(params).toEqual([TARGET.installSlug, TARGET.workspaceId, CANDIDATE_A]);
   });
 
   it('claims candidate+input once, publishes through the existing helper, then persists/emits ready', async () => {

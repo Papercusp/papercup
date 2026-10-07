@@ -632,7 +632,7 @@ export async function emitDependencyPrebuildTerminal(
     state.status === 'ready'
       ? `dependency generation ${state.identity} ready for ${state.candidate.slice(0, 12)}`
       : `dependency generation prebuild failed for ${state.candidate.slice(0, 12)}: ${state.error.slice(0, 240)}`;
-  await Promise.all([
+  const effects: Promise<unknown>[] = [
     emit({
       key: `${DEPENDENCY_PREBUILD_EVENT_PREFIX}:${state.status}`,
       workspaceId: target.workspaceId,
@@ -647,11 +647,13 @@ export async function emitDependencyPrebuildTerminal(
       payload,
       source: 'git-sync:dependency-prebuild',
     }),
-  ]).then(() => undefined);
+  ];
   if (state.status === 'ready') {
     // Reuse the existing routine, not another readiness poll. A late publication for an old
     // candidate must not wake a successor, and a live runner or an intentional pause stays put.
-    await (deps.sql ?? getOrgPg().sql).unsafe(
+    // Scheduling and notification delivery are independent consequences of persisted READY.
+    // Start both before awaiting either so a failed event cannot strand the matching attempt.
+    effects.push((deps.sql ?? getOrgPg().sql).unsafe(
       `UPDATE harness_shared.routines
           SET next_fire_at = now() + interval '1 minute', updated_at = now()
         WHERE install_slug = $1 AND workspace_id = $2
@@ -663,8 +665,9 @@ export async function emitDependencyPrebuildTerminal(
             OR metadata->'repair_queue'->>'repairHead' = $3)
           AND (next_fire_at IS NULL OR next_fire_at > now() + interval '1 minute')`,
       [target.installSlug, target.workspaceId, state.candidate],
-    );
+    ));
   }
+  await Promise.all(effects).then(() => undefined);
 }
 
 function terminateProcessGroup(pid: number, signal: NodeJS.Signals): void {
