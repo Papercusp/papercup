@@ -6,9 +6,14 @@
  * chooses the canonical candidate and appends the incoming report/evidence.
  */
 import { getOrgPg } from '@papercusp/db-org';
+import { performance } from 'node:perf_hooks';
 import type { AdmissionIdentity } from './harness/improvements/digest';
+import { recordTelemetryReport } from './record-telemetry';
+import { TELEMETRY_KINDS } from './telemetry-kinds';
 
 type OrgSql = ReturnType<typeof getOrgPg>['sql'];
+
+const SLOW_CAPTURE_OCCURRENCE_TELEMETRY_MS = 500;
 
 export type IssueOccurrenceKind =
   | 'canonical-created'
@@ -307,45 +312,101 @@ export async function recordIssueOccurrence(
   // Unit suites use injected recorders. Never let an unrelated pure test open PG.
   if (process.env.VITEST && !sqlOverride) return null;
   const sql = sqlOverride ?? getOrgPg().sql;
+  const operationStartedAt = new Date().toISOString();
+  const operationStarted = performance.now();
+  let canonicalLookupAwaitMs: number | null = null;
+  let occurrenceInsertAwaitMs: number | null = null;
+  let outcome: 'recorded' | 'canonical-missing' | 'insert-empty' | 'failed' = 'failed';
+  let failedStage: 'canonical-lookup' | 'occurrence-insert' | null = null;
   try {
-    const canonical = (await sql<Array<{
-      workspace_id: string;
-      harness_slug: string;
-      feature_id: string;
-    }>>`
-      SELECT workspace_id, harness_slug, feature_id
-        FROM harness_shared.work_items
-       WHERE feature_id = ${input.canonicalId}
-         ${input.canonicalHarness ? sql`AND harness_slug = ${input.canonicalHarness}` : sql``}
-       ORDER BY created_ts DESC
-       LIMIT 1
-    `)[0];
-    if (!canonical) return null;
+    const lookupStarted = performance.now();
+    let canonical: { workspace_id: string; harness_slug: string; feature_id: string } | undefined;
+    try {
+      canonical = (await sql<Array<{
+        workspace_id: string;
+        harness_slug: string;
+        feature_id: string;
+      }>>`
+        SELECT workspace_id, harness_slug, feature_id
+          FROM harness_shared.work_items
+         WHERE feature_id = ${input.canonicalId}
+           ${input.canonicalHarness ? sql`AND harness_slug = ${input.canonicalHarness}` : sql``}
+         ORDER BY created_ts DESC
+         LIMIT 1
+      `)[0];
+    } catch (error) {
+      failedStage = 'canonical-lookup';
+      throw error;
+    } finally {
+      canonicalLookupAwaitMs = Math.round((performance.now() - lookupStarted) * 100) / 100;
+    }
+    if (!canonical) {
+      outcome = 'canonical-missing';
+      return null;
+    }
     const evidence = JSON.stringify(input.evidence ?? {});
     const identity = input.admissionIdentity ? JSON.stringify(input.admissionIdentity) : null;
-    const rows = await sql<Array<{ occurrence_id: string | number; occurred_at: Date | string }>>`
-      INSERT INTO harness_shared.work_item_occurrences
-        (workspace_id, canonical_harness_slug, canonical_work_item_id, reporter,
-         source_tool, report_kind, reported_title, evidence, admission_identity)
-      VALUES
-        (${canonical.workspace_id}, ${canonical.harness_slug}, ${canonical.feature_id},
-         ${input.reporter ?? null}, ${input.sourceTool}, ${input.reportKind}, ${input.reportedTitle},
-         ${evidence}::text::jsonb, ${identity}::text::jsonb)
-      RETURNING occurrence_id, occurred_at
-    `;
+    const insertStarted = performance.now();
+    let rows: Array<{ occurrence_id: string | number; occurred_at: Date | string }>;
+    try {
+      rows = await sql<Array<{ occurrence_id: string | number; occurred_at: Date | string }>>`
+        INSERT INTO harness_shared.work_item_occurrences
+          (workspace_id, canonical_harness_slug, canonical_work_item_id, reporter,
+           source_tool, report_kind, reported_title, evidence, admission_identity)
+        VALUES
+          (${canonical.workspace_id}, ${canonical.harness_slug}, ${canonical.feature_id},
+           ${input.reporter ?? null}, ${input.sourceTool}, ${input.reportKind}, ${input.reportedTitle},
+           ${evidence}::text::jsonb, ${identity}::text::jsonb)
+        RETURNING occurrence_id, occurred_at
+      `;
+    } catch (error) {
+      failedStage = 'occurrence-insert';
+      throw error;
+    } finally {
+      occurrenceInsertAwaitMs = Math.round((performance.now() - insertStarted) * 100) / 100;
+    }
     const row = rows[0];
-    return row
-      ? {
-          occurrenceId: Number(row.occurrence_id),
-          workspaceId: canonical.workspace_id,
-          canonicalHarness: canonical.harness_slug,
-          canonicalId: canonical.feature_id,
-          reportKind: input.reportKind,
-          occurredAt: new Date(row.occurred_at).toISOString(),
-        }
-      : null;
+    if (!row) {
+      outcome = 'insert-empty';
+      return null;
+    }
+    outcome = 'recorded';
+    return {
+      occurrenceId: Number(row.occurrence_id),
+      workspaceId: canonical.workspace_id,
+      canonicalHarness: canonical.harness_slug,
+      canonicalId: canonical.feature_id,
+      reportKind: input.reportKind,
+      occurredAt: new Date(row.occurred_at).toISOString(),
+    };
   } catch {
+    outcome = 'failed';
     return null;
+  } finally {
+    const totalElapsedMs = Math.round((performance.now() - operationStarted) * 100) / 100;
+    if (
+      input.sourceTool === 'improvements:capture' &&
+      input.reportKind === 'canonical-created' &&
+      totalElapsedMs >= SLOW_CAPTURE_OCCURRENCE_TELEMETRY_MS
+    ) {
+      // Best-effort local diagnostic telemetry; never add this write to the
+      // capture's critical path. These are client-observed SQL-await times, so
+      // they include pool/driver/network latency as well as database execution.
+      void recordTelemetryReport({
+        kind: TELEMETRY_KINDS.capture_stage_timing,
+        payload: {
+          operation: 'issue_occurrence_persistence',
+          sourceTool: input.sourceTool,
+          reportKind: input.reportKind,
+          startedAt: operationStartedAt,
+          canonicalLookupAwaitMs,
+          occurrenceInsertAwaitMs,
+          totalElapsedMs,
+          outcome,
+          failedStage,
+        },
+      }).catch(() => {});
+    }
   }
 }
 

@@ -57,6 +57,10 @@ export const TELEMETRY_KINDS = {
    *  recorded locally on the boot-history channel; this kind forwards the
    *  count off-device when the user has opted in. */
   substrate_admission_rejected: 'substrate_admission_rejected',
+
+  /** Slow improvements:capture occurrence persistence; records client-observed
+   *  canonical lookup and occurrence INSERT await times, without work-item data. */
+  capture_stage_timing: 'capture_stage_timing',
 } as const;
 
 export type TelemetryKind = (typeof TELEMETRY_KINDS)[keyof typeof TELEMETRY_KINDS];
@@ -80,6 +84,17 @@ export interface TelemetryPayloads {
     reason: 'bad_sig' | 'binding_invalid' | 'revoked';
     /** Truncated peer label (e.g. first bytes of the log key) — NOT the full pubkey. */
     peer?: string;
+  };
+  capture_stage_timing: {
+    operation: 'issue_occurrence_persistence';
+    sourceTool: 'improvements:capture';
+    reportKind: 'canonical-created';
+    startedAt: string;
+    canonicalLookupAwaitMs: number | null;
+    occurrenceInsertAwaitMs: number | null;
+    totalElapsedMs: number;
+    outcome: 'recorded' | 'canonical-missing' | 'insert-empty' | 'failed';
+    failedStage: 'canonical-lookup' | 'occurrence-insert' | null;
   };
 }
 
