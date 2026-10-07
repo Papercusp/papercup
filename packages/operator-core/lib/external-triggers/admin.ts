@@ -1489,21 +1489,27 @@ export async function loadExternalTriggerAdminSnapshot(
              s.cursor,
              s.last_connected_at AS "lastConnectedAt",
              s.last_error AS "lastError",
-             count(DISTINCT b.id)::int AS "bindingCount",
-             count(DISTINCT b.id) FILTER (WHERE b.armed)::int AS "armedBindingCount",
-             count(DISTINCT d.id) FILTER (
-               WHERE d.outcome = 'failed'
-                 AND d.received_at >= now() - interval '24 hours'
-             )::int AS "failedDeliveries24h"
+             binding_counts."bindingCount",
+             binding_counts."armedBindingCount",
+             delivery_counts."failedDeliveries24h"
         FROM harness_shared.data_sources s
-        LEFT JOIN harness_shared.trigger_bindings b
-          ON b.workspace_id = s.workspace_id
-         AND b.source_id = s.id
-         AND b.detached_at IS NULL
-        LEFT JOIN harness_shared.trigger_deliveries d
-          ON d.workspace_id = s.workspace_id AND d.source_id = s.id
+        LEFT JOIN LATERAL (
+          SELECT count(*)::int AS "bindingCount",
+                 count(*) FILTER (WHERE b.armed)::int AS "armedBindingCount"
+            FROM harness_shared.trigger_bindings b
+           WHERE b.workspace_id = s.workspace_id
+             AND b.source_id = s.id
+             AND b.detached_at IS NULL
+        ) binding_counts ON TRUE
+        LEFT JOIN LATERAL (
+          SELECT count(*)::int AS "failedDeliveries24h"
+            FROM harness_shared.trigger_deliveries d
+           WHERE d.workspace_id = s.workspace_id
+             AND d.source_id = s.id
+             AND d.outcome = 'failed'
+             AND d.received_at >= now() - interval '24 hours'
+        ) delivery_counts ON TRUE
        WHERE s.workspace_id = ${workspaceId}
-       GROUP BY s.workspace_id, s.id
        ORDER BY s.kind, s.created_at, s.id`,
     sql<BindingDbRow[]>`
       SELECT b.id::text,

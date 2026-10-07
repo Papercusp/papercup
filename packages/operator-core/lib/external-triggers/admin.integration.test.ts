@@ -146,6 +146,35 @@ describe('external-trigger admin shared seam', () => {
     expect(snapshot.recentRuns[0]).toMatchObject({ bindingId, status: 'failed', attempts: 2 });
   });
 
+  it('loads source aggregates when the source relation is a compatibility view without primary-key metadata', async () => {
+    const relations = await sql<Array<{ relkind: string }>>`
+      SELECT c.relkind::text AS relkind
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+       WHERE n.nspname = 'harness_shared' AND c.relname = 'data_sources'`;
+    expect(relations[0]?.relkind).toBe('r');
+
+    const snapshot = await sql.begin(async (tx) => {
+      await tx`SAVEPOINT compatibility_view_fixture`;
+      await tx`ALTER TABLE harness_shared.data_sources RENAME TO data_sources_view_fixture_base`;
+      await tx`CREATE VIEW harness_shared.data_sources AS
+        SELECT * FROM harness_shared.data_sources_view_fixture_base`;
+      const result = await loadExternalTriggerAdminSnapshot(tx as unknown as Sql, WS);
+      // Keep this schema substitution local to the assertion; all existing test
+      // cases continue against the migrated base table after the savepoint rolls back.
+      await tx`ROLLBACK TO SAVEPOINT compatibility_view_fixture`;
+      return result;
+    });
+
+    expect(snapshot.sources).toHaveLength(1);
+    expect(snapshot.sources[0]).toMatchObject({
+      id: sourceId,
+      kind: 'gmail',
+      bindingCount: 1,
+      armedBindingCount: 1,
+    });
+  });
+
   it('projects a redacted trigger cause, policy trace, linked plan progress, and outcome links', async () => {
     const planRuns = await sql<Array<{ id: number }>>`
       INSERT INTO harness_shared.plan_runs
