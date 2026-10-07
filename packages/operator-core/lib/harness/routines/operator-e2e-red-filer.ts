@@ -378,6 +378,8 @@ export async function fileOperatorE2eReds(
   }
   const outcomes: RedFilingOutcome[] = [];
   for (const red of reds) {
+    // Spec rows are derived from a group; task-only failures were handled above.
+    if (!group) continue;
     try {
       const ownership = classifyOwnership(
         red.specPath,
