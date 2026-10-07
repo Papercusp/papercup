@@ -21,6 +21,10 @@ import { z } from 'zod';
 import type { ThreadPostRow } from '@papercusp/coordination/capabilities';
 
 const getWorkItem = vi.fn();
+const readReportAttachmentEvidence = vi.fn();
+vi.mock('../../harness/improvements/report-attachments', () => ({
+  readReportAttachmentEvidence: (...args: unknown[]) => readReportAttachmentEvidence(...args),
+}));
 const getWorkItemDetail = vi.fn();
 const getWorkItemThreadWindow = vi.fn();
 vi.mock('../../work-items', () => ({
@@ -87,6 +91,19 @@ import {
 const ctx = { uiClientId: 'su-tester', workspaceId: 'default' } as never;
 const parse = (x: unknown) => (get.args as { parse: (x: unknown) => unknown }).parse(x);
 type Out = { data: any };
+
+it('attachment read returns bounded evidence without checkpoint enrichment and refuses mixed/bulk modes', async () => {
+  getWorkItem.mockResolvedValue({ id: 'WI-attachment', harness: 'papercusp' });
+  const evidence = { sourceWorkItemId: 'EI-source', attachments: [], page: null };
+  readReportAttachmentEvidence.mockResolvedValue(evidence);
+  const result = (await env({ id: 'WI-attachment', attachments: {} })).results[0];
+  expect(result).toMatchObject({ ok: true, id: 'WI-attachment', reportAttachments: evidence });
+  expect(readReportAttachmentEvidence).toHaveBeenCalledWith(expect.any(String), 'WI-attachment', {}, { harness: 'papercusp' });
+  expect(getWorkItemCheckpointWithMeta).not.toHaveBeenCalled();
+  expect(() => parse({ ids: ['WI-a', 'WI-b'], attachments: {} })).toThrow();
+  expect(() => parse({ id: 'WI-a', attachments: {}, resume: true })).toThrow();
+  expect(() => parse({ id: 'WI-a', attachments: { limit: 2049 } })).toThrow();
+});
 
 it('documents checkpointUpdatedAtMs as the checkpoint-change marker, not workItem.updatedAt', () => {
   const returns = (get as unknown as { guidance?: { returns?: string } }).guidance?.returns ?? '';
