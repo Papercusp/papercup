@@ -747,7 +747,8 @@ const reportArg = z
   .optional()
   .describe(
     'Structured status card (ReportBlock): { title?, plans:[{ title, status?, summary?, items?:[{ id?, text, status? }] }] }. Sent to ["human"] it renders as a 📋 card in the owner\'s Inbox (fleet updates, status digests) instead of plain text. Statuses like blocked/failing surface it as an Alert; a genuine decision still goes through coord:escalate. Invalid shape → loud report_invalid refusal (nothing sent).',
-  );
+  )
+  .meta({ id: 'coord-send-report-v1' });
 
 /** P-033. Which fields a NON-AGENT sender (the operator GUI) derived rather than
  *  authored — so the D-070 measurement can exclude them instead of counting a
