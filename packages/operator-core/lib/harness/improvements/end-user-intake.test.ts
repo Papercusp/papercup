@@ -5,7 +5,7 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import type { CaptureImprovementInput, CaptureImprovementResult } from './capture-core';
-import { classifyEndUserReport, intakeEndUserReport, type EndUserIntakeDeps } from './end-user-intake';
+import { ANONYMOUS_END_USER_FILER, classifyEndUserReport, intakeEndUserReport, type EndUserIntakeDeps } from './end-user-intake';
 import { END_USER_NOTE_HEADER, isQuotedEndUserText } from './untrusted-evidence';
 
 function deps() {
@@ -37,6 +37,15 @@ describe('classifyEndUserReport', () => {
 });
 
 describe('intakeEndUserReport', () => {
+  it.each([undefined, null, '   '])('attributes an anonymous filing to the door for independent verification (%s)', async (reporterId) => {
+    const d = deps();
+    await intakeEndUserReport({ text: 'Export crashes', reporterId }, d.all);
+    const input = d.capture.mock.calls[0]?.[0];
+    expect(input).toMatchObject({ createdBy: ANONYMOUS_END_USER_FILER, reporterKind: 'end-user' });
+    expect(input?.payloadExtra).not.toHaveProperty('contact');
+    expect(input?.payloadExtra).not.toHaveProperty('reporterId');
+  });
+
   it('files a bug through the one intake as an end-user report with its captured context', async () => {
     const d = deps();
     const reportContext = { appVersion: '0.9.3', recentErrors: [{ message: 'TypeError: cannot read properties of undefined', source: 'renderer' }] };

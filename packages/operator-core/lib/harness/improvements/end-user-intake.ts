@@ -48,6 +48,8 @@ const IDEA_CUE =
 
 const MAX_TITLE = 120;
 const MAX_NOTE = 2000;
+/** Trusted filing actor, not a reporter identity or contact detail. */
+export const ANONYMOUS_END_USER_FILER = 'system:end-user-report';
 
 export function classifyEndUserReport(text: string, ctx?: ReportContextInput | null): EndUserReportClassification {
   if (Array.isArray(ctx?.recentErrors) && ctx.recentErrors.length > 0) return { kind: 'bug', basis: 'recent-errors' };
@@ -154,7 +156,9 @@ export async function intakeEndUserReport(
     reporterKind: 'end-user',
     sourceRole: 'human',
     ...(input.reportContext ? { reportContext: input.reportContext } : {}),
-    ...(input.reporterId ? { createdBy: input.reporterId } : {}),
+    // A null filer prevents independent acceptance from establishing its party
+    // set. Attribute anonymous filings to this door without identifying anyone.
+    createdBy: input.reporterId?.trim() || ANONYMOUS_END_USER_FILER,
     // Omitted scope files under the platform Pot. Left unset, captureImprovement
     // files under the workspace's operator scope instead, so an agent's report of
     // the same error (filed under the Pot) would never fold onto this one.
