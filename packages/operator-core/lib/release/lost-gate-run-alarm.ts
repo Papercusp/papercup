@@ -151,23 +151,24 @@ export function lostRunAlarmBody(opts: {
  */
 export async function claimLostRunAlarm(
   sql: Sql,
-  target: { installSlug: string; workspaceId: string },
+  target: { installSlug: string; workspaceId: string; alarmField?: 'lostRunAlarm' | 'qualificationProgressAlarm' },
   key: string,
   nowMs: number,
 ): Promise<boolean> {
+  const alarmField = target.alarmField ?? 'lostRunAlarm';
   const result = await sql`
     UPDATE harness_shared.routines
        SET metadata = jsonb_set(
              COALESCE(metadata, '{}'::jsonb),
              '{gate_health}',
              COALESCE(metadata->'gate_health', '{}'::jsonb)
-               || jsonb_build_object('lostRunAlarm', jsonb_build_object('key', ${key}::text, 'alarmedAtMs', ${nowMs}::bigint)),
+               || jsonb_build_object(${alarmField}::text, jsonb_build_object('key', ${key}::text, 'alarmedAtMs', ${nowMs}::bigint)),
              true
            )
      WHERE install_slug = ${target.installSlug}
        AND workspace_id = ${target.workspaceId}
        AND target_role = 'system:green-checkpoint'
-       AND (metadata->'gate_health'->'lostRunAlarm'->>'key') IS DISTINCT FROM ${key}::text`;
+       AND (metadata->'gate_health'->${alarmField}->>'key') IS DISTINCT FROM ${key}::text`;
   return result.count === 1;
 }
 
@@ -229,12 +230,13 @@ async function requeueDeadQualification(
 export async function sweepLostGateRuns(sql: Sql, deps: LostRunSweepDeps = {}): Promise<LostRunSweepResult> {
   const out: LostRunSweepResult = { alarmed: [], deduped: [], failed: [] };
   const nowMs = deps.nowMs ?? Date.now();
-  let rows: { install_slug: string; workspace_id: string; marker: unknown; alarmed_key: string | null; qualification?: unknown }[];
+  let rows: { install_slug: string; workspace_id: string; marker: unknown; alarmed_key: string | null; progress_alarmed_key?: string | null; qualification?: unknown }[];
   try {
     rows = await sql<typeof rows>`
       SELECT install_slug, workspace_id,
              metadata->'gate_health'->'inFlightCandidate' AS marker,
              metadata->'gate_health'->'lostRunAlarm'->>'key' AS alarmed_key,
+             metadata->'gate_health'->'qualificationProgressAlarm'->>'key' AS progress_alarmed_key,
              metadata->${CHECKPOINT_QUALIFICATION_METADATA_KEY} AS qualification
         FROM harness_shared.routines
        WHERE target_role = 'system:green-checkpoint'
@@ -246,18 +248,16 @@ export async function sweepLostGateRuns(sql: Sql, deps: LostRunSweepDeps = {}): 
   }
 
   for (const row of rows) {
-    const decision = decideLostRunAlarm({
+    const markerDecision = decideLostRunAlarm({
       rawMarker: row.marker,
       alreadyAlarmedKey: row.alarmed_key,
       selfPid: deps.selfPid ?? process.pid,
       pidAlive: deps.pidAlive ?? isPidAlive,
       nowMs,
     });
-    // A live process does not prove its qualification heartbeat is advancing. Keep the existing
-    // death alarm authoritative, and use the canonical progress projection for the other case.
-    const transaction = decision.action === 'silent' && decision.reason !== 'already-alarmed'
-      ? parseCheckpointQualificationTransaction(row.qualification)
-      : null;
+    // An old in-flight marker can outlive its run. Inspect the current qualification independently
+    // so the old marker's dedup stamp cannot hide a successor's missing heartbeat.
+    const transaction = parseCheckpointQualificationTransaction(row.qualification);
     const runner = transaction?.currentPhysicalRunner;
     const liveness = runner ? (deps.probeQualificationRunner ?? probeRunnerLiveness)(runner, nowMs) : 'unknown';
     const qualification = transaction && transaction.phase !== 'terminal' && runner
@@ -267,13 +267,19 @@ export async function sweepLostGateRuns(sql: Sql, deps: LostRunSweepDeps = {}): 
     const progressKey = inspect && transaction && runner
       ? `qualification:${transaction.attemptId}:${runner.id}:${liveness === 'dead' ? 'dead' : runner.heartbeatAtMs ?? transaction.lastProgressAtMs ?? runner.reservedAtMs}`
       : null;
+    // Prefer the current runner, retaining separate stamps on the same routine metadata so
+    // recovery of its heartbeat cannot make an old death alarm look new again.
+    const decision = progressKey ? { action: 'silent', reason: 'qualification-progress' } as const : markerDecision;
     if (decision.action === 'silent') {
       if (decision.reason === 'already-alarmed') out.deduped.push(row.install_slug);
       if (!progressKey) continue;
     }
-    const target = { installSlug: row.install_slug, workspaceId: row.workspace_id };
+    const target = {
+      installSlug: row.install_slug, workspaceId: row.workspace_id,
+      alarmField: progressKey ? 'qualificationProgressAlarm' as const : 'lostRunAlarm' as const,
+    };
     const key = decision.action === 'alarm' ? decision.key : progressKey!;
-    if (row.alarmed_key === key) {
+    if ((progressKey ? row.progress_alarmed_key : row.alarmed_key) === key) {
       out.deduped.push(row.install_slug);
       continue;
     }
@@ -358,16 +364,17 @@ export async function sweepLostGateRuns(sql: Sql, deps: LostRunSweepDeps = {}): 
 
 async function releaseLostRunAlarmClaim(
   sql: Sql,
-  target: { installSlug: string; workspaceId: string },
+  target: { installSlug: string; workspaceId: string; alarmField?: 'lostRunAlarm' | 'qualificationProgressAlarm' },
   key: string,
 ): Promise<void> {
+  const alarmField = target.alarmField ?? 'lostRunAlarm';
   await sql`
     UPDATE harness_shared.routines
-       SET metadata = jsonb_set(metadata, '{gate_health}', (metadata->'gate_health') - 'lostRunAlarm', true)
+       SET metadata = jsonb_set(metadata, '{gate_health}', (metadata->'gate_health') - ${alarmField}::text, true)
      WHERE install_slug = ${target.installSlug}
        AND workspace_id = ${target.workspaceId}
        AND target_role = 'system:green-checkpoint'
-       AND metadata->'gate_health'->'lostRunAlarm'->>'key' = ${key}::text`;
+       AND metadata->'gate_health'->${alarmField}->>'key' = ${key}::text`;
 }
 
 async function defaultNotifyOwner(opts: {
