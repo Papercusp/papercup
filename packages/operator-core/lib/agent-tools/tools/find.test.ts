@@ -1824,6 +1824,11 @@ describe('handler — dynamic activation (dynamic-tool-surface-2026-07-01)', () 
     expect(activated).toHaveLength(1);
     expect(activated[0]).toEqual(out.hits.map((h) => h.tool));
     expect(out.activated).toBe(true);
+    const description = (toolFind as unknown as { description: string }).description;
+    expect(description).toContain('client may need a tool-list refresh');
+    expect(description).toContain('follow `howToCall`');
+    expect(description).toContain('use tools:invoke when a wrapper is absent');
+    expect(description).not.toContain('are directly callable');
     // EI-20224177038218883: server activation cannot prove the client consumed
     // list_changed and materialized a same-turn wrapper. Lead with the one path
     // that is immediately callable on every client.

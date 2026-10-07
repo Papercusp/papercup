@@ -1227,9 +1227,10 @@ export default defineTool({
     // P-011 prompt-weight: the result-shape prose below moved into the free `returns`
     // field, which already described this exact payload (EI-22083648545226771).
     'Find tools by INTENT across the full ~550-tool catalog (hybrid lexical + semantic). ACTIVATION IS ' +
-    'CONDITIONAL: on a seeded (small-surface) session the matches are added to your live tool list ' +
-    '(activated:true) and are directly callable; on a full-catalog session there is nothing to expand ' +
-    '(activated:false) — call them via tools:invoke. High-confidence runtime symptoms (slow/queued, ' +
+    'CONDITIONAL: on a seeded (small-surface) session the matches are added to the server tool surface ' +
+    '(activated:true); the client may need a tool-list refresh before direct-call wrappers appear, so ' +
+    'follow `howToCall` and use tools:invoke when a wrapper is absent. On a full-catalog session there ' +
+    'is nothing to expand (activated:false) — call tools:invoke. High-confidence runtime symptoms (slow/queued, ' +
     'connection-refused, no-window, change-live?, value-stale?) route their decisive diagnostic to hit #1.',
   guidance: {
     when:

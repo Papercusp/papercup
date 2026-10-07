@@ -712,6 +712,7 @@ export const CALLERS_GRAPH_MEASUREMENT = {
     'ripgrep `(?<![\\w$])NAME\\s*\\(` over ts/tsx/mts/cts/js/jsx/mjs/cjs outside node_modules, over the SAME roots, ' +
     'with --with-filename (a single-file root otherwise prints no path and parsed as zero lines); each omitted line ' +
     'classified by AST. A literal `NAME(` census over the same roots checks for partial-name searches.',
+  remeasureCommand: 'node --import tsx scripts/remeasure-callers.ts [sampledName ...] (mandatory semantic reference + literal census; exits nonzero on incomplete or suspicious evidence)',
   evidence: 'docs/evidence/gitnexus-callers-remeasure-scoped-2026-10-06.json',
   tally: { resolved: 39, 'not-found': 1 },
 } as const;

@@ -23,6 +23,7 @@ import {
   type HeadBlobResolution,
 } from '../../agent-tools/work_items/completion-freshness';
 import { isCompletionSettled } from '../../work-item-completion-authority';
+import * as historyGit from '../../agent-tools/work_items/untouched-paths';
 
 // These fixtures own real temporary Git repositories. Keep them on local Git so they do not
 // depend on (or start) the process-wide spawner sidecar; its routing and fallback are covered by
@@ -416,22 +417,23 @@ describe('completionBlobHistoryContains — exact path and repository proof', ()
   // Both git reads are covered: the top-level path runs `git log` alone, and the nested path
   // runs the gitlink `ls-tree` first.
   it('answers unmeasured for a timed-out git read and undefined for a git that refuses', async () => {
-    const bin = mkdtempSync(join(tmpdir(), 'completion-history-fake-git-'));
-    TEMP_ROOTS.push(bin);
-    const slowGit = join(bin, 'slow-git');
-    const refusingGit = join(bin, 'refusing-git');
-    writeFileSync(slowGit, '#!/bin/sh\nexec sleep 10\n', { mode: 0o755 });
-    writeFileSync(refusingGit, '#!/bin/sh\nexit 128\n', { mode: 0o755 });
-    const ask = (gitBinary: string, path: string) =>
-      completionBlobHistoryContains(bin, 'a'.repeat(40), 'b'.repeat(40), path, 'c'.repeat(40), {
-        gitBinary,
-        timeoutMs: 200,
-      });
-
-    expect(await ask(slowGit, 'file.ts')).toBe('unmeasured');
-    expect(await ask(refusingGit, 'file.ts')).toBeUndefined();
-    expect(await ask(slowGit, 'dir/file.ts')).toBe('unmeasured');
-    expect(await ask(refusingGit, 'dir/file.ts')).toBeUndefined();
+    // A shell meant to refuse can itself miss a 200ms deadline (CI run 20871147).
+    // Map measured runner outcomes here; untouched-paths covers the real deadline.
+    const read = vi.spyOn(historyGit, 'streamGitFields');
+    const ask = (path: string) => completionBlobHistoryContains(
+      '/repo', 'a'.repeat(40), 'b'.repeat(40), path, 'c'.repeat(40), { gitBinary: 'git' },
+    );
+    try {
+      for (const path of ['file.ts', 'dir/file.ts']) {
+        read.mockResolvedValueOnce('timeout');
+        expect(await ask(path)).toBe('unmeasured');
+        read.mockResolvedValueOnce('failed');
+        expect(await ask(path)).toBeUndefined();
+      }
+      expect(read.mock.calls.map(([args]) => args[2])).toEqual(['log', 'log', 'ls-tree', 'ls-tree']);
+    } finally {
+      read.mockRestore();
+    }
   });
 
   // WI-10005357: a settlement pass resolved every declared path with its own `ls-tree`, per

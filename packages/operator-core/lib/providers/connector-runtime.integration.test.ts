@@ -255,6 +255,39 @@ beforeEach(() => {
 });
 
 describe('connector sync driver over registered providers (R-3)', () => {
+  it('refuses an undeclared membership snapshot without committing its cursor', async () => {
+    const src = await createSource();
+    handler = async () => ({ ...page([], 'untrusted', false), membership: { members: [{ providerUserId: '42' }] } });
+    const applyMembership = vi.fn();
+    await syncOne(src, { applyMembership });
+    expect(applyMembership).not.toHaveBeenCalled();
+    expect(await state(src)).toMatchObject({ cursor: null, failure_count: 1 });
+  });
+
+  it('applies declared membership before cursor commit and replays after an apply failure', async () => {
+    const src = await createSource();
+    descriptor.membership = { identityProvider: 'fixture' };
+    try {
+      handler = async () => ({ ...page([], 'members-committed', false), membership: { members: [{ providerUserId: '42' }] } });
+      const applyMembership = vi.fn<NonNullable<ConnectorSyncDeps['applyMembership']>>(async () => {
+        expect((await state(src)).cursor).toBeNull();
+        throw new Error('membership write interrupted');
+      });
+      await syncOne(src, { applyMembership });
+      expect(await state(src)).toMatchObject({ cursor: null, failure_count: 1 });
+      await makeDue(src);
+      applyMembership.mockImplementation(async () => {
+        expect((await state(src)).cursor).toBeNull();
+        return { applied: false, reason: 'not_organization_scope' };
+      });
+      expect(await syncOne(src, { applyMembership })).toMatchObject({ outcome: 'synced', membership: { applied: false } });
+      expect((await state(src)).cursor).toBe('members-committed');
+      expect(applyMembership).toHaveBeenCalledTimes(2);
+    } finally {
+      delete descriptor.membership;
+    }
+  });
+
   it('backfills every page, commits each cursor after admission, then polls incrementally', async () => {
     const src = await createSource();
     const first = [mail('m1'), mail('m2')];

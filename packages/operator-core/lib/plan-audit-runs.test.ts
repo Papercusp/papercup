@@ -21,6 +21,8 @@ describe('read-only audit run lifecycle', () => {
     await executePlanAudit(run);
     expect(h.engine).toHaveBeenCalledWith(expect.objectContaining({ planSlugs: ['a'], artifactPrefix: 'reports/plan-audits/' + run.id }));
     expect(h.publish).toHaveBeenCalledWith(h.sql, expect.objectContaining({ visibility: 'owner', tags: ['plan-audit'] }), { harnessSlug: 'test-harness' });
+    expect(h.publish.mock.calls[0][1].bodyMd).toContain('/adv?opcv=plans&paudit=' + run.id);
+    expect(h.publish.mock.calls[0][1].bodyMd).not.toContain('](/?');
     expect(JSON.parse(h.save.mock.calls.at(-1)![2])).toMatchObject({ status: 'complete', reportId: 'rpt_test', rowCount: 1 });
   });
   it('never publishes a failed generation as success', async () => {

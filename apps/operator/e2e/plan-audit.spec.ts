@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 
-test('sidebar audit opens report, navigates evidence, and reopens history', async ({ page }) => {
+test('sidebar audit opens report, navigates evidence, and reopens history', async ({ page }, testInfo) => {
   // UI contracts use a controlled HTTP seam; a separate real-PG integration
   // suite proves persistence and workspace isolation (not a mocked database).
   const run = { id: '11111111-1111-4111-8111-111111111111', scope: 'single', planSlugs: ['audit-fixture'], status: 'complete', startedAt: '2026-10-07T00:00:00Z', rowCount: 1 };
@@ -12,7 +12,15 @@ test('sidebar audit opens report, navigates evidence, and reopens history', asyn
       await route.fulfill({ contentType: 'text/html', body: renderPlanAuditReport({ rows: [{ slug: 'audit-fixture', title: 'Audit fixture', status: 'active', category: 'Finish', implementation: 'Verified implementation', recommendation: 'Review evidence', citations: [{ path: 'src/real.ts' }] }] }) });
     } else await route.fulfill({ json: url.searchParams.has('runId') ? { run } : { runs: [run] } });
   });
-  await page.goto('/?opcv=plans&paudit=' + run.id);
+  const errors: string[] = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await page.goto('/adv?opcv=plans&paudit=' + run.id);
+  // The root gateway intentionally replaces its search on redirect; audit
+  // permalinks must name the maintained app route, not '/'. Fail before looking
+  // inside an iframe if the host/URL prerequisite isn't actually established.
+  await expect(page).toHaveURL(/paudit=/);
+  await expect(page.getByTestId('plan-audit-pane')).toBeVisible();
+  await testInfo.attach('app-readiness', { body: JSON.stringify({ url: page.url(), errors }), contentType: 'application/json' });
   const frame = page.frameLocator('iframe[title="Plan audit report"]');
   await expect(frame.getByRole('heading', { name: 'Audit fixture' })).toBeVisible();
   await expect(frame.getByText('src/real.ts', { exact: true }).first()).toBeVisible();

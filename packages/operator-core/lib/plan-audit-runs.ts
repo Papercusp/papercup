@@ -25,6 +25,9 @@ export interface PlanAuditRun {
 }
 const PREFIX = 'reports/plan-audits/';
 export const PLAN_AUDIT_RUN_TIMEOUT_MS = 300000;
+export function planAuditUiPath(id: string): string {
+  return '/adv?opcv=plans&paudit=' + encodeURIComponent(id);
+}
 const idPattern = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
 const running = new Map<string, Promise<void>>();
 
@@ -105,7 +108,7 @@ export async function executePlanAudit(run: PlanAuditRun): Promise<void> {
       summary: result.manifest.rows.length + ' plans inspected; point-in-time, read-only ledger/evidence audit.',
       subject: run.scope === 'single' ? { kind: 'plan', ref: run.planSlugs![0] } : { kind: 'pot', ref: run.harness },
       visibility: 'owner', source: 'owner', tags: ['plan-audit'],
-      bodyMd: '# Plan audit\n\n[Open the navigable audit workspace](/?opcv=plans&paudit=' + run.id + ')\n\nSnapshot: ' + result.manifest.generatedAt + '\n\nFull evidence: ' + result.artifacts.json + '\n\nNo plan lifecycle, assignment, claim, or blocker was changed. Stored test histories are not fresh test runs.',
+      bodyMd: '# Plan audit\n\n[Open the navigable audit workspace](' + planAuditUiPath(run.id) + ')\n\nSnapshot: ' + result.manifest.generatedAt + '\n\nFull evidence: ' + result.artifacts.json + '\n\nNo plan lifecycle, assignment, claim, or blocker was changed. Stored test histories are not fresh test runs.',
     }, { harnessSlug: run.harness });
     await save({ ...run, status: 'complete', finishedAt: new Date().toISOString(), rowCount: result.manifest.rows.length, reportId: report.reportId });
   } catch (error) {
