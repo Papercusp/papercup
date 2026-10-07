@@ -18,6 +18,7 @@ const { getRegisteredSuSessionHost } = require('../su-session-host') as typeof i
 const { getAdvSession } = require('../adv-sessions') as typeof import('../adv-sessions');
 const { SU_SESSION_SCHEMA, SU_SESSION_PROTOCOL_VERSION } =
   require('@papercusp/chat-protocol') as typeof import('@papercusp/chat-protocol');
+const { observeAttachResponse } = require('./attach-observation') as typeof import('./attach-observation');
 
 if (
   !process.send ||
@@ -166,14 +167,12 @@ const server = createAdaptorServer({
     if (launch) observe(launch.agent_chat_id, launch.harness_slug);
     if (launch) {
       // HTTP 200 alone cannot distinguish exact resume from the legacy
-      // attach-only fallback. Never consume a streamed bootstrap response.
-      const result = response.headers.get('content-type')?.includes('application/json')
-        ? await response.clone().json().catch(() => undefined) as Record<string, unknown> | undefined
-        : undefined;
+      // attach-only fallback. Observe a clone without delaying the PUI.
+      const emitAttachResult = (result: Record<string, unknown> | undefined, httpStatus = response.status) => {
       send({ type: 'diagnostic', level: 'info', args: ['PUI_OPERATOR_ATTACH_RESULT', {
         requestedAdvSessionId: launch.attach_adv_session_id,
         attachedEngine: launch.attached_engine,
-        httpStatus: response.status,
+        httpStatus,
         contentType: response.headers.get('content-type'),
         status: result?.status,
         attached: result?.attached,
@@ -186,6 +185,9 @@ const server = createAdaptorServer({
         code: result?.code,
         error: result?.error,
       }] });
+      };
+      void observeAttachResponse(response, emitAttachResult).catch((error) => send({ type: 'diagnostic', level: 'info',
+        args: ['PUI_OPERATOR_ATTACH_OBSERVATION_ERROR', String(error).slice(0, 500)] }));
     }
     if (tracksReadiness) {
       // Rehydration may itself occur while handling the snapshot request.
