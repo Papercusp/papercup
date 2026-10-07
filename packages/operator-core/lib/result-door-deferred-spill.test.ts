@@ -23,9 +23,11 @@ import {
   beginResultDoorAggregate,
   resetResultDoorAggregatesForTests,
   RESULT_DOOR_TOKENS,
+  type DoorableResult,
 } from './result-door';
 import { _resetScratchUsageForTests, _setScratchUsageForTests, refreshScratchUsage, WORKSPACE_QUOTA_BYTES, writeWithScratchQuota } from './scratch-gc';
 import { parseScratchReference, writeScratchReference } from './scratch-reference';
+import type { ScratchWriteTimings } from './scratch-gc';
 
 const BUDGET_CHARS = RESULT_DOOR_TOKENS * CHARS_PER_TOKEN_ESTIMATE;
 const RUN_ID = '11111111-2222-4333-8444-555555555555';
@@ -68,6 +70,20 @@ afterEach(() => {
 });
 
 describe('result-door deferred spill (WI-10004533)', () => {
+  it.each(['text', 'media'])('reports a persisted %s spill phase without allowing observer failure to lose the original payload', async (kind) => {
+    const observed = vi.fn((_timings: ScratchWriteTimings) => { throw new Error('diagnostic observer failed'); });
+    const original = kind === 'text' ? oversized().content[0].text : 'A'.repeat(BUDGET_CHARS * 3);
+    const input = kind === 'text' ? { content: [{ type: 'text', text: original }] }
+      : { content: [{ type: 'image', mimeType: 'image/png', data: original }] };
+    const result = await applyResultDoorAsync<DoorableResult>(input, { ...OPTS, onScratchWriteTiming: observed });
+    expect(observed).toHaveBeenCalledTimes(1);
+    expect(observed.mock.calls[0][0]).toEqual({
+      quotaWaitMs: expect.any(Number), refreshWaitMs: expect.any(Number),
+      quotaRecoveryMs: expect.any(Number), writeMs: expect.any(Number), totalMs: expect.any(Number),
+    });
+    const path = (result._meta?.resultDoor as { spillPath?: string })?.spillPath;
+    expect(parseScratchReference(readFileSync(path!))!.payload.toString()).toContain(original);
+  });
   it('with a collector, the synchronous door performs NO filesystem write — the spill lands only when awaited', async () => {
     const deferred: Promise<void>[] = [];
     const out = applyResultDoor(oversized(), { ...OPTS, deferredScratchWrites: deferred });
