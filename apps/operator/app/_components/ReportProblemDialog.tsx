@@ -11,12 +11,13 @@
  * ui:dispatch; the palette command report.problem and the mod+shift+b shortcut
  * set the same param.
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
 import './shortcuts-cheat-sheet.css';
 import { parseAsBoolean, parseAsString, useQueryState } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
 import { toast } from 'sonner';
+import { Checkbox } from '../harness/Checkbox';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
 import type { WorkItemRow } from '../adv/harnesses/WorkItemsPanel';
 import { CHAT_WORK_ITEM_POPUP_PARAM, encodeScopedRef } from './chat/chat-ref-popup-params';
@@ -26,6 +27,7 @@ import {
   PROBLEM_REPORT_LIMITS,
   buildProblemReport,
   previewDigest,
+  decodeProblemScreenshot,
   type ProblemReportPayload,
 } from '@papercusp/operator-core/lib/harness/improvements/problem-report';
 import {
@@ -55,17 +57,19 @@ export function ReportProblemReceipt({ sent }: { sent: SendResult }) {
   return <>
     <p>Thanks — {sent.routed === 'memory' ? 'your note was saved' : 'your report was filed'}{sent.id ? ` as ${sent.id}` : ''}.</p>
     {sent.delivery === 'queued-for-federation' && <p>Queued for upstream delivery. Upstream receipt has not yet been confirmed.</p>}
-    {sent.attachments?.map((attachment, index) => (
+    {sent.attachments?.map((attachment, index) => {
+      const name = attachment.kind === 'screenshot' ? 'Screenshot' : 'Log attachment';
+      return (
       <p key={index} role={attachment.ok ? undefined : 'alert'}>
         {attachment.ok
           ? attachment.delivery === 'upstream-received'
-            ? 'Log attachment received upstream.'
+            ? `${name} received upstream.`
             : attachment.delivery === 'local-only' || sent.delivery === 'queued-for-federation'
-            ? 'Log attachment saved on this install. It has not been sent upstream.'
-            : 'Log attachment saved.'
-          : `Log attachment could not be saved: ${attachment.reason ?? 'unknown error'}. Your report remains filed.`}
+            ? `${name} saved on this install. It has not been sent upstream.`
+            : `${name} saved.`
+          : `${name} could not be saved: ${attachment.reason ?? 'unknown error'}. Your report remains filed.`}
       </p>
-    ))}
+    ); })}
   </>;
 }
 
@@ -83,6 +87,10 @@ export default function ReportProblemDialog() {
   const [open, setOpen] = useQueryState('report', parseAsBoolean.withDefault(false));
   const [text, setText] = useState('');
   const [attachLog, setAttachLog] = useState(false);
+  const [screenshot, setScreenshot] = useState<string | null>(null);
+  const [attachScreenshot, setAttachScreenshot] = useState(false);
+  const [capturingScreenshot, setCapturingScreenshot] = useState(false);
+  const screenshotGeneration = useRef(0);
   const [captured, setCaptured] = useState<Captured | null>(null);
   const [appVersion, setAppVersion] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
@@ -95,8 +103,12 @@ export default function ReportProblemDialog() {
 
   useEffect(() => {
     if (!open) {
+      screenshotGeneration.current += 1;
+      setCapturingScreenshot(false);
       setText('');
       setAttachLog(false);
+      setScreenshot(null);
+      setAttachScreenshot(false);
       setCaptured(null);
       setError(null);
       setSent(null);
@@ -125,8 +137,33 @@ export default function ReportProblemDialog() {
       recentErrors: captured.errors,
       attachLog,
       logLines: captured.logLines,
+      attachScreenshot,
+      screenshotDataUrl: screenshot,
     });
-  }, [captured, text, appVersion, attachLog]);
+  }, [captured, text, appVersion, attachLog, screenshot, attachScreenshot]);
+
+  const captureScreenshot = async () => {
+    const generation = ++screenshotGeneration.current;
+    setCapturingScreenshot(true);
+    setError(null);
+    setAttachScreenshot(false);
+    try {
+      const { toPng } = await import('html-to-image');
+      const image = await toPng(document.body, {
+        width: window.innerWidth, height: window.innerHeight, pixelRatio: 1,
+        filter: (node) => !(node instanceof Element && node.closest('[data-report-capture-exclude]')),
+      });
+      decodeProblemScreenshot(image.replace(/^data:image\/png;base64,/, ''));
+      if (generation === screenshotGeneration.current) setScreenshot(image);
+    } catch {
+      if (generation === screenshotGeneration.current) {
+        setScreenshot(null);
+        setError('The screenshot could not be captured. You can still send your report.');
+      }
+    } finally {
+      if (generation === screenshotGeneration.current) setCapturingScreenshot(false);
+    }
+  };
 
   const review = () => {
     const ring = readClientReportRing();
@@ -165,10 +202,11 @@ export default function ReportProblemDialog() {
     {receiptIds.map((id) => <ReportProblemUpdate key={`${workspaceId}:${id}`} id={id} workspaceId={workspaceId} onOpen={() => void setWorkItemPopup(encodeScopedRef(PLATFORM_POT_SLUG, id))} />)}
     <Dialog.Root open={open} onOpenChange={(o) => { if (!o) void setOpen(false); }}>
       <Dialog.Portal>
-        <Dialog.Overlay className="kbd-cheat-overlay" />
+        <Dialog.Overlay className="kbd-cheat-overlay" data-report-capture-exclude />
         <Dialog.Content
           aria-label="Report a problem"
           data-testid="report-problem-dialog"
+          data-report-capture-exclude
           style={{
             position: 'fixed', top: '12vh', left: '50%', transform: 'translateX(-50%)',
             width: 'min(640px, 92vw)', maxHeight: '76vh', overflow: 'hidden auto',
@@ -217,17 +255,30 @@ export default function ReportProblemDialog() {
                 />
                 Attach recent log lines ({captured.logLines.length})
               </label>
+              <button type="button" disabled={capturingScreenshot || sending} onClick={() => void captureScreenshot()}>
+                {capturingScreenshot ? 'Capturing screenshot…' : screenshot ? 'Capture again' : 'Capture screenshot'}
+              </button>
+              {screenshot && <div data-testid="report-problem-screenshot-preview">
+                <img src={screenshot} alt="Screenshot preview" style={{ width: '100%', maxHeight: 240, objectFit: 'contain' }} />
+                <label htmlFor="report-problem-attach-screenshot" style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                  <Checkbox id="report-problem-attach-screenshot" dataTestId="report-problem-attach-screenshot" checked={attachScreenshot} onChange={setAttachScreenshot} disabled={sending} />
+                  Attach this screenshot
+                </label>
+                <p style={{ fontSize: 11 }}>Images are not redacted. Check the preview before attaching it.</p>
+              </div>}
               <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 4 }}>This is exactly what will be sent:</div>
               <pre
                 data-testid="report-problem-preview"
                 style={{ maxHeight: '40vh', overflow: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 11, padding: 8, background: 'rgba(0,0,0,.25)', borderRadius: 6 }}
               >
-                {payload ? JSON.stringify(payload, null, 2) : ''}
+                {payload ? JSON.stringify(payload, function (key, value) {
+                  return key === 'content' && this?.kind === 'screenshot' ? '[Screenshot shown above]' : value;
+                }, 2) : ''}
               </pre>
               {error ? <p role="alert" style={{ color: 'var(--pc-danger, #f87171)' }}>{error}</p> : null}
               <div style={{ marginTop: 10, display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
                 <button type="button" onClick={() => setCaptured(null)}>Back</button>
-                <button type="button" data-testid="report-problem-send" disabled={!payload || sending} onClick={() => void send()}>
+                <button type="button" data-testid="report-problem-send" disabled={!payload || sending || capturingScreenshot} onClick={() => void send()}>
                   {sending ? 'Sending…' : 'Send'}
                 </button>
               </div>

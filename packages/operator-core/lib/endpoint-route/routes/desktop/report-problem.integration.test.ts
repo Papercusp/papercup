@@ -92,6 +92,26 @@ async function rowsMentioning(marker: string) {
 }
 
 describe('desktop Report a problem door, end to end', () => {
+  it('stores a consented screenshot as exact non-redactable PNG bytes in real Postgres', async () => {
+    const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jN1sAAAAASUVORK5CYII=';
+    const draft = { text: `Export crashes screenshot ${suffix()}`, screenshotDataUrl: png };
+    const unchecked = buildProblemReport(draft);
+    const local = await handleReportProblem({ payload: unchecked, previewDigest: await previewDigest(unchecked) }, deps);
+    expect(local.status).toBe(200);
+    if (local.status !== 200) throw new Error('report was not filed');
+    expect(local.body.attachments).toEqual([]);
+    // This fixture deliberately disables title-search deduplication; use a
+    // separate source for the positive control rather than refiling its title.
+    const selected = buildProblemReport({ ...draft, text: `${draft.text} selected`, attachScreenshot: true });
+    const sent = await handleReportProblem({ payload: selected, previewDigest: await previewDigest(selected) }, deps);
+    expect(sent.status).toBe(200);
+    if (sent.status !== 200) throw new Error('screenshot report was not filed');
+    expect(sent.body.attachments).toEqual([expect.objectContaining({ kind: 'screenshot', ok: true })]);
+    const [stored] = await db.adminSql<{ content: Buffer; kind: string; redaction: string; door: string }[]>`
+      SELECT content, kind, redaction, door FROM harness_shared.report_attachments WHERE work_item_id = ${sent.body.id!}`;
+    expect(stored).toMatchObject({ kind: 'screenshot', redaction: 'not-redactable', door: 'desktop' });
+    expect(stored!.content.equals(Buffer.from(png.split(',')[1]!, 'base64'))).toBe(true);
+  });
   it('P-015: the captured report crosses real Hyperswarm into a separate upstream database', async () => {
     h.sql = db.adminSql;
     const marker = `swarm-report-${suffix()}`;

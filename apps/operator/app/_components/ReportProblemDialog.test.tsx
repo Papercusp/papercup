@@ -3,6 +3,11 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { ReportProblemReceipt } from './ReportProblemDialog';
 
 describe('ReportProblemReceipt', () => {
+  it('names screenshot receipts separately from logs', () => {
+    const html = renderToStaticMarkup(<ReportProblemReceipt sent={{ routed: 'work-item', id: 'EI-42', attachments: [{ kind: 'screenshot', ok: true, delivery: 'upstream-received' }] }} />);
+    expect(html).toContain('Screenshot received upstream');
+    expect(html).not.toContain('Log attachment');
+  });
   it('shows the verified attachment receipt independently of queued report delivery', () => {
     const html = renderToStaticMarkup(<ReportProblemReceipt sent={{ routed: 'work-item', id: 'EI-42', delivery: 'queued-for-federation', attachments: [{ kind: 'log', ok: true, delivery: 'upstream-received' }] }} />);
     expect(html).toContain('Log attachment received upstream');

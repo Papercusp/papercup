@@ -49,6 +49,23 @@ async function send(p: ProblemReportPayload, extra: Record<string, unknown> = {}
 }
 
 describe('handleReportProblem', () => {
+  it('stores only consented PNG bytes through the existing attachment seam', async () => {
+    const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jN1sAAAAASUVORK5CYII=';
+    const { d, putCalls } = deps();
+    await handleReportProblem(await send(payload({ screenshotDataUrl: png })), d);
+    expect(putCalls).toHaveLength(0);
+    const p = payload({ screenshotDataUrl: png, attachScreenshot: true });
+    const out = await handleReportProblem(await send(p), d);
+    expect(out).toMatchObject({ status: 200, body: { attachments: [{ kind: 'screenshot', ok: true }] } });
+    expect(putCalls[0]).toMatchObject({ kind: 'screenshot', mime: 'image/png', door: 'desktop', workItemId: 'EI-42' });
+    expect(putCalls[0]!.content).toBeInstanceOf(Uint8Array);
+    expect([...putCalls[0]!.content as Uint8Array].slice(0, 8)).toEqual([137, 80, 78, 71, 13, 10, 26, 10]);
+    const body = await send(p);
+    const changed = { ...p, attachments: [{ ...p.attachments[0]!, content: 'eA==' }] };
+    expect((await handleReportProblem({ ...body, payload: changed }, d)).status).toBe(409);
+    expect((await handleReportProblem(await send(changed), d)).status).toBe(422);
+    expect(putCalls).toHaveLength(1);
+  });
   it('production dependencies route Send through the existing contribution core with explicit consent', async () => {
     const result: EndUserReportResult = { routed: 'work-item', classification: { kind: 'bug', basis: 'defect-cue' }, capture: { ok: true, issue: { id: 'EI-report' } } as never };
     const spy = vi.spyOn(contribution, 'contributeUpstream').mockResolvedValue({ ok: true, kind: 'report', queued: true, result, summary: 'queued' });

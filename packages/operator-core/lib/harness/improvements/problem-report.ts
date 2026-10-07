@@ -36,6 +36,7 @@ export const PROBLEM_REPORT_LIMITS = {
   errorSource: 120,
   logLines: 200,
   logLine: 500,
+  screenshotBytes: 2 * 1024 * 1024,
 } as const;
 
 /**
@@ -74,7 +75,29 @@ export interface ProblemReportPayload {
     recentErrors: ProblemReportError[];
   };
   /** Only what the reporter ticked. Empty unless they opted in. */
-  attachments: ProblemReportLogAttachment[];
+  attachments: Array<ProblemReportLogAttachment | ProblemReportScreenshotAttachment>;
+}
+
+export interface ProblemReportScreenshotAttachment {
+  kind: 'screenshot';
+  mime: 'image/png';
+  content: string;
+}
+
+/** Browser-safe decoder; transport bytes stay bound to the preview digest. */
+export function decodeProblemScreenshot(content: string): Uint8Array {
+  if (content.length > Math.ceil(PROBLEM_REPORT_LIMITS.screenshotBytes / 3) * 4 ||
+      !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(content)) {
+    throw new Error('Screenshot is invalid or exceeds 2 MiB');
+  }
+  const decoded = atob(content);
+  const bytes = Uint8Array.from(decoded, (char) => char.charCodeAt(0));
+  const signature = [137, 80, 78, 71, 13, 10, 26, 10];
+  if (bytes.length > PROBLEM_REPORT_LIMITS.screenshotBytes || btoa(decoded) !== content ||
+      !signature.every((byte, index) => bytes[index] === byte)) {
+    throw new Error('Screenshot must be a PNG of at most 2 MiB');
+  }
+  return bytes;
 }
 
 /** What the dialog collects before building the payload. */
@@ -89,6 +112,8 @@ export interface ProblemReportDraft {
   attachLog?: boolean;
   /** Candidate log lines; included only when attachLog is true. */
   logLines?: readonly string[];
+  attachScreenshot?: boolean;
+  screenshotDataUrl?: string | null;
 }
 
 function bounded(value: unknown, limit: number): string | null {
@@ -168,6 +193,14 @@ export function buildProblemReport(draft: ProblemReportDraft): ProblemReportPayl
   const text = oneLine(draft.text, PROBLEM_REPORT_LIMITS.text);
   if (!text) throw new Error('a problem report needs a sentence describing what went wrong');
   const log = draft.attachLog === true ? buildLogAttachment(draft.logLines) : null;
+  let screenshot: ProblemReportScreenshotAttachment | null = null;
+  if (draft.attachScreenshot === true && draft.screenshotDataUrl) {
+    const prefix = 'data:image/png;base64,';
+    if (!draft.screenshotDataUrl.startsWith(prefix)) throw new Error('Screenshot must be a PNG');
+    const content = draft.screenshotDataUrl.slice(prefix.length);
+    decodeProblemScreenshot(content);
+    screenshot = { kind: 'screenshot', mime: 'image/png', content };
+  }
   return {
     schemaVersion: PROBLEM_REPORT_SCHEMA_VERSION,
     text,
@@ -177,7 +210,7 @@ export function buildProblemReport(draft: ProblemReportDraft): ProblemReportPayl
       screen: buildScreen(draft.route, draft.search),
       recentErrors: buildErrors(draft.recentErrors),
     },
-    attachments: log ? [log] : [],
+    attachments: [...(log ? [log] : []), ...(screenshot ? [screenshot] : [])],
   };
 }
 
@@ -190,15 +223,18 @@ export function renormalizeProblemReport(payload: ProblemReportPayload): Problem
   try {
     const screen = payload.context.screen;
     const search = screen?.state ? new URLSearchParams(screen.state).toString() : null;
-    const log = payload.attachments[0];
+    const log = payload.attachments.find((attachment) => attachment.kind === 'log');
+    const screenshot = payload.attachments.find((attachment) => attachment.kind === 'screenshot');
     return buildProblemReport({
       text: payload.text,
       appVersion: payload.context.appVersion,
       route: screen?.route ?? null,
       search,
       recentErrors: payload.context.recentErrors,
-      attachLog: payload.attachments.length > 0,
+      attachLog: !!log,
       logLines: log ? log.content.split('\n') : [],
+      attachScreenshot: !!screenshot,
+      screenshotDataUrl: screenshot ? `data:image/png;base64,${screenshot.content}` : null,
     });
   } catch {
     return null;
@@ -207,7 +243,7 @@ export function renormalizeProblemReport(payload: ProblemReportPayload): Problem
 
 /** True when the payload is exactly what `buildProblemReport` would have produced. */
 export function isNormalizedProblemReport(payload: ProblemReportPayload): boolean {
-  if (payload.attachments.length > 1) return false;
+  if (payload.attachments.length > 2) return false;
   const again = renormalizeProblemReport(payload);
   return again !== null && canonicalJson(again) === canonicalJson(payload);
 }

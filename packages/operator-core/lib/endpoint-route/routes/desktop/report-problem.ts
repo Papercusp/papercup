@@ -38,6 +38,7 @@ import {
   PROBLEM_REPORT_LIMITS as L,
   PROBLEM_REPORT_SCHEMA_VERSION,
   isNormalizedProblemReport,
+  decodeProblemScreenshot,
   previewDigest,
   type ProblemReportPayload,
 } from '../../../harness/improvements/problem-report';
@@ -73,16 +74,20 @@ const payloadSchema = z
       .strict(),
     attachments: z
       .array(
-        z
+        z.union([z
           .object({
             kind: z.literal('log'),
             mime: z.literal('text/plain'),
             lineCount: z.number().int().min(1).max(L.logLines),
             content: z.string().min(1).max(L.logLines * (L.logLine + 1)),
           })
-          .strict(),
+          .strict(), z.object({
+            kind: z.literal('screenshot'),
+            mime: z.literal('image/png'),
+            content: z.string().min(1).max(Math.ceil(L.screenshotBytes / 3) * 4),
+          }).strict()]),
       )
-      .max(1),
+      .max(2),
   })
   .strict();
 
@@ -116,8 +121,8 @@ export function defaultReportProblemDeps(): ReportProblemDeps {
 }
 
 export type ReportProblemAttachmentOutcome =
-  | { kind: 'log'; ok: true; id: string; deduplicated: boolean; delivery?: 'local-only' | 'upstream-received' }
-  | { kind: 'log'; ok: false; reason: string };
+  | { kind: 'log' | 'screenshot'; ok: true; id: string; deduplicated: boolean; delivery?: 'local-only' | 'upstream-received' }
+  | { kind: 'log' | 'screenshot'; ok: false; reason: string };
 
 export type ReportProblemOutcome =
   | {
@@ -202,7 +207,7 @@ export async function handleReportProblem(
         door: REPORT_PROBLEM_DOOR,
         kind: attachment.kind,
         mime: attachment.mime,
-        content: attachment.content,
+        content: attachment.kind === 'screenshot' ? decodeProblemScreenshot(attachment.content) : attachment.content,
         externalId: `${digest}:${index}`,
       })
       .catch((err: unknown): PutReportAttachmentResult => ({

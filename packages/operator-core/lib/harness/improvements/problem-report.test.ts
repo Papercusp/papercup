@@ -14,6 +14,7 @@ import {
 } from './problem-report';
 
 const SECRET = `token=${'q'.repeat(30)}`;
+const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jN1sAAAAASUVORK5CYII=';
 
 function draft(overrides: Partial<Parameters<typeof buildProblemReport>[0]> = {}) {
   return buildProblemReport({
@@ -27,6 +28,25 @@ function draft(overrides: Partial<Parameters<typeof buildProblemReport>[0]> = {}
 }
 
 describe('buildProblemReport', () => {
+  it('keeps a captured screenshot off the wire until explicitly attached', () => {
+    expect(draft({ screenshotDataUrl: PNG }).attachments).toEqual([]);
+    const p = draft({ screenshotDataUrl: PNG, attachScreenshot: true, attachLog: true, logLines: ['failed'] });
+    expect(p.attachments.map((attachment) => attachment.kind)).toEqual(['log', 'screenshot']);
+    expect(p.attachments[1]).toEqual({ kind: 'screenshot', mime: 'image/png', content: PNG.split(',')[1] });
+    expect(isNormalizedProblemReport(p)).toBe(true);
+  });
+
+  it('rejects invalid, non-PNG and oversized screenshot bytes', () => {
+    for (const screenshotDataUrl of ['data:image/svg+xml;base64,PHN2Zz4=', 'data:image/png;base64,eA==', `data:image/png;base64,${'A'.repeat(3_000_000)}`]) {
+      expect(() => draft({ screenshotDataUrl, attachScreenshot: true })).toThrow(/Screenshot/);
+    }
+  });
+
+  it('binds screenshot bytes to the preview digest and refuses duplicated images', async () => {
+    const p = draft({ screenshotDataUrl: PNG, attachScreenshot: true });
+    expect(await previewDigest(p)).not.toBe(await previewDigest(draft({ screenshotDataUrl: PNG })));
+    expect(isNormalizedProblemReport({ ...p, attachments: [p.attachments[0]!, p.attachments[0]!] })).toBe(false);
+  });
   it('builds the automatic context: app, version, screen, recent errors', () => {
     const p = draft();
     expect(p.schemaVersion).toBe(1);
@@ -134,7 +154,7 @@ describe('preview binding', () => {
     ).toBe(false);
     expect(isNormalizedProblemReport({ ...p, attachments: [...p.attachments, ...p.attachments] })).toBe(false);
     expect(
-      isNormalizedProblemReport({ ...p, attachments: [{ ...p.attachments[0], lineCount: 99 }] }),
+      isNormalizedProblemReport({ ...p, attachments: [{ kind: 'log', mime: 'text/plain', content: 'x', lineCount: 99 }] }),
     ).toBe(false);
   });
 });
