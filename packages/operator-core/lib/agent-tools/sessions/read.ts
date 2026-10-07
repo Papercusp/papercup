@@ -118,9 +118,9 @@ export default defineTool({
   name: 'sessions:read',
   needsWorkspaceTx: true,
   crossWorkspace: true,
-  capability: 'search:read',
+  capability: 'sessions:read',
   description:
-    "Read indexed session turns. `tail:N` already means `order:'desc', limit:N`; do not combine `tail` with `order` or `limit`. `session:'self'` spans YOUR OWN respawn chain, including predecessor turns. If that window includes multiple native sessions, `session_id` is null, `session_ids` lists them, and each turn's `ref` identifies its source. Pass a `session_turn:…` ref, coordinates, from/to range, or tail. `query` and `mode` belong to sessions:search. " +
+    "Read indexed session turns. `session:'self'` spans YOUR OWN respawn chain, including predecessor turns. The evidence-only judge may use only `session:'self'`; named sessions and turn refs are refused for that role. `tail:N` already means `order:'desc', limit:N`; do not combine `tail` with `order` or `limit`. If that window includes multiple native sessions, `session_id` is null, `session_ids` lists them, and each turn's `ref` identifies its source. Pass a `session_turn:…` ref, coordinates, from/to range, or tail for other allowed readers. `query` and `mode` belong to sessions:search. " +
     `Turn text is returned in ${SESSION_TURN_TEXT_CHUNK_CAP}-character chunks by default; clipped turns carry text_truncated, text_full_chars, and a readMore continuation (text_offset/text_limit). A turn at the index cap also reports source_completeness (see returns). ` +
     "NOTE ON `turn_count` (EI-9970): this is the number of rows in THIS response's window (bounded by `limit`, default 40) — NOT the session's total turn count. It is a DIFFERENT quantity from sessions:list's `turns` field (that session's full indexed-text-turn total) despite the similar name; do not compare them. For the session total, use sessions:list.",
   guidance: {
@@ -176,6 +176,19 @@ export default defineTool({
     ),
   }),
   async handler(args, ctx: PapercuspUnifiedToolContext) {
+    if (ctx.role === 'judge' && args.session !== 'self') {
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify({
+            ok: false,
+            error: 'judge_session_scope_only',
+            message: "The evidence-only judge may read only its own transcript chain using session:'self'.",
+          }),
+        }],
+        isError: true,
+      };
+    }
     const tx = ctx.tx!;
     if (!(await sessionSearchEnabled())) return disabledResult();
     const workspaceId = ctx.workspaceId ?? '';
