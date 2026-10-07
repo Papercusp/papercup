@@ -187,6 +187,76 @@ describe('bounded quota recovery contract (measured-agent-productivity P-004)', 
   });
 });
 
+describe('live Codex quota gateway repair', () => {
+  const ownerId = 'su-quota-gateway';
+  const sessionId = 9901;
+  const fixture = (account = 'auto', launchedBy: string | null = 'su-leader') => {
+    const order: string[] = [];
+    const record = session({
+      id: sessionId, agent: 'codex', coordOwnerId: ownerId,
+      launchArgv: ['psu', '--agent=codex', `--account=${account}`, '--headless'],
+    });
+    const repair = vi.fn<NonNullable<ExecuteWakeDeps['ensureCodexHomeForWake']>>(async () => {
+      order.push('repair');
+      return { ok: true, repaired: true };
+    });
+    const inject = vi.fn<NonNullable<ExecuteWakeDeps['injectPsuHostWithConfirmation']>>(async () => {
+      order.push('inject');
+      return { ok: true, confirmation: 'acked', reason: 'delivered' };
+    });
+    const common = deps({
+      getSession: vi.fn(async () => record) as never,
+      findPsuHost: vi.fn(() => ({
+        sock: '/tmp/quota-gateway.sock', ownerId, bridgeTty: false,
+        quotaBlocked: true, launchedBy, caps: ['quota-recovery'],
+      })) as never,
+      ensureCodexHomeForWake: repair,
+      injectPsuHostWithConfirmation: inject,
+    });
+    const delivery = work({
+      id: sessionId, subscriberId: ownerId,
+      wakeHandle: advHandle({ advSessionId: sessionId, agent: 'codex', pid: 1234 }),
+    });
+    return { order, record, repair, inject, common, delivery };
+  };
+
+  it('repairs the persisted auto gateway route before recycling the live quota-blocked native session', async () => {
+    const f = fixture();
+    expect(await executeWake(f.delivery, f.common)).toEqual({ kind: 'delivered', channel: 'psu-socket-recycle' });
+    expect(f.order).toEqual(['repair', 'inject']);
+    expect(f.repair).toHaveBeenCalledWith({
+      advSessionId: sessionId, owner: ownerId, codexHome: codexHomeForAdvSession(sessionId),
+      headless: true, sessionRow: f.record, requireGatewayProvider: true, codexGatewayAccountId: null,
+    });
+  });
+
+  it.each([
+    { ok: false, reason: 'home-unreadable' },
+    { ok: true, repaired: false, reason: 'no-launch-spec' },
+  ])('parks rather than recycling into an unverified gateway route: $reason', async (result) => {
+    const f = fixture();
+    f.repair.mockResolvedValueOnce(result);
+    expect(await executeWake(f.delivery, f.common)).toMatchObject({
+      kind: 'park', reason: expect.stringContaining('Codex quota gateway repair'),
+    });
+    expect(f.inject).not.toHaveBeenCalled();
+  });
+
+  it('leaves an explicitly default account route unchanged', async () => {
+    const f = fixture('default');
+    await executeWake(f.delivery, f.common);
+    expect(f.repair).not.toHaveBeenCalled();
+    expect(f.inject.mock.calls[0]?.[1]).toMatchObject({ mode: 'turn' });
+  });
+
+  it('restores auto routing without weakening the missing-launch-provenance recycle fence', async () => {
+    const f = fixture('auto', null);
+    await executeWake(f.delivery, f.common);
+    expect(f.order).toEqual(['repair', 'inject']);
+    expect(f.inject.mock.calls[0]?.[1]).toMatchObject({ mode: 'turn' });
+  });
+});
+
 afterAll(() => {
   if (prevCodexHomesEnv === undefined) delete process.env.PAPERCUSP_SU_CODEX_HOMES_DIR;
   else process.env.PAPERCUSP_SU_CODEX_HOMES_DIR = prevCodexHomesEnv;
