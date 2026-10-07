@@ -57,6 +57,10 @@ export interface ProjectPlanBriefOptions {
   /** False when the caller narrowed plans:get with an `items` selection: a
    * narrowed item list cannot establish plan-wide blockers or counts. */
   itemsComplete: boolean;
+  /** Whether this response included a lifecycle or detailed rubric signal. */
+  acceptanceIncluded?: boolean;
+  /** Whether this response ran the latest-audit lookup. */
+  auditIncluded?: boolean;
 }
 
 type Rec = Record<string, unknown>;
@@ -151,7 +155,7 @@ function workItemFor(result: Rec, itemId: string): string | null {
   return linked ? str(linked.featureId) : null;
 }
 
-function readAcceptance(result: Rec): BriefField<PlanBriefAcceptance> {
+function readAcceptance(result: Rec, included: boolean): BriefField<PlanBriefAcceptance> {
   const ship = rec(result.shipReadiness);
   if (ship) {
     const unavailable = str(ship.unavailableReason);
@@ -182,12 +186,34 @@ function readAcceptance(result: Rec): BriefField<PlanBriefAcceptance> {
       'plans:get.acceptanceRubric',
     );
   }
-  return unknown('no acceptance rubric on this plan and ship readiness was not requested (pass shipReadiness:true)');
+  const lifecycleAcceptance = rec(rec(result.lifecycle)?.acceptance);
+  if (typeof lifecycleAcceptance?.rubricActive === 'boolean') {
+    const rubricRef = str(lifecycleAcceptance.rubricRef);
+    return known(
+      {
+        source: 'acceptanceRubric',
+        satisfied: null,
+        code: null,
+        summary: lifecycleAcceptance.rubricActive
+          ? `active acceptance rubric ${rubricRef ?? '(unnamed)'} is attached; criteria details were not included in this read`
+          : 'no active acceptance rubric is attached; ship verdict not measured (pass shipReadiness:true)',
+      },
+      'plans:get.lifecycle.acceptance',
+    );
+  }
+  if (!included || result.enrichmentsDeferred === true) {
+    return unknown('acceptance rubric status was not included in this read; re-read with mode:"sections" and includeEnrichments:true');
+  }
+  return unknown('acceptance rubric status could not be measured in this read');
 }
 
-function readLastVerified(result: Rec): BriefField<BriefVerifiedEvidence> {
+function readLastVerified(result: Rec, included: boolean): BriefField<BriefVerifiedEvidence> {
   const audit = rec(result.latestAudit);
-  if (!audit) return unknown('no plan audit is recorded for this plan');
+  if (!audit) {
+    return included
+      ? unknown('no plan audit is recorded for this plan')
+      : unknown('plan audit was not included in this read; re-read with mode:"sections" and includeEnrichments:true');
+  }
   const seq = Number(audit.auditSeq);
   const kind = str(audit.auditKind) ?? 'unknown-kind';
   if (kind === 'activation') {
@@ -268,7 +294,7 @@ export function projectPlanOperationalBrief(result: Rec, options: ProjectPlanBri
     nextSource = 'plans:get.now.nextDerivation (pure item graph; open-issue blocks not applied)';
   }
 
-  const acceptance = readAcceptance(result);
+  const acceptance = readAcceptance(result, options.acceptanceIncluded ?? true);
   const workItemId = next?.itemId ? workItemFor(result, next.itemId) : null;
 
   const nextItem: BriefField<PlanBriefNextItem | null> = next
@@ -332,7 +358,7 @@ export function projectPlanOperationalBrief(result: Rec, options: ProjectPlanBri
         ),
     nextAction: next ? known(nextActionFor(next, workItemId, acceptance), nextSource) : unknown('no next pointer could be derived'),
     blockers,
-    lastVerified: readLastVerified(result),
+    lastVerified: readLastVerified(result, options.auditIncluded ?? true),
     deadline: known(null, 'plan state carries no deadline field'),
     facts: {
       phase,
