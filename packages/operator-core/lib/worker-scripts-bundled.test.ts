@@ -231,7 +231,7 @@ describe('shared worker recipe executes in the bundled plain-node runtime', () =
     symlinkSync(join(REPO_ROOT, 'node_modules'), join(output, 'node_modules'), 'dir');
     const result = build();
     expect(result.status, result.stdout + result.stderr).toBe(0);
-  }, 50_000);
+  }, 40_000);
 
   afterAll(() => {
     if (output) rmSync(output, { recursive: true, force: true });
