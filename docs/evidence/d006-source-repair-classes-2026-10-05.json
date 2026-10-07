@@ -5,12 +5,13 @@
   "accountableOwner": "su-9d0b2e6a-7f3e-4344-a475-374f2fb71dd8",
   "population": {
     "failedFiles": 124,
-    "repairedFocused": 18,
+    "repairedFocused": 19,
     "repairedPeerFocused": 12,
-    "openUnknown": 94
+    "openUnknown": 93
   },
   "classes": {
-    "assertion": 61,
+    "assertion": 60,
+    "work-item-disclosure-fixture": 1,
     "migration-stage": 1,
     "missing-schema": 16,
     "blueprint-fixture": 1,
@@ -241,6 +242,19 @@
         "existingFixtureChange": "Adds started_at timestamptz NOT NULL DEFAULT now(); no duplicate repair made.",
         "testSha256BeforeAndAfter": "63436752e1bb199f0da6b9da19d827593929e9c669d5aa2f45b80e31d314ae83",
         "bindFromTestRunSha256BeforeAndAfter": "aabb18220b923b96d875ccaa1f98dd68ef61b28af31b1ff9a9ad7c081c2b9722",
+        "downstreamPeerRepair": {
+          "item": "WI-10006905",
+          "state": "done",
+          "completionAuthority": "committed",
+          "cause": "A subsequent fromTestRun loader selected framework, which the same private fixture omitted; the existing peer repair added framework text NOT NULL DEFAULT 'vitest'. This is distinct from the original missing started_at column.",
+          "storedPassCases": 46,
+          "storedPassTask": "0mux3yx961cks5xr178",
+          "settlementEvidenceHash": "5e591d7e6843faf10fe1a9658e837f633a444c2d58a62e4201235885c4c007e0",
+          "laterObservedReceipt": 20894630,
+          "laterReceiptCommit": "8f7048ce7dd1abd70ba1bf2391c4f4e52282ea6d",
+          "laterReceiptRoot": "/dev/shm/pcv/papercusp-lint-as-committed-8f7048ce7d-DyCuRj",
+          "meaning": "Existing terminal evidence only; no duplicate edit or terminal retest. Original started_at repair-item attribution and complete current source/import/environment disposition remain unknown."
+        },
         "remaining": "Peer repair-item attribution and complete source/import/environment disposition remain open; this focused receipt does not close the final D006 assurance gap."
       },
       "lines": [
@@ -323,9 +337,33 @@
     },
     {
       "path": "packages/operator-core/lib/agent-tools/work_items/work-items-tools.integration.test.ts",
-      "class": "assertion",
-      "state": "open-unknown",
-      "item": "WI-10006170",
+      "class": "work-item-disclosure-fixture",
+      "state": "repaired-focused",
+      "item": "WI-10007139",
+      "beforeTestRun": 20895450,
+      "afterTestRun": 20895651,
+      "currentPrecondition": {
+        "passed": 2,
+        "failed": 7,
+        "selectorUnselected": 38,
+        "head": "e6336fb3b28987e4d6f0750e6670cefb47145bb0"
+      },
+      "passed": 48,
+      "skipped": 0,
+      "testSha256": "1a7457724bbf28ccf400623da706414d4b86f247553bd140f2e2a5d4a291b5f1",
+      "testBlob": "b439238d0b932154905ef085320b6c4f442a7868",
+      "diagnosis": "The private schema omitted personal_disclosures, so real comment sealing refused both family writes and expansion's audit comment. Reused DISCLOSURE_LEDGER_FIXTURE_DDL, cleared it between cases, and added missing-ledger refusal/restored-ledger acceptance controls for both families without changing production sealing.",
+      "sourceFingerprints": {
+        "disclosureFixtureSha256": "62a6ba7ad7f9d7bacea6ab04b3ed84feec0945d75118e5ee7816fdb77b84da93",
+        "sharedSealSha256": "9c5bbb5360e54868c225cf863c55e00b26298f642377dd9bf549058dc7a91153"
+      },
+      "nativeLogs": {
+        "before": "/tmp/wi-10006170-work-items-tools-before.log",
+        "beforeSha256": "d831150362c5ef5e15f21dc308c217e1620a8f6c19bbc166763dc370eb842041",
+        "after": "/tmp/wi-10007139-after.log",
+        "afterSha256": "b2ddfc18bb47af9ab2931c442db09d9301b0d739a29130c5ecf132d15315bd0f"
+      },
+      "latestReceiptMeaning": "Whole named file PASS48/0skip on local dirty staging, canonical configuration and PG fixture, workspace papercusp-workspace/harness papercusp/runGroup null. Complete import/environment assurance, final D006 and shipment remain unverified.",
       "lines": [
         14990,
         15009,

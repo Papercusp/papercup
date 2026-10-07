@@ -35,6 +35,7 @@ import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { applyEventSubstrateMigrationsForTest, createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
+import { DISCLOSURE_LEDGER_FIXTURE_DDL } from '../../../test/_disclosure-ledger-fixture';
 import {
   CARRY_NOTES_DDL,
   HARNESS_FEATURES_CONSOLIDATED_DDL,
@@ -314,6 +315,9 @@ beforeAll(async () => {
   // The claim tool handlers reach claimNextWorkItem/claimIssue, which read adv_sessions,
   // event_awaits and the other claim-path tables (WI-10005130 / WI-10005225).
   await applyClaimPathReadDeps((ddl) => db.sql.unsafe(ddl).simple());
+  // Both comment families and expansion's audit comment consult the disclosure
+  // ledger before storing shared text. Keep their real fail-closed seal active.
+  await db.sql.unsafe(DISCLOSURE_LEDGER_FIXTURE_DDL);
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL); // work_item_deps + work_item_blocked readiness (migs 367/379) — claimNextWorkItem references them UNCONDITIONALLY
   // HFC_DDL (the shared _work-items-schema fixture) is the COMPLETE post-374 schema:
   // the work_items BASE table (with item_kind/assignee_rank/rank_writer/rank_updated_at),
@@ -340,6 +344,7 @@ beforeEach(async () => {
                        harness_shared.fleet_membership_events,
                        harness_shared.coord_entity_subscriptions,
                        harness_shared.coord_threads, harness_shared.coord_thread_posts,
+                       harness_shared.personal_disclosures,
                        harness_shared.coord_links, harness_shared.coord_topics,
                        harness_shared.coord_event_log RESTART IDENTITY`;
   await db.sql`ALTER SEQUENCE harness_shared.work_item_seq RESTART WITH 1`;
@@ -845,6 +850,31 @@ describe('work_items:* tool surface — lifecycle (real PG)', () => {
     const missRes = (missing.results as { ok: boolean; error?: string }[])[0]!;
     expect(missRes.ok).toBe(false);
     expect(missRes.error).toMatch(/work_item 'WI-404' not found/);
+  });
+
+  it('comment: refuses an unavailable disclosure ledger and resumes both family writers after fixture repair', async () => {
+    const bug = await createOne({ kind: 'bug', title: 'ledger issue', harness: 'papercup' });
+    const feature = await createOne({ kind: 'feature', title: 'ledger feature', harness: 'papercup' });
+    const ids = [bug, feature].map((created) => (created.workItem as { id: string }).id);
+
+    await db.sql`DROP TABLE harness_shared.personal_disclosures`;
+    try {
+      for (const id of ids) {
+        const refused = await call(commentTool, { id, body: 'unsealed text must not persist' });
+        expect(refused.ok, JSON.stringify(refused)).toBe(false);
+        expect(JSON.stringify(refused)).toContain('disclosure_ledger_unavailable');
+      }
+      expect(await db.sql`SELECT body FROM harness_shared.coord_thread_posts`).toHaveLength(0);
+    } finally {
+      await db.sql.unsafe(DISCLOSURE_LEDGER_FIXTURE_DDL);
+    }
+
+    for (const id of ids) {
+      const accepted = await call(commentTool, { id, body: 'ledger is readable' });
+      expect(accepted.ok, JSON.stringify(accepted)).toBe(true);
+    }
+    const posts = await db.sql<{ body: string }[]>`SELECT body FROM harness_shared.coord_thread_posts`;
+    expect(posts.map((post) => post.body)).toEqual(['ledger is readable', 'ledger is readable']);
   });
 
   it('comment: preserves a non-default workspace and harness on both family writers', async () => {
