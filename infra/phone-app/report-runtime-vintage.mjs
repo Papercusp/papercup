@@ -19,10 +19,16 @@
 //
 // Usage: report-runtime-vintage.mjs --unit <name> [--dir <checkout>] [--pid <n>]
 //          [--origin <url> ...] [--workspace <id>] [--timeout-ms <n>]
+//          [--executable]
+// --executable measures the kernel-loaded native executable now, with no Git
+// attribution. Use it for a compiled native shell with no baked revision, not
+// to identify JavaScript/Python or other code loaded by an interpreter. A new
+// report cannot supply execution-time witnesses for a historical test run.
 // Env:   PHONE_VINTAGE_ORIGINS (comma list, default http://127.0.0.1:3070,http://127.0.0.1:3170)
 //        PAPERCUSP_WORKSPACE_ID (default papercusp-workspace)
 import { execFileSync } from 'node:child_process';
-import { realpathSync } from 'node:fs';
+import { realpathSync, readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 export const DEFAULT_ORIGINS = ['http://127.0.0.1:3070', 'http://127.0.0.1:3170'];
@@ -48,11 +54,13 @@ export function parseArgs(argv, env = process.env) {
     else if (flag === '--origin') { out.origins.push(value); i += 1; }
     else if (flag === '--workspace') { out.workspace = value; i += 1; }
     else if (flag === '--timeout-ms') { out.timeoutMs = Number.parseInt(value, 10); i += 1; }
+    else if (flag === '--executable') out.executable = true;
     else throw new Error(`unknown argument: ${flag}`);
   }
   if (!out.unit) throw new Error('--unit is required');
   if (out.pid === null && env.MAINPID) out.pid = Number.parseInt(env.MAINPID, 10);
   if (!Number.isInteger(out.pid) || out.pid <= 0) out.pid = null;
+  if (out.executable && !out.pid) throw new Error('--executable requires a positive --pid or MAINPID');
   if (out.origins.length === 0) {
     out.origins = (env.PHONE_VINTAGE_ORIGINS || DEFAULT_ORIGINS.join(','))
       .split(',').map((s) => s.trim()).filter(Boolean);
@@ -75,19 +83,20 @@ export function readCheckout(dir, run = (args) => execFileSync('git', args, { cw
 }
 
 /** The exact body the loopback sink accepts (bodySchema in runtime-vintage-report.ts). */
-export function buildVintageReport({ unit, workspace, pid, dir, treeSha, dirty, now = new Date() }) {
+export function buildVintageReport({ unit, workspace, pid, dir, treeSha, dirty, executableDigest, now = new Date() }) {
   return {
     unit,
     workspaceId: workspace,
-    treeSha,
+    treeSha: executableDigest ? null : treeSha,
     buildTime: now.toISOString(),
-    bundleVersion: null,
+    bundleVersion: executableDigest ? `executable-sha256:${executableDigest}` : null,
     pid,
     extra: {
       reporter: 'infra/phone-app/report-runtime-vintage.mjs',
       checkout: dir,
       // A dirty checkout means the process may be running edits the sha does not name.
       uncommittedTrackedPaths: dirty,
+      ...(executableDigest ? { identitySource: 'kernel-loaded-executable' } : {}),
     },
   };
 }
@@ -127,9 +136,13 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     process.stdout.write(`${JSON.stringify({ ok: false, error: String(error?.message ?? error) })}\n`);
     return 0;
   }
-  const { treeSha, dirty } = readCheckout(args.dir);
+  // Native artifacts without baked source metadata must never inherit the
+  // reporting checkout's current HEAD. Read the process's loaded inode instead.
+  const executableDigest = args.executable
+    ? createHash('sha256').update(readFileSync(`/proc/${args.pid}/exe`)).digest('hex') : undefined;
+  const { treeSha, dirty } = args.executable ? { treeSha: null, dirty: null } : readCheckout(args.dir);
   const report = buildVintageReport({ unit: args.unit, workspace: args.workspace, pid: args.pid,
-    dir: args.dir, treeSha, dirty });
+    dir: args.dir, treeSha, dirty, executableDigest });
   const result = await postVintage(report, args.origins, args.timeoutMs);
   process.stdout.write(`${JSON.stringify({ ...result, unit: args.unit, treeSha, pid: args.pid })}\n`);
   return 0;

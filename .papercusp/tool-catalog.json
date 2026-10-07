@@ -30989,7 +30989,7 @@
           "POST"
         ]
       },
-      "description": "Merged activity timeline for ONE agent: transcript turns + tool calls + coord messages, newest-first. owner:'self' = the caller. Audit filters can select kind/tool/status/goalRef, hide automatic hook traffic (default), group repeats, continue with nextCursor, and report automatic-versus-agent tool-call counts. Tool rows carry the goal and assumptions that were live when each call was made.",
+      "description": "Merged activity timeline for ONE agent: transcript turns + tool calls + coord messages, newest-first. owner:'self' = the caller. Audit filters can select kind/tool/status/goalRef, hide automatic hook traffic (default), group repeats, continue by passing the returned `nextCursor` value in the `cursor` argument, and report automatic-versus-agent tool-call counts. Tool rows carry the goal and assumptions that were live when each call was made.",
       "capabilities": [
         "search:read"
       ],

@@ -9,6 +9,7 @@ export interface VintageArgs {
   origins: string[];
   workspace: string;
   timeoutMs: number;
+  executable?: boolean;
 }
 
 export interface VintageReport {
@@ -16,9 +17,9 @@ export interface VintageReport {
   workspaceId: string;
   treeSha: string | null;
   buildTime: string;
-  bundleVersion: null;
+  bundleVersion: string | null;
   pid: number | null;
-  extra: { reporter: string; checkout: string; uncommittedTrackedPaths: number | null };
+  extra: { reporter: string; checkout: string; uncommittedTrackedPaths: number | null; identitySource?: string };
 }
 
 export interface VintageAttempt {
@@ -40,6 +41,7 @@ export declare function buildVintageReport(input: {
   dir: string;
   treeSha: string | null;
   dirty: number | null;
+  executableDigest?: string;
   now?: Date;
 }): VintageReport;
 export declare function postVintage(

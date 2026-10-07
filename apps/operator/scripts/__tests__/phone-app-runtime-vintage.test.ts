@@ -51,6 +51,19 @@ describe('report-runtime-vintage', () => {
     expect(() => parseArgs([], {})).toThrow(/--unit is required/);
   });
 
+  it('requires a process for executable identity and never substitutes checkout HEAD', async () => {
+    expect(() => parseArgs(['--unit', 'native', '--executable'], {})).toThrow(/requires a positive/);
+    expect(parseArgs(['--unit', 'native', '--executable'], { MAINPID: '4242' }))
+      .toMatchObject({ executable: true, pid: 4242 });
+    const accepting = await sink(() => ({ status: 200, json: { ok: true } }));
+    const { stdout } = await execFileAsync(process.execPath, [script, '--unit', 'native', '--executable',
+      '--pid', String(process.pid), '--origin', accepting.origin], { cwd: phoneDir, timeout: 20_000 });
+    expect(JSON.parse(stdout.trim())).toMatchObject({ ok: true, treeSha: null });
+    expect(accepting.received[0].body).toMatchObject({ treeSha: null, pid: process.pid,
+      bundleVersion: expect.stringMatching(/^executable-sha256:[a-f0-9]{64}$/),
+      extra: { identitySource: 'kernel-loaded-executable', uncommittedTrackedPaths: null } });
+  });
+
   it('builds exactly the body the loopback sink accepts, with the checkout sha and dirtiness', () => {
     const report = buildVintageReport({ unit: 'papercusp-phone-worker.service', workspace: 'ws',
       pid: 7, dir: '/x/worker', treeSha: 'a'.repeat(40), dirty: 2, now: new Date('2026-10-06T17:00:00Z') });
