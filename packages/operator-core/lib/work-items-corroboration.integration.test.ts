@@ -72,7 +72,7 @@ vi.mock('@papercusp/flags/server', async () => {
 
 const wi = await import('./work-items');
 const { claimNextVerificationTask } = await import('./harness/improvements/agent-review');
-const { readCorroboration, readCorroborationSummary, corroborationReportersSql } = await import(
+const { readCorroboration, readCorroborationSummary, corroborationReportersSql, readOccurrenceReporters } = await import(
   './harness/improvements/corroboration'
 );
 
@@ -235,6 +235,23 @@ beforeEach(async () => {
 });
 
 describe('P-012 the count is distinct reporters in the occurrence ledger', () => {
+  it('inherits source filings on distinct promotion without double-counting reporters or changing remote authorship', async () => {
+    await seed('WI-SOURCE');
+    await db.sql`UPDATE harness_shared.work_items SET origin = 'remote' WHERE feature_id = 'WI-SOURCE'`;
+    await seed('WI-TARGET', { payload: { intakeSource: { id: 'WI-SOURCE', mode: 'distinct' } } });
+    await occur('WI-SOURCE', 'su-a');
+    await occur('WI-SOURCE', 'su-b');
+    await occur('WI-TARGET', 'su-a');
+    await occur('WI-SOURCE', 'foreign-workspace', { ws: 'elsewhere' });
+    await occur('WI-SOURCE', 'foreign-harness', { harness: 'elsewhere' });
+    const ledger = await readCorroboration(db.sql as never, { workspaceId: WS, items: [{ id: 'WI-SOURCE', harness: H }, { id: 'WI-TARGET', harness: H }] });
+    expect(ledger.get('WI-TARGET')).toMatchObject({ reporters: 2, filings: 3 });
+    expect(ledger.get('WI-SOURCE')).toMatchObject({ reporters: 2, filings: 2 });
+    expect(await reportersScalar('WI-TARGET')).toBe(2);
+    expect(await readOccurrenceReporters(db.sql as never, { workspaceId: WS, harness: H, id: 'WI-TARGET' })).toEqual(['su-a', 'su-b']);
+    expect((await db.sql`SELECT origin, payload FROM harness_shared.work_items WHERE feature_id = 'WI-SOURCE'`)[0]).toMatchObject({ origin: 'remote', payload: null });
+  });
+
   it('counts distinct non-blank reporters, counts filings without promotions, and stays in its workspace and harness', async () => {
     await seed('WI-CO-A', { payload: { reporterKinds: ['agent', 'end-user'] } });
     await occur('WI-CO-A', 'su-a', { kind: 'canonical-created', at: '2026-10-01T00:00:00.000Z' });
