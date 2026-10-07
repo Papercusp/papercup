@@ -1525,6 +1525,20 @@ superuser token. Reload and restart only after provisioning, then verify through
 the real authenticated app people search. Final shipment evidence must come from
 the deployed green operator, separately from current-build checks.
 
+Phone voice producer admission uses the existing `work_items:create` surface:
+`{ phone_producer: { roomName: "<admitted room>" }, harness: "phone-app" }`.
+This mode accepts no caller-authored owner, runtime binding, payload or assignment.
+The caller must use a verified bearer service principal matching the sidecar's
+configured execution owner; connected-app grants are rechecked before writes.
+The operator requires injected `PHONE_PRODUCER_ADMISSION_ENDPOINT` (the trusted
+HTTPS `/platform/producer-admission` URL) and `PHONE_PRODUCER_TOKEN_FILE` (the
+private bridge token file). The latter reuses the sidecar's bridge credential
+setting; neither setting has a superuser or worker-secret fallback. Configure
+these outside the repository only after the scoped principal and bridge grant
+are approved. Missing configuration refuses admission. This entry creates the
+canonical producer binding; retained outcome settlement and live acceptance
+remain separate checks.
+
 ## Verify
 
 ```bash
