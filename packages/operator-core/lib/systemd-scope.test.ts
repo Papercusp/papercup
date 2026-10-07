@@ -84,9 +84,9 @@ describe('transient service payload escaping', () => {
   });
 
   it.skipIf(!userManagerBusReachable())(
-    'preserves Bash $VAR and $$ through systemd-run and the credential env runner',
+    'preserves Bash $VAR, command substitution, and $$ through systemd-run and the credential env runner',
     async () => {
-      const command = 'printf "value=<%s> pid=<%s>\\n" "$PC_WI10004318_VALUE" "$$"';
+      const command = 'printf "value=<%s> substitution=<%s> pid=<%s>\\n" "$PC_WI10004318_VALUE" "$(printf command-substitution)" "$$"';
       const built = buildTaskServiceArgvWithTransport(['/bin/bash', '-o', 'pipefail', '-c', command], {
         unit: `pc-wi10004318-env-handoff-${process.pid}-${Date.now()}.service`,
         slice: 'papercusp-bash-job.slice',
@@ -110,7 +110,7 @@ describe('transient service payload escaping', () => {
         const [code, signal] = (await once(child, 'close')) as [number | null, NodeJS.Signals | null];
 
         expect({ code, signal, stderr }).toEqual({ code: 0, signal: null, stderr: '' });
-        expect(stdout).toMatch(/^value=<expanded> pid=<\d+>\n$/);
+        expect(stdout).toMatch(/^value=<expanded> substitution=<command-substitution> pid=<\d+>\n$/);
       } finally {
         built.transport?.release();
       }
