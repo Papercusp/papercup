@@ -16,7 +16,7 @@
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadavg, availableParallelism, tmpdir } from 'node:os';
 import { applyWorkerCapEnv } from './lib/worker-cap.mjs';
@@ -1322,8 +1322,9 @@ export function callerChoseReporting(vitestArgs) {
  * The workspace config still supplies the source-map importDurations settings. Missing reporter
  * files in a partial/foreign checkout must not turn this diagnostic injection into a load error.
  *
- * Preserve explicit human reporters; leave machine/custom reporters and caller-owned report
- * paths unchanged. Human formatting alone must not disable assertion receipts or the ledger.
+ * Preserve the caller's output reporters and report paths. Explicit CLI reporters replace
+ * the configured list, so retain the silent evidence reporters even for a caller-owned JSON
+ * report. Add a private JSON report only when the caller selected human formatting.
  *
  * @param {string[]} vitestArgs
  * @param {string | null} reportPath
@@ -1332,27 +1333,39 @@ export function callerChoseReporting(vitestArgs) {
  */
 export function withInjectedJsonReport(vitestArgs, reportPath, { repoRoot = REPO_ROOT, env = process.env } = {}) {
   const args = vitestArgs ?? [];
-  if (!reportPath) return { args, injectedReportPath: null };
   const humanReporters = new Set(['default', 'verbose', 'dot']);
   const selectedReporters = [];
+  let callerHasOutputFile = false;
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--outputFile' || args[i].startsWith('--outputFile=')) {
-      return { args, injectedReportPath: null };
+      callerHasOutputFile = true;
     }
     if (args[i] === '--reporter') selectedReporters.push(args[++i]);
     else if (args[i].startsWith('--reporter=')) selectedReporters.push(args[i].slice('--reporter='.length));
   }
-  if (selectedReporters.some((reporter) => !humanReporters.has(reporter))) {
+  // Leave malformed CLI arguments to Vitest; never turn a missing reporter
+  // value into a valid run by appending one of our own.
+  if (selectedReporters.some((reporter) => !reporter || reporter.startsWith('--'))) {
+    return { args, injectedReportPath: null };
+  }
+  const injectPrivateJson = Boolean(reportPath) && !callerHasOutputFile
+    && selectedReporters.every((reporter) => humanReporters.has(reporter));
+  if (!injectPrivateJson && selectedReporters.length === 0) {
+    // An outputFile alone does not replace the configured reporters.
     return { args, injectedReportPath: null };
   }
   const evidenceReporters = [];
   const adminReporter = join(repoRoot, 'libs/test-config/src/admin-test-runs-reporter.ts');
-  if (env.PAPERCUSP_DISABLE_TEST_RUNS_REPORTER !== '1' && existsSync(adminReporter)) {
+  const alreadySelected = (path) => selectedReporters.some((reporter) => basename(reporter) === basename(path));
+  if (env.PAPERCUSP_DISABLE_TEST_RUNS_REPORTER !== '1' && existsSync(adminReporter) && !alreadySelected(adminReporter)) {
     evidenceReporters.push(`--reporter=${adminReporter}`);
   }
   const sourceMapReporter = join(repoRoot, 'libs/test-config/src/executed-source-map-reporter.ts');
-  if (env.PC_EXECUTED_SOURCE_MAP_WORKSPACE?.trim() && existsSync(sourceMapReporter)) {
+  if (env.PC_EXECUTED_SOURCE_MAP_WORKSPACE?.trim() && existsSync(sourceMapReporter) && !alreadySelected(sourceMapReporter)) {
     evidenceReporters.push(`--reporter=${sourceMapReporter}`);
+  }
+  if (!injectPrivateJson) {
+    return { args: [...args, ...evidenceReporters], injectedReportPath: null };
   }
   return {
     args: [...args, ...(selectedReporters.length ? [] : ['--reporter=default']), '--reporter=json', ...evidenceReporters, `--outputFile=${reportPath}`],
