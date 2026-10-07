@@ -39,4 +39,13 @@ describe('sidebar audit to report', () => {
     expect(iframe.getAttribute('src')).toContain('runId=saved&format=html');
     fireEvent.click(screen.getByRole('button', { name: '← Back to plans' }));expect(h.set).toHaveBeenCalledWith(null);
   });
+  it('never displays a completed response for a different route identity', async () => {
+    h.id = 'requested';vi.stubGlobal('fetch', h.fetch);
+    h.fetch.mockResolvedValue(reply({ run: { id: 'previous', status: 'complete' } }));
+    render(<PlanAuditPane />);
+    await waitFor(() => expect(h.fetch).toHaveBeenCalled());
+    expect(screen.queryByTitle('Plan audit report')).toBeNull();
+    expect(screen.queryByRole('link', { name: 'Download full JSON' })).toBeNull();
+    expect(screen.getByRole('status').textContent).toContain('Loading audit');
+  });
 });

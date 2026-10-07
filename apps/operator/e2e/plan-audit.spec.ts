@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { writeFile } from 'node:fs/promises';
 import { renderPlanAuditReport } from '../../../packages/operator-core/lib/plan-audit-report';
+import { stubSyncQueries } from './_sync-stub';
 
 test.use({ trace: 'retain-on-failure' });
 test.afterEach(async ({ page }, testInfo) => {
@@ -11,6 +12,12 @@ test.afterEach(async ({ page }, testInfo) => {
 });
 
 test('sidebar audit opens report, navigates evidence, and reopens history', async ({ page }, testInfo) => {
+  const sync = await stubSyncQueries(page, name => {
+    if (name === 'plans.list') return [{ slug: 'audit-fixture', harness: 'papercusp', title: 'Audit fixture', status: 'active', archived: false, legacy: false, counts: { todo: 1 }, items: [], decisions: [] }];
+    if (name === 'plans.attention' || name === 'planWorkActivity.list') return [];
+    if (name === 'advRoster.list') return [{ active: [], ended: [] }];
+    return undefined;
+  });
   // UI contracts use a controlled HTTP seam; a separate real-PG integration
   // suite proves persistence and workspace isolation (not a mocked database).
   const run = { id: '11111111-1111-4111-8111-111111111111', scope: 'single', planSlugs: ['audit-fixture'], status: 'complete', startedAt: '2026-10-07T00:00:00Z', rowCount: 1 };
@@ -61,9 +68,13 @@ test('sidebar audit opens report, navigates evidence, and reopens history', asyn
   // that a hand-authored report URL can open the viewer.
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.goto('/plans');
+  await sync.waitForServed(['plans.list']);
+  await expect(page.getByTestId('plans-pane-count-value')).toHaveText('1');
   await page.getByRole('button', { name: 'Audit workspace', exact: true }).click();
   await expect(page.getByTestId('plan-audit-pane')).toBeVisible();
   await expect(page).toHaveURL(new RegExp('paudit=' + run.id));
   expect(submissions).toEqual([{ scope: 'workspace' }]);
   await expect(frame.getByRole('heading', { name: 'Audit fixture' })).toBeVisible();
+  sync.assertServed('plans.list');
+  expect(requests.some(url => url.includes('runId=history&format=html'))).toBe(false);
 });

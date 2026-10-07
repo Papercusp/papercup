@@ -67,6 +67,8 @@ export interface GoalDetailGoalInput {
   title: string;
   body?: string | null;
   status: string;
+  standing?: boolean;
+  goalPackage?: { ref: string } | null;
   killCriterion?: string | null;
   tripwires?: GoalDetailTripwire[] | null;
   budgetCents?: number | null;
